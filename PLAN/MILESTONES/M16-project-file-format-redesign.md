@@ -174,13 +174,13 @@ Scouting facts this plan relies on (2026-10-10):
 
 ## Phase 16.3: `.ntpz` save and load, clean break
 
-- [ ] M16.P3.T1 — Project bundle writer and reader
+- [x] M16.P3.T1 — Project bundle writer and reader
   - files: new `Serialization/Bundle/ProjectBundle.h/.cpp`, new `Tests/Serialization/ProjectBundle_Test.cpp`
   - approach: members are written in a fixed order: `mimetype`, `manifest.yaml` (bundle version, app version and commit, save date, author, member list with sizes and CRCs), `project.yaml`, `gui.yaml` (optional), then the `blobs/**` members sorted. The reader validates `mimetype`. A referenced blob that is missing gives a warning and empty item data. `detectProjectFileKind(path)` returns bundle, legacy XML (`<?xml`/`<!DOCTYPE boost_serialization` within the first 64 bytes), or unknown.
   - verify: compiled at P3.T8. Write and read roto and tracker blobs; a deleted blob member gives a warning; two saves of the same data differ only in `manifest.yaml`; `detectProjectFileKind` classifies samples of each kind.
   - size: M
 
-- [ ] M16.P3.T2 — Save `.ntpz` atomically
+- [x] M16.P3.T2 — Save `.ntpz` atomically
   - files: `Engine/Project.cpp` (`saveProjectInternal`), `Engine/ProjectPrivate.cpp`, `Engine/AppInstance.h/.cpp`, `Gui/GuiAppInstance.cpp`
   - approach:
     - Build `ProjectSerialization` and `ProjectGuiSerialization`, then write them with `ProjectBundleWriter` into a `QSaveFile` **in the target directory**. That gives fsync and rename and removes the temp-dir write and copy fallback.
@@ -189,7 +189,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: compiled at P3.T8. There, the project round-trip gtests pass through the bundle path, and a writer made to throw after `project.yaml` leaves the previous file intact.
   - size: M
 
-- [ ] M16.P3.T3 — Load `.ntpz` only; refuse old XML clearly
+- [x] M16.P3.T3 — Load `.ntpz` only; refuse old XML clearly
   - files: `Engine/Project.cpp` (`loadProjectInternal`), `Gui/NodeSettingsPanel.cpp` (the refusal message only), `Serialization/BoostXml/*` (delete every load half; the save halves stay for P6)
   - approach: by `detectProjectFileKind`:
     - a bundle goes through `ProjectBundleReader` → `restoreFromSerialization`;
@@ -200,25 +200,25 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: compiled at P3.T8; the tests are in P5.T2.
   - size: M
 
-- [ ] M16.P3.T4 — Dangling references and order independence at restore
+- [x] M16.P3.T4 — Dangling references and order independence at restore
   - files: `Engine/NodeGroupSerialization.cpp`, `Engine/Project.h/.cpp` (a load-warnings list)
   - approach: in the wiring pass (`:374-393`), an unknown input label or a missing sibling target becomes a load warning ("Blur1.Source → Missing1: node not found; input left disconnected"). Warnings go to `appPTR->writeToErrorLog_mt_safe` and are collected on Project. The GUI shows one summary dialog after load; the CLI prints to stderr. Missing link or expression targets get the same treatment. Keep the order as: create all nodes, then wire all inputs, then restore links.
   - verify: compiled at P3.T8; the tests are in P5.T2.
   - size: M
 
-- [ ] M16.P3.T5 — Delete legacy-format tests and fixtures
+- [x] M16.P3.T5 — Delete legacy-format tests and fixtures
   - files: `Tests/fixtures/golden-ntp/` and `Tests/Serialization/GoldenXml_Test.cpp` (M93's), plus the other XML-only tests if they depend on the XML format: `ProjectXmlEquivalence_Test`, `KnobXmlEquivalence_Test`, `RotoXmlEquivalence_Test`, `ProjectXmlHelpers.h`, the `MissingPlugin*` XML tests, `Tests/fixtures/native-golden`. (The two legacy `.ntp` fixtures and `LegacyColorProjectTest` were already removed by M69.)
   - approach: delete only the assertions about *migrating* old versions. Where a legacy test also pins current behaviour, rebuild that graph in code and keep the assertion. For example, `ResavingWritesRgbaNeverTheStorageID` becomes a check that a fresh Blur's saved `project.yaml` never contains the storage ID. List every deleted test name in the commit message.
   - verify: compiled at P3.T8. `grep -rn "legacy" Tests/*.cpp` shows nothing that loads an XML fixture.
   - size: M
 
-- [ ] M16.P3.T6 — Delete version-gated legacy migration code
+- [x] M16.P3.T6 — Delete version-gated legacy migration code
   - files: `Engine/Project.cpp` (the RC2/RC3 scan, `setReadingRC2OrRC3Archive`), `Engine/NodeGroupSerialization.cpp` (`oldInputs`, ~`:363`), `Serialization/*Serialization.h` (remove the `version` fields and `oldInputs`). Most Node.cpp/ProjectPrivate/ProjectGui legacy gates were already removed; re-scout for any remaining version gates rather than trusting line numbers
   - approach: the clean break makes these unreachable, because a `.ntpz` is always current. Remove the code and its constants (the `*_SERIALIZATION_*` version macros go with `BoostXml` in P7.T1).
   - verify: compiled at P3.T8, where the full ctest is green.
   - size: M
 
-- [ ] M16.P3.T7 — `.ntpz` across Engine, CLI and desktop integration
+- [x] M16.P3.T7 — `.ntpz` across Engine, CLI and desktop integration
   - files:
     - `Global/Macros.h` (`NATRON_PROJECT_FILE_EXT "ntpz"`)
     - `Engine/Project.cpp` (autosave search `:960-970`, help text `:1254,1573`)
@@ -381,3 +381,6 @@ UAT (P7.T3).
 - 2026-10-22 — P1.T2's `grep -rn yaml-cpp Engine Gui` check is not literally empty: it matches the About-box licence qrc line and two old comments linking a yaml-cpp issue. No Engine/Gui file includes yaml-cpp, which is the check's intent.
 - 2026-10-22 — Phase 16.2 load-side contract that Phase 16.3 must honour: (1) non-user knobs decode untyped, so call `completeKnobSerialization(knob, liveTypeName, liveDimension, &liveChoiceEntries)` before `fromSerialization`; (2) defaults are saved only for user knobs, so `KnobHelper::fromSerialization` must skip `cloneDefaultValues` when none was saved; (3) only free/broken keys keep derivatives, so loaded curves recompute them (`Curve::setKeyframes(keys, true)` or equivalent).
 - 2026-10-22 — Choice knobs have no stored label in the data model: written as the option ID, plus `{value: idx, option: id}` when the index doesn't match that ID. `gui.yaml` drops `legacyBackdrops`/`legacyPanes`/`version` (clean break). Only `Serialization/Yaml/*.cpp` and `YamlPrivate.h` include yaml-cpp. Subnormal doubles parse via `strtod_l` (libstdc++ `from_chars` rejects them). The example `project.yaml` for the docs is pinned as `kExampleProjectYaml` in `Tests/Serialization/ProjectYaml_Test.cpp`.
+- 2026-10-22 — Between Phase 16.3 and 16.4, copy/paste, `.nl` import and `.nps` import are inert (the XML readers are gone; `decodeClipboardNodes` returns false and cut still deletes). Phase 16.4 restores them; the milestone never ships in between.
+- 2026-10-22 — `softwareVersion`, `lastAuthor` and `lastSaveDate` project knobs are kept out of `project.yaml` so re-saves stay byte-identical; author and date round-trip through `manifest.yaml`, `softwareVersion` is set from the running build on load.
+- 2026-10-22 — A missing link target is a load warning, not a failed load (`KnobI::restoreLinks` reports `missingTargets`). The GUI summary dialog lists the first 20 warnings.

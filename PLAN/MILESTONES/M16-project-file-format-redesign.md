@@ -311,7 +311,7 @@ Scouting facts this plan relies on (2026-10-10):
 
 ## Phase 16.6: One-off benchmark (both writers still exist)
 
-- [x] M16.P6.T1 — Heavy roto/tracker benchmark harness
+- [ ] M16.P6.T1 — Heavy roto/tracker benchmark harness
   - files: new `tools/bench/project_io_bench.py`, new `tools/bench/make_heavy_project.py` (both deleted in P7.T1; they stay in git history)
   - approach: `make_heavy_project.py` (under NatronRenderer) builds a seeded project through `PyRoto`/`PyTracker`: 200 strokes × 500 samples, 30 beziers × 24 CPs × 200 keys with feather, 16 tracks × 2000 frames, plus the `keying_grade` graph. `project_io_bench.py` times `saveLegacyXmlForBenchmark` against the `.ntpz` save, and autosave, as a median of 7 after warm-up. It records file sizes and the `.ntpz` load time; XML load is no longer possible. Results go to `build/bench/results-project-io.jsonl` through `lib.sh`'s helpers.
   - verify: one run against a `fast` build prints the table and exits 0.

@@ -551,6 +551,13 @@ Settings::initializeKnobsProjectSetup()
     _firstReadSetProjectFormat->setHintToolTip( tr("If checked, the project size is set to this of the first image or video read within the project.") );
     _projectsPage->addKnob(_firstReadSetProjectFormat);
 
+    _developRawOnRead = AppManager::createKnob<KnobBool>(this, tr("Develop RAW files on read"));
+    _developRawOnRead->setName("developRawOnRead");
+    _developRawOnRead->setHintToolTip(tr("If checked, creating a Read of a camera raw file in the interface (from the node menu, by "
+                                         "dropping a file or opening one) also creates RawPrepare, RawTemperature, RawHighlights, "
+                                         "RawDemosaic and RawInputColor below it, in a backdrop titled \"Develop RAW\". Loading a project "
+                                         "or creating a Read from Python never does."));
+    _projectsPage->addKnob(_developRawOnRead);
 
     _autoPreviewEnabledForNewProjects = AppManager::createKnob<KnobBool>( this, tr("Auto-preview enabled by default for new projects") );
     _autoPreviewEnabledForNewProjects->setName("enableAutoPreviewNewProjects");
@@ -1535,6 +1542,7 @@ Settings::setDefaultValues()
 
     // General/Projects setup
     _firstReadSetProjectFormat->setDefaultValue(true);
+    _developRawOnRead->setDefaultValue(true);
     _autoPreviewEnabledForNewProjects->setDefaultValue(true, 0);
     _fixPathsOnProjectPathChanged->setDefaultValue(true);
 
@@ -3236,6 +3244,12 @@ bool
 Settings::isAutoProjectFormatEnabled() const
 {
     return _firstReadSetProjectFormat->getValue();
+}
+
+bool
+Settings::isDevelopRawOnReadEnabled() const
+{
+    return _developRawOnRead->getValue();
 }
 
 bool

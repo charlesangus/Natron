@@ -140,6 +140,7 @@
 
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
+#include "Engine/Nodes/IO/RawExtensions.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NativeRegistry.h"
 #include "Engine/Nodes/NodeSpec.h"
@@ -3415,6 +3416,11 @@ void
 AppManager::getSupportedReaderFileFormats(std::vector<std::string>* formats) const
 {
     *formats = OiioReadSupport::readableExtensions();
+    for (std::string_view raw : RawExtensions::kExtensions) {
+        if (std::find(formats->begin(), formats->end(), std::string(raw)) == formats->end()) {
+            formats->push_back(std::string(raw));
+        }
+    }
 }
 
 void
@@ -3426,6 +3432,11 @@ AppManager::getSupportedWriterFileFormats(std::vector<std::string>* formats) con
 std::string
 AppManager::getReaderPluginIDForFileType(const std::string & extension) const
 {
+    // The native Read decodes camera raw files itself, whatever OpenImageIO makes of them.
+    if (RawExtensions::isRawExtension(extension)) {
+        return std::string(PLUGINID_NATRON_READ);
+    }
+
     return OiioReadSupport::formatNameForExtension(extension).empty() ? std::string() : std::string(PLUGINID_NATRON_READ);
 }
 

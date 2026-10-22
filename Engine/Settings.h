@@ -249,6 +249,9 @@ public:
 
     bool isAutoProjectFormatEnabled() const;
 
+    // Whether creating a Read of a camera raw file in the interface adds the Develop RAW chain.
+    bool isDevelopRawOnReadEnabled() const;
+
     bool isAutoFixRelativeFilePathEnabled() const;
 
     ///////////////////////////////////////////////////////
@@ -478,6 +481,7 @@ private:
     // General/Projects setup
     KnobPagePtr _projectsPage;
     KnobBoolPtr _firstReadSetProjectFormat;
+    KnobBoolPtr _developRawOnRead;
     KnobBoolPtr _autoPreviewEnabledForNewProjects;
     KnobBoolPtr _fixPathsOnProjectPathChanged;
 

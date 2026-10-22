@@ -131,10 +131,11 @@ public:
     void onPluginsActivationChanged();
 
     /**
-     * @brief The window whose toolbar or graph is about to show the nodes menu: nodes created
-     * from it go into that window's last selected node collection.
+     * @brief The window whose toolbar or graph is about to show the nodes menu in popup: until
+     * popup hides, nodes created from the menu go into that window's last selected node
+     * collection. With no popup open, they go into the active window's.
      **/
-    void setNodesMenuTarget(Gui* gui);
+    void setNodesMenuTarget(Gui* gui, QMenu* popup);
 
     virtual bool isBackground() const OVERRIDE FINAL
     {
@@ -292,6 +293,12 @@ private:
     void loadShortcuts();
 
     void populateShortcuts();
+
+    /**
+     * @brief Re-reads the category colour and shortcut properties of the nodes menu's actions for
+     * pluginID, or of every plug-in's actions when pluginID is empty.
+     **/
+    void refreshNodesMenuPluginProperties(const QString& pluginID);
 
     std::unique_ptr<GuiApplicationManagerPrivate> _imp;
 };

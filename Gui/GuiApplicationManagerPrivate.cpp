@@ -51,6 +51,7 @@ GuiApplicationManagerPrivate::GuiApplicationManagerPrivate(GuiApplicationManager
     , _topLevelToolButtons()
     , nodesMenu(NULL)
     , nodesMenuTarget()
+    , nodesMenuTargetGeneration(0)
     , _knobsClipBoard(new KnobsClipBoard)
     , _knobGuiFactory(new KnobGuiFactory())
     , _colorPickerCursor()
@@ -155,8 +156,6 @@ GuiApplicationManagerPrivate::findPluginToolButtonInternal(const std::list<Plugi
             }
             if ( major == (*it)->getMajorVersion() ) {
                 return *it;
-            } else {
-                (*it)->setNotHighestMajorVersion(true);
             }
         }
     }

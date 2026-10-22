@@ -7,17 +7,22 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup
 
 Sections:
   - api: nodesMenu() returns the QMenu named NodesMenu, the same object on every call;
-  - tree: every plug-in-owned action names a plug-in in the registry (natron.getPluginIDs()), no
-    plug-in version has two actions, Merge and Blur sit under their groupings, and every action
-    carries the ID, major, category colour and shortcut properties; the Python API exposes no
-    user-creatable flag or grouping, so this startup tree is the snapshot the later sections
-    compare against; top-level groupings keep the toolbox order; triggering an action creates the
-    node;
+  - tree: the Preferences plug-in list, which shows every registered plug-in version except
+    internal-only ones with its grouping, is read as the registry; every plug-in-owned action names
+    a version that list shows (and an ID natron.getPluginIDs() returns) and sits under that
+    version's grouping, Merge, Blur and the test PyPlug have an action for their newest major, no
+    plug-in version has two actions, and every action carries the ID, major, category colour and
+    shortcut properties; Python cannot see whether a listed version is deprecated, so a listed
+    version with no action is only counted, not failed; of the test PyPlug's two majors (from
+    m158_nodes_menu.natronpath/), only the older one's label carries its major; the startup tree is
+    the snapshot the later sections compare against; top-level groupings keep the toolbox order;
+    triggering an action creates the node;
   - python item: a QAction added under Merge/ shows in the main window's Merge toolbox popup;
   - second window: a window opened afterwards has the same toolbox buttons over the same menus,
     shows the Python item, and both windows' graph right-click menus hold every top-level entry
-    of the nodes menu; a node created from the menu after a right-click in the second window lands
-    in that window's project;
+    of the nodes menu; a node created from the menu while the second window's right-click menu is
+    open lands in that window's project, and once that menu has closed, one created with the first
+    window active lands in the first window's;
   - disable: disabling a Merge plug-in in Preferences removes only its action, keeps the Python
     item, and re-enabling it (or cancelling Preferences) brings the action back.
 
@@ -53,7 +58,9 @@ MERGE_GROUPING = "Merge"
 MERGE_ID = "net.sf.openfx.MergePlugin"
 BLUR_ID = "net.sf.cimg.CImgBlur"
 PYTHON_ITEM_TEXT = "M158 Python item"
-KNOWN_GROUPINGS = {MERGE_ID: [MERGE_GROUPING], BLUR_ID: ["Filter"]}
+TWO_MAJORS_ID = "fr.natron.m158.TwoMajors"
+TWO_MAJORS_LABEL = "M158 Two Majors"
+KNOWN_GROUPINGS = {MERGE_ID: [MERGE_GROUPING], BLUR_ID: ["Filter"], TWO_MAJORS_ID: ["Other"]}
 
 # Columns of the Preferences plug-in list (PreferencesPanel.cpp COL_*).
 PREFS_COL_ID = 1
@@ -83,8 +90,6 @@ try:
     def nodes_menu():
         return NatronGui.natron.nodesMenu()
 
-    # ---- the menu tree -------------------------------------------------------------------------
-
     def walk(menu, path, leaves):
         """Appends (plugin ID, major, grouping path, action) for every plug-in-owned leaf."""
         for a in menu.actions():
@@ -97,9 +102,10 @@ try:
                 leaves.append((a.property(PROP_ID), int(a.property(PROP_MAJOR)), path, a))
         return leaves
 
-    def expected_items():
+    def expected_items(listed):
         """(ID, major) -> grouping path of every plug-in action at startup, once each has been
-        checked against the plug-in registry."""
+        checked against the plug-in registry: natron.getPluginIDs() and listed, the Preferences
+        plug-in list."""
         registered = set(NatronGui.natron.getPluginIDs())
         leaves = walk(nodes_menu(), [], [])
         expected = {}
@@ -107,8 +113,21 @@ try:
             expected.setdefault((pid, major), path)
         unknown = sorted(set(pid for pid, _, _, _ in leaves if pid not in registered))
         check(not unknown, "every plug-in action names a registered plug-in (%r)" % unknown[:10])
-        report("NOTE %d plug-in IDs registered, %d with an action"
-               % (len(registered), len(set(pid for pid, _ in expected))))
+        unlisted = sorted(k for k in expected if k not in listed)
+        check(not unlisted, "every plug-in action names a plug-in version the Preferences list shows, "
+              "so none is internal-only or of a major that does not exist (%r)" % unlisted[:10])
+        misplaced = sorted((k, p, listed[k] or [DEFAULT_GROUPING]) for k, p in expected.items()
+                           if k in listed and p != (listed[k] or [DEFAULT_GROUPING]))
+        check(not misplaced, "every plug-in action sits under the grouping the Preferences list shows "
+              "for its plug-in (%r)" % misplaced[:5])
+        for pid in sorted(KNOWN_GROUPINGS):
+            majors = [m for k, m in listed if k == pid]
+            newest = (pid, max(majors)) if majors else None
+            check(newest in expected, "%s's newest listed major has an action (listed majors %r)" % (pid, majors))
+        no_action = sorted(k for k in listed if k not in expected)
+        report("NOTE %d plug-in IDs registered, %d plug-in versions in the Preferences list, %d with an "
+               "action; the %d without one are deprecated or disabled as far as this test can tell (%r)"
+               % (len(registered), len(listed), len(expected), len(no_action), no_action[:10]))
         for pid, grouping in sorted(KNOWN_GROUPINGS.items()):
             paths = [p for (k, _), p in expected.items() if k == pid]
             check(grouping in paths, "%s has an action under %r (got %r)" % (pid, grouping, paths))
@@ -126,10 +145,10 @@ try:
                            if k in paths and len(paths[k]) == 1 and paths[k][0] != expected[k])
         still_there = sorted(k for k in absent if k in paths)
         report("NOTE %s: %d plug-in actions for %d expected plug-in versions" % (area, len(leaves), len(expected)))
-        check(not missing, "%s: every user-creatable plug-in has an action (missing %d: %r)"
+        check(not missing, "%s: every plug-in version with an action at startup still has one (missing %d: %r)"
               % (area, len(missing), missing[:10]))
         check(not doubled, "%s: no plug-in has two actions (%r)" % (area, doubled[:10]))
-        check(not extra, "%s: no action for a plug-in that is not user-creatable (%r)" % (area, extra[:10]))
+        check(not extra, "%s: no action for a plug-in version that had none at startup (%r)" % (area, extra[:10]))
         check(not misplaced, "%s: each action sits under its plug-in's grouping path (%r)" % (area, misplaced[:5]))
         if absent:
             check(not still_there, "%s: the disabled plug-in has no action (%r)" % (area, still_there))
@@ -146,8 +165,6 @@ try:
             if leaf[0] == pid and (major is None or leaf[1] == major):
                 return leaf
         return None
-
-    # ---- windows, toolboxes and graphs ---------------------------------------------------------
 
     def gui_widgets():
         return [w for w in gt.widgets_of("Gui") if w.isVisible()]
@@ -270,13 +287,49 @@ try:
                 return n
         return None
 
-    # ---- Preferences plug-in list --------------------------------------------------------------
-
     def open_prefs():
         for w in gt.widgets_of("PreferencesPanel"):
             if w.isVisible():
                 return w
         return None
+
+    def plugin_list(prefs):
+        for tree in prefs.findChildren(QTreeWidget):
+            header = tree.headerItem()
+            if header.text(PREFS_COL_ID) == "ID" and header.text(PREFS_COL_VERSION) == "Version":
+                return tree
+        return None
+
+    def listed_plugin_versions(prefs):
+        """(ID, major) -> grouping path of every row of the Preferences plug-in list."""
+        tree = plugin_list(prefs)
+        found = {}
+
+        def visit(item, path):
+            pid = item.text(PREFS_COL_ID)
+            if pid:
+                found.setdefault((pid, int(item.text(PREFS_COL_VERSION).split(".")[0])), path)
+                return
+            for i in range(item.childCount()):
+                visit(item.child(i), path + [item.text(0)])
+
+        if tree is not None:
+            for i in range(tree.topLevelItemCount()):
+                visit(tree.topLevelItem(i), [])
+        return found
+
+    def read_plugin_list(gui):
+        QMetaObject.invokeMethod(gui, "showSettings")
+        ok = yield ("until", lambda: open_prefs() is not None, POLL_TIMEOUT_S)
+        prefs = open_prefs()
+        require(ok and prefs is not None, "the Preferences window opened")
+        yield ("sleep", SETTLE_MS)
+        listed = listed_plugin_versions(prefs)
+        QApplication.sendEvent(prefs, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        ok = yield ("until", lambda: open_prefs() is None, POLL_TIMEOUT_S)
+        require(ok, "Escape closes Preferences")
+        yield ("sleep", SETTLE_MS)
+        return listed
 
     def plugin_checkbox(prefs, pid, major):
         for tree in prefs.findChildren(QTreeWidget):
@@ -302,8 +355,6 @@ try:
             check(all(not owned(a) for a in actions[index:]),
                   "%s: plug-in actions are listed before the Python item" % area)
 
-    # ---- steps ---------------------------------------------------------------------------------
-
     def steps():
         ok = yield ("until", lambda: len(gui_widgets()) > 0 and graph_of(gui_widgets()[0]) is not None,
                     STARTUP_TIMEOUT_S)
@@ -320,9 +371,19 @@ try:
         check(ptr(nodes_menu()) == ptr(menu), "nodesMenu() returns the same menu on every call")
 
         gt.section("tree")
-        expected = expected_items()
+        listed = yield from read_plugin_list(main_gui)
+        require(len(listed) > 0, "the Preferences plug-in list has rows")
+        expected = expected_items(listed)
         require(len(expected) > 0, "the plug-in list has user-creatable plug-ins")
         leaves = check_tree("tree", expected)
+        several_majors = sorted(set(pid for pid, _ in listed if sum(1 for k, _ in listed if k == pid) > 1))
+        report("NOTE plug-ins listed with more than one major: %r" % several_majors)
+        labels = dict((major, a.text()) for pid, major, _, a in leaves if pid == TWO_MAJORS_ID)
+        if check(sorted(labels) == [1, 2], "the test PyPlug has an action for each of its majors (got %r)"
+                 % sorted(labels)):
+            check(labels[2] == TWO_MAJORS_LABEL, "the newest major keeps the plain label (got %r)" % labels[2])
+            check(labels[1] == TWO_MAJORS_LABEL + " 1", "the older major's label carries its major (got %r)"
+                  % labels[1])
         colours_ok = all(str(a.property(PROP_COLOR) or "").startswith("#") for _, _, _, a in leaves)
         check(colours_ok, "every plug-in action carries a category colour name")
         check(all(isinstance(a.property(PROP_SHORTCUT), str) for _, _, _, a in leaves),
@@ -405,18 +466,45 @@ try:
         check_graph_menu("window 2", second_gui)
 
         blur_leaf = find_leaf(BLUR_ID)
-        if blur_leaf is not None:
+        second_graph = graph_of(second_gui)
+        if blur_leaf is not None and second_graph is not None:
             before1 = node_names(app)
             before2 = node_names(app2)
-            blur_leaf[3].trigger()
+
+            def trigger_while_open(menu):
+                blur_leaf[3].trigger()
+                close_popups()
+
+            right_click(second_graph.viewport(), trigger_while_open)
             ok = yield ("until", lambda: new_node(app2, before2, BLUR_ID) is not None, POLL_TIMEOUT_S)
-            check(ok, "after a right-click in window 2's graph, the menu creates nodes in window 2's project")
+            check(ok, "while window 2's graph menu is open, the menu creates nodes in window 2's project")
             check(new_node(app, before1, BLUR_ID) is None, "...and none in window 1's project")
             node = new_node(app2, before2, BLUR_ID)
             if node is not None:
                 node.destroy()
             gt.close_all_panels()
             yield ("sleep", SETTLE_MS)
+
+            main_gui.raise_()
+            main_gui.activateWindow()
+            ok = yield ("until", lambda: QApplication.activeWindow() is not None
+                        and ptr(QApplication.activeWindow()) == ptr(main_gui), POLL_TIMEOUT_S)
+            if not ok:
+                report("SKIP second window: window 1 could not be made the active window, so a trigger "
+                       "after window 2's graph menu closed is not checked")
+            else:
+                before1 = node_names(app)
+                before2 = node_names(app2)
+                blur_leaf[3].trigger()
+                ok = yield ("until", lambda: new_node(app, before1, BLUR_ID) is not None, POLL_TIMEOUT_S)
+                check(ok, "once window 2's graph menu has closed, the menu creates nodes in the active "
+                      "window 1's project")
+                check(new_node(app2, before2, BLUR_ID) is None, "...and none in window 2's project")
+                node = new_node(app, before1, BLUR_ID)
+                if node is not None:
+                    node.destroy()
+                gt.close_all_panels()
+                yield ("sleep", SETTLE_MS)
 
         gt.section("disable")
         target = None

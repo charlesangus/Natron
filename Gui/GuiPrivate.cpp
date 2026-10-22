@@ -488,7 +488,7 @@ private:
 
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL
     {
-        appPTR->setNodesMenuTarget(_gui);
+        appPTR->setNodesMenuTarget(_gui, menu());
         _menuOpened = !_menuOpened;
         if (_menuOpened) {
             setFocus();
@@ -507,7 +507,10 @@ private:
 
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL
     {
-        appPTR->setNodesMenuTarget(_gui);
+        // Space and Select press the button, which pops an InstantPopup button's menu up.
+        if ((e->key() == Qt::Key_Right) || (e->key() == Qt::Key_Space) || (e->key() == Qt::Key_Select)) {
+            appPTR->setNodesMenuTarget(_gui, menu());
+        }
         if (e->key() == Qt::Key_Right) {
             QMenu* m = menu();
             if (m) {
@@ -539,7 +542,7 @@ private:
             setFocus();
             _gui->setToolButtonMenuOpened(this);
             _menuOpened = true;
-            appPTR->setNodesMenuTarget(_gui);
+            appPTR->setNodesMenuTarget(_gui, menu());
             showMenu();
         }
         QToolButton::enterEvent(e);

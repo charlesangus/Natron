@@ -56,13 +56,12 @@ class PluginGroupNode
     int _major, _minor;
     std::list<PluginGroupNodePtr> _children;
     PluginGroupNodeWPtr _parent;
-    bool _notHighestMajorVersion;
     bool _isUserCreatable;
 
 public:
-    PluginGroupNode(const QString & pluginID,
-                    const QString & pluginLabel,
-                    const QString & iconPath,
+    PluginGroupNode(const QString& pluginID,
+                    const QString& pluginLabel,
+                    const QString& iconPath,
                     int major,
                     int minor,
                     bool isUserCreatable)
@@ -73,7 +72,6 @@ public:
         , _minor(minor)
         , _children()
         , _parent()
-        , _notHighestMajorVersion(false)
         , _isUserCreatable(isUserCreatable)
     {
     }
@@ -144,16 +142,6 @@ public:
     int getMinorVersion() const
     {
         return _minor;
-    }
-
-    bool getNotHighestMajorVersion() const
-    {
-        return _notHighestMajorVersion;
-    }
-
-    void setNotHighestMajorVersion(bool v)
-    {
-        _notHighestMajorVersion = v;
     }
 };
 

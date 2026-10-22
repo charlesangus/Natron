@@ -209,6 +209,21 @@ public:
 
     void clearNodeCreationContext();
 
+    struct NodeCreationContext {
+        NodeCollectionWPtr collection;
+        double x = 0;
+        double y = 0;
+        bool positionPending = false;
+    };
+
+    /**
+     * @brief The whole context, including whether its position has been used, so that a caller
+     * that sets a context of its own can put the previous one back with restoreNodeCreationContext().
+     **/
+    NodeCreationContext getNodeCreationContext() const;
+
+    void restoreNodeCreationContext(const NodeCreationContext& context);
+
     /**
      * @brief The collection set by setNodeCreationContext(), or null when no context is set.
      **/

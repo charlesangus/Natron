@@ -181,10 +181,7 @@ public:
 
     ProjectBeingLoadedInfo projectBeingLoaded;
 
-    bool creationContextActive;
-    NodeCollectionWPtr creationContextCollection;
-    double creationContextX, creationContextY;
-    bool creationContextPositionPending;
+    AppInstance::NodeCreationContext creationContext;
 
     AppInstancePrivate(int appID,
                        AppInstance* app)
@@ -204,11 +201,7 @@ public:
         , invalidExprKnobsMutex()
         , invalidExprKnobs()
         , projectBeingLoaded()
-        , creationContextActive(false)
-        , creationContextCollection()
-        , creationContextX(0)
-        , creationContextY(0)
-        , creationContextPositionPending(false)
+        , creationContext()
     {
     }
 
@@ -1113,25 +1106,34 @@ AppInstance::setNodeCreationContext(const NodeCollectionPtr& collection,
                                     double x,
                                     double y)
 {
-    _imp->creationContextActive = (bool)collection;
-    _imp->creationContextCollection = collection;
-    _imp->creationContextX = x;
-    _imp->creationContextY = y;
-    _imp->creationContextPositionPending = (bool)collection;
+    _imp->creationContext.collection = collection;
+    _imp->creationContext.x = x;
+    _imp->creationContext.y = y;
+    _imp->creationContext.positionPending = (bool)collection;
 }
 
 void
 AppInstance::clearNodeCreationContext()
 {
-    _imp->creationContextActive = false;
-    _imp->creationContextCollection.reset();
-    _imp->creationContextPositionPending = false;
+    _imp->creationContext = NodeCreationContext();
+}
+
+AppInstance::NodeCreationContext
+AppInstance::getNodeCreationContext() const
+{
+    return _imp->creationContext;
+}
+
+void
+AppInstance::restoreNodeCreationContext(const NodeCreationContext& context)
+{
+    _imp->creationContext = context;
 }
 
 NodeCollectionPtr
 AppInstance::getNodeCreationContextCollection() const
 {
-    return _imp->creationContextActive ? _imp->creationContextCollection.lock() : NodeCollectionPtr();
+    return _imp->creationContext.collection.lock();
 }
 
 void
@@ -1153,16 +1155,16 @@ AppInstancePrivate::applyNodeCreationContext(const Plugin* plugin,
         args.setProperty<NodeCollectionPtr>(kCreateNodeArgsPropGroupContainer, collection);
     }
     // A toolset creates no node of its own, so the position is kept for the first node its script creates.
-    if (!creationContextPositionPending || (argsGroup != collection) || plugin->getToolsetScript()) {
+    if (!creationContext.positionPending || (argsGroup != collection) || plugin->getToolsetScript()) {
         return;
     }
     const double unset = std::numeric_limits<int>::min();
     if ((args.getProperty<double>(kCreateNodeArgsPropNodeInitialPosition, 0) != unset) || (args.getProperty<double>(kCreateNodeArgsPropNodeInitialPosition, 1) != unset)) {
         return;
     }
-    args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, creationContextX, 0);
-    args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, creationContextY, 1);
-    creationContextPositionPending = false;
+    args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, creationContext.x, 0);
+    args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, creationContext.y, 1);
+    creationContext.positionPending = false;
 }
 
 NodePtr

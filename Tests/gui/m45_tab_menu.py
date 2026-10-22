@@ -468,6 +468,7 @@ try:
 
         action = merge_menu.addAction("M45 Python Blur")
         action.triggered.connect(create_blur)
+        extra_actions = []
         try:
             group_node = create_node(GROUP_ID, 1400, 900)
             if group_node is None:
@@ -526,9 +527,50 @@ try:
                      "python action: outside the tab menu the node goes to the root graph")
                 check(created[0].getScriptName() not in [n.getScriptName() for n in group_node.getChildren()],
                      "python action: outside the tab menu the group gets no node")
+
+            def create_inner():
+                nested.append(app.createNode(BLUR_ID))
+
+            def create_around_inner():
+                nested.append(app.createNode(BLUR_ID))
+                app.triggerTabMenuAction(inner_action)
+                nested.append(app.createNode(BLUR_ID))
+
+            nested = []
+            inner_action = merge_menu.addAction("M45 Python Inner")
+            inner_action.triggered.connect(create_inner)
+            extra_actions.append(inner_action)
+            outer_action = merge_menu.addAction("M45 Python Nested")
+            outer_action.triggered.connect(create_around_inner)
+            extra_actions.append(outer_action)
+            root_before = len(app.getChildren())
+
+            popup, line_edit, view = yield from open_menu(subgraph)
+            if not check(popup is not None, "python action: the tab menu reopens over the group's graph"):
+                return
+            entries = listed(line_edit, view, "M45 Python Nested")
+            row = next((r for r, e in enumerate(entries) if row_name(e) == "M45 Python Nested"), -1)
+            if not check(row >= 0, "python action: the nesting action is listed (got %r)" % entries):
+                close_menu(popup)
+                return
+            view.setCurrentIndex(view.model().index(row, 0))
+            QTest.keyClick(line_edit, Qt.Key_Return)
+
+            ok = yield ("until", lambda: len(nested) == 3, 5.0)
+            if not check(ok and all(n is not None for n in nested),
+                         "python action: an action triggered from inside a tab-menu action creates its node, "
+                         "and the outer action creates one before and one after it (got %d)" % len(nested)):
+                return
+            inside = [n.getScriptName() for n in group_node.getChildren()]
+            check(all(n.getScriptName() in inside for n in nested),
+                 "python action: the nodes created before, inside and after the nested trigger all go into "
+                 "the group's graph (%r in %r)" % ([n.getScriptName() for n in nested], inside))
+            check(len(app.getChildren()) == root_before,
+                 "python action: the nested trigger leaves no node in the root graph")
         finally:
-            merge_menu.removeAction(action)
-            action.deleteLater()
+            for extra in [action] + extra_actions:
+                merge_menu.removeAction(extra)
+                extra.deleteLater()
 
     def preferences_section(main_graph):
         gt.section("preferences")

@@ -8,7 +8,8 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup
 Run it again with -e QT_SCALE_FACTOR=2 for the hi-DPI shots. Set M56_BASELINE_DIR to the output
 directory of an earlier run to also check that the themed icons differ from that run's icons. Set
 M56_TOOLBOX_BASELINE to an icons-toolbox.png from an earlier run to also check that the left
-toolbox is drawn pixel for pixel as it was then.
+toolbox is drawn pixel for pixel as it was then; unset, that comparison is reported as SKIP, and a
+path that does not exist fails.
 
 Sizes are compared in logical px scaled by the screen's logical DPI / 96, the same factor
 TO_DPIX/TO_DPIY apply.
@@ -449,6 +450,10 @@ try:
     def compare_toolbox_with_baseline(shot_path):
         base_path = os.environ.get("M56_TOOLBOX_BASELINE")
         if not base_path:
+            report("SKIP toolbox: pixel comparison with a baseline (set M56_TOOLBOX_BASELINE to an "
+                   "icons-toolbox.png from an earlier run)")
+            return
+        if not check(os.path.isfile(base_path), "toolbox: baseline screenshot %s exists" % base_path):
             return
         base = QImage(base_path)
         if not check(not base.isNull(), "toolbox: baseline screenshot %s loads" % base_path):

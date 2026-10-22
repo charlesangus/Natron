@@ -67,6 +67,7 @@ struct GuiApplicationManagerPrivate
     std::list<PluginGroupNodePtr> _topLevelToolButtons;
     QMenu* nodesMenu;
     QPointer<Gui> nodesMenuTarget;
+    quint64 nodesMenuTargetGeneration;
     std::unique_ptr<KnobsClipBoard> _knobsClipBoard;
     std::unique_ptr<KnobGuiFactory> _knobGuiFactory;
     QCursor _colorPickerCursor, _linkToCursor, _linkMultCursor;

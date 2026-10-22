@@ -480,7 +480,7 @@ NodeGraph::showMenu(const QPoint & pos)
     if (nodesMenu) {
         _imp->_menu->addActions(nodesMenu->actions());
     }
-    appPTR->setNodesMenuTarget(getGui());
+    appPTR->setNodesMenuTarget(getGui(), _imp->_menu);
 
     QAction* ret = _imp->_menu->exec(pos);
     if (ret == findAction) {

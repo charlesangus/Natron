@@ -27,6 +27,7 @@
 #include "GuiApplicationManagerPrivate.h"
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
@@ -42,6 +43,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QMenu>
 #include <QPixmapCache>
 #include <QSettings>
+#include <QTimer>
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 #include <QtGlobal> // for Q_OS_*
 CLANG_DIAG_ON(deprecated)
@@ -1302,6 +1304,25 @@ findPlugin(const QString& pluginID,
     return 0;
 }
 
+int
+highestUserCreatableMajor(const QString& pluginID)
+{
+    const PluginsMap& plugins = appPTR->getPluginsList();
+    PluginsMap::const_iterator found = plugins.find(pluginID.toStdString());
+    int highest = std::numeric_limits<int>::min();
+
+    if (found == plugins.end()) {
+        return highest;
+    }
+    for (PluginVersionsOrdered::const_iterator it = found->second.begin(); it != found->second.end(); ++it) {
+        if ((*it)->getIsUserCreatable()) {
+            highest = std::max(highest, (*it)->getMajorVersion());
+        }
+    }
+
+    return highest;
+}
+
 QString
 categoryColorName(const Plugin& plugin)
 {
@@ -1327,6 +1348,61 @@ shortcutText(const Plugin& plugin)
     std::list<QKeySequence> sequences = getKeybind(shortcutGroup, plugin.getPluginID());
 
     return sequences.empty() ? QString() : sequences.front().toString(QKeySequence::NativeText);
+}
+
+void
+refreshPluginActionProperties(QAction* action,
+                              const Plugin* plugin)
+{
+    action->setProperty(kNodesMenuPropCategoryColor, plugin ? categoryColorName(*plugin) : QString());
+    action->setProperty(kNodesMenuPropShortcut, plugin ? shortcutText(*plugin) : QString());
+}
+
+void
+refreshPluginActionsProperties(QMenu* menu,
+                               const QString& pluginID)
+{
+    QList<QAction*> actions = menu->actions();
+
+    for (int i = 0; i < actions.size(); ++i) {
+        if (!isPluginOwned(actions[i])) {
+            continue;
+        }
+        if (actions[i]->menu()) {
+            refreshPluginActionsProperties(actions[i]->menu(), pluginID);
+            continue;
+        }
+        const QString id = actions[i]->property(kNodesMenuPropPluginID).toString();
+        if (pluginID.isEmpty() || (id == pluginID)) {
+            refreshPluginActionProperties(actions[i], findPlugin(id, actions[i]->property(kNodesMenuPropPluginMajor).toInt()));
+        }
+    }
+}
+
+GuiAppInstancePtr
+activeWindowApp()
+{
+    QWidget* active = QApplication::activeWindow();
+
+    if (!active) {
+        return GuiAppInstancePtr();
+    }
+    const AppInstanceVec& instances = appPTR->getAppInstances();
+    for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
+        GuiAppInstancePtr app = std::dynamic_pointer_cast<GuiAppInstance>(*it);
+        Gui* gui = app ? app->getGui() : 0;
+        if (!gui) {
+            continue;
+        }
+        // A floating pane is a window of its own, parented to its Gui.
+        for (QWidget* w = active; w; w = w->parentWidget()) {
+            if (w == gui) {
+                return app;
+            }
+        }
+    }
+
+    return GuiAppInstancePtr();
 }
 
 bool
@@ -1473,9 +1549,29 @@ GuiApplicationManager::getNodesMenu() const
 }
 
 void
-GuiApplicationManager::setNodesMenuTarget(Gui* gui)
+GuiApplicationManager::setNodesMenuTarget(Gui* gui,
+                                          QMenu* popup)
 {
-    _imp->nodesMenuTarget = gui;
+    _imp->nodesMenuTarget = popup ? gui : 0;
+    const quint64 generation = ++_imp->nodesMenuTargetGeneration;
+    if (!popup) {
+        return;
+    }
+    // A QMenu hides before it emits the chosen action's triggered(), so the target is cleared only
+    // once the event that hid the popup has been handled. A later popup's target is left alone.
+    QObject::connect(popup, &QMenu::aboutToHide, this, [this, generation]() { QTimer::singleShot(0, this, [this, generation]() {
+                                                                                  if (_imp->nodesMenuTargetGeneration == generation) {
+                                                                                      _imp->nodesMenuTarget.clear();
+                                                                                  }
+                                                                              }); }, Qt::SingleShotConnection);
+}
+
+void
+GuiApplicationManager::refreshNodesMenuPluginProperties(const QString& pluginID)
+{
+    if (_imp->nodesMenu) {
+        refreshPluginActionsProperties(_imp->nodesMenu, pluginID);
+    }
 }
 
 void
@@ -1498,6 +1594,9 @@ GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
     } else {
         if (nodesMenuTarget) {
             app = nodesMenuTarget->getApp();
+        }
+        if (!app) {
+            app = activeWindowApp();
         }
         if (!app) {
             app = std::dynamic_pointer_cast<GuiAppInstance>(_publicInterface->getTopLevelInstance());
@@ -1556,7 +1655,9 @@ GuiApplicationManagerPrivate::addNodesMenuPluginAction(QMenu* menu,
         return;
     }
 
-    QString label = leaf.getNotHighestMajorVersion() ? leaf.getLabelVersionMajorEncoded() : leaf.getLabel();
+    // Only an older major is told apart by its version: the newest one keeps the plain label.
+    const bool olderMajor = plugin && (leaf.getMajorVersion() < highestUserCreatableMajor(leaf.getID()));
+    QString label = olderMajor ? leaf.getLabelVersionMajorEncoded() : leaf.getLabel();
     QIcon menuIcon, toolButtonIcon;
     makePluginGroupIcons(leaf, &menuIcon, &toolButtonIcon);
 
@@ -1566,8 +1667,7 @@ GuiApplicationManagerPrivate::addNodesMenuPluginAction(QMenu* menu,
     action->setProperty(kNodesMenuPropPluginOwned, true);
     action->setProperty(kNodesMenuPropPluginID, leaf.getID());
     action->setProperty(kNodesMenuPropPluginMajor, leaf.getMajorVersion());
-    action->setProperty(kNodesMenuPropCategoryColor, plugin ? categoryColorName(*plugin) : QString());
-    action->setProperty(kNodesMenuPropShortcut, plugin ? shortcutText(*plugin) : QString());
+    refreshPluginActionProperties(action, plugin);
 
     const QString pluginID = leaf.getID();
     const int major = leaf.getMajorVersion();
@@ -1587,6 +1687,11 @@ GuiApplicationManager::rebuildNodesMenu()
     if (!_imp->nodesMenu) {
         _imp->nodesMenu = new Menu(NULL);
         _imp->nodesMenu->setObjectName(QString::fromUtf8(kNodesMenuObjectName));
+        // As in the node graph, colours follow saved settings rather than settingChanged(), so a
+        // discarded Preferences edit never shows.
+        QObject::connect(getCurrentSettings().get(), &Settings::settingsSaved, this, [this]() {
+            refreshNodesMenuPluginProperties(QString());
+        });
     }
     QMenu* root = _imp->nodesMenu;
 

@@ -130,6 +130,28 @@ TEST_F(NodeCreationContextTest, ClearingTheContextRestoresTheProjectRoot)
     EXPECT_EQ(root(), dot->getGroup());
 }
 
+TEST_F(NodeCreationContextTest, RestoringASavedContextBringsBackItsCollectionAndUsedPosition)
+{
+    _app->setNodeCreationContext(group(), 10, 20);
+    ASSERT_TRUE(bool(createDot(NodeCollectionPtr())));
+    const AppInstance::NodeCreationContext saved = _app->getNodeCreationContext();
+    EXPECT_FALSE(saved.positionPending);
+
+    _app->setNodeCreationContext(root(), 30, 40);
+    EXPECT_TRUE(_app->getNodeCreationContext().positionPending);
+    _app->restoreNodeCreationContext(saved);
+
+    const AppInstance::NodeCreationContext restored = _app->getNodeCreationContext();
+    EXPECT_EQ(group(), restored.collection.lock());
+    EXPECT_EQ(10, restored.x);
+    EXPECT_EQ(20, restored.y);
+    EXPECT_FALSE(restored.positionPending);
+
+    NodePtr dot = createDot(NodeCollectionPtr());
+    ASSERT_TRUE(bool(dot));
+    EXPECT_EQ(group(), dot->getGroup());
+}
+
 TEST_F(NodeCreationContextTest, PythonCreateNodeWithNoGroupUsesTheContext)
 {
     _app->setNodeCreationContext(group(), 10, 20);

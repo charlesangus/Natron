@@ -201,7 +201,6 @@ public:
     std::list<OpenGLRendererInfo> openGLRenderers;
     std::unique_ptr<QCoreApplication> _qApp;
 
-    // Directories holding an initGui.py, in search-path order, waiting for the first GUI window.
     QStringList pendingInitGuiDirs;
     bool initGuiScriptsRan = false;
 

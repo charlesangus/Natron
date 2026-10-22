@@ -49,13 +49,16 @@ namespace {
 QPointer<NodeGraph> g_target;
 QPointF g_scenePos;
 
-// Clears the context however the action returns, and leaves alone an app the action closed.
+// Puts back the context that was set before, however the action returns, so that an action
+// triggered from inside another one hands the outer action its context back; an app the action
+// closed is left alone.
 class NodeCreationContextScope {
 public:
     NodeCreationContextScope(const AppInstancePtr& app,
                              const NodeCollectionPtr& collection,
                              const QPointF& scenePos)
         : _app(app)
+        , _previous(app->getNodeCreationContext())
     {
         app->setNodeCreationContext(collection, scenePos.x(), scenePos.y());
     }
@@ -63,7 +66,7 @@ public:
     ~NodeCreationContextScope()
     {
         if (AppInstancePtr app = _app.lock()) {
-            app->clearNodeCreationContext();
+            app->restoreNodeCreationContext(_previous);
         }
     }
 
@@ -72,6 +75,7 @@ public:
 
 private:
     AppInstanceWPtr _app;
+    AppInstance::NodeCreationContext _previous;
 };
 
 std::string

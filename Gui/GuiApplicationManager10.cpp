@@ -1108,6 +1108,7 @@ GuiApplicationManager::notifyShortcutChanged(KeyBoundAction* action)
                         assert(found->second.size() > 0);
                         ( *found->second.rbegin() )->setHasShortcut( !action->currentShortcut.empty() );
                     }
+                    refreshNodesMenuPluginProperties(it2->first);
                     break;
                 }
             }

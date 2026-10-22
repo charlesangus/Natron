@@ -107,13 +107,13 @@ Scouting facts this plan relies on (2026-10-10):
 
 ## Phase 16.2: YAML encoding of the data model
 
-- [ ] M16.P2.T1 — Scalar and curve YAML encoding
+- [x] M16.P2.T1 — Scalar and curve YAML encoding
   - files: new `Serialization/Yaml/YamlScalars.h/.cpp`, new `Serialization/Yaml/CurveYaml.cpp`, new `Tests/Serialization/CurveYaml_Test.cpp`
   - approach: port RB-3's compact curve grammar (`git show origin/master:Serialization/CurveSerialization.cpp`). It is a flow sequence: an interpolation token only when it changes, then `time value`, then `rightDeriv` for free or broken keys, then `leftDeriv` for broken keys. Rewrite the decoder as an explicit state machine. Doubles are emitted as `std::to_chars` shortest-round-trip strings and parsed with `std::from_chars`; `.inf`/`.nan` use the YAML forms.
   - verify: compiled at P2.T7. Every interpolation type, mixed sequences, broken and free tangents, ±0, denormals, 1e300 and 17-digit values all round-trip bit-exactly. A 3-key linear curve's text is pinned as a literal. Malformed input throws a descriptive error.
   - size: M
 
-- [ ] M16.P2.T2 — Knob YAML encoding (sparse)
+- [x] M16.P2.T2 — Knob YAML encoding (sparse)
   - files: new `Serialization/Yaml/KnobYaml.cpp`, new `Tests/Serialization/KnobYaml_Test.cpp`
   - approach: knobs form a map keyed by script name, in data-model order, holding only knobs that `toSerialization` emitted. Value forms:
     - a scalar for a 1-dim knob, a flow sequence for N dims;
@@ -130,7 +130,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: compiled at P2.T7. A table over every knob type in M93's conversion list, in static, animated, expression, linked and user variants, checks encode→decode equality field by field. A default-valued knob is absent from the output.
   - size: L
 
-- [ ] M16.P2.T3 — Node and project YAML encoding
+- [x] M16.P2.T3 — Node and project YAML encoding
   - files: new `Serialization/Yaml/NodeYaml.cpp`, new `Serialization/Yaml/ProjectYaml.cpp`, new `Tests/Serialization/ProjectYaml_Test.cpp`
   - approach:
     - A node is `{plugin: id, version: [major, minor], label?, python: {module, version}?, knobs, inputs: {<input label>: <sibling script name>}, pages?, userPages?, children: {...}}`.
@@ -143,13 +143,13 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: compiled at P2.T7. A data-model project built in code, with a nested group, connections and a layer registry: encode→decode is equal, re-encoding is byte-identical, a hand-shuffled file decodes equal, and a duplicate script name or `formatVersion: 99` gives the expected error.
   - size: M
 
-- [ ] M16.P2.T4 — GUI YAML encoding
+- [x] M16.P2.T4 — GUI YAML encoding
   - files: new `Serialization/Yaml/ProjectGuiYaml.cpp`, new `Tests/Serialization/ProjectGuiYaml_Test.cpp`
   - approach: `gui.yaml` holds node UI keyed by fully-qualified name (position, size, colour, overlay colour), backdrops, viewer data, histograms and the pane layout. The layout encoder is a separate entry point because `.nl` files reuse it (P4.T3).
   - verify: compiled at P2.T7. A fully populated `ProjectGuiSerialization` round-trips field by field.
   - size: M
 
-- [ ] M16.P2.T5 — Roto encoding with blob members
+- [x] M16.P2.T5 — Roto encoding with blob members
   - files: new `Serialization/Yaml/RotoYaml.cpp`, new `Tests/Serialization/RotoYaml_Test.cpp`
   - approach: the item tree and item knobs stay in YAML.
     - **Strokes:** one table with columns `x, y, pressure, time` (the three parallel curves merged). This assumes they share key times; if not, fall back to inline curves.
@@ -160,7 +160,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: compiled at P2.T7. A 2000-sample stroke, a 20-CP feathered bezier with a broken tangent over 100 keys, a static bezier, and a bezier with an odd CP key set all round-trip bit-exactly. Blobs appear only above the threshold, and no per-sample text is in the YAML.
   - size: L
 
-- [ ] M16.P2.T6 — Tracker encoding with blob members
+- [x] M16.P2.T6 — Tracker encoding with blob members
   - files: new `Serialization/Yaml/TrackerYaml.cpp`, new `Tests/Serialization/TrackerYaml_Test.cpp`
   - approach: track flags, names and user keys go inline. Knob curves at or above the threshold go into **one table per track**: rows are the union of key times; columns are `time`, `<knob>.<dim>` values, a u8 `<knob>.<dim>.present` mask, and `interp` columns only when not all-linear. Curves with free or broken derivatives fall back to inline curves.
   - verify: compiled at P2.T7. 4 tracks × 1000 keys with sparse curves and one broken tangent round-trip bit-exactly as four blob members.
@@ -379,3 +379,5 @@ UAT (P7.T3).
 - 2026-10-22 — P1.T1 probe (running natron-dev, `aswf/ci-vfxall:2027-clang21.1` base; the ghcr dev image adds nothing for these): yaml-cpp **0.9.0** at `/usr/local` with a CMake config (`yaml-cpp::yaml-cpp`, shared only, already bundled in AppImages via OCIO); zlib 1.3.2 at `/usr/local` with `ZLIB::ZLIB`. So `find_package(yaml-cpp 0.8 CONFIG)` takes 0.9.0 and nothing is vendored.
 - 2026-10-22 — `ZipReader` maps with POSIX `mmap`, not `QFile::map`: `Serialization/` must not include Qt (README + layering script). A file truncated under a live mapping would SIGBUS, so saves must write-then-rename (already P3.T2's QSaveFile plan).
 - 2026-10-22 — P1.T2's `grep -rn yaml-cpp Engine Gui` check is not literally empty: it matches the About-box licence qrc line and two old comments linking a yaml-cpp issue. No Engine/Gui file includes yaml-cpp, which is the check's intent.
+- 2026-10-22 — Phase 16.2 load-side contract that Phase 16.3 must honour: (1) non-user knobs decode untyped, so call `completeKnobSerialization(knob, liveTypeName, liveDimension, &liveChoiceEntries)` before `fromSerialization`; (2) defaults are saved only for user knobs, so `KnobHelper::fromSerialization` must skip `cloneDefaultValues` when none was saved; (3) only free/broken keys keep derivatives, so loaded curves recompute them (`Curve::setKeyframes(keys, true)` or equivalent).
+- 2026-10-22 — Choice knobs have no stored label in the data model: written as the option ID, plus `{value: idx, option: id}` when the index doesn't match that ID. `gui.yaml` drops `legacyBackdrops`/`legacyPanes`/`version` (clean break). Only `Serialization/Yaml/*.cpp` and `YamlPrivate.h` include yaml-cpp. Subnormal doubles parse via `strtod_l` (libstdc++ `from_chars` rejects them). The example `project.yaml` for the docs is pinned as `kExampleProjectYaml` in `Tests/Serialization/ProjectYaml_Test.cpp`.

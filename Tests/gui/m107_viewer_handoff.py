@@ -37,8 +37,11 @@ Run the CPU reference first, then each GPU configuration, into the same output d
           Tests/gui/run-gui-test.sh Tests/gui/m107_viewer_handoff.py build/fast/App/Natron
     done
     docker exec -e NATRON_GUI_TEST_OUT=$OUT -e GUI_TEST_TIMEOUT=900 -e NATRON_GPU=force \
-        -e NATRON_GPU_FAULT=lost@40 -w /home/bosley/git/Natron natron-dev \
+        -e NATRON_GPU_FAULT=lost@40 -w /home/bosley/git/Natron natron-dev-gpu \
         Tests/gui/run-gui-test.sh Tests/gui/m107_viewer_handoff.py build/fast/App/Natron
+The fault run needs a hardware device (natron-dev-gpu, tools/ci/local/devshell.sh --gpu): on lavapipe the cost
+model moves the sweep's regions to the CPU after the first GPU frame, so the device sees fewer than 40 operations
+in the whole run and the loss never fires.
 An empty NATRON_VIEWER_HANDOFF is ignored by the engine. Each run must end with
 "SUMMARY 0 failure(s)"; results.txt is overwritten by every run, so read it after each one.
 Set M107_TOLERANCE (code values, default 1) or M107_PICK_TOL (default 0.002) to relax the checks.
@@ -643,7 +646,10 @@ try:
         elif FAULT_ENV:
             report("NOTE %d hand-off or Vulkan lines in the log after %s" % (len(lines), FAULT_ENV))
             loss_at = next((i for i, (r, why) in enumerate(rungs) if r == "cpu" and "device lost" in why), None)
-            check(loss_at is not None, "%s: the log shows the hand-off dropping to the cpu rung on a device loss" % FAULT_ENV)
+            check(loss_at is not None, "%s: the log shows the hand-off dropping to the cpu rung on a device loss%s" %
+                  (FAULT_ENV, "" if loss_at is not None else
+                   " (none: the fault fires only on that device operation, which a CPU-type device such as lavapipe,"
+                   " whose regions the cost model moves to the CPU, may never reach)"))
             check(loss_at is not None and any(r != "cpu" for r, _ in rungs[:loss_at]),
                   "%s: a GPU rung was in use before the loss (%r)" % (FAULT_ENV, rungs[:loss_at or 0]))
             check(len(post_loss) >= POST_LOSS_SWEEP_STEPS and all(post_loss),

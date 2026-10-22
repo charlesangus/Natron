@@ -386,6 +386,7 @@ UAT (P7.T3).
 - 2026-10-22 — A missing link target is a load warning, not a failed load (`KnobI::restoreLinks` reports `missingTargets`). The GUI summary dialog lists the first 20 warnings.
 - 2026-10-22 — The clipboard document uses the project node schema, which omits the clone master (`masterNodeName`), so a pasted clone is no longer linked to its original. Duplicate and clone don't go through the clipboard. M92 - Linked Nodes defines linked-node fields; accepted under the clean break.
 - 2026-10-22 — A default-layout preference pointing at an XML, damaged or empty `.nl` falls back to the built-in layout with an error dialog (previously: error and no layout at all).
+- 2026-10-22 — Build of `ffbddea94` (P3+P4): 30 tests red. Root cause: `detectProjectFileKind` sniffed 64 bytes, but the bundle mime check needs 72, so every `.ntpz` was refused as unrecognized. Fixed in `07dea085a`, along with a test that expected 5 manifest members where there are 4. The bench comps still need regenerating, and the decode path is unexercised until a build passes detection.
 
 ## Handoff (2026-10-22, PM paused by user)
 

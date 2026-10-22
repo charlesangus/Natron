@@ -69,7 +69,7 @@ Every node is built on the M137 - Native Base Class Flexibility framework (`Node
   - verify: gtest round-trips every key. `colourAt` matches a hand table for RGGB, BGGR, GRBG, GBRG and a 6x6 X-Trans, including after a one-pixel crop offset. `hasCfa` is false for `none`. `requireStage` gives the expected text.
   - size: M
 
-- [ ] M80.P1.T4 — Host raw-kind nodes on the native framework
+- [x] M80.P1.T4 — Host raw-kind nodes on the native framework
   - files: `Engine/Nodes/NodeSpec.h`, `Engine/Nodes/Image/ImagePipelineSpec.h`, `Engine/Nodes/Image/StagedImageEffect.h/.cpp`, `Engine/Nodes/README.md`, new `Tests/Native/RawKindFramework_Test.cpp`
   - approach: `StagedImageEffect` ops are image-kind today. Let an `ImagePipelineSpec`/`NodeSpec` declare raw in with raw out, or raw in with image out. Ops already see pixel position through `RowIO::x0`/`y` (`Engine/Nodes/Image/PixelKernel.h:69`), so a Point op can call `RawLayout::colourAt`. Stages that make no sense on a mosaic are rejected at compile time for raw-in specs: Premult, and the layer and channel selection. The framework checks `raw/stage` through `RawMetadata::requireStage` before rendering and raises the persistent error. Scout first: if raw-in specs need more than a kind field plus those restrictions, report it before implementing. Document raw nodes in the README "Flat image nodes" section.
   - verify: gtest with a test-only raw Point op: declared kinds resolve; a raw→raw op sees the right `colourAt` per row; a raw→image op connects to an image consumer; a wrong `raw/stage` sets the persistent message and renders nothing.

@@ -151,6 +151,7 @@ target_link_libraries(Tests
         Qt::Concurrent
         Python3::Python
         openMVG
+        rawspeed::rawspeed
 )
 if(NATRON_GPU)
     include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)

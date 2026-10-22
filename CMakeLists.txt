@@ -93,6 +93,17 @@ set(PYSIDE_VERSION_MAJOR 6)
 # Engine, not descendants of it.
 find_package(harfbuzz CONFIG REQUIRED)
 
+# rawspeed is built and installed by tools/ci/local/fetch-assets.sh, which writes the package
+# config found here. Found at the top level for the same reason as harfbuzz: NatronEngine links it
+# statically, so every executable linking NatronEngine links it too.
+set(NATRON_RAWSPEED_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/build/assets/rawspeed" CACHE PATH "The rawspeed install fetch-assets.sh produces")
+if(NOT EXISTS "${NATRON_RAWSPEED_ROOT}/lib/cmake/rawspeed/rawspeedConfig.cmake")
+    message(FATAL_ERROR "rawspeed is not installed at ${NATRON_RAWSPEED_ROOT}. Run tools/ci/local/fetch-assets.sh first.")
+endif()
+find_package(rawspeed CONFIG REQUIRED PATHS "${NATRON_RAWSPEED_ROOT}" NO_DEFAULT_PATH)
+# fetch-assets.sh rewrites the config when the pin moves; rawspeed_REF must follow it.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NATRON_RAWSPEED_ROOT}/lib/cmake/rawspeed/rawspeedConfig.cmake")
+
 get_target_property(PYSIDE_INCLUDE_DIRS PySide6::pyside6 INTERFACE_INCLUDE_DIRECTORIES)
 set(QTCORE_INCLUDE_DIRS ${Qt6Core_INCLUDE_DIRS})
 set(QTGUI_INCLUDE_DIRS ${Qt6Gui_INCLUDE_DIRS})

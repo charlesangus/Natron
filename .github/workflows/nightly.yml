@@ -114,6 +114,7 @@ jobs:
             build/assets/Plugins
             build/assets/TestPlugins
             build/assets/CImg
+            build/assets/rawspeed
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets

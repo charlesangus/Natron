@@ -141,6 +141,10 @@ jobs:
       # build/assets/CImg holds the one plugin-src file the tests read
       # (CImg.h, the reference the native kernels are checked against), so
       # it must be cached alongside Plugins/.
+      #
+      # build/assets/rawspeed is the installed rawspeed (static library,
+      # headers, cameras.xml) the Natron build links, built by its own
+      # stamped step, so a hit skips that compile too.
       - name: Cache test assets
         uses: actions/cache@v6.1.0
         with:
@@ -148,6 +152,7 @@ jobs:
             build/assets/Plugins
             build/assets/TestPlugins
             build/assets/CImg
+            build/assets/rawspeed
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets
@@ -237,6 +242,7 @@ jobs:
             build/assets/Plugins
             build/assets/TestPlugins
             build/assets/CImg
+            build/assets/rawspeed
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets

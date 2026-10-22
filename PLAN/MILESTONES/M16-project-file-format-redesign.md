@@ -69,19 +69,19 @@ Scouting facts this plan relies on (2026-10-10):
 
 ## Phase 16.1: Dependencies and container primitives
 
-- [ ] M16.P1.T1 — Probe the CI image for yaml-cpp and zlib
+- [x] M16.P1.T1 — Probe the CI image for yaml-cpp and zlib
   - files: none (findings go in `## Decisions`)
   - approach: in `tools/ci/local/devshell.sh`, run `find / \( -path '*yaml-cpp/yaml.h' -o -name 'yaml-cpp*Config.cmake' -o -name 'libyaml-cpp*' -o -name zlib.h -o -name 'libz.so*' \) 2>/dev/null`. Record each path, its version, and whether it is a public install with a CMake config.
   - verify: a Decisions entry lists what was found, or "none".
   - size: S
 
-- [ ] M16.P1.T2 — Add yaml-cpp 0.8 to the build
+- [x] M16.P1.T2 — Add yaml-cpp 0.8 to the build
   - files: `CMakeLists.txt`, new `libs/yaml-cpp/` (only if P1.T1 found no usable install), `libs/CMakeLists.txt`, `Serialization/CMakeLists.txt` (add `GLOB_RECURSE` for the new `Bundle/` and `Yaml/` subdirs; it globs only top-level `*.cpp` plus `BoostXml/` today), `tools/ci/check_serialization_layering.sh` (if it needs to allow the new subdirs), `tools/license/components/LICENSE-yaml-cpp.txt` (and its README line)
   - approach: try `find_package(yaml-cpp 0.8 CONFIG)` first. Otherwise vendor the pinned 0.8.0 release as a static target with tests, tools and contrib OFF. Link it PRIVATE to `NatronSerialization` only, so no Engine or Gui header includes yaml-cpp. Exclude `libs/yaml-cpp` from the format and lint gates as other `libs/` entries are.
   - verify: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug` configures and links, and `grep -rn yaml-cpp Engine Gui` is empty.
   - size: M
 
-- [ ] M16.P1.T3 — Stored-only zip writer and reader with 64-byte member alignment
+- [x] M16.P1.T3 — Stored-only zip writer and reader with 64-byte member alignment
   - files: new `Serialization/Bundle/ZipStore.h/.cpp`, new `Tests/Serialization/ZipStore_Test.cpp`
   - approach: write it in-house; no library can align member data, and libzip is not in the image.
     - Writer: the first member is `mimetype` (`application/vnd.natron.project+zip`, stored, no extra field). Every member is method 0, with the local-header extra field padded (id `0x1986`, as usdz does) so its data starts on a 64-byte boundary. CRC32 comes from zlib if P1.T1 found it, otherwise a table. A fixed 1980-01-01 DOS timestamp makes the output deterministic. Zip64 and members over 4 GiB are refused with a clear error.
@@ -93,7 +93,7 @@ Scouting facts this plan relies on (2026-10-10):
     - Truncated, bit-flipped and traversal-named archives throw and do not crash.
   - size: M
 
-- [ ] M16.P1.T4 — Blob table codec (flat typed columns)
+- [x] M16.P1.T4 — Blob table codec (flat typed columns)
   - files: new `Serialization/Bundle/BlobTable.h/.cpp`, new `Tests/Serialization/BlobTable_Test.cpp`
   - approach: a 64-byte header (magic `NTBL`, u16 version, u16 column count, u64 rows, u64 column-directory offset), followed by columns that are each 64-byte aligned, named, typed (`f64|f32|i32|u8`), contiguous and little-endian (SoA). The YAML side keeps a descriptor `{blob: blobs/<path>.bin, rows: N, columns: [time:f64, x:f64, ...]}`. The reader matches columns **by name**: an expected column that is missing gets its default, and an unknown column is ignored. That is the schema-evolution story. `BlobTableView` gives typed spans with no copy when aligned, and copies otherwise. A static_assert enforces little-endian hosts.
   - verify: compiled at P1.T5. gtest round-trips every dtype, a 0-row table and a 1e6-row table; checks the missing and unknown column rules; and checks that a corrupt count or offset is rejected without reading out of bounds (ASan in the debug build if available).
@@ -376,3 +376,6 @@ UAT (P7.T3).
 - 2026-10-22 — **Claimed despite strict file overlap** (user): run alongside M80, M16 and M158 in parallel lanes, with M64 - Tiled Rendering (parked) not treated as a blocker; overlaps with active rows (M86, M107, M154) and sibling lanes are one or two shared files, handled by rebasing after each merge.
 - 2026-10-22 — Freshness check (§5a) at claim: stale file lists and line numbers corrected in place; no premise change.
 - 2026-10-22 — Build mode on this host is remote: every `tools/ci/local/build.sh`/`test.sh` checkpoint in this file runs as `tools/ci/remote/build.sh debug --tests` on pushed HEAD instead (release where the task says release). Local-only steps (P1.T1 probe) use the natron-dev container.
+- 2026-10-22 — P1.T1 probe (running natron-dev, `aswf/ci-vfxall:2027-clang21.1` base; the ghcr dev image adds nothing for these): yaml-cpp **0.9.0** at `/usr/local` with a CMake config (`yaml-cpp::yaml-cpp`, shared only, already bundled in AppImages via OCIO); zlib 1.3.2 at `/usr/local` with `ZLIB::ZLIB`. So `find_package(yaml-cpp 0.8 CONFIG)` takes 0.9.0 and nothing is vendored.
+- 2026-10-22 — `ZipReader` maps with POSIX `mmap`, not `QFile::map`: `Serialization/` must not include Qt (README + layering script). A file truncated under a live mapping would SIGBUS, so saves must write-then-rename (already P3.T2's QSaveFile plan).
+- 2026-10-22 — P1.T2's `grep -rn yaml-cpp Engine Gui` check is not literally empty: it matches the About-box licence qrc line and two old comments linking a yaml-cpp issue. No Engine/Gui file includes yaml-cpp, which is the check's intent.

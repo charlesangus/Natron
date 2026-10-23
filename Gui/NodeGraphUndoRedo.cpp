@@ -746,13 +746,13 @@ ResizeBackdropCommand::~ResizeBackdropCommand()
 void
 ResizeBackdropCommand::undo()
 {
-    _bd->resize(_oldW, _oldH);
+    _bd->resizeByUser(_oldW, _oldH);
 }
 
 void
 ResizeBackdropCommand::redo()
 {
-    _bd->resize(_w, _h);
+    _bd->resizeByUser(_w, _h);
 }
 
 bool

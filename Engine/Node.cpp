@@ -8452,14 +8452,9 @@ Node::setColor(double r,
         return;
     }
     gui->setColor(r, g, b);
-    // The GUI drops a colour close to the category colour, which only it knows.
-    if (gui->hasUserColor()) {
-        double ur, ug, ub;
-        gui->getUserColor(&ur, &ug, &ub);
-        setLayoutFromGuiUserColor(true, ur, ug, ub);
-    } else {
-        setLayoutFromGuiUserColor(false, 0., 0., 0.);
-    }
+    // The GUI drops a colour close to the category colour, which only it knows. A backdrop's
+    // colour is its body rather than a user colour, so the GUI never reports one for it.
+    setLayoutFromGuiUserColor(isBackdropNode() || gui->hasUserColor(), r, g, b);
 }
 
 bool

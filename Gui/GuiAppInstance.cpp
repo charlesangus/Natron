@@ -513,9 +513,9 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
         triggerAutoSave();
     }
 
-
-    ///only move main instances
-    if ( node->getParentMultiInstanceName().empty() && !serialization) {
+    // NodeGui::initialize already placed a node whose serialization holds a position.
+    const bool hasStoredPosition = serialization && serialization->layout.hasPosition;
+    if (node->getParentMultiInstanceName().empty() && !hasStoredPosition) {
         bool autoConnect = args.getProperty<bool>(kCreateNodeArgsPropAutoConnect);
 
         if ( selectedNodes.empty() || serialization) {

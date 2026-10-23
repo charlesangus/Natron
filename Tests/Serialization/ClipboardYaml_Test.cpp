@@ -33,7 +33,6 @@
 #include <gtest/gtest.h>
 
 #include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/Yaml/ClipboardYaml.h"
 #include "Serialization/Yaml/KnobYaml.h"
 #include "Serialization/Yaml/YamlScalars.h"
@@ -43,8 +42,6 @@ NATRON_NAMESPACE_USING
 using Serialization::ClipboardSerialization;
 using Serialization::KnobSerialization;
 using Serialization::KnobValueSerialization;
-using Serialization::NodeGuiSerialization;
-using Serialization::NodeGuiSerializationPtr;
 using Serialization::NodeSerialization;
 using Serialization::NodeSerializationPtr;
 using Serialization::YamlError;
@@ -82,23 +79,20 @@ foldedDoubleKnob(const std::string& name,
     return knob;
 }
 
-NodeGuiSerializationPtr
-makeGui(const std::string& nodeName,
-        double x,
-        double y)
+void
+setPosition(const NodeSerializationPtr& node,
+            double x,
+            double y)
 {
-    NodeGuiSerializationPtr gui = std::make_shared<NodeGuiSerialization>();
-    gui->nodeName = nodeName;
-    gui->positionX = x;
-    gui->positionY = y;
-    gui->width = 104.;
-    gui->height = 34.;
-
-    return gui;
+    node->layout.hasPosition = true;
+    node->layout.x = x;
+    node->layout.y = y;
+    node->layout.hasSize = true;
+    node->layout.width = 104.;
+    node->layout.height = 34.;
 }
 
-// Blur1 feeds Grade1, whose mask comes from Read1, a node that was not copied. The source nodes
-// sat in Group1, so their graph states carry fully qualified names.
+// Blur1 feeds Grade1, whose mask comes from Read1, a node that was not copied.
 ClipboardSerialization
 blurIntoGrade()
 {
@@ -109,25 +103,19 @@ blurIntoGrade()
     NodeSerializationPtr blur = makeNode("Blur1", "net.sf.cimg.CImgBlur");
     blur->knobs.push_back(foldedDoubleKnob("size", 3.5));
     clipboard.nodes = { grade, blur };
-    clipboard.nodesUI = { makeGui("Group1.Grade1", 10., 120.), makeGui("Group1.Blur1", 10.5, -40.25) };
+    setPosition(grade, 10., 120.);
+    setPosition(blur, 10.5, -40.25);
 
     return clipboard;
 }
 
 NodeSerializationPtr
 findNode(const ClipboardSerialization& clipboard,
-         const std::string& scriptName,
-         NodeGuiSerializationPtr* gui)
+         const std::string& scriptName)
 {
-    std::list<NodeGuiSerializationPtr>::const_iterator itGui = clipboard.nodesUI.begin();
     for (const NodeSerializationPtr& node : clipboard.nodes) {
         if (node->scriptName == scriptName) {
-            *gui = (itGui != clipboard.nodesUI.end()) ? *itGui : NodeGuiSerializationPtr();
-
             return node;
-        }
-        if (itGui != clipboard.nodesUI.end()) {
-            ++itGui;
         }
     }
 
@@ -158,15 +146,12 @@ TEST(ClipboardYaml, AnEditedBlurSizeAndTheBlurToGradeConnectionSurviveTheText)
     const ClipboardSerialization decoded = Serialization::decodeClipboardYaml(text, &warnings);
     EXPECT_TRUE(warnings.empty()) << (warnings.empty() ? std::string() : warnings.front());
     ASSERT_EQ(2u, decoded.nodes.size());
-    ASSERT_EQ(2u, decoded.nodesUI.size());
 
-    NodeGuiSerializationPtr blurGui;
-    const NodeSerializationPtr blur = findNode(decoded, "Blur1", &blurGui);
+    const NodeSerializationPtr blur = findNode(decoded, "Blur1");
     ASSERT_NE(nullptr, blur);
-    ASSERT_NE(nullptr, blurGui);
-    EXPECT_EQ("Blur1", blurGui->nodeName);
-    EXPECT_SAME_DOUBLE(10.5, blurGui->positionX);
-    EXPECT_SAME_DOUBLE(-40.25, blurGui->positionY);
+    ASSERT_TRUE(blur->layout.hasPosition);
+    EXPECT_SAME_DOUBLE(10.5, blur->layout.x);
+    EXPECT_SAME_DOUBLE(-40.25, blur->layout.y);
     ASSERT_EQ(1u, blur->knobs.size());
     KnobSerialization size = blur->knobs.front();
     Serialization::completeKnobSerialization(&size, "Double", 2);
@@ -175,18 +160,17 @@ TEST(ClipboardYaml, AnEditedBlurSizeAndTheBlurToGradeConnectionSurviveTheText)
     ASSERT_TRUE(std::holds_alternative<double>(*size.dimensions[0].value));
     EXPECT_SAME_DOUBLE(12.25, std::get<double>(*size.dimensions[0].value));
 
-    NodeGuiSerializationPtr gradeGui;
-    const NodeSerializationPtr grade = findNode(decoded, "Grade1", &gradeGui);
+    const NodeSerializationPtr grade = findNode(decoded, "Grade1");
     ASSERT_NE(nullptr, grade);
-    ASSERT_NE(nullptr, gradeGui);
-    EXPECT_SAME_DOUBLE(120., gradeGui->positionY);
+    ASSERT_TRUE(grade->layout.hasPosition);
+    EXPECT_SAME_DOUBLE(120., grade->layout.y);
     ASSERT_EQ(1u, grade->inputs.count("Source"));
     EXPECT_EQ("Blur1", grade->inputs.at("Source"));
     ASSERT_EQ(1u, grade->inputs.count("Mask"));
     EXPECT_EQ("Read1", grade->inputs.at("Mask"));
 }
 
-TEST(ClipboardYaml, AGroupKeepsTheGraphStatesOfItsNodesAlignedWithThem)
+TEST(ClipboardYaml, AGroupKeepsThePositionsOfItsChildren)
 {
     ClipboardSerialization clipboard;
     NodeSerializationPtr group = makeNode("Group1", "fr.inria.built-in.Group");
@@ -197,31 +181,28 @@ TEST(ClipboardYaml, AGroupKeepsTheGraphStatesOfItsNodesAlignedWithThem)
     blur->inputs["Source"] = "Input1";
     group->children = { output, blur, input };
     clipboard.nodes = { group };
-    NodeGuiSerializationPtr groupGui = makeGui("Comp.Group1", 0., 0.);
-    groupGui->children = { makeGui("Comp.Group1.Input1", 1., 2.), makeGui("Comp.Group1.Blur2", 3., 4.) };
-    clipboard.nodesUI = { groupGui };
+    setPosition(group, 0., 0.);
+    setPosition(input, 1., 2.);
+    setPosition(blur, 3., 4.);
 
     YamlWarnings warnings;
     const ClipboardSerialization decoded = Serialization::decodeClipboardYaml(Serialization::encodeClipboardYaml(clipboard), &warnings);
     EXPECT_TRUE(warnings.empty()) << (warnings.empty() ? std::string() : warnings.front());
     ASSERT_EQ(1u, decoded.nodes.size());
-    ASSERT_EQ(1u, decoded.nodesUI.size());
     const NodeSerialization& decodedGroup = *decoded.nodes.front();
-    const NodeGuiSerialization& decodedGroupGui = *decoded.nodesUI.front();
-    EXPECT_EQ("Group1", decodedGroupGui.nodeName);
     ASSERT_EQ(3u, decodedGroup.children.size());
-    ASSERT_EQ(decodedGroup.children.size(), decodedGroupGui.children.size());
-    std::list<NodeGuiSerializationPtr>::const_iterator itGui = decodedGroupGui.children.begin();
     for (const NodeSerializationPtr& child : decodedGroup.children) {
-        const NodeGuiSerialization& childGui = **itGui++;
-        EXPECT_EQ("Group1." + child->scriptName, childGui.nodeName);
         if (child->scriptName == "Input1") {
-            EXPECT_SAME_DOUBLE(2., childGui.positionY);
+            ASSERT_TRUE(child->layout.hasPosition);
+            EXPECT_SAME_DOUBLE(1., child->layout.x);
+            EXPECT_SAME_DOUBLE(2., child->layout.y);
         } else if (child->scriptName == "Blur2") {
-            EXPECT_SAME_DOUBLE(4., childGui.positionY);
+            ASSERT_TRUE(child->layout.hasPosition);
+            EXPECT_SAME_DOUBLE(3., child->layout.x);
+            EXPECT_SAME_DOUBLE(4., child->layout.y);
             EXPECT_EQ("Input1", child->inputs.at("Source"));
         } else {
-            EXPECT_SAME_DOUBLE(0., childGui.positionY);
+            EXPECT_FALSE(child->layout.hasPosition);
         }
     }
 }

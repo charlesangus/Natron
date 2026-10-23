@@ -20,6 +20,7 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `gpu_region_bench.sh` | GPU Off/Auto comparison of spatial nodes (alone and between Grades) and the M82 comps from a Natron AppImage, as first-frame, re-render, jump and playback sessions; keeps each run's render profile. |
 | `gpu_region_summary.py` | Splits the GPU region records of those profiles into per-phase times per region and per node. |
 | `gpu-region-profile-sample.jsonl` | Region records in the current format, used by `gpu_region_summary.py --self-test`. |
+| `raw_large_bench.sh`, `raw_large_bench.py` | Renders a camera raw file through the whole Develop RAW chain from a Natron AppImage at 1, 2 and 4 render threads (`BENCH_THREADS`) and prints time, speedup and peak RSS per count. |
 | `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
 
 Topologies: `chain` (N Grades in series), `mixed` (Grade/Blur/Transform/ColorCorrect in series),

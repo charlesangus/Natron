@@ -43,8 +43,14 @@
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/RectD.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -813,5 +819,83 @@ RawHighlights::renderOp(const RenderActionArgs& args,
 
     return cancel.check() ? eStatusFailed : eStatusOK;
 } // RawHighlights::renderOp
+
+bool
+RawHighlights::canRenderOpOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > 4)) {
+        return false;
+    }
+    // Resolving only reads knobs and the source's metadata and region.
+    const std::optional<Settings> settings = const_cast<RawHighlights*>(this)->resolveSettings(query.time, query.view);
+    if (!settings) {
+        return false;
+    }
+
+    return (settings->mode == eRawHighlightsModeClip) || ((settings->mode == eRawHighlightsModeLCh) && settings->layout.hasCfa());
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+bool
+RawHighlights::getOpGpuInputLayer(int inputNb,
+                                  const ImageLayerDesc& plane,
+                                  double time,
+                                  ViewIdx view,
+                                  ImageLayerDesc* layer) const
+{
+    stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+    return true;
+}
+
+RectI
+RawHighlights::getOpGpuInputRoI(int inputNb,
+                                const RectI& outputRect,
+                                const RenderScale& /*scale*/) const
+{
+    const std::optional<Settings> settings = const_cast<RawHighlights*>(this)->resolveSettings(getCurrentTime(), getCurrentView());
+
+    if ((inputNb != getSourceInput()) || !settings || (settings->mode != eRawHighlightsModeLCh) || !settings->layout.hasCfa()) {
+        return outputRect;
+    }
+
+    return RectI(outputRect.x1 - 2, outputRect.y1 - 2, outputRect.x2 + 2, outputRect.y2 + 2).intersect(settings->sourceRoD);
+}
+
+StatusEnum
+RawHighlights::renderOpGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    const std::optional<Settings> found = resolveSettings(args.query.time, args.query.view);
+
+    if (!found) {
+        return eStatusFailed;
+    }
+    const Settings& s = *found;
+    const bool lch = (s.mode == eRawHighlightsModeLCh) && s.layout.hasCfa();
+    if ((s.mode != eRawHighlightsModeClip) && !lch) {
+        return eStatusFailed;
+    }
+    RawHighlightsGpuParams params = {};
+    params.layout = toRawLayoutGpu(s.layout);
+    params.clip = (lch ? kClipMagicLCh : kClipMagicClip) * s.clip;
+    params.rodX1 = s.sourceRoD.x1;
+    params.rodY1 = s.sourceRoD.y1;
+    params.rodX2 = s.sourceRoD.x2;
+    params.rodY2 = s.sourceRoD.y2;
+    const int kernel = lch ? (int)gpu::GpuKernelId::rawhighlights_lch : (int)gpu::GpuKernelId::rawhighlights_clip;
+
+    return RawNodeSupport::recordRawPointGpu(args, getSourceInput(), kernel, params);
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+}
 
 NATRON_NAMESPACE_EXIT

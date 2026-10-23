@@ -39,8 +39,14 @@
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/RectD.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -499,5 +505,77 @@ RawPrepare::renderOp(const RenderActionArgs& args,
 
     return cancel.check() ? eStatusFailed : eStatusOK;
 } // RawPrepare::renderOp
+
+bool
+RawPrepare::canRenderOpOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > 4)) {
+        return false;
+    }
+    // Resolving only reads knobs and the source's metadata and region.
+    const std::optional<Settings> settings = const_cast<RawPrepare*>(this)->resolveSettings(query.time, query.view);
+
+    return settings && !settings->passThrough && !settings->stageError;
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+bool
+RawPrepare::getOpGpuInputLayer(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view,
+                               ImageLayerDesc* layer) const
+{
+    stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+    return true;
+}
+
+RectI
+RawPrepare::getOpGpuInputRoI(int inputNb,
+                             const RectI& outputRect,
+                             const RenderScale& /*scale*/) const
+{
+    const std::optional<Settings> settings = const_cast<RawPrepare*>(this)->resolveSettings(getCurrentTime(), getCurrentView());
+
+    if ((inputNb != getSourceInput()) || !settings || settings->passThrough) {
+        return outputRect;
+    }
+    RectI moved = outputRect;
+    moved.translate(settings->kept.x1, settings->kept.y1);
+
+    return moved;
+}
+
+StatusEnum
+RawPrepare::renderOpGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    const std::optional<Settings> found = resolveSettings(args.query.time, args.query.view);
+
+    if (!found || found->passThrough || found->stageError) {
+        return eStatusFailed;
+    }
+    const Settings& s = *found;
+    RawPrepareGpuParams params = {};
+    params.layout = toRawLayoutGpu(s.hasCfa ? s.layout.croppedTo(s.kept.x1, s.kept.y1) : RawLayout());
+    for (int i = 0; i < 4; ++i) {
+        params.sub[i] = s.sub[i];
+        params.div[i] = s.div[i];
+    }
+    params.hasCfa = s.hasCfa ? 1u : 0u;
+
+    return RawNodeSupport::recordRawPointGpu(args, getSourceInput(), (int)gpu::GpuKernelId::rawprepare_wrapped, params, s.kept.x1, s.kept.y1);
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+}
 
 NATRON_NAMESPACE_EXIT

@@ -165,6 +165,10 @@ struct EndToEndResult {
     // Tasks the GPU frame ran on the device, by node script name.
     std::map<std::string, int> gpuTasksPerNode;
 
+    // Images the GPU frame's regions uploaded to the device and downloaded from it.
+    int uploads = 0;
+    int downloads = 0;
+
     bool ranInRegion(const NodePtr& node) const;
 };
 
@@ -175,7 +179,8 @@ typedef std::function<bool(std::string* error)> GpuContextReady;
 
 // Renders `root` over `window` at `time` twice. First as a frame of the render scheduler with a
 // forced GPU context, with every node of `graph` whose effect accepts the task on the GPU, as
-// regions. Then on the CPU under a GpuPlacementOffGuard.
+// regions, a run of raw-reading tasks all or nothing as a render places it. Then on the CPU under
+// a GpuPlacementOffGuard.
 EndToEndResult renderEndToEnd(const std::vector<NodePtr>& graph,
                               const NodePtr& root,
                               const RectI& window,

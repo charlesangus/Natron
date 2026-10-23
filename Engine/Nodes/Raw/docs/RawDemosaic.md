@@ -39,3 +39,19 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
 
 Tests: `Tests/Native/NativeRawDemosaic_Test.cpp`, on synthetic Bayer and X-Trans mosaics. Real
 X-Trans files and darktable-reference comparisons come later.
+
+GPU: PPG and RCD without green equilibration or colour smoothing, and the pass-through of data
+without a CFA, in `Engine/Gpu/Kernels/demosaic_bayer.slang`, following the passes of darktable's
+`demosaic_ppg.cl` and `demosaic_rcd.cl` with the CPU port's arithmetic: the median, PPG's green
+and red-blue passes, RCD's population, its steps 1 to 4.3, and the output. Each pass covers the
+whole buffer the CPU would run over for the window (`sourceRegionFor()`), with the CPU's row and
+column ranges and its half-width plane indexing, so it gives the values the CPU keeps from its
+112-photosite tiles. The window is processed in bands sharing one work buffer of at most 128 MB;
+a band's result does not depend on the band, as a tile's does not. The passes read global memory;
+none uses workgroup-shared tiles. The device divides within 2.5 ulp: bound
+`ParityTolerance::transcendental()` for PPG and RCD, `ParityTolerance::exact()` for the
+pass-through. AMaZE, VNG and Markesteijn have no GPU path, nor does local equilibration or colour
+smoothing; full equilibration measures the whole source per frame, as Inpaint Opposed does. Any of
+them keeps the node, and its raw run, on the CPU. GPU tests:
+`Tests/Native/NativeRawDemosaicGpu_Test.cpp`, PPG and RCD on the Bayer fixture inside the image and
+at its corners, a tiled GPU render against the full-frame one, and the linear pass-through.

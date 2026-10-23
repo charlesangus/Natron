@@ -22,3 +22,12 @@ its OpenCL path and flat-field gain maps.
   has no meaning.
 
 Tests: `Tests/Native/NativeRawPrepare_Test.cpp`, on synthetic mosaics. No real camera files yet.
+
+GPU: `rawprepare_wrapped` (`Engine/Gpu/Kernels/rawprepare.slang`), a wrapped point kernel. The
+source view is moved by the kept area's corner, and the parameter block (`RawPrepareGpuParams`,
+`Engine/Nodes/Raw/RawGpuParams.h`) carries the cropped CFA layout, so each output pixel finds the
+black level cell of the photosite it shows. The GPU divides within 2.5 ulp: bound
+`ParityTolerance::arithmetic()`. A prepared source is an identity and a source without
+`raw/stage` stays on the CPU, which fails it. GPU tests: `Tests/Native/NativeRawPrepTempGpu_Test.cpp`,
+on the Bayer, X-Trans and linear fixtures, with the file's levels and with overridden levels and
+an odd crop.

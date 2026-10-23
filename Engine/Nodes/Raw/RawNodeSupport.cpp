@@ -29,6 +29,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <span>
+#include <vector>
 
 #include <QString>
 
@@ -36,6 +38,11 @@
 #include "Engine/Node.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Gpu/GpuWrap.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -282,6 +289,68 @@ OwnedMessage::withdraw(const NodePtr& node)
         node->clearPersistentMessage(false);
     }
 }
+
+StatusEnum
+recordRawPointGpu(const GpuRenderArgs& args,
+                  int sourceInput,
+                  int kernel,
+                  const void* params,
+                  std::size_t paramBytes,
+                  int dx,
+                  int dy)
+{
+#ifdef NATRON_HAVE_GPU
+    const RectI& rect = args.outputRect;
+    const GpuImageView& out = args.output;
+    const int nComps = args.query.nComps;
+
+    if (rect.isNull() || (kernel < 0) || (nComps < 1) || (nComps > 4) || !out.buffer || (out.nComps != nComps) || !out.bounds.contains(rect) || ((out.byteOffset % sizeof(float)) != 0)) {
+        return eStatusFailed;
+    }
+    gpu::GpuWrap wrap;
+    wrap.nComps = (uint32_t)nComps;
+    wrap.channelMask = 0xF;
+    wrap.src.nComps = (uint32_t)nComps;
+    if ((sourceInput >= 0) && (sourceInput < (int)args.inputs.size()) && args.inputs[sourceInput].buffer) {
+        const GpuImageView& in = args.inputs[sourceInput];
+        if ((in.nComps != nComps) || ((in.byteOffset % sizeof(float)) != 0)) {
+            return eStatusFailed;
+        }
+        wrap.src.buffer = in.buffer;
+        wrap.src.offsetFloats = in.byteOffset / sizeof(float);
+        wrap.src.bounds = gpu::GpuWrapRect { in.bounds.x1 - dx, in.bounds.y1 - dy, in.bounds.x2 - dx, in.bounds.y2 - dy };
+        wrap.src.strideFloats = (uint32_t)in.rowStrideFloats;
+    }
+    wrap.dst.buffer = out.buffer;
+    wrap.dst.offsetFloats = out.byteOffset / sizeof(float);
+    wrap.dst.bounds = gpu::GpuWrapRect { out.bounds.x1, out.bounds.y1, out.bounds.x2, out.bounds.y2 };
+    wrap.dst.strideFloats = (uint32_t)out.rowStrideFloats;
+    wrap.dst.nComps = (uint32_t)nComps;
+    wrap.output = gpu::GpuWrapRect { rect.x1, rect.y1, rect.x2, rect.y2 };
+
+    gpu::GpuRecordContext& ctx = args.context;
+    gpu::GpuBuffer* block = nullptr;
+    if (paramBytes > 0) {
+        std::vector<std::byte> bytes((paramBytes + 3) & ~std::size_t(3), std::byte(0));
+        std::memcpy(bytes.data(), params, paramBytes);
+        if (!ctx.scratch(bytes.size(), block) || !block || !ctx.updateBuffer(*block, 0, std::span<const std::byte>(bytes.data(), bytes.size()))) {
+            return eStatusFailed;
+        }
+    }
+
+    return gpu::recordWrapped(ctx, (gpu::GpuKernelId)kernel, wrap, block) ? eStatusOK : eStatusFailed;
+#else
+    Q_UNUSED(args);
+    Q_UNUSED(sourceInput);
+    Q_UNUSED(kernel);
+    Q_UNUSED(params);
+    Q_UNUSED(paramBytes);
+    Q_UNUSED(dx);
+    Q_UNUSED(dy);
+
+    return eStatusFailed;
+#endif
+} // recordRawPointGpu
 } // namespace RawNodeSupport
 
 NATRON_NAMESPACE_EXIT

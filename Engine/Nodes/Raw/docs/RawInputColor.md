@@ -23,3 +23,9 @@ Port of the matrix path of darktable's input colour module (`src/iop/colorin.c` 
 
 Tests: `Tests/Native/NativeRawInputColor_Test.cpp`, on a synthetic grey card and patches through
 RawDemosaic. A viewer colour check on real raw files comes once real files exist.
+
+GPU: `rawinputcolor_wrapped` (`Engine/Gpu/Kernels/rawinputcolor.slang`), the op's `gpu()`, with
+the baked camera to working space matrix, the OCIO matrix included, in `RawInputColorGpuParams`.
+The products are summed in the CPU's order without contraction: bound
+`ParityTolerance::arithmetic()`. GPU tests: `Tests/Native/NativeRawChainGpu_Test.cpp`, which also
+renders the whole Develop chain with RCD as one GPU region, one upload and one download.

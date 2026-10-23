@@ -546,6 +546,7 @@ placeOnGpu(FrameRun* run,
 
         return native && native->canRenderOnGpu(query);
     };
+    inputs.readsRaw = taskReadsRaw;
     placeGraph(run->graph, inputs);
 }
 
@@ -628,6 +629,8 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         }
         result.gpu = readRgba(rootPlanes.begin()->second, window);
         result.gpuTasksPerNode = run.stats->getGpuTasksPerNode();
+        result.uploads = run.stats->getUploadCount();
+        result.downloads = run.stats->getDownloadCount();
     }
 
     appPTR->clearAllCaches();

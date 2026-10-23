@@ -30,3 +30,14 @@ Tests: `Tests/Native/NativeRawHighlights_Test.cpp`, on synthetic mosaics. They c
 a hand computation, and check Inpaint Opposed and LCh for invariants and for tiles matching the
 full frame bit for bit. The darktable-reference comparison per mode belongs to the reference
 harness, which does not exist yet; `DISABLED_MatchesTheDarktableReference` is where it plugs in.
+
+GPU: Clip Highlights (`rawhighlights_clip`, bound `ParityTolerance::exact()`) and Reconstruct in
+LCh on a Bayer or X-Trans mosaic (`rawhighlights_lch`, bound `ParityTolerance::transcendental()`
+for its square root and divisions), both wrapped kernels in `Engine/Gpu/Kernels/rawhighlights.slang`.
+LCh reads the source through the wrap's view, which the node asks to be the window grown by 2 and
+clipped to the source (`getOpGpuInputRoI()`). Inpaint Opposed stays on the CPU: its chrominance is
+a double-precision sum over the whole source, kept per frame under `RawNodeSupport::frameKey()`,
+which neither a region's strips nor float sums on the device reproduce. LCh without a CFA is
+Inpaint Opposed and stays on the CPU too. With either, the raw run the node is in stays on the CPU
+(see `placeGraph()`). GPU tests: `Tests/Native/NativeRawHighlightsGpu_Test.cpp`, on a synthetic
+clipped patch.

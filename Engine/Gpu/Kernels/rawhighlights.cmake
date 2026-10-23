@@ -1,0 +1,2 @@
+slang_add_kernel(rawhighlights_clip Kernels/rawhighlights.slang ENTRY rawhighlights_clip REGISTRY NatronGpu)
+slang_add_kernel(rawhighlights_lch Kernels/rawhighlights.slang ENTRY rawhighlights_lch REGISTRY NatronGpu)

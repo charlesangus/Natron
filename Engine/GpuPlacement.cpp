@@ -213,6 +213,60 @@ describeRegion(const FrameGraph& graph,
     return region;
 }
 
+/**
+ * @brief Clears candidate for every task of a raw run that holds a task left on the CPU: neither a candidate, nor
+ * cached, nor an identity.
+ **/
+void
+dropIncompleteRawRuns(const FrameGraph& graph,
+                      const std::function<bool(const FrameGraph::Task&)>& readsRaw,
+                      const std::vector<bool>& identity,
+                      const std::vector<bool>& cached,
+                      std::vector<bool>* candidate)
+{
+    const int n = (int)graph.tasks.size();
+    std::vector<bool> raw(n, false);
+    for (int i = 0; i < n; ++i) {
+        raw[i] = readsRaw(graph.tasks[i]);
+    }
+
+    std::vector<int> run(n, -1);
+    int nRuns = 0;
+    for (int seed = 0; seed < n; ++seed) {
+        if (!raw[seed] || (run[seed] >= 0)) {
+            continue;
+        }
+        std::vector<int> stack(1, seed);
+        run[seed] = nRuns;
+        while (!stack.empty()) {
+            const int t = stack.back();
+            stack.pop_back();
+            const FrameGraph::Task& task = graph.tasks[t];
+            for (const std::vector<int>* links : { &task.dependencies, &task.consumerTasks }) {
+                for (int u : *links) {
+                    if ((u >= 0) && (u < n) && raw[u] && (run[u] < 0)) {
+                        run[u] = nRuns;
+                        stack.push_back(u);
+                    }
+                }
+            }
+        }
+        ++nRuns;
+    }
+
+    std::vector<bool> incomplete(nRuns, false);
+    for (int i = 0; i < n; ++i) {
+        if ((run[i] >= 0) && !identity[i] && !cached[i] && !(*candidate)[i]) {
+            incomplete[run[i]] = true;
+        }
+    }
+    for (int i = 0; i < n; ++i) {
+        if ((run[i] >= 0) && incomplete[run[i]]) {
+            (*candidate)[i] = false;
+        }
+    }
+} // dropIncompleteRawRuns
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 void
@@ -235,6 +289,19 @@ placeGraph(FrameGraph& graph,
     std::vector<bool> identity(n, false);
     for (int i = 0; i < n; ++i) {
         identity[i] = inputs.isIdentity ? inputs.isIdentity(graph.tasks[i]) : graph.tasks[i].isIdentity;
+    }
+
+    std::vector<bool> candidate(n, false);
+    std::vector<bool> cached(n, false);
+    for (int t : order) {
+        if (identity[t]) {
+            continue;
+        }
+        cached[t] = inputs.isCached && inputs.isCached(graph.tasks[t]);
+        candidate[t] = !cached[t] && inputs.canRenderOnGpu && inputs.canRenderOnGpu(graph.tasks[t]);
+    }
+    if (inputs.readsRaw) {
+        dropIncompleteRawRuns(graph, inputs.readsRaw, identity, cached, &candidate);
     }
 
     // Labels are working region ids; a merge empties the regions it absorbs.
@@ -283,10 +350,7 @@ placeGraph(FrameGraph& graph,
             continue;
         }
 
-        if (inputs.isCached && inputs.isCached(task)) {
-            continue;
-        }
-        if (!inputs.canRenderOnGpu || !inputs.canRenderOnGpu(task)) {
+        if (!candidate[t]) {
             continue;
         }
 
@@ -503,10 +567,13 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
     }
     const ImageLayerDesc& plane = task.components.front();
 
+    if ((task.key.mipmapLevel != 0) && (native->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes)) {
+        return false;
+    }
+
     query->time = task.key.time;
     query->view = task.key.view;
-    const bool rendersFullScale = (task.key.mipmapLevel != 0) && (native->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
-    query->mappedScale = RenderScale::fromMipmapLevel(rendersFullScale ? 0 : task.key.mipmapLevel);
+    query->mappedScale = RenderScale::fromMipmapLevel(task.key.mipmapLevel);
     query->nComps = plane.getNumComponents();
     query->bitDepth = task.bitdepth;
 
@@ -536,6 +603,26 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
 
     return true;
 } // makeGpuQueryForTask
+
+bool
+taskReadsRaw(const FrameGraph::Task& task)
+{
+    if (!task.key.node) {
+        return false;
+    }
+    EffectInstancePtr effect = task.key.node->getEffectInstance();
+    if (!effect) {
+        return false;
+    }
+    const int nInputs = effect->getNInputs();
+    for (int i = 0; i < nInputs; ++i) {
+        if (effect->getInputDataKind(i) == eDataKindRaw) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
@@ -606,6 +693,7 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
 
         return native && native->canRenderOnGpu(query);
     };
+    inputs.readsRaw = taskReadsRaw;
 
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
     if (gpu && gpu->isAvailable()) {

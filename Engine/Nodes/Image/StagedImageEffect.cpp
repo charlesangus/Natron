@@ -195,6 +195,9 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
 
         return resampleGpuSourceRoI(*this, source, opResample(time, view, scale), getResampleRegionStages(time, view), time, view, outputRect, scale);
     }
+    if (kind == OpKind::Custom) {
+        return getOpGpuInputRoI(inputNb, outputRect, scale);
+    }
 
     return NativeEffectBase::getGpuInputRoI(inputNb, outputRect, scale);
 }

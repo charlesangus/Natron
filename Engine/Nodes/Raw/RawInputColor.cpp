@@ -38,8 +38,13 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -166,9 +171,20 @@ RawInputColorOp::row(const Params& params,
 }
 
 GpuOpRef
-RawInputColorOp::gpu(const Params& /*params*/) const
+RawInputColorOp::gpu(const Params& params) const
 {
+#ifdef NATRON_HAVE_GPU
+    RawInputColorGpuParams p = {};
+    for (int i = 0; i < 9; ++i) {
+        p.matrix[i] = params.matrix[i];
+    }
+
+    return GpuOpRef::compiled((int)gpu::GpuKernelId::rawinputcolor_wrapped, p);
+#else
+    Q_UNUSED(params);
+
     return GpuOpRef::none();
+#endif
 }
 
 RawInputColor::RawInputColor(NodePtr node)

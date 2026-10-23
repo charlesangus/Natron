@@ -126,6 +126,27 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief PPG and RCD, without green equilibration or colour smoothing, and the pass-through of
+     * data without a CFA. AMaZE, VNG and Markesteijn have no GPU path yet. Full green
+     * equilibration measures the whole source once per frame, which a region's strips cannot
+     * share, and local equilibration and colour smoothing are not ported, so any of them keeps the
+     * node on the CPU.
+     **/
+    virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool getOpGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual RectI getOpGpuInputRoI(int inputNb,
+                                   const RectI& outputRect,
+                                   const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
                                       const RectD& outputRoD,

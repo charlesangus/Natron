@@ -69,6 +69,49 @@ struct LayerSerialization {
 };
 
 /**
+ * @brief Where a node sits in the node graph and how it is coloured. Each part is saved only
+ * when its flag is set. color is the user colour, or a backdrop's body colour; it is never the
+ * category colour.
+ **/
+struct NodeLayoutSerialization {
+    bool hasPosition;
+    double x;
+    double y;
+
+    bool hasSize;
+    double width;
+    double height;
+
+    bool hasColor;
+    float colorR;
+    float colorG;
+    float colorB;
+
+    bool hasOverlayColor;
+    float overlayR;
+    float overlayG;
+    float overlayB;
+
+    NodeLayoutSerialization()
+        : hasPosition(false)
+        , x(0.)
+        , y(0.)
+        , hasSize(false)
+        , width(0.)
+        , height(0.)
+        , hasColor(false)
+        , colorR(0.f)
+        , colorG(0.f)
+        , colorB(0.f)
+        , hasOverlayColor(false)
+        , overlayR(0.f)
+        , overlayG(0.f)
+        , overlayB(0.f)
+    {
+    }
+};
+
+/**
  * @brief The saved state of one node: its plug-in, names and knobs, its input connections, its
  * roto and tracker data, its user knob layout and, for a group or a multi-instance node, the
  * nodes it holds. Node names are script names.
@@ -83,6 +126,8 @@ struct NodeSerialization {
     // Empty unless the node is an unedited PyPlug instance, see Node::hasPyPlugBeenEdited().
     std::string pythonModule;
     unsigned int pythonModuleVersion;
+
+    NodeLayoutSerialization layout;
 
     // The knobs that differ from their defaults, or carry an expression or a link.
     std::list<KnobSerialization> knobs;
@@ -120,6 +165,7 @@ struct NodeSerialization {
         , pluginMinorVersion(-1)
         , pythonModule()
         , pythonModuleVersion(0)
+        , layout()
         , knobs()
         , inputs()
         , knobsAge(0)

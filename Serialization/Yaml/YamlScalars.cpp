@@ -296,6 +296,45 @@ namespace YamlDetail {
     }
 
     void
+    emitDoublePair(YAML::Emitter& em,
+                   std::string_view key,
+                   double a,
+                   double b)
+    {
+        emitKey(em, key);
+        em << YAML::Value << YAML::Flow << YAML::BeginSeq;
+        emitDouble(em, a);
+        emitDouble(em, b);
+        em << YAML::EndSeq;
+    }
+
+    void
+    emitFloatTriple(YAML::Emitter& em,
+                    std::string_view key,
+                    float r,
+                    float g,
+                    float b)
+    {
+        emitKey(em, key);
+        em << YAML::Value << YAML::Flow << YAML::BeginSeq;
+        emitFloat(em, r);
+        emitFloat(em, g);
+        emitFloat(em, b);
+        em << YAML::EndSeq;
+    }
+
+    std::vector<float>
+    readFloatTriple(const YAML::Node& node,
+                    const std::string& context)
+    {
+        if (!node.IsSequence() || (node.size() != 3)) {
+            fail(node, context, "expected [r, g, b]");
+        }
+
+        return { readFloat(node[0], context), readFloat(node[1], context), readFloat(node[2], context) };
+    }
+
+    void
     emitInt(YAML::Emitter& em,
             long long value)
     {

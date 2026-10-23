@@ -83,6 +83,18 @@ namespace YamlDetail {
                 emitInt(em, node.pythonModuleVersion);
                 em << YAML::EndMap;
             }
+            if (node.layout.hasPosition) {
+                emitDoublePair(em, "pos", node.layout.x, node.layout.y);
+            }
+            if (node.layout.hasSize) {
+                emitDoublePair(em, "size", node.layout.width, node.layout.height);
+            }
+            if (node.layout.hasColor) {
+                emitFloatTriple(em, "color", node.layout.colorR, node.layout.colorG, node.layout.colorB);
+            }
+            if (node.layout.hasOverlayColor) {
+                emitFloatTriple(em, "overlay", node.layout.overlayR, node.layout.overlayG, node.layout.overlayB);
+            }
             if (!node.knobs.empty()) {
                 emitKey(em, "knobs");
                 em << YAML::Value;
@@ -158,6 +170,32 @@ namespace YamlDetail {
                 data.pythonModule = readString(pythonReader.get("module"), context + ".python.module");
                 data.pythonModuleVersion = readUInt(pythonReader.get("version"), context + ".python.version");
                 pythonReader.finish();
+            }
+            if (YAML::Node pos = reader.get("pos")) {
+                const std::vector<double> values = readDoubleVector(pos, context + ".pos", 2);
+                data.layout.hasPosition = true;
+                data.layout.x = values[0];
+                data.layout.y = values[1];
+            }
+            if (YAML::Node size = reader.get("size")) {
+                const std::vector<double> values = readDoubleVector(size, context + ".size", 2);
+                data.layout.hasSize = true;
+                data.layout.width = values[0];
+                data.layout.height = values[1];
+            }
+            if (YAML::Node color = reader.get("color")) {
+                const std::vector<float> values = readFloatTriple(color, context + ".color");
+                data.layout.hasColor = true;
+                data.layout.colorR = values[0];
+                data.layout.colorG = values[1];
+                data.layout.colorB = values[2];
+            }
+            if (YAML::Node overlay = reader.get("overlay")) {
+                const std::vector<float> values = readFloatTriple(overlay, context + ".overlay");
+                data.layout.hasOverlayColor = true;
+                data.layout.overlayR = values[0];
+                data.layout.overlayG = values[1];
+                data.layout.overlayB = values[2];
             }
             if (YAML::Node knobs = reader.get("knobs")) {
                 data.knobs = readKnobMap(knobs, context + ".knobs", warnings);

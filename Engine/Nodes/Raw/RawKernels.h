@@ -234,6 +234,63 @@ void greenEquilibrationFullApply(float* buffer,
                                  std::uint32_t imageFilters,
                                  double ratio,
                                  const ParallelFor& parallel);
+
+/**
+ * @brief The smallest width and height caCorrect() works on. darktable's tiles mirror up to 16
+ * photosites in from the image's edges, which a smaller image does not have.
+ **/
+const int kCaCorrectMinimumSize = 32;
+
+/**
+ * @brief darktable's cacorrect process(): estimates the lateral shift of red and blue against
+ * green in 128-photosite blocks over the whole Bayer mosaic, fits a polynomial to the block
+ * shifts and moves red and blue back by it, iterations times, in place. With avoidShift the
+ * colour cast the correction leaves is measured, blurred and divided out. scaler is the processed
+ * maximum. Returns whether a correction was applied: an image smaller than
+ * kCaCorrectMinimumSize is left untouched, and one whose shifts cannot be fitted (too few blocks
+ * with detail, a singular system) only goes through the division by scaler and back.
+ **/
+bool caCorrect(float* image,
+               int width,
+               int height,
+               std::uint32_t filters,
+               int iterations,
+               bool avoidShift,
+               float scaler,
+               const ParallelFor& parallel);
+
+/**
+ * @brief The wavelet bands rawDenoiseBayer() and rawDenoiseXTrans() threshold, finest first.
+ **/
+const int kRawDenoiseBands = 5;
+
+/**
+ * @brief darktable's wavelet_denoise(): each of the four colours of the 2x2 Bayer block on its
+ * own, square-rooted, decomposed in kRawDenoiseBands à trous bands whose details are soft
+ * thresholded, and squared back. force[channel][band] is darktable's curve value per channel
+ * (all, red, green, blue) and band (coarsest first), 0.5 being neutral; threshold scales them all.
+ **/
+void rawDenoiseBayer(const float* in,
+                     float* out,
+                     int width,
+                     int height,
+                     std::uint32_t filters,
+                     float threshold,
+                     const float force[4][kRawDenoiseBands],
+                     const ParallelFor& parallel);
+
+/**
+ * @brief darktable's wavelet_denoise_xtrans(): rawDenoiseBayer() for an X-Trans mosaic, each
+ * colour filled in at the other photosites from its nearest neighbours before the wavelets.
+ **/
+void rawDenoiseXTrans(const float* in,
+                      float* out,
+                      int width,
+                      int height,
+                      const std::uint8_t (*xtrans)[6],
+                      float threshold,
+                      const float force[4][kRawDenoiseBands],
+                      const ParallelFor& parallel);
 } // namespace RawKernels
 
 NATRON_NAMESPACE_EXIT

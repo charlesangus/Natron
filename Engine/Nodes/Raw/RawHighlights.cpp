@@ -730,7 +730,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
         for (int c = 0; c < 3; ++c) {
             clips[c] = clipval * s.coeffs[c];
         }
-        const U64 key = getRenderHash() ^ (U64)(std::int64_t)std::llround(args.time * 1000.) ^ ((U64)(int)args.view << 48);
+        const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
         std::lock_guard<std::mutex> lock(_chromaMutex);
         if (!_chromaValid || (_chromaKey != key)) {
             if (hasCfa) {

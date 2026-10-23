@@ -1010,6 +1010,13 @@ origin, and `raw/stage` once the output is an image). Neither is `FINAL` in
 `StagedImageEffect` or `ImageNode`, so a subclass of either can; a demosaic
 reads neighbouring photosites, so it is a Passes or Custom node anyway.
 
+A raw node whose result depends on the whole frame (RawDemosaic's full green matching,
+RawHighlights' Inpaint Opposed, RawCACorrect) asks for the whole source in
+`getRegionsOfInterest()`, measures it on the first render under a node mutex, and keeps the
+result under `RawNodeSupport::frameKey()` of its render hash, time and view. The other tiles
+wait on that mutex and reuse the result, so every tile agrees with the full frame and the frame
+is measured once per source and settings. A cancelled measurement is not kept.
+
 On the GPU nothing changes in the path: a raw op's parameter block carries the
 CFA in a bounded form -- the pattern packed into at most a 6x6 (X-Trans) cell
 array plus its origin -- so the block's size is fixed and the

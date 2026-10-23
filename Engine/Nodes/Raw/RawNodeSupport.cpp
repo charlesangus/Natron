@@ -26,6 +26,8 @@
 #include "RawNodeSupport.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <cstring>
 
 #include <QString>
@@ -234,6 +236,14 @@ xtransAt(const RawLayout& layout,
             xtrans[row][col] = (std::uint8_t)((c == eRawCfaColorNone) ? 1 : (int)c);
         }
     }
+}
+
+U64
+frameKey(U64 renderHash,
+         double time,
+         ViewIdx view)
+{
+    return renderHash ^ (U64)(std::int64_t)std::llround(time * 1000.) ^ ((U64)(int)view << 48);
 }
 
 void

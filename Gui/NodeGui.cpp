@@ -478,6 +478,9 @@ NodeGui::initialize(NodeGraph* dag,
 
     restoreStateAfterCreation();
 
+    applyNodeGeometryAndOverlayColor();
+    setFlag(QGraphicsItem::ItemSendsGeometryChanges);
+
     ///Link the position of the node to the position of the parent multi-instance
     const std::string parentMultiInstanceName = internalNode->getParentMultiInstanceName();
     if ( !parentMultiInstanceName.empty() ) {
@@ -495,6 +498,79 @@ NodeGui::initialize(NodeGraph* dag,
         internalNode->initializeHostOverlays();
     }
 } // initialize
+
+void
+NodeGui::applyNodeColor()
+{
+    NodePtr node = getNode();
+    QColor categoryColor;
+
+    if (getCategoryColor(node, &categoryColor)) {
+        setCurrentColor(categoryColor);
+    }
+    if (!node || !node->hasUserColor()) {
+        return;
+    }
+    double r, g, b;
+    node->getUserColor(&r, &g, &b);
+    const QColor userColor = QColor::fromRgbF(r, g, b);
+    if (colorIsBody()) {
+        setCurrentColor(userColor);
+    } else {
+        setUserColor(userColor);
+    }
+}
+
+void
+NodeGui::applyNodeGeometryAndOverlayColor()
+{
+    NodePtr node = getNode();
+
+    if (!node) {
+        return;
+    }
+    if (node->hasSize()) {
+        double w, h;
+        node->getSize(&w, &h);
+        resize(qRound(w), qRound(h), colorIsBody());
+    }
+    double x, y;
+    node->getPosition(&x, &y);
+    if (QPointF(x, y) != pos()) {
+        refreshPosition(x, y, true);
+    }
+    if (node->hasOverlayColor()) {
+        double r, g, b;
+        node->getStoredOverlayColor(&r, &g, &b);
+        setOverlayColor(QColor::fromRgbF(r, g, b));
+    }
+}
+
+void
+NodeGui::storeUserColorInNode(bool hasColor,
+                              const QColor& color)
+{
+    NodePtr node = getNode();
+
+    if (node) {
+        node->setLayoutFromGuiUserColor(hasColor, color.redF(), color.greenF(), color.blueF());
+    }
+}
+
+QVariant
+NodeGui::itemChange(GraphicsItemChange change,
+                    const QVariant& value)
+{
+    if (change == QGraphicsItem::ItemPositionHasChanged) {
+        NodePtr node = _internalNode.lock();
+        if (node) {
+            const QPointF p = value.toPointF();
+            node->setLayoutFromGuiPosition(p.x(), p.y());
+        }
+    }
+
+    return QGraphicsItem::itemChange(change, value);
+}
 
 bool
 NodeGui::getCategoryColor(const NodePtr& internalNode,
@@ -529,12 +605,8 @@ NodeGui::restoreStateAfterCreation()
         return;
     }
 
-    ///Refresh the disabled knob
+    applyNodeColor();
 
-    QColor color;
-    if (getCategoryColor(internalNode, &color)) {
-        setCurrentColor(color);
-    }
     KnobBoolPtr disabledknob = internalNode->getDisabledKnob();
     if ( disabledknob && disabledknob->getValue() ) {
         onDisabledKnobToggled(true);
@@ -568,6 +640,11 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
     assert(propsLayout);
     NodeGuiPtr thisShared = shared_from_this();
     _settingsPanel = createPanel(propsLayout, thisShared);
+    if (_settingsPanel && shownNode && shownNode->hasOverlayColor()) {
+        double r, g, b;
+        shownNode->getStoredOverlayColor(&r, &g, &b);
+        _settingsPanel->setOverlayColor(QColor::fromRgbF(r, g, b));
+    }
 
     initializeKnobs();
     beginEditKnobs();
@@ -873,13 +950,20 @@ NodeGui::createGui()
 void
 NodeGui::onSettingsPanelColorChanged(const QColor & color)
 {
+    NodePtr node = getNode();
+    const bool hadUserColor = colorIsBody() ? (node && node->hasUserColor()) : hasUserColor();
+
+    // Compared at 8 bits per channel, the precision the colour dialog hands back, so
+    // confirming the dialog unchanged does not turn the body colour into a user colour.
+    if (!hadUserColor && (color.rgb() == getCurrentColor().rgb())) {
+        return;
+    }
     if (colorIsBody()) {
         setCurrentColor(color);
-    } else if (hasUserColor() || (color.rgb() != getCurrentColor().rgb())) {
-        // Compared at 8 bits per channel, the precision the colour dialog hands back, so
-        // confirming the dialog unchanged does not turn the body colour into a user colour.
+    } else {
         setUserColor(color);
     }
+    storeUserColorInNode(true, color);
 }
 
 void
@@ -1631,7 +1715,13 @@ NodeGui::getOverlayColor(double* r,
                          double* b) const
 {
     if ( !getSettingPanel() ) {
-        return false;
+        NodePtr node = getNode();
+        if (!node || !node->hasOverlayColor()) {
+            return false;
+        }
+        node->getStoredOverlayColor(r, g, b);
+
+        return true;
     }
     if (_overlayLocked) {
         *r = 0.5;
@@ -3575,6 +3665,34 @@ NodeGui::refreshPanelColorIndicator()
         }
         _settingsPanel->setCurrentColor(color);
     }
+}
+
+void
+NodeGui::clearUserColorByUser()
+{
+    clearUserColor();
+    storeUserColorInNode(false, QColor());
+}
+
+void
+NodeGui::resizeByUser(int width,
+                      int height)
+{
+    if (!canResize()) {
+        return;
+    }
+    resize(width, height);
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    int w, h;
+    {
+        QMutexLocker k(&_mtSafeSizeMutex);
+        w = _mtSafeWidth;
+        h = _mtSafeHeight;
+    }
+    node->setLayoutFromGuiSize(w, h);
 }
 
 bool

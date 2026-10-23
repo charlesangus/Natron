@@ -322,6 +322,18 @@ public:
     virtual bool hasUserColor() const OVERRIDE FINAL;
 
     /**
+     * @brief clearUserColor() as a user edit: the node then saves no user colour. Programmatic
+     * colouring goes through Node instead, which already holds the value it saves.
+     **/
+    void clearUserColorByUser();
+
+    /**
+     * @brief resize() as a user edit: the resulting size becomes the one the node saves. Default
+     * and content-driven sizing do not, so a re-saved project keeps the size it was loaded with.
+     **/
+    void resizeByUser(int width, int height);
+
+    /**
      * @brief Reads the user colour flag and value under one lock. Returns false, leaving
      * color untouched, when no user colour is set.
      **/
@@ -641,7 +653,21 @@ protected:
      **/
     virtual void applyDisabledState(bool disabled);
 
+    virtual QVariant itemChange(GraphicsItemChange change, const QVariant& value) OVERRIDE;
+
 private:
+    /**
+     * @brief Shows the category colour, then the user colour the node holds, if any.
+     **/
+    void applyNodeColor();
+
+    /**
+     * @brief Shows the size, position and overlay colour the node holds, e.g. from a loaded
+     * project or a paste.
+     **/
+    void applyNodeGeometryAndOverlayColor();
+
+    void storeUserColorInNode(bool hasColor, const QColor& color);
 
     int getPluginIconWidth() const;
 

@@ -385,13 +385,13 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: compiled at P8.T15; `ClipboardYaml.*`.
   - size: M
 
-- [ ] M16.P8.T6 — Copy and paste nodes without NodeGuiSerialization
+- [x] M16.P8.T6 — Copy and paste nodes without NodeGuiSerialization
   - files: `Gui/NodeClipBoard.h` (`:39`, `:47-62`), `Gui/NodeGraphPrivate.h` (`:249`), `Gui/NodeGraphPrivate.cpp` (`copyNodesInternal` `:195-228`), `Gui/NodeGraphPrivate10.cpp` (`:70-90`, `:107`, `pasteNode` `:190-330`), `Gui/GuiApplicationManager10.cpp` (`:1158`)
   - approach: paste bbox from `NodeSerialization::layout` (pos plus size). `pasteNode` drops its `guiSerialization` argument (creation already places the node, P8.T3/T4), then applies the offset with `setPosition`. Remove the placeholder `setStoredGuiChildren` call and the `nodesUi` child list.
   - verify: compiled at P8.T15; P8.T11's copy/paste case.
   - size: M
 
-- [ ] M16.P8.T7 — Update the remaining clipboard and clone callers
+- [x] M16.P8.T7 — Update the remaining clipboard and clone callers
   - files: `Gui/NodeGraph40.cpp` (`:64`, `:130`, `:342`, clone `:500-506`), `Gui/NodeGraph45.cpp` (`:70`, `:653`), `Gui/NodeGui.cpp` (`:2994-3000`), `Gui/NodeGui.h` (`:163-169`)
   - approach: follow-up to P8.T5/T6. Clone and `copyNodesAndCreateInGroup` pass only `NodeSerialization`; delete-from-clipboard drops the `nodesUI` loop. Delete `NodeGui::toSerialization`/`fromSerialization` (the latter swaps G and B of the overlay colour at `ProjectGuiSerializationConvert.cpp:507`; don't carry that over).
   - verify: compiled at P8.T15.

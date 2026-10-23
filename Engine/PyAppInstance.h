@@ -323,12 +323,6 @@ public:
     bool saveProjectAs(const QString& filename);
     bool saveTempProject(const QString& filename);
 
-    /** @brief Exists only for the project-I/O benchmark: writes the legacy boost XML project to filename. Returns false on failure. **/
-    bool saveLegacyXmlForBenchmark(const QString& filename);
-
-    /** @brief Exists only for the project-I/O benchmark: runs the autosave write, which appends ".autosave" to filename. Returns false on failure. **/
-    bool autoSaveForBenchmark(const QString& filename);
-
     /**
      * @brief Loads the .ntpz project bundle at filename. In background mode it replaces the
      * current project and returns this application; in the GUI it is opened the way the Open

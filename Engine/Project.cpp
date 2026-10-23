@@ -68,14 +68,12 @@
 
 #include <OpenColorIO/OpenColorIO.h>
 
-#include "Global/FStreamsSupport.h"
 #include "Global/GitVersion.h"
 #include "Global/StrUtils.h"
 #ifdef DEBUG
 #include "Global/FloatingPointExceptions.h"
 #endif
 
-#include "Serialization/BoostXml/ProjectXml.h"
 #include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/Bundle/ZipStore.h"
 #include "Serialization/ProjectSerialization.h"
@@ -902,23 +900,6 @@ Project::writeProjectFileAtomically(const QString& filePath,
     if (!file.commit()) {
         throw std::runtime_error(tr("Failed to save to %1: %2").arg(filePath).arg(file.errorString()).toStdString());
     }
-}
-
-void
-Project::saveLegacyXmlForBenchmark(const QString& filePath)
-{
-    FStreamsSupport::ofstream ofile;
-    FStreamsSupport::open(&ofile, filePath.toStdString());
-    if (!ofile) {
-        throw std::runtime_error(tr("Failed to open file %1").arg(filePath).toStdString());
-    }
-    boost::archive::xml_oarchive oArchive(ofile);
-    AppInstancePtr app = getApp();
-    bool bgProject = app->isBackground();
-    oArchive << boost::serialization::make_nvp("Background_project", bgProject);
-    Serialization::ProjectSerialization projectSerialization;
-    toSerialization(&projectSerialization);
-    oArchive << boost::serialization::make_nvp("Project", projectSerialization);
 }
 
 void

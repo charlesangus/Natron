@@ -115,12 +115,6 @@ public:
                                            const std::function<void()>& beforeReplace = std::function<void()>());
 
     /**
-     * @brief Writes the project in the boost XML format to filePath, only to compare that format
-     * with the bundle. Nothing loads what it writes.
-     **/
-    void saveLegacyXmlForBenchmark(const QString& filePath);
-
-    /**
      * @brief Saves the project with the given path and name corresponding to a file on disk.
      * @param autoSave If true then it will save the project in a temporary file instead (see autoSave()).
      * @returns The actual filepath of the file saved

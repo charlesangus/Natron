@@ -144,7 +144,12 @@ TEST_F(ViewerRawTest, ViewerAcceptsARawReadAndOtherImageInputsDoNot)
     NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
     ASSERT_TRUE(bool(dot));
     connectNodes(read, dot, 0, true);
-    EXPECT_EQ(Node::eCanConnectInput_ok, viewer->canConnectInput(dot, 0));
+    // The first viewer's input is taken by the Read, which canConnectInput() reports before it
+    // looks at data kinds, so the pass-through goes to a viewer with a free input.
+    NodePtr freeViewer = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWER));
+    ASSERT_TRUE(bool(freeViewer));
+    EXPECT_EQ(eDataKindRaw, dot->getEffectiveOutputDataKind());
+    EXPECT_EQ(Node::eCanConnectInput_ok, freeViewer->canConnectInput(dot, 0));
 }
 
 TEST_F(ViewerRawTest, MosaicDisplaysAsGreyWithTheMosaicValues)

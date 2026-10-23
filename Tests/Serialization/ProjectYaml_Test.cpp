@@ -67,6 +67,7 @@ nodes:
     plugin: "net.sf.cimg.CImgBlur"
     version: [4, 0]
     label: "Soft blur"
+    pos: [120, -40]
     knobs:
       size: 3.5
     inputs: {Source: "Read1"}
@@ -112,6 +113,7 @@ nodes:
       Blur2:
         plugin: "net.sf.cimg.CImgBlur"
         version: [4, 0]
+        pos: [-35.5, 80]
         knobs:
           size: {expr: "thisGroup.amount.get() * 20", hasRet: false}
         inputs: {Source: "Input1"}
@@ -234,6 +236,9 @@ exampleProject()
     blur->knobs.back().dimensions.resize(1);
     blur->inputs["Source"] = "Read1";
     blur->pagesOrder = { "Controls", "Node" };
+    blur->layout.hasPosition = true;
+    blur->layout.x = 120.;
+    blur->layout.y = -40.;
 
     NodeSerializationPtr group = makeNode("Group1", "fr.inria.built-in.Group", 1, 0);
     group->pythonModule = "SoftGlow";
@@ -280,6 +285,9 @@ exampleProject()
     innerBlur->knobs.back().dimensions.resize(1);
     innerBlur->knobs.back().dimensions[0].expression = "thisGroup.amount.get() * 20";
     innerBlur->inputs["Source"] = "Input1";
+    innerBlur->layout.hasPosition = true;
+    innerBlur->layout.x = -35.5;
+    innerBlur->layout.y = 80.;
     NodeSerializationPtr input = makeNode("Input1", "fr.inria.built-in.Input", 1, 0);
     NodeSerializationPtr output = makeNode("Output1", "fr.inria.built-in.Output", 1, 0);
     output->inputs["Source"] = "Blur2";
@@ -311,6 +319,20 @@ expectNodesEqual(const NodeSerialization& expected,
     EXPECT_EQ(expected.pluginMinorVersion, actual.pluginMinorVersion);
     EXPECT_EQ(expected.pythonModule, actual.pythonModule);
     EXPECT_EQ(expected.pythonModuleVersion, actual.pythonModuleVersion);
+    EXPECT_EQ(expected.layout.hasPosition, actual.layout.hasPosition);
+    EXPECT_EQ(expected.layout.x, actual.layout.x);
+    EXPECT_EQ(expected.layout.y, actual.layout.y);
+    EXPECT_EQ(expected.layout.hasSize, actual.layout.hasSize);
+    EXPECT_EQ(expected.layout.width, actual.layout.width);
+    EXPECT_EQ(expected.layout.height, actual.layout.height);
+    EXPECT_EQ(expected.layout.hasColor, actual.layout.hasColor);
+    EXPECT_EQ(expected.layout.colorR, actual.layout.colorR);
+    EXPECT_EQ(expected.layout.colorG, actual.layout.colorG);
+    EXPECT_EQ(expected.layout.colorB, actual.layout.colorB);
+    EXPECT_EQ(expected.layout.hasOverlayColor, actual.layout.hasOverlayColor);
+    EXPECT_EQ(expected.layout.overlayR, actual.layout.overlayR);
+    EXPECT_EQ(expected.layout.overlayG, actual.layout.overlayG);
+    EXPECT_EQ(expected.layout.overlayB, actual.layout.overlayB);
     expectExpectedKnobs(expected.knobs, actual.knobs);
     EXPECT_EQ(expected.inputs, actual.inputs);
     EXPECT_EQ(expected.pagesOrder, actual.pagesOrder);
@@ -426,6 +448,54 @@ TEST(ProjectYaml, RoundTripsAndReencodesByteIdentically)
     EXPECT_TRUE(warnings.empty());
     expectProjectsEqual(project, decoded);
     EXPECT_EQ(text, Serialization::encodeProjectYaml(decoded, blobs));
+}
+
+TEST(ProjectYaml, BackdropSizeAndColoursRoundTrip)
+{
+    ProjectSerialization project = exampleProject();
+    NodeSerializationPtr backdrop = makeNode("BackDrop1", "fr.inria.built-in.BackDrop", 1, 0);
+    backdrop->layout.hasPosition = true;
+    backdrop->layout.x = -300.25;
+    backdrop->layout.y = 12.;
+    backdrop->layout.hasSize = true;
+    backdrop->layout.width = 640.;
+    backdrop->layout.height = 480.5;
+    backdrop->layout.hasColor = true;
+    backdrop->layout.colorR = 0.25f;
+    backdrop->layout.colorG = 0.5f;
+    backdrop->layout.colorB = 0.125f;
+    backdrop->layout.hasOverlayColor = true;
+    backdrop->layout.overlayR = 1.f;
+    backdrop->layout.overlayG = 0.f;
+    backdrop->layout.overlayB = 0.75f;
+    project.nodes.nodes.push_front(backdrop);
+
+    Serialization::MemoryBlobStore blobs;
+    const std::string text = Serialization::encodeProjectYaml(project, blobs);
+    EXPECT_NE(std::string::npos, text.find("    pos: [-300.25, 12]\n    size: [640, 480.5]\n    color: [0.25, 0.5, 0.125]\n    overlay: [1, 0, 0.75]\n"));
+
+    YamlWarnings warnings;
+    const ProjectSerialization decoded = Serialization::decodeProjectYaml(text, blobs, &warnings);
+    EXPECT_TRUE(warnings.empty());
+    expectProjectsEqual(project, decoded);
+    EXPECT_EQ(text, Serialization::encodeProjectYaml(decoded, blobs));
+}
+
+TEST(ProjectYaml, NodeWithoutLayoutWritesNoLayoutKeys)
+{
+    ProjectSerialization project;
+    project.nodes.nodes = { makeNode("Read1", "fr.inria.built-in.Read", 1, 0) };
+    Serialization::MemoryBlobStore blobs;
+    const std::string text = Serialization::encodeProjectYaml(project, blobs);
+    for (const char* key : { "pos:", "size:", "color:", "overlay:" }) {
+        EXPECT_EQ(std::string::npos, text.find(key)) << key;
+    }
+
+    YamlWarnings warnings;
+    const ProjectSerialization decoded = Serialization::decodeProjectYaml(text, blobs, &warnings);
+    EXPECT_TRUE(warnings.empty());
+    const Serialization::NodeLayoutSerialization& layout = decoded.nodes.nodes.front()->layout;
+    EXPECT_FALSE(layout.hasPosition || layout.hasSize || layout.hasColor || layout.hasOverlayColor);
 }
 
 TEST(ProjectYaml, NodeAndKeyOrderInTheFileIsCosmetic)

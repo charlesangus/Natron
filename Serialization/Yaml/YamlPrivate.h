@@ -70,6 +70,12 @@ namespace YamlDetail {
     void emitDouble(YAML::Emitter& em, double value);
     void emitFloat(YAML::Emitter& em, float value);
     void emitInt(YAML::Emitter& em, long long value);
+
+    /**
+     * @brief Writes key with a flow-style [a, b] or [r, g, b] value.
+     **/
+    void emitDoublePair(YAML::Emitter& em, std::string_view key, double a, double b);
+    void emitFloatTriple(YAML::Emitter& em, std::string_view key, float r, float g, float b);
     void emitBool(YAML::Emitter& em, bool value);
     void emitStringList(YAML::Emitter& em, const std::vector<std::string>& values);
     void emitStringList(YAML::Emitter& em, const std::list<std::string>& values);
@@ -104,6 +110,7 @@ namespace YamlDetail {
     std::vector<std::string> readStringVector(const YAML::Node& node, const std::string& context);
     std::list<std::string> readStringList(const YAML::Node& node, const std::string& context);
     std::vector<double> readDoubleVector(const YAML::Node& node, const std::string& context, std::size_t expectedSize);
+    std::vector<float> readFloatTriple(const YAML::Node& node, const std::string& context);
 
     /**
      * @brief Reads a map: gives each known key once, refuses duplicate keys, and on finish() reports

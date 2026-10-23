@@ -27,23 +27,34 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <OpenImageIO/imageio.h>
+
 #include <QString>
+
+#include <ofxImageEffect.h>
+#include <ofxNatron.h>
 
 #include "BaseTest.h"
 #include "NativePluginIdentity.h"
 #include "RawTestSource.h"
 #include "RenderBothWays.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Raw/RawHighlights.h"
+#include "Engine/Nodes/Raw/RawPrepare.h"
+#include "Engine/Nodes/Raw/RawTemperature.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -104,6 +115,34 @@ const RectI kTiles[] = {
     RectI(17, 13, 18, 14),
     RectI(30, 0, 48, 13),
 };
+bool
+readReferenceMosaic(const std::string& path,
+                    std::vector<float>* pixels,
+                    int* width,
+                    int* height,
+                    std::string* error)
+{
+    OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(path);
+
+    if (!input) {
+        *error = "cannot open " + path + ": " + OIIO::geterror();
+
+        return false;
+    }
+    const OIIO::ImageSpec spec = input->spec();
+    pixels->resize((std::size_t)spec.width * spec.height);
+    const bool ok = (spec.nchannels == 1) && input->read_image(0, 0, 0, 1, OIIO::TypeDesc::FLOAT, pixels->data());
+    input->close();
+    if (!ok) {
+        *error = "cannot read " + path + " as one float channel";
+
+        return false;
+    }
+    *width = spec.width;
+    *height = spec.height;
+
+    return true;
+}
 } // namespace
 
 class NativeRawHighlightsTest
@@ -311,18 +350,65 @@ TEST_F(NativeRawHighlightsTest, InpaintOpposedOnASizeWithoutMaskPadding)
     }
 }
 
-// The hook for the darktable reference comparison: darktable's own output for each mode on the
-// clipped mosaic comes from the reference harness, which does not exist yet, so the test stays
-// disabled and fails if forced to run without it.
-TEST_F(NativeRawHighlightsTest, DISABLED_MatchesTheDarktableReference)
+// darktable's highlights module on the synthetic clipped mosaics tools/raw/make-reference.sh
+// writes as DNGs, with each mode's result read back through its photosite-colour demosaic. The
+// same DNG goes through the native Read, RawPrepare and RawTemperature here; see
+// Tests/fixtures/raw/README.md for the tolerances.
+TEST_F(NativeRawHighlightsTest, MatchesTheDarktableReference)
 {
-    for (RawHighlightsModeEnum mode : { eRawHighlightsModeClip, eRawHighlightsModeOpposed, eRawHighlightsModeLCh }) {
-        NodePtr node = createChain("RGGB", mode);
-        ASSERT_TRUE(bool(node));
-        RenderedPlane plane;
-        std::string error;
-        ASSERT_TRUE(renderRawTestPlane(node, RectI(0, 0, kWidth, kHeight), &plane, &error)) << error;
-        ADD_FAILURE() << "no darktable reference output for mode " << (int)mode;
+    struct ModeCase {
+        RawHighlightsModeEnum mode;
+        const char* name;
+        double tolerance;
+    };
+    const ModeCase modes[] = {
+        { eRawHighlightsModeClip, "clip", 1e-5 },
+        { eRawHighlightsModeUnclipped, "unclipped", 1e-5 },
+        { eRawHighlightsModeOpposed, "opposed", 2e-3 },
+        { eRawHighlightsModeLCh, "lch", 1e-3 },
+    };
+    const std::string dir = std::string(NATRON_TESTS_FIXTURES_DIR "/raw/reference/");
+
+    for (const char* layout : { "bayer", "xtrans" }) {
+        for (const ModeCase& m : modes) {
+            const std::string what = std::string(layout) + " " + m.name;
+            std::vector<float> reference;
+            int refWidth = 0;
+            int refHeight = 0;
+            std::string error;
+            ASSERT_TRUE(readReferenceMosaic(dir + "highlights-" + layout + "-" + m.name + ".tif", &reference, &refWidth, &refHeight, &error)) << what << ": " << error;
+
+            NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_READ));
+            ASSERT_TRUE(bool(read));
+            read->getEffectInstance()->getKnobByNameAndType<KnobFile>(kOfxImageEffectFileParamName)->setValue(dir + "highlights-" + layout + ".dng");
+            NodePtr prepare = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWPREPARE));
+            NodePtr temperature = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWTEMPERATURE));
+            NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWHIGHLIGHTS));
+            ASSERT_TRUE(prepare && temperature && node);
+            connectNodes(read, prepare, 0, true);
+            connectNodes(prepare, temperature, 0, true);
+            connectNodes(temperature, node, 0, true);
+            node->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawHighlightsParamMode)->setValue((int)m.mode);
+
+            const RectI window(0, 0, refWidth, refHeight);
+            RenderedPlane plane;
+            ASSERT_TRUE(renderRawTestPlane(node, window, &plane, &error)) << what << ": " << error;
+            double worst = 0.;
+            double sum = 0.;
+            for (int row = 0; row < refHeight; ++row) {
+                for (int x = 0; x < refWidth; ++x) {
+                    // Natron's rows count from the bottom.
+                    const int y = refHeight - 1 - row;
+                    const double expected = reference[(std::size_t)row * refWidth + x];
+                    const double diff = std::fabs((double)rawTestPlaneValue(plane, x, y, 0) - expected);
+                    sum += diff;
+                    worst = std::max(worst, diff);
+                    EXPECT_LE(diff, m.tolerance) << what << " at " << x << "," << y << ": darktable " << expected << ", Natron " << rawTestPlaneValue(plane, x, y, 0);
+                }
+            }
+            std::printf("highlights %s against darktable: mean error %g, max error %g\n", what.c_str(), sum / ((double)refWidth * refHeight), worst);
+            getApp()->getProject()->reset(false, true);
+        }
     }
 }
 

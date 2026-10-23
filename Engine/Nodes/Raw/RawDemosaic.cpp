@@ -32,7 +32,9 @@
 #include "RawDemosaic.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include "Engine/AppManager.h"
@@ -42,8 +44,14 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/RectD.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -551,5 +559,205 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
 
     return cancel.check() ? eStatusFailed : eStatusOK;
 } // RawDemosaic::renderOp
+
+bool
+RawDemosaic::canRenderOpOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps != 4)) {
+        return false;
+    }
+    // Resolving only reads knobs and the source's metadata and region.
+    const std::optional<Settings> settings = const_cast<RawDemosaic*>(this)->resolveSettings(query.time, query.view);
+    if (!settings) {
+        return false;
+    }
+    if (settings->algorithm == Algorithm::PassThrough) {
+        return true;
+    }
+
+    return ((settings->algorithm == Algorithm::PPG) || (settings->algorithm == Algorithm::RCD)) && (settings->greenEq == eRawDemosaicGreenEqNone) && (settings->smoothing == 0);
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+bool
+RawDemosaic::getOpGpuInputLayer(int inputNb,
+                                const ImageLayerDesc& plane,
+                                double time,
+                                ViewIdx view,
+                                ImageLayerDesc* layer) const
+{
+    if (inputNb != getSourceInput()) {
+        stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+        return true;
+    }
+
+    // The source is read in its own layer, a mosaic's one channel, not in the RGBA output's.
+    return const_cast<RawDemosaic*>(this)->resolveInputPlaneForRender(inputNb, time, view, layer, NULL);
+}
+
+RectI
+RawDemosaic::getOpGpuInputRoI(int inputNb,
+                              const RectI& outputRect,
+                              const RenderScale& /*scale*/) const
+{
+    if (inputNb != getSourceInput()) {
+        return outputRect;
+    }
+
+    return const_cast<RawDemosaic*>(this)->sourceRegionFor(outputRect, getCurrentTime(), getCurrentView());
+}
+
+StatusEnum
+RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuQuery& query = args.query;
+    const RectI& rect = args.outputRect;
+    const GpuImageView& out = args.output;
+    if (!canRenderOpOnGpu(query) || rect.isNull() || !out.buffer || (out.nComps != 4) || !out.bounds.contains(rect) || ((out.byteOffset % sizeof(float)) != 0)) {
+        return eStatusFailed;
+    }
+    const std::optional<Settings> found = resolveSettings(query.time, query.view);
+    if (!found) {
+        return eStatusFailed;
+    }
+    const Settings& s = *found;
+    const int sourceInput = getSourceInput();
+    const bool hasSource = (sourceInput >= 0) && (sourceInput < (int)args.inputs.size()) && args.inputs[sourceInput].buffer;
+    const GpuImageView source = hasSource ? args.inputs[sourceInput] : GpuImageView();
+    if (hasSource && (((source.byteOffset % sizeof(float)) != 0) || (source.nComps < 1) || (source.nComps > 4))) {
+        return eStatusFailed;
+    }
+    const std::uint64_t srcEnd = source.byteOffset / sizeof(float) + (std::uint64_t)source.bounds.height() * (std::uint64_t)source.rowStrideFloats;
+    const std::uint64_t dstEnd = out.byteOffset / sizeof(float) + (std::uint64_t)out.bounds.height() * (std::uint64_t)out.rowStrideFloats;
+    if ((srcEnd > UINT32_MAX) || (dstEnd > UINT32_MAX)) {
+        return eStatusFailed;
+    }
+
+    RawDemosaicGpuPush base = {};
+    if (hasSource) {
+        base.srcOffset = (std::uint32_t)(source.byteOffset / sizeof(float));
+        base.srcStride = (std::uint32_t)source.rowStrideFloats;
+        base.srcX1 = source.bounds.x1;
+        base.srcY1 = source.bounds.y1;
+        base.srcX2 = source.bounds.x2;
+        base.srcY2 = source.bounds.y2;
+        base.srcComps = (std::uint32_t)source.nComps;
+    } else {
+        base.srcComps = 1;
+    }
+    base.dstStride = (std::uint32_t)out.rowStrideFloats;
+    const bool rcd = (s.algorithm == Algorithm::RCD);
+    base.mode = (s.algorithm == Algorithm::PassThrough) ? kRawDemosaicGpuModePassThrough : (rcd ? kRawDemosaicGpuModeRcd : kRawDemosaicGpuModePpg);
+    base.threshold = rcd ? 0.0f : s.edgeThreshold;
+    base.scaler = s.processedMaximum;
+    base.revScaler = 1.0f / s.processedMaximum;
+    base.margin = rcd ? 10u : 100000u;
+
+    // Bands of the window are demosaiced one after the other through one work buffer, each over
+    // the source region the CPU would read for it, which a tile's result does not depend on.
+    const std::uint64_t kMaxWorkFloats = std::uint64_t(1) << 25;
+    std::vector<RectI> bands;
+    std::vector<RectI> needs;
+    std::uint64_t workFloats = 4;
+    if (base.mode == kRawDemosaicGpuModePassThrough) {
+        bands.push_back(rect);
+        needs.push_back(RectI());
+    } else {
+        const RectI firstRow = sourceRegionFor(RectI(rect.x1, rect.y1, rect.x2, rect.y1 + 1), query.time, query.view);
+        const std::uint64_t needWidth = (std::uint64_t)std::max(1, firstRow.width());
+        const int overhead = std::max(0, firstRow.height() - 1);
+        const int bandRows = (int)std::max<std::int64_t>(16, (std::int64_t)(kMaxWorkFloats / (16 * needWidth)) - overhead);
+        for (int y = rect.y1; y < rect.y2; y += bandRows) {
+            const RectI band(rect.x1, y, rect.x2, std::min(rect.y2, y + bandRows));
+            const RectI need = sourceRegionFor(band, query.time, query.view);
+            bands.push_back(band);
+            needs.push_back(need);
+            const std::uint64_t w = (std::uint64_t)std::max(0, need.width());
+            const std::uint64_t h = (std::uint64_t)std::max(0, need.height());
+            const std::uint64_t stride = (w + 1) & ~std::uint64_t(1);
+            workFloats = std::max(workFloats, 9 * w * h + (13 * stride * h) / 2);
+        }
+    }
+    if (workFloats > UINT32_MAX) {
+        return eStatusFailed;
+    }
+
+    gpu::GpuRecordContext& ctx = args.context;
+    gpu::GpuBuffer* work = nullptr;
+    if (!ctx.scratch(workFloats * sizeof(float), work) || !work) {
+        return eStatusFailed;
+    }
+    const gpu::GpuBuffer* src = hasSource ? source.buffer : work;
+    const auto groups = [](std::uint32_t n) {
+        return std::max<std::uint32_t>(n, 1);
+    };
+    const auto run = [&](gpu::GpuKernelId kernel, const RawDemosaicGpuPush& push, std::uint32_t x, std::uint32_t y) {
+        if (!ctx.dispatch(kernel, { src, work, out.buffer }, push, { groups(x), groups(y), 1 })) {
+            return false;
+        }
+        ctx.computeBarrier();
+
+        return true;
+    };
+
+    for (std::size_t b = 0; b < bands.size(); ++b) {
+        const RectI& band = bands[b];
+        const RectI& need = needs[b];
+        RawDemosaicGpuPush push = base;
+        const std::uint32_t width = (std::uint32_t)std::max(0, need.width());
+        const std::uint32_t height = (std::uint32_t)std::max(0, need.height());
+        push.bufX1 = need.x1;
+        push.bufY2 = need.y2;
+        push.width = width;
+        push.height = height;
+        push.stride = (width + 1) & ~1u;
+        push.filters = (base.mode == kRawDemosaicGpuModePassThrough) || need.isNull() ? 0u : RawNodeSupport::bayerFiltersAt(s.layout, need);
+        push.dstOffset = (std::uint32_t)(out.byteOffset / sizeof(float) + (std::uint64_t)(band.y1 - out.bounds.y1) * (std::uint64_t)out.rowStrideFloats + (std::uint64_t)(band.x1 - out.bounds.x1) * 4);
+        push.outX = band.x1;
+        push.outY = band.y1;
+        push.outWidth = (std::uint32_t)band.width();
+        push.outHeight = (std::uint32_t)band.height();
+
+        if ((base.mode != kRawDemosaicGpuModePassThrough) && (width > 0) && (height > 0)) {
+            if ((push.threshold > 0.0f) && !run(gpu::GpuKernelId::demosaic_median, push, width, height)) {
+                return eStatusFailed;
+            }
+            if (!run(gpu::GpuKernelId::demosaic_ppg_green, push, width, height) || !run(gpu::GpuKernelId::demosaic_ppg_rb, push, width, height)) {
+                return eStatusFailed;
+            }
+            if (rcd && (width >= 20) && (height >= 20)) {
+                const std::uint32_t slots = push.stride / 2;
+                const bool ok = run(gpu::GpuKernelId::rcd_populate, push, push.stride, height)
+                    && run(gpu::GpuKernelId::rcd_vh, push, push.stride, height)
+                    && run(gpu::GpuKernelId::rcd_lpf, push, slots, height)
+                    && run(gpu::GpuKernelId::rcd_green, push, width, height)
+                    && run(gpu::GpuKernelId::rcd_pq, push, slots, height)
+                    && run(gpu::GpuKernelId::rcd_pqdir, push, slots, height)
+                    && run(gpu::GpuKernelId::rcd_rb, push, width, height)
+                    && run(gpu::GpuKernelId::rcd_rb_green, push, width, height);
+                if (!ok) {
+                    return eStatusFailed;
+                }
+            }
+        }
+        if (!run(gpu::GpuKernelId::demosaic_write, push, push.outWidth, push.outHeight)) {
+            return eStatusFailed;
+        }
+    }
+
+    return eStatusOK;
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+} // RawDemosaic::renderOpGpu
 
 NATRON_NAMESPACE_EXIT

@@ -25,3 +25,8 @@ blackbody and daylight spectra, and Little CMS's `cmsWhitePointFromTemp()` are i
 - It renders at full resolution only.
 
 Tests: `Tests/Native/NativeRawTemperature_Test.cpp`, on synthetic mosaics. No real camera files yet.
+
+GPU: `rawtemperature_wrapped` (`Engine/Gpu/Kernels/rawprepare.slang`), the op's `gpu()`, with the
+CFA layout and the three multipliers in `RawTemperatureGpuParams`. One product per channel, as on
+the CPU: bound `ParityTolerance::arithmetic()`. GPU tests: `Tests/Native/NativeRawPrepTempGpu_Test.cpp`,
+every mode on the Bayer, X-Trans and linear fixtures.

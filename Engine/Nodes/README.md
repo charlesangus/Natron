@@ -967,7 +967,9 @@ unless it opts into the GPU by overriding three virtuals:
 `canRenderOpOnGpu(query)` (the answer may depend only on the query, the
 node's settings and its source metadata), `renderOpGpu(args)` to record its dispatches over
 `args.outputRect`, and `getOpGpuInputLayer()` to say the layer it reads each
-input in. The keyers do, with their own kernels.
+input in. A node reading more of an input than the window overrides
+`getOpGpuInputRoI()` too. The keyers do, with their own kernels, and so do the raw
+develop nodes.
 
 ### Raw nodes
 
@@ -1017,11 +1019,23 @@ result under `RawNodeSupport::frameKey()` of its render hash, time and view. The
 wait on that mutex and reuse the result, so every tile agrees with the full frame and the frame
 is measured once per source and settings. A cancelled measurement is not kept.
 
-On the GPU nothing changes in the path: a raw op's parameter block carries the
-CFA in a bounded form -- the pattern packed into at most a 6x6 (X-Trans) cell
-array plus its origin -- so the block's size is fixed and the
-`static_assert(sizeof(...) == ...)` beside its Slang mirror holds whatever the
-file.
+On the GPU nothing changes in the path: a mosaic is a one-channel image in a
+region like any other, its pixel in the alpha bit of `pixelwrap.slang`'s channel
+order. A raw op's parameter block starts with the CFA in a bounded form,
+`RawLayoutGpu` (`Engine/Nodes/Raw/RawGpuParams.h`, beside the other raw blocks):
+the period, the origin and the pattern packed into at most a 6x6 (X-Trans) cell
+array, so the block's size is fixed and the `static_assert(sizeof(...) == ...)`
+beside its Slang mirror holds whatever the file. `RawLayout` in
+`Engine/Gpu/Kernels/rawlayout.slang` loads it and answers `colourAt()` as the CPU
+does. A Custom raw node that reads around a pixel or moves pixels says what of its
+source a window needs through `getOpGpuInputRoI()`, as a Passes op's halo does.
+
+Placement keeps a develop chain whole: the tasks reading raw data, joined by their
+dependencies, form a run, and a run with a task that has no GPU path (neither
+cached nor an identity) stays on the CPU entirely, so a mosaic never crosses
+between the devices in the middle of it (`placeGraph()`, `taskReadsRaw()`). A raw node renders
+at full scale only, and a region refuses such a node at a proxy level, so its task there is never
+a GPU candidate (`makeGpuQueryForTask()`).
 
 ### The GPU side of an op
 

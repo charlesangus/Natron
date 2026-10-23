@@ -50,6 +50,9 @@ struct PlacementInputs {
     // Whether the task passes its single dependency's images through. Unset: Task::isIdentity.
     std::function<bool(const FrameGraph::Task&)> isIdentity;
 
+    // Whether the task's effect reads raw-kind data from an input. Unset: none does.
+    std::function<bool(const FrameGraph::Task&)> readsRaw;
+
     // What running a region on the GPU gains over the CPU; it is accepted when positive, else shrunk. The graph it is
     // given has the members of the regions accepted so far on the GPU and every other task on the CPU. Unset: every
     // region is accepted.
@@ -64,6 +67,10 @@ const int kMaxRegionShrinkSteps = 16;
  *
  * A task is a candidate when it is not cached and its effect can render it on the GPU. An identity task is never asked:
  * it joins the region of its dependency, whose device image it aliases, or stays on the CPU.
+ *
+ * Tasks that read raw data form runs: those joined by a dependency between two of them. A run is all or nothing: when
+ * one of its tasks is neither a candidate, nor cached, nor an identity, none of them is a candidate, since a mosaic
+ * crossing between the devices in the middle of a develop chain costs more transfer than its cheap point ops save.
  *
  * Regions are grown greedily in topological order: a candidate joins the regions of all its candidate dependencies at
  * once when that keeps the graph with each region contracted to one node acyclic, else the largest one of them that
@@ -92,11 +99,17 @@ bool isGpuPlacementAvailable();
 
 /**
  * @brief The query the effect of task is asked through canRenderOnGpu(). False when the task cannot go to the GPU
- * whatever the effect answers: it is not a native image effect, or renders more than one plane.
+ * whatever the effect answers: it is not a native image effect, renders more than one plane, or is asked for a
+ * downscaled image it can only render at full scale, which a region refuses.
  **/
 bool makeGpuQueryForTask(const FrameGraph::Task& task,
                          const FrameRenderContext& context,
                          GpuQuery* query);
+
+/**
+ * @brief Whether the effect of task declares an input of eDataKindRaw: the PlacementInputs::readsRaw a render uses.
+ **/
+bool taskReadsRaw(const FrameGraph::Task& task);
 
 /**
  * @brief The inputs placeGraph() takes in a render: the effects and the image cache are asked, and, while the GPU

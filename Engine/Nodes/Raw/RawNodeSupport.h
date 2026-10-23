@@ -29,14 +29,17 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Image.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawKernels.h"
 #include "Engine/RectI.h"
@@ -168,6 +171,35 @@ void xtransAt(const RawLayout& layout,
 U64 frameKey(U64 renderHash,
              double time,
              ViewIdx view);
+
+/**
+ * @brief Records kernel, a point op entry built with runWrapped, over args.outputRect with the
+ * paramBytes of params as its parameter block: every channel processed, no mask, mix or divisor.
+ * The source is input sourceInput moved by (-dx, -dy), so output pixel (x, y) reads source pixel
+ * (x + dx, y + dy), and reads zero outside the source's view. The output and the source have
+ * args.query.nComps channels.
+ **/
+StatusEnum recordRawPointGpu(const GpuRenderArgs& args,
+                             int sourceInput,
+                             int kernel,
+                             const void* params,
+                             std::size_t paramBytes,
+                             int dx = 0,
+                             int dy = 0) WARN_UNUSED_RETURN;
+
+template <typename P>
+StatusEnum
+recordRawPointGpu(const GpuRenderArgs& args,
+                  int sourceInput,
+                  int kernel,
+                  const P& params,
+                  int dx = 0,
+                  int dy = 0)
+{
+    static_assert(std::is_trivially_copyable_v<P>);
+
+    return recordRawPointGpu(args, sourceInput, kernel, &params, sizeof(P), dx, dy);
+}
 
 /**
  * @brief One persistent message a node posts about its source and takes back itself, leaving any

@@ -38,7 +38,12 @@
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/Project.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -199,9 +204,21 @@ RawTemperatureOp::row(const Params& params,
 }
 
 GpuOpRef
-RawTemperatureOp::gpu(const Params& /*params*/) const
+RawTemperatureOp::gpu(const Params& params) const
 {
+#ifdef NATRON_HAVE_GPU
+    RawTemperatureGpuParams p = {};
+    p.layout = toRawLayoutGpu(params.layout);
+    for (int c = 0; c < 3; ++c) {
+        p.coeffs[c] = params.coeffs[c];
+    }
+
+    return GpuOpRef::compiled((int)gpu::GpuKernelId::rawtemperature_wrapped, p);
+#else
+    Q_UNUSED(params);
+
     return GpuOpRef::none();
+#endif
 }
 
 RawTemperature::RawTemperature(NodePtr node)

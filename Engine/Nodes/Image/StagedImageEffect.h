@@ -137,7 +137,8 @@ public:
     /**
      * @brief When inputNb is the source, at the current time and view: for a Passes op, outputRect
      * grown by the halo of the op's passes; for a Resample op that opts into the GPU,
-     * resampleGpuSourceRoI(). outputRect otherwise.
+     * resampleGpuSourceRoI(). For a Custom op, getOpGpuInputRoI() for any input. outputRect
+     * otherwise.
      **/
     virtual RectI getGpuInputRoI(int inputNb,
                                  const RectI& outputRect,
@@ -378,6 +379,18 @@ protected:
                                     ImageLayerDesc* /*layer*/) const WARN_UNUSED_RETURN
     {
         return false;
+    }
+
+    /**
+     * @brief For a Custom op, the pixels of input inputNb that renderOpGpu() reads to fill
+     * outputRect, at the current time and view. A region hands each strip of the node at least
+     * this much of the input. outputRect by default.
+     **/
+    virtual RectI getOpGpuInputRoI(int /*inputNb*/,
+                                   const RectI& outputRect,
+                                   const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
+    {
+        return outputRect;
     }
 
     /**

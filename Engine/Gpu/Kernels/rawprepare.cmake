@@ -1,0 +1,2 @@
+slang_add_kernel(rawprepare_wrapped Kernels/rawprepare.slang ENTRY rawprepare_wrapped REGISTRY NatronGpu)
+slang_add_kernel(rawtemperature_wrapped Kernels/rawprepare.slang ENTRY rawtemperature_wrapped REGISTRY NatronGpu)

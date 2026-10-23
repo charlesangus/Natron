@@ -103,6 +103,26 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Clip Highlights, and Reconstruct in LCh on a Bayer or X-Trans mosaic. Inpaint Opposed
+     * measures its chrominance over the whole source with double sums, which a region's strips
+     * and the GPU's float arithmetic cannot reproduce, so it stays on the CPU, as does LCh without
+     * a CFA, which is Inpaint Opposed.
+     **/
+    virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool getOpGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual RectI getOpGpuInputRoI(int inputNb,
+                                   const RectI& outputRect,
+                                   const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
                                       const RectD& outputRoD,

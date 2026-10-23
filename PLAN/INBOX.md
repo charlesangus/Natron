@@ -14,26 +14,6 @@
 - refs: none
 - Pre-existing bug on main, found by M154 - Fresh Buffer Page Zeroing's first `-DNATRON_GPU=OFF` CI build (run 39770415588) and outside its scope: `StagedImageEffectGpuTest` fails in a GPU-off build because `StagedImageEffect::canRenderOnGpu` returns true for 1–4 components and for the mask/mix/channel-subset query, where the test (`Tests/Native/StagedImageEffectGpu_Test.cpp:511, 528`) expects false without `NATRON_HAVE_GPU`. Either the effect should refuse GPU without `NATRON_HAVE_GPU`, or the test's expectation is wrong. Both came from M137. Repro: `tools/ci/remote/build.sh fast --tests --no-appimage --cmake-arg -DNATRON_GPU=OFF` (available once M154 merges).
 
-### 2026-10-22T19:30:00Z — change-request
-- refs: none
-- New milestone requested (user, 2026-10-22): **"GL Context Restore On GUI Thread"**, a bug fix, deps `-`. An AppImage of M158 - Node Toolbar As Menu (`8570052b4`, fast preset) segfaulted at startup on an NVIDIA RTX 3070 Ti (proprietary driver, X11). Log: Qt's `QBackingStoreDefaultCompositor` printed "Failed to compile shader" for its `#version 150` shader with an empty info log, then "Failed to build graphics pipeline", then a SIGSEGV in `QPlatformBackingStore::rhiFlush` during the first expose. It is **intermittent**: the same AppImage later launched fine, as did main's beta43 release. Llvmpipe/Xvfb never shows it, because the GL suite is off there.
-
-  > Likely mechanism (diagnosed by reading code; not reproduced): Natron releases the main thread's GL context with a raw `glXMakeCurrent(dpy, None, NULL)` through `OSGLContext_x11::makeContextCurrent(nullptr)` (`Engine/OSGLContext_x11.cpp:~872`) without restoring the previous one. Qt 6 skips `makeCurrent` when it believes its own compositor context is still current, so its shader compile runs with no context bound: `glCreateShader` returns 0 and the log is empty. Unguarded release sites on the main thread:
-  > - the one-time `GL_MAX_TEXTURE_SIZE` probe in `Engine/GPUContextPool.cpp:256-259` (no `threadHasACurrentContext()` guard, unlike `:305`)
-  > - `Engine/RenderScheduler.cpp:1218`
-  > - `EffectInstance::dettachAllOpenGLContexts` (`Engine/EffectInstance.cpp:~4625`)
-  > - the `OSGLContext` and `OSGLContext_x11` destructors
-  >
-  > Timing (when a viewer or preview render first attaches on the main thread relative to the first expose) would explain why it's intermittent.
-  >
-  > Suggested fix:
-  > 1. Seed the pool's texture limit from `OpenGLRendererInfo::maxTextureSize`, which `getGPUInfos` already gathers, and delete the probe's bind/unbind.
-  > 2. Make Natron's GLX bind and release save the thread's previous display, drawables and context, and restore them instead of releasing to `None`.
-  >
-  > Workaround: `NATRON_GPU=off`.
-  >
-  > Acceptance sketch: after any Natron GL attach and release on the GUI thread, a test checks that `QOpenGLContext::currentContext()` and the GLX current context are what they were before; repeated launches on the NVIDIA desktop never hit the compositor failure.
-
 ### 2026-10-23T00:15:41+00:00 — change-request
 - refs: M29
 - This is defunct now, cancel it. I was able to self serve leaving the fork network and this has been done.

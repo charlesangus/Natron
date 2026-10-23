@@ -3636,6 +3636,14 @@ NodeGui::setOverlayColor(const QColor& c)
 }
 
 void
+NodeGui::setOverlayColor(double r,
+                         double g,
+                         double b)
+{
+    setOverlayColor(QColor::fromRgbF(r, g, b));
+}
+
+void
 NodeGui::onSwitchInputActionTriggered()
 {
     NodePtr node = getNode();

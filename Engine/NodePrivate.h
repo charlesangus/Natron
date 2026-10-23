@@ -243,6 +243,16 @@ public:
         , channelSelectorResolvedSequence(0)
         , dataKindConflictMessage()
         , guiPointer()
+        , layoutMutex()
+        , posX(0.)
+        , posY(0.)
+        , sizeW(0.)
+        , sizeH(0.)
+        , hasSizeSet(false)
+        , userColorSet(false)
+        , userColor { 0., 0., 0. }
+        , overlayColorSet(false)
+        , overlayColor { 0., 0., 0. }
         , nativeOverlays()
         , nodeCreated(false)
         , wasCreatedSilently(false)
@@ -505,6 +515,17 @@ public:
     // Guarded by persistentMessageMutex.
     QString dataKindConflictMessage;
     NodeGuiIWPtr guiPointer;
+
+    // Node-graph layout, kept here so a headless session and a save off the main thread see it.
+    // The GUI mirrors its own drags and resizes into these through the Node::setLayoutFromGui* calls.
+    mutable QMutex layoutMutex;
+    double posX, posY;
+    double sizeW, sizeH;
+    bool hasSizeSet;
+    bool userColorSet;
+    double userColor[3];
+    bool overlayColorSet;
+    double overlayColor[3];
     std::list<HostOverlayKnobsPtr> nativeOverlays;
     bool nodeCreated;
     bool wasCreatedSilently;

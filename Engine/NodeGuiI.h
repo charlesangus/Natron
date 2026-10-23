@@ -127,6 +127,11 @@ public:
     virtual bool getOverlayColor(double* r, double* g, double* b) const = 0;
 
     /**
+     * @brief Set the suggested overlay colour
+     **/
+    virtual void setOverlayColor(double r, double g, double b) = 0;
+
+    /**
      * @brief Add a default viewer overlay
      **/
     virtual void addDefaultInteract(const HostOverlayKnobsPtr& knobs) = 0;

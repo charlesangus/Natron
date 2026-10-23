@@ -156,12 +156,6 @@ public:
 
     virtual void restoreStateAfterCreation() OVERRIDE FINAL;
 
-    /**
-     * @brief Fills serialization with what a project file saves for this node in the node graph
-     * and, for a group, for the nodes it holds that are part of the project.
-     **/
-    void toSerialization(Serialization::NodeGuiSerialization* serialization) const;
-
     NodePtr getNode() const
     {
         return _internalNode.lock();
@@ -332,12 +326,6 @@ public:
      * color untouched, when no user colour is set.
      **/
     bool getUserColor(QColor* color) const;
-
-    /**
-     * @brief Resets the body to the category colour and applies the user colour the
-     * serialization resolves to, so a saved project follows later Preferences changes.
-     **/
-    void restoreCategoryAndUserColor(const Serialization::NodeGuiSerialization& serialization);
 
     /**
      * @brief Re-applies this node's category body colour after a Preferences

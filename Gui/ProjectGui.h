@@ -70,21 +70,6 @@ public:
         return _project.lock();
     }
 
-    /**
-     * @brief Fills serialization with the GUI section of a project file: the node graph state of
-     * the visible nodes, the viewers, the layout, the histograms, the opened settings and Python
-     * panels, and the script editor input.
-     **/
-    void toSerialization(Serialization::ProjectGuiSerialization* serialization) const;
-
-    /**
-     * @brief Restores the GUI state saved in serialization once the project's nodes exist, as
-     * loading a project file does. The saved layout is only restored for an auto-save or when
-     * the settings ask for the project's workspace.
-     **/
-    void fromSerialization(const Serialization::ProjectGuiSerialization& serialization,
-                           bool isAutosave);
-
     void registerNewColorPicker(KnobColorPtr knob);
 
     void removeColorPicker(KnobColorPtr knob);

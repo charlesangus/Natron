@@ -1101,21 +1101,6 @@ Gui::saveWarning()
     return -1;
 }
 
-void
-Gui::loadProjectGui(bool isAutosave,
-                    const Serialization::ProjectGuiSerialization& serialization) const
-{
-    assert(_imp->_projectGui);
-    _imp->_projectGui->fromSerialization(serialization, isAutosave);
-}
-
-void
-Gui::saveProjectGui(Serialization::ProjectGuiSerialization* serialization)
-{
-    assert(_imp->_projectGui);
-    _imp->_projectGui->toSerialization(serialization);
-}
-
 bool
 Gui::isAboutToClose() const
 {

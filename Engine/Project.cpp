@@ -37,7 +37,6 @@
 #include <limits>
 #include <map>
 #include <memory>
-#include <optional>
 #include <set>
 #include <stdexcept>
 
@@ -76,11 +75,9 @@
 #include "Global/FloatingPointExceptions.h"
 #endif
 
-#include "Serialization/BoostXml/ProjectGuiXml.h"
 #include "Serialization/BoostXml/ProjectXml.h"
 #include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/Bundle/ZipStore.h"
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/ProjectSerialization.h"
 #include "Serialization/Yaml/YamlScalars.h"
 
@@ -530,26 +527,7 @@ Project::loadProjectInternal(const QString & path,
     const QDateTime savedOn = QDateTime::fromString(QString::fromUtf8(manifest.saveDate.c_str()), Qt::ISODate);
     _imp->saveDate->setValue(savedOn.isValid() ? savedOn.toLocalTime().toString().toStdString() : manifest.saveDate);
 
-    {
-        QMutexLocker l(&_imp->projectLock);
-        _imp->loadedGuiYaml = std::string(bundle->guiYaml());
-    }
-
-    if (!getApp()->isBackground() && bundle->hasGui()) {
-        Serialization::YamlWarnings guiWarnings;
-        std::optional<Serialization::ProjectGuiSerialization> projectGuiSerialization;
-        try {
-            projectGuiSerialization = bundle->readGui(&guiWarnings);
-        } catch (const Serialization::YamlError& e) {
-            addLoadWarning(tr("The window layout, node positions and viewers could not be read and were left as they were: %1").arg(QString::fromUtf8(e.what())));
-        }
-        for (const std::string& warning : guiWarnings) {
-            addLoadWarning(QString::fromUtf8(warning.c_str()));
-        }
-        if (projectGuiSerialization) {
-            getApp()->loadProjectGui(isAutoSave, *projectGuiSerialization);
-        }
-    }
+    getApp()->onProjectNodesRestored();
 
     // After every node is restored, so that no node's saved config wins.
     pushOCIOConfigToNodes();
@@ -800,17 +778,6 @@ Project::saveProjectInternal(const QString & path,
         toSerialization(&projectSerialization);
         writer.setProject(projectSerialization);
 
-        AppInstancePtr app = getApp();
-        if (app->isBackground()) {
-            QMutexLocker l(&_imp->projectLock);
-            writer.setGuiYaml(_imp->loadedGuiYaml);
-        } else {
-            Serialization::ProjectGuiSerialization projectGuiSerialization;
-            if (app->saveProjectGui(&projectGuiSerialization)) {
-                writer.setGui(projectGuiSerialization);
-            }
-        }
-
         Serialization::BundleManifest manifest;
         manifest.appVersion = NATRON_VERSION_STRING;
         manifest.appCommit = GIT_COMMIT;
@@ -952,12 +919,6 @@ Project::saveLegacyXmlForBenchmark(const QString& filePath)
     Serialization::ProjectSerialization projectSerialization;
     toSerialization(&projectSerialization);
     oArchive << boost::serialization::make_nvp("Project", projectSerialization);
-    if (!bgProject) {
-        Serialization::ProjectGuiSerialization projectGuiSerialization;
-        if (app->saveProjectGui(&projectGuiSerialization)) {
-            oArchive << boost::serialization::make_nvp("ProjectGui", projectGuiSerialization);
-        }
-    }
 }
 
 void
@@ -2864,7 +2825,6 @@ Project::doResetEnd(bool aboutToQuit)
             ++_imp->formatsGeneration;
             Node::invalidateAllHashes();
             _imp->layers.reset(new LayerRegistry());
-            _imp->loadedGuiYaml.clear();
         }
         {
             // The menu must lose the additional formats too: tryAddProjectFormat() indexes it as

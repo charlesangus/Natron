@@ -108,7 +108,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ViewerTab.h"
 
 #include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 
 #define NATRON_STATE_INDICATOR_OFFSET 5
 
@@ -3706,23 +3705,6 @@ NodeGui::getUserColor(QColor* color) const
     *color = _userColor;
 
     return true;
-}
-
-void
-NodeGui::restoreCategoryAndUserColor(const Serialization::NodeGuiSerialization& serialization)
-{
-    QColor categoryColor;
-
-    if (getCategoryColor(getNode(), &categoryColor)) {
-        setCurrentColor(categoryColor);
-    }
-
-    float r, g, b;
-    if (Serialization::resolveNodeGuiUserColor(serialization, &r, &g, &b)) {
-        setUserColor(QColor::fromRgbF(r, g, b));
-    } else {
-        clearUserColor();
-    }
 }
 
 void

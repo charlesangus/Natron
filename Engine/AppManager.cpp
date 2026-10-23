@@ -1949,10 +1949,16 @@ AppManager::runInitGuiScripts()
     }
     _imp->initGuiScriptsRan = true;
 
-    PythonGILLocker pgl;
-    QStringList searchPathBefore = getAllNonOFXPluginsPaths();
     QStringList dirs;
     dirs.swap(_imp->pendingInitGuiDirs);
+    if (dirs.isEmpty()) {
+        std::cout << tr("Info: initGui.py script not loaded (this is not an error)").toStdString() << std::endl;
+
+        return;
+    }
+
+    PythonGILLocker pgl;
+    QStringList searchPathBefore = getAllNonOFXPluginsPaths();
 
     QStringList loaded;
     Q_FOREACH (const QString& dir, dirs) {
@@ -1962,14 +1968,11 @@ AppManager::runInitGuiScripts()
     }
 
     if (loaded.isEmpty()) {
-        QString message = tr("Info: initGui.py script not loaded (this is not an error)");
-        setLoadingStatus(message);
-        std::cout << message.toStdString() << std::endl;
+        std::cout << tr("Info: initGui.py script not loaded (this is not an error)").toStdString() << std::endl;
     } else {
+        // No splash text: the splash screen pumps the event loop, and this runs with the main window half-built.
         Q_FOREACH (const QString& found, loaded) {
-            QString message = tr("Info: initGui.py script found and loaded at %1").arg(found);
-            setLoadingStatus(message);
-            std::cout << message.toStdString() << std::endl;
+            std::cout << tr("Info: initGui.py script found and loaded at %1").arg(found).toStdString() << std::endl;
         }
     }
 

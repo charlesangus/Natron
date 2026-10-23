@@ -89,7 +89,7 @@ Every node is built on the M137 - Native Base Class Flexibility framework (`Node
   - verify: gtest: a Read whose filename moves PNG→RAW→PNG flips Image→Raw→Image; a raw-only consumer reports a conflict when it flips back; a project save/load round trip keeps the resolved kind (`Tests/DataKindProjectLoad_Test.cpp` pattern).
   - size: M
 
-- [ ] M80.P2.T3 — Read renders raw for RAW files
+- [x] M80.P2.T3 — Read renders raw for RAW files
   - files: `Engine/Nodes/IO/NativeRead.cpp`, `Engine/Nodes/IO/OiioReadSupport.cpp` (extension claim only), `Engine/Nodes/IO/docs/NativeRead.md`, new `Tests/Native/NativeReadRaw_Test.cpp`
   - approach: the native Read claims a constant set of rawspeed's supported extensions (cr2, cr3, nef, arw, raf, rw2, orf, dng, pef, srw, and the rest rawspeed lists) before `readableExtensions()` (`OiioReadSupport.h:302`). OIIO's `raw` stays in `kExcludedOiioFormats` (`OiioReadSupport.cpp:815`). For a RAW file the Read outputs `eDataKindRaw`: the decoded channels, the active-area window as the RoD, data from `RawDecodeSupport`, and the `RawMetadata` keys merged into the file metadata (`deriveOutputMetadata`). `ocioInputSpace` does not apply to raw data, so hide the colour knobs for a raw file. Frame sequences and the time domain work as for images. Proxy is disabled for raw, because downscaling a mosaic is meaningless; the tooltip says so. An unsupported camera sets a persistent error with P2.T1's text. Replace the "RAW is excluded; a later milestone adds it" line in `NativeRead.md:87`.
   - verify: gtest: a Read of each fixture is raw kind with the expected channel count, metadata keys and values; a non-RAW file still outputs an image; the unsupported-camera path sets the persistent error.
@@ -101,7 +101,7 @@ Every node is built on the M137 - Native Base Class Flexibility framework (`Node
   - verify: gtest: a viewer fed by a raw Read renders without error, and its pixel values equal the mosaic; a linear DNG shows three channels. Extend the `Tests/gui` smoke script to show it.
   - size: M
 
-- [ ] M80.P2.T5 — RawToImage node
+- [x] M80.P2.T5 — RawToImage node
   - files: new `Engine/Nodes/Raw/RawToImage.h/.cpp`, `RawToImage.reg.inc`, `docs/RawToImage.md`, new `Tests/Native/NativeRawToImage_Test.cpp`
   - approach: raw in, image out, no knobs beyond the framework's. A plain conversion through `RawDisplay` (P2.T4): mosaic → a 1-channel grey image (alpha 1), linear → channels as they are. No scaling, no colour. It is the explicit converter for users who want raw values in an image graph. Tab menu `Raw/RawToImage` via `NodeSpec::grouping`.
   - verify: gtest: output equals the input values for a mosaic and a linear fixture; output kind is image; `expectNativeIdentity` passes.

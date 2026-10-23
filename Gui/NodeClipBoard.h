@@ -36,7 +36,6 @@
 #include "Gui/GuiFwd.h"
 
 #include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -44,7 +43,6 @@ class NodeClipBoard
 {
 public:
     std::list<Serialization::NodeSerializationPtr> nodes;
-    std::list<Serialization::NodeGuiSerializationPtr> nodesUI;
 
     // The node each item of nodes was copied from, or null. It is not put on the system
     // clipboard: a serialization does not reference its node.
@@ -52,14 +50,13 @@ public:
 
     NodeClipBoard()
         : nodes()
-        , nodesUI()
         , sourceNodes()
     {
     }
 
     bool isEmpty() const
     {
-        return nodes.empty() && nodesUI.empty();
+        return nodes.empty();
     }
 };
 

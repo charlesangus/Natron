@@ -1153,7 +1153,6 @@ void
 GuiApplicationManager::clearNodeClipBoard()
 {
     _imp->_nodeCB.nodes.clear();
-    _imp->_nodeCB.nodesUI.clear();
     _imp->_nodeCB.sourceNodes.clear();
 }
 

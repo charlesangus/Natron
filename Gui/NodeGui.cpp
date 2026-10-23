@@ -3080,14 +3080,6 @@ NodeGui::destroyGui()
                 break;
             }
         }
-
-        for (std::list<Serialization::NodeGuiSerializationPtr>::iterator it = cb.nodesUI.begin();
-             it != cb.nodesUI.end(); ++it) {
-            if ((*it)->nodeName == internalNode->getFullyQualifiedName()) {
-                cb.nodesUI.erase(it);
-                break;
-            }
-        }
     }
 
     //Delete edges

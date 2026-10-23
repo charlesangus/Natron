@@ -162,12 +162,6 @@ public:
      **/
     void toSerialization(Serialization::NodeGuiSerialization* serialization) const;
 
-    /**
-     * @brief Applies the colours, position, preview state and size saved in serialization to
-     * this node, as pasting a copied node does.
-     **/
-    void fromSerialization(const Serialization::NodeGuiSerialization& serialization);
-
     NodePtr getNode() const
     {
         return _internalNode.lock();

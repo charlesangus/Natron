@@ -132,14 +132,6 @@ amazeSpan(int w0,
     *b0 = std::max(0, kAmazeGrid * ((w0 / kAmazeGrid) - 1));
     *b1 = std::min(n, kAmazeGrid * ((w1 - 1) / kAmazeGrid) + kAmazeTileEnd + endMargin);
 }
-
-U64
-renderKey(U64 hash,
-          double time,
-          ViewIdx view)
-{
-    return hash ^ (U64)(std::int64_t)std::llround(time * 1000.) ^ ((U64)(int)view << 48);
-}
 } // namespace
 
 struct RawDemosaic::Settings {
@@ -481,7 +473,7 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
             greens = mosaic.data;
             if ((s.greenEq == eRawDemosaicGreenEqFull) || (s.greenEq == eRawDemosaicGreenEqBoth)) {
                 const std::uint32_t imageFilters = RawNodeSupport::bayerFiltersAt(s.layout, rod);
-                const U64 key = renderKey(getRenderHash(), args.time, args.view);
+                const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
                 double ratio = 0.;
                 {
                     std::lock_guard<std::mutex> lock(_greenMutex);

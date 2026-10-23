@@ -162,6 +162,14 @@ void xtransAt(const RawLayout& layout,
               std::uint8_t xtrans[6][6]);
 
 /**
+ * @brief The key a node caches a whole-frame analysis of its source under: its render hash, which
+ * covers its knobs and everything upstream, combined with the time and the view.
+ **/
+U64 frameKey(U64 renderHash,
+             double time,
+             ViewIdx view);
+
+/**
  * @brief One persistent message a node posts about its source and takes back itself, leaving any
  * other message on the node alone. Safe to use from render threads.
  **/

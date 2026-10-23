@@ -433,7 +433,7 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: compiled at P8.T15; `grep -rn "NodeGuiSerialization\|ProjectGuiSerialization\|ViewerDataSerialization\|gui\.yaml" Engine Gui Serialization Tests` is empty.
   - size: M
 
-- [ ] M16.P8.T14 — Headless ctests for Engine-owned layout
+- [x] M16.P8.T14 — Headless ctests for Engine-owned layout
   - files: new `Tests/Serialization/NodeLayout_Test.cpp`, `Tests/Serialization/ProjectEquivalence.cpp` (add position, size, colour, overlay near `:231`), `Tests/Serialization/ProjectBundleTestHelpers.h` if needed
   - approach: `BaseTest`, no GUI. `setPosition` then `getPosition` returns the value; save+reload keeps a position, a group child's position, a backdrop's size and colour; a rename keeps the position; a moved placeholder saves its new position and keeps its children's; moving one node changes exactly the position line(s) of that node in `project.yaml` (text diff of two saves); toggling preview saves one knob line; re-saving twice is byte-identical.
   - verify: compiled at P8.T15; `NodeLayout.*`.
@@ -495,6 +495,7 @@ UAT (P7.T3).
 - 2026-10-23 — User calls on the `gui.yaml` drop: the preview flag is saved by making the `enablePreview` knob persistent (saved under `knobs:` only when non-default), not as a layout field; Python panels opened at runtime, and their knob values and `userData`, are no longer restored on reopen (panels registered by `initGui.py` still are). Accepted side effects: open group graph tabs, script editor input and the autosave-recovery workspace are not restored; size is saved only for backdrops and colour only when user-set (or a backdrop's body colour), so re-saves stay byte-identical; closing a project still resets to the default layout (existing behaviour).
 - 2026-10-23 — P6.T2 results (recorded in `tools/bench/BASELINE.md`): `.ntpz` 53.7 MB against 1.20 GB XML (22.4× smaller); medians of run medians 7.62 s `.ntpz` save against 17.17 s XML, 7.68 s autosave; `.ntpz` load 15.4–20.2 s. Run 3 was contended by other host work (its `.ntpz` save median 19.0 s); runs 1–2 were idle. Both P6.T2 thresholds pass. Lane rebased onto main `bf781cbcd` (M158) as `800d814cb`; one conflict in `Engine/AppInstance.cpp`, both sides kept.
 - 2026-10-23 — P8.T6+T7, T8–T10 and T12+T13 were each dispatched to one implementer, because the tree doesn't compile between them. P8.T11 and P8.T14 code is in `c05fe101e`, unchecked until the P8.T15 build: T11 can't check the overlay colour (no Python getter) and treats the first Viewer's pane as the anchor (not exposed to Python). Paste now centres on the true layout bounding box (the old code ignored size), and a serialized node without a stored position is auto-placed instead of left at (0,0). A coloured backdrop now reports `hasUserColor()` true in Python.
+- 2026-10-23 — Remote debug build of `c05fe101e` (run 40038006490) green: Phase 16.8 code compiles and `NodeLayout.*`, `ProjectBundle.*`, `ProjectYaml.*`, `ClipboardYaml.*`, `ProjectGuiYaml.*`, `BundleLoadTest.*` and `MissingPlugin*` pass. P8.T15 completes once P8.T11 runs against the fast AppImage of HEAD (which also carries P7.T1 `d23b79b0d` and P7.T2 `6e5203af0`).
 
 ## Handoff (2026-10-22, PM paused by user)
 

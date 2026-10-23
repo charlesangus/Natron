@@ -326,7 +326,7 @@ TEST_F(RawDecodeSupportTest, UnsupportedCameraNamesTheCameraAndRawspeedVersion)
     // Same length, so every TIFF offset and count still holds; rawspeed's database has no such
     // camera and the decoder is not allowed to guess.
     const std::string real = "Canon EOS 5D Mark III";
-    const std::string stub = "Canon EOS 5D Mark IX";
+    const std::string stub = "Canon EOS 5D Mark XII";
     ASSERT_EQ(real.size(), stub.size());
     std::size_t patched = 0;
     for (std::vector<char>::iterator it = bytes.begin(); (it = std::search(it, bytes.end(), real.begin(), real.end())) != bytes.end(); it += (std::ptrdiff_t)real.size()) {
@@ -338,10 +338,10 @@ TEST_F(RawDecodeSupportTest, UnsupportedCameraNamesTheCameraAndRawspeedVersion)
 
     std::string error;
     EXPECT_FALSE(bool(RawDecodeSupport::readHeader(path, &error)));
-    EXPECT_NE(std::string::npos, error.find("Canon EOS 5D Mark IX")) << error;
+    EXPECT_NE(std::string::npos, error.find("Canon EOS 5D Mark XII")) << error;
     EXPECT_NE(std::string::npos, error.find(RawspeedRuntime::version())) << error;
     EXPECT_NE(std::string::npos, error.find("not supported")) << error;
-    EXPECT_EQ(0u, error.find(RawDecodeSupport::unsupportedCameraMessage("Canon", "Canon EOS 5D Mark IX", std::string()).substr(0, 30))) << error;
+    EXPECT_EQ(0u, error.find(RawDecodeSupport::unsupportedCameraMessage("Canon", "Canon EOS 5D Mark XII", std::string()).substr(0, 30))) << error;
 }
 
 TEST_F(RawDecodeSupportTest, ConcurrentFirstReadsDecodeOnce)

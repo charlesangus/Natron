@@ -27,7 +27,6 @@
 #include <string_view>
 
 #include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/Yaml/YamlScalars.h"
 
 NATRON_NAMESPACE_ENTER
@@ -40,29 +39,21 @@ inline constexpr int kClipboardYamlFormatVersion = 1;
 inline constexpr std::string_view kClipboardYamlMimeType = "application/vnd.natron.nodes+yaml";
 
 /**
- * @brief Copied nodes: nodes[i] is shown in the node graph as nodesUI[i], and so are their
- * children, in the same order.
+ * @brief Copied nodes. Each node, and each child of a group, carries its own layout.
  **/
 struct ClipboardSerialization {
     std::list<NodeSerializationPtr> nodes;
-    std::list<NodeGuiSerializationPtr> nodesUI;
 };
 
 /**
- * @brief The clipboard document: `format: natron-clipboard`, `formatVersion`, `nodes` in the
- * project.yaml node schema (so a node's inputs name its siblings by script name) and `gui`, the
- * node graph state of each node keyed by its script name, a group's nodes by their names within
- * the copied set ("Group1.Blur1"). Heavy roto and tracker tables are inlined as base64.
- *
- * A node's graph state is found by script name, so the source names in nodesUI (fully qualified
- * in the source project) do not need to match the copied set's.
+ * @brief The clipboard document: `format: natron-clipboard`, `formatVersion` and `nodes` in the
+ * project.yaml node schema (so a node's inputs name its siblings by script name, and position,
+ * size and colours sit on each node). Heavy roto and tracker tables are inlined as base64.
  **/
 std::string encodeClipboardYaml(const ClipboardSerialization& clipboard);
 
 /**
- * @brief Reads the clipboard document. Nodes come back sorted by script name, each with a graph
- * state named within the copied set (a default one, at the origin, for a node the document gives
- * none). Throws YamlError for text that is not a Natron clipboard document.
+ * @brief Reads the clipboard document. Nodes come back sorted by script name. Throws YamlError for text that is not a Natron clipboard document.
  **/
 ClipboardSerialization decodeClipboardYaml(std::string_view text, YamlWarnings* warnings = nullptr);
 

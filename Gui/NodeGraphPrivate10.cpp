@@ -26,9 +26,10 @@
 #include "NodeGraphPrivate.h"
 #include "NodeGraph.h"
 
+#include <algorithm>
 #include <limits>
-#include <stdexcept>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 #include <QDebug>
 
@@ -50,7 +51,6 @@
 #include "Gui/NodeGui.h"
 
 #include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -62,34 +62,32 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
                                      std::list<std::pair<std::string, NodeGuiPtr> > *newNodes)
 {
     if ( !clipboard.isEmpty() ) {
-        double xmax = std::numeric_limits<int>::min();
-        double xmin = std::numeric_limits<int>::max();
-        double ymin = std::numeric_limits<int>::max();
-        double ymax = std::numeric_limits<int>::min();
+        double xmax = std::numeric_limits<double>::lowest();
+        double xmin = std::numeric_limits<double>::max();
+        double ymin = std::numeric_limits<double>::max();
+        double ymax = std::numeric_limits<double>::lowest();
+        bool anyPositioned = false;
 
-        for (std::list<Serialization::NodeGuiSerializationPtr>::const_iterator it = clipboard.nodesUI.begin();
-             it != clipboard.nodesUI.end(); ++it) {
-            double x = (*it)->positionX;
-            double y = (*it)->positionY;
-            double w = (*it)->width;
-            double h = (*it)->height;
-            if ( (x + w) > xmax ) {
-                xmax = x;
+        // A node with no stored size counts as a point at its position.
+        for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = clipboard.nodes.begin();
+             it != clipboard.nodes.end(); ++it) {
+            const Serialization::NodeLayoutSerialization& layout = (*it)->layout;
+            if (!layout.hasPosition) {
+                continue;
             }
-            if (x < xmin) {
-                xmin = x;
-            }
-            if ( (y + h) > ymax ) {
-                ymax = y;
-            }
-            if (y < ymin) {
-                ymin = y;
-            }
+            anyPositioned = true;
+            const double w = layout.hasSize ? layout.width : 0.;
+            const double h = layout.hasSize ? layout.height : 0.;
+            xmin = std::min(xmin, layout.x);
+            ymin = std::min(ymin, layout.y);
+            xmax = std::max(xmax, layout.x + w);
+            ymax = std::max(ymax, layout.y + h);
         }
 
-        QPointF offset( scenePos.x() - ( (xmin + xmax) / 2. ), scenePos.y() - ( (ymin + ymax) / 2. ) );
-
-        assert( clipboard.nodes.size() == clipboard.nodesUI.size() );
+        QPointF offset(0., 0.);
+        if (anyPositioned) {
+            offset = QPointF(scenePos.x() - ((xmin + xmax) / 2.), scenePos.y() - ((ymin + ymax) / 2.));
+        }
 
         NodesGuiList newNodesList;
         std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>> newNodesMap;
@@ -104,15 +102,14 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
             const std::list<Serialization::NodeSerializationPtr>& internalNodesClipBoard = clipboard.nodes;
             std::list<Serialization::NodeSerializationPtr>::const_iterator itOther = internalNodesClipBoard.begin();
             std::list<NodePtr>::const_iterator itSource = clipboard.sourceNodes.begin();
-            for (std::list<Serialization::NodeGuiSerializationPtr>::const_iterator it = clipboard.nodesUI.begin();
-                 it != clipboard.nodesUI.end(); ++it, ++itOther) {
+            for (; itOther != internalNodesClipBoard.end(); ++itOther) {
                 NodePtr sourceNode;
                 if (itSource != clipboard.sourceNodes.end()) {
                     sourceNode = *itSource;
                     ++itSource;
                 }
                 const std::string& oldScriptName = (*itOther)->scriptName;
-                NodeGuiPtr node = pasteNode(*itOther, sourceNode, *it, offset, group.lock(), std::string(), false, &oldNewScriptNamesMapping);
+                NodeGuiPtr node = pasteNode(*itOther, sourceNode, offset, group.lock(), std::string(), false, &oldNewScriptNamesMapping);
 
                 if (!node) {
                     missingNodePlugins.insert((*itOther)->pluginID);
@@ -187,7 +184,6 @@ void trimNumber(std::string &baseName)
 NodeGuiPtr
 NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalSerialization,
                             const NodePtr& sourceNode,
-                            const Serialization::NodeGuiSerializationPtr& guiSerialization,
                             const QPointF& offset,
                             const NodeCollectionPtr& grp,
                             const std::string& parentName,
@@ -255,11 +251,11 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
     NodesList allNodes;
     _publicInterface->getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
 
-    if (guiSerialization) {
-        gui->fromSerialization(*guiSerialization);
+    if (internalSerialization->layout.hasPosition && !offset.isNull()) {
+        double x, y;
+        n->getPosition(&x, &y);
+        n->setPosition(x + offset.x(), y + offset.y());
     }
-    QPointF newPos = gui->getPos_mt_safe() + offset;
-    gui->setPosition( newPos.x(), newPos.y() );
 
     if (clone) {
         assert(sourceNode);
@@ -274,11 +270,6 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
     NodeGroupPtr isGrp =
         std::dynamic_pointer_cast<NodeGroup>( n->getEffectInstance()->shared_from_this() );
     const std::list<Serialization::NodeSerializationPtr>& nodes = internalSerialization->children;
-    std::list<Serialization::NodeGuiSerializationPtr> nodesUi;
-    if (guiSerialization) {
-        nodesUi = guiSerialization->children;
-    }
-    assert( nodes.size() == nodesUi.size() || nodesUi.empty() );
 
     if (internalSerialization->scriptName != n->getScriptName()) {
         (*oldNewScriptNamesMapping)[internalSerialization->scriptName] = n->getScriptName();
@@ -307,15 +298,13 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
             }
         }
         std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>> newNodesMap;
-        std::list<std::pair<std::string, NodeGuiPtr> > newNodes;
-        std::list<Serialization::NodeGuiSerializationPtr>::const_iterator itUi = nodesUi.begin();
+        std::list<std::pair<std::string, NodeGuiPtr>> newNodes;
         for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-            Serialization::NodeGuiSerializationPtr guiS = nodesUi.empty() ? Serialization::NodeGuiSerializationPtr() : *itUi;
             NodePtr childSourceNode;
             if (sourceCollection) {
                 childSourceNode = sourceCollection->getNodeByName((*it)->scriptName);
             }
-            NodeGuiPtr newChild = pasteNode(*it, childSourceNode, guiS, QPointF(0, 0), collection, parentName, clone, oldNewScriptNamesMapping);
+            NodeGuiPtr newChild = pasteNode(*it, childSourceNode, QPointF(0, 0), collection, parentName, clone, oldNewScriptNamesMapping);
             if (newChild) {
                 newNodes.push_back(std::make_pair((*it)->scriptName, newChild));
                 if ((*it)->scriptName != newChild->getNode()->getScriptName()) {
@@ -323,9 +312,6 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
                 }
                 allNodes.push_back( newChild->getNode() );
                 newNodesMap.push_back(std::make_pair(*it,newChild->getNode()));
-            }
-            if ( !nodesUi.empty() ) {
-                ++itUi;
             }
         }
         restoreConnections(nodes, newNodes, *oldNewScriptNamesMapping);

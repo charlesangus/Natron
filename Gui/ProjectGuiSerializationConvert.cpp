@@ -464,26 +464,6 @@ NodeGui::toSerialization(Serialization::NodeGuiSerialization* serialization) con
 }
 
 void
-NodeGui::fromSerialization(const Serialization::NodeGuiSerialization& serialization)
-{
-    if (colorIsBody()) {
-        setCurrentColor(QColor::fromRgbF(serialization.colorR, serialization.colorG, serialization.colorB));
-    } else {
-        restoreCategoryAndUserColor(serialization);
-    }
-    if (serialization.hasOverlayColor) {
-        setOverlayColor(QColor::fromRgbF(serialization.overlayColorR, serialization.overlayColorB, serialization.overlayColorG));
-    }
-    setPos_mt_safe(QPointF(serialization.positionX, serialization.positionY));
-    NodePtr node = getNode();
-    assert(node);
-    if (node && (node->isPreviewEnabled() != serialization.previewEnabled)) {
-        togglePreview();
-    }
-    resize(serialization.width, serialization.height);
-}
-
-void
 Gui::toSerialization(Serialization::GuiLayoutSerialization* serialization)
 {
     assert(serialization);

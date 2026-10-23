@@ -243,10 +243,10 @@ public:
      * @brief Create a new node given the serialization of another one
      * @param sourceNode[in] The node internalSerialization was made from, if known. A clone is slaved to it.
      * @param offset[in] The offset applied to the new node position relative to the serialized node's position.
+     * A serialization without a position is placed automatically and not offset.
      **/
     NodeGuiPtr pasteNode(const Serialization::NodeSerializationPtr& internalSerialization,
                          const NodePtr& sourceNode,
-                         const Serialization::NodeGuiSerializationPtr& guiSerialization,
                          const QPointF& offset,
                          const NodeCollectionPtr& group,
                          const std::string& parentName,

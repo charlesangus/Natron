@@ -61,7 +61,6 @@
 #include "Global/QtCompat.h"
 
 #include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/Yaml/ClipboardYaml.h"
 
 NATRON_NAMESPACE_ENTER
@@ -127,7 +126,6 @@ putOnSystemClipboard(const NodeClipBoard& cb)
     try {
         Serialization::ClipboardSerialization serialization;
         serialization.nodes = cb.nodes;
-        serialization.nodesUI = cb.nodesUI;
         text = Serialization::encodeClipboardYaml(serialization);
     } catch (const std::exception& e) {
         Dialogs::errorDialog(NodeGraph::tr("Copy").toStdString(), NodeGraph::tr("The selection cannot be copied: %1").arg(QString::fromUtf8(e.what())).toStdString());
@@ -339,7 +337,6 @@ decodeClipboardNodes(const std::string& text,
         return false;
     }
     clipboard->nodes = serialization.nodes;
-    clipboard->nodesUI = serialization.nodesUI;
     clipboard->sourceNodes.assign(serialization.nodes.size(), NodePtr());
 
     return true;
@@ -500,9 +497,7 @@ NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
         NodePtr sourceNode = (*it)->getNode();
         Serialization::NodeSerializationPtr internalSerialization = std::make_shared<Serialization::NodeSerialization>();
         sourceNode->toSerialization(internalSerialization.get());
-        Serialization::NodeGuiSerializationPtr guiSerialization = std::make_shared<Serialization::NodeGuiSerialization>();
-        (*it)->toSerialization(guiSerialization.get());
-        NodeGuiPtr clone = _imp->pasteNode(internalSerialization, sourceNode, guiSerialization, offset,
+        NodeGuiPtr clone = _imp->pasteNode(internalSerialization, sourceNode, offset,
                                            _imp->group.lock(), std::string(), true, &oldNewScriptNamesMapping);
 
         newNodes.push_back(std::make_pair(internalSerialization->scriptName, clone));

@@ -31,22 +31,12 @@
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
-inline constexpr std::string_view kGuiYamlFormat = "natron-gui";
 inline constexpr std::string_view kLayoutYamlFormat = "natron-layout";
-inline constexpr int kGuiYamlFormatVersion = 1;
-
-/**
- * @brief The gui.yaml document: the node graph state of every node keyed by its fully
- * qualified name (a group's nodes follow it), the viewers keyed by script name, the opened
- * histograms, settings panels and Python panels, the script editor input and the window layout.
- * Not written: the class versions and the backdrops of files that predate backdrop nodes.
- **/
-std::string encodeProjectGuiYaml(const ProjectGuiSerialization& gui);
-ProjectGuiSerialization decodeProjectGuiYaml(std::string_view text, YamlWarnings* warnings = nullptr);
+inline constexpr int kLayoutYamlFormatVersion = 1;
 
 /**
  * @brief A window layout as a document of its own, for layout files: `format: natron-layout`,
- * `formatVersion` and `windows`, the same windows gui.yaml holds under `layout`.
+ * `formatVersion` and `windows`.
  **/
 std::string encodeGuiLayoutYaml(const GuiLayoutSerialization& layout);
 GuiLayoutSerialization decodeGuiLayoutYaml(std::string_view text, YamlWarnings* warnings = nullptr);

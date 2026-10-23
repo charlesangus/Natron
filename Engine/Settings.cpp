@@ -646,12 +646,6 @@ Settings::initializeKnobsUserInterface()
                                            "from the Layout menu. If empty, the default application layout is used.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
     _uiPage->addKnob(_defaultLayoutFile);
 
-    _loadProjectsWorkspace = AppManager::createKnob<KnobBool>( this, tr("Load workspace embedded within projects") );
-    _loadProjectsWorkspace->setName("loadProjectWorkspace");
-    _loadProjectsWorkspace->setHintToolTip( tr("When checked, when loading a project, the workspace (windows layout) will also be loaded, otherwise it "
-                                               "will use your current layout.") );
-    _uiPage->addKnob(_loadProjectsWorkspace);
-
 #ifdef Q_OS_WIN
     _enableConsoleWindow = AppManager::createKnob<KnobBool>( this, tr("Enable console window") );
     _enableConsoleWindow->setName("enableConsoleWindow");
@@ -1557,7 +1551,6 @@ Settings::setDefaultValues()
     _maxPanelsOpened->setDefaultValue(10, 0);
     _useCursorPositionIncrements->setDefaultValue(true);
     //_defaultLayoutFile
-    _loadProjectsWorkspace->setDefaultValue(false);
 #ifdef Q_OS_WIN
     _enableConsoleWindow->setDefaultValue(false);
 #endif
@@ -3218,12 +3211,6 @@ std::string
 Settings::getDefaultLayoutFile() const
 {
     return _defaultLayoutFile->getValue();
-}
-
-bool
-Settings::getLoadProjectWorkspce() const
-{
-    return _loadProjectsWorkspace->getValue();
 }
 
 #ifdef Q_OS_WIN

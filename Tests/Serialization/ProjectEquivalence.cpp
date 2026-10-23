@@ -230,6 +230,27 @@ public:
         add(prefix, node->getPluginID() + (plugin ? " " + std::to_string(plugin->getMajorVersion()) + "." + std::to_string(plugin->getMinorVersion()) : std::string(" (no plug-in)")));
         add(prefix + " label", node->getLabel());
 
+        double x, y;
+        node->getPosition(&x, &y);
+        add(prefix + " position", exact(x) + " " + exact(y));
+        if (node->hasSize()) {
+            double w, h;
+            node->getSize(&w, &h);
+            add(prefix + " size", exact(w) + " " + exact(h));
+        }
+        // Colours are stored as floats, so a colour set in double precision only compares after
+        // the same rounding.
+        if (node->hasUserColor()) {
+            double r, g, b;
+            node->getUserColor(&r, &g, &b);
+            add(prefix + " color", exact((float)r) + " " + exact((float)g) + " " + exact((float)b));
+        }
+        if (node->hasOverlayColor()) {
+            double r, g, b;
+            node->getStoredOverlayColor(&r, &g, &b);
+            add(prefix + " overlay", exact((float)r) + " " + exact((float)g) + " " + exact((float)b));
+        }
+
         for (int i = 0; i < node->getNInputs(); ++i) {
             NodePtr input = node->getInput(i);
             add(prefix + " input " + std::to_string(i) + " " + node->getInputLabel(i), input ? input->getFullyQualifiedName() : std::string());

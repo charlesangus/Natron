@@ -240,7 +240,6 @@ public:
 
     std::string getDefaultLayoutFile() const;
 
-    bool getLoadProjectWorkspce() const;
 #ifdef Q_OS_WIN
     bool getEnableConsoleWindow() const;
 #endif
@@ -500,7 +499,6 @@ private:
     KnobIntPtr _maxPanelsOpened;
     KnobBoolPtr _useCursorPositionIncrements;
     KnobFilePtr _defaultLayoutFile;
-    KnobBoolPtr _loadProjectsWorkspace;
 #ifdef Q_OS_WIN
     KnobBoolPtr _enableConsoleWindow;
 #endif

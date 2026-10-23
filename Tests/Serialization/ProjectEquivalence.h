@@ -44,7 +44,7 @@ NATRON_NAMESPACE_ENTER
  * written as its bit pattern.
  *
  * It covers the node tree (fully qualified names, plug-in ID and version), each node's inputs by
- * label, every persistent knob of the nodes and of the project (raw values, curves with their
+ * label, its position, size, user colour and overlay colour, every persistent knob of the nodes and of the project (raw values, curves with their
  * derivatives and interpolations, animated strings, parametric curves, choice options,
  * expressions and links), the project layer registry, the additional formats and the timeline.
  * Nodes that are not part of the project, such as the internal nodes of a RotoPaint, are left

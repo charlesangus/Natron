@@ -331,7 +331,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: the grep result matches; `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug` then `tools/ci/local/test.sh ctest debug` are green. The build is required.
   - size: M
 
-- [ ] M16.P7.T2 — Format reference and decision record
+- [x] M16.P7.T2 — Format reference and decision record
   - files: new `docs/project-format.md`, new `.plan/PLAN/DECISIONS/2026-10-10-project-format-resolved-calls.md` (published to `docs/decisions/` per `publish_decisions`), an amendment note appended to `.plan/PLAN/DECISIONS/2026-09-05-project-format-bundle-design.md` (sibling-relative connections, no import bridge), `Serialization/README.md` ("adding a field")
   - approach: the format reference covers: member order and alignment; member order (`mimetype`, `manifest.yaml`, `project.yaml`, then `blobs/**`); `manifest.yaml` and `project.yaml` schemas with an example, including the per-node layout fields `pos`, `size`, `color` and `overlay`, and a note that pane layout, viewer state, selection and open panels are not saved in projects; the curve grammar; the blob table format; `.nps`, `.nl` (the app layout, the only place pane layout is saved) and clipboard documents; versioning (`formatVersion` bumps; unknown keys warn); the clean-break policy; and hand-repair (`unzip -p f.ntpz project.yaml`; repacking with Python `zipfile` `ZIP_STORED`, `mimetype` first, loads but loses alignment until the next Natron save).
   - verify: the example YAML is copied from P2.T3's pinned test output; links resolve.

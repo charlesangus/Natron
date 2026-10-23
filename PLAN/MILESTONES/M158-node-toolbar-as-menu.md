@@ -122,7 +122,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
   - verify: the docs build, if the docs pipeline has a check.
   - size: M
 
-- [ ] M158.P4.T2 — UAT
+- [x] M158.P4.T2 — UAT
   - files: none (user acceptance)
   - approach: hand the user an AppImage and a checklist:
     - the toolbar looks unchanged
@@ -161,6 +161,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
 - 2026-10-22 — Review round 2 (Codex, on the fix diff only) found 7 issues. Six are fixed in `54dff1566`: a target armed by presses that open no menu, a target left behind when a rebuild destroys its popup, and version labels that followed activation, plus three test gaps. The seventh asked for a committed binary toolbox baseline and was declined; the verification run passes `M56_TOOLBOX_BASELINE` explicitly. Every thread has a reply, and the review round is closed. On `54dff1566`: fast build 333/333 and all four GUI scripts pass (nodes menu with enabled-state completeness and real-key menu selection, initGui, tab menu, toolbox pixel-identical). The GUI bench is N/A because M117 - GUI Perf Harness And Baseline hasn't landed. Merging waits on PR CI and the user's UAT and screenshot sign-off.
 - 2026-10-22 — Resumed after a host reboot (no Docker in this session). HEAD `54dff1566` already sits on main's tip (`448013710`), so the fast build of `54dff1566` (333/333) and its GUI-script passes stand as the gate run. UAT checklist, the before/after toolbar shots (byte-identical) and the node-graph menu shot were sent to the user; the AppImage is `build/appimages/M158-54dff1566.AppImage` (too large to send). P4.T2 waits on the user's sign-off.
 - 2026-10-23 — UAT found a reliable startup crash of `54dff1566`'s fast AppImage on AMD and NVIDIA hosts (Qt compositor shader "Failed to compile shader", empty log, SIGSEGV in `rhiFlush`); `main`'s fast build and the latest release were clean. This corrects the 2026-10-22 note that called it unreproduced and unrelated. Bisect: P1 (`c0c331f22`) clean, P2 (`3fa10e5c6`) crashes. A build with the `runInitGuiScripts()` call removed was clean, and one with the call moved after `show()` still crashed, so the call's side effects were the cause, not its timing. With no `initGui.py` it still took the Python GIL and called `setLoadingStatus`, whose splash `updateText` runs `QCoreApplication::processEvents()` with the main window half-built. Fixed in `cc6ad6c63` by returning early when no `initGui.py` exists and never sending splash text; the user confirmed that AppImage launches. Which of the GIL lock and the splash pump was the trigger was not isolated. The "GL Context Restore On GUI Thread" inbox request was written from the wrong diagnosis and should be dropped. Lesson: a plan note saying a crash is "not reproduced" is not evidence it is unrelated; P2 should have been checked on a real GPU host.
+- 2026-10-23 — UAT passed on `M158-cc6ad6c63.AppImage` (user). PR #80 squash-merged as `bf781cbcd`; PR CI was green on `cc6ad6c63`. The docs commit `b746872d4` was pushed to the `docs` branch on merge.
 
 ## Handoff (2026-10-22, PM paused by user)
 

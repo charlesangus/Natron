@@ -1044,3 +1044,24 @@ Graph benchmarks at 8c5a37d90, four ABBA rounds (`BENCH_N=50 BENCH_RES=uhd`, def
 | ccchain | 13.53 / 13.55 / 13.59 / 13.41 | 14.45 / 12.69 / 12.67 / 12.63 | -6.3% |
 
 Rounds 3 and 4 are steady within a run (frames within 1%) and agree: blurchain -1% to +0.2%, xfchain -4.7%, ccchain -6.5%. Rounds 1 and 2 each have one side with a 15 to 25% outlier, in both directions.
+
+## Project file I/O: XML `.ntp` against `.ntpz` (2026-10-23)
+
+A one-off comparison taken while both writers existed; the scripts that produced it (`tools/bench/project_io_bench.py`, `tools/bench/make_heavy_project.py`) were then deleted and remain in git history.
+
+Machine: 4-core Intel N100, 15 GB RAM. Release AppImage run natively under `xvfb-run` with NatronRenderer. Heavy project: 200 unfinished 500-point beziers standing in for strokes (the Python roto API can't create paint strokes), 30 feathered beziers × 24 control points × 200 keys, 16 tracks × 2000 frames, plus the `keying_grade` graph. Each run takes the median of 7 timings after a warm-up.
+
+| Run | `.ntpz` save (s) | XML save (s) | Autosave (s) | `.ntpz` load (s) |
+|-----|------------------|--------------|--------------|------------------|
+| 1   | 7.52             | 16.80        | 7.72         | 16.13            |
+| 2   | 7.62             | 17.17        | 7.68         | 15.41            |
+| 3   | 19.00            | 17.68        | 7.53         | 20.17            |
+
+Run 3's `.ntpz` save and load were contended by other work on the host; runs 1 and 2 ran on an idle host.
+
+| File | Bytes |
+|------|-------|
+| XML `.ntp` | 1,202,628,104 |
+| `.ntpz` (save and autosave) | 53,661,635 |
+
+`.ntpz` is 22.4× smaller. The median of the three run medians is 7.62 s for the `.ntpz` save against 17.17 s for XML (2.3× faster), and 7.68 s for autosave. XML loading was no longer possible when this was measured, so there is no load comparison.

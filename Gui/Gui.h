@@ -153,12 +153,6 @@ public:
     void minimize();
 
     static void loadStyleSheet();
-    ToolButton* findExistingToolButton(const QString & name) const;
-    ToolButton* findOrCreateToolButton(const PluginGroupNodePtr& plugin);
-
-    void sortAllPluginsToolButtons();
-
-    const std::vector<ToolButton*> & getToolButtons() const;
 
     void registerNewUndoStack(QUndoStack* stack);
 
@@ -410,8 +404,6 @@ public:
 
     const std::list<DockablePanel*>& getVisiblePanels() const;
     std::list<DockablePanel*> getVisiblePanels_mt_safe() const;
-    std::list<ToolButton*> getToolButtonsOrdered() const;
-
     void setToolButtonMenuOpened(QToolButton* button);
     QToolButton* getToolButtonMenuOpened() const;
 
@@ -624,7 +616,7 @@ public Q_SLOTS:
 
     void buildTabFocusOrderPropertiesBin();
 
-    void addToolButttonsToToolBar();
+    void rebuildNodesToolBox();
 
     void onCurrentUndoStackChanged(QUndoStack* stack);
 

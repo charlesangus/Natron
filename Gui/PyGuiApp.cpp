@@ -614,17 +614,10 @@ GuiApp::renderBlocking(const std::list<Effect*>& effects,
     renderInternal(true, effects, firstFrames, lastFrames, frameSteps);
 }
 
-QString
-GuiApp::getTabMenuNodeItems() const
+void
+GuiApp::triggerTabMenuAction(QAction* action)
 {
-    return TabMenuBridge::nodeItemsJson();
-}
-
-bool
-GuiApp::createNodeFromTabMenu(const QString& pluginID,
-                              int majorVersion)
-{
-    return TabMenuBridge::createNode(pluginID, majorVersion);
+    TabMenuBridge::triggerAction(action);
 }
 
 PyViewer::PyViewer(const NodePtr& node)

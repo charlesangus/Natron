@@ -49,6 +49,11 @@ NATRON_NAMESPACE_ENTER
 GuiApplicationManagerPrivate::GuiApplicationManagerPrivate(GuiApplicationManager* publicInterface)
     : _publicInterface(publicInterface)
     , _topLevelToolButtons()
+    , nodesMenu(NULL)
+    , nodesMenuTarget()
+    , nodesMenuPopup()
+    , nodesMenuPopupShown(false)
+    , nodesMenuTargetGeneration(0)
     , _knobsClipBoard(new KnobsClipBoard)
     , _knobGuiFactory(new KnobGuiFactory())
     , _colorPickerCursor()
@@ -153,8 +158,6 @@ GuiApplicationManagerPrivate::findPluginToolButtonInternal(const std::list<Plugi
             }
             if ( major == (*it)->getMajorVersion() ) {
                 return *it;
-            } else {
-                (*it)->setNotHighestMajorVersion(true);
             }
         }
     }

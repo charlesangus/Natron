@@ -67,9 +67,15 @@ class _FakeKeySequenceValue(object):
 
 
 class _FakeAction(object):
-    def __init__(self, shortcut_text="", icon_obj=None):
+    def __init__(self, shortcut_text="", icon_obj=None, text="", properties=None,
+                 menu=None, visible=True, enabled=True):
         self._shortcut_text = shortcut_text
         self._icon_obj = icon_obj
+        self._text = text
+        self._properties = dict(properties or {})
+        self._menu = menu
+        self._visible = visible
+        self._enabled = enabled
         self.trigger_calls = 0
 
     def shortcut(self):
@@ -78,8 +84,53 @@ class _FakeAction(object):
     def icon(self):
         return self._icon_obj
 
+    def text(self):
+        return self._text
+
+    def property(self, name):
+        return self._properties.get(name)
+
+    def setProperty(self, name, value):
+        self._properties[name] = value
+
+    def menu(self):
+        return self._menu
+
+    def isVisible(self):
+        return self._visible
+
+    def isEnabled(self):
+        return self._enabled
+
     def trigger(self):
         self.trigger_calls += 1
+
+
+class _FakeMenu(object):
+    def __init__(self, actions=None, enabled=True):
+        self._actions = list(actions or [])
+        self._enabled = enabled
+
+    def actions(self):
+        return list(self._actions)
+
+    def isEnabled(self):
+        return self._enabled
+
+
+def _submenu(title, actions, owned=True):
+    properties = {"natronPluginOwned": True, "natronGrouping": title} if owned else {}
+    return _FakeAction(text=title, menu=_FakeMenu(actions), properties=properties)
+
+
+def _plugin_action(label, plugin_id="", major=1, color="", shortcut=""):
+    return _FakeAction(text=label, properties={
+        "natronPluginOwned": True,
+        "natronPluginID": plugin_id,
+        "natronPluginMajor": major,
+        "natronCategoryColor": color,
+        "natronShortcut": shortcut,
+    })
 
 
 class _FakeWidget(object):
@@ -99,15 +150,12 @@ class _FakeWidget(object):
 
 
 class _FakeApp(object):
-    def __init__(self, node_items_json):
-        self._node_items_json = node_items_json
-        self.created = []
+    def __init__(self):
+        self.triggered = []
 
-    def getTabMenuNodeItems(self):
-        return self._node_items_json
-
-    def createNodeFromTabMenu(self, plugin_id, major):
-        self.created.append((plugin_id, major))
+    def triggerTabMenuAction(self, action):
+        self.triggered.append(action)
+        action.trigger()
 
 
 class _FakeChoiceParam(object):
@@ -238,7 +286,10 @@ class NatronAdapterTests(unittest.TestCase):
         shiboken6_module = types.ModuleType("shiboken6")
         shiboken6_module.isValid = lambda obj: True
 
-        natron_ns = types.SimpleNamespace(getSettings=lambda: _FakeSettings({}))
+        natron_ns = types.SimpleNamespace(
+            getSettings=lambda: _FakeSettings({}),
+            nodesMenu=lambda: None,
+        )
         natron_gui_module = types.ModuleType("NatronGui")
         natron_gui_module.natron = natron_ns
 
@@ -299,44 +350,126 @@ class NatronAdapterTests(unittest.TestCase):
 
     # --- node and command items ------------------------------------------
 
-    def test_node_items_build_menupath_from_grouping_and_label(self):
+    def _set_nodes_menu(self, h, actions):
+        menu = _FakeMenu(actions)
+        h.natron_ns.nodesMenu = lambda: menu
+        return menu
+
+    def test_node_items_build_menupath_below_the_nodes_menu(self):
         h = self._load_adapter()
-        app = _FakeApp(
-            '[{"id": "BlurOFX", "major": 1, "label": "Blur", '
-            '"grouping": ["Filter"], "icon": "", "color": "", "shortcut": ""}]'
-        )
+        blur = _plugin_action("Blur", "BlurOFX")
+        self._set_nodes_menu(h, [_submenu("Filter", [blur])])
         plugin = h.module.NatronPlugin()
-        plugin.set_app(app)
 
         items = plugin.get_items()
 
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["menupath"], "Filter/Blur")
-        self.assertIsInstance(items[0]["menuobj"], h.module._NodeEntry)
+        self.assertIs(items[0]["menuobj"], blur)
         self.assertNotIn("shortcut", items[0])
 
-    def test_slash_in_label_is_substituted(self):
+    def test_nested_groupings_and_top_level_leaves(self):
         h = self._load_adapter()
-        app = _FakeApp(
-            '[{"id": "MergeOFX", "major": 2, "label": "A/B", '
-            '"grouping": ["Merge"], "icon": "", "color": "", "shortcut": "M"}]'
-        )
+        self._set_nodes_menu(h, [
+            _submenu("Extra", [_submenu("Filter", [_plugin_action("Bloom")])]),
+            _FakeAction(text="Loose"),
+        ])
         plugin = h.module.NatronPlugin()
-        plugin.set_app(app)
+
+        paths = [i["menupath"] for i in plugin.get_items()]
+
+        self.assertEqual(paths, ["Extra/Filter/Bloom", "Loose"])
+
+    def test_slash_in_label_is_substituted_and_shortcut_property_used(self):
+        h = self._load_adapter()
+        self._set_nodes_menu(h, [_submenu("Merge", [_plugin_action("A/B", shortcut="M")])])
+        plugin = h.module.NatronPlugin()
 
         items = plugin.get_items()
 
-        self.assertEqual(items[0]["menupath"], u"Merge/A∕B")
+        self.assertEqual(items[0]["menupath"], u"Merge/A\u2215B")
         self.assertEqual(items[0]["shortcut"], "M")
+
+    def test_menu_text_ampersands_are_unescaped(self):
+        h = self._load_adapter()
+        self._set_nodes_menu(h, [_submenu("R&&D", [_plugin_action("Shuffle && Copy"),
+                                                   _FakeAction(text="&Mine")])])
+        plugin = h.module.NatronPlugin()
+
+        paths = [i["menupath"] for i in plugin.get_items()]
+
+        self.assertEqual(paths, ["R&D/Shuffle & Copy", "R&D/Mine"])
+
+    def test_older_majors_keep_their_version_encoded_labels(self):
+        h = self._load_adapter()
+        self._set_nodes_menu(h, [_submenu("Filter", [
+            _plugin_action("Blurry", "test.Blurry", 2),
+            _plugin_action("Blurry 1", "test.Blurry", 1),
+        ])])
+        plugin = h.module.NatronPlugin()
+
+        paths = [i["menupath"] for i in plugin.get_items()]
+
+        self.assertEqual(paths, ["Filter/Blurry", "Filter/Blurry 1"])
+
+    def test_python_action_with_a_plugin_path_is_kept_and_numbered(self):
+        h = self._load_adapter()
+        plus = _plugin_action("Plus", "PlusOFX")
+        python_plus = _FakeAction(text="Plus", shortcut_text="Alt+P")
+        self._set_nodes_menu(h, [_submenu("Merge", [plus, python_plus])])
+        plugin = h.module.NatronPlugin()
+
+        items = plugin.get_items()
+
+        self.assertEqual([i["menupath"] for i in items], ["Merge/Plus", "Merge/Plus (2)"])
+        self.assertIs(items[1]["menuobj"], python_plus)
+        self.assertEqual(items[1]["shortcut"], "Alt+P")
+
+    def test_python_action_under_merge_is_listed_and_triggers(self):
+        h = self._load_adapter()
+        mine = _FakeAction(text="My Merge Tool")
+        self._set_nodes_menu(h, [_submenu("Merge", [_plugin_action("Plus"), mine])])
+        app = _FakeApp()
+        plugin = h.module.NatronPlugin()
+        plugin.set_app(app)
+
+        items = [i for i in plugin.get_items() if i["menupath"] == "Merge/My Merge Tool"]
+        self.assertEqual(len(items), 1)
+        plugin.invoke(items[0])
+        h.scheduled[0][1]()
+
+        self.assertEqual(app.triggered, [mine])
+        self.assertEqual(mine.trigger_calls, 1)
+
+    def test_hidden_disabled_and_separator_actions_are_skipped(self):
+        h = self._load_adapter()
+        self._set_nodes_menu(h, [
+            _submenu("Filter", [
+                _plugin_action("Blur"),
+                _FakeAction(text="Hidden", visible=False),
+                _FakeAction(text="Disabled", enabled=False),
+                _FakeAction(text=""),
+            ]),
+            _FakeAction(text="Off", menu=_FakeMenu([_FakeAction(text="X")], enabled=False)),
+        ])
+        plugin = h.module.NatronPlugin()
+
+        paths = [i["menupath"] for i in plugin.get_items()]
+
+        self.assertEqual(paths, ["Filter/Blur"])
+
+    def test_no_nodes_menu_lists_no_node_items(self):
+        h = self._load_adapter()
+        h.natron_ns.nodesMenu = lambda: None
+        plugin = h.module.NatronPlugin()
+
+        self.assertEqual(plugin.get_items(), [])
 
     def test_duplicate_menupath_gets_suffix(self):
         h = self._load_adapter()
-        app = _FakeApp(
-            '[{"id": "BlurOFX1", "major": 1, "label": "Blur", "grouping": ["Filter"]},'
-            ' {"id": "BlurOFX2", "major": 2, "label": "Blur", "grouping": ["Filter"]}]'
-        )
+        self._set_nodes_menu(h, [_submenu("Filter", [_plugin_action("Blur", "BlurOFX1"),
+                                                     _plugin_action("Blur", "BlurOFX2")])])
         plugin = h.module.NatronPlugin()
-        plugin.set_app(app)
 
         items = plugin.get_items()
 
@@ -344,7 +477,7 @@ class NatronAdapterTests(unittest.TestCase):
 
     def test_command_items_appended_with_shortcut(self):
         h = self._load_adapter()
-        app = _FakeApp('[]')
+        app = _FakeApp()
         plugin = h.module.NatronPlugin()
         plugin.set_app(app)
 
@@ -364,7 +497,7 @@ class NatronAdapterTests(unittest.TestCase):
 
     def test_command_items_without_shortcut_text_omit_key(self):
         h = self._load_adapter()
-        app = _FakeApp('[]')
+        app = _FakeApp()
         plugin = h.module.NatronPlugin()
         plugin.set_app(app)
 
@@ -381,12 +514,12 @@ class NatronAdapterTests(unittest.TestCase):
 
     # --- colour hook -------------------------------------------------------
 
-    def test_get_color_parses_hex_for_node_entries(self):
+    def test_get_color_reads_the_category_colour_property(self):
         h = self._load_adapter()
         plugin = h.module.NatronPlugin()
-        entry = h.module._NodeEntry("id", 1, "", "#112233")
+        action = _plugin_action("Blur", color="#112233")
 
-        left, text = plugin.get_color(entry)
+        left, text = plugin.get_color(action)
 
         self.assertIsInstance(left, h.qtgui.QColor)
         self.assertEqual(left.value, "#112233")
@@ -396,9 +529,8 @@ class NatronAdapterTests(unittest.TestCase):
     def test_get_color_returns_none_for_empty_color(self):
         h = self._load_adapter()
         plugin = h.module.NatronPlugin()
-        entry = h.module._NodeEntry("id", 1, "", "")
 
-        self.assertEqual(plugin.get_color(entry), (None, None))
+        self.assertEqual(plugin.get_color(_plugin_action("Blur", color="")), (None, None))
 
     def test_get_color_returns_none_for_command_items(self):
         h = self._load_adapter()
@@ -409,23 +541,24 @@ class NatronAdapterTests(unittest.TestCase):
 
     # --- deferred invoke ----------------------------------------------------
 
-    def test_invoke_node_defers_create_node_one_tick(self):
+    def test_invoke_node_defers_the_trigger_through_the_app_one_tick(self):
         h = self._load_adapter()
-        app = _FakeApp('[]')
+        app = _FakeApp()
         plugin = h.module.NatronPlugin()
         plugin.set_app(app)
-        entry = h.module._NodeEntry("BlurOFX", 1, "", "")
+        blur = _plugin_action("Blur", "BlurOFX")
 
-        plugin.invoke({"menuobj": entry})
+        plugin.invoke({"menuobj": blur})
 
         self.assertEqual(len(h.scheduled), 1)
-        self.assertEqual(app.created, [])
+        self.assertEqual(app.triggered, [])
         delay, callback = h.scheduled[0]
         self.assertEqual(delay, 0)
 
         callback()
 
-        self.assertEqual(app.created, [("BlurOFX", 1)])
+        self.assertEqual(app.triggered, [blur])
+        self.assertEqual(blur.trigger_calls, 1)
 
     def test_invoke_action_defers_trigger_one_tick(self):
         h = self._load_adapter()
@@ -469,42 +602,15 @@ class NatronAdapterTests(unittest.TestCase):
 
     # --- icon hook -----------------------------------------------------------
 
-    def test_get_icon_caches_per_path(self):
+    def test_get_icon_comes_from_the_node_action(self):
         h = self._load_adapter()
         plugin = h.module.NatronPlugin()
-        tmp = tempfile.NamedTemporaryFile(delete=False)
-        tmp.close()
-        try:
-            entry = h.module._NodeEntry("id", 1, tmp.name, "")
+        icon_obj = h.qtgui.QIcon(_GRADE_RESOURCE_ICON)
+        grade = _FakeAction(text="Grade", icon_obj=icon_obj)
 
-            icon_first = plugin.get_icon(entry)
-            icon_second = plugin.get_icon(entry)
+        self.assertIs(plugin.get_icon(grade), icon_obj)
 
-            self.assertIsInstance(icon_first, h.qtgui.QIcon)
-            self.assertEqual(icon_first.path, tmp.name)
-            self.assertIs(icon_first, icon_second)
-        finally:
-            os.unlink(tmp.name)
-
-    def test_get_icon_returns_none_for_empty_or_missing_path(self):
-        h = self._load_adapter()
-        plugin = h.module.NatronPlugin()
-
-        self.assertIsNone(plugin.get_icon(h.module._NodeEntry("id", 1, "", "")))
-        self.assertIsNone(
-            plugin.get_icon(h.module._NodeEntry("id", 1, "/no/such/file.png", ""))
-        )
-
-    def test_get_icon_loads_qt_resource_paths(self):
-        h = self._load_adapter()
-        plugin = h.module.NatronPlugin()
-
-        icon = plugin.get_icon(h.module._NodeEntry("net.sf.openfx.GradePlugin", 1, _GRADE_RESOURCE_ICON, ""))
-
-        self.assertIsInstance(icon, h.qtgui.QIcon)
-        self.assertEqual(icon.path, _GRADE_RESOURCE_ICON)
-
-    def test_get_icon_falls_back_to_base_for_commands(self):
+    def test_get_icon_uses_the_base_for_commands(self):
         h = self._load_adapter()
         plugin = h.module.NatronPlugin()
         icon_obj = h.qtgui.QIcon("/some/path")
@@ -592,7 +698,7 @@ class NatronAdapterTests(unittest.TestCase):
             "tabMenuSearchModes": _FakeChoiceParam("consecutive,anchored_fuzzy,non_anchored_fuzzy"),
             "tabMenuScroll": _FakeBoolParam(False),
         })
-        app = _FakeApp("[]")
+        app = _FakeApp()
 
         h.module.launch(app)
 
@@ -607,7 +713,7 @@ class NatronAdapterTests(unittest.TestCase):
     def test_launch_falls_back_to_defaults_when_params_missing(self):
         h = self._load_adapter()
         h.natron_ns.getSettings = lambda: _FakeSettings({})
-        app = _FakeApp("[]")
+        app = _FakeApp()
 
         h.module.launch(app)
 
@@ -623,7 +729,7 @@ class NatronAdapterTests(unittest.TestCase):
         h.core._tabtabtab_instance = popup
         h.app_holder["instance"] = _make_qapp(active=second_window)
 
-        h.module.launch(_FakeApp("[]"))
+        h.module.launch(_FakeApp())
 
         self.assertEqual(popup.set_parent_calls, [(second_window, "DialogFlags")])
         self.assertIs(popup.parent(), second_window)
@@ -635,7 +741,7 @@ class NatronAdapterTests(unittest.TestCase):
         h.core._tabtabtab_instance = popup
         h.app_holder["instance"] = _make_qapp(active=window)
 
-        h.module.launch(_FakeApp("[]"))
+        h.module.launch(_FakeApp())
 
         self.assertEqual(popup.set_parent_calls, [])
 
@@ -653,7 +759,7 @@ class NatronAdapterTests(unittest.TestCase):
         ]
 
         h.app_holder["instance"] = _make_qapp(active=second_window)
-        h.module.launch(_FakeApp("[]"))
+        h.module.launch(_FakeApp())
         # Once shown, the popup is the active window, and a stale popup
         # would lead the focus walk back to the first project.
         stale_popup = _FakeWidget(classname="TabTabTabWidget", parent=first_window)
@@ -670,27 +776,24 @@ class NatronAdapterTests(unittest.TestCase):
         gone = _FakeWidget(classname="Natron::Gui")
         current = _FakeWidget(classname="Natron::Gui")
         h.app_holder["instance"] = _make_qapp(active=gone)
-        h.module.launch(_FakeApp("[]"))
+        h.module.launch(_FakeApp())
 
         h.shiboken6.isValid = lambda obj: obj is not gone
         h.app_holder["instance"] = _make_qapp(active=current)
 
         self.assertIs(h.module._plugin.main_window(), current)
 
-    def test_get_items_returns_fresh_node_entries_with_current_colour(self):
+    def test_get_color_follows_the_current_property(self):
         h = self._load_adapter()
-        app = _FakeApp('[{"id": "BlurOFX", "major": 1, "label": "Blur", '
-                       '"grouping": ["Filter"], "color": "#111111"}]')
+        blur = _plugin_action("Blur", "BlurOFX", color="#111111")
+        self._set_nodes_menu(h, [_submenu("Filter", [blur])])
         plugin = h.module.NatronPlugin()
-        plugin.set_app(app)
         first = plugin.get_items()[0]["menuobj"]
+        self.assertEqual(plugin.get_color(first)[0].value, "#111111")
 
-        app._node_items_json = ('[{"id": "BlurOFX", "major": 1, "label": "Blur", '
-                                '"grouping": ["Filter"], "color": "#222222"}]')
-        second = plugin.get_items()[0]["menuobj"]
+        blur.setProperty("natronCategoryColor", "#222222")
 
-        self.assertIsNot(first, second)
-        self.assertEqual(plugin.get_color(second)[0].value, "#222222")
+        self.assertEqual(plugin.get_color(plugin.get_items()[0]["menuobj"])[0].value, "#222222")
 
     # --- row metrics ---------------------------------------------------------
 

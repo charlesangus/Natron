@@ -88,6 +88,9 @@ App::getCollectionFromGroup(Group* group) const
         }
     }
 
+    if (!collection && !group) {
+        collection = getInternalApp()->getNodeCreationContextCollection();
+    }
     if (!collection) {
         collection = std::dynamic_pointer_cast<NodeCollection>( getInternalApp()->getProject() );
     }

@@ -25,248 +25,172 @@
 
 #include "Global/Macros.h"
 
-#include <algorithm>
-#include <memory>
-#include <set>
-#include <vector>
+#include <string>
 
 #include <gtest/gtest.h>
 
-#include <QColor>
-#include <QFile>
-#include <QIcon>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QRegularExpression>
+#include <QAction>
+#include <QThreadPool>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
-#include "Engine/Settings.h"
-
-#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/NodeGroup.h"
+#include "Engine/Project.h"
 
 #include "Gui/TabMenuBridge.h"
 
-// GuiResources lives in the static NatronGui library, and only
-// GuiApplicationManager registers it, which this suite's AppManager is not.
-// Q_INIT_RESOURCE has to be expanded outside any namespace.
-static void
-initGuiResources()
-{
-    Q_INIT_RESOURCE(GuiResources);
-}
-
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
-QJsonArray
-parseItems(const QString& json)
-{
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &error);
-
-    EXPECT_EQ(QJsonParseError::NoError, error.error);
-    EXPECT_TRUE(doc.isArray());
-
-    return doc.array();
-}
-
-QString
-noShortcut(const QString&,
-           const QString&)
-{
-    return QString();
-}
-
-class FakePlugins {
-public:
-    Plugin* add(const QString& id,
-                const QString& label,
-                int major,
-                bool deprecated = false,
-                const QString& iconPath = QString())
+class NodeCreationContextTest
+    : public ::testing::Test {
+protected:
+    virtual void SetUp() OVERRIDE
     {
-        _owned.emplace_back(new Plugin(0, QString(), id, label, iconPath, QStringList(),
-                                       QStringList() << QString::fromUtf8("Filter"), 0,
-                                       major, 0, false, false, deprecated));
-        Plugin* p = _owned.back().get();
-        p->setLabelWithoutSuffix(label);
-        _map[id.toStdString()].insert(p);
+        _app = appPTR->getTopLevelInstance();
+        ASSERT_TRUE(bool(_app));
+        _app->getProject()->reset(false, true);
 
-        return p;
+        CreateNodeArgs args(PLUGINID_NATRON_GROUP, _app->getProject());
+        args.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+        NodePtr groupNode = _app->createNode(args);
+        ASSERT_TRUE(bool(groupNode));
+        _group = std::dynamic_pointer_cast<NodeGroup>(groupNode->getEffectInstance());
+        ASSERT_TRUE(bool(_group));
     }
 
-    const PluginsMap& map() const
+    virtual void TearDown() OVERRIDE
     {
-        return _map;
-    }
-
-private:
-    std::vector<std::unique_ptr<Plugin>> _owned;
-    PluginsMap _map;
-};
-
-std::vector<QJsonObject>
-itemsWithId(const QJsonArray& items,
-            const QString& id)
-{
-    std::vector<QJsonObject> ret;
-
-    for (const QJsonValue& v : items) {
-        QJsonObject o = v.toObject();
-        if (o.value(QString::fromUtf8("id")).toString() == id) {
-            ret.push_back(o);
+        if (_app) {
+            _app->clearNodeCreationContext();
+            _group.reset();
+            _app->getProject()->reset(false, true);
         }
+        QThreadPool::globalInstance()->waitForDone();
     }
 
-    return ret;
-}
+    NodePtr createDot(const NodeCollectionPtr& collection)
+    {
+        CreateNodeArgs args(PLUGINID_NATRON_DOT, collection);
+
+        return _app->createNode(args);
+    }
+
+    NodeCollectionPtr group() const
+    {
+        return _group;
+    }
+
+    NodeCollectionPtr root() const
+    {
+        return _app->getProject();
+    }
+
+    AppInstancePtr _app;
+    NodeGroupPtr _group;
+};
 } // anonymous namespace
 
-TEST(TabMenuBridge, RegistryListsOnlyUserCreatablePlugins)
+TEST_F(NodeCreationContextTest, NodesWithNoCollectionGoIntoTheContextCollection)
 {
-    const PluginsMap& plugins = appPTR->getPluginsList();
-    QJsonArray items = parseItems(TabMenuBridge::nodeItemsJson(plugins, noShortcut));
+    _app->setNodeCreationContext(group(), 10, 20);
 
-    ASSERT_FALSE(items.isEmpty());
+    NodePtr first = createDot(NodeCollectionPtr());
+    NodePtr second = createDot(NodeCollectionPtr());
 
-    std::set<std::pair<QString, int>> creatable;
-    std::size_t creatableCount = 0;
-    for (PluginsMap::const_iterator it = plugins.begin(); it != plugins.end(); ++it) {
-        for (PluginVersionsOrdered::const_iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
-            if ((*it2)->getIsUserCreatable()) {
-                creatable.insert(std::make_pair((*it2)->getPluginID(), (*it2)->getMajorVersion()));
-                ++creatableCount;
-            }
+    ASSERT_TRUE(first && second);
+    EXPECT_EQ(group(), first->getGroup());
+    EXPECT_EQ(group(), second->getGroup());
+}
+
+TEST_F(NodeCreationContextTest, AnExplicitCollectionIsKept)
+{
+    _app->setNodeCreationContext(group(), 10, 20);
+
+    NodePtr dot = createDot(root());
+
+    ASSERT_TRUE(bool(dot));
+    EXPECT_EQ(root(), dot->getGroup());
+}
+
+TEST_F(NodeCreationContextTest, ClearingTheContextRestoresTheProjectRoot)
+{
+    _app->setNodeCreationContext(group(), 10, 20);
+    EXPECT_EQ(group(), _app->getNodeCreationContextCollection());
+    _app->clearNodeCreationContext();
+    EXPECT_FALSE(_app->getNodeCreationContextCollection());
+
+    NodePtr dot = createDot(NodeCollectionPtr());
+
+    ASSERT_TRUE(bool(dot));
+    EXPECT_EQ(root(), dot->getGroup());
+}
+
+TEST_F(NodeCreationContextTest, RestoringASavedContextBringsBackItsCollectionAndUsedPosition)
+{
+    _app->setNodeCreationContext(group(), 10, 20);
+    ASSERT_TRUE(bool(createDot(NodeCollectionPtr())));
+    const AppInstance::NodeCreationContext saved = _app->getNodeCreationContext();
+    EXPECT_FALSE(saved.positionPending);
+
+    _app->setNodeCreationContext(root(), 30, 40);
+    EXPECT_TRUE(_app->getNodeCreationContext().positionPending);
+    _app->restoreNodeCreationContext(saved);
+
+    const AppInstance::NodeCreationContext restored = _app->getNodeCreationContext();
+    EXPECT_EQ(group(), restored.collection.lock());
+    EXPECT_EQ(10, restored.x);
+    EXPECT_EQ(20, restored.y);
+    EXPECT_FALSE(restored.positionPending);
+
+    NodePtr dot = createDot(NodeCollectionPtr());
+    ASSERT_TRUE(bool(dot));
+    EXPECT_EQ(group(), dot->getGroup());
+}
+
+TEST_F(NodeCreationContextTest, PythonCreateNodeWithNoGroupUsesTheContext)
+{
+    _app->setNodeCreationContext(group(), 10, 20);
+
+    const std::string appVar = _app->getAppIDString();
+    const std::string dot = std::string("\"") + PLUGINID_NATRON_DOT + "\"";
+    const std::string script = "_tabMenuDot = " + appVar + ".createNode(" + dot + ")\n"
+        + "_tabMenuRootDot = " + appVar + ".createNode(" + dot + ", -1, " + appVar + ")\n"
+        + "del _tabMenuDot, _tabMenuRootDot\n";
+    std::string error, output;
+    ASSERT_TRUE(interpretPythonScript(script, &error, &output)) << error;
+
+    EXPECT_EQ(1u, group()->getNodes().size());
+    std::size_t rootDots = 0;
+    NodesList rootNodes = root()->getNodes();
+    for (NodesList::const_iterator it = rootNodes.begin(); it != rootNodes.end(); ++it) {
+        if ((*it)->getPluginID() == PLUGINID_NATRON_DOT) {
+            ++rootDots;
         }
     }
-
-    EXPECT_EQ(creatableCount, (std::size_t)items.size());
-    for (const QJsonValue& v : items) {
-        QJsonObject o = v.toObject();
-        std::pair<QString, int> key(o.value(QString::fromUtf8("id")).toString(), o.value(QString::fromUtf8("major")).toInt());
-        EXPECT_TRUE(creatable.count(key)) << key.first.toStdString();
-    }
+    EXPECT_EQ(1u, rootDots);
 }
 
-TEST(TabMenuBridge, DotItemCarriesLabelGroupingColourAndShortcut)
+TEST(TabMenuBridge, TriggerWithoutAnOpenMenuTriggersTheActionAsIs)
 {
-    const PluginsMap& plugins = appPTR->getPluginsList();
-    PluginsMap::const_iterator found = plugins.find(PLUGINID_NATRON_DOT);
+    AppInstancePtr app = appPTR->getTopLevelInstance();
+    ASSERT_TRUE(bool(app));
+    QAction action(0);
+    int triggered = 0;
+    bool contextSetWhileTriggered = true;
+    QObject::connect(&action, &QAction::triggered, [&]() {
+        ++triggered;
+        contextSetWhileTriggered = (bool)app->getNodeCreationContextCollection();
+    });
 
-    ASSERT_TRUE(found != plugins.end());
-    ASSERT_FALSE(found->second.empty());
-    const Plugin* dot = *found->second.rbegin();
+    TabMenuBridge::triggerAction(&action);
+    TabMenuBridge::triggerAction(0);
 
-    QString expectedGroup = QString::fromUtf8("Nodes");
-    for (const QString& g : dot->getGrouping()) {
-        expectedGroup += QLatin1Char('/') + g;
-    }
-    QString seenGroup;
-    TabMenuBridge::ShortcutLookup lookup = [&](const QString& group, const QString& id) {
-        if (id == QString::fromUtf8(PLUGINID_NATRON_DOT)) {
-            seenGroup = group;
-            return QString::fromUtf8(".");
-        }
-        return QString();
-    };
-
-    std::vector<QJsonObject> dots = itemsWithId(parseItems(TabMenuBridge::nodeItemsJson(plugins, lookup)),
-                                                QString::fromUtf8(PLUGINID_NATRON_DOT));
-    ASSERT_EQ(1u, dots.size());
-    const QJsonObject& item = dots.front();
-
-    EXPECT_EQ(dot->getLabelWithoutSuffix(), item.value(QString::fromUtf8("label")).toString());
-    EXPECT_EQ(dot->getMajorVersion(), item.value(QString::fromUtf8("major")).toInt());
-    QStringList grouping;
-    for (const QJsonValue& g : item.value(QString::fromUtf8("grouping")).toArray()) {
-        grouping << g.toString();
-    }
-    EXPECT_EQ(dot->getGrouping(), grouping);
-    EXPECT_EQ(expectedGroup, seenGroup);
-    EXPECT_EQ(QString::fromUtf8("."), item.value(QString::fromUtf8("shortcut")).toString());
-
-    float r, g, b;
-    appPTR->getCurrentSettings()->getNodeCategoryColor(Node::categoryForPlugin(*dot), &r, &g, &b);
-    const QString color = item.value(QString::fromUtf8("color")).toString();
-    EXPECT_TRUE(QRegularExpression(QString::fromUtf8("^#[0-9a-f]{6}$")).match(color).hasMatch()) << color.toStdString();
-    EXPECT_EQ(QColor::fromRgbF(std::clamp(r, 0.f, 1.f), std::clamp(g, 0.f, 1.f), std::clamp(b, 0.f, 1.f)).name(), color);
-}
-
-TEST(TabMenuBridge, NewestVersionKeepsTheBareLabelAndComesFirst)
-{
-    FakePlugins plugins;
-
-    plugins.add(QString::fromUtf8("test.Blurry"), QString::fromUtf8("Blurry"), 1);
-    plugins.add(QString::fromUtf8("test.Blurry"), QString::fromUtf8("Blurry"), 2);
-
-    QJsonArray items = parseItems(TabMenuBridge::nodeItemsJson(plugins.map(), noShortcut));
-    ASSERT_EQ(2, items.size());
-    EXPECT_EQ(2, items[0].toObject().value(QString::fromUtf8("major")).toInt());
-    EXPECT_EQ(QString::fromUtf8("Blurry"), items[0].toObject().value(QString::fromUtf8("label")).toString());
-    EXPECT_EQ(1, items[1].toObject().value(QString::fromUtf8("major")).toInt());
-    EXPECT_EQ(QString::fromUtf8("Blurry 1"), items[1].toObject().value(QString::fromUtf8("label")).toString());
-}
-
-TEST(TabMenuBridge, DeprecatedVersionsAreSkipped)
-{
-    FakePlugins plugins;
-
-    plugins.add(QString::fromUtf8("test.Old"), QString::fromUtf8("Old"), 1, true);
-    plugins.add(QString::fromUtf8("test.Mixed"), QString::fromUtf8("Mixed"), 1);
-    plugins.add(QString::fromUtf8("test.Mixed"), QString::fromUtf8("Mixed"), 2, true);
-
-    QJsonArray items = parseItems(TabMenuBridge::nodeItemsJson(plugins.map(), noShortcut));
-    ASSERT_EQ(1, items.size());
-    const QJsonObject item = items[0].toObject();
-    EXPECT_EQ(QString::fromUtf8("test.Mixed"), item.value(QString::fromUtf8("id")).toString());
-    EXPECT_EQ(1, item.value(QString::fromUtf8("major")).toInt());
-    EXPECT_EQ(QString::fromUtf8("Mixed 1"), item.value(QString::fromUtf8("label")).toString());
-}
-
-TEST(TabMenuBridge, IconIsEmptyUnlessTheFileExists)
-{
-    FakePlugins plugins;
-    const QString existing = QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/deep-tiled.exr");
-
-    plugins.add(QString::fromUtf8("test.WithIcon"), QString::fromUtf8("WithIcon"), 1, false, existing);
-    plugins.add(QString::fromUtf8("test.MissingIcon"), QString::fromUtf8("MissingIcon"), 1, false,
-                QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/no-such-icon.png"));
-
-    QJsonArray items = parseItems(TabMenuBridge::nodeItemsJson(plugins.map(), noShortcut));
-    std::vector<QJsonObject> withIcon = itemsWithId(items, QString::fromUtf8("test.WithIcon"));
-    std::vector<QJsonObject> missingIcon = itemsWithId(items, QString::fromUtf8("test.MissingIcon"));
-    ASSERT_EQ(1u, withIcon.size());
-    ASSERT_EQ(1u, missingIcon.size());
-    EXPECT_EQ(existing, withIcon.front().value(QString::fromUtf8("icon")).toString());
-    EXPECT_EQ(QString(), missingIcon.front().value(QString::fromUtf8("icon")).toString());
-    EXPECT_EQ(QString(), missingIcon.front().value(QString::fromUtf8("shortcut")).toString());
-}
-
-TEST(TabMenuBridge, NativeGradeCarriesItsResourceIcon)
-{
-    initGuiResources();
-
-    const PluginsMap& plugins = appPTR->getPluginsList();
-    PluginsMap::const_iterator found = plugins.find(PLUGINID_NATRON_GRADE);
-    ASSERT_TRUE(found != plugins.end());
-    ASSERT_FALSE(found->second.empty());
-    const Plugin* grade = *found->second.rbegin();
-    ASSERT_TRUE(grade->getIconFilePath().startsWith(QString::fromUtf8(NATRON_IMAGES_PATH)));
-
-    std::vector<QJsonObject> grades = itemsWithId(parseItems(TabMenuBridge::nodeItemsJson(plugins, noShortcut)),
-                                                  QString::fromUtf8(PLUGINID_NATRON_GRADE));
-    ASSERT_EQ(1u, grades.size());
-    const QString icon = grades.front().value(QString::fromUtf8("icon")).toString();
-
-    EXPECT_EQ(grade->getIconFilePath(), icon);
-    EXPECT_TRUE(QFile::exists(icon)) << icon.toStdString();
-    EXPECT_FALSE(QIcon(icon).pixmap(16, 16).isNull()) << icon.toStdString();
-}
-
-TEST(TabMenuBridge, CreateNodeWithoutAnOpenMenuDoesNothing)
-{
-    EXPECT_FALSE(TabMenuBridge::createNode(QString::fromUtf8(PLUGINID_NATRON_DOT), 1));
+    EXPECT_EQ(1, triggered);
+    EXPECT_FALSE(contextSetWhileTriggered);
+    EXPECT_FALSE(app->getNodeCreationContextCollection());
 }

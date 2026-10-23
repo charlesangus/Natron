@@ -167,8 +167,11 @@ public:
     void renderBlocking(Effect* writeNode, int firstFrame, int lastFrame, int frameStep = 1);
     void renderBlocking(const std::list<Effect*>& effects, const std::list<int>& firstFrames, const std::list<int>& lastFrames, const std::list<int>& frameSteps);
 
-    QString getTabMenuNodeItems() const;
-    bool createNodeFromTabMenu(const QString& pluginID, int majorVersion);
+    /**
+     * @brief Triggers an action chosen in the tab menu. Nodes it creates with no group go into the graph
+     * the menu was opened over, and the first one with no position lands at the cursor.
+     **/
+    void triggerTabMenuAction(QAction* action);
 };
 
 NATRON_PYTHON_NAMESPACE_EXIT;

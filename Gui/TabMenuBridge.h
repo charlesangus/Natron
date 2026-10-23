@@ -28,11 +28,7 @@
 
 #include "Global/Macros.h"
 
-#include <functional>
-
 #include <QString>
-
-#include "Engine/Plugin.h"
 
 #include "Gui/GuiFwd.h"
 
@@ -40,33 +36,17 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief The C++ side of the Python tab menu (tabtabtab_natron). The node graph calls launch(),
- * and the adapter calls back into nodeItemsJson() and createNode() through GuiApp.
+ * and the adapter triggers the chosen action through triggerAction(), by way of GuiApp.
  * GUI thread only; at most one menu is open at a time.
  **/
 namespace TabMenuBridge {
 /**
- * @brief Returns the create-node shortcut text for a plugin, or an empty string.
- * The first argument is the shortcut group (kShortcutGroupNodes + "/<grouping>..."), the second the plugin ID.
+ * @brief Triggers action with a node creation context on the graph that last called launch(): nodes
+ * the action creates with no collection go into that graph, and the first one with no position lands
+ * at the cursor position recorded then. The context is cleared once the action returns. Without such
+ * a graph the action is triggered as is.
  **/
-typedef std::function<QString(const QString&, const QString&)> ShortcutLookup;
-
-/**
- * @brief A JSON array with one object per user-creatable plugin version in the registry:
- * {id, major, label, grouping[], icon, color "#rrggbb", shortcut}.
- **/
-QString nodeItemsJson();
-
-/**
- * @brief As nodeItemsJson(), over the given plugins and with the given shortcut lookup.
- **/
-QString nodeItemsJson(const PluginsMap& plugins, const ShortcutLookup& shortcutFor);
-
-/**
- * @brief Creates the plugin in the graph that last called launch(), at the cursor position recorded then,
- * connected after the selected node and with an undo entry. Returns false if there is no such graph,
- * the plugin is unknown, or creation fails.
- **/
-bool createNode(const QString& pluginID, int majorVersion);
+void triggerAction(QAction* action);
 
 /**
  * @brief Records the graph and the cursor's scene position, then opens the tab menu.

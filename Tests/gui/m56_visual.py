@@ -6,7 +6,10 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup
         -w /home/bosley/git/Natron natron-dev \
         Tests/gui/run-gui-test.sh Tests/gui/m56_visual.py build/fast/App/Natron
 Run it again with -e QT_SCALE_FACTOR=2 for the hi-DPI shots. Set M56_BASELINE_DIR to the output
-directory of an earlier run to also check that the themed icons differ from that run's icons.
+directory of an earlier run to also check that the themed icons differ from that run's icons. Set
+M56_TOOLBOX_BASELINE to an icons-toolbox.png from an earlier run to also check that the left
+toolbox is drawn pixel for pixel as it was then; unset, that comparison is reported as SKIP, and a
+path that does not exist fails.
 
 Sizes are compared in logical px scaled by the screen's logical DPI / 96, the same factor
 TO_DPIX/TO_DPIY apply.
@@ -68,7 +71,7 @@ try:
     import NatronEngine
     import shiboken6
     from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QMetaObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
-    from PySide6.QtGui import QCursor, QFontMetrics, QGuiApplication, QIcon, QMouseEvent, QPalette
+    from PySide6.QtGui import QCursor, QFontMetrics, QGuiApplication, QIcon, QImage, QMouseEvent, QPalette
     from PySide6.QtWidgets import (QAbstractButton, QApplication, QGraphicsTextItem, QLabel, QMenu, QScrollArea,
                                    QTabBar, QToolBar, QWidget)
 
@@ -443,6 +446,35 @@ try:
         unchanged = len(set(hashes) & set(baseline))
         check(unchanged <= len(hashes) * (1.0 - THEMED_ICON_FRACTION),
               "%s: icons differ from the baseline run (%d of %d unchanged)" % (area, unchanged, len(hashes)))
+
+    def compare_toolbox_with_baseline(shot_path):
+        base_path = os.environ.get("M56_TOOLBOX_BASELINE")
+        if not base_path:
+            report("SKIP toolbox: pixel comparison with a baseline (set M56_TOOLBOX_BASELINE to an "
+                   "icons-toolbox.png from an earlier run)")
+            return
+        if not check(os.path.isfile(base_path), "toolbox: baseline screenshot %s exists" % base_path):
+            return
+        base = QImage(base_path)
+        if not check(not base.isNull(), "toolbox: baseline screenshot %s loads" % base_path):
+            return
+        current = QImage(shot_path)
+        if not check(current.size() == base.size(),
+                     "toolbox: same size as the baseline (%dx%d vs %dx%d)"
+                     % (current.width(), current.height(), base.width(), base.height())):
+            return
+        differing = 0
+        worst = 0
+        for y in range(base.height()):
+            for x in range(base.width()):
+                a = current.pixelColor(x, y)
+                b = base.pixelColor(x, y)
+                d = max(abs(a.red() - b.red()), abs(a.green() - b.green()), abs(a.blue() - b.blue()))
+                if d:
+                    differing += 1
+                    worst = max(worst, d)
+        check(differing == 0, "toolbox: pixel-identical to the baseline (%d pixels differ, by up to %d)"
+              % (differing, worst))
 
     def save_icon_hashes():
         with open(os.path.join(gt.OUT, "icon-hashes.json"), "w") as f:
@@ -978,6 +1010,7 @@ try:
                   "toolbox: every grouping icon is drawn in the theme colour (%d of %d; off: %s)"
                   % (themed, probed, ", ".join(off) or "none"))
             crop_shot(toolbox, "icons-toolbox")
+            compare_toolbox_with_baseline(os.path.join(gt.OUT, "icons-toolbox.png"))
 
         viewer = create("fr.inria.built-in.Viewer", 0, 400)
         gt.close_all_panels()

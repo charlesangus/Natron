@@ -181,6 +181,8 @@ public:
 
     ProjectBeingLoadedInfo projectBeingLoaded;
 
+    AppInstance::NodeCreationContext creationContext;
+
     AppInstancePrivate(int appID,
                        AppInstance* app)
 
@@ -199,8 +201,11 @@ public:
         , invalidExprKnobsMutex()
         , invalidExprKnobs()
         , projectBeingLoaded()
+        , creationContext()
     {
     }
+
+    void applyNodeCreationContext(const Plugin* plugin, CreateNodeArgs& args);
 
     void declareCurrentAppVariable_Python();
 
@@ -1096,6 +1101,72 @@ isEntitledForInspector(Plugin* plugin,
 
 }
 
+void
+AppInstance::setNodeCreationContext(const NodeCollectionPtr& collection,
+                                    double x,
+                                    double y)
+{
+    _imp->creationContext.collection = collection;
+    _imp->creationContext.x = x;
+    _imp->creationContext.y = y;
+    _imp->creationContext.positionPending = (bool)collection;
+}
+
+void
+AppInstance::clearNodeCreationContext()
+{
+    _imp->creationContext = NodeCreationContext();
+}
+
+AppInstance::NodeCreationContext
+AppInstance::getNodeCreationContext() const
+{
+    return _imp->creationContext;
+}
+
+void
+AppInstance::restoreNodeCreationContext(const NodeCreationContext& context)
+{
+    _imp->creationContext = context;
+}
+
+NodeCollectionPtr
+AppInstance::getNodeCreationContextCollection() const
+{
+    return _imp->creationContext.collection.lock();
+}
+
+void
+AppInstancePrivate::applyNodeCreationContext(const Plugin* plugin,
+                                             CreateNodeArgs& args)
+{
+    NodeCollectionPtr collection = _publicInterface->getNodeCreationContextCollection();
+
+    if (!collection) {
+        return;
+    }
+    // Plug-ins' internal nodes are created out of the project, with no collection.
+    if (args.getProperty<bool>(kCreateNodeArgsPropOutOfProject) || args.getProperty<bool>(kCreateNodeArgsPropNoNodeGUI) || args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization)) {
+        return;
+    }
+    NodeCollectionPtr argsGroup = args.getProperty<NodeCollectionPtr>(kCreateNodeArgsPropGroupContainer);
+    if (!argsGroup) {
+        argsGroup = collection;
+        args.setProperty<NodeCollectionPtr>(kCreateNodeArgsPropGroupContainer, collection);
+    }
+    // A toolset creates no node of its own, so the position is kept for the first node its script creates.
+    if (!creationContext.positionPending || (argsGroup != collection) || plugin->getToolsetScript()) {
+        return;
+    }
+    const double unset = std::numeric_limits<int>::min();
+    if ((args.getProperty<double>(kCreateNodeArgsPropNodeInitialPosition, 0) != unset) || (args.getProperty<double>(kCreateNodeArgsPropNodeInitialPosition, 1) != unset)) {
+        return;
+    }
+    args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, creationContext.x, 0);
+    args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, creationContext.y, 1);
+    creationContext.positionPending = false;
+}
+
 NodePtr
 AppInstance::createNodeInternal(CreateNodeArgs& args,
                                 CreateNodeStatusEnum* status)
@@ -1157,6 +1228,7 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
         return node;
     }
 
+    _imp->applyNodeCreationContext(plugin, args);
 
     /*
        If the plug-in is a PyPlug create it with createNodeFromPythonModule() except in the following situations:

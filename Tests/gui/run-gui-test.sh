@@ -18,6 +18,8 @@
 # checkForUpdates=false, so it neither depends on nor rewrites the container's Natron settings
 # and caches, and the first-run "check for updates?" question cannot block the script.
 #
+# Startup scripts a test needs live in <script>.natronpath/, which is put on NATRON_PLUGIN_PATH.
+#
 # Environment: NATRON_GUI_TEST_OUT (screenshots, results.txt and natron.log, default build/gui-test-out),
 # GUI_TEST_TIMEOUT (seconds, default 300), GUI_TEST_DISPLAY (default 79).
 set -u
@@ -155,6 +157,13 @@ else
 fi
 export DISPLAY=":$DISPLAY_NUM" LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa
 export NATRON_GUI_TEST_ROOT="$ROOT" NATRON_GUI_TEST_OUT="$OUT"
+
+# A script that needs startup scripts (init.py, initGui.py) keeps them in <script>.natronpath/
+# beside it: they must be on the search path before Natron starts, long before the script runs.
+SEARCH_DIR="${SCRIPT%.py}.natronpath"
+if [ -d "$SEARCH_DIR" ]; then
+    export NATRON_PLUGIN_PATH="$SEARCH_DIR${NATRON_PLUGIN_PATH:+:$NATRON_PLUGIN_PATH}"
+fi
 
 if [ "$APPIMAGE" -eq 0 ] && [ ! -d "$OFX_PLUGIN_PATH" ]; then
     echo "OFX_PLUGIN_PATH $OFX_PLUGIN_PATH does not exist" >&2

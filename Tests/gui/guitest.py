@@ -76,6 +76,22 @@ def class_name(w):
     return w.metaObject().className().split("::")[-1]
 
 
+_menu_owners = {}
+
+
+def menu_of(owner):
+    """owner.menu() for a QAction or QToolButton, usable for the rest of the run.
+
+    PySide makes the returned menu's wrapper a child of owner's wrapper, and marks it deleted once
+    owner's wrapper is collected, although the C++ menu lives on; keeping owner's wrapper alive
+    keeps the menu's. Every call must go through here: a plain .menu() on a temporary wrapper
+    re-parents the menu's wrapper to that temporary."""
+    menu = owner.menu()
+    if menu is not None:
+        _menu_owners[id(owner)] = owner
+    return menu
+
+
 def widgets_of(name):
     found = []
     for w in QApplication.allWidgets():

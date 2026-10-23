@@ -160,8 +160,6 @@ struct GuiAppInstancePrivate
         _previewProvider = std::make_shared<FileDialogPreviewProvider>();
         rotoData.turboAlreadyActiveBeforePainting = false;
     }
-
-    void findOrCreateToolButtonRecursive(const PluginGroupNodePtr& n);
 };
 
 GuiAppInstance::GuiAppInstance(int appID)
@@ -247,16 +245,6 @@ GuiAppInstance::isClosing() const
 }
 
 void
-GuiAppInstancePrivate::findOrCreateToolButtonRecursive(const PluginGroupNodePtr& n)
-{
-    _gui->findOrCreateToolButton(n);
-    const std::list<PluginGroupNodePtr>& children = n->getChildren();
-    for (std::list<PluginGroupNodePtr>::const_iterator it = children.begin(); it != children.end(); ++it) {
-        findOrCreateToolButtonRecursive(*it);
-    }
-}
-
-void
 GuiAppInstance::loadInternal(const CLArgs& cl,
                              bool makeEmptyInstance)
 {
@@ -277,14 +265,10 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
 
     printAutoDeclaredVariable(_imp->declareAppAndParamsString);
 
-    ///if the app is interactive, build the plugins toolbuttons from the groups we extracted off the plugins.
-    const std::list<PluginGroupNodePtr> & _toolButtons = appPTR->getTopLevelPluginsToolButtons();
-    for (std::list<PluginGroupNodePtr  >::const_iterator it = _toolButtons.begin(); it != _toolButtons.end(); ++it) {
-        _imp->findOrCreateToolButtonRecursive(*it);
-    }
-    _imp->_gui->sortAllPluginsToolButtons();
-
     Q_EMIT pluginsPopulated();
+
+    // Before the project is created, so onProjectCreated callbacks defined in initGui.py exist.
+    appPTR->runInitGuiScripts();
 
     ///show the gui
     _imp->_gui->show();

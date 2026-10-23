@@ -25,32 +25,22 @@
 
 #include "TabMenuBridge.h"
 
-#include <algorithm>
 #include <iostream>
-#include <list>
+#include <memory>
 #include <string>
 
-#include <QColor>
+#include <QAction>
 #include <QCoreApplication>
 #include <QCursor>
 #include <QDir>
-#include <QFile>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QKeySequence>
 #include <QPointF>
 #include <QPointer>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/CreateNodeArgs.h"
-#include "Engine/Node.h"
-#include "Engine/Settings.h"
 
-#include "Gui/ActionShortcuts.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
-#include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
 
 NATRON_NAMESPACE_ENTER
@@ -59,58 +49,34 @@ namespace {
 QPointer<NodeGraph> g_target;
 QPointF g_scenePos;
 
-QString
-createShortcutText(const QString& shortcutGroup,
-                   const QString& pluginID)
-{
-    std::list<QKeySequence> sequences = getKeybind(shortcutGroup, pluginID);
-
-    if (sequences.empty()) {
-        return QString();
+// Puts back the context that was set before, however the action returns, so that an action
+// triggered from inside another one hands the outer action its context back; an app the action
+// closed is left alone.
+class NodeCreationContextScope {
+public:
+    NodeCreationContextScope(const AppInstancePtr& app,
+                             const NodeCollectionPtr& collection,
+                             const QPointF& scenePos)
+        : _app(app)
+        , _previous(app->getNodeCreationContext())
+    {
+        app->setNodeCreationContext(collection, scenePos.x(), scenePos.y());
     }
 
-    return sequences.front().toString(QKeySequence::NativeText);
-}
-
-QString
-categoryColorName(const Plugin& plugin)
-{
-    float r, g, b;
-
-    appPTR->getCurrentSettings()->getNodeCategoryColor(Node::categoryForPlugin(plugin), &r, &g, &b);
-
-    return QColor::fromRgbF(std::clamp(r, 0.f, 1.f),
-                            std::clamp(g, 0.f, 1.f),
-                            std::clamp(b, 0.f, 1.f))
-        .name();
-}
-
-QJsonObject
-makeNodeItem(const Plugin& plugin,
-             const QString& label,
-             const TabMenuBridge::ShortcutLookup& shortcutFor)
-{
-    const QStringList& grouping = plugin.getGrouping();
-    QString shortcutGroup = QString::fromUtf8(kShortcutGroupNodes);
-    QJsonArray groupingArray;
-
-    for (const QString& g : grouping) {
-        groupingArray.append(g);
-        shortcutGroup += QLatin1Char('/') + g;
+    ~NodeCreationContextScope()
+    {
+        if (AppInstancePtr app = _app.lock()) {
+            app->restoreNodeCreationContext(_previous);
+        }
     }
 
-    const QString& iconPath = plugin.getIconFilePath();
-    QJsonObject item;
-    item[QString::fromUtf8("id")] = plugin.getPluginID();
-    item[QString::fromUtf8("major")] = plugin.getMajorVersion();
-    item[QString::fromUtf8("label")] = label;
-    item[QString::fromUtf8("grouping")] = groupingArray;
-    item[QString::fromUtf8("icon")] = (!iconPath.isEmpty() && QFile::exists(iconPath)) ? iconPath : QString();
-    item[QString::fromUtf8("color")] = categoryColorName(plugin);
-    item[QString::fromUtf8("shortcut")] = shortcutFor ? shortcutFor(shortcutGroup, plugin.getPluginID()) : QString();
+    NodeCreationContextScope(const NodeCreationContextScope&) = delete;
+    NodeCreationContextScope& operator=(const NodeCreationContextScope&) = delete;
 
-    return item;
-}
+private:
+    AppInstanceWPtr _app;
+    AppInstance::NodeCreationContext _previous;
+};
 
 std::string
 pythonStringLiteral(const QString& s)
@@ -129,61 +95,23 @@ pythonStringLiteral(const QString& s)
 } // anonymous namespace
 
 namespace TabMenuBridge {
-QString
-nodeItemsJson()
+void
+triggerAction(QAction* action)
 {
-    return nodeItemsJson(appPTR->getPluginsList(), createShortcutText);
-}
+    if (!action) {
+        return;
+    }
+    Gui* gui = g_target ? g_target->getGui() : 0;
+    GuiAppInstancePtr app = gui ? gui->getApp() : GuiAppInstancePtr();
+    NodeCollectionPtr collection = g_target ? g_target->getGroup() : NodeCollectionPtr();
+    if (!app || !collection) {
+        action->trigger();
 
-QString
-nodeItemsJson(const PluginsMap& plugins,
-              const ShortcutLookup& shortcutFor)
-{
-    QJsonArray items;
-
-    for (PluginsMap::const_iterator it = plugins.begin(); it != plugins.end(); ++it) {
-        for (PluginVersionsOrdered::const_reverse_iterator it2 = it->second.rbegin(); it2 != it->second.rend(); ++it2) {
-            const Plugin* plugin = *it2;
-            if (!plugin || !plugin->getIsUserCreatable()) {
-                continue;
-            }
-            // Only the family's newest version, user-creatable or not, keeps the bare label, so an
-            // older version never shows up looking like the current one.
-            const QString label = (it2 == it->second.rbegin()) ? plugin->getLabelWithoutSuffix() : plugin->getLabelVersionMajorEncoded();
-            items.append(makeNodeItem(*plugin, label, shortcutFor));
-        }
+        return;
     }
 
-    return QString::fromUtf8(QJsonDocument(items).toJson(QJsonDocument::Compact));
-}
-
-bool
-createNode(const QString& pluginID,
-           int majorVersion)
-{
-    if (!g_target) {
-        return false;
-    }
-    Gui* gui = g_target->getGui();
-    if (!gui) {
-        return false;
-    }
-    GuiAppInstancePtr app = gui->getApp();
-    if (!app) {
-        return false;
-    }
-
-    const PluginsMap& allPlugins = appPTR->getPluginsList();
-    if (allPlugins.find(pluginID.toStdString()) == allPlugins.end()) {
-        return false;
-    }
-
-    CreateNodeArgs args(pluginID.toStdString(), g_target->getGroup());
-    args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, g_scenePos.x(), 0);
-    args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, g_scenePos.y(), 1);
-    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, majorVersion, 0);
-
-    return (bool)app->createNode(args);
+    NodeCreationContextScope scope(app, collection, g_scenePos);
+    action->trigger();
 }
 
 void

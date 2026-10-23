@@ -36,34 +36,6 @@
   > - Roto render output and the saved project are bit-identical to before on the existing roto tests.
   > - Interactive point drags on a heavily keyed shape stay responsive. Measure with the GUI bench once M117 - GUI Perf Harness And Baseline lands.
 
-### 2026-10-23T22:18:43Z — change-request
-- refs: M16
-- **User decision (2026-10-23): drop `gui.yaml` entirely.** The bundle becomes `mimetype`, `manifest.yaml`, `project.yaml` and `blobs/**`. This replaces M16 - Project Format Redesign's 2026-10-10 "Member split" decision and P3.T2's headless `gui.yaml` pass-through. Record it in M16's `## Decisions` and add revision tasks (Phases 16.1–16.5 are checked off, so these are new tasks, not edits to done ones).
-
-  Rationale (user): splitting the files gives no clean-diff benefit, because the graph is unreadable without the positions, so any useful diff spans both files and carries the position churn anyway. Later work such as the E12 graph diff has to handle positions and topology together; the two can't be separated. The rest of `gui.yaml` is either app state or transient.
-
-  Where each `ProjectGuiSerialization` field goes (`Serialization/ProjectGuiSerialization.h`):
-  - **Node position, size, tile colour, user colour, overlay colour, preview flag** → per-node data in `project.yaml`, owned by the Engine `Node`, with `NodeGui` mirroring it. Today `Node::setPosition` drops the value and `getPosition` returns (0, 0) with no GUI (`Engine/Node.cpp:8261-8283`), so headless scripts can't place nodes. Engine ownership fixes that, and position now survives renames, because `gui.yaml` was keyed by fully-qualified name. Group children carry theirs through the `children:` nesting.
-  - **Backdrops** → they are nodes, so they follow the row above.
-  - **Not saved (app-level layout):** pane layout, splitters, floating windows, toolbar visibility, Python panels. These belong to the app's layout manager (the `.nl` save/load and the default-layout preference). Opening a project never changes the layout, and a fresh boot gets the default layout. Keep P2.T4's layout encoder for `.nl` (P4.T3); only the project-GUI encoder goes.
-  - **Not saved (transient):** viewer zoom/pan and `zoomOrPanSinceLastFit`, node selection, open histograms, open settings panels and their minimized/hide-unmodified flags, script editor input.
-  - **Viewer state** (gain, gamma, display/view/look, channels, layers, inputs A/B, wipe operator, fps, frame bounds, user RoI, and so on) → **not saved by M16 - Project Format Redesign.** It will become knobs on the Viewer node in separate work, filed separately and outside this milestone's scope. Until then it is unsaved, which is accepted.
-  - **Loading several viewers with no saved layout:** each Viewer node opens as a tab in the default viewer pane.
-
-  Expected revision tasks:
-  - node schema and encoder: add the layout fields (P2.T3's `ProjectYaml`)
-  - remove `ProjectGuiYaml`'s project entry point and its test cases
-  - bundle member list without `gui.yaml` (P3.T1)
-  - save/load paths without `ProjectGuiSerialization`, and no headless pass-through (P3.T2)
-  - Engine-side position storage on `Node`
-  - clipboard positions taken from node data (P4.T2)
-  - viewer placement on load
-  - remove the code that restores opened panels, histograms and selection on load
-  - update or delete tests that assert on `gui.yaml`
-  - regenerate the fixtures and bench comps
-  - P7.T2 docs without the `gui.yaml` schema
-  - P7.T3 UAT step 3 becomes "Move a node: only that node's position lines in `project.yaml` change. Change a Blur size: one line changes." Step 2's `unzip -l` member list has no `gui.yaml`.
-
 ### 2026-10-23T22:19:49Z — change-request
 - refs: none
 - New milestone requested (user, 2026-10-23): **"Viewer Node Knobs"**, epic E3 - Native Nodes And I/O, Deps M16 - Project Format Redesign and M107 - GPU Viewer Hand-off. It follows from the M16 - Project Format Redesign decision to drop `gui.yaml`, which leaves viewer state unsaved until this lands. Suggested stub:

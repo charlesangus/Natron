@@ -6,7 +6,7 @@ Replace the boost::serialization XML `.ntp` with a `.ntpz` bundle: a stored-unco
 holding:
 - `project.yaml`: the graph, with sparse knobs, explicit sibling-relative connections and
   compact curves;
-- `gui.yaml`: workspace, viewers and node positions;
+- per-node layout (position, size, colours) on each node in `project.yaml`; pane layout is app-level (`.nl`), and viewer state is not saved (2026-10-23 decision);
 - `manifest.yaml`;
 - 64-byte-aligned binary blob members for heavy per-node data: roto strokes, animated bezier
   shapes, tracker curves, and any curve over a key-count threshold.
@@ -311,13 +311,13 @@ Scouting facts this plan relies on (2026-10-10):
 
 ## Phase 16.6: One-off benchmark (both writers still exist)
 
-- [ ] M16.P6.T1 — Heavy roto/tracker benchmark harness
+- [x] M16.P6.T1 — Heavy roto/tracker benchmark harness
   - files: new `tools/bench/project_io_bench.py`, new `tools/bench/make_heavy_project.py` (both deleted in P7.T1; they stay in git history)
   - approach: `make_heavy_project.py` (under NatronRenderer) builds a seeded project through `PyRoto`/`PyTracker`: 200 strokes × 500 samples, 30 beziers × 24 CPs × 200 keys with feather, 16 tracks × 2000 frames, plus the `keying_grade` graph. `project_io_bench.py` times `saveLegacyXmlForBenchmark` against the `.ntpz` save, and autosave, as a median of 7 after warm-up. It records file sizes and the `.ntpz` load time; XML load is no longer possible. Results go to `build/bench/results-project-io.jsonl` through `lib.sh`'s helpers.
   - verify: one run against a `fast` build prints the table and exits 0.
   - size: M
 
-- [ ] M16.P6.T2 — Run the comparison and record the numbers
+- [x] M16.P6.T2 — Run the comparison and record the numbers
   - files: `tools/bench/BASELINE.md` (one section; the numbers outlive the scripts)
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh release`, then three runs of P6.T1. Record the size ratio, save and autosave medians, and the `.ntpz` load time.
   - verify: `.ntpz` is at least 10x smaller, and its save and autosave medians are faster. If either misses, stop and report before P7. The release build is required.
@@ -333,7 +333,7 @@ Scouting facts this plan relies on (2026-10-10):
 
 - [ ] M16.P7.T2 — Format reference and decision record
   - files: new `docs/project-format.md`, new `.plan/PLAN/DECISIONS/2026-10-10-project-format-resolved-calls.md` (published to `docs/decisions/` per `publish_decisions`), an amendment note appended to `.plan/PLAN/DECISIONS/2026-09-05-project-format-bundle-design.md` (sibling-relative connections, no import bridge), `Serialization/README.md` ("adding a field")
-  - approach: the format reference covers: member order and alignment; `manifest.yaml`, `project.yaml` and `gui.yaml` schemas with an example; the curve grammar; the blob table format; `.nps`, `.nl` and clipboard documents; versioning (`formatVersion` bumps; unknown keys warn); the clean-break policy; and hand-repair (`unzip -p f.ntpz project.yaml`; repacking with Python `zipfile` `ZIP_STORED`, `mimetype` first, loads but loses alignment until the next Natron save).
+  - approach: the format reference covers: member order and alignment; member order (`mimetype`, `manifest.yaml`, `project.yaml`, then `blobs/**`); `manifest.yaml` and `project.yaml` schemas with an example, including the per-node layout fields `pos`, `size`, `color` and `overlay`, and a note that pane layout, viewer state, selection and open panels are not saved in projects; the curve grammar; the blob table format; `.nps`, `.nl` (the app layout, the only place pane layout is saved) and clipboard documents; versioning (`formatVersion` bumps; unknown keys warn); the clean-break policy; and hand-repair (`unzip -p f.ntpz project.yaml`; repacking with Python `zipfile` `ZIP_STORED`, `mimetype` first, loads but loses alignment until the next Natron save).
   - verify: the example YAML is copied from P2.T3's pinned test output; links resolve.
   - size: M
 
@@ -341,14 +341,114 @@ Scouting facts this plan relies on (2026-10-10):
   - files: `build/appimages/M16-<sha>.AppImage`, `build/appimages/M16-uat.md`
   - approach: build with the release `tools/ci/local/package.sh` and launch-check with `build/appimages/run-launch-check.sh`. The script:
     1. Open each regenerated `tools/bench/comps/*.ntpz`. Open an old `.ntp`, from a recent-files entry and via drag-drop, and get the clear old-format message with no crash.
-    2. Save. `unzip -l` lists the members, and `unzip -p x.ntpz project.yaml` is readable.
-    3. Move a node: only `gui.yaml` changes. Change a Blur size: one line of `project.yaml` changes.
+    2. Save. `unzip -l` lists exactly `mimetype`, `manifest.yaml`, `project.yaml` and any `blobs/**` members (no `gui.yaml`), and `unzip -p x.ntpz project.yaml` is readable.
+    3. Move a node: only that node's position lines in `project.yaml` change. Change a Blur size: one line changes.
     4. Point an input at a missing node by hand (repack with `zipfile`), open, and get one warning with the input disconnected.
     5. Paint 20 strokes and track 2 points over 200 frames. Autosave does not stall and is named `.ntpz.autosave`.
     6. Export and import a `.nps` preset; save and load an `.nl` layout; copy nodes, edit them in a text editor, and paste them back.
     7. `kill -9` during a save of the heavy project: the previous file is intact.
     8. The file manager associates `.ntpz` with Natron.
   - verify: the user signs off `M16-uat.md`. **Stop for the user.**
+  - size: M
+
+## Phase 16.8: Drop gui.yaml
+
+Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimetype`, `manifest.yaml`, `project.yaml` and `blobs/**`. Node layout lives on the Engine `Node` and in `project.yaml`; pane layout is app-level (`.nl`); viewer state, selection, open panels, histograms and script editor input are not saved. Line numbers are as scouted on 2026-10-23.
+
+- [ ] M16.P8.T1 — Add node layout fields to the project.yaml node schema
+  - files: `Serialization/NodeSerialization.h` (`NodeSerialization` `:76`), `Serialization/Yaml/NodeYaml.cpp` (`emitNode` `:55-127`, `readNode` `:129+`), `Serialization/Yaml/YamlPrivate.h` and `Serialization/Yaml/YamlTable.cpp` (move `emitDoublePair`/`emitFloatTriple`/`readFloatTriple` out of `ProjectGuiYaml.cpp:29-100`), `Tests/Serialization/ProjectYaml_Test.cpp`
+  - approach: add `NodeLayoutSerialization` (with `hasPosition`/`hasSize`/`hasColor`/`hasOverlayColor`) to `NodeSerialization`. Emit after `python`, before `knobs`, one flow line per field: `pos: [x, y]`; `size: [w, h]` (only when set); `color: [r, g, b]` (the user colour, or a backdrop's body colour, never the category colour); `overlay: [r, g, b]`. All optional on read, no warning when missing. Shortest-round-trip doubles so re-saves stay byte-identical. No Qt. Update `kExampleProjectYaml`; add round-trip cases for a group child's position under `children:`, a backdrop with size and colour, and a node with no layout writing no keys.
+  - verify: compiled at P8.T15; `ProjectYaml.RoundTripsAndReencodesByteIdentically` and the new cases.
+  - size: M
+
+- [ ] M16.P8.T2 — Make Engine `Node` own position, size, colour and overlay colour; persist the preview flag
+  - files: `Engine/Node.h` (`:830-845`, `:1447`), `Engine/NodePrivate.h` (`Node::Implementation`, beside `guiPointer` `:507`), `Engine/Node.cpp` (`:8261-8370`; `enablePreview` knob `:2901-2912`), `Engine/NodeOverlay.cpp` (`:105`), `Engine/NodeGuiI.h` (add `setOverlayColor`)
+  - approach: store layout in `Node::Implementation` behind its own small mutex (saves can read off the main thread). Public setters (`setPosition`, `setSize`, `setColor`, `resetColor`, new `setOverlayColor`) store then forward to the GUI if any; getters always return the stored value (no more (0,0) headless). Add store-only setters for the GUI to mirror into, so there is no forwarding loop. Backdrop-ness via `dynamic_cast<Backdrop*>` as at `Node.cpp:7377`. No per-render cost. Make the `enablePreview` knob persistent (drop `setIsPersistent(false)`, `:2908`) so it is saved under `knobs:` only when it differs from the default (user decision).
+  - verify: compiled at P8.T15; P8.T14's headless tests.
+  - size: M
+
+- [ ] M16.P8.T3 — Route node layout through Node to/from serialization; drop placeholder GUI children
+  - files: `Engine/ProjectSerializationConvert.cpp` (`Node::toSerialization` `:129-247`, placeholder branch `:141-152`), `Engine/NodeMain.cpp` (after effect creation ~`:120`, built-in and OFX paths), `Engine/Nodes/MissingPluginNode.h` (`:63-65`, `:109`), `Engine/Nodes/MissingPluginNode.cpp` (`:63-80`)
+  - approach: `toSerialization` writes layout for project nodes but not for multi-instance children. The placeholder branch takes layout from the live node, as it already does for label and inputs; its stored children carry their own. `Node::load` applies `serialization->layout` once for every creation path (placeholders, PyPlug containers, paste). Delete `setStoredGuiChildren`/`getStoredGuiChildren` and `_guiChildren`.
+  - verify: compiled at P8.T15; `MissingPluginRoundTripTest.*` green and P8.T14's placeholder case passes.
+  - size: M
+
+- [ ] M16.P8.T4 — Make NodeGui mirror Node layout both ways
+  - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp` (`initialize` `:382`, `resize` `:1144`, colour setters `:3517-3600`, `setColor` `:3923`), `Gui/BackdropGui.cpp`, `Gui/DockablePanel.cpp` (`:1372-1483`), `Gui/GuiAppInstance.cpp` (`createNodeGui` `:509-545`)
+  - approach: Engine is the source of truth; `NodeGui::initialize` applies the stored position, backdrop size and colour. Mirror moves back via `itemChange(ItemPositionHasChanged)` with `ItemSendsGeometryChanges` (also catches the direct `setPos` at `NodeGraph.cpp:426`). Push only user edits (backdrop resize, colour dialog, overlay dialog) — default sizing/colouring must not overwrite stored values, or QColor/int rounding breaks byte-identical re-saves. Overlay colour reads/writes Node, so a later-created panel shows it. In `createNodeGui`, a serialized node with a stored position is placed from it. Remove `restoreCategoryAndUserColor(const NodeGuiSerialization&)`.
+  - verify: compiled at P8.T15; P8.T11's Xvfb test (drag a node; Python `getPosition` and saved `project.yaml` agree).
+  - size: L
+
+- [ ] M16.P8.T5 — Put clipboard positions on the node data
+  - files: `Serialization/Yaml/ClipboardYaml.h` (`:30`, `:46-60`), `Serialization/Yaml/ClipboardYaml.cpp` (`:46-110`, `:120-195`), `Tests/Serialization/ClipboardYaml_Test.cpp`
+  - approach: delete `ClipboardSerialization::nodesUI` and the `gui:` section; layout travels inside each node through P8.T1's schema, group children included. Drop the `ProjectGuiSerialization.h` include. Rewrite `AGroupKeepsTheGraphStatesOfItsNodesAlignedWithThem` to assert child positions under `children:`.
+  - verify: compiled at P8.T15; `ClipboardYaml.*`.
+  - size: M
+
+- [ ] M16.P8.T6 — Copy and paste nodes without NodeGuiSerialization
+  - files: `Gui/NodeClipBoard.h` (`:39`, `:47-62`), `Gui/NodeGraphPrivate.h` (`:249`), `Gui/NodeGraphPrivate.cpp` (`copyNodesInternal` `:195-228`), `Gui/NodeGraphPrivate10.cpp` (`:70-90`, `:107`, `pasteNode` `:190-330`), `Gui/GuiApplicationManager10.cpp` (`:1158`)
+  - approach: paste bbox from `NodeSerialization::layout` (pos plus size). `pasteNode` drops its `guiSerialization` argument (creation already places the node, P8.T3/T4), then applies the offset with `setPosition`. Remove the placeholder `setStoredGuiChildren` call and the `nodesUi` child list.
+  - verify: compiled at P8.T15; P8.T11's copy/paste case.
+  - size: M
+
+- [ ] M16.P8.T7 — Update the remaining clipboard and clone callers
+  - files: `Gui/NodeGraph40.cpp` (`:64`, `:130`, `:342`, clone `:500-506`), `Gui/NodeGraph45.cpp` (`:70`, `:653`), `Gui/NodeGui.cpp` (`:2994-3000`), `Gui/NodeGui.h` (`:163-169`)
+  - approach: follow-up to P8.T5/T6. Clone and `copyNodesAndCreateInGroup` pass only `NodeSerialization`; delete-from-clipboard drops the `nodesUI` loop. Delete `NodeGui::toSerialization`/`fromSerialization` (the latter swaps G and B of the overlay colour at `ProjectGuiSerializationConvert.cpp:507`; don't carry that over).
+  - verify: compiled at P8.T15.
+  - size: M
+
+- [ ] M16.P8.T8 — Remove gui.yaml from the bundle writer and reader
+  - files: `Serialization/Bundle/ProjectBundle.h`, `Serialization/Bundle/ProjectBundle.cpp`, `Tests/Serialization/ProjectBundle_Test.cpp`
+  - approach: members are `mimetype`, `manifest.yaml`, `project.yaml`, then sorted blobs. Delete `kBundleGuiMember`, `setGui`, `setGuiYaml`, `guiYaml()`, `hasGui`, `readGui`; update the class comment. A stray `gui.yaml` is ignored like any unknown member (no import).
+  - verify: compiled at P8.T15; `ProjectBundle.MembersAreWrittenInTheirFixedOrder` with the new list.
+  - size: M
+
+- [ ] M16.P8.T9 — Save and load with no GUI section and no headless pass-through
+  - files: `Engine/Project.cpp` (load `:533-552`, save `:803-812`, reset `:2867`, includes `:79`/`:83`), `Engine/ProjectPrivate.h` (`:140-142`), `Engine/AppInstance.h` (`:286-302`)
+  - approach: delete `loadedGuiYaml`, the `readGui`/`loadProjectGui` block and the `saveProjectGui` branch. Replace the `loadProjectGui`/`saveProjectGui` virtuals with one hook (e.g. `virtual void onProjectNodesRestored() {}`) called where `loadProjectGui` was.
+  - verify: compiled at P8.T15; `BundleLoadTest.*` and `MissingPlugin*` green.
+  - size: M
+
+- [ ] M16.P8.T10 — Delete the project-GUI restore and save in Gui
+  - files: `Gui/GuiAppInstance.h` (`:126-127`), `Gui/GuiAppInstance.cpp` (`:771-785`), `Gui/Gui.h` (`:305-307`), `Gui/Gui20.cpp` (`:1105-1118`), `Gui/ProjectGui.h` (`:78-86`), `Gui/ProjectGuiSerializationConvert.cpp`
+  - approach: delete `restoreNodeGuiFromSerialization` (`:312-434`), `copyNodeGuiSerializationRenamingParent` (`:96-112`), `pythonPanelToSerialization` (`:223`) and `ProjectGui::toSerialization`/`fromSerialization` (`:627-859`) — no more restoring panels, histograms, Python panels, script editor input, selection, viewer state or layout on load. Keep `Gui::toSerialization(GuiLayoutSerialization*)` (`:521`), `Gui::restoreLayout` (`:537`) and their helpers for `.nl`. `GuiAppInstance::onProjectNodesRestored()` keeps only refreshing edges and knob links on every node (`getNodes_recursive`) and `centerAllNodeGraphsWithTimer()`.
+  - verify: compiled at P8.T15; P8.T11's Xvfb test.
+  - size: L
+
+- [ ] M16.P8.T11 — Remove the workspace preference; test layout-free loading in the GUI
+  - files: `Engine/Settings.h` (`:242`), `Engine/Settings.cpp` (`:642-646`, `:3194`), new `Tests/gui/m16_project_layout.py` (run with `Tests/gui/run-gui-test.sh`)
+  - approach: delete `loadProjectWorkspace`, no migration. Viewer placement needs no new code: `Gui::createViewerGui` (`Gui/Gui.cpp:356-370`) adds each Viewer to `getAnchor()`. Xvfb test, `checkForUpdates=false` seeded: build two Viewers, a moved backdrop, a user colour, a node in a group and an open settings panel; save, change the pane layout, reopen. Both viewers are tabs in the anchor pane; the pane layout is unchanged; no panel open, nothing selected, no histograms; positions, backdrop size and colours match; a drag shows in `node.getPosition()`; copy/paste keeps relative offsets.
+  - verify: run after the P8.T15 build against its fast AppImage.
+  - size: M
+
+- [ ] M16.P8.T12 — Remove the project entry point from ProjectGuiYaml and its tests
+  - files: `Serialization/Yaml/ProjectGuiYaml.h`, `Serialization/Yaml/ProjectGuiYaml.cpp` (`:102-184`, node/viewer/panel emit/read, `encodeProjectGuiYaml` `:618-694`, `decodeProjectGuiYaml` `:697-759`), `Serialization/Yaml/YamlPrivate.h` (`:48`, `:278-279`), `Tests/Serialization/ProjectGuiYaml_Test.cpp`
+  - approach: keep only `encodeGuiLayoutYaml`/`decodeGuiLayoutYaml`, `kLayoutYamlFormat` and the window/splitter/pane code. Delete `kGuiYamlFormat`/`kGuiYamlFormatVersion`. Delete `FullyPopulatedGuiRoundTrips` and `NodesAreKeyedByFullyQualifiedName`; keep `LayoutHasItsOwnDocument`; cut `MalformedOrNewerDocumentsAreRefused` to the layout document.
+  - verify: compiled at P8.T15; `ProjectGuiYaml.LayoutHasItsOwnDocument`.
+  - size: M
+
+- [ ] M16.P8.T13 — Cut ProjectGuiSerialization down to the layout structs
+  - files: `Serialization/ProjectGuiSerialization.h/.cpp`, `Serialization/SerializationFwd.h` (`:46`, `:49`, `:67`), `Serialization/BoostXml/ProjectGuiXml.{h,cpp}` (delete), `Engine/Project.cpp` (`saveLegacyXmlForBenchmark` GUI block `:952-959`, include `:79`), `Tests/ViewerDataSerialization_Test.cpp` and `Tests/NodeGuiUserColorSerialization_Test.cpp` (delete, with `Tests/CMakeLists.txt:213,219`)
+  - approach: keep `PaneLayoutSerialization`, `SplitterSerialization`, `ApplicationWindowSerialization`, `GuiLayoutSerialization` and their macros (and `NATRON_SERIALIZATION_PROJECT_SETTINGS_PANEL_NAME` if `.nl` still uses it). Delete `NodeGuiSerialization`, `ViewerDataSerialization`, `PythonPanelSerialization`, `ProjectGuiSerialization` and their macros.
+  - verify: compiled at P8.T15; `grep -rn "NodeGuiSerialization\|ProjectGuiSerialization\|ViewerDataSerialization\|gui\.yaml" Engine Gui Serialization Tests` is empty.
+  - size: M
+
+- [ ] M16.P8.T14 — Headless ctests for Engine-owned layout
+  - files: new `Tests/Serialization/NodeLayout_Test.cpp`, `Tests/Serialization/ProjectEquivalence.cpp` (add position, size, colour, overlay near `:231`), `Tests/Serialization/ProjectBundleTestHelpers.h` if needed
+  - approach: `BaseTest`, no GUI. `setPosition` then `getPosition` returns the value; save+reload keeps a position, a group child's position, a backdrop's size and colour; a rename keeps the position; a moved placeholder saves its new position and keeps its children's; moving one node changes exactly the position line(s) of that node in `project.yaml` (text diff of two saves); toggling preview saves one knob line; re-saving twice is byte-identical.
+  - verify: compiled at P8.T15; `NodeLayout.*`.
+  - size: M
+
+- [ ] M16.P8.T15 — Checkpoint: build and test
+  - files: none
+  - approach: syntax-check changed TUs (`tools/ci/local/syntax-check.py --root .worktrees/m16`; blind to moc TUs), push, `tools/ci/remote/build.sh debug --tests`, then `tools/ci/remote/build.sh fast` for the AppImage P8.T11 and P8.T16 use; run P8.T11.
+  - verify: ctest green including `NodeLayout.*`, `ProjectBundle.*`, `ProjectYaml.*`, `ClipboardYaml.*`, `ProjectGuiYaml.*`, `BundleLoadTest.*`, `MissingPlugin*`; P8.T11 passes; P8.T13's grep is empty.
+  - size: M
+
+- [ ] M16.P8.T16 — Regenerate fixtures and bench comps
+  - files: `Tests/fixtures/read-time-offset.ntpz`, `tools/bench/comps/*.ntpz`
+  - approach: `tools/ci/regen_read_time_offset.py` and `tools/bench/comps/build_comps.py` through `NatronRenderer -b` from the P8.T15 fast AppImage (`LD_LIBRARY_PATH` unset, `xvfb-run`). Never hand-edit.
+  - verify: `unzip -Z1` lists only `mimetype manifest.yaml project.yaml`; a second regeneration gives a byte-identical `project.yaml`; fixture ctests pass on the next remote debug build.
   - size: M
 
 **Verification gate:** full `tools/ci/local/test.sh ctest debug` and `smoke debug` green, and
@@ -391,6 +491,9 @@ UAT (P7.T3).
 - 2026-10-22 — The build of `07dea085a` passed 336 of 338 tests; the decode path is sound. The remaining failures were a string-animation encode mismatch (fixed in `19302cc5e`) and the missing comps. The fixture and comps were regenerated as `.ntpz` with that build's AppImage, and the old `.ntp` files were removed (`e569e4b26`). `build_comps.sh` hard-codes `build/release`, so `build_comps.py` was run directly. Its repack now mirrors `ZipStore`, with aligned members and a manifest whose size and CRC32 match. P5.T5 runs as a remote debug build of `e569e4b26`.
 - 2026-10-22 — The P6 benchmark runs from a fast AppImage under NatronRenderer, because this host builds remotely and has no local build to run a C++ bench from. That needs two temporary Python methods, `App.saveLegacyXmlForBenchmark` and `App.autoSaveForBenchmark`. The second exists because `Project::autoSave` returns early in background mode. This deviates from P3.T2's "no UI, no Python", and P7.T1 deletes both methods along with the XML writer. The Python roto API can't create paint strokes, so the heavy project's 200 "strokes" are unfinished 500-point beziers without pressure.
 - 2026-10-22 — Resumed after a host reboot. Rebased onto main (`448013710`, M154) as `c95168fc1`; one conflict in `tools/bench/gpu_region_bench.sh`, which kept main's `$BUILD_SUFFIX` and the `.ntpz` comp path. With no Docker in this session, the P6 benchmark (3 runs) runs natively from the extracted release AppImage under host `xvfb-run`, with `LD_LIBRARY_PATH` unset, because the host's Qt 6.5 shadows the bundled 6.8. `heavy.ntpz` from the earlier container run is reused.
+- 2026-10-23 — **User decision: drop `gui.yaml` entirely** (replaces the 2026-10-10 "Member split" entry, P3.T2's headless `gui.yaml` pass-through, and the `gui.yaml` parts of the 2026-10-22 choice-knob entry). The bundle is `mimetype`, `manifest.yaml`, `project.yaml`, `blobs/**`. Splitting gave no clean-diff benefit: the graph is unreadable without positions, so a useful diff spans both files anyway, and later graph-diff work must handle positions and topology together. Node position, size, user colour, overlay colour (and backdrops, which are nodes) become per-node data owned by the Engine `Node` with `NodeGui` mirroring it, so headless scripts can place nodes and positions survive renames. Pane layout, splitters, floating windows, toolbar visibility and Python panels are app layout (`.nl`, default-layout preference): opening a project never changes the layout. Viewer zoom/pan, selection, histograms, open settings panels and script editor input are transient. Viewer state is not saved until a separate Viewer Node Knobs milestone. Several viewers with no saved layout each open as a tab in the default viewer pane. Phase 16.8 implements it.
+- 2026-10-23 — User calls on the `gui.yaml` drop: the preview flag is saved by making the `enablePreview` knob persistent (saved under `knobs:` only when non-default), not as a layout field; Python panels opened at runtime, and their knob values and `userData`, are no longer restored on reopen (panels registered by `initGui.py` still are). Accepted side effects: open group graph tabs, script editor input and the autosave-recovery workspace are not restored; size is saved only for backdrops and colour only when user-set (or a backdrop's body colour), so re-saves stay byte-identical; closing a project still resets to the default layout (existing behaviour).
+- 2026-10-23 — P6.T2 results (recorded in `tools/bench/BASELINE.md`): `.ntpz` 53.7 MB against 1.20 GB XML (22.4× smaller); medians of run medians 7.62 s `.ntpz` save against 17.17 s XML, 7.68 s autosave; `.ntpz` load 15.4–20.2 s. Run 3 was contended by other host work (its `.ntpz` save median 19.0 s); runs 1–2 were idle. Both P6.T2 thresholds pass. Lane rebased onto main `bf781cbcd` (M158) as `800d814cb`; one conflict in `Engine/AppInstance.cpp`, both sides kept.
 
 ## Handoff (2026-10-22, PM paused by user)
 

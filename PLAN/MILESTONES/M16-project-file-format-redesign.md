@@ -355,7 +355,7 @@ Scouting facts this plan relies on (2026-10-10):
 
 Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimetype`, `manifest.yaml`, `project.yaml` and `blobs/**`. Node layout lives on the Engine `Node` and in `project.yaml`; pane layout is app-level (`.nl`); viewer state, selection, open panels, histograms and script editor input are not saved. Line numbers are as scouted on 2026-10-23.
 
-- [ ] M16.P8.T1 — Add node layout fields to the project.yaml node schema
+- [x] M16.P8.T1 — Add node layout fields to the project.yaml node schema
   - files: `Serialization/NodeSerialization.h` (`NodeSerialization` `:76`), `Serialization/Yaml/NodeYaml.cpp` (`emitNode` `:55-127`, `readNode` `:129+`), `Serialization/Yaml/YamlPrivate.h` and `Serialization/Yaml/YamlTable.cpp` (move `emitDoublePair`/`emitFloatTriple`/`readFloatTriple` out of `ProjectGuiYaml.cpp:29-100`), `Tests/Serialization/ProjectYaml_Test.cpp`
   - approach: add `NodeLayoutSerialization` (with `hasPosition`/`hasSize`/`hasColor`/`hasOverlayColor`) to `NodeSerialization`. Emit after `python`, before `knobs`, one flow line per field: `pos: [x, y]`; `size: [w, h]` (only when set); `color: [r, g, b]` (the user colour, or a backdrop's body colour, never the category colour); `overlay: [r, g, b]`. All optional on read, no warning when missing. Shortest-round-trip doubles so re-saves stay byte-identical. No Qt. Update `kExampleProjectYaml`; add round-trip cases for a group child's position under `children:`, a backdrop with size and colour, and a node with no layout writing no keys.
   - verify: compiled at P8.T15; `ProjectYaml.RoundTripsAndReencodesByteIdentically` and the new cases.

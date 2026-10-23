@@ -111,13 +111,13 @@ Every node is built on the M137 - Native Base Class Flexibility framework (`Node
 
 Each port names the darktable source file in its `approach` as the reference. Ports take the C path at `DARKTABLE_REF` (P1.T1) and never the SSE or OpenCL variants; core-chain GPU kernels are Phase 80.6. Ports keep the darktable copyright header. Every node is a framework node (P1.T4) under `Engine/Nodes/Raw/`. Per node, it adds `<Node>.reg.inc`, `<Node>.costseed.inc`, `docs/<Node>.md`, an icon and a `Tests/Native/Native<Node>_Test.cpp` calling `expectNativeIdentity`, per the README checklist; no shared file is edited. Per-pixel mosaic work is a Point op that uses `RowIO::x0/y`. Neighbourhood work is a Passes op, or Custom where the algorithm's structure needs it. Each node declares raw in and raw out unless stated, and checks `raw/stage`. Prepare, Temperature and Highlights accept 1 or 3 channels (linear raw). Nodes sit in the Tab menu under `Raw` (`NodeSpec::grouping`).
 
-- [ ] M80.P3.T1 — RawPrepare node (levels, scaling, crop)
+- [x] M80.P3.T1 — RawPrepare node (levels, scaling, crop)
   - files: new `Engine/Nodes/Raw/RawPrepare.h/.cpp` + per-node files, new `Tests/Native/NativeRawPrepare_Test.cpp`
   - approach: port darktable `src/iop/rawprepare.c`. Subtract per-CFA-colour black levels (per channel for linear), scale by the white level to 0-1, apply the crop (shifting the pattern origin via `RawLayout`), and set `raw/stage` to `prepared`. A `prepared` input passes through with a warning. Knobs: black levels (override), white level (override), crop margins. Defaults come from the metadata.
   - verify: gtest against a hand-computed mosaic with known levels; a crop by an odd number of pixels keeps `colourAt` correct; a linear 3-channel input scales per channel; a prepared input passes through unchanged.
   - size: M
 
-- [ ] M80.P3.T2 — Temperature node (white balance on raw)
+- [x] M80.P3.T2 — Temperature node (white balance on raw)
   - files: new `Engine/Nodes/Raw/RawTemperature.h/.cpp` + per-node files, new `Tests/Native/NativeRawTemperature_Test.cpp`
   - approach: port the raw-domain part of darktable `src/iop/temperature.c`: per-CFA-colour gains on the prepared mosaic, or per-channel gains on linear data. Knobs: temperature, tint, the three channel coefficients, and a mode (as shot, camera reference, custom). The temperature-to-coefficient conversion uses the camera matrix from metadata, as darktable does. Port the `dt_colorspaces_...` helpers it needs locally rather than pulling in darktable's colour library. It requires `raw/stage` = `prepared`.
   - verify: gtest: as-shot coefficients reproduce rawspeed's; a custom temperature on a synthetic grey patch with a known matrix gives equal channels after demosaic (checked once P3.T4 lands); an unprepared input raises the stage error.
@@ -129,25 +129,25 @@ Each port names the darktable source file in its `approach` as the reference. Po
   - verify: gtest: a synthetic mosaic with a clipped patch, each mode matching a reference computed from darktable on the same input. The reference is generated once by the P5.T1 harness and stored as a small fixture; the fixture README says how.
   - size: M
 
-- [ ] M80.P3.T4 — Demosaic node: PPG and RCD (Bayer), linear pass-through
+- [x] M80.P3.T4 — Demosaic node: PPG and RCD (Bayer), linear pass-through
   - files: new `Engine/Nodes/Raw/RawDemosaic.h/.cpp` + per-node files, new `Engine/Nodes/Raw/DemosaicBayer.h/.cpp`, new `Tests/Native/NativeRawDemosaicBayer_Test.cpp`
   - approach: port darktable `src/iop/demosaic.c` and `src/iop/demosaicing/ppg.c` and `rcd.c`. Raw in, image out: three colour channels plus alpha 1. Input with no CFA (linear) passes through as image with alpha 1. The halo comes from the algorithm (RCD needs 4-6 px), rounded up to the pattern period, and the RoD equals the input's. Knobs: method, green equilibration, colour smoothing passes. The method knob is an enum, so P3.T5 and P3.T6 add choices.
   - verify: gtest: a synthetic gradient mosaic reconstructs within a bound; a tile rendered with RoI expansion equals the same pixels of the full-frame render, bit for bit; output kind is image; a linear fixture passes through unchanged.
   - size: L
 
-- [ ] M80.P3.T5 — Demosaic: AMaZE
+- [x] M80.P3.T5 — Demosaic: AMaZE
   - files: new `Engine/Nodes/Raw/DemosaicAmaze.h/.cpp`, `Engine/Nodes/Raw/RawDemosaic.cpp` (method enum), new `Tests/Native/RawDemosaicAmaze_Test.cpp`
   - approach: port darktable `src/iop/demosaicing/amaze.cc` (GPL-3). It works in 128-px tiles with its own overlap. Map that onto Natron's RoI (an 18 px halo, aligned to the pattern), not onto a whole-image buffer.
   - verify: gtest: tiled equals full-frame on a fixture; the result is within a bound of PPG's on a smooth patch and measurably sharper on an edge pattern.
   - size: L
 
-- [ ] M80.P3.T6 — Demosaic: X-Trans (Markesteijn)
+- [x] M80.P3.T6 — Demosaic: X-Trans (Markesteijn)
   - files: new `Engine/Nodes/Raw/DemosaicXTrans.h/.cpp`, `Engine/Nodes/Raw/RawDemosaic.cpp`, new `Tests/Native/RawDemosaicXTrans_Test.cpp`
   - approach: port darktable `src/iop/demosaicing/xtrans.c`: 1-pass and 3-pass Markesteijn, plus the fast VNG variant for X-Trans previews. The 6x6 pattern period drives the halo alignment.
   - verify: gtest: on the X-Trans fixture, tiled equals full-frame; the output has no pattern artefacts on a flat patch.
   - size: L
 
-- [ ] M80.P3.T7 — Input colour node (camera to working space)
+- [x] M80.P3.T7 — Input colour node (camera to working space)
   - files: new `Engine/Nodes/Raw/RawInputColor.h/.cpp` + per-node files, `Engine/Project.cpp/.h` (only if a working-space accessor is missing), new `Tests/Native/NativeRawInputColor_Test.cpp`
   - approach: image in, image out, placed after demosaic: a Point op. Camera RGB goes to XYZ D65 through the metadata matrix (`raw/cam_to_xyz`), which the user can override; an ICC/DCP-less "standard matrix" is the fallback. Then XYZ goes to the project working space through the project OCIO (`DESIGN/2026-10-02-project-ocio.md`): build an OCIO matrix transform to the working space rather than hard-coding primaries. Port the matrix handling from darktable `src/iop/colorin.c`, not its ICC profile path.
   - verify: gtest: a grey-card mosaic with the metadata matrix ends neutral in the working space; changing the project working space re-renders.

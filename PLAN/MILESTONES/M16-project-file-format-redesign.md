@@ -421,13 +421,13 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: run after the P8.T15 build against its fast AppImage.
   - size: M
 
-- [ ] M16.P8.T12 — Remove the project entry point from ProjectGuiYaml and its tests
+- [x] M16.P8.T12 — Remove the project entry point from ProjectGuiYaml and its tests
   - files: `Serialization/Yaml/ProjectGuiYaml.h`, `Serialization/Yaml/ProjectGuiYaml.cpp` (`:102-184`, node/viewer/panel emit/read, `encodeProjectGuiYaml` `:618-694`, `decodeProjectGuiYaml` `:697-759`), `Serialization/Yaml/YamlPrivate.h` (`:48`, `:278-279`), `Tests/Serialization/ProjectGuiYaml_Test.cpp`
   - approach: keep only `encodeGuiLayoutYaml`/`decodeGuiLayoutYaml`, `kLayoutYamlFormat` and the window/splitter/pane code. Delete `kGuiYamlFormat`/`kGuiYamlFormatVersion`. Delete `FullyPopulatedGuiRoundTrips` and `NodesAreKeyedByFullyQualifiedName`; keep `LayoutHasItsOwnDocument`; cut `MalformedOrNewerDocumentsAreRefused` to the layout document.
   - verify: compiled at P8.T15; `ProjectGuiYaml.LayoutHasItsOwnDocument`.
   - size: M
 
-- [ ] M16.P8.T13 — Cut ProjectGuiSerialization down to the layout structs
+- [x] M16.P8.T13 — Cut ProjectGuiSerialization down to the layout structs
   - files: `Serialization/ProjectGuiSerialization.h/.cpp`, `Serialization/SerializationFwd.h` (`:46`, `:49`, `:67`), `Serialization/BoostXml/ProjectGuiXml.{h,cpp}` (delete), `Engine/Project.cpp` (`saveLegacyXmlForBenchmark` GUI block `:952-959`, include `:79`), `Tests/ViewerDataSerialization_Test.cpp` and `Tests/NodeGuiUserColorSerialization_Test.cpp` (delete, with `Tests/CMakeLists.txt:213,219`)
   - approach: keep `PaneLayoutSerialization`, `SplitterSerialization`, `ApplicationWindowSerialization`, `GuiLayoutSerialization` and their macros (and `NATRON_SERIALIZATION_PROJECT_SETTINGS_PANEL_NAME` if `.nl` still uses it). Delete `NodeGuiSerialization`, `ViewerDataSerialization`, `PythonPanelSerialization`, `ProjectGuiSerialization` and their macros.
   - verify: compiled at P8.T15; `grep -rn "NodeGuiSerialization\|ProjectGuiSerialization\|ViewerDataSerialization\|gui\.yaml" Engine Gui Serialization Tests` is empty.

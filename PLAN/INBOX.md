@@ -33,3 +33,7 @@
   > Workaround: `NATRON_GPU=off`.
   >
   > Acceptance sketch: after any Natron GL attach and release on the GUI thread, a test checks that `QOpenGLContext::currentContext()` and the GLX current context are what they were before; repeated launches on the NVIDIA desktop never hit the compositor failure.
+
+### 2026-10-23T00:15:41+00:00 — change-request
+- refs: M29
+- This is defunct now, cancel it. I was able to self serve leaving the fork network and this has been done.

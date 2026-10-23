@@ -49,7 +49,6 @@
 
 #include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/Bundle/ZipStore.h"
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/ProjectSerialization.h"
 #include "Serialization/Yaml/ManifestYaml.h"
 #include "Serialization/Yaml/YamlScalars.h"
@@ -172,19 +171,6 @@ makeProject()
     return project;
 }
 
-Serialization::ProjectGuiSerialization
-makeGui()
-{
-    Serialization::ProjectGuiSerialization gui;
-    Serialization::NodeGuiSerialization node;
-    node.nodeName = "RotoPaint1";
-    node.positionX = 100.;
-    node.positionY = -20.;
-    gui.nodes.push_back(node);
-
-    return gui;
-}
-
 BundleManifest
 makeManifest(const std::string& saveDate)
 {
@@ -203,7 +189,6 @@ makeWriter(const std::string& saveDate)
 {
     ProjectBundleWriter writer;
     writer.setProject(makeProject());
-    writer.setGui(makeGui());
     writer.setManifest(makeManifest(saveDate));
 
     return writer;
@@ -268,12 +253,12 @@ TEST(ProjectBundle, MembersAreWrittenInTheirFixedOrder)
     for (const Serialization::ZipMember& member : archive.members()) {
         names.push_back(member.name);
     }
-    const std::vector<std::string> expected = { "mimetype", "manifest.yaml", "project.yaml", "gui.yaml", kStrokeBlob, kTrackBlob };
+    const std::vector<std::string> expected = { "mimetype", "manifest.yaml", "project.yaml", kStrokeBlob, kTrackBlob };
     EXPECT_EQ(expected, names);
     EXPECT_EQ(std::string(Serialization::kNatronProjectMimeType), asText(archive.data("mimetype")));
 
     const BundleManifest manifest = Serialization::decodeManifestYaml(asText(archive.data("manifest.yaml")));
-    ASSERT_EQ(4u, manifest.members.size());
+    ASSERT_EQ(3u, manifest.members.size());
     for (const Serialization::BundleManifestMember& listed : manifest.members) {
         const Serialization::ZipMember* member = archive.find(listed.name);
         ASSERT_TRUE(member) << listed.name;
@@ -294,7 +279,6 @@ TEST(ProjectBundle, RotoAndTrackerBlobsReadBack)
     makeWriter("2026-10-22T10:00:00Z").write(path);
 
     ProjectBundleReader reader(path);
-    EXPECT_TRUE(reader.hasGui());
     EXPECT_TRUE(reader.archive().contains(kStrokeBlob));
     EXPECT_TRUE(reader.archive().contains(kTrackBlob));
     EXPECT_EQ(std::string::npos, std::string(reader.projectYaml()).find("1.01")) << "stroke samples belong in the blob";
@@ -316,11 +300,6 @@ TEST(ProjectBundle, RotoAndTrackerBlobsReadBack)
         EXPECT_EQ(*centerOf(original).dimensions[d].curve, *centerOf(loaded).dimensions[d].curve);
     }
     EXPECT_EQ("RotoPaint1", std::next(loaded.nodes.nodes.begin())->get()->inputs.at("Source"));
-
-    std::optional<Serialization::ProjectGuiSerialization> gui = reader.readGui();
-    ASSERT_TRUE(gui.has_value());
-    ASSERT_EQ(1u, gui->nodes.size());
-    EXPECT_EQ(100., gui->nodes.front().positionX);
 }
 
 TEST(ProjectBundle, AMissingBlobWarnsAndLeavesItsItemEmpty)

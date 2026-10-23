@@ -302,10 +302,6 @@ public:
 
     static QPixmap screenShot(QWidget* w);
 
-    void loadProjectGui(bool isAutosave, const Serialization::ProjectGuiSerialization& serialization) const;
-
-    void saveProjectGui(Serialization::ProjectGuiSerialization* serialization);
-
     void setColorPickersColor(double r, double g, double b, double a);
 
     void registerNewColorPicker(KnobColorPtr knob);

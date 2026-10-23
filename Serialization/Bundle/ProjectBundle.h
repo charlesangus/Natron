@@ -30,7 +30,6 @@
 #include <string_view>
 
 #include "Serialization/Bundle/ZipStore.h"
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/ProjectSerialization.h"
 #include "Serialization/Yaml/BlobSink.h"
 #include "Serialization/Yaml/ManifestYaml.h"
@@ -41,14 +40,13 @@ namespace Serialization {
 
 /**
  * @brief A project bundle (.ntpz): a ZipStore archive whose members are, in this order,
- * `mimetype`, `manifest.yaml`, `project.yaml`, `gui.yaml` when there is GUI state, then the blob
- * members of project.yaml sorted by path. Writing the same project twice gives the same bytes
+ * `mimetype`, `manifest.yaml`, `project.yaml`, then the blob members of project.yaml sorted by
+ * path. Any other member a reader finds is ignored. Writing the same project twice gives the same bytes
  * except for manifest.yaml.
  **/
 
 inline constexpr std::string_view kBundleManifestMember = "manifest.yaml";
 inline constexpr std::string_view kBundleProjectMember = "project.yaml";
-inline constexpr std::string_view kBundleGuiMember = "gui.yaml";
 
 /**
  * @brief Thrown when a file is not a readable project bundle. The message is meant for the user.
@@ -84,14 +82,6 @@ public:
      **/
     void setProject(const ProjectSerialization& project);
 
-    void setGui(const ProjectGuiSerialization& gui);
-
-    /**
-     * @brief Writes text as gui.yaml unchanged: what a save without a GUI uses to keep the GUI
-     * state of the file it loaded. Empty text writes no gui.yaml.
-     **/
-    void setGuiYaml(std::string text);
-
     /**
      * @brief The manifest to write. Its member list is ignored: write() fills in the real one.
      **/
@@ -100,11 +90,6 @@ public:
     const std::string& projectYaml() const
     {
         return _projectYaml;
-    }
-
-    const std::string& guiYaml() const
-    {
-        return _guiYaml;
     }
 
     const MemoryBlobStore& blobs() const
@@ -135,7 +120,6 @@ private:
 
     std::string _projectYaml;
     MemoryBlobStore _blobs;
-    std::string _guiYaml;
     BundleManifest _manifest;
 };
 
@@ -165,24 +149,11 @@ public:
     std::string_view projectYaml() const;
 
     /**
-     * @brief The gui.yaml text, empty when the bundle has none.
-     **/
-    std::string_view guiYaml() const;
-
-    bool hasGui() const;
-
-    /**
      * @brief Decodes project.yaml. A blob member it names that the bundle lacks is reported in
      * warnings and leaves that item's data empty; anything else that does not decode throws
      * YamlError.
      **/
     ProjectSerialization readProject(YamlWarnings* warnings = nullptr) const;
-
-    /**
-     * @brief Decodes gui.yaml, nothing when the bundle has none. Throws YamlError when it does
-     * not decode.
-     **/
-    std::optional<ProjectGuiSerialization> readGui(YamlWarnings* warnings = nullptr) const;
 
     std::optional<std::span<const std::byte>> findMember(std::string_view path) const override;
 

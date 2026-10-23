@@ -137,10 +137,6 @@ public:
     mutable QMutex loadWarningsMutex;
     QStringList loadWarnings; //< problems the last load worked around, see Project::addLoadWarning()
 
-    // The gui.yaml of the loaded bundle, written back unchanged by an app without a GUI so its
-    // saves keep the node positions, viewers and layout. Protected by projectLock.
-    std::string loadedGuiYaml;
-
     // Project::getContentDigest() without the OCIO file stamp, and the state it was computed from.
     mutable QMutex contentDigestMutex; //< protects the contentDigest* fields
     mutable bool contentDigestValid = false;

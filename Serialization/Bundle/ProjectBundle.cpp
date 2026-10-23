@@ -26,7 +26,6 @@
 #include <utility>
 #include <vector>
 
-#include "Serialization/Yaml/ProjectGuiYaml.h"
 #include "Serialization/Yaml/ProjectYaml.h"
 
 NATRON_NAMESPACE_ENTER
@@ -125,18 +124,6 @@ ProjectBundleWriter::setProject(const ProjectSerialization& project)
 }
 
 void
-ProjectBundleWriter::setGui(const ProjectGuiSerialization& gui)
-{
-    _guiYaml = encodeProjectGuiYaml(gui);
-}
-
-void
-ProjectBundleWriter::setGuiYaml(std::string text)
-{
-    _guiYaml = std::move(text);
-}
-
-void
 ProjectBundleWriter::setManifest(const BundleManifest& manifest)
 {
     _manifest = manifest;
@@ -155,9 +142,6 @@ ProjectBundleWriter::manifest() const
         manifest.members.push_back(std::move(member));
     };
     list(kBundleProjectMember, textBytes(_projectYaml));
-    if (!_guiYaml.empty()) {
-        list(kBundleGuiMember, textBytes(_guiYaml));
-    }
     for (const auto& blob : _blobs.members()) {
         list(blob.first, blob.second);
     }
@@ -171,9 +155,6 @@ ProjectBundleWriter::writeMembers(ZipWriter& writer) const
     const std::string manifestYaml = encodeManifestYaml(manifest());
     writer.addMember(kBundleManifestMember, textBytes(manifestYaml));
     writer.addMember(kBundleProjectMember, textBytes(_projectYaml));
-    if (!_guiYaml.empty()) {
-        writer.addMember(kBundleGuiMember, textBytes(_guiYaml));
-    }
     for (const auto& blob : _blobs.members()) {
         writer.addMember(blob.first, blob.second);
     }
@@ -238,34 +219,10 @@ ProjectBundleReader::projectYaml() const
     return bytesText(_archive.data(kBundleProjectMember));
 }
 
-bool
-ProjectBundleReader::hasGui() const
-{
-    return _archive.contains(kBundleGuiMember);
-}
-
-std::string_view
-ProjectBundleReader::guiYaml() const
-{
-    const ZipMember* gui = _archive.find(kBundleGuiMember);
-
-    return gui ? bytesText(_archive.data(*gui)) : std::string_view();
-}
-
 ProjectSerialization
 ProjectBundleReader::readProject(YamlWarnings* warnings) const
 {
     return decodeProjectYaml(projectYaml(), *this, warnings);
-}
-
-std::optional<ProjectGuiSerialization>
-ProjectBundleReader::readGui(YamlWarnings* warnings) const
-{
-    if (!hasGui()) {
-        return std::nullopt;
-    }
-
-    return decodeProjectGuiYaml(guiYaml(), warnings);
 }
 
 std::optional<std::span<const std::byte>>

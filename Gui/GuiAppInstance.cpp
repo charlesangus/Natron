@@ -770,21 +770,22 @@ GuiAppInstance::isShowingDialog() const
 }
 
 void
-GuiAppInstance::loadProjectGui(bool isAutosave,
-                               const Serialization::ProjectGuiSerialization& serialization) const
-{
-    _imp->_gui->loadProjectGui(isAutosave, serialization);
-}
-
-bool
-GuiAppInstance::saveProjectGui(Serialization::ProjectGuiSerialization* serialization)
+GuiAppInstance::onProjectNodesRestored()
 {
     if (!_imp->_gui) {
-        return false;
+        return;
     }
-    _imp->_gui->saveProjectGui(serialization);
-
-    return true;
+    // Every node of every sub-graph, so a Group's own pipes are repainted right after load too.
+    NodesList allNodes;
+    getProject()->getNodes_recursive(allNodes, true);
+    for (NodesList::const_iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
+        NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>((*it)->getNodeGui());
+        if (nodeGui) {
+            nodeGui->refreshEdges();
+            nodeGui->refreshKnobLinks();
+        }
+    }
+    _imp->_gui->centerAllNodeGraphsWithTimer();
 }
 
 void

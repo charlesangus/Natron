@@ -257,12 +257,6 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
 
     if (guiSerialization) {
         gui->fromSerialization(*guiSerialization);
-        if (isPlaceholder) {
-            MissingPluginNode* placeholder = dynamic_cast<MissingPluginNode*>(n->getEffectInstance().get());
-            if (placeholder) {
-                placeholder->setStoredGuiChildren(guiSerialization->nodeName, guiSerialization->children);
-            }
-        }
     }
     QPointF newPos = gui->getPos_mt_safe() + offset;
     gui->setPosition( newPos.x(), newPos.y() );

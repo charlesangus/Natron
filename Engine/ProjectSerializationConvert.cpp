@@ -123,6 +123,46 @@ deepCopyNodeSerialization(const Serialization::NodeSerialization& source)
     return copy;
 }
 
+// A hidden multi-instance child is placed by its parent, so only a node of the project carries a layout.
+void
+layoutToSerialization(const Node& node,
+                      Serialization::NodeLayoutSerialization* layout)
+{
+    *layout = Serialization::NodeLayoutSerialization();
+
+    double x, y;
+    node.getPosition(&x, &y);
+    layout->hasPosition = true;
+    layout->x = x;
+    layout->y = y;
+
+    if (node.hasSize()) {
+        double w, h;
+        node.getSize(&w, &h);
+        layout->hasSize = true;
+        layout->width = w;
+        layout->height = h;
+    }
+
+    if (node.hasUserColor()) {
+        double r, g, b;
+        node.getUserColor(&r, &g, &b);
+        layout->hasColor = true;
+        layout->colorR = (float)r;
+        layout->colorG = (float)g;
+        layout->colorB = (float)b;
+    }
+
+    if (node.hasOverlayColor()) {
+        double r, g, b;
+        node.getStoredOverlayColor(&r, &g, &b);
+        layout->hasOverlayColor = true;
+        layout->overlayR = (float)r;
+        layout->overlayG = (float)g;
+        layout->overlayB = (float)b;
+    }
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 void
@@ -147,6 +187,9 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         serialization->inputs.clear();
         if (serializeInputs) {
             getInputNames(serialization->inputs);
+        }
+        if (getParentMultiInstanceName().empty()) {
+            layoutToSerialization(*this, &serialization->layout);
         }
 
         return;
@@ -238,6 +281,9 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     }
 
     serialization->multiInstanceParentName = getParentMultiInstanceName();
+    if (serialization->multiInstanceParentName.empty()) {
+        layoutToSerialization(*this, &serialization->layout);
+    }
 
     NodesList multiInstanceChildren;
     getChildrenMultiInstance(&multiInstanceChildren);

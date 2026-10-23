@@ -59,11 +59,6 @@ public:
 
     Serialization::NodeSerializationPtr getStoredSerialization() const WARN_UNUSED_RETURN;
 
-    void setStoredGuiChildren(const std::string& nodeName,
-                              const std::list<Serialization::NodeGuiSerializationPtr>& children);
-
-    std::list<Serialization::NodeGuiSerializationPtr> getStoredGuiChildren(std::string* nodeName) const WARN_UNUSED_RETURN;
-
     static std::string getShortPluginName(const std::string& pluginID) WARN_UNUSED_RETURN;
 
     QString getMissingSummary() const WARN_UNUSED_RETURN;
@@ -105,8 +100,6 @@ private:
     std::string _description;
     std::vector<InputSpec> _inputSpecs;
     NodeSpec _spec;
-    std::string _guiChildrenNodeName;
-    std::list<Serialization::NodeGuiSerializationPtr> _guiChildren;
 };
 
 NATRON_NAMESPACE_EXIT

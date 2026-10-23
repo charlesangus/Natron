@@ -367,7 +367,7 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: compiled at P8.T15; P8.T14's headless tests.
   - size: M
 
-- [ ] M16.P8.T3 — Route node layout through Node to/from serialization; drop placeholder GUI children
+- [x] M16.P8.T3 — Route node layout through Node to/from serialization; drop placeholder GUI children
   - files: `Engine/ProjectSerializationConvert.cpp` (`Node::toSerialization` `:129-247`, placeholder branch `:141-152`), `Engine/NodeMain.cpp` (after effect creation ~`:120`, built-in and OFX paths), `Engine/Nodes/MissingPluginNode.h` (`:63-65`, `:109`), `Engine/Nodes/MissingPluginNode.cpp` (`:63-80`)
   - approach: `toSerialization` writes layout for project nodes but not for multi-instance children. The placeholder branch takes layout from the live node, as it already does for label and inputs; its stored children carry their own. `Node::load` applies `serialization->layout` once for every creation path (placeholders, PyPlug containers, paste). Delete `setStoredGuiChildren`/`getStoredGuiChildren` and `_guiChildren`.
   - verify: compiled at P8.T15; `MissingPluginRoundTripTest.*` green and P8.T14's placeholder case passes.

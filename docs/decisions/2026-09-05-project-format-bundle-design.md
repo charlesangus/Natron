@@ -62,3 +62,5 @@ compositor with pipeline users.
   creation is decoupled from deserialization (per-node
   `AppInstance::createNode` + O(K²) knob matching in `Node::loadKnob()`) —
   that decoupling is follow-on work, not part of the format itself.
+
+**Amended 2026-10-10 and 2026-10-23:** connections are sibling-relative, not fully qualified. Group membership is nesting, and `inputs:` names a sibling's script name; only expressions and links stay fully qualified. There is no import bridge for the old XML formats, only an old-format message (see `2026-10-10-project-format-resolved-calls.md`). The bundle has no `gui.yaml`: node layout lives in `project.yaml` and pane layout in `.nl` files.

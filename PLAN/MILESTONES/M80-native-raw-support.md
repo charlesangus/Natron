@@ -161,19 +161,19 @@ Each port names the darktable source file in its `approach` as the reference. Po
 
 ## Phase 80.4: Extra modules
 
-- [ ] M80.P4.T1 — Hot pixels node
+- [x] M80.P4.T1 — Hot pixels node
   - files: new `Engine/Nodes/Raw/RawHotPixels.h/.cpp` + per-node files, new `Tests/Native/NativeRawHotPixels_Test.cpp`
   - approach: port darktable `src/iop/hotpixels.c`: threshold and strength, running on the prepared mosaic with a 2-px halo (Passes).
   - verify: gtest: injected hot pixels on a smooth mosaic are removed, and a clean mosaic comes back bit-identical.
   - size: M
 
-- [ ] M80.P4.T2 — Chromatic aberration node
+- [x] M80.P4.T2 — Chromatic aberration node
   - files: new `Engine/Nodes/Raw/RawCACorrect.h/.cpp` + per-node files, new `Tests/Native/NativeRawCACorrect_Test.cpp`
   - approach: port darktable `src/iop/cacorrect.c` (Bayer; X-Trans passes through with a message). It estimates shifts over the whole image, so it needs the full frame. Cache the shift estimate per (input hash, parameters) instead of recomputing it per tile, and have the RoI request the full input for estimation (Custom op).
   - verify: gtest: a synthetic mosaic with a known channel shift is corrected within a bound; tiled equals full-frame.
   - size: L
 
-- [ ] M80.P4.T3 — Raw denoise node
+- [x] M80.P4.T3 — Raw denoise node
   - files: new `Engine/Nodes/Raw/RawDenoise.h/.cpp` + per-node files, bundled noise-profile data under `Engine/Nodes/Raw/data/`, new `Tests/Native/NativeRawDenoise_Test.cpp`
   - approach: port darktable `src/iop/rawdenoise.c` (wavelet). Ship profile data for the fixture cameras and read the rest from darktable's `noiseprofiles.json` at `DARKTABLE_REF`; record the pinned copy and its licence. Knobs: method, threshold or strength, ISO override.
   - verify: gtest: added Gaussian noise on a smooth mosaic is reduced measurably (PSNR improves), and edges are preserved within a bound.

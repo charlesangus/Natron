@@ -123,7 +123,7 @@ Each port names the darktable source file in its `approach` as the reference. Po
   - verify: gtest: as-shot coefficients reproduce rawspeed's; a custom temperature on a synthetic grey patch with a known matrix gives equal channels after demosaic (checked once P3.T4 lands); an unprepared input raises the stage error.
   - size: M
 
-- [ ] M80.P3.T3 — Highlights node (clip and reconstruct)
+- [x] M80.P3.T3 — Highlights node (clip and reconstruct)
   - files: new `Engine/Nodes/Raw/RawHighlights.h/.cpp` + per-node files, new `Tests/Native/NativeRawHighlights_Test.cpp`
   - approach: port darktable `src/iop/highlights.c`. Modes: clip, unclipped (leave), and reconstruction ("inpaint opposed" at `DARKTABLE_REF`; LCh where the pattern allows). The clip threshold needs the white level and white-balance coefficients from metadata.
   - verify: gtest: a synthetic mosaic with a clipped patch, each mode matching a reference computed from darktable on the same input. The reference is generated once by the P5.T1 harness and stored as a small fixture; the fixture README says how.
@@ -221,31 +221,31 @@ Kernels are Slang under `Engine/Gpu/Kernels/`, each with its own `<kernel>.cmake
   - verify: —
   - size: —
 
-- [ ] M80.P6.T2 — Raw data in GPU regions
+- [x] M80.P6.T2 — Raw data in GPU regions
   - files: `Engine/Gpu/GpuBuffer.*`, `Engine/Gpu/GpuWrap.*`, `Engine/GpuPlacement.*`, `Engine/Nodes/Image/StagedImageEffect.cpp` (raw-in GPU path), new `Tests/Gpu/RawRegionGpu_Test.cpp`
   - approach: let a raw-kind region (1 or 3 channels) live resident on the GPU like an image region, and give kernels the `RawLayout` (pattern period, origin, the 6x6 colour table) as a uniform block. Placement treats raw-kind nodes as eligible only when every op in the run has a GPU path. Scout first whether `GpuBuffer`/`GpuWrap` already handle one channel; report if this needs more than bounded changes.
   - verify: a 1-channel mosaic uploads and reads back bit-exactly; a test kernel reading `colourAt` from the uniform matches the CPU `RawLayout` on every pixel of a Bayer and an X-Trans layout.
   - size: L
 
-- [ ] M80.P6.T3 — Prepare and Temperature kernels
+- [x] M80.P6.T3 — Prepare and Temperature kernels
   - files: new `Engine/Gpu/Kernels/rawprepare.slang`, `rawprepare.cmake`, `Engine/Nodes/Raw/RawPrepare.cpp`, `Engine/Nodes/Raw/RawTemperature.cpp`, new `Tests/Native/NativeRawPrepTempGpu_Test.cpp`
   - approach: one Slang module with two `IPixelOp`s (levels/scale/crop-offset, and per-CFA-colour gains), from darktable's `basic.cl` rawprepare and whitebalance kernels. Wire each node's `gpu()`.
   - verify: GPU parity against the CPU nodes on the Bayer, X-Trans and linear fixtures, within the README's parity tolerance.
   - size: M
 
-- [ ] M80.P6.T4 — Highlights kernels
+- [x] M80.P6.T4 — Highlights kernels
   - files: new `Engine/Gpu/Kernels/rawhighlights.slang`, `rawhighlights.cmake`, `Engine/Nodes/Raw/RawHighlights.cpp`, new `Tests/Native/NativeRawHighlightsGpu_Test.cpp`
   - approach: port darktable's highlights OpenCL (clip, and the reconstruction mode P3.T3 ported). Clip is a Point kernel; reconstruction follows the CPU op's pass structure.
   - verify: GPU parity against the CPU node for each mode on the clipped-patch fixture.
   - size: M
 
-- [ ] M80.P6.T5 — Demosaic PPG and RCD kernels
+- [x] M80.P6.T5 — Demosaic PPG and RCD kernels
   - files: new `Engine/Gpu/Kernels/demosaic_bayer.slang`, `demosaic_bayer.cmake`, `Engine/Nodes/Raw/RawDemosaic.cpp`, `Engine/Nodes/Raw/DemosaicBayer.cpp`, new `Tests/Native/NativeRawDemosaicGpu_Test.cpp`
   - approach: port darktable `demosaic_ppg.cl` and `demosaic_rcd.cl` (multi-pass, local memory) as `PassList::gpu` passes. AMaZE, Markesteijn and VNG report no GPU path, so a chain using them renders on the CPU (M81 - Raw GPU Kernels). Linear pass-through needs no kernel.
   - verify: GPU parity against the CPU node for PPG and RCD on the Bayer fixture; the tiled GPU render equals the full-frame GPU render.
   - size: L
 
-- [ ] M80.P6.T6 — InputColor kernel and resident-chain check
+- [x] M80.P6.T6 — InputColor kernel and resident-chain check
   - files: new `Engine/Gpu/Kernels/rawinputcolor.slang`, `rawinputcolor.cmake`, `Engine/Nodes/Raw/RawInputColor.cpp`, new `Tests/Native/NativeRawChainGpu_Test.cpp`
   - approach: a 3x3 camera→working-space matrix Point kernel (the OCIO matrix baked to the node's parameter block). Then check that the whole Develop chain, Prepare through InputColor with RCD, runs as one resident GPU region with no readback between nodes.
   - verify: GPU parity for InputColor; the chain test shows the end-to-end GPU result within tolerance of the CPU chain and a single upload/readback (from the placement trace).
@@ -292,6 +292,7 @@ Kernels are Slang under `Engine/Gpu/Kernels/`, each with its own `<kernel>.cmake
 - 2026-10-22 — Phase 80.6 code is in `100acfe47` (rebased onto main `448013710`), unchecked until a green build; remote debug build dispatched. The re-dispatched implementer kept the stopped one's work, added the missing `demosaic_bayer.cmake`, renamed Slang locals named `out`, and made `makeGpuQueryForTask()` refuse full-scale-only nodes at proxy levels (they were already refused at region build). `GpuBuffer`/`GpuWrap` needed no change for one channel. The CFA layout travels in each kernel's parameter block (the point-op convention), not a separate uniform buffer. The test-only `rawlayout_probe` entry lives in `rawprepare.slang`, because slangc runs without `-I`. The PPG/RCD reference is `RawDemosaicBasics.cpp` (`DemosaicBayer.cpp` doesn't exist).
 - 2026-10-22 — GPU coverage limits in Phase 80.6: Highlights "Inpaint Opposed" (the default mode, a double-precision whole-frame chroma sum), green equilibration and colour smoothing have no GPU path. So **a default Develop chain renders on the CPU**; the resident-chain test uses Clip and LCh with RCD. The cost model can still split a raw run, and a Dot between raw nodes splits it. Raw nodes have no cost-seed rows (Grade's and Blur's rows apply).
 - 2026-10-23 — Resumed. Lane rebased onto main `bf781cbcd` (M158), no conflicts. The Phase 80.6 build failed only `NativeGpuCapabilityTest.OnlyAllowlistedNativeNodesRenderOnGpu` (RawInputColor now has a GPU path); allowlisted in `2586de5f0`. P5.T1 harness and references are in `54f2a4e19`, unchecked until a green build: darktable 5.6.2 built in a Debian trixie container (Ubuntu's archive unreachable here; LibRaw can't be disabled at 5.6.2, so it is built but unused); 192×192 crops of the CR2 and RAF; tolerances relative to the crop mean, 0.1%/2% (PPG, RCD) and 0.3%/5% (AMaZE, Markesteijn), with darktable's own method-to-method spread for scale in the README. darktable has no "unclipped" highlights mode (that reference is the module off) and can't export a mosaic (the highlights references use the photosite-colour debug demosaic). P3.T3's darktable comparison is `NativeRawHighlightsTest.MatchesTheDarktableReference`. LFS objects uploaded from this host this time.
+- 2026-10-23 — Debug build of `54f2a4e19` (run 40037813655): 356/357 on both legs. Phase 80.6 GPU parity tests and `NativeRawHighlightsTest.MatchesTheDarktableReference` pass, so P3.T3 and P6.T2–T6 are checked. `RawReferenceTest`: PPG, RCD, AMaZE and Markesteijn 1-pass match darktable to 0.013–0.015% mean and 0.11–0.12% max; Markesteijn 3-pass fails on one pixel (crop 95,3: 16.7% against a 5% max), sent to a consultant. The previous build's `SchedulerEquivalence` segfault was a pre-existing `AbortableRenderInfo` timer race (logged to the inbox).
 
 ## Handoff (2026-10-22, PM paused by user)
 

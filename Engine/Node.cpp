@@ -3018,7 +3018,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
     previewEnabled->setHashExempt(true);
     previewEnabled->setAnimationEnabled(false);
     previewEnabled->setAddNewLine(false);
-    previewEnabled->setIsPersistent(false);
+    previewEnabled->setIsPersistent(true);
     previewEnabled->setEvaluateOnChange(false);
     previewEnabled->setHintToolTip( tr("Whether to show a preview on the node box in the node-graph.") );
     settingsPage->addKnob(previewEnabled);
@@ -8374,6 +8374,7 @@ void
 Node::setPosition(double x,
                   double y)
 {
+    setLayoutFromGuiPosition(x, y);
     NodeGuiIPtr gui = _imp->guiPointer.lock();
 
     if (gui) {
@@ -8385,20 +8386,17 @@ void
 Node::getPosition(double *x,
                   double *y) const
 {
-    NodeGuiIPtr gui = _imp->guiPointer.lock();
+    QMutexLocker k(&_imp->layoutMutex);
 
-    if (gui) {
-        gui->getPosition(x, y);
-    } else {
-        *x = 0.;
-        *y = 0.;
-    }
+    *x = _imp->posX;
+    *y = _imp->posY;
 }
 
 void
 Node::setSize(double w,
               double h)
 {
+    setLayoutFromGuiSize(w, h);
     NodeGuiIPtr gui = _imp->guiPointer.lock();
 
     if (gui) {
@@ -8410,14 +8408,18 @@ void
 Node::getSize(double* w,
               double* h) const
 {
-    NodeGuiIPtr gui = _imp->guiPointer.lock();
+    QMutexLocker k(&_imp->layoutMutex);
 
-    if (gui) {
-        gui->getSize(w, h);
-    } else {
-        *w = 0.;
-        *h = 0.;
-    }
+    *w = _imp->sizeW;
+    *h = _imp->sizeH;
+}
+
+bool
+Node::hasSize() const
+{
+    QMutexLocker k(&_imp->layoutMutex);
+
+    return _imp->hasSizeSet;
 }
 
 bool
@@ -8425,17 +8427,28 @@ Node::getColor(double* r,
                double *g,
                double* b) const
 {
+    {
+        QMutexLocker k(&_imp->layoutMutex);
+        if (_imp->userColorSet) {
+            *r = _imp->userColor[0];
+            *g = _imp->userColor[1];
+            *b = _imp->userColor[2];
+
+            return true;
+        }
+    }
     NodeGuiIPtr gui = _imp->guiPointer.lock();
 
     if (gui) {
         gui->getColor(r, g, b);
+
         return true;
-    } else {
-        *r = 0.;
-        *g = 0.;
-        *b = 0.;
-        return false;
     }
+    *r = 0.;
+    *g = 0.;
+    *b = 0.;
+
+    return false;
 }
 
 void
@@ -8445,17 +8458,28 @@ Node::setColor(double r,
 {
     NodeGuiIPtr gui = _imp->guiPointer.lock();
 
-    if (gui) {
-        gui->setColor(r, g, b);
+    if (!gui) {
+        setLayoutFromGuiUserColor(true, r, g, b);
+
+        return;
+    }
+    gui->setColor(r, g, b);
+    // The GUI drops a colour close to the category colour, which only it knows.
+    if (gui->hasUserColor()) {
+        double ur, ug, ub;
+        gui->getUserColor(&ur, &ug, &ub);
+        setLayoutFromGuiUserColor(true, ur, ug, ub);
+    } else {
+        setLayoutFromGuiUserColor(false, 0., 0., 0.);
     }
 }
 
 bool
 Node::hasUserColor() const
 {
-    NodeGuiIPtr gui = _imp->guiPointer.lock();
+    QMutexLocker k(&_imp->layoutMutex);
 
-    return gui && gui->hasUserColor();
+    return _imp->userColorSet;
 }
 
 void
@@ -8463,23 +8487,57 @@ Node::getUserColor(double* r,
                    double* g,
                    double* b) const
 {
-    NodeGuiIPtr gui = _imp->guiPointer.lock();
+    QMutexLocker k(&_imp->layoutMutex);
 
-    if (gui) {
-        gui->getUserColor(r, g, b);
-    } else {
-        *r = *g = *b = 0.;
-    }
+    *r = _imp->userColor[0];
+    *g = _imp->userColor[1];
+    *b = _imp->userColor[2];
 }
 
 void
 Node::resetColor()
 {
+    setLayoutFromGuiUserColor(false, 0., 0., 0.);
     NodeGuiIPtr gui = _imp->guiPointer.lock();
 
     if (gui) {
         gui->clearUserColor();
     }
+}
+
+void
+Node::setLayoutFromGuiPosition(double x,
+                               double y)
+{
+    QMutexLocker k(&_imp->layoutMutex);
+
+    _imp->posX = x;
+    _imp->posY = y;
+}
+
+void
+Node::setLayoutFromGuiSize(double w,
+                           double h)
+{
+    QMutexLocker k(&_imp->layoutMutex);
+
+    _imp->sizeW = w;
+    _imp->sizeH = h;
+    _imp->hasSizeSet = true;
+}
+
+void
+Node::setLayoutFromGuiUserColor(bool hasColor,
+                                double r,
+                                double g,
+                                double b)
+{
+    QMutexLocker k(&_imp->layoutMutex);
+
+    _imp->userColorSet = hasColor;
+    _imp->userColor[0] = hasColor ? r : 0.;
+    _imp->userColor[1] = hasColor ? g : 0.;
+    _imp->userColor[2] = hasColor ? b : 0.;
 }
 
 void

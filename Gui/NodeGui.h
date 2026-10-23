@@ -341,6 +341,7 @@ public:
     void refreshCategoryColor();
 
     void setOverlayColor(const QColor& c);
+    virtual void setOverlayColor(double r, double g, double b) OVERRIDE FINAL;
 
     void refreshKnobsAfterTimeChange(bool onlyTimeEvaluationKnobs, SequenceTime time);
 

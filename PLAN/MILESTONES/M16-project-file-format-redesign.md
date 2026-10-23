@@ -373,7 +373,7 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: compiled at P8.T15; `MissingPluginRoundTripTest.*` green and P8.T14's placeholder case passes.
   - size: M
 
-- [ ] M16.P8.T4 — Make NodeGui mirror Node layout both ways
+- [x] M16.P8.T4 — Make NodeGui mirror Node layout both ways
   - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp` (`initialize` `:382`, `resize` `:1144`, colour setters `:3517-3600`, `setColor` `:3923`), `Gui/BackdropGui.cpp`, `Gui/DockablePanel.cpp` (`:1372-1483`), `Gui/GuiAppInstance.cpp` (`createNodeGui` `:509-545`)
   - approach: Engine is the source of truth; `NodeGui::initialize` applies the stored position, backdrop size and colour. Mirror moves back via `itemChange(ItemPositionHasChanged)` with `ItemSendsGeometryChanges` (also catches the direct `setPos` at `NodeGraph.cpp:426`). Push only user edits (backdrop resize, colour dialog, overlay dialog) — default sizing/colouring must not overwrite stored values, or QColor/int rounding breaks byte-identical re-saves. Overlay colour reads/writes Node, so a later-created panel shows it. In `createNodeGui`, a serialized node with a stored position is placed from it. Remove `restoreCategoryAndUserColor(const NodeGuiSerialization&)`.
   - verify: compiled at P8.T15; P8.T11's Xvfb test (drag a node; Python `getPosition` and saved `project.yaml` agree).

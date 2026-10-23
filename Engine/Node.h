@@ -858,6 +858,12 @@ public:
     bool hasOverlayColor() const;
 
     /**
+     * @brief The overlay colour held by the node itself, without asking its GUI. Meaningful when
+     * hasOverlayColor() is true.
+     **/
+    void getStoredOverlayColor(double* r, double* g, double* b) const;
+
+    /**
      * @brief Store-only counterparts of the setters above, for the node's GUI to mirror its own
      * changes into. They never call back into the GUI.
      **/

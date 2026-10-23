@@ -143,6 +143,18 @@ Node::hasOverlayColor() const
 }
 
 void
+Node::getStoredOverlayColor(double* r,
+                            double* g,
+                            double* b) const
+{
+    QMutexLocker k(&_imp->layoutMutex);
+
+    *r = _imp->overlayColor[0];
+    *g = _imp->overlayColor[1];
+    *b = _imp->overlayColor[2];
+}
+
+void
 Node::setLayoutFromGuiOverlayColor(bool hasColor,
                                    double r,
                                    double g,

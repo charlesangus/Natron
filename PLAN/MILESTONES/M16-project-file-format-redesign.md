@@ -361,7 +361,7 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: compiled at P8.T15; `ProjectYaml.RoundTripsAndReencodesByteIdentically` and the new cases.
   - size: M
 
-- [ ] M16.P8.T2 — Make Engine `Node` own position, size, colour and overlay colour; persist the preview flag
+- [x] M16.P8.T2 — Make Engine `Node` own position, size, colour and overlay colour; persist the preview flag
   - files: `Engine/Node.h` (`:830-845`, `:1447`), `Engine/NodePrivate.h` (`Node::Implementation`, beside `guiPointer` `:507`), `Engine/Node.cpp` (`:8261-8370`; `enablePreview` knob `:2901-2912`), `Engine/NodeOverlay.cpp` (`:105`), `Engine/NodeGuiI.h` (add `setOverlayColor`)
   - approach: store layout in `Node::Implementation` behind its own small mutex (saves can read off the main thread). Public setters (`setPosition`, `setSize`, `setColor`, `resetColor`, new `setOverlayColor`) store then forward to the GUI if any; getters always return the stored value (no more (0,0) headless). Add store-only setters for the GUI to mirror into, so there is no forwarding loop. Backdrop-ness via `dynamic_cast<Backdrop*>` as at `Node.cpp:7377`. No per-render cost. Make the `enablePreview` knob persistent (drop `setIsPersistent(false)`, `:2908`) so it is saved under `knobs:` only when it differs from the default (user decision).
   - verify: compiled at P8.T15; P8.T14's headless tests.

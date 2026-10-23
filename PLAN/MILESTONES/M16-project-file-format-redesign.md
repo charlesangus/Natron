@@ -397,19 +397,19 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: compiled at P8.T15.
   - size: M
 
-- [ ] M16.P8.T8 — Remove gui.yaml from the bundle writer and reader
+- [x] M16.P8.T8 — Remove gui.yaml from the bundle writer and reader
   - files: `Serialization/Bundle/ProjectBundle.h`, `Serialization/Bundle/ProjectBundle.cpp`, `Tests/Serialization/ProjectBundle_Test.cpp`
   - approach: members are `mimetype`, `manifest.yaml`, `project.yaml`, then sorted blobs. Delete `kBundleGuiMember`, `setGui`, `setGuiYaml`, `guiYaml()`, `hasGui`, `readGui`; update the class comment. A stray `gui.yaml` is ignored like any unknown member (no import).
   - verify: compiled at P8.T15; `ProjectBundle.MembersAreWrittenInTheirFixedOrder` with the new list.
   - size: M
 
-- [ ] M16.P8.T9 — Save and load with no GUI section and no headless pass-through
+- [x] M16.P8.T9 — Save and load with no GUI section and no headless pass-through
   - files: `Engine/Project.cpp` (load `:533-552`, save `:803-812`, reset `:2867`, includes `:79`/`:83`), `Engine/ProjectPrivate.h` (`:140-142`), `Engine/AppInstance.h` (`:286-302`)
   - approach: delete `loadedGuiYaml`, the `readGui`/`loadProjectGui` block and the `saveProjectGui` branch. Replace the `loadProjectGui`/`saveProjectGui` virtuals with one hook (e.g. `virtual void onProjectNodesRestored() {}`) called where `loadProjectGui` was.
   - verify: compiled at P8.T15; `BundleLoadTest.*` and `MissingPlugin*` green.
   - size: M
 
-- [ ] M16.P8.T10 — Delete the project-GUI restore and save in Gui
+- [x] M16.P8.T10 — Delete the project-GUI restore and save in Gui
   - files: `Gui/GuiAppInstance.h` (`:126-127`), `Gui/GuiAppInstance.cpp` (`:771-785`), `Gui/Gui.h` (`:305-307`), `Gui/Gui20.cpp` (`:1105-1118`), `Gui/ProjectGui.h` (`:78-86`), `Gui/ProjectGuiSerializationConvert.cpp`
   - approach: delete `restoreNodeGuiFromSerialization` (`:312-434`), `copyNodeGuiSerializationRenamingParent` (`:96-112`), `pythonPanelToSerialization` (`:223`) and `ProjectGui::toSerialization`/`fromSerialization` (`:627-859`) — no more restoring panels, histograms, Python panels, script editor input, selection, viewer state or layout on load. Keep `Gui::toSerialization(GuiLayoutSerialization*)` (`:521`), `Gui::restoreLayout` (`:537`) and their helpers for `.nl`. `GuiAppInstance::onProjectNodesRestored()` keeps only refreshing edges and knob links on every node (`getNodes_recursive`) and `centerAllNodeGraphsWithTimer()`.
   - verify: compiled at P8.T15; P8.T11's Xvfb test.

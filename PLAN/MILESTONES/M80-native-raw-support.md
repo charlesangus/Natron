@@ -77,7 +77,7 @@ Every node is built on the M137 - Native Base Class Flexibility framework (`Node
 
 ## Phase 80.2: Decode and read
 
-- [ ] M80.P2.T1 — rawspeed decode support
+- [x] M80.P2.T1 — rawspeed decode support
   - files: new `Engine/Nodes/IO/RawDecodeSupport.h/.cpp`, new `Tests/Native/RawDecodeSupport_Test.cpp`, new fixtures under `Tests/fixtures/raw/`
   - approach: model it on `OiioReadSupport`. A header cache keyed on (path, mtime, size) holds the parsed `RawImage` metadata behind a mutex. `decode(path, RectI window, float* dst, stride)` copies the window as float. rawspeed decodes whole files, so keep one decoded `RawImage` per cache key in a size-bounded LRU. The cap is a fraction of the project cache, not a constant, so it suits many-core high-RAM machines and modest ones alike. Fill `RawMetadata` from the decoder: CFA (`none` and the real channel count for linear DNGs), black and white levels, as-shot white balance, the camera matrix from `cameras.xml`, and the crop. A camera rawspeed rejects or marks unsupported fails with an error naming the make, model and rawspeed version. All offsets are `size_t`. Fixtures: small CC0 raw files from raw.pixls.us — a Bayer file, an X-Trans RAF and a linear DNG. Record their sources in `Tests/fixtures/raw/README.md`.
   - verify: gtest checks dimensions, CFA pattern, channel count, levels and crop against rawspeed's own output for each fixture. A window decode equals the same window of the full decode, bit for bit. A truncated file fails cleanly, and an unsupported-camera stub gives the named error.

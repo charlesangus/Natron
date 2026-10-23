@@ -379,7 +379,7 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: compiled at P8.T15; P8.T11's Xvfb test (drag a node; Python `getPosition` and saved `project.yaml` agree).
   - size: L
 
-- [ ] M16.P8.T5 — Put clipboard positions on the node data
+- [x] M16.P8.T5 — Put clipboard positions on the node data
   - files: `Serialization/Yaml/ClipboardYaml.h` (`:30`, `:46-60`), `Serialization/Yaml/ClipboardYaml.cpp` (`:46-110`, `:120-195`), `Tests/Serialization/ClipboardYaml_Test.cpp`
   - approach: delete `ClipboardSerialization::nodesUI` and the `gui:` section; layout travels inside each node through P8.T1's schema, group children included. Drop the `ProjectGuiSerialization.h` include. Rewrite `AGroupKeepsTheGraphStatesOfItsNodesAlignedWithThem` to assert child positions under `children:`.
   - verify: compiled at P8.T15; `ClipboardYaml.*`.

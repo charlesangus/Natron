@@ -23,6 +23,7 @@ import re
 import statistics
 import sys
 import time
+import traceback
 
 HEAVY = os.environ.get("BENCH_HEAVY", os.path.join(os.getcwd(), "build", "bench", "heavy.ntpz"))
 OUT = os.environ.get("BENCH_OUT", os.path.join(os.getcwd(), "build", "bench", "results-project-io.jsonl"))
@@ -74,52 +75,64 @@ def measure(name, method, path, written=None):
     return {"median_s": round(median, 6), "runs_s": [round(s, 6) for s in samples], "bytes": size_of(written or path)}
 
 
-os.makedirs(WORK, exist_ok=True)
-os.makedirs(os.path.dirname(OUT), exist_ok=True)
-if not os.path.exists(HEAVY):
-    raise RuntimeError("%s does not exist; run make_heavy_project.py first" % HEAVY)
+def main():
+    os.makedirs(WORK, exist_ok=True)
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    if not os.path.exists(HEAVY):
+        raise RuntimeError("%s does not exist; run make_heavy_project.py first" % HEAVY)
 
-pressure_start = {"load1": load1(), "psi_cpu": pressure_some10("cpu"), "psi_io": pressure_some10("io")}
+    pressure_start = {"load1": load1(), "psi_cpu": pressure_some10("cpu"), "psi_io": pressure_some10("io")}
 
-session = app
-load_median, load_samples = median_time(lambda: app.loadProject(HEAVY))
-loaded = app.loadProject(HEAVY)
-if loaded is not None:
-    session = loaded
-log("load median %.4fs" % load_median)
+    session = app
+    load_median, load_samples = median_time(lambda: app.loadProject(HEAVY))
+    loaded = app.loadProject(HEAVY)
+    if loaded is not None:
+        session = loaded
+    log("load median %.4fs" % load_median)
 
-ntpz_path = os.path.join(WORK, "save.ntpz")
-if not session.saveProjectAs(ntpz_path):
-    raise RuntimeError("could not save " + ntpz_path)
-results = {
-    "ntpz_save": measure("ntpz_save", session.saveProject, ntpz_path),
-    "legacy_xml_save": measure("legacy_xml_save", getattr(session, "saveLegacyXmlForBenchmark", None),
-                               os.path.join(WORK, "legacy.xml")),
-    "autosave": measure("autosave", getattr(session, "autoSaveForBenchmark", None),
-                        os.path.join(WORK, "autosave.ntpz"),
-                        written=os.path.join(WORK, "autosave.ntpz.autosave")),
-}
+    ntpz_path = os.path.join(WORK, "save.ntpz")
+    if not session.saveProjectAs(ntpz_path):
+        raise RuntimeError("could not save " + ntpz_path)
+    results = {
+        "ntpz_save": measure("ntpz_save", session.saveProject, ntpz_path),
+        "legacy_xml_save": measure("legacy_xml_save", getattr(session, "saveLegacyXmlForBenchmark", None),
+                                   os.path.join(WORK, "legacy.xml")),
+        "autosave": measure("autosave", getattr(session, "autoSaveForBenchmark", None),
+                            os.path.join(WORK, "autosave.ntpz"),
+                            written=os.path.join(WORK, "autosave.ntpz.autosave")),
+    }
 
-record = {
-    "bench": "project_io", "heavy": os.path.basename(HEAVY), "heavy_bytes": size_of(HEAVY), "runs": RUNS,
-    "load_median_s": round(load_median, 6), "load_runs_s": [round(s, 6) for s in load_samples],
-    "results": results, "epoch": int(time.time()),
-    "load1_start": pressure_start["load1"], "psi_cpu_start": pressure_start["psi_cpu"],
-    "psi_io_start": pressure_start["psi_io"],
-}
-with open(OUT, "a") as f:
-    f.write(json.dumps(record) + "\n")
-
-
-def cell(value, scale=1000.0, fmt="%.1f"):
-    return "n/a" if value is None else fmt % (value * scale)
+    record = {
+        "bench": "project_io", "heavy": os.path.basename(HEAVY), "heavy_bytes": size_of(HEAVY), "runs": RUNS,
+        "load_median_s": round(load_median, 6), "load_runs_s": [round(s, 6) for s in load_samples],
+        "results": results, "epoch": int(time.time()),
+        "load1_start": pressure_start["load1"], "psi_cpu_start": pressure_start["psi_cpu"],
+        "psi_io_start": pressure_start["psi_io"],
+    }
+    with open(OUT, "a") as f:
+        f.write(json.dumps(record) + "\n")
 
 
-log("%-18s %12s %14s" % ("measurement", "median ms", "bytes"))
-log("%-18s %12s %14s" % ("ntpz load", cell(load_median), size_of(HEAVY)))
-for key, label in (("ntpz_save", "ntpz save"), ("legacy_xml_save", "legacy xml save"), ("autosave", "autosave")):
-    r = results[key]
-    log("%-18s %12s %14s" % (label, cell(r["median_s"]), "n/a" if r["bytes"] is None else r["bytes"]))
-log("appended to " + OUT)
-# A script run with -b renders the project's writers when it ends; the exit skips that.
+    def cell(value, scale=1000.0, fmt="%.1f"):
+        return "n/a" if value is None else fmt % (value * scale)
+
+
+    log("%-18s %12s %14s" % ("measurement", "median ms", "bytes"))
+    log("%-18s %12s %14s" % ("ntpz load", cell(load_median), size_of(HEAVY)))
+    for key, label in (("ntpz_save", "ntpz save"), ("legacy_xml_save", "legacy xml save"), ("autosave", "autosave")):
+        r = results[key]
+        log("%-18s %12s %14s" % (label, cell(r["median_s"]), "n/a" if r["bytes"] is None else r["bytes"]))
+    log("appended to " + OUT)
+
+
+# A script run with -b renders the project's writers when it ends or fails; leaving through os._exit
+# skips that on every path.
+try:
+    main()
+except BaseException:
+    traceback.print_exc()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(1)
+sys.stdout.flush()
 os._exit(0)

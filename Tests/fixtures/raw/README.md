@@ -82,12 +82,14 @@ What darktable 5.6.2 cannot do, and the workarounds:
 ### Tolerances
 
 `RawReference_Test` reports the mean and the largest absolute difference over the three
-channels of the crop, both relative to the reference's mean value there, and bounds each method:
+channels of the crop, both relative to the reference's mean value there. It bounds the mean, and
+the number of pixels whose largest channel difference is over the max bound:
 
-| Method | Mean | Max |
-| --- | --- | --- |
-| PPG, RCD | 0.1 % | 2 % |
-| AMaZE, Markesteijn 1-pass and 3-pass | 0.3 % | 5 % |
+| Method | Mean | Max | Pixels allowed over max |
+| --- | --- | --- | --- |
+| PPG, RCD | 0.1 % | 2 % | 0 |
+| AMaZE | 0.3 % | 5 % | 0 |
+| Markesteijn 1-pass and 3-pass | 0.3 % | 5 % | 36 (0.1 % of the crop) |
 
 A faithful port differs from darktable only by floating-point evaluation order and by the colour
 matrices' rounding (darktable goes through Lab and its own hard-coded profile matrices, Natron
@@ -105,6 +107,18 @@ AMaZE and Markesteijn get the looser bound because their ports carry more float-
 (AMaZE's many divisions and clamps near zero, Markesteijn's homogeneity maps, whose ties can pick
 a different direction for a pixel and move it by a few per cent), which a 0.1 % mean would turn
 into failures that are not bugs.
+
+Markesteijn averages the directions whose 5x5 homogeneity count reaches the largest count less
+an eighth of it, all integers, and each count is a sum of `drv <= 8 * min(drv)` comparisons. One
+comparison flipping by a rounding error moves the threshold or a count by one, which adds or
+drops a direction and moves that pixel by up to about 17 % of the crop's mean level. On the RAF
+crop, scaling every photosite by a random factor within 1e-5 of 1 moves 8 to 17 pixels of the
+3-pass result and 3 to 9 of the 1-pass result over 5 %, where the darktable 1-pass and 3-pass
+references differ by over 5 % at 4619 pixels. Natron's develop chain does not reproduce
+darktable's mosaic bit for bit, and at `DARKTABLE_REF` it puts one 3-pass pixel, (95, 3) from the
+top-left, 16.7 % away. The port run outside Natron on a mosaic rebuilt from the RAF gives
+darktable's value there, and the 1e-5 perturbation moves that pixel by 14 %: the direction with
+the count 108 drops out when the largest count goes from 123 to 124.
 
 `NativeRawHighlightsTest.MatchesTheDarktableReference` compares every photosite of the
 white-balanced mosaic after RawPrepare, RawTemperature and RawHighlights with darktable's, in

@@ -2,7 +2,7 @@
 
 Make a node's metadata (colour layout and components, bit depth, PAR, fps, format, field order) a function of time and view rather than one value per refresh. Today each node keeps one `NodeMetadata` in `EffectInstance::_imp->metadata`. Only the main thread recomputes it, through `Node::refreshAllInputRelatedData` (`Engine/Node.cpp` ~:7945-8003). Every getter (`Engine/EffectInstance.cpp` ~:6413-6540) first runs `refreshInputRelatedDataIfStale()`, which does nothing off the main thread, so render threads read whatever the last refresh left. The derivations that depend on time read `getCurrentTime()`, which on the main thread is the timeline frame (`EffectInstance.cpp` ~:6021-6033). That holds for NativeRead (`Engine/Nodes/IO/NativeRead.cpp` ~:1052), DeepRead (`Engine/Nodes/Deep/DeepRead.cpp` ~:158), NativeWrite (`NativeWrite.cpp` ~:1141), Crop (`Crop.cpp` ~:532), DeepCrop (`DeepCrop.cpp` ~:193) and Reformat (`Reformat.cpp` ~:946): their metadata is whatever frame was current at the last refresh. A keyed Disable is resolved as enabled at every frame (`EffectInstance.cpp` ~:6150-6153), and a Switch reports the widest layout of all its inputs (`getDefaultMetadata`, ~:6238-6410).
 
-The key/value metadata already works per frame: `NativeEffectBase::getOutputMetadata` (`Engine/Nodes/NativeEffectBase.cpp` ~:382-426) caches per (time, view) under the node hash with a leaf lock and a generation check, and Route ops answer with their routed input (`StagedImageEffect.cpp` ~:600-618). This milestone gives `NodeMetadata` the same shape. Each node computes it on request at (time, view), and the actions cache keys it by (hash, time, view). A node that is an identity at a frame reports its input's metadata at the identity time. Native nodes derive it at a time. An OpenFX node keeps one answer per hash, because getClipPreferences has no time. Renders read the metadata snapshotted with their frame's node hashes. That removes the main-thread-only refresh and M100's stale-data abort. Consumers outside the render (Viewer, Write, node graph, Python) ask at an explicit time. Premult is not a metadata field: M43 - Drop Premult Concept removes it. Prior art: Natron 3 (`origin/master` `Engine/EffectInstanceActions.cpp` ~:1933, `getTimeInvariantMetadata_public`) keys metadata by hash from any thread and keeps its side effects on the main thread.
+The key/value metadata already works per frame: `NativeEffectBase::getOutputMetadata` (`Engine/Nodes/NativeEffectBase.cpp` ~:382-426) caches per (time, view) under the node hash with a leaf lock and a generation check, and Route ops answer with their routed input (`StagedImageEffect.cpp` ~:600-618). This milestone gives `NodeMetadata` the same shape. Each node computes it on request at (time, view), and the actions cache keys it by (hash, time, view). A node that is an identity at a frame reports its input's metadata at the identity time. Native nodes derive it at a time. An OpenFX node answers per frame too: getClipPreferences runs once per distinct input-metadata signature (user decision, 2026-10-24). Renders read the metadata snapshotted with their frame's node hashes. That removes the main-thread-only refresh and M100's stale-data abort. Consumers outside the render (Viewer, Write, node graph, Python) ask at an explicit time. Premult is not a metadata field: M43 - Drop Premult Concept removes it. Prior art: Natron 3 (`origin/master` `Engine/EffectInstanceActions.cpp` ~:1933, `getTimeInvariantMetadata_public`) keys metadata by hash from any thread and keeps its side effects on the main thread.
 
 Filed 2026-10-24 by M110 - Remaining Native GPU Ports, on the user's ruling that node metadata is not the same at every frame (M110's `## Decisions`, 2026-10-24). It absorbs M144 - Render-Thread Metadata Refresh (cancelled 2026-10-24), and carries M144's acceptance in Phases 167.3 and 167.6. M110.P3.T4 fixes the Switch's per-frame layers through the components path, ahead of this milestone.
 
@@ -15,7 +15,7 @@ Deps: M100 - Content Node Hashing.
 - The identity rule: a node that is an identity at (time, view) reports its input's metadata at the identity time and view. This covers Switch, integer Dissolve, keyed Disable, Dot and group pass-throughs, and the OpenFX TimeOffset and FrameHold.
 - Every native `getPreferredMetadata` override derives at an explicit (time, view), and no derivation reads `getCurrentTime()`.
 - Renders read the metadata snapshotted per frame, alongside `ParallelRenderArgs::nodeHash`. File, tracker and colour-sampler renders never use stale metadata (M144).
-- OpenFX clip preferences are computed once per hash, on the thread the P1.T1 decision approves.
+- OpenFX clip preferences per frame: getClipPreferences runs once per distinct input-metadata signature (the inputs' metadata merged over every frame the render reads), under a per-instance mutex; answers are cached and each render thread's clips answer from its frame's result. The identity rule applies to OpenFX nodes too.
 - Main-thread UI side effects (channel selectors, the Write's views menu, bit-depth/PAR/FPS warnings, the identity state) are driven from the current frame's answer on a hash change or a frame change, and no render reads them.
 - Viewer, node-graph warnings, Python and Write follow the frame. Write follows the policy the user chooses.
 - Delete `_imp->metadata`, the timeless getters, `refreshMetadata_public/_internal`, the `inputRelatedDataStale` flag with its posted refresh, and M100's viewer stale-data abort.
@@ -25,7 +25,6 @@ Deps: M100 - Content Node Hashing.
 - A premult field in `NodeMetadata`, or any premult tracking: M43 - Drop Premult Concept.
 - Per-frame key/value `ImageMetadata`, which is already per frame (M74, M77). It is touched only where a reader moves to the new API.
 - Snapshotting knob values for a render in progress: pixels computed from live knobs after a mid-render edit. No owner; recorded as a known gap if P3.T7 shows it.
-- Per-frame OpenFX clip preferences: an OpenFX node keeps one answer per hash.
 - The components path and `presentsOnlyPassThroughLayers`, which belong to M110.P3.T4.
 
 **Edge cases:**
@@ -43,7 +42,7 @@ Deps: M100 - Content Node Hashing.
 
 **Assumptions:**
 - `Node::getHashValue()` may be called from any thread. `NativeEffectBase::getOutputMetadata` already relies on this (`NativeEffectBase.h` ~:361-365).
-- OpenFX getClipPreferences can run off the main thread under a per-instance lock with value setting off (Natron 3 does it). P1.T1 checks this.
+- Calling getClipPreferences once per input signature departs from the OpenFX spec ("constant for the duration of an effect", `libs/OpenFX/include/ofxImageEffect.h:333-342`; not a render-thread action, `ofxThreadSafety.rst:26-34`). Real plugins tolerate it: the Support library re-reads clip properties on every call (`ofxsImageEffect.cpp:1904-1931`) and parameters resolve at the per-thread time. `SET_CAN_SET_VALUE` is debug-only, so P1.T1 must find another way to stop parameter writes off the main thread. Known risk: ofxsMultiPlane rebuilds channel menus inside getClipPreferences (`SupportExt/ofxsMultiPlane.cpp:954-956`); those rebuilds are suppressed or deferred off the main thread.
 - The tracker and colour-sampler renders go through `ParallelRenderArgs` with a frozen `nodeHash`. P3.T6 checks this.
 - `OiioReadSupport::readHeader` caches headers, so a per-frame Read answer doesn't reopen the file on every query. P2.T5 checks this.
 - M110.P3.T4 (`fd155a8e5`) is not on main (`9b6196a5c`). M167 rebases onto it when M110 merges; expect conflicts in `EffectInstance.cpp` and `StagedImageEffect.cpp`.
@@ -53,7 +52,7 @@ Deps: M100 - Content Node Hashing.
 
 - [ ] M167.P1.T1 — Spike OpenFX clip preferences off the main thread, and inventory the input-related data
   - files: `Engine/OfxEffectInstance.cpp`, `Engine/OfxEffectInstance.h`, `Tests/OfxClipPreferencesThread_Test.cpp` (new), `Tests/CMakeLists.txt`
-  - approach: Add a test-only entry point that runs `getClipPreferences_safe` from a pool thread under `preferencesLock` (write) with `SET_CAN_SET_VALUE(false)`, without the `assert` at ~:2006. Run it against the natronTest plugins. Grep `build/assets/plugin-src/openfx-misc` at the pinned ref for plugins that set params, or call `syncPrivateData`-style code, in `getClipPreferences`. Inventory into `## Decisions`: every field `refreshAllInputRelatedData` writes, and which thread reads each; every timeless getter call (about 150), classed as render-time, UI-at-current-frame or OpenFX boundary; and what `onSyncPrivateDataRequested` needs (`EffectInstance.cpp` ~:6155-6170). Recommend the thread model for P4.T1.
+  - approach: Add a test-only entry point that runs `getClipPreferences_safe` from a pool thread under `preferencesLock` (write) with `SET_CAN_SET_VALUE(false)`, without the `assert` at ~:2006. Run it against the natronTest plugins. Grep `build/assets/plugin-src/openfx-misc` at the pinned ref for plugins that set params, or call `syncPrivateData`-style code, in `getClipPreferences`. Inventory into `## Decisions`: every field `refreshAllInputRelatedData` writes, and which thread reads each; every timeless getter call (about 150), classed as render-time, UI-at-current-frame or OpenFX boundary; and what `onSyncPrivateDataRequested` needs (`EffectInstance.cpp` ~:6155-6170). Check that per-signature calls on a non-main thread, under a per-instance mutex and while renders hold the preferences read lock, neither deadlock nor write instance members, and find how to block or defer parameter writes and ofxsMultiPlane menu rebuilds there. Recommend the details for P4.T1.
   - verify: at the phase build, the spike test passes under `--repeat until-fail:50` with 16 threads. The inventory is recorded, and the user approves the P4 thread model before P4 starts.
   - size: L
 
@@ -175,27 +174,27 @@ Deps: M100 - Content Node Hashing.
 
 **Phase gate:** one `tools/ci/remote/build.sh fast --tests` is green in both legs, including `SchedulerEquivalence`, `CacheEquivalence`, `TimeVaryingLayers` and `MidRenderEdit`.
 
-## Phase 167.4: OpenFX boundary: one answer per hash
+## Phase 167.4: OpenFX boundary: per-frame answers
 
-- [ ] M167.P4.T1 — OpenFX clip preferences once per hash, on the approved thread model
+- [ ] M167.P4.T1 — Per-signature OpenFX clip preferences under a per-instance mutex
   - files: `Engine/OfxEffectInstance.cpp`, `Engine/OfxEffectInstance.h`, `Engine/EffectInstance.cpp`, `Engine/EffectInstancePrivate.h`
-  - approach: Implement P1.T1's approved model. Working assumption: `getTimeInvariantMetadata()` for an OpenFX node runs `getClipPreferences_safe` from any thread, under the instance's preferences write lock, with value setting allowed only on the main thread. Input clips see their inputs' `getTimeInvariantMetadata()`. `onSyncPrivateDataRequested` moves to the knob-change path on the main thread (`EffectInstance.cpp` ~:6155-6170). For an OpenFX node, `getMetadata(time, view)` is the identity rule's answer or the per-hash answer.
-  - verify: the phase build; `OfxTestPlugin` and `Metadata_Test` unchanged and green.
+  - approach: For an OpenFX node, `getMetadata(time, view)` is the identity rule's answer on pass-through frames; otherwise it builds the input signature — each input's `getMetadata` merged (widest components, deepest depth; PAR and fps from frame t) over every frame `getFramesNeeded` asks for at (time, view) — and looks up a cache keyed by (hash, signature, view), adding time only when the node has animated or expression knobs. On a miss, run `getClipPreferences_safe` under a new per-instance mutex (not the preferences write lock, which renders hold for reading), with the input clips answering the signature through per-thread clip storage, and capture the result without writing instance members. Parameter writes and channel-menu rebuilds off the main thread are blocked or deferred per P1.T1. `onSyncPrivateDataRequested` moves to the knob-change path on the main thread (`EffectInstance.cpp` ~:6155-6170).
+  - verify: the phase build; `OfxTestPlugin` and `Metadata_Test` green.
   - size: L
 
-- [ ] M167.P4.T2 — OpenFX clip properties read the per-hash answers
+- [ ] M167.P4.T2 — OpenFX clip properties answer from the render thread's frame
   - files: `Engine/OfxClipInstance.cpp`, `Engine/OfxClipInstance.h`, `Engine/OfxImageEffectInstance.cpp`, `Engine/OfxImageEffectInstance.h`
-  - approach: Point the timeless reads at the per-hash answers (about 14 in `OfxClipInstance.cpp`, ~:185, 241, 259, 372-434, 475, 530, 570). Output clips read the node's own answer; input clips the connected effect's `getTimeInvariantMetadata()`. Drop `refreshInputRelatedDataIfStale` from `getCurrentMetadata` (~:1835), keeping `dropStaleClipMetadata`.
+  - approach: Store the frame's clip-preferences answer in the per-thread clip storage (`OfxClipInstance.h` ~:268-292) for the render and for any action called on a render thread. The clip getters (~14 in `OfxClipInstance.cpp`, ~:185, 241, 259, 358-434, 475, 530, 570) read it there; the instance-wide answer is only a fallback for actions on the main thread with no frame (computed at the current frame). Fetched frames are converted to the frame's merged layout (~:852-862). Drop `refreshInputRelatedDataIfStale` from `getCurrentMetadata` (~:1835), keeping `dropStaleClipMetadata`.
   - verify: the phase build; `OfxMetadataBridge` and every OpenFX test green.
   - size: L
 
 - [ ] M167.P4.T3 — OpenFX tests across the boundary
   - files: `Tests/OfxPerFrameMetadata_Test.cpp` (new), `Tests/CMakeLists.txt`, `Tests/OfxTestPlugins/natronTest/TraitTestPlugins.cpp`
-  - approach: Add a clip-preferences call counter to a natronTest plugin. Cases: an OpenFX node below a per-frame Switch gets the widest layout at every frame, and getClipPreferences runs once per hash across 100 frames and 16 threads; a native node below an OpenFX FrameWindow identity gets the held frame's metadata; querying from 16 threads while the main thread edits does not deadlock (30 s guard).
+  - approach: Add a clip-preferences call counter to a natronTest plugin. Cases: an OpenFX node below a per-frame Switch (RGB at f1, RGBA at f2) sees RGB at f1 and RGBA at f2, rendered in parallel on 16 threads, and getClipPreferences runs once per distinct signature across 100 frames; a temporal OpenFX plugin (TimeBlur-like test plugin asking for f1 and f2) at f1 gets the merged RGBA layout and both fetched frames in it; a native node below an OpenFX FrameWindow identity gets the held frame's metadata with no getClipPreferences call on identity frames; querying from 16 threads while the main thread edits does not deadlock (30 s guard).
   - verify: the phase build; `OfxPerFrameMetadata` passes `--repeat until-fail:50`.
-  - size: M
+  - size: L
 
-**Phase gate:** one `tools/ci/remote/build.sh fast --tests` is green, with the OpenFX test count and results unchanged from the P3 build apart from the new suite.
+**Phase gate:** one `tools/ci/remote/build.sh fast --tests` is green, with the OpenFX suites unchanged apart from the new one.
 
 ## Phase 167.5: Consumers outside the render
 
@@ -254,6 +253,8 @@ Deps: M100 - Content Node Hashing.
 **Verification gate:** All six phase builds (`tools/ci/remote/build.sh fast --tests`) and a final `tools/ci/remote/build.sh debug --tests` pass in both scheduler legs, including `PerFrameMetadata`, `TimeVaryingLayers`, `SchedulerEquivalence`, `CacheEquivalence`, `MidRenderEdit`, `OfxPerFrameMetadata`, the unchanged OpenFX suites and, once M43 has landed, `PremultAbsence`. `git grep -n -i premult Engine/NodeMetadata.h Engine/NodeMetadata.cpp` is empty. Every grep in P6 is empty. P6.T4's bench and soaks are recorded with no unaccepted regression. The Xvfb viewer check on the release AppImage (format, PAR, fps and channel menu following the frame over a keyed Switch) is shared and approved. If M117 has landed, the GUI bench runs because `Gui/NodeGraph15.cpp` changes.
 
 ## Decisions
+
+- 2026-10-24 — **User decision: per-frame OpenFX metadata.** getClipPreferences runs once per distinct input-metadata signature — the inputs' metadata merged over every frame the render reads, because temporal plugins (TimeBlur, FrameBlend, Retime, TimeOffset, FrameHold) fetch neighbours and reject mismatched formats — under a per-instance mutex, cached by (hash, signature, view[, time when animated]), with each render thread's clips answering from its frame's result. This knowingly departs from the OpenFX spec, which defines clip preferences as constant for an effect; real plugins tolerate it. The identity rule applies to OpenFX nodes too (TimeOffset/FrameHold read another frame, which getClipPreferences can't see, and identity frames skip the call). Rejected: one answer per hash (wrong when upstream varies); a plugin clone per signature (heavy `createInstanceAction`). Phase 167.4 rewritten.
 
 - 2026-10-24 — **User decision: a Write over a range whose metadata varies writes per-file headers.** Each image-sequence file's header follows its own frame's metadata; an OpenFX video writer keeps its per-hash clip preferences and the host converts each frame to them, as today (P5.T4). Open: the user asked whether OpenFX can be handed the correct metadata for the frame it is processing rather than a time-invariant answer; P4's design waits on that analysis, and the identity-rule question for OpenFX follows from it.
 

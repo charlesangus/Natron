@@ -51,18 +51,12 @@ struct ColorPanelLayout {
         Vertical
     };
 
-    enum class Placement {
-        InKnob,
-        BinTop
-    };
-
     // The panel starts in the label column instead of the field column.
     bool extendLeft = false;
 
     // The panel's own lines run on under the row's buttons instead of stopping at their inset.
     bool extendRight = false;
     SliderStyle style = SliderStyle::Natron;
-    Placement placement = Placement::InKnob;
 
     bool operator==(const ColorPanelLayout& other) const;
     bool operator!=(const ColorPanelLayout& other) const;
@@ -108,7 +102,6 @@ public:
     void setExtendLeft(bool extend);
     void setExtendRight(bool extend);
     void setSliderStyle(ColorPanelLayout::SliderStyle style);
-    void setPlacement(ColorPanelLayout::Placement placement);
 
 Q_SIGNALS:
     void layoutChanged();

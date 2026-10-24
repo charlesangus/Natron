@@ -124,7 +124,7 @@ addChoice(QHBoxLayout* layout,
 bool
 ColorPanelLayout::operator==(const ColorPanelLayout& other) const
 {
-    return (extendLeft == other.extendLeft) && (extendRight == other.extendRight) && (style == other.style) && (placement == other.placement);
+    return (extendLeft == other.extendLeft) && (extendRight == other.extendRight) && (style == other.style);
 }
 
 bool
@@ -189,7 +189,6 @@ ColorPanelLayoutDev::createDevBar(QWidget* parent)
     addToggle(layout, "ColorPanelDevExtendLeft", tr("Left"), tr("Start the panel in the label column."), [](const ColorPanelLayout& l) { return l.extendLeft; }, [](bool v) { ColorPanelLayoutDev::instance()->setExtendLeft(v); });
     addToggle(layout, "ColorPanelDevExtendRight", tr("Right"), tr("Run the panel's sliders on under the row's buttons."), [](const ColorPanelLayout& l) { return l.extendRight; }, [](bool v) { ColorPanelLayoutDev::instance()->setExtendRight(v); });
     addChoice(layout, "ColorPanelDevStyle", tr("Slider style"), { { tr("Natron sliders"), (int)ColorPanelLayout::SliderStyle::Natron }, { tr("Custom sliders"), (int)ColorPanelLayout::SliderStyle::Custom }, { tr("Vertical sliders"), (int)ColorPanelLayout::SliderStyle::Vertical } }, [](const ColorPanelLayout& l) { return (int)l.style; }, [](int v) { ColorPanelLayoutDev::instance()->setSliderStyle((ColorPanelLayout::SliderStyle)v); });
-    addChoice(layout, "ColorPanelDevPlacement", tr("Placement"), { { tr("In the knob"), (int)ColorPanelLayout::Placement::InKnob }, { tr("Top of the bin"), (int)ColorPanelLayout::Placement::BinTop } }, [](const ColorPanelLayout& l) { return (int)l.placement; }, [](int v) { ColorPanelLayoutDev::instance()->setPlacement((ColorPanelLayout::Placement)v); });
     layout->addStretch(1);
 
     return bar;
@@ -235,15 +234,6 @@ ColorPanelLayoutDev::setSliderStyle(ColorPanelLayout::SliderStyle style)
     ColorPanelLayout l = _layout;
 
     l.style = style;
-    setLayout(l);
-}
-
-void
-ColorPanelLayoutDev::setPlacement(ColorPanelLayout::Placement placement)
-{
-    ColorPanelLayout l = _layout;
-
-    l.placement = placement;
     setLayout(l);
 }
 

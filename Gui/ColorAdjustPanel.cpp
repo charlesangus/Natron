@@ -223,7 +223,7 @@ bool
 sameLayoutAxes(const ColorPanelLayout& a,
                const ColorPanelLayout& b)
 {
-    return a.extendLeft == b.extendLeft && a.extendRight == b.extendRight && a.style == b.style && a.placement == b.placement;
+    return a.extendLeft == b.extendLeft && a.extendRight == b.extendRight && a.style == b.style;
 }
 
 ColorEdit

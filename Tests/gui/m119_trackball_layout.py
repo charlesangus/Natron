@@ -9,11 +9,11 @@ What it covers, one section each:
 - bounds: on a Grade's gain at a 500 px bin, the Left axis starts the panel in the label column,
   the Right axis runs the Hue slider on to the row's last button while the "g" channel line keeps
   its inset, and a Blur's size row does not move.
-- sizes: every Left x Right x Style x Placement combination at the default bin width and at twice
+- sizes: every Left x Right x Style combination at the default bin width and at twice
   it: a screenshot, the wheel's diameter and the Hue track's length.
 - no-flash: no widget of the Grade panel paints at a geometry other than its settled one while an
   axis is switched (a paint logger, as M44 used for the dropdown).
-- undo: a slider drag in each style and placement is one undo step.
+- undo: a slider drag in each style is one undo step.
 - fresh-engage: global mode starts in C on every fresh engage, and keeps its mode across a knob
   switch while engaged.
 - feedback: for each value of the colorTrackballFeedback preference (Crosshair + reveal, Widget
@@ -23,9 +23,6 @@ What it covers, one section each:
   cycles leave no override cursor.
 - reveal: screenshots of the C, S, T and V graphics, and a press at the screen's corner keeps
   the graphic on screen.
-- bin-top: the bin-top panel bound by the dropdown, Ctrl+E and Ctrl+Down, following the top node,
-  hiding on a node without a colour knob, surviving its node's deletion and a close while engaged,
-  and taking the HUD on a live Placement switch.
 
 Knob widgets carry no object name; KnobGui puts the knob's script name in bold at the start of its
 tooltip, so that is how a knob's widgets are found. The Grade's "Gain" knob is named "white".
@@ -57,7 +54,6 @@ HUD_OFFSET = 16
 REVEAL_DIAMETER = 240
 
 STYLE_NAMES = {0: "Natron", 1: "Custom", 2: "Vertical"}
-PLACEMENT_NAMES = {0: "InKnob", 1: "BinTop"}
 FEEDBACK_NAMES = {0: "CrosshairReveal", 1: "WidgetCursor"}
 
 try:
@@ -316,19 +312,16 @@ try:
             "left": left.isChecked() if left is not None else None,
             "right": right.isChecked() if right is not None else None,
             "style": combo("ColorPanelDevStyle"),
-            "placement": combo("ColorPanelDevPlacement"),
         }
 
-    def set_layout(left=None, right=None, style=None, placement=None):
+    def set_layout(left=None, right=None, style=None):
         if left is not None:
             dev("ColorPanelDevExtendLeft").setChecked(left)
         if right is not None:
             dev("ColorPanelDevExtendRight").setChecked(right)
-        for name, value in (("ColorPanelDevStyle", style), ("ColorPanelDevPlacement", placement)):
-            if value is None:
-                continue
-            c = dev(name)
-            c.setCurrentIndex(c.findData(value))
+        if style is not None:
+            c = dev("ColorPanelDevStyle")
+            c.setCurrentIndex(c.findData(style))
         QApplication.processEvents()
 
     def set_feedback(value):
@@ -337,12 +330,9 @@ try:
 
     def layout_text(l=None):
         l = l or get_layout()
-        return "L=%d R=%d %s %s" % (l["left"], l["right"], STYLE_NAMES.get(l["style"]), PLACEMENT_NAMES.get(l["placement"]))
+        return "L=%d R=%d %s" % (l["left"], l["right"], STYLE_NAMES.get(l["style"]))
 
     # ---- the active adjust panel and its parts -----------------------------------------------------
-
-    def bin_panel():
-        return first_named("ColorTrackballBinPanel")
 
     def drop_stale_wrappers():
         """Collects Python wrappers nothing refers to any more.
@@ -353,29 +343,9 @@ try:
 
     def active_adjust_panel(grade_panel):
         drop_stale_wrappers()
-        bin_adjust = first_named("ColorTrackballBinAdjustPanel", True)
-        if bin_adjust is not None:
-            return bin_adjust
         for w in named("ColorAdjustPanel", True, grade_panel):
             return w
         return None
-
-    def bind_bin(grade_panel):
-        """In BinTop, makes sure the bin-top panel is bound to gain, re-pressing ▾ if a live switch left it unbound.
-
-        Returns whether it was already bound."""
-        if get_layout()["placement"] != 1:
-            return True
-        bp = bin_panel()
-        if bp is not None and bp.isVisible():
-            return True
-        sel = child_named(knob_row(grade_panel, GAIN), "ColorSelectorButton")
-        if sel.isChecked():
-            sel.click()
-            QApplication.processEvents()
-        sel.click()
-        QApplication.processEvents()
-        return False
 
     def all_inside(panel):
         out = []
@@ -617,7 +587,7 @@ try:
         yield ("sleep", PANEL_MS)
         require(dev("ColorPanelDevBar") is not None, "the colour panels have a dev bar",
                 "NATRON_COLOR_PANEL_DEV did not reach Natron")
-        set_layout(False, False, 0, 0, 0, 0)
+        set_layout(False, False, 0)
         gp = panel_of(grade)
         row = knob_row(gp, GAIN)
         require(row is not None, "found the Grade's gain row")
@@ -705,38 +675,32 @@ try:
             got = set_bin_width(width)
             yield ("sleep", SETTLE_MS)
             report("NOTE bin width %d (asked %d)" % (got, width))
-            for placement in (0, 1):
-                for style in (0, 1, 2):
-                    for left in (False, True):
-                        for right in (False, True):
-                            ap = wheels = bp = None
-                            set_layout(left, right, style, placement)
+            for style in (0, 1, 2):
+                for left in (False, True):
+                    for right in (False, True):
+                        ap = wheels = None
+                        set_layout(left, right, style)
+                        yield ("sleep", PANEL_MS)
+                        ap = active_adjust_panel(gp)
+                        d, track = measure(ap)
+                        if d < 0:
+                            ap = None
                             yield ("sleep", PANEL_MS)
-                            if not bind_bin(gp):
-                                report("NOTE %s: the bin-top panel was not up with ▾ open; pressed ▾ again" % layout_text())
-                                yield ("sleep", PANEL_MS)
                             ap = active_adjust_panel(gp)
                             d, track = measure(ap)
-                            if d < 0:
-                                ap = None
-                                yield ("sleep", PANEL_MS)
-                                ap = active_adjust_panel(gp)
-                                d, track = measure(ap)
-                            name = "size-%s-%s-%s-L%dR%d" % ("default" if wi == 0 else "wide", PLACEMENT_NAMES[placement],
-                                                             STYLE_NAMES[style], left, right)
-                            if d < 0:
-                                bp = bin_panel()
-                                wheels = [(w.width(), w.height(), w.isVisible()) for w in live_children(ap if alive(ap) else gp)
-                                          if gt.class_name(w) == "ColorWheelWidget"]
-                                report("NOTE   no wheel: adjust panel %r visible=%r, bin panel visible=%r, wheels %r"
-                                       % (ap.objectName() if alive(ap) else None, alive(ap) and ap.isVisible(),
-                                          bp is not None and bp.isVisible(), wheels))
-                            table.append((width, layout_text(), d, track))
-                            report("NOTE size bin=%d %s: wheel %d px, Hue track %d px" % (got, layout_text(), d, track))
-                            check(px(WHEEL_MIN) - 1 <= d <= px(WHEEL_MAX) + 1 and track > 0,
-                                  "%s at %d px: a %d px wheel in [160, 320] and a %d px Hue track" % (layout_text(), got, d, track))
-                            crop_widget(bin_wrapper(), name)
-        set_layout(False, False, 0, 0)
+                        name = "size-%s-%s-L%dR%d" % ("default" if wi == 0 else "wide",
+                                                         STYLE_NAMES[style], left, right)
+                        if d < 0:
+                            wheels = [(w.width(), w.height(), w.isVisible()) for w in live_children(ap if alive(ap) else gp)
+                                      if gt.class_name(w) == "ColorWheelWidget"]
+                            report("NOTE   no wheel: adjust panel %r visible=%r, wheels %r"
+                                   % (ap.objectName() if alive(ap) else None, alive(ap) and ap.isVisible(), wheels))
+                        table.append((width, layout_text(), d, track))
+                        report("NOTE size bin=%d %s: wheel %d px, Hue track %d px" % (got, layout_text(), d, track))
+                        check(px(WHEEL_MIN) - 1 <= d <= px(WHEEL_MAX) + 1 and track > 0,
+                              "%s at %d px: a %d px wheel in [160, 320] and a %d px Hue track" % (layout_text(), got, d, track))
+                        crop_widget(bin_wrapper(), name)
+        set_layout(False, False, 0)
         set_bin_width(default_width)
         yield ("sleep", SETTLE_MS)
 
@@ -750,43 +714,38 @@ try:
         yield from logged_switch(root, "Style Custom", lambda: set_layout(style=1))
         yield from logged_switch(root, "Style Vertical", lambda: set_layout(style=2))
         yield from logged_switch(root, "Style Natron", lambda: set_layout(style=0))
-        yield from logged_switch(root, "Placement BinTop", lambda: set_layout(placement=1))
-        yield from logged_switch(root, "Placement InKnob", lambda: set_layout(placement=0))
         yield from logged_switch(root, "▾ close", lambda: selector.click())
         yield from logged_switch(root, "▾ open", lambda: selector.click())
 
         # =========================================================================================
         gt.section("undo")
-        for placement in (0, 1):
-            for style in (0, 1, 2):
-                ap = slider = None
-                set_layout(False, False, style, placement)
-                yield ("sleep", PANEL_MS)
-                if not bind_bin(gp):
-                    yield ("sleep", PANEL_MS)
-                set_gain(grade, (1.0, 1.0, 1.0, 1.0))
-                yield ("sleep", SETTLE_MS)
-                v0 = gain_values(grade)
-                ap = active_adjust_panel(gp)
-                slider = line_slider(ap, "Value") if alive(ap) else None
-                label = "%s %s" % (STYLE_NAMES[style], PLACEMENT_NAMES[placement])
-                if not check(slider is not None, "%s: found the Value slider" % label):
-                    continue
-                if style == 2:
-                    start = QPoint(slider.width() // 2, slider.height() * 3 // 4)
-                    drag(slider, start, QPoint(0, -40))
-                else:
-                    start = QPoint(slider.width() // 4, slider.height() // 2)
-                    drag(slider, start, QPoint(40, 0))
-                yield ("sleep", SETTLE_MS)
-                v1 = gain_values(grade)
-                QMetaObject.invokeMethod(gp, "onUndoClicked")
-                yield ("sleep", SETTLE_MS)
-                v2 = gain_values(grade)
-                report("NOTE undo %s: before %r, after drag %r, after one undo %r" % (label, v0, v1, v2))
-                check(v1 != v0, "%s: a Value drag changes gain" % label)
-                check(v2 == v0, "%s: one undo restores gain (the drag is one undo step)" % label)
-        set_layout(False, False, 0, 0)
+        for style in (0, 1, 2):
+            ap = slider = None
+            set_layout(False, False, style)
+            yield ("sleep", PANEL_MS)
+            set_gain(grade, (1.0, 1.0, 1.0, 1.0))
+            yield ("sleep", SETTLE_MS)
+            v0 = gain_values(grade)
+            ap = active_adjust_panel(gp)
+            slider = line_slider(ap, "Value") if alive(ap) else None
+            label = STYLE_NAMES[style]
+            if not check(slider is not None, "%s: found the Value slider" % label):
+                continue
+            if style == 2:
+                start = QPoint(slider.width() // 2, slider.height() * 3 // 4)
+                drag(slider, start, QPoint(0, -40))
+            else:
+                start = QPoint(slider.width() // 4, slider.height() // 2)
+                drag(slider, start, QPoint(40, 0))
+            yield ("sleep", SETTLE_MS)
+            v1 = gain_values(grade)
+            QMetaObject.invokeMethod(gp, "onUndoClicked")
+            yield ("sleep", SETTLE_MS)
+            v2 = gain_values(grade)
+            report("NOTE undo %s: before %r, after drag %r, after one undo %r" % (label, v0, v1, v2))
+            check(v1 != v0, "%s: a Value drag changes gain" % label)
+            check(v2 == v0, "%s: one undo restores gain (the drag is one undo step)" % label)
+        set_layout(False, False, 0)
         yield ("sleep", SETTLE_MS)
 
         # =========================================================================================
@@ -835,7 +794,7 @@ try:
         centre = screen_rect().center()
         for fb in (0, 1):
             name = FEEDBACK_NAMES[fb]
-            set_layout(False, False, 0, 0)
+            set_layout(False, False, 0)
             set_feedback(fb)
             yield ("sleep", SETTLE_MS)
             QCursor.setPos(centre)
@@ -968,7 +927,7 @@ try:
         # =========================================================================================
         gt.section("reveal")
         start_gain = (1.4, 1.1, 0.7, 1.0)
-        set_layout(False, False, 0, 0)
+        set_layout(False, False, 0)
         set_feedback(0)
         yield ("sleep", SETTLE_MS)
         for mode_key, mode in ((Qt.Key_C, "C"), (Qt.Key_S, "S"), (Qt.Key_T, "T"), (Qt.Key_V, "V")):
@@ -1018,141 +977,6 @@ try:
         set_feedback(0)
         yield ("sleep", SETTLE_MS)
 
-        # =========================================================================================
-        gt.section("bin-top")
-        raise_panel(grade)
-        yield ("sleep", PANEL_MS)
-        row = knob_row(gp, GAIN)
-        selector = child_named(row, "ColorSelectorButton")
-        if selector.isChecked():
-            selector.click()
-            yield ("sleep", SETTLE_MS)
-        set_layout(False, False, 0, 1, 0, 0)
-        yield ("sleep", SETTLE_MS)
-        selector.click()
-        yield ("sleep", PANEL_MS)
-        bp = bin_panel()
-        title = first_named("ColorTrackballBinPanelTitle")
-        want = "%s.%s" % (grade.getLabel(), GAIN)
-        check(bp is not None and bp.isVisible(), "BinTop: ▾ shows the bin-top panel")
-        check(title is not None and title.text() == want, "BinTop: it is bound to %s (%r)" % (want, title.text() if title else None))
-        check(not named("ColorAdjustPanel", True, gp), "BinTop: no inline adjust panel in the Grade's panel")
-        check(channel_slider_g(row.parentWidget()) is not None, "BinTop: ▾ still unfolds r/g/b/a inline")
-        wrapper = bin_wrapper()
-        sa = bin_scroll_area(wrapper)
-        if bp is not None and sa is not None:
-            check(bp.geometry().bottom() < sa.geometry().top() + 1,
-                  "BinTop: the panel sits above the bin's scroll area (%s over %s)" % (fmt_rect(bp.geometry()), fmt_rect(sa.geometry())))
-        crop_widget(wrapper, "bintop-bound-gain")
-        selector.click()
-        yield ("sleep", SETTLE_MS)
-        check(bp is None or not bp.isVisible(), "BinTop: ▾ again hides the bin-top panel")
-
-        ctrl_e()
-        yield ("sleep", SETTLE_MS)
-        bp = bin_panel()
-        check(engaged() and bp is not None and bp.isVisible(), "BinTop: Ctrl+E engages and shows the bin-top panel")
-        report("NOTE BinTop Ctrl+E bound to %r" % (title.text() if title else None))
-        h = hud()
-        check(h is not None and h.isVisible() and bp is not None and is_inside(h, bp),
-              "BinTop: the HUD sits in the bin-top panel")
-        send_key(Qt.Key_Down, Qt.ControlModifier)
-        yield ("sleep", SETTLE_MS)
-        next_name = "%s.%s" % (grade.getLabel(), "multiply")
-        report("NOTE BinTop after Ctrl+Down: %r" % (title.text() if title else None))
-        check(title is not None and title.text() != want and title.text().startswith(grade.getLabel() + "."),
-              "BinTop: Ctrl+Down rebinds to the next colour knob (%r; the Grade's order puts %s after gain)"
-              % (title.text() if title else None, next_name))
-        crop_widget(wrapper, "bintop-engaged-ctrl-down")
-        send_key(Qt.Key_Escape)
-        yield ("sleep", SETTLE_MS)
-
-        set_layout(placement=0)
-        yield ("sleep", SETTLE_MS)
-        child_named(knob_row(gp, GAIN), "ColorGlobalModeButton").click()
-        yield ("sleep", SETTLE_MS)
-        h = hud()
-        check(h is not None and h.isVisible() and is_inside(h, gp), "InKnob: the HUD sits under the knob")
-        set_layout(placement=1)
-        yield ("sleep", PANEL_MS)
-        h = hud()
-        bp = bin_panel()
-        check(h is not None and h.isVisible() and bp is not None and is_inside(h, bp),
-              "a live switch to BinTop moves the HUD into the bin-top panel")
-        crop_widget(bin_wrapper(), "bintop-hud-after-live-switch")
-        set_layout(placement=0)
-        yield ("sleep", PANEL_MS)
-        h = hud()
-        check(h is not None and h.isVisible() and is_inside(h, gp) and not (bp is not None and is_inside(h, bp)),
-              "a live switch back to InKnob moves the HUD under the knob")
-        send_key(Qt.Key_Escape)
-        yield ("sleep", SETTLE_MS)
-        set_layout(placement=1)
-        yield ("sleep", SETTLE_MS)
-
-        row = knob_row(gp, GAIN)
-        selector = child_named(row, "ColorSelectorButton")
-        if not selector.isChecked():
-            selector.click()
-        yield ("sleep", PANEL_MS)
-        raise_panel(cc)
-        yield ("sleep", PANEL_MS)
-        bp = bin_panel()
-        title = first_named("ColorTrackballBinPanelTitle")
-        want_cc = "%s.%s" % (cc.getLabel(), CC_GAIN)
-        check(bp is not None and bp.isVisible() and title is not None and title.text() == want_cc,
-              "BinTop: raising the ColorCorrect rebinds to %s (%r)" % (want_cc, title.text() if title else None))
-        crop_widget(bin_wrapper(), "bintop-colorcorrect-top")
-        raise_panel(blur)
-        yield ("sleep", PANEL_MS)
-        bp = bin_panel()
-        check(bp is None or not bp.isVisible(), "BinTop: raising the Blur hides the bin-top panel")
-        crop_widget(bin_wrapper(), "bintop-blur-top")
-
-        raise_panel(grade)
-        yield ("sleep", PANEL_MS)
-        ctrl_e()
-        yield ("sleep", SETTLE_MS)
-        bp = bin_panel()
-        close = first_named("ColorTrackballBinPanelCloseButton")
-        if check(engaged() and bp is not None and bp.isVisible() and close is not None,
-                 "BinTop: engaged with the bin-top panel up"):
-            close.click()
-            yield ("sleep", SETTLE_MS)
-            check(not bp.isVisible(), "BinTop: the close button hides the panel while engaged")
-            report("NOTE after closing the bin-top panel while engaged: engaged=%r, HUD visible=%r"
-                   % (engaged(), hud() is not None and hud().isVisible()))
-            send_key(Qt.Key_Escape)
-            yield ("sleep", SETTLE_MS)
-            ctrl_e() if engaged() else None
-            yield ("sleep", SETTLE_MS)
-        check(not engaged(), "BinTop: global mode is down after the close")
-
-        grade2 = create(GRADE_ID, 900, 0)
-        ok = yield ("until", lambda: panel_of(grade2) is not None, 20.0)
-        yield ("sleep", PANEL_MS)
-        gp2 = panel_of(grade2)
-        sel2 = child_named(knob_row(gp2, GAIN), "ColorSelectorButton") if gp2 is not None else None
-        if check(sel2 is not None, "a second Grade's gain ▾ is found"):
-            sel2.click()
-            yield ("sleep", PANEL_MS)
-            title = first_named("ColorTrackballBinPanelTitle")
-            want2 = "%s.%s" % (grade2.getLabel(), GAIN)
-            check(title is not None and title.text() == want2, "BinTop: bound to %s (%r)" % (want2, title.text() if title else None))
-            name2 = grade2.getScriptName()
-            label2 = grade2.getLabel()
-            grade2.destroy()
-            yield ("sleep", PANEL_MS)
-            check(app.getNode(name2) is None, "the bound Grade was deleted")
-            bp = bin_panel()
-            title = first_named("ColorTrackballBinPanelTitle")
-            report("NOTE after deleting the bound node: bin panel visible=%r, title %r"
-                   % (bp is not None and bp.isVisible(), title.text() if title else None))
-            check(bp is None or not bp.isVisible() or (title is not None and not title.text().startswith(label2 + ".")),
-                  "BinTop: deleting the bound node unbinds it without a crash")
-            crop_widget(bin_wrapper(), "bintop-after-delete")
-        set_layout(False, False, 0, 0, 0, 0)
-        yield ("sleep", SETTLE_MS)
 
         report("NOTE size table (bin width, layout, wheel px, Hue track px):")
         for width, text, d, track in table:

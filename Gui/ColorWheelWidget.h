@@ -56,6 +56,47 @@ class QWheelEvent;
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief The hue ring ColorWheelWidget draws around its disc, shared with every other disc that
+ * wears the same ring. For a widget of size size, the ring's outer edge sits a small margin in
+ * from the shorter side's half, the ring has a fixed width, and the disc starts a small gap
+ * inside it; all three are DPI-scaled widget pixels.
+ **/
+double colorWheelRingOuterRadius(const QSize& size);
+double colorWheelRingInnerRadius(const QSize& size);
+double colorWheelDiscRadius(const QSize& size);
+
+/**
+ * @brief The ring's colours, one entry per degree of plane hue (0 = +x, counter-clockwise): rgb
+ * holds the working-space colour 0.8 of the way to the gamut edge, scaled so its largest channel
+ * is 1, and limit the gamut edge's plane radius itself. Not display-converted.
+ **/
+struct ColorWheelHueTable {
+    std::vector<float> rgb;
+    std::vector<double> limit;
+};
+
+constexpr int kColorWheelHueTableSize = 360;
+
+ColorWheelHueTable buildColorWheelHueTable(const LumaBasis& basis);
+
+/**
+ * @brief The table entry nearest to degrees, any angle accepted.
+ **/
+int colorWheelHueIndex(double degrees);
+
+/**
+ * @brief The anti-aliased ring between innerRadius and outerRadius (widget pixels), rendered at
+ * dpr into a square image 2 * outerRadius wide whose centre is the ring's. converter, when set,
+ * turns the table into display colour first.
+ **/
+QImage renderColorWheelRing(const LumaBasis& basis, double outerRadius, double innerRadius, double dpr, const std::function<void(float* rgb, int count)>& converter);
+
+/**
+ * @brief The dark hairlines at the disc's edge and both edges of the ring.
+ **/
+void drawColorWheelRingOutlines(QPainter& p, const QPointF& centre, double discRadius, double innerRadius, double outerRadius);
+
+/**
  * @brief The trackball colour wheel: a disc of the chroma plane re-centred on the knob's current
  * plane point (the anchor), an absolute hue ring about white around it, the gamut triangle, the
  * Planckian locus (ratio roles) or linear temp/tint axes (Offset), the neutral white marker and
@@ -104,6 +145,7 @@ public:
      * @brief An empty converter means identity.
      **/
     void setDisplayConverter(const DisplayConverter& converter);
+    const DisplayConverter& getDisplayConverter() const;
 
     /**
      * @brief Moves the puck to dq away from the anchor, keeping the frame fixed; past the rim the
@@ -242,7 +284,6 @@ private:
     double devicePixelRatioForCache() const;
     void convertToDisplay(std::vector<float>& rgb) const;
     bool discColour(const PlanePoint& q, double rgb[3]) const;
-    void buildHueTable(std::vector<float>& table) const;
     const QImage& discImage() const;
     const QImage& ringImage() const;
     QColor activeColour() const;

@@ -39,16 +39,14 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/AppManager.h"
 
+#include "Gui/ColorWheelWidget.h"
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
 const double kGrey = kColorPivotGrey;
 const double kPi = 3.14159265358979323846;
-const int kHueTableSize = 360;
 
-const double kMargin = 3.0;
-const double kRingWidth = 12.0;
-const double kRingGap = 2.0;
 const double kPuckRadius = 5.0;
 const double kSizeHint = 240.0;
 
@@ -95,132 +93,6 @@ clamp01(double v)
     return std::min(1.0, std::max(0.0, v));
 }
 
-struct HueTable {
-    std::vector<float> rgb;
-    std::vector<double> limit;
-};
-
-// Same construction as ColorWheelWidget's hue ring: per hue, the largest in-gamut plane radius
-// by bisection, then the colour 0.8 of the way there, scaled so its largest channel is 1.
-HueTable
-buildHueTable(const LumaBasis& basis)
-{
-    HueTable table;
-
-    table.rgb.assign(3 * kHueTableSize, (float)kGrey);
-    table.limit.assign(kHueTableSize, 0.0);
-
-    for (int k = 0; k < kHueTableSize; ++k) {
-        double theta = 2.0 * kPi * k / kHueTableSize;
-        double cx = std::cos(theta);
-        double cy = std::sin(theta);
-        double rgb[3];
-
-        auto inGamut = [&](double s, double out[3]) {
-            ChromaEditResult r = fromPlane(eColorKnobRoleGain, basis, neutralGainValue(), planePoint(s * cx, s * cy), kGrey);
-
-            for (int i = 0; i < 3; ++i) {
-                out[i] = r.value.rgb[i];
-            }
-
-            return r.valid && out[0] >= 0.0 && out[1] >= 0.0 && out[2] >= 0.0;
-        };
-
-        double lo = 0.0;
-        double hi = 1.0;
-
-        if (inGamut(hi, rgb)) {
-            lo = hi;
-        } else {
-            for (int iter = 0; iter < 32; ++iter) {
-                double mid = 0.5 * (lo + hi);
-
-                if (inGamut(mid, rgb)) {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
-            }
-        }
-        table.limit[k] = lo;
-
-        if (!inGamut(0.8 * lo, rgb)) {
-            continue;
-        }
-
-        double m = std::max(rgb[0], std::max(rgb[1], rgb[2]));
-
-        if (m <= 0.0) {
-            continue;
-        }
-        for (int i = 0; i < 3; ++i) {
-            table.rgb[3 * k + i] = (float)(rgb[i] / m);
-        }
-    }
-
-    return table;
-}
-
-int
-hueIndex(double degrees)
-{
-    degrees = std::fmod(degrees, 360.0);
-    if (degrees < 0.0) {
-        degrees += 360.0;
-    }
-
-    return (int)std::floor(degrees * kHueTableSize / 360.0 + 0.5) % kHueTableSize;
-}
-
-// The hue ring ColorWheelWidget draws, reproduced here because its helper is private to it.
-QImage
-renderHueRing(const LumaBasis& basis,
-              double outerRadius,
-              double innerRadius,
-              double dpr,
-              const std::function<void(float*, int)>& converter)
-{
-    int n = (int)std::ceil(2.0 * outerRadius * dpr);
-
-    if (n <= 0) {
-        return QImage();
-    }
-
-    HueTable table = buildHueTable(basis);
-
-    if (converter) {
-        converter(table.rgb.data(), kHueTableSize);
-    }
-
-    QImage image(n, n, QImage::Format_ARGB32);
-
-    image.fill(Qt::transparent);
-
-    double RoDev = outerRadius * dpr;
-    double RiDev = innerRadius * dpr;
-
-    for (int j = 0; j < n; ++j) {
-        for (int i = 0; i < n; ++i) {
-            double dx = (i + 0.5) - RoDev;
-            double dy = (j + 0.5) - RoDev;
-            double r = std::hypot(dx, dy);
-            double coverage = std::min(clamp01(RoDev - r + 0.5), clamp01(r - RiDev + 0.5));
-
-            if (coverage <= 0.0) {
-                continue;
-            }
-
-            double degrees = std::atan2(-dy, dx) * 180.0 / kPi;
-            int k = hueIndex(degrees);
-
-            image.setPixel(i, j, qRgba(toByte(table.rgb[3 * k]), toByte(table.rgb[3 * k + 1]), toByte(table.rgb[3 * k + 2]), (int)(coverage * 255.0 + 0.5)));
-        }
-    }
-    image.setDevicePixelRatio(dpr);
-
-    return image;
-}
-
 void
 normalise(double rgb[3])
 {
@@ -237,7 +109,7 @@ normalise(double rgb[3])
 struct GradientSampler {
     ColorGlobalModeEnum mode;
     const LumaBasis& basis;
-    HueTable hues;
+    ColorWheelHueTable hues;
 
     GradientSampler(ColorGlobalModeEnum m,
                     const LumaBasis& b)
@@ -245,7 +117,7 @@ struct GradientSampler {
         , basis(b)
     {
         if (mode == eColorGlobalModeS) {
-            hues = buildHueTable(basis);
+            hues = buildColorWheelHueTable(basis);
         }
     }
 
@@ -258,8 +130,8 @@ struct GradientSampler {
         switch (mode) {
         case eColorGlobalModeS: {
             double degrees = (u + 1.0) / 2.0 * kHueSpanDegrees;
-            int k = hueIndex(degrees);
-            double theta = 2.0 * kPi * k / kHueTableSize;
+            int k = colorWheelHueIndex(degrees);
+            double theta = 2.0 * kPi * k / kColorWheelHueTableSize;
             double s = clamp01((v + 1.0) / 2.0) * 0.8 * hues.limit[k];
             ChromaEditResult r = fromPlane(eColorKnobRoleGain, basis, neutralGainValue(), planePoint(s * std::cos(theta), s * std::sin(theta)), kGrey);
 
@@ -271,7 +143,7 @@ struct GradientSampler {
             return r.valid;
         }
         case eColorGlobalModeT: {
-            ChromaEditResult r = fromTempTint(eColorKnobRoleGain, basis, neutralGainValue(), -u * kTempRangeMired, v * kTintRange);
+            ChromaEditResult r = fromTempTint(eColorKnobRoleGain, basis, neutralGainValue(), u * kTempRangeMired, v * kTintRange);
 
             for (int i = 0; i < 3; ++i) {
                 rgb[i] = std::max(0.0, r.value.rgb[i]);
@@ -370,19 +242,19 @@ ColorModeDiscWidget::getDiscCentre() const
 double
 ColorModeDiscWidget::getRingOuterRadius() const
 {
-    return std::max(0.0, std::min(width(), height()) / 2.0 - TO_DPIX(kMargin));
+    return colorWheelRingOuterRadius(size());
 }
 
 double
 ColorModeDiscWidget::getRingInnerRadius() const
 {
-    return std::max(0.0, getRingOuterRadius() - TO_DPIX(kRingWidth));
+    return colorWheelRingInnerRadius(size());
 }
 
 double
 ColorModeDiscWidget::getDiscRadius() const
 {
-    return std::max(0.0, getRingInnerRadius() - TO_DPIX(kRingGap));
+    return colorWheelDiscRadius(size());
 }
 
 QPointF
@@ -440,7 +312,7 @@ ColorModeDiscWidget::ringImage() const
     if ((key == _ringKey) || (n <= 0)) {
         return _ring;
     }
-    _ring = renderHueRing(_basis, Ro, getRingInnerRadius(), dpr, _converter);
+    _ring = renderColorWheelRing(_basis, Ro, getRingInnerRadius(), dpr, _converter);
     _ringKey = key;
 
     return _ring;
@@ -564,12 +436,7 @@ ColorModeDiscWidget::paintEvent(QPaintEvent* /*e*/)
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
     p.drawImage(QPointF(c.x() - Ro, c.y() - Ro), ringImage());
     p.drawImage(QPointF(c.x() - R, c.y() - R), gradientImage());
-
-    p.setBrush(Qt::NoBrush);
-    p.setPen(QPen(QColor(21, 21, 21), 1.0));
-    p.drawEllipse(c, R, R);
-    p.drawEllipse(c, Ri, Ri);
-    p.drawEllipse(c, Ro, Ro);
+    drawColorWheelRingOutlines(p, c, R, Ri, Ro);
 
     QPointF pos = getPuckWidgetPos();
     double r = TO_DPIX(kPuckRadius);

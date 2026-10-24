@@ -57,7 +57,6 @@ NATRON_NAMESPACE_ENTER
 namespace {
 const double kGrey = kColorPivotGrey;
 const double kPi = 3.14159265358979323846;
-const int kHueTableSize = 360;
 
 const double kMargin = 3.0;
 const double kRingWidth = 12.0;
@@ -292,6 +291,157 @@ lockKeyTracker()
 }
 } // namespace
 
+double
+colorWheelRingOuterRadius(const QSize& size)
+{
+    return std::max(0.0, std::min(size.width(), size.height()) / 2.0 - TO_DPIX(kMargin));
+}
+
+double
+colorWheelRingInnerRadius(const QSize& size)
+{
+    return std::max(0.0, colorWheelRingOuterRadius(size) - TO_DPIX(kRingWidth));
+}
+
+double
+colorWheelDiscRadius(const QSize& size)
+{
+    return std::max(0.0, colorWheelRingInnerRadius(size) - TO_DPIX(kRingGap));
+}
+
+ColorWheelHueTable
+buildColorWheelHueTable(const LumaBasis& basis)
+{
+    ColorWheelHueTable table;
+
+    table.rgb.assign(3 * kColorWheelHueTableSize, (float)kGrey);
+    table.limit.assign(kColorWheelHueTableSize, 0.0);
+
+    for (int k = 0; k < kColorWheelHueTableSize; ++k) {
+        double theta = 2.0 * kPi * k / kColorWheelHueTableSize;
+        double cx = std::cos(theta);
+        double cy = std::sin(theta);
+        double rgb[3];
+
+        auto inGamut = [&](double s, double out[3]) {
+            ChromaEditResult r = fromPlane(eColorKnobRoleGain, basis, neutralGainValue(), planePoint(s * cx, s * cy), kGrey);
+
+            for (int i = 0; i < 3; ++i) {
+                out[i] = r.value.rgb[i];
+            }
+
+            return r.valid && out[0] >= 0.0 && out[1] >= 0.0 && out[2] >= 0.0;
+        };
+
+        double lo = 0.0;
+        double hi = 1.0;
+
+        if (inGamut(hi, rgb)) {
+            lo = hi;
+        } else {
+            for (int iter = 0; iter < 32; ++iter) {
+                double mid = 0.5 * (lo + hi);
+
+                if (inGamut(mid, rgb)) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+        }
+        table.limit[k] = lo;
+
+        // Backing off the gamut edge keeps a little of the other channels, so neighbouring
+        // hues stay distinguishable instead of collapsing onto the three primaries' corners.
+        if (!inGamut(0.8 * lo, rgb)) {
+            continue;
+        }
+
+        double m = std::max(rgb[0], std::max(rgb[1], rgb[2]));
+
+        if (m <= 0.0) {
+            continue;
+        }
+        for (int i = 0; i < 3; ++i) {
+            table.rgb[3 * k + i] = (float)(rgb[i] / m);
+        }
+    }
+
+    return table;
+}
+
+int
+colorWheelHueIndex(double degrees)
+{
+    degrees = std::fmod(degrees, 360.0);
+    if (degrees < 0.0) {
+        degrees += 360.0;
+    }
+
+    return (int)std::floor(degrees * kColorWheelHueTableSize / 360.0 + 0.5) % kColorWheelHueTableSize;
+}
+
+QImage
+renderColorWheelRing(const LumaBasis& basis,
+                     double outerRadius,
+                     double innerRadius,
+                     double dpr,
+                     const std::function<void(float* rgb, int count)>& converter)
+{
+    int n = (int)std::ceil(2.0 * outerRadius * dpr);
+
+    if (n <= 0) {
+        return QImage();
+    }
+
+    ColorWheelHueTable table = buildColorWheelHueTable(basis);
+
+    if (converter) {
+        converter(table.rgb.data(), kColorWheelHueTableSize);
+    }
+
+    QImage image(n, n, QImage::Format_ARGB32);
+
+    image.fill(Qt::transparent);
+
+    double RoDev = outerRadius * dpr;
+    double RiDev = innerRadius * dpr;
+
+    for (int j = 0; j < n; ++j) {
+        for (int i = 0; i < n; ++i) {
+            double dx = (i + 0.5) - RoDev;
+            double dy = (j + 0.5) - RoDev;
+            double r = std::hypot(dx, dy);
+            double coverage = std::min(clamp01(RoDev - r + 0.5), clamp01(r - RiDev + 0.5));
+
+            if (coverage <= 0.0) {
+                continue;
+            }
+
+            int k = colorWheelHueIndex(std::atan2(-dy, dx) * 180.0 / kPi);
+
+            image.setPixel(i, j, qRgba(toByte(table.rgb[3 * k]), toByte(table.rgb[3 * k + 1]), toByte(table.rgb[3 * k + 2]), (int)(coverage * 255.0 + 0.5)));
+        }
+    }
+    image.setDevicePixelRatio(dpr);
+
+    return image;
+}
+
+void
+drawColorWheelRingOutlines(QPainter& p,
+                           const QPointF& centre,
+                           double discRadius,
+                           double innerRadius,
+                           double outerRadius)
+{
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(QColor(21, 21, 21), 1.0));
+    p.drawEllipse(centre, discRadius, discRadius);
+    p.drawEllipse(centre, innerRadius, innerRadius);
+    p.drawEllipse(centre, outerRadius, outerRadius);
+}
+
 bool
 ColorWheelWidget::DiscCacheKey::operator==(const DiscCacheKey& other) const
 {
@@ -396,6 +546,12 @@ ColorWheelWidget::setDisplayConverter(const DisplayConverter& converter)
     update();
 }
 
+const ColorWheelWidget::DisplayConverter&
+ColorWheelWidget::getDisplayConverter() const
+{
+    return _converter;
+}
+
 void
 ColorWheelWidget::setDragOffset(const PlanePoint& dq)
 {
@@ -473,19 +629,19 @@ ColorWheelWidget::getDiscCentre() const
 double
 ColorWheelWidget::getRingOuterRadius() const
 {
-    return std::max(0.0, std::min(width(), height()) / 2.0 - TO_DPIX(kMargin));
+    return colorWheelRingOuterRadius(size());
 }
 
 double
 ColorWheelWidget::getRingInnerRadius() const
 {
-    return std::max(0.0, getRingOuterRadius() - TO_DPIX(kRingWidth));
+    return colorWheelRingInnerRadius(size());
 }
 
 double
 ColorWheelWidget::getDiscRadius() const
 {
-    return std::max(0.0, getRingInnerRadius() - TO_DPIX(kRingGap));
+    return colorWheelDiscRadius(size());
 }
 
 QPointF
@@ -683,62 +839,6 @@ ColorWheelWidget::discColour(const PlanePoint& q,
     return r.valid;
 }
 
-void
-ColorWheelWidget::buildHueTable(std::vector<float>& table) const
-{
-    table.assign(3 * kHueTableSize, (float)kGrey);
-
-    for (int k = 0; k < kHueTableSize; ++k) {
-        double theta = 2.0 * kPi * k / kHueTableSize;
-        double cx = std::cos(theta);
-        double cy = std::sin(theta);
-        double rgb[3];
-
-        auto inGamut = [&](double s, double out[3]) {
-            ChromaEditResult r = fromPlane(eColorKnobRoleGain, _basis, neutralGainValue(), planePoint(s * cx, s * cy), kGrey);
-
-            for (int i = 0; i < 3; ++i) {
-                out[i] = r.value.rgb[i];
-            }
-
-            return r.valid && out[0] >= 0.0 && out[1] >= 0.0 && out[2] >= 0.0;
-        };
-
-        double lo = 0.0;
-        double hi = 1.0;
-
-        if (inGamut(hi, rgb)) {
-            lo = hi;
-        } else {
-            for (int iter = 0; iter < 32; ++iter) {
-                double mid = 0.5 * (lo + hi);
-
-                if (inGamut(mid, rgb)) {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
-            }
-        }
-
-        // Backing off the gamut edge keeps a little of the other channels, so neighbouring
-        // hues stay distinguishable instead of collapsing onto the three primaries' corners.
-        if (!inGamut(0.8 * lo, rgb)) {
-            continue;
-        }
-
-        double m = std::max(rgb[0], std::max(rgb[1], rgb[2]));
-
-        if (m <= 0.0) {
-            continue;
-        }
-        for (int i = 0; i < 3; ++i) {
-            table[3 * k + i] = (float)(rgb[i] / m);
-        }
-    }
-    convertToDisplay(table);
-}
-
 const QImage&
 ColorWheelWidget::discImage() const
 {
@@ -832,42 +932,7 @@ ColorWheelWidget::ringImage() const
         return _ring;
     }
 
-    std::vector<float> table;
-
-    buildHueTable(table);
-
-    QImage image(n, n, QImage::Format_ARGB32);
-
-    image.fill(Qt::transparent);
-
-    double RoDev = Ro * dpr;
-    double RiDev = Ri * dpr;
-
-    for (int j = 0; j < n; ++j) {
-        for (int i = 0; i < n; ++i) {
-            double dx = (i + 0.5) - RoDev;
-            double dy = (j + 0.5) - RoDev;
-            double r = std::hypot(dx, dy);
-            double coverage = std::min(clamp01(RoDev - r + 0.5), clamp01(r - RiDev + 0.5));
-
-            if (coverage <= 0.0) {
-                continue;
-            }
-
-            double degrees = std::atan2(-dy, dx) * 180.0 / kPi;
-
-            if (degrees < 0.0) {
-                degrees += 360.0;
-            }
-
-            int k = (int)std::floor(degrees * kHueTableSize / 360.0 + 0.5) % kHueTableSize;
-
-            image.setPixel(i, j, qRgba(toByte(table[3 * k]), toByte(table[3 * k + 1]), toByte(table[3 * k + 2]), (int)(coverage * 255.0 + 0.5)));
-        }
-    }
-    image.setDevicePixelRatio(dpr);
-
-    _ring = image;
+    _ring = renderColorWheelRing(_basis, Ro, Ri, dpr, _converter);
     _ringKey = key;
 
     return _ring;
@@ -1025,12 +1090,7 @@ ColorWheelWidget::paintEvent(QPaintEvent* /*e*/)
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
     p.drawImage(QPointF(c.x() - Ro, c.y() - Ro), ringImage());
     p.drawImage(QPointF(c.x() - R, c.y() - R), discImage());
-
-    p.setBrush(Qt::NoBrush);
-    p.setPen(QPen(QColor(21, 21, 21), 1.0));
-    p.drawEllipse(c, R, R);
-    p.drawEllipse(c, Ri, Ri);
-    p.drawEllipse(c, Ro, Ro);
+    drawColorWheelRingOutlines(p, c, R, Ri, Ro);
 
     p.save();
     QPainterPath clip;

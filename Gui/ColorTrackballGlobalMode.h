@@ -60,6 +60,7 @@ class QWheelEvent;
 NATRON_NAMESPACE_ENTER
 
 class ColorTrackballHud;
+class ColorTrackballReveal;
 class WindowHighlightFrame;
 
 /**
@@ -143,6 +144,30 @@ bool colorGlobalModeFeedbackAttachesHud(ColorPanelLayout::Feedback feedback);
 bool colorGlobalModeFeedbackHudFollowsCursor(ColorPanelLayout::Feedback feedback);
 
 /**
+ * @brief Whether a press brings up the mode graphic at the press point for the stroke's length.
+ **/
+bool colorGlobalModeFeedbackRevealsOnPress(ColorPanelLayout::Feedback feedback);
+
+/**
+ * @brief Whether the mode graphic stands in for the pointer from engage to exit.
+ **/
+bool colorGlobalModeFeedbackGraphicIsCursor(ColorPanelLayout::Feedback feedback);
+
+/**
+ * @brief What global mode shows for a feedback at one moment. The crosshair stays pushed under
+ * a blank cursor, which hides it while the mode graphic is the feedback; the graphic either
+ * follows the pointer or stays where it was put.
+ **/
+struct ColorGlobalModeFeedbackState {
+    bool crosshair = false;
+    bool blankCursor = false;
+    bool graphicShown = false;
+    bool graphicFollowsPointer = false;
+};
+
+ColorGlobalModeFeedbackState colorGlobalModeFeedbackState(ColorPanelLayout::Feedback feedback, bool engaged, bool strokeActive);
+
+/**
  * @brief The Feedback and Puck values global mode works with. A change arriving mid-stroke is
  * held until the stroke ends, so one stroke never changes how it is shown halfway through.
  **/
@@ -199,6 +224,33 @@ public:
 private:
     Qt::CursorShape _shape;
     bool _held;
+};
+
+/**
+ * @brief Global mode's two override cursors, the crosshair and the blank one above it, kept in
+ * that order on QApplication's stack whatever order they are asked for in. Both are let go on
+ * destruction.
+ **/
+class ColorGlobalModeCursors {
+public:
+    ColorGlobalModeCursors();
+    ~ColorGlobalModeCursors();
+
+    void sync(bool crosshair, bool blank);
+
+    bool isCrosshairHeld() const
+    {
+        return _crosshair.isHeld();
+    }
+
+    bool isBlankHeld() const
+    {
+        return _blank.isHeld();
+    }
+
+private:
+    ColorGlobalModeOverrideCursor _crosshair;
+    ColorGlobalModeOverrideCursor _blank;
 };
 
 /**
@@ -385,6 +437,8 @@ private:
     void setGear(double gearFactor);
 
     ColorTrackballHud* ensureHud();
+    ColorTrackballReveal* ensureReveal();
+    void syncReveal();
     void showChrome();
     void hideChrome();
     void updateHud();
@@ -440,9 +494,14 @@ private:
     QList<QKeySequence> _passThrough;
 
     ColorGlobalModeFeedbackSwitch _feedback;
-    ColorGlobalModeOverrideCursor _crosshair;
+    ColorGlobalModeCursors _cursors;
+    QPoint _pointerPos;
 
     QPointer<ColorTrackballHud> _hud;
+    QPointer<ColorTrackballReveal> _reveal;
+    bool _revealFollowing;
+    const void* _revealKnob;
+    ColorKnobRoleEnum _revealRole;
     std::vector<QPointer<WindowHighlightFrame>> _highlightFrames;
     QString _endOfListMessage;
     int _targetPosition;

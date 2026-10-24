@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -78,6 +79,9 @@ struct GpuDeviceInfo {
     VkPhysicalDeviceType type = VK_PHYSICAL_DEVICE_TYPE_OTHER;
     uint32_t apiVersion = 0;
     uint32_t physicalDeviceIndex = 0;
+    std::string driverVersion;
+    // Why this device was chosen: the explicit selector that named it, or the ranking that put it first.
+    std::string selectionReason;
 
     uint32_t computeFamily = 0;
     // Family of the upload and download queues: a transfer-only family when the device has one, else computeFamily.
@@ -114,6 +118,27 @@ struct GpuDeviceInfo {
 // GPU, or a CPU implementation such as lavapipe. A discrete card with Resizable BAR also exposes a device-local,
 // host-visible type covering its whole heap, but reaching that memory still crosses PCIe.
 bool isUnifiedMemory(VkPhysicalDeviceType type);
+
+struct GpuDeviceCandidate {
+    uint32_t index = 0;
+    VkPhysicalDeviceType type = VK_PHYSICAL_DEVICE_TYPE_OTHER;
+    // Size of the largest device-local memory heap.
+    uint64_t deviceLocalHeapSize = 0;
+    std::string name;
+    bool meetsRequirements = false;
+};
+
+struct GpuAutoPick {
+    // Position in the candidate list, not GpuDeviceCandidate::index.
+    size_t candidate = 0;
+    std::string reason;
+};
+
+// The automatic choice: best type (discrete, integrated, virtual, cpu, other), then the larger device-local heap, then
+// the lower index, so it does not depend on the loader's enumeration order. Candidates that fail the requirements are
+// never picked. A CPU-type device is picked when nothing better qualifies; refusing it in auto mode is the caller's
+// policy. Empty when no candidate qualifies.
+std::optional<GpuAutoPick> pickAutoDevice(const std::vector<GpuDeviceCandidate>& candidates);
 
 class GpuDevice {
 public:

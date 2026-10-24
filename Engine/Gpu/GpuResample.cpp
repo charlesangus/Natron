@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <string>
 
@@ -200,6 +201,50 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
         return s;
     }
     return ctx.dispatch(GpuKernelId::resample_blur, { src, r.dst.buffer, matrices }, p, { p.width, p.height, 1 });
+}
+
+GpuStatus
+recordOffset(GpuRecordContext& ctx, const GpuOffset& o)
+{
+    if (o.channels == 0 || o.channels > kGpuResampleMaxChannels) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, "recordOffset: unsupported channel count" };
+    }
+    if (!o.dst.buffer || o.output.empty() || !contains(o.dst.bounds, o.output)) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "recordOffset: invalid destination window" };
+    }
+
+    GpuOffsetParams p {};
+    p.width = uint32_t(o.output.x2 - o.output.x1);
+    p.height = uint32_t(o.output.y2 - o.output.y1);
+    p.dstStride = o.dst.strideFloats;
+    p.nComps = o.channels;
+    if (!floatIndex(o.dst, o.output.x1, o.output.y1, o.channels, p.dstOffset)) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "recordOffset: destination exceeds 32-bit indexing" };
+    }
+
+    bool srcValid = o.src.buffer && !o.src.bounds.empty();
+    if (srcValid) {
+        const int64_t sx0 = int64_t(o.output.x1) - o.dx;
+        const int64_t sy0 = int64_t(o.output.y1) - o.dy;
+        const auto threads = [](int64_t v, uint32_t n) { return uint32_t(std::clamp<int64_t>(v, 0, int64_t(n))); };
+        p.validX1 = threads(int64_t(o.src.bounds.x1) - sx0, p.width);
+        p.validX2 = threads(int64_t(o.src.bounds.x2) - sx0, p.width);
+        p.validY1 = threads(int64_t(o.src.bounds.y1) - sy0, p.height);
+        p.validY2 = threads(int64_t(o.src.bounds.y2) - sy0, p.height);
+        srcValid = p.validX1 < p.validX2 && p.validY1 < p.validY2;
+        if (srcValid) {
+            p.srcStride = o.src.strideFloats;
+            if (!floatIndex(o.src, int32_t(sx0 + p.validX1), int32_t(sy0 + p.validY1), o.channels, p.srcOffset)) {
+                return { VK_ERROR_INITIALIZATION_FAILED, "recordOffset: source exceeds 32-bit indexing" };
+            }
+        } else {
+            p.validX1 = p.validX2 = p.validY1 = p.validY2 = 0;
+        }
+    }
+
+    // An invalid source is never read, but the binding still needs a buffer.
+    const GpuBuffer* src = srcValid ? o.src.buffer : o.dst.buffer;
+    return ctx.dispatch(GpuKernelId::offset, { src, o.dst.buffer }, p, { p.width, p.height, 1 });
 }
 
 } // namespace gpu

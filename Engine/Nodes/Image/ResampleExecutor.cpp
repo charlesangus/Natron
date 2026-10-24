@@ -308,6 +308,68 @@ gpuSamplingTransforms(const EffectInstance& effect,
 
     return true;
 }
+
+// Records the matrix form's resample of source through transforms into dst over rect.
+bool
+recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
+                        const ResampleSettings& settings,
+                        const Resampler::SamplingTransforms& transforms,
+                        bool draftMode,
+                        int nComps,
+                        const GpuImageView& source,
+                        const GpuImageView& dst,
+                        const RectI& rect)
+{
+    const Resampler::FilterEnum filter = draftMode ? Resampler::eFilterImpulse : settings.filter;
+    gpu::GpuResample resample;
+    if (source.buffer) {
+        resample.src = PassExec::toGpuBlurImage(source);
+    }
+    resample.channels = (uint32_t)nComps;
+    resample.filter = (uint32_t)filter;
+    resample.clamp = settings.clamp && Resampler::filterHonoursClamp(filter);
+    resample.blackOutside = settings.blackOutside;
+    resample.matrices.resize(transforms.invTransforms.size());
+    for (std::size_t i = 0; i < transforms.invTransforms.size(); ++i) {
+        const Mat3& H = transforms.invTransforms[i];
+        gpu::GpuResampleMatrix& m = resample.matrices[i];
+        for (int k = 0; k < 6; ++k) {
+            m.matrix[k] = H.m[k];
+        }
+        if (!transforms.alphas.empty()) {
+            m.weight = transforms.alphas[i];
+        }
+        // The Jacobian the CPU samples with, by which axes fall inside the source.
+        for (int state = 1; state < 4; ++state) {
+            const bool x = (state & 1) != 0;
+            const bool y = (state & 2) != 0;
+            const double Jxx = x ? H(0, 0) : 0.;
+            const double Jxy = x ? H(0, 1) : 0.;
+            const double Jyx = y ? H(1, 0) : 0.;
+            const double Jyy = y ? H(1, 1) : 0.;
+            gpu::GpuResampleJacobian& j = m.jacobians[state];
+            j.zero = (Jxx == 0.) && (Jxy == 0.) && (Jyx == 0.) && (Jyy == 0.);
+            int levelX = 0;
+            int levelY = 0;
+            if (!j.zero && Resampler::supersampleLevels(Jxx, Jxy, Jyx, Jyy, &levelX, &levelY)) {
+                j.levelX = (uint32_t)levelX;
+                j.levelY = (uint32_t)levelY;
+            }
+        }
+    }
+    if (resample.matrices.size() > 1) {
+        const double quality = transforms.motionBlur;
+        resample.blur.minSamples = (uint32_t)Resampler::motionBlurMinSamples(quality);
+        resample.blur.maxIterations = (uint32_t)Resampler::motionBlurMaxIterations(quality);
+        resample.blur.maxError = Resampler::motionBlurMaxError(quality);
+        resample.blur.seedOffset = (uint32_t)(unsigned int)(0x10000 * quality);
+        resample.blur.weighted = !transforms.alphas.empty();
+    }
+    resample.dst = PassExec::toGpuBlurImage(dst);
+    resample.output = PassExec::toGpuBlurRect(rect);
+
+    return bool(gpu::recordResample(ctx, resample));
+}
 #endif // NATRON_HAVE_GPU
 } // anonymous namespace
 
@@ -678,7 +740,13 @@ canRecordResampleGpu(const EffectInstance& effect,
                      const ResampleRequest& request)
 {
 #ifdef NATRON_HAVE_GPU
-    if (!canRunStagesGpu(plan, query) || (query.nComps > (int)gpu::kGpuResampleMaxChannels) || query.hasConcatenatedInput) {
+    if (!canRunStagesGpu(plan, query) || (query.nComps > (int)gpu::kGpuResampleMaxChannels)) {
+        return false;
+    }
+    if (request.form == ResampleRequest::Form::Offset) {
+        return !request.rowMatte;
+    }
+    if (query.hasConcatenatedInput) {
         return false;
     }
     Resampler::SamplingTransforms transforms;
@@ -697,8 +765,6 @@ canRecordResampleGpu(const EffectInstance& effect,
 RectI
 resampleGpuSourceRoI(const EffectInstance& effect,
                      int sourceInput,
-                     const ResampleRequest& request,
-                     const ResampleRegionStages& stages,
                      double time,
                      ViewIdx view,
                      const RectI& outputRect,
@@ -709,9 +775,15 @@ resampleGpuSourceRoI(const EffectInstance& effect,
         return outputRect;
     }
     const RectD window = outputRect.toCanonical_noClipping(scale.toMipmapLevel(), effect.getAspectRatio(-1));
+    // The region actions only read knobs and the inputs' regions of definition.
+    EffectInstance& self = const_cast<EffectInstance&>(effect);
+    RectD rod;
+    bool isProjectFormat = false;
+    if (self.getRegionOfDefinition_public(self.getRenderHash(), time, scale, view, &rod, &isProjectFormat) == eStatusFailed) {
+        rod = window;
+    }
     RoIMap rois;
-    // Computing the region only reads knobs and the inputs' regions of definition.
-    resampleRegionsOfInterest(const_cast<EffectInstance&>(effect), sourceInput, request, stages, time, scale, window, view, &rois);
+    self.getRegionsOfInterest_public(time, scale, rod, window, view, &rois);
     RoIMap::const_iterator found = rois.find(input);
     if (found == rois.end()) {
         return outputRect;
@@ -724,8 +796,7 @@ StatusEnum
 recordResampleGpu(EffectInstance& effect,
                   const StagePlan& plan,
                   const GpuRenderArgs& args,
-                  const ResampleRequest& request,
-                  const ResampleRegionStages& stages)
+                  const ResampleRequest& request)
 {
 #ifdef NATRON_HAVE_GPU
     const GpuQuery& query = args.query;
@@ -735,17 +806,18 @@ recordResampleGpu(EffectInstance& effect,
     if (!canRecordResampleGpu(effect, plan, query, request) || rect.isNull() || !PassExec::isUsableGpuView(args.output, nComps) || !args.output.bounds.contains(rect)) {
         return eStatusFailed;
     }
+    const bool matrix = request.form == ResampleRequest::Form::Matrix;
     const double time = query.time;
     const RenderScale& scale = query.mappedScale;
     Resampler::SamplingTransforms transforms;
-    if (!gpuSamplingTransforms(effect, sourceInput, request, time, scale, &transforms)) {
+    if (matrix && !gpuSamplingTransforms(effect, sourceInput, request, time, scale, &transforms)) {
         return eStatusFailed;
     }
-    const ResampleSettings& settings = request.settings;
-    const Resampler::FilterEnum filter = query.draftMode ? Resampler::eFilterImpulse : settings.filter;
 
-    // runResampleCpu() is handed the source over its region of interest clipped to the source's
-    // region of definition, and the filters clamp to and read zero outside exactly that.
+    // runResampleCpu() reads the source it is handed, clipped to its region of definition, and the
+    // filters clamp to and read zero outside exactly that. Its matrix form is handed the source
+    // over its region of interest; its offset form reads past that region unless the request
+    // clips to it.
     GpuImageView source;
     EffectInstancePtr input = effect.getInput(sourceInput);
     if (input && (sourceInput < (int)args.inputs.size()) && args.inputs[sourceInput].buffer) {
@@ -755,55 +827,12 @@ recordResampleGpu(EffectInstance& effect,
         }
         RectD srcRoD;
         if (sourceRegionOfDefinition(input, time, scale, query.view, &srcRoD)) {
-            const RectI srcRoI = resampleGpuSourceRoI(effect, sourceInput, request, stages, time, query.view, rect, scale);
-            const RectI valid = intersectPixels(intersectPixels(inputView.bounds, clampedPixelEnclosing(srcRoD, scale, effect.getAspectRatio(sourceInput))), srcRoI);
+            RectI valid = intersectPixels(inputView.bounds, clampedPixelEnclosing(srcRoD, scale, effect.getAspectRatio(sourceInput)));
+            if (matrix || request.clipSourceToRoI) {
+                valid = intersectPixels(valid, resampleGpuSourceRoI(effect, sourceInput, time, query.view, rect, scale));
+            }
             source = PassExec::cropGpuView(inputView, valid);
         }
-    }
-
-    gpu::GpuResample resample;
-    if (source.buffer) {
-        resample.src = PassExec::toGpuBlurImage(source);
-    }
-    resample.channels = (uint32_t)nComps;
-    resample.filter = (uint32_t)filter;
-    resample.clamp = settings.clamp && Resampler::filterHonoursClamp(filter);
-    resample.blackOutside = settings.blackOutside;
-    resample.matrices.resize(transforms.invTransforms.size());
-    for (std::size_t i = 0; i < transforms.invTransforms.size(); ++i) {
-        const Mat3& H = transforms.invTransforms[i];
-        gpu::GpuResampleMatrix& m = resample.matrices[i];
-        for (int k = 0; k < 6; ++k) {
-            m.matrix[k] = H.m[k];
-        }
-        if (!transforms.alphas.empty()) {
-            m.weight = transforms.alphas[i];
-        }
-        // The Jacobian the CPU samples with, by which axes fall inside the source.
-        for (int state = 1; state < 4; ++state) {
-            const bool x = (state & 1) != 0;
-            const bool y = (state & 2) != 0;
-            const double Jxx = x ? H(0, 0) : 0.;
-            const double Jxy = x ? H(0, 1) : 0.;
-            const double Jyx = y ? H(1, 0) : 0.;
-            const double Jyy = y ? H(1, 1) : 0.;
-            gpu::GpuResampleJacobian& j = m.jacobians[state];
-            j.zero = (Jxx == 0.) && (Jxy == 0.) && (Jyx == 0.) && (Jyy == 0.);
-            int levelX = 0;
-            int levelY = 0;
-            if (!j.zero && Resampler::supersampleLevels(Jxx, Jxy, Jyx, Jyy, &levelX, &levelY)) {
-                j.levelX = (uint32_t)levelX;
-                j.levelY = (uint32_t)levelY;
-            }
-        }
-    }
-    if (resample.matrices.size() > 1) {
-        const double quality = transforms.motionBlur;
-        resample.blur.minSamples = (uint32_t)Resampler::motionBlurMinSamples(quality);
-        resample.blur.maxIterations = (uint32_t)Resampler::motionBlurMaxIterations(quality);
-        resample.blur.maxError = Resampler::motionBlurMaxError(quality);
-        resample.blur.seedOffset = (uint32_t)(unsigned int)(0x10000 * quality);
-        resample.blur.weighted = !transforms.alphas.empty();
     }
 
     // Without a mask, a mix or a channel left out, the resampled pixels are the output.
@@ -819,18 +848,31 @@ recordResampleGpu(EffectInstance& effect,
             return eStatusFailed;
         }
     }
-    resample.dst = PassExec::toGpuBlurImage(filtered);
-    resample.output = PassExec::toGpuBlurRect(rect);
-    if (!gpu::recordResample(ctx, resample)) {
-        return eStatusFailed;
+    if (matrix) {
+        if (!recordResampleMatrixGpu(ctx, request.settings, transforms, query.draftMode, nComps, source, filtered, rect)) {
+            return eStatusFailed;
+        }
+    } else {
+        gpu::GpuOffset shift;
+        if (source.buffer) {
+            shift.src = PassExec::toGpuBlurImage(source);
+        }
+        shift.dst = PassExec::toGpuBlurImage(filtered);
+        shift.output = PassExec::toGpuBlurRect(rect);
+        shift.channels = (uint32_t)nComps;
+        shift.dx = request.offset.x;
+        shift.dy = request.offset.y;
+        if (!gpu::recordOffset(ctx, shift)) {
+            return eStatusFailed;
+        }
     }
     if (!finish) {
         return eStatusOK;
     }
     ctx.computeBarrier();
 
-    // The reference the stages blend against is the source under the output pixel, as the
-    // resample read it.
+    // The reference the stages blend against, and pass unprocessed channels through from, is the
+    // source under the output pixel, unshifted, as the resample read it.
     GpuRenderArgs wrapArgs(args);
     if (sourceInput < (int)wrapArgs.inputs.size()) {
         wrapArgs.inputs[sourceInput] = source;
@@ -842,7 +884,6 @@ recordResampleGpu(EffectInstance& effect,
     Q_UNUSED(plan);
     Q_UNUSED(args);
     Q_UNUSED(request);
-    Q_UNUSED(stages);
 
     return eStatusFailed;
 #endif

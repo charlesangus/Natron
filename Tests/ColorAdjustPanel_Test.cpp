@@ -30,16 +30,11 @@
 #include <vector>
 
 #include <QApplication>
-#include <QCheckBox>
 #include <QColor>
-#include <QComboBox>
-#include <QImage>
 #include <QKeyEvent>
 #include <QMouseEvent>
-#include <QPixmap>
 #include <QPoint>
 #include <QPointF>
-#include <QPointer>
 #include <QString>
 #include <QTabWidget>
 
@@ -49,9 +44,7 @@
 
 #include "Gui/ColorAdjustPanel.h"
 #include "Gui/ColorEditSlider.h"
-#include "Gui/ColorPanelLayoutDev.h"
 #include "Gui/ColorWheelWidget.h"
-#include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SpinBox.h"
 
 NATRON_NAMESPACE_USING
@@ -102,8 +95,6 @@ identity(float* /*rgb*/,
 {
 }
 
-// The slider only builds its pixel-to-value mapping on its first paint, which never happens in
-// this headless suite, so the range is re-asserted once the sliders have their real widths.
 void
 setUpPanel(ColorAdjustPanel& panel,
            const KnobColorValue& value,
@@ -115,13 +106,6 @@ setUpPanel(ColorAdjustPanel& panel,
     panel.resize(720, 280);
     panel.show();
     QApplication::processEvents();
-    for (ColorSliderKindEnum kind : kLineKinds) {
-        ScaleSliderQWidget* s = panel.getSlider(kind);
-
-        if (s) {
-            s->setMinimumAndMaximum(s->minimum(), s->maximum());
-        }
-    }
 }
 
 struct PanelRecorder {
@@ -188,10 +172,9 @@ typeInto(SpinBox* box,
     sendKey(box, Qt::Key_Return);
 }
 
-// Moves right by dx in steps and releases, with mods held throughout. With Ctrl or Shift held
-// the press anchors at the slider's current value instead of jumping to x0.
+// Moves by dx in steps and releases, with mods held throughout.
 void
-sliderDrag(ScaleSliderQWidget* s,
+customDrag(ColorEditSlider* s,
            double x0,
            double dx,
            Qt::KeyboardModifiers mods = Qt::NoModifier,
@@ -206,10 +189,47 @@ sliderDrag(ScaleSliderQWidget* s,
     sendMouse(s, QEvent::MouseButtonRelease, QPointF(x0 + dx, y), Qt::LeftButton, Qt::NoButton, mods);
 }
 
-double
-unitsPerPixel(const ScaleSliderQWidget* s)
+void
+doubleClick(ColorEditSlider* s)
 {
-    return (s->maximum() - s->minimum()) / s->width();
+    QPointF p(s->width() / 2., s->height() / 2.);
+
+    sendMouse(s, QEvent::MouseButtonDblClick, p, Qt::LeftButton, Qt::LeftButton);
+    sendMouse(s, QEvent::MouseButtonRelease, p, Qt::LeftButton, Qt::NoButton);
+}
+
+double
+customMarkerX(const ColorEditSlider* s)
+{
+    QRectF r = s->trackRect();
+    SliderRange range = s->range();
+
+    return r.left() + (s->value() - range.rangeMin) / (range.rangeMax - range.rangeMin) * r.width();
+}
+
+// A press near whichever end of the track is farther from the marker, so the drag is relative.
+double
+offMarkerX(const ColorEditSlider* s)
+{
+    QRectF r = s->trackRect();
+
+    return (customMarkerX(s) > r.center().x()) ? r.left() + 5. : r.right() - 5.;
+}
+
+// A drag of this many pixels from offMarkerX(), pointed back across the track.
+double
+inwardDrag(const ColorEditSlider* s,
+           double pixels)
+{
+    return (offMarkerX(s) < s->trackRect().center().x()) ? pixels : -pixels;
+}
+
+double
+customUnitsPerPixel(const ColorEditSlider* s)
+{
+    SliderRange range = s->range();
+
+    return (range.rangeMax - range.rangeMin) / s->trackRect().width();
 }
 
 double
@@ -228,79 +248,6 @@ angleDifference(double a,
     return std::min(d, 360.0 - d);
 }
 
-// Ticks are painted over the track gradient, so each end is read over a few pixels and the
-// sample least like a tick is kept.
-QColor
-darkestNear(const QImage& image,
-            int x,
-            int y)
-{
-    QColor best = image.pixelColor(x, y);
-
-    for (int dx = -3; dx <= 3; ++dx) {
-        QColor c = image.pixelColor(x + dx, y);
-
-        if (c.lightness() < best.lightness()) {
-            best = c;
-        }
-    }
-
-    return best;
-}
-
-// Sets or clears NATRON_COLOR_PANEL_DEV for one test and leaves the switch at its default,
-// with the variable unset, for the cases that follow in this process.
-struct DevSwitchScope {
-    explicit DevSwitchScope(bool enabled)
-    {
-        if (enabled) {
-            qputenv("NATRON_COLOR_PANEL_DEV", "1");
-        } else {
-            qunsetenv("NATRON_COLOR_PANEL_DEV");
-        }
-        ColorPanelLayoutDev::reloadForTests();
-    }
-
-    ~DevSwitchScope()
-    {
-        ColorPanelLayoutDev::instance()->setLayout(ColorPanelLayout());
-        qunsetenv("NATRON_COLOR_PANEL_DEV");
-        ColorPanelLayoutDev::reloadForTests();
-    }
-};
-
-struct LayoutCounter {
-    int changed = 0;
-    int applied = 0;
-
-    explicit LayoutCounter(ColorAdjustPanel& panel)
-    {
-        QObject::connect(ColorPanelLayoutDev::instance(), &ColorPanelLayoutDev::layoutChanged, &panel, [this]() {
-            ++changed;
-        });
-        QObject::connect(&panel, &ColorAdjustPanel::layoutApplied, [this]() {
-            ++applied;
-        });
-    }
-};
-
-QColor
-brightestNear(const QImage& image,
-              int x,
-              int y)
-{
-    QColor best = image.pixelColor(x, y);
-
-    for (int dx = -3; dx <= 3; ++dx) {
-        QColor c = image.pixelColor(x + dx, y);
-
-        if (c.lightness() > best.lightness()) {
-            best = c;
-        }
-    }
-
-    return best;
-}
 } // namespace
 
 TEST(ColorAdjustPanel, HasNoTabsAndOneLinePerAxis)
@@ -313,9 +260,9 @@ TEST(ColorAdjustPanel, HasNoTabsAndOneLinePerAxis)
     ASSERT_TRUE(panel.getEditArea());
     EXPECT_TRUE(panel.getWheel()->isVisibleTo(panel.getEditArea()));
     for (ColorSliderKindEnum kind : kLineKinds) {
-        ASSERT_TRUE(panel.getSlider(kind));
+        ASSERT_TRUE(panel.getCustomSlider(kind));
         ASSERT_TRUE(panel.getSpinBox(kind));
-        EXPECT_TRUE(panel.getSlider(kind)->isVisibleTo(&panel));
+        EXPECT_TRUE(panel.getCustomSlider(kind)->isVisibleTo(&panel));
         EXPECT_TRUE(panel.getSpinBox(kind)->isVisibleTo(&panel));
     }
 }
@@ -330,7 +277,7 @@ TEST(ColorAdjustPanel, OneDimensionalKnobShowsOnlyValue)
     for (ColorSliderKindEnum kind : kLineKinds) {
         bool expected = kind == eColorSliderKindValue;
 
-        EXPECT_EQ(expected, panel.getSlider(kind)->isVisibleTo(&panel));
+        EXPECT_EQ(expected, panel.getCustomSlider(kind)->isVisibleTo(&panel));
         EXPECT_EQ(expected, panel.getSpinBox(kind)->isVisibleTo(&panel));
     }
 
@@ -351,11 +298,11 @@ TEST(ColorAdjustPanel, ThreeDimensionalKnobShowsEveryLine)
 
     EXPECT_TRUE(panel.getWheel()->isVisibleTo(&panel));
     for (ColorSliderKindEnum kind : kLineKinds) {
-        EXPECT_TRUE(panel.getSlider(kind)->isVisibleTo(&panel));
+        EXPECT_TRUE(panel.getCustomSlider(kind)->isVisibleTo(&panel));
     }
 }
 
-TEST(ColorAdjustPanel, PressAtTheMiddleOfTheHueTrackSetsHalfTurnAndKeepsLuma)
+TEST(ColorAdjustPanel, HueDragTurnsTheHueAndKeepsLumaAndAlpha)
 {
     ColorAdjustPanel panel;
     KnobColorValue start = makeValue(1.5, 1.0, 1.0, 0.9);
@@ -364,19 +311,16 @@ TEST(ColorAdjustPanel, PressAtTheMiddleOfTheHueTrackSetsHalfTurnAndKeepsLuma)
     setUpPanel(panel, start);
 
     PanelRecorder rec(panel);
-    ScaleSliderQWidget* hue = panel.getSlider(eColorSliderKindHue);
+    ColorEditSlider* hue = panel.getCustomSlider(eColorSliderKindHue);
+    double hueBefore = planeHue(toPlane(eColorKnobRoleGain, basis, start));
+    double dx = inwardDrag(hue, 40.);
 
     ASSERT_GT(hue->width(), 150);
-
-    double x = hue->width() / 2.;
-    double y = hue->height() / 2.;
-
-    sendMouse(hue, QEvent::MouseButtonPress, QPointF(x, y), Qt::LeftButton, Qt::LeftButton);
-    sendMouse(hue, QEvent::MouseButtonRelease, QPointF(x, y), Qt::LeftButton, Qt::NoButton);
+    customDrag(hue, offMarkerX(hue), dx);
 
     ASSERT_EQ(1, rec.starts);
     ASSERT_EQ(1, rec.ends);
-    EXPECT_LT(angleDifference(180.0, planeHue(toPlane(eColorKnobRoleGain, basis, rec.endValue))), 2.0);
+    EXPECT_LT(angleDifference(hueBefore + dx * customUnitsPerPixel(hue), planeHue(toPlane(eColorKnobRoleGain, basis, rec.endValue))), 1e-6);
     EXPECT_LT(relativeError(luma(basis, rec.endValue.rgb), luma(basis, start.rgb)), 1e-9);
     EXPECT_EQ(0.9, rec.endValue.a);
 }
@@ -388,9 +332,9 @@ TEST(ColorAdjustPanel, ValueDragIsOneGestureAndAlphaTracks)
     setUpPanel(panel, makeValue(1.2, 1.0, 0.8, 1.0));
 
     PanelRecorder rec(panel);
-    ScaleSliderQWidget* value = panel.getSlider(eColorSliderKindValue);
+    ColorEditSlider* value = panel.getCustomSlider(eColorSliderKindValue);
 
-    sliderDrag(value, value->width() / 2., 60.);
+    customDrag(value, value->trackRect().left() + 5., 60.);
 
     EXPECT_EQ(1, rec.starts);
     EXPECT_GE(rec.moves, 2);
@@ -406,39 +350,6 @@ TEST(ColorAdjustPanel, ValueDragIsOneGestureAndAlphaTracks)
     EXPECT_NEAR(1.2 * factor, rec.endValue.rgb[0], 1e-9);
     EXPECT_NEAR(0.8 * factor, rec.endValue.rgb[2], 1e-9);
     EXPECT_NEAR(factor, rec.endValue.a, 1e-9);
-}
-
-TEST(ColorAdjustPanel, CtrlDragOnValueMovesAtATenthOfThePlainRate)
-{
-    ColorAdjustPanel panel;
-    LumaBasis basis = acescg();
-
-    setUpPanel(panel, makeValue(1.0, 1.0, 1.0));
-
-    PanelRecorder rec(panel);
-    ScaleSliderQWidget* value = panel.getSlider(eColorSliderKindValue);
-
-    // Far from the marker: a Ctrl press anchors at the current value rather than jumping here.
-    sliderDrag(value, 10., 100., Qt::ControlModifier);
-
-    ASSERT_EQ(1, rec.ends);
-    EXPECT_NEAR(100. * unitsPerPixel(value) * gear(true, false), std::log2(luma(basis, rec.endValue.rgb)), 1e-9);
-
-    PanelRecorder plain(panel);
-    double before = std::log2(luma(basis, panel.getValue().rgb));
-    double x0 = value->width() / 2.;
-    double y = value->height() / 2.;
-
-    sendMouse(value, QEvent::MouseButtonPress, QPointF(x0, y), Qt::LeftButton, Qt::LeftButton);
-    double atPress = std::log2(luma(basis, panel.getValue().rgb));
-    sendMouse(value, QEvent::MouseMove, QPointF(x0 + 40., y), Qt::NoButton, Qt::LeftButton);
-    double afterMove = std::log2(luma(basis, panel.getValue().rgb));
-    sendMouse(value, QEvent::MouseButtonRelease, QPointF(x0 + 40., y), Qt::LeftButton, Qt::NoButton);
-
-    EXPECT_NE(before, atPress);
-    EXPECT_NEAR(40. * unitsPerPixel(value), afterMove - atPress, 1e-9);
-    EXPECT_EQ(1, plain.starts);
-    EXPECT_EQ(1, plain.ends);
 }
 
 TEST(ColorAdjustPanel, TypedTwoStopsOnAGainMultipliesLumaByFour)
@@ -468,7 +379,7 @@ TEST(ColorAdjustPanel, PowerValueLineCountsStopsFromMidGrey)
     setUpPanel(panel, makeValue(1.0, 1.0, 1.0, 1.0), 4, eColorKnobRolePower);
 
     EXPECT_NEAR(0.0, panel.getSpinBox(eColorSliderKindValue)->value(), 1e-9) << "gamma 1 is 0 stops";
-    EXPECT_NEAR(0.0, panel.getSlider(eColorSliderKindValue)->getPosition(), 1e-9);
+    EXPECT_NEAR(0.0, panel.getCustomSlider(eColorSliderKindValue)->value(), 1e-9);
 
     PanelRecorder rec(panel);
 
@@ -490,11 +401,13 @@ TEST(ColorAdjustPanel, SliderDragMovesThePuckWithoutReanchoringTheWheel)
 
     PanelRecorder rec(panel);
     ColorWheelWidget* wheel = panel.getWheel();
-    ScaleSliderQWidget* hue = panel.getSlider(eColorSliderKindHue);
+    ColorEditSlider* hue = panel.getCustomSlider(eColorSliderKindHue);
+    double x0 = offMarkerX(hue);
+    double x1 = x0 + inwardDrag(hue, 60.);
     double y = hue->height() / 2.;
 
-    sendMouse(hue, QEvent::MouseButtonPress, QPointF(20., y), Qt::LeftButton, Qt::LeftButton);
-    sendMouse(hue, QEvent::MouseMove, QPointF(80., y), Qt::NoButton, Qt::LeftButton);
+    sendMouse(hue, QEvent::MouseButtonPress, QPointF(x0, y), Qt::LeftButton, Qt::LeftButton);
+    sendMouse(hue, QEvent::MouseMove, QPointF(x1, y), Qt::NoButton, Qt::LeftButton);
 
     ASSERT_GE(rec.moves, 1);
     EXPECT_TRUE(wheel->hasDragOffset());
@@ -502,7 +415,7 @@ TEST(ColorAdjustPanel, SliderDragMovesThePuckWithoutReanchoringTheWheel)
         EXPECT_EQ(start.rgb[i], wheel->getValue().rgb[i]) << "the wheel keeps its anchor mid-drag";
     }
 
-    sendMouse(hue, QEvent::MouseButtonRelease, QPointF(80., y), Qt::LeftButton, Qt::NoButton);
+    sendMouse(hue, QEvent::MouseButtonRelease, QPointF(x1, y), Qt::LeftButton, Qt::NoButton);
 
     ASSERT_EQ(1, rec.ends);
     EXPECT_FALSE(wheel->hasDragOffset());
@@ -553,25 +466,26 @@ TEST(ColorAdjustPanel, TempDragKeepsLumaAndLeavesAlphaAlone)
     setUpPanel(panel, start);
 
     PanelRecorder rec(panel);
-    ScaleSliderQWidget* temp = panel.getSlider(eColorSliderKindTemp);
+    ColorEditSlider* temp = panel.getCustomSlider(eColorSliderKindTemp);
     TempTintResult before = toTempTint(eColorKnobRoleGain, basis, start);
+    double dx = inwardDrag(temp, 60.);
 
     ASSERT_TRUE(before.valid);
-    sliderDrag(temp, 10., 60., Qt::ControlModifier);
+    customDrag(temp, offMarkerX(temp), dx, Qt::ControlModifier);
 
     ASSERT_EQ(1, rec.ends);
 
     TempTintResult after = toTempTint(eColorKnobRoleGain, basis, rec.endValue);
 
     ASSERT_TRUE(after.valid);
-    ASSERT_LT(std::abs(before.temp), temp->maximum());
-    EXPECT_NEAR(before.temp + 60. * unitsPerPixel(temp) * gear(true, false), after.temp, 1e-4);
+    ASSERT_LT(std::abs(before.temp), temp->range().rangeMax);
+    EXPECT_NEAR(before.temp + dx * customUnitsPerPixel(temp) * gear(true, false), after.temp, 1e-4);
     EXPECT_NEAR(before.tint, after.tint, 1e-4);
     EXPECT_LT(relativeError(luma(basis, rec.endValue.rgb), luma(basis, start.rgb)), 1e-9);
     EXPECT_EQ(0.7, rec.endValue.a);
 }
 
-TEST(ColorAdjustPanel, AltClickOnTempResetsTemperature)
+TEST(ColorAdjustPanel, DoubleClickOnTempResetsTemperature)
 {
     ColorAdjustPanel panel;
     KnobColorValue start = makeValue(1.1, 1.0, 0.9, 0.7);
@@ -585,11 +499,7 @@ TEST(ColorAdjustPanel, AltClickOnTempResetsTemperature)
     ASSERT_GT(std::abs(before.temp), 1.0);
 
     PanelRecorder rec(panel);
-    ScaleSliderQWidget* temp = panel.getSlider(eColorSliderKindTemp);
-    QPointF p(temp->width() * 0.8, temp->height() / 2.);
-
-    sendMouse(temp, QEvent::MouseButtonPress, p, Qt::LeftButton, Qt::LeftButton, Qt::AltModifier);
-    sendMouse(temp, QEvent::MouseButtonRelease, p, Qt::LeftButton, Qt::NoButton, Qt::AltModifier);
+    doubleClick(panel.getCustomSlider(eColorSliderKindTemp));
 
     ASSERT_EQ(1, rec.starts);
     ASSERT_EQ(1, rec.ends);
@@ -602,18 +512,14 @@ TEST(ColorAdjustPanel, AltClickOnTempResetsTemperature)
     EXPECT_EQ(0.7, rec.endValue.a);
 }
 
-TEST(ColorAdjustPanel, AltClickOnValueResetsGain)
+TEST(ColorAdjustPanel, DoubleClickOnValueResetsGain)
 {
     ColorAdjustPanel panel;
 
     setUpPanel(panel, makeValue(2.0, 2.0, 2.0, 2.0));
 
     PanelRecorder rec(panel);
-    ScaleSliderQWidget* value = panel.getSlider(eColorSliderKindValue);
-    QPointF p(10., value->height() / 2.);
-
-    sendMouse(value, QEvent::MouseButtonPress, p, Qt::LeftButton, Qt::LeftButton, Qt::AltModifier);
-    sendMouse(value, QEvent::MouseButtonRelease, p, Qt::LeftButton, Qt::NoButton, Qt::AltModifier);
+    doubleClick(panel.getCustomSlider(eColorSliderKindValue));
 
     ASSERT_EQ(1, rec.starts);
     ASSERT_EQ(1, rec.ends);
@@ -629,14 +535,14 @@ TEST(ColorAdjustPanel, OffsetTempAndTintRangesAreATenth)
 
     setUpPanel(panel, makeValue(0.0, 0.0, 0.0, 0.0), 4, eColorKnobRoleOffset);
 
-    EXPECT_EQ(-0.1, panel.getSlider(eColorSliderKindTemp)->minimum());
-    EXPECT_EQ(0.1, panel.getSlider(eColorSliderKindTemp)->maximum());
-    EXPECT_EQ(-0.1, panel.getSlider(eColorSliderKindTint)->minimum());
-    EXPECT_EQ(0.1, panel.getSlider(eColorSliderKindTint)->maximum());
+    EXPECT_EQ(-0.1, panel.getCustomSlider(eColorSliderKindTemp)->range().rangeMin);
+    EXPECT_EQ(0.1, panel.getCustomSlider(eColorSliderKindTemp)->range().rangeMax);
+    EXPECT_EQ(-0.1, panel.getCustomSlider(eColorSliderKindTint)->range().rangeMin);
+    EXPECT_EQ(0.1, panel.getCustomSlider(eColorSliderKindTint)->range().rangeMax);
 
     panel.setRole(eColorKnobRoleGain);
-    EXPECT_EQ(-100.0, panel.getSlider(eColorSliderKindTemp)->minimum());
-    EXPECT_EQ(100.0, panel.getSlider(eColorSliderKindTemp)->maximum());
+    EXPECT_EQ(-100.0, panel.getCustomSlider(eColorSliderKindTemp)->range().rangeMin);
+    EXPECT_EQ(100.0, panel.getCustomSlider(eColorSliderKindTemp)->range().rangeMax);
 }
 
 TEST(ColorAdjustPanel, SatFromZeroGrowsAlongRememberedHue)
@@ -655,14 +561,14 @@ TEST(ColorAdjustPanel, SatFromZeroGrowsAlongRememberedHue)
     EXPECT_LT(planeSaturation(neutral), 1e-9);
     EXPECT_NEAR(hue0, panel.getRememberedHue(), 1e-9);
 
-    ScaleSliderQWidget* sat = panel.getSlider(eColorSliderKindSat);
+    ColorEditSlider* sat = panel.getCustomSlider(eColorSliderKindSat);
 
-    sliderDrag(sat, sat->width() - 10., 100., Qt::ControlModifier);
+    customDrag(sat, sat->trackRect().right() - 10., 100., Qt::ControlModifier);
 
     PlanePoint grown = toPlane(eColorKnobRoleGain, basis, panel.getValue());
 
     ASSERT_TRUE(grown.valid);
-    EXPECT_NEAR(100. * unitsPerPixel(sat) * gear(true, false), planeSaturation(grown), 1e-7);
+    EXPECT_NEAR(100. * customUnitsPerPixel(sat) * gear(true, false), planeSaturation(grown), 1e-7);
     EXPECT_LT(angleDifference(hue0, planeHue(grown)), 0.5);
 }
 
@@ -718,8 +624,8 @@ TEST(ColorAdjustPanel, PressWithoutMoveEmitsNothing)
     sendMouse(wheel, QEvent::MouseButtonPress, c, Qt::LeftButton, Qt::LeftButton);
     sendMouse(wheel, QEvent::MouseButtonRelease, c, Qt::LeftButton, Qt::NoButton);
 
-    ScaleSliderQWidget* hue = panel.getSlider(eColorSliderKindHue);
-    QPointF p(10., hue->height() / 2.);
+    ColorEditSlider* hue = panel.getCustomSlider(eColorSliderKindHue);
+    QPointF p(offMarkerX(hue), hue->height() / 2.);
 
     sendMouse(hue, QEvent::MouseButtonPress, p, Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
     sendMouse(hue, QEvent::MouseButtonRelease, p, Qt::LeftButton, Qt::NoButton, Qt::ControlModifier);
@@ -760,7 +666,7 @@ TEST(ColorAdjustPanel, SliderLinesFollowTheValue)
     setUpPanel(panel, makeValue(1.0, 1.0, 1.0));
     panel.setKnobValue(makeValue(2.0, 2.0, 2.0));
 
-    EXPECT_NEAR(1.0, panel.getSlider(eColorSliderKindValue)->getPosition(), 1e-9);
+    EXPECT_NEAR(1.0, panel.getCustomSlider(eColorSliderKindValue)->value(), 1e-9);
     EXPECT_NEAR(1.0, panel.getSpinBox(eColorSliderKindValue)->value(), 1e-9);
 }
 
@@ -770,212 +676,33 @@ TEST(ColorAdjustPanel, SliderGradientsFollowTheCurrentColour)
 
     setUpPanel(panel, makeValue(1.0, 1.0, 1.0));
 
-    ScaleSliderQWidget* value = panel.getSlider(eColorSliderKindValue);
-    QImage valueTrack = value->grab().toImage();
-    int left = (int)(valueTrack.width() * 0.09);
-    int right = (int)(valueTrack.width() * 0.91);
-    int bandRow = -1;
+    QGradientStops valueStops = panel.getCustomSlider(eColorSliderKindValue)->gradientStops();
 
-    for (int y = 0; y < valueTrack.height(); ++y) {
-        if (darkestNear(valueTrack, left, y).lightness() + 40 < brightestNear(valueTrack, right, y).lightness()) {
-            bandRow = y;
-            break;
-        }
-    }
-    ASSERT_GE(bandRow, 0);
+    ASSERT_GE(valueStops.size(), 2);
+    EXPECT_LT(valueStops.first().second.lightness() + 40, valueStops.last().second.lightness());
 
     panel.setKnobValue(makeValue(1.05, 1.0, 0.95));
 
-    QImage satTrack = panel.getSlider(eColorSliderKindSat)->grab().toImage();
-    int greyestSpread = 255;
-    int mostTinted = -255;
+    QGradientStops satStops = panel.getCustomSlider(eColorSliderKindSat)->gradientStops();
 
-    for (int dx = -3; dx <= 3; ++dx) {
-        QColor grey = satTrack.pixelColor(left + dx, bandRow);
-        QColor tinted = satTrack.pixelColor(right + dx, bandRow);
+    ASSERT_GE(satStops.size(), 2);
 
-        greyestSpread = std::min(greyestSpread, std::abs(grey.red() - grey.blue()));
-        mostTinted = std::max(mostTinted, tinted.red() - tinted.blue());
-    }
-    EXPECT_LE(greyestSpread, 4);
-    EXPECT_GT(mostTinted, 3);
+    QColor grey = satStops.first().second;
+    QColor tinted = satStops.last().second;
+
+    EXPECT_LE(std::abs(grey.red() - grey.blue()), 4);
+    EXPECT_GT(tinted.red() - tinted.blue(), 3);
 }
 
-TEST(ColorAdjustPanel, NoDevBarWithoutTheVariable)
+TEST(ColorAdjustPanel, PairsColorEditSlidersWithNatronSpinBoxes)
 {
-    DevSwitchScope dev(false);
-    ColorAdjustPanel panel;
-
-    setUpPanel(panel, makeValue(1.0, 1.0, 1.0));
-
-    EXPECT_FALSE(ColorPanelLayoutDev::isDevEnabled());
-    EXPECT_EQ(nullptr, panel.getDevBar());
-    EXPECT_EQ(nullptr, panel.findChild<QWidget*>(QString::fromUtf8("ColorPanelDevBar")));
-    EXPECT_EQ(nullptr, panel.findChild<QComboBox*>());
-    EXPECT_TRUE(panel.getLayout() == ColorPanelLayout());
-}
-
-TEST(ColorAdjustPanel, DevComboChangeEmitsOnceAndRebuildsEveryPanel)
-{
-    DevSwitchScope dev(true);
-    ColorAdjustPanel panel;
-    ColorAdjustPanel other;
-    KnobColorValue start = makeValue(1.2, 1.0, 0.8);
-
-    setUpPanel(panel, start);
-    setUpPanel(other, start);
-    panel.setRightInset(30);
-    panel.getEditArea()->setEnabled(false);
-
-    QWidget* bar = panel.getDevBar();
-
-    ASSERT_TRUE(bar);
-    ASSERT_TRUE(other.getDevBar());
-
-    QComboBox* style = bar->findChild<QComboBox*>(QString::fromUtf8("ColorPanelDevStyle"));
-    QComboBox* otherStyle = other.getDevBar()->findChild<QComboBox*>(QString::fromUtf8("ColorPanelDevStyle"));
-
-    ASSERT_TRUE(style);
-    ASSERT_TRUE(otherStyle);
-
-    LayoutCounter counter(panel);
-    LayoutCounter otherCounter(other);
-    QPointer<QWidget> oldArea = panel.getEditArea();
-    QPointer<ColorWheelWidget> oldWheel = panel.getWheel();
-    double valueBefore = panel.getSpinBox(eColorSliderKindValue)->value();
-
-    style->setCurrentIndex(style->findData((int)ColorPanelLayout::SliderStyle::Custom));
-
-    EXPECT_EQ(1, counter.changed);
-    EXPECT_EQ(1, counter.applied);
-    EXPECT_EQ(1, otherCounter.applied);
-    EXPECT_TRUE(panel.getLayout().style == ColorPanelLayout::SliderStyle::Custom);
-    EXPECT_TRUE(other.getLayout().style == ColorPanelLayout::SliderStyle::Custom);
-    EXPECT_NE(oldArea.data(), panel.getEditArea());
-    EXPECT_NE(oldWheel.data(), panel.getWheel());
-    EXPECT_EQ(otherStyle->findData((int)ColorPanelLayout::SliderStyle::Custom), otherStyle->currentIndex());
-
-    // What the owner set on the old edit area carries over to the new one.
-    EXPECT_FALSE(panel.getEditArea()->isEnabled());
-    EXPECT_EQ(30, panel.getRightInset());
-    EXPECT_EQ(valueBefore, panel.getSpinBox(eColorSliderKindValue)->value());
-    for (int i = 0; i < 3; ++i) {
-        EXPECT_EQ(start.rgb[i], panel.getWheel()->getValue().rgb[i]);
-    }
-
-    // The old widgets no longer reach the panel.
-    PanelRecorder rec(panel);
-
-    if (oldWheel) {
-        QPointF c = oldWheel->getDiscCentre();
-
-        sendMouse(oldWheel, QEvent::MouseButtonPress, c, Qt::LeftButton, Qt::LeftButton);
-        sendMouse(oldWheel, QEvent::MouseMove, c + QPointF(10., 0.), Qt::NoButton, Qt::LeftButton);
-        sendMouse(oldWheel, QEvent::MouseButtonRelease, c + QPointF(10., 0.), Qt::LeftButton, Qt::NoButton);
-    }
-    EXPECT_EQ(0, rec.starts);
-
-    // Setting the same value again changes nothing.
-    style->setCurrentIndex(style->findData((int)ColorPanelLayout::SliderStyle::Custom));
-    ColorPanelLayoutDev::instance()->setSliderStyle(ColorPanelLayout::SliderStyle::Custom);
-    EXPECT_EQ(1, counter.changed);
-    EXPECT_EQ(1, counter.applied);
-}
-
-TEST(ColorAdjustPanel, DevToggleMidGestureRebuildsOnlyAfterTheGestureEnds)
-{
-    DevSwitchScope dev(true);
-    ColorAdjustPanel panel;
-
-    setUpPanel(panel, makeValue(1.0, 1.0, 1.0));
-
-    LayoutCounter counter(panel);
-    PanelRecorder rec(panel);
-    ColorWheelWidget* wheel = panel.getWheel();
-    QWidget* area = panel.getEditArea();
-    QPointF c = wheel->getDiscCentre();
-
-    sendMouse(wheel, QEvent::MouseButtonPress, c, Qt::LeftButton, Qt::LeftButton);
-    sendMouse(wheel, QEvent::MouseMove, c + QPointF(8., -4.), Qt::NoButton, Qt::LeftButton);
-    ASSERT_TRUE(panel.isEditing());
-
-    QCheckBox* right = panel.getDevBar()->findChild<QCheckBox*>(QString::fromUtf8("ColorPanelDevExtendRight"));
-
-    ASSERT_TRUE(right);
-    right->setChecked(true);
-
-    EXPECT_EQ(1, counter.changed);
-    EXPECT_EQ(0, counter.applied);
-    EXPECT_EQ(area, panel.getEditArea());
-    EXPECT_FALSE(panel.getLayout().extendRight);
-
-    sendMouse(wheel, QEvent::MouseMove, c + QPointF(16., -8.), Qt::NoButton, Qt::LeftButton);
-    sendMouse(wheel, QEvent::MouseButtonRelease, c + QPointF(16., -8.), Qt::LeftButton, Qt::NoButton);
-
-    EXPECT_EQ(1, rec.starts);
-    EXPECT_GE(rec.moves, 1);
-    EXPECT_EQ(1, rec.ends);
-    EXPECT_FALSE(panel.isEditing());
-    EXPECT_EQ(1, counter.applied);
-    EXPECT_NE(area, panel.getEditArea());
-    EXPECT_TRUE(panel.getLayout().extendRight);
-    for (int i = 0; i < 3; ++i) {
-        EXPECT_EQ(panel.getValue().rgb[i], panel.getWheel()->getValue().rgb[i]);
-    }
-}
-
-namespace {
-
-void
-customDrag(ColorEditSlider* s,
-           double x0,
-           double dx,
-           Qt::KeyboardModifiers mods = Qt::NoModifier,
-           int steps = 4)
-{
-    double y = s->height() / 2.;
-
-    sendMouse(s, QEvent::MouseButtonPress, QPointF(x0, y), Qt::LeftButton, Qt::LeftButton, mods);
-    for (int i = 1; i <= steps; ++i) {
-        sendMouse(s, QEvent::MouseMove, QPointF(x0 + dx * i / steps, y), Qt::NoButton, Qt::LeftButton, mods);
-    }
-    sendMouse(s, QEvent::MouseButtonRelease, QPointF(x0 + dx, y), Qt::LeftButton, Qt::NoButton, mods);
-}
-
-double
-customMarkerX(const ColorEditSlider* s)
-{
-    QRectF r = s->trackRect();
-    SliderRange range = s->range();
-
-    return r.left() + (s->value() - range.rangeMin) / (range.rangeMax - range.rangeMin) * r.width();
-}
-
-double
-customUnitsPerPixel(const ColorEditSlider* s)
-{
-    SliderRange range = s->range();
-
-    return (range.rangeMax - range.rangeMin) / s->trackRect().width();
-}
-
-} // namespace
-
-TEST(ColorAdjustPanel, CustomStylePairsColorEditSlidersWithNatronSpinBoxes)
-{
-    DevSwitchScope dev(true);
-
-    ColorPanelLayoutDev::instance()->setSliderStyle(ColorPanelLayout::SliderStyle::Custom);
-
     ColorAdjustPanel panel;
 
     setUpPanel(panel, makeValue(1.2, 1.0, 0.8));
-    EXPECT_TRUE(panel.getLayout().style == ColorPanelLayout::SliderStyle::Custom);
     for (ColorSliderKindEnum kind : kLineKinds) {
         ColorEditSlider* s = panel.getCustomSlider(kind);
 
         ASSERT_TRUE(s);
-        EXPECT_EQ(nullptr, panel.getSlider(kind));
         EXPECT_TRUE(panel.getSpinBox(kind));
         EXPECT_EQ(kind, s->kind());
         EXPECT_EQ(eColorKnobRoleGain, s->role());
@@ -984,12 +711,8 @@ TEST(ColorAdjustPanel, CustomStylePairsColorEditSlidersWithNatronSpinBoxes)
     }
 }
 
-TEST(ColorAdjustPanel, CustomMarkerDragIsOneUndoStepAndTheSpinBoxFollows)
+TEST(ColorAdjustPanel, MarkerDragIsOneUndoStepAndTheSpinBoxFollows)
 {
-    DevSwitchScope dev(true);
-
-    ColorPanelLayoutDev::instance()->setSliderStyle(ColorPanelLayout::SliderStyle::Custom);
-
     ColorAdjustPanel panel;
     LumaBasis basis = acescg();
 
@@ -1015,12 +738,8 @@ TEST(ColorAdjustPanel, CustomMarkerDragIsOneUndoStepAndTheSpinBoxFollows)
     EXPECT_NEAR(expected, value->value(), 1e-9);
 }
 
-TEST(ColorAdjustPanel, CustomRelativeCtrlDragMovesATenthAndIsOneUndoStep)
+TEST(ColorAdjustPanel, RelativeCtrlDragMovesATenthAndIsOneUndoStep)
 {
-    DevSwitchScope dev(true);
-
-    ColorPanelLayoutDev::instance()->setSliderStyle(ColorPanelLayout::SliderStyle::Custom);
-
     ColorAdjustPanel panel;
     LumaBasis basis = acescg();
 
@@ -1042,123 +761,4 @@ TEST(ColorAdjustPanel, CustomRelativeCtrlDragMovesATenthAndIsOneUndoStep)
 
     EXPECT_NEAR(expected, std::log2(luma(basis, rec.endValue.rgb)), 1e-9);
     EXPECT_NEAR(expected, panel.getSpinBox(eColorSliderKindValue)->value(), 1e-3);
-}
-
-TEST(ColorAdjustPanel, SwitchingStylesLiveKeepsTheValueAndEveryLine)
-{
-    DevSwitchScope dev(true);
-    ColorAdjustPanel panel;
-    KnobColorValue start = makeValue(1.2, 1.0, 0.8);
-
-    setUpPanel(panel, start);
-    panel.setRightInset(24);
-
-    double hueBefore = panel.getSpinBox(eColorSliderKindHue)->value();
-    double valueBefore = panel.getSpinBox(eColorSliderKindValue)->value();
-
-    ColorPanelLayoutDev::instance()->setSliderStyle(ColorPanelLayout::SliderStyle::Custom);
-    ASSERT_TRUE(panel.getLayout().style == ColorPanelLayout::SliderStyle::Custom);
-    EXPECT_EQ(hueBefore, panel.getSpinBox(eColorSliderKindHue)->value());
-    EXPECT_EQ(valueBefore, panel.getSpinBox(eColorSliderKindValue)->value());
-    EXPECT_NEAR(valueBefore, panel.getCustomSlider(eColorSliderKindValue)->value(), 1e-3);
-
-    ColorPanelLayoutDev::instance()->setSliderStyle(ColorPanelLayout::SliderStyle::Vertical);
-    ASSERT_TRUE(panel.getLayout().style == ColorPanelLayout::SliderStyle::Vertical);
-    EXPECT_EQ(nullptr, panel.getCustomSlider(eColorSliderKindValue));
-    EXPECT_EQ(hueBefore, panel.getSpinBox(eColorSliderKindHue)->value());
-    EXPECT_EQ(valueBefore, panel.getSpinBox(eColorSliderKindValue)->value());
-    EXPECT_EQ(24, panel.getRightInset());
-
-    ColorPanelLayoutDev::instance()->setSliderStyle(ColorPanelLayout::SliderStyle::Natron);
-    ASSERT_TRUE(panel.getSlider(eColorSliderKindValue));
-    EXPECT_EQ(Qt::Horizontal, panel.getSlider(eColorSliderKindValue)->orientation());
-    for (int i = 0; i < 3; ++i) {
-        EXPECT_EQ(start.rgb[i], panel.getValue().rgb[i]);
-    }
-}
-
-TEST(ColorAdjustPanel, VerticalStyleHasAColumnPerLineAsTallAsTheWheel)
-{
-    DevSwitchScope dev(true);
-
-    ColorPanelLayoutDev::instance()->setSliderStyle(ColorPanelLayout::SliderStyle::Vertical);
-
-    ColorAdjustPanel panel;
-
-    setUpPanel(panel, makeValue(1.2, 1.0, 0.8));
-    panel.resize(900, 500);
-    QApplication::processEvents();
-    QApplication::processEvents();
-
-    ColorWheelWidget* wheel = panel.getWheel();
-    int vertical = 0;
-
-    for (ColorSliderKindEnum kind : kLineKinds) {
-        ScaleSliderQWidget* s = panel.getSlider(kind);
-        SpinBox* box = panel.getSpinBox(kind);
-
-        ASSERT_TRUE(s);
-        ASSERT_TRUE(box);
-        EXPECT_EQ(nullptr, panel.getCustomSlider(kind));
-        if (s->orientation() == Qt::Vertical) {
-            ++vertical;
-        }
-        EXPECT_TRUE(s->isVisible());
-        EXPECT_NEAR(wheel->height(), s->height(), 2);
-
-        // Caption above, field below, and the column right of the wheel.
-        EXPECT_GE(box->geometry().top(), s->geometry().bottom());
-        EXPECT_GE(s->geometry().left(), wheel->geometry().right());
-    }
-    EXPECT_EQ(5, vertical);
-    EXPECT_GE(wheel->width(), ColorWheelWidget::minimumDiameter());
-    EXPECT_LE(wheel->width(), ColorWheelWidget::maximumDiameter());
-}
-
-TEST(ColorAdjustPanel, VerticalStyleOneDimensionalKnobShowsOnlyValue)
-{
-    DevSwitchScope dev(true);
-
-    ColorPanelLayoutDev::instance()->setSliderStyle(ColorPanelLayout::SliderStyle::Vertical);
-
-    ColorAdjustPanel panel;
-
-    setUpPanel(panel, makeValue(1.0, 1.0, 1.0), 1);
-
-    EXPECT_FALSE(panel.getWheel()->isVisible());
-    for (ColorSliderKindEnum kind : kLineKinds) {
-        bool expected = kind == eColorSliderKindValue;
-
-        EXPECT_EQ(expected, panel.getSlider(kind)->isVisible());
-        EXPECT_EQ(expected, panel.getSpinBox(kind)->isVisible());
-    }
-}
-
-TEST(ColorAdjustPanel, VerticalUpwardDragOnValueRaisesItInOneUndoStep)
-{
-    DevSwitchScope dev(true);
-
-    ColorPanelLayoutDev::instance()->setSliderStyle(ColorPanelLayout::SliderStyle::Vertical);
-
-    ColorAdjustPanel panel;
-    LumaBasis basis = acescg();
-
-    setUpPanel(panel, makeValue(1.0, 1.0, 1.0));
-
-    PanelRecorder rec(panel);
-    ScaleSliderQWidget* value = panel.getSlider(eColorSliderKindValue);
-    double x = value->width() / 2.;
-    double y0 = value->height() / 2.;
-
-    sendMouse(value, QEvent::MouseButtonPress, QPointF(x, y0), Qt::LeftButton, Qt::LeftButton);
-    double atPress = std::log2(luma(basis, panel.getValue().rgb));
-    for (int i = 1; i <= 4; ++i) {
-        sendMouse(value, QEvent::MouseMove, QPointF(x, y0 - 10. * i), Qt::NoButton, Qt::LeftButton);
-    }
-    sendMouse(value, QEvent::MouseButtonRelease, QPointF(x, y0 - 40.), Qt::LeftButton, Qt::NoButton);
-
-    EXPECT_EQ(1, rec.starts);
-    EXPECT_EQ(1, rec.ends);
-    EXPECT_FALSE(panel.isEditing());
-    EXPECT_GT(std::log2(luma(basis, rec.endValue.rgb)), atPress);
 }

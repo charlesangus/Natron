@@ -88,7 +88,6 @@ struct ScaleSliderQWidgetPrivate
     QColor lineColor;
     QGradientStops trackGradient;
     bool allowDraftModeSetting;
-    Qt::Orientation orientation;
 
     ScaleSliderQWidgetPrivate(QWidget* parent,
                               double min,
@@ -120,7 +119,6 @@ struct ScaleSliderQWidgetPrivate
         , lineColor(Qt::black)
         , trackGradient()
         , allowDraftModeSetting(allowDraftModeSetting)
-        , orientation(Qt::Horizontal)
     {
         font.setPointSize( (font.pointSize() * NATRON_FONT_SIZE_10) / NATRON_FONT_SIZE_13 );
         assert( std::isfinite(minimum) && std::isfinite(maximum) && std::isfinite(initialPos) );
@@ -155,10 +153,6 @@ ScaleSliderQWidget::sizeHint() const
 QSize
 ScaleSliderQWidget::minimumSizeHint() const
 {
-    if (_imp->orientation == Qt::Vertical) {
-        return QSize(TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(150));
-    }
-
     return QSize( TO_DPIX(150), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE) );
 }
 
@@ -190,38 +184,6 @@ ScaleSliderQWidget::getPosition() const
     return _imp->value;
 }
 
-void
-ScaleSliderQWidget::setOrientation(Qt::Orientation orientation)
-{
-    if (_imp->orientation == orientation) {
-        return;
-    }
-    _imp->orientation = orientation;
-    updateGeometry();
-    update();
-}
-
-Qt::Orientation
-ScaleSliderQWidget::orientation() const
-{
-    return _imp->orientation;
-}
-
-double
-ScaleSliderQWidget::valueAtPosition(const QPointF& pos) const
-{
-    if (_imp->orientation == Qt::Vertical) {
-        // the track spans the widget's full height with the minimum on the bottom row
-        const double span = std::max(1, height() - 1);
-        const double fraction = (height() - 1 - pos.y()) / span;
-
-        return _imp->minimum + fraction * (_imp->maximum - _imp->minimum);
-    }
-    QPointF newClick_opengl = _imp->zoomCtx.toZoomCoordinates(pos.x(), pos.y());
-
-    return newClick_opengl.x();
-}
-
 bool
 ScaleSliderQWidget::isReadOnly() const
 {
@@ -246,8 +208,8 @@ ScaleSliderQWidget::mousePressEvent(QMouseEvent* e)
                 // to the click, so a geared drag can start from anywhere on the track
                 _imp->accumulator = _imp->value;
             } else {
-                const double clicked = valueAtPosition(newClick);
-                double v = _imp->dataType == eDataTypeInt ? std::floor(clicked + 0.5) : clicked;
+                QPointF newClick_opengl = _imp->zoomCtx.toZoomCoordinates(newClick.x(), newClick.y());
+                double v = _imp->dataType == eDataTypeInt ? std::floor(newClick_opengl.x() + 0.5) : newClick_opengl.x();
                 if (v < _imp->minimum) {
                     v = _imp->minimum;
                 } else if (v > _imp->maximum) {
@@ -266,15 +228,13 @@ ScaleSliderQWidget::mouseMoveEvent(QMouseEvent* e)
 {
     if (!_imp->readOnly) {
         QPoint newClick = e->pos();
-        const bool vertical = _imp->orientation == Qt::Vertical;
-        // a vertical drag counts upward as positive, matching the minimum at the bottom
-        double dxPixels = vertical ? _imp->oldClick.y() - newClick.y() : newClick.x() - _imp->oldClick.x();
+        double dxPixels = newClick.x() - _imp->oldClick.x();
         _imp->oldClick = newClick;
 
         // the per-pixel rate is the slider's own range over its width, not the padded
         // zoom-context range the tick painting uses, so the gearing feels the same
         // regardless of how much margin paintEvent leaves for tick labels
-        double unitsPerPixel = (_imp->maximum - _imp->minimum) / (vertical ? height() : width());
+        double unitsPerPixel = (_imp->maximum - _imp->minimum) / width();
         double gearFactor = gear(modifierHasControl(e), modifierHasShift(e));
         _imp->dragGear = gearFactor;
         _imp->accumulator += dxPixels * unitsPerPixel * gearFactor;
@@ -330,10 +290,6 @@ ScaleSliderQWidget::leaveEvent(QEvent* e)
 double
 ScaleSliderQWidget::increment()
 {
-    if (_imp->orientation == Qt::Vertical) {
-        return (_imp->maximum - _imp->minimum) / height() * std::min(1., _imp->dragGear);
-    }
-
     return (_imp->zoomCtx.right() - _imp->zoomCtx.left()) / width() * std::min(1., _imp->dragGear);
 }
 
@@ -469,12 +425,6 @@ ScaleSliderQWidget::paintEvent(QPaintEvent* /*e*/)
         p.setPen(scaleColor);
     } else {
         p.setPen(_imp->lineColor);
-    }
-
-    if (_imp->orientation == Qt::Vertical) {
-        paintVertical(p, scaleColor);
-
-        return;
     }
 
     QPointF btmLeft = _imp->zoomCtx.toZoomCoordinates(0, height() - 1);
@@ -651,72 +601,6 @@ ScaleSliderQWidget::paintEvent(QPaintEvent* /*e*/)
     p.setRenderHints(rh);
 #endif
 } // paintEvent
-
-void
-ScaleSliderQWidget::paintVertical(QPainter& p,
-                                  const QColor& scaleColor)
-{
-    const double span = std::max(1, height() - 1);
-    const double lineXpos = width() / 2.;
-    const double range = _imp->maximum - _imp->minimum;
-    if (range <= 0.) {
-        return;
-    }
-    const auto yOf = [&](double v) {
-        return height() - 1 - (v - _imp->minimum) / range * span;
-    };
-
-    if (!_imp->useLineColor) {
-        p.setPen(scaleColor);
-    } else {
-        p.setPen(_imp->lineColor);
-    }
-    if (!_imp->trackGradient.isEmpty()) {
-        double bandWidth = TO_DPIX(TICK_HEIGHT);
-        QRectF band(lineXpos - bandWidth / 2., 0, bandWidth, span);
-        QLinearGradient gradient(band.bottomLeft(), band.topLeft());
-        gradient.setStops(_imp->trackGradient);
-        QPen previousPen = p.pen();
-        p.setPen(Qt::black);
-        p.setBrush(QBrush(gradient));
-        p.drawRect(band);
-        p.setBrush(Qt::NoBrush);
-        p.setPen(previousPen);
-    } else {
-        p.drawLine(QPointF(lineXpos, 0), QPointF(lineXpos, height() - 1));
-    }
-
-    SettingsPtr settings = appPTR->getCurrentSettings();
-    if (!_imp->useSliderColor) {
-        double sliderColorRGB[3];
-        settings->getSliderColor(&sliderColorRGB[0], &sliderColorRGB[1], &sliderColorRGB[2]);
-        _imp->sliderColor.setRgbF(sliderColorRGB[0], sliderColorRGB[1], sliderColorRGB[2]);
-    } else {
-        _imp->sliderColor = _imp->customSliderColor;
-    }
-    double selectionColorRGB[3];
-    settings->getSelectionColor(&selectionColorRGB[0], &selectionColorRGB[1], &selectionColorRGB[2]);
-    QColor selectionColor;
-    selectionColor.setRgbF(selectionColorRGB[0], selectionColorRGB[1], selectionColorRGB[2]);
-
-    QPainter::RenderHints rh = p.renderHints();
-    p.setRenderHints(QPainter::Antialiasing);
-    if (!_imp->readOnly) {
-        p.setBrush(QBrush(_imp->sliderColor));
-    } else {
-        p.setBrush(QBrush(QColor(100, 100, 100, 200)));
-    }
-    if (!hasFocus() || _imp->readOnly) {
-        p.setPen(Qt::black);
-    } else {
-        QPen pen = p.pen();
-        pen.setColor(selectionColor);
-        p.setPen(pen);
-    }
-    const double radius = TO_DPIX(SLIDER_HEIGHT / 2.8);
-    p.drawEllipse(QPointF(lineXpos, yOf(_imp->value)), radius, radius);
-    p.setRenderHints(rh);
-}
 
 void
 ScaleSliderQWidget::setReadOnly(bool ro)

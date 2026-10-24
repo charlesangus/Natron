@@ -1904,32 +1904,100 @@ try:
         QApplication.processEvents()
         rgba = info_rgba()
         report("NOTE hover: %r %r" % (rgba, info_source()))
-        check(rgb_is(rgba, (0.25, 0.25, 0.25)) and info_source() == "in", "hover reads the Grade's input, 0.25, marked in")
+        check(rgb_is(rgba, (0.5, 0.5, 0.5)) and info_source() == "out", "hover reads the Grade's output, 0.5, marked out")
         click(gl, mid, Qt.LeftButton, Qt.ControlModifier)
         yield ("sleep", SETTLE_MS)
         rgba = info_rgba()
         report("NOTE Ctrl-click: %r %r" % (rgba, info_source()))
-        check(rgb_is(rgba, (0.25, 0.25, 0.25)) and info_source() == "in", "Ctrl-click reads the input, 0.25, marked in")
-        widget_shot(info_bar(), "picker-01-ctrl-click-in")
+        check(rgb_is(rgba, (0.5, 0.5, 0.5)) and info_source() == "out", "Ctrl-click reads the output, 0.5, marked out")
+        widget_shot(info_bar(), "picker-01-ctrl-click-out")
         click(gl, mid, Qt.LeftButton, Qt.ControlModifier | Qt.AltModifier)
         yield ("sleep", SETTLE_MS)
         rgba = info_rgba()
         report("NOTE Ctrl+Alt-click: %r %r" % (rgba, info_source()))
-        check(rgb_is(rgba, (0.5, 0.5, 0.5)) and info_source() == "out", "Ctrl+Alt-click reads the output, 0.5, marked out")
-        widget_shot(info_bar(), "picker-02-ctrl-alt-click-out")
+        check(rgb_is(rgba, (0.25, 0.25, 0.25)) and info_source() == "in", "Ctrl+Alt-click reads the input, 0.25, marked in")
+        widget_shot(info_bar(), "picker-02-ctrl-alt-click-in")
         drag(gl, mid - QPointF(20, 20), mid + QPointF(20, 20), Qt.LeftButton, Qt.ControlModifier | Qt.ShiftModifier)
         yield ("sleep", SETTLE_MS)
         rgba = info_rgba()
         report("NOTE Ctrl+Shift rect: %r %r" % (rgba, info_source()))
-        check(rgb_is(rgba, (0.25, 0.25, 0.25)) and info_source() == "in", "the Ctrl+Shift rectangle reads the input, 0.25, marked in")
+        check(rgb_is(rgba, (0.5, 0.5, 0.5)) and info_source() == "out", "the Ctrl+Shift rectangle reads the output, 0.5, marked out")
         drag(gl, mid - QPointF(20, 20), mid + QPointF(20, 20), Qt.LeftButton,
              Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier)
         yield ("sleep", SETTLE_MS)
         rgba = info_rgba()
         report("NOTE Ctrl+Shift+Alt rect: %r %r" % (rgba, info_source()))
-        check(rgb_is(rgba, (0.5, 0.5, 0.5)) and info_source() == "out",
-              "the Ctrl+Shift+Alt rectangle reads the output, 0.5, marked out")
-        gt.shot("picker-03-rect-out.png")
+        check(rgb_is(rgba, (0.25, 0.25, 0.25)) and info_source() == "in",
+              "the Ctrl+Shift+Alt rectangle reads the input, 0.25, marked in")
+        gt.shot("picker-03-rect-alt-in.png")
+
+        gt.close_all_panels()
+        eg = create("net.sf.openfx.GradePlugin", 8000, 300)
+        set_all(eg.getParam("multiply"), 2.0)
+        connect(eg, 0, c25)
+        yield ("sleep", SETTLE_MS)
+        view(eg)
+        yield ("sleep", RENDER_MS)
+        eye_labels = [w for w in gt.widgets_of("ColorPickerLabel") if w.isVisible()]
+        if check(eye_labels, "the Grade's panel shows a colour picker"):
+            eye_names = ("blackPoint", "whitePoint", "black", "white", "multiply", "offset", "gamma")
+            eye_before = {}
+            for n in eye_names:
+                p = eg.getParam(n)
+                if p is not None:
+                    eye_before[n] = [p.getValue(d) for d in range(p.getNumDimensions())]
+            eye_label = eye_labels[0]
+            eye_centre = QPointF(eye_label.width() / 2.0, eye_label.height() / 2.0)
+            click(eye_label, eye_centre)
+            yield ("sleep", SETTLE_MS)
+            move(gl, mid)
+            move(gl, mid + QPointF(1, 0))
+            QApplication.processEvents()
+            report("NOTE eyedropper hover: %r %r" % (info_rgba(), info_source()))
+            check(rgb_is(info_rgba(), (0.25, 0.25, 0.25)) and info_source() == "in",
+                  "with the eyedropper on, hover reads the input, 0.25, marked in")
+            click(gl, mid, Qt.LeftButton, Qt.ControlModifier)
+            yield ("sleep", SETTLE_MS)
+            rgba = info_rgba()
+            report("NOTE eyedropper Ctrl-click: %r %r" % (rgba, info_source()))
+            check(rgb_is(rgba, (0.25, 0.25, 0.25)) and info_source() == "in",
+                  "with the eyedropper on, Ctrl-click reads the input, 0.25, marked in")
+            widget_shot(info_bar(), "picker-04-eyedropper-ctrl-click-in")
+            filled = None
+            for n in eye_names:
+                p = eg.getParam(n)
+                if p is None:
+                    continue
+                now = [p.getValue(d) for d in range(p.getNumDimensions())]
+                if now != eye_before.get(n):
+                    filled = (n, now)
+            report("NOTE eyedropper Grade knob that changed: %r" % (filled,))
+            check(filled is not None and all(close(filled[1][i], 0.25) for i in range(3)),
+                  "the Ctrl-click filled the colour knob with the input, 0.25")
+            if filled is not None:
+                restore = eg.getParam(filled[0])
+                for d, v in enumerate(eye_before[filled[0]]):
+                    restore.setValue(v, d)
+                yield ("sleep", RENDER_MS)
+            click(gl, mid, Qt.LeftButton, Qt.ControlModifier | Qt.AltModifier)
+            yield ("sleep", SETTLE_MS)
+            rgba = info_rgba()
+            report("NOTE eyedropper Ctrl+Alt-click: %r %r" % (rgba, info_source()))
+            check(rgb_is(rgba, (0.5, 0.5, 0.5)) and info_source() == "out",
+                  "with the eyedropper on, Ctrl+Alt-click reads the output, 0.5, marked out")
+            widget_shot(info_bar(), "picker-05-eyedropper-ctrl-alt-click-out")
+            view(reader)
+            yield ("sleep", RENDER_MS)
+            click(gl, mid, Qt.LeftButton, Qt.ControlModifier)
+            yield ("sleep", SETTLE_MS)
+            report("NOTE eyedropper Read Ctrl-click: %r %r" % (info_rgba(), info_source()))
+            check(info_source() == "out", "on a Read with the eyedropper on, the pick reads the output, marked out")
+            widget_shot(info_bar(), "picker-06-eyedropper-read-out")
+            click(eye_label, eye_centre)
+            yield ("sleep", SETTLE_MS)
+        gt.close_all_panels()
+        view(g2)
+        yield ("sleep", RENDER_MS)
 
         mb = create("net.sf.openfx.ConstantPlugin", 8400, -300)
         set_rgba(mb.getParam("color"), (0.25, 0.25, 0.25, 1.0))
@@ -1945,11 +2013,11 @@ try:
         yield ("sleep", SETTLE_MS)
         rgba = info_rgba()
         report("NOTE Merge Ctrl-click: %r %r" % (rgba, info_source()))
-        check(rgb_is(rgba, (0.25, 0.25, 0.25)) and info_source() == "in", "on a Merge, Ctrl-click reads B (0.25), marked in")
+        check(rgb_is(rgba, (0.75, 0.75, 0.75)) and info_source() == "out", "on a Merge, Ctrl-click reads A over B (0.75), marked out")
         click(gl, mid, Qt.LeftButton, Qt.ControlModifier | Qt.AltModifier)
         yield ("sleep", SETTLE_MS)
         rgba = info_rgba()
-        check(rgb_is(rgba, (0.75, 0.75, 0.75)) and info_source() == "out", "on a Merge, Ctrl+Alt-click reads A over B (0.75), marked out")
+        check(rgb_is(rgba, (0.25, 0.25, 0.25)) and info_source() == "in", "on a Merge, Ctrl+Alt-click reads B (0.25), marked in")
 
         view(reader)
         yield ("sleep", RENDER_MS)
@@ -1957,7 +2025,7 @@ try:
         yield ("sleep", SETTLE_MS)
         report("NOTE Read Ctrl-click: %r %r" % (info_rgba(), info_source()))
         check(info_source() == "out", "on a Read, Ctrl-click falls back to the output, marked out")
-        widget_shot(info_bar(), "picker-04-read-out")
+        widget_shot(info_bar(), "picker-07-read-out")
 
         # =====================================================================================
         gt.section("picker-scene-referred")

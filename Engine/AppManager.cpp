@@ -138,6 +138,7 @@
 #include "Engine/ThreadPool.h"
 #include "Engine/TrackerNode.h"
 
+#include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -3427,6 +3428,38 @@ std::string
 AppManager::getReaderPluginIDForFileType(const std::string & extension) const
 {
     return OiioReadSupport::formatNameForExtension(extension).empty() ? std::string() : std::string(PLUGINID_NATRON_READ);
+}
+
+std::string
+AppManager::getReaderPluginIDForFile(const std::string& originalPath,
+                                     const ProjectPtr& project) const
+{
+    std::string path = originalPath;
+    if (project) {
+        project->canonicalizePath(path);
+    }
+    const std::string::size_type dot = path.find_last_of('.');
+    const std::string::size_type sep = path.find_last_of('/');
+    const std::string extension = (dot == std::string::npos || (sep != std::string::npos && dot < sep)) ? std::string() : path.substr(dot + 1);
+    const std::string byExtension = getReaderPluginIDForFileType(extension);
+    if (byExtension.empty()) {
+        return byExtension;
+    }
+    std::string firstFile = path;
+    if (path.find_first_of("#%") != std::string::npos) {
+        std::map<int, std::map<int, std::string>> sequence;
+        FileSystemModel::filesListFromPattern(path, &sequence);
+        if (!sequence.empty() && !sequence.begin()->second.empty()) {
+            firstFile = sequence.begin()->second.begin()->second;
+        }
+    }
+    // DeepRead reads the first part, so that is the part that decides.
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(firstFile, NULL);
+    if (header && !header->subimages.empty() && header->subimages[0].deep) {
+        return std::string(PLUGINID_NATRON_DEEPREAD);
+    }
+
+    return byExtension;
 }
 
 std::string

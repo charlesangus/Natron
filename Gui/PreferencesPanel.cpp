@@ -62,6 +62,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Splitter.h"
 #include "Gui/TableModelView.h"
 #include "Gui/ThemedIcon.h"
+#include "Gui/WindowPlacement.h"
 
 #define COL_PLUGIN_LABEL 0
 #define COL_PLUGINID COL_PLUGIN_LABEL + 1
@@ -1205,10 +1206,7 @@ PreferencesPanel::saveChangesAndClose()
 void
 PreferencesPanel::showEvent(QShowEvent* /*e*/)
 {
-    QScreen* desktop = QGuiApplication::primaryScreen();
-    const QRect rect = desktop->availableGeometry();
-
-    move( QPoint(rect.width() / 2 - width() / 2, rect.height() / 2 - height() / 2) );
+    placeOnUserScreen(this, parentWidget());
 
     _imp->changedKnobs.clear();
     _imp->pluginSettingsChanged = false;

@@ -332,16 +332,16 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutDescActionShowAll "Show All"
 
 #define kShortcutIDMousePickColor "pick"
-#define kShortcutDescMousePickColor "Pick a Color from the viewed node's input"
+#define kShortcutDescMousePickColor "Pick a Color from the viewed node's output (its input while picking a color parameter)"
 
-#define kShortcutIDMousePickOutputColor "pickOutput"
-#define kShortcutDescMousePickOutputColor "Pick a Color from the viewed node's output"
+#define kShortcutIDMousePickAlternateColor "pickAlternate"
+#define kShortcutDescMousePickAlternateColor "Pick a Color from the other source: the viewed node's input (its output while picking a color parameter)"
 
 #define kShortcutIDMouseRectanglePick "rectanglePick"
-#define kShortcutDescMouseRectanglePick "Rectangle Color Picker on the viewed node's input"
+#define kShortcutDescMouseRectanglePick "Rectangle Color Picker on the viewed node's output (its input while picking a color parameter)"
 
-#define kShortcutIDMouseRectanglePickOutput "rectanglePickOutput"
-#define kShortcutDescMouseRectanglePickOutput "Rectangle Color Picker on the viewed node's output"
+#define kShortcutIDMouseRectanglePickAlternate "rectanglePickAlternate"
+#define kShortcutDescMouseRectanglePickAlternate "Rectangle Color Picker on the other source: the viewed node's input (its output while picking a color parameter)"
 
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"

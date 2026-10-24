@@ -1041,3 +1041,37 @@ TEST_F(DeepReadWriteTest, ReadWriteOfALayeredFileKeepsAllTwelveChannels)
     ASSERT_EQ(0, runOiiotool(QStringList() << QString::fromUtf8("--info") << QString::fromUtf8("-v") << written, &infoOutput)) << infoOutput.toStdString();
     EXPECT_TRUE(infoOutput.contains(QString::fromUtf8("12 channel"))) << infoOutput.toStdString();
 }
+
+TEST_F(DeepReadWriteTest, ReaderLookupResolvesProjectPathsBeforeProbing)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString copy = dir.path() + QString::fromUtf8("/shot.exr");
+    ASSERT_TRUE(QFile::copy(fixturePath("deep-scanline.exr"), copy));
+
+    ProjectPtr project = getApp()->getProject();
+    KnobPathPtr projectPathsKnob = project->getEnvVarKnob();
+    ASSERT_TRUE(bool(projectPathsKnob));
+    std::list<std::vector<std::string>> pathVariables;
+    projectPathsKnob->getTable(&pathVariables);
+    bool found = false;
+    for (std::list<std::vector<std::string>>::iterator it = pathVariables.begin(); it != pathVariables.end(); ++it) {
+        if ((it->size() == 2) && ((*it)[0] == NATRON_PROJECT_ENV_VAR_NAME)) {
+            (*it)[1] = dir.path().toStdString();
+            found = true;
+        }
+    }
+    if (!found) {
+        std::vector<std::string> row(2);
+        row[0] = NATRON_PROJECT_ENV_VAR_NAME;
+        row[1] = dir.path().toStdString();
+        pathVariables.push_back(row);
+    }
+    projectPathsKnob->setTable(pathVariables);
+
+    const std::string deepID(PLUGINID_NATRON_DEEPREAD);
+    EXPECT_EQ(deepID, appPTR->getReaderPluginIDForFile(copy.toStdString()));
+    EXPECT_EQ(deepID, appPTR->getReaderPluginIDForFile("[Project]/shot.exr", project));
+    EXPECT_EQ(deepID, appPTR->getReaderPluginIDForFile("shot.exr", project));
+    EXPECT_NE(deepID, appPTR->getReaderPluginIDForFile("[Project]/shot.exr"));
+}

@@ -380,9 +380,6 @@ GuiApplicationManager::setFileToOpen(const QString & str)
 bool
 GuiApplicationManager::handleImageFileOpenRequest(const std::string& filename)
 {
-    QString fileCopy( QString::fromUtf8( filename.c_str() ) );
-    QString ext = QtCompat::removeFileExtension(fileCopy);
-    std::string readerFileType = appPTR->getReaderPluginIDForFileType( ext.toStdString() );
     AppInstancePtr mainInstance = appPTR->getTopLevelInstance();
     bool instanceCreated = false;
 
@@ -395,6 +392,7 @@ GuiApplicationManager::handleImageFileOpenRequest(const std::string& filename)
         return false;
     }
 
+    const std::string readerFileType = appPTR->getReaderPluginIDForFile(filename, mainInstance->getProject());
     CreateNodeArgs args(readerFileType, mainInstance->getProject() );
     args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, filename);
     args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
@@ -912,8 +910,8 @@ GuiApplicationManager::populateShortcuts()
 
     registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickColor, kShortcutDescMousePickColor, Qt::ControlModifier, Qt::LeftButton);
     registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePick, kShortcutDescMouseRectanglePick, Qt::ShiftModifier | Qt::ControlModifier, Qt::LeftButton);
-    registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickOutputColor, kShortcutDescMousePickOutputColor, Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
-    registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePickOutput, kShortcutDescMouseRectanglePickOutput, Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
+    registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickAlternateColor, kShortcutDescMousePickAlternateColor, Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
+    registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePickAlternate, kShortcutDescMouseRectanglePickAlternate, Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
 
     ///Player
     registerKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevious, kShortcutDescActionPlayerPrevious, Qt::NoModifier, Qt::Key_Left);

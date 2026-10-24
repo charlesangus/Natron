@@ -41,6 +41,8 @@ CLANG_DIAG_ON(deprecated)
 #include "Global/FloatingPointExceptions.h"
 #endif
 
+#include "Gui/WindowPlacement.h"
+
 NATRON_NAMESPACE_ENTER
 
 SplashScreen::SplashScreen(const QString & filePath)
@@ -89,9 +91,7 @@ SplashScreen::SplashScreen(const QString & filePath)
         show();
     }
 
-    QScreen* desktop = QGuiApplication::primaryScreen();
-    QRect screen = desktop->availableGeometry();
-    move(screen.width() / 2 - width() / 2, screen.height() / 2 - height() / 2);
+    placeOnUserScreen(this, 0);
 }
 
 void
@@ -142,9 +142,7 @@ LoadProjectSplashScreen::LoadProjectSplashScreen(const QString & filePath)
     resize( _pixmap.width(), _pixmap.height() );
     show();
 
-    QScreen* desktop = QGuiApplication::primaryScreen();
-    QRect screen = desktop->availableGeometry();
-    move(screen.width() / 2 - width() / 2, screen.height() / 2 - height() / 2);
+    placeOnUserScreen(this, QApplication::activeWindow());
 }
 
 void

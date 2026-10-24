@@ -994,6 +994,10 @@ AppInstance::createReader(const std::string& filename,
                           CreateNodeArgs& args)
 {
     args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, filename);
+    const std::string readerID = appPTR->getReaderPluginIDForFile(filename, getProject());
+    if (!readerID.empty()) {
+        args.setProperty<std::string>(kCreateNodeArgsPropPluginID, readerID);
+    }
     std::string canonicalFilename = filename;
     getProject()->canonicalizePath(canonicalFilename);
 
@@ -1196,6 +1200,25 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
     }
 
     bool isSilentCreation = args.getProperty<bool>(kCreateNodeArgsPropSilent);
+
+    // The file is picked before the node exists so that a deep image creates a DeepRead rather than a Read.
+    if (!serialization && !isSilentCreation && !isBackground() && (argsPluginID == QString::fromUtf8(PLUGINID_NATRON_READ)) && !args.getProperty<bool>(kCreateNodeArgsPropOutOfProject) && !args.getProperty<bool>(kCreateNodeArgsPropNoNodeGUI)) {
+        const std::string fileParam(kOfxImageEffectFileParamName);
+        const std::vector<std::string> defaultParams = args.getPropertyN<std::string>(kCreateNodeArgsPropNodeInitialParamValues);
+        const std::string valueProp = std::string(kCreateNodeArgsPropParamValue) + "_" + fileParam;
+        const bool hasFile = std::find(defaultParams.begin(), defaultParams.end(), fileParam) != defaultParams.end() && !args.getProperty<std::string>(valueProp).empty();
+        if (!hasFile) {
+            const std::string picked = openImageFileDialog();
+            if (picked.empty()) {
+                return node;
+            }
+            args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, picked);
+            const std::string readerID = appPTR->getReaderPluginIDForFile(picked, getProject());
+            if (!readerID.empty()) {
+                findId = QString::fromStdString(readerID);
+            }
+        }
+    }
 
     try {
         plugin = appPTR->getPluginBinary(findId, versionMajor, versionMinor, _imp->_projectCreatedWithLowerCaseIDs && serialization);

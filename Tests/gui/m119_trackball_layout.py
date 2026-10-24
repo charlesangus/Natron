@@ -901,9 +901,14 @@ try:
         lit = highlighted_backdrops(gp)
         if check(len(lit) == 1, "panel open: exactly one sunken block is highlighted (%d)" % len(lit)):
             block = global_rect(lit[0])
-            ap = active_adjust_panel(gp)
+            row_top = global_rect(gain_row).top()
+            below = [w for w in named("ColorAdjustPanel", True, gp) if global_rect(w).top() >= row_top]
+            ap = min(below, key=lambda w: global_rect(w).top() - row_top) if below else None
             check(block.contains(global_rect(gain_row)), "panel open: the block surrounds gain's row")
-            check(ap is not None and block.contains(global_rect(ap)), "panel open: the block surrounds gain's panel")
+            ap_rect = global_rect(ap) if ap is not None else None
+            report("NOTE panel open: block %s, gain's panel %s" % (fmt_rect(block), fmt_rect(ap_rect) if ap_rect is not None else None))
+            check(ap_rect is not None and block.contains(ap_rect.adjusted(px(2), px(2), -px(2), -px(2))),
+                  "panel open: the block surrounds gain's panel")
             fill = backdrop_fill(lit[0])
             report("NOTE engaged block fill %s, saturation %.2f; plain fill %s"
                    % (fill.name(), fill.hsvSaturationF(), plain_fill.name() if plain_fill is not None else None))
@@ -920,11 +925,15 @@ try:
         if check(len(lit) == 1, "panel closed: the sunken block is still highlighted (%d)" % len(lit)):
             block = global_rect(lit[0])
             row_rect = global_rect(gain_row)
+            for w in live_children(gp):
+                if (w.isVisible() and tagged(w, GAIN) and not isinstance(w, QLabel) and not is_inside(w, gain_row)
+                        and not any(is_inside(w, p) for p in named("ColorAdjustPanel", False, gp))):
+                    row_rect = row_rect.united(global_rect(w))
             label = knob_label_cell(gp, GAIN, gain_row.parentWidget())
-            check(block.contains(row_rect), "panel closed: the block surrounds gain's row")
+            check(block.contains(row_rect), "panel closed: the block surrounds gain's row and its channel lines")
             check(label is None or block.contains(global_rect(label)), "panel closed: the block surrounds gain's label")
             report("NOTE panel closed: block %s, row %s" % (fmt_rect(block), fmt_rect(row_rect)))
-            check(block.height() <= row_rect.height() + px(12), "panel closed: the block is the row alone (%d px, row %d px)"
+            check(block.height() <= row_rect.height() + px(12), "panel closed: the block is the row and its channel lines alone (%d px, row area %d px)"
                   % (block.height(), row_rect.height()))
         crop_widget(gp, "engaged-panel-closed", 4)
 

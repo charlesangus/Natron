@@ -209,20 +209,6 @@ public:
      **/
     QWidget* getGlobalModeColumnWidget() const;
 
-    /**
-     * @brief Moves hud into this knob's below-row column, right after the channel lines and
-     * before the adjust panel, wrapped in the same update guard as setAdjustPanelExpanded() so
-     * the insertion settles without a paint at a stale geometry. In the BinTop placement it
-     * goes into the bin-top trackball panel instead.
-     **/
-    void attachGlobalModeHud(QWidget* hud);
-
-    /**
-     * @brief Takes hud back out of this knob's below-row column and hides it, under the same
-     * update guard as attachGlobalModeHud().
-     **/
-    void detachGlobalModeHud(QWidget* hud);
-
 public Q_SLOTS:
 
     /**

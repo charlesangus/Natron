@@ -31,6 +31,7 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QGuiApplication>
+#include <QRegion>
 #include <QScreen>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -171,6 +172,8 @@ ColorTrackballReveal::ColorTrackballReveal()
     const int side = diameter();
 
     setFixedSize(side, side);
+    // The translucent background shows as black corners without a compositor.
+    setMask(QRegion(0, 0, side, side, QRegion::Ellipse));
 
     _wheel = new ColorWheelWidget(this);
     _disc = new ColorModeDiscWidget(this);

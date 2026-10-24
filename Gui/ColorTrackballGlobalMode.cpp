@@ -463,9 +463,7 @@ isOnAnyScreen(const QPoint& p)
 }
 } // namespace
 
-// Created with no parent: it is homeless until a target attaches it into its own below-row
-// column, and is reparented and moved there whenever the target changes, or until a
-// following feedback makes it a window of its own.
+// Created with no parent, as a window of its own that follows the cursor; deleted with the controller.
 ColorTrackballHud*
 ColorTrackballGlobalMode::ensureHud()
 {
@@ -986,7 +984,7 @@ ColorTrackballGlobalMode::exit()
     // The touched knob is left open and unfolded, exactly as the user left it; only the HUD
     // goes away.
     if (_hud) {
-        _hud->setFollowCursor(false);
+        _hud->hide();
     }
 
     QCoreApplication* app = QCoreApplication::instance();
@@ -1235,9 +1233,6 @@ ColorTrackballGlobalMode::applyFeedback()
 
     ColorTrackballHud* hud = ensureHud();
 
-    if (!hud->isFollowingCursor()) {
-        hud->setFollowCursor(true);
-    }
     updateHud();
     hud->followCursorTo(QCursor::pos());
     hud->show();
@@ -1364,7 +1359,7 @@ ColorTrackballGlobalMode::handleMouseMove(QObject* watched,
                                           QMouseEvent* e)
 {
     _pointerPos = eventGlobalPosition(watched, e).toPoint();
-    if (_hud && _hud->isFollowingCursor()) {
+    if (_hud) {
         _hud->followCursorTo(_pointerPos);
     }
     if (_reveal && _revealFollowing && _reveal->isVisible()) {

@@ -105,37 +105,26 @@ class ColorTrackballHud
     GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
-    explicit ColorTrackballHud(QWidget* parent = 0);
+    ColorTrackballHud();
 
     virtual ~ColorTrackballHud() OVERRIDE;
 
     void setState(const ColorTrackballHudState& state);
 
     /**
-     * @brief The flags the HUD's own window has while it follows the cursor: a frameless tool
+     * @brief The flags the HUD's window has from construction: a frameless tool
      * window on top of everything that never takes focus or input.
      **/
     static Qt::WindowFlags followCursorWindowFlags();
 
     /**
-     * @brief Turns the HUD into a window of its own that followCursorTo() places by the
-     * pointer, or back into a parentless widget with the window flags and input attributes it
-     * had before following began (plus Qt::Window, which Qt gives every parentless widget),
-     * ready to be attached to a knob's column. Either way it is taken out of any layout it was
-     * in and left hidden.
-     **/
-    void setFollowCursor(bool follow);
-
-    bool isFollowingCursor() const
-    {
-        return _followCursor;
-    }
-
-    /**
      * @brief Places the following HUD by the pointer at globalCursor, by
-     * colorTrackballHudFollowPosition() on the screen holding it. Ignored when not following.
+     * colorTrackballHudFollowPosition() on the screen holding it.
      **/
     void followCursorTo(const QPoint& globalCursor);
+
+protected:
+    virtual void paintEvent(QPaintEvent* e) OVERRIDE;
 
 private:
     void placeByCursor();
@@ -151,10 +140,6 @@ private:
     QLabel* _legendT;
     QLabel* _legendV;
     QLabel* _endOfListLabel;
-    bool _followCursor;
-    Qt::WindowFlags _preFollowWindowFlags;
-    bool _preFollowShowWithoutActivating;
-    bool _preFollowTransparentForMouseEvents;
     QPoint _cursor;
 };
 

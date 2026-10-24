@@ -384,26 +384,6 @@ TEST(ColorTrackballBinPanel, DestroyingTheKnobsWidgetsUnbinds)
     EXPECT_EQ(0, panel.getBoundKnob());
 }
 
-TEST(ColorTrackballBinPanel, TheHudGoesToTheBinPanelInBinTop)
-{
-    PlacementScope placement(ColorPanelLayout::Placement::BinTop);
-    QWidget bin;
-    ColorTrackballBinPanel panel(0, &bin);
-    std::unique_ptr<BuiltColorKnob> white = buildColorKnob("White");
-
-    ASSERT_TRUE(bool(white));
-    white->gui->setAdjustPanelExpanded(true);
-
-    QWidget* hud = new QWidget();
-
-    white->gui->attachGlobalModeHud(hud);
-    EXPECT_EQ(&panel, hud->parentWidget());
-
-    white->gui->detachGlobalModeHud(hud);
-    EXPECT_EQ(0, hud->parentWidget());
-    delete hud;
-}
-
 TEST(ColorTrackballBinPanel, SwitchingBackToInKnobHandsTheEditingBackToTheKnob)
 {
     PlacementScope placement(ColorPanelLayout::Placement::BinTop);

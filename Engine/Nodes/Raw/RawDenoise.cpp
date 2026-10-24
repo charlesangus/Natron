@@ -147,6 +147,8 @@ RawDenoise::initializeKnobs()
     for (int channel = 0; channel < 4; ++channel) {
         KnobGroupPtr group = createKnob<KnobGroup>(tr("%1 Strengths").arg(groupLabels[channel]));
         group->setName(std::string("strengths") + kChannelNames[channel]);
+        group->setHintToolTip((channel == 0) ? tr("How strongly each wavelet band of every channel is denoised.").toStdString()
+                                             : tr("How strongly each wavelet band of %1 is denoised, on top of the strengths for all channels.").arg(groupLabels[channel].toLower()).toStdString());
         group->setDefaultValue(false);
         page->addKnob(group);
         for (int band = 0; band < RawKernels::kRawDenoiseBands; ++band) {

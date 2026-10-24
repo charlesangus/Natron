@@ -70,11 +70,14 @@ RawInputColorOp::createKnobs(KnobHolder* knobHolder,
     const RawColorMath::Mat3 rec709 = RawColorMath::srgbToXyz();
     const char* names[3] = { kRawInputColorParamRow0, kRawInputColorParamRow1, kRawInputColorParamRow2 };
     const QString labels[3] = { EffectInstance::tr("X"), EffectInstance::tr("Y"), EffectInstance::tr("Z") };
+    const char* columns[3] = { "r", "g", "b" };
     for (int r = 0; r < 3; ++r) {
         KnobDoublePtr row = AppManager::createKnob<KnobDouble>(knobHolder, labels[r].toStdString(), 3);
         row->setName(names[r]);
         row->setHintToolTip(EffectInstance::tr("A row of the custom camera RGB to XYZ (D65) matrix: the weights of camera red, green and blue in this XYZ component.").toStdString());
         for (int c = 0; c < 3; ++c) {
+            // The columns weigh camera red, green and blue; the default x, y, z would read as XYZ.
+            row->setDimensionName(c, columns[c]);
             row->setDefaultValue(rec709[r * 3 + c], c);
             row->setDisplayMinimum(-2., c);
             row->setDisplayMaximum(2., c);

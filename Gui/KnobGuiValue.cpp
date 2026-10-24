@@ -1132,7 +1132,7 @@ public:
     DimensionsFoldCommand(const KnobGuiPtr& knobGui,
                           bool fold)
         : QUndoCommand()
-        , _knobGui(knobGui)
+        , _knob(knobGui->getKnob())
         , _fold(fold)
         , _knobBeforeFold()
     {
@@ -1151,33 +1151,69 @@ public:
 
     virtual void undo() OVERRIDE FINAL
     {
-        KnobGuiPtr knobGui = _knobGui.lock();
-        KnobGuiValue* isValue = dynamic_cast<KnobGuiValue*>(knobGui.get());
-        if (!isValue) {
+        KnobIPtr knob = lockUndoKnob(_knob);
+        if (!knob) {
+            setObsolete(true);
+
             return;
         }
-        KnobIPtr knob = knobGui->getKnob();
-        if (knob && _knobBeforeFold) {
+        if (_knobBeforeFold) {
             knob->cloneAndUpdateGui(_knobBeforeFold.get());
         }
-        isValue->setDimensionsFolded(!_fold);
+        KnobGuiValue* isValue = dynamic_cast<KnobGuiValue*>(KnobGui::getLiveGui(knob).get());
+        if (isValue) {
+            isValue->setDimensionsFolded(!_fold);
+        } else {
+            knob->restoreDimensionsUnfoldedInGui(_fold);
+        }
     }
 
     virtual void redo() OVERRIDE FINAL
     {
-        KnobGuiPtr knobGui = _knobGui.lock();
-        KnobGuiValue* isValue = dynamic_cast<KnobGuiValue*>(knobGui.get());
-        if (!isValue) {
+        KnobIPtr knob = lockUndoKnob(_knob);
+        if (!knob) {
+            setObsolete(true);
+
             return;
         }
-        if (_fold) {
-            isValue->copyDimensionZeroValueToOthers();
+        // The knob's current GUI may be a rebuild of the one the command was made in.
+        KnobGuiValue* isValue = dynamic_cast<KnobGuiValue*>(KnobGui::getLiveGui(knob).get());
+        if (isValue) {
+            if (_fold) {
+                isValue->copyDimensionZeroValueToOthers();
+            }
+            isValue->setDimensionsFolded(_fold);
+
+            return;
         }
-        isValue->setDimensionsFolded(_fold);
+        // Without a GUI the raw value is copied: the per-dimension normalization the spin
+        // boxes apply only exists in the GUI.
+        if (_fold) {
+            copyDimensionZeroRawValue(knob);
+        }
+        knob->restoreDimensionsUnfoldedInGui(!_fold);
     }
 
 private:
-    KnobGuiWPtr _knobGui;
+    static void copyDimensionZeroRawValue(const KnobIPtr& knob)
+    {
+        KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(knob.get());
+        KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob.get());
+        if (!isDouble && !isInt) {
+            return;
+        }
+        knob->beginChanges();
+        for (int i = 1; i < knob->getDimension(); ++i) {
+            if (isDouble) {
+                isDouble->setValue(isDouble->getValue(0), ViewSpec::all(), i);
+            } else {
+                isInt->setValue(isInt->getValue(0), ViewSpec::all(), i);
+            }
+        }
+        knob->endChanges();
+    }
+
+    KnobIWPtr _knob;
     bool _fold;
     KnobIPtr _knobBeforeFold;
 };

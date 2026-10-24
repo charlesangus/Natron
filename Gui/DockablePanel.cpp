@@ -1691,7 +1691,7 @@ DockablePanel::setKeyOnAllParameters()
                     k.curveUI = *it2;
                     KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it2->get() );
                     if (isKnobCurve) {
-                        k.knobUI = isKnobCurve->getKnobGui();
+                        k.knob = isKnobCurve->getInternalKnob();
                         k.dimension = isKnobCurve->getDimension();
                     } else {
                         k.dimension = 0;

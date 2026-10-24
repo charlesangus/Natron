@@ -240,19 +240,23 @@ private:
 class DopeSheetKey
 {
 public:
-    DopeSheetKey(const DSKnobPtr &knob,
+    DopeSheetKey(const DSKnobPtr& knob,
                  const KeyFrame& kf)
         : context(knob)
         , key(kf)
+        , knob(knob ? knob->getInternalKnob() : KnobIPtr())
+        , dimension(knob ? knob->getDimension() : 0)
     {
         DSKnobPtr knobContext = context.lock();
 
         assert(knobContext);
     }
 
-    DopeSheetKey(const DopeSheetKey &other)
+    DopeSheetKey(const DopeSheetKey& other)
         : context(other.context)
         , key(other.key)
+        , knob(other.knob)
+        , dimension(other.dimension)
     {}
 
     friend bool operator==(const DopeSheetKey &key,
@@ -295,6 +299,11 @@ public:
 
     DSKnobWPtr context;
     KeyFrame key;
+
+    // The dope sheet recreates its knob contexts whenever a panel is rebuilt, so undo commands
+    // address the key through the knob and dimension instead.
+    KnobIWPtr knob;
+    int dimension;
 };
 
 typedef DopeSheetKeyPtr DopeSheetKeyPtr;

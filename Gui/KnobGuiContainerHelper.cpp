@@ -64,8 +64,6 @@ struct KnobGuiContainerHelperPrivate
     KnobHolder* undoOwner;
     // Only without a history.
     std::unique_ptr<QUndoStack> undoStack;
-    QUndoCommand* cmdBeingPushed;
-    bool clearedStackDuringPush;
     std::unique_ptr<KnobGuiContainerSignalsHandler> signals;
 
     KnobGuiContainerHelperPrivate(KnobGuiContainerHelper* p,
@@ -80,8 +78,6 @@ struct KnobGuiContainerHelperPrivate
         , history(history)
         , undoOwner(undoOwner)
         , undoStack()
-        , cmdBeingPushed(0)
-        , clearedStackDuringPush(false)
         , signals(new KnobGuiContainerSignalsHandler(p))
     {
         if (history) {
@@ -1043,9 +1039,7 @@ KnobGuiContainerHelper::refreshGuiForKnobsChanges(bool restorePageIndex)
     }
     _imp->pages.clear();
 
-    //Clear undo/Redo stack so that KnobGui pointers are not lying around
-    clearUndoRedoStack();
-
+    // Undo commands address knobs rather than their GUIs, so the history survives the rebuild.
     recreateKnobsInternal(curPage, restorePageIndex);
     _imp->refreshPagesEnabledness();
 }
@@ -1194,14 +1188,7 @@ KnobGuiContainerHelper::pushUndoCommand(QUndoCommand* cmd)
 
         return;
     }
-    _imp->cmdBeingPushed = cmd;
-    _imp->clearedStackDuringPush = false;
     _imp->undoStack->push(cmd);
-
-    //We may be in a situation where the command was not pushed because the stack was cleared
-    if (!_imp->clearedStackDuringPush) {
-        _imp->cmdBeingPushed = 0;
-    }
     refreshUndoRedoButtons();
 }
 
@@ -1246,23 +1233,6 @@ KnobGuiContainerHelper::refreshUndoRedoButtons()
 }
 
 void
-KnobGuiContainerHelper::clearUndoRedoStack()
-{
-    if (_imp->undoStack) {
-        _imp->undoStack->clear();
-        _imp->clearedStackDuringPush = true;
-        _imp->signals->s_deleteCurCmdLater();
-        refreshUndoRedoButtons();
-    }
-}
-
-void
-KnobGuiContainerSignalsHandler::onDeleteCurCmdLaterTriggered()
-{
-    _container->onDeleteCurCmdLater();
-}
-
-void
 KnobGuiContainerSignalsHandler::connectUndoHistory(UndoHistory* history)
 {
     QObject::connect(history, SIGNAL(changed()), this, SLOT(onUndoHistoryChanged()));
@@ -1291,15 +1261,6 @@ KnobGuiContainerSignalsHandler::onPageSecretnessChanged()
             it->second->tab->setVisible(!isPage->getIsSecret());
             break;
         }
-    }
-}
-
-void
-KnobGuiContainerHelper::onDeleteCurCmdLater()
-{
-    if (_imp->cmdBeingPushed) {
-        _imp->undoStack->clear();
-        _imp->cmdBeingPushed = 0;
     }
 }
 

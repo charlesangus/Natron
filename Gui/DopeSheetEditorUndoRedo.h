@@ -28,8 +28,9 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
+#include <list>
 #include <map>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -140,7 +141,13 @@ private:
 
 private:
     DopeSheetKeyPtrList _keys;
-    std::vector<DSNodePtr> _nodes;
+    // Nodes rather than their dope sheet rows, which are recreated when a panel is rebuilt.
+    struct MovedNode {
+        NodeWPtr node;
+        DopeSheetItemType type;
+    };
+
+    std::vector<MovedNode> _nodes;
     NodesWList _allDifferentNodes;
     double _dt;
     DopeSheetEditor *_model;
@@ -169,18 +176,21 @@ private:
      * @brief Move the selected keyframes by 'dt' on the dope sheet timeline.
      */
     void transformKey(const DopeSheetKeyPtr& key);
+    bool knobsAreAlive() const;
 
 private:
 
 
     struct TransformKeyData
     {
+        KnobIWPtr knob;
+        int dimension;
         DopeSheetKeyPtrList keys;
         CurvePtr oldCurve;
         CurvePtr newCurve;
     };
 
-    typedef std::map<DSKnobPtr, TransformKeyData> TransformKeys;
+    typedef std::list<TransformKeyData> TransformKeys;
 
     bool _firstRedoCalled;
     Transform::Matrix3x3 _transform;
@@ -217,7 +227,7 @@ private:
     void trimLeft(double firstFrame);
 
 private:
-    DSNodeWPtr _readerContext;
+    NodeWPtr _reader;
     double _oldTime;
     double _newTime;
 };
@@ -252,7 +262,7 @@ private:
     void trimRight(double lastFrame);
 
 private:
-    DSNodeWPtr _readerContext;
+    NodeWPtr _reader;
     double _oldTime;
     double _newTime;
 };
@@ -285,7 +295,7 @@ private:
     void slipReader(double dt);
 
 private:
-    DSNodeWPtr _readerContext;
+    NodeWPtr _reader;
     double _dt;
     DopeSheetEditor *_model;
 };
@@ -408,7 +418,12 @@ private:
     int _refKeyindex;
     bool _pasteRelativeToRefTime;
     std::vector<DopeSheetKey> _keys;
-    std::list<DSKnobWPtr> _dstKnobs;
+    struct DstKnob {
+        KnobIWPtr knob;
+        int dimension;
+    };
+
+    std::list<DstKnob> _dstKnobs;
     DopeSheetEditor *_model;
 };
 

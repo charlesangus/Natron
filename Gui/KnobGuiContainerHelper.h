@@ -83,7 +83,6 @@ public:
         : QObject()
         , _container(container)
     {
-        QObject::connect(this, SIGNAL( deleteCurCmdLater() ), this, SLOT( onDeleteCurCmdLaterTriggered() ), Qt::QueuedConnection);
     }
 
     void connectUndoHistory(UndoHistory* history);
@@ -92,22 +91,11 @@ public:
     {
     }
 
-    void s_deleteCurCmdLater()
-    {
-        Q_EMIT deleteCurCmdLater();
-    }
-
-Q_SIGNALS:
-
-    void deleteCurCmdLater();
-
 public Q_SLOTS:
 
     void onPageLabelChangedInternally();
 
     void onPageSecretnessChanged();
-
-    void onDeleteCurCmdLaterTriggered();
 
     void onUndoHistoryChanged();
 
@@ -335,8 +323,6 @@ private:
 
     void refreshPagesOrder(const KnobPageGuiPtr& curTabName, bool restorePageIndex);
 
-    void clearUndoRedoStack();
-
     KnobGuiPtr findKnobGuiOrCreate(const KnobIPtr & knob,
                                    bool makeNewLine,
                                    int lastKnobLineSpacing,
@@ -346,8 +332,6 @@ private:
     void initializeKnobVectorInternal(const KnobsVec& siblingsVec, KnobsVec* regularKnobsVec);
 
     void recreateKnobsInternal(const KnobPageGuiPtr& curPage, bool restorePageIndex);
-
-    void onDeleteCurCmdLater();
 
     friend class KnobGuiContainerSignalsHandler;
     std::unique_ptr<KnobGuiContainerHelperPrivate> _imp;

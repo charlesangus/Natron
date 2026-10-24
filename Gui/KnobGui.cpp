@@ -165,10 +165,24 @@ KnobGui::getLastUndoCommand() const
     return _imp->container->getLastUndoCommand();
 }
 
+bool
+KnobGui::isUndoableEdit(const KnobIPtr& knob)
+{
+    if (!knob || !knob->getCanUndo()) {
+        return false;
+    }
+    if (knob->getEvaluateOnChange()) {
+        return true;
+    }
+
+    // A label, a note or a font size does not render but is still part of the project.
+    return knob->getIsPersistent() && !dynamic_cast<KnobButton*>(knob.get());
+}
+
 void
 KnobGui::pushUndoCommand(QUndoCommand* cmd)
 {
-    if ( getKnob()->getCanUndo() && getKnob()->getEvaluateOnChange() ) {
+    if (isUndoableEdit(getKnob())) {
         _imp->container->pushUndoCommand(cmd);
     } else {
         cmd->redo();

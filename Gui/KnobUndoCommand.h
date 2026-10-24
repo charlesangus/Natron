@@ -60,6 +60,24 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief The knob an undo command addresses, or null once the knob has been destroyed or
+ * deleted from its holder. Commands hold knobs rather than knob GUIs because rebuilding a
+ * panel replaces every KnobGui while the knobs stay.
+ **/
+inline KnobIPtr
+lockUndoKnob(const KnobIWPtr& knob)
+{
+    KnobIPtr k = knob.lock();
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(k.get());
+
+    if (!k || (helper && !helper->getSignalSlotHandler())) {
+        return KnobIPtr();
+    }
+
+    return k;
+}
+
 //================================================================
 
 template<typename T>
@@ -79,7 +97,7 @@ public:
         , _dimension(dimension)
         , _oldValue()
         , _newValue()
-        , _knob(knob)
+        , _knob(knob->getKnob())
         , _valueChangedReturnCode(1)
         , _newKeys(1)
         , _oldKeys(1)
@@ -109,7 +127,7 @@ public:
         , _dimension(-1)
         , _oldValue(oldValue)
         , _newValue(newValue)
-        , _knob(knob)
+        , _knob(knob->getKnob())
         , _valueChangedReturnCode(oldValue.size())
         , _newKeys(oldValue.size())
         , _oldKeys(oldValue.size())
@@ -138,12 +156,13 @@ private:
     {
         bool modifiedKeyFrame = false;
         int i = 0;
-        KnobGuiPtr knobUI = _knob.lock();
+        KnobIPtr knob = lockUndoKnob(_knob);
 
-        if (!knobUI) {
+        if (!knob) {
+            setObsolete(true);
+
             return;
         }
-        KnobIPtr knob = knobUI->getKnob();
 
         KnobHolder* holder = knob->getHolder();
 
@@ -170,21 +189,20 @@ private:
                 knob->unblockValueChanges();
             }
 
+            KnobGui::setKnobValue(knob, dimension, *it, NULL, refreshUI, !refreshUI ? eValueChangedReasonUserEdited : eValueChangedReasonNatronGuiEdited);
 
-            knobUI->setValue(dimension, *it, NULL, refreshUI, !refreshUI ? eValueChangedReasonUserEdited : eValueChangedReasonNatronGuiEdited);
-
-            if ( knob->getHolder()->getApp() ) {
+            if (holder && holder->getApp()) {
                 if (_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeAdded) {
                     try {
-                        knobUI->removeKeyFrame( _newKeys[i].getTime(), dimension, ViewIdx(0) );
+                        KnobGui::removeKnobKeyframe(knob, _newKeys[i].getTime(), dimension, ViewIdx(0));
                     } catch (std::exception&) {
                         qDebug() << "KnobUndoCommand::undo: could not remove keyframe from knob" << knob->getName().c_str() << "at time" << _newKeys[i].getTime() << "dimension" << dimension;
                         // ignore
                     }
                     modifiedKeyFrame = true;
                 } else if (_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeModified) {
-                    knobUI->removeKeyFrame( _newKeys[i].getTime(), dimension, ViewIdx(0) );
-                    knobUI->setKeyframe( _oldKeys[i].getTime(), dimension, ViewIdx(0) );
+                    KnobGui::removeKnobKeyframe(knob, _newKeys[i].getTime(), dimension, ViewIdx(0));
+                    KnobGui::setKnobKeyframe(knob, _oldKeys[i].getTime(), dimension, ViewIdx(0));
                     modifiedKeyFrame = true;
                 }
             }
@@ -196,11 +214,15 @@ private:
         }
 
         ///This will refresh all dimensions
-        knobUI->onInternalValueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronGuiEdited);
+        KnobGuiPtr knobUI = KnobGui::getLiveGui(knob);
+        if (knobUI) {
+            knobUI->onInternalValueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronGuiEdited);
+        }
 
         knob->endChanges();
-        if (modifiedKeyFrame && knobUI->getGui()) {
-            knobUI->getGui()->getCurveEditor()->getCurveWidget()->refreshSelectedKeysAndUpdate();
+        Gui* gui = KnobGui::getGuiForKnob(knob);
+        if (modifiedKeyFrame && gui) {
+            gui->getCurveEditor()->getCurveWidget()->refreshSelectedKeysAndUpdate();
         }
 
         EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
@@ -218,12 +240,13 @@ private:
     virtual void redo() OVERRIDE FINAL
     {
         double time = 0;
-        KnobGuiPtr knobUI = _knob.lock();
+        KnobIPtr knob = lockUndoKnob(_knob);
 
-        if (!knobUI) {
+        if (!knob) {
+            setObsolete(true);
+
             return;
         }
-        KnobIPtr knob = knobUI->getKnob();
 
         KnobHolder* holder = knob->getHolder();
 
@@ -262,7 +285,7 @@ private:
                 knob->unblockValueChanges();
             }
 
-            _valueChangedReturnCode[i] = knobUI->setValue(dimension, *it, &_newKeys[i], refreshUI, !refreshUI ? eValueChangedReasonUserEdited : eValueChangedReasonNatronGuiEdited);
+            _valueChangedReturnCode[i] = KnobGui::setKnobValue(knob, dimension, *it, &_newKeys[i], refreshUI, !refreshUI ? eValueChangedReasonUserEdited : eValueChangedReasonNatronGuiEdited);
             if ((_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeAdded) || (_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeModified)) {
                 modifiedKeyFrames = true;
             }
@@ -280,14 +303,18 @@ private:
 
         ///This will refresh all dimensions
         if (_firstRedoCalled || _refreshGuiFirstTime) {
-            knobUI->onInternalValueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronGuiEdited);
+            KnobGuiPtr knobUI = KnobGui::getLiveGui(knob);
+            if (knobUI) {
+                knobUI->onInternalValueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronGuiEdited);
+            }
         }
 
 
         knob->endChanges();
 
-        if (modifiedKeyFrames && knobUI->getGui()) {
-            knobUI->getGui()->getCurveEditor()->getCurveWidget()->refreshSelectedKeysAndUpdate();
+        Gui* gui = KnobGui::getGuiForKnob(knob);
+        if (modifiedKeyFrames && gui) {
+            gui->getCurveEditor()->getCurveWidget()->refreshSelectedKeysAndUpdate();
         }
 
         EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
@@ -317,8 +344,8 @@ private:
             return false;
         }
 
-        KnobGuiPtr knob = knobCommand->_knob.lock();
-        if ( (_knob.lock() != knob) || !_merge || !knobCommand->_merge || (_dimension != knobCommand->_dimension) ) {
+        KnobIPtr knob = knobCommand->_knob.lock();
+        if (!knob || (_knob.lock() != knob) || !_merge || !knobCommand->_merge || (_dimension != knobCommand->_dimension)) {
             return false;
         }
 
@@ -356,7 +383,7 @@ private:
     int _dimension;
     std::list<T> _oldValue;
     std::list<T> _newValue;
-    KnobGuiWPtr _knob;
+    KnobIWPtr _knob;
     std::vector<int> _valueChangedReturnCode;
     std::vector<KeyFrame> _newKeys;
     std::vector<KeyFrame>  _oldKeys;
@@ -387,7 +414,7 @@ private:
     };
 
     ///For each knob, the second member points to a clone of the knob before the first redo() call was made
-    typedef std::map<KnobGuiWPtr, std::list<ValueToSet>, std::owner_less<KnobGuiWPtr>> ParamsMap;
+    typedef std::map<KnobIWPtr, std::list<ValueToSet>, std::owner_less<KnobIWPtr>> ParamsMap;
     ParamsMap knobs;
     bool createNew;
     bool firstRedoCalled;

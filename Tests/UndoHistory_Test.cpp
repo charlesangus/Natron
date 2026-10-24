@@ -35,7 +35,16 @@
 
 #include <gtest/gtest.h>
 
+#include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Project.h"
+#include "Engine/ViewIdx.h"
+
+#include "Gui/KnobGuiColor.h"
+#include "Gui/KnobGuiContainerI.h"
+#include "Gui/KnobUndoCommand.h"
 
 #include "Gui/UndoHistory.h"
 
@@ -462,4 +471,121 @@ TEST_F(UndoHistoryTest, ClearDuringPushIsDeferred)
     push("x");
     history.push(new ReentrantCommand(&history, &log, true));
     EXPECT_EQ(0, history.count());
+}
+
+namespace {
+// What a node panel does with a knob GUI's pushes: record them in the window's history.
+class HistoryKnobGuiContainer
+    : public KnobGuiContainerI {
+public:
+    explicit HistoryKnobGuiContainer(UndoHistory* history)
+        : KnobGuiContainerI()
+        , _history(history)
+    {
+    }
+
+    virtual Gui* getGui() const OVERRIDE FINAL
+    {
+        return 0;
+    }
+
+    virtual const QUndoCommand* getLastUndoCommand() const OVERRIDE FINAL
+    {
+        return _history->getLastCommand();
+    }
+
+    virtual void pushUndoCommand(QUndoCommand* cmd) OVERRIDE FINAL
+    {
+        _history->push(cmd);
+    }
+
+    virtual KnobGuiPtr getKnobGui(const KnobIPtr& /*knob*/) const OVERRIDE FINAL
+    {
+        return KnobGuiPtr();
+    }
+
+    virtual int getItemsSpacingOnSameLine() const OVERRIDE FINAL
+    {
+        return 0;
+    }
+
+private:
+    UndoHistory* _history;
+};
+
+// A project knob: its holder has the real (background) AppInstance that KnobUndoCommand needs.
+template <typename K>
+std::shared_ptr<K>
+makeProjectKnob(const std::string& label,
+                int dimension)
+{
+    AppInstancePtr app = appPTR->getTopLevelInstance();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+
+    if (!project) {
+        return std::shared_ptr<K>();
+    }
+
+    return AppManager::createKnob<K>(project.get(), label, dimension, false);
+}
+} // anon namespace
+
+TEST(KnobUndoRecording, EditOfANonRenderingProjectKnobIsRecorded)
+{
+    KnobColorPtr knob = makeProjectKnob<KnobColor>("Non-rendering colour", 3);
+    ASSERT_TRUE(bool(knob));
+    knob->setEvaluateOnChange(false);
+    knob->setValue(0.25, ViewSpec::all(), 0, true);
+
+    UndoHistory history;
+    HistoryKnobGuiContainer container(&history);
+    KnobGuiPtr knobGui = std::make_shared<KnobGuiColor>(knob, &container);
+
+    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, 0.25, 0.75, 0, false));
+    EXPECT_DOUBLE_EQ(0.75, knob->getValue(0));
+    ASSERT_EQ(1, history.count());
+
+    history.undo();
+    EXPECT_DOUBLE_EQ(0.25, knob->getValue(0));
+    history.redo();
+    EXPECT_DOUBLE_EQ(0.75, knob->getValue(0));
+}
+
+TEST(KnobUndoRecording, EditOfANonUndoableKnobIsAppliedButNotRecorded)
+{
+    KnobColorPtr knob = makeProjectKnob<KnobColor>("Non-undoable colour", 3);
+    ASSERT_TRUE(bool(knob));
+    knob->setCanUndo(false);
+    knob->setValue(0.25, ViewSpec::all(), 0, true);
+
+    UndoHistory history;
+    HistoryKnobGuiContainer container(&history);
+    KnobGuiPtr knobGui = std::make_shared<KnobGuiColor>(knob, &container);
+
+    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, 0.25, 0.75, 0, false));
+    EXPECT_DOUBLE_EQ(0.75, knob->getValue(0));
+    EXPECT_EQ(0, history.count());
+}
+
+TEST(KnobUndoRecording, WhichKnobEditsAreUndoable)
+{
+    KnobColorPtr rendering = makeProjectKnob<KnobColor>("Rendering colour", 3);
+    KnobColorPtr nonRendering = makeProjectKnob<KnobColor>("Saved colour", 3);
+    KnobColorPtr transient = makeProjectKnob<KnobColor>("Transient colour", 3);
+    KnobButtonPtr button = makeProjectKnob<KnobButton>("Action", 1);
+    KnobButtonPtr renderingButton = makeProjectKnob<KnobButton>("Rendering toggle", 1);
+    ASSERT_TRUE(rendering && nonRendering && transient && button && renderingButton);
+
+    nonRendering->setEvaluateOnChange(false);
+    transient->setEvaluateOnChange(false);
+    transient->setIsPersistent(false);
+    button->setEvaluateOnChange(false);
+    renderingButton->setEvaluateOnChange(true);
+
+    EXPECT_TRUE(KnobGui::isUndoableEdit(rendering));
+    EXPECT_TRUE(KnobGui::isUndoableEdit(nonRendering));
+    EXPECT_FALSE(KnobGui::isUndoableEdit(transient));
+    EXPECT_FALSE(KnobGui::isUndoableEdit(button));
+    EXPECT_TRUE(KnobGui::isUndoableEdit(renderingButton));
+    EXPECT_FALSE(KnobGui::isUndoableEdit(KnobIPtr()));
 }

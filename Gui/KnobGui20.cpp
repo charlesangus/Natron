@@ -37,11 +37,11 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/ViewIdx.h"
 
-#include "Gui/KnobGuiPrivate.h"
 #include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/KnobGuiPrivate.h"
 #include "Gui/KnobUndoCommand.h" // SetExpressionCommand...
-
 
 NATRON_NAMESPACE_ENTER
 
@@ -704,10 +704,49 @@ KnobGui::setAllKeyframeMarkersOnTimeline(int dimension)
 void
 KnobGui::setKeyframeMarkerOnTimeline(double time)
 {
-    KnobIPtr knob = getKnob();
+    setKeyframeMarkerOnTimeline(getKnob(), time);
+}
 
+void
+KnobGui::setKeyframeMarkerOnTimeline(const KnobIPtr& knob,
+                                     double time)
+{
     if ( knob->isDeclaredByPlugin() || knob->isUserKnob() ) {
         knob->getHolder()->getApp()->addKeyframeIndicator(time);
+    }
+}
+
+KnobGuiPtr
+KnobGui::getLiveGui(const KnobIPtr& knob)
+{
+    if (!knob) {
+        return KnobGuiPtr();
+    }
+    KnobGuiPtr gui = std::dynamic_pointer_cast<KnobGui>(knob->getKnobGuiPointer());
+    if (!gui || gui->_imp->guiRemoved) {
+        return KnobGuiPtr();
+    }
+
+    return gui;
+}
+
+Gui*
+KnobGui::getGuiForKnob(const KnobIPtr& knob)
+{
+    KnobHolder* holder = knob ? knob->getHolder() : 0;
+    GuiAppInstancePtr app = holder ? std::dynamic_pointer_cast<GuiAppInstance>(holder->getApp()) : GuiAppInstancePtr();
+
+    return app ? app->getGui() : 0;
+}
+
+void
+KnobGui::refreshLiveGui(const KnobIPtr& knob,
+                        int dimension)
+{
+    KnobGuiPtr gui = getLiveGui(knob);
+
+    if (gui && gui->_imp->widgetCreated) {
+        gui->updateGUI(dimension);
     }
 }
 

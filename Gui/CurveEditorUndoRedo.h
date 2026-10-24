@@ -136,15 +136,6 @@ public:
 
     virtual ~FoldedCurveEditCommand() OVERRIDE;
 
-private:
-    virtual void undo() OVERRIDE FINAL;
-    virtual void redo() OVERRIDE FINAL;
-    virtual int id() const OVERRIDE FINAL;
-    virtual bool mergeWith(const QUndoCommand* command) OVERRIDE FINAL;
-
-    void copyDimensionZeroToOthers();
-    void restoreOtherDimensions();
-
     struct FoldedKnob {
         KnobIPtr knob;
         CurveGuiPtr dimensionZeroCurve;
@@ -153,10 +144,19 @@ private:
         std::vector<CurvePtr> curvesBeforeFirstRedo;
     };
 
+private:
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+    virtual int id() const OVERRIDE FINAL;
+    virtual bool mergeWith(const QUndoCommand* command) OVERRIDE FINAL;
+
+    void copyDimensionZeroToOthers();
+    void restoreOtherDimensions();
+    bool knobsAreAlive() const;
+
     CurveEditor* _editor;
     std::unique_ptr<QUndoCommand> _inner;
     std::list<FoldedKnob> _knobs;
-    std::list<KnobGuiWPtr> _knobGuis;
     bool _snapshotsTaken;
 };
 
@@ -171,7 +171,7 @@ public:
     struct KeyToAdd
     {
         CurveGuiPtr curveUI;
-        KnobGuiWPtr knobUI;
+        KnobIWPtr knob;
         int dimension;
         std::vector<KeyFrame> keyframes;
     };

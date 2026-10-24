@@ -32,7 +32,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QCursor, QKeyEvent, QMouseEvent
-    from PySide6.QtWidgets import QAbstractButton, QApplication, QLineEdit, QMainWindow, QTreeWidget
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QLineEdit, QMainWindow, QTabWidget, QTreeWidget
 
     import guitest as gt
     from guitest import check, report
@@ -140,8 +140,7 @@ try:
     def type_into_panel(name, value):
         """Types value into the first visible, enabled spin box of the node's panel (a parameter on
         the open Controls page) and presses Return, which is how KnobGui pushes a value command.
-        Hidden pages hold spin boxes too, e.g. the label's font size on the Node page, which edits
-        the non-evaluating userTextArea knob that KnobGui::pushUndoCommand never records."""
+        Hidden pages hold spin boxes too, e.g. the label's font size on the Node page."""
         p = panel_of(name)
         if not check(p is not None, "found the settings panel of " + name):
             return False
@@ -154,6 +153,32 @@ try:
         box.setText(str(value))
         send_key(box, Qt.Key_Return)
         return True
+
+    def show_page(name, page_label):
+        p = panel_of(name)
+        if p is None:
+            return False
+        for tabs in p.findChildren(QTabWidget):
+            for i in range(tabs.count()):
+                if tabs.tabText(i).replace("&", "") == page_label:
+                    tabs.setCurrentIndex(i)
+                    QApplication.processEvents()
+                    return True
+        return False
+
+    def font_size_box(name):
+        p = panel_of(name)
+        if p is None:
+            return None
+        for w in p.findChildren(QLineEdit):
+            if gt.class_name(w) == "SpinBox" and w.isVisible() and w.isEnabled() and "Font size" in w.toolTip():
+                return w
+        return None
+
+    def label_text(name):
+        node = app.getNode(name)
+        p = node.getParam("userTextArea") if node is not None else None
+        return p.getValue() if p is not None else None
 
     def snapshot(name):
         node = app.getNode(name)
@@ -465,6 +490,29 @@ try:
         yield ("sleep", SETTLE_MS)
         check(snapshot(a) == a_after, "the restored %s's redo button re-applied its edit" % a)
         gt.shot("m114-global-undo.png")
+
+        # ---- the label's font size does not render, but it is part of the project.
+        gt.section("label-font-size")
+        gt.require(show_page(a, "Node"), "showed the Node page of " + a)
+        box = font_size_box(a)
+        gt.require(box is not None, "found the label's font size box on %s's Node page" % a)
+        label_before = label_text(a)
+        new_size = 17 if str(box.text()).strip() != "17" else 19
+        box.setFocus()
+        box.setText(str(new_size))
+        send_key(box, Qt.Key_Return)
+        yield ("sleep", SETTLE_MS)
+        label_after = label_text(a)
+        gt.require(label_after != label_before and str(new_size) in label_after,
+                   "typing %d into the font size box changed %s's label" % (new_size, a),
+                   "label %r" % (label_after,))
+        check(undo_enabled(), "the font size edit is in the history")
+        shortcut(panel_of(a), redo=False)
+        yield ("sleep", SETTLE_MS)
+        check(label_text(a) == label_before, "Ctrl+Z restored %s's label (%r)" % (a, label_text(a)))
+        shortcut(panel_of(a), redo=True)
+        yield ("sleep", SETTLE_MS)
+        check(label_text(a) == label_after, "Ctrl+Shift+Z re-applied the font size (%r)" % (label_text(a),))
 
         faulthandler.cancel_dump_traceback_later()
 

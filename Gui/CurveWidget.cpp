@@ -1733,7 +1733,14 @@ CurveWidget::setSelectedKeys(const SelectedKeys & keys)
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
-    _imp->_selectedKeyFrames = keys;
+    // An undo command may hold curves that were replaced when their panel was rebuilt; only the
+    // keys of curves still shown can be selected.
+    _imp->_selectedKeyFrames.clear();
+    for (SelectedKeys::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        if (std::find(_imp->_curves.begin(), _imp->_curves.end(), it->first) != _imp->_curves.end()) {
+            _imp->_selectedKeyFrames.insert(*it);
+        }
+    }
     refreshSelectedKeysAndUpdate();
 }
 

@@ -102,13 +102,6 @@ public:
      **/
     void setTrackGradient(const QGradientStops& stops);
 
-    /**
-     * @brief Horizontal, the default, runs the value along x with tick labels. Vertical runs it
-     * along y with the minimum at the bottom, and draws no tick labels.
-     **/
-    void setOrientation(Qt::Orientation orientation);
-    Qt::Orientation orientation() const;
-
 Q_SIGNALS:
     void editingFinished(bool hasMovedOnce);
     void positionChanged(double);
@@ -120,9 +113,6 @@ public Q_SLOTS:
 
 private:
     void seekInternal(double v);
-
-    double valueAtPosition(const QPointF& pos) const;
-    void paintVertical(QPainter& p, const QColor& scaleColor);
 
     void centerOn(double left, double right);
 

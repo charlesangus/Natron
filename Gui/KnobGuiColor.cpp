@@ -67,7 +67,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Button.h"
 #include "Gui/ClickableLabel.h"
 #include "Gui/ColorKnobEditSession.h"
-#include "Gui/ColorPanelLayoutDev.h"
 #include "Gui/ColorTrackballGlobalMode.h"
 #include "Gui/ComboBox.h"
 #include "Gui/CurveGui.h"
@@ -92,42 +91,6 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// The panel's sliders end where the row's own slider does: everything right of that slider
-// has a fixed width. QBoxLayout puts its spacing only between widget items; spacer items
-// contribute just their own width.
-int
-widthRightOfLastSlider(QHBoxLayout* containerLayout)
-{
-    int sliderIndex = -1;
-
-    for (int i = 0; i < containerLayout->count(); ++i) {
-        QLayoutItem* item = containerLayout->itemAt(i);
-
-        if (item && qobject_cast<ScaleSliderQWidget*>(item->widget())) {
-            sliderIndex = i;
-        }
-    }
-    if (sliderIndex < 0) {
-        return 0;
-    }
-
-    int inset = 0;
-
-    for (int i = sliderIndex + 1; i < containerLayout->count(); ++i) {
-        QLayoutItem* item = containerLayout->itemAt(i);
-
-        if (!item) {
-            continue;
-        }
-        if (item->widget()) {
-            inset += containerLayout->spacing();
-        }
-        inset += item->sizeHint().width();
-    }
-
-    return inset;
-}
-
 ColorAdjustPanel::DisplayConverter
 makeDisplayConverter(const ProjectColorManagementPtr& colorManagement)
 {
@@ -855,40 +818,8 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         QObject::connect(_globalModeButton, &QToolButton::clicked, this, &KnobGuiColor::engageGlobalMode);
         containerLayout->addWidget(_globalModeButton);
 
-        // The panel's bounds follow its layout: on the left it starts in the field column or,
-        // in a row of its own, in the label column; on the right its sliders stop where the
-        // row's slider does or run on to the row's end. The channel lines keep their inset.
-        // Measured once, while every item in the row is still shown and so counted.
-        const int rowInset = widthRightOfLastSlider(containerLayout);
-        auto applyPanelBounds = [this, rowInset](bool settle) {
-            if (!_adjustPanel) {
-                return;
-            }
-
-            const ColorPanelLayout& panelLayout = _adjustPanel->getLayout();
-            QWidget* topWidget = (settle && getContainer()) ? getContainer()->getContainerWidget() : 0;
-            UpdatesHeldOff held(topWidget);
-
-            setBelowRowWidgetFullWidth(panelLayout.extendLeft);
-            _adjustPanel->setRightInset(panelLayout.extendRight ? 0 : rowInset);
-            if (settle) {
-                if (QWidget* columnWidget = getGlobalModeColumnWidget()) {
-                    activateLayoutsUpToInclusive(columnWidget, topWidget);
-                }
-                if (_adjustPanel->parentWidget()) {
-                    activateLayoutsUpToInclusive(_adjustPanel->parentWidget(), topWidget);
-                }
-                // The panel's new width can rearrange its own lines (the Vertical style wraps
-                // them below the wheel), which changes its height in turn.
-                activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
-            }
-        };
-        // Nothing is on screen yet, so the first pass needs no settling.
-        applyPanelBounds(false);
-        QObject::connect(_adjustPanel.data(), &ColorAdjustPanel::layoutApplied, this, [this, applyPanelBounds]() {
-            applyPanelBounds(true);
-            refreshAdjustPanelToolTip(isAdjustPanelExpanded());
-        });
+        // The panel has a row of its own, from the label column to the row's last button.
+        setBelowRowWidgetFullWidth(true);
 
         return;
     }

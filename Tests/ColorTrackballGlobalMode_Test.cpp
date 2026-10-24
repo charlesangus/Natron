@@ -31,7 +31,6 @@
 #include <string>
 #include <vector>
 
-#include <QComboBox>
 #include <QCursor>
 #include <QGuiApplication>
 #include <QWidget>
@@ -40,7 +39,6 @@
 
 #include "Engine/ColorWheelMath.h"
 
-#include "Gui/ColorPanelLayoutDev.h"
 #include "Gui/ColorTrackballGlobalMode.h"
 #include "Gui/ColorTrackballHud.h"
 
@@ -560,23 +558,6 @@ TEST(ColorTrackballGlobalModeFeedback, CrosshairIsPushedOnceAndRestoredOnce)
         crosshair.setHeld(true);
     }
     EXPECT_EQ(baseline, overrideCursorDepth());
-}
-
-TEST(ColorTrackballGlobalModeFeedback, TheDevBarHasNoFeedbackControls)
-{
-    qputenv("NATRON_COLOR_PANEL_DEV", "1");
-    ColorPanelLayoutDev::reloadForTests();
-
-    std::unique_ptr<QWidget> bar(ColorPanelLayoutDev::createDevBar(nullptr));
-
-    ASSERT_TRUE(bar != nullptr);
-    EXPECT_TRUE(bar->findChild<QComboBox*>(QString::fromUtf8("ColorPanelDevFeedback")) == nullptr);
-    EXPECT_TRUE(bar->findChild<QComboBox*>(QString::fromUtf8("ColorPanelDevStyle")) != nullptr);
-    EXPECT_EQ(1, bar->findChildren<QComboBox*>().size());
-
-    bar.reset();
-    qunsetenv("NATRON_COLOR_PANEL_DEV");
-    ColorPanelLayoutDev::reloadForTests();
 }
 
 TEST(ColorTrackballGlobalModeRightClick, ReleaseAndContextMenuAreEatenOnce)

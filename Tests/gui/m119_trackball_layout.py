@@ -1,19 +1,19 @@
-"""Evidence for the switchable colour-panel layouts and the global-mode feedback designs.
+"""Evidence for the colour-panel layout and the global-mode feedback designs.
 
-Run with the layout dev switch on (the dev bar on every colour panel is how the script drives it):
-    docker exec -e NATRON_COLOR_PANEL_DEV=1 natron-dev bash -c 'cd <tree> && \
+Run with:
+    docker exec natron-dev bash -c 'cd <tree> && \
         NATRON_GUI_TEST_OUT=build/m119-shots GUI_TEST_TIMEOUT=1200 \
         Tests/gui/run-gui-test.sh Tests/gui/m119_trackball_layout.py <Natron binary or AppImage>'
 
 What it covers, one section each:
-- bounds: on a Grade's gain at a 500 px bin, the Left axis starts the panel in the label column,
-  the Right axis runs the Hue slider on to the row's last button while the "g" channel line keeps
-  its inset, and a Blur's size row does not move.
-- sizes: every Left x Right x Style combination at the default bin width and at twice
-  it: a screenshot, the wheel's diameter and the Hue track's length.
-- no-flash: no widget of the Grade panel paints at a geometry other than its settled one while an
-  axis is switched (a paint logger, as M44 used for the dropdown).
-- undo: a slider drag in each style is one undo step.
+- bounds: on a Grade's gain at a 500 px bin, the panel starts in the label column and runs the
+  Hue slider on to the row's last button while the "g" channel line keeps its inset, and a Blur's
+  size row does not move when the panel opens.
+- sizes: at the default bin width and at twice it: a screenshot, the wheel's diameter and the
+  Hue track's length.
+- no-flash: no widget of the Grade panel paints at a geometry other than its settled one while
+  the panel is folded and unfolded (a paint logger, as M44 used for the dropdown).
+- undo: a slider drag is one undo step.
 - fresh-engage: global mode starts in C on every fresh engage, and keeps its mode across a knob
   switch while engaged.
 - feedback: for each value of the colorTrackballFeedback preference (Crosshair + reveal, Widget
@@ -53,7 +53,6 @@ WHEEL_MAX = 320
 HUD_OFFSET = 16
 REVEAL_DIAMETER = 240
 
-STYLE_NAMES = {0: "Natron", 1: "Custom", 2: "Vertical"}
 FEEDBACK_NAMES = {0: "CrosshairReveal", 1: "WidgetCursor"}
 
 try:
@@ -297,40 +296,9 @@ try:
         found.sort(key=lambda s: s.mapToGlobal(QPoint(0, 0)).y())
         return found[0] if found else None
 
-    # ---- dev switch ----------------------------------------------------------------------------
-
-    def dev(name):
-        return first_named(name)
-
-    def get_layout():
-        def combo(name):
-            c = dev(name)
-            return c.itemData(c.currentIndex()) if c is not None else None
-        left = dev("ColorPanelDevExtendLeft")
-        right = dev("ColorPanelDevExtendRight")
-        return {
-            "left": left.isChecked() if left is not None else None,
-            "right": right.isChecked() if right is not None else None,
-            "style": combo("ColorPanelDevStyle"),
-        }
-
-    def set_layout(left=None, right=None, style=None):
-        if left is not None:
-            dev("ColorPanelDevExtendLeft").setChecked(left)
-        if right is not None:
-            dev("ColorPanelDevExtendRight").setChecked(right)
-        if style is not None:
-            c = dev("ColorPanelDevStyle")
-            c.setCurrentIndex(c.findData(style))
-        QApplication.processEvents()
-
     def set_feedback(value):
         NatronEngine.natron.getSettings().getParam("colorTrackballFeedback").set(value)
         QApplication.processEvents()
-
-    def layout_text(l=None):
-        l = l or get_layout()
-        return "L=%d R=%d %s" % (l["left"], l["right"], STYLE_NAMES.get(l["style"]))
 
     # ---- the active adjust panel and its parts -----------------------------------------------------
 
@@ -364,9 +332,8 @@ try:
         return None
 
     def line_slider(panel, title):
-        names = ("ColorAdjustSlider" + title, "ColorAdjustCustomSlider" + title)
         for w in all_inside(panel):
-            if w.objectName() in names:
+            if w.objectName() == "ColorAdjustCustomSlider" + title:
                 return w
         return None
 
@@ -384,12 +351,7 @@ try:
         d = min(wheel.width(), wheel.height()) if wheel is not None else -1
         if wheel is not None and wheel.width() != wheel.height():
             report("NOTE   wheel widget is %dx%d" % (wheel.width(), wheel.height()))
-        if hue is None:
-            track = -1
-        elif get_layout()["style"] == 2:
-            track = hue.height()
-        else:
-            track = hue.width()
+        track = hue.width() if hue is not None else -1
         return d, track
 
     # ---- input -----------------------------------------------------------------------------------
@@ -576,18 +538,14 @@ try:
         win.activateWindow()
         win.raise_()
         yield ("until", lambda: win.isActiveWindow(), 10.0)
-        report("NOTE binary %s, screen %s, DPI scale %.3f, NATRON_COLOR_PANEL_DEV=%r"
-               % (QApplication.applicationFilePath(), fmt_rect(screen_rect()), dpi_scale(),
-                  os.environ.get("NATRON_COLOR_PANEL_DEV")))
+        report("NOTE binary %s, screen %s, DPI scale %.3f"
+               % (QApplication.applicationFilePath(), fmt_rect(screen_rect()), dpi_scale()))
         gt.close_all_panels()
 
         grade = create(GRADE_ID, 0, 0)
         ok = yield ("until", lambda: panel_of(grade) is not None, 20.0)
         require(ok, "the Grade's panel opened")
         yield ("sleep", PANEL_MS)
-        require(dev("ColorPanelDevBar") is not None, "the colour panels have a dev bar",
-                "NATRON_COLOR_PANEL_DEV did not reach Natron")
-        set_layout(False, False, 0)
         gp = panel_of(grade)
         row = knob_row(gp, GAIN)
         require(row is not None, "found the Grade's gain row")
@@ -614,34 +572,21 @@ try:
         g_slider = channel_slider_g(column)
         check(label_cell is not None, "found gain's label cell")
         check(g_slider is not None, "found gain's g channel slider (▾ unfolds r/g/b/a)")
-        base_left = ap.mapToGlobal(QPoint(0, 0)).x()
-        base_hue_right = global_rect(line_slider(ap, "Hue")).right()
-        base_g_right = global_rect(g_slider).right() if g_slider is not None else None
+        left = ap.mapToGlobal(QPoint(0, 0)).x()
+        hue_right = global_rect(line_slider(ap, "Hue")).right()
+        g_right = global_rect(g_slider).right() if g_slider is not None else None
         globe_right = global_rect(globe).right()
         label_left = label_column_left(label_cell)
-        report("NOTE today: panel left %r, label column left %r, Hue right %r, g right %r, last button right %r"
-               % (base_left, label_left, base_hue_right, base_g_right, globe_right))
-        crop_widget(gp, "bounds-500-today")
-
-        set_layout(left=True)
-        yield ("sleep", PANEL_MS)
-        ap = active_adjust_panel(gp)
-        left = ap.mapToGlobal(QPoint(0, 0)).x() if ap is not None else None
-        check(label_left is not None and left is not None and abs(left - label_left) <= EDGE_TOLERANCE,
-              "Left: the panel starts at the label column (panel %r, label %r)" % (left, label_left))
-        crop_widget(gp, "bounds-500-left")
-        set_layout(left=False, right=True)
-        yield ("sleep", PANEL_MS)
-        ap = active_adjust_panel(gp)
-        hue_right = global_rect(line_slider(ap, "Hue")).right() if ap is not None else None
-        g_slider = channel_slider_g(column)
-        g_right = global_rect(g_slider).right() if g_slider is not None else None
-        check(hue_right is not None and abs(hue_right - globe_right) <= EDGE_TOLERANCE,
-              "Right: the Hue slider ends at the last button's right edge (Hue %r, button %r)" % (hue_right, globe_right))
-        check(g_right is not None and base_g_right is not None and abs(g_right - base_g_right) <= EDGE_TOLERANCE,
-              "Right: the g channel slider keeps today's right edge (%r, today %r)" % (g_right, base_g_right))
-        crop_widget(gp, "bounds-500-right")
-        set_layout(left=False, right=False)
+        report("NOTE panel left %r, label column left %r, Hue right %r, g right %r, last button right %r"
+               % (left, label_left, hue_right, g_right, globe_right))
+        crop_widget(gp, "bounds-500")
+        check(label_left is not None and abs(left - label_left) <= EDGE_TOLERANCE,
+              "the panel starts at the label column (panel %r, label %r)" % (left, label_left))
+        check(abs(hue_right - globe_right) <= EDGE_TOLERANCE,
+              "the Hue slider ends at the last button's right edge (Hue %r, button %r)" % (hue_right, globe_right))
+        check(g_right is not None and g_right < globe_right - EDGE_TOLERANCE,
+              "the g channel slider keeps its inset short of the buttons (%r, button %r)" % (g_right, globe_right))
+        selector.click()
         yield ("sleep", SETTLE_MS)
 
         blur = create(BLUR_ID, 300, 0)
@@ -655,14 +600,12 @@ try:
         if check(bp_ is not None, "the Blur's panel opened"):
             before = size_row()
             check(len(before) > 0, "found the Blur's size row (%d widgets)" % len(before))
-            set_layout(left=True, right=True)
+            selector.click()
             yield ("sleep", PANEL_MS)
             after = size_row()
-            check(before == after, "Left+Right: the Blur's size row is unchanged")
+            check(before == after, "opening gain's panel leaves the Blur's size row unchanged")
             if before != after:
                 report("NOTE size row before %r after %r" % (before, after))
-            set_layout(left=False, right=False)
-            yield ("sleep", SETTLE_MS)
         raise_panel(grade)
         yield ("sleep", PANEL_MS)
 
@@ -675,77 +618,53 @@ try:
             got = set_bin_width(width)
             yield ("sleep", SETTLE_MS)
             report("NOTE bin width %d (asked %d)" % (got, width))
-            for style in (0, 1, 2):
-                for left in (False, True):
-                    for right in (False, True):
-                        ap = wheels = None
-                        set_layout(left, right, style)
-                        yield ("sleep", PANEL_MS)
-                        ap = active_adjust_panel(gp)
-                        d, track = measure(ap)
-                        if d < 0:
-                            ap = None
-                            yield ("sleep", PANEL_MS)
-                            ap = active_adjust_panel(gp)
-                            d, track = measure(ap)
-                        name = "size-%s-%s-L%dR%d" % ("default" if wi == 0 else "wide",
-                                                         STYLE_NAMES[style], left, right)
-                        if d < 0:
-                            wheels = [(w.width(), w.height(), w.isVisible()) for w in live_children(ap if alive(ap) else gp)
-                                      if gt.class_name(w) == "ColorWheelWidget"]
-                            report("NOTE   no wheel: adjust panel %r visible=%r, wheels %r"
-                                   % (ap.objectName() if alive(ap) else None, alive(ap) and ap.isVisible(), wheels))
-                        table.append((width, layout_text(), d, track))
-                        report("NOTE size bin=%d %s: wheel %d px, Hue track %d px" % (got, layout_text(), d, track))
-                        check(px(WHEEL_MIN) - 1 <= d <= px(WHEEL_MAX) + 1 and track > 0,
-                              "%s at %d px: a %d px wheel in [160, 320] and a %d px Hue track" % (layout_text(), got, d, track))
-                        crop_widget(bin_wrapper(), name)
-        set_layout(False, False, 0)
+            ap = wheels = None
+            yield ("sleep", PANEL_MS)
+            ap = active_adjust_panel(gp)
+            d, track = measure(ap)
+            if d < 0:
+                ap = None
+                yield ("sleep", PANEL_MS)
+                ap = active_adjust_panel(gp)
+                d, track = measure(ap)
+            name = "size-%s" % ("default" if wi == 0 else "wide")
+            if d < 0:
+                wheels = [(w.width(), w.height(), w.isVisible()) for w in live_children(ap if alive(ap) else gp)
+                          if gt.class_name(w) == "ColorWheelWidget"]
+                report("NOTE   no wheel: adjust panel %r visible=%r, wheels %r"
+                       % (ap.objectName() if alive(ap) else None, alive(ap) and ap.isVisible(), wheels))
+            table.append((width, d, track))
+            report("NOTE size bin=%d: wheel %d px, Hue track %d px" % (got, d, track))
+            check(px(WHEEL_MIN) - 1 <= d <= px(WHEEL_MAX) + 1 and track > 0,
+                  "at %d px: a %d px wheel in [160, 320] and a %d px Hue track" % (got, d, track))
+            crop_widget(bin_wrapper(), name)
         set_bin_width(default_width)
         yield ("sleep", SETTLE_MS)
 
         # =========================================================================================
         gt.section("no-flash")
         root = gp
-        yield from logged_switch(root, "Left on", lambda: set_layout(left=True))
-        yield from logged_switch(root, "Left off", lambda: set_layout(left=False))
-        yield from logged_switch(root, "Right on", lambda: set_layout(right=True))
-        yield from logged_switch(root, "Right off", lambda: set_layout(right=False))
-        yield from logged_switch(root, "Style Custom", lambda: set_layout(style=1))
-        yield from logged_switch(root, "Style Vertical", lambda: set_layout(style=2))
-        yield from logged_switch(root, "Style Natron", lambda: set_layout(style=0))
         yield from logged_switch(root, "▾ close", lambda: selector.click())
         yield from logged_switch(root, "▾ open", lambda: selector.click())
 
         # =========================================================================================
         gt.section("undo")
-        for style in (0, 1, 2):
-            ap = slider = None
-            set_layout(False, False, style)
-            yield ("sleep", PANEL_MS)
-            set_gain(grade, (1.0, 1.0, 1.0, 1.0))
-            yield ("sleep", SETTLE_MS)
-            v0 = gain_values(grade)
-            ap = active_adjust_panel(gp)
-            slider = line_slider(ap, "Value") if alive(ap) else None
-            label = STYLE_NAMES[style]
-            if not check(slider is not None, "%s: found the Value slider" % label):
-                continue
-            if style == 2:
-                start = QPoint(slider.width() // 2, slider.height() * 3 // 4)
-                drag(slider, start, QPoint(0, -40))
-            else:
-                start = QPoint(slider.width() // 4, slider.height() // 2)
-                drag(slider, start, QPoint(40, 0))
+        set_gain(grade, (1.0, 1.0, 1.0, 1.0))
+        yield ("sleep", SETTLE_MS)
+        v0 = gain_values(grade)
+        ap = active_adjust_panel(gp)
+        slider = line_slider(ap, "Value") if alive(ap) else None
+        if check(slider is not None, "found the Value slider"):
+            start = QPoint(slider.width() // 4, slider.height() // 2)
+            drag(slider, start, QPoint(40, 0))
             yield ("sleep", SETTLE_MS)
             v1 = gain_values(grade)
             QMetaObject.invokeMethod(gp, "onUndoClicked")
             yield ("sleep", SETTLE_MS)
             v2 = gain_values(grade)
-            report("NOTE undo %s: before %r, after drag %r, after one undo %r" % (label, v0, v1, v2))
-            check(v1 != v0, "%s: a Value drag changes gain" % label)
-            check(v2 == v0, "%s: one undo restores gain (the drag is one undo step)" % label)
-        set_layout(False, False, 0)
+            report("NOTE undo: before %r, after drag %r, after one undo %r" % (v0, v1, v2))
+            check(v1 != v0, "a Value drag changes gain")
+            check(v2 == v0, "one undo restores gain (the drag is one undo step)")
         yield ("sleep", SETTLE_MS)
 
         # =========================================================================================
@@ -794,7 +713,6 @@ try:
         centre = screen_rect().center()
         for fb in (0, 1):
             name = FEEDBACK_NAMES[fb]
-            set_layout(False, False, 0)
             set_feedback(fb)
             yield ("sleep", SETTLE_MS)
             QCursor.setPos(centre)
@@ -927,7 +845,6 @@ try:
         # =========================================================================================
         gt.section("reveal")
         start_gain = (1.4, 1.1, 0.7, 1.0)
-        set_layout(False, False, 0)
         set_feedback(0)
         yield ("sleep", SETTLE_MS)
         for mode_key, mode in ((Qt.Key_C, "C"), (Qt.Key_S, "S"), (Qt.Key_T, "T"), (Qt.Key_V, "V")):

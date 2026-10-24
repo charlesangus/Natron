@@ -39,7 +39,6 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/ColorWheelMath.h"
 
-#include "Gui/ColorPanelLayoutDev.h"
 #include "Gui/ColorWheelWidget.h"
 #include "Gui/GuiFwd.h"
 
@@ -52,10 +51,7 @@ struct ColorAdjustPanelPrivate;
 
 /**
  * @brief The colour knob's adjustment panel: the trackball wheel beside one line each for Hue,
- * Sat, Value, Temp and Tint, every line a caption, a SpinBox and a slider. The slider style
- * decides the slider and where the lines go: a horizontal ScaleSliderQWidget per row (Natron),
- * a horizontal ColorEditSlider per row (Custom), or a vertical ScaleSliderQWidget per column to
- * the right of the wheel, caption on top and SpinBox underneath (Vertical). It
+ * Sat, Value, Temp and Tint, every line a caption, a SpinBox and a ColorEditSlider. It
  * knows nothing about knobs: the owner feeds it a value, a dimension count, a role and a basis,
  * and turns valuesEdited into knob changes and undo steps.
  *
@@ -67,13 +63,8 @@ struct ColorAdjustPanelPrivate;
  * the wheel re-centres on the new value at End.
  *
  * A slider reports absolute targets in its line's unit (degrees, plane distance, stops or Y,
- * mired, tint or the Offset axes), except a ColorEditSlider's off-marker drag, which nudges by
- * increments in that unit; a spinbox commit is a one-shot absolute edit.
- *
- * The edit area is built for ColorPanelLayoutDev's current layout and rebuilt when it changes;
- * a change that arrives during a gesture waits for the gesture's End, so one gesture never spans
- * two sets of widgets. Pointers from getEditArea, getWheel, getSlider and getSpinBox are only
- * good until the next layoutApplied.
+ * mired, tint or the Offset axes), except an off-marker drag, which nudges by increments in
+ * that unit; a spinbox commit is a one-shot absolute edit.
  **/
 class ColorAdjustPanel
     : public QWidget {
@@ -114,25 +105,6 @@ public:
      **/
     void setDisplayConverter(const DisplayConverter& converter);
 
-    /**
-     * @brief Leaves this many pixels free right of the sliders, so they end at the same x as
-     * the knob's own sliders, which stop short of the row's buttons.
-     **/
-    void setRightInset(int pixels);
-    int getRightInset() const;
-
-    /**
-     * @brief The layout the edit area is currently built in, which lags the switch's value
-     * while a gesture defers a change.
-     **/
-    const ColorPanelLayout& getLayout() const;
-
-    /**
-     * @brief The development layout bar above the edit area; null unless
-     * ColorPanelLayoutDev::isDevEnabled().
-     **/
-    QWidget* getDevBar() const;
-
     const KnobColorValue& getValue() const;
     int getDimensions() const;
     ColorKnobRoleEnum getRole() const;
@@ -151,34 +123,19 @@ public:
      **/
     QWidget* getEditArea() const;
     ColorWheelWidget* getWheel() const;
-
-    /**
-     * @brief The line's ScaleSliderQWidget in the Natron and Vertical styles, null in Custom;
-     * getCustomSlider is the reverse.
-     **/
-    ScaleSliderQWidget* getSlider(ColorSliderKindEnum kind) const;
     ColorEditSlider* getCustomSlider(ColorSliderKindEnum kind) const;
     SpinBox* getSpinBox(ColorSliderKindEnum kind) const;
 
 Q_SIGNALS:
     void valuesEdited(KnobColorValue value, ColorAdjustPanel::GesturePhaseEnum phase, QString undoLabel);
 
-    /**
-     * @brief The edit area has been rebuilt for a new layout, getLayout() returns it, and the
-     * value, role, basis, converter, inset and enabled state carry over.
-     **/
-    void layoutApplied();
-
 protected:
     virtual void resizeEvent(QResizeEvent* e) OVERRIDE;
 
 private Q_SLOTS:
-    void onLayoutChanged();
     void onWheelGestureStarted();
     void onWheelGestureMoved(ColorEdit edit, QString axisLabel);
     void onWheelGestureFinished(bool moved);
-    void onSliderPositionChanged(double value);
-    void onSliderEditingFinished(bool hasMovedOnce);
     void onSliderResetRequested();
     void onCustomSliderGestureStarted();
     void onCustomSliderGestureMoved(double value, bool absolute, QString axisLabel);
@@ -186,7 +143,7 @@ private Q_SLOTS:
     void onSpinBoxValueChanged(double value);
 
 private:
-    // It wires each rebuilt edit area to the slots above.
+    // It wires the edit area to the slots above.
     friend struct ColorAdjustPanelPrivate;
 
     std::unique_ptr<ColorAdjustPanelPrivate> _imp;

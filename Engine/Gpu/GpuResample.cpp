@@ -100,6 +100,23 @@ namespace {
         return {};
     }
 
+    // Mirrors kOffsetFlagMatte in Kernels/offset.slang.
+    constexpr uint32_t kOffsetFlagMatte = 1;
+
+    GpuStatus uploadWords(GpuRecordContext& ctx, std::span<const std::byte> bytes, GpuBuffer*& out)
+    {
+        if (GpuStatus s = ctx.scratch(bytes.size(), out); !s) {
+            return s;
+        }
+        for (std::size_t offset = 0; offset < bytes.size(); offset += kUpdateChunkBytes) {
+            const std::size_t n = std::min(kUpdateChunkBytes, bytes.size() - offset);
+            if (GpuStatus s = ctx.updateBuffer(*out, offset, bytes.subspan(offset, n)); !s) {
+                return s;
+            }
+        }
+        return {};
+    }
+
     GpuStatus uploadBlurMatrices(GpuRecordContext& ctx, const GpuResample& r, GpuBuffer*& out)
     {
         const GpuResampleBlur& b = r.blur;
@@ -124,17 +141,7 @@ namespace {
             w[13] = floatBits(hi);
             w[14] = floatBits(lo);
         }
-        const std::span<const std::byte> bytes = std::as_bytes(std::span<const uint32_t>(words));
-        if (GpuStatus s = ctx.scratch(bytes.size(), out); !s) {
-            return s;
-        }
-        for (std::size_t offset = 0; offset < bytes.size(); offset += kUpdateChunkBytes) {
-            const std::size_t n = std::min(kUpdateChunkBytes, bytes.size() - offset);
-            if (GpuStatus s = ctx.updateBuffer(*out, offset, bytes.subspan(offset, n)); !s) {
-                return s;
-            }
-        }
-        return {};
+        return uploadWords(ctx, std::as_bytes(std::span<const uint32_t>(words)), out);
     }
 
 } // namespace
@@ -248,9 +255,35 @@ recordOffset(GpuRecordContext& ctx, const GpuOffset& o)
         }
     }
 
-    // An invalid source is never read, but the binding still needs a buffer.
+    const bool matted = !o.columnWeights.empty() || !o.rowWeights.empty();
+    if (matted && (o.columnWeights.size() != p.width || o.rowWeights.size() != p.height)) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "recordOffset: the matte does not cover the destination window" };
+    }
+
+    // An invalid source is never read, but the binding still needs a buffer, and so does the
+    // weights' binding without a matte.
     const GpuBuffer* src = srcValid ? o.src.buffer : o.dst.buffer;
-    return ctx.dispatch(GpuKernelId::offset, { src, o.dst.buffer }, p, { p.width, p.height, 1 });
+    const GpuBuffer* weights = o.dst.buffer;
+    if (matted) {
+        std::vector<float> pairs;
+        pairs.reserve(2 * (o.columnWeights.size() + o.rowWeights.size()));
+        for (const std::vector<double>* axis : { &o.columnWeights, &o.rowWeights }) {
+            for (double w : *axis) {
+                float hi, lo;
+                splitDouble(w, hi, lo);
+                pairs.push_back(hi);
+                pairs.push_back(lo);
+            }
+        }
+        GpuBuffer* table = nullptr;
+        if (GpuStatus s = uploadWords(ctx, std::as_bytes(std::span<const float>(pairs)), table); !s) {
+            return s;
+        }
+        weights = table;
+        p.flags = kOffsetFlagMatte;
+        p.rowWeights = 2 * p.width;
+    }
+    return ctx.dispatch(GpuKernelId::offset, { src, o.dst.buffer, weights }, p, { p.width, p.height, 1 });
 }
 
 } // namespace gpu

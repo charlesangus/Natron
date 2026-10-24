@@ -163,6 +163,47 @@ readSourceImageRow(const Resampler::SourceImage& src,
     std::copy(pix, pix + (std::size_t)(xEnd - xStart) * nComps, row + (std::size_t)(xStart - x0) * nComps);
 }
 
+// The weights of one axis of a matte over [first, first + count), 1 where the function is unset.
+void
+sampleMatteAxis(const std::function<double(int)>& weight,
+                int first,
+                int count,
+                std::vector<double>* weights)
+{
+    weights->assign((std::size_t)count, 1.);
+    if (!weight) {
+        return;
+    }
+    for (int i = 0; i < count; ++i) {
+        (*weights)[(std::size_t)i] = weight(first + i);
+    }
+}
+
+// Weighs width pixels of nComps floats by column[i] * rowWeight, as ResampleMatte describes.
+void
+applyMatteRow(const double* column,
+              double rowWeight,
+              int width,
+              int nComps,
+              float* row)
+{
+    float* pix = row;
+
+    for (int i = 0; i < width; ++i, pix += nComps) {
+        const double w = column[i] * rowWeight;
+        if (w == 0) {
+            std::fill(pix, pix + nComps, 0.f);
+            continue;
+        }
+        if (w >= 1) {
+            continue;
+        }
+        for (int c = 0; c < nComps; ++c) {
+            pix[c] = (float)(pix[c] * w);
+        }
+    }
+}
+
 RectD
 projectRect(const EffectInstance& effect)
 {
@@ -444,6 +485,13 @@ runResampleCpu(EffectInstance& effect,
     const OfxPointD s = args.mappedScale.toOfxPointD();
     const double dstPar = effect.getAspectRatio(-1);
     const PixelOffset offset = request.offset;
+    const bool matted = !matrix && request.matte.isSet();
+    std::vector<double> matteColumns;
+    std::vector<double> matteRows;
+    if (matted) {
+        sampleMatteAxis(request.matte.column, roi.x1, width, &matteColumns);
+        sampleMatteAxis(request.matte.row, roi.y1, roi.height(), &matteRows);
+    }
 
     // Images are locked, their bounds read and the matrices built here, on the calling thread;
     // the band threads only read through these.
@@ -529,8 +577,8 @@ runResampleCpu(EffectInstance& effect,
             } else {
                 readSourceImageRow(plane.source, plane.readable, roi.x1 - offset.x, y - offset.y, width, outRow);
             }
-            if (!matrix && plane.src && request.rowMatte) {
-                request.rowMatte(y, roi.x1, width, nComps, outRow);
+            if (matted && plane.src) {
+                applyMatteRow(matteColumns.data(), matteRows[(std::size_t)(y - roi.y1)], width, nComps, outRow);
             }
             if (direct) {
                 continue;
@@ -744,7 +792,7 @@ canRecordResampleGpu(const EffectInstance& effect,
         return false;
     }
     if (request.form == ResampleRequest::Form::Offset) {
-        return !request.rowMatte;
+        return true;
     }
     if (query.hasConcatenatedInput) {
         return false;
@@ -862,6 +910,11 @@ recordResampleGpu(EffectInstance& effect,
         shift.channels = (uint32_t)nComps;
         shift.dx = request.offset.x;
         shift.dy = request.offset.y;
+        // runResampleCpu() weighs only a plane whose source it fetched.
+        if (request.matte.isSet() && source.buffer) {
+            sampleMatteAxis(request.matte.column, rect.x1, rect.width(), &shift.columnWeights);
+            sampleMatteAxis(request.matte.row, rect.y1, rect.height(), &shift.rowWeights);
+        }
         if (!gpu::recordOffset(ctx, shift)) {
             return eStatusFailed;
         }

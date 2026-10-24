@@ -29,6 +29,7 @@
 #include <bitset>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
@@ -177,6 +178,48 @@ struct ClippedOffsetGpuTestOp
     };
 };
 
+int
+positiveModulo(int v,
+               int n)
+{
+    return ((v % n) + n) % n;
+}
+
+// Every sixth column weighs 0, then 1, then 1.5, then partial weights that are not exact in float.
+double
+testColumnWeight(int x)
+{
+    const int k = positiveModulo(x, 6);
+
+    switch (k) {
+    case 0:
+        return 0.;
+    case 1:
+        return 1.;
+    case 2:
+        return 1.5;
+    default:
+        return std::sqrt(0.1 * k);
+    }
+}
+
+// Every fifth row weighs 0, then 1, then partial weights, so that with the column's 1.5 some
+// products reach 1 and some stay below.
+double
+testRowWeight(int y)
+{
+    const int k = positiveModulo(y, 5);
+
+    switch (k) {
+    case 0:
+        return 0.;
+    case 1:
+        return 1.;
+    default:
+        return 1. / (k + 0.7);
+    }
+}
+
 struct MattedOffsetGpuTestOp
     : OffsetGpuTestOp {
     static constexpr NodeSpec kNodeSpec = {
@@ -186,10 +229,15 @@ struct MattedOffsetGpuTestOp
         .inputs = kInputs,
     };
 
-    ResampleRowMatte rowMatte(const Params& /*params*/,
-                              const PassContext& /*context*/) const
+    ResampleMatte matte(const Params& /*params*/,
+                        const PassContext& /*context*/) const
     {
-        return [](int /*y*/, int /*x1*/, int /*width*/, int /*nComps*/, float* /*row*/) { };
+        ResampleMatte m;
+
+        m.column = testColumnWeight;
+        m.row = testRowWeight;
+
+        return m;
     }
 };
 
@@ -386,7 +434,7 @@ TEST_F(StagedOffsetGpuTest, EligibilityFollowsTheRequest)
 #else
     const bool supported = false;
 #endif
-    for (const char* id : { kOffsetGpuTestOpPluginID, kPassThroughOffsetGpuTestOpPluginID, kClippedOffsetGpuTestOpPluginID }) {
+    for (const char* id : { kOffsetGpuTestOpPluginID, kPassThroughOffsetGpuTestOpPluginID, kClippedOffsetGpuTestOpPluginID, kMattedOffsetGpuTestOpPluginID }) {
         NodePtr source;
         NodePtr node;
         ASSERT_TRUE(createGraph(id, 7., -5., &source, &node));
@@ -403,13 +451,6 @@ TEST_F(StagedOffsetGpuTest, EligibilityFollowsTheRequest)
             EXPECT_FALSE(effect->canRenderOnGpu(q)) << id << " bit depth " << (int)depth;
         }
     }
-
-    NodePtr source;
-    NodePtr matted;
-    ASSERT_TRUE(createGraph(kMattedOffsetGpuTestOpPluginID, 7., -5., &source, &matted));
-    StagedImageEffect* effect = effectOf(matted);
-    ASSERT_TRUE(effect != NULL);
-    EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << "a request with a row matte";
 }
 
 // The GPU source region is the node's own region of interest, here narrowed by the node.
@@ -699,6 +740,116 @@ TEST_F(StagedOffsetGpuTest, SourceSmallerThanTheWindowReadsZero)
         expectExact(expected, run, roi, 4, c.name);
         if (HasFatalFailure()) {
             return;
+        }
+    }
+}
+
+// The matted node at several offsets and both mipmap levels, against the CPU render, with NaN and
+// infinite pixels written into the GPU source where the CPU render has the parity source's. A
+// pixel weighing 0 must be +0 exactly and one weighing 1 or more the source's bits; the others
+// are held to resampling(), and a NaN or infinity weighed by a partial weight stays one.
+TEST_F(StagedOffsetGpuTest, MatteMatchesTheCpuRender)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    for (const OffsetCase& c : kOffsets) {
+        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+            NodePtr source;
+            NodePtr node;
+            ASSERT_TRUE(createGraph(kMattedOffsetGpuTestOpPluginID, c.x, c.y, &source, &node));
+            StagedImageEffect* effect = effectOf(node);
+            ASSERT_TRUE(effect != NULL);
+            const std::string level = std::string(c.name) + " mipmap " + std::to_string(mipmapLevel);
+            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+            const RectI rod = pixelRegionOfDefinition(node, mipmapLevel);
+            ASSERT_FALSE(rod.isNull()) << level;
+            const GpuQuery query = queryFor(node, mipmapLevel);
+            ASSERT_EQ(4, query.nComps) << level;
+            ASSERT_TRUE(effect->canRenderOnGpu(query)) << level;
+            const int dx = (int)std::lround(c.x * scale.toOfxPointD().x);
+            const int dy = (int)std::lround(c.y * scale.toOfxPointD().y);
+
+            for (const RectI& roi : testWindows(rod)) {
+                const std::string what = level + " " + describeRoI(roi);
+                RenderedPlane cpu;
+                ASSERT_TRUE(renderColor(node, mipmapLevel, roi, &cpu)) << what;
+                ASSERT_EQ(4u, cpu.channels.size()) << what;
+                ASSERT_EQ(roi, cpu.window) << what;
+
+                GpuParityImage image;
+                ASSERT_TRUE(sourceImage(source, mipmapLevel, effect->getGpuInputRoI(0, roi, scale), &image)) << what;
+                std::vector<float> expected = cpu.pixels;
+                std::size_t poisoned[3] = { 0, 0, 0 };
+                for (int y = roi.y1; y < roi.y2; ++y) {
+                    for (int x = roi.x1; x < roi.x2; ++x) {
+                        const int sx = x - dx;
+                        const int sy = y - dy;
+                        if (!image.bounds.contains(sx, sy) || (positiveModulo(sx * 3 + sy, 4) != 0)) {
+                            continue;
+                        }
+                        float* src = &image.pixels[((std::size_t)(sy - image.bounds.y1) * image.bounds.width() + (sx - image.bounds.x1)) * 4];
+                        src[0] = nan;
+                        src[1] = inf;
+                        const double w = testColumnWeight(x) * testRowWeight(y);
+                        float* out = &expected[((std::size_t)(y - roi.y1) * roi.width() + (x - roi.x1)) * 4];
+                        if (w == 0) {
+                            ++poisoned[0];
+                            continue;
+                        }
+                        ++poisoned[(w >= 1) ? 2 : 1];
+                        out[0] = nan;
+                        out[1] = (w >= 1) ? inf : (float)(inf * w);
+                    }
+                }
+                EXPECT_GT(poisoned[0], 0u) << what << ": no NaN source pixel weighs 0";
+                EXPECT_GT(poisoned[1], 0u) << what << ": no NaN source pixel has a partial weight";
+                EXPECT_GT(poisoned[2], 0u) << what << ": no NaN source pixel weighs 1 or more";
+
+                const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, roi, outputLayout());
+                ASSERT_TRUE(run.ok) << what;
+                EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
+                ASSERT_EQ(expected.size(), run.pixels.size()) << what;
+                const ImageDiff diff = compareImages(expected, run.pixels, ParityTolerance::resampling());
+                EXPECT_GT(diff.compared, 0u) << what;
+                EXPECT_EQ(0u, diff.mismatches) << what << ": " << diff.mismatches << " mismatches, first at float " << diff.firstMismatchIndex << " gpu "
+                                               << run.pixels[diff.firstMismatchIndex] << " expected " << expected[diff.firstMismatchIndex];
+
+                std::size_t inexact = 0;
+                std::size_t zeros = 0;
+                std::size_t partials = 0;
+                for (int y = roi.y1; y < roi.y2; ++y) {
+                    for (int x = roi.x1; x < roi.x2; ++x) {
+                        const double w = testColumnWeight(x) * testRowWeight(y);
+                        const std::size_t at = ((std::size_t)(y - roi.y1) * roi.width() + (x - roi.x1)) * 4;
+                        if ((w != 0) && (w < 1)) {
+                            ++partials;
+                            continue;
+                        }
+                        zeros += (w == 0) ? 1 : 0;
+                        for (int ch = 0; ch < 4; ++ch) {
+                            const float g = run.pixels[at + ch];
+                            const float e = expected[at + ch];
+                            const bool same = (std::isnan(g) && std::isnan(e)) || ((g == e) && (std::signbit(g) == std::signbit(e)));
+                            if (!same || ((w == 0) && ((g != 0.f) || std::signbit(g)))) {
+                                if (inexact == 0) {
+                                    ADD_FAILURE() << what << ": pixel (" << x << "," << y << ") channel " << ch << " weighing " << w << " gpu " << g << " expected " << e;
+                                }
+                                ++inexact;
+                            }
+                        }
+                    }
+                }
+                EXPECT_EQ(0u, inexact) << what << ": floats weighing 0 or at least 1 that are not exact";
+                EXPECT_GT(zeros, 0u) << what;
+                EXPECT_GT(partials, 0u) << what;
+                if (HasFatalFailure()) {
+                    return;
+                }
+            }
         }
     }
 }

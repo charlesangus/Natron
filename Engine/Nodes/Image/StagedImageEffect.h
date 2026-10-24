@@ -663,9 +663,9 @@ private:
                 request.form = ResampleRequest::Form::Offset;
                 request.offset = _op.offset(params, context);
                 if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
-                                  { o.rowMatte(p, c) } -> std::same_as<ResampleRowMatte>;
+                                  { o.matte(p, c) } -> std::same_as<ResampleMatte>;
                               }) {
-                    request.rowMatte = _op.rowMatte(params, context);
+                    request.matte = _op.matte(params, context);
                 }
                 if constexpr (requires { requires OP::kClipsSourceToRoI; }) {
                     request.clipSourceToRoI = true;

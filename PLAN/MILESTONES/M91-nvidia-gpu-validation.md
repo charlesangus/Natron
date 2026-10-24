@@ -237,5 +237,4 @@ If M107 hasn't merged when Phase 91.2 finishes, skip this phase and file it as a
 - 2026-10-23 — User allowed agents to briefly open test windows on the `:0` Plasma session for the NVIDIA GL checks (P1.T5, Phase 91.3).
 - 2026-10-23 — P1.T4: tools/gpu-spike had bit-rotted (standalone grade.slang deleted in M137); the spike now carries its own copy of the old grade_main kernel staged beside the engine gradeops module (code: 2c03da4d3 on milestone/m91-nvidia-gpu-validation). GpuBench smoke on the RTX 3070 Ti ran with hostImport=1.
 - 2026-10-23 — User: no Quadro P400 runs at all, not even the optional small-VRAM data point (P1.T4 and later).
-
 - 2026-10-23 — P1.T6 triage: Phase 91.2 keeps P2.T2 (staged-reason logging), P2.T3 (spec-derived LUT tolerance, test-only) and P2.T5 (pipelined timing assertion, test-only); P2.T1 and P2.T4 were dropped as not triggered. Follow-up observed, not M91 scope: in pipelined strips, per-member times are inflated (Grade 0.21 ms vs 0.045 ms serial), which skews GpuCostModel calibration samples. It needs a follow-up milestone, to be filed by /cat-plan.

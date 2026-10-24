@@ -288,7 +288,7 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
     GUI bench rule: not triggered. The diff touches `Gui/ViewerGL*` only, none of `NodeGraph*`, `NodeGui*`, `Edge*`, knob expressions or node naming.
   - size: M
 
-- [ ] M107.P6.T2 — Quick directional bench (~1 h) on RADV
+- [x] M107.P6.T2 — Quick directional bench (~1 h) on RADV
   - files: milestone Results section (data in `.local/m107/`)
   - approach:
     - Release AppImages of main and of the M107 branch, run on the same boot (probe `MemAvailable` per case; `env -u LD_LIBRARY_PATH`), in P1.T2's radeonsi display setup.
@@ -316,7 +316,7 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
 
 ## Phase 107.7: Playback and first-frame fixes (from P6.T2's diagnosis)
 
-- [ ] M107.P7.T1 — Fill the hand-off cache in place, with tile copies in parallel; upload the readback rung straight from mapped memory
+- [x] M107.P7.T1 — Fill the hand-off cache in place, with tile copies in parallel; upload the readback rung straight from mapped memory
   - files: `Engine/ViewerHandoff.h`, `Engine/ViewerHandoff.cpp`, `Engine/Gpu/GlInterop.h`, `Engine/Gpu/GlInterop.cpp`, `Engine/ViewerInstance.cpp`, `Tests/Native/ViewerHandoff_Test.cpp`, `Tests/Gpu/GlInterop_Test.cpp`
   - approach:
     - Productionise the diagnosis prototype (`.local/m107/p6t2/proto-fix.diff`, which also carries the timing probes, switched by `NATRON_M107_TIMING`/`NATRON_M107_PROTO`). Keep the behaviour without the probes or the switches: delete `Engine/Gpu/M107Probe.h` and every probe call.
@@ -327,13 +327,13 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
   - verify: remote `fast --tests` green on lavapipe. M107's suites on RADV from the remote build tree, as for P6.T1. UAT readback and hostsync configs `SUMMARY 0 failure(s)`. A headless readback rerun of UHD/8K × 8u/32f against main `3c2ba44fc` (3 interleaved rounds): UHD 32f playback ≥ 15 fps, as the prototype measured.
   - size: M
 
-- [ ] M107.P7.T2 — Run the hand-off cache fill on a worker
+- [x] M107.P7.T2 — Run the hand-off cache fill on a worker
   - files: `Engine/ViewerHandoff.h`, `Engine/ViewerHandoff.cpp`, `Engine/ViewerInstance.cpp`
   - approach: after the upload, the fill (tile allocation plus parallel copies) runs as a job on the global pool, holding the slot. `present` waits on that slot's pending fill before it reuses the slot, so on zerocopy and hostsync the GUI thread does no fill work in steady playback. Device loss or a viewer teardown waits for, or cancels, a pending fill before the slot's memory is freed.
   - verify: as P7.T1, plus a `ViewerHandoff_Test` case in which a fill is still pending when the slot comes round again, and one where teardown happens with a fill pending.
   - size: M
 
-- [ ] M107.P7.T3 — 8K playback stalls: parallel CPU fallback, logged refusal reason, and keep displayed roots resident
+- [x] M107.P7.T3 — 8K playback stalls: parallel CPU fallback, logged refusal reason, and keep displayed roots resident
   - files: `Engine/ViewerInstance.cpp`, `Engine/ViewerHandoff.cpp`
   - approach:
     - Log the reason `present` refuses a device root, once per reason per session.
@@ -342,13 +342,13 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
   - verify: headless readback 8K 8u playback has no frame over 1 s, and playback fps ≥ main's 1.55. The UAT configs still pass.
   - size: M
 
-- [ ] M107.P7.T4 — Readback rung: overlap the GPU wait
+- [x] M107.P7.T4 — Readback rung: overlap the GPU wait
   - files: `Engine/ViewerHandoff.cpp`, `Engine/Gpu/GlInterop.cpp`
   - approach: the upload's `waitProduced` (~19 ms at UHD 32f) no longer runs straight after `produce` on the GUI thread. Either present frame N−1's slot while frame N computes, using the existing double buffer, or wait on the render thread before handing the frame to the GUI.
   - verify: as P7.T1. UHD 32f readback playback improves over P7.T2's numbers, and tweak and seek don't regress.
   - size: M
 
-- [ ] M107.P7.T5 — First frame: compile the viewer kernel and build the rings ahead of time
+- [x] M107.P7.T5 — First frame: compile the viewer kernel and build the rings ahead of time
   - files: `Engine/ViewerHandoff.h`, `Engine/ViewerHandoff.cpp`, `Gui/ViewerGL.cpp`
   - approach:
     - Compile the viewer-process kernel on a worker at `ViewerHandoff::create`, and again when the display processor or depth changes, so the first frame finds it ready.
@@ -506,3 +506,29 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
     - The headless first-frame bench only benefits if it creates a `ViewerGL`.
   - **Checked:** `-fsyntax-only` on 38 TUs.
 - 2026-10-23 — **Phase 107.7 CI line green:** remote `fast --tests` of `ed113a3e6` (P7.T1–T5, run 40054501349) passes every ctest entry in both scheduler legs on lavapipe, with 42 M107-suite cases per leg, the new staged-frame and fill-lifetime cases included. Still owed on the GPU host, once M156's bench frees it: the RADV suites, UAT readback/hostsync/cpu/`lost@40`, and the headless rerun against main for playback fps, the 8K stalls and first frame. The release AppImage is building.
+- 2026-10-23 — **Phase 107.7 verified on the GPU host, so P7.T1–P7.T5 are done and P6.T2's direction call is settled** (`.local/m107/p7verify/`).
+  - **Host:** boot `9e915d0b`, AMD Radeon AI PRO R9700 (RADV GFX1201, radeonsi), Mesa 25.2.7, 55–61 GB available.
+  - **AppImages:** candidate release `ed113a3e6` (run 40054503389); main release is `v0.1.0-beta45`, built from `bf781cbcd` (the current main).
+  - **RADV gate line:** the 9 M107 suites pass in all four legs (RADV and lavapipe × legacy and taskgraph), with no skips on RADV. On lavapipe, 5 GlInterop zero-copy cases soft-skip for missing semaphore extensions.
+  - **UAT:** cpu, hostsync (lavapipe), readback (RADV) and `lost@40` (RADV → `cpu (device lost)`) each give `SUMMARY 0 failure(s)`. Every grab is within 1 code value of the CPU, so the accepted ±2 dither allowance wasn't needed. All 39 readback root regions downloaded 0 bytes.
+  - **Headless bench, readback rung vs main gpu, same boot, 3 interleaved rounds, medians; first / tweak / seek in ms, playback in fps:**
+
+    | Case | Candidate readback | Main gpu |
+    |---|---|---|
+    | UHD 8u | 111 / 28 / 57 / 72.4 | 258 / 123 / 176 / 7.42 |
+    | UHD 32f | 168 / 43 / 75 / 32.2 | 145 / 44 / 85 / 27.4 |
+    | 8K 8u | 368 / 78 / 222 / 20.1 | 762 / 454 / 671 / 1.78 |
+    | 8K 32f | 527 / 128 / 256 / 8.88 | 462 / 147 / 329 / 2.12 |
+
+    The candidate's CPU rung equals main's CPU. All 180 root regions per case downloaded 0 bytes, and no refusal lines were logged.
+  - **Targets:**
+    - P7.T1: 32.2 fps against ≥ 15. Met.
+    - P7.T3: worst 8K 8u frame 226 ms, against no frame over 1 s, and 20.1 fps against main's 1.78. Met.
+    - P7.T4: tweak and seek are below P6.T2's candidate and at or below main. Met. "Faster than P7.T1/T2 alone" can't be judged, because those were batched.
+    - P7.T5: first frame −147 ms (UHD 8u) and +23 ms (UHD 32f) against main, inside +50. Met, and the harness creates a `ViewerGL`, so P7.T5's precompile is exercised.
+  - **Direction (P6.T2):** the hand-off beats main on tweak and seek everywhere. Playback beats main 1.2–11×. The first frame is slower only at 32f, by 23–65 ms.
+  - **Residuals for P6.T3:**
+    - One 1455 ms gap at frame 18 in round 1 of 8K 32f readback. Rounds 2 and 3 are worst about 270 ms.
+    - The first 8K 8u run's first frame took 1145 ms, likely a cold page cache.
+    - Main's own 8K gpu-rung stalls are 6.6–15.6 s.
+  - **Owed by the user:** the desktop zerocopy/hostsync rerun with `.local/m107/p6t2/desktop/viewer-bench.sh --base .local/m107/p7verify/main-beta45/Natron-2.6.0-x86_64.AppImage` (~40 min, X11 session).

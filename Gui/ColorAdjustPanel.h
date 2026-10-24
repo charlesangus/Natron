@@ -47,11 +47,15 @@ class QResizeEvent;
 
 NATRON_NAMESPACE_ENTER
 
+class ColorEditSlider;
 struct ColorAdjustPanelPrivate;
 
 /**
  * @brief The colour knob's adjustment panel: the trackball wheel beside one line each for Hue,
- * Sat, Value, Temp and Tint, every line a caption, a SpinBox and a ScaleSliderQWidget. It
+ * Sat, Value, Temp and Tint, every line a caption, a SpinBox and a slider. The slider style
+ * decides the slider and where the lines go: a horizontal ScaleSliderQWidget per row (Natron),
+ * a horizontal ColorEditSlider per row (Custom), or a vertical ScaleSliderQWidget per column to
+ * the right of the wheel, caption on top and SpinBox underneath (Vertical). It
  * knows nothing about knobs: the owner feeds it a value, a dimension count, a role and a basis,
  * and turns valuesEdited into knob changes and undo steps.
  *
@@ -63,7 +67,8 @@ struct ColorAdjustPanelPrivate;
  * the wheel re-centres on the new value at End.
  *
  * A slider reports absolute targets in its line's unit (degrees, plane distance, stops or Y,
- * mired, tint or the Offset axes); a spinbox commit is a one-shot absolute edit.
+ * mired, tint or the Offset axes), except a ColorEditSlider's off-marker drag, which nudges by
+ * increments in that unit; a spinbox commit is a one-shot absolute edit.
  *
  * The edit area is built for ColorPanelLayoutDev's current layout and rebuilt when it changes;
  * a change that arrives during a gesture waits for the gesture's End, so one gesture never spans
@@ -147,7 +152,12 @@ public:
     QWidget* getEditArea() const;
     ColorWheelWidget* getWheel() const;
 
+    /**
+     * @brief The line's ScaleSliderQWidget in the Natron and Vertical styles, null in Custom;
+     * getCustomSlider is the reverse.
+     **/
     ScaleSliderQWidget* getSlider(ColorSliderKindEnum kind) const;
+    ColorEditSlider* getCustomSlider(ColorSliderKindEnum kind) const;
     SpinBox* getSpinBox(ColorSliderKindEnum kind) const;
 
 Q_SIGNALS:
@@ -170,6 +180,9 @@ private Q_SLOTS:
     void onSliderPositionChanged(double value);
     void onSliderEditingFinished(bool hasMovedOnce);
     void onSliderResetRequested();
+    void onCustomSliderGestureStarted();
+    void onCustomSliderGestureMoved(double value, bool absolute, QString axisLabel);
+    void onCustomSliderGestureFinished(bool moved);
     void onSpinBoxValueChanged(double value);
 
 private:

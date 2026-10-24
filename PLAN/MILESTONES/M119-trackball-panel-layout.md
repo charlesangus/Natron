@@ -14,8 +14,8 @@ Follow-up to M44 - Trackball Colour Editing. At the default properties width the
 - The bin-top placement: shown on demand, bound to one colour knob, retargeting as global mode does.
 - Global mode starts in "C" on every fresh engage instead of remembering the last mode across invocations and nodes.
 - Two more dev axes for global mode's feedback, on the same switch:
-  - **Feedback:** today (HUD under the knob or in the bin-top panel, arrow cursor); **A** crosshair cursor with the HUD following it; **C** a mode graphic revealed at the press point; **A+C** both.
-  - **Puck:** how the reveal graphic's marker behaves, **relative** (starts at the disc's centre, travels with the stroke) or **absolute** (sits where the knob's current value falls on the gradient). Only matters with C or A+C.
+  - **Feedback:** today (HUD under the knob or in the bin-top panel, arrow cursor); **A** crosshair cursor with the HUD following it; **C** a mode graphic revealed at the press point; **A+C** both; **W** the mode widget replaces the cursor on engage, follows the pointer, and freezes in place on press.
+  - **Puck:** how the reveal graphic's marker behaves, **relative** (starts at the disc's centre, travels with the stroke) or **absolute** (sits where the knob's current value falls on the gradient). Only matters with C, A+C or W.
 - The reveal graphic: C mode shows the real `ColorWheelWidget`; S, T and V show discs of the wheel's diameter with the same outer ring, filled with a gradient that says what the stroke does. S: hue shifts left and right, white at the bottom to highly saturated at the top. T: warm to cool left to right, green to magenta bottom to top. V: white at the top right, black at the bottom left.
 - An AppImage and test card for the user's pick, then a cleanup that makes the winner the only layout.
 
@@ -37,6 +37,7 @@ Follow-up to M44 - Trackball Colour Editing. At the default properties width the
 - Press-to-reveal near a screen edge: the graphic is clamped to the screen; the puck's start is still the press point's disc centre (relative) so nothing jumps.
 - The following HUD near a screen edge flips to the other side of the cursor; it never takes mouse events.
 - The cursor is a crosshair from engage to exit and returns on exit or when a modal dialog takes over (as global mode already leaves for one). While a reveal graphic is up the cursor is hidden and comes back at release.
+- WidgetCursor (W): from engage the mode widget (T14's window) is centred on the pointer and tracks it, the real cursor is hidden; on press it stops where it is and the stroke moves the puck inside it as in Reveal; on release it resumes following. A mode switch swaps the widget under the pointer, and exit hides it and restores the cursor. The following HUD runs alongside it, as in Crosshair.
 - Absolute puck on S, T and V: only the axes with an absolute meaning move the puck off centre (S vertical saturation; T temp and tint; V along the diagonal). S's hue-shift axis has no absolute value, so the puck stays centred horizontally.
 - Reveal graphic with a gesture that ends by a lost grab or app deactivation: it hides exactly as the stroke ends.
 - A Feedback or Puck change arrives mid-stroke: deferred to the stroke's end, as every other axis.
@@ -137,7 +138,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
 - [ ] M119.P1.T11 — Add the Feedback and Puck dev axes, and the crosshair cursor
   - files: `Gui/ColorPanelLayoutDev.h`, `Gui/ColorPanelLayoutDev.cpp`, `Gui/ColorTrackballGlobalMode.h`, `Gui/ColorTrackballGlobalMode.cpp`, `Tests/ColorTrackballGlobalMode_Test.cpp`
   - approach:
-    - Extend T1's `ColorPanelLayout` with `enum Feedback { Today, Crosshair, Reveal, CrosshairReveal } feedback` and `enum Puck { Relative, Absolute } puck`, defaulting to Today and Relative. T1's dev bar gains the two combos (Puck only enabled with Reveal or CrosshairReveal); both stay inert without `NATRON_COLOR_PANEL_DEV`.
+    - Extend T1's `ColorPanelLayout` with `enum Feedback { Today, Crosshair, Reveal, CrosshairReveal, WidgetCursor } feedback` and `enum Puck { Relative, Absolute } puck`, defaulting to Today and Relative. T1's dev bar gains the two combos (Puck only enabled with Reveal, CrosshairReveal or WidgetCursor); both stay inert without `NATRON_COLOR_PANEL_DEV`.
     - With Crosshair or CrosshairReveal, `engage()` pushes `QApplication::setOverrideCursor(Qt::CrossCursor)` on a fresh engage, and `exit()` and `leaveForModalWidget()` pop it, so every exit path restores the cursor exactly once.
     - A Feedback or Puck change mid-stroke is deferred to `endStroke()`, like the other axes.
   - verify: `GuiTests --gtest_filter=ColorTrackballGlobalMode*`: with Crosshair, engage makes `QApplication::overrideCursor()` a cross, exit and a leave for a modal widget restore it, and two engage/exit cycles leave no override cursor behind; with Today the cursor is never touched.
@@ -170,12 +171,21 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorTrackballReveal*`: a press at (500, 400) shows a window centred there; with Relative the puck is at the centre on press and moves with a synthetic stroke; with Absolute it starts at the value's position; release and a lost grab hide the window and pop the blank cursor, leaving no override cursor beyond the crosshair; a press at a screen corner keeps the window inside the screen; the stroke's value changes are identical with and without the reveal.
   - size: L
 
+- [ ] M119.P1.T15 — Add the WidgetCursor feedback: the mode widget replaces the cursor from engage and freezes on press
+  - files: `Gui/ColorTrackballReveal.h`, `Gui/ColorTrackballReveal.cpp`, `Gui/ColorTrackballGlobalMode.h`, `Gui/ColorTrackballGlobalMode.cpp`, `Tests/ColorTrackballReveal_Test.cpp`
+  - approach:
+    - Reuses T14's `ColorTrackballReveal` window with a follow mode: on a fresh engage with WidgetCursor, the controller shows it centred on the pointer (blank override cursor pushed, popped on every exit path as in T11), and on every pointer move outside a stroke re-centres it on the pointer, clamped to the screen.
+    - `beginStroke()` freezes the window at its current position instead of re-centring on the press (the reveal path); `endStroke()`/`endStrokeWithoutRelease()` end the stroke and resume following, without hiding the window. The Puck setting applies as in T14.
+    - Mode changes swap the widget in place; the following HUD (T12) is shown as in Crosshair. Today, Crosshair, Reveal and CrosshairReveal behave exactly as before.
+  - verify: `GuiTests --gtest_filter=ColorTrackballReveal*:ColorTrackballGlobalMode*`: with WidgetCursor, engage shows the window centred on the pointer and the override cursor is blank; a synthetic move re-centres it; a press freezes it and moves to the puck; release resumes following; setMode swaps the widget; exit hides it and leaves no override cursor.
+  - size: M
+
 - [ ] M119.P1.T9 — End build: run every suite, write the GUI evidence script, and capture each combination at two bin widths
   - files: `Tests/gui/m119_trackball_layout.py` (new)
   - approach:
     - One `fast` build and full ctest.
     - The script opens Grade and ColorCorrect with `NATRON_COLOR_PANEL_DEV=1`, and for each meaningful layout combination (both bound toggles × three styles × two placements) at the default bin width and at 2× captures a screenshot and records the wheel's diameter and the Hue track's length to `results.txt`.
-    - It also checks no paint at a stale geometry on an axis switch (the M44.P7.T8 paint logger), that a drag on each style is one undo step, and that Ctrl+E on a second node after leaving the mode in a non-C mode shows "C" in the HUD (T10). For the Feedback axis it also engages global mode with each of Today, Crosshair, Reveal and CrosshairReveal, takes one screenshot per mode (C, S, T, V) of the reveal graphic with each Puck setting, and records the override cursor shape before, during and after a stroke.
+    - It also checks no paint at a stale geometry on an axis switch (the M44.P7.T8 paint logger), that a drag on each style is one undo step, and that Ctrl+E on a second node after leaving the mode in a non-C mode shows "C" in the HUD (T10). For the Feedback axis it also engages global mode with each of Today, Crosshair, Reveal, CrosshairReveal and WidgetCursor, takes one screenshot per mode (C, S, T, V) of the reveal graphic with each Puck setting, and records the override cursor shape before, during and after a stroke.
   - verify: ctest all green; `results.txt` has no FAIL and a wheel diameter and track length for every combination; the shots exist and are listed for the test card, including the four reveal graphics under each Puck setting.
   - size: M
 
@@ -222,3 +232,4 @@ These briefs name every file a losing axis could leave behind; the PM narrows ea
 - 2026-10-24 — **Reveal graphic (user):** C mode shows the current trackball widget at the click; S, T and V show discs with the wheel's ring, filled with the gradients listed under Scope, and the user wants both a relative puck (from the centre) and an absolute puck (at the current value) to try.
 - 2026-10-24 — **Real cursor is hidden during a reveal stroke (user, on recommendation):** the puck is the feedback.
 - 2026-10-24 — **The following HUD is a frameless click-through top-level window that flips at screen edges (user, on recommendation).**
+- 2026-10-24 — **WidgetCursor feedback added (user):** the mode widget replaces the cursor on entering global mode, follows the pointer, and freezes in place on press. Task M119.P1.T15, which depends on T14.

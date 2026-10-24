@@ -781,6 +781,8 @@ Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 r
 
 ## Decisions
 
+- 2026-10-24 — **Review fix: gain maps use uncropped sensor coordinates (PM).** Review of PR #83 found that RawPrepare accepted, placed and picked the cell of each GainMap using the active area, so a file whose active area starts at an odd offset swapped the maps' cells and a map sized to the whole sensor was refused. The Read now publishes `raw/sensor` (the uncropped sensor rect), and RawPrepare uses it for acceptance, position, relative coordinates and cell parity, as darktable does. Fixed in 7dbfe2031; PR CI green. Not checked against the DNG specification's own GainMap coordinate convention; this follows darktable.
+
 - 2026-10-22 — Core-chain GPU kernels move into this milestone (Phase 80.6): the backend is settled (Vulkan + Slang) and the round-two rule has ports ship their own kernels; estimated at about 6 tasks of the 12–15 for all raw GPU work. The rest stays in M81 - Raw GPU Kernels (user).
 - 2026-10-22 — M80.P6.T1 (backend requirements note) cancelled: M83 - GPU Compute Backend Spike already chose the backend.
 - 2026-10-22 — Lens correction leaves this milestone for a new M160 - Lensfun Lens Correction, which depends on this milestone and on M113 - Native Warp Nodes' coordinate sampler. It stays a separate node from M132 - Native Lens Distortion (user).

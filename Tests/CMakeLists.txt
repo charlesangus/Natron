@@ -218,6 +218,7 @@ set(GuiTests_SOURCES
     TabMenuBridge_Test.cpp
     ThemedIcon_Test.cpp
     ViewerDataSerialization_Test.cpp
+    WindowPlacement_Test.cpp
     guimain.cpp
 )
 add_executable(GuiTests ${GuiTests_SOURCES})

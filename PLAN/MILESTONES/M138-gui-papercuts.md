@@ -86,13 +86,13 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
 
 ## Phase 138.4: UAT fixes
 
-- [ ] M138.P4.T1 — The ▶ preview shows EXR files
+- [x] M138.P4.T1 — The ▶ preview shows EXR files
   - files: `Gui/SequenceFileDialog.cpp` (preview reader `Natron_File_Dialog_Preview_Provider_Reader`, `createViewerPreviewNode`, the file-change path), the native Read's EXR decode path it reaches (find via the error text "called OpenEXRInput::read_native_tiles without an open file", likely OIIO use in `Engine/Nodes/IO/`), `Tests/gui/m138_*.py` (the file-dialog section)
   - approach: UAT found the preview works for JPG but an EXR fails with "Natron_File_Dialog_Preview_Provider_Reader error: called OpenEXRInput::read_native_tiles without an open file". Find why the preview's Read reaches a tiled EXR read with no open file (e.g. a file-change race where the reader closes or reopens while a render is in flight, a header cache keyed by path that outlives the ImageInput, or a tiled-EXR path that assumes `open()` succeeded) and fix the root cause, not the preview alone, if the same path affects a normal Read. Add a tiled and a scanline EXR to the GUI script's file-dialog section.
   - verify: the script's file-dialog section previews a scanline and a tiled EXR with no error; a normal Read of the same files renders; ctest green.
   - size: M
 
-- [ ] M138.P4.T3 — Creating a Read on a deep EXR creates a DeepRead
+- [x] M138.P4.T3 — Creating a Read on a deep EXR creates a DeepRead
   - files: the Read creation paths — `Gui/Gui40.cpp` (drag-drop), File>Import / `Gui` create-reader helpers, `Engine/NativeRead.cpp` or the create-time file pick (`NativeRead::onEffectCreated`), using `AppManager::getReaderPluginIDForFile`
   - approach: wherever a reader node is created for a file (import dialog, drag-drop, a new Read's create-time file dialog), resolve the plugin with `getReaderPluginIDForFile` so a deep EXR creates a DeepRead. A Read whose file knob is later changed to a deep file keeps the clear error.
   - verify: the M138 GUI script imports and drag-drops a deep EXR and gets a DeepRead whose viewer shows the image; a flat EXR still gets a Read.

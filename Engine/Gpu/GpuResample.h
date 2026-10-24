@@ -87,4 +87,37 @@ struct GpuResample {
 
 GpuStatus recordResample(GpuRecordContext& ctx, const GpuResample& resample);
 
+// Mirrors OffsetParams in Kernels/offset.slang. The valid rect is in thread coordinates, the
+// source's offset addressing the pixel its first thread reads, so the kernel does no signed
+// arithmetic that a large offset could overflow.
+struct GpuOffsetParams {
+    uint32_t width;
+    uint32_t height;
+    uint32_t dstOffset;
+    uint32_t dstStride;
+    uint32_t srcOffset;
+    uint32_t srcStride;
+    uint32_t validX1;
+    uint32_t validY1;
+    uint32_t validX2;
+    uint32_t validY2;
+    uint32_t nComps;
+};
+static_assert(sizeof(GpuOffsetParams) == 44);
+
+// A whole-pixel translation over `output`: dst(x, y) = src(x - dx, y - dy), zero where that pixel
+// lies outside src.bounds. Every channel is copied bit for bit. A source without a buffer, or with
+// empty bounds, renders zeros.
+struct GpuOffset {
+    GpuBlurImage src;
+    GpuBlurImage dst;
+    // Within dst.bounds.
+    GpuBlurRect output;
+    uint32_t channels = 0;
+    int32_t dx = 0;
+    int32_t dy = 0;
+};
+
+GpuStatus recordOffset(GpuRecordContext& ctx, const GpuOffset& offset);
+
 } // namespace gpu

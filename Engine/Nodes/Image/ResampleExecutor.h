@@ -188,11 +188,13 @@ StatusEnum resampleTransform(EffectInstance& effect,
                              Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
 
 /**
- * @brief Whether recordResampleGpu() can render request through plan for query: a matrix-form
- * request, a plan the GPU stages run (canRunStagesGpu()), no transform concatenated into the
- * source, and sampling matrices at the query's time, view and scale that are all affine and no
- * more than the kernel takes. Motion and directional blur are accepted. Depends only on the
- * query and the node's settings, so placement and recording agree.
+ * @brief Whether recordResampleGpu() can render request through plan for query: a plan the GPU
+ * stages run (canRunStagesGpu()) for no more components than the kernels take, then, for the
+ * matrix form, no transform concatenated into the source, and sampling matrices at the query's
+ * time, view and scale that are all affine and no more than the kernel takes (motion and
+ * directional blur are accepted), and for the offset form, no row matte. The host never
+ * concatenates into an offset-form source. Depends only on the query and the node's settings, so
+ * placement and recording agree.
  **/
 bool canRecordResampleGpu(const EffectInstance& effect,
                           const StagePlan& plan,
@@ -201,14 +203,13 @@ bool canRecordResampleGpu(const EffectInstance& effect,
 
 /**
  * @brief The pixels of the source, input sourceInput, that recordResampleGpu() reads to produce
- * outputRect at time, view and scale: the source's entry of resampleRegionsOfInterest() over
- * outputRect, enclosed in pixels. outputRect itself without a connected source or for an empty
- * outputRect.
+ * outputRect at time, view and scale: the source's entry of the node's own regions of interest
+ * (EffectInstance::getRegionsOfInterest_public()) over outputRect, enclosed in pixels, so that a
+ * node overriding them is read as the CPU reads it. outputRect itself without a connected source,
+ * for an empty outputRect, or when the node names no region for the source.
  **/
 RectI resampleGpuSourceRoI(const EffectInstance& effect,
                            int sourceInput,
-                           const ResampleRequest& request,
-                           const ResampleRegionStages& stages,
                            double time,
                            ViewIdx view,
                            const RectI& outputRect,
@@ -216,17 +217,17 @@ RectI resampleGpuSourceRoI(const EffectInstance& effect,
 
 /**
  * @brief Records request over args.outputRect of args.output through plan, as runResampleCpu()
- * renders it: the source, clipped to its region of definition and to resampleGpuSourceRoI(), is
- * resampled through the request's matrices (averaged for a blur) with the impulse filter for a
- * draft render. With a mask, a mix other than 1 or unprocessed channels, the result goes through
- * recordStagesGpuFinish() against that same clipped source. stages are the node's region stages,
- * as for resampleGpuSourceRoI(). Fails for a request canRecordResampleGpu() refuses.
+ * renders it. The source is clipped to its region of definition and, for the matrix form or with
+ * clipSourceToRoI, to resampleGpuSourceRoI(). The matrix form resamples it through the request's
+ * matrices (averaged for a blur) with the impulse filter for a draft render; the offset form
+ * shifts it by the request's offset, zero outside it. With a mask, a mix other than 1 or
+ * unprocessed channels, the result goes through recordStagesGpuFinish() against that same
+ * clipped source, unshifted. Fails for a request canRecordResampleGpu() refuses.
  **/
 StatusEnum recordResampleGpu(EffectInstance& effect,
                              const StagePlan& plan,
                              const GpuRenderArgs& args,
-                             const ResampleRequest& request,
-                             const ResampleRegionStages& stages) WARN_UNUSED_RETURN;
+                             const ResampleRequest& request) WARN_UNUSED_RETURN;
 
 NATRON_NAMESPACE_EXIT
 

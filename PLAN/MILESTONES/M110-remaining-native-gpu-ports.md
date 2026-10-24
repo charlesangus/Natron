@@ -131,7 +131,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: at the phase build, `NativeReformatGpu_Test`, `NativeReformat_Test` and `NativeGpuCapability_Test` pass on lavapipe.
   - size: M
 
-- [ ] M110.P1.T2 — Give Dissolve a GPU Composite step
+- [x] M110.P1.T2 — Give Dissolve a GPU Composite step
   - files: `Engine/Nodes/Merge/Dissolve.h`, `Engine/Nodes/Merge/Dissolve.cpp`, `Engine/Gpu/Kernels/dissolve.slang` (new), `Engine/Gpu/Kernels/dissolve.cmake` (new), `Engine/Nodes/Merge/docs/Dissolve.md`, `Tests/Native/NativeDissolveGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach:
     - Add `GpuOpRef gpu(const Params&) const` returning `GpuOpRef::compiled(gpu::GpuKernelId::dissolve, block)`. The block holds `blend` and is mirrored with `static_assert(sizeof...)`.
@@ -143,7 +143,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: at the phase build, `NativeDissolveGpu_Test`, `NativeDissolve_Test` and `NativeGpuCapability_Test` pass on lavapipe.
   - size: M
 
-- [ ] M110.P1.T3 — Extend the device line filters to first-order derivatives and Neumann boundaries
+- [x] M110.P1.T3 — Extend the device line filters to first-order derivatives and Neumann boundaries
   - files: `Engine/Gpu/GpuBlur.h`, `Engine/Gpu/GpuBlur.cpp`, `Engine/Gpu/Kernels/blur_lines.slang`, `Engine/Nodes/Filter/BlurKernels.{h,cpp}`, `Engine/Nodes/Filter/Blur.cpp`, `Tests/Native/GpuLineFilter_Test.cpp` (new)
   - approach:
     - Add `order` (0 or 1) and `neumann` to `GpuLineFilter` and `LinesParams`/`GpuLineBlurParams`, and update the `static_assert` size.
@@ -154,7 +154,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: at the phase build, `GpuLineFilter_Test` passes on lavapipe, and `NativeBlurGpu_Test` and `BlurKernels_Test` pass unchanged.
   - size: L
 
-- [ ] M110.P1.T4 — Render offset-form Resample ops on the GPU
+- [x] M110.P1.T4 — Render offset-form Resample ops on the GPU
   - files: `Engine/Nodes/Image/Op.h`, `Engine/Nodes/Image/StagedImageEffect.h`, `Engine/Nodes/Image/ResampleExecutor.{h,cpp}`, `Engine/Gpu/GpuResample.{h,cpp}`, `Engine/Gpu/Kernels/offset.slang` (new), `Engine/Gpu/Kernels/offset.cmake` (new), `Tests/Native/StagedOffsetGpu_Test.cpp` (new)
   - approach:
     - Add the concept `GpuOffsetResampleOp`: an offset-form op with `kResamplesOnGpu`. Make `GpuResampleOp` cover both forms, or add the parallel concept, and have `opResamplesOnGpu()` answer for either.
@@ -168,7 +168,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: at the phase build, `StagedOffsetGpu_Test`, `StagedResample_Test`, `NativeTransformGpu_Test` and `NativeCrop_Test` pass on lavapipe.
   - size: L
 
-- [ ] M110.P1.T5 — Add a multi-plane GPU query and render arguments
+- [x] M110.P1.T5 — Add a multi-plane GPU query and render arguments
   - files: `Engine/Nodes/Image/GpuRender.h`, `Engine/Nodes/NativeEffectBase.h`, `Engine/Nodes/NativeEffectBase.cpp`, `Tests/Native/NativeGpuParity.h`, `Tests/Native/NativeGpuParity.cpp`
   - approach:
     - Add `ImageLayerDesc plane` to `GpuQuery`. It is the plane the task renders, and `nComps` stays its component count; include `Engine/ImageLayerDesc.h`.
@@ -404,3 +404,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **Risk for P2.T2 (Position):** with pass-through, the CPU reads unprocessed channels from whatever image it fetched, possibly a cached one larger than the RoI. The GPU reads 0 outside the RoI. The test bypasses the cache. The durable fix is adding the window to the RoI under pass-through, which changes the CPU fetch.
   - **Checked:** `-fsyntax-only` and slangc.
 - 2026-10-23 — **M110.P1.T5 code in (`d947df339`); Phase 110.1 build dispatched.** `GpuQuery::plane` defaults to the none layer, and nothing hashes or compares `GpuQuery`. `getGpuExtraInputLayers` is inline on `NativeEffectBase`, so `NativeEffectBase.cpp` is unchanged. `runRenderGpu` takes `NativeEffectBase&` plus layer images uploaded at slots after the output, and finds the mask input by `dynamic_cast`. Checked with `-fsyntax-only` on 28 TUs.
+- 2026-10-23 — **Phase 110.1 build (`d947df339`, run 40054275558, lavapipe): P1.T2–P1.T5 done, and P1.T1 fails one entry.** Every other ctest entry passes in both legs, none of the new suites skipped: `NativeDissolveGpu`, `GpuLineFilter`, `StagedOffsetGpu`, `NativeGpuCapability`, `NativeReformatGpu` (16 cases), plus the unchanged `NativeBlurGpu`, `BlurKernels`, `StagedResample`, `NativeTransformGpu`, `NativeCrop` and `StagedImageEffectGpu`. Blur's GPU output is therefore unchanged by P1.T3's line-filter work.
+  - **The failure:** `Filters/NativeReformatGpuFilterTest` fails for impulse (filter 0) and box (filter 1) only. Impulse fails every fit, scale and distort-turn case; box fails fit at mipmap 0/1 and distort-turn at mipmap 0. Worst errors are 0.05 at mipmap 0 and 0.98 at mipmap 1. Filters 2–9 pass.
+  - **Suspected cause:** samples tie exactly on pixel edges, and the GPU rounds them unlike the CPU. Exact-scale Reformats are common, so a consultant is diagnosing and fixing it in the kernel rather than shifting the test off-grid.
+  - **Lane note:** an implementer container left the lane's `build/` root-owned, which blocked the log download. Fixed.

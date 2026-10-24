@@ -264,6 +264,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-24 — **Non-multi-planar effects declare the layers they read per input (PM, from a fixer's diagnosis):** STMap and IDistort's UV layer selection was never planned upstream, because `getComponentsNeededAndProduced` overrides only apply to multi-planar effects; the GPU region then converted RGBA to the `warp` layer by channel position. A new `EffectInstance::getInputLayersRead` hook plans the selected layers, and a GPU region no longer lets a colour plane stand in for a non-colour layer. Making both nodes multi-planar was rejected: it changes pass-through, metadata and GUI behaviour. Code: e850d9991.
 - 2026-10-12 — **Created from M69 - Minor Cleanup (user):** instead of giving the OFX IDistort and STMap a UV-layer dropdown (the cancelled M69.P9.T1), rewrite them as native nodes, drop the alpha channel feature, and use this milestone for further native-node rewrites.
 - 2026-10-13 — **Scope is the warp family (user, native-node port grill):** IDistort, STMap, CornerPin and Mirror. Redesigned, not ported for parity. Plain IDs, scene-linear maths, GPU kernels in this milestone.
 - 2026-10-13 — **LensDistortion gets its own milestone (user):** M132 - Native Lens Distortion, with all models. It reuses this milestone's per-pixel-coordinate sampler.

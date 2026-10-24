@@ -26,6 +26,7 @@
 #include "StartupGLDiag.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -44,8 +45,10 @@
 #include <unistd.h>
 
 #include <QtCore/QByteArray>
+#include <QtCore/QCoreApplication>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QString>
+#include <QtCore/QThread>
 #include <QtCore/QtGlobal>
 
 NATRON_NAMESPACE_ENTER
@@ -558,6 +561,105 @@ checkpoint(const char* name)
         line += reason.empty() ? std::string(" OK") : " MISMATCH reason=" + reason;
     }
     writeLine(line);
+}
+
+namespace {
+
+    struct SwitchInfo {
+        Switch id;
+        const char* env;
+    };
+
+    constexpr SwitchInfo kSwitches[] = {
+        { Switch::SkipGLProbe, "NATRON_DIAG_SKIP_GL_PROBE" },
+        { Switch::SkipVulkanEnum, "NATRON_DIAG_SKIP_VK_ENUM" },
+        { Switch::GpuInitSync, "NATRON_DIAG_GPU_INIT_SYNC" },
+        { Switch::NoSplashPump, "NATRON_DIAG_NO_SPLASH_PUMP" },
+        { Switch::RestoreGL, "NATRON_DIAG_RESTORE_GL" },
+    };
+
+    constexpr size_t kSwitchCount = sizeof(kSwitches) / sizeof(kSwitches[0]);
+
+    const char*
+    switchEnv(Switch s)
+    {
+        for (const SwitchInfo& info : kSwitches) {
+            if (info.id == s) {
+                return info.env;
+            }
+        }
+
+        return "?";
+    }
+
+    bool
+    readSwitch(const char* env)
+    {
+        const char* v = std::getenv(env);
+
+        return v && std::strcmp(v, "1") == 0;
+    }
+
+    std::atomic<bool> g_switchesLogged { false };
+
+} // anonymous namespace
+
+bool
+switchOn(Switch s)
+{
+    static const auto values = [] {
+        std::array<bool, kSwitchCount> v {};
+        for (size_t i = 0; i < kSwitchCount; ++i) {
+            v[i] = readSwitch(kSwitches[i].env);
+        }
+
+        return v;
+    }();
+
+    for (size_t i = 0; i < kSwitchCount; ++i) {
+        if (kSwitches[i].id == s) {
+            return values[i];
+        }
+    }
+
+    return false;
+}
+
+void
+logActiveSwitches()
+{
+    if (g_switchesLogged.exchange(true)) {
+        return;
+    }
+    for (const SwitchInfo& info : kSwitches) {
+        if (switchOn(info.id)) {
+            writeLine(std::string("switch active ") + info.env + "=1");
+        }
+    }
+}
+
+void
+logSwitchAction(Switch s,
+                const char* action)
+{
+    if (!switchOn(s)) {
+        return;
+    }
+    writeLine(std::string("switch ") + switchEnv(s) + ": " + (action ? action : "?"));
+}
+
+bool
+onGuiThread()
+{
+    const QCoreApplication* app = QCoreApplication::instance();
+
+    return app && (QThread::currentThread() == app->thread());
+}
+
+bool
+restoreGLOnThisThread()
+{
+    return switchOn(Switch::RestoreGL) && onGuiThread();
 }
 
 } // namespace StartupGLDiag

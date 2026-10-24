@@ -27,9 +27,12 @@
 
 #ifdef __NATRON_LINUX__
 
-#include <stdexcept>
 #include <iostream>
+#include <mutex>
+#include <optional>
 #include <sstream> // stringstream
+#include <stdexcept>
+#include <string>
 
 #include <dlfcn.h>
 
@@ -259,6 +262,112 @@ extensionSupported(const OSGLContext_glx_data* data,
 
     return false;
 }
+
+namespace {
+
+typedef Display* (*PFNGLXGETCURRENTDISPLAYPROC)();
+typedef GLXDrawable (*PFNGLXGETCURRENTDRAWABLEPROC)();
+
+struct SavedGLXBinding {
+    Display* display = nullptr;
+    GLXDrawable drawable = 0;
+    GLXContext context = nullptr;
+};
+
+// The binding that was current on the GUI thread before Natron made one of its
+// own contexts current there, put back when Natron releases that context.
+// Only the GUI thread fills it; a context destroyed on another thread may
+// still have to clear it.
+std::mutex g_pendingRestoreMutex;
+std::optional<SavedGLXBinding> g_pendingRestore;
+
+SavedGLXBinding
+captureGLXBinding(const OSGLContext_glx_data* glxInfo)
+{
+    static const auto getDisplay = (PFNGLXGETCURRENTDISPLAYPROC)dlsym(glxInfo->_imp->handle, "glXGetCurrentDisplay");
+    static const auto getDrawable = (PFNGLXGETCURRENTDRAWABLEPROC)dlsym(glxInfo->_imp->handle, "glXGetCurrentDrawable");
+    SavedGLXBinding b;
+
+    b.context = glxInfo->_imp->GetCurrentContext();
+    b.display = getDisplay ? getDisplay() : nullptr;
+    b.drawable = getDrawable ? getDrawable() : 0;
+
+    return b;
+}
+
+// Qt's GLX context belongs to Qt's own X connection, so it is restored with
+// the display it was current on rather than Natron's.
+bool
+restoreGLXBinding(const OSGLContext_glx_data* glxInfo,
+                  const SavedGLXBinding& saved,
+                  const char* tag,
+                  const void* caller)
+{
+    const StartupGLDiag::GLXBinding before = StartupGLDiag::currentGLXBinding();
+    bool ok;
+
+    if (saved.context) {
+        ok = glxInfo->_imp->MakeCurrent(saved.display ? saved.display : glxInfo->_imp->x11.display, saved.drawable, saved.context);
+    } else {
+        ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
+    }
+    StartupGLDiag::GLXBinding target;
+    target.context = saved.context;
+    target.drawable = saved.drawable;
+    StartupGLDiag::logMakeCurrent(tag, caller, target, before, ok);
+
+    return ok;
+}
+
+std::optional<SavedGLXBinding>
+takePendingRestore()
+{
+    std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
+    std::optional<SavedGLXBinding> pending = g_pendingRestore;
+    g_pendingRestore.reset();
+
+    return pending;
+}
+
+// Puts back the GUI thread's binding however the scope exits, and keeps an
+// enclosing make-current's pending restore intact across the scope.
+class ScopedGLXRestore {
+public:
+    explicit ScopedGLXRestore(const OSGLContext_glx_data* glxInfo)
+        : _glxInfo(glxInfo)
+        , _active(StartupGLDiag::restoreGLOnThisThread())
+    {
+        if (!_active) {
+            return;
+        }
+        _saved = captureGLXBinding(glxInfo);
+        _outerPending = takePendingRestore();
+    }
+
+    ~ScopedGLXRestore()
+    {
+        if (!_active) {
+            return;
+        }
+        const SavedGLXBinding now = captureGLXBinding(_glxInfo);
+        if ((now.context != _saved.context) || (now.drawable != _saved.drawable)) {
+            restoreGLXBinding(_glxInfo, _saved, "restore-gl:scope-exit", __builtin_return_address(0));
+        }
+        std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
+        g_pendingRestore = _outerPending;
+    }
+
+    ScopedGLXRestore(const ScopedGLXRestore&) = delete;
+    ScopedGLXRestore& operator=(const ScopedGLXRestore&) = delete;
+
+private:
+    const OSGLContext_glx_data* _glxInfo;
+    const bool _active;
+    SavedGLXBinding _saved;
+    std::optional<SavedGLXBinding> _outerPending;
+};
+
+} // anonymous namespace
 
 typedef void (*GLPFNglproc)(void);
 static GLPFNglproc
@@ -849,9 +958,26 @@ OSGLContext_x11::~OSGLContext_x11()
     if (_imp->glxContextHandle) {
 
         if (glxInfo->_imp->GetCurrentContext() == _imp->glxContextHandle) {
-            const StartupGLDiag::GLXBinding before = StartupGLDiag::currentGLXBinding();
-            const bool ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
-            StartupGLDiag::logMakeCurrent("~OSGLContext_x11:unset-before-destroy", __builtin_return_address(0), StartupGLDiag::GLXBinding(), before, ok);
+            std::optional<SavedGLXBinding> pending;
+            if (StartupGLDiag::restoreGLOnThisThread()) {
+                pending = takePendingRestore();
+                if (pending && (pending->context == _imp->glxContextHandle)) {
+                    pending.reset();
+                }
+            }
+            if (pending) {
+                restoreGLXBinding(glxInfo, *pending, "~OSGLContext_x11:restore-before-destroy", __builtin_return_address(0));
+            } else {
+                const StartupGLDiag::GLXBinding before = StartupGLDiag::currentGLXBinding();
+                const bool ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
+                StartupGLDiag::logMakeCurrent("~OSGLContext_x11:unset-before-destroy", __builtin_return_address(0), StartupGLDiag::GLXBinding(), before, ok);
+            }
+        }
+        if (StartupGLDiag::switchOn(StartupGLDiag::Switch::RestoreGL)) {
+            std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
+            if (g_pendingRestore && (g_pendingRestore->context == _imp->glxContextHandle)) {
+                g_pendingRestore.reset();
+            }
         }
         glxInfo->_imp->DestroyContext(glxInfo->_imp->x11.display, _imp->glxContextHandle);
         _imp->glxContextHandle = 0;
@@ -881,10 +1007,34 @@ OSGLContext_x11::makeContextCurrent(const OSGLContext_x11* context,
         }
     }
 
+    const bool restore = StartupGLDiag::restoreGLOnThisThread();
     bool ok;
     if (context) {
+        bool savedHere = false;
+        if (restore) {
+            std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
+            if (!g_pendingRestore) {
+                g_pendingRestore = captureGLXBinding(glxInfo);
+                savedHere = true;
+            }
+        }
         ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, context->_imp->glxWindowHandle, context->_imp->glxContextHandle);
+        // A failed glXMakeCurrent leaves the previous binding in place, so
+        // there is nothing to restore later.
+        if (!ok && savedHere) {
+            std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
+            g_pendingRestore.reset();
+        }
     } else {
+        std::optional<SavedGLXBinding> pending;
+        if (restore) {
+            pending = takePendingRestore();
+        }
+        if (pending) {
+            const std::string tag = std::string(diagTag ? diagTag : "OSGLContext_x11::makeContextCurrent") + ":restore-gl";
+
+            return restoreGLXBinding(glxInfo, *pending, tag.c_str(), diagCaller ? diagCaller : __builtin_return_address(0));
+        }
         ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
     }
 
@@ -942,6 +1092,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
     if (!glxInfo->_imp->x11.display) {
         return;
     }
+    const ScopedGLXRestore restoreOnExit(glxInfo);
     if (!glxInfo->_imp->MESA_query_renderer) {
         std::unique_ptr<OSGLContext_x11> context;
         try {

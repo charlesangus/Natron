@@ -79,6 +79,30 @@ void logMakeCurrent(const char* tag,
 // and flags MISMATCH when they disagree.
 void checkpoint(const char* name);
 
+// Startup isolation switches. Each is read once from its environment
+// variable ("1" turns it on) and works whether or not NATRON_DIAG_GL is set.
+enum class Switch {
+    SkipGLProbe, // NATRON_DIAG_SKIP_GL_PROBE
+    SkipVulkanEnum, // NATRON_DIAG_SKIP_VK_ENUM
+    GpuInitSync, // NATRON_DIAG_GPU_INIT_SYNC
+    NoSplashPump, // NATRON_DIAG_NO_SPLASH_PUMP
+    RestoreGL // NATRON_DIAG_RESTORE_GL
+};
+
+bool switchOn(Switch s);
+
+// Logs every active switch, once per process.
+void logActiveSwitches();
+
+// Logs that an active switch changed what startup did.
+void logSwitchAction(Switch s, const char* action);
+
+bool onGuiThread();
+
+// RestoreGL is on and the caller runs on the GUI thread, the only thread
+// where Qt keeps a GL context of its own.
+bool restoreGLOnThisThread();
+
 } // namespace StartupGLDiag
 
 NATRON_NAMESPACE_EXIT

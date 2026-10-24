@@ -577,14 +577,15 @@ TEST_F(BundleLoadTest, AMissingBlobWarnsAndLeavesItsStrokeEmpty)
         for (const Serialization::ZipMember& member : source.members()) {
             if (member.name.ends_with(".stroke.bin")) {
                 EXPECT_TRUE(strokeBlob.empty()) << "a second stroke blob " << member.name;
-                strokeBlob = member.name;
+                strokeBlob = member.name.substr(member.name.find('/') + 1);
             }
         }
         ASSERT_FALSE(strokeBlob.empty()) << "the saved bundle has no stroke blob member";
-        Serialization::ZipWriter copy(damagedPath.toStdString());
+        Serialization::ZipWriter copy(damagedPath.toStdString(), Serialization::kNatronProjectMimeType, "missing-blob");
         for (const Serialization::ZipMember& member : source.members()) {
-            if ((member.name != "mimetype") && (member.name != strokeBlob)) {
-                copy.addMember(member.name, source.data(member));
+            const std::string relative = member.name.substr(member.name.find('/') + 1);
+            if ((relative != "mimetype") && (relative != strokeBlob)) {
+                copy.addMember(relative, source.data(member));
             }
         }
         copy.finish();

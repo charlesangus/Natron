@@ -33,15 +33,22 @@ namespace Serialization {
 
 namespace {
 
-    // The local header of a stored member is 30 bytes and `mimetype` is 8 bytes long, so in a
-    // bundle the mime type always starts at offset 38.
-    constexpr std::size_t kMimeTypeOffset = 38;
+    constexpr std::size_t kLocalHeaderSize = 30;
 
-    // Large enough for the whole mime type entry, and for the XML declaration or doctype of a
-    // legacy project that may follow a short prologue.
+    // Room for the local header of a `<stem>/mimetype` member with a stem of a typical file name
+    // length, its alignment-free extra field and the mime type; also covers the XML declaration
+    // or doctype of a legacy project that may follow a short prologue.
+    constexpr std::size_t kSniffSize = 512;
     constexpr std::size_t kLegacyXmlSniffSize = 64;
-    constexpr std::size_t kSniffSize = std::max(kLegacyXmlSniffSize, kMimeTypeOffset + kNatronProjectMimeType.size());
-    static_assert(kSniffSize >= kMimeTypeOffset + kNatronProjectMimeType.size());
+    constexpr std::string_view kMimeTypeName = "mimetype";
+    constexpr std::string_view kDefaultRootFolder = "project";
+
+    std::uint16_t
+    littleEndian16(std::span<const std::byte> head,
+                   std::size_t offset)
+    {
+        return static_cast<std::uint16_t>(std::to_integer<unsigned>(head[offset]) | (std::to_integer<unsigned>(head[offset + 1]) << 8));
+    }
 
     std::span<const std::byte>
     textBytes(std::string_view text)
@@ -87,9 +94,18 @@ namespace {
 ProjectFileKind
 detectProjectFileKind(std::span<const std::byte> head)
 {
-    const std::string_view text = bytesText(head.first(std::min(head.size(), kSniffSize)));
-    if (text.starts_with("PK\x03\x04") && (head.size() >= kMimeTypeOffset + kNatronProjectMimeType.size()) && (bytesText(head.subspan(30, 8)) == "mimetype") && (bytesText(head.subspan(kMimeTypeOffset, kNatronProjectMimeType.size())) == kNatronProjectMimeType)) {
-        return ProjectFileKind::eBundle;
+    const std::string_view text = bytesText(head.first(std::min(head.size(), kLegacyXmlSniffSize)));
+    if (head.size() >= kLocalHeaderSize && bytesText(head.first(4)) == "PK\x03\x04") {
+        const std::size_t nameSize = littleEndian16(head, 26);
+        const std::size_t extraSize = littleEndian16(head, 28);
+        const std::size_t dataStart = kLocalHeaderSize + nameSize + extraSize;
+        if (head.size() >= dataStart + kNatronProjectMimeType.size() && nameSize >= kMimeTypeName.size()) {
+            const std::string_view name = bytesText(head.subspan(kLocalHeaderSize, nameSize));
+            const bool isMimeType = name == kMimeTypeName || (name.ends_with(kMimeTypeName) && name[name.size() - kMimeTypeName.size() - 1] == '/' && name.find('/') == name.size() - kMimeTypeName.size() - 1);
+            if (isMimeType && bytesText(head.subspan(dataStart, kNatronProjectMimeType.size())) == kNatronProjectMimeType) {
+                return ProjectFileKind::eBundle;
+            }
+        }
     }
     if (contains(text, "<?xml") || contains(text, "<!DOCTYPE boost_serialization")) {
         return ProjectFileKind::eLegacyXml;
@@ -112,7 +128,10 @@ detectProjectFileKind(const std::string& path)
     return detectProjectFileKind(std::span<const std::byte>(head, size));
 }
 
-ProjectBundleWriter::ProjectBundleWriter() = default;
+ProjectBundleWriter::ProjectBundleWriter()
+    : _rootFolder(kDefaultRootFolder)
+{
+}
 
 void
 ProjectBundleWriter::setProject(const ProjectSerialization& project)
@@ -121,6 +140,13 @@ ProjectBundleWriter::setProject(const ProjectSerialization& project)
     std::string text = encodeProjectYaml(project, blobs);
     _projectYaml = std::move(text);
     _blobs = std::move(blobs);
+}
+
+void
+ProjectBundleWriter::setRootFolder(std::string_view folder)
+{
+    const bool usable = !folder.empty() && (folder.find('/') == std::string_view::npos) && zipMemberNameProblem(folder).empty();
+    _rootFolder = usable ? std::string(folder) : std::string(kDefaultRootFolder);
 }
 
 void
@@ -164,14 +190,14 @@ ProjectBundleWriter::writeMembers(ZipWriter& writer) const
 void
 ProjectBundleWriter::write(ZipOutput& output) const
 {
-    ZipWriter writer(output);
+    ZipWriter writer(output, kNatronProjectMimeType, _rootFolder);
     writeMembers(writer);
 }
 
 void
 ProjectBundleWriter::write(const std::string& path) const
 {
-    ZipWriter writer(path);
+    ZipWriter writer(path, kNatronProjectMimeType, _rootFolder);
     writeMembers(writer);
 }
 
@@ -191,7 +217,20 @@ void
 ProjectBundleReader::validate()
 {
     const std::vector<ZipMember>& members = _archive.members();
-    if (members.empty() || (members.front().name != "mimetype") || (bytesText(_archive.data(members.front())) != kNatronProjectMimeType)) {
+    if (members.empty()) {
+        throw ProjectBundleError("Unrecognized or damaged project file: it is a zip archive but not a " NATRON_APPLICATION_NAME " project");
+    }
+    // The folder holding the bundle is the first member's, so a bundle renamed or re-zipped by hand
+    // keeps working.
+    const std::string& first = members.front().name;
+    if (first == kMimeTypeName) {
+        _root.clear();
+    } else if (first.size() > kMimeTypeName.size() + 1 && first.ends_with(kMimeTypeName) && first.find('/') == first.size() - kMimeTypeName.size() - 1) {
+        _root = first.substr(0, first.size() - kMimeTypeName.size());
+    } else {
+        throw ProjectBundleError("Unrecognized or damaged project file: it is a zip archive but not a " NATRON_APPLICATION_NAME " project");
+    }
+    if (bytesText(_archive.data(members.front())) != kNatronProjectMimeType) {
         throw ProjectBundleError("Unrecognized or damaged project file: it is a zip archive but not a " NATRON_APPLICATION_NAME " project");
     }
     try {
@@ -199,7 +238,7 @@ ProjectBundleReader::validate()
     } catch (const ZipError& e) {
         throw ProjectBundleError(std::string("Unrecognized or damaged project file: ") + e.what());
     }
-    const ZipMember* manifest = _archive.find(kBundleManifestMember);
+    const ZipMember* manifest = _archive.find(_root + std::string(kBundleManifestMember));
     if (!manifest) {
         throw ProjectBundleError("Unrecognized or damaged project file: manifest.yaml is missing");
     }
@@ -208,7 +247,7 @@ ProjectBundleReader::validate()
     } catch (const YamlError& e) {
         throw ProjectBundleError(e.what());
     }
-    if (!_archive.contains(kBundleProjectMember)) {
+    if (!_archive.contains(_root + std::string(kBundleProjectMember))) {
         throw ProjectBundleError("Unrecognized or damaged project file: project.yaml is missing");
     }
 }
@@ -216,7 +255,7 @@ ProjectBundleReader::validate()
 std::string_view
 ProjectBundleReader::projectYaml() const
 {
-    return bytesText(_archive.data(kBundleProjectMember));
+    return bytesText(_archive.data(_root + std::string(kBundleProjectMember)));
 }
 
 ProjectSerialization
@@ -228,7 +267,7 @@ ProjectBundleReader::readProject(YamlWarnings* warnings) const
 std::optional<std::span<const std::byte>>
 ProjectBundleReader::findMember(std::string_view path) const
 {
-    const ZipMember* member = _archive.find(path);
+    const ZipMember* member = _archive.find(_root + std::string(path));
     if (!member) {
         return std::nullopt;
     }

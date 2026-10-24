@@ -216,16 +216,24 @@ struct ZipReader::InflateCache {
     std::vector<AlignedBuffer> buffers;
 };
 
+std::string
+zipMemberNameProblem(std::string_view name)
+{
+    return memberNameProblem(name, false);
+}
+
 ZipWriter::ZipWriter(const std::string& path,
-                     std::string_view mimeType)
+                     std::string_view mimeType,
+                     std::string_view root)
     : _path(path)
+    , _root(root.empty() ? std::string() : std::string(root) + '/')
 {
     _file = std::fopen(path.c_str(), "wb");
     if (!_file) {
         throw ZipError("cannot create " + path + ": " + std::strerror(errno));
     }
     try {
-        writeMember("mimetype", std::as_bytes(std::span<const char>(mimeType.data(), mimeType.size())), false);
+        writeMember(std::string_view("mimetype"), std::as_bytes(std::span<const char>(mimeType.data(), mimeType.size())), false);
     } catch (...) {
         close();
         throw;
@@ -233,12 +241,14 @@ ZipWriter::ZipWriter(const std::string& path,
 }
 
 ZipWriter::ZipWriter(ZipOutput& output,
-                     std::string_view mimeType)
+                     std::string_view mimeType,
+                     std::string_view root)
     : _path("<output>")
+    , _root(root.empty() ? std::string() : std::string(root) + '/')
     , _output(&output)
 {
     try {
-        writeMember("mimetype", std::as_bytes(std::span<const char>(mimeType.data(), mimeType.size())), false);
+        writeMember(std::string_view("mimetype"), std::as_bytes(std::span<const char>(mimeType.data(), mimeType.size())), false);
     } catch (...) {
         close();
         throw;
@@ -293,13 +303,15 @@ ZipWriter::addMember(std::string_view name,
 }
 
 void
-ZipWriter::writeMember(std::string_view name,
+ZipWriter::writeMember(std::string_view relativeName,
                        std::span<const std::byte> data,
                        bool align)
 {
     if (!_file && !_output) {
         throw ZipError("zip archive " + _path + " is closed");
     }
+    const std::string fullName = _root + std::string(relativeName);
+    const std::string_view name = fullName;
     std::string problem = memberNameProblem(name, false);
     if (!problem.empty()) {
         throw ZipError(problem + ": \"" + std::string(name) + "\"");

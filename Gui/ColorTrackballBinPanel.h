@@ -87,6 +87,14 @@ public:
     static ColorTrackballBinPanel* instanceFor(Gui* gui);
 
     /**
+     * @brief Which open ▾ a live switch to BinTop binds when several are open: scanning the
+     * docked panels from the top of the bin down, the first panel with an open ▾ gives its
+     * global-mode target (topmost panel only), else its last-touched knob, else its first in
+     * declaration order, each only if that knob's ▾ is open. Null when no ▾ is open.
+     **/
+    static KnobGuiColor* openKnobToBind(Gui* gui);
+
+    /**
      * @brief Registers itself as gui's panel, hidden and unbound.
      **/
     explicit ColorTrackballBinPanel(Gui* gui, QWidget* parent = nullptr);

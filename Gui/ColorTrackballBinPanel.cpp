@@ -25,10 +25,14 @@
 
 #include "ColorTrackballBinPanel.h"
 
+#include <algorithm>
+#include <list>
 #include <map>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QCoreApplication>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -103,6 +107,49 @@ ColorTrackballBinPanel::instanceFor(Gui* gui)
     return bin ? bin->getColorTrackballPanel() : 0;
 }
 
+KnobGuiColor*
+ColorTrackballBinPanel::openKnobToBind(Gui* gui)
+{
+    if (!gui) {
+        return 0;
+    }
+
+    NodeSettingsPanel* topPanel = topmostNodePanel(gui);
+    ColorKnobTouchTracker* tracker = ColorKnobTouchTracker::instanceFor(gui);
+    const std::list<DockablePanel*>& panels = gui->getVisiblePanels();
+
+    for (std::list<DockablePanel*>::const_iterator it = panels.begin(); it != panels.end(); ++it) {
+        if ((*it)->isFloating()) {
+            continue;
+        }
+
+        std::vector<KnobGuiColor*> open;
+        std::vector<KnobGuiColor*> knobGuis = orderedColorKnobs(*it);
+
+        for (std::size_t i = 0; i < knobGuis.size(); ++i) {
+            if (knobGuis[i]->isAdjustPanelExpanded()) {
+                open.push_back(knobGuis[i]);
+            }
+        }
+        if (open.empty()) {
+            continue;
+        }
+
+        KnobGuiColor* preferred = (*it == topPanel) ? resolveColorTrackballTarget(gui) : 0;
+
+        if (!preferred || (std::find(open.begin(), open.end(), preferred) == open.end())) {
+            preferred = tracker ? dynamic_cast<KnobGuiColor*>(tracker->lastTouched(*it)) : 0;
+        }
+        if (!preferred || (std::find(open.begin(), open.end(), preferred) == open.end())) {
+            preferred = open.front();
+        }
+
+        return preferred;
+    }
+
+    return 0;
+} // ColorTrackballBinPanel::openKnobToBind
+
 ColorTrackballBinPanel::ColorTrackballBinPanel(Gui* gui,
                                                QWidget* parent)
     : QWidget(parent)
@@ -167,12 +214,32 @@ ColorTrackballBinPanel::ColorTrackballBinPanel(Gui* gui,
 
     // Leaving the BinTop placement hands the bound knob back to its own panel, its ▾ still
     // checked; see unbind().
+    // The bin's layout is settled before anything paints, so the node panels below do not
+    // first paint where they sat under this panel and then jump up.
     QObject::connect(ColorPanelLayoutDev::instance(), &ColorPanelLayoutDev::layoutChanged, this, [this]() {
         if (!binTopPlacement() && isBound()) {
+            QWidget* bin = parentWidget();
+            const bool holdUpdates = bin && bin->updatesEnabled();
+
+            if (holdUpdates) {
+                bin->setUpdatesEnabled(false);
+            }
             unbind();
+            if (bin) {
+                QCoreApplication::sendPostedEvents(bin, QEvent::LayoutRequest);
+                if (QLayout* binLayout = bin->layout()) {
+                    binLayout->activate();
+                }
+            }
+            if (holdUpdates) {
+                bin->setUpdatesEnabled(true);
+            }
         }
     });
 
+    // As wide as the bin whatever its contents ask for: a panel at the top of the bin must
+    // never widen it.
+    setSizePolicy(QSizePolicy::Ignored, sizePolicy().verticalPolicy());
     hide();
 }
 

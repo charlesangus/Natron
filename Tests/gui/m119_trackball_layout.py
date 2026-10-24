@@ -267,18 +267,19 @@ try:
         return None
 
     def label_column_left(label_cell):
-        """The left edge of the page grid's label column, at the label's row (labels sit right-aligned in it)."""
+        """The left edge of the page grid's label column (labels sit right-aligned in it).
+
+        Column 0 starts at the grid's contents left. cellRect() is not used: once heightForWidth has
+        run, its x leaves out the grid's left margin."""
         if label_cell is None:
             return None
         page = label_cell.parentWidget()
         grid = page.layout() if page is not None else None
         if not isinstance(grid, QGridLayout):
             return None
-        index = grid.indexOf(label_cell)
-        if index < 0:
+        if grid.indexOf(label_cell) < 0:
             return None
-        row = grid.getItemPosition(index)[0]
-        return page.mapToGlobal(grid.cellRect(row, 0).topLeft()).x()
+        return page.mapToGlobal(QPoint(grid.contentsRect().left(), 0)).x()
 
     def channel_slider_g(column):
         found = []

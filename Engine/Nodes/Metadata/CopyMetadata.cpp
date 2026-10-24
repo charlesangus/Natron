@@ -31,6 +31,7 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Metadata/MetadataKeyFilter.h"
+#include "Engine/RectD.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -76,6 +77,22 @@ CopyMetadata::route(double time,
                     ViewIdx /*view*/)
 {
     return Route::input(0, time);
+}
+
+StatusEnum
+CopyMetadata::getRegionOfDefinition(U64 /*hash*/,
+                                    double time,
+                                    const RenderScale& scale,
+                                    ViewIdx view,
+                                    RectD* rod)
+{
+    const EffectInstancePtr input = getInput(0);
+    if (!input) {
+        return eStatusReplyDefault;
+    }
+    bool isProjectFormat = false;
+
+    return input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, rod, &isProjectFormat);
 }
 
 ImageMetadata

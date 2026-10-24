@@ -400,8 +400,10 @@ private:
     // _update_illuminants().
     void refreshVisibility();
 
-    // gui_changed()'s tail: the hue and chroma of x and y, and the CCT label.
-    void showIlluminant();
+    // gui_changed()'s tail: the hue and chroma of x and y, and the CCT label. An edit of the hue or
+    // chroma keeps them as typed, as _illum_xy_callback() does; deriving them back from x and y
+    // would move them by the float round trip.
+    void showIlluminant(bool keepHueChroma = false);
 
     // _illum_xy_callback(): x, y and the temperature from the hue and chroma.
     void applyHueChroma();

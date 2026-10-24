@@ -356,9 +356,23 @@ TEST_F(NativeRawColorCalibrationTest, TheIlluminantKnobsStayInSync)
     EXPECT_FLOAT_EQ(4500.f, (float)temperature->getValue());
 }
 
-TEST_F(NativeRawColorCalibrationTest, PipeIlluminantWithNothingElseIsTheIdentity)
+// Not quite the identity: darktable adapts from the pipe's D50 xy to its D50 CAT16 LMS constants,
+// which are rounded and taken from a different D50 white, and moves a channel by up to 0.07%.
+TEST_F(NativeRawColorCalibrationTest, PipeIlluminantAdaptsFromDarktablesD50)
 {
-    expectPixels([](const RawColorMath::Vec3& in) { return in; }, 1e-6, [](const NodePtr& node) {
+    const RawColorMath::Mat3 toXyz = workingToXyzD50();
+    const RawColorMath::Mat3 fromXyz = *RawColorMath::invert(toXyz);
+    const double x = 0.34567;
+    const double y = 0.35850;
+    const RawColorMath::Vec3 illuminant = RawColorMath::apply(kXyzToCat16, { x / y, 1., (1. - x - y) / y });
+
+    expectPixels([&](const RawColorMath::Vec3& in) {
+        RawColorMath::Vec3 lms = RawColorMath::apply(kXyzToCat16, RawColorMath::apply(toXyz, in));
+        for (int c = 0; c < 3; ++c) {
+            lms[c] *= kCat16D50[c] / illuminant[c];
+        }
+
+        return RawColorMath::apply(fromXyz, RawColorMath::apply(kCat16ToXyz, lms)); }, 1e-4, [](const NodePtr& node) {
         choiceKnob(node, kRawColorCalibrationParamIlluminant)->setValueFromID("pipe", 0);
         doubleKnob(node, kRawColorCalibrationParamGamut)->setValue(0.);
         boolKnob(node, kRawColorCalibrationParamClip)->setValue(false); }, "pipe identity");

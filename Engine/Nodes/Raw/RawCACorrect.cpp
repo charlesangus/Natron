@@ -92,6 +92,7 @@ RawCACorrect::RawCACorrect(NodePtr node)
     , _message()
     , _frameMutex()
     , _frameKey(0)
+    , _messageHash(0)
     , _frame()
 {
     setSupportsRenderScaleMaybe(eSupportsNo);
@@ -181,8 +182,10 @@ RawCACorrect::resolveSettings(double time,
 }
 
 void
-RawCACorrect::postFrameMessage(const Frame& frame)
+RawCACorrect::postFrameMessage(const Frame& frame,
+                               U64 renderHash)
 {
+    _messageHash = renderHash;
     if (frame.corrected) {
         _message.withdraw(getNode());
 
@@ -203,21 +206,18 @@ RawCACorrect::isOpIdentity(double time,
     if (!settings) {
         return false;
     }
+    const U64 renderHash = getRenderHash();
+    std::lock_guard<std::mutex> lock(_frameMutex);
     if (!settings->passThrough.empty()) {
+        _messageHash = 0;
         _message.post(getNode(), eMessageTypeWarning, settings->passThrough);
 
         return true;
     }
-    std::shared_ptr<const Frame> frame;
-    {
-        std::lock_guard<std::mutex> lock(_frameMutex);
-        if (_frame && (_frameKey == RawNodeSupport::frameKey(getRenderHash(), time, view))) {
-            frame = _frame;
-        }
-    }
-    if (frame) {
-        postFrameMessage(*frame);
-    } else {
+    if (_frame && (_frameKey == RawNodeSupport::frameKey(renderHash, time, view))) {
+        postFrameMessage(*_frame, renderHash);
+    } else if (_messageHash != renderHash) {
+        _messageHash = 0;
         _message.withdraw(getNode());
     }
 
@@ -269,7 +269,8 @@ RawCACorrect::renderOp(const RenderActionArgs& args,
 
     RenderCancellation cancel(this);
     const RawKernels::ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, appPTR->getNCPUsAvailableForEffect());
-    const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
+    const U64 renderHash = getRenderHash();
+    const U64 key = RawNodeSupport::frameKey(renderHash, args.time, args.view);
 
     std::shared_ptr<const Frame> frame;
     {
@@ -290,8 +291,8 @@ RawCACorrect::renderOp(const RenderActionArgs& args,
             _frameKey = key;
         }
         frame = _frame;
+        postFrameMessage(*frame, renderHash);
     }
-    postFrameMessage(*frame);
 
     const RawNodeSupport::TopDownBuffer& mosaic = frame->mosaic;
     const RectI& roi = args.roi;

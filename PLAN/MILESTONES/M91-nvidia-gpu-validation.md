@@ -123,7 +123,7 @@ The rest of the milestone runs everything once, fixes what fails because of the 
   - verify: the findings section lists every gpu-labelled and engine suite as pass, fail or skip, on the named device, for both schedulers; holds the GlInterop path line; classifies each failure as vendor / host-capacity / not-vendor. No suite reports "no usable Vulkan device".
   - size: M
 
-- [ ] M91.P1.T5 — Check auto mode, host-import and GL interop on a real NVIDIA display
+- [x] M91.P1.T5 — Check auto mode, host-import and GL interop on a real NVIDIA display
   - files: none in code. Output goes to `.local/m91/baseline/`, findings appended to the same section.
   - approach: Run the P1.T4 fast AppImage on the host (`env -u LD_LIBRARY_PATH`, fresh config) with `NATRON_GPU=auto`, rendering `tools/bench/comps/keying_grade.ntp` headless through NatronRenderer with `NATRON_RENDER_PROFILE` on. From the log record: the "GPU compute ready" line (device, reason, host-import against staging calibration: `hostImport` true, import alignment 4096); that regions are placed on the GPU; any `incLegacyFallbacks` reasons. Run `GlInteropQt` (from P1.T4's `build/gpu-spike`) under `DISPLAY=:0 XAUTHORITY=/home/bosley/.Xauthority` and under Xvfb; record `best`, `missing` and checksum (zero-copy expected on `:0`, readback under Xvfb). If `:0` isn't available, note it and rely on the EGL GlInterop result.
   - verify: the findings section shows auto picking the RTX 3070 Ti with host-import active (or the logged reason why not), region placement in the render profile, and `GlInteropQt` best rungs on `:0` and Xvfb with byte-exact checksums (or the `missing` string).
@@ -155,6 +155,12 @@ Failures (none of them reproduces on the lavapipe CI legs):
 - `GpuResidencyTest.RegionMembersAreTimedOnTheDevice`, `Tests/GpuResidency_Test.cpp:1992`, pipelined-strips mode: kernelMs 0.945 against a member-timestamp sum of 0.877 (≈7%, against 5% allowed). Flaky (passed on one rerun, failed twice). **Vendor-specific timing**; cause unconfirmed.
 - `GpuTransferTest.PipelinedFramesTimeline`, `GpuTransfer_Test.cpp:404-405`: expected HostImport, got Staging on all frames. Failed only while host RAM was tight, then passed 3/3 standalone and in later runs. **Host-capacity (probable)**. The engine's staging fallback worked; only the strict assert tripped.
 - `Shards/CacheEquivalenceSweepTest`: stale local assets. **Not vendor**; passes with pinned assets.
+
+P1.T5 (2026-10-23, fast AppImage d338d2af1 on the host; artifacts in `.local/m91/baseline/t5/`):
+- Auto mode: NatronRenderer rendering `keying_grade.ntp` (Write path redirected to /tmp), taskgraph, frames 1-6, exit 0. `GPU compute ready on NVIDIA GeForce RTX 3070 Ti (driver 580.178.4, selected by auto: discrete, 8 GiB, over Quadro P400 (2 GiB), llvmpipe (...) (cpu)) after 456.0 ms (... host import calibration 14.1 ms, staging calibration 0.0 ms)`.
+- Placement: 36 region records (6 regions per frame), all ok, empty `fallback`, 0 retries. 78 GPU and 66 CPU node records; the CPU ones are Rectangle, Ramp, Merge and Write (no GPU support).
+- Host-import transfers: uploads 52 HostImport / 4 Staged, downloads 49 HostImport / 7 Staged. The staged ones fall in frames 1-3 across regions, and no reason is logged. Triage this in P1.T6.
+- GlInteropQt (in the NVIDIA container): on `:0` with NVIDIA GL 4.6.0 580.178.04 the path is **zero-copy**, 0.244 ms at 256x192, checksums MATCH. Under Xvfb (llvmpipe GL) it falls back to **readback-pbo** with logged blockers (no GL_EXT_semaphore(_fd), UUID mismatch), checksums MATCH. That is the expected rung.
 
 ## Phase 91.2: Vendor-specific fixes (template tasks; instantiate only what P1.T6 triggers)
 

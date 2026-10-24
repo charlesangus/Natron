@@ -109,7 +109,17 @@ struct ViewerHandoffReadback {
     std::size_t size = 0;
 };
 
+/**
+ * @brief Work on one readback, run on the global thread pool, or on the GL thread when present() needs its slot
+ * before the pool started it. It must not need the GL context, the GL thread or the ViewerHandoff.
+ **/
 using ViewerHandoffReadbackFn = std::function<void(const ViewerHandoffReadback&)>;
+
+/**
+ * @brief Called on the GL thread with the token of a completed readback, returns the work to run on it, or an empty
+ * function to drop it.
+ **/
+using ViewerHandoffClaimFn = std::function<ViewerHandoffReadbackFn(std::uint64_t token)>;
 
 /**
  * @brief Success, or a refusal whose reason completes "viewer handoff: " for
@@ -134,7 +144,10 @@ struct ViewerHandoffResult {
  * again once the context has recovered.
  *
  * Threads: rung() and prepare() are safe from any thread. Every other call, destruction included,
- * runs on the thread of the GL context, with that context current.
+ * runs on the thread of the GL context, with that context current. The work consumeCompletedReadbacks() is handed
+ * runs on the global thread pool while its slot is held: present() waits for it before producing into that slot
+ * again, and rebuilding a ring, losing the device and release() cancel it if it has not started and wait for it if
+ * it has.
  **/
 class ViewerHandoff
 {
@@ -195,14 +208,15 @@ public:
                                 const ViewerHandoffFrame& frame);
 
     /**
-     * @brief Passes \p consume each readback whose device copy has finished since the last call,
-     * without waiting for the others. A readback is lost when its ring is rebuilt or the device is.
+     * @brief Passes \p claim the token of each readback whose device copy has finished since the last
+     * call, without waiting for the others, and starts the work it returns on the global thread pool.
+     * A readback is lost when its ring is rebuilt or the device is, and so is its work if it has not
+     * started by then.
      *
-     * The texels are read in place from the slot's mapped memory, so they are valid only until
-     * \p consume returns: it copies what it keeps, and any present() or ensureCapacity() it makes
-     * is refused, so that no slot is produced into or rebuilt while it reads.
+     * The work reads the texels in place from the slot's mapped memory, which stays valid until it
+     * returns. Any present() or ensureCapacity() \p claim itself makes is refused.
      **/
-    void consumeCompletedReadbacks(const ViewerHandoffReadbackFn& consume);
+    void consumeCompletedReadbacks(const ViewerHandoffClaimFn& claim);
 
     /**
      * @brief Grows every slot to hold \p bytes, waiting for the frames they hold.
@@ -213,8 +227,8 @@ public:
     std::size_t capacity(int textureIndex) const;
 
     /**
-     * @brief Releases every GL object, device resource and pinned root. The rung is Cpu until the
-     * next create().
+     * @brief Releases every GL object, device resource and pinned root, after cancelling or waiting for
+     * the readback work still pending. The rung is Cpu until the next create().
      **/
     void release();
 

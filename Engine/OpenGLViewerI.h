@@ -283,11 +283,11 @@ public:
     }
 
     /**
-     * @brief Passes \p consume the host copies of the display buffers that transferDeviceImageToGPU() was asked
-     * for through ViewerHandoffParams::readbackToken and the device has finished since the last call, each
-     * valid only until \p consume returns, as ViewerHandoff::consumeCompletedReadbacks() lends them.
+     * @brief Passes \p claim the token of each host copy of a display buffer that transferDeviceImageToGPU() was
+     * asked for through ViewerHandoffParams::readbackToken and the device has finished since the last call, and runs
+     * the work it returns on the global thread pool, as ViewerHandoff::consumeCompletedReadbacks() does.
      **/
-    virtual void consumeCompletedHandoffReadbacks(const ViewerHandoffReadbackFn& /*consume*/)
+    virtual void consumeCompletedHandoffReadbacks(const ViewerHandoffClaimFn& /*claim*/)
     {
     }
 #endif

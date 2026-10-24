@@ -32,14 +32,17 @@
 #include <atomic>
 #include <cassert>
 #include <cctype>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <mutex>
 #include <optional>
 #include <vector>
 
 #include <QtCore/QDebug>
 #include <QtCore/QString>
+#include <QtCore/QThreadPool>
 
 #include "Engine/Gpu/GlInterop.h"
 #include "Engine/Gpu/GpuBuffer.h"
@@ -53,6 +56,10 @@ namespace {
 
 // Small enough to cost nothing, only to find out whether a rung's interop can be built at all.
 const VkDeviceSize kProbeCapacity = 4096;
+
+// Ahead of the render tasks and their fork-join helpers, since present() blocks the GL thread on a fill that has not
+// finished once the ring comes round to its slot.
+const int kFillRunnablePriority = 8;
 
 // GpuKernel's descriptor pools hold 1024 sets; on a device without push descriptors they are
 // recycled once no frame is in flight, and waited for when frames never stop overlapping.
@@ -140,10 +147,115 @@ struct OwnedReadback {
     std::vector<unsigned char> bytes;
 };
 
+// Work on a readback, run once: by a pool thread, or by the first thread to wait for it before the pool started it,
+// so that waiting never depends on a free pool thread.
+class FillJob {
+public:
+    explicit FillJob(std::function<void()> work)
+        : _work(std::move(work))
+    {
+    }
+
+    static void start(const std::shared_ptr<FillJob>& job)
+    {
+        const auto runnable = [job]() {
+            if (job->take()) {
+                job->run();
+            }
+        };
+        QThreadPool::globalInstance()->start(runnable, kFillRunnablePriority);
+    }
+
+    bool finished() const
+    {
+        std::lock_guard<std::mutex> k(_mutex);
+
+        return _state == State::Finished;
+    }
+
+    // Runs the work here if it has not started, else blocks until it has finished.
+    void wait()
+    {
+        if (take()) {
+            run();
+
+            return;
+        }
+        std::unique_lock<std::mutex> k(_mutex);
+        _finished.wait(k, [this]() { return _state == State::Finished; });
+    }
+
+    // Drops the work if it has not started, else blocks until it has finished.
+    void cancel()
+    {
+        std::function<void()> dropped;
+        std::unique_lock<std::mutex> k(_mutex);
+        if (_state == State::Queued) {
+            _state = State::Finished;
+            dropped.swap(_work);
+            k.unlock();
+            _finished.notify_all();
+
+            return;
+        }
+        _finished.wait(k, [this]() { return _state == State::Finished; });
+    }
+
+private:
+    enum class State {
+        Queued,
+        Running,
+        Finished,
+    };
+
+    bool take()
+    {
+        std::lock_guard<std::mutex> k(_mutex);
+        if (_state != State::Queued) {
+            return false;
+        }
+        _state = State::Running;
+
+        return true;
+    }
+
+    void run()
+    {
+        std::function<void()> work;
+        {
+            std::lock_guard<std::mutex> k(_mutex);
+            work.swap(_work);
+        }
+        // Thrown on a pool thread, it would end the process.
+        try {
+            work();
+        } catch (const std::exception& e) {
+            qWarning().noquote() << "Viewer hand-off readback work failed:" << e.what();
+        } catch (...) {
+            qWarning().noquote() << "Viewer hand-off readback work failed";
+        }
+        work = nullptr;
+        {
+            std::lock_guard<std::mutex> k(_mutex);
+            _state = State::Finished;
+        }
+        _finished.notify_all();
+    }
+
+    mutable std::mutex _mutex;
+    std::condition_variable _finished;
+    State _state = State::Queued;
+    std::function<void()> _work;
+};
+
+using FillJobPtr = std::shared_ptr<FillJob>;
+
 struct Ring {
     std::unique_ptr<gpu::GlInterop> interop;
     std::array<GpuDeviceImagePtr, gpu::GlInterop::kSlots> pinned;
     std::array<PendingReadback, gpu::GlInterop::kSlots> readbacks;
+    // The work reading the slot's host copy in place; the slot is not produced into or freed until it has finished.
+    std::array<FillJobPtr, gpu::GlInterop::kSlots> fills;
 };
 
 } // namespace
@@ -188,8 +300,10 @@ struct ViewerHandoff::Imp {
 
     std::array<Ring, kTextureCount> rings;
     std::vector<OwnedReadback> owned;
-    // Set while consumeCompletedReadbacks() lends slot memory, which no slot may be produced into or rebuilt under.
-    bool lending = false;
+    // The work on readbacks copied out of their slots, which holds no slot.
+    std::vector<FillJobPtr> detachedFills;
+    // Set while consumeCompletedReadbacks() calls its claim, which must not change the rings it walks.
+    bool claiming = false;
     std::size_t wantedCapacity = 0;
     unsigned dispatchesSinceRelease = 0;
 
@@ -244,9 +358,33 @@ struct ViewerHandoff::Imp {
         }
     }
 
-    // GlInterop's destructor waits for its in-flight frames, so the pins can go after it.
+    void waitFill(Ring& ring,
+                  int slot)
+    {
+        if (ring.fills[slot]) {
+            ring.fills[slot]->wait();
+            ring.fills[slot].reset();
+        }
+    }
+
+    void cancelFills(std::vector<FillJobPtr>& jobs)
+    {
+        for (const FillJobPtr& job : jobs) {
+            job->cancel();
+        }
+        jobs.clear();
+    }
+
+    // GlInterop's destructor waits for its in-flight frames, so the pins can go after it. The fills go first, since
+    // the destructor unmaps the memory they read.
     void destroyRing(Ring& ring)
     {
+        for (FillJobPtr& job : ring.fills) {
+            if (job) {
+                job->cancel();
+                job.reset();
+            }
+        }
         ring.interop.reset();
         ring.readbacks = {};
         for (int i = 0; i < gpu::GlInterop::kSlots; ++i) {
@@ -275,23 +413,25 @@ struct ViewerHandoff::Imp {
         rung.store(ViewerHandoffRung::Cpu, std::memory_order_release);
         old.reset();
         owned.clear();
+        cancelFills(detachedFills);
         wantedCapacity = 0;
         if (lost) {
             buildFailed = false;
         }
     }
 
-    // Reads the host copy of a slot once the device has written it, lending it in place to \p consume, or, when
-    // \p consume is null, waiting for it and copying it to `owned`. A copy that cannot be read is dropped.
+    // Reads the host copy of a slot once the device has written it, starting the work \p claim returns for it on the
+    // slot in place, or, when \p claim is null, waiting for it and copying it to `owned`. A copy that cannot be read
+    // is dropped.
     void harvest(Ring& ring,
                  int slot,
-                 const ViewerHandoffReadbackFn* consume)
+                 const ViewerHandoffClaimFn* claim)
     {
         PendingReadback& pending = ring.readbacks[slot];
         if (!pending.token || !ring.interop) {
             return;
         }
-        if (!consume && !ring.interop->waitProduced(slot)) {
+        if (!claim && !ring.interop->waitProduced(slot)) {
             pending = PendingReadback();
 
             return;
@@ -307,13 +447,19 @@ struct ViewerHandoff::Imp {
         if (!s) {
             return;
         }
-        if (consume) {
+        if (claim) {
+            ViewerHandoffReadbackFn work = callClaim(*claim, taken.token);
+            if (!work) {
+                return;
+            }
             ViewerHandoffReadback lent;
             lent.token = taken.token;
             lent.frame = taken.frame;
             lent.data = data;
             lent.size = static_cast<std::size_t>(size);
-            (*consume)(lent);
+            assert(!ring.fills[slot]);
+            ring.fills[slot] = std::make_shared<FillJob>([work, lent]() { work(lent); });
+            FillJob::start(ring.fills[slot]);
         } else {
             OwnedReadback copy;
             copy.token = taken.token;
@@ -321,6 +467,19 @@ struct ViewerHandoff::Imp {
             copy.bytes.assign(data, data + size);
             owned.push_back(std::move(copy));
         }
+    }
+
+    ViewerHandoffReadbackFn callClaim(const ViewerHandoffClaimFn& claim,
+                                      std::uint64_t token)
+    {
+        claiming = true;
+        struct EndClaiming {
+            bool* claiming;
+
+            ~EndClaiming() { *claiming = false; }
+        } endClaiming { &claiming };
+
+        return claim(token);
     }
 
     // Unpins the root of every slot the device is done with. Returns whether a frame is still in
@@ -579,7 +738,7 @@ ViewerHandoff::maintain()
     if (!_imp->created) {
         return false;
     }
-    if (_imp->lending) {
+    if (_imp->claiming) {
         return bool(_imp->currentDevice());
     }
     Imp::NoteRungOnExit note { _imp.get() };
@@ -634,8 +793,8 @@ ViewerHandoff::present(int textureIndex,
                        unsigned int glTexture,
                        const ViewerHandoffFrame& frame)
 {
-    if (_imp->lending) {
-        return refuse("present() while readbacks are lent");
+    if (_imp->claiming) {
+        return refuse("present() while a readback is claimed");
     }
     if (!maintain()) {
         return refuse("rung cpu: " + rungReason());
@@ -704,8 +863,10 @@ ViewerHandoff::present(int textureIndex,
     processParams.gamma = params.gamma;
     processParams.displayProcessor = params.displayProcessor;
 
-    // The slot produce() is about to overwrite may still hold a host copy nobody has collected.
+    // The slot produce() is about to overwrite may still hold a host copy that a fill is reading or that nobody has
+    // collected.
     if (const int next = ring.interop->nextSlot(); next >= 0) {
+        _imp->waitFill(ring, next);
         _imp->harvest(ring, next, nullptr);
     }
 
@@ -760,31 +921,36 @@ ViewerHandoff::present(int textureIndex,
 }
 
 void
-ViewerHandoff::consumeCompletedReadbacks(const ViewerHandoffReadbackFn& consume)
+ViewerHandoff::consumeCompletedReadbacks(const ViewerHandoffClaimFn& claim)
 {
-    if (_imp->lending) {
+    if (_imp->claiming) {
         return;
     }
-    _imp->lending = true;
-    struct EndLending {
-        bool* lending;
-
-        ~EndLending() { *lending = false; }
-    } endLending { &_imp->lending };
+    std::vector<FillJobPtr>& detached = _imp->detachedFills;
+    detached.erase(std::remove_if(detached.begin(), detached.end(), [](const FillJobPtr& job) { return job->finished(); }),
+                   detached.end());
 
     std::vector<OwnedReadback> owned;
     owned.swap(_imp->owned);
-    for (const OwnedReadback& o : owned) {
-        ViewerHandoffReadback lent;
-        lent.token = o.token;
-        lent.frame = o.frame;
-        lent.data = o.bytes.data();
-        lent.size = o.bytes.size();
-        consume(lent);
+    for (OwnedReadback& o : owned) {
+        ViewerHandoffReadbackFn work = _imp->callClaim(claim, o.token);
+        if (!work) {
+            continue;
+        }
+        std::shared_ptr<const OwnedReadback> copy = std::make_shared<const OwnedReadback>(std::move(o));
+        detached.push_back(std::make_shared<FillJob>([work, copy]() {
+            ViewerHandoffReadback lent;
+            lent.token = copy->token;
+            lent.frame = copy->frame;
+            lent.data = copy->bytes.data();
+            lent.size = copy->bytes.size();
+            work(lent);
+        }));
+        FillJob::start(detached.back());
     }
     for (Ring& ring : _imp->rings) {
         for (int i = 0; i < gpu::GlInterop::kSlots; ++i) {
-            _imp->harvest(ring, i, &consume);
+            _imp->harvest(ring, i, &claim);
         }
     }
 }
@@ -792,8 +958,8 @@ ViewerHandoff::consumeCompletedReadbacks(const ViewerHandoffReadbackFn& consume)
 ViewerHandoffResult
 ViewerHandoff::ensureCapacity(std::size_t bytes)
 {
-    if (_imp->lending) {
-        return refuse("ensureCapacity() while readbacks are lent");
+    if (_imp->claiming) {
+        return refuse("ensureCapacity() while a readback is claimed");
     }
     if (!maintain()) {
         return refuse("rung cpu: " + rungReason());
@@ -818,7 +984,7 @@ ViewerHandoff::capacity(int textureIndex) const
 void
 ViewerHandoff::release()
 {
-    assert(!_imp->lending);
+    assert(!_imp->claiming);
     _imp->drop("released", false);
     _imp->created = false;
     _imp->buildFailed = false;

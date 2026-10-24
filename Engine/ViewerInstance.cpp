@@ -230,6 +230,9 @@ ViewerInstance::~ViewerInstance()
     //    QMutexLocker locker(&_imp->updateViewerMutex);
     //    assert(!_imp->updateViewerRunning);
     //}
+#ifdef NATRON_HAVE_GPU
+    _imp->cacheFillGate->close();
+#endif
     if (_imp->uiContext) {
         _imp->uiContext->removeGUI();
     }
@@ -3222,14 +3225,21 @@ ViewerInstance::ViewerInstancePrivate::pollCacheReadbacks()
 
         return;
     }
-    uiContext->consumeCompletedHandoffReadbacks([this](const ViewerHandoffReadback& rb) {
+    const std::shared_ptr<CacheFillGate> gate = cacheFillGate;
+    uiContext->consumeCompletedHandoffReadbacks([this, &gate](std::uint64_t token) -> ViewerHandoffReadbackFn {
         for (std::list<PendingCacheFill>::iterator it = pendingCacheFills.begin(); it != pendingCacheFills.end(); ++it) {
-            if (it->token == rb.token) {
-                insertCacheTiles(*it, rb);
-                pendingCacheFills.erase(it);
-                break;
+            if (it->token != token) {
+                continue;
             }
+            std::shared_ptr<const PendingCacheFill> fill = std::make_shared<const PendingCacheFill>(std::move(*it));
+            pendingCacheFills.erase(it);
+
+            return [this, gate, fill](const ViewerHandoffReadback& rb) {
+                gate->runIfOpen([&]() { insertCacheTiles(*fill, rb); });
+            };
         }
+
+        return ViewerHandoffReadbackFn();
     });
     for (std::list<PendingCacheFill>::iterator it = pendingCacheFills.begin(); it != pendingCacheFills.end();) {
         if (++it->polls > kMaxCacheReadbackPolls) {

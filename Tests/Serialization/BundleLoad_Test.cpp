@@ -616,7 +616,7 @@ TEST_F(BundleLoadTest, TheOldXmlFormatsAreRefusedWithTheOldFormatMessage)
 
     std::string output;
     EXPECT_FALSE(loadFile(QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/old-format.ntp"), &output));
-    EXPECT_NE(std::string::npos, output.find("old XML .ntp format")) << output;
+    EXPECT_NE(std::string::npos, output.find("Legacy .ntp projects are not supported")) << output;
 
     // Presets and layouts are read only by the GUI (NodeSettingsPanel and Gui::importLayout),
     // which this binary does not link: what is checked here is the shared test those readers
@@ -639,7 +639,7 @@ TEST_F(BundleLoadTest, TheOldXmlFormatsAreRefusedWithTheOldFormatMessage)
         EXPECT_THROW(Serialization::decodeGuiLayoutYaml(oldFile.text), Serialization::YamlError);
 
         EXPECT_FALSE(loadFile(path, &output));
-        EXPECT_NE(std::string::npos, output.find("old XML .ntp format")) << output;
+        EXPECT_NE(std::string::npos, output.find("Legacy .ntp projects are not supported")) << output;
     }
 }
 
@@ -651,5 +651,5 @@ TEST_F(BundleLoadTest, AGarbageFileIsUnrecognized)
     for (int i = 0; i < 256; ++i) {
         garbage.push_back((char)((i * 37 + 11) & 0xff));
     }
-    expectRefused(tmp, QString::fromUtf8("garbage.ntpz"), garbage, "Unrecognized");
+    expectRefused(tmp, QString::fromUtf8("garbage.ntpz"), garbage, "garbage.ntpz is not a " NATRON_APPLICATION_NAME " project");
 }

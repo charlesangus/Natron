@@ -532,8 +532,15 @@ TEST_F(RotoTrackerBundleTest, RotoAndTrackerSurviveSaveAndLoad)
     ASSERT_TRUE(saveAs(tmp, QString::fromUtf8("roto-tracker.ntpz"), &firstPath));
     {
         const Serialization::ZipReader archive(firstPath.toStdString());
-        const std::string rotoBlobs = "blobs/" + rotoPaintName + "/";
-        const std::string trackBlobs = "blobs/" + trackerName + "/";
+        std::string root;
+        for (const Serialization::ZipMember& member : archive.members()) {
+            if (member.name.ends_with("/project.yaml")) {
+                root = member.name.substr(0, member.name.size() - std::string("project.yaml").size());
+            }
+        }
+        ASSERT_FALSE(root.empty()) << "the saved bundle has no project.yaml under a folder";
+        const std::string rotoBlobs = root + "blobs/" + rotoPaintName + "/";
+        const std::string trackBlobs = root + "blobs/" + trackerName + "/";
         int strokeBlobCount = 0, bezierBlobCount = 0, trackBlobCount = 0;
         for (const Serialization::ZipMember& member : archive.members()) {
             if (member.name.starts_with(rotoBlobs) && member.name.ends_with(".stroke.bin")) {

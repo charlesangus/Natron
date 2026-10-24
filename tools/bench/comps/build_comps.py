@@ -46,13 +46,13 @@ def update_manifest(data, members):
     return text.encode("utf-8")
 
 
-def write_bundle(path, members):
-    """Stored zip laid out like Serialization/Bundle/ZipStore.cpp: every member but mimetype has its data on a 64-byte boundary."""
+def write_bundle(path, members, root):
+    """Stored zip laid out like Serialization/Bundle/ZipStore.cpp: every member sits under root (the file name without .ntpz) and every member but mimetype has its data on a 64-byte boundary."""
     out = bytearray()
     central = bytearray()
     dos_time, dos_date = 0, (1 << 5) | 1
     for index, (name, data) in enumerate(members):
-        raw = name.encode("utf-8")
+        raw = (root + "/" + name).encode("utf-8")
         flags = 0 if name.isascii() else 1 << 11
         extra = b""
         if index > 0:
@@ -211,11 +211,11 @@ def finish(comp, root):
     app.saveProject(path)
     # The saved Project variable is the directory at save time; Natron resets it on load.
     with zipfile.ZipFile(path) as src:
-        members = [(info.filename, src.read(info.filename)) for info in src.infolist()]
+        members = [(info.filename.split("/", 1)[1], src.read(info.filename)) for info in src.infolist() if not info.is_dir()]
     members = [(name, rewrite_project(data) if name == "project.yaml" else data) for name, data in members]
     members = [(name, update_manifest(data, members) if name == "manifest.yaml" else data) for name, data in members]
     repacked = path + ".repack"
-    write_bundle(repacked, members)
+    write_bundle(repacked, members, comp)
     os.replace(repacked, path)
     for leftover in (path + ".lock", path + ".~1~"):
         if os.path.exists(leftover):

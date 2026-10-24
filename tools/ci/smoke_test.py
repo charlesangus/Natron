@@ -800,8 +800,8 @@ def _write_time_offset_fixture_copy(dir_path, output_dir):
     # fixture to a zero offset.
     # tools/ci/regen_read_time_offset.py regenerates the fixture.
     #
-    # The token is in project.yaml. Natron reads a bundle repacked stored
-    # with the mimetype member leading; only the member alignment is lost.
+    # The token is in project.yaml. Natron reads any repacked zip; only the
+    # member alignment is lost.
     copy_path = os.path.join(dir_path, "read-time-offset.ntpz")
     with zipfile.ZipFile(fixture_path) as src, \
             zipfile.ZipFile(copy_path, "w", zipfile.ZIP_STORED) as dst:
@@ -920,7 +920,7 @@ def _call_capturing_native_output(func):
 
 def check_project_bundle_round_trip():
     """app.saveProject() writes a .ntpz bundle that app.loadProject() reads
-    back, and app.loadProject() refuses a project in the old XML format."""
+    back, and app.loadProject() refuses a project in the legacy XML format."""
     tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-ntpz-")
     path = os.path.join(tmpdir, "round-trip.ntpz")
 
@@ -944,7 +944,8 @@ def check_project_bundle_round_trip():
                              "archive there" % (path,))
     with zipfile.ZipFile(path) as bundle:
         members = bundle.namelist()
-    if members[:3] != ["mimetype", "manifest.yaml", "project.yaml"]:
+    if members[:3] != ["round-trip/mimetype", "round-trip/manifest.yaml",
+                       "round-trip/project.yaml"]:
         raise AssertionError("%r is not laid out as a project bundle: %r"
                              % (path, members))
     _mark("[smoke] app.saveProject() wrote the bundle %r: %r" % (path, members))
@@ -977,12 +978,12 @@ def check_project_bundle_round_trip():
         lambda: app.loadProject(old_format))
     if result is not None:
         raise AssertionError("app.loadProject(%r) loaded a project in the "
-                             "old XML format" % (old_format,))
-    if "old XML .ntp format" not in output:
+                             "legacy XML format" % (old_format,))
+    if "Legacy .ntp projects are not supported" not in output:
         raise AssertionError("app.loadProject(%r) returned None without the "
-                             "old-format message; it printed:\n%s"
+                             "legacy-format message; it printed:\n%s"
                              % (old_format, output))
-    _mark("[smoke] OK: app.loadProject() refused the old XML format: %s"
+    _mark("[smoke] OK: app.loadProject() refused the legacy XML format: %s"
           % (output.strip().splitlines()[-1],))
 
 

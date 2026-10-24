@@ -354,6 +354,9 @@ ProjectBundleReader::readManifest()
     _hasManifest = true;
     _warnings.insert(_warnings.end(), decodeWarnings.begin(), decodeWarnings.end());
 
+    // A blob that is listed but absent is reported once, when the item that needs it is read,
+    // so it is not repeated here as a stale manifest.
+    auto isBlob = [](const std::string& name) { return name.starts_with("blobs/"); };
     std::vector<std::string> mismatches;
     for (const BundleManifestMember& listed : _manifest.members) {
         const std::string name = _root + listed.name;
@@ -362,7 +365,9 @@ ProjectBundleReader::readManifest()
         if (_directory) {
             const std::optional<std::span<const std::byte>> data = _directory->findMember(name);
             if (!data) {
-                mismatches.push_back(listed.name + " is missing");
+                if (!isBlob(listed.name)) {
+                    mismatches.push_back(listed.name + " is missing");
+                }
                 continue;
             }
             size = static_cast<std::uint32_t>(std::min<std::size_t>(data->size(), UINT32_MAX));
@@ -370,7 +375,9 @@ ProjectBundleReader::readManifest()
         } else {
             const ZipMember* member = _archive->find(name);
             if (!member) {
-                mismatches.push_back(listed.name + " is missing");
+                if (!isBlob(listed.name)) {
+                    mismatches.push_back(listed.name + " is missing");
+                }
                 continue;
             }
             size = member->size;

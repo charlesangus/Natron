@@ -34,6 +34,7 @@
 #include <utility>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h" // PythonGILUnlocker
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
@@ -3558,6 +3559,10 @@ ButtonParam::trigger()
     if (!knob) {
         return;
     }
+    // A Write's render button saves the project for the render process, and that save may wait
+    // for an auto-save whose save callback needs the Python lock.
+    PythonGILUnlocker pgl;
+
     knob->trigger();
 }
 

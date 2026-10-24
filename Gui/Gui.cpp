@@ -218,6 +218,12 @@ Gui::abortProject(bool quitApp,
 {
     GuiAppInstancePtr app = getApp();
 
+    // Reached from the event loop of a save waiting on the main thread, closing would destroy
+    // the project under that save.
+    if (app && app->getProject()->isSavingOnMainThread()) {
+        return false;
+    }
+
     // stop viewers before anything else
     std::list<ViewerTab*> viewers = getViewersList();
     for (std::list<ViewerTab*>::iterator it = viewers.begin(); it != viewers.end(); ++it) {
@@ -299,6 +305,17 @@ Gui::closeEvent(QCloseEvent* e)
     GuiAppInstancePtr app = getApp();
     if ( app && app->isClosing() ) {
         e->ignore();
+    } else if (app && app->getProject()->isSavingOnMainThread()) {
+        // The window manager asked while a save waits on the main thread; closing now would
+        // destroy the project under it, and dropping the request would leave the user's close
+        // unanswered.
+        e->ignore();
+        if (!_imp->closeAfterSave) {
+            _imp->closeAfterSave = true;
+            QObject::connect(app->getProject().get(), &Project::mainThreadSavesEnded, this, [this]() {
+                _imp->closeAfterSave = false;
+                close(); }, Qt::ConnectionType(Qt::QueuedConnection | Qt::SingleShotConnection));
+        }
     } else {
         if ( !abortProject(true, true, true) ) {
             e->ignore();

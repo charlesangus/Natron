@@ -133,6 +133,7 @@ public:
     QThread* savingThread; //< the thread running the save while isSavingProject
     QWaitCondition savingFinishedCond; //< woken when isSavingProject goes back to false
     int savesWaiting; //< saves waiting for the running one, see Project::saveProject_imp
+    int mainThreadSaves; //< main-thread saveProject_imp calls waiting or saving, main thread only
     std::shared_ptr<QTimer> autoSaveTimer;
     std::list<std::shared_ptr<QFutureWatcher<void> > > autoSaveFutures;
     mutable QMutex projectClosingMutex;

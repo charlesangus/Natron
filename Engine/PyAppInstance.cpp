@@ -467,6 +467,10 @@ App::loadProject(const QString& filename)
 bool
 App::resetProject()
 {
+    // Resetting may save the project first, and that save may wait for an auto-save whose save
+    // callback needs the Python lock.
+    PythonGILUnlocker pgl;
+
     return getInternalApp()->resetProject();
 }
 
@@ -474,6 +478,10 @@ App::resetProject()
 bool
 App::closeProject()
 {
+    // Closing may save the project first, and that save may wait for an auto-save whose save
+    // callback needs the Python lock.
+    PythonGILUnlocker pgl;
+
     return getInternalApp()->closeProject();
 }
 

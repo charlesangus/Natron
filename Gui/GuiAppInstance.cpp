@@ -307,7 +307,11 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
     /// Create auto-save dir if it does not exists
     QDir dir = Project::autoSavesDir();
     dir.mkpath( QString::fromUtf8(".") );
-
+    if (getAppID() == 0) {
+        // Render saves of renders that never started or never loaded them, left by a Natron that
+        // quit or crashed.
+        Project::removeStaleRenderSaves();
+    }
 
     if (getAppID() == 0) {
         QString missingOpenGLError;

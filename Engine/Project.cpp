@@ -30,7 +30,6 @@
 #include <cassert>
 #include <cerrno> // errno
 #include <cstdlib> // strtoul
-#include <cstring> // strerror
 #include <fstream>
 #include <functional>
 #include <ios>
@@ -64,6 +63,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHostInfo>
+#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QTextStream>
@@ -692,8 +692,10 @@ Project::loadProjectInternal(const QString& path,
         Q_EMIT projectNameChanged(path + name, false);
     }
 
-    ///Try to take the project lock by creating a lock file
-    if (!isAutoSave) {
+    /// Try to take the project lock by creating a lock file
+    // A render save is this process's own copy, removed once loaded: a lock beside it would
+    // outlive it and guard nothing.
+    if (!isAutoSave && !isRenderSaveFile(filePath)) {
         QString lockFilePath = getLockAbsoluteFilePath();
         if ( !QFile::exists(lockFilePath) ) {
             createLockFile();
@@ -736,6 +738,30 @@ Project::saveProject_imp(const QString & path,
         }
     }
 
+    const bool onMainThread = qApp && (QThread::currentThread() == qApp->thread());
+    // The events handled while this call waits or saves may close the app, which would otherwise
+    // release the last reference to the project under it.
+    const ProjectPtr self = weak_from_this().lock();
+    struct MainThreadSaveScope {
+        Project* project;
+
+        explicit MainThreadSaveScope(Project* p)
+            : project(p)
+        {
+            if (project) {
+                ++project->_imp->mainThreadSaves;
+            }
+        }
+
+        ~MainThreadSaveScope()
+        {
+            if (project && (--project->_imp->mainThreadSaves == 0)) {
+                Q_EMIT project->mainThreadSavesEnded();
+            }
+        }
+    };
+    const MainThreadSaveScope mainThreadSave(onMainThread ? this : 0);
+
     // A periodic auto-save that finds a save running has nothing to add to it. Any other save was
     // asked for by the user, a script or a render, and dropping it would lose work or start a
     // render without its project, so it waits for the running save instead.
@@ -750,7 +776,6 @@ Project::saveProject_imp(const QString & path,
                 return false;
             }
             ++_imp->savesWaiting;
-            const bool onMainThread = qApp && (QThread::currentThread() == qApp->thread());
             std::unique_ptr<QEventLoop> loop;
             if (onMainThread) {
                 // Connected before the lock is released, so the end of the running save, which
@@ -763,8 +788,11 @@ Project::saveProject_imp(const QString & path,
             if (onMainThread) {
                 l.unlock();
                 // Blocking the main thread could deadlock a save that needs it, and the window
-                // would stop repainting. User input stays queued so nothing can be edited or
-                // closed under the save.
+                // would stop repainting. User input stays queued so nothing can be edited under
+                // the save. A close asked for by the window manager or a script is not user
+                // input: what would close or reset the project refuses while
+                // isSavingOnMainThread(). deleteLater() calls made outside this loop wait until
+                // it returns.
                 loop->exec(QEventLoop::ExcludeUserInputEvents);
                 l.relock();
             } else {
@@ -778,6 +806,7 @@ Project::saveProject_imp(const QString & path,
 
     QString ret;
     bool saved = false;
+    std::string error;
 
     try {
         if (!autoS) {
@@ -801,9 +830,8 @@ Project::saveProject_imp(const QString & path,
         }
         saved = true;
     } catch (const std::exception & e) {
-        if (!autoS) {
-            Dialogs::errorDialog( tr("Save").toStdString(), e.what() );
-        } else {
+        error = e.what();
+        if (autoS) {
             qDebug() << "Save failure: " << e.what();
         }
     }
@@ -816,6 +844,12 @@ Project::saveProject_imp(const QString & path,
     }
     Q_EMIT saveFinished();
 
+    // Shown once this save no longer counts as running: a save the dialog's event loop lets in,
+    // such as a render's, would otherwise be refused as re-entering it.
+    if (!saved && !autoS) {
+        Dialogs::errorDialog(tr("Save").toStdString(), error);
+    }
+
     ///Save caches ToC
     appPTR->saveCaches();
 
@@ -827,6 +861,22 @@ Project::saveProject_imp(const QString & path,
     // the caller discard work that never reached the disk.
     return saved;
 } // Project::saveProject_imp
+
+bool
+Project::isSavingOnMainThread() const
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    return _imp->mainThreadSaves > 0;
+}
+
+bool
+Project::isSavingOnCurrentThread() const
+{
+    QMutexLocker l(&_imp->isSavingProjectMutex);
+
+    return _imp->isSavingProject && (_imp->savingThread == QThread::currentThread());
+}
 
 static QStringList
 findBackups(const QString & filePath)
@@ -1106,11 +1156,15 @@ Project::writeProjectFileAtomically(const QString& filePath,
     // The new contents are already complete on disk, so failing here does not fail the save.
     const QByteArray dirPath = QFile::encodeName(QFileInfo(filePath).absolutePath());
     const int dirFd = ::open(dirPath.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if ((dirFd == -1) || (::fsync(dirFd) != 0)) {
-        qWarning() << "Could not sync the directory of" << filePath << ":" << strerror(errno);
+    int syncError = (dirFd == -1) ? errno : 0;
+    if ((dirFd != -1) && (::fsync(dirFd) != 0)) {
+        syncError = errno;
     }
     if (dirFd != -1) {
         ::close(dirFd);
+    }
+    if (syncError != 0) {
+        qWarning() << "Could not sync the directory of" << filePath << ":" << qt_error_string(syncError);
     }
 }
 
@@ -1262,17 +1316,68 @@ Project::autoSaveProjectNameLength(const QString& fileName)
     return suffixPos + ntpExt.size();
 }
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// Drawn once per process. A process id alone does not tell apart two processes in different pid
+// namespaces that share the auto-save folder, as containers sharing a home folder do.
+const QString&
+renderSaveProcessToken()
+{
+    static const QString token = QString::fromUtf8("%1").arg(QRandomGenerator::system()->generate(), 8, 16, QLatin1Char('0'));
+
+    return token;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
 QString
 Project::makeRenderSaveFileName(int appID)
 {
     static std::atomic<unsigned long long> renderSaveCount(0);
 
-    // The process id keeps two Natron processes apart, and clearAutoSavesDir() reads it back.
-    return QString::fromUtf8("RENDER_SAVE_%1_%2_%3.%4")
+    // removeStaleRenderSaves() reads the process id and token back.
+    return QString::fromUtf8("RENDER_SAVE_%1_%2_%3_%4.%5")
         .arg(QCoreApplication::applicationPid())
+        .arg(renderSaveProcessToken())
         .arg(appID)
         .arg(++renderSaveCount)
         .arg(QString::fromUtf8(NATRON_PROJECT_FILE_EXT));
+}
+
+qint64
+Project::renderSaveGraceSeconds()
+{
+    return 10 * 60;
+}
+
+void
+Project::removeStaleRenderSaves()
+{
+    const QDir savesDir(autoSavesDir());
+    const QStringList entries = savesDir.entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot);
+    static const QRegularExpression renderSaveOwner(QString::fromUtf8("^RENDER_SAVE_(\\d+)_([0-9a-f]{8})_"));
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+
+    for (const QString& entry : entries) {
+        if (!entry.startsWith(QString::fromUtf8("RENDER_SAVE"))) {
+            continue;
+        }
+        const QRegularExpressionMatch owner = renderSaveOwner.match(entry);
+        if (owner.hasMatch()) {
+            if (owner.captured(2) == renderSaveProcessToken()) {
+                continue;
+            }
+            const pid_t pid = (pid_t)owner.captured(1).toLongLong();
+            if ((pid > 0) && ((::kill(pid, 0) == 0) || (errno == EPERM))) {
+                continue;
+            }
+        }
+        const QString filePath = savesDir.filePath(entry);
+        if (QFileInfo(filePath).lastModified().toUTC().secsTo(now) < renderSaveGraceSeconds()) {
+            continue;
+        }
+        QFile::remove(filePath);
+    }
 }
 
 bool
@@ -2933,20 +3038,11 @@ Project::clearAutoSavesDir()
     QDir savesDir( autoSavesDir() );
     QStringList entries = savesDir.entryList();
 
-    // RENDER_SAVE_<pid>_...: a render process of a running Natron may not have loaded it yet.
-    static const QRegularExpression renderSaveOwner(QString::fromUtf8("^RENDER_SAVE_(\\d+)_"));
+    removeStaleRenderSaves();
 
     Q_FOREACH (const QString& entry, entries) {
-        if ( entry.contains( QString::fromUtf8("RENDER_SAVE") ) ) {
-            const QRegularExpressionMatch owner = renderSaveOwner.match(entry);
-            bool ownerRuns = false;
-            if (owner.hasMatch()) {
-                const pid_t pid = (pid_t)owner.captured(1).toLongLong();
-                ownerRuns = (pid > 0) && ((::kill(pid, 0) == 0) || (errno == EPERM));
-            }
-            if (!ownerRuns) {
-                QFile::remove(savesDir.filePath(entry));
-            }
+        // A render process of a running Natron may not have loaded its file yet.
+        if (entry.startsWith(QString::fromUtf8("RENDER_SAVE"))) {
             continue;
         }
 

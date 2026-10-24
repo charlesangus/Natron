@@ -166,7 +166,7 @@ P1.T5 (2026-10-23, fast AppImage d338d2af1 on the host; artifacts in `.local/m91
 
 Triage of the baseline: P2.T1 (GlInterop) and P2.T4 (device limits) were not triggered and are dropped. Zero-copy and every limit held on NVIDIA. `GpuTransferTest.PipelinedFramesTimeline` is classed host-capacity: it failed only under RAM pressure, the engine's staging fallback was correct, and it passed on every rerun. It gets no task, but P2.T6 must see it pass. `Shards/CacheEquivalenceSweepTest` was caused by stale local assets and is not vendor-related. The diagnosis for each task below was done read-only on the RTX 3070 Ti.
 
-- [ ] M91.P2.T2 — Record why a transfer took the staging path instead of host-import, and log import failures once
+- [x] M91.P2.T2 — Record why a transfer took the staging path instead of host-import, and log import failures once
   - files: `Engine/Gpu/GpuTransfer.cpp`, `Engine/Gpu/GpuTransfer.h`, `Engine/RenderScheduler.h`, `Engine/RenderStats.cpp`, `Tests/Gpu/GpuTransfer_Test.cpp`. **Not** `Engine/GpuRegionTask.cpp`, which M107 is changing.
   - approach: In the keying_grade render, 11 of 112 region transfers were staged with `importCount` 0 and no reason recorded. `resolveImports` (~755-868) has three silent exits: an unaligned or uncached range (expected); `createHostImported` failing with its `GpuStatus` discarded (~785, ~821); and a pending import forgotten mid-flight. Make `resolveImports` report a reason enum (Unaligned, ImportFailed with the VkResult/message, Forgotten, Disabled). Expose per-reason staged counters on GpuTransfer and fold them into the region report / profile JSON (`stagedReasons`) from RenderScheduler/RenderStats, without going through `GpuRegionTask.cpp`'s `notePath`. Log ImportFailed once per run (rate-limited) with its VkResult. Unaligned stays silent apart from the counter.
   - verify: a `GpuTransfer_Test` case forces each reason (an unaligned pointer, and a failing import if it can be provoked, e.g. a non-host pointer) and checks the counter. Remote CI (lavapipe) is green. P2.T6 re-runs the t5 render and records the reasons for the staged transfers. If they are ImportFailed on NVIDIA (e.g. `VK_ERROR_INVALID_EXTERNAL_HANDLE` from overlapping or still-registered pages), file a follow-up to chase `forget()` and pool reuse rather than fixing it here.
@@ -193,6 +193,12 @@ Triage of the baseline: P2.T1 (GlInterop) and P2.T4 (device limits) were not tri
 ## Phase 91.3: Viewer hand-off on NVIDIA GL (⚑ start after M107 - GPU Viewer Hand-off merges)
 
 If M107 hasn't merged when Phase 91.2 finishes, skip this phase and file it as a follow-up milestone. The acceptance line for the viewer path is then met by `GlInterop_Test` (NVIDIA EGL) and `GlInteropQt` on `:0`, and a decision records that.
+
+- [ ] M91.P3.T0 — Surface the staged-transfer reasons in the region profile
+  - files: `Engine/GpuRegionTask.cpp`, `Engine/RenderScheduler.h`, `Engine/RenderScheduler.cpp`, `Engine/RenderStats.h`, `Engine/RenderStats.cpp`
+  - approach: P2.T2 added `GpuTransfer::stagedReasons()`, but `RegionReport` is filled only in `GpuRegionTask.cpp`, which is an M107 file. After M107 merges: snapshot `stagedReasons()` beside `importStatsBefore` (~l.353) and write the deltas into new `RegionReport` staged* fields next to `importsAtUpload` (~l.394). Copy them into `GpuRegionTimes` in `RenderScheduler.cpp` (~l.1303). In `formatRegionRecord`, write `"stagedReasons":{"disabled":N,"unaligned":N,"importFailed":N,"forgotten":N}` only when a count is nonzero, so the exact-match string in `RenderProfile_Test.cpp` (~l.336) is unchanged.
+  - verify: a `RenderProfile_Test` case with a nonzero staged count emits the object. The t5 render's profile shows reasons for every staged transfer.
+  - size: M
 
 - [ ] M91.P3.T1 — Let the GUI test harness run on an existing host display with that display's GL
   - files: `Tests/gui/run-gui-test.sh` (M107 also changes this file, hence the ⚑)
@@ -238,3 +244,4 @@ If M107 hasn't merged when Phase 91.2 finishes, skip this phase and file it as a
 - 2026-10-23 — P1.T4: tools/gpu-spike had bit-rotted (standalone grade.slang deleted in M137); the spike now carries its own copy of the old grade_main kernel staged beside the engine gradeops module (code: 2c03da4d3 on milestone/m91-nvidia-gpu-validation). GpuBench smoke on the RTX 3070 Ti ran with hostImport=1.
 - 2026-10-23 — User: no Quadro P400 runs at all, not even the optional small-VRAM data point (P1.T4 and later).
 - 2026-10-23 — P1.T6 triage: Phase 91.2 keeps P2.T2 (staged-reason logging), P2.T3 (spec-derived LUT tolerance, test-only) and P2.T5 (pipelined timing assertion, test-only); P2.T1 and P2.T4 were dropped as not triggered. Follow-up observed, not M91 scope: in pipelined strips, per-member times are inflated (Grade 0.21 ms vs 0.045 ms serial), which skews GpuCostModel calibration samples. It needs a follow-up milestone, to be filed by /cat-plan.
+- 2026-10-23 — P2.T2 scoped down: the counters, the once-per-run ImportFailed log and the tests landed. Wiring the counts into the region profile needs `GpuRegionTask.cpp` (an M107 file), so it moved to P3.T0, after M107 merges. ImportFailed has no test because no deterministic way to make a driver reject an aligned pointer was found. The P2.T6 rerun reads the stderr log to see whether NVIDIA rejects imports.

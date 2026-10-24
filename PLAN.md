@@ -243,3 +243,4 @@ future core work has solid ground to build on.
 
 - **M161 - Startup Compositor Crash:** waiting on the user's diagnostic run on the NVIDIA host (P1.T3): `build/appimages/M161-diag.md` with `M161-diag-e4ac87b1a.AppImage` and `startup-gl-matrix.sh`; send back the tarball(s). Phase 161.2 starts from the result.
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.
+- **M16 - Project Format Redesign:** UAT round 2 with the user (P9.T10): `build/appimages/M16-uat.md` with `M16-d7138ee99.AppImage`.

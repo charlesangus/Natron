@@ -500,3 +500,4 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **Effect:** ordinary single-plane graphs gain no edge. Where an edge is added, it replaces an unplanned pull, so pull counts only go down and CPU output and cache keys are unchanged.
   - **New test:** `AddLayersPassesColourThroughBesideTheLayerItAddsInOneRegion`.
   - **Not covered:** a pass-through node as the render root stays an unplanned pull.
+- 2026-10-24 — **A Switch must pass through only its active input's layers, colour layout included, at each frame** (user). Today it presents the widest colour layout of all its inputs at every frame, because metadata is time-invariant. That is a bug, not a constraint to test around. `d40ab5123`'s Layers tests, which vary only non-colour layers, are a stopgap. A consultant is scoping the fix: one M110 task, or its own milestone. Once it lands, the tests go back to varying the colour layout by frame.

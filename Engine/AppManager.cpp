@@ -3442,7 +3442,7 @@ AppManager::getReaderPluginIDForFile(const std::string& path) const
     }
     std::string firstFile = path;
     if (path.find_first_of("#%") != std::string::npos) {
-        SequenceParsing::SequenceFromPattern sequence;
+        std::map<int, std::map<int, std::string>> sequence;
         FileSystemModel::filesListFromPattern(path, &sequence);
         if (!sequence.empty() && !sequence.begin()->second.empty()) {
             firstFile = sequence.begin()->second.begin()->second;

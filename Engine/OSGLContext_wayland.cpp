@@ -27,6 +27,8 @@
 #include <cerrno>
 #include <cstring>
 #include <iostream>
+#include <mutex>
+#include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
 
@@ -39,6 +41,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/OSGLContext.h"
+#include "Engine/StartupGLDiag.h"
 #include "Global/GLIncludes.h"
 
 NATRON_NAMESPACE_ENTER
@@ -73,6 +76,9 @@ struct OSGLContext_egl_dataPrivate
     PFNEGLCHOOSECONFIGPROC ChooseConfig;
     PFNEGLCREATECONTEXTPROC CreateContext;
     PFNEGLGETCURRENTCONTEXTPROC GetCurrentContext;
+    PFNEGLGETCURRENTDISPLAYPROC GetCurrentDisplay;
+    PFNEGLGETCURRENTSURFACEPROC GetCurrentSurface;
+    PFNEGLQUERYAPIPROC QueryAPI;
     PFNEGLDESTROYCONTEXTPROC DestroyContext;
     PFNEGLCREATEWINDOWSURFACEPROC CreateWindowSurface;
     PFNEGLDESTROYSURFACEPROC DestroySurface;
@@ -100,6 +106,120 @@ OSGLContext_egl_data::OSGLContext_egl_data()
 
 OSGLContext_egl_data::~OSGLContext_egl_data()
 {
+}
+
+namespace {
+
+struct SavedEGLBinding {
+    EGLDisplay display = EGL_NO_DISPLAY;
+    EGLSurface draw = EGL_NO_SURFACE;
+    EGLSurface read = EGL_NO_SURFACE;
+    EGLContext context = EGL_NO_CONTEXT;
+    EGLenum api = EGL_OPENGL_API;
+};
+
+// Qt records which context it made current on each thread and skips its own
+// eglMakeCurrent while that record matches, never asking EGL. So when Natron
+// binds one of its contexts on the GUI thread, whatever it displaced is put
+// back when Natron releases its context, rather than leaving nothing bound
+// under a context Qt still believes current.
+struct PendingRestore {
+    SavedEGLBinding displaced;
+    // Anything other than this bound at release time means Qt has rebound
+    // its own context since, and that binding is left alone.
+    EGLContext natronContext = EGL_NO_CONTEXT;
+};
+
+// Only the GUI thread fills it; a context destroyed on another thread may
+// still have to clear it.
+std::mutex g_pendingRestoreMutex;
+std::optional<PendingRestore> g_pendingRestore;
+
+SavedEGLBinding
+captureEGLBinding(const OSGLContext_egl_data* eglInfo)
+{
+    SavedEGLBinding b;
+
+    b.context = eglInfo->_imp->GetCurrentContext();
+    if (eglInfo->_imp->GetCurrentDisplay) {
+        b.display = eglInfo->_imp->GetCurrentDisplay();
+    }
+    if (eglInfo->_imp->GetCurrentSurface) {
+        b.draw = eglInfo->_imp->GetCurrentSurface(EGL_DRAW);
+        b.read = eglInfo->_imp->GetCurrentSurface(EGL_READ);
+    }
+    if (eglInfo->_imp->QueryAPI) {
+        b.api = eglInfo->_imp->QueryAPI();
+    }
+
+    return b;
+}
+
+// Qt's EGL context may live on its own EGLDisplay, so it is restored with the
+// display it was current on rather than Natron's.
+bool
+restoreEGLBinding(const OSGLContext_egl_data* eglInfo,
+                  const SavedEGLBinding& saved)
+{
+    if (saved.context == EGL_NO_CONTEXT) {
+        return eglInfo->_imp->MakeCurrent(eglInfo->_imp->dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    }
+    eglInfo->_imp->BindAPI(saved.api);
+
+    return eglInfo->_imp->MakeCurrent((saved.display != EGL_NO_DISPLAY) ? saved.display : eglInfo->_imp->dpy, saved.draw, saved.read, saved.context);
+}
+
+std::optional<PendingRestore>
+takePendingRestore()
+{
+    std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
+    std::optional<PendingRestore> pending = g_pendingRestore;
+    g_pendingRestore.reset();
+
+    return pending;
+}
+
+} // anonymous namespace
+
+struct ScopedEGLBindingRestore::Imp {
+    const OSGLContext_egl_data* eglInfo = nullptr;
+    bool guiThread = false;
+    SavedEGLBinding saved;
+    std::optional<PendingRestore> outerPending;
+};
+
+ScopedEGLBindingRestore::ScopedEGLBindingRestore()
+    : _imp(new Imp)
+{
+    const OSGLContext_egl_data* eglInfo = appPTR ? appPTR->getEGLData() : nullptr;
+
+    if (!eglInfo || !eglInfo->_imp->dpy) {
+        return;
+    }
+    _imp->eglInfo = eglInfo;
+    _imp->saved = captureEGLBinding(eglInfo);
+    // A make-current inside the scope must not consume the restore owed to
+    // an enclosing Natron make-current, so it is set aside until the scope
+    // ends.
+    _imp->guiThread = StartupGLDiag::onGuiThread();
+    if (_imp->guiThread) {
+        _imp->outerPending = takePendingRestore();
+    }
+}
+
+ScopedEGLBindingRestore::~ScopedEGLBindingRestore()
+{
+    if (!_imp->eglInfo) {
+        return;
+    }
+    const SavedEGLBinding now = captureEGLBinding(_imp->eglInfo);
+    if ((now.context != _imp->saved.context) || (now.draw != _imp->saved.draw) || (now.read != _imp->saved.read) || (now.api != _imp->saved.api)) {
+        restoreEGLBinding(_imp->eglInfo, _imp->saved);
+    }
+    if (_imp->guiThread) {
+        std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
+        g_pendingRestore = _imp->outerPending;
+    }
 }
 
 // Wayland-specific per-window data
@@ -240,6 +360,9 @@ OSGLContext_wayland::initEGLData(OSGLContext_egl_data* eglInfo)
     eglInfo->_imp->ChooseConfig = (PFNEGLCHOOSECONFIGPROC)dlsym(eglInfo->_imp->handle, "eglChooseConfig");
     eglInfo->_imp->CreateContext = (PFNEGLCREATECONTEXTPROC)dlsym(eglInfo->_imp->handle, "eglCreateContext");
     eglInfo->_imp->GetCurrentContext = (PFNEGLGETCURRENTCONTEXTPROC)dlsym(eglInfo->_imp->handle, "eglGetCurrentContext");
+    eglInfo->_imp->GetCurrentDisplay = (PFNEGLGETCURRENTDISPLAYPROC)dlsym(eglInfo->_imp->handle, "eglGetCurrentDisplay");
+    eglInfo->_imp->GetCurrentSurface = (PFNEGLGETCURRENTSURFACEPROC)dlsym(eglInfo->_imp->handle, "eglGetCurrentSurface");
+    eglInfo->_imp->QueryAPI = (PFNEGLQUERYAPIPROC)dlsym(eglInfo->_imp->handle, "eglQueryAPI");
     eglInfo->_imp->DestroyContext = (PFNEGLDESTROYCONTEXTPROC)dlsym(eglInfo->_imp->handle, "eglDestroyContext");
     eglInfo->_imp->CreateWindowSurface = (PFNEGLCREATEWINDOWSURFACEPROC)dlsym(eglInfo->_imp->handle, "eglCreateWindowSurface");
     eglInfo->_imp->DestroySurface = (PFNEGLDESTROYSURFACEPROC)dlsym(eglInfo->_imp->handle, "eglDestroySurface");
@@ -547,6 +670,25 @@ OSGLContext_wayland::~OSGLContext_wayland()
 
     assert(eglInfo);
 
+    // Released before its surface goes away, so nothing is ever left bound
+    // to a destroyed surface or context.
+    if (_imp->eglContextHandle != EGL_NO_CONTEXT) {
+        if (eglInfo->_imp->GetCurrentContext() == _imp->eglContextHandle) {
+            std::optional<PendingRestore> pending;
+            if (StartupGLDiag::onGuiThread()) {
+                pending = takePendingRestore();
+            }
+            if (pending && (pending->displaced.context != _imp->eglContextHandle)) {
+                restoreEGLBinding(eglInfo, pending->displaced);
+            } else {
+                eglInfo->_imp->MakeCurrent(eglInfo->_imp->dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            }
+        }
+        std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
+        if (g_pendingRestore && (g_pendingRestore->displaced.context == _imp->eglContextHandle)) {
+            g_pendingRestore.reset();
+        }
+    }
     if (_imp->eglSurfaceHandle != EGL_NO_SURFACE) {
         eglInfo->_imp->DestroySurface(eglInfo->_imp->dpy, _imp->eglSurfaceHandle);
         _imp->eglSurfaceHandle = EGL_NO_SURFACE;
@@ -556,9 +698,6 @@ OSGLContext_wayland::~OSGLContext_wayland()
         _imp->waylandWindow.native = nullptr;
     }
     if (_imp->eglContextHandle != EGL_NO_CONTEXT) {
-        if (eglInfo->_imp->GetCurrentContext() == _imp->eglContextHandle) {
-            OSGLContext_wayland::makeContextCurrent(nullptr);
-        }
         eglInfo->_imp->DestroyContext(eglInfo->_imp->dpy, _imp->eglContextHandle);
         _imp->eglContextHandle = EGL_NO_CONTEXT;
     }
@@ -579,14 +718,50 @@ OSGLContext_wayland::makeContextCurrent(const OSGLContext_wayland* context)
         return false;
     }
 
+    const bool guiThread = StartupGLDiag::onGuiThread();
     if (context != nullptr) {
+        bool savedHere = false;
+        if (guiThread) {
+            std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
+            if (!g_pendingRestore) {
+                g_pendingRestore = PendingRestore { captureEGLBinding(eglInfo), EGL_NO_CONTEXT };
+                savedHere = true;
+            }
+        }
         if (!eglInfo->_imp->BindAPI(EGL_OPENGL_API)) {
+            if (savedHere) {
+                std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
+                g_pendingRestore.reset();
+            }
             throw std::runtime_error("EGL: Could not bind with OpenGL API");
         }
-        return eglInfo->_imp->MakeCurrent(eglInfo->_imp->dpy, context->_imp->eglSurfaceHandle, context->_imp->eglSurfaceHandle, context->_imp->eglContextHandle);
-    } else {
-        return eglInfo->_imp->MakeCurrent(eglInfo->_imp->dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        const bool ok = eglInfo->_imp->MakeCurrent(eglInfo->_imp->dpy, context->_imp->eglSurfaceHandle, context->_imp->eglSurfaceHandle, context->_imp->eglContextHandle);
+        if (guiThread) {
+            std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
+            if (ok && g_pendingRestore) {
+                g_pendingRestore->natronContext = context->_imp->eglContextHandle;
+            } else if (!ok && savedHere) {
+                // A failed eglMakeCurrent leaves the previous binding in
+                // place, so there is nothing to restore later.
+                g_pendingRestore.reset();
+            }
+        }
+        return ok;
     }
+
+    std::optional<PendingRestore> pending;
+    if (guiThread) {
+        pending = takePendingRestore();
+    }
+    if (pending) {
+        if (eglInfo->_imp->GetCurrentContext() != pending->natronContext) {
+            return true;
+        }
+
+        return restoreEGLBinding(eglInfo, pending->displaced);
+    }
+
+    return eglInfo->_imp->MakeCurrent(eglInfo->_imp->dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 }
 
 bool
@@ -630,6 +805,9 @@ OSGLContext_wayland::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
         return;
     }
 
+    // The probe binds a context of its own on whatever thread asks, possibly
+    // over a context Qt believes current there.
+    const ScopedEGLBindingRestore restoreOnExit;
     std::unique_ptr<OSGLContext_wayland> context;
     try {
         context.reset(new OSGLContext_wayland(FramebufferConfig(), GLVersion.major, GLVersion.minor, false, GLRendererID(), nullptr));
@@ -647,6 +825,7 @@ OSGLContext_wayland::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
         OSGLContext::checkOpenGLVersion();
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
+        makeContextCurrent(nullptr);
 
         return;
     }
@@ -663,6 +842,8 @@ OSGLContext_wayland::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
     info.accelerated = !OSGLContext::isSoftwareRendererName(info.rendererName);
     info.hasUuid = OSGLContext::readCurrentDeviceUuid(getProcAddress(eglInfo, "glGetUnsignedBytei_vEXT"), &info.deviceUuid);
     renderers.push_back(info);
+
+    makeContextCurrent(nullptr);
 } // OSGLContext_wayland::getGPUInfos
 
 NATRON_NAMESPACE_EXIT
@@ -738,6 +919,17 @@ OSGLContext_wayland::threadHasACurrentContext() {
 
 void
 OSGLContext_wayland::getGPUInfos(std::list<OpenGLRendererInfo>&)
+{
+}
+
+struct ScopedEGLBindingRestore::Imp {
+};
+
+ScopedEGLBindingRestore::ScopedEGLBindingRestore()
+{
+}
+
+ScopedEGLBindingRestore::~ScopedEGLBindingRestore()
 {
 }
 

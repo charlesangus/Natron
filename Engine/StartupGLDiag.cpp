@@ -575,7 +575,7 @@ namespace {
         { Switch::SkipVulkanEnum, "NATRON_DIAG_SKIP_VK_ENUM" },
         { Switch::GpuInitSync, "NATRON_DIAG_GPU_INIT_SYNC" },
         { Switch::NoSplashPump, "NATRON_DIAG_NO_SPLASH_PUMP" },
-        { Switch::RestoreGL, "NATRON_DIAG_RESTORE_GL" },
+        { Switch::ForceProbeContext, "NATRON_DIAG_GL_FORCE_PROBE_CONTEXT" },
     };
 
     constexpr size_t kSwitchCount = sizeof(kSwitches) / sizeof(kSwitches[0]);
@@ -654,12 +654,6 @@ onGuiThread()
     const QCoreApplication* app = QCoreApplication::instance();
 
     return app && (QThread::currentThread() == app->thread());
-}
-
-bool
-restoreGLOnThisThread()
-{
-    return switchOn(Switch::RestoreGL) && onGuiThread();
 }
 
 } // namespace StartupGLDiag

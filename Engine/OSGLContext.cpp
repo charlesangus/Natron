@@ -298,6 +298,9 @@ OSGLContext::OSGLContext(const FramebufferConfig& pixelFormatAttrs,
 
 OSGLContext::~OSGLContext()
 {
+    // Contexts are destroyed on whichever thread drops the last reference,
+    // which may have another context bound for its own work.
+    const OSGLContextBindingRestore restoreOnExit;
     setContextCurrentNoRender();
     if (_imp->pboID) {
         glDeleteBuffers(1, &_imp->pboID);
@@ -615,6 +618,24 @@ OSGLContext::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
         StartupGLDiag::checkpoint("getGPUInfos:end");
     }
 #endif
+}
+
+OSGLContextBindingRestore::OSGLContextBindingRestore()
+{
+#ifdef __NATRON_LINUX__
+    if (!appPTR) {
+        return;
+    }
+    if (appPTR->isOnWayland()) {
+        _egl.reset(new ScopedEGLBindingRestore);
+    } else {
+        _glx.reset(new ScopedGLXBindingRestore);
+    }
+#endif
+}
+
+OSGLContextBindingRestore::~OSGLContextBindingRestore()
+{
 }
 
 NATRON_NAMESPACE_EXIT

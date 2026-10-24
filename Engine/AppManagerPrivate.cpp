@@ -796,6 +796,16 @@ extern PFNGLISVERTEXARRAYAPPLEPROC glad_glIsVertexArray;
 }
 
 void
+AppManagerPrivate::probeOpenGLRenderersOnce()
+{
+    if (openGLRenderersProbed) {
+        return;
+    }
+    openGLRenderersProbed = true;
+    OSGLContext::getGPUInfos(openGLRenderers);
+}
+
+void
 AppManagerPrivate::addOpenGLRequirementsString(QString& str, OpenGLRequirementsTypeEnum type)
 {
     switch (type) {
@@ -820,8 +830,7 @@ AppManagerPrivate::addOpenGLRequirementsString(QString& str, OpenGLRequirementsT
             break;
         }
     }
-    std::list<OpenGLRendererInfo> openGLRenderers;
-    OSGLContext::getGPUInfos(openGLRenderers);
+    probeOpenGLRenderersOnce();
     if ( !openGLRenderers.empty() ) {
         str += QLatin1Char('\n');
         str += tr("Available OpenGL renderers:");

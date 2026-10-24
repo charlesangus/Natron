@@ -190,6 +190,8 @@ public:
 
     /**
      * @brief Same as setContextCurrent() except that it should be used to bind the context to perform NON-RENDER operations!
+     * On the GUI thread, the next unsetCurrentContextNoRender() puts back whatever this displaced (usually Qt's own
+     * context) instead of leaving nothing bound.
      **/
     void setContextCurrentNoRender();
     static void unsetCurrentContextNoRender();
@@ -323,6 +325,28 @@ public:
     {
         dettach();
     }
+};
+
+class ScopedGLXBindingRestore;
+class ScopedEGLBindingRestore;
+
+/**
+ * @brief Puts back the calling thread's GL binding (the GLX context and drawable, or on Wayland the EGL context,
+ * surfaces and bound API) when it goes out of scope, however the scope exits.
+ **/
+class OSGLContextBindingRestore {
+public:
+    OSGLContextBindingRestore();
+    ~OSGLContextBindingRestore();
+
+    OSGLContextBindingRestore(const OSGLContextBindingRestore&) = delete;
+    OSGLContextBindingRestore& operator=(const OSGLContextBindingRestore&) = delete;
+
+private:
+#ifdef __NATRON_LINUX__
+    std::unique_ptr<ScopedGLXBindingRestore> _glx;
+    std::unique_ptr<ScopedEGLBindingRestore> _egl;
+#endif
 };
 
 NATRON_NAMESPACE_EXIT

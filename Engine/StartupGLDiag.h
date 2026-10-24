@@ -86,7 +86,10 @@ enum class Switch {
     SkipVulkanEnum, // NATRON_DIAG_SKIP_VK_ENUM
     GpuInitSync, // NATRON_DIAG_GPU_INIT_SYNC
     NoSplashPump, // NATRON_DIAG_NO_SPLASH_PUMP
-    RestoreGL // NATRON_DIAG_RESTORE_GL
+    // Makes the GLX renderer probe create and bind a probe context even when
+    // GLX_MESA_query_renderer is available, so Mesa hosts run the path NVIDIA
+    // drivers take.
+    ForceProbeContext // NATRON_DIAG_GL_FORCE_PROBE_CONTEXT
 };
 
 bool switchOn(Switch s);
@@ -97,11 +100,9 @@ void logActiveSwitches();
 // Logs that an active switch changed what startup did.
 void logSwitchAction(Switch s, const char* action);
 
+// The caller runs on the QCoreApplication thread, the only thread where Qt
+// keeps a GL context of its own. False before the application exists.
 bool onGuiThread();
-
-// RestoreGL is on and the caller runs on the GUI thread, the only thread
-// where Qt keeps a GL context of its own.
-bool restoreGLOnThisThread();
 
 } // namespace StartupGLDiag
 

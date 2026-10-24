@@ -196,6 +196,7 @@ public:
     mutable QMutex renderSchedulerMutex;
     RenderSchedulerPtr renderScheduler;
     std::list<OpenGLRendererInfo> openGLRenderers;
+    bool openGLRenderersProbed = false;
     std::unique_ptr<QCoreApplication> _qApp;
 
     QStringList pendingInitGuiDirs;
@@ -214,7 +215,12 @@ public:
 
     void restoreCaches();
 
-    static void addOpenGLRequirementsString(QString& str, OpenGLRequirementsTypeEnum type);
+    void addOpenGLRequirementsString(QString& str, OpenGLRequirementsTypeEnum type);
+
+    // Fills openGLRenderers on the first call only. Probing binds GL contexts
+    // of its own, so it runs during startup, before Qt creates any context,
+    // and everything later reads the cached list.
+    void probeOpenGLRenderersOnce();
 
     bool checkForCacheDiskStructure(const QString & cachePath, bool isTiled);
 

@@ -85,6 +85,21 @@ private:
     std::unique_ptr<OSGLContext_x11Private> _imp;
 };
 
+// Puts back the calling thread's GLX context and drawable when it goes out of
+// scope, however the scope exits.
+class ScopedGLXBindingRestore {
+public:
+    ScopedGLXBindingRestore();
+    ~ScopedGLXBindingRestore();
+
+    ScopedGLXBindingRestore(const ScopedGLXBindingRestore&) = delete;
+    ScopedGLXBindingRestore& operator=(const ScopedGLXBindingRestore&) = delete;
+
+private:
+    struct Imp;
+    std::unique_ptr<Imp> _imp;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // __NATRON_LINUX__

@@ -78,6 +78,21 @@ private:
     std::unique_ptr<OSGLContext_waylandPrivate> _imp;
 };
 
+// Puts back the calling thread's EGL context, surfaces and bound API when it
+// goes out of scope, however the scope exits.
+class ScopedEGLBindingRestore {
+public:
+    ScopedEGLBindingRestore();
+    ~ScopedEGLBindingRestore();
+
+    ScopedEGLBindingRestore(const ScopedEGLBindingRestore&) = delete;
+    ScopedEGLBindingRestore& operator=(const ScopedEGLBindingRestore&) = delete;
+
+private:
+    struct Imp;
+    std::unique_ptr<Imp> _imp;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // __NATRON_LINUX__

@@ -337,7 +337,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: the example YAML is copied from P2.T3's pinned test output; links resolve.
   - size: M
 
-- [ ] M16.P7.T3 — AppImage and user UAT checkpoint
+- [x] M16.P7.T3 — AppImage and user UAT checkpoint
   - files: `build/appimages/M16-<sha>.AppImage`, `build/appimages/M16-uat.md`
   - approach: build with the release `tools/ci/local/package.sh` and launch-check with `build/appimages/run-launch-check.sh`. The script:
     1. Open each regenerated `tools/bench/comps/*.ntpz`. Open an old `.ntp`, from a recent-files entry and via drag-drop, and get the clear old-format message with no crash.
@@ -496,6 +496,7 @@ UAT (P7.T3).
 - 2026-10-23 — P6.T2 results (recorded in `tools/bench/BASELINE.md`): `.ntpz` 53.7 MB against 1.20 GB XML (22.4× smaller); medians of run medians 7.62 s `.ntpz` save against 17.17 s XML, 7.68 s autosave; `.ntpz` load 15.4–20.2 s. Run 3 was contended by other host work (its `.ntpz` save median 19.0 s); runs 1–2 were idle. Both P6.T2 thresholds pass. Lane rebased onto main `bf781cbcd` (M158) as `800d814cb`; one conflict in `Engine/AppInstance.cpp`, both sides kept.
 - 2026-10-23 — P8.T6+T7, T8–T10 and T12+T13 were each dispatched to one implementer, because the tree doesn't compile between them. P8.T11 and P8.T14 code is in `c05fe101e`, unchecked until the P8.T15 build: T11 can't check the overlay colour (no Python getter) and treats the first Viewer's pane as the anchor (not exposed to Python). Paste now centres on the true layout bounding box (the old code ignored size), and a serialized node without a stored position is auto-placed instead of left at (0,0). A coloured backdrop now reports `hasUserColor()` true in Python.
 - 2026-10-23 — Remote debug build of `c05fe101e` (run 40038006490) green: Phase 16.8 code compiles and `NodeLayout.*`, `ProjectBundle.*`, `ProjectYaml.*`, `ClipboardYaml.*`, `ProjectGuiYaml.*`, `BundleLoadTest.*` and `MissingPlugin*` pass. P8.T15 completes once P8.T11 runs against the fast AppImage of HEAD (which also carries P7.T1 `d23b79b0d` and P7.T2 `6e5203af0`).
+- 2026-10-24 — **P7.T3 UAT feedback (user, on `M16-ba521118c.AppImage`):** autosave showed no hitches; crash safety to be judged in practice; file association untested and not a concern. Fixes requested: File>Open crashes on a .ntp or any non-.ntpz file; a plain unzip should create a folder named after the file (members under one top-level folder); hand-edited projects must be easy to open — the reader accepts any valid re-zip (compressed or stored, any order, mimetype optional, root or one top-level folder), and File>Open accepts an unzipped folder (or its project.yaml). Planned as Phase 16.9. The startup compositor crash seen during this UAT is a `main` bug, fixed in M161 - Startup Compositor Crash.
 
 ## Handoff (2026-10-22, PM paused by user)
 

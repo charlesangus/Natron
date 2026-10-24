@@ -242,5 +242,5 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M138 - GUI Papercuts:** paused at its UAT (2026-10-24, same rule as M16). Needs the user's sign-off on `build/appimages/M138-uat.md` with `build/appimages/M138-b9095c319.AppImage` (release, 334/334; GUI scripts 57/0 and 413/0). Resumes at the gate, PR, review and merge.
-- **M16 - Project Format Redesign:** paused at P7.T3 UAT (2026-10-24, per the user's rule for this run: blocked on feedback → open question, pause, pick up the next E3 milestone). Needs the user's sign-off on `build/appimages/M16-uat.md` with `build/appimages/M16-ba521118c.AppImage` (release, 342/342 tests). Resumes at the gate, PR, review and merge.
+- **M16 - Project Format Redesign:** UAT feedback received 2026-10-24; Phase 16.9 (UAT fixes) is being planned and resumes when a lane frees.
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.

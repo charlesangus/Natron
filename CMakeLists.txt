@@ -68,7 +68,7 @@ find_package(Boost COMPONENTS headers serialization CONFIG)
 # that links it, so the imported targets must be visible from the top level.
 # The ASWF image ships yaml-cpp 0.9 with a CMake config, which satisfies 0.8.
 find_package(yaml-cpp 0.8 CONFIG REQUIRED)
-find_package(ZLIB)
+find_package(ZLIB REQUIRED)
 if(WIN32)
     # Prevent looking in the registry so that the MinGW python can be found.
     set(Python3_FIND_REGISTRY NEVER)

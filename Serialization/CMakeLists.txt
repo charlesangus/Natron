@@ -39,9 +39,5 @@ target_include_directories(NatronSerialization
 target_link_libraries(NatronSerialization
     PRIVATE
         yaml-cpp::yaml-cpp
+        ZLIB::ZLIB
 )
-
-if(ZLIB_FOUND)
-    target_link_libraries(NatronSerialization PRIVATE ZLIB::ZLIB)
-    target_compile_definitions(NatronSerialization PRIVATE NATRON_SERIALIZATION_HAVE_ZLIB)
-endif()

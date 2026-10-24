@@ -19,9 +19,11 @@
 
 #include "Serialization/Bundle/ZipStore.h"
 
-#include <array>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <utility>
 
 #include <fcntl.h>
@@ -29,9 +31,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#ifdef NATRON_SERIALIZATION_HAVE_ZLIB
 #include <zlib.h>
-#endif
 
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
@@ -58,6 +58,7 @@ namespace {
     constexpr std::uint16_t kFlagStrongEncryption = 1 << 6;
     constexpr std::uint16_t kFlagUtf8Name = 1 << 11;
     constexpr std::uint16_t kMethodStored = 0;
+    constexpr std::uint16_t kMethodDeflated = 8;
 
     // 1980-01-01 00:00, the earliest DOS date, so output never depends on the clock.
     constexpr std::uint16_t kDosTime = 0;
@@ -67,6 +68,30 @@ namespace {
 
     constexpr std::uint16_t kMax16 = 0xFFFF;
     constexpr std::uint32_t kMax32 = 0xFFFFFFFF;
+
+    std::string
+    methodName(std::uint16_t method)
+    {
+        switch (method) {
+        case 12:
+            return "bzip2 (method 12)";
+        case 14:
+            return "lzma (method 14)";
+        case 93:
+            return "zstd (method 93)";
+        default:
+            return "method " + std::to_string(method);
+        }
+    }
+
+    struct AlignedFree {
+        void operator()(std::byte* p) const
+        {
+            std::free(p);
+        }
+    };
+
+    using AlignedBuffer = std::unique_ptr<std::byte, AlignedFree>;
 
     class ByteSink {
     public:
@@ -175,43 +200,21 @@ namespace {
         return std::string();
     }
 
-#ifndef NATRON_SERIALIZATION_HAVE_ZLIB
-    constexpr std::array<std::uint32_t, 256>
-    makeCrcTable()
-    {
-        std::array<std::uint32_t, 256> table {};
-        for (std::uint32_t i = 0; i < 256; ++i) {
-            std::uint32_t c = i;
-            for (int k = 0; k < 8; ++k) {
-                c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-            }
-            table[i] = c;
-        }
-
-        return table;
-    }
-
-    constexpr std::array<std::uint32_t, 256> kCrcTable = makeCrcTable();
-#endif
 } // anon namespace
 
 std::uint32_t
 zipCrc32(std::span<const std::byte> data,
          std::uint32_t crc)
 {
-#ifdef NATRON_SERIALIZATION_HAVE_ZLIB
     return static_cast<std::uint32_t>(crc32_z(crc, reinterpret_cast<const Bytef*>(data.data()), data.size()));
-#else
-    crc = ~crc;
-    for (std::byte b : data) {
-        crc = kCrcTable[(crc ^ std::to_integer<std::uint32_t>(b)) & 0xFF] ^ (crc >> 8);
-    }
-
-    return ~crc;
-#endif
 }
 
 ZipOutput::~ZipOutput() = default;
+
+struct ZipReader::InflateCache {
+    std::mutex mutex;
+    std::vector<AlignedBuffer> buffers;
+};
 
 ZipWriter::ZipWriter(const std::string& path,
                      std::string_view mimeType)
@@ -417,6 +420,7 @@ ZipWriter::finish()
 
 ZipReader::ZipReader(const std::string& path)
     : _origin(path)
+    , _inflated(std::make_unique<InflateCache>())
 {
     int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
@@ -453,12 +457,14 @@ ZipReader::ZipReader(std::span<const std::byte> bytes)
     : _bytes(bytes.data())
     , _size(bytes.size())
     , _origin("<memory>")
+    , _inflated(std::make_unique<InflateCache>())
 {
     parse();
 }
 
 ZipReader::~ZipReader()
 {
+    _inflated.reset();
     unmap();
 }
 
@@ -469,6 +475,7 @@ ZipReader::ZipReader(ZipReader&& other) noexcept
     , _origin(std::move(other._origin))
     , _members(std::move(other._members))
     , _index(std::move(other._index))
+    , _inflated(std::move(other._inflated))
 {
 }
 
@@ -483,6 +490,7 @@ ZipReader::operator=(ZipReader&& other) noexcept
         _origin = std::move(other._origin);
         _members = std::move(other._members);
         _index = std::move(other._index);
+        _inflated = std::move(other._inflated);
     }
 
     return *this;
@@ -592,10 +600,10 @@ ZipReader::parse()
         if (flags & (kFlagEncrypted | kFlagStrongEncryption)) {
             fail(label + "encrypted members are not supported");
         }
-        if (method != kMethodStored) {
-            fail(label + "compressed members are not supported");
+        if ((method != kMethodStored) && (method != kMethodDeflated)) {
+            fail(label + "compression " + methodName(method) + " is not supported, only stored and deflate");
         }
-        if (compressedSize != size) {
+        if ((method == kMethodStored) && (compressedSize != size)) {
             fail(label + "stored member with differing compressed and uncompressed sizes");
         }
         if (startDisk != 0) {
@@ -616,13 +624,13 @@ ZipReader::parse()
         if (readU16(local + 6) & (kFlagEncrypted | kFlagStrongEncryption)) {
             fail(label + "encrypted members are not supported");
         }
-        if (readU16(local + 8) != kMethodStored) {
-            fail(label + "compressed members are not supported");
+        if (readU16(local + 8) != method) {
+            fail(label + "local header and central directory compression methods differ");
         }
         std::size_t localNameSize = readU16(local + 26);
         std::size_t localExtraSize = readU16(local + 28);
         std::uint64_t dataOffset = static_cast<std::uint64_t>(localOffset) + kLocalHeaderSize + localNameSize + localExtraSize;
-        if ((dataOffset > directoryOffset) || (directoryOffset - dataOffset < size)) {
+        if ((dataOffset > directoryOffset) || (directoryOffset - dataOffset < compressedSize)) {
             fail(label + "member data lies outside the archive data");
         }
         if ((localNameSize != nameSize) || (std::memcmp(local + kLocalHeaderSize, name.data(), nameSize) != 0)) {
@@ -645,6 +653,8 @@ ZipReader::parse()
         member.name = std::move(name);
         member.dataOffset = dataOffset;
         member.size = size;
+        member.compressedSize = compressedSize;
+        member.method = method;
         member.crc32 = crc;
         _members.push_back(std::move(member));
     }
@@ -661,7 +671,65 @@ ZipReader::find(std::string_view name) const
 std::span<const std::byte>
 ZipReader::data(const ZipMember& member) const
 {
-    return std::span<const std::byte>(_bytes + member.dataOffset, member.size);
+    if (member.method == kMethodStored) {
+        return std::span<const std::byte>(_bytes + member.dataOffset, member.size);
+    }
+    if (member.size == 0) {
+        return {};
+    }
+    auto it = _index.find(member.name);
+    if (it == _index.end()) {
+        throw ZipError(_origin + ": no member \"" + member.name + "\"");
+    }
+    const std::size_t slot = it->second;
+    const std::string label = _origin + ": member \"" + member.name + "\": ";
+
+    std::lock_guard<std::mutex> lock(_inflated->mutex);
+    if (_inflated->buffers.empty()) {
+        _inflated->buffers.resize(_members.size());
+    }
+    AlignedBuffer& buffer = _inflated->buffers[slot];
+    if (!buffer) {
+        // One byte beyond the declared size lets a stream that is too long be told apart from
+        // one that fits exactly.
+        const std::size_t capacity = static_cast<std::size_t>(member.size) + 1;
+        const std::size_t rounded = (capacity + kZipMemberAlignment - 1) / kZipMemberAlignment * kZipMemberAlignment;
+        AlignedBuffer out(static_cast<std::byte*>(std::aligned_alloc(kZipMemberAlignment, rounded)));
+        if (!out) {
+            throw ZipError(label + "cannot allocate " + std::to_string(member.size) + " bytes");
+        }
+
+        z_stream strm {};
+        if (inflateInit2(&strm, -MAX_WBITS) != Z_OK) {
+            throw ZipError(label + "cannot initialise inflate");
+        }
+        strm.next_in = reinterpret_cast<Bytef*>(const_cast<std::byte*>(_bytes + member.dataOffset));
+        strm.avail_in = member.compressedSize;
+        strm.next_out = reinterpret_cast<Bytef*>(out.get());
+        strm.avail_out = static_cast<uInt>(capacity);
+        int ret = inflate(&strm, Z_FINISH);
+        const uLong produced = strm.total_out;
+        inflateEnd(&strm);
+
+        if (produced > member.size) {
+            throw ZipError(label + "deflate stream is longer than its declared size of " + std::to_string(member.size) + " bytes");
+        }
+        if (ret == Z_BUF_ERROR) {
+            throw ZipError(label + "deflate stream is truncated");
+        }
+        if (ret != Z_STREAM_END) {
+            throw ZipError(label + "corrupt deflate stream");
+        }
+        if (produced != member.size) {
+            throw ZipError(label + "deflate stream is shorter than its declared size of " + std::to_string(member.size) + " bytes");
+        }
+        if (zipCrc32(std::span<const std::byte>(out.get(), member.size)) != member.crc32) {
+            throw ZipError(label + "CRC-32 mismatch");
+        }
+        buffer = std::move(out);
+    }
+
+    return std::span<const std::byte>(buffer.get(), member.size);
 }
 
 std::span<const std::byte>

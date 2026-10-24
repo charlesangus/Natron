@@ -1779,7 +1779,7 @@ exportKnobValues(int indentLevel,
                         weights = QString::fromUtf8(", ") + NUM_VALUE(it3->getLeftWeight()) + QString::fromUtf8(", ") + NUM_VALUE(it3->getRightWeight());
                     }
                     WRITE_INDENT(innerIdent);
-                    WRITE_STRING(QString::fromUtf8("param.addControlPoint(") + NUM_INT(i) + QString::fromUtf8(", ") + NUM_TIME(it3->getTime()) + QString::fromUtf8(", ") + NUM_VALUE(it3->getValue()) + QString::fromUtf8(", ") + NUM_VALUE(it3->getLeftDerivative())
+                    WRITE_STRING(QString::fromUtf8("param.") + QString::fromUtf8(weights.isEmpty() ? "addControlPoint(" : "addControlPointWithWeights(") + NUM_INT(i) + QString::fromUtf8(", ") + NUM_TIME(it3->getTime()) + QString::fromUtf8(", ") + NUM_VALUE(it3->getValue()) + QString::fromUtf8(", ") + NUM_VALUE(it3->getLeftDerivative())
                                  + QString::fromUtf8(", ") + NUM_VALUE(it3->getRightDerivative()) + weights + QString::fromUtf8(", ") + interpStr + QString::fromUtf8(")"));
                 }
             }

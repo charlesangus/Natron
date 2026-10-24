@@ -3892,14 +3892,14 @@ ParametricParam::addControlPoint(int dimension,
 }
 
 StatusEnum
-ParametricParam::addControlPoint(int dimension,
-                                 double key,
-                                 double value,
-                                 double leftDerivative,
-                                 double rightDerivative,
-                                 double leftWeight,
-                                 double rightWeight,
-                                 KeyframeTypeEnum interpolation)
+ParametricParam::addControlPointWithWeights(int dimension,
+                                            double key,
+                                            double value,
+                                            double leftDerivative,
+                                            double rightDerivative,
+                                            double leftWeight,
+                                            double rightWeight,
+                                            KeyframeTypeEnum interpolation)
 {
     if (!checkIsEditable()) {
         return eStatusFailed;
@@ -4007,14 +4007,14 @@ ParametricParam::setNthControlPoint(int dimension,
 }
 
 StatusEnum
-ParametricParam::setNthControlPoint(int dimension,
-                                    int nthCtl,
-                                    double key,
-                                    double value,
-                                    double leftDerivative,
-                                    double rightDerivative,
-                                    double leftWeight,
-                                    double rightWeight)
+ParametricParam::setNthControlPointWithWeights(int dimension,
+                                               int nthCtl,
+                                               double key,
+                                               double value,
+                                               double leftDerivative,
+                                               double rightDerivative,
+                                               double leftWeight,
+                                               double rightWeight)
 {
     if (!checkIsEditable()) {
         return eStatusFailed;

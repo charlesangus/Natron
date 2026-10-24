@@ -178,24 +178,24 @@ TEST_F(PyKeyTangentsTest, ParametricControlPointsCarryTheirWeights)
 
     const std::string script = paramScript(getApp()->getAppIDString(), lookup, kColorLookupParamLookupTable) + "OK = NatronEngine.Natron.StatusEnum.eStatusOK\n"
                                                                                                                "param.deleteAllControlPoints(0)\n"
-                                                                                                               // The shorter overloads still take positional derivatives and leave the weights at 1/3.
+                                                                                                               // addControlPoint still takes positional derivatives and leave the weights at 1/3.
                                                                                                                "assert param.addControlPoint(0, 0., 0., 1., 1., NatronEngine.Natron.KeyframeTypeEnum.eKeyframeTypeFree) == OK\n"
-                                                                                                               "assert param.addControlPoint(0, 1., 1., 1., 1., 0.25, 0.6) == OK\n"
+                                                                                                               "assert param.addControlPointWithWeights(0, 1., 1., 1., 1., 0.25, 0.6) == OK\n"
                                                                                                                "point = param.getNthControlPoint(0, 0)\n"
                                                                                                                "assert len(point) == 7, point\n"
                                                                                                                "assert point[0] == OK and abs(point[5] - 1. / 3.) < 1e-12 and abs(point[6] - 1. / 3.) < 1e-12, point\n"
                                                                                                                "point = param.getNthControlPoint(0, 1)\n"
                                                                                                                "assert (point[1], point[2]) == (1., 1.), point\n"
                                                                                                                "assert abs(point[5] - 0.25) < 1e-12 and abs(point[6] - 0.6) < 1e-12, point\n"
-                                                                                                               // The six-argument setter keeps the weights; the eight-argument one replaces them.
+                                                                                                               // setNthControlPoint keeps the weights; setNthControlPointWithWeights replaces them.
                                                                                                                "assert param.setNthControlPoint(0, 1, 1., 0.9, 0.5, 0.5) == OK\n"
                                                                                                                "point = param.getNthControlPoint(0, 1)\n"
                                                                                                                "assert abs(point[5] - 0.25) < 1e-12 and abs(point[6] - 0.6) < 1e-12, point\n"
-                                                                                                               "assert param.setNthControlPoint(0, 1, 1., 0.9, 0.5, 0.5, 0.7, 0.1) == OK\n"
+                                                                                                               "assert param.setNthControlPointWithWeights(0, 1, 1., 0.9, 0.5, 0.5, 0.7, 0.1) == OK\n"
                                                                                                                "point = param.getNthControlPoint(0, 1)\n"
                                                                                                                "assert abs(point[5] - 0.7) < 1e-12 and abs(point[6] - 0.1) < 1e-12, point\n"
                                                                                                                "try:\n"
-                                                                                                               "    param.addControlPoint(0, 0.5, 0.5, 1., 1., 0., 0.5)\n"
+                                                                                                               "    param.addControlPointWithWeights(0, 0.5, 0.5, 1., 1., 0., 0.5)\n"
                                                                                                                "    raise AssertionError('a zero weight was accepted')\n"
                                                                                                                "except ValueError:\n"
                                                                                                                "    pass\n";

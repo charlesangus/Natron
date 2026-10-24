@@ -1380,7 +1380,7 @@ public:
     Natron::StatusEnum addControlPoint(int dimension, double key, double value, double leftDerivative, double rightDerivative, Natron::KeyframeTypeEnum interpolation = Natron::KeyframeTypeEnum::eKeyframeTypeSmooth);
     /// Weights only hold on a Free or Broken control point. Sets a Python ValueError for a weight
     /// outside [0.01, 0.99].
-    Natron::StatusEnum addControlPoint(int dimension, double key, double value, double leftDerivative, double rightDerivative, double leftWeight, double rightWeight, Natron::KeyframeTypeEnum interpolation = Natron::KeyframeTypeEnum::eKeyframeTypeFree);
+    Natron::StatusEnum addControlPointWithWeights(int dimension, double key, double value, double leftDerivative, double rightDerivative, double leftWeight, double rightWeight, Natron::KeyframeTypeEnum interpolation = Natron::KeyframeTypeEnum::eKeyframeTypeFree);
 
     double getValue(int dimension, double parametricPosition) const;
 
@@ -1404,14 +1404,14 @@ public:
                                                     double rightDerivative);
     /// Weights only hold on a Free or Broken control point. Sets a Python ValueError for a weight
     /// outside [0.01, 0.99].
-    Natron::StatusEnum setNthControlPoint(int dimension,
-                                          int nthCtl,
-                                          double key,
-                                          double value,
-                                          double leftDerivative,
-                                          double rightDerivative,
-                                          double leftWeight,
-                                          double rightWeight);
+    Natron::StatusEnum setNthControlPointWithWeights(int dimension,
+                                                     int nthCtl,
+                                                     double key,
+                                                     double value,
+                                                     double leftDerivative,
+                                                     double rightDerivative,
+                                                     double leftWeight,
+                                                     double rightWeight);
     Natron::StatusEnum setNthControlPointInterpolation(int dimension,
                                                                  int nThCtl,
                                                                  Natron::KeyframeTypeEnum interpolation);

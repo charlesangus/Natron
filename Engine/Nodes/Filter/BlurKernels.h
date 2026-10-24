@@ -38,6 +38,12 @@
 #include <cstddef>
 #include <vector>
 
+#ifdef NATRON_HAVE_GPU
+namespace gpu {
+struct GpuLineFilter;
+}
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -137,10 +143,11 @@ public:
 
     /**
      * @brief What apply() runs, for a device that runs the same recursion: the kind, the order,
-     * and the coefficients apply() reads, as computed at construction.
+     * the boundary condition, and the coefficients apply() reads, as computed at construction.
      **/
     Kind kind() const { return _kind; }
     unsigned int order() const { return _order; }
+    bool neumann() const { return _neumann; }
 
     /// Deriche: a0, a1, a2, a3, b1, b2, coefp, coefn.
     void dericheCoefficients(double out[8]) const;
@@ -196,6 +203,14 @@ private:
     std::vector<float> _weights;
     int _radius;
 };
+
+#ifdef NATRON_HAVE_GPU
+/**
+ * @brief The device form of `filter`, with its order and boundary condition. The FIR Gaussian has
+ * none and gives the identity; gpu::recordLineBlur refuses an order above 1.
+ **/
+gpu::GpuLineFilter toGpuLineFilter(const LineFilter& filter);
+#endif
 
 /// One-shot wrappers: build the filter and apply it to a single line.
 void deriche(float* data, int n, std::ptrdiff_t stride, float sigma, unsigned int order, bool neumann);

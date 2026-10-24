@@ -572,8 +572,7 @@ TEST(ColorTrackballGlobalModeFeedback, TheDevBarHasNoFeedbackControls)
     ASSERT_TRUE(bar != nullptr);
     EXPECT_TRUE(bar->findChild<QComboBox*>(QString::fromUtf8("ColorPanelDevFeedback")) == nullptr);
     EXPECT_TRUE(bar->findChild<QComboBox*>(QString::fromUtf8("ColorPanelDevStyle")) != nullptr);
-    EXPECT_TRUE(bar->findChild<QComboBox*>(QString::fromUtf8("ColorPanelDevPlacement")) != nullptr);
-    EXPECT_EQ(2, bar->findChildren<QComboBox*>().size());
+    EXPECT_EQ(1, bar->findChildren<QComboBox*>().size());
 
     bar.reset();
     qunsetenv("NATRON_COLOR_PANEL_DEV");

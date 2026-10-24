@@ -201,7 +201,6 @@ set(GuiTests_SOURCES
     ColorKnobUndoMerge_Test.cpp
     ColorModeDiscWidget_Test.cpp
     ColorPickerLabel_Test.cpp
-    ColorTrackballBinPanel_Test.cpp
     ColorTrackballGlobalMode_Test.cpp
     ColorTrackballHud_Test.cpp
     ColorTrackballReveal_Test.cpp

@@ -37,8 +37,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-class ColorTrackballBinPanel;
-
 class PropertiesBinWrapper
     : public QWidget, public PanelWidget
 {
@@ -48,12 +46,6 @@ public:
 
     virtual ~PropertiesBinWrapper();
 
-    /**
-     * @brief The bin's trackball panel, created hidden on first use above the panels' scroll
-     * area, so it stays in view whatever the bin is scrolled to.
-     **/
-    ColorTrackballBinPanel* getColorTrackballPanel();
-
 private:
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void enterEvent(QEnterEvent* e) OVERRIDE FINAL;
@@ -61,8 +53,6 @@ private:
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual void keyReleaseEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual QUndoStack* getUndoStack() const OVERRIDE FINAL;
-
-    QPointer<ColorTrackballBinPanel> _colorTrackballPanel;
 };
 
 NATRON_NAMESPACE_EXIT

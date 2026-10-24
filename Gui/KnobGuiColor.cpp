@@ -68,7 +68,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ClickableLabel.h"
 #include "Gui/ColorKnobEditSession.h"
 #include "Gui/ColorPanelLayoutDev.h"
-#include "Gui/ColorTrackballBinPanel.h"
 #include "Gui/ColorTrackballGlobalMode.h"
 #include "Gui/ComboBox.h"
 #include "Gui/CurveGui.h"
@@ -228,51 +227,7 @@ touchTagFor(KnobGuiColor* knobGui)
     return QVariant::fromValue(QPointer<KnobGuiColor>(knobGui));
 }
 
-// Read from the switch rather than from the adjust panel's applied layout, so the knob, the
-// bin-top panel and global mode agree on it the moment it changes.
-bool
-binTopPlacement()
-{
-    return ColorPanelLayoutDev::instance()->getLayout().placement == ColorPanelLayout::Placement::BinTop;
-}
 } // namespace
-
-void
-detachColorGlobalModeHud(QWidget* hud)
-{
-    if (!hud) {
-        return;
-    }
-    hud->hide();
-
-    QWidget* parent = hud->parentWidget();
-    QVBoxLayout* layout = parent ? qobject_cast<QVBoxLayout*>(parent->layout()) : 0;
-
-    if (layout) {
-        layout->removeWidget(hud);
-    }
-    hud->setParent(0);
-}
-
-void
-attachColorGlobalModeHud(QVBoxLayout* columnLayout,
-                         QWidget* afterWidget,
-                         QWidget* hud)
-{
-    if (!columnLayout || !hud) {
-        return;
-    }
-    detachColorGlobalModeHud(hud);
-
-    // With no channel-lines widget to anchor on, index 1 still lands right after the row,
-    // the column's first and only other item at that point.
-    const int afterIndex = afterWidget ? columnLayout->indexOf(afterWidget) : -1;
-    const int index = (afterIndex >= 0) ? (afterIndex + 1) : 1;
-
-    hud->setParent(columnLayout->parentWidget());
-    columnLayout->insertWidget(index, hud);
-    hud->show();
-}
 
 ColorPickerLabel::ColorPickerLabel(KnobGuiColor* knob,
                                    QWidget* parent)
@@ -428,7 +383,6 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _adjustPanel()
     , _rowContainer()
     , _editSession()
-    , _adjustPanelInBin(false)
     , _configCallbackOwner()
     , _configCallbackId(-1)
 {
@@ -479,14 +433,6 @@ void
 KnobGuiColor::setAdjustPanelExpanded(bool expanded)
 {
     if (!_adjustPanel || !_colorSelectorButton) {
-        return;
-    }
-    // Already open, so no toggle follows; the bin-top panel may still be bound elsewhere.
-    if (expanded && _colorSelectorButton->isChecked() && binTopPlacement()) {
-        if (ColorTrackballBinPanel* binPanel = ColorTrackballBinPanel::instanceFor(getGui())) {
-            binPanel->bindTo(this);
-        }
-
         return;
     }
     _colorSelectorButton->setChecked(expanded);
@@ -704,9 +650,6 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
         return;
     }
 
-    // In the BinTop placement ▾ pushes the editing up to the bin-top panel: the channel lines
-    // still unfold here, but the knob's own adjust panel stays hidden.
-    const bool binTop = binTopPlacement();
     QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
     QWidget* columnWidget = _adjustPanel->parentWidget();
 
@@ -718,11 +661,11 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
         if (expanded) {
             KnobColorPtr knob = _knob.lock();
 
-            if (knob && !binTop && !_adjustPanel->isEditing()) {
+            if (knob && !_adjustPanel->isEditing()) {
                 _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob));
             }
             setDimensionsFolded(false);
-            _adjustPanel->setVisible(!binTop);
+            _adjustPanel->setVisible(true);
         } else {
             _adjustPanel->setVisible(false);
         }
@@ -731,38 +674,16 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
             activateLayoutsUpToInclusive(columnWidget, topWidget);
         }
         // Shown at its settled width, the panel may rearrange its own lines and change height.
-        if (expanded && !binTop) {
+        if (expanded) {
             activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
         }
     }
-    _adjustPanelInBin = expanded && binTop;
     refreshAdjustPanelToolTip(expanded);
-
-    if (!binTop) {
-        return;
-    }
-
-    ColorTrackballBinPanel* binPanel = ColorTrackballBinPanel::instanceFor(getGui());
-
-    if (!binPanel) {
-        return;
-    }
-    if (expanded) {
-        binPanel->bindTo(this);
-    } else if (binPanel->getBoundKnob() == this) {
-        binPanel->unbind();
-    }
 } // KnobGuiColor::onAdjustPanelToggled
 
 void
 KnobGuiColor::refreshAdjustPanelToolTip(bool expanded)
 {
-    if (binTopPlacement()) {
-        _colorSelectorButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Edit in the trackball panel at the top of the properties"),
-                                                                                NATRON_NAMESPACE::WhiteSpaceNormal));
-
-        return;
-    }
     _colorSelectorButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(expanded ? tr("Hide the colour adjustment panel.") : tr("Show the colour adjustment panel: a trackball wheel with hue, saturation, value, temperature and tint sliders."),
                                                                             NATRON_NAMESPACE::WhiteSpaceNormal));
 }
@@ -966,21 +887,7 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         applyPanelBounds(false);
         QObject::connect(_adjustPanel.data(), &ColorAdjustPanel::layoutApplied, this, [this, applyPanelBounds]() {
             applyPanelBounds(true);
-            // A Placement switch moves an open ▾'s editing between this column and the bin top.
-            // The bin top holds one knob, so going there with several ▾ open keeps the one
-            // openKnobToBind() picks, whatever order the knobs hear the switch in, and closes
-            // the rest.
-            if (isAdjustPanelExpanded() && (binTopPlacement() != _adjustPanelInBin)) {
-                KnobGuiColor* pick = binTopPlacement() ? ColorTrackballBinPanel::openKnobToBind(getGui()) : 0;
-
-                if (pick && (pick != this)) {
-                    setAdjustPanelExpanded(false);
-                } else {
-                    onAdjustPanelToggled(true);
-                }
-            } else {
-                refreshAdjustPanelToolTip(isAdjustPanelExpanded());
-            }
+            refreshAdjustPanelToolTip(isAdjustPanelExpanded());
         });
 
         return;
@@ -1130,7 +1037,7 @@ KnobGuiColor::_show()
     if (_globalModeButton) {
         _globalModeButton->show();
     }
-    if (isAdjustPanelExpanded() && !_adjustPanelInBin) {
+    if (isAdjustPanelExpanded()) {
         _adjustPanel->show();
     }
 }

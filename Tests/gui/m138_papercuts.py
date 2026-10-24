@@ -2,7 +2,7 @@
 the Preferences window opening centred on the screen's available area, and the colour-picker
 defaults (output unless a colour knob's eyedropper is on, with Ctrl+Alt picking the other source).
 
-Sections (all run by default; M138_SECTIONS=file-dialog,placement,picker-defaults picks a subset):
+Sections (all run by default; M138_SECTIONS=file-dialog,placement,picker-defaults,deep-read picks a subset):
   file-dialog      Read's create-time file dialog: into a subfolder, Back, Forward twice (the second
                    lands on a disabled button), the preview toggle with no selection and with a PNG
                    selected, then a scanline, a tiled and a deep tiled EXR with no error, toggled off, dialog
@@ -10,6 +10,8 @@ Sections (all run by default; M138_SECTIONS=file-dialog,placement,picker-default
   placement        Preferences is centred within the availableGeometry of the screen it is on.
   picker-defaults  Constant(0.25) -> Grade(x2) in the viewer, then a Read, with the eyedropper of the
                    Grade's offset colour knob off and on.
+  deep-read        Importing or dropping a deep EXR creates a DeepRead whose viewer shows the image;
+                   a flat EXR still creates a Read.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m138-out -e GUI_TEST_TIMEOUT=300 \
@@ -36,12 +38,12 @@ SETTLE_MS = 400
 RENDER_MS = 1500
 CENTRE_TOL_PX = 3
 TOL = 1e-3
-ALL_SECTIONS = ("file-dialog", "placement", "picker-defaults")
+ALL_SECTIONS = ("file-dialog", "placement", "picker-defaults", "deep-read")
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QPoint, QPointF, Qt
-    from PySide6.QtGui import QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QMimeData, QMetaObject, QPoint, QPointF, Qt, QUrl
+    from PySide6.QtGui import QDropEvent, QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QListView, QMainWindow, QTreeView, QWidget
 
@@ -566,6 +568,71 @@ try:
             n.destroy()
         QApplication.processEvents()
 
+    # ---- section: deep-read ---------------------------------------------------------------
+
+    READ_ID = "fr.inria.built-in.Read"
+    DEEPREAD_ID = "fr.natron.DeepRead"
+
+    def drop_files(paths):
+        gui = next(iter(gt.widgets_of("Gui")), None)
+        graph = node_graph_view()
+        require(gui is not None and graph is not None, "found the Gui and a node graph to drop on")
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
+        pos = QPointF(graph.mapTo(gui, graph.rect().center()))
+        event = QDropEvent(pos, Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+        QApplication.sendEvent(gui, event)
+        QApplication.processEvents()
+
+    def created_since(before):
+        return [n for n in app.getChildren() if n.getScriptName() not in before]
+
+    def file_of(node):
+        return node.getParam("filename").getValue()
+
+    def deep_read_section():
+        gt.section("deep-read")
+        require(make_fixtures(), "write the EXR fixtures", "no oiiotool or OpenImageIO")
+        deep_path = os.path.join(FILES_DIR, "m138-deep-red-tiled.exr")
+        flat_path = os.path.join(FILES_DIR, "m138-green-scanline.exr")
+        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        require(viewer is not None, "a Viewer exists")
+
+        def shows(node, channel, label):
+            view(viewer, node)
+            yield ("sleep", RENDER_MS)
+            colour = gt.viewer_centre_colour()
+            check(colour is not None and all(colour[channel] > colour[i] + 30 for i in range(3) if i != channel),
+                  label + " (centre " + repr(colour) + ")")
+
+        def names():
+            return set(n.getScriptName() for n in app.getChildren())
+
+        for how in ("import", "drop"):
+            before = names()
+            if how == "import":
+                app.createReader(deep_path)
+            else:
+                drop_files([deep_path])
+            deep = created_since(before)
+            check(len(deep) == 1 and deep[0].getPluginID() == DEEPREAD_ID,
+                  how + " of a deep EXR creates a DeepRead (got %r)" % [n.getPluginID() for n in deep])
+            if deep and deep[0].getPluginID() == DEEPREAD_ID:
+                check(file_of(deep[0]) == deep_path, how + ": the DeepRead holds the dropped file")
+                yield from shows(deep[0], 0, how + ": the viewer shows the deep image")
+
+            before = names()
+            if how == "import":
+                app.createReader(flat_path)
+            else:
+                drop_files([flat_path])
+            flat = created_since(before)
+            check(len(flat) == 1 and flat[0].getPluginID() == READ_ID,
+                  how + " of a flat EXR creates a Read (got %r)" % [n.getPluginID() for n in flat])
+            if flat and flat[0].getPluginID() == READ_ID:
+                yield from shows(flat[0], 1, how + ": the viewer shows the flat image")
+        yield ("sleep", SETTLE_MS)
+
     # ---- steps ----------------------------------------------------------------------------
 
     def steps():
@@ -586,6 +653,8 @@ try:
                 yield from placement_section()
             elif name == "picker-defaults":
                 yield from picker_defaults_section()
+            elif name == "deep-read":
+                yield from deep_read_section()
             else:
                 check(False, "unknown section " + name)
         faulthandler.cancel_dump_traceback_later()

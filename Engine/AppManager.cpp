@@ -3440,8 +3440,16 @@ AppManager::getReaderPluginIDForFile(const std::string& path) const
     if (byExtension.empty()) {
         return byExtension;
     }
+    std::string firstFile = path;
+    if (path.find_first_of("#%") != std::string::npos) {
+        SequenceParsing::SequenceFromPattern sequence;
+        FileSystemModel::filesListFromPattern(path, &sequence);
+        if (!sequence.empty() && !sequence.begin()->second.empty()) {
+            firstFile = sequence.begin()->second.begin()->second;
+        }
+    }
     // DeepRead reads the first part, so that is the part that decides.
-    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, NULL);
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(firstFile, NULL);
     if (header && !header->subimages.empty() && header->subimages[0].deep) {
         return std::string(PLUGINID_NATRON_DEEPREAD);
     }

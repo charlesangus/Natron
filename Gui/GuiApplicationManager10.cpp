@@ -380,9 +380,7 @@ GuiApplicationManager::setFileToOpen(const QString & str)
 bool
 GuiApplicationManager::handleImageFileOpenRequest(const std::string& filename)
 {
-    QString fileCopy( QString::fromUtf8( filename.c_str() ) );
-    QString ext = QtCompat::removeFileExtension(fileCopy);
-    std::string readerFileType = appPTR->getReaderPluginIDForFileType( ext.toStdString() );
+    std::string readerFileType = appPTR->getReaderPluginIDForFile(filename);
     AppInstancePtr mainInstance = appPTR->getTopLevelInstance();
     bool instanceCreated = false;
 

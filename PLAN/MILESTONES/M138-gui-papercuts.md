@@ -84,6 +84,20 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
   - verify: both scripts pass under `Tests/gui/run-gui-test.sh`, with info-bar screenshots of both states.
   - size: M
 
+## Phase 138.4: UAT fixes
+
+- [ ] M138.P4.T1 — The ▶ preview shows EXR files
+  - files: `Gui/SequenceFileDialog.cpp` (preview reader `Natron_File_Dialog_Preview_Provider_Reader`, `createViewerPreviewNode`, the file-change path), the native Read's EXR decode path it reaches (find via the error text "called OpenEXRInput::read_native_tiles without an open file", likely OIIO use in `Engine/Nodes/IO/`), `Tests/gui/m138_*.py` (the file-dialog section)
+  - approach: UAT found the preview works for JPG but an EXR fails with "Natron_File_Dialog_Preview_Provider_Reader error: called OpenEXRInput::read_native_tiles without an open file". Find why the preview's Read reaches a tiled EXR read with no open file (e.g. a file-change race where the reader closes or reopens while a render is in flight, a header cache keyed by path that outlives the ImageInput, or a tiled-EXR path that assumes `open()` succeeded) and fix the root cause, not the preview alone, if the same path affects a normal Read. Add a tiled and a scanline EXR to the GUI script's file-dialog section.
+  - verify: the script's file-dialog section previews a scanline and a tiled EXR with no error; a normal Read of the same files renders; ctest green.
+  - size: M
+
+- [ ] M138.P4.T2 — Build, Xvfb re-run and UAT AppImage
+  - files: none
+  - approach: fast build with tests, the M138 GUI scripts under Xvfb, `package.sh`, and an AppImage for the user to re-check the EXR preview.
+  - verify: ctest and the GUI scripts green; the user confirms the EXR preview.
+  - size: S
+
 **Verification gate:**
 - One `fast` build after all phases (remote on this host).
 - `GuiTests` passes, plus `Tests/gui/run-gui-test.sh` on `m138_papercuts.py` and `m69_cleanup.py`.
@@ -100,3 +114,4 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
 - 2026-10-24 — **P1.T1 reproduction (fast build 9cca3b082):** the crash is the ▶ preview toggle, every click, not the history `>`. `onTogglePreviewButtonClicked` (`SequenceFileDialog.cpp:2659`) re-parents the top-level preview viewer (made top-level at `:2718`) into `_centerAreaLayout`; destroying its native window hides the dialog (`QWidgetWindow::~QWidgetWindow` → `QDialogPrivate::setVisible(false)`), ending `exec()` without `finished`. `popOpenFileDialog` (`Gui/Gui20.cpp:1024-1026`) then destroys the dialog with the viewer still inside (`teardownPreview()` runs only from `closeEvent`/`done`, `:2793-2805`). Top frames: `QOpenGLShaderProgram::removeAllShaders` ← `ViewerGL::Implementation::~Implementation` ← `ViewerGL::~ViewerGL` ← … `ViewerTab::~ViewerTab` ← `SequenceFileDialog::~SequenceFileDialog` ← `Gui::popOpenFileDialog` ← `Gui::openImageSequenceDialog` ← `NativeRead::onEffectCreated`.
 - 2026-10-24 — Also found and folded into P1.T2 (same file): the "Look in" combo connects the Qt5-only `activated(QString)` (`:289`), so choosing a folder there does nothing; Forward into a folder deleted after Back advances `_currentHistoryLocation` before `setDirectory` fails (`:1306-1312`).
 - 2026-10-24 — **All tasks verified on fast build b9095c319+b90f877b7 (remote, 334/334 ctest):** `m138_papercuts.py` 57 PASS / 0 FAIL (file-dialog 26: ▶ shows the PNG in the dialog, toggles off, works after reopen; placement; picker-defaults 24), `m69_cleanup.py` 413 PASS / 0 FAIL. Code: P2 71fbf663d, P3 13e650a33, P1.T1 9cca3b082 + cb2502fca, P1.T2 b9095c319, script fixes b90f877b7. The ▶ fix: the shared preview viewer joins the dialog before its window exists (Qt 6 recreates a shown window when a GL widget first joins it, which hid the modal dialog), `ViewerGL` releases its GL objects and `TextRenderer` atlases on `aboutToBeDestroyed` and skips uploads while context-less. Other GL widgets' `TextRenderer`s went to the inbox.
+- 2026-10-24 — **UAT feedback (user):** everything OK except the ▶ preview, which now works for JPG but fails for EXR ("Natron_File_Dialog_Preview_Provider_Reader error: called OpenEXRInput::read_native_tiles without an open file"). Added Phase 138.4; resumed in a sixth lane (user asked to keep every milestone in flight).

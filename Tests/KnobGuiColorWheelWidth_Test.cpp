@@ -416,7 +416,8 @@ TEST_F(KnobGuiColorWheelWidth, WhenTheColumnHeightAndTheLinesCannotBothFitThePan
     EXPECT_GT(minimum, _page->width());
 
     // Given the minimum, the lines sit right of the wheel and inside the panel.
-    _page->setFixedWidth(minimum + blockPadX() + 1);
+    // The full-width row pads the panel by the block's side padding on both sides.
+    _page->setFixedWidth(minimum + 2 * blockPadX());
     settle();
 
     EXPECT_GE(panel()->width(), minimum);

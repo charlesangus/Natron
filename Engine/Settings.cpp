@@ -632,6 +632,45 @@ Settings::initializeKnobsUserInterface()
                                                      "Shift (x10) or Control (/10) while incrementing.") );
     _uiPage->addKnob(_useCursorPositionIncrements);
 
+    _colorTrackballFeedback = AppManager::createKnob<KnobChoice>(this, tr("Color trackball feedback"));
+    _colorTrackballFeedback->setName("colorTrackballFeedback");
+    {
+        std::vector<ChoiceOption> entries;
+        assert(entries.size() == (int)eColorTrackballFeedbackCrosshairReveal);
+        entries.push_back(ChoiceOption("crosshairReveal",
+                                       tr("Crosshair + reveal").toStdString(),
+                                       tr("Show a crosshair cursor with a following HUD, and reveal the mode's graphic at the press point.").toStdString()));
+        assert(entries.size() == (int)eColorTrackballFeedbackWidgetCursor);
+        entries.push_back(ChoiceOption("widgetCursor",
+                                       tr("Widget cursor").toStdString(),
+                                       tr("Replace the cursor with the mode's widget, which follows the pointer and freezes on press.").toStdString()));
+        _colorTrackballFeedback->populateChoices(entries);
+    }
+    _colorTrackballFeedback->setHintToolTip(tr("How the color trackball shows what a drag will do. \n"
+                                               "Crosshair + reveal shows a crosshair cursor with a following HUD and reveals the "
+                                               "mode's graphic at the press point. \n"
+                                               "Widget cursor replaces the cursor with the mode's widget, which follows the pointer "
+                                               "and freezes on press."));
+    _uiPage->addKnob(_colorTrackballFeedback);
+
+    _colorTrackballSize = AppManager::createKnob<KnobChoice>(this, tr("Color trackball size"));
+    _colorTrackballSize->setName("colorTrackballSize");
+    {
+        std::vector<ChoiceOption> entries;
+        assert(entries.size() == (int)eColorTrackballSizeRegular);
+        entries.push_back(ChoiceOption("regular",
+                                       tr("Regular").toStdString(),
+                                       tr("The standard track size.").toStdString()));
+        assert(entries.size() == (int)eColorTrackballSizeLarge);
+        entries.push_back(ChoiceOption("large",
+                                       tr("Large").toStdString(),
+                                       tr("A bigger colour wheel with the channel and Hue...Tint sliders beside it.").toStdString()));
+        _colorTrackballSize->populateChoices(entries);
+    }
+    _colorTrackballSize->setHintToolTip(tr("Size of the color trackball track. \n"
+                                           "Large shows a bigger colour wheel with the channel and Hue...Tint sliders beside it."));
+    _uiPage->addKnob(_colorTrackballSize);
+
     _defaultLayoutFile = AppManager::createKnob<KnobFile>( this, tr("Default layout file") );
     _defaultLayoutFile->setName("defaultLayout");
     _defaultLayoutFile->setHintToolTip( tr("When set, %1 uses the given layout file "
@@ -1542,6 +1581,8 @@ Settings::setDefaultValues()
     _renderOnEditingFinished->setDefaultValue(false);
     _maxPanelsOpened->setDefaultValue(10, 0);
     _useCursorPositionIncrements->setDefaultValue(true);
+    _colorTrackballFeedback->setDefaultValue((int)eColorTrackballFeedbackCrosshairReveal);
+    _colorTrackballSize->setDefaultValue((int)eColorTrackballSizeRegular);
     //_defaultLayoutFile
     _loadProjectsWorkspace->setDefaultValue(false);
 #ifdef Q_OS_WIN
@@ -3208,6 +3249,18 @@ bool
 Settings::useCursorPositionIncrements() const
 {
     return _useCursorPositionIncrements->getValue();
+}
+
+Settings::ColorTrackballFeedbackEnum
+Settings::getColorTrackballFeedback() const
+{
+    return (ColorTrackballFeedbackEnum)_colorTrackballFeedback->getValue();
+}
+
+Settings::ColorTrackballSizeEnum
+Settings::getColorTrackballSize() const
+{
+    return (ColorTrackballSizeEnum)_colorTrackballSize->getValue();
 }
 
 bool

@@ -89,6 +89,7 @@ set(Tests_SOURCES
     Native/NativeGpuParity.cpp
     NodeCategory_Test.cpp
     TabMenuSettings_Test.cpp
+    SettingsColorTrackball_Test.cpp
     NodeColorSampler_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp

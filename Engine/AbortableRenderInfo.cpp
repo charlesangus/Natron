@@ -29,6 +29,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <QAtomicInt>
 #include <QMutex>
@@ -159,29 +160,37 @@ AbortableRenderInfo::unregisterThreadForRender(AbortableThread* thread)
 bool
 AbortableRenderInfo::getStallReport(std::string* report) const
 {
-    ThreadSet threads;
+    struct ThreadAction {
+        std::string threadName;
+        std::string actionName;
+        NodePtr node;
+    };
+    std::vector<ThreadAction> actions;
     {
+        // A registered thread unregisters before it is destroyed, under this lock, so the pointers
+        // are only valid while it is held. The nodes are inspected after it is released.
         QMutexLocker k(&_imp->threadsMutex);
-        threads = _imp->threadsForThisRender;
+        for (ThreadSet::const_iterator it = _imp->threadsForThisRender.begin(); it != _imp->threadsForThisRender.end(); ++it) {
+            ThreadAction action;
+            (*it)->getCurrentActionInfos(&action.actionName, &action.node);
+            if (!action.node) {
+                continue;
+            }
+            action.threadName = (*it)->getThreadName();
+            actions.push_back(action);
+        }
     }
 
     std::stringstream ss;
-    bool hasAtLeastOneThreadInNodeAction = false;
-    for (ThreadSet::const_iterator it = threads.begin(); it != threads.end(); ++it) {
-        std::string actionName;
-        NodePtr node;
-        (*it)->getCurrentActionInfos(&actionName, &node);
-        if (!node) {
-            continue;
-        }
-        hasAtLeastOneThreadInNodeAction = true;
+    for (std::size_t i = 0; i < actions.size(); ++i) {
+        const NodePtr& node = actions[i].node;
         if (node->getEffectInstance()->isReader() || node->getEffectInstance()->isWriter()) {
             return false;
         }
         const std::string nodeName = node->getFullyQualifiedName();
         const std::string pluginId = node->getPluginID();
 
-        ss << " - " << (*it)->getThreadName() << tr(" stalled in:").toStdString() << std::endl
+        ss << " - " << actions[i].threadName << tr(" stalled in:").toStdString() << std::endl
            << std::endl;
         if (!nodeName.empty()) {
             ss << "    Node: " << nodeName << std::endl;
@@ -189,12 +198,12 @@ AbortableRenderInfo::getStallReport(std::string* report) const
         if (!pluginId.empty()) {
             ss << "    Plugin: " << pluginId << std::endl;
         }
-        if (!actionName.empty()) {
-            ss << "    Action: " << actionName << std::endl;
+        if (!actions[i].actionName.empty()) {
+            ss << "    Action: " << actions[i].actionName << std::endl;
         }
         ss << std::endl;
     }
-    if (!hasAtLeastOneThreadInNodeAction) {
+    if (actions.empty()) {
         return false;
     }
     *report = ss.str();

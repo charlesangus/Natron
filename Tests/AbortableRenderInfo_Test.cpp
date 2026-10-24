@@ -25,17 +25,20 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
-#include <QEventLoop>
 #include <QString>
 #include <QThread>
 #include <QThreadPool>
@@ -65,9 +68,9 @@ runOnExitedThread(const std::function<void()>& fn)
     thread->wait();
 }
 
-// Spins the main thread's event loop, where the watchdog's timer lives, until done() holds.
+// Polls done() without ever running the main thread's event loop: the watchdog must not need it.
 bool
-pumpUntil(const std::function<bool()>& done,
+waitUntil(const std::function<bool()>& done,
           int guardMs = kGuardMs)
 {
     QElapsedTimer elapsed;
@@ -76,16 +79,32 @@ pumpUntil(const std::function<bool()>& done,
         if (elapsed.elapsed() > guardMs) {
             return false;
         }
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
         QThread::msleep(1);
     }
 
     return true;
 }
 
+// Filled by the watchdog thread, read by the test.
 struct StallReports {
+    std::mutex mutex;
+    std::condition_variable added;
     std::vector<std::string> reports;
-    bool allOnMainThread = true;
+    bool anyOnMainThread = false;
+
+    std::size_t size()
+    {
+        std::lock_guard<std::mutex> k(mutex);
+
+        return reports.size();
+    }
+
+    std::vector<std::string> since(std::size_t first)
+    {
+        std::lock_guard<std::mutex> k(mutex);
+
+        return std::vector<std::string>(reports.begin() + first, reports.end());
+    }
 };
 } // namespace
 
@@ -98,15 +117,19 @@ protected:
         AbortWatchdog::setTimeoutForTesting(kTimeoutMs);
         StallReports* reports = &_reports;
         AbortWatchdog::setStallReportHandlerForTesting([reports](const std::string& report) {
-            reports->allOnMainThread = reports->allOnMainThread && QThread::currentThread() == QCoreApplication::instance()->thread();
-            reports->reports.push_back(report);
+            {
+                std::lock_guard<std::mutex> k(reports->mutex);
+                reports->anyOnMainThread = reports->anyOnMainThread || QThread::currentThread() == QCoreApplication::instance()->thread();
+                reports->reports.push_back(report);
+            }
+            reports->added.notify_all();
         });
     }
 
     virtual void TearDown() OVERRIDE
     {
         // Drain what this test left behind so no report reaches the next test's handler.
-        pumpUntil([]() { return AbortWatchdog::getNumWatchedForTesting() == 0; });
+        waitUntil([]() { return AbortWatchdog::getNumWatchedForTesting() == 0; });
         AbortWatchdog::setStallReportHandlerForTesting(AbortWatchdog::StallReportHandler());
         AbortWatchdog::setTimeoutForTesting(0);
         BaseTest::TearDown();
@@ -136,10 +159,10 @@ protected:
             actor.clearAbortInfo();
         }
 
-        const std::size_t reportsBefore = _reports.reports.size();
-        ASSERT_TRUE(pumpUntil([&info]() { return !AbortWatchdog::isWatchingForTesting(info); }));
+        const std::size_t reportsBefore = _reports.size();
+        ASSERT_TRUE(waitUntil([&info]() { return !AbortWatchdog::isWatchingForTesting(info); }));
         EXPECT_GE(sinceAbort.elapsed(), kTimeoutMs);
-        _newReports.assign(_reports.reports.begin() + reportsBefore, _reports.reports.end());
+        _newReports = _reports.since(reportsBefore);
 
         actor.clearAbortInfo();
         actor.setCurrentActionInfos(std::string(), NodePtr());
@@ -175,8 +198,8 @@ TEST_F(AbortableRenderInfoTest, AbortedOnAThirdThreadThenDestroyedOnAnother)
     EXPECT_TRUE(weak.expired());
 
     // The watchdog drops the destroyed render on its next scan, before the timeout.
-    EXPECT_TRUE(pumpUntil([]() { return AbortWatchdog::getNumWatchedForTesting() == 0; }));
-    EXPECT_TRUE(_reports.reports.empty());
+    EXPECT_TRUE(waitUntil([]() { return AbortWatchdog::getNumWatchedForTesting() == 0; }));
+    EXPECT_EQ((std::size_t)0, _reports.size());
 }
 
 TEST_F(AbortableRenderInfoTest, CreateAbortDestroyAcrossPoolResizes)
@@ -220,15 +243,13 @@ TEST_F(AbortableRenderInfoTest, CreateAbortDestroyAcrossPoolResizes)
         }
         pool.waitForDone();
         EXPECT_TRUE(created.empty()) << "pool size " << poolSize;
-        // Let the watchdog scan while infos are being destroyed elsewhere.
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
     }
 
-    EXPECT_TRUE(pumpUntil([]() { return AbortWatchdog::getNumWatchedForTesting() == 0; }));
-    EXPECT_TRUE(_reports.reports.empty());
+    EXPECT_TRUE(waitUntil([]() { return AbortWatchdog::getNumWatchedForTesting() == 0; }));
+    EXPECT_EQ((std::size_t)0, _reports.size());
 }
 
-TEST_F(AbortableRenderInfoTest, AStalledPoolRenderIsReportedOnTheMainThread)
+TEST_F(AbortableRenderInfoTest, AStalledPoolRenderIsReportedOffTheMainThread)
 {
     NodePtr checker = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD), PLUGIN_MAJOR_NATRON_CHECKERBOARD);
     ASSERT_TRUE(bool(checker));
@@ -237,7 +258,92 @@ TEST_F(AbortableRenderInfoTest, AStalledPoolRenderIsReportedOnTheMainThread)
     ASSERT_EQ((std::size_t)1, _newReports.size());
     EXPECT_NE(std::string::npos, _newReports[0].find(checker->getFullyQualifiedName()));
     EXPECT_NE(std::string::npos, _newReports[0].find("Action: render"));
-    EXPECT_TRUE(_reports.allOnMainThread);
+    std::lock_guard<std::mutex> k(_reports.mutex);
+    EXPECT_FALSE(_reports.anyOnMainThread);
+}
+
+// A command-line render or a script's app.render() blocks the main thread until the render ends,
+// so a stalled render there must be reported without the main thread's event loop ever running.
+TEST_F(AbortableRenderInfoTest, AStalledRenderIsReportedWhileTheMainThreadIsBlocked)
+{
+    NodePtr checker = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD), PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    ASSERT_TRUE(bool(checker));
+
+    AbortableThread actor(QThread::currentThread());
+    actor.setCurrentActionInfos("render", checker);
+    AbortableRenderInfoPtr info = AbortableRenderInfo::create(true, 0);
+    actor.setAbortInfo(false, info, EffectInstancePtr());
+
+    bool reported;
+    {
+        std::unique_lock<std::mutex> k(_reports.mutex);
+        const std::size_t reportsBefore = _reports.reports.size();
+        info->setAborted();
+        reported = _reports.added.wait_for(k, std::chrono::milliseconds(kGuardMs), [this, reportsBefore]() { return _reports.reports.size() > reportsBefore; });
+    }
+    EXPECT_TRUE(reported);
+
+    actor.clearAbortInfo();
+    actor.setCurrentActionInfos(std::string(), NodePtr());
+}
+
+// setAbortInfo() does not unregister the thread from its previous render, so destroying the thread
+// must remove it from every render that may still list it.
+TEST_F(AbortableRenderInfoTest, ADestroyedThreadIsNoLongerListedByAnyOfItsRenders)
+{
+    AbortableRenderInfoPtr first = AbortableRenderInfo::create(true, 0);
+    AbortableRenderInfoPtr second = AbortableRenderInfo::create(true, 0);
+    std::unique_ptr<AbortableThread> actor(new AbortableThread(QThread::currentThread()));
+    actor->setAbortInfo(false, first, EffectInstancePtr());
+    actor->setAbortInfo(false, second, EffectInstancePtr());
+
+    AbortableThread* const destroyed = actor.get();
+    actor.reset();
+    // Only compares the pointer; it is never dereferenced.
+    EXPECT_FALSE(first->unregisterThreadForRender(destroyed));
+    EXPECT_FALSE(second->unregisterThreadForRender(destroyed));
+}
+
+// Render threads finish and are destroyed while the watchdog describes their render. Under a
+// sanitizer, any read of a destroyed thread fails this test.
+TEST_F(AbortableRenderInfoTest, StallReportsRaceRenderThreadsExiting)
+{
+    NodePtr checker = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD), PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    ASSERT_TRUE(bool(checker));
+    AbortableRenderInfoPtr info = AbortableRenderInfo::create(true, 0);
+
+    const int kThreads = 4;
+    const int kIterations = 2000;
+    std::atomic<int> running(kThreads);
+    std::vector<std::unique_ptr<QThread>> threads;
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back(QThread::create([&info, &checker, &running]() {
+            for (int i = 0; i < kIterations; ++i) {
+                std::unique_ptr<AbortableThread> actor(new AbortableThread(QThread::currentThread()));
+                actor->setThreadName("exiting render thread");
+                actor->setCurrentActionInfos("render", checker);
+                actor->setAbortInfo(false, info, EffectInstancePtr());
+                // Destroyed without clearAbortInfo(), like a thread that exits mid-render.
+            }
+            --running;
+        }));
+        threads.back()->start();
+    }
+
+    int scans = 0;
+    while (running.load() > 0) {
+        std::string report;
+        if (info->getStallReport(&report)) {
+            EXPECT_NE(std::string::npos, report.find("exiting render thread"));
+        }
+        ++scans;
+    }
+    for (std::size_t t = 0; t < threads.size(); ++t) {
+        threads[t]->wait();
+    }
+    EXPECT_GT(scans, 0);
+    std::string report;
+    EXPECT_FALSE(info->getStallReport(&report));
 }
 
 TEST_F(AbortableRenderInfoTest, UnregisteringEveryThreadBeforeTheTimeoutSuppressesTheReport)

@@ -144,6 +144,7 @@ public:
      * @brief Registers the thread as part of this render request. Whenever AbortableThread::setAbortInfo is called, the thread is automatically registered
      * in this class as to be part of this render. This is used to monitor running threads for a specific render and to know if a thread has stalled when
      * the user called setAborted()
+     * The thread must be unregistered before it is destroyed; AbortableThread's destructor does it.
      **/
     void registerThreadForRender(AbortableThread* thread);
 

@@ -107,6 +107,7 @@
 #endif
 #include "Global/PythonUtils.h"
 
+#include "Engine/AbortWatchdog.h"
 #include "Engine/AppInstance.h"
 #include "Engine/Backdrop.h"
 #include "Engine/CLArgs.h"
@@ -484,6 +485,9 @@ AppManager::~AppManager()
 
     ///Caches may have launched some threads to delete images, wait for them to be done
     QThreadPool::globalInstance()->waitForDone();
+
+    // No render is left to abort, and the watchdog thread reads this manager.
+    AbortWatchdog::shutdown();
 
     {
         QMutexLocker k(&_imp->renderSchedulerMutex);

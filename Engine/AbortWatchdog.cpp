@@ -28,14 +28,15 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <mutex>
 #include <sstream>
+#include <thread>
 #include <vector>
 
+#include <QCoreApplication>
 #include <QDebug>
 #include <QMetaObject>
-#include <QPointer>
-#include <QTimer>
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
@@ -58,19 +59,32 @@ struct WatchedRender {
     Clock::time_point abortedAt;
 };
 
+struct WatchdogState;
+void stopThread(WatchdogState& s);
+
 struct WatchdogState {
     std::mutex mutex;
+    std::condition_variable wake;
+    // Renders stay listed until their check is over, report included.
     std::vector<WatchedRender> renders;
-    // Renders that were destroyed are only pruned by a scan, which never runs while the main
-    // thread is blocked; pruning on insertion past this size keeps the list bounded meanwhile.
+    // Destroyed renders are only pruned by a scan, which does not run while a stall dialog is
+    // open; pruning on insertion past this size keeps the list bounded meanwhile.
     std::size_t pruneThreshold = 64;
-    // Set once a timer start was queued, cleared by the scan that stops the timer.
-    bool timerWanted = false;
     AbortWatchdog::StallReportHandler handler;
+    std::thread thread;
+    // Set for good once the application shuts the watchdog down.
+    bool stopping = false;
+    // While the stall dialog is open on the main thread, scans wait so dialogs never stack.
+    bool dialogOpen = false;
 
-    // Main thread only.
-    QPointer<QTimer> timer;
-    bool reportOpen = false;
+    // Held by the watchdog thread while it checks due renders and reports them, so that replacing
+    // the handler waits for a report in flight. Taken before mutex, never after.
+    std::mutex reportMutex;
+
+    ~WatchdogState()
+    {
+        stopThread(*this);
+    }
 };
 
 WatchdogState&
@@ -89,22 +103,41 @@ scanIntervalMs()
     return std::max(1, AbortWatchdog::getTimeoutMs() / 4);
 }
 
-void scan();
-
 void
-startTimerOnMainThread()
+stopThread(WatchdogState& s)
 {
-    WatchdogState& s = state();
-
-    if (!s.timer) {
-        s.timer = new QTimer(QCoreApplication::instance());
-        QObject::connect(s.timer.data(), &QTimer::timeout, s.timer.data(), []() { scan(); });
+    std::thread thread;
+    {
+        std::lock_guard<std::mutex> k(s.mutex);
+        s.stopping = true;
+        thread.swap(s.thread);
     }
-    if (!s.timer->isActive()) {
-        s.timer->start(scanIntervalMs());
+    s.wake.notify_all();
+    if (thread.joinable()) {
+        thread.join();
     }
 }
 
+void
+showStallDialog(const std::vector<AbortableRenderInfoPtr>& stalled,
+                const std::string& message)
+{
+    WatchdogState& s = state();
+    StandardButtonEnum reply = Dialogs::questionDialog(AbortWatchdog::tr("A Render is not responding anymore").toStdString(), message, false, StandardButtons(eStandardButtonYes | eStandardButtonNo), eStandardButtonNo);
+
+    if (reply == eStandardButtonYes) {
+        for (std::size_t i = 0; i < stalled.size(); ++i) {
+            stalled[i]->killRegisteredThreads();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> k(s.mutex);
+        s.dialogOpen = false;
+    }
+    s.wake.notify_all();
+}
+
+// Runs on the watchdog thread, with reportMutex held.
 void
 report(const std::vector<AbortableRenderInfoPtr>& stalled,
        const std::string& details)
@@ -132,7 +165,9 @@ report(const std::vector<AbortableRenderInfoPtr>& stalled,
 
         return;
     }
-    if (appPTR->isBackground()) {
+    // The application is torn down only after the watchdog thread was stopped.
+    QCoreApplication* app = QCoreApplication::instance();
+    if (!app || !appPTR || appPTR->isBackground()) {
         qDebug() << ss.str().c_str();
 
         return;
@@ -142,58 +177,21 @@ report(const std::vector<AbortableRenderInfoPtr>& stalled,
        << std::endl;
     ss << AbortWatchdog::tr("WARNING: Killing them may not work or may leave %1 in a bad state. The application may crash or freeze as a consequence of this. It is advised to restart %1 instead.").arg(QString::fromUtf8(NATRON_APPLICATION_NAME)).toStdString();
 
-    s.reportOpen = true;
-    StandardButtonEnum reply = Dialogs::questionDialog(AbortWatchdog::tr("A Render is not responding anymore").toStdString(), ss.str(), false, StandardButtons(eStandardButtonYes | eStandardButtonNo), eStandardButtonNo);
-    s.reportOpen = false;
-    if (reply == eStandardButtonYes) {
-        for (std::size_t i = 0; i < stalled.size(); ++i) {
-            stalled[i]->killRegisteredThreads();
-        }
-    }
-} // report
-
-void
-scan()
-{
-    WatchdogState& s = state();
-
-    // The question dialog runs a nested event loop; renders keep waiting until it closes.
-    if (s.reportOpen) {
-        return;
-    }
-
-    const Clock::time_point now = Clock::now();
-    const Clock::duration timeout = std::chrono::milliseconds(AbortWatchdog::getTimeoutMs());
-    std::vector<AbortableRenderInfoPtr> due;
-    bool stop = false;
     {
         std::lock_guard<std::mutex> k(s.mutex);
-        std::vector<WatchedRender>::iterator kept = s.renders.begin();
-        for (std::vector<WatchedRender>::iterator it = s.renders.begin(); it != s.renders.end(); ++it) {
-            AbortableRenderInfoPtr info = it->info.lock();
-            if (!info) {
-                continue;
-            }
-            if (now - it->abortedAt < timeout) {
-                *kept++ = *it;
-                continue;
-            }
-            due.push_back(info);
-        }
-        s.renders.erase(kept, s.renders.end());
-        if (s.renders.empty()) {
-            s.timerWanted = false;
-            stop = true;
-        }
+        s.dialogOpen = true;
     }
-    if (stop) {
-        s.timer->stop();
-    } else if (s.timer->interval() != scanIntervalMs()) {
-        s.timer->setInterval(scanIntervalMs());
-    }
+    const std::string message = ss.str();
+    QMetaObject::invokeMethod(app, [stalled, message]() { showStallDialog(stalled, message); }, Qt::QueuedConnection);
+} // report
 
+// Runs on the watchdog thread, with reportMutex held and the state's mutex released.
+void
+checkDueRenders(const std::vector<AbortableRenderInfoPtr>& due)
+{
     std::vector<AbortableRenderInfoPtr> stalled;
     std::string details;
+
     for (std::size_t i = 0; i < due.size(); ++i) {
         std::string renderDetails;
         if (due[i]->getStallReport(&renderDetails)) {
@@ -204,23 +202,79 @@ scan()
     if (!stalled.empty()) {
         report(stalled, details);
     }
-} // scan
+}
+
+// The watchdog thread's body. It only wakes up while renders are watched and no dialog is open,
+// so it costs nothing otherwise. Being its own thread, it times out renders even while the main
+// thread is blocked, which a command-line render or a script's app.render() does.
+void
+run()
+{
+    WatchdogState& s = state();
+    std::unique_lock<std::mutex> lock(s.mutex);
+
+    for (;;) {
+        if (s.stopping) {
+            return;
+        }
+        if (s.renders.empty() || s.dialogOpen) {
+            s.wake.wait(lock);
+            continue;
+        }
+        s.wake.wait_for(lock, std::chrono::milliseconds(scanIntervalMs()));
+        if (s.stopping) {
+            return;
+        }
+        if (s.dialogOpen) {
+            continue;
+        }
+
+        const Clock::time_point now = Clock::now();
+        const Clock::duration timeout = std::chrono::milliseconds(AbortWatchdog::getTimeoutMs());
+        std::vector<AbortableRenderInfoPtr> due;
+        std::vector<WatchedRender>::iterator kept = s.renders.begin();
+        for (std::vector<WatchedRender>::iterator it = s.renders.begin(); it != s.renders.end(); ++it) {
+            AbortableRenderInfoPtr info = it->info.lock();
+            if (!info) {
+                continue;
+            }
+            if (now - it->abortedAt >= timeout) {
+                due.push_back(info);
+            }
+            *kept++ = *it;
+        }
+        s.renders.erase(kept, s.renders.end());
+        if (due.empty()) {
+            continue;
+        }
+
+        lock.unlock();
+        {
+            std::lock_guard<std::mutex> k(s.reportMutex);
+            checkDueRenders(due);
+        }
+        lock.lock();
+        s.renders.erase(std::remove_if(s.renders.begin(), s.renders.end(), [&due](const WatchedRender& r) {
+                            AbortableRenderInfoPtr info = r.info.lock();
+
+                            return !info || std::find(due.begin(), due.end(), info) != due.end();
+                        }),
+                        s.renders.end());
+    }
+} // run
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 void
 AbortWatchdog::watch(const AbortableRenderInfoWPtr& info)
 {
-    QCoreApplication* app = QCoreApplication::instance();
-
-    if (!app) {
-        return;
-    }
-
     WatchdogState& s = state();
-    bool startTimer = false;
+    bool wasIdle;
     {
         std::lock_guard<std::mutex> k(s.mutex);
+        if (s.stopping) {
+            return;
+        }
         if (s.renders.size() >= s.pruneThreshold) {
             s.renders.erase(std::remove_if(s.renders.begin(), s.renders.end(), [](const WatchedRender& r) { return r.info.expired(); }), s.renders.end());
             s.pruneThreshold = std::max<std::size_t>(64, s.renders.size() * 2);
@@ -228,15 +282,21 @@ AbortWatchdog::watch(const AbortableRenderInfoWPtr& info)
         WatchedRender render;
         render.info = info;
         render.abortedAt = Clock::now();
+        wasIdle = s.renders.empty();
         s.renders.push_back(render);
-        if (!s.timerWanted) {
-            s.timerWanted = true;
-            startTimer = true;
+        if (!s.thread.joinable()) {
+            s.thread = std::thread(run);
         }
     }
-    if (startTimer) {
-        QMetaObject::invokeMethod(app, []() { startTimerOnMainThread(); }, Qt::QueuedConnection);
+    if (wasIdle) {
+        s.wake.notify_all();
     }
+}
+
+void
+AbortWatchdog::shutdown()
+{
+    stopThread(state());
 }
 
 int
@@ -257,6 +317,7 @@ void
 AbortWatchdog::setStallReportHandlerForTesting(const StallReportHandler& handler)
 {
     WatchdogState& s = state();
+    std::lock_guard<std::mutex> reportLock(s.reportMutex);
     std::lock_guard<std::mutex> k(s.mutex);
 
     s.handler = handler;

@@ -29,6 +29,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <list>
 #include <mutex>
@@ -37,15 +38,19 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
+#include <QFileInfo>
 #include <QMetaObject>
 #include <QObject>
 #include <QString>
 #include <QTemporaryDir>
+#include <QThread>
 
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/BlockingBackgroundRender.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/GenericSchedulerThread.h"
@@ -56,6 +61,7 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -64,6 +70,21 @@ NATRON_PYTHON_NAMESPACE_USING
 namespace {
 const int kGuardSeconds = 30;
 const int kIdleDelayMs = 200;
+
+// Polls done() until it holds, or gives up after the guard delay.
+bool
+waitUntil(const std::function<bool()>& done)
+{
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(kGuardSeconds);
+    while (!done()) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            return false;
+        }
+        QThread::msleep(1);
+    }
+
+    return true;
+}
 
 // Aborts the run when a blocking render never returns, so a hang reports itself instead of
 // stalling until the ctest timeout.
@@ -205,28 +226,79 @@ TEST_F(BlockingRenderIdleTest, TwoSequencesQueuedOnOneWriteBothReturn)
     EXPECT_FALSE(effect->isDoingSequentialRender());
 }
 
-TEST_F(BlockingRenderIdleTest, TheAfterRenderCallbackHasRunWhenABlockingRenderReturns)
+// With another sequence queued on the Write, the first blocking render stops waiting as soon as
+// its sequence is reported finished, so only the ordering inside the scheduler keeps it blocked
+// until its afterRender callback has completed.
+TEST_F(BlockingRenderIdleTest, AQueuedSequenceDoesNotLetABlockingRenderReturnBeforeItsAfterRender)
 {
     OutputEffectInstance* effect = writerEffect();
     ASSERT_TRUE(effect != NULL);
+    KnobString* beforeRender = dynamic_cast<KnobString*>(_writer->getKnobByName("beforeRender").get());
+    ASSERT_TRUE(beforeRender != NULL);
     KnobString* afterRender = dynamic_cast<KnobString*>(_writer->getKnobByName("afterRender").get());
     ASSERT_TRUE(afterRender != NULL);
 
+    const QString goPath = _dir.path() + QString::fromUtf8("/go");
+    const QString firstAfterRenderDonePath = _dir.path() + QString::fromUtf8("/firstAfterRenderDone");
     std::string error, output;
-    // The sleep keeps the callback running well past the moment the sequence is reported finished.
-    const std::string define = "blockingRenderAfterRenderRan = False\n"
-                               "def blockingRenderAfterRender(aborted, thisNode, app):\n"
-                               "    global blockingRenderAfterRenderRan\n"
-                               "    import time\n"
-                               "    time.sleep(0.2)\n"
-                               "    blockingRenderAfterRenderRan = True\n";
+    // The first sequence holds in beforeRender until the second one is queued behind it. Its
+    // afterRender then outlasts the moment the sequence would be reported finished if the report
+    // came first, and only leaves its mark once it ends.
+    const std::string define = "import os, time\n"
+                               "queuedSequenceBeforeCalls = 0\n"
+                               "queuedSequenceAfterCalls = 0\n"
+                               "def queuedSequenceBeforeRender(thisNode, app):\n"
+                               "    global queuedSequenceBeforeCalls\n"
+                               "    queuedSequenceBeforeCalls += 1\n"
+                               "    if queuedSequenceBeforeCalls != 1:\n"
+                               "        return\n"
+                               "    deadline = time.monotonic() + "
+        + std::to_string(kGuardSeconds) + "\n"
+                                          "    while not os.path.exists('"
+        + goPath.toStdString() + "') and time.monotonic() < deadline:\n"
+                                 "        time.sleep(0.005)\n"
+                                 "def queuedSequenceAfterRender(aborted, thisNode, app):\n"
+                                 "    global queuedSequenceAfterCalls\n"
+                                 "    queuedSequenceAfterCalls += 1\n"
+                                 "    if queuedSequenceAfterCalls != 1:\n"
+                                 "        return\n"
+                                 "    time.sleep(0.2)\n"
+                                 "    open('"
+        + firstAfterRenderDonePath.toStdString() + "', 'w').close()\n";
     ASSERT_TRUE(interpretPythonScript(define, &error, &output)) << error;
-    afterRender->setValue(std::string("blockingRenderAfterRender"));
+    beforeRender->setValue(std::string("queuedSequenceBeforeRender"));
+    afterRender->setValue(std::string("queuedSequenceAfterRender"));
+    _writer->refreshInputRelatedDataForRender();
 
-    std::list<AppInstance::RenderWork> works;
-    works.push_back(AppInstance::RenderWork(effect, 1, 1, 1, false));
-    EXPECT_EQ(1, renderBlocking(works));
+    BlockingBackgroundRender first(effect);
+    BlockingBackgroundRender second(effect);
+    std::atomic<bool> afterRenderDoneWhenFirstReturned(false);
+    {
+        RenderWatchdog watchdog;
+        std::thread firstThread([&first, &afterRenderDoneWhenFirstReturned, &firstAfterRenderDonePath]() {
+            first.blockingRender(false, 1, 1, 1);
+            afterRenderDoneWhenFirstReturned = QFileInfo::exists(firstAfterRenderDonePath);
+            appPTR->getAppTLS()->cleanupTLSForThread();
+        });
+        const bool firstQueued = waitUntil([effect]() { return effect->hasRenderSequenceRequestOtherThan(NULL); });
+        std::thread secondThread([&second]() {
+            second.blockingRender(false, 1, 1, 1);
+            appPTR->getAppTLS()->cleanupTLSForThread();
+        });
+        const bool secondQueued = waitUntil([effect, &first]() { return effect->hasRenderSequenceRequestOtherThan(&first); });
+        QFile go(goPath);
+        const bool released = go.open(QIODevice::WriteOnly);
+        go.close();
+        firstThread.join();
+        secondThread.join();
+        EXPECT_TRUE(firstQueued);
+        EXPECT_TRUE(secondQueued);
+        EXPECT_TRUE(released);
+    }
 
-    EXPECT_TRUE(interpretPythonScript("if not blockingRenderAfterRenderRan:\n    raise ValueError('afterRender had not run')\n", &error, &output)) << error;
+    EXPECT_TRUE(afterRenderDoneWhenFirstReturned.load());
+    EXPECT_TRUE(QFileInfo::exists(firstAfterRenderDonePath));
+    EXPECT_FALSE(effect->isDoingSequentialRender());
+    beforeRender->setValue(std::string());
     afterRender->setValue(std::string());
 }

@@ -6636,10 +6636,13 @@ EffectInstance::getMetadata(double time,
     if (!node) {
         return getRefreshedMetadata();
     }
-    // As NativeEffectBase::getOutputMetadata(): refresh first so the hash read is the one the
-    // derivation sees, and read the generation after the hash so that a change in between
-    // keeps the result from being stored.
+    // Refresh first so the hash read is the one the derivation sees. An upstream edit only marks
+    // this node, so its hash is not recomputed while the derivation runs and can read the same
+    // again after an input changed and changed back meanwhile, with the derivation having seen
+    // the other state: the mark count, read before the hash, catches that. The generation catches
+    // a drop under the same hash.
     refreshInputRelatedDataIfStale();
+    const U64 marks = node->getHashMarkCount();
     const U64 hash = node->getHashValue();
     NodeMetadataConstPtr cached = _imp->actionsCache->getMetadataResult(hash, time, view);
     if (cached) {
@@ -6647,7 +6650,7 @@ EffectInstance::getMetadata(double time,
     }
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     NodeMetadataConstPtr metadata = isOpenFX() ? getOpenFXMetadataAt(hash, time, view) : deriveMetadataAt(hash, time, view);
-    if (node->getHashValue() == hash) {
+    if ((node->getHashMarkCount() == marks) && (node->getHashValue() == hash)) {
         _imp->actionsCache->setMetadataResult(hash, time, view, metadata, generation);
     }
 
@@ -6665,7 +6668,9 @@ EffectInstance::getTimeInvariantMetadata()
     if (isOpenFX()) {
         return getOpenFXTimeInvariantMetadata();
     }
+    // As getMetadata().
     refreshInputRelatedDataIfStale();
+    const U64 marks = node->getHashMarkCount();
     const U64 hash = node->getHashValue();
     NodeMetadataConstPtr cached = _imp->actionsCache->getTimeInvariantMetadataResult(hash);
     if (cached) {
@@ -6673,7 +6678,7 @@ EffectInstance::getTimeInvariantMetadata()
     }
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     NodeMetadataConstPtr metadata = deriveTimeInvariantMetadata();
-    if (node->getHashValue() == hash) {
+    if ((node->getHashMarkCount() == marks) && (node->getHashValue() == hash)) {
         _imp->actionsCache->setTimeInvariantMetadataResult(hash, metadata, generation);
     }
 

@@ -295,6 +295,15 @@ public:
     bool getHashValueIfUpToDate(U64* hash) const;
 
     /**
+     * @brief A count that moves whenever the hash is marked dirty, by an edit of this node or of
+     * anything it folds in, after applying the marks queued so far. A result derived from what
+     * the hash covers may be stored under the hash only if this count, read before the hash,
+     * is the same afterwards: a hash read once cannot tell that an input changed and changed back
+     * during the derivation. MT-safe.
+     **/
+    U64 getHashMarkCount() const;
+
+    /**
      * @brief Marks the hash for a recompute on its next read, and with it the hashes of every
      * node that folds this one in. Callable from any thread, under any lock: the nodes downstream
      * are marked before the next hash read on any thread.

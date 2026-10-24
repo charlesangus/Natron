@@ -1512,6 +1512,18 @@ Node::flushHashDirtyMarks()
     }
 } // Node::flushHashDirtyMarks
 
+U64
+Node::getHashMarkCount() const
+{
+    // A queued mark has not reached this node's generation yet.
+    if (hashComputeDepth == 0) {
+        flushHashDirtyMarksBeforeRead(this);
+    }
+
+    // Both only grow, so the sum stays put only while neither moves.
+    return _imp->hashDirtyGeneration.load() + hashEpoch().load();
+}
+
 bool
 Node::isHashDirty() const
 {

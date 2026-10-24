@@ -612,7 +612,10 @@ TEST_F(BundleLoadTest, AMissingBlobWarnsAndLeavesItsStrokeEmpty)
 
 TEST_F(BundleLoadTest, AMultiInstanceTrackerReopensWithItsInstancesAttached)
 {
-    NodePtr main = createNode(QString::fromUtf8(PLUGINID_OFX_TRACKERPM));
+    // TrackerPM is a deprecated, non-user-creatable plug-in, so creation must opt in to it.
+    CreateNodeArgs mainArgs(PLUGINID_OFX_TRACKERPM, getApp()->getProject());
+    mainArgs.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+    NodePtr main = getApp()->createNode(mainArgs);
     ASSERT_TRUE(bool(main));
     ASSERT_TRUE(main->isMultiInstance()) << "TrackerPM did not open in the tracker context";
     std::vector<std::string> instanceNames;
@@ -621,6 +624,7 @@ TEST_F(BundleLoadTest, AMultiInstanceTrackerReopensWithItsInstancesAttached)
         args.setProperty<std::string>(kCreateNodeArgsPropMultiInstanceParentName, main->getScriptName());
         args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
         args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+        args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
         NodePtr instance = getApp()->createNode(args);
         ASSERT_TRUE(bool(instance));
         ASSERT_EQ(main, instance->getParentMultiInstance());

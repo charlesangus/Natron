@@ -52,7 +52,7 @@ Follow-up to M44 - Trackball Colour Editing. At the default properties width the
 
 Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence script is committed as `Tests/gui/m119_trackball_layout.py` and run with `Tests/gui/run-gui-test.sh Tests/gui/m119_trackball_layout.py build/fast/App/Natron` after a `fast` build (see the board's build-mode note). Agents do not build; the phase has one end build (T9).
 
-- [ ] M119.P1.T1 — Add the dev layout switch: four axes, an env-var gate, a live change notifier and a dev bar on each panel
+- [x] M119.P1.T1 — Add the dev layout switch: four axes, an env-var gate, a live change notifier and a dev bar on each panel
   - files: `Gui/ColorPanelLayoutDev.h` (new), `Gui/ColorPanelLayoutDev.cpp` (new), `Gui/ColorAdjustPanel.h`, `Gui/ColorAdjustPanel.cpp`, `Tests/ColorAdjustPanel_Test.cpp`
   - approach:
     - `struct ColorPanelLayout { bool extendLeft; bool extendRight; enum SliderStyle { Natron, Custom, Vertical } style; enum Placement { InKnob, BinTop } placement; }`, defaulting to today's layout (false, false, Natron, InKnob).
@@ -63,7 +63,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorAdjustPanel*`: with the variable unset there is no dev bar; with it set (via `qputenv` before construction) changing a combo emits `layoutChanged` once and a panel rebuilds; a change mid-gesture rebuilds only after `endGesture`. Existing cases stay green.
   - size: M
 
-- [ ] M119.P1.T2 — Make the wheel square and responsive between 160 px and a ~320 px cap
+- [x] M119.P1.T2 — Make the wheel square and responsive between 160 px and a ~320 px cap
   - files: `Gui/ColorWheelWidget.h`, `Gui/ColorWheelWidget.cpp`, `Gui/ColorAdjustPanel.cpp`, `Tests/ColorWheelWidget_Test.cpp`
   - approach:
     - `ColorWheelWidget` gets `hasHeightForWidth() = true`, `heightForWidth(w) = w`, an `Expanding` policy, `minimumSizeHint` 160 px and a `kWheelMaxPx` cap of 320 (both `TO_DPIX`). Painting already uses `min(width, height)`; centre the disc in any non-square rect.
@@ -72,7 +72,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorWheelWidget*`: a 600 px-wide panel gives a wheel of 320 px, a 300 px one gives at least 160 px, and the disc's drawn radius matches the widget's short side (±1 px). Existing paint and input cases stay green at 160 px.
   - size: M
 
-- [ ] M119.P1.T3 — Add the left and right bound axes: a full-width page row for the panel, and the overflow inset
+- [x] M119.P1.T3 — Add the left and right bound axes: a full-width page row for the panel, and the overflow inset
   - files: `Gui/KnobGui.h`, `Gui/KnobGuiContainerHelper.cpp`, `Gui/KnobGuiValue.h`, `Gui/KnobGuiValue.cpp`, `Gui/KnobGuiColor.cpp`
   - approach:
     - **Right.** When `extendRight` is on, `KnobGuiColor` feeds `ColorAdjustPanel::setRightInset(0)` instead of the buttons' width. The channel lines (`dimensionLines`) keep their inset whatever the axis says.
@@ -81,7 +81,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=KnobGuiColor*` on a Grade `gain` panel at 500 px: with `extendLeft` the panel's left x equals the label column's left x (±1 px); with `extendRight` the Hue slider's right edge equals the ⊕ button's right edge (±1 px) while the "g" channel slider keeps today's right edge; a Blur `size` row is unchanged.
   - size: M
 
-- [ ] M119.P1.T4 — Restore the custom slider and offer it as the Custom style, paired with Natron's SpinBox
+- [x] M119.P1.T4 — Restore the custom slider and offer it as the Custom style, paired with Natron's SpinBox
   - files: `Gui/ColorEditSlider.h`, `Gui/ColorEditSlider.cpp`, `Tests/ColorEditSlider_Test.cpp`, `Tests/CMakeLists.txt`, `Gui/ColorAdjustPanel.cpp`
   - approach:
     - Restore the three files from `bed0a3207^` (`git show bed0a3207^:<path>`), and re-add the test to `Tests/CMakeLists.txt`.
@@ -90,7 +90,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorEditSlider*:ColorAdjustPanel*`: a marker drag of 40 px moves exactly 40 px of range whatever the modifiers; a relative 80 px drag with Ctrl moves 8 px of range; in the Custom style a drag is one undo step and the SpinBox shows the new value after it.
   - size: L
 
-- [ ] M119.P1.T5 — Give `ScaleSliderQWidget` a vertical orientation
+- [x] M119.P1.T5 — Give `ScaleSliderQWidget` a vertical orientation
   - files: `Gui/ScaleSliderQWidget.h`, `Gui/ScaleSliderQWidget.cpp`, `Tests/ScaleSliderQWidget_Test.cpp`
   - approach:
     - `setOrientation(Qt::Orientation)`, default horizontal. Vertical maps the long axis to y with the minimum at the bottom; mouse mapping, gearing accumulation, the marker and the optional track gradient all follow the long axis. Tick labels are omitted when vertical.
@@ -98,7 +98,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ScaleSliderQWidget*`: a 300 px vertical slider over [0, 1] gains about 0.1 for a 30 px upward drag and about 0.0333 for 100 px with Ctrl; a press at 25 % from the bottom jumps to 0.25; every existing horizontal case stays green.
   - size: M
 
-- [ ] M119.P1.T6 — Build the Vertical style: slider columns to the right of the wheel
+- [x] M119.P1.T6 — Build the Vertical style: slider columns to the right of the wheel
   - files: `Gui/ColorAdjustPanel.h`, `Gui/ColorAdjustPanel.cpp`, `Tests/ColorAdjustPanel_Test.cpp`
   - approach:
     - The edit area is the wheel, then one column per line (Hue, Sat, Value, Temp, Tint): caption on top, a vertical `ScaleSliderQWidget` (T5), the `SpinBox` underneath. Column heights follow the wheel's height.
@@ -107,7 +107,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorAdjustPanel*` in Vertical style: five vertical sliders exist; a 1-dim knob shows only Value; each slider's height equals the wheel's (±2 px); an upward drag on Value raises value and is one undo step.
   - size: M
 
-- [ ] M119.P1.T7 — Add the bin-top trackball panel, bound to one colour knob and retargeting on top-node change
+- [x] M119.P1.T7 — Add the bin-top trackball panel, bound to one colour knob and retargeting on top-node change
   - files: `Gui/ColorTrackballBinPanel.h` (new), `Gui/ColorTrackballBinPanel.cpp` (new), `Gui/PropertiesBinWrapper.cpp`, `Gui/ColorTrackballGlobalMode.cpp`, `Tests/ColorTrackballBinPanel_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - One `ColorTrackballBinPanel` per properties bin, inserted at the top of the bin's layout, hidden by default. It holds a title (`Node.knob`), a close button and one `ColorAdjustPanel` driven through a `ColorKnobEditSession` on the bound knob, so gestures and undo behave as in-knob.
@@ -117,7 +117,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorTrackballBinPanel*`: binding a Grade `gain` shows the panel with the right title and a Hue drag edits that knob in one undo step; raising a ColorCorrect to the top rebinds to master gain; raising a Blur hides it; deleting the bound node unbinds without a crash.
   - size: L
 
-- [ ] M119.P1.T8 — Route ▾, Ctrl+E, Ctrl+Up/Down and the HUD to the bin-top panel in BinTop placement
+- [x] M119.P1.T8 — Route ▾, Ctrl+E, Ctrl+Up/Down and the HUD to the bin-top panel in BinTop placement
   - files: `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`, `Gui/ColorTrackballGlobalMode.h`, `Gui/ColorTrackballGlobalMode.cpp`, `Tests/ColorTrackballGlobalMode_Test.cpp`
   - approach:
     - In BinTop placement the knob's ▾ becomes "push up": it unfolds the knob's r/g/b/a lines inline (as ▾ does today), binds the bin-top panel to this knob and shows it; ▾ again, or the panel's close button, hides it and re-folds per M44.P7.T8's rule. No inline adjust panel is shown. The tooltip says "Edit in the trackball panel at the top of the properties".
@@ -126,7 +126,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorTrackballGlobalMode*:KnobGuiColor*` in BinTop: ▾ on `gain` shows the bin panel bound to `gain` and unfolds r/g/b/a inline with no inline adjust panel; Ctrl+E then Ctrl+Down rebinds to `gamma`; the HUD's parent is the bin panel. InKnob cases stay green.
   - size: M
 
-- [ ] M119.P1.T10 — Reset global mode to "C" on every fresh engage, so the mode no longer carries over between invocations or nodes
+- [x] M119.P1.T10 — Reset global mode to "C" on every fresh engage, so the mode no longer carries over between invocations or nodes
   - files: `Gui/ColorTrackballGlobalMode.cpp`, `Gui/ColorTrackballGlobalMode.h`, `Tests/ColorTrackballGlobalMode_Test.cpp`
   - approach:
     - `ColorTrackballGlobalMode` is one controller per `Gui` (`instanceFor`), so `_mode` outlives `exit()` and the next Ctrl+E on any node starts in whatever mode was last picked. In `engage()`, in the `if (!_engaged)` branch (a fresh invocation), set the mode back to `eColorGlobalModeC` through the same path `setMode` uses, so the HUD and readouts update; do it before `Q_EMIT engagedChanged(true)`.
@@ -135,7 +135,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorTrackballGlobalMode*`: engage, `setMode(eColorGlobalModeH)` (any non-C mode), `exit()`, engage on a different knob, and `getMode()` is `eColorGlobalModeC` with `stateChanged` emitted; engage, set a non-C mode, then engage on a second knob without exiting, and the mode is unchanged. Existing cases stay green.
   - size: S
 
-- [ ] M119.P1.T11 — Add the Feedback and Puck dev axes, and the crosshair cursor
+- [x] M119.P1.T11 — Add the Feedback and Puck dev axes, and the crosshair cursor
   - files: `Gui/ColorPanelLayoutDev.h`, `Gui/ColorPanelLayoutDev.cpp`, `Gui/ColorTrackballGlobalMode.h`, `Gui/ColorTrackballGlobalMode.cpp`, `Tests/ColorTrackballGlobalMode_Test.cpp`
   - approach:
     - Extend T1's `ColorPanelLayout` with `enum Feedback { Today, Crosshair, Reveal, CrosshairReveal, WidgetCursor } feedback` and `enum Puck { Relative, Absolute } puck`, defaulting to Today and Relative. T1's dev bar gains the two combos (Puck only enabled with Reveal, CrosshairReveal or WidgetCursor); both stay inert without `NATRON_COLOR_PANEL_DEV`.
@@ -144,7 +144,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorTrackballGlobalMode*`: with Crosshair, engage makes `QApplication::overrideCursor()` a cross, exit and a leave for a modal widget restore it, and two engage/exit cycles leave no override cursor behind; with Today the cursor is never touched.
   - size: M
 
-- [ ] M119.P1.T12 — Make the HUD follow the cursor in the Crosshair and CrosshairReveal feedback
+- [x] M119.P1.T12 — Make the HUD follow the cursor in the Crosshair and CrosshairReveal feedback
   - files: `Gui/ColorTrackballHud.h`, `Gui/ColorTrackballHud.cpp`, `Gui/ColorTrackballGlobalMode.cpp`, `Gui/KnobGuiColor.cpp`, `Tests/ColorTrackballHud_Test.cpp`
   - approach:
     - Add `ColorTrackballHud::setFollowCursor(bool)`: when on, the HUD is a frameless, click-through top-level tool window (`Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::WindowTransparentForInput`, no activation) positioned from the global-mode controller on every pointer move at an offset of about (16, 16) DPI-scaled to the cursor's below and right. When that would leave the screen holding the cursor, it flips to the other side on that axis.
@@ -153,7 +153,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorTrackballHud*:ColorTrackballGlobalMode*`: with Crosshair the HUD's window flags are as listed and a move to (100, 100) puts it at the offset; a move within 10 px of the screen's right and bottom edges puts it left of and above the cursor; with Today the HUD is attached under the knob exactly as before.
   - size: M
 
-- [ ] M119.P1.T13 — Add the S, T and V gradient discs for the reveal graphic
+- [x] M119.P1.T13 — Add the S, T and V gradient discs for the reveal graphic
   - files: `Gui/ColorModeDiscWidget.h` (new), `Gui/ColorModeDiscWidget.cpp` (new), `Tests/ColorModeDiscWidget_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - One painted widget taking a mode (S, T or V) and a puck position in [-1, 1]². It draws a disc the size of its rect with the outer ring `ColorWheelWidget` draws (reuse its ring helper, or factor it out to a shared function if it is a private method), then the gradient inside it: S hue left to right with white at the bottom to full saturation at the top; T warm to cool left to right and green to magenta bottom to top; V white at the top right to black at the bottom left. Gradient colours come from `Engine/ColorWheelMath.h` so they match the knob's maths. Cache the gradient image per size.
@@ -161,7 +161,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorModeDiscWidget*`: rendering each mode at 240 px and sampling the image, the S disc is whiter at the bottom than the top and its left and right samples have different hues; the T disc is warmer at the left than the right and greener at the bottom than the top; the V disc is lighter at the top right than the bottom left; a puck position of (2, 2) is drawn clamped on the rim.
   - size: M
 
-- [ ] M119.P1.T14 — Show the press-to-reveal graphic for the Reveal and CrosshairReveal feedback
+- [x] M119.P1.T14 — Show the press-to-reveal graphic for the Reveal and CrosshairReveal feedback
   - files: `Gui/ColorTrackballReveal.h` (new), `Gui/ColorTrackballReveal.cpp` (new), `Gui/ColorTrackballGlobalMode.h`, `Gui/ColorTrackballGlobalMode.cpp`, `Tests/ColorTrackballReveal_Test.cpp` (new)
   - approach:
     - `ColorTrackballReveal` is a transparent, click-through top-level window (same flags as T12) holding a `ColorWheelWidget` in C mode and a `ColorModeDiscWidget` (T13) in S, T and V, 240 px DPI-scaled, centred on the press point and clamped to the screen.
@@ -171,7 +171,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorTrackballReveal*`: a press at (500, 400) shows a window centred there; with Relative the puck is at the centre on press and moves with a synthetic stroke; with Absolute it starts at the value's position; release and a lost grab hide the window and pop the blank cursor, leaving no override cursor beyond the crosshair; a press at a screen corner keeps the window inside the screen; the stroke's value changes are identical with and without the reveal.
   - size: L
 
-- [ ] M119.P1.T15 — Add the WidgetCursor feedback: the mode widget replaces the cursor from engage and freezes on press
+- [x] M119.P1.T15 — Add the WidgetCursor feedback: the mode widget replaces the cursor from engage and freezes on press
   - files: `Gui/ColorTrackballReveal.h`, `Gui/ColorTrackballReveal.cpp`, `Gui/ColorTrackballGlobalMode.h`, `Gui/ColorTrackballGlobalMode.cpp`, `Tests/ColorTrackballReveal_Test.cpp`
   - approach:
     - Reuses T14's `ColorTrackballReveal` window with a follow mode: on a fresh engage with WidgetCursor, the controller shows it centred on the pointer (blank override cursor pushed, popped on every exit path as in T11), and on every pointer move outside a stroke re-centres it on the pointer, clamped to the screen.
@@ -180,7 +180,7 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorTrackballReveal*:ColorTrackballGlobalMode*`: with WidgetCursor, engage shows the window centred on the pointer and the override cursor is blank; a synthetic move re-centres it; a press freezes it and moves to the puck; release resumes following; setMode swaps the widget; exit hides it and leaves no override cursor.
   - size: M
 
-- [ ] M119.P1.T9 — End build: run every suite, write the GUI evidence script, and capture each combination at two bin widths
+- [x] M119.P1.T9 — End build: run every suite, write the GUI evidence script, and capture each combination at two bin widths
   - files: `Tests/gui/m119_trackball_layout.py` (new)
   - approach:
     - One `fast` build and full ctest.

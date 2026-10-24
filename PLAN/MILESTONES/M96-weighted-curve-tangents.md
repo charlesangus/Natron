@@ -42,25 +42,25 @@ This milestone gives each tangent a weight: the handle's time extent as a fracti
 
 ## Phase 96.1: Engine model and evaluation
 
-- [ ] M96.P1.T1 — Add weighted Bezier segment evaluation to `Interpolation`
+- [x] M96.P1.T1 — Add weighted Bezier segment evaluation to `Interpolation`
   - files: `Engine/Interpolation.h`, `Engine/Interpolation.cpp`, `Tests/WeightedInterpolation_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: Add `kDefaultTangentWeight = 1./3`, `kMinTangentWeight` and `kMaxTangentWeight`. Give `interpolate`, `derive`, `derive_clamp`, `integrate` and `integrate_clamp` two extra parameters, `vcurWeightRight` and `vnextWeightLeft`. When both equal `kDefaultTangentWeight`, or the segment is Constant or None, run today's Hermite code untouched. Otherwise use control points in u = (t-tcur)/span: X = {0, a, 1-b, 1} and Y = {P0, P0+slopeR·a·span, P3−slopeL·b·span, P3}. Solve X(s)=u with `solveCubic`, keeping the root in [0,1] and polishing it with Newton. Value is Y(s). Derivative is Y'(s)/(X'(s)·span). The integral is span·∫Y(s)X'(s)ds, a degree-5 polynomial integrated exactly. The clamped integral splits at the s where Y crosses vmin/vmax (roots of a cubic), and uses clamp·ΔX on the clamped pieces.
   - verify: five gtests. (1) Weights 1/3 forced through the Bezier path match the Hermite path within 1e-12 for random segments. (2) Unweighted results are bitwise equal to a reference copy of today's Hermite formula pasted into the test, for every `KeyframeTypeEnum` pair. (3) Value and integral are continuous at segment ends. (4) The derivative matches a central finite difference. (5) At a=b=0.99 time is monotonic and the derivative is finite. Compiled at the phase build.
   - size: L
 
-- [ ] M96.P1.T2 — Add weights to `KeyFrame` and wire them through `Curve`
+- [x] M96.P1.T2 — Add weights to `KeyFrame` and wire them through `Curve`
   - files: `Engine/Curve.h`, `Engine/Curve.cpp`, `Engine/CurvePrivate.h`, `Tests/Curve_Test.cpp`
   - approach: Add `_weighted`, `_leftWeight` and `_rightWeight` with accessors, clamping and NaN rejection, and include them in `operator==`, copy and assignment. Pass each key's weights (or 1/3 when unweighted) at every `Interpolation::` call in `getValueAt`/`getDerivativeAt`/`getIntegrateFromTo` (:998-1194). Add `Curve::setKeyFrameTangents(left, right, leftWeight, rightWeight, weighted, index, newIndex)`, replacing `setKeyFrameDerivatives`. `setKeyframeInterpolation_internal` (:1598) resets weights when the type leaves F/X. Hash the weights and the flag in `appendContentHash`. `to/fromSerialization` stays as it is until P2.T1.
   - verify: new `Curve_Test` cases: a weighted Free key changes mid-segment values while values at the keys stay put; switching it to Smooth resets the weights; `clone` and `operator=` keep the weights; content hashes differ only through the weight. Compiled at the phase build.
   - size: M
 
-- [ ] M96.P1.T3 — Make `CurveSnapshot` honour weights and fall back from GPU on weighted segments
+- [x] M96.P1.T3 — Make `CurveSnapshot` honour weights and fall back from GPU on weighted segments
   - files: `Engine/Nodes/Image/CurveSnapshot.h`, `Tests/Native/NativeColorLookup_Test.cpp`, `Tests/Native/NativeColorLookupGpu_Test.cpp`
   - approach: `valueAt` (:93-137) passes weights exactly as `Curve::getValueAt` does. `packSegment` (:237+) returns false for any segment that would take the Bezier path, so `packGpu` fails and the callers clear `gpuCurves`. Update the class comment.
   - verify: CPU test: a ColorLookup with one weighted key renders equal to `Curve::getValueAt` sampled per pixel. GPU test: the same curve packs false and the render still matches the CPU. Unweighted GPU tests unchanged. Compiled at the phase build.
   - size: M
 
-- [ ] M96.P1.T4 — Replace the knob derivative setters with a tangent setter that carries weights
+- [x] M96.P1.T4 — Replace the knob derivative setters with a tangent setter that carries weights
   - files: `Engine/Knob.h`, `Engine/Knob.cpp`, `Engine/KnobImpl.h`, `Engine/KnobTypes.h`, `Engine/KnobTypes.cpp`
   - approach: Add `struct KeyTangents { double left, right, leftWeight, rightWeight; bool weighted; }` and `KnobI::setTangentsAtTime(reason, view, dim, time, const KeyTangents&, KeyFrame* newKey)`, replacing `moveDerivativesAtTime`/`moveDerivativeAtTime` (`Knob.h:668-669`, `Knob.cpp:1518-1575`) and fixing every caller. Weights go into the key-equality checks at `KnobImpl.h:1576` and :2926. `KnobParametric::addControlPoint`/`get/setNthControlPoint` (`KnobTypes.cpp:2089-2253`) gain weight overloads.
   - verify: gtest: a Double knob with three keys gets a weighted right tangent through `setTangentsAtTime`; the value at the segment midpoint changes, `curveAnimationChanged` fires, and the node hash changes. Phase build `tools/ci/remote/build.sh debug --tests`; all of ctest green.

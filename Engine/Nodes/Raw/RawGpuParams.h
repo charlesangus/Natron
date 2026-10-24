@@ -113,6 +113,34 @@ struct RawInputColorGpuParams {
 };
 static_assert(sizeof(RawInputColorGpuParams) == 48);
 
+/**
+ * @brief Mirrors CalibrationOp in rawcolorcalibration.slang: RawColorCalibrationMath::Kernel with
+ * its matrices row-major, plus the adaptation's XYZ to LMS and LMS to XYZ matrices and D50 in its
+ * LMS space, which the CPU keeps as constants. The matrices are zero for the XYZ and RGB
+ * adaptations, which have no LMS space. adaptation and version are the enums' values.
+ **/
+struct RawColorCalibrationGpuParams {
+    float rgbToXyz[9];
+    float xyzToRgb[9];
+    float rgbToLms[9];
+    float mixToXyz[9];
+    float xyzToLms[9];
+    float lmsToXyz[9];
+    float illuminant[3];
+    float d50[3];
+    float saturation[3];
+    float lightness[3];
+    float grey[3];
+    float p;
+    float gamut;
+    std::uint32_t adaptation;
+    std::uint32_t version;
+    std::uint32_t clip;
+    std::uint32_t applyGrey;
+    std::uint32_t padding;
+};
+static_assert(sizeof(RawColorCalibrationGpuParams) == 304);
+
 inline constexpr std::uint32_t kRawDemosaicGpuModePpg = 0;
 inline constexpr std::uint32_t kRawDemosaicGpuModeRcd = 1;
 inline constexpr std::uint32_t kRawDemosaicGpuModePassThrough = 2;

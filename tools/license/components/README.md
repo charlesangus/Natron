@@ -28,6 +28,7 @@ Natron binaries include components from the following libraries:
 * rawspeed (LGPL 2.1) https://github.com/darktable-org/rawspeed -- the camera raw decoder, linked statically into Natron at commit c835b05aecfacb7343f7c424abd620aa12116c3f (the revision darktable release-5.6.2 pins); its camera database, cameras.xml, ships under Resources/rawspeed
 * pugixml (MIT) https://pugixml.org (used by Natron via rawspeed, to read cameras.xml)
 * darktable (GPL 3.0 or later) https://www.darktable.org -- the raw processing nodes are ported from darktable release-5.6.2 (commit 20891f6c6fa7be995e5bf9dff9d1ee5062051773) and keep darktable's copyright headers
+* darktable white balance presets (GPL 3.0 or later; values originally from UFRaw, Copyright 2004-2013 Udi Fuchs, GPL 2.0 or later) https://github.com/darktable-org/darktable/blob/release-5.6.2/data/wb_presets.json -- data/wb_presets.json of darktable release-5.6.2, copied unchanged to Engine/Nodes/Raw/data/wb_presets.json and shipped under Resources/darktable; RawTemperature's camera presets
 
 Natron itself is GPL 2.0 or later. Because the raw nodes ported from darktable are GPL 3.0 or
 later, the Natron binaries as a whole are distributed under the terms of the GPL 3.0

@@ -229,6 +229,12 @@ target_link_libraries(NatronEngine
 configure_file(${rawspeed_CAMERAS_XML} ${CMAKE_BINARY_DIR}/Resources/rawspeed/cameras.xml COPYONLY)
 install(FILES ${rawspeed_CAMERAS_XML} DESTINATION Resources/rawspeed)
 
+# darktable's white balance presets, read at run time by RawTemperature from
+# <bin>/../Resources/darktable, the same way.
+set(NatronEngine_WB_PRESETS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Raw/data/wb_presets.json)
+configure_file(${NatronEngine_WB_PRESETS_JSON} ${CMAKE_BINARY_DIR}/Resources/darktable/wb_presets.json COPYONLY)
+install(FILES ${NatronEngine_WB_PRESETS_JSON} DESTINATION Resources/darktable)
+
 # Some Linux dependencies (notably Qt) can expose the distribution FreeType
 # before this static library's transitive link interface is expanded.  The
 # ASWF image also provides HarfBuzz and a newer, ABI-compatible FreeType under

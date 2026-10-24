@@ -20,7 +20,8 @@
 /*
  * A port of the raw-domain part of darktable's white balance module, DARKTABLE_REF
  * release-5.6.2 (commit 20891f6c6fa7), src/iop/temperature.c, Copyright (C) 2009-2026 darktable
- * developers, distributed under the GNU GPL version 3 or later.
+ * developers, distributed under the GNU GPL version 3 or later. Its camera presets are read
+ * through RawWbPresets, from darktable's data/wb_presets.json.
  */
 
 // ***** BEGIN PYTHON BLOCK *****
@@ -31,6 +32,7 @@
 
 #include "RawTemperature.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -39,6 +41,7 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Raw/RawGpuParams.h"
+#include "Engine/Nodes/Raw/RawWbPresets.h"
 #include "Engine/Project.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -83,6 +86,37 @@ usableCoefficients(const std::array<double, 3>& coeffs)
 
     return true;
 }
+
+std::string
+sourceMake(const ImageMetadata& source)
+{
+    return RawMetadata::getMake(source).value_or(std::string());
+}
+
+std::string
+sourceModel(const ImageMetadata& source)
+{
+    return RawMetadata::getModel(source).value_or(std::string());
+}
+
+// The multipliers of every mode but Custom. A preset the source's camera does not have gives the
+// as-shot multipliers.
+RawColorMath::Vec3
+resolvedMultipliers(int modeIndex,
+                    const ImageMetadata& source,
+                    const std::string& presetName,
+                    int tune)
+{
+    if (modeIndex == (int)eRawTemperatureModeCameraPreset) {
+        if (const std::optional<RawColorMath::Vec3> coeffs = RawTemperatureOp::presetMultipliers(source, presetName, tune)) {
+            return *coeffs;
+        }
+
+        return RawTemperatureOp::modeMultipliers(eRawTemperatureModeAsShot, source);
+    }
+
+    return RawTemperatureOp::modeMultipliers((modeIndex == (int)eRawTemperatureModeCameraReference) ? eRawTemperatureModeCameraReference : eRawTemperatureModeAsShot, source);
+}
 } // namespace
 
 void
@@ -96,11 +130,33 @@ RawTemperatureOp::createKnobs(KnobHolder* holder,
     modes.push_back(ChoiceOption("asShot", EffectInstance::tr("As Shot").toStdString(), EffectInstance::tr("The multipliers the camera recorded in the raw file.").toStdString()));
     modes.push_back(ChoiceOption("cameraReference", EffectInstance::tr("Camera Reference").toStdString(), EffectInstance::tr("The multipliers that make D65 white neutral through the camera's colour matrix.").toStdString()));
     modes.push_back(ChoiceOption("custom", EffectInstance::tr("Custom").toStdString(), EffectInstance::tr("The red, green and blue multipliers below, which the temperature and the tint set.").toStdString()));
+    modes.push_back(ChoiceOption("cameraPreset", EffectInstance::tr("Camera Preset").toStdString(), EffectInstance::tr("The camera's white balance setting the Preset knob names, at the Finetune knob's tuning.").toStdString()));
     modeKnob->populateChoices(modes);
     modeKnob->setDefaultValue((int)eRawTemperatureModeAsShot);
     modeKnob->setAnimationEnabled(false);
     page->addKnob(modeKnob);
     mode = modeKnob;
+
+    // Filled from the source's camera by RawTemperature::refreshPresets(); the project saves the
+    // chosen setting by name.
+    KnobChoicePtr presetKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Preset").toStdString());
+    presetKnob->setName(kRawTemperatureParamPreset);
+    presetKnob->setHintToolTip(EffectInstance::tr("The white balance settings of the source's camera, from darktable's presets. Choosing one switches the mode to Camera Preset.").toStdString());
+    presetKnob->setAnimationEnabled(false);
+    page->addKnob(presetKnob);
+    preset = presetKnob;
+
+    KnobIntPtr finetuneKnob = AppManager::createKnob<KnobInt>(holder, EffectInstance::tr("Finetune").toStdString());
+    finetuneKnob->setName(kRawTemperatureParamFinetune);
+    finetuneKnob->setHintToolTip(EffectInstance::tr("Fine tunes the camera's white balance setting, in the camera's own steps. Its range is the setting's tunings; values between two the camera gives are interpolated.").toStdString());
+    finetuneKnob->setDefaultValue(0);
+    finetuneKnob->setMinimum(-9);
+    finetuneKnob->setMaximum(9);
+    finetuneKnob->setDisplayMinimum(-9);
+    finetuneKnob->setDisplayMaximum(9);
+    finetuneKnob->setAnimationEnabled(false);
+    page->addKnob(finetuneKnob);
+    finetune = finetuneKnob;
 
     temperature = addDoubleKnob(holder, page, kRawTemperatureParamTemperature, EffectInstance::tr("Temperature"),
                                 EffectInstance::tr("The colour temperature, in kelvin, of the light to make neutral. Editing it sets the multipliers through the camera's colour matrix."),
@@ -145,8 +201,32 @@ RawTemperatureOp::modeMultipliers(RawTemperatureModeEnum mode,
             }
         }
     }
+    // No colour matrix: darktable's _find_coeffs() takes the camera's first preset, whatever
+    // its name and tuning, and reload_defaults() its daylight preset for the D65 multipliers.
+    const RawWbPresets::Database& presets = RawWbPresets::database();
+    if (mode == eRawTemperatureModeAsShot) {
+        if (const std::optional<std::array<double, 3>> first = RawWbPresets::firstPreset(presets, sourceMake(source), sourceModel(source))) {
+            if (usableCoefficients(*first)) {
+                return RawColorMath::Vec3 { (*first)[0] / (*first)[1], 1., (*first)[2] / (*first)[1] };
+            }
+        }
+    } else if (const std::optional<std::array<double, 3>> daylight = RawWbPresets::daylightPreset(presets, sourceMake(source), sourceModel(source))) {
+        return *daylight;
+    }
 
     return RawColorMath::Vec3 { 2., 1., 1.5 };
+}
+
+std::optional<RawColorMath::Vec3>
+RawTemperatureOp::presetMultipliers(const ImageMetadata& source,
+                                    const std::string& name,
+                                    int tune)
+{
+    if (name.empty()) {
+        return std::nullopt;
+    }
+
+    return RawWbPresets::presetMultipliers(RawWbPresets::database(), sourceMake(source), sourceModel(source), name, tune);
 }
 
 RawTemperatureOp::Params
@@ -160,8 +240,12 @@ RawTemperatureOp::bake(const KnobReader& reader,
     RawColorMath::Vec3 coeffs;
     if (modeIndex == eRawTemperatureModeCustom) {
         coeffs = { reader.value(red), reader.value(green), reader.value(blue) };
+    } else if (modeIndex == eRawTemperatureModeCameraPreset) {
+        const KnobChoicePtr presetKnob = preset.lock();
+        (void)reader.value(presetKnob);
+        coeffs = resolvedMultipliers(modeIndex, source, presetKnob->getActiveEntry().id, reader.value(finetune));
     } else {
-        coeffs = modeMultipliers((modeIndex == eRawTemperatureModeCameraReference) ? eRawTemperatureModeCameraReference : eRawTemperatureModeAsShot, source);
+        coeffs = resolvedMultipliers(modeIndex, source, std::string(), 0);
     }
     for (int c = 0; c < 3; ++c) {
         params.coeffs[c] = (float)coeffs[c];
@@ -249,9 +333,63 @@ RawTemperature::refreshEnabled()
 }
 
 void
+RawTemperature::refreshPresets()
+{
+    const KnobChoicePtr presetKnob = op().preset.lock();
+    const KnobIntPtr finetuneKnob = op().finetune.lock();
+
+    if (!presetKnob || !finetuneKnob) {
+        return;
+    }
+    const ImageMetadata source = getSourceMetadata(getCurrentTime(), ViewIdx(0));
+    const RawWbPresets::Database& database = RawWbPresets::database();
+    const std::vector<RawWbPresets::CameraPreset> presets = RawWbPresets::cameraPresets(database, sourceMake(source), sourceModel(source));
+    std::vector<ChoiceOption> options;
+    for (const RawWbPresets::CameraPreset& p : presets) {
+        options.push_back(ChoiceOption(p.name, p.name, std::string()));
+    }
+    const std::vector<ChoiceOption> current = presetKnob->getEntries_mt_safe();
+    const bool same = std::equal(current.begin(), current.end(), options.begin(), options.end(),
+                                 [](const ChoiceOption& a, const ChoiceOption& b) { return a.id == b.id; });
+    if (!same) {
+        // Pins the chosen name first, so the new menu restores it by name, not by position.
+        (void)presetKnob->getActiveEntry();
+        presetKnob->populateChoices(options);
+    }
+
+    // darktable shows Finetune only for a setting with tunings, over their range.
+    const std::string chosen = presetKnob->getActiveEntry().id;
+    const auto found = std::find_if(presets.begin(), presets.end(), [&](const RawWbPresets::CameraPreset& p) { return p.name == chosen; });
+    const bool tuned = (found != presets.end()) && (found->minTuningPos != found->maxTuningPos);
+    if (tuned) {
+        const int lowest = database[found->minTuningPos].tuning;
+        const int highest = database[found->maxTuningPos].tuning;
+        finetuneKnob->setMinimum(lowest);
+        finetuneKnob->setMaximum(highest);
+        finetuneKnob->setDisplayMinimum(lowest);
+        finetuneKnob->setDisplayMaximum(highest);
+    }
+    finetuneKnob->setSecret(!tuned);
+} // RawTemperature::refreshPresets
+
+void
 RawTemperature::onKnobsLoaded()
 {
+    refreshPresets();
     refreshEnabled();
+}
+
+void
+RawTemperature::onInputChanged(int /*inputNo*/)
+{
+    refreshPresets();
+}
+
+void
+RawTemperature::onMetadataRefreshed(const NodeMetadata& metadata)
+{
+    ImageNode<RawTemperatureOp>::onMetadataRefreshed(metadata);
+    refreshPresets();
 }
 
 void
@@ -296,15 +434,21 @@ RawTemperature::knobChanged(KnobI* k,
     const KnobDoublePtr redKnob = o.red.lock();
     const KnobDoublePtr greenKnob = o.green.lock();
     const KnobDoublePtr blueKnob = o.blue.lock();
+    const KnobChoicePtr presetKnob = o.preset.lock();
+    const KnobIntPtr finetuneKnob = o.finetune.lock();
     const bool isMode = modeKnob && (k == modeKnob.get());
+    const bool isPreset = (presetKnob && (k == presetKnob.get())) || (finetuneKnob && (k == finetuneKnob.get()));
     const bool isTemperature = (temperatureKnob && (k == temperatureKnob.get())) || (tintKnob && (k == tintKnob.get()));
     const bool isCoefficient = (redKnob && (k == redKnob.get())) || (greenKnob && (k == greenKnob.get())) || (blueKnob && (k == blueKnob.get()));
 
-    if (!isMode && !isTemperature && !isCoefficient) {
+    if (!isMode && !isTemperature && !isCoefficient && !isPreset) {
         return false;
     }
     if (isMode) {
         refreshEnabled();
+    }
+    if (presetKnob && (k == presetKnob.get())) {
+        refreshPresets();
     }
     AppInstancePtr app = getApp();
     const bool loading = app && app->getProject() && app->getProject()->isLoadingProject();
@@ -324,10 +468,17 @@ RawTemperature::knobChanged(KnobI* k,
         setTemperatureKnobs(matrices, { redKnob->getValueAtTime(time), greenKnob->getValueAtTime(time), blueKnob->getValueAtTime(time) });
         modeKnob->setValue((int)eRawTemperatureModeCustom);
     } else {
+        // Choosing a preset or its tuning chooses the Camera Preset mode, as darktable's
+        // settings menu does.
+        if (isPreset) {
+            modeKnob->setValue((int)eRawTemperatureModeCameraPreset);
+        }
         // Showing what a non-custom mode resolves to is also where Custom starts from.
         const int modeIndex = modeKnob->getValue();
         if (modeIndex != (int)eRawTemperatureModeCustom) {
-            const RawColorMath::Vec3 coeffs = RawTemperatureOp::modeMultipliers((RawTemperatureModeEnum)modeIndex, source);
+            const std::string presetName = presetKnob ? presetKnob->getActiveEntry().id : std::string();
+            const int tune = finetuneKnob ? finetuneKnob->getValue() : 0;
+            const RawColorMath::Vec3 coeffs = resolvedMultipliers(modeIndex, source, presetName, tune);
             setCoefficientKnobs(coeffs);
             setTemperatureKnobs(matrices, coeffs);
         }

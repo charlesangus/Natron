@@ -20,7 +20,8 @@
 /*
  * A port of the raw-domain part of darktable's white balance module, DARKTABLE_REF
  * release-5.6.2 (commit 20891f6c6fa7), src/iop/temperature.c, Copyright (C) 2009-2026 darktable
- * developers, distributed under the GNU GPL version 3 or later.
+ * developers, distributed under the GNU GPL version 3 or later. Its camera presets are read
+ * through RawWbPresets, from darktable's data/wb_presets.json.
  */
 
 #ifndef Engine_Nodes_Raw_RawTemperature_h
@@ -35,6 +36,8 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <optional>
+#include <string>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
@@ -46,6 +49,8 @@
 #define PLUGIN_MAJOR_NATRON_RAWTEMPERATURE 1
 
 #define kRawTemperatureParamMode "mode"
+#define kRawTemperatureParamPreset "preset"
+#define kRawTemperatureParamFinetune "finetune"
 #define kRawTemperatureParamTemperature "temperature"
 #define kRawTemperatureParamTint "tint"
 #define kRawTemperatureParamRed "red"
@@ -57,7 +62,8 @@ NATRON_NAMESPACE_ENTER
 enum RawTemperatureModeEnum {
     eRawTemperatureModeAsShot = 0,
     eRawTemperatureModeCameraReference,
-    eRawTemperatureModeCustom
+    eRawTemperatureModeCustom,
+    eRawTemperatureModeCameraPreset
 };
 
 inline constexpr InputSpec kRawTemperatureInputs[] = {
@@ -70,7 +76,9 @@ inline constexpr InputSpec kRawTemperatureInputs[] = {
  * data without a CFA. As Shot takes the camera's multipliers from raw/wb_coeffs; Camera
  * Reference the multipliers that make D65 white neutral through the camera matrix; Custom the
  * red, green and blue knobs, which editing the temperature or the tint sets through the camera
- * matrix (sRGB when the source has none), as darktable's sliders do.
+ * matrix (sRGB when the source has none), as darktable's sliders do; Camera Preset the setting
+ * of darktable's preset database that the Preset knob names, for the source's raw/make and
+ * raw/model, at the Finetune knob's tuning.
  **/
 struct RawTemperatureOp {
     struct Params {
@@ -82,8 +90,8 @@ struct RawTemperatureOp {
         .id = PLUGINID_NATRON_RAWTEMPERATURE,
         .label = "RawTemperature",
         .description = "Applies the white balance to prepared raw data, by the camera's as-shot multipliers, the camera "
-                       "reference (D65) multipliers, or a custom temperature and tint or red, green and blue multipliers. "
-                       "Goes after RawPrepare.",
+                       "reference (D65) multipliers, a custom temperature and tint or red, green and blue multipliers, "
+                       "or one of the camera's white balance presets. Goes after RawPrepare.",
         .grouping = PLUGIN_GROUP_RAW,
         .majorVersion = PLUGIN_MAJOR_NATRON_RAWTEMPERATURE,
         .minorVersion = 0,
@@ -112,11 +120,23 @@ struct RawTemperatureOp {
     GpuOpRef gpu(const Params& params) const;
 
     /**
-     * @brief The multipliers mode gives for source: As Shot falls back on Camera Reference when
-     * the file has no usable multipliers, and both on darktable's last resort, (2, 1, 1.5).
+     * @brief The multipliers mode gives for source, As Shot or Camera Reference. Without usable
+     * multipliers in the file, As Shot falls back as darktable's _find_coeffs() does: on the
+     * camera reference multipliers of the colour matrix, then on the camera's first preset,
+     * normalised to green 1. Without a colour matrix, Camera Reference falls back as darktable's
+     * reload_defaults() does, on the camera's daylight preset. Both end on darktable's last
+     * resort, (2, 1, 1.5).
      **/
     static RawColorMath::Vec3 modeMultipliers(RawTemperatureModeEnum mode,
                                               const ImageMetadata& source);
+
+    /**
+     * @brief The multipliers of the camera preset called name at tune, for the camera source
+     * comes from; nothing when that camera has no such preset.
+     **/
+    static std::optional<RawColorMath::Vec3> presetMultipliers(const ImageMetadata& source,
+                                                               const std::string& name,
+                                                               int tune);
 
     /**
      * @brief The matrices temperature and tint go through for source: its camera's, or sRGB.
@@ -124,6 +144,8 @@ struct RawTemperatureOp {
     static RawColorMath::CameraMatrices sourceMatrices(const ImageMetadata& source);
 
     KnobChoiceWPtr mode;
+    KnobChoiceWPtr preset;
+    KnobIntWPtr finetune;
     KnobDoubleWPtr temperature;
     KnobDoubleWPtr tint;
     KnobDoubleWPtr red;
@@ -154,10 +176,20 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+
+    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+
     virtual ImageMetadata deriveOutputMetadata(double time,
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void refreshEnabled();
+
+    /**
+     * @brief Fills the Preset menu with the settings darktable lists for the source's camera,
+     * keeping the chosen one by name, and gives Finetune that setting's tunings for its range.
+     **/
+    void refreshPresets();
 
     void setCoefficientKnobs(const RawColorMath::Vec3& coeffs);
 

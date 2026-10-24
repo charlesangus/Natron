@@ -160,6 +160,16 @@ if [[ "${GPU}" == "1" ]]; then
     fi
 fi
 
+# Memory cap, sized per host by memcap.sh (75% of the Docker daemon's memory,
+# at least 4 GiB kept back; NATRON_DEV_MEMORY overrides, "0" turns it off).
+# Swap is capped at the same value, so a runaway build or test is OOM-killed
+# inside the container instead of swapping the host until it falls over.
+read -r -a MEM_DOCKER_ARGS <<< "$("${SCRIPT_DIR}/memcap.sh" --docker-args)"
+MEM_CAP_BYTES=0
+if [[ "${#MEM_DOCKER_ARGS[@]}" -gt 0 ]]; then
+    MEM_CAP_BYTES=$(( $("${SCRIPT_DIR}/memcap.sh" --mib --docker) * 1048576 ))
+fi
+
 # --- optional forced recreate -----------------------------------------------
 if [[ "${RECREATE}" == "1" ]]; then
     echo "devshell.sh: recreating container '${CONTAINER_NAME}' (caches are kept)..." >&2
@@ -219,6 +229,7 @@ if [[ "${STATE}" == "missing" ]]; then
         --security-opt seccomp=unconfined \
         "${DRI_DOCKER_ARGS[@]+"${DRI_DOCKER_ARGS[@]}"}" \
         "${GPU_DOCKER_ARGS[@]+"${GPU_DOCKER_ARGS[@]}"}" \
+        "${MEM_DOCKER_ARGS[@]+"${MEM_DOCKER_ARGS[@]}"}" \
         -v "${REPO_ROOT}:${REPO_ROOT}" \
         -v "${CCACHE_DIR_HOST}:${CCACHE_MOUNT}" \
         -v "${HOME_VOLUME}:${HOME_MOUNT}" \
@@ -257,11 +268,20 @@ if [[ "${STATE}" == "missing" ]]; then
     # makes the cache survive image rebuilds.
     sed -i '/^max_size/d; /^compiler_check/d' "${CCACHE_DIR_HOST}/ccache.conf" 2>/dev/null || true
 
-elif [[ "${STATE}" == "stopped" ]]; then
-    echo "devshell.sh: starting existing (stopped) container '${CONTAINER_NAME}'..." >&2
-    docker start "${CONTAINER_NAME}" >/dev/null
+else
+    # Unlike the runtime and mounts, the memory cap can change on an existing
+    # container, so containers made before the cap existed, or on a host
+    # whose memory changed, pick it up without --recreate.
+    if [[ "${MEM_CAP_BYTES}" -gt 0 ]] \
+        && [[ "$(docker container inspect -f '{{.HostConfig.Memory}}' "${CONTAINER_NAME}")" != "${MEM_CAP_BYTES}" ]]; then
+        echo "devshell.sh: capping '${CONTAINER_NAME}' at $(( MEM_CAP_BYTES / 1048576 )) MiB (NATRON_DEV_MEMORY overrides)" >&2
+        docker update "${MEM_DOCKER_ARGS[@]}" "${CONTAINER_NAME}" >/dev/null
+    fi
+    if [[ "${STATE}" == "stopped" ]]; then
+        echo "devshell.sh: starting existing (stopped) container '${CONTAINER_NAME}'..." >&2
+        docker start "${CONTAINER_NAME}" >/dev/null
+    fi
 fi
-# else: already running -- nothing to do, just exec below.
 
 # --- run the requested command ----------------------------------------------
 # Note: the base image's entrypoint prints a large NVIDIA/CUDA banner, but

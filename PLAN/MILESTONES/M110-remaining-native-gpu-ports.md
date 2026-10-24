@@ -490,3 +490,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **Case 1:** `flat-rgba-pattern.exr` → Reformat (27x21, distort, keys) → Grade → Shuffle (R↔B, alpha 1).
   - **Case 2:** `flat-three-layers.exr`, with the Shuffle's green from `specular.B`. It needs P4.T4 to forward `specular` through two hops (the Reformat and the Grade).
   - **Assertions:** exactly one region of exactly those three nodes, the Read and the Write outside it, one GPU run each, and parity within `resampling()`.
+- 2026-10-24 — **NativeLayersGpu failures diagnosed** (consultant).
+  - **Time-varying cases: test fixed in `d40ab5123`.** A Switch's colour layout comes from metadata, which is the same at every frame and the widest of its inputs (`EffectInstance.cpp:6254-6305`). So only non-colour layers can vary per frame. The tests now vary spec only.
+  - **RemoveLayers → Grade is a real request-pass gap.** A node that only passes a plane through, and needs nothing from that input, gets no request edge (`ParallelRenderArgs.cpp` `visitRequestPassItem`). P4.T4 can't forward along a missing edge, so the node stays on the CPU, which pulls the plane unplanned.
+  - **Next:** a consultant is choosing between adding the edge when a requested plane resolves to a pass-through, and adding it lazily, then implementing the choice. Accepting CPU placement is the fallback only if both are unsound.

@@ -230,6 +230,7 @@ future core work has solid ground to build on.
 | M167 | Per-Frame Node Metadata | doing | M100 | bosley-native-nodes | E14 | [M167-per-frame-node-metadata.md](PLAN/MILESTONES/M167-per-frame-node-metadata.md) |
 | M168 | NVIDIA Viewer Hand-off Validation | todo | M107, M91 |  | E5 | [M168-nvidia-viewer-hand-off-validation.md](PLAN/MILESTONES/M168-nvidia-viewer-hand-off-validation.md) |
 | M169 | Pipelined Strip Member Timing | todo | M107, M91 |  | E5 | [M169-pipelined-strip-member-timing.md](PLAN/MILESTONES/M169-pipelined-strip-member-timing.md) |
+| M173 | Global Mode For Value Knobs | todo | M119 |  | E10 | [M173-global-mode-for-value-knobs.md](PLAN/MILESTONES/M173-global-mode-for-value-knobs.md) |
 
 # Epics
 

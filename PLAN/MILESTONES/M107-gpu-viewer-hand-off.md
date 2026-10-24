@@ -494,3 +494,14 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
   - **New APIs:** `GlInterop::discard`, and `ViewerHandoff::stage`/`presentStaged`/`discardStaged`.
   - **Refactor to review:** `ViewerInstance::updateViewer` is split into present and show helpers. That refactor of a hot path is wider than the brief and needs a careful look at the UAT.
   - **Checked:** `-fsyntax-only` on 40 TUs.
+- 2026-10-23 — **M107.P7.T5 code in (`ed113a3e6`); Phase 107.7's code is complete.**
+  - **Precompile:** `ViewerHandoff::precompile(key, format, processorFn)` runs from `initializeGL`, `resizeGL` and `paintGL`, deduplicated by key. A pool job at priority 8 looks up the OCIO processor and compiles. It reruns after a device rebuild.
+  - **Compile locking:** `ViewerGpuProcess::pipelineFor` now compiles outside its mutex, and later callers wait on the one in-flight compile, the one file outside the brief. A render-thread `prepare()` waits for that compile rather than fall back.
+  - **Abandoning:** `release`, device loss and a newer request clear the job's device reference.
+  - **Ring prebuild:** `reserve(textureIndex, bytes)` sizes rings at the tile-rounded viewport + 1 tile per axis. Ring 1 is reserved only while a wipe operator is on. Rings never shrink and are kept across device loss.
+  - **Review points:**
+    - If any main-thread path calls `prepareHandoff`, it could block the GUI thread on a compile.
+    - A float viewer holds 2 × ~56 MB at 1080p from the start.
+    - Ring builds still block the GUI thread, now at `initializeGL`/resize.
+    - The headless first-frame bench only benefits if it creates a `ViewerGL`.
+  - **Checked:** `-fsyntax-only` on 38 TUs.

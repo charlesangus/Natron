@@ -31,8 +31,12 @@
 #include <cmath>
 #include <cstring> // for std::memcpy
 #include <limits>
+#include <list>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -52,6 +56,9 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/AppManager.h"
 #include "Engine/Cache.h"
 #include "Engine/GpuPlacement.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 #include "Engine/Image.h"
 #include "Engine/Log.h"
 #include "Engine/Lut.h"
@@ -507,6 +514,125 @@ viewerFrameCanTakeDeviceRoot(const ViewerArgs& inArgs,
     }
 
     return !inArgs.isDoingPartialUpdates && (inArgs.params->nbCachedTile == 0);
+}
+
+/**
+ * Pins the device roots of frames waiting to be shown. Left evictable, they are the oldest buffers in the pool's LRU
+ * while playback renders ahead, so VRAM pressure evicts the next frame to show first and it takes the CPU viewer
+ * process. Pins take at most half the pool budget, which leaves the other half to the renders running ahead; a root
+ * that does not fit waits, oldest first, for a pin to be released, and stays evictable meanwhile.
+ **/
+class DeviceRootHolds {
+public:
+    static DeviceRootHolds& instance()
+    {
+        // Never destroyed, since a frame may still be released while the process exits.
+        static DeviceRootHolds* holds = new DeviceRootHolds;
+
+        return *holds;
+    }
+
+    // Released when the returned token is.
+    std::shared_ptr<void> hold(const GpuDeviceImagePtr& root)
+    {
+        if (!root) {
+            return std::shared_ptr<void>();
+        }
+        std::shared_ptr<Entry> entry = std::make_shared<Entry>();
+        entry->root = root;
+        entry->bytes = root->bytes();
+        std::vector<std::shared_ptr<Entry>> visited;
+        {
+            std::lock_guard<std::mutex> k(_mutex);
+            _waiting.push_back(entry);
+            promoteLocked(&visited);
+        }
+
+        return entry;
+    }
+
+private:
+    struct Entry {
+        GpuDeviceImagePtr root;
+        std::size_t bytes = 0;
+        bool pinned = false;
+
+        ~Entry() { DeviceRootHolds::instance().release(*this); }
+    };
+
+    static std::size_t limitOf(const GpuDeviceImage& root)
+    {
+        gpu::GpuRuntime* runtime = root.runtime();
+        if (!runtime || runtime->isLost()) {
+            return 0;
+        }
+
+        return static_cast<std::size_t>(runtime->pool().budget() / 2);
+    }
+
+    void release(Entry& entry)
+    {
+        std::vector<std::shared_ptr<Entry>> visited;
+        std::lock_guard<std::mutex> k(_mutex);
+        if (entry.pinned) {
+            entry.root->unpin();
+            entry.pinned = false;
+            _heldBytes -= entry.bytes;
+        }
+        promoteLocked(&visited);
+    }
+
+    // The entries it locks are dropped by the caller after the mutex, since the last reference to one may be among
+    // them and its destructor takes the mutex.
+    void promoteLocked(std::vector<std::shared_ptr<Entry>>* visited)
+    {
+        for (std::list<std::weak_ptr<Entry>>::iterator it = _waiting.begin(); it != _waiting.end();) {
+            std::shared_ptr<Entry> entry = it->lock();
+            if (!entry) {
+                it = _waiting.erase(it);
+                continue;
+            }
+            visited->push_back(entry);
+            const std::size_t limit = limitOf(*entry->root);
+            if ((entry->bytes == 0) || (entry->bytes > limit)) {
+                it = _waiting.erase(it);
+                continue;
+            }
+            if (_heldBytes + entry->bytes > limit) {
+                return;
+            }
+            // Null once the root was evicted or downloaded, and then there is nothing left to keep on the device.
+            if (entry->root->pin()) {
+                entry->pinned = true;
+                _heldBytes += entry->bytes;
+            }
+            it = _waiting.erase(it);
+        }
+    }
+
+    std::mutex _mutex;
+    std::size_t _heldBytes = 0;
+    std::list<std::weak_ptr<Entry>> _waiting;
+};
+
+// Counts a frame the hand-off refused, logging each reason the first time it is given in the session.
+void
+noteHandoffRefusal(const RenderStatsPtr& stats,
+                   const std::string& reason)
+{
+    if (stats) {
+        stats->incLegacyFallbacks("viewer handoff: " + reason);
+    }
+    static std::mutex mutex;
+    static std::set<std::string> logged;
+    {
+        std::lock_guard<std::mutex> k(mutex);
+        if (!logged.insert(reason).second) {
+            return;
+        }
+    }
+    qInfo().noquote() << QString::fromLatin1("Viewer hand-off refused a frame, drawn by the CPU viewer process instead: %1")
+                             .arg(QString::fromStdString(reason));
 }
 #endif
 
@@ -1753,9 +1879,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                     hasDeviceColor = true;
                                     layers.clear();
                                 } else {
-                                    if (stats) {
-                                        stats->incLegacyFallbacks("viewer handoff: " + prepared.reason);
-                                    }
+                                    noteHandoffRefusal(stats, prepared.reason);
                                     if ( layers.empty() ) {
                                         ImagePtr downloaded = found->second->downloadToRam();
                                         if (downloaded) {
@@ -1858,6 +1982,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             // The tiles keep describing the texture the root is drawn into, without any RAM buffer.
             const UpdateViewerParamsPtr& updateParams = inArgs.params;
             updateParams->deviceColor = deviceColor;
+            updateParams->deviceRootHold = DeviceRootHolds::instance().hold(deviceColor);
             updateParams->deviceProcess.rect = updateParams->roi;
             updateParams->deviceProcess.channels = inArgs.channels;
             updateParams->deviceProcess.alphaChannelIndex = alphaChannelIndex;
@@ -3104,14 +3229,27 @@ drawDeviceRootOnCpu(OpenGLViewerI* uiContext,
     // the root covers is processed.
     const RectI drawn = rect.intersect( downloaded->getBounds() );
     if ( !drawn.isNull() ) {
-        if (drawn == rect) {
+        const bool whole = (drawn == rect);
+        const std::size_t drawnRowBytes = drawn.width() * pixelBytes;
+        std::vector<unsigned char> part(whole ? 0 : drawnRowBytes * drawn.height());
+        unsigned char* const out = whole ? &buffer[0] : &part[0];
+        // The 8-bit dither diffuses its error along each row from a random start of its own, so splitting the rect into
+        // bands of whole rows leaves the output as one call makes it.
+        const int maxThreads = std::max(1, QThreadPool::globalInstance()->maxThreadCount());
+        const int bandCount = std::min(drawn.height(), 4 * maxThreads);
+        const int rowsPerBand = (drawn.height() + bandCount - 1) / bandCount;
+        parallelForOnGlobalPool(bandCount, maxThreads, [&](int i) {
+            RectI band = drawn;
+            band.y1 = drawn.y1 + i * rowsPerBand;
+            band.y2 = std::min(drawn.y2, band.y1 + rowsPerBand);
+            if (band.y1 >= band.y2) {
+                return;
+            }
             viewerProcessRectOnCpu(downloaded, matte, process.channels, params.depth, process.gain, process.gamma, process.offset,
-                                   process.displayProcessor, process.alphaChannelIndex, rect, &buffer[0]);
-        } else {
-            const std::size_t drawnRowBytes = drawn.width() * pixelBytes;
-            std::vector<unsigned char> part(drawnRowBytes * drawn.height());
-            viewerProcessRectOnCpu(downloaded, matte, process.channels, params.depth, process.gain, process.gamma, process.offset,
-                                   process.displayProcessor, process.alphaChannelIndex, drawn, &part[0]);
+                                   process.displayProcessor, process.alphaChannelIndex, band,
+                                   out + std::size_t(band.y1 - drawn.y1) * drawnRowBytes);
+        });
+        if (!whole) {
             for (int y = drawn.y1; y < drawn.y2; ++y) {
                 std::memcpy(&buffer[(y - rect.y1) * rowBytes + (drawn.x1 - rect.x1) * pixelBytes],
                             &part[(y - drawn.y1) * drawnRowBytes],
@@ -3278,6 +3416,9 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
             params->deviceProcess.readbackToken = wantsCacheFill ? nextReadbackToken++ : 0;
             const ViewerHandoffResult presented = uiContext->transferDeviceImageToGPU(params->deviceColor, texRect, params->roiNotRoundedToTileSize,
                                                                                       params->textureIndex, params->deviceProcess, &texture);
+            // present() pins the root for as long as the device reads it, and a pinned root cannot be downloaded,
+            // neither by the CPU fallback below nor by the picker reading the frame on screen.
+            params->deviceRootHold.reset();
             if (presented && wantsCacheFill) {
                 PendingCacheFill fill;
                 fill.token = params->deviceProcess.readbackToken;
@@ -3293,9 +3434,7 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
                 scheduleCachePoll();
             }
             if (!presented) {
-                if (params->deviceStats) {
-                    params->deviceStats->incLegacyFallbacks("viewer handoff: " + presented.reason);
-                }
+                noteHandoffRefusal(params->deviceStats, presented.reason);
                 deviceDownload = drawDeviceRootOnCpu(uiContext, *params, texRect, &texture);
             }
         }

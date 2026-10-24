@@ -1539,6 +1539,22 @@ CurveWidgetPrivate::refreshKeyTangents(KeyPtr & key)
         assert(std::abs(rightTanX - x) <= tanMax.x() * 1.001); // check that they are effectively clamped (taking into account rounding errors)
         assert(std::abs(rightTanY - y) <= tanMax.y() * 1.001);
     }
+    // A Free or Broken key's inner handles are the Bezier control points its weights define, so
+    // that the handle shows the segment's true shape at any zoom. Outer handles have no segment
+    // to take a weight from and keep the clamped drawing above.
+    const KeyframeTypeEnum interp = key->key.getInterpolation();
+    if ((interp == eKeyframeTypeFree) || (interp == eKeyframeTypeBroken)) {
+        if (key->hasPrevious && (key->prevKey.getTime() < x)) {
+            const double extent = key->key.getLeftWeight() * (x - key->prevKey.getTime());
+            leftTanX = x - extent;
+            leftTanY = y - key->key.getLeftDerivative() * extent;
+        }
+        if (key->hasNext && (key->nextKey.getTime() > x)) {
+            const double extent = key->key.getRightWeight() * (key->nextKey.getTime() - x);
+            rightTanX = x + extent;
+            rightTanY = y + key->key.getRightDerivative() * extent;
+        }
+    }
     key->leftTan.first = leftTanX;
     key->leftTan.second = leftTanY;
     key->rightTan.first = rightTanX;

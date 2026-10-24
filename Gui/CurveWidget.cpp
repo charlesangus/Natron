@@ -600,12 +600,12 @@ CurveWidget::resizeGL(int width,
     if (height == 0) {
         height = 1;
     }
-    glViewport (0, 0, width, height);
+    // Qt passes the size in logical pixels, the space mouse events and the zoom context use;
+    // only the viewport is in device pixels.
+    const double screenPixelRatio = getScreenPixelRatio();
+    glViewport(0, 0, (GLsizei)std::ceil(width * screenPixelRatio), (GLsizei)std::ceil(height * screenPixelRatio));
     double zoomWidth = width;
     double zoomHeight = height;
-    double screenPixelRatio = getScreenPixelRatio();
-    zoomWidth /= screenPixelRatio;
-    zoomHeight /= screenPixelRatio;
 
     // Width and height may be 0 when tearing off a viewer tab to another panel
     if ( (width > 0) && (height > 0) ) {

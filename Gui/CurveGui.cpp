@@ -149,6 +149,8 @@ CurveGui::nextPointForSegment(const double x, // < in curve coordinates
     }
 
     double tprev, vprev, vprevDerivRight, tnext, vnext, vnextDerivLeft;
+    KeyframeTypeEnum prevInterp, nextInterp;
+    double prevWeightRight, nextWeightLeft;
     if (upperIt == keys.end()) {
         // We are in a periodic curve: we are in-between the last keyframe and the parametric xMax
         // If the curve is non periodic, it should have been handled in the 2 cases above: we only draw a straightline
@@ -163,6 +165,10 @@ CurveGui::nextPointForSegment(const double x, // < in curve coordinates
         //xClamped += period;
         vnext = start->getValue();
         vnextDerivLeft = start->getLeftDerivative();
+        prevInterp = last->getInterpolation();
+        prevWeightRight = last->getRightWeight();
+        nextInterp = start->getInterpolation();
+        nextWeightLeft = start->getLeftWeight();
 
     } else if (upperIt == keys.begin()) {
         // We are in a periodic curve: we are in-between the parametric xMin and the first keyframe
@@ -177,6 +183,10 @@ CurveGui::nextPointForSegment(const double x, // < in curve coordinates
         tnext = std::fmod(last->getTime() - upperIt->getTime(), period) + tprev;
         vnext = upperIt->getValue();
         vnextDerivLeft = upperIt->getLeftDerivative();
+        prevInterp = last->getInterpolation();
+        prevWeightRight = last->getRightWeight();
+        nextInterp = upperIt->getInterpolation();
+        nextWeightLeft = upperIt->getLeftWeight();
 
     } else {
         // in-between 2 keyframes
@@ -188,6 +198,10 @@ CurveGui::nextPointForSegment(const double x, // < in curve coordinates
         tnext = upperIt->getTime();
         vnext = upperIt->getValue();
         vnextDerivLeft = upperIt->getLeftDerivative();
+        prevInterp = prev->getInterpolation();
+        prevWeightRight = prev->getRightWeight();
+        nextInterp = upperIt->getInterpolation();
+        nextWeightLeft = upperIt->getLeftWeight();
     }
     double normalizeTimeRange = tnext - tprev;
     if (normalizeTimeRange == 0) {
@@ -197,21 +211,27 @@ CurveGui::nextPointForSegment(const double x, // < in curve coordinates
     }
     assert(normalizeTimeRange > 0.);
 
-    double t = ( xClamped - tprev ) / normalizeTimeRange;
-    double P3 = vnext;
-    double P0 = vprev;
-    // Hermite coefficients P0' and P3' are for t normalized in [0,1]
-    double P3pl = vnextDerivLeft / normalizeTimeRange; // normalize for t \in [0,1]
-    double P0pr = vprevDerivRight / normalizeTimeRange; // normalize for t \in [0,1]
-    double secondDer = 6. * (1. - t) * (P3 - P3pl / 3. - P0 - 2. * P0pr / 3.) +
-    6. * t * (P0 - P3 + 2 * P3pl / 3. + P0pr / 3. );
+    double delta_x;
+    if (Interpolation::isWeightedSegment(prevInterp, nextInterp, prevWeightRight, nextWeightLeft)) {
+        // The Hermite curvature estimate below does not describe a Bezier in (time, value), whose
+        // curvature can concentrate near a long handle, so sample it every 2 pixels instead.
+        delta_x = 2.;
+    } else {
+        double t = (xClamped - tprev) / normalizeTimeRange;
+        double P3 = vnext;
+        double P0 = vprev;
+        // Hermite coefficients P0' and P3' are for t normalized in [0,1]
+        double P3pl = vnextDerivLeft / normalizeTimeRange; // normalize for t \in [0,1]
+        double P0pr = vprevDerivRight / normalizeTimeRange; // normalize for t \in [0,1]
+        double secondDer = 6. * (1. - t) * (P3 - P3pl / 3. - P0 - 2. * P0pr / 3.) + 6. * t * (P0 - P3 + 2 * P3pl / 3. + P0pr / 3.);
 
-    double secondDerWidgetCoord = _curveWidget->toWidgetCoordinates(0, secondDer).y();
-    double normalizedSecondDerWidgetCoord = std::abs(secondDerWidgetCoord / normalizeTimeRange);
+        double secondDerWidgetCoord = _curveWidget->toWidgetCoordinates(0, secondDer).y();
+        double normalizedSecondDerWidgetCoord = std::abs(secondDerWidgetCoord / normalizeTimeRange);
 
-    // compute delta_x so that the y difference between the derivative and the curve is at most
-    // 1 pixel (use the second order Taylor expansion of the function)
-    double delta_x = std::max(2. / std::max(std::sqrt(normalizedSecondDerWidgetCoord), 0.1), 1.);
+        // compute delta_x so that the y difference between the derivative and the curve is at most
+        // 1 pixel (use the second order Taylor expansion of the function)
+        delta_x = std::max(2. / std::max(std::sqrt(normalizedSecondDerWidgetCoord), 0.1), 1.);
+    }
 
     // The x widget coordinate of the next keyframe
     double tNextWidgetCoords = _curveWidget->toWidgetCoordinates(tnext, 0).x();

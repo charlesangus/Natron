@@ -3246,12 +3246,12 @@ DopeSheetView::resizeGL(int w,
         h = 1;
     }
 
-    glViewport(0, 0, w, h);
+    // Qt passes the size in logical pixels, the space mouse events and the zoom context use;
+    // only the viewport is in device pixels.
+    const double screenPixelRatio = getScreenPixelRatio();
+    glViewport(0, 0, (GLsizei)std::ceil(w * screenPixelRatio), (GLsizei)std::ceil(h * screenPixelRatio));
     double zoomWidth = w;
     double zoomHeight = h;
-    double screenPixelRatio = getScreenPixelRatio();
-    zoomWidth /= screenPixelRatio;
-    zoomHeight /= screenPixelRatio;
 
     _imp->zoomContext.setScreenSize(zoomWidth, zoomHeight);
 

@@ -678,6 +678,10 @@ MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
     , _oldInterp(key->key.getInterpolation())
     , _oldLeft(key->key.getLeftDerivative())
     , _oldRight(key->key.getRightDerivative())
+    , _oldLeftWeight(key->key.getLeftWeight())
+    , _oldRightWeight(key->key.getRightWeight())
+    , _newLeftWeight(_oldLeftWeight)
+    , _newRightWeight(_oldRightWeight)
     , _setBoth(false)
     , _updateOnFirstRedo(updateOnFirstRedo)
     , _firstRedoCalled(false)
@@ -747,6 +751,39 @@ MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
         }
         _newInterp = eKeyframeTypeBroken;
     }
+
+    // The handle's time extent is a fraction of the segment it reaches into. A periodic curve's
+    // first and last keys reach into the wrap segment.
+    double leftSpan = 0.;
+    double rightSpan = 0.;
+    {
+        const std::pair<double, double> xRange = internalCurve->getXRange();
+        const double period = xRange.second - xRange.first;
+        const bool wraps = internalCurve->isCurvePeriodic() && (keys.size() > 1) && std::isfinite(period) && (period > 0.);
+        if (prev != keys.end()) {
+            leftSpan = cur->getTime() - prev->getTime();
+        } else if (wraps) {
+            leftSpan = cur->getTime() - (keys.rbegin()->getTime() - period);
+        }
+        if (next != keys.end()) {
+            rightSpan = next->getTime() - cur->getTime();
+        } else if (wraps) {
+            rightSpan = keys.begin()->getTime() + period - cur->getTime();
+        }
+    }
+    const double draggedSpan = isLeft ? leftSpan : rightSpan;
+    if (draggedSpan > 0.) {
+        const double oldWeight = isLeft ? _oldLeftWeight : _oldRightWeight;
+        const double newWeight = Interpolation::clampTangentWeight(std::abs(dx) / draggedSpan);
+        const double otherSpan = isLeft ? rightSpan : leftSpan;
+        double& draggedNew = isLeft ? _newLeftWeight : _newRightWeight;
+        double& otherNew = isLeft ? _newRightWeight : _newLeftWeight;
+        const double otherOld = isLeft ? _oldRightWeight : _oldLeftWeight;
+        draggedNew = newWeight;
+        if (_setBoth && (otherSpan > 0.)) {
+            otherNew = Interpolation::clampTangentWeight(otherOld * newWeight / oldWeight);
+        }
+    }
 }
 
 MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
@@ -761,6 +798,10 @@ MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
     , _oldInterp(key->key.getInterpolation())
     , _oldLeft(key->key.getLeftDerivative())
     , _oldRight(key->key.getRightDerivative())
+    , _oldLeftWeight(key->key.getLeftWeight())
+    , _oldRightWeight(key->key.getRightWeight())
+    , _newLeftWeight(_oldLeftWeight)
+    , _newRightWeight(_oldRightWeight)
     , _setBoth(true)
     , _updateOnFirstRedo(true)
     , _firstRedoCalled(false)
@@ -802,10 +843,12 @@ MoveTangentCommand::setNewDerivatives(bool undo)
         double left = undo ? _oldLeft : _newLeft;
         double right = undo ? _oldRight : _newRight;
         KeyframeTypeEnum interp = undo ? _oldInterp : _newInterp;
+        double leftWeight = undo ? _oldLeftWeight : _newLeftWeight;
+        double rightWeight = undo ? _oldRightWeight : _newRightWeight;
 
         if (!isParametric) {
             attachedKnob->beginChanges();
-            const KeyTangents tangents = { left, right, _key->key.getLeftWeight(), _key->key.getRightWeight() };
+            const KeyTangents tangents = { left, right, leftWeight, rightWeight };
             attachedKnob->setTangentsAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), _key->key.getTime(), tangents, NULL);
             attachedKnob->setInterpolationAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), _key->key.getTime(), interp, &_key->key);
             if (_firstRedoCalled || _updateOnFirstRedo) {
@@ -814,11 +857,14 @@ MoveTangentCommand::setNewDerivatives(bool undo)
         } else {
             int keyframeIndexInCurve = _key->curve->getInternalCurve()->keyFrameIndex( _key->key.getTime() );
             _key->key = _key->curve->getInternalCurve()->setKeyFrameInterpolation(interp, keyframeIndexInCurve);
-            _key->key = _key->curve->getInternalCurve()->setKeyFrameTangents(left, right, _key->key.getLeftWeight(), _key->key.getRightWeight(), keyframeIndexInCurve);
+            _key->key = _key->curve->getInternalCurve()->setKeyFrameTangents(left, right, leftWeight, rightWeight, keyframeIndexInCurve);
             attachedKnob->evaluateValueChange(isKnobCurve->getDimension(), _key->key.getTime(), ViewIdx(0),  eValueChangedReasonUserEdited);
         }
 
-        _widget->refreshCurveDisplayTangents( _key->curve.get() );
+        // Null when a unit test exercises the command without a real curve widget behind it.
+        if (_widget) {
+            _widget->refreshCurveDisplayTangents(_key->curve.get());
+        }
     }
 }
 
@@ -861,6 +907,8 @@ MoveTangentCommand::mergeWith(const QUndoCommand * command)
         _newInterp = cmd->_newInterp;
         _newLeft = cmd->_newLeft;
         _newRight = cmd->_newRight;
+        _newLeftWeight = cmd->_newLeftWeight;
+        _newRightWeight = cmd->_newRightWeight;
 
         return true;
     } else {

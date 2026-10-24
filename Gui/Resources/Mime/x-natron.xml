@@ -6,8 +6,8 @@
         <glob-deleteall/>
         <glob pattern="*.ntpz"/>
         <magic priority="60">
-            <match type="string" value="mimetype" offset="30">
-                <match type="string" value="application/vnd.natron.project+zip" offset="38"/>
+            <match type="string" value="PK\003\004" offset="0">
+                <match type="string" value="application/vnd.natron.project+zip" offset="39:300"/>
             </match>
         </magic>
     </mime-type>

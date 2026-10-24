@@ -1,6 +1,6 @@
 # Project file format
 
-A Natron project is a `.ntpz` bundle: a stored (uncompressed) zip archive of YAML documents
+A Natron project is a `.ntpz` bundle: a zip archive (stored, uncompressed, as Natron writes it) of YAML documents
 and binary tables. This page describes what the code in `Serialization/` reads and writes. The
 encoders are in `Serialization/Yaml/`, the container in `Serialization/Bundle/`. To add a field,
 see [Serialization/README.md](../Serialization/README.md).
@@ -19,25 +19,57 @@ exactly; infinities and NaN are `.inf`, `-.inf` and `.nan`.
 
 ## Bundle layout
 
-The archive is a classic 32-bit zip (no zip64, no compression, no encryption). Members are
-written in a fixed order:
+The archive is a classic 32-bit zip (no zip64, no encryption) that Natron writes without
+compression. Every member sits under one folder named after the project file without its
+extension, so `test.ntpz` unzips to a `test/` folder. Members are written in a fixed order:
 
-1. `mimetype`, containing `application/vnd.natron.project+zip`. It has no extra field, so the
-   mime type always starts at byte offset 38 of the file and file sniffers can match it. A reader
-   treats a zip whose first member is not this `mimetype` as not a Natron project.
-2. `manifest.yaml`
-3. `project.yaml`
-4. `blobs/**`, sorted by path. Present only when the project holds roto or tracker data too
-   large to inline (see [Blob tables](#blob-tables)).
+1. `<stem>/mimetype`, containing `application/vnd.natron.project+zip`. It has no extra field, so
+   the mime type starts at byte offset `39 + length of <stem>` of the file. The shared-mime-info
+   rule therefore matches it anywhere in offsets 39 to 300 after the `PK` signature.
+2. `<stem>/manifest.yaml`
+3. `<stem>/project.yaml`
+4. `<stem>/blobs/**`, sorted by path. Present only when the project holds roto or tracker data
+   too large to inline (see [Blob tables](#blob-tables)).
 
 Every member except `mimetype` is stored with an extra field of id `0x1986` whose padding places
 the start of its data on a 64-byte boundary. A reader that maps the file can then hand out the
 bytes of a blob in place, correctly aligned for `double`. The reader does not require the
 alignment: misaligned columns are copied instead of read in place.
 
-A reader ignores members it does not know. Saving the same project twice gives the same bytes
-except in `manifest.yaml`, which carries the save date. A project is saved by writing a new file
-and renaming it over the old one, because the reader maps the archive.
+Saving the same project twice gives the same bytes except in `manifest.yaml`, which carries the
+save date. A project is saved by writing a new file and renaming it over the old one, because
+the reader maps the archive.
+
+### What the reader accepts
+
+The reader is lenient so that a bundle unzipped, edited and re-zipped by any tool still opens.
+Member names below are relative to the project's root folder.
+
+- Any zip archive is accepted, in any member order, compressed or stored. Directory entries are
+  ignored. The CRC-32 of every member is checked, and a member that fails is refused.
+- The root is wherever the archive's single `project.yaml` is: at the top of the archive or in
+  one folder, whatever that folder is called. No `project.yaml` is "not a project"; several are
+  refused as ambiguous.
+- `mimetype` is optional, at the root or at the top of the archive. One that names another type
+  is refused.
+- `manifest.yaml` is optional and advisory. A missing or unreadable one gives no author or
+  dates. One whose member list no longer matches the members (typically after hand-editing)
+  gives a single warning that it is probably out of date. The reader does not otherwise compare
+  sizes or CRCs with the manifest. A `formatVersion` higher than the reader knows is refused.
+- Members outside the root folder, other than a top-level `mimetype`, are ignored with a
+  warning. Members under the root that the project does not name are ignored silently.
+- A blob the project names that is not in the archive warns once; the rest of the project still loads.
+
+An old `.ntp` or a file that is not a project is refused before the application state is
+touched.
+
+### Opening and saving a folder
+
+File > Open also takes an unzipped project: pick the folder, or its `project.yaml`. The folder
+is read with the same rules as an archive, and the project is treated as `<parent>/<folder>.ntpz`.
+It is not saved automatically after loading. Save writes `<folder>.ntpz` beside the folder,
+asking before it replaces an existing file, and Save As starts there. Reload follows the folder
+until the project has been saved.
 
 The bundle holds no window or pane layout, viewer state, selection or open panels. See
 [What a project does not save](#what-a-project-does-not-save).
@@ -71,9 +103,7 @@ members:
   - {name: "blobs/Roto1/Stroke1.stroke.bin", size: 12864, crc32: "9f8e7d6c"}
 ```
 
-On load the reader opens the archive, checks `mimetype`, checks the CRC-32 of every member,
-requires `manifest.yaml` and `project.yaml`, and refuses a manifest whose `formatVersion` is
-higher than it knows.
+On load the reader follows the rules in [What the reader accepts](#what-the-reader-accepts).
 
 ## project.yaml
 
@@ -341,30 +371,28 @@ compatibility, by design"), and the application carries on. A file is recognised
 first bytes (`<?xml`, or `<!DOCTYPE boost_serialization`). A zip that is not a Natron bundle, or
 any other file that is not readable, gives "Unrecognized or damaged project file".
 
-## Repairing a bundle by hand
+## Hand-editing a project
 
 A bundle is a zip, so standard tools open it:
 
 ```sh
-unzip -l f.ntpz                  # members, in archive order
-unzip -p f.ntpz project.yaml     # print the graph
-unzip -p f.ntpz manifest.yaml
+unzip -l test.ntpz                    # members, in archive order
+unzip -p test.ntpz test/project.yaml  # print the graph
 ```
 
-To change a file, extract it, edit it and write a new archive with Python. The members must be
-stored, not compressed, with `mimetype` first:
+To change a project, unzip it, edit `project.yaml`, then either open the folder or zip it again:
 
-```python
-import zipfile
-
-with zipfile.ZipFile("fixed.ntpz", "w", zipfile.ZIP_STORED) as out:
-    out.writestr("mimetype", "application/vnd.natron.project+zip")
-    for name in ["manifest.yaml", "project.yaml"]:
-        out.write(name)
+```sh
+unzip test.ntpz                       # creates test/
+$EDITOR test/project.yaml
 ```
 
-Add any `blobs/**` members the same way. The result loads, but a hand-written archive lacks the
-64-byte alignment padding, so blobs are copied instead of read in place, until the next Natron
-save rewrites the file. The CRC of each member is checked on load, which `zipfile` computes
-for you; the sizes and CRCs listed in `manifest.yaml` are descriptive and a reader does not
-compare them with the archive.
+- Open the `test/` folder (or `test/project.yaml`) in Natron. Save then writes `test.ntpz`
+  beside it.
+- Or re-zip it with any tool: `zip -r test.ntpz test/`, `python -m zipfile -c test.ntpz test/`,
+  or a file manager's compress command. Compression, member order and directory entries do not
+  matter.
+
+A hand-made archive lacks the 64-byte alignment padding, so blobs are copied instead of read in
+place, until the next Natron save rewrites the file. After editing, `manifest.yaml` is stale and
+the first load warns once; the next save rewrites it.

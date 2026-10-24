@@ -48,3 +48,11 @@ foreach(_suite IN LISTS _natron_long_suites)
     set_tests_properties(${_suite} PROPERTIES TIMEOUT ${_timeout})
     math(EXPR _natron_i "${_natron_i} + 1")
 endforeach()
+
+# Sends the renderer probe down the probe-context path NVIDIA drivers take even under Mesa. The
+# switch is read once, during start-up, so it has to be in the process environment.
+if(NOT "GuiThreadGLBinding" IN_LIST NATRON_GTEST_SUITE_TESTS)
+    message(FATAL_ERROR "SuiteProperties.cmake: 'GuiThreadGLBinding' is not a registered test; "
+                        "update the suite name or it would silently lose its properties.")
+endif()
+set_tests_properties(GuiThreadGLBinding PROPERTIES ENVIRONMENT "NATRON_DIAG_GL_FORCE_PROBE_CONTEXT=1")

@@ -22,7 +22,9 @@ renderer probe bind a probe context even under Mesa, the path NVIDIA drivers tak
 Each launch gets a fresh HOME whose Natron.conf has checkForUpdates=false. A launch passes when
 Natron exits 0 after the main window was shown, exposed and closed by this script; its log has no
 "Failed to compile shader", "Failed to build graphics pipeline" or segmentation fault line and no
-MISMATCH checkpoint; the diagnostics ran (checkpoints up to first-expose are logged); a forced
+MISMATCH checkpoint; the diagnostics ran (checkpoints up to first-expose are logged); no
+getGPUInfos:begin checkpoint follows createGui:before, since Qt's own contexts exist from then on and
+the renderer list comes from the startup probe; a forced
 launch took the probe-context path; and with the fixture, initGui.py ran and its action is under
 the Merge submenu.
 
@@ -243,6 +245,11 @@ def driver_main(argv):
         check(any("checkpoint name=show:after" in l for l in checkpoints)
               and any("checkpoint name=first-expose:before" in l for l in checkpoints),
               "NATRON_DIAG_GL checkpoints ran through first-expose (%d logged)" % len(checkpoints))
+        gui_at = next((i for i, l in enumerate(checkpoints) if "checkpoint name=createGui:before" in l), None)
+        late_probes = [] if gui_at is None else [l for l in checkpoints[gui_at:] if "checkpoint name=getGPUInfos:begin" in l]
+        check(gui_at is not None and not late_probes,
+              "no GPU probe once the GUI is being created (%s)"
+              % ("no createGui:before checkpoint" if gui_at is None else "%d after createGui:before" % len(late_probes)))
         if forced:
             check(any(FORCE_PROBE_ENV + ": probed the OpenGL renderer through a probe context" in l for l in log),
                   "the renderer probe bound a probe context")

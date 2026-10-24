@@ -5,6 +5,7 @@
 
 #include <span>
 #include <string>
+#include <vector>
 
 namespace gpu {
 
@@ -262,6 +263,43 @@ GpuStatus
 recordWrapped(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuBuffer* opParams)
 {
     return record(ctx, kernel, wrap, opParams, nullptr);
+}
+
+GpuStatus
+recordWrappedInputs(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuBuffer* opParams,
+                    std::span<const GpuWrapView> inputs)
+{
+    GpuWrapParams p;
+    if (GpuStatus s = wrapParams(wrap, p); !s) {
+        return s;
+    }
+    if (p.width == 0 || p.height == 0) {
+        return {};
+    }
+    const GpuBuffer* unused = nullptr;
+    const GpuBuffer* b[kGpuWrapBindings];
+    if (GpuStatus s = wrapBuffers(ctx, wrap, opParams, nullptr, unused, b); !s) {
+        return s;
+    }
+    std::vector<const GpuBuffer*> buffers(b, b + kGpuWrapBindings);
+    for (const GpuWrapView& input : inputs) {
+        if (input.bounds.empty()) {
+            if (GpuStatus s = standIn(ctx, unused); !s) {
+                return s;
+            }
+            buffers.push_back(unused);
+            continue;
+        }
+        if (GpuStatus s = checkGeometry(input, "input"); !s) {
+            return s;
+        }
+        if (GpuStatus s = checkBuffer(input, "input"); !s) {
+            return s;
+        }
+        buffers.push_back(input.buffer);
+    }
+    return ctx.dispatch(kernel, std::span<const GpuBuffer* const>(buffers.data(), buffers.size()),
+                        std::as_bytes(std::span(&p, 1)), { p.width, p.height, 1 });
 }
 
 GpuStatus

@@ -42,9 +42,14 @@
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Transform/WarpGpu.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/TimeLine.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -671,5 +676,119 @@ IDistort::renderOp(const RenderActionArgs& args,
 
     return eStatusOK;
 } // IDistort::renderOp
+
+bool
+IDistort::resolveGpuUVLayer(double time,
+                            ViewIdx view,
+                            ImageLayerDesc* layer,
+                            int* uChannel,
+                            int* vChannel) const
+{
+    *layer = ImageLayerDesc();
+    *uChannel = -1;
+    *vChannel = -1;
+    UVChannel u;
+    UVChannel v;
+    const_cast<IDistort*>(this)->resolveUVChannels(time, view, &u, &v);
+    if (u.valid && v.valid && !(u.layer == v.layer)) {
+        return false;
+    }
+    const UVChannel& used = u.valid ? u : v;
+    if (!used.valid) {
+        return true;
+    }
+    if ((used.layer.getNumComponents() < 1) || (used.layer.getNumComponents() > 4)) {
+        return false;
+    }
+    *layer = used.layer;
+    *uChannel = u.valid ? u.channel : -1;
+    *vChannel = v.valid ? v.channel : -1;
+
+    return true;
+}
+
+bool
+IDistort::canRenderOpOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+        return false;
+    }
+    ImageLayerDesc layer;
+    int uChannel = -1;
+    int vChannel = -1;
+
+    return resolveGpuUVLayer(query.time, query.view, &layer, &uChannel, &vChannel);
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+bool
+IDistort::getOpGpuInputLayer(int inputNb,
+                             const ImageLayerDesc& plane,
+                             double time,
+                             ViewIdx view,
+                             ImageLayerDesc* layer) const
+{
+    if (inputNb == kIDistortInputUV) {
+        int uChannel = -1;
+        int vChannel = -1;
+        if (resolveGpuUVLayer(time, view, layer, &uChannel, &vChannel) && (layer->getNumComponents() > 0)) {
+            return true;
+        }
+    }
+    stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+    return true;
+}
+
+RectI
+IDistort::getOpGpuInputRoI(int inputNb,
+                           const RectI& outputRect,
+                           const RenderScale& scale) const
+{
+    if ((inputNb == kIDistortInputSource) || (inputNb == kIDistortInputUV)) {
+        return warpGpuInputRoI(*this, inputNb, kIDistortInputSource, kIDistortInputUV, outputRect, scale);
+    }
+
+    return StagedImageEffect::getOpGpuInputRoI(inputNb, outputRect, scale);
+}
+
+StatusEnum
+IDistort::renderOpGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuQuery& query = args.query;
+    ImageLayerDesc uvLayer;
+    int uChannel = -1;
+    int vChannel = -1;
+    if (!canRenderOpOnGpu(query) || !resolveGpuUVLayer(query.time, query.view, &uvLayer, &uChannel, &vChannel)) {
+        return eStatusFailed;
+    }
+    Settings settings;
+    readSettings(query.time, query.view, &settings);
+    if (query.draftMode) {
+        settings.filter = Resampler::eFilterImpulse;
+    }
+    const OfxPointD s = query.mappedScale.toOfxPointD();
+
+    WarpGpuParams params;
+    params.filter = (uint32_t)settings.filter;
+    params.flags = (settings.clamp ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
+    setWarpGpuDouble(settings.uOffset, params.uOffset);
+    setWarpGpuDouble(settings.vOffset, params.vOffset);
+    setWarpGpuDouble(settings.uScale * s.x, params.uScale);
+    setWarpGpuDouble(settings.vScale * s.y, params.vScale);
+
+    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::idistort, params, kIDistortInputUV, uvLayer, uChannel, vChannel);
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+}
 
 NATRON_NAMESPACE_EXIT

@@ -31,6 +31,7 @@
 #include <bitset>
 #include <mutex>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -325,6 +326,28 @@ StatusEnum recordStagesGpuDivide(const StagePlan& plan,
 StatusEnum recordStagesGpuFinish(const StagePlan& plan,
                                  const GpuRenderArgs& args,
                                  const GpuImageView& filtered) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Records kernel, a pixelwrap entry built with runWrapped, over args.outputRect of
+ * args.output through plan, as recordStagesGpu() records a Kernel op, the entry also reading
+ * inputs at the bindings after its parameter block, in order. An input without a buffer is bound
+ * to a stand-in, so the entry must read none of its pixels.
+ **/
+StatusEnum recordStagesGpuKernelInputs(const StagePlan& plan,
+                                       const GpuRenderArgs& args,
+                                       const PixelKernelGpu& kernel,
+                                       std::span<const GpuImageView> inputs) WARN_UNUSED_RETURN;
+
+/**
+ * @brief args' view of input inputNb of effect cropped to that input's region of definition, as a
+ * CPU render fetches it: an image of the input holds no pixel outside its region, while the view
+ * may. An empty view when the input is not connected, not handed over or the crop is empty. False
+ * when the view is not 1 to 4 floats per pixel or the region cannot be read.
+ **/
+bool stageGpuInputView(EffectInstance& effect,
+                       const GpuRenderArgs& args,
+                       int inputNb,
+                       GpuImageView* view) WARN_UNUSED_RETURN;
 
 NATRON_NAMESPACE_EXIT
 

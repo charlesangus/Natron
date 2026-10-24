@@ -61,9 +61,11 @@
 #include "Engine/Nodes/Raw/RawInputColor.h"
 #include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Nodes/Transform/Crop.h"
+#include "Engine/Nodes/Transform/IDistort.h"
 #include "Engine/Nodes/Transform/Mirror.h"
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
+#include "Engine/Nodes/Transform/STMap.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
@@ -98,6 +100,8 @@ gpuCapableIds()
         PLUGINID_NATRON_CROP,
         PLUGINID_NATRON_CORNERPIN,
         PLUGINID_NATRON_MIRROR,
+        PLUGINID_NATRON_STMAP,
+        PLUGINID_NATRON_IDISTORT,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_RAWINPUTCOLOR,

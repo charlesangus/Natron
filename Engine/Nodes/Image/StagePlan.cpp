@@ -282,6 +282,23 @@ makeStageGpuInput(const StageSource& source,
     return toWrapView(args.inputs[inputNb], view);
 }
 
+// kernel's parameter block in a scratch buffer, its size rounded up to whole words; no buffer when
+// it has none.
+bool
+uploadKernelParams(gpu::GpuRecordContext& ctx,
+                   const PixelKernelGpu& kernel,
+                   gpu::GpuBuffer** params)
+{
+    *params = nullptr;
+    if (kernel.params.empty()) {
+        return true;
+    }
+    std::vector<std::byte> block(kernel.params);
+    block.resize((block.size() + 3) & ~std::size_t(3), std::byte(0));
+
+    return ctx.scratch(block.size(), *params) && *params && ctx.updateBuffer(**params, 0, std::span<const std::byte>(block.data(), block.size()));
+}
+
 StatusEnum
 recordKernelOp(const StagePlan& plan,
                const GpuRenderArgs& args,
@@ -316,12 +333,8 @@ recordKernelOp(const StagePlan& plan,
 
     gpu::GpuRecordContext& ctx = args.context;
     gpu::GpuBuffer* params = nullptr;
-    if (!kernel.params.empty()) {
-        std::vector<std::byte> block(kernel.params);
-        block.resize((block.size() + 3) & ~std::size_t(3), std::byte(0));
-        if (!ctx.scratch(block.size(), params) || !params || !ctx.updateBuffer(*params, 0, std::span<const std::byte>(block.data(), block.size()))) {
-            return eStatusFailed;
-        }
+    if (!uploadKernelParams(ctx, kernel, &params)) {
+        return eStatusFailed;
     }
 
     if (!plan.composite.empty()) {
@@ -1125,6 +1138,81 @@ recordStagesGpuFinish(const StagePlan& plan,
 
     return eStatusFailed;
 #endif
+}
+
+StatusEnum
+recordStagesGpuKernelInputs(const StagePlan& plan,
+                            const GpuRenderArgs& args,
+                            const PixelKernelGpu& kernel,
+                            std::span<const GpuImageView> inputs)
+{
+#ifdef NATRON_HAVE_GPU
+    if (args.outputRect.isNull() || (kernel.kernel < 0) || (kernel.params.size() > kMaxGpuParamBytes)) {
+        return eStatusFailed;
+    }
+    gpu::GpuWrap wrap;
+    if (!makeStageGpuWrap(plan, args, &wrap) || !toWrapView(args.output, &wrap.dst)) {
+        return eStatusFailed;
+    }
+    wrap.output = gpu::GpuWrapRect { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };
+
+    std::vector<gpu::GpuWrapView> views(inputs.size());
+    for (std::size_t k = 0; k < inputs.size(); ++k) {
+        views[k].nComps = 1;
+        if (inputs[k].buffer && !inputs[k].bounds.isNull() && !toWrapView(inputs[k], &views[k])) {
+            return eStatusFailed;
+        }
+    }
+
+    gpu::GpuRecordContext& ctx = args.context;
+    gpu::GpuBuffer* params = nullptr;
+    if (!uploadKernelParams(ctx, kernel, &params)) {
+        return eStatusFailed;
+    }
+
+    return gpu::recordWrappedInputs(ctx, (gpu::GpuKernelId)kernel.kernel, wrap, params, std::span<const gpu::GpuWrapView>(views.data(), views.size())) ? eStatusOK : eStatusFailed;
+#else
+    Q_UNUSED(plan);
+    Q_UNUSED(args);
+    Q_UNUSED(kernel);
+    Q_UNUSED(inputs);
+
+    return eStatusFailed;
+#endif
+}
+
+bool
+stageGpuInputView(EffectInstance& effect,
+                  const GpuRenderArgs& args,
+                  int inputNb,
+                  GpuImageView* view)
+{
+    *view = GpuImageView();
+    if ((inputNb < 0) || (inputNb >= (int)args.inputs.size())) {
+        return true;
+    }
+    const GpuImageView& in = args.inputs[inputNb];
+    EffectInstancePtr input = effect.getInput(inputNb);
+    if (!input || !in.buffer) {
+        return true;
+    }
+    if ((in.nComps < 1) || (in.nComps > 4) || !PassExec::isUsableGpuView(in, in.nComps)) {
+        return false;
+    }
+    const RenderScale& scale = args.query.mappedScale;
+    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    RectD rod;
+    bool isProjectFormat = false;
+    if (input->getRegionOfDefinition_public(input->getRenderHash(), args.query.time, inputScale, args.query.view, &rod, &isProjectFormat) == eStatusFailed) {
+        return false;
+    }
+    const RectI crop = in.bounds.intersect(rod.toPixelEnclosing(scale, effect.getAspectRatio(inputNb)));
+    if (crop.isNull()) {
+        return true;
+    }
+    *view = PassExec::cropGpuView(in, crop);
+
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

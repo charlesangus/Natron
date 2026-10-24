@@ -10,7 +10,10 @@
 // decision, and with the doubles computed bit for bit otherwise. The integer double emulation is
 // kept out of the two-float entries because it is many times slower to run and to compile. It has
 // no division, so projective matrices, whose positions are quotients, always take the two-float
-// entries. GpuResampleParams in Engine/Gpu/GpuResample.h mirrors ResampleParams.
+// entries. The filters, interpolation and supersampling are resamplecore.slang's. GpuResampleParams in
+// Engine/Gpu/GpuResample.h mirrors ResampleParams.
+
+import resamplecore;
 
 StructuredBuffer<float> srcBuf;
 RWStructuredBuffer<float> dstBuf;
@@ -59,180 +62,21 @@ struct ResampleParams
 };
 [[vk::push_constant]] ConstantBuffer<ResampleParams> rp;
 
-static const uint kFilterImpulse = 0;
-static const uint kFilterBox = 1;
-static const uint kFilterBilinear = 2;
-static const uint kFilterCubic = 3;
-static const uint kFilterKeys = 4;
-static const uint kFilterSimon = 5;
-static const uint kFilterRifman = 6;
-static const uint kFilterMitchell = 7;
-static const uint kFilterParzen = 8;
-static const uint kFilterNotch = 9;
-
-// kFlagClamp is only set for the filters Resampler::filterHonoursClamp names.
-static const uint kFlagClamp = 1;
-static const uint kFlagBlackOutside = 2;
-static const uint kFlagSrcValid = 4;
-// The exact entries' matrix rows whose float evaluation Engine/Gpu/GpuResample.cpp found exact
-// over the whole window; the blurred entry has them per matrix.
-static const uint kFlagExactRowX = 8;
-static const uint kFlagExactRowY = 16;
-static const uint kFlagMatrixInBuffer = 32;
-
-///////////////////////////////////////////////////////////////////////////////
-// Two-float arithmetic: a value is hi + lo with |lo| at most half an ulp of hi.
-
-struct FF
+// The source described by `rp` and srcBuf.
+ResampleSource paramsSource()
 {
-    float hi;
-    float lo;
-};
-
-FF ffMake(float hi, float lo)
-{
-    FF r;
-    r.hi = hi;
-    r.lo = lo;
-    return r;
-}
-
-FF ffQuick(float a, float b)
-{
-    precise float s = a + b;
-    precise float e = b - (s - a);
-    return ffMake(s, e);
-}
-
-FF ffTwoSum(float a, float b)
-{
-    precise float s = a + b;
-    precise float v = s - a;
-    precise float e = (a - (s - v)) + (b - v);
-    return ffMake(s, e);
-}
-
-FF ffAdd(FF a, FF b)
-{
-    const FF s = ffTwoSum(a.hi, b.hi);
-    precise float lo = s.lo + (a.lo + b.lo);
-    return ffQuick(s.hi, lo);
-}
-
-FF ffAddF(FF a, float b)
-{
-    const FF s = ffTwoSum(a.hi, b);
-    precise float lo = s.lo + a.lo;
-    return ffQuick(s.hi, lo);
-}
-
-FF ffMulF(FF a, float b)
-{
-    precise float p = a.hi * b;
-    precise float e = fma(a.hi, b, -p);
-    precise float lo = e + a.lo * b;
-    return ffQuick(p, lo);
-}
-
-// Dekker's split: a = hi + lo with both halves 12 bits wide, so their products are exact.
-FF ffSplit(float a)
-{
-    precise float c = 4097.0 * a;
-    precise float hi = c - (c - a);
-    precise float lo = a - hi;
-    return ffMake(hi, lo);
-}
-
-// ffMulF with an error-free a.hi * b built from correctly rounded products and sums alone, which
-// Vulkan requires, rather than from fma, which it lets a device leave unfused.
-FF ffMulFDekker(FF a, float b)
-{
-    const FF sa = ffSplit(a.hi);
-    const FF sb = ffSplit(b);
-    precise float p = a.hi * b;
-    precise float e = ((sa.hi * sb.hi - p) + sa.hi * sb.lo + sa.lo * sb.hi) + sa.lo * sb.lo;
-    precise float lo = e + a.lo * b;
-    return ffQuick(p, lo);
-}
-
-FF ffHalf(FF a)
-{
-    return ffMake(a.hi * 0.5, a.lo * 0.5);
-}
-
-FF ffNeg(FF a)
-{
-    return ffMake(-a.hi, -a.lo);
-}
-
-FF ffMul(FF a, FF b)
-{
-    precise float p = a.hi * b.hi;
-    precise float e = fma(a.hi, b.hi, -p);
-    precise float lo = e + (a.hi * b.lo + a.lo * b.hi);
-    return ffQuick(p, lo);
-}
-
-// One correction step after the float quotient, whose rounding the device may not make exact.
-FF ffDivF(FF a, float b)
-{
-    precise float q1 = a.hi / b;
-    const FF r = ffAdd(a, ffNeg(ffMulF(ffMake(q1, 0.0), b)));
-    precise float q2 = (r.hi + r.lo) / b;
-    return ffQuick(q1, q2);
-}
-
-FF ffDiv(FF a, FF b)
-{
-    precise float q1 = a.hi / b.hi;
-    const FF r = ffAdd(a, ffNeg(ffMul(ffMake(q1, 0.0), b)));
-    precise float q2 = (r.hi + r.lo) / b.hi;
-    return ffQuick(q1, q2);
-}
-
-bool ffLess(FF a, FF b)
-{
-    return a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo);
-}
-
-// A position as its floor and its fraction: i + f with f in [0, 1]. The fraction reaches 1 only
-// when the value lies a rounding below the next integer, where i is still its floor.
-struct Pos
-{
-    int i;
-    float f;
-};
-
-Pos toPos(FF a)
-{
-    float fl = floor(a.hi);
-    precise float f = (a.hi - fl) + a.lo;
-    if (f < 0.0)
-    {
-        fl -= 1.0;
-        f += 1.0;
-    }
-    else if (f >= 1.0)
-    {
-        fl += 1.0;
-        f -= 1.0;
-    }
-    Pos p;
-    p.i = int(fl);
-    p.f = f;
-    return p;
-}
-
-float posValue(Pos p)
-{
-    precise float v = float(p.i) + p.f;
-    return v;
-}
-
-// p > n for an integer n.
-bool posAbove(Pos p, int n)
-{
-    return p.i > n || (p.i == n && p.f > 0.0);
+    ResampleSource s;
+    s.buf = srcBuf;
+    s.offset = rp.srcOffset;
+    s.stride = rp.srcStride;
+    s.x1 = rp.srcX1;
+    s.y1 = rp.srcY1;
+    s.x2 = rp.srcX2;
+    s.y2 = rp.srcY2;
+    s.nComps = rp.nComps;
+    s.valid = (rp.flags & kFlagSrcValid) != 0;
+    s.blackOutside = (rp.flags & kFlagBlackOutside) != 0;
+    return s;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -597,406 +441,6 @@ Pos dblToPos(Dbl d)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Source access
-
-bool srcValid()
-{
-    return (rp.flags & kFlagSrcValid) != 0;
-}
-
-bool blackOutside()
-{
-    return (rp.flags & kFlagBlackOutside) != 0;
-}
-
-bool insideSrc(int x, int y)
-{
-    return x >= rp.srcX1 && x < rp.srcX2 && y >= rp.srcY1 && y < rp.srcY2;
-}
-
-// Inside the source.
-float4 srcAt(int x, int y)
-{
-    float4 v = float4(0.0, 0.0, 0.0, 0.0);
-    const uint base = rp.srcOffset + uint(y - rp.srcY1) * rp.srcStride + uint(x - rp.srcX1) * rp.nComps;
-    for (uint c = 0; c < rp.nComps && c < 4; ++c)
-        v[c] = srcBuf[base + c];
-    return v;
-}
-
-// The pixel at (x, y), zero outside the source; `any` records whether it was inside.
-float4 pixel(int x, int y, inout bool any)
-{
-    if (!insideSrc(x, y))
-        return float4(0.0, 0.0, 0.0, 0.0);
-    any = true;
-    return srcAt(x, y);
-}
-
-int clampCoord(int v, int lo, int hiExclusive)
-{
-    return max(lo, min(v, hiExclusive - 1));
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// 1-D filters, as in Resampler.h
-
-float4 clampValue(float4 I, float4 Ic, float4 In)
-{
-    const float4 lo = min(Ic, In);
-    const float4 hi = max(Ic, In);
-    float4 r = I;
-    [ForceUnroll]
-    for (int c = 0; c < 4; ++c)
-    {
-        if (I[c] < lo[c])
-            r[c] = lo[c];
-        else if (I[c] > hi[c])
-            r[c] = hi[c];
-    }
-    return r;
-}
-
-float4 filterLinear(float4 Ic, float4 In, float d)
-{
-    return Ic + d * (In - Ic);
-}
-
-float4 filterCubic(float4 Ic, float4 In, float d)
-{
-    return Ic + d * d * ((-3.0 * Ic + 3.0 * In) + d * (2.0 * Ic - 2.0 * In));
-}
-
-float4 filter4(uint filter, bool clampOn, float4 Ip, float4 Ic, float4 In, float4 Ia, float d)
-{
-    float4 I;
-    switch (filter)
-    {
-    case kFilterKeys:
-        I = Ic + d * ((-Ip + In) + d * ((2.0 * Ip - 5.0 * Ic + 4.0 * In - Ia) + d * (-Ip + 3.0 * Ic - 3.0 * In + Ia))) / 2.0;
-        break;
-    case kFilterSimon:
-        I = Ic + d * ((-3.0 * Ip + 3.0 * In) + d * ((6.0 * Ip - 9.0 * Ic + 6.0 * In - 3.0 * Ia) + d * (-3.0 * Ip + 5.0 * Ic - 5.0 * In + 3.0 * Ia))) / 4.0;
-        break;
-    case kFilterRifman:
-        I = Ic + d * ((-Ip + In) + d * ((2.0 * Ip - 2.0 * Ic + In - Ia) + d * (-Ip + Ic - In + Ia)));
-        break;
-    case kFilterMitchell:
-        I = (Ip + 16.0 * Ic + In + d * ((-9.0 * Ip + 9.0 * In) + d * ((15.0 * Ip - 36.0 * Ic + 27.0 * In - 6.0 * Ia) + d * (-7.0 * Ip + 21.0 * Ic - 21.0 * In + 7.0 * Ia)))) / 18.0;
-        break;
-    case kFilterParzen:
-        return (Ip + 4.0 * Ic + In + d * ((-3.0 * Ip + 3.0 * In) + d * ((3.0 * Ip - 6.0 * Ic + 3.0 * In) + d * (-Ip + 3.0 * Ic - 3.0 * In + Ia)))) / 6.0;
-    case kFilterNotch:
-        return (Ip + 2.0 * Ic + In + d * ((-2.0 * Ip + 2.0 * In) + d * ((Ip - Ic - In + Ia)))) / 4.0;
-    default:
-        return float4(0.0, 0.0, 0.0, 0.0);
-    }
-    return clampOn ? clampValue(I, Ic, In) : I;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// Resampler's interpolateT: false (and zero) when every tap is outside the source.
-
-// Impulse and box: the source pixel `cell`, the floor of the position.
-bool cellPixel(int2 cell, out float4 result)
-{
-    result = float4(0.0, 0.0, 0.0, 0.0);
-    if (!srcValid())
-        return false;
-    int mx = cell.x;
-    int my = cell.y;
-    if (!blackOutside())
-    {
-        mx = clampCoord(mx, rp.srcX1, rp.srcX2);
-        my = clampCoord(my, rp.srcY1, rp.srcY2);
-    }
-    if (!insideSrc(mx, my))
-        return false;
-    result = srcAt(mx, my);
-    return true;
-}
-
-// The bilinear to notch filters, at the position (px + 0.5, py + 0.5).
-bool interpolateAt(uint filter, bool clampOn, Pos px, Pos py, out float4 result)
-{
-    result = float4(0.0, 0.0, 0.0, 0.0);
-    if (!srcValid())
-        return false;
-    const bool black = blackOutside();
-
-    if (filter == kFilterBilinear || filter == kFilterCubic)
-    {
-        int cx = px.i;
-        int cy = py.i;
-        int nx = cx + 1;
-        int ny = cy + 1;
-        if (!black)
-        {
-            cx = clampCoord(cx, rp.srcX1, rp.srcX2);
-            cy = clampCoord(cy, rp.srcY1, rp.srcY2);
-            nx = clampCoord(nx, rp.srcX1, rp.srcX2);
-            ny = clampCoord(ny, rp.srcY1, rp.srcY2);
-        }
-        const float dx = clamp(float(px.i - cx) + px.f, 0.0, 1.0);
-        const float dy = clamp(float(py.i - cy) + py.f, 0.0, 1.0);
-        bool any = false;
-        const float4 Icc = pixel(cx, cy, any);
-        const float4 Inc = pixel(nx, cy, any);
-        const float4 Icn = pixel(cx, ny, any);
-        const float4 Inn = pixel(nx, ny, any);
-        if (!any)
-            return false;
-        if (filter == kFilterBilinear)
-            result = filterLinear(filterLinear(Icc, Inc, dx), filterLinear(Icn, Inn, dx), dy);
-        else
-            result = filterCubic(filterCubic(Icc, Inc, dx), filterCubic(Icn, Inn, dx), dy);
-        return true;
-    }
-
-    int xs[4];
-    int ys[4];
-    [ForceUnroll]
-    for (int k = 0; k < 4; ++k)
-    {
-        xs[k] = px.i - 1 + k;
-        ys[k] = py.i - 1 + k;
-        if (!black)
-        {
-            xs[k] = clampCoord(xs[k], rp.srcX1, rp.srcX2);
-            ys[k] = clampCoord(ys[k], rp.srcY1, rp.srcY2);
-        }
-    }
-    const float dx = clamp(float(px.i - xs[1]) + px.f, 0.0, 1.0);
-    const float dy = clamp(float(py.i - ys[1]) + py.f, 0.0, 1.0);
-    bool any = false;
-    float4 rows[4];
-    [ForceUnroll]
-    for (int r = 0; r < 4; ++r)
-    {
-        const float4 Ip = pixel(xs[0], ys[r], any);
-        const float4 Ic = pixel(xs[1], ys[r], any);
-        const float4 In = pixel(xs[2], ys[r], any);
-        const float4 Ia = pixel(xs[3], ys[r], any);
-        rows[r] = filter4(filter, clampOn, Ip, Ic, In, Ia, dx);
-    }
-    if (!any)
-        return false;
-    result = filter4(filter, clampOn, rows[0], rows[1], rows[2], rows[3], dy);
-    return true;
-}
-
-bool interpolate(uint filter, bool clampOn, FF fx, FF fy, out float4 result)
-{
-    return interpolateAt(filter, clampOn, toPos(ffAddF(fx, -0.5)), toPos(ffAddF(fy, -0.5)), result);
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// The box filter's integration, Resampler's integrate1d and integrate2d, with positions relative
-// to the source origin.
-
-float4 srcRel(int ix, int iy)
-{
-    return srcAt(rp.srcX1 + ix, rp.srcY1 + iy);
-}
-
-void integrate1d(int row, int n, Pos x1, Pos x2, bool zeroOutside, inout float4 v)
-{
-    int ifirst;
-    float fracfirst;
-    if (x1.i < 0)
-    {
-        ifirst = 0;
-        fracfirst = 0.0;
-    }
-    else if (x1.i >= n)
-    {
-        ifirst = n - 1;
-        fracfirst = 0.0;
-    }
-    else
-    {
-        ifirst = x1.i;
-        fracfirst = x1.f;
-    }
-    int ilast;
-    float fraclast;
-    if (x2.i < 0)
-    {
-        ilast = 0;
-        fraclast = 0.0;
-    }
-    else if (x2.i >= n)
-    {
-        ilast = n - 1;
-        fraclast = 0.0;
-    }
-    else
-    {
-        ilast = x2.i;
-        fraclast = 1.0 - x2.f;
-    }
-    if (x1.i < 0 && !zeroOutside)
-        v += srcRel(ifirst, row) * (-posValue(x1));
-    if (fracfirst > 0.0)
-        v -= srcRel(ifirst, row) * fracfirst;
-    for (int i = ifirst; i <= ilast; ++i)
-        v += srcRel(i, row);
-    if (fraclast > 0.0)
-        v -= srcRel(ilast, row) * fraclast;
-    if (posAbove(x2, n) && !zeroOutside)
-    {
-        precise float w = float(x2.i - n) + x2.f;
-        v += srcRel(ilast, row) * w;
-    }
-}
-
-float4 integrate2d(Pos x1, Pos y1, Pos x2, Pos y2, bool zeroOutside)
-{
-    const int awidth = rp.srcX2 - rp.srcX1;
-    const int aheight = rp.srcY2 - rp.srcY1;
-    int ifirst;
-    float fracfirst;
-    if (y1.i < 0)
-    {
-        ifirst = 0;
-        fracfirst = 0.0;
-    }
-    else if (y1.i >= aheight)
-    {
-        ifirst = aheight - 1;
-        fracfirst = 0.0;
-    }
-    else
-    {
-        ifirst = y1.i;
-        fracfirst = y1.f;
-    }
-    int ilast;
-    float fraclast;
-    if (y2.i < 0)
-    {
-        ilast = 0;
-        fraclast = 0.0;
-    }
-    else if (y2.i >= aheight)
-    {
-        ilast = aheight - 1;
-        fraclast = 0.0;
-    }
-    else
-    {
-        ilast = y2.i;
-        fraclast = 1.0 - y2.f;
-    }
-
-    float4 v = float4(0.0, 0.0, 0.0, 0.0);
-    float4 p = float4(0.0, 0.0, 0.0, 0.0);
-    integrate1d(ifirst, awidth, x1, x2, zeroOutside, p);
-    if (y1.i < 0 && !zeroOutside)
-        v += p * (-posValue(y1));
-    if (fracfirst > 0.0)
-        v -= p * fracfirst;
-    v += p;
-    for (int i = ifirst + 1; i < ilast; ++i)
-        integrate1d(i, awidth, x1, x2, zeroOutside, v);
-    if (ilast > ifirst)
-    {
-        p = float4(0.0, 0.0, 0.0, 0.0);
-        integrate1d(ilast, awidth, x1, x2, zeroOutside, p);
-        v += p;
-    }
-    if (fraclast > 0.0)
-        v -= p * fraclast;
-    if (posAbove(y2, aheight) && !zeroOutside)
-    {
-        precise float w = float(y2.i - aheight) + y2.f;
-        v += p * w;
-    }
-    return v;
-}
-
-bool outsideBounds(FF x, FF y)
-{
-    const int ix = toPos(x).i;
-    const int iy = toPos(y).i;
-    return ix < rp.srcX1 || rp.srcX2 <= ix || iy < rp.srcY1 || rp.srcY2 <= iy;
-}
-
-FF corner(FF f, FF a, FF b, float sa, float sb)
-{
-    const FF ha = ffHalf(a);
-    const FF hb = ffHalf(b);
-    return ffAdd(ffAdd(f, sa < 0.0 ? ffNeg(ha) : ha), sb < 0.0 ? ffNeg(hb) : hb);
-}
-
-int pow3(int e)
-{
-    int r = 1;
-    for (int k = 0; k < e; ++k)
-        r *= 3;
-    return r;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// Resampler's interpolateSuperT for the bilinear to notch filters and the Jacobian (Jxx Jxy; Jyx Jyy)
-// of state `state`, with the centre sample's fx - 0.5 and fy - 0.5 as px and py.
-
-float4 interpolateSuperAt(uint filter, bool clampOn, FF fx, FF fy, Pos px, Pos py, FF Jxx, FF Jxy, FF Jyx, FF Jyy, uint states,
-                          uint state)
-{
-    float4 tmp;
-    const uint bits = (states >> (8 * state)) & 0xffu;
-    if ((bits & 0x40u) != 0)
-    {
-        interpolateAt(filter, clampOn, px, py, tmp);
-        return tmp;
-    }
-
-    const bool inside = interpolateAt(filter, clampOn, px, py, tmp);
-    if (!inside)
-    {
-        // A black centre is only kept when the whole back-transformed pixel is outside.
-        if (outsideBounds(corner(fx, Jxx, Jxy, -1.0, -1.0), corner(fy, Jyx, Jyy, -1.0, -1.0))
-            && outsideBounds(corner(fx, Jxx, Jxy, 1.0, -1.0), corner(fy, Jyx, Jyy, 1.0, -1.0))
-            && outsideBounds(corner(fx, Jxx, Jxy, -1.0, 1.0), corner(fy, Jyx, Jyy, -1.0, 1.0))
-            && outsideBounds(corner(fx, Jxx, Jxy, 1.0, 1.0), corner(fy, Jyx, Jyy, 1.0, 1.0)))
-            return tmp;
-    }
-    const int isx = int(bits & 7u);
-    const int isy = int((bits >> 3) & 7u);
-    if (isx == 0 && isy == 0)
-        return tmp;
-
-    const int nisx = pow3(isx);
-    const int nisy = pow3(isy);
-    const float jxx = Jxx.hi + Jxx.lo;
-    const float jxy = Jxy.hi + Jxy.lo;
-    const float jyx = Jyx.hi + Jyx.lo;
-    const float jyy = Jyy.hi + Jyy.lo;
-    for (int sy = -nisy / 2; sy <= nisy / 2; ++sy)
-    {
-        for (int sx = -nisx / 2; sx <= nisx / 2; ++sx)
-        {
-            if (sx != 0 || sy != 0)
-            {
-                const float ox = (jxx * float(sx)) / float(nisx) + (jxy * float(sy)) / float(nisy);
-                const float oy = (jyx * float(sx)) / float(nisx) + (jyy * float(sy)) / float(nisy);
-                float4 s;
-                interpolate(kFilterBilinear, false, ffAddF(fx, ox), ffAddF(fy, oy), s);
-                tmp += s;
-            }
-        }
-    }
-    return tmp / float(nisx * nisy);
-}
-
-float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF Jyy, uint states, uint state)
-{
-    return interpolateSuperAt(filter, clampOn, fx, fy, toPos(ffAddF(fx, -0.5)), toPos(ffAddF(fy, -0.5)), Jxx, Jxy, Jyx, Jyy, states,
-                              state);
-}
-
-///////////////////////////////////////////////////////////////////////////////
 
 // The matrix rows (h00 h01 h02) and (h10 h11 h12), with `states` as in ResampleParams. A projective
 // matrix also has the row (h20 h21 h22), and its Jacobian and states are worked out per pixel.
@@ -1015,32 +459,6 @@ struct Matrix
     FF h22;
 };
 
-// The states byte of Jacobian (Jxx Jxy; Jyx Jyy) as Resampler::supersampleLevels decides it: level n
-// along an axis once the squared norm of its column exceeds 3^(2n - 1), up to 4.
-uint jacobianStates(FF Jxx, FF Jxy, FF Jyx, FF Jyy)
-{
-    if (Jxx.hi == 0.0 && Jxy.hi == 0.0 && Jyx.hi == 0.0 && Jyy.hi == 0.0)
-        return 0x40u;
-    const FF dx = ffAdd(ffMul(Jxx, Jxx), ffMul(Jyx, Jyx));
-    const FF dy = ffAdd(ffMul(Jxy, Jxy), ffMul(Jyy, Jyy));
-    uint levelX = 0;
-    uint levelY = 0;
-    float threshold = 3.0;
-    [ForceUnroll]
-    for (int n = 0; n < 4; ++n)
-    {
-        if (ffLess(ffMake(threshold, 0.0), dx))
-            ++levelX;
-        if (ffLess(ffMake(threshold, 0.0), dy))
-            ++levelY;
-        threshold *= 9.0;
-    }
-    return levelX | (levelY << 3);
-}
-
-// One entry of the Jacobian of (X / Z, Y / Z), as Resampler's samplePixel computes it: (h Z - P g) / Z^2,
-// with h the matrix entry of that row and column, P the row's X or Y, and g the third row's entry in
-// that column.
 FF projectiveJacobian(FF hrc, FF P, FF h2c, FF Z, FF Z2)
 {
     return ffDiv(ffAdd(ffMul(hrc, Z), ffNeg(ffMul(P, h2c))), Z2);
@@ -1048,7 +466,8 @@ FF projectiveJacobian(FF hrc, FF P, FF h2c, FF Z, FF Z2)
 
 float4 samplePixel(Matrix m, int x, int y)
 {
-    if (!srcValid())
+    const ResampleSource src = paramsSource();
+    if (!src.valid)
         return float4(0.0, 0.0, 0.0, 0.0);
     const uint filter = rp.filter;
     const bool clampOn = (rp.flags & kFlagClamp) != 0;
@@ -1070,10 +489,16 @@ float4 samplePixel(Matrix m, int x, int y)
         fy = ffDiv(Y, Z);
     }
 
+    float4 r;
+    if (filter == kFilterImpulse)
+    {
+        interpolate(src, filter, clampOn, fx, fy, r);
+        return r;
+    }
     // x1 <= fx + 0.5 && fx - 0.5 < x2, and likewise for y.
-    bool xinside = toPos(ffAddF(fx, 0.5)).i >= rp.srcX1 && toPos(ffAddF(fx, -0.5)).i < rp.srcX2;
-    bool yinside = toPos(ffAddF(fy, 0.5)).i >= rp.srcY1 && toPos(ffAddF(fy, -0.5)).i < rp.srcY2;
-    if (blackOutside() && !(xinside && yinside))
+    bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
+    bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
+    if (src.blackOutside && !(xinside && yinside))
     {
         xinside = false;
         yinside = false;
@@ -1094,7 +519,7 @@ float4 samplePixel(Matrix m, int x, int y)
         states = jacobianStates(Jxx, Jxy, Jyx, Jyy);
         state = 0;
     }
-    return interpolateSuper(filter, clampOn, fx, fy, Jxx, Jxy, Jyx, Jyy, states, state);
+    return interpolateSuper(src, filter, clampOn, fx, fy, Jxx, Jxy, Jyx, Jyy, states, state);
 }
 
 // The same matrix as the doubles' bits.
@@ -1142,7 +567,7 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
 {
     taps = noTaps();
     float4 r = float4(0.0, 0.0, 0.0, 0.0);
-    if (!srcValid())
+    if (!paramsSource().valid)
         return r;
     // The CPU's h00 * (x + 0.5) + h01 * (y + 0.5) + h02, in that order and unfused.
     const int kx = 2 * x + 1;
@@ -1152,7 +577,7 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
     const int2 cell = int2(dblFloor(dx), dblFloor(dy));
     if (rp.filter == kFilterImpulse)
     {
-        cellPixel(cell, r);
+        cellPixel(paramsSource(), cell, r);
         return r;
     }
 
@@ -1162,7 +587,7 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
     // x1 <= x + 0.5 && x - 0.5 < x2, and likewise for y.
     bool xinside = dblFloor(dblAdd(dx, half)) >= rp.srcX1 && dblFloor(bx) < rp.srcX2;
     bool yinside = dblFloor(dblAdd(dy, half)) >= rp.srcY1 && dblFloor(by) < rp.srcY2;
-    if (blackOutside() && !(xinside && yinside))
+    if (paramsSource().blackOutside && !(xinside && yinside))
     {
         xinside = false;
         yinside = false;
@@ -1180,7 +605,7 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
     const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
     if ((((m.states >> (8 * state)) & 0xffu) & 0x40u) != 0)
     {
-        cellPixel(cell, r);
+        cellPixel(paramsSource(), cell, r);
         return r;
     }
 
@@ -1219,7 +644,7 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
     }
     if (!dblLess(x1, x2) || !dblLess(y1, y2))
     {
-        cellPixel(cell, r);
+        cellPixel(paramsSource(), cell, r);
         return r;
     }
     const Dbl ox = dblFromInt(rp.srcX1);
@@ -1228,7 +653,7 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
     const Dbl rx2 = dblSub(x2, ox);
     const Dbl ry1 = dblSub(y1, oy);
     const Dbl ry2 = dblSub(y2, oy);
-    float4 v = integrate2d(dblToPos(rx1), dblToPos(ry1), dblToPos(rx2), dblToPos(ry2), blackOutside());
+    float4 v = integrate2d(paramsSource(), dblToPos(rx1), dblToPos(ry1), dblToPos(rx2), dblToPos(ry2), paramsSource().blackOutside);
     precise float s = dblToFloat(dblSub(rx2, rx1)) * dblToFloat(dblSub(ry2, ry1));
     if (s != 0.0)
         v /= s;
@@ -1296,7 +721,7 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
     if (rp.filter == kFilterImpulse)
     {
         if (cellExact)
-            cellPixel(cell, r);
+            cellPixel(paramsSource(), cell, r);
         return cellExact;
     }
 
@@ -1309,7 +734,7 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
         return false;
     bool xinside = ax.i >= rp.srcX1 && bx.i < rp.srcX2;
     bool yinside = ay.i >= rp.srcY1 && by.i < rp.srcY2;
-    if (blackOutside() && !(xinside && yinside))
+    if (paramsSource().blackOutside && !(xinside && yinside))
     {
         xinside = false;
         yinside = false;
@@ -1330,7 +755,7 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
     if ((((mb.states >> (8 * state)) & 0xffu) & 0x40u) != 0)
     {
         if (cellExact)
-            cellPixel(cell, r);
+            cellPixel(paramsSource(), cell, r);
         return cellExact;
     }
 
@@ -1368,7 +793,7 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
     if (!ffLess(x1, x2) || !ffLess(y1, y2))
     {
         if (cellExact)
-            cellPixel(cell, r);
+            cellPixel(paramsSource(), cell, r);
         return cellExact;
     }
     const FF rx1 = ffAddF(x1, -float(rp.srcX1));
@@ -1386,7 +811,7 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
     if (floorGeAmbiguous(px1, ex, awidth) || floorGeAmbiguous(px2, ex, 0) || floorGeAmbiguous(py1, ey, aheight)
         || floorGeAmbiguous(py2, ey, 0))
         return false;
-    float4 v = integrate2d(px1, py1, px2, py2, blackOutside());
+    float4 v = integrate2d(paramsSource(), px1, py1, px2, py2, paramsSource().blackOutside);
     const FF wx = ffAdd(rx2, ffNeg(rx1));
     const FF wy = ffAdd(ry2, ffNeg(ry1));
     precise float s = (wx.hi + wx.lo) * (wy.hi + wy.lo);
@@ -1401,7 +826,7 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
 // the compiled kernel.
 float4 samplePixelDecided(MatrixBits m, uint exactRows, int x, int y)
 {
-    if (!srcValid())
+    if (!paramsSource().valid)
         return float4(0.0, 0.0, 0.0, 0.0);
     float4 r;
     SmoothTaps t;
@@ -1411,7 +836,7 @@ float4 samplePixelDecided(MatrixBits m, uint exactRows, int x, int y)
         return r;
     const FF zero = ffMake(0.0, 0.0);
     const uint state = (t.xinside ? 1u : 0u) | (t.yinside ? 2u : 0u);
-    return interpolateSuperAt(rp.filter, (rp.flags & kFlagClamp) != 0, t.fx, t.fy, t.px, t.py, t.xinside ? dblToFF(m.h00) : zero,
+    return interpolateSuperAt(paramsSource(), rp.filter, (rp.flags & kFlagClamp) != 0, t.fx, t.fy, t.px, t.py, t.xinside ? dblToFF(m.h00) : zero,
                               t.xinside ? dblToFF(m.h01) : zero, t.yinside ? dblToFF(m.h10) : zero, t.yinside ? dblToFF(m.h11) : zero,
                               m.states, state);
 }
@@ -1661,7 +1086,7 @@ void resample_blur_main(uint3 tid : SV_DispatchThreadID)
         return;
     // Every sample of a source that is not there is zero, and so is their mean.
     float4 v = float4(0.0, 0.0, 0.0, 0.0);
-    if (srcValid())
+    if (paramsSource().valid)
     {
         TwoFloatSampler sampler;
         v = motionBlurPixel(sampler, rp.outX + int(tid.x), rp.outY + int(tid.y));
@@ -1676,7 +1101,7 @@ void resample_blur_exact_main(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= rp.width || tid.y >= rp.height)
         return;
     float4 v = float4(0.0, 0.0, 0.0, 0.0);
-    if (srcValid())
+    if (paramsSource().valid)
     {
         ExactSampler sampler;
         v = motionBlurPixel(sampler, rp.outX + int(tid.x), rp.outY + int(tid.y));

@@ -124,11 +124,19 @@ try:
         w, h = effect.getSize()
         return x, y, w, h
 
+    def root_offset():
+        # Opening a project centres its graph on the nodes, which pans the item every node is
+        # parented to so that the top-left corner of the nodes' bounding box sits at the scene
+        # origin: a node is at its layout position minus the smallest layout position.
+        positions = [n.getPosition() for n in app.getChildren()]
+        return QPointF(-min(p[0] for p in positions), -min(p[1] for p in positions))
+
     def frame_on(graph, effect, zoom=1.0):
         x, y, w, h = box(effect)
+        off = root_offset()
         graph.resetTransform()
         graph.scale(zoom, zoom)
-        graph.centerOn(x + w / 2.0, y + h / 2.0)
+        graph.centerOn(x + off.x() + w / 2.0, y + off.y() + h / 2.0)
         QApplication.processEvents()
 
     def send_mouse(widget, etype, pos, button, buttons):
@@ -137,7 +145,8 @@ try:
 
     def drag_by(graph, effect, dx, dy):
         x, y, w, h = box(effect)
-        start = (x + w / 2.0, y + h / 2.0)
+        off = root_offset()
+        start = (x + off.x() + w / 2.0, y + off.y() + h / 2.0)
         vp = graph.viewport()
         send_mouse(vp, QEvent.MouseButtonPress, graph.mapFromScene(QPointF(*start)), Qt.LeftButton, Qt.LeftButton)
         pos = start

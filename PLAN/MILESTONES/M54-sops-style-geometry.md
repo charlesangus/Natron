@@ -48,16 +48,16 @@ choice arises.
   - verify: round-trip unit test on an anonymous layer — a detail with a mesh, a `vertex` color attribute and a prim group authors a `UsdGeomMesh` with matching points/indices, a `primvars:color` with `vertex` interpolation and a `UsdGeomSubset`; converting back yields an identical detail (same content hash).
   - size: M
 
-- [ ] M54.P2.T2 — `GeoToScene`
-  - files: `Engine/Nodes/Geometry/GeoToScene.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoToScene_Test.cpp`, `Tests/CMakeLists.txt`
+- [ ] M54.P2.T2 — `GeoToUSD`
+  - files: `Engine/Nodes/Geometry/GeoToUSD.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoToScene_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: inputs Geometry (+ optional Scene to append to); knobs: root scope path, "author time samples across range" (default off — vertex data is never auto-baked). Output kind **scene**: authors the prims into the node's layer via `SceneOps` and `GeoUsdConvert` at the current time; memoized per M19.P1.T3 keyed on the detail hash.
   - verify: unit test — a `GeoConstant` detail appears under the scope path on the composed stage; re-evaluating with an unchanged detail re-emits the same layer handle.
   - size: M
 
-- [ ] M54.P2.T3 — `SceneToGeo`
-  - files: `Engine/Nodes/Geometry/SceneToGeo.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/SceneToGeo_Test.cpp`, `Tests/CMakeLists.txt`
+- [ ] M54.P2.T3 — `USDToGeo`
+  - files: `Engine/Nodes/Geometry/USDToGeo.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/SceneToGeo_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: inputs Scene; knobs: `PrimSelector`, "flatten transforms" (bake world xform into points), time follows the frame. Uses `GeoUsdConvert` over the composed input stage. Prims of unsupported types are skipped and listed in the node's info message.
-  - verify: unit test — `ReadScene`(reference `.usda`) → `SceneToGeo` yields the expected mesh; with flatten on, a translated prim's points move; `GeoToScene` → `SceneToGeo` is the identity on a detail.
+  - verify: unit test — `USDRead`(reference `.usda`) → `USDToGeo` yields the expected mesh; with flatten on, a translated prim's points move; `GeoToUSD` → `USDToGeo` is the identity on a detail.
   - size: M
 
 - [ ] M54.P2.T4 — `Viewport3D` displays geometry nodes through a scratch stage
@@ -76,13 +76,13 @@ choice arises.
 
 - [ ] M54.P3.T2 — `GeoImportOBJ`
   - files: `Engine/Nodes/Geometry/GeoImportOBJ.h`/`.cpp`, `Engine/Nodes/Geometry/ObjParser.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoImportOBJ_Test.cpp`, a tiny committed `.obj`
-  - approach: minimal OBJ parser (v/vt/vn/f with n-gons, groups → prim groups, objects → prims); USD/Alembic import is `ReadScene` → `SceneToGeo`, so this node is OBJ only. Missing file sets a node error.
+  - approach: minimal OBJ parser (v/vt/vn/f with n-gons, groups → prim groups, objects → prims); USD/Alembic import is `USDRead` → `USDToGeo`, so this node is OBJ only. Missing file sets a node error.
   - verify: unit test — the committed `.obj` loads with matching counts, UVs and two groups.
   - size: M
 
 - [ ] M54.P3.T3 — `GeoTransform`
   - files: `Engine/Nodes/Geometry/GeoTransform.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoTransform_Test.cpp`
-  - approach: TRS + pivot knobs (same layout as `Transform3D`), optional group restriction; transforms points and normals (COW copy of those two arrays only, everything else stays shared with the input).
+  - approach: TRS + pivot knobs (same layout as `USDTransform`), optional group restriction; transforms points and normals (COW copy of those two arrays only, everything else stays shared with the input).
   - verify: unit test — transform moves points; `st` storage is identical to the input's (`VtArray::IsIdentical`).
   - size: S
 
@@ -152,8 +152,8 @@ choice arises.
 
 - [ ] M54.P5.T1 — Geometry pipeline integration test in CI
   - files: `Tests/GeoPipeline_Test.cpp`, `Tests/CMakeLists.txt`
-  - approach: headless graph — `GeoPrimitive`(grid) → `GeoTransform` → `GeoGroup`(bbox) → `GeoDelete` → `GeoDisplace`(constant) → `GeoNormals` → `GeoEdit`(one point) → `GeoToScene` → `Merge3D`(with `ReadScene`) → `WriteScene`; assert the exported mesh's point count, one edited point's position, and the `primvars:normals`. Plus `SceneToGeo` of the same export equals the pre-bridge detail.
+  - approach: headless graph — `GeoPrimitive`(grid) → `GeoTransform` → `GeoGroup`(bbox) → `GeoDelete` → `GeoDisplace`(constant) → `GeoNormals` → `GeoEdit`(one point) → `GeoToUSD` → `USDMerge`(with `USDRead`) → `USDWrite`; assert the exported mesh's point count, one edited point's position, and the `primvars:normals`. Plus `USDToGeo` of the same export equals the pre-bridge detail.
   - verify: test green in `build-and-test`.
   - size: S
 
-**Verification gate:** CI green including M54.P5.T1; on real hardware a geometry chain displays in `Viewport3D`, point picking and `GeoEdit` drag work with undo, and the result renders through `GeoToScene` → `HydraRender` to an image; `GeoWrangle` runs a script that edits points; geometry cache respects its own budget; pre-existing ctest suite green; `Engine/GeoDetail.h` and `Engine/` core stay pxr-free.
+**Verification gate:** CI green including M54.P5.T1; on real hardware a geometry chain displays in `Viewport3D`, point picking and `GeoEdit` drag work with undo, and the result renders through `GeoToUSD` → `USDRender` to an image; `GeoWrangle` runs a script that edits points; geometry cache respects its own budget; pre-existing ctest suite green; `Engine/GeoDetail.h` and `Engine/` core stay pxr-free.

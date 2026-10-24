@@ -27,12 +27,12 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
 
 **Out:**
 - A bridge handing a node's composed stage to Python (Shiboken ↔ pxr object hand-off, GIL interplay with Natron's Python threads) — none.
-- A manual 2D/3D toggle, and showing a scene in 2D through a camera — M20 - 3D Node Vocabulary (`HydraRender`).
+- A manual 2D/3D toggle, and showing a scene in 2D through a camera — M20 - 3D Node Vocabulary (`USDRender`).
 - Hydra rendering into an Image, and handing Storm output to Vulkan compute — M20 - 3D Node Vocabulary.
 - HgiVulkan / Vulkan Storm — none.
 - Moving the GUI to a GL core profile, or to QRhi/Vulkan — none.
 - Up-axis or unit conversion of scene data — none (a future node).
-- Gizmos and transform handles — M20 - 3D Node Vocabulary (`Transform3D`).
+- Gizmos and transform handles — M20 - 3D Node Vocabulary (`USDTransform`).
 - MaterialX — none.
 
 **Edge cases:**
@@ -112,7 +112,7 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
 
 - [ ] M19.P2.T3 — Viewport picking and camera look-through
   - files: `Gui/SceneViewport.cpp`, `Gui/SceneViewport.h`
-  - approach: `UsdImagingGLEngine` pick → prim selection (highlight in viewport); look-through any `UsdGeomCamera` on the stage plus the free tumble/pan/dolly camera. Kept minimal — gizmos arrive with `Transform3D` in M20.
+  - approach: `UsdImagingGLEngine` pick → prim selection (highlight in viewport); look-through any `UsdGeomCamera` on the stage plus the free tumble/pan/dolly camera. Kept minimal — gizmos arrive with `USDTransform` in M20.
   - verify: manual — clicking a prim highlights it; look-through a camera prim matches usdview's framing for the same file.
   - size: M
 
@@ -132,7 +132,7 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
 
 ## Decisions
 
-- 2026-10-24 — Storm runs on HgiGL, not HgiVulkan: HgiGL is USD's production-stable Hgi, and HgiVulkan would make M19 depend on M107 - GPU Viewer Hand-off's interop across two VkDevices. Handing Hydra output to Vulkan compute is `HydraRender`'s concern in M20 - 3D Node Vocabulary.
+- 2026-10-24 — Storm runs on HgiGL, not HgiVulkan: HgiGL is USD's production-stable Hgi, and HgiVulkan would make M19 depend on M107 - GPU Viewer Hand-off's interop across two VkDevices. Handing Hydra output to Vulkan compute is `USDRender`'s concern in M20 - 3D Node Vocabulary.
 - 2026-10-24 — The whole GUI moves to one GL 4.5+ compatibility context (glad regenerated), instead of a separate 4.5-core widget: compat keeps every immediate-mode path and every OFX overlay interact working, and it removes the risk of mixing profiles in one Qt window. Core profile and QRhi/Vulkan were weighed and rejected as large rewrites with little user-visible gain for 3D.
 - 2026-10-24 — No GL 4.5 compatibility context means the GUI refuses to start: the user chose a hard requirement over a degraded 2D-only fallback.
 - 2026-10-24 — The GL 4.5 requirement is GUI-only: NatronRenderer and ctest keep running on GPU-less farm nodes and CI.
@@ -145,4 +145,4 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
 - 2026-10-24 — One Viewer node handles both 2D and 3D, picking its view from the active input's kind, with no manual toggle in M19 (user's call). This replaces the standalone `Viewport3D` panel that followed the selection.
 - 2026-10-24 — Up-axis and units are honoured from stage metadata with no conversion; normalising would rewrite what the file says.
 - 2026-10-24 — Deps are M17, M161, M107: fix the startup GL race (M161 - Startup Compositor Crash) before changing the context format so a regression can be attributed, and let M107 - GPU Viewer Hand-off land its ViewerGL/ViewerInstance edits before the viewer gains a scene view.
-- 2026-10-24 — Scene nodes are named `USD<Whatever>` (so `ReadScene` becomes `USDRead`), matching `Deep<Whatever>` and `Raw<Whatever>`: user's naming rule, recorded project-wide in `PLAN/DECISIONS/2026-10-24-usd-node-naming.md`.
+- 2026-10-24 — Scene nodes are named `USD<Whatever>` (so the old `ReadScene` becomes `USDRead`; native geometry nodes are `Geo<Whatever>`), matching `Deep<Whatever>` and `Raw<Whatever>`: user's naming rule, recorded project-wide in `PLAN/DECISIONS/2026-10-24-usd-node-naming.md`.

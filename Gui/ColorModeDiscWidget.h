@@ -45,17 +45,22 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief The reveal graphic of the S, T and V global trackball modes: a disc the size of its
- * rect, ringed like ColorWheelWidget's, filled with a gradient that says what the stroke does,
- * and a small ring marker for the puck.
+ * rect, laid out like ColorWheelWidget's, showing what a drag towards each point does, and a
+ * small ring marker for the puck.
  *
- * S runs hue left to right with white at the bottom and full saturation at the top. T runs cool
- * to warm left to right and green to magenta bottom to top. V runs white at the top right to
- * black at the bottom left. The colours come from ColorWheelMath, so they follow the knob's own
- * maths. C has no gradient: the C reveal is the real ColorWheelWidget, and C here draws the ring
- * and an empty disc.
+ * Ring and fill are one function of the drag direction: the colour a drag that way produces,
+ * with the ring holding the colour at the disc's rim in that direction. Directions follow the
+ * gesture's sign in globalModeEdit. S runs from the centre hue -30 degrees on the left to +30
+ * degrees on the right, with full saturation at the top and white at the bottom, and follows
+ * the live value's hue. T runs cool blue on the left to warm orange on the right and green at
+ * the bottom to magenta at the top. V runs black at the bottom and left to white at the top and
+ * right. The colours come from ColorWheelMath and pass through the display converter. C has no
+ * gradient: the C reveal is the real ColorWheelWidget, and C here draws the wheel's ring and an
+ * empty disc.
  *
  * The puck is a position in [-1, 1]^2 (x right, y up) and is clamped to the disc's rim. The
- * gradient and ring images are cached per size and rebuilt lazily on the next paint.
+ * images are cached per size, mode and, in S, centre hue to the degree, and rebuilt lazily on
+ * the next paint.
  **/
 class ColorModeDiscWidget
     : public QWidget {
@@ -74,6 +79,19 @@ public:
 
     void setBasis(const LumaBasis& basis);
     void setDisplayConverter(const DisplayConverter& converter);
+
+    /**
+     * @brief Centres the S disc on value's hue. A value without a hue (saturation about 0)
+     * keeps the last hue a value had since forgetHue(), or 0 degrees if none had one.
+     **/
+    void setCentreValue(ColorKnobRoleEnum role, const KnobColorValue& value);
+    void forgetHue();
+
+    /**
+     * @brief The S disc's centre hue in plane degrees, rounded to a whole degree in [0, 360).
+     **/
+    void setCentreHue(double degrees);
+    int getCentreHue() const { return _hue; }
 
     /**
      * @brief Sets the puck, clamped to the unit disc.
@@ -102,6 +120,7 @@ private:
         int size = 0;
         double dpr = 0.0;
         ColorGlobalModeEnum mode = eColorGlobalModeS;
+        int hue = 0;
         unsigned generation = 0;
         bool valid = false;
 
@@ -117,6 +136,9 @@ private:
     LumaBasis _basis;
     DisplayConverter _converter;
     unsigned _generation;
+    int _hue;
+    bool _hasDefinedHue;
+    double _lastDefinedHue;
     QPointF _puck;
     mutable QImage _ring;
     mutable CacheKey _ringKey;

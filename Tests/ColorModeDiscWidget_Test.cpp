@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 #include <QColor>
 #include <QImage>
@@ -45,10 +46,22 @@ NATRON_NAMESPACE_USING
 namespace {
 const int kDiscSize = 240;
 
+const double kRec709ToXYZ[9] = {
+    0.4124564, 0.3575761, 0.1804375,
+    0.2126729, 0.7151522, 0.0721750,
+    0.0193339, 0.1191920, 0.9503041
+};
+
 void
 identity(float* /*rgb*/,
          int /*count*/)
 {
+}
+
+LumaBasis
+rec709()
+{
+    return LumaBasis(kRec709LumaWeights, kRec709ToXYZ);
 }
 
 QImage
@@ -63,6 +76,16 @@ renderMode(ColorModeDiscWidget& disc,
     return disc.grab().toImage();
 }
 
+QColor
+sampleAtPixel(const QImage& image,
+              double x,
+              double y)
+{
+    double dpr = image.devicePixelRatio() > 0.0 ? image.devicePixelRatio() : 1.0;
+
+    return QColor::fromRgb(image.pixel((int)std::lround(x * dpr), (int)std::lround(y * dpr)));
+}
+
 // u runs right and v up, both in units of the disc radius.
 QColor
 sampleAt(const ColorModeDiscWidget& disc,
@@ -72,11 +95,21 @@ sampleAt(const ColorModeDiscWidget& disc,
 {
     QPointF c = disc.getDiscCentre();
     double R = disc.getDiscRadius();
-    double dpr = image.devicePixelRatio() > 0.0 ? image.devicePixelRatio() : 1.0;
-    int x = (int)std::lround((c.x() + u * R) * dpr);
-    int y = (int)std::lround((c.y() - v * R) * dpr);
 
-    return QColor::fromRgb(image.pixel(x, y));
+    return sampleAtPixel(image, c.x() + u * R, c.y() - v * R);
+}
+
+// Midway across the ring, degrees counter-clockwise from the right.
+QColor
+rimAt(const ColorModeDiscWidget& disc,
+      const QImage& image,
+      double degrees)
+{
+    QPointF c = disc.getDiscCentre();
+    double mid = 0.5 * (disc.getRingInnerRadius() + disc.getRingOuterRadius());
+    double angle = degrees * M_PI / 180.0;
+
+    return sampleAtPixel(image, c.x() + mid * std::cos(angle), c.y() - mid * std::sin(angle));
 }
 
 double
@@ -89,48 +122,220 @@ whiteness(const QColor& c)
 }
 
 double
-hueDifference(const QColor& a,
-              const QColor& b)
+signedDegrees(double d)
 {
-    double d = std::fmod(std::fabs(a.hsvHueF() - b.hsvHueF()) * 360.0, 360.0);
+    d = std::fmod(d, 360.0);
+    if (d > 180.0) {
+        d -= 360.0;
+    } else if (d <= -180.0) {
+        d += 360.0;
+    }
 
-    return std::min(d, 360.0 - d);
+    return d;
+}
+
+// The plane hue the knob's own maths reads off a drawn colour, so the check is in the same
+// degrees the S disc is laid out in rather than HSV's.
+double
+planeHueOf(const LumaBasis& basis,
+           const QColor& c)
+{
+    KnobColorValue v = neutralGainValue();
+
+    v.rgb[0] = c.redF();
+    v.rgb[1] = c.greenF();
+    v.rgb[2] = c.blueF();
+
+    return planeHue(toPlane(eColorKnobRoleGain, basis, v));
+}
+
+KnobColorValue
+valueWithHue(const LumaBasis& basis,
+             double degrees)
+{
+    double theta = degrees * M_PI / 180.0;
+    PlanePoint q;
+
+    q.x = 0.05 * std::cos(theta);
+    q.y = 0.05 * std::sin(theta);
+    q.valid = true;
+
+    ChromaEditResult r = fromPlane(eColorKnobRoleGain, basis, neutralGainValue(), q, 1.0);
+
+    EXPECT_TRUE(r.valid);
+
+    return r.value;
+}
+
+// The smallest arc of HSV hue holding every chromatic sample: about 315 degrees for eight
+// samples of a plain hue ring.
+double
+hueSpan(const std::vector<QColor>& samples)
+{
+    std::vector<double> hues;
+
+    for (const QColor& c : samples) {
+        if ((c.hsvHue() >= 0) && (c.hsvSaturation() > 20)) {
+            hues.push_back(c.hsvHueF() * 360.0);
+        }
+    }
+    if (hues.size() < 2) {
+        return 0.0;
+    }
+    std::sort(hues.begin(), hues.end());
+
+    double gap = hues.front() + 360.0 - hues.back();
+
+    for (std::size_t k = 1; k < hues.size(); ++k) {
+        gap = std::max(gap, hues[k] - hues[k - 1]);
+    }
+
+    return 360.0 - gap;
+}
+
+std::vector<QColor>
+eightRimSamples(const ColorModeDiscWidget& disc,
+                const QImage& image)
+{
+    std::vector<QColor> samples;
+
+    for (int k = 0; k < 8; ++k) {
+        samples.push_back(rimAt(disc, image, k * 45.0 + 10.0));
+    }
+
+    return samples;
 }
 } // anonymous namespace
 
-TEST(ColorModeDiscWidget, SaturationDiscIsWhiterAtTheBottomAndHueRunsAcross)
+TEST(ColorModeDiscWidget, SaturationRimRunsThirtyDegreesEitherSideOfTheHue)
 {
+    const LumaBasis basis = rec709();
     ColorModeDiscWidget disc;
+
+    disc.setBasis(basis);
+    disc.setCentreValue(eColorKnobRoleGain, valueWithHue(basis, 40.0));
+    EXPECT_EQ(40, disc.getCentreHue());
+
     QImage image = renderMode(disc, eColorGlobalModeS);
 
     ASSERT_FALSE(image.isNull());
+    // A drag right turns the hue up, as globalModeEdit's S does for a positive dx.
+    EXPECT_NEAR(-30.0, signedDegrees(planeHueOf(basis, rimAt(disc, image, 180.0)) - 40.0), 3.0);
+    EXPECT_NEAR(30.0, signedDegrees(planeHueOf(basis, rimAt(disc, image, 0.0)) - 40.0), 3.0);
+    EXPECT_GT(whiteness(rimAt(disc, image, 270.0)), whiteness(rimAt(disc, image, 90.0)) + 0.3);
     EXPECT_GT(whiteness(sampleAt(disc, image, 0.0, -0.7)), whiteness(sampleAt(disc, image, 0.0, 0.7)) + 0.3);
-    EXPECT_GT(hueDifference(sampleAt(disc, image, -0.6, 0.5), sampleAt(disc, image, 0.6, 0.5)), 30.0);
 }
 
-TEST(ColorModeDiscWidget, TemperatureDiscIsWarmerAtTheRightAndGreenerAtTheBottom)
+TEST(ColorModeDiscWidget, SaturationRimFollowsTheLiveHue)
+{
+    const LumaBasis basis = rec709();
+    ColorModeDiscWidget disc;
+
+    disc.setBasis(basis);
+    disc.setCentreValue(eColorKnobRoleGain, valueWithHue(basis, 40.0));
+
+    QImage before = renderMode(disc, eColorGlobalModeS);
+    double leftBefore = planeHueOf(basis, rimAt(disc, before, 180.0));
+    double rightBefore = planeHueOf(basis, rimAt(disc, before, 0.0));
+
+    disc.setCentreValue(eColorKnobRoleGain, valueWithHue(basis, 100.0));
+    EXPECT_EQ(100, disc.getCentreHue());
+
+    QImage after = disc.grab().toImage();
+
+    ASSERT_FALSE(after.isNull());
+    EXPECT_NEAR(60.0, signedDegrees(planeHueOf(basis, rimAt(disc, after, 180.0)) - leftBefore), 3.0);
+    EXPECT_NEAR(60.0, signedDegrees(planeHueOf(basis, rimAt(disc, after, 0.0)) - rightBefore), 3.0);
+}
+
+TEST(ColorModeDiscWidget, NeutralValueKeepsTheLastDefinedHueElseZero)
+{
+    const LumaBasis basis = rec709();
+    ColorModeDiscWidget disc;
+
+    disc.setBasis(basis);
+    disc.setCentreValue(eColorKnobRoleGain, valueWithHue(basis, 140.0));
+    disc.setCentreValue(eColorKnobRoleGain, neutralGainValue());
+    EXPECT_EQ(140, disc.getCentreHue());
+
+    disc.forgetHue();
+    disc.setCentreValue(eColorKnobRoleGain, neutralGainValue());
+    EXPECT_EQ(0, disc.getCentreHue());
+}
+
+TEST(ColorModeDiscWidget, TemperatureRimIsWarmAtTheRightAndMagentaAtTheTop)
 {
     ColorModeDiscWidget disc;
+
+    disc.setBasis(rec709());
+
     QImage image = renderMode(disc, eColorGlobalModeT);
 
     ASSERT_FALSE(image.isNull());
 
-    QColor left = sampleAt(disc, image, -0.7, 0.0);
-    QColor right = sampleAt(disc, image, 0.7, 0.0);
-    QColor bottom = sampleAt(disc, image, 0.0, -0.7);
-    QColor top = sampleAt(disc, image, 0.0, 0.7);
+    QColor left = rimAt(disc, image, 180.0);
+    QColor right = rimAt(disc, image, 0.0);
+    QColor bottom = rimAt(disc, image, 270.0);
+    QColor top = rimAt(disc, image, 90.0);
 
-    EXPECT_GT(right.red() - right.blue(), left.red() - left.blue());
-    EXPECT_GT(bottom.green() - (bottom.red() + bottom.blue()) / 2, top.green() - (top.red() + top.blue()) / 2);
+    EXPECT_GT(right.red() - right.blue(), left.red() - left.blue() + 60);
+    EXPECT_GT(bottom.green() - (bottom.red() + bottom.blue()) / 2, top.green() - (top.red() + top.blue()) / 2 + 60);
+
+    QColor innerLeft = sampleAt(disc, image, -0.7, 0.0);
+    QColor innerRight = sampleAt(disc, image, 0.7, 0.0);
+
+    EXPECT_GT(innerRight.red() - innerRight.blue(), innerLeft.red() - innerLeft.blue());
 }
 
-TEST(ColorModeDiscWidget, ValueDiscIsLighterAtTheTopRight)
+TEST(ColorModeDiscWidget, ValueRimIsWhiteTopAndRightAndBlackBottomAndLeft)
 {
     ColorModeDiscWidget disc;
     QImage image = renderMode(disc, eColorGlobalModeV);
 
     ASSERT_FALSE(image.isNull());
+    EXPECT_GT(rimAt(disc, image, 45.0).lightness(), rimAt(disc, image, 225.0).lightness() + 200);
+    EXPECT_GE(rimAt(disc, image, 90.0).lightness(), 240);
+    EXPECT_GE(rimAt(disc, image, 0.0).lightness(), 240);
+    EXPECT_LE(rimAt(disc, image, 270.0).lightness(), 15);
+    EXPECT_LE(rimAt(disc, image, 180.0).lightness(), 15);
     EXPECT_GT(sampleAt(disc, image, 0.6, 0.6).lightness(), sampleAt(disc, image, -0.6, -0.6).lightness() + 100);
+}
+
+TEST(ColorModeDiscWidget, NoModeDrawsThePlainHueRing)
+{
+    const LumaBasis basis = rec709();
+
+    for (ColorGlobalModeEnum mode : { eColorGlobalModeS, eColorGlobalModeT, eColorGlobalModeV }) {
+        ColorModeDiscWidget disc;
+
+        disc.setBasis(basis);
+        disc.setCentreHue(200.0);
+
+        QImage image = renderMode(disc, mode);
+
+        ASSERT_FALSE(image.isNull());
+
+        const double Ro = disc.getRingOuterRadius();
+        const double dpr = image.devicePixelRatio() > 0.0 ? image.devicePixelRatio() : 1.0;
+        QImage ring = renderColorWheelRing(basis, Ro, disc.getRingInnerRadius(), dpr, &identity);
+        const double mid = 0.5 * (disc.getRingInnerRadius() + Ro);
+        int differing = 0;
+
+        for (int k = 0; k < 8; ++k) {
+            double degrees = k * 45.0 + 10.0;
+            QColor drawn = rimAt(disc, image, degrees);
+            double angle = degrees * M_PI / 180.0;
+            QColor wheel = sampleAtPixel(ring, Ro + mid * std::cos(angle), Ro - mid * std::sin(angle));
+            int diff = std::abs(drawn.red() - wheel.red()) + std::abs(drawn.green() - wheel.green()) + std::abs(drawn.blue() - wheel.blue());
+
+            differing += (diff > 60) ? 1 : 0;
+        }
+        EXPECT_GE(differing, 4) << "mode " << (int)mode;
+        if (mode != eColorGlobalModeT) {
+            // T's rim circles white, so it holds every hue; its layout is checked on its own.
+            EXPECT_LE(hueSpan(eightRimSamples(disc, image)), 300.0) << "mode " << (int)mode;
+        }
+    }
 }
 
 TEST(ColorModeDiscWidget, PuckBeyondTheRimIsClampedOntoIt)
@@ -185,7 +390,7 @@ TEST(ColorModeDiscWidget, RingIsTheWheelsRingInTheSamePlace)
 
     disc.setBasis(basis);
 
-    QImage image = renderMode(disc, eColorGlobalModeS);
+    QImage image = renderMode(disc, eColorGlobalModeC);
 
     wheel.resize(disc.size());
     EXPECT_DOUBLE_EQ(wheel.getRingOuterRadius(), disc.getRingOuterRadius());

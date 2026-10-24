@@ -50,10 +50,10 @@ const double kPi = 3.14159265358979323846;
 const double kPuckRadius = 5.0;
 const double kSizeHint = 240.0;
 
-const double kHueSpanDegrees = 300.0;
-const double kTempRangeMired = 120.0;
-const double kTintRange = 30.0;
-const int kTempTintLattice = 48;
+const double kHueReachDegrees = 30.0;
+const double kGamutReach = 0.9;
+const int kLattice = 48;
+const double kNeutralSaturation = 1e-9;
 
 const double kRec709ToXYZ[9] = {
     0.4124564, 0.3575761, 0.1804375,
@@ -105,56 +105,97 @@ normalise(double rgb[3])
     }
 }
 
-// u runs right and v up, both in [-1, 1].
-struct GradientSampler {
+// The colour a drag of (dx, dy), in units of the disc radius with dy running down as screen
+// pixels do, produces. Each axis takes globalModeEdit's sign for the same pixel delta, so the
+// disc shows where a drag that way goes.
+struct DragSampler {
     ColorGlobalModeEnum mode;
     const LumaBasis& basis;
+    double centreHue;
     ColorWheelHueTable hues;
+    TempTintAxes axes;
 
-    GradientSampler(ColorGlobalModeEnum m,
-                    const LumaBasis& b)
+    DragSampler(ColorGlobalModeEnum m,
+                const LumaBasis& b,
+                double hue)
         : mode(m)
         , basis(b)
+        , centreHue(hue)
     {
         if (mode == eColorGlobalModeS) {
             hues = buildColorWheelHueTable(basis);
+        } else if (mode == eColorGlobalModeT) {
+            axes = linearTempTintAxes(basis);
         }
     }
 
-    bool sample(double u,
-                double v,
+    bool sample(double dx,
+                double dy,
                 double rgb[3]) const
     {
-        rgb[0] = rgb[1] = rgb[2] = 0.0;
+        rgb[0] = rgb[1] = rgb[2] = kGrey;
 
         switch (mode) {
         case eColorGlobalModeS: {
-            double degrees = (u + 1.0) / 2.0 * kHueSpanDegrees;
-            int k = colorWheelHueIndex(degrees);
-            double theta = 2.0 * kPi * k / kColorWheelHueTableSize;
-            double s = clamp01((v + 1.0) / 2.0) * 0.8 * hues.limit[k];
+            double degrees = centreHue + dx * kHueReachDegrees;
+            double theta = degrees * kPi / 180.0;
+            double s = clamp01((1.0 - dy) / 2.0) * kGamutReach * hues.limit[colorWheelHueIndex(degrees)];
             ChromaEditResult r = fromPlane(eColorKnobRoleGain, basis, neutralGainValue(), planePoint(s * std::cos(theta), s * std::sin(theta)), kGrey);
 
+            if (!r.valid) {
+                return false;
+            }
             for (int i = 0; i < 3; ++i) {
                 rgb[i] = std::max(0.0, r.value.rgb[i]);
             }
             normalise(rgb);
 
-            return r.valid;
+            return true;
         }
         case eColorGlobalModeT: {
-            ChromaEditResult r = fromTempTint(eColorKnobRoleGain, basis, neutralGainValue(), u * kTempRangeMired, v * kTintRange);
+            if (!axes.valid) {
+                return false;
+            }
+
+            double distance = std::hypot(dx, dy);
+
+            if (!(distance > 0.0)) {
+                rgb[0] = rgb[1] = rgb[2] = 1.0;
+
+                return true;
+            }
+
+            double temp = dx / distance;
+            double tint = -dy / distance;
+            double a = temp * axes.temp[0] + tint * axes.tint[0];
+            double b = temp * axes.temp[1] + tint * axes.tint[1];
+            double unit[3];
+
+            join(basis, 0.0, a, b, unit);
+
+            // Scaled per direction to just inside the gamut at mid-grey, so every rim colour
+            // is as vivid as the working space allows instead of fading where one axis is short.
+            double reach = 0.0;
 
             for (int i = 0; i < 3; ++i) {
-                rgb[i] = std::max(0.0, r.value.rgb[i]);
+                if (unit[i] < 0.0) {
+                    double limit = kGrey / -unit[i];
+
+                    reach = (reach > 0.0) ? std::min(reach, limit) : limit;
+                }
+            }
+            if (!(reach > 0.0)) {
+                return false;
+            }
+            for (int i = 0; i < 3; ++i) {
+                rgb[i] = std::max(0.0, kGrey + std::min(1.0, distance) * kGamutReach * reach * unit[i]);
             }
             normalise(rgb);
 
-            return r.valid;
+            return true;
         }
         case eColorGlobalModeV: {
-            double t = clamp01((u + v + 2.0) / 4.0);
-            KnobColorValue c = setValue(eColorKnobRoleGain, basis, neutralGainValue(), t);
+            KnobColorValue c = setValue(eColorKnobRoleGain, basis, neutralGainValue(), clamp01(0.5 + 0.5 * (dx - dy)));
 
             for (int i = 0; i < 3; ++i) {
                 rgb[i] = std::max(0.0, c.rgb[i]);
@@ -168,12 +209,24 @@ struct GradientSampler {
         }
     }
 };
+
+int
+wholeDegrees(double degrees)
+{
+    if (!std::isfinite(degrees)) {
+        return 0;
+    }
+
+    int d = (int)std::lround(std::fmod(degrees, 360.0));
+
+    return ((d % 360) + 360) % 360;
+}
 } // anonymous namespace
 
 bool
 ColorModeDiscWidget::CacheKey::operator==(const CacheKey& other) const
 {
-    return valid == other.valid && size == other.size && dpr == other.dpr && mode == other.mode && generation == other.generation;
+    return valid == other.valid && size == other.size && dpr == other.dpr && mode == other.mode && hue == other.hue && generation == other.generation;
 }
 
 ColorModeDiscWidget::ColorModeDiscWidget(QWidget* parent)
@@ -182,6 +235,9 @@ ColorModeDiscWidget::ColorModeDiscWidget(QWidget* parent)
     , _basis(kRec709LumaWeights, kRec709ToXYZ)
     , _converter()
     , _generation(0)
+    , _hue(0)
+    , _hasDefinedHue(false)
+    , _lastDefinedHue(0.0)
     , _puck(0.0, 0.0)
 {
     setAttribute(Qt::WA_TranslucentBackground, true);
@@ -215,6 +271,40 @@ ColorModeDiscWidget::setDisplayConverter(const DisplayConverter& converter)
     _converter = converter;
     ++_generation;
     update();
+}
+
+void
+ColorModeDiscWidget::setCentreValue(ColorKnobRoleEnum role,
+                                    const KnobColorValue& value)
+{
+    PlanePoint p = toPlane(role, _basis, value);
+
+    if (p.valid && (planeSaturation(p) > kNeutralSaturation)) {
+        _lastDefinedHue = planeHue(p);
+        _hasDefinedHue = true;
+    }
+    setCentreHue(_hasDefinedHue ? _lastDefinedHue : 0.0);
+}
+
+void
+ColorModeDiscWidget::forgetHue()
+{
+    _hasDefinedHue = false;
+    _lastDefinedHue = 0.0;
+}
+
+void
+ColorModeDiscWidget::setCentreHue(double degrees)
+{
+    int hue = wholeDegrees(degrees);
+
+    if (hue == _hue) {
+        return;
+    }
+    _hue = hue;
+    if (_mode == eColorGlobalModeS) {
+        update();
+    }
 }
 
 void
@@ -295,6 +385,7 @@ ColorModeDiscWidget::cacheKey(int size,
     key.size = size;
     key.dpr = devicePixelRatioForCache();
     key.mode = withMode ? _mode : eColorGlobalModeS;
+    key.hue = (withMode && (_mode == eColorGlobalModeS)) ? _hue : 0;
     key.generation = _generation;
     key.valid = true;
 
@@ -323,10 +414,11 @@ ColorModeDiscWidget::gradientImage() const
 {
     double dpr = devicePixelRatioForCache();
     double R = getDiscRadius();
-    int n = (int)std::ceil(2.0 * R * dpr);
+    double Ro = getRingOuterRadius();
+    int n = (int)std::ceil(2.0 * Ro * dpr);
     CacheKey key = cacheKey(n, true);
 
-    if ((key == _gradientKey) || (n <= 0)) {
+    if ((key == _gradientKey) || (n <= 0) || (R <= 0.0)) {
         return _gradient;
     }
 
@@ -334,27 +426,25 @@ ColorModeDiscWidget::gradientImage() const
 
     image.fill(Qt::transparent);
 
-    GradientSampler sampler(_mode, _basis);
+    DragSampler sampler(_mode, _basis, _hue);
+    double RoDev = Ro * dpr;
     double Rdev = R * dpr;
     std::vector<int> indices;
     std::vector<int> alphas;
     std::vector<float> rgb;
 
-    // Temp/tint needs a Newton solve per colour, so it is evaluated on a lattice over the disc's
-    // bounding square and interpolated.
-    std::vector<double> lattice;
-    int L = kTempTintLattice;
+    // Evaluated on a lattice over the unit disc's bounding square and interpolated: an S drag
+    // rebuilds this on every degree of hue, and a per-pixel plane solve is too slow for that.
+    const int L = kLattice;
+    std::vector<double> lattice(3 * L * L, kGrey);
 
-    if (_mode == eColorGlobalModeT) {
-        lattice.assign(3 * L * L, 0.5);
-        for (int j = 0; j < L; ++j) {
-            for (int i = 0; i < L; ++i) {
-                double c[3];
+    for (int j = 0; j < L; ++j) {
+        for (int i = 0; i < L; ++i) {
+            double c[3];
 
-                if (sampler.sample(2.0 * i / (L - 1) - 1.0, 1.0 - 2.0 * j / (L - 1), c)) {
-                    for (int k = 0; k < 3; ++k) {
-                        lattice[3 * (j * L + i) + k] = c[k];
-                    }
+            if (sampler.sample(2.0 * i / (L - 1) - 1.0, 2.0 * j / (L - 1) - 1.0, c)) {
+                for (int k = 0; k < 3; ++k) {
+                    lattice[3 * (j * L + i) + k] = c[k];
                 }
             }
         }
@@ -365,39 +455,31 @@ ColorModeDiscWidget::gradientImage() const
     rgb.reserve(3 * n * n);
     for (int j = 0; j < n; ++j) {
         for (int i = 0; i < n; ++i) {
-            double dx = (i + 0.5) - Rdev;
-            double dy = (j + 0.5) - Rdev;
-            double coverage = clamp01(Rdev - std::hypot(dx, dy) + 0.5);
+            double px = (i + 0.5) - RoDev;
+            double py = (j + 0.5) - RoDev;
+            double r = std::hypot(px, py);
+            double coverage = clamp01(RoDev - r + 0.5);
 
             if (coverage <= 0.0) {
                 continue;
             }
 
-            double u = dx / Rdev;
-            double v = -dy / Rdev;
-            double c[3] = { kGrey, kGrey, kGrey };
+            // The ring holds the rim's colour in each direction.
+            double scale = (r > Rdev) ? 1.0 / r : 1.0 / Rdev;
+            double fx = clamp01((px * scale + 1.0) / 2.0) * (L - 1);
+            double fy = clamp01((py * scale + 1.0) / 2.0) * (L - 1);
+            int x0 = std::min((int)fx, L - 2);
+            int y0 = std::min((int)fy, L - 2);
+            double tx = fx - x0;
+            double ty = fy - y0;
 
-            if (_mode == eColorGlobalModeT) {
-                double fx = clamp01((u + 1.0) / 2.0) * (L - 1);
-                double fy = clamp01((1.0 - v) / 2.0) * (L - 1);
-                int x0 = std::min((int)fx, L - 2);
-                int y0 = std::min((int)fy, L - 2);
-                double tx = fx - x0;
-                double ty = fy - y0;
-
-                for (int k = 0; k < 3; ++k) {
-                    double a = lattice[3 * (y0 * L + x0) + k] * (1.0 - tx) + lattice[3 * (y0 * L + x0 + 1) + k] * tx;
-                    double b = lattice[3 * ((y0 + 1) * L + x0) + k] * (1.0 - tx) + lattice[3 * ((y0 + 1) * L + x0 + 1) + k] * tx;
-
-                    c[k] = a * (1.0 - ty) + b * ty;
-                }
-            } else if (!sampler.sample(u, v, c)) {
-                continue;
-            }
             indices.push_back(j * n + i);
             alphas.push_back((int)(coverage * 255.0 + 0.5));
             for (int k = 0; k < 3; ++k) {
-                rgb.push_back((float)c[k]);
+                double a = lattice[3 * (y0 * L + x0) + k] * (1.0 - tx) + lattice[3 * (y0 * L + x0 + 1) + k] * tx;
+                double b = lattice[3 * ((y0 + 1) * L + x0) + k] * (1.0 - tx) + lattice[3 * ((y0 + 1) * L + x0 + 1) + k] * tx;
+
+                rgb.push_back((float)(a * (1.0 - ty) + b * ty));
             }
         }
     }
@@ -416,7 +498,7 @@ ColorModeDiscWidget::gradientImage() const
     _gradientKey = key;
 
     return _gradient;
-}
+} // ColorModeDiscWidget::gradientImage
 
 void
 ColorModeDiscWidget::paintEvent(QPaintEvent* /*e*/)
@@ -434,8 +516,7 @@ ColorModeDiscWidget::paintEvent(QPaintEvent* /*e*/)
 
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    p.drawImage(QPointF(c.x() - Ro, c.y() - Ro), ringImage());
-    p.drawImage(QPointF(c.x() - R, c.y() - R), gradientImage());
+    p.drawImage(QPointF(c.x() - Ro, c.y() - Ro), (_mode == eColorGlobalModeC) ? ringImage() : gradientImage());
     drawColorWheelRingOutlines(p, c, R, Ri, Ro);
 
     QPointF pos = getPuckWidgetPos();

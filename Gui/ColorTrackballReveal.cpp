@@ -210,6 +210,7 @@ ColorTrackballReveal::setKnob(ColorKnobRoleEnum role,
     _wheel->setDisplayConverter(converter);
     _disc->setBasis(basis);
     _disc->setDisplayConverter(converter);
+    _disc->forgetHue();
 }
 
 void
@@ -251,6 +252,7 @@ ColorTrackballReveal::setStroke(const KnobColorValue& start,
 
         return;
     }
+    _disc->setCentreValue(_role, live);
     _disc->setPuck(colorTrackballRevealDiscPuck(_mode, _role, strokeDx, strokeDy, rates));
 }
 

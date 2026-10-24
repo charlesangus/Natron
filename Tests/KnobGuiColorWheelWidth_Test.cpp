@@ -167,11 +167,13 @@ blockRowGap()
     return TO_DPIY(NATRON_DENSITY_ROW_GAP);
 }
 
-// The backdrop's fill at its centre, its edges midway down its left side and midway along its
-// top, and its frame's bottom edge, which sits the row gap above the backdrop's own bottom.
+// The backdrop's fill at its centre, its edges midway down its left and right sides and midway
+// along its top, and its frame's bottom edge, which sits the row gap above the backdrop's own
+// bottom.
 struct BackdropColors {
     QColor fill;
     QColor edge;
+    QColor rightEdge;
     QColor topEdge;
     QColor bottomEdge;
 };
@@ -184,6 +186,7 @@ backdropColors(QWidget* backdrop)
 
     c.fill = QColor::fromRgb(image.pixel(image.width() / 2, image.height() / 2));
     c.edge = QColor::fromRgb(image.pixel(0, image.height() / 2));
+    c.rightEdge = QColor::fromRgb(image.pixel(image.width() - 1, image.height() / 2));
     c.topEdge = QColor::fromRgb(image.pixel(image.width() / 2, 0));
     c.bottomEdge = QColor::fromRgb(image.pixel(image.width() / 2, image.height() - 1 - blockRowGap()));
 
@@ -503,6 +506,9 @@ TEST_F(KnobGuiColorWheelWidth, GlobalModeOutlinesTheOpenKnobsSunkenBlockInTheSel
     ASSERT_TRUE(backdrop);
     ASSERT_TRUE(backdrop->isVisible());
     const BackdropColors normal = backdropColors(backdrop);
+    const QRect plainBlock = backdrop->geometry();
+    const QRect plainPanel = rectIn(panel(), _page.get());
+    const QRect plainField = rectIn(_field, _page.get());
     const QRgb selection = ThemedIcon::themeSelectionColor().rgb();
     ASSERT_NE(selection, normal.edge.rgb());
 
@@ -517,8 +523,14 @@ TEST_F(KnobGuiColorWheelWidth, GlobalModeOutlinesTheOpenKnobsSunkenBlockInTheSel
     const BackdropColors engaged = backdropColors(backdrop);
     EXPECT_EQ(normal.fill.rgb(), engaged.fill.rgb());
     EXPECT_EQ(selection, engaged.edge.rgb());
+    EXPECT_EQ(selection, engaged.rightEdge.rgb());
     EXPECT_EQ(selection, engaged.topEdge.rgb());
     EXPECT_EQ(selection, engaged.bottomEdge.rgb());
+
+    // Engaging moves and resizes nothing: the block, the knob's row and its panel stay put.
+    EXPECT_EQ(plainBlock, backdrop->geometry());
+    EXPECT_EQ(plainField, rectIn(_field, _page.get()));
+    EXPECT_EQ(plainPanel, rectIn(panel(), _page.get()));
 
     // The row no longer carries the stylesheet border that drew the selection colour around it.
     EXPECT_FALSE(_field->property("_natronColorTrackballTarget").isValid());
@@ -533,6 +545,7 @@ TEST_F(KnobGuiColorWheelWidth, GlobalModeOutlinesTheOpenKnobsSunkenBlockInTheSel
     EXPECT_EQ(normal.fill.rgb(), after.fill.rgb());
     EXPECT_EQ(normal.edge.rgb(), after.edge.rgb());
     EXPECT_EQ(normal.bottomEdge.rgb(), after.bottomEdge.rgb());
+    EXPECT_EQ(plainBlock, _gui->getOpenBackdrop()->geometry());
 }
 
 TEST_F(KnobGuiColorWheelWidth, GlobalModeOnAClosedKnobShowsTheBlockAroundItsRowAlone)

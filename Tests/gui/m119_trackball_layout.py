@@ -596,17 +596,44 @@ try:
     def rgb_name(v):
         return "#%06x" % (v & 0xffffff) if v is not None else None
 
+    def covering_windows(w):
+        """The global rects of the visible top-level windows other than w's own that overlap w on
+        screen: global mode's hint block follows the pointer and can sit over the block, and a
+        screen grab sees it."""
+        r = global_rect(w)
+        own = ptr(w.window())
+        rects = []
+        for t in QApplication.topLevelWidgets():
+            try:
+                if ptr(t) == own or not t.isVisible():
+                    continue
+                g = global_rect(t)
+            except RuntimeError:
+                continue
+            if g.intersects(r):
+                rects.append(g)
+        return rects
+
     def block_probe(backdrop):
         """The sunken block as drawn on screen: its frame's global rect and its fill and outline
-        pixels. Sampled in the padding column left of every cell's contents, where only the fill
-        and the top and bottom outlines are drawn. The frame ends above the backdrop's bottom (the
-        row gap below it is the page's), so its bottom is the lowest pixel of the colour the right
-        outline has midway down."""
+        pixels. Sampled in a padding column inside the left or right outline, where only the fill
+        and the top and bottom outlines are drawn, and in a row clear of every cell's contents'
+        edges. Columns and rows another window covers (the pointer-following hint block) are
+        skipped. The frame ends above the backdrop's bottom (the row gap below it is the page's),
+        so its bottom is the lowest pixel of the colour the right outline has at the sample row."""
         r = global_rect(backdrop)
         img = grab_screen(r)
         w, h = img.width(), img.height()
-        x0 = max(1, int(px(BLOCK_PAD) / 2))
-        mid = h // 2
+        covers = [c.translated(-r.x(), -r.y()) for c in covering_windows(backdrop)]
+
+        def clear(rect):
+            return not any(c.intersects(rect) for c in covers)
+
+        inset = max(1, int(px(BLOCK_PAD) / 2))
+        columns = [x for x in (inset, w - 1 - inset) if clear(QRect(x, 0, 1, h))]
+        x0 = columns[0] if columns else inset
+        rows = [y for y in (h // 2, h // 4, (3 * h) // 4) if clear(QRect(0, y, 1, 1)) and clear(QRect(w - 1, y, 1, 1))]
+        mid = rows[0] if rows else h // 2
         bottom_colour = img.pixel(w - 1, mid)
         y_bot = None
         for y in range(h - 1, 0, -1):
@@ -621,6 +648,7 @@ try:
             "right": bottom_colour,
             "top": img.pixel(x0, 0),
             "bottom": img.pixel(x0, y_bot) if y_bot is not None else None,
+            "probe": (x0, mid, bool(columns) and bool(rows)),
         }
 
     def screen_pixel(w, local):
@@ -1057,10 +1085,12 @@ try:
             report("NOTE panel open: block %s, gain's panel %s" % (fmt_rect(block), fmt_rect(ap_rect) if ap_rect is not None else None))
             check(ap_rect is not None and block.contains(ap_rect), "panel open: the block surrounds gain's panel")
             probe = block_probe(lit[0])
-            report("NOTE engaged block fill %s, outline left %s top %s bottom %s; plain fill %s; selection %s"
-                   % (rgb_name(probe["fill"]), rgb_name(probe["left"]), rgb_name(probe["top"]), rgb_name(probe["bottom"]),
-                      rgb_name(plain_probe["fill"]) if plain_probe is not None else None, rgb_name(selection)))
-            for side in ("left", "top", "bottom"):
+            report("NOTE engaged block fill %s, outline left %s right %s top %s bottom %s; plain fill %s; selection %s; probe column/row %r"
+                   % (rgb_name(probe["fill"]), rgb_name(probe["left"]), rgb_name(probe["right"]), rgb_name(probe["top"]),
+                      rgb_name(probe["bottom"]), rgb_name(plain_probe["fill"]) if plain_probe is not None else None,
+                      rgb_name(selection), probe["probe"]))
+            check(probe["probe"][2], "panel open: a probe column and row no other window covers")
+            for side in ("left", "right", "top", "bottom"):
                 check(probe[side] is not None and pixel_distance(probe[side], selection) <= 6,
                       "panel open: the engaged block's %s outline is the selection colour (%s)" % (side, rgb_name(probe[side])))
             if plain_probe is not None:
@@ -1091,8 +1121,12 @@ try:
             check(label is None or block.contains(global_rect(label)), "panel closed: the block surrounds gain's label")
             report("NOTE panel closed: block %s, row %s" % (fmt_rect(block), fmt_rect(row_rect)))
             probe = block_probe(lit[0])
-            check(probe["bottom"] is not None and pixel_distance(probe["bottom"], selection) <= 6,
-                  "panel closed: the engaged block's outline is the selection colour (%s)" % rgb_name(probe["bottom"]))
+            report("NOTE panel closed: outline left %s right %s top %s bottom %s; probe column/row %r"
+                   % (rgb_name(probe["left"]), rgb_name(probe["right"]), rgb_name(probe["top"]), rgb_name(probe["bottom"]),
+                      probe["probe"]))
+            for side in ("left", "right", "top", "bottom"):
+                check(probe[side] is not None and pixel_distance(probe[side], selection) <= 6,
+                      "panel closed: the engaged block's %s outline is the selection colour (%s)" % (side, rgb_name(probe[side])))
             if row_cell is not None:
                 check_block_margins(lit[0], probe, row_cell, row_cell, row_cell, grid_cell_of(label, page) if label is not None else row_cell,
                                     "panel closed")

@@ -51,6 +51,7 @@
 #define kRawDemosaicParamGreenEq "greenEquilibration"
 #define kRawDemosaicParamEdgeThreshold "edgeThreshold"
 #define kRawDemosaicParamColorSmoothing "colorSmoothing"
+#define kRawDemosaicParamLmmseRefine "lmmseRefine"
 
 NATRON_NAMESPACE_ENTER
 
@@ -60,7 +61,8 @@ enum RawDemosaicBayerMethodEnum {
     eRawDemosaicBayerAMaZE,
     eRawDemosaicBayerVNG4,
     eRawDemosaicBayerPassthroughMonochrome,
-    eRawDemosaicBayerPhotositeColor
+    eRawDemosaicBayerPhotositeColor,
+    eRawDemosaicBayerLMMSE
 };
 
 enum RawDemosaicXTransMethodEnum {
@@ -69,6 +71,14 @@ enum RawDemosaicXTransMethodEnum {
     eRawDemosaicXTransVNG,
     eRawDemosaicXTransPassthroughMonochrome,
     eRawDemosaicXTransPhotositeColor
+};
+
+enum RawDemosaicLmmseRefineEnum {
+    eRawDemosaicLmmseBasic = 0,
+    eRawDemosaicLmmseMedian,
+    eRawDemosaicLmmse3xMedian,
+    eRawDemosaicLmmseRefineMedians,
+    eRawDemosaicLmmse2xRefineMedians
 };
 
 enum RawDemosaicGreenEqEnum {
@@ -80,7 +90,7 @@ enum RawDemosaicGreenEqEnum {
 
 /**
  * @brief Raw to image: darktable's demosaic module on prepared raw data. A Bayer mosaic is
- * demosaiced by RCD (the default), PPG, AMaZE or VNG4, an X-Trans one by Markesteijn 1-pass (the
+ * demosaiced by RCD (the default), PPG, AMaZE, VNG4 or LMMSE, an X-Trans one by Markesteijn 1-pass (the
  * default), Markesteijn 3-pass or VNG, or either left as photosites (passthrough monochrome, photosite
  * colour), after the optional green equilibration (Bayer) and
  * followed by the optional colour smoothing passes. Data without a CFA passes through. The output
@@ -88,7 +98,7 @@ enum RawDemosaicGreenEqEnum {
  * and drops the CFA and the raw stage.
  *
  * Each render reads its window grown by what the method reads around a pixel, aligned to the CFA
- * period (and, for AMaZE, to its 128-pixel tile grid), so a tile is bit for bit the same pixels
+ * period (and, for AMaZE and LMMSE, to their own tile grids), so a tile is bit for bit the same pixels
  * as the full frame. Full green equilibration measures the whole image, once per source and
  * settings. Renders at full resolution only.
  **/
@@ -123,6 +133,17 @@ private:
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    // darktable's gui_changed(): LMMSE Refine shows only for the LMMSE method.
+    void refreshMethodKnobsVisibility();
+
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
@@ -136,7 +157,7 @@ private:
      * data without a CFA. AMaZE, VNG and Markesteijn have no GPU path yet. Full green
      * equilibration measures the whole source once per frame, which a region's strips cannot
      * share, and local equilibration and colour smoothing are not ported, so any of them keeps the
-     * node on the CPU.
+     * node on the CPU. LMMSE has no GPU path, as in darktable.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -169,6 +190,7 @@ private:
     KnobChoiceWPtr _greenEq;
     KnobDoubleWPtr _edgeThreshold;
     KnobIntWPtr _colorSmoothing;
+    KnobChoiceWPtr _lmmseRefine;
 
     // The ratio of full green equilibration, for the source and settings its key names.
     std::mutex _greenMutex;

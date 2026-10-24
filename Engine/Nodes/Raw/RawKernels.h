@@ -136,6 +136,34 @@ void amaze(const float* in,
            const ParallelFor& parallel);
 
 /**
+ * @brief darktable's lmmse_demosaic(): LMMSE on a Bayer mosaic, in gamma space scaled by
+ * 1/scaler (darktable passes the processed maximum), with refine 0 to 4 darktable's LMMSE refine
+ * levels: basic, median, 3x median, refine & medians, 2x refine + medians. PPG fills the 4
+ * outermost photosites. The result depends on the 136-photosite tiles laid from the buffer's
+ * top-left photosite; lmmseSpan() gives a buffer that reproduces the whole image's.
+ **/
+void lmmse(float* out,
+           const float* in,
+           int width,
+           int height,
+           std::uint32_t filters,
+           int refine,
+           float scaler,
+           const ParallelFor& parallel);
+
+/**
+ * @brief The buffer [*b0, *b1) lmmse() runs over to output [start, end) of an axis of n
+ * photosites exactly as a run over the whole axis does: it starts on the tile grid lmmse() lays
+ * from the axis's first photosite, and its tiles covering the window are neither its first nor
+ * its last unless they are the axis's.
+ **/
+void lmmseSpan(int start,
+               int end,
+               int n,
+               int* b0,
+               int* b1);
+
+/**
  * @brief darktable's vng_interpolate(): VNG on a Bayer (VNG4) or X-Trans mosaic, or only its
  * linear interpolation when onlyLinear.
  **/

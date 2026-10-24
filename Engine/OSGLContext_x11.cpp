@@ -35,6 +35,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/OSGLContext.h"
+#include "Engine/StartupGLDiag.h"
 #include "Global/GLIncludes.h"
 
 extern "C"
@@ -848,7 +849,9 @@ OSGLContext_x11::~OSGLContext_x11()
     if (_imp->glxContextHandle) {
 
         if (glxInfo->_imp->GetCurrentContext() == _imp->glxContextHandle) {
-            glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
+            const StartupGLDiag::GLXBinding before = StartupGLDiag::currentGLXBinding();
+            const bool ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
+            StartupGLDiag::logMakeCurrent("~OSGLContext_x11:unset-before-destroy", __builtin_return_address(0), StartupGLDiag::GLXBinding(), before, ok);
         }
         glxInfo->_imp->DestroyContext(glxInfo->_imp->x11.display, _imp->glxContextHandle);
         _imp->glxContextHandle = 0;
@@ -856,7 +859,9 @@ OSGLContext_x11::~OSGLContext_x11()
 }
 
 bool
-OSGLContext_x11::makeContextCurrent(const OSGLContext_x11* context)
+OSGLContext_x11::makeContextCurrent(const OSGLContext_x11* context,
+                                    const char* diagTag,
+                                    const void* diagCaller)
 {
     const OSGLContext_glx_data* glxInfo = appPTR->getGLXData();
 
@@ -866,11 +871,28 @@ OSGLContext_x11::makeContextCurrent(const OSGLContext_x11* context)
         return false;
     }
 
-    if (context) {
-        return glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, context->_imp->glxWindowHandle, context->_imp->glxContextHandle);
-    } else {
-        return glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
+    const bool diag = StartupGLDiag::enabled();
+    StartupGLDiag::GLXBinding before, target;
+    if (diag) {
+        before = StartupGLDiag::currentGLXBinding();
+        if (context) {
+            target.context = context->_imp->glxContextHandle;
+            target.drawable = context->_imp->glxWindowHandle;
+        }
     }
+
+    bool ok;
+    if (context) {
+        ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, context->_imp->glxWindowHandle, context->_imp->glxContextHandle);
+    } else {
+        ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
+    }
+
+    if (diag) {
+        StartupGLDiag::logMakeCurrent(diagTag ? diagTag : "OSGLContext_x11::makeContextCurrent", diagCaller ? diagCaller : __builtin_return_address(0), target, before, ok);
+    }
+
+    return ok;
 }
 
 bool
@@ -930,7 +952,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
             return;
         }
 
-        if ( !makeContextCurrent( context.get() ) ) {
+        if (!makeContextCurrent(context.get(), "getGPUInfos:probe")) {
             return;
         }
 
@@ -1042,7 +1064,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
                     continue;
                 }
 
-                if (!makeContextCurrent(context.get())) {
+                if (!makeContextCurrent(context.get(), "getGPUInfos:probe-mesa")) {
                     ++renderer;
                     continue;
                 }
@@ -1068,7 +1090,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
 
                 renderers.push_back(info);
 
-                makeContextCurrent(0);
+                makeContextCurrent(nullptr, "getGPUInfos:release-mesa");
             }
             ++renderer;
         } while (gotRenderer);

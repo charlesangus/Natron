@@ -70,7 +70,9 @@ public:
 
     static void initGLXData(OSGLContext_glx_data* glxInfo);
     static void destroyGLXData(OSGLContext_glx_data* glxInfo);
-    static bool makeContextCurrent(const OSGLContext_x11* context);
+    static bool makeContextCurrent(const OSGLContext_x11* context,
+                                   const char* diagTag = nullptr,
+                                   const void* diagCaller = nullptr);
     static bool threadHasACurrentContext();
     static void getGPUInfos(std::list<OpenGLRendererInfo>& renderers);
 

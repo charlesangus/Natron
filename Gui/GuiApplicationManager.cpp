@@ -46,6 +46,10 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QTimer>
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 #include <QtGlobal> // for Q_OS_*
+
+#include "Global/GLIncludes.h" // must precede qopengl.h
+#include <QOpenGLContext>
+#include <QtGui/qopenglcontext_platform.h>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -59,6 +63,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/Settings.h"
+#include "Engine/StartupGLDiag.h"
 #include "Gui/DocumentationManager.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
@@ -79,11 +84,45 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+StartupGLDiag::QtGLState
+currentQtGLState()
+{
+    StartupGLDiag::QtGLState state;
+    QOpenGLContext* context = QOpenGLContext::currentContext();
+    if (!context) {
+        return state;
+    }
+    state.qtContext = context;
+    state.nativeKind = StartupGLDiag::QtNativeKind::Unknown;
+#if QT_CONFIG(xcb_glx_plugin)
+    if (auto* glx = context->nativeInterface<QNativeInterface::QGLXContext>()) {
+        state.nativeKind = StartupGLDiag::QtNativeKind::GLX;
+        state.nativeContext = glx->nativeContext();
+
+        return state;
+    }
+#endif
+#if QT_CONFIG(egl)
+    if (auto* egl = context->nativeInterface<QNativeInterface::QEGLContext>()) {
+        state.nativeKind = StartupGLDiag::QtNativeKind::EGL;
+        state.nativeContext = egl->nativeContext();
+    }
+#endif
+
+    return state;
+}
+
+} // anonymous namespace
 
 GuiApplicationManager::GuiApplicationManager()
     : AppManager()
     , _imp( new GuiApplicationManagerPrivate(this) )
 {
+    StartupGLDiag::setQtGLStateQuery(&currentQtGLState);
+    StartupGLDiag::installMessageHandler();
+
     // A colour knob reports each channel separately and a colour picker reports every drag
     // step, and reapplying the stylesheet repolishes every widget, so the changes are
     // coalesced into one reapply.

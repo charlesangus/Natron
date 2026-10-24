@@ -451,7 +451,71 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: `unzip -Z1` lists only `mimetype manifest.yaml project.yaml`; a second regeneration gives a byte-identical `project.yaml`; fixture ctests pass on the next remote debug build.
   - size: M
 
-**Verification gate:** full `tools/ci/local/test.sh ctest debug` and `smoke debug` green, and
+## Phase 16.9: UAT fixes
+
+From the P7.T3 UAT (2026-10-24). Crash evidence (consultant, unconfirmed until T5 step 1): a refused file goes down a path no successful load takes — a non-empty graph opens a new app window first (`Gui/Gui20.cpp:826-831`), `Project::loadProject` resets and deletes the graph asynchronously (`Engine/Project.cpp:241`, `:2788`), the file is refused (`:485-490`), a modal error dialog runs a nested event loop on the half-cleared graph (`:291`), then a new Viewer is created (`:293-296`, `Gui/Gui.cpp:365` assert inert under NDEBUG); the refused path is still added to recent files (`Gui/Gui20.cpp:836-844`). The user's hand re-zip failed because `python -m zipfile -c` deflates every member: `detectProjectFileKind` (`Serialization/Bundle/ProjectBundle.cpp:91`) only accepts a stored `mimetype` with its text at byte 38, `ZipStore.cpp:595,619` reject compressed members and `ProjectBundle.cpp:194` requires `mimetype` first.
+
+- [ ] M16.P9.T1 — Lenient ZipReader: deflate, any order, zlib required
+  - files: `Serialization/Bundle/ZipStore.h`, `Serialization/Bundle/ZipStore.cpp`, `Tests/Serialization/ZipStore_Test.cpp`, `Serialization/CMakeLists.txt`, `CMakeLists.txt` (`:71` → `find_package(ZLIB REQUIRED)`)
+  - approach: accept method 0 and 8 (raw `inflateInit2(-MAX_WBITS)`); refuse other methods by name (bzip2, lzma, zstd), keep refusing encrypted and zip64 members. Use central-directory sizes and CRC so flag bit 3 (data descriptor) works. `data()` stays a zero-copy span for stored members; deflated members are inflated once into a cached 64-byte-aligned buffer, capped at the declared size (zip-bomb guard) and CRC-checked when inflated. Directory entries stay skipped. Drop the `#ifndef` CRC table.
+  - verify: compiled at P9.T9. The "compressed is rejected" cases become round-trips of deflated members, mixed methods and any member order; a truncated deflate stream throws.
+  - size: M
+
+- [ ] M16.P9.T2 — Writer puts every member under `<stem>/`
+  - files: `Serialization/Bundle/ZipStore.h/.cpp` (constructors ~216-243 take a root prefix), `Serialization/Bundle/ProjectBundle.h/.cpp` (`setRootFolder`), `Engine/Project.cpp` (`saveProjectInternal`)
+  - approach: order `<stem>/mimetype` (stored, no extra field), `<stem>/manifest.yaml`, `<stem>/project.yaml`, then sorted `<stem>/blobs/**`; 64-byte alignment unchanged (padding from the real name length). The stem is the project file name without `.ntpz`, never the autosave or temp name; if it fails `memberNameProblem` or is empty, use `project`.
+  - verify: compiled at P9.T9. `unzip test.ntpz` creates only `test/`; every data offset is a multiple of 64; two saves are byte-identical.
+  - size: M
+
+- [ ] M16.P9.T3 — Reader resolves the root and makes the manifest advisory; directory source
+  - files: `Serialization/Bundle/ProjectBundle.h/.cpp`, `Serialization/Yaml/ManifestYaml.cpp`, `Tests/Serialization/ProjectBundle_Test.cpp`
+  - approach: (a) any zip, directory entries ignored; (b) root = the one `project.yaml` at depth 0 or 1 — zero → "not a Natron project (no project.yaml)", two or more → "ambiguous"; (c) the folder name is never compared with the file name; (d) `mimetype` optional, at the root or under the folder; present and different → "not a Natron project"; (e) a zip-level CRC mismatch stays an error; (f) the manifest is optional and its member list advisory — a size/CRC mismatch or missing listed member gives one load warning; no manifest → defaults; newer-version refusal stays on `project.yaml`; (g) members outside the root other than `mimetype` are ignored with a warning. `detectProjectFileKind` becomes zip (`PK\3\4`/`PK\5\6`), legacy XML, directory, or `project.yaml`; the offset-38 sniff is dropped. Add a directory-backed `BlobSource` (std::filesystem, no Qt) reading `project.yaml`, an optional manifest and `blobs/` into owned aligned buffers.
+  - verify: compiled at P9.T9. Cases: root and folder layouts; a renamed file; no mimetype; a wrong mimetype; two roots; a manifest mismatch → one warning.
+  - size: L
+
+- [ ] M16.P9.T4 — Engine: open a folder or project.yaml; refuse before reset
+  - files: `Engine/Project.h`, `Engine/Project.cpp` (`loadProject` ~236, `loadProjectInternal` ~462, `findAutoSaveForProject` ~1023), `Engine/ProjectPrivate.h`, `Engine/AppInstance.cpp` (~622, 688), `Engine/CLArgs.cpp` (~988, 1111)
+  - approach: `Project::classifyOpenTarget(path, &source, &error)` normalises `project.yaml` to its folder. Errors, checked before `reset()`: `.ntp` or XML content → "Legacy .ntp projects are not supported. This version of Natron only opens .ntpz projects."; anything else → "<file> is not a Natron project". A folder `/a/test/` loads under the identity path `/a/` and name `test.ntpz` with `loadedFromFolder` set; `[Project]` = `/a/`. Autosave goes to `/a/test.ntpz.autosave`; opening the folder offers recovery only if that autosave is newer than `project.yaml` (the `.ntpz`-exists requirement doesn't apply to folders). The CLI, NatronRenderer and `app.loadProject` accept folders.
+  - verify: compiled at P9.T9; the P9.T7 tests.
+  - size: L
+
+- [ ] M16.P9.T5 — GUI File>Open: backtrace, refuse before touching the app, folder selection
+  - files: `Gui/Gui20.cpp` (`openProject` ~771, `openProjectInternal` ~794), `Gui/SequenceFileDialog.h/.cpp` (`openSelectedFiles` ~1429, `setDefaultFilter` ~1894), `Gui/Gui50.cpp` (~1170, 1265), `Gui/GuiAppInstance.cpp` (~363, 1231)
+  - approach: (1) capture a gdb backtrace of the crash from `M16-ba521118c` under Xvfb and record it in ## Decisions; (2) call `classifyOpenTarget` before `isGraphWorthLess`/`newAppInstance` — on failure one error dialog and return, no reset, no new window, no recent-files entry; (3) the default filter becomes `*.ntpz project.yaml`; (4) Open with a selected folder containing `project.yaml` opens it, double-click still navigates; (5) drag-dropping a folder opens it; (6) recent files store the folder path.
+  - verify: P9.T8.
+  - size: M
+
+- [ ] M16.P9.T6 — Save and Save As for folder projects
+  - files: `Gui/Gui20.cpp` (`saveProject` ~868, `saveProjectAs` ~898, 923), `Engine/Project.h/.cpp`, `Engine/ProjectPrivate.h`
+  - approach: Save writes `<parent>/<folder>.ntpz`, never into the folder. If that file exists on the first save, ask "Replace test.ntpz?" (Replace / Save As… / Cancel). After a successful save `loadedFromFolder` clears and the `.ntpz` goes into recent files. Save As opens in `<parent>` with `<folder>.ntpz` pre-filled if the dialog supports it.
+  - verify: P9.T8.
+  - size: M
+
+- [ ] M16.P9.T7 — Regression ctests and tools
+  - files: new `Tests/Serialization/ProjectOpen_Test.cpp`, `Tests/CMakeLists.txt`, `Tests/Serialization/BundleLoad_Test.cpp` (~611, 645), `tools/ci/smoke_test.py` (~804, 947), `tools/bench/comps/build_comps.py` (~40-50, folder layout)
+  - approach: round-trips — (1) Natron-written with the folder layout; (2) a Python `zipfile` deflated re-zip without mimetype, at the root, with a stale manifest → loads with one warning; (3) `zip -r test.ntpz test/` (directory entries) → loads, also after renaming the file; (4) folder open and `project.yaml` open; (5) `.ntp` XML → the legacy message, a `.png` → "not a Natron project", no reset (a probe node survives). Graphs compared with `ProjectEquivalence`.
+  - verify: compiled and run at P9.T9.
+  - size: M
+
+- [ ] M16.P9.T8 — Xvfb GUI check of File>Open
+  - files: new `Tests/gui/m16_open_errors.py` (run with `Tests/gui/run-gui-test.sh`)
+  - approach: seed `checkForUpdates=false`. Trigger `actionOpen_project`, find the `SequenceFileDialog` via `activeModalWidget`, type a `.ntp` path and accept: one error dialog with the legacy text, process alive, graph unchanged, no recent-files entry. Repeat with a non-empty graph (no new window), a `.png`, a folder, and a folder Save (`.ntpz` beside it).
+  - verify: passes against the P9.T9 fast AppImage; screenshots shared.
+  - size: M
+
+- [ ] M16.P9.T9 — Format doc, MIME and build checkpoint
+  - files: `docs/project-format.md` (layout, T3's reader policy, folder open and save, hand-repair is `unzip`, edit, `zip -r` or any zip tool), `Gui/Resources/Mime/x-natron.xml` (magic → range match on `/mimetypeapplication/vnd.natron.project+zip` over offsets 30–330, or glob only if shared-mime-info rejects it), `tools/bench/comps/*.ntpz`, `Tests/fixtures/read-time-offset.ntpz` (regenerated by script, never by hand)
+  - approach: syntax-check, push, `tools/ci/remote/build.sh debug --tests`, then `fast`, then P9.T8.
+  - verify: ctest and smoke green; `xmllint --noout` and `update-mime-database` on a temp copy give `application/x-natron` for a renamed `.ntpz`.
+  - size: M
+
+- [ ] M16.P9.T10 — Release AppImage and UAT round 2
+  - files: `build/appimages/M16-<sha>.AppImage`, `build/appimages/M16-uat.md`
+  - approach: `package.sh` and the launch check. New UAT steps: the `.ntp` and `.png` error dialogs with no crash; `unzip` → a `test/` folder; an edit plus a Python re-zip; folder open and Save; a renamed file. Stop for the user.
+  - verify: the user signs off.
+  - size: M
+
+**Verification gate:** full `tools/ci/local/test.sh ctest debug` and `smoke debug` green, and P9's lenient-reader, folder-open and refusal tests (P9.T7) and the File>Open Xvfb check (P9.T8) pass, and the user signs off UAT round 2.
 CI `format`, `lint-ci` and `build-and-test` green. The regenerated fixtures and comps are
 `.ntpz` bundles. The dangling, order, robustness and old-format refusal tests pass (P5.T2).
 The roto and tracker bundle round-trip is bit-exact (P5.T3). The one-off benchmark shows at

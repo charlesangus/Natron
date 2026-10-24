@@ -92,6 +92,12 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
   - verify: the script's file-dialog section previews a scanline and a tiled EXR with no error; a normal Read of the same files renders; ctest green.
   - size: M
 
+- [ ] M138.P4.T3 — Creating a Read on a deep EXR creates a DeepRead
+  - files: the Read creation paths — `Gui/Gui40.cpp` (drag-drop), File>Import / `Gui` create-reader helpers, `Engine/NativeRead.cpp` or the create-time file pick (`NativeRead::onEffectCreated`), using `AppManager::getReaderPluginIDForFile`
+  - approach: wherever a reader node is created for a file (import dialog, drag-drop, a new Read's create-time file dialog), resolve the plugin with `getReaderPluginIDForFile` so a deep EXR creates a DeepRead. A Read whose file knob is later changed to a deep file keeps the clear error.
+  - verify: the M138 GUI script imports and drag-drops a deep EXR and gets a DeepRead whose viewer shows the image; a flat EXR still gets a Read.
+  - size: M
+
 - [ ] M138.P4.T2 — Build, Xvfb re-run and UAT AppImage
   - files: none
   - approach: fast build with tests, the M138 GUI scripts under Xvfb, `package.sh`, and an AppImage for the user to re-check the EXR preview.
@@ -115,3 +121,5 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
 - 2026-10-24 — Also found and folded into P1.T2 (same file): the "Look in" combo connects the Qt5-only `activated(QString)` (`:289`), so choosing a folder there does nothing; Forward into a folder deleted after Back advances `_currentHistoryLocation` before `setDirectory` fails (`:1306-1312`).
 - 2026-10-24 — **All tasks verified on fast build b9095c319+b90f877b7 (remote, 334/334 ctest):** `m138_papercuts.py` 57 PASS / 0 FAIL (file-dialog 26: ▶ shows the PNG in the dialog, toggles off, works after reopen; placement; picker-defaults 24), `m69_cleanup.py` 413 PASS / 0 FAIL. Code: P2 71fbf663d, P3 13e650a33, P1.T1 9cca3b082 + cb2502fca, P1.T2 b9095c319, script fixes b90f877b7. The ▶ fix: the shared preview viewer joins the dialog before its window exists (Qt 6 recreates a shown window when a GL widget first joins it, which hid the modal dialog), `ViewerGL` releases its GL objects and `TextRenderer` atlases on `aboutToBeDestroyed` and skips uploads while context-less. Other GL widgets' `TextRenderer`s went to the inbox.
 - 2026-10-24 — **UAT feedback (user):** everything OK except the ▶ preview, which now works for JPG but fails for EXR ("Natron_File_Dialog_Preview_Provider_Reader error: called OpenEXRInput::read_native_tiles without an open file"). Added Phase 138.4; resumed in a sixth lane (user asked to keep every milestone in flight).
+- 2026-10-24 — **P4.T1 root cause:** the EXR was deep. `OiioReadSupport::decode` called OIIO's flat tile/scanline read on a deep part, which OIIO reports as "read_native_tiles without an open file". The preview now picks the reader per file (`AppManager::getReaderPluginIDForFile`: DeepRead for a deep first part), and a plain Read refuses deep data with a clear message. **User decision:** every Read creation path (dialog, drag-drop, the Read node's file pick at creation) creates a DeepRead for a deep EXR; a Read whose file is later changed to a deep EXR shows the clear error. Added as P4.T3.
+

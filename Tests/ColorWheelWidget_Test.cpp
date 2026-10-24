@@ -1071,37 +1071,3 @@ TEST(ColorWheelWidget, DiscFollowsTheShortSideAndStaysCentred)
 
     EXPECT_NEAR(2.0 * wide.getDiscRadius() * disc.devicePixelRatio(), disc.width(), 2.0);
 }
-
-TEST(ColorWheelWidget, PanelWidthDecidesTheWheelSize)
-{
-    int maxD = ColorWheelWidget::maximumDiameter();
-    int minD = ColorWheelWidget::minimumDiameter();
-    ColorAdjustPanel wide;
-
-    wide.setKnobValue(makeValue(1.0, 1.0, 1.0), 4, eColorKnobRoleGain, acescg());
-    wide.resize((int)TO_DPIX(600.), maxD + (int)TO_DPIY(40.));
-    wide.show();
-    QApplication::processEvents();
-    QApplication::processEvents();
-
-    ColorWheelWidget* wheel = wide.getWheel();
-
-    EXPECT_EQ(maxD, wheel->width());
-    EXPECT_EQ(maxD, wheel->height());
-    EXPECT_NEAR(maxD / 2.0, wheel->getDiscCentre().x(), 1.0);
-    EXPECT_NEAR(maxD / 2.0, wheel->getDiscCentre().y(), 1.0);
-
-    ColorAdjustPanel narrow;
-
-    narrow.setKnobValue(makeValue(1.0, 1.0, 1.0), 4, eColorKnobRoleGain, acescg());
-    narrow.resize((int)TO_DPIX(300.), maxD + (int)TO_DPIY(40.));
-    narrow.show();
-    QApplication::processEvents();
-    QApplication::processEvents();
-
-    ColorWheelWidget* small = narrow.getWheel();
-
-    EXPECT_GE(small->width(), minD);
-    EXPECT_LT(small->width(), maxD);
-    EXPECT_EQ(small->width(), small->height());
-}

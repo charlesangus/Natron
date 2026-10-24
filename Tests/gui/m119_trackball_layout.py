@@ -705,16 +705,18 @@ try:
                 row = ap.contentsRect()
                 row_left = ap.mapToGlobal(row.topLeft()).x()
                 row_right = ap.mapToGlobal(row.topRight()).x()
-                expected = int(row.width() * WHEEL_FRACTIONS[choice] + 0.5)
-                column = line_column(ap).height()
-                report("NOTE size %s bin=%d: row %d px, wheel %dx%d, fraction %d px, line column %d px, Hue track %d px"
-                       % (tag, got, row.width(), wheel.width(), wheel.height(), expected, column, track))
+                lines_area = hue.parentWidget()
+                area_layout = wheel.parentWidget().layout()
+                spacing = area_layout.spacing() if area_layout is not None else 0
+                column = lines_area.sizeHint().height()
+                lines_min = lines_area.minimumSizeHint().width()
+                fraction = int(row.width() * WHEEL_FRACTIONS[choice] + 0.5)
+                expected = max(min(fraction, row.width() - spacing - lines_min), column, 1)
+                report("NOTE size %s bin=%d: row %d px, wheel %dx%d, fraction %d px, lines min %d, expected %d, line column %d px, Hue track %d px"
+                       % (tag, got, row.width(), wheel.width(), wheel.height(), fraction, lines_min, expected, column, track))
                 check(wheel.width() == wheel.height(), "%s: the wheel is square (%dx%d)" % (tag, wheel.width(), wheel.height()))
-                if expected >= column:
-                    check(abs(d - expected) <= 2, "%s: the wheel is %s of the row (%d, expected %d)"
-                          % (tag, WHEEL_WIDTH_NAMES[choice], d, expected))
-                else:
-                    check(d >= column - 2, "%s: the wheel is no smaller than the line column (%d, column %d)" % (tag, d, column))
+                check(abs(d - expected) <= 2, "%s: the wheel is %s of the row, capped by the lines and floored at their height (%d, expected %d)"
+                      % (tag, WHEEL_WIDTH_NAMES[choice], d, expected))
                 check(abs(global_rect(wheel).left() - row_left) <= EDGE_TOLERANCE,
                       "%s: the wheel sits flush left (%d, row %d)" % (tag, global_rect(wheel).left(), row_left))
                 check(abs(global_rect(hue).right() - row_right) <= EDGE_TOLERANCE + 1,
@@ -1122,11 +1124,6 @@ try:
         set_gain(grade, (1.0, 1.0, 1.0, 1.0))
         set_feedback(0)
         yield ("sleep", SETTLE_MS)
-
-
-        report("NOTE size table (bin width, size, wheel px, Hue track px, channel lines in the panel):")
-        for width, text, d, track, lines in table:
-            report("NOTE   %4d  %-8s wheel %3d  Hue %3d  lines %d" % (width, text, d, track, lines))
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

@@ -1,7 +1,7 @@
-// Resampler::resampleRow for affine inverse matrices: the ten filters of Resampler::filter1D,
-// Resampler::interpolate and Resampler::interpolateSuper (supersampling and the box integration),
-// reading the source from a storage buffer. resample_main samples one matrix; resample_blur_main
-// averages several per pixel as Resampler::motionBlurPixel does. Sample positions are carried in two
+// Resampler::resampleRow for affine and projective inverse matrices: the ten filters of
+// Resampler::filter1D, Resampler::interpolate and Resampler::interpolateSuper (supersampling and the
+// box integration), reading the source from a storage buffer. resample_main samples one matrix;
+// resample_blur_main averages several per pixel as Resampler::motionBlurPixel does. Sample positions are carried in two
 // floats, so that the filter taps and the integer cells the CPU picks with its double positions are
 // the same here. GpuResampleParams in Engine/Gpu/GpuResample.h mirrors ResampleParams.
 
@@ -15,7 +15,8 @@ StructuredBuffer<uint> blurBuf;
 // The matrix rows (h00 h01 h02) and (h10 h11 h12) are each a double split into hi + lo. `states`
 // holds one byte per Jacobian state (bit 0: x inside, bit 1: y inside): levelX in bits 0-2,
 // levelY in bits 3-5, bit 6 set when that Jacobian is zero. resample_blur_main reads the matrices
-// and their states from blurBuf instead.
+// and their states from blurBuf instead, and so does resample_main under kFlagMatrixInBuffer, which
+// a projective matrix needs: its third row does not fit the push constants.
 struct ResampleParams
 {
     int outX;
@@ -64,6 +65,7 @@ static const uint kFilterNotch = 9;
 static const uint kFlagClamp = 1;
 static const uint kFlagBlackOutside = 2;
 static const uint kFlagSrcValid = 4;
+static const uint kFlagMatrixInBuffer = 8;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Two-float arithmetic: a value is hi + lo with |lo| at most half an ulp of hi.
@@ -626,7 +628,8 @@ float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy,
 
 ///////////////////////////////////////////////////////////////////////////////
 
-// The matrix rows (h00 h01 h02) and (h10 h11 h12), with `states` as in ResampleParams.
+// The matrix rows (h00 h01 h02) and (h10 h11 h12), with `states` as in ResampleParams. A projective
+// matrix also has the row (h20 h21 h22), and its Jacobian and states are worked out per pixel.
 struct Matrix
 {
     FF h00;
@@ -636,7 +639,42 @@ struct Matrix
     FF h11;
     FF h12;
     uint states;
+    bool projective;
+    FF h20;
+    FF h21;
+    FF h22;
 };
+
+// The states byte of Jacobian (Jxx Jxy; Jyx Jyy) as Resampler::supersampleLevels decides it: level n
+// along an axis once the squared norm of its column exceeds 3^(2n - 1), up to 4.
+uint jacobianStates(FF Jxx, FF Jxy, FF Jyx, FF Jyy)
+{
+    if (Jxx.hi == 0.0 && Jxy.hi == 0.0 && Jyx.hi == 0.0 && Jyy.hi == 0.0)
+        return 0x40u;
+    const FF dx = ffAdd(ffMul(Jxx, Jxx), ffMul(Jyx, Jyx));
+    const FF dy = ffAdd(ffMul(Jxy, Jxy), ffMul(Jyy, Jyy));
+    uint levelX = 0;
+    uint levelY = 0;
+    float threshold = 3.0;
+    [ForceUnroll]
+    for (int n = 0; n < 4; ++n)
+    {
+        if (ffLess(ffMake(threshold, 0.0), dx))
+            ++levelX;
+        if (ffLess(ffMake(threshold, 0.0), dy))
+            ++levelY;
+        threshold *= 9.0;
+    }
+    return levelX | (levelY << 3);
+}
+
+// One entry of the Jacobian of (X / Z, Y / Z), as Resampler's samplePixel computes it: (h Z - P g) / Z^2,
+// with h the matrix entry of that row and column, P the row's X or Y, and g the third row's entry in
+// that column.
+FF projectiveJacobian(FF hrc, FF P, FF h2c, FF Z, FF Z2)
+{
+    return ffDiv(ffAdd(ffMul(hrc, Z), ffNeg(ffMul(P, h2c))), Z2);
+}
 
 float4 samplePixel(Matrix m, int x, int y)
 {
@@ -646,8 +684,21 @@ float4 samplePixel(Matrix m, int x, int y)
     const bool clampOn = (rp.flags & kFlagClamp) != 0;
     const float px = float(x) + 0.5;
     const float py = float(y) + 0.5;
-    const FF fx = ffAdd(ffAdd(ffMulF(m.h00, px), ffMulF(m.h01, py)), m.h02);
-    const FF fy = ffAdd(ffAdd(ffMulF(m.h10, px), ffMulF(m.h11, py)), m.h12);
+    const FF X = ffAdd(ffAdd(ffMulF(m.h00, px), ffMulF(m.h01, py)), m.h02);
+    const FF Y = ffAdd(ffAdd(ffMulF(m.h10, px), ffMulF(m.h11, py)), m.h12);
+    const FF zero = ffMake(0.0, 0.0);
+    FF Z = ffMake(1.0, 0.0);
+    FF fx = X;
+    FF fy = Y;
+    if (m.projective)
+    {
+        Z = ffAdd(ffAdd(ffMulF(m.h20, px), ffMulF(m.h21, py)), m.h22);
+        // Behind the camera, or at infinity.
+        if (!ffLess(zero, Z))
+            return float4(0.0, 0.0, 0.0, 0.0);
+        fx = ffDiv(X, Z);
+        fy = ffDiv(Y, Z);
+    }
 
     float4 r;
     if (filter == kFilterImpulse)
@@ -663,10 +714,23 @@ float4 samplePixel(Matrix m, int x, int y)
         xinside = false;
         yinside = false;
     }
-    const FF zero = ffMake(0.0, 0.0);
-    const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
-    return interpolateSuper(filter, clampOn, fx, fy, xinside ? m.h00 : zero, xinside ? m.h01 : zero, yinside ? m.h10 : zero,
-                            yinside ? m.h11 : zero, m.states, state);
+    FF Jxx = xinside ? m.h00 : zero;
+    FF Jxy = xinside ? m.h01 : zero;
+    FF Jyx = yinside ? m.h10 : zero;
+    FF Jyy = yinside ? m.h11 : zero;
+    uint states = m.states;
+    uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
+    if (m.projective)
+    {
+        const FF Z2 = ffMul(Z, Z);
+        Jxx = xinside ? projectiveJacobian(m.h00, X, m.h20, Z, Z2) : zero;
+        Jxy = xinside ? projectiveJacobian(m.h01, X, m.h21, Z, Z2) : zero;
+        Jyx = yinside ? projectiveJacobian(m.h10, Y, m.h20, Z, Z2) : zero;
+        Jyy = yinside ? projectiveJacobian(m.h11, Y, m.h21, Z, Z2) : zero;
+        states = jacobianStates(Jxx, Jxy, Jyx, Jyy);
+        state = 0;
+    }
+    return interpolateSuper(filter, clampOn, fx, fy, Jxx, Jxy, Jyx, Jyy, states, state);
 }
 
 void storePixel(uint3 tid, float4 v)
@@ -683,13 +747,24 @@ void resample_main(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= rp.width || tid.y >= rp.height)
         return;
     Matrix m;
-    m.h00 = ffMake(rp.h00Hi, rp.h00Lo);
-    m.h01 = ffMake(rp.h01Hi, rp.h01Lo);
-    m.h02 = ffMake(rp.h02Hi, rp.h02Lo);
-    m.h10 = ffMake(rp.h10Hi, rp.h10Lo);
-    m.h11 = ffMake(rp.h11Hi, rp.h11Lo);
-    m.h12 = ffMake(rp.h12Hi, rp.h12Lo);
-    m.states = rp.states;
+    if ((rp.flags & kFlagMatrixInBuffer) != 0)
+    {
+        m = blurMatrix(0);
+    }
+    else
+    {
+        m.h00 = ffMake(rp.h00Hi, rp.h00Lo);
+        m.h01 = ffMake(rp.h01Hi, rp.h01Lo);
+        m.h02 = ffMake(rp.h02Hi, rp.h02Lo);
+        m.h10 = ffMake(rp.h10Hi, rp.h10Lo);
+        m.h11 = ffMake(rp.h11Hi, rp.h11Lo);
+        m.h12 = ffMake(rp.h12Hi, rp.h12Lo);
+        m.states = rp.states;
+        m.projective = false;
+        m.h20 = ffMake(0.0, 0.0);
+        m.h21 = ffMake(0.0, 0.0);
+        m.h22 = ffMake(1.0, 0.0);
+    }
     storePixel(tid, samplePixel(m, rp.outX + int(tid.x), rp.outY + int(tid.y)));
 }
 
@@ -700,10 +775,10 @@ void resample_main(uint3 tid : SV_DispatchThreadID)
 
 // The header: matrix count, minimum samples, maximum samples, the seed's offset
 // (unsigned(0x10000 * motionBlur)), the squared maximum error as hi and lo float bits, and 1 when the
-// matrices are weighted. A matrix: hi of h00 h01 h02 h10 h11 h12, then their lo, its states, and its
-// weight as hi and lo float bits.
+// matrices are weighted. A matrix: hi of h00 h01 h02 h10 h11 h12, then their lo, its states, its
+// weight as hi and lo float bits, 1 when it is projective, then hi of h20 h21 h22 and their lo.
 static const uint kBlurHeaderWords = 8;
-static const uint kBlurMatrixWords = 16;
+static const uint kBlurMatrixWords = 22;
 
 uint motionBlurHash(uint a)
 {
@@ -733,6 +808,10 @@ Matrix blurMatrix(uint t)
     m.h11 = ffMake(asfloat(blurBuf[base + 4]), asfloat(blurBuf[base + 10]));
     m.h12 = ffMake(asfloat(blurBuf[base + 5]), asfloat(blurBuf[base + 11]));
     m.states = blurBuf[base + 12];
+    m.projective = blurBuf[base + 15] != 0;
+    m.h20 = ffMake(asfloat(blurBuf[base + 16]), asfloat(blurBuf[base + 19]));
+    m.h21 = ffMake(asfloat(blurBuf[base + 17]), asfloat(blurBuf[base + 20]));
+    m.h22 = ffMake(asfloat(blurBuf[base + 18]), asfloat(blurBuf[base + 21]));
     return m;
 }
 

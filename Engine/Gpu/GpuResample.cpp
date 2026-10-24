@@ -15,6 +15,7 @@ namespace {
     constexpr uint32_t kFlagClamp = 1;
     constexpr uint32_t kFlagBlackOutside = 2;
     constexpr uint32_t kFlagSrcValid = 4;
+    constexpr uint32_t kFlagMatrixInBuffer = 8;
 
     GpuStatus invalid(const char* what)
     {
@@ -41,7 +42,7 @@ namespace {
 
     // Mirrors kBlurHeaderWords and kBlurMatrixWords in Kernels/resample.slang.
     constexpr uint32_t kBlurHeaderWords = 8;
-    constexpr uint32_t kBlurMatrixWords = 16;
+    constexpr uint32_t kBlurMatrixWords = 22;
 
     // updateBuffer's limit per call.
     constexpr std::size_t kUpdateChunkBytes = 65536;
@@ -76,6 +77,11 @@ namespace {
             return invalid("the Jacobian with both axes outside must be zero");
         }
         for (double v : m.matrix) {
+            if (!std::isfinite(v)) {
+                return invalid("the matrix is not finite");
+            }
+        }
+        for (double v : m.perspective) {
             if (!std::isfinite(v)) {
                 return invalid("the matrix is not finite");
             }
@@ -116,6 +122,12 @@ namespace {
             splitDouble(m.weight, hi, lo);
             w[13] = floatBits(hi);
             w[14] = floatBits(lo);
+            w[15] = m.isProjective() ? 1u : 0u;
+            for (int k = 0; k < 3; ++k) {
+                splitDouble(m.perspective[k], hi, lo);
+                w[16 + k] = floatBits(hi);
+                w[19 + k] = floatBits(lo);
+            }
         }
         const std::span<const std::byte> bytes = std::as_bytes(std::span<const uint32_t>(words));
         if (GpuStatus s = ctx.scratch(bytes.size(), out); !s) {
@@ -186,7 +198,7 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     // An invalid source is never read, but the binding still needs a buffer, and so does the
     // matrices' binding when they travel in the push constants.
     const GpuBuffer* src = srcValid ? r.src.buffer : r.dst.buffer;
-    if (!blurred) {
+    if (!blurred && !r.matrices[0].isProjective()) {
         const GpuResampleMatrix& m = r.matrices[0];
         for (int k = 0; k < 6; ++k) {
             splitDouble(m.matrix[k], p.hHi[k], p.hLo[k]);
@@ -195,9 +207,15 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
         return ctx.dispatch(GpuKernelId::resample, { src, r.dst.buffer, r.dst.buffer }, p, { p.width, p.height, 1 });
     }
 
+    // A projective matrix's third row does not fit the push constants: one alone is read from the
+    // matrices' buffer too.
     GpuBuffer* matrices = nullptr;
     if (GpuStatus s = uploadBlurMatrices(ctx, r, matrices); !s) {
         return s;
+    }
+    if (!blurred) {
+        p.flags |= kFlagMatrixInBuffer;
+        return ctx.dispatch(GpuKernelId::resample, { src, r.dst.buffer, matrices }, p, { p.width, p.height, 1 });
     }
     return ctx.dispatch(GpuKernelId::resample_blur, { src, r.dst.buffer, matrices }, p, { p.width, p.height, 1 });
 }

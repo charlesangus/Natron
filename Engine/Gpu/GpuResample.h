@@ -48,13 +48,22 @@ struct GpuResampleJacobian {
     uint32_t levelY = 0;
 };
 
-// One destination-to-source pixel matrix, rows (m[0] m[1] m[2]) and (m[3] m[4] m[5]), with its
-// Jacobians indexed by which axes sample inside the source: bit 0 x, bit 1 y; entry 0 must be zero.
-// weight is only read by a weighted blur.
+// One destination-to-source pixel matrix, rows (m[0] m[1] m[2]) and (m[3] m[4] m[5]) and the third
+// row `perspective`, with its Jacobians indexed by which axes sample inside the source: bit 0 x,
+// bit 1 y; entry 0 must be zero. A third row other than (0, 0, 1) makes the matrix projective, sampled
+// as Resampler's samplePixel does: divided by z, zero where z <= 0, with the Jacobian and its
+// supersampling worked out per pixel, so `jacobians` is not read. weight is only read by a weighted
+// blur.
 struct GpuResampleMatrix {
     std::array<double, 6> matrix {};
+    std::array<double, 3> perspective { 0., 0., 1. };
     std::array<GpuResampleJacobian, 4> jacobians {};
     double weight = 1.;
+
+    bool isProjective() const
+    {
+        return perspective[0] != 0. || perspective[1] != 0. || perspective[2] != 1.;
+    }
 };
 
 // How Resampler::motionBlurPixel samples: the minimum and maximum samples per pixel, the standard
@@ -68,7 +77,7 @@ struct GpuResampleBlur {
     bool weighted = false;
 };
 
-// Resampler::resampleRow over `output` for affine inverse matrices. One matrix resamples it
+// Resampler::resampleRow over `output` for affine or projective inverse matrices. One matrix resamples it
 // directly; several are averaged per pixel as Resampler::motionBlurPixel does, with `blur`. filter
 // is the Resampler::FilterEnum value; clamp is only honoured by the filters that clamp on the CPU,
 // which the caller decides. A source without a buffer, or with empty bounds, renders zeros.

@@ -190,8 +190,8 @@ StatusEnum resampleTransform(EffectInstance& effect,
 /**
  * @brief Whether recordResampleGpu() can render request through plan for query: a matrix-form
  * request, a plan the GPU stages run (canRunStagesGpu()), no transform concatenated into the
- * source, and sampling matrices at the query's time, view and scale that are all affine and no
- * more than the kernel takes. Motion and directional blur are accepted. Depends only on the
+ * source, and sampling matrices at the query's time, view and scale that are all finite (affine
+ * or projective) and no more than the kernel takes. Motion and directional blur are accepted. Depends only on the
  * query and the node's settings, so placement and recording agree.
  **/
 bool canRecordResampleGpu(const EffectInstance& effect,

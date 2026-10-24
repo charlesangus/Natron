@@ -77,7 +77,8 @@ public:
 
     // A relative drag moves this many range units per pixel (before the gear) when it is
     // positive, so a slider can share a gesture rate with the wheel locks and the global mode;
-    // zero or less spreads the range over the track width instead, so the rate follows the size.
+    // zero or less spreads the range over the track width instead, so the rate follows the size
+    // down to the minimum track length, below which it stays at that length's rate.
     void setRelativeRatePerPixel(double unitsPerPixel);
     double relativeRatePerPixel() const;
 

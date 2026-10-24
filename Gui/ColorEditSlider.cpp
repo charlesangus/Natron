@@ -415,7 +415,9 @@ ColorEditSlider::mouseMoveEvent(QMouseEvent* e)
         Q_EMIT gestureMoved(_imp->value, true, label);
     } else {
         double g = gear(modifierHasControl(e), modifierHasShift(e));
-        double perPixel = (_imp->relativeRate > 0.) ? _imp->relativeRate : (rng.rangeMax - rng.rangeMin) / w;
+        // A cramped track still spreads the range over at least kMinTrackPx, so a squeezed
+        // panel never turns a short nudge into a jump of the whole range.
+        double perPixel = (_imp->relativeRate > 0.) ? _imp->relativeRate : (rng.rangeMax - rng.rangeMin) / std::max(w, TO_DPIX(kMinTrackPx));
         double delta = (x - _imp->dragLastX) * perPixel * g;
         _imp->value += delta;
         Q_EMIT gestureMoved(delta, false, label);

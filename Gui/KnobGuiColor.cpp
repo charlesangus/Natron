@@ -766,6 +766,10 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
         if (columnWidget) {
             activateLayoutsUpToInclusive(columnWidget, topWidget);
         }
+        // Shown at its settled width, the panel may rearrange its own lines and change height.
+        if (expanded && !binTop) {
+            activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
+        }
     }
     _adjustPanelInBin = expanded && binTop;
     refreshAdjustPanelToolTip(expanded);
@@ -989,6 +993,9 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
                 if (_adjustPanel->parentWidget()) {
                     activateLayoutsUpToInclusive(_adjustPanel->parentWidget(), topWidget);
                 }
+                // The panel's new width can rearrange its own lines (the Vertical style wraps
+                // them below the wheel), which changes its height in turn.
+                activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
             }
         };
         // Nothing is on screen yet, so the first pass needs no settling.
@@ -996,8 +1003,17 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         QObject::connect(_adjustPanel.data(), &ColorAdjustPanel::layoutApplied, this, [this, applyPanelBounds]() {
             applyPanelBounds(true);
             // A Placement switch moves an open ▾'s editing between this column and the bin top.
+            // The bin top holds one knob, so going there with several ▾ open keeps the one
+            // openKnobToBind() picks, whatever order the knobs hear the switch in, and closes
+            // the rest.
             if (isAdjustPanelExpanded() && (binTopPlacement() != _adjustPanelInBin)) {
-                onAdjustPanelToggled(true);
+                KnobGuiColor* pick = binTopPlacement() ? ColorTrackballBinPanel::openKnobToBind(getGui()) : 0;
+
+                if (pick && (pick != this)) {
+                    setAdjustPanelExpanded(false);
+                } else {
+                    onAdjustPanelToggled(true);
+                }
             } else {
                 refreshAdjustPanelToolTip(isAdjustPanelExpanded());
             }

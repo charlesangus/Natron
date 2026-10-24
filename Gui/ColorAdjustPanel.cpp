@@ -275,6 +275,8 @@ struct ColorAdjustPanelPrivate {
     SpinBox* spinBoxes[kLineCount];
     ScaleSliderQWidget* sliders[kLineCount];
     ColorEditSlider* customSliders[kLineCount];
+    int spinBoxWidths[kLineCount]; // each field's natural width, from applyRanges()
+    bool columnsWrapped; // Vertical style: the columns sit below the wheel instead of beside it
 
     SourceEnum source;
     int activeSlider;
@@ -304,6 +306,7 @@ struct ColorAdjustPanelPrivate {
         , editArea(nullptr)
         , linesLayout(nullptr)
         , wheel(nullptr)
+        , columnsWrapped(false)
         , source(eSourceNone)
         , activeSlider(-1)
         , started(false)
@@ -319,6 +322,7 @@ struct ColorAdjustPanelPrivate {
             spinBoxes[i] = nullptr;
             sliders[i] = nullptr;
             customSliders[i] = nullptr;
+            spinBoxWidths[i] = 0;
         }
     }
 
@@ -340,6 +344,7 @@ struct ColorAdjustPanelPrivate {
     void rebuildEditArea();
     void applyPendingLayout();
     void updateWheelSize();
+    void placeColumns(bool wrapped);
 
     int sliderIndex(const QObject* s) const;
     int spinBoxIndex(const QObject* s) const;
@@ -498,9 +503,41 @@ ColorAdjustPanelPrivate::buildColumns()
         spinBoxes[i] = box;
         sliders[i] = slider;
     }
+    columnsWrapped = false;
     linesLayout->setContentsMargins(0, 0, rightInset, 0);
     areaLayout->addLayout(linesLayout, 0);
     areaLayout->addStretch(1);
+}
+
+// Vertical style only: beside the wheel, each column's caption, track and field sit in rows
+// 0 to 2 and the wheel in row 1, column 0; wrapped, the wheel takes row 0 across all the
+// columns and the lines move down a row under it. Rows and columns left empty take no space.
+void
+ColorAdjustPanelPrivate::placeColumns(bool wrapped)
+{
+    if (wrapped == columnsWrapped) {
+        return;
+    }
+    columnsWrapped = wrapped;
+
+    const int firstRow = wrapped ? 1 : 0;
+
+    linesLayout->removeWidget(wheel);
+    if (wrapped) {
+        linesLayout->addWidget(wheel, 0, 1, 1, kLineCount, Qt::AlignLeft | Qt::AlignTop);
+    } else {
+        linesLayout->addWidget(wheel, 1, 0, Qt::AlignLeft | Qt::AlignTop);
+    }
+    for (int i = 0; i < kLineCount; ++i) {
+        int column = i + 1;
+
+        linesLayout->removeWidget(captions[i]);
+        linesLayout->removeWidget(sliders[i]);
+        linesLayout->removeWidget(spinBoxes[i]);
+        linesLayout->addWidget(captions[i], firstRow, column, Qt::AlignHCenter);
+        linesLayout->addWidget(sliders[i], firstRow + 1, column, Qt::AlignHCenter | Qt::AlignTop);
+        linesLayout->addWidget(spinBoxes[i], firstRow + 2, column, Qt::AlignHCenter);
+    }
 }
 
 void
@@ -545,6 +582,9 @@ ColorAdjustPanelPrivate::rebuildEditArea()
 
     buildEditArea();
     mainLayout->addWidget(editArea);
+    // Shown now rather than by the layout's queued show, so the caller's synchronous flush
+    // already measures the new area and the first paint is at the settled height.
+    editArea->show();
     connectEditArea();
     wheel->setBasis(basis);
     wheel->setRole(role);
@@ -579,33 +619,74 @@ ColorAdjustPanelPrivate::applyPendingLayout()
 // The wheel takes what the lines leave once they have a caption, a field and the shortest
 // usable track (never below the slider's own minimum, or the layout would squeeze the wheel
 // back); the wheel itself keeps that within its floor and cap. In the Vertical style the
-// columns need their own width whatever the wheel's size, and their tracks follow the wheel's
-// diameter.
+// wheel takes what the columns leave beside it, and their tracks follow its diameter; see
+// placeColumns() for when they wrap below it.
 void
 ColorAdjustPanelPrivate::updateWheelSize()
 {
     QHBoxLayout* areaLayout = qobject_cast<QHBoxLayout*>(editArea->layout());
 
     if (layout.style == ColorPanelLayout::SliderStyle::Vertical) {
-        int columnsWidth = 0;
+        const int spacing = linesLayout->horizontalSpacing();
+        const int available = q->contentsRect().width() - rightInset;
+        int natural[kLineCount];
+        int narrowest[kLineCount];
+        int naturalTotal = 0;
 
         for (int i = 0; i < kLineCount; ++i) {
-            if (!lineVisible(i)) {
-                continue;
+            int field = (spinBoxWidths[i] > 0) ? spinBoxWidths[i] : spinBoxes[i]->minimumWidth();
+
+            narrowest[i] = std::max(captions[i]->sizeHint().width(), sliders[i]->minimumWidth());
+            natural[i] = std::max(narrowest[i], field);
+            if (lineVisible(i)) {
+                naturalTotal += natural[i] + spacing;
             }
-
-            int column = std::max(captions[i]->sizeHint().width(), std::max(spinBoxes[i]->minimumWidth(), sliders[i]->minimumWidth()));
-
-            columnsWidth += column + linesLayout->horizontalSpacing();
         }
 
-        int available = q->contentsRect().width() - columnsWidth - rightInset;
+        // The wheel never goes below its floor to make room: when the columns do not fit
+        // beside the smallest wheel they wrap below it, where the wheel can take the whole
+        // width, and only then do the fields narrow, widest first, down to their caption
+        // and track.
+        const bool wrapped = (nDims != 1) && (available - naturalTotal < ColorWheelWidget::minimumDiameter());
+        int columnsBudget = naturalTotal;
 
-        wheel->setPreferredDiameter(available);
+        placeColumns(wrapped);
+        if (wrapped) {
+            wheel->setPreferredDiameter(available);
+            columnsBudget = available + spacing;
+        } else {
+            wheel->setPreferredDiameter(available - naturalTotal);
+        }
 
-        int trackHeight = wheel->getPreferredDiameter();
+        int cap = 0;
 
         for (int i = 0; i < kLineCount; ++i) {
+            cap = std::max(cap, natural[i]);
+        }
+        for (; cap > 0; --cap) {
+            int total = 0;
+
+            for (int i = 0; i < kLineCount; ++i) {
+                if (lineVisible(i)) {
+                    total += std::max(narrowest[i], std::min(natural[i], cap)) + spacing;
+                }
+            }
+            if (total <= columnsBudget) {
+                break;
+            }
+        }
+
+        const int trackHeight = wrapped ? ColorWheelWidget::minimumDiameter() : wheel->getPreferredDiameter();
+
+        for (int i = 0; i < kLineCount; ++i) {
+            int field = std::min(natural[i], std::max(narrowest[i], cap));
+
+            if (spinBoxWidths[i] > 0) {
+                field = std::min(field, spinBoxWidths[i]);
+                if (spinBoxes[i]->minimumWidth() != field) {
+                    spinBoxes[i]->setFixedWidth(field);
+                }
+            }
             if (sliders[i]->minimumHeight() != trackHeight) {
                 sliders[i]->setFixedHeight(trackHeight);
             }
@@ -872,7 +953,8 @@ ColorAdjustPanelPrivate::applyRanges()
         int textWidth = std::max(boxMetrics.horizontalAdvance(QString::number(range.rangeMin, 'f', lineDecimals(kind, role))),
                                  boxMetrics.horizontalAdvance(QString::number(range.rangeMax, 'f', lineDecimals(kind, role))));
 
-        spinBoxes[i]->setFixedWidth(textWidth + (int)TO_DPIX(10.));
+        spinBoxWidths[i] = textWidth + (int)TO_DPIX(10.);
+        spinBoxes[i]->setFixedWidth(spinBoxWidths[i]);
         if (kind == eColorSliderKindSat) {
             spinBoxes[i]->setMinimum(0.0);
         }
@@ -1091,6 +1173,9 @@ ColorAdjustPanel::ColorAdjustPanel(QWidget* parent)
     _imp->mainLayout = layout;
     _imp->devBar = ColorPanelLayoutDev::createDevBar(this);
     if (_imp->devBar) {
+        // The bar's row of combo boxes is wider than a default bin: it is clipped rather than
+        // let its width become the panel's minimum and widen the bin.
+        _imp->devBar->setSizePolicy(QSizePolicy::Ignored, _imp->devBar->sizePolicy().verticalPolicy());
         layout->addWidget(_imp->devBar);
     }
     _imp->buildEditArea();

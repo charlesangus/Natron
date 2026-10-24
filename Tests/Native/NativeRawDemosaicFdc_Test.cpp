@@ -211,7 +211,9 @@ TEST_F(NativeRawDemosaicFdcTest, TilesMatchTheFullFrame)
 }
 
 // The hybrid keeps a flat field to float rounding. Pure FDC's 13x13 filters are tabulated to 7
-// digits and do not sum to exactly 0 on a flat field, so its chroma is a few 1e-4 off.
+// digits and do not sum to exactly 0 on a flat field. Measured over all 36 phases of a 50x40
+// patch at 0.35, darktable's own C and this port agree bit for bit: hybrid (ISO 400) deviates by
+// at most 2.98e-8, pure FDC (ISO 3200) by at most 1.2089e-3. The pure tolerance is that x 1.5.
 TEST_F(NativeRawDemosaicFdcTest, AFlatFieldStaysNeutralAtEveryPhase)
 {
     const RectI rod(0, 0, 50, 40);
@@ -223,7 +225,7 @@ TEST_F(NativeRawDemosaicFdcTest, AFlatFieldStaysNeutralAtEveryPhase)
         double iso;
         float tolerance;
     };
-    const Mode modes[] = { { 400., 1e-6f }, { 3200., 1e-3f } };
+    const Mode modes[] = { { 400., 1e-6f }, { 3200., 1.82e-3f } };
     for (const Mode& mode : modes) {
         NodePtr source = createSource(rod, kXTransPattern, 0, 0, mode.iso, flat);
         NodePtr node = createFdc(source);

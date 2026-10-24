@@ -302,7 +302,7 @@ GPU kernels for every new mode go to M81: each new mode returns false from the n
 
 The tasks below are serial within a node, because they share its `.cpp`. Separate nodes can run in parallel lanes, and every task adds its own test file rather than sharing one.
 
-- [ ] M80.P7.T1 — Extend the reference harness to every mode darktable-cli can render
+- [x] M80.P7.T1 — Extend the reference harness to every mode darktable-cli can render
   - files: `tools/raw/make-reference.py`, `tools/raw/make-reference.sh`, `Tests/fixtures/raw/README.md`
   - approach:
     - Add jobs, packing each params struct at the version in its module's `DT_MODULE_INTROSPECTION`:
@@ -660,7 +660,7 @@ Deferred as a display aid: the checker patch-grid and ΔE overlay (`gui_post_exp
 
 Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 run serially, since they share the node's `.cpp`. T32 needs T5 and T14. T36 needs T14 and T32. T37 follows T27 and T28.
 
-- [ ] M80.P7.T29 — Add color calibration jobs to the reference harness
+- [x] M80.P7.T29 — Add color calibration jobs to the reference harness
   - files: `tools/raw/make-reference.py`, `tools/raw/make-reference.sh`, `Tests/fixtures/raw/README.md`
   - approach:
     - Runs after T1 (same files) and before T2. Pack `dt_iop_channelmixer_rgb_params_t` at v3 (`DT_MODULE_INTROSPECTION(3, …)`, channelmixerrgb.c:70): six float[4] rows, six normalize gbooleans, illuminant, illum_fluo, illum_led, adaptation, x, y, temperature, gamut, clip, version. Add it as a `channelmixerrgb` history entry after colorin.

@@ -264,13 +264,41 @@ Re-planned 2026-10-24 from the user's UAT pick (see ## Decisions). T2, T3, T4 an
   - verify: GuiTests: the toggle's icon/text differs between folded and open and matches ▾/▴ (compare against the resources used, or the text glyph); its tooltip changes; clicking it while open folds the panel. T10's script captures both states.
   - size: M
 
-- [ ] M119.P3.T10 — End build, refresh the evidence script to the final layout, and package the approval AppImage
+- [ ] ~~M119.P3.T10 — End build, refresh the evidence script to the final layout, and package the approval AppImage~~ (superseded 2026-10-24: UAT round 2 feedback; the end build moves to M119.P4.T4)
   - files: `Tests/gui/m119_trackball_layout.py`
   - approach: drop every dev-switch and bin-top combination. Capture Regular and Large at default and 2× width; both feedback preferences; S/T/V reveal shots including S mid-drag; T3's HUD pixel check; T4's right-click check; keep the size, undo and no-flash checks. One `fast` build, full ctest, `package.sh`; share screenshots before the AppImage.
   - verify: ctest all green; `results.txt` has no FAIL; the user approves on the AppImage.
   - size: M
 
-**Verification gate:** full ctest green; `Tests/gui/m119_trackball_layout.py` reports no FAIL, and in it the following HUD's on-screen pixels match its own render and a right-click ends global mode with the cursor restored and no context menu; both feedback preferences and both track sizes work live on the AppImage; the wheel is larger than 160 px at the default width in Regular and larger still in Large; the S/T/V discs show the drag result and S follows the value live; the panel toggle shows ▴ while open; no `NATRON_COLOR_PANEL_DEV`, `ColorPanelLayout`, bin-top, vertical-slider or absolute-puck code remains; the user approved on an AppImage.
+## Phase 119.4: Split HUD, perceptual discs, warp-back (UAT round 2)
+
+Design reference: `build/m119-mockup/` in the lane (mockup.py, NOTES.md, hud-{C,S,T,V}.png, colours-before-after.png), approved by the user with the changes recorded under Decisions.
+
+- [ ] M119.P4.T1 — Split the HUD around the disc and retire the square HUD
+  - files: the global-mode HUD and reveal classes (`Gui/ColorTrackballGlobalMode.cpp`, `Gui/ColorTrackballReveal.cpp`, the HUD class), `Tests/ColorTrackballReveal_Test.cpp` or the HUD's test
+  - approach: direction labels as small dark rounded pills 6 px outside the outer ring, where each direction acts — S: +Hue right, −Hue left, +Sat top, −Sat bottom; T: Warmer right, Cooler left, Less green top, Greener bottom; V: +Val right and top, −Val left and bottom; C: no direction labels. Below the disc one block: knob name only (no node name), the C/S/T/V key caps with the active one lit, the gearing hints with the held modifier lit, and "Esc/Enter: accept   Ctrl+up/down: switch knob". No live readouts. The square following HUD is retired in both feedback modes. The labels are opaque (no compositor), and the reveal window's mask grows to cover them. The C line, white-point crosshair and pucks stay.
+  - verify: GuiTests: labels per mode with the right text on the right side; no overlap with the ring; the block shows the knob name and not the node name; the square HUD is gone.
+  - size: L
+
+- [ ] M119.P4.T2 — Perceptual disc colours
+  - files: `Gui/ColorModeDiscWidget.{h,cpp}`, `Gui/ColorWheelWidget.cpp` (ring), `Gui/ColorTrackballGlobalMode.cpp:1316` (display conversion source), `Tests/ColorModeDiscWidget_Test.cpp`
+  - approach: per NOTES.md — keep today's maths only to find each direction's hue, rebuild colours in OKLab with set lightness and capped chroma, gamut-map, encode once for display. S reach ±60° (`kHueReachDegrees`), −Sat edge neutral grey. T: four patches with the final constants from NOTES.md (toned down two-thirds back toward the first proposal). V: perceptual grey ramp centred on mid grey reaching its ends exactly at the rim (fixes the clamp at |dx−dy| ≥ 1 and the 0.5 centre, `ColorModeDiscWidget.cpp:198`). The ring change also applies to the properties-panel wheel. When the panel wheel is absent, the disc still gets a display conversion (today it shows raw linear values).
+  - verify: GuiTests: S rim ±60°±3°; T warm right, cool left, magenta top, green bottom with a bounded chroma; V centre is mid-grey's display value and the rim reaches black and white; disc renders through a display conversion with no panel wheel.
+  - size: L
+
+- [ ] M119.P4.T3 — Cursor warps back to the stroke's start on release
+  - files: `Gui/ColorTrackballGlobalMode.cpp` (`handleMousePress` ~:1390, release/`endStroke`)
+  - approach: record the press position before any edge warp; after `endStroke()` on a real release, `QCursor::setPos` back there in both feedback modes and swallow the synthetic move; the reveal stays put. Keep today's behaviour where the platform refuses the move, and don't warp when the stroke ends by losing the grab.
+  - verify: GuiTests or the evidence script: after a drag and release the cursor is at the press position and the reveal did not move.
+  - size: M
+
+- [ ] M119.P4.T4 — Build, evidence script and approval AppImage
+  - files: `Tests/gui/m119_trackball_layout.py`
+  - approach: update the script to the split HUD (per-mode label checks and shots, warp-back check, perceptual colour probes); one fast build with tests; Xvfb run; share screenshots, then the AppImage.
+  - verify: ctest green; results.txt no FAIL; the user approves on the AppImage.
+  - size: M
+
+**Verification gate:** full ctest green; `Tests/gui/m119_trackball_layout.py` reports no FAIL, and in it the split HUD labels sit outside the ring per mode, the cursor returns to the stroke's start on release, and a right-click ends global mode with the cursor restored and no context menu; both feedback preferences and both track sizes work live on the AppImage; the wheel is larger than 160 px at the default width in Regular and larger still in Large; the S/T/V discs show the drag result and S follows the value live; the panel toggle shows ▴ while open; no `NATRON_COLOR_PANEL_DEV`, `ColorPanelLayout`, bin-top, vertical-slider or absolute-puck code remains; the user approved on an AppImage.
 
 ## Decisions
 

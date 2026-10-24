@@ -447,3 +447,38 @@ TEST_F(NativeRawDemosaicCaptureTest, TheFixturesGiveDarktablesAutomaticRadius)
         EXPECT_NEAR(e.radius, *radius, 1e-2) << e.fixture.file;
     }
 }
+
+// The automatic radius and the full green equilibration ratio are kept across renders of the
+// frame, and Clear Caches drops them, so the next render measures them again; the radius last
+// measured is still reported in between.
+TEST_F(NativeRawDemosaicCaptureTest, ClearCachesDropsTheFrameMeasurements)
+{
+    const RectI rod(0, 0, 200, 150);
+    NodePtr node = createChain(rod, "RGGB", 800., blurredScene);
+    ASSERT_TRUE(bool(node));
+    KnobChoicePtr greenEq = node->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawDemosaicParamGreenEq);
+    ASSERT_TRUE(bool(greenEq));
+    greenEq->setValue((int)eRawDemosaicGreenEqFull);
+
+    const FrameComputedCounter computed;
+    // Emptying the node cache makes each window render, and leaves the node's own results.
+    const auto renderWindow = [&node](const RectI& window) {
+        appPTR->clearNodeCache();
+        RenderedPlane plane;
+        std::string error;
+        EXPECT_TRUE(renderRawTestPlane(node, window, &plane, &error, false)) << error;
+    };
+    renderWindow(fromTopLeft(rod, 0, 0, 16, 16));
+    renderWindow(fromTopLeft(rod, 150, 120, 20, 20));
+    EXPECT_EQ(1, computed.count(kRawDemosaicFrameCaptureRadius));
+    EXPECT_EQ(1, computed.count(kRawDemosaicFrameGreenRatio));
+    const std::optional<double> radius = demosaicOf(node)->lastAutoCaptureRadius();
+    ASSERT_TRUE(bool(radius));
+
+    node->purgeAllInstancesCaches();
+    EXPECT_EQ(radius, demosaicOf(node)->lastAutoCaptureRadius());
+    renderWindow(fromTopLeft(rod, 80, 60, 16, 16));
+    EXPECT_EQ(2, computed.count(kRawDemosaicFrameCaptureRadius));
+    EXPECT_EQ(2, computed.count(kRawDemosaicFrameGreenRatio));
+    EXPECT_EQ(radius, demosaicOf(node)->lastAutoCaptureRadius());
+}

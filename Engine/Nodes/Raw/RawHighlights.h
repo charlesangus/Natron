@@ -61,6 +61,12 @@
 #define kRawHighlightsParamScales "scales"
 #define kRawHighlightsParamSolidColor "solidColor"
 
+// What RawNodeSupport::noteFrameComputed() names this node's whole-frame computations.
+#define kRawHighlightsFrameOpposedChroma "RawHighlights.opposedChroma"
+#define kRawHighlightsFrameReconstructColor "RawHighlights.reconstructColor"
+#define kRawHighlightsFrameSegments "RawHighlights.segments"
+#define kRawHighlightsFrameLaplacian "RawHighlights.laplacian"
+
 NATRON_NAMESPACE_ENTER
 
 enum RawHighlightsModeEnum {
@@ -135,6 +141,12 @@ public:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Drops the whole-frame results kept under RawNodeSupport::frameKey(), as Clear Caches
+     * and memory pressure ask; the next render computes them again.
+     **/
+    virtual void purgeCaches() OVERRIDE FINAL;
 
 private:
     struct Settings;

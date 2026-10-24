@@ -737,6 +737,18 @@ RawHighlights::~RawHighlights()
 {
 }
 
+void
+RawHighlights::purgeCaches()
+{
+    {
+        std::lock_guard<std::mutex> lock(_chromaMutex);
+        _chromaValid = false;
+    }
+    std::lock_guard<std::mutex> lock(_frameMutex);
+    _frameValid = false;
+    _frame.reset();
+}
+
 const NodeSpec*
 RawHighlights::nodeSpec() const
 {
@@ -1190,6 +1202,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     const auto opposedChromaOf = [&](const ImageView* whole) {
         std::lock_guard<std::mutex> lock(_chromaMutex);
         if (!_chromaValid || (_chromaKey != key)) {
+            RawNodeSupport::noteFrameComputed(kRawHighlightsFrameOpposedChroma, key);
             std::optional<ImageView> own;
             RawNodeSupport::TopDownBuffer ownBuffer;
             if (!whole) {
@@ -1215,6 +1228,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     } else if ((mode == eRawHighlightsModeInpaint) || (mode == eRawHighlightsModeSegments)) {
         std::lock_guard<std::mutex> lock(_frameMutex);
         if (!_frameValid || (_frameKey != key)) {
+            RawNodeSupport::noteFrameComputed((mode == eRawHighlightsModeInpaint) ? kRawHighlightsFrameReconstructColor : kRawHighlightsFrameSegments, key);
             _frame.reset();
             std::optional<ImageView> whole;
             RawNodeSupport::TopDownBuffer wholeBuffer;
@@ -1282,6 +1296,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
         {
             std::lock_guard<std::mutex> lock(_frameMutex);
             if (!_frameValid || (_frameKey != key)) {
+                RawNodeSupport::noteFrameComputed(kRawHighlightsFrameLaplacian, key);
                 _frame.reset();
                 std::optional<ImageView> whole;
                 RawNodeSupport::TopDownBuffer wholeBuffer;

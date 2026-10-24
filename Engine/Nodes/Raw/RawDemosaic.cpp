@@ -228,6 +228,7 @@ RawDemosaic::RawDemosaic(NodePtr node)
     , _captureValid(false)
     , _captureKey(0)
     , _captureRadiusValue(0.)
+    , _lastAutoCaptureRadius()
 {
     setSupportsRenderScaleMaybe(eSupportsNo);
 }
@@ -595,11 +596,18 @@ RawDemosaic::lastAutoCaptureRadius() const
 {
     std::lock_guard<std::mutex> lock(_captureMutex);
 
-    if (!_captureValid) {
-        return std::nullopt;
-    }
+    return _lastAutoCaptureRadius;
+}
 
-    return _captureRadiusValue;
+void
+RawDemosaic::purgeCaches()
+{
+    {
+        std::lock_guard<std::mutex> lock(_greenMutex);
+        _greenValid = false;
+    }
+    std::lock_guard<std::mutex> lock(_captureMutex);
+    _captureValid = false;
 }
 
 void
@@ -950,6 +958,7 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
         {
             std::lock_guard<std::mutex> lock(_captureMutex);
             if (!_captureValid || (_captureKey != key)) {
+                RawNodeSupport::noteFrameComputed(kRawDemosaicFrameCaptureRadius, key);
                 RawKernels::CaptureRadiusArea area;
                 const RectI centre = captureRadiusRect(rod, &area);
                 reliable = area.reliable;
@@ -969,6 +978,9 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
                 _captureKey = key;
                 _captureValid = !cancel.check();
                 measured = _captureValid;
+                if (measured) {
+                    _lastAutoCaptureRadius = radius;
+                }
             }
             capture.radius = (float)_captureRadiusValue;
         }
@@ -1034,6 +1046,7 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
                 {
                     std::lock_guard<std::mutex> lock(_greenMutex);
                     if (!_greenValid || (_greenKey != key)) {
+                        RawNodeSupport::noteFrameComputed(kRawDemosaicFrameGreenRatio, key);
                         RawNodeSupport::TopDownBuffer whole;
                         whole.allocate(rod, 1);
                         RawNodeSupport::readTopDown(source, &whole, parallel);

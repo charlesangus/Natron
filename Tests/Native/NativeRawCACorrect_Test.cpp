@@ -296,3 +296,33 @@ TEST_F(NativeRawCACorrectTest, UnpreparedDataRaisesTheStageError)
     int type = 0;
     EXPECT_EQ(RawMetadata::requireStage(metadata, eRawStagePrepared, node->getLabel()).value_or(std::string()), persistentMessage(node, &type));
 }
+
+// The corrected frame is kept across renders of the frame, and Clear Caches drops it, so the next
+// render corrects the frame again.
+TEST_F(NativeRawCACorrectTest, ClearCachesDropsTheCorrectedFrame)
+{
+    const RectI rod(0, 0, kWidth, kHeight);
+    const ImageMetadata metadata = rawTestMetadata("RGGB", 0, 0, eRawStagePrepared);
+    NodePtr node = createChain(rod, 1, aberratedMosaic(*RawLayout::fromMetadata(metadata)), metadata);
+    ASSERT_TRUE(bool(node));
+
+    const FrameComputedCounter computed;
+    // Emptying the node cache makes each window render, and leaves the node's own results.
+    const auto renderWindow = [&node](const RectI& window) {
+        appPTR->clearNodeCache();
+        RenderedPlane plane;
+        std::string error;
+        EXPECT_TRUE(renderRawTestPlane(node, window, &plane, &error, false)) << error;
+
+        return plane;
+    };
+    const RectI window(100, 80, 164, 128);
+    const RenderedPlane first = renderWindow(window);
+    (void)renderWindow(RectI(kWidth - 64, kHeight - 48, kWidth, kHeight));
+    EXPECT_EQ(1, computed.count(kRawCACorrectFrame));
+
+    node->purgeAllInstancesCaches();
+    const RenderedPlane again = renderWindow(window);
+    EXPECT_EQ(2, computed.count(kRawCACorrectFrame));
+    EXPECT_EQ(first.pixels, again.pixels);
+}

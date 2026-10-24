@@ -61,6 +61,10 @@
 #define kRawDemosaicParamCaptureBoost "captureCornerBoost"
 #define kRawDemosaicParamCaptureCenter "captureSharpCenter"
 
+// What RawNodeSupport::noteFrameComputed() names this node's whole-frame computations.
+#define kRawDemosaicFrameCaptureRadius "RawDemosaic.captureRadius"
+#define kRawDemosaicFrameGreenRatio "RawDemosaic.greenRatio"
+
 NATRON_NAMESPACE_ENTER
 
 enum RawDemosaicBayerMethodEnum {
@@ -133,6 +137,12 @@ public:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Drops the whole-frame results kept under RawNodeSupport::frameKey(), as Clear Caches
+     * and memory pressure ask; the next render computes them again.
+     **/
+    virtual void purgeCaches() OVERRIDE FINAL;
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
 
@@ -251,6 +261,8 @@ private:
     bool _captureValid;
     U64 _captureKey;
     double _captureRadiusValue;
+    // What lastAutoCaptureRadius() reports, which a purge leaves.
+    std::optional<double> _lastAutoCaptureRadius;
 };
 
 NATRON_NAMESPACE_EXIT

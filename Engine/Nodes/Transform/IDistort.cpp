@@ -628,7 +628,8 @@ IDistort::renderOp(const RenderActionArgs& args,
                     }
                 }
                 coordRow(y + 1, uRow.data(), vRow.data(), rows.sx[2].data(), rows.sy[2].data());
-                Resampler::coordJacobians(rows.sx[0].data(), rows.sx[1].data(), rows.sx[2].data(), rows.sy[0].data(), rows.sy[1].data(), rows.sy[2].data(), gridWidth, jacobian.data());
+                Resampler::coordJacobiansWithinBounds(rows.sx[0].data(), rows.sx[1].data(), rows.sx[2].data(), rows.sy[0].data(), rows.sy[1].data(), rows.sy[2].data(),
+                                                      gridX0, y, gridWidth, uvBounds[0], uvBounds[1], 1., 1., jacobian.data());
                 Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, jacobian.data() + 4, width, settings.filter, settings.clamp, settings.blackOutside,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
             }

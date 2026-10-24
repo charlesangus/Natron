@@ -4055,7 +4055,7 @@
 				<UserKnob>0</UserKnob>
 			</item>
 			<item>
-				<Name>transform</Name>
+				<Name>extraMatrix</Name>
 				<Type>Double</Type>
 				<Dimension>9</Dimension>
 				<Secret>1</Secret>

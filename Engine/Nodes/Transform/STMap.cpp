@@ -612,7 +612,8 @@ STMap::renderOp(const RenderActionArgs& args,
                 std::vector<float> jacobian;
                 if (jacobians) {
                     jacobian.resize((std::size_t)4 * n);
-                    Resampler::coordJacobians(&sx[0], &sx[n], &sx[2 * n], &sy[0], &sy[n], &sy[2 * n], n, &jacobian[0]);
+                    Resampler::coordJacobiansWithinBounds(&sx[0], &sx[n], &sx[2 * n], &sy[0], &sy[n], &sy[2 * n], io.x0 - 1, io.y, n,
+                                                          uvPlanes[0].access ? uvPlanes[0].bounds : RectI(), uvPlanes[1].access ? uvPlanes[1].bounds : RectI(), 0., 0., &jacobian[0]);
                 }
                 Resampler::resampleRowFromCoords(source, &sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width,
                                                  settings.filter, settings.clamp, settings.blackOutside, settings.wrapU, settings.wrapV,

@@ -408,6 +408,31 @@ void coordJacobians(const float* sxPrev,
                     int n,
                     float* jacobian);
 
+/**
+ * @brief coordJacobians() for a coordinate map read from U and V images that end, as openfx-misc's
+ * Distortion takes it: where a pixel's U was read from inside uBounds and a neighbour's was not
+ * (it read 0), the neighbour counts as having the pixel's U, so no difference is taken across
+ * the edge of the U image; the same for V, sy and vBounds. With U and V held constant the map
+ * moves by stepX per pixel along x in sx and by stepY per pixel along y in sy: 1 for an offset
+ * map such as IDistort's, 0 for an absolute one such as STMap's. The rows hold pixels x0 to
+ * x0 + n - 1 of rows y - 1, y and y + 1. The row ends and null rows keep coordJacobians()'s
+ * one-sided rules.
+ **/
+void coordJacobiansWithinBounds(const float* sxPrev,
+                                const float* sx,
+                                const float* sxNext,
+                                const float* syPrev,
+                                const float* sy,
+                                const float* syNext,
+                                int x0,
+                                int y,
+                                int n,
+                                const RectI& uBounds,
+                                const RectI& vBounds,
+                                double stepX,
+                                double stepY,
+                                float* jacobian);
+
 ///////////////////////////////////////////////////////////////////////////////
 // Motion blur
 

@@ -29,9 +29,10 @@
 #define PLUGINID_NATRON_CORNERPIN "CornerPin"
 #define PLUGIN_MAJOR_NATRON_CORNERPIN 1
 
-// Tabs holding the "to" points (with their enable flags) and the "from" points.
-#define kCornerPinNodeParamToGroup "to"
-#define kCornerPinNodeParamFromGroup "from"
+// Tabs holding the "to" points (with their enable flags) and the "from" points. Not plain
+// "from": that is a Python keyword, which knob naming silently rewrites to "pFrom".
+#define kCornerPinNodeParamToGroup "toPoints"
+#define kCornerPinNodeParamFromGroup "fromPoints"
 
 // Points, in canonical coordinates. enableN covers both toN and fromN.
 #define kCornerPinNodeParamTo1 "to1"

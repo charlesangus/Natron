@@ -140,6 +140,12 @@ public:
     virtual ~Mirror();
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
+
+    virtual StatusEnum getRegionOfDefinition(U64 hash,
+                                             double time,
+                                             const RenderScale& scale,
+                                             ViewIdx view,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 };
 
 NATRON_NAMESPACE_EXIT

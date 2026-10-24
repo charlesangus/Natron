@@ -91,6 +91,7 @@ const float kClipMagicClip = 1.0f;
 const float kClipMagicLCh = 1.0f;
 const float kClipMagicOpposed = 0.987f;
 const float kClipMagicInpaint = 1.0f;
+const float kClipMagicLaplacian = 0.995f;
 
 const char* const kModeUnavailable = "highlights: mode not available for this type of image. falling back to inpaint opposed.";
 
@@ -118,6 +119,29 @@ recoveryFromIndex(int index)
 
     return ((index >= 0) && (index < count)) ? kRecoveryChoices[index].recovery : RawKernels::eSegmentsRecoveryOff;
 }
+
+struct ScaleChoice {
+    const char* id;
+    const char* label;
+};
+
+// darktable's Diameter of Reconstruction menu; the index is the number of wavelet scales less one.
+const ScaleChoice kLaplacianScaleChoices[] = {
+    { "2px", "2 px" },
+    { "4px", "4 px" },
+    { "8px", "8 px" },
+    { "16px", "16 px" },
+    { "32px", "32 px" },
+    { "64px", "64 px" },
+    { "128px", "128 px (slow)" },
+    { "256px", "256 px (slow)" },
+    { "512px", "512 px (very slow)" },
+    { "1024px", "1024 px (very slow)" },
+    { "2048px", "2048 px (insanely slow)" },
+    { "4096px", "4096 px (insanely slow)" },
+};
+
+const int kLaplacianScaleCount = (int)(sizeof(kLaplacianScaleChoices) / sizeof(kLaplacianScaleChoices[0]));
 
 const float kSqrt3 = (float)1.7320508075688772935274463415058723669L;
 const float kSqrt12 = (float)3.4641016151377545870548926830117447339L;
@@ -629,6 +653,8 @@ rawHighlightsModeRequirement(RawHighlightsModeEnum mode)
     case eRawHighlightsModeInpaint:
     case eRawHighlightsModeSegments:
         return eRawHighlightsRequiresCfa;
+    case eRawHighlightsModeLaplacian:
+        return eRawHighlightsRequiresBayer;
     case eRawHighlightsModeClip:
     case eRawHighlightsModeUnclipped:
     case eRawHighlightsModeOpposed:
@@ -676,6 +702,9 @@ struct RawHighlights::Settings {
     RawKernels::SegmentsRecoveryEnum recovery = RawKernels::eSegmentsRecoveryOff;
     float strength = 0.f;
     float noiseLevel = 0.f;
+    int iterations = 30;
+    int scales = 6;
+    float solidColor = 0.f;
 };
 
 RawHighlights::RawHighlights(NodePtr node)
@@ -688,6 +717,9 @@ RawHighlights::RawHighlights(NodePtr node)
     , _recovery()
     , _strength()
     , _noiseLevel()
+    , _iterations()
+    , _scales()
+    , _solidColor()
     , _message()
     , _chromaMutex()
     , _chromaValid(false)
@@ -732,6 +764,7 @@ RawHighlights::initializeKnobs()
     modes.push_back(ChoiceOption("lch", tr("Reconstruct in LCh").toStdString(), tr("Rebuilds clipped photosites keeping their lightness and scaling their chroma. Inpaint Opposed on data without a colour filter array.").toStdString()));
     modes.push_back(ChoiceOption("inpaint", tr("Reconstruct Color").toStdString(), tr("Rebuilds a clipped photosite from the next photosite of another colour along its row and column, by the colour ratios of the unclipped photosites before it. Inpaint Opposed on data without a colour filter array.").toStdString()));
     modes.push_back(ChoiceOption("segments", tr("Segmentation Based").toStdString(), tr("Inpaint Opposed, then rebuilds each clipped segment of a colour from a candidate found next to it, and can rebuild the areas where every colour is clipped. Inpaint Opposed on data without a colour filter array.").toStdString()));
+    modes.push_back(ChoiceOption("laplacian", tr("Guided Laplacians").toStdString(), tr("Diffuses the colour of the unclipped surroundings into the clipped areas, guided by the details of the channels that are not clipped, on the image at a quarter of its size. Inpaint Opposed on data without a Bayer mosaic.").toStdString()));
     mode->populateChoices(modes);
     mode->setDefaultValue((int)eRawHighlightsModeOpposed);
     mode->setAnimationEnabled(false);
@@ -817,14 +850,49 @@ RawHighlights::initializeKnobs()
     page->addKnob(noiseLevel);
     _noiseLevel = noiseLevel;
 
+    KnobIntPtr iterations = createKnob<KnobInt>(tr("Iterations"));
+    iterations->setName(kRawHighlightsParamIterations);
+    iterations->setHintToolTip(tr("Increase if magenta highlights don't get fully corrected\neach new iteration brings a performance penalty."));
+    iterations->setDefaultValue(30);
+    iterations->setMinimum(1);
+    iterations->setMaximum(256);
+    iterations->setDisplayMinimum(1);
+    iterations->setDisplayMaximum(256);
+    page->addKnob(iterations);
+    _iterations = iterations;
+
+    KnobDoublePtr solidColor = createKnob<KnobDouble>(tr("Inpaint a Flat Color"));
+    solidColor->setName(kRawHighlightsParamSolidColor);
+    solidColor->setHintToolTip(tr("Increase if magenta highlights don't get fully corrected.\nthis may produce non-smooth boundaries between valid and clipped regions."));
+    solidColor->setDefaultValue(0.);
+    solidColor->setMinimum(0.);
+    solidColor->setMaximum(1.);
+    solidColor->setDisplayMinimum(0.);
+    solidColor->setDisplayMaximum(1.);
+    page->addKnob(solidColor);
+    _solidColor = solidColor;
+
+    KnobChoicePtr scales = createKnob<KnobChoice>(tr("Diameter of Reconstruction"));
+    scales->setName(kRawHighlightsParamScales);
+    scales->setHintToolTip(tr("Increase to correct larger clipped areas.\nlarge values bring huge performance penalties"));
+    std::vector<ChoiceOption> diameters;
+    for (const ScaleChoice& choice : kLaplacianScaleChoices) {
+        diameters.push_back(ChoiceOption(choice.id, tr(choice.label).toStdString(), std::string()));
+    }
+    scales->populateChoices(diameters);
+    scales->setDefaultValue(6);
+    scales->setAnimationEnabled(false);
+    page->addKnob(scales);
+    _scales = scales;
+
     refreshOverride();
-    refreshSegmentsVisibility();
+    refreshModeKnobsVisibility();
 }
 
-// darktable's gui_changed(): the segmentation knobs follow the requested method, so they stay put
-// while a source without a CFA makes the node fall back.
+// darktable's gui_changed(): the segmentation and Laplacian knobs follow the requested method, so
+// they stay put while a source the method cannot run makes the node fall back.
 void
-RawHighlights::refreshSegmentsVisibility()
+RawHighlights::refreshModeKnobsVisibility()
 {
     const KnobChoicePtr mode = _mode.lock();
     const KnobChoicePtr recovery = _recovery.lock();
@@ -834,6 +902,7 @@ RawHighlights::refreshSegmentsVisibility()
     }
     const bool useSegmentation = (mode->getValue() == (int)eRawHighlightsModeSegments);
     const bool useRecovery = useSegmentation && (recoveryFromIndex(recovery->getValue()) != RawKernels::eSegmentsRecoveryOff);
+    const bool useLaplacian = (mode->getValue() == (int)eRawHighlightsModeLaplacian);
     if (const KnobIntPtr knob = _combine.lock()) {
         knob->setSecret(!useSegmentation);
     }
@@ -845,7 +914,16 @@ RawHighlights::refreshSegmentsVisibility()
         knob->setSecret(!useRecovery);
     }
     if (const KnobDoublePtr knob = _noiseLevel.lock()) {
-        knob->setSecret(!useRecovery);
+        knob->setSecret(!(useRecovery || useLaplacian));
+    }
+    if (const KnobIntPtr knob = _iterations.lock()) {
+        knob->setSecret(!useLaplacian);
+    }
+    if (const KnobDoublePtr knob = _solidColor.lock()) {
+        knob->setSecret(!useLaplacian);
+    }
+    if (const KnobChoicePtr knob = _scales.lock()) {
+        knob->setSecret(!useLaplacian);
     }
 }
 
@@ -885,7 +963,7 @@ RawHighlights::refreshModeWarning(double time)
     const int value = mode->getValue();
     const RawLayout layout = RawLayout::fromMetadata(getSourceMetadata(time, ViewIdx(0))).value_or(RawLayout());
     bool fellBack = false;
-    if ((value >= (int)eRawHighlightsModeClip) && (value <= (int)eRawHighlightsModeSegments)) {
+    if ((value >= (int)eRawHighlightsModeClip) && (value <= (int)eRawHighlightsModeLaplacian)) {
         (void)sanitiseRawHighlightsMode((RawHighlightsModeEnum)value, layout, &fellBack);
     }
     if (fellBack) {
@@ -906,7 +984,7 @@ void
 RawHighlights::onKnobsLoaded()
 {
     refreshOverride();
-    refreshSegmentsVisibility();
+    refreshModeKnobsVisibility();
     showSourceClip(getCurrentTime());
     refreshModeWarning(getCurrentTime());
 }
@@ -923,13 +1001,13 @@ RawHighlights::knobChanged(KnobI* k,
     const KnobChoicePtr recovery = _recovery.lock();
 
     if (mode && (k == mode.get())) {
-        refreshSegmentsVisibility();
+        refreshModeKnobsVisibility();
         refreshModeWarning(time);
 
         return true;
     }
     if (recovery && (k == recovery.get())) {
-        refreshSegmentsVisibility();
+        refreshModeKnobsVisibility();
 
         return true;
     }
@@ -957,7 +1035,7 @@ RawHighlights::resolveSettings(double time,
     const KnobReader reader(time, view);
     const int mode = reader.value(_mode);
     s.layout = RawLayout::fromMetadata(source).value_or(RawLayout());
-    const RawHighlightsModeEnum requested = ((mode >= (int)eRawHighlightsModeClip) && (mode <= (int)eRawHighlightsModeSegments)) ? (RawHighlightsModeEnum)mode : eRawHighlightsModeOpposed;
+    const RawHighlightsModeEnum requested = ((mode >= (int)eRawHighlightsModeClip) && (mode <= (int)eRawHighlightsModeLaplacian)) ? (RawHighlightsModeEnum)mode : eRawHighlightsModeOpposed;
     s.mode = sanitiseRawHighlightsMode(requested, s.layout, &s.fellBack);
     const double threshold = reader.value(_clipOverride) ? reader.value(_clip) : std::min(1., RawMetadata::getLinearResponseLimit(source));
     s.clip = (float)(threshold * RawMetadata::getWhiteLevel(source).value_or(1.));
@@ -972,6 +1050,12 @@ RawHighlights::resolveSettings(double time,
         s.recovery = recoveryFromIndex(reader.value(_recovery));
         s.strength = (float)reader.value(_strength);
         s.noiseLevel = (float)reader.value(_noiseLevel);
+    }
+    if (s.mode == eRawHighlightsModeLaplacian) {
+        s.noiseLevel = (float)reader.value(_noiseLevel);
+        s.iterations = std::clamp(reader.value(_iterations), 1, 256);
+        s.scales = std::clamp(reader.value(_scales), 0, kLaplacianScaleCount - 1);
+        s.solidColor = (float)reader.value(_solidColor);
     }
 
     return s;
@@ -1006,7 +1090,7 @@ RawHighlights::getRegionsOfInterest(double time,
     const double par = getAspectRatio(getSourceInput());
     const bool lchOnCfa = (settings->mode == eRawHighlightsModeLCh) && settings->layout.hasCfa();
     RectI need;
-    if ((settings->mode == eRawHighlightsModeOpposed) || (settings->mode == eRawHighlightsModeInpaint) || (settings->mode == eRawHighlightsModeSegments) || ((settings->mode == eRawHighlightsModeLCh) && !lchOnCfa)) {
+    if ((settings->mode == eRawHighlightsModeOpposed) || (settings->mode == eRawHighlightsModeInpaint) || (settings->mode == eRawHighlightsModeSegments) || (settings->mode == eRawHighlightsModeLaplacian) || ((settings->mode == eRawHighlightsModeLCh) && !lchOnCfa)) {
         need = settings->sourceRoD;
     } else if (lchOnCfa) {
         const RectI window = PassExec::toPixelEnclosing(renderWindow, scale, par);
@@ -1082,6 +1166,9 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     RectI need = roi;
     if ((mode == eRawHighlightsModeOpposed) || (mode == eRawHighlightsModeLCh)) {
         need = RectI(roi.x1 - 2, roi.y1 - 2, roi.x2 + 2, roi.y2 + 2).intersect(s.sourceRoD);
+    } else if (mode == eRawHighlightsModeLaplacian) {
+        // The mask's box mean reaches 2 photosites and the bilinear RGB under it 1 more.
+        need = RectI(roi.x1 - 3, roi.y1 - 3, roi.x2 + 3, roi.y2 + 3).intersect(s.sourceRoD);
     }
     RawNodeSupport::TopDownBuffer buffer;
     buffer.allocate(need, source.nComps);
@@ -1091,6 +1178,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
 
     std::array<float, 3> chroma = { 0.f, 0.f, 0.f };
     std::shared_ptr<const std::vector<float>> frameMosaic;
+    RectI laplacianWindow;
     float clips[3] = { s.clip, s.clip, s.clip };
     const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
     float opposedClips[3];
@@ -1177,6 +1265,45 @@ RawHighlights::renderOp(const RenderActionArgs& args,
             _frameValid = !cancel.check();
         }
         frameMosaic = _frame;
+    } else if (mode == eRawHighlightsModeLaplacian) {
+        RawKernels::LaplacianParams params;
+        for (int c = 0; c < 3; ++c) {
+            params.clips[c] = kClipMagicLaplacian * s.clip * s.coeffs[c];
+            params.wb[c] = s.coeffs[c];
+        }
+        params.noiseLevel = s.noiseLevel;
+        params.iterations = s.iterations;
+        params.scales = s.scales;
+        params.solidColor = s.solidColor;
+        const std::uint32_t filters = RawNodeSupport::bayerFiltersAt(s.layout, s.sourceRoD);
+        const int width = s.sourceRoD.width();
+        const int height = s.sourceRoD.height();
+        std::shared_ptr<const std::vector<float>> reconstructed;
+        {
+            std::lock_guard<std::mutex> lock(_frameMutex);
+            if (!_frameValid || (_frameKey != key)) {
+                _frame.reset();
+                std::optional<ImageView> whole;
+                RawNodeSupport::TopDownBuffer wholeBuffer;
+                viewWholeSource(source, s.sourceRoD, parallel, &whole, &wholeBuffer);
+                auto ds = std::make_shared<std::vector<float>>((std::size_t)RawKernels::laplacianDownsampledWidth(width) * (std::size_t)RawKernels::laplacianDownsampledHeight(height) * 4, 0.f);
+                RawKernels::laplacianReconstruct(whole->pixel(0, 0), whole->rowStride, whole->nComps, width, height, filters, params, ds->data(), parallel);
+                _frame = std::move(ds);
+                _frameKey = key;
+                _frameValid = !cancel.check();
+            }
+            reconstructed = _frame;
+        }
+        // The window's mosaic, top-down, over the part of roi inside the source.
+        const RectI inside = roi.intersect(s.sourceRoD);
+        if (!inside.isNull()) {
+            const int row0 = s.sourceRoD.y2 - inside.y2;
+            const int col0 = inside.x1 - s.sourceRoD.x1;
+            auto window = std::make_shared<std::vector<float>>((std::size_t)inside.width() * (std::size_t)inside.height(), 0.f);
+            RawKernels::laplacianRemosaic(in.base, in.rowStride, in.nComps, in.row0, in.col0, width, height, filters, params, reconstructed->data(), row0, col0, inside.height(), inside.width(), window->data(), parallel);
+            frameMosaic = std::move(window);
+            laplacianWindow = inside;
+        }
     } else if (mode == eRawHighlightsModeLCh) {
         clips[0] = clips[1] = clips[2] = kClipMagicLCh * s.clip;
     } else {
@@ -1220,6 +1347,9 @@ RawHighlights::renderOp(const RenderActionArgs& args,
                     case eRawHighlightsModeInpaint:
                     case eRawHighlightsModeSegments:
                         v = (*frameMosaic)[(std::size_t)row * (std::size_t)rod.width() + (std::size_t)col];
+                        break;
+                    case eRawHighlightsModeLaplacian:
+                        v = (*frameMosaic)[(std::size_t)(laplacianWindow.y2 - 1 - y) * (std::size_t)laplacianWindow.width() + (std::size_t)(x - laplacianWindow.x1)];
                         break;
                     case eRawHighlightsModeLCh:
                         v = (s.layout.period() == 2) ? lchBayer(in, cfa, row, col, clips[0]) : lchXTrans(in, cfa, row, col, clips[0]);

@@ -311,6 +311,69 @@ void inpaintColor(const float* in,
                   const std::uint8_t (*xtrans)[6],
                   const float clip[3],
                   const ParallelFor& parallel);
+
+// darktable's DS_FACTOR: Guided Laplacians diffuses on the mosaic downsampled this many times.
+const int kLaplacianDownsampling = 4;
+
+/**
+ * @brief The settings of darktable's Guided Laplacians highlights mode. clips is the clipping
+ * level of red, green and blue, wb the white balance multipliers already applied; scales is the
+ * Diameter of Reconstruction index (0 for 2 px to 11 for 4096 px).
+ **/
+struct LaplacianParams {
+    float clips[3] = { 1.f, 1.f, 1.f };
+    float wb[3] = { 1.f, 1.f, 1.f };
+    float noiseLevel = 0.f;
+    int iterations = 30;
+    int scales = 6;
+    float solidColor = 0.f;
+};
+
+int laplacianDownsampledWidth(int width) WARN_UNUSED_RETURN;
+
+int laplacianDownsampledHeight(int height) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The first half of darktable's process_laplacian_bayer() over a whole Bayer mosaic: the
+ * bilinear RGB and its clipping mask, downsampled, then iterations of guided Laplacians and heat
+ * diffusion. in is read in place, photosite (row, col) at in[row * inRowStride + col *
+ * inPixelStride]. reconstructed receives laplacianDownsampledWidth(width) x
+ * laplacianDownsampledHeight(height) pixels of RGB and norm, four floats each; nothing is written
+ * when either is 0.
+ **/
+void laplacianReconstruct(const float* in,
+                          std::ptrdiff_t inRowStride,
+                          std::ptrdiff_t inPixelStride,
+                          int width,
+                          int height,
+                          std::uint32_t filters,
+                          const LaplacianParams& params,
+                          float* reconstructed,
+                          const ParallelFor& parallel);
+
+/**
+ * @brief The second half: rows [row0, row0 + rows) and columns [col0, col0 + cols) of the width x
+ * height mosaic, upsampled from reconstructed and blended over the input by the blurred clipping
+ * mask, into out, cols wide. in holds photosite (row, col) at in[(row - inRow0) * inRowStride +
+ * (col - inCol0) * inPixelStride] for the region grown by 3 photosites and clipped to the mosaic.
+ * A region depends only on its own photosites and reconstructed, so tiles match the whole frame.
+ **/
+void laplacianRemosaic(const float* in,
+                       std::ptrdiff_t inRowStride,
+                       std::ptrdiff_t inPixelStride,
+                       int inRow0,
+                       int inCol0,
+                       int width,
+                       int height,
+                       std::uint32_t filters,
+                       const LaplacianParams& params,
+                       const float* reconstructed,
+                       int row0,
+                       int col0,
+                       int rows,
+                       int cols,
+                       float* out,
+                       const ParallelFor& parallel);
 } // namespace RawKernels
 
 NATRON_NAMESPACE_EXIT

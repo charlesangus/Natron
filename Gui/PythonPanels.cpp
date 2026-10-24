@@ -212,13 +212,12 @@ PyModalDialog::PyModalDialog(Gui* gui,
     _imp->centerLayout = new QVBoxLayout(_imp->centerContainer);
     _imp->centerLayout->setContentsMargins(0, 0, 0, 0);
 
-
     _imp->panel = new DockablePanel(gui,
                                     _imp->holder,
                                     _imp->mainLayout,
                                     DockablePanel::eHeaderModeNoHeader,
                                     false,
-                                    QUndoStackPtr(),
+                                    0,
                                     QString(), QString(),
                                     _imp->centerContainer);
     _imp->panel->turnOffPages();
@@ -415,7 +414,7 @@ PyPanel::PyPanel(const QString& scriptName,
                                         _imp->mainLayout,
                                         DockablePanel::eHeaderModeNoHeader,
                                         false,
-                                        QUndoStackPtr(),
+                                        0,
                                         QString(), QString(),
                                         _imp->centerContainer);
         _imp->panel->turnOffPages();

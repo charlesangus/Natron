@@ -233,6 +233,7 @@ set(GuiTests_SOURCES
     ShuffleMatrix_Test.cpp
     TabMenuBridge_Test.cpp
     ThemedIcon_Test.cpp
+    UndoHistory_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )

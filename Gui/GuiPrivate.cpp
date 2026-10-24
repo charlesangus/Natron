@@ -43,7 +43,6 @@
 #include <QTextEdit>
 
 #include <QScreen>
-#include <QUndoGroup>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QCloseEvent>
@@ -129,10 +128,9 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , _uiUsingMainThreadMutex()
     , _lastQuestionDialogAnswer(eStandardButtonNo)
     , _lastStopAskingAnswer(false)
-    , _currentUndoAction(0)
-    , _currentRedoAction(0)
-    , _undoStacksGroup(0)
-    , _undoStacksActions()
+    , undoHistory(0)
+    , actionUndo(0)
+    , actionRedo(0)
     , _splittersMutex()
     , _splitters()
     , _pyPanelsMutex()
@@ -601,26 +599,6 @@ GuiPrivate::rebuildNodesToolBox()
         if (actions[i]->menu() && actions[i]->property(kNodesMenuPropPluginOwned).toBool()) {
             addToolButton(actions[i]);
         }
-    }
-}
-
-void
-GuiPrivate::setUndoRedoActions(QAction* undoAction,
-                               QAction* redoAction)
-{
-    if (_currentUndoAction) {
-        menuEdit->removeAction(_currentUndoAction);
-    }
-    if (_currentRedoAction) {
-        menuEdit->removeAction(_currentRedoAction);
-    }
-    _currentUndoAction = undoAction;
-    _currentRedoAction = redoAction;
-    if (undoAction) {
-        menuEdit->addAction(undoAction);
-    }
-    if (redoAction) {
-        menuEdit->addAction(redoAction);
     }
 }
 

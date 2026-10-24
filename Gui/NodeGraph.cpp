@@ -50,8 +50,9 @@
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/Menu.h"
-#include "Gui/NodeGui.h"
 #include "Gui/NodeGraphTextItem.h"
+#include "Gui/NodeGui.h"
+#include "Gui/UndoHistory.h"
 
 #include "Global/QtCompat.h"
 
@@ -143,10 +144,6 @@ NodeGraph::NodeGraph(Gui* gui,
 
     QObject::connect( &_imp->_refreshCacheTextTimer, SIGNAL(timeout()), this, SLOT(updateCacheSizeText()) );
     _imp->_refreshCacheTextTimer.start(NATRON_CACHE_SIZE_TEXT_REFRESH_INTERVAL_MS);
-
-    _imp->_undoStack = new QUndoStack(this);
-    _imp->_undoStack->setUndoLimit( appPTR->getCurrentSettings()->getMaximumUndoRedoNodeGraph() );
-    getGui()->registerNewUndoStack(_imp->_undoStack);
 
     QObject::connect(appPTR->getCurrentSettings().get(), SIGNAL(settingsSaved()), this, SLOT(onSettingsSaved()));
 
@@ -283,7 +280,6 @@ NodeGraph::onNodesCleared()
 
     _imp->_selection.clear();
     _imp->_magnifiedNode.reset();
-    _imp->_undoStack->clear();
 }
 
 void
@@ -303,7 +299,7 @@ NodeGraph::addNodesToCreationOf(const NodePtr& created,
     }
     AddMultipleNodesCommand* command = new AddMultipleNodesCommand(this, guis);
     command->setCreatedFor(owner);
-    pushUndoCommand(command);
+    pushUndoCommand(command, guis);
 }
 
 void
@@ -469,15 +465,9 @@ NodeGraph::createNodeGUI(const NodePtr & node,
         node_ui->ensurePanelCreated();
     }
 
-
-    QUndoStackPtr nodeStack = node_ui->getUndoStack();
-    if (nodeStack) {
-        getGui()->registerNewUndoStack( nodeStack.get() );
-    }
-
     bool addUndoRedo = args.getProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand);
     if (addUndoRedo) {
-        pushUndoCommand( new AddMultipleNodesCommand(this, node_ui) );
+        pushUndoCommand(new AddMultipleNodesCommand(this, node_ui), NodesGuiList(1, node_ui));
     } else if ( !serialization && !isGrp ) {
         selectNode(node_ui, false);
     }
@@ -487,10 +477,18 @@ NodeGraph::createNodeGUI(const NodePtr & node,
     return node_ui;
 } // NodeGraph::createNodeGUI
 
-QUndoStack*
-NodeGraph::getUndoStack() const
+void
+NodeGraph::pushUndoCommand(QUndoCommand* command,
+                           const NodesGuiList& touchedNodes)
 {
-    return _imp->_undoStack;
+    UndoScope scope;
+
+    for (NodesGuiList::const_iterator it = touchedNodes.begin(); it != touchedNodes.end(); ++it) {
+        if (*it) {
+            scope.touchNode((*it)->getNode());
+        }
+    }
+    pushUndoCommand(command, scope);
 }
 
 NATRON_NAMESPACE_EXIT

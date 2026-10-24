@@ -97,7 +97,6 @@ CurveWidgetPrivate::CurveWidgetPrivate(Gui* gui,
     , _tangentDragForceBreak(false)
     , _evaluateOnPenUp(false)
     , _keyDragLastMovement()
-    , _undoStack(new QUndoStack)
     , _gui(gui)
     , savedTexture(0)
     , sizeH()
@@ -112,7 +111,6 @@ CurveWidgetPrivate::CurveWidgetPrivate(Gui* gui,
 
     _nextCurveAddedColor.setHsv(200, 255, 255);
     //_rightClickMenu->setFont( QFont(appFont,appFontSize) );
-    _gui->registerNewUndoStack( _undoStack.get() );
 }
 
 CurveWidgetPrivate::~CurveWidgetPrivate()

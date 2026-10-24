@@ -66,6 +66,7 @@
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ThemedIcon.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 
@@ -839,6 +840,7 @@ Gui::openProjectInternal(const std::string & absoluteFileName,
     ProjectPtr project = getApp()->getProject();
     ///if the current graph has no value, just load the project in the same window
     if ( project->isGraphWorthLess() ) {
+        _imp->undoHistory->clear();
         bool ok = project->loadProject(QString(), target.source, false, attemptToLoadAutosave);
         if (ok) {
             ret = _imp->_appInstance.lock();

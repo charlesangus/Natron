@@ -38,12 +38,10 @@
 
 #include <QAction>
 #include <QApplication> // qApp
-#include <QGridLayout>
 #include <QCheckBox>
+#include <QGridLayout>
 #include <QLabel>
 #include <QTextEdit>
-#include <QUndoGroup>
-#include <QUndoStack>
 
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
@@ -60,6 +58,7 @@
 #include "Gui/ResizableMessageBox.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ThemedIcon.h"
+#include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -684,46 +683,26 @@ Gui::showSettings()
     _imp->_settingsGui->activateWindow();
 }
 
-void
-Gui::registerNewUndoStack(QUndoStack* stack)
+UndoHistory*
+Gui::getUndoHistory() const
 {
-    _imp->_undoStacksGroup->addStack(stack);
-    QAction* undo = stack->createUndoAction(stack);
-    undo->setShortcut(QKeySequence::Undo);
-    QAction* redo = stack->createRedoAction(stack);
-    redo->setShortcut(QKeySequence::Redo);
-    _imp->_undoStacksActions.insert( std::make_pair( stack, std::make_pair(undo, redo) ) );
+    return _imp->undoHistory;
 }
 
 void
-Gui::removeUndoStack(QUndoStack* stack)
+Gui::onUndoHistoryChanged()
 {
-    std::map<QUndoStack*, std::pair<QAction*, QAction*> >::iterator it = _imp->_undoStacksActions.find(stack);
+    UndoHistory* history = _imp->undoHistory;
 
-    if ( it == _imp->_undoStacksActions.end() ) {
+    if (!history || !_imp->actionUndo || !_imp->actionRedo) {
         return;
     }
-    if (_imp->_currentUndoAction == it->second.first) {
-        _imp->menuEdit->removeAction(_imp->_currentUndoAction);
-        _imp->_currentUndoAction = 0;
-    }
-    if (_imp->_currentRedoAction == it->second.second) {
-        _imp->menuEdit->removeAction(_imp->_currentRedoAction);
-        _imp->_currentRedoAction = 0;
-    }
-    _imp->_undoStacksGroup->removeStack(stack);
-    _imp->_undoStacksActions.erase(it);
-}
-
-void
-Gui::onCurrentUndoStackChanged(QUndoStack* stack)
-{
-    std::map<QUndoStack*, std::pair<QAction*, QAction*> >::iterator it = _imp->_undoStacksActions.find(stack);
-
-    //the stack must have been registered first with registerNewUndoStack()
-    if ( it != _imp->_undoStacksActions.end() ) {
-        _imp->setUndoRedoActions(it->second.first, it->second.second);
-    }
+    QString undoText = history->undoText();
+    QString redoText = history->redoText();
+    _imp->actionUndo->setText(undoText.isEmpty() ? tr("Undo") : tr("Undo %1").arg(undoText));
+    _imp->actionRedo->setText(redoText.isEmpty() ? tr("Redo") : tr("Redo %1").arg(redoText));
+    _imp->actionUndo->setEnabled(history->canUndo());
+    _imp->actionRedo->setEnabled(history->canRedo());
 }
 
 NATRON_NAMESPACE_EXIT

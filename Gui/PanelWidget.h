@@ -81,7 +81,13 @@ public:
      */
     void handleUnCaughtKeyUpEvent(QKeyEvent* e);
 
+    /**
+     * @brief Records the command in the window's undo history, with no owner unless a scope
+     * is given.
+     **/
     virtual void pushUndoCommand(QUndoCommand* command);
+
+    void pushUndoCommand(QUndoCommand* command, const UndoScope& scope);
 
     /*
      * @brief Called whenever this panel is made the current tab in the parent tab widget
@@ -89,9 +95,6 @@ public:
     virtual void onPanelMadeCurrent() {}
 
 protected:
-
-    virtual QUndoStack* getUndoStack() const { return 0; }
-
     virtual void notifyGuiClosing() {}
 
     /**

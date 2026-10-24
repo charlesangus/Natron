@@ -163,7 +163,7 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
         }
 
         if (useUndoCommand) {
-            _publicInterface->pushUndoCommand( new AddMultipleNodesCommand(_publicInterface, newNodesList) );
+            _publicInterface->pushUndoCommand(new AddMultipleNodesCommand(_publicInterface, newNodesList), newNodesList);
         }
     }
 } // pasteNodesInternal
@@ -408,11 +408,11 @@ NodeGraphPrivate::toggleSelectedNodesEnabled()
     ///if some nodes are disabled , enable them before
 
     if ( disabledNodes.size() == allNodes.size() ) {
-        _publicInterface->pushUndoCommand( new EnableNodesCommand(allNodes) );
+        _publicInterface->pushUndoCommand(new EnableNodesCommand(allNodes), allNodes);
     } else if (disabledNodes.size() > 0) {
-        _publicInterface->pushUndoCommand( new EnableNodesCommand(disabledNodes) );
+        _publicInterface->pushUndoCommand(new EnableNodesCommand(disabledNodes), disabledNodes);
     } else {
-        _publicInterface->pushUndoCommand( new DisableNodesCommand(allNodes) );
+        _publicInterface->pushUndoCommand(new DisableNodesCommand(allNodes), allNodes);
     }
 }
 

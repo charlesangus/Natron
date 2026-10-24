@@ -308,7 +308,7 @@ pasteOntoNode(NodeGraph* graph,
     QUndoCommand* pasteCommand = new QUndoCommand(NodeGraph::tr("Paste node(s)"));
     new AddMultipleNodesCommand(graph, pasted, pasteCommand);
     new ReconnectInputsCommand(graph, changes, pasteCommand);
-    graph->pushUndoCommand(pasteCommand);
+    graph->pushUndoCommand(pasteCommand, pasted);
 
     return true;
 } // pasteOntoNode
@@ -380,7 +380,7 @@ NodeGraph::pasteNodeClipBoards(const QPointF& pos)
         pastedNodes.push_back(it->second);
     }
     if (!pasteOntoNode(this, selectionBeforePaste, pastedNodes)) {
-        pushUndoCommand(new AddMultipleNodesCommand(this, pastedNodes));
+        pushUndoCommand(new AddMultipleNodesCommand(this, pastedNodes), pastedNodes);
     }
 
     return true;
@@ -523,8 +523,7 @@ NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
         (*it)->getNode()->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, true); // clone should never fail
     }
 
-
-    pushUndoCommand( new AddMultipleNodesCommand(this, newNodesList) );
+    pushUndoCommand(new AddMultipleNodesCommand(this, newNodesList), newNodesList);
 } // NodeGraph::cloneSelectedNodes
 
 void
@@ -563,14 +562,7 @@ NodeGraph::decloneSelectedNodes()
         }
     }
 
-    pushUndoCommand( new DecloneMultipleNodesCommand(this, nodesToDeclone) );
-}
-
-void
-NodeGraph::setUndoRedoStackLimit(int limit)
-{
-    _imp->_undoStack->clear();
-    _imp->_undoStack->setUndoLimit(limit);
+    pushUndoCommand(new DecloneMultipleNodesCommand(this, nodesToDeclone), nodesToDeclone);
 }
 
 void

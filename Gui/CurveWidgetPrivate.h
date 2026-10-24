@@ -176,7 +176,6 @@ public:
     bool _tangentDragForceBreak; //< Ctrl was held when the tangent drag started
     bool _evaluateOnPenUp; //< true if we must re-evaluate the nodes associated to the selected keyframes on penup
     QPointF _keyDragLastMovement;
-    std::unique_ptr<QUndoStack> _undoStack;
     Gui* _gui;
     GLuint savedTexture;
     QSize sizeH;

@@ -101,6 +101,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/SpinBox.h"
 #include "Gui/TabWidget.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 
@@ -118,7 +119,7 @@ NATRON_NAMESPACE_ENTER
 void
 Gui::setUndoRedoStackLimit(int limit)
 {
-    _imp->_nodeGraphArea->setUndoRedoStackLimit(limit);
+    _imp->undoHistory->setUndoLimit(limit);
 }
 
 void

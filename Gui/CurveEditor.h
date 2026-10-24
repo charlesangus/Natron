@@ -378,7 +378,6 @@ public:
 
     void centerOn(const std::vector<CurvePtr> & curves);
 
-    std::pair<QAction*, QAction*> getUndoRedoActions() const WARN_UNUSED_RETURN;
     std::list<CurveGuiPtr> findCurve(const KnobGuiPtr& knob, int dimension) const WARN_UNUSED_RETURN;
 
     void hideCurves(const KnobGuiPtr& knob);
@@ -426,8 +425,6 @@ public Q_SLOTS:
     void onExprLineEditFinished();
 
 private:
-
-    virtual QUndoStack* getUndoStack() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void enterEvent(QEnterEvent* e) OVERRIDE FINAL;
     virtual void leaveEvent(QEvent* e) OVERRIDE FINAL;
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;

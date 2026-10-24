@@ -25,17 +25,16 @@
 
 #include "NodeViewerContext.h"
 
-#include <QMouseEvent>
-#include <QStyle>
-#include <QToolBar>
 #include <QAction>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QPalette>
 #include <QFile>
 #include <QFrame>
-#include <QUndoStack>
+#include <QHBoxLayout>
+#include <QMouseEvent>
+#include <QPalette>
+#include <QStyle>
+#include <QToolBar>
 #include <QUndoCommand>
+#include <QVBoxLayout>
 #include <ofxKeySyms.h>
 
 #include "Engine/EffectInstance.h"
@@ -55,6 +54,7 @@
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/QtEnumConvert.h"
 #include "Gui/ThemedIcon.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 #include "Gui/ViewerToolButton.h"
@@ -460,23 +460,23 @@ NodeViewerContext::getGui() const
 const QUndoCommand*
 NodeViewerContext::getLastUndoCommand() const
 {
-    NodeSettingsPanel* panel = _imp->getNode()->getSettingPanel();
+    Gui* gui = getGui();
 
-    if (panel) {
-        return panel->getLastUndoCommand();
-    }
-
-    return 0;
+    return gui ? gui->getUndoHistory()->getLastCommand() : 0;
 }
 
 void
 NodeViewerContext::pushUndoCommand(QUndoCommand* cmd)
 {
-    NodeSettingsPanel* panel = _imp->getNode()->getSettingPanel();
+    Gui* gui = getGui();
+    NodeGuiPtr node = _imp->getNode();
 
-    if (panel) {
-        panel->pushUndoCommand(cmd);
+    if (!gui || !node) {
+        delete cmd;
+
+        return;
     }
+    gui->getUndoHistory()->push(cmd, UndoScope(UndoScope::holderForNode(node->getNode())));
 }
 
 KnobGuiPtr

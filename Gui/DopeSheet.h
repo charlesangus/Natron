@@ -382,8 +382,6 @@ public:
 
     void renameSelectedNode();
 
-    QUndoStack* getUndoStack() const;
-
 Q_SIGNALS:
     void modelChanged();
     void nodeAdded(DSNode *dsNode);

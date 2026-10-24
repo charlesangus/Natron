@@ -29,14 +29,13 @@
 #include <utility>
 #include <stdexcept>
 
+#include <QApplication>
 #include <QDebug>
 #include <QGridLayout>
-#include <QUndoStack>
-#include <QScrollArea>
-#include <QApplication>
-#include <QStyle>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QScrollArea>
+#include <QStyle>
 
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h" // NATRON_PARAMETER_PAGE_NAME_INFO

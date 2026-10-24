@@ -32,9 +32,8 @@
 #include <QThread>
 #include <QTimer>
 
-#include <QHBoxLayout>
 #include <QGraphicsScene>
-#include <QUndoGroup>
+#include <QHBoxLayout>
 
 #ifdef DEBUG
 #include "Global/FloatingPointExceptions.h"
@@ -43,23 +42,25 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 
 #include "Gui/AboutWindow.h"
 #include "Gui/AutoHideToolBar.h"
-#include "Gui/DockablePanel.h"
 #include "Gui/CurveEditor.h"
 #include "Gui/CurveWidget.h"
+#include "Gui/DockablePanel.h"
 #include "Gui/FloatingWidget.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiPrivate.h"
 #include "Gui/Histogram.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/ProgressPanel.h"
 #include "Gui/ProjectGui.h"
-#include "Gui/GuiApplicationManager.h"
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
 
 #include "Serialization/SerializationFwd.h"
@@ -81,9 +82,8 @@ Gui::setupUi()
     ///Restores position, size of the main window as well as whether it was fullscreen or not.
     _imp->restoreGuiGeometry();
 
-
-    _imp->_undoStacksGroup = new QUndoGroup;
-    QObject::connect( _imp->_undoStacksGroup, SIGNAL(activeStackChanged(QUndoStack*)), this, SLOT(onCurrentUndoStackChanged(QUndoStack*)) );
+    _imp->undoHistory = new UndoHistory(this);
+    _imp->undoHistory->setUndoLimit(appPTR->getCurrentSettings()->getMaximumUndoSteps());
 
     createMenuActions();
 

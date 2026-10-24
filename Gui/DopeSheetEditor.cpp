@@ -285,10 +285,4 @@ DopeSheetEditor::onInputEventCalled()
     takeClickFocus();
 }
 
-QUndoStack*
-DopeSheetEditor::getUndoStack() const
-{
-    return _imp->model ? _imp->model->getUndoStack() : 0;
-}
-
 NATRON_NAMESPACE_EXIT

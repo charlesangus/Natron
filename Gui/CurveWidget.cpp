@@ -63,6 +63,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/PythonPanels.h" // PyModelDialog
 #include "Gui/TabWidget.h"
 #include "Gui/ThemedIcon.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
 
 #include <QOpenGLContext>
@@ -97,9 +98,23 @@ CurveWidget::pushUndoCommand(QUndoCommand* cmd)
 {
     CurveEditor* editor = dynamic_cast<CurveEditor*>(_imp->_selectionModel);
     CurveEditorCommand* curveCmd = dynamic_cast<CurveEditorCommand*>(cmd);
-    if (editor && curveCmd) {
-        std::list<CurveGuiPtr> editedCurves;
+    UndoScope scope;
+    std::list<CurveGuiPtr> editedCurves;
+    if (curveCmd) {
         curveCmd->getEditedCurves(&editedCurves);
+        for (std::list<CurveGuiPtr>::const_iterator it = editedCurves.begin(); it != editedCurves.end(); ++it) {
+            if (KnobCurveGui* knobCurve = dynamic_cast<KnobCurveGui*>(it->get())) {
+                scope.touchKnob(knobCurve->getInternalKnob());
+            } else if (BezierCPCurveGui* bezierCurve = dynamic_cast<BezierCPCurveGui*>(it->get())) {
+                RotoContextPtr roto = bezierCurve->getRotoContext();
+                if (roto) {
+                    scope.touchNode(roto->getNode());
+                }
+            }
+        }
+        scope.ownByOnlyTouched();
+    }
+    if (editor && curveCmd) {
         std::list<CurveGuiPtr> foldedCurves;
         for (std::list<CurveGuiPtr>::const_iterator it = editedCurves.begin(); it != editedCurves.end(); ++it) {
             if (editor->isFoldedKnobDimensionZero(it->get()) && (std::find(foldedCurves.begin(), foldedCurves.end(), *it) == foldedCurves.end())) {
@@ -111,14 +126,12 @@ CurveWidget::pushUndoCommand(QUndoCommand* cmd)
         }
     }
 
-    _imp->_undoStack->setActive();
-    _imp->_undoStack->push(cmd);
-}
+    if (!_imp->_gui) {
+        delete cmd;
 
-QUndoStack*
-CurveWidget::getUndoStack() const
-{
-    return _imp->_undoStack.get();
+        return;
+    }
+    _imp->_gui->getUndoHistory()->push(cmd, scope);
 }
 
 ///////////////////////////////////////////////////////////////////

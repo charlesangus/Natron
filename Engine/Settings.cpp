@@ -1219,17 +1219,14 @@ Settings::initializeKnobsNodeGraph()
                                                 "with the inputs and output nodes.") );
     _nodegraphTab->addKnob(_snapNodesToConnections);
 
-
-    _maxUndoRedoNodeGraph = AppManager::createKnob<KnobInt>( this, tr("Maximum undo/redo for the node graph") );
-    _maxUndoRedoNodeGraph->setName("maxUndoRedo");
-    _maxUndoRedoNodeGraph->disableSlider();
-    _maxUndoRedoNodeGraph->setMinimum(0);
-    _maxUndoRedoNodeGraph->setHintToolTip( tr("Set the maximum of events related to the node graph %1 "
-                                              "remembers. Past this limit, older events will be deleted forever, "
-                                              "allowing to re-use the RAM for other purposes. \n"
-                                              "Changing this value will clear the undo/redo stack.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
-    _nodegraphTab->addKnob(_maxUndoRedoNodeGraph);
-
+    _maxUndoSteps = AppManager::createKnob<KnobInt>(this, tr("Maximum undo steps"));
+    _maxUndoSteps->setName("maxUndoSteps");
+    _maxUndoSteps->disableSlider();
+    _maxUndoSteps->setMinimum(0);
+    _maxUndoSteps->setHintToolTip(tr("Number of edits kept in the project window's undo history. "
+                                     "Past this limit, the oldest edits are dropped, "
+                                     "allowing to re-use the RAM for other purposes."));
+    _nodegraphTab->addKnob(_maxUndoSteps);
 
     _disconnectedArrowLength = AppManager::createKnob<KnobInt>( this, tr("Disconnected arrow length") );
     _disconnectedArrowLength->setName("disconnectedArrowLength");
@@ -1631,7 +1628,7 @@ Settings::setDefaultValues()
     _autoScroll->setDefaultValue(false);
     _autoTurbo->setDefaultValue(false);
     _snapNodesToConnections->setDefaultValue(true);
-    _maxUndoRedoNodeGraph->setDefaultValue(20, 0);
+    _maxUndoSteps->setDefaultValue(200, 0);
     _disconnectedArrowLength->setDefaultValue(30);
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _usePluginIconsInNodeGraph->setDefaultValue(true);
@@ -2336,8 +2333,8 @@ Settings::onKnobValueChanged(KnobI* k,
     } else if (k == _useThreadPool.get()) {
         bool useTP = _useThreadPool->getValue();
         appPTR->setUseThreadPool(useTP);
-    } else if (k == _maxUndoRedoNodeGraph.get()) {
-        appPTR->setUndoRedoStackLimit( _maxUndoRedoNodeGraph->getValue() );
+    } else if (k == _maxUndoSteps.get()) {
+        appPTR->setUndoRedoStackLimit(_maxUndoSteps->getValue());
     } else if (k == _maxPanelsOpened.get()) {
         appPTR->onMaxPanelsOpenedChanged( _maxPanelsOpened->getValue() );
     } else if (k == _queueRenders.get()) {
@@ -2865,9 +2862,9 @@ Settings::isRenderInSeparatedProcessEnabled() const
 }
 
 int
-Settings::getMaximumUndoRedoNodeGraph() const
+Settings::getMaximumUndoSteps() const
 {
-    return _maxUndoRedoNodeGraph->getValue();
+    return _maxUndoSteps->getValue();
 }
 
 int

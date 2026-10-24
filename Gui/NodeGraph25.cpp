@@ -361,7 +361,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRenameNode, modifiers, key)) {
         renameNode();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphExtractNode, modifiers, key)) {
-        pushUndoCommand( new ExtractNodeUndoRedoCommand(this, _imp->_selection) );
+        pushUndoCommand(new ExtractNodeUndoRedoCommand(this, _imp->_selection), _imp->_selection);
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphTogglePreview, modifiers, key)) {
         togglePreviewsForSelectedNodes();
     } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomIn, Qt::NoModifier, key)) { // zoom in/out doesn't care about modifiers

@@ -397,8 +397,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         if ( !dotNodeGui->getIsSelected() ) {
             selectNode( dotNodeGui, modCASIsShift(e) );
         }
-        pushUndoCommand( new AddMultipleNodesCommand( this, nodesList) );
-
+        pushUndoCommand(new AddMultipleNodesCommand(this, nodesList), nodesList);
 
         _imp->_evtState = eEventStateDraggingNode;
         didSomething = true;

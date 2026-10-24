@@ -264,7 +264,7 @@ NodeGraph::removeNode(const NodeGuiPtr & node)
     node->setUserSelected(false);
     NodesGuiList nodesToRemove;
     nodesToRemove.push_back(node);
-    pushUndoCommand( new RemoveMultipleNodesCommand(this, nodesToRemove) );
+    pushUndoCommand(new RemoveMultipleNodesCommand(this, nodesToRemove), nodesToRemove);
 } // NodeGraph::removeNode
 
 void
@@ -352,8 +352,7 @@ NodeGraph::deleteSelection()
             (*it)->setUserSelected(false);
         }
 
-
-        pushUndoCommand( new RemoveMultipleNodesCommand(this, nodesToRemove) );
+        pushUndoCommand(new RemoveMultipleNodesCommand(this, nodesToRemove), nodesToRemove);
         _imp->_selection.clear();
     }
 } // deleteSelection

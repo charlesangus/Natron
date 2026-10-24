@@ -37,7 +37,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobShuffleMap.h"
-#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Channel/ChannelCopy.h"
 
 #define PLUGINID_NATRON_SHUFFLE "fr.natron.Shuffle"
 #define PLUGINID_NATRON_SHUFFLECOPY "fr.natron.ShuffleCopy"
@@ -73,9 +73,11 @@ inline constexpr InputSpec kShuffleCopyInputs[] = {
  * The colour views (rgba, rgb, alpha, xy) all alias the one colour plane by channel bit, so a
  * colour output writes only the bits its view covers and the plane's other bits pass through
  * from the main input's colour plane. A colour channel an input lacks reads 0.
+ *
+ * Both the CPU and the GPU render a plane from the route channelRoute() describes.
  **/
 class Shuffle
-    : public NativeEffectBase {
+    : public ChannelRouteEffect {
 public:
     enum InputEnum {
         eInputMain = 0,
@@ -181,6 +183,18 @@ public:
      **/
     ShuffleSource getEffectiveSource(int outSlot, int outIndex, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Each component of plane through its output's effective source, as resolved at
+     * (time, view). The colour plane takes every bit an output view covers from that view's
+     * source and every other bit from the main input's colour plane. A slot reads its input's
+     * plane of the slot's layer (the colour plane for a colour view) and a channel by name, and
+     * reads 0 where the input is disconnected, lacks that plane or channel, or is not float. A
+     * plane that is no output is all 0. Never false. cpuOnly is set when
+     * checkExtraChannelsPresent() fails, so that the CPU reports the missing channel, and when an
+     * input read is not float, which the GPU would read converted.
+     **/
+    virtual bool channelRoute(double time, ViewIdx view, const ImageLayerDesc& plane, ChannelRoute* route) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_SHUFFLE,
         .label = "Shuffle",
@@ -223,8 +237,6 @@ private:
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
     /**
      * @brief Every output channel the render produces is checked through its effective source,
      * explicit row or implicit alike: a non-colour slot whose input is connected but does not
@@ -238,29 +250,6 @@ private:
     virtual bool checkExtraChannelsPresent(double time,
                                            ViewIdx view,
                                            std::string* message) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    struct FetchedPlane {
-        int inputNb;
-        std::string layerID;
-        ImagePtr image;
-
-        FetchedPlane()
-            : inputNb(-1)
-            , layerID()
-            , image()
-        {
-        }
-    };
-
-    /**
-     * @brief inputNb's plane layerID for this render, fetched once and remembered in fetched.
-     * Null when the input is disconnected or does not carry that layer. The colour plane is
-     * fetched as kNatronColorLayerID, whatever view reads it.
-     **/
-    ImagePtr fetchInputPlane(const RenderActionArgs& args,
-                             int inputNb,
-                             const std::string& layerID,
-                             std::vector<FetchedPlane>* fetched);
 
     /**
      * @brief The number of channels layerID has at (time, view): a colour view's own count (4,

@@ -31,6 +31,7 @@
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/RenderStats.h"
+#include "Engine/StartupGLDiag.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRuntime.h"
@@ -129,6 +130,10 @@ GpuContext::GpuContext(const GpuContextOptions& options)
 #ifdef NATRON_HAVE_GPU
     if (_mode != GpuResolvedMode::Off) {
         _thread = std::thread([this] { initialize(); });
+        if (StartupGLDiag::switchOn(StartupGLDiag::Switch::GpuInitSync)) {
+            _thread.join();
+            StartupGLDiag::logSwitchAction(StartupGLDiag::Switch::GpuInitSync, "Vulkan compute initialisation finished before startup continued");
+        }
         return;
     }
 #endif

@@ -25,13 +25,17 @@
 
 #include "GuiAppInstance.h"
 
-#include <stdexcept>
 #include <sstream> // stringstream
+#include <stdexcept>
+#include <string>
 
-#include <QDir>
-#include <QSettings>
-#include <QMutex>
 #include <QCoreApplication>
+#include <QDir>
+#include <QEvent>
+#include <QMutex>
+#include <QSettings>
+#include <QTimer>
+#include <QWindow>
 
 #include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
@@ -46,6 +50,7 @@
 #include "Engine/Project.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
+#include "Engine/StartupGLDiag.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -68,6 +73,60 @@
 #include "Gui/ViewerGL.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+
+// Logs a checkpoint at the main window's first Expose and first UpdateRequest,
+// which is where Qt builds its compositor pipelines and flushes the backing
+// store, then removes itself.
+class FirstExposeCheckpoint : public QObject {
+public:
+    explicit FirstExposeCheckpoint(QWindow* window)
+        : QObject(window)
+    {
+        window->installEventFilter(this);
+    }
+
+    bool eventFilter(QObject* watched,
+                     QEvent* event) override
+    {
+        if (!_exposeSeen && (event->type() == QEvent::Expose)) {
+            _exposeSeen = true;
+            report("first-expose");
+        } else if (!_updateSeen && (event->type() == QEvent::UpdateRequest)) {
+            _updateSeen = true;
+            report("first-update-request");
+        }
+        if (_exposeSeen && _updateSeen) {
+            watched->removeEventFilter(this);
+        }
+
+        return false;
+    }
+
+private:
+    static void report(const char* name)
+    {
+        StartupGLDiag::checkpoint((std::string(name) + ":before").c_str());
+        const std::string after = std::string(name) + ":after";
+        QTimer::singleShot(0, [after]() { StartupGLDiag::checkpoint(after.c_str()); });
+    }
+
+    bool _exposeSeen = false;
+    bool _updateSeen = false;
+};
+
+void
+loadingStatusCheckpoint(const QString& status)
+{
+    if (!StartupGLDiag::enabled()) {
+        return;
+    }
+    const QByteArray name = QByteArray("setLoadingStatus:") + status.toUtf8();
+    StartupGLDiag::checkpoint(name.constData());
+}
+
+} // anonymous namespace
 
 struct RotoPaintData
 {
@@ -261,18 +320,30 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
     GuiAppInstancePtr thisShared = std::dynamic_pointer_cast<GuiAppInstance>( shared_from_this() );
     assert(thisShared);
     _imp->_gui = new Gui(thisShared);
+    StartupGLDiag::checkpoint("createGui:before");
     _imp->_gui->createGui();
+    StartupGLDiag::checkpoint("createGui:after");
 
     printAutoDeclaredVariable(_imp->declareAppAndParamsString);
 
     Q_EMIT pluginsPopulated();
 
     // Before the project is created, so onProjectCreated callbacks defined in initGui.py exist.
+    StartupGLDiag::checkpoint("runInitGuiScripts:before");
     appPTR->runInitGuiScripts();
+    StartupGLDiag::checkpoint("runInitGuiScripts:after");
 
     ///show the gui
+    StartupGLDiag::checkpoint("show:before");
     _imp->_gui->show();
-
+    StartupGLDiag::checkpoint("show:after");
+    if (StartupGLDiag::enabled()) {
+        if (QWindow* window = _imp->_gui->windowHandle()) {
+            new FirstExposeCheckpoint(window);
+        } else {
+            StartupGLDiag::checkpoint("show:no-window-handle");
+        }
+    }
 
     SettingsPtr nSettings = appPTR->getCurrentSettings();
     QObject::connect( getProject().get(), SIGNAL(formatChanged(Format)), this, SLOT(projectFormatChanged(Format)) );
@@ -289,6 +360,7 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
 
         if ( nSettings->isCheckForUpdatesEnabled() ) {
             appPTR->setLoadingStatus( tr("Checking if updates are available...") );
+            loadingStatusCheckpoint(tr("Checking if updates are available..."));
             checkForNewVersion();
         }
     }
@@ -356,6 +428,7 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
     } else {
         if ( info.suffix() == QString::fromUtf8("py") ) {
             appPTR->setLoadingStatus( tr("Loading script: ") + cl.getScriptFilename() );
+            loadingStatusCheckpoint(tr("Loading script: ") + cl.getScriptFilename());
 
             ///If this is a Python script, execute it
             loadPythonScript(info);
@@ -366,6 +439,7 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
             QString path = info.path();
             StrUtils::ensureLastPathSeparator(path);
             appPTR->setLoadingStatus(tr("Loading project: ") + path + name);
+            loadingStatusCheckpoint(tr("Loading project: ") + path + name);
             getProject()->loadProject(path, name);
             ///remove any file open event that might have occurred
             appPTR->setFileToOpen( QString() );

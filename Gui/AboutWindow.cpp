@@ -47,6 +47,7 @@ CLANG_DIAG_ON(deprecated)
 
 #include "Engine/AppManager.h"
 #include "Engine/OSGLContext.h"
+#include "Engine/StartupGLDiag.h"
 #include "Engine/Utils.h" // convertFromPlainText
 
 #include "Gui/Button.h"
@@ -577,7 +578,12 @@ AboutWindow::updateLibrariesVersions()
                        .arg( appPTR->getCeresVersion() )
                        .arg( appPTR->getOpenMVGVersion() );
     std::list<OpenGLRendererInfo> openGLRenderers;
-    OSGLContext::getGPUInfos(openGLRenderers);
+    if (StartupGLDiag::switchOn(StartupGLDiag::Switch::SkipGLProbe)) {
+        StartupGLDiag::logSwitchAction(StartupGLDiag::Switch::SkipGLProbe, "skipped the About window OpenGL renderer probe");
+        libsText += QLatin1String("<h3>") + tr("OpenGL renderers:") + QLatin1String("</h3><p>") + tr("probe skipped") + QLatin1String("</p>");
+    } else {
+        OSGLContext::getGPUInfos(openGLRenderers);
+    }
     if ( !openGLRenderers.empty() ) {
         libsText += (QLatin1String("<h3>") +
                      tr("OpenGL renderers:") +

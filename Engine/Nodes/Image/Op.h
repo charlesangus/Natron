@@ -350,8 +350,8 @@ concept MatrixResampleOp = ResampleOp<OP> && MatrixResampleMembers<OP>;
 /**
  * @brief A Resample op of the matrix form that also runs on the GPU, which it opts into with
  * `static constexpr bool kResamplesOnGpu = true`. The GPU then renders it whenever its sampling
- * matrices are affine and no transform is concatenated into its source, motion and directional
- * blur included; every other Resample op stays on the CPU.
+ * matrices, affine or projective, are finite and no transform is concatenated into its source,
+ * motion and directional blur included; every other Resample op stays on the CPU.
  *
  * Any Resample op may also have costHint(params, context), returning
  * std::optional<GpuCostHint>, to describe its cost to the GPU cost model.

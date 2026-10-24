@@ -866,8 +866,8 @@ an integer `which`).
   concatenates into its source. Transform, TransformMasked and Reformat are this
   form. It runs on the GPU only if the op says
   `static constexpr bool kResamplesOnGpu = true`; then the GPU renders it
-  whenever its sampling matrices are affine and nothing is concatenated into the
-  source. The Resample kind runs its own loop (`runResampleCpu()`), not a row
+  whenever its sampling matrices, affine or projective, are finite and nothing is
+  concatenated into the source. The Resample kind runs its own loop (`runResampleCpu()`), not a row
   function under `runStagesCpu()`, since it fetches through the concatenated
   transform and samples the whole source.
 - *Offset form*: `offset(params, ctx)` returns the whole-pixel translation at

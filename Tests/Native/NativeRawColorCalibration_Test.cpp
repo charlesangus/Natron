@@ -456,7 +456,7 @@ TEST_F(NativeRawColorCalibrationTest, ColorfulnessVersionOneSwapsRedAndBlue)
 /**
  * darktable's colour calibration jobs (make-reference.py colour_calibration_jobs()) on the Develop
  * RAW chain, white balance as shot, with RawColorCalibration after RawInputColor and darktable's
- * linear Rec2020 working space. The camera illuminant and default jobs are in
+ * linear Rec709 working space. The camera illuminant and default jobs are in
  * NativeRawColorCalibrationDefaults_Test.cpp.
  **/
 class NativeRawColorCalibrationReferenceTest
@@ -466,7 +466,7 @@ protected:
                  const char* suffix,
                  const std::function<void(const NodePtr&)>& configure)
     {
-        setRec2020WorkingSpace();
+        setLinearRec709WorkingSpace();
         const std::string name = std::string(site.xtrans ? "RAF colorcal " : "CR2 colorcal ") + suffix;
         const RawDevelop::Chain chain = createChain(site);
         ASSERT_TRUE(chain.complete()) << name;
@@ -559,20 +559,14 @@ protected:
         }
     }
 
-    // darktable's default working profile; the adaptation none job mixes in it.
-    void setRec2020WorkingSpace()
+    // make-reference.py sets colorin's working profile to linear Rec709, and the clips and the
+    // adaptation none mix act on working RGB.
+    void setLinearRec709WorkingSpace()
     {
         KnobChoicePtr workingSpace = getApp()->getProject()->getKnobByNameAndType<KnobChoice>("workingSpace");
         ASSERT_TRUE(bool(workingSpace));
-        for (const ChoiceOption& option : workingSpace->getEntries_mt_safe()) {
-            const QString id = QString::fromUtf8(option.id.c_str());
-            if (id.contains(QString::fromUtf8("2020")) && id.contains(QString::fromUtf8("linear"), Qt::CaseInsensitive)) {
-                workingSpace->setValueFromID(option.id, 0);
-
-                return;
-            }
-        }
-        FAIL() << "the project offers no linear Rec. 2020 working space";
+        workingSpace->setValueFromID("Linear Rec.709 (sRGB)", 0);
+        ASSERT_EQ(std::string("Linear Rec.709 (sRGB)"), getApp()->getProject()->getWorkingColorSpace());
     }
 };
 

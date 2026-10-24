@@ -135,7 +135,7 @@ future core work has solid ground to build on.
 | M89 | Shared Worktree Ccache | done | - |  | E2 | [M89-shared-worktree-ccache.md](PLAN/MILESTONES/M89-shared-worktree-ccache.md) |
 | M90 | Render Path Serial Overhead | done | M84 | bosley-native-nodes | E6 | [M90-render-path-serial-overhead.md](PLAN/MILESTONES/M90-render-path-serial-overhead.md) |
 | M91 | NVIDIA GPU Validation | doing | M84 | bosley-faux | E5 | [M91-nvidia-gpu-validation.md](PLAN/MILESTONES/M91-nvidia-gpu-validation.md) |
-| M116 | GPU Region Overlay | todo | M81, M85, M86, M87, M91, M107, M108, M109, M110 |  | E5 | [M116-gpu-region-overlay.md](PLAN/MILESTONES/M116-gpu-region-overlay.md) |
+| M116 | GPU Region Overlay | todo | M81, M85, M86, M87, M91, M107, M108, M109, M110, M162 |  | E5 | [M116-gpu-region-overlay.md](PLAN/MILESTONES/M116-gpu-region-overlay.md) |
 | M27 | Real Debug Build | done | - | | E2 | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | done | M75 | bosley-native-nodes | E3 | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M31 | Architectural Cleanup | todo | M75, M76 |  | E14 | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
@@ -220,6 +220,7 @@ future core work has solid ground to build on.
 | M158 | Node Toolbar As Menu | done | - | bosley-native-nodes | E10 | [M158-node-toolbar-as-menu.md](PLAN/MILESTONES/M158-node-toolbar-as-menu.md) |
 | M161 | Startup Compositor Crash | blocked | - | bosley-native-nodes | E10 | [M161-startup-compositor-crash.md](PLAN/MILESTONES/M161-startup-compositor-crash.md) |
 | M170 | Engine Render Races | todo | - |  | E14 | [M170-engine-render-races.md](PLAN/MILESTONES/M170-engine-render-races.md) |
+| M162 | OFX CUDA And OpenCL Suites | todo | M86 |  | E5 | [M162-ofx-cuda-and-opencl-suites.md](PLAN/MILESTONES/M162-ofx-cuda-and-opencl-suites.md) |
 
 # Epics
 

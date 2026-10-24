@@ -340,7 +340,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: at the phase build, `NativeGpuChain_Test` passes on lavapipe.
   - size: M
 
-- [ ] M110.P4.T2 — Update the native-node README for the new GPU paths
+- [x] M110.P4.T2 — Update the native-node README for the new GPU paths
   - files: `Engine/Nodes/README.md`
   - approach:
     - **Overlaps M80**, which also edits this file. Keep the edits to these passages and rebase on M80 if it has merged.

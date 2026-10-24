@@ -37,3 +37,4 @@ Today `getColorAt` divides x by `image->getPixelAspectRatio()` (`Gui/ViewerGL.cp
 ## Decisions
 
 - 2026-10-24 — **Gate run (PM):** fast build 0fd212730 passed 389/389 on both legs. `m134_picker_par.py` passes 20/20: rect and point picks agree on both halves at PAR 2 and PAR 1. `m55_input_pipes.py` passes. `m55_node_graph.py` fails 6 checks in `splice-vertical`, the same 6 on main-equivalent `M80-final.AppImage`, so they're pre-existing and unrelated (sent to the inbox). The "rect check fails with T1 reverted" proof was not run: the PAR 2 rect pick is a direct check of the conversion, and at PAR 1 the arithmetic reduces to the old code.
+- 2026-10-24 — **Shipped (PM):** PR #86 squash-merged as d61e038cd; PR CI green on all legs, Codex review found nothing.

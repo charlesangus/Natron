@@ -408,3 +408,9 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **The failure:** `Filters/NativeReformatGpuFilterTest` fails for impulse (filter 0) and box (filter 1) only. Impulse fails every fit, scale and distort-turn case; box fails fit at mipmap 0/1 and distort-turn at mipmap 0. Worst errors are 0.05 at mipmap 0 and 0.98 at mipmap 1. Filters 2–9 pass.
   - **Suspected cause:** samples tie exactly on pixel edges, and the GPU rounds them unlike the CPU. Exact-scale Reformats are common, so a consultant is diagnosing and fixing it in the kernel rather than shifting the test off-grid.
   - **Lane note:** an implementer container left the lane's `build/` root-owned, which blocked the log download. Fixed.
+- 2026-10-23 — **M110.P2.T1 code in (`4444e6668`), awaiting the phase build.**
+  - **Kernels:** four entries (`edgedetect_fill`, `_stencil`, `_combine`, `_nms`) with a 104-byte push block. Combine and NMS emulate the CPU's double arithmetic in two-float, with no fma. The stencil uses `precise` and should match the CPU bit for bit.
+  - **Scratch:** 3 buffers, or 4 with erosion plus NMS.
+  - **Accepted deviation (PM):** `PassGpuIO` gains `std::bitset<4> channels`, set from `plan.processChannels` in `recordPassesGpu` (`Engine/Nodes/Image/PassExecutor.{h,cpp}`, one line each). Without it, RMS, Max and Tensor would mix unprocessed channels into the result on the default RGB-on-RGBA setting.
+  - **Test:** a ~250-submit sweep.
+  - **Watch:** NMS near-ties after a blur above 0, and the nearest-pixel fill's clamp (`src.bounds ∩ input RoD` versus the CPU's fetched bounds).

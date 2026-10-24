@@ -494,3 +494,9 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **Time-varying cases: test fixed in `d40ab5123`.** A Switch's colour layout comes from metadata, which is the same at every frame and the widest of its inputs (`EffectInstance.cpp:6254-6305`). So only non-colour layers can vary per frame. The tests now vary spec only.
   - **RemoveLayers → Grade is a real request-pass gap.** A node that only passes a plane through, and needs nothing from that input, gets no request edge (`ParallelRenderArgs.cpp` `visitRequestPassItem`). P4.T4 can't forward along a missing edge, so the node stays on the CPU, which pulls the plane unplanned.
   - **Next:** a consultant is choosing between adding the edge when a requested plane resolves to a pass-through, and adding it lazily, then implementing the choice. Accepting CPU placement is the fallback only if both are unsound.
+- 2026-10-24 — **Pass-through-only edges: lazy edge added (`5355cb3b9`), built with P4.T4, P4.T1 and the Layers test fix** (consultant).
+  - **Mechanism:** `queuePassThroughPlanes` adds an edge to the pass-through input only once a consumer asks the node for a plane that resolves to a pass-through. Three conditions must hold: the input was walked at that time and view, the input's RoI contains the node's RoI, and the input's post-order is lower. `dfsPostOrder` is only a tie-break, and `buildGraph` rebuilds dependencies from the edges.
+  - **Why not an eager edge:** it can't know which planes consumers will ask for at visit time, and adding it anyway would add a source task that renders every output component.
+  - **Effect:** ordinary single-plane graphs gain no edge. Where an edge is added, it replaces an unplanned pull, so pull counts only go down and CPU output and cache keys are unchanged.
+  - **New test:** `AddLayersPassesColourThroughBesideTheLayerItAddsInOneRegion`.
+  - **Not covered:** a pass-through node as the render root stays an unplanned pull.

@@ -159,7 +159,7 @@ future core work has solid ground to build on.
 | M32 | Deep Sample Node | todo |  |  | E8 | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
 | M93 | Serialization Boundary | done | - | slate-ferret | E7 | [M93-serialization-boundary.md](PLAN/MILESTONES/M93-serialization-boundary.md) |
 | M100 | Content Node Hashing | done | M93 | bosley-native-nodes | E7 | [M100-content-node-hashing.md](PLAN/MILESTONES/M100-content-node-hashing.md) |
-| M16 | Project Format Redesign | blocked | M93 | bosley-native-nodes | E7 | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
+| M16 | Project Format Redesign | doing | M93 | bosley-native-nodes | E7 | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M114 | Global Undo Correctness | todo | M93 |  | E7 | [M114-global-undo-correctness.md](PLAN/MILESTONES/M114-global-undo-correctness.md) |
 | M102 | Graph Edit Operations | todo | M16 |  | E7 | [M102-graph-edit-operations.md](PLAN/MILESTONES/M102-graph-edit-operations.md) |
 | M103 | Graph Diff And Merge | todo | M102 |  | E12 | [M103-graph-diff-and-merge.md](PLAN/MILESTONES/M103-graph-diff-and-merge.md) |
@@ -242,5 +242,4 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M138 - GUI Papercuts:** paused at its UAT (2026-10-24, same rule as M16). Needs the user's sign-off on `build/appimages/M138-uat.md` with `build/appimages/M138-b9095c319.AppImage` (release, 334/334; GUI scripts 57/0 and 413/0). Resumes at the gate, PR, review and merge.
-- **M16 - Project Format Redesign:** UAT feedback received 2026-10-24; Phase 16.9 (UAT fixes) is being planned and resumes when a lane frees.
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.

@@ -34,6 +34,7 @@
 #include <string_view>
 #include <vector>
 
+#include "Engine/Nodes/IO/RawDngOpcodes.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/RectI.h"
 
@@ -61,6 +62,7 @@
 #define kRawMetadataModel "raw/model"
 #define kRawMetadataLinearResponseLimit "raw/linear_response_limit"
 #define kRawMetadataDngD65Matrix "raw/dng_d65_matrix"
+#define kRawMetadataGainMaps "raw/gain_maps"
 
 #define kRawCfaPatternNone "none"
 #define kRawStageRaw "raw"
@@ -279,6 +281,14 @@ void setLinearResponseLimit(ImageMetadata* metadata, double limit);
  **/
 std::optional<std::array<double, 9>> getDngD65Matrix(const ImageMetadata& metadata);
 void setDngD65Matrix(ImageMetadata* metadata, const std::array<double, 9>& matrix);
+
+/**
+ * @brief raw/gain_maps: the DNG GainMap opcodes of the file's OpcodeList2, stored by
+ * RawDngOpcodes::serializeGainMaps() (map count, then per map 15 geometry values and its gains).
+ * Empty when the key is absent or malformed.
+ **/
+std::vector<DngGainMap> getGainMaps(const ImageMetadata& metadata);
+void setGainMaps(ImageMetadata* metadata, const std::vector<DngGainMap>& maps);
 
 std::optional<RawStageEnum> getStage(const ImageMetadata& metadata);
 void setStage(ImageMetadata* metadata, RawStageEnum stage);

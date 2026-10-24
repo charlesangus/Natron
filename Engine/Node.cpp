@@ -1305,6 +1305,38 @@ hashDirtyQueue()
 
 thread_local bool flushingHashDirtyMarks = false;
 
+// The hash mark trace tests install. Off, a mark only loads the flag.
+std::atomic<bool> hashMarkTraceOn(false);
+
+struct HashMarkTraceSlot {
+    std::mutex mutex; //< held through a call, so that removing the trace waits for one in progress
+    Node::HashMarkTrace trace;
+};
+
+// Deliberately leaked, like the queue.
+HashMarkTraceSlot&
+hashMarkTraceSlot()
+{
+    static HashMarkTraceSlot* slot = new HashMarkTraceSlot;
+
+    return *slot;
+}
+
+void
+traceHashMark(const Node* node,
+              const char* reason,
+              const KnobI* knob)
+{
+    if (!hashMarkTraceOn.load(std::memory_order_relaxed)) {
+        return;
+    }
+    HashMarkTraceSlot& slot = hashMarkTraceSlot();
+    std::lock_guard<std::mutex> l(slot.mutex);
+    if (slot.trace) {
+        slot.trace(node, reason, knob);
+    }
+}
+
 class FlushingHashDirtyMarksFlag {
 public:
     FlushingHashDirtyMarksFlag() { flushingHashDirtyMarks = true; }
@@ -1360,16 +1392,19 @@ struct Node::HashWalk {
 void
 Node::markHashDirty()
 {
-    markHashDirtyInternal(false);
+    markHashDirtyInternal(false, "markHashDirty", 0);
 }
 
 void
-Node::markHashDirtyInternal(bool includeGroupContents)
+Node::markHashDirtyInternal(bool includeGroupContents,
+                            const char* reason,
+                            const KnobI* knob)
 {
     // Raised before the generation moves: a walk that finds the node dirty must also see that its
     // mark is pending, or it would stop at the node and leave the dependents clean.
     const bool alreadyQueued = _imp->hashDirtyQueued.exchange(true);
     _imp->hashDirtyGeneration.fetch_add(1);
+    traceHashMark(this, reason, knob);
     if (alreadyQueued && !includeGroupContents) {
         return;
     }
@@ -1391,9 +1426,21 @@ Node::markHashDirtyInternal(bool includeGroupContents)
 }
 
 void
-Node::invalidateAllHashes()
+Node::invalidateAllHashes(const char* reason,
+                          const KnobI* knob)
 {
     hashEpoch().fetch_add(1);
+    traceHashMark(0, reason, knob);
+}
+
+void
+Node::setHashMarkTraceForTesting(const HashMarkTrace& trace)
+{
+    HashMarkTraceSlot& slot = hashMarkTraceSlot();
+    std::lock_guard<std::mutex> l(slot.mutex);
+
+    slot.trace = trace;
+    hashMarkTraceOn.store(bool(trace));
 }
 
 void
@@ -1464,6 +1511,7 @@ Node::flushHashDirtyMarks()
                 return;
             }
             const U64 previous = node->_imp->hashDirtyGeneration.fetch_add(1);
+            traceHashMark(node.get(), "reached by a mark upstream", 0);
             const bool wasDirty = (previous != node->_imp->hashCleanGeneration.load()) || (hashEpoch().load() != node->_imp->hashCleanEpoch.load());
             // Whatever folds in a dirty node is dirty too, except below a node whose own mark is
             // still pending, so the walk stops at dirty nodes that are not pending.
@@ -1672,7 +1720,7 @@ Node::onKnobContentChanged(const KnobI* knob)
     if (knob && dynamic_cast<NodeGroup*>(_imp->effect.get())) {
         groupState = (knob == _imp->disableNodeKnob.lock().get()) || (knob == _imp->lifeTimeKnob.lock().get()) || (knob == _imp->enableLifeTimeKnob.lock().get());
     }
-    markHashDirtyInternal(groupState);
+    markHashDirtyInternal(groupState, "knob content changed", knob);
 }
 
 bool

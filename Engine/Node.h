@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <functional>
 #include <list>
 #include <map>
 #include <set>
@@ -314,7 +315,18 @@ public:
      * @brief Marks every node's hash dirty, for changes to state all of them fold in, such as
      * the project's render settings. Lock-free.
      **/
-    static void invalidateAllHashes();
+    static void invalidateAllHashes(const char* reason = "invalidateAllHashes",
+                                    const KnobI* knob = 0);
+
+    /**
+     * @brief Called with every move of a hash mark count: a node's own mark (`node` the node
+     * marked), a mark reaching it from upstream, or a move of the count all nodes share (`node`
+     * null). `knob` is the knob whose change marked, when known, and is only valid during the
+     * call. Calls are serialized, from whichever thread marks; the trace must not mark. An empty
+     * function removes it. For tests.
+     **/
+    typedef std::function<void(const Node* node, const char* reason, const KnobI* knob)> HashMarkTrace;
+    static void setHashMarkTraceForTesting(const HashMarkTrace& trace);
 
     /**
      * @brief Marks the hash dirty and recomputes it now. Returns true if it changed.
@@ -1949,7 +1961,9 @@ private:
      * @brief Marks this node, and if includeGroupContents every node inside it when it is a
      * group. Its dependents are marked by the next flushHashDirtyMarks().
      **/
-    void markHashDirtyInternal(bool includeGroupContents);
+    void markHashDirtyInternal(bool includeGroupContents,
+                               const char* reason,
+                               const KnobI* knob);
 
     /**
      * @brief Marks the dependents of every node marked since the last flush. Any hash read

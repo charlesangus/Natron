@@ -157,7 +157,7 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
         }
         additionalFormats = serializedAdditionalFormats;
         ++formatsGeneration;
-        Node::invalidateAllHashes();
+        Node::invalidateAllHashes("project formats changed");
 
         formatKnob->populateChoices(entries);
         autoSetProjectFormat = false;

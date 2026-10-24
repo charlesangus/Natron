@@ -29,9 +29,12 @@
 #include <atomic>
 #include <functional>
 #include <list>
+#include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QString>
 #include <QThread>
@@ -42,6 +45,7 @@
 #include <ofxNatron.h>
 
 #include "BaseTest.h"
+#include "CacheMemoryPressureGuard.h"
 #include "NativeParity.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "RenderBothWays.h"
@@ -49,6 +53,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -93,6 +98,62 @@ optionIDs(const NodePtr& node,
 
     return ids;
 }
+
+// Records every hash mark count move while alive, to say on a mismatch where the marks came from.
+class HashMarkRecorder {
+public:
+    struct Mark {
+        const Node* node; //< null for a move of the count all nodes share
+        std::string reason;
+        std::string knob;
+        bool mainThread;
+    };
+
+    HashMarkRecorder()
+    {
+        Node::setHashMarkTraceForTesting([this](const Node* node, const char* reason, const KnobI* knob) {
+            Mark mark;
+            mark.node = node;
+            mark.reason = reason ? reason : "";
+            mark.knob = knob ? knob->getName() : std::string();
+            mark.mainThread = (QThread::currentThread() == qApp->thread());
+            std::lock_guard<std::mutex> l(_mutex);
+            _marks.push_back(mark);
+        });
+    }
+
+    ~HashMarkRecorder()
+    {
+        Node::setHashMarkTraceForTesting(Node::HashMarkTrace());
+    }
+
+    HashMarkRecorder(const HashMarkRecorder&) = delete;
+    HashMarkRecorder& operator=(const HashMarkRecorder&) = delete;
+
+    // The marks that moved `node`'s count: its own, and those of the count all nodes share.
+    std::string describe(const NodePtr& node) const
+    {
+        std::lock_guard<std::mutex> l(_mutex);
+        std::ostringstream os;
+        for (std::size_t i = 0; i < _marks.size(); ++i) {
+            const Mark& mark = _marks[i];
+            if (mark.node && (mark.node != node.get())) {
+                continue;
+            }
+            os << "\n  " << (mark.node ? node->getScriptName_mt_safe() : std::string("<all nodes>")) << ": " << mark.reason;
+            if (!mark.knob.empty()) {
+                os << " (knob " << mark.knob << ")";
+            }
+            os << (mark.mainThread ? " on the main thread" : " off the main thread");
+        }
+
+        return os.str();
+    }
+
+private:
+    mutable std::mutex _mutex;
+    std::vector<Mark> _marks;
+};
 
 } // anonymous namespace
 
@@ -210,8 +271,12 @@ TEST_F(OfxClipPreferencesThreadTest, GeneratorAnswersOnPoolThreadsAsOnTheMainThr
     defaults.setOutputFormat(RectI(0, 0, 1, 1));
     defaults.setPixelAspectRatio(-1, 1.);
 
+    // Held across the measured window, so that the renders' own guards find the knob already at 0
+    // and write no Settings knob, which would move every node's mark count.
+    DisableUnreachableRAMPurging noPurge;
     const U64 marksBefore = generator->getHashMarkCount();
     const U64 hashBefore = generator->getHashValue();
+    HashMarkRecorder recorder;
 
     int wrong = 0, failed = 0, renders = 0;
     ASSERT_TRUE(runOnPoolThreads(generator, defaults, [&](const NodeMetadata& answer) { return (answer.getNComps(-1) == mainAnswer->getNComps(-1)) && (answer.getOutputFormat() == mainAnswer->getOutputFormat()) && (answer.getPixelAspectRatio(-1) == mainAnswer->getPixelAspectRatio(-1)) && (answer.getBitDepth(-1) == mainAnswer->getBitDepth(-1)); }, generator, &wrong, &failed, &renders));
@@ -219,7 +284,7 @@ TEST_F(OfxClipPreferencesThreadTest, GeneratorAnswersOnPoolThreadsAsOnTheMainThr
     EXPECT_EQ(0, failed);
     EXPECT_EQ(0, wrong);
     EXPECT_GT(renders, 0);
-    EXPECT_EQ(marksBefore, generator->getHashMarkCount());
+    EXPECT_EQ(marksBefore, generator->getHashMarkCount()) << "over " << renders << " renders:" << recorder.describe(generator);
     EXPECT_EQ(hashBefore, generator->getHashValue());
     NodeMetadataConstPtr mainAnswerAfter = generator->getEffectInstance()->getTimeInvariantMetadata();
     ASSERT_TRUE(bool(mainAnswerAfter));
@@ -244,8 +309,11 @@ TEST_F(OfxClipPreferencesThreadTest, MultiPlaneOverAnUnchangedInputLeavesItsMenu
 
     NodeMetadataConstPtr mainAnswer = multiPlane->getEffectInstance()->getTimeInvariantMetadata();
     ASSERT_TRUE(bool(mainAnswer));
+    // As in the Generator test.
+    DisableUnreachableRAMPurging noPurge;
     const U64 marksBefore = multiPlane->getHashMarkCount();
     const U64 hashBefore = multiPlane->getHashValue();
+    HashMarkRecorder recorder;
 
     int wrong = 0, failed = 0, renders = 0;
     ASSERT_TRUE(runOnPoolThreads(multiPlane, *mainAnswer, [&](const NodeMetadata& answer) { return (answer.getNComps(-1) == mainAnswer->getNComps(-1)) && (answer.getComponentsType(-1) == mainAnswer->getComponentsType(-1)) && (answer.getNComps(0) == mainAnswer->getNComps(0)) && (answer.getOutputFormat() == mainAnswer->getOutputFormat()) && (answer.getPixelAspectRatio(-1) == mainAnswer->getPixelAspectRatio(-1)); }, multiPlane, &wrong, &failed, &renders));
@@ -254,6 +322,6 @@ TEST_F(OfxClipPreferencesThreadTest, MultiPlaneOverAnUnchangedInputLeavesItsMenu
     EXPECT_EQ(0, wrong);
     EXPECT_EQ(planesBefore, optionIDs(multiPlane, kNatronTestMultiPlaneParamInputPlane));
     EXPECT_EQ(channelsBefore, optionIDs(multiPlane, kNatronTestMultiPlaneParamByChannel));
-    EXPECT_EQ(marksBefore, multiPlane->getHashMarkCount());
+    EXPECT_EQ(marksBefore, multiPlane->getHashMarkCount()) << "over " << renders << " renders:" << recorder.describe(multiPlane);
     EXPECT_EQ(hashBefore, multiPlane->getHashValue());
 }

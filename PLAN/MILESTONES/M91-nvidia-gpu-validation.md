@@ -237,7 +237,7 @@ If M107 hasn't merged when Phase 91.2 finishes, skip this phase and file it as a
   - verify: a median-of-3 table per comp for auto and off, a GPU-region count, and an explicit statement that auto is not slower than off beyond noise — or a follow-up stub saying why.
   - size: M
 
-- [ ] M91.P4.T3 — Record the NVIDIA numbers and decisions in the GPU design note
+- [x] M91.P4.T3 — Record the NVIDIA numbers and decisions in the GPU design note
   - files: `PLAN/DESIGN/2026-10-10-gpu-compute-backend.md`, `PLAN/DECISIONS/<date>-nvidia-*.md` (one per workaround, only if any). Plan branch only.
   - approach: Add §11, "Outcomes from M91 - NVIDIA GPU Validation", with the P4.T1 and P4.T2 tables beside the RADV figures, stating host differences up front (FX-8350 vs 7800X3D, PCIe link, 8 vs 24 GiB, no ReBAR). Add an NVIDIA column to §3; NVIDIA rows to §4 (dispatch Y/Z limit, 48 KiB shared memory, no fp32 denormal preservation, 246 MiB BAR heap). Update §8's "One vendor and one driver" risk. One decision entry per vendor-specific workaround or widened tolerance.
   - verify: §11 exists with numbers for every bench in P4.T1 and P4.T2. Every P2 workaround has a decision file. §8 no longer says NVIDIA is untested.

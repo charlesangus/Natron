@@ -136,20 +136,21 @@ The twin does not vectorise. Each pixel is a scalar call inside an 8×8 group lo
 
 ## 3. Tolerances per kernel and driver
 
-| Kernel / check | Bound | lavapipe | RADV |
-|---|---|---|---|
-| `fill` (x + y·w, 1921×1081) | exact | pass | pass |
-| Transfer round trip (UHD, staging and host-import) | byte-exact | pass | pass |
-| Grade, C++ twin against the double reference | ≤ 4 ULP, or abs ≤ 1e-6 near 0. Plus a per-element conditioned term for reverse grade: 4 + 2·\|ln y\| ULP of the pow term, plus subtraction and division rounding. | CPU only: about 5.5k of 27M values need the conditioned term. That is float against double, not a kernel bug. | — |
-| Grade, GPU against the double reference | The same bounds, plus a GPU-only slack from the SPIR-V precision table (pow = exp2·log2, unfused fma). Subnormal inputs may return either the value or 0. | worst use of the conditioned bound 0.487. pow/log2 on subnormals are garbage, hence the value-or-0 rule. | worst use of the conditioned bound 0.244; gamma curves ≤ 31 ULP; all 6033 subnormals match |
-| Blur, C++ twin against the double FIR reference | abs ≤ 2e-6 on [0, 1], σ ∈ {0.5, 3, 25, 100}, odd and tiny sizes | pass | — |
-| Blur, GPU against the double FIR reference | abs ≤ 2e-6 | same values as RADV | max abs 1.4e-7 / 2.2e-7 / 5.8e-7 / 1.21e-6 at σ 0.5 / 3 / 25 / 100 |
-| `Chain<Grade, Invert>` against two passes | bit-exact | pass (C++ twin) | — |
-| GL 4.3 compute (Grade, Blur) | the P3 bounds above | — | pass on radeonsi |
-| GL interop | byte-exact | hostsync pass | zero-copy and hostsync pass |
-| Tiled strips against the whole frame (bench) | — | — | max abs diff 0 |
+| Kernel / check | Bound | lavapipe | RADV | NVIDIA |
+|---|---|---|---|---|
+| `fill` (x + y·w, 1921×1081) | exact | pass | pass | pass |
+| Transfer round trip (UHD, staging and host-import) | byte-exact | pass | pass | pass |
+| Grade, C++ twin against the double reference | ≤ 4 ULP, or abs ≤ 1e-6 near 0. Plus a per-element conditioned term for reverse grade: 4 + 2·\|ln y\| ULP of the pow term, plus subtraction and division rounding. | CPU only: about 5.5k of 27M values need the conditioned term. That is float against double, not a kernel bug. | — | — |
+| Grade, GPU against the double reference | The same bounds, plus a GPU-only slack from the SPIR-V precision table (pow = exp2·log2, unfused fma). Subnormal inputs may return either the value or 0. | worst use of the conditioned bound 0.487. pow/log2 on subnormals are garbage, hence the value-or-0 rule. | worst use of the conditioned bound 0.244; gamma curves ≤ 31 ULP; all 6033 subnormals match | pass at the RADV bounds |
+| Blur, C++ twin against the double FIR reference | abs ≤ 2e-6 on [0, 1], σ ∈ {0.5, 3, 25, 100}, odd and tiny sizes | pass | — | — |
+| Blur, GPU against the double FIR reference | abs ≤ 2e-6 | same values as RADV | max abs 1.4e-7 / 2.2e-7 / 5.8e-7 / 1.21e-6 at σ 0.5 / 3 / 25 / 100 | pass at the RADV bounds |
+| `Chain<Grade, Invert>` against two passes | bit-exact | pass (C++ twin) | — | — |
+| GL 4.3 compute (Grade, Blur) | the P3 bounds above | — | pass on radeonsi | pass |
+| GL interop | byte-exact | hostsync pass | zero-copy and hostsync pass | zero-copy and hostsync pass (§11) |
+| Tiled strips against the whole frame (bench) | — | — | max abs diff 0 | — |
+| Linear-filter LUT in runtime GLSL (`Lut3DLinear`, `Lut2DLinear`) | the exact-weight 1e-5 where the device allows; otherwise `kTolerance` plus a per-element bound of 2^-`subTexelPrecisionBits` times the texel differences across the cell (`subTexelPrecisionBits` is 8 on NVIDIA) | pass | pass | worst 1.55e-4 (3D) and 1.26e-5 (2D); legal under the Vulkan filtering precision rules |
 
-Kernel fix found along the way: SPIR-V `Pow` gives NaN for inf^0, so reverse grade now returns 1 explicitly for pow(v, 0).
+On NVIDIA every other suite passed at the RADV tolerances (§11). Kernel fix found along the way: SPIR-V `Pow` gives NaN for inf^0, so reverse grade now returns 1 explicitly for pow(v, 0).
 
 ## 4. Hard limits and gotchas M84 must design around
 
@@ -165,6 +166,11 @@ Kernel fix found along the way: SPIR-V `Pow` gives NaN for inf^0, so reverse gra
 | 8 | **The container does not see RADV** even with `--device=/dev/dri`. | GPU runs build in the container and run natively on the host, so binaries may depend only on `libvulkan.so.1`, glibc and el9 base libstdc++. Engine ctest on a real GPU needs the same arrangement, or a fix to the image. |
 | 9 | **Push constants are capped at 128 B, and uniform buffers are unsupported.** | Kernel parameters must fit 128 B. Bigger tables, such as Blur weights, go in a storage buffer. |
 | 10 | Validation layers are on neither the image nor the host. | Without them, misuse such as the copy corruption shows up only as wrong output. Install the layers for M84 development. |
+| 11 | NVIDIA: `maxComputeWorkGroupCount` is {2³¹−1, **65535**, **65535**} (RADV: 2³²−1 in every dimension). | `GpuKernel::record` fails rather than splitting a dispatch that exceeds it. Kernels must keep Y and Z within 65535 groups. |
+| 12 | NVIDIA: `maxComputeSharedMemorySize` is **48 KiB** (RADV 64 KiB). | The current kernels' groupshared use fits. |
+| 13 | NVIDIA: `shaderDenormPreserveFloat32` is **false**. | Float compares on denormals are not reliable, which is why §10 keys compares by integer. |
+| 14 | NVIDIA without ReBAR: the device-local, host-visible heap (BAR) is **246 MiB**. | Do not assume the VRAM is host-visible. |
+| 15 | NVIDIA: subgroup size 32. Queue families: compute-only ×8 (family 2), transfer-only ×2 (family 1), plus the graphics family. | No kernel relies on subgroups. The code picks compute family 2 and transfer family 1, with ownership transfers between them. |
 
 ## 5. API sketch for M84 - GPU Placement And Residency
 
@@ -297,7 +303,7 @@ The main build gains `find_package(Vulkan)` behind an option that defaults to on
 - **The Blur GPU kernel is far from roofline:** 21.5 ms for σ25 at UHD on a 61 TFLOP card, and the 8K σ25 vertical-pass anomaly. GPU gains for heavy spatial ops depend on M85 fixing this.
 - **The cost of registering a host-import is unmeasured.** The 9.9 ms figure assumes the frame is already in imported memory. The per-buffer pin and unpin cost, and how it behaves with a churning `FrameStore`, decide whether residency-from-day-one gets its transfer number.
 - **Device-lost recovery is untested.** The latch exists, but nothing has exercised re-running on the CPU or re-creating the device.
-- **One vendor and one driver.** Every speed and interop number is RADV/radeonsi. NVIDIA (proprietary GL/Vulkan interop, UUID matching), Intel and macOS (MoltenVK, where GL interop is not an option) are untested. The limits in §4 may differ per driver, so read them from the device.
+- **Vendors and drivers.** NVIDIA proprietary is now validated on Ampere (RTX 3070 Ti, driver 580.178.04) as well as RADV and lavapipe (§11). Intel, Pascal (the Quadro P400 was not run, by user decision) and macOS (MoltenVK, where GL interop is not an option) are untested. The limits in §4 differ per driver, so read them from the device.
 - **Runtime fusion against offline-only Slang** (M87, §6) may force a runtime-compiler decision.
 - **Slang release churn:** v2026.19 is pinned. GLSL output already needed fix-ups, and a compiler bump must re-run the tolerance suite.
 - **Host access to `/dev/dri`** after reboots (§4 #7), and no RADV inside the container (§4 #8), make real-GPU CI hard. CI will be lavapipe-only, so the semaphore interop path is never run in CI.
@@ -368,3 +374,128 @@ The main build gains `find_package(Vulkan)` behind an option that defaults to on
   - stripped regions hide it;
   - at 16k and 24k the uncompressed EXR Write is 60–90% of an Auto frame.
 - **The bench host is transient:** its hardware can change across a reboot. Compare only Auto/Off pairs measured on one boot.
+
+## 11. Outcomes from M91 - NVIDIA GPU Validation (2026-10-24)
+
+NVIDIA proprietary driver 580.178.04 (Vulkan 1.4.312) on an RTX 3070 Ti works for the offline kernels, the runtime shaders, host-import and the Vulkan→GL hand-off. Two tests were vendor-specific and were fixed in the tests, not the engine.
+
+**Host differences (read every number below with these)**
+
+| | RADV reference host | M91 host (bosley-faux) |
+|---|---|---|
+| GPU | RX 7900 XTX, 24 GiB VRAM, ReBAR | RTX 3070 Ti, 8 GiB VRAM (about 4 GiB held by desktop apps, 3.86 GiB headroom), no ReBAR (246 MiB BAR heap) |
+| PCIe link | not recorded (about 25 GB/s DMA, i.e. gen4 x16) | **gen 2 x16**, the platform's maximum; about 6 GB/s per direction |
+| CPU | 7800X3D, 16 threads | AMD FX-8350, 8 threads, 4.0 GHz max |
+| Host RAM | 24 GiB-class | 23 GiB, about 6 GB free, swap in use |
+| Driver | RADV | NVIDIA 580.178.04 |
+
+Transfer rows are dominated by the gen 2 link, so they are not comparable as GPU speed. Kernel rows are comparable as GPU compute. NVIDIA figures are the mean of 2 runs (median run-to-run difference 0.2%). Only UHD and 8K were run. The CPU columns of §2.3 were not re-measured (they need `graph_bench`, and the CPU is the busy FX-8350).
+
+### 11.1 Transfers (cf. §2.1; UHD float, `GpuTransfer_Test`, ms/frame wall)
+
+NVIDIA ran 6 frames at 8 strips per frame (RADV 16 frames), on a possibly loaded host, so treat it as indicative.
+
+| Path | RADV | NVIDIA | Notes |
+|---|---|---|---|
+| Staging, 1 copy thread | 35.4 | 60.5 | overlap ×2.57 (RADV ×1.55 with 8 threads) |
+| Staging, 8 copy threads | 20.1 | 60.8 | overlap ×2.41; link-bound, extra copy threads do not help |
+| Host-import (pin per frame) | 9.9 | 52.0 | |
+| Host-import, cached registration | n/a | 37.2 | pin cost removed |
+| DMA alone, each way | 4.7–5.6 | 20.3–22.8 | about 5.7 GB/s (RADV about 25 GB/s) |
+| No-op compute | 0.28 | 0.51–0.57 | |
+
+### 11.2 Break-even (cf. §2.2; one round trip, serial / pipelined ms)
+
+| Size | Staging RADV | Staging NVIDIA | Host-import RADV | Host-import NVIDIA | GB/s staging / import, RADV | GB/s staging / import, NVIDIA |
+|---|---|---|---|---|---|---|
+| UHD | 20.0 / 18.6 | 74.3 / 72.7 | 10.8 / 9.5 | 43.9 / 36.7 | 13.2 / 24.5 | 3.6 / 6.0 |
+| 8K | 78.2 / 74.3 | 281.7 / 275.4 | 42.8 / 38.4 | 174.6 / 150.5 | 13.6 / 24.8 | 3.8 / 6.1 |
+| 16k (tiled) | 603.6 / 571.2 | skipped | 329.0 / 292.3 | skipped | 13.6 / 24.9 | skipped |
+| 24k (tiled) | 1337.8 / 1274.9 | skipped | 737.4 / 654.5 | skipped | 13.8 / 25.0 | skipped |
+
+Bandwidth is flat across sizes again: about 6 GB/s with host-import and 3.7 GB/s with staging on the gen 2 link (RADV: 25 and 13.6).
+
+### 11.3 Kernel time and end to end (cf. §2.3; ms per image, pipelined)
+
+| Size | Workload | RADV kernel | NVIDIA kernel | RADV E2E staging | NVIDIA E2E staging | RADV E2E import | NVIDIA E2E import |
+|---|---|---|---|---|---|---|---|
+| UHD | Grade | 0.4 | 0.5 | 18.5 | 68.1 | 9.5 | 36.7 |
+| UHD | Blur s3 | 3.3 | 1.2 | 18.9 | 68.2 | 9.5 | 36.7 |
+| UHD | Blur s25 | 21.5 | 5.9 | 35.0 | 68.7 | 25.5 | 37.3 |
+| UHD | Blur s100 | 52.5 | 19.3 | 75.4 | 68.1 | 61.3 | 39.3 |
+| UHD | Grade→Blur25 | 22.9 | 6.5 | 33.5 | 68.1 | 23.7 | 37.5 |
+| 8K | Grade | 2.0 | 2.1 | 74.1 | 280.3 | 38.3 | 150.3 |
+| 8K | Blur s3 | 12.8 | 4.8 | 84.8 | 272.5 | 38.3 | 151.4 |
+| 8K | Blur s25 | 164.2 | 23.8 | 254.2 | 274.7 | 186.3 | 156.3 |
+| 8K | Blur s100 | 286.6 | 78.1 | 395.0 | 280.2 | 342.1 | 170.5 |
+| 8K | Grade→Blur25 | 170.0 | 25.9 | 221.7 | 270.6 | 182.3 | 156.3 |
+
+Up to Blur s25 every NVIDIA cell is pure transfer time (E2E equals Copy). Blur kernels are 2.5–7× faster than on RADV. Overlap off, UHD (staging / import): Copy 74.3 / 43.9, Blur25 77.0 / 49.4, Blur100 89.7 / 62.6; 8K: Copy 281.7 / 174.6, Blur25 299.4 / 195.6, Blur100 352.6 / 249.9.
+
+Blur pass split (cf. §2.4; resident, ms per image, H / V):
+
+| | s3 RADV | s3 NVIDIA | s25 RADV | s25 NVIDIA | s100 RADV | s100 NVIDIA |
+|---|---|---|---|---|---|---|
+| UHD | 0.99 / 2.30 | 0.58 / 0.63 | 5.94 / 15.52 | 2.19 / 3.72 | 22.10 / 30.37 | 8.38 / 10.87 |
+| 8K | 4.00 / 8.79 | 2.34 / 2.49 | 23.44 / 140.77 | 8.81 / 14.96 | 87.86 / 198.89 | 34.11 / 44.02 |
+
+NVIDIA V/H is 1.07–1.70 everywhere. The RADV 8K s25 outlier (V = 6× H) does not appear (1.7×).
+
+### 11.4 Interop hand-off (cf. §2.5; UHD float, end to end, median of 10)
+
+| Path | RADV / radeonsi | NVIDIA / NVIDIA GL |
+|---|---|---|
+| Zero-copy with semaphores | 0.79 ms | 1.24 ms (produce 0.81, hand-off 0.64) |
+| Zero-copy hostsync (fence + `glFinish`) | 0.87 ms | 1.43 ms |
+| Readback + PBO | 33.2 ms | 67.12 ms (gen 2 link) |
+
+All three paths are byte-exact on NVIDIA, with device and driver UUIDs matching.
+
+### 11.5 ImportCost (NVIDIA only; no RADV figures)
+
+Alignment 4096 B. Median ms of 7.
+
+| Buffer | alloc+touch | pin (touched) | unpin | pin (cold) |
+|---|---|---|---|---|
+| 1 MB | 0.081 | 0.159 | 0.312 | 0.147 |
+| UHD 126.6 MB | 79.8 | 11.5 | 5.8 | 66.4 |
+| 8K 506 MB | 323.5 | 49.0 | 27.5 | 270.0 |
+| 4 GB | `VK_ERROR_OUT_OF_DEVICE_MEMORY` in `vkAllocateMemory` | | | |
+
+Churn, 32 UHD round trips, median ms/frame: fresh alloc+touch+import+transfer+free 235.7; recycled with cached import 43.7; recycled staging 90.7. Fresh allocation costs 192 ms/frame (439% of the cached transfer), which confirms the cached-registration requirement (§5.5).
+
+### 11.6 End-to-end release render (3 comps, frames 1–6, taskgraph, release AppImage, per-host memory cap)
+
+Median of 3 rounds, whole-process wall in seconds, auto against `NATRON_GPU=off`. All 21 renders exited 0, with no OOM kills.
+
+| Comp | Auto | Off | Speed-up | GPU-placed task records | Region records | Fallbacks | Transfers |
+|---|---|---|---|---|---|---|---|
+| keying_grade | 7.3 | 15.1 | 2.07× | 78 of 144 | 36 | none | all host-import |
+| cg_multipass | 8.7 | 15.0 | 1.72× | 60 of 186 (75 in r3) | 18 (33 in r3) | none | all host-import |
+| defocus_retime | 23.9 | 63.9 | 2.67× | 96 of 228 | 54 | none | all host-import |
+
+Auto is not slower than off on any comp. There were no host-import failures. The run selected the RTX 3070 Ti over the Quadro P400 and llvmpipe, ready about 330–360 ms after start. Exposed transfer, not kernel time, dominates the GPU regions (keying_grade, first round: upload 1032 ms, kernel 129 ms, download 929 ms). Placement is not deterministic: cg_multipass r3 placed 15 more tasks and was still the fastest auto run. An earlier attempt without the memory cap swapped and was discarded.
+
+### 11.7 Test suites
+
+P2.T6 (build f2cb62759, CI run 40058465161), all green on the RTX 3070 Ti:
+
+| Run | Total | Pass | Fail |
+|---|---|---|---|
+| `ctest -L gpu` (REQUIRE_GPU, REQUIRE_GPU_HARDWARE) | 47 | 47 | 0 |
+| engine ctest, `NATRON_GPU=force`, legacy | 335 | 335 | 0 |
+| engine ctest, `NATRON_GPU=force`, taskgraph | 335 | 335 | 0 |
+
+`GlInterop_Test` is zero-copy on NVIDIA EGL (UHD medians: zero-copy 1.23 ms, hostsync 1.47 ms, readback 66.96 ms; byte-exact on all three). `GlInteropQt` on `:0` with NVIDIA GL 4.6.0 is zero-copy, checksums match; under Xvfb (llvmpipe GL) it correctly falls back to readback-pbo. Vendor-specific failures found in the baseline and fixed in the tests: the linear-LUT tolerance (§3) and the pipelined-strip timing assert (decision `nvidia-pipelined-strip-timing-assert`). `GpuTransferTest.PipelinedFramesTimeline` failed once under RAM pressure (staging fallback, correct) and passed afterwards.
+
+### 11.8 Capacity and cost-seed notes
+
+- 16k and 24k were dropped as host capacity: the 4.1 GB image with staging plus host buffers pushed a host with about 5 GiB available into swap, and the first 16k staging cell took 293.7 s. That data is not valid.
+- The 4 GB ImportCost case hit `VK_ERROR_OUT_OF_DEVICE_MEMORY` with 3.86 GiB of VRAM headroom (cause not investigated).
+- The GPU cost seeds were measured on the RADV and 7800X3D host. The CPU rows are too cheap for the FX-8350 (Grade seeded at 11.5 ms/Mpx, observed about 45–50 under load), so the model undervalues offload. In cg_multipass this keeps five single-node island Grades on the CPU (about 133 MB each way predicted at about 45 ms). That errs in the safe direction (toward CPU). Predicted transfer cost tracked the measured exposed transfer, within about 2–20%.
+
+### 11.9 Follow-ups
+
+- Viewer hand-off validation on NVIDIA once M107 is merged (Phase 91.3 was skipped: M107 was still in progress).
+- Pipelined member-time inflation: the compute→transfer release barriers inside the timed strip interval are charged real time on NVIDIA, so member timestamps undercount strip time.
+- Per-vendor and per-host cost seeds, including a CPU-seed correction for slow hosts.

@@ -482,12 +482,17 @@ TEST_F(DataKindGroupTest, SwappingWhatFeedsTheGroupOutputFlipsTheGroupsKind)
     ASSERT_TRUE(imageSink->connectInput(group, 0));
     EXPECT_FALSE(hasDataKindMessage(imageSink));
 
+    // Deep now reaches the group while the image sink still requires image of it: like any
+    // pass-through caught between the two, the group holds both kinds and reports ambiguous.
     ASSERT_TRUE(groupOutput->replaceInput(deepSource, 0));
-    EXPECT_EQ(eDataKindDeep, group->getEffectiveOutputDataKind());
+    bool ambiguous = false;
+    EXPECT_EQ(eDataKindPolymorphic, group->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_TRUE(ambiguous);
     EXPECT_TRUE(hasDataKindMessage(imageSink));
 
     ASSERT_TRUE(groupOutput->replaceInput(imageSource, 0));
-    EXPECT_EQ(eDataKindImage, group->getEffectiveOutputDataKind());
+    EXPECT_EQ(eDataKindImage, group->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
     EXPECT_FALSE(hasDataKindMessage(imageSink));
 }
 
@@ -513,12 +518,17 @@ TEST_F(DataKindGroupTest, SwappingInsideANestedGroupFlipsTheOuterGroupsKind)
     EXPECT_FALSE(hasDataKindMessage(imageSink));
 
     ASSERT_TRUE(nestedOutput->replaceInput(deepSource, 0));
-    EXPECT_EQ(eDataKindDeep, nested->getEffectiveOutputDataKind());
-    EXPECT_EQ(eDataKindDeep, outer->getEffectiveOutputDataKind());
+    bool ambiguous = false;
+    EXPECT_EQ(eDataKindPolymorphic, nested->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_TRUE(ambiguous);
+    ambiguous = false;
+    EXPECT_EQ(eDataKindPolymorphic, outer->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_TRUE(ambiguous);
     EXPECT_TRUE(hasDataKindMessage(imageSink));
 
     ASSERT_TRUE(nestedOutput->replaceInput(imageSource, 0));
-    EXPECT_EQ(eDataKindImage, outer->getEffectiveOutputDataKind());
+    EXPECT_EQ(eDataKindImage, outer->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
     EXPECT_FALSE(hasDataKindMessage(imageSink));
 }
 

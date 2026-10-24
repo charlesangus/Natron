@@ -340,7 +340,7 @@ Design reference: `build/m119-mockup/` in the lane (mockup.py, NOTES.md, hud-{C,
   - verify: GuiTests: engaged, the active knob's backdrop is visible and highlighted and no widget in the row keeps the old orange style; ending global mode restores it. Screenshots in the evidence script.
   - size: M
 
-- [ ] M119.P6.T3 — Build, evidence script and approval AppImage
+- [x] M119.P6.T3 — Build, evidence script and approval AppImage
   - files: `Tests/gui/m119_trackball_layout.py`
   - approach: add ring-proportion probes and global-mode highlight shots (panel open and closed, after a knob switch); one release build with tests; Xvfb run; share screenshots, then the AppImage.
   - verify: ctest green; results.txt no FAIL; the user approves.
@@ -360,7 +360,7 @@ Design reference: `build/m119-mockup/` in the lane (mockup.py, NOTES.md, hud-{C,
   - verify: unit tests updated; the script checks the engaged block's outline pixel is the highlight colour, its fill equals the plain block's, and the button has no orange fill; screenshots.
   - size: M
 
-- [ ] M119.P7.T3 — Build, evidence script and approval AppImage
+- [x] M119.P7.T3 — Build, evidence script and approval AppImage
   - files: `Tests/gui/m119_trackball_layout.py`
   - approach: release build with tests, run the script under Xvfb, send screenshots and the AppImage.
   - verify: ctest green; results.txt no FAIL; the user approves.
@@ -370,6 +370,7 @@ Design reference: `build/m119-mockup/` in the lane (mockup.py, NOTES.md, hud-{C,
 
 ## Decisions
 
+- 2026-10-24 — **UAT approved (user):** round 5 on `M119-7c8ff148f.AppImage`. P6.T3's approval is folded into P7.T3.
 - 2026-10-24 — **Round 5 details (user):** the engaged outline stays 1 px, in the selection colour on all four sides. The block's 6 px top padding is added only while the panel is open, so the row shifts down 6 px on open; its side padding is reserved permanently, so the toggle never moves sideways. Evidence: release 397/397 on 7c8ff148f; `m119_trackball_layout.py` 246/246 after the probe fix in 7d45f637b. The two earlier failures were the probe reading under the global-mode hint window. Screenshots sent; P7.T3 waits on the user's approval.
 - 2026-10-24 — **UAT round 5 (user):** the lighter sunken block reads better, but it has no inner or outer margin, so it is tight and overlaps its neighbours, and the labels and knobs inside draw their own background. Remove the global-mode button's orange fill. Instead of lightening the engaged block, colour its outline with the highlight colour (orange). Reuse existing spacing constants. Phase 119.7 added; P6.T3's approval is superseded by P7.T3.
 - 2026-10-24 — **Phase 6 evidence (PM):** release build on 950fe5847 is 397/397 on both legs. `m119_trackball_layout.py` reports no failures on 1ef406920's script: the ring is 12/72.5 of the outer radius at every size (9 px quarter-default to 38 px half-wide), and exactly one highlighted block follows the engaged knob (open, closed, Ctrl+Down, Esc). The first run's two failures were the script measuring Multiply's panel and gain's 22 px main row without its split channel lines. Screenshots sent; P6.T3 waits on the user's approval. The global-mode button keeps its orange 'on' fill pending the user's call.

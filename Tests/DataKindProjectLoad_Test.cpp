@@ -434,8 +434,8 @@ TEST_F(BaseTest, DeepChainInsideGroupSurvivesSaveAndLoadWithSameKindsAndNoConfli
     ASSERT_TRUE(group2 && sink2);
     ASSERT_TRUE(bool(group2->getInput(0)));
     EXPECT_EQ(sourceName, group2->getInput(0)->getScriptName());
-    ASSERT_TRUE(bool(sink2->getInput(0)));
-    EXPECT_EQ(groupName, sink2->getInput(0)->getScriptName());
+    ASSERT_TRUE(bool(sink2->getRealInput(0)));
+    EXPECT_EQ(groupName, sink2->getRealInput(0)->getScriptName());
 
     ambiguous = true;
     EXPECT_EQ(eDataKindDeep, group2->getEffectiveOutputDataKind(&ambiguous));

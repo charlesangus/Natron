@@ -568,6 +568,10 @@ private:
                                              TexturePtr* texture);
 
     ViewerHandoffFrame handoffFrameFor(const TextureRect& roiRounded) const;
+
+    // Starts compiling the viewer process of the current depth and display transform, and builds the hand-off rings
+    // at the largest frame the viewport can show, so that the first frame pays for neither.
+    void prepareHandoffAhead();
 #endif
 
     void setParametricParamsPickerColor(const OfxRGBAColourD& color, bool setColor, bool hasColor);

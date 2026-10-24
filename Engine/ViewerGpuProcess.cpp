@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <future>
 #include <limits>
 #include <span>
 #include <vector>
@@ -331,26 +332,52 @@ ViewerGpuProcess::pipelineFor(const ProjectColorManagement::DisplayProcessorPtr&
         }
     }
 
-    std::lock_guard<std::mutex> lock(_mutex);
-    const auto found = _pipelines.find(key);
-    if (found != _pipelines.end()) {
-        out = found->second;
+    std::promise<Built> promise;
+    {
+        std::unique_lock<std::mutex> lock(_mutex);
+        const auto found = _pipelines.find(key);
+        if (found != _pipelines.end()) {
+            out = found->second;
 
-        return gpu::GpuStatus();
-    }
-    const auto failed = _failures.find(key);
-    if (failed != _failures.end()) {
-        return failed->second;
+            return gpu::GpuStatus();
+        }
+        const auto failed = _failures.find(key);
+        if (failed != _failures.end()) {
+            return failed->second;
+        }
+        const auto building = _building.find(key);
+        if (building != _building.end()) {
+            const std::shared_future<Built> pending = building->second;
+            lock.unlock();
+            const Built& built = pending.get();
+            out = built.pipeline;
+
+            return built.status;
+        }
+        _building.emplace(key, promise.get_future().share());
     }
 
-    const gpu::GpuStatus s = buildPipeline(processor, format, withOcio, out);
-    if (s) {
-        _pipelines.emplace(key, out);
-    } else if (s.result == VK_ERROR_INITIALIZATION_FAILED) {
-        _failures.emplace(key, s);
+    Built built;
+    try {
+        built.status = buildPipeline(processor, format, withOcio, built.pipeline);
+    } catch (const std::exception& e) {
+        built.status = failure(std::string("ViewerGpuProcess: ") + e.what());
+    } catch (...) {
+        built.status = failure("ViewerGpuProcess: the pipeline build threw");
     }
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _building.erase(key);
+        if (built.status) {
+            _pipelines.emplace(key, built.pipeline);
+        } else if (built.status.result == VK_ERROR_INITIALIZATION_FAILED) {
+            _failures.emplace(key, built.status);
+        }
+    }
+    out = built.pipeline;
+    promise.set_value(built);
 
-    return s;
+    return built.status;
 }
 
 gpu::GpuStatus
@@ -397,7 +424,10 @@ ViewerGpuProcess::buildPipeline(const ProjectColorManagement::DisplayProcessorPt
             }
             pipeline->uboBinding = b.binding;
         }
-        s = _resources.acquire(pipeline->shader, pipeline->textures);
+        {
+            std::lock_guard<std::mutex> lock(_resourcesMutex);
+            s = _resources.acquire(pipeline->shader, pipeline->textures);
+        }
         if (!s) {
             return s;
         }

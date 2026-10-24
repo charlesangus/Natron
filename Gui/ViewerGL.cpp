@@ -26,10 +26,11 @@
 #include "ViewerGL.h"
 #include "ViewerGLPrivate.h"
 
-#include <cassert>
 #include <algorithm> // min, max
-#include <limits>
+#include <cassert>
+#include <cstdint>
 #include <cstring> // for std::memcpy, std::memset, std::strcmp, std::strchr
+#include <limits>
 #include <stdexcept>
 
 #include "Global/GLIncludes.h" //!<must be included before QGlWidget because of gl.h and glew.h
@@ -217,6 +218,9 @@ ViewerGL::resizeGL(int w,
         zoomSinceLastFit = _imp->zoomOrPannedSinceLastFit;
     }
     glCheckError();
+#ifdef NATRON_HAVE_GPU
+    prepareHandoffAhead();
+#endif
     _imp->ms = eMouseStateUndefined;
     assert(_imp->viewerTab);
     ViewerInstance* viewer = _imp->viewerTab->getInternalNode();
@@ -281,6 +285,7 @@ ViewerGL::paintGL()
 #ifdef NATRON_HAVE_GPU
     if (_imp->handoff) {
         _imp->handoff->maintain();
+        prepareHandoffAhead();
     }
 #endif
 
@@ -1251,6 +1256,7 @@ ViewerGL::initializeGL()
                 doneCurrent();
             }
         });
+        prepareHandoffAhead();
     }
 #endif
 
@@ -1803,6 +1809,59 @@ ViewerGL::prepareHandoff(const ProjectColorManagement::DisplayProcessorPtr& proc
     }
 
     return _imp->handoff->prepare(processor, format);
+}
+
+void
+ViewerGL::prepareHandoffAhead()
+{
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(QOpenGLContext::currentContext() == context());
+    ViewerHandoff* handoff = _imp->handoff.get();
+    if (!handoff) {
+        return;
+    }
+    const ImageBitDepthEnum depth = getBitDepth();
+
+    // The format and processor ViewerInstance hands prepareHandoff() for its frames.
+    const ViewerHandoffFormat processFormat = (depth == eImageBitDepthFloat) ? ViewerHandoffFormat::Rgba32F : ViewerHandoffFormat::Bgra8;
+    std::string key;
+    ViewerHandoffProcessorFn processor;
+    ViewerInstance* node = getInternalNode();
+    AppInstancePtr app = node ? node->getApp() : AppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    if ((processFormat == ViewerHandoffFormat::Bgra8) && colorManagement) {
+        std::string display = _imp->displayName;
+        std::string view = _imp->viewName;
+        const std::string look = _imp->lookName;
+        if (display.empty() || view.empty()) {
+            project->getDefaultDisplayView(&display, &view);
+        }
+        const std::string working = project->getWorkingColorSpace();
+        // Held by the request so that a later config cannot reuse the address the key names while it is the last one.
+        const OCIO_NAMESPACE::ConstConfigRcPtr config = colorManagement->getConfig();
+        key = std::to_string(reinterpret_cast<std::uintptr_t>(config.get())) + '\n' + working + '\n' + display + '\n' + view + '\n' + look;
+        processor = [colorManagement, config, working, display, view, look]() {
+            return colorManagement->getDisplayProcessor(working, display, view, look);
+        };
+    }
+    handoff->precompile(key, processFormat, processor);
+
+    // A displayed rect spans at most the viewport and a pixel of enclosing at each edge, at the mipmap level the zoom
+    // picks, and is rounded out to whole tiles at both ends.
+    const int tileSize = ipow(2, appPTR->getCurrentSettings()->getViewerTilesPowerOf2());
+    const auto span = [tileSize](int pixels) {
+        return unsigned(((std::max(pixels, 0) + 2 + tileSize - 1) / tileSize + 1) * tileSize);
+    };
+    ViewerHandoffFrame largest;
+    largest.width = span(width());
+    largest.height = span(height());
+    largest.format = (depth == eImageBitDepthByte) ? ViewerHandoffFormat::Bgra8 : ViewerHandoffFormat::Rgba32F;
+    handoff->reserve(0, largest.bytes());
+    // The B ring is only built once a wipe or another compositing operator shows the second input.
+    if (getCompositingOperator() != eViewerCompositingOperatorNone) {
+        handoff->reserve(1, largest.bytes());
+    }
 }
 
 ViewerHandoffFrame

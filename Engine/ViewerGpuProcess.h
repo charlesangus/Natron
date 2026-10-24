@@ -30,6 +30,7 @@
 
 #ifdef NATRON_HAVE_GPU
 
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -72,7 +73,8 @@ struct ViewerGpuProcessParams {
  * gain, offset, display transform, gamma, dither and ARGB packing) as one compute dispatch.
  *
  * One pipeline is compiled per output format and display processor, with every other parameter
- * pushed per dispatch. Thread safe. Every kernel, uniform block and LUT texture it hands to
+ * pushed per dispatch. Thread safe: a pipeline still compiling for one caller is waited for by the
+ * others that need it, and does not hold up those that need another. Every kernel, uniform block and LUT texture it hands to
  * recorded work stays alive until the object is destroyed, which must wait for that work.
  **/
 class ViewerGpuProcess
@@ -130,6 +132,11 @@ public:
 private:
     struct Pipeline;
 
+    struct Built {
+        gpu::GpuStatus status;
+        std::shared_ptr<const Pipeline> pipeline;
+    };
+
     gpu::GpuStatus pipelineFor(const ProjectColorManagement::DisplayProcessorPtr& processor,
                                gpu::GlPixelFormat format,
                                std::shared_ptr<const Pipeline>& out);
@@ -141,8 +148,10 @@ private:
 
     gpu::GpuRuntime& _runtime;
     std::mutex _mutex;
+    std::mutex _resourcesMutex;
     OcioVulkanShader::Resources _resources;
     std::map<std::string, std::shared_ptr<const Pipeline> > _pipelines;
+    std::map<std::string, std::shared_future<Built>> _building;
 
     // A pipeline that cannot be built fails again without a recompile on every frame the CPU then
     // renders; a device that ran out of memory may succeed later, so its failures are not kept.

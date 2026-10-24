@@ -490,8 +490,8 @@ try:
         check(len(items) > 3, "the dialog's filter menu opened (%d entries)" % len(items))
         check("*.dpx" in items, "the dialog's filter lists dpx")
         check("*.tga" in items, "the dialog's filter lists tga")
-        check("*.cr2" not in items, "the dialog's filter does not list cr2")
-        check(not any(i in items for i in ("*.raw", "*.psd", "*.ffmpeg")), "the dialog's filter lists no raw, psd or ffmpeg")
+        check("*.cr2" in items, "the dialog's filter lists cr2, which rawspeed decodes")
+        check(not any(i in items for i in ("*.psd", "*.ffmpeg")), "the dialog's filter lists no psd or ffmpeg")
 
     def steps():
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)

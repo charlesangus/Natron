@@ -52,6 +52,8 @@
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Raw/RawColorCalibration.h"
+#include "Engine/Nodes/Raw/RawInputColor.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
@@ -83,6 +85,8 @@ gpuCapableIds()
         PLUGINID_NATRON_TRANSFORMMASKED,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
+        PLUGINID_NATRON_RAWINPUTCOLOR,
+        PLUGINID_NATRON_RAWCOLORCALIBRATION,
     };
 
     return ids;

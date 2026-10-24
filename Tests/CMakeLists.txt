@@ -87,6 +87,7 @@ set(Tests_SOURCES
     NativeParity.cpp
     Native/NativeGolden.cpp
     Native/NativeGpuParity.cpp
+    Gpu/RawRegionGpu_Test.cpp
     NodeCategory_Test.cpp
     TabMenuSettings_Test.cpp
     NodeColorSampler_Test.cpp
@@ -151,6 +152,7 @@ target_link_libraries(Tests
         Qt::Concurrent
         Python3::Python
         openMVG
+        rawspeed::rawspeed
 )
 if(NATRON_GPU)
     include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
@@ -159,6 +161,9 @@ if(NATRON_GPU)
     # already owns a target named pixelwrap_scale.
     slang_add_kernel(staged_test_pixelwrap_scale ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/pixelwrap.slang ENTRY pixelwrap_scale)
     target_link_libraries(Tests PRIVATE staged_test_pixelwrap_scale)
+    # Gpu/RawRegionGpu_Test registers this at run time to read a raw layout back from the device.
+    slang_add_kernel(raw_test_layout_probe ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/rawprepare.slang ENTRY rawlayout_probe)
+    target_link_libraries(Tests PRIVATE raw_test_layout_probe)
 endif()
 # Compiler, build type and the flags that set optimisation and FMA contraction, so fast
 # (Release at -O1), release (RelWithDebInfo) and debug builds stamp distinct goldens.

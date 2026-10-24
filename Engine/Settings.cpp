@@ -551,6 +551,13 @@ Settings::initializeKnobsProjectSetup()
     _firstReadSetProjectFormat->setHintToolTip( tr("If checked, the project size is set to this of the first image or video read within the project.") );
     _projectsPage->addKnob(_firstReadSetProjectFormat);
 
+    _developRawOnRead = AppManager::createKnob<KnobBool>(this, tr("Develop RAW files on read"));
+    _developRawOnRead->setName("developRawOnRead");
+    _developRawOnRead->setHintToolTip(tr("If checked, creating a Read of a camera raw file in the interface (from the node menu, by "
+                                         "dropping a file or opening one) also creates RawPrepare, RawTemperature, RawHighlights, "
+                                         "RawDemosaic, RawInputColor and RawColorCalibration below it, in a backdrop titled \"Develop RAW\". Loading a project "
+                                         "or creating a Read from Python never does."));
+    _projectsPage->addKnob(_developRawOnRead);
 
     _autoPreviewEnabledForNewProjects = AppManager::createKnob<KnobBool>( this, tr("Auto-preview enabled by default for new projects") );
     _autoPreviewEnabledForNewProjects->setName("enableAutoPreviewNewProjects");
@@ -976,6 +983,12 @@ Settings::initializeKnobsNodeGraphColors()
     _edgeSceneColor->setSimplified(true);
     _edgeSceneColor->setHintToolTip(tr("The color used to tint node graph edges carrying Scene data, connected or not."));
     _nodegraphColorsTab->addKnob(_edgeSceneColor);
+
+    _edgeRawColor = AppManager::createKnob<KnobColor>(this, tr("Raw edges"), 3);
+    _edgeRawColor->setName("edgeRawColor");
+    _edgeRawColor->setSimplified(true);
+    _edgeRawColor->setHintToolTip(tr("The color used to tint node graph edges carrying camera Raw data, connected or not."));
+    _nodegraphColorsTab->addKnob(_edgeRawColor);
 } // Settings::initializeKnobsNodeGraphColors
 
 void
@@ -1529,6 +1542,7 @@ Settings::setDefaultValues()
 
     // General/Projects setup
     _firstReadSetProjectFormat->setDefaultValue(true);
+    _developRawOnRead->setDefaultValue(true);
     _autoPreviewEnabledForNewProjects->setDefaultValue(true, 0);
     _fixPathsOnProjectPathChanged->setDefaultValue(true);
 
@@ -1784,6 +1798,9 @@ Settings::setDefaultValues()
     _edgeSceneColor->setDefaultValue(230. / 255., 0); // Okabe-Ito orange
     _edgeSceneColor->setDefaultValue(159. / 255., 1);
     _edgeSceneColor->setDefaultValue(0. / 255., 2);
+    _edgeRawColor->setDefaultValue(204. / 255., 0); // Okabe-Ito reddish purple
+    _edgeRawColor->setDefaultValue(121. / 255., 1);
+    _edgeRawColor->setDefaultValue(167. / 255., 2);
 
     endChanges();
 } // setDefaultValues
@@ -3129,6 +3146,16 @@ Settings::getEdgeSceneColor(float* r,
     *b = _edgeSceneColor->getValue(2);
 }
 
+void
+Settings::getEdgeRawColor(float* r,
+                          float* g,
+                          float* b) const
+{
+    *r = _edgeRawColor->getValue(0);
+    *g = _edgeRawColor->getValue(1);
+    *b = _edgeRawColor->getValue(2);
+}
+
 bool
 Settings::getEdgeKindColor(DataKindEnum kind,
                            float* r,
@@ -3141,6 +3168,9 @@ Settings::getEdgeKindColor(DataKindEnum kind,
         return true;
     case eDataKindScene:
         getEdgeSceneColor(r, g, b);
+        return true;
+    case eDataKindRaw:
+        getEdgeRawColor(r, g, b);
         return true;
     case eDataKindImage:
     case eDataKindPolymorphic:
@@ -3214,6 +3244,12 @@ bool
 Settings::isAutoProjectFormatEnabled() const
 {
     return _firstReadSetProjectFormat->getValue();
+}
+
+bool
+Settings::isDevelopRawOnReadEnabled() const
+{
+    return _developRawOnRead->getValue();
 }
 
 bool

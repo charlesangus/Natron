@@ -1,0 +1,1 @@
+slang_add_kernel(rawinputcolor_wrapped Kernels/rawinputcolor.slang ENTRY rawinputcolor_wrapped REGISTRY NatronGpu)

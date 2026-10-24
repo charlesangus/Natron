@@ -111,6 +111,12 @@ public:
      **/
     void refreshMenu();
 
+    /**
+     * @brief Hides every visible knob of the set, for a file the space does not apply to, or
+     * shows them again.
+     **/
+    void setHidden(bool hidden);
+
     std::string space() const;
 
     /**
@@ -136,6 +142,8 @@ private:
     KnobBoolWPtr _spaceSet;
     KnobStringWPtr _contextKeys[4];
     KnobStringWPtr _contextValues[4];
+    KnobGroupWPtr _context;
+    bool _hidden;
 };
 
 NATRON_NAMESPACE_EXIT

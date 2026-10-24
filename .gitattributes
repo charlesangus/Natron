@@ -1,8 +1,6 @@
 .git* text export-ignore
-
 # Set the default behavior, in case people don't have core.autocrlf set.
 * text=auto
-
 # Explicitly declare text files you want to always be normalized and converted
 # to native line endings on checkout.
 *.py text whitespace=tab-in-indent,trail,space
@@ -21,29 +19,28 @@
 *.cmakein text whitespace=tab-in-indent,trail,space
 *.in text whitespace=tab-in-indent,trail,space
 CMakeLists.txt text whitespace=tab-in-indent,trail,space
-
 *.sh            eol=lf
 PKGBUILD eol=lf
-
 # Denote all files that are truly binary and should not be modified.
 *.png binary
 *.jpg binary
 *.jpeg binary
 *.exr binary
 *.ico binary
-
 *.a binary
 *.so binary
 *.dll binary
-
 *.pdf binary
 *.vec binary
 *.doc binary
-
 *.S text
-
 *.xml -text
 *.yml -text
 *.patch -text
 *.diff -text
 *.pc -text
+Tests/fixtures/raw/*.cr2 filter=lfs diff=lfs merge=lfs -text
+Tests/fixtures/raw/*.raf filter=lfs diff=lfs merge=lfs -text
+Tests/fixtures/raw/*.dng filter=lfs diff=lfs merge=lfs -text
+Tests/fixtures/raw/reference/canon-*.tif filter=lfs diff=lfs merge=lfs -text
+Tests/fixtures/raw/reference/fujifilm-*.tif filter=lfs diff=lfs merge=lfs -text

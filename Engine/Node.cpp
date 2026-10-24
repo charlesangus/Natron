@@ -1887,12 +1887,24 @@ nodePropagatesDataKindThroughInput(const NodePtr& node,
 // The conversions the engine is willing to insert without a node in the graph to show for it. A
 // fixed table rather than a registry on purpose: adding a row widens what the type system permits
 // everywhere at once, which is a design decision taken here, not a capability a node -- or a
-// plugin -- can grant itself by answering a virtual.
+// plugin -- can grant itself by answering a virtual. Raw has no row: demosaicing and camera colour
+// are user-visible nodes with their own parameters, never a silent conversion.
 static bool
 isRegisteredAdapter(DataKindEnum from,
                     DataKindEnum to)
 {
     return (from == eDataKindDeep) && (to == eDataKindImage);
+}
+
+// Raw reaches an image input only at the Viewer, which shows the values as they are for display
+// (RawDisplay) and feeds nothing downstream. It is kept out of the table above so that no other
+// image input, whatever its virtual answers, can take raw without a RawToImage in the graph.
+static bool
+isViewerOnlyAdapter(const EffectInstancePtr& effect,
+                    DataKindEnum from,
+                    DataKindEnum to)
+{
+    return (from == eDataKindRaw) && (to == eDataKindImage) && dynamic_cast<const ViewerInstance*>(effect.get());
 }
 
 static bool
@@ -1901,7 +1913,7 @@ inputAcceptsViaAdapter(const EffectInstancePtr& effect,
                        DataKindEnum from,
                        DataKindEnum required)
 {
-    return isRegisteredAdapter(from, required) && effect->inputAcceptsDataKindViaAdapter(inputNb, from);
+    return (isRegisteredAdapter(from, required) || isViewerOnlyAdapter(effect, from, required)) && effect->inputAcceptsDataKindViaAdapter(inputNb, from);
 }
 
 // The node whose consumers receive what node delivers. A GroupOutput has none inside its group:

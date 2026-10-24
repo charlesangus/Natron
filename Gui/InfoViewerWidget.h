@@ -67,7 +67,11 @@ public:
 
     void setDataWindow(const RectI & r); // in pixel coordinates
 
-    void setImageFormat(const ImageLayerDesc& comp, ImageBitDepthEnum depth);
+    /**
+     * @brief Shows the layer and depth of the displayed image, or kindLabel instead when it is
+     * not empty: the Viewer converts raw input for display, so its layer would mislead.
+     **/
+    void setImageFormat(const ImageLayerDesc& comp, ImageBitDepthEnum depth, const QString& kindLabel = QString());
 
     void setColor(float r, float g, float b, float a);
 

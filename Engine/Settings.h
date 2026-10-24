@@ -220,6 +220,7 @@ public:
 
     void getEdgeDeepColor(float* r, float* g, float* b) const;
     void getEdgeSceneColor(float* r, float* g, float* b) const;
+    void getEdgeRawColor(float* r, float* g, float* b) const;
 
     /**
      * @brief The colour an edge should tint itself with for the given data kind, if any. Returns
@@ -247,6 +248,9 @@ public:
     bool useCursorPositionIncrements() const;
 
     bool isAutoProjectFormatEnabled() const;
+
+    // Whether creating a Read of a camera raw file in the interface adds the Develop RAW chain.
+    bool isDevelopRawOnReadEnabled() const;
 
     bool isAutoFixRelativeFilePathEnabled() const;
 
@@ -477,6 +481,7 @@ private:
     // General/Projects setup
     KnobPagePtr _projectsPage;
     KnobBoolPtr _firstReadSetProjectFormat;
+    KnobBoolPtr _developRawOnRead;
     KnobBoolPtr _autoPreviewEnabledForNewProjects;
     KnobBoolPtr _fixPathsOnProjectPathChanged;
 
@@ -657,6 +662,7 @@ private:
     KnobColorPtr _defaultUsd3DGroupColor;
     KnobColorPtr _edgeDeepColor;
     KnobColorPtr _edgeSceneColor;
+    KnobColorPtr _edgeRawColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
     bool _settingsExisted;

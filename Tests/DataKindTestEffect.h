@@ -43,6 +43,9 @@
 #define kTestPluginIDDataKindConsumerMirrorPolicy "test.natron.built-in.DataKindConsumerMirrorPolicy"
 #define kTestPluginIDDataKindAdapterSink "test.natron.built-in.DataKindAdapterSink"
 #define kTestPluginIDDataKindSceneAdapterSink "test.natron.built-in.DataKindSceneAdapterSink"
+#define kTestPluginIDDataKindRawSource "test.natron.built-in.DataKindRawSource"
+#define kTestPluginIDDataKindRawSink "test.natron.built-in.DataKindRawSink"
+#define kTestPluginIDDataKindRawAdapterSink "test.natron.built-in.DataKindRawAdapterSink"
 
 NATRON_NAMESPACE_ENTER
 
@@ -544,6 +547,151 @@ public:
                                                 DataKindEnum kind) const OVERRIDE WARN_UNUSED_RETURN
     {
         return kind == eDataKindScene;
+    }
+};
+
+class DataKindTestRawSource
+    : public NoOpBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DataKindTestRawSource(n);
+    }
+
+    DataKindTestRawSource(NodePtr n)
+        : NoOpBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
+
+    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return kTestPluginIDDataKindRawSource;
+    }
+
+    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "Test Data Kind Raw Source";
+    }
+
+    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual std::string getInputLabel(int /*inputNb*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual int getNInputs() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return 0;
+    }
+
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindRaw;
+    }
+};
+
+class DataKindTestRawSink
+    : public NoOpBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DataKindTestRawSink(n);
+    }
+
+    DataKindTestRawSink(NodePtr n)
+        : NoOpBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
+
+    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return kTestPluginIDDataKindRawSink;
+    }
+
+    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "Test Data Kind Raw Sink";
+    }
+
+    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual std::string getInputLabel(int /*inputNb*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindRaw;
+    }
+
+    virtual DataKindEnum getInputDataKind(int /*inputNb*/) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindRaw;
+    }
+};
+
+// An image input asking to take raw through an adapter: the engine has no raw adapter to grant.
+class DataKindTestRawAdapterSink
+    : public NoOpBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DataKindTestRawAdapterSink(n);
+    }
+
+    DataKindTestRawAdapterSink(NodePtr n)
+        : NoOpBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
+
+    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return kTestPluginIDDataKindRawAdapterSink;
+    }
+
+    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "Test Data Kind Raw Adapter Sink";
+    }
+
+    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual std::string getInputLabel(int /*inputNb*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindImage;
+    }
+
+    virtual DataKindEnum getInputDataKind(int /*inputNb*/) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindImage;
+    }
+
+    virtual bool inputAcceptsDataKindViaAdapter(int /*inputNb*/,
+                                                DataKindEnum kind) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return kind == eDataKindRaw;
     }
 };
 

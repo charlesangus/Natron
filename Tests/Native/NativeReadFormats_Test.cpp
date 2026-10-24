@@ -30,6 +30,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -50,6 +51,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/IO/RawExtensions.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
@@ -136,13 +138,24 @@ TEST(NativeReadFormats, ExcludedFormatsAreAbsentUnlessAKeptFormatClaimsTheExtens
 
     for (const char* const* name = OiioReadSupport::kExcludedOiioFormats; name != OiioReadSupport::kExcludedOiioFormats + 5; ++name) {
         for (const std::string& ext : oiioExtensionsOf(*name)) {
-            EXPECT_EQ(kept.count(ext) > 0, readable.count(ext) > 0) << *name << " extension " << ext;
+            EXPECT_EQ(kept.count(ext) > 0 && !RawExtensions::isRawExtension(ext), readable.count(ext) > 0) << *name << " extension " << ext;
         }
     }
-    for (const char* ext : { "cr2", "nef", "dng", "arw", "null", "term", "psd" }) {
+    for (const char* ext : { "null", "term", "psd" }) {
         if (!kept.count(ext)) {
             EXPECT_FALSE(readable.count(ext)) << ext;
         }
+    }
+}
+
+// rawspeed claims the camera raw extensions first, even one a kept OIIO format also lists.
+TEST(NativeReadFormats, CameraRawExtensionsNeverGoToOiio)
+{
+    const std::set<std::string> readable = readableSet();
+
+    for (std::string_view ext : RawExtensions::kExtensions) {
+        EXPECT_FALSE(readable.count(std::string(ext))) << ext;
+        EXPECT_TRUE(OiioReadSupport::formatNameForExtension(std::string(ext)).empty()) << ext;
     }
 }
 
@@ -216,15 +229,15 @@ TEST_F(NativeReadFormatsTest, AFileOutsideTheSetPostsAnUnsupportedFormatMessageA
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     const QString source = QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/png-8bit.png");
-    const QString raw = dir.path() + QString::fromUtf8("/shot.cr2");
-    ASSERT_TRUE(QFile::copy(source, raw));
+    const QString unsupported = dir.path() + QString::fromUtf8("/shot.psd");
+    ASSERT_TRUE(QFile::copy(source, unsupported));
 
     NodePtr node = createRead();
     ASSERT_TRUE(bool(node));
     NativeRead* read = dynamic_cast<NativeRead*>(node->getEffectInstance().get());
     ASSERT_TRUE(read != NULL);
 
-    setFile(node, raw.toStdString());
+    setFile(node, unsupported.toStdString());
     RectD rod;
     EXPECT_EQ(eStatusFailed, read->getRegionOfDefinition(0, 1., RenderScale(), ViewIdx(0), &rod));
     EXPECT_TRUE(node->hasPersistentMessage());

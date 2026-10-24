@@ -56,6 +56,8 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/MemoryFile.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Raw/RawDisplay.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -251,6 +253,14 @@ ViewerInstance::getUiContext() const
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
     return _imp->uiContext;
+}
+
+std::string
+ViewerInstance::getRawDisplayLabel(int textureIndex) const
+{
+    std::lock_guard<std::mutex> lock(_rawDisplayLabelMutex);
+
+    return ((textureIndex == 0) || (textureIndex == 1)) ? _rawDisplayLabel[textureIndex] : std::string();
 }
 
 void
@@ -1384,6 +1394,20 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
     // Detection only: this runs on the main thread, where the resolved kind is a memoized read
     // and no render may be started.
     outArgs->deepUpstream = outArgs->activeInputToRender && outArgs->activeInputToRender->producesDeepData();
+    outArgs->rawUpstream = outArgs->activeInputToRender && (outArgs->activeInputToRender->getNode()->getEffectiveOutputDataKind() == eDataKindRaw);
+    {
+        std::string rawLabel;
+        if (outArgs->rawUpstream) {
+            NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(outArgs->activeInputToRender.get());
+            const ImageMetadata metadata = native ? native->getOutputMetadata(time, view) : ImageMetadata();
+            outArgs->rawNormalisation = RawDisplay::normalisationOf(metadata);
+            rawLabel = RawDisplay::label(RawDisplay::modeOf(metadata, outArgs->activeInputToRender->getMetadataNComps(-1)));
+        }
+        std::lock_guard<std::mutex> lock(_rawDisplayLabelMutex);
+        if ((textureIndex == 0) || (textureIndex == 1)) {
+            _rawDisplayLabel[textureIndex] = rawLabel;
+        }
+    }
 
     // Before rendering we check that all mandatory inputs in the graph are connected else we fail
     if ( !outArgs->activeInputToRender || !checkTreeCanRender( outArgs->activeInputToRender->getNode().get() ) ) {
@@ -1564,6 +1588,14 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                 requestedComponents.push_back(inArgs.params->layer);
             }
         }
+    }
+
+    // Raw is shown from the input's own plane (its 1 or 3 channels), whatever layer the Viewer
+    // is set to, and converted to RGBA with alpha 1 by RawDisplay below.
+    if (inArgs.rawUpstream) {
+        requestedComponents.clear();
+        requestedComponents.push_back(components);
+        alphaChannelIndex = ((inArgs.channels == eDisplayChannelsA) || (inArgs.channels == eDisplayChannelsMatte)) ? 3 : -1;
     }
 
     if (requestedComponents.empty()) {
@@ -1748,6 +1780,12 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         if ( inArgs.activeInputToRender->aborted() ) {
             return eViewerRenderRetCodeRedraw;
         }*/
+
+        if (inArgs.rawUpstream && colorImage) {
+            colorImage = RawDisplay::toDisplayImage(colorImage, inArgs.rawNormalisation ? &*inArgs.rawNormalisation : nullptr);
+            inArgs.params->colorImage = colorImage;
+            alphaImage = (inArgs.channels == eDisplayChannelsMatte) ? colorImage : ImagePtr();
+        }
 
         const bool viewerRenderRoiOnly = !useTextureCache;
 

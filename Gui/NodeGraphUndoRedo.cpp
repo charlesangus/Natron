@@ -124,6 +124,41 @@ AddMultipleNodesCommand::AddMultipleNodesCommand(NodeGraph* graph,
     _nodes.push_back(node);
 }
 
+namespace {
+// Shares the numbering of the compression IDs in Global/GlobalDefines.h, past their last.
+const int kNodeGraphAddMultipleNodesCommandCompressionID = 25;
+} // anonymous namespace
+
+void
+AddMultipleNodesCommand::setCreatedFor(const NodeGuiPtr& owner)
+{
+    _createdFor = owner;
+}
+
+int
+AddMultipleNodesCommand::id() const
+{
+    return kNodeGraphAddMultipleNodesCommandCompressionID;
+}
+
+bool
+AddMultipleNodesCommand::mergeWith(const QUndoCommand* other)
+{
+    const AddMultipleNodesCommand* added = dynamic_cast<const AddMultipleNodesCommand*>(other);
+    const NodeGuiPtr owner = added ? added->_createdFor.lock() : NodeGuiPtr();
+
+    if (!owner || _isUndone) {
+        return false;
+    }
+    const bool ownsIt = std::any_of(_nodes.begin(), _nodes.end(), [&owner](const NodeGuiWPtr& node) { return node.lock() == owner; });
+    if (!ownsIt) {
+        return false;
+    }
+    _nodes.insert(_nodes.end(), added->_nodes.begin(), added->_nodes.end());
+
+    return true;
+}
+
 AddMultipleNodesCommand::~AddMultipleNodesCommand()
 {
     if (_isUndone) {

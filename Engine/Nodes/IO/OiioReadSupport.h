@@ -295,9 +295,10 @@ ImageMetadata attributeMetadata(const std::string& path,
                                 const OIIO::ImageSpec& spec);
 
 /**
- * @brief The file extensions the native Read accepts: every extension in OIIO's runtime
- * "extension_list" except those of a format in kExcludedOiioFormats, lower case, sorted. An
- * extension that an excluded format shares with a kept one stays. Computed once. Thread-safe.
+ * @brief The file extensions the native Read decodes through OIIO: every extension in OIIO's
+ * runtime "extension_list" except those of a format in kExcludedOiioFormats and the camera raw
+ * ones (RawExtensions::kExtensions), which the Read claims first for rawspeed. Lower case, sorted.
+ * An extension that an excluded format shares with a kept one stays. Computed once. Thread-safe.
  **/
 const std::vector<std::string>& readableExtensions();
 

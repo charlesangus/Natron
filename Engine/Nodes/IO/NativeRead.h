@@ -116,6 +116,13 @@ public:
     virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
 
     /**
+     * @brief eDataKindRaw when the File parameter's extension is a camera raw one
+     * (RawExtensions::isRawPath()), eDataKindImage otherwise, an empty File included. Never
+     * ambiguous, and the file need not exist.
+     **/
+    virtual DataKindEnum resolveOutputDataKind(bool* isAmbiguous) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
      * @brief Forgets what this node read from disk (its frame listings, the headers of its files
      * and proxy files, its output metadata) and lists its files again, so that the files now on
      * disk are what it reads. Only this node is touched: the callers announce the change
@@ -138,6 +145,8 @@ private:
         .grouping = PLUGIN_GROUP_IMAGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_READ,
         .minorVersion = 0,
+        // The kind follows the File parameter, through resolveOutputDataKind().
+        .outputKind = eDataKindPolymorphic,
     };
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -163,6 +172,9 @@ private:
                                  const CreateNodeArgs& args) OVERRIDE FINAL;
 
     bool rejectUnsupportedFormat(const std::string& path);
+    bool isRawFile() const;
+    void refreshRawKnobState();
+    void refreshOutputDataKind();
 
     // The frames a filename pattern matches on disk, listed once per pattern.
     struct FrameListing {

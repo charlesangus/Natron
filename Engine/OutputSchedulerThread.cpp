@@ -2406,7 +2406,7 @@ private:
                 std::list<ImageLayerDesc> components;
                 ImageBitDepthEnum imageDepth = eImageBitDepthNone;
 
-                if (outputKind == eDataKindImage) {
+                if ((outputKind == eDataKindImage) || (outputKind == eDataKindRaw)) {
                     // Use needed components to figure out what we need to render
                     EffectInstance::ComponentsNeededMap neededComps;
                     std::list<ImageLayerDesc> passThroughLayers;
@@ -2461,6 +2461,8 @@ private:
                 RenderingFlagSetter flagIsRendering(activeInputToRender->getNode());
                 EffectInstance::RenderRoIRetCode retCode;
                 switch (outputKind) {
+                // A raw payload is a float Image in the image cache, so it renders like an image.
+                case eDataKindRaw:
                 case eDataKindImage: {
                     std::map<ImageLayerDesc, ImagePtr> layers;
                     FrameFuturePtr future;
@@ -2590,7 +2592,7 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
     ImageBitDepthEnum imageDepth = eImageBitDepthNone;
     const DataKindEnum outputKind = effect->getOutputDataKind();
 
-    if (outputKind == eDataKindImage) {
+    if ((outputKind == eDataKindImage) || (outputKind == eDataKindRaw)) {
         ImageLayerDesc metadataLayer, metadataPairedLayer;
         effect->getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
         if (metadataLayer.getNumComponents() > 0) {
@@ -2630,6 +2632,7 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
         try {
             EffectInstance::RenderRoIRetCode retCode;
             switch (outputKind) {
+            case eDataKindRaw:
             case eDataKindImage: {
                 ImagePtr inputImage = std::dynamic_pointer_cast<Image>(it->frame);
                 assert(inputImage);

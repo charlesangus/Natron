@@ -25,6 +25,14 @@ Natron binaries include components from the following libraries:
 * qhttpserver (BSD) https://github.com/nikhilm/qhttpserver
 * hoedown (BSD) https://github.com/hoedown/hoedown
 * libtess (SGI Free Software License B, X11-like) ftp://ftp.freedesktop.org/pub/mesa/glu/
+* rawspeed (LGPL 2.1) https://github.com/darktable-org/rawspeed -- the camera raw decoder, linked statically into Natron at commit c835b05aecfacb7343f7c424abd620aa12116c3f (the revision darktable release-5.6.2 pins); its camera database, cameras.xml, ships under Resources/rawspeed
+* pugixml (MIT) https://pugixml.org (used by Natron via rawspeed, to read cameras.xml)
+* darktable (GPL 3.0 or later) https://www.darktable.org -- the raw processing nodes are ported from darktable release-5.6.2 (commit 20891f6c6fa7be995e5bf9dff9d1ee5062051773) and keep darktable's copyright headers
+* darktable white balance presets (GPL 3.0 or later; values originally from UFRaw, Copyright 2004-2013 Udi Fuchs, GPL 2.0 or later) https://github.com/darktable-org/darktable/blob/release-5.6.2/data/wb_presets.json -- data/wb_presets.json of darktable release-5.6.2, copied unchanged to Engine/Nodes/Raw/data/wb_presets.json and shipped under Resources/darktable; RawTemperature's camera presets
+
+Natron itself is GPL 2.0 or later. Because the raw nodes ported from darktable are GPL 3.0 or
+later, the Natron binaries as a whole are distributed under the terms of the GPL 3.0
+(LICENSE-GPL-3.0.txt); rawspeed's LGPL 2.1 and pugixml's MIT licence are both compatible with that.
 
 # Additional dependencies
 
@@ -62,7 +70,7 @@ Natron binaries include components from the following libraries:
 * OpenEXR & IlmBase (Modified BSD)  http://www.openexr.com/license.html (used by openfx-io via OpenImageIO) 
 * libtiff (Modified BSD) http://www.remotesensing.org/libtiff (used by openfx-io via OpenImageIO) 
 * libpng (libpng/zlib License) http://www.libpng.org (used by openfx-io via OpenImageIO and openfx-arena via ImageMagick)
-* libjpeg (Modified BSD) http://ijg.org (used by openfx-io via OpenImageIO) 
+* libjpeg (Modified BSD) http://ijg.org (used by openfx-io via OpenImageIO, and by Natron via rawspeed for lossy DNG) 
 * openjpeg (2-clauses BSD) http://www.openjpeg.org (used by openfx-io via OpenImageIO) 
 * webp (Modified BSD) https://developers.google.com/speed/webp (used by openfx-io via OpenImageIO) 
 * HDF5 (Modified BSD) https://www.hdfgroup.org/HDF5 (used by openfx-io via OpenImageIO) 
@@ -115,7 +123,7 @@ readers means restoring its entry here.
 * SQLite (Public Domain) https://www.sqlite.org/ (used by Python)
 * bzip2 (Modified BSD) http://www.bzip.org (used by Natron, openfx-io and openfx-arena via FreeType and FFmpeg) 
 * liblzma (Public Domain) http://tukaani.org/xz/ (used by openfx-io and openfx-arena via FFmpeg and libxml) 
-* zlib (libpng/zlib License) http://www.zlib.net/
+* zlib (libpng/zlib License) http://www.zlib.net/ (used by Natron via rawspeed for deflate DNG, among others)
 * libiconv (LGPL 2.1) https://www.gnu.org/software/libiconv/
 * libintl (LGPL 2.1) https://www.gnu.org/software/gettext/
 * ncurses (LGPL 2.1) https://www.gnu.org/software/ncurses/

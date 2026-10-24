@@ -164,8 +164,11 @@ overrides `isIdentity()` itself; see "Flat image nodes".
 
 `KnobReader(time, view)` reads knob values, and a node bakes them once per
 evaluation into a plain `Params` struct with `bake(const KnobReader&)`;
-`bakeParams(op, time, view)` does so for any type that has it. Render code
-works on the baked `Params`, never on the knobs.
+`bakeParams(op, time, view)` does so for any type that has it. A type whose
+`Params` also depend on the metadata of the image it reads has
+`bake(const KnobReader&, const ImageMetadata& source)` instead, never both;
+`bakeParams(op, reader, source)` and `bakeParams(op, time, view, source)` call
+either form. Render code works on the baked `Params`, never on the knobs.
 
 ## Per-frame metadata
 
@@ -384,7 +387,10 @@ Files a port adds, per node (`<Dir>` is the node's directory under
       from `NATRON_GPU_COST_SEED_CPU_ROW`, `_CPU_MOTION_BLUR_ROW`, `_CPU_SIGMA_ROW`
       and `_GPU_ROW`. CMake aggregates them into `GpuCostSeedsAll.inc`. Regenerate
       with `tools/bench/render-profile-report.py ... --emit-cost-table <source root>`
-      rather than writing rows by hand. Delete
+      rather than writing rows by hand. A node the tool has no rows for, such as
+      one that `Engine/GpuCostSeeds/inputs.txt` never renders, has no fragment:
+      `RenderProfileReportSelfTest` fails on any fragment the tool would not
+      write, a hand-written row-less one included. Delete
       `Engine/GpuCostSeeds/ofx/<plugin-id>.inc` for the OFX plug-in the port
       supersedes, or the plug-in keeps a second seed.
 - [ ] `Engine/Nodes/<Dir>/docs/<Node>.md`: the node's doc, with a `Tolerance:` line
@@ -414,7 +420,7 @@ plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
 
 ## Data kinds
 
-`DataKindEnum` (`Global/Enums.h`) has four values:
+`DataKindEnum` (`Global/Enums.h`) has five values:
 
 - `eDataKindImage` -- a flat raster image. The default for every input and
   output that doesn't say otherwise, so every existing node and every OFX
@@ -429,11 +435,26 @@ plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
   no scene payload or evaluation path yet.
 - `eDataKindPolymorphic` -- on an input, "I accept any kind"; on an output,
   "I have no fixed kind of my own." For pass-through utility nodes (`Dot`, the
-  other `NoOps`, group boundaries, `TypedPassthrough`), not for nodes that
-  actually produce or transform data. Only nodes that override the kind
+  other `NoOps`, group boundaries, `TypedPassthrough`), and for a source whose
+  kind follows one of its knobs (the native Read, see "Knob-driven source
+  kinds" below), not for nodes that otherwise produce or transform data. Only
+  nodes that override the kind
   virtuals are polymorphic: an OFX plugin that happens to pass its input
   through, like openfx-misc's `Switch`, is loaded as an `OfxEffectInstance`
   and is typed image/image like every other plugin.
+- `eDataKindRaw` -- camera raw data before it is an image: a one-channel
+  float mosaic straight off the sensor, or three or one channel linear data
+  (a linear DNG) that has a camera's black/white levels and colour matrix but
+  no colour management yet. The payload is an ordinary float `Image` in the
+  ordinary image cache, rendered through `renderRoI()`; there is no raw render
+  virtual and no raw cache. The kind exists for edge typing only, so that a
+  mosaic can never reach a node that would read it as RGB. The mosaic layout
+  (CFA pattern and origin, black and white levels, white balance, camera
+  matrix, crop, ISO, exposure, and whether the data is still `raw` or already
+  `prepared`) travels as image metadata under the `raw/` keys
+  (`Engine/Nodes/IO/RawMetadata.h`), not in the kind. There is no adapter
+  between raw and image: the conversion is always a node in the graph. Raw
+  edges have their own Preferences colour (`edgeRawColor`).
 
 A node declares kinds via `NodeSpec::inputs[i].kind` and
 `NodeSpec::outputKind` (or, off `NativeEffectBase`, by
@@ -446,7 +467,8 @@ class, not configured per node instance and not stored per connection. An
 edge carries no kind of its own -- its kind is simply its source node's
 *effective* output kind -- so nothing about data kinds is ever serialized
 into a project, and nothing about it can go stale independently of the graph
-itself.
+itself. A polymorphic node whose policy reads a knob is still no exception:
+the kind is derived from the knob's serialized value, never stored.
 
 **Resolution policy belongs to the node.** A polymorphic node's *effective*
 output kind is `Node::getEffectiveOutputDataKind()` (`Engine/Node.cpp`), which
@@ -466,6 +488,23 @@ others, or those branches are typed, rendered and connection-checked as the
 kind the switch outputs. The default is true, matching the engine default
 below, which follows every polymorphic-declared input at once -- so a node
 without a policy needs nothing here.
+
+**Knob-driven source kinds.** A source node whose kind depends on what it
+reads declares `outputKind = eDataKindPolymorphic` and overrides
+`resolveOutputDataKind()` to answer from a knob, never ambiguous. The native
+Read does this from its `filename`: `eDataKindRaw` when the extension is a
+camera raw one (`RawExtensions::isRawPath()`, `Engine/Nodes/IO/RawExtensions.h`,
+the formats rawspeed decodes), `eDataKindImage` for anything else, an empty
+filename included -- so every consumer of a Read on a non-raw file sees image
+exactly as before. Only the extension is consulted; the file need not exist.
+The engine only invalidates a cached kind when a connection changes, so such a
+node calls `Node::invalidateEffectiveOutputDataKindCache()` itself from
+`knobChanged()` when the knob moves the kind, and once from `onKnobsLoaded()`.
+The Read only invalidates when the kind actually changes, since invalidating
+re-checks and repaints everything reachable from the node. Edges are never
+disconnected by a flip: a consumer that cannot take the new kind gets the
+ordinary data-kind error described below, which clears when the kind flips
+back.
 
 The engine default resolves **bidirectionally**, from the current topology
 alone:
@@ -582,11 +621,24 @@ attempt to register, an implicit conversion of its own; if a node needs data in
 a different kind than what feeds it, it takes that kind as its declared input
 and requires an explicit converter node upstream.
 
-The Viewer is the intended single exception, once there is deep data to
-convert: flattening deep to image for display is the one conversion that has
-nowhere else to go, since it is not part of the graph's result. That is a
-design intent, not current behavior -- `ViewerInstance` declares image inputs
-like every other node here and no flattening exists to run.
+The Viewer is the single exception, for deep and raw: showing them is a
+conversion that has nowhere else to go, since it is not part of the graph's
+result. `ViewerInstance` declares image inputs and answers
+`inputAcceptsDataKindViaAdapter()` for `eDataKindDeep` and `eDataKindRaw`.
+That virtual is only half of the permission; `Node.cpp` must also allow the
+conversion. Deep to image is a row of its adapter table
+(`isRegisteredAdapter`), and the Viewer flattens deep input for display. Raw
+has no row there: `isViewerOnlyAdapter` allows raw to image only into a
+`ViewerInstance`, so every other image input keeps rejecting raw, whatever
+its virtual answers, and needs a `RawToImage` upstream. The Viewer asks a raw
+input for its own plane, whatever layer the Viewer is set to, and shows it
+through `RawDisplay` (`Engine/Nodes/Raw/RawDisplay.*`, shared with
+`RawToImage`). There is no demosaic: a mosaic shows as grey and linear raw
+shows its channels, with alpha 1. The Viewer alone scales a `raw`-stage edge
+to 0-1 for display, subtracting the black level of each photosite's colour and
+dividing by white minus black (nothing is scaled without a white level, and a
+`prepared` stream already is 0-1); `RawToImage` keeps the sensor's values. The info line
+reads "RAW mosaic" or "RAW linear" instead of the layer and depth.
 
 ## Groups resolve kinds from what is inside them
 
@@ -782,6 +834,19 @@ do:
   `gpu(params, context)`; it has one form or the other.
 - The op never overrides `render()` or `isIdentity()` of the node: both are
   `FINAL` in `StagedImageEffect`, so a node cannot fork the stage rules.
+- An op whose maths depends on its source's metadata -- a raw op reading the
+  CFA layout -- has `bake(reader, source)` instead of `bake(reader)`.
+  `ImageNode` hands it `getSourceMetadata(time, view)`, the metadata of the
+  first Source input at the time and view being baked (a motion-blurred
+  Resample op is re-baked at every sample time, with the metadata of that
+  time), and fetches it only for an op with that form, since `bake()` runs
+  several times per frame. A Custom node calls `getSourceMetadata()` itself.
+  `Params` derived from metadata are never hashed: they invalidate through the
+  node hash, exactly like the source's pixels, since an upstream change moves
+  both. An op that memoizes a table it derives from metadata keys the memo on
+  `ImageMetadata::hash()`, not on its knobs alone, and a runtime shader takes
+  metadata-derived values as uniforms, never baked into its source text, or
+  every new file would compile a new shader.
 
 ### Stages
 
@@ -902,10 +967,78 @@ mix and divisor from the `StagePlan` instead of its own knobs. Merge, Keyer and
 ChromaKeyer are Custom nodes; Merge until M101 - Clean-Sheet Merge Node, the
 keyers until M95 - Knob Cleanup And Keyer Redesign. A Custom node is on the CPU
 unless it opts into the GPU by overriding three virtuals:
-`canRenderOpOnGpu(query)` (the answer may depend only on the query and the
-node's settings), `renderOpGpu(args)` to record its dispatches over
+`canRenderOpOnGpu(query)` (the answer may depend only on the query, the
+node's settings and its source metadata), `renderOpGpu(args)` to record its dispatches over
 `args.outputRect`, and `getOpGpuInputLayer()` to say the layer it reads each
-input in. The keyers do, with their own kernels.
+input in. A node reading more of an input than the window overrides
+`getOpGpuInputRoI()` too. The keyers do, with their own kernels, and so do the raw
+develop nodes.
+
+### Raw nodes
+
+A node reading camera raw data (`eDataKindRaw`, see "Data kinds") is an image
+node like any other: its `NodeSpec` declares the Source input
+`.kind = eDataKindRaw` and its `outputKind`, either `eDataKindRaw` (raw in, raw
+out: a black-level subtraction, a raw crop) or `eDataKindImage` (raw in, image
+out: a demosaic). Raw out from an image Source is a compile error. Its
+pipeline has `.layers = LayerPolicy::none()` and neither `Premult` nor
+`MaskMix`: a mosaic has no alpha to divide by, no layers or channels to pick,
+and nothing to blend against a mask. All three are compile errors on a raw
+Source, as `staticImagePipelineSpec()` checks.
+
+Raw enters the graph through the native Read, whose output is raw whenever
+its `filename` has a camera raw extension (see "Knob-driven source kinds").
+rawspeed decodes the file (`Engine/Nodes/IO/RawDecodeSupport.*`, see
+`Engine/Nodes/IO/docs/NativeRead.md`); OpenImageIO is never asked to read it
+as an image.
+
+`ImagePipelineSpec::rawStage` says which `raw/stage` the node needs its source
+at: `Any` (the default, and the only choice for an image Source or a Route op),
+`Raw` or `Prepared`. With `Raw` or `Prepared` the host reads the source's
+`raw/stage` before anything else: on a mismatch, or with no `raw/stage` at all,
+the node is never an identity and never placed on the GPU, and its render
+fails, rendering nothing, with `RawMetadata::requireStage()`'s text as the
+node's persistent error. The error is taken back by the first render that
+finds the stage right. Nothing is ever passed through silently.
+
+A Point op reads the CFA through `bake(reader, source)`:
+`RawLayout::fromMetadata(source)` into its `Params`, then
+`layout.colourAt(io.x0 + x, io.y)` for pixel `x` of the row. `colourAt()` takes
+the pattern's origin into account, so the op needs nothing else to find the
+colour of each photosite in whatever window it renders.
+
+A raw-to-image node that changes the channel count -- a one-channel mosaic in,
+RGB out, as a demosaic does -- declares its own output components by
+overriding `getPreferredMetadata()`, and overrides `deriveOutputMetadata()` to
+drop the `raw/` keys that no longer describe its output (the CFA pattern and
+origin, and `raw/stage` once the output is an image). Neither is `FINAL` in
+`StagedImageEffect` or `ImageNode`, so a subclass of either can; a demosaic
+reads neighbouring photosites, so it is a Passes or Custom node anyway.
+
+A raw node whose result depends on the whole frame (RawDemosaic's full green matching,
+RawHighlights' Inpaint Opposed, RawCACorrect) asks for the whole source in
+`getRegionsOfInterest()`, measures it on the first render under a node mutex, and keeps the
+result under `RawNodeSupport::frameKey()` of its render hash, time and view. The other tiles
+wait on that mutex and reuse the result, so every tile agrees with the full frame and the frame
+is measured once per source and settings. A cancelled measurement is not kept.
+
+On the GPU nothing changes in the path: a mosaic is a one-channel image in a
+region like any other, its pixel in the alpha bit of `pixelwrap.slang`'s channel
+order. A raw op's parameter block starts with the CFA in a bounded form,
+`RawLayoutGpu` (`Engine/Nodes/Raw/RawGpuParams.h`, beside the other raw blocks):
+the period, the origin and the pattern packed into at most a 6x6 (X-Trans) cell
+array, so the block's size is fixed and the `static_assert(sizeof(...) == ...)`
+beside its Slang mirror holds whatever the file. `RawLayout` in
+`Engine/Gpu/Kernels/rawlayout.slang` loads it and answers `colourAt()` as the CPU
+does. A Custom raw node that reads around a pixel or moves pixels says what of its
+source a window needs through `getOpGpuInputRoI()`, as a Passes op's halo does.
+
+Placement keeps a develop chain whole: the tasks reading raw data, joined by their
+dependencies, form a run, and a run with a task that has no GPU path (neither
+cached nor an identity) stays on the CPU entirely, so a mosaic never crosses
+between the devices in the middle of it (`placeGraph()`, `taskReadsRaw()`). A raw node renders
+at full scale only, and a region refuses such a node at a proxy level, so its task there is never
+a GPU candidate (`makeGpuQueryForTask()`).
 
 ### The GPU side of an op
 

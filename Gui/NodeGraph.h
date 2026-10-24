@@ -141,6 +141,9 @@ public:
 
     virtual void onNodesCleared() OVERRIDE FINAL;
 
+    virtual void addNodesToCreationOf(const NodePtr& created,
+                                      const NodesList& added) OVERRIDE FINAL;
+
     void setLastSelectedViewer(ViewerTab* tab);
 
     ViewerTab* getLastSelectedViewer() const;

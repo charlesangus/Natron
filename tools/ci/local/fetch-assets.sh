@@ -19,9 +19,12 @@
 #   build/assets/TestPlugins/metadataPrint.ofx.bundle/   (tests only)
 #   build/assets/plugin-src/deps-install/  (lcms2, libzip, ImageMagick --
 #                                           for openfx-arena)
+#   build/assets/rawspeed/                 (rawspeed, linked statically into
+#                                           Natron itself, with cameras.xml)
 #
 # A second run does no network or compile work if the plugin bundles already look
-# complete and the plugin stamp matches the pins below.
+# complete and the plugin stamp matches the pins below, and rawspeed's install
+# is complete and its own stamp matches its pin.
 #
 # --- Why the plugins are BUILT here, not downloaded -----------------------
 #
@@ -237,6 +240,22 @@ OPENFX_ARENA_REF="88e6bc92ba81afa832ce98acc25521ebded02a74"
 OPENFX_METADATA_REPO="https://github.com/charlesangus/openfx.git"
 OPENFX_METADATA_REF="ba379b1f7bba325e6d52bdb6a315309e48c236dc"
 
+# RAWSPEED_REF: darktable-org/rawspeed at the commit darktable's release
+# below pins as its src/external/rawspeed submodule, so the decoder and the
+# modules ported from that release agree. Not a plugin: Natron's own Engine
+# links it (statically), so it is installed apart from the plugin deps, with
+# its own stamp, into a directory CI caches alongside Plugins/. rawspeed has no
+# install rule for its library or headers, only for cameras.xml, so the
+# install below lays out lib/, include/ and a CMake package config itself.
+#
+# DARKTABLE_REF: darktable-org/darktable at the release-5.6.2 tag, the latest
+# release. Nothing here builds darktable; this is the source revision the raw
+# nodes are ported from and the reference renders are made with.
+RAWSPEED_REPO="https://github.com/darktable-org/rawspeed.git"
+RAWSPEED_REF="c835b05aecfacb7343f7c424abd620aa12116c3f"
+DARKTABLE_REPO="https://github.com/darktable-org/darktable.git"
+DARKTABLE_REF="20891f6c6fa7be995e5bf9dff9d1ee5062051773"
+
 PLUGINS_TARGET="${ASSETS_DIR}/Plugins"
 TEST_PLUGINS_TARGET="${ASSETS_DIR}/TestPlugins"
 PLUGINS_SRC_DIR="${ASSETS_DIR}/plugin-src"
@@ -247,16 +266,50 @@ PLUGINS_STAMP="${PLUGINS_TARGET}/.natron-plugin-pins"
 CIMG_HEADER_KEPT="${ASSETS_DIR}/CImg/CImg.h"
 PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF} lcms2=${LCMS2_REF} libzip=${LIBZIP_REF} imagemagick=${IMAGEMAGICK_REF} openfx-arena=${OPENFX_ARENA_REF} openfx-metadata=${OPENFX_METADATA_REF}"
 
+RAWSPEED_PREFIX="${ASSETS_DIR}/rawspeed"
+RAWSPEED_STAMP="${RAWSPEED_PREFIX}/.natron-rawspeed-pin"
+# recipe= changes whenever the build flags below change, so a local re-run
+# rebuilds even though the ref did not move.
+RAWSPEED_WANT="rawspeed=${RAWSPEED_REF} recipe=1"
+
 if [[ "${CHECK_PINS}" -eq 1 ]]; then
-    if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ]; then
+    pins_ok=1
+    if [ ! -f "${PLUGINS_STAMP}" ] || [ "$(cat "${PLUGINS_STAMP}")" != "${PLUGINS_WANT}" ]; then
+        echo "fetch-assets.sh: ${PLUGINS_TARGET} was not built at the pinned refs." >&2
+        echo "  built:  $(cat "${PLUGINS_STAMP}" 2>/dev/null || echo "<no stamp>")" >&2
+        echo "  pinned: ${PLUGINS_WANT}" >&2
+        pins_ok=0
+    fi
+    if [ ! -f "${RAWSPEED_STAMP}" ] || [ "$(cat "${RAWSPEED_STAMP}")" != "${RAWSPEED_WANT}" ]; then
+        echo "fetch-assets.sh: ${RAWSPEED_PREFIX} was not built at the pinned ref." >&2
+        echo "  built:  $(cat "${RAWSPEED_STAMP}" 2>/dev/null || echo "<no stamp>")" >&2
+        echo "  pinned: ${RAWSPEED_WANT}" >&2
+        pins_ok=0
+    fi
+    if [[ "${pins_ok}" -eq 1 ]]; then
         exit 0
     fi
-    echo "fetch-assets.sh: ${PLUGINS_TARGET} was not built at the pinned refs." >&2
-    echo "  built:  $(cat "${PLUGINS_STAMP}" 2>/dev/null || echo "<no stamp>")" >&2
-    echo "  pinned: ${PLUGINS_WANT}" >&2
     echo "Run tools/ci/local/fetch-assets.sh to rebuild them." >&2
     exit 1
 fi
+
+# Fetch exactly one commit. `git clone --depth 1` cannot take a raw SHA on most
+# servers, so init + fetch that SHA directly instead; it is the cheapest way to
+# land on an exact pin without cloning history.
+clone_at_ref() {
+    local repo="$1" ref="$2" dest="$3"
+    if [ -d "${dest}/.git" ] && [ "$(git -C "${dest}" rev-parse HEAD 2>/dev/null)" = "${ref}" ]; then
+        echo "[fetch]   ${dest##*/}: already at ${ref}"
+        return 0
+    fi
+    rm -rf "${dest}"
+    mkdir -p "${dest}"
+    git -C "${dest}" init -q
+    git -C "${dest}" remote add origin "${repo}"
+    git -C "${dest}" fetch -q --depth 1 origin "${ref}"
+    git -C "${dest}" checkout -q FETCH_HEAD
+    git -C "${dest}" submodule update -q --init --recursive --depth 1
+}
 
 # Defined unconditionally (not just in the build branch below) so both the
 # "already built -- skipping" and the "building..." paths can probe these
@@ -296,24 +349,6 @@ else
     echo "[Plugins]   ${PLUGINS_WANT}"
 
     mkdir -p "${PLUGINS_SRC_DIR}"
-
-    # Fetch exactly one commit each. `git clone --depth 1` cannot take a raw
-    # SHA on most servers, so init + fetch that SHA directly instead; it is
-    # the cheapest way to land on an exact pin without cloning history.
-    clone_at_ref() {
-        local repo="$1" ref="$2" dest="$3"
-        if [ -d "${dest}/.git" ] && [ "$(git -C "${dest}" rev-parse HEAD 2>/dev/null)" = "${ref}" ]; then
-            echo "[Plugins]   ${dest##*/}: already at ${ref}"
-            return 0
-        fi
-        rm -rf "${dest}"
-        mkdir -p "${dest}"
-        git -C "${dest}" init -q
-        git -C "${dest}" remote add origin "${repo}"
-        git -C "${dest}" fetch -q --depth 1 origin "${ref}"
-        git -C "${dest}" checkout -q FETCH_HEAD
-        git -C "${dest}" submodule update -q --init --recursive --depth 1
-    }
 
     clone_at_ref "${OPENFX_IO_REPO}"   "${OPENFX_IO_REF}"   "${PLUGINS_SRC_DIR}/openfx-io"
     clone_at_ref "${SEEXPR_REPO}"      "${SEEXPR_REF}"      "${PLUGINS_SRC_DIR}/SeExpr"
@@ -626,6 +661,140 @@ else
 
     echo "${PLUGINS_WANT}" > "${PLUGINS_STAMP}"
     echo "[Plugins] done -> ${PLUGINS_TARGET}"
+fi
+
+# ---------------------------------------------------------------------------
+# rawspeed (built from source, linked statically into Natron's Engine)
+# ---------------------------------------------------------------------------
+#
+# Static, so neither the AppImage nor the ctest job (which only downloads the
+# build tree) needs a librawspeed.so. Its own dependencies are shared
+# libraries the image already has and Natron's bundle already collects through
+# its ldd walk: pugixml (cameras.xml), libjpeg (lossy DNG) and zlib (deflate
+# DNG). They are named by path, the /usr/local copies, because the image also
+# carries an older libjpeg (62) at /usr/lib64 whose header must never be paired
+# with the other's library; the generated package config hands Natron's link
+# exactly the libraries rawspeed was compiled against.
+#
+# Flags:
+#   BINARY_PACKAGE_BUILD=ON    -- -mtune=generic instead of -march=native: the
+#                                 install is cached and reused on other machines.
+#   WITH_OPENMP=OFF            -- Natron parallelises across tiles and nodes
+#                                 itself, and an OpenMP runtime would be one
+#                                 more library to bundle for no gain.
+#   RAWSPEED_ENABLE_WERROR=OFF -- a new compiler warning in a pinned upstream
+#                                 must not fail this build.
+#   BUILD_TESTING/TOOLS/BENCHMARKING/FUZZERS/DOCS=OFF, USE_XMLLINT=OFF -- only
+#                                 the library and cameras.xml are needed.
+#
+# The finished install is assembled beside its final directory and renamed
+# into place, so an interrupted run never leaves a partial install that a
+# later run (or CMake) takes for a complete one.
+RAWSPEED_LIB="${RAWSPEED_PREFIX}/lib/librawspeed.a"
+RAWSPEED_CAMERAS_XML="${RAWSPEED_PREFIX}/share/rawspeed/cameras.xml"
+RAWSPEED_CONFIG="${RAWSPEED_PREFIX}/lib/cmake/rawspeed/rawspeedConfig.cmake"
+RAWSPEED_DEP_INCLUDE_DIR="/usr/local/include"
+RAWSPEED_DEP_PUGIXML="/usr/local/lib/libpugixml.so"
+RAWSPEED_DEP_JPEG="/usr/local/lib/libjpeg.so"
+RAWSPEED_DEP_ZLIB="/usr/local/lib/libz.so"
+
+echo "[darktable] raw nodes are ported from ${DARKTABLE_REPO} at ${DARKTABLE_REF}"
+if [ -f "${RAWSPEED_STAMP}" ] && [ "$(cat "${RAWSPEED_STAMP}")" = "${RAWSPEED_WANT}" ] \
+    && [ -f "${RAWSPEED_LIB}" ] && [ -f "${RAWSPEED_CAMERAS_XML}" ] && [ -f "${RAWSPEED_CONFIG}" ]; then
+    echo "[rawspeed] already built at the pinned ref -- skipping."
+    echo "[rawspeed]   ${RAWSPEED_WANT}"
+else
+    echo "[rawspeed] building rawspeed from source..."
+    echo "[rawspeed]   ${RAWSPEED_WANT}"
+
+    for dep in "${RAWSPEED_DEP_PUGIXML}" "${RAWSPEED_DEP_JPEG}" "${RAWSPEED_DEP_ZLIB}" \
+        "${RAWSPEED_DEP_INCLUDE_DIR}/pugixml.hpp" "${RAWSPEED_DEP_INCLUDE_DIR}/jpeglib.h" "${RAWSPEED_DEP_INCLUDE_DIR}/zlib.h"; do
+        if [ ! -f "${dep}" ]; then
+            echo "[rawspeed] ERROR: ${dep} is missing from this image; rawspeed needs it." >&2
+            exit 1
+        fi
+    done
+
+    mkdir -p "${PLUGINS_SRC_DIR}"
+    RAWSPEED_SRC="${PLUGINS_SRC_DIR}/rawspeed"
+    # A sibling of the source tree, not inside it: rawspeed sets
+    # CMAKE_DISABLE_SOURCE_CHANGES.
+    RAWSPEED_BUILD="${PLUGINS_SRC_DIR}/rawspeed-build"
+    RAWSPEED_STAGE="${RAWSPEED_PREFIX}.partial"
+    clone_at_ref "${RAWSPEED_REPO}" "${RAWSPEED_REF}" "${RAWSPEED_SRC}"
+
+    rm -rf "${RAWSPEED_BUILD}"
+    cmake -S "${RAWSPEED_SRC}" -B "${RAWSPEED_BUILD}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_PREFIX_PATH=/usr/local \
+        -DCMAKE_INSTALL_DATAROOTDIR=share \
+        -DBINARY_PACKAGE_BUILD=ON \
+        -DRAWSPEED_ENABLE_WERROR=OFF \
+        -DRAWSPEED_ENABLE_DEBUG_INFO=OFF \
+        -DWITH_OPENMP=OFF \
+        -DWITH_PUGIXML=ON \
+        -DUSE_BUNDLED_PUGIXML=OFF \
+        -DWITH_JPEG=ON \
+        -DWITH_ZLIB=ON \
+        -DUSE_BUNDLED_ZLIB=OFF \
+        -DUSE_XMLLINT=OFF \
+        -DBUILD_TESTING=OFF \
+        -DBUILD_TOOLS=OFF \
+        -DBUILD_BENCHMARKING=OFF \
+        -DBUILD_FUZZERS=OFF \
+        -DBUILD_DOCS=OFF \
+        -DPugixml_INCLUDE_DIR="${RAWSPEED_DEP_INCLUDE_DIR}" \
+        -DPugixml_LIBRARY="${RAWSPEED_DEP_PUGIXML}" \
+        -DJPEG_INCLUDE_DIR="${RAWSPEED_DEP_INCLUDE_DIR}" \
+        -DJPEG_LIBRARY="${RAWSPEED_DEP_JPEG}" \
+        -DZLIB_INCLUDE_DIR="${RAWSPEED_DEP_INCLUDE_DIR}" \
+        -DZLIB_LIBRARY="${RAWSPEED_DEP_ZLIB}" \
+        > /dev/null
+    cmake --build "${RAWSPEED_BUILD}" --target rawspeed -j "$(nproc)"
+
+    rm -rf "${RAWSPEED_STAGE}"
+    # With the options above, cameras.xml (and its stylesheet) is all rawspeed
+    # installs.
+    cmake --install "${RAWSPEED_BUILD}" --prefix "${RAWSPEED_STAGE}" > /dev/null
+
+    mkdir -p "${RAWSPEED_STAGE}/lib/cmake/rawspeed" "${RAWSPEED_STAGE}/include/rawspeed"
+    mapfile -t built_libs < <(find "${RAWSPEED_BUILD}" -name librawspeed.a -type f)
+    if [ "${#built_libs[@]}" -ne 1 ]; then
+        echo "[rawspeed] ERROR: expected exactly one librawspeed.a under ${RAWSPEED_BUILD}, found ${#built_libs[@]}" >&2
+        exit 1
+    fi
+    cp "${built_libs[0]}" "${RAWSPEED_STAGE}/lib/librawspeed.a"
+    # The include roots rawspeed's own target exports -- src/librawspeed
+    # (headers named "adt/...", "decoders/..."), src/external and the
+    # generated rawspeedconfig.h -- merged into one directory.
+    (cd "${RAWSPEED_SRC}/src/librawspeed" && find . -name '*.h' -exec cp --parents {} "${RAWSPEED_STAGE}/include/rawspeed/" \;)
+    cp "${RAWSPEED_SRC}"/src/external/*.h "${RAWSPEED_STAGE}/include/rawspeed/"
+    cp "${RAWSPEED_BUILD}/src/rawspeedconfig.h" "${RAWSPEED_STAGE}/include/rawspeed/"
+    if [ ! -f "${RAWSPEED_STAGE}/share/rawspeed/cameras.xml" ]; then
+        echo "[rawspeed] ERROR: the install produced no share/rawspeed/cameras.xml" >&2
+        exit 1
+    fi
+
+    cat > "${RAWSPEED_STAGE}/lib/cmake/rawspeed/rawspeedConfig.cmake" <<CONFIG
+# Generated by tools/ci/local/fetch-assets.sh. Do not edit.
+get_filename_component(_rawspeed_prefix "\${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+set(rawspeed_REF "${RAWSPEED_REF}")
+set(rawspeed_CAMERAS_XML "\${_rawspeed_prefix}/share/rawspeed/cameras.xml")
+if(NOT TARGET rawspeed::rawspeed)
+    add_library(rawspeed::rawspeed STATIC IMPORTED)
+    set_target_properties(rawspeed::rawspeed PROPERTIES
+        IMPORTED_LOCATION "\${_rawspeed_prefix}/lib/librawspeed.a"
+        INTERFACE_INCLUDE_DIRECTORIES "\${_rawspeed_prefix}/include/rawspeed"
+        INTERFACE_COMPILE_FEATURES cxx_std_20
+        INTERFACE_LINK_LIBRARIES "${RAWSPEED_DEP_PUGIXML};${RAWSPEED_DEP_JPEG};${RAWSPEED_DEP_ZLIB}")
+endif()
+unset(_rawspeed_prefix)
+CONFIG
+
+    echo "${RAWSPEED_WANT}" > "${RAWSPEED_STAGE}/.natron-rawspeed-pin"
+    rm -rf "${RAWSPEED_PREFIX}"
+    mv "${RAWSPEED_STAGE}" "${RAWSPEED_PREFIX}"
+    echo "[rawspeed] done -> ${RAWSPEED_PREFIX}"
 fi
 
 # ---------------------------------------------------------------------------

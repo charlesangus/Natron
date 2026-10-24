@@ -165,6 +165,39 @@ struct NodeSpec {
     }
 };
 
+/**
+ * @brief The number of the first Source input of spec, or -1 when it has none.
+ **/
+constexpr int
+nodeSpecSourceInput(const NodeSpec& spec)
+{
+    int first = 0;
+
+    for (const InputSpec& input : spec.inputs) {
+        if (input.role == InputRole::Source) {
+            return first;
+        }
+        first += input.count;
+    }
+
+    return -1;
+}
+
+/**
+ * @brief The kind the first Source input of spec takes, or eDataKindPolymorphic when it has none.
+ **/
+constexpr DataKindEnum
+nodeSpecSourceKind(const NodeSpec& spec)
+{
+    for (const InputSpec& input : spec.inputs) {
+        if (input.role == InputRole::Source) {
+            return input.kind;
+        }
+    }
+
+    return eDataKindPolymorphic;
+}
+
 constexpr bool
 nodeSpecMasksAreImages(const NodeSpec& spec)
 {

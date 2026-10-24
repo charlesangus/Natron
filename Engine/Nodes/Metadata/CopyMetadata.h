@@ -89,6 +89,16 @@ private:
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The RoD of A, whose image is the output; the default would union in B, which only
+     * contributes metadata and may have no image at all.
+     **/
+    virtual StatusEnum getRegionOfDefinition(U64 hash,
+                                             double time,
+                                             const RenderScale& scale,
+                                             ViewIdx view,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual void initializeKnobs() OVERRIDE FINAL;
 
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;

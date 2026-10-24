@@ -26,13 +26,17 @@
 #include "StagedImageEffect.h"
 
 #include <bitset>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <QString>
+
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/RectD.h"
 
 NATRON_NAMESPACE_ENTER
@@ -40,6 +44,8 @@ NATRON_NAMESPACE_ENTER
 StagedImageEffect::StagedImageEffect(NodePtr node)
     : NativeEffectBase(node)
     , _stageKnobs()
+    , _rawStageErrorMutex()
+    , _postedRawStageError()
 {
 }
 
@@ -142,6 +148,9 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
 bool
 StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
 {
+    if (rawStageError(query.time, query.view)) {
+        return false;
+    }
     const OpKind kind = imagePipelineSpec().op;
 
     if (kind == OpKind::Passes) {
@@ -185,6 +194,9 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
         const ViewIdx view = getCurrentView();
 
         return resampleGpuSourceRoI(*this, source, opResample(time, view, scale), getResampleRegionStages(time, view), time, view, outputRect, scale);
+    }
+    if (kind == OpKind::Custom) {
+        return getOpGpuInputRoI(inputNb, outputRect, scale);
     }
 
     return NativeEffectBase::getGpuInputRoI(inputNb, outputRect, scale);
@@ -344,6 +356,30 @@ StagedImageEffect::getMaskInvertValue(double time,
     const KnobReader reader(time, view);
 
     return reader.valueOr(_stageKnobs.maskInvert, false);
+}
+
+ImageMetadata
+StagedImageEffect::getSourceMetadata(double time,
+                                     ViewIdx view) const
+{
+    const int source = getSourceInput();
+
+    return (source >= 0) ? getInputMetadata(source, time, view) : ImageMetadata();
+}
+
+std::optional<std::string>
+StagedImageEffect::rawStageError(double time,
+                                 ViewIdx view) const
+{
+    const RawStageRequirement required = imagePipelineSpec().rawStage;
+
+    if (required == RawStageRequirement::Any) {
+        return std::nullopt;
+    }
+    const RawStageEnum expected = (required == RawStageRequirement::Prepared) ? eRawStagePrepared : eRawStageRaw;
+    NodePtr node = getNode();
+
+    return RawMetadata::requireStage(getSourceMetadata(time, view), expected, node ? node->getLabel_mt_safe() : getPluginLabel());
 }
 
 bool
@@ -589,6 +625,10 @@ StagedImageEffect::isIdentity(double time,
                               ViewIdx* inputView,
                               int* inputNb)
 {
+    // A source at the wrong raw stage must reach render() and fail there, not pass through.
+    if (rawStageError(time, view)) {
+        return false;
+    }
     if (NativeEffectBase::isIdentity(time, scale, roi, view, inputTime, inputView, inputNb)) {
         return true;
     }
@@ -617,6 +657,35 @@ StagedImageEffect::isIdentity(double time,
 StatusEnum
 StagedImageEffect::render(const RenderActionArgs& args)
 {
+    if (imagePipelineSpec().rawStage != RawStageRequirement::Any) {
+        const std::optional<std::string> stageError = rawStageError(args.time, args.view);
+
+        if (stageError) {
+            {
+                std::lock_guard<std::mutex> lock(_rawStageErrorMutex);
+                _postedRawStageError = *stageError;
+            }
+            setPersistentMessage(eMessageTypeError, *stageError);
+
+            return eStatusFailed;
+        }
+        std::string posted;
+        {
+            std::lock_guard<std::mutex> lock(_rawStageErrorMutex);
+            posted.swap(_postedRawStageError);
+        }
+        NodePtr node = getNode();
+        // Only the message this check posted is cleared; another one stays the user's to read.
+        if (!posted.empty() && node) {
+            QString current;
+            int type = 0;
+            node->getPersistentMessage(&current, &type, false);
+            if (current == QString::fromUtf8(posted.c_str())) {
+                node->clearPersistentMessage(false);
+            }
+        }
+    }
+
     if (imagePipelineSpec().op != OpKind::Composite) {
         return renderOp(args, resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), args.time, args.view, args.processChannels));
     }

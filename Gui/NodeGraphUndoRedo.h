@@ -103,12 +103,22 @@ public:
     virtual void undo();
     virtual void redo();
 
+    /**
+     * @brief Marks this command as adding nodes made on behalf of `owner` just after it was
+     * created: pushed right after the command that added `owner`, it merges into that command.
+     **/
+    void setCreatedFor(const NodeGuiPtr& owner);
+
+    virtual int id() const;
+    virtual bool mergeWith(const QUndoCommand* other);
+
 private:
 
     std::list<NodeGuiWPtr> _nodes;
     NodeGraph* _graph;
     bool _firstRedoCalled;
     bool _isUndone;
+    NodeGuiWPtr _createdFor;
 };
 
 

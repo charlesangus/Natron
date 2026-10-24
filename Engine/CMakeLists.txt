@@ -220,7 +220,20 @@ target_link_libraries(NatronEngine
         mv
         openMVG
         tess
+        rawspeed::rawspeed
 )
+
+# rawspeed's camera database, read at run time from <bin>/../Resources/rawspeed beside every
+# executable: copied there in the build tree, which the ctest jobs receive whole, and installed
+# there in the bundle.
+configure_file(${rawspeed_CAMERAS_XML} ${CMAKE_BINARY_DIR}/Resources/rawspeed/cameras.xml COPYONLY)
+install(FILES ${rawspeed_CAMERAS_XML} DESTINATION Resources/rawspeed)
+
+# darktable's white balance presets, read at run time by RawTemperature from
+# <bin>/../Resources/darktable, the same way.
+set(NatronEngine_WB_PRESETS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Raw/data/wb_presets.json)
+configure_file(${NatronEngine_WB_PRESETS_JSON} ${CMAKE_BINARY_DIR}/Resources/darktable/wb_presets.json COPYONLY)
+install(FILES ${NatronEngine_WB_PRESETS_JSON} DESTINATION Resources/darktable)
 
 # Some Linux dependencies (notably Qt) can expose the distribution FreeType
 # before this static library's transitive link interface is expanded.  The
@@ -262,5 +275,6 @@ target_compile_definitions(NatronEngine
     PRIVATE
         NATRON_CUSTOM_BUILD_USER_TOKEN="${BUILD_USER_NAME}"
         NATRON_BUILD_NUMBER=0
+        NATRON_RAWSPEED_VERSION="${rawspeed_REF}"
         QT_NO_KEYWORDS
 )

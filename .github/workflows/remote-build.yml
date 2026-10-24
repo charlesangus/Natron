@@ -94,6 +94,25 @@ jobs:
         uses: actions/checkout@v5.0.1
         with:
           submodules: recursive
+          lfs: false
+
+      # LFS objects come from the cache and download only on a miss. The workspace
+      # is not owned by the container's root user, so git needs it marked safe.
+      - name: List LFS objects
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore LFS objects
+        uses: actions/cache@v6.1.0
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+
+      - name: Pull LFS objects
+        run: |
+          git lfs install --local
+          git lfs pull
 
       # The primary key ends in run_id so every run saves a fresh entry
       # (a save under an existing exact key is a silent no-op); hits come
@@ -116,6 +135,7 @@ jobs:
             build/assets/Plugins
             build/assets/TestPlugins
             build/assets/CImg
+            build/assets/rawspeed
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets
@@ -257,6 +277,25 @@ jobs:
         uses: actions/checkout@v5.0.1
         with:
           submodules: recursive
+          lfs: false
+
+      # LFS objects come from the cache and download only on a miss. The workspace
+      # is not owned by the container's root user, so git needs it marked safe.
+      - name: List LFS objects
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore LFS objects
+        uses: actions/cache@v6.1.0
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+
+      - name: Pull LFS objects
+        run: |
+          git lfs install --local
+          git lfs pull
 
       # The build job saved both entries, so these hit and fetch-assets.sh is a stamp check.
       - name: Restore test assets
@@ -266,6 +305,7 @@ jobs:
             build/assets/Plugins
             build/assets/TestPlugins
             build/assets/CImg
+            build/assets/rawspeed
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets

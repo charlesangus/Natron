@@ -353,7 +353,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: the script runs and reproduces the 2026-10-23 audit's gaps as MISSING rows, plus the mask-view rows the audit missed. Python only; no build.
   - size: M
 
-- [ ] M80.P7.T4 — darktable comparisons for already-ported modes that have no comparison yet
+- [x] M80.P7.T4 — darktable comparisons for already-ported modes that have no comparison yet
   - files: new `Tests/Native/RawReferenceModules_Test.cpp`, `Tests/Native/RawReference_Test.cpp` (shared helpers only, moved into a header if needed), new `Tests/Native/RawReferenceSupport.h`
   - approach:
     - Compare these modes on the T2 crops, reusing `RawReference_Test`'s crop/convert/tolerance code:
@@ -527,7 +527,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest on hand tables, plus the darktable comparisons for Bayer and X-Trans passthrough mono and photosite colour. Compiled at P7.T26.
   - size: M
 
-- [ ] M80.P7.T20 — RawDemosaic: LMMSE (Bayer) with LMMSE Refine
+- [x] M80.P7.T20 — RawDemosaic: LMMSE (Bayer) with LMMSE Refine
   - files: new `Engine/Nodes/Raw/RawDemosaicLmmse.cpp`, `Engine/Nodes/Raw/RawKernels.h`, `Engine/Nodes/Raw/RawDemosaic.cpp/.h`, new `Tests/Native/NativeRawDemosaicLmmse_Test.cpp`
   - approach:
     - Port `demosaicing/lmmse.c` `lmmse_demosaic`, `_init_lmmse_gamma` (a thread-safe once-init table, not darktable's globals) and `_median3f`.
@@ -537,7 +537,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks tiled = full frame bit for bit, plus the darktable comparisons for all 5 refine levels. Compiled at P7.T26.
   - size: L
 
-- [ ] M80.P7.T21 — RawDemosaic: dual demosaic (RCD+VNG4, AMaZE+VNG4, Markesteijn 3-pass+VNG) with Dual Threshold and mask view
+- [x] M80.P7.T21 — RawDemosaic: dual demosaic (RCD+VNG4, AMaZE+VNG4, Markesteijn 3-pass+VNG) with Dual Threshold and mask view
   - files: new `Engine/Nodes/Raw/RawDemosaicDual.cpp`, `Engine/Nodes/Raw/RawKernels.h`, `Engine/Nodes/Raw/RawDemosaic.cpp/.h`, new `Tests/Native/NativeRawDemosaicDual_Test.cpp`
   - approach:
     - Port `demosaicing/dual.c` `dual_demosaic` and `_slider2contrast`, with the `dt_masks_calc_detail_mask`/blur steps it calls.
@@ -557,7 +557,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks tiled = full frame, and a flat patch stays neutral at all 36 phases. The darktable comparison passes on the RAF. Compiled at P7.T26.
   - size: L
 
-- [ ] M80.P7.T23 — RawDemosaic: capture sharpening
+- [x] M80.P7.T23 — RawDemosaic: capture sharpening
   - files: new `Engine/Nodes/Raw/RawDemosaicCapture.cpp`, `Engine/Nodes/Raw/RawKernels.h`, `Engine/Nodes/Raw/RawDemosaic.cpp/.h`, new `Tests/Native/NativeRawDemosaicCapture_Test.cpp`
   - approach:
     - Port `demosaicing/capture.c`: `_calc_auto_radius` (`_calcRadiusBayer`/`Xtrans`/`Mono`), `_get_variance_threshold`, `_prepare_blend`, `_modify_blend`, `_blur_mul`/`_blur_div` and `_calc_9x9_gauss_coeffs`, plus the iteration loop.
@@ -822,6 +822,7 @@ Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 r
 - 2026-10-24 — **Checkpoint A (P7.T18):** debug `--tests` on ca3bd3ca2 371/371 green (after four test-only fixes: highlights tests swapping sources without disconnecting and missing the clip override; input-colour tests feeding raw data straight into RawInputColor); release `--tests` on bdc363e05 372/373 — the one failure is T20's new `NativeRawDemosaicLmmseTest.TilesMatchTheFullFrameWithLocalGreensAndSmoothing` (render returns no plane, then the test segfaults), routed to T20. The regenerated references (T2, fb98e7c19) pass the existing `RawReferenceTest` and highlights comparisons. T2, T5–T17 and T19 checked off; T4 remains (not yet implemented).
 - 2026-10-24 — **P7.T38 cancelled:** darktable 5.6.2's rawdenoise GUI never moves band positions — `x_move` is only ever set to -1 (`rawdenoise.c:790,903`), the drag path runs only when `x_move < 0` and edits y through `dt_iop_rawdenoise_get_params`, and double-click resets x to the defaults `k/4`. So `x` is a stored param with no widget, not a user control; adding 20 position knobs would exceed the port. The implementation was discarded uncommitted. T28 maps rawdenoise `x` to N/A (no widget). The implementer also found that darktable quantises the sampled curve to 16 bits (up to 1.5e-5 in the band weights); T4's shaped-curve comparison shows whether that matters.
 - 2026-10-24 — **P7.T25 follow-ups (code aa24e9e21):** Clear Caches now frees every raw node's per-`frameKey()` cache, and `RawNodeSupport::setFrameComputedHookForTests` lets RawLarge assert each whole-frame computation runs once per frame. Kept as designed (`Engine/Nodes/README.md` ~970): whole-frame computations get their input through every tile's RoI (whole source, or capture's 60% measurement area), not through an extra fetch on a cache miss, which would be an unplanned `getImage` pull and would not save memory (the cached input grows to the union anyway). So capture-auto's 100 MP bound stays 118F/25 + 2F.
+- 2026-10-24 — **Debug `--tests` on 73fb95703: 376/377.** T4's 29 darktable comparisons, T20 LMMSE (after the test-only fix 9484f2b33), T21 dual and T23 capture sharpening pass; checked off. The one failure is T22's FDC flat patch above ISO 1600 (1.21e-3 vs a guessed 1e-3); the port is bit-identical to darktable's C, so the tolerance is being set from darktable's measured maximum.
 
 ## Handoff (2026-10-22, PM paused by user)
 

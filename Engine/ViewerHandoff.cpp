@@ -30,11 +30,13 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 #include <QtCore/QDebug>
 #include <QtCore/QString>
@@ -131,6 +133,13 @@ struct PendingReadback {
     ViewerHandoffFrame frame;
 };
 
+// A host copy that present() had to take out of its slot before producing into it again.
+struct OwnedReadback {
+    std::uint64_t token = 0;
+    ViewerHandoffFrame frame;
+    std::vector<unsigned char> bytes;
+};
+
 struct Ring {
     std::unique_ptr<gpu::GlInterop> interop;
     std::array<GpuDeviceImagePtr, gpu::GlInterop::kSlots> pinned;
@@ -178,7 +187,9 @@ struct ViewerHandoff::Imp {
     std::string reason;
 
     std::array<Ring, kTextureCount> rings;
-    std::vector<ViewerHandoffReadback> completed;
+    std::vector<OwnedReadback> owned;
+    // Set while consumeCompletedReadbacks() lends slot memory, which no slot may be produced into or rebuilt under.
+    bool lending = false;
     std::size_t wantedCapacity = 0;
     unsigned dispatchesSinceRelease = 0;
 
@@ -263,39 +274,53 @@ struct ViewerHandoff::Imp {
         }
         rung.store(ViewerHandoffRung::Cpu, std::memory_order_release);
         old.reset();
-        completed.clear();
+        owned.clear();
         wantedCapacity = 0;
         if (lost) {
             buildFailed = false;
         }
     }
 
-    // Moves the host copy of a slot to `completed` once the device has written it, waiting for it when
-    // asked. A copy that cannot be read is dropped.
+    // Reads the host copy of a slot once the device has written it, lending it in place to \p consume, or, when
+    // \p consume is null, waiting for it and copying it to `owned`. A copy that cannot be read is dropped.
     void harvest(Ring& ring,
                  int slot,
-                 bool wait)
+                 const ViewerHandoffReadbackFn* consume)
     {
         PendingReadback& pending = ring.readbacks[slot];
         if (!pending.token || !ring.interop) {
             return;
         }
-        if (wait && !ring.interop->waitProduced(slot)) {
+        if (!consume && !ring.interop->waitProduced(slot)) {
             pending = PendingReadback();
 
             return;
         }
-        ViewerHandoffReadback out;
-        const gpu::GpuStatus s = ring.interop->readHostCopy(slot, out.bytes);
+        const unsigned char* data = nullptr;
+        VkDeviceSize size = 0;
+        const gpu::GpuStatus s = ring.interop->hostCopyView(slot, &data, &size);
         if (s.result == VK_TIMEOUT) {
             return;
         }
-        if (s) {
-            out.token = pending.token;
-            out.frame = pending.frame;
-            completed.push_back(std::move(out));
-        }
+        const PendingReadback taken = pending;
         pending = PendingReadback();
+        if (!s) {
+            return;
+        }
+        if (consume) {
+            ViewerHandoffReadback lent;
+            lent.token = taken.token;
+            lent.frame = taken.frame;
+            lent.data = data;
+            lent.size = static_cast<std::size_t>(size);
+            (*consume)(lent);
+        } else {
+            OwnedReadback copy;
+            copy.token = taken.token;
+            copy.frame = taken.frame;
+            copy.bytes.assign(data, data + size);
+            owned.push_back(std::move(copy));
+        }
     }
 
     // Unpins the root of every slot the device is done with. Returns whether a frame is still in
@@ -554,6 +579,9 @@ ViewerHandoff::maintain()
     if (!_imp->created) {
         return false;
     }
+    if (_imp->lending) {
+        return bool(_imp->currentDevice());
+    }
     Imp::NoteRungOnExit note { _imp.get() };
     std::shared_ptr<Device> dev = _imp->currentDevice();
     if (dev) {
@@ -606,6 +634,9 @@ ViewerHandoff::present(int textureIndex,
                        unsigned int glTexture,
                        const ViewerHandoffFrame& frame)
 {
+    if (_imp->lending) {
+        return refuse("present() while readbacks are lent");
+    }
     if (!maintain()) {
         return refuse("rung cpu: " + rungReason());
     }
@@ -675,7 +706,7 @@ ViewerHandoff::present(int textureIndex,
 
     // The slot produce() is about to overwrite may still hold a host copy nobody has collected.
     if (const int next = ring.interop->nextSlot(); next >= 0) {
-        _imp->harvest(ring, next, true);
+        _imp->harvest(ring, next, nullptr);
     }
 
     const gpu::GlFrame glFrame { frame.width, frame.height, pixelFormatOf(frame.format) };
@@ -728,23 +759,42 @@ ViewerHandoff::present(int textureIndex,
     return accept();
 }
 
-std::vector<ViewerHandoffReadback>
-ViewerHandoff::takeCompletedReadbacks()
+void
+ViewerHandoff::consumeCompletedReadbacks(const ViewerHandoffReadbackFn& consume)
 {
+    if (_imp->lending) {
+        return;
+    }
+    _imp->lending = true;
+    struct EndLending {
+        bool* lending;
+
+        ~EndLending() { *lending = false; }
+    } endLending { &_imp->lending };
+
+    std::vector<OwnedReadback> owned;
+    owned.swap(_imp->owned);
+    for (const OwnedReadback& o : owned) {
+        ViewerHandoffReadback lent;
+        lent.token = o.token;
+        lent.frame = o.frame;
+        lent.data = o.bytes.data();
+        lent.size = o.bytes.size();
+        consume(lent);
+    }
     for (Ring& ring : _imp->rings) {
         for (int i = 0; i < gpu::GlInterop::kSlots; ++i) {
-            _imp->harvest(ring, i, false);
+            _imp->harvest(ring, i, &consume);
         }
     }
-    std::vector<ViewerHandoffReadback> out;
-    out.swap(_imp->completed);
-
-    return out;
 }
 
 ViewerHandoffResult
 ViewerHandoff::ensureCapacity(std::size_t bytes)
 {
+    if (_imp->lending) {
+        return refuse("ensureCapacity() while readbacks are lent");
+    }
     if (!maintain()) {
         return refuse("rung cpu: " + rungReason());
     }
@@ -768,6 +818,7 @@ ViewerHandoff::capacity(int textureIndex) const
 void
 ViewerHandoff::release()
 {
+    assert(!_imp->lending);
     _imp->drop("released", false);
     _imp->created = false;
     _imp->buildFailed = false;

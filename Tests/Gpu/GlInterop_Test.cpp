@@ -13,6 +13,7 @@
 #include <GL/glext.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -385,6 +386,62 @@ protected:
         }
     }
 
+    // A host copy is read where the device wrote it, so a slot hands out the same mapped memory every time,
+    // holding the texels of its own last frame, and a slot produced without one refuses to give it.
+    void hostCopyInPlace(GlHandoffPath path)
+    {
+        if (!caps.supports(path)) {
+            GPUTEST_SKIP() << toString(path) << " unavailable on " << driverLabel() << ": missing " << caps.missing;
+        }
+        constexpr uint32_t w = 300;
+        constexpr uint32_t h = 170;
+        const GlFrame frame { w, h, GlPixelFormat::Rgba32F };
+        std::unique_ptr<GlInterop> gi;
+        GpuStatus s = GlInterop::create(*dev, eglLoader, frame.bytes(), path, gi);
+        ASSERT_TRUE(s.ok()) << s.message;
+        const GLuint tex = makeTexture(w, h);
+        std::vector<std::unique_ptr<TestBuffer>> sources;
+        for (uint32_t f = 0; f < uint32_t(2 * GlInterop::kSlots); ++f) {
+            auto staging = std::make_unique<TestBuffer>();
+            ASSERT_TRUE(staging->create(*dev, frame.bytes()).ok());
+            fillPattern(staging->data, w, h, 300 + f);
+            staging->flush();
+            sources.push_back(std::move(staging));
+        }
+        std::array<const unsigned char*, GlInterop::kSlots> firstView {};
+        for (uint32_t f = 0; f < sources.size(); ++f) {
+            int slot = -1;
+            s = gi->produce(
+                frame, [&](VkCommandBuffer cb, VkBuffer dst) { return sources[f]->copyTo(cb, dst); }, {}, &slot, true);
+            ASSERT_TRUE(s.ok()) << s.message;
+            s = gi->upload(slot, tex, 0, 0);
+            ASSERT_TRUE(s.ok()) << s.message;
+            ASSERT_TRUE(gi->waitProduced(slot).ok());
+            const unsigned char* data = nullptr;
+            VkDeviceSize size = 0;
+            s = gi->hostCopyView(slot, &data, &size);
+            ASSERT_TRUE(s.ok()) << toString(path) << ": " << s.message;
+            ASSERT_EQ(frame.bytes(), size) << toString(path);
+            EXPECT_EQ(0, std::memcmp(sources[f]->data, data, size)) << toString(path) << " frame " << f << " differs";
+            if (!firstView[slot]) {
+                firstView[slot] = data;
+            }
+            EXPECT_EQ(firstView[slot], data) << toString(path) << " slot " << slot << " moved its host copy";
+        }
+
+        int slot = -1;
+        ASSERT_TRUE(produce(*gi, frame, *sources[0], slot).ok());
+        ASSERT_TRUE(gi->upload(slot, tex, 0, 0).ok());
+        ASSERT_TRUE(gi->waitProduced(slot).ok());
+        const unsigned char* data = nullptr;
+        VkDeviceSize size = 0;
+        if (path == GlHandoffPath::Readback) {
+            EXPECT_TRUE(gi->hostCopyView(slot, &data, &size).ok()) << "the readback path always has a host copy";
+        } else {
+            EXPECT_FALSE(gi->hostCopyView(slot, &data, &size).ok()) << toString(path);
+        }
+    }
+
     // Produces frame f+1 into the other slot before frame f is uploaded, with frame sizes that change
     // every produce, so each upload must read only its own slot. One produce also waits on a host-
     // signalled timeline value, with its source rewritten between the submit and the signal.
@@ -671,6 +728,21 @@ GPU_TEST_F(GlInteropTest, ZeroCopyHostSyncBgra8SubRectByteExact)
 GPU_TEST_F(GlInteropTest, ReadbackBgra8SubRectByteExact)
 {
     bgra8SubRect(GlHandoffPath::Readback);
+}
+
+GPU_TEST_F(GlInteropTest, ZeroCopyHostCopyInPlace)
+{
+    hostCopyInPlace(GlHandoffPath::ZeroCopy);
+}
+
+GPU_TEST_F(GlInteropTest, ZeroCopyHostSyncHostCopyInPlace)
+{
+    hostCopyInPlace(GlHandoffPath::ZeroCopyHostSync);
+}
+
+GPU_TEST_F(GlInteropTest, ReadbackHostCopyInPlace)
+{
+    hostCopyInPlace(GlHandoffPath::Readback);
 }
 
 GPU_TEST_F(GlInteropTest, UhdLatency)

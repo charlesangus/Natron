@@ -198,7 +198,7 @@ public:
                                                          int textureIndex,
                                                          const ViewerHandoffParams& params,
                                                          TexturePtr* texture) OVERRIDE FINAL;
-    virtual std::vector<ViewerHandoffReadback> takeCompletedHandoffReadbacks() OVERRIDE FINAL;
+    virtual void consumeCompletedHandoffReadbacks(const ViewerHandoffReadbackFn& consume) OVERRIDE FINAL;
 #endif
     virtual void clearLastRenderedImage() OVERRIDE FINAL;
     virtual void disconnectInputTexture(int textureIndex, bool clearRoD) OVERRIDE FINAL;

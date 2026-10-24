@@ -62,6 +62,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
@@ -3131,19 +3132,26 @@ ViewerInstance::ViewerInstancePrivate::insertCacheTiles(const PendingCacheFill& 
 {
     const std::size_t pixelBytes = (std::size_t)fill.bytesPerPixel;
     const std::size_t frameRowBytes = (std::size_t)readback.frame.width * pixelBytes;
-    if ( (readback.frame.width != (unsigned)fill.roi.width()) || (readback.frame.height != (unsigned)fill.roi.height()) ||
-         (readback.bytes.size() != frameRowBytes * readback.frame.height) ) {
+    if ((readback.frame.width != (unsigned)fill.roi.width()) || (readback.frame.height != (unsigned)fill.roi.height()) || !readback.data || (readback.size != frameRowBytes * readback.frame.height)) {
         return;
     }
     const RectI tileBounds(0, 0, fill.tileSize, fill.tileSize);
     const std::size_t tileRowBytes = (std::size_t)fill.tileSize * pixelBytes;
+    struct TileCopy {
+        FrameEntryPtr entry;
+        unsigned char* dst;
+        const unsigned char* src;
+    };
+    std::vector<TileCopy> copies;
+    copies.reserve(fill.tiles.size());
+    // Every new entry stays locked until its copy is done, so no reader sees a tile half filled.
+    FrameEntryLocker entryLocker(this);
     for (std::vector<UpdateViewerParams::DeviceCacheTile>::const_iterator it = fill.tiles.begin(); it != fill.tiles.end(); ++it) {
         const RectI& r = it->rectRounded;
         if ( (r.width() != fill.tileSize) || (r.height() != fill.tileSize) || !fill.roi.contains(r) ) {
             continue;
         }
-        FrameParamsPtr frameParams( new FrameParams(fill.bounds, it->key.getBitDepth(), tileBounds, ImagePtr() ) );
-        FrameEntryLocker entryLocker(this);
+        FrameParamsPtr frameParams(new FrameParams(fill.bounds, it->key.getBitDepth(), tileBounds, ImagePtr()));
         FrameEntryPtr entry;
         // A tile that is in the cache already is complete, and another thread may be filling it.
         if ( appPTR->getTextureOrCreate(it->key, frameParams, &entryLocker, &entry) || !entry ) {
@@ -3155,12 +3163,15 @@ ViewerInstance::ViewerInstancePrivate::insertCacheTiles(const PendingCacheFill& 
             continue;
         }
         const std::size_t xBytes = (std::size_t)(r.x1 - fill.roi.x1) * pixelBytes;
-        for (int row = 0; row < fill.tileSize; ++row) {
-            std::memcpy(dst + (std::size_t)row * tileRowBytes,
-                        &readback.bytes[(std::size_t)(r.y1 - fill.roi.y1 + row) * frameRowBytes + xBytes],
-                        tileRowBytes);
-        }
+        copies.push_back(TileCopy { entry, dst, readback.data + (std::size_t)(r.y1 - fill.roi.y1) * frameRowBytes + xBytes });
     }
+    const int tileSize = fill.tileSize;
+    parallelForOnGlobalPool((int)copies.size(), QThreadPool::globalInstance()->maxThreadCount(), [&](int i) {
+        const TileCopy& c = copies[i];
+        for (int row = 0; row < tileSize; ++row) {
+            std::memcpy(c.dst + (std::size_t)row * tileRowBytes, c.src + (std::size_t)row * frameRowBytes, tileRowBytes);
+        }
+    });
 }
 
 void
@@ -3174,16 +3185,15 @@ ViewerInstance::ViewerInstancePrivate::pollCacheReadbacks()
 
         return;
     }
-    const std::vector<ViewerHandoffReadback> done = uiContext->takeCompletedHandoffReadbacks();
-    for (std::vector<ViewerHandoffReadback>::const_iterator rb = done.begin(); rb != done.end(); ++rb) {
+    uiContext->consumeCompletedHandoffReadbacks([this](const ViewerHandoffReadback& rb) {
         for (std::list<PendingCacheFill>::iterator it = pendingCacheFills.begin(); it != pendingCacheFills.end(); ++it) {
-            if (it->token == rb->token) {
-                insertCacheTiles(*it, *rb);
+            if (it->token == rb.token) {
+                insertCacheTiles(*it, rb);
                 pendingCacheFills.erase(it);
                 break;
             }
         }
-    }
+    });
     for (std::list<PendingCacheFill>::iterator it = pendingCacheFills.begin(); it != pendingCacheFills.end();) {
         if (++it->polls > kMaxCacheReadbackPolls) {
             it = pendingCacheFills.erase(it);

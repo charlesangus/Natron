@@ -136,6 +136,10 @@ struct KnobGuiValuePrivate
     QWidget* dimensionLines;
     QGridLayout* dimensionLinesLayout;
     std::vector<ScaleSliderQWidget*> dimensionSliders; // indexed by dimension; entry 0 stays null, the row's slider drives it
+    QPointer<QWidget> lentLines;
+    QSpacerItem* lentRowStretch; // owned by the row's layout while the lines are lent
+    int lentBoxIndex;
+    int lentLinesIndex;
     bool foldStateHeld;
     bool dimensionsFolded;
 
@@ -158,6 +162,10 @@ struct KnobGuiValuePrivate
         , dimensionLines(0)
         , dimensionLinesLayout(0)
         , dimensionSliders()
+        , lentLines()
+        , lentRowStretch(0)
+        , lentBoxIndex(-1)
+        , lentLinesIndex(-1)
         , foldStateHeld(false)
         , dimensionsFolded(false)
     {
@@ -291,6 +299,13 @@ KnobGuiValue::removeSpecificGui()
     _imp->dimensionLines = 0;
     _imp->dimensionLinesLayout = 0;
     _imp->dimensionSliders.clear();
+    if (_imp->lentLines) {
+        _imp->lentLines->deleteLater();
+    }
+    _imp->lentLines = nullptr;
+    _imp->lentRowStretch = 0;
+    _imp->lentBoxIndex = -1;
+    _imp->lentLinesIndex = -1;
 }
 
 void
@@ -793,6 +808,163 @@ KnobGuiValue::getDimensionLinesWidget() const
     return _imp->dimensionLines;
 }
 
+namespace {
+// setParent() hides a widget; this keeps the shown state its owner left it in.
+void
+moveIntoLayout(QWidget* w,
+               QBoxLayout* to,
+               int index,
+               int stretch)
+{
+    const bool wasHidden = w->isHidden();
+
+    w->setParent(to->parentWidget());
+    to->insertWidget(index, w, stretch);
+    w->setVisible(!wasHidden);
+}
+} // namespace
+
+QWidget*
+KnobGuiValue::lendChannelLines(int trackMinimum)
+{
+    if (_imp->lentLines) {
+        return _imp->lentLines.data();
+    }
+
+    QHBoxLayout* containerLayout = _imp->container ? qobject_cast<QHBoxLayout*>(_imp->container->layout()) : 0;
+    QWidget* box0 = _imp->spinBoxes.empty() ? 0 : _imp->spinBoxes[0].first->parentWidget();
+    const int boxIndex = (containerLayout && box0) ? containerLayout->indexOf(box0) : -1;
+
+    if (!_imp->slider || (boxIndex < 0) || (containerLayout->indexOf(_imp->slider) != boxIndex + 1)) {
+        return 0;
+    }
+
+    QWidget* host = new QWidget(_imp->container->parentWidget());
+    QVBoxLayout* hostLayout = new QVBoxLayout(host);
+    hostLayout->setContentsMargins(0, 0, 0, 0);
+    hostLayout->setSpacing(_imp->dimensionLinesLayout ? _imp->dimensionLinesLayout->verticalSpacing() : (int)TO_DPIY(1));
+
+    QWidget* firstLine = new QWidget(host);
+    QHBoxLayout* firstLineLayout = new QHBoxLayout(firstLine);
+    firstLineLayout->setContentsMargins(0, 0, 0, 0);
+    firstLineLayout->setSpacing(containerLayout->spacing());
+    hostLayout->addWidget(firstLine);
+
+    containerLayout->removeWidget(box0);
+    containerLayout->removeWidget(_imp->slider);
+    moveIntoLayout(box0, firstLineLayout, 0, 0);
+    moveIntoLayout(_imp->slider, firstLineLayout, 1, 1);
+    _imp->slider->setMinimumWidth(trackMinimum);
+
+    // Outweighs the zero-stretch spacer addExtraWidgets() may have left after the switch
+    // button, so the remaining buttons pack to the right instead of splitting the space.
+    _imp->lentRowStretch = new QSpacerItem(0, 0, QSizePolicy::Expanding, QSizePolicy::Minimum);
+    containerLayout->insertItem(0, _imp->lentRowStretch);
+    containerLayout->setStretch(0, 1);
+
+    if (_imp->dimensionLines) {
+        if (QVBoxLayout* columnLayout = getBelowRowColumnLayout()) {
+            _imp->lentLinesIndex = columnLayout->indexOf(_imp->dimensionLines);
+            columnLayout->removeWidget(_imp->dimensionLines);
+        }
+        moveIntoLayout(_imp->dimensionLines, hostLayout, 1, 0);
+        _imp->dimensionLinesLayout->setContentsMargins(0, 0, 0, 0);
+        for (std::size_t i = 1; i < _imp->dimensionSliders.size(); ++i) {
+            if (_imp->dimensionSliders[i]) {
+                _imp->dimensionSliders[i]->setMinimumWidth(trackMinimum);
+            }
+        }
+    }
+
+    _imp->lentBoxIndex = boxIndex;
+    _imp->lentLines = host;
+
+    return host;
+} // KnobGuiValue::lendChannelLines
+
+void
+KnobGuiValue::reclaimChannelLines()
+{
+    QWidget* host = _imp->lentLines.data();
+    QHBoxLayout* containerLayout = _imp->container ? qobject_cast<QHBoxLayout*>(_imp->container->layout()) : 0;
+
+    if (!host || !containerLayout) {
+        return;
+    }
+
+    if (_imp->lentRowStretch) {
+        containerLayout->removeItem(_imp->lentRowStretch);
+        delete _imp->lentRowStretch;
+        _imp->lentRowStretch = 0;
+    }
+
+    QWidget* box0 = _imp->spinBoxes[0].first->parentWidget();
+    QLayout* box0From = box0->parentWidget() ? box0->parentWidget()->layout() : 0;
+    if (box0From) {
+        box0From->removeWidget(box0);
+        box0From->removeWidget(_imp->slider);
+    }
+    moveIntoLayout(box0, containerLayout, _imp->lentBoxIndex, 0);
+    moveIntoLayout(_imp->slider, containerLayout, _imp->lentBoxIndex + 1, 1);
+    _imp->slider->setMinimumWidth(0);
+
+    if (_imp->dimensionLines) {
+        if (QLayout* from = _imp->dimensionLines->parentWidget() ? _imp->dimensionLines->parentWidget()->layout() : 0) {
+            from->removeWidget(_imp->dimensionLines);
+        }
+        if (QVBoxLayout* columnLayout = getBelowRowColumnLayout()) {
+            moveIntoLayout(_imp->dimensionLines, columnLayout, (_imp->lentLinesIndex >= 0) ? _imp->lentLinesIndex : 1, 0);
+        }
+        for (std::size_t i = 1; i < _imp->dimensionSliders.size(); ++i) {
+            if (_imp->dimensionSliders[i]) {
+                _imp->dimensionSliders[i]->setMinimumWidth(0);
+            }
+        }
+        setDimensionLinesRightInset(containerLayout);
+    }
+
+    _imp->lentLines = nullptr;
+    _imp->lentBoxIndex = -1;
+    _imp->lentLinesIndex = -1;
+    delete host;
+} // KnobGuiValue::reclaimChannelLines
+
+bool
+KnobGuiValue::areChannelLinesLent() const
+{
+    return !_imp->lentLines.isNull();
+}
+
+int
+KnobGuiValue::getChannelLinesMinimumWidth(int trackMinimum) const
+{
+    QHBoxLayout* containerLayout = _imp->container ? qobject_cast<QHBoxLayout*>(_imp->container->layout()) : 0;
+
+    if (_imp->spinBoxes.empty() || !containerLayout) {
+        return 0;
+    }
+
+    QWidget* box0 = _imp->spinBoxes[0].first->parentWidget();
+    int width = box0->sizeHint().width() + containerLayout->spacing() + trackMinimum;
+
+    if (_imp->dimensionLinesLayout) {
+        int fieldColumn = 0;
+        for (int row = 0; row < _imp->dimensionLinesLayout->rowCount(); ++row) {
+            int rowWidth = 0;
+            for (int column = 0; column < 2; ++column) {
+                QLayoutItem* item = _imp->dimensionLinesLayout->itemAtPosition(row, column);
+                if (item) {
+                    rowWidth += item->sizeHint().width() + _imp->dimensionLinesLayout->horizontalSpacing();
+                }
+            }
+            fieldColumn = std::max(fieldColumn, rowWidth);
+        }
+        width = std::max(width, fieldColumn + trackMinimum);
+    }
+
+    return width;
+}
+
 QVBoxLayout*
 KnobGuiValue::getBelowRowColumnLayout() const
 {
@@ -1004,7 +1176,7 @@ KnobGuiValue::onDimensionSliderEditingFinished(int dimension,
     SettingsPtr settings = appPTR->getCurrentSettings();
     if (settings->getRenderOnEditingFinishedOnly()) {
         dimensionSliderEditingEnd(dimension, slider->getPosition());
-    } else if (settings->isAutoProxyEnabled() && hasMovedOnce) {
+    } else if (settings->isAutoProxyEnabled() && hasMovedOnce && getGui()) {
         getGui()->renderAllViewers(true);
     }
 }
@@ -1526,7 +1698,7 @@ KnobGuiValue::onSliderEditingFinished(bool hasMovedOnce)
     if (onEditingFinishedOnly) {
         double v = _imp->slider->getPosition();
         sliderEditingEnd(v);
-    } else if (autoProxyEnabled && hasMovedOnce) {
+    } else if (autoProxyEnabled && hasMovedOnce && getGui()) {
         getGui()->renderAllViewers(true);
     }
 }

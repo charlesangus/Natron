@@ -348,6 +348,7 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _editSession()
     , _configCallbackOwner()
     , _configCallbackId(-1)
+    , _trackSizeRetry()
 {
     KnobColorPtr k = _knob.lock();
     assert(k);
@@ -535,6 +536,12 @@ KnobGuiColor::createBelowRowWidget(QWidget* parent)
                                ColorKnobEditSession::basisFor(colorManagement));
     _adjustPanel->setDisplayConverter(makeDisplayConverter(colorManagement));
     QObject::connect(_adjustPanel.data(), &ColorAdjustPanel::valuesEdited, this, &KnobGuiColor::onAdjustPanelValuesEdited);
+    QObject::connect(_adjustPanel.data(), &ColorAdjustPanel::widthChanged, this, &KnobGuiColor::refreshTrackSizeLayout, Qt::QueuedConnection);
+    if (SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr()) {
+        QObject::connect(settings.get(), &Settings::settingChanged, this, [this](KnobI*) {
+            refreshTrackSizeLayout();
+        });
+    }
 
     if (colorManagement) {
         QPointer<KnobGuiColor> self(this);
@@ -603,7 +610,83 @@ KnobGuiColor::refreshAdjustPanelState()
     bool editable = isAdjustPanelEditable();
 
     _adjustPanel->setEnabled(knob->isEnabled(0));
-    _adjustPanel->getEditArea()->setEnabled(editable);
+    _adjustPanel->setEditable(editable);
+}
+
+bool
+KnobGuiColor::wantsLargeTrackLayout() const
+{
+    SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
+
+    if (!_adjustPanel || !settings || !isAdjustPanelExpanded() || (settings->getColorTrackballSize() != Settings::eColorTrackballSizeLarge)) {
+        return false;
+    }
+
+    return _adjustPanel->fitsLargeLayout(getChannelLinesMinimumWidth(ColorAdjustPanel::largeTrackMinimum()));
+}
+
+// Returns whether anything moved. The caller holds updates off and flushes the layouts.
+bool
+KnobGuiColor::applyTrackSizeLayout()
+{
+    if (!_adjustPanel) {
+        return false;
+    }
+
+    bool large = wantsLargeTrackLayout();
+
+    if (large == _adjustPanel->isLargeLayout()) {
+        return false;
+    }
+    if (large) {
+        int track = ColorAdjustPanel::largeTrackMinimum();
+        int linesWidth = getChannelLinesMinimumWidth(track);
+        QWidget* lines = lendChannelLines(track);
+
+        if (lines) {
+            lines->setProperty(colorKnobTouchTagPropertyName(), touchTagFor(this));
+        }
+        _adjustPanel->setLargeLayout(lines, linesWidth);
+    } else {
+        _adjustPanel->setRegularLayout();
+        reclaimChannelLines();
+    }
+
+    return true;
+}
+
+void
+KnobGuiColor::refreshTrackSizeLayout()
+{
+    if (!_adjustPanel || (wantsLargeTrackLayout() == _adjustPanel->isLargeLayout())) {
+        return;
+    }
+
+    // Reparenting a slider under a running drag would cut its gesture in two, so the move
+    // waits for every button to be up.
+    bool busy = _adjustPanel->isEditing() || (_editSession && _editSession->isActive()) || (QApplication::mouseButtons() != Qt::NoButton);
+
+    if (busy) {
+        if (!_trackSizeRetry) {
+            _trackSizeRetry = new QTimer(this);
+            _trackSizeRetry->setSingleShot(true);
+            _trackSizeRetry->setInterval(50);
+            QObject::connect(_trackSizeRetry.data(), &QTimer::timeout, this, &KnobGuiColor::refreshTrackSizeLayout);
+        }
+        _trackSizeRetry->start();
+
+        return;
+    }
+
+    QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
+    UpdatesHeldOff held(topWidget);
+
+    if (applyTrackSizeLayout()) {
+        if (QWidget* columnWidget = getGlobalModeColumnWidget()) {
+            activateLayoutsUpToInclusive(columnWidget, topWidget);
+        }
+        activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
+    }
 }
 
 void
@@ -630,15 +713,23 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
             setDimensionsFolded(false);
             _adjustPanel->setVisible(true);
         } else {
+            applyTrackSizeLayout();
             _adjustPanel->setVisible(false);
         }
 
         if (columnWidget) {
             activateLayoutsUpToInclusive(columnWidget, topWidget);
         }
-        // Shown at its settled width, the panel may rearrange its own lines and change height.
+        // Shown at its settled width, the panel may rearrange its own lines and change height,
+        // and only then is it known whether the Large layout fits.
         if (expanded) {
             activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
+            if (applyTrackSizeLayout()) {
+                if (columnWidget) {
+                    activateLayoutsUpToInclusive(columnWidget, topWidget);
+                }
+                activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
+            }
         }
     }
     refreshAdjustPanelToolTip(expanded);

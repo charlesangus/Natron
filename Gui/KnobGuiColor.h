@@ -39,6 +39,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QPointer>
 #include <QStyledItemDelegate>
 #include <QTextEdit>
+#include <QTimer>
 #include <QToolButton>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -220,6 +221,13 @@ public Q_SLOTS:
 
     void refreshAdjustPanelState();
 
+    /**
+     * @brief Moves the channel lines beside the wheel or back above the panel to match the
+     * track-size preference, the panel's fold state and whether the panel is wide enough,
+     * as one update. Waits while a gesture or a mouse button is held.
+     **/
+    void refreshTrackSizeLayout();
+
 Q_SIGNALS:
 
     void dimensionSwitchToggled(bool b);
@@ -262,6 +270,8 @@ private:
     void refreshAdjustPanelColorManagement();
     bool isAdjustPanelEditable() const;
     void refreshAdjustPanelToolTip(bool expanded);
+    bool wantsLargeTrackLayout() const;
+    bool applyTrackSizeLayout();
 
     void updateLabel(double r, double g, double b, double a);
 
@@ -285,6 +295,7 @@ private:
     std::unique_ptr<ColorKnobEditSession> _editSession;
     std::weak_ptr<ProjectColorManagement> _configCallbackOwner;
     int _configCallbackId;
+    QPointer<QTimer> _trackSizeRetry;
 };
 
 NATRON_NAMESPACE_EXIT

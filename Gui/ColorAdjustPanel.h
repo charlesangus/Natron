@@ -118,16 +118,54 @@ public:
     bool isEditing() const;
 
     /**
-     * @brief Everything that edits: the wheel and every line. The owner disables it while the
-     * knob cannot take the panel's edits.
+     * @brief The widget holding the wheel and every line, and in the Large layout the owner's
+     * channel lines too.
      **/
     QWidget* getEditArea() const;
+
+    /**
+     * @brief Enables the wheel and the panel's own lines, never the owner's channel lines: the
+     * owner disables those per dimension. The owner turns it off while the knob cannot take
+     * the panel's edits.
+     **/
+    void setEditable(bool editable);
+    bool isEditable() const;
+
+    /**
+     * @brief The Large track size: the owner's channel lines (may be null) at the top of the
+     * column right of the wheel, every slider track there at least largeTrackMinimum() wide so
+     * the wheel takes the width, up to largeMaximumDiameter(). The lines are reparented into
+     * the panel; channelLinesMinimumWidth is their width with those short tracks.
+     **/
+    void setLargeLayout(QWidget* channelLines, int channelLinesMinimumWidth);
+
+    /**
+     * @brief Back to the Regular layout. Returns the channel lines, out of the panel's layout
+     * but still its descendant, for the owner to reparent; null when there were none.
+     **/
+    QWidget* setRegularLayout();
+    bool isLargeLayout() const;
+
+    /**
+     * @brief Whether the panel's current width holds the smallest wheel beside the Large right
+     * column, given the channel lines' width with the short tracks.
+     **/
+    bool fitsLargeLayout(int channelLinesMinimumWidth) const;
+
+    static int largeTrackMinimum();
+    static int largeMaximumDiameter();
     ColorWheelWidget* getWheel() const;
     ColorEditSlider* getCustomSlider(ColorSliderKindEnum kind) const;
     SpinBox* getSpinBox(ColorSliderKindEnum kind) const;
 
 Q_SIGNALS:
     void valuesEdited(KnobColorValue value, ColorAdjustPanel::GesturePhaseEnum phase, QString undoLabel);
+
+    /**
+     * @brief The panel's width changed. Emitted from its resizeEvent, so a receiver that moves
+     * widgets in or out of the panel should be connected queued.
+     **/
+    void widthChanged();
 
 protected:
     virtual void resizeEvent(QResizeEvent* e) OVERRIDE;

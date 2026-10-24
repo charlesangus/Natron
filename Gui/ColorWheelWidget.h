@@ -207,12 +207,21 @@ public:
     /**
      * @brief The wheel is square: its floor and its cap (both DPI-scaled) bound the preferred
      * diameter the owner sets, and the disc is centred in whatever rect it ends up with.
+     * maximumDiameter() is the default cap; an instance can be given its own with
+     * setMaximumDiameter().
      **/
     static int minimumDiameter();
     static int maximumDiameter();
 
     /**
-     * @brief The width the owner can spare, clamped to [minimumDiameter, maximumDiameter];
+     * @brief This wheel's cap, never below minimumDiameter(). The preferred diameter is
+     * re-clamped to it.
+     **/
+    void setMaximumDiameter(int pixels);
+    int getMaximumDiameter() const;
+
+    /**
+     * @brief The width the owner can spare, clamped to [minimumDiameter, getMaximumDiameter];
      * it becomes the sizeHint. The disc images re-render on the next paint at the new size.
      **/
     void setPreferredDiameter(int pixels);
@@ -310,6 +319,7 @@ private:
     unsigned _basisGeneration;
     unsigned _converterGeneration;
     int _preferredDiameter;
+    int _maxDiameter;
 
     HitZoneEnum _dragZone;
     QPointF _lastDragPos;

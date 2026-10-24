@@ -183,6 +183,27 @@ protected:
     QWidget* getDimensionLinesWidget() const;
 
     /**
+     * @brief Lends the channel lines out as one widget for a subclass to place elsewhere:
+     * spinbox 0's slot with the row's slider, then the per-dimension lines, every slider at
+     * least trackMinimum wide and with no right inset. The row keeps its buttons, packed to the
+     * right. Null when the row has no slider and spinbox 0 slot to lend. The widget stays
+     * owned by whoever it is placed in; reclaimChannelLines() takes its contents back.
+     **/
+    QWidget* lendChannelLines(int trackMinimum);
+
+    /**
+     * @brief Puts the lent lines back where they were, with their insets and minimum widths,
+     * and deletes the lending widget. The caller holds updates off and flushes the layouts.
+     **/
+    void reclaimChannelLines();
+    bool areChannelLinesLent() const;
+
+    /**
+     * @brief The width the channel lines need with trackMinimum-wide sliders and no inset.
+     **/
+    int getChannelLinesMinimumWidth(int trackMinimum) const;
+
+    /**
      * @brief The below-row column's own layout (the row, the per-dimension lines when there
      * are any, and the subclass's below-row widget, top to bottom), or null for a knob with no
      * below-row widget and so no column of its own. Lets a subclass place extra widgets at a

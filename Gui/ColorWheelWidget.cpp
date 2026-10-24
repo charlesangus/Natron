@@ -467,6 +467,7 @@ ColorWheelWidget::ColorWheelWidget(QWidget* parent)
     , _basisGeneration(0)
     , _converterGeneration(0)
     , _preferredDiameter(minimumDiameter())
+    , _maxDiameter(maximumDiameter())
     , _dragZone(eHitZoneNone)
     , _lastDragPos()
     , _gestureOffset()
@@ -476,7 +477,7 @@ ColorWheelWidget::ColorWheelWidget(QWidget* parent)
 
     policy.setHeightForWidth(true);
     setSizePolicy(policy);
-    setMaximumSize(maximumDiameter(), maximumDiameter());
+    setMaximumSize(_maxDiameter, _maxDiameter);
     setFocusPolicy(Qt::StrongFocus);
     lockKeyTracker();
     updateAnchor();
@@ -757,9 +758,31 @@ ColorWheelWidget::maximumDiameter()
 }
 
 void
+ColorWheelWidget::setMaximumDiameter(int pixels)
+{
+    int cap = std::max(pixels, minimumDiameter());
+
+    if (cap == _maxDiameter) {
+        return;
+    }
+    _maxDiameter = cap;
+    setMaximumSize(cap, cap);
+    if (_preferredDiameter > cap) {
+        _preferredDiameter = cap;
+    }
+    updateGeometry();
+}
+
+int
+ColorWheelWidget::getMaximumDiameter() const
+{
+    return _maxDiameter;
+}
+
+void
 ColorWheelWidget::setPreferredDiameter(int pixels)
 {
-    int d = std::min(std::max(pixels, minimumDiameter()), maximumDiameter());
+    int d = std::min(std::max(pixels, minimumDiameter()), _maxDiameter);
 
     if (d == _preferredDiameter) {
         return;

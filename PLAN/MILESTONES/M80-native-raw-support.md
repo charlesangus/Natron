@@ -95,7 +95,7 @@ Every node is built on the M137 - Native Base Class Flexibility framework (`Node
   - verify: gtest: a Read of each fixture is raw kind with the expected channel count, metadata keys and values; a non-RAW file still outputs an image; the unsupported-camera path sets the persistent error.
   - size: M
 
-- [ ] M80.P2.T4 — The Viewer accepts raw directly
+- [x] M80.P2.T4 — The Viewer accepts raw directly
   - files: `Engine/ViewerInstance.cpp/.h`, new `Engine/Nodes/Raw/RawDisplay.h/.cpp`, `Engine/Nodes/README.md`
   - approach: extend the Viewer's adapter exception (`ViewerInstance.h`, `inputAcceptsDataKindViaAdapter`, which returns `kind == eDataKindDeep` today) to Raw. `isRegisteredAdapter` (`Node.cpp:~1895`) hard-codes Deep→Image; make the Raw acceptance Viewer-only (no general Raw→Image adapter row, per P1.T2), choosing the smallest mechanism that keeps other image inputs rejecting raw. Display goes through a shared `RawDisplay` conversion: a mosaic becomes a greyscale single channel, and linear raw shows its channels as they are. RawToImage (P2.T5) reuses the same function. No demosaic in the viewer. The info line shows "RAW mosaic" or "RAW linear". Update the README's Viewer-exception paragraph.
   - verify: gtest: a viewer fed by a raw Read renders without error, and its pixel values equal the mosaic; a linear DNG shows three channels. Extend the `Tests/gui` smoke script to show it.
@@ -153,7 +153,7 @@ Each port names the darktable source file in its `approach` as the reference. Po
   - verify: gtest: a grey-card mosaic with the metadata matrix ends neutral in the working space; changing the project working space re-renders.
   - size: M
 
-- [ ] M80.P3.T8 — Develop RAW: auto-insert the chain on interactive create
+- [x] M80.P3.T8 — Develop RAW: auto-insert the chain on interactive create
   - files: new `Engine/Nodes/Raw/RawDevelop.h/.cpp` (chain builder), the GUI node-creation hook found while scouting (Tab-menu create, file drop and file-browser create paths in `Gui/`), `Engine/Settings.cpp` (preference), `Tests/gui/m80_raw.py`
   - approach: when the user interactively creates a Read on a RAW file, insert RawPrepare → Temperature → Highlights → Demosaic → InputColor below it with darktable's defaults, as **loose nodes inside a backdrop** titled "Develop RAW". Groups are an image barrier (README "Known limitation"), and the backdrop is the permanent form. A "Develop RAW files on read" preference turns it off; it defaults on. It never fires on project load, Python `createNode`, or a filename change on an existing Read. Scout the creation paths first and put the hook at the single point they share; report it if no such point exists. The chain builder lives in Engine so tests can call it.
   - verify: gtest calls the chain builder on a fixture Read and checks the five nodes, their order and the backdrop. The Xvfb script creates a Read on a fixture through the GUI path and sees the chain and a plausible colour image in the viewer; loading a saved project does not add a second chain; ctest is otherwise unchanged.
@@ -193,13 +193,13 @@ Each port names the darktable source file in its `approach` as the reference. Po
 
 ## Phase 80.5: Verification against darktable
 
-- [ ] M80.P5.T1 — Reference comparison harness
+- [x] M80.P5.T1 — Reference comparison harness
   - files: new `Tests/Native/RawReference_Test.cpp`, new `tools/raw/make-reference.sh`, `Tests/fixtures/raw/README.md`
   - approach: a script builds darktable at `DARKTABLE_REF` in a throwaway container. It develops each fixture with a fixed XMP sidecar (only the ported modules enabled, no tone mapping) to a 32-bit TIFF in the same working space, and the TIFF is committed as a small fixture. The test runs the Develop chain on the same file and compares with a tolerance per method (PPG and RCD close, AMaZE and Markesteijn within a looser bound), reporting mean and max error. If the sandbox can't pull the base image, generate the references on a host that can and commit them.
   - verify: the test passes for the Bayer and X-Trans fixtures; the README states the tolerances and why.
   - size: M
 
-- [ ] M80.P5.T2 — Large-image and threading check
+- [x] M80.P5.T2 — Large-image and threading check
   - files: new `Tests/Native/RawLarge_Test.cpp`, `tools/bench/`
   - approach: a synthetic 100 MP mosaic, generated at run time and never committed, runs through the whole chain. Check for no `int` overflow (`size_t` row arithmetic), memory bounded by the decode cache cap, and scaling across threads without a lock convoy (check with the `tools/bench` scripts, per the render-scaling findings). Concurrent renders of two views of one file share one decode.
   - verify: the gtest completes under a stated memory bound; the bench shows time falling with thread count.
@@ -211,7 +211,7 @@ Each port names the darktable source file in its `approach` as the reference. Po
   - verify: the scripts pass under Xvfb; the screenshots are shared and the user approves them.
   - size: M
 
-- [ ] M80.P5.T4 — Viewer normalises raw for display; RawPrepare white-level knob fixes
+- [x] M80.P5.T4 — Viewer normalises raw for display; RawPrepare white-level knob fixes
   - files: `Engine/ViewerInstance.cpp`, `Engine/Nodes/Raw/RawDisplay.h/.cpp`, `Engine/Nodes/Raw/RawToImage.cpp` (only if it shares the scaled path), `Engine/Nodes/Raw/RawPrepare.cpp`, `Tests/Native/` viewer raw test, `Tests/gui/m80_raw.py`
   - approach: the Viewer shows a raw edge scaled to 0–1 for display only: subtract the black levels per CFA colour (or per channel) and divide by `raw/white_level` for a `raw`-stage stream; a `prepared` stream is already 0–1. RawToImage keeps raw sensor values unchanged (user decision). RawPrepare's White Level knob shows the file's value when Override is off, and its field is wide enough for 5 digits.
   - verify: gtest: a viewer on a raw Read shows values in 0–1 matching (value − black) / (white − black); RawToImage output still equals the input values. Xvfb: a raw Read at gain 0 shows a visible mosaic, not white.
@@ -672,6 +672,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
 - 2026-10-23 — Phase 80.7 planned from the parity audit (consultant). User calls: spot white balance is a rectangle on the viewer plus a Pick button that stores coefficients once; colorin's Working Profile defaults to the project working space plus darktable's options; 4-colour (CYGM/RGBE) controls are N/A because the Read rejects 4-colour sensors; file-derived defaults use RawPrepare's show-the-file's-value-until-overridden pattern, and choice defaults resolve per file (Flat Field Embedded when GainMaps exist; Input Profile Embedded for a DNG, Standard otherwise); `wb_presets.json` ships in the repo under `Engine/Nodes/Raw/data/`, installed to `Resources/darktable/`.
 - 2026-10-23 — **User decision: port darktable's color calibration as a node** rather than default to As Shot. With it, the Develop chain can use darktable's scene-referred default (As Shot to Reference plus a CAT). Tasks to be added to Phase 80.7. Open: how darkroom-only display aids (mask views, dual mask, capture-sharpen masks, hot-pixel markers) show — the user asked whether nodes can draw arbitrary viewer overlays; being scouted.
 - 2026-10-23 — User decision: defer darktable's darkroom-only display aids (mask views, dual mask, capture-sharpen views, hot-pixel markers) until Natron has rich viewer overlays (overlaid images, handles, arbitrary drawing). Today native nodes can only use stock host overlays (no custom `drawOverlay`), no overlay can draw per-pixel data, and nodes can't query the existing viewer-render flag (`isRenderUserInteraction`). A milestone for that was requested through the inbox.
+- 2026-10-24 — Fast build with tests of `7be5ffca2` (run 40048743972) green on both legs: `RawReferenceTest` (with the Markesteijn outlier budget), `RawLargeTest` (decode once; separate band and whole-source memory bounds) and the Viewer normalisation pass. P5.T1, P5.T2, P5.T4, P2.T4 and P3.T8 checked; P5.T3 waits for the Phase 80.7 panel re-run (T27) and the user's screenshot approval. User calls on color calibration: RawTemperature's own default becomes As Shot to Reference; the node ships its GPU kernel here; it lives in the Raw group as `RawColorCalibration`.
 
 ## Handoff (2026-10-22, PM paused by user)
 

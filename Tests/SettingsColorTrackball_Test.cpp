@@ -46,27 +46,43 @@ struct ChangeCounter {
 
 } // anon namespace
 
-TEST_F(BaseTest, ColorTrackballSettingsDefaultToCrosshairRevealAndRegular)
+TEST_F(BaseTest, ColorTrackballSettingsDefaultToCrosshairRevealAndAThird)
 {
     SettingsPtr settings = appPTR->getCurrentSettings();
     KnobChoicePtr feedback = settings->getKnobByNameAndType<KnobChoice>("colorTrackballFeedback");
-    KnobChoicePtr size = settings->getKnobByNameAndType<KnobChoice>("colorTrackballSize");
+    KnobChoicePtr size = settings->getKnobByNameAndType<KnobChoice>("colorTrackballWheelWidth");
 
     ASSERT_TRUE(bool(feedback));
     ASSERT_TRUE(bool(size));
     EXPECT_EQ(0, feedback->getDefaultValue(0));
-    EXPECT_EQ(0, size->getDefaultValue(0));
+    EXPECT_EQ((int)Settings::eColorTrackballWheelWidthThird, size->getDefaultValue(0));
     EXPECT_EQ(2u, feedback->getEntries_mt_safe().size());
-    EXPECT_EQ(2u, size->getEntries_mt_safe().size());
+    EXPECT_EQ(4u, size->getEntries_mt_safe().size());
     EXPECT_EQ(Settings::eColorTrackballFeedbackCrosshairReveal, settings->getColorTrackballFeedback());
-    EXPECT_EQ(Settings::eColorTrackballSizeRegular, settings->getColorTrackballSize());
+    EXPECT_EQ(Settings::eColorTrackballWheelWidthThird, settings->getColorTrackballWheelWidth());
+    EXPECT_DOUBLE_EQ(1. / 3., settings->getColorTrackballWheelFraction());
+}
+
+TEST_F(BaseTest, ColorTrackballWheelWidthMapsToItsFraction)
+{
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    KnobChoicePtr size = settings->getKnobByNameAndType<KnobChoice>("colorTrackballWheelWidth");
+    ASSERT_TRUE(bool(size));
+    const int saved = size->getValue();
+
+    const double fractions[4] = { 1. / 2., 1. / 3., 1. / 4., 1. / 5. };
+    for (int i = 0; i < 4; ++i) {
+        size->setValue(i);
+        EXPECT_DOUBLE_EQ(fractions[i], settings->getColorTrackballWheelFraction());
+    }
+    size->setValue(saved);
 }
 
 TEST_F(BaseTest, ColorTrackballSettingsEmitSettingChangedOncePerChange)
 {
     SettingsPtr settings = appPTR->getCurrentSettings();
     KnobChoicePtr feedback = settings->getKnobByNameAndType<KnobChoice>("colorTrackballFeedback");
-    KnobChoicePtr size = settings->getKnobByNameAndType<KnobChoice>("colorTrackballSize");
+    KnobChoicePtr size = settings->getKnobByNameAndType<KnobChoice>("colorTrackballWheelWidth");
     ASSERT_TRUE(bool(feedback));
     ASSERT_TRUE(bool(size));
 
@@ -86,21 +102,21 @@ TEST_F(BaseTest, ColorTrackballSettingsEmitSettingChangedOncePerChange)
     EXPECT_EQ(0, counter.size);
     EXPECT_EQ(Settings::eColorTrackballFeedbackWidgetCursor, settings->getColorTrackballFeedback());
 
-    size->setValue(Settings::eColorTrackballSizeLarge);
+    size->setValue(Settings::eColorTrackballWheelWidthHalf);
     EXPECT_EQ(1, counter.feedback);
     EXPECT_EQ(1, counter.size);
-    EXPECT_EQ(Settings::eColorTrackballSizeLarge, settings->getColorTrackballSize());
+    EXPECT_EQ(Settings::eColorTrackballWheelWidthHalf, settings->getColorTrackballWheelWidth());
 
     QObject::disconnect(connection);
     feedback->setValue(Settings::eColorTrackballFeedbackCrosshairReveal);
-    size->setValue(Settings::eColorTrackballSizeRegular);
+    size->setValue(Settings::eColorTrackballWheelWidthThird);
 }
 
 TEST_F(BaseTest, ColorTrackballSettingsRoundTripThroughSaveAndRestore)
 {
     SettingsPtr settings = appPTR->getCurrentSettings();
     KnobChoicePtr feedback = settings->getKnobByNameAndType<KnobChoice>("colorTrackballFeedback");
-    KnobChoicePtr size = settings->getKnobByNameAndType<KnobChoice>("colorTrackballSize");
+    KnobChoicePtr size = settings->getKnobByNameAndType<KnobChoice>("colorTrackballWheelWidth");
     KnobBoolPtr saveEnabled = settings->getKnobByNameAndType<KnobBool>("saveSettings");
     ASSERT_TRUE(bool(feedback));
     ASSERT_TRUE(bool(size));
@@ -109,21 +125,21 @@ TEST_F(BaseTest, ColorTrackballSettingsRoundTripThroughSaveAndRestore)
     saveEnabled->setValue(true);
 
     feedback->setValue(Settings::eColorTrackballFeedbackWidgetCursor);
-    size->setValue(Settings::eColorTrackballSizeLarge);
+    size->setValue(Settings::eColorTrackballWheelWidthFifth);
     std::vector<KnobI*> knobs;
     knobs.push_back(feedback.get());
     knobs.push_back(size.get());
     settings->saveSettings(knobs, false, false);
 
     feedback->setValue(Settings::eColorTrackballFeedbackCrosshairReveal);
-    size->setValue(Settings::eColorTrackballSizeRegular);
+    size->setValue(Settings::eColorTrackballWheelWidthThird);
     settings->restoreKnobsFromSettings(knobs);
 
     EXPECT_EQ(Settings::eColorTrackballFeedbackWidgetCursor, settings->getColorTrackballFeedback());
-    EXPECT_EQ(Settings::eColorTrackballSizeLarge, settings->getColorTrackballSize());
+    EXPECT_EQ(Settings::eColorTrackballWheelWidthFifth, settings->getColorTrackballWheelWidth());
 
     feedback->setValue(Settings::eColorTrackballFeedbackCrosshairReveal);
-    size->setValue(Settings::eColorTrackballSizeRegular);
+    size->setValue(Settings::eColorTrackballWheelWidthThird);
     settings->saveSettings(knobs, false, false);
     saveEnabled->setValue(savedEnabled);
 }

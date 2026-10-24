@@ -42,6 +42,8 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QLayout>
 #include <QMetaObject>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPalette>
 #include <QScrollArea>
 #include <QStyle>
 #include <QToolTip>
@@ -189,6 +191,86 @@ touchTagFor(KnobGuiColor* knobGui)
 {
     return QVariant::fromValue(QPointer<KnobGuiColor>(knobGui));
 }
+
+const char*
+openBlockPropertyName()
+{
+    return "_natronColorAdjustOpen";
+}
+
+// The open state's icon is the closed state's, flipped, so the pair always matches. Both
+// check states get it: a themed glyph's On state is tinted with the selection colour.
+QIcon
+verticallyMirroredIcon(const QIcon& source,
+                       const QSize& size,
+                       qreal devicePixelRatio)
+{
+    QIcon mirrored;
+    const QIcon::Mode modes[] = { QIcon::Normal, QIcon::Disabled, QIcon::Active };
+
+    for (QIcon::Mode mode : modes) {
+        const QPixmap pix = source.pixmap(size, devicePixelRatio, mode, QIcon::Off);
+        QPixmap flipped = QPixmap::fromImage(pix.toImage().mirrored(false, true));
+
+        flipped.setDevicePixelRatio(pix.devicePixelRatio());
+        mirrored.addPixmap(flipped, mode, QIcon::Off);
+        mirrored.addPixmap(flipped, mode, QIcon::On);
+    }
+
+    return mirrored;
+}
+
+void
+repolishTree(QWidget* root)
+{
+    QList<QWidget*> widgets = root->findChildren<QWidget*>();
+
+    widgets.prepend(root);
+    for (QWidget* w : widgets) {
+        w->style()->unpolish(w);
+        w->style()->polish(w);
+        w->update();
+    }
+}
+
+// Spans the page grid's cells for the knob's row and its panel, under them. The widgets in
+// those cells turn their stylesheet background transparent while it shows (mainstyle.qss,
+// _natronColorAdjustOpen), so this fill also covers the grid's spacing between them. The
+// colours come from the application palette, which Gui::loadStyleSheet() fills from the theme:
+// Mid is the panel background, Dark the sunken colour, Light the raised one.
+class AdjustPanelBackdrop
+    : public QWidget {
+public:
+    explicit AdjustPanelBackdrop(QWidget* parent)
+        : QWidget(parent)
+    {
+        setObjectName(QString::fromUtf8("ColorAdjustOpenBackdrop"));
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFocusPolicy(Qt::NoFocus);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    }
+
+protected:
+    virtual void paintEvent(QPaintEvent* /*e*/) OVERRIDE
+    {
+        const QPalette palette = QApplication::palette();
+        const QColor base = palette.color(QPalette::Mid);
+        const QColor sunken = palette.color(QPalette::Dark);
+        const QColor fill = QColor::fromRgbF((base.redF() + sunken.redF()) / 2.,
+                                             (base.greenF() + sunken.greenF()) / 2.,
+                                             (base.blueF() + sunken.blueF()) / 2.);
+        const QRect r = rect();
+        QPainter p(this);
+
+        p.fillRect(r, fill);
+        p.setPen(sunken.darker(140));
+        p.drawLine(r.topLeft(), r.topRight());
+        p.drawLine(r.topLeft(), r.bottomLeft());
+        p.setPen(palette.color(QPalette::Light));
+        p.drawLine(r.bottomLeft(), r.bottomRight());
+        p.drawLine(r.topRight(), r.bottomRight());
+    }
+};
 
 } // namespace
 
@@ -348,7 +430,8 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _editSession()
     , _configCallbackOwner()
     , _configCallbackId(-1)
-    , _trackSizeRetry()
+    , _openBackdrop()
+    , _openBlockWidgets()
 {
     KnobColorPtr k = _knob.lock();
     assert(k);
@@ -372,6 +455,9 @@ KnobGuiColor::~KnobGuiColor()
 
     if (colorManagement && (_configCallbackId >= 0)) {
         colorManagement->removeConfigChangedCallback(_configCallbackId);
+    }
+    if (_openBackdrop) {
+        _openBackdrop->deleteLater();
     }
 }
 
@@ -400,6 +486,12 @@ KnobGuiColor::setAdjustPanelExpanded(bool expanded)
         return;
     }
     _colorSelectorButton->setChecked(expanded);
+}
+
+QWidget*
+KnobGuiColor::getOpenBackdrop() const
+{
+    return _openBackdrop.data();
 }
 
 ColorKnobEditSession*
@@ -536,10 +628,10 @@ KnobGuiColor::createBelowRowWidget(QWidget* parent)
                                ColorKnobEditSession::basisFor(colorManagement));
     _adjustPanel->setDisplayConverter(makeDisplayConverter(colorManagement));
     QObject::connect(_adjustPanel.data(), &ColorAdjustPanel::valuesEdited, this, &KnobGuiColor::onAdjustPanelValuesEdited);
-    QObject::connect(_adjustPanel.data(), &ColorAdjustPanel::widthChanged, this, &KnobGuiColor::refreshTrackSizeLayout, Qt::QueuedConnection);
+    refreshWheelFraction();
     if (SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr()) {
         QObject::connect(settings.get(), &Settings::settingChanged, this, [this](KnobI*) {
-            refreshTrackSizeLayout();
+            refreshWheelFraction();
         });
     }
 
@@ -613,79 +705,13 @@ KnobGuiColor::refreshAdjustPanelState()
     _adjustPanel->setEditable(editable);
 }
 
-bool
-KnobGuiColor::wantsLargeTrackLayout() const
+void
+KnobGuiColor::refreshWheelFraction()
 {
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
 
-    if (!_adjustPanel || !settings || !isAdjustPanelExpanded() || (settings->getColorTrackballSize() != Settings::eColorTrackballSizeLarge)) {
-        return false;
-    }
-
-    return _adjustPanel->fitsLargeLayout(getChannelLinesMinimumWidth(ColorAdjustPanel::largeTrackMinimum()));
-}
-
-// Returns whether anything moved. The caller holds updates off and flushes the layouts.
-bool
-KnobGuiColor::applyTrackSizeLayout()
-{
-    if (!_adjustPanel) {
-        return false;
-    }
-
-    bool large = wantsLargeTrackLayout();
-
-    if (large == _adjustPanel->isLargeLayout()) {
-        return false;
-    }
-    if (large) {
-        int track = ColorAdjustPanel::largeTrackMinimum();
-        int linesWidth = getChannelLinesMinimumWidth(track);
-        QWidget* lines = lendChannelLines(track);
-
-        if (lines) {
-            lines->setProperty(colorKnobTouchTagPropertyName(), touchTagFor(this));
-        }
-        _adjustPanel->setLargeLayout(lines, linesWidth);
-    } else {
-        _adjustPanel->setRegularLayout();
-        reclaimChannelLines();
-    }
-
-    return true;
-}
-
-void
-KnobGuiColor::refreshTrackSizeLayout()
-{
-    if (!_adjustPanel || (wantsLargeTrackLayout() == _adjustPanel->isLargeLayout())) {
-        return;
-    }
-
-    // Reparenting a slider under a running drag would cut its gesture in two, so the move
-    // waits for every button to be up.
-    bool busy = _adjustPanel->isEditing() || (_editSession && _editSession->isActive()) || (QApplication::mouseButtons() != Qt::NoButton);
-
-    if (busy) {
-        if (!_trackSizeRetry) {
-            _trackSizeRetry = new QTimer(this);
-            _trackSizeRetry->setSingleShot(true);
-            _trackSizeRetry->setInterval(50);
-            QObject::connect(_trackSizeRetry.data(), &QTimer::timeout, this, &KnobGuiColor::refreshTrackSizeLayout);
-        }
-        _trackSizeRetry->start();
-
-        return;
-    }
-
-    QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
-    UpdatesHeldOff held(topWidget);
-
-    if (applyTrackSizeLayout()) {
-        if (QWidget* columnWidget = getGlobalModeColumnWidget()) {
-            activateLayoutsUpToInclusive(columnWidget, topWidget);
-        }
-        activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
+    if (_adjustPanel && settings) {
+        _adjustPanel->setWheelFraction(settings->getColorTrackballWheelFraction());
     }
 }
 
@@ -713,35 +739,100 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
             setDimensionsFolded(false);
             _adjustPanel->setVisible(true);
         } else {
-            applyTrackSizeLayout();
             _adjustPanel->setVisible(false);
         }
+        refreshOpenBackdrop();
 
         if (columnWidget) {
             activateLayoutsUpToInclusive(columnWidget, topWidget);
         }
-        // Shown at its settled width, the panel may rearrange its own lines and change height,
-        // and only then is it known whether the Large layout fits.
+        // Shown at its settled width, the panel sizes its wheel from that width, which can
+        // change the panel's height.
         if (expanded) {
             activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
-            if (applyTrackSizeLayout()) {
-                if (columnWidget) {
-                    activateLayoutsUpToInclusive(columnWidget, topWidget);
-                }
-                activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
-            }
         }
     }
     refreshAdjustPanelToolTip(expanded);
 } // KnobGuiColor::onAdjustPanelToggled
 
 void
+KnobGuiColor::setOpenBlockTagged(bool tagged)
+{
+    for (const QPointer<QWidget>& w : _openBlockWidgets) {
+        if (w) {
+            w->setProperty(openBlockPropertyName(), tagged);
+            // Qt re-evaluates property selectors, the descendant ones included, only on polish.
+            repolishTree(w.data());
+        }
+    }
+    if (!tagged) {
+        _openBlockWidgets.clear();
+    }
+}
+
+void
+KnobGuiColor::refreshOpenBackdrop()
+{
+    QWidget* fullWidthRow = getFullWidthRowWidget();
+    QWidget* page = fullWidthRow ? fullWidthRow->parentWidget() : 0;
+    QGridLayout* grid = page ? qobject_cast<QGridLayout*>(page->layout()) : 0;
+    QWidget* field = _rowContainer.data();
+
+    while (field && page && (field->parentWidget() != page)) {
+        field = field->parentWidget();
+    }
+
+    const int fieldIndex = (grid && field) ? grid->indexOf(field) : -1;
+    const int fullIndex = grid ? grid->indexOf(fullWidthRow) : -1;
+    const bool open = isAdjustPanelExpanded() && !_adjustPanel->isHidden() && fullWidthRow && !fullWidthRow->isHidden() && (fieldIndex >= 0) && (fullIndex >= 0);
+
+    setOpenBlockTagged(false);
+    if (_openBackdrop) {
+        if (QLayout* l = _openBackdrop->parentWidget() ? _openBackdrop->parentWidget()->layout() : 0) {
+            l->removeWidget(_openBackdrop.data());
+        }
+        _openBackdrop->hide();
+    }
+    if (!open) {
+        return;
+    }
+
+    int firstRow, lastRow, rowSpan, column, columnSpan;
+    grid->getItemPosition(fieldIndex, &firstRow, &column, &rowSpan, &columnSpan);
+    grid->getItemPosition(fullIndex, &lastRow, &column, &rowSpan, &columnSpan);
+    lastRow += rowSpan - 1;
+
+    // Rows are found afresh each time: knobs created later can shift the page's grid.
+    for (int i = 0; i < grid->count(); ++i) {
+        int row, col, rs, cs;
+        grid->getItemPosition(i, &row, &col, &rs, &cs);
+        QWidget* w = grid->itemAt(i)->widget();
+        if (w && (row >= firstRow) && (row + rs - 1 <= lastRow)) {
+            _openBlockWidgets.push_back(w);
+        }
+    }
+
+    if (!_openBackdrop || (_openBackdrop->parentWidget() != page)) {
+        if (_openBackdrop) {
+            _openBackdrop->deleteLater();
+        }
+        _openBackdrop = new AdjustPanelBackdrop(page);
+        QObject::connect(fullWidthRow, &QObject::destroyed, _openBackdrop.data(), &QObject::deleteLater);
+    }
+    grid->addWidget(_openBackdrop.data(), firstRow, 0, lastRow - firstRow + 1, std::max(1, grid->columnCount()));
+    _openBackdrop->lower();
+    _openBackdrop->show();
+    setOpenBlockTagged(true);
+} // KnobGuiColor::refreshOpenBackdrop
+
+void
 KnobGuiColor::refreshAdjustPanelToolTip(bool expanded)
 {
-    // The open state shows the up chevron, the pair of the folded state's down chevron, and
-    // keeps the button's size so nothing reflows.
     QIcon icon;
-    appPTR->getIcon(expanded ? NATRON_PIXMAP_COLOR_ADJUST_DROPUP : NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN, NATRON_MEDIUM_BUTTON_ICON_SIZE, &icon);
+    appPTR->getIcon(NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN, NATRON_MEDIUM_BUTTON_ICON_SIZE, &icon);
+    if (expanded) {
+        icon = verticallyMirroredIcon(icon, _colorSelectorButton->iconSize(), _colorSelectorButton->devicePixelRatio());
+    }
     _colorSelectorButton->setIcon(icon);
     _colorSelectorButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(expanded ? tr("Hide the colour adjustment panel.") : tr("Show the colour adjustment panel: a trackball wheel with hue, saturation, value, temperature and tint sliders."),
                                                                             NATRON_NAMESPACE::WhiteSpaceNormal));
@@ -1050,6 +1141,7 @@ KnobGuiColor::_hide()
     }
     if (_adjustPanel) {
         _adjustPanel->hide();
+        refreshOpenBackdrop();
     }
 }
 
@@ -1066,6 +1158,7 @@ KnobGuiColor::_show()
     }
     if (isAdjustPanelExpanded()) {
         _adjustPanel->show();
+        refreshOpenBackdrop();
     }
 }
 

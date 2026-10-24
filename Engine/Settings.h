@@ -61,9 +61,11 @@ public:
         eColorTrackballFeedbackWidgetCursor
     };
 
-    enum ColorTrackballSizeEnum {
-        eColorTrackballSizeRegular = 0,
-        eColorTrackballSizeLarge
+    enum ColorTrackballWheelWidthEnum {
+        eColorTrackballWheelWidthHalf = 0,
+        eColorTrackballWheelWidthThird,
+        eColorTrackballWheelWidthQuarter,
+        eColorTrackballWheelWidthFifth
     };
 
     enum KnownHostNameEnum
@@ -258,7 +260,12 @@ public:
 
     ColorTrackballFeedbackEnum getColorTrackballFeedback() const;
 
-    ColorTrackballSizeEnum getColorTrackballSize() const;
+    ColorTrackballWheelWidthEnum getColorTrackballWheelWidth() const;
+
+    /**
+     * @brief The share of the adjust panel's width the colour wheel takes: 1/2, 1/3, 1/4 or 1/5.
+     **/
+    double getColorTrackballWheelFraction() const;
 
     bool isAutoProjectFormatEnabled() const;
 
@@ -513,7 +520,7 @@ private:
     KnobIntPtr _maxPanelsOpened;
     KnobBoolPtr _useCursorPositionIncrements;
     KnobChoicePtr _colorTrackballFeedback;
-    KnobChoicePtr _colorTrackballSize;
+    KnobChoicePtr _colorTrackballWheelWidth;
     KnobFilePtr _defaultLayoutFile;
 #ifdef Q_OS_WIN
     KnobBoolPtr _enableConsoleWindow;

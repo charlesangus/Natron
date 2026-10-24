@@ -219,6 +219,7 @@ set(GuiTests_SOURCES
     EdgeNearbyGrab_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorTrackSize_Test.cpp
+    KnobGuiColorWheelWidth_Test.cpp
     KnobGuiString_Test.cpp
     KnobUndoHash_Test.cpp
     LayerChannelRow_Test.cpp

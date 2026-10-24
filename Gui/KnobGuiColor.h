@@ -153,6 +153,12 @@ public:
     bool isAdjustPanelExpanded() const;
     void setAdjustPanelExpanded(bool expanded);
 
+    /**
+     * @brief The sunken block drawn behind the knob's row and its open panel, in the page's
+     * grid; null or hidden while the panel is closed.
+     **/
+    QWidget* getOpenBackdrop() const;
+
     ColorKnobEditSession* getEditSession();
 
     /**
@@ -221,12 +227,7 @@ public Q_SLOTS:
 
     void refreshAdjustPanelState();
 
-    /**
-     * @brief Moves the channel lines beside the wheel or back above the panel to match the
-     * track-size preference, the panel's fold state and whether the panel is wide enough,
-     * as one update. Waits while a gesture or a mouse button is held.
-     **/
-    void refreshTrackSizeLayout();
+    void refreshWheelFraction();
 
 Q_SIGNALS:
 
@@ -270,8 +271,8 @@ private:
     void refreshAdjustPanelColorManagement();
     bool isAdjustPanelEditable() const;
     void refreshAdjustPanelToolTip(bool expanded);
-    bool wantsLargeTrackLayout() const;
-    bool applyTrackSizeLayout();
+    void refreshOpenBackdrop();
+    void setOpenBlockTagged(bool tagged);
 
     void updateLabel(double r, double g, double b, double a);
 
@@ -295,7 +296,8 @@ private:
     std::unique_ptr<ColorKnobEditSession> _editSession;
     std::weak_ptr<ProjectColorManagement> _configCallbackOwner;
     int _configCallbackId;
-    QPointer<QTimer> _trackSizeRetry;
+    QPointer<QWidget> _openBackdrop;
+    std::vector<QPointer<QWidget>> _openBlockWidgets;
 };
 
 NATRON_NAMESPACE_EXIT

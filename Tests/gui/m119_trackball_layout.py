@@ -9,11 +9,12 @@ What it covers, one section each:
 - bounds: on a Grade's gain at a 500 px bin, the panel starts in the label column and runs the
   Hue slider on to the row's last button while the "g" channel line keeps its inset, and a Blur's
   size row does not move when the panel opens.
-- sizes: for the Regular and Large colorTrackballSize preferences, at the default bin width and
-  at twice it: a screenshot, the wheel's diameter (above 160 px at the default width in Regular,
-  larger in Large, up to 400 px), the Hue track's length, and in Large the nine lines
-  (r, g, b, a, Hue, Sat, Value, Temp, Tint) beside a wheel on their left.
-- panel-toggle: the knob's panel button shows a down chevron folded and an up chevron open.
+- sizes: for each colorTrackballWheelWidth preference (1/2, 1/3, 1/4, 1/5), at the default bin
+  width and at twice it: a screenshot, the wheel square at that fraction of the panel's width (or
+  as tall as the line column when that is larger) flush left, and the Hue line ending at the
+  panel's right edge.
+- panel-toggle: the knob's panel button shows the dropdown icon folded and exactly that icon
+  flipped top to bottom while open, also after a value change and a slider drag (never a swatch).
 - no-flash: no widget of the Grade panel paints at a geometry other than its settled one while
   the panel is folded and unfolded (a paint logger).
 - undo: a slider drag is one undo step, including a drag that starts on the marker.
@@ -55,10 +56,9 @@ CC_GAIN = "MasterGain"
 
 T3_BIN_WIDTH = 500
 EDGE_TOLERANCE = 1
-WHEEL_MIN = 160
-WHEEL_MAX = 320
-WHEEL_MAX_LARGE = 400
-SIZE_NAMES = {0: "regular", 1: "large"}
+WHEEL_FRACTIONS = {0: 1.0 / 2, 1: 1.0 / 3, 2: 1.0 / 4, 3: 1.0 / 5}
+WHEEL_WIDTH_NAMES = {0: "half", 1: "third", 2: "quarter", 3: "fifth"}
+WHEEL_WIDTH_DEFAULT = 1
 HUD_OFFSET = 16
 REVEAL_DIAMETER = 240
 
@@ -71,7 +71,7 @@ try:
     import NatronEngine
     import shiboken6
     from PySide6.QtCore import QEvent, QMetaObject, QObject, QPoint, QPointF, QRect, Qt
-    from PySide6.QtGui import QContextMenuEvent, QCursor, QGuiApplication, QImage, QKeyEvent, QMouseEvent
+    from PySide6.QtGui import QContextMenuEvent, QCursor, QGuiApplication, QIcon, QImage, QKeyEvent, QMouseEvent
     from PySide6.QtWidgets import QApplication, QDialog, QGridLayout, QLabel, QMainWindow, QMenu, QScrollArea, QSplitter, QWidget
 
     import guitest as gt
@@ -312,8 +312,8 @@ try:
     def set_feedback(value):
         set_pref("colorTrackballFeedback", value)
 
-    def set_size(value):
-        set_pref("colorTrackballSize", value)
+    def set_wheel_width(value):
+        set_pref("colorTrackballWheelWidth", value)
 
     def grab_screen(rect):
         r = rect.intersected(screen_rect())
@@ -374,9 +374,14 @@ try:
                 return w
         return None
 
-    def channel_lines_in(panel, name=GAIN):
-        """The knob's own channel sliders, which sit inside the panel only in the Large layout."""
-        return [w for w in all_inside(panel) if gt.class_name(w) == "ScaleSliderQWidget" and tagged(w, name)]
+    def line_column(panel):
+        """The global rect from the top of the panel's first line to the bottom of its last."""
+        column = QRect()
+        for title in ("Hue", "Sat", "Value", "Temp", "Tint"):
+            s = line_slider(panel, title)
+            if s is not None:
+                column = column.united(global_rect(s))
+        return column
 
     def measure(panel):
         if not alive(panel):
@@ -676,10 +681,11 @@ try:
         gt.section("sizes")
         widths = [default_width, min(2 * default_width, screen_rect().width() - 300)]
         report("NOTE bin widths: default %d, wide %d" % tuple(widths))
-        table = []
-        measured = {}
-        for size in (0, 1):
-            set_size(size)
+        if not selector.isChecked():
+            selector.click()
+            yield ("sleep", PANEL_MS)
+        for choice in sorted(WHEEL_FRACTIONS):
+            set_wheel_width(choice)
             yield ("sleep", PANEL_MS)
             for wi, width in enumerate(widths):
                 got = set_bin_width(width)
@@ -691,35 +697,31 @@ try:
                     yield ("sleep", PANEL_MS)
                     ap = active_adjust_panel(gp)
                     d, track = measure(ap)
-                tag = "%s-%s" % (SIZE_NAMES[size], "default" if wi == 0 else "wide")
-                lines = len(channel_lines_in(ap)) if d >= 0 else 0
-                large = lines > 0
-                measured[(size, wi)] = d
-                table.append((got, SIZE_NAMES[size], d, track, lines))
-                report("NOTE size %s bin=%d: wheel %d px, Hue track %d px, %d channel lines inside the panel"
-                       % (tag, got, d, track, lines))
-                limit = WHEEL_MAX_LARGE if size == 1 else WHEEL_MAX
-                check(px(WHEEL_MIN) - 1 <= d <= px(limit) + 1 and track > 0,
-                      "%s at %d px: a %d px wheel in [160, %d] and a %d px Hue track" % (tag, got, d, limit, track))
-                check(large == (size == 1),
-                      "%s: the channel lines are %s the panel (%d inside)" % (tag, "inside" if size == 1 else "outside", lines))
-                if size == 1 and large and ap is not None:
-                    names = ["Hue", "Sat", "Value", "Temp", "Tint"]
-                    have = [n for n in names if line_slider(ap, n) is not None]
-                    check(len(have) == 5 and lines == 4, "%s: nine lines, r g b a and Hue Sat Value Temp Tint (%d + %d)"
-                          % (tag, lines, len(have)))
-                    wheel = wheel_of(ap)
-                    first_line = min(channel_lines_in(ap), key=lambda w: w.mapToGlobal(QPoint(0, 0)).x())
-                    check(wheel.mapToGlobal(QPoint(0, 0)).x() + wheel.width() <= first_line.mapToGlobal(QPoint(0, 0)).x(),
-                          "%s: the wheel sits left of the lines" % tag)
-                    check(wheel.width() == wheel.height(), "%s: the wheel is square (%dx%d)" % (tag, wheel.width(), wheel.height()))
+                tag = "%s-%s" % (WHEEL_WIDTH_NAMES[choice], "default" if wi == 0 else "wide")
+                if not check(ap is not None and d > 0 and track > 0, "%s at %d px: the panel shows a wheel and a Hue line" % (tag, got)):
+                    continue
+                wheel = wheel_of(ap)
+                hue = line_slider(ap, "Hue")
+                row = ap.contentsRect()
+                row_left = ap.mapToGlobal(row.topLeft()).x()
+                row_right = ap.mapToGlobal(row.topRight()).x()
+                expected = int(row.width() * WHEEL_FRACTIONS[choice] + 0.5)
+                column = line_column(ap).height()
+                report("NOTE size %s bin=%d: row %d px, wheel %dx%d, fraction %d px, line column %d px, Hue track %d px"
+                       % (tag, got, row.width(), wheel.width(), wheel.height(), expected, column, track))
+                check(wheel.width() == wheel.height(), "%s: the wheel is square (%dx%d)" % (tag, wheel.width(), wheel.height()))
+                if expected >= column:
+                    check(abs(d - expected) <= 2, "%s: the wheel is %s of the row (%d, expected %d)"
+                          % (tag, WHEEL_WIDTH_NAMES[choice], d, expected))
+                else:
+                    check(d >= column - 2, "%s: the wheel is no smaller than the line column (%d, column %d)" % (tag, d, column))
+                check(abs(global_rect(wheel).left() - row_left) <= EDGE_TOLERANCE,
+                      "%s: the wheel sits flush left (%d, row %d)" % (tag, global_rect(wheel).left(), row_left))
+                check(abs(global_rect(hue).right() - row_right) <= EDGE_TOLERANCE + 1,
+                      "%s: the Hue line ends at the row's right edge (%d, row %d)" % (tag, global_rect(hue).right(), row_right))
+                check(global_rect(hue).left() > global_rect(wheel).right(), "%s: the lines sit right of the wheel" % tag)
                 crop_widget(bin_wrapper(), "size-" + tag)
-        check(measured.get((0, 0), -1) > px(WHEEL_MIN), "Regular at the default width: the wheel is above 160 px (%r)" % measured.get((0, 0)))
-        check(measured.get((1, 0), -1) > measured.get((0, 0), 1 << 30),
-              "Large at the default width: the wheel is larger than Regular's (%r against %r)" % (measured.get((1, 0)), measured.get((0, 0))))
-        check(measured.get((1, 1), -1) > measured.get((0, 1), 1 << 30),
-              "Large at twice the width: the wheel is larger than Regular's (%r against %r)" % (measured.get((1, 1)), measured.get((0, 1))))
-        set_size(0)
+        set_wheel_width(WHEEL_WIDTH_DEFAULT)
         set_bin_width(default_width)
         yield ("sleep", PANEL_MS)
 
@@ -729,26 +731,41 @@ try:
         if selector.isChecked():
             selector.click()
             yield ("sleep", SETTLE_MS)
-        folded_icon = selector.icon().pixmap(selector.iconSize()).toImage()
+        folded_icon = selector.icon().pixmap(selector.iconSize()).toImage().convertToFormat(QImage.Format_ARGB32)
+        flipped = folded_icon.mirrored(False, True)
         folded_tip = selector.toolTip()
         crop_widget(knob_row(gp, GAIN), "toggle-folded", 4)
         selector.click()
         yield ("sleep", PANEL_MS)
         check(selector.isChecked() and active_adjust_panel(gp) is not None, "the button opens the panel")
-        open_icon = selector.icon().pixmap(selector.iconSize()).toImage()
+        check(not folded_icon.isNull() and flipped != folded_icon, "the dropdown icon is not symmetric top to bottom")
+
+        def open_icon_is_flipped(when):
+            on = selector.icon().pixmap(selector.iconSize(), QIcon.Normal, QIcon.On).toImage().convertToFormat(QImage.Format_ARGB32)
+            off = selector.icon().pixmap(selector.iconSize(), QIcon.Normal, QIcon.Off).toImage().convertToFormat(QImage.Format_ARGB32)
+            check(on == flipped and off == flipped, "%s: the open icon is the dropdown icon flipped" % when)
+
+        open_icon_is_flipped("opened")
         crop_widget(knob_row(gp, GAIN), "toggle-open", 4)
-        check(not folded_icon.isNull() and not open_icon.isNull() and image_diff(folded_icon.convertToFormat(QImage.Format_RGB32),
-                                                                                  open_icon.convertToFormat(QImage.Format_RGB32), 0) > 0.0,
-              "the open panel's button icon differs from the folded one")
-        check(open_icon.size() == folded_icon.size(), "the two icons are the same size (%dx%d)" % (open_icon.width(), open_icon.height()))
-        mirrored = folded_icon.mirrored(False, True)
-        check(image_diff(mirrored.convertToFormat(QImage.Format_ARGB32), open_icon.convertToFormat(QImage.Format_ARGB32), 24) < 0.1,
-              "the open icon is the folded chevron turned up")
+        before = gain_values(grade)
+        set_gain(grade, [0.8, 0.9, 1.1, 1.0])
+        yield ("sleep", SETTLE_MS)
+        open_icon_is_flipped("after a value change")
+        crop_widget(knob_row(gp, GAIN), "toggle-open-changed", 4)
+        hue = line_slider(active_adjust_panel(gp), "Hue")
+        if check(hue is not None, "found the Hue line"):
+            drag(hue, QPoint(hue.width() // 4, hue.height() // 2), QPoint(40, 0))
+            yield ("sleep", SETTLE_MS)
+            open_icon_is_flipped("after a slider drag")
+            crop_widget(knob_row(gp, GAIN), "toggle-open-dragged", 4)
+        set_gain(grade, before)
         check(selector.toolTip() != folded_tip, "the tooltip changes with the state")
         report("NOTE tooltips: folded %r, open %r" % (folded_tip[:60], selector.toolTip()[:60]))
         selector.click()
         yield ("sleep", SETTLE_MS)
         check(not selector.isChecked(), "the button folds the panel again")
+        folded_again = selector.icon().pixmap(selector.iconSize()).toImage().convertToFormat(QImage.Format_ARGB32)
+        check(folded_again == folded_icon, "folded again, the button shows the dropdown icon")
         selector.click()
         yield ("sleep", PANEL_MS)
 

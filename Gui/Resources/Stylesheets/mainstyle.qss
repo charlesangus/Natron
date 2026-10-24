@@ -42,6 +42,15 @@ QWidget[_natronColorTrackballTarget="true"] {
     border-radius: 2px;
 }
 
+/* A colour knob with its adjust panel open: the cells of its row and panel let the sunken
+   block painted under them (KnobGuiColor's backdrop) show through. Only plain containers and
+   labels go transparent; fields, sliders and buttons keep their own backgrounds. */
+QWidget[_natronColorAdjustOpen="true"],
+QWidget[_natronColorAdjustOpen="true"] .QWidget,
+QWidget[_natronColorAdjustOpen="true"] QLabel {
+    background-color: transparent;
+}
+
 QToolTip {
    color: %5;
    background-color: black;
@@ -810,9 +819,9 @@ QToolButton#ColorSelectorButton:pressed {
 
 /* The themed icon already tints On-state glyphs with the selection colour, but that colour
    shift alone is too subtle to read as "toggled"; the fill behind it is what makes the
-   dropdown and global-mode buttons read as pressed when checked (panel open, global mode
-   engaged). */
-QToolButton#ColorSelectorButton:checked,
+   global-mode button read as pressed while global mode is engaged. The adjust panel's
+   dropdown button gets no fill: the open state shows its glyph flipped, and the fill behind a
+   selection-tinted glyph read as a colour swatch. */
 QToolButton#ColorGlobalModeButton:checked {
     background-color: %1;
     border-radius: 2px;

@@ -38,7 +38,6 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
-#include <QPointer>
 #include <QResizeEvent>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
@@ -62,14 +61,6 @@ const double kNeutralSaturation = 1e-9;
 // The Hue track is painted at this fraction of the rim when the value is (near) neutral, so the
 // spectrum stays readable instead of collapsing to grey.
 const double kHueTrackSaturationFraction = 0.5;
-
-// The shortest slider track the wheel leaves room for before it stops growing.
-const double kMinTrackLength = 120.0;
-
-// In the Large layout the tracks beside the wheel give way to it down to this length, and the
-// wheel grows up to the larger cap.
-const double kLargeTrackLength = 70.0;
-const double kLargeWheelMaxPx = 400.0;
 
 const ColorSliderKindEnum kLineKinds[kLineCount] = {
     eColorSliderKindHue,
@@ -223,42 +214,6 @@ clampedColor(const float rgb[3])
     return c;
 }
 
-// Box layouts squeeze every item from its size hint by an equal share when the width falls
-// short, so a column hinting at its long preferred tracks would take that share out of the
-// wheel. In the Large layout the column hints at its minimum instead and only grows into what
-// the wheel leaves.
-class RightColumnWidget
-    : public QWidget {
-public:
-    explicit RightColumnWidget(QWidget* parent)
-        : QWidget(parent)
-        , _hintWidth(-1)
-    {
-    }
-
-    void setHintWidth(int width)
-    {
-        if (width != _hintWidth) {
-            _hintWidth = width;
-            updateGeometry();
-        }
-    }
-
-    virtual QSize sizeHint() const OVERRIDE
-    {
-        QSize s = QWidget::sizeHint();
-
-        if (_hintWidth >= 0) {
-            s.setWidth(_hintWidth);
-        }
-
-        return s;
-    }
-
-private:
-    int _hintWidth;
-};
-
 ColorEdit
 makeEdit(ColorAxisEnum axis,
          double d1,
@@ -298,12 +253,10 @@ struct ColorAdjustPanelPrivate {
 
     QWidget* editArea;
     QWidget* linesArea;
-    RightColumnWidget* rightColumnWidget;
+    QWidget* rightColumnWidget;
     QVBoxLayout* rightColumn;
     QGridLayout* linesLayout;
-    QPointer<QWidget> channelLines;
-    int channelLinesMinimumWidth;
-    bool large;
+    double wheelFraction;
     bool editable;
     ColorWheelWidget* wheel;
     Label* captions[kLineCount];
@@ -335,9 +288,7 @@ struct ColorAdjustPanelPrivate {
         , rightColumnWidget(nullptr)
         , rightColumn(nullptr)
         , linesLayout(nullptr)
-        , channelLines()
-        , channelLinesMinimumWidth(0)
-        , large(false)
+        , wheelFraction(1. / 3.)
         , editable(true)
         , wheel(nullptr)
         , source(eSourceNone)
@@ -366,7 +317,6 @@ struct ColorAdjustPanelPrivate {
     void connectEditArea();
     void updateWheelSize();
     int linesMinimumWidth(int trackWidth) const;
-    int largeColumnMinimumWidth() const;
 
     int sliderIndex(const QObject* s) const;
     int spinBoxIndex(const QObject* s) const;
@@ -418,7 +368,7 @@ ColorAdjustPanelPrivate::buildEditArea()
     wheel = new ColorWheelWidget(editArea);
     areaLayout->addWidget(wheel, 0, Qt::AlignTop);
 
-    rightColumnWidget = new RightColumnWidget(editArea);
+    rightColumnWidget = new QWidget(editArea);
     rightColumn = new QVBoxLayout(rightColumnWidget);
     rightColumn->setContentsMargins(0, 0, 0, 0);
     rightColumn->setSpacing((int)TO_DPIY(1.));
@@ -488,38 +438,27 @@ ColorAdjustPanelPrivate::linesMinimumWidth(int trackWidth) const
     return captionWidth + fieldWidth + 2 * linesLayout->horizontalSpacing() + trackWidth;
 }
 
-int
-ColorAdjustPanelPrivate::largeColumnMinimumWidth() const
-{
-    return std::max(linesMinimumWidth((int)TO_DPIX(kLargeTrackLength)), channelLinesMinimumWidth);
-}
-
-// The wheel takes what the lines leave once they have a caption, a field and the shortest
-// usable track (in Regular never below the slider's own minimum, or the layout would squeeze
-// the wheel back); the wheel itself keeps that within its floor and cap.
+// The wheel takes its share of the width, but never less than the lines' height. It also never
+// takes so much that the lines lose their caption, field and shortest track: a minimum width
+// that grew with the panel's own width would hold the panel wider than its parent gives it.
 void
 ColorAdjustPanelPrivate::updateWheelSize()
 {
     QHBoxLayout* areaLayout = qobject_cast<QHBoxLayout*>(editArea->layout());
-    int columnMinimum = 0;
+    int trackWidth = 0;
 
-    if (large) {
-        columnMinimum = largeColumnMinimumWidth();
-    } else {
-        int trackWidth = (int)TO_DPIX(kMinTrackLength);
-
-        for (int i = 0; i < kLineCount; ++i) {
-            trackWidth = std::max(trackWidth, customSliders[i]->minimumSizeHint().width());
-        }
-        columnMinimum = linesMinimumWidth(trackWidth);
+    for (int i = 0; i < kLineCount; ++i) {
+        trackWidth = std::max(trackWidth, customSliders[i]->minimumSizeHint().width());
     }
 
-    int available = q->contentsRect().width() - (areaLayout ? areaLayout->spacing() : 0) - columnMinimum;
+    const int width = q->contentsRect().width();
+    const int spacing = areaLayout ? areaLayout->spacing() : 0;
+    const int columnHeight = linesArea->sizeHint().height();
+    int diameter = (int)std::floor(width * wheelFraction + 0.5);
 
-    wheel->setPreferredDiameter(available);
-    // In Large the wheel can be taller than the column of lines. Its minimum height holds the
-    // row open to the whole square, so the row does not clip it to the lines' height.
-    wheel->setMinimumHeight(large ? wheel->getPreferredDiameter() : 0);
+    diameter = std::min(diameter, width - spacing - linesMinimumWidth(trackWidth));
+    diameter = std::max(diameter, std::max(columnHeight, 1));
+    wheel->setFixedSize(diameter, diameter);
 }
 
 int
@@ -1049,9 +988,6 @@ ColorAdjustPanel::resizeEvent(QResizeEvent* e)
 {
     QWidget::resizeEvent(e);
     _imp->updateWheelSize();
-    if (e->oldSize().width() != e->size().width()) {
-        Q_EMIT widthChanged();
-    }
 }
 
 void
@@ -1069,75 +1005,20 @@ ColorAdjustPanel::isEditable() const
 }
 
 void
-ColorAdjustPanel::setLargeLayout(QWidget* channelLines,
-                                 int channelLinesMinimumWidth)
+ColorAdjustPanel::setWheelFraction(double fraction)
 {
-    if (_imp->channelLines && (_imp->channelLines != channelLines)) {
-        _imp->rightColumn->removeWidget(_imp->channelLines);
+    fraction = std::min(std::max(fraction, 0.), 1.);
+    if (fraction == _imp->wheelFraction) {
+        return;
     }
-    _imp->large = true;
-    _imp->channelLines = channelLines;
-    _imp->channelLinesMinimumWidth = channelLines ? channelLinesMinimumWidth : 0;
-    if (channelLines && (_imp->rightColumn->indexOf(channelLines) < 0)) {
-        channelLines->setParent(_imp->rightColumnWidget);
-        _imp->rightColumn->insertWidget(0, channelLines);
-        channelLines->show();
-    }
-    for (int i = 0; i < kLineCount; ++i) {
-        _imp->customSliders[i]->setMinimumWidth((int)TO_DPIX(kLargeTrackLength));
-    }
-    _imp->wheel->setMaximumDiameter(largeMaximumDiameter());
-    _imp->rightColumnWidget->setHintWidth(_imp->largeColumnMinimumWidth());
+    _imp->wheelFraction = fraction;
     _imp->updateWheelSize();
 }
 
-QWidget*
-ColorAdjustPanel::setRegularLayout()
+double
+ColorAdjustPanel::getWheelFraction() const
 {
-    QWidget* lines = _imp->channelLines.data();
-
-    if (lines) {
-        _imp->rightColumn->removeWidget(lines);
-    }
-    _imp->channelLines = nullptr;
-    _imp->channelLinesMinimumWidth = 0;
-    _imp->large = false;
-    for (int i = 0; i < kLineCount; ++i) {
-        _imp->customSliders[i]->setMinimumWidth(0);
-    }
-    _imp->wheel->setMaximumDiameter(ColorWheelWidget::maximumDiameter());
-    _imp->rightColumnWidget->setHintWidth(-1);
-    _imp->updateWheelSize();
-
-    return lines;
-}
-
-bool
-ColorAdjustPanel::isLargeLayout() const
-{
-    return _imp->large;
-}
-
-bool
-ColorAdjustPanel::fitsLargeLayout(int channelLinesMinimumWidth) const
-{
-    QHBoxLayout* areaLayout = qobject_cast<QHBoxLayout*>(_imp->editArea->layout());
-    int column = std::max(_imp->linesMinimumWidth((int)TO_DPIX(kLargeTrackLength)), channelLinesMinimumWidth);
-    int spacing = areaLayout ? areaLayout->spacing() : 0;
-
-    return contentsRect().width() - spacing - column >= ColorWheelWidget::minimumDiameter();
-}
-
-int
-ColorAdjustPanel::largeTrackMinimum()
-{
-    return (int)TO_DPIX(kLargeTrackLength);
-}
-
-int
-ColorAdjustPanel::largeMaximumDiameter()
-{
-    return (int)TO_DPIX(kLargeWheelMaxPx);
+    return _imp->wheelFraction;
 }
 
 const KnobColorValue&

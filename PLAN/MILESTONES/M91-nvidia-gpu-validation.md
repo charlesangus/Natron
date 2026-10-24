@@ -218,3 +218,4 @@ If M107 hasn't merged when Phase 91.2 finishes, skip this phase and file it as a
 - 2026-10-23 — P1.T6 resized S → M: triage needs judgement.
 - 2026-10-23 — User chose to proceed despite the §8a overlap with M107 - GPU Viewer Hand-off (earlier row): run Phases 91.1, 91.2 and 91.4 now, leave M107-owned files untouched until it merges, send interop findings to its owner through the inbox, and the second to merge rebases.
 - 2026-10-23 — User allowed agents to briefly open test windows on the `:0` Plasma session for the NVIDIA GL checks (P1.T5, Phase 91.3).
+- 2026-10-23 — P1.T4: tools/gpu-spike had bit-rotted (standalone grade.slang deleted in M137); the spike now carries its own copy of the old grade_main kernel staged beside the engine gradeops module (code: 2c03da4d3 on milestone/m91-nvidia-gpu-validation). GpuBench smoke on the RTX 3070 Ti ran with hostImport=1.

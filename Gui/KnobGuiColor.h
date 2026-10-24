@@ -278,6 +278,7 @@ private:
     void refreshAdjustPanelToolTip(bool expanded);
     void refreshOpenBackdrop();
     void setOpenBlockTagged(bool tagged);
+    void reserveOpenBlockSidePadding();
 
     void updateLabel(double r, double g, double b, double a);
 
@@ -311,6 +312,9 @@ private:
 
     QPointer<QWidget> _openBackdrop;
     std::vector<OpenBlockCell> _openBlockWidgets;
+    // The label and field cells that keep the block's side padding at all times.
+    QPointer<QWidget> _paddedLabelCell;
+    QPointer<QWidget> _paddedFieldCell;
     bool _globalModeHighlighted;
 };
 

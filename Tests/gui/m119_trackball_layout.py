@@ -14,7 +14,8 @@ What it covers, one section each:
   as tall as the line column when that is larger) flush left, and the Hue line ending at the
   panel's right edge. The hue ring's width is measured on each wheel (pixel probe).
 - panel-toggle: the knob's panel button shows the dropdown icon folded and exactly that icon
-  flipped top to bottom while open, also after a value change and a slider drag (never a swatch).
+  flipped top to bottom while open, also after a value change and a slider drag (never a swatch),
+  and opening or folding the panel leaves the button at the same x on screen.
 - no-flash: no widget of the Grade panel paints at a geometry other than its settled one while
   the panel is folded and unfolded (a paint logger).
 - undo: a slider drag is one undo step, including a drag that starts on the marker.
@@ -896,9 +897,12 @@ try:
         flipped = folded_icon.mirrored(False, True)
         folded_tip = selector.toolTip()
         crop_widget(knob_row(gp, GAIN), "toggle-folded", 4)
+        folded_x = global_rect(selector).left()
         selector.click()
         yield ("sleep", PANEL_MS)
         check(selector.isChecked() and active_adjust_panel(gp) is not None, "the button opens the panel")
+        check(global_rect(selector).left() == folded_x, "opening the panel leaves the button at x %d (now %d)"
+              % (folded_x, global_rect(selector).left()))
         check(not folded_icon.isNull() and flipped != folded_icon, "the dropdown icon is not symmetric top to bottom")
 
         def open_icon_is_flipped(when):
@@ -925,6 +929,8 @@ try:
         selector.click()
         yield ("sleep", SETTLE_MS)
         check(not selector.isChecked(), "the button folds the panel again")
+        check(global_rect(selector).left() == folded_x, "folding the panel leaves the button at x %d (now %d)"
+              % (folded_x, global_rect(selector).left()))
         folded_again = selector.icon().pixmap(selector.iconSize()).toImage().convertToFormat(QImage.Format_ARGB32)
         check(folded_again == folded_icon, "folded again, the button shows the dropdown icon")
         selector.click()

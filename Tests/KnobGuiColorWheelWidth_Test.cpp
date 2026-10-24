@@ -257,7 +257,7 @@ protected:
         _field = new QWidget(_page.get());
         QHBoxLayout* fieldLayout = new QHBoxLayout(_field);
         fieldLayout->setContentsMargins(0, 0, 0, 0);
-        _gui->createGUI(_field, 0, 0, 0, fieldLayout, true, 0, std::vector<KnobIPtr>());
+        _gui->createGUI(_field, _label, 0, 0, fieldLayout, true, 0, std::vector<KnobIPtr>());
         grid->addWidget(_field, 0, 1);
 
         QWidget* fullWidthRow = _gui->getFullWidthRowWidget();
@@ -391,6 +391,7 @@ TEST_F(KnobGuiColorWheelWidth, TheOpenToggleIsTheClosedIconFlippedAndNeverASwatc
     const QSize iconSize = button->iconSize();
     const QSize size = button->size();
     const QPoint position = button->pos();
+    const QPoint onPage = button->mapTo(_page.get(), QPoint());
     const QString closedTip = button->toolTip();
     const QImage closed = argb(button->icon().pixmap(iconSize, QIcon::Normal, QIcon::Off));
     const QImage flipped = closed.mirrored(false, true);
@@ -409,6 +410,7 @@ TEST_F(KnobGuiColorWheelWidth, TheOpenToggleIsTheClosedIconFlippedAndNeverASwatc
     EXPECT_TRUE(button->toolTip().contains(QString::fromUtf8("Hide")));
     EXPECT_EQ(size, button->size());
     EXPECT_EQ(position, button->pos());
+    EXPECT_EQ(onPage.x(), button->mapTo(_page.get(), QPoint()).x()) << "the toggle stays under the cursor";
 
     for (int i = 0; i < 3; ++i) {
         _knob->setValue(0.25 + 0.1 * i, ViewSpec::all(), i, true);
@@ -441,12 +443,17 @@ TEST_F(KnobGuiColorWheelWidth, AnOpenPanelAndItsRowSitInOneSunkenBlock)
 {
     build(600);
     EXPECT_TRUE(!_gui->getOpenBackdrop() || !_gui->getOpenBackdrop()->isVisible());
+    EXPECT_EQ(QMargins(blockPadX(), 0, 0, 0), _label->contentsMargins());
+    EXPECT_EQ(QMargins(0, 0, blockPadX(), 0), _field->contentsMargins());
+    const QRect closedField = rectIn(_field, _page.get());
 
     setExpanded(true);
     QWidget* backdrop = _gui->getOpenBackdrop();
     ASSERT_TRUE(backdrop);
     EXPECT_TRUE(backdrop->isVisible());
     EXPECT_EQ(_page.get(), backdrop->parentWidget());
+    EXPECT_EQ(closedField.left(), rectIn(_field, _page.get()).left());
+    EXPECT_EQ(closedField.right(), rectIn(_field, _page.get()).right());
 
     const QRect block = backdrop->geometry();
     EXPECT_TRUE(block.contains(rectIn(_label, _page.get()))) << "the label";
@@ -462,7 +469,8 @@ TEST_F(KnobGuiColorWheelWidth, AnOpenPanelAndItsRowSitInOneSunkenBlock)
 
     // The cells along the block's edges are padded inside its frame, and the block ends with
     // the row gap below its frame. Neither the label nor the row has a layout bottom margin
-    // here, so the gap comes from their padding.
+    // here, so the gap comes from their padding. The label's left and the field's right keep
+    // their padding while the block is hidden too.
     const int padX = blockPadX();
     const int padY = blockPadY();
     const int gap = blockRowGap();
@@ -482,8 +490,8 @@ TEST_F(KnobGuiColorWheelWidth, AnOpenPanelAndItsRowSitInOneSunkenBlock)
     EXPECT_TRUE(!_gui->getOpenBackdrop() || !_gui->getOpenBackdrop()->isVisible());
     EXPECT_FALSE(_label->property("_natronColorAdjustOpen").toBool());
     EXPECT_FALSE(_field->property("_natronColorAdjustOpen").toBool());
-    EXPECT_EQ(QMargins(), _label->contentsMargins());
-    EXPECT_EQ(QMargins(), _field->contentsMargins());
+    EXPECT_EQ(QMargins(padX, 0, 0, 0), _label->contentsMargins());
+    EXPECT_EQ(QMargins(0, 0, padX, 0), _field->contentsMargins());
     EXPECT_EQ(QMargins(), _gui->getFullWidthRowWidget()->contentsMargins());
 }
 
@@ -561,8 +569,8 @@ TEST_F(KnobGuiColorWheelWidth, GlobalModeOnAClosedKnobShowsTheBlockAroundItsRowA
     EXPECT_TRUE(!_gui->getOpenBackdrop() || !_gui->getOpenBackdrop()->isVisible());
     EXPECT_FALSE(_label->property("_natronColorAdjustOpen").toBool());
     EXPECT_FALSE(_field->property("_natronColorAdjustOpen").toBool());
-    EXPECT_EQ(QMargins(), _label->contentsMargins());
-    EXPECT_EQ(QMargins(), _field->contentsMargins());
+    EXPECT_EQ(QMargins(blockPadX(), 0, 0, 0), _label->contentsMargins());
+    EXPECT_EQ(QMargins(0, 0, blockPadX(), 0), _field->contentsMargins());
 }
 
 // Global mode highlights a knob first and then opens it, and a knob switch does the reverse on

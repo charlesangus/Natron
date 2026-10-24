@@ -181,6 +181,7 @@ public:
 
     virtual std::string getDescriptionLabel() const;
     QWidget* getFieldContainer() const;
+    QWidget* getLabelContainer() const;
 
     /**
      * @brief Returns the row index of the knob in the layout.

@@ -478,6 +478,8 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _configCallbackId(-1)
     , _openBackdrop()
     , _openBlockWidgets()
+    , _paddedLabelCell()
+    , _paddedFieldCell()
     , _globalModeHighlighted(false)
 {
     KnobColorPtr k = _knob.lock();
@@ -863,7 +865,8 @@ KnobGuiColor::refreshOpenBackdrop()
     // The cells along the block's edges are padded so their contents sit inside the frame by the
     // margin a settings panel keeps inside its own edge. The row above already ends with the row
     // gap; the block ends with one too, outside its frame, taken from the cells' own bottom gap
-    // when they have one.
+    // when they have one. The label and field cells keep their side padding at all times
+    // (reserveOpenBlockSidePadding()), so only the full-width row gains any here.
     const int padX = TO_DPIX(NATRON_DENSITY_PANEL_MARGIN);
     const int padY = TO_DPIY(NATRON_DENSITY_PANEL_MARGIN);
     const int rowGap = TO_DPIY(NATRON_DENSITY_ROW_GAP);
@@ -888,10 +891,10 @@ KnobGuiColor::refreshOpenBackdrop()
             const int ownGap = w->layout() ? w->layout()->contentsMargins().bottom() : 0;
             pad.setBottom(padY + std::max(0, rowGap - ownGap));
         }
-        if (col == 0) {
+        if ((col == 0) && (w != _paddedLabelCell.data())) {
             pad.setLeft(padX);
         }
-        if (col + cs - 1 >= lastColumn) {
+        if ((col + cs - 1 >= lastColumn) && (w != _paddedFieldCell.data())) {
             pad.setRight(padX);
         }
         cell.blockMargins = cell.restMargins + pad;
@@ -913,6 +916,26 @@ KnobGuiColor::refreshOpenBackdrop()
     _openBackdrop->show();
     setOpenBlockTagged(true);
 } // KnobGuiColor::refreshOpenBackdrop
+
+// The block's side padding is kept by the label's left and the field's right whether or not the
+// block shows: padding them only while it shows would narrow the field and move the row's
+// buttons, the open toggle among them, out from under the cursor that clicked it.
+void
+KnobGuiColor::reserveOpenBlockSidePadding()
+{
+    const int padX = TO_DPIX(NATRON_DENSITY_PANEL_MARGIN);
+    QWidget* label = getLabelContainer();
+    QWidget* field = getFieldContainer();
+
+    if (label && (label != _paddedLabelCell.data())) {
+        label->setContentsMargins(label->contentsMargins() + QMargins(padX, 0, 0, 0));
+        _paddedLabelCell = label;
+    }
+    if (field && (field != _paddedFieldCell.data())) {
+        field->setContentsMargins(field->contentsMargins() + QMargins(0, 0, padX, 0));
+        _paddedFieldCell = field;
+    }
+}
 
 void
 KnobGuiColor::refreshAdjustPanelToolTip(bool expanded)
@@ -1096,6 +1119,7 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
 
         // The panel has a row of its own, from the label column to the row's last button.
         setBelowRowWidgetFullWidth(true);
+        reserveOpenBlockSidePadding();
 
         return;
     }

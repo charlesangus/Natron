@@ -222,6 +222,7 @@ future core work has solid ground to build on.
 | M170 | Engine Render Races | todo | - |  | E14 | [M170-engine-render-races.md](PLAN/MILESTONES/M170-engine-render-races.md) |
 | M162 | OFX CUDA And OpenCL Suites | todo | M86 |  | E5 | [M162-ofx-cuda-and-opencl-suites.md](PLAN/MILESTONES/M162-ofx-cuda-and-opencl-suites.md) |
 | M171 | GPU Correctness Fixes | todo | - |  | E5 | [M171-gpu-correctness-fixes.md](PLAN/MILESTONES/M171-gpu-correctness-fixes.md) |
+| M163 | Incremental Bezier Edits | todo | - |  | E6 | [M163-incremental-bezier-edits.md](PLAN/MILESTONES/M163-incremental-bezier-edits.md) |
 
 # Epics
 

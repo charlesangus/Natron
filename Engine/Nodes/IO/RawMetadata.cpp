@@ -244,6 +244,19 @@ setWhiteLevel(ImageMetadata* metadata,
     metadata->setDouble(kRawMetadataWhiteLevel, level);
 }
 
+std::optional<double>
+getSensorWhiteLevel(const ImageMetadata& metadata)
+{
+    return metadata.getDouble(kRawMetadataSensorWhiteLevel);
+}
+
+void
+setSensorWhiteLevel(ImageMetadata* metadata,
+                    double level)
+{
+    metadata->setDouble(kRawMetadataSensorWhiteLevel, level);
+}
+
 std::optional<std::array<double, 3>>
 getWbCoeffs(const ImageMetadata& metadata)
 {

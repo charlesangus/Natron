@@ -53,6 +53,13 @@
 #define kRawDemosaicParamColorSmoothing "colorSmoothing"
 #define kRawDemosaicParamLmmseRefine "lmmseRefine"
 #define kRawDemosaicParamDualThreshold "dualThreshold"
+#define kRawDemosaicParamCaptureSharpen "captureSharpen"
+#define kRawDemosaicParamCaptureIterations "captureIterations"
+#define kRawDemosaicParamCaptureRadius "captureRadius"
+#define kRawDemosaicParamCaptureThreshold "captureContrastSensitivity"
+#define kRawDemosaicParamCaptureThresholdOverride "captureContrastSensitivityOverride"
+#define kRawDemosaicParamCaptureBoost "captureCornerBoost"
+#define kRawDemosaicParamCaptureCenter "captureSharpCenter"
 
 NATRON_NAMESPACE_ENTER
 
@@ -100,14 +107,16 @@ enum RawDemosaicGreenEqEnum {
  * colour), after the optional green equilibration (Bayer) and
  * followed by the optional colour smoothing passes. The dual methods (RCD, AMaZE, Markesteijn
  * 3-pass) blend the method's output with VNG's where the image has little detail, by Dual
- * Threshold, and turn colour smoothing off as darktable does. Data without a CFA passes through. The output
+ * Threshold, and turn colour smoothing off as darktable does. Capture Sharpen deconvolves the
+ * demosaiced output (or monochrome data without a CFA) before the dual blend and colour
+ * smoothing, by darktable's capture sharpening. Data without a CFA passes through. The output
  * is RGBA with an alpha of 1, and its metadata keeps the camera matrix and white balance keys
  * and drops the CFA and the raw stage.
  *
  * Each render reads its window grown by what the method reads around a pixel, aligned to the CFA
  * period (and, for AMaZE, LMMSE and Frequency Domain Chroma, to their own tile grids), so a tile is bit for bit the same pixels
- * as the full frame. Full green equilibration measures the whole image, once per source and
- * settings. Renders at full resolution only.
+ * as the full frame. Full green equilibration and capture sharpening's automatic radius measure
+ * the whole image, once per source and settings. Renders at full resolution only.
  **/
 class RawDemosaic
     : public StagedImageEffect {
@@ -135,6 +144,12 @@ public:
      **/
     RectI sourceRegionFor(const RectI& window, double time, ViewIdx view) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The automatic capture sharpening radius last measured, for the frame a render with
+     * Radius 0 last ran on, or nothing before any has.
+     **/
+    std::optional<double> lastAutoCaptureRadius() const WARN_UNUSED_RETURN;
+
 private:
     std::optional<Settings> resolveSettings(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
@@ -156,6 +171,18 @@ private:
     // method list and the knobs its method uses show. With no source, or one without a CFA, both
     // lists show.
     void refreshMethodKnobsVisibility();
+
+    // RawHighlights' override pattern for Contrast Sensitivity: the knob is editable only while
+    // overridden, and otherwise shows darktable's _get_variance_threshold() for the source.
+    void refreshCaptureOverride();
+
+    // gui_changed()'s capture sharpening part, support being darktable's capture_support.
+    void refreshCaptureKnobsVisibility(bool support);
+
+    void showSourceCaptureThreshold(double time);
+
+    // The radius an automatic run measured, in the Radius tooltip, set on the main thread.
+    void showAutoCaptureRadius(double radius, bool reliable);
 
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
@@ -205,12 +232,25 @@ private:
     KnobIntWPtr _colorSmoothing;
     KnobChoiceWPtr _lmmseRefine;
     KnobDoubleWPtr _dualThreshold;
+    KnobBoolWPtr _captureSharpen;
+    KnobIntWPtr _captureIterations;
+    KnobDoubleWPtr _captureRadius;
+    KnobDoubleWPtr _captureThreshold;
+    KnobBoolWPtr _captureThresholdOverride;
+    KnobDoubleWPtr _captureBoost;
+    KnobDoubleWPtr _captureCenter;
 
     // The ratio of full green equilibration, for the source and settings its key names.
     std::mutex _greenMutex;
     bool _greenValid;
     U64 _greenKey;
     double _greenRatio;
+
+    // The automatic capture sharpening radius, for the source and settings its key names.
+    mutable std::mutex _captureMutex;
+    bool _captureValid;
+    U64 _captureKey;
+    double _captureRadiusValue;
 };
 
 NATRON_NAMESPACE_EXIT

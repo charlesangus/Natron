@@ -48,6 +48,33 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
   `dt_fast_hypotf()` is taken as the plain square root of the sum of squares of darktable's
   `-ffast-math` Release builds. darktable's "show dual mask" view is not ported. No GPU path.
 - **Dual Threshold**: 0 to 1, default 0.2 (darktable's `dual_thrs`). Shown only for a dual method.
+- **Capture Sharpen** (default off): darktable's capture sharpening (`capture.c`), a luminance
+  Richardson-Lucy deconvolution of the demosaiced output, run where darktable's `process()` runs
+  it: after the method, on the green-matched mosaic, before the dual blend and colour smoothing.
+  It applies to every method except the photosite modes, and to data without a CFA only when it
+  has one channel (darktable's true monochrome); colour data without a CFA passes through
+  untouched. Controls, shown as darktable's `gui_changed()` shows them (the switch where capture
+  is supported, the rest while it is on, Sharp Center while Corner Boost is not 0):
+  **Iterations** 1 to 25, default 8, run as `n + (int)(0.000065 n^4)` (50 at 25);
+  **Radius** 0 to 1.5, 0 measuring it per frame by `_calc_auto_radius()` on the raw centre (the
+  middle 60% of each side) before green matching, white balance undone by `1 / max(1, raw/wb_applied)`,
+  0.2 added for X-Trans, 0.5 when the frame is too small; the measured value is shown in the
+  Radius tooltip and never written to the knob; **Contrast Sensitivity** 0 to 1, whose default is
+  darktable's `_get_variance_threshold()` (0.4, minus 0.07 when `raw/sensor_white_level` is over
+  4096, moved by 0.012 per 100 ISO from 600, ISO clamped to 100..1000), shown in the knob until
+  **Override Contrast Sensitivity** is on (RawHighlights' clipping-threshold pattern; an
+  overriding 0 takes the default cut to a hundredth, as `commit_params()` does);
+  **Corner Boost** 0 to 1.5, default 0; **Sharp Center** 0 to 1, default 0 (a percentage in
+  darktable). The clip mask uses 0.9 x `raw/wb_applied` per colour. Every border condition
+  (clip-mask frame, variance window clamp, Gaussian edges, the per-pixel sigma's fade and its
+  distance from the centre) is taken from the frame rather than the buffer, and the halo is
+  `8 n + 10` for n iterations, so tiles equal the full frame bit for bit, where darktable's
+  18-photosite tile overlap is approximate. The clip mask is gathered rather than scattered and the
+  automatic radius's maximum is reduced per row, so threaded runs equal serial ones. Frames under 5
+  photosites a side are left alone (darktable reads out of bounds there). darktable's "show
+  sharpened areas" and "show radius" views are not ported. No GPU path: capture keeps the node on
+  the CPU. `raw/sensor_white_level` is set by RawPrepare from the file's white level before it
+  normalises `raw/white_level` to 1.
 - **LMMSE Refine**: darktable's five levels: basic, median (the default), 3x median, refine &
   medians and 2x refine + medians. It is shown only when the method is LMMSE, as in darktable's
   `gui_changed()`. LMMSE works in darktable's gamma space, scaled by the processed maximum, and PPG
@@ -108,7 +135,10 @@ equal to the plain method, busy areas keeping the method and flat ones not, colo
 off, and the Dual Threshold knob's default, range and visibility. `NativeRawDemosaicFdc_Test.cpp`
 covers Frequency Domain Chroma tiles against the full frame on its tile seams at ISO 400 and 3200, a
 flat field at all 36 X-Trans phases in both modes, and the knobs' visibility with a Bayer source,
-an X-Trans source and none.
+an X-Trans source and none. `NativeRawDemosaicCapture_Test.cpp` covers capture sharpening: tiles
+against the full frame with a fixed and the automatic radius, the automatic radius being repeatable
+on a synthetic blurred mosaic, off equal to bypass bit for bit, the knobs' defaults and visibility,
+and the automatic radius of the CR2 and RAF fixtures.
 
 GPU: PPG and RCD without green equilibration or colour smoothing, and the pass-through of data
 without a CFA, in `Engine/Gpu/Kernels/demosaic_bayer.slang`, following the passes of darktable's

@@ -271,6 +271,98 @@ void dualDemosaic(float* high,
                   const ParallelFor& parallel);
 
 /**
+ * @brief The iterations darktable's capture sharpening runs for an Iterations slider value
+ * (commit_params()): slider + (int)(0.000065 * slider^4), fine-grained up to 11 and 50 at 25.
+ **/
+int captureIterations(int slider) WARN_UNUSED_RETURN;
+
+/**
+ * @brief darktable's _get_variance_threshold(): the default Contrast Sensitivity of an image,
+ * 0.4 lowered by 0.07 when the sensor's white level is over 4096 and moved by 0.012 per 100 ISO
+ * below or above ISO 600, the ISO clamped to [100, 1000].
+ **/
+float captureVarianceThreshold(double sensorWhiteLevel,
+                               double iso) WARN_UNUSED_RETURN;
+
+/**
+ * @brief How far a pixel of captureSharpen()'s output reads its rgb and cfa inputs: 4 for each
+ * of the two 9x9 convolutions of an iteration, 4 for the blend mask's blur, up to 4 for its
+ * variance window where the frame's edge clamps it and 2 for the clip mask's dilation.
+ **/
+int captureHalo(int iterations) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The centre of a frameWidth x frameHeight frame _calc_auto_radius() measures the radius
+ * on, in photosites from the frame's top-left: its x, y, width and height, with darktable's
+ * float-to-int truncations. reliable is false when either side is under a fifth of the frame's,
+ * in which case darktable takes a radius of 0.5.
+ **/
+struct CaptureRadiusArea {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    bool reliable = false;
+};
+CaptureRadiusArea captureRadiusArea(int frameWidth,
+                                    int frameHeight) WARN_UNUSED_RETURN;
+
+/**
+ * @brief darktable's _calc_auto_radius() on area, the area's mosaic photosites row by row: each
+ * undone by 1 / max(1, wbApplied) of its colour, then _calcRadiusBayer(), 0.2 +
+ * _calcRadiusXtrans() or, for filters 0 (no CFA), _calcRadiusMono() on the plain values, clamped
+ * to [0, 1.5]. As darktable does, the colours are looked up from the area's own top-left with
+ * the frame's filters and xtrans, which are those seen from the frame's top-left.
+ **/
+float captureAutoRadius(const float* area,
+                        int width,
+                        int height,
+                        std::uint32_t filters,
+                        const std::uint8_t (*xtrans)[6],
+                        const float wbApplied[3],
+                        const ParallelFor& parallel) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The settings of one captureSharpen() run, as darktable's commit_params() leaves them:
+ * radius is the Gaussian sigma (positive, the automatic one already resolved), threshold the
+ * Contrast Sensitivity and iterations the count captureIterations() gives.
+ **/
+struct CaptureSettings {
+    float radius = 0.f;
+    float threshold = 0.4f;
+    float boost = 0.f;
+    float center = 0.f;
+    int iterations = 8;
+};
+
+/**
+ * @brief darktable's _capture_sharpen() in place on rgb, the four-channel demosaiced output, cfa
+ * being the (green equilibrated) mosaic it came from, one value per photosite, or for filters 0
+ * the monochrome values. The buffers are width x height and their top-left pixel is
+ * (frameRow, frameCol) of a frameWidth x frameHeight frame: every border condition darktable
+ * takes from its buffer (the clip mask's 2-photosite frame, the variance window's clamp, the
+ * Gaussians' edges and the per-pixel sigma's fade over the 8 outermost photosites and its
+ * distance from the centre) is taken from the frame, so a pixel captureHalo() inside the buffer
+ * comes out the same whatever buffer it is computed in. filters and xtrans describe the
+ * pattern from the buffer's top-left; wbApplied are the white balance multipliers applied
+ * upstream (darktable's temperature coefficients, 1 when none are), whose 0.9 is the clip
+ * level of each colour. Frames under 5 photosites on a side are left untouched.
+ **/
+void captureSharpen(float* rgb,
+                    const float* cfa,
+                    int width,
+                    int height,
+                    int frameRow,
+                    int frameCol,
+                    int frameWidth,
+                    int frameHeight,
+                    std::uint32_t filters,
+                    const std::uint8_t (*xtrans)[6],
+                    const float wbApplied[3],
+                    const CaptureSettings& settings,
+                    const ParallelFor& parallel);
+
+/**
  * @brief darktable's passthrough_monochrome(): every photosite's value in all three channels.
  **/
 void passthroughMonochrome(float* out,

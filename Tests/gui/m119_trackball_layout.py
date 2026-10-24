@@ -16,13 +16,13 @@ What it covers, one section each:
 - undo: a slider drag in each style and placement is one undo step.
 - fresh-engage: global mode starts in C on every fresh engage, and keeps its mode across a knob
   switch while engaged.
-- feedback: for Today, Crosshair, Reveal, Crosshair + reveal and Widget cursor, the override
-  cursor before, during and after a stroke, the HUD's home, the following HUD on real pointer
-  moves (also at the screen's edge), the reveal graphic at the press point, the widget cursor
-  following, freezing on press and resuming on release; a modal dialog and repeated cycles
-  leave no override cursor.
-- reveal: screenshots of the C, S, T and V graphics under each Puck setting, and a press at the
-  screen's corner keeps the graphic on screen.
+- feedback: for each value of the colorTrackballFeedback preference (Crosshair + reveal, Widget
+  cursor), the override cursor before, during and after a stroke, the following HUD on real
+  pointer moves (also at the screen's edge), the reveal graphic at the press point, the widget
+  cursor following, freezing on press and resuming on release; a modal dialog and repeated
+  cycles leave no override cursor.
+- reveal: screenshots of the C, S, T and V graphics, and a press at the screen's corner keeps
+  the graphic on screen.
 - bin-top: the bin-top panel bound by the dropdown, Ctrl+E and Ctrl+Down, following the top node,
   hiding on a node without a colour knob, surviving its node's deletion and a close while engaged,
   and taking the HUD on a live Placement switch.
@@ -58,8 +58,7 @@ REVEAL_DIAMETER = 240
 
 STYLE_NAMES = {0: "Natron", 1: "Custom", 2: "Vertical"}
 PLACEMENT_NAMES = {0: "InKnob", 1: "BinTop"}
-FEEDBACK_NAMES = {0: "Today", 1: "Crosshair", 2: "Reveal", 3: "CrosshairReveal", 4: "WidgetCursor"}
-PUCK_NAMES = {0: "Relative", 1: "Absolute"}
+FEEDBACK_NAMES = {0: "CrosshairReveal", 1: "WidgetCursor"}
 
 try:
     import faulthandler
@@ -318,21 +317,22 @@ try:
             "right": right.isChecked() if right is not None else None,
             "style": combo("ColorPanelDevStyle"),
             "placement": combo("ColorPanelDevPlacement"),
-            "feedback": combo("ColorPanelDevFeedback"),
-            "puck": combo("ColorPanelDevPuck"),
         }
 
-    def set_layout(left=None, right=None, style=None, placement=None, feedback=None, puck=None):
+    def set_layout(left=None, right=None, style=None, placement=None):
         if left is not None:
             dev("ColorPanelDevExtendLeft").setChecked(left)
         if right is not None:
             dev("ColorPanelDevExtendRight").setChecked(right)
-        for name, value in (("ColorPanelDevStyle", style), ("ColorPanelDevPlacement", placement),
-                            ("ColorPanelDevFeedback", feedback), ("ColorPanelDevPuck", puck)):
+        for name, value in (("ColorPanelDevStyle", style), ("ColorPanelDevPlacement", placement)):
             if value is None:
                 continue
             c = dev(name)
             c.setCurrentIndex(c.findData(value))
+        QApplication.processEvents()
+
+    def set_feedback(value):
+        NatronEngine.natron.getSettings().getParam("colorTrackballFeedback").set(value)
         QApplication.processEvents()
 
     def layout_text(l=None):
@@ -829,16 +829,14 @@ try:
         # =========================================================================================
         gt.section("feedback")
         expected = {
-            0: ("none", "none", "none"),
-            1: ("cross", "cross", "cross"),
-            2: ("none", "blank", "none"),
-            3: ("cross", "blank", "cross"),
-            4: ("blank", "blank", "blank"),
+            0: ("cross", "blank", "cross"),
+            1: ("blank", "blank", "blank"),
         }
         centre = screen_rect().center()
-        for fb in (0, 1, 2, 3, 4):
+        for fb in (0, 1):
             name = FEEDBACK_NAMES[fb]
-            set_layout(False, False, 0, 0, fb, 0)
+            set_layout(False, False, 0, 0)
+            set_feedback(fb)
             yield ("sleep", SETTLE_MS)
             QCursor.setPos(centre)
             yield ("sleep", 200)
@@ -850,36 +848,29 @@ try:
                 continue
             before = cursor_name()
             h = hud()
-            if fb == 0:
-                check(h is not None and h.isVisible() and is_inside(h, gp) and not h.isWindow(),
-                      "Today: the HUD sits under the knob in the Grade's panel")
-                crop_widget(gp, "feedback-today-hud")
-            elif fb in (1, 3, 4):
-                check(h is not None and h.isVisible() and h.isWindow(), "%s: the HUD is its own window" % name)
-                if h is not None:
-                    flags = h.windowFlags()
-                    check(bool(flags & Qt.WindowTransparentForInput) and bool(flags & Qt.FramelessWindowHint),
-                          "%s: the following HUD is frameless and click-through" % name)
-                p = QPoint(400, 300)
-                QCursor.setPos(p)
-                yield ("sleep", 300)
-                hp = h.pos() if h is not None else None
-                off = round(px(HUD_OFFSET))
-                check(hp is not None and abs(hp.x() - (p.x() + off)) <= 2 and abs(hp.y() - (p.y() + off)) <= 2,
-                      "%s: a real pointer move to (400, 300) puts the HUD at +%d (HUD at %r)" % (name, off, hp))
-                edge = QPoint(screen_rect().right() - 4, screen_rect().bottom() - 4)
-                QCursor.setPos(edge)
-                yield ("sleep", 300)
-                hg = h.frameGeometry() if h is not None else None
-                check(hg is not None and hg.right() < edge.x() and hg.bottom() < edge.y() and screen_rect().contains(hg),
-                      "%s: near the bottom-right edge the HUD flips left of and above the pointer (%s, pointer %r)"
-                      % (name, fmt_rect(hg) if hg else None, edge))
-                gt.shot("feedback-%s-hud-edge.png" % name)
-                QCursor.setPos(centre)
-                yield ("sleep", 300)
-            else:
-                check(h is None or not h.isVisible(), "Reveal: no HUD is shown")
-            if fb == 4:
+            check(h is not None and h.isVisible() and h.isWindow(), "%s: the HUD is its own window" % name)
+            if h is not None:
+                flags = h.windowFlags()
+                check(bool(flags & Qt.WindowTransparentForInput) and bool(flags & Qt.FramelessWindowHint),
+                      "%s: the following HUD is frameless and click-through" % name)
+            p = QPoint(400, 300)
+            QCursor.setPos(p)
+            yield ("sleep", 300)
+            hp = h.pos() if h is not None else None
+            off = round(px(HUD_OFFSET))
+            check(hp is not None and abs(hp.x() - (p.x() + off)) <= 2 and abs(hp.y() - (p.y() + off)) <= 2,
+                  "%s: a real pointer move to (400, 300) puts the HUD at +%d (HUD at %r)" % (name, off, hp))
+            edge = QPoint(screen_rect().right() - 4, screen_rect().bottom() - 4)
+            QCursor.setPos(edge)
+            yield ("sleep", 300)
+            hg = h.frameGeometry() if h is not None else None
+            check(hg is not None and hg.right() < edge.x() and hg.bottom() < edge.y() and screen_rect().contains(hg),
+                  "%s: near the bottom-right edge the HUD flips left of and above the pointer (%s, pointer %r)"
+                  % (name, fmt_rect(hg) if hg else None, edge))
+            gt.shot("feedback-%s-hud-edge.png" % name)
+            QCursor.setPos(centre)
+            yield ("sleep", 300)
+            if fb == 1:
                 r = reveal_window()
                 check(r is not None and r.isVisible(), "WidgetCursor: the mode widget is up from engage")
                 if r is not None:
@@ -900,19 +891,16 @@ try:
             yield ("sleep", 200)
             during = cursor_name()
             r = reveal_window()
-            if fb in (2, 3, 4):
-                check(reveal_shown(), "%s: the mode graphic is up during the stroke" % name)
-                if r is not None:
-                    c = r.frameGeometry().center()
-                    check(abs(c.x() - centre.x()) <= 2 and abs(c.y() - centre.y()) <= 2,
-                          "%s: the graphic is centred on the press point (%r, press %r)" % (name, c, centre))
-            else:
-                check(not reveal_shown(), "%s: no mode graphic on press" % name)
+            check(reveal_shown(), "%s: the mode graphic is up during the stroke" % name)
+            if r is not None:
+                c = r.frameGeometry().center()
+                check(abs(c.x() - centre.x()) <= 2 and abs(c.y() - centre.y()) <= 2,
+                      "%s: the graphic is centred on the press point (%r, press %r)" % (name, c, centre))
             frozen = r.frameGeometry() if (r is not None and r.isVisible()) else None
             for k in range(1, 9):
                 global_move(QPoint(centre.x() + 10 * k, centre.y() - 6 * k))
             yield ("sleep", 200)
-            if fb == 4 and r is not None:
+            if fb == 1 and r is not None:
                 check(frozen is not None and r.frameGeometry() == frozen,
                       "WidgetCursor: frozen in place during the stroke (%s, was %s)"
                       % (fmt_rect(r.frameGeometry()), fmt_rect(frozen) if frozen else None))
@@ -925,9 +913,9 @@ try:
             report("NOTE %s: override cursor before %s, during %s, after %s a stroke" % (name, before, during, after))
             check((before, during, after) == expected[fb],
                   "%s: cursor before/during/after a stroke is %s (got %s)" % (name, "/".join(expected[fb]), "/".join((before, during, after))))
-            if fb in (2, 3):
+            if fb == 0:
                 check(not reveal_shown(), "%s: release hides the mode graphic" % name)
-            if fb == 4 and r is not None:
+            if fb == 1 and r is not None:
                 check(r.isVisible(), "WidgetCursor: the mode widget stays up after release")
                 q = QPoint(centre.x() + 150, centre.y() + 100)
                 QCursor.setPos(q)
@@ -950,16 +938,16 @@ try:
             QMetaObject.invokeMethod(gp, "onUndoClicked")
             yield ("sleep", 200)
 
-        set_layout(feedback=1)
+        set_feedback(0)
         yield ("sleep", SETTLE_MS)
         for cycle in (1, 2):
             child_named(knob_row(gp, GAIN), "ColorGlobalModeButton").click()
             yield ("sleep", SETTLE_MS)
-            check(cursor_name() == "cross", "Crosshair cycle %d: engage sets a cross cursor (%s)" % (cycle, cursor_name()))
+            check(cursor_name() == "cross", "Crosshair + reveal cycle %d: engage sets a cross cursor (%s)" % (cycle, cursor_name()))
             ctrl_e()
             yield ("sleep", SETTLE_MS)
         check(not engaged() and cursor_name() == "none" and QApplication.overrideCursor() is None,
-              "Crosshair: two engage/exit cycles leave no override cursor (%s)" % cursor_name())
+              "Crosshair + reveal: two engage/exit cycles leave no override cursor (%s)" % cursor_name())
         child_named(knob_row(gp, GAIN), "ColorGlobalModeButton").click()
         yield ("sleep", SETTLE_MS)
         dialog = QDialog(main_window())
@@ -969,8 +957,8 @@ try:
         yield ("sleep", SETTLE_MS)
         send_key(Qt.Key_Shift, Qt.NoModifier, dialog)
         yield ("sleep", SETTLE_MS)
-        check(not engaged(), "Crosshair: a modal dialog takes global mode down")
-        check(QApplication.overrideCursor() is None, "Crosshair: a modal dialog leaves no override cursor (%s)" % cursor_name())
+        check(not engaged(), "Crosshair + reveal: a modal dialog takes global mode down")
+        check(QApplication.overrideCursor() is None, "Crosshair + reveal: a modal dialog leaves no override cursor (%s)" % cursor_name())
         dialog.close()
         dialog.deleteLater()
         yield ("sleep", SETTLE_MS)
@@ -980,37 +968,37 @@ try:
         # =========================================================================================
         gt.section("reveal")
         start_gain = (1.4, 1.1, 0.7, 1.0)
-        for puck in (0, 1):
-            set_layout(False, False, 0, 0, 2, puck)
+        set_layout(False, False, 0, 0)
+        set_feedback(0)
+        yield ("sleep", SETTLE_MS)
+        for mode_key, mode in ((Qt.Key_C, "C"), (Qt.Key_S, "S"), (Qt.Key_T, "T"), (Qt.Key_V, "V")):
+            set_gain(grade, start_gain)
+            yield ("sleep", 200)
+            child_named(knob_row(gp, GAIN), "ColorGlobalModeButton").click()
             yield ("sleep", SETTLE_MS)
-            for mode_key, mode in ((Qt.Key_C, "C"), (Qt.Key_S, "S"), (Qt.Key_T, "T"), (Qt.Key_V, "V")):
-                set_gain(grade, start_gain)
-                yield ("sleep", 200)
-                child_named(knob_row(gp, GAIN), "ColorGlobalModeButton").click()
-                yield ("sleep", SETTLE_MS)
-                send_key(mode_key)
-                yield ("sleep", 200)
-                check(hud_mode() == mode or hud_mode() is None, "%s: mode %s picked" % (PUCK_NAMES[puck], mode))
-                press = QPoint(centre.x() - 200, centre.y())
-                global_press(press)
-                yield ("sleep", 300)
-                r = reveal_window()
-                if check(r is not None and r.isVisible(), "%s %s: the graphic is up on press" % (PUCK_NAMES[puck], mode)):
-                    check(reveal_mode_widget_is_wheel() == (mode == "C"),
-                          "%s %s: the graphic is the %s" % (PUCK_NAMES[puck], mode, "wheel" if mode == "C" else "gradient disc"))
-                    side = r.width()
-                    check(abs(side - px(REVEAL_DIAMETER)) <= 1, "%s %s: the graphic is %d px" % (PUCK_NAMES[puck], mode, side))
-                    crop(r.frameGeometry(), "reveal-%s-%s-press" % (PUCK_NAMES[puck], mode), 10)
-                for k in range(1, 9):
-                    global_move(QPoint(press.x() + 8 * k, press.y() - 5 * k))
-                yield ("sleep", 300)
-                if r is not None and r.isVisible():
-                    crop(r.frameGeometry(), "reveal-%s-%s-stroke" % (PUCK_NAMES[puck], mode), 10)
-                global_release(QPoint(press.x() + 64, press.y() - 40))
-                yield ("sleep", 300)
-                check(not reveal_shown(), "%s %s: release hides the graphic" % (PUCK_NAMES[puck], mode))
-                send_key(Qt.Key_Escape)
-                yield ("sleep", SETTLE_MS)
+            send_key(mode_key)
+            yield ("sleep", 200)
+            check(hud_mode() == mode or hud_mode() is None, "mode %s picked" % mode)
+            press = QPoint(centre.x() - 200, centre.y())
+            global_press(press)
+            yield ("sleep", 300)
+            r = reveal_window()
+            if check(r is not None and r.isVisible(), "%s: the graphic is up on press" % mode):
+                check(reveal_mode_widget_is_wheel() == (mode == "C"),
+                      "%s: the graphic is the %s" % (mode, "wheel" if mode == "C" else "gradient disc"))
+                side = r.width()
+                check(abs(side - px(REVEAL_DIAMETER)) <= 1, "%s: the graphic is %d px" % (mode, side))
+                crop(r.frameGeometry(), "reveal-%s-press" % mode, 10)
+            for k in range(1, 9):
+                global_move(QPoint(press.x() + 8 * k, press.y() - 5 * k))
+            yield ("sleep", 300)
+            if r is not None and r.isVisible():
+                crop(r.frameGeometry(), "reveal-%s-stroke" % mode, 10)
+            global_release(QPoint(press.x() + 64, press.y() - 40))
+            yield ("sleep", 300)
+            check(not reveal_shown(), "%s: release hides the graphic" % mode)
+            send_key(Qt.Key_Escape)
+            yield ("sleep", SETTLE_MS)
         set_gain(grade, start_gain)
         child_named(knob_row(gp, GAIN), "ColorGlobalModeButton").click()
         yield ("sleep", SETTLE_MS)
@@ -1027,7 +1015,7 @@ try:
         send_key(Qt.Key_Escape)
         yield ("sleep", SETTLE_MS)
         set_gain(grade, (1.0, 1.0, 1.0, 1.0))
-        set_layout(feedback=0, puck=0)
+        set_feedback(0)
         yield ("sleep", SETTLE_MS)
 
         # =========================================================================================

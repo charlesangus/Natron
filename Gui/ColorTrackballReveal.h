@@ -42,8 +42,6 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/ColorWheelMath.h"
 
-#include "Gui/ColorPanelLayoutDev.h"
-
 NATRON_NAMESPACE_ENTER
 
 class ColorModeDiscWidget;
@@ -57,22 +55,16 @@ QPoint colorTrackballRevealPosition(const QPoint& centre, const QSize& size, con
 
 /**
  * @brief The puck on the S, T or V disc, in units of the disc's radius (x right, y up), not yet
- * clamped to the rim. strokeDx and strokeDy are the stroke's gear-scaled pointer travel so far.
- *
- * Relative: the travel alone, scaled per axis so a stroke at gear 1 reaches the rim where it has
- * moved the axis by half the panel slider's range (sliderMapping). Absolute: the axes with an
- * absolute meaning are read off live against the same ranges (S: saturation, bottom = none;
- * T: temp and tint; V: value, along the diagonal); S's hue, which has none, still follows the
- * travel, and T falls back to the travel where live has no temp/tint. The T disc runs warm on
- * the left, so its x is mirrored to stay on the colour the knob is taking.
+ * clamped to the rim. strokeDx and strokeDy are the stroke's gear-scaled pointer travel so far,
+ * scaled per axis so a stroke at gear 1 reaches the rim where it has moved the axis by half the
+ * panel slider's range (sliderMapping); the puck starts in the centre and travels with the stroke.
  **/
-QPointF colorTrackballRevealDiscPuck(ColorGlobalModeEnum mode, ColorPanelLayout::Puck puck, ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& live, double strokeDx, double strokeDy, const TrackballRates& rates);
+QPointF colorTrackballRevealDiscPuck(ColorGlobalModeEnum mode, ColorKnobRoleEnum role, double strokeDx, double strokeDy, const TrackballRates& rates);
 
 /**
  * @brief What the C reveal's ColorWheelWidget is given: the value it is anchored on and its puck
- * offset from there (wheel-relative plane units). Relative anchors on the stroke's start, so the
- * puck starts in the centre; Absolute anchors on the role's neutral, so the puck sits at live's
- * own place about white. Where a plane point is missing, the offset is the C stroke's own
+ * offset from there (wheel-relative plane units). It anchors on the stroke's start, so the puck
+ * starts in the centre. Where a plane point is missing, the offset is the C stroke's own
  * translate of the travel instead.
  **/
 struct ColorTrackballRevealWheelState {
@@ -80,7 +72,7 @@ struct ColorTrackballRevealWheelState {
     PlanePoint offset;
 };
 
-ColorTrackballRevealWheelState colorTrackballRevealWheelState(ColorPanelLayout::Puck puck, ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& start, const KnobColorValue& live, double strokeDx, double strokeDy, const TrackballRates& rates);
+ColorTrackballRevealWheelState colorTrackballRevealWheelState(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& start, const KnobColorValue& live, double strokeDx, double strokeDy, const TrackballRates& rates);
 
 /**
  * @brief The global trackball mode's mode graphic: a ColorWheelWidget in C and a
@@ -122,7 +114,7 @@ public:
      * after strokeDx, strokeDy of gear-scaled travel; outside a stroke start and live are both
      * the knob's value and the travel is zero.
      **/
-    void setStroke(ColorPanelLayout::Puck puck, const KnobColorValue& start, const KnobColorValue& live, double strokeDx, double strokeDy, const TrackballRates& rates);
+    void setStroke(const KnobColorValue& start, const KnobColorValue& live, double strokeDx, double strokeDy, const TrackballRates& rates);
 
     /**
      * @brief Moves the window so it is centred on globalPos, kept inside the screen holding it.

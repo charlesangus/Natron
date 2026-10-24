@@ -56,21 +56,6 @@ struct ColorPanelLayout {
         BinTop
     };
 
-    // How global mode shows itself around the pointer.
-    enum class Feedback {
-        Today,
-        Crosshair,
-        Reveal,
-        CrosshairReveal,
-        WidgetCursor
-    };
-
-    // Where the reveal graphic's marker starts: the disc's centre, or the knob's current value.
-    enum class Puck {
-        Relative,
-        Absolute
-    };
-
     // The panel starts in the label column instead of the field column.
     bool extendLeft = false;
 
@@ -78,17 +63,10 @@ struct ColorPanelLayout {
     bool extendRight = false;
     SliderStyle style = SliderStyle::Natron;
     Placement placement = Placement::InKnob;
-    Feedback feedback = Feedback::Today;
-    Puck puck = Puck::Relative;
 
     bool operator==(const ColorPanelLayout& other) const;
     bool operator!=(const ColorPanelLayout& other) const;
 };
-
-/**
- * @brief Whether feedback shows the reveal graphic, the only place the Puck axis matters.
- **/
-bool colorPanelFeedbackUsesPuck(ColorPanelLayout::Feedback feedback);
 
 /**
  * @brief The process-wide development switch for the colour panel layout. The value can be
@@ -131,8 +109,6 @@ public:
     void setExtendRight(bool extend);
     void setSliderStyle(ColorPanelLayout::SliderStyle style);
     void setPlacement(ColorPanelLayout::Placement placement);
-    void setFeedback(ColorPanelLayout::Feedback feedback);
-    void setPuck(ColorPanelLayout::Puck puck);
 
 Q_SIGNALS:
     void layoutChanged();

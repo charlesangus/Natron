@@ -37,9 +37,9 @@
 #include <gtest/gtest.h>
 
 #include "Engine/ColorWheelMath.h"
+#include "Engine/Settings.h"
 
 #include "Gui/ColorModeDiscWidget.h"
-#include "Gui/ColorPanelLayoutDev.h"
 #include "Gui/ColorTrackballGlobalMode.h"
 #include "Gui/ColorTrackballHud.h"
 #include "Gui/ColorTrackballReveal.h"
@@ -48,8 +48,10 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-typedef ColorPanelLayout::Feedback F;
-typedef ColorPanelLayout::Puck P;
+typedef Settings::ColorTrackballFeedbackEnum F;
+
+const F kCrosshairReveal = Settings::eColorTrackballFeedbackCrosshairReveal;
+const F kWidgetCursor = Settings::eColorTrackballFeedbackWidgetCursor;
 
 const double kAP1Weights[3] = { 0.2722287168, 0.6740817658, 0.0536895174 };
 const double kAP1ToXYZ[9] = {
@@ -218,14 +220,14 @@ TEST(ColorTrackballReveal, SetModeSwapsTheWidgetInPlace)
     EXPECT_EQ(QRect(0, 0, reveal.width(), reveal.height()), reveal.getWheel()->geometry());
 }
 
-TEST(ColorTrackballReveal, RelativePuckStartsInTheCentreAndMovesWithTheStroke)
+TEST(ColorTrackballReveal, PuckStartsInTheCentreAndMovesWithTheStroke)
 {
     const TrackballRates rates;
     const LumaBasis basis = acescg();
     const KnobColorValue start = rgba(1.0, 1.0, 1.0, 1.0);
 
     for (ColorGlobalModeEnum mode : { eColorGlobalModeS, eColorGlobalModeT, eColorGlobalModeV }) {
-        QPointF p = colorTrackballRevealDiscPuck(mode, P::Relative, eColorKnobRoleGain, basis, start, 0.0, 0.0, rates);
+        QPointF p = colorTrackballRevealDiscPuck(mode, eColorKnobRoleGain, 0.0, 0.0, rates);
 
         EXPECT_DOUBLE_EQ(0.0, p.x()) << "mode " << mode;
         EXPECT_DOUBLE_EQ(0.0, p.y()) << "mode " << mode;
@@ -233,19 +235,19 @@ TEST(ColorTrackballReveal, RelativePuckStartsInTheCentreAndMovesWithTheStroke)
 
     // S: 90 px right is 45 degrees of hue, a quarter of the hue line's half; 250 px up is half
     // the saturation line's half.
-    QPointF s = colorTrackballRevealDiscPuck(eColorGlobalModeS, P::Relative, eColorKnobRoleGain, basis, start, 90.0, -250.0, rates);
+    QPointF s = colorTrackballRevealDiscPuck(eColorGlobalModeS, eColorKnobRoleGain, 90.0, -250.0, rates);
 
     EXPECT_NEAR(0.25, s.x(), 1e-9);
     EXPECT_NEAR(0.5, s.y(), 1e-9);
 
     // T: 100 px right warms by 50 mired, towards the disc's warm right; 100 px up is 25 magenta.
-    QPointF t = colorTrackballRevealDiscPuck(eColorGlobalModeT, P::Relative, eColorKnobRoleGain, basis, start, 100.0, -100.0, rates);
+    QPointF t = colorTrackballRevealDiscPuck(eColorGlobalModeT, eColorKnobRoleGain, 100.0, -100.0, rates);
 
     EXPECT_NEAR(0.5, t.x(), 1e-9);
     EXPECT_NEAR(0.5, t.y(), 1e-9);
 
     // V: 30 px right and 30 up is 0.6 stops of the value line's 3, along the diagonal.
-    QPointF v = colorTrackballRevealDiscPuck(eColorGlobalModeV, P::Relative, eColorKnobRoleGain, basis, start, 30.0, -30.0, rates);
+    QPointF v = colorTrackballRevealDiscPuck(eColorGlobalModeV, eColorKnobRoleGain, 30.0, -30.0, rates);
 
     EXPECT_NEAR(0.2 * kInvSqrt2, v.x(), 1e-9);
     EXPECT_NEAR(0.2 * kInvSqrt2, v.y(), 1e-9);
@@ -257,7 +259,7 @@ TEST(ColorTrackballReveal, RelativePuckStartsInTheCentreAndMovesWithTheStroke)
     reveal.setKnob(eColorKnobRoleGain, basis, &identity, rates.wheelRim);
     reveal.setMode(eColorGlobalModeV);
     stroke.begin(start, 0.0);
-    reveal.setStroke(P::Relative, start, start, stroke.getTotalDx(), stroke.getTotalDy(), rates);
+    reveal.setStroke(start, start, stroke.getTotalDx(), stroke.getTotalDy(), rates);
     EXPECT_DOUBLE_EQ(0.0, reveal.getDisc()->getPuck().x());
     EXPECT_DOUBLE_EQ(0.0, reveal.getDisc()->getPuck().y());
 
@@ -266,75 +268,17 @@ TEST(ColorTrackballReveal, RelativePuckStartsInTheCentreAndMovesWithTheStroke)
     ChromaEditResult r = stroke.evaluate(eColorGlobalModeV, eColorKnobRoleGain, basis, rates);
 
     ASSERT_TRUE(r.valid);
-    reveal.setStroke(P::Relative, start, r.value, stroke.getTotalDx(), stroke.getTotalDy(), rates);
+    reveal.setStroke(start, r.value, stroke.getTotalDx(), stroke.getTotalDy(), rates);
     EXPECT_NEAR(0.2 * kInvSqrt2, reveal.getDisc()->getPuck().x(), 1e-9);
     EXPECT_NEAR(0.2 * kInvSqrt2, reveal.getDisc()->getPuck().y(), 1e-9);
 
     // Far past the rim it parks on it.
     stroke.addMove(3000.0, -3000.0, 1.0);
-    reveal.setStroke(P::Relative, start, r.value, stroke.getTotalDx(), stroke.getTotalDy(), rates);
+    reveal.setStroke(start, r.value, stroke.getTotalDx(), stroke.getTotalDy(), rates);
     EXPECT_NEAR(1.0, std::hypot(reveal.getDisc()->getPuck().x(), reveal.getDisc()->getPuck().y()), 1e-9);
 }
 
-TEST(ColorTrackballReveal, AbsolutePuckStartsAtTheValue)
-{
-    const TrackballRates rates;
-    const LumaBasis basis = acescg();
-
-    // V: one stop above Gain's pivot is a third of the way out along the diagonal.
-    const KnobColorValue bright = rgba(2.0, 2.0, 2.0, 1.0);
-    QPointF v = colorTrackballRevealDiscPuck(eColorGlobalModeV, P::Absolute, eColorKnobRoleGain, basis, bright, 0.0, 0.0, rates);
-
-    EXPECT_NEAR(kInvSqrt2 / 3.0, v.x(), 1e-6);
-    EXPECT_NEAR(kInvSqrt2 / 3.0, v.y(), 1e-6);
-
-    // T: 50 mired warm and 20 magenta.
-    ChromaEditResult warm = fromTempTint(eColorKnobRoleGain, basis, rgba(1.0, 1.0, 1.0, 1.0), 50.0, 20.0);
-
-    ASSERT_TRUE(warm.valid);
-
-    QPointF t = colorTrackballRevealDiscPuck(eColorGlobalModeT, P::Absolute, eColorKnobRoleGain, basis, warm.value, 0.0, 0.0, rates);
-
-    EXPECT_NEAR(0.5, t.x(), 1e-3);
-    EXPECT_NEAR(0.4, t.y(), 1e-3);
-
-    // S: three quarters of the rim's saturation is half way up; hue has no absolute place.
-    ChromaEditResult saturated = setSaturation(eColorKnobRoleGain, basis, rgba(1.0, 1.0, 1.0, 1.0), 0.75 * rates.wheelRim, 30.0);
-
-    ASSERT_TRUE(saturated.valid);
-
-    QPointF s = colorTrackballRevealDiscPuck(eColorGlobalModeS, P::Absolute, eColorKnobRoleGain, basis, saturated.value, 0.0, 0.0, rates);
-
-    EXPECT_DOUBLE_EQ(0.0, s.x());
-    EXPECT_NEAR(0.5, s.y(), 1e-6);
-
-    // A neutral value sits at the bottom of S.
-    QPointF white = colorTrackballRevealDiscPuck(eColorGlobalModeS, P::Absolute, eColorKnobRoleGain, basis, rgba(1.0, 1.0, 1.0, 1.0), 0.0, 0.0, rates);
-
-    EXPECT_NEAR(-1.0, white.y(), 1e-6);
-
-    // The stroke then carries it: 30 px right and 30 up adds 0.6 stops.
-    ColorGlobalModeStroke stroke;
-
-    stroke.begin(bright, 0.0);
-    stroke.addMove(30.0, -30.0, 1.0);
-
-    ChromaEditResult r = stroke.evaluate(eColorGlobalModeV, eColorKnobRoleGain, basis, rates);
-
-    ASSERT_TRUE(r.valid);
-
-    ColorTrackballReveal reveal;
-
-    reveal.setKnob(eColorKnobRoleGain, basis, &identity, rates.wheelRim);
-    reveal.setMode(eColorGlobalModeV);
-    reveal.setStroke(P::Absolute, bright, bright, 0.0, 0.0, rates);
-    EXPECT_NEAR(kInvSqrt2 / 3.0, reveal.getDisc()->getPuck().x(), 1e-6);
-    reveal.setStroke(P::Absolute, bright, r.value, stroke.getTotalDx(), stroke.getTotalDy(), rates);
-    EXPECT_NEAR(kInvSqrt2 * 1.6 / 3.0, reveal.getDisc()->getPuck().x(), 1e-6);
-    EXPECT_NEAR(kInvSqrt2 * 1.6 / 3.0, reveal.getDisc()->getPuck().y(), 1e-6);
-}
-
-TEST(ColorTrackballReveal, CWheelPuckIsTheStrokesTranslateOrTheValueAboutWhite)
+TEST(ColorTrackballReveal, CWheelPuckIsTheStrokesTranslate)
 {
     const TrackballRates rates;
     const LumaBasis basis = acescg();
@@ -344,8 +288,8 @@ TEST(ColorTrackballReveal, CWheelPuckIsTheStrokesTranslateOrTheValueAboutWhite)
     reveal.setKnob(eColorKnobRoleGain, basis, &identity, rates.wheelRim);
     reveal.setMode(eColorGlobalModeC);
 
-    // Relative: anchored on the start, the puck in the centre until the stroke moves.
-    reveal.setStroke(P::Relative, start, start, 0.0, 0.0, rates);
+    // Anchored on the start, the puck in the centre until the stroke moves.
+    reveal.setStroke(start, start, 0.0, 0.0, rates);
     EXPECT_NEAR(0.0, reveal.getWheel()->getDragOffset().x, 1e-12);
     EXPECT_NEAR(0.0, reveal.getWheel()->getDragOffset().y, 1e-12);
     for (int i = 0; i < 3; ++i) {
@@ -360,22 +304,9 @@ TEST(ColorTrackballReveal, CWheelPuckIsTheStrokesTranslateOrTheValueAboutWhite)
     ChromaEditResult r = stroke.evaluate(eColorGlobalModeC, eColorKnobRoleGain, basis, rates);
 
     ASSERT_TRUE(r.valid);
-    reveal.setStroke(P::Relative, start, r.value, stroke.getTotalDx(), stroke.getTotalDy(), rates);
+    reveal.setStroke(start, r.value, stroke.getTotalDx(), stroke.getTotalDy(), rates);
     EXPECT_NEAR(20.0 * rates.globalTrackballPlanePerPixel, reveal.getWheel()->getDragOffset().x, 1e-6);
     EXPECT_NEAR(10.0 * rates.globalTrackballPlanePerPixel, reveal.getWheel()->getDragOffset().y, 1e-6);
-
-    // Absolute: anchored on white, the puck at the value's own place.
-    reveal.setStroke(P::Absolute, start, r.value, stroke.getTotalDx(), stroke.getTotalDy(), rates);
-
-    PlanePoint white = toPlane(eColorKnobRoleGain, basis, rgba(1.0, 1.0, 1.0, 1.0));
-    PlanePoint live = toPlane(eColorKnobRoleGain, basis, r.value);
-
-    ASSERT_TRUE(white.valid && live.valid);
-    for (int i = 0; i < 3; ++i) {
-        EXPECT_DOUBLE_EQ(1.0, reveal.getWheel()->getValue().rgb[i]);
-    }
-    EXPECT_NEAR(live.x - white.x, reveal.getWheel()->getDragOffset().x, 1e-12);
-    EXPECT_NEAR(live.y - white.y, reveal.getWheel()->getDragOffset().y, 1e-12);
 }
 
 TEST(ColorTrackballReveal, TheStrokesValueDoesNotDependOnTheReveal)
@@ -400,7 +331,7 @@ TEST(ColorTrackballReveal, TheStrokesValueDoesNotDependOnTheReveal)
             ChromaEditResult a = plain.evaluate(mode, eColorKnobRoleGain, basis, rates);
             ChromaEditResult b = shown.evaluate(mode, eColorKnobRoleGain, basis, rates);
 
-            reveal.setStroke((step % 2) ? P::Absolute : P::Relative, start, b.value, shown.getTotalDx(), shown.getTotalDy(), rates);
+            reveal.setStroke(start, b.value, shown.getTotalDx(), shown.getTotalDy(), rates);
             for (int i = 0; i < 3; ++i) {
                 EXPECT_EQ(a.value.rgb[i], b.value.rgb[i]) << "mode " << mode << " step " << step;
             }
@@ -410,7 +341,7 @@ TEST(ColorTrackballReveal, TheStrokesValueDoesNotDependOnTheReveal)
 
 TEST(ColorTrackballRevealFeedback, WhatEachFeedbackShows)
 {
-    for (F f : { F::Today, F::Crosshair, F::Reveal, F::CrosshairReveal, F::WidgetCursor }) {
+    for (F f : { kCrosshairReveal, kWidgetCursor }) {
         for (bool stroke : { false, true }) {
             ColorGlobalModeFeedbackState off = colorGlobalModeFeedbackState(f, false, stroke);
 
@@ -418,38 +349,24 @@ TEST(ColorTrackballRevealFeedback, WhatEachFeedbackShows)
         }
     }
 
-    ColorGlobalModeFeedbackState today = colorGlobalModeFeedbackState(F::Today, true, true);
+    ColorGlobalModeFeedbackState revealIdle = colorGlobalModeFeedbackState(kCrosshairReveal, true, false);
+    ColorGlobalModeFeedbackState revealStroke = colorGlobalModeFeedbackState(kCrosshairReveal, true, true);
 
-    EXPECT_FALSE(today.crosshair || today.blankCursor || today.graphicShown);
+    EXPECT_TRUE(revealIdle.crosshair);
+    EXPECT_FALSE(revealIdle.graphicShown || revealIdle.blankCursor);
+    EXPECT_TRUE(revealStroke.crosshair && revealStroke.graphicShown && revealStroke.blankCursor);
+    EXPECT_FALSE(revealStroke.graphicFollowsPointer);
 
-    ColorGlobalModeFeedbackState crosshair = colorGlobalModeFeedbackState(F::Crosshair, true, true);
-
-    EXPECT_TRUE(crosshair.crosshair);
-    EXPECT_FALSE(crosshair.blankCursor || crosshair.graphicShown);
-
-    for (F f : { F::Reveal, F::CrosshairReveal }) {
-        ColorGlobalModeFeedbackState idle = colorGlobalModeFeedbackState(f, true, false);
-        ColorGlobalModeFeedbackState stroke = colorGlobalModeFeedbackState(f, true, true);
-
-        EXPECT_EQ(f == F::CrosshairReveal, idle.crosshair);
-        EXPECT_FALSE(idle.graphicShown || idle.blankCursor);
-        EXPECT_TRUE(stroke.graphicShown && stroke.blankCursor);
-        EXPECT_FALSE(stroke.graphicFollowsPointer);
-    }
-
-    ColorGlobalModeFeedbackState widgetIdle = colorGlobalModeFeedbackState(F::WidgetCursor, true, false);
-    ColorGlobalModeFeedbackState widgetStroke = colorGlobalModeFeedbackState(F::WidgetCursor, true, true);
+    ColorGlobalModeFeedbackState widgetIdle = colorGlobalModeFeedbackState(kWidgetCursor, true, false);
+    ColorGlobalModeFeedbackState widgetStroke = colorGlobalModeFeedbackState(kWidgetCursor, true, true);
 
     EXPECT_FALSE(widgetIdle.crosshair);
     EXPECT_TRUE(widgetIdle.graphicShown && widgetIdle.blankCursor && widgetIdle.graphicFollowsPointer);
     EXPECT_TRUE(widgetStroke.graphicShown && widgetStroke.blankCursor);
     EXPECT_FALSE(widgetStroke.graphicFollowsPointer);
 
-    EXPECT_TRUE(colorGlobalModeFeedbackRevealsOnPress(F::Reveal));
-    EXPECT_TRUE(colorGlobalModeFeedbackRevealsOnPress(F::CrosshairReveal));
-    EXPECT_FALSE(colorGlobalModeFeedbackRevealsOnPress(F::WidgetCursor));
-    EXPECT_TRUE(colorGlobalModeFeedbackGraphicIsCursor(F::WidgetCursor));
-    EXPECT_FALSE(colorGlobalModeFeedbackGraphicIsCursor(F::CrosshairReveal));
+    EXPECT_TRUE(colorGlobalModeFeedbackGraphicIsCursor(kWidgetCursor));
+    EXPECT_FALSE(colorGlobalModeFeedbackGraphicIsCursor(kCrosshairReveal));
 }
 
 TEST(ColorTrackballRevealFeedback, ARevealStrokeHidesTheCursorAndLeavesOnlyTheCrosshair)
@@ -459,39 +376,31 @@ TEST(ColorTrackballRevealFeedback, ARevealStrokeHidesTheCursorAndLeavesOnlyTheCr
     {
         ColorGlobalModeCursors cursors;
 
-        syncCursors(cursors, F::CrosshairReveal, true, false);
+        syncCursors(cursors, kCrosshairReveal, true, false);
         EXPECT_EQ(baseline + 1, overrideCursorDepth());
         EXPECT_EQ(Qt::CrossCursor, topCursor());
 
         // Press, then release.
-        syncCursors(cursors, F::CrosshairReveal, true, true);
+        syncCursors(cursors, kCrosshairReveal, true, true);
         EXPECT_EQ(baseline + 2, overrideCursorDepth());
         EXPECT_EQ(Qt::BlankCursor, topCursor());
-        syncCursors(cursors, F::CrosshairReveal, true, false);
+        syncCursors(cursors, kCrosshairReveal, true, false);
         EXPECT_EQ(baseline + 1, overrideCursorDepth());
         EXPECT_EQ(Qt::CrossCursor, topCursor());
 
         // Press, then a lost grab: the same stroke end, reached without a release.
-        syncCursors(cursors, F::CrosshairReveal, true, true);
-        syncCursors(cursors, F::CrosshairReveal, true, false);
+        syncCursors(cursors, kCrosshairReveal, true, true);
+        syncCursors(cursors, kCrosshairReveal, true, false);
         EXPECT_EQ(baseline + 1, overrideCursorDepth());
         EXPECT_EQ(Qt::CrossCursor, topCursor());
 
         // Exit mid-stroke, as a modal dialog taking over does.
-        syncCursors(cursors, F::CrosshairReveal, true, true);
-        syncCursors(cursors, F::CrosshairReveal, false, false);
-        EXPECT_EQ(baseline, overrideCursorDepth());
-
-        // Reveal without the crosshair puts nothing back at release.
-        syncCursors(cursors, F::Reveal, true, false);
-        EXPECT_EQ(baseline, overrideCursorDepth());
-        syncCursors(cursors, F::Reveal, true, true);
-        EXPECT_EQ(Qt::BlankCursor, topCursor());
-        syncCursors(cursors, F::Reveal, true, false);
+        syncCursors(cursors, kCrosshairReveal, true, true);
+        syncCursors(cursors, kCrosshairReveal, false, false);
         EXPECT_EQ(baseline, overrideCursorDepth());
 
         // Destroyed while both are held.
-        syncCursors(cursors, F::CrosshairReveal, true, true);
+        syncCursors(cursors, kCrosshairReveal, true, true);
     }
     EXPECT_EQ(baseline, overrideCursorDepth());
 }
@@ -501,26 +410,26 @@ TEST(ColorTrackballRevealFeedback, WidgetCursorIsBlankFromEngageToExit)
     const int baseline = overrideCursorDepth();
     ColorGlobalModeCursors cursors;
 
-    syncCursors(cursors, F::WidgetCursor, true, false);
+    syncCursors(cursors, kWidgetCursor, true, false);
     EXPECT_EQ(baseline + 1, overrideCursorDepth());
     EXPECT_EQ(Qt::BlankCursor, topCursor());
-    syncCursors(cursors, F::WidgetCursor, true, true);
+    syncCursors(cursors, kWidgetCursor, true, true);
     EXPECT_EQ(baseline + 1, overrideCursorDepth());
-    syncCursors(cursors, F::WidgetCursor, true, false);
+    syncCursors(cursors, kWidgetCursor, true, false);
     EXPECT_EQ(baseline + 1, overrideCursorDepth());
     EXPECT_EQ(Qt::BlankCursor, topCursor());
 
-    // Switched to Crosshair between strokes: the crosshair is all that is left.
-    syncCursors(cursors, F::Crosshair, true, false);
+    // Switched to Crosshair + reveal between strokes: the crosshair is all that is left.
+    syncCursors(cursors, kCrosshairReveal, true, false);
     EXPECT_EQ(baseline + 1, overrideCursorDepth());
     EXPECT_EQ(Qt::CrossCursor, topCursor());
 
     // And back: the blank cursor goes on top of nothing but the stack it found.
-    syncCursors(cursors, F::WidgetCursor, true, false);
+    syncCursors(cursors, kWidgetCursor, true, false);
     EXPECT_EQ(baseline + 1, overrideCursorDepth());
     EXPECT_EQ(Qt::BlankCursor, topCursor());
 
-    syncCursors(cursors, F::WidgetCursor, false, false);
+    syncCursors(cursors, kWidgetCursor, false, false);
     EXPECT_EQ(baseline, overrideCursorDepth());
 }
 

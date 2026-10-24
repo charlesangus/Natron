@@ -51,6 +51,7 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/AppManager.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -237,51 +238,19 @@ takeColorGlobalModeWheelNotches(int* accumulator,
 }
 
 bool
-colorGlobalModeFeedbackShowsCrosshair(ColorPanelLayout::Feedback feedback)
+colorGlobalModeFeedbackShowsCrosshair(Settings::ColorTrackballFeedbackEnum feedback)
 {
-    return (feedback == ColorPanelLayout::Feedback::Crosshair) || (feedback == ColorPanelLayout::Feedback::CrosshairReveal);
+    return feedback == Settings::eColorTrackballFeedbackCrosshairReveal;
 }
 
 bool
-colorGlobalModeFeedbackAttachesHud(ColorPanelLayout::Feedback feedback)
+colorGlobalModeFeedbackGraphicIsCursor(Settings::ColorTrackballFeedbackEnum feedback)
 {
-    return feedback == ColorPanelLayout::Feedback::Today;
-}
-
-ColorGlobalModeHudHomeEnum
-colorGlobalModeHudHome(ColorPanelLayout::Feedback feedback,
-                       ColorPanelLayout::Placement placement)
-{
-    if (colorGlobalModeFeedbackHudFollowsCursor(feedback)) {
-        return eColorGlobalModeHudHomeCursor;
-    }
-    if (!colorGlobalModeFeedbackAttachesHud(feedback)) {
-        return eColorGlobalModeHudHomeNone;
-    }
-
-    return (placement == ColorPanelLayout::Placement::BinTop) ? eColorGlobalModeHudHomeBinPanel : eColorGlobalModeHudHomeKnobColumn;
-}
-
-bool
-colorGlobalModeFeedbackHudFollowsCursor(ColorPanelLayout::Feedback feedback)
-{
-    return (feedback == ColorPanelLayout::Feedback::Crosshair) || (feedback == ColorPanelLayout::Feedback::CrosshairReveal) || (feedback == ColorPanelLayout::Feedback::WidgetCursor);
-}
-
-bool
-colorGlobalModeFeedbackRevealsOnPress(ColorPanelLayout::Feedback feedback)
-{
-    return (feedback == ColorPanelLayout::Feedback::Reveal) || (feedback == ColorPanelLayout::Feedback::CrosshairReveal);
-}
-
-bool
-colorGlobalModeFeedbackGraphicIsCursor(ColorPanelLayout::Feedback feedback)
-{
-    return feedback == ColorPanelLayout::Feedback::WidgetCursor;
+    return feedback == Settings::eColorTrackballFeedbackWidgetCursor;
 }
 
 ColorGlobalModeFeedbackState
-colorGlobalModeFeedbackState(ColorPanelLayout::Feedback feedback,
+colorGlobalModeFeedbackState(Settings::ColorTrackballFeedbackEnum feedback,
                              bool engaged,
                              bool strokeActive)
 {
@@ -294,7 +263,7 @@ colorGlobalModeFeedbackState(ColorPanelLayout::Feedback feedback,
     if (colorGlobalModeFeedbackGraphicIsCursor(feedback)) {
         state.graphicShown = true;
         state.graphicFollowsPointer = !strokeActive;
-    } else if (colorGlobalModeFeedbackRevealsOnPress(feedback)) {
+    } else {
         state.graphicShown = strokeActive;
     }
     state.blankCursor = state.graphicShown;
@@ -303,21 +272,18 @@ colorGlobalModeFeedbackState(ColorPanelLayout::Feedback feedback,
 }
 
 ColorGlobalModeFeedbackSwitch::ColorGlobalModeFeedbackSwitch()
-    : _feedback(ColorPanelLayout::Feedback::Today)
-    , _puck(ColorPanelLayout::Puck::Relative)
+    : _feedback(Settings::eColorTrackballFeedbackCrosshairReveal)
     , _pending(false)
-    , _pendingFeedback(ColorPanelLayout::Feedback::Today)
-    , _pendingPuck(ColorPanelLayout::Puck::Relative)
+    , _pendingFeedback(Settings::eColorTrackballFeedbackCrosshairReveal)
 {
 }
 
 bool
-ColorGlobalModeFeedbackSwitch::offer(const ColorPanelLayout& latest,
+ColorGlobalModeFeedbackSwitch::offer(Settings::ColorTrackballFeedbackEnum latest,
                                      bool strokeActive)
 {
     _pending = true;
-    _pendingFeedback = latest.feedback;
-    _pendingPuck = latest.puck;
+    _pendingFeedback = latest;
     if (strokeActive) {
         return false;
     }
@@ -333,10 +299,9 @@ ColorGlobalModeFeedbackSwitch::strokeEnded()
     }
     _pending = false;
 
-    const bool changed = (_pendingFeedback != _feedback) || (_pendingPuck != _puck);
+    const bool changed = (_pendingFeedback != _feedback);
 
     _feedback = _pendingFeedback;
-    _puck = _pendingPuck;
 
     return changed;
 }
@@ -515,9 +480,8 @@ ColorTrackballGlobalMode::ensureHud()
 void
 ColorTrackballGlobalMode::showChrome()
 {
-    // The HUD's own visibility follows attachGlobalModeHud()/detachGlobalModeHud() on the
-    // target, called from setTarget() and exit(), or applyFeedback() when it follows the
-    // cursor; only the window border is done here.
+    // The HUD's own visibility follows applyFeedback() and exit(); only the window border is
+    // done here.
     if (!_gui) {
         return;
     }
@@ -647,7 +611,6 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
     : QObject(0)
     , _gui(gui)
     , _engaged(false)
-    , _placement(ColorPanelLayoutDev::instance()->getLayout().placement)
     , _target()
     , _targetObject()
     , _targetConnections()
@@ -697,31 +660,15 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
         updateHud();
         syncReveal();
     });
-    // Feedback and Puck go through the switch; the other axes leave both unchanged and offer()
-    // false. A Placement change moves an attached HUD between the knob's column and the bin
-    // top: KnobGuiColor::attachGlobalModeHud() picks the home from the placement.
-    QObject::connect(ColorPanelLayoutDev::instance(), &ColorPanelLayoutDev::layoutChanged, this, [this]() {
-        const ColorPanelLayout layout = ColorPanelLayoutDev::instance()->getLayout();
-        const bool placementChanged = (layout.placement != _placement);
+    SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
 
-        _placement = layout.placement;
-        if (_feedback.offer(layout, _strokeActive)) {
-            applyFeedback();
-
-            return;
-        }
-        if (!placementChanged || !_engaged) {
-            return;
-        }
-
-        KnobGuiColor* target = getTarget();
-        ColorTrackballHud* hud = _hud.data();
-
-        if (target && hud && !hud->isFollowingCursor() && hud->parentWidget()) {
-            target->detachGlobalModeHud(hud);
-            target->attachGlobalModeHud(hud);
-        }
-    });
+    if (settings) {
+        QObject::connect(settings.get(), &Settings::settingChanged, this, [this](KnobI*) {
+            if (offerFeedbackSetting()) {
+                applyFeedback();
+            }
+        });
+    }
     QObject::connect(this, &ColorTrackballGlobalMode::knobListEndReached, this, [this](int direction) {
         _endOfListMessage = (direction < 0) ? tr("First colour knob.") : tr("Last colour knob.");
         updateHud();
@@ -893,16 +840,8 @@ ColorTrackballGlobalMode::onTargetGone()
 void
 ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
 {
-    // Taken off the outgoing target before clearTarget() lets go of it; the touched knob
-    // itself is left exactly as the switch leaves it, open and unfolded, with nothing restored.
-    KnobGuiColor* previousTarget = getTarget();
-    ColorTrackballHud* hud = ensureHud();
-
-    // A following HUD is a window of its own, which detaching would turn back into a widget.
-    if (previousTarget && hud && !hud->isFollowingCursor()) {
-        previousTarget->detachGlobalModeHud(hud);
-    }
-
+    // The outgoing knob is left exactly as the switch leaves it, open and unfolded, with
+    // nothing restored.
     clearTarget();
     // A successful switch reaches a real knob, so whatever end-of-list message the previous
     // step may have left standing no longer describes the HUD's new target.
@@ -945,9 +884,6 @@ ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
     // or closes it back up, so working across several knobs in one session leaves every one of
     // them open afterwards instead of needing to be reopened.
     target->setAdjustPanelExpanded(true);
-    if (hud && !hud->isFollowingCursor() && colorGlobalModeFeedbackAttachesHud(_feedback.getFeedback())) {
-        target->attachGlobalModeHud(hud);
-    }
     target->touchColorKnob();
     revealTarget();
 }
@@ -1012,8 +948,7 @@ ColorTrackballGlobalMode::engage(const KnobGuiColorPtr& target)
 
     endStroke();
     if (!_engaged) {
-        // Before setTarget(), which decides from it whether the HUD goes into the knob's column.
-        _feedback.offer(ColorPanelLayoutDev::instance()->getLayout(), false);
+        offerFeedbackSetting();
     }
     setTarget(target);
     if (!_engaged) {
@@ -1049,13 +984,9 @@ ColorTrackballGlobalMode::exit()
     _engaged = false;
 
     // The touched knob is left open and unfolded, exactly as the user left it; only the HUD
-    // itself comes back out.
-    KnobGuiColor* target = getTarget();
-
-    if (_hud && _hud->isFollowingCursor()) {
+    // goes away.
+    if (_hud) {
         _hud->setFollowCursor(false);
-    } else if (target && _hud) {
-        target->detachGlobalModeHud(_hud.data());
     }
 
     QCoreApplication* app = QCoreApplication::instance();
@@ -1278,46 +1209,38 @@ ColorTrackballGlobalMode::endStrokeWithoutRelease()
     releaseStrokeGrab();
 }
 
+// Offers the feedback preference to the switch. True when the feedback in effect changed.
+bool
+ColorTrackballGlobalMode::offerFeedbackSetting()
+{
+    SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
+
+    if (!settings) {
+        return false;
+    }
+
+    return _feedback.offer(settings->getColorTrackballFeedback(), _strokeActive);
+}
+
 // Brings the cursor and, while engaged, the HUD in line with the feedback in effect; every
 // path in and out of the mode ends here, which is what keeps the override cursor stack
 // balanced. exit() has already put the HUD away by the time it gets here.
 void
 ColorTrackballGlobalMode::applyFeedback()
 {
-    const ColorPanelLayout::Feedback feedback = _feedback.getFeedback();
-
     syncReveal();
     if (!_engaged) {
         return;
     }
 
     ColorTrackballHud* hud = ensureHud();
-    KnobGuiColor* target = getTarget();
 
-    if (colorGlobalModeFeedbackHudFollowsCursor(feedback)) {
-        if (!hud->isFollowingCursor()) {
-            if (target) {
-                target->detachGlobalModeHud(hud);
-            }
-            hud->setFollowCursor(true);
-        }
-        updateHud();
-        hud->followCursorTo(QCursor::pos());
-        hud->show();
-
-        return;
+    if (!hud->isFollowingCursor()) {
+        hud->setFollowCursor(true);
     }
-    if (hud->isFollowingCursor()) {
-        hud->setFollowCursor(false);
-    }
-    if (!target) {
-        return;
-    }
-    if (!colorGlobalModeFeedbackAttachesHud(feedback)) {
-        target->detachGlobalModeHud(hud);
-    } else if (!hud->parentWidget()) {
-        target->attachGlobalModeHud(hud);
-    }
+    updateHud();
+    hud->followCursorTo(QCursor::pos());
+    hud->show();
 }
 
 // Created with no parent, as a window of its own; deleted with the controller.
@@ -1368,11 +1291,11 @@ ColorTrackballGlobalMode::syncReveal()
     }
     reveal->setMode(_strokeActive ? _strokeMode : _mode);
     if (_strokeActive) {
-        reveal->setStroke(_feedback.getPuck(), _stroke.getStart(), _strokeValue, _stroke.getTotalDx(), _stroke.getTotalDy(), _rates);
+        reveal->setStroke(_stroke.getStart(), _strokeValue, _stroke.getTotalDx(), _stroke.getTotalDy(), _rates);
     } else {
         const KnobColorValue value = target->getCurrentColorValue();
 
-        reveal->setStroke(_feedback.getPuck(), value, value, 0.0, 0.0, _rates);
+        reveal->setStroke(value, value, 0.0, 0.0, _rates);
     }
 
     // Placed on the press point when a stroke brings it up, and on the pointer whenever it

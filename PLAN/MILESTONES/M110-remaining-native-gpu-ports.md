@@ -431,3 +431,8 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
     - `false` means the plane can't be described: the GPU refuses and the CPU render fails. "Stay on the CPU" is `route.cpuOnly`. **Binding on P3.T2/P3.T3:** a node returns `false` only where today's CPU render would fail, never where it succeeds.
   - **Mapping for P3:** in the implementer's report, kept for P3's briefs. Shuffle must set `cpuOnly` from each source's *stored* depth, because region slots are float.
   - **Test gap:** `ChannelRouteCpu_Test` drives `applyChannelRoute` on hand-built images. The fetch half is covered by the existing render suites once P3 moves the nodes.
+- 2026-10-23 — **M110.P2.T3 code in (`1937f850e`); Phase 110.2 build of P2.T1–T4 dispatched (P2.T5 waits on M156).**
+  - **Separability holds:** every old zero case is one-axis (border, or `blackOutside` with `dx <= 0`/`dy <= 0`), and the fade was already `wx * wy` in double.
+  - **The GPU matte is two-float, not exact-double.** A (hi, lo) pair can't carry an arbitrary double weight, and the multiply is continuous in the weight, so partial pixels are held to `resampling()`. The zero and ≥ 1 cases are exact.
+  - **Crop is bumped to plugin major 3 (hard cut).** With `blackOutside` off and softness above 0, a pixel centre exactly on the crop edge has a ramp weight of 0. That pixel is now *written* 0, where it used to be multiplied by 0, which gave NaN for a NaN source and -0 for a negative one. `NativeCrop_Test` never puts a centre on an edge, so it should be unaffected.
+  - **Outside the brief:** `Engine/Nodes/README.md`'s offset-form paragraph is updated, and `GpuOffsetParams` grows 44 → 52 bytes with a weights binding at slot 2.

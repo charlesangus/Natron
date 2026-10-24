@@ -161,12 +161,14 @@ Knob<T>::setMinimum(const T& mini,
                     int dimension)
 {
     T maxi;
+    KnobContentWrite write;
     {
         QWriteLocker k(&_minMaxMutex);
         _minimums[dimension] = mini;
         maxi = _maximums[dimension];
     }
     invalidateContentHash();
+    write.finish();
 
     signalMinMaxChanged(mini, maxi, dimension);
 }
@@ -177,12 +179,14 @@ Knob<T>::setMaximum(const T& maxi,
                     int dimension)
 {
     T mini;
+    KnobContentWrite write;
     {
         QWriteLocker k(&_minMaxMutex);
         _maximums[dimension] = maxi;
         mini = _minimums[dimension];
     }
     invalidateContentHash();
+    write.finish();
 
     signalMinMaxChanged(mini, maxi, dimension);
 }
@@ -222,12 +226,14 @@ void
 Knob<T>::setMinimumsAndMaximums(const std::vector<T> &minis,
                                 const std::vector<T> &maxis)
 {
+    KnobContentWrite write;
     {
         QWriteLocker k(&_minMaxMutex);
         _minimums = minis;
         _maximums = maxis;
     }
     invalidateContentHash();
+    write.finish();
     for (unsigned int i = 0; i < minis.size(); ++i) {
         signalMinMaxChanged(minis[i], maxis[i], i);
     }
@@ -1201,6 +1207,7 @@ Knob<T>::setValue(const T & v,
         ++_setValueRecursionLevel;
     }
 
+    KnobContentWrite write;
     {
         QMutexLocker l(&_valueMutex);
         hasChanged |= (v != _values[dimension]);
@@ -1208,6 +1215,7 @@ Knob<T>::setValue(const T & v,
         _guiValues[dimension] = v;
     }
     invalidateContentHash();
+    write.finish();
 
     double time;
     bool timeSet = false;
@@ -2566,6 +2574,7 @@ Knob<T>::copyValueForType(Knob<OTHERTYPE>* other,
                           int otherDimension)
 {
     assert( (dimension == otherDimension) || (dimension != -1) );
+    KnobContentWrite write;
     QMutexLocker k(&_valueMutex);
     if (dimension == -1) {
         int dimMin = std::min( getDimension(), other->getDimension() );
@@ -2594,6 +2603,7 @@ Knob<T>::copyValueForTypeAndCheckIfChanged(Knob<OTHERTYPE>* other,
 {
     assert( (dimension == otherDimension) || (dimension != -1) );
     bool ret = false;
+    KnobContentWrite write;
     QMutexLocker k(&_valueMutex);
     if (dimension == -1) {
         int dimMin = std::min( getDimension(), other->getDimension() );
@@ -2887,6 +2897,7 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
     bool valueWritten = false;
 
     cloneGuiCurvesIfNeeded(dimensionChanged);
+    KnobContentWrite write;
     {
         QMutexLocker kql(&_setValuesQueueMutex);
         QMutexLocker k(&_valueMutex);
@@ -2938,6 +2949,7 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
     if (valueWritten) {
         invalidateContentHash();
     }
+    write.finish();
     cloneInternalCurvesIfNeeded(dimensionChanged);
 
     clearExpressionsResultsIfNeeded(dimensionChanged);
@@ -3019,11 +3031,13 @@ Knob<T>::copyValuesFromCurve(int dim)
     double time = getCurrentTime();
     assert(dim >= 0 && dim < getDimension());
     T v = getValueAtTime(time, dim);
+    KnobContentWrite write;
     {
         QMutexLocker l(&_valueMutex);
         _guiValues[dim] = _values[dim] = v;
     }
     invalidateContentHash();
+    write.finish();
 }
 
 inline void

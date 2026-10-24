@@ -1468,6 +1468,28 @@ public:
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const = 0;
 };
 
+/**
+ * @brief Brackets a knob content write, from before the store until after the hash marks it
+ * raises. A knob stores its value before it marks its node, so a cache keyed by a node hash can
+ * otherwise derive from the new value and still read the old hash and mark count on both sides
+ * of the derive. A cache filled only when isSettled() held for a snapshot taken before its mark
+ * count, and the snapshot is unchanged after the derive, cannot have seen a write its hash misses:
+ * a write that began before the snapshot either ended, with its marks raised before the hash was
+ * read, or is still counted in it; one that began after it moves the snapshot.
+ **/
+class KnobContentWrite {
+public:
+    KnobContentWrite();
+    ~KnobContentWrite();
+
+    void finish();
+
+    static U64 snapshot();
+    static bool isSettled(U64 snapshot);
+
+private:
+    bool _open;
+};
 
 ///Skins the API of KnobI by implementing most of the functions in a non templated manner.
 struct KnobHelperPrivate;

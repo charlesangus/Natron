@@ -6696,8 +6696,11 @@ EffectInstance::getMetadata(double time,
     // this node, so its hash is not recomputed while the derivation runs and can read the same
     // again after an input changed and changed back meanwhile, with the derivation having seen
     // the other state: the mark count, read before the hash, catches that. The generation catches
-    // a drop under the same hash.
+    // a drop under the same hash. A knob stores its value before it marks, so a derive can also
+    // see a value the hash and marks do not yet reflect: the write snapshot, read before both,
+    // catches that.
     refreshInputRelatedDataIfStale();
+    const U64 writes = KnobContentWrite::snapshot();
     const U64 marks = node->getHashMarkCount();
     const U64 hash = node->getHashValue();
     NodeMetadataConstPtr cached = _imp->actionsCache->getMetadataResult(hash, time, view);
@@ -6706,7 +6709,7 @@ EffectInstance::getMetadata(double time,
     }
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     NodeMetadataConstPtr metadata = isOpenFX() ? getOpenFXMetadataAt(hash, time, view) : deriveMetadataAt(hash, time, view);
-    if ((node->getHashMarkCount() == marks) && (node->getHashValue() == hash)) {
+    if ((node->getHashMarkCount() == marks) && (node->getHashValue() == hash) && KnobContentWrite::isSettled(writes)) {
         _imp->actionsCache->setMetadataResult(hash, time, view, metadata, generation);
     }
 
@@ -6726,6 +6729,7 @@ EffectInstance::getTimeInvariantMetadata()
     }
     // As getMetadata().
     refreshInputRelatedDataIfStale();
+    const U64 writes = KnobContentWrite::snapshot();
     const U64 marks = node->getHashMarkCount();
     const U64 hash = node->getHashValue();
     NodeMetadataConstPtr cached = _imp->actionsCache->getTimeInvariantMetadataResult(hash);
@@ -6734,7 +6738,7 @@ EffectInstance::getTimeInvariantMetadata()
     }
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     NodeMetadataConstPtr metadata = deriveTimeInvariantMetadata();
-    if ((node->getHashMarkCount() == marks) && (node->getHashValue() == hash)) {
+    if ((node->getHashMarkCount() == marks) && (node->getHashValue() == hash) && KnobContentWrite::isSettled(writes)) {
         _imp->actionsCache->setTimeInvariantMetadataResult(hash, metadata, generation);
     }
 

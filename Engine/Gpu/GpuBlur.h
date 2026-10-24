@@ -124,7 +124,7 @@ struct GpuSeparableBlur {
 // held by ctx and a compute barrier between the passes.
 GpuStatus recordSeparableBlur(GpuRecordContext& ctx, const GpuSeparableBlur& blur);
 
-// The recursive line filters of Kernels/blur_lines.slang, the CPU's LineFilter kinds at order 0.
+// The recursive line filters of Kernels/blur_lines.slang, the CPU's LineFilter kinds at orders 0 and 1.
 enum class GpuLineFilterKind : uint32_t {
     identity = 0,
     deriche = 1,
@@ -140,9 +140,14 @@ struct GpuLineFilter {
     // vanVliet: [B, -b1, -b2, -b3] and the 3x3 Triggs matrix row by row.
     std::array<double, 4> vanVliet {};
     std::array<double, 9> triggs {};
-    // box: the width (above 1) and the number of passes (1 to 3).
+    // box: the width and the number of passes (1 to 3). A width of 1 or less, or no passes, smooths
+    // nothing and is only valid at order 1.
     float boxSize = 0.f;
     uint32_t iterations = 0;
+    // 0, or 1 for the first derivative.
+    uint32_t order = 0;
+    // The end samples repeat outside the line, where otherwise it is black.
+    bool neumann = false;
 };
 
 // Mirrors LinesParams in Kernels/blur_lines.slang, which has no padding between members.
@@ -169,12 +174,14 @@ struct GpuLineBlurParams {
     uint32_t srcStride;
     int32_t half;
     uint32_t iterations;
+    uint32_t order;
+    uint32_t neumann;
 };
-static_assert(sizeof(GpuLineBlurParams) == 88);
+static_assert(sizeof(GpuLineBlurParams) == 96);
 
-// A separable recursive blur of `output`, as Blur's CPU passes run LineFilter: every row of the
+// A separable recursive filter of `output`, as the CPU's passes run LineFilter: every row of the
 // filtered rect, then every column, each over the whole rect along its axis, with samples outside
-// it black. Samples outside srcValid are black too, and so are output pixels outside the filtered
+// it black or, for a Neumann filter, the line's end samples. Samples outside srcValid are black too, and so are output pixels outside the filtered
 // rect.
 struct GpuLineBlur {
     GpuBlurImage src;

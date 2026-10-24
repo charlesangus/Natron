@@ -1,8 +1,8 @@
-// BlurKernels::LineFilter's recursive filters, one thread per line: Deriche, van Vliet (order 0) and
-// the box filter iterated 1, 2 or 3 times, with the CPU's recursions and rounding points, and black
-// outside the line. The CPU keeps the recursion state in double; here it is kept in two floats, as plain
-// float state drifts by more than 1e-3 for van Vliet at large sigma. GpuLineBlurParams in
-// Engine/Gpu/GpuBlur.h mirrors LinesParams.
+// BlurKernels::LineFilter's recursive filters, one thread per line: Deriche, van Vliet and the box
+// filter iterated 0 to 3 times, at orders 0 and 1, with the CPU's recursions and rounding points, and
+// black or the end samples (Neumann) outside the line. The CPU keeps the recursion state in double;
+// here it is kept in two floats, as plain float state drifts by more than 1e-3 for van Vliet at large
+// sigma. GpuLineBlurParams in Engine/Gpu/GpuBlur.h mirrors LinesParams.
 
 StructuredBuffer<float> srcBuf;
 RWStructuredBuffer<float> dstBuf;
@@ -43,6 +43,8 @@ struct LinesParams
     uint srcStride;
     int half;
     uint iterations;
+    uint order;
+    uint neumann;
 };
 [[vk::push_constant]] ConstantBuffer<LinesParams> params;
 
@@ -292,6 +294,12 @@ void dericheLine(int lo, int hi, int line, uint li)
     FF4 yb = ff4(float4(0.0));
     FF4 yp = yb;
     float4 xp = float4(0.0);
+    if (params.neumann != 0)
+    {
+        xp = inputAt(lo, line, li);
+        yp = ffMul(ff4(xp), coef(6));
+        yb = yp;
+    }
     const int causalEnd = min(hi, params.outHi);
     for (int pos = lo; pos < causalEnd; ++pos)
     {
@@ -308,6 +316,13 @@ void dericheLine(int lo, int hi, int line, uint li)
     float4 xa = float4(0.0);
     FF4 yn = ff4(float4(0.0));
     FF4 ya = yn;
+    if (params.neumann != 0)
+    {
+        xn = inputAt(hi - 1, line, li);
+        xa = xn;
+        yn = ffMul(ff4(xn), coef(7));
+        ya = yn;
+    }
     const int anticausalEnd = max(lo, params.outLo);
     for (int pos = hi - 1; pos >= anticausalEnd; --pos)
     {
@@ -335,6 +350,15 @@ void vanVlietLine(int lo, int hi, int line, uint li)
     FF4 v1 = ff4(float4(0.0));
     FF4 v2 = v1;
     FF4 v3 = v1;
+    // Read before the causal pass, which overwrites the line in place.
+    float4 iplus = float4(0.0);
+    if (params.neumann != 0)
+    {
+        iplus = inputAt(hi - 1, line, li);
+        v1 = ffDiv(ff4(inputAt(lo, line, li)), coef(0));
+        v2 = v1;
+        v3 = v1;
+    }
     for (int pos = lo; pos < hi; ++pos)
     {
         FF4 v0 = ff4(inputAt(pos, line, li));
@@ -347,7 +371,7 @@ void vanVlietLine(int lo, int hi, int line, uint li)
         v1 = v0;
     }
 
-    const FF4 uplus = ffDiv(ff4(float4(0.0)), denom);
+    const FF4 uplus = ffDiv(ff4(iplus), denom);
     const FF4 vplus = ffDiv(uplus, denom);
     const FF4 unp = ffSub(v1, uplus);
     const FF4 unp1 = ffSub(v2, uplus);
@@ -379,18 +403,106 @@ void vanVlietLine(int lo, int hi, int line, uint li)
     }
 }
 
-// boxSample() of the line as the pass reads it: positions outside the line read zero.
+// LineFilter::applyVanVliet at order 1. As on the CPU, the causal input at a position is half the
+// difference of its neighbours, except that the first two positions take the boundary value in place
+// of the previous sample; the first position's output is zero.
+void vanVlietDerivativeLine(int lo, int hi, int line, uint li)
+{
+    const FF sum = coef(1);
+    const FF f1 = coef(2);
+    const FF f2 = coef(3);
+    const FF f3 = coef(4);
+
+    float4 x1 = float4(0.0);
+    float4 x2 = float4(0.0);
+    if (params.neumann != 0)
+    {
+        x1 = inputAt(lo, line, li);
+        x2 = x1;
+    }
+    FF4 v1 = ff4(float4(0.0));
+    FF4 v2 = v1;
+    FF4 v3 = v1;
+    for (int pos = lo; pos < hi - 1; ++pos)
+    {
+        const float4 x0 = inputAt(pos + 1, line, li);
+        const FF4 d = ffTwoSum(x0, -x2);
+        FF4 v0 = ff4(d.hi * 0.5, d.lo * 0.5);
+        v0 = ffAdd(v0, ffMul(v1, f1));
+        v0 = ffAdd(v0, ffMul(v2, f2));
+        v0 = ffAdd(v0, ffMul(v3, f3));
+        storeLine(pos, li, ffFloat(v0));
+        x2 = x1;
+        x1 = x0;
+        v3 = v2;
+        v2 = v1;
+        v1 = v0;
+    }
+
+    FF4 w[3];
+    [ForceUnroll]
+    for (uint r = 0; r < 3; ++r)
+    {
+        const FF4 m = ffAdd(ffAdd(ffMul(v1, coef(6 + 3 * r)), ffMul(v2, coef(7 + 3 * r))), ffMul(v3, coef(8 + 3 * r)));
+        w[r] = ffMul(m, sum);
+    }
+    if (isOut(hi - 1))
+        storeOut(hi - 1, li, ffFloat(w[0]));
+    v1 = w[0];
+    v2 = w[1];
+    v3 = w[2];
+    const int anticausalEnd = max(lo + 1, params.outLo);
+    for (int pos = hi - 2; pos >= anticausalEnd; --pos)
+    {
+        FF4 v0 = ffMul(ff4(loadLine(pos, li)), sum);
+        v0 = ffAdd(v0, ffMul(v1, f1));
+        v0 = ffAdd(v0, ffMul(v2, f2));
+        v0 = ffAdd(v0, ffMul(v3, f3));
+        if (isOut(pos))
+            storeOut(pos, li, ffFloat(v0));
+        v3 = v2;
+        v2 = v1;
+        v1 = v0;
+    }
+    if (hi - lo > 1 && isOut(lo))
+        storeOut(lo, li, float4(0.0));
+}
+
+// boxSample() of the line as the pass reads it: positions outside the line read zero, or the end
+// sample for a Neumann filter.
 float4 boxSample(int rel, int lo, int n, bool first, int line, uint li)
 {
     if (rel < 0 || rel >= n)
-        return float4(0.0);
+    {
+        if (params.neumann == 0)
+            return float4(0.0);
+        rel = rel < 0 ? 0 : n - 1;
+    }
     return first ? inputAt(lo + rel, line, li) : loadLine(lo + rel, li);
 }
 
-// LineFilter::applyBox at order 0. Every pass but the last writes the line in place, the window
-// keeping the samples it overwrites; the last writes the output positions.
+// centredDifference() at order 1, from the line the box passes left (or the input, after none) to
+// the output positions. The difference is rounded to float before it is halved, as on the CPU.
+void boxDifferenceLine(int lo, int hi, int line, uint li)
+{
+    const bool first = params.iterations == 0;
+    const int n = hi - lo;
+    const int start = max(0, params.outLo - lo);
+    const int end = min(n, params.outHi - lo);
+    for (int x = start; x < end; ++x)
+    {
+        precise float4 d = boxSample(x + 1, lo, n, first, line, li) - boxSample(x - 1, lo, n, first, line, li);
+        precise float4 v = d * 0.5;
+        storeOut(lo + x, li, v);
+    }
+}
+
+// LineFilter::applyBox. Every pass but the last writes the line in place, the window keeping the
+// samples it overwrites; the last writes the output positions at order 0, and the line at order 1,
+// where the difference then writes the output positions.
 void boxLine(int lo, int hi, int line, uint li)
 {
+    const bool derivative = params.order != 0;
     const FF frac = coef(0);
     const FF boxSize = coef(1);
     const int w2 = params.half;
@@ -401,7 +513,7 @@ void boxLine(int lo, int hi, int line, uint li)
     for (uint iter = 0; iter < params.iterations; ++iter)
     {
         const bool first = iter == 0;
-        const bool last = iter + 1 == params.iterations;
+        const bool last = !derivative && iter + 1 == params.iterations;
         FF4 sum = ff4(float4(0.0));
         for (int x = -w2; x <= w2; ++x)
         {
@@ -436,6 +548,8 @@ void boxLine(int lo, int hi, int line, uint li)
             next = boxSample(x + w2 + 2, lo, n, first, line, li);
         }
     }
+    if (derivative)
+        boxDifferenceLine(lo, hi, line, li);
 }
 
 // One thread per line. The vertical pass also writes zero to the output positions its line does
@@ -472,7 +586,10 @@ void blur_lines(uint3 dtid : SV_DispatchThreadID)
         dericheLine(lo, hi, line, li);
         break;
     case kKindVanVliet:
-        vanVlietLine(lo, hi, line, li);
+        if (params.order != 0)
+            vanVlietDerivativeLine(lo, hi, line, li);
+        else
+            vanVlietLine(lo, hi, line, li);
         break;
     case kKindBox:
         boxLine(lo, hi, line, li);

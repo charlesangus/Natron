@@ -124,12 +124,24 @@ namespace {
         return c;
     }
 
+    // A box of LineFilter::box() that smooths, as opposed to one that only takes the difference.
+    bool boxSmooths(const GpuLineFilter& f)
+    {
+        return f.boxSize > 1.f && f.iterations > 0;
+    }
+
     bool validLineFilter(const GpuLineFilter& f)
     {
+        if (f.order > 1) {
+            return false;
+        }
         if (f.kind != GpuLineFilterKind::box) {
             return true;
         }
-        return f.boxSize > 1.f && f.iterations >= 1 && f.iterations <= 3;
+        if (!(f.boxSize > 0.f)) {
+            return false;
+        }
+        return boxSmooths(f) ? f.iterations <= 3 : f.order == 1;
     }
 
     // One pass of blur_lines with its coefficients, ring and stored lines, the scratch ones from ctx.
@@ -147,9 +159,13 @@ namespace {
         }
         p.kind = static_cast<uint32_t>(f.kind);
         p.half = half;
-        p.iterations = f.kind == GpuLineFilterKind::box ? f.iterations : 0;
+        const bool box = f.kind == GpuLineFilterKind::box;
+        p.iterations = box && boxSmooths(f) ? f.iterations : 0;
+        p.order = f.order;
+        p.neumann = f.neumann ? 1u : 0u;
 
-        const bool stores = f.kind == GpuLineFilterKind::vanVliet || (f.kind == GpuLineFilterKind::box && f.iterations > 1);
+        // A box keeps its line when a later pass or the difference reads what a pass wrote.
+        const bool stores = f.kind == GpuLineFilterKind::vanVliet || (box && (p.iterations > 1 || (p.iterations > 0 && p.order > 0)));
         if (stores && !lines) {
             if (storedFloats > UINT32_MAX) {
                 return invalidLines("stored lines exceed 32-bit indexing");
@@ -333,7 +349,7 @@ recordLineBlur(GpuRecordContext& ctx, const GpuLineBlur& b)
         return invalidLines("invalid source, destination or window");
     }
     if (!validLineFilter(b.filterX) || !validLineFilter(b.filterY)) {
-        return invalidLines("invalid box filter");
+        return invalidLines("unsupported line filter");
     }
 
     // The row pass covers the output's columns over every row of the domain, which holds every row

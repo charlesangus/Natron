@@ -153,34 +153,6 @@ lineWorker(const LineFilterPtr& filter,
 }
 
 #ifdef NATRON_HAVE_GPU
-/// The device form of a LineFilter other than the FIR Gaussian.
-gpu::GpuLineFilter
-toGpuLineFilter(const BlurKernels::LineFilter& filter)
-{
-    gpu::GpuLineFilter f;
-
-    switch (filter.kind()) {
-    case BlurKernels::LineFilter::eKindDeriche:
-        f.kind = gpu::GpuLineFilterKind::deriche;
-        filter.dericheCoefficients(f.deriche.data());
-        break;
-    case BlurKernels::LineFilter::eKindVanVliet:
-        f.kind = gpu::GpuLineFilterKind::vanVliet;
-        filter.vanVlietCoefficients(f.vanVliet.data(), f.triggs.data());
-        break;
-    case BlurKernels::LineFilter::eKindBox:
-        f.kind = gpu::GpuLineFilterKind::box;
-        f.boxSize = filter.boxSize();
-        f.iterations = filter.boxIterations();
-        break;
-    case BlurKernels::LineFilter::eKindIdentity:
-    case BlurKernels::LineFilter::eKindFIRGaussian:
-        break;
-    }
-
-    return f;
-}
-
 /// The source the kernels read. With no source pixels in the extent the executor hands over no
 /// buffer, but the kernels still bind one: a placeholder, which the empty valid rect keeps unread.
 bool
@@ -250,8 +222,8 @@ lineGpuRecorder(const LineFilterPtr& filterX,
         blur.domain = PassExec::toGpuBlurRect(io.domain);
         blur.window = window;
         blur.channels = (uint32_t)io.nComps;
-        blur.filterX = toGpuLineFilter(*filterX);
-        blur.filterY = toGpuLineFilter(*filterY);
+        blur.filterX = BlurKernels::toGpuLineFilter(*filterX);
+        blur.filterY = BlurKernels::toGpuLineFilter(*filterY);
 
         return gpu::recordLineBlur(io.context, blur) ? eStatusOK : eStatusFailed;
     };

@@ -38,7 +38,7 @@ Natron sometimes crashes at startup on NVIDIA (proprietary driver) and AMD hosts
   - verify: the script runs end to end under Xvfb against an AppImage.
   - size: M
 
-- [ ] M161.P1.T3 — Diagnostic AppImage; the user runs the matrix once on the NVIDIA host
+- [x] M161.P1.T3 — Diagnostic AppImage; the user runs the matrix once on the NVIDIA host
   - files: none (`tools/ci/local/package.sh` or the remote AppImage)
   - approach: ranking — a MISMATCH at the failure, or `RESTORE_GL`/`SKIP_GL_PROBE` curing it → H1; only the cache configs curing it, or cache changes in the diff → H2; `GPU_INIT_SYNC` or `NATRON_GPU=off` curing it → H4; `NO_SPLASH_PUMP` curing it → H3.
   - verify: the result and log excerpts are recorded in ## Decisions; the user agrees with the diagnosis.
@@ -62,7 +62,7 @@ Natron sometimes crashes at startup on NVIDIA (proprietary driver) and AMD hosts
 
 ## Phase 161.3: Confirm
 
-- [ ] M161.P3.T1 — Release AppImage for the user on NVIDIA
+- [x] M161.P3.T1 — Release AppImage for the user on NVIDIA
   - files: none
   - approach: package the release build; the user launches it 10 times with their initGui.py and 10 without, against their existing caches with no cleanup, and sends `NATRON_DIAG_GL=1` logs from any failure.
   - verify: the user reports 20/20 clean launches.
@@ -72,6 +72,7 @@ Natron sometimes crashes at startup on NVIDIA (proprietary driver) and AMD hosts
 
 ## Decisions
 
+- 2026-10-24 — **Confirmed on the user's NVIDIA host (user):** `M161-04d2203c2.AppImage` (RTX 3070 Ti, driver 580.178.04, X11) ran 10 capture launches. All 10 were clean, with 0 MISMATCH and 0 QT-STALE at every checkpoint (the pre-fix diagnostic build showed 6 MISMATCH and 2 QT-STALE on every one of its 20 launches), and no GPU probe after `createGui:before`. The initGui.py half of P3.T1 no longer applies: the user no longer has one, and the Xvfb test covers it with a fixture modelled on theirs.
 - 2026-10-24 — **Phase 161.2 verified (PM):** fix 04d2203c2 (restore the replaced GLX/EGL binding around every GUI-thread Natron switch; probe the renderers once at startup and reuse the list in the About window). Release build 389/389. `m161_startup_compositor.py` passed 20/20 launches under Xvfb. The startup GUI test alone could not catch the bug on Xvfb: Qt's context does not exist yet when the old About-window probe runs, so a fix-reverted build also passed 8/8. Two checks were added in 6af2258f8. A `GuiThreadGLBinding` GuiTests suite makes a Qt context current, then runs the probe, make-current/unset and destroy, and asserts Qt's context stays bound; it runs in CI ctest. The startup test also now fails when a GPU probe runs after `createGui:before`. On a fix-reverted scratch build (since deleted), the suite fails all three cases on both ctest legs and the log check fails every launch. The fixed lane passes debug ctest 390/390 with the suite running, not skipped. Release AppImage `M161-04d2203c2.AppImage` is with the user for P3.T1.
 - 2026-10-24 — **User's NVIDIA capture points to H1 (PM):** 20 plain launches of the diagnostic AppImage (e4ac87b1a, RTX 3070 Ti + Quadro P400, driver 580.178.04, X11) were all clean, but every one shows the same stale binding. The second `getGPUInfos` (from the About window built inside `createGui`) runs while Qt's compositor context (glx 0x454b3588) is current, makes its probe context current over it, then unsets to none before destroying it. Qt's per-thread record still names 0x454b3588 (QT-STALE), so `getGPUInfos:end`, `createGui:after`, `runInitGuiScripts:before/after` and `show:before/after` all report MISMATCH qt-current-glx-none, 20/20. The binding is only repaired at the first expose, when a GL widget makes its own context current. Because `QRhiGles2::ensureContext` trusts Qt's record, any compositor flush between `show` and that first expose compiles with no context: the observed empty-log shader failure. Whether a flush lands in that window is timing, which is why the crash comes and goes. The first probe (before the GUI exists) is harmless. H2 is not supported: cache changes are only Natron's own disk-cache restore files, the OFX load cache and Natron.conf, with no Qt shader cache writes. Phase 161.2 goes ahead with the H1 fix.
 - 2026-10-24 — **Created by bosley-native-nodes at the user's request** after the M16 - Project Format Redesign UAT AppImage crashed at startup on the user's NVIDIA host with M158's fix in place. Fix the root cause, not another startup early return. User data: removing initGui.py does not help; `QT_XCB_GL_INTEGRATION=none` stops the crash (no window) and one such launch makes later normal launches work; `NATRON_DISABLE_GPU` had no effect (it does not exist).

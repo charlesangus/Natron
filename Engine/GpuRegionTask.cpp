@@ -1344,6 +1344,28 @@ private:
         }
     }
 
+    // Returns the index of the record, or -1 when the profile is off.
+    int noteDownloadRecord(std::size_t bytes,
+                           int strip,
+                           int comps,
+                           gpu::TransferPath path)
+    {
+        if (!_report || !_report->recordDownloads) {
+            return -1;
+        }
+        const gpu::GpuDevice& device = _runtime.device();
+        GpuDownloadRecord record;
+        record.bytes = bytes;
+        record.strip = strip;
+        record.queueFamily = device.queueFamily(gpu::QueueKind::Download);
+        record.queueIndex = device.info().downloadQueueIndex;
+        record.comps = comps;
+        record.staged = (path != gpu::TransferPath::HostImport);
+        _report->downloads.push_back(record);
+
+        return (int)_report->downloads.size() - 1;
+    }
+
     /**
      * @brief Allocates the RAM images every download lands in, and has the runtime's helper thread fault them in and
      * import them while the uploads and the compute run, so that the downloads pay neither. Stripped, each image is
@@ -1472,6 +1494,7 @@ private:
                 return failGpu(producerTask, "download failed", status);
             }
             notePath(path, false);
+            noteDownloadRecord(slot.layout.pixelBytes(), -1, slot.layout.nComps(), path);
             if (_stats) {
                 _stats->noteDownload(slot.layout.pixelBytes());
             }
@@ -2074,6 +2097,13 @@ private:
                 return failGpu(producerTask, "download failed", status);
             }
             notePath(path, false);
+            const int record = noteDownloadRecord(range.second, flight ? (int)index : -1, slot.layout.nComps(), path);
+            if (record >= 0 && flight) {
+                if (_downloadRecordOf.empty()) {
+                    _downloadRecordOf.assign(strips.size() * _slots.size(), -1);
+                }
+                _downloadRecordOf[index * _slots.size() + s] = record;
+            }
             if (flight) {
                 flight->transfers.push_back(done);
             } else {
@@ -2427,6 +2457,12 @@ private:
                     if ((_downloadQuery[s] >= 0) && pairOf(k, _downloadQuery[s], &interval)) {
                         transfers.push_back(interval);
                         downloadTicks += interval.second - interval.first;
+                        if (!_downloadRecordOf.empty()) {
+                            const int record = _downloadRecordOf[k * _slots.size() + s];
+                            if (record >= 0) {
+                                _report->downloads[(std::size_t)record].deviceMs = msOf(interval.second - interval.first);
+                            }
+                        }
                     }
                 }
             }
@@ -2756,6 +2792,9 @@ private:
     std::uint32_t _memberStamp0 = 0;
     std::vector<int> _uploadQuery;
     std::vector<int> _downloadQuery;
+
+    // Per strip and slot, the index in the report's downloads of the copy, -1 for none; empty until a copy is recorded.
+    std::vector<int> _downloadRecordOf;
     std::size_t _peakDeviceBytes = 0;
     NodePtr _failedNode;
     std::string _failure;
@@ -2907,7 +2946,9 @@ runGpuRegion(const FrameRenderContextPtr& context,
             }
         }
         for (;;) {
+            const bool recordDownloads = report->recordDownloads;
             *report = RenderScheduler::RegionReport();
+            report->recordDownloads = recordDownloads;
             RegionRun::FailureKind kind;
             int rows = 0;
             int inFlight = 1;

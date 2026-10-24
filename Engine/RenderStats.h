@@ -243,6 +243,22 @@ private:
 };
 
 /**
+ * @brief One device-to-host copy a GPU region issued. strip is -1 for a region that ran whole. deviceMs is the
+ * download queue's own timestamped time, negative when the copy was not timestamped.
+ **/
+struct GpuDownloadRecord {
+    unsigned long long bytes = 0;
+    int strip = -1;
+    double deviceMs = -1.;
+    unsigned int queueFamily = 0;
+    unsigned int queueIndex = 0;
+    int comps = 0;
+
+    // Staged through the transfer ring, so copied a second time on the host, rather than imported in place.
+    bool staged = false;
+};
+
+/**
  * @brief What a GPU region spent its time on. Times are milliseconds, sizes bytes. strips is 0 for a region run whole.
  **/
 struct GpuRegionTimes {
@@ -274,6 +290,7 @@ struct GpuRegionTimes {
     unsigned long long downloadsStaged = 0;
     unsigned long long importsAtUpload = 0;
     unsigned long long importsAtDownload = 0;
+    std::vector<GpuDownloadRecord> downloads;
 
     // The region fit the device whole and ran as strips anyway, to overlap its transfers with its compute.
     bool overlapStrips = false;

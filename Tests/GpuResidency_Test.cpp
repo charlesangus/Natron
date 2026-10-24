@@ -48,6 +48,9 @@
 
 #include <QElapsedTimer>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QString>
 #include <QTemporaryDir>
 #include <QThread>
@@ -897,6 +900,63 @@ TEST_F(GpuResidencyTest, RegionKernelTimeIsNotCountedTwiceWhenTheLastMemberDownl
     }
     EXPECT_EQ(1, regionRecords);
     EXPECT_EQ(1, run.stats->getDownloadCount());
+}
+
+// The region's record lists each download with its size, queue and path, and the sizes add up to the bytes it moved.
+TEST_F(GpuResidencyTest, RegionRecordListsEveryDownloadAndTheirBytesAddUp)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    NodePtr blur = makeBlur(9.);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && grade && blur && sink);
+    connectNodes(source, grade, 0, true);
+    connectNodes(grade, blur, 0, true);
+    connectNodes(blur, sink, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(sink, &run, &error)) << error;
+    placeOnGpu(&run, { grade, blur });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(2u, run.graph.regions[0].members.size());
+
+    QTemporaryDir profileDir;
+    ASSERT_TRUE(profileDir.isValid());
+    RenderScheduler::setProfilePath((profileDir.path() + QString::fromUtf8("/profile")).toStdString());
+    const bool rendered = render(&run);
+    RenderScheduler::flushProfile();
+    const std::string profilePath = RenderScheduler::getProfileFilePath();
+    RenderScheduler::setProfilePath(std::string());
+    ASSERT_TRUE(rendered);
+
+    int regionRecords = 0;
+    for (const std::string& record : readProfileRecords(profilePath)) {
+        if (record.compare(0, 17, "{\"kind\":\"region\",") != 0) {
+            continue;
+        }
+        ++regionRecords;
+        const QJsonObject object = QJsonDocument::fromJson(QByteArray::fromStdString(record)).object();
+        ASSERT_TRUE(object.contains(QString::fromUtf8("downloads"))) << record;
+        const QJsonArray downloads = object.value(QString::fromUtf8("downloads")).toArray();
+        EXPECT_EQ(run.stats->getDownloadCount(), downloads.size()) << record;
+        double bytes = 0.;
+        for (const QJsonValue& value : downloads) {
+            const QJsonObject download = value.toObject();
+            const char* keys[] = { "strip", "bytes", "deviceMs", "queueFamily", "queueIndex", "comps", "format", "staged" };
+            for (const char* key : keys) {
+                EXPECT_TRUE(download.contains(QString::fromUtf8(key))) << key << " in " << record;
+            }
+            EXPECT_GT(download.value(QString::fromUtf8("comps")).toInt(), 0) << record;
+            bytes += download.value(QString::fromUtf8("bytes")).toDouble();
+        }
+        EXPECT_GT(bytes, 0.) << record;
+        EXPECT_EQ(object.value(QString::fromUtf8("downloadBytes")).toDouble(), bytes) << record;
+    }
+    EXPECT_EQ(1, regionRecords);
 }
 
 TEST_F(GpuResidencyTest, SharedProducerRendersOnceAndDownloadsOnlyCpuOutputs)

@@ -40,6 +40,13 @@ A member's kernel time is the wallNs of its task record (device timestamps, the 
 only on devices without them). pred xfer is predictedTransferMs: the transfer time placement's cost
 model predicts for the region's uploadBytes and downloadBytes, to compare with uploadMs + downloadMs.
 It reads n/a when the model knows no bandwidth (the record holds null) or the record has no such field.
+
+The downloads table lists, per region, the copies back to the host that its record's downloads array holds:
+their count, size (min/median/max, MB), the effective rate (bytes over the summed device time of the
+timestamped copies, GB/s), the share of the region's transfer time that the last strip's copies spent, how
+many were staged through the transfer ring instead of imported in place, and the download queue. deviceMs is
+null for a copy that was not timestamped (an unstripped or serial region, or a device without timestamps);
+the rate and the last-strip share then read n/a.
 """
 import collections
 import glob
@@ -229,6 +236,25 @@ def build(records, skip_frames, marks=()):
     return rows, len(kept)
 
 
+def download_stats(region):
+    """The figures of one region's downloads array, or None when it holds no copy."""
+    downloads = region.get("downloads") or []
+    if not downloads:
+        return None
+    sizes = sorted(d["bytes"] for d in downloads)
+    timed = [d for d in downloads if d.get("deviceMs") is not None]
+    time_ms = sum(d["deviceMs"] for d in timed)
+    rate = sum(d["bytes"] for d in timed) / (time_ms * 1e6) if time_ms > 0 else None
+    last_share = None
+    strips = [d["strip"] for d in timed if d.get("strip", -1) >= 0]
+    if strips and time_ms > 0:
+        last = max(strips)
+        last_share = sum(d["deviceMs"] for d in timed if d.get("strip") == last) / time_ms
+    return {"count": len(downloads), "min": sizes[0], "median": median(sizes), "max": sizes[-1], "rate": rate,
+            "lastShare": last_share, "staged": sum(1 for d in downloads if d.get("staged")),
+            "queue": "%d.%d" % (downloads[0].get("queueFamily", 0), downloads[0].get("queueIndex", 0))}
+
+
 def mean(values):
     return sum(values) / len(values) if values else 0.0
 
@@ -258,6 +284,7 @@ def summarise(rows, import_rate_gbps=None):
             for m in r["members"]:
                 nodes.setdefault(m["node"], []).append(m["kernelMs"])
         entry["nodes"] = [(n, mean(v)) for n, v in nodes.items()]
+        entry["downloadStats"] = [st for st in (download_stats(g) for g in regs) if st]
         out.append(entry)
     return out
 
@@ -286,6 +313,22 @@ def format_summary(entries):
         for node, k in e["nodes"]:
             share = 100.0 * k / e["wallMs"] if e["wallMs"] > 0 else 0.0
             lines.append(" | ".join((e["signature"], node, "%.2f" % k, "%.0f%%" % share)))
+    lines.append("")
+    lines.append("Downloads (per region run, mean over runs; rate and last strip need timestamped copies)")
+    lines.append(" | ".join(("region", "copies", "min MB", "median MB", "max MB", "rate GB/s", "last strip share", "staged", "queue")))
+    for e in entries:
+        stats = e["downloadStats"]
+        if not stats:
+            continue
+        rates = [st["rate"] for st in stats if st["rate"] is not None]
+        shares = [st["lastShare"] for st in stats if st["lastShare"] is not None]
+        lines.append(" | ".join((e["signature"], "%.1f" % mean([st["count"] for st in stats]),
+                                 "%.2f" % (mean([st["min"] for st in stats]) / 1e6),
+                                 "%.2f" % (mean([st["median"] for st in stats]) / 1e6),
+                                 "%.2f" % (mean([st["max"] for st in stats]) / 1e6),
+                                 ("%.2f" % mean(rates)) if rates else "n/a",
+                                 ("%.0f%%" % (100.0 * mean(shares))) if shares else "n/a",
+                                 "%.1f" % mean([st["staged"] for st in stats]), stats[0]["queue"])))
     return "\n".join(lines)
 
 
@@ -369,6 +412,15 @@ def self_test():
     assert "n/a" in text and "Grade1+Blur1" in text and "prepare wait" in text and "pipelined floor" in text
     assert abs(pair["prepareWaitMs"] - 1.0) < 1e-9 and abs(erode["prepareWaitMs"] - 3.0) < 1e-9
     assert fallback["prepareWaitMs"] == 0.0
+
+    stripped = download_stats(rows[2]["region"])
+    assert stripped["count"] == 4 and stripped["max"] == 33177600 and stripped["staged"] == 4
+    assert abs(stripped["rate"] - 132710400 / 30e6) < 1e-9, stripped["rate"]
+    assert abs(stripped["lastShare"] - 0.3) < 1e-9, stripped["lastShare"]
+    whole = download_stats(rows[0]["region"])
+    assert whole["count"] == 1 and whole["rate"] is None and whole["lastShare"] is None
+    assert download_stats(rows[3]["region"]) is None
+    assert "last strip share" in text and "30%" in text
 
     assert abs(pipelined_floor_ms(rows[2]["region"]) - 0.0) < 1e-9
     assert abs(pipelined_floor_ms(rows[0]["region"]) - 9.0) < 1e-9

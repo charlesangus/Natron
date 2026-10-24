@@ -8408,10 +8408,24 @@ void
 Node::getSize(double* w,
               double* h) const
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
+        if (_imp->hasSizeSet) {
+            *w = _imp->sizeW;
+            *h = _imp->sizeH;
 
-    *w = _imp->sizeW;
-    *h = _imp->sizeH;
+            return;
+        }
+    }
+    // A node that was never sized is laid out by its GUI.
+    NodeGuiIPtr gui = _imp->guiPointer.lock();
+    if (gui) {
+        gui->getSize(w, h);
+
+        return;
+    }
+    *w = 0.;
+    *h = 0.;
 }
 
 bool

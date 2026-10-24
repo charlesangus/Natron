@@ -66,10 +66,33 @@ FF ffAddF(FF a, float b)
     return ffQuick(s.hi, lo);
 }
 
+// Veltkamp's split: hi carries the top 12 bits of the significand, so products of halves are exact.
+void ffSplit(float a, out float hi, out float lo)
+{
+    precise float t = a * 4097.0;
+    precise float h = t - (t - a);
+    precise float l = a - h;
+    hi = h;
+    lo = l;
+}
+
+// Dekker's exact product error, as Vulkan does not require fma() to round once (lavapipe does not).
+float ffProductError(float a, float b, float p)
+{
+    float ah;
+    float al;
+    float bh;
+    float bl;
+    ffSplit(a, ah, al);
+    ffSplit(b, bh, bl);
+    precise float e = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
+    return e;
+}
+
 FF ffMulF(FF a, float b)
 {
     precise float p = a.hi * b;
-    precise float e = fma(a.hi, b, -p);
+    const float e = ffProductError(a.hi, b, p);
     precise float lo = e + a.lo * b;
     return ffQuick(p, lo);
 }
@@ -87,7 +110,7 @@ FF ffNeg(FF a)
 FF ffMul(FF a, FF b)
 {
     precise float p = a.hi * b.hi;
-    precise float e = fma(a.hi, b.hi, -p);
+    const float e = ffProductError(a.hi, b.hi, p);
     precise float lo = e + (a.hi * b.lo + a.lo * b.hi);
     return ffQuick(p, lo);
 }

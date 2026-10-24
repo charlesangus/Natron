@@ -102,14 +102,15 @@ struct PinCase {
 
 // A mild homography, one that minifies (supersampling levels that change across the output), one
 // that magnifies, the first inverted, an affine three-point pin, and a perspective extra matrix
-// whose z crosses 0 between pixel centres at x = 50, leaving the right of the output black.
+// whose z crosses 0 between pixel centres near x = 50, leaving the right of the output black. Its
+// entries are not round decimals: with -0.03 and 1.5, (y + 0.5) / z is an integer at many pixels.
 const PinCase kPins[] = {
     { "homography", 4, { { 0., 0. }, { 64., 0. }, { 64., 48. }, { 0., 48. } }, { { 4.13, 2.27 }, { 58.31, 6.19 }, { 62.07, 44.43 }, { 3.29, 40.11 } }, false, true, Mat3::identity() },
     { "homography-minify", 4, { { 0., 0. }, { 64., 0. }, { 64., 48. }, { 0., 48. } }, { { 20.17, 14.29 }, { 41.33, 16.07 }, { 38.41, 31.13 }, { 23.71, 28.37 } }, false, true, Mat3::identity() },
     { "homography-magnify", 4, { { 16., 12. }, { 48., 10. }, { 50., 36. }, { 14., 38. } }, { { 0.17, 0.23 }, { 64.31, 0.11 }, { 63.73, 48.29 }, { 0.41, 47.87 } }, false, true, Mat3::identity() },
     { "homography-invert", 4, { { 0., 0. }, { 64., 0. }, { 64., 48. }, { 0., 48. } }, { { 4.13, 2.27 }, { 58.31, 6.19 }, { 62.07, 44.43 }, { 3.29, 40.11 } }, true, true, Mat3::identity() },
     { "affine-3", 3, { { 0., 0. }, { 64., 0. }, { 64., 48. }, { 0., 0. } }, { { 3.17, -2.29 }, { 60.41, 5.13 }, { 57.23, 46.37 }, { 0., 0. } }, false, false, Mat3::identity() },
-    { "behind-camera", 0, {}, {}, false, true, Mat3(1., 0., 0., 0., 1., 0., -0.03, 0., 1.5) },
+    { "behind-camera", 0, {}, {}, false, true, Mat3(1., 0., 0., 0., 1., 0., -0.03007, 0., 1.50131) },
 };
 
 bool

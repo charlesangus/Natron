@@ -60,3 +60,4 @@ Groups, and the PyPlug instances that are groups, stop being an image barrier. A
   - size: M
 
 **Verification gate:** `ctest` is green, including `DataKindGroup_Test` and the extended `DataKindProjectLoad`/`PyPlugInstantiate` cases, with `DataKind_Test` and `DeepNodes_Test` unchanged; the Xvfb script passes and the user has approved the screenshot.
+- 2026-10-24 — **Claimed by bosley-native-nodes** as the next E3 milestone while M16 waits on UAT (user's rule for this run). M79 - Layered Document Readers was skipped: its stub is still `Blocked on:` a decoding-library choice. Overlap: `Engine/Nodes/README.md` with M110.P4.T2 (different section; rebase on merge).

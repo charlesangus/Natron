@@ -19,7 +19,7 @@
 
 /*
  * A port of darktable's highlight reconstruction module, DARKTABLE_REF release-5.6.2 (commit
- * 20891f6c6fa7), src/iop/highlights.c with src/iop/hlreconstruct/opposed.c, lch.c and the
+ * 20891f6c6fa7), src/iop/highlights.c with src/iop/hlreconstruct/opposed.c, lch.c, laplacian.c and the
  * reference average of segbased.c, Copyright (C) 2009-2026 darktable developers, distributed
  * under the GNU GPL version 3 or later.
  */
@@ -57,6 +57,9 @@
 #define kRawHighlightsParamRecovery "recovery"
 #define kRawHighlightsParamStrength "strength"
 #define kRawHighlightsParamNoiseLevel "noiseLevel"
+#define kRawHighlightsParamIterations "iterations"
+#define kRawHighlightsParamScales "scales"
+#define kRawHighlightsParamSolidColor "solidColor"
 
 NATRON_NAMESPACE_ENTER
 
@@ -66,7 +69,8 @@ enum RawHighlightsModeEnum {
     eRawHighlightsModeOpposed,
     eRawHighlightsModeLCh,
     eRawHighlightsModeInpaint,
-    eRawHighlightsModeSegments
+    eRawHighlightsModeSegments,
+    eRawHighlightsModeLaplacian
 };
 
 /**
@@ -104,7 +108,9 @@ RawHighlightsModeEnum sanitiseRawHighlightsMode(RawHighlightsModeEnum mode,
  * plane and rebuilds each segment from a candidate found next to it; Rebuild also lifts the areas
  * where every colour is clipped by a gradient grown inwards from their edges. Reconstruct Color and
  * Segmentation Based need a CFA and work over the whole frame, which they keep per source and
- * settings, one float per photosite.
+ * settings, one float per photosite. Guided Laplacians needs a Bayer mosaic: it diffuses the
+ * clipped areas of a bilinear RGB image at a quarter of the size, which it keeps per source and
+ * settings, and each render blends the upsampled result over its window by the clipping mask.
  *
  * The clipping threshold shows the smaller of 1 and raw/linear_response_limit until Override
  * Clipping Threshold is on.
@@ -153,7 +159,7 @@ private:
 
     void refreshModeWarning(double time);
 
-    void refreshSegmentsVisibility();
+    void refreshModeKnobsVisibility();
 
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
@@ -167,8 +173,8 @@ private:
      * @brief Clip Highlights, and Reconstruct in LCh on a Bayer or X-Trans mosaic. Inpaint Opposed
      * measures its chrominance over the whole source with double sums, which a region's strips
      * and the GPU's float arithmetic cannot reproduce, so it stays on the CPU, as does LCh without
-     * a CFA, which is Inpaint Opposed. Reconstruct Color and Segmentation Based are whole-frame scans
-     * and stay on the CPU.
+     * a CFA, which is Inpaint Opposed. Reconstruct Color, Segmentation Based and Guided Laplacians
+     * work over the whole frame and stay on the CPU.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -202,6 +208,9 @@ private:
     KnobChoiceWPtr _recovery;
     KnobDoubleWPtr _strength;
     KnobDoubleWPtr _noiseLevel;
+    KnobIntWPtr _iterations;
+    KnobChoiceWPtr _scales;
+    KnobDoubleWPtr _solidColor;
     RawNodeSupport::OwnedMessage _message;
 
     // The chrominance of Inpaint Opposed, for the source and settings its key names.
@@ -210,8 +219,8 @@ private:
     U64 _chromaKey;
     std::array<float, 3> _chroma;
 
-    // The Reconstruct Color or Segmentation Based mosaic of the whole source, for the source and
-    // settings its key names.
+    // The Reconstruct Color or Segmentation Based mosaic of the whole source, or the downsampled
+    // Guided Laplacians reconstruction, for the source and settings its key names.
     std::mutex _frameMutex;
     bool _frameValid;
     U64 _frameKey;

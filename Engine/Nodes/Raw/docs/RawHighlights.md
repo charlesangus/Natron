@@ -3,7 +3,7 @@
 Tolerance: none recorded.
 
 Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
-`hlreconstruct/opposed.c`, `lch.c`, `inpaint.c` and the reference average of `segbased.c`, darktable
+`hlreconstruct/opposed.c`, `lch.c`, `inpaint.c`, `laplacian.c` and the reference average of `segbased.c`, darktable
 `release-5.6.2`).
 
 - Raw in, raw out, at the prepared stage.
@@ -15,8 +15,8 @@ Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
   warning ("highlights: mode not available for this type of image. falling back to inpaint
   opposed."); the Method knob keeps the choice, so a CFA source brings it back. Each mode
   declares the sensor it needs in `rawHighlightsModeRequirement()`: Reconstruct in LCh and
-  Reconstruct Color and Segmentation Based need a CFA, and Guided Laplacians, not yet ported, needs a
-  Bayer mosaic.
+  Reconstruct Color and Segmentation Based need a CFA, and Guided Laplacians needs a Bayer mosaic,
+  so an X-Trans source falls back too.
 - **Clip Highlights** clips every photosite to the threshold, whatever its colour, which turns
   clipped areas white.
 - **Unclipped** is an identity.
@@ -53,11 +53,36 @@ Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
   not off. The whole frame is computed once per `RawNodeSupport::frameKey()` and each render
   copies its window. It has no GPU path and none of darktable's mask views. Where darktable
   races in the candidate pass, segments are applied in darktable's serial order.
-- The guided Laplacian mode is not ported.
+- **Guided Laplacians** (`laplacian.c`, Aurélien Pierre's, `RawKernels::laplacianReconstruct()` and
+  `laplacianRemosaic()`) builds a bilinear RGB image and its norm from the mosaic, divided by the
+  `raw/wb_applied` multipliers, with a mask of the colours that read a photosite above 0.995 x the
+  clipping threshold x that multiplier, blurred by a 5x5 box mean. Both are downsampled 4 times;
+  there **Iterations** rounds each run guided Laplacians (the clipped colours follow the high
+  frequencies of the channel with the most detail, with Poisson noise at **Noise Level** / 4 in the
+  last round) then heat diffusion of the colour ratios (**Inpaint a Flat Color** damps it towards a
+  flat colour), over `ceil(log2(diameter / 4))` wavelet scales for **Diameter of Reconstruction**.
+  The result is upsampled and blended over the mosaic by the blurred mask. Noise Level, Iterations,
+  Inpaint a Flat Color and Diameter of Reconstruction show only for this mode; Noise Level is shared
+  with Segmentation Based. The downsampled result is computed once per
+  `RawNodeSupport::frameKey()` from the whole source; each render rebuilds its window at full
+  resolution from it and its own photosites grown by 3, so tiles match the full frame bit for bit
+  and the full-resolution buffers darktable allocates are never held. A mosaic narrower or shorter
+  than 4 photosites passes through. Differences from darktable:
+  - The box mean sums each 5-photosite window directly where darktable keeps a running sum down
+    each column. The horizontal means of 0 and 1 are the same; the vertical sums can differ in the
+    last bits, and no longer depend on the rows above a tile.
+  - The noise is seeded from the downsampled position, as in darktable; since that frame is always
+    whole, renders repeat and tiles agree.
+  - darktable tiles this mode with an overlap when memory is short, and its result then depends on
+    the tiling; here the downsampled frame is always whole.
+  - Clipping thresholds use `raw/wb_applied` where darktable uses its processed maximum, as for
+    Reconstruct Color; `raw/processed_maximum` is left alone, as darktable does for this mode.
 - It renders at full resolution only.
 
 Tests: `Tests/Native/NativeRawHighlightsDefaults_Test.cpp` for the threshold default, its
-override and the mode fallback; `Tests/Native/NativeRawHighlights_Test.cpp`, on synthetic mosaics. They check Clip against
+override and the mode fallback; `Tests/Native/NativeRawHighlightsLaplacian_Test.cpp` for Guided
+Laplacians (tiles against the full frame, untouched photosites away from clipping, the X-Trans and
+linear fallbacks, knob defaults and visibility); `Tests/Native/NativeRawHighlights_Test.cpp`, on synthetic mosaics. They check Clip against
 a hand computation, and check Inpaint Opposed and LCh for invariants and for tiles matching the
 full frame bit for bit. The darktable-reference comparison per mode belongs to the reference
 harness, which does not exist yet; `DISABLED_MatchesTheDarktableReference` is where it plugs in.
@@ -66,7 +91,7 @@ GPU: Clip Highlights (`rawhighlights_clip`, bound `ParityTolerance::exact()`) an
 LCh on a Bayer or X-Trans mosaic (`rawhighlights_lch`, bound `ParityTolerance::transcendental()`
 for its square root and divisions), both wrapped kernels in `Engine/Gpu/Kernels/rawhighlights.slang`.
 LCh reads the source through the wrap's view, which the node asks to be the window grown by 2 and
-clipped to the source (`getOpGpuInputRoI()`). Reconstruct Color is a whole-frame scan and stays on the CPU. Inpaint Opposed stays on the CPU: its chrominance is
+clipped to the source (`getOpGpuInputRoI()`). Reconstruct Color is a whole-frame scan and stays on the CPU, as do Segmentation Based and Guided Laplacians. Inpaint Opposed stays on the CPU: its chrominance is
 a double-precision sum over the whole source, kept per frame under `RawNodeSupport::frameKey()`,
 which neither a region's strips nor float sums on the device reproduce. LCh without a CFA is
 Inpaint Opposed and stays on the CPU too. With either, the raw run the node is in stays on the CPU

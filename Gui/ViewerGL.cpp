@@ -119,6 +119,16 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 NATRON_NAMESPACE_ENTER
 
+// Outside knob picking the viewer reads the output; while an eyedropper is active it reads the
+// input. The alternate shortcuts select the other source.
+static bool
+resolvePickOutput(const Gui* gui,
+                  bool alternate)
+{
+    const bool knobPicking = gui->hasPickers();
+
+    return alternate ? knobPicking : !knobPicking;
+}
 
 ViewerGL::ViewerGL(ViewerTab* parent,
                    const QOpenGLWidget* shareWidget)
@@ -1882,29 +1892,31 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
         displayingImage() ) {
         // picker with single-point selection
         _imp->pickerState = ePickerStatePoint;
-        if ( pickColor( e->position().x(), e->position().y(), false ) ) {
+        _imp->pickerReadsOutput = resolvePickOutput(_imp->viewerTab->getGui(), false);
+        if (pickColor(e->position().x(), e->position().y(), _imp->pickerReadsOutput)) {
             _imp->ms = eMouseStatePickingColor;
             mustRedraw = true;
             overlaysCaught = true;
         }
     }
 
-    if (!overlaysCaught && isMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickOutputColor, modifiers, button) && displayingImage()) {
-        // picker with single-point selection
+    if (!overlaysCaught && isMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickAlternateColor, modifiers, button) && displayingImage()) {
+        // picker with single-point selection, on the source the plain shortcut does not read
         _imp->pickerState = ePickerStatePoint;
-        if ( pickColor( e->position().x(), e->position().y(), true ) ) {
-            _imp->ms = eMouseStatePickingOutputColor;
+        _imp->pickerReadsOutput = resolvePickOutput(_imp->viewerTab->getGui(), true);
+        if (pickColor(e->position().x(), e->position().y(), _imp->pickerReadsOutput)) {
+            _imp->ms = eMouseStatePickingAlternateColor;
             mustRedraw = true;
             overlaysCaught = true;
         }
     }
 
-    const bool rectanglePickInput = isMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePick, modifiers, button);
-    const bool rectanglePickOutput = isMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePickOutput, modifiers, button);
-    if (!overlaysCaught && (rectanglePickInput || rectanglePickOutput) && displayingImage()) {
+    const bool rectanglePickDefault = isMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePick, modifiers, button);
+    const bool rectanglePickAlternate = isMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePickAlternate, modifiers, button);
+    if (!overlaysCaught && (rectanglePickDefault || rectanglePickAlternate) && displayingImage()) {
         // start picker with rectangle selection (picked color is the average over the rectangle)
         _imp->pickerState = ePickerStateRectangle;
-        _imp->pickerReadsOutput = rectanglePickOutput;
+        _imp->pickerReadsOutput = resolvePickOutput(_imp->viewerTab->getGui(), rectanglePickAlternate);
         _imp->pickerRect.setTopLeft(zoomPos);
         _imp->pickerRect.setBottomRight(zoomPos);
         _imp->ms = eMouseStateBuildingPickerRectangle;
@@ -2468,13 +2480,9 @@ ViewerGL::penMotionInternal(int x,
         mustRedraw = true;
         break;
     }
-    case eMouseStatePickingColor: {
-        pickColor( newClick.x(), newClick.y(), false );
-        mustRedraw = true;
-        break;
-    }
-    case eMouseStatePickingOutputColor: {
-        pickColor( newClick.x(), newClick.y(), true );
+    case eMouseStatePickingColor:
+    case eMouseStatePickingAlternateColor: {
+        pickColor(newClick.x(), newClick.y(), _imp->pickerReadsOutput);
         mustRedraw = true;
         break;
     }
@@ -2644,7 +2652,7 @@ ViewerGL::updateColorPicker(int textureIndex,
                    ( imgPosCanonical.y() >= formatCanonical.bottom() ) &&
                    ( imgPosCanonical.y() < formatCanonical.top() ) ) ) {
                 //imgPos must be in canonical coordinates
-                picked = pickColorAt(imgPosCanonical.x(), imgPosCanonical.y(), textureIndex, false, &r, &g, &b, &a, &mmLevel, &fromInput);
+                picked = pickColorAt(imgPosCanonical.x(), imgPosCanonical.y(), textureIndex, resolvePickOutput(_imp->viewerTab->getGui(), false), &r, &g, &b, &a, &mmLevel, &fromInput);
             }
         }
     }

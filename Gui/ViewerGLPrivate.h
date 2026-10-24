@@ -77,7 +77,7 @@ enum MouseStateEnum {
     eMouseStateDraggingRoiCross,
     eMouseStateBuildingUserRoI,
     eMouseStatePickingColor,
-    eMouseStatePickingOutputColor,
+    eMouseStatePickingAlternateColor,
     eMouseStateBuildingPickerRectangle,
     eMouseStateDraggingWipeCenter,
     eMouseStateDraggingWipeMixHandle,
@@ -221,8 +221,9 @@ struct ViewerGL::Implementation
     PickerStateEnum pickerState;
     QPointF lastPickerPos;
     QRectF pickerRect;
-    // Whether the rectangle pick reads the viewed node's output rather than its input. It samples
-    // on release, when the modifiers may no longer match the ones the drag started with.
+    // Whether the current pick reads the viewed node's output rather than its input. It is fixed at
+    // press, since rectangle picks sample on release and re-picks follow drags, when the modifiers
+    // and eyedropper state may no longer match.
     bool pickerReadsOutput;
 
     // projection info, only used by the main thread

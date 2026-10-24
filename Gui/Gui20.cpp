@@ -868,6 +868,26 @@ Gui::saveProject()
         QString projectFilename = project->getProjectFilename();
         QString projectPath = project->getProjectPath();
 
+        if (project->isLoadedFromFolder()) {
+            QString existing = projectPath;
+            if (!existing.endsWith(QLatin1Char('/'))) {
+                existing.append(QLatin1Char('/'));
+            }
+            if (QFileInfo::exists(existing + projectFilename)) {
+                const StandardButtonEnum answer = Dialogs::questionDialog(NATRON_APPLICATION_NAME,
+                                                                          tr("Replace %1?").arg(projectFilename).toStdString() + "\n" + tr("%1 already exists next to the project folder. Yes replaces it, No lets you choose another file.").arg(projectFilename).toStdString(),
+                                                                          false,
+                                                                          StandardButtons(eStandardButtonYes | eStandardButtonNo | eStandardButtonCancel),
+                                                                          eStandardButtonCancel);
+                if (answer == eStandardButtonNo) {
+                    return saveProjectAs();
+                }
+                if (answer != eStandardButtonYes) {
+                    return false;
+                }
+            }
+        }
+
         if ( !_imp->checkProjectLockAndWarn(projectPath, projectFilename) ) {
             return false;
         }
@@ -920,7 +940,14 @@ Gui::saveProjectAs()
     std::vector<std::string> filter;
 
     filter.push_back(NATRON_PROJECT_FILE_EXT);
-    std::string outFile = popSaveFileDialog( false, filter, _imp->_lastSaveProjectOpenedDir.toStdString(), false );
+    ProjectPtr project = getApp()->getProject();
+    std::string initialDir = _imp->_lastSaveProjectOpenedDir.toStdString();
+    std::string suggestedFile;
+    if (project->isLoadedFromFolder()) {
+        initialDir = project->getProjectPath().toStdString();
+        suggestedFile = project->getProjectFilename().toStdString();
+    }
+    std::string outFile = popSaveFileDialog(false, filter, initialDir, false, suggestedFile);
     if (outFile.size() > 0) {
         return saveProjectAs(outFile);
     }
@@ -1052,11 +1079,16 @@ Gui::saveImageSequenceDialog()
 
 std::string
 Gui::popSaveFileDialog(bool sequenceDialog,
-                       const std::vector<std::string> & initialfilters,
-                       const std::string & initialDir,
-                       bool allowRelativePaths)
+                       const std::vector<std::string>& initialfilters,
+                       const std::string& initialDir,
+                       bool allowRelativePaths,
+                       const std::string& suggestedFileName)
 {
     SequenceFileDialog dialog(this, initialfilters, sequenceDialog, SequenceFileDialog::eFileDialogModeSave, initialDir, this, allowRelativePaths);
+
+    if (!suggestedFileName.empty()) {
+        dialog.setSuggestedFileName(QString::fromStdString(suggestedFileName));
+    }
 
     if ( dialog.exec() ) {
         if (sequenceDialog) {

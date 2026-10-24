@@ -177,6 +177,13 @@ Gui::reloadProject()
     QString projectPath = proj->getProjectPath();
     StrUtils::ensureLastPathSeparator(projectPath);
 
+    if (proj->isLoadedFromFolder()) {
+        // The bundle named by the project may not exist yet; the folder is what was opened.
+        const QString extension = QLatin1Char('.') + QString::fromUtf8(NATRON_PROJECT_FILE_EXT);
+        if (filename.endsWith(extension)) {
+            filename.chop(extension.size());
+        }
+    }
     projectPath.append(filename);
 
     if ( !abortProject(false, true, true) ) {

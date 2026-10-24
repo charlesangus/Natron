@@ -1804,6 +1804,12 @@ SequenceFileDialog::filesToSave()
     return ret.toStdString();
 }
 
+void
+SequenceFileDialog::setSuggestedFileName(const QString& name)
+{
+    _selectionLineEdit->setText(name);
+}
+
 QDir
 SequenceFileDialog::currentDirectory() const
 {

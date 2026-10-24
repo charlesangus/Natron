@@ -277,8 +277,8 @@ public:
     std::string popOpenFileDialog(bool sequenceDialog,
                                   const std::vector<std::string> & initialfilters, const std::string & initialDir,
                                   bool allowRelativePaths);
-    std::string popSaveFileDialog(bool sequenceDialog, const std::vector<std::string> & initialfilters, const std::string & initialDir,
-                                  bool allowRelativePaths);
+    std::string popSaveFileDialog(bool sequenceDialog, const std::vector<std::string>& initialfilters, const std::string& initialDir,
+                                  bool allowRelativePaths, const std::string& suggestedFileName = std::string());
     std::string openImageSequenceDialog();
     std::string saveImageSequenceDialog();
 

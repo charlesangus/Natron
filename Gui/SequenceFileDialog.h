@@ -327,6 +327,9 @@ public:
     ///Works only in eFileDialogModeSave mode.
     std::string filesToSave();
 
+    /// Pre-fills the file name of a save dialog.
+    void setSuggestedFileName(const QString& name);
+
     ///Returns the path of the directory returned by currentDirectory() but whose path has been made
     ///relative to the selected user project path.
     std::string selectedDirectory() const;

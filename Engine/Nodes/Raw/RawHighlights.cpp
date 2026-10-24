@@ -87,6 +87,8 @@ const float kClipMagicClip = 1.0f;
 const float kClipMagicLCh = 1.0f;
 const float kClipMagicOpposed = 0.987f;
 
+const char* const kModeUnavailable = "highlights: mode not available for this type of image. falling back to inpaint opposed.";
+
 const float kSqrt3 = (float)1.7320508075688772935274463415058723669L;
 const float kSqrt12 = (float)3.4641016151377545870548926830117447339L;
 
@@ -569,8 +571,50 @@ lchXTrans(const ImageView& in,
 } // lchXTrans
 } // namespace
 
+RawHighlightsRequirementEnum
+rawHighlightsModeRequirement(RawHighlightsModeEnum mode)
+{
+    switch (mode) {
+    case eRawHighlightsModeLCh:
+        return eRawHighlightsRequiresCfa;
+    case eRawHighlightsModeClip:
+    case eRawHighlightsModeUnclipped:
+    case eRawHighlightsModeOpposed:
+        break;
+    }
+
+    return eRawHighlightsRequiresAny;
+}
+
+bool
+rawHighlightsModeAvailable(RawHighlightsModeEnum mode,
+                           const RawLayout& layout)
+{
+    switch (rawHighlightsModeRequirement(mode)) {
+    case eRawHighlightsRequiresCfa:
+        return layout.hasCfa();
+    case eRawHighlightsRequiresBayer:
+        return layout.period() == 2;
+    case eRawHighlightsRequiresAny:
+        break;
+    }
+
+    return true;
+}
+
+RawHighlightsModeEnum
+sanitiseRawHighlightsMode(RawHighlightsModeEnum mode,
+                          const RawLayout& layout,
+                          bool* fellBack)
+{
+    *fellBack = !rawHighlightsModeAvailable(mode, layout);
+
+    return *fellBack ? eRawHighlightsModeOpposed : mode;
+}
+
 struct RawHighlights::Settings {
     RawHighlightsModeEnum mode = eRawHighlightsModeOpposed;
+    bool fellBack = false;
     float clip = 1.f;
     RawLayout layout;
     std::array<float, 3> coeffs = { 1.f, 1.f, 1.f };
@@ -581,6 +625,8 @@ RawHighlights::RawHighlights(NodePtr node)
     : StagedImageEffect(node)
     , _mode()
     , _clip()
+    , _clipOverride()
+    , _message()
     , _chromaMutex()
     , _chromaValid(false)
     , _chromaKey(0)
@@ -626,7 +672,7 @@ RawHighlights::initializeKnobs()
 
     KnobDoublePtr clip = createKnob<KnobDouble>(tr("Clipping Threshold"));
     clip->setName(kRawHighlightsParamClip);
-    clip->setHintToolTip(tr("The fraction of the white level above which a photosite counts as clipped."));
+    clip->setHintToolTip(tr("The fraction of the white level above which a photosite counts as clipped. Until overridden it shows the limit the raw file says the sensor responds linearly up to, or 1."));
     clip->setDefaultValue(1.);
     clip->setMinimum(0.);
     clip->setMaximum(2.);
@@ -634,6 +680,103 @@ RawHighlights::initializeKnobs()
     clip->setDisplayMaximum(2.);
     page->addKnob(clip);
     _clip = clip;
+
+    KnobBoolPtr clipOverride = createKnob<KnobBool>(tr("Override Clipping Threshold"));
+    clipOverride->setName(kRawHighlightsParamClipOverride);
+    clipOverride->setHintToolTip(tr("Use the clipping threshold above instead of the one the raw file gives."));
+    clipOverride->setDefaultValue(false);
+    clipOverride->setAnimationEnabled(false);
+    page->addKnob(clipOverride);
+    _clipOverride = clipOverride;
+
+    refreshOverride();
+}
+
+void
+RawHighlights::refreshOverride()
+{
+    const KnobBoolPtr overrideKnob = _clipOverride.lock();
+    const KnobDoublePtr clip = _clip.lock();
+
+    if (overrideKnob && clip) {
+        clip->setAllDimensionsEnabled(overrideKnob->getValue());
+    }
+}
+
+void
+RawHighlights::showSourceClip(double time)
+{
+    const KnobBoolPtr overrideKnob = _clipOverride.lock();
+    const KnobDoublePtr clip = _clip.lock();
+
+    if (!overrideKnob || !clip || overrideKnob->getValue() || !getInput(getSourceInput())) {
+        return;
+    }
+    clip->setValue(std::min(1., RawMetadata::getLinearResponseLimit(getSourceMetadata(time, ViewIdx(0)))));
+}
+
+void
+RawHighlights::refreshModeWarning(double time)
+{
+    const KnobChoicePtr mode = _mode.lock();
+
+    if (!mode || !getInput(getSourceInput())) {
+        _message.withdraw(getNode());
+
+        return;
+    }
+    const int value = mode->getValue();
+    const RawLayout layout = RawLayout::fromMetadata(getSourceMetadata(time, ViewIdx(0))).value_or(RawLayout());
+    bool fellBack = false;
+    if ((value >= (int)eRawHighlightsModeClip) && (value <= (int)eRawHighlightsModeLCh)) {
+        (void)sanitiseRawHighlightsMode((RawHighlightsModeEnum)value, layout, &fellBack);
+    }
+    if (fellBack) {
+        _message.post(getNode(), eMessageTypeWarning, tr(kModeUnavailable).toStdString());
+    } else {
+        _message.withdraw(getNode());
+    }
+}
+
+void
+RawHighlights::onInputChanged(int /*inputNo*/)
+{
+    showSourceClip(getCurrentTime());
+    refreshModeWarning(getCurrentTime());
+}
+
+void
+RawHighlights::onKnobsLoaded()
+{
+    refreshOverride();
+    showSourceClip(getCurrentTime());
+    refreshModeWarning(getCurrentTime());
+}
+
+bool
+RawHighlights::knobChanged(KnobI* k,
+                           ValueChangedReasonEnum /*reason*/,
+                           ViewSpec /*view*/,
+                           double time,
+                           bool /*originatedFromMainThread*/)
+{
+    const KnobBoolPtr overrideKnob = _clipOverride.lock();
+    const KnobChoicePtr mode = _mode.lock();
+
+    if (mode && (k == mode.get())) {
+        refreshModeWarning(time);
+
+        return true;
+    }
+    if (!overrideKnob || (k != overrideKnob.get())) {
+        return false;
+    }
+    refreshOverride();
+    if (!overrideKnob->getValue()) {
+        showSourceClip(time);
+    }
+
+    return true;
 }
 
 std::optional<RawHighlights::Settings>
@@ -648,9 +791,11 @@ RawHighlights::resolveSettings(double time,
     const ImageMetadata source = getSourceMetadata(time, view);
     const KnobReader reader(time, view);
     const int mode = reader.value(_mode);
-    s.mode = ((mode >= (int)eRawHighlightsModeClip) && (mode <= (int)eRawHighlightsModeLCh)) ? (RawHighlightsModeEnum)mode : eRawHighlightsModeOpposed;
     s.layout = RawLayout::fromMetadata(source).value_or(RawLayout());
-    s.clip = (float)(reader.value(_clip) * RawMetadata::getWhiteLevel(source).value_or(1.));
+    const RawHighlightsModeEnum requested = ((mode >= (int)eRawHighlightsModeClip) && (mode <= (int)eRawHighlightsModeLCh)) ? (RawHighlightsModeEnum)mode : eRawHighlightsModeOpposed;
+    s.mode = sanitiseRawHighlightsMode(requested, s.layout, &s.fellBack);
+    const double threshold = reader.value(_clipOverride) ? reader.value(_clip) : std::min(1., RawMetadata::getLinearResponseLimit(source));
+    s.clip = (float)(threshold * RawMetadata::getWhiteLevel(source).value_or(1.));
     if (const std::optional<std::array<double, 3>> applied = RawMetadata::getWbApplied(source)) {
         for (int c = 0; c < 3; ++c) {
             s.coeffs[c] = (float)(*applied)[c];
@@ -738,6 +883,11 @@ RawHighlights::renderOp(const RenderActionArgs& args,
         return eStatusFailed;
     }
     const Settings& s = *found;
+    if (s.fellBack) {
+        _message.post(getNode(), eMessageTypeWarning, tr(kModeUnavailable).toStdString());
+    } else {
+        _message.withdraw(getNode());
+    }
     const int sourceInput = getSourceInput();
     const bool hasCfa = s.layout.hasCfa();
     const RawHighlightsModeEnum mode = (!hasCfa && (s.mode == eRawHighlightsModeLCh)) ? eRawHighlightsModeOpposed : s.mode;

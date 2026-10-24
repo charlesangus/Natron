@@ -7,7 +7,16 @@ Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
 `release-5.6.2`).
 
 - Raw in, raw out, at the prepared stage.
-- **Clipping Threshold** is multiplied by `raw/white_level`, which is 1 after RawPrepare.
+- **Clipping Threshold** is multiplied by `raw/white_level`, which is 1 after RawPrepare. It
+  shows the smaller of 1 and `raw/linear_response_limit` (1 when the key is absent), as
+  darktable's `reload_defaults()` sets it, until **Override Clipping Threshold** is on; turning
+  the override off shows the file's value again, and changing the input keeps an override.
+- A mode the source cannot run falls back to Inpaint Opposed with darktable's message as a node
+  warning ("highlights: mode not available for this type of image. falling back to inpaint
+  opposed."); the Method knob keeps the choice, so a CFA source brings it back. Each mode
+  declares the sensor it needs in `rawHighlightsModeRequirement()`: Reconstruct in LCh needs a
+  CFA, and the modes not yet ported need a CFA (Segmentation, Reconstruct Color) or a Bayer
+  mosaic (Guided Laplacians).
 - **Clip Highlights** clips every photosite to the threshold, whatever its colour, which turns
   clipped areas white.
 - **Unclipped** is an identity.
@@ -27,7 +36,8 @@ Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
 - The segmentation, guided Laplacian and inpaint-colour modes are not ported.
 - It renders at full resolution only.
 
-Tests: `Tests/Native/NativeRawHighlights_Test.cpp`, on synthetic mosaics. They check Clip against
+Tests: `Tests/Native/NativeRawHighlightsDefaults_Test.cpp` for the threshold default, its
+override and the mode fallback; `Tests/Native/NativeRawHighlights_Test.cpp`, on synthetic mosaics. They check Clip against
 a hand computation, and check Inpaint Opposed and LCh for invariants and for tiles matching the
 full frame bit for bit. The darktable-reference comparison per mode belongs to the reference
 harness, which does not exist yet; `DISABLED_MatchesTheDarktableReference` is where it plugs in.

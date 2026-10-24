@@ -41,7 +41,7 @@ Scouted facts (main `31636d20d`, 2026-10-20; re-check at promotion):
   - verify: The Decisions entry accounts for at least 80% of each comp's measured gap, or says what remains unexplained.
   - size: L
 
-- [ ] M156.P1.T3 — Time every region transfer on the device (runs before P1.T2 resumes)
+- [x] M156.P1.T3 — Time every region transfer on the device (runs before P1.T2 resumes)
   - files: Engine/GpuRegionTask.cpp, Engine/RenderStats.{h,cpp}, tools/bench/gpu_region_summary.py, Tests/GpuResidency_Test.cpp
   - approach:
     - Give a whole region a timestamp pool with one query pair per download and upload slot. Pass it in `issueDownloads()` (~:1226-1270) and `upload()` (~:849), as `options.timestampPool`/`timestampQuery`, which `GpuTransfer.cpp:672` already honours. Read it in `finishDownloads()` (~:1384). Reset the pool on the device: host reset is off, and the pair is written on the transfer queue.
@@ -86,3 +86,7 @@ Tasks are inserted from M156.P1.T2's attribution.
   - **Record:** `GpuDownloadRecord` → `GpuTransferRecord` (+`pinned`), and `recordDownloads` → `recordTransfers`. A new `uploads` list comes first. Pinned downloads are recorded (`deviceMs` null) and counted in `downloadBytes`. `ownDownloadBytes()` excludes them, so the cost model's `observeTransfer`/`predictedTransferMs` see exactly what they did before.
   - **Test:** renamed to `RegionRecordListsEveryTransferAndTheirBytesAddUp`, plus a sibling `StripRegionRecordTimesEveryTransfer`.
   - **Caveats for P1.T2:** a staged copy's `deviceMs` includes ring-wait idle time, so its rate is a lower bound. Pinned downloads stay untimed, so the ≥ 95% timestamped check excludes pinned bytes.
+- 2026-10-23 — **M156.P1.T3 done.**
+  - **CI:** remote `fast --tests` of `d4eb41d68` is green on both legs (run 40056237899). `RegionRecordListsEveryTransferAndTheirBytesAddUp` and `StripRegionRecordTimesEveryTransfer` ran in both legs, and lavapipe reports timestamps supported, so the `deviceMs` assertions were exercised.
+  - **Release AppImage:** run 40056240260, at `.worktrees/m156/build/remote/release/`.
+  - **Folded into P1.T2:** the GPU-host "≥ 95% timestamped" check (pinned bytes excluded) moves to P1.T2's resumed first run. P1.T2 resumes when M107.P6.T3's bench frees the host.

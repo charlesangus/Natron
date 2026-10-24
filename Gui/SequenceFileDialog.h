@@ -452,6 +452,13 @@ private:
 
     bool isDirectory(const QString & name) const;
 
+    /**
+     * @brief True when an open dialog that lists project.yaml among its filters is given a folder
+     * holding one: Open takes the folder as the project instead of entering it. A trailing
+     * separator, as set by a double-click, still means entering it.
+     **/
+    bool isProjectFolderToOpen(const QString& name) const;
+
     QFileSystemModel* getFavoriteSystemModel() const;
 
     SequenceDialogView* getSequenceView() const

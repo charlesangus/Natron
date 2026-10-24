@@ -243,13 +243,13 @@ notAProjectMessage(const QString& fileName)
     return Project::tr("%1 is not a %2 project").arg(fileName, QString::fromUtf8(NATRON_APPLICATION_NAME));
 }
 
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
 QString
-bundleProjectMemberName()
+Project::folderProjectFileName()
 {
     return QString::fromUtf8(Serialization::kBundleProjectMember.data(), (int)Serialization::kBundleProjectMember.size());
 }
-
-NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 bool
 Project::classifyOpenTarget(const QString& path,
@@ -269,7 +269,7 @@ Project::classifyOpenTarget(const QString& path,
         return false;
     }
 
-    const QString projectYaml = bundleProjectMemberName();
+    const QString projectYaml = folderProjectFileName();
     QString folder;
     if (info.isDir()) {
         folder = absolute;
@@ -1178,7 +1178,7 @@ Project::findAutoSaveForProject(const OpenTarget& target,
             // The folder's bundle need not exist, and the autosave may be from the bundle rather
             // than from this folder: it only stands for the folder if it is newer than its edits.
             const QFileInfo autoSaveInfo(savesDir.filePath(entry));
-            const QFileInfo projectYamlInfo(QDir(target.source).filePath(bundleProjectMemberName()));
+            const QFileInfo projectYamlInfo(QDir(target.source).filePath(folderProjectFileName()));
             if (autoSaveInfo.lastModified() <= projectYamlInfo.lastModified()) {
                 continue;
             }

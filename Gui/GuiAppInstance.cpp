@@ -362,19 +362,19 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
             ///If this is a Python script, execute it
             loadPythonScript(info);
             execOnProjectCreatedCallback();
-        } else if (info.suffix() == QString::fromUtf8(NATRON_PROJECT_FILE_EXT) || info.suffix() == QString::fromUtf8("ntp")) {
-            ///Otherwise just load the project specified.
-            QString name = info.fileName();
-            QString path = info.path();
-            StrUtils::ensureLastPathSeparator(path);
-            appPTR->setLoadingStatus(tr("Loading project: ") + path + name);
-            getProject()->loadProject(path, name);
-            ///remove any file open event that might have occurred
-            appPTR->setFileToOpen( QString() );
         } else {
-            Dialogs::errorDialog(tr("Invalid file").toStdString(),
-                                 tr("%1 only accepts python scripts or .ntpz project files").arg(QString::fromUtf8(NATRON_APPLICATION_NAME)).toStdString());
-            execOnProjectCreatedCallback();
+            Project::OpenTarget target;
+            QString refusal;
+            if (Project::classifyOpenTarget(cl.getScriptFilename(), &target, &refusal)) {
+                appPTR->setLoadingStatus(tr("Loading project: ") + target.source);
+                getProject()->loadProject(QString(), target.source);
+                /// remove any file open event that might have occurred
+                appPTR->setFileToOpen(QString());
+            } else {
+                Dialogs::errorDialog(tr("Invalid file").toStdString(), refusal.toStdString());
+                getProject()->createViewer();
+                execOnProjectCreatedCallback();
+            }
         }
     }
 
@@ -1229,12 +1229,12 @@ GuiAppInstance::handleFileOpenEvent(const std::string &filename)
     QString fileCopy( QString::fromUtf8( filename.c_str() ) );
 
     fileCopy.replace( QLatin1Char('\\'), QLatin1Char('/') );
+    const QFileInfo info(fileCopy);
     QString ext = QtCompat::removeFileExtension(fileCopy);
-    if (ext == QString::fromUtf8(NATRON_PROJECT_FILE_EXT) || ext == QString::fromUtf8("ntp")) {
+    if ((ext == QString::fromUtf8(NATRON_PROJECT_FILE_EXT)) || (ext == QString::fromUtf8("ntp")) || info.isDir() || (info.fileName() == Project::folderProjectFileName())) {
+        // openProject() reports a refused or failed project itself.
         AppInstancePtr app = getGui()->openProject(filename);
-        if (!app) {
-            Dialogs::errorDialog(tr("Project").toStdString(), tr("Failed to open project").toStdString() + ' ' + filename);
-        }
+        Q_UNUSED(app);
     } else {
         appPTR->handleImageFileOpenRequest(filename);
     }

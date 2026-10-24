@@ -111,6 +111,11 @@ public:
     static bool classifyOpenTarget(const QString& path, OpenTarget* out, QString* error);
 
     /**
+     * @brief The name of the file that makes a folder a project (an unzipped bundle): project.yaml.
+     **/
+    static QString folderProjectFileName();
+
+    /**
      * @brief Loads the project at path + name: a file, a folder or a project.yaml, as
      * classifyOpenTarget() describes. A path it refuses is reported and the current project is
      * left untouched; otherwise the current project is reset before loading.

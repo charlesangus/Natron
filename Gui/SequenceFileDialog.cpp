@@ -1264,6 +1264,21 @@ SequenceFileDialog::isDirectory(const QString & name) const
     return QDir(name).exists();
 }
 
+bool
+SequenceFileDialog::isProjectFolderToOpen(const QString& name) const
+{
+    if ((_dialogMode != eFileDialogModeOpen) || !_filters.contains(Project::folderProjectFileName())) {
+        return false;
+    }
+    if (name.endsWith(QLatin1Char('/')) || !isDirectory(name)) {
+        return false;
+    }
+    Project::OpenTarget target;
+    QString refusal;
+
+    return Project::classifyOpenTarget(name, &target, &refusal) && target.isFolder;
+}
+
 QString
 SequenceFileDialog::rootPath() const
 {
@@ -1500,6 +1515,11 @@ SequenceFileDialog::openSelectedFiles()
                 }
                 QDialog::accept();
             }
+        } else if (isProjectFolderToOpen(str)) {
+            // selectedFiles() prefers the selected row, which may not be the folder typed in.
+            _view->selectionModel()->clear();
+            teardownPreview();
+            QDialog::accept();
         } else {
             setDirectory(str);
         }
@@ -1523,7 +1543,7 @@ SequenceFileDialog::keyPressEvent(QKeyEvent* e)
 {
     if ( (e->key() == Qt::Key_Return) || (e->key() == Qt::Key_Enter) ) {
         QString str = _selectionLineEdit->text();
-        if ( !isDirectory(str) ) {
+        if (!isDirectory(str) || isProjectFolderToOpen(str)) {
             if (_dialogMode != eFileDialogModeDir) {
                 openSelectedFiles();
             } else {
@@ -1838,6 +1858,17 @@ SequenceFileDialog::seekUrl(const QUrl & url)
     setDirectory(urlToPathString(url));
 }
 
+// A filter is an extension, a pattern, or a whole file name such as project.yaml.
+static QString
+filterPattern(const QString& filter)
+{
+    if (filter.contains(QLatin1Char('*')) || filter.contains(QLatin1Char('.'))) {
+        return filter;
+    }
+
+    return QString::fromUtf8("*.") + filter;
+}
+
 void
 SequenceFileDialog::showFilterMenu()
 {
@@ -1860,10 +1891,7 @@ SequenceFileDialog::showFilterMenu()
     filters << QString::fromUtf8("*/") << QString::fromUtf8("*") << QString::fromUtf8(".*");
 
     for (int i = 0; i < filters.size(); ++i) {
-        QString filter = filters[i];
-        if ( !filter.contains( QString::fromUtf8("*") ) ) {
-            filter.prepend( QString::fromUtf8("*.") );
-        }
+        QString filter = filterPattern(filters[i]);
         QAction *filterAction = new QAction(filter, this);
         QObject::connect( filterAction, SIGNAL(triggered()), this, SLOT(handleFilterSlot()) );
         actions.append(filterAction);
@@ -1903,8 +1931,14 @@ SequenceFileDialog::setDefaultFilter()
     }
 
     QString filter = QString::fromUtf8("*.*");
-    if (_filters.size() == 1) { // only set if we got a single filter (ntp/nl/nps etc)
-        filter = QString::fromUtf8("*.%1").arg( _filters.at(0) );
+    // Long extension lists (readers) stay unfiltered; a single type, or a project with its
+    // folder form, is filtered on exactly that.
+    if ((_filters.size() == 1) || _filters.contains(Project::folderProjectFileName())) {
+        QStringList patterns;
+        for (const QString& f : _filters) {
+            patterns.push_back(filterPattern(f));
+        }
+        filter = patterns.join(QLatin1Char(' '));
     }
     _filterLineEdit->setText(filter);
     applyFilter(filter);

@@ -1234,10 +1234,22 @@ void
 Gui::handleOpenFilesFromUrls(const QList<QUrl>& urls,
                              const QPoint& globalPos)
 {
+    // A project folder, or its project.yaml, is one project and not a folder of files to read.
+    QList<QUrl> fileUrls;
+    for (const QUrl& url : urls) {
+        Project::OpenTarget target;
+        QString refusal;
+        if (Project::classifyOpenTarget(url.toLocalFile(), &target, &refusal) && target.isFolder) {
+            AppInstancePtr appInstance = openProject(url.toLocalFile().toStdString());
+            Q_UNUSED(appInstance);
+        } else {
+            fileUrls.push_back(url);
+        }
+    }
+
     std::vector<SequenceParsing::SequenceFromFilesPtr> sequences;
 
-
-    fileSequencesFromUrls(urls, &sequences);
+    fileSequencesFromUrls(fileUrls, &sequences);
     QWidget* widgetUnderMouse = QApplication::widgetAt(globalPos);
     NodeGraph* graph = isNodeGraphChild(widgetUnderMouse);
 

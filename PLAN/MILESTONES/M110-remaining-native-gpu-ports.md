@@ -445,3 +445,15 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **EdgeDetect:** recursive filters with suppression after erosion or `expandRoD` flip pixels on near-ties within `iir()`'s tolerance, so those cases now use no erosion, or no suppression. Simple and box filters still cover suppression after erosion.
   - **Still owed:** impulse and box (draft mode forces impulse) still pay for the exact maths. The old-vs-new resample bench on the GPU host stands, after M156.P1.T2.
 - 2026-10-24 — **Phase 110.2 build green for P2.T1–P2.T4** (remote `fast --tests` of `9b8a816b1`, run 40091898992, both legs; 342 of 343 entries pass). Transform, EdgeDetect, Position, ChannelRoute and GpuResidency all pass with the fixes. The one failure is P3.T1's new `NativeCropGpuTest` (`CropMatchesTheCpuRender`, `InputRegionIsTheNodesRegionOfInterest`, `NaNSourceOnTheBorderIsWrittenZero`, both legs), sent to a consultant. P2.T5 is being implemented in the lane.
+- 2026-10-24 — **M110.P2.T5 code in (`dd776c096`), awaiting the build with the Crop fix.**
+  - **One plane classifier:** `makeGpuTaskPlanes` sorts a task's planes into rendered, pass-through and absent. Placement and `plan()` share it, so they always agree.
+  - **Per plane:** each rendered plane is a `Member`. A pass-through plane shares the in-region producer's slot, or, when the producer is outside the region, an external slot. Extra input layers are appended slots, with parallel input-number and layer vectors. Whole and strip paths fill `layerInputs` through one helper.
+  - **Storing:** `storeOutputs` makes one `put` per task with every plane. A task goes all-RAM if any plane is downloaded.
+  - **Cost:** kernel cost is split evenly per plane, and `memberNs` is summed back per task.
+  - **Accepted deviations (PM):**
+    - The test effect is built on `ChannelRouteEffect`, because `compositestep_halveadd` is not in the registry.
+    - `Tests/Native/NativeGpuParity.cpp`'s `placeOnGpu` uses the new classifier, so parity tests can place multi-plane tasks.
+    - `resolveInputs` no longer falls back silently to `components.front()`, only between colour layouts.
+  - **`MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu` keeps its expectation:** nothing asks the source for the producer's extra layer, so it can't be aliased. A new assertion pins that reasoning.
+  - **Risk for P4.T1's acceptance chain:** the request pass does not ask upstream for planes a node passes through, so in Read → Grade → Shuffle (another layer) the Grade can't alias the plane and stays on the CPU. Fixing that means propagating pass-through planes in `Engine/ParallelRenderArgs.cpp`, outside P2.T5's files. Decide at P4.T1.
+  - **Coverage gap:** the strip path with extra layer slots is untested, because the 64×48 parity source never strips.

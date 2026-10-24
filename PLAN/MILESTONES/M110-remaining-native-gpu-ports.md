@@ -414,3 +414,6 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **Accepted deviation (PM):** `PassGpuIO` gains `std::bitset<4> channels`, set from `plan.processChannels` in `recordPassesGpu` (`Engine/Nodes/Image/PassExecutor.{h,cpp}`, one line each). Without it, RMS, Max and Tensor would mix unprocessed channels into the result on the default RGB-on-RGBA setting.
   - **Test:** a ~250-submit sweep.
   - **Watch:** NMS near-ties after a blur above 0, and the nearest-pixel fill's clamp (`src.bounds ∩ input RoD` versus the CPU's fetched bounds).
+- 2026-10-23 — **M110.P2.T2 code in (`6526069fa`), awaiting the phase build.** Position opts in with `kResamplesOnGpu`, and its GPU bound is `exact()`.
+  - **Pre-existing CPU cache dependence, found by reading the code:** under `PassThroughUnprocessed`, a pixel whose unshifted position falls outside the RoI reads the CPU's *fetched* image. That is 0 with an exact-RoI fetch, but real pixels when the cache holds a larger image from an earlier render. So the CPU's unprocessed channels at the window edge depend on cache state, while the GPU always reads 0. Tests bypass the cache and agree.
+  - **Fix options, for a later call:** add the window to the RoI under pass-through, which changes the CPU fetch, or clip the CPU's reference read to the RoI. Not fixed here.

@@ -78,7 +78,7 @@ public:
     /**
      * @brief Flag that the thread is currently entering the given actionName of the given node. This is used
      * to report to the user if a thread seems to be unresponding after a long time that the user aborted it.
-     * @see AbortableRenderInfo::onAbortTimerTimeout()
+     * @see AbortableRenderInfo::getStallReport()
      **/
     void setCurrentActionInfos(const std::string& actionName, const NodePtr& node);
     void getCurrentActionInfos(std::string* actionName, NodePtr* node) const;

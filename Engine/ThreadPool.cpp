@@ -25,8 +25,10 @@
 
 #include "ThreadPool.h"
 
-#include <string>
+#include <algorithm>
 #include <sstream> // stringstream
+#include <string>
+#include <vector>
 
 #include <QAtomicInt>
 #include <QMutex>
@@ -50,6 +52,9 @@ struct AbortableThreadPrivate
     bool abortInfoValid;
     std::string currentActionName;
     NodeWPtr currentActionNode;
+    // Every render this thread registered with and may still be listed in: setAbortInfo() replaces
+    // abortInfo without unregistering from the previous render, so that one may still list it too.
+    std::vector<AbortableRenderInfoWPtr> registeredRenders;
 
     AbortableThreadPrivate(QThread* thread)
         : thread(thread)
@@ -61,6 +66,7 @@ struct AbortableThreadPrivate
         , abortInfoValid(false)
         , currentActionName()
         , currentActionNode()
+        , registeredRenders()
     {
     }
 };
@@ -72,6 +78,19 @@ AbortableThread::AbortableThread(QThread* thread)
 
 AbortableThread::~AbortableThread()
 {
+    // A render that still lists this thread would otherwise keep a dangling pointer to it. Each
+    // unregistration waits for a stall scan of that render that is describing this thread.
+    std::vector<AbortableRenderInfoWPtr> registeredRenders;
+    {
+        QMutexLocker k(&_imp->abortInfoMutex);
+        registeredRenders.swap(_imp->registeredRenders);
+    }
+    for (std::size_t i = 0; i < registeredRenders.size(); ++i) {
+        AbortableRenderInfoPtr info = registeredRenders[i].lock();
+        if (info) {
+            info->unregisterThreadForRender(this);
+        }
+    }
 }
 
 void
@@ -134,7 +153,19 @@ AbortableThread::setAbortInfo(bool isRenderResponseToUserInteraction,
         _imp->abortInfo = abortInfo;
         _imp->treeRoot = treeRoot;
         _imp->abortInfoValid = true;
+        if (abortInfo) {
+            std::vector<AbortableRenderInfoWPtr>& registered = _imp->registeredRenders;
+            registered.erase(std::remove_if(registered.begin(), registered.end(), [](const AbortableRenderInfoWPtr& r) { return r.expired(); }), registered.end());
+            bool alreadyRegistered = false;
+            for (std::size_t i = 0; i < registered.size() && !alreadyRegistered; ++i) {
+                alreadyRegistered = !registered[i].owner_before(abortInfo) && !abortInfo.owner_before(registered[i]);
+            }
+            if (!alreadyRegistered) {
+                registered.push_back(abortInfo);
+            }
+        }
     }
+    // Outside abortInfoMutex: a stall scan holds the render's thread lock while it takes this one.
     if (abortInfo) {
         abortInfo->registerThreadForRender(this);
     }
@@ -150,6 +181,14 @@ AbortableThread::clearAbortInfo()
         _imp->abortInfo.reset();
         _imp->treeRoot.reset();
         _imp->abortInfoValid = false;
+        if (abortInfo) {
+            std::vector<AbortableRenderInfoWPtr>& registered = _imp->registeredRenders;
+            registered.erase(std::remove_if(registered.begin(), registered.end(), [&abortInfo](const AbortableRenderInfoWPtr& r) {
+                                 AbortableRenderInfoPtr info = r.lock();
+                                 return !info || info == abortInfo;
+                             }),
+                             registered.end());
+        }
     }
 
     if (abortInfo) {

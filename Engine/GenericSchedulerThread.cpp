@@ -25,6 +25,11 @@
 
 #include "GenericSchedulerThread.h"
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <thread>
+
 #include <QCoreApplication>
 #include <QMutex>
 #include <QWaitCondition>
@@ -54,6 +59,8 @@ public:
     }
 };
 
+std::atomic<int> idleTransitionDelayMs(0);
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 static GenericSchedulerThreadMetaTypesRegistration registration;
 struct GenericSchedulerThreadPrivate
@@ -82,7 +89,10 @@ struct GenericSchedulerThreadPrivate
 
     // The state of the thread protected by threadStateMutex
     GenericSchedulerThread::ThreadStateEnum threadState;
+    // Counts the times the thread left eThreadStateActive, protected by threadStateMutex
+    std::uint64_t inactiveTransitions;
     mutable QMutex threadStateMutex;
+    mutable QWaitCondition threadStateCond;
 
     // The tasks queue, protected by enqueuedTasksMutex
     std::list<GenericThreadStartArgsPtr> enqueuedTasks, queuedTaskWhileProcessingAbort;
@@ -110,7 +120,9 @@ struct GenericSchedulerThreadPrivate
         , abortRequestedMutex()
         , abortRequestedCond()
         , threadState(GenericSchedulerThread::eThreadStateStopped)
+        , inactiveTransitions(0)
         , threadStateMutex()
+        , threadStateCond()
         , enqueuedTasks()
         , queuedTaskWhileProcessingAbort()
         , enqueuedTasksMutex()
@@ -125,7 +137,11 @@ struct GenericSchedulerThreadPrivate
     {
         QMutexLocker k(&threadStateMutex);
 
+        if ((threadState == GenericSchedulerThread::eThreadStateActive) && (state != GenericSchedulerThread::eThreadStateActive)) {
+            ++inactiveTransitions;
+        }
         threadState = state;
+        threadStateCond.wakeAll();
     }
 
     // Returns the state of the thread
@@ -322,6 +338,25 @@ GenericSchedulerThread::getThreadState() const
     QMutexLocker k(&_imp->threadStateMutex);
 
     return _imp->threadState;
+}
+
+void
+GenericSchedulerThread::waitUntilNotActive(const std::function<bool()>& stopWaiting) const
+{
+    QMutexLocker k(&_imp->threadStateMutex);
+    // The thread may leave eThreadStateActive and re-enter it for a newly queued task before this
+    // thread wakes up, so counting transitions is what guarantees the wake-up is not missed.
+    const std::uint64_t transitionsAtStart = _imp->inactiveTransitions;
+
+    while ((_imp->threadState == eThreadStateActive) && (_imp->inactiveTransitions == transitionsAtStart) && !stopWaiting()) {
+        _imp->threadStateCond.wait(k.mutex());
+    }
+}
+
+void
+GenericSchedulerThread::setIdleTransitionDelayForTesting(int milliseconds)
+{
+    idleTransitionDelayMs.store(milliseconds);
 }
 
 bool
@@ -522,6 +557,11 @@ GenericSchedulerThread::run()
         // If the thread has not been aborted, put it asleep
         if (state == eThreadStateActive) {
             state = eThreadStateIdle;
+        }
+
+        const int delayMs = idleTransitionDelayMs.load();
+        if (delayMs > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
         }
 
         _imp->setThreadState(state);

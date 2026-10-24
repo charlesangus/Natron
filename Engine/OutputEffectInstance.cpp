@@ -367,6 +367,20 @@ OutputEffectInstance::notifyRenderFinished()
 }
 
 bool
+OutputEffectInstance::hasRenderSequenceRequestOtherThan(const BlockingBackgroundRender* renderController) const
+{
+    QMutexLocker k(&_outputEffectDataLock);
+
+    for (std::list<RenderSequenceArgs>::const_iterator it = _renderSequenceRequests.begin(); it != _renderSequenceRequests.end(); ++it) {
+        if (it->renderController != renderController) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
 OutputEffectInstance::isSequentialRenderBeingAborted() const
 {
     return _engine ? _engine->isSequentialRenderBeingAborted() : false;

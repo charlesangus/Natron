@@ -30,7 +30,10 @@
 
 #include "Global/GlobalDefines.h"
 
-#include <QObject>
+#include <memory>
+#include <string>
+
+#include <QCoreApplication>
 
 #include "Engine/EngineFwd.h"
 
@@ -47,16 +50,12 @@ NATRON_NAMESPACE_ENTER
  * and the thread will be notified. The thread should then periodically call AbortableThread::getAbortInfo and call the AbortableRenderInfo::isAborted()
  * function to find out whether the render was aborted or not. Some renders relying on a 3rd party library might not peek the isAborted() function.
  * In this case, if this thread does not return from its task after some time that the user called setAborted(), then the user will be notified about a potentially
- * stalled render.
+ * stalled render (see AbortWatchdog).
  **/
 struct AbortableRenderInfoPrivate;
 class AbortableRenderInfo
-    : public QObject
-    , public std::enable_shared_from_this<AbortableRenderInfo>
-{
-GCC_DIAG_SUGGEST_OVERRIDE_OFF
-    Q_OBJECT
-GCC_DIAG_SUGGEST_OVERRIDE_ON
+    : public std::enable_shared_from_this<AbortableRenderInfo> {
+    Q_DECLARE_TR_FUNCTIONS(AbortableRenderInfo)
 
 private:
     // constructors should be privatized in any class that derives from std::enable_shared_from_this<>
@@ -145,6 +144,7 @@ public:
      * @brief Registers the thread as part of this render request. Whenever AbortableThread::setAbortInfo is called, the thread is automatically registered
      * in this class as to be part of this render. This is used to monitor running threads for a specific render and to know if a thread has stalled when
      * the user called setAborted()
+     * The thread must be unregistered before it is destroyed; AbortableThread's destructor does it.
      **/
     void registerThreadForRender(AbortableThread* thread);
 
@@ -156,19 +156,16 @@ public:
      **/
     bool unregisterThreadForRender(AbortableThread* thread);
 
-public Q_SLOTS:
-
     /**
-     * @brief Triggered by a timer after some time that a thread called setAborted(). This is used to detect stalled threads that do not seem
-     * to want to abort.
+     * @brief Describes the threads of this render that are inside an action of a node, for the
+     * stalled-render report. Returns false, leaving report untouched, when there is nothing to
+     * report: no thread is registered, none is inside a node action, or one is inside a reader or
+     * writer, whose file IO may legitimately take long without abort callbacks.
      **/
-    void onAbortTimerTimeout();
+    bool getStallReport(std::string* report) const;
 
-    void onStartTimerInOriginalThreadTriggered();
-
-Q_SIGNALS:
-
-    void startTimerInOriginalThread();
+    // Terminates every registered thread. See AbortableThread::killThread() for the dangers.
+    void killRegisteredThreads();
 
 private:
 

@@ -103,6 +103,12 @@ public:
 
     void notifyRenderFinished();
 
+    /**
+     * @brief Returns true if a sequence render requested by anything other than renderController
+     * is queued or running.
+     **/
+    bool hasRenderSequenceRequestOtherThan(const BlockingBackgroundRender* renderController) const;
+
     void renderCurrentFrame(bool canAbort);
 
     void renderCurrentFrameWithRenderStats(bool canAbort);

@@ -216,9 +216,9 @@ bool canRecordResampleGpu(const EffectInstance& effect,
 /**
  * @brief The pixels of the source, input sourceInput, that recordResampleGpu() reads to produce
  * outputRect at time, view and scale: the source's entry of the node's own regions of interest
- * (EffectInstance::getRegionsOfInterest_public()) over outputRect, enclosed in pixels, so that a
- * node overriding them is read as the CPU reads it. outputRect itself without a connected source,
- * for an empty outputRect, or when the node names no region for the source.
+ * (EffectInstance::getRegionsOfInterest_public()) over outputRect, enclosed in the source's own
+ * pixels, so that a node overriding them is read as the CPU reads it. outputRect itself without a
+ * connected source, for an empty outputRect, or when the node names no region for the source.
  **/
 RectI resampleGpuSourceRoI(const EffectInstance& effect,
                            int sourceInput,
@@ -229,8 +229,9 @@ RectI resampleGpuSourceRoI(const EffectInstance& effect,
 
 /**
  * @brief Records request over args.outputRect of args.output through plan, as runResampleCpu()
- * renders it. The source is clipped to its region of definition and, for the matrix form or with
- * clipSourceToRoI, to resampleGpuSourceRoI(). The matrix form resamples it through the request's
+ * renders it. The source is clipped to its region of definition and, for the matrix form, to
+ * resampleGpuSourceRoI(); with clipSourceToRoI, the offset form clips it to that same region of
+ * interest enclosed at the source clip's pixel aspect ratio, the region getImage() reports. The matrix form resamples it through the request's
  * matrices (averaged for a blur) with the impulse filter for a draft render; the offset form
  * shifts it by the request's offset, zero outside it, and weighs it by the request's matte as
  * runResampleCpu() does, the weights sampled over outputRect. With a mask, a mix other than 1 or

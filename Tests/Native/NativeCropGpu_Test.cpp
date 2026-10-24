@@ -51,6 +51,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -163,28 +164,35 @@ protected:
         return setKnobValues(node, kCropParamReformat, { c.reformat ? 1. : 0. }) && setKnobValues(node, kCropParamIntersect, { c.intersect ? 1. : 0. }) && setKnobValues(node, kCropParamBlackOutside, { c.blackOutside ? 1. : 0. }) && setKnobValues(node, kCropParamSoftness, { c.softness });
     }
 
-    // A source moved off the origin, or a constant of NaN, connected to a new Crop set up as the case says.
+    // A source moved off the origin, or one that is NaN in rgb and infinite in alpha, connected to
+    // a new Crop set up as the case says.
     bool createGraph(const CropCase& c,
                      bool nanSource,
                      NodePtr* source,
                      NodePtr* node)
     {
+        NodePtr constant;
         if (nanSource) {
-            *source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+            constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+            *source = createNode(QString::fromUtf8(PLUGINID_NATRON_MULTIPLY), PLUGIN_MAJOR_NATRON_COLORMATH);
+            EXPECT_TRUE(bool(constant));
         } else {
             *source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
         }
         *node = createNode(QString::fromUtf8(PLUGINID_NATRON_CROP), PLUGIN_MAJOR_NATRON_CROP);
         EXPECT_TRUE(bool(*source));
         EXPECT_TRUE(bool(*node));
-        if (!*source || !*node) {
+        if (!*source || !*node || (nanSource && !constant)) {
             return false;
         }
         if (nanSource) {
-            const double nan = std::numeric_limits<double>::quiet_NaN();
-            if (!setKnobValues(*source, kConstantParamColor, { nan, nan, nan, nan })) {
+            // A knob clamps NaN to its maximum, so the NaN is made downstream: the constant is
+            // infinite, and the multiply's rgb, by 0, turns it into NaN and leaves alpha infinite.
+            const double inf = std::numeric_limits<double>::infinity();
+            if (!setKnobValues(constant, kConstantParamColor, { inf, inf, inf, inf }) || !setKnobValues(*source, kColorMathParamValue, { 0., 0., 0., 0. })) {
                 return false;
             }
+            connectNodes(constant, *source, 0, true);
         } else {
             setParitySourceComponents(*source, "rgba");
             setParitySourceOrigin(*source, 3, 5);
@@ -242,7 +250,14 @@ TEST_F(NativeCropGpuTest, InputRegionIsTheNodesRegionOfInterest)
                 effect->getRegionsOfInterest_public(kTime, scale, window, window, ViewIdx(0), &rois);
                 RoIMap::const_iterator found = rois.find(source->getEffectInstance());
                 ASSERT_TRUE(found != rois.end()) << c.name << " mipmap " << mipmapLevel;
-                EXPECT_EQ(found->second.toPixelEnclosing(scale, sourcePar), effect->getGpuInputRoI(0, rect, scale)) << c.name << " par " << par << " mipmap " << mipmapLevel;
+                const RectI expected = found->second.toPixelEnclosing(scale, sourcePar);
+                const RectI actual = effect->getGpuInputRoI(0, rect, scale);
+                // An empty region keeps whatever corners the intersection left; only its emptiness matters.
+                if (expected.isNull()) {
+                    EXPECT_TRUE(actual.isNull()) << c.name << " par " << par << " mipmap " << mipmapLevel;
+                } else {
+                    EXPECT_EQ(expected, actual) << c.name << " par " << par << " mipmap " << mipmapLevel;
+                }
             }
         }
     }
@@ -560,8 +575,8 @@ TEST_F(NativeCropGpuTest, CropMatchesTheCpuRender)
     }
 }
 
-// A NaN source pixel on the border or on a zero-weight edge comes out 0 on both sides, and one
-// the crop keeps stays NaN.
+// A NaN or infinite source pixel on the border or on a zero-weight edge comes out 0 on both
+// sides, and a NaN one the crop keeps stays NaN.
 TEST_F(NativeCropGpuTest, NaNSourceOnTheBorderIsWrittenZero)
 {
     std::unique_ptr<GpuParityRuntime> runtime;

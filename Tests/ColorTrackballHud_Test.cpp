@@ -448,16 +448,23 @@ TEST(ColorTrackballHud, AfterFollowingItAttachesUnderTheKnobAsBefore)
     columnLayout->addWidget(&channelLines);
     columnLayout->addWidget(&panel);
 
+    const Qt::WindowFlags beforeFollowing = hud.windowFlags();
+    const bool showedWithoutActivating = hud.testAttribute(Qt::WA_ShowWithoutActivating);
+
     hud.setFollowCursor(true);
     hud.setFollowCursor(false);
 
     EXPECT_FALSE(hud.isFollowingCursor());
+    // A parentless widget is always a window to Qt; every other flag is the one it had before.
+    EXPECT_EQ(beforeFollowing | Qt::Window, hud.windowFlags());
     EXPECT_FALSE(hud.windowFlags().testFlag(Qt::WindowTransparentForInput));
     EXPECT_FALSE(hud.testAttribute(Qt::WA_TransparentForMouseEvents));
+    EXPECT_EQ(showedWithoutActivating, hud.testAttribute(Qt::WA_ShowWithoutActivating));
 
     attachColorGlobalModeHud(columnLayout, &channelLines, &hud);
 
     EXPECT_EQ(2, columnLayout->indexOf(&hud));
     EXPECT_EQ(&column, hud.parentWidget());
     EXPECT_FALSE(hud.isWindow());
+    EXPECT_EQ(beforeFollowing & ~Qt::WindowType_Mask, hud.windowFlags() & ~Qt::WindowType_Mask);
 }

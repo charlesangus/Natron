@@ -58,6 +58,9 @@ ColorTrackballHud::ColorTrackballHud(QWidget* parent)
     , _legendV(new QLabel(QString::fromUtf8("V"), this))
     , _endOfListLabel(new QLabel(this))
     , _followCursor(false)
+    , _preFollowWindowFlags()
+    , _preFollowShowWithoutActivating(false)
+    , _preFollowTransparentForMouseEvents(false)
     , _cursor()
 {
     setObjectName(QString::fromUtf8("ColorTrackballHud"));
@@ -181,16 +184,28 @@ ColorTrackballHud::setFollowCursor(bool follow)
     if (layout) {
         layout->removeWidget(this);
     }
-    _followCursor = follow;
-    setParent(0, follow ? followCursorWindowFlags() : Qt::WindowFlags());
-    if (!follow) {
-        // reparenting with empty flags keeps the old window-type and input flags; drop them so the widget is a plain child again
-        setWindowFlags(windowFlags() & ~followCursorWindowFlags() & ~Qt::WindowType_Mask);
+    if (follow == _followCursor) {
+        if (follow) {
+            adjustSize();
+        }
+
+        return;
     }
-    setAttribute(Qt::WA_ShowWithoutActivating, follow);
-    setAttribute(Qt::WA_TransparentForMouseEvents, follow);
+    _followCursor = follow;
     if (follow) {
+        _preFollowWindowFlags = windowFlags();
+        _preFollowShowWithoutActivating = testAttribute(Qt::WA_ShowWithoutActivating);
+        _preFollowTransparentForMouseEvents = testAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_ShowWithoutActivating, true);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        setParent(0, followCursorWindowFlags());
         adjustSize();
+    } else {
+        // Qt ORs WindowTransparentForInput into the flags of any reparent made while
+        // WA_TransparentForMouseEvents is set, so the attribute goes back first.
+        setAttribute(Qt::WA_ShowWithoutActivating, _preFollowShowWithoutActivating);
+        setAttribute(Qt::WA_TransparentForMouseEvents, _preFollowTransparentForMouseEvents);
+        setParent(0, _preFollowWindowFlags);
     }
 }
 

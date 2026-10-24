@@ -275,6 +275,24 @@ TEST(ColorTrackballBinPanel, AGestureInThePanelIsOneUndoStepOnTheBoundKnob)
     EXPECT_DOUBLE_EQ(0.5, adjust->getValue().rgb[0]);
 }
 
+TEST(ColorTrackballBinPanel, DeletingTheBoundKnobsWidgetsUnbindsWithoutTouchingThem)
+{
+    PlacementScope placement(ColorPanelLayout::Placement::BinTop);
+    QWidget bin;
+    ColorTrackballBinPanel panel(0, &bin);
+    std::unique_ptr<BuiltColorKnob> white = buildColorKnob("White");
+
+    ASSERT_TRUE(bool(white));
+    ASSERT_TRUE(panel.bindTo(white->gui.get()));
+
+    // The row's ▾ is deleted before the adjust panel below it, whose destroyed() still finds
+    // the knob GUI alive and its pointer to the ▾ dangling.
+    white->page.reset();
+
+    EXPECT_FALSE(panel.isBound());
+    EXPECT_TRUE(panel.isHidden());
+}
+
 TEST(ColorTrackballBinPanel, OnlyOneKnobIsBoundAtATime)
 {
     PlacementScope placement(ColorPanelLayout::Placement::BinTop);

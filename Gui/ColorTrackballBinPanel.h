@@ -158,6 +158,14 @@ private Q_SLOTS:
 
 private:
     void releaseBinding();
+
+    /**
+     * @brief The unbind for a knob whose GUI, adjust panel or node panel is being destroyed:
+     * a QWidget's destroyed() comes before its children go and before QPointers to it clear,
+     * so the knob may still look alive while its widgets are half gone. Nothing of it is
+     * touched; its edit session and global mode see the same destruction themselves.
+     **/
+    void dropDyingBinding();
     void refreshFromKnob();
     void refreshEditable();
     void refreshTitle();

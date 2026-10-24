@@ -247,20 +247,18 @@ ColorTrackballBinPanel::bindTo(KnobGuiColor* knobGui)
     _knob = shared;
     _knobObject = knobGui;
 
-    // Every way the knob can go away ends in the same unbind; by then the guard reads null, so
-    // nothing of the dying knob is touched.
     _knobConnections.push_back(QObject::connect(knobGui, &QObject::destroyed, this, [this]() {
-        unbind();
+        dropDyingBinding();
     }));
     _knobConnections.push_back(QObject::connect(knobGui->getAdjustPanel(), &QObject::destroyed, this, [this]() {
-        unbind();
+        dropDyingBinding();
     }));
 
     DockablePanel* nodePanel = dynamic_cast<DockablePanel*>(knobGui->getContainer());
 
     if (nodePanel) {
         _knobConnections.push_back(QObject::connect(nodePanel, &QObject::destroyed, this, [this]() {
-            unbind();
+            dropDyingBinding();
         }));
         _knobConnections.push_back(QObject::connect(nodePanel, &DockablePanel::closeChanged, this, [this](bool closed) {
             if (closed) {
@@ -331,6 +329,19 @@ ColorTrackballBinPanel::unbind()
     if (previous && binTopPlacement() && previous->isAdjustPanelExpanded()) {
         previous->setAdjustPanelExpanded(false);
     }
+    if (wasBound) {
+        Q_EMIT boundKnobChanged();
+    }
+}
+
+void
+ColorTrackballBinPanel::dropDyingBinding()
+{
+    const bool wasBound = !_knobConnections.empty() || getBoundKnob();
+
+    releaseBinding();
+    _topCheckPending = false;
+    hide();
     if (wasBound) {
         Q_EMIT boundKnobChanged();
     }

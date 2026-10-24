@@ -72,6 +72,8 @@ struct PositionOp {
         .inputs = kPositionInputs,
     };
 
+    static constexpr bool kResamplesOnGpu = true;
+
     static constexpr ImagePipelineSpec kPipeline = {
         .stages = { Stage::PassThroughUnprocessed },
         .layers = LayerPolicy::all(),
@@ -98,6 +100,7 @@ struct PositionOp {
 };
 
 static_assert(ResampleOp<PositionOp> && !MatrixResampleOp<PositionOp>);
+static_assert(GpuOffsetResampleOp<PositionOp>);
 
 class Position
     : public ImageNode<PositionOp> {

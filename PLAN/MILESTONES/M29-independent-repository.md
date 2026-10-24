@@ -71,3 +71,4 @@ shows no fork parent; the new repo carries every branch and tag the old fork
 had (via the mirror push), the same `main` branch protection contexts, and a
 merged PR proving CI runs end-to-end on it; the old fork is renamed,
 re-described, and archived.
+- 2026-10-24 — Cancelled (user): the fork link was removed by self-service, so the milestone is moot.

@@ -3430,3 +3430,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
   - regenerate the fixtures and bench comps
   - P7.T2 docs without the `gui.yaml` schema
   - P7.T3 UAT step 3 becomes "Move a node: only that node's position lines in `project.yaml` change. Change a Blur size: one line changes." Step 2's `unzip -l` member list has no `gui.yaml`.
+
+### 2026-10-23T00:15:41+00:00 — change-request
+- refs: M29
+- This is defunct now, cancel it. I was able to self serve leaving the fork network and this has been done.

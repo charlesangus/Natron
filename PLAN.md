@@ -231,6 +231,7 @@ future core work has solid ground to build on.
 | M168 | NVIDIA Viewer Hand-off Validation | todo | M107, M91 |  | E5 | [M168-nvidia-viewer-hand-off-validation.md](PLAN/MILESTONES/M168-nvidia-viewer-hand-off-validation.md) |
 | M169 | Pipelined Strip Member Timing | todo | M107, M91 |  | E5 | [M169-pipelined-strip-member-timing.md](PLAN/MILESTONES/M169-pipelined-strip-member-timing.md) |
 | M173 | Global Mode For Value Knobs | todo | M119 |  | E10 | [M173-global-mode-for-value-knobs.md](PLAN/MILESTONES/M173-global-mode-for-value-knobs.md) |
+| M174 | Wayland Support | blocked | - |  | E1 | [M174-wayland-support.md](PLAN/MILESTONES/M174-wayland-support.md) |
 
 # Epics
 
@@ -252,6 +253,8 @@ future core work has solid ground to build on.
 | E14 | Architecture | Solidify architecture, considering correctness, performance, robustness, etc. |
 
 # Open questions
+
+- **M174 - Wayland Support:** blocked until the user approves starting it (user, 2026-10-24). Stub; elaborate on approval.
 
 - **M113 - Native Warp Nodes:** UAT with the user: screenshots from `m113_warp.py` and `build/appimages/M113-0c04c69d7.AppImage`.
 

@@ -302,19 +302,19 @@ Design reference: `build/m119-mockup/` in the lane (mockup.py, NOTES.md, hud-{C,
 
 ## Phase 119.5: Fractional wheel width, filling sliders, toggle icon, sunken open knob (UAT round 3)
 
-- [ ] M119.P5.T1 — Wheel width as a fraction of the row; sliders fill the rest
+- [x] M119.P5.T1 — Wheel width as a fraction of the row; sliders fill the rest
   - files: the track-size preference in `Engine/Settings.{h,cpp}` (today Regular/Large), `Gui/ColorAdjustPanel*.cpp` (`ColorAdjustPanelPrivate::updateWheelSize`), `Tests/` tests of the panel layout and setting
   - approach: replace Regular/Large with a choice of 1/2, 1/3, 1/4, 1/5 of the panel's horizontal space (default 1/3). The wheel sits flush left; its diameter is that fraction of the available width, but never less than the total height of the slider column beside it. The sliders take all remaining width and stretch with the panel. The setting applies live. No migration of the old value (clean break).
   - verify: GuiTests: at 1/2, 1/3, 1/4 and 1/5 the wheel's width is the fraction of the row within 2 px, flush left; sliders end at the row's right edge; at a narrow width the wheel equals the slider column's height.
   - size: L
 
-- [ ] M119.P5.T2 — The open panel's toggle is the vertical mirror of the dropdown icon, never a colour swatch
+- [x] M119.P5.T2 — The open panel's toggle is the vertical mirror of the dropdown icon, never a colour swatch
   - files: `Gui/KnobGuiColor.cpp` (`refreshAdjustPanelToolTip(bool)`, the swatch/button refresh path), `Gui/Resources/Images/chevrons-up.svg`, `NATRON_PIXMAP_COLOR_ADJUST_DROPUP`
   - approach: find why the button still shows a colour swatch while the panel is open (a swatch refresh on value change likely repaints the button after P3.T11 set the icon) and make the open state always show the up icon. The up icon is the down icon mirrored vertically, generated from the same source so the two match exactly.
   - verify: GuiTests: with the panel open, after a value change and after a slider drag, the button's icon equals the down icon flipped vertically (pixel compare); closed, it is the down icon.
   - size: M
 
-- [ ] M119.P5.T3 — A knob with its panel open reads as one sunken block
+- [x] M119.P5.T3 — A knob with its panel open reads as one sunken block
   - files: `Gui/KnobGuiColor.cpp`, the panel container, the knob row's widget/styles
   - approach: while the panel is open, the knob's row and its panel are drawn together as one sunken area: a single frame around both with a slightly darker background and an inset edge, so it stands apart from neighbouring knobs. Closed, the row looks as today.
   - verify: GuiTests: open, the frame encloses the knob row and the panel; closed, no frame. Screenshots to the user.
@@ -329,6 +329,8 @@ Design reference: `build/m119-mockup/` in the lane (mockup.py, NOTES.md, hud-{C,
 **Verification gate:** full ctest green; `Tests/gui/m119_trackball_layout.py` reports no FAIL, and in it the split HUD labels sit outside the ring per mode, the cursor returns to the stroke's start on release, and a right-click ends global mode with the cursor restored and no context menu; both feedback preferences and all four wheel fractions work live on the AppImage; the wheel takes its fraction of the row (never less than the sliders' height), flush left, and the sliders fill the rest; the open panel's toggle is the mirrored dropdown icon and the open knob reads as one sunken block; the S/T/V discs show the drag result and S follows the value live; no `NATRON_COLOR_PANEL_DEV`, `ColorPanelLayout`, bin-top, vertical-slider or absolute-puck code remains; the user approved on an AppImage.
 
 ## Decisions
+
+- 2026-10-24 — **Phase 119.5 built (PM):** release 21409530d (rebased on main) passed 397/397 on both legs, and the evidence script has no failures (`build/m119-gui-p5b/`). The old `PanelWidthDecidesTheWheelSize` test, which encoded Regular/Large sizing, is retired. The wheel's diameter is its fraction of the row, capped so the lines keep their 241 px minimum width and floored at the line column's height (114 px). So at the default 508 px panel width, 1/2 gives 204 px and 1/5 floors at 114 px; at 998 px each fraction is exact. Screenshots sent; P5.T4 waits on the user's approval of `build/appimages/M119-21409530d.AppImage`.
 
 - 2026-10-24 — **User decision: R/G/B/A stay in the knob row.** With the single fractional layout, the knob's channel lines stay in its row while the panel is open (the old Large mode's lending them to the panel is removed); the lines beside the wheel are the panel's Hue/Sat/Value/Temp/Tint. Phase 5 code: 2504a6581, release build running.
 

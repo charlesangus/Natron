@@ -45,6 +45,7 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 - `USDTransform` over a prim that already has an xformOp stack: Append mode (the default) keeps the stack and its animation underneath. Replace mode writes `!resetXformStack!` plus the node's op.
 - The same upstream layer reaches `USDMerge` more than once (shared ancestor, diamond graphs): each layer handle stays only once, at its strongest position.
 - `USDMaterial` or a dome `USDLight` texture path that doesn't resolve: the path is authored anyway (it may resolve on the farm or through an `ArResolver`), a persistent node warning names it, and Storm shows its fallback.
+- `USDWrite` asset paths: a path-mode knob chooses relative to the output file (default, the Solaris "Use Relative Paths" behaviour) or absolute; a path on another filesystem root that can't be made relative is written absolute.
 - `USDWrite` output exists: overwritten, as Write does. Its frame-range knob (default: project range) clips the exported time samples.
 
 **Assumptions:**
@@ -52,7 +53,6 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 - Storm renders correctly in an EGL surfaceless 4.5 context with no window system, including on llvmpipe.
 - Storm produces a `primId` AOV that can be mapped back to prim paths from the render index, so the path hash can be computed per pixel.
 - Unconfirmed: Storm antialiasing uses a fixed MSAA sample count, with no samples knob in v1.
-- Unconfirmed: `USDWrite` rewrites external asset paths relative to the output file (the Solaris "Use Relative Paths" default), with no option for absolute paths.
 
 ## Phase 20.1: Create nodes
 
@@ -110,8 +110,8 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 
 - [ ] M20.P3.T2 — `USDWrite`
   - files: `Engine/Nodes/Scene/USDWrite.cpp`, CMake source list
-  - approach: an output node like Write. The Render button, the render queue and `NatronRenderer -w` trigger it, and it writes one `.usd`/`.usda`/`.usdc` file once per render whatever the frame range. A frame-range knob (default: project range) clips the exported time samples. Layered mode follows the Solaris USD ROP's "Flatten Implicit Layers": every Natron-authored anonymous layer is flattened into the output file, and external file layers (USDRead's) stay sublayers/references with asset paths rewritten relative to the output. Flattened mode bakes the whole stack, externals included, into one layer. An existing output is overwritten.
-  - verify: round-trip test — a node-built scene → USDWrite → USDRead composes an identical prim tree (diff via `UsdStage::ExportToString`), in both modes; layered output references the original external file through a relative path; the frame-range knob clips the time samples; `NatronRenderer -w` writes the file once for a 10-frame range.
+  - approach: an output node like Write. The Render button, the render queue and `NatronRenderer -w` trigger it, and it writes one `.usd`/`.usda`/`.usdc` file once per render whatever the frame range. A frame-range knob (default: project range) clips the exported time samples. Layered mode follows the Solaris USD ROP's "Flatten Implicit Layers": every Natron-authored anonymous layer is flattened into the output file, and external file layers (USDRead's) stay sublayers/references. A path-mode knob writes asset paths relative to the output (default) or absolute; a path that can't be made relative is written absolute. Flattened mode bakes the whole stack, externals included, into one layer. An existing output is overwritten.
+  - verify: round-trip test — a node-built scene → USDWrite → USDRead composes an identical prim tree (diff via `UsdStage::ExportToString`), in both modes; layered output references the original external file through a relative path, and through an absolute one in absolute mode; the frame-range knob clips the time samples; `NatronRenderer -w` writes the file once for a 10-frame range.
   - size: M
 
 - [ ] M20.P3.T3 — Scene vocabulary integration test in CI
@@ -143,9 +143,10 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 - 2026-10-24 — In `USDMerge`, later inputs are stronger: matches the Solaris Merge LOP and the strongest-last `layerStack`.
 - 2026-10-24 — `USDMerge` keeps each layer handle once, at its strongest position: the composition is the same, and diamond graphs no longer grow the stack exponentially.
 - 2026-10-24 — `USDWrite` is a render-triggered output that writes once, with a frame-range knob that clips samples: it fits Write, the render queue and `NatronRenderer -w` without wasting the time-sample design.
-- 2026-10-24 — `USDWrite` layered mode flattens implicit layers, Solaris-style: anonymous Natron layers go into the output, external layers stay referenced with relative paths. Per-node save paths are M52's. Asked to follow Solaris by the user.
+- 2026-10-24 — `USDWrite` layered mode flattens implicit layers, Solaris-style: anonymous Natron layers go into the output, external layers stay referenced. Per-node save paths are M52's. Asked to follow Solaris by the user.
 - 2026-10-24 — Colours are in the project working space throughout, with no implicit transform and USD `colorSpace` metadata ignored in v1: M50's explicit-only rule.
 - 2026-10-24 — A texture path that doesn't resolve is authored anyway, with a node warning: assets may resolve on the farm or through a pipeline `ArResolver`.
 - 2026-10-24 — `USDCamera` defaults to 50 mm and a 36×24 mm aperture, not linked to the format: `USDRender`'s fit mode handles aspect, as it does for cameras from files.
 - 2026-10-24 — `Deps` is M19: the milestone requires M19 - USD/Hydra Foundation's gate, and `USDRender` reuses M107 - GPU Viewer Hand-off's ladder, which M19 already depends on.
 - 2026-10-24 — The old M20.P3.T1 was split into the readback render (P3.T1), the headless EGL context (P3.T5), the interop ladder (P3.T4) and the strict GL test (P3.T6); `USDWrite` was re-sized S → M: per the task sizing rule, each is one coherent change, and the export logic plus its tests is not haiku-safe.
+- 2026-10-24 — `USDWrite` has a path-mode knob, relative (default) or absolute: user's call, since relative-only was an arbitrary restriction; relative stays the default so exports can be moved.

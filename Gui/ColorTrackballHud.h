@@ -119,8 +119,10 @@ public:
 
     /**
      * @brief Turns the HUD into a window of its own that followCursorTo() places by the
-     * pointer, or back into a plain parentless widget ready to be attached to a knob's column.
-     * Either way it is taken out of any layout it was in and left hidden.
+     * pointer, or back into a parentless widget with the window flags and input attributes it
+     * had before following began (plus Qt::Window, which Qt gives every parentless widget),
+     * ready to be attached to a knob's column. Either way it is taken out of any layout it was
+     * in and left hidden.
      **/
     void setFollowCursor(bool follow);
 
@@ -150,6 +152,9 @@ private:
     QLabel* _legendV;
     QLabel* _endOfListLabel;
     bool _followCursor;
+    Qt::WindowFlags _preFollowWindowFlags;
+    bool _preFollowShowWithoutActivating;
+    bool _preFollowTransparentForMouseEvents;
     QPoint _cursor;
 };
 

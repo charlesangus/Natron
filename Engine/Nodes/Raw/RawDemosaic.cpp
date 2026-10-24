@@ -186,6 +186,7 @@ const char* const kCaptureThresholdHint = QT_TRANSLATE_NOOP("RawDemosaic",
                                                             "Restricts capture sharpening to areas of high local contrast: increase it to exclude flat areas in very dark or noisy images, "
                                                             "decrease it for well exposed, low noise images. Until overridden it shows the image's default, "
                                                             "from its ISO and whether the sensor has more than 12 bits.");
+const char* const kCaptureGroupName = "captureSharpenControls";
 } // namespace
 
 struct RawDemosaic::Settings {
@@ -375,6 +376,12 @@ RawDemosaic::initializeKnobs()
     page->addKnob(captureSharpen);
     _captureSharpen = captureSharpen;
 
+    KnobGroupPtr captureGroup = createKnob<KnobGroup>(tr("Capture Sharpen Controls"));
+    captureGroup->setName(kCaptureGroupName);
+    captureGroup->setHintToolTip(tr("The controls of capture sharpening, shown while it is on.").toStdString());
+    captureGroup->setDefaultValue(true);
+    page->addKnob(captureGroup);
+
     KnobIntPtr captureIterations = createKnob<KnobInt>(tr("Iterations"));
     captureIterations->setName(kRawDemosaicParamCaptureIterations);
     captureIterations->setHintToolTip(tr("Capture sharpening's strength, by iterations: one per step up to 11, rising to 50 at 25."));
@@ -384,7 +391,7 @@ RawDemosaic::initializeKnobs()
     captureIterations->setDisplayMinimum(1);
     captureIterations->setDisplayMaximum(25);
     captureIterations->setAnimationEnabled(false);
-    page->addKnob(captureIterations);
+    captureGroup->addKnob(captureIterations);
     _captureIterations = captureIterations;
 
     KnobDoublePtr captureRadius = createKnob<KnobDouble>(tr("Radius"));
@@ -396,7 +403,7 @@ RawDemosaic::initializeKnobs()
     captureRadius->setDisplayMinimum(0.);
     captureRadius->setDisplayMaximum(1.5);
     captureRadius->setAnimationEnabled(false);
-    page->addKnob(captureRadius);
+    captureGroup->addKnob(captureRadius);
     _captureRadius = captureRadius;
 
     KnobDoublePtr captureThreshold = createKnob<KnobDouble>(tr("Contrast Sensitivity"));
@@ -408,7 +415,7 @@ RawDemosaic::initializeKnobs()
     captureThreshold->setDisplayMinimum(0.);
     captureThreshold->setDisplayMaximum(1.);
     captureThreshold->setAnimationEnabled(false);
-    page->addKnob(captureThreshold);
+    captureGroup->addKnob(captureThreshold);
     _captureThreshold = captureThreshold;
 
     KnobBoolPtr captureThresholdOverride = createKnob<KnobBool>(tr("Override Contrast Sensitivity"));
@@ -417,7 +424,7 @@ RawDemosaic::initializeKnobs()
                                                 "An overriding 0 takes the image's default, rounded down to a hundredth."));
     captureThresholdOverride->setDefaultValue(false);
     captureThresholdOverride->setAnimationEnabled(false);
-    page->addKnob(captureThresholdOverride);
+    captureGroup->addKnob(captureThresholdOverride);
     _captureThresholdOverride = captureThresholdOverride;
 
     KnobDoublePtr captureBoost = createKnob<KnobDouble>(tr("Corner Boost"));
@@ -429,7 +436,7 @@ RawDemosaic::initializeKnobs()
     captureBoost->setDisplayMinimum(0.);
     captureBoost->setDisplayMaximum(1.5);
     captureBoost->setAnimationEnabled(false);
-    page->addKnob(captureBoost);
+    captureGroup->addKnob(captureBoost);
     _captureBoost = captureBoost;
 
     KnobDoublePtr captureCenter = createKnob<KnobDouble>(tr("Sharp Center"));
@@ -441,7 +448,7 @@ RawDemosaic::initializeKnobs()
     captureCenter->setDisplayMinimum(0.);
     captureCenter->setDisplayMaximum(1.);
     captureCenter->setAnimationEnabled(false);
-    page->addKnob(captureCenter);
+    captureGroup->addKnob(captureCenter);
     _captureCenter = captureCenter;
 
     refreshCaptureOverride();
@@ -530,6 +537,9 @@ RawDemosaic::refreshCaptureKnobsVisibility(bool support)
     // controls while it is on, and Sharp Center while Corner Boost is not 0.
     const bool doCapture = support && enabled->getValue();
     enabled->setSecret(!support);
+    if (const KnobIPtr group = getKnobByName(kCaptureGroupName)) {
+        group->setSecret(!doCapture);
+    }
     iterations->setSecret(!doCapture);
     radius->setSecret(!doCapture);
     threshold->setSecret(!doCapture);

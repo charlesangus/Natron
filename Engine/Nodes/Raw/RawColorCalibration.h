@@ -93,7 +93,7 @@
 #define kRawColorCalibrationParamSpotSize "spotSize"
 #define kRawColorCalibrationParamPick "pick"
 
-// The Calibrate with a Color Checker group of the CAT tab. The corners are the chart's guides
+// The Calibrate With a Color Checker group, below the tabs. The corners are the chart's guides
 // (its white dots), in pixels of the input.
 #define kRawColorCalibrationGroupChecker "colorChecker"
 #define kRawColorCalibrationParamCheckerChart "checkerChart"
@@ -321,9 +321,10 @@ struct RawColorCalibrationOp {
     void createSpotKnobs(KnobHolder* holder,
                          const KnobGroupPtr& tab);
 
-    // The Calibrate with a Color Checker group, after the area color mapping.
+    // The Calibrate With a Color Checker group, on page below the tabs as darktable has it below
+    // its notebook, so it stays in view on every tab.
     void createCheckerKnobs(KnobHolder* holder,
-                            const KnobGroupPtr& tab);
+                            const KnobPagePtr& page);
 
     /**
      * @brief The matrix from the working space of the project of holder to XYZ (D50); linear

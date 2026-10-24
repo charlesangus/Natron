@@ -587,7 +587,6 @@ RawColorCalibrationOp::createKnobs(KnobHolder* knobHolder,
                    defaults.clip);
 
     createSpotKnobs(knobHolder, cat);
-    createCheckerKnobs(knobHolder, cat);
 
     const Vec3* rowDefaults[eRawColorCalibrationRowCount] = { &defaults.red, &defaults.green, &defaults.blue, &defaults.saturation, &defaults.lightness, &defaults.grey };
     const bool normalizeDefaults[eRawColorCalibrationRowCount] = { defaults.normalizeR, defaults.normalizeG, defaults.normalizeB, defaults.normalizeSaturation, defaults.normalizeLightness, defaults.normalizeGrey };
@@ -617,6 +616,8 @@ RawColorCalibrationOp::createKnobs(KnobHolder* knobHolder,
             version = versionKnob;
         }
     }
+
+    createCheckerKnobs(knobHolder, page);
 }
 
 CalibrationSettings

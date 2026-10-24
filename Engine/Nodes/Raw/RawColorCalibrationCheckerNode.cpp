@@ -160,14 +160,14 @@ xyzToCamera(const ImageMetadata& source,
 
 void
 RawColorCalibrationOp::createCheckerKnobs(KnobHolder* knobHolder,
-                                          const KnobGroupPtr& tab)
+                                          const KnobPagePtr& page)
 {
-    KnobGroupPtr group = AppManager::createKnob<KnobGroup>(knobHolder, EffectInstance::tr("Calibrate with a Color Checker").toStdString());
+    KnobGroupPtr group = AppManager::createKnob<KnobGroup>(knobHolder, EffectInstance::tr("Calibrate With a Color Checker").toStdString());
     group->setName(kRawColorCalibrationGroupChecker);
     group->setHintToolTip(EffectInstance::tr("Use a color checker target to autoset CAT and channels. Place the four corners on the "
                                              "chart's guides in the viewer, then Calibrate.")
                               .toStdString());
-    tab->addKnob(group);
+    page->addKnob(group);
 
     std::vector<ChoiceOption> charts;
     for (int t = 0; t < (int)ColorCheckerTarget::Last; ++t) {

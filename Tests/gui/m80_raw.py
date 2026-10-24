@@ -15,7 +15,11 @@ and then:
   - RawHotPixels, RawCACorrect and RawDenoise spliced into the Bayer chain render;
   - RawToImage turns the mosaic into a grey image that the info line no longer calls raw;
   - the preference turned off, a dropped CR2 gets no chain;
-  - each raw node's properties panel shows no cut-off label and every visible knob has a tooltip.
+  - each raw node's properties panel shows no cut-off label and every visible knob has a tooltip;
+  - every highlights mode, Bayer and X-Trans demosaic mode, white balance preset, adaptation and
+    illuminant shows only the knobs it uses; Flat Field stays hidden for a file without gain maps;
+  - RawTemperature picks its white balance from an area, and RawColorCalibration runs Pick in
+    correction and measure mode, Calibrate and Validate on its chart corners, and applies a preset.
 Without the fixtures (a checkout without Git LFS has pointer files) the dropped file is an empty
 .cr2 and those sections are skipped.
 
@@ -24,8 +28,9 @@ so a Read shows a visible mosaic at the default gain; RawToImage keeps the senso
 The demosaic methods are shown at 200%.
 
 Shots, under $NATRON_GUI_TEST_OUT: m80-develop-raw.png and m80-develop-all.png (the node graph),
-m80-viewer-*.png (the window with the Viewer on each state), m80-preference-off.png and
-m80-panel-<node>.png (each panel).
+m80-viewer-*.png (the window with the Viewer on each state, including the area and chart overlays),
+m80-preference-off.png, m80-panel-<node>.png (each panel) and m80-panel-<node>-<mode>.png (a panel
+per group of modes, and each RawColorCalibration tab).
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m80_raw.py
 """
@@ -51,12 +56,24 @@ EXTRA_IDS = ["fr.natron.RawCACorrect", "fr.natron.RawHotPixels", "fr.natron.RawD
 TO_IMAGE_ID = "fr.natron.RawToImage"
 BAYER_METHODS = ["rcd", "ppg", "amaze", "vng4"]
 XTRANS_METHODS = ["markesteijn1", "markesteijn3", "vng"]
+BAYER_MODES = ["rcd", "ppg", "amaze", "vng4", "passthroughMonochrome", "photositeColor", "lmmse", "rcdDual", "amazeDual"]
+XTRANS_MODES = ["markesteijn1", "markesteijn3", "vng", "passthroughMonochrome", "photositeColor", "markesteijn3Dual", "fdc"]
+PASSTHROUGH_MODES = ["passthroughMonochrome", "photositeColor"]
+CAPTURE_KNOBS = ["captureSharpenControls", "captureIterations", "captureRadius", "captureContrastSensitivity",
+                 "captureContrastSensitivityOverride", "captureCornerBoost"]
+HIGHLIGHT_MODES = ["clip", "unclipped", "opposed", "lch", "inpaint", "segments", "laplacian"]
+RECOVERY_MODES = ["off", "generic", "flatGeneric", "small", "large", "flatSmall", "flatLarge"]
+TUNED_CR2_PRESETS = ["Daylight", "Shade", "Cloudy", "Tungsten", "White Fluorescent", "Flash"]
+ADAPTATIONS = ["linearBradford", "cat16", "nonLinearBradford", "xyz", "none"]
+ILLUMINANT_KNOBS = ["illuminant", "approxCct", "temperature", "illumFluo", "illumLed", "illumHue", "illumChroma"]
+CHECKER_CORNERS = [("checkerTopLeft", 0.3, 0.7), ("checkerTopRight", 0.7, 0.7),
+                   ("checkerBottomRight", 0.7, 0.3), ("checkerBottomLeft", 0.3, 0.3)]
 
 try:
     import NatronEngine
     from PySide6.QtCore import Q_ARG, QMetaObject, QMimeData, QPoint, QPointF, QRect, Qt, QUrl
     from PySide6.QtGui import QDragEnterEvent, QDropEvent, QGuiApplication
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QWidget
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QTabWidget, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -394,6 +411,258 @@ try:
         for area in panel.findChildren(QScrollArea):
             area.setMinimumHeight(0)
 
+    def options_of(node, name):
+        param = node.getParam(name)
+        return [param.getOption(i) for i in range(param.getNumOptions())] if param is not None else []
+
+    def choice_id(node, name):
+        param = node.getParam(name)
+        return param.getOption(param.getValue()) if param is not None else None
+
+    def try_choice(node, name, option):
+        """set_choice that reports a missing option as a failure instead of ending the run."""
+        options = options_of(node, name)
+        if not check(option in options, "%s.%s offers %s (%r)" % (node.getScriptName(), name, option, options)):
+            return False
+        node.getParam(name).setValue(options.index(option))
+        return True
+
+    def expect_visible(node, label, expected):
+        """One PASS/FAIL line: every knob in expected is shown (True) or hidden (False)."""
+        wrong = []
+        for name in sorted(expected):
+            param = node.getParam(name)
+            if param is None or param.getIsVisible() != expected[name]:
+                wrong.append(name)
+        shown = [n for n in sorted(expected) if expected[n]]
+        hidden = [n for n in sorted(expected) if not expected[n]]
+        return check(not wrong, "%s: shows %r, hides %r (wrong: %r)" % (label, shown, hidden, wrong))
+
+    def image_box(node):
+        """The node's region of definition as (x, y, width, height), in pixels."""
+        try:
+            rod = node.getRegionOfDefinition(app.timelineGetTime(), 0)
+            box = (rod.left(), rod.bottom(), rod.right() - rod.left(), rod.top() - rod.bottom())
+            if box[2] > 1 and box[3] > 1:
+                return box
+        except Exception:
+            report("NOTE %s: no region of definition: %s" % (node.getScriptName(), traceback.format_exc().splitlines()[-1]))
+        return (0.0, 0.0, 1000.0, 1000.0)
+
+    def open_panel(node):
+        gt.close_all_panels()
+        app.selectNode(node, True)
+        QMetaObject.invokeMethod(node_graph_view(), "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: panel_of(node) is not None, POLL_TIMEOUT_S)
+        check(ok, "%s: its properties panel opens" % node.getScriptName())
+        yield ("sleep", 800)
+        return ok
+
+    def panel_shot(node, name):
+        """Saves the open panel of node, grown to show its knobs, as name."""
+        yield ("sleep", 300)
+        panel = panel_of(node)
+        if not check(panel is not None, "%s: its panel is open for %s" % (node.getScriptName(), name)):
+            return
+        for area in panel.findChildren(QScrollArea):
+            content = area.widget()
+            if content is not None:
+                area.setMinimumHeight(min(content.sizeHint().height() + 4, 900))
+        yield ("sleep", 500)
+        QApplication.processEvents()
+        screen = QGuiApplication.primaryScreen().grabWindow(0)
+        rect = QRect(panel.mapToGlobal(panel.rect().topLeft()), panel.size()).intersected(QRect(0, 0, screen.width(), screen.height()))
+        path = os.path.join(gt.OUT, name)
+        report(("SHOT " if screen.copy(rect).save(path) else "NOTE could not save ") + path)
+        for area in panel.findChildren(QScrollArea):
+            area.setMinimumHeight(0)
+
+    def knob_tabs(node):
+        """The tab widget of the node's tab groups (not the panel's own page tabs), or None."""
+        panel = panel_of(node)
+        if panel is None:
+            return None
+        for w in panel.findChildren(QTabWidget):
+            try:
+                if w.parent() is not None and gt.class_name(w.parent()) == "TabGroup":
+                    return w
+            except RuntimeError:
+                continue
+        return None
+
+    def highlights_section(highlights):
+        saved = {n: highlights.getParam(n).getValue() for n in ("mode", "recovery")}
+        yield from open_panel(highlights)
+        for mode in HIGHLIGHT_MODES:
+            if not try_choice(highlights, "mode", mode):
+                continue
+            segments = mode == "segments"
+            laplacian = mode == "laplacian"
+            for recovery in (RECOVERY_MODES if segments else [None]):
+                if recovery is not None and not try_choice(highlights, "recovery", recovery):
+                    continue
+                recovering = segments and recovery != "off"
+                label = "RawHighlights %s%s" % (mode, (", recovery " + recovery) if segments else "")
+                expect_visible(highlights, label, {
+                    "combine": segments, "candidating": segments, "recovery": segments,
+                    "strength": recovering, "noiseLevel": recovering or laplacian,
+                    "iterations": laplacian, "solidColor": laplacian, "scales": laplacian})
+                if mode in ("clip", "laplacian") or recovery in ("off", "generic"):
+                    yield from panel_shot(highlights, "m80-panel-RawHighlights-%s%s.png" % (mode, ("-" + recovery) if segments else ""))
+        for name, value in saved.items():
+            highlights.getParam(name).setValue(value)
+
+    def demosaic_section(demosaic, sensor, param, modes):
+        bayer = param == "method"
+        names = ["captureSharpen", "captureCornerBoost"]
+        saved = {n: demosaic.getParam(n).getValue() for n in [param] + names}
+        yield from open_panel(demosaic)
+        for mode in modes:
+            if not try_choice(demosaic, param, mode):
+                continue
+            passing = mode in PASSTHROUGH_MODES
+            for capture in (False, True):
+                demosaic.getParam("captureSharpen").setValue(capture)
+                shown = capture and not passing
+                expected = {"method": bayer, "xtransMethod": not bayer, "dualThreshold": mode.endswith("Dual"),
+                            "lmmseRefine": mode == "lmmse", "captureSharpen": not passing,
+                            "captureSharpCenter": shown and demosaic.getParam("captureCornerBoost").getValue() != 0}
+                if bayer:
+                    expected["edgeThreshold"] = mode == "ppg"
+                expected.update((n, shown) for n in CAPTURE_KNOBS)
+                expect_visible(demosaic, "%s RawDemosaic %s, capture sharpen %s" % (sensor, mode, "on" if capture else "off"), expected)
+            yield from panel_shot(demosaic, "m80-panel-RawDemosaic-%s-%s.png" % (sensor.lower().replace("-", ""), mode))
+        try_choice(demosaic, param, modes[0])
+        demosaic.getParam("captureSharpen").setValue(True)
+        for boost in (0.0, 0.5):
+            demosaic.getParam("captureCornerBoost").setValue(boost)
+            expect_visible(demosaic, "%s RawDemosaic, Corner Boost %g" % (sensor, boost), {"captureSharpCenter": boost != 0})
+        yield from panel_shot(demosaic, "m80-panel-RawDemosaic-%s-capture.png" % sensor.lower().replace("-", ""))
+        for name, value in saved.items():
+            demosaic.getParam(name).setValue(value)
+
+    def temperature_presets(temperature, label, tuned_expected):
+        try_choice(temperature, "mode", "cameraPreset")
+        presets = options_of(temperature, "preset")
+        if not check(presets, "%s RawTemperature: camera presets are offered (%r)" % (label, presets)):
+            return
+        tuned = []
+        for preset in presets:
+            try_choice(temperature, "preset", preset)
+            if temperature.getParam("finetune").getIsVisible():
+                tuned.append(preset)
+        report("NOTE %s RawTemperature: presets with Finetune shown %r" % (label, tuned))
+        if tuned_expected:
+            expected = [p for p in TUNED_CR2_PRESETS if p in presets]
+            check(expected and all(p in tuned for p in expected),
+                  "%s RawTemperature: Finetune shows for the presets with tunings %r" % (label, expected))
+            chosen = expected[0] if expected else presets[0]
+        else:
+            check(not tuned, "%s RawTemperature: Finetune stays hidden for presets without tunings" % label)
+            chosen = presets[0]
+        try_choice(temperature, "preset", chosen)
+        report("NOTE %s RawTemperature preset %s: multipliers %r" % (label, chosen, [temperature.getParam(c).getValue() for c in ("red", "green", "blue")]))
+        yield from open_panel(temperature)
+        yield from panel_shot(temperature, "m80-panel-RawTemperature-preset-%s.png" % label.lower())
+
+    def place_spot(node, fx, fy, fw, fh):
+        x, y, w, h = image_box(node)
+        node.getParam("spotBottomLeft").set(x + fx * w, y + fy * h)
+        node.getParam("spotSize").set(fw * w, fh * h)
+
+    def calibration_section(cal):
+        cal.getParam("catOverride").setValue(True)
+        illuminants = options_of(cal, "illuminant")
+        check("camera" in illuminants, "RawColorCalibration offers the camera illuminant for a raw input (%r)" % illuminants)
+        yield from open_panel(cal)
+        cal.getParam("areaMapping").setOpened(True)
+        cal.getParam("colorChecker").setOpened(True)
+        tabs = knob_tabs(cal)
+        if tabs is not None:
+            tabs.setCurrentIndex(0)
+        enabled_wrong = []
+        for adaptation in ADAPTATIONS:
+            try_choice(cal, "illuminant", "d")
+            if not try_choice(cal, "adaptation", adaptation):
+                continue
+            for illuminant in illuminants:
+                cal.getParam("illuminant").setValue(illuminants.index(illuminant))
+                actual = choice_id(cal, "adaptation")
+                cat = actual != "none"
+                expect_visible(cal, "RawColorCalibration adaptation %s (now %s), illuminant %s" % (adaptation, actual, illuminant), {
+                    "illuminant": cat, "approxCct": cat,
+                    "temperature": cat and illuminant in ("d", "blackBody"),
+                    "illumFluo": cat and illuminant == "f", "illumLed": cat and illuminant == "led",
+                    "illumHue": cat and illuminant == "custom", "illumChroma": cat and illuminant == "custom"})
+                adaptation_enabled = cal.getParam("adaptation").getIsEnabled(0)
+                if illuminant == "camera":
+                    check(not adaptation_enabled, "RawColorCalibration: the camera illuminant disables the adaptation (with %s)" % adaptation)
+                elif not adaptation_enabled:
+                    enabled_wrong.append((adaptation, illuminant))
+                if (adaptation == "linearBradford" and illuminant in ("d", "f", "led", "custom", "camera")) or (adaptation == "none" and illuminant == "d"):
+                    yield from panel_shot(cal, "m80-panel-RawColorCalibration-cat-%s-%s.png" % (adaptation, illuminant))
+        check(not enabled_wrong, "RawColorCalibration: the adaptation stays enabled for every other illuminant (disabled for %r)" % enabled_wrong)
+
+        try_choice(cal, "adaptation", "linearBradford")
+        for illuminant, knob in (("f", "illumFluo"), ("led", "illumLed")):
+            try_choice(cal, "illuminant", illuminant)
+            sources = options_of(cal, knob)
+            stayed = []
+            for source in sources:
+                try_choice(cal, knob, source)
+                if cal.getParam(knob).getIsVisible() and choice_id(cal, "illuminant") == illuminant:
+                    stayed.append(source)
+            check(sources and stayed == sources, "RawColorCalibration: every %s source keeps its menu shown (%r of %r)" % (knob, stayed, sources))
+        try_choice(cal, "illuminant", "d")
+
+        place_spot(cal, 0.45, 0.45, 0.1, 0.1)
+        for mode in ("correction", "measure"):
+            if not try_choice(cal, "spotMode", mode):
+                continue
+            cal.getParam("spotInput").setValue("")
+            cal.getParam("pick").trigger()
+            ok = yield ("until", lambda: bool(cal.getParam("spotInput").getValue()), RENDER_TIMEOUT_S)
+            check(ok, "RawColorCalibration: Pick in %s mode reads the area (%r)" % (mode, cal.getParam("spotInput").getValue()))
+            if mode == "correction":
+                check(choice_id(cal, "illuminant") == "custom", "RawColorCalibration: Pick in correction mode sets a custom illuminant (%r)" % choice_id(cal, "illuminant"))
+            else:
+                report("NOTE RawColorCalibration measured L %r, h %r, c %r" % tuple(cal.getParam(n).getValue() for n in ("spotLightness", "spotHue", "spotChroma")))
+            yield from panel_shot(cal, "m80-panel-RawColorCalibration-pick-%s.png" % mode)
+
+        x, y, w, h = image_box(cal)
+        for name, fx, fy in CHECKER_CORNERS:
+            cal.getParam(name).set(x + fx * w, y + fy * h)
+        for button in ("calibrate", "validate"):
+            cal.getParam("checkerReport").setValue("")
+            cal.getParam(button).trigger()
+            ok = yield ("until", lambda: bool(cal.getParam("checkerReport").getValue()), RENDER_TIMEOUT_S)
+            text = cal.getParam("checkerReport").getValue()
+            check(ok, "RawColorCalibration: %s writes a report" % button.capitalize())
+            report("NOTE RawColorCalibration %s report %r" % (button, " ".join(text.split())[:300]))
+            yield from panel_shot(cal, "m80-panel-RawColorCalibration-checker-%s.png" % button)
+
+        yield from view(cal, "CR2 RawColorCalibration", "m80-viewer-colorcalibration.png")
+        yield from open_panel(cal)
+        cal.getParam("areaMapping").setOpened(True)
+        cal.getParam("colorChecker").setOpened(True)
+        yield ("sleep", 1500)
+        gt.shot("m80-viewer-colorcalibration-overlays.png")
+
+        if try_choice(cal, "preset", "swapRB"):
+            cal.getParam("applyPreset").trigger()
+            yield ("sleep", SETTLE_MS)
+            rows = {n: cal.getParam(n).getValue() for n in ("redR", "redB", "blueR", "blueB")}
+            check(abs(rows["redB"] - 1) < 1e-6 and abs(rows["redR"]) < 1e-6 and abs(rows["blueR"] - 1) < 1e-6,
+                  "RawColorCalibration: applying the swap R and B preset swaps the R and B rows (%r)" % rows)
+
+        tabs = knob_tabs(cal)
+        if check(tabs is not None and tabs.count() == 7, "RawColorCalibration shows seven tabs (%r)"
+                 % ([tabs.tabText(i) for i in range(tabs.count())] if tabs is not None else None)):
+            for i in range(tabs.count()):
+                tabs.setCurrentIndex(i)
+                yield from panel_shot(cal, "m80-panel-RawColorCalibration-tab-%d-%s.png" % (i + 1, re.sub(r"\W+", "", tabs.tabText(i)).lower()))
+            tabs.setCurrentIndex(0)
+
     def steps():
         ok = yield ("until", lambda: root_graph() is not None and main_window() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the node graph is up")
@@ -438,6 +707,12 @@ try:
         check(all(n.getPosition()[1] > ry for n in chain), "the chain is below the Read")
         ys = [n.getPosition()[1] for n in chain]
         check(ys == sorted(ys), "the chain runs top to bottom in order")
+        held = sorted((n for n in app.getChildren() if n.getPluginID() not in (BACKDROP_ID, "fr.inria.built-in.Viewer") and inside(n, backdrop)),
+                      key=lambda n: n.getPosition()[1])
+        check(len(held) == 6 and held[-1].getPluginID() == "fr.natron.RawColorCalibration",
+              "Develop RAW holds six nodes with RawColorCalibration last (%r)" % [n.getPluginID() for n in held])
+        check(choice_id(chain[1], "mode") == "asShotToReference",
+              "RawTemperature starts on As Shot to Reference (%r)" % choice_id(chain[1], "mode"))
         frame_graph([read, backdrop])
         gt.shot("m80-develop-raw.png")
 
@@ -592,6 +867,41 @@ try:
             gt.section("panels")
             for node in cr2_chain + extras + [to_image]:
                 yield from panel_section(node)
+            gt.close_all_panels()
+
+            gt.section("develop defaults")
+            for label, c in (("CR2", cr2_chain), ("RAF", raf_chain), ("DNG", dng_chain)):
+                expect_visible(c[0], "%s RawPrepare without gain maps" % label, {"flatField": False})
+            for label, c in (("RAF", raf_chain), ("DNG", dng_chain)):
+                check(choice_id(c[1], "mode") == "asShotToReference",
+                      "%s RawTemperature starts on As Shot to Reference (%r)" % (label, choice_id(c[1], "mode")))
+
+            gt.section("highlights modes")
+            yield from highlights_section(cr2_chain[2])
+
+            gt.section("demosaic modes")
+            yield from demosaic_section(cr2_chain[3], "Bayer", "method", BAYER_MODES)
+            yield from demosaic_section(raf_chain[3], "X-Trans", "xtransMethod", XTRANS_MODES)
+
+            gt.section("temperature presets and spot")
+            yield from temperature_presets(cr2_chain[1], "CR2", True)
+            yield from temperature_presets(raf_chain[1], "RAF", False)
+            set_choice(raf_chain[1], "mode", "asShotToReference")
+            temperature = cr2_chain[1]
+            if try_choice(temperature, "mode", "fromImageArea"):
+                place_spot(temperature, 0.45, 0.45, 0.1, 0.1)
+                temperature.getParam("pick").trigger()
+                yield ("sleep", SETTLE_MS)
+                multipliers = [temperature.getParam(c).getValue() for c in ("red", "green", "blue")]
+                check(all(m > 0 for m in multipliers), "RawTemperature: Pick from the area gives positive multipliers (%r)" % multipliers)
+                yield from view(cr2_chain[-1], "CR2 white balance from an area", "m80-viewer-temperature-area.png")
+                yield from open_panel(temperature)
+                yield ("sleep", 1500)
+                gt.shot("m80-viewer-temperature-area-overlay.png")
+            set_choice(temperature, "mode", "asShotToReference")
+
+            gt.section("color calibration")
+            yield from calibration_section(cr2_chain[-1])
             gt.close_all_panels()
         else:
             gt.report("NOTE the raw fixtures are not checked out (git lfs pull); the Viewer sections are skipped")

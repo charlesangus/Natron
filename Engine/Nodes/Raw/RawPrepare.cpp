@@ -294,6 +294,7 @@ RawPrepare::showFlatFieldAvailability(double time)
 
     knob->setHintToolTip(flatFieldHint(available));
     knob->setAllDimensionsEnabled(available);
+    knob->setSecret(!available);
 }
 
 void

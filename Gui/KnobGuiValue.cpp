@@ -25,18 +25,21 @@
 
 #include "KnobGuiValue.h"
 
-#include <limits>
 #include <algorithm> // min, max
+#include <functional>
+#include <limits>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
 #include <QColorDialog>
+#include <QEvent>
 #include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QPointer>
 #include <QScrollArea>
 #include <QStyle>
 #include <QToolTip>
@@ -85,6 +88,34 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+// Runs a callback whenever the watched widget is shown or hidden on its own account, which is
+// all the full-width holder needs to follow it.
+class ExplicitVisibilityWatcher
+    : public QObject {
+public:
+    ExplicitVisibilityWatcher(QObject* parent,
+                              const std::function<void()>& onChange)
+        : QObject(parent)
+        , _onChange(onChange)
+    {
+    }
+
+    virtual bool eventFilter(QObject* watched,
+                             QEvent* e) OVERRIDE FINAL
+    {
+        if ((e->type() == QEvent::ShowToParent) || (e->type() == QEvent::HideToParent)) {
+            _onChange();
+        }
+
+        return QObject::eventFilter(watched, e);
+    }
+
+private:
+    std::function<void()> _onChange;
+};
+} // namespace
+
 struct KnobGuiValuePrivate
 {
     KnobIWPtr knob;
@@ -93,6 +124,11 @@ struct KnobGuiValuePrivate
     std::vector<std::pair<SpinBox *, ClickableLabel *> > spinBoxes;
     QWidget *container;
     QWidget* belowRowColumn; // non-null only when createBelowRowWidget() supplied a widget; owns "container" as a child
+    QPointer<QWidget> belowRowWidget;
+    QPointer<QObject> belowRowWidgetWatcher; // reaches back into this struct, so it goes first
+    QWidget* fullWidthRow; // the below-row widget's holder when it has a row of its own; null with no below-row widget
+    bool belowRowWidgetFullWidth;
+    bool knobHidden;
     ScaleSliderQWidget *slider;
     Button* rectangleFormatButton;
     Button *dimensionSwitchButton;
@@ -110,6 +146,11 @@ struct KnobGuiValuePrivate
         , spinBoxes()
         , container(0)
         , belowRowColumn(0)
+        , belowRowWidget()
+        , belowRowWidgetWatcher()
+        , fullWidthRow(0)
+        , belowRowWidgetFullWidth(false)
+        , knobHidden(false)
         , slider(0)
         , rectangleFormatButton(0)
         , dimensionSwitchButton(0)
@@ -125,6 +166,14 @@ struct KnobGuiValuePrivate
     KnobIntBasePtr getKnobAsInt() const
     {
         return intKnob.lock();
+    }
+
+    void refreshFullWidthRowVisibility()
+    {
+        if (!fullWidthRow) {
+            return;
+        }
+        fullWidthRow->setVisible(belowRowWidgetFullWidth && !knobHidden && belowRowWidget && !belowRowWidget->isHidden());
     }
 
     KnobDoubleBasePtr getKnobAsDouble() const
@@ -220,6 +269,7 @@ KnobGuiValue::KnobGuiValue(KnobIPtr knob,
 
 KnobGuiValue::~KnobGuiValue()
 {
+    delete _imp->belowRowWidgetWatcher.data();
 }
 
 void
@@ -231,6 +281,12 @@ KnobGuiValue::removeSpecificGui()
     } else {
         _imp->container->deleteLater();
     }
+    delete _imp->belowRowWidgetWatcher.data();
+    if (_imp->fullWidthRow) {
+        _imp->fullWidthRow->deleteLater();
+        _imp->fullWidthRow = 0;
+    }
+    _imp->belowRowWidgetFullWidth = false;
     _imp->spinBoxes.clear();
     _imp->dimensionLines = 0;
     _imp->dimensionLinesLayout = 0;
@@ -266,6 +322,21 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         belowRowWidget->hide();
         columnLayout->addWidget(belowRowWidget);
         layout->addWidget(_imp->belowRowColumn);
+        _imp->belowRowWidget = belowRowWidget;
+
+        // The page re-parents the holder into its grid; until the widget moves in it stays empty
+        // and hidden, so its row takes no space.
+        _imp->fullWidthRow = new QWidget(layout->parentWidget());
+        QVBoxLayout* holderLayout = new QVBoxLayout(_imp->fullWidthRow);
+        holderLayout->setContentsMargins(0, 0, 0, 0);
+        holderLayout->setSpacing(0);
+        _imp->fullWidthRow->hide();
+
+        KnobGuiValuePrivate* imp = _imp.get();
+        _imp->belowRowWidgetWatcher = new ExplicitVisibilityWatcher(belowRowWidget, [imp]() {
+            imp->refreshFullWidthRowVisibility();
+        });
+        belowRowWidget->installEventFilter(_imp->belowRowWidgetWatcher.data());
     } else {
         layout->addWidget(_imp->container);
     }
@@ -726,6 +797,43 @@ QVBoxLayout*
 KnobGuiValue::getBelowRowColumnLayout() const
 {
     return _imp->belowRowColumn ? qobject_cast<QVBoxLayout*>(_imp->belowRowColumn->layout()) : 0;
+}
+
+QWidget*
+KnobGuiValue::getFullWidthRowWidget() const
+{
+    return _imp->fullWidthRow;
+}
+
+bool
+KnobGuiValue::isBelowRowWidgetFullWidth() const
+{
+    return _imp->belowRowWidgetFullWidth;
+}
+
+void
+KnobGuiValue::setBelowRowWidgetFullWidth(bool fullWidth)
+{
+    QWidget* widget = _imp->belowRowWidget.data();
+    QVBoxLayout* columnLayout = getBelowRowColumnLayout();
+    QVBoxLayout* holderLayout = _imp->fullWidthRow ? qobject_cast<QVBoxLayout*>(_imp->fullWidthRow->layout()) : 0;
+
+    if (!widget || !columnLayout || !holderLayout || (fullWidth == _imp->belowRowWidgetFullWidth)) {
+        return;
+    }
+
+    QVBoxLayout* from = fullWidth ? columnLayout : holderLayout;
+    QVBoxLayout* to = fullWidth ? holderLayout : columnLayout;
+
+    // setParent() hides a widget; its own shown state is what the caller left it in.
+    const bool wasHidden = widget->isHidden();
+
+    _imp->belowRowWidgetFullWidth = fullWidth;
+    from->removeWidget(widget);
+    widget->setParent(to->parentWidget());
+    to->addWidget(widget);
+    widget->setVisible(!wasHidden);
+    _imp->refreshFullWidthRowVisibility();
 }
 
 void
@@ -1573,6 +1681,8 @@ KnobGuiValue::onSpinBoxValueChanged()
 void
 KnobGuiValue::_hide()
 {
+    _imp->knobHidden = true;
+    _imp->refreshFullWidthRowVisibility();
     for (std::size_t i = 0; i < _imp->spinBoxes.size(); ++i) {
         _imp->spinBoxes[i].first->hide();
         if (_imp->spinBoxes[i].second) {
@@ -1596,6 +1706,8 @@ KnobGuiValue::_hide()
 void
 KnobGuiValue::_show()
 {
+    _imp->knobHidden = false;
+    _imp->refreshFullWidthRowVisibility();
     for (std::size_t i = 0; i < _imp->spinBoxes.size(); ++i) {
         if ( !_imp->dimensionSwitchButton || ( (i > 0) && _imp->dimensionSwitchButton->isChecked() ) || (i == 0) ) {
             _imp->spinBoxes[i].first->show();

@@ -162,8 +162,24 @@ public:
     ColorAxisEnum getActiveLock() const;
     bool isDragging() const;
 
+    /**
+     * @brief The wheel is square: its floor and its cap (both DPI-scaled) bound the preferred
+     * diameter the owner sets, and the disc is centred in whatever rect it ends up with.
+     **/
+    static int minimumDiameter();
+    static int maximumDiameter();
+
+    /**
+     * @brief The width the owner can spare, clamped to [minimumDiameter, maximumDiameter];
+     * it becomes the sizeHint. The disc images re-render on the next paint at the new size.
+     **/
+    void setPreferredDiameter(int pixels);
+    int getPreferredDiameter() const;
+
     virtual QSize sizeHint() const OVERRIDE;
     virtual QSize minimumSizeHint() const OVERRIDE;
+    virtual bool hasHeightForWidth() const OVERRIDE;
+    virtual int heightForWidth(int width) const OVERRIDE;
 
 Q_SIGNALS:
     void gestureStarted();
@@ -252,6 +268,7 @@ private:
     bool _hasDragOffset;
     unsigned _basisGeneration;
     unsigned _converterGeneration;
+    int _preferredDiameter;
 
     HitZoneEnum _dragZone;
     QPointF _lastDragPos;

@@ -39,8 +39,11 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/ColorWheelMath.h"
 
+#include "Gui/ColorPanelLayoutDev.h"
 #include "Gui/ColorWheelWidget.h"
 #include "Gui/GuiFwd.h"
+
+class QResizeEvent;
 
 NATRON_NAMESPACE_ENTER
 
@@ -61,6 +64,11 @@ struct ColorAdjustPanelPrivate;
  *
  * A slider reports absolute targets in its line's unit (degrees, plane distance, stops or Y,
  * mired, tint or the Offset axes); a spinbox commit is a one-shot absolute edit.
+ *
+ * The edit area is built for ColorPanelLayoutDev's current layout and rebuilt when it changes;
+ * a change that arrives during a gesture waits for the gesture's End, so one gesture never spans
+ * two sets of widgets. Pointers from getEditArea, getWheel, getSlider and getSpinBox are only
+ * good until the next layoutApplied.
  **/
 class ColorAdjustPanel
     : public QWidget {
@@ -106,6 +114,19 @@ public:
      * the knob's own sliders, which stop short of the row's buttons.
      **/
     void setRightInset(int pixels);
+    int getRightInset() const;
+
+    /**
+     * @brief The layout the edit area is currently built in, which lags the switch's value
+     * while a gesture defers a change.
+     **/
+    const ColorPanelLayout& getLayout() const;
+
+    /**
+     * @brief The development layout bar above the edit area; null unless
+     * ColorPanelLayoutDev::isDevEnabled().
+     **/
+    QWidget* getDevBar() const;
 
     const KnobColorValue& getValue() const;
     int getDimensions() const;
@@ -132,7 +153,17 @@ public:
 Q_SIGNALS:
     void valuesEdited(KnobColorValue value, ColorAdjustPanel::GesturePhaseEnum phase, QString undoLabel);
 
+    /**
+     * @brief The edit area has been rebuilt for a new layout, getLayout() returns it, and the
+     * value, role, basis, converter, inset and enabled state carry over.
+     **/
+    void layoutApplied();
+
+protected:
+    virtual void resizeEvent(QResizeEvent* e) OVERRIDE;
+
 private Q_SLOTS:
+    void onLayoutChanged();
     void onWheelGestureStarted();
     void onWheelGestureMoved(ColorEdit edit, QString axisLabel);
     void onWheelGestureFinished(bool moved);
@@ -142,6 +173,9 @@ private Q_SLOTS:
     void onSpinBoxValueChanged(double value);
 
 private:
+    // It wires each rebuilt edit area to the slots above.
+    friend struct ColorAdjustPanelPrivate;
+
     std::unique_ptr<ColorAdjustPanelPrivate> _imp;
 };
 

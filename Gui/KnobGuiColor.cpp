@@ -905,7 +905,37 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         _globalModeButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Engage the global trackball mode (Ctrl+E) on this knob: press C (hue+saturation trackball), S (hue on x, saturation on y), T (temperature/tint) or V (value) to pick what a click-drag anywhere adjusts, until Esc or Enter accepts, or the shortcut is pressed again."), NATRON_NAMESPACE::WhiteSpaceNormal));
         QObject::connect(_globalModeButton, &QToolButton::clicked, this, &KnobGuiColor::engageGlobalMode);
         containerLayout->addWidget(_globalModeButton);
-        _adjustPanel->setRightInset(widthRightOfLastSlider(containerLayout));
+
+        // The panel's bounds follow its layout: on the left it starts in the field column or,
+        // in a row of its own, in the label column; on the right its sliders stop where the
+        // row's slider does or run on to the row's end. The channel lines keep their inset.
+        // Measured once, while every item in the row is still shown and so counted.
+        const int rowInset = widthRightOfLastSlider(containerLayout);
+        auto applyPanelBounds = [this, rowInset](bool settle) {
+            if (!_adjustPanel) {
+                return;
+            }
+
+            const ColorPanelLayout& panelLayout = _adjustPanel->getLayout();
+            QWidget* topWidget = (settle && getContainer()) ? getContainer()->getContainerWidget() : 0;
+            UpdatesHeldOff held(topWidget);
+
+            setBelowRowWidgetFullWidth(panelLayout.extendLeft);
+            _adjustPanel->setRightInset(panelLayout.extendRight ? 0 : rowInset);
+            if (settle) {
+                if (QWidget* columnWidget = getGlobalModeColumnWidget()) {
+                    activateLayoutsUpToInclusive(columnWidget, topWidget);
+                }
+                if (_adjustPanel->parentWidget()) {
+                    activateLayoutsUpToInclusive(_adjustPanel->parentWidget(), topWidget);
+                }
+            }
+        };
+        // Nothing is on screen yet, so the first pass needs no settling.
+        applyPanelBounds(false);
+        QObject::connect(_adjustPanel.data(), &ColorAdjustPanel::layoutApplied, this, [applyPanelBounds]() {
+            applyPanelBounds(true);
+        });
 
         return;
     }

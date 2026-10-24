@@ -92,6 +92,12 @@ public:
 
     int getDimensionForSpinBox(const SpinBox* spinbox) const;
 
+    /**
+     * @brief The holder for the below-row widget when it is moved out to a row of its own
+     * (see setBelowRowWidgetFullWidth()). Null for a knob with no below-row widget.
+     **/
+    virtual QWidget* getFullWidthRowWidget() const OVERRIDE FINAL;
+
 public Q_SLOTS:
 
     void onSpinBoxValueChanged();
@@ -183,6 +189,15 @@ protected:
      * specific position in that column from outside createBelowRowWidget().
      **/
     QVBoxLayout* getBelowRowColumnLayout() const;
+
+    /**
+     * @brief Moves the below-row widget into the full-width row's holder, starting in the label
+     * column, or back to the end of the below-row column. The holder is shown only while it
+     * holds the widget, the widget itself is not hidden and the knob is shown. The caller holds
+     * updates off and flushes the layouts around the move.
+     **/
+    void setBelowRowWidgetFullWidth(bool fullWidth);
+    bool isBelowRowWidgetFullWidth() const;
 
     /**
      * @brief Lets a subclass supply a widget placed below the knob's row, spanning the

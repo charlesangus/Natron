@@ -47,8 +47,10 @@
 
 #include <gtest/gtest.h>
 
+#include "Engine/AppManager.h"
 #include "Engine/ColorWheelMath.h"
 
+#include "Gui/ColorAdjustPanel.h"
 #include "Gui/ColorWheelWidget.h"
 
 NATRON_NAMESPACE_USING
@@ -981,4 +983,85 @@ TEST(ColorWheelWidget, EscapeEndsDragWithoutCancel)
     releaseAt(wheel, c + QPointF(20.0, 0.0));
     EXPECT_EQ(1u, rec.edits.size());
     EXPECT_EQ(1, rec.finished);
+}
+
+TEST(ColorWheelWidget, IsSquareBetweenItsFloorAndCap)
+{
+    ColorWheelWidget wheel;
+
+    EXPECT_EQ((int)TO_DPIX(160.), ColorWheelWidget::minimumDiameter());
+    EXPECT_EQ((int)TO_DPIX(320.), ColorWheelWidget::maximumDiameter());
+    EXPECT_TRUE(wheel.hasHeightForWidth());
+    EXPECT_TRUE(wheel.sizePolicy().hasHeightForWidth());
+    EXPECT_EQ(250, wheel.heightForWidth(250));
+    EXPECT_EQ(QSize(ColorWheelWidget::minimumDiameter(), ColorWheelWidget::minimumDiameter()), wheel.minimumSizeHint());
+
+    wheel.setPreferredDiameter(10000);
+    EXPECT_EQ(ColorWheelWidget::maximumDiameter(), wheel.getPreferredDiameter());
+    EXPECT_EQ(QSize(ColorWheelWidget::maximumDiameter(), ColorWheelWidget::maximumDiameter()), wheel.sizeHint());
+    wheel.setPreferredDiameter(10);
+    EXPECT_EQ(ColorWheelWidget::minimumDiameter(), wheel.getPreferredDiameter());
+}
+
+TEST(ColorWheelWidget, DiscFollowsTheShortSideAndStaysCentred)
+{
+    ColorWheelWidget square;
+
+    setUpWheel(square, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.2);
+    QApplication::processEvents();
+
+    // The gap between the widget's edge and the outer ring, whatever the DPI.
+    double margin = kWidgetSize / 2.0 - square.getRingOuterRadius();
+
+    ASSERT_GE(margin, 0.0);
+
+    ColorWheelWidget wide;
+
+    setUpWheel(wide, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.2);
+    wide.resize(300, 220);
+    QApplication::processEvents();
+    ASSERT_EQ(QSize(300, 220), wide.size());
+
+    EXPECT_NEAR(220 / 2.0 - margin, wide.getRingOuterRadius(), 1.0);
+    EXPECT_NEAR(150.0, wide.getDiscCentre().x(), 1.0);
+    EXPECT_NEAR(110.0, wide.getDiscCentre().y(), 1.0);
+
+    // The disc image is rendered at the new size on the next read, not left at the old one.
+    QImage disc = wide.getDiscImage();
+
+    EXPECT_NEAR(2.0 * wide.getDiscRadius() * disc.devicePixelRatio(), disc.width(), 2.0);
+}
+
+TEST(ColorWheelWidget, PanelWidthDecidesTheWheelSize)
+{
+    int maxD = ColorWheelWidget::maximumDiameter();
+    int minD = ColorWheelWidget::minimumDiameter();
+    ColorAdjustPanel wide;
+
+    wide.setKnobValue(makeValue(1.0, 1.0, 1.0), 4, eColorKnobRoleGain, acescg());
+    wide.resize((int)TO_DPIX(600.), maxD + (int)TO_DPIY(40.));
+    wide.show();
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    ColorWheelWidget* wheel = wide.getWheel();
+
+    EXPECT_EQ(maxD, wheel->width());
+    EXPECT_EQ(maxD, wheel->height());
+    EXPECT_NEAR(maxD / 2.0, wheel->getDiscCentre().x(), 1.0);
+    EXPECT_NEAR(maxD / 2.0, wheel->getDiscCentre().y(), 1.0);
+
+    ColorAdjustPanel narrow;
+
+    narrow.setKnobValue(makeValue(1.0, 1.0, 1.0), 4, eColorKnobRoleGain, acescg());
+    narrow.resize((int)TO_DPIX(300.), maxD + (int)TO_DPIY(40.));
+    narrow.show();
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    ColorWheelWidget* small = narrow.getWheel();
+
+    EXPECT_GE(small->width(), minD);
+    EXPECT_LT(small->width(), maxD);
+    EXPECT_EQ(small->width(), small->height());
 }

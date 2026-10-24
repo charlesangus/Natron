@@ -171,6 +171,14 @@ public:
      * opens or closes under the row.
      **/
     virtual bool wantsTopAlignedLabel() const;
+
+    /**
+     * @brief A widget the page gives a grid row of its own, directly below the knob's row and
+     * spanning both the label and field columns, or null for none. Read once, right after the
+     * knob's GUI is created; the knob owns its contents and visibility.
+     **/
+    virtual QWidget* getFullWidthRowWidget() const { return nullptr; }
+
     virtual std::string getDescriptionLabel() const;
     QWidget* getFieldContainer() const;
 

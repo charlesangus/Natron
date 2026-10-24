@@ -69,6 +69,8 @@ const double kPuckRadius = 5.0;
 const double kParkedPuckRadius = 6.0;
 const double kRingHitTolerance = 4.0;
 const double kWheelNotch = 120.0;
+const double kWheelMinPx = 160.0;
+const double kWheelMaxPx = 320.0;
 
 PlanePoint
 planePoint(double x,
@@ -314,11 +316,17 @@ ColorWheelWidget::ColorWheelWidget(QWidget* parent)
     , _hasDragOffset(false)
     , _basisGeneration(0)
     , _converterGeneration(0)
+    , _preferredDiameter(minimumDiameter())
     , _dragZone(eHitZoneNone)
     , _lastDragPos()
     , _gestureOffset()
     , _gestureMoved(false)
 {
+    QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    policy.setHeightForWidth(true);
+    setSizePolicy(policy);
+    setMaximumSize(maximumDiameter(), maximumDiameter());
     setFocusPolicy(Qt::StrongFocus);
     lockKeyTracker();
     updateAnchor();
@@ -580,16 +588,58 @@ ColorWheelWidget::getDiscImage() const
     return discImage();
 }
 
+int
+ColorWheelWidget::minimumDiameter()
+{
+    return (int)TO_DPIX(kWheelMinPx);
+}
+
+int
+ColorWheelWidget::maximumDiameter()
+{
+    return (int)TO_DPIX(kWheelMaxPx);
+}
+
+void
+ColorWheelWidget::setPreferredDiameter(int pixels)
+{
+    int d = std::min(std::max(pixels, minimumDiameter()), maximumDiameter());
+
+    if (d == _preferredDiameter) {
+        return;
+    }
+    _preferredDiameter = d;
+    updateGeometry();
+}
+
+int
+ColorWheelWidget::getPreferredDiameter() const
+{
+    return _preferredDiameter;
+}
+
 QSize
 ColorWheelWidget::sizeHint() const
 {
-    return QSize((int)TO_DPIX(160.0), (int)TO_DPIY(160.0));
+    return QSize(_preferredDiameter, _preferredDiameter);
 }
 
 QSize
 ColorWheelWidget::minimumSizeHint() const
 {
-    return QSize((int)TO_DPIX(80.0), (int)TO_DPIY(80.0));
+    return QSize(minimumDiameter(), minimumDiameter());
+}
+
+bool
+ColorWheelWidget::hasHeightForWidth() const
+{
+    return true;
+}
+
+int
+ColorWheelWidget::heightForWidth(int width) const
+{
+    return width;
 }
 
 double

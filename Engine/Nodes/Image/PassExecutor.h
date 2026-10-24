@@ -385,6 +385,9 @@ struct PassGpuIO {
     int haloX = 0;
     int haloY = 0;
     int nComps = 0;
+    // The processed channels, in the bit space of pixelKernelChannelBit(); the finish restores the
+    // others from the source, but a recorder that combines channels must leave them out.
+    std::bitset<4> channels;
 
     explicit PassGpuIO(gpu::GpuRecordContext& ctx)
         : context(ctx)

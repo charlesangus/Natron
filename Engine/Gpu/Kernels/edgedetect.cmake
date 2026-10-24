@@ -1,0 +1,4 @@
+slang_add_kernel(edgedetect_fill Kernels/edgedetect.slang ENTRY edgedetect_fill REGISTRY NatronGpu)
+slang_add_kernel(edgedetect_stencil Kernels/edgedetect.slang ENTRY edgedetect_stencil REGISTRY NatronGpu)
+slang_add_kernel(edgedetect_combine Kernels/edgedetect.slang ENTRY edgedetect_combine REGISTRY NatronGpu)
+slang_add_kernel(edgedetect_nms Kernels/edgedetect.slang ENTRY edgedetect_nms REGISTRY NatronGpu)

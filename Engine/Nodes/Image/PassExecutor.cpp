@@ -1240,6 +1240,7 @@ recordPassesGpu(EffectInstance& effect,
     io.haloX = rect.x1 - sourceRoI.x1;
     io.haloY = rect.y1 - sourceRoI.y1;
     io.nComps = nComps;
+    io.channels = plan.processChannels;
     if (list.gpu(io) != eStatusOK) {
         return eStatusFailed;
     }

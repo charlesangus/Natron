@@ -36,6 +36,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <list>
 #include <memory>
@@ -49,7 +50,14 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Project.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuBlur.h"
+#include "Engine/Gpu/GpuMorphology.h"
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -151,6 +159,19 @@ const int kSlotGx = 1;
 const int kSlotGy = 2;
 const int kSlotSuppressed = 3;
 
+// The rotation-invariant kernel's weights, rounded to float.
+float
+rotationInvariantA()
+{
+    return (float)(0.25f * (2 - std::sqrt(2.f)));
+}
+
+float
+rotationInvariantB()
+{
+    return (float)(0.5f * (std::sqrt(2.f) - 1));
+}
+
 // The finite-difference stencil over the pre-blurred buffer: CImg<float>::get_gradient(0, scheme),
 // centred differences (one-sided and halved at the ends), Sobel or rotation-invariant 3x3 kernels
 // with repeated edges, all in float. A one-pixel-wide axis has a zero derivative.
@@ -158,8 +179,8 @@ std::function<PassRowFn(const PassScratch&)>
 stencilWorker(EdgeDetectFilterEnum scheme)
 {
     return [scheme](const PassScratch& scratch) -> PassRowFn {
-        const float ra = (float)(0.25f * (2 - std::sqrt(2.f)));
-        const float rb = (float)(0.5f * (std::sqrt(2.f) - 1));
+        const float ra = rotationInvariantA();
+        const float rb = rotationInvariantB();
         const int bufferWidth = scratch.width;
         const int bufferHeight = scratch.height;
 
@@ -504,6 +525,381 @@ atSlot(Pass pass,
     return pass;
 }
 
+#ifdef NATRON_HAVE_GPU
+// Mirrors kScheme*, kCombine* and kNormalize* in Kernels/edgedetect.slang.
+const uint32_t kGpuSchemeSimple = 0;
+const uint32_t kGpuSchemeSobel = 1;
+const uint32_t kGpuSchemeRotationInvariant = 2;
+const uint32_t kGpuCombineSeparate = 0;
+const uint32_t kGpuCombineRMS = 1;
+const uint32_t kGpuCombineMax = 2;
+const uint32_t kGpuCombineTensor = 3;
+const uint32_t kGpuNormalizeX = 1;
+const uint32_t kGpuNormalizeY = 2;
+
+// Mirrors EdgeParams in Kernels/edgedetect.slang, which has no padding between members.
+struct EdgeDetectGpuParams {
+    int32_t bufX1;
+    int32_t bufY1;
+    uint32_t bufWidth;
+    uint32_t bufHeight;
+    uint32_t channels;
+    uint32_t processed;
+    uint32_t mode;
+    uint32_t flags;
+    int32_t outX1;
+    int32_t outY1;
+    uint32_t outWidth;
+    uint32_t outHeight;
+    uint32_t dstOffset;
+    uint32_t dstStride;
+    int32_t srcX1;
+    int32_t srcY1;
+    int32_t srcX2;
+    int32_t srcY2;
+    uint32_t srcOffset;
+    uint32_t srcStride;
+    float normXHi;
+    float normXLo;
+    float normYHi;
+    float normYLo;
+    float ra;
+    float rb;
+};
+static_assert(sizeof(EdgeDetectGpuParams) == 104);
+static_assert(offsetof(EdgeDetectGpuParams, outX1) == 32);
+static_assert(offsetof(EdgeDetectGpuParams, srcX1) == 56);
+static_assert(offsetof(EdgeDetectGpuParams, normXHi) == 80);
+
+// The passes of edgeDetectPasses() as the GPU recorder runs them.
+struct EdgeDetectGpuPlan {
+    bool finiteDifference = false;
+    uint32_t scheme = kGpuSchemeSimple;
+    // The finite-difference schemes' pre-blur, absent when it leaves every line unchanged.
+    bool preBlur = false;
+    gpu::GpuLineFilter preBlurX;
+    gpu::GpuLineFilter preBlurY;
+    // The derivative blurs of the x and y gradient components, rows then columns.
+    gpu::GpuLineFilter gxRows;
+    gpu::GpuLineFilter gxColumns;
+    gpu::GpuLineFilter gyRows;
+    gpu::GpuLineFilter gyColumns;
+    Normalization normalization;
+    EdgeDetectMultiChannelEnum multiChannel = eEdgeDetectMultiChannelTensor;
+    // Rows then columns, as the CPU's erosion passes.
+    std::vector<gpu::GpuMorphPass> erosion;
+    int erodeX = 0;
+    int erodeY = 0;
+    bool nms = false;
+};
+
+uint32_t
+gpuCombineMode(EdgeDetectMultiChannelEnum multiChannel)
+{
+    switch (multiChannel) {
+    case eEdgeDetectMultiChannelRMS:
+        return kGpuCombineRMS;
+    case eEdgeDetectMultiChannelMax:
+        return kGpuCombineMax;
+    case eEdgeDetectMultiChannelTensor:
+        return kGpuCombineTensor;
+    case eEdgeDetectMultiChannelSeparate:
+    default:
+        return kGpuCombineSeparate;
+    }
+}
+
+uint32_t
+gpuScheme(EdgeDetectFilterEnum filter)
+{
+    if (filter == eEdgeDetectFilterSobel) {
+        return kGpuSchemeSobel;
+    }
+    if (filter == eEdgeDetectFilterRotationInvariant) {
+        return kGpuSchemeRotationInvariant;
+    }
+
+    return kGpuSchemeSimple;
+}
+
+// A double as a float and the float nearest to what that leaves.
+void
+splitDouble(double v,
+            float* hi,
+            float* lo)
+{
+    *hi = (float)v;
+    *lo = (float)(v - (double)*hi);
+}
+
+// A tightly packed scratch buffer of nComps floats per pixel of rect.
+gpu::GpuBlurImage
+scratchImage(gpu::GpuBuffer* buffer,
+             const RectI& rect,
+             int nComps)
+{
+    gpu::GpuBlurImage image;
+
+    image.buffer = buffer;
+    image.bounds = PassExec::toGpuBlurRect(rect);
+    image.strideFloats = (uint32_t)(rect.width() * nComps);
+
+    return image;
+}
+
+// The float index of pixel (x, y) of image, or false when the image exceeds the kernels' 32-bit
+// indices.
+bool
+gpuFloatIndex(const gpu::GpuBlurImage& image,
+              int x,
+              int y,
+              int nComps,
+              uint32_t* out)
+{
+    const uint64_t index = image.offsetFloats + (uint64_t)(y - image.bounds.y1) * image.strideFloats + (uint64_t)(x - image.bounds.x1) * nComps;
+    const uint64_t end = image.offsetFloats + (uint64_t)(image.bounds.y2 - image.bounds.y1) * image.strideFloats;
+    if ((index > UINT32_MAX) || (end > UINT32_MAX)) {
+        return false;
+    }
+    *out = (uint32_t)index;
+
+    return true;
+}
+
+// Points a dispatch's output at rect of dst.
+bool
+setGpuOutput(const gpu::GpuBlurImage& dst,
+             const RectI& rect,
+             int nComps,
+             EdgeDetectGpuParams* p)
+{
+    p->outX1 = rect.x1;
+    p->outY1 = rect.y1;
+    p->outWidth = (uint32_t)std::max(0, rect.width());
+    p->outHeight = (uint32_t)std::max(0, rect.height());
+    p->dstStride = dst.strideFloats;
+
+    return PassExec::isEmptyRect(rect) || gpuFloatIndex(dst, rect.x1, rect.y1, nComps, &p->dstOffset);
+}
+
+bool
+dispatchEdgeDetect(gpu::GpuRecordContext& ctx,
+                   gpu::GpuKernelId kernel,
+                   const gpu::GpuBuffer* in,
+                   const gpu::GpuBuffer* gx,
+                   const gpu::GpuBuffer* gy,
+                   const gpu::GpuBuffer* out,
+                   const EdgeDetectGpuParams& p,
+                   uint32_t width,
+                   uint32_t height)
+{
+    if (!width || !height) {
+        return true;
+    }
+
+    return (bool)ctx.dispatch(kernel, { in, gx, gy, out }, p, { width, height, 1 });
+}
+
+// A separable line filter of the whole buffer, from src to dst, which may be the same buffer.
+bool
+recordBufferLines(gpu::GpuRecordContext& ctx,
+                  const gpu::GpuBuffer* window,
+                  const gpu::GpuBlurImage& src,
+                  const gpu::GpuBlurImage& dst,
+                  int nComps,
+                  const gpu::GpuLineFilter& filterX,
+                  const gpu::GpuLineFilter& filterY)
+{
+    gpu::GpuLineBlur blur;
+
+    blur.src = src;
+    blur.srcValid = src.bounds;
+    blur.dst = dst;
+    blur.output = dst.bounds;
+    blur.domain = dst.bounds;
+    blur.window = window;
+    blur.channels = (uint32_t)nComps;
+    blur.filterX = filterX;
+    blur.filterY = filterY;
+
+    return (bool)gpu::recordLineBlur(ctx, blur);
+}
+
+/// The pass list on the GPU over the CPU's buffer, io.domain. The buffer slot, the two gradient
+/// components and, when the suppression reads an eroded magnitude, a fourth buffer are scratch;
+/// the last step writes io.filtered over io.output, zero outside the buffer as the CPU writes it.
+PassGpuRecorder
+edgeDetectGpuRecorder(const std::shared_ptr<const EdgeDetectGpuPlan>& plan)
+{
+    return [plan](const PassGpuIO& io) -> StatusEnum {
+        gpu::GpuRecordContext& ctx = io.context;
+        const int nComps = io.nComps;
+        const RectI& bufferRect = io.domain;
+        const bool hasBuffer = !PassExec::isEmptyRect(bufferRect);
+        const uint64_t floats = hasBuffer ? (uint64_t)bufferRect.width() * bufferRect.height() * nComps : 0;
+        if (floats > UINT32_MAX) {
+            return eStatusFailed;
+        }
+        const VkDeviceSize bytes = (VkDeviceSize)std::max<uint64_t>(floats, 4) * sizeof(float);
+        gpu::GpuBuffer* magnitude = nullptr;
+        gpu::GpuBuffer* gx = nullptr;
+        gpu::GpuBuffer* gy = nullptr;
+        if (!ctx.scratch(bytes, magnitude) || !magnitude || !ctx.scratch(bytes, gx) || !gx || !ctx.scratch(bytes, gy) || !gy) {
+            return eStatusFailed;
+        }
+
+        // The CPU's buffer holds the processed channels only, and combines those.
+        uint32_t processed = 0;
+        int nProcessed = 0;
+        int firstProcessed = -1;
+        for (int c = 0; c < nComps; ++c) {
+            if (io.channels[pixelKernelChannelBit(nComps, c)]) {
+                processed |= 1u << c;
+                ++nProcessed;
+                if (firstProcessed < 0) {
+                    firstProcessed = c;
+                }
+            }
+        }
+        const bool separate = (nProcessed <= 1) || (plan->multiChannel == eEdgeDetectMultiChannelSeparate);
+
+        EdgeDetectGpuParams base {};
+        base.channels = (uint32_t)nComps;
+        base.processed = processed;
+        if (hasBuffer) {
+            base.bufX1 = bufferRect.x1;
+            base.bufY1 = bufferRect.y1;
+            base.bufWidth = (uint32_t)bufferRect.width();
+            base.bufHeight = (uint32_t)bufferRect.height();
+        }
+        const gpu::GpuBlurImage filtered = PassExec::toGpuBlurImage(io.filtered);
+
+        if (!hasBuffer) {
+            // Every pixel of the window lies outside the empty buffer, so the combination writes zero.
+            EdgeDetectGpuParams p = base;
+            if (!setGpuOutput(filtered, io.output, nComps, &p)) {
+                return eStatusFailed;
+            }
+
+            return dispatchEdgeDetect(ctx, gpu::GpuKernelId::edgedetect_combine, magnitude, gx, gy, filtered.buffer, p, p.outWidth, p.outHeight) ? eStatusOK : eStatusFailed;
+        }
+        const gpu::GpuBlurImage magnitudeImage = scratchImage(magnitude, bufferRect, nComps);
+
+        const gpu::GpuBuffer* sourceBuffer = io.source.buffer;
+        EdgeDetectGpuParams fill = base;
+        if (!sourceBuffer || PassExec::isEmptyRect(io.sourceValid)) {
+            // The kernel still binds a source, which the empty source rect keeps unread.
+            sourceBuffer = gx;
+        } else {
+            const gpu::GpuBlurImage source = PassExec::toGpuBlurImage(io.source);
+            fill.srcX1 = io.sourceValid.x1;
+            fill.srcY1 = io.sourceValid.y1;
+            fill.srcX2 = io.sourceValid.x2;
+            fill.srcY2 = io.sourceValid.y2;
+            fill.srcStride = source.strideFloats;
+            if (!gpuFloatIndex(source, io.sourceValid.x1, io.sourceValid.y1, nComps, &fill.srcOffset)) {
+                return eStatusFailed;
+            }
+        }
+        if (!dispatchEdgeDetect(ctx, gpu::GpuKernelId::edgedetect_fill, sourceBuffer, gx, gy, magnitude, fill, base.bufWidth, base.bufHeight)) {
+            return eStatusFailed;
+        }
+        ctx.computeBarrier();
+
+        const bool lines = !plan->finiteDifference || plan->preBlur;
+        gpu::GpuBuffer* window = nullptr;
+        if (lines && !gpu::recordFilterWindow(ctx, PassExec::toGpuBlurRect(io.output), PassExec::toGpuBlurRect(io.rod), io.haloX, io.haloY, window)) {
+            return eStatusFailed;
+        }
+        if (plan->finiteDifference) {
+            if (plan->preBlur) {
+                if (!recordBufferLines(ctx, window, magnitudeImage, magnitudeImage, nComps, plan->preBlurX, plan->preBlurY)) {
+                    return eStatusFailed;
+                }
+                ctx.computeBarrier();
+            }
+            EdgeDetectGpuParams stencil = base;
+            stencil.mode = plan->scheme;
+            stencil.ra = rotationInvariantA();
+            stencil.rb = rotationInvariantB();
+            if (!dispatchEdgeDetect(ctx, gpu::GpuKernelId::edgedetect_stencil, magnitude, gx, gy, magnitude, stencil, base.bufWidth, base.bufHeight)) {
+                return eStatusFailed;
+            }
+        } else {
+            if (!recordBufferLines(ctx, window, magnitudeImage, scratchImage(gx, bufferRect, nComps), nComps, plan->gxRows, plan->gxColumns)) {
+                return eStatusFailed;
+            }
+            if (!recordBufferLines(ctx, window, magnitudeImage, scratchImage(gy, bufferRect, nComps), nComps, plan->gyRows, plan->gyColumns)) {
+                return eStatusFailed;
+            }
+        }
+        ctx.computeBarrier();
+
+        // Without erosion or suppression the combination is the result, needed over the window only.
+        const bool erodes = !plan->erosion.empty();
+        const bool keepsBuffer = erodes || plan->nms;
+        const Normalization& n = plan->normalization;
+        EdgeDetectGpuParams combine = base;
+        combine.mode = separate ? kGpuCombineSeparate : gpuCombineMode(plan->multiChannel);
+        combine.flags = (n.normalizeX ? kGpuNormalizeX : 0u) | (n.normalizeY ? kGpuNormalizeY : 0u);
+        splitDouble(n.normX, &combine.normXHi, &combine.normXLo);
+        splitDouble(n.normY, &combine.normYHi, &combine.normYLo);
+        const gpu::GpuBlurImage& combineDst = keepsBuffer ? magnitudeImage : filtered;
+        if (!setGpuOutput(combineDst, keepsBuffer ? bufferRect : io.output, nComps, &combine)) {
+            return eStatusFailed;
+        }
+        if (!dispatchEdgeDetect(ctx, gpu::GpuKernelId::edgedetect_combine, magnitude, gx, gy, combineDst.buffer, combine, combine.outWidth, combine.outHeight)) {
+            return eStatusFailed;
+        }
+        if (!keepsBuffer) {
+            return eStatusOK;
+        }
+        ctx.computeBarrier();
+
+        const gpu::GpuBuffer* suppressionInput = magnitude;
+        if (erodes) {
+            gpu::GpuMorphology morph;
+            morph.src = magnitudeImage;
+            morph.rod = PassExec::toGpuBlurRect(bufferRect);
+            morph.passes = plan->erosion;
+            morph.channels = (uint32_t)nComps;
+            gpu::GpuBuffer* eroded = nullptr;
+            if (plan->nms) {
+                if (!ctx.scratch(bytes, eroded) || !eroded) {
+                    return eStatusFailed;
+                }
+                morph.dst = scratchImage(eroded, bufferRect, nComps);
+                morph.output = morph.rod;
+            } else {
+                // Each eroded line clamps its windows to the buffer, which the window grown by the
+                // radius and clipped to the buffer reaches wherever the window needs it.
+                morph.dst = filtered;
+                morph.output = PassExec::toGpuBlurRect(io.output);
+                morph.haloX = plan->erodeX;
+                morph.haloY = plan->erodeY;
+            }
+            if (!gpu::recordMorphology(ctx, morph)) {
+                return eStatusFailed;
+            }
+            if (!plan->nms) {
+                return eStatusOK;
+            }
+            ctx.computeBarrier();
+            suppressionInput = eroded;
+        }
+
+        EdgeDetectGpuParams suppression = base;
+        suppression.mode = separate ? 1u : 0u;
+        suppression.flags = separate ? 0u : (uint32_t)std::max(0, firstProcessed);
+        if (!setGpuOutput(filtered, io.output, nComps, &suppression)) {
+            return eStatusFailed;
+        }
+
+        return dispatchEdgeDetect(ctx, gpu::GpuKernelId::edgedetect_nms, suppressionInput, gx, gy, filtered.buffer, suppression, suppression.outWidth, suppression.outHeight) ? eStatusOK : eStatusFailed;
+    };
+} // edgeDetectGpuRecorder
+#endif // NATRON_HAVE_GPU
+
 /// The passes of one render at scale; params carries sizeX already divided by the pixel aspect
 /// ratio. The halo and the region of definition's spread are CImgBlurPlugin::getRoI() and
 /// getRegionOfDefinition() with first-order derivatives on both axes, which are never an
@@ -541,6 +937,18 @@ edgeDetectPasses(const EdgeDetectParams& params,
     PassList list;
     list.boundary = PassExec::Boundary::Nearest;
     list.scratchSlots = 3;
+    // What gpuCostHint() reports: the blur's sigma, recursive for the Gaussians.
+    const auto withCost = [&](Pass pass, double size, const LineFilterPtr& lineFilter) {
+        pass.sigma = size / 2.4;
+        pass.recursive = isGaussianFamily(filter) && !lineFilter->isIdentity();
+
+        return pass;
+    };
+#ifdef NATRON_HAVE_GPU
+    std::shared_ptr<EdgeDetectGpuPlan> gpuPlan = std::make_shared<EdgeDetectGpuPlan>();
+    gpuPlan->multiChannel = params.multiChannel;
+    gpuPlan->nms = params.nms;
+#endif
 
     if (isFiniteDifference(params.filter)) {
         // A Gaussian pre-blur, then finite differences, which read one pixel around each.
@@ -552,11 +960,18 @@ edgeDetectPasses(const EdgeDetectParams& params,
             preBlurX = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmax, 0, neumann));
             preBlurY = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmay, 0, neumann));
         }
-        list.passes.push_back(Pass::lineX(haloX - 1, std::max(0, growX - 1), lineWorker(preBlurX)));
-        list.passes.push_back(Pass::lineY(haloY - 1, std::max(0, growY - 1), lineWorker(preBlurY)));
+        list.passes.push_back(withCost(Pass::lineX(haloX - 1, std::max(0, growX - 1), lineWorker(preBlurX)), sx, preBlurX));
+        list.passes.push_back(withCost(Pass::lineY(haloY - 1, std::max(0, growY - 1), lineWorker(preBlurY)), sy, preBlurY));
         Pass stencil = Pass::gather(1, 1, true, stencilWorker(params.filter));
         stencil.growX = stencil.growY = params.expandRoD ? 1 : 0;
         list.passes.push_back(stencil);
+#ifdef NATRON_HAVE_GPU
+        gpuPlan->finiteDifference = true;
+        gpuPlan->scheme = gpuScheme(params.filter);
+        gpuPlan->preBlur = !preBlurX->isIdentity() || !preBlurY->isIdentity();
+        gpuPlan->preBlurX = BlurKernels::toGpuLineFilter(*preBlurX);
+        gpuPlan->preBlurY = BlurKernels::toGpuLineFilter(*preBlurY);
+#endif
     } else {
         // The x and y gradient components as derivative blurs, each run as a horizontal pass then
         // a vertical one, over a copy of the source each.
@@ -581,13 +996,24 @@ edgeDetectPasses(const EdgeDetectParams& params,
             gyColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(boxY), 1, neumann));
         }
         list.passes.push_back(Pass::point(true, copyWorker()));
-        list.passes.push_back(atSlot(Pass::lineX(haloX, growX, lineWorker(gxRows)), kSlotGx));
-        list.passes.push_back(atSlot(Pass::lineY(haloY, growY, lineWorker(gxColumns)), kSlotGx));
-        list.passes.push_back(atSlot(Pass::lineX(0, 0, lineWorker(gyRows)), kSlotGy));
-        list.passes.push_back(atSlot(Pass::lineY(0, 0, lineWorker(gyColumns)), kSlotGy));
+        list.passes.push_back(atSlot(withCost(Pass::lineX(haloX, growX, lineWorker(gxRows)), sx, gxRows), kSlotGx));
+        list.passes.push_back(atSlot(withCost(Pass::lineY(haloY, growY, lineWorker(gxColumns)), sy, gxColumns), kSlotGx));
+        list.passes.push_back(atSlot(withCost(Pass::lineX(0, 0, lineWorker(gyRows)), sx, gyRows), kSlotGy));
+        list.passes.push_back(atSlot(withCost(Pass::lineY(0, 0, lineWorker(gyColumns)), sy, gyColumns), kSlotGy));
+#ifdef NATRON_HAVE_GPU
+        gpuPlan->gxRows = BlurKernels::toGpuLineFilter(*gxRows);
+        gpuPlan->gxColumns = BlurKernels::toGpuLineFilter(*gxColumns);
+        gpuPlan->gyRows = BlurKernels::toGpuLineFilter(*gyRows);
+        gpuPlan->gyColumns = BlurKernels::toGpuLineFilter(*gyColumns);
+#endif
     }
 
-    list.passes.push_back(Pass::point(false, combineWorker(normalization(filter, sx, sy), params.multiChannel)));
+    const Normalization norm = normalization(filter, sx, sy);
+    list.passes.push_back(Pass::point(false, combineWorker(norm, params.multiChannel)));
+#ifdef NATRON_HAVE_GPU
+    gpuPlan->normalization = norm;
+    bool gpuFits = true;
+#endif
 
     int erodeX = 0;
     int erodeY = 0;
@@ -602,6 +1028,17 @@ edgeDetectPasses(const EdgeDetectParams& params,
         if (erodeY > 0) {
             list.passes.push_back(Pass::lineY(erodeY, 0, erodeWorker(erodeY, takeMax)));
         }
+#ifdef NATRON_HAVE_GPU
+        gpuFits = (erodeX <= (int)gpu::kGpuMorphMaxRadius) && (erodeY <= (int)gpu::kGpuMorphMaxRadius);
+        if (erodeX > 0) {
+            gpuPlan->erosion.push_back(gpu::GpuMorphPass { (uint32_t)erodeX, false, takeMax });
+            gpuPlan->erodeX = erodeX;
+        }
+        if (erodeY > 0) {
+            gpuPlan->erosion.push_back(gpu::GpuMorphPass { (uint32_t)erodeY, true, takeMax });
+            gpuPlan->erodeY = erodeY;
+        }
+#endif
     }
 
     if (params.nms) {
@@ -611,6 +1048,12 @@ edgeDetectPasses(const EdgeDetectParams& params,
         list.scratchSlots = 4;
         list.resultSlot = kSlotSuppressed;
     }
+
+#ifdef NATRON_HAVE_GPU
+    if (gpuFits) {
+        list.gpu = edgeDetectGpuRecorder(gpuPlan);
+    }
+#endif
 
     return list;
 } // edgeDetectPasses

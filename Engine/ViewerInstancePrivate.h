@@ -30,14 +30,16 @@
 
 #include "ViewerInstance.h"
 
-#include <map>
-#include <set>
-#include <vector>
+#include <algorithm> // min, max
+#include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <list>
-#include <cassert>
-#include <algorithm> // min, max
+#include <map>
+#include <memory>
+#include <set>
+#include <vector>
 
 #include <QMutex>
 #include <QWaitCondition>
@@ -163,6 +165,49 @@ public:
     // clang-format on
 
 #ifdef NATRON_HAVE_GPU
+    // Lets the cache fills running on the pool finish before the viewer they fill for is destroyed, and keeps those
+    // that have not started from starting after it is.
+    class CacheFillGate {
+    public:
+        void runIfOpen(const std::function<void()>& work)
+        {
+            {
+                QMutexLocker k(&_mutex);
+                if (_closed) {
+                    return;
+                }
+                ++_active;
+            }
+            struct Leave {
+                CacheFillGate* gate;
+
+                ~Leave()
+                {
+                    QMutexLocker k(&gate->_mutex);
+                    if (--gate->_active == 0) {
+                        gate->_idle.wakeAll();
+                    }
+                }
+            } leave { this };
+            work();
+        }
+
+        void close()
+        {
+            QMutexLocker k(&_mutex);
+            _closed = true;
+            while (_active > 0) {
+                _idle.wait(&_mutex);
+            }
+        }
+
+    private:
+        QMutex _mutex;
+        QWaitCondition _idle;
+        int _active = 0;
+        bool _closed = false;
+    };
+
     // A device frame whose display buffer is being copied to host memory, to become cache tiles.
     struct PendingCacheFill
     {
@@ -175,12 +220,13 @@ public:
         int polls = 0;
     };
 
-    // Writes the tiles of every readback that has completed into the viewer cache and drops the ones that never
-    // will. Main thread, with the GL context current.
+    // Starts writing the tiles of every readback that has completed into the viewer cache on the pool and drops the
+    // ones that never will. Main thread, with the GL context current.
     void pollCacheReadbacks();
 
     void scheduleCachePoll();
 
+    // Any thread: allocates the tiles of fill in the cache and copies them from the readback.
     void insertCacheTiles(const PendingCacheFill& fill,
                           const ViewerHandoffReadback& readback);
 #endif
@@ -428,6 +474,7 @@ public:
 #ifdef NATRON_HAVE_GPU
     // Only accessed from MT
     std::list<PendingCacheFill> pendingCacheFills;
+    std::shared_ptr<CacheFillGate> cacheFillGate = std::make_shared<CacheFillGate>();
     std::uint64_t nextReadbackToken = 1;
     bool cachePollScheduled = false;
 #endif

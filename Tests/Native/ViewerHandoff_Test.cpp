@@ -26,18 +26,23 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <QtCore/QThreadPool>
 
 #include <dlfcn.h>
 #include <unistd.h>
@@ -789,22 +794,32 @@ TEST(ViewerHandoff, ReadbackMatchesTheTextureOnEveryRung)
                 ViewerHandoffFrame frame;
                 std::vector<unsigned char> bytes;
             };
+            std::mutex gotMutex;
             std::map<std::uint64_t, Got> got;
-            bool presentRefusedWhileLent = true;
-            const auto collect = [&](const ViewerHandoffReadback& rb) {
-                Got& g = got[rb.token];
-                g.frame = rb.frame;
-                g.bytes.assign(rb.data, rb.data + rb.size);
-                // The lent texels live in a slot, which present() must not produce into until they are returned.
-                presentRefusedWhileLent = presentRefusedWhileLent && !handoff.present(0, root, plain, texture, frame);
+            bool presentRefusedWhileClaiming = true;
+            const auto collect = [&](std::uint64_t) -> ViewerHandoffReadbackFn {
+                // The claim runs while the rings are walked, which present() must not change.
+                presentRefusedWhileClaiming = presentRefusedWhileClaiming && !handoff.present(0, root, plain, texture, frame);
+
+                return [&](const ViewerHandoffReadback& rb) {
+                    std::lock_guard<std::mutex> k(gotMutex);
+                    Got& g = got[rb.token];
+                    g.frame = rb.frame;
+                    g.bytes.assign(rb.data, rb.data + rb.size);
+                };
+            };
+            const auto gotCount = [&]() {
+                std::lock_guard<std::mutex> k(gotMutex);
+
+                return got.size();
             };
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-            while ((got.size() < expected.size()) && (std::chrono::steady_clock::now() < deadline)) {
+            while ((gotCount() < expected.size()) && (std::chrono::steady_clock::now() < deadline)) {
                 handoff.consumeCompletedReadbacks(collect);
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
-            ASSERT_EQ(expected.size(), got.size()) << toString(wanted);
-            EXPECT_TRUE(presentRefusedWhileLent) << toString(wanted);
+            ASSERT_EQ(expected.size(), gotCount()) << toString(wanted);
+            EXPECT_TRUE(presentRefusedWhileClaiming) << toString(wanted);
             for (const auto& e : expected) {
                 const Got& rb = got.at(e.first);
                 EXPECT_EQ(frame.width, rb.frame.width);
@@ -812,12 +827,233 @@ TEST(ViewerHandoff, ReadbackMatchesTheTextureOnEveryRung)
                 EXPECT_TRUE(rb.bytes == e.second) << toString(wanted) << " token " << e.first;
             }
             bool anyLeft = false;
-            handoff.consumeCompletedReadbacks([&](const ViewerHandoffReadback&) { anyLeft = true; });
+            handoff.consumeCompletedReadbacks([&](std::uint64_t) -> ViewerHandoffReadbackFn {
+                anyLeft = true;
+
+                return ViewerHandoffReadbackFn();
+            });
             EXPECT_FALSE(anyLeft) << toString(wanted);
         }
         handoff.release();
     }
     EXPECT_GT(ran, 0) << "not even the readback rung came up";
+#endif
+}
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+
+// A readback present()ed into ring 0, with the texels its texture received.
+struct ReadbackSetup {
+    GpuDeviceImagePtr root;
+    Case c = makeCase(eDisplayChannelsRGB, 4);
+    ViewerHandoffFrame frame = frameFor(kRect, ViewerHandoffFormat::Bgra8);
+    unsigned texture = 0;
+    std::vector<unsigned char> expected;
+};
+
+// Presents tokens 1 to count into ring 0 and keeps the texels of token 1.
+bool
+presentReadbacks(Harness& h,
+                 ViewerHandoff& handoff,
+                 std::uint64_t count,
+                 ReadbackSetup* setup)
+{
+    setup->root = makeRoot(h.runtime(), 4, 5);
+    if (!setup->root) {
+        ADD_FAILURE() << "no device root";
+
+        return false;
+    }
+    setup->texture = h.makeTexture(setup->frame);
+    for (std::uint64_t token = 1; token <= count; ++token) {
+        ViewerHandoffParams params = paramsFor(setup->c, kRect);
+        params.gain = 0.25 * double(token);
+        params.readbackToken = token;
+        const ViewerHandoffResult r = handoff.present(0, setup->root, params, setup->texture, setup->frame);
+        if (!r) {
+            ADD_FAILURE() << "token " << token << ": " << r.reason;
+
+            return false;
+        }
+        if (token == 1) {
+            setup->expected.resize(setup->frame.bytes());
+            h.egl.gl.BindTexture(kGlTexture2D, setup->texture);
+            h.egl.gl.PixelStorei(kGlPackAlignment, 4);
+            h.egl.gl.GetTexImage(kGlTexture2D, 0, kGlBgra, kGlUnsignedInt8888Rev, setup->expected.data());
+        }
+    }
+
+    return true;
+}
+
+// Consumes readbacks until claim has taken token 1.
+bool
+claimFirst(ViewerHandoff& handoff,
+           const ViewerHandoffReadbackFn& work)
+{
+    bool claimed = false;
+    const auto claim = [&](std::uint64_t token) -> ViewerHandoffReadbackFn {
+        if (token != 1) {
+            return ViewerHandoffReadbackFn();
+        }
+        claimed = true;
+
+        return work;
+    };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (!claimed && (std::chrono::steady_clock::now() < deadline)) {
+        handoff.consumeCompletedReadbacks(claim);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+
+    return claimed;
+}
+
+bool
+waitFor(const std::atomic<bool>& flag)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (!flag && (std::chrono::steady_clock::now() < deadline)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    return flag;
+}
+
+// Holds a fill until the thread setAfter() starts lets it go.
+struct Latch {
+    std::promise<void> promise;
+    std::shared_future<void> future = promise.get_future().share();
+    std::atomic<bool> started { false };
+    std::atomic<bool> finished { false };
+
+    void setAfter(std::chrono::milliseconds delay, std::thread* thread)
+    {
+        *thread = std::thread([this, delay]() {
+            std::this_thread::sleep_for(delay);
+            promise.set_value();
+        });
+    }
+};
+
+} // namespace
+#endif // NATRON_HAVE_GPU
+
+TEST(ViewerHandoff, PresentWaitsForAFillStillReadingTheSlotItReuses)
+{
+#ifndef NATRON_HAVE_GPU
+    reportNoGpu("built without the GPU backend");
+#else
+    Harness h;
+    if (!h.init()) {
+        return;
+    }
+    ScopedEnv env("NATRON_VIEWER_HANDOFF", nullptr);
+    ViewerHandoff handoff(h.context.get());
+    ASSERT_NE(ViewerHandoffRung::Cpu, handoff.create(eglLoader)) << handoff.rungReason();
+    ReadbackSetup setup;
+    // Token 1 in one slot and token 2 in the other, so the next present() comes round to token 1's.
+    ASSERT_TRUE(presentReadbacks(h, handoff, 2, &setup));
+
+    Latch latch;
+    std::vector<unsigned char> seen;
+    ASSERT_TRUE(claimFirst(handoff, [&](const ViewerHandoffReadback& rb) {
+        latch.started = true;
+        latch.future.wait();
+        seen.assign(rb.data, rb.data + rb.size);
+        latch.finished = true;
+    }));
+    std::thread releaser;
+    latch.setAfter(std::chrono::milliseconds(200), &releaser);
+    ViewerHandoffParams params = paramsFor(setup.c, kRect);
+    params.gain = 1.;
+    const ViewerHandoffResult r = handoff.present(0, setup.root, params, setup.texture, setup.frame);
+    const bool finishedFirst = latch.finished;
+    releaser.join();
+    ASSERT_TRUE(bool(r)) << r.reason;
+    EXPECT_TRUE(finishedFirst) << "present() produced into a slot a fill was still reading";
+    EXPECT_TRUE(seen == setup.expected) << "the fill read a slot that had been produced into again";
+    handoff.release();
+#endif
+}
+
+TEST(ViewerHandoff, ReleaseWaitsForARunningFillAndCancelsAQueuedOne)
+{
+#ifndef NATRON_HAVE_GPU
+    reportNoGpu("built without the GPU backend");
+#else
+    Harness h;
+    if (!h.init()) {
+        return;
+    }
+    ScopedEnv env("NATRON_VIEWER_HANDOFF", nullptr);
+    {
+        ViewerHandoff handoff(h.context.get());
+        ASSERT_NE(ViewerHandoffRung::Cpu, handoff.create(eglLoader)) << handoff.rungReason();
+        ReadbackSetup setup;
+        ASSERT_TRUE(presentReadbacks(h, handoff, 1, &setup));
+        Latch latch;
+        std::vector<unsigned char> seen;
+        ASSERT_TRUE(claimFirst(handoff, [&](const ViewerHandoffReadback& rb) {
+            latch.started = true;
+            latch.future.wait();
+            seen.assign(rb.data, rb.data + rb.size);
+            latch.finished = true;
+        }));
+        ASSERT_TRUE(waitFor(latch.started)) << "the fill never started on the pool";
+        std::thread releaser;
+        latch.setAfter(std::chrono::milliseconds(200), &releaser);
+        handoff.release();
+        const bool finishedFirst = latch.finished;
+        releaser.join();
+        EXPECT_TRUE(finishedFirst) << "release() unmapped a slot a fill was still reading";
+        EXPECT_TRUE(seen == setup.expected);
+        EXPECT_EQ(ViewerHandoffRung::Cpu, handoff.rung());
+    }
+
+    // Every pool thread is held, so the fill is still queued when the hand-off is destroyed.
+    QThreadPool* pool = QThreadPool::globalInstance();
+    const int threads = pool->maxThreadCount();
+    std::promise<void> unblock;
+    std::shared_future<void> unblocked = unblock.get_future().share();
+    std::atomic<int> blocking { 0 };
+    std::atomic<int> blockersDone { 0 };
+    for (int i = 0; i < threads; ++i) {
+        pool->start([&blocking, &blockersDone, unblocked]() {
+            ++blocking;
+            unblocked.wait_for(std::chrono::seconds(30));
+            ++blockersDone;
+        });
+    }
+    struct Unblock {
+        std::promise<void>* unblock;
+        std::atomic<int>* done;
+        int count;
+
+        ~Unblock()
+        {
+            unblock->set_value();
+            while (done->load() < count) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+    } unblockOnExit { &unblock, &blockersDone, threads };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while ((blocking.load() < threads) && (std::chrono::steady_clock::now() < deadline)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(threads, blocking.load()) << "the pool threads could not all be held";
+
+    std::atomic<bool> ran { false };
+    {
+        ViewerHandoff handoff(h.context.get());
+        ASSERT_NE(ViewerHandoffRung::Cpu, handoff.create(eglLoader)) << handoff.rungReason();
+        ReadbackSetup setup;
+        ASSERT_TRUE(presentReadbacks(h, handoff, 1, &setup));
+        ASSERT_TRUE(claimFirst(handoff, [&](const ViewerHandoffReadback&) { ran = true; }));
+    }
+    EXPECT_FALSE(ran.load()) << "a fill that had not started ran after its hand-off was destroyed";
 #endif
 }
 

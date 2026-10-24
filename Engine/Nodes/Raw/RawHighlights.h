@@ -49,6 +49,7 @@
 
 #define kRawHighlightsParamMode "mode"
 #define kRawHighlightsParamClip "clip"
+#define kRawHighlightsParamClipOverride "clipOverride"
 
 NATRON_NAMESPACE_ENTER
 
@@ -60,12 +61,38 @@ enum RawHighlightsModeEnum {
 };
 
 /**
+ * @brief The sensor a reconstruction mode needs, as darktable's highlights gui_changed() checks.
+ * A mode added later declares its requirement in rawHighlightsModeRequirement() and the
+ * sanitising follows.
+ **/
+enum RawHighlightsRequirementEnum {
+    eRawHighlightsRequiresAny = 0,
+    eRawHighlightsRequiresCfa,
+    eRawHighlightsRequiresBayer
+};
+
+RawHighlightsRequirementEnum rawHighlightsModeRequirement(RawHighlightsModeEnum mode) WARN_UNUSED_RETURN;
+
+bool rawHighlightsModeAvailable(RawHighlightsModeEnum mode,
+                                const RawLayout& layout) WARN_UNUSED_RETURN;
+
+/**
+ * @brief mode when the layout can run it, Inpaint Opposed otherwise, which sets *fellBack.
+ **/
+RawHighlightsModeEnum sanitiseRawHighlightsMode(RawHighlightsModeEnum mode,
+                                                const RawLayout& layout,
+                                                bool* fellBack) WARN_UNUSED_RETURN;
+
+/**
  * @brief Highlight reconstruction on prepared raw data, darktable's highlights module. Clip
  * clips every photosite to the clipping threshold; Unclipped leaves the data alone; Inpaint
  * Opposed rebuilds a clipped photosite from the opposed colours around it plus a chrominance
  * offset measured over the whole image next to the clipped areas; LCh rebuilds clipped Bayer and
  * X-Trans photosites keeping lightness and scaling chroma, and is Inpaint Opposed on data without
  * a CFA, as in darktable.
+ *
+ * The clipping threshold shows the smaller of 1 and raw/linear_response_limit until Override
+ * Clipping Threshold is on.
  *
  * The threshold is the clipping threshold times the white level (1 after RawPrepare); Inpaint
  * Opposed scales it by the white balance already applied, read from raw/wb_applied. Inpaint
@@ -94,6 +121,22 @@ private:
     std::optional<Settings> resolveSettings(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
+
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+
+    void refreshOverride();
+
+    void showSourceClip(double time);
+
+    void refreshModeWarning(double time);
 
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
@@ -135,6 +178,8 @@ private:
 
     KnobChoiceWPtr _mode;
     KnobDoubleWPtr _clip;
+    KnobBoolWPtr _clipOverride;
+    RawNodeSupport::OwnedMessage _message;
 
     // The chrominance of Inpaint Opposed, for the source and settings its key names.
     std::mutex _chromaMutex;

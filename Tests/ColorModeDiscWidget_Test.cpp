@@ -38,6 +38,7 @@
 #include "Engine/ColorWheelMath.h"
 
 #include "Gui/ColorModeDiscWidget.h"
+#include "Gui/ColorWheelWidget.h"
 
 NATRON_NAMESPACE_USING
 
@@ -107,7 +108,7 @@ TEST(ColorModeDiscWidget, SaturationDiscIsWhiterAtTheBottomAndHueRunsAcross)
     EXPECT_GT(hueDifference(sampleAt(disc, image, -0.6, 0.5), sampleAt(disc, image, 0.6, 0.5)), 30.0);
 }
 
-TEST(ColorModeDiscWidget, TemperatureDiscIsWarmerAtTheLeftAndGreenerAtTheBottom)
+TEST(ColorModeDiscWidget, TemperatureDiscIsWarmerAtTheRightAndGreenerAtTheBottom)
 {
     ColorModeDiscWidget disc;
     QImage image = renderMode(disc, eColorGlobalModeT);
@@ -119,7 +120,7 @@ TEST(ColorModeDiscWidget, TemperatureDiscIsWarmerAtTheLeftAndGreenerAtTheBottom)
     QColor bottom = sampleAt(disc, image, 0.0, -0.7);
     QColor top = sampleAt(disc, image, 0.0, 0.7);
 
-    EXPECT_GT(left.red() - left.blue(), right.red() - right.blue());
+    EXPECT_GT(right.red() - right.blue(), left.red() - left.blue());
     EXPECT_GT(bottom.green() - (bottom.red() + bottom.blue()) / 2, top.green() - (top.red() + top.blue()) / 2);
 }
 
@@ -174,4 +175,41 @@ TEST(ColorModeDiscWidget, PuckInsideTheRimIsKept)
     disc.setPuck(QPointF(0.25, -0.5));
     EXPECT_DOUBLE_EQ(disc.getPuck().x(), 0.25);
     EXPECT_DOUBLE_EQ(disc.getPuck().y(), -0.5);
+}
+
+TEST(ColorModeDiscWidget, RingIsTheWheelsRingInTheSamePlace)
+{
+    const LumaBasis basis(kRec709LumaWeights);
+    ColorModeDiscWidget disc;
+    ColorWheelWidget wheel;
+
+    disc.setBasis(basis);
+
+    QImage image = renderMode(disc, eColorGlobalModeS);
+
+    wheel.resize(disc.size());
+    EXPECT_DOUBLE_EQ(wheel.getRingOuterRadius(), disc.getRingOuterRadius());
+    EXPECT_DOUBLE_EQ(wheel.getRingInnerRadius(), disc.getRingInnerRadius());
+    EXPECT_DOUBLE_EQ(wheel.getDiscRadius(), disc.getDiscRadius());
+    EXPECT_DOUBLE_EQ(colorWheelRingOuterRadius(disc.size()), disc.getRingOuterRadius());
+
+    const double Ro = disc.getRingOuterRadius();
+    const double Ri = disc.getRingInnerRadius();
+    const double mid = 0.5 * (Ro + Ri);
+    const double dpr = image.devicePixelRatio() > 0.0 ? image.devicePixelRatio() : 1.0;
+    QImage ring = renderColorWheelRing(basis, Ro, Ri, dpr, &identity);
+    QPointF c = disc.getDiscCentre();
+
+    ASSERT_FALSE(ring.isNull());
+    for (int k = 0; k < 8; ++k) {
+        double angle = k * M_PI / 4.0 + 0.2;
+        double dx = mid * std::cos(angle);
+        double dy = -mid * std::sin(angle);
+        QColor drawn = QColor::fromRgb(image.pixel((int)std::lround((c.x() + dx) * dpr), (int)std::lround((c.y() + dy) * dpr)));
+        QColor shared = QColor::fromRgb(ring.pixel((int)std::lround((Ro + dx) * dpr), (int)std::lround((Ro + dy) * dpr)));
+
+        EXPECT_NEAR(shared.red(), drawn.red(), 6) << "angle " << angle;
+        EXPECT_NEAR(shared.green(), drawn.green(), 6) << "angle " << angle;
+        EXPECT_NEAR(shared.blue(), drawn.blue(), 6) << "angle " << angle;
+    }
 }

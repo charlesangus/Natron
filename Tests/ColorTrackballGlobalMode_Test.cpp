@@ -449,6 +449,7 @@ TEST(ColorTrackballGlobalModeFeedback, OnlyCrosshairFeedbacksShowTheCrosshairAnd
     EXPECT_TRUE(colorGlobalModeFeedbackHudFollowsCursor(F::Crosshair));
     EXPECT_FALSE(colorGlobalModeFeedbackHudFollowsCursor(F::Reveal));
     EXPECT_TRUE(colorGlobalModeFeedbackHudFollowsCursor(F::CrosshairReveal));
+    EXPECT_TRUE(colorGlobalModeFeedbackHudFollowsCursor(F::WidgetCursor));
 
     EXPECT_FALSE(colorPanelFeedbackUsesPuck(F::Today));
     EXPECT_FALSE(colorPanelFeedbackUsesPuck(F::Crosshair));

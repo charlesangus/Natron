@@ -48,8 +48,8 @@ NATRON_NAMESPACE_ENTER
  * rect, ringed like ColorWheelWidget's, filled with a gradient that says what the stroke does,
  * and a small ring marker for the puck.
  *
- * S runs hue left to right with white at the bottom and full saturation at the top. T runs warm
- * to cool left to right and green to magenta bottom to top. V runs white at the top right to
+ * S runs hue left to right with white at the bottom and full saturation at the top. T runs cool
+ * to warm left to right and green to magenta bottom to top. V runs white at the top right to
  * black at the bottom left. The colours come from ColorWheelMath, so they follow the knob's own
  * maths. C has no gradient: the C reveal is the real ColorWheelWidget, and C here draws the ring
  * and an empty disc.

@@ -877,6 +877,31 @@ GlInterop::upload(int slot, unsigned int texture, int x, int y)
 }
 
 GpuStatus
+GlInterop::discard(int slot)
+{
+    if (slot < 0 || slot >= kSlots) {
+        return fail(VK_ERROR_UNKNOWN, "discard() on slot " + std::to_string(slot) + " out of range");
+    }
+    Slot& sl = slots_[slot];
+    if (!sl.pendingUpload) {
+        return fail(VK_ERROR_UNKNOWN, "discard() of a slot with no pending produce()");
+    }
+    if (path_ == GlHandoffPath::ZeroCopy) {
+        // produce() signalled the binary semaphore, which must be waited on before it is signalled again, and the
+        // next produce() waits for GL to give the buffer back.
+        Gl& gl = *gl_;
+        while (gl.GetError() != GL_NO_ERROR) {
+        }
+        gl.WaitSemaphoreEXT(sl.glReady, 1, &sl.glBuffer, 0, nullptr, nullptr);
+        gl.SignalSemaphoreEXT(sl.glDoneGl, 1, &sl.glBuffer, 0, nullptr, nullptr);
+        gl.Flush();
+        sl.glSignaled = true;
+    }
+    sl.pendingUpload = false;
+    return path_ == GlHandoffPath::ZeroCopy ? glError("discard") : GpuStatus {};
+}
+
+GpuStatus
 GlInterop::hostCopyView(int slot, const unsigned char** data, VkDeviceSize* size)
 {
     if (slot < 0 || slot >= kSlots) {

@@ -38,6 +38,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -229,7 +230,41 @@ public:
     // Any thread: allocates the tiles of fill in the cache and copies them from the readback.
     void insertCacheTiles(const PendingCacheFill& fill,
                           const ViewerHandoffReadback& readback);
+
+    // A playback frame whose viewer process the device runs while the main thread shows the frame before it.
+    struct StagedDeviceFrame {
+        UpdateViewerParamsPtr params;
+        TextureRect texRect;
+        std::uint64_t id = 0;
+    };
+
+    // Sets the cache-fill readback token of params, 0 when it wants none, and returns it.
+    std::uint64_t assignReadbackToken(UpdateViewerParams& params);
+
+    void addCacheFill(const UpdateViewerParams& params);
+
+    // Uploads the device root of params into its texture now, or draws it on the CPU if the hand-off refuses it.
+    void presentDeviceFrame(const UpdateViewerParamsPtr& params,
+                            TexturePtr* texture,
+                            ImagePtr* deviceDownload);
+
+    // Starts the viewer process of the device root of params and keeps the frame in stagedFrames; false, with nothing
+    // staged, if the hand-off refuses.
+    bool stageDeviceFrame(const UpdateViewerParamsPtr& params);
+
+    void showStagedFrame(const StagedDeviceFrame& staged);
+
+    void discardStagedFrame(int textureIndex);
+
+    // Shows each staged frame once the device has finished it, for the frame that no other follows.
+    void scheduleStagedFlush();
 #endif
+
+    // Everything updateViewer() does once the texture holds the frame of params, or before the tiles of a CPU frame.
+    void showFrame(const UpdateViewerParamsPtr& params,
+                   TexturePtr texture,
+                   const ImagePtr& deviceDownload,
+                   bool deviceFrame);
 
     void redrawViewer()
     {
@@ -477,6 +512,8 @@ public:
     std::shared_ptr<CacheFillGate> cacheFillGate = std::make_shared<CacheFillGate>();
     std::uint64_t nextReadbackToken = 1;
     bool cachePollScheduled = false;
+    std::optional<StagedDeviceFrame> stagedFrames[2];
+    bool stagedFlushScheduled = false;
 #endif
 };
 

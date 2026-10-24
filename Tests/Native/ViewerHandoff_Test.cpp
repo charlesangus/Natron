@@ -621,6 +621,17 @@ public:
         const unsigned texture = makeTexture(frame);
         const ViewerHandoffResult r = handoff.present(textureIndex, root, paramsFor(c, rect), texture, frame);
         ASSERT_TRUE(bool(r)) << label << ": " << r.reason;
+        compareWithCpu(texture, image, c, format, rect, label);
+    }
+
+    void compareWithCpu(unsigned texture,
+                        const ImagePtr& image,
+                        const Case& c,
+                        ViewerHandoffFormat format,
+                        const RectI& rect,
+                        const std::string& label)
+    {
+        const ViewerHandoffFrame frame = frameFor(rect, format);
         std::string first;
         if (format == ViewerHandoffFormat::Bgra8) {
             const std::vector<U32> got = readEightBit(texture, frame);
@@ -1159,5 +1170,93 @@ TEST(ViewerHandoff, DeviceLossFallsBackToCpuAndRecovers)
     h.presentAndCompare(handoff, 0, root, image, c, ViewerHandoffFormat::Bgra8, kRect, "after the recovery");
     ASSERT_FALSE(::testing::Test::HasFatalFailure());
     handoff.release();
+#endif
+}
+
+TEST(ViewerHandoff, StagedFramesUploadLaterAndCanBeDiscardedOrLost)
+{
+#ifndef NATRON_HAVE_GPU
+    reportNoGpu("built without the GPU backend");
+#else
+    Harness h;
+    if (!h.init()) {
+        return;
+    }
+    int ran = 0;
+    for (ViewerHandoffRung wanted : { ViewerHandoffRung::ZeroCopy, ViewerHandoffRung::HostSync, ViewerHandoffRung::Readback }) {
+        ScopedEnv env("NATRON_VIEWER_HANDOFF", toString(wanted));
+        ViewerHandoff handoff(h.context.get());
+        if (handoff.create(eglLoader) != wanted) {
+            continue;
+        }
+        ++ran;
+        const std::string rung = toString(wanted);
+        const ImagePtr image = makeImage(4, 5);
+        const GpuDeviceImagePtr root = makeRoot(h.runtime(), 4, 5);
+        ASSERT_TRUE(bool(root));
+        Case first = makeCase(eDisplayChannelsRGB, 4);
+        Case second = first;
+        second.gain = 0.25;
+        const ViewerHandoffFormat format = ViewerHandoffFormat::Rgba32F;
+        const ViewerHandoffFrame frame = frameFor(kRect, format);
+
+        // Both slots staged, the way playback holds the frame before the one it just started.
+        std::uint64_t a = 0;
+        std::uint64_t b = 0;
+        ViewerHandoffResult r = handoff.stage(0, root, paramsFor(first, kRect), frame, &a);
+        ASSERT_TRUE(bool(r)) << rung << ": " << r.reason;
+        r = handoff.stage(0, root, paramsFor(second, kRect), frame, &b);
+        ASSERT_TRUE(bool(r)) << rung << ": " << r.reason;
+        ASSERT_NE(a, b);
+        std::uint64_t c = 0;
+        r = handoff.stage(0, root, paramsFor(first, kRect), frame, &c);
+        EXPECT_FALSE(bool(r)) << rung;
+        EXPECT_EQ(0u, c);
+        const unsigned refusedTexture = h.makeTexture(frame);
+        EXPECT_FALSE(bool(handoff.present(0, root, paramsFor(first, kRect), refusedTexture, frame))) << rung;
+
+        const unsigned textureA = h.makeTexture(frame);
+        r = handoff.presentStaged(0, a, textureA, frame);
+        ASSERT_TRUE(bool(r)) << rung << ": " << r.reason;
+        h.compareWithCpu(textureA, image, first, format, kRect, rung + " first staged frame");
+        ASSERT_FALSE(::testing::Test::HasFatalFailure());
+        EXPECT_FALSE(bool(handoff.presentStaged(0, a, textureA, frame))) << rung << ": a staged frame is shown once";
+
+        const unsigned textureB = h.makeTexture(frame);
+        r = handoff.presentStaged(0, b, textureB, frame);
+        ASSERT_TRUE(bool(r)) << rung << ": " << r.reason;
+        h.compareWithCpu(textureB, image, second, format, kRect, rung + " second staged frame");
+        ASSERT_FALSE(::testing::Test::HasFatalFailure());
+
+        // A discarded frame frees its slot for the frames after it.
+        for (int i = 0; i < 3; ++i) {
+            std::uint64_t dropped = 0;
+            r = handoff.stage(0, root, paramsFor(second, kRect), frame, &dropped);
+            ASSERT_TRUE(bool(r)) << rung << ": " << r.reason;
+            handoff.discardStaged(0, dropped);
+            EXPECT_FALSE(handoff.stagedComputing(0, dropped));
+        }
+        h.presentAndCompare(handoff, 0, root, image, first, format, kRect, rung + " present after discards");
+        ASSERT_FALSE(::testing::Test::HasFatalFailure());
+
+        // Presented into a texture of another frame, a staged frame is refused and its root is free for the CPU path.
+        const GpuDeviceImagePtr refusedRoot = makeRoot(h.runtime(), 4, 5);
+        ASSERT_TRUE(bool(refusedRoot));
+        std::uint64_t mismatched = 0;
+        r = handoff.stage(0, refusedRoot, paramsFor(first, kRect), frame, &mismatched);
+        ASSERT_TRUE(bool(r)) << rung << ": " << r.reason;
+        const ViewerHandoffFrame eightBit = frameFor(kRect, ViewerHandoffFormat::Bgra8);
+        EXPECT_FALSE(bool(handoff.presentStaged(0, mismatched, h.makeTexture(eightBit), eightBit))) << rung;
+        EXPECT_TRUE(bool(refusedRoot->downloadToRam())) << rung;
+
+        std::uint64_t lost = 0;
+        r = handoff.stage(1, root, paramsFor(first, kRect), frame, &lost);
+        ASSERT_TRUE(bool(r)) << rung << ": " << r.reason;
+        handoff.release();
+        EXPECT_FALSE(handoff.stagedComputing(1, lost));
+        EXPECT_FALSE(bool(handoff.presentStaged(1, lost, h.makeTexture(frame), frame))) << rung;
+        std::printf("[viewer-handoff] %s stages frames\n", rung.c_str());
+    }
+    EXPECT_GT(ran, 0) << "not even the readback rung came up";
 #endif
 }

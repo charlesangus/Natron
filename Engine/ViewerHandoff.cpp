@@ -256,6 +256,25 @@ struct Ring {
     std::array<PendingReadback, gpu::GlInterop::kSlots> readbacks;
     // The work reading the slot's host copy in place; the slot is not produced into or freed until it has finished.
     std::array<FillJobPtr, gpu::GlInterop::kSlots> fills;
+    // The id of the frame stage() left in the slot, 0 when none, and the frame it was given.
+    std::array<std::uint64_t, gpu::GlInterop::kSlots> staged {};
+    std::array<ViewerHandoffFrame, gpu::GlInterop::kSlots> stagedFrames {};
+
+    int stagedSlot(std::uint64_t id) const
+    {
+        for (int i = 0; i < gpu::GlInterop::kSlots; ++i) {
+            if (id && (staged[i] == id)) {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    bool holdsStaged() const
+    {
+        return std::any_of(staged.begin(), staged.end(), [](std::uint64_t id) { return id != 0; });
+    }
 };
 
 } // namespace
@@ -306,6 +325,7 @@ struct ViewerHandoff::Imp {
     bool claiming = false;
     std::size_t wantedCapacity = 0;
     unsigned dispatchesSinceRelease = 0;
+    std::uint64_t nextStagedId = 1;
 
     // The rung last written to the log; unset until the first one is.
     std::optional<ViewerHandoffRung> loggedRung;
@@ -387,6 +407,7 @@ struct ViewerHandoff::Imp {
         }
         ring.interop.reset();
         ring.readbacks = {};
+        ring.staged = {};
         for (int i = 0; i < gpu::GlInterop::kSlots; ++i) {
             unpinSlot(ring, i);
         }
@@ -672,6 +693,157 @@ struct ViewerHandoff::Imp {
         }
     }
 
+    // What present() and stage() share: checks the frame, builds or grows the slots, and submits the viewer process of
+    // root into a free slot, which then keeps root pinned. Stores the slot in *slot. With keepStaged, slots that must
+    // first grow are refused rather than rebuilt while they hold a staged frame.
+    ViewerHandoffResult produceFrame(std::shared_ptr<Device>& dev,
+                                     int textureIndex,
+                                     const GpuDeviceImagePtr& root,
+                                     const ViewerHandoffParams& params,
+                                     const ViewerHandoffFrame& frame,
+                                     bool keepStaged,
+                                     int* slot)
+    {
+        if ((textureIndex < 0) || (textureIndex >= kTextureCount)) {
+            return refuse("texture index " + std::to_string(textureIndex) + " out of range");
+        }
+        if (!root) {
+            return refuse("no device root");
+        }
+        if (root->runtime() != dev->runtime) {
+            return refuse("root belongs to another GPU runtime");
+        }
+        if ((frame.width == 0) || (frame.height == 0) || (int(frame.width) != params.rect.width()) || (int(frame.height) != params.rect.height())) {
+            return refuse("frame " + std::to_string(frame.width) + "x" + std::to_string(frame.height) + " does not match the rect " + std::to_string(params.rect.width()) + "x" + std::to_string(params.rect.height()));
+        }
+
+        const std::size_t bytes = frame.bytes();
+        Ring& ring = rings[textureIndex];
+        if (keepStaged) {
+            for (const Ring& other : rings) {
+                const bool mustGrow = other.interop && ((other.interop->capacity() < wantedCapacity) || ((&other == &ring) && (other.interop->capacity() < bytes)));
+                if (mustGrow && other.holdsStaged()) {
+                    wantedCapacity = std::max(wantedCapacity, bytes);
+
+                    return refuse("slots holding a staged frame must grow first");
+                }
+            }
+        }
+
+        if (ViewerHandoffResult r = grow(*dev); !r) {
+            return r;
+        }
+
+        if (!ring.interop) {
+            const std::size_t capacity = std::max(bytes, wantedCapacity);
+            if (ViewerHandoffResult r = buildRing(*dev, textureIndex, capacity); !r) {
+                return r;
+            }
+        } else if (ring.interop->capacity() < bytes) {
+            wantedCapacity = std::max(wantedCapacity, bytes);
+
+            return refuse("frame of " + std::to_string(bytes) + " bytes is over the " + std::to_string(ring.interop->capacity()) + "-byte slots, which grow for the next frame");
+        }
+        const int next = ring.interop->nextSlot();
+        if (next < 0) {
+            return refuse("every slot holds a staged frame");
+        }
+
+        bool lost = false;
+        if (!recycleDescriptors(*dev, &lost)) {
+            dev.reset();
+            drop("device lost", true);
+
+            return refuse("device lost");
+        }
+
+        gpu::GpuBuffer* buffer = root->pin();
+        if (!buffer) {
+            return refuse("root was evicted or downloaded");
+        }
+        const GpuImageLayout& layout = root->layout();
+        GpuImageView view;
+        view.buffer = buffer;
+        view.byteOffset = 0;
+        view.bounds = layout.bounds;
+        view.nComps = layout.nComps();
+        view.rowStrideFloats = layout.bounds.width() * view.nComps;
+
+        ViewerGpuProcessParams processParams;
+        processParams.rect = params.rect;
+        processParams.channels = params.channels;
+        processParams.alphaChannelIndex = params.alphaChannelIndex;
+        processParams.matteOverlay = params.matteOverlay;
+        processParams.gain = params.gain;
+        processParams.offset = params.offset;
+        processParams.gamma = params.gamma;
+        processParams.displayProcessor = params.displayProcessor;
+
+        // The slot produce() is about to overwrite may still hold a host copy that a fill is reading or that nobody
+        // has collected.
+        waitFill(ring, next);
+        harvest(ring, next, nullptr);
+
+        const gpu::GlFrame glFrame { frame.width, frame.height, pixelFormatOf(frame.format) };
+        ViewerGpuProcess& process = *dev->process;
+        const gpu::GpuStatus produced = ring.interop->produce(
+            glFrame,
+            [&](VkCommandBuffer cmd, VkBuffer dst) { return process.record(cmd, view, dst, glFrame, processParams); },
+            {},
+            slot,
+            params.readbackToken != 0);
+        if (!produced) {
+            root->unpin();
+            if (isLostStatus(produced) || dev->runtime->isLost()) {
+                dev.reset();
+                drop("device lost", true);
+
+                return refuse("device lost: " + produced.message);
+            }
+
+            return refuse("viewer process: " + produced.message);
+        }
+        unpinSlot(ring, *slot);
+        ring.pinned[*slot] = root;
+        ring.readbacks[*slot].token = params.readbackToken;
+        ring.readbacks[*slot].frame = frame;
+        ++dispatchesSinceRelease;
+
+        return accept();
+    }
+
+    // Uploads the frame produced into slot, and unpins the roots the device is done with.
+    ViewerHandoffResult uploadSlot(std::shared_ptr<Device>& dev,
+                                   Ring& ring,
+                                   int slot,
+                                   unsigned int glTexture,
+                                   const ViewerHandoffFrame& frame)
+    {
+        const gpu::GpuStatus uploaded = ring.interop->upload(slot, glTexture, frame.x, frame.y);
+        if (!uploaded) {
+            if (isLostStatus(uploaded) || dev->runtime->isLost()) {
+                dev.reset();
+                drop("device lost", true);
+
+                return refuse("device lost: " + uploaded.message);
+            }
+            // A slot whose upload failed stays pending in the interop, so the ring is rebuilt.
+            destroyRing(ring);
+
+            return refuse("upload: " + uploaded.message);
+        }
+        bool lost = false;
+        collect(ring, false, &lost);
+        if (lost) {
+            dev.reset();
+            drop("device lost", true);
+
+            return refuse("device lost");
+        }
+
+        return accept();
+    }
+
     ViewerHandoffResult grow(Device& dev)
     {
         for (int i = 0; i < kTextureCount; ++i) {
@@ -801,123 +973,127 @@ ViewerHandoff::present(int textureIndex,
     }
     Imp::NoteRungOnExit note { _imp.get() };
     std::shared_ptr<Device> dev = _imp->currentDevice();
-    if ((textureIndex < 0) || (textureIndex >= kTextureCount)) {
-        return refuse("texture index " + std::to_string(textureIndex) + " out of range");
-    }
-    if (!root) {
-        return refuse("no device root");
-    }
-    if (root->runtime() != dev->runtime) {
-        return refuse("root belongs to another GPU runtime");
-    }
-    if ((frame.width == 0) || (frame.height == 0) || (int(frame.width) != params.rect.width()) ||
-        (int(frame.height) != params.rect.height())) {
-        return refuse("frame " + std::to_string(frame.width) + "x" + std::to_string(frame.height) + " does not match the rect " +
-                      std::to_string(params.rect.width()) + "x" + std::to_string(params.rect.height()));
-    }
-
-    if (ViewerHandoffResult r = _imp->grow(*dev); !r) {
+    int slot = -1;
+    if (ViewerHandoffResult r = _imp->produceFrame(dev, textureIndex, root, params, frame, false, &slot); !r) {
         return r;
     }
 
-    const std::size_t bytes = frame.bytes();
-    Ring& ring = _imp->rings[textureIndex];
-    if (!ring.interop) {
-        const std::size_t capacity = std::max(bytes, _imp->wantedCapacity);
-        if (ViewerHandoffResult r = _imp->buildRing(*dev, textureIndex, capacity); !r) {
-            return r;
-        }
-    } else if (ring.interop->capacity() < bytes) {
-        _imp->wantedCapacity = std::max(_imp->wantedCapacity, bytes);
+    return _imp->uploadSlot(dev, _imp->rings[textureIndex], slot, glTexture, frame);
+}
 
-        return refuse("frame of " + std::to_string(bytes) + " bytes is over the " + std::to_string(ring.interop->capacity()) +
-                      "-byte slots, which grow for the next frame");
+ViewerHandoffResult
+ViewerHandoff::stage(int textureIndex,
+                     const GpuDeviceImagePtr& root,
+                     const ViewerHandoffParams& params,
+                     const ViewerHandoffFrame& frame,
+                     std::uint64_t* staged)
+{
+    if (!staged) {
+        return refuse("stage() needs somewhere to store the staged frame");
     }
-
-    bool lost = false;
-    if (!_imp->recycleDescriptors(*dev, &lost)) {
-        _imp->drop("device lost", true);
-
-        return refuse("device lost");
+    *staged = 0;
+    if (_imp->claiming) {
+        return refuse("stage() while a readback is claimed");
     }
-
-    gpu::GpuBuffer* buffer = root->pin();
-    if (!buffer) {
-        return refuse("root was evicted or downloaded");
+    if (!maintain()) {
+        return refuse("rung cpu: " + rungReason());
     }
-    const GpuImageLayout& layout = root->layout();
-    GpuImageView view;
-    view.buffer = buffer;
-    view.byteOffset = 0;
-    view.bounds = layout.bounds;
-    view.nComps = layout.nComps();
-    view.rowStrideFloats = layout.bounds.width() * view.nComps;
-
-    ViewerGpuProcessParams processParams;
-    processParams.rect = params.rect;
-    processParams.channels = params.channels;
-    processParams.alphaChannelIndex = params.alphaChannelIndex;
-    processParams.matteOverlay = params.matteOverlay;
-    processParams.gain = params.gain;
-    processParams.offset = params.offset;
-    processParams.gamma = params.gamma;
-    processParams.displayProcessor = params.displayProcessor;
-
-    // The slot produce() is about to overwrite may still hold a host copy that a fill is reading or that nobody has
-    // collected.
-    if (const int next = ring.interop->nextSlot(); next >= 0) {
-        _imp->waitFill(ring, next);
-        _imp->harvest(ring, next, nullptr);
-    }
-
-    const gpu::GlFrame glFrame { frame.width, frame.height, pixelFormatOf(frame.format) };
-    ViewerGpuProcess& process = *dev->process;
+    Imp::NoteRungOnExit note { _imp.get() };
+    std::shared_ptr<Device> dev = _imp->currentDevice();
     int slot = -1;
-    const gpu::GpuStatus produced = ring.interop->produce(
-        glFrame,
-        [&](VkCommandBuffer cmd, VkBuffer dst) { return process.record(cmd, view, dst, glFrame, processParams); },
-        {},
-        &slot,
-        params.readbackToken != 0);
-    if (!produced) {
-        root->unpin();
-        if (isLostStatus(produced) || dev->runtime->isLost()) {
-            dev.reset();
-            _imp->drop("device lost", true);
-
-            return refuse("device lost: " + produced.message);
-        }
-
-        return refuse("viewer process: " + produced.message);
+    if (ViewerHandoffResult r = _imp->produceFrame(dev, textureIndex, root, params, frame, true, &slot); !r) {
+        return r;
     }
-    _imp->unpinSlot(ring, slot);
-    ring.pinned[slot] = root;
-    ring.readbacks[slot].token = params.readbackToken;
-    ring.readbacks[slot].frame = frame;
-    ++_imp->dispatchesSinceRelease;
-
-    const gpu::GpuStatus uploaded = ring.interop->upload(slot, glTexture, frame.x, frame.y);
-    if (!uploaded) {
-        if (isLostStatus(uploaded) || dev->runtime->isLost()) {
-            dev.reset();
-            _imp->drop("device lost", true);
-
-            return refuse("device lost: " + uploaded.message);
-        }
-        // A slot whose upload failed stays pending in the interop, so the ring is rebuilt.
-        _imp->destroyRing(ring);
-
-        return refuse("upload: " + uploaded.message);
-    }
-    _imp->collect(ring, false, &lost);
-    if (lost) {
-        dev.reset();
-        _imp->drop("device lost", true);
-
-        return refuse("device lost");
-    }
+    Ring& ring = _imp->rings[textureIndex];
+    *staged = _imp->nextStagedId++;
+    ring.staged[slot] = *staged;
+    ring.stagedFrames[slot] = frame;
 
     return accept();
+}
+
+bool
+ViewerHandoff::stagedComputing(int textureIndex,
+                               std::uint64_t staged)
+{
+    if ((textureIndex < 0) || (textureIndex >= kTextureCount)) {
+        return false;
+    }
+    Ring& ring = _imp->rings[textureIndex];
+    const int slot = ring.stagedSlot(staged);
+    if ((slot < 0) || !ring.interop) {
+        return false;
+    }
+
+    return ring.interop->waitProduced(slot, 0).result == VK_TIMEOUT;
+}
+
+ViewerHandoffResult
+ViewerHandoff::presentStaged(int textureIndex,
+                             std::uint64_t staged,
+                             unsigned int glTexture,
+                             const ViewerHandoffFrame& frame)
+{
+    if (_imp->claiming) {
+        return refuse("presentStaged() while a readback is claimed");
+    }
+    if (!maintain()) {
+        return refuse("rung cpu: " + rungReason());
+    }
+    Imp::NoteRungOnExit note { _imp.get() };
+    std::shared_ptr<Device> dev = _imp->currentDevice();
+    if ((textureIndex < 0) || (textureIndex >= kTextureCount)) {
+        return refuse("texture index " + std::to_string(textureIndex) + " out of range");
+    }
+    Ring& ring = _imp->rings[textureIndex];
+    const int slot = ring.stagedSlot(staged);
+    if (slot < 0) {
+        return refuse("staged frame lost with its slots");
+    }
+    const ViewerHandoffFrame& was = ring.stagedFrames[slot];
+    ring.staged[slot] = 0;
+    if ((was.width != frame.width) || (was.height != frame.height) || (was.format != frame.format)) {
+        const ViewerHandoffResult refused = refuse("staged frame does not match the texture it is presented into");
+        if (!ring.interop->discard(slot)) {
+            _imp->destroyRing(ring);
+
+            return refused;
+        }
+        const gpu::GpuStatus s = ring.interop->waitProduced(slot);
+        if (!s) {
+            dev.reset();
+            _imp->drop("device lost", true);
+
+            return refuse("device lost: " + s.message);
+        }
+        _imp->unpinSlot(ring, slot);
+
+        return refused;
+    }
+
+    return _imp->uploadSlot(dev, ring, slot, glTexture, frame);
+}
+
+void
+ViewerHandoff::discardStaged(int textureIndex,
+                             std::uint64_t staged)
+{
+    if ((textureIndex < 0) || (textureIndex >= kTextureCount)) {
+        return;
+    }
+    if (_imp->claiming) {
+        return;
+    }
+    Ring& ring = _imp->rings[textureIndex];
+    const int slot = ring.stagedSlot(staged);
+    if ((slot < 0) || !ring.interop) {
+        return;
+    }
+    ring.staged[slot] = 0;
+    if (!ring.interop->discard(slot)) {
+        // A slot left pending can never be produced into again.
+        _imp->destroyRing(ring);
+    }
 }
 
 void

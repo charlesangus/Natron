@@ -17,6 +17,16 @@ namespace {
     constexpr uint32_t kFlagBlackOutside = 2;
     constexpr uint32_t kFlagSrcValid = 4;
 
+    // Mirrors kFilterImpulse and kFilterBox in Kernels/resample.slang.
+    constexpr uint32_t kFilterImpulse = 0;
+    constexpr uint32_t kFilterBox = 1;
+
+    // Impulse and box run the kernels that take the CPU's double positions bit for bit.
+    bool exactPositions(uint32_t filter)
+    {
+        return filter == kFilterImpulse || filter == kFilterBox;
+    }
+
     GpuStatus invalid(const char* what)
     {
         return { VK_ERROR_INITIALIZATION_FAILED, std::string("recordResample: ") + what };
@@ -66,6 +76,21 @@ namespace {
         std::memcpy(&u, &v, sizeof(u));
         words[0] = static_cast<uint32_t>(u);
         words[1] = static_cast<uint32_t>(u >> 32);
+    }
+
+    // The twelve matrix words the kernel for `exact` reads, as GpuResampleParams::matrix lays them out.
+    void packMatrix(const std::array<double, 6>& matrix, bool exact, uint32_t* words)
+    {
+        for (int k = 0; k < 6; ++k) {
+            if (exact) {
+                doubleBits(matrix[k], &words[2 * k]);
+            } else {
+                float hi, lo;
+                splitDouble(matrix[k], hi, lo);
+                words[k] = floatBits(hi);
+                words[6 + k] = floatBits(lo);
+            }
+        }
     }
 
     uint32_t packStates(const std::array<GpuResampleJacobian, 4>& jacobians)
@@ -133,9 +158,7 @@ namespace {
         for (std::size_t i = 0; i < r.matrices.size(); ++i) {
             const GpuResampleMatrix& m = r.matrices[i];
             uint32_t* w = &words[kBlurHeaderWords + i * kBlurMatrixWords];
-            for (int k = 0; k < 6; ++k) {
-                doubleBits(m.matrix[k], &w[2 * k]);
-            }
+            packMatrix(m.matrix, exactPositions(r.filter), w);
             w[12] = packStates(m.jacobians);
             splitDouble(m.weight, hi, lo);
             w[13] = floatBits(hi);
@@ -200,20 +223,21 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     // An invalid source is never read, but the binding still needs a buffer, and so does the
     // matrices' binding when they travel in the push constants.
     const GpuBuffer* src = srcValid ? r.src.buffer : r.dst.buffer;
+    const bool exact = exactPositions(r.filter);
     if (!blurred) {
         const GpuResampleMatrix& m = r.matrices[0];
-        for (int k = 0; k < 6; ++k) {
-            doubleBits(m.matrix[k], &p.hBits[2 * k]);
-        }
+        packMatrix(m.matrix, exact, p.matrix);
         p.states = packStates(m.jacobians);
-        return ctx.dispatch(GpuKernelId::resample, { src, r.dst.buffer, r.dst.buffer }, p, { p.width, p.height, 1 });
+        return ctx.dispatch(exact ? GpuKernelId::resample_exact : GpuKernelId::resample, { src, r.dst.buffer, r.dst.buffer }, p,
+                            { p.width, p.height, 1 });
     }
 
     GpuBuffer* matrices = nullptr;
     if (GpuStatus s = uploadBlurMatrices(ctx, r, matrices); !s) {
         return s;
     }
-    return ctx.dispatch(GpuKernelId::resample_blur, { src, r.dst.buffer, matrices }, p, { p.width, p.height, 1 });
+    return ctx.dispatch(exact ? GpuKernelId::resample_blur_exact : GpuKernelId::resample_blur, { src, r.dst.buffer, matrices }, p,
+                        { p.width, p.height, 1 });
 }
 
 GpuStatus

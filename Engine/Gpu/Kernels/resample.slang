@@ -1,9 +1,13 @@
 // Resampler::resampleRow for affine inverse matrices: the ten filters of Resampler::filter1D,
 // Resampler::interpolate and Resampler::interpolateSuper (supersampling and the box integration),
 // reading the source from a storage buffer. resample_main samples one matrix; resample_blur_main
-// averages several per pixel as Resampler::motionBlurPixel does. Sample positions, and every floor
-// and comparison taken from them, are the CPU's doubles bit for bit; the filter weights use them as
-// two floats. GpuResampleParams in Engine/Gpu/GpuResample.h mirrors ResampleParams.
+// averages several per pixel as Resampler::motionBlurPixel does. Both carry sample positions in two
+// floats, which the bilinear to notch filters are continuous in. Impulse and box pick a source pixel,
+// and box a supersampling state, by floors of the CPU's double positions that two floats round to the
+// other side of on exact scales; their entries, resample_exact_main and resample_blur_exact_main,
+// compute those positions bit for bit. The integer double emulation is kept out of the two-float
+// entries because it is many times slower to run and to compile.
+// GpuResampleParams in Engine/Gpu/GpuResample.h mirrors ResampleParams.
 
 StructuredBuffer<float> srcBuf;
 RWStructuredBuffer<float> dstBuf;
@@ -12,7 +16,9 @@ RWStructuredBuffer<float> dstBuf;
 StructuredBuffer<uint> blurBuf;
 
 // The destination's offset addresses the output origin. The source's addresses (srcX1, srcY1).
-// The matrix rows (h00 h01 h02) and (h10 h11 h12) are the doubles' bits, low word first. `states`
+// The matrix rows (h00 h01 h02) and (h10 h11 h12) are, for the two-float entries, the six high
+// floats' bits in m0-m5 and the six low floats' in m6-m11, and for the exact entries the doubles'
+// bits, low word first, in m0-m11. `states`
 // holds one byte per Jacobian state (bit 0: x inside, bit 1: y inside): levelX in bits 0-2,
 // levelY in bits 3-5, bit 6 set when that Jacobian is zero. resample_blur_main reads the matrices
 // and their states from blurBuf instead.
@@ -34,18 +40,18 @@ struct ResampleParams
     uint filter;
     uint flags;
     uint states;
-    uint h00Lo;
-    uint h00Hi;
-    uint h01Lo;
-    uint h01Hi;
-    uint h02Lo;
-    uint h02Hi;
-    uint h10Lo;
-    uint h10Hi;
-    uint h11Lo;
-    uint h11Hi;
-    uint h12Lo;
-    uint h12Hi;
+    uint m0;
+    uint m1;
+    uint m2;
+    uint m3;
+    uint m4;
+    uint m5;
+    uint m6;
+    uint m7;
+    uint m8;
+    uint m9;
+    uint m10;
+    uint m11;
 };
 [[vk::push_constant]] ConstantBuffer<ResampleParams> rp;
 
@@ -117,6 +123,11 @@ FF ffMulF(FF a, float b)
     precise float e = fma(a.hi, b, -p);
     precise float lo = e + a.lo * b;
     return ffQuick(p, lo);
+}
+
+FF ffHalf(FF a)
+{
+    return ffMake(a.hi * 0.5, a.lo * 0.5);
 }
 
 FF ffNeg(FF a)
@@ -488,12 +499,11 @@ Dbl dblAdd(Dbl a, Dbl b)
         if (u96AnyBelow(pb.m, d - 40))
             nb.x |= 1u;
     }
-    if (pa.neg == pb.neg)
-        return dblRound(pa.neg, u96Add(na, nb), pa.e - 40);
-    const uint3 diff = u96Sub(na, nb);
-    if (all(diff == uint3(0, 0, 0)))
+    const bool same = pa.neg == pb.neg;
+    const uint3 n = same ? u96Add(na, nb) : u96Sub(na, nb);
+    if (!same && all(n == uint3(0, 0, 0)))
         return dblMake(0, 0);
-    return dblRound(pa.neg, diff, pa.e - 40);
+    return dblRound(pa.neg, n, pa.e - 40);
 }
 
 Dbl dblSub(Dbl a, Dbl b)
@@ -655,30 +665,34 @@ float4 filter4(uint filter, bool clampOn, float4 Ip, float4 Ic, float4 In, float
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Resampler's interpolateT: false (and zero) when every tap is outside the source. Impulse and box
-// read the source pixel `cell`, the floor of the position, which the other filters ignore.
+// Resampler's interpolateT: false (and zero) when every tap is outside the source.
 
-bool interpolate(uint filter, bool clampOn, FF fx, FF fy, int2 cell, out float4 result)
+// Impulse and box: the source pixel `cell`, the floor of the position.
+bool cellPixel(int2 cell, out float4 result)
+{
+    result = float4(0.0, 0.0, 0.0, 0.0);
+    if (!srcValid())
+        return false;
+    int mx = cell.x;
+    int my = cell.y;
+    if (!blackOutside())
+    {
+        mx = clampCoord(mx, rp.srcX1, rp.srcX2);
+        my = clampCoord(my, rp.srcY1, rp.srcY2);
+    }
+    if (!insideSrc(mx, my))
+        return false;
+    result = srcAt(mx, my);
+    return true;
+}
+
+// The bilinear to notch filters.
+bool interpolate(uint filter, bool clampOn, FF fx, FF fy, out float4 result)
 {
     result = float4(0.0, 0.0, 0.0, 0.0);
     if (!srcValid())
         return false;
     const bool black = blackOutside();
-
-    if (filter == kFilterImpulse || filter == kFilterBox)
-    {
-        int mx = cell.x;
-        int my = cell.y;
-        if (!black)
-        {
-            mx = clampCoord(mx, rp.srcX1, rp.srcX2);
-            my = clampCoord(my, rp.srcY1, rp.srcY2);
-        }
-        if (!insideSrc(mx, my))
-            return false;
-        result = srcAt(mx, my);
-        return true;
-    }
 
     const Pos px = toPos(ffAddF(fx, -0.5));
     const Pos py = toPos(ffAddF(fy, -0.5));
@@ -868,19 +882,18 @@ float4 integrate2d(Pos x1, Pos y1, Pos x2, Pos y2, bool zeroOutside)
     return v;
 }
 
-bool outsideBounds(Dbl x, Dbl y)
+bool outsideBounds(FF x, FF y)
 {
-    const int ix = dblFloor(x);
-    const int iy = dblFloor(y);
+    const int ix = toPos(x).i;
+    const int iy = toPos(y).i;
     return ix < rp.srcX1 || rp.srcX2 <= ix || iy < rp.srcY1 || rp.srcY2 <= iy;
 }
 
-// f + sa * a / 2 + sb * b / 2, added in the CPU's order.
-Dbl corner(Dbl f, Dbl a, Dbl b, float sa, float sb)
+FF corner(FF f, FF a, FF b, float sa, float sb)
 {
-    const Dbl ha = dblHalf(a);
-    const Dbl hb = dblHalf(b);
-    return dblAdd(dblAdd(f, sa < 0.0 ? dblNeg(ha) : ha), sb < 0.0 ? dblNeg(hb) : hb);
+    const FF ha = ffHalf(a);
+    const FF hb = ffHalf(b);
+    return ffAdd(ffAdd(f, sa < 0.0 ? ffNeg(ha) : ha), sb < 0.0 ? ffNeg(hb) : hb);
 }
 
 int pow3(int e)
@@ -892,59 +905,27 @@ int pow3(int e)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Resampler's interpolateSuperT for the Jacobian (Jxx Jxy; Jyx Jyy) of state `state`, at the position
-// (x, y), which is (fx, fy) as two floats and falls in source pixel `cell`.
+// Resampler's interpolateSuperT for the bilinear to notch filters and the Jacobian (Jxx Jxy; Jyx Jyy)
+// of state `state`.
 
-float4 interpolateSuper(uint filter, bool clampOn, Dbl x, Dbl y, FF fx, FF fy, int2 cell, Dbl Jxx, Dbl Jxy, Dbl Jyx, Dbl Jyy,
-                        uint states, uint state)
+float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF Jyy, uint states, uint state)
 {
     float4 tmp;
     const uint bits = (states >> (8 * state)) & 0xffu;
     if ((bits & 0x40u) != 0)
     {
-        interpolate(filter, clampOn, fx, fy, cell, tmp);
+        interpolate(filter, clampOn, fx, fy, tmp);
         return tmp;
     }
-    if (filter == kFilterBox)
-    {
-        const Dbl c0x = corner(x, Jxx, Jxy, -1.0, -1.0);
-        const Dbl c0y = corner(y, Jyx, Jyy, -1.0, -1.0);
-        const Dbl c1x = corner(x, Jxx, Jxy, 1.0, -1.0);
-        const Dbl c1y = corner(y, Jyx, Jyy, 1.0, -1.0);
-        const Dbl c2x = corner(x, Jxx, Jxy, -1.0, 1.0);
-        const Dbl c2y = corner(y, Jyx, Jyy, -1.0, 1.0);
-        const Dbl c3x = corner(x, Jxx, Jxy, 1.0, 1.0);
-        const Dbl c3y = corner(y, Jyx, Jyy, 1.0, 1.0);
-        const Dbl x1 = dblMin(dblMin(c0x, c1x), dblMin(c2x, c3x));
-        const Dbl x2 = dblMax(dblMax(c0x, c1x), dblMax(c2x, c3x));
-        const Dbl y1 = dblMin(dblMin(c0y, c1y), dblMin(c2y, c3y));
-        const Dbl y2 = dblMax(dblMax(c0y, c1y), dblMax(c2y, c3y));
-        if (!dblLess(x1, x2) || !dblLess(y1, y2))
-        {
-            interpolate(filter, clampOn, fx, fy, cell, tmp);
-            return tmp;
-        }
-        const Dbl ox = dblFromInt(rp.srcX1);
-        const Dbl oy = dblFromInt(rp.srcY1);
-        const Dbl rx1 = dblSub(x1, ox);
-        const Dbl rx2 = dblSub(x2, ox);
-        const Dbl ry1 = dblSub(y1, oy);
-        const Dbl ry2 = dblSub(y2, oy);
-        float4 v = integrate2d(dblToPos(rx1), dblToPos(ry1), dblToPos(rx2), dblToPos(ry2), blackOutside());
-        precise float s = dblToFloat(dblSub(rx2, rx1)) * dblToFloat(dblSub(ry2, ry1));
-        if (s != 0.0)
-            v /= s;
-        return v;
-    }
 
-    const bool inside = interpolate(filter, clampOn, fx, fy, cell, tmp);
+    const bool inside = interpolate(filter, clampOn, fx, fy, tmp);
     if (!inside)
     {
         // A black centre is only kept when the whole back-transformed pixel is outside.
-        if (outsideBounds(corner(x, Jxx, Jxy, -1.0, -1.0), corner(y, Jyx, Jyy, -1.0, -1.0))
-            && outsideBounds(corner(x, Jxx, Jxy, 1.0, -1.0), corner(y, Jyx, Jyy, 1.0, -1.0))
-            && outsideBounds(corner(x, Jxx, Jxy, -1.0, 1.0), corner(y, Jyx, Jyy, -1.0, 1.0))
-            && outsideBounds(corner(x, Jxx, Jxy, 1.0, 1.0), corner(y, Jyx, Jyy, 1.0, 1.0)))
+        if (outsideBounds(corner(fx, Jxx, Jxy, -1.0, -1.0), corner(fy, Jyx, Jyy, -1.0, -1.0))
+            && outsideBounds(corner(fx, Jxx, Jxy, 1.0, -1.0), corner(fy, Jyx, Jyy, 1.0, -1.0))
+            && outsideBounds(corner(fx, Jxx, Jxy, -1.0, 1.0), corner(fy, Jyx, Jyy, -1.0, 1.0))
+            && outsideBounds(corner(fx, Jxx, Jxy, 1.0, 1.0), corner(fy, Jyx, Jyy, 1.0, 1.0)))
             return tmp;
     }
     const int isx = int(bits & 7u);
@@ -954,10 +935,10 @@ float4 interpolateSuper(uint filter, bool clampOn, Dbl x, Dbl y, FF fx, FF fy, i
 
     const int nisx = pow3(isx);
     const int nisy = pow3(isy);
-    const float jxx = dblToFloat(Jxx);
-    const float jxy = dblToFloat(Jxy);
-    const float jyx = dblToFloat(Jyx);
-    const float jyy = dblToFloat(Jyy);
+    const float jxx = Jxx.hi + Jxx.lo;
+    const float jxy = Jxy.hi + Jxy.lo;
+    const float jyx = Jyx.hi + Jyx.lo;
+    const float jyy = Jyy.hi + Jyy.lo;
     for (int sy = -nisy / 2; sy <= nisy / 2; ++sy)
     {
         for (int sx = -nisx / 2; sx <= nisx / 2; ++sx)
@@ -967,7 +948,7 @@ float4 interpolateSuper(uint filter, bool clampOn, Dbl x, Dbl y, FF fx, FF fy, i
                 const float ox = (jxx * float(sx)) / float(nisx) + (jxy * float(sy)) / float(nisy);
                 const float oy = (jyx * float(sx)) / float(nisx) + (jyy * float(sy)) / float(nisy);
                 float4 s;
-                interpolate(kFilterBilinear, false, ffAddF(fx, ox), ffAddF(fy, oy), int2(0, 0), s);
+                interpolate(kFilterBilinear, false, ffAddF(fx, ox), ffAddF(fy, oy), s);
                 tmp += s;
             }
         }
@@ -980,12 +961,12 @@ float4 interpolateSuper(uint filter, bool clampOn, Dbl x, Dbl y, FF fx, FF fy, i
 // The matrix rows (h00 h01 h02) and (h10 h11 h12), with `states` as in ResampleParams.
 struct Matrix
 {
-    Dbl h00;
-    Dbl h01;
-    Dbl h02;
-    Dbl h10;
-    Dbl h11;
-    Dbl h12;
+    FF h00;
+    FF h01;
+    FF h02;
+    FF h10;
+    FF h11;
+    FF h12;
     uint states;
 };
 
@@ -995,21 +976,56 @@ float4 samplePixel(Matrix m, int x, int y)
         return float4(0.0, 0.0, 0.0, 0.0);
     const uint filter = rp.filter;
     const bool clampOn = (rp.flags & kFlagClamp) != 0;
+    const float px = float(x) + 0.5;
+    const float py = float(y) + 0.5;
+    const FF fx = ffAdd(ffAdd(ffMulF(m.h00, px), ffMulF(m.h01, py)), m.h02);
+    const FF fy = ffAdd(ffAdd(ffMulF(m.h10, px), ffMulF(m.h11, py)), m.h12);
+
+    // x1 <= fx + 0.5 && fx - 0.5 < x2, and likewise for y.
+    bool xinside = toPos(ffAddF(fx, 0.5)).i >= rp.srcX1 && toPos(ffAddF(fx, -0.5)).i < rp.srcX2;
+    bool yinside = toPos(ffAddF(fy, 0.5)).i >= rp.srcY1 && toPos(ffAddF(fy, -0.5)).i < rp.srcY2;
+    if (blackOutside() && !(xinside && yinside))
+    {
+        xinside = false;
+        yinside = false;
+    }
+    const FF zero = ffMake(0.0, 0.0);
+    const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
+    return interpolateSuper(filter, clampOn, fx, fy, xinside ? m.h00 : zero, xinside ? m.h01 : zero, yinside ? m.h10 : zero,
+                            yinside ? m.h11 : zero, m.states, state);
+}
+
+// The same matrix as the doubles' bits.
+struct MatrixBits
+{
+    Dbl h00;
+    Dbl h01;
+    Dbl h02;
+    Dbl h10;
+    Dbl h11;
+    Dbl h12;
+    uint states;
+};
+
+// Impulse and box at the CPU's double position: the pixel it falls in, or for box with a nonzero
+// Jacobian, Resampler's integration over the back-transformed pixel.
+float4 samplePixelExact(MatrixBits m, int x, int y)
+{
+    float4 r = float4(0.0, 0.0, 0.0, 0.0);
+    if (!srcValid())
+        return r;
     // The CPU's h00 * (x + 0.5) + h01 * (y + 0.5) + h02, in that order and unfused.
     const int kx = 2 * x + 1;
     const int ky = 2 * y + 1;
     const Dbl dx = dblAdd(dblAdd(dblMulHalfInt(m.h00, kx), dblMulHalfInt(m.h01, ky)), m.h02);
     const Dbl dy = dblAdd(dblAdd(dblMulHalfInt(m.h10, kx), dblMulHalfInt(m.h11, ky)), m.h12);
-    const FF fx = dblToFF(dx);
-    const FF fy = dblToFF(dy);
     const int2 cell = int2(dblFloor(dx), dblFloor(dy));
-
-    float4 r;
-    if (filter == kFilterImpulse)
+    if (rp.filter != kFilterBox)
     {
-        interpolate(filter, clampOn, fx, fy, cell, r);
+        cellPixel(cell, r);
         return r;
     }
+
     const Dbl half = dblMake(0, 0x3fe00000u);
     // x1 <= x + 0.5 && x - 0.5 < x2, and likewise for y.
     bool xinside = dblFloor(dblAdd(dx, half)) >= rp.srcX1 && dblFloor(dblSub(dx, half)) < rp.srcX2;
@@ -1019,10 +1035,62 @@ float4 samplePixel(Matrix m, int x, int y)
         xinside = false;
         yinside = false;
     }
-    const Dbl zero = dblMake(0, 0);
     const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
-    return interpolateSuper(filter, clampOn, dx, dy, fx, fy, cell, xinside ? m.h00 : zero, xinside ? m.h01 : zero,
-                            yinside ? m.h10 : zero, yinside ? m.h11 : zero, m.states, state);
+    if ((((m.states >> (8 * state)) & 0xffu) & 0x40u) != 0)
+    {
+        cellPixel(cell, r);
+        return r;
+    }
+
+    // The corners dx -+ Jxx / 2 -+ Jxy / 2, added in the CPU's order. One loop body keeps a single
+    // copy of the emulated additions in the compiled kernel.
+    const Dbl zero = dblMake(0, 0);
+    const Dbl hxx = dblHalf(xinside ? m.h00 : zero);
+    const Dbl hxy = dblHalf(xinside ? m.h01 : zero);
+    const Dbl hyx = dblHalf(yinside ? m.h10 : zero);
+    const Dbl hyy = dblHalf(yinside ? m.h11 : zero);
+    Dbl x1 = dx;
+    Dbl x2 = dx;
+    Dbl y1 = dy;
+    Dbl y2 = dy;
+    [loop]
+    for (int k = 0; k < 4; ++k)
+    {
+        const bool sa = (k & 1) != 0;
+        const bool sb = (k & 2) != 0;
+        const Dbl cx = dblAdd(dblAdd(dx, sa ? hxx : dblNeg(hxx)), sb ? hxy : dblNeg(hxy));
+        const Dbl cy = dblAdd(dblAdd(dy, sa ? hyx : dblNeg(hyx)), sb ? hyy : dblNeg(hyy));
+        if (k == 0)
+        {
+            x1 = cx;
+            x2 = cx;
+            y1 = cy;
+            y2 = cy;
+        }
+        else
+        {
+            x1 = dblMin(x1, cx);
+            x2 = dblMax(x2, cx);
+            y1 = dblMin(y1, cy);
+            y2 = dblMax(y2, cy);
+        }
+    }
+    if (!dblLess(x1, x2) || !dblLess(y1, y2))
+    {
+        cellPixel(cell, r);
+        return r;
+    }
+    const Dbl ox = dblFromInt(rp.srcX1);
+    const Dbl oy = dblFromInt(rp.srcY1);
+    const Dbl rx1 = dblSub(x1, ox);
+    const Dbl rx2 = dblSub(x2, ox);
+    const Dbl ry1 = dblSub(y1, oy);
+    const Dbl ry2 = dblSub(y2, oy);
+    float4 v = integrate2d(dblToPos(rx1), dblToPos(ry1), dblToPos(rx2), dblToPos(ry2), blackOutside());
+    precise float s = dblToFloat(dblSub(rx2, rx1)) * dblToFloat(dblSub(ry2, ry1));
+    if (s != 0.0)
+        v /= s;
+    return v;
 }
 
 void storePixel(uint3 tid, float4 v)
@@ -1039,14 +1107,31 @@ void resample_main(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= rp.width || tid.y >= rp.height)
         return;
     Matrix m;
-    m.h00 = dblMake(rp.h00Lo, rp.h00Hi);
-    m.h01 = dblMake(rp.h01Lo, rp.h01Hi);
-    m.h02 = dblMake(rp.h02Lo, rp.h02Hi);
-    m.h10 = dblMake(rp.h10Lo, rp.h10Hi);
-    m.h11 = dblMake(rp.h11Lo, rp.h11Hi);
-    m.h12 = dblMake(rp.h12Lo, rp.h12Hi);
+    m.h00 = ffMake(asfloat(rp.m0), asfloat(rp.m6));
+    m.h01 = ffMake(asfloat(rp.m1), asfloat(rp.m7));
+    m.h02 = ffMake(asfloat(rp.m2), asfloat(rp.m8));
+    m.h10 = ffMake(asfloat(rp.m3), asfloat(rp.m9));
+    m.h11 = ffMake(asfloat(rp.m4), asfloat(rp.m10));
+    m.h12 = ffMake(asfloat(rp.m5), asfloat(rp.m11));
     m.states = rp.states;
     storePixel(tid, samplePixel(m, rp.outX + int(tid.x), rp.outY + int(tid.y)));
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void resample_exact_main(uint3 tid : SV_DispatchThreadID)
+{
+    if (tid.x >= rp.width || tid.y >= rp.height)
+        return;
+    MatrixBits m;
+    m.h00 = dblMake(rp.m0, rp.m1);
+    m.h01 = dblMake(rp.m2, rp.m3);
+    m.h02 = dblMake(rp.m4, rp.m5);
+    m.h10 = dblMake(rp.m6, rp.m7);
+    m.h11 = dblMake(rp.m8, rp.m9);
+    m.h12 = dblMake(rp.m10, rp.m11);
+    m.states = rp.states;
+    storePixel(tid, samplePixelExact(m, rp.outX + int(tid.x), rp.outY + int(tid.y)));
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1056,8 +1141,9 @@ void resample_main(uint3 tid : SV_DispatchThreadID)
 
 // The header: matrix count, minimum samples, maximum samples, the seed's offset
 // (unsigned(0x10000 * motionBlur)), the squared maximum error as hi and lo float bits, and 1 when the
-// matrices are weighted. A matrix: the double bits of h00 h01 h02 h10 h11 h12, low word first, its
-// states, and its weight as hi and lo float bits.
+// matrices are weighted. A matrix: twelve words holding h00 h01 h02 h10 h11 h12 as the push
+// constants' m0-m11 do for the entry that reads them, its states, and its weight as hi and lo float
+// bits.
 static const uint kBlurHeaderWords = 8;
 static const uint kBlurMatrixWords = 16;
 
@@ -1082,6 +1168,20 @@ Matrix blurMatrix(uint t)
 {
     const uint base = kBlurHeaderWords + t * kBlurMatrixWords;
     Matrix m;
+    m.h00 = ffMake(asfloat(blurBuf[base + 0]), asfloat(blurBuf[base + 6]));
+    m.h01 = ffMake(asfloat(blurBuf[base + 1]), asfloat(blurBuf[base + 7]));
+    m.h02 = ffMake(asfloat(blurBuf[base + 2]), asfloat(blurBuf[base + 8]));
+    m.h10 = ffMake(asfloat(blurBuf[base + 3]), asfloat(blurBuf[base + 9]));
+    m.h11 = ffMake(asfloat(blurBuf[base + 4]), asfloat(blurBuf[base + 10]));
+    m.h12 = ffMake(asfloat(blurBuf[base + 5]), asfloat(blurBuf[base + 11]));
+    m.states = blurBuf[base + 12];
+    return m;
+}
+
+MatrixBits blurMatrixBits(uint t)
+{
+    const uint base = kBlurHeaderWords + t * kBlurMatrixWords;
+    MatrixBits m;
     m.h00 = dblMake(blurBuf[base + 0], blurBuf[base + 1]);
     m.h01 = dblMake(blurBuf[base + 2], blurBuf[base + 3]);
     m.h02 = dblMake(blurBuf[base + 4], blurBuf[base + 5]);
@@ -1109,7 +1209,29 @@ int samplesForVariance(FF var, FF maxErr2)
     return max(toPos(q).i, 0);
 }
 
-float4 motionBlurPixel(int x, int y)
+// How a blurred sample is taken: from the two-float or the exact matrix words.
+interface IBlurSampler
+{
+    float4 sample(uint t, int x, int y);
+};
+
+struct TwoFloatSampler : IBlurSampler
+{
+    float4 sample(uint t, int x, int y)
+    {
+        return samplePixel(blurMatrix(t), x, y);
+    }
+};
+
+struct ExactSampler : IBlurSampler
+{
+    float4 sample(uint t, int x, int y)
+    {
+        return samplePixelExact(blurMatrixBits(t), x, y);
+    }
+};
+
+float4 motionBlurPixel<S : IBlurSampler>(S sampler, int x, int y)
 {
     const uint count = blurBuf[0];
     const int minSamples = int(blurBuf[1]);
@@ -1135,7 +1257,7 @@ float4 motionBlurPixel(int x, int y)
             // (sample + vanDerCorput2(seed)) * count / minSamples, floored: the fraction left over
             // from the index cannot carry the integer quotient past the next integer.
             const uint t = (sample < minSamples) ? (uint(sample) * count + index) / uint(minSamples) : index;
-            const float4 v = samplePixel(blurMatrix(t), x, y);
+            const float4 v = sampler.sample(t, x, y);
             if (!weighted)
             {
                 for (uint c = 0; c < nComps; ++c)
@@ -1200,6 +1322,24 @@ void resample_blur_main(uint3 tid : SV_DispatchThreadID)
     // Every sample of a source that is not there is zero, and so is their mean.
     float4 v = float4(0.0, 0.0, 0.0, 0.0);
     if (srcValid())
-        v = motionBlurPixel(rp.outX + int(tid.x), rp.outY + int(tid.y));
+    {
+        TwoFloatSampler sampler;
+        v = motionBlurPixel(sampler, rp.outX + int(tid.x), rp.outY + int(tid.y));
+    }
+    storePixel(tid, v);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void resample_blur_exact_main(uint3 tid : SV_DispatchThreadID)
+{
+    if (tid.x >= rp.width || tid.y >= rp.height)
+        return;
+    float4 v = float4(0.0, 0.0, 0.0, 0.0);
+    if (srcValid())
+    {
+        ExactSampler sampler;
+        v = motionBlurPixel(sampler, rp.outX + int(tid.x), rp.outY + int(tid.y));
+    }
     storePixel(tid, v);
 }

@@ -73,11 +73,12 @@ if(TARGET OpenGL::EGL)
     target_include_directories(GpuTests SYSTEM PRIVATE ${OPENGL_EGL_INCLUDE_DIRS})
 endif()
 
-# In the dev image /usr/local's glvnd only lists the NVIDIA EGL vendor, so Mesa's vendor file is
-# named explicitly; elsewhere the system default already works.
+# glvnd reads every vendor file in the directory it is pointed at, at run time. Pointing it at the
+# system directory keeps Mesa-only hosts (CI lavapipe, RADV) unchanged, while an NVIDIA container
+# has 10_nvidia.json loaded first.
 set(GpuTests_GL_ENV "")
-if(EXISTS /usr/share/glvnd/egl_vendor.d/50_mesa.json AND EXISTS /usr/local/share/glvnd/egl_vendor.d)
-    list(APPEND GpuTests_GL_ENV "__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json")
+if(EXISTS /usr/share/glvnd/egl_vendor.d AND EXISTS /usr/local/share/glvnd/egl_vendor.d)
+    list(APPEND GpuTests_GL_ENV "__EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d")
 endif()
 string(REPLACE ";" "\;" GpuTests_GL_ENV "${GpuTests_GL_ENV}")
 

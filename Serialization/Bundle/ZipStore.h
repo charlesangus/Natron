@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -36,11 +37,12 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 /**
- * @brief A stored-only (method 0) zip container whose member data starts on a 64-byte boundary,
- * so a reader can map the file and hand out member bytes in place, typed and aligned.
+ * @brief A zip container whose writer stores members (method 0) with data starting on a 64-byte
+ * boundary, so a reader can map the file and hand out member bytes in place, typed and aligned.
+ * The reader also accepts deflated (method 8) members, in any order.
  *
- * Only the classic 32-bit zip format is written or read: zip64, compression and encryption are
- * refused.
+ * Only the classic 32-bit zip format is written or read: zip64, encryption and compression
+ * methods other than stored and deflate are refused.
  **/
 
 class ZipError
@@ -118,7 +120,11 @@ private:
 struct ZipMember {
     std::string name;
     std::uint64_t dataOffset = 0;
+    /// Uncompressed size.
     std::uint32_t size = 0;
+    /// Bytes the member occupies in the archive, starting at dataOffset.
+    std::uint32_t compressedSize = 0;
+    std::uint16_t method = 0;
     std::uint32_t crc32 = 0;
 };
 
@@ -158,6 +164,13 @@ public:
         return find(name) != nullptr;
     }
 
+    /**
+     * @brief The uncompressed bytes. Stored members are views into the archive; deflated members
+     * are inflated on first access into a 64-byte-aligned buffer owned by the reader, which stays
+     * valid for the reader's lifetime. Safe to call from several threads. Throws ZipError when
+     * the deflate stream is corrupt, truncated, or does not produce exactly the declared size,
+     * or when the inflated bytes fail the CRC-32.
+     **/
     std::span<const std::byte> data(const ZipMember& member) const;
 
     /**
@@ -173,6 +186,8 @@ public:
     void verify(std::string_view name) const;
 
 private:
+    struct InflateCache;
+
     void parse();
     void unmap() noexcept;
 
@@ -182,6 +197,7 @@ private:
     std::string _origin;
     std::vector<ZipMember> _members;
     std::unordered_map<std::string, std::size_t> _index;
+    std::unique_ptr<InflateCache> _inflated;
 };
 
 } // namespace Serialization

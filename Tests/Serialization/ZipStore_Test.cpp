@@ -37,6 +37,7 @@
 #include <sys/mman.h>
 
 #include <gtest/gtest.h>
+#include <zlib.h>
 
 #include <QProcess>
 #include <QStandardPaths>
@@ -166,6 +167,158 @@ runTool(const QString& program,
 
     return process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1;
 }
+
+struct RawMember {
+    std::string name;
+    std::uint16_t method = 0;
+    bool dataDescriptor = false;
+    std::uint32_t crc = 0;
+    std::uint32_t uncompressedSize = 0;
+    std::vector<std::byte> payload;
+};
+
+std::vector<std::byte>
+rawDeflate(const std::vector<std::byte>& data)
+{
+    z_stream strm {};
+    EXPECT_EQ(deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY), Z_OK);
+    std::vector<std::byte> out(deflateBound(&strm, static_cast<uLong>(data.size())) + 16);
+    strm.next_in = reinterpret_cast<Bytef*>(const_cast<std::byte*>(data.data()));
+    strm.avail_in = static_cast<uInt>(data.size());
+    strm.next_out = reinterpret_cast<Bytef*>(out.data());
+    strm.avail_out = static_cast<uInt>(out.size());
+    EXPECT_EQ(deflate(&strm, Z_FINISH), Z_STREAM_END);
+    out.resize(strm.total_out);
+    deflateEnd(&strm);
+
+    return out;
+}
+
+RawMember
+deflatedMember(const std::string& name,
+               const std::vector<std::byte>& data,
+               bool dataDescriptor = false)
+{
+    RawMember member;
+    member.name = name;
+    member.method = 8;
+    member.dataDescriptor = dataDescriptor;
+    member.crc = Serialization::zipCrc32(data);
+    member.uncompressedSize = static_cast<std::uint32_t>(data.size());
+    member.payload = rawDeflate(data);
+
+    return member;
+}
+
+RawMember
+storedMember(const std::string& name,
+             const std::vector<std::byte>& data)
+{
+    RawMember member;
+    member.name = name;
+    member.crc = Serialization::zipCrc32(data);
+    member.uncompressedSize = static_cast<std::uint32_t>(data.size());
+    member.payload = data;
+
+    return member;
+}
+
+void
+put16(std::vector<std::byte>& out,
+      std::uint32_t v)
+{
+    out.push_back(static_cast<std::byte>(v & 0xFF));
+    out.push_back(static_cast<std::byte>((v >> 8) & 0xFF));
+}
+
+void
+put32(std::vector<std::byte>& out,
+      std::uint32_t v)
+{
+    put16(out, v & 0xFFFF);
+    put16(out, v >> 16);
+}
+
+void
+putString(std::vector<std::byte>& out,
+          const std::string& s)
+{
+    out.insert(out.end(), reinterpret_cast<const std::byte*>(s.data()), reinterpret_cast<const std::byte*>(s.data()) + s.size());
+}
+
+std::vector<std::byte>
+buildZip(const std::vector<RawMember>& members)
+{
+    std::vector<std::byte> out;
+    std::vector<std::uint32_t> offsets;
+    for (const RawMember& m : members) {
+        offsets.push_back(static_cast<std::uint32_t>(out.size()));
+        const std::uint16_t flags = m.dataDescriptor ? 8 : 0;
+        put32(out, 0x04034b50);
+        put16(out, 20);
+        put16(out, flags);
+        put16(out, m.method);
+        put16(out, 0);
+        put16(out, 33);
+        put32(out, m.dataDescriptor ? 0 : m.crc);
+        put32(out, m.dataDescriptor ? 0 : static_cast<std::uint32_t>(m.payload.size()));
+        put32(out, m.dataDescriptor ? 0 : m.uncompressedSize);
+        put16(out, static_cast<std::uint32_t>(m.name.size()));
+        put16(out, 0);
+        putString(out, m.name);
+        out.insert(out.end(), m.payload.begin(), m.payload.end());
+        if (m.dataDescriptor) {
+            put32(out, 0x08074b50);
+            put32(out, m.crc);
+            put32(out, static_cast<std::uint32_t>(m.payload.size()));
+            put32(out, m.uncompressedSize);
+        }
+    }
+    const std::uint32_t directoryOffset = static_cast<std::uint32_t>(out.size());
+    for (std::size_t i = 0; i < members.size(); ++i) {
+        const RawMember& m = members[i];
+        put32(out, 0x02014b50);
+        put16(out, 20);
+        put16(out, 20);
+        put16(out, m.dataDescriptor ? 8 : 0);
+        put16(out, m.method);
+        put16(out, 0);
+        put16(out, 33);
+        put32(out, m.crc);
+        put32(out, static_cast<std::uint32_t>(m.payload.size()));
+        put32(out, m.uncompressedSize);
+        put16(out, static_cast<std::uint32_t>(m.name.size()));
+        put16(out, 0);
+        put16(out, 0);
+        put16(out, 0);
+        put16(out, 0);
+        put32(out, 0);
+        put32(out, offsets[i]);
+        putString(out, m.name);
+    }
+    const std::uint32_t directorySize = static_cast<std::uint32_t>(out.size()) - directoryOffset;
+    put32(out, 0x06054b50);
+    put16(out, 0);
+    put16(out, 0);
+    put16(out, static_cast<std::uint32_t>(members.size()));
+    put16(out, static_cast<std::uint32_t>(members.size()));
+    put32(out, directorySize);
+    put32(out, directoryOffset);
+    put16(out, 0);
+
+    return out;
+}
+
+std::vector<std::byte>
+compressibleBytes(std::size_t size)
+{
+    std::vector<std::byte> bytes(size);
+    for (std::size_t i = 0; i < size; ++i) {
+        bytes[i] = static_cast<std::byte>((i / 7) % 13);
+    }
+
+    return bytes;
+}
 } // anon namespace
 
 TEST(ZipStore, RoundTripsMembersOnAlignedOffsets)
@@ -241,7 +394,7 @@ TEST(ZipStore, ExternalToolsAcceptOutput)
     }
 }
 
-TEST(ZipStore, AcceptsUnalignedStoredArchiveAndRejectsDeflated)
+TEST(ZipStore, AcceptsForeignStoredAndDeflatedArchives)
 {
     QString python = findTool("python3");
     if (python.isEmpty()) {
@@ -273,7 +426,121 @@ TEST(ZipStore, AcceptsUnalignedStoredArchiveAndRejectsDeflated)
         EXPECT_EQ(std::to_integer<std::size_t>(blob[i]), i);
     }
 
-    EXPECT_THROW(ZipReader(deflated.toStdString()), ZipError);
+    ZipReader deflatedReader(deflated.toStdString());
+    EXPECT_NO_THROW(deflatedReader.verify());
+    EXPECT_EQ(asString(deflatedReader.data("project.yaml")), std::string(1000, 'a'));
+    EXPECT_EQ(asString(deflatedReader.data("mimetype")), std::string(Serialization::kNatronProjectMimeType));
+    std::span<const std::byte> deflatedBlob = deflatedReader.data("blobs/x.bin");
+    ASSERT_EQ(deflatedBlob.size(), 256u);
+    for (std::size_t i = 0; i < deflatedBlob.size(); ++i) {
+        EXPECT_EQ(std::to_integer<std::size_t>(deflatedBlob[i]), i);
+    }
+}
+
+TEST(ZipStore, ReadsDeflatedAndMixedMembersInAnyOrder)
+{
+    const std::vector<std::byte> a = compressibleBytes(100000);
+    const std::vector<std::byte> b = patternBytes(777, 3);
+    const std::vector<std::byte> c = compressibleBytes(5);
+    const std::vector<std::byte> empty;
+    std::vector<std::byte> zip = buildZip({ deflatedMember("big.bin", a), storedMember("mimetype", c),
+                                            deflatedMember("sub/random.bin", b), storedMember("plain.bin", b),
+                                            deflatedMember("empty.bin", empty) });
+    ZipReader reader { std::span<const std::byte>(zip) };
+    ASSERT_EQ(reader.members().size(), 5u);
+    EXPECT_NO_THROW(reader.verify());
+
+    std::span<const std::byte> big = reader.data("big.bin");
+    ASSERT_EQ(big.size(), a.size());
+    EXPECT_EQ(std::memcmp(big.data(), a.data(), a.size()), 0);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(big.data()) % Serialization::kZipMemberAlignment, 0u);
+    EXPECT_EQ(reader.data("big.bin").data(), big.data()) << "inflated once and cached";
+
+    std::span<const std::byte> random = reader.data("sub/random.bin");
+    ASSERT_EQ(random.size(), b.size());
+    EXPECT_EQ(std::memcmp(random.data(), b.data(), b.size()), 0);
+    EXPECT_EQ(reader.data("empty.bin").size(), 0u);
+
+    const ZipMember* plain = reader.find("plain.bin");
+    ASSERT_NE(plain, nullptr);
+    EXPECT_EQ(reader.data(*plain).data(), zip.data() + plain->dataOffset) << "stored members stay zero-copy";
+
+    ZipReader moved = std::move(reader);
+    EXPECT_EQ(moved.data("big.bin").data(), big.data());
+}
+
+TEST(ZipStore, ReadsDataDescriptorMembers)
+{
+    const std::vector<std::byte> a = compressibleBytes(4096);
+    const std::vector<std::byte> b = patternBytes(100, 9);
+    std::vector<std::byte> zip = buildZip({ deflatedMember("a.bin", a, true), storedMember("b.bin", b),
+                                            deflatedMember("c.bin", b, true) });
+    ZipReader reader { std::span<const std::byte>(zip) };
+    EXPECT_NO_THROW(reader.verify());
+    EXPECT_EQ(std::memcmp(reader.data("a.bin").data(), a.data(), a.size()), 0);
+    EXPECT_EQ(std::memcmp(reader.data("c.bin").data(), b.data(), b.size()), 0);
+}
+
+TEST(ZipStore, RejectsBadDeflateStreams)
+{
+    const std::vector<std::byte> a = compressibleBytes(50000);
+    {
+        RawMember truncated = deflatedMember("a.bin", a);
+        truncated.payload.resize(truncated.payload.size() / 2);
+        std::vector<std::byte> zip = buildZip({ truncated });
+        ZipReader reader { std::span<const std::byte>(zip) };
+        EXPECT_THROW(reader.data("a.bin"), ZipError);
+        EXPECT_THROW(reader.verify(), ZipError);
+    }
+    {
+        RawMember longer = deflatedMember("a.bin", a);
+        longer.uncompressedSize -= 10;
+        std::vector<std::byte> zip = buildZip({ longer });
+        ZipReader reader { std::span<const std::byte>(zip) };
+        EXPECT_THROW(reader.data("a.bin"), ZipError);
+    }
+    {
+        RawMember shorter = deflatedMember("a.bin", a);
+        shorter.uncompressedSize += 10;
+        std::vector<std::byte> zip = buildZip({ shorter });
+        ZipReader reader { std::span<const std::byte>(zip) };
+        EXPECT_THROW(reader.data("a.bin"), ZipError);
+    }
+    {
+        RawMember badCrc = deflatedMember("a.bin", a);
+        badCrc.crc ^= 1;
+        std::vector<std::byte> zip = buildZip({ badCrc });
+        ZipReader reader { std::span<const std::byte>(zip) };
+        EXPECT_THROW(reader.data("a.bin"), ZipError);
+    }
+    {
+        RawMember garbage = deflatedMember("a.bin", a);
+        for (std::byte& byte : garbage.payload) {
+            byte = static_cast<std::byte>(0xFF);
+        }
+        std::vector<std::byte> zip = buildZip({ garbage });
+        ZipReader reader { std::span<const std::byte>(zip) };
+        EXPECT_THROW(reader.data("a.bin"), ZipError);
+    }
+}
+
+TEST(ZipStore, RefusesUnsupportedMethodsByName)
+{
+    struct Case {
+        std::uint16_t method;
+        const char* name;
+    };
+    for (Case c : { Case { 12, "bzip2" }, Case { 14, "lzma" }, Case { 93, "zstd" }, Case { 99, "method 99" } }) {
+        RawMember member = storedMember("a.bin", patternBytes(32, 1));
+        member.method = c.method;
+        std::vector<std::byte> zip = buildZip({ member });
+        try {
+            ZipReader reader { std::span<const std::byte>(zip) };
+            ADD_FAILURE() << "method " << c.method << " was accepted";
+        } catch (const ZipError& e) {
+            EXPECT_NE(std::string(e.what()).find(c.name), std::string::npos) << e.what();
+        }
+    }
 }
 
 TEST(ZipStore, WriterRefusesBadNamesAndZip64Sizes)

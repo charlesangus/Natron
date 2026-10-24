@@ -466,3 +466,9 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **Never returns false.** `cpuOnly` is set when `checkExtraChannelsPresent` fails, which the engine still reports, and when a read input is non-float at either its fetched or its stored depth. That is conservative.
   - **Test coverage gap:** ShuffleCopy with input 2 (the main input) disconnected has no GPU parity case.
 - 2026-10-24 — **P2.T5 and P3.T1 done, so Phase 110.2's gate is green.** Remote `fast --tests` of `cc4a0f96e` (run 40094020594) passes all 344 entries in both legs. `GpuMultiPlaneRegionTest` and `NativeCropGpuTest` ran, with no skips in either suite.
+- 2026-10-24 — **M110.P3.T3 code in (`6ce6924b8`); the Phase 110.3 build is dispatched.**
+  - **Routes:** both nodes run on the CPU from their route. AddLayers: a widened colour plane is colour bits plus constant 0, an added layer is all 0, and layers already present pass through as identity members. RemoveLayers: Narrowed copies the kept bits, Unchanged and Dropped are never rendered, and non-colour layers pass through. Sources use `eNonFloatConverts`.
+  - **Gates:** neither node ever returns false. `cpuOnly` is set for a non-float input, the same rule as Shuffle.
+  - **CPU output:** expected to stay bit-identical, so no plugin-major bump.
+  - **Risk:** a task whose only plane is a pass-through has to place as an identity member (the RemoveLayers → Grade end-to-end case).
+  - **Gap:** the non-float `cpuOnly` path is untested for the whole family, because the parity source is float only.

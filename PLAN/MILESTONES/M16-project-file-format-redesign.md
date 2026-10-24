@@ -325,7 +325,7 @@ Scouting facts this plan relies on (2026-10-10):
 
 ## Phase 16.7: Cleanup, docs and UAT
 
-- [ ] M16.P7.T1 — Delete the boost XML format entirely
+- [x] M16.P7.T1 — Delete the boost XML format entirely
   - files: `Serialization/BoostXml/` (removed), `Engine/Project.cpp` (`saveLegacyXmlForBenchmark`), `tools/bench/project_io_bench.py` and `tools/bench/make_heavy_project.py` (removed), `Serialization/CMakeLists.txt`, `CMakeLists.txt` (`find_package(Boost COMPONENTS headers serialization)` at `:56` stays only if the cache TOC still needs it; link it only to Engine)
   - approach: after this task, `grep -rnE "xml_[io]archive|boost/serialization" Engine Gui Serialization` lists only the cache TOC (`Engine/AppManagerPrivate.cpp`, the cache key headers, and their `RectI`/`RectD`/`Format`/`ImageLayerDesc` helpers). Remove the `*_SERIALIZATION_*` version macros.
   - verify: the grep result matches; `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug` then `tools/ci/local/test.sh ctest debug` are green. The build is required.
@@ -415,7 +415,7 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: compiled at P8.T15; P8.T11's Xvfb test.
   - size: L
 
-- [ ] M16.P8.T11 — Remove the workspace preference; test layout-free loading in the GUI
+- [x] M16.P8.T11 — Remove the workspace preference; test layout-free loading in the GUI
   - files: `Engine/Settings.h` (`:242`), `Engine/Settings.cpp` (`:642-646`, `:3194`), new `Tests/gui/m16_project_layout.py` (run with `Tests/gui/run-gui-test.sh`)
   - approach: delete `loadProjectWorkspace`, no migration. Viewer placement needs no new code: `Gui::createViewerGui` (`Gui/Gui.cpp:356-370`) adds each Viewer to `getAnchor()`. Xvfb test, `checkForUpdates=false` seeded: build two Viewers, a moved backdrop, a user colour, a node in a group and an open settings panel; save, change the pane layout, reopen. Both viewers are tabs in the anchor pane; the pane layout is unchanged; no panel open, nothing selected, no histograms; positions, backdrop size and colours match; a drag shows in `node.getPosition()`; copy/paste keeps relative offsets.
   - verify: run after the P8.T15 build against its fast AppImage.
@@ -439,7 +439,7 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: compiled at P8.T15; `NodeLayout.*`.
   - size: M
 
-- [ ] M16.P8.T15 — Checkpoint: build and test
+- [x] M16.P8.T15 — Checkpoint: build and test
   - files: none
   - approach: syntax-check changed TUs (`tools/ci/local/syntax-check.py --root .worktrees/m16`; blind to moc TUs), push, `tools/ci/remote/build.sh debug --tests`, then `tools/ci/remote/build.sh fast` for the AppImage P8.T11 and P8.T16 use; run P8.T11.
   - verify: ctest green including `NodeLayout.*`, `ProjectBundle.*`, `ProjectYaml.*`, `ClipboardYaml.*`, `ProjectGuiYaml.*`, `BundleLoadTest.*`, `MissingPlugin*`; P8.T11 passes; P8.T13's grep is empty.

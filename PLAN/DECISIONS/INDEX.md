@@ -101,3 +101,4 @@
 - 2026-10-22 — raw-support-grill-revisions: core-chain raw GPU in M80, rest in M81; lens → M160 (lensfun, any image); linear raw stays raw + RawToImage, viewer accepts raw; Develop RAW is a backdrop; groups made kind-agnostic in M159 → DECISIONS/2026-10-22-raw-support-grill-revisions.md
 - 2026-10-10 — project-format-resolved-calls: .ntpz clean break, sibling-relative connections, .nps kept, blob tables, yaml-cpp, ZipStore, no gui.yaml, boost only for cache TOC → DECISIONS/2026-10-10-project-format-resolved-calls.md
 - 2026-10-24 — trackball-panel-layout-uat-pick: user picked M119's layout and global-mode feedback at UAT → DECISIONS/2026-10-24-trackball-panel-layout-uat-pick.md
+- 2026-10-24 — usd-node-naming: every USD/3D node is named USD<Whatever> (ReadScene → USDRead), like Deep<…>/Raw<…>; M20/M52–M54 rename on next elaboration → DECISIONS/2026-10-24-usd-node-naming.md

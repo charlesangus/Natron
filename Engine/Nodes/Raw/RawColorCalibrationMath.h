@@ -347,6 +347,83 @@ Vec3 xyYToLch(const Vec3& xyY);
 Vec3 luvToXyY(const Vec3& luv);
 Vec3 lchToLuv(const Vec3& lch);
 Vec3 lchToXyY(const Vec3& lch);
+
+/**
+ * @brief dt_iop_channelmixer_rgb_version_t: the colorfulness algorithm.
+ **/
+enum class SaturationVersion : int {
+    V1 = 0,
+    V2 = 1,
+    V3 = 2
+};
+
+/**
+ * @brief dt_iop_channelmixer_rgb_params_t, at darktable's static defaults (init() makes the mix
+ * the identity).
+ **/
+struct Settings {
+    Vec3 red = { 1.f, 0.f, 0.f };
+    Vec3 green = { 0.f, 1.f, 0.f };
+    Vec3 blue = { 0.f, 0.f, 1.f };
+    Vec3 saturation = { 0.f, 0.f, 0.f };
+    Vec3 lightness = { 0.f, 0.f, 0.f };
+    Vec3 grey = { 0.f, 0.f, 0.f };
+    bool normalizeR = false;
+    bool normalizeG = false;
+    bool normalizeB = false;
+    bool normalizeSaturation = false;
+    bool normalizeLightness = false;
+    bool normalizeGrey = false;
+    Illuminant illuminant = Illuminant::D;
+    Fluorescent fluorescent = Fluorescent::F3;
+    Led led = Led::B5;
+    Adaptation adaptation = Adaptation::Cat16;
+    float x = 0.333f;
+    float y = 0.333f;
+    float temperature = 5003.f;
+    float gamut = 1.f;
+    bool clip = true;
+    SaturationVersion version = SaturationVersion::V3;
+};
+
+/**
+ * @brief What the pixel loop reads: commit_params()'s dt_iop_channelmixer_rbg_data_t and the
+ * matrices _loop_switch() derives from the working profile. Plain data, so that a GPU kernel can
+ * take it as it is.
+ **/
+struct Kernel {
+    Mat3 rgbToXyz;
+    Mat3 xyzToRgb;
+    Mat3 rgbToLms;
+    Mat3 mixToXyz;
+    Vec3 illuminant;
+    Vec3 saturation;
+    Vec3 lightness;
+    Vec3 grey;
+    float p;
+    float gamut;
+    Adaptation adaptation;
+    SaturationVersion version;
+    bool clip;
+    bool applyGrey;
+};
+
+/**
+ * @brief commit_params() for working RGB whose matrix to XYZ (D50) is rgbToXyz, and xyzToRgb its
+ * inverse. camera and customWb are what illuminantToXy() needs for the camera illuminant.
+ **/
+Kernel makeKernel(const Settings& settings,
+                  const Mat3& rgbToXyz,
+                  const Mat3& xyzToRgb,
+                  const RawCameraWhite* camera,
+                  const Vec4* customWb);
+
+/**
+ * @brief One pixel of _loop_switch(): the three colour channels of in to out.
+ **/
+void processPixel(const Kernel& kernel,
+                  const float* in,
+                  float* out);
 } // namespace RawColorCalibrationMath
 
 NATRON_NAMESPACE_EXIT

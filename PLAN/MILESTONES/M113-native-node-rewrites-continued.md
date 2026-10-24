@@ -176,7 +176,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the test covers zero UV giving Source, a constant +2 px U shifting the image by 2 px, uvScale, a render scale of 0.5 matching a downscaled full render within the filter tolerance, and U/V from an arbitrary layer. It runs at the phase build.
   - size: L
 
-- [ ] M113.P2.T3 — Run STMap and IDistort on the GPU
+- [x] M113.P2.T3 — Run STMap and IDistort on the GPU
   - files: `Engine/Gpu/Kernels/stmap.slang` (new), `Engine/Nodes/Transform/STMap.cpp`, `Engine/Nodes/Transform/IDistort.cpp`, `Engine/Gpu/Kernels/stmap.cmake`, `Tests/Native/NativeWarpGpu_Test.cpp` (new)
   - approach:
     - One Slang file with two entries (`stmap_main`, `idistort_main`), both built on `coordmap.slang` and wrapped by M85 - Native GPU Kernels's `pixelwrap.slang` for mask, mix and channels.

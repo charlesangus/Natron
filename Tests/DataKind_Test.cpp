@@ -79,6 +79,24 @@ TEST_F(BaseTest, DotResolutionUpdatesAfterDisconnectAndReconnect)
     EXPECT_EQ(eDataKindImage, dot->getEffectiveOutputDataKind());
 }
 
+// The other direction: the Dot took deep from the consumer below it, and the consumer's own
+// input is what gets disconnected, so the walk from the consumer no longer reaches the Dot.
+TEST_F(BaseTest, DotDropsTheKindItTookFromAConsumerThatDisconnectsIt)
+{
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr deepSink = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(dot && deepSink && imageSink);
+
+    ASSERT_TRUE(deepSink->connectInput(dot, 0));
+    EXPECT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+
+    ASSERT_EQ(0, deepSink->disconnectInput(dot.get()));
+    EXPECT_EQ(eDataKindPolymorphic, dot->getEffectiveOutputDataKind());
+    EXPECT_EQ(Node::eCanConnectInput_ok, imageSink->canConnectInput(dot, 0));
+}
+
 // A concrete image-kind sink cannot be fed directly by a concrete deep-kind source:
 // canConnectInput must reject at the connection that introduces the contradiction, and
 // name the node responsible for the conflicting kind (here, the source itself).

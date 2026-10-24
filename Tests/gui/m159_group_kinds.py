@@ -1,21 +1,8 @@
-"""A GUI test for M159 - Kind-Agnostic Groups: the external edges of a group wrapped around a deep
-chain are drawn in the deep colour, and those of a group around an image chain are not. Driven by
-Tests/gui/run-gui-test.sh, not ctest.
-
-Usage (natron-dev container):
-    docker exec natron-dev bash -c 'cd /home/bosley/git/Natron/.worktrees/m159 && \
-        NATRON_GUI_TEST_OUT=build/m159-shots GUI_TEST_TIMEOUT=600 \
-        Tests/gui/run-gui-test.sh Tests/gui/m159_group_kinds.py build/remote/fast/Natron-2.6.0-x86_64.AppImage'
-
-Graph, left to right:
-    Constant -> DeepFromImage -> Group[Input -> DeepCrop -> Output] -> DeepCrop
-    Constant -> Group[Input -> Output]                    (the image control, below the first)
-
-Python does not expose an Edge's pen, so the colour is read from pixels, the way
-m55_input_pipes.py finds a pipe: points along the straight line between two node boxes' centres
-are grabbed from the screen and counted when they are close to the Preferences "Deep edges"
-colour (Python does not expose the Preferences colour, so the Okabe-Ito default is assumed). An edge is deep-coloured when enough of its points are, and the image
-edges are the control that the probe does not see deep colour everywhere.
+"""Checks that a group's external edges are drawn in the deep colour when it wraps a deep chain and
+not when it wraps an image chain. Python exposes neither an Edge's pen nor the Preferences edge
+colours, so the script samples screen pixels along each edge and compares them with the default
+deep-edge colour; the image group's edges are the control that the probe is not seeing deep colour
+everywhere.
 """
 import os
 import sys

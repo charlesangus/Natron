@@ -591,8 +591,8 @@ like every other node here and no flattening exists to run.
 ## Groups resolve kinds from what is inside them
 
 A `Group` node, a PyPlug instance (which is a group) and a group nested in a group
-carry whatever kind their inner graph does, for every kind: image, deep, scene and
-raw. `NodeGroup` declares polymorphic inputs and output, and `Node` resolves them
+carry whatever kind their inner graph does, whichever kind that is. `NodeGroup`
+declares polymorphic inputs and output, and `Node` resolves them
 from the graph instead of from a declaration. Nothing needs to be stated on the
 group, and there are no per-`GroupInput`/`GroupOutput` kind knobs.
 

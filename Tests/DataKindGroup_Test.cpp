@@ -555,3 +555,159 @@ TEST_F(DataKindGroupTest, RequirementsCrossNestedGroupInputs)
     EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, outer->canConnectInput(imageSource, 0, &conflictingNode));
     EXPECT_EQ(deepSink.get(), conflictingNode.get());
 }
+
+// A scene chain passes through a group like any other kind: the group carries scene, and
+// consumers that cannot take scene are refused at its output.
+TEST_F(DataKindGroupTest, SceneChainThroughGroupStaysScene)
+{
+    NodePtr sceneSource = createRootNode(kTestPluginIDDataKindScenePolicy);
+    NodePtr group = createRootGroup();
+    ASSERT_TRUE(sceneSource && group);
+    NodePtr groupInput = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr innerDot = createInside(group, PLUGINID_NATRON_DOT);
+    NodePtr groupOutput = createInside(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(groupInput && innerDot && groupOutput);
+    ASSERT_TRUE(innerDot->connectInput(groupInput, 0));
+    ASSERT_TRUE(groupOutput->connectInput(innerDot, 0));
+    ASSERT_TRUE(group->connectInput(sceneSource, 0));
+
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindScene, groupInput->getEffectiveOutputDataKind());
+    EXPECT_EQ(eDataKindScene, group->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+
+    NodePtr imageSink = createRootNode(kTestPluginIDDataKindImageSink);
+    NodePtr deepSink = createRootNode(kTestPluginIDDataKindDeepSink);
+    NodePtr outerDot = createRootNode(PLUGINID_NATRON_DOT);
+    ASSERT_TRUE(imageSink && deepSink && outerDot);
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, imageSink->canConnectInput(group, 0));
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, deepSink->canConnectInput(group, 0));
+    ASSERT_TRUE(outerDot->connectInput(group, 0));
+    EXPECT_EQ(eDataKindScene, outerDot->getEffectiveOutputDataKind());
+}
+
+// An input fed from outside but consumed by nothing inside takes the external kind alone, and
+// has no say in the group's output kind or in what its consumers may be.
+TEST_F(DataKindGroupTest, ExternallyFedUnusedGroupInputTakesTheExternalKindAlone)
+{
+    NodePtr group = createRootGroup();
+    ASSERT_TRUE(bool(group));
+    NodePtr groupInput = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr innerImageSource = createInside(group, kTestPluginIDImageRenderSource);
+    NodePtr groupOutput = createInside(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(groupInput && innerImageSource && groupOutput);
+    ASSERT_TRUE(groupOutput->connectInput(innerImageSource, 0));
+
+    NodePtr imageSink = createRootNode(kTestPluginIDDataKindImageSink);
+    ASSERT_TRUE(bool(imageSink));
+    ASSERT_TRUE(imageSink->connectInput(group, 0));
+
+    NodePtr deepSource = createRootNode(kTestPluginIDDataKindDeepSource);
+    ASSERT_TRUE(bool(deepSource));
+    EXPECT_EQ(Node::eCanConnectInput_ok, group->canConnectInput(deepSource, 0));
+    ASSERT_TRUE(group->connectInput(deepSource, 0));
+
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindDeep, groupInput->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+    ambiguous = true;
+    EXPECT_EQ(eDataKindImage, group->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+    EXPECT_FALSE(hasDataKindMessage(group));
+    EXPECT_FALSE(hasDataKindMessage(imageSink));
+}
+
+// Each group input resolves from its own external feed and its own inner consumers: a deep
+// input and an image input on the same group neither mix nor constrain each other.
+TEST_F(DataKindGroupTest, GroupInputsOfDifferentKindsResolveIndependently)
+{
+    NodePtr group = createRootGroup();
+    ASSERT_TRUE(bool(group));
+    NodePtr deepInput = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr imageInput = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr innerDot = createInside(group, PLUGINID_NATRON_DOT);
+    NodePtr innerImageSink = createInside(group, kTestPluginIDDataKindImageSink);
+    NodePtr groupOutput = createInside(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(deepInput && imageInput && innerDot && innerImageSink && groupOutput);
+    ASSERT_TRUE(innerDot->connectInput(deepInput, 0));
+    ASSERT_TRUE(groupOutput->connectInput(innerDot, 0));
+    ASSERT_TRUE(innerImageSink->connectInput(imageInput, 0));
+
+    NodeGroup* groupEffect = group->isEffectGroup();
+    ASSERT_TRUE(groupEffect != NULL);
+    ASSERT_EQ(deepInput.get(), groupEffect->getGroupInputNode(0).get());
+    ASSERT_EQ(imageInput.get(), groupEffect->getGroupInputNode(1).get());
+
+    NodePtr deepSource = createRootNode(kTestPluginIDDataKindDeepSource);
+    NodePtr imageSource = createImageRenderSource(0);
+    ASSERT_TRUE(deepSource && imageSource);
+    EXPECT_EQ(Node::eCanConnectInput_ok, group->canConnectInput(deepSource, 0));
+    EXPECT_EQ(Node::eCanConnectInput_ok, group->canConnectInput(imageSource, 1));
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, group->canConnectInput(deepSource, 1));
+
+    ASSERT_TRUE(group->connectInput(deepSource, 0));
+    ASSERT_TRUE(group->connectInput(imageSource, 1));
+
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindDeep, deepInput->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+    ambiguous = true;
+    EXPECT_EQ(eDataKindImage, imageInput->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+    ambiguous = true;
+    EXPECT_EQ(eDataKindDeep, group->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+    EXPECT_FALSE(hasDataKindMessage(innerImageSink));
+    EXPECT_FALSE(hasDataKindMessage(group));
+}
+
+// The node feeding a group's input took its kind from what the GroupInput's consumers require.
+// Once that edge is cut nothing downstream constrains it, and an image consumer is accepted.
+TEST_F(DataKindGroupTest, NodeDetachedFromAGroupInputDropsTheKindItTookFromInside)
+{
+    NodePtr group = createRootGroup();
+    ASSERT_TRUE(bool(group));
+    NodePtr groupInput = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr innerDeepSink = createInside(group, kTestPluginIDDataKindDeepSink);
+    ASSERT_TRUE(groupInput && innerDeepSink);
+    ASSERT_TRUE(innerDeepSink->connectInput(groupInput, 0));
+
+    NodePtr dot = createRootNode(PLUGINID_NATRON_DOT);
+    ASSERT_TRUE(bool(dot));
+    ASSERT_TRUE(group->connectInput(dot, 0));
+    EXPECT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+
+    ASSERT_EQ(0, group->disconnectInput(dot.get()));
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindPolymorphic, dot->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+
+    NodePtr imageSink = createRootNode(kTestPluginIDDataKindImageSink);
+    ASSERT_TRUE(bool(imageSink));
+    EXPECT_EQ(Node::eCanConnectInput_ok, imageSink->canConnectInput(dot, 0));
+}
+
+// The same from inside: the node that fed the GroupOutput took the requirement of the group's
+// consumers, and loses it once another node replaces it there.
+TEST_F(DataKindGroupTest, NodeReplacedAtTheGroupOutputDropsTheKindItTookFromOutside)
+{
+    NodePtr group = createRootGroup();
+    ASSERT_TRUE(bool(group));
+    NodePtr innerDot = createInside(group, PLUGINID_NATRON_DOT);
+    NodePtr innerDeepSource = createInside(group, kTestPluginIDDataKindDeepSource);
+    NodePtr innerImageSource = createInside(group, kTestPluginIDImageRenderSource);
+    NodePtr groupOutput = createInside(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(innerDot && innerDeepSource && innerImageSource && groupOutput);
+    ASSERT_TRUE(groupOutput->connectInput(innerDot, 0));
+
+    NodePtr deepSink = createRootNode(kTestPluginIDDataKindDeepSink);
+    ASSERT_TRUE(bool(deepSink));
+    ASSERT_TRUE(deepSink->connectInput(group, 0));
+    EXPECT_EQ(eDataKindDeep, innerDot->getEffectiveOutputDataKind());
+
+    ASSERT_TRUE(groupOutput->replaceInput(innerDeepSource, 0));
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindPolymorphic, innerDot->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+    EXPECT_EQ(Node::eCanConnectInput_ok, innerDot->canConnectInput(innerImageSource, 0));
+}

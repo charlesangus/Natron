@@ -2303,11 +2303,11 @@ Node::invalidateEffectiveOutputDataKindCache()
             node->_imp->effectiveDataKindCacheSet = false;
         }
 
+        // Group nodes and their GroupInput and GroupOutput nodes each resolve a kind of their own,
+        // and the redirected outputs step over them, so the direct outputs are walked and the
+        // boundary is crossed explicitly. Only past a precomp's output node does the redirection
+        // reach consumers that nothing else here does.
         NodesList neighbours;
-        node->getOutputsWithGroupRedirection(neighbours);
-
-        // The redirected outputs step over group nodes and their GroupInput and GroupOutput nodes,
-        // each of which resolves a kind of its own, so the boundary is crossed explicitly too.
         NodesWList directOutputs;
         node->getOutputs_mt_safe(directOutputs);
         for (NodesWList::const_iterator it = directOutputs.begin(); it != directOutputs.end(); ++it) {
@@ -2319,6 +2319,10 @@ Node::invalidateEffectiveOutputDataKindCache()
             std::vector<NodePtr> groupInputs;
             isGroup->getInputs(&groupInputs, false);
             neighbours.insert(neighbours.end(), groupInputs.begin(), groupInputs.end());
+        }
+        PrecompNodePtr precomp = node->isPartOfPrecomp();
+        if (precomp && (precomp->getOutputNode().get() == node)) {
+            node->getOutputsWithGroupRedirection(neighbours);
         }
         const EffectInstance* effect = node->_imp->effect.get();
         if (dynamic_cast<const GroupInput*>(effect) || dynamic_cast<const GroupOutput*>(effect)) {

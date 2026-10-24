@@ -253,6 +253,8 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **M113 - Native Warp Nodes:** UAT with the user: screenshots from `m113_warp.py` and `build/appimages/M113-0c04c69d7.AppImage`.
+
 - **M161 - Startup Compositor Crash:** After M161 merges, its lane picks up M19 - USD/Hydra Foundation (reserved for bosley-native-nodes; also needs M107 - GPU Viewer Hand-off done).
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.
 - **M166 - Non-Float Plane Model:** the user wants to rethink the model before it is planned: Read emitting EXR half/uint32 layers natively, and possibly a bit depth per layer. Settle the framing in `/cat-discuss`, then elaborate.

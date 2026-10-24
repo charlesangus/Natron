@@ -44,6 +44,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
@@ -114,15 +115,17 @@ protected:
     NodePtr createChain(const std::vector<Ref::Vec3>& pixels)
     {
         NodePtr source = createNode(QString::fromUtf8(kRawTestSourceID));
+        NodePtr demosaic = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWDEMOSAIC));
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWINPUTCOLOR));
 
-        EXPECT_TRUE(source && node);
-        if (!source || !node) {
+        EXPECT_TRUE(source && demosaic && node);
+        if (!source || !demosaic || !node) {
             return NodePtr();
         }
         const std::vector<Ref::Vec3> values = pixels;
         dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(RectI(0, 0, kWidth, kHeight), 3, [values](int x, int, int c) { return (float)values[std::min<std::size_t>(x, values.size() - 1)][c]; }, rawTestMetadata(kRawCfaPatternNone, 0, 0, eRawStagePrepared));
-        connectNodes(source, node, 0, true);
+        connectNodes(source, demosaic, 0, true);
+        connectNodes(demosaic, node, 0, true);
         EffectInstancePtr effect = node->getEffectInstance();
         effect->getKnobByNameAndType<KnobBool>(kRawInputColorParamProfileOverride)->setValue(true);
         effect->getKnobByNameAndType<KnobChoice>(kRawInputColorParamProfile)->setValueFromID(kRawInputColorProfileLinearRec2020, 0);

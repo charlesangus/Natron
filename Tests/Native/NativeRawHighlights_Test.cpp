@@ -213,6 +213,7 @@ TEST_F(NativeRawHighlightsTest, ClipModeClipsToTheThreshold)
     ASSERT_TRUE(bool(node));
     const RawTestSource::ValueFn scene = clippedScene(*RawLayout::fromPattern("RGGB"));
 
+    node->getEffectInstance()->getKnobByNameAndType<KnobBool>(kRawHighlightsParamClipOverride)->setValue(true);
     for (double threshold : { 1., 0.8 }) {
         node->getEffectInstance()->getKnobByNameAndType<KnobDouble>(kRawHighlightsParamClip)->setValue(threshold);
         RenderedPlane plane;

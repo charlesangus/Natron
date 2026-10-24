@@ -130,7 +130,7 @@ future core work has solid ground to build on.
 | M86 | OFX 1.5 GPU Suites | todo | M85, M108 |  | E5 | [M86-ofx-gpu-suites.md](PLAN/MILESTONES/M86-ofx-gpu-suites.md) |
 | M87 | Point-Op Kernel Fusion | todo | M85, M126 |  | E5 | [M87-point-op-kernel-fusion.md](PLAN/MILESTONES/M87-point-op-kernel-fusion.md) |
 | M109 | GPU Region Engine Hardening | done | M85 | gpu | E5 | [M109-gpu-region-engine-hardening.md](PLAN/MILESTONES/M109-gpu-region-engine-hardening.md) |
-| M110 | Remaining Native GPU Ports | todo | M85, M109, M126, M137 |  | E5 | [M110-remaining-native-gpu-ports.md](PLAN/MILESTONES/M110-remaining-native-gpu-ports.md) |
+| M110 | Remaining Native GPU Ports | doing | M85, M109, M126, M137 | gpu | E5 | [M110-remaining-native-gpu-ports.md](PLAN/MILESTONES/M110-remaining-native-gpu-ports.md) |
 | M88 | FIR Gaussian Blur | done |  |  | E6 | [M88-fir-gaussian-blur.md](PLAN/MILESTONES/M88-fir-gaussian-blur.md) |
 | M89 | Shared Worktree Ccache | done | - |  | E2 | [M89-shared-worktree-ccache.md](PLAN/MILESTONES/M89-shared-worktree-ccache.md) |
 | M90 | Render Path Serial Overhead | done | M84 | bosley-native-nodes | E6 | [M90-render-path-serial-overhead.md](PLAN/MILESTONES/M90-render-path-serial-overhead.md) |

@@ -43,7 +43,7 @@ ALL_SECTIONS = ("file-dialog", "placement", "picker-defaults", "deep-read")
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QItemSelectionModel, QMimeData, QMetaObject, QPoint, QPointF, Qt, QUrl
-    from PySide6.QtGui import QDropEvent, QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent
+    from PySide6.QtGui import QDragEnterEvent, QDropEvent, QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QListView, QMainWindow, QTreeView, QWidget
 
@@ -366,7 +366,11 @@ try:
             param.setValue(value, d)
 
     def view(viewer, node):
-        if viewer.getInput(0) is not None:
+        current = viewer.getInput(0)
+        if current is not None and current.getScriptName() == node.getScriptName():
+            QApplication.processEvents()
+            return
+        if current is not None:
             viewer.disconnectInput(0)
         require(viewer.connectInput(0, node), "the Viewer now shows " + node.getLabel())
         QApplication.processEvents()
@@ -580,6 +584,9 @@ try:
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
         pos = QPointF(graph.mapTo(gui, graph.rect().center()))
+        # Qt only delivers a drop to a widget that accepted the preceding drag-enter
+        enter = QDragEnterEvent(pos.toPoint(), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+        QApplication.sendEvent(gui, enter)
         event = QDropEvent(pos, Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
         QApplication.sendEvent(gui, event)
         QApplication.processEvents()

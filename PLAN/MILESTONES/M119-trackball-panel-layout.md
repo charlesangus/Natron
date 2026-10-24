@@ -222,19 +222,19 @@ Re-planned 2026-10-24 from the user's UAT pick (see ## Decisions). T2, T3, T4 an
   - verify: `GuiTests --gtest_filter=ColorTrackballHud*` (the HUD is a window, not a child of any panel). Xvfb (in T10's script): after engage and a pointer move, `QScreen::grabWindow(0, hud.frameGeometry())` matches `hud.grab()` (mean channel difference under 4) and the region contains the "Mode C" label's text pixels; the reveal shot shows no black corners.
   - size: M
 
-- [ ] M119.P3.T4 — Exit global mode on a right-click, with no context menu
+- [x] M119.P3.T4 — Exit global mode on a right-click, with no context menu
   - files: `Gui/ColorTrackballGlobalMode.{h,cpp}`, `Tests/ColorTrackballGlobalMode_Test.cpp`
   - approach: in `handleMousePress`, a `Qt::RightButton` press with no other button held calls `exit()`, the same path as Esc. Set a `_swallowRightClickTail` flag and keep the event filter installed until the matching release and the `QEvent::ContextMenu` have been eaten (or the next unrelated event clears the flag), so nothing under the pointer opens a menu. A right press during a left stroke is ignored, as today.
   - verify: GuiTests: synthetic right press+release+ContextMenu while engaged → `isEngaged()==false`, `QApplication::overrideCursor()==nullptr`, ContextMenu reported as filtered. T10's script right-clicks over a node's properties panel during global mode, checks the mode ended, the cursor was restored and no `QMenu` is visible.
   - size: M
 
-- [ ] M119.P3.T5 — Delete the bin-top placement
+- [x] M119.P3.T5 — Delete the bin-top placement
   - files: `Gui/ColorTrackballBinPanel.{h,cpp}` and `Tests/ColorTrackballBinPanel_Test.cpp` (delete), `Gui/PropertiesBinWrapper.{h,cpp}`, `Gui/KnobGuiColor.cpp` (`binTopPlacement`, :236, :486, :576, :781, :1010), `Tests/CMakeLists.txt`
   - approach: ▾ goes back to only the in-knob panel; Ctrl+E/Ctrl+Up/Down are untouched. Remove `Placement` from `ColorPanelLayout`.
   - verify: `GuiTests --gtest_filter=KnobGuiColor*:ColorTrackballGlobalMode*` green; `grep -rn BinPanel Gui Tests` is empty.
   - size: M
 
-- [ ] M119.P3.T6 — Make Custom sliders with both edges extended the only layout, and delete the dev switch
+- [x] M119.P3.T6 — Make Custom sliders with both edges extended the only layout, and delete the dev switch
   - files: `Gui/ColorPanelLayoutDev.{h,cpp}` (delete), `Gui/ColorAdjustPanel.{h,cpp}`, `Gui/KnobGuiColor.cpp`, `Gui/ScaleSliderQWidget.{h,cpp}` (drop the vertical path), `Tests/ColorAdjustPanel_Test.cpp`, `Tests/ScaleSliderQWidget_Test.cpp`
   - approach: hard-code Custom + extendLeft + extendRight (`KnobGuiColor.cpp:983-988`; keep `getFullWidthRowWidget`). Delete the Natron and Vertical styles, the dev bar, the env var, the `layoutChanged` rebuild, `setOrientation` and the vertical tests.
   - verify: `GuiTests --gtest_filter=ColorAdjustPanel*:ScaleSliderQWidget*:KnobGuiColor*` green; `grep -rn 'NATRON_COLOR_PANEL_DEV\|ColorPanelLayout' Gui Tests` is empty.

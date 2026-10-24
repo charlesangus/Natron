@@ -205,7 +205,7 @@ Each port names the darktable source file in its `approach` as the reference. Po
   - verify: the gtest completes under a stated memory bound; the bench shows time falling with thread count.
   - size: M
 
-- [ ] M80.P5.T3 — Panels and viewer check under Xvfb
+- [x] M80.P5.T3 — Panels and viewer check under Xvfb
   - files: `Tests/gui/m80_raw.py`, node panel layouts in `Engine/Nodes/Raw/*.cpp` (labels and pages only)
   - approach: run the Xvfb recipe (`build/deeprepro/run-gui.sh`, with `checkForUpdates` pre-seeded off). Open a Bayer, an X-Trans and a linear-DNG fixture, check the auto-inserted Develop backdrop, switch demosaic methods, change temperature, view a raw edge directly and through RawToImage. Capture screenshots of each node's panel and the viewer. Share the screenshots and get the user's approval before sign-off (project rule).
   - verify: the scripts pass under Xvfb; the screenshots are shared and the user approves them.
@@ -602,7 +602,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: ctest is green on both legs, including every new P7 test, the RawColorCalibration darktable comparisons and GPU parity test, and `RawLargeTest`. T19–T25 and T30–T36 get checked off.
   - size: M
 
-- [ ] M80.P7.T27 — Xvfb panels re-run and screenshots
+- [x] M80.P7.T27 — Xvfb panels re-run and screenshots
   - files: `Tests/gui/m80_raw.py`, node panel layouts in `Engine/Nodes/Raw/*.cpp` (labels, pages and conditional visibility only)
   - approach:
     - Use the Xvfb recipe (`build/deeprepro/run-gui.sh`, `checkForUpdates` pre-seeded off) on the release build.

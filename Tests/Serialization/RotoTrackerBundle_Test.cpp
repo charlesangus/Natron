@@ -103,7 +103,7 @@ storedCurveText(const Serialization::CurveSerialization& curve)
     const Serialization::CurveSerialization stored = Serialization::canonicalCurveForYaml(curve);
     std::string text = std::to_string(stored.keyframes.size()) + " keys";
     for (const Serialization::KeyFrameSerialization& key : stored.keyframes) {
-        text += " [t=" + exact(key.time) + " v=" + exact(key.value) + " l=" + exact(key.leftDerivative) + " r=" + exact(key.rightDerivative) + " i=" + std::to_string(key.interpolation) + "]";
+        text += " [t=" + exact(key.time) + " v=" + exact(key.value) + " l=" + exact(key.leftDerivative) + " r=" + exact(key.rightDerivative) + " lw=" + exact(key.leftWeight) + " rw=" + exact(key.rightWeight) + " i=" + std::to_string(key.interpolation) + "]";
     }
 
     return text;

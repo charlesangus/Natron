@@ -42,6 +42,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -126,6 +127,14 @@ protected:
         }
         whitePoint->setValueAtTime(1, 1., ViewSpec::all(), 0);
         whitePoint->setValueAtTime(10, 2.5, ViewSpec::all(), 0);
+        // A lengthened handle, so that the project carries a key with a non-default weight.
+        KeyTangents tangents;
+        tangents.left = 0.25;
+        tangents.right = 0.25;
+        tangents.rightWeight = 0.6;
+        if (!whitePoint->setTangentsAtTime(eCurveChangeReasonInternal, ViewSpec::all(), 0, 1., tangents, nullptr)) {
+            return false;
+        }
         whitePoint->setExpression(1, "thisNode.whitePoint.getValue(0)", false, true);
 
         return true;

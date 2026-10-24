@@ -20,6 +20,8 @@
 #include "Serialization/Yaml/CurveYaml.h"
 
 #include <cmath>
+#include <optional>
+#include <string>
 
 #include "Serialization/Yaml/YamlPrivate.h"
 
@@ -28,16 +30,38 @@ namespace Serialization {
 
 namespace YamlDetail {
 
+    namespace {
+
+        // The suffix that marks a free or broken keyframe whose tangents carry weights.
+        constexpr char kWeightedTokenSuffix = 'W';
+
+        bool
+        keyframeHasWeights(const KeyFrameSerialization& key)
+        {
+            return keyframeStoresDerivatives(key.interpolation) && ((key.leftWeight != kKeyFrameDefaultTangentWeight) || (key.rightWeight != kKeyFrameDefaultTangentWeight));
+        }
+
+    } // namespace
+
     void
     emitCurve(YAML::Emitter& em,
               const CurveSerialization& curve)
     {
         em << YAML::Flow << YAML::BeginSeq;
         int previousInterpolation = -1;
+        bool previousWeighted = false;
         for (const KeyFrameSerialization& key : curve.keyframes) {
-            if (key.interpolation != previousInterpolation) {
-                em << std::string(keyframeInterpolationToken(key.interpolation));
+            // Keys whose weights are both the default write no weights, so that a curve whose
+            // handles were never lengthened is written exactly as before weights existed.
+            const bool weighted = keyframeHasWeights(key);
+            if ((key.interpolation != previousInterpolation) || (weighted != previousWeighted)) {
+                std::string token(keyframeInterpolationToken(key.interpolation));
+                if (weighted) {
+                    token += kWeightedTokenSuffix;
+                }
+                em << token;
                 previousInterpolation = key.interpolation;
+                previousWeighted = weighted;
             }
             emitDouble(em, key.time);
             emitDouble(em, key.value);
@@ -46,6 +70,10 @@ namespace YamlDetail {
             }
             if (key.interpolation == kYamlKeyframeBroken) {
                 emitDouble(em, key.leftDerivative);
+            }
+            if (weighted) {
+                emitDouble(em, key.rightWeight);
+                emitDouble(em, key.leftWeight);
             }
         }
         em << YAML::EndSeq;
@@ -58,7 +86,9 @@ namespace YamlDetail {
             eCurveDecodeStateTime,
             eCurveDecodeStateValue,
             eCurveDecodeStateRightDerivative,
-            eCurveDecodeStateLeftDerivative
+            eCurveDecodeStateLeftDerivative,
+            eCurveDecodeStateRightWeight,
+            eCurveDecodeStateLeftWeight
         };
 
         const char*
@@ -75,9 +105,34 @@ namespace YamlDetail {
                 return "a right derivative";
             case eCurveDecodeStateLeftDerivative:
                 return "a left derivative";
+            case eCurveDecodeStateRightWeight:
+                return "a right weight";
+            case eCurveDecodeStateLeftWeight:
+                return "a left weight";
             }
 
             return "";
+        }
+
+        struct CurveToken {
+            int interpolation;
+            bool weighted;
+        };
+
+        std::optional<CurveToken>
+        curveTokenFromText(const std::string& text)
+        {
+            if (std::optional<int> interpolation = keyframeInterpolationFromToken(text)) {
+                return CurveToken { *interpolation, false };
+            }
+            if ((text.size() > 1) && (text.back() == kWeightedTokenSuffix)) {
+                std::optional<int> interpolation = keyframeInterpolationFromToken(std::string_view(text).substr(0, text.size() - 1));
+                if (interpolation && keyframeStoresDerivatives(*interpolation)) {
+                    return CurveToken { *interpolation, true };
+                }
+            }
+
+            return std::nullopt;
         }
 
     } // namespace
@@ -94,6 +149,7 @@ namespace YamlDetail {
 
         CurveDecodeStateEnum state = eCurveDecodeStateTimeOrInterpolation;
         int interpolation = kYamlKeyframeLinear;
+        bool weighted = false;
         KeyFrameSerialization key;
         auto pushKey = [&]() {
             if (!curve.keyframes.empty() && !(key.time > curve.keyframes.back().time)) {
@@ -113,14 +169,15 @@ namespace YamlDetail {
             const std::string& text = element.Scalar();
             std::optional<double> number = parseYamlDouble(text);
             if (!number) {
-                std::optional<int> token = keyframeInterpolationFromToken(text);
+                std::optional<CurveToken> token = curveTokenFromText(text);
                 if (!token) {
                     fail(element, elementContext, "\"" + text + "\" is neither a number nor an interpolation token");
                 }
                 if (state != eCurveDecodeStateTimeOrInterpolation) {
                     fail(element, elementContext, std::string("expected ") + expectedAt(state) + ", found the interpolation token \"" + text + "\"");
                 }
-                interpolation = *token;
+                interpolation = token->interpolation;
+                weighted = token->weighted;
                 state = eCurveDecodeStateTime;
                 continue;
             }
@@ -149,12 +206,35 @@ namespace YamlDetail {
                     state = eCurveDecodeStateLeftDerivative;
                 } else {
                     key.leftDerivative = *number;
-                    pushKey();
+                    if (weighted) {
+                        state = eCurveDecodeStateRightWeight;
+                    } else {
+                        pushKey();
+                    }
                 }
                 break;
             case eCurveDecodeStateLeftDerivative:
                 key.leftDerivative = *number;
-                pushKey();
+                if (weighted) {
+                    state = eCurveDecodeStateRightWeight;
+                } else {
+                    pushKey();
+                }
+                break;
+            case eCurveDecodeStateRightWeight:
+            case eCurveDecodeStateLeftWeight:
+                // NaN fails both comparisons. A weight outside the range would let time run
+                // backwards within a segment, so it is refused rather than clamped.
+                if (!((*number >= kKeyFrameMinTangentWeight) && (*number <= kKeyFrameMaxTangentWeight))) {
+                    fail(element, elementContext, std::string(state == eCurveDecodeStateRightWeight ? "a right" : "a left") + " weight must be between " + formatYamlDouble(kKeyFrameMinTangentWeight) + " and " + formatYamlDouble(kKeyFrameMaxTangentWeight) + ", found " + text);
+                }
+                if (state == eCurveDecodeStateRightWeight) {
+                    key.rightWeight = *number;
+                    state = eCurveDecodeStateLeftWeight;
+                } else {
+                    key.leftWeight = *number;
+                    pushKey();
+                }
                 break;
             }
         }
@@ -194,6 +274,8 @@ canonicalCurveForYaml(const CurveSerialization& curve)
         } else if (key.interpolation != kYamlKeyframeBroken) {
             key.leftDerivative = 0.;
             key.rightDerivative = 0.;
+            key.leftWeight = kKeyFrameDefaultTangentWeight;
+            key.rightWeight = kKeyFrameDefaultTangentWeight;
         }
     }
 

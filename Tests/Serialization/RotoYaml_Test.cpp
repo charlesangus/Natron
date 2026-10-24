@@ -420,10 +420,13 @@ TEST(RotoYaml, BezierWithAnOddKeySetKeepsItsCurvesInline)
     feather->rightYCurve.keyframes[2].interpolation = 7;
     feather->rightYCurve.keyframes[2].leftDerivative = -0.75;
     feather->rightYCurve.keyframes[2].rightDerivative = 1.5;
+    feather->rightYCurve.keyframes[2].leftWeight = 0.2;
+    feather->rightYCurve.keyframes[2].rightWeight = 0.85;
     BezierSerialization freeKey = makeBezier("Free1", "Layer1", 3, 70);
     freeKey.controlPoints.front().yCurve.keyframes[10].interpolation = 6;
     freeKey.controlPoints.front().yCurve.keyframes[10].leftDerivative = 0.5;
     freeKey.controlPoints.front().yCurve.keyframes[10].rightDerivative = 0.5;
+    freeKey.controlPoints.front().yCurve.keyframes[10].rightWeight = 0.6;
     const RotoContextSerialization roto = contextWith({ asChild(bezier), asChild(freeKey) });
 
     Serialization::MemoryBlobStore blobs;

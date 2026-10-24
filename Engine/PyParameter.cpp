@@ -27,6 +27,8 @@
 
 #include <cassert>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <set>
 #include <stdexcept>
@@ -50,6 +52,49 @@
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
+
+namespace {
+
+std::string
+formatNumber(double value)
+{
+    char text[32];
+    std::snprintf(text, sizeof(text), "%g", value);
+
+    return std::string(text);
+}
+
+// The engine would clamp a weight silently; a script gets told, since a weight it computed
+// outside the range is more likely a bug than an intent.
+bool
+checkTangentWeight(double weight,
+                   const char* side,
+                   const std::string& keyDescription)
+{
+    if ((weight >= Interpolation::kMinTangentWeight) && (weight <= Interpolation::kMaxTangentWeight)) {
+        return true;
+    }
+    const std::string message = std::string("The ") + side + " weight of " + keyDescription + " must be between " + formatNumber(Interpolation::kMinTangentWeight) + " and " + formatNumber(Interpolation::kMaxTangentWeight) + ", not " + formatNumber(weight) + ".";
+    PyErr_SetString(PyExc_ValueError, message.c_str());
+
+    return false;
+}
+
+bool
+checkTangentDerivative(double derivative,
+                       const char* side,
+                       const std::string& keyDescription)
+{
+    if (std::isfinite(derivative)) {
+        return true;
+    }
+    const std::string message = std::string("The ") + side + " derivative of " + keyDescription + " must be finite, not " + formatNumber(derivative) + ".";
+    PyErr_SetString(PyExc_ValueError, message.c_str());
+
+    return false;
+}
+
+} // anonymous namespace
 
 bool
 checkHolderIsEditable(const KnobHolder* holder)
@@ -666,6 +711,98 @@ AnimatedParam::setInterpolationAtTime(double time,
     KeyFrame newKey;
 
     return knob->setInterpolationAtTime(eCurveChangeReasonInternal, ViewSpec::current(), dimension, time, interpolation, &newKey);
+}
+
+bool
+AnimatedParam::getKeyTangents(double time,
+                              int dimension,
+                              int* interpolation,
+                              double* leftDerivative,
+                              double* rightDerivative,
+                              double* leftWeight,
+                              double* rightWeight) const
+{
+    KnobIPtr knob = getInternalKnob();
+
+    if (!knob) {
+        PyErr_SetString(PyExc_ValueError, "The parameter no longer exists.");
+
+        return false;
+    }
+    if ((dimension < 0) || (dimension >= knob->getDimension())) {
+        const std::string message = "The parameter " + knob->getName() + " has no dimension " + std::to_string(dimension) + ".";
+        PyErr_SetString(PyExc_ValueError, message.c_str());
+
+        return false;
+    }
+    CurvePtr curve = knob->canAnimate() ? knob->getCurve(ViewSpec::current(), dimension) : CurvePtr();
+    KeyFrame key;
+    if (!curve || !curve->getKeyFrameWithTime(time, &key)) {
+        const std::string message = "The parameter " + knob->getName() + " has no keyframe at time " + formatNumber(time) + " in dimension " + std::to_string(dimension) + ".";
+        PyErr_SetString(PyExc_ValueError, message.c_str());
+
+        return false;
+    }
+    if (interpolation) {
+        *interpolation = (int)key.getInterpolation();
+    }
+    if (leftDerivative) {
+        *leftDerivative = key.getLeftDerivative();
+    }
+    if (rightDerivative) {
+        *rightDerivative = key.getRightDerivative();
+    }
+    if (leftWeight) {
+        *leftWeight = key.getLeftWeight();
+    }
+    if (rightWeight) {
+        *rightWeight = key.getRightWeight();
+    }
+
+    return true;
+}
+
+void
+AnimatedParam::setKeyTangents(double time,
+                              double leftDerivative,
+                              double rightDerivative,
+                              double leftWeight,
+                              double rightWeight,
+                              int dimension)
+{
+    if (!checkIsEditable()) {
+        return;
+    }
+    KnobIPtr knob = getInternalKnob();
+
+    if (!knob) {
+        PyErr_SetString(PyExc_ValueError, "The parameter no longer exists.");
+
+        return;
+    }
+    if ((dimension < 0) || (dimension >= knob->getDimension())) {
+        const std::string message = "The parameter " + knob->getName() + " has no dimension " + std::to_string(dimension) + ".";
+        PyErr_SetString(PyExc_ValueError, message.c_str());
+
+        return;
+    }
+    const std::string keyDescription = "the keyframe of " + knob->getName() + " at time " + formatNumber(time);
+    if (knob->getKeyFrameIndex(ViewSpec::current(), dimension, time) == -1) {
+        const std::string message = "The parameter " + knob->getName() + " has no keyframe at time " + formatNumber(time) + " in dimension " + std::to_string(dimension) + ".";
+        PyErr_SetString(PyExc_ValueError, message.c_str());
+
+        return;
+    }
+    if (!checkTangentDerivative(leftDerivative, "left", keyDescription) || !checkTangentDerivative(rightDerivative, "right", keyDescription) || !checkTangentWeight(leftWeight, "left", keyDescription) || !checkTangentWeight(rightWeight, "right", keyDescription)) {
+        return;
+    }
+
+    KeyTangents tangents;
+    tangents.left = leftDerivative;
+    tangents.right = rightDerivative;
+    tangents.leftWeight = leftWeight;
+    tangents.rightWeight = rightWeight;
+    knob->setTangentsAtTime(eCurveChangeReasonInternal, ViewSpec::current(), dimension, time, tangents, 0);
 }
 
 void
@@ -3754,6 +3891,36 @@ ParametricParam::addControlPoint(int dimension,
     return param->addControlPoint(eValueChangedReasonNatronInternalEdited, dimension, key, value, leftDerivative, rightDerivative, interpolation);
 }
 
+StatusEnum
+ParametricParam::addControlPoint(int dimension,
+                                 double key,
+                                 double value,
+                                 double leftDerivative,
+                                 double rightDerivative,
+                                 double leftWeight,
+                                 double rightWeight,
+                                 KeyframeTypeEnum interpolation)
+{
+    if (!checkIsEditable()) {
+        return eStatusFailed;
+    }
+    KnobParametricPtr param = _parametricKnob.lock();
+    if (!param) {
+        return eStatusFailed;
+    }
+    const std::string keyDescription = "the control point of " + param->getName() + " at " + formatNumber(key);
+    if (!checkTangentWeight(leftWeight, "left", keyDescription) || !checkTangentWeight(rightWeight, "right", keyDescription)) {
+        return eStatusFailed;
+    }
+    KeyTangents tangents;
+    tangents.left = leftDerivative;
+    tangents.right = rightDerivative;
+    tangents.leftWeight = leftWeight;
+    tangents.rightWeight = rightWeight;
+
+    return param->addControlPoint(eValueChangedReasonNatronInternalEdited, dimension, key, value, tangents, interpolation);
+}
+
 double
 ParametricParam::getValue(int dimension,
                           double parametricPosition) const
@@ -3792,16 +3959,33 @@ ParametricParam::getNControlPoints(int dimension) const
 StatusEnum
 ParametricParam::getNthControlPoint(int dimension,
                                     int nthCtl,
-                                    double *key,
-                                    double *value,
-                                    double *leftDerivative,
-                                    double *rightDerivative) const
+                                    double* key,
+                                    double* value,
+                                    double* leftDerivative,
+                                    double* rightDerivative,
+                                    double* leftWeight,
+                                    double* rightWeight) const
 {
+    *key = 0.;
+    *value = 0.;
+    *leftDerivative = 0.;
+    *rightDerivative = 0.;
+    *leftWeight = Interpolation::kDefaultTangentWeight;
+    *rightWeight = Interpolation::kDefaultTangentWeight;
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
     }
-    return param->getNthControlPoint(dimension, nthCtl, key, value, leftDerivative, rightDerivative);
+    KeyTangents tangents;
+    const StatusEnum status = param->getNthControlPoint(dimension, nthCtl, key, value, &tangents);
+    if (status == eStatusOK) {
+        *leftDerivative = tangents.left;
+        *rightDerivative = tangents.right;
+        *leftWeight = tangents.leftWeight;
+        *rightWeight = tangents.rightWeight;
+    }
+
+    return status;
 }
 
 StatusEnum
@@ -3820,6 +4004,36 @@ ParametricParam::setNthControlPoint(int dimension,
         return eStatusFailed;
     }
     return param->setNthControlPoint(eValueChangedReasonNatronInternalEdited, dimension, nthCtl, key, value, leftDerivative, rightDerivative);
+}
+
+StatusEnum
+ParametricParam::setNthControlPoint(int dimension,
+                                    int nthCtl,
+                                    double key,
+                                    double value,
+                                    double leftDerivative,
+                                    double rightDerivative,
+                                    double leftWeight,
+                                    double rightWeight)
+{
+    if (!checkIsEditable()) {
+        return eStatusFailed;
+    }
+    KnobParametricPtr param = _parametricKnob.lock();
+    if (!param) {
+        return eStatusFailed;
+    }
+    const std::string keyDescription = "control point " + std::to_string(nthCtl) + " of " + param->getName();
+    if (!checkTangentWeight(leftWeight, "left", keyDescription) || !checkTangentWeight(rightWeight, "right", keyDescription)) {
+        return eStatusFailed;
+    }
+    KeyTangents tangents;
+    tangents.left = leftDerivative;
+    tangents.right = rightDerivative;
+    tangents.leftWeight = leftWeight;
+    tangents.rightWeight = rightWeight;
+
+    return param->setNthControlPoint(eValueChangedReasonNatronInternalEdited, dimension, nthCtl, key, value, tangents);
 }
 
 StatusEnum

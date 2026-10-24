@@ -1773,11 +1773,14 @@ exportKnobValues(int indentLevel,
                         break;
                     }
 
-
-                    WRITE_INDENT(innerIdent); WRITE_STRING( QString::fromUtf8("param.addControlPoint(") + NUM_INT(i) + QString::fromUtf8(", ") +
-                                                            NUM_TIME( it3->getTime() ) + QString::fromUtf8(", ") +
-                                                            NUM_VALUE( it3->getValue() ) + QString::fromUtf8(", ") + NUM_VALUE( it3->getLeftDerivative() )
-                                                            + QString::fromUtf8(", ") + NUM_VALUE( it3->getRightDerivative() ) + QString::fromUtf8(", ") + interpStr + QString::fromUtf8(")") );
+                    // Default weights keep the shorter call, so PyPlugs with untouched handles export as before.
+                    QString weights;
+                    if ((it3->getLeftWeight() != Interpolation::kDefaultTangentWeight) || (it3->getRightWeight() != Interpolation::kDefaultTangentWeight)) {
+                        weights = QString::fromUtf8(", ") + NUM_VALUE(it3->getLeftWeight()) + QString::fromUtf8(", ") + NUM_VALUE(it3->getRightWeight());
+                    }
+                    WRITE_INDENT(innerIdent);
+                    WRITE_STRING(QString::fromUtf8("param.addControlPoint(") + NUM_INT(i) + QString::fromUtf8(", ") + NUM_TIME(it3->getTime()) + QString::fromUtf8(", ") + NUM_VALUE(it3->getValue()) + QString::fromUtf8(", ") + NUM_VALUE(it3->getLeftDerivative())
+                                 + QString::fromUtf8(", ") + NUM_VALUE(it3->getRightDerivative()) + weights + QString::fromUtf8(", ") + interpStr + QString::fromUtf8(")"));
                 }
             }
         } else { // !isParametric

@@ -275,6 +275,37 @@ public:
     QString getExpression(int dimension, bool* hasRetVariable) const;
 
     bool setInterpolationAtTime(double time, Natron::KeyframeTypeEnum interpolation, int dimension = 0);
+
+    /**
+     * @brief Reads the interpolation, derivatives and weights of the keyframe at the given time.
+     * A weight is the handle's extent in time as a fraction of the segment on that side; keys that
+     * are neither Free nor Broken always have the default 1/3. Python gets the tuple
+     * (interpolation, left, right, leftWeight, rightWeight). With no keyframe at that time, or a
+     * dimension out of range, a Python ValueError is set and false is returned.
+     * The output pointers default to null only so that Python can omit the dimension; the
+     * interpolation is an int so that the binding only meets pointers to primitive types.
+     **/
+    bool getKeyTangents(double time,
+                        int dimension = 0,
+                        int* interpolation = 0,
+                        double* leftDerivative = 0,
+                        double* rightDerivative = 0,
+                        double* leftWeight = 0,
+                        double* rightWeight = 0) const;
+
+    /**
+     * @brief Sets both derivatives and weights of the keyframe at the given time, as dragging its
+     * handles in the curve editor does: a Broken key stays Broken, any other becomes Free when the
+     * derivatives are equal and Broken otherwise. Sets a Python ValueError when there is no
+     * keyframe at that time, the dimension is out of range, a derivative is not finite or a weight
+     * is outside [0.01, 0.99].
+     **/
+    void setKeyTangents(double time,
+                        double leftDerivative,
+                        double rightDerivative,
+                        double leftWeight = 1. / 3.,
+                        double rightWeight = 1. / 3.,
+                        int dimension = 0);
 };
 
 /**
@@ -1347,6 +1378,9 @@ public:
 
     Natron::StatusEnum addControlPoint(int dimension, double key, double value, Natron::KeyframeTypeEnum interpolation = Natron::KeyframeTypeEnum::eKeyframeTypeSmooth);
     Natron::StatusEnum addControlPoint(int dimension, double key, double value, double leftDerivative, double rightDerivative, Natron::KeyframeTypeEnum interpolation = Natron::KeyframeTypeEnum::eKeyframeTypeSmooth);
+    /// Weights only hold on a Free or Broken control point. Sets a Python ValueError for a weight
+    /// outside [0.01, 0.99].
+    Natron::StatusEnum addControlPoint(int dimension, double key, double value, double leftDerivative, double rightDerivative, double leftWeight, double rightWeight, Natron::KeyframeTypeEnum interpolation = Natron::KeyframeTypeEnum::eKeyframeTypeFree);
 
     double getValue(int dimension, double parametricPosition) const;
 
@@ -1354,17 +1388,30 @@ public:
 
     // Natron:: is necessary for shiboken
     Natron::StatusEnum getNthControlPoint(int dimension,
-                                                    int nthCtl,
-                                                    double *key,
-                                                    double *value,
-                                                    double *leftDerivative,
-                                                    double *rightDerivative) const;
+                                          int nthCtl,
+                                          double* key,
+                                          double* value,
+                                          double* leftDerivative,
+                                          double* rightDerivative,
+                                          double* leftWeight,
+                                          double* rightWeight) const;
+    /// Keeps the control point's weights.
     Natron::StatusEnum setNthControlPoint(int dimension,
                                                     int nthCtl,
                                                     double key,
                                                     double value,
                                                     double leftDerivative,
                                                     double rightDerivative);
+    /// Weights only hold on a Free or Broken control point. Sets a Python ValueError for a weight
+    /// outside [0.01, 0.99].
+    Natron::StatusEnum setNthControlPoint(int dimension,
+                                          int nthCtl,
+                                          double key,
+                                          double value,
+                                          double leftDerivative,
+                                          double rightDerivative,
+                                          double leftWeight,
+                                          double rightWeight);
     Natron::StatusEnum setNthControlPointInterpolation(int dimension,
                                                                  int nThCtl,
                                                                  Natron::KeyframeTypeEnum interpolation);

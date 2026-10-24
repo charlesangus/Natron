@@ -77,7 +77,7 @@ curveText(const Curve& curve)
     const KeyFrameSet keys = curve.getKeyFrames_mt_safe();
     text << keys.size() << " keys";
     for (KeyFrameSet::const_iterator it = keys.begin(); it != keys.end(); ++it) {
-        text << " [t=" << exact(it->getTime()) << " v=" << exact(it->getValue()) << " l=" << exact(it->getLeftDerivative()) << " r=" << exact(it->getRightDerivative()) << " i=" << (int)it->getInterpolation() << ']';
+        text << " [t=" << exact(it->getTime()) << " v=" << exact(it->getValue()) << " l=" << exact(it->getLeftDerivative()) << " r=" << exact(it->getRightDerivative()) << " lw=" << exact(it->getLeftWeight()) << " rw=" << exact(it->getRightWeight()) << " i=" << (int)it->getInterpolation() << ']';
     }
 
     return text.str();

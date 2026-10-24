@@ -41,6 +41,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+// The project format validates weights against its own copy of these bounds.
+static_assert(Serialization::kKeyFrameDefaultTangentWeight == Interpolation::kDefaultTangentWeight, "tangent weight defaults differ");
+static_assert(Serialization::kKeyFrameMinTangentWeight == Interpolation::kMinTangentWeight, "tangent weight minimums differ");
+static_assert(Serialization::kKeyFrameMaxTangentWeight == Interpolation::kMaxTangentWeight, "tangent weight maximums differ");
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
@@ -410,6 +414,8 @@ Curve::toSerialization(Serialization::CurveSerialization* serialization) const
         keyframe.interpolation = (int)it->getInterpolation();
         keyframe.leftDerivative = it->getLeftDerivative();
         keyframe.rightDerivative = it->getRightDerivative();
+        keyframe.leftWeight = it->getLeftWeight();
+        keyframe.rightWeight = it->getRightWeight();
         serialization->keyframes.push_back(keyframe);
     }
 }
@@ -420,7 +426,7 @@ Curve::fromSerialization(const Serialization::CurveSerialization& serialization)
     KeyFrameSet keys;
 
     for (std::vector<Serialization::KeyFrameSerialization>::const_iterator it = serialization.keyframes.begin(); it != serialization.keyframes.end(); ++it) {
-        KeyFrame k(it->time, it->value, it->leftDerivative, it->rightDerivative, (KeyframeTypeEnum)it->interpolation);
+        KeyFrame k(it->time, it->value, it->leftDerivative, it->rightDerivative, (KeyframeTypeEnum)it->interpolation, it->leftWeight, it->rightWeight);
         keys.insert(k);
     }
 

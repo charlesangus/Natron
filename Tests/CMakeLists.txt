@@ -108,6 +108,7 @@ set(Tests_SOURCES
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
     Serialization/ProjectEquivalence.cpp
+    PyKeyTangents_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
     ReadFormat_Test.cpp

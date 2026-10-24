@@ -486,3 +486,11 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
     - `drawDeviceRootOnCpu` runs whole-row bands with `parallelForOnGlobalPool`.
     - Each refusal reason is logged once per session.
   - **Open design call (later):** frames beyond the hold budget are still evicted. Closing that needs either a VRAM-aware limit on render-ahead in `OutputSchedulerThread`, or `present` re-uploading an evicted root's RAM copy. The P7 headless rerun shows whether it matters.
+- 2026-10-23 — **Remote `fast --tests` of `8d3ba7b77` (P7.T1, rebased on `bf781cbcd`) is green on lavapipe** (run 40051360104). Every ctest entry passes in both scheduler legs, including the 39 M107-suite cases per leg. The `NativeWriteReadBackTest` flake didn't recur. P7.T1's remaining checks (RADV suites, UAT readback/hostsync, headless ≥ 15 fps) are batched into one GPU-host run after Phase 107.7, because M156 - GPU Download Throughput In Comps's P1.T2 bench holds the host now.
+- 2026-10-23 — **M107.P7.T4 code in (`0a2671807`), awaiting the phase run.**
+  - **Mechanism:** readback-rung playback frames (device frame, `isSequential`) are staged. When frame N arrives, its viewer process is submitted, then the staged N−1 is uploaded and shown. N is shown when N+1 arrives or when a 1 ms timer sees it finished.
+  - **Immediate path unchanged:** tweaks, seeks, first frames, zerocopy and hostsync take the immediate path as before. A tweak or seek drops a staged frame, while a sequential or partial frame shows it first.
+  - **Why not wait on the render thread:** roots arrive already computed, so the ~19 ms is the viewer process plus the host copy submitted by `produce` on the GUI thread. Waiting on the render thread would mean moving a GL-tied ring across threads.
+  - **New APIs:** `GlInterop::discard`, and `ViewerHandoff::stage`/`presentStaged`/`discardStaged`.
+  - **Refactor to review:** `ViewerInstance::updateViewer` is split into present and show helpers. That refactor of a hot path is wider than the brief and needs a careful look at the UAT.
+  - **Checked:** `-fsyntax-only` on 40 TUs.

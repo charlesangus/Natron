@@ -194,7 +194,31 @@ const char* const kToNames[4] = { kCornerPinNodeParamTo1, kCornerPinNodeParamTo2
 const char* const kFromNames[4] = { kCornerPinNodeParamFrom1, kCornerPinNodeParamFrom2, kCornerPinNodeParamFrom3, kCornerPinNodeParamFrom4 };
 const char* const kEnableNames[4] = { kCornerPinNodeParamEnable1, kCornerPinNodeParamEnable2, kCornerPinNodeParamEnable3, kCornerPinNodeParamEnable4 };
 
+// The tracker's knobs duplicated from its internal Transform, under the Transform's own names.
+const char* const kTransformLinks[] = {
+    "translate",
+    "rotate",
+    "scale",
+    "uniform",
+    "skewX",
+    "skewY",
+    "skewOrder",
+    "center",
+    "invert",
+    "filter",
+    "clamp",
+    "black_outside",
+    "motionBlur",
+    "shutter",
+    "shutterOffset",
+    "shutterCustomOffset",
+};
+
+// Row-major, not the identity, so a dropped or transposed copy shows.
+const double kExtraMatrix[9] = { 1.5, 0.25, 3., -0.5, 2., 7., 0.001, 0.002, 1. };
+
 // Indices into the tracker's Transform Type and Motion Type choices.
+const int kTransformTypeTransform = 0;
 const int kTransformTypeCornerPin = 1;
 const int kMotionTypeMatchMove = 2;
 
@@ -289,6 +313,39 @@ protected:
         EXPECT_FALSE(exportedEnable4->getValue());
     }
 
+    void setTrackerExtraMatrix()
+    {
+        KnobDoublePtr matrix = std::dynamic_pointer_cast<KnobDouble>(_tracker->getKnobByName(kCornerPinNodeParamExtraMatrix));
+        ASSERT_TRUE(bool(matrix));
+        ASSERT_EQ(9, matrix->getDimension());
+        for (int d = 0; d < 9; ++d) {
+            matrix->setValue(kExtraMatrix[d], ViewSpec::all(), d);
+        }
+    }
+
+    void expectExtraMatrixCopied(const NodePtr& exported)
+    {
+        KnobDoublePtr matrix = std::dynamic_pointer_cast<KnobDouble>(exported->getKnobByName(kCornerPinNodeParamExtraMatrix));
+        ASSERT_TRUE(bool(matrix));
+        ASSERT_EQ(9, matrix->getDimension());
+        for (int d = 0; d < 9; ++d) {
+            EXPECT_DOUBLE_EQ(kExtraMatrix[d], matrix->getValue(d)) << "dim " << d;
+        }
+    }
+
+    // The CornerPin solve runs on the global thread pool and lands through a queued signal.
+    void solveAndWait()
+    {
+        KnobDoublePtr to1 = std::dynamic_pointer_cast<KnobDouble>(_tracker->getKnobByName(kCornerPinNodeParamTo1));
+        ASSERT_TRUE(bool(to1));
+        _context->solveTransformParams();
+        for (int i = 0; i < 3000 && !hasKeyframeAt(to1, 3); ++i) {
+            QCoreApplication::processEvents();
+            QThread::msleep(10);
+        }
+        ASSERT_TRUE(hasKeyframeAt(to1, 3)) << "the CornerPin solve did not finish in time";
+    }
+
     NodePtr _tracker;
     TrackerContextPtr _context;
     NodePtr _cornerPin;
@@ -323,11 +380,97 @@ TEST_F(TrackerCornerPinTest, DuplicatedKnobsDriveInternalCornerPin)
         }
     }
 
+    EXPECT_TRUE(bool(_tracker->getKnobByName(kCornerPinNodeParamToGroup)));
+    EXPECT_TRUE(bool(_tracker->getKnobByName(kCornerPinNodeParamFromGroup)));
+
     KnobDoublePtr trackerTo1 = std::dynamic_pointer_cast<KnobDouble>(_tracker->getKnobByName(kCornerPinNodeParamTo1));
     KnobDoublePtr cornerPinTo1 = std::dynamic_pointer_cast<KnobDouble>(_cornerPin->getKnobByName(kCornerPinNodeParamTo1));
     ASSERT_TRUE(trackerTo1 && cornerPinTo1);
     trackerTo1->setValue(123.5, ViewSpec::all(), 0);
     EXPECT_DOUBLE_EQ(123.5, cornerPinTo1->getValue(0));
+}
+
+TEST_F(TrackerCornerPinTest, DuplicatedKnobsDriveInternalTransform)
+{
+    createTracker();
+    if (HasFatalFailure()) {
+        return;
+    }
+    KnobChoicePtr transformType = std::dynamic_pointer_cast<KnobChoice>(_tracker->getKnobByName("transformType"));
+    ASSERT_TRUE(bool(transformType));
+    transformType->setValue(kTransformTypeTransform);
+    NodePtr transform = _context->getCurrentlySelectedTransformNode();
+    ASSERT_TRUE(bool(transform));
+    ASSERT_NE(_cornerPin, transform);
+
+    for (const char* name : kTransformLinks) {
+        KnobIPtr trackerKnob = _tracker->getKnobByName(name);
+        KnobIPtr transformKnob = transform->getKnobByName(name);
+        ASSERT_TRUE(bool(trackerKnob)) << "tracker has no " << name;
+        ASSERT_TRUE(bool(transformKnob)) << "Transform has no " << name;
+        for (int d = 0; d < transformKnob->getDimension(); ++d) {
+            EXPECT_EQ(trackerKnob, transformKnob->getMaster(d).second) << name << " dim " << d << " is not driven by the tracker";
+        }
+    }
+}
+
+// Tracks a single marker that only translates and solves the CornerPin from it, so every "to"
+// point is its "from" point moved by the marker's offset from the reference frame.
+TEST_F(TrackerCornerPinTest, SolvedTrackDrivesExportedCornerPin)
+{
+    createTracker();
+    if (HasFatalFailure()) {
+        return;
+    }
+    // Off, so the knob edits below do not start solves of their own that race the explicit one.
+    KnobBoolPtr autoSolve = std::dynamic_pointer_cast<KnobBool>(_tracker->getKnobByName("autoComputeransform"));
+    ASSERT_TRUE(bool(autoSolve));
+    autoSolve->setValue(false);
+    KnobChoicePtr motionType = std::dynamic_pointer_cast<KnobChoice>(_tracker->getKnobByName("motionType"));
+    ASSERT_TRUE(bool(motionType));
+    motionType->setValue(kMotionTypeMatchMove);
+    ASSERT_EQ(1, _context->getTransformReferenceFrame());
+
+    const double from[4][2] = { { 0., 0. }, { 100., 0. }, { 100., 80. }, { 0., 80. } };
+    for (int i = 0; i < 4; ++i) {
+        KnobDoublePtr fromKnob = std::dynamic_pointer_cast<KnobDouble>(_tracker->getKnobByName(kFromNames[i]));
+        ASSERT_TRUE(bool(fromKnob)) << kFromNames[i];
+        fromKnob->setValue(from[i][0], ViewSpec::all(), 0);
+        fromKnob->setValue(from[i][1], ViewSpec::all(), 1);
+    }
+
+    const double track[3][2] = { { 40., 48. }, { 46.5, 51. }, { 53., 47.25 } };
+    TrackMarkerPtr marker = _context->createMarker();
+    ASSERT_TRUE(bool(marker));
+    KnobDoublePtr center = marker->getCenterKnob();
+    for (int frame = 1; frame <= 3; ++frame) {
+        center->setValueAtTime(frame, track[frame - 1][0], ViewSpec::all(), 0);
+        center->setValueAtTime(frame, track[frame - 1][1], ViewSpec::all(), 1);
+    }
+
+    solveAndWait();
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        KnobDoublePtr trackerTo = std::dynamic_pointer_cast<KnobDouble>(_tracker->getKnobByName(kToNames[i]));
+        ASSERT_TRUE(bool(trackerTo)) << kToNames[i];
+        for (int frame = 1; frame <= 3; ++frame) {
+            for (int d = 0; d < 2; ++d) {
+                const double expected = from[i][d] + track[frame - 1][d] - track[0][d];
+                EXPECT_NEAR(expected, trackerTo->getValueAtTime(frame, d), 1e-9) << kToNames[i] << " frame " << frame << " dim " << d;
+            }
+        }
+    }
+
+    KnobBoolPtr enable4 = std::dynamic_pointer_cast<KnobBool>(_tracker->getKnobByName(kCornerPinNodeParamEnable4));
+    ASSERT_TRUE(bool(enable4));
+    enable4->setValue(false);
+
+    NodePtr exported = exportCornerPin(true);
+    ASSERT_TRUE(bool(exported));
+    expectToPointsFollowTracker(exported);
 }
 
 TEST_F(TrackerCornerPinTest, LinkedExportFollowsTrack)
@@ -340,6 +483,10 @@ TEST_F(TrackerCornerPinTest, LinkedExportFollowsTrack)
     if (HasFatalFailure()) {
         return;
     }
+    setTrackerExtraMatrix();
+    if (HasFatalFailure()) {
+        return;
+    }
 
     NodePtr exported = exportCornerPin(true);
     ASSERT_TRUE(bool(exported));
@@ -348,6 +495,7 @@ TEST_F(TrackerCornerPinTest, LinkedExportFollowsTrack)
     if (HasFatalFailure()) {
         return;
     }
+    expectExtraMatrixCopied(exported);
 
     KnobDoublePtr trackerTo2 = std::dynamic_pointer_cast<KnobDouble>(_tracker->getKnobByName(kCornerPinNodeParamTo2));
     KnobDoublePtr exportedTo2 = std::dynamic_pointer_cast<KnobDouble>(exported->getKnobByName(kCornerPinNodeParamTo2));
@@ -378,15 +526,22 @@ TEST_F(TrackerCornerPinTest, CopiedExportFollowsTrack)
     if (HasFatalFailure()) {
         return;
     }
+    setTrackerExtraMatrix();
+    if (HasFatalFailure()) {
+        return;
+    }
 
     NodePtr exported = exportCornerPin(false);
     ASSERT_TRUE(bool(exported));
     expectToPointsFollowTracker(exported);
+    expectExtraMatrixCopied(exported);
 
     KnobDoublePtr exportedTo1 = std::dynamic_pointer_cast<KnobDouble>(exported->getKnobByName(kCornerPinNodeParamTo1));
     ASSERT_TRUE(bool(exportedTo1));
     EXPECT_FALSE(bool(exportedTo1->getMaster(0).second));
     for (int i = 0; i < 4; ++i) {
-        EXPECT_EQ(nullptr, exported->getKnobByName(kEnableNames[i])->getMaster(0).second.get()) << kEnableNames[i];
+        KnobIPtr exportedEnable = exported->getKnobByName(kEnableNames[i]);
+        ASSERT_TRUE(bool(exportedEnable)) << kEnableNames[i];
+        EXPECT_EQ(nullptr, exportedEnable->getMaster(0).second.get()) << kEnableNames[i];
     }
 }

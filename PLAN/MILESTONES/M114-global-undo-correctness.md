@@ -40,31 +40,31 @@ The milestone also fixes the two preset bugs found in the M93 - Serialization Bo
 
 ## Phase 114.1: One history, routed everywhere
 
-- [ ] M114.P1.T1 — Add the `UndoHistory` model with owner-filtered undo/redo, and unit-test it
+- [x] M114.P1.T1 — Add the `UndoHistory` model with owner-filtered undo/redo, and unit-test it
   - files: `Gui/UndoHistory.h` (new), `Gui/UndoHistory.cpp` (new), `Gui/CMakeLists.txt`, `Tests/UndoHistory_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: A `QObject` that owns `QUndoCommand`s in push order, each entry holding `{done, owner (KnobHolder* weak), touched node set}`. `push(cmd, scope)` runs `redo()`, merges per the Edge-cases rule, and drops every undone entry. `undo()`/`redo()` are global; redo replays the most recently undone entry. `undo(owner)`/`redo(owner)` and `canUndo(owner)`/`canRedo(owner)` implement the panel rule. Also provides obsolete skipping, `setUndoLimit` (oldest first), `clear()`, `undoText()/redoText()` and a `changed()` signal. No widgets.
   - verify: `Tests/UndoHistory_Test.cpp` uses fake commands that append to a log. Cover global order across owners, panel undo of an older entry, panel undo blocked by a later entry touching the node, redo order, truncation on push, merge only with the newest entry, limit trimming and obsolete skipping. `tools/ci/remote/build.sh debug --tests`.
   - size: L
 
-- [ ] M114.P1.T2 — Make `Gui` own one history and drive Edit → Undo/Redo from it
+- [x] M114.P1.T2 — Make `Gui` own one history and drive Edit → Undo/Redo from it
   - files: `Gui/Gui.h`, `Gui/Gui05.cpp`, `Gui/Gui30.cpp`, `Gui/GuiPrivate.h`, `Gui/GuiPrivate.cpp`, `Gui/PanelWidget.h`, `Gui/PanelWidget.cpp`
   - approach: Replace `_undoStacksGroup`, `registerNewUndoStack`, `removeUndoStack`, `onCurrentUndoStackChanged` and `setUndoRedoActions` with `Gui::getUndoHistory()` and two permanent Edit-menu actions (Ctrl+Z / Ctrl+Shift+Z, `Qt::ApplicationShortcut`) whose text and enabled state follow `changed()`. Set the limit from `getMaximumUndoRedoNodeGraph()`; renaming that setting is allowed (clean break). `PanelWidget::pushUndoCommand` pushes to the history with owner none. Delete the `setActive()` in `enterEventBase`.
   - verify: covered by the P1.T5 Xvfb script; compiles in the phase build with P1.T3 and P1.T4.
   - size: M
 
-- [ ] M114.P1.T3 — Route the node graphs, dope sheet and curve widget to the history, and delete their stacks
+- [x] M114.P1.T3 — Route the node graphs, dope sheet and curve widget to the history, and delete their stacks
   - files: `Gui/NodeGraph.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraphPrivate.cpp`, `Gui/DopeSheet.cpp`, `Gui/DopeSheet.h`, `Gui/CurveWidgetPrivate.cpp`, `Gui/CurveWidgetPrivate.h`, `Gui/CurveWidget.cpp`, `Gui/CurveEditor.cpp`, `Gui/CurveEditor.h`, `Gui/DopeSheetEditor.cpp`, `Gui/PropertiesBinWrapper.cpp`
   - approach: Remove each private `QUndoStack` and its `getUndoStack()` override. Pushes go to the history with a scope. Add/Remove/Paste/Group/Inline/Extract/Declone/Rename/Disable/Enable touch their nodes. Move/Connect/Resize/Rearrange touch none. Dope-sheet and curve key commands touch the nodes owning the edited knobs, with an owner only when that is a single node. Delete the dead `CurveEditor` stack and `getUndoRedoActions`. Clear the history from project close.
   - verify: `rg -n 'QUndoStack|QUndoGroup' Gui` lists only `Gui/UndoHistory.*`, `Gui/ScriptEditor.cpp` and `KnobGuiContainerHelper`'s private stack; then the P1.T5 script.
   - size: M
 
-- [ ] M114.P1.T4 — Make node panels a filtered view: route panel and engine commands with an owner, and drive the buttons from the history
+- [x] M114.P1.T4 — Make node panels a filtered view: route panel and engine commands with an owner, and drive the buttons from the history
   - files: `Gui/KnobGuiContainerHelper.h`, `Gui/KnobGuiContainerHelper.cpp`, `Gui/DockablePanel.cpp`, `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraph.cpp`
   - approach: Nodes and the project push to the history with owner = holder. Preferences and PyPanels keep a private stack (constructor flag). `DockablePanel::onUndoClicked`/`onRedoPressed` (`:879-903`) call `undo(owner)`/`redo(owner)`, and the buttons refresh on `changed()`. Delete `focusInEvent`'s `setActive`. Delete `NodeGui::_undoStack`, `getUndoStack` and `removeUndoStack`, plus the registration at `NodeGraph.cpp:473-476`. `NodeGui::pushUndoCommand` and `restoreInternal` push with owner = node whether or not the panel exists.
   - verify: the P1.T5 script.
   - size: L
 
-- [ ] M114.P1.T5 — Xvfb test of global order, focus independence and panel buttons
+- [x] M114.P1.T5 — Xvfb test of global order, focus independence and panel buttons
   - files: `Tests/gui/m114_global_undo.py` (new)
   - approach: Follow `Tests/gui/m55_input_pipes.py`'s `trigger_undo` (trigger the Edit-menu action). Edit a knob on A in its panel, move B in the graph, key a curve in the curve editor, edit a dope-sheet key, connect A→B, and add a roto shape. Then, with the mouse over each pane in turn, undo all of them and check reverse order, then redo all. Press A's panel undo button with B edited afterwards: only A reverts. Delete A, undo the delete, and check that A's panel buttons still step its edits.
   - verify: `Tests/gui/run-gui-test.sh Tests/gui/m114_global_undo.py <fast AppImage>` exits 0.
@@ -88,6 +88,12 @@ The milestone also fixes the two preset bugs found in the M93 - Serialization Bo
   - files: `Gui/KnobGuiContainerHelper.h`, `Gui/KnobGuiContainerHelper.cpp`, `Tests/gui/m114_rebuild_undo.py` (new)
   - approach: Remove `clearUndoRedoStack`, `cmdBeingPushed`, `clearedStackDuringPush`, `onDeleteCurCmdLater` and the call in `refreshGuiForKnobsChanges`. Test: edit a plugin knob and a user knob, add a user knob via Manage User Params (`recreateUserKnobs`), key a knob in the curve editor, then undo everything in order and redo.
   - verify: `tools/ci/remote/build.sh fast`, then `Tests/gui/run-gui-test.sh Tests/gui/m114_rebuild_undo.py <AppImage>` exits 0.
+  - size: M
+
+- [ ] M114.P2.T4 — Record edits to knobs that do not trigger a render
+  - files: `Gui/KnobGui.cpp`, `Gui/KnobUndoCommand.cpp`, `Tests/UndoHistory_Test.cpp`, `Tests/gui/m114_global_undo.py`
+  - approach: `KnobGui::pushUndoCommand` (`Gui/KnobGui.cpp` ~:171) applies and discards the command for a knob that cannot be undone or does not trigger a render, so a node label, the label's font size, a note or any other non-render project knob never reaches the history. Push every user edit of a persistent project knob into the global history whatever its render flag; keep the discard only for knobs that are genuinely not undoable (buttons, transient UI-only knobs). Add one Xvfb check that changes Blur1's label font size from the Node page and undoes it with Ctrl+Z.
+  - verify: the phase build; the new unit case and the GUI check pass.
   - size: M
 
 ## Phase 114.3: Exact preset apply and undo
@@ -122,5 +128,6 @@ The milestone also fixes the two preset bugs found in the M93 - Serialization Bo
 
 ## Decisions
 
+- 2026-10-24 — **Phase 1 verified; non-render knob edits join Phase 2 (PM):** fast build on ea293de30 is 390/390 on both legs, and `m114_global_undo.py` (script 3b06c630f) reports 0 failures against that AppImage. The script needed only test fixes: a viewer for an empty project, activating the window before the graph drag, live curve-editor and dope-sheet widgets, and typing into a visible parameter. Its first typing target was the hidden label font-size box on the Node page, and that edit never reached the history because `KnobGui::pushUndoCommand` (`Gui/KnobGui.cpp` ~:171) discards commands for knobs that do not trigger a render. That predates M114, but it breaks the milestone's goal that every project edit is recorded, so P2.T4 fixes it.
 - 2026-10-24 — **User decisions:** panel undo/redo buttons are a filtered view of the global history (a panel undo is allowed when no later entry touches that node; graph moves and connections don't block it). A preset apply resets absent knobs to default except: label, sublabel and disable; Read/Write file paths; roto/tracker content absent from the preset; and the target's own user knobs (undo removes user knobs the preset added).
 - 2026-10-24 — **Elaborated from the stub (PM, opus consultant).** The stub's `WriteNode` encoder-swap case is gone (M76 deleted `Engine/WriteNode.cpp`); knob-GUI rebuilds through `recreateUserKnobs` still lose history, which Phase 114.2 fixes. The split with M92 - Linked Nodes stays: M114 changes how commands are pushed and what they address; M92's new link commands should address knobs (P2.T1) and list every node they touch. M106.P2.T1 should reuse this milestone's touched-node sets and obsolete skipping.

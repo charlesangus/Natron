@@ -219,6 +219,7 @@ future core work has solid ground to build on.
 | M157 | Relicense To GPLv3 Or Later | todo | - |  | E2 | [M157-relicense-to-gplv3-or-later.md](PLAN/MILESTONES/M157-relicense-to-gplv3-or-later.md) |
 | M158 | Node Toolbar As Menu | done | - | bosley-native-nodes | E10 | [M158-node-toolbar-as-menu.md](PLAN/MILESTONES/M158-node-toolbar-as-menu.md) |
 | M161 | Startup Compositor Crash | blocked | - | bosley-native-nodes | E10 | [M161-startup-compositor-crash.md](PLAN/MILESTONES/M161-startup-compositor-crash.md) |
+| M170 | Engine Render Races | todo | - |  | E14 | [M170-engine-render-races.md](PLAN/MILESTONES/M170-engine-render-races.md) |
 
 # Epics
 

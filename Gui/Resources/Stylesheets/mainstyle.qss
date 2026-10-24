@@ -39,11 +39,16 @@ Natron--NodeSettingsPanel[_selected="false"] {
 
 /* A colour knob with its adjust panel open, or with global mode engaged on it: the cells of
    its row and panel let the sunken block painted under them (KnobGuiColor's backdrop) show
-   through. Only plain containers and labels go transparent; fields, sliders and buttons keep
-   their own backgrounds. */
+   through. Plain containers, labels and slider tracks go transparent; fields and buttons keep
+   their own backgrounds. A knob label only in its plain state: its animation and selection
+   backgrounds carry meaning (see the ClickableLabel rules below). */
 QWidget[_natronColorAdjustOpen="true"],
 QWidget[_natronColorAdjustOpen="true"] .QWidget,
-QWidget[_natronColorAdjustOpen="true"] QLabel {
+QWidget[_natronColorAdjustOpen="true"] QLabel,
+QWidget[_natronColorAdjustOpen="true"] ScaleSliderQWidget,
+QWidget[_natronColorAdjustOpen="true"] Natron--ScaleSliderQWidget,
+QWidget[_natronColorAdjustOpen="true"] ClickableLabel[dirty="false"][animation="0"][sunkenStyle="false"],
+QWidget[_natronColorAdjustOpen="true"] Natron--ClickableLabel[dirty="false"][animation="0"][sunkenStyle="false"] {
     background-color: transparent;
 }
 
@@ -811,14 +816,4 @@ QToolButton#ColorSelectorButton:pressed {
     padding-left: 0px;
     top: 0px;
     left: 0px;
-}
-
-/* The themed icon already tints On-state glyphs with the selection colour, but that colour
-   shift alone is too subtle to read as "toggled"; the fill behind it is what makes the
-   global-mode button read as pressed while global mode is engaged. The adjust panel's
-   dropdown button gets no fill: the open state shows its glyph flipped, and the fill behind a
-   selection-tinted glyph read as a colour swatch. */
-QToolButton#ColorGlobalModeButton:checked {
-    background-color: %1;
-    border-radius: 2px;
 }

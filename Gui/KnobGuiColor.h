@@ -34,6 +34,7 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QMargins>
 #include <QObject>
 #include <QPointF>
 #include <QPointer>
@@ -156,7 +157,8 @@ public:
     /**
      * @brief The sunken block drawn behind the knob's row and its open panel, in the page's
      * grid; null or hidden while the panel is closed, unless global mode is engaged on the
-     * knob, when it surrounds the row alone. While engaged it is drawn highlighted.
+     * knob, when it surrounds the row alone. While engaged its outline takes the
+     * selection colour.
      **/
     QWidget* getOpenBackdrop() const;
 
@@ -299,8 +301,16 @@ private:
     std::unique_ptr<ColorKnobEditSession> _editSession;
     std::weak_ptr<ProjectColorManagement> _configCallbackOwner;
     int _configCallbackId;
+    // A page grid cell inside the sunken block, with the contents margins it has outside the
+    // block and the ones that pad it inside.
+    struct OpenBlockCell {
+        QPointer<QWidget> widget;
+        QMargins restMargins;
+        QMargins blockMargins;
+    };
+
     QPointer<QWidget> _openBackdrop;
-    std::vector<QPointer<QWidget>> _openBlockWidgets;
+    std::vector<OpenBlockCell> _openBlockWidgets;
     bool _globalModeHighlighted;
 };
 

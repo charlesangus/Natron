@@ -77,6 +77,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
+#include "Gui/GuiDensity.h"
 #include "Gui/GuiMacros.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Label.h"
@@ -86,6 +87,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/SpinBox.h"
 #include "Gui/SpinBoxValidator.h"
 #include "Gui/TabGroup.h"
+#include "Gui/ThemedIcon.h"
 
 #include <ofxNatron.h>
 
@@ -247,13 +249,16 @@ mixColors(const QColor& a,
 // those cells turn their stylesheet background transparent while it shows (mainstyle.qss,
 // _natronColorAdjustOpen), so this fill also covers the grid's spacing between them. The
 // colours come from the application palette, which Gui::loadStyleSheet() fills from the theme:
-// Mid is the panel background, Dark the sunken colour, Light the raised one.
+// Mid is the panel background, Dark the sunken colour, Light the raised one. The frame stops
+// short of the cells' bottom by the bottom gap, which keeps the row gap every other row ends
+// with between the block and the knob below it.
 class AdjustPanelBackdrop
     : public QWidget {
 public:
     explicit AdjustPanelBackdrop(QWidget* parent)
         : QWidget(parent)
         , _highlighted(false)
+        , _bottomGap(0)
     {
         setObjectName(QString::fromUtf8("ColorAdjustOpenBackdrop"));
         setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -271,31 +276,35 @@ public:
         }
     }
 
+    void setBottomGap(int gap)
+    {
+        if (_bottomGap != gap) {
+            _bottomGap = gap;
+            update();
+        }
+    }
+
 protected:
     virtual void paintEvent(QPaintEvent* /*e*/) OVERRIDE
     {
         const QPalette palette = QApplication::palette();
         const QColor base = palette.color(QPalette::Mid);
         const QColor sunken = palette.color(QPalette::Dark);
-        const QColor raised = palette.color(QPalette::Light);
-        QColor fill = mixColors(base, sunken, 0.5);
         QColor shadowEdge = sunken.darker(140);
-        QColor lightEdge = raised;
+        QColor lightEdge = palette.color(QPalette::Light);
 
         if (_highlighted) {
-            // The highlight colour is only a tint: greyed down and mixed in lightly, so the
-            // engaged knob reads as lifted without competing with the colours being edited.
-            const QColor h = palette.color(QPalette::Highlight).toHsl();
-            const QColor tint = QColor::fromHslF(std::max<float>(0.f, h.hslHueF()), h.hslSaturationF() * 0.4f, 0.6f);
-            fill = mixColors(mixColors(fill, raised, 0.3), tint, 0.12);
-            shadowEdge = mixColors(raised, tint, 0.35).lighter(115);
+            // Only the outline marks the engaged knob, in the selection colour the stylesheet
+            // uses; the fill stays the plain block's so the colours being edited keep their
+            // surroundings.
+            shadowEdge = ThemedIcon::themeSelectionColor();
             lightEdge = shadowEdge;
         }
 
-        const QRect r = rect();
+        const QRect r = rect().adjusted(0, 0, 0, -_bottomGap);
         QPainter p(this);
 
-        p.fillRect(r, fill);
+        p.fillRect(r, mixColors(base, sunken, 0.5));
         p.setPen(shadowEdge);
         p.drawLine(r.topLeft(), r.topRight());
         p.drawLine(r.topLeft(), r.bottomLeft());
@@ -306,6 +315,7 @@ protected:
 
 private:
     bool _highlighted;
+    int _bottomGap;
 };
 
 } // namespace
@@ -800,11 +810,12 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
 void
 KnobGuiColor::setOpenBlockTagged(bool tagged)
 {
-    for (const QPointer<QWidget>& w : _openBlockWidgets) {
-        if (w) {
-            w->setProperty(openBlockPropertyName(), tagged);
+    for (const OpenBlockCell& cell : _openBlockWidgets) {
+        if (cell.widget) {
+            cell.widget->setProperty(openBlockPropertyName(), tagged);
+            cell.widget->setContentsMargins(tagged ? cell.blockMargins : cell.restMargins);
             // Qt re-evaluates property selectors, the descendant ones included, only on polish.
-            repolishTree(w.data());
+            repolishTree(cell.widget.data());
         }
     }
     if (!tagged) {
@@ -849,14 +860,42 @@ KnobGuiColor::refreshOpenBackdrop()
         lastRow += rowSpan - 1;
     }
 
+    // The cells along the block's edges are padded so their contents sit inside the frame by the
+    // margin a settings panel keeps inside its own edge. The row above already ends with the row
+    // gap; the block ends with one too, outside its frame, taken from the cells' own bottom gap
+    // when they have one.
+    const int padX = TO_DPIX(NATRON_DENSITY_PANEL_MARGIN);
+    const int padY = TO_DPIY(NATRON_DENSITY_PANEL_MARGIN);
+    const int rowGap = TO_DPIY(NATRON_DENSITY_ROW_GAP);
+    const int lastColumn = std::max(1, grid->columnCount()) - 1;
+
     // Rows are found afresh each time: knobs created later can shift the page's grid.
     for (int i = 0; i < grid->count(); ++i) {
         int row, col, rs, cs;
         grid->getItemPosition(i, &row, &col, &rs, &cs);
         QWidget* w = grid->itemAt(i)->widget();
-        if (w && (row >= firstRow) && (row + rs - 1 <= lastRow)) {
-            _openBlockWidgets.push_back(w);
+        if (!w || (row < firstRow) || (row + rs - 1 > lastRow)) {
+            continue;
         }
+        OpenBlockCell cell;
+        cell.widget = w;
+        cell.restMargins = w->contentsMargins();
+        QMargins pad;
+        if (row == firstRow) {
+            pad.setTop(padY);
+        }
+        if (row + rs - 1 == lastRow) {
+            const int ownGap = w->layout() ? w->layout()->contentsMargins().bottom() : 0;
+            pad.setBottom(padY + std::max(0, rowGap - ownGap));
+        }
+        if (col == 0) {
+            pad.setLeft(padX);
+        }
+        if (col + cs - 1 >= lastColumn) {
+            pad.setRight(padX);
+        }
+        cell.blockMargins = cell.restMargins + pad;
+        _openBlockWidgets.push_back(cell);
     }
 
     if (!_openBackdrop || (_openBackdrop->parentWidget() != page)) {
@@ -866,7 +905,9 @@ KnobGuiColor::refreshOpenBackdrop()
         _openBackdrop = new AdjustPanelBackdrop(page);
         QObject::connect(fullWidthRow, &QObject::destroyed, _openBackdrop.data(), &QObject::deleteLater);
     }
-    static_cast<AdjustPanelBackdrop*>(_openBackdrop.data())->setHighlighted(_globalModeHighlighted);
+    AdjustPanelBackdrop* backdrop = static_cast<AdjustPanelBackdrop*>(_openBackdrop.data());
+    backdrop->setHighlighted(_globalModeHighlighted);
+    backdrop->setBottomGap(rowGap);
     grid->addWidget(_openBackdrop.data(), firstRow, 0, lastRow - firstRow + 1, std::max(1, grid->columnCount()));
     _openBackdrop->lower();
     _openBackdrop->show();

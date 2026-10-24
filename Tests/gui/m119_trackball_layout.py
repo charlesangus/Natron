@@ -6,9 +6,9 @@ Run with:
         Tests/gui/run-gui-test.sh Tests/gui/m119_trackball_layout.py <Natron binary or AppImage>'
 
 What it covers, one section each:
-- bounds: on a Grade's gain at a 500 px bin, the panel starts in the label column and runs the
-  Hue slider on to the row's last button while the "g" channel line keeps its inset, and a Blur's
-  size row does not move when the panel opens.
+- bounds: on a Grade's gain at a 500 px bin, the panel starts in the label column (inset by the
+  sunken block's padding) and runs the Hue slider on to the row's last button while the "g"
+  channel line keeps its inset, and a Blur's size row does not move when the panel opens.
 - sizes: for each colorTrackballWheelWidth preference (1/2, 1/3, 1/4, 1/5), at the default bin
   width and at twice it: a screenshot, the wheel square at that fraction of the panel's width (or
   as tall as the line column when that is larger) flush left, and the Hue line ending at the
@@ -20,9 +20,12 @@ What it covers, one section each:
 - undo: a slider drag is one undo step, including a drag that starts on the marker.
 - fresh-engage: global mode starts in C on every fresh engage, and keeps its mode across a knob
   switch while engaged.
-- engaged-highlight: while engaged, the target knob's sunken block is drawn highlighted (a grey
-  tint, not the selection colour), around the row and its panel when open and around the row
-  alone when closed; it moves with a Ctrl+Down knob switch and leaving the mode clears it.
+- engaged-highlight: the sunken block keeps the panel margin inside its frame and the row gap
+  outside it (both measured on screen), and the knob label and channel slider inside it show the
+  block's fill instead of their own background. While engaged, the target knob's block keeps the
+  plain fill and takes an outline in the selection colour, around the row and its panel when open
+  and around the row alone when closed; the global-mode button has no selection-colour fill; the
+  outline moves with a Ctrl+Down knob switch and leaving the mode clears it.
 - feedback: for each value of the colorTrackballFeedback preference (Crosshair + reveal, Widget
   cursor), the override cursor before, during and after a stroke, the following HUD on real
   pointer moves (also at the screen's edge), the reveal graphic at the press point, the widget
@@ -65,6 +68,10 @@ WHEEL_FRACTIONS = {0: 1.0 / 2, 1: 1.0 / 3, 2: 1.0 / 4, 3: 1.0 / 5}
 WHEEL_WIDTH_NAMES = {0: "half", 1: "third", 2: "quarter", 3: "fifth"}
 WHEEL_WIDTH_DEFAULT = 1
 HUD_OFFSET = 16
+# Gui/GuiDensity.h: the sunken block's inner padding is the panel margin, and it ends with the
+# row gap every knob row ends with.
+BLOCK_PAD = 6  # NATRON_DENSITY_PANEL_MARGIN
+ROW_GAP = 4  # NATRON_DENSITY_ROW_GAP
 REVEAL_DIAMETER = 240
 
 FEEDBACK_NAMES = {0: "CrosshairReveal", 1: "WidgetCursor"}
@@ -579,9 +586,111 @@ try:
         return [w for w in live_children(root)
                 if w.objectName() == "ColorAdjustOpenBackdrop" and w.isVisible() and w.property("colorGlobalModeHighlighted")]
 
-    def backdrop_fill(backdrop):
-        img = backdrop.grab().toImage()
-        return img.pixelColor(img.width() // 2, img.height() // 2)
+    def selection_rgb():
+        """The theme's selection colour as the stylesheet and the block's outline get it."""
+        p = NatronEngine.natron.getSettings().getParam("selection")
+        r, g, b = (int(max(0.0, min(1.0, p.getValue(d))) * 255 + 0.5) for d in range(3))
+        return 0xff000000 | (r << 16) | (g << 8) | b
+
+    def rgb_name(v):
+        return "#%06x" % (v & 0xffffff) if v is not None else None
+
+    def block_probe(backdrop):
+        """The sunken block as drawn on screen: its frame's global rect and its fill and outline
+        pixels. Sampled in the padding column left of every cell's contents, where only the fill
+        and the top and bottom outlines are drawn. The frame ends above the backdrop's bottom (the
+        row gap below it is the page's), so its bottom is the lowest pixel of the colour the right
+        outline has midway down."""
+        r = global_rect(backdrop)
+        img = grab_screen(r)
+        w, h = img.width(), img.height()
+        x0 = max(1, int(px(BLOCK_PAD) / 2))
+        mid = h // 2
+        bottom_colour = img.pixel(w - 1, mid)
+        y_bot = None
+        for y in range(h - 1, 0, -1):
+            if pixel_distance(img.pixel(x0, y), bottom_colour) <= 6:
+                y_bot = y
+                break
+        frame_h = (y_bot + 1) if y_bot is not None else h
+        return {
+            "frame": QRect(r.x(), r.y(), w, frame_h),
+            "fill": img.pixel(x0, mid),
+            "left": img.pixel(0, mid),
+            "right": bottom_colour,
+            "top": img.pixel(x0, 0),
+            "bottom": img.pixel(x0, y_bot) if y_bot is not None else None,
+        }
+
+    def screen_pixel(w, local):
+        return grab_screen(QRect(w.mapToGlobal(local), w.mapToGlobal(local))).pixel(0, 0)
+
+    def grid_cell_of(w, page):
+        """The page grid's cell (a direct child of the page) holding w."""
+        while w is not None and w.parentWidget() is not None and ptr(w.parentWidget()) != ptr(page):
+            w = w.parentWidget()
+        return w
+
+    def content_rect(cell):
+        """The global union of a cell's visible child widgets: where its contents are drawn."""
+        r = QRect()
+        for c in cell.children():
+            if isinstance(c, QWidget) and c.isVisible() and c.width() > 0 and c.height() > 0:
+                r = r.united(global_rect(c))
+        return r
+
+    def neighbour_cells(backdrop, step):
+        """The visible cells of the nearest grid row above (step -1) or below (step 1) the block."""
+        page = backdrop.parentWidget()
+        grid = page.layout()
+        row, _col, rs, _cs = grid.getItemPosition(grid.indexOf(backdrop))
+        target = row - 1 if step < 0 else row + rs
+        while 0 <= target < grid.rowCount():
+            cells = []
+            for i in range(grid.count()):
+                w = grid.itemAt(i).widget()
+                if w is None or not w.isVisible() or ptr(w) == ptr(backdrop):
+                    continue
+                r, _c, s_, _cs2 = grid.getItemPosition(i)
+                if (step < 0 and r + s_ - 1 == target) or (step > 0 and r == target):
+                    cells.append(w)
+            if cells:
+                return cells
+            target += step
+        return []
+
+    def check_block_margins(backdrop, probe, first_cell, last_cell, right_cell, left_cell, what):
+        """The panel margin between the frame and the cells' contents on each side, and the row gap
+        between the frame and the rows above and below."""
+        frame = probe["frame"]
+        pad = px(BLOCK_PAD)
+        gap = px(ROW_GAP)
+        inner = {
+            "top": content_rect(first_cell).top() - frame.top(),
+            "bottom": frame.bottom() - content_rect(last_cell).bottom(),
+            "left": content_rect(left_cell).left() - frame.left(),
+            "right": frame.right() - content_rect(right_cell).right(),
+        }
+        report("NOTE %s: frame %s, inner margins %r (panel margin %.1f px)" % (what, fmt_rect(frame), inner, pad))
+        for side in ("top", "bottom", "right"):
+            check(abs(inner[side] - pad) <= EDGE_TOLERANCE, "%s: the %s inner margin is the panel margin (%d px, want %.1f)"
+                  % (what, side, inner[side], pad))
+        check(inner["left"] >= pad - EDGE_TOLERANCE, "%s: the left inner margin is at least the panel margin (%d px, want %.1f)"
+              % (what, inner["left"], pad))
+        above = neighbour_cells(backdrop, -1)
+        below = neighbour_cells(backdrop, 1)
+        if check(len(above) > 0 and len(below) > 0, "%s: found the rows above and below the block" % what):
+            # A row's cell ends with its own row gap (its layout's bottom margin); the row below
+            # starts at its cell's top.
+            above_bottom = max(global_rect(c).bottom() - (c.layout().contentsMargins().bottom() if c.layout() is not None else 0)
+                               for c in above)
+            below_top = min(global_rect(c).top() for c in below)
+            outer_top = frame.top() - above_bottom - 1
+            outer_bottom = below_top - frame.bottom() - 1
+            report("NOTE %s: outer margins top %d, bottom %d (row gap %.1f px)" % (what, outer_top, outer_bottom, gap))
+            check(abs(outer_top - gap) <= EDGE_TOLERANCE, "%s: the row gap above the block (%d px, want %.1f)" % (what, outer_top, gap))
+            check(abs(outer_bottom - gap) <= EDGE_TOLERANCE, "%s: the row gap below the block (%d px, want %.1f)"
+                  % (what, outer_bottom, gap))
 
     def gain_values(node, name=GAIN):
         p = node.getParam(name)
@@ -692,8 +801,8 @@ try:
         report("NOTE panel left %r, label column left %r, Hue right %r, g right %r, last button right %r"
                % (left, label_left, hue_right, g_right, globe_right))
         crop_widget(gp, "bounds-500")
-        check(label_left is not None and abs(left - label_left) <= EDGE_TOLERANCE,
-              "the panel starts at the label column (panel %r, label %r)" % (left, label_left))
+        check(label_left is not None and abs(left - label_left - px(BLOCK_PAD)) <= EDGE_TOLERANCE,
+              "the panel starts at the label column, inset by the block's padding (panel %r, label %r)" % (left, label_left))
         check(abs(hue_right - globe_right) <= EDGE_TOLERANCE,
               "the Hue slider ends at the last button's right edge (Hue %r, button %r)" % (hue_right, globe_right))
         check(g_right is not None and g_right < globe_right - EDGE_TOLERANCE,
@@ -888,34 +997,76 @@ try:
         gt.section("engaged-highlight")
         gain_row = knob_row(gp, GAIN)
         selector = child_named(gain_row, "ColorSelectorButton")
+        globe = child_named(gain_row, "ColorGlobalModeButton")
         if not selector.isChecked():
             selector.click()
             yield ("sleep", PANEL_MS)
-        plain = [w for w in live_children(gp) if w.objectName() == "ColorAdjustOpenBackdrop" and w.isVisible()]
-        plain_fill = backdrop_fill(plain[0]) if plain else None
+        selection = selection_rgb()
+        page = None
+        row_cell = None
+        gain_panel = None
+        plain_probe = None
+        backdrops = [w for w in live_children(gp) if w.objectName() == "ColorAdjustOpenBackdrop" and w.isVisible()]
+        for b in backdrops:
+            if is_inside(gain_row, b.parentWidget()) and global_rect(b).contains(global_rect(gain_row)):
+                page = b.parentWidget()
+                plain_probe = block_probe(b)
+                row_cell = grid_cell_of(gain_row, page)
+                row_top = global_rect(gain_row).top()
+                below = [w for w in named("ColorAdjustPanel", True, page) if global_rect(w).top() >= row_top]
+                gain_panel = min(below, key=lambda w: global_rect(w).top() - row_top) if below else None
+                if gain_panel is not None:
+                    check_block_margins(b, plain_probe, row_cell, grid_cell_of(gain_panel, page), row_cell,
+                                        grid_cell_of(gain_panel, page), "panel open")
+        check(plain_probe is not None, "panel open: found gain's sunken block")
+        check(gain_panel is not None, "panel open: found gain's own adjust panel")
+
+        # The knob label and a channel slider inside the block show its fill, not a background.
+        # The sizes section reuses the name "column"; gain's own column is its row's parent.
+        gain_column = gain_row.parentWidget()
+        gain_label = None
+        for w in gp.findChildren(QLabel):
+            if tagged(w, GAIN) and not is_inside(w, gain_column) and w.isVisible():
+                gain_label = w
+        g_slider = channel_slider_g(gain_column)
+        if plain_probe is not None:
+            fill = plain_probe["fill"]
+            for name, w, local in (("gain's label", gain_label, QPoint(1, 1)), ("a channel slider", g_slider, QPoint(2, 1))):
+                if check(w is not None, "found %s" % name):
+                    pix = screen_pixel(w, local)
+                    check(pixel_distance(pix, fill) <= 6, "%s draws no background over the block (%s, block fill %s)"
+                          % (name, rgb_name(pix), rgb_name(fill)))
+        globe_before = screen_pixel(globe, QPoint(2, 2))
+
         check(not highlighted_backdrops(gp), "before engaging, no sunken block is highlighted")
-        child_named(gain_row, "ColorGlobalModeButton").click()
+        globe.click()
         yield ("sleep", SETTLE_MS)
         check(engaged(), "the global-mode button engages the mode on gain")
         check(gain_row.property("_natronColorTrackballTarget") is None, "the row carries no target border property")
         lit = highlighted_backdrops(gp)
         if check(len(lit) == 1, "panel open: exactly one sunken block is highlighted (%d)" % len(lit)):
             block = global_rect(lit[0])
-            row_top = global_rect(gain_row).top()
-            below = [w for w in named("ColorAdjustPanel", True, gp) if global_rect(w).top() >= row_top]
-            ap = min(below, key=lambda w: global_rect(w).top() - row_top) if below else None
             check(block.contains(global_rect(gain_row)), "panel open: the block surrounds gain's row")
-            ap_rect = global_rect(ap) if ap is not None else None
+            ap_rect = global_rect(gain_panel) if gain_panel is not None else None
             report("NOTE panel open: block %s, gain's panel %s" % (fmt_rect(block), fmt_rect(ap_rect) if ap_rect is not None else None))
-            check(ap_rect is not None and block.contains(ap_rect.adjusted(px(2), px(2), -px(2), -px(2))),
-                  "panel open: the block surrounds gain's panel")
-            fill = backdrop_fill(lit[0])
-            report("NOTE engaged block fill %s, saturation %.2f; plain fill %s"
-                   % (fill.name(), fill.hsvSaturationF(), plain_fill.name() if plain_fill is not None else None))
-            check(fill.hsvSaturationF() < 0.25, "panel open: the highlight is a grey tint, not the selection colour (saturation %.2f)"
-                  % fill.hsvSaturationF())
-            if plain_fill is not None:
-                check(fill.lightnessF() > plain_fill.lightnessF(), "panel open: the highlighted block is lighter than the plain one")
+            check(ap_rect is not None and block.contains(ap_rect), "panel open: the block surrounds gain's panel")
+            probe = block_probe(lit[0])
+            report("NOTE engaged block fill %s, outline left %s top %s bottom %s; plain fill %s; selection %s"
+                   % (rgb_name(probe["fill"]), rgb_name(probe["left"]), rgb_name(probe["top"]), rgb_name(probe["bottom"]),
+                      rgb_name(plain_probe["fill"]) if plain_probe is not None else None, rgb_name(selection)))
+            for side in ("left", "top", "bottom"):
+                check(probe[side] is not None and pixel_distance(probe[side], selection) <= 6,
+                      "panel open: the engaged block's %s outline is the selection colour (%s)" % (side, rgb_name(probe[side])))
+            if plain_probe is not None:
+                check(pixel_distance(probe["fill"], plain_probe["fill"]) <= 3, "panel open: the engaged block's fill is the plain block's (%s, plain %s)"
+                      % (rgb_name(probe["fill"]), rgb_name(plain_probe["fill"])))
+                check(probe["frame"] == plain_probe["frame"], "panel open: engaging leaves the block's frame where it was (%s, plain %s)"
+                      % (fmt_rect(probe["frame"]), fmt_rect(plain_probe["frame"])))
+        check(globe.isChecked(), "the global-mode button reads as checked while engaged")
+        globe_after = screen_pixel(globe, QPoint(2, 2))
+        report("NOTE global-mode button background %s unchecked, %s checked" % (rgb_name(globe_before), rgb_name(globe_after)))
+        check(pixel_distance(globe_after, selection) > 60, "the checked global-mode button has no selection-colour fill (%s)"
+              % rgb_name(globe_after))
         crop_widget(gp, "engaged-panel-open", 4)
 
         selector.click()
@@ -933,8 +1084,13 @@ try:
             check(block.contains(row_rect), "panel closed: the block surrounds gain's row and its channel lines")
             check(label is None or block.contains(global_rect(label)), "panel closed: the block surrounds gain's label")
             report("NOTE panel closed: block %s, row %s" % (fmt_rect(block), fmt_rect(row_rect)))
-            check(block.height() <= row_rect.height() + px(12), "panel closed: the block is the row and its channel lines alone (%d px, row area %d px)"
-                  % (block.height(), row_rect.height()))
+            probe = block_probe(lit[0])
+            check(probe["bottom"] is not None and pixel_distance(probe["bottom"], selection) <= 6,
+                  "panel closed: the engaged block's outline is the selection colour (%s)" % rgb_name(probe["bottom"]))
+            if row_cell is not None:
+                check_block_margins(lit[0], probe, row_cell, row_cell, row_cell, grid_cell_of(label, page) if label is not None else row_cell,
+                                    "panel closed")
+                check(content_rect(row_cell).contains(row_rect), "panel closed: the row's cell holds its channel lines")
         crop_widget(gp, "engaged-panel-closed", 4)
 
         target_before = hud_knob()

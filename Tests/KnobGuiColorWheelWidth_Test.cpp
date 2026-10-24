@@ -38,6 +38,7 @@
 #include <QIcon>
 #include <QImage>
 #include <QLabel>
+#include <QMargins>
 #include <QMouseEvent>
 #include <QPoint>
 #include <QRect>
@@ -59,9 +60,11 @@
 #include "Gui/ColorAdjustPanel.h"
 #include "Gui/ColorEditSlider.h"
 #include "Gui/ColorWheelWidget.h"
+#include "Gui/GuiDensity.h"
 #include "Gui/KnobGuiColor.h"
 #include "Gui/KnobGuiContainerI.h"
 #include "Gui/SpinBox.h"
+#include "Gui/ThemedIcon.h"
 
 NATRON_NAMESPACE_USING
 
@@ -144,10 +147,33 @@ argb(const QPixmap& pix)
     return pix.toImage().convertToFormat(QImage::Format_ARGB32);
 }
 
-// The backdrop's fill at its centre and its inset edge midway down its left side.
+// The sunken block's inner padding and the row gap it ends with, from the same density
+// constants KnobGuiColor uses.
+int
+blockPadX()
+{
+    return TO_DPIX(NATRON_DENSITY_PANEL_MARGIN);
+}
+
+int
+blockPadY()
+{
+    return TO_DPIY(NATRON_DENSITY_PANEL_MARGIN);
+}
+
+int
+blockRowGap()
+{
+    return TO_DPIY(NATRON_DENSITY_ROW_GAP);
+}
+
+// The backdrop's fill at its centre, its edges midway down its left side and midway along its
+// top, and its frame's bottom edge, which sits the row gap above the backdrop's own bottom.
 struct BackdropColors {
     QColor fill;
     QColor edge;
+    QColor topEdge;
+    QColor bottomEdge;
 };
 
 BackdropColors
@@ -158,6 +184,8 @@ backdropColors(QWidget* backdrop)
 
     c.fill = QColor::fromRgb(image.pixel(image.width() / 2, image.height() / 2));
     c.edge = QColor::fromRgb(image.pixel(0, image.height() / 2));
+    c.topEdge = QColor::fromRgb(image.pixel(image.width() / 2, 0));
+    c.bottomEdge = QColor::fromRgb(image.pixel(image.width() / 2, image.height() - 1 - blockRowGap()));
 
     return c;
 }
@@ -333,7 +361,8 @@ TEST_F(KnobGuiColorWheelWidth, TheWheelTakesItsFractionFlushLeftAndTheSlidersFil
             EXPECT_NEAR(row.right(), rectIn(slider, panel()).right(), 2) << "fraction 1/" << (i + 2);
             EXPECT_GT(rectIn(slider, panel()).left(), rectIn(wheel(), panel()).right());
         }
-        EXPECT_NEAR(_page->width() - 1, rectIn(panel(), _page.get()).right(), 2);
+        // The block's inner padding keeps the panel off the block's right edge.
+        EXPECT_NEAR(_page->width() - 1 - blockPadX(), rectIn(panel(), _page.get()).right(), 2);
     }
 }
 
@@ -431,13 +460,34 @@ TEST_F(KnobGuiColorWheelWidth, AnOpenPanelAndItsRowSitInOneSunkenBlock)
     EXPECT_TRUE(_field->property("_natronColorAdjustOpen").toBool());
     EXPECT_TRUE(_gui->getFullWidthRowWidget()->property("_natronColorAdjustOpen").toBool());
 
+    // The cells along the block's edges are padded inside its frame, and the block ends with
+    // the row gap below its frame. Neither the label nor the row has a layout bottom margin
+    // here, so the gap comes from their padding.
+    const int padX = blockPadX();
+    const int padY = blockPadY();
+    const int gap = blockRowGap();
+    EXPECT_EQ(QMargins(padX, padY, 0, 0), _label->contentsMargins());
+    EXPECT_EQ(QMargins(0, padY, padX, 0), _field->contentsMargins());
+    EXPECT_EQ(QMargins(padX, 0, padX, padY + gap), _gui->getFullWidthRowWidget()->contentsMargins());
+    const QRect panelRect = rectIn(panel(), _page.get());
+    EXPECT_GE(panelRect.left() - block.left(), padX) << "inner margin, left";
+    EXPECT_GE(block.right() - panelRect.right(), padX) << "inner margin, right";
+    EXPECT_GE(block.bottom() - panelRect.bottom(), padY + gap) << "inner margin and row gap, bottom";
+
+    const QPalette palette = QApplication::palette();
+    const BackdropColors plain = backdropColors(backdrop);
+    EXPECT_EQ(palette.color(QPalette::Light).rgb(), plain.bottomEdge.rgb()) << "the frame ends the row gap above the block's cells";
+
     setExpanded(false);
     EXPECT_TRUE(!_gui->getOpenBackdrop() || !_gui->getOpenBackdrop()->isVisible());
     EXPECT_FALSE(_label->property("_natronColorAdjustOpen").toBool());
     EXPECT_FALSE(_field->property("_natronColorAdjustOpen").toBool());
+    EXPECT_EQ(QMargins(), _label->contentsMargins());
+    EXPECT_EQ(QMargins(), _field->contentsMargins());
+    EXPECT_EQ(QMargins(), _gui->getFullWidthRowWidget()->contentsMargins());
 }
 
-TEST_F(KnobGuiColorWheelWidth, GlobalModeLightensTheOpenKnobsSunkenBlock)
+TEST_F(KnobGuiColorWheelWidth, GlobalModeOutlinesTheOpenKnobsSunkenBlockInTheSelectionColour)
 {
     build(600);
     setExpanded(true);
@@ -445,6 +495,8 @@ TEST_F(KnobGuiColorWheelWidth, GlobalModeLightensTheOpenKnobsSunkenBlock)
     ASSERT_TRUE(backdrop);
     ASSERT_TRUE(backdrop->isVisible());
     const BackdropColors normal = backdropColors(backdrop);
+    const QRgb selection = ThemedIcon::themeSelectionColor().rgb();
+    ASSERT_NE(selection, normal.edge.rgb());
 
     _gui->setGlobalModeHighlighted(true);
     settle();
@@ -453,12 +505,12 @@ TEST_F(KnobGuiColorWheelWidth, GlobalModeLightensTheOpenKnobsSunkenBlock)
     EXPECT_TRUE(backdrop->isVisible());
     EXPECT_TRUE(backdrop->geometry().contains(rectIn(panel(), _page.get()))) << "the panel";
 
+    // Only the outline changes: all four sides take the selection colour, the fill stays.
     const BackdropColors engaged = backdropColors(backdrop);
-    EXPECT_GT(engaged.fill.lightnessF(), normal.fill.lightnessF());
-    EXPECT_GT(engaged.edge.lightnessF(), normal.edge.lightnessF());
-    // A tint, not a bright highlight colour.
-    EXPECT_LT(engaged.fill.saturationF(), 0.25);
-    EXPECT_LT(engaged.edge.saturationF(), 0.35);
+    EXPECT_EQ(normal.fill.rgb(), engaged.fill.rgb());
+    EXPECT_EQ(selection, engaged.edge.rgb());
+    EXPECT_EQ(selection, engaged.topEdge.rgb());
+    EXPECT_EQ(selection, engaged.bottomEdge.rgb());
 
     // The row no longer carries the stylesheet border that drew the selection colour around it.
     EXPECT_FALSE(_field->property("_natronColorTrackballTarget").isValid());
@@ -472,6 +524,7 @@ TEST_F(KnobGuiColorWheelWidth, GlobalModeLightensTheOpenKnobsSunkenBlock)
     const BackdropColors after = backdropColors(_gui->getOpenBackdrop());
     EXPECT_EQ(normal.fill.rgb(), after.fill.rgb());
     EXPECT_EQ(normal.edge.rgb(), after.edge.rgb());
+    EXPECT_EQ(normal.bottomEdge.rgb(), after.bottomEdge.rgb());
 }
 
 TEST_F(KnobGuiColorWheelWidth, GlobalModeOnAClosedKnobShowsTheBlockAroundItsRowAlone)
@@ -494,15 +547,22 @@ TEST_F(KnobGuiColorWheelWidth, GlobalModeOnAClosedKnobShowsTheBlockAroundItsRowA
     EXPECT_LE(block.bottom(), std::max(label.bottom(), field.bottom()) + 1) << "the row alone";
     EXPECT_TRUE(_label->property("_natronColorAdjustOpen").toBool());
     EXPECT_TRUE(_field->property("_natronColorAdjustOpen").toBool());
+    // The row is the block's first and last row: padded on every side but the one it shares
+    // with the label, and followed by the row gap.
+    EXPECT_EQ(QMargins(blockPadX(), blockPadY(), 0, blockPadY() + blockRowGap()), _label->contentsMargins());
+    EXPECT_EQ(QMargins(0, blockPadY(), blockPadX(), blockPadY() + blockRowGap()), _field->contentsMargins());
 
     const BackdropColors engaged = backdropColors(backdrop);
-    EXPECT_LT(engaged.fill.saturationF(), 0.25);
+    EXPECT_EQ(ThemedIcon::themeSelectionColor().rgb(), engaged.edge.rgb());
+    EXPECT_EQ(ThemedIcon::themeSelectionColor().rgb(), engaged.bottomEdge.rgb());
 
     _gui->setGlobalModeHighlighted(false);
     settle();
     EXPECT_TRUE(!_gui->getOpenBackdrop() || !_gui->getOpenBackdrop()->isVisible());
     EXPECT_FALSE(_label->property("_natronColorAdjustOpen").toBool());
     EXPECT_FALSE(_field->property("_natronColorAdjustOpen").toBool());
+    EXPECT_EQ(QMargins(), _label->contentsMargins());
+    EXPECT_EQ(QMargins(), _field->contentsMargins());
 }
 
 // Global mode highlights a knob first and then opens it, and a knob switch does the reverse on
@@ -523,11 +583,14 @@ TEST_F(KnobGuiColorWheelWidth, OpeningAnEngagedKnobGrowsTheHighlightedBlockToThe
     EXPECT_TRUE(backdrop->geometry().contains(rectIn(panel(), _page.get()))) << "the panel";
     EXPECT_EQ(rowOnly.fill.rgb(), backdropColors(backdrop).fill.rgb());
 
+    EXPECT_EQ(rowOnly.edge.rgb(), backdropColors(backdrop).edge.rgb());
+
     _gui->setGlobalModeHighlighted(false);
     settle();
     ASSERT_TRUE(_gui->getOpenBackdrop());
     EXPECT_TRUE(_gui->getOpenBackdrop()->isVisible());
-    EXPECT_LT(backdropColors(_gui->getOpenBackdrop()).fill.lightnessF(), rowOnly.fill.lightnessF());
+    EXPECT_EQ(rowOnly.fill.rgb(), backdropColors(_gui->getOpenBackdrop()).fill.rgb());
+    EXPECT_NE(rowOnly.edge.rgb(), backdropColors(_gui->getOpenBackdrop()).edge.rgb());
 
     // Closing the panel while engaged keeps the highlighted block, shrunk back to the row.
     _gui->setGlobalModeHighlighted(true);

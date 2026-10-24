@@ -297,6 +297,7 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
     QSize buttonIconSize( TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE) );
 
     _previousButton = new Button(fileDialogGlyph("arrow-left"), QString(), _buttonsWidget);
+    _previousButton->setObjectName(QString::fromUtf8("SequenceFileDialogPreviousButton"));
     _previousButton->setFixedSize(buttonSize);
     _previousButton->setIconSize(buttonIconSize);
     _previousButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Go back in the directory history."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -304,6 +305,7 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
     QObject::connect( _previousButton, SIGNAL(clicked()), this, SLOT(previousFolder()) );
 
     _nextButton = new Button(fileDialogGlyph("arrow-right"), QString(), _buttonsWidget);
+    _nextButton->setObjectName(QString::fromUtf8("SequenceFileDialogNextButton"));
     _nextButton->setFixedSize(buttonSize);
     _nextButton->setIconSize(buttonIconSize);
     _nextButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Go forward in the directory history."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -437,6 +439,7 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
         QIcon icPreview;
         appPTR->getIcon(NATRON_PIXMAP_PLAYER_PLAY_DISABLED, NATRON_PIXMAP_PLAYER_PLAY_ENABLED, buttonIconSize.width(), &icPreview);
         _togglePreviewButton = new Button(icPreview, QString(), _centerArea);
+        _togglePreviewButton->setObjectName(QString::fromUtf8("SequenceFileDialogTogglePreviewButton"));
         _togglePreviewButton->setIconSize(buttonIconSize);
         QObject::connect( _togglePreviewButton, SIGNAL(clicked(bool)), this, SLOT(onTogglePreviewButtonClicked(bool)) );
         _togglePreviewButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);

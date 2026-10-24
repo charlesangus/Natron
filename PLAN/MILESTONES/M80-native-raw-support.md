@@ -594,7 +594,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: the gtest passes under stated per-mode memory bounds, recorded in the README. The bench shows time falling with thread count for LMMSE and capture sharpening. Compiled at P7.T26.
   - size: M
 
-- [ ] M80.P7.T26 — Build checkpoint B
+- [x] M80.P7.T26 — Build checkpoint B
   - files: (none new)
   - approach:
     - Run the syntax check, then remote debug `--tests` and the release gate, covering T19–T25 and T30–T36 plus anything reopened from A.
@@ -739,7 +739,7 @@ Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 r
   - verify: a synthetic chart (each chart's reference Lab through a known illuminant and 3×3) is recovered within tolerance; the ΔE report equals a hand computation; all 7 charts give the right patch counts and layouts. Compiled at P7.T26.
   - size: L
 
-- [ ] M80.P7.T35 — GPU kernel for RawColorCalibration
+- [x] M80.P7.T35 — GPU kernel for RawColorCalibration
   - files: new `Engine/Gpu/Kernels/rawcolorcalibration.slang`, new `Engine/Gpu/Kernels/rawcolorcalibration.cmake`, `Engine/Nodes/Raw/RawColorCalibration.cpp`, `Engine/Nodes/Raw/RawGpuParams.h`, new `Tests/Native/NativeRawColorCalibrationGpu_Test.cpp`, `Tests/Native/NativeGpuCapability_Test.cpp` (allowlist)
   - approach:
     - Mirror `rawinputcolor.slang` and `RawInputColorOp::gpu`.

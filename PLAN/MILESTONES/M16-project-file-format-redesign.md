@@ -571,3 +571,5 @@ UAT (P7.T3).
 - Next build should be of HEAD (P3+P4); then P3.T8 steps 2–4: regenerate `Tests/fixtures/read-time-offset.ntpz` (`tools/ci/regen_read_time_offset.py`) and `tools/bench/comps/*.ntpz` (`build_comps.sh`) with NatronRenderer from the fast AppImage, `git rm` the old `.ntp` files.
 - **Uncommitted in the worktree:** a stopped P5.T2–T4 implementer's partial work (`Tests/Serialization/ProjectEquivalence.{h,cpp}`, `Tests/fixtures/bundle/`, `Tests/fixtures/old-format.ntp`, `Tests/CMakeLists.txt` edit). Re-dispatch P5.T2–T4 over it.
 - Remaining after that: P5.T5 build, Phase 16.6 benchmark (release build), Phase 16.7 cleanup/docs/UAT, gate, PR.
+- 2026-10-24 — **Review fixes (PM):** Codex found four issues, all real and fixed in d0a0b2b3b and 52fa7eb5a. Backups no longer move the target before the commit. Inflated sizes are capped: 1032:1 ratio, 2 GiB per member, 8 GiB in total, with streaming verify. Stroke segment counts must cover the sample rows exactly. Multi-instance children reattach to their parent on load.
+- 2026-10-24 — **Shipped (PM):** PR #87 squash-merged as 121a8289c; PR CI green on all legs.

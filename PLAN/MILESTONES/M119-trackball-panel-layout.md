@@ -240,7 +240,7 @@ Re-planned 2026-10-24 from the user's UAT pick (see ## Decisions). T2, T3, T4 an
   - verify: `GuiTests --gtest_filter=ColorAdjustPanel*:ScaleSliderQWidget*:KnobGuiColor*` green; `grep -rn 'NATRON_COLOR_PANEL_DEV\|ColorPanelLayout' Gui Tests` is empty.
   - size: L
 
-- [ ] M119.P3.T7 — Make the whole custom slider a relative drag
+- [x] M119.P3.T7 — Make the whole custom slider a relative drag
   - files: `Gui/ColorEditSlider.{h,cpp}`, `Gui/ColorAdjustPanel.cpp`, `Tests/ColorEditSlider_Test.cpp`
   - approach: a press on the marker no longer starts an absolute drag. Every drag is relative at the gear (minimum track length per a44785f42). Drop the `absolute` argument from `gestureMoved` and its handling in the panel; the SpinBox stays the only way to type a value.
   - verify: `GuiTests --gtest_filter=ColorEditSlider*:ColorAdjustPanel*`: a press on the marker followed by 40 px is the same delta as a 40 px drag elsewhere; a click without a move leaves the value unchanged; one undo step per drag.

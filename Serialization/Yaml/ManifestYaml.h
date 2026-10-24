@@ -72,8 +72,9 @@ struct BundleManifest {
 std::string encodeManifestYaml(const BundleManifest& manifest);
 
 /**
- * @brief Throws YamlError for a document that is not a bundle manifest or one written by a newer
- * Natron (a higher formatVersion); unknown keys are reported in warnings.
+ * @brief Throws YamlError for a document that is not a bundle manifest; unknown keys are reported
+ * in warnings. A manifest from a newer Natron (a higher formatVersion) is not refused: its
+ * author and dates are read, its member list is left empty, and a warning says so.
  **/
 BundleManifest decodeManifestYaml(std::string_view text, YamlWarnings* warnings = nullptr);
 

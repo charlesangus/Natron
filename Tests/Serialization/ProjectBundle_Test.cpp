@@ -27,15 +27,19 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -50,7 +54,9 @@
 #include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/Bundle/ZipStore.h"
 #include "Serialization/ProjectSerialization.h"
+#include "Serialization/Yaml/BlobSink.h"
 #include "Serialization/Yaml/ManifestYaml.h"
+#include "Serialization/Yaml/ProjectYaml.h"
 #include "Serialization/Yaml/YamlScalars.h"
 
 NATRON_NAMESPACE_USING
@@ -239,6 +245,166 @@ centerOf(const ProjectSerialization& project)
     return std::next(project.nodes.nodes.begin())->get()->trackerContext.tracks.front().knobs.front();
 }
 
+struct Entry {
+    std::string name;
+    std::vector<std::byte> data;
+    std::optional<std::uint32_t> crc = std::nullopt;
+};
+
+std::vector<std::byte>
+toBytes(std::string_view text)
+{
+    const std::span<const std::byte> bytes = asBytes(text);
+
+    return std::vector<std::byte>(bytes.begin(), bytes.end());
+}
+
+void
+writeFileBytes(const std::string& path,
+               const std::vector<std::byte>& bytes)
+{
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+
+void
+put16(std::vector<std::byte>& out,
+      std::uint32_t v)
+{
+    out.push_back(static_cast<std::byte>(v & 0xFF));
+    out.push_back(static_cast<std::byte>((v >> 8) & 0xFF));
+}
+
+void
+put32(std::vector<std::byte>& out,
+      std::uint32_t v)
+{
+    put16(out, v & 0xFFFF);
+    put16(out, v >> 16);
+}
+
+void
+putText(std::vector<std::byte>& out,
+        const std::string& text)
+{
+    const std::span<const std::byte> bytes = asBytes(text);
+    out.insert(out.end(), bytes.begin(), bytes.end());
+}
+
+// ZipWriter always leads with a mimetype member, so archives laid out as other zip tools lay
+// them out are built by hand: stored members, in the given order.
+std::vector<std::byte>
+buildStoredZip(const std::vector<Entry>& entries)
+{
+    std::vector<std::byte> out;
+    std::vector<std::uint32_t> offsets;
+    for (const Entry& e : entries) {
+        offsets.push_back(static_cast<std::uint32_t>(out.size()));
+        put32(out, 0x04034b50);
+        put16(out, 20);
+        put16(out, 0);
+        put16(out, 0);
+        put16(out, 0);
+        put16(out, 33);
+        put32(out, e.crc.value_or(Serialization::zipCrc32(e.data)));
+        put32(out, static_cast<std::uint32_t>(e.data.size()));
+        put32(out, static_cast<std::uint32_t>(e.data.size()));
+        put16(out, static_cast<std::uint32_t>(e.name.size()));
+        put16(out, 0);
+        putText(out, e.name);
+        out.insert(out.end(), e.data.begin(), e.data.end());
+    }
+    const std::uint32_t directoryOffset = static_cast<std::uint32_t>(out.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        const Entry& e = entries[i];
+        put32(out, 0x02014b50);
+        put16(out, 20);
+        put16(out, 20);
+        put16(out, 0);
+        put16(out, 0);
+        put16(out, 0);
+        put16(out, 33);
+        put32(out, e.crc.value_or(Serialization::zipCrc32(e.data)));
+        put32(out, static_cast<std::uint32_t>(e.data.size()));
+        put32(out, static_cast<std::uint32_t>(e.data.size()));
+        put16(out, static_cast<std::uint32_t>(e.name.size()));
+        put16(out, 0);
+        put16(out, 0);
+        put16(out, 0);
+        put16(out, 0);
+        put32(out, 0);
+        put32(out, offsets[i]);
+        putText(out, e.name);
+    }
+    const std::uint32_t directorySize = static_cast<std::uint32_t>(out.size()) - directoryOffset;
+    put32(out, 0x06054b50);
+    put16(out, 0);
+    put16(out, 0);
+    put16(out, static_cast<std::uint32_t>(entries.size()));
+    put16(out, static_cast<std::uint32_t>(entries.size()));
+    put32(out, directorySize);
+    put32(out, directoryOffset);
+    put16(out, 0);
+
+    return out;
+}
+
+/**
+ * @brief The members a writer would write, named under prefix ("" or "folder/"); the mimetype
+ * and the manifest only when asked for.
+ **/
+std::vector<Entry>
+bundleEntries(const ProjectBundleWriter& writer,
+              const std::string& prefix,
+              bool withMimeType,
+              bool withManifest)
+{
+    std::vector<Entry> entries;
+    if (withMimeType) {
+        entries.push_back({ prefix + "mimetype", toBytes(Serialization::kNatronProjectMimeType) });
+    }
+    if (withManifest) {
+        entries.push_back({ prefix + "manifest.yaml", toBytes(Serialization::encodeManifestYaml(writer.manifest())) });
+    }
+    entries.push_back({ prefix + "project.yaml", toBytes(writer.projectYaml()) });
+    for (const auto& blob : writer.blobs().members()) {
+        entries.push_back({ prefix + blob.first, blob.second });
+    }
+
+    return entries;
+}
+
+void
+writeFolder(const std::filesystem::path& folder,
+            const std::vector<Entry>& entries)
+{
+    for (const Entry& e : entries) {
+        const std::filesystem::path file = folder / e.name;
+        std::filesystem::create_directories(file.parent_path());
+        writeFileBytes(file.string(), e.data);
+    }
+}
+
+/**
+ * @brief The project as project.yaml text and blob members, so two loads of the same graph
+ * compare equal exactly when they would save the same.
+ **/
+std::pair<std::string, std::map<std::string, std::vector<std::byte>, std::less<>>>
+reencode(const ProjectSerialization& project)
+{
+    Serialization::MemoryBlobStore blobs;
+    std::string text = Serialization::encodeProjectYaml(project, blobs);
+
+    return { std::move(text), blobs.members() };
+}
+
+bool
+containsText(const std::string& haystack,
+             std::string_view needle)
+{
+    return haystack.find(needle) != std::string::npos;
+}
+
 } // anonymous namespace
 
 TEST(ProjectBundle, MembersAreWrittenInTheirFixedOrder)
@@ -281,8 +447,9 @@ TEST(ProjectBundle, RotoAndTrackerBlobsReadBack)
     makeWriter("2026-10-22T10:00:00Z").write(path);
 
     ProjectBundleReader reader(path);
-    EXPECT_TRUE(reader.archive().contains(kStrokeBlob));
-    EXPECT_TRUE(reader.archive().contains(kTrackBlob));
+    EXPECT_EQ("project/", reader.root());
+    EXPECT_TRUE(reader.findMember(kStrokeBlob).has_value());
+    EXPECT_TRUE(reader.findMember(kTrackBlob).has_value());
     EXPECT_EQ(std::string::npos, std::string(reader.projectYaml()).find("1.01")) << "stroke samples belong in the blob";
 
     YamlWarnings warnings;
@@ -417,25 +584,17 @@ TEST(ProjectBundle, TheReaderRefusesWhatIsNotANatronBundle)
     }
     EXPECT_THROW(ProjectBundleReader reader(otherZip), ProjectBundleError);
 
-    const std::string noManifest = dir.filePath(QString::fromUtf8("nomanifest.ntpz")).toStdString();
-    {
-        ZipWriter writer(noManifest);
-        writer.addMember("project.yaml", asBytes("format: natron-project\nformatVersion: 1\n"));
-        writer.finish();
-    }
-    EXPECT_THROW(ProjectBundleReader reader(noManifest), ProjectBundleError);
-
     const std::string newer = dir.filePath(QString::fromUtf8("newer.ntpz")).toStdString();
     {
         ZipWriter writer(newer);
-        writer.addMember("manifest.yaml", asBytes("format: natron-bundle\nformatVersion: 99\n"));
-        writer.addMember("project.yaml", asBytes("format: natron-project\nformatVersion: 1\n"));
+        writer.addMember("manifest.yaml", asBytes("format: natron-bundle\nformatVersion: 1\n"));
+        writer.addMember("project.yaml", asBytes("format: natron-project\nformatVersion: 99\n"));
         writer.finish();
     }
     try {
-        ProjectBundleReader reader(newer);
-        ADD_FAILURE() << "a bundle from a newer Natron was read";
-    } catch (const ProjectBundleError& e) {
+        ProjectBundleReader(newer).readProject();
+        ADD_FAILURE() << "a project from a newer Natron was read";
+    } catch (const Serialization::YamlNewerFormatError& e) {
         EXPECT_NE(std::string::npos, std::string(e.what()).find("newer Natron")) << e.what();
     }
 
@@ -473,7 +632,16 @@ TEST(ProjectBundle, DetectProjectFileKindClassifiesEachKind)
         ZipWriter writer(otherZip, "application/zip");
         writer.finish();
     }
-    EXPECT_EQ(ProjectFileKind::eUnknown, Serialization::detectProjectFileKind(otherZip));
+    EXPECT_EQ(ProjectFileKind::eBundle, Serialization::detectProjectFileKind(otherZip));
+
+    const std::string emptyZip = dir.filePath(QString::fromUtf8("empty.zip")).toStdString();
+    writeFileBytes(emptyZip, buildStoredZip({}));
+    EXPECT_EQ(ProjectFileKind::eBundle, Serialization::detectProjectFileKind(emptyZip));
+
+    EXPECT_EQ(ProjectFileKind::eDirectory, Serialization::detectProjectFileKind(dir.path().toStdString()));
+    const std::string yaml = dir.filePath(QString::fromUtf8("project.yaml")).toStdString();
+    writeFileText(yaml, "format: natron-project\nformatVersion: 1\n");
+    EXPECT_EQ(ProjectFileKind::eProjectYaml, Serialization::detectProjectFileKind(yaml));
 
     const std::string garbage = dir.filePath(QString::fromUtf8("garbage.ntpz")).toStdString();
     writeFileText(garbage, "this is not a project at all");
@@ -517,4 +685,270 @@ TEST(ProjectBundle, AFailedSaveLeavesThePreviousFileIntact)
 
     QDir listing(dir.path());
     EXPECT_EQ(QStringList() << QString::fromUtf8("project.ntpz"), listing.entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot));
+}
+
+TEST(ProjectBundle, TheMembersMayBeAtTheTopOrInAnyOneFolder)
+{
+    const ProjectBundleWriter writer = makeWriter("2026-10-22T10:00:00Z");
+    for (const std::string& prefix : { std::string(), std::string("anything/") }) {
+        const std::vector<std::byte> zip = buildStoredZip(bundleEntries(writer, prefix, true, true));
+        ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+        EXPECT_EQ(prefix, reader.root());
+        EXPECT_TRUE(reader.hasManifest());
+        EXPECT_EQ("user@host", reader.manifest().author);
+        YamlWarnings warnings;
+        const ProjectSerialization loaded = reader.readProject(&warnings);
+        EXPECT_TRUE(warnings.empty()) << prefix << ": " << warnings.front();
+        EXPECT_EQ(12, loaded.timelineCurrentTime);
+        ASSERT_EQ(1u, strokeOf(loaded).strokes.size());
+    }
+}
+
+TEST(ProjectBundle, ARenamedFileStillOpens)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string saved = dir.filePath(QString::fromUtf8("test.ntpz")).toStdString();
+    const std::string renamed = dir.filePath(QString::fromUtf8("renamed.ntpz")).toStdString();
+    ProjectBundleWriter writer = makeWriter("2026-10-22T10:00:00Z");
+    writer.setRootFolder("test");
+    writer.write(saved);
+    std::filesystem::rename(saved, renamed);
+
+    ProjectBundleReader reader(renamed);
+    EXPECT_EQ("test/", reader.root());
+    EXPECT_TRUE(reader.warnings().empty());
+    EXPECT_EQ(12, reader.readProject().timelineCurrentTime);
+}
+
+TEST(ProjectBundle, TheMimeTypeIsOptionalButMustNotNameAnotherType)
+{
+    const ProjectBundleWriter writer = makeWriter("2026-10-22T10:00:00Z");
+    {
+        const std::vector<std::byte> zip = buildStoredZip(bundleEntries(writer, "test/", false, true));
+        ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+        YamlWarnings warnings;
+        EXPECT_EQ(12, reader.readProject(&warnings).timelineCurrentTime);
+        EXPECT_TRUE(warnings.empty());
+    }
+    {
+        std::vector<Entry> entries = bundleEntries(writer, "test/", false, true);
+        entries.push_back({ "mimetype", toBytes(std::string(Serialization::kNatronProjectMimeType) + "\n") });
+        const std::vector<std::byte> zip = buildStoredZip(entries);
+        ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+        EXPECT_TRUE(reader.warnings().empty()) << "a top-level mimetype is not outside the project";
+    }
+
+    std::vector<Entry> inFolder = bundleEntries(writer, "test/", false, true);
+    inFolder.insert(inFolder.begin(), { "test/mimetype", toBytes("application/zip") });
+    std::vector<Entry> atTop = bundleEntries(writer, "test/", false, true);
+    atTop.insert(atTop.begin(), { "mimetype", toBytes("application/epub+zip") });
+    for (const std::vector<Entry>& entries : { inFolder, atTop }) {
+        const std::vector<std::byte> zip = buildStoredZip(entries);
+        try {
+            ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+            ADD_FAILURE() << "an archive of another type was read as a project";
+        } catch (const ProjectBundleError& e) {
+            EXPECT_TRUE(containsText(e.what(), "Not a " NATRON_APPLICATION_NAME " project")) << e.what();
+        }
+    }
+}
+
+TEST(ProjectBundle, TheRootIsTheOneProjectYamlAtDepthZeroOrOne)
+{
+    const ProjectBundleWriter writer = makeWriter("2026-10-22T10:00:00Z");
+
+    std::vector<Entry> twoFolders = bundleEntries(writer, "a/", true, true);
+    for (const Entry& e : bundleEntries(writer, "b/", true, true)) {
+        twoFolders.push_back(e);
+    }
+    std::vector<Entry> topAndFolder = bundleEntries(writer, "", false, true);
+    for (const Entry& e : bundleEntries(writer, "copy/", false, false)) {
+        topAndFolder.push_back(e);
+    }
+    for (const std::vector<Entry>& entries : { twoFolders, topAndFolder }) {
+        const std::vector<std::byte> zip = buildStoredZip(entries);
+        try {
+            ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+            ADD_FAILURE() << "an archive with two projects was read";
+        } catch (const ProjectBundleError& e) {
+            EXPECT_TRUE(containsText(e.what(), "Ambiguous project archive")) << e.what();
+        }
+    }
+
+    const std::vector<std::vector<Entry>> withoutProject = {
+        {},
+        { { "notes.txt", toBytes("hello") } },
+        bundleEntries(writer, "deep/er/", true, true),
+    };
+    for (const std::vector<Entry>& entries : withoutProject) {
+        const std::vector<std::byte> zip = buildStoredZip(entries);
+        try {
+            ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+            ADD_FAILURE() << "an archive without a project was read";
+        } catch (const ProjectBundleError& e) {
+            EXPECT_TRUE(containsText(e.what(), "no project.yaml")) << e.what();
+        }
+    }
+}
+
+TEST(ProjectBundle, AStaleManifestLoadsWithOneWarning)
+{
+    ProjectSerialization changed = makeProject();
+    changed.timelineCurrentTime = 99;
+    ProjectBundleWriter current;
+    current.setProject(changed);
+    const ProjectBundleWriter previous = makeWriter("2026-10-22T10:00:00Z");
+    BundleManifest stale = previous.manifest();
+    stale.members.push_back({ "blobs/gone.bin", 3, 0x12345678 });
+
+    std::vector<Entry> entries = bundleEntries(current, "test/", true, false);
+    entries.push_back({ "test/manifest.yaml", toBytes(Serialization::encodeManifestYaml(stale)) });
+    const std::vector<std::byte> zip = buildStoredZip(entries);
+    ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+    EXPECT_TRUE(reader.hasManifest());
+    EXPECT_EQ("user@host", reader.manifest().author);
+
+    YamlWarnings warnings;
+    EXPECT_EQ(99, reader.readProject(&warnings).timelineCurrentTime);
+    ASSERT_EQ(1u, warnings.size());
+    EXPECT_TRUE(containsText(warnings.front(), "manifest.yaml")) << warnings.front();
+    EXPECT_TRUE(containsText(warnings.front(), "project.yaml differs")) << warnings.front();
+    EXPECT_TRUE(containsText(warnings.front(), "blobs/gone.bin is missing")) << warnings.front();
+}
+
+TEST(ProjectBundle, AMissingOrUnreadableManifestGivesDefaults)
+{
+    const ProjectBundleWriter writer = makeWriter("2026-10-22T10:00:00Z");
+    {
+        const std::vector<std::byte> zip = buildStoredZip(bundleEntries(writer, "test/", true, false));
+        ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+        EXPECT_FALSE(reader.hasManifest());
+        EXPECT_EQ(BundleManifest(), reader.manifest());
+        YamlWarnings warnings;
+        EXPECT_EQ(12, reader.readProject(&warnings).timelineCurrentTime);
+        EXPECT_TRUE(warnings.empty());
+    }
+    {
+        std::vector<Entry> entries = bundleEntries(writer, "test/", true, false);
+        entries.push_back({ "test/manifest.yaml", toBytes("[not, a, manifest") });
+        const std::vector<std::byte> zip = buildStoredZip(entries);
+        ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+        EXPECT_FALSE(reader.hasManifest());
+        EXPECT_EQ(BundleManifest(), reader.manifest());
+        YamlWarnings warnings;
+        EXPECT_EQ(12, reader.readProject(&warnings).timelineCurrentTime);
+        ASSERT_EQ(1u, warnings.size());
+        EXPECT_TRUE(containsText(warnings.front(), "manifest.yaml")) << warnings.front();
+    }
+    {
+        std::vector<Entry> entries = bundleEntries(writer, "test/", true, false);
+        entries.push_back({ "test/manifest.yaml", toBytes("format: natron-bundle\nformatVersion: 99\nauthor: someone\nmembers: something new\nfuture: 1\n") });
+        const std::vector<std::byte> zip = buildStoredZip(entries);
+        ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+        EXPECT_TRUE(reader.hasManifest());
+        EXPECT_EQ("someone", reader.manifest().author);
+        EXPECT_TRUE(reader.manifest().members.empty());
+        YamlWarnings warnings;
+        EXPECT_EQ(12, reader.readProject(&warnings).timelineCurrentTime);
+        ASSERT_EQ(1u, warnings.size());
+        EXPECT_TRUE(containsText(warnings.front(), "newer")) << warnings.front();
+    }
+}
+
+TEST(ProjectBundle, MembersOutsideTheRootAreIgnoredWithAWarning)
+{
+    const ProjectBundleWriter writer = makeWriter("2026-10-22T10:00:00Z");
+    std::vector<Entry> entries = bundleEntries(writer, "test/", true, true);
+    entries.insert(entries.begin(), { "mimetype", toBytes(Serialization::kNatronProjectMimeType) });
+    entries.push_back({ "notes.txt", toBytes("hello") });
+    entries.push_back({ "other/readme", toBytes("hi") });
+    entries.push_back({ "test/unused.txt", toBytes("ignored silently") });
+    const std::vector<std::byte> zip = buildStoredZip(entries);
+    ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+
+    YamlWarnings warnings;
+    EXPECT_EQ(12, reader.readProject(&warnings).timelineCurrentTime);
+    ASSERT_EQ(1u, warnings.size());
+    EXPECT_TRUE(containsText(warnings.front(), "notes.txt")) << warnings.front();
+    EXPECT_TRUE(containsText(warnings.front(), "other/readme")) << warnings.front();
+    EXPECT_FALSE(containsText(warnings.front(), "mimetype")) << warnings.front();
+    EXPECT_FALSE(containsText(warnings.front(), "unused.txt")) << warnings.front();
+}
+
+TEST(ProjectBundle, AMemberWithAWrongCrcIsRefused)
+{
+    const ProjectBundleWriter writer = makeWriter("2026-10-22T10:00:00Z");
+    std::vector<Entry> entries = bundleEntries(writer, "test/", true, false);
+    for (Entry& e : entries) {
+        if (e.name == std::string("test/") + kStrokeBlob) {
+            e.crc = Serialization::zipCrc32(e.data) ^ 1u;
+        }
+    }
+    const std::vector<std::byte> zip = buildStoredZip(entries);
+    try {
+        ProjectBundleReader reader(std::span<const std::byte>(zip.data(), zip.size()));
+        ADD_FAILURE() << "a member with a wrong CRC was read";
+    } catch (const ProjectBundleError& e) {
+        EXPECT_TRUE(containsText(e.what(), "damaged")) << e.what();
+    }
+}
+
+TEST(ProjectBundle, AnUnzippedFolderLoadsTheSameGraphAsTheArchive)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::filesystem::path root(dir.path().toStdString());
+    const std::string archive = (root / "test.ntpz").string();
+    ProjectBundleWriter writer = makeWriter("2026-10-22T10:00:00Z");
+    writer.setRootFolder("test");
+    writer.write(archive);
+    {
+        ZipReader zip(archive);
+        std::vector<Entry> entries;
+        for (const Serialization::ZipMember& member : zip.members()) {
+            const std::span<const std::byte> data = zip.data(member);
+            entries.push_back({ member.name, std::vector<std::byte>(data.begin(), data.end()) });
+        }
+        writeFolder(root, entries);
+    }
+    const std::filesystem::path folder = root / "test";
+
+    ProjectBundleReader fromZip(archive);
+    const auto expected = reencode(fromZip.readProject());
+    for (const std::filesystem::path& path : { folder, folder / "project.yaml" }) {
+        ProjectBundleReader fromFolder(path.string());
+        EXPECT_EQ("", fromFolder.root());
+        EXPECT_TRUE(fromFolder.hasManifest());
+        EXPECT_EQ(fromZip.manifest(), fromFolder.manifest());
+        const std::optional<std::span<const std::byte>> stroke = fromFolder.findMember(kStrokeBlob);
+        ASSERT_TRUE(stroke.has_value());
+        EXPECT_EQ(0u, reinterpret_cast<std::uintptr_t>(stroke->data()) % Serialization::kZipMemberAlignment);
+        YamlWarnings warnings;
+        const ProjectSerialization loaded = fromFolder.readProject(&warnings);
+        EXPECT_TRUE(warnings.empty()) << path.string();
+        const auto actual = reencode(loaded);
+        EXPECT_EQ(expected.first, actual.first) << path.string();
+        EXPECT_TRUE(expected.second == actual.second) << path.string();
+    }
+    EXPECT_EQ(ProjectFileKind::eDirectory, Serialization::detectProjectFileKind(folder.string()));
+    EXPECT_EQ(ProjectFileKind::eProjectYaml, Serialization::detectProjectFileKind((folder / "project.yaml").string()));
+
+    std::filesystem::remove(folder / "mimetype");
+    std::filesystem::remove(folder / "manifest.yaml");
+    ProjectBundleReader bare(folder.string());
+    EXPECT_FALSE(bare.hasManifest());
+    EXPECT_EQ(12, bare.readProject().timelineCurrentTime);
+
+    writeFileText((folder / "mimetype").string(), "application/zip");
+    EXPECT_THROW(ProjectBundleReader reader(folder.string()), ProjectBundleError);
+
+    const std::filesystem::path empty = root / "empty";
+    std::filesystem::create_directory(empty);
+    try {
+        ProjectBundleReader reader(empty.string());
+        ADD_FAILURE() << "a folder without a project was read";
+    } catch (const ProjectBundleError& e) {
+        EXPECT_TRUE(containsText(e.what(), "no project.yaml")) << e.what();
+    }
 }

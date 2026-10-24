@@ -120,7 +120,12 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
-    void postFrameMessage(const Frame& frame);
+    /**
+     * @brief Posts or withdraws the message frame calls for, measured under renderHash. The
+     * caller holds _frameMutex, so that a decision taken on a missing frame cannot land after
+     * another thread posted the message of the frame it computed.
+     **/
+    void postFrameMessage(const Frame& frame, U64 renderHash);
 
     KnobChoiceWPtr _iterations;
     KnobBoolWPtr _avoidShift;
@@ -129,6 +134,10 @@ private:
     std::mutex _frameMutex;
     U64 _frameKey;
     std::shared_ptr<const Frame> _frame;
+    // The render hash of the frame whose message is posted, 0 for none. It outlives a purge of
+    // _frame: Clear Caches refreshes every node's identity right after dropping the frame, and
+    // the message still holds until the settings or the input change.
+    U64 _messageHash;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -810,7 +810,7 @@ RawColorCalibration::refreshVersionVisibility()
 }
 
 void
-RawColorCalibration::showIlluminant()
+RawColorCalibration::showIlluminant(bool keepHueChroma)
 {
     const RawColorCalibrationOp& o = op();
     const KnobChoicePtr illuminantKnob = o.illuminant.lock();
@@ -830,12 +830,14 @@ RawColorCalibration::showIlluminant()
     _syncing = true;
     const float px = (float)xKnob->getValue();
     const float py = (float)yKnob->getValue();
-    const Vec3 lch = illuminantLch(px, py);
-    // A grey illuminant has no hue: the slider stays where it was, for when the chroma comes back.
-    if (lch[1] > 0.f) {
-        hueKnob->setValue(radiansToDegrees(lch[2]));
+    if (!keepHueChroma) {
+        const Vec3 lch = illuminantLch(px, py);
+        // A grey illuminant has no hue: the slider stays where it was, for when the chroma comes back.
+        if (lch[1] > 0.f) {
+            hueKnob->setValue(radiansToDegrees(lch[2]));
+        }
+        chromaKnob->setValue(lch[1]);
     }
-    chromaKnob->setValue(lch[1]);
 
     Xy xy = { px, py };
     const ImageMetadata source = getSourceMetadata(getCurrentTime(), ViewIdx(0));
@@ -1248,7 +1250,7 @@ RawColorCalibration::knobChanged(KnobI* k,
     } else if (isIlluminant || isSource || isTemperature) {
         syncIlluminant(isIlluminant, isTemperature);
     }
-    showIlluminant();
+    showIlluminant(isHueChroma);
 
     return true;
 }

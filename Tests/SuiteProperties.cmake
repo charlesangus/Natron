@@ -16,6 +16,9 @@ set(_natron_serial_suites
 set(_natron_long_suite_timeouts
     BaseTest 540
     FrameGraphBuild 900
+    # Debug: about 250 s legacy and 350 s task-graph, almost all of it the 100 MP whole-frame
+    # renders the suite exists to bound.
+    RawLargeTest 1080
 )
 
 set(_natron_long_suites "")

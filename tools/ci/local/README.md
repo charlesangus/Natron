@@ -464,6 +464,19 @@ own `natron-dev-gpu-home` volume. On top of the normal container it:
 
 - refuses to start unless some `/dev/dri/renderD*` is readable and writable
   by the invoking user, rather than silently falling back to lavapipe;
+- on a host with `/dev/nvidiactl` whose Docker daemon has the `nvidia` runtime
+  (nvidia-container-toolkit), creates the container with `--runtime=nvidia`
+  and `NVIDIA_VISIBLE_DEVICES=all`,
+  `NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,display`, so the host
+  driver, its Vulkan ICD and its EGL vendor file are injected alongside the
+  `/dev/dri` passthrough. Inside, `nvidia-smi -L` lists the NVIDIA GPUs and the
+  Vulkan device list shows them ahead of llvmpipe. No `VK_*` or
+  `__EGL_VENDOR_LIBRARY_DIRS` override is needed.
+
+A container keeps the runtime it was created with, so an existing `--gpu`
+container must be recreated to pick up the NVIDIA runtime: pass `--recreate`
+(caches are kept) or use a fresh name, e.g.
+`NATRON_DEV_CONTAINER=natron-dev-m91-gpu`.
 
 On an AMD RX 7900 XTX host, the Vulkan device list inside it is:
 

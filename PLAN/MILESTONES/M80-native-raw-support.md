@@ -678,7 +678,7 @@ Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 r
   - verify: `python3 -I -m py_compile`; a dry run lists every job and writes every XMP; the README table lists each reference with its tolerance class. T2 renders them.
   - size: M
 
-- [ ] M80.P7.T30 — Port darktable's illuminant and chromatic-adaptation maths
+- [x] M80.P7.T30 — Port darktable's illuminant and chromatic-adaptation maths
   - files: new `Engine/Nodes/Raw/RawColorCalibrationMath.h/.cpp`, new `Tests/Native/RawColorCalibrationMath_Test.cpp`
   - approach:
     - From `src/common/illuminants.h`: `illuminant_to_xy` with the fluorescent and LED tables, `CCT_to_xy_daylight`, `CCT_to_xy_blackbody`, `xy_to_CCT`, `CCT_reverse_lookup` (serial and deterministic, LUT built once and thread-safe), `xy_to_uv`, `find_temperature_from_raw_coeffs`, `WB_coeffs_to_illuminant_xy`, `matrice_pseudoinverse`, `illuminant_xy_to_XYZ`.
@@ -688,7 +688,7 @@ Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 r
   - verify: gtest against a table produced by compiling the darktable headers standalone in /tmp: daylight and Planckian xy at several CCTs, the A/E/F/LED xy, CCT round trips, a CAT16/Bradford/XYZ adaptation of D50 that is the identity, and `find_temperature_from_raw_coeffs` on the CR2's metadata. Compiled at P7.T26.
   - size: L
 
-- [ ] M80.P7.T31 — RawColorCalibration node: knobs, mixing and the per-pixel op
+- [x] M80.P7.T31 — RawColorCalibration node: knobs, mixing and the per-pixel op
   - files: new `Engine/Nodes/Raw/RawColorCalibration.h/.cpp` + per-node files (`RawColorCalibration.reg.inc`, `Engine/Nodes/Raw/docs/RawColorCalibration.md`, icon), new `Tests/Native/NativeRawColorCalibration_Test.cpp`
   - approach:
     - Image in and out, Tab `Raw/`, with the CAT and mixing knobs from the intro at their static defaults.
@@ -701,7 +701,7 @@ Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 r
   - verify: `expectNativeIdentity`; pipe illuminant + identity mix + gamut 0 + clip off is the identity within 1e-6; the darktable comparisons for every T29 job except the camera and scene-default ones, with the test project's working space set to linear Rec709 as the harness uses. Compiled at P7.T26.
   - size: L
 
-- [ ] M80.P7.T32 — RawColorCalibration: file-derived defaults, "as shot in camera", double-CAT and white-balance warnings
+- [x] M80.P7.T32 — RawColorCalibration: file-derived defaults, "as shot in camera", double-CAT and white-balance warnings
   - files: `Engine/Nodes/Raw/RawColorCalibration.cpp/.h`, `Engine/Nodes/IO/RawMetadata.h/.cpp` (`raw/cat_applied`, plus getters for `raw/wb_d65_coeffs` and `raw/wb_late_correction` if T14 left any out), new `Tests/Native/NativeRawColorCalibrationDefaults_Test.cpp`
   - approach:
     - Port `reload_defaults` (:3862) with RawPrepare's shown-until-overridden pattern:
@@ -717,7 +717,7 @@ Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 r
   - verify: the defaults on the CR2, RAF and DNG equal darktable's logged commit line from T29 (temperature within 1 K, xy within 1e-4); the darktable comparisons for the camera-illuminant jobs (as shot and preset 4) pass; a second instance downstream defaults to pipe + none and warns. Compiled at P7.T26.
   - size: L
 
-- [ ] M80.P7.T33 — RawColorCalibration: area color mapping (spot) and built-in presets
+- [x] M80.P7.T33 — RawColorCalibration: area color mapping (spot) and built-in presets
   - files: `Engine/Nodes/Raw/RawColorCalibration.cpp/.h`, new `Engine/Nodes/Raw/RawColorCalibrationSpot.cpp`, `Engine/Nodes/Raw/docs/RawColorCalibration.md`, new `Tests/Native/NativeRawColorCalibrationSpot_Test.cpp`
   - approach:
     - Spot area bottom-left/size knobs with `node->addRectangleInteract` (ExtentKnobs.cpp:276).
@@ -728,7 +728,7 @@ Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 r
   - verify: on a synthetic patch, correction maps the area to the target within ΔE 0.1 with and without mixing; measure followed by correction on the same area is a no-op; each preset writes darktable's values. No darktable render, because the picker is GUI-only. Compiled at P7.T26.
   - size: M
 
-- [ ] M80.P7.T34 — RawColorCalibration: color-checker calibration
+- [x] M80.P7.T34 — RawColorCalibration: color-checker calibration
   - files: new `Engine/Nodes/Raw/RawColorCalibrationChecker.h/.cpp`, new `Engine/Nodes/Raw/RawColorCheckerData.h` (from `src/common/colorchecker.h`), `Engine/Nodes/Raw/RawColorCalibration.cpp/.h`, new `Tests/Native/NativeRawColorCalibrationChecker_Test.cpp`
   - approach:
     - A corner pin through `Node::addCornerPinInteract` (Node.h:1536): hidden "from" knobs at the ideal box, visible "to" knobs on the chart corners.
@@ -749,7 +749,7 @@ Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 r
   - verify: CPU/GPU parity per adaptation × version × clip × gamut on RADV/llvmpipe, at RawInputColor's GPU tolerance class; `NativeGpuCapabilityTest` allowlists the node. Compiled at P7.T26.
   - size: M
 
-- [ ] M80.P7.T36 — Develop RAW: insert RawColorCalibration; RawTemperature defaults to As Shot to Reference
+- [x] M80.P7.T36 — Develop RAW: insert RawColorCalibration; RawTemperature defaults to As Shot to Reference
   - files: `Engine/Nodes/Raw/RawDevelop.h/.cpp`, `Engine/Nodes/Raw/RawTemperature.cpp`, `Engine/Nodes/Raw/docs/RawTemperature.md`, `Tests/Native/RawDevelop_Test.cpp`, new `Tests/Native/RawReferenceSceneDefault_Test.cpp`
   - approach:
     - `Chain` gains `colorCalibration` after `inputColor`: the slot arrays at RawDevelop.cpp:119 and :154, `addNodesToCreationOf` (:163), and the backdrop height.

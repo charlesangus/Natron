@@ -30,13 +30,16 @@
 #include <vector>
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QColor>
+#include <QComboBox>
 #include <QImage>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPixmap>
 #include <QPoint>
 #include <QPointF>
+#include <QPointer>
 #include <QString>
 #include <QTabWidget>
 
@@ -45,6 +48,7 @@
 #include "Engine/ColorWheelMath.h"
 
 #include "Gui/ColorAdjustPanel.h"
+#include "Gui/ColorPanelLayoutDev.h"
 #include "Gui/ColorWheelWidget.h"
 #include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SpinBox.h"
@@ -242,6 +246,42 @@ darkestNear(const QImage& image,
 
     return best;
 }
+
+// Sets or clears NATRON_COLOR_PANEL_DEV for one test and leaves the switch at its default,
+// with the variable unset, for the cases that follow in this process.
+struct DevSwitchScope {
+    explicit DevSwitchScope(bool enabled)
+    {
+        if (enabled) {
+            qputenv("NATRON_COLOR_PANEL_DEV", "1");
+        } else {
+            qunsetenv("NATRON_COLOR_PANEL_DEV");
+        }
+        ColorPanelLayoutDev::reloadForTests();
+    }
+
+    ~DevSwitchScope()
+    {
+        ColorPanelLayoutDev::instance()->setLayout(ColorPanelLayout());
+        qunsetenv("NATRON_COLOR_PANEL_DEV");
+        ColorPanelLayoutDev::reloadForTests();
+    }
+};
+
+struct LayoutCounter {
+    int changed = 0;
+    int applied = 0;
+
+    explicit LayoutCounter(ColorAdjustPanel& panel)
+    {
+        QObject::connect(ColorPanelLayoutDev::instance(), &ColorPanelLayoutDev::layoutChanged, &panel, [this]() {
+            ++changed;
+        });
+        QObject::connect(&panel, &ColorAdjustPanel::layoutApplied, [this]() {
+            ++applied;
+        });
+    }
+};
 
 QColor
 brightestNear(const QImage& image,
@@ -758,4 +798,127 @@ TEST(ColorAdjustPanel, SliderGradientsFollowTheCurrentColour)
     }
     EXPECT_LE(greyestSpread, 4);
     EXPECT_GT(mostTinted, 3);
+}
+
+TEST(ColorAdjustPanel, NoDevBarWithoutTheVariable)
+{
+    DevSwitchScope dev(false);
+    ColorAdjustPanel panel;
+
+    setUpPanel(panel, makeValue(1.0, 1.0, 1.0));
+
+    EXPECT_FALSE(ColorPanelLayoutDev::isDevEnabled());
+    EXPECT_EQ(nullptr, panel.getDevBar());
+    EXPECT_EQ(nullptr, panel.findChild<QWidget*>(QString::fromUtf8("ColorPanelDevBar")));
+    EXPECT_EQ(nullptr, panel.findChild<QComboBox*>());
+    EXPECT_TRUE(panel.getLayout() == ColorPanelLayout());
+}
+
+TEST(ColorAdjustPanel, DevComboChangeEmitsOnceAndRebuildsEveryPanel)
+{
+    DevSwitchScope dev(true);
+    ColorAdjustPanel panel;
+    ColorAdjustPanel other;
+    KnobColorValue start = makeValue(1.2, 1.0, 0.8);
+
+    setUpPanel(panel, start);
+    setUpPanel(other, start);
+    panel.setRightInset(30);
+    panel.getEditArea()->setEnabled(false);
+
+    QWidget* bar = panel.getDevBar();
+
+    ASSERT_TRUE(bar);
+    ASSERT_TRUE(other.getDevBar());
+
+    QComboBox* style = bar->findChild<QComboBox*>(QString::fromUtf8("ColorPanelDevStyle"));
+    QComboBox* otherStyle = other.getDevBar()->findChild<QComboBox*>(QString::fromUtf8("ColorPanelDevStyle"));
+
+    ASSERT_TRUE(style);
+    ASSERT_TRUE(otherStyle);
+
+    LayoutCounter counter(panel);
+    LayoutCounter otherCounter(other);
+    QPointer<QWidget> oldArea = panel.getEditArea();
+    QPointer<ColorWheelWidget> oldWheel = panel.getWheel();
+    double valueBefore = panel.getSpinBox(eColorSliderKindValue)->value();
+
+    style->setCurrentIndex(style->findData((int)ColorPanelLayout::SliderStyle::Custom));
+
+    EXPECT_EQ(1, counter.changed);
+    EXPECT_EQ(1, counter.applied);
+    EXPECT_EQ(1, otherCounter.applied);
+    EXPECT_TRUE(panel.getLayout().style == ColorPanelLayout::SliderStyle::Custom);
+    EXPECT_TRUE(other.getLayout().style == ColorPanelLayout::SliderStyle::Custom);
+    EXPECT_NE(oldArea.data(), panel.getEditArea());
+    EXPECT_NE(oldWheel.data(), panel.getWheel());
+    EXPECT_EQ(otherStyle->findData((int)ColorPanelLayout::SliderStyle::Custom), otherStyle->currentIndex());
+
+    // What the owner set on the old edit area carries over to the new one.
+    EXPECT_FALSE(panel.getEditArea()->isEnabled());
+    EXPECT_EQ(30, panel.getRightInset());
+    EXPECT_EQ(valueBefore, panel.getSpinBox(eColorSliderKindValue)->value());
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(start.rgb[i], panel.getWheel()->getValue().rgb[i]);
+    }
+
+    // The old widgets no longer reach the panel.
+    PanelRecorder rec(panel);
+
+    if (oldWheel) {
+        QPointF c = oldWheel->getDiscCentre();
+
+        sendMouse(oldWheel, QEvent::MouseButtonPress, c, Qt::LeftButton, Qt::LeftButton);
+        sendMouse(oldWheel, QEvent::MouseMove, c + QPointF(10., 0.), Qt::NoButton, Qt::LeftButton);
+        sendMouse(oldWheel, QEvent::MouseButtonRelease, c + QPointF(10., 0.), Qt::LeftButton, Qt::NoButton);
+    }
+    EXPECT_EQ(0, rec.starts);
+
+    // Setting the same value again changes nothing.
+    style->setCurrentIndex(style->findData((int)ColorPanelLayout::SliderStyle::Custom));
+    ColorPanelLayoutDev::instance()->setSliderStyle(ColorPanelLayout::SliderStyle::Custom);
+    EXPECT_EQ(1, counter.changed);
+    EXPECT_EQ(1, counter.applied);
+}
+
+TEST(ColorAdjustPanel, DevToggleMidGestureRebuildsOnlyAfterTheGestureEnds)
+{
+    DevSwitchScope dev(true);
+    ColorAdjustPanel panel;
+
+    setUpPanel(panel, makeValue(1.0, 1.0, 1.0));
+
+    LayoutCounter counter(panel);
+    PanelRecorder rec(panel);
+    ColorWheelWidget* wheel = panel.getWheel();
+    QWidget* area = panel.getEditArea();
+    QPointF c = wheel->getDiscCentre();
+
+    sendMouse(wheel, QEvent::MouseButtonPress, c, Qt::LeftButton, Qt::LeftButton);
+    sendMouse(wheel, QEvent::MouseMove, c + QPointF(8., -4.), Qt::NoButton, Qt::LeftButton);
+    ASSERT_TRUE(panel.isEditing());
+
+    QCheckBox* right = panel.getDevBar()->findChild<QCheckBox*>(QString::fromUtf8("ColorPanelDevExtendRight"));
+
+    ASSERT_TRUE(right);
+    right->setChecked(true);
+
+    EXPECT_EQ(1, counter.changed);
+    EXPECT_EQ(0, counter.applied);
+    EXPECT_EQ(area, panel.getEditArea());
+    EXPECT_FALSE(panel.getLayout().extendRight);
+
+    sendMouse(wheel, QEvent::MouseMove, c + QPointF(16., -8.), Qt::NoButton, Qt::LeftButton);
+    sendMouse(wheel, QEvent::MouseButtonRelease, c + QPointF(16., -8.), Qt::LeftButton, Qt::NoButton);
+
+    EXPECT_EQ(1, rec.starts);
+    EXPECT_GE(rec.moves, 1);
+    EXPECT_EQ(1, rec.ends);
+    EXPECT_FALSE(panel.isEditing());
+    EXPECT_EQ(1, counter.applied);
+    EXPECT_NE(area, panel.getEditArea());
+    EXPECT_TRUE(panel.getLayout().extendRight);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(panel.getValue().rgb[i], panel.getWheel()->getValue().rgb[i]);
+    }
 }

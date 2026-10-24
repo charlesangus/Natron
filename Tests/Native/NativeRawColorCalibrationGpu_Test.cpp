@@ -47,9 +47,12 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-// Sums of products, quotients and square roots rounded as the CPU rounds them; the kernel's own
-// pow() stays within an ulp or two of the CPU's powf().
-const ParityTolerance kCalibrationGpuTolerance = ParityTolerance::arithmetic();
+// Vulkan lets a device divide within 2.5 ulp and contract multiply-adds, and the error of this
+// chain follows the size of its intermediates rather than of the output: NVIDIA lands 1e-6 to
+// 2.6e-6 from the CPU for outputs anywhere from 0.13 (over a hundred ulp there) to 2.4, so a
+// bound in ulps of the output cannot hold and arithmetic()'s 1e-6 sits below it. 1e-5 leaves
+// nearly four times the worst measured, and stays a hundred times under a wrong matrix entry.
+const ParityTolerance kCalibrationGpuTolerance = ParityTolerance::make(0., 1e-5);
 
 const char* const kLinearRec709Space = "Linear Rec.709 (sRGB)";
 

@@ -28,7 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -201,7 +204,16 @@ protected:
         const std::size_t first = diff.firstMismatchIndex;
         EXPECT_EQ(0u, diff.mismatches) << what << ": " << diff.mismatches << " of " << diff.compared << " floats differ, the first at float " << first
                                        << " (cpu " << cpu.pixels[first] << ", gpu " << run.pixels[first] << "), the worst by " << diff.worstAbsolute;
-        std::printf("%s: %zu floats, worst difference %g\n", what.c_str(), diff.compared, diff.worstAbsolute);
+        double worstRatio = 0.;
+        for (std::size_t i = 0; i < cpu.pixels.size(); ++i) {
+            const double reference = cpu.pixels[i];
+            const double bound = tolerance.absolute + tolerance.relative * std::max(1., std::fabs(reference));
+            const double error = std::fabs(reference - (double)run.pixels[i]);
+            if (std::isfinite(error) && error > 0.) {
+                worstRatio = std::max(worstRatio, bound > 0. ? error / bound : std::numeric_limits<double>::infinity());
+            }
+        }
+        std::printf("[          ] %s: %zu floats, worst difference %g, worst error/bound %.3f\n", what.c_str(), diff.compared, diff.worstAbsolute, worstRatio);
 
         return cpu;
     }

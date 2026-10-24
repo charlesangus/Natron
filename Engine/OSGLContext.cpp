@@ -43,6 +43,7 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/GpuDeviceList.h"
+#include "Engine/StartupGLDiag.h"
 #include "Global/FloatingPointExceptions.h"
 
 NATRON_NAMESPACE_ENTER
@@ -345,7 +346,7 @@ OSGLContext::setContextCurrentNoRender()
     if (appPTR->isOnWayland()) {
         OSGLContext_wayland::makeContextCurrent( static_cast<const OSGLContext_wayland *>( _imp->_platformContext.get()) );
     } else {
-        OSGLContext_x11::makeContextCurrent( static_cast<const OSGLContext_x11 *>( _imp->_platformContext.get()) );
+        OSGLContext_x11::makeContextCurrent(static_cast<const OSGLContext_x11*>(_imp->_platformContext.get()), "OSGLContext::setContextCurrentNoRender", __builtin_return_address(0));
     }
 #endif
 }
@@ -393,7 +394,7 @@ OSGLContext::unsetCurrentContextNoRender()
     if (appPTR->isOnWayland()) {
         OSGLContext_wayland::makeContextCurrent( nullptr );
     } else {
-        OSGLContext_x11::makeContextCurrent( nullptr );
+        OSGLContext_x11::makeContextCurrent(nullptr, "OSGLContext::unsetCurrentContextNoRender", __builtin_return_address(0));
     }
 #endif
 }
@@ -609,7 +610,9 @@ OSGLContext::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
     if (appPTR->isOnWayland()) {
         OSGLContext_wayland::getGPUInfos(renderers);
     } else {
+        StartupGLDiag::checkpoint("getGPUInfos:begin");
         OSGLContext_x11::getGPUInfos(renderers);
+        StartupGLDiag::checkpoint("getGPUInfos:end");
     }
 #endif
 }

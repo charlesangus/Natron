@@ -56,13 +56,13 @@ Deps: M100 - Content Node Hashing.
   - verify: at the phase build, the spike test passes under `--repeat until-fail:50` with 16 threads. The inventory is recorded, and the user approves the P4 thread model before P4 starts.
   - size: L
 
-- [ ] M167.P1.T2 — Add `getMetadata(time, view)` and `getTimeInvariantMetadata()` to `EffectInstance`, with the identity rule
+- [x] M167.P1.T2 — Add `getMetadata(time, view)` and `getTimeInvariantMetadata()` to `EffectInstance`, with the identity rule
   - files: `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp`, `Engine/EffectInstancePrivate.h`, `Engine/EffectInstancePrivate.cpp`, `Engine/NodeMetadata.h`
   - approach: Add `typedef std::shared_ptr<const NodeMetadata> NodeMetadataConstPtr`, with no new fields and no premult. Add a new virtual `getPreferredMetadataAt(time, view, md)` whose default forwards to the old `getPreferredMetadata(md)`, so overrides can move family by family. `getDefaultMetadataAt(time, view)` is `getDefaultMetadata` reading each input's `getMetadata` at the same time. `getMetadata` reads the hash first, looks in a new `ActionsCache` slot under (hash, time, view), and otherwise derives with no lock held: if the identity check at that time (whole format, identity scale) names an input, copy the output fields from that input at the identity time; otherwise default, then preferred, then the clamping half of `checkMetadata` (warnings stay out). It stores the result only if the generation hasn't moved, and drops the cache on the same-hash invalidation. `getTimeInvariantMetadata()` is today's path, cached per hash. The timeless getters stay untouched until P6.
   - verify: P1.T3's tests, at the phase build `tools/ci/remote/build.sh fast --tests`.
   - size: L
 
-- [ ] M167.P1.T3 — Test effect and acceptance tests for per-frame metadata
+- [x] M167.P1.T3 — Test effect and acceptance tests for per-frame metadata
   - files: `Tests/NativeMetadataTestEffect.h`, `Tests/PerFrameMetadata_Test.cpp` (new), `Tests/CMakeLists.txt`, `Tests/TimeVaryingLayers_Test.cpp`
   - approach: Give the metadata source test effect animatable nComps, bit depth, PAR and format knobs, answered through `getPreferredMetadataAt`, plus a derivation counter. Cases: a Switch keyed between rgb+spec at f1 and rgba at f2 gives `getMetadata` RGB at f1 and RGBA at f2, and so does a native node below it; an integer Dissolve does the same; a keyed Disable passes its input's metadata through per frame; `kNatronTestFrameWindowPluginID` with a one-frame range reports the held frame's metadata; the Switch's `getTimeInvariantMetadata()` is still the widest; a second query does not derive again; 16 threads querying random frames while the main thread toggles a knob 1000 times: every cached answer equals a fresh derivation under the hash it was stored under. In `TimeVaryingLayers_Test`, the Switch cases also assert the metadata layout.
   - verify: `tools/ci/remote/build.sh fast --tests` passes in both legs, and `PerFrameMetadata` passes `--repeat until-fail:50` in natron-dev against that build.

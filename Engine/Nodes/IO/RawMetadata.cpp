@@ -394,6 +394,20 @@ setCatApplied(ImageMetadata* metadata)
     metadata->setInt(kRawMetadataCatApplied, 1);
 }
 
+bool
+getMonochrome(const ImageMetadata& metadata)
+{
+    const std::optional<int> monochrome = metadata.getInt(kRawMetadataMonochrome);
+
+    return monochrome && (*monochrome != 0);
+}
+
+void
+setMonochrome(ImageMetadata* metadata)
+{
+    metadata->setInt(kRawMetadataMonochrome, 1);
+}
+
 std::optional<std::string>
 getMake(const ImageMetadata& metadata)
 {

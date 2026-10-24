@@ -26,6 +26,8 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <vector>
+
 #include "Global/Macros.h"
 
 #include "Engine/EngineFwd.h"
@@ -37,9 +39,11 @@ NATRON_NAMESPACE_ENTER
 class CreateNodeArgs;
 
 /**
- * @brief The Develop RAW chain: RawPrepare, RawTemperature, RawHighlights, RawDemosaic and
- * RawInputColor connected one below the other under a Read of a camera raw file, at their
- * defaults, which are darktable's, as loose nodes inside a backdrop titled "Develop RAW".
+ * @brief The Develop RAW chain: RawPrepare, RawTemperature, RawHighlights, RawDemosaic,
+ * RawInputColor and RawColorCalibration connected one below the other under a Read of a camera raw
+ * file, at their defaults, which are darktable's under its default scene-referred workflow
+ * (RawTemperature as shot to reference, RawColorCalibration adapting from the file's illuminant),
+ * as loose nodes inside a backdrop titled "Develop RAW".
  *
  * The native Read asks for it when it is created in the interface -- from the node menu, by a
  * file dropped on the node graph or a file opened with Natron -- on a camera raw file, with the
@@ -53,10 +57,38 @@ struct Chain {
     NodePtr highlights;
     NodePtr demosaic;
     NodePtr inputColor;
+    NodePtr colorCalibration;
     NodePtr backdrop;
 
     bool complete() const;
 };
+
+struct NodeSize {
+    double width = 0.;
+    double height = 0.;
+};
+
+/**
+ * @brief A rectangle of the node graph: its top-left corner, y growing downwards, and its size.
+ **/
+struct GraphRect {
+    double x = 0.;
+    double y = 0.;
+    double width = 0.;
+    double height = 0.;
+};
+
+struct ChainLayout {
+    std::vector<GraphRect> nodes;
+    GraphRect backdrop;
+};
+
+/**
+ * @brief Where buildChain() puts nodes of the given sizes under a Read at (readX, readY) of the
+ * given size: one below the other in order, each centred under the Read, inside a backdrop whose
+ * title bar sits above the first.
+ **/
+ChainLayout layoutChain(double readX, double readY, double readWidth, double readHeight, const std::vector<NodeSize>& sizes);
 
 /**
  * @brief Creates the chain below read, in read's group, and returns it; a chain whose nodes could

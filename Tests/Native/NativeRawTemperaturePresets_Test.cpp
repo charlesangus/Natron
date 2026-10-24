@@ -233,12 +233,16 @@ TEST_F(NativeRawTemperaturePresetsTest, WithoutAsShotOrMatrixAsShotTakesTheFirst
     // darktable's _find_coeffs(): the camera's first row, which for the X-Pro2 is daylight.
     NodePtr node = createTemperature(cameraMetadata("Fujifilm", "X-Pro2"));
     ASSERT_TRUE(bool(node));
-    ASSERT_EQ((int)eRawTemperatureModeAsShot, knobChoice(node, kRawTemperatureParamMode)->getValue());
+    knobChoice(node, kRawTemperatureParamMode)->setValue((int)eRawTemperatureModeAsShot);
+    expectMultiplied(node, kXPro2Daylight);
+    // As Shot to Reference, the default, applies the same multipliers.
+    knobChoice(node, kRawTemperatureParamMode)->setValue((int)eRawTemperatureModeAsShotToReference);
     expectMultiplied(node, kXPro2Daylight);
 
     // For the 5D Mark III the first row is daylight at tuning -9.
     NodePtr canon = createTemperature(cameraMetadata("Canon", "EOS 5D Mark III"));
     ASSERT_TRUE(bool(canon));
+    knobChoice(canon, kRawTemperatureParamMode)->setValue((int)eRawTemperatureModeAsShot);
     expectMultiplied(canon, k5DMarkIIIDaylightMinus9);
 }
 

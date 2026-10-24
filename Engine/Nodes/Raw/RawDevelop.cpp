@@ -44,6 +44,7 @@
 #include "Engine/NodeGraphI.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
+#include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/Nodes/Raw/RawHighlights.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
@@ -94,7 +95,33 @@ namespace {
 bool
 Chain::complete() const
 {
-    return prepare && temperature && highlights && demosaic && inputColor && backdrop;
+    return prepare && temperature && highlights && demosaic && inputColor && colorCalibration && backdrop;
+}
+
+ChainLayout
+layoutChain(double readX,
+            double readY,
+            double readWidth,
+            double readHeight,
+            const std::vector<NodeSize>& sizes)
+{
+    ChainLayout layout;
+    double y = readY + readHeight + kNodeGap + kBackdropHeader;
+    double maxWidth = readWidth;
+
+    for (const NodeSize& size : sizes) {
+        // A node shorter or narrower than the Read is centred under it.
+        layout.nodes.push_back({ readX + (readWidth - size.width) / 2., y, size.width, size.height });
+        maxWidth = std::max(maxWidth, size.width);
+        y += size.height + kNodeGap;
+    }
+    const double top = readY + readHeight + kNodeGap;
+    layout.backdrop.width = maxWidth + 2. * kBackdropMargin;
+    layout.backdrop.height = (y - kNodeGap + kBackdropMargin) - top;
+    layout.backdrop.x = readX + readWidth / 2. - layout.backdrop.width / 2.;
+    layout.backdrop.y = top;
+
+    return layout;
 }
 
 Chain
@@ -115,43 +142,46 @@ buildChain(const NodePtr& read)
     read->getPosition(&readX, &readY);
     read->getSize(&readW, &readH);
 
-    const char* const ids[5] = { PLUGINID_NATRON_RAWPREPARE, PLUGINID_NATRON_RAWTEMPERATURE, PLUGINID_NATRON_RAWHIGHLIGHTS, PLUGINID_NATRON_RAWDEMOSAIC, PLUGINID_NATRON_RAWINPUTCOLOR };
-    NodePtr* const slots[5] = { &chain.prepare, &chain.temperature, &chain.highlights, &chain.demosaic, &chain.inputColor };
-    double y = readY + readH + kNodeGap + kBackdropHeader;
-    double maxWidth = readW;
-    NodePtr previous = read;
+    const char* const ids[] = { PLUGINID_NATRON_RAWPREPARE, PLUGINID_NATRON_RAWTEMPERATURE, PLUGINID_NATRON_RAWHIGHLIGHTS, PLUGINID_NATRON_RAWDEMOSAIC, PLUGINID_NATRON_RAWINPUTCOLOR, PLUGINID_NATRON_RAWCOLORCALIBRATION };
+    NodePtr* const slots[] = { &chain.prepare, &chain.temperature, &chain.highlights, &chain.demosaic, &chain.inputColor, &chain.colorCalibration };
+    static_assert(sizeof(ids) / sizeof(ids[0]) == sizeof(slots) / sizeof(slots[0]), "one slot per node");
+    const int count = (int)(sizeof(ids) / sizeof(ids[0]));
+    // Each node's size is known once it exists, so the chain is created, then laid out.
+    std::vector<NodeSize> sizes;
     bool ok = true;
-    for (int i = 0; (i < 5) && ok; ++i) {
-        NodePtr node = createChainNode(app, group, ids[i], readX, y);
+    for (int i = 0; i < count; ++i) {
+        NodePtr node = createChainNode(app, group, ids[i], readX, readY + readH + kNodeGap + kBackdropHeader);
         if (!node) {
             ok = false;
             break;
         }
         *slots[i] = node;
-        double w = 0., h = 0.;
-        node->getSize(&w, &h);
-        // A node shorter or narrower than the Read is centred under it.
-        node->setPosition(readX + (readW - w) / 2., y);
-        maxWidth = std::max(maxWidth, w);
-        y += h + kNodeGap;
-        ok = app->getProject()->connectNodes(0, previous, node);
-        previous = node;
+        NodeSize size;
+        node->getSize(&size.width, &size.height);
+        sizes.push_back(size);
     }
 
     if (ok) {
-        const double top = readY + readH + kNodeGap;
-        const double width = maxWidth + 2. * kBackdropMargin;
-        const double height = (y - kNodeGap + kBackdropMargin) - top;
-        chain.backdrop = createChainNode(app, group, PLUGINID_NATRON_BACKDROP, readX + readW / 2. - width / 2., top);
-        if (chain.backdrop) {
-            chain.backdrop->setLabel(kRawDevelopBackdropTitle);
-            chain.backdrop->setPosition(readX + readW / 2. - width / 2., top);
-            chain.backdrop->setSize(width, height);
+        const ChainLayout layout = layoutChain(readX, readY, readW, readH, sizes);
+        NodePtr previous = read;
+        for (int i = 0; (i < count) && ok; ++i) {
+            NodePtr node = *slots[i];
+            node->setPosition(layout.nodes[(std::size_t)i].x, layout.nodes[(std::size_t)i].y);
+            ok = app->getProject()->connectNodes(0, previous, node);
+            previous = node;
+        }
+        if (ok) {
+            chain.backdrop = createChainNode(app, group, PLUGINID_NATRON_BACKDROP, layout.backdrop.x, layout.backdrop.y);
+            if (chain.backdrop) {
+                chain.backdrop->setLabel(kRawDevelopBackdropTitle);
+                chain.backdrop->setPosition(layout.backdrop.x, layout.backdrop.y);
+                chain.backdrop->setSize(layout.backdrop.width, layout.backdrop.height);
+            }
         }
     }
 
     if (!chain.complete()) {
-        for (NodePtr* slot : { &chain.prepare, &chain.temperature, &chain.highlights, &chain.demosaic, &chain.inputColor, &chain.backdrop }) {
+        for (NodePtr* slot : { &chain.prepare, &chain.temperature, &chain.highlights, &chain.demosaic, &chain.inputColor, &chain.colorCalibration, &chain.backdrop }) {
             if (*slot) {
                 (*slot)->destroyNode(false, false);
             }
@@ -160,7 +190,7 @@ buildChain(const NodePtr& read)
         return Chain();
     }
     if (NodeGraphI* graph = group->getNodeGraph()) {
-        graph->addNodesToCreationOf(read, { chain.prepare, chain.temperature, chain.highlights, chain.demosaic, chain.inputColor, chain.backdrop });
+        graph->addNodesToCreationOf(read, { chain.prepare, chain.temperature, chain.highlights, chain.demosaic, chain.inputColor, chain.colorCalibration, chain.backdrop });
     }
 
     return chain;

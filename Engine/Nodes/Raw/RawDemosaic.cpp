@@ -909,8 +909,20 @@ RawDemosaic::deriveOutputMetadata(double time,
 {
     ImageMetadata metadata = StagedImageEffect::deriveOutputMetadata(time, view);
 
+    // darktable's demosaic sets DT_IMAGE_MONOCHROME_BAYER while a passthrough (monochrome) method
+    // is chosen, which dt_image_is_monochrome() reports from then on.
+    const std::optional<RawLayout> layout = RawLayout::fromMetadata(metadata);
+    const KnobChoicePtr bayerMethod = _bayerMethod.lock();
+    const KnobChoicePtr xtransMethod = _xtransMethod.lock();
+    if (layout && (layout->period() == 2) && bayerMethod && (bayerMethod->getValueAtTime(time) == (int)eRawDemosaicBayerPassthroughMonochrome)) {
+        RawMetadata::setMonochrome(&metadata);
+    } else if (layout && (layout->period() == 6) && xtransMethod && (xtransMethod->getValueAtTime(time) == (int)eRawDemosaicXTransPassthroughMonochrome)) {
+        RawMetadata::setMonochrome(&metadata);
+    }
+
     // The output is an image: what described the mosaic no longer describes it. The camera
-    // matrix and the white balance stay for RawInputColor.
+    // matrix and the white balance stay for RawInputColor, and raw/monochrome for
+    // RawColorCalibration.
     metadata.remove(kRawMetadataCfaPattern);
     metadata.remove(kRawMetadataCfaOrigin);
     metadata.remove(kRawMetadataStage);

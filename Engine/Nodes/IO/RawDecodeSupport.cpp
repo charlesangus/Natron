@@ -554,6 +554,11 @@ namespace {
             }
             header->channels = decoded->cpp;
             metadata.setString(kRawMetadataCfaPattern, kRawCfaPatternNone);
+            // dt_imageio_open_rawspeed_sraw(): one sample per pixel without a CFA is a monochrome
+            // sensor.
+            if (decoded->cpp == 1) {
+                RawMetadata::setMonochrome(&metadata);
+            }
             std::vector<double> black;
             for (int c = 0; c < header->channels; ++c) {
                 black.push_back(separate[(std::size_t)std::min(c, 3)]);

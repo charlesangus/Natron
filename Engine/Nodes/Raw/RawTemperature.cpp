@@ -152,9 +152,12 @@ RawTemperatureOp::createKnobs(KnobHolder* holder,
     modes.push_back(ChoiceOption("custom", EffectInstance::tr("Custom").toStdString(), EffectInstance::tr("The red, green and blue multipliers below, which the temperature and the tint set.").toStdString()));
     modes.push_back(ChoiceOption("cameraPreset", EffectInstance::tr("Camera Preset").toStdString(), EffectInstance::tr("The camera's white balance setting the Preset knob names, at the Finetune knob's tuning.").toStdString()));
     modes.push_back(ChoiceOption("fromImageArea", EffectInstance::tr("From Image Area").toStdString(), EffectInstance::tr("The multipliers that make the mean of the spot area neutral, stored in the red, green and blue knobs when Pick is pressed. Choosing this mode picks.").toStdString()));
-    modes.push_back(ChoiceOption("asShotToReference", EffectInstance::tr("As Shot to Reference").toStdString(), EffectInstance::tr("The as-shot multipliers, which RawInputColor corrects to the camera reference ones before its colour matrix, so the highlights and demosaic work on as-shot data and the colour ends at D65.").toStdString()));
+    modes.push_back(ChoiceOption("asShotToReference", EffectInstance::tr("As Shot to Reference").toStdString(), EffectInstance::tr("The as-shot multipliers, which RawInputColor corrects to the camera reference ones before its colour matrix, so the highlights and demosaic work on as-shot data and the colour ends at D65. The image is white-balanced only by a chromatic adaptation after RawInputColor, such as RawColorCalibration's; RawColorCalibration warns when its adaptation follows another white balance.").toStdString()));
     modeKnob->populateChoices(modes);
-    modeKnob->setDefaultValue((int)eRawTemperatureModeAsShot);
+    // darktable's default under its default scene-referred workflow (temperature.c
+    // reload_defaults(), dt_is_scene_referred()): the white balance to D65 is left to a CAT after
+    // RawInputColor, RawColorCalibration's by default.
+    modeKnob->setDefaultValue((int)eRawTemperatureModeAsShotToReference);
     modeKnob->setAnimationEnabled(false);
     page->addKnob(modeKnob);
     mode = modeKnob;

@@ -85,6 +85,9 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
   are Point ops with no halo, and darktable's tiny-image fallback to VNG does not apply to them.
   Match Greens and Color Smoothing still apply, as in darktable. No GPU path: they keep the node
   on the CPU. darktable's "Monochrome" (a true mono sensor) is the no-CFA pass-through below.
+  While "passthrough (monochrome)" is chosen the output carries `raw/monochrome`, as darktable
+  flags the image `DT_IMAGE_MONOCHROME_BAYER`, so RawColorCalibration defaults to the plain
+  channel mixer. The key the Read sets for a monochrome sensor passes through in every mode.
 - **Match Greens**: Bayer only, darktable's local, full or both averages. The local threshold
   is 0.0001 x `raw/iso`.
 - **Edge Threshold**: PPG's pre-median.

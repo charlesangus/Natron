@@ -54,6 +54,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Raw/RawColorMath.h"
 #include "Engine/Nodes/Raw/RawDevelop.h"
+#include "Engine/Nodes/Raw/RawTemperature.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/RectD.h"
@@ -188,8 +189,9 @@ protected:
         return read;
     }
 
-    // A Read of site's file with the Develop RAW chain under it, at its defaults.
-    RawDevelop::Chain createChain(const RawReference::CropSite& site)
+    // A Read of site's file with the Develop RAW chain under it, at its defaults: darktable's
+    // under its default scene-referred workflow, which the scene-referred default jobs render.
+    RawDevelop::Chain createDefaultChain(const RawReference::CropSite& site)
     {
         NodePtr read = createRead(*site.fixture);
 
@@ -198,6 +200,24 @@ protected:
         }
 
         return RawDevelop::buildChain(read);
+    }
+
+    // The Develop RAW chain with RawTemperature on As Shot, darktable's default under the
+    // workflow "none" every other job runs with. Those jobs end at colorin, so the chain's
+    // RawInputColor is what they compare.
+    RawDevelop::Chain createChain(const RawReference::CropSite& site)
+    {
+        RawDevelop::Chain chain = createDefaultChain(site);
+
+        if (chain.temperature) {
+            KnobChoicePtr mode = chain.temperature->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawTemperatureParamMode);
+            EXPECT_TRUE(bool(mode));
+            if (mode) {
+                mode->setValue((int)eRawTemperatureModeAsShot);
+            }
+        }
+
+        return chain;
     }
 
     // Puts node between the Develop chain's node below and its input, as darktable's pipe order

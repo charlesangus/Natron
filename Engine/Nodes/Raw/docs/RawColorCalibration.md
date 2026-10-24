@@ -63,7 +63,10 @@ and x, y come from the input and are shown, greyed out, on the knobs; turning it
 shown values for editing. darktable's rules:
 
 - An upstream RawColorCalibration that adapts publishes `raw/cat_applied`; below it the defaults
-  are illuminant pipe and adaptation none (the plain channel mixer).
+  are illuminant pipe and adaptation none (the plain channel mixer). The same goes for a
+  monochrome image (`dt_image_is_monochrome()`), which `raw/monochrome` marks: the Read sets it
+  for a raw without a CFA and one sample per pixel, RawDemosaic for its passthrough (monochrome)
+  methods.
 - Otherwise CAT16. When `_get_white_balance_coeff()` finds raw input, the illuminant as shot in
   camera (`find_temperature_from_raw_coeffs()`) is then turned by
   `_check_if_close_to_daylight()` into D, black body or custom at the nearest temperature, which
@@ -88,7 +91,8 @@ shown values for editing. darktable's rules:
 - `_set_trouble_messages()`, joined with the gray warning in the node's one message: a CAT below
   another that adapts warns "double CAT applied"; a CAT on a white balance other than the
   reference (RawTemperature As Shot, say) warns "white balance applied twice". A white balance
-  applied by RawTemperature stands for darktable's enabled white balance module.
+  applied by RawTemperature stands for darktable's enabled white balance module. Neither warns
+  on a monochrome image.
 - Choosing the camera illuminant, or leaving it, sets x, y, the temperature and the adaptation
   from the camera's white balance, as `gui_changed()` does.
 
@@ -140,8 +144,6 @@ darktable's auto-applied "scene-referred default" preset is the module's file de
 - Animation is off for the choices, toggles and the illuminant knobs, which sync each other; the
   sliders animate.
 - As darktable leaves it, the gray output stays in the adaptation's LMS or XYZ space.
-- darktable also defaults to the plain channel mixer for a monochrome image. Nothing marks one once
-  RawDemosaic has dropped the mosaic's description, so that rule is not ported.
 - darktable 5.6.2's third trouble message ("white balance missing") cannot appear there: the
   module returns early when the white balance module is off. It is not ported either.
 - The area mapping targets and the mixing toggle are per-node knobs saved with the project, where

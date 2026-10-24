@@ -27,6 +27,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -42,6 +43,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/Nodes/Raw/RawDevelop.h"
 #include "Engine/Nodes/Raw/RawHighlights.h"
@@ -89,7 +91,7 @@ protected:
     }
 };
 
-TEST_F(RawDevelopTest, BuildsTheFiveNodesInOrderInABackdrop)
+TEST_F(RawDevelopTest, BuildsTheSixNodesInOrderInABackdrop)
 {
     NodePtr read = createRawRead();
     ASSERT_TRUE(bool(read));
@@ -103,6 +105,7 @@ TEST_F(RawDevelopTest, BuildsTheFiveNodesInOrderInABackdrop)
     EXPECT_EQ(std::string(PLUGINID_NATRON_RAWHIGHLIGHTS), chain.highlights->getPluginID());
     EXPECT_EQ(std::string(PLUGINID_NATRON_RAWDEMOSAIC), chain.demosaic->getPluginID());
     EXPECT_EQ(std::string(PLUGINID_NATRON_RAWINPUTCOLOR), chain.inputColor->getPluginID());
+    EXPECT_EQ(std::string(PLUGINID_NATRON_RAWCOLORCALIBRATION), chain.colorCalibration->getPluginID());
     EXPECT_EQ(std::string(PLUGINID_NATRON_BACKDROP), chain.backdrop->getPluginID());
     EXPECT_EQ(std::string(kRawDevelopBackdropTitle), chain.backdrop->getLabel());
 
@@ -111,15 +114,17 @@ TEST_F(RawDevelopTest, BuildsTheFiveNodesInOrderInABackdrop)
     EXPECT_EQ(chain.temperature, chain.highlights->getInput(0));
     EXPECT_EQ(chain.highlights, chain.demosaic->getInput(0));
     EXPECT_EQ(chain.demosaic, chain.inputColor->getInput(0));
+    EXPECT_EQ(chain.inputColor, chain.colorCalibration->getInput(0));
     EXPECT_EQ(eDataKindImage, chain.inputColor->getEffectiveOutputDataKind());
+    EXPECT_EQ(eDataKindImage, chain.colorCalibration->getEffectiveOutputDataKind());
 
     // Loose nodes in the Read's own group, not a group of their own.
-    for (const NodePtr& node : { chain.prepare, chain.temperature, chain.highlights, chain.demosaic, chain.inputColor, chain.backdrop }) {
+    for (const NodePtr& node : { chain.prepare, chain.temperature, chain.highlights, chain.demosaic, chain.inputColor, chain.colorCalibration, chain.backdrop }) {
         EXPECT_EQ(read->getGroup(), node->getGroup());
     }
 
-    // Every node at its defaults, which are darktable's.
-    EXPECT_EQ((int)eRawTemperatureModeAsShot, chain.temperature->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawTemperatureParamMode)->getValue());
+    // Every node at its defaults, which are darktable's under its scene-referred workflow.
+    EXPECT_EQ((int)eRawTemperatureModeAsShotToReference, chain.temperature->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawTemperatureParamMode)->getValue());
     EXPECT_EQ((int)eRawHighlightsModeOpposed, chain.highlights->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawHighlightsParamMode)->getValue());
     EXPECT_EQ((int)eRawDemosaicBayerRCD, chain.demosaic->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawDemosaicParamBayerMethod)->getValue());
     EXPECT_EQ((int)eRawDemosaicXTransMarkesteijn1, chain.demosaic->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawDemosaicParamXTransMethod)->getValue());
@@ -176,5 +181,49 @@ TEST_F(RawDevelopTest, LoadingASavedProjectDoesNotAddASecondChain)
     EXPECT_EQ(1, counts[PLUGINID_NATRON_RAWHIGHLIGHTS]);
     EXPECT_EQ(1, counts[PLUGINID_NATRON_RAWDEMOSAIC]);
     EXPECT_EQ(1, counts[PLUGINID_NATRON_RAWINPUTCOLOR]);
+    EXPECT_EQ(1, counts[PLUGINID_NATRON_RAWCOLORCALIBRATION]);
     EXPECT_EQ(1, counts[PLUGINID_NATRON_BACKDROP]);
+}
+
+// RawTemperature defaults to As Shot to Reference wherever it is created, darktable's default
+// under its default scene-referred workflow, not only in the Develop chain.
+TEST_F(RawDevelopTest, AFreshRawTemperatureDefaultsToAsShotToReference)
+{
+    NodePtr temperature = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWTEMPERATURE));
+    ASSERT_TRUE(bool(temperature));
+    KnobChoicePtr mode = temperature->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawTemperatureParamMode);
+    ASSERT_TRUE(bool(mode));
+    EXPECT_EQ((int)eRawTemperatureModeAsShotToReference, mode->getValue());
+    EXPECT_EQ((int)eRawTemperatureModeAsShotToReference, mode->getDefaultValue(0));
+}
+
+// Without an interface every node is 0 x 0 at the origin, so the layout buildChain() applies is
+// checked on its own, with the sizes a node graph gives.
+TEST_F(RawDevelopTest, TheLayoutKeepsTheSixNodesInOrderInsideTheBackdrop)
+{
+    const double readX = 100., readY = -40., readW = 104., readH = 34.;
+    const std::vector<RawDevelop::NodeSize> sizes = { { 104., 34. }, { 120., 34. }, { 104., 50. }, { 104., 34. }, { 140., 34. }, { 150., 40. } };
+    const RawDevelop::ChainLayout layout = RawDevelop::layoutChain(readX, readY, readW, readH, sizes);
+
+    ASSERT_EQ(sizes.size(), layout.nodes.size());
+    const RawDevelop::GraphRect& b = layout.backdrop;
+    // Below the Read, which stays outside.
+    EXPECT_GE(b.y, readY + readH);
+    for (std::size_t i = 0; i < layout.nodes.size(); ++i) {
+        const RawDevelop::GraphRect& n = layout.nodes[i];
+        EXPECT_EQ(sizes[i].width, n.width) << i;
+        EXPECT_EQ(sizes[i].height, n.height) << i;
+        // Inside the backdrop, under its title bar.
+        EXPECT_GT(n.y, b.y) << i;
+        EXPECT_GE(n.x, b.x) << i;
+        EXPECT_LE(n.x + n.width, b.x + b.width) << i;
+        EXPECT_LE(n.y + n.height, b.y + b.height) << i;
+        // Centred under the Read.
+        EXPECT_DOUBLE_EQ(readX + readW / 2., n.x + n.width / 2.) << i;
+        // Each below the one before, without overlapping it.
+        if (i > 0) {
+            const RawDevelop::GraphRect& above = layout.nodes[i - 1];
+            EXPECT_GT(n.y, above.y + above.height) << i;
+        }
+    }
 }

@@ -555,7 +555,7 @@ Settings::initializeKnobsProjectSetup()
     _developRawOnRead->setName("developRawOnRead");
     _developRawOnRead->setHintToolTip(tr("If checked, creating a Read of a camera raw file in the interface (from the node menu, by "
                                          "dropping a file or opening one) also creates RawPrepare, RawTemperature, RawHighlights, "
-                                         "RawDemosaic and RawInputColor below it, in a backdrop titled \"Develop RAW\". Loading a project "
+                                         "RawDemosaic, RawInputColor and RawColorCalibration below it, in a backdrop titled \"Develop RAW\". Loading a project "
                                          "or creating a Read from Python never does."));
     _projectsPage->addKnob(_developRawOnRead);
 

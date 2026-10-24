@@ -67,6 +67,7 @@
 #define kRawMetadataWbD65Coeffs "raw/wb_d65_coeffs"
 #define kRawMetadataSensorWhiteLevel "raw/sensor_white_level"
 #define kRawMetadataCatApplied "raw/cat_applied"
+#define kRawMetadataMonochrome "raw/monochrome"
 
 #define kRawCfaPatternNone "none"
 #define kRawStageRaw "raw"
@@ -290,6 +291,15 @@ void setWbLateCorrection(ImageMetadata* metadata, const std::array<double, 3>& c
  **/
 bool getCatApplied(const ImageMetadata& metadata);
 void setCatApplied(ImageMetadata* metadata);
+
+/**
+ * @brief raw/monochrome: 1 for an image without colour, darktable's DT_IMAGE_MONOCHROME (a raw
+ * rawspeed decodes as one sample per photosite without a colour filter array) or
+ * DT_IMAGE_MONOCHROME_BAYER (a RawDemosaic passthrough (monochrome) output). Absent otherwise.
+ * Every raw node passes it on.
+ **/
+bool getMonochrome(const ImageMetadata& metadata);
+void setMonochrome(ImageMetadata* metadata);
 
 /**
  * @brief raw/make and raw/model: rawspeed's canonical camera names, the spelling darktable's

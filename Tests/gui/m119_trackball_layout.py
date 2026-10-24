@@ -507,6 +507,20 @@ try:
                 return c.isVisible()
         return None
 
+    def disc_widget(r):
+        # ColorModeDiscWidget has no Q_OBJECT, so its className() is QWidget: take the largest visible square child.
+        best = None
+        for c in r.children():
+            if isinstance(c, QWidget) and c.isVisible() and c.width() == c.height():
+                if best is None or c.width() > best.width():
+                    best = c
+        return best
+
+    def disc_centre(r):
+        # The reveal window is taller than the disc (pills, hint block), so its own centre is not the disc's.
+        d = disc_widget(r)
+        return d.mapToGlobal(d.rect().center()) if d is not None else r.frameGeometry().center()
+
     def crop(rect, name, pad=0):
         QApplication.processEvents()
         r = QRect(rect.x() - pad, rect.y() - pad, rect.width() + 2 * pad, rect.height() + 2 * pad).intersected(screen_rect())
@@ -851,13 +865,13 @@ try:
                 r = reveal_window()
                 check(r is not None and r.isVisible(), "WidgetCursor: the mode widget is up from engage")
                 if r is not None:
-                    c = r.frameGeometry().center()
+                    c = disc_centre(r)
                     check(abs(c.x() - centre.x()) <= 2 and abs(c.y() - centre.y()) <= 2,
                           "WidgetCursor: centred on the pointer (%r, pointer %r)" % (c, centre))
                     q = QPoint(centre.x() - 200, centre.y() - 120)
                     QCursor.setPos(q)
                     yield ("sleep", 300)
-                    c = r.frameGeometry().center()
+                    c = disc_centre(r)
                     check(abs(c.x() - q.x()) <= 2 and abs(c.y() - q.y()) <= 2,
                           "WidgetCursor: follows a real pointer move (%r, pointer %r)" % (c, q))
                     QCursor.setPos(centre)
@@ -870,7 +884,7 @@ try:
             r = reveal_window()
             check(reveal_shown(), "%s: the mode graphic is up during the stroke" % name)
             if r is not None:
-                c = r.frameGeometry().center()
+                c = disc_centre(r)
                 check(abs(c.x() - centre.x()) <= 2 and abs(c.y() - centre.y()) <= 2,
                       "%s: the graphic is centred on the press point (%r, press %r)" % (name, c, centre))
             frozen = r.frameGeometry() if (r is not None and r.isVisible()) else None
@@ -897,7 +911,7 @@ try:
                 q = QPoint(centre.x() + 150, centre.y() + 100)
                 QCursor.setPos(q)
                 yield ("sleep", 300)
-                c = r.frameGeometry().center()
+                c = disc_centre(r)
                 check(abs(c.x() - q.x()) <= 2 and abs(c.y() - q.y()) <= 2,
                       "WidgetCursor: resumes following after release (%r, pointer %r)" % (c, q))
                 send_key(Qt.Key_S)
@@ -1023,7 +1037,7 @@ try:
             if check(r is not None and r.isVisible(), "%s: the graphic is up on press" % mode):
                 check(reveal_mode_widget_is_wheel() == (mode == "C"),
                       "%s: the graphic is the %s" % (mode, "wheel" if mode == "C" else "gradient disc"))
-                side = r.width()
+                side = disc_widget(r).width()
                 check(abs(side - px(REVEAL_DIAMETER)) <= 1, "%s: the graphic is %d px" % (mode, side))
                 crop(r.frameGeometry(), "reveal-%s-press" % mode, 10)
             for k in range(1, 9):

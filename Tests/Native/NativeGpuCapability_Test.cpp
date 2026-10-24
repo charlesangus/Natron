@@ -53,7 +53,9 @@
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/CornerPinKnobs.h"
+#include "Engine/Nodes/Transform/IDistort.h"
 #include "Engine/Nodes/Transform/Mirror.h"
+#include "Engine/Nodes/Transform/STMap.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
@@ -85,6 +87,8 @@ gpuCapableIds()
         PLUGINID_NATRON_TRANSFORMMASKED,
         PLUGINID_NATRON_CORNERPIN,
         PLUGINID_NATRON_MIRROR,
+        PLUGINID_NATRON_STMAP,
+        PLUGINID_NATRON_IDISTORT,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
     };

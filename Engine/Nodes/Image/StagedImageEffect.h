@@ -134,7 +134,8 @@ public:
     /**
      * @brief When inputNb is the source, at the current time and view: for a Passes op, outputRect
      * grown by the halo of the op's passes; for a Resample op that opts into the GPU,
-     * resampleGpuSourceRoI(). outputRect otherwise.
+     * resampleGpuSourceRoI(). For any input of a Custom op, getOpGpuInputRoI(). outputRect
+     * otherwise.
      **/
     virtual RectI getGpuInputRoI(int inputNb,
                                  const RectI& outputRect,
@@ -371,6 +372,19 @@ protected:
     }
 
     /**
+     * @brief For a Custom op, the region of input inputNb renderOpGpu() reads to produce
+     * outputRect at the current time and view; NativeEffectBase::getGpuInputRoI() by default.
+     **/
+    virtual RectI getOpGpuInputRoI(int inputNb,
+                                   const RectI& outputRect,
+                                   const RenderScale& scale) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The StagePlan the GPU executor runs for query.
+     **/
+    StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
+
+    /**
      * @brief Lets a node narrow the region of definition its passes give, in pixels at scale:
      * rod, which is srcRoD, the source's region, grown unless that is empty. Returns whether it
      * changed rod; the default changes nothing.
@@ -386,8 +400,6 @@ protected:
     }
 
 private:
-    StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
-
     ResampleRegionStages getResampleRegionStages(double time,
                                                  ViewIdx view) const WARN_UNUSED_RETURN;
 

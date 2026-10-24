@@ -129,6 +129,11 @@ GpuStatus wrapStepParams(const GpuWrapStep& step, GpuWrapParams& out);
 GpuStatus recordWrapped(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap,
                         const GpuBuffer* opParams = nullptr);
 
+// recordWrapped() for an entry that also reads `inputs`, bound in order after the parameter block.
+// An input with empty bounds gets a stand-in buffer, so the kernel must read none of its pixels.
+GpuStatus recordWrappedInputs(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap,
+                              const GpuBuffer* opParams, std::span<const GpuWrapView> inputs);
+
 // Records one dispatch of `kernel`, a Composite step entry built with runCompositeStep, reading its
 // parameters from `opParams`.
 GpuStatus recordWrapStep(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrapStep& step,

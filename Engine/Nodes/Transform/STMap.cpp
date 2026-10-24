@@ -43,6 +43,11 @@
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/Transform/WarpGpu.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -640,5 +645,132 @@ STMap::renderOp(const RenderActionArgs& args,
 
     return eStatusOK;
 } // STMap::renderOp
+
+bool
+STMap::resolveGpuUVLayer(double time,
+                         ViewIdx view,
+                         ImageLayerDesc* layer,
+                         int* uChannel,
+                         int* vChannel) const
+{
+    *layer = ImageLayerDesc();
+    *uChannel = -1;
+    *vChannel = -1;
+    UVChannel u;
+    UVChannel v;
+    const_cast<STMap*>(this)->resolveUVChannels(time, view, &u, &v);
+    if (u.valid && v.valid && !(u.layer == v.layer)) {
+        return false;
+    }
+    const UVChannel& used = u.valid ? u : v;
+    if (!used.valid) {
+        return true;
+    }
+    if ((used.layer.getNumComponents() < 1) || (used.layer.getNumComponents() > 4)) {
+        return false;
+    }
+    *layer = used.layer;
+    *uChannel = u.valid ? u.channel : -1;
+    *vChannel = v.valid ? v.channel : -1;
+
+    return true;
+}
+
+bool
+STMap::canRenderOpOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+        return false;
+    }
+    ImageLayerDesc layer;
+    int uChannel = -1;
+    int vChannel = -1;
+
+    return resolveGpuUVLayer(query.time, query.view, &layer, &uChannel, &vChannel);
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+bool
+STMap::getOpGpuInputLayer(int inputNb,
+                          const ImageLayerDesc& plane,
+                          double time,
+                          ViewIdx view,
+                          ImageLayerDesc* layer) const
+{
+    if (inputNb == kSTMapInputUV) {
+        int uChannel = -1;
+        int vChannel = -1;
+        if (resolveGpuUVLayer(time, view, layer, &uChannel, &vChannel) && (layer->getNumComponents() > 0)) {
+            return true;
+        }
+    }
+    stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+    return true;
+}
+
+RectI
+STMap::getOpGpuInputRoI(int inputNb,
+                        const RectI& outputRect,
+                        const RenderScale& scale) const
+{
+    if ((inputNb == kSTMapInputSource) || (inputNb == kSTMapInputUV)) {
+        return warpGpuInputRoI(*this, inputNb, kSTMapInputSource, kSTMapInputUV, outputRect, scale);
+    }
+
+    return StagedImageEffect::getOpGpuInputRoI(inputNb, outputRect, scale);
+}
+
+StatusEnum
+STMap::renderOpGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuQuery& query = args.query;
+    ImageLayerDesc uvLayer;
+    int uChannel = -1;
+    int vChannel = -1;
+    if (!canRenderOpOnGpu(query) || !resolveGpuUVLayer(query.time, query.view, &uvLayer, &uChannel, &vChannel)) {
+        return eStatusFailed;
+    }
+    Settings settings;
+    readSettings(query.time, query.view, &settings);
+    if (query.draftMode) {
+        settings.filter = Resampler::eFilterImpulse;
+    }
+    RectI domain;
+    const bool hasDomain = getSourceDomain(query.time, query.view, query.mappedScale, &domain);
+
+    WarpGpuParams params;
+    params.filter = (uint32_t)settings.filter;
+    params.flags = (settings.clamp ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | (hasDomain ? kWarpGpuSample : 0u);
+    params.wrapU = (uint32_t)settings.wrapU;
+    params.wrapV = (uint32_t)settings.wrapV;
+    if (hasDomain) {
+        params.domain[0] = domain.x1;
+        params.domain[1] = domain.y1;
+        params.domain[2] = domain.x2;
+        params.domain[3] = domain.y2;
+    }
+    setWarpGpuDouble(settings.uOffset, params.uOffset);
+    setWarpGpuDouble(settings.vOffset, params.vOffset);
+    setWarpGpuDouble(settings.uScale, params.uScale);
+    setWarpGpuDouble(settings.vScale, params.vScale);
+    setWarpGpuDouble(domain.x1, params.originX);
+    setWarpGpuDouble(domain.y1, params.originY);
+    setWarpGpuDouble(domain.width(), params.width);
+    setWarpGpuDouble(domain.height(), params.height);
+
+    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::stmap, params, kSTMapInputUV, uvLayer, uChannel, vChannel);
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+}
 
 NATRON_NAMESPACE_EXIT

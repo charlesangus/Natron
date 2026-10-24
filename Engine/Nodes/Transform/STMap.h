@@ -164,6 +164,27 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Accepts what the stages accept in float, when U and V resolve to one layer of 1 to 4
+     * channels or to none.
+     **/
+    virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool getOpGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual RectI getOpGpuInputRoI(int inputNb,
+                                   const RectI& outputRect,
+                                   const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The one layer U and V are read from on the GPU; false when they resolve to different layers.
+    bool resolveGpuUVLayer(double time, ViewIdx view, ImageLayerDesc* layer, int* uChannel, int* vChannel) const WARN_UNUSED_RETURN;
+
     void readSettings(double time, ViewIdx view, Settings* settings) const;
 
     // Where U or V is read from: a layer of the UV input and its channel there, or nothing,

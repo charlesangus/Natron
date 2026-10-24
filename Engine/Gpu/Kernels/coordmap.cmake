@@ -1,1 +1,1 @@
-slang_add_kernel(coordmap_test Kernels/coordmap.slang ENTRY coordmap_test_main REGISTRY NatronGpu)
+slang_add_kernel(coordmap_test Kernels/coordmap_test.slang ENTRY coordmap_test_main REGISTRY NatronGpu)

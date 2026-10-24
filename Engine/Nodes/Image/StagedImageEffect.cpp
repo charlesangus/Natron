@@ -170,6 +170,14 @@ StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
 }
 
 RectI
+StagedImageEffect::getOpGpuInputRoI(int inputNb,
+                                    const RectI& outputRect,
+                                    const RenderScale& scale) const
+{
+    return NativeEffectBase::getGpuInputRoI(inputNb, outputRect, scale);
+}
+
+RectI
 StagedImageEffect::getGpuInputRoI(int inputNb,
                                   const RectI& outputRect,
                                   const RenderScale& scale) const
@@ -177,6 +185,9 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
     const OpKind kind = imagePipelineSpec().op;
     const int source = getSourceInput();
 
+    if (kind == OpKind::Custom) {
+        return getOpGpuInputRoI(inputNb, outputRect, scale);
+    }
     if ((inputNb == source) && (kind == OpKind::Passes)) {
         return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
     }

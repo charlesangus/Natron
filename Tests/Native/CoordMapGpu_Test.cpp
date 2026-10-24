@@ -51,7 +51,7 @@
 
 NATRON_NAMESPACE_USING
 
-// coordmap.slang's test entry against Resampler::resampleRowFromCoords: the same source, per-pixel
+// coordmap_test.slang's entry against Resampler::resampleRowFromCoords: the same source, per-pixel
 // coordinates and Jacobians, sampled on the CPU and on the device.
 
 namespace {

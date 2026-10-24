@@ -19,8 +19,8 @@
 
 /*
  * The camera matrix handling of darktable's input colour module, DARKTABLE_REF release-5.6.2
- * (commit 20891f6c6fa7), src/iop/colorin.c (commit_params(), reload_defaults() and
- * update_profile_list()) and src/common/colorspaces.c, Copyright (C) 2009-2026 darktable
+ * (commit 20891f6c6fa7), src/iop/colorin.c (commit_params(), reload_defaults(),
+ * update_profile_list(), process() and process_cmatrix_proper()) and src/common/colorspaces.c, Copyright (C) 2009-2026 darktable
  * developers, distributed under the GNU GPL version 3 or later.
  */
 
@@ -32,6 +32,7 @@
 
 #include "RawInputColor.h"
 
+#include <algorithm>
 #include <vector>
 
 #include "Engine/AppInstance.h"
@@ -71,11 +72,127 @@ const ProfileOption kProfileOptions[] = {
       "darktable's matrix for the camera matched to the vendor's own rendering." },
     { eRawInputColorProfileAlternateMatrix, kRawInputColorProfileAlternateMatrix, "Alternate Color Matrix",
       "darktable's alternate matrix for the camera." },
+    { eRawInputColorProfileSrgb, kRawInputColorProfileSrgb, "sRGB",
+      "sRGB primaries, D65 white and the sRGB tone curve." },
+    { eRawInputColorProfileAdobeRgb, kRawInputColorProfileAdobeRgb, "Adobe RGB (compatible)",
+      "Adobe RGB (1998) primaries, D65 white and a 2.2 (2 + 51/256) gamma." },
     { eRawInputColorProfileLinearRec709, kRawInputColorProfileLinearRec709, "Linear Rec709 RGB",
       "Treats camera RGB as linear Rec. 709." },
+    { eRawInputColorProfileRec709, kRawInputColorProfileRec709, "Rec709 RGB",
+      "Rec. 709 primaries and the Rec. 709 tone curve." },
+    { eRawInputColorProfileLinearRec2020, kRawInputColorProfileLinearRec2020, "Linear Rec2020 RGB",
+      "Linear Rec. 2020." },
+    { eRawInputColorProfilePqRec2020, kRawInputColorProfilePqRec2020, "PQ Rec2020 RGB",
+      "Rec. 2020 primaries and the PQ (SMPTE ST 2084) tone curve, 1 being 10000 nits." },
+    { eRawInputColorProfileHlgRec2020, kRawInputColorProfileHlgRec2020, "HLG Rec2020 RGB",
+      "Rec. 2020 primaries and the hybrid log-gamma tone curve." },
+    { eRawInputColorProfilePqP3, kRawInputColorProfilePqP3, "PQ P3 RGB",
+      "P3 primaries, D65 white and the PQ tone curve." },
+    { eRawInputColorProfileHlgP3, kRawInputColorProfileHlgP3, "HLG P3 RGB",
+      "P3 primaries, D65 white and the hybrid log-gamma tone curve." },
+    { eRawInputColorProfileDisplayP3, kRawInputColorProfileDisplayP3, "Display P3 RGB",
+      "P3 primaries, D65 white and the sRGB tone curve." },
+    { eRawInputColorProfileLinearProPhoto, kRawInputColorProfileLinearProPhoto, "Linear ProPhoto RGB",
+      "Linear ProPhoto RGB, D50 white." },
+    { eRawInputColorProfileLinearXyz, kRawInputColorProfileLinearXyz, "Linear XYZ",
+      "The input is CIE XYZ relative to D50." },
+    { eRawInputColorProfileLab, kRawInputColorProfileLab, "Lab",
+      "The input is CIE Lab relative to D50, L from 0 to 100. The late white balance correction and gamut clipping do not apply." },
+    { eRawInputColorProfileLinearInfraredBgr, kRawInputColorProfileLinearInfraredBgr, "Linear Infrared BGR",
+      "Linear Rec. 709 with red and blue swapped." },
+    { eRawInputColorProfileBrg, kRawInputColorProfileBrg, "BRG (for testing)",
+      "sRGB with its channels rotated, for testing." },
     { eRawInputColorProfileCustom, kRawInputColorProfileCustom, "Custom",
       "The camera RGB to XYZ (D65) matrix below, used as given." },
 };
+
+struct SpaceOption {
+    RawColorProfiles::Space space;
+    const char* id;
+    const char* label;
+};
+
+// darktable's work_pos profiles, in its order; its sRGB working profile is the "web-safe" one.
+const SpaceOption kWorkingOptions[] = {
+    { RawColorProfiles::Space::Srgb, kRawInputColorProfileSrgb, "sRGB (web-safe)" },
+    { RawColorProfiles::Space::AdobeRgb, kRawInputColorProfileAdobeRgb, "Adobe RGB (compatible)" },
+    { RawColorProfiles::Space::LinearRec709, kRawInputColorProfileLinearRec709, "Linear Rec709 RGB" },
+    { RawColorProfiles::Space::Rec709, kRawInputColorProfileRec709, "Rec709 RGB" },
+    { RawColorProfiles::Space::LinearRec2020, kRawInputColorProfileLinearRec2020, "Linear Rec2020 RGB" },
+    { RawColorProfiles::Space::PqRec2020, kRawInputColorProfilePqRec2020, "PQ Rec2020 RGB" },
+    { RawColorProfiles::Space::HlgRec2020, kRawInputColorProfileHlgRec2020, "HLG Rec2020 RGB" },
+    { RawColorProfiles::Space::PqP3, kRawInputColorProfilePqP3, "PQ P3 RGB" },
+    { RawColorProfiles::Space::HlgP3, kRawInputColorProfileHlgP3, "HLG P3 RGB" },
+    { RawColorProfiles::Space::DisplayP3, kRawInputColorProfileDisplayP3, "Display P3 RGB" },
+    { RawColorProfiles::Space::LinearProPhoto, kRawInputColorProfileLinearProPhoto, "Linear ProPhoto RGB" },
+};
+
+// colorin's dt_iop_color_normalize_t after off. Only the matrices count: the clip is in linear
+// RGB, so sRGB and linear Rec709 clip alike.
+const SpaceOption kGamutOptions[] = {
+    { RawColorProfiles::Space::Srgb, kRawInputColorProfileSrgb, "sRGB" },
+    { RawColorProfiles::Space::AdobeRgb, kRawInputColorProfileAdobeRgb, "Adobe RGB (compatible)" },
+    { RawColorProfiles::Space::LinearRec709, kRawInputColorProfileLinearRec709, "Linear Rec709 RGB" },
+    { RawColorProfiles::Space::LinearRec2020, kRawInputColorProfileLinearRec2020, "Linear Rec2020 RGB" },
+};
+
+template <std::size_t N>
+std::optional<RawColorProfiles::Space>
+spaceAt(const SpaceOption (&options)[N],
+        int index)
+{
+    // Index 0 is the choice's first option, the project's working space or off.
+    if ((index < 1) || (index > (int)N)) {
+        return std::nullopt;
+    }
+
+    return options[index - 1].space;
+}
+
+template <std::size_t N>
+int
+spaceIndex(const SpaceOption (&options)[N],
+           const std::optional<RawColorProfiles::Space>& space)
+{
+    if (space) {
+        for (int i = 0; i < (int)N; ++i) {
+            if (options[i].space == *space) {
+                return i + 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+template <std::size_t N>
+const char*
+spaceLabel(const SpaceOption (&options)[N],
+           RawColorProfiles::Space space)
+{
+    return options[spaceIndex(options, space) - 1].label;
+}
+
+std::array<float, 9>
+toFloats(const RawColorMath::Mat3& m)
+{
+    std::array<float, 9> out;
+    for (int i = 0; i < 9; ++i) {
+        out[i] = (float)m[i];
+    }
+
+    return out;
+}
+
+void
+applyMatrix(const float* m,
+            const float in[3],
+            float out[3])
+{
+    out[0] = m[0] * in[0] + m[1] * in[1] + m[2] * in[2];
+    out[1] = m[3] * in[0] + m[4] * in[1] + m[5] * in[2];
+    out[2] = m[6] * in[0] + m[7] * in[1] + m[8] * in[2];
+}
 
 const char* const kProfileUnavailable = "input profile: %1 not available for this camera. falling back to %2.";
 
@@ -119,6 +236,77 @@ xyzToCamProfile(const std::optional<std::array<double, 9>>& xyzToCam)
     return std::nullopt;
 }
 } // namespace
+
+std::optional<RawColorProfiles::Space>
+rawInputColorProfileSpace(RawInputColorProfileEnum profile)
+{
+    using RawColorProfiles::Space;
+    switch (profile) {
+    case eRawInputColorProfileSrgb:
+        return Space::Srgb;
+    case eRawInputColorProfileAdobeRgb:
+        return Space::AdobeRgb;
+    case eRawInputColorProfileLinearRec709:
+        return Space::LinearRec709;
+    case eRawInputColorProfileRec709:
+        return Space::Rec709;
+    case eRawInputColorProfileLinearRec2020:
+        return Space::LinearRec2020;
+    case eRawInputColorProfilePqRec2020:
+        return Space::PqRec2020;
+    case eRawInputColorProfileHlgRec2020:
+        return Space::HlgRec2020;
+    case eRawInputColorProfilePqP3:
+        return Space::PqP3;
+    case eRawInputColorProfileHlgP3:
+        return Space::HlgP3;
+    case eRawInputColorProfileDisplayP3:
+        return Space::DisplayP3;
+    case eRawInputColorProfileLinearProPhoto:
+        return Space::LinearProPhoto;
+    case eRawInputColorProfileLinearXyz:
+        return Space::LinearXyz;
+    case eRawInputColorProfileLab:
+        return Space::Lab;
+    case eRawInputColorProfileLinearInfraredBgr:
+        return Space::LinearInfraredBgr;
+    case eRawInputColorProfileBrg:
+        return Space::Brg;
+    case eRawInputColorProfileEmbeddedMatrix:
+    case eRawInputColorProfileStandardMatrix:
+    case eRawInputColorProfileEnhancedMatrix:
+    case eRawInputColorProfileVendorMatrix:
+    case eRawInputColorProfileAlternateMatrix:
+    case eRawInputColorProfileCustom:
+        break;
+    }
+
+    return std::nullopt;
+}
+
+std::optional<RawColorProfiles::Space>
+rawInputColorWorkingProfileAt(int index)
+{
+    return spaceAt(kWorkingOptions, index);
+}
+
+int
+rawInputColorWorkingProfileIndex(const std::optional<RawColorProfiles::Space>& space)
+{
+    return spaceIndex(kWorkingOptions, space);
+}
+
+std::optional<RawColorProfiles::Space>
+rawInputColorGamutAt(int index)
+{
+    return spaceAt(kGamutOptions, index);
+}
+
+int
+rawInputColorGamutIndex(const std::optional<RawColorProfiles::Space>& space)
+{
+    return spaceIndex(kGamutOptions, space);
+}
 
 RawInputColorProfileEnum
 rawInputColorProfileAt(int index)
@@ -178,9 +366,12 @@ rawInputColorProfileMatrix(RawInputColorProfileEnum profile,
         return tableMatrix(RawColorMatrices::Table::Vendor, source);
     case eRawInputColorProfileAlternateMatrix:
         return tableMatrix(RawColorMatrices::Table::Alternate, source);
-    case eRawInputColorProfileLinearRec709:
-        return RawColorMath::srgbToXyz();
     case eRawInputColorProfileCustom:
+        break;
+    default:
+        if (const std::optional<RawColorProfiles::Space> space = rawInputColorProfileSpace(profile)) {
+            return RawColorProfiles::toXyz(*space);
+        }
         break;
     }
 
@@ -269,6 +460,34 @@ RawInputColorOp::createKnobs(KnobHolder* knobHolder,
         page->addKnob(row);
         rows[r] = row;
     }
+
+    KnobChoicePtr working = AppManager::createKnob<KnobChoice>(knobHolder, EffectInstance::tr("Working Profile").toStdString());
+    working->setName(kRawInputColorParamWorkingProfile);
+    working->setHintToolTip(EffectInstance::tr("The space of the output. Project Working Space is the project's OpenColorIO working space, which the nodes after this one expect; another profile writes the output in that profile, its tone curve included, as darktable's working profile does.").toStdString());
+    std::vector<ChoiceOption> workingOptions;
+    workingOptions.push_back(ChoiceOption(kRawInputColorWorkingProject, EffectInstance::tr("Project Working Space").toStdString(), EffectInstance::tr("The project's working space.").toStdString()));
+    for (const SpaceOption& option : kWorkingOptions) {
+        workingOptions.push_back(ChoiceOption(option.id, EffectInstance::tr(option.label).toStdString(), std::string()));
+    }
+    working->populateChoices(workingOptions);
+    working->setDefaultValue(0);
+    working->setAnimationEnabled(false);
+    page->addKnob(working);
+    workingProfile = working;
+
+    KnobChoicePtr gamut = AppManager::createKnob<KnobChoice>(knobHolder, EffectInstance::tr("Gamut Clipping").toStdString());
+    gamut->setName(kRawInputColorParamGamutClipping);
+    gamut->setHintToolTip(EffectInstance::tr("Confine the colours to the gamut of an RGB colour space: after the input profile the values are clamped to [0, 1] in that space's linear RGB, highlights above its white included. Not applied to a Lab input.").toStdString());
+    std::vector<ChoiceOption> gamutOptions;
+    gamutOptions.push_back(ChoiceOption(kRawInputColorGamutOff, EffectInstance::tr("Off").toStdString(), std::string()));
+    for (const SpaceOption& option : kGamutOptions) {
+        gamutOptions.push_back(ChoiceOption(option.id, EffectInstance::tr(option.label).toStdString(), std::string()));
+    }
+    gamut->populateChoices(gamutOptions);
+    gamut->setDefaultValue(0);
+    gamut->setAnimationEnabled(false);
+    page->addKnob(gamut);
+    gamutClipping = gamut;
 }
 
 RawColorMath::Mat3
@@ -297,29 +516,50 @@ RawInputColorOp::bake(const KnobReader& reader,
 {
     RawColorMath::Mat3 camToXyz = RawColorMath::srgbToXyz();
     const RawInputColorProfileEnum requested = reader.value(profileOverride) ? rawInputColorProfileAt(reader.value(profile)) : rawInputColorDefaultProfile(source);
+    const RawInputColorProfileEnum used = rawInputColorResolveProfile(requested, source, &camToXyz);
 
-    if (rawInputColorResolveProfile(requested, source, &camToXyz) == eRawInputColorProfileCustom) {
+    if (used == eRawInputColorProfileCustom) {
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
                 camToXyz[r * 3 + c] = reader.value(rows[r], c);
             }
         }
     }
-    RawColorMath::Mat3 total = RawColorMath::multiply(xyzToWorking(holder), camToXyz);
-    // darktable's process_cmatrix() multiplies camera RGB by D65coeffs / as_shot before the
-    // matrix when RawTemperature asked for the late correction; scaling the matrix's columns
-    // does the same. darktable skips it for a Lab input profile, which this node has not.
-    if (const std::optional<std::array<double, 3>> correction = RawMetadata::getWbLateCorrection(source)) {
-        for (int r = 0; r < 3; ++r) {
+    const std::optional<RawColorProfiles::Space> inputSpace = rawInputColorProfileSpace(used);
+    const std::optional<RawColorProfiles::Space> working = rawInputColorWorkingProfileAt(reader.value(workingProfile));
+    // colorin is disabled for a Lab input (commit_params()), so nothing is clipped; the pipe
+    // still takes Lab to the working profile.
+    const bool lab = (used == eRawInputColorProfileLab);
+    const std::optional<RawColorProfiles::Space> gamut = lab ? std::nullopt : rawInputColorGamutAt(reader.value(gamutClipping));
+    Params params;
+
+    params.lab = lab;
+    params.clip = bool(gamut);
+    params.inputTrc = inputSpace ? RawColorProfiles::trcOf(*inputSpace) : RawColorProfiles::Trc::Linear;
+    params.outputTrc = working ? RawColorProfiles::trcOf(*working) : RawColorProfiles::Trc::Linear;
+    params.correction = { 1.f, 1.f, 1.f };
+
+    const RawColorMath::Mat3 xyzToOut = working ? RawColorProfiles::fromXyz(*working) : xyzToWorking(holder);
+    RawColorMath::Mat3 first = RawColorMath::multiply(gamut ? RawColorProfiles::fromXyz(*gamut) : xyzToOut, camToXyz);
+    // process() multiplies camera RGB by D65coeffs / as_shot before the tone curves and the
+    // matrix when RawTemperature asked for the late correction, except for a Lab input. With no
+    // tone curve, scaling the matrix's columns does the same.
+    if (const std::optional<std::array<double, 3>> correction = RawMetadata::getWbLateCorrection(source); correction && !lab) {
+        if (params.inputTrc == RawColorProfiles::Trc::Linear) {
+            for (int r = 0; r < 3; ++r) {
+                for (int c = 0; c < 3; ++c) {
+                    first[r * 3 + c] *= (*correction)[c];
+                }
+            }
+        } else {
             for (int c = 0; c < 3; ++c) {
-                total[r * 3 + c] *= (*correction)[c];
+                params.correction[c] = (float)(*correction)[c];
             }
         }
     }
-    Params params;
-    for (int i = 0; i < 9; ++i) {
-        params.matrix[i] = (float)total[i];
-    }
+    params.matrix = toFloats(first);
+    params.gamutToWorking = gamut ? toFloats(RawColorMath::multiply(xyzToOut, RawColorProfiles::toXyz(*gamut))) : toFloats(RawColorMath::Mat3 { 1., 0., 0., 0., 1., 0., 0., 0., 1. });
+    params.cpuOnly = lab || params.clip || working || (params.inputTrc != RawColorProfiles::Trc::Linear);
 
     return params;
 }
@@ -327,6 +567,9 @@ RawInputColorOp::bake(const KnobReader& reader,
 bool
 RawInputColorOp::isIdentity(const Params& params) const
 {
+    if (params.lab || params.clip || (params.inputTrc != RawColorProfiles::Trc::Linear) || (params.outputTrc != RawColorProfiles::Trc::Linear)) {
+        return false;
+    }
     for (int i = 0; i < 9; ++i) {
         if (params.matrix[i] != (((i % 4) == 0) ? 1.f : 0.f)) {
             return false;
@@ -343,8 +586,38 @@ RawInputColorOp::row(const Params& params,
     const float* src = io.src[0];
     float* dst = io.dst;
     const float* m = params.matrix.data();
+    const bool matrixOnly = !params.lab && !params.clip && (params.inputTrc == RawColorProfiles::Trc::Linear) && (params.outputTrc == RawColorProfiles::Trc::Linear);
 
     for (int x = 0; x < io.width; ++x, src += io.nComps, dst += io.nComps) {
+        if ((io.nComps >= 3) && !matrixOnly) {
+            float in[3];
+            if (params.lab) {
+                const std::array<float, 3> xyz = RawColorProfiles::labToXyzD50(src[0], src[1], src[2]);
+                in[0] = xyz[0];
+                in[1] = xyz[1];
+                in[2] = xyz[2];
+            } else {
+                for (int c = 0; c < 3; ++c) {
+                    in[c] = RawColorProfiles::decode(params.inputTrc, src[c] * params.correction[c]);
+                }
+            }
+            float out[3];
+            applyMatrix(m, in, out);
+            if (params.clip) {
+                // process_cmatrix_proper()'s dt_vector_clip() in the gamut, then on to the output.
+                for (int c = 0; c < 3; ++c) {
+                    in[c] = std::min(std::max(out[c], 0.f), 1.f);
+                }
+                applyMatrix(params.gamutToWorking.data(), in, out);
+            }
+            for (int c = 0; c < 3; ++c) {
+                dst[c] = RawColorProfiles::encode(params.outputTrc, out[c]);
+            }
+            if (io.nComps > 3) {
+                dst[3] = src[3];
+            }
+            continue;
+        }
         if (io.nComps < 3) {
             for (int c = 0; c < io.nComps; ++c) {
                 dst[c] = src[c];
@@ -367,6 +640,9 @@ GpuOpRef
 RawInputColorOp::gpu(const Params& params) const
 {
 #ifdef NATRON_HAVE_GPU
+    if (params.cpuOnly) {
+        return GpuOpRef::none();
+    }
     RawInputColorGpuParams p = {};
     for (int i = 0; i < 9; ++i) {
         p.matrix[i] = params.matrix[i];
@@ -397,7 +673,7 @@ RawInputColor::deriveOutputMetadata(double time,
     const std::optional<std::array<double, 3>> correction = RawMetadata::getWbLateCorrection(metadata);
     const std::optional<std::array<double, 3>> d65 = RawMetadata::getWbD65Coeffs(metadata);
 
-    if (!correction || !d65) {
+    if (!correction || !d65 || (usedProfile(metadata, nullptr) == eRawInputColorProfileLab)) {
         return metadata;
     }
     // As darktable's colorin process(): the data now carries the D65 multipliers, and its
@@ -446,26 +722,45 @@ RawInputColor::showSourceProfile()
     }
 }
 
-void
-RawInputColor::refreshProfileWarning()
+RawInputColorProfileEnum
+RawInputColor::usedProfile(const ImageMetadata& source,
+                           RawInputColorProfileEnum* requested) const
 {
     const KnobBoolPtr overrideKnob = op().profileOverride.lock();
     const KnobChoicePtr choice = op().profile.lock();
-
-    if (!overrideKnob || !choice || !getInput(getSourceInput())) {
-        _message.withdraw(getNode());
-
-        return;
-    }
-    const ImageMetadata source = getSourceMetadata(getCurrentTime(), ViewIdx(0));
-    const RawInputColorProfileEnum requested = overrideKnob->getValue() ? rawInputColorProfileAt(choice->getValue()) : rawInputColorDefaultProfile(source);
+    const RawInputColorProfileEnum wanted = (overrideKnob && choice && overrideKnob->getValue()) ? rawInputColorProfileAt(choice->getValue()) : rawInputColorDefaultProfile(source);
     RawColorMath::Mat3 unused;
-    const RawInputColorProfileEnum used = rawInputColorResolveProfile(requested, source, &unused);
-    if (used != requested) {
-        const QString text = tr(kProfileUnavailable).arg(tr(optionOf(requested).label), tr(optionOf(used).label));
-        _message.post(getNode(), eMessageTypeWarning, text.toStdString());
-    } else {
+
+    if (requested) {
+        *requested = wanted;
+    }
+
+    return rawInputColorResolveProfile(wanted, source, &unused);
+}
+
+void
+RawInputColor::refreshProfileWarning()
+{
+    const KnobChoicePtr working = op().workingProfile.lock();
+    const std::optional<RawColorProfiles::Space> workingSpace = working ? rawInputColorWorkingProfileAt(working->getValue()) : std::nullopt;
+    QString warning;
+
+    if (getInput(getSourceInput())) {
+        RawInputColorProfileEnum requested;
+        const RawInputColorProfileEnum used = usedProfile(getSourceMetadata(getCurrentTime(), ViewIdx(0)), &requested);
+        if (used != requested) {
+            warning = tr(kProfileUnavailable).arg(tr(optionOf(requested).label), tr(optionOf(used).label));
+        }
+    }
+    QString text = warning;
+    if (workingSpace) {
+        const QString note = tr("output: %1, not the project's working space.").arg(tr(spaceLabel(kWorkingOptions, *workingSpace)));
+        text = text.isEmpty() ? note : (text + QString::fromUtf8("\n") + note);
+    }
+    if (text.isEmpty()) {
         _message.withdraw(getNode());
+    } else {
+        _message.post(getNode(), warning.isEmpty() ? eMessageTypeInfo : eMessageTypeWarning, text.toStdString());
     }
 }
 
@@ -501,11 +796,16 @@ RawInputColor::knobChanged(KnobI* k,
 {
     const KnobBoolPtr overrideKnob = op().profileOverride.lock();
     const KnobChoicePtr choice = op().profile.lock();
+    const KnobChoicePtr working = op().workingProfile.lock();
 
     if (overrideKnob && (k == overrideKnob.get())) {
         if (!overrideKnob->getValue()) {
             showSourceProfile();
         }
+    } else if (working && (k == working.get())) {
+        refreshProfileWarning();
+
+        return true;
     } else if (!choice || (k != choice.get())) {
         return false;
     }

@@ -47,8 +47,8 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/ColorWheelMath.h"
+#include "Engine/Settings.h"
 
-#include "Gui/ColorPanelLayoutDev.h"
 #include "Gui/ColorTrackballTarget.h"
 #include "Gui/GuiFwd.h"
 
@@ -130,41 +130,13 @@ int takeColorGlobalModeWheelNotches(int* accumulator, int angleDelta);
 /**
  * @brief Whether global mode swaps the pointer for a crosshair from engage to exit.
  **/
-bool colorGlobalModeFeedbackShowsCrosshair(ColorPanelLayout::Feedback feedback);
+bool colorGlobalModeFeedbackShowsCrosshair(Settings::ColorTrackballFeedbackEnum feedback);
 
 /**
- * @brief Whether the HUD sits in the target knob's own column, as it always did before the
- * Feedback axis existed. With any other feedback it is never attached there.
+ * @brief Whether the mode graphic stands in for the pointer from engage to exit, rather than
+ * coming up at the press point for the stroke's length.
  **/
-bool colorGlobalModeFeedbackAttachesHud(ColorPanelLayout::Feedback feedback);
-
-/**
- * @brief Whether the HUD is a small window of its own that follows the pointer.
- **/
-bool colorGlobalModeFeedbackHudFollowsCursor(ColorPanelLayout::Feedback feedback);
-
-/**
- * @brief Where the HUD sits while the mode is engaged. A Feedback with no HUD in a panel wins
- * over the Placement; with the Today feedback, BinTop puts it in the bin-top trackball panel.
- **/
-enum ColorGlobalModeHudHomeEnum {
-    eColorGlobalModeHudHomeNone,
-    eColorGlobalModeHudHomeKnobColumn,
-    eColorGlobalModeHudHomeBinPanel,
-    eColorGlobalModeHudHomeCursor
-};
-
-ColorGlobalModeHudHomeEnum colorGlobalModeHudHome(ColorPanelLayout::Feedback feedback, ColorPanelLayout::Placement placement);
-
-/**
- * @brief Whether a press brings up the mode graphic at the press point for the stroke's length.
- **/
-bool colorGlobalModeFeedbackRevealsOnPress(ColorPanelLayout::Feedback feedback);
-
-/**
- * @brief Whether the mode graphic stands in for the pointer from engage to exit.
- **/
-bool colorGlobalModeFeedbackGraphicIsCursor(ColorPanelLayout::Feedback feedback);
+bool colorGlobalModeFeedbackGraphicIsCursor(Settings::ColorTrackballFeedbackEnum feedback);
 
 /**
  * @brief What global mode shows for a feedback at one moment. The crosshair stays pushed under
@@ -178,43 +150,36 @@ struct ColorGlobalModeFeedbackState {
     bool graphicFollowsPointer = false;
 };
 
-ColorGlobalModeFeedbackState colorGlobalModeFeedbackState(ColorPanelLayout::Feedback feedback, bool engaged, bool strokeActive);
+ColorGlobalModeFeedbackState colorGlobalModeFeedbackState(Settings::ColorTrackballFeedbackEnum feedback, bool engaged, bool strokeActive);
 
 /**
- * @brief The Feedback and Puck values global mode works with. A change arriving mid-stroke is
- * held until the stroke ends, so one stroke never changes how it is shown halfway through.
+ * @brief The feedback global mode works with. A change arriving mid-stroke is held until the
+ * stroke ends, so one stroke never changes how it is shown halfway through.
  **/
 class ColorGlobalModeFeedbackSwitch {
 public:
     ColorGlobalModeFeedbackSwitch();
 
     /**
-     * @brief Takes latest's Feedback and Puck: at once outside a stroke, at strokeEnded()
-     * during one. True when the values in effect changed.
+     * @brief Takes latest: at once outside a stroke, at strokeEnded() during one. True when the
+     * value in effect changed.
      **/
-    bool offer(const ColorPanelLayout& latest, bool strokeActive);
+    bool offer(Settings::ColorTrackballFeedbackEnum latest, bool strokeActive);
 
     /**
-     * @brief Puts a held change into effect. True when the values in effect changed.
+     * @brief Puts a held change into effect. True when the value in effect changed.
      **/
     bool strokeEnded();
 
-    ColorPanelLayout::Feedback getFeedback() const
+    Settings::ColorTrackballFeedbackEnum getFeedback() const
     {
         return _feedback;
     }
 
-    ColorPanelLayout::Puck getPuck() const
-    {
-        return _puck;
-    }
-
 private:
-    ColorPanelLayout::Feedback _feedback;
-    ColorPanelLayout::Puck _puck;
+    Settings::ColorTrackballFeedbackEnum _feedback;
     bool _pending;
-    ColorPanelLayout::Feedback _pendingFeedback;
-    ColorPanelLayout::Puck _pendingPuck;
+    Settings::ColorTrackballFeedbackEnum _pendingFeedback;
 };
 
 /**
@@ -475,11 +440,11 @@ private:
     bool handleKeyPress(QKeyEvent* e);
     bool handleKeyRelease(QKeyEvent* e);
     void undoOnTargetPanel(bool redo);
+    bool offerFeedbackSetting();
     void applyFeedback();
 
     Gui* _gui;
     bool _engaged;
-    ColorPanelLayout::Placement _placement;
     std::weak_ptr<KnobGuiColor> _target;
     QPointer<KnobGuiColor> _targetObject;
     std::vector<QMetaObject::Connection> _targetConnections;

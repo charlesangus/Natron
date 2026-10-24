@@ -124,7 +124,7 @@ addChoice(QHBoxLayout* layout,
 bool
 ColorPanelLayout::operator==(const ColorPanelLayout& other) const
 {
-    return (extendLeft == other.extendLeft) && (extendRight == other.extendRight) && (style == other.style) && (placement == other.placement) && (feedback == other.feedback) && (puck == other.puck);
+    return (extendLeft == other.extendLeft) && (extendRight == other.extendRight) && (style == other.style) && (placement == other.placement);
 }
 
 bool
@@ -190,14 +190,6 @@ ColorPanelLayoutDev::createDevBar(QWidget* parent)
     addToggle(layout, "ColorPanelDevExtendRight", tr("Right"), tr("Run the panel's sliders on under the row's buttons."), [](const ColorPanelLayout& l) { return l.extendRight; }, [](bool v) { ColorPanelLayoutDev::instance()->setExtendRight(v); });
     addChoice(layout, "ColorPanelDevStyle", tr("Slider style"), { { tr("Natron sliders"), (int)ColorPanelLayout::SliderStyle::Natron }, { tr("Custom sliders"), (int)ColorPanelLayout::SliderStyle::Custom }, { tr("Vertical sliders"), (int)ColorPanelLayout::SliderStyle::Vertical } }, [](const ColorPanelLayout& l) { return (int)l.style; }, [](int v) { ColorPanelLayoutDev::instance()->setSliderStyle((ColorPanelLayout::SliderStyle)v); });
     addChoice(layout, "ColorPanelDevPlacement", tr("Placement"), { { tr("In the knob"), (int)ColorPanelLayout::Placement::InKnob }, { tr("Top of the bin"), (int)ColorPanelLayout::Placement::BinTop } }, [](const ColorPanelLayout& l) { return (int)l.placement; }, [](int v) { ColorPanelLayoutDev::instance()->setPlacement((ColorPanelLayout::Placement)v); });
-    addChoice(layout, "ColorPanelDevFeedback", tr("Global mode feedback"), { { tr("Feedback: today"), (int)ColorPanelLayout::Feedback::Today }, { tr("Crosshair"), (int)ColorPanelLayout::Feedback::Crosshair }, { tr("Reveal"), (int)ColorPanelLayout::Feedback::Reveal }, { tr("Crosshair + reveal"), (int)ColorPanelLayout::Feedback::CrosshairReveal }, { tr("Widget cursor"), (int)ColorPanelLayout::Feedback::WidgetCursor } }, [](const ColorPanelLayout& l) { return (int)l.feedback; }, [](int v) { ColorPanelLayoutDev::instance()->setFeedback((ColorPanelLayout::Feedback)v); });
-
-    QComboBox* puck = addChoice(layout, "ColorPanelDevPuck", tr("Where the reveal graphic's marker starts"), { { tr("Puck: relative"), (int)ColorPanelLayout::Puck::Relative }, { tr("Puck: absolute"), (int)ColorPanelLayout::Puck::Absolute } }, [](const ColorPanelLayout& l) { return (int)l.puck; }, [](int v) { ColorPanelLayoutDev::instance()->setPuck((ColorPanelLayout::Puck)v); });
-
-    puck->setEnabled(colorPanelFeedbackUsesPuck(ColorPanelLayoutDev::instance()->getLayout().feedback));
-    QObject::connect(ColorPanelLayoutDev::instance(), &ColorPanelLayoutDev::layoutChanged, puck, [puck]() {
-        puck->setEnabled(colorPanelFeedbackUsesPuck(ColorPanelLayoutDev::instance()->getLayout().feedback));
-    });
     layout->addStretch(1);
 
     return bar;
@@ -253,40 +245,6 @@ ColorPanelLayoutDev::setPlacement(ColorPanelLayout::Placement placement)
 
     l.placement = placement;
     setLayout(l);
-}
-
-void
-ColorPanelLayoutDev::setFeedback(ColorPanelLayout::Feedback feedback)
-{
-    ColorPanelLayout l = _layout;
-
-    l.feedback = feedback;
-    setLayout(l);
-}
-
-void
-ColorPanelLayoutDev::setPuck(ColorPanelLayout::Puck puck)
-{
-    ColorPanelLayout l = _layout;
-
-    l.puck = puck;
-    setLayout(l);
-}
-
-bool
-colorPanelFeedbackUsesPuck(ColorPanelLayout::Feedback feedback)
-{
-    switch (feedback) {
-    case ColorPanelLayout::Feedback::Reveal:
-    case ColorPanelLayout::Feedback::CrosshairReveal:
-    case ColorPanelLayout::Feedback::WidgetCursor:
-        return true;
-    case ColorPanelLayout::Feedback::Today:
-    case ColorPanelLayout::Feedback::Crosshair:
-        return false;
-    }
-
-    return false;
 }
 
 NATRON_NAMESPACE_EXIT

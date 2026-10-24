@@ -55,20 +55,6 @@ halfRange(const SliderRange& range)
     return 0.5 * (range.rangeMax - range.rangeMin);
 }
 
-// value's place across range, -1 at its minimum and 1 at its maximum.
-double
-acrossRange(const SliderRange& range,
-            double value)
-{
-    double half = halfRange(range);
-
-    if (!(half > 0.0) || !std::isfinite(value)) {
-        return 0.0;
-    }
-
-    return (value - 0.5 * (range.rangeMax + range.rangeMin)) / half;
-}
-
 // travel's share of the range's half, the distance from its middle to either end.
 double
 travelAcross(const SliderRange& range,
@@ -77,52 +63,6 @@ travelAcross(const SliderRange& range,
     double half = halfRange(range);
 
     return (half > 0.0) ? travel / half : 0.0;
-}
-
-// The Value axis's own reading, as the panel's Value line shows it: stops from the role's pivot
-// for a ratio role (Power's counted on its 18% grey effect vector), luma for Offset.
-double
-valueAxisReading(ColorKnobRoleEnum role,
-                 const LumaBasis& basis,
-                 const KnobColorValue& v,
-                 const SliderRange& range)
-{
-    double Y = 0.0;
-
-    if (role == eColorKnobRolePower) {
-        double effect[3];
-
-        for (int i = 0; i < 3; ++i) {
-            PowerEffectResult e = powerToEffect(v.rgb[i]);
-
-            if (!e.valid) {
-                return range.rangeMin;
-            }
-            effect[i] = e.effect;
-        }
-        Y = luma(basis, effect);
-    } else {
-        Y = luma(basis, v.rgb);
-    }
-    if (!isRatioRole(role)) {
-        return Y;
-    }
-
-    return (Y > 0.0) ? std::log2(Y / valueStopPivot(role)) : range.rangeMin;
-}
-
-KnobColorValue
-neutralFor(ColorKnobRoleEnum role,
-           const KnobColorValue& like)
-{
-    KnobColorValue v = neutralGainValue(like.hasAlpha);
-
-    v.a = like.a;
-    if (!isRatioRole(role)) {
-        v.rgb[0] = v.rgb[1] = v.rgb[2] = 0.0;
-    }
-
-    return v;
 }
 
 PlanePoint
@@ -162,55 +102,27 @@ colorTrackballRevealPosition(const QPoint& centre,
 
 QPointF
 colorTrackballRevealDiscPuck(ColorGlobalModeEnum mode,
-                             ColorPanelLayout::Puck puck,
                              ColorKnobRoleEnum role,
-                             const LumaBasis& basis,
-                             const KnobColorValue& live,
                              double strokeDx,
                              double strokeDy,
                              const TrackballRates& rates)
 {
-    const bool absolute = (puck == ColorPanelLayout::Puck::Absolute);
-
     switch (mode) {
     case eColorGlobalModeS: {
         SliderRange hue = sliderMapping(eColorSliderKindHue, role, rates);
         SliderRange sat = sliderMapping(eColorSliderKindSat, role, rates);
-        double x = travelAcross(hue, strokeDx * rates.hueDegreesPerPixel);
-        double y = travelAcross(sat, -strokeDy * rates.satPlanePerPixel);
 
-        if (absolute) {
-            PlanePoint p = toPlane(role, basis, live);
-
-            y = acrossRange(sat, p.valid ? planeSaturation(p) : 0.0);
-        }
-
-        return QPointF(x, y);
+        return QPointF(travelAcross(hue, strokeDx * rates.hueDegreesPerPixel), travelAcross(sat, -strokeDy * rates.satPlanePerPixel));
     }
     case eColorGlobalModeT: {
         SliderRange temp = sliderMapping(eColorSliderKindTemp, role, rates);
         SliderRange tint = sliderMapping(eColorSliderKindTint, role, rates);
-        double t = travelAcross(temp, strokeDx * tempRatePerPixel(rates, role));
-        double n = travelAcross(tint, -strokeDy * tintRatePerPixel(rates, role));
 
-        if (absolute) {
-            TempTintResult tt = toTempTint(role, basis, live);
-
-            if (tt.valid) {
-                t = acrossRange(temp, tt.temp);
-                n = acrossRange(tint, tt.tint);
-            }
-        }
-
-        return QPointF(t, n);
+        return QPointF(travelAcross(temp, strokeDx * tempRatePerPixel(rates, role)), travelAcross(tint, -strokeDy * tintRatePerPixel(rates, role)));
     }
     case eColorGlobalModeV: {
         SliderRange value = sliderMapping(eColorSliderKindValue, role, rates);
         double s = travelAcross(value, (strokeDx - strokeDy) * valueRatePerPixel(rates, role));
-
-        if (absolute) {
-            s = acrossRange(value, valueAxisReading(role, basis, live, value));
-        }
 
         return QPointF(s * kInvSqrt2, s * kInvSqrt2);
     }
@@ -222,8 +134,7 @@ colorTrackballRevealDiscPuck(ColorGlobalModeEnum mode,
 }
 
 ColorTrackballRevealWheelState
-colorTrackballRevealWheelState(ColorPanelLayout::Puck puck,
-                               ColorKnobRoleEnum role,
+colorTrackballRevealWheelState(ColorKnobRoleEnum role,
                                const LumaBasis& basis,
                                const KnobColorValue& start,
                                const KnobColorValue& live,
@@ -233,12 +144,9 @@ colorTrackballRevealWheelState(ColorPanelLayout::Puck puck,
 {
     ColorTrackballRevealWheelState state;
 
-    state.anchor = (puck == ColorPanelLayout::Puck::Absolute) ? neutralFor(role, live) : start;
-    state.offset = offsetBetween(toPlane(role, basis, state.anchor), toPlane(role, basis, live));
+    state.anchor = start;
+    state.offset = offsetBetween(toPlane(role, basis, start), toPlane(role, basis, live));
     if (!state.offset.valid) {
-        if (puck == ColorPanelLayout::Puck::Absolute) {
-            state.anchor = start;
-        }
         state.offset.x = strokeDx * rates.globalTrackballPlanePerPixel;
         state.offset.y = -strokeDy * rates.globalTrackballPlanePerPixel;
         state.offset.valid = true;
@@ -326,22 +234,21 @@ ColorTrackballReveal::getModeWidget() const
 }
 
 void
-ColorTrackballReveal::setStroke(ColorPanelLayout::Puck puck,
-                                const KnobColorValue& start,
+ColorTrackballReveal::setStroke(const KnobColorValue& start,
                                 const KnobColorValue& live,
                                 double strokeDx,
                                 double strokeDy,
                                 const TrackballRates& rates)
 {
     if (_mode == eColorGlobalModeC) {
-        ColorTrackballRevealWheelState state = colorTrackballRevealWheelState(puck, _role, _basis, start, live, strokeDx, strokeDy, rates);
+        ColorTrackballRevealWheelState state = colorTrackballRevealWheelState(_role, _basis, start, live, strokeDx, strokeDy, rates);
 
         _wheel->setValue(state.anchor);
         _wheel->setDragOffset(state.offset);
 
         return;
     }
-    _disc->setPuck(colorTrackballRevealDiscPuck(_mode, puck, _role, _basis, live, strokeDx, strokeDy, rates));
+    _disc->setPuck(colorTrackballRevealDiscPuck(_mode, _role, strokeDx, strokeDy, rates));
 }
 
 void

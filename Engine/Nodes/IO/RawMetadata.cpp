@@ -341,6 +341,58 @@ setProcessedMaximum(ImageMetadata* metadata,
     setFixedVector(metadata, kRawMetadataProcessedMaximum, maximum);
 }
 
+std::optional<std::string>
+getMake(const ImageMetadata& metadata)
+{
+    return metadata.getString(kRawMetadataMake);
+}
+
+void
+setMake(ImageMetadata* metadata,
+        const std::string& make)
+{
+    metadata->setString(kRawMetadataMake, make);
+}
+
+std::optional<std::string>
+getModel(const ImageMetadata& metadata)
+{
+    return metadata.getString(kRawMetadataModel);
+}
+
+void
+setModel(ImageMetadata* metadata,
+         const std::string& model)
+{
+    metadata->setString(kRawMetadataModel, model);
+}
+
+double
+getLinearResponseLimit(const ImageMetadata& metadata)
+{
+    return metadata.getDouble(kRawMetadataLinearResponseLimit).value_or(1.);
+}
+
+void
+setLinearResponseLimit(ImageMetadata* metadata,
+                       double limit)
+{
+    metadata->setDouble(kRawMetadataLinearResponseLimit, limit);
+}
+
+std::optional<std::array<double, 9>>
+getDngD65Matrix(const ImageMetadata& metadata)
+{
+    return getFixedVector<9>(metadata, kRawMetadataDngD65Matrix);
+}
+
+void
+setDngD65Matrix(ImageMetadata* metadata,
+                const std::array<double, 9>& matrix)
+{
+    setFixedVector(metadata, kRawMetadataDngD65Matrix, matrix);
+}
+
 std::optional<RawStageEnum>
 getStage(const ImageMetadata& metadata)
 {

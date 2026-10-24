@@ -17,6 +17,14 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
+/*
+ * The DNG colour matrix selection and the linear response limit are ported from darktable,
+ * DARKTABLE_REF release-5.6.2 (commit 20891f6c6fa7): the illuminant table and the d65_color_matrix
+ * selection of src/common/exif.cc (Copyright (C) 2009-2026 darktable developers), here read
+ * through rawspeed's TIFF parser instead of Exiv2. darktable is distributed under the GNU GPL
+ * version 3 or later, so this file is too.
+ */
+
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
 // "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
@@ -29,6 +37,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -212,6 +221,217 @@ namespace {
         return std::nullopt;
     }
 
+    std::optional<double>
+    linearResponseLimit(rawspeed::RawDecoder& decoder)
+    {
+        try {
+            const rawspeed::TiffIFD* root = decoder.getRootIFD();
+            const rawspeed::TiffEntry* entry = root ? root->getEntryRecursive(rawspeed::TiffTag::LINEARRESPONSELIMIT) : nullptr;
+            if (entry && entry->count == 1) {
+                const double limit = entry->getFloat();
+                if (std::isfinite(limit)) {
+                    return limit;
+                }
+            }
+        } catch (const std::exception&) {
+        }
+
+        return std::nullopt;
+    }
+
+    // DNG 1.6 tags that rawspeed's TiffTag does not name.
+    const rawspeed::TiffTag kCalibrationIlluminant3 = static_cast<rawspeed::TiffTag>(0xCD31);
+    const rawspeed::TiffTag kColorMatrix3 = static_cast<rawspeed::TiffTag>(0xCD32);
+    const rawspeed::TiffTag kCameraCalibration3 = static_cast<rawspeed::TiffTag>(0xCD33);
+
+    // The DNG SDK's EXIF LightSource numbering, as darktable's dt_dng_illuminant_t indexes it,
+    // with the Bradford adaptation from each illuminant to D65.
+    struct Illuminant {
+        int temperature;
+        std::array<float, 9> adaptation;
+    };
+
+    const int kIlluminantUnknown = 0;
+    const int kIlluminantD65 = 21;
+    const int kIlluminantOther = 25;
+
+    const std::array<Illuminant, kIlluminantOther + 1>&
+    illuminants()
+    {
+        static const std::array<Illuminant, kIlluminantOther + 1> table = { {
+            { 0, { 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f } },
+            { 5500, { 0.9726856f, -0.0135482f, 0.0361731f, -0.0167463f, 1.0049102f, 0.0120598f, 0.0070026f, -0.0116372f, 1.1869548f } },
+            { 4230, { 0.9212269f, -0.0449128f, 0.1211620f, -0.0553723f, 1.0277243f, 0.0403563f, 0.0235086f, -0.0391019f, 1.6390644f } },
+            { 2850, { 0.8446965f, -0.1179225f, 0.3948108f, -0.1366303f, 1.1041226f, 0.1291718f, 0.0798489f, -0.1348999f, 3.1924009f } },
+            { 5500, { 0.9726856f, -0.0135482f, 0.0361731f, -0.0167463f, 1.0049102f, 0.0120598f, 0.0070026f, -0.0116372f, 1.1869548f } },
+            { 0, { 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f } },
+            { 0, { 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f } },
+            { 0, { 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f } },
+            { 0, { 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f } },
+            { 5500, { 0.9726856f, -0.0135482f, 0.0361731f, -0.0167463f, 1.0049102f, 0.0120598f, 0.0070026f, -0.0116372f, 1.1869548f } },
+            { 6500, { 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f } },
+            { 7500, { 1.0206905f, 0.0091588f, -0.0228796f, 0.0115005f, 0.9984917f, -0.0076762f, -0.0043619f, 0.0072053f, 0.8853432f } },
+            { 6430, { 1.0096114f, 0.0061501f, 0.0068113f, 0.0102539f, 0.9888663f, 0.0015575f, 0.0023119f, -0.0044823f, 1.0525915f } },
+            { 5000, { 0.9554129f, -0.0231280f, 0.0637169f, -0.0283629f, 1.0099053f, 0.0211824f, 0.0124188f, -0.0206922f, 1.3330592f } },
+            { 4150, { 0.9147843f, -0.0492842f, 0.1202810f, -0.0622085f, 1.034984f, 0.0404480f, 0.0228014f, -0.0375807f, 1.6259804f } },
+            { 3450, { 0.8805388f, -0.0774890f, 0.2293784f, -0.0932136f, 1.0589267f, 0.0757827f, 0.0453660f, -0.0760107f, 2.2417979f } },
+            { 2940, { 0.8488316f, -0.1107439f, 0.3471428f, -0.1310107f, 1.0986874f, 0.1141548f, 0.0694025f, -0.1167541f, 2.9109462f } },
+            { 2850, { 0.8446965f, -0.1179225f, 0.3948108f, -0.1366303f, 1.1041226f, 0.1291718f, 0.0798489f, -0.1348999f, 3.1924009f } },
+            { 4871, { 0.9415037f, -0.0321240f, 0.0584672f, -0.0428238f, 1.0250998f, 0.0203309f, 0.0101511f, -0.0161170f, 1.2847354f } },
+            { 6774, { 0.9904476f, -0.0071683f, -0.0116156f, -0.0123712f, 1.0155950f, -0.0029282f, -0.0035635f, 0.0067697f, 0.9181569f } },
+            { 5500, { 0.9726856f, -0.0135482f, 0.0361731f, -0.0167463f, 1.0049102f, 0.0120598f, 0.0070026f, -0.0116372f, 1.1869548f } },
+            { 6500, { 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f } },
+            { 7500, { 1.0206905f, 0.0091588f, -0.0228796f, 0.0115005f, 0.9984917f, -0.0076762f, -0.0043619f, 0.0072053f, 0.8853432f } },
+            { 5000, { 0.9555766f, -0.0230393f, 0.0631636f, -0.0282895f, 1.0099416f, 0.0210077f, 0.0122982f, -0.0204830f, 1.3299098f } },
+            { 3200, { 0.8663030f, -0.0913083f, 0.2771784f, -0.1090504f, 1.0746895f, 0.0913841f, 0.0550856f, -0.0924636f, 2.5119387f } },
+            { 6500, { 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f } },
+        } };
+
+        return table;
+    }
+
+    using Mat9f = std::array<float, 9>;
+
+    Mat9f
+    identity9()
+    {
+        return { 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f };
+    }
+
+    // Single precision like darktable's mat3mul(), so the product matches its logged matrix.
+    Mat9f
+    multiply9(const Mat9f& a,
+              const Mat9f& b)
+    {
+        Mat9f out;
+
+        for (int k = 0; k < 3; ++k) {
+            for (int i = 0; i < 3; ++i) {
+                float x = 0.f;
+                for (int j = 0; j < 3; ++j) {
+                    x += a[(std::size_t)(3 * k + j)] * b[(std::size_t)(3 * j + i)];
+                }
+                out[(std::size_t)(3 * k + i)] = x;
+            }
+        }
+
+        return out;
+    }
+
+    std::optional<Mat9f>
+    readMatrix(const rawspeed::TiffIFD* root,
+               rawspeed::TiffTag tag)
+    {
+        const rawspeed::TiffEntry* entry = root->getEntryRecursive(tag);
+
+        if (!entry || entry->count != 9) {
+            return std::nullopt;
+        }
+        Mat9f out;
+        for (uint32_t i = 0; i < 9; ++i) {
+            out[i] = entry->getFloat(i);
+        }
+
+        return out;
+    }
+
+    // The embedded DNG colour matrix for D65, as darktable's dt_exif_read_exif_data() builds
+    // d65_color_matrix: the colour matrix of the illuminant nearest above D65 (the first one with
+    // a matrix when none is labelled), times its camera calibration and the analog balance,
+    // adapted to D65. A ForwardMatrix is not part of it. Absent for a file that is not a DNG or
+    // has no usable colour matrix.
+    std::optional<std::array<double, 9>>
+    dngD65Matrix(rawspeed::RawDecoder& decoder)
+    {
+        try {
+            const rawspeed::TiffIFD* root = decoder.getRootIFD();
+            if (!root || !root->hasEntryRecursive(rawspeed::TiffTag::DNGVERSION)) {
+                return std::nullopt;
+            }
+
+            const std::array<rawspeed::TiffTag, 3> illuminantTags = { rawspeed::TiffTag::CALIBRATIONILLUMINANT1, rawspeed::TiffTag::CALIBRATIONILLUMINANT2, kCalibrationIlluminant3 };
+            const std::array<rawspeed::TiffTag, 3> colorTags = { rawspeed::TiffTag::COLORMATRIX1, rawspeed::TiffTag::COLORMATRIX2, kColorMatrix3 };
+            const std::array<rawspeed::TiffTag, 3> calibrationTags = { rawspeed::TiffTag::CAMERACALIBRATION1, rawspeed::TiffTag::CAMERACALIBRATION2, kCameraCalibration3 };
+
+            Mat9f analogBalance = identity9();
+            if (const rawspeed::TiffEntry* entry = root->getEntryRecursive(rawspeed::TiffTag::ANALOGBALANCE)) {
+                if (entry->count == 3) {
+                    analogBalance[0] = entry->getFloat(0);
+                    analogBalance[4] = entry->getFloat(1);
+                    analogBalance[8] = entry->getFloat(2);
+                }
+            }
+
+            std::array<int, 3> illuminant = { kIlluminantUnknown, kIlluminantUnknown, kIlluminantUnknown };
+            std::array<std::optional<Mat9f>, 3> color;
+            std::array<Mat9f, 3> calibration = { identity9(), identity9(), identity9() };
+            for (std::size_t k = 0; k < 3; ++k) {
+                if (const rawspeed::TiffEntry* entry = root->getEntryRecursive(illuminantTags[k])) {
+                    illuminant[k] = (int)std::min<uint32_t>((uint32_t)kIlluminantOther, entry->getU32());
+                }
+                color[k] = readMatrix(root, colorTags[k]);
+                if (color[k]) {
+                    if (const std::optional<Mat9f> cc = readMatrix(root, calibrationTags[k])) {
+                        calibration[k] = *cc;
+                    }
+                }
+                if (illuminant[k] == kIlluminantOther) {
+                    illuminant[k] = kIlluminantD65;
+                }
+            }
+
+            const int d65Temperature = illuminants()[(std::size_t)kIlluminantD65].temperature;
+            int selected = -1;
+            int selectedTemperature = 0;
+            int deltaMin = d65Temperature;
+            for (std::size_t k = 0; k < 3; ++k) {
+                if (illuminant[k] == kIlluminantUnknown) {
+                    continue;
+                }
+                const int temperature = illuminants()[(std::size_t)illuminant[k]].temperature;
+                const int delta = std::abs(temperature - d65Temperature);
+                if (temperature > selectedTemperature && delta <= deltaMin) {
+                    selected = (int)k;
+                    selectedTemperature = temperature;
+                    deltaMin = delta;
+                }
+            }
+
+            if (selected == -1) {
+                for (std::size_t k = 0; k < 3; ++k) {
+                    if (illuminant[k] == kIlluminantUnknown && color[k]) {
+                        selected = (int)k;
+                        illuminant[k] = kIlluminantD65;
+                        break;
+                    }
+                }
+            }
+            if (selected < 0) {
+                return std::nullopt;
+            }
+
+            // A labelled illuminant without a ColorMatrix has no matrix to adapt.
+            const std::size_t s = (std::size_t)selected;
+            if (!color[s]) {
+                return std::nullopt;
+            }
+            const Mat9f cameraToXyz = multiply9(multiply9(analogBalance, calibration[s]), *color[s]);
+            const Mat9f d65 = multiply9(illuminants()[(std::size_t)illuminant[s]].adaptation, cameraToXyz);
+            std::array<double, 9> out;
+            for (std::size_t i = 0; i < 9; ++i) {
+                if (!std::isfinite(d65[i])) {
+                    return std::nullopt;
+                }
+                out[i] = (double)d65[i];
+            }
+
+            return out;
+        } catch (const std::exception&) {
+        }
+
+        return std::nullopt;
+    }
+
     // Fills decoded->header from the decoded image, or returns false with the reason.
     bool
     describe(const std::string& path,
@@ -349,6 +569,14 @@ namespace {
         }
         if (const std::optional<double> seconds = exposureTime(decoder)) {
             RawMetadata::setExposure(&metadata, *seconds);
+        }
+        RawMetadata::setMake(&metadata, header->make);
+        RawMetadata::setModel(&metadata, header->model);
+        if (const std::optional<double> limit = linearResponseLimit(decoder)) {
+            RawMetadata::setLinearResponseLimit(&metadata, *limit);
+        }
+        if (const std::optional<std::array<double, 9>> d65 = dngD65Matrix(decoder)) {
+            RawMetadata::setDngD65Matrix(&metadata, *d65);
         }
         RawMetadata::setStage(&metadata, eRawStageRaw);
 

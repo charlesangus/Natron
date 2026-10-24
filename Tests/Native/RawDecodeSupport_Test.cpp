@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstring>
@@ -239,6 +240,85 @@ TEST_F(RawDecodeSupportTest, HeaderMatchesRawspeedForEachFixture)
             }
         }
     }
+}
+
+// darktable keys its white balance presets (data/wb_presets.json: maker "Canon", model "EOS 5D
+// Mark III"; maker "Fujifilm", model "X-Pro2") and its colour matrix table (src/common/
+// colormatrices.c: "Canon EOS 5D Mark III") on rawspeed's canonical names.
+TEST_F(RawDecodeSupportTest, CameraNamesAreRawspeedsCanonicalNames)
+{
+    struct Expected {
+        const RawFixture* fixture;
+        const char* make;
+        const char* model;
+    };
+    const Expected expected[] = {
+        { &bayerFixture(), "Canon", "EOS 5D Mark III" },
+        { &xtransFixture(), "Fujifilm", "X-Pro2" },
+    };
+
+    for (const Expected& e : expected) {
+        SCOPED_TRACE(e.fixture->file);
+        std::string error;
+        const std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(e.fixture->path(), &error);
+        ASSERT_TRUE(bool(header)) << error;
+
+        EXPECT_EQ(std::optional<std::string>(e.make), RawMetadata::getMake(header->metadata));
+        EXPECT_EQ(std::optional<std::string>(e.model), RawMetadata::getModel(header->metadata));
+    }
+
+    std::string error;
+    const std::shared_ptr<const RawDecodeSupport::Header> canon = RawDecodeSupport::readHeader(bayerFixture().path(), &error);
+    ASSERT_TRUE(bool(canon)) << error;
+    EXPECT_EQ("Canon EOS 5D Mark III", *RawMetadata::getMake(canon->metadata) + " " + *RawMetadata::getModel(canon->metadata));
+
+    const std::shared_ptr<const RawDecodeSupport::Header> dng = RawDecodeSupport::readHeader(linearFixture().path(), &error);
+    ASSERT_TRUE(bool(dng)) << error;
+    EXPECT_FALSE(RawMetadata::getMake(dng->metadata).value_or("").empty());
+    EXPECT_FALSE(RawMetadata::getModel(dng->metadata).value_or("").empty());
+}
+
+TEST_F(RawDecodeSupportTest, CameraFilesHaveNoDngMatrixAndALinearResponseLimitOfOne)
+{
+    for (const RawFixture* fixture : { &bayerFixture(), &xtransFixture() }) {
+        SCOPED_TRACE(fixture->file);
+        std::string error;
+        const std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(fixture->path(), &error);
+        ASSERT_TRUE(bool(header)) << error;
+
+        EXPECT_FALSE(RawMetadata::getDngD65Matrix(header->metadata).has_value());
+        EXPECT_FALSE(header->metadata.contains(kRawMetadataLinearResponseLimit));
+        EXPECT_EQ(1., RawMetadata::getLinearResponseLimit(header->metadata));
+    }
+}
+
+// The linear DNG carries ColorMatrix1/2 for illuminants A (17) and D65 (21), CameraCalibration1/2
+// and an AnalogBalance. darktable picks the D65 entry and its Bradford adaptation to D65 is the
+// identity, so its d65_color_matrix is AnalogBalance * CameraCalibration2 * ColorMatrix2. The
+// tag values below were read from the file with a plain TIFF parser; darktable's logged matrix
+// for this file comes with the reference regeneration.
+TEST_F(RawDecodeSupportTest, LinearDngYieldsTheD65MatrixFromItsEmbeddedTags)
+{
+    std::string error;
+    const std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(linearFixture().path(), &error);
+    ASSERT_TRUE(bool(header)) << error;
+
+    const std::array<double, 9> colorMatrix2 = { 0.6722, -0.0635, -0.0963, -0.4287, 1.246, 0.2028, -0.0908, 0.2162, 0.5668 };
+    const std::array<double, 9> cameraCalibration2 = { 1.002, 0., 0., 0., 1., 0., 0., 0., 1.0062 };
+    const std::array<double, 3> analogBalance = { 1.399522, 1., 2.677346 };
+
+    const std::optional<std::array<double, 9>> matrix = RawMetadata::getDngD65Matrix(header->metadata);
+    ASSERT_TRUE(matrix.has_value());
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            double expected = 0.;
+            for (int k = 0; k < 3; ++k) {
+                expected += analogBalance[(std::size_t)row] * cameraCalibration2[(std::size_t)(3 * row + k)] * colorMatrix2[(std::size_t)(3 * k + col)];
+            }
+            EXPECT_NEAR(expected, (*matrix)[(std::size_t)(3 * row + col)], 1e-5) << "row " << row << " col " << col;
+        }
+    }
+    EXPECT_EQ(1., RawMetadata::getLinearResponseLimit(header->metadata));
 }
 
 TEST_F(RawDecodeSupportTest, FullDecodeMatchesRawspeedAndWindowsMatchTheFullDecode)

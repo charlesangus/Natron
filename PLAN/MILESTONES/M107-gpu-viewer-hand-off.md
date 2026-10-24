@@ -532,3 +532,4 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
     - The first 8K 8u run's first frame took 1145 ms, likely a cold page cache.
     - Main's own 8K gpu-rung stalls are 6.6–15.6 s.
   - **Owed by the user:** the desktop zerocopy/hostsync rerun with `.local/m107/p6t2/desktop/viewer-bench.sh --base .local/m107/p7verify/main-beta45/Natron-2.6.0-x86_64.AppImage` (~40 min, X11 session).
+- 2026-10-24 — **Resumed by the gpu PM after a host crash (~09:16) and a reboot onto different hardware** (boot `d728f1eb`, RX 7900 XTX / Navi 31, radeonsi only through Xvfb's llvmpipe as before, ~193 GB available). P6.T3's sweep had started at ~09:15 on the previous boot and left no matrix data, so it restarts on this boot; only same-boot pairs count. Rebased onto main `d82d560f6` (M159, no shared files) as `1941b46bc`; remote `fast --tests` dispatched for the gate's CI line.

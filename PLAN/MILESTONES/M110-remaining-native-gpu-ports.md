@@ -118,7 +118,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
 
 ## Phase 110.1: Independent ports and foundations
 
-- [ ] M110.P1.T1 — Run Reformat on the GPU through the matrix-form resampler
+- [x] M110.P1.T1 — Run Reformat on the GPU through the matrix-form resampler
   - files: `Engine/Nodes/Transform/Reformat.h`, `Engine/Nodes/Transform/Reformat.cpp`, `Engine/Nodes/Transform/docs/Reformat.md`, `Tests/Native/NativeReformatGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach:
     - Add `static constexpr bool kResamplesOnGpu = true;` and `static_assert(GpuResampleOp<ReformatOp>)`.
@@ -333,13 +333,13 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
 
 ## Phase 110.4: Acceptance chain, docs and the GPU host
 
-- [ ] M110.P4.T4 — Ask upstream for the planes a node passes through (runs before P4.T1)
+- [x] M110.P4.T4 — Ask upstream for the planes a node passes through (runs before P4.T1)
   - files: `Engine/ParallelRenderArgs.cpp`, `Engine/ParallelRenderArgs.h` (if needed), `Tests/Native/GpuMultiPlaneRegion_Test.cpp`, `Tests/GpuResidency_Test.cpp`
   - approach: The request pass doesn't ask a node's pass-through input for the planes the node passes through, so in Read → Grade → Shuffle (Shuffle reading another layer) the Grade can't alias that plane as an identity member and stays on the CPU. When a consumer requests a plane that a node passes through (`getComponentsNeededAndProduced_public`), propagate the request for that plane to the pass-through input at the same time and view, as `renderRoI` would fetch it. Keep the CPU render's results unchanged. Then re-check `MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu`: its pinned assertion that the source lacks the layer may now flip. Update it only if the GPU render matches the CPU, and say why in the test.
   - verify: at the phase build, a new `GpuMultiPlaneRegion_Test` case puts Grade → Shuffle (in2 from another layer of the source) in one region matching the CPU, and `RenderScheduler_Test`, `GpuResidency_Test`, `GpuPlacement_Test`, every `Tests/Native/*Gpu_Test` and the CPU render suites stay green in both legs.
   - size: L
 
-- [ ] M110.P4.T1 — Test the Read → Reformat → Grade → Shuffle → Write chain as one region
+- [x] M110.P4.T1 — Test the Read → Reformat → Grade → Shuffle → Write chain as one region
   - files: `Tests/Native/NativeGpuChain_Test.cpp` (new)
   - approach:
     - Build a NativeRead of `Tests/fixtures/flat-rgba-pattern.exr` (or a multi-layer fixture), then a Reformat with a non-identity resize and filter, a Grade with non-neutral gain, a Shuffle with a non-identity mapping (R↔B, alpha from 1, so it is not a route identity), and a NativeWrite.
@@ -374,7 +374,8 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
     - Then build the stripped `release` AppImage. Render a `.ntp` of the acceptance chain at UHD with `env -u LD_LIBRARY_PATH NATRON_GPU=auto NATRON_RENDER_PROFILE=<file>`.
     - Summarise the profile with `tools/bench/gpu_region_summary.py` (read-only). Record whether the cost model placed Reformat, Grade and Shuffle in one region, and the region's wall and kernel ms.
     - Compare only runs from the same boot.
-  - verify: every listed test passes on RADV, and a Decisions line records the Auto-mode outcome and the numbers.
+    - Bench the resample kernel before and after `1b73356be`'s exact-double impulse/box entries at UHD, 8K and 24k (Transform and Reformat, impulse, box and one smooth filter), same boot. If impulse/box regressed materially, add a fast path that uses exact maths only near a decision boundary.
+  - verify: every listed test passes on RADV, and Decisions lines record the Auto-mode outcome, the numbers and the resample before/after table.
   - size: M
 
 **Verification gate:**
@@ -513,3 +514,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
 - 2026-10-24 — **A Switch must pass through only its active input's layers, colour layout included, at each frame** (user). Today it presents the widest colour layout of all its inputs at every frame, because metadata is time-invariant. That is a bug, not a constraint to test around. `d40ab5123`'s Layers tests, which vary only non-colour layers, are a stopgap. A consultant is scoping the fix: one M110 task, or its own milestone. Once it lands, the tests go back to varying the colour layout by frame.
 - 2026-10-24 — **Node metadata must not be time-invariant** (user: "Node metadata should absolutely not be the same at every frame, there's no reason that should be the case"). This widens the Switch ruling: components and colour layout, PAR, fps, premult and the rest should be per frame for every node. It is architecture work beyond M110's scope, so the consultant is scoping it as its own milestone, with the Switch fix possibly riding on it. The new milestone goes to `/cat-plan` through the inbox.
 - 2026-10-24 — **M110.P3.T4 inserted (PM, consultant-scoped)** to apply the user's Switch ruling now. Per-frame layers go through the components path, which is already keyed on (hash, time, view). This needs no time-varying `NodeMetadata`, so it ships ahead of the per-frame metadata milestone, which goes to `/cat-plan` through the inbox. Remaining gap until that milestone: the Switch's metadata, which the Viewer, Write and OFX clips read, still declares the widest input.
+- 2026-10-24 — **Resumed by the gpu PM after a host crash (~09:16) and a reboot onto different hardware** (boot `d728f1eb`, RX 7900 XTX / Navi 31, ~193 GB available). The crash left the plan worktree's newest commit object empty locally; it had already been pushed, so the fetch restored it and nothing was lost. Rebased onto main `d82d560f6` (M159) as `23c4a5a83`; only `Engine/Nodes/README.md` is shared, and it merged cleanly.
+- 2026-10-24 — **Remote `fast --tests` of `5355cb3b9` (run 40096925163): 346 of 347 entries pass in both legs, so P4.T4 and P4.T1 are done.** `NativeGpuChainTest` (both cases, one region between the Read and the Write), `ShuffleReadsAnotherLayerThroughAGradeInOneRegion`, the flipped `MaskInAnotherLayerThanItsProducersPlaneIsReadThroughItsPassThrough` and `NativeLayersGpuTest` pass. The one failure is the lazy-edge commit's new `GpuMultiPlaneRegionTest.AddLayersPassesColourThroughBesideTheLayerItAddsInOneRegion`: AddLayers and Shuffle are placed in a region, but it falls back to the CPU. A fixer is on it. P3.T3 closes with that fix.
+- 2026-10-24 — **M110.P1.T1 checked off** (PM). Its verify has passed in every build since `9b8a816b1`. The owed resample bench for the exact-maths impulse/box entries moves into P4.T3's GPU-host run, so it isn't lost.
+

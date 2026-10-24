@@ -1855,6 +1855,26 @@
     </object-type>
 
     <object-type name="ParametricParam">
+        <modify-function signature="addControlPointWithWeights(int,double,double,double,double,double,double,Natron::KeyframeTypeEnum)">
+            <inject-code class="target" position="beginning">
+                Natron::StatusEnum status = %CPPSELF.%FUNCTION_NAME(%1, %2, %3, %4, %5, %6, %7, %8);
+                if (PyErr_Occurred()) {
+                    return {};
+                }
+                %PYARG_0 = %CONVERTTOPYTHON[Natron::StatusEnum](status);
+                return %PYARG_0;
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setNthControlPointWithWeights(int,int,double,double,double,double,double,double)">
+            <inject-code class="target" position="beginning">
+                Natron::StatusEnum status = %CPPSELF.%FUNCTION_NAME(%1, %2, %3, %4, %5, %6, %7, %8);
+                if (PyErr_Occurred()) {
+                    return {};
+                }
+                %PYARG_0 = %CONVERTTOPYTHON[Natron::StatusEnum](status);
+                return %PYARG_0;
+            </inject-code>
+        </modify-function>
         <modify-function signature="getNthControlPoint(int,int,double*,double*,double*,double*,double*,double*)const">
             <modify-argument index="3">
                 <remove-argument/>

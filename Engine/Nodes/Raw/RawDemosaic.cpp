@@ -37,6 +37,10 @@
 #include <cstdint>
 #include <vector>
 
+#include <QCoreApplication>
+#include <QMetaObject>
+#include <QThread>
+
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
@@ -155,6 +159,33 @@ amazeSpan(int w0,
     *b0 = std::max(0, kAmazeGrid * ((w0 / kAmazeGrid) - 1));
     *b1 = std::min(n, kAmazeGrid * ((w1 - 1) / kAmazeGrid) + kAmazeTileEnd + endMargin);
 }
+
+// darktable's reload_defaults() Contrast Sensitivity for the source: _get_variance_threshold()
+// from the file's white level and ISO.
+float
+sourceCaptureThreshold(const ImageMetadata& source)
+{
+    return RawKernels::captureVarianceThreshold(RawMetadata::getSensorWhiteLevel(source).value_or(0.), RawMetadata::getIso(source).value_or(0.));
+}
+
+// The frame area _calc_auto_radius() measures, as a region of rod.
+RectI
+captureRadiusRect(const RectI& rod,
+                  RawKernels::CaptureRadiusArea* area)
+{
+    *area = RawKernels::captureRadiusArea(rod.width(), rod.height());
+
+    return RectI(rod.x1 + area->x, rod.y2 - area->y - area->height, rod.x1 + area->x + area->width, rod.y2 - area->y);
+}
+
+const char* const kCaptureRadiusHint = QT_TRANSLATE_NOOP("RawDemosaic",
+                                                         "Capture sharpening's radius should reflect the overall Gaussian-type blur of the camera sensor, possibly the anti-aliasing filter and the lens. "
+                                                         "Increasing it too far soon leads to artefacts like halos and ringing, especially with many iterations.\n\n"
+                                                         "0 measures the radius from the centre of the raw data of each frame.");
+const char* const kCaptureThresholdHint = QT_TRANSLATE_NOOP("RawDemosaic",
+                                                            "Restricts capture sharpening to areas of high local contrast: increase it to exclude flat areas in very dark or noisy images, "
+                                                            "decrease it for well exposed, low noise images. Until overridden it shows the image's default, "
+                                                            "from its ISO and whether the sensor has more than 12 bits.");
 } // namespace
 
 struct RawDemosaic::Settings {
@@ -171,6 +202,13 @@ struct RawDemosaic::Settings {
     float processedMaximum = 1.f;
     float processedMinimum = 1.f;
     float iso = 0.f;
+    // Capture sharpening: on when enabled and darktable supports it for the method, mono for data
+    // without a CFA of one channel (darktable's true monochrome). capture.radius is the Radius
+    // knob's, 0 or less for the automatic one; the threshold is resolved.
+    bool capture = false;
+    bool mono = false;
+    RawKernels::CaptureSettings captureSettings;
+    float wbApplied[3] = { 1.f, 1.f, 1.f };
 };
 
 RawDemosaic::RawDemosaic(NodePtr node)
@@ -186,6 +224,10 @@ RawDemosaic::RawDemosaic(NodePtr node)
     , _greenValid(false)
     , _greenKey(0)
     , _greenRatio(0.)
+    , _captureMutex()
+    , _captureValid(false)
+    , _captureKey(0)
+    , _captureRadiusValue(0.)
 {
     setSupportsRenderScaleMaybe(eSupportsNo);
 }
@@ -323,6 +365,85 @@ RawDemosaic::initializeKnobs()
     page->addKnob(dualThreshold);
     _dualThreshold = dualThreshold;
 
+    KnobBoolPtr captureSharpen = createKnob<KnobBool>(tr("Capture Sharpen"));
+    captureSharpen->setName(kRawDemosaicParamCaptureSharpen);
+    captureSharpen->setHintToolTip(tr("Capture sharpening recovers details lost to in-camera blurring, which can be caused by diffraction, "
+                                      "the anti-aliasing filter or other sources of Gaussian-type blur."));
+    captureSharpen->setDefaultValue(false);
+    captureSharpen->setAnimationEnabled(false);
+    page->addKnob(captureSharpen);
+    _captureSharpen = captureSharpen;
+
+    KnobIntPtr captureIterations = createKnob<KnobInt>(tr("Iterations"));
+    captureIterations->setName(kRawDemosaicParamCaptureIterations);
+    captureIterations->setHintToolTip(tr("Capture sharpening's strength, by iterations: one per step up to 11, rising to 50 at 25."));
+    captureIterations->setDefaultValue(8);
+    captureIterations->setMinimum(1);
+    captureIterations->setMaximum(25);
+    captureIterations->setDisplayMinimum(1);
+    captureIterations->setDisplayMaximum(25);
+    captureIterations->setAnimationEnabled(false);
+    page->addKnob(captureIterations);
+    _captureIterations = captureIterations;
+
+    KnobDoublePtr captureRadius = createKnob<KnobDouble>(tr("Radius"));
+    captureRadius->setName(kRawDemosaicParamCaptureRadius);
+    captureRadius->setHintToolTip(tr(kCaptureRadiusHint));
+    captureRadius->setDefaultValue(0.);
+    captureRadius->setMinimum(0.);
+    captureRadius->setMaximum(1.5);
+    captureRadius->setDisplayMinimum(0.);
+    captureRadius->setDisplayMaximum(1.5);
+    captureRadius->setAnimationEnabled(false);
+    page->addKnob(captureRadius);
+    _captureRadius = captureRadius;
+
+    KnobDoublePtr captureThreshold = createKnob<KnobDouble>(tr("Contrast Sensitivity"));
+    captureThreshold->setName(kRawDemosaicParamCaptureThreshold);
+    captureThreshold->setHintToolTip(tr(kCaptureThresholdHint));
+    captureThreshold->setDefaultValue(0.4);
+    captureThreshold->setMinimum(0.);
+    captureThreshold->setMaximum(1.);
+    captureThreshold->setDisplayMinimum(0.);
+    captureThreshold->setDisplayMaximum(1.);
+    captureThreshold->setAnimationEnabled(false);
+    page->addKnob(captureThreshold);
+    _captureThreshold = captureThreshold;
+
+    KnobBoolPtr captureThresholdOverride = createKnob<KnobBool>(tr("Override Contrast Sensitivity"));
+    captureThresholdOverride->setName(kRawDemosaicParamCaptureThresholdOverride);
+    captureThresholdOverride->setHintToolTip(tr("Use the contrast sensitivity above instead of the image's default. "
+                                                "An overriding 0 takes the image's default, rounded down to a hundredth."));
+    captureThresholdOverride->setDefaultValue(false);
+    captureThresholdOverride->setAnimationEnabled(false);
+    page->addKnob(captureThresholdOverride);
+    _captureThresholdOverride = captureThresholdOverride;
+
+    KnobDoublePtr captureBoost = createKnob<KnobDouble>(tr("Corner Boost"));
+    captureBoost->setName(kRawDemosaicParamCaptureBoost);
+    captureBoost->setHintToolTip(tr("Further increases the sharpening radius towards the image's corners, in pixels; the sharp centre of the image is not affected."));
+    captureBoost->setDefaultValue(0.);
+    captureBoost->setMinimum(0.);
+    captureBoost->setMaximum(1.5);
+    captureBoost->setDisplayMinimum(0.);
+    captureBoost->setDisplayMaximum(1.5);
+    captureBoost->setAnimationEnabled(false);
+    page->addKnob(captureBoost);
+    _captureBoost = captureBoost;
+
+    KnobDoublePtr captureCenter = createKnob<KnobDouble>(tr("Sharp Center"));
+    captureCenter->setName(kRawDemosaicParamCaptureCenter);
+    captureCenter->setHintToolTip(tr("The size of the sharp image centre Corner Boost leaves alone, as a fraction of half the image's shorter side beyond the half it always leaves."));
+    captureCenter->setDefaultValue(0.);
+    captureCenter->setMinimum(0.);
+    captureCenter->setMaximum(1.);
+    captureCenter->setDisplayMinimum(0.);
+    captureCenter->setDisplayMaximum(1.);
+    captureCenter->setAnimationEnabled(false);
+    page->addKnob(captureCenter);
+    _captureCenter = captureCenter;
+
+    refreshCaptureOverride();
     refreshMethodKnobsVisibility();
 }
 
@@ -341,11 +462,15 @@ RawDemosaic::refreshMethodKnobsVisibility()
         return;
     }
     int period = 0;
-    if (getInput(getSourceInput())) {
+    const EffectInstancePtr input = getInput(getSourceInput());
+    if (input) {
         if (const std::optional<RawLayout> layout = RawLayout::fromMetadata(getSourceMetadata(getCurrentTime(), ViewIdx(0)))) {
             period = layout->period();
         }
     }
+    // darktable's capture_support: not for the photosite modes, and for data without a CFA only
+    // when it is monochrome (darktable's true monochrome; colour data skips demosaic entirely).
+    bool captureSupport = true;
     const int bayer = bayerMethod->getValue();
     const int xtrans = xtransMethod->getValue();
     const bool bayerDual = (bayer == (int)eRawDemosaicBayerRCDDual) || (bayer == (int)eRawDemosaicBayerAMaZEDual);
@@ -360,6 +485,7 @@ RawDemosaic::refreshMethodKnobsVisibility()
         colorSmoothing->setSecret(passing || bayerDual);
         dualThreshold->setSecret(!bayerDual);
         lmmseRefine->setSecret(bayer != (int)eRawDemosaicBayerLMMSE);
+        captureSupport = !passing;
     } else if (period == 6) {
         const bool passing = (xtrans == (int)eRawDemosaicXTransPassthroughMonochrome) || (xtrans == (int)eRawDemosaicXTransPhotositeColor);
         bayerMethod->setSecret(true);
@@ -369,6 +495,7 @@ RawDemosaic::refreshMethodKnobsVisibility()
         colorSmoothing->setSecret(passing || xtransDual);
         dualThreshold->setSecret(!xtransDual);
         lmmseRefine->setSecret(true);
+        captureSupport = !passing;
     } else {
         // With no source, or one without a CFA, the sensor is unknown: both lists and every knob
         // either of them uses stay available.
@@ -379,19 +506,115 @@ RawDemosaic::refreshMethodKnobsVisibility()
         colorSmoothing->setSecret(false);
         dualThreshold->setSecret(!bayerDual && !xtransDual);
         lmmseRefine->setSecret(bayer != (int)eRawDemosaicBayerLMMSE);
+        captureSupport = !input || (input->getMetadataNComps(-1) == 1);
     }
+    refreshCaptureKnobsVisibility(captureSupport);
+}
+
+void
+RawDemosaic::refreshCaptureKnobsVisibility(bool support)
+{
+    const KnobBoolPtr enabled = _captureSharpen.lock();
+    const KnobIntPtr iterations = _captureIterations.lock();
+    const KnobDoublePtr radius = _captureRadius.lock();
+    const KnobDoublePtr threshold = _captureThreshold.lock();
+    const KnobBoolPtr thresholdOverride = _captureThresholdOverride.lock();
+    const KnobDoublePtr boost = _captureBoost.lock();
+    const KnobDoublePtr center = _captureCenter.lock();
+
+    if (!enabled || !iterations || !radius || !threshold || !thresholdOverride || !boost || !center) {
+        return;
+    }
+    // darktable's gui_changed(): the switch shows where capture sharpening is supported, the
+    // controls while it is on, and Sharp Center while Corner Boost is not 0.
+    const bool doCapture = support && enabled->getValue();
+    enabled->setSecret(!support);
+    iterations->setSecret(!doCapture);
+    radius->setSecret(!doCapture);
+    threshold->setSecret(!doCapture);
+    thresholdOverride->setSecret(!doCapture);
+    boost->setSecret(!doCapture);
+    center->setSecret(!doCapture || (boost->getValue() == 0.));
+}
+
+void
+RawDemosaic::refreshCaptureOverride()
+{
+    const KnobBoolPtr thresholdOverride = _captureThresholdOverride.lock();
+    const KnobDoublePtr threshold = _captureThreshold.lock();
+
+    if (thresholdOverride && threshold) {
+        threshold->setAllDimensionsEnabled(thresholdOverride->getValue());
+    }
+}
+
+void
+RawDemosaic::showSourceCaptureThreshold(double time)
+{
+    const KnobBoolPtr thresholdOverride = _captureThresholdOverride.lock();
+    const KnobDoublePtr threshold = _captureThreshold.lock();
+
+    if (!thresholdOverride || !threshold || !getInput(getSourceInput())) {
+        return;
+    }
+    const float value = sourceCaptureThreshold(getSourceMetadata(time, ViewIdx(0)));
+    threshold->setHintToolTip(tr(kCaptureThresholdHint) + QLatin1String("\n\n") + tr("The image's default: %1.").arg((double)value, 0, 'f', 3));
+    if (!thresholdOverride->getValue()) {
+        threshold->setValue((double)value);
+    }
+}
+
+void
+RawDemosaic::showAutoCaptureRadius(double radius,
+                                   bool reliable)
+{
+    QString text = tr(kCaptureRadiusHint) + QLatin1String("\n\n") + tr("Measured on the last frame rendered with radius 0: %1 px.").arg(radius, 0, 'f', 2);
+    if (!reliable) {
+        text += QLatin1Char(' ') + tr("The frame is too small for a reliable measure.");
+    }
+    const std::string hint = text.toStdString();
+    const KnobDoubleWPtr weak = _captureRadius;
+    const auto apply = [weak, hint]() {
+        if (const KnobDoublePtr knob = weak.lock()) {
+            knob->setHintToolTip(hint);
+        }
+    };
+    // Setting a tooltip signals the GUI, which only the main thread may do.
+    if (!qApp) {
+        return;
+    }
+    if (QThread::currentThread() == qApp->thread()) {
+        apply();
+    } else {
+        QMetaObject::invokeMethod(qApp, apply, Qt::QueuedConnection);
+    }
+}
+
+std::optional<double>
+RawDemosaic::lastAutoCaptureRadius() const
+{
+    std::lock_guard<std::mutex> lock(_captureMutex);
+
+    if (!_captureValid) {
+        return std::nullopt;
+    }
+
+    return _captureRadiusValue;
 }
 
 void
 RawDemosaic::onKnobsLoaded()
 {
+    refreshCaptureOverride();
     refreshMethodKnobsVisibility();
+    showSourceCaptureThreshold(getCurrentTime());
 }
 
 void
 RawDemosaic::onInputChanged(int /*inputNo*/)
 {
     refreshMethodKnobsVisibility();
+    showSourceCaptureThreshold(getCurrentTime());
 }
 
 void
@@ -405,13 +628,27 @@ bool
 RawDemosaic::knobChanged(KnobI* k,
                          ValueChangedReasonEnum /*reason*/,
                          ViewSpec /*view*/,
-                         double /*time*/,
+                         double time,
                          bool /*originatedFromMainThread*/)
 {
     const KnobChoicePtr bayerMethod = _bayerMethod.lock();
     const KnobChoicePtr xtransMethod = _xtransMethod.lock();
+    const KnobBoolPtr captureSharpen = _captureSharpen.lock();
+    const KnobDoublePtr captureBoost = _captureBoost.lock();
+    const KnobBoolPtr thresholdOverride = _captureThresholdOverride.lock();
 
-    if (!k || ((k != bayerMethod.get()) && (k != xtransMethod.get()))) {
+    if (!k) {
+        return false;
+    }
+    if (thresholdOverride && (k == thresholdOverride.get())) {
+        refreshCaptureOverride();
+        if (!thresholdOverride->getValue()) {
+            showSourceCaptureThreshold(time);
+        }
+
+        return true;
+    }
+    if ((k != bayerMethod.get()) && (k != xtransMethod.get()) && (k != captureSharpen.get()) && (k != captureBoost.get())) {
         return false;
     }
     refreshMethodKnobsVisibility();
@@ -521,6 +758,38 @@ RawDemosaic::resolveSettings(double time,
     s.processedMinimum = std::fmax(1.0f, (float)std::min({ maximum[0], maximum[1], maximum[2] }));
     s.iso = (float)RawMetadata::getIso(source).value_or(0.);
 
+    // Capture sharpening, as demosaic.c's process() decides it: not for the photosite modes, and
+    // for data without a CFA only when it is monochrome.
+    if (reader.value(_captureSharpen)) {
+        if (s.algorithm == Algorithm::PassThrough) {
+            const EffectInstancePtr input = getInput(getSourceInput());
+            s.mono = (s.layout.period() == 0) && input && (input->getMetadataNComps(-1) == 1);
+            s.capture = s.mono;
+        } else {
+            s.capture = (s.algorithm != Algorithm::PhotositeMonochrome) && (s.algorithm != Algorithm::PhotositeColor);
+        }
+    }
+    if (s.capture) {
+        RawKernels::CaptureSettings& cs = s.captureSettings;
+        cs.iterations = RawKernels::captureIterations(std::max(1, std::min(25, (int)reader.value(_captureIterations))));
+        cs.radius = (float)std::max(0., std::min(1.5, (double)reader.value(_captureRadius)));
+        cs.boost = (float)std::max(0., std::min(1.5, (double)reader.value(_captureBoost)));
+        cs.center = (float)std::max(0., std::min(1., (double)reader.value(_captureCenter)));
+        const float sourceThreshold = sourceCaptureThreshold(source);
+        if (!reader.value(_captureThresholdOverride)) {
+            cs.threshold = sourceThreshold;
+        } else {
+            const float threshold = (float)reader.value(_captureThreshold);
+            // commit_params(): a threshold of 0 or less takes the image's, cut to a hundredth.
+            cs.threshold = (threshold <= 0.0f) ? 0.01f * (float)(int)(100.0f * sourceThreshold) : threshold;
+        }
+        if (const std::optional<std::array<double, 3>> applied = RawMetadata::getWbApplied(source)) {
+            for (int c = 0; c < 3; ++c) {
+                s.wbApplied[c] = (float)(*applied)[c];
+            }
+        }
+    }
+
     return s;
 } // RawDemosaic::resolveSettings
 
@@ -535,19 +804,22 @@ RawDemosaic::sourceRegionFor(const RectI& window,
         return window;
     }
     const RectI& rod = settings->sourceRoD;
+    // Capture sharpening runs between the method and the dual blend, so its reach adds to the
+    // method's own and the dual mask's.
+    const int capture = settings->capture ? RawKernels::captureHalo(settings->captureSettings.iterations) : 0;
     if (settings->algorithm == Algorithm::PassThrough) {
-        return window.intersect(rod);
+        return settings->capture ? RawNodeSupport::expandForKernel(window, capture, 1, kMinimumBuffer, rod) : window.intersect(rod);
     }
     const bool local = (settings->greenEq == eRawDemosaicGreenEqLocal) || (settings->greenEq == eRawDemosaicGreenEqBoth);
     const int extra = settings->smoothing + (local ? 2 : 0);
     if ((settings->algorithm != Algorithm::AMaZE) && (settings->algorithm != Algorithm::LMMSE) && (settings->algorithm != Algorithm::FDC)) {
-        const int own = algorithmHalo(settings->algorithm);
+        const int own = algorithmHalo(settings->algorithm) + capture;
         const int halo = settings->dual ? std::max(own + kDualMaskReach, kDualLowReach) : own;
         return RawNodeSupport::expandForKernel(window, halo + extra, settings->layout.period(), kMinimumBuffer, rod);
     }
     // AMaZE's span leaves at least 16 photosites past the grown window on each inner side, more
     // than VNG and its smoothing read.
-    const int grow = extra + (settings->dual ? kDualMaskReach : 0);
+    const int grow = extra + (settings->dual ? kDualMaskReach : 0) + capture;
     const RectI grown = RectI(window.x1 - grow, window.y1 - grow, window.x2 + grow, window.y2 + grow).intersect(rod);
     if (grown.isNull()) {
         return grown;
@@ -603,7 +875,15 @@ RawDemosaic::getRegionsOfInterest(double time,
     }
     const double par = getAspectRatio(getSourceInput());
     const bool full = (settings->greenEq == eRawDemosaicGreenEqFull) || (settings->greenEq == eRawDemosaicGreenEqBoth);
-    const RectI need = full ? settings->sourceRoD : sourceRegionFor(PassExec::toPixelEnclosing(renderWindow, scale, par), time, view);
+    RectI need = full ? settings->sourceRoD : sourceRegionFor(PassExec::toPixelEnclosing(renderWindow, scale, par), time, view);
+    if (settings->capture && (settings->captureSettings.radius <= 0.f)) {
+        // The automatic radius measures the centre of the frame, whatever the window.
+        RawKernels::CaptureRadiusArea area;
+        const RectI centre = captureRadiusRect(settings->sourceRoD, &area);
+        if (!centre.isNull()) {
+            need.merge(centre);
+        }
+    }
     (*ret)[input] = PassExec::toCanonical(need, scale, par);
 }
 
@@ -660,8 +940,61 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
     const RectI& roi = args.roi;
     const RectI& rod = s.sourceRoD;
 
+    // The capture sharpening settings for this frame, the automatic radius measured once per
+    // frame key on the raw data, before green equilibration, as _calc_auto_radius() does.
+    RawKernels::CaptureSettings capture = s.captureSettings;
+    if (s.capture && (capture.radius <= 0.f)) {
+        const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
+        bool measured = false;
+        bool reliable = true;
+        {
+            std::lock_guard<std::mutex> lock(_captureMutex);
+            if (!_captureValid || (_captureKey != key)) {
+                RawKernels::CaptureRadiusArea area;
+                const RectI centre = captureRadiusRect(rod, &area);
+                reliable = area.reliable;
+                double radius = 0.5;
+                if (area.reliable && !centre.isNull()) {
+                    RawNodeSupport::TopDownBuffer measure;
+                    measure.allocate(centre, 1);
+                    RawNodeSupport::readTopDown(source, &measure, parallel);
+                    const std::uint32_t frameFilters = s.mono ? 0u : ((s.layout.period() == 2) ? RawNodeSupport::bayerFiltersAt(s.layout, rod) : RawKernels::kFiltersXTrans);
+                    std::uint8_t frameXTrans[6][6] = {};
+                    if (s.layout.period() == 6) {
+                        RawNodeSupport::xtransAt(s.layout, rod, frameXTrans);
+                    }
+                    radius = RawKernels::captureAutoRadius(measure.data.data(), centre.width(), centre.height(), frameFilters, frameXTrans, s.wbApplied, parallel);
+                }
+                _captureRadiusValue = radius;
+                _captureKey = key;
+                _captureValid = !cancel.check();
+                measured = _captureValid;
+            }
+            capture.radius = (float)_captureRadiusValue;
+        }
+        if (measured) {
+            showAutoCaptureRadius((double)capture.radius, reliable);
+        }
+    }
+
     RawNodeSupport::TopDownBuffer rgb;
-    if (s.algorithm == Algorithm::PassThrough) {
+    if ((s.algorithm == Algorithm::PassThrough) && s.capture) {
+        // darktable's true monochrome: the values themselves are the mosaic.
+        const RectI need = sourceRegionFor(roi, args.time, args.view);
+        RawNodeSupport::TopDownBuffer mono;
+        mono.allocate(need, 1);
+        RawNodeSupport::readTopDown(source, &mono, parallel);
+        rgb.allocate(need, 4);
+        parallel(need.height(), [&](int r) {
+            const std::size_t base = (std::size_t)r * need.width();
+            for (int i = 0; i < need.width(); ++i) {
+                const float v = mono.data[base + i];
+                float* q = &rgb.data[(base + i) * 4];
+                q[0] = q[1] = q[2] = q[3] = v;
+            }
+        });
+        RawKernels::captureSharpen(rgb.data.data(), mono.data.data(), need.width(), need.height(), rod.y2 - need.y2, need.x1 - rod.x1, rod.width(), rod.height(), 0u, NULL, s.wbApplied, capture, parallel);
+    } else if (s.algorithm == Algorithm::PassThrough) {
         RawNodeSupport::TopDownBuffer in;
         in.allocate(roi, source.nComps);
         RawNodeSupport::readTopDown(source, &in, parallel);
@@ -756,6 +1089,11 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
         case Algorithm::PassThrough:
             break;
         }
+        // demosaic.c's process(): capture sharpening on the method's output and the green
+        // equilibrated mosaic, before the dual blend and colour smoothing.
+        if (s.capture) {
+            RawKernels::captureSharpen(out.data.data(), in, width, height, rod.y2 - need.y2, need.x1 - rod.x1, rod.width(), rod.height(), filters, xtrans, s.wbApplied, capture, parallel);
+        }
         if (s.dual) {
             RawKernels::dualDemosaic(out.data.data(), in, width, height, filters, xtrans, s.dualThreshold, s.wb, parallel);
         }
@@ -801,6 +1139,10 @@ RawDemosaic::canRenderOpOnGpu(const GpuQuery& query) const
     // Resolving only reads knobs and the source's metadata and region.
     const std::optional<Settings> settings = const_cast<RawDemosaic*>(this)->resolveSettings(query.time, query.view);
     if (!settings) {
+        return false;
+    }
+    // Capture sharpening has no GPU path.
+    if (settings->capture) {
         return false;
     }
     if (settings->algorithm == Algorithm::PassThrough) {

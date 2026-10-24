@@ -552,6 +552,12 @@ RawPrepare::deriveOutputMetadata(double time,
     RawMetadata::setStage(&metadata, eRawStagePrepared);
     const std::size_t levels = RawMetadata::getBlackLevels(metadata).value_or(std::vector<double>(4, 0.)).size();
     RawMetadata::setBlackLevels(&metadata, std::vector<double>(levels, 0.));
+    // The file's white level, which the normalised one no longer tells.
+    if (!RawMetadata::getSensorWhiteLevel(metadata)) {
+        if (const std::optional<double> white = RawMetadata::getWhiteLevel(metadata)) {
+            RawMetadata::setSensorWhiteLevel(&metadata, *white);
+        }
+    }
     RawMetadata::setWhiteLevel(&metadata, 1.);
     RawMetadata::setProcessedMaximum(&metadata, { 1., 1., 1. });
     RawMetadata::setCrop(&metadata, RectI(0, 0, settings->kept.width(), settings->kept.height()));

@@ -65,6 +65,7 @@
 #define kRawMetadataGainMaps "raw/gain_maps"
 #define kRawMetadataWbLateCorrection "raw/wb_late_correction"
 #define kRawMetadataWbD65Coeffs "raw/wb_d65_coeffs"
+#define kRawMetadataSensorWhiteLevel "raw/sensor_white_level"
 
 #define kRawCfaPatternNone "none"
 #define kRawStageRaw "raw"
@@ -216,6 +217,14 @@ void setBlackLevels(ImageMetadata* metadata, const std::vector<double>& levels);
 
 std::optional<double> getWhiteLevel(const ImageMetadata& metadata);
 void setWhiteLevel(ImageMetadata* metadata, double level);
+
+/**
+ * @brief raw/sensor_white_level: the white level the raw file gives, which RawPrepare keeps when
+ * it normalises raw/white_level to 1 (darktable's raw_white_point, by which RawDemosaic's
+ * capture sharpening tells a sensor of more than 12 bits).
+ **/
+std::optional<double> getSensorWhiteLevel(const ImageMetadata& metadata);
+void setSensorWhiteLevel(ImageMetadata* metadata, double level);
 
 /**
  * @brief raw/wb_coeffs: the as-shot red, green and blue multipliers.

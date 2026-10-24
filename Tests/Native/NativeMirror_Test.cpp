@@ -257,7 +257,8 @@ protected:
         ASSERT_EQ(1u, transforms.count(0)) << what;
         ASSERT_TRUE(bool(transforms[0].newInputEffect)) << what;
         EXPECT_TRUE(bool(transforms[0].cat)) << what;
-        EXPECT_EQ(expectedInput->getEffectInstance(), transforms[0].newInputEffect) << what;
+        // newInputEffect is the most upstream node of the chain; the image is fetched from its input.
+        EXPECT_EQ(expectedInput->getEffectInstance(), transforms[0].newInputEffect->getInput(transforms[0].newInputNbToFetchFrom)) << what;
     }
 
     NodePtr makeCrop(const NodePtr& input,
@@ -391,18 +392,23 @@ TEST_F(NativeMirrorTest, MirrorThenTransformIsOneResample)
 
 // A Transform followed by a Mirror is one resample by the Mirror, with its impulse filter. Rotation
 // stays out of it so the reference, a Transform with the translation and scale reflected, is exact
-// to a rotation-free matrix.
+// to a rotation-free matrix. The Mirror reflects about the centre of the Transform's region, not
+// the source's: y -> (y1 + y2) - y, so the reflected Transform about the centre 24 translates by
+// (y1 + y2) - 48 - ty.
 TEST_F(NativeMirrorTest, TransformThenMirrorIsOneResample)
 {
     resetProject();
     NodePtr source = makeSource();
     const RectI window(-16, -16, 80, 64);
-    NodePtr transform = makeTransform(source, 5.3173, 3.2719, 0., 0.75, 0.6);
+    const double ty = 3.2719;
+    NodePtr transform = makeTransform(source, 5.3173, ty, 0., 0.75, 0.6);
     NodePtr mirror = makeMirror(transform, true, false);
     ASSERT_TRUE(bool(transform) && bool(mirror));
     expectConcatenatesInto(mirror, source, "transform then flip");
 
-    NodePtr reference = makeTransform(source, 5.3173, -3.2719, 0., 0.75, -0.6);
+    const RectI transformRoD = pixelRoD(transform, 0);
+    ASSERT_FALSE(transformRoD.isNull());
+    NodePtr reference = makeTransform(source, 5.3173, (double)(transformRoD.y1 + transformRoD.y2) - 48. - ty, 0., 0.75, -0.6);
     ASSERT_TRUE(bool(reference));
     ASSERT_TRUE(setKnobValue(reference, kResamplerParamFilterType, std::string("impulse")));
     expectSameImage(mirror, reference, window, "transform then flip");

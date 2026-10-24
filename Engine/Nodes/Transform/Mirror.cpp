@@ -153,4 +153,24 @@ Mirror::addAcceptedComponents(int inputNb,
     comps->push_back(ImageLayerDesc::getXYComponents());
 }
 
+StatusEnum
+Mirror::getRegionOfDefinition(U64 hash,
+                              double time,
+                              const RenderScale& scale,
+                              ViewIdx view,
+                              RectD* rod)
+{
+    // The reflection maps the source's pixels onto themselves, pixel centre onto pixel centre, so
+    // the region is the source's. The generic resample region would grow it by the one-pixel
+    // black edge a filtered warp needs.
+    RectD srcRoD;
+    if (op().sourceRegion && op().sourceRegion(time, view, scale, &srcRoD)) {
+        *rod = srcRoD;
+
+        return eStatusOK;
+    }
+
+    return ImageNode<MirrorOp>::getRegionOfDefinition(hash, time, scale, view, rod);
+}
+
 NATRON_NAMESPACE_EXIT

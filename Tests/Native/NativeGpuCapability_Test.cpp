@@ -59,7 +59,9 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Nodes/Transform/Crop.h"
+#include "Engine/Nodes/Transform/Mirror.h"
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Nodes/Transform/Transform.h"
@@ -94,6 +96,8 @@ gpuCapableIds()
         PLUGINID_NATRON_REFORMAT,
         PLUGINID_NATRON_POSITION,
         PLUGINID_NATRON_CROP,
+        PLUGINID_NATRON_CORNERPIN,
+        PLUGINID_NATRON_MIRROR,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_RAWINPUTCOLOR,

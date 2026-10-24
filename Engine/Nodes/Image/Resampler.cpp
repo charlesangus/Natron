@@ -1412,6 +1412,80 @@ coordJacobians(const float* sxPrev,
     }
 }
 
+namespace {
+    inline bool
+    pixelInside(const RectI& bounds,
+                int x,
+                int y)
+    {
+        return (x >= bounds.x1) && (x < bounds.x2) && (y >= bounds.y1) && (y < bounds.y2);
+    }
+
+    // Redoes the central differences of one coordinate at pixel i of a row (0 < i < n - 1) when
+    // the pixel is inside bounds and a neighbour is not, standing the pixel's own value, moved by
+    // the constant-UV step, in for that neighbour.
+    void
+    differencesWithinBounds(const float* prev,
+                            const float* row,
+                            const float* next,
+                            int i,
+                            int x,
+                            int y,
+                            const RectI& bounds,
+                            double stepX,
+                            double stepY,
+                            float* dx,
+                            float* dy)
+    {
+        if (!pixelInside(bounds, x, y)) {
+            return;
+        }
+        const double centre = (double)row[i];
+        const bool left = pixelInside(bounds, x - 1, y);
+        const bool right = pixelInside(bounds, x + 1, y);
+        if (!left || !right) {
+            const double before = left ? (double)row[i - 1] : centre - stepX;
+            const double after = right ? (double)row[i + 1] : centre + stepX;
+            *dx = finiteFloatOrZero((after - before) / 2.);
+        }
+        if (!prev || !next) {
+            return;
+        }
+        const bool below = pixelInside(bounds, x, y - 1);
+        const bool above = pixelInside(bounds, x, y + 1);
+        if (!below || !above) {
+            const double before = below ? (double)prev[i] : centre - stepY;
+            const double after = above ? (double)next[i] : centre + stepY;
+            *dy = finiteFloatOrZero((after - before) / 2.);
+        }
+    }
+} // namespace
+
+void
+coordJacobiansWithinBounds(const float* sxPrev,
+                           const float* sx,
+                           const float* sxNext,
+                           const float* syPrev,
+                           const float* sy,
+                           const float* syNext,
+                           int x0,
+                           int y,
+                           int n,
+                           const RectI& uBounds,
+                           const RectI& vBounds,
+                           double stepX,
+                           double stepY,
+                           float* jacobian)
+{
+    coordJacobians(sxPrev, sx, sxNext, syPrev, sy, syNext, n, jacobian);
+    for (int i = 1; i < n - 1; ++i) {
+        float* J = jacobian + (std::size_t)4 * i;
+        const int x = x0 + i;
+        differencesWithinBounds(sxPrev, sx, sxNext, i, x, y, uBounds, stepX, 0., &J[0], &J[1]);
+        differencesWithinBounds(syPrev, sy, syNext, i, x, y, vBounds, 0., stepY, &J[2], &J[3]);
+    }
+}
+
 void
 motionBlurPixel(const ResampleParams& params,
                 const SourceImage& src,

@@ -148,6 +148,13 @@ solveWithFallback(const Transform::Point3D* p,
             Transform::Matrix3x3 H;
             if (solvePoints(p, q, idx, n, &H)) {
                 *matrix = TransformMath::fromEngineMatrix(H);
+                if (n < 4) {
+                    // The affine solvers compose Hq * inverse(Hp), which leaves rounding noise in
+                    // the bottom row; left there it would send the pin down the projective path.
+                    (*matrix)(2, 0) = 0.;
+                    (*matrix)(2, 1) = 0.;
+                    (*matrix)(2, 2) = 1.;
+                }
                 const Transform::Point3D& first = p[idx[0]];
                 const TransformMath::Point3 mapped = *matrix * TransformMath::Point3(first.x, first.y, first.z);
                 if (mapped.z < 0.) {

@@ -32,13 +32,13 @@ This milestone fixes two engine races that surfaced as test flakes. In the first
   - verify: `tools/ci/remote/build.sh debug --tests`. The new test passes, and fails when the `blockingRender` wait is reverted locally (note that run in the PR). It also passes with the hook on under `--repeat until-fail:50`.
   - size: L
 
-- [ ] M170.P1.T2 — Audit the code that inspects a Write right after `startWritersRendering`, and make the afterRender callback run before a blocking render returns
+- [x] M170.P1.T2 — Audit the code that inspects a Write right after `startWritersRendering`, and make the afterRender callback run before a blocking render returns
   - files: `Engine/OutputSchedulerThread.cpp`, `Engine/AppInstance.cpp`, `Engine/PyAppInstance.cpp`, `Engine/DiskCacheNode.cpp`, `Engine/PrecompNode.cpp`
   - approach: Go through each caller (`Engine/AppInstance.cpp` ~:680/683, `Engine/Node.cpp` ~:6635, `Engine/DiskCacheNode.cpp` ~:170, `Engine/PrecompNode.cpp` ~:714, `Engine/PyAppInstance.cpp` ~:343/390, plus the `Tests/` callers). Record which ones read Write state or results afterwards. In `DefaultScheduler::onRenderStopped`, move `effect->notifyRenderFinished()` after the afterRender Python callback. That way a blocking `app.render()` returns only after its callback has run, and the T1 wait covers the rest. List the audit results in the PR body. Fix only real ordering bugs here, and spin off anything larger.
   - verify: Add a gtest that registers an afterRender callback setting a flag, runs a blocking render, and asserts the flag is set as soon as the render returns. Run `tools/ci/remote/build.sh debug --tests`.
   - size: M
 
-- [ ] M170.P1.T3 — Remove M138's `isDoingSequentialRender` polling from `NativeWriteReadBackTest` and soak the suite
+- [x] M170.P1.T3 — Remove M138's `isDoingSequentialRender` polling from `NativeWriteReadBackTest` and soak the suite
   - files: `Tests/Native/NativeWriteReadBack_Test.cpp`
   - approach: Delete the deadline loop and its comment in `writeSequence()` (~:221-231), keeping a single `ASSERT_FALSE(effect->isDoingSequentialRender())` as the contract check. Remove the `<chrono>` and `<thread>` includes if nothing else uses them.
   - verify: Rerun the M138 reproduction, 480 suite runs with 8 parallel copies on 4 cores, against a debug build: `ctest -R NativeWriteReadBack --repeat until-fail:60` in 8 concurrent shells. Expect 0 failures, compared with the baseline of about 58 in 480.
@@ -52,13 +52,13 @@ This milestone fixes two engine races that surfaced as test flakes. In the first
   - verify: The user approves the chosen option before T2 starts, and the decision is recorded.
   - size: M
 
-- [ ] M170.P2.T2 — Make the timer's lifetime safe on any thread, per the T1 decision, with a deterministic thread-exit test
+- [x] M170.P2.T2 — Make the timer's lifetime safe on any thread, per the T1 decision, with a deterministic thread-exit test
   - files: `Engine/AbortableRenderInfo.cpp`, `Engine/AbortableRenderInfo.h`, `Tests/AbortableRenderInfo_Test.cpp` (new; add it to the Tests CMake list)
   - approach: Implement the approved option. Remove the eager `new QTimer` from `AbortableRenderInfoPrivate` (~:87), and make the destructor (~:107-113) safe when the creating thread has exited. Remove the `deleteLater()` in `onAbortTimerTimeout` that nulls the pointer, which races with the destructor (~:229-230), or put it under `timerMutex`. Tests, all deterministic: (1) create an info on a `QThread` with no event loop, end the thread, then drop the last `shared_ptr` on a second thread. (2) Do the same with `setAborted()` called from a third thread before the drop. (3) Loop 10k create/abort/destroy cycles across `QThreadPool` resizes 16/4/1, as `Tests/SchedulerEquivalence_Test.cpp` ~:303 does.
   - verify: `tools/ci/remote/build.sh debug --tests`. The new test passes, and case 1 or 3 crashes when the old destructor is restored locally (note this in the PR). Run `SchedulerEquivalence` with 8 parallel copies and `--repeat until-fail:100`: no segfault.
   - size: L
 
-- [ ] M170.P2.T3 — Test the abort-timeout behaviour that T1 chose
+- [x] M170.P2.T3 — Test the abort-timeout behaviour that T1 chose
   - files: `Engine/AbortableRenderInfo.cpp`, `Engine/AbortableRenderInfo.h`, `Tests/AbortableRenderInfo_Test.cpp`
   - approach: Make the timeout injectable for tests, with a static override of `NATRON_ABORT_TIMEOUT_MS`. Under option (a) or (b), assert three things. A render created on a pool thread, aborted, and kept registered past the timeout reaches `onAbortTimerTimeout` on the main thread. Unregistering every thread before the timeout suppresses it. Readers and writers never report. Under option (c), assert that pool-created infos never start a timer, and that main-thread ones still do.
   - verify: Run `tools/ci/remote/build.sh debug --tests`. The test passes with `--repeat until-fail:50`.
@@ -68,4 +68,6 @@ This milestone fixes two engine races that surfaced as test flakes. In the first
 
 ## Decisions
 
+- 2026-10-24 — **Gate soak results (PM):** on the debug build (32543a146, 391/391 on both ctest legs), 8 parallel copies on 4 cores in natron-dev: NativeWriteReadBack 480 runs, AbortableRenderInfo 104, BlockingRenderIdle 104, SchedulerEquivalence 104. Every one of the 792 gtest runs passed (M138 baseline: about 58 failures in 480 NativeWriteReadBack runs). 79 runs exited non-zero only because `xvfb-run -a` failed to kill an already-gone Xvfb under 8-way contention; each of those logs ends in `[  PASSED  ]` with no failure, and 20 sequential runs of the three suites all exited 0.
+- 2026-10-24 — **P2.T2 revert check replaced (PM):** the old per-render `QTimer` destructor cannot be restored under the new test, because the test drives `AbortWatchdog` hooks and `getStallReport`, which do not exist in the old design. The crash path (a `QTimer` owned by an exited thread) is gone by construction. The thread-exit cases plus the soak stand as the evidence. P1.T1's revert run (blockingRender wait removed) is on `scratch/m170-revert-wait`.
 - 2026-10-24 — **User decision: one app-wide abort watchdog (option b).** `AbortableRenderInfo` loses its per-render `QTimer`, `ownerThread`, `timerMutex` and the start signal. `setAborted()` adds a weak pointer and a timestamp, under a mutex, to one main-thread watchdog, whose timer runs only while that list is non-empty. One scan can raise a single merged stalled-render dialog and skips renders that already have one open. This removes the `QEventDispatcherGlib::wakeUp` crash by design, along with the race between `onAbortTimerTimeout` and the destructor. The stalled-render dialog now works for renders created on pool threads: it fires 5 s after an abort when a non-IO plug-in is still inside an action. Background mode is unchanged: there the main thread is blocked and the watchdog only logs. Rejected: (a) a per-render main-thread timer, which costs more under abort churn and can stack dialogs; (c) leaving pool renders inert, which keeps the two-thread design.

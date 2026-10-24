@@ -13,6 +13,11 @@ There is no compatibility: old projects and scripts that use the old IDs load th
 
 Deps: M101 - Clean-Sheet Merge Node (it builds the base class's multi-input support that Dissolve needs here, and it already moves Merge, RotoPaint's merges and the PyPlugs' merges to the plain `Merge` ID) and M76 - Native Write (Phase 107.5 renames its knobs). Also M120 - Native Node Port Kit (added 2026-10-19): it splits the registration, README and plug-in-list manifests this milestone edits. At promotion, rewrite the briefs against its per-node `.reg.inc`, `docs/<Node>.md` and identity tests, and rename the OFX-ID-named icons in `Gui/Resources/Images/NativeNodes/` along with the IDs.
 
+Notes from M113 - Native Warp Nodes (2026-10-24), which shipped the first plain-ID native nodes (`Mirror`, `STMap`, `IDistort`, `CornerPin`). `Engine/CMakeLists.txt` now validates an OfxRetired marker's replacement with a plain-or-dotted regex (the marker file name stays a dotted OFX ID). Check these during the mass rename:
+- The node-menu tree (`Gui/GuiApplicationManagerPrivate.cpp:146-160`) keeps groups and plug-ins in one list per level, matched by `getID()`. A plain ID equal to a sibling subgroup name under the same parent would be taken for that group; dotted IDs made that impossible.
+- `Engine/AppManager.cpp:2251-2259` `getPluginBinaryFromOldID` maps `Viewer`, `Dot`, `DiskCache`, `Backdrop`. It only runs after an exact lookup fails, but the renames should check it.
+- `Engine/Nodes/README.md:971-990` ("IDs and versions") still says native nodes keep the OFX ID at a higher major.
+
 Behaviour and maths fixes are in M112 - Native Node Behaviour Fixes. The `hidpi`/`interactive` knobs and the keyers are in M95 - Knob Cleanup And Keyer Redesign.
 
 Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; re-check line numbers at promotion):

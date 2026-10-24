@@ -112,15 +112,13 @@ protected:
         node->getEffectInstance()->getKnobByNameAndType<KnobChoice>(knob)->setValue(value);
     }
 
-    static RenderedPlane render(const NodePtr& node,
-                                const RectI& window)
+    static void render(const NodePtr& node,
+                       const RectI& window,
+                       RenderedPlane* plane)
     {
-        RenderedPlane plane;
         std::string error;
 
-        EXPECT_TRUE(renderRawTestPlane(node, window, &plane, &error)) << error;
-
-        return plane;
+        ASSERT_TRUE(renderRawTestPlane(node, window, plane, &error)) << error;
     }
 
     // A window placed from the top-left of rod, in the top-down rows LMMSE lays its tiles in.
@@ -137,7 +135,8 @@ protected:
                                              const RectI& rod,
                                              const char* what)
     {
-        const RenderedPlane full = render(node, rod);
+        RenderedPlane full;
+        ASSERT_NO_FATAL_FAILURE(render(node, rod, &full));
         const int w = rod.width(), h = rod.height();
         // LMMSE writes rows and columns [112t + 8, 112t + 120) of tile t, and the first and last
         // tiles of the image differ from the inner ones.
@@ -153,7 +152,10 @@ protected:
             fromTopLeft(rod, w - 60, 0, 60, 3),
         };
         for (const RectI& tile : tiles) {
-            const RenderedPlane plane = render(node, tile);
+            // A window outside the image renders nothing.
+            ASSERT_TRUE(rod.contains(tile)) << what << ": tile " << tile.x1 << "," << tile.y1 << "-" << tile.x2 << "," << tile.y2 << " is outside the image";
+            RenderedPlane plane;
+            ASSERT_NO_FATAL_FAILURE(render(node, tile, &plane));
             for (int y = tile.y1; y < tile.y2; ++y) {
                 for (int x = tile.x1; x < tile.x2; ++x) {
                     for (int c = 0; c < 4; ++c) {
@@ -178,20 +180,20 @@ TEST_F(NativeRawDemosaicLmmseTest, TilesMatchTheFullFrameAtEveryRefineLevel)
         ASSERT_TRUE(bool(node));
         for (int level : kRefineLevels) {
             setChoice(node, kRawDemosaicParamLmmseRefine, level);
-            expectTilesMatchTheFullFrame(node, rod, (std::string(phase.pattern) + " refine " + std::to_string(level)).c_str());
+            ASSERT_NO_FATAL_FAILURE(expectTilesMatchTheFullFrame(node, rod, (std::string(phase.pattern) + " refine " + std::to_string(level)).c_str()));
         }
     }
 }
 
 TEST_F(NativeRawDemosaicLmmseTest, TilesMatchTheFullFrameWithLocalGreensAndSmoothing)
 {
-    const RectI rod(0, 0, 300, 250);
+    const RectI rod(0, 0, 360, 250);
     NodePtr node = createChain(rod, "GRBG", 0, 0, texturedScene);
     ASSERT_TRUE(bool(node));
     setChoice(node, kRawDemosaicParamLmmseRefine, eRawDemosaicLmmseRefineMedians);
     setChoice(node, kRawDemosaicParamGreenEq, eRawDemosaicGreenEqLocal);
     node->getEffectInstance()->getKnobByNameAndType<KnobInt>(kRawDemosaicParamColorSmoothing)->setValue(2);
-    expectTilesMatchTheFullFrame(node, rod, "local greens, 2 smoothing passes");
+    ASSERT_NO_FATAL_FAILURE(expectTilesMatchTheFullFrame(node, rod, "local greens, 2 smoothing passes"));
 }
 
 // darktable's tiles read zeros past the image edge, so the photosites just inside its 4-photosite
@@ -205,7 +207,8 @@ TEST_F(NativeRawDemosaicLmmseTest, AFlatFieldComesOutNeutral)
         ASSERT_TRUE(bool(node));
         for (int level : kRefineLevels) {
             setChoice(node, kRawDemosaicParamLmmseRefine, level);
-            const RenderedPlane plane = render(node, rod);
+            RenderedPlane plane;
+            ASSERT_NO_FATAL_FAILURE(render(node, rod, &plane));
             for (int y = rod.y1 + 8; y < rod.y2 - 8; ++y) {
                 for (int x = rod.x1 + 8; x < rod.x2 - 8; ++x) {
                     for (int c = 0; c < 3; ++c) {

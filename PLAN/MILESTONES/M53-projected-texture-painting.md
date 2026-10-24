@@ -9,7 +9,7 @@ to world positions, a `ProjectTexture` node that projects any image
 through a camera into that UV space with occlusion, and an in-process
 `Ar`/`Hio` plugin so `USDMaterial` can bind a node's output as a live
 texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
-`USDMaterial`, `Viewport3D`, `USDWrite`).
+`USDMaterial`, the Viewer's 3D view, `USDWrite`).
 
 ## Phase 53.1: CPU raster substrate
 
@@ -51,10 +51,10 @@ texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
   - verify: unit test — a `Constant` → `USDMaterial` diffuse input composes a `UsdUVTexture` with a `natron://` asset path; `USDWrite` produces the `.exr` and a layer referencing the relative file path that `USDRead` composes cleanly.
   - size: M
 
-- [ ] M53.P2.T5 — `Viewport3D` refreshes when a live texture's source changes
-  - files: `Gui/Viewport3D.cpp`, `Engine/Nodes/Scene/USDMaterial.cpp`
+- [ ] M53.P2.T5 — The Viewer's 3D view refreshes when a live texture's source changes
+  - files: `Gui/SceneViewport.cpp`, `Engine/Nodes/Scene/USDMaterial.cpp`
   - approach: the viewport already re-composes when the viewed node's stack hash changes (M19.P1.T3); confirm the `?v=<hash>` path change propagates through Storm's texture registry as a reload, and add an explicit `HdChangeTracker` material-dirty mark if a stale texture persists. Keep it simple: whole-texture reload per change is acceptable for v1 (design doc, Risks).
-  - verify: manual — paint a stroke upstream of a live-textured material and see it appear on the model in `Viewport3D` without touching the viewport.
+  - verify: manual — paint a stroke upstream of a live-textured material and see it appear on the model in the Viewer's 3D view without touching the viewport.
   - size: S
 
 ## Phase 53.3: Paint workflow
@@ -62,7 +62,7 @@ texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
 - [ ] M53.P3.T1 — `PaintThroughCamera` preset group
   - files: a shipped PyPlug/preset under the existing built-in presets location, `Gui/` only if the preset loader needs a menu entry, brief usage notes in `Engine/Nodes/Scene/README.md` (create if absent)
   - approach: a group node wiring `USDRender`(camera) → `RotoPaint` → `ProjectTexture`(same camera, same prim) → 2D `Merge` over an optional existing-texture input → output image, with the camera path and prim selector promoted to the group. Its output feeds `USDMaterial`'s diffuse input. Multi-angle painting is several of these merged in 2D; say so in the notes.
-  - verify: manual on real hardware — paint a stroke in the 2D viewer on the rendered view; the stroke shows on the model in `Viewport3D` from a different angle, correctly occluded where another prim was in front.
+  - verify: manual on real hardware — paint a stroke in the 2D viewer on the rendered view; the stroke shows on the model in the Viewer's 3D view from a different angle, correctly occluded where another prim was in front.
   - size: M
 
 - [ ] M53.P3.T2 — Paint pipeline integration test in CI

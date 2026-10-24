@@ -16,7 +16,7 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 - [ ] M20.P1.T1 — `USDCamera` and `USDPrim`
   - files: `Engine/Nodes/Scene/USDCamera.cpp`, `Engine/Nodes/Scene/USDPrim.cpp`, CMake source list
   - approach: `USDCamera` authors a `UsdGeomCamera` prim (focal length, aperture, clipping, transform — animated knobs as time samples per M19's time policy). `USDPrim` authors empty xforms / simple prims for layout scaffolding. Both take an optional scene input (append to stack) or act as scene sources.
-  - verify: unit tests — composed stage contains the camera with knob-matching attributes; Viewport3D look-through of a `USDCamera` matches its knob values.
+  - verify: unit tests — composed stage contains the camera with knob-matching attributes; 3D-view look-through of a `USDCamera` matches its knob values.
   - size: M
 
 - [ ] M20.P1.T2 — `USDLight`
@@ -28,8 +28,8 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 ## Phase 20.2: Edit nodes
 
 - [ ] M20.P2.T1 — `USDTransform` with viewport gizmo
-  - files: `Engine/Nodes/Scene/USDTransform.cpp`, `Gui/Viewport3D.cpp` (gizmo drawing + drag → knob writeback), CMake source list
-  - approach: xform override on a prim pattern (path or wildcard match), authored as the strongest opinion in the node's layer. Viewport gizmo: translate/rotate/scale handles drawn in `Viewport3D` when a `USDTransform` is selected; drags write back to knobs (undoable through the existing knob undo stack).
+  - files: `Engine/Nodes/Scene/USDTransform.cpp`, `Gui/SceneViewport.cpp` (gizmo drawing + drag → knob writeback), CMake source list
+  - approach: xform override on a prim pattern (path or wildcard match), authored as the strongest opinion in the node's layer. Viewport gizmo: translate/rotate/scale handles drawn in the Viewer's 3D view when a `USDTransform` is selected; drags write back to knobs (undoable through the existing knob undo stack).
   - verify: unit test — override composes over the input's xform; manual — gizmo drag moves the prim and creates one undo entry.
   - size: L
 
@@ -42,14 +42,14 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 - [ ] M20.P2.T3 — `USDMaterial`
   - files: `Engine/Nodes/Scene/USDMaterial.cpp`, CMake source list
   - approach: authors a `UsdPreviewSurface` material (diffuse/metallic/roughness/emissive knobs; texture file inputs for each) and binds it to a prim pattern. MaterialX explicitly out of scope for v1.
-  - verify: unit test — material prim + binding present on composed stage; manual — shaded Viewport3D shows the material.
+  - verify: unit test — material prim + binding present on composed stage; manual — the shaded 3D view shows the material.
   - size: M
 
 ## Phase 20.3: Consumers
 
 - [ ] M20.P3.T1 — `USDRender` node: scene + camera → Image
   - files: `Engine/Nodes/Scene/USDRender.cpp`, `Engine/Nodes/Scene/HydraRenderImpl.cpp` (AOV/engine plumbing), CMake source list
-  - approach: scene input + camera path knob → renders through a Hydra render delegate into Natron Image planes: color, depth, and prim-ID AOVs. Delegate selectable — Storm ships; others discovered via plugInfo. **Output kind: image** — this node is the scene→2D bridge, so its result flows through the normal `renderRoI` path, image cache included. Needs a GL context for Storm: reuse the Viewport3D context-creation path; without GL 4.5 the node fails its render with a clear error (2D-only pipelines unaffected).
+  - approach: scene input + camera path knob → renders through a Hydra render delegate into Natron Image planes: color, depth, and prim-ID AOVs. Delegate selectable — Storm ships; others discovered via plugInfo. **Output kind: image** — this node is the scene→2D bridge, so its result flows through the normal `renderRoI` path, image cache included. Needs a GL 4.5 context for Storm: in the GUI it uses a context shared with the global 4.5 compatibility context (M19.P2.T8); headless (NatronRenderer, ctest), which has no GL requirement, it creates its own offscreen context, and without GL 4.5 there the node fails its render with a clear error (2D-only pipelines unaffected).
   - verify: render a reference scene to PNG in a GUI/GL-capable environment and diff against a committed reference; depth and prim-ID planes present and plausible (depth monotonic with distance).
   - size: L
 

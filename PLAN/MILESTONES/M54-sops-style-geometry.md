@@ -5,8 +5,8 @@ Full title: SOPs-style geometry — GeoDetail data kind, bridges, operators, poi
 Stage 3 of the 3D roadmap (`PLAN/DESIGN/2026-09-18-3d-roadmap-lops-paint-sops.md`,
 Question 3). A fourth data kind, `eDataKindGeometry`, carrying a
 copy-on-write `GeoDetail` (UsdGeom's attribute vocabulary without a
-stage); explicit bridges to and from the scene stack; the same
-`Viewport3D` for display via a scratch stage; a Nuke-classic-sized
+stage); explicit bridges to and from the scene stack; the Viewer's
+3D view for display via a scratch stage; a Nuke-classic-sized
 operator set plus a Python wrangle; and EditGeo-style point editing.
 Decision: `PLAN/DECISIONS/2026-09-18-geometry-is-a-fourth-data-kind.md`.
 Requires M52 (`PrimSelector`) and M20.P2.T1 (gizmo). Runs after M53.
@@ -60,10 +60,10 @@ choice arises.
   - verify: unit test — `USDRead`(reference `.usda`) → `USDToGeo` yields the expected mesh; with flatten on, a translated prim's points move; `GeoToUSD` → `USDToGeo` is the identity on a detail.
   - size: M
 
-- [ ] M54.P2.T4 — `Viewport3D` displays geometry nodes through a scratch stage
-  - files: `Gui/Viewport3D.cpp`/`.h`, `Engine/Nodes/Geometry/GeoScratchStage.h`/`.cpp`
-  - approach: when the viewed node's effective kind is geometry, pull its detail, convert via `GeoUsdConvert` into an anonymous layer under `/Natron/geo`, and hand the resulting stack to the existing viewport path (`StageCache` keyed by detail hash, so unchanged geometry costs nothing). Picking (M19.P2.T3) returns the prim path, which maps back to the detail's prim index by table.
-  - verify: manual — a `GeoPrimitive` node viewed in `Viewport3D` shows the mesh; scrubbing a time-varying upstream node updates it; clicking a prim reports its index.
+- [ ] M54.P2.T4 — The Viewer's 3D view displays geometry nodes through a scratch stage
+  - files: `Gui/SceneViewport.cpp`/`.h`, `Engine/ViewerInstance.h`/`.cpp`, `Gui/ViewerTab.cpp`, `Engine/Nodes/Geometry/GeoScratchStage.h`/`.cpp`
+  - approach: extend M19.P2.T6's Viewer input acceptance and kind-driven view switch to the geometry kind. When the Viewer's active input is geometry, pull its detail, convert via `GeoUsdConvert` into an anonymous layer under `/Natron/geo`, and hand the resulting stack to the existing viewport path (`StageCache` keyed by detail hash, so unchanged geometry costs nothing). Picking (M19.P2.T3) returns the prim path, which maps back to the detail's prim index by table.
+  - verify: manual — a `GeoPrimitive` node viewed in the Viewer's 3D view shows the mesh; scrubbing a time-varying upstream node updates it; clicking a prim reports its index.
   - size: M
 
 ## Phase 54.3: Operators
@@ -136,14 +136,14 @@ choice arises.
 
 ## Phase 54.4: Point editing
 
-- [ ] M54.P4.T1 — `Viewport3D` point picking
-  - files: `Gui/Viewport3D.cpp`/`.h`
-  - approach: a points pick mode using `UsdImagingGLEngine::TestIntersection` with the pick target set to points (Storm renders point-id AOVs for this), click and marquee select, selection stored as (prim path, point index) set and drawn as highlighted points. Available only when the viewed node's kind is geometry.
+- [ ] M54.P4.T1 — 3D-view point picking
+  - files: `Gui/SceneViewport.cpp`/`.h`
+  - approach: a points pick mode using `UsdImagingGLEngine::TestIntersection` with the pick target set to points (Storm renders point-id AOVs for this), click and marquee select, selection stored as (prim path, point index) set and drawn as highlighted points. Available only when the Viewer's active input is geometry.
   - verify: manual — clicking a vertex of a `GeoPrimitive` cube highlights it; marquee selects the expected set.
   - size: M
 
 - [ ] M54.P4.T2 — `GeoEdit` node with viewport drag
-  - files: `Engine/Nodes/Geometry/GeoEdit.h`/`.cpp`, `Gui/Viewport3D.cpp` (drag → knob writeback), `Engine/AppManager.cpp`, `Tests/GeoEdit_Test.cpp`
+  - files: `Engine/Nodes/Geometry/GeoEdit.h`/`.cpp`, `Gui/SceneViewport.cpp` (drag → knob writeback), `Engine/AppManager.cpp`, `Tests/GeoEdit_Test.cpp`
   - approach: stores a sparse map `(prim index, point index) → offset` in a serialized knob (a `KnobString` holding a compact text encoding is acceptable; a table knob if one fits); render applies offsets to points (COW-detaching `points` only) and recomputes normals if present. Viewport: with the node selected and points picked (T1), M20.P2.T1's translate gizmo drags them; release writes one knob change (one undo entry). Topology guard: if the input's point count for a prim differs from the count recorded when the edit was made, skip that prim's edits and set a node warning.
   - verify: unit test — an edit map round-trips through serialization and moves exactly the listed points; changing the upstream point count triggers the warning and leaves points unmodified. Manual — drag creates one undo entry.
   - size: L
@@ -156,4 +156,4 @@ choice arises.
   - verify: test green in `build-and-test`.
   - size: S
 
-**Verification gate:** CI green including M54.P5.T1; on real hardware a geometry chain displays in `Viewport3D`, point picking and `GeoEdit` drag work with undo, and the result renders through `GeoToUSD` → `USDRender` to an image; `GeoWrangle` runs a script that edits points; geometry cache respects its own budget; pre-existing ctest suite green; `Engine/GeoDetail.h` and `Engine/` core stay pxr-free.
+**Verification gate:** CI green including M54.P5.T1; on real hardware a geometry chain displays in the Viewer's 3D view, point picking and `GeoEdit` drag work with undo, and the result renders through `GeoToUSD` → `USDRender` to an image; `GeoWrangle` runs a script that edits points; geometry cache respects its own budget; pre-existing ctest suite green; `Engine/GeoDetail.h` and `Engine/` core stay pxr-free.

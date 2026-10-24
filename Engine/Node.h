@@ -190,6 +190,36 @@ public:
     void fromSerialization(const Serialization::NodeSerialization& serialization,
                            bool updateKnobGui = false);
 
+    enum PresetApplyModeEnum {
+        // A preset file. Knobs it leaves out are reset except the label, the sublabel, the
+        // disable switch and a Read or Write file path, which a preset does not own. Roto shapes
+        // and tracks are replaced only when it carries some.
+        ePresetApplyModePreset,
+
+        // A toSerialization() snapshot of this node. A knob it leaves out was at its default
+        // when it was taken, which makes every one of them a reset, roto shapes and tracks included.
+        ePresetApplyModeSnapshot
+    };
+
+    /**
+     * @brief Makes this node match a sparse serialization, where fromSerialization() only
+     * writes what serialization holds over the node's current state. Every persistent plug-in
+     * knob loses its expression, links and animation, and the ones absent from serialization
+     * return to their defaults (with the exceptions of mode). Expressions and links in
+     * serialization are restored against the project's nodes. The node's own user knobs are
+     * kept; the ones serialization creates are appended to createdUserKnobs, for undo to remove
+     * with deleteUserKnobs().
+     **/
+    void applyPresetSerialization(const Serialization::NodeSerialization& serialization,
+                                  PresetApplyModeEnum mode,
+                                  std::list<KnobIPtr>* createdUserKnobs);
+
+    /**
+     * @brief Deletes those of knobs that are still user knobs of this node and rebuilds the
+     * user pages of its settings panel.
+     **/
+    void deleteUserKnobs(const std::list<KnobIWPtr>& knobs);
+
     void setPagesOrder(const std::list<std::string>& pages);
 
     std::list<std::string> getPagesOrder() const;

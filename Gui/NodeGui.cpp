@@ -2619,7 +2619,23 @@ NodeGui::restoreInternal(const NodeGuiPtr& thisShared,
 {
     assert(internalSerialization.size() >= 1);
 
-    pushToUndoHistory(new LoadNodePresetsCommand(thisShared, internalSerialization));
+    LoadNodePresetsCommand* command = new LoadNodePresetsCommand(thisShared, internalSerialization);
+    Gui* gui = _graph ? _graph->getGui() : 0;
+    if (!gui) {
+        command->redo();
+        delete command;
+
+        return;
+    }
+    NodePtr node = getNode();
+    UndoScope scope(UndoScope::holderForNode(node));
+    // The preset replaces the multi-instance children wholesale.
+    NodesList children;
+    node->getChildrenMultiInstance(&children);
+    for (NodesList::const_iterator it = children.begin(); it != children.end(); ++it) {
+        scope.touchNode(*it);
+    }
+    gui->getUndoHistory()->push(command, scope);
 }
 
 void

@@ -1270,9 +1270,15 @@ LoadNodePresetsCommand::undo()
     _isUndone = true;
 
     NodeGuiPtr node = _node.lock();
+    if (!node) {
+        return;
+    }
     NodePtr internalNode = node->getNode();
     MultiInstancePanelPtr panel = node->getMultiInstancePanel();
-    internalNode->fromSerialization(*_oldSerialization.front(), true);
+
+    internalNode->deleteUserKnobs(_createdUserKnobs);
+    _createdUserKnobs.clear();
+    internalNode->applyPresetSerialization(*_oldSerialization.front(), Node::ePresetApplyModeSnapshot, NULL);
     if (panel) {
         std::list<NodePtr> newChildren, oldChildren;
         getListAsShared(_newChildren, newChildren);
@@ -1280,13 +1286,6 @@ LoadNodePresetsCommand::undo()
         panel->removeInstances(newChildren);
         panel->addInstances(oldChildren);
     }
-
-    NodesList allNodes;
-    internalNode->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
-
-    std::map<std::string, std::string> oldNewScriptNames;
-    internalNode->storeKnobsLinks(*_oldSerialization.front(), oldNewScriptNames);
-    internalNode->restoreKnobsLinks(allNodes, oldNewScriptNames, true); // may not fail
 
     internalNode->getEffectInstance()->incrHashAndEvaluate(true, true);
     internalNode->getApp()->triggerAutoSave();
@@ -1296,11 +1295,13 @@ void
 LoadNodePresetsCommand::redo()
 {
     NodeGuiPtr node = _node.lock();
+    if (!node) {
+        return;
+    }
     NodePtr internalNode = node->getNode();
     MultiInstancePanelPtr panel = node->getMultiInstancePanel();
 
     if (!_firstRedoCalled) {
-        ///Serialize the current state of the node
         node->serializeInternal(_oldSerialization);
 
         if (panel) {
@@ -1326,7 +1327,9 @@ LoadNodePresetsCommand::redo()
         }
     }
 
-    internalNode->fromSerialization(*_newSerializations.front(), true);
+    std::list<KnobIPtr> created;
+    internalNode->applyPresetSerialization(*_newSerializations.front(), Node::ePresetApplyModePreset, &created);
+    _createdUserKnobs.assign(created.begin(), created.end());
     if (panel) {
         std::list<NodePtr> oldChildren, newChildren;
         getListAsShared(_oldChildren, oldChildren);
@@ -1337,12 +1340,6 @@ LoadNodePresetsCommand::redo()
         }
     }
 
-    NodesList allNodes;
-    internalNode->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
-
-    std::map<std::string, std::string> oldNewScriptNames;
-    internalNode->storeKnobsLinks(*_newSerializations.front(), oldNewScriptNames);
-    internalNode->restoreKnobsLinks(allNodes, oldNewScriptNames, true); // may not fail
     internalNode->getEffectInstance()->incrHashAndEvaluate(true, true);
     internalNode->getApp()->triggerAutoSave();
     _firstRedoCalled = true;

@@ -384,6 +384,7 @@ private:
     NodeGuiWPtr _node;
     std::list<NodeWPtr> _oldChildren, _newChildren; //< children if multi-instance
     std::list<Serialization::NodeSerializationPtr> _newSerializations, _oldSerialization;
+    std::list<KnobIWPtr> _createdUserKnobs;
 };
 
 class RenameNodeUndoRedoCommand

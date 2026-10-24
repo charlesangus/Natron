@@ -91,6 +91,7 @@ set(Tests_SOURCES
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp
     NodeCategory_Test.cpp
+    NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
     SettingsColorTrackball_Test.cpp
     NodeColorSampler_Test.cpp

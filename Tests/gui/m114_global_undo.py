@@ -17,6 +17,7 @@ drawn: that needs synthetic pen strokes in the GL viewer.
 """
 import os
 import sys
+import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
@@ -137,13 +138,16 @@ try:
         return None
 
     def type_into_panel(name, value):
-        """Types value into the first enabled spin box of the node's panel and presses Return,
-        which is how KnobGui pushes a value command."""
+        """Types value into the first visible, enabled spin box of the node's panel (a parameter on
+        the open Controls page) and presses Return, which is how KnobGui pushes a value command.
+        Hidden pages hold spin boxes too, e.g. the label's font size on the Node page, which edits
+        the non-evaluating userTextArea knob that KnobGui::pushUndoCommand never records."""
         p = panel_of(name)
         if not check(p is not None, "found the settings panel of " + name):
             return False
-        boxes = [w for w in p.findChildren(QLineEdit) if gt.class_name(w) == "SpinBox" and w.isEnabled()]
-        if not check(len(boxes) > 0, "the settings panel of %s has an enabled spin box" % name):
+        boxes = [w for w in p.findChildren(QLineEdit)
+                 if gt.class_name(w) == "SpinBox" and w.isEnabled() and w.isVisible()]
+        if not check(len(boxes) > 0, "the settings panel of %s has a visible, enabled spin box" % name):
             return False
         box = boxes[0]
         box.setFocus()
@@ -205,13 +209,22 @@ try:
 
     def drag_node(graph, name, dx, dy):
         vp = graph.viewport()
+        # QGraphicsItem::isActive() is false in an inactive window, so NodeGraph::hasItemNearbyMouse()
+        # skips every node; typing into a panel just before leaves the main window inactive.
+        win = graph.window()
+        win.activateWindow()
+        win.raise_()
+        deadline = time.time() + 10.0
+        while not win.isActiveWindow() and time.time() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.02)
         start = frame_on(graph, name)
         x0, y0 = float(start.x()), float(start.y())
-
         def mouse(kind, x, y, button, buttons):
             QApplication.sendEvent(vp, QMouseEvent(kind, QPointF(x, y), button, buttons, Qt.NoModifier))
             QApplication.processEvents()
 
+        mouse(QEvent.MouseMove, x0, y0, Qt.NoButton, Qt.NoButton)
         mouse(QEvent.MouseButtonPress, x0, y0, Qt.LeftButton, Qt.LeftButton)
         steps_n = 5
         for i in range(1, steps_n + 1):
@@ -220,18 +233,64 @@ try:
 
     # ---- curve editor and dope sheet -------------------------------------------------------
 
+    from PySide6.QtCore import QMetaObject
+
     def curve_editor_parts():
-        editors = [w for w in gt.widgets_of("CurveEditor")]
-        if not editors:
-            return None, None
-        ce = editors[0]
-        tree = ce.findChild(QTreeWidget, "tree")
-        widgets = [w for w in gt.widgets_of("CurveWidget") if ce.isAncestorOf(w)]
-        return tree, (widgets[0] if widgets else None)
+        # Several CurveEditor wrappers can exist (stale ones from closed panels); keep only live ones.
+        from shiboken6 import isValid
+        best_tree, best_widget = None, None
+        for ce in gt.widgets_of("CurveEditor"):
+            if not isValid(ce):
+                continue
+            trees = [t for t in ce.findChildren(QTreeWidget) if isValid(t) and t.objectName() == "tree"]
+            widgets = [w for w in gt.widgets_of("CurveWidget") if isValid(w) and ce.isAncestorOf(w)]
+            if trees and widgets:
+                if best_tree is None or ce.isVisible():
+                    best_tree, best_widget = trees[0], widgets[0]
+        return best_tree, best_widget
+
+    def tree_op(method):
+        # Fetch the tree and call it in the same expression chain, never holding the wrapper across calls.
+        from shiboken6 import isValid
+        for ce in gt.widgets_of("CurveEditor"):
+            for t in ce.findChildren(QTreeWidget):
+                if isValid(t) and t.objectName() == "tree":
+                    getattr(t, method)()
+                    return True
+        return False
+
+    def tree_select_node(node_name):
+        # Select only the named node's row and its descendants, so Ctrl+A acts on that node's curves.
+        from shiboken6 import isValid
+        from PySide6.QtCore import QItemSelectionModel
+        for ce in gt.widgets_of("CurveEditor"):
+            for t in ce.findChildren(QTreeWidget):
+                if not (isValid(t) and t.objectName() == "tree"):
+                    continue
+                model = t.model()
+                sel = t.selectionModel()
+                sel.clear()
+                def walk(parent):
+                    for r in range(model.rowCount(parent)):
+                        idx = model.index(r, 0, parent)
+                        yield idx
+                        for sub in walk(idx):
+                            yield sub
+                for top in range(model.rowCount()):
+                    top_idx = model.index(top, 0)
+                    if node_name in str(model.data(top_idx)):
+                        flags = QItemSelectionModel.Select | QItemSelectionModel.Rows
+                        sel.select(top_idx, flags)
+                        for idx in walk(top_idx):
+                            sel.select(idx, flags)
+                        return True
+        return False
 
     def dope_sheet():
-        editors = gt.widgets_of("DopeSheetEditor")
-        return editors[0] if editors else None
+        # DopeSheetEditor has no Q_OBJECT, so it is found through its view; keys the view ignores
+        # reach the editor's key handler.
+        views = [v for v in gt.widgets_of("DopeSheetView") if v.isVisible()] or gt.widgets_of("DopeSheetView")
+        return views[0] if views else None
 
     def viewer_widget():
         viewers = [w for w in gt.widgets_of("ViewerGL") if w.isVisible()]
@@ -247,7 +306,9 @@ try:
 
         gt.section("setup")
         viewers = [n for n in app.getChildren() if n.getPluginID() == "fr.inria.built-in.Viewer"]
-        gt.require(len(viewers) > 0, "the project has a viewer")
+        if not viewers:
+            viewers = [create("fr.inria.built-in.Viewer", 0, 400)]
+        gt.require(len(viewers) > 0 and viewers[0] is not None, "the project has a viewer")
         viewer = viewers[0].getScriptName()
         a = create(BLUR, 0, 0).getScriptName()
         b = create(BLUR, 300, 0).getScriptName()
@@ -273,6 +334,10 @@ try:
         yield ("sleep", SETTLE_MS)
         gt.require(snapshot(a) != a_before, "1: typing into %s's panel changed a parameter" % a)
         a_after = snapshot(a)
+        report("NOTE edit 1 changed %r; the Edit menu offers %r"
+               % (sorted(k for k in a_after if a_after.get(k) != a_before.get(k)),
+                  edit_menu_action("undo").text() if edit_menu_action("undo") else None))
+        check(undo_enabled(), "1: the panel edit is in the history")
 
         graph = root_graph()
         drag_node(graph, b, 60, 40)
@@ -281,10 +346,15 @@ try:
                    "position %r" % (position(b),))
         b_pos_after = position(b)
 
+        ok = yield ("until", lambda: all(x is not None for x in curve_editor_parts()), 10.0)
+        yield ("sleep", SETTLE_MS)
         tree, curve_widget = curve_editor_parts()
         gt.require(tree is not None and curve_widget is not None, "found the curve editor's tree and curve widget")
-        tree.expandAll()
-        tree.selectAll()
+        tree_op("expandAll")
+        QApplication.processEvents()
+        tree, curve_widget = curve_editor_parts()
+        gt.require(tree is not None and curve_widget is not None, "the curve editor's tree and curve widget survive expandAll")
+        gt.require(tree_select_node(c), "selected %s in the curve editor tree" % c)
         QApplication.processEvents()
         send_key(curve_widget, Qt.Key_A, Qt.ControlModifier)
         send_key(curve_widget, Qt.Key_Backspace)

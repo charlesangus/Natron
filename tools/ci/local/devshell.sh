@@ -158,7 +158,7 @@ if [[ "${GPU}" == "1" ]]; then
         NVIDIA_RUNTIME=1
         GPU_DOCKER_ARGS+=(--runtime=nvidia
             -e NVIDIA_VISIBLE_DEVICES=all
-            -e NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,display)
+            -e "NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,display")
     fi
 fi
 

@@ -57,6 +57,10 @@
 #define kRawMetadataStage "raw/stage"
 #define kRawMetadataWbApplied "raw/wb_applied"
 #define kRawMetadataProcessedMaximum "raw/processed_maximum"
+#define kRawMetadataMake "raw/make"
+#define kRawMetadataModel "raw/model"
+#define kRawMetadataLinearResponseLimit "raw/linear_response_limit"
+#define kRawMetadataDngD65Matrix "raw/dng_d65_matrix"
 
 #define kRawCfaPatternNone "none"
 #define kRawStageRaw "raw"
@@ -250,6 +254,31 @@ void setWbApplied(ImageMetadata* metadata, const std::array<double, 3>& coeffs);
  **/
 std::optional<std::array<double, 3>> getProcessedMaximum(const ImageMetadata& metadata);
 void setProcessedMaximum(ImageMetadata* metadata, const std::array<double, 3>& maximum);
+
+/**
+ * @brief raw/make and raw/model: rawspeed's canonical camera names, the spelling darktable's
+ * white balance presets and colour matrix tables match on ("Canon" / "EOS 5D Mark III").
+ **/
+std::optional<std::string> getMake(const ImageMetadata& metadata);
+void setMake(ImageMetadata* metadata, const std::string& make);
+
+std::optional<std::string> getModel(const ImageMetadata& metadata);
+void setModel(ImageMetadata* metadata, const std::string& model);
+
+/**
+ * @brief raw/linear_response_limit: the DNG LinearResponseLimit, the fraction of the white level
+ * up to which the sensor responds linearly. 1 when the key is absent.
+ **/
+double getLinearResponseLimit(const ImageMetadata& metadata);
+void setLinearResponseLimit(ImageMetadata* metadata, double limit);
+
+/**
+ * @brief raw/dng_d65_matrix: the matrix a DNG's embedded colour tags give for D65 (darktable's
+ * d65_color_matrix), row-major 3x3. Absent when the file is not a DNG or carries no usable
+ * colour matrix.
+ **/
+std::optional<std::array<double, 9>> getDngD65Matrix(const ImageMetadata& metadata);
+void setDngD65Matrix(ImageMetadata* metadata, const std::array<double, 9>& matrix);
 
 std::optional<RawStageEnum> getStage(const ImageMetadata& metadata);
 void setStage(ImageMetadata* metadata, RawStageEnum stage);

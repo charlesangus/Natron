@@ -251,6 +251,30 @@ TEST(RawMetadata, EveryKeyRoundTrips)
     EXPECT_EQ(std::optional<std::string>(kRawStageRaw), metadata.getString(kRawMetadataStage));
 }
 
+TEST(RawMetadata, CameraIdentityLimitAndDngMatrixRoundTrip)
+{
+    ImageMetadata metadata;
+
+    EXPECT_FALSE(RawMetadata::getMake(metadata).has_value());
+    EXPECT_FALSE(RawMetadata::getModel(metadata).has_value());
+    EXPECT_FALSE(RawMetadata::getDngD65Matrix(metadata).has_value());
+    EXPECT_EQ(1., RawMetadata::getLinearResponseLimit(metadata));
+
+    const std::array<double, 9> matrix = { 0.9, 0.1, 0., 0.2, 0.8, 0.1, 0., 0.05, 0.95 };
+    RawMetadata::setMake(&metadata, "Canon");
+    RawMetadata::setModel(&metadata, "EOS 5D Mark III");
+    RawMetadata::setLinearResponseLimit(&metadata, 0.75);
+    RawMetadata::setDngD65Matrix(&metadata, matrix);
+
+    EXPECT_EQ(std::optional<std::string>("Canon"), RawMetadata::getMake(metadata));
+    EXPECT_EQ(std::optional<std::string>("EOS 5D Mark III"), RawMetadata::getModel(metadata));
+    EXPECT_EQ(0.75, RawMetadata::getLinearResponseLimit(metadata));
+    EXPECT_EQ((std::optional<std::array<double, 9>>(matrix)), RawMetadata::getDngD65Matrix(metadata));
+
+    metadata.setDoubleVector(kRawMetadataDngD65Matrix, std::vector<double> { 1., 0., 0. });
+    EXPECT_FALSE(RawMetadata::getDngD65Matrix(metadata).has_value());
+}
+
 TEST(RawMetadata, WrongShapesReadAsAbsent)
 {
     ImageMetadata metadata;

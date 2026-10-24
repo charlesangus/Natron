@@ -19,6 +19,7 @@ namespace {
     constexpr uint32_t kFlagSrcValid = 4;
     constexpr uint32_t kFlagExactRowX = 8;
     constexpr uint32_t kFlagExactRowY = 16;
+    constexpr uint32_t kFlagMatrixInBuffer = 32;
 
     // Mirrors kFilterImpulse, kFilterBox and kFilterMitchell in Kernels/resample.slang.
     constexpr uint32_t kFilterImpulse = 0;
@@ -59,7 +60,7 @@ namespace {
 
     // Mirrors kBlurHeaderWords and kBlurMatrixWords in Kernels/resample.slang.
     constexpr uint32_t kBlurHeaderWords = 8;
-    constexpr uint32_t kBlurMatrixWords = 16;
+    constexpr uint32_t kBlurMatrixWords = 23;
 
     // updateBuffer's limit per call.
     constexpr std::size_t kUpdateChunkBytes = 65536;
@@ -162,6 +163,11 @@ namespace {
                 return invalid("the matrix is not finite");
             }
         }
+        for (double v : m.perspective) {
+            if (!std::isfinite(v)) {
+                return invalid("the matrix is not finite");
+            }
+        }
         for (const GpuResampleJacobian& j : m.jacobians) {
             if (j.levelX > kGpuResampleMaxLevel || j.levelY > kGpuResampleMaxLevel) {
                 return invalid("supersampling level out of range");
@@ -190,7 +196,7 @@ namespace {
         return {};
     }
 
-    GpuStatus uploadBlurMatrices(GpuRecordContext& ctx, const GpuResample& r, GpuBuffer*& out)
+    GpuStatus uploadBlurMatrices(GpuRecordContext& ctx, const GpuResample& r, bool exact, GpuBuffer*& out)
     {
         const GpuResampleBlur& b = r.blur;
         std::vector<uint32_t> words(kBlurHeaderWords + r.matrices.size() * kBlurMatrixWords, 0u);
@@ -206,13 +212,20 @@ namespace {
         for (std::size_t i = 0; i < r.matrices.size(); ++i) {
             const GpuResampleMatrix& m = r.matrices[i];
             uint32_t* w = &words[kBlurHeaderWords + i * kBlurMatrixWords];
-            packMatrix(m.matrix, exactPositions(r.filter, r.clamp), w);
+            packMatrix(m.matrix, exact, w);
             w[12] = packStates(m.jacobians);
             splitDouble(m.weight, hi, lo);
             w[13] = floatBits(hi);
             w[14] = floatBits(lo);
-            if (exactPositions(r.filter, r.clamp)) {
+            if (exact) {
                 w[15] = exactRowFlags(m.matrix, r.output) / kFlagExactRowX;
+            } else {
+                w[16] = m.isProjective() ? 1u : 0u;
+                for (int k = 0; k < 3; ++k) {
+                    splitDouble(m.perspective[k], hi, lo);
+                    w[17 + k] = floatBits(hi);
+                    w[20 + k] = floatBits(lo);
+                }
             }
         }
         return uploadWords(ctx, std::as_bytes(std::span<const uint32_t>(words)), out);
@@ -274,8 +287,11 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     // An invalid source is never read, but the binding still needs a buffer, and so does the
     // matrices' binding when they travel in the push constants.
     const GpuBuffer* src = srcValid ? r.src.buffer : r.dst.buffer;
-    const bool exact = exactPositions(r.filter, r.clamp);
-    if (!blurred) {
+    // The exact kernels emulate no division, so a projective matrix runs the two-float ones.
+    const bool projective
+        = std::any_of(r.matrices.begin(), r.matrices.end(), [](const GpuResampleMatrix& m) { return m.isProjective(); });
+    const bool exact = exactPositions(r.filter, r.clamp) && !projective;
+    if (!blurred && !projective) {
         const GpuResampleMatrix& m = r.matrices[0];
         packMatrix(m.matrix, exact, p.matrix);
         p.states = packStates(m.jacobians);
@@ -286,9 +302,15 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
                             { p.width, p.height, 1 });
     }
 
+    // A projective matrix's third row does not fit the push constants: one alone is read from the
+    // matrices' buffer too.
     GpuBuffer* matrices = nullptr;
-    if (GpuStatus s = uploadBlurMatrices(ctx, r, matrices); !s) {
+    if (GpuStatus s = uploadBlurMatrices(ctx, r, exact, matrices); !s) {
         return s;
+    }
+    if (!blurred) {
+        p.flags |= kFlagMatrixInBuffer;
+        return ctx.dispatch(GpuKernelId::resample, { src, r.dst.buffer, matrices }, p, { p.width, p.height, 1 });
     }
     return ctx.dispatch(exact ? GpuKernelId::resample_blur_exact : GpuKernelId::resample_blur, { src, r.dst.buffer, matrices }, p,
                         { p.width, p.height, 1 });

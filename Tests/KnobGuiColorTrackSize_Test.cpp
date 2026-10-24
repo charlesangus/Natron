@@ -194,6 +194,9 @@ protected:
         _knob = AppManager::createKnob<KnobColor>(project.get(), std::string("TrackSizeGain"), 4, false);
         ASSERT_TRUE(bool(_knob));
         for (int i = 0; i < 4; ++i) {
+            // A knob with no display range has no bounded slider, and so no channel lines.
+            _knob->setDisplayMinimum(0., i);
+            _knob->setDisplayMaximum(1., i);
             _knob->setValue(0.5, ViewSpec::all(), i, true);
         }
 

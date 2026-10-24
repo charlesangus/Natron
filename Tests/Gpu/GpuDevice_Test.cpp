@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <vector>
@@ -66,6 +67,82 @@ GPU_TEST_F(GpuDeviceTest, BudgetIsNonZero)
         total += b.budget;
     }
     EXPECT_GT(total, 0u);
+}
+
+namespace {
+
+GpuDeviceCandidate
+candidate(uint32_t index, VkPhysicalDeviceType type, uint64_t gib, const char* name, bool ok = true)
+{
+    GpuDeviceCandidate c;
+    c.index = index;
+    c.type = type;
+    c.deviceLocalHeapSize = gib << 30;
+    c.name = name;
+    c.meetsRequirements = ok;
+    return c;
+}
+
+} // namespace
+
+TEST(GpuDeviceAutoPick, EnumerationOrderDoesNotMatter)
+{
+    std::vector<GpuDeviceCandidate> list = {
+        candidate(0, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, 8, "RTX 3070 Ti"),
+        candidate(1, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, 2, "Quadro P400"),
+        candidate(2, VK_PHYSICAL_DEVICE_TYPE_CPU, 0, "llvmpipe"),
+    };
+    std::sort(list.begin(), list.end(),
+              [](const GpuDeviceCandidate& a, const GpuDeviceCandidate& b) { return a.index < b.index; });
+    do {
+        const std::optional<GpuAutoPick> pick = pickAutoDevice(list);
+        ASSERT_TRUE(pick.has_value());
+        EXPECT_EQ(list[pick->candidate].name, "RTX 3070 Ti");
+        EXPECT_EQ(pick->reason.rfind("auto: discrete, 8 GiB, over ", 0), 0u);
+        EXPECT_NE(pick->reason.find("Quadro P400 (2 GiB)"), std::string::npos);
+        EXPECT_NE(pick->reason.find("llvmpipe (cpu)"), std::string::npos);
+    } while (std::next_permutation(list.begin(), list.end(),
+                                   [](const GpuDeviceCandidate& a, const GpuDeviceCandidate& b) {
+                                       return a.index < b.index;
+                                   }));
+}
+
+TEST(GpuDeviceAutoPick, OnlyCpuDeviceIsStillPicked)
+{
+    const std::vector<GpuDeviceCandidate> list = { candidate(0, VK_PHYSICAL_DEVICE_TYPE_CPU, 0, "llvmpipe") };
+    const std::optional<GpuAutoPick> pick = pickAutoDevice(list);
+    ASSERT_TRUE(pick.has_value());
+    EXPECT_EQ(pick->candidate, 0u);
+}
+
+TEST(GpuDeviceAutoPick, NoCandidatesPicksNothing)
+{
+    EXPECT_FALSE(pickAutoDevice({}).has_value());
+    EXPECT_FALSE(
+        pickAutoDevice({ candidate(0, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, 8, "RTX 3070 Ti", false) }).has_value());
+}
+
+TEST(GpuDeviceAutoPick, LargerDeviceFailingRequirementsIsSkipped)
+{
+    const std::vector<GpuDeviceCandidate> list = {
+        candidate(0, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, 8, "RTX 3070 Ti", false),
+        candidate(1, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, 2, "Quadro P400"),
+    };
+    const std::optional<GpuAutoPick> pick = pickAutoDevice(list);
+    ASSERT_TRUE(pick.has_value());
+    EXPECT_EQ(list[pick->candidate].name, "Quadro P400");
+    EXPECT_EQ(pick->reason.find("RTX 3070 Ti"), std::string::npos);
+}
+
+TEST(GpuDeviceAutoPick, IdenticalDevicesPreferLowerIndex)
+{
+    std::vector<GpuDeviceCandidate> list = {
+        candidate(1, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, 8, "RTX A"),
+        candidate(0, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, 8, "RTX A"),
+    };
+    const std::optional<GpuAutoPick> pick = pickAutoDevice(list);
+    ASSERT_TRUE(pick.has_value());
+    EXPECT_EQ(list[pick->candidate].index, 0u);
 }
 
 TEST(GpuDeviceOptions, ValidationIsOffByDefault)

@@ -105,7 +105,7 @@ The rest of the milestone runs everything once, fixes what fails because of the 
   - verify: `NATRON_DEV_CONTAINER=natron-dev-m91-gpu tools/ci/local/devshell.sh --gpu --recreate sh -c 'nvidia-smi -L; eglinfo -B | grep -i renderer'` lists both GPUs and an NVIDIA EGL renderer. A Vulkan device listing inside the container (`vulkaninfo --summary` if present, otherwise `DeviceList` from P1.T4) shows the RTX 3070 Ti, P400 and llvmpipe. `bash -n` and `shellcheck` pass. On a host without NVIDIA the generated `docker run` arguments don't change.
   - size: M
 
-- [ ] M91.P1.T2 — Let the GlInterop ctest load whichever EGL vendors the system provides, not only Mesa
+- [x] M91.P1.T2 — Let the GlInterop ctest load whichever EGL vendors the system provides, not only Mesa
   - files: `Tests/Gpu/CMakeLists.txt`
   - approach: replace `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json` with `__EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d`, under the same `if(EXISTS …)` guard. Update the comment. glvnd then reads the directory at run time: Mesa alone on CI and RADV hosts, `10_nvidia.json` first in the NVIDIA container.
   - verify: in the P1.T4 run, `ctest -R '^Gpu\.GlInteropTest' -V` in the NVIDIA container shows an NVIDIA GL renderer and UUID match. Remote CI on lavapipe stays green.

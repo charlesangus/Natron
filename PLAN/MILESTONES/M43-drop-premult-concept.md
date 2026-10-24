@@ -43,7 +43,7 @@ This milestone removes all of that. Premult stops being state that flows through
   - verify: `git -C libs/OpenFX grep -n _outputPreMultiplication` is empty and `git grep kOfxImageOpaque HostSupport/src` is empty. The phase build plus full `ctest` is green.
   - size: M
 
-- [ ] M43.P1.T2 — List the OFX plugins that stay OFX and read clip premult
+- [x] M43.P1.T2 — List the OFX plugins that stay OFX and read clip premult
   - files: this milestone file (a "Plugins in scope" section); read-only over the openfx-misc fork at `cd08fb2c`, `Engine/Nodes/`, `PLAN/MILESTONES/M145-ofx-fork-plugin-purge.md` and the port milestones it lists
   - approach: For every plugin the shipped bundles provide, mark it shadowed (a native node registers its ID), to be ported (named by a port milestone M145 depends on), or lasting. For each lasting plugin, record whether it has `premultChanged` or the auto-toggle, and whether it reads `getPreMultiplication()` for its own maths (for example unpremultiplying around a filter). Rewrite P2.T1's file list from the result, adding further removal tasks (P2.T3 onward, placed before P2.T2's bump) of at most 5 files each if needed.
   - verify: Every plugin ID in the shipped bundles appears in the section with one of the three marks, and every lasting plugin that reads premult is assigned to a P2 task or to P1.T3's knob list.
@@ -96,6 +96,8 @@ This milestone removes all of that. Premult stops being state that flows through
   - size: M
 
 ## Decisions
+
+- 2026-10-24 — **User decision: no `Input alpha` knob.** P1.T2's audit found no plugin that stays OFX and reads clip premult for its maths (only `premultChanged`/auto-toggle UI in CImgFilter, ClipTest and DenoiseSharpen), so the knob would ship on no plugin. Clips and fetched images answer Unpremultiplied; premult storage, derivation, read-back and the plugin params are still removed. P1.T3 becomes: clip premult answers Unpremultiplied (no knob). P1.T4's test proves a plugin's reported output premult is discarded and never reaches downstream clips, images or `NodeMetadata`. P3.T3's guard bans `inputAlpha` too. P2.T1's files: `CImg/CImgFilter.cpp`, `CImg/CImgFilter.h`, `ClipTest/ClipTest.cpp`, `DenoiseSharpen/DenoiseSharpen.cpp`; no P2.T3+.
 
 - 2026-10-24 — **M43 revived, scoped to what 38.2 left:** The user's ruling is that nodes hold no premult information, and they chose to revive M43 rather than file a new milestone. On `origin/main` the remaining state is in the HostSupport fork and in plugin params that the host only hides. The Engine enum and metadata the inbox report cited were already deleted by `30c1f0ceb`.
 - 2026-10-24 — **OFX premult comes from an explicit per-node host knob, `Input alpha`, default Premultiplied:** The user found a fixed constant odd, since grade-like plugins want unpremultiplied input and filters want premultiplied, and asked for a host knob near the top of the node. It is set by the artist, never inferred and never passed downstream, so premult is no longer tracked state. Only OFX plugins that read clip premult get it. Premultiplied is the default because that is how image data normally arrives.

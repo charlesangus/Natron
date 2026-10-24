@@ -224,6 +224,7 @@ future core work has solid ground to build on.
 | M171 | GPU Correctness Fixes | todo | - |  | E5 | [M171-gpu-correctness-fixes.md](PLAN/MILESTONES/M171-gpu-correctness-fixes.md) |
 | M163 | Incremental Bezier Edits | todo | - |  | E6 | [M163-incremental-bezier-edits.md](PLAN/MILESTONES/M163-incremental-bezier-edits.md) |
 | M164 | Viewer Node Knobs | todo | M16, M107 |  | E3 | [M164-viewer-node-knobs.md](PLAN/MILESTONES/M164-viewer-node-knobs.md) |
+| M165 | Rich Viewer Overlays | todo | M80 |  | E3 | [M165-rich-viewer-overlays.md](PLAN/MILESTONES/M165-rich-viewer-overlays.md) |
 
 # Epics
 

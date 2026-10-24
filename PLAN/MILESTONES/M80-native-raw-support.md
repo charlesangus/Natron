@@ -547,7 +547,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks tiled = full frame, plus the darktable comparisons for the three dual modes at 0.2 and 0.6. Compiled at P7.T26.
   - size: L
 
-- [ ] M80.P7.T22 — RawDemosaic: X-Trans Frequency Domain Chroma
+- [x] M80.P7.T22 — RawDemosaic: X-Trans Frequency Domain Chroma
   - files: new `Engine/Nodes/Raw/RawDemosaicFdc.cpp`, `Engine/Nodes/Raw/RawKernels.h`, `Engine/Nodes/Raw/RawDemosaic.cpp`, new `Tests/Native/NativeRawDemosaicFdc_Test.cpp`
   - approach:
     - Port `demosaicing/xtrans.c` `xtrans_fdc_interpolate` (~518 onward) with its filter tables.
@@ -583,7 +583,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest: default x equals today's output bit for bit; a moved x changes the band weights as a hand evaluation of darktable's curve says; the darktable comparison of the moved-x job passes. Compiled at P7.T26.
   - size: M
 
-- [ ] M80.P7.T25 — Large-image check for the new whole-frame and big-halo modes
+- [x] M80.P7.T25 — Large-image check for the new whole-frame and big-halo modes
   - files: `Tests/Native/RawLarge_Test.cpp`, `tools/bench/` (raw script only)
   - approach:
     - Run these on the synthetic 100 MP mosaic, in bands and as a whole source:

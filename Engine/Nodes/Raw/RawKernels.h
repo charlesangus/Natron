@@ -205,6 +205,44 @@ void markesteijn(float* out,
                  const ParallelFor& parallel);
 
 /**
+ * @brief darktable's _slider2contrast(): the detail blend threshold of a Dual Threshold slider
+ * value.
+ **/
+float dualContrast(float slider) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The blend mask of darktable's dual_demosaic(), one float per pixel in [0, 1], 1 where
+ * the high-frequency method is kept: the Scharr gradient of the square root of the mean of the
+ * white-balance-undone RGB of high (dt_masks_calc_scharr_mask() in raw mode, wb being 1 / the
+ * applied multipliers or 1 when none are), a sigmoid at dualContrast(threshold)
+ * (dt_masks_calc_detail_blend()) and darktable's 9x9 Gaussian of sigma 2 (dt_gaussian_fast_blur()).
+ * A pixel reads high up to 5 photosites away.
+ **/
+void dualDetailMask(float* mask,
+                    const float* high,
+                    int width,
+                    int height,
+                    float threshold,
+                    const float wb[3],
+                    const ParallelFor& parallel);
+
+/**
+ * @brief darktable's dual_demosaic() in place on high, the output of the high-frequency method:
+ * blends it with VNG's linear interpolation of raw followed by 2 colour smoothing passes, by
+ * dualDetailMask(), and zeroes the fourth channel. Leaves high untouched when width or height is
+ * under 16 or threshold is not positive.
+ **/
+void dualDemosaic(float* high,
+                  const float* raw,
+                  int width,
+                  int height,
+                  std::uint32_t filters,
+                  const std::uint8_t (*xtrans)[6],
+                  float threshold,
+                  const float wb[3],
+                  const ParallelFor& parallel);
+
+/**
  * @brief darktable's passthrough_monochrome(): every photosite's value in all three channels.
  **/
 void passthroughMonochrome(float* out,

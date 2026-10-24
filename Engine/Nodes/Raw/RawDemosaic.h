@@ -52,6 +52,7 @@
 #define kRawDemosaicParamEdgeThreshold "edgeThreshold"
 #define kRawDemosaicParamColorSmoothing "colorSmoothing"
 #define kRawDemosaicParamLmmseRefine "lmmseRefine"
+#define kRawDemosaicParamDualThreshold "dualThreshold"
 
 NATRON_NAMESPACE_ENTER
 
@@ -62,7 +63,9 @@ enum RawDemosaicBayerMethodEnum {
     eRawDemosaicBayerVNG4,
     eRawDemosaicBayerPassthroughMonochrome,
     eRawDemosaicBayerPhotositeColor,
-    eRawDemosaicBayerLMMSE
+    eRawDemosaicBayerLMMSE,
+    eRawDemosaicBayerRCDDual,
+    eRawDemosaicBayerAMaZEDual
 };
 
 enum RawDemosaicXTransMethodEnum {
@@ -70,7 +73,8 @@ enum RawDemosaicXTransMethodEnum {
     eRawDemosaicXTransMarkesteijn3,
     eRawDemosaicXTransVNG,
     eRawDemosaicXTransPassthroughMonochrome,
-    eRawDemosaicXTransPhotositeColor
+    eRawDemosaicXTransPhotositeColor,
+    eRawDemosaicXTransMarkesteijn3Dual
 };
 
 enum RawDemosaicLmmseRefineEnum {
@@ -93,7 +97,9 @@ enum RawDemosaicGreenEqEnum {
  * demosaiced by RCD (the default), PPG, AMaZE, VNG4 or LMMSE, an X-Trans one by Markesteijn 1-pass (the
  * default), Markesteijn 3-pass or VNG, or either left as photosites (passthrough monochrome, photosite
  * colour), after the optional green equilibration (Bayer) and
- * followed by the optional colour smoothing passes. Data without a CFA passes through. The output
+ * followed by the optional colour smoothing passes. The dual methods (RCD, AMaZE, Markesteijn
+ * 3-pass) blend the method's output with VNG's where the image has little detail, by Dual
+ * Threshold, and turn colour smoothing off as darktable does. Data without a CFA passes through. The output
  * is RGBA with an alpha of 1, and its metadata keeps the camera matrix and white balance keys
  * and drops the CFA and the raw stage.
  *
@@ -141,7 +147,8 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
-    // darktable's gui_changed(): LMMSE Refine shows only for the LMMSE method.
+    // darktable's gui_changed(): LMMSE Refine shows only for the LMMSE method, Dual Threshold only
+    // for a dual method.
     void refreshMethodKnobsVisibility();
 
     virtual bool isOpIdentity(double time,
@@ -154,7 +161,7 @@ private:
 
     /**
      * @brief PPG and RCD, without green equilibration or colour smoothing, and the pass-through of
-     * data without a CFA. AMaZE, VNG and Markesteijn have no GPU path yet. Full green
+     * data without a CFA. AMaZE, VNG, Markesteijn and the dual methods have no GPU path yet. Full green
      * equilibration measures the whole source once per frame, which a region's strips cannot
      * share, and local equilibration and colour smoothing are not ported, so any of them keeps the
      * node on the CPU. LMMSE has no GPU path, as in darktable.
@@ -191,6 +198,7 @@ private:
     KnobDoubleWPtr _edgeThreshold;
     KnobIntWPtr _colorSmoothing;
     KnobChoiceWPtr _lmmseRefine;
+    KnobDoubleWPtr _dualThreshold;
 
     // The ratio of full green equilibration, for the source and settings its key names.
     std::mutex _greenMutex;

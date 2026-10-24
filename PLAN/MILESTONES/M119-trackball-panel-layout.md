@@ -266,28 +266,6 @@ Re-planned 2026-10-24 from the user's UAT pick (see ## Decisions). T2, T3, T4 an
 
 **Verification gate:** full ctest green; `Tests/gui/m119_trackball_layout.py` reports no FAIL, and in it the following HUD's on-screen pixels match its own render and a right-click ends global mode with the cursor restored and no context menu; both feedback preferences and both track sizes work live on the AppImage; the wheel is larger than 160 px at the default width in Regular and larger still in Large; the S/T/V discs show the drag result and S follows the value live; no `NATRON_COLOR_PANEL_DEV`, `ColorPanelLayout`, bin-top, vertical-slider or absolute-puck code remains; the user approved on an AppImage.
 
-## Decisions`, then re-check Phase 119.3's briefs against it (PLAN-FORMAT.md §5a).
-  - verify: the AppImage launches with `--version`; the user's pick is recorded in `## Decisions`.
-  - size: S
-
-## Phase 119.3: Keep the winner
-
-These briefs name every file a losing axis could leave behind; the PM narrows each one to the pick recorded at P2.T1.
-
-- [ ] M119.P3.T1 — Make the picked combination the only layout and delete the dev switch and every losing path
-  - files: `Gui/ColorPanelLayoutDev.{h,cpp}` (delete), `Gui/ColorAdjustPanel.{h,cpp}`, `Gui/KnobGuiColor.{h,cpp}`, `Gui/KnobGuiContainerHelper.cpp`, and whichever of `Gui/ColorEditSlider.*`, `Gui/ColorTrackballBinPanel.*`, `ScaleSliderQWidget`'s vertical path, `KnobGui::getFullWidthRowWidget`, `Gui/ColorTrackballReveal.*`, `Gui/ColorModeDiscWidget.*` and the HUD's follow-cursor mode the pick does not use
-  - approach: hard-code the picked values, remove the dev bar, the env var and the `layoutChanged` rebuild, the Feedback and Puck switches (keeping only the picked cursor, HUD and reveal behaviour), and delete the unused widgets and hooks with their tests and `Tests/CMakeLists.txt` entries. `grep -rn 'NATRON_COLOR_PANEL_DEV\|ColorPanelLayout' Gui Tests` is empty afterwards. If this touches more than five non-deleted files, split it per widget.
-  - verify: `GuiTests` for the kept widgets green; the removed tests are gone from the list; the grep is empty.
-  - size: L
-
-- [ ] M119.P3.T2 — End build, refresh the GUI evidence script to the final layout, and package the approval AppImage
-  - files: `Tests/gui/m119_trackball_layout.py`
-  - approach: reduce the script to the final layout at both widths, keep the size, undo and no-flash checks, one `fast` build and full ctest, `package.sh`, and share the screenshots before the AppImage.
-  - verify: ctest all green; the script has no FAIL; the user approves the final layout on the AppImage.
-  - size: M
-
-**Verification gate:** full ctest green; the global-mode feedback the user picked (cursor, HUD placement, reveal graphic and puck) works on the AppImage; `Tests/gui/m119_trackball_layout.py` reports no FAIL; at the default properties width the wheel is larger than 160 px; no `NATRON_COLOR_PANEL_DEV` or losing-variant code remains; the user approved the final layout on an AppImage.
-
 ## Decisions
 
 - 2026-10-14 — **Global mode resets to "C" on a fresh engage (user):** the controller is per-`Gui`, so the last-used mode persisted across exits and nodes, which was confusing. Only a fresh invocation resets; retargeting an engaged mode keeps its mode. Task M119.P1.T10.

@@ -31,6 +31,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -171,6 +172,20 @@ void xtransAt(const RawLayout& layout,
 U64 frameKey(U64 renderHash,
              double time,
              ViewIdx view);
+
+/**
+ * @brief Calls hook with what and the frame key each time a node computes a whole-frame result it
+ * keeps under frameKey(), on the thread computing it and under the node's cache mutex. An empty
+ * function, the default, removes the hook.
+ **/
+void setFrameComputedHookForTests(const std::function<void(const char* what, U64 key)>& hook);
+
+/**
+ * @brief Tells the hook set for tests, if any, that what was computed under key. Costs one atomic
+ * load when no hook is set.
+ **/
+void noteFrameComputed(const char* what,
+                       U64 key);
 
 /**
  * @brief Records kernel, a point op entry built with runWrapped, over args.outputRect with the

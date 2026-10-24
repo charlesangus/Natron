@@ -50,6 +50,7 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NodeSpec.h"
+#include "Engine/Nodes/Raw/RawNodeSupport.h"
 #include "Engine/Plugin.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -298,6 +299,48 @@ renderRawTestPlane(const NodePtr& node,
 
     return false;
 }
+
+/**
+ * @brief Counts the whole-frame computations RawNodeSupport::noteFrameComputed() reports, by
+ * name, from its construction to its destruction, which removes the hook.
+ **/
+class FrameComputedCounter {
+public:
+    FrameComputedCounter()
+    {
+        RawNodeSupport::setFrameComputedHookForTests([this](const char* what, U64) {
+            std::lock_guard<std::mutex> lock(_mutex);
+            ++_counts[what];
+        });
+    }
+
+    ~FrameComputedCounter()
+    {
+        RawNodeSupport::setFrameComputedHookForTests(std::function<void(const char*, U64)>());
+    }
+
+    FrameComputedCounter(const FrameComputedCounter&) = delete;
+    FrameComputedCounter& operator=(const FrameComputedCounter&) = delete;
+
+    std::map<std::string, int> counts() const
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        return _counts;
+    }
+
+    int count(const char* what) const
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        const std::map<std::string, int>::const_iterator found = _counts.find(what);
+
+        return (found == _counts.end()) ? 0 : found->second;
+    }
+
+private:
+    mutable std::mutex _mutex;
+    std::map<std::string, int> _counts;
+};
 
 /**
  * @brief Channel c of pixel (x, y) of plane.

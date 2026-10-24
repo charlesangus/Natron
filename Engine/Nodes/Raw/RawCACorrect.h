@@ -50,6 +50,9 @@
 #define kRawCACorrectParamIterations "iterations"
 #define kRawCACorrectParamAvoidShift "avoidColorShift"
 
+// What RawNodeSupport::noteFrameComputed() names this node's whole-frame computation.
+#define kRawCACorrectFrame "RawCACorrect.frame"
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -79,6 +82,12 @@ public:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Drops the whole-frame results kept under RawNodeSupport::frameKey(), as Clear Caches
+     * and memory pressure ask; the next render computes them again.
+     **/
+    virtual void purgeCaches() OVERRIDE FINAL;
 
 private:
     struct Settings;

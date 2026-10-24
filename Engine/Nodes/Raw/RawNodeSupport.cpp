@@ -26,6 +26,7 @@
 #include "RawNodeSupport.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -251,6 +252,38 @@ frameKey(U64 renderHash,
          ViewIdx view)
 {
     return renderHash ^ (U64)(std::int64_t)std::llround(time * 1000.) ^ ((U64)(int)view << 48);
+}
+
+namespace {
+    std::mutex g_frameHookMutex;
+    std::function<void(const char*, U64)> g_frameHook;
+    std::atomic<bool> g_frameHookSet(false);
+} // namespace
+
+void
+setFrameComputedHookForTests(const std::function<void(const char* what, U64 key)>& hook)
+{
+    std::lock_guard<std::mutex> lock(g_frameHookMutex);
+
+    g_frameHook = hook;
+    g_frameHookSet.store(bool(hook), std::memory_order_release);
+}
+
+void
+noteFrameComputed(const char* what,
+                  U64 key)
+{
+    if (!g_frameHookSet.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::function<void(const char*, U64)> hook;
+    {
+        std::lock_guard<std::mutex> lock(g_frameHookMutex);
+        hook = g_frameHook;
+    }
+    if (hook) {
+        hook(what, key);
+    }
 }
 
 void

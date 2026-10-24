@@ -101,6 +101,14 @@ RawCACorrect::~RawCACorrect()
 {
 }
 
+void
+RawCACorrect::purgeCaches()
+{
+    std::lock_guard<std::mutex> lock(_frameMutex);
+
+    _frame.reset();
+}
+
 const NodeSpec*
 RawCACorrect::nodeSpec() const
 {
@@ -269,6 +277,7 @@ RawCACorrect::renderOp(const RenderActionArgs& args,
         // instead of each measuring the whole image again.
         std::lock_guard<std::mutex> lock(_frameMutex);
         if (!_frame || (_frameKey != key)) {
+            RawNodeSupport::noteFrameComputed(kRawCACorrectFrame, key);
             std::shared_ptr<Frame> computed = std::make_shared<Frame>();
             computed->mosaic.allocate(rod, 1);
             RawNodeSupport::readTopDown(source, &computed->mosaic, parallel);

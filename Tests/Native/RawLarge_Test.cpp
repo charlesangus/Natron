@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <optional>
 #include <string>
 #include <thread>
@@ -283,6 +284,7 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         RawDecodeSupport::setDecodedHookForTests(std::function<void(const std::string&)>());
+        RawNodeSupport::setFrameComputedHookForTests(std::function<void(const char*, U64)>());
         getApp()->getProject()->reset(false, true);
         RawDecodeSupport::clearCaches();
         BaseTest::TearDown();
@@ -337,14 +339,18 @@ protected:
 
     // Renders the two bands and the two far corners of output, each from an empty node cache but
     // for the second corner, which shares the first's, and checks that the peak resident set
-    // grew by less than bound over the whole run and that each corner rendered on its own matches
-    // the band holding it.
+    // grew by less than bound over the whole run, that each corner rendered on its own matches
+    // the band holding it, and that the four renders of the one frame ran each whole-frame
+    // computation named in frames exactly once and no other. Emptying the node cache leaves the
+    // nodes' own whole-frame results, which only Clear Caches (purgeCaches()) drops.
     void developWithinBound(const NodePtr& output,
                             const char* mode,
                             std::size_t bound,
-                            const char* boundText)
+                            const char* boundText,
+                            const std::vector<std::string>& frames = std::vector<std::string>())
     {
         SCOPED_TRACE(mode);
+        const FrameComputedCounter computed;
         appPTR->clearNodeCache();
         resetPeakResident();
         const std::size_t before = peakResidentBytes();
@@ -362,6 +368,12 @@ protected:
         RenderedPlane high;
         ASSERT_TRUE(renderRawTestPlane(output, RectI(kWidth - kCornerSize, kHeight - kCornerSize, kWidth, kHeight), &high, &error, false)) << error;
         appPTR->clearNodeCache();
+
+        std::map<std::string, int> expected;
+        for (const std::string& what : frames) {
+            expected[what] = 1;
+        }
+        EXPECT_EQ(expected, computed.counts()) << "the whole-frame computations run by the two bands and the two corners";
 
         const std::size_t peak = peakResidentBytes();
         const std::size_t growth = (peak > before) ? (peak - before) : 0;
@@ -468,11 +480,11 @@ TEST_F(RawLargeTest, HundredMegapixelWholeFrameHighlightModesStayWithinTheirBoun
     ASSERT_TRUE(bool(highlightsMode));
 
     highlightsMode->setValue((int)eRawHighlightsModeInpaint);
-    developWithinBound(chain.inputColor, "Reconstruct Color", kMaxInpaintGrowthBytes, "four one-channel frames and the Clip bound");
+    developWithinBound(chain.inputColor, "Reconstruct Color", kMaxInpaintGrowthBytes, "four one-channel frames and the Clip bound", { kRawHighlightsFrameReconstructColor });
     highlightsMode->setValue((int)eRawHighlightsModeSegments);
-    developWithinBound(chain.inputColor, "Segmentation Based", kMaxSegmentsGrowthBytes, "four one-channel frames, 14/9 of one for the segmentation and the Clip bound");
+    developWithinBound(chain.inputColor, "Segmentation Based", kMaxSegmentsGrowthBytes, "four one-channel frames, 14/9 of one for the segmentation and the Clip bound", { kRawHighlightsFrameSegments, kRawHighlightsFrameOpposedChroma });
     highlightsMode->setValue((int)eRawHighlightsModeLaplacian);
-    developWithinBound(chain.inputColor, "Guided Laplacians", kMaxLaplacianGrowthBytes, "4.5 one-channel frames and the Clip bound");
+    developWithinBound(chain.inputColor, "Guided Laplacians", kMaxLaplacianGrowthBytes, "4.5 one-channel frames and the Clip bound", { kRawHighlightsFrameLaplacian });
 }
 
 TEST_F(RawLargeTest, HundredMegapixelFlatFieldStaysWithinTheBandBound)
@@ -518,7 +530,7 @@ TEST_F(RawLargeTest, HundredMegapixelBayerDemosaicModesStayWithinTheirBounds)
     captureRadius->setValue(0.8);
     developWithinBound(chain.inputColor, "capture sharpening, radius 0.8", kMaxWindowedGrowthBytes, "the Clip bound");
     captureRadius->setValue(0.);
-    developWithinBound(chain.inputColor, "capture sharpening, automatic radius", kMaxAutoCaptureGrowthBytes, "118/25 one-channel frames and the Clip bound");
+    developWithinBound(chain.inputColor, "capture sharpening, automatic radius", kMaxAutoCaptureGrowthBytes, "118/25 one-channel frames and the Clip bound", { kRawDemosaicFrameCaptureRadius });
     EXPECT_TRUE(bool(dynamic_cast<RawDemosaic*>(demosaic.get())->lastAutoCaptureRadius()));
 }
 

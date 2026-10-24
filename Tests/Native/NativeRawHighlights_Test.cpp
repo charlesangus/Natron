@@ -429,3 +429,42 @@ TEST_F(NativeRawHighlightsTest, UnpreparedDataRaisesTheStageError)
     node->getPersistentMessage(&message, &type, false);
     EXPECT_EQ(QString::fromUtf8(RawMetadata::requireStage(metadata, eRawStagePrepared, node->getLabel()).value_or(std::string()).c_str()), message);
 }
+
+// Each mode's whole-frame result is kept across renders of the frame, and Clear Caches drops it,
+// so the next render computes it again.
+TEST_F(NativeRawHighlightsTest, ClearCachesDropsTheWholeFrameResults)
+{
+    struct Case {
+        RawHighlightsModeEnum mode;
+        std::vector<const char*> frames;
+    };
+    const Case cases[] = {
+        { eRawHighlightsModeOpposed, { kRawHighlightsFrameOpposedChroma } },
+        { eRawHighlightsModeInpaint, { kRawHighlightsFrameReconstructColor } },
+        { eRawHighlightsModeSegments, { kRawHighlightsFrameSegments, kRawHighlightsFrameOpposedChroma } },
+        { eRawHighlightsModeLaplacian, { kRawHighlightsFrameLaplacian } },
+    };
+    for (const Case& k : cases) {
+        NodePtr node = createChain("RGGB", k.mode);
+        ASSERT_TRUE(bool(node)) << k.mode;
+        const FrameComputedCounter computed;
+        // Emptying the node cache makes each window render, and leaves the node's own results.
+        const auto renderWindow = [&node, &k](const RectI& window) {
+            appPTR->clearNodeCache();
+            RenderedPlane plane;
+            std::string error;
+            EXPECT_TRUE(renderRawTestPlane(node, window, &plane, &error, false)) << k.mode << ": " << error;
+        };
+        renderWindow(RectI(0, 0, 7, 5));
+        renderWindow(RectI(30, 0, 48, 13));
+        for (const char* what : k.frames) {
+            EXPECT_EQ(1, computed.count(what)) << k.mode << ": " << what << " before Clear Caches";
+        }
+        node->purgeAllInstancesCaches();
+        renderWindow(RectI(10, 9, 31, 28));
+        for (const char* what : k.frames) {
+            EXPECT_EQ(2, computed.count(what)) << k.mode << ": " << what << " after Clear Caches";
+        }
+        EXPECT_EQ(k.frames.size(), computed.counts().size()) << k.mode;
+    }
+}

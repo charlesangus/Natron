@@ -394,7 +394,7 @@ public:
             const gpu::HostImportStats importStats = _runtime.transfer().hostImportStats();
             _report->importsAtUpload = importStats.atUpload - importStatsBefore.atUpload;
             _report->importsAtDownload = importStats.atDownload - importStatsBefore.atDownload;
-            _report->predictedTransferMs = GpuCostModel::session().transferMs((double)_report->uploadBytes, (double)_report->downloadBytes);
+            _report->predictedTransferMs = GpuCostModel::session().transferMs((double)_report->uploadBytes, (double)ownDownloadBytes());
         }
         if (isAborted()) {
             return EffectInstance::eRenderRoIRetCodeAborted;
@@ -848,11 +848,15 @@ private:
 
     bool upload()
     {
+        if (!timeTransfersForProfile(1)) {
+            return false;
+        }
         const Clock::time_point begin = Clock::now();
         std::vector<gpu::TimelineValue> uploads;
         std::vector<std::shared_ptr<Image::ReadAccess>> accesses;
 
-        for (Slot& slot : _slots) {
+        for (std::size_t s = 0; s < _slots.size(); ++s) {
+            Slot& slot = _slots[s];
             if (!slot.source) {
                 continue;
             }
@@ -873,6 +877,10 @@ private:
             }
             gpu::StreamOptions options;
             options.handoff = gpu::ComputeHandoff::Submit;
+            if (_queries && (_uploadQuery[s] >= 0)) {
+                options.timestampPool = _queries;
+                options.timestampQuery = queryOf(0, _uploadQuery[s]);
+            }
             gpu::TransferPath path = gpu::TransferPath::Staging;
             options.path = &path;
             gpu::TimelineValue done;
@@ -884,6 +892,7 @@ private:
                 return failGpu(slot.externalTask, "upload failed", status);
             }
             notePath(path, true);
+            noteTransferRecord(true, slot.layout.pixelBytes(), -1, slot.layout.nComps(), path, s);
             uploads.push_back(done);
             accesses.push_back(access);
             slot.view = viewOf(&slot.handle.buffer(), slot.layout);
@@ -1107,26 +1116,87 @@ private:
         }
     }
 
-    // Returns the index of the record, or -1 when the profile is off.
-    int noteDownloadRecord(std::size_t bytes,
-                           int strip,
-                           int comps,
-                           gpu::TransferPath path)
+    /**
+     * @brief Lists a copy in the profile record; null when the profile is off. timedAt is the copy's strip * slots +
+     * slot entry in the timestamp pool, for a copy that the pool times.
+     **/
+    GpuTransferRecord* noteTransferRecord(bool upload,
+                                          std::size_t bytes,
+                                          int strip,
+                                          int comps,
+                                          gpu::TransferPath path,
+                                          std::optional<std::size_t> timedAt = std::nullopt)
     {
-        if (!_report || !_report->recordDownloads) {
-            return -1;
+        if (!_report || !_report->recordTransfers) {
+            return nullptr;
         }
         const gpu::GpuDevice& device = _runtime.device();
-        GpuDownloadRecord record;
+        GpuTransferRecord record;
         record.bytes = bytes;
         record.strip = strip;
-        record.queueFamily = device.queueFamily(gpu::QueueKind::Download);
-        record.queueIndex = device.info().downloadQueueIndex;
+        record.queueFamily = device.queueFamily(upload ? gpu::QueueKind::Upload : gpu::QueueKind::Download);
+        record.queueIndex = upload ? device.info().uploadQueueIndex : device.info().downloadQueueIndex;
         record.comps = comps;
         record.staged = (path != gpu::TransferPath::HostImport);
-        _report->downloads.push_back(record);
+        std::vector<GpuTransferRecord>& records = upload ? _report->uploads : _report->downloads;
+        records.push_back(record);
+        std::vector<int>& recordOf = upload ? _uploadRecordOf : _downloadRecordOf;
+        if (timedAt && (*timedAt < recordOf.size())) {
+            recordOf[*timedAt] = (int)records.size() - 1;
+        }
 
-        return (int)_report->downloads.size() - 1;
+        return &records.back();
+    }
+
+    // The store downloads a pinned slot outside downloadMs, so the cost model learns from the other downloads only.
+    unsigned long long ownDownloadBytes() const
+    {
+        unsigned long long bytes = _report->downloadBytes;
+        for (const GpuTransferRecord& download : _report->downloads) {
+            if (download.pinned) {
+                bytes -= download.bytes;
+            }
+        }
+
+        return bytes;
+    }
+
+    // A region run whole or as serial strips times its copies only for the profile.
+    bool timeTransfersForProfile(std::size_t nStrips)
+    {
+        return !_report || !_report->recordTransfers || createQueries(nStrips, false);
+    }
+
+    // Gives each copy the profile lists the time between the timestamps written around it, once every copy has landed.
+    void noteTransferTimes(std::size_t nStrips)
+    {
+        if (!_queries || _uploadRecordOf.empty()) {
+            return;
+        }
+        const std::uint32_t count = (std::uint32_t)nStrips * _queriesPerStrip;
+        std::vector<std::uint64_t> results((std::size_t)count * 2, 0);
+        const VkResult read = vkGetQueryPoolResults(_runtime.device().device(), _queries, 0, count, results.size() * sizeof(std::uint64_t), results.data(),
+                                                    2 * sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        if ((read != VK_SUCCESS) && (read != VK_NOT_READY)) {
+            return;
+        }
+        const double msPerTick = _runtime.transfer().timestampPeriodNs() * 1e-6;
+        for (std::size_t k = 0; k < nStrips; ++k) {
+            for (std::size_t s = 0; s < _slots.size(); ++s) {
+                for (const bool upload : { true, false }) {
+                    const int pair = upload ? _uploadQuery[s] : _downloadQuery[s];
+                    const int record = (upload ? _uploadRecordOf : _downloadRecordOf)[k * _slots.size() + s];
+                    if ((pair < 0) || (record < 0)) {
+                        continue;
+                    }
+                    const std::size_t q = queryOf(k, pair);
+                    if ((results[q * 2 + 1] == 0) || (results[q * 2 + 3] == 0) || (results[q * 2 + 2] < results[q * 2])) {
+                        continue;
+                    }
+                    (upload ? _report->uploads : _report->downloads)[(std::size_t)record].deviceMs = (double)(results[q * 2 + 2] - results[q * 2]) * msPerTick;
+                }
+            }
+        }
     }
 
     /**
@@ -1250,6 +1320,10 @@ private:
             }
             gpu::StreamOptions options;
             options.handoff = gpu::ComputeHandoff::Submit;
+            if (_queries && (_downloadQuery[s] >= 0)) {
+                options.timestampPool = _queries;
+                options.timestampQuery = queryOf(0, _downloadQuery[s]);
+            }
             gpu::TransferPath path = gpu::TransferPath::Staging;
             options.path = &path;
             const gpu::GpuStatus status = _runtime.download(slot.handle.buffer(), 0, { data, bytes }, slot.downloadDone, options);
@@ -1257,7 +1331,7 @@ private:
                 return failGpu(producerTask, "download failed", status);
             }
             notePath(path, false);
-            noteDownloadRecord(slot.layout.pixelBytes(), -1, slot.layout.nComps(), path);
+            noteTransferRecord(false, slot.layout.pixelBytes(), -1, slot.layout.nComps(), path, s);
             if (_stats) {
                 _stats->noteDownload(slot.layout.pixelBytes());
             }
@@ -1283,6 +1357,11 @@ private:
             return fail(input.key.node, "its device image could not be downloaded");
         }
         slot.downloaded = images.front();
+        GpuTransferRecord* record = noteTransferRecord(false, slot.layout.pixelBytes(), -1, slot.layout.nComps(), gpu::TransferPath::HostImport);
+        if (record) {
+            record->pinned = true;
+            _report->downloadBytes += record->bytes;
+        }
 
         return true;
     }
@@ -1401,6 +1480,7 @@ private:
         if (_report) {
             _report->downloadMs += msBetween(begin, Clock::now());
         }
+        noteTransferTimes(1);
 
         return true;
     }
@@ -1563,7 +1643,7 @@ private:
     {
         std::vector<std::shared_ptr<Image::ReadAccess>> sources;
 
-        if (!prepareStripImages(&sources)) {
+        if (!prepareStripImages(&sources) || !timeTransfersForProfile(strips.size())) {
             return EffectInstance::eRenderRoIRetCodeFailed;
         }
         for (std::size_t index = 0; index < strips.size(); ++index) {
@@ -1571,7 +1651,7 @@ private:
             if (isAborted()) {
                 return EffectInstance::eRenderRoIRetCodeAborted;
             }
-            if (!uploadStrip(strip, sources)) {
+            if (!uploadStrip(strips, index, sources)) {
                 return EffectInstance::eRenderRoIRetCodeFailed;
             }
             const EffectInstance::RenderRoIRetCode recorded = recordStrip(strip);
@@ -1590,16 +1670,23 @@ private:
             }
         }
 
-        return finishStripImages() ? EffectInstance::eRenderRoIRetCodeOk : EffectInstance::eRenderRoIRetCodeFailed;
+        if (!finishStripImages()) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        noteTransferTimes(strips.size());
+
+        return EffectInstance::eRenderRoIRetCodeOk;
     } // recordStrips
 
     // Pipelined, the uploads are left in flight for the strip's compute to wait on, and the compute queue's half of
     // their ownership transfer is left to the strip's command buffer.
-    bool uploadStrip(const GpuStrip& strip,
+    bool uploadStrip(const std::vector<GpuStrip>& strips,
+                     std::size_t index,
                      const std::vector<std::shared_ptr<Image::ReadAccess>>& sources,
                      StripInFlight* flight = nullptr,
                      std::vector<gpu::TimelineValue>* pending = nullptr)
     {
+        const GpuStrip& strip = strips[index];
         const Clock::time_point begin = Clock::now();
         std::vector<gpu::TimelineValue> uploads;
 
@@ -1623,9 +1710,9 @@ private:
             }
             gpu::StreamOptions options;
             options.handoff = flight ? gpu::ComputeHandoff::Record : gpu::ComputeHandoff::Submit;
-            if (flight && _queries && (_uploadQuery[s] >= 0)) {
+            if (_queries && (_uploadQuery[s] >= 0)) {
                 options.timestampPool = _queries;
-                options.timestampQuery = queryOf(flight->index, _uploadQuery[s]);
+                options.timestampQuery = queryOf(index, _uploadQuery[s]);
             }
             gpu::TransferPath path = gpu::TransferPath::Staging;
             options.path = &path;
@@ -1638,6 +1725,7 @@ private:
                 return failGpu(slot.externalTask, "upload failed", status);
             }
             notePath(path, true);
+            noteTransferRecord(true, bytes, (int)index, slot.layout.nComps(), path, index * _slots.size() + s);
             if (flight) {
                 flight->transfers.push_back(done);
                 pending->push_back(done);
@@ -1830,10 +1918,10 @@ private:
             options.handoff = flight ? gpu::ComputeHandoff::Record : gpu::ComputeHandoff::Submit;
             if (flight) {
                 options.waits = std::span<const gpu::TimelineValue>(&flight->computeDone, 1);
-                if (_queries && (_downloadQuery[s] >= 0)) {
-                    options.timestampPool = _queries;
-                    options.timestampQuery = queryOf(flight->index, _downloadQuery[s]);
-                }
+            }
+            if (_queries && (_downloadQuery[s] >= 0)) {
+                options.timestampPool = _queries;
+                options.timestampQuery = queryOf(index, _downloadQuery[s]);
             }
             gpu::TransferPath path = gpu::TransferPath::Staging;
             options.path = &path;
@@ -1845,13 +1933,7 @@ private:
                 return failGpu(producerTask, "download failed", status);
             }
             notePath(path, false);
-            const int record = noteDownloadRecord(range.second, flight ? (int)index : -1, slot.layout.nComps(), path);
-            if (record >= 0 && flight) {
-                if (_downloadRecordOf.empty()) {
-                    _downloadRecordOf.assign(strips.size() * _slots.size(), -1);
-                }
-                _downloadRecordOf[index * _slots.size() + s] = record;
-            }
+            noteTransferRecord(false, range.second, (int)index, slot.layout.nComps(), path, index * _slots.size() + s);
             if (flight) {
                 flight->transfers.push_back(done);
             } else {
@@ -1897,8 +1979,6 @@ private:
         return (std::uint32_t)(strip * _queriesPerStrip) + (std::uint32_t)pair * 2;
     }
 
-    // A device that cannot time both its queues, or a query pool that cannot be made, leaves the region untimed
-    // rather than failing it.
     bool startPipeline(std::size_t nStrips)
     {
         gpu::GpuDevice& device = _runtime.device();
@@ -1908,6 +1988,19 @@ private:
 
             return failGpu(firstMemberTask(), "cannot create the strips' timeline", status);
         }
+
+        return createQueries(nStrips, true);
+    } // startPipeline
+
+    /**
+     * @brief Makes the pool that times, per strip, the copy of each slot uploaded or downloaded, and with timeMembers
+     * the strip's compute and each member it records. A region run whole is one strip. A device that cannot time both
+     * its queues, or a query pool that cannot be made, leaves the region untimed rather than failing it.
+     **/
+    bool createQueries(std::size_t nStrips,
+                       bool timeMembers)
+    {
+        gpu::GpuDevice& device = _runtime.device();
         if (!_runtime.transfer().timestampsSupported()) {
             return true;
         }
@@ -1924,7 +2017,7 @@ private:
         }
         std::uint32_t recorded = 0;
         for (const Member& member : _members) {
-            recorded += member.identity ? 0 : 1;
+            recorded += (member.identity || !timeMembers) ? 0 : 1;
         }
         _memberStamp0 = (std::uint32_t)pairs * 2;
         _queriesPerStrip = _memberStamp0 + recorded;
@@ -1950,10 +2043,16 @@ private:
             }
             vkDestroyQueryPool(device.device(), _queries, nullptr);
             _queries = VK_NULL_HANDLE;
+
+            return true;
+        }
+        if (_report && _report->recordTransfers) {
+            _uploadRecordOf.assign(nStrips * _slots.size(), -1);
+            _downloadRecordOf.assign(nStrips * _slots.size(), -1);
         }
 
         return true;
-    } // startPipeline
+    } // createQueries
 
     // flight takes over the buffers the strip used, which stay out of reach of later strips until retireStrip sees
     // its device work done.
@@ -2080,7 +2179,7 @@ private:
             StripInFlight& flight = _inFlightStrips.back();
             flight.index = k;
             std::vector<gpu::TimelineValue> uploads;
-            if (!uploadStrip(strips[k], sources, &flight, &uploads)) {
+            if (!uploadStrip(strips, k, sources, &flight, &uploads)) {
                 return EffectInstance::eRenderRoIRetCodeFailed;
             }
             const EffectInstance::RenderRoIRetCode submitted = submitStrip(strips[k], &flight, uploads);
@@ -2205,12 +2304,6 @@ private:
                     if ((_downloadQuery[s] >= 0) && pairOf(k, _downloadQuery[s], &interval)) {
                         transfers.push_back(interval);
                         downloadTicks += interval.second - interval.first;
-                        if (!_downloadRecordOf.empty()) {
-                            const int record = _downloadRecordOf[k * _slots.size() + s];
-                            if (record >= 0) {
-                                _report->downloads[(std::size_t)record].deviceMs = msOf(interval.second - interval.first);
-                            }
-                        }
                     }
                 }
             }
@@ -2222,6 +2315,7 @@ private:
             _report->kernelMs = msOf(lengthOf(computeBusy));
             _report->transferHiddenMs = msOf(hidden);
             _report->transferExposedMs = msOf(lengthOf(transferBusy) - hidden);
+            noteTransferTimes(nStrips);
         } else {
             const long long ns = (long long)(msBetween(_pipelineBegin, Clock::now()) * 1e6);
             _report->kernelMs = (double)ns * 1e-6;
@@ -2340,7 +2434,7 @@ private:
             }
         }
         if (_report) {
-            model.observeTransfer((double)_report->uploadBytes, (double)_report->downloadBytes, _report->uploadMs + _report->downloadMs);
+            model.observeTransfer((double)_report->uploadBytes, (double)ownDownloadBytes(), _report->uploadMs + _report->downloadMs);
         }
         if (_stats) {
             _stats->noteGpuRegionRun();
@@ -2424,9 +2518,11 @@ private:
     Clock::time_point _pipelineBegin;
     std::vector<std::vector<int>> _stripSegments;
 
-    // Timestamps of the pipelined strips, when the device writes them on both queues. A strip's pairs are its compute,
-    // then those of the slots _uploadQuery and _downloadQuery number, -1 for a slot without one, then come the single
-    // queries of its members. _segmentQueries times the submissions of a region run whole or of serial strips.
+    // Timestamps of the pipelined strips, when the device writes them on both queues, or, for the profile only, of
+    // the copies of a region run whole or of serial strips. A strip's pairs are its compute, unwritten unless
+    // pipelined, then those of the slots _uploadQuery and _downloadQuery number, -1 for a slot without one, then come
+    // the single queries of its members when pipelined. _segmentQueries times the submissions of a region run whole or
+    // of serial strips.
     VkQueryPool _queries = VK_NULL_HANDLE;
     VkQueryPool _segmentQueries = VK_NULL_HANDLE;
     bool _segmentTimed = false;
@@ -2437,7 +2533,9 @@ private:
     std::vector<int> _uploadQuery;
     std::vector<int> _downloadQuery;
 
-    // Per strip and slot, the index in the report's downloads of the copy, -1 for none; empty until a copy is recorded.
+    // Per strip and slot, the index in the report's uploads or downloads of the copy the pool times, -1 for none;
+    // empty unless the profile is on and the pool was made.
+    std::vector<int> _uploadRecordOf;
     std::vector<int> _downloadRecordOf;
     std::size_t _peakDeviceBytes = 0;
     NodePtr _failedNode;
@@ -2590,9 +2688,9 @@ runGpuRegion(const FrameRenderContextPtr& context,
             }
         }
         for (;;) {
-            const bool recordDownloads = report->recordDownloads;
+            const bool recordTransfers = report->recordTransfers;
             *report = RenderScheduler::RegionReport();
-            report->recordDownloads = recordDownloads;
+            report->recordTransfers = recordTransfers;
             RegionRun::FailureKind kind;
             int rows = 0;
             int inFlight = 1;

@@ -41,12 +41,14 @@ only on devices without them). pred xfer is predictedTransferMs: the transfer ti
 model predicts for the region's uploadBytes and downloadBytes, to compare with uploadMs + downloadMs.
 It reads n/a when the model knows no bandwidth (the record holds null) or the record has no such field.
 
-The downloads table lists, per region, the copies back to the host that its record's downloads array holds:
-their count, size (min/median/max, MB), the effective rate (bytes over the summed device time of the
-timestamped copies, GB/s), the share of the region's transfer time that the last strip's copies spent, how
-many were staged through the transfer ring instead of imported in place, and the download queue. deviceMs is
-null for a copy that was not timestamped (an unstripped or serial region, or a device without timestamps);
-the rate and the last-strip share then read n/a.
+The transfers table lists, per region, the copies its record's uploads and downloads arrays hold, one line
+per direction: their count, size (min/median/max, MB), the device rate (bytes over the summed device time of
+the timestamped copies, GB/s), the timestamped share of the bytes, the share of the timestamped device time
+that the last strip's copies spent, how many were staged through the transfer ring instead of imported in
+place, how many downloads were of another region's device image (pinned; the frame store makes those, so they
+are never timestamped), and the queue. deviceMs is null for a copy that was not timestamped (a pinned
+download, or a device without timestamps); the rate and the last-strip share then read n/a. The device time
+is the transfer queue's own: it does not replace transferExposedMs, which the host measures.
 """
 import collections
 import glob
@@ -56,6 +58,7 @@ import re
 import sys
 import tempfile
 
+TRANSFERS = ("uploads", "downloads")
 PHASES = ("kernel", "exposed", "record", "acquire", "submitWait")
 FIELDS = ("wallMs", "planMs", "kernelMs", "transferExposedMs", "transferHiddenMs", "uploadMs", "downloadMs",
           "recordMs", "acquireMs", "submitWaitMs", "prepareWaitMs")
@@ -236,23 +239,26 @@ def build(records, skip_frames, marks=()):
     return rows, len(kept)
 
 
-def download_stats(region):
-    """The figures of one region's downloads array, or None when it holds no copy."""
-    downloads = region.get("downloads") or []
-    if not downloads:
+def transfer_stats(region, key):
+    """The figures of one region's uploads or downloads array, or None when it holds no copy."""
+    copies = region.get(key) or []
+    if not copies:
         return None
-    sizes = sorted(d["bytes"] for d in downloads)
-    timed = [d for d in downloads if d.get("deviceMs") is not None]
+    sizes = sorted(d["bytes"] for d in copies)
+    timed = [d for d in copies if d.get("deviceMs") is not None]
     time_ms = sum(d["deviceMs"] for d in timed)
-    rate = sum(d["bytes"] for d in timed) / (time_ms * 1e6) if time_ms > 0 else None
+    timed_bytes = sum(d["bytes"] for d in timed)
+    rate = timed_bytes / (time_ms * 1e6) if time_ms > 0 else None
+    total = sum(sizes)
     last_share = None
     strips = [d["strip"] for d in timed if d.get("strip", -1) >= 0]
     if strips and time_ms > 0:
         last = max(strips)
         last_share = sum(d["deviceMs"] for d in timed if d.get("strip") == last) / time_ms
-    return {"count": len(downloads), "min": sizes[0], "median": median(sizes), "max": sizes[-1], "rate": rate,
-            "lastShare": last_share, "staged": sum(1 for d in downloads if d.get("staged")),
-            "queue": "%d.%d" % (downloads[0].get("queueFamily", 0), downloads[0].get("queueIndex", 0))}
+    return {"count": len(copies), "min": sizes[0], "median": median(sizes), "max": sizes[-1], "rate": rate,
+            "timedShare": timed_bytes / total if total > 0 else 0.0, "lastShare": last_share,
+            "staged": sum(1 for d in copies if d.get("staged")), "pinned": sum(1 for d in copies if d.get("pinned")),
+            "queue": "%d.%d" % (copies[0].get("queueFamily", 0), copies[0].get("queueIndex", 0))}
 
 
 def mean(values):
@@ -284,7 +290,7 @@ def summarise(rows, import_rate_gbps=None):
             for m in r["members"]:
                 nodes.setdefault(m["node"], []).append(m["kernelMs"])
         entry["nodes"] = [(n, mean(v)) for n, v in nodes.items()]
-        entry["downloadStats"] = [st for st in (download_stats(g) for g in regs) if st]
+        entry["transferStats"] = {key: [st for st in (transfer_stats(g, key) for g in regs) if st] for key in TRANSFERS}
         out.append(entry)
     return out
 
@@ -314,21 +320,25 @@ def format_summary(entries):
             share = 100.0 * k / e["wallMs"] if e["wallMs"] > 0 else 0.0
             lines.append(" | ".join((e["signature"], node, "%.2f" % k, "%.0f%%" % share)))
     lines.append("")
-    lines.append("Downloads (per region run, mean over runs; rate and last strip need timestamped copies)")
-    lines.append(" | ".join(("region", "copies", "min MB", "median MB", "max MB", "rate GB/s", "last strip share", "staged", "queue")))
+    lines.append("Transfers (per region run, mean over runs; rate and last strip need timestamped copies)")
+    lines.append(" | ".join(("region", "dir", "copies", "min MB", "median MB", "max MB", "rate GB/s", "timed bytes",
+                             "last strip share", "staged", "pinned", "queue")))
     for e in entries:
-        stats = e["downloadStats"]
-        if not stats:
-            continue
-        rates = [st["rate"] for st in stats if st["rate"] is not None]
-        shares = [st["lastShare"] for st in stats if st["lastShare"] is not None]
-        lines.append(" | ".join((e["signature"], "%.1f" % mean([st["count"] for st in stats]),
-                                 "%.2f" % (mean([st["min"] for st in stats]) / 1e6),
-                                 "%.2f" % (mean([st["median"] for st in stats]) / 1e6),
-                                 "%.2f" % (mean([st["max"] for st in stats]) / 1e6),
-                                 ("%.2f" % mean(rates)) if rates else "n/a",
-                                 ("%.0f%%" % (100.0 * mean(shares))) if shares else "n/a",
-                                 "%.1f" % mean([st["staged"] for st in stats]), stats[0]["queue"])))
+        for key in TRANSFERS:
+            stats = e["transferStats"][key]
+            if not stats:
+                continue
+            rates = [st["rate"] for st in stats if st["rate"] is not None]
+            shares = [st["lastShare"] for st in stats if st["lastShare"] is not None]
+            lines.append(" | ".join((e["signature"], key[:-1], "%.1f" % mean([st["count"] for st in stats]),
+                                     "%.2f" % (mean([st["min"] for st in stats]) / 1e6),
+                                     "%.2f" % (mean([st["median"] for st in stats]) / 1e6),
+                                     "%.2f" % (mean([st["max"] for st in stats]) / 1e6),
+                                     ("%.2f" % mean(rates)) if rates else "n/a",
+                                     "%.0f%%" % (100.0 * mean([st["timedShare"] for st in stats])),
+                                     ("%.0f%%" % (100.0 * mean(shares))) if shares else "n/a",
+                                     "%.1f" % mean([st["staged"] for st in stats]),
+                                     "%.1f" % mean([st["pinned"] for st in stats]), stats[0]["queue"])))
     return "\n".join(lines)
 
 
@@ -413,14 +423,30 @@ def self_test():
     assert abs(pair["prepareWaitMs"] - 1.0) < 1e-9 and abs(erode["prepareWaitMs"] - 3.0) < 1e-9
     assert fallback["prepareWaitMs"] == 0.0
 
-    stripped = download_stats(rows[2]["region"])
+    stripped = transfer_stats(rows[2]["region"], "downloads")
     assert stripped["count"] == 4 and stripped["max"] == 33177600 and stripped["staged"] == 4
     assert abs(stripped["rate"] - 132710400 / 30e6) < 1e-9, stripped["rate"]
     assert abs(stripped["lastShare"] - 0.3) < 1e-9, stripped["lastShare"]
-    whole = download_stats(rows[0]["region"])
-    assert whole["count"] == 1 and whole["rate"] is None and whole["lastShare"] is None
-    assert download_stats(rows[3]["region"]) is None
-    assert "last strip share" in text and "30%" in text
+    assert stripped["timedShare"] == 1.0 and stripped["pinned"] == 0
+    stripped_up = transfer_stats(rows[2]["region"], "uploads")
+    assert stripped_up["count"] == 4 and stripped_up["queue"] == "2.0" and stripped_up["staged"] == 0
+    assert abs(stripped_up["rate"] - 132710400 / 24e6) < 1e-9, stripped_up["rate"]
+    assert abs(stripped_up["lastShare"] - 0.25) < 1e-9, stripped_up["lastShare"]
+    whole = transfer_stats(rows[0]["region"], "downloads")
+    assert whole["count"] == 1 and whole["rate"] is None and whole["lastShare"] is None and whole["timedShare"] == 0.0
+    whole_up = transfer_stats(rows[0]["region"], "uploads")
+    assert abs(whole_up["rate"] - 132710400 / 4e6) < 1e-9 and whole_up["timedShare"] == 1.0
+    assert whole_up["lastShare"] is None
+    with_pinned = transfer_stats(rows[1]["region"], "downloads")
+    assert with_pinned["count"] == 2 and with_pinned["pinned"] == 1
+    assert abs(with_pinned["timedShare"] - 0.8) < 1e-9, with_pinned["timedShare"]
+    assert abs(with_pinned["rate"] - 132710400 / 5e6) < 1e-9, with_pinned["rate"]
+    assert sum(d["bytes"] for d in rows[1]["region"]["downloads"]) == rows[1]["region"]["downloadBytes"]
+    assert transfer_stats(rows[3]["region"], "downloads") is None and transfer_stats(rows[3]["region"], "uploads") is None
+    assert len(pair["transferStats"]["downloads"]) == 2 and len(pair["transferStats"]["uploads"]) == 2
+    assert "last strip share" in text and "30%" in text and "timed bytes" in text
+    assert "Grade1+Blur1 | download | 1.5 |" in text and "| 40% |" in text, text
+    assert "Erode1 | upload | 4.0 | 33.18 | 33.18 | 33.18 | 5.53 | 100% | 25% | 0.0 | 0.0 | 2.0" in text, text
 
     assert abs(pipelined_floor_ms(rows[2]["region"]) - 0.0) < 1e-9
     assert abs(pipelined_floor_ms(rows[0]["region"]) - 9.0) < 1e-9

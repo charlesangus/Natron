@@ -294,9 +294,11 @@ public:
         unsigned long long importsAtUpload = 0;
         unsigned long long importsAtDownload = 0;
 
-        // Set by the scheduler when the profile is on; the region then lists each download it issued.
-        bool recordDownloads = false;
-        std::vector<GpuDownloadRecord> downloads;
+        // Set by the scheduler when the profile is on; the region then lists each upload and download it issued, and
+        // timestamps them on the device when it can.
+        bool recordTransfers = false;
+        std::vector<GpuTransferRecord> uploads;
+        std::vector<GpuTransferRecord> downloads;
 
         // The device was lost: the scheduler renders the whole frame again on the CPU, whatever the body returned.
         bool deviceLost = false;

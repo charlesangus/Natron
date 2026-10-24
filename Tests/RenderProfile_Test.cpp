@@ -326,7 +326,14 @@ TEST(RenderStatsGpuCounters, RegionRecordFormat)
     times.downloadsStaged = 2;
     times.importsAtUpload = 3;
     times.importsAtDownload = 4;
-    GpuDownloadRecord first;
+    GpuTransferRecord upload;
+    upload.bytes = 8;
+    upload.strip = 1;
+    upload.deviceMs = 0.125;
+    upload.queueFamily = 3;
+    upload.comps = 1;
+    times.uploads.push_back(upload);
+    GpuTransferRecord first;
     first.bytes = 16;
     first.strip = 0;
     first.deviceMs = 0.25;
@@ -334,8 +341,9 @@ TEST(RenderStatsGpuCounters, RegionRecordFormat)
     first.queueIndex = 2;
     first.comps = 4;
     first.staged = true;
-    GpuDownloadRecord second;
+    GpuTransferRecord second;
     second.bytes = 16;
+    second.pinned = true;
     times.downloads.push_back(first);
     times.downloads.push_back(second);
 
@@ -348,9 +356,11 @@ TEST(RenderStatsGpuCounters, RegionRecordFormat)
               "\"poolMisses\":2,\"importCount\":5,\"newImportBytes\":4096,\"predictedTransferMs\":1.250000,"
               "\"overlapStrips\":1,\"prepareWaitMs\":0.750000,\"uploadsImported\":6,\"uploadsStaged\":1,"
               "\"downloadsImported\":7,\"downloadsStaged\":2,\"importsAtUpload\":3,\"importsAtDownload\":4,"
+              "\"uploads\":[{\"strip\":1,\"bytes\":8,\"deviceMs\":0.125000,\"queueFamily\":3,\"queueIndex\":0,"
+              "\"comps\":1,\"format\":\"f32\",\"staged\":0}],"
               "\"downloads\":[{\"strip\":0,\"bytes\":16,\"deviceMs\":0.250000,\"queueFamily\":1,\"queueIndex\":2,"
-              "\"comps\":4,\"format\":\"f32\",\"staged\":1},{\"strip\":-1,\"bytes\":16,\"deviceMs\":null,"
-              "\"queueFamily\":0,\"queueIndex\":0,\"comps\":0,\"format\":\"f32\",\"staged\":0}],"
+              "\"comps\":4,\"format\":\"f32\",\"staged\":1,\"pinned\":0},{\"strip\":-1,\"bytes\":16,\"deviceMs\":null,"
+              "\"queueFamily\":0,\"queueIndex\":0,\"comps\":0,\"format\":\"f32\",\"staged\":0,\"pinned\":1}],"
               "\"fallback\":\"\",\"retries\":0}\n");
 
     times.predictedTransferMs = std::numeric_limits<double>::infinity();

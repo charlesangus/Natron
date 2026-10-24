@@ -478,3 +478,11 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
   - New `ViewerHandoff` cases: `PresentWaitsForAFillStillReadingTheSlotItReuses` and `ReleaseWaitsForARunningFillAndCancelsAQueuedOne`.
   - Risk for P7.T3/P7.T4: the fill's `parallelForOnGlobalPool` helpers queue at priority 1, behind render work, so copies may run mostly on the job's own thread during playback.
   - Checked with `-fsyntax-only` and clang-format.
+- 2026-10-23 — **M107.P7.T3 code in (`a249df3db`), awaiting the phase build.**
+  - **Finding: eviction of queued roots causes the 8K stalls.** Every device root is evictable once stored (`GpuRegionTask.cpp:2316`). The pool evicts the oldest first (`GpuBufferPool.cpp:155,262`), and the oldest is the next frame to display. Playback buffers up to 3 × hardware threads frames (`OutputSchedulerThread.cpp:190`), far more than VRAM holds at ~566 MB per 8K root. Eviction downloads synchronously (`GpuContext.cpp:724-744`), `pin()` then refuses the evicted root (`:767`), and `present` falls back to the single-threaded CPU process. Slow display lets rendering run further ahead, which makes the loop feed itself.
+  - **Change:**
+    - A process-wide `DeviceRootHolds` pins each queued root, up to half the pool budget, oldest first. The hold rides `UpdateViewerParams::deviceRootHold`, the one file outside the brief.
+    - A hold is released after `transferDeviceImageToGPU` or when the frame is dropped, and before the CPU fallback, so the picker still reads the RAM copy.
+    - `drawDeviceRootOnCpu` runs whole-row bands with `parallelForOnGlobalPool`.
+    - Each refusal reason is logged once per session.
+  - **Open design call (later):** frames beyond the hold budget are still evicted. Closing that needs either a VRAM-aware limit on render-ahead in `OutputSchedulerThread`, or `present` re-uploading an evicted root's RAM copy. The P7 headless rerun shows whether it matters.

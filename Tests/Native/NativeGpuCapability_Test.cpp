@@ -54,6 +54,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
@@ -83,6 +84,7 @@ gpuCapableIds()
         PLUGINID_NATRON_DILATE,
         PLUGINID_NATRON_TRANSFORM,
         PLUGINID_NATRON_TRANSFORMMASKED,
+        PLUGINID_NATRON_REFORMAT,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_RAWINPUTCOLOR,

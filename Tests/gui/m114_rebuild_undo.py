@@ -93,8 +93,21 @@ try:
         a = edit_menu_action("undo")
         return a.text() if a is not None else None
 
+    def activate_window(widget):
+        """Window shortcuts such as Edit > Undo only fire in the active window, and typing into a
+        panel leaves the main window inactive under Xvfb."""
+        win = widget.window()
+        win.activateWindow()
+        win.raise_()
+        deadline = time.time() + 10.0
+        while not win.isActiveWindow() and time.time() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.02)
+        return win.isActiveWindow()
+
     def shortcut(widget, redo):
         """Ctrl+Z (or Ctrl+Shift+Z) with the mouse over widget, sent to widget."""
+        activate_window(widget)
         QCursor.setPos(widget.mapToGlobal(widget.rect().center()))
         QApplication.processEvents()
         mods = Qt.ControlModifier | (Qt.ShiftModifier if redo else Qt.NoModifier)
@@ -123,13 +136,17 @@ try:
                     return p
         return None
 
-    def panel_button(name, what):
+    # PySide makes the wrappers p.findChildren returns children of p's wrapper and marks them
+    # deleted once p's wrapper is collected, although the C++ widgets live on (see gt.menu_of).
+    # Every lookup below therefore uses what it finds while the panel's wrapper is still held.
+
+    def panel_button_enabled(name, what):
         p = panel_of(name)
         if p is None:
             return None
         for b in p.findChildren(QAbstractButton):
             if ("%s the last change" % what) in b.toolTip():
-                return b
+                return b.isEnabled()
         return None
 
     def show_page(name, page_label):
@@ -146,18 +163,28 @@ try:
                     return True
         return False
 
-    def first_spin_box(name):
+    def spin_boxes(p):
+        return [w for w in p.findChildren(QLineEdit)
+                if gt.class_name(w) == "SpinBox" and w.isEnabled() and w.isVisible()]
+
+    def has_spin_box(name):
+        p = panel_of(name)
+        return p is not None and len(spin_boxes(p)) > 0
+
+    def type_into(name, value):
+        """Types value into the first visible, enabled spin box of the node's panel and presses
+        Return, which is how KnobGui pushes a value command."""
         p = panel_of(name)
         if p is None:
-            return None
-        boxes = [w for w in p.findChildren(QLineEdit)
-                 if gt.class_name(w) == "SpinBox" and w.isEnabled() and w.isVisible()]
-        return boxes[0] if boxes else None
-
-    def type_into(box, value):
+            return False
+        boxes = spin_boxes(p)
+        if not boxes:
+            return False
+        box = boxes[0]
         box.setFocus()
         box.setText(str(value))
         send_key(box, Qt.Key_Return)
+        return True
 
     def plugin_values(name):
         """The node's plugin parameter values, without the user parameters and the keyed one."""
@@ -297,17 +324,15 @@ try:
         # ---- edits before the rebuild.
         gt.section("edits")
         gt.require(show_page(blur, "Controls"), "showed the Controls page of " + blur)
-        box = first_spin_box(blur)
-        gt.require(box is not None, "the Controls page of %s has a visible, enabled spin box" % blur)
-        type_into(box, 7)
+        gt.require(has_spin_box(blur), "the Controls page of %s has a visible, enabled spin box" % blur)
+        gt.require(type_into(blur, 7), "typed 7 into the Controls page's spin box")
         yield ("sleep", SETTLE_MS)
         gt.require(plugin_values(blur) != plugin_before, "1: typing into the Controls page changed a plugin parameter")
         plugin_after = plugin_values(blur)
 
         gt.require(show_page(blur, "User"), "showed the User page of " + blur)
-        user_box = first_spin_box(blur)
-        gt.require(user_box is not None, "the User page of %s has a visible, enabled spin box" % blur)
-        type_into(user_box, 3)
+        gt.require(has_spin_box(blur), "the User page of %s has a visible, enabled spin box" % blur)
+        gt.require(type_into(blur, 3), "typed 3 into the User page's spin box")
         yield ("sleep", SETTLE_MS)
         gt.require(value_of(blur, TYPED_USER) == 3, "2: typing into the User page set %s" % TYPED_USER,
                    "value %r" % (value_of(blur, TYPED_USER),))
@@ -325,12 +350,9 @@ try:
         gt.require(added is not None, "added a user parameter")
         node.refreshUserParamsGUI()
         yield ("sleep", SETTLE_MS)
-        check(not isValid(user_box) or not user_box.isVisible(),
-              "the rebuild replaced the User page's spin boxes")
         check(undo_enabled() and undo_text() == text_before_rebuild,
               "the history is untouched by the rebuild (%r, was %r)" % (undo_text(), text_before_rebuild))
-        undo_button = panel_button(blur, "Undo")
-        check(undo_button is not None and undo_button.isEnabled(), "the rebuilt panel's undo button is enabled")
+        check(panel_button_enabled(blur, "Undo") is True, "the rebuilt panel's undo button is enabled")
 
         # ---- an edit after the rebuild.
         gt.section("after-rebuild")

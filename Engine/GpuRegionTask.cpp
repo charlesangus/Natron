@@ -268,15 +268,29 @@ struct Slot {
     bool released = false;
 };
 
+/**
+ * @brief One plane of a member task of the region. A plane the task passes through, or every plane of an identity
+ * task, is an identity member sharing the slot it aliases.
+ **/
 struct Member {
     int task = -1;
+    ImageLayerDesc plane;
     NativeEffectBase* effect = nullptr;
     GpuQuery query;
     bool identity = false;
     int outSlot = -1;
 
-    // Indexed by input number; -1 for an input the member does not read.
+    // For an identity member aliasing an image of a task outside the region: that task and the layer it is read in,
+    // outSlot being -1. Its image goes to the store as the store holds it, and a member reading it reads that task.
+    int externalTask = -1;
+    ImageLayerDesc externalLayer;
+
+    // The first nInputs are indexed by input number, -1 for an input the member does not read; the others are the
+    // layers getGpuExtraInputLayers() names, read from input inputSlotInput[k] in inputSlotLayer[k].
+    int nInputs = 0;
     std::vector<int> inputSlots;
+    std::vector<int> inputSlotInput;
+    std::vector<ImageLayerDesc> inputSlotLayer;
 
     // Its share of the device time of the submission it is recorded in.
     double weight = 1.;
@@ -346,6 +360,15 @@ public:
 
     EffectInstance::RenderRoIRetCode run(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
+        const EffectInstance::RenderRoIRetCode code = runPlanned(rootPlanes);
+        reportTimesByTask();
+
+        return code;
+    }
+
+private:
+    EffectInstance::RenderRoIRetCode runPlanned(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
+    {
         const Clock::time_point planBegin = Clock::now();
         const std::uint64_t allocationsBefore = _runtime.pool().allocationCount();
         const std::uint64_t importsBefore = _runtime.transfer().hostImportCount();
@@ -405,8 +428,9 @@ public:
         noteSuccess();
 
         return EffectInstance::eRenderRoIRetCodeOk;
-    }
+    } // runPlanned
 
+public:
     enum class FailureKind {
         None,
 
@@ -553,14 +577,158 @@ private:
         return (int)_slots.size() - 1;
     }
 
+    // The member of the task at position pos of the region that produces layer, -1 for none. When aliasing, a colour
+    // layer stands for another colour layout, as renderRoI() hands an identity's input over in the layout it has.
+    int memberOf(int pos,
+                 const ImageLayerDesc& layer,
+                 bool aliasing) const
+    {
+        for (int m : _taskMembers[pos]) {
+            if (sameLayer(_members[m].plane, layer)) {
+                return m;
+            }
+        }
+        if (aliasing && layer.isColorLayer()) {
+            for (int m : _taskMembers[pos]) {
+                if (_members[m].plane.isColorLayer()) {
+                    return m;
+                }
+            }
+        }
+
+        return -1;
+    }
+
+    // The slot holding task in layer; -1 when task is a member producing no such plane.
     int slotOfTask(int task,
                    const ImageLayerDesc& layer,
-                   const RectI& needed)
+                   const RectI& needed,
+                   bool aliasing)
     {
         const int pos = _position[task];
+        if (pos < 0) {
+            return externalSlot(task, layer, needed);
+        }
+        const int m = memberOf(pos, layer, aliasing);
+        if (m < 0) {
+            return -1;
+        }
+        const Member& member = _members[m];
 
-        return (pos >= 0) ? _members[pos].outSlot : externalSlot(task, layer, needed);
+        return (member.outSlot >= 0) ? member.outSlot : externalSlot(member.externalTask, member.externalLayer, needed);
     }
+
+    // The slot a member reads task from in layer, -1 when the region holds no image of task in that layer.
+    int readSlot(int task,
+                 const ImageLayerDesc& layer,
+                 const RectI& needed)
+    {
+        const int slot = slotOfTask(task, layer, needed, false);
+        if ((slot < 0) || ((_position[task] >= 0) && !sameLayer(_slots[slot].layout.layer, layer))) {
+            return -1;
+        }
+
+        return slot;
+    }
+
+    // Makes member an identity of task in layer: it shares the slot of the member producing that plane, or aliases
+    // the image of a task outside the region.
+    bool aliasTask(Member* member,
+                   int task,
+                   const ImageLayerDesc& layer) const
+    {
+        member->identity = true;
+        const int pos = _position[task];
+        if (pos < 0) {
+            member->externalTask = task;
+            member->externalLayer = layer;
+
+            return true;
+        }
+        const int m = memberOf(pos, layer, true);
+        if (m < 0) {
+            return false;
+        }
+        member->outSlot = _members[m].outSlot;
+        member->externalTask = _members[m].externalTask;
+        member->externalLayer = _members[m].externalLayer;
+
+        return true;
+    }
+
+    void addMember(int pos,
+                   const Member& member)
+    {
+        _taskMembers[pos].push_back((int)_members.size());
+        _members.push_back(member);
+    }
+
+    // The input slots of a member rendering its plane: one per input it reads, in getGpuInputLayer()'s layer, then one
+    // per layer getGpuExtraInputLayers() adds.
+    bool planInputs(const std::vector<std::pair<int, int>>& edges,
+                    Member* member)
+    {
+        const FrameGraph::Task& task = _graph.tasks[member->task];
+        NativeEffectBase* effect = member->effect;
+
+        member->nInputs = std::max(0, effect->getNInputs());
+        member->inputSlots.assign(member->nInputs, -1);
+        member->inputSlotInput.resize(member->nInputs);
+        member->inputSlotLayer.assign(member->nInputs, ImageLayerDesc());
+        std::vector<int> inputTasks(member->nInputs, -1);
+        for (int inputNb = 0; inputNb < member->nInputs; ++inputNb) {
+            member->inputSlotInput[inputNb] = inputNb;
+        }
+        for (std::size_t e = 0; e < edges.size(); ++e) {
+            const int inputNb = edges[e].first;
+            if ((inputNb < 0) || (inputNb >= member->nInputs)) {
+                continue;
+            }
+            ImageLayerDesc layer;
+            if (!effect->getGpuInputLayer(inputNb, member->plane, task.key.time, task.key.view, &layer)) {
+                return fail(member->task, "the node cannot read an input on the GPU");
+            }
+            if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
+                return fail(member->task, "an input renders an empty window");
+            }
+            const RectI needed = effect->getGpuInputRoI(inputNb, task.renderedRoI, member->query.mappedScale);
+            const int slot = readSlot(edges[e].second, layer, needed);
+            if (slot < 0) {
+                return fail(member->task, "an input produced in the region is not in the layer the node reads");
+            }
+            member->inputSlots[inputNb] = slot;
+            member->inputSlotLayer[inputNb] = layer;
+            inputTasks[inputNb] = edges[e].second;
+        }
+
+        for (int inputNb = 0; inputNb < member->nInputs; ++inputNb) {
+            if ((member->inputSlots[inputNb] < 0) && effect->getInput(inputNb) && !effect->isInputMask(inputNb)) {
+                return fail(member->task, "a connected input has no task to read");
+            }
+        }
+
+        for (int inputNb = 0; inputNb < member->nInputs; ++inputNb) {
+            if (inputTasks[inputNb] < 0) {
+                continue;
+            }
+            std::vector<ImageLayerDesc> layers;
+            if (!effect->getGpuExtraInputLayers(inputNb, member->plane, task.key.time, task.key.view, &layers)) {
+                return fail(member->task, "the node cannot read an input on the GPU");
+            }
+            const RectI needed = effect->getGpuInputRoI(inputNb, task.renderedRoI, member->query.mappedScale);
+            for (const ImageLayerDesc& layer : layers) {
+                const int slot = readSlot(inputTasks[inputNb], layer, needed);
+                if (slot < 0) {
+                    return fail(member->task, "an input produced in the region does not carry a layer the node reads");
+                }
+                member->inputSlots.push_back(slot);
+                member->inputSlotInput.push_back(inputNb);
+                member->inputSlotLayer.push_back(layer);
+            }
+        }
+
+        return true;
+    } // planInputs
 
     bool plan()
     {
@@ -571,6 +739,7 @@ private:
         for (std::size_t i = 0; i < _region.members.size(); ++i) {
             _position[_region.members[i]] = (int)i;
         }
+        _taskMembers.assign(_region.members.size(), std::vector<int>());
         if (_region.members.empty() || !request) {
             return fail(NodePtr(), "the region has no member or no request");
         }
@@ -579,12 +748,9 @@ private:
         for (std::size_t i = 0; i < _region.members.size(); ++i) {
             const int taskIndex = _region.members[i];
             const FrameGraph::Task& task = _graph.tasks[taskIndex];
-            Member member;
-            member.task = taskIndex;
-            if (!task.key.node || (task.components.size() != 1)) {
-                return fail(taskIndex, "the task does not render exactly one plane");
+            if (!task.key.node || task.components.empty()) {
+                return fail(taskIndex, "the task renders no plane");
             }
-            const ImageLayerDesc& plane = task.components.front();
 
             // Task::dependencies follows the request's edges, skipping those whose node is gone.
             std::vector<std::pair<int, int>> edges;
@@ -609,64 +775,78 @@ private:
                 if (deps.size() != 1) {
                     return fail(taskIndex, "an identity task without a single input");
                 }
-                member.identity = true;
-                member.outSlot = slotOfTask(deps.front(), plane, task.renderedRoI);
-                _members.push_back(member);
+                // A plane its input in the region does not produce is one renderRoI() would leave out of both.
+                for (const ImageLayerDesc& plane : task.components) {
+                    Member member;
+                    member.task = taskIndex;
+                    member.plane = plane;
+                    if (aliasTask(&member, deps.front(), plane)) {
+                        addMember((int)i, member);
+                    }
+                }
+                if (_taskMembers[i].empty()) {
+                    return fail(taskIndex, "an identity task whose input produces none of its planes in the region");
+                }
                 continue;
             }
 
-            member.effect = dynamic_cast<NativeEffectBase*>(task.key.node->getEffectInstance().get());
-            if (!member.effect) {
+            NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(task.key.node->getEffectInstance().get());
+            if (!effect) {
                 return fail(taskIndex, "the node has no GPU path");
             }
-            if (!makeGpuQueryForTask(task, *_context, &member.query) || !member.effect->canRenderOnGpu(member.query)) {
+            std::vector<GpuTaskPlane> planes;
+            if (!makeGpuTaskPlanes(task, *_context, &planes)) {
                 return fail(taskIndex, "the node cannot render these settings on the GPU");
             }
-            if ((task.key.mipmapLevel != 0) && (member.effect->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes)) {
+            if ((task.key.mipmapLevel != 0) && (effect->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes)) {
                 return fail(taskIndex, "the node renders at full scale");
             }
             if (task.renderedRoI.isNull()) {
                 return fail(taskIndex, "the task renders an empty window");
             }
 
-            member.inputSlots.assign(std::max(0, member.effect->getNInputs()), -1);
-            for (std::size_t e = 0; e < edges.size(); ++e) {
-                const int inputNb = edges[e].first;
-                if ((inputNb < 0) || (inputNb >= (int)member.inputSlots.size())) {
+            // Every plane renders the task's whole window, so the planes it renders share its cost evenly.
+            int nRendered = 0;
+            for (const GpuTaskPlane& plane : planes) {
+                nRendered += plane.passThrough ? 0 : 1;
+            }
+            const double kernelMs = model.gpuMs(model.traitsOf(task), GpuCostModel::megapixelsOf(task));
+            const double planeMs = (std::isfinite(kernelMs) && (kernelMs > 0.) && (nRendered > 0)) ? kernelMs / nRendered : 0.;
+
+            for (const GpuTaskPlane& plane : planes) {
+                Member member;
+                member.task = taskIndex;
+                member.plane = plane.plane;
+                member.effect = effect;
+                if (plane.passThrough) {
+                    int input = -1;
+                    for (const std::pair<int, int>& edge : edges) {
+                        const FrameGraph::Task& dependency = _graph.tasks[edge.second];
+                        if ((edge.first == plane.passThroughInput) && (dependency.key.time == plane.passThroughTime) && (dependency.key.view == plane.passThroughView)) {
+                            input = edge.second;
+                            break;
+                        }
+                    }
+                    if ((input < 0) || !aliasTask(&member, input, plane.passThroughLayer)) {
+                        return fail(taskIndex, "a plane the node passes through is not in the region");
+                    }
+                    addMember((int)i, member);
                     continue;
                 }
-                ImageLayerDesc layer;
-                if (!member.effect->getGpuInputLayer(inputNb, plane, task.key.time, task.key.view, &layer)) {
-                    return fail(taskIndex, "the node cannot read an input on the GPU");
+
+                member.query = plane.query;
+                if (!planInputs(edges, &member)) {
+                    return false;
                 }
-                if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
-                    return fail(taskIndex, "an input renders an empty window");
-                }
-                const int producer = _position[edges[e].second];
-                if ((producer >= 0) && !sameLayer(_slots[_members[producer].outSlot].layout.layer, layer)) {
-                    return fail(taskIndex, "an input produced in the region is not in the layer the node reads");
-                }
-                const RectI needed = member.effect->getGpuInputRoI(inputNb, task.renderedRoI, member.query.mappedScale);
-                const int slot = slotOfTask(edges[e].second, layer, needed);
-                member.inputSlots[inputNb] = slot;
+                Slot out;
+                out.layout = layoutOf(task, plane.plane, task.renderedRoI);
+                out.producer = (int)_members.size();
+                _slots.push_back(out);
+                member.outSlot = (int)_slots.size() - 1;
+                member.predictedKernelMs = planeMs;
+                member.weight = (planeMs > 0.) ? planeMs : 1.;
+                addMember((int)i, member);
             }
-
-            for (int inputNb = 0; inputNb < (int)member.inputSlots.size(); ++inputNb) {
-                if ((member.inputSlots[inputNb] < 0) && member.effect->getInput(inputNb) && !member.effect->isInputMask(inputNb)) {
-                    return fail(taskIndex, "a connected input has no task to read");
-                }
-            }
-
-            Slot out;
-            out.layout = layoutOf(task, plane, task.renderedRoI);
-            out.producer = (int)i;
-            _slots.push_back(out);
-            member.outSlot = (int)_slots.size() - 1;
-
-            const double kernelMs = model.gpuMs(model.traitsOf(task), GpuCostModel::megapixelsOf(task));
-            member.predictedKernelMs = (std::isfinite(kernelMs) && (kernelMs > 0.)) ? kernelMs : 0.;
-            member.weight = (member.predictedKernelMs > 0.) ? member.predictedKernelMs : 1.;
-            _members.push_back(member);
         }
 
         // Reads are marked once every slot exists, as an identity member reads through to the slot it shares.
@@ -680,20 +860,25 @@ private:
 
         for (const FrameGraph::Region::Output& output : _region.outputs) {
             const FrameGraph::Task& task = _graph.tasks[output.task];
-            Slot& slot = _slots[_members[_position[output.task]].outSlot];
             bool cpuConsumer = output.isRoot;
             for (int consumer : task.consumerTasks) {
                 if (_graph.tasks[consumer].regionId < 0) {
                     cpuConsumer = true;
                 }
             }
-            if (cpuConsumer) {
-                slot.download = true;
-            } else if (output.externalConsumers > 0) {
-                ++slot.deviceOutputs;
-            }
-            if (output.isRoot || (output.externalConsumers > 0)) {
-                slot.keep = true;
+            for (int m : _taskMembers[_position[output.task]]) {
+                if (_members[m].outSlot < 0) {
+                    continue;
+                }
+                Slot& slot = _slots[_members[m].outSlot];
+                if (cpuConsumer) {
+                    slot.download = true;
+                } else if (output.externalConsumers > 0) {
+                    ++slot.deviceOutputs;
+                }
+                if (output.isRoot || (output.externalConsumers > 0)) {
+                    slot.keep = true;
+                }
             }
         }
         for (Slot& slot : _slots) {
@@ -701,6 +886,29 @@ private:
             if (slot.deviceOutputs > 1) {
                 slot.download = true;
             }
+        }
+        // A task's planes go to the store as one entry, which holds RAM images or device images but not both: one plane
+        // in RAM, downloaded or aliased from outside the region, sends the others there too.
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (const FrameGraph::Region::Output& output : _region.outputs) {
+                if (!output.isRoot && (output.externalConsumers <= 0)) {
+                    continue;
+                }
+                const std::vector<int>& members = _taskMembers[_position[output.task]];
+                bool inRam = false;
+                for (int m : members) {
+                    inRam = inRam || (_members[m].outSlot < 0) || _slots[_members[m].outSlot].download;
+                }
+                for (int m : members) {
+                    if (inRam && (_members[m].outSlot >= 0) && !_slots[_members[m].outSlot].download) {
+                        _slots[_members[m].outSlot].download = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        for (Slot& slot : _slots) {
             if (slot.download) {
                 slot.downloadAt = std::max(0, std::max(slot.producer, slot.lastRead));
             }
@@ -814,9 +1022,14 @@ private:
 
             std::list<ImagePtr> images;
             bool found = _store.find(input.key, needed, pixelRoI, &images);
-            if (!found && !input.components.empty()) {
-                std::list<ImageLayerDesc> stored(1, input.components.front());
-                found = _store.find(input.key, stored, pixelRoI, &images);
+            // Only another colour layout stands for a colour layer; any other layer is read as stored or not at all.
+            if (!found && slot.layout.layer.isColorLayer()) {
+                for (const ImageLayerDesc& layer : input.components) {
+                    if (layer.isColorLayer()) {
+                        found = _store.find(input.key, std::list<ImageLayerDesc>(1, layer), pixelRoI, &images);
+                        break;
+                    }
+                }
             }
             if (!found || images.empty() || !images.front()) {
                 return fail(input.key.node, "its output is not in the frame store");
@@ -1264,6 +1477,34 @@ private:
         return true;
     }
 
+    // The views of the slots member reads, by input number and as layer inputs; false when one is not on the device.
+    bool setInputs(const Member& member,
+                   GpuRenderArgs* args) const
+    {
+        args->inputs.assign(member.nInputs, GpuImageView());
+        args->layerInputs.clear();
+        for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
+            if (member.inputSlots[k] < 0) {
+                continue;
+            }
+            const GpuImageView& view = _slots[member.inputSlots[k]].view;
+            if (!view.buffer) {
+                return false;
+            }
+            if ((int)k < member.nInputs) {
+                args->inputs[k] = view;
+                continue;
+            }
+            GpuLayerInput layerInput;
+            layerInput.inputNb = member.inputSlotInput[k];
+            layerInput.layer = member.inputSlotLayer[k];
+            layerInput.view = view;
+            args->layerInputs.push_back(layerInput);
+        }
+
+        return true;
+    }
+
     EffectInstance::RenderRoIRetCode record()
     {
         std::unique_ptr<gpu::GpuRecordContext> recorder;
@@ -1302,17 +1543,10 @@ private:
                 GpuRenderArgs args(*recorder);
                 args.query = member.query;
                 args.outputRect = task.renderedRoI;
-                args.inputs.resize(member.inputSlots.size());
-                for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
-                    if (member.inputSlots[k] < 0) {
-                        continue;
-                    }
-                    args.inputs[k] = _slots[member.inputSlots[k]].view;
-                    if (!args.inputs[k].buffer) {
-                        fail(member.task, "an input is not on the device");
+                if (!setInputs(member, &args)) {
+                    fail(member.task, "an input is not on the device");
 
-                        return EffectInstance::eRenderRoIRetCodeFailed;
-                    }
+                    return EffectInstance::eRenderRoIRetCodeFailed;
                 }
                 args.output = out.view;
                 StatusEnum status = eStatusFailed;
@@ -1405,8 +1639,9 @@ private:
             stripMember.inputSlots = member.inputSlots;
             NativeEffectBase* effect = member.effect;
             const RenderScale scale = member.query.mappedScale;
-            stripMember.inputRoI = [effect, scale](int inputNb, const RectI& rect) {
-                return effect->getGpuInputRoI(inputNb, rect, scale);
+            const std::vector<int> inputOfSlot = member.inputSlotInput;
+            stripMember.inputRoI = [effect, scale, inputOfSlot](int k, const RectI& rect) {
+                return effect->getGpuInputRoI(inputOfSlot[k], rect, scale);
             };
             stripMember.kernelMs = member.predictedKernelMs;
             graph.members.push_back(stripMember);
@@ -1676,17 +1911,10 @@ private:
             GpuRenderArgs args(recorder);
             args.query = member.query;
             args.outputRect = rect;
-            args.inputs.resize(member.inputSlots.size());
-            for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
-                if (member.inputSlots[k] < 0) {
-                    continue;
-                }
-                args.inputs[k] = _slots[member.inputSlots[k]].view;
-                if (!args.inputs[k].buffer) {
-                    fail(member.task, "a strip of its input is not on the device");
+            if (!setInputs(member, &args)) {
+                fail(member.task, "a strip of its input is not on the device");
 
-                    return EffectInstance::eRenderRoIRetCodeFailed;
-                }
+                return EffectInstance::eRenderRoIRetCodeFailed;
             }
             args.output = out.view;
             StatusEnum status = eStatusFailed;
@@ -2230,48 +2458,87 @@ private:
         return true;
     }
 
+    // The image of the task outside the region that member aliases, as the store holds it.
+    bool findAliasedImage(const Member& member,
+                          ImagePtr* image) const
+    {
+        const FrameGraph::Task& input = _graph.tasks[member.externalTask];
+        RectI pixelRoI = _graph.tasks[member.task].renderedRoI.intersect(input.renderedRoI);
+        if (pixelRoI.isNull()) {
+            pixelRoI = input.renderedRoI;
+        }
+        std::list<ImagePtr> images;
+        if (!_store.find(input.key, std::list<ImageLayerDesc>(1, member.externalLayer), pixelRoI, &images) || images.empty() || !images.front()) {
+            return false;
+        }
+        *image = images.front();
+
+        return true;
+    }
+
+    // Each output task goes to the store as one entry holding all its planes.
     bool storeOutputs(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
         std::vector<GpuDeviceImagePtr> deviceImages(_slots.size());
 
         for (const FrameGraph::Region::Output& output : _region.outputs) {
             const FrameGraph::Task& task = _graph.tasks[output.task];
-            const int s = _members[_position[output.task]].outSlot;
-            Slot& slot = _slots[s];
-            const ImageLayerDesc& layer = task.components.front();
-            if (output.isRoot) {
-                if (!slot.downloaded) {
+            if (!output.isRoot && (output.externalConsumers <= 0)) {
+                continue;
+            }
+            std::map<ImageLayerDesc, ImagePtr> ramPlanes;
+            std::map<ImageLayerDesc, DeviceImagePtr> devicePlanes;
+            std::vector<GpuDeviceImagePtr> created;
+            for (int m : _taskMembers[_position[output.task]]) {
+                const Member& member = _members[m];
+                if (member.outSlot < 0) {
+                    ImagePtr image;
+                    if (!findAliasedImage(member, &image)) {
+                        return fail(output.task, "a plane it passes through is not in the frame store");
+                    }
+                    ramPlanes[member.plane] = image;
+                    continue;
+                }
+                const int s = member.outSlot;
+                Slot& slot = _slots[s];
+                if (slot.downloaded) {
+                    ramPlanes[member.plane] = slot.downloaded;
+                    continue;
+                }
+                if (output.isRoot) {
                     return fail(output.task, "the root was not downloaded");
                 }
-                if (rootPlanes) {
-                    (*rootPlanes)[layer] = slot.downloaded;
-                }
-                continue;
-            }
-            if (output.externalConsumers <= 0) {
-                continue;
-            }
-            if (slot.downloaded) {
-                std::map<ImageLayerDesc, ImagePtr> planes;
-                planes[layer] = slot.downloaded;
-                _store.put(task.key, planes, task.renderedRoI, output.externalConsumers);
-                continue;
-            }
-            GpuDeviceImagePtr image = slot.pinned;
-            if (!image) {
-                image = GpuDeviceImage::create(_runtime, slot.handle, slot.layout, _stats);
+                GpuDeviceImagePtr image = slot.pinned;
                 if (!image) {
-                    return fail(output.task, "cannot wrap its device image");
+                    image = deviceImages[s] ? deviceImages[s] : GpuDeviceImage::create(_runtime, slot.handle, slot.layout, _stats);
+                    if (!image) {
+                        return fail(output.task, "cannot wrap its device image");
+                    }
+                    if (!deviceImages[s]) {
+                        deviceImages[s] = image;
+                        created.push_back(image);
+                    }
                 }
-                deviceImages[s] = image;
+                devicePlanes[member.plane] = image;
             }
-            std::map<ImageLayerDesc, DeviceImagePtr> planes;
-            planes[layer] = image;
-            _store.putDevice(task.key, planes, task.renderedRoI, output.externalConsumers);
-            if (deviceImages[s]) {
-                const std::weak_ptr<FrameRenderContext> weakContext = _context;
-                const std::weak_ptr<RenderStats> weakStats = _stats;
-                const FrameStore::TaskKey key = task.key;
+            if (!ramPlanes.empty() && !devicePlanes.empty()) {
+                return fail(output.task, "its planes are split between RAM and the device");
+            }
+            if (output.isRoot) {
+                if (rootPlanes) {
+                    rootPlanes->insert(ramPlanes.begin(), ramPlanes.end());
+                }
+                continue;
+            }
+            if (!ramPlanes.empty()) {
+                _store.put(task.key, ramPlanes, task.renderedRoI, output.externalConsumers);
+                continue;
+            }
+            _store.putDevice(task.key, devicePlanes, task.renderedRoI, output.externalConsumers);
+            const std::weak_ptr<FrameRenderContext> weakContext = _context;
+            const std::weak_ptr<RenderStats> weakStats = _stats;
+            const FrameStore::TaskKey key = task.key;
+            for (const GpuDeviceImagePtr& image : created) {
                 image->setEvictable([weakContext, weakStats, key]() {
                     const FrameRenderContextPtr context = weakContext.lock();
                     if (context && (context->getStore().evictToRam(key) > 0)) {
@@ -2286,18 +2553,43 @@ private:
         return true;
     } // storeOutputs
 
+    // Region::members order, as RegionReport::memberNs is read: each task's planes are added up.
+    void reportTimesByTask()
+    {
+        if (!_report || (_report->memberNs.size() != _members.size())) {
+            return;
+        }
+        std::vector<long long> byTask(_region.members.size(), 0);
+        for (std::size_t i = 0; i < _members.size(); ++i) {
+            byTask[_position[_members[i].task]] += _report->memberNs[i];
+        }
+        _report->memberNs.swap(byTask);
+    }
+
     void noteSuccess()
     {
         GpuCostModel& model = GpuCostModel::session();
 
+        std::vector<long long> taskNs(_region.members.size(), 0);
+        std::vector<bool> rendered(_region.members.size(), false);
         for (std::size_t i = 0; i < _members.size(); ++i) {
             const Member& member = _members[i];
             if (member.identity) {
                 continue;
             }
-            const FrameGraph::Task& task = _graph.tasks[member.task];
-            if (_report && (i < _report->memberNs.size()) && (_report->memberNs[i] > 0)) {
-                model.observeGpu(task, _report->memberNs[i]);
+            const int pos = _position[member.task];
+            rendered[pos] = true;
+            if (_report && (i < _report->memberNs.size())) {
+                taskNs[pos] += _report->memberNs[i];
+            }
+        }
+        for (std::size_t pos = 0; pos < _region.members.size(); ++pos) {
+            if (!rendered[pos]) {
+                continue;
+            }
+            const FrameGraph::Task& task = _graph.tasks[_region.members[pos]];
+            if (taskNs[pos] > 0) {
+                model.observeGpu(task, taskNs[pos]);
             }
             if (_stats) {
                 _stats->noteGpuTaskRun(task.key.node->getScriptName_mt_safe());
@@ -2366,9 +2658,12 @@ private:
     int _inFlight = 1;
     bool _overlapped = false;
 
-    // Index in _members of each member task, -1 for every other task.
+    // Index in Region::members of each member task, -1 for every other task.
     std::vector<int> _position;
     std::vector<Member> _members;
+
+    // By index in Region::members: the members of the task's planes, in _members.
+    std::vector<std::vector<int>> _taskMembers;
     std::vector<Slot> _slots;
 
     // Buffers no later member of the submission being recorded reads, reused before a new one is acquired.

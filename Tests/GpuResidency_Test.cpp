@@ -1094,8 +1094,9 @@ TEST_F(GpuResidencyTest, MaskRenderedInTheRegionIsNeverDownloaded)
     expectMatchesCpu(grade, run);
 }
 
-// The Grade feeding the source also feeds the mask from its extra layer, so that member is asked for two planes and
-// the region, which keeps one plane per member on the device, cannot read both of them from it.
+// The Grade feeding the source also feeds the mask from its extra layer, so it is asked for two planes: it renders the
+// colour plane and passes the extra layer through from the source. Nothing asks the source for that layer, so no task
+// stores an image of it the pass-through plane could alias, and the region renders on the CPU.
 TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu)
 {
     if (!gpuOrSkip()) {
@@ -1125,6 +1126,11 @@ TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu)
     std::vector<std::string> expectedLayers = { kNatronColorLayerID, kParitySourceExtraLayerID };
     std::sort(expectedLayers.begin(), expectedLayers.end());
     EXPECT_EQ(expectedLayers, producerLayers) << "the producer renders the source's plane and the mask's layer";
+    const int sourceTask = taskOf(run.graph, source);
+    ASSERT_TRUE(sourceTask >= 0);
+    for (const ImageLayerDesc& layer : run.graph.tasks[sourceTask].components) {
+        EXPECT_NE(std::string(kParitySourceExtraLayerID), layer.getLayerID()) << "the source is asked for the layer the producer passes through";
+    }
     assignRegions(&run.graph, { { producerTask, gradeTask } });
 
     ASSERT_TRUE(render(&run));

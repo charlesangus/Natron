@@ -435,3 +435,40 @@ guided laplacians (float sums and iterated wavelets), 1e-3 for reconstruct color
 LinearResponseLimit clip, the GainMap flat field and hot pixels, which multiply or replace
 photosites. Against the unclipped mosaic, clip changes 97 (Bayer) and 84 (X-Trans) photosites
 by up to 1, opposed 104 and 115 by up to 0.74, LCh 173 and 134 by up to 0.54.
+
+## Memory bounds on the 100 MP mosaic
+
+`Tests/Native/RawLarge_Test.cpp` develops a synthetic 12288 x 8192 mosaic through the whole chain,
+one mode at a time. Each mode renders a 224-row band at the bottom, a 160-row band at the top and a
+64 x 64 window at each right-hand corner. Every render starts from an empty node cache, because
+a cached image that is asked for a second region grows to the bounding box of both. The test
+resets the peak resident set (`/proc/self/clear_refs`) before each mode and bounds its growth. It
+also checks that each corner rendered on its own matches the band holding it, which is what the
+tiled and whole-frame kernels promise.
+
+F below is one float per photosite, 384 MiB. The band allowance, 2 F (half the frame in RGBA
+floats), is the bound that Clip already meets.
+
+| Mode | Bound | Why |
+|---|---|---|
+| Clip, Flat Field (GainMap) | 2 F | Window plus a halo; the gain maps are a few kilobytes |
+| LMMSE, RCD dual, AMaZE dual, Markesteijn 3-pass dual, FDC | 2 F | Tile grids or halos of at most a few hundred photosites around the window |
+| Capture sharpening, set radius | 2 F | Halo of 8 x iterations + 10 photosites |
+| Inpaint opposed (default) | 3 F + 2 F | Whole source held by the source, RawPrepare and RawTemperature |
+| Reconstruct color | 4 F + 2 F | As opposed, plus the rebuilt frame kept per frame key |
+| Segmentation based | 4 F + 14 F / 9 + 2 F | As reconstruct color, plus 13 planes at 3 x 3 decimation and a flood-fill stack of F / 144 per plane |
+| Guided laplacians | 3 F + 6 F / 4 + 2 F | Kept RGBA image at quarter size (F / 4) and five scratch images of that size |
+| Capture sharpening, automatic radius | 118 F / 25 + 2 F | See below |
+
+Capture sharpening with the automatic radius doesn't meet a band bound. RawDemosaic merges the
+centre 60 % x 60 % of the frame, where it measures the radius, into the region it asks of its
+source. Every band and tile therefore pulls the bounding box of itself and the centre, about 80 %
+of the frame, through RawPrepare, RawTemperature and RawHighlights. That costs four stages of
+4 F / 5, Clip's top-down copy of 4 F / 5 and two copies of the 9 F / 25 centre, on every render
+and not only when the radius is measured. It would meet the band bound if the centre were fetched
+in its own request, made only when the radius for the frame key is not yet known.
+
+The whole-frame results (the opposed chrominance; the reconstruct color, segmentation and laplacian
+frames; the automatic radius; the full green equilibration ratio; the CA correction) are node
+members kept per `frameKey()`. Clear Caches does not release them, so up to F stays resident per
+RawHighlights node after a whole-frame mode has run.

@@ -10,6 +10,8 @@
 #   BENCH_REPS       timed renders after the untimed first one, which decodes the file (default 3)
 #   BENCH_OUT        JSON-lines file the result is appended to (default none)
 #   BENCH_THREADS    recorded in the result only; the thread count is the noRenderThreads setting
+#   BENCH_MODE       "default" (the node defaults), "lmmse" (RawDemosaic's LMMSE) or "capture"
+#                    (capture sharpening with the automatic radius); recorded in the result
 
 import glob
 import json
@@ -25,6 +27,7 @@ RENDER_DIR = os.environ.get("BENCH_RENDER_DIR", "/tmp")
 REPS = int(os.environ.get("BENCH_REPS", "3"))
 OUT = os.environ.get("BENCH_OUT", "")
 THREADS = os.environ.get("BENCH_THREADS", "")
+MODE = os.environ.get("BENCH_MODE", "default")
 
 CHAIN = (
     "fr.natron.RawPrepare",
@@ -69,6 +72,13 @@ def build():
     compression = writer.getParam("compression")
     if compression is not None:
         compression.set("none")
+    demosaic = nodes["fr.natron.RawDemosaic"]
+    if MODE == "lmmse":
+        demosaic.getParam("method").set("LMMSE")
+    elif MODE == "capture":
+        demosaic.getParam("captureSharpen").set(True)
+    elif MODE != "default":
+        raise RuntimeError("unknown BENCH_MODE %r" % MODE)
     return writer, nodes["fr.natron.RawTemperature"]
 
 
@@ -97,10 +107,10 @@ def main():
         times.append(render(writer))
         log("render %d %.3fs" % (k, times[-1]))
     best = min(times) if times else first
-    log("threads=%s file=%s first_s=%.3f best_s=%.3f peak_rss_mb=%s" % (THREADS or "?", os.path.basename(RAW), first, best, peak_rss_mb()))
+    log("mode=%s threads=%s file=%s first_s=%.3f best_s=%.3f peak_rss_mb=%s" % (MODE, THREADS or "?", os.path.basename(RAW), first, best, peak_rss_mb()))
     if OUT:
         with open(OUT, "a") as f:
-            f.write(json.dumps({"threads": THREADS, "file": RAW, "first_s": round(first, 4), "times_s": [round(t, 4) for t in times],
+            f.write(json.dumps({"mode": MODE, "threads": THREADS, "file": RAW, "first_s": round(first, 4), "times_s": [round(t, 4) for t in times],
                                 "peak_rss_mb": peak_rss_mb(), "rusage_maxrss_mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024}) + "\n")
 
 

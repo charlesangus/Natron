@@ -48,6 +48,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/ColorWheelMath.h"
 
+#include "Gui/ColorPanelLayoutDev.h"
 #include "Gui/ColorTrackballTarget.h"
 #include "Gui/GuiFwd.h"
 
@@ -124,6 +125,81 @@ int stepColorKnobIndex(const std::vector<ColorKnobInfo>& knobs, int current, int
  * A delta against the accumulated direction discards the remainder first.
  **/
 int takeColorGlobalModeWheelNotches(int* accumulator, int angleDelta);
+
+/**
+ * @brief Whether global mode swaps the pointer for a crosshair from engage to exit.
+ **/
+bool colorGlobalModeFeedbackShowsCrosshair(ColorPanelLayout::Feedback feedback);
+
+/**
+ * @brief Whether the HUD sits in the target knob's own column, as it always did before the
+ * Feedback axis existed. With any other feedback it is never attached there.
+ **/
+bool colorGlobalModeFeedbackAttachesHud(ColorPanelLayout::Feedback feedback);
+
+/**
+ * @brief Whether the HUD is a small window of its own that follows the pointer.
+ **/
+bool colorGlobalModeFeedbackHudFollowsCursor(ColorPanelLayout::Feedback feedback);
+
+/**
+ * @brief The Feedback and Puck values global mode works with. A change arriving mid-stroke is
+ * held until the stroke ends, so one stroke never changes how it is shown halfway through.
+ **/
+class ColorGlobalModeFeedbackSwitch {
+public:
+    ColorGlobalModeFeedbackSwitch();
+
+    /**
+     * @brief Takes latest's Feedback and Puck: at once outside a stroke, at strokeEnded()
+     * during one. True when the values in effect changed.
+     **/
+    bool offer(const ColorPanelLayout& latest, bool strokeActive);
+
+    /**
+     * @brief Puts a held change into effect. True when the values in effect changed.
+     **/
+    bool strokeEnded();
+
+    ColorPanelLayout::Feedback getFeedback() const
+    {
+        return _feedback;
+    }
+
+    ColorPanelLayout::Puck getPuck() const
+    {
+        return _puck;
+    }
+
+private:
+    ColorPanelLayout::Feedback _feedback;
+    ColorPanelLayout::Puck _puck;
+    bool _pending;
+    ColorPanelLayout::Feedback _pendingFeedback;
+    ColorPanelLayout::Puck _pendingPuck;
+};
+
+/**
+ * @brief One entry on QApplication's override cursor stack, pushed the first time it is held
+ * and popped the first time it is let go, so any number of exit paths asking to let go restore
+ * the cursor exactly once. Let go on destruction.
+ **/
+class ColorGlobalModeOverrideCursor {
+public:
+    explicit ColorGlobalModeOverrideCursor(Qt::CursorShape shape);
+    ~ColorGlobalModeOverrideCursor();
+
+    void setHeld(bool held);
+
+    bool isHeld() const
+    {
+        return _held;
+    }
+
+private:
+    Qt::CursorShape _shape;
+    bool _held;
+};
 
 /**
  * @brief One click-drag stroke's accumulated pointer travel, applied to the value the stroke
@@ -332,6 +408,7 @@ private:
     bool handleKeyPress(QKeyEvent* e);
     bool handleKeyRelease(QKeyEvent* e);
     void undoOnTargetPanel(bool redo);
+    void applyFeedback();
 
     Gui* _gui;
     bool _engaged;
@@ -361,6 +438,9 @@ private:
     int _wheelAccumulator;
     std::set<int> _swallowedKeys;
     QList<QKeySequence> _passThrough;
+
+    ColorGlobalModeFeedbackSwitch _feedback;
+    ColorGlobalModeOverrideCursor _crosshair;
 
     QPointer<ColorTrackballHud> _hud;
     std::vector<QPointer<WindowHighlightFrame>> _highlightFrames;

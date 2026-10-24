@@ -30,10 +30,13 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QColor>
 #include <QEvent>
 #include <QFont>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLayout>
 #include <QPainter>
 #include <QPen>
+#include <QScreen>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -54,6 +57,8 @@ ColorTrackballHud::ColorTrackballHud(QWidget* parent)
     , _legendT(new QLabel(QString::fromUtf8("T"), this))
     , _legendV(new QLabel(QString::fromUtf8("V"), this))
     , _endOfListLabel(new QLabel(this))
+    , _followCursor(false)
+    , _cursor()
 {
     setObjectName(QString::fromUtf8("ColorTrackballHud"));
     _targetLabel->setObjectName(QString::fromUtf8("ColorTrackballHudTarget"));
@@ -115,6 +120,99 @@ ColorTrackballHud::ColorTrackballHud(QWidget* parent)
 
 ColorTrackballHud::~ColorTrackballHud()
 {
+}
+
+namespace {
+// One axis of colorTrackballHudFollowPosition: lo and hi bound the screen, hi exclusive.
+int
+followAxis(int cursor,
+           int extent,
+           int lo,
+           int hi,
+           int offset)
+{
+    int p = cursor + offset;
+
+    if (p + extent > hi) {
+        p = cursor - offset - extent;
+    }
+    if (p + extent > hi) {
+        p = hi - extent;
+    }
+    if (p < lo) {
+        p = lo;
+    }
+
+    return p;
+}
+
+// Away from the pointer by this much, before DPI scaling.
+const double kFollowOffset = 16.;
+} // namespace
+
+QPoint
+colorTrackballHudFollowPosition(const QPoint& cursor,
+                                const QSize& hudSize,
+                                const QRect& screen,
+                                const QPoint& offset)
+{
+    if (screen.isEmpty()) {
+        return cursor + offset;
+    }
+
+    return QPoint(followAxis(cursor.x(), hudSize.width(), screen.left(), screen.left() + screen.width(), offset.x()),
+                  followAxis(cursor.y(), hudSize.height(), screen.top(), screen.top() + screen.height(), offset.y()));
+}
+
+Qt::WindowFlags
+ColorTrackballHud::followCursorWindowFlags()
+{
+    return Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::WindowTransparentForInput | Qt::WindowDoesNotAcceptFocus;
+}
+
+void
+ColorTrackballHud::setFollowCursor(bool follow)
+{
+    hide();
+
+    QWidget* parent = parentWidget();
+    QLayout* layout = parent ? parent->layout() : 0;
+
+    if (layout) {
+        layout->removeWidget(this);
+    }
+    _followCursor = follow;
+    setParent(0, follow ? followCursorWindowFlags() : Qt::WindowFlags());
+    setAttribute(Qt::WA_ShowWithoutActivating, follow);
+    setAttribute(Qt::WA_TransparentForMouseEvents, follow);
+    if (follow) {
+        adjustSize();
+    }
+}
+
+void
+ColorTrackballHud::followCursorTo(const QPoint& globalCursor)
+{
+    if (!_followCursor) {
+        return;
+    }
+    _cursor = globalCursor;
+    placeByCursor();
+}
+
+void
+ColorTrackballHud::placeByCursor()
+{
+    QScreen* screen = QGuiApplication::screenAt(_cursor);
+
+    if (!screen) {
+        screen = QGuiApplication::primaryScreen();
+    }
+
+    const QRect screenRect = screen ? screen->geometry() : QRect();
+    const QPoint offset((int)TO_DPIX(kFollowOffset), (int)TO_DPIY(kFollowOffset));
+
+    move(colorTrackballHudFollowPosition(_cursor, size(), screenRect, offset));
 }
 
 QString
@@ -214,6 +312,12 @@ ColorTrackballHud::setState(const ColorTrackballHudState& state)
 
     _endOfListLabel->setText(state.endOfListMessage);
     _endOfListLabel->setVisible(!state.endOfListMessage.isEmpty());
+    // A window of its own does not take its size from a layout, and a new size near an edge
+    // can need the other side of the pointer.
+    if (_followCursor) {
+        adjustSize();
+        placeByCursor();
+    }
 }
 
 WindowHighlightFrame::WindowHighlightFrame(QWidget* window)

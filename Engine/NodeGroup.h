@@ -359,6 +359,18 @@ public:
         return false;
     }
 
+    // A group carries whatever its inner graph does: Node resolves its output from what feeds its
+    // GroupOutput, and each input from what that input's GroupInput feeds inside.
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindPolymorphic;
+    }
+
+    virtual DataKindEnum getInputDataKind(int /*inputNb*/) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindPolymorphic;
+    }
+
     virtual int getNInputs() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isInputOptional(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isInputMask(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -383,6 +395,11 @@ public:
     NodePtr getOutputNodeInput(bool useGuiConnexions) const;
 
     NodePtr getRealInputForInput(bool useGuiConnexions, const NodePtr& input) const;
+
+    /**
+     * @brief The GroupInput node inside this group that stands for its input inputNb, or null.
+     **/
+    NodePtr getGroupInputNode(int inputNb) const;
 
     void getInputs(std::vector<NodePtr>* inputs, bool useGuiConnexions) const;
 

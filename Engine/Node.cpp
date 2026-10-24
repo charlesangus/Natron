@@ -1904,6 +1904,22 @@ inputAcceptsViaAdapter(const EffectInstancePtr& effect,
     return isRegisteredAdapter(from, required) && effect->inputAcceptsDataKindViaAdapter(inputNb, from);
 }
 
+// The node whose consumers receive what node delivers. A GroupOutput has none inside its group:
+// what reaches it leaves through the group node, so the group node's consumers are the ones.
+static NodePtr
+dataKindDeliveringNode(const Node* node)
+{
+    if (dynamic_cast<GroupOutput*>(node->getEffectInstance().get())) {
+        NodeGroup* group = dynamic_cast<NodeGroup*>(node->getGroup().get());
+        NodePtr groupNode = group ? group->getNode() : NodePtr();
+        if (groupNode) {
+            return groupNode;
+        }
+    }
+
+    return std::const_pointer_cast<Node>(node->shared_from_this());
+}
+
 DataKindEnum
 Node::getEffectiveOutputDataKind(bool* isAmbiguous) const
 {
@@ -2030,6 +2046,18 @@ Node::collectUpstreamDataKindConstraint(int overrideInputNb,
                                         const DataKindConstraint& overrideConstraint,
                                         DataKindConstraint* constraint) const
 {
+    // A group renders nothing itself: what leaves it is what reaches its GroupOutput, so its own
+    // inputs only count through what they feed inside.
+    NodeGroup* isGroup = isEffectGroup();
+    if (isGroup) {
+        NodePtr outputNode = isGroup->getOutputNode(false);
+        if (outputNode) {
+            constraint->merge(effectiveDataKindConstraintOf(outputNode->getRealInput(0)));
+        }
+
+        return;
+    }
+
     int nInputs = getNInputs();
 
     for (int i = 0; i < nInputs; ++i) {
@@ -2074,16 +2102,26 @@ Node::collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const
     }
     requirementStack.push_back(this);
 
+    NodePtr deliveringNode = dataKindDeliveringNode(this);
     NodesWList outputs;
-    getOutputs_mt_safe(outputs);
+    deliveringNode->getOutputs_mt_safe(outputs);
 
     for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
         NodePtr consumer = it->lock();
         if (!consumer) {
             continue;
         }
-        int slot = consumer->getInputIndex(this);
+        int slot = consumer->getInputIndex(deliveringNode.get());
         if (slot < 0) {
+            continue;
+        }
+        // A group's input requires whatever the consumers of its GroupInput inside require.
+        NodeGroup* consumerGroup = consumer->isEffectGroup();
+        if (consumerGroup) {
+            NodePtr groupInput = consumerGroup->getGroupInputNode(slot);
+            if (groupInput) {
+                groupInput->collectDownstreamDataKindRequirement(constraint);
+            }
             continue;
         }
         DataKindEnum required = consumer->getEffectInstance()->getInputDataKind(slot);
@@ -2119,17 +2157,24 @@ bool
 Node::findDataKindConflictDownstream(const DataKindConstraint& constraint,
                                      NodePtr* conflictingNode) const
 {
+    NodePtr deliveringNode = dataKindDeliveringNode(this);
     NodesWList outputs;
 
-    getOutputs_mt_safe(outputs);
+    deliveringNode->getOutputs_mt_safe(outputs);
 
     for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
         NodePtr consumer = it->lock();
         if (!consumer) {
             continue;
         }
-        int slot = consumer->getInputIndex(this);
+        int slot = consumer->getInputIndex(deliveringNode.get());
         if (slot < 0) {
+            continue;
+        }
+        if (consumer->isEffectGroup()) {
+            if (consumer->findDataKindConflictInsideGroup(slot, constraint, conflictingNode)) {
+                return true;
+            }
             continue;
         }
         DataKindEnum required = consumer->getEffectInstance()->getInputDataKind(slot);
@@ -2161,6 +2206,27 @@ Node::findDataKindConflictDownstream(const DataKindConstraint& constraint,
 
     return false;
 } // findDataKindConflictDownstream
+
+bool
+Node::findDataKindConflictInsideGroup(int inputNb,
+                                      const DataKindConstraint& constraint,
+                                      NodePtr* conflictingNode) const
+{
+    NodeGroup* isGroup = isEffectGroup();
+    NodePtr groupInput = isGroup ? isGroup->getGroupInputNode(inputNb) : NodePtr();
+
+    if (!groupInput) {
+        return false;
+    }
+
+    // The GroupInput has no inputs to override: constraint stands for what the group's input
+    // would carry, and what the GroupInput's consumers require is merged in as it would be for
+    // any other pass-through.
+    DataKindConstraint simulated = constraint;
+    groupInput->collectDownstreamDataKindRequirement(&simulated);
+
+    return (simulated.ambiguous || (simulated.kind != eDataKindPolymorphic)) && groupInput->findDataKindConflictDownstream(simulated, conflictingNode);
+}
 
 bool
 Node::isInputDataKindUnacceptable(const NodePtr& input,
@@ -2197,6 +2263,14 @@ Node::checkDataKindCompatibility(const NodePtr& input,
         return eCanConnectInput_incompatibleDataKind;
     }
 
+    if (isEffectGroup()) {
+        if (findDataKindConflictInsideGroup(inputNumber, effectiveDataKindConstraintOf(input), conflictingNode)) {
+            return eCanConnectInput_incompatibleDataKind;
+        }
+
+        return eCanConnectInput_ok;
+    }
+
     if (_imp->effect->getOutputDataKind() == eDataKindPolymorphic) {
         DataKindConstraint simulated = resolveDataKindConstraint(inputNumber, effectiveDataKindConstraintOf(input));
         if ((simulated.ambiguous || (simulated.kind != eDataKindPolymorphic)) && findDataKindConflictDownstream(simulated, conflictingNode)) {
@@ -2229,9 +2303,32 @@ Node::invalidateEffectiveOutputDataKindCache()
             node->_imp->effectiveDataKindCacheSet = false;
         }
 
-        NodesList outputs;
-        node->getOutputsWithGroupRedirection(outputs);
-        for (NodesList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+        NodesList neighbours;
+        node->getOutputsWithGroupRedirection(neighbours);
+
+        // The redirected outputs step over group nodes and their GroupInput and GroupOutput nodes,
+        // each of which resolves a kind of its own, so the boundary is crossed explicitly too.
+        NodesWList directOutputs;
+        node->getOutputs_mt_safe(directOutputs);
+        for (NodesWList::const_iterator it = directOutputs.begin(); it != directOutputs.end(); ++it) {
+            neighbours.push_back(it->lock());
+        }
+        NodeGroup* isGroup = node->isEffectGroup();
+        if (isGroup) {
+            neighbours.push_back(isGroup->getOutputNode(false));
+            std::vector<NodePtr> groupInputs;
+            isGroup->getInputs(&groupInputs, false);
+            neighbours.insert(neighbours.end(), groupInputs.begin(), groupInputs.end());
+        }
+        const EffectInstance* effect = node->_imp->effect.get();
+        if (dynamic_cast<const GroupInput*>(effect) || dynamic_cast<const GroupOutput*>(effect)) {
+            NodeGroup* enclosing = dynamic_cast<NodeGroup*>(node->getGroup().get());
+            if (enclosing) {
+                neighbours.push_back(enclosing->getNode());
+            }
+        }
+
+        for (NodesList::const_iterator it = neighbours.begin(); it != neighbours.end(); ++it) {
             if (*it && visited.insert(it->get()).second) {
                 pending.push_back(it->get());
             }

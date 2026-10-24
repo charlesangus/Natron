@@ -117,7 +117,7 @@ The rest of the milestone runs everything once, fixes what fails because of the 
   - verify: new `GpuDeviceTest` cases feed fake candidates (3070 Ti, P400, llvmpipe) in every permutation and always get the 3070 Ti; plus only-llvmpipe, larger-device-fails-requirements, and two identical discrete GPUs tie-breaking to the lower index. In the P1.T4 run, the engine log names the RTX 3070 Ti with that reason.
   - size: M
 
-- [ ] M91.P1.T4 — Baseline run on the RTX 3070 Ti: one remote build, then every GPU suite and the engine ctest locally
+- [x] M91.P1.T4 — Baseline run on the RTX 3070 Ti: one remote build, then every GPU suite and the engine ctest locally
   - files: none in code. Raw output goes to `.local/m91/baseline/`. A "Baseline findings" section goes in this milestone file.
   - approach: Push the milestone branch with P1.T1–T3. Run `tools/ci/remote/build.sh fast --tests` once (also gives the fast AppImage). Fetch the build tree with `gh run download <run-id> -n build-tree-fast`; mount or symlink it at `/__w/Natron/Natron` in the P1.T1 container, following M107.P6.T1's recipe. In the container, with fresh `XDG_CONFIG_HOME` and `XDG_CACHE_HOME`: (a) `NATRON_TEST_REQUIRE_GPU=1 NATRON_TEST_REQUIRE_GPU_HARDWARE=1 ctest -L gpu --output-on-failure` — check each suite's `vulkan device:` line names the RTX 3070 Ti, record the GlInterop best path and `missing` string; (b) the full engine ctest with `NATRON_GPU=force NATRON_TEST_REQUIRE_GPU=1` under `xvfb-run`, once per scheduler (`NATRON_RENDER_SCHEDULER=legacy` and `taskgraph`), as `tools/ci/local/test.sh ctest` does; (c) optional: `GpuTests` natively on the host. Locally build `tools/gpu-spike` (`cmake -S tools/gpu-spike -B build/gpu-spike -G Ninja -DCMAKE_BUILD_TYPE=Release` in the container); fix bit-rot only if it doesn't build. Run `DeviceList` through `run-host.sh`. If a Khronos validation layer can be had without sudo (LunarG SDK tarball via `VK_ADD_LAYER_PATH`), run `GpuTests` once more with it. For every failure, record suite, case, assert text, and whether it reproduces on lavapipe (remote CI logs) and on RADV (M107/M109 records).
   - verify: the findings section lists every gpu-labelled and engine suite as pass, fail or skip, on the named device, for both schedulers; holds the GlInterop path line; classifies each failure as vendor / host-capacity / not-vendor. No suite reports "no usable Vulkan device".
@@ -134,6 +134,27 @@ The rest of the milestone runs everything once, fixes what fails because of the 
   - approach: Map each vendor-specific failure to one P2 template, or file it as a follow-up milestone stub when the fix is large (more than about one M task, or design work). Delete the P2 templates nothing triggered. Route non-vendor failures to their owner. Route GlInterop and viewer failures per P2.T1's sequencing rule.
   - verify: every failure in the findings section has a P2 task, a follow-up stub or a written "not vendor-specific → <owner>" line. P2 contains only triggered tasks.
   - size: M
+
+## Baseline findings (P1.T4, 2026-10-23, build d338d2af1, CI run 40052482940)
+
+How to repeat: download `build-tree-fast` to tmpfs (`/tmp/m91`; the repo disk had ~130 MB free); rebuild test assets from the CI AppImage (`--appimage-extract`, copy `Plugins/OFX/Natron`) or `tools/ci/local/fetch-assets.sh` — the local `build/assets` was stale against the pins and made `Shards/CacheEquivalenceSweepTest` fail (Sketch non-deterministic, then munmap_chunk crash), which is not vendor-related. Run in a plain `docker run --runtime=nvidia` container from the dev image with the checkout at `/__w/Natron/Natron` and the build tree mounted over its `build/`, because devshell.sh has no extra-mount option. Use a fresh `XDG_CONFIG_HOME`/`XDG_CACHE_HOME` per run; scripts are in `.local/m91/baseline/`.
+
+| Run | Total | Pass | Fail | Device |
+|---|---|---|---|---|
+| `ctest -L gpu` (REQUIRE_GPU, REQUIRE_GPU_HARDWARE) | 47 | 45 | 2 | RTX 3070 Ti |
+| engine ctest, `NATRON_GPU=force`, legacy | 335 | 332 | 3 | RTX 3070 Ti |
+| engine ctest, `NATRON_GPU=force`, taskgraph | 335 | 332 | 3 | RTX 3070 Ti |
+| host-native `GpuTests` (no GlInterop) | 121 cases | 119 | 2 | RTX 3070 Ti |
+| host-native `GpuTests` with Khronos validation (SDK 1.4.363) | 121 cases | 119 | 2 | zero real validation errors |
+
+- `GpuDeviceAutoPick.*` (5 cases) pass. The engine log shows: `GPU compute ready on NVIDIA GeForce RTX 3070 Ti (driver 580.178.4, selected by auto: discrete, 8 GiB, over Quadro P400 (2 GiB), llvmpipe (...) (cpu)) after 987.8 ms (... host import calibration 26.3 ms ...)`.
+- GlInterop under Xvfb in the NVIDIA container used NVIDIA GL (`4.6.0 NVIDIA 580.178.04`): `best path: zero-copy`, `missing: (none)`, uuidMatch=1, byte-exact on zero-copy, hostsync and readback. UHD RGBA32F end-to-end medians: zero-copy 1.23 ms, hostsync 1.47 ms, readback 66.96 ms. 8/8 pass.
+
+Failures (none of them reproduces on the lavapipe CI legs):
+- `GpuRuntimeShaderTest.Lut3DLinear` / `Lut2DLinear` (both registrations), `Tests/Gpu/GpuRuntimeShader_Test.cpp:344`: worst 1.55e-4 / 1.26e-5 against kTolerance 1e-5. Deterministic. **Vendor-specific**: NVIDIA's hardware linear filter evidently doesn't give the exact result the test assumes (the comment at :149-151 assumes fixed-point weights exact on a 1/32 grid).
+- `GpuResidencyTest.RegionMembersAreTimedOnTheDevice`, `Tests/GpuResidency_Test.cpp:1992`, pipelined-strips mode: kernelMs 0.945 against a member-timestamp sum of 0.877 (≈7%, against 5% allowed). Flaky (passed on one rerun, failed twice). **Vendor-specific timing**; cause unconfirmed.
+- `GpuTransferTest.PipelinedFramesTimeline`, `GpuTransfer_Test.cpp:404-405`: expected HostImport, got Staging on all frames. Failed only while host RAM was tight, then passed 3/3 standalone and in later runs. **Host-capacity (probable)**. The engine's staging fallback worked; only the strict assert tripped.
+- `Shards/CacheEquivalenceSweepTest`: stale local assets. **Not vendor**; passes with pinned assets.
 
 ## Phase 91.2: Vendor-specific fixes (template tasks; instantiate only what P1.T6 triggers)
 

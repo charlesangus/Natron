@@ -20,12 +20,19 @@ Port of the matrix path of darktable's input colour module (`src/iop/colorin.c` 
   `cie_xyz_d65_interchange` role, so no primaries are hard-coded. A working space with no such
   matrix, a log space for example, is treated as linear Rec. 709.
 - The working space is part of every node's hash, so changing it renders again.
+- **Late correction**: when the source carries `raw/wb_late_correction` (RawTemperature in As Shot
+  to Reference), camera RGB is multiplied by it, `D65coeffs / as_shot` per channel, before the
+  matrix, as darktable's `process_cmatrix()` does. The product is folded into the matrix's
+  columns. darktable skips it for a Lab input profile, which this node does not offer. The output
+  then records `raw/wb_d65_coeffs` as `raw/wb_applied` and multiplies `raw/processed_maximum` by
+  the correction, as darktable's `process()` does; the key itself is left for later nodes.
 
 Tests: `Tests/Native/NativeRawInputColor_Test.cpp`, on a synthetic grey card and patches through
-RawDemosaic. A viewer colour check on real raw files comes once real files exist.
+RawDemosaic. `Tests/Native/NativeRawLateCorrection_Test.cpp` checks the late correction. A viewer colour check on real raw files comes once real files exist.
 
 GPU: `rawinputcolor_wrapped` (`Engine/Gpu/Kernels/rawinputcolor.slang`), the op's `gpu()`, with
-the baked camera to working space matrix, the OCIO matrix included, in `RawInputColorGpuParams`.
+the baked camera to working space matrix, the OCIO matrix and the late correction included, in
+`RawInputColorGpuParams`; the kernel is unchanged by the late correction.
 The products are summed in the CPU's order without contraction: bound
 `ParityTolerance::arithmetic()`. GPU tests: `Tests/Native/NativeRawChainGpu_Test.cpp`, which also
 renders the whole Develop chain with RCD as one GPU region, one upload and one download.

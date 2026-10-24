@@ -63,6 +63,8 @@
 #define kRawMetadataLinearResponseLimit "raw/linear_response_limit"
 #define kRawMetadataDngD65Matrix "raw/dng_d65_matrix"
 #define kRawMetadataGainMaps "raw/gain_maps"
+#define kRawMetadataWbLateCorrection "raw/wb_late_correction"
+#define kRawMetadataWbD65Coeffs "raw/wb_d65_coeffs"
 
 #define kRawCfaPatternNone "none"
 #define kRawStageRaw "raw"
@@ -256,6 +258,21 @@ void setWbApplied(ImageMetadata* metadata, const std::array<double, 3>& coeffs);
  **/
 std::optional<std::array<double, 3>> getProcessedMaximum(const ImageMetadata& metadata);
 void setProcessedMaximum(ImageMetadata* metadata, const std::array<double, 3>& maximum);
+
+/**
+ * @brief raw/wb_d65_coeffs: the red, green and blue multipliers that make D65 white neutral for
+ * the camera (darktable's chroma D65coeffs), which RawTemperature publishes in every mode.
+ **/
+std::optional<std::array<double, 3>> getWbD65Coeffs(const ImageMetadata& metadata);
+void setWbD65Coeffs(ImageMetadata* metadata, const std::array<double, 3>& coeffs);
+
+/**
+ * @brief raw/wb_late_correction: per red, green and blue, D65coeffs / as_shot, which RawInputColor
+ * multiplies camera RGB by before its matrix (darktable's chroma late_correction). Present only
+ * after RawTemperature in As Shot to Reference.
+ **/
+std::optional<std::array<double, 3>> getWbLateCorrection(const ImageMetadata& metadata);
+void setWbLateCorrection(ImageMetadata* metadata, const std::array<double, 3>& correction);
 
 /**
  * @brief raw/make and raw/model: rawspeed's canonical camera names, the spelling darktable's

@@ -56,6 +56,9 @@
 #define kRawTemperatureParamRed "red"
 #define kRawTemperatureParamGreen "green"
 #define kRawTemperatureParamBlue "blue"
+#define kRawTemperatureParamSpotBottomLeft "spotBottomLeft"
+#define kRawTemperatureParamSpotSize "spotSize"
+#define kRawTemperatureParamPick "pick"
 
 NATRON_NAMESPACE_ENTER
 
@@ -63,7 +66,9 @@ enum RawTemperatureModeEnum {
     eRawTemperatureModeAsShot = 0,
     eRawTemperatureModeCameraReference,
     eRawTemperatureModeCustom,
-    eRawTemperatureModeCameraPreset
+    eRawTemperatureModeCameraPreset,
+    eRawTemperatureModeFromImageArea,
+    eRawTemperatureModeAsShotToReference
 };
 
 inline constexpr InputSpec kRawTemperatureInputs[] = {
@@ -78,7 +83,11 @@ inline constexpr InputSpec kRawTemperatureInputs[] = {
  * red, green and blue knobs, which editing the temperature or the tint sets through the camera
  * matrix (sRGB when the source has none), as darktable's sliders do; Camera Preset the setting
  * of darktable's preset database that the Preset knob names, for the source's raw/make and
- * raw/model, at the Finetune knob's tuning.
+ * raw/model, at the Finetune knob's tuning; From Image Area the red, green and blue knobs as the
+ * Pick button last set them from the source's mean over the spot area; As Shot to Reference the
+ * as-shot multipliers, with raw/wb_late_correction telling RawInputColor to move them on to the
+ * Camera Reference ones before its matrix. Every mode publishes the Camera Reference multipliers
+ * as raw/wb_d65_coeffs.
  **/
 struct RawTemperatureOp {
     struct Params {
@@ -91,7 +100,8 @@ struct RawTemperatureOp {
         .label = "RawTemperature",
         .description = "Applies the white balance to prepared raw data, by the camera's as-shot multipliers, the camera "
                        "reference (D65) multipliers, a custom temperature and tint or red, green and blue multipliers, "
-                       "or one of the camera's white balance presets. Goes after RawPrepare.",
+                       "one of the camera's white balance presets, or the mean of an area of the image; or by the as-shot "
+                       "multipliers corrected to the reference ones in RawInputColor. Goes after RawPrepare.",
         .grouping = PLUGIN_GROUP_RAW,
         .majorVersion = PLUGIN_MAJOR_NATRON_RAWTEMPERATURE,
         .minorVersion = 0,
@@ -143,6 +153,13 @@ struct RawTemperatureOp {
      **/
     static RawColorMath::CameraMatrices sourceMatrices(const ImageMetadata& source);
 
+    /**
+     * @brief The multipliers darktable's color_picker_apply() takes from the picked mean colour:
+     * each channel's reciprocal relative to green's, clamped to [0, 8], a channel at or under
+     * 0.001 counting as 1.
+     **/
+    static std::array<float, 3> pickedCoefficients(const std::array<float, 3>& mean);
+
     KnobChoiceWPtr mode;
     KnobChoiceWPtr preset;
     KnobIntWPtr finetune;
@@ -151,6 +168,9 @@ struct RawTemperatureOp {
     KnobDoubleWPtr red;
     KnobDoubleWPtr green;
     KnobDoubleWPtr blue;
+    KnobDoubleWPtr spotBottomLeft;
+    KnobDoubleWPtr spotSize;
+    KnobButtonWPtr pick;
 };
 
 static_assert(PointOp<RawTemperatureOp>);
@@ -168,6 +188,8 @@ public:
     virtual ~RawTemperature();
 
 private:
+    virtual void initializeKnobs() OVERRIDE FINAL;
+
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,
@@ -190,6 +212,21 @@ private:
      * keeping the chosen one by name, and gives Finetune that setting's tunings for its range.
      **/
     void refreshPresets();
+
+    /**
+     * @brief While the spot area knobs are at their defaults, moves those defaults to darktable's
+     * default picker box, 2% to 98% of the source's format.
+     **/
+    void refreshSpotDefaults();
+
+    /**
+     * @brief Reads the source at full scale over the spot area, averages it per colour of the
+     * CFA (per channel without one), and stores the multipliers of that mean in the red, green
+     * and blue knobs with the mode set to From Image Area. False, changing nothing, when there
+     * is no source or the area misses it.
+     **/
+    bool pickSpot(double time,
+                  ViewIdx view);
 
     void setCoefficientKnobs(const RawColorMath::Vec3& coeffs);
 

@@ -33,9 +33,13 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdint>
 #include <vector>
 
+#include <QCoreApplication>
+
 #include "Engine/AppManager.h"
+#include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -86,7 +90,70 @@ blackCell(const RawLayout& layout,
 
     return row * 2 + col;
 }
+
+std::string
+flatFieldHint(bool available)
+{
+    if (available) {
+        return QCoreApplication::translate("RawPrepare", "Multiplies each photosite by the gain the raw file's embedded GainMaps give it, correcting the uneven colour cast and shading of the lens and sensor. On by default when the file has them.").toStdString();
+    }
+
+    return QCoreApplication::translate("RawPrepare", "The raw file has no embedded GainMaps that can be applied, so this does nothing. Applying needs four single-plane Bayer maps over the whole sensor that share one grid.").toStdString();
+}
+
+// The cell of the 2x2 block at the sensor's top-left corner that sensor pixel (col, row), counted
+// from the top-left, is on.
+inline int
+sensorCell(int col,
+           int row)
+{
+    return ((row & 1) << 1) + (col & 1);
+}
 } // namespace
+
+std::shared_ptr<const RawPrepare::FlatField>
+RawPrepare::acceptGainMaps(const std::vector<DngGainMap>& maps,
+                           int width,
+                           int height)
+{
+    if (maps.size() != 4) {
+        return nullptr;
+    }
+    std::array<const DngGainMap*, 4> byCell = { nullptr, nullptr, nullptr, nullptr };
+    for (const DngGainMap& g : maps) {
+        if ((g.plane != 0) || (g.planes != 1) || (g.mapPlanes != 1) || (g.rowPitch != 2) || (g.colPitch != 2) || (g.mapPointsV < 2) || (g.mapPointsH < 2) || (g.top > 1) || (g.left > 1) || ((int64_t)g.bottom != height) || ((int64_t)g.right != width)) {
+            return nullptr;
+        }
+        if (g.gains.size() < (std::size_t)g.mapPointsV * g.mapPointsH) {
+            return nullptr;
+        }
+        byCell[(std::size_t)(((g.top & 1) << 1) + (g.left & 1))] = &g;
+    }
+    for (const DngGainMap* g : byCell) {
+        if (!g) {
+            return nullptr;
+        }
+    }
+    for (int i = 1; i < 4; ++i) {
+        const DngGainMap& a = *byCell[(std::size_t)i];
+        const DngGainMap& b = *byCell[0];
+        if ((a.mapPointsH != b.mapPointsH) || (a.mapPointsV != b.mapPointsV) || (a.mapSpacingH != b.mapSpacingH) || (a.mapSpacingV != b.mapSpacingV) || (a.mapOriginH != b.mapOriginH) || (a.mapOriginV != b.mapOriginV)) {
+            return nullptr;
+        }
+    }
+    auto field = std::make_shared<FlatField>();
+    field->mapW = (int)byCell[0]->mapPointsH;
+    field->mapH = (int)byCell[0]->mapPointsV;
+    field->spacingH = (float)byCell[0]->mapSpacingH;
+    field->spacingV = (float)byCell[0]->mapSpacingV;
+    field->originH = (float)byCell[0]->mapOriginH;
+    field->originV = (float)byCell[0]->mapOriginV;
+    for (std::size_t i = 0; i < 4; ++i) {
+        field->gains[i] = byCell[i]->gains;
+    }
+
+    return field;
+}
 
 RawPrepare::RawPrepare(NodePtr node)
     : StagedImageEffect(node)
@@ -99,6 +166,7 @@ RawPrepare::RawPrepare(NodePtr node)
     , _cropTop()
     , _cropRight()
     , _cropBottom()
+    , _flatField()
     , _message()
 {
     setSupportsRenderScaleMaybe(eSupportsNo);
@@ -198,7 +266,34 @@ RawPrepare::initializeKnobs()
         *margin.store = knob;
     }
 
+    std::vector<ChoiceOption> flatFieldModes;
+    flatFieldModes.push_back(ChoiceOption("disabled", tr("Disabled").toStdString(), ""));
+    flatFieldModes.push_back(ChoiceOption("embedded", tr("Embedded GainMap").toStdString(), ""));
+    KnobChoicePtr flatField = createKnob<KnobChoice>(tr("Flat Field"));
+    flatField->setName(kRawPrepareParamFlatField);
+    flatField->setHintToolTip(flatFieldHint(false));
+    flatField->populateChoices(flatFieldModes);
+    flatField->setDefaultValue(eRawPrepareFlatFieldEmbedded);
+    flatField->setAnimationEnabled(false);
+    page->addKnob(flatField);
+    _flatField = flatField;
+
     refreshOverrides();
+}
+
+void
+RawPrepare::showFlatFieldAvailability(double time)
+{
+    const KnobChoicePtr knob = _flatField.lock();
+
+    if (!knob) {
+        return;
+    }
+    const std::optional<Settings> settings = resolveSettings(time, ViewIdx(0));
+    const bool available = settings && settings->flatFieldAvailable;
+
+    knob->setHintToolTip(flatFieldHint(available));
+    knob->setAllDimensionsEnabled(available);
 }
 
 void
@@ -258,6 +353,7 @@ void
 RawPrepare::onInputChanged(int /*inputNo*/)
 {
     showSourceLevels(getCurrentTime());
+    showFlatFieldAvailability(getCurrentTime());
 }
 
 void
@@ -265,6 +361,7 @@ RawPrepare::onKnobsLoaded()
 {
     refreshOverrides();
     showSourceLevels(getCurrentTime());
+    showFlatFieldAvailability(getCurrentTime());
 }
 
 bool
@@ -388,6 +485,18 @@ RawPrepare::resolveSettings(double time,
         }
     }
 
+    if (s.hasCfa && (s.layout.period() == 2)) {
+        const std::vector<DngGainMap> maps = RawMetadata::getGainMaps(source);
+        if (!maps.empty()) {
+            if (std::shared_ptr<const FlatField> field = acceptGainMaps(maps, s.sourceRoD.width(), s.sourceRoD.height())) {
+                s.flatFieldAvailable = true;
+                if (reader.value(_flatField) == eRawPrepareFlatFieldEmbedded) {
+                    s.flatField = std::move(field);
+                }
+            }
+        }
+    }
+
     return s;
 } // RawPrepare::resolveSettings
 
@@ -508,6 +617,11 @@ RawPrepare::renderOp(const RenderActionArgs& args,
     const int dy = s.kept.y1;
     const RectI& roi = args.roi;
     RenderCancellation cancel(this);
+    const FlatField* flat = s.flatField.get();
+    const int sensorW = s.sourceRoD.width();
+    const int sensorH = s.sourceRoD.height();
+    const float imToRelX = 1.0f / (float)sensorW;
+    const float imToRelY = 1.0f / (float)sensorH;
     const RawKernels::ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, appPTR->getNCPUsAvailableForEffect());
 
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
@@ -524,6 +638,21 @@ RawPrepare::renderOp(const RenderActionArgs& args,
             if (!out) {
                 return;
             }
+            const float* rows0[4] = { nullptr, nullptr, nullptr, nullptr };
+            const float* rows1[4] = { nullptr, nullptr, nullptr, nullptr };
+            int sensorRow = 0;
+            float yFrac = 0.f;
+            if (flat) {
+                sensorRow = s.sourceRoD.y2 - 1 - sy;
+                const float yMap = std::min(std::max(((float)sensorRow * imToRelY - flat->originV) * (1.0f / flat->spacingV), 0.f), (float)flat->mapH);
+                const uint32_t y0 = std::min((uint32_t)yMap, (uint32_t)flat->mapH - 1);
+                const uint32_t y1 = std::min(y0 + 1, (uint32_t)flat->mapH - 1);
+                yFrac = yMap - (float)y0;
+                for (std::size_t f = 0; f < 4; ++f) {
+                    rows0[f] = &flat->gains[f][y0 * (std::size_t)flat->mapW];
+                    rows1[f] = &flat->gains[f][y1 * (std::size_t)flat->mapW];
+                }
+            }
             for (int x = roi.x1; x < roi.x2; ++x, out += nComps) {
                 const int sx = x + dx;
                 const bool inside = (sx >= source.bounds.x1) && (sx < source.bounds.x2) && (sy >= source.bounds.y1) && (sy < source.bounds.y2);
@@ -533,6 +662,17 @@ RawPrepare::renderOp(const RenderActionArgs& args,
                     for (int c = 0; c < nComps; ++c) {
                         const float v = (in && (c < source.nComps)) ? in[c] : 0.f;
                         out[c] = (v - s.sub[id]) / s.div[id];
+                    }
+                    if (flat && in && (nComps > 0)) {
+                        const int sensorCol = sx - s.sourceRoD.x1;
+                        const int f = sensorCell(sensorCol, sensorRow);
+                        const float xMap = std::min(std::max(((float)sensorCol * imToRelX - flat->originH) * (1.0f / flat->spacingH), 0.f), (float)flat->mapW);
+                        const uint32_t x0 = std::min((uint32_t)xMap, (uint32_t)flat->mapW - 1);
+                        const uint32_t x1 = std::min(x0 + 1, (uint32_t)flat->mapW - 1);
+                        const float xFrac = xMap - (float)x0;
+                        const float top = (1.0f - xFrac) * rows0[f][x0] + xFrac * rows0[f][x1];
+                        const float bottom = (1.0f - xFrac) * rows1[f][x0] + xFrac * rows1[f][x1];
+                        out[0] *= (1.0f - yFrac) * top + yFrac * bottom;
                     }
                 } else {
                     for (int c = 0; c < nComps; ++c) {
@@ -558,7 +698,7 @@ RawPrepare::canRenderOpOnGpu(const GpuQuery& query) const
     // Resolving only reads knobs and the source's metadata and region.
     const std::optional<Settings> settings = const_cast<RawPrepare*>(this)->resolveSettings(query.time, query.view);
 
-    return settings && !settings->passThrough && !settings->stageError;
+    return settings && !settings->passThrough && !settings->stageError && !settings->flatField;
 #else
     Q_UNUSED(query);
 

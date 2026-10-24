@@ -35,8 +35,10 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
@@ -55,6 +57,12 @@
 #define kRawPrepareParamCropTop "cropTop"
 #define kRawPrepareParamCropRight "cropRight"
 #define kRawPrepareParamCropBottom "cropBottom"
+#define kRawPrepareParamFlatField "flatField"
+
+enum RawPrepareFlatFieldEnum {
+    eRawPrepareFlatFieldDisabled = 0,
+    eRawPrepareFlatFieldEmbedded = 1,
+};
 
 NATRON_NAMESPACE_ENTER
 
@@ -63,7 +71,9 @@ NATRON_NAMESPACE_ENTER
  * photosite becomes (value - black) / (white - black) with the black level of its cell of the
  * 2x2 block at the CFA origin, or of its channel for data without a CFA, so that black is 0 and
  * the white level is 1; the kept area is moved to the origin, the CFA origin moving with it. The
- * levels and the crop come from the source's raw/ metadata unless overridden.
+ * levels and the crop come from the source's raw/ metadata unless overridden. With Flat Field on
+ * and four embedded GainMaps that fit, each photosite is also multiplied by its map's gain,
+ * bilinearly interpolated, which takes the node off the GPU.
  *
  * Raw in, raw out, at the raw stage: the output's raw/stage is prepared, its black levels 0, its
  * white level 1. A source that is already prepared passes through unchanged, with a warning.
@@ -92,6 +102,30 @@ public:
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
+     * @brief The four embedded GainMaps of a Bayer file, indexed by the cell of the 2x2 block at
+     * the sensor's top-left corner that they correct, with the grid they share. Rows run from the
+     * sensor's top, as the file stores them.
+     **/
+    struct FlatField {
+        int mapW = 0;
+        int mapH = 0;
+        float spacingH = 1.f;
+        float spacingV = 1.f;
+        float originH = 0.f;
+        float originV = 0.f;
+        std::array<std::vector<float>, 4> gains;
+    };
+
+    /**
+     * @brief The maps flat field correction can apply, or null when maps does not hold exactly
+     * four single-plane Bayer maps over the whole sensor of width x height photosites that share
+     * one grid.
+     **/
+    static std::shared_ptr<const FlatField> acceptGainMaps(const std::vector<DngGainMap>& maps,
+                                                           int width,
+                                                           int height) WARN_UNUSED_RETURN;
+
+    /**
      * @brief What a render at time and view does: the black level per cell (or channel) and the
      * scale, the source pixels kept, and whether the source is already prepared. Empty when the
      * source has no region.
@@ -106,6 +140,9 @@ public:
         RawLayout layout;
         RectI sourceRoD;
         RectI kept;
+        // Set when Flat Field is on and the source has maps that can be applied.
+        std::shared_ptr<const FlatField> flatField;
+        bool flatFieldAvailable = false;
     };
 
     std::optional<Settings> resolveSettings(double time, ViewIdx view) WARN_UNUSED_RETURN;
@@ -157,6 +194,9 @@ private:
 
     void refreshOverrides();
 
+    // Without usable maps the Flat Field choice does nothing, and says so.
+    void showFlatFieldAvailability(double time);
+
     // While an override is off its knobs show the source's value, which is what a render uses.
     void showSourceLevels(double time);
 
@@ -169,6 +209,7 @@ private:
     KnobIntWPtr _cropTop;
     KnobIntWPtr _cropRight;
     KnobIntWPtr _cropBottom;
+    KnobChoiceWPtr _flatField;
     RawNodeSupport::OwnedMessage _message;
 };
 

@@ -1,4 +1,6 @@
-# M144 - Render-Thread Metadata Refresh
+# M144 - ~~Render-Thread Metadata Refresh~~
+
+> Cancelled 2026-10-24 (user decision): absorbed by M167 - Per-Frame Node Metadata, whose hash-keyed, on-request metadata is one of this milestone's two candidate designs and removes the main-thread-only refresh. Its acceptance is carried there. Kept for history.
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 

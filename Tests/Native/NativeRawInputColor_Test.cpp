@@ -194,7 +194,8 @@ TEST_F(NativeRawInputColorTest, ACustomMatrixIsUsedAsGiven)
     NodePtr node = createChain(camera);
     ASSERT_TRUE(bool(node));
     EffectInstancePtr effect = node->getEffectInstance();
-    effect->getKnobByNameAndType<KnobChoice>(kRawInputColorParamMatrix)->setValue((int)eRawInputColorMatrixCustom);
+    effect->getKnobByNameAndType<KnobBool>(kRawInputColorParamProfileOverride)->setValue(true);
+    effect->getKnobByNameAndType<KnobChoice>(kRawInputColorParamProfile)->setValueFromID(kRawInputColorProfileCustom, 0);
     const RawColorMath::Mat3 custom = RawColorMath::srgbToXyz();
     const char* const rows[3] = { kRawInputColorParamRow0, kRawInputColorParamRow1, kRawInputColorParamRow2 };
     for (int r = 0; r < 3; ++r) {

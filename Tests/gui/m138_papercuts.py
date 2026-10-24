@@ -406,6 +406,11 @@ try:
                 continue
         return best[1] if best else None
 
+    def icon_bytes(label):
+        """The label's swatch pixels: the eyedropper icon is drawn over the swatch only while picking is on."""
+        img = label.pixmap().toImage()
+        return bytes(img.constBits()) if not img.isNull() else b""
+
     def toggle_eyedropper(label):
         """A press and release on the label, as a click does."""
         centre = QPointF(label.rect().center())
@@ -471,10 +476,13 @@ try:
         expect("Ctrl+Shift+Alt rectangle without an eyedropper", (0.25, 0.25, 0.25), "in")
 
         # The Grade's offset eyedropper on: the input by default, the output with Alt.
-        dropper = eyedropper_of(panel_of(g2), "Offset")
+        # Keep the panel's wrapper alive: PySide invalidates the child wrappers when a parent wrapper is collected.
+        grade_panel = panel_of(g2)
+        dropper = eyedropper_of(grade_panel, "Offset")
         require(dropper is not None, "found the eyedropper on the Grade's Offset row")
+        icon_off = icon_bytes(dropper)
         toggle_eyedropper(dropper)
-        check(dropper.isPickingEnabled(), "clicking the label turns its eyedropper on")
+        check(icon_bytes(dropper) != icon_off, "clicking the label turns its eyedropper on")
         yield ("sleep", SETTLE_MS)
         move(gl, mid)
         move(gl, mid + QPointF(1, 0))
@@ -499,7 +507,7 @@ try:
         read.setPosition(8300, -300)
         view(viewer, read)
         yield ("sleep", RENDER_MS)
-        check(dropper.isPickingEnabled(), "the eyedropper is still on")
+        check(icon_bytes(dropper) != icon_off, "the eyedropper is still on")
         click(gl, mid, Qt.LeftButton, ctrl)
         yield ("sleep", SETTLE_MS)
         rgba, source = reading("Ctrl-click on a Read with the eyedropper on")
@@ -508,7 +516,7 @@ try:
         set_all(offset, 0.0)
 
         toggle_eyedropper(dropper)
-        check(not dropper.isPickingEnabled(), "clicking the label again turns the eyedropper off")
+        check(icon_bytes(dropper) == icon_off, "clicking the label again turns the eyedropper off")
         gt.close_all_panels()
         for n in (read, g2, c25):
             n.destroy()

@@ -1975,6 +1975,11 @@ try:
             report("NOTE eyedropper Grade knob that changed: %r" % (filled,))
             check(filled is not None and all(close(filled[1][i], 0.25) for i in range(3)),
                   "the Ctrl-click filled the colour knob with the input, 0.25")
+            if filled is not None:
+                restore = eg.getParam(filled[0])
+                for d, v in enumerate(eye_before[filled[0]]):
+                    restore.setValue(v, d)
+                yield ("sleep", RENDER_MS)
             click(gl, mid, Qt.LeftButton, Qt.ControlModifier | Qt.AltModifier)
             yield ("sleep", SETTLE_MS)
             rgba = info_rgba()

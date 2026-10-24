@@ -190,6 +190,18 @@ Triage of the baseline: P2.T1 (GlInterop) and P2.T4 (device limits) were not tri
   - verify: every gpu-labelled suite and the engine ctest (both schedulers, `NATRON_GPU=force`) pass on the RTX 3070 Ti. The remote CI legs on lavapipe are green. Failures filed as follow-ups are listed.
   - size: M
 
+- [ ] M91.P2.T7 — Fix the RAW layout colour lookup at negative pixel coordinates on NVIDIA
+  - files: `Engine/Gpu/Kernels/rawlayout.slang` (and only if the mirror shares the bug, `Engine/Nodes/Raw/RawGpuParams.h`), `Tests/Gpu/RawRegionGpu_Test.cpp`
+  - approach: `RawRegionGpu.KernelColourMatchesRawLayoutEverywhere` fails deterministically on the RTX 3070 Ti and passes on lavapipe. The assert is RawRegionGpu_Test.cpp:332: got 2 against layout 0, for X-Trans `GGRGGBGGBGGRBRGRBGGGBGGRGGRGGBRBGBRG` at origin 0,0, pixel -7,-5. `colourAt(int x, int y)` (rawlayout.slang ~l.33) probably uses `%` or `/` on negative ints, which is implementation-defined or differs per driver in SPIR-V (OpSRem/OSMod). Make the period wrap a true floor-modulo, e.g. `((v % n) + n) % n` on int, matching CPU `RawLayout::colourAt()` for every sign. Keep the Bayer path consistent.
+  - verify: the test passes on the RTX 3070 Ti and on lavapipe CI, and the other NativeRaw*Gpu suites are still green.
+  - size: M
+
+- [ ] M91.P2.T8 — Give the RAW colour-calibration GPU parity check a bound NVIDIA's arithmetic meets legally
+  - files: `Tests/Native/RawGpuTestSupport.h`, the NativeRawColorCalibrationGpu test source
+  - approach: `NativeRawColorCalibrationGpuTest.EveryAdaptationVersionClipAndGamutMatchesTheCpu` has 40 failures on NVIDIA. In each, 1-2 of 256 floats differ, by at most 2.62e-6 (for example 0.42302263 on the CPU against 0.42302161 on the GPU), against `ParityTolerance::arithmetic()` (RawGpuTestSupport.h:202). First find out whether the kernel uses fma/contraction, pow or exp, or matrix chains that Vulkan only bounds in ulp. Then set the tolerance from what the spec allows, as a relative/ulp bound sized to the chain length, stated in a why-comment. Do not loosen it globally, and do not change the engine. A real colour error (around 1e-3 or more) must still fail.
+  - verify: passes on the RTX 3070 Ti and on lavapipe CI, and prints the worst error against its bound.
+  - size: M
+
 P2.T6 result (2026-10-24, build f2cb62759, CI run 40058465161; artifacts in `.local/m91/p2/`, same recipe as P1.T4):
 
 | Run | Total | Pass | Fail | Device |
@@ -271,3 +283,4 @@ If M107 hasn't merged when Phase 91.2 finishes, skip this phase and file it as a
     - NativeWriteLarge ×2, new on main: two frames over 2 GB filled the 4 GiB `/tmp` tmpfs. Host capacity.
     - CacheEquivalenceSweep/15 on taskgraph: "scheduler did not complete the frame". This matches the pre-existing blocking-render / scheduler-idle race on main that M138 already reported through the inbox.
 - 2026-10-24 — lint-ci failed on SC2054 (the commas in the NVIDIA_DRIVER_CAPABILITIES array element); value quoted. Rebased onto main 9b6196a5c (M80 - Native RAW Support adds GPU kernels and RawRegionGpu_Test, none in M91's files) as ea7481578 on milestone/m91-nvidia-gpu-validation; gate re-runs on the rebased tip.
+- 2026-10-24 — The gate re-run on ea7481578 (rebased onto M80 - Native RAW Support) failed two NVIDIA-only tests in M80's new RAW GPU code: the X-Trans colour at negative coordinates and the calibration parity at about 2e-6. Both pass on lavapipe. The user chose to fix them in M91 before merging, so P2.T7 and P2.T8 were added. CacheEquivalenceSweep/10 under taskgraph also fails with GPU force on lavapipe (3/5) and never with GPU off. That makes it not vendor-specific; it is the scheduler race already reported by M138. Report: `.local/m91/gate2/summary.md`.

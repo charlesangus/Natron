@@ -69,7 +69,8 @@ inline constexpr InputSpec kRawInputColorInputs[] = {
  * profile from it; XYZ goes to the working space through the inverse of the project's
  * working-to-XYZ matrix, which the OpenColorIO config gives. The Standard matrix, and the
  * fallback when the source has no camera matrix, is linear Rec. 709. A working space with no
- * matrix to XYZ (a log space) is treated as linear Rec. 709.
+ * matrix to XYZ (a log space) is treated as linear Rec. 709. When the source carries
+ * raw/wb_late_correction, camera RGB is multiplied by it before the matrix.
  **/
 struct RawInputColorOp {
     struct Params {
@@ -140,6 +141,9 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    virtual ImageMetadata deriveOutputMetadata(double time,
+                                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void refreshEnabled();
 };

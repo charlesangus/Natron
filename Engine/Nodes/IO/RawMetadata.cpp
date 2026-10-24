@@ -341,6 +341,32 @@ setProcessedMaximum(ImageMetadata* metadata,
     setFixedVector(metadata, kRawMetadataProcessedMaximum, maximum);
 }
 
+std::optional<std::array<double, 3>>
+getWbD65Coeffs(const ImageMetadata& metadata)
+{
+    return getFixedVector<3>(metadata, kRawMetadataWbD65Coeffs);
+}
+
+void
+setWbD65Coeffs(ImageMetadata* metadata,
+               const std::array<double, 3>& coeffs)
+{
+    setFixedVector(metadata, kRawMetadataWbD65Coeffs, coeffs);
+}
+
+std::optional<std::array<double, 3>>
+getWbLateCorrection(const ImageMetadata& metadata)
+{
+    return getFixedVector<3>(metadata, kRawMetadataWbLateCorrection);
+}
+
+void
+setWbLateCorrection(ImageMetadata* metadata,
+                    const std::array<double, 3>& correction)
+{
+    setFixedVector(metadata, kRawMetadataWbLateCorrection, correction);
+}
+
 std::optional<std::string>
 getMake(const ImageMetadata& metadata)
 {

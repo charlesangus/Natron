@@ -17,6 +17,22 @@ blackbody and daylight spectra, and Little CMS's `cmsWhitePointFromTemp()` are i
   - **Custom** uses the **Red**, **Green** and **Blue** knobs.
   - **Camera Preset** uses the camera's white balance setting named by **Preset**, at the
     **Finetune** tuning. A setting the source's camera does not have gives the As Shot multipliers.
+  - **From Image Area** uses the **Red**, **Green** and **Blue** knobs as **Pick** last set them.
+    Choosing the mode picks, as darktable's menu switches its picker on.
+  - **As Shot to Reference** applies the As Shot multipliers and sets `raw/wb_late_correction` to
+    the Camera Reference multipliers divided by the As Shot ones, per channel, as darktable's
+    `_publish_chroma()` sets `late_correction`. RawHighlights and RawDemosaic pass it on;
+    RawInputColor multiplies by it before its matrix. Any other mode removes the key.
+- **Spot Bottom Left** and **Spot Size** are the area Pick reads, drawn as a rectangle in the
+  viewer. While untouched they follow darktable's default picker box, 2% to 98% of the source's
+  format.
+- **Pick** reads the source over the area at full resolution and averages it per colour of the CFA
+  over that colour's photosites (darktable's `_color_picker_bayer()` and
+  `_color_picker_xtrans()`), per channel on linear data, and the one channel of a monochrome image
+  as grey. As darktable's `color_picker_apply()` does, each multiplier is the reciprocal of its
+  mean relative to green's, clamped to [0, 8], a mean at or under 0.001 counting as 1, and green
+  is 1. It stores them in the knobs, sets the temperature and tint from them, and sets the mode to
+  From Image Area, in one undo step.
 - **Preset** lists the settings of darktable's presets database (`data/wb_presets.json`, installed
   in `Resources/darktable/`) for the source's `raw/make` and `raw/model`, rawspeed's canonical
   names, which darktable matches exactly. Names are lower-cased and at most 50 are listed, as in
@@ -33,8 +49,14 @@ blackbody and daylight spectra, and Little CMS's `cmsWhitePointFromTemp()` are i
 - Multipliers apply per CFA colour on a mosaic and per channel on three-channel linear data. A
   one-channel image without a CFA is left alone.
 - The output records the multipliers in `raw/wb_applied` and multiplies `raw/processed_maximum` by
-  them. RawHighlights and RawDemosaic read both.
-- darktable's "as shot to reference" and "from image area" modes are not ported.
+  them. RawHighlights and RawDemosaic read both. In every mode it also records the Camera
+  Reference multipliers, darktable's `D65coeffs`, in `raw/wb_d65_coeffs`.
+- Differences from darktable in From Image Area:
+  - darktable re-picks whenever its picker box moves while the picker is on; here the area is read
+    only when Pick is pressed or the mode is chosen, and the result is stored.
+  - darktable's default box is 2% to 98% of the final, cropped and distorted preview, transformed
+    back to the module; here it is 2% to 98% of the source's format.
+  - darktable accumulates the sums in float; here in double, then the mean is rounded to float.
 - Differences from darktable in the presets:
   - darktable's `reload_defaults()` looks for "Daylight" and "DirectSunlight", which the
     lower-cased names never equal, so it never finds the daylight preset. This looks for
@@ -51,6 +73,10 @@ Tests: `Tests/Native/NativeRawTemperature_Test.cpp`, on synthetic mosaics. No re
 `Tests/Native/NativeRawTemperaturePresets_Test.cpp` checks the presets against `wb_presets.json`:
 the Canon EOS 5D Mark III daylight rows, a between-tunings interpolation, the Fujifilm X-Pro2 menu,
 a camera without presets, and the fallbacks without as-shot multipliers or a matrix.
+`Tests/Native/NativeRawTemperatureSpot_Test.cpp` picks Bayer, X-Trans and linear mosaics with known
+per-colour means. `Tests/Native/NativeRawLateCorrection_Test.cpp` checks As Shot to Reference
+through RawHighlights, RawDemosaic and RawInputColor against Camera Reference, and
+`raw/wb_d65_coeffs` in every mode.
 
 GPU: `rawtemperature_wrapped` (`Engine/Gpu/Kernels/rawprepare.slang`), the op's `gpu()`, with the
 CFA layout and the three multipliers in `RawTemperatureGpuParams`. One product per channel, as on

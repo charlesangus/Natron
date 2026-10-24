@@ -125,7 +125,17 @@ RawInputColorOp::bake(const KnobReader& reader,
             camToXyz = RawColorMath::whiteNormalisedCameraToXyz(*fromFile).value_or(camToXyz);
         }
     }
-    const RawColorMath::Mat3 total = RawColorMath::multiply(xyzToWorking(holder), camToXyz);
+    RawColorMath::Mat3 total = RawColorMath::multiply(xyzToWorking(holder), camToXyz);
+    // darktable's process_cmatrix() multiplies camera RGB by D65coeffs / as_shot before the
+    // matrix when RawTemperature asked for the late correction; scaling the matrix's columns
+    // does the same. darktable skips it for a Lab input profile, which this node has not.
+    if (const std::optional<std::array<double, 3>> correction = RawMetadata::getWbLateCorrection(source)) {
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                total[r * 3 + c] *= (*correction)[c];
+            }
+        }
+    }
     Params params;
     for (int i = 0; i < 9; ++i) {
         params.matrix[i] = (float)total[i];
@@ -197,6 +207,29 @@ RawInputColor::RawInputColor(NodePtr node)
 
 RawInputColor::~RawInputColor()
 {
+}
+
+ImageMetadata
+RawInputColor::deriveOutputMetadata(double time,
+                                    ViewIdx view)
+{
+    ImageMetadata metadata = ImageNode<RawInputColorOp>::deriveOutputMetadata(time, view);
+    const std::optional<std::array<double, 3>> correction = RawMetadata::getWbLateCorrection(metadata);
+    const std::optional<std::array<double, 3>> d65 = RawMetadata::getWbD65Coeffs(metadata);
+
+    if (!correction || !d65) {
+        return metadata;
+    }
+    // As darktable's colorin process(): the data now carries the D65 multipliers, and its
+    // maximum moves with the correction.
+    std::array<double, 3> maximum = RawMetadata::getProcessedMaximum(metadata).value_or(std::array<double, 3> { 1., 1., 1. });
+    for (int c = 0; c < 3; ++c) {
+        maximum[c] *= (*correction)[c];
+    }
+    RawMetadata::setWbApplied(&metadata, *d65);
+    RawMetadata::setProcessedMaximum(&metadata, maximum);
+
+    return metadata;
 }
 
 void

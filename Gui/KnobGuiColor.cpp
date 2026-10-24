@@ -738,6 +738,11 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
 void
 KnobGuiColor::refreshAdjustPanelToolTip(bool expanded)
 {
+    // The open state shows the up chevron, the pair of the folded state's down chevron, and
+    // keeps the button's size so nothing reflows.
+    QIcon icon;
+    appPTR->getIcon(expanded ? NATRON_PIXMAP_COLOR_ADJUST_DROPUP : NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN, NATRON_MEDIUM_BUTTON_ICON_SIZE, &icon);
+    _colorSelectorButton->setIcon(icon);
     _colorSelectorButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(expanded ? tr("Hide the colour adjustment panel.") : tr("Show the colour adjustment panel: a trackball wheel with hue, saturation, value, temperature and tint sliders."),
                                                                             NATRON_NAMESPACE::WhiteSpaceNormal));
 }

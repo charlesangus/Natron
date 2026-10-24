@@ -327,6 +327,9 @@ pixmapEnumToPath(PixmapEnum e)
     case NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN:
         path = NATRON_ICONS_PATH "lucide/chevrons-down.svg";
         break;
+    case NATRON_PIXMAP_COLOR_ADJUST_DROPUP:
+        path = NATRON_ICONS_PATH "lucide/chevrons-up.svg";
+        break;
     case NATRON_PIXMAP_COLOR_GLOBAL_TRACKBALL:
         path = NATRON_ICONS_PATH "lucide/expand.svg";
         break;

@@ -32,9 +32,11 @@
 #include <QApplication>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPoint>
+#include <QToolButton>
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QWidget>
@@ -344,4 +346,37 @@ TEST_F(KnobGuiColorTrackSize, ANarrowBinFallsBackToRegular)
     EXPECT_FALSE(panel()->isLargeLayout());
     EXPECT_FALSE(panel()->isAncestorOf(gSlider()));
     EXPECT_LE(wheel()->width(), ColorWheelWidget::maximumDiameter());
+}
+
+TEST_F(KnobGuiColorTrackSize, ThePanelToggleShowsAnUpChevronWhileOpenAndFoldsOnClick)
+{
+    build(500);
+    QToolButton* toggle = _page->findChild<QToolButton*>(QString::fromUtf8("ColorSelectorButton"));
+    ASSERT_TRUE(toggle);
+    ASSERT_FALSE(_gui->isAdjustPanelExpanded());
+
+    const QSize iconSize = toggle->iconSize();
+    const QSize size = toggle->size();
+    const QPoint position = toggle->pos();
+    ASSERT_FALSE(toggle->icon().isNull());
+    const QImage folded = toggle->icon().pixmap(iconSize).toImage();
+    const QString foldedTip = toggle->toolTip();
+
+    setExpanded(true);
+    ASSERT_FALSE(toggle->icon().isNull());
+    const QImage open = toggle->icon().pixmap(iconSize).toImage();
+    EXPECT_NE(folded, open);
+    // The up chevron is the down chevron mirrored top to bottom.
+    EXPECT_EQ(folded.mirrored(false, true), open);
+    EXPECT_NE(foldedTip, toggle->toolTip());
+    EXPECT_TRUE(toggle->toolTip().contains(QString::fromUtf8("Hide")));
+    EXPECT_EQ(size, toggle->size());
+    EXPECT_EQ(position, toggle->pos());
+
+    toggle->click();
+    settle();
+    EXPECT_FALSE(_gui->isAdjustPanelExpanded());
+    EXPECT_FALSE(panel()->isVisible());
+    EXPECT_EQ(folded, toggle->icon().pixmap(iconSize).toImage());
+    EXPECT_EQ(foldedTip, toggle->toolTip());
 }

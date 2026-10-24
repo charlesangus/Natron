@@ -13,6 +13,7 @@ lucide/chevron-down.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdc
 lucide/chevron-right.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/chevrons-down-up.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/chevrons-down.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/chevrons-up.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/circle-ellipsis.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/circle-play.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/circle-question-mark.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC

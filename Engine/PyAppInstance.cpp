@@ -419,6 +419,9 @@ App::addFormat(const QString& formatSpec)
 bool
 App::saveTempProject(const QString& filename)
 {
+    // A save may wait for an auto-save whose save callback needs the Python lock.
+    PythonGILUnlocker pgl;
+
     return getInternalApp()->saveTemp( filename.toStdString() );
 }
 
@@ -429,6 +432,8 @@ App::saveProject(const QString& filename)
     std::map<std::string, std::string> env;
     getInternalApp()->getProject()->getEnvironmentVariables(env);
     Project::expandVariable(env, outFile);
+    // A save may wait for an auto-save whose save callback needs the Python lock.
+    PythonGILUnlocker pgl;
 
     return getInternalApp()->save(outFile);
 }
@@ -440,6 +445,8 @@ App::saveProjectAs(const QString& filename)
     std::map<std::string, std::string> env;
     getInternalApp()->getProject()->getEnvironmentVariables(env);
     Project::expandVariable(env, outFile);
+    // A save may wait for an auto-save whose save callback needs the Python lock.
+    PythonGILUnlocker pgl;
 
     return getInternalApp()->saveAs(outFile);
 }

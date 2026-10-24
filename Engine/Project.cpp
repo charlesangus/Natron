@@ -30,6 +30,7 @@
 #include <cassert>
 #include <cerrno> // errno
 #include <cstdlib> // strtoul
+#include <cstring> // strerror
 #include <fstream>
 #include <functional>
 #include <ios>
@@ -39,6 +40,8 @@
 #include <memory>
 #include <set>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 #ifdef __NATRON_WIN32__
 #include <stdio.h> //for _snprintf
@@ -46,8 +49,10 @@
 #include <Lmcons.h> //for UNLEN
 #define snprintf _snprintf
 #elif defined(__NATRON_UNIX__)
+#include <fcntl.h> // open
 #include <pwd.h> //for getpwuid
-#include <unistd.h> // link
+#include <signal.h> // kill
+#include <unistd.h> // link, fsync
 #endif
 
 #include <QCoreApplication>
@@ -55,6 +60,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QDirIterator>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QHostInfo>
@@ -730,16 +736,48 @@ Project::saveProject_imp(const QString & path,
         }
     }
 
+    // A periodic auto-save that finds a save running has nothing to add to it. Any other save was
+    // asked for by the user, a script or a render, and dropping it would lose work or start a
+    // render without its project, so it waits for the running save instead.
+    const bool isRenderSave = name.contains(QString::fromUtf8("RENDER_SAVE"));
+    const bool mayBeSkipped = autoS && !isRenderSave;
     {
         QMutexLocker l(&_imp->isSavingProjectMutex);
-        if (_imp->isSavingProject) {
-            return false;
-        } else {
-            _imp->isSavingProject = true;
+        while (_imp->isSavingProject) {
+            // The running save is on this thread when an event loop it spun reached here: it can
+            // only finish after this call returns.
+            if (mayBeSkipped || (_imp->savingThread == QThread::currentThread())) {
+                return false;
+            }
+            ++_imp->savesWaiting;
+            const bool onMainThread = qApp && (QThread::currentThread() == qApp->thread());
+            std::unique_ptr<QEventLoop> loop;
+            if (onMainThread) {
+                // Connected before the lock is released, so the end of the running save, which
+                // needs the lock, always reaches this loop.
+                loop = std::make_unique<QEventLoop>();
+                QObject::connect(this, &Project::saveFinished, loop.get(), &QEventLoop::quit, Qt::QueuedConnection);
+            }
+            // The running save calls the Python save callback, so the caller must not hold the
+            // Python lock here: the Python entry points that save release it first (see App).
+            if (onMainThread) {
+                l.unlock();
+                // Blocking the main thread could deadlock a save that needs it, and the window
+                // would stop repainting. User input stays queued so nothing can be edited or
+                // closed under the save.
+                loop->exec(QEventLoop::ExcludeUserInputEvents);
+                l.relock();
+            } else {
+                _imp->savingFinishedCond.wait(&_imp->isSavingProjectMutex);
+            }
+            --_imp->savesWaiting;
         }
+        _imp->isSavingProject = true;
+        _imp->savingThread = QThread::currentThread();
     }
 
     QString ret;
+    bool saved = false;
 
     try {
         if (!autoS) {
@@ -761,6 +799,7 @@ Project::saveProject_imp(const QString & path,
 
             ret = saveProjectInternal(path, name, true, updateProjectProperties);
         }
+        saved = true;
     } catch (const std::exception & e) {
         if (!autoS) {
             Dialogs::errorDialog( tr("Save").toStdString(), e.what() );
@@ -772,7 +811,10 @@ Project::saveProject_imp(const QString & path,
     {
         QMutexLocker l(&_imp->isSavingProjectMutex);
         _imp->isSavingProject = false;
+        _imp->savingThread = 0;
+        _imp->savingFinishedCond.wakeAll();
     }
+    Q_EMIT saveFinished();
 
     ///Save caches ToC
     appPTR->saveCaches();
@@ -781,7 +823,9 @@ Project::saveProject_imp(const QString & path,
         *newFilePath = ret;
     }
 
-    return true;
+    // Closing the project after "Save" relies on this: reporting a failed save as done would let
+    // the caller discard work that never reached the disk.
+    return saved;
 } // Project::saveProject_imp
 
 static QStringList
@@ -792,6 +836,7 @@ findBackups(const QString & filePath)
         ret.append(filePath);
     }
     // find files matching filePath.~[0-9]+~
+    std::vector<std::pair<qulonglong, QString>> backups;
     QRegularExpression rx(QString::fromUtf8("\\.~(\\d+)~$"));
     QFileInfo fileInfo(filePath);
     QString fileName = fileInfo.fileName();
@@ -810,10 +855,15 @@ findBackups(const QString & filePath)
         // lastIndexIn() is just that match.
         QRegularExpressionMatch backupMatch = rx.match(fn);
         if (fn.startsWith(fileName) && backupMatch.hasMatch() && (backupMatch.capturedStart() == fileName.size())) {
-            ret.append(file.filePath());
+            backups.push_back(std::make_pair(backupMatch.captured(1).toULongLong(), file.filePath()));
         }
     }
-    ret.sort();
+    // Rotation renames each backup to the next number, oldest first; an alphabetical order would
+    // put .~10~ before .~2~ and rename backups over each other once there are ten of them.
+    std::sort(backups.begin(), backups.end());
+    for (const std::pair<qulonglong, QString>& backup : backups) {
+        ret.append(backup.second);
+    }
 
     return ret;
 }
@@ -1051,6 +1101,17 @@ Project::writeProjectFileAtomically(const QString& filePath,
     if (!file.commit()) {
         throw std::runtime_error(tr("Failed to save to %1: %2").arg(filePath).arg(file.errorString()).toStdString());
     }
+    // The rename that committed the file is only durable once its directory is synced; until
+    // then a power cut can bring back the previous file, or no file at all for a first save.
+    // The new contents are already complete on disk, so failing here does not fail the save.
+    const QByteArray dirPath = QFile::encodeName(QFileInfo(filePath).absolutePath());
+    const int dirFd = ::open(dirPath.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if ((dirFd == -1) || (::fsync(dirFd) != 0)) {
+        qWarning() << "Could not sync the directory of" << filePath << ":" << strerror(errno);
+    }
+    if (dirFd != -1) {
+        ::close(dirFd);
+    }
 }
 
 void
@@ -1143,6 +1204,11 @@ Project::onAutoSaveTimerTriggered()
     ///check that all schedulers are not working.
     ///If so launch an auto-save, otherwise, restart the timer.
     bool canAutoSave = !hasNodeRendering() && !getApp()->isShowingDialog();
+    {
+        // An auto-save started now would make the saves waiting for the running one wait longer.
+        QMutexLocker l(&_imp->isSavingProjectMutex);
+        canAutoSave = canAutoSave && (_imp->savesWaiting == 0);
+    }
 
     if (canAutoSave) {
         std::shared_ptr<QFutureWatcher<void> > watcher = std::make_shared<QFutureWatcher<void> >();
@@ -1170,6 +1236,59 @@ Project::onAutoSaveFutureFinished()
     }
 }
 
+int
+Project::autoSaveProjectNameLength(const QString& fileName)
+{
+    if (fileName.contains(QString::fromUtf8("RENDER_SAVE"))) {
+        return -1;
+    }
+    const QString ntpExt = QLatin1Char('.') + QString::fromUtf8(NATRON_PROJECT_FILE_EXT);
+    const QString autoSaveSuffix = ntpExt + QString::fromUtf8(".autosave");
+    const int suffixPos = fileName.indexOf(autoSaveSuffix);
+    if (suffixPos == -1) {
+        return -1;
+    }
+    // QSaveFile writes beside its target under the target's name plus a random suffix, so a
+    // half-written auto-save (or one a crash cut short) also contains ".autosave". Only the time
+    // hash from saveProjectInternal may follow it in a finished auto-save.
+    const QString tail = fileName.mid(suffixPos + autoSaveSuffix.size());
+    if (!tail.isEmpty()) {
+        static const QRegularExpression timeHash(QString::fromUtf8("^\\.\\d+$"));
+        if (!timeHash.match(tail).hasMatch()) {
+            return -1;
+        }
+    }
+
+    return suffixPos + ntpExt.size();
+}
+
+QString
+Project::makeRenderSaveFileName(int appID)
+{
+    static std::atomic<unsigned long long> renderSaveCount(0);
+
+    // The process id keeps two Natron processes apart, and clearAutoSavesDir() reads it back.
+    return QString::fromUtf8("RENDER_SAVE_%1_%2_%3.%4")
+        .arg(QCoreApplication::applicationPid())
+        .arg(appID)
+        .arg(++renderSaveCount)
+        .arg(QString::fromUtf8(NATRON_PROJECT_FILE_EXT));
+}
+
+bool
+Project::isRenderSaveFile(const QString& filePath)
+{
+    const QFileInfo info(filePath);
+
+    return info.fileName().startsWith(QString::fromUtf8("RENDER_SAVE")) && (QDir(info.absolutePath()) == QDir(autoSavesDir()));
+}
+
+bool
+Project::saveForRenderProcess(QString* filePath)
+{
+    return saveProject_imp(QString(), makeRenderSaveFileName(getApp()->getAppID()), true, false, filePath);
+}
+
 bool
 Project::findAutoSaveForProject(const OpenTarget& target,
                                 QString* autoSaveFileName)
@@ -1179,17 +1298,11 @@ Project::findAutoSaveForProject(const OpenTarget& target,
     QStringList entries = savesDir.entryList(QDir::Files | QDir::NoDotAndDotDot);
 
     Q_FOREACH(const QString &entry, entries) {
-        QString ntpExt( QLatin1Char('.') );
-
-        ntpExt.append( QString::fromUtf8(NATRON_PROJECT_FILE_EXT) );
-        QString searchStr(ntpExt);
-        QString autosaveSuffix( QString::fromUtf8(".autosave") );
-        searchStr.append(autosaveSuffix);
-        int suffixPos = entry.indexOf(searchStr);
-        if ( (suffixPos == -1) || entry.contains( QString::fromUtf8("RENDER_SAVE") ) ) {
+        const int projectNameLength = autoSaveProjectNameLength(entry);
+        if (projectNameLength == -1) {
             continue;
         }
-        QString filename = target.path + entry.left(suffixPos + ntpExt.size());
+        QString filename = target.path + entry.left(projectNameLength);
         if (filename != projectAbsFilePath) {
             continue;
         }
@@ -2820,10 +2933,20 @@ Project::clearAutoSavesDir()
     QDir savesDir( autoSavesDir() );
     QStringList entries = savesDir.entryList();
 
-    Q_FOREACH(const QString &entry, entries) {
-        ///Do not remove the RENDER_SAVE used by the background processes to render because otherwise they may fail to start rendering.
-        /// @see AppInstance::startWritersRendering
+    // RENDER_SAVE_<pid>_...: a render process of a running Natron may not have loaded it yet.
+    static const QRegularExpression renderSaveOwner(QString::fromUtf8("^RENDER_SAVE_(\\d+)_"));
+
+    Q_FOREACH (const QString& entry, entries) {
         if ( entry.contains( QString::fromUtf8("RENDER_SAVE") ) ) {
+            const QRegularExpressionMatch owner = renderSaveOwner.match(entry);
+            bool ownerRuns = false;
+            if (owner.hasMatch()) {
+                const pid_t pid = (pid_t)owner.captured(1).toLongLong();
+                ownerRuns = (pid > 0) && ((::kill(pid, 0) == 0) || (errno == EPERM));
+            }
+            if (!ownerRuns) {
+                QFile::remove(savesDir.filePath(entry));
+            }
             continue;
         }
 

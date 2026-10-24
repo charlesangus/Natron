@@ -627,6 +627,10 @@ AppInstance::loadInternal(const CLArgs& cl,
             if (!_imp->_currentProject->loadProject(info.path(), info.fileName())) {
                 throw std::invalid_argument(tr("Project file loading failed.").toStdString());
             }
+            // The file was written for this process alone and is read in full by now.
+            if ((appPTR->getAppType() == AppManager::eAppTypeBackgroundAutoRunLaunchedFromGui) && Project::isRenderSaveFile(info.absoluteFilePath())) {
+                QFile::remove(info.absoluteFilePath());
+            }
         }
 
         // exec the python script specified via --onload
@@ -1884,12 +1888,7 @@ AppInstance::startWritersRendering(bool doBlockingRender,
         return;
     }
 
-
     bool renderInSeparateProcess = appPTR->getCurrentSettings()->isRenderInSeparatedProcessEnabled();
-    QString savePath;
-    if (renderInSeparateProcess) {
-        getProject()->saveProject_imp(QString(), QString::fromUtf8("RENDER_SAVE.ntpz"), true, false, &savePath);
-    }
 
     std::list<RenderQueueItem> itemsToQueue;
     for (std::list<RenderWork>::const_iterator it = writers.begin(); it != writers.end(); ++it) {
@@ -1905,10 +1904,16 @@ AppInstance::startWritersRendering(bool doBlockingRender,
             continue;;
         }
         _imp->getSequenceNameFromWriter(it->writer, &item.sequenceName);
-        item.savePath = savePath;
 
         if (renderInSeparateProcess) {
-            item.process = std::make_shared<ProcessHandler>(savePath, item.work.writer, item.work.firstFrame, item.work.lastFrame, item.work.frameStep);
+            // One file per render process: each process removes its file once loaded, and a
+            // queued render may start long after the others.
+            if (!getProject()->saveForRenderProcess(&item.savePath)) {
+                appPTR->writeToErrorLog_mt_safe(tr("Render"), QDateTime::currentDateTime(),
+                                                tr("%1 was not rendered: the project could not be saved for the render process.").arg(item.sequenceName));
+                continue;
+            }
+            item.process = std::make_shared<ProcessHandler>(item.savePath, item.work.writer, item.work.firstFrame, item.work.lastFrame, item.work.frameStep);
             QObject::connect( item.process.get(), SIGNAL(processFinished(int)), this, SLOT(onBackgroundRenderProcessFinished()) );
         } else {
             QObject::connect(item.work.writer->getRenderEngine().get(), SIGNAL(renderFinished(int)), this, SLOT(onQueuedRenderFinished(int)), Qt::UniqueConnection);

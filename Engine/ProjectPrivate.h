@@ -39,10 +39,11 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QCoreApplication>
 #include <QDateTime>
-#include <QString>
 #include <QFuture>
 #include <QFutureWatcher>
 #include <QMutex>
+#include <QString>
+#include <QWaitCondition>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -129,6 +130,9 @@ public:
     bool isLoadingProjectInternal; //< true when loading the internal project (not gui)
     mutable QMutex isSavingProjectMutex;
     bool isSavingProject; //< true when the project is saving
+    QThread* savingThread; //< the thread running the save while isSavingProject
+    QWaitCondition savingFinishedCond; //< woken when isSavingProject goes back to false
+    int savesWaiting; //< saves waiting for the running one, see Project::saveProject_imp
     std::shared_ptr<QTimer> autoSaveTimer;
     std::list<std::shared_ptr<QFutureWatcher<void> > > autoSaveFutures;
     mutable QMutex projectClosingMutex;

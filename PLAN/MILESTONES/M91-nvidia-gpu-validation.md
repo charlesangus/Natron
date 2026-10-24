@@ -99,7 +99,7 @@ The rest of the milestone runs everything once, fixes what fails because of the 
 
 ## Phase 91.1: Bring-up and baseline
 
-- [ ] M91.P1.T1 — Run the GPU dev container on NVIDIA through nvidia-container-toolkit
+- [x] M91.P1.T1 — Run the GPU dev container on NVIDIA through nvidia-container-toolkit
   - files: `tools/ci/local/devshell.sh`, `tools/ci/local/README.md` (the "GPU container" section only)
   - approach: In the `--gpu` branch, detect NVIDIA: `/dev/nvidiactl` exists and `docker info --format '{{json .Runtimes}}'` lists `nvidia`. When it does, add `--runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,display`. Keep the `/dev/dri` args. Replace the "out of scope" comment. If the image's loader doesn't search the directory where the toolkit drops `nvidia_icd.json`, export `VK_ADD_DRIVER_FILES` to that path; if its glvnd doesn't see the injected `10_nvidia.json`, export `__EGL_VENDOR_LIBRARY_DIRS` — each only when the file exists. An existing container keeps the runtime it was created with, so the README says to use `--recreate` (or a new name such as `NATRON_DEV_CONTAINER=natron-dev-m91-gpu`). README text goes in the GPU container section, not the "RADV GL display" section M107 adds.
   - verify: `NATRON_DEV_CONTAINER=natron-dev-m91-gpu tools/ci/local/devshell.sh --gpu --recreate sh -c 'nvidia-smi -L; eglinfo -B | grep -i renderer'` lists both GPUs and an NVIDIA EGL renderer. A Vulkan device listing inside the container (`vulkaninfo --summary` if present, otherwise `DeviceList` from P1.T4) shows the RTX 3070 Ti, P400 and llvmpipe. `bash -n` and `shellcheck` pass. On a host without NVIDIA the generated `docker run` arguments don't change.

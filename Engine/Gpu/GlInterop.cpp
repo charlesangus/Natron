@@ -26,9 +26,6 @@ struct GlInterop::Gl {
     PFNGLGENBUFFERSPROC GenBuffers = nullptr;
     PFNGLDELETEBUFFERSPROC DeleteBuffers = nullptr;
     PFNGLBINDBUFFERPROC BindBuffer = nullptr;
-    PFNGLBUFFERDATAPROC BufferData = nullptr;
-    PFNGLMAPBUFFERRANGEPROC MapBufferRange = nullptr;
-    PFNGLUNMAPBUFFERPROC UnmapBuffer = nullptr;
 
     PFNGLGETUNSIGNEDBYTEVEXTPROC GetUnsignedBytevEXT = nullptr;
     PFNGLGETUNSIGNEDBYTEI_VEXTPROC GetUnsignedBytei_vEXT = nullptr;
@@ -64,9 +61,6 @@ struct GlInterop::Gl {
         get(GenBuffers, "glGenBuffers");
         get(DeleteBuffers, "glDeleteBuffers");
         get(BindBuffer, "glBindBuffer");
-        get(BufferData, "glBufferData");
-        get(MapBufferRange, "glMapBufferRange");
-        get(UnmapBuffer, "glUnmapBuffer");
         get(GetUnsignedBytevEXT, "glGetUnsignedBytevEXT");
         get(GetUnsignedBytei_vEXT, "glGetUnsignedBytei_vEXT");
         get(CreateMemoryObjectsEXT, "glCreateMemoryObjectsEXT");
@@ -81,8 +75,7 @@ struct GlInterop::Gl {
         get(SignalSemaphoreEXT, "glSignalSemaphoreEXT");
 
         if (!GetError || !GetString || !GetIntegerv || !BindTexture || !TexSubImage2D || !PixelStorei
-            || !Flush || !Finish || !GenBuffers || !DeleteBuffers || !BindBuffer || !BufferData
-            || !MapBufferRange || !UnmapBuffer) {
+            || !Flush || !Finish || !GenBuffers || !DeleteBuffers || !BindBuffer) {
             return false;
         }
 
@@ -157,7 +150,7 @@ toString(GlHandoffPath path)
     case GlHandoffPath::ZeroCopyHostSync:
         return "zero-copy-hostsync";
     case GlHandoffPath::Readback:
-        return "readback-pbo";
+        return "readback";
     }
     return "?";
 }
@@ -500,13 +493,10 @@ GlInterop::initGlSlot(Slot& slot, bool semaphores)
     Gl& gl = *gl_;
     VkDevice vk = device_->device();
 
-    gl.GenBuffers(1, &slot.glBuffer);
     if (path_ == GlHandoffPath::Readback) {
-        gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, slot.glBuffer);
-        gl.BufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(capacity_), nullptr, GL_STREAM_DRAW);
-        gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-        return glError("PBO allocation");
+        return {};
     }
+    gl.GenBuffers(1, &slot.glBuffer);
 
     auto getMemoryFd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(vkGetDeviceProcAddr(vk, "vkGetMemoryFdKHR"));
     if (!getMemoryFd) {
@@ -846,25 +836,20 @@ GlInterop::upload(int slot, unsigned int texture, int x, int y)
     }
 
     const VkDeviceSize bytes = sl.frame.bytes();
-    gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, sl.glBuffer);
+    // The Readback path uploads straight from the mapped host copy: client memory is read before
+    // glTexSubImage2D returns, and a staging PBO would only add a frame-sized copy into fresh pages.
+    const void* hostSource = nullptr;
     if (path_ == GlHandoffPath::Readback) {
         if (GpuStatus s = device_->check(
                 vmaInvalidateAllocation(device_->allocator(), sl.readbackAllocation, 0, bytes),
                 "vmaInvalidateAllocation");
             !s) {
-            gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
             return s;
         }
-        // Orphaning lets the driver hand out fresh storage instead of stalling on the previous upload.
-        gl.BufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(bytes), nullptr, GL_STREAM_DRAW);
-        void* dst = gl.MapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, static_cast<GLsizeiptr>(bytes),
-                                      GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
-        if (!dst) {
-            gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-            return fail(VK_ERROR_MEMORY_MAP_FAILED, "glMapBufferRange failed");
-        }
-        std::memcpy(dst, sl.readbackMapped, bytes);
-        gl.UnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
+        hostSource = sl.readbackMapped;
+        gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    } else {
+        gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, sl.glBuffer);
     }
 
     const bool bgra8 = sl.frame.format == GlPixelFormat::Bgra8;
@@ -875,7 +860,7 @@ GlInterop::upload(int slot, unsigned int texture, int x, int y)
     gl.PixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
     gl.TexSubImage2D(GL_TEXTURE_2D, 0, x, y, static_cast<GLsizei>(sl.frame.width),
                      static_cast<GLsizei>(sl.frame.height), bgra8 ? GL_BGRA : GL_RGBA,
-                     bgra8 ? GL_UNSIGNED_INT_8_8_8_8_REV : GL_FLOAT, nullptr);
+                     bgra8 ? GL_UNSIGNED_INT_8_8_8_8_REV : GL_FLOAT, hostSource);
     gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
     if (path_ == GlHandoffPath::ZeroCopy) {
@@ -892,14 +877,14 @@ GlInterop::upload(int slot, unsigned int texture, int x, int y)
 }
 
 GpuStatus
-GlInterop::readHostCopy(int slot, std::vector<unsigned char>& out)
+GlInterop::hostCopyView(int slot, const unsigned char** data, VkDeviceSize* size)
 {
     if (slot < 0 || slot >= kSlots) {
-        return fail(VK_ERROR_UNKNOWN, "readHostCopy() on slot " + std::to_string(slot) + " out of range");
+        return fail(VK_ERROR_UNKNOWN, "hostCopyView() on slot " + std::to_string(slot) + " out of range");
     }
     Slot& sl = slots_[slot];
     if (!sl.hostCopyValid || sl.readback == VK_NULL_HANDLE) {
-        return fail(VK_ERROR_UNKNOWN, "readHostCopy() of a slot with no host copy");
+        return fail(VK_ERROR_UNKNOWN, "hostCopyView() of a slot with no host copy");
     }
     if (GpuStatus s = waitProduced(slot, 0); !s) {
         return s;
@@ -910,8 +895,8 @@ GlInterop::readHostCopy(int slot, std::vector<unsigned char>& out)
         !s) {
         return s;
     }
-    out.assign(static_cast<const unsigned char*>(sl.readbackMapped),
-               static_cast<const unsigned char*>(sl.readbackMapped) + bytes);
+    *data = static_cast<const unsigned char*>(sl.readbackMapped);
+    *size = bytes;
     return {};
 }
 

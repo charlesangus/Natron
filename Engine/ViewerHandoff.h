@@ -35,7 +35,6 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "Global/Enums.h"
 
@@ -94,19 +93,23 @@ struct ViewerHandoffParams {
     ProjectColorManagement::DisplayProcessorPtr displayProcessor;
 
     // Nonzero asks for a copy of the display buffer in host memory, collected later by
-    // takeCompletedReadbacks() under this token. The frame is shown without waiting for it.
+    // consumeCompletedReadbacks() under this token. The frame is shown without waiting for it.
     std::uint64_t readbackToken = 0;
 };
 
 /**
  * @brief The display buffer of a present() whose params carried a readbackToken: the texels the
- * texture received, tightly packed rows, frame.bytes() long.
+ * texture received, tightly packed rows, size == frame.bytes(), lent for one call of the
+ * ViewerHandoffReadbackFn it is passed to.
  **/
 struct ViewerHandoffReadback {
     std::uint64_t token = 0;
     ViewerHandoffFrame frame;
-    std::vector<unsigned char> bytes;
+    const unsigned char* data = nullptr;
+    std::size_t size = 0;
 };
+
+using ViewerHandoffReadbackFn = std::function<void(const ViewerHandoffReadback&)>;
 
 /**
  * @brief Success, or a refusal whose reason completes "viewer handoff: " for
@@ -192,10 +195,14 @@ public:
                                 const ViewerHandoffFrame& frame);
 
     /**
-     * @brief Returns the readbacks whose device copy has finished since the last call, without
-     * waiting for the others. A readback is lost when its ring is rebuilt or the device is.
+     * @brief Passes \p consume each readback whose device copy has finished since the last call,
+     * without waiting for the others. A readback is lost when its ring is rebuilt or the device is.
+     *
+     * The texels are read in place from the slot's mapped memory, so they are valid only until
+     * \p consume returns: it copies what it keeps, and any present() or ensureCapacity() it makes
+     * is refused, so that no slot is produced into or rebuilt while it reads.
      **/
-    std::vector<ViewerHandoffReadback> takeCompletedReadbacks();
+    void consumeCompletedReadbacks(const ViewerHandoffReadbackFn& consume);
 
     /**
      * @brief Grows every slot to hold \p bytes, waiting for the frames they hold.

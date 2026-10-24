@@ -9,7 +9,6 @@
 #include <memory>
 #include <span>
 #include <string>
-#include <vector>
 
 namespace gpu {
 
@@ -21,7 +20,7 @@ enum class GlHandoffPath {
     ZeroCopy,
     // Exported memory without semaphores: the CPU waits on a Vulkan fence and on glFinish.
     ZeroCopyHostSync,
-    // Device buffer copied to host memory, then uploaded through an ordinary GL PBO.
+    // Device buffer copied to host memory, which glTexSubImage2D reads in place.
     Readback,
 };
 
@@ -97,7 +96,6 @@ public:
     VkDeviceSize capacity() const { return capacity_; }
 
     VkBuffer buffer(int slot) const { return slots_[slot].buffer; }
-    unsigned int glBuffer(int slot) const { return slots_[slot].glBuffer; }
     // The frame last produced into `slot`.
     const GlFrame& frame(int slot) const { return slots_[slot].frame; }
 
@@ -116,9 +114,10 @@ public:
     // The slot the next produce() will use, or -1 while every slot awaits upload().
     int nextSlot() const;
 
-    // Copies the host copy that the last produce(hostCopy = true) into `slot` left to *out, without waiting:
-    // VK_TIMEOUT while the GPU is still writing it. The next produce() into the slot overwrites it.
-    GpuStatus readHostCopy(int slot, std::vector<unsigned char>& out);
+    // Points *data at the host copy that the last produce(hostCopy = true) into `slot` left, in the slot's mapped
+    // memory, and *size at its length, without waiting: VK_TIMEOUT while the GPU is still writing it. The next
+    // produce() into the slot overwrites it and destruction unmaps it, so the view is valid only until either.
+    GpuStatus hostCopyView(int slot, const unsigned char** data, VkDeviceSize* size);
 
     // Blocks the CPU until the last produce() into `slot` has finished on the GPU.
     GpuStatus waitProduced(int slot, uint64_t timeoutNs = UINT64_MAX);

@@ -785,22 +785,35 @@ TEST(ViewerHandoff, ReadbackMatchesTheTextureOnEveryRung)
             ViewerHandoffParams plain = paramsFor(c, kRect);
             ASSERT_TRUE(bool(handoff.present(1, root, plain, texture, frame)));
 
-            std::map<std::uint64_t, ViewerHandoffReadback> got;
+            struct Got {
+                ViewerHandoffFrame frame;
+                std::vector<unsigned char> bytes;
+            };
+            std::map<std::uint64_t, Got> got;
+            bool presentRefusedWhileLent = true;
+            const auto collect = [&](const ViewerHandoffReadback& rb) {
+                Got& g = got[rb.token];
+                g.frame = rb.frame;
+                g.bytes.assign(rb.data, rb.data + rb.size);
+                // The lent texels live in a slot, which present() must not produce into until they are returned.
+                presentRefusedWhileLent = presentRefusedWhileLent && !handoff.present(0, root, plain, texture, frame);
+            };
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
             while ((got.size() < expected.size()) && (std::chrono::steady_clock::now() < deadline)) {
-                for (ViewerHandoffReadback& rb : handoff.takeCompletedReadbacks()) {
-                    got[rb.token] = std::move(rb);
-                }
+                handoff.consumeCompletedReadbacks(collect);
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
             ASSERT_EQ(expected.size(), got.size()) << toString(wanted);
+            EXPECT_TRUE(presentRefusedWhileLent) << toString(wanted);
             for (const auto& e : expected) {
-                const ViewerHandoffReadback& rb = got.at(e.first);
+                const Got& rb = got.at(e.first);
                 EXPECT_EQ(frame.width, rb.frame.width);
                 EXPECT_EQ(frame.height, rb.frame.height);
                 EXPECT_TRUE(rb.bytes == e.second) << toString(wanted) << " token " << e.first;
             }
-            EXPECT_TRUE(handoff.takeCompletedReadbacks().empty());
+            bool anyLeft = false;
+            handoff.consumeCompletedReadbacks([&](const ViewerHandoffReadback&) { anyLeft = true; });
+            EXPECT_FALSE(anyLeft) << toString(wanted);
         }
         handoff.release();
     }

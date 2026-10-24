@@ -283,12 +283,12 @@ public:
     }
 
     /**
-     * @brief The host copies of the display buffers that transferDeviceImageToGPU() was asked for through
-     * ViewerHandoffParams::readbackToken and the device has finished since the last call.
+     * @brief Passes \p consume the host copies of the display buffers that transferDeviceImageToGPU() was asked
+     * for through ViewerHandoffParams::readbackToken and the device has finished since the last call, each
+     * valid only until \p consume returns, as ViewerHandoff::consumeCompletedReadbacks() lends them.
      **/
-    virtual std::vector<ViewerHandoffReadback> takeCompletedHandoffReadbacks()
+    virtual void consumeCompletedHandoffReadbacks(const ViewerHandoffReadbackFn& /*consume*/)
     {
-        return std::vector<ViewerHandoffReadback>();
     }
 #endif
 };

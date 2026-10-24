@@ -55,7 +55,7 @@ Natron sometimes crashes at startup on NVIDIA (proprietary driver) and AMD hosts
   - size: M
 
 - [ ] M161.P2.T2 — Xvfb regression test
-  - files: `Tests/gui/m161_startup_compositor.py` (new), a fixture initGui.py beside it modelled on the user's (`build/m161/user-initGui.py`: adds a QAction under the Merge submenu of `natron.nodesMenu()`), `Tests/gui/run-gui-test.sh` if it needs a repeat option
+  - files: `Tests/gui/m161_startup_compositor.py` (new), a fixture initGui.py beside it modelled on the user's (`build/m161/user-initGui.py`: adds a QAction under the Merge submenu of `natron.nodesMenu()`); the repeat loop lives in the test script, not in `Tests/gui/run-gui-test.sh`
   - approach: launch with `NATRON_DIAG_GL=1` 10 times with the initGui.py and 10 times without; assert no compositor or shader failure line, no MISMATCH at any checkpoint, and startup completes (window shown, then a clean quit). Pre-seed `checkForUpdates=false`.
   - verify: 20/20 under Xvfb; with the fix reverted it reports MISMATCH (H1) or the cache check fails (H2), proving the test catches the bug on llvmpipe.
   - size: M
@@ -73,3 +73,4 @@ Natron sometimes crashes at startup on NVIDIA (proprietary driver) and AMD hosts
 ## Decisions
 
 - 2026-10-24 — **Created by bosley-native-nodes at the user's request** after the M16 - Project Format Redesign UAT AppImage crashed at startup on the user's NVIDIA host with M158's fix in place. Fix the root cause, not another startup early return. User data: removing initGui.py does not help; `QT_XCB_GL_INTEGRATION=none` stops the crash (no window) and one such launch makes later normal launches work; `NATRON_DISABLE_GPU` had no effect (it does not exist).
+- 2026-10-24 — **Claimed with an overlap override (user):** M161 shares `Engine/AppManager.cpp` with M64 - Tiled Rendering (parked indefinitely) and `Gui/GuiAppInstance.cpp` with M16 - Project Format Redesign (finished tasks; its UAT waits on this crash), which would make it wait for ever. Conflicts are resolved by rebase at merge. `Tests/gui/run-gui-test.sh` (M91 - NVIDIA GPU Validation) is dropped from M161's files.

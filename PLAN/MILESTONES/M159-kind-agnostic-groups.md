@@ -53,7 +53,7 @@ Groups, and the PyPlug instances that are groups, stop being an image barrier. A
   - verify: the new load and PyPlug cases pass; the existing `DataKind*` and `DeepNodes_Test` cases are unchanged.
   - size: M
 
-- [ ] M159.P1.T5 — README and edge colour check
+- [x] M159.P1.T5 — README and edge colour check
   - files: `Engine/Nodes/README.md` (replace "Known limitation: groups are an image barrier"), new `Tests/gui/m159_group_kinds.py`
   - approach: document how groups resolve kinds and the edge cases above. An Xvfb script builds a group around a deep chain and screenshots the group's external edges, which should be coloured deep. Share the screenshot with the user (project rule).
   - verify: the script passes under Xvfb; the screenshot is shared and the user approves it.

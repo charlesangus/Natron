@@ -1106,8 +1106,11 @@ or redeclare:
 The stage knobs sit together below the node's own knobs, under one separator, in
 this order: (Un)premult by, the mask selectors and Invert mask, Mix. A node's own
 knobs follow the OFX plugin's order, names, types, dimensions and defaults. The
-OFX-internal `NatronOfxParamProcess*`, `unPremultBy*` and `premultChanged` are
-not declared. Labels drop the `OFX` suffix and grouping is a `/`-separated path
+OFX-internal `NatronOfxParamProcess*` and `unPremultBy*` are not declared.
+Nothing in the graph keeps premult state: OFX clips and the images they fetch
+always answer unpremultiplied, the host discards the output premult a plugin
+reports, and unpremultiplying is only ever the explicit "(Un)premult by"
+choice. Labels drop the `OFX` suffix and grouping is a `/`-separated path
 matching the OFX menus. The filters (Blur, EdgeDetect, ErodeDilate) have no
 `Premult` stage and filter the data as stored.
 

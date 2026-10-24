@@ -26,7 +26,10 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <iostream>
+#include <iterator>
 #include <list>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -35,11 +38,13 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "HashSweepEdits.h"
 #include "NativeParity.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -138,8 +143,60 @@ reportedOption(bool opaque)
 bool
 hasAlphaDeclarationKnob(const NodePtr& node)
 {
-    return bool(node->getKnobByName(std::string("input") + "Alpha"));
+    return bool(node->getKnobByName("inputAlpha"));
 }
+
+const char* const kBannedKnobNames[] = {
+    "premult",
+    "premultChannel",
+    "premultChanged",
+    "filePremult",
+    "outputPremult",
+    "inputPremult",
+    "inputAlpha",
+};
+
+// OFX plug-ins that still declare a banned knob at the pinned openfx-misc and that M145 - OFX
+// Fork Plugin Purge deletes once their port lands. Remove each entry with that deletion.
+const char* const kExemptOfxPluginIDs[] = {
+    // M122 - Native Colour Utilities
+    "net.sf.openfx.ColorMatrixPlugin",
+    "net.sf.openfx.ColorSuppress",
+    "net.sf.openfx.HSVToolPlugin",
+    "net.sf.openfx.HueCorrect",
+    "net.sf.openfx.HueCorrect1",
+    "net.sf.openfx.HueKeyer",
+    "net.sf.openfx.Premult",
+    "net.sf.openfx.Unpremult",
+    "net.sf.openfx.RGBToHSV",
+    "net.sf.openfx.HSVToRGB",
+    "net.sf.openfx.RGBToHSL",
+    "net.sf.openfx.HSLToRGB",
+    "net.sf.openfx.RGBToHSI",
+    "net.sf.openfx.HSIToRGB",
+    "net.sf.openfx.RGBToYCbCr601",
+    "net.sf.openfx.YCbCrToRGB601",
+    "net.sf.openfx.RGBToYCbCr709",
+    "net.sf.openfx.YCbCrToRGB709",
+    "net.sf.openfx.RGBToYPbPr601",
+    "net.sf.openfx.YPbPrToRGB601",
+    "net.sf.openfx.RGBToYPbPr709",
+    "net.sf.openfx.YPbPrToRGB709",
+    "net.sf.openfx.RGBToYUV601",
+    "net.sf.openfx.YUVToRGB601",
+    "net.sf.openfx.RGBToYUV709",
+    "net.sf.openfx.YUVToRGB709",
+    "net.sf.openfx.RGB709ToXYZ",
+    "net.sf.openfx.XYZToRGB709",
+    "net.sf.openfx.RGB709ToLab",
+    "net.sf.openfx.LabToRGB709",
+    "net.sf.openfx.XYZToLab",
+    "net.sf.openfx.LabToXYZ",
+    "net.sf.openfx.XYZToxyY",
+    "net.sf.openfx.xyYToXYZ",
+    // M130 - Native Edge-Preserving And Directional Filters
+    "net.sf.openfx.GodRays",
+};
 
 } // anonymous namespace
 
@@ -202,8 +259,7 @@ TEST_F(PremultAbsenceTest, ReportedOutputPremultIsDiscarded)
     EXPECT_EQ(kProbeUnPreMultiplied, after.image) << "downstream image";
 }
 
-// No node, OFX or native, carries the removed knob declaring its source alpha. The name is split so the
-// source-tree guard for the removed knob does not match this test.
+// No node, OFX or native, carries a knob declaring its source alpha.
 TEST_F(PremultAbsenceTest, NoNodeHasAnAlphaDeclarationKnob)
 {
     NodePtr probe = createProbe();
@@ -214,4 +270,50 @@ TEST_F(PremultAbsenceTest, NoNodeHasAnAlphaDeclarationKnob)
     EXPECT_FALSE(hasAlphaDeclarationKnob(probe));
     EXPECT_FALSE(hasAlphaDeclarationKnob(constant));
     EXPECT_FALSE(hasAlphaDeclarationKnob(copy));
+}
+
+TEST_F(PremultAbsenceTest, NoRegisteredPluginHasAPremultKnob)
+{
+    const std::set<std::string> exempt(std::begin(kExemptOfxPluginIDs), std::end(kExemptOfxPluginIDs));
+    const std::vector<HashSweep::PluginVersion> plugins = HashSweep::sweptPlugins();
+    ASSERT_FALSE(plugins.empty());
+
+    const bool bundlesLoaded = HashSweep::ofxBundleExpected();
+    if (!bundlesLoaded) {
+        std::cout << "[premult absence] OFX_PLUGIN_PATH unset: the shipped OpenFX bundles are not covered" << std::endl;
+    }
+
+    std::set<std::string> exemptSeen;
+    int checked = 0;
+    for (std::size_t i = 0; i < plugins.size(); ++i) {
+        const HashSweep::PluginVersion& plugin = plugins[i];
+        if (plugin.isOfx && exempt.count(plugin.id)) {
+            exemptSeen.insert(plugin.id);
+            continue;
+        }
+        CreateNodeArgs args(plugin.id, getApp()->getProject());
+        args.setProperty<int>(kCreateNodeArgsPropPluginVersion, plugin.major, 0);
+        args.setProperty<int>(kCreateNodeArgsPropPluginVersion, plugin.minor, 1);
+        args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+        args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+        args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
+        args.setProperty<bool>(kCreateNodeArgsPropTrustPluginID, true);
+        NodePtr node = getApp()->createNode(args);
+        if (!node) {
+            ADD_FAILURE() << plugin.describe() << ": the node could not be created";
+            continue;
+        }
+        for (const char* name : kBannedKnobNames) {
+            EXPECT_FALSE(bool(node->getKnobByName(name))) << plugin.describe() << " has a knob named " << name;
+        }
+        node->destroyNode(true, false);
+        ++checked;
+    }
+    std::cout << "[premult absence] " << checked << " plugins checked, " << exemptSeen.size() << " exempt" << std::endl;
+
+    if (bundlesLoaded) {
+        for (const std::string& id : exempt) {
+            EXPECT_TRUE(exemptSeen.count(id)) << id << " is exempt but no longer loaded as an OpenFX plugin; remove the entry";
+        }
+    }
 }

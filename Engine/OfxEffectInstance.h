@@ -354,8 +354,6 @@ private:
 
     void tryInitializeOverlayInteracts();
 
-    void hideDeprecatedPremultKnobs();
-
     void pushMultiplaneTwin(std::size_t index, bool pushChannelQuad);
 
     void dropClipMetadataNotCachedUnder(U64 hash);

@@ -571,7 +571,6 @@ RGBGeneratorPluginFactory::createInstance(OfxImageEffectHandle handle,
 
 #define kParamUnPremultBy "unPremultBy"
 #define kParamUnPremultByChannel "unPremultByChannel"
-#define kParamPremultChanged "premultChanged"
 
 class PointMatrixPlugin
     : public ImageEffect {
@@ -758,15 +757,6 @@ describePointMatrixInContext(ImageEffectDescriptor& desc,
         param->setDefault(1.);
         param->setRange(0., 1.);
         param->setDisplayRange(0., 1.);
-        page->addChild(*param);
-    }
-    {
-        // ColorMatrix keeps this hidden flag; the host hides it by name, as it does ColorMatrix's.
-        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamPremultChanged);
-        param->setDefault(false);
-        param->setIsSecretAndDisabled(true);
-        param->setAnimates(false);
-        param->setEvaluateOnChange(false);
         page->addChild(*param);
     }
 }

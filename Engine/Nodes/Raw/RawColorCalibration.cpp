@@ -46,9 +46,14 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Raw/RawColorMath.h"
+#include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/Nodes/Raw/RawTemperature.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -747,9 +752,52 @@ RawColorCalibrationOp::row(const Params& params,
 }
 
 GpuOpRef
-RawColorCalibrationOp::gpu(const Params& /*params*/) const
+RawColorCalibrationOp::gpu(const Params& params) const
 {
+#ifdef NATRON_HAVE_GPU
+    RawColorCalibrationGpuParams g = {};
+    for (int i = 0; i < 9; ++i) {
+        g.rgbToXyz[i] = params.rgbToXyz[i];
+        g.xyzToRgb[i] = params.xyzToRgb[i];
+        g.rgbToLms[i] = params.rgbToLms[i];
+        g.mixToXyz[i] = params.mixToXyz[i];
+    }
+    const bool lms = (params.adaptation == Adaptation::LinearBradford) || (params.adaptation == Adaptation::FullBradford) || (params.adaptation == Adaptation::Cat16);
+    if (lms) {
+        // The conversions of a unit vector are their matrices' columns, exactly: each entry is
+        // summed with zeros only.
+        for (int col = 0; col < 3; ++col) {
+            Vec3 unit = { 0.f, 0.f, 0.f };
+            unit[col] = 1.f;
+            const Vec3 toLms = convertAnyXyzToLms(unit, params.adaptation);
+            const Vec3 toXyz = convertAnyLmsToXyz(unit, params.adaptation);
+            for (int row = 0; row < 3; ++row) {
+                g.xyzToLms[row * 3 + col] = toLms[row];
+                g.lmsToXyz[row * 3 + col] = toXyz[row];
+            }
+        }
+    }
+    const Vec3 d50 = convertD50ToLms(params.adaptation);
+    for (int c = 0; c < 3; ++c) {
+        g.illuminant[c] = params.illuminant[c];
+        g.d50[c] = d50[c];
+        g.saturation[c] = params.saturation[c];
+        g.lightness[c] = params.lightness[c];
+        g.grey[c] = params.grey[c];
+    }
+    g.p = params.p;
+    g.gamut = params.gamut;
+    g.adaptation = (std::uint32_t)params.adaptation;
+    g.version = (std::uint32_t)params.version;
+    g.clip = params.clip ? 1u : 0u;
+    g.applyGrey = params.applyGrey ? 1u : 0u;
+
+    return GpuOpRef::compiled((int)gpu::GpuKernelId::rawcolorcalibration_wrapped, g);
+#else
+    Q_UNUSED(params);
+
     return GpuOpRef::none();
+#endif
 }
 
 RawColorCalibration::RawColorCalibration(NodePtr node)

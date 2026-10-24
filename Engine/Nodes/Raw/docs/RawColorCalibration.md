@@ -22,6 +22,14 @@ not ported.
   on which one.
 - A project saves choice ids, so options added later do not move a saved choice.
 
+GPU: `rawcolorcalibration_wrapped` (`Engine/Gpu/Kernels/rawcolorcalibration.slang`), the op's
+`gpu()`, with the kernel's matrices and rows, the adaptation's LMS matrices and D50 in
+`RawColorCalibrationGpuParams`; the camera illuminant is resolved before the bake, so every
+setting has a GPU path. The kernel keeps the CPU's operation order without contraction, its
+NaN-aware clipping and `fmaxf`/`fminf`, and computes `powf` itself in float-float arithmetic,
+within an ulp. Bound `ParityTolerance::arithmetic()`, every adaptation, saturation version, clip
+setting and gamut compression in `Tests/Native/NativeRawColorCalibrationGpu_Test.cpp`.
+
 ## Knobs
 
 | darktable param | Knob | Notes |

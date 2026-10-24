@@ -270,3 +270,4 @@ If M107 hasn't merged when Phase 91.2 finishes, skip this phase and file it as a
   - Full engine ctest with `NATRON_GPU=force` passed after retries: 335/337 legacy and 334/337 taskgraph on the first `-j4` run. All 5 failures pass on a serial cold-cache retry, and none is vendor-specific:
     - NativeWriteLarge ×2, new on main: two frames over 2 GB filled the 4 GiB `/tmp` tmpfs. Host capacity.
     - CacheEquivalenceSweep/15 on taskgraph: "scheduler did not complete the frame". This matches the pre-existing blocking-render / scheduler-idle race on main that M138 already reported through the inbox.
+- 2026-10-24 — lint-ci failed on SC2054 (the commas in the NVIDIA_DRIVER_CAPABILITIES array element); value quoted. Rebased onto main 9b6196a5c (M80 - Native RAW Support adds GPU kernels and RawRegionGpu_Test, none in M91's files) as ea7481578 on milestone/m91-nvidia-gpu-validation; gate re-runs on the rebased tip.

@@ -381,3 +381,13 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
 - 2026-10-23 — **M110.P1.T2 code in (`eb987e79d`), awaiting the phase build.** The operand order is checked: the composite fold passes `result` as from (base) and `input` as to. No framework gap was found, since the Composite path already handles mask, mix, pass-through and unconnected inputs. The open risks for the build: whether `resolveGpuStagePlan` accepts 1–3 components when the node's connected sources are RGBA, and whether `dissolve.slang`'s imports of `pixelwrap` and `compositestep` resolve.
 - 2026-10-23 — **Multi-plane regions are widened to every node** (user: "Definitely want to widen so GPU regions can handle multilayer processing, that's key"). Any GPU-capable node may join a region per plane, with pass-through planes as identity members and extra input layers as extra slots, not only the channel nodes. The guards stay: a task whose pass-through can't be resolved stays on the CPU, and `MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu` changes its expectation only if the GPU render matches the CPU. This settles M110.P2.T5's breadth.
 - 2026-10-23 — **The Shuffle-family framework narrows after widening.** Each region member renders one plane, so a channel node needs an op that reads several layers and writes one plane, not a multi-plane-output op kind. A consultant is comparing "B-lite" (`StagedImageEffect` ops declare extra input layers, so Shuffle is a Point op) against a `ChannelRoute` base whose CPU path also runs from the route. The answer goes to the user. It gates P2.T4, P3.T2 and P3.T3.
+- 2026-10-23 — **M110.P1.T3 code in (`8826682eb`), awaiting the phase build.**
+  - **Params:** the block appends `order` and `neumann` at offsets 88 and 92, for 96 bytes, confirmed by slangc reflection.
+  - **Ports:**
+    - Deriche's order 1 differs from order 0 only in its coefficients. Neumann initialises from the boundary samples × `coefp`/`coefn`.
+    - van Vliet order 1 is a new function that keeps the CPU's boundary-value quirk at positions 0 and 1.
+    - The box at order 1 writes `(n − p) * 0.5`, rounded as the CPU does.
+  - **Blur:** everything sits behind `order != 0 || neumann`, so Blur's device output should stay bit-identical.
+  - **Test:** `GpuLineFilter_Test` runs ~1,300 small submits on lavapipe.
+  - **Watch:** van Vliet σ 30 at order 1 sits near the 1e-4 bound.
+  - **Checked:** `-fsyntax-only`, and `slangc` from m107's `.natron-deps`.

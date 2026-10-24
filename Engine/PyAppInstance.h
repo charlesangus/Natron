@@ -324,12 +324,14 @@ public:
     bool saveTempProject(const QString& filename);
 
     /**
-     * @brief Loads the .ntpz project bundle at filename. In background mode it replaces the
-     * current project and returns this application; in the GUI it is opened the way the Open
-     * Project menu entry opens one. Returns None, without raising, when the file does not exist
-     * or cannot be loaded; the reason is reported as an error: a damaged or unrecognized file, a
+     * @brief Loads the .ntpz project bundle at filename, or the unzipped bundle folder (or its
+     * project.yaml) there. In background mode it replaces the current project and returns this
+     * application; in the GUI it is opened the way the Open Project menu entry opens one.
+     * Returns None, without raising, when the path does not exist or cannot be loaded; the
+     * reason is reported as an error: a damaged file, one that is not a Natron project, a
      * project saved by a newer Natron, or a project in the old XML .ntp format, which this
-     * version cannot open. Problems the load worked around, such as a missing input node, are
+     * version cannot open. A path that is refused before loading leaves the current project
+     * as it was. Problems the load worked around, such as a missing input node, are
      * reported as warnings and the project still loads.
      **/
     App* loadProject(const QString& filename);

@@ -33,6 +33,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QDir>
 #include <QFile>
 #include <QObject>
 #include <QString>
@@ -103,7 +104,75 @@ collectKnobNames(const std::list<Serialization::NodeSerializationPtr>& nodes,
     }
 }
 
+bool
+writeBytes(const QString& path,
+           const std::string& bytes)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+
+    return file.write(bytes.data(), (qint64)bytes.size()) == (qint64)bytes.size();
+}
+
 } // namespace
+
+TEST(ProjectOpenTarget, ClassifiesBundlesFoldersAndRefusals)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dir = QDir::cleanPath(tmp.path()) + QLatin1Char('/');
+    const QDir tmpDir(tmp.path());
+    ASSERT_TRUE(tmpDir.mkpath(QString::fromUtf8("test")));
+    ASSERT_TRUE(tmpDir.mkpath(QString::fromUtf8("empty")));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("test/project.yaml"), "format: natron-project\n"));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("renamed.bin"), std::string("PK\x03\x04", 4) + std::string(60, '\0')));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("old.ntp"), "<?xml version=\"1.0\"?>\n<!DOCTYPE boost_serialization>\n"));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("plain.ntp"), "not xml at all\n"));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("xml.ntpz"), "<?xml version=\"1.0\"?>\n"));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("image.png"), std::string("\x89PNG\r\n\x1a\n", 8) + std::string(56, '\0')));
+
+    for (const char* folderPath : { "test", "test/", "test/project.yaml" }) {
+        SCOPED_TRACE(folderPath);
+        Project::OpenTarget target;
+        QString error;
+        ASSERT_TRUE(Project::classifyOpenTarget(dir + QString::fromUtf8(folderPath), &target, &error)) << error.toStdString();
+        EXPECT_TRUE(target.isFolder);
+        EXPECT_EQ((dir + QString::fromUtf8("test")).toStdString(), target.source.toStdString());
+        EXPECT_EQ(dir.toStdString(), target.path.toStdString());
+        EXPECT_EQ(std::string("test." NATRON_PROJECT_FILE_EXT), target.name.toStdString());
+    }
+
+    {
+        Project::OpenTarget target;
+        QString error;
+        ASSERT_TRUE(Project::classifyOpenTarget(dir + QString::fromUtf8("renamed.bin"), &target, &error)) << error.toStdString();
+        EXPECT_FALSE(target.isFolder);
+        EXPECT_EQ((dir + QString::fromUtf8("renamed.bin")).toStdString(), target.source.toStdString());
+        EXPECT_EQ(dir.toStdString(), target.path.toStdString());
+        EXPECT_EQ(std::string("renamed.bin"), target.name.toStdString());
+    }
+
+    const struct {
+        const char* fileName;
+        const char* expected;
+    } refused[] = {
+        { "old.ntp", "Legacy .ntp projects are not supported." },
+        { "plain.ntp", "Legacy .ntp projects are not supported." },
+        { "xml.ntpz", "Legacy .ntp projects are not supported." },
+        { "image.png", "image.png is not a " NATRON_APPLICATION_NAME " project" },
+        { "empty", "empty is not a " NATRON_APPLICATION_NAME " project" },
+        { "missing.ntpz", "no such file" },
+    };
+    for (const auto& refusal : refused) {
+        SCOPED_TRACE(refusal.fileName);
+        Project::OpenTarget target;
+        QString error;
+        EXPECT_FALSE(Project::classifyOpenTarget(dir + QString::fromUtf8(refusal.fileName), &target, &error));
+        EXPECT_NE(std::string::npos, error.toStdString().find(refusal.expected)) << error.toStdString();
+    }
+}
 
 // Exercises Project::saveProject()/loadProject() end to end: builds a generator -> writer graph,
 // sets a distinctive value on one knob of each kind that Engine/*Serialization.h treats

@@ -618,17 +618,15 @@ AppInstance::loadInternal(const CLArgs& cl,
 
         std::list<AppInstance::RenderWork> writersWork;
 
-        // An old .ntp reaches the loader too, which explains why it cannot be opened.
-        if ((info.suffix() == QString::fromUtf8(NATRON_PROJECT_FILE_EXT)) || (info.suffix() == QString::fromUtf8("ntp"))) {
-            ///Load the project
-            if ( !_imp->_currentProject->loadProject( info.path(), info.fileName() ) ) {
-                throw std::invalid_argument( tr("Project file loading failed.").toStdString() );
-            }
-        } else if (info.suffix() == QString::fromUtf8("py")) {
+        if (info.suffix() == QString::fromUtf8("py")) {
             ///Load the python script
             loadPythonScript(info);
         } else {
-            throw std::invalid_argument(tr("%1 only accepts python scripts or .ntpz project files.").arg(QString::fromUtf8(NATRON_APPLICATION_NAME)).toStdString());
+            // Anything else is a bundle, a folder or a project.yaml; the loader explains what it
+            // refuses.
+            if (!_imp->_currentProject->loadProject(info.path(), info.fileName())) {
+                throw std::invalid_argument(tr("Project file loading failed.").toStdString());
+            }
         }
 
         // exec the python script specified via --onload
@@ -685,7 +683,7 @@ AppInstance::loadInternal(const CLArgs& cl,
         if ( info.exists() ) {
             if ( info.suffix() == QString::fromUtf8("py") ) {
                 loadPythonScript(info);
-            } else if ((info.suffix() == QString::fromUtf8(NATRON_PROJECT_FILE_EXT)) || (info.suffix() == QString::fromUtf8("ntp"))) {
+            } else {
                 if ( !_imp->_currentProject->loadProject( info.path(), info.fileName() ) ) {
                     throw std::invalid_argument( tr("Project file loading failed.").toStdString() );
                 }
@@ -2375,19 +2373,19 @@ AppInstance::saveAs(const std::string& filename)
 AppInstancePtr
 AppInstance::loadProject(const std::string& filename)
 {
-    QFileInfo file( QString::fromUtf8( filename.c_str() ) );
+    Project::OpenTarget target;
+    QString refusal;
+    if (!Project::classifyOpenTarget(QString::fromUtf8(filename.c_str()), &target, &refusal)) {
+        Dialogs::errorDialog(tr("Project loader").toStdString(), refusal.toStdString());
 
-    if ( !file.exists() ) {
         return AppInstancePtr();
     }
-    QString fileUnPathed = file.fileName();
-    QString path = file.path() + QChar::fromLatin1('/');
 
     //We are in background mode, there can only be 1 instance active, wipe the current project
     ProjectPtr project = getProject();
     project->resetProject();
 
-    bool ok  = project->loadProject( path, fileUnPathed);
+    bool ok = project->loadProject(QString(), target.source);
     if (ok) {
         return shared_from_this();
     }

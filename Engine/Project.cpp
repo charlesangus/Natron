@@ -230,7 +230,105 @@ public:
     }
 };
 
+QString
+legacyProjectMessage()
+{
+    return Project::tr("Legacy .ntp projects are not supported. This version of %1 only opens .%2 projects.")
+        .arg(QString::fromUtf8(NATRON_APPLICATION_NAME), QString::fromUtf8(NATRON_PROJECT_FILE_EXT));
+}
+
+QString
+notAProjectMessage(const QString& fileName)
+{
+    return Project::tr("%1 is not a %2 project").arg(fileName, QString::fromUtf8(NATRON_APPLICATION_NAME));
+}
+
+QString
+bundleProjectMemberName()
+{
+    return QString::fromUtf8(Serialization::kBundleProjectMember.data(), (int)Serialization::kBundleProjectMember.size());
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+bool
+Project::classifyOpenTarget(const QString& path,
+                            OpenTarget* out,
+                            QString* error)
+{
+    if (path.isEmpty()) {
+        *error = tr("No project file was given.");
+
+        return false;
+    }
+    const QString absolute = QDir::cleanPath(QDir::current().absoluteFilePath(path));
+    const QFileInfo info(absolute);
+    if (!info.exists()) {
+        *error = tr("%1: no such file.").arg(absolute);
+
+        return false;
+    }
+
+    const QString projectYaml = bundleProjectMemberName();
+    QString folder;
+    if (info.isDir()) {
+        folder = absolute;
+    } else if (info.fileName() == projectYaml) {
+        folder = info.absolutePath();
+    }
+
+    if (!folder.isEmpty()) {
+        const QFileInfo folderInfo(folder);
+        QString stem = folderInfo.fileName();
+        if (!QFileInfo(QDir(folder).filePath(projectYaml)).isFile()) {
+            *error = notAProjectMessage(stem.isEmpty() ? folder : stem);
+
+            return false;
+        }
+        if (stem.isEmpty()) {
+            stem = QString::fromUtf8("project");
+        }
+        QString parent = folderInfo.absolutePath();
+        StrUtils::ensureLastPathSeparator(parent);
+        out->source = folder;
+        out->path = parent;
+        out->name = stem + QLatin1Char('.') + QString::fromUtf8(NATRON_PROJECT_FILE_EXT);
+        out->isFolder = true;
+
+        return true;
+    }
+
+    // Content decides, so a renamed bundle still opens; only the old XML format, or a .ntp that
+    // is not a bundle, gets the legacy message.
+    const Serialization::ProjectFileKind kind = Serialization::detectProjectFileKind(absolute.toStdString());
+    if ((kind == Serialization::ProjectFileKind::eLegacyXml) || ((kind != Serialization::ProjectFileKind::eBundle) && (info.suffix().compare(QString::fromUtf8("ntp"), Qt::CaseInsensitive) == 0))) {
+        *error = legacyProjectMessage();
+
+        return false;
+    }
+    if (kind != Serialization::ProjectFileKind::eBundle) {
+        *error = notAProjectMessage(info.fileName());
+
+        return false;
+    }
+
+    QString directory = info.absolutePath();
+    StrUtils::ensureLastPathSeparator(directory);
+    out->source = absolute;
+    out->path = directory;
+    out->name = info.fileName();
+    out->isFolder = false;
+
+    return true;
+} // Project::classifyOpenTarget
+
+bool
+Project::isLoadedFromFolder() const
+{
+    QMutexLocker l(&_imp->projectLock);
+
+    return _imp->loadedFromFolder;
+}
 
 bool
 Project::loadProject(const QString & path,
@@ -238,23 +336,37 @@ Project::loadProject(const QString & path,
                      bool isUntitledAutosave,
                      bool attemptToLoadAutosave)
 {
+    QString targetPath = path;
+    if (!targetPath.isEmpty()) {
+        StrUtils::ensureLastPathSeparator(targetPath);
+    }
+    targetPath += name;
+    OpenTarget target;
+    QString refusal;
+    if (!classifyOpenTarget(targetPath, &target, &refusal)) {
+        Dialogs::errorDialog(tr("Project loader").toStdString(), refusal.toStdString());
+
+        return false;
+    }
+
     reset(false, true);
 
     try {
-        QString realPath = path;
-        StrUtils::ensureLastPathSeparator(realPath);
-        QString realName = name;
+        const QString& realPath = target.path;
+        QString realName = target.name;
+        QString source = target.source;
         bool isAutoSave = isUntitledAutosave;
         if (!getApp()->isBackground() && !isUntitledAutosave) {
             // In Gui mode, attempt to load an auto-save for this project if there's one.
             QString autosaveFileName;
-            bool hasAutoSave = findAutoSaveForProject(realPath, name, &autosaveFileName);
+            bool hasAutoSave = findAutoSaveForProject(target, &autosaveFileName);
             if (hasAutoSave) {
                 StandardButtonEnum ret = eStandardButtonNo;
                 if (attemptToLoadAutosave) {
                     QString text = tr("A recent auto-save of %1 was found.\n"
                                       "Would you like to use it instead? "
-                                      "Clicking No will remove this auto-save.").arg(name);
+                                      "Clicking No will remove this auto-save.")
+                                       .arg(target.name);
                     ret = Dialogs::questionDialog(tr("Auto-save").toStdString(),
                                                   text.toStdString(), false, StandardButtons(eStandardButtonYes | eStandardButtonNo),
                                                   eStandardButtonYes);
@@ -263,17 +375,22 @@ Project::loadProject(const QString & path,
                     QFile::remove(realPath + autosaveFileName);
                 } else {
                     realName = autosaveFileName;
+                    source = realPath + realName;
                     isAutoSave = true;
                     {
                         QMutexLocker k(&_imp->projectLock);
-                        _imp->lastAutoSaveFilePath = realPath + realName;
+                        _imp->lastAutoSaveFilePath = source;
                     }
                 }
             }
         }
 
         bool mustSave = false;
-        const bool loaded = loadProjectInternal(realPath, realName, isAutoSave, isUntitledAutosave, &mustSave);
+        const bool loaded = loadProjectInternal(realPath, realName, source, isAutoSave, isUntitledAutosave, &mustSave);
+        if (loaded) {
+            QMutexLocker k(&_imp->projectLock);
+            _imp->loadedFromFolder = target.isFolder;
+        }
         reportLoadWarnings();
         if (!loaded) {
             appPTR->showErrorLog();
@@ -283,6 +400,11 @@ Project::loadProject(const QString & path,
             if (hasMissingPluginNode()) {
                 appPTR->writeToErrorLog_mt_safe(tr("Project loader"), QDateTime::currentDateTime(),
                                                 tr("The project was not saved automatically after loading because a plug-in it uses is missing."));
+            } else if (target.isFolder) {
+                // The bundle a folder saves to may already exist and hold other work, so only
+                // the user may decide to write it.
+                appPTR->writeToErrorLog_mt_safe(tr("Project loader"), QDateTime::currentDateTime(),
+                                                tr("The project was not saved automatically after loading because it was opened from a folder."));
             } else {
                 saveProject(realPath, realName, 0);
             }
@@ -459,14 +581,15 @@ Project::reportDataKindConflicts()
 } // Project::reportDataKindConflicts
 
 bool
-Project::loadProjectInternal(const QString & path,
-                             const QString & name,
+Project::loadProjectInternal(const QString& path,
+                             const QString& name,
+                             const QString& source,
                              bool isAutoSave,
                              bool isUntitledAutosave,
                              bool* mustSave)
 {
     FlagSetter loadingProjectRAII(true, &_imp->isLoadingProject, &_imp->isLoadingProjectMutex);
-    QString filePath = path + name;
+    const QString& filePath = source;
     std::cout << tr("Loading project: %1").arg(filePath).toStdString() << std::endl;
 
     if ( !QFile::exists(filePath) ) {
@@ -481,13 +604,13 @@ Project::loadProjectInternal(const QString & path,
     const std::string filePathStd = filePath.toStdString();
     switch (Serialization::detectProjectFileKind(filePathStd)) {
     case Serialization::ProjectFileKind::eBundle:
+    case Serialization::ProjectFileKind::eDirectory:
+    case Serialization::ProjectFileKind::eProjectYaml:
         break;
     case Serialization::ProjectFileKind::eLegacyXml:
-        throw std::runtime_error(tr("This project uses the old XML .ntp format, which this version of %1 cannot open (no compatibility, by design).")
-                                     .arg(QString::fromUtf8(NATRON_APPLICATION_NAME))
-                                     .toStdString());
+        throw std::runtime_error(legacyProjectMessage().toStdString());
     case Serialization::ProjectFileKind::eUnknown:
-        throw std::runtime_error(tr("Unrecognized or damaged project file: %1").arg(filePath).toStdString());
+        throw std::runtime_error(notAProjectMessage(QFileInfo(filePath).fileName()).toStdString());
     }
 
     LoadProjectSplashScreen_RAII __raii_splashscreen__(getApp(), name);
@@ -835,6 +958,7 @@ Project::saveProjectInternal(const QString & path,
             _imp->setProjectPath( path.toStdString() );
             QMutexLocker l(&_imp->projectLock);
             _imp->hasProjectBeenSavedByUser = true;
+            _imp->loadedFromFolder = false;
             _imp->ageSinceLastSave = time;
         }
         Q_EMIT projectNameChanged(path + name, false); //< notify the gui so it can update the title
@@ -1028,12 +1152,11 @@ Project::onAutoSaveFutureFinished()
 }
 
 bool
-Project::findAutoSaveForProject(const QString& projectPath,
-                                const QString& projectName,
+Project::findAutoSaveForProject(const OpenTarget& target,
                                 QString* autoSaveFileName)
 {
-    QString projectAbsFilePath = projectPath + projectName;
-    QDir savesDir(projectPath);
+    const QString projectAbsFilePath = target.path + target.name;
+    QDir savesDir(target.path);
     QStringList entries = savesDir.entryList(QDir::Files | QDir::NoDotAndDotDot);
 
     Q_FOREACH(const QString &entry, entries) {
@@ -1047,12 +1170,24 @@ Project::findAutoSaveForProject(const QString& projectPath,
         if ( (suffixPos == -1) || entry.contains( QString::fromUtf8("RENDER_SAVE") ) ) {
             continue;
         }
-        QString filename = projectPath + entry.left( suffixPos + ntpExt.size() );
-        if ( (filename == projectAbsFilePath) && QFile::exists(filename) ) {
-            *autoSaveFileName = entry;
-
-            return true;
+        QString filename = target.path + entry.left(suffixPos + ntpExt.size());
+        if (filename != projectAbsFilePath) {
+            continue;
         }
+        if (target.isFolder) {
+            // The folder's bundle need not exist, and the autosave may be from the bundle rather
+            // than from this folder: it only stands for the folder if it is newer than its edits.
+            const QFileInfo autoSaveInfo(savesDir.filePath(entry));
+            const QFileInfo projectYamlInfo(QDir(target.source).filePath(bundleProjectMemberName()));
+            if (autoSaveInfo.lastModified() <= projectYamlInfo.lastModified()) {
+                continue;
+            }
+        } else if (!QFile::exists(filename)) {
+            continue;
+        }
+        *autoSaveFileName = entry;
+
+        return true;
     }
 
     return false;
@@ -2806,6 +2941,7 @@ Project::doResetEnd(bool aboutToQuit)
             QMutexLocker l(&_imp->projectLock);
             _imp->autoSetProjectFormat = appPTR->getCurrentSettings()->isAutoProjectFormatEnabled();
             _imp->hasProjectBeenSavedByUser = false;
+            _imp->loadedFromFolder = false;
             _imp->projectCreationTime = QDateTime::currentDateTime().toMSecsSinceEpoch();
             _imp->setProjectFilename(NATRON_PROJECT_UNTITLED);
             _imp->setProjectPath("");

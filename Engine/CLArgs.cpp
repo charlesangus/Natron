@@ -108,6 +108,10 @@ public:
     QStringList::iterator hasToken(const QString& longName, const QString& shortName);
     QStringList::iterator hasOutputToken(QString& indexStr);
     QStringList::iterator findFileNameWithExtension(const QString& extension);
+
+    // An unzipped project: a folder, or the project.yaml inside one.
+    QStringList::iterator findProjectFolderArgument();
+    static bool isProjectFolderArgument(const QString& arg);
 };
 
 CLArgs::CLArgs()
@@ -574,6 +578,33 @@ CLArgsPrivate::findFileNameWithExtension(const QString& extension)
 }
 
 QStringList::iterator
+CLArgsPrivate::findProjectFolderArgument()
+{
+    for (QStringList::iterator it = args.begin(); it != args.end(); ++it) {
+        if (isProjectFolderArgument(*it)) {
+            return it;
+        }
+    }
+
+    return args.end();
+}
+
+bool
+CLArgsPrivate::isProjectFolderArgument(const QString& arg)
+{
+    if (arg.startsWith(QChar::fromLatin1('-'))) {
+        return false;
+    }
+    QString path = arg;
+#ifdef __NATRON_UNIX__
+    path = AppManager::qt_tildeExpansion(path);
+#endif
+    const QFileInfo info(path);
+
+    return info.isDir() || (info.fileName() == QString::fromUtf8("project.yaml"));
+}
+
+QStringList::iterator
 CLArgsPrivate::hasToken(const QString& longName,
                         const QString& shortName)
 {
@@ -985,7 +1016,7 @@ CLArgsPrivate::parse()
         if ( it != args.end() && !it->startsWith( QChar::fromLatin1('-') ) ) {
             // Check that it's neither a python script, a natron project, nor a frame range.
             QRegularExpression re( QRegularExpression::anchoredPattern( QString::fromUtf8("[0-9\\-,]*") ) ); // Matches frame ranges.
-            if (!it->endsWith(QString::fromUtf8(".py"), Qt::CaseInsensitive) && !it->endsWith(QString::fromUtf8("." NATRON_PROJECT_FILE_EXT), Qt::CaseInsensitive) && !it->endsWith(QString::fromUtf8(".ntp"), Qt::CaseInsensitive) && !re.match(*it).hasMatch()) {
+            if (!it->endsWith(QString::fromUtf8(".py"), Qt::CaseInsensitive) && !it->endsWith(QString::fromUtf8("." NATRON_PROJECT_FILE_EXT), Qt::CaseInsensitive) && !it->endsWith(QString::fromUtf8(".ntp"), Qt::CaseInsensitive) && !isProjectFolderArgument(*it) && !re.match(*it).hasMatch()) {
                 w.filename = *it;
 #ifdef __NATRON_UNIX__
                 w.filename = AppManager::qt_tildeExpansion(w.filename);
@@ -1109,13 +1140,14 @@ CLArgsPrivate::parse()
 
     {
         QStringList::iterator it = findFileNameWithExtension( QString::fromUtf8(NATRON_PROJECT_FILE_EXT) );
-        if ( it == args.end() ) {
-            if (findFileNameWithExtension(QString::fromUtf8("ntp")) != args.end()) {
-                std::cout << tr("This project uses the old XML .ntp format, which this version of Natron cannot open (no compatibility, by design)").toStdString() << std::endl;
-                error = 1;
-
-                return;
-            }
+        // An old .ntp is taken too, so that the loader explains why it cannot be opened.
+        if (it == args.end()) {
+            it = findFileNameWithExtension(QString::fromUtf8("ntp"));
+        }
+        if (it == args.end()) {
+            it = findProjectFolderArgument();
+        }
+        if (it == args.end()) {
             it = findFileNameWithExtension( QString::fromUtf8("py") );
             if (it != args.end()) {
                 isPythonScript = true;

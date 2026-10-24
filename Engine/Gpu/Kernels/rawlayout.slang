@@ -23,10 +23,16 @@ struct RawLayout
         return period > 0;
     }
 
+    // Floor modulo, as RawLayout::wrap(). The remainder only ever sees non-negative operands:
+    // NVIDIA's driver evaluates OpSRem of a negative dividend by a non-constant divisor as an
+    // unsigned remainder, which is right for a period of 2 but not of 6.
     int wrapCell(int v)
     {
-        const int m = v % period;
-        return m < 0 ? m + period : m;
+        const uint p = uint(period);
+        if (v >= 0)
+            return int(uint(v) % p);
+        const uint r = uint(-v) % p;
+        return r == 0u ? 0 : int(p - r);
     }
 
     // 0 red, 1 green, 2 blue; 3 without a CFA.

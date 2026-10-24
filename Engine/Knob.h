@@ -663,10 +663,11 @@ public:
     virtual bool setInterpolationAtTime(Natron::CurveChangeReason reason, ViewSpec view, int dimension, double time, Natron::KeyframeTypeEnum interpolation, KeyFrame* newKey) = 0;
 
     /**
-     * @brief Set the left/right derivatives of the control point at the given time.
+     * @brief Sets both tangents of the control point at the given time. A Broken key stays
+     * Broken; any other key becomes Free when the derivatives are equal and Broken otherwise.
+     * If newKey is not NULL it receives the updated key.
      **/
-    virtual bool moveDerivativesAtTime(Natron::CurveChangeReason reason, ViewSpec view, int dimension, double time, double left, double right) = 0;
-    virtual bool moveDerivativeAtTime(Natron::CurveChangeReason reason, ViewSpec view, int dimension, double time, double derivative, bool isLeft) = 0;
+    virtual bool setTangentsAtTime(Natron::CurveChangeReason reason, ViewSpec view, int dimension, double time, const KeyTangents& tangents, KeyFrame* newKey) = 0;
 
     /**
      * @brief Removes animation before the given time and dimension. If the reason is different than eValueChangedReasonUserEdited
@@ -1624,8 +1625,7 @@ public:
 
     virtual void cloneCurve(ViewSpec view, int dimension, const Curve& curve) OVERRIDE FINAL;
     virtual bool setInterpolationAtTime(Natron::CurveChangeReason reason, ViewSpec view, int dimension, double time, Natron::KeyframeTypeEnum interpolation, KeyFrame* newKey) OVERRIDE FINAL;
-    virtual bool moveDerivativesAtTime(Natron::CurveChangeReason reason, ViewSpec view, int dimension, double time, double left, double right)  OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual bool moveDerivativeAtTime(Natron::CurveChangeReason reason, ViewSpec view, int dimension, double time, double derivative, bool isLeft) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool setTangentsAtTime(Natron::CurveChangeReason reason, ViewSpec view, int dimension, double time, const KeyTangents& tangents, KeyFrame* newKey) OVERRIDE FINAL;
     virtual void deleteAnimationBeforeTime(double time, ViewSpec view, int dimension, Natron::ValueChangedReasonEnum reason) OVERRIDE FINAL;
     virtual void deleteAnimationAfterTime(double time, ViewSpec view, int dimension, Natron::ValueChangedReasonEnum reason) OVERRIDE FINAL;
 

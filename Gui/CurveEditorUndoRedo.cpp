@@ -805,13 +805,8 @@ MoveTangentCommand::setNewDerivatives(bool undo)
 
         if (!isParametric) {
             attachedKnob->beginChanges();
-            if (_setBoth) {
-                attachedKnob->moveDerivativesAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), _key->key.getTime(), left, right);
-            } else {
-                attachedKnob->moveDerivativeAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), _key->key.getTime(),
-                                                   _deriv == eSelectedTangentLeft ? left : right,
-                                                   _deriv == eSelectedTangentLeft);
-            }
+            const KeyTangents tangents = { left, right, _key->key.getLeftWeight(), _key->key.getRightWeight() };
+            attachedKnob->setTangentsAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), _key->key.getTime(), tangents, NULL);
             attachedKnob->setInterpolationAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), _key->key.getTime(), interp, &_key->key);
             if (_firstRedoCalled || _updateOnFirstRedo) {
                 attachedKnob->endChanges();
@@ -819,7 +814,7 @@ MoveTangentCommand::setNewDerivatives(bool undo)
         } else {
             int keyframeIndexInCurve = _key->curve->getInternalCurve()->keyFrameIndex( _key->key.getTime() );
             _key->key = _key->curve->getInternalCurve()->setKeyFrameInterpolation(interp, keyframeIndexInCurve);
-            _key->key = _key->curve->getInternalCurve()->setKeyFrameDerivatives(left, right, keyframeIndexInCurve);
+            _key->key = _key->curve->getInternalCurve()->setKeyFrameTangents(left, right, _key->key.getLeftWeight(), _key->key.getRightWeight(), keyframeIndexInCurve);
             attachedKnob->evaluateValueChange(isKnobCurve->getDimension(), _key->key.getTime(), ViewIdx(0),  eValueChangedReasonUserEdited);
         }
 
@@ -926,13 +921,14 @@ JoinTangentsCommand::setNewDerivatives(bool undo)
 
         if (!isParametric) {
             attachedKnob->beginChanges();
-            attachedKnob->moveDerivativesAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), left, right);
+            const KeyTangents tangents = { left, right, it->key->key.getLeftWeight(), it->key->key.getRightWeight() };
+            attachedKnob->setTangentsAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), tangents, NULL);
             attachedKnob->setInterpolationAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), interp, &it->key->key);
             attachedKnob->endChanges();
         } else {
             int keyframeIndexInCurve = it->key->curve->getInternalCurve()->keyFrameIndex(it->key->key.getTime());
             it->key->key = it->key->curve->getInternalCurve()->setKeyFrameInterpolation(interp, keyframeIndexInCurve);
-            it->key->key = it->key->curve->getInternalCurve()->setKeyFrameDerivatives(left, right, keyframeIndexInCurve);
+            it->key->key = it->key->curve->getInternalCurve()->setKeyFrameTangents(left, right, it->key->key.getLeftWeight(), it->key->key.getRightWeight(), keyframeIndexInCurve);
             attachedKnob->evaluateValueChange(isKnobCurve->getDimension(), it->key->key.getTime(), ViewIdx(0), eValueChangedReasonUserEdited);
         }
     }

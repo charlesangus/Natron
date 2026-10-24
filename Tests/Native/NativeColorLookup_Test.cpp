@@ -342,6 +342,46 @@ TEST_F(NativeColorLookupTest, SetButtonsAddCubicControlPoints)
     EXPECT_TRUE(hasPoint(table, ColorLookup::eCurveAlpha, 0.1, 0.45));
 }
 
+TEST_F(NativeColorLookupTest, SnapshotRepeatsWeightedCurves)
+{
+    NodePtr node = createNodeAtMajor(getApp(), kColorLookupID, kNativeColorLookupMajor);
+    ASSERT_TRUE(isNative(node));
+    KnobParametric* table = tableOf(node);
+    ASSERT_TRUE(table != NULL);
+    const int curve = ColorLookup::eCurveMaster;
+    ASSERT_EQ(eStatusOK, table->deleteAllControlPoints(eValueChangedReasonPluginEdited, curve));
+    ASSERT_EQ(eStatusOK, table->addControlPoint(eValueChangedReasonPluginEdited, curve, 0., 0., eKeyframeTypeSmooth));
+    KeyTangents weighted;
+    weighted.left = 1.;
+    weighted.right = 1.;
+    weighted.leftWeight = 0.6;
+    weighted.rightWeight = 0.2;
+    ASSERT_EQ(eStatusOK, table->addControlPoint(eValueChangedReasonPluginEdited, curve, 0.5, 0.7, weighted, eKeyframeTypeFree));
+    ASSERT_EQ(eStatusOK, table->addControlPoint(eValueChangedReasonPluginEdited, curve, 1., 1., eKeyframeTypeSmooth));
+
+    double key = 0.;
+    double value = 0.;
+    KeyTangents read;
+    ASSERT_EQ(eStatusOK, table->getNthControlPoint(curve, 1, &key, &value, &read));
+    EXPECT_EQ(0.6, read.leftWeight);
+    EXPECT_EQ(0.2, read.rightWeight);
+
+    const CurvePtr c = table->getParametricCurve(curve);
+    const CurveSnapshot snapshot(c);
+    const double weightedQuarter = snapshot.valueAt(0.25);
+    for (int i = -50; i <= 150; ++i) {
+        const double x = i / 100.;
+        EXPECT_EQ(c->getValueAt(x), snapshot.valueAt(x)) << x;
+    }
+
+    KeyTangents unweighted = weighted;
+    unweighted.leftWeight = Interpolation::kDefaultTangentWeight;
+    unweighted.rightWeight = Interpolation::kDefaultTangentWeight;
+    ASSERT_EQ(eStatusOK, table->setNthControlPoint(eValueChangedReasonPluginEdited, curve, 1, 0.5, 0.7, unweighted));
+    EXPECT_NE(weightedQuarter, CurveSnapshot(c).valueAt(0.25));
+    EXPECT_EQ(c->getValueAt(0.25), CurveSnapshot(c).valueAt(0.25));
+}
+
 TEST_F(NativeColorLookupTest, IdentityOnlyWhenMixIsZero)
 {
     ParityPair pair = makePair();

@@ -402,6 +402,319 @@ Interpolation::solveQuartic(double c0,
     return num;
 } // solveQuartic
 
+double
+Interpolation::clampTangentWeight(double w)
+{
+    if (std::isnan(w)) {
+        return kDefaultTangentWeight;
+    }
+
+    return (std::min)((std::max)(w, kMinTangentWeight), kMaxTangentWeight);
+}
+
+bool
+Interpolation::isWeightedSegment(KeyframeTypeEnum interp,
+                                 KeyframeTypeEnum interpNext,
+                                 double vcurWeightRight,
+                                 double vnextWeightLeft)
+{
+    if ((interp == eKeyframeTypeNone) || (interp == eKeyframeTypeConstant) || (interpNext == eKeyframeTypeNone)) {
+        return false;
+    }
+
+    return (vcurWeightRight != kDefaultTangentWeight) || (vnextWeightLeft != kDefaultTangentWeight);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// One segment as Bezier curves X(s) and Y(s), s in [0,1], X in units of the span.
+struct BezierSegment {
+    BezierSegment(double tcur,
+                  double vcur,
+                  double vcurDerivRight,
+                  double vnextDerivLeft,
+                  double vcurWeightRight,
+                  double vnextWeightLeft,
+                  double tnext,
+                  double vnext)
+        : origin(tcur)
+        , span(tnext - tcur)
+    {
+        const double a = Interpolation::clampTangentWeight(vcurWeightRight);
+        const double b = Interpolation::clampTangentWeight(vnextWeightLeft);
+
+        // The control polygon's legs, so that the power coefficients below are differences of
+        // legs rather than of the possibly large control values.
+        const double xd0 = a;
+        const double xd1 = 1. - a - b;
+        const double xd2 = b;
+        const double yd0 = vcurDerivRight * a * span;
+        const double yd2 = vnextDerivLeft * b * span;
+        const double yd1 = (vnext - yd2) - (vcur + yd0);
+
+        x[0] = 0.;
+        x[1] = a;
+        x[2] = 1. - b;
+        x[3] = 1.;
+        y[0] = vcur;
+        y[1] = vcur + yd0;
+        y[2] = vnext - yd2;
+        y[3] = vnext;
+
+        xc[0] = 0.;
+        xc[1] = 3. * xd0;
+        xc[2] = 3. * (xd1 - xd0);
+        xc[3] = xd2 - 2. * xd1 + xd0;
+        yc[0] = vcur;
+        yc[1] = 3. * yd0;
+        yc[2] = 3. * (yd1 - yd0);
+        yc[3] = yd2 - 2. * yd1 + yd0;
+
+        // dt = span X'(s) ds, so the integral over time is span times that of Y X'.
+        const double dx[3] = { xc[1], 2. * xc[2], 3. * xc[3] };
+        for (int k = 0; k < 6; ++k) {
+            yxc[k] = 0.;
+        }
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                yxc[i + j] += yc[i] * dx[j];
+            }
+        }
+    }
+
+    // The Bernstein form returns the end control points exactly at s = 0 and s = 1, which keeps
+    // the curve continuous at its keys.
+    static double bernstein(const double p[4],
+                            double s)
+    {
+        const double r = 1. - s;
+
+        return r * r * r * p[0] + 3. * r * s * (r * p[1] + s * p[2]) + s * s * s * p[3];
+    }
+
+    static double bernsteinDerive(const double p[4],
+                                  double s)
+    {
+        const double r = 1. - s;
+
+        return 3. * (r * r * (p[1] - p[0]) + 2. * r * s * (p[2] - p[1]) + s * s * (p[3] - p[2]));
+    }
+
+    double X(double s) const
+    {
+        return bernstein(x, s);
+    }
+
+    double dX(double s) const
+    {
+        return bernsteinDerive(x, s);
+    }
+
+    double Y(double s) const
+    {
+        return bernstein(y, s);
+    }
+
+    double dY(double s) const
+    {
+        return bernsteinDerive(y, s);
+    }
+
+    // The integral of Y(s) X'(s) from 0 to s.
+    double integralYdX(double s) const
+    {
+        double ret = 0.;
+        for (int k = 5; k >= 0; --k) {
+            ret = (ret + yxc[k] / (k + 1)) * s;
+        }
+
+        return ret;
+    }
+
+    // The s at which X(s) = u. X is strictly increasing on [0,1] for weights in (0,1): X'/3 has
+    // Bernstein coefficients a, 1-a-b and b, and when the middle one is negative it is still
+    // above -sqrt(ab), which keeps that quadratic positive. A Newton iteration from the cubic's
+    // closed-form root, bisecting whenever a step leaves the bracket, so it always converges.
+    double paramAt(double u) const
+    {
+        if (!(u > 0.)) {
+            return 0.;
+        }
+        if (!(u < 1.)) {
+            return 1.;
+        }
+        double s = u;
+        double roots[3];
+        int orders[3];
+        const int n = Interpolation::solveCubic(-u, xc[1], xc[2], xc[3], roots, orders);
+        double bestDistance = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < n; ++i) {
+            const double r = roots[i];
+            const double distance = (r < 0.) ? -r : ((r > 1.) ? r - 1. : 0.);
+            if ((r == r) && (distance < bestDistance)) {
+                bestDistance = distance;
+                s = (std::min)((std::max)(r, 0.), 1.);
+            }
+        }
+        double lo = 0.;
+        double hi = 1.;
+        for (int i = 0; i < 100; ++i) {
+            const double f = X(s) - u;
+            if (f == 0.) {
+                break;
+            }
+            if (f < 0.) {
+                lo = s;
+            } else {
+                hi = s;
+            }
+            double next = s - f / dX(s);
+            if (!((next > lo) && (next < hi))) {
+                next = 0.5 * (lo + hi);
+            }
+            if ((next == s) || (hi - lo <= std::numeric_limits<double>::epsilon() * hi)) {
+                s = next;
+                break;
+            }
+            s = next;
+        }
+
+        return s;
+    }
+
+    double paramAtTime(double t) const
+    {
+        return paramAt((t - origin) / span);
+    }
+
+    double origin;
+    double span;
+    double x[4], y[4];
+    double xc[4], yc[4];
+    double yxc[6];
+};
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+double
+Interpolation::interpolateBezier(double tcur,
+                                 double vcur,
+                                 double vcurDerivRight,
+                                 double vnextDerivLeft,
+                                 double vcurWeightRight,
+                                 double vnextWeightLeft,
+                                 double tnext,
+                                 double vnext,
+                                 double currentTime)
+{
+    const BezierSegment seg(tcur, vcur, vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, tnext, vnext);
+
+    return seg.Y(seg.paramAtTime(currentTime));
+}
+
+double
+Interpolation::deriveBezier(double tcur,
+                            double vcur,
+                            double vcurDerivRight,
+                            double vnextDerivLeft,
+                            double vcurWeightRight,
+                            double vnextWeightLeft,
+                            double tnext,
+                            double vnext,
+                            double currentTime)
+{
+    const BezierSegment seg(tcur, vcur, vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, tnext, vnext);
+    const double s = seg.paramAtTime(currentTime);
+
+    return seg.dY(s) / (seg.dX(s) * seg.span);
+}
+
+double
+Interpolation::integrateBezier(double tcur,
+                               double vcur,
+                               double vcurDerivRight,
+                               double vnextDerivLeft,
+                               double vcurWeightRight,
+                               double vnextWeightLeft,
+                               double tnext,
+                               double vnext,
+                               double time1,
+                               double time2)
+{
+    const BezierSegment seg(tcur, vcur, vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, tnext, vnext);
+    const double s1 = seg.paramAtTime(time1);
+    const double s2 = seg.paramAtTime(time2);
+
+    return (seg.integralYdX(s2) - seg.integralYdX(s1)) * seg.span;
+}
+
+double
+Interpolation::integrateBezierClamp(double tcur,
+                                    double vcur,
+                                    double vcurDerivRight,
+                                    double vnextDerivLeft,
+                                    double vcurWeightRight,
+                                    double vnextWeightLeft,
+                                    double tnext,
+                                    double vnext,
+                                    double time1,
+                                    double time2,
+                                    double vmin,
+                                    double vmax)
+{
+    const BezierSegment seg(tcur, vcur, vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, tnext, vnext);
+    const double s1 = seg.paramAtTime(time1);
+    const double s2 = seg.paramAtTime(time2);
+
+    // Split [s1,s2] where Y crosses vmin or vmax; each piece is then either clamped or not
+    // throughout, which its midpoint tells.
+    std::vector<double> cuts;
+    cuts.push_back(s1);
+    const double bounds[2] = { vmin, vmax };
+    for (int b = 0; b < 2; ++b) {
+        const double bound = bounds[b];
+        if (!(std::fabs(bound) < std::numeric_limits<double>::infinity())) {
+            continue;
+        }
+        double roots[3];
+        int orders[3];
+        const int n = Interpolation::solveCubic(seg.yc[0] - bound, seg.yc[1], seg.yc[2], seg.yc[3], roots, orders);
+        for (int i = 0; i < n; ++i) {
+            double r = roots[i];
+            for (int k = 0; k < 2; ++k) {
+                const double d = seg.dY(r);
+                if (d != 0.) {
+                    r -= (seg.Y(r) - bound) / d;
+                }
+            }
+            if ((r > s1) && (r < s2)) {
+                cuts.push_back(r);
+            }
+        }
+    }
+    cuts.push_back(s2);
+    std::sort(cuts.begin(), cuts.end());
+
+    double ret = 0.;
+    for (std::size_t i = 0; i + 1 < cuts.size(); ++i) {
+        const double sa = cuts[i];
+        const double sb = cuts[i + 1];
+        if (!(sb > sa)) {
+            continue;
+        }
+        const double mid = seg.Y(0.5 * (sa + sb));
+        if (mid >= vmax) {
+            ret += vmax * (seg.X(sb) - seg.X(sa));
+        } else if (mid <= vmin) {
+            ret += vmin * (seg.X(sb) - seg.X(sa));
+        } else {
+            ret += seg.integralYdX(sb) - seg.integralYdX(sa);
+        }
+    }
+
+    return ret * seg.span;
+}
+
 /**
  * @brief Interpolates using the control points P0(t0,v0) , P3(t3,v3)
  * and the derivatives P1(t1,v1) (being the derivative at P0 with respect to
@@ -413,15 +726,20 @@ Interpolation::solveQuartic(double c0,
  **/
 double
 Interpolation::interpolate(double tcur,
-                           const double vcur,              //start control point
-                           const double vcurDerivRight, //being the derivative dv/dt at tcur
-                           const double vnextDerivLeft, //being the derivative dv/dt at tnext
+                           const double vcur, // start control point
+                           const double vcurDerivRight, // being the derivative dv/dt at tcur
+                           const double vnextDerivLeft, // being the derivative dv/dt at tnext
+                           const double vcurWeightRight,
+                           const double vnextWeightLeft,
                            double tnext,
-                           const double vnext,               //end control point
+                           const double vnext, // end control point
                            double currentTime,
                            KeyframeTypeEnum interp,
                            KeyframeTypeEnum interpNext)
 {
+    if (isWeightedSegment(interp, interpNext, vcurWeightRight, vnextWeightLeft)) {
+        return interpolateBezier(tcur, vcur, vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, tnext, vnext, currentTime);
+    }
     double P0 = vcur;
     double P3 = vnext;
     // Hermite coefficients P0' and P3' are the derivatives with respect to x \in [0,1]
@@ -463,15 +781,20 @@ Interpolation::interpolate(double tcur,
 /// derive at currentTime. The derivative is with respect to currentTime
 double
 Interpolation::derive(double tcur,
-                      const double vcur,              //start control point
-                      const double vcurDerivRight,      //being the derivative dv/dt at tcur
-                      const double vnextDerivLeft,      //being the derivative dv/dt at tnext
+                      const double vcur, // start control point
+                      const double vcurDerivRight, // being the derivative dv/dt at tcur
+                      const double vnextDerivLeft, // being the derivative dv/dt at tnext
+                      const double vcurWeightRight,
+                      const double vnextWeightLeft,
                       double tnext,
-                      const double vnext,                    //end control point
+                      const double vnext, // end control point
                       double currentTime,
                       KeyframeTypeEnum interp,
                       KeyframeTypeEnum interpNext)
 {
+    if (isWeightedSegment(interp, interpNext, vcurWeightRight, vnextWeightLeft)) {
+        return deriveBezier(tcur, vcur, vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, tnext, vnext, currentTime);
+    }
     double P0 = vcur;
     double P3 = vnext;
     // Hermite coefficients P0' and P3' are the derivatives with respect to x \in [0,1]
@@ -512,17 +835,27 @@ Interpolation::derive(double tcur,
 /// interpolate and derive at currentTime. The derivative is with respect to currentTime
 double
 Interpolation::derive_clamp(double tcur,
-                            const double vcur,              //start control point
-                            const double vcurDerivRight, //being the derivative dv/dt at tcur
-                            const double vnextDerivLeft, //being the derivative dv/dt at tnext
+                            const double vcur, // start control point
+                            const double vcurDerivRight, // being the derivative dv/dt at tcur
+                            const double vnextDerivLeft, // being the derivative dv/dt at tnext
+                            const double vcurWeightRight,
+                            const double vnextWeightLeft,
                             double tnext,
-                            const double vnext,               //end control point
+                            const double vnext, // end control point
                             double currentTime,
                             double vmin,
                             double vmax,
                             KeyframeTypeEnum interp,
                             KeyframeTypeEnum interpNext)
 {
+    if (isWeightedSegment(interp, interpNext, vcurWeightRight, vnextWeightLeft)) {
+        const double v = interpolateBezier(tcur, vcur, vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, tnext, vnext, currentTime);
+        if ((vmin < v) && (v < vmax)) {
+            return deriveBezier(tcur, vcur, vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, tnext, vnext, currentTime);
+        }
+
+        return 0.;
+    }
     double P0 = vcur;
     double P3 = vnext;
     // Hermite coefficients P0' and P3' are the derivatives with respect to x \in [0,1]
@@ -565,16 +898,21 @@ Interpolation::derive_clamp(double tcur,
 // integrate from time1 to time2
 double
 Interpolation::integrate(double tcur,
-                         const double vcur,              //start control point
-                         const double vcurDerivRight, //being the derivative dv/dt at tcur
-                         const double vnextDerivLeft, //being the derivative dv/dt at tnext
+                         const double vcur, // start control point
+                         const double vcurDerivRight, // being the derivative dv/dt at tcur
+                         const double vnextDerivLeft, // being the derivative dv/dt at tnext
+                         const double vcurWeightRight,
+                         const double vnextWeightLeft,
                          double tnext,
-                         const double vnext,               //end control point
+                         const double vnext, // end control point
                          double time1,
                          double time2,
                          KeyframeTypeEnum interp,
                          KeyframeTypeEnum interpNext)
 {
+    if (isWeightedSegment(interp, interpNext, vcurWeightRight, vnextWeightLeft)) {
+        return integrateBezier(tcur, vcur, vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, tnext, vnext, time1, time2);
+    }
     double P0 = vcur;
     double P3 = vnext;
     // Hermite coefficients P0' and P3' are the derivatives with respect to x \in [0,1]
@@ -705,11 +1043,13 @@ statusUpdate(FuncTypeEnum status,
 // integrate from time1 to time2 with clamping of the function values in [vmin,vmax]
 double
 Interpolation::integrate_clamp(double tcur,
-                               const double vcur,              //start control point
-                               const double vcurDerivRight, //being the derivative dv/dt at tcur
-                               const double vnextDerivLeft, //being the derivative dv/dt at tnext
+                               const double vcur, // start control point
+                               const double vcurDerivRight, // being the derivative dv/dt at tcur
+                               const double vnextDerivLeft, // being the derivative dv/dt at tnext
+                               const double vcurWeightRight,
+                               const double vnextWeightLeft,
                                double tnext,
-                               const double vnext,               //end control point
+                               const double vnext, // end control point
                                double time1,
                                double time2,
                                double vmin,
@@ -717,14 +1057,19 @@ Interpolation::integrate_clamp(double tcur,
                                KeyframeTypeEnum interp,
                                KeyframeTypeEnum interpNext)
 {
+    if (isWeightedSegment(interp, interpNext, vcurWeightRight, vnextWeightLeft)) {
+        return integrateBezierClamp(tcur, vcur, vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, tnext, vnext, time1, time2, vmin, vmax);
+    }
     if ( vmin == -std::numeric_limits<double>::infinity() &&
          vmax == +std::numeric_limits<double>::infinity() ) {
         return integrate(tcur,
-                         vcur,              //start control point
-                         vcurDerivRight, //being the derivative dv/dt at tcur
-                         vnextDerivLeft, //being the derivative dv/dt at tnext
+                         vcur, // start control point
+                         vcurDerivRight, // being the derivative dv/dt at tcur
+                         vnextDerivLeft, // being the derivative dv/dt at tnext
+                         vcurWeightRight,
+                         vnextWeightLeft,
                          tnext,
-                         vnext,               //end control point
+                         vnext, // end control point
                          time1,
                          time2,
                          interp,

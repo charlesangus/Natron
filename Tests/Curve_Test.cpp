@@ -30,6 +30,7 @@
 #include <QString>
 #include <QDir>
 
+#include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
 
 NATRON_NAMESPACE_USING
@@ -124,4 +125,121 @@ TEST(Curve, Basic)
     KeyFrame k2(1., 20.);
 }
 
+TEST(KeyFrame, WeightsOnlyOnFreeAndBrokenKeys)
+{
+    KeyFrame smooth(0., 1.);
+    smooth.setLeftWeight(0.5);
+    EXPECT_EQ(Interpolation::kDefaultTangentWeight, smooth.getLeftWeight());
 
+    KeyFrame free(0., 1., 2., 2., eKeyframeTypeFree, 0.25, 0.75);
+    EXPECT_EQ(0.25, free.getLeftWeight());
+    EXPECT_EQ(0.75, free.getRightWeight());
+
+    free.setRightWeight(5.);
+    EXPECT_EQ(Interpolation::kMaxTangentWeight, free.getRightWeight());
+    free.setRightWeight(-1.);
+    EXPECT_EQ(Interpolation::kMinTangentWeight, free.getRightWeight());
+    free.setRightWeight(std::nan(""));
+    EXPECT_EQ(Interpolation::kDefaultTangentWeight, free.getRightWeight());
+
+    KeyFrame other(free);
+    EXPECT_EQ(free, other);
+    other.setLeftWeight(0.5);
+    EXPECT_NE(free, other);
+
+    other.setInterpolation(eKeyframeTypeBroken);
+    EXPECT_EQ(0.5, other.getLeftWeight());
+    other.setInterpolation(eKeyframeTypeLinear);
+    EXPECT_EQ(Interpolation::kDefaultTangentWeight, other.getLeftWeight());
+    EXPECT_EQ(Interpolation::kDefaultTangentWeight, other.getRightWeight());
+}
+
+namespace {
+void
+addFreeKeys(Curve& c)
+{
+    c.addKeyFrame(KeyFrame(0., 0., 1., 1., eKeyframeTypeFree));
+    c.addKeyFrame(KeyFrame(10., 5., 0., 0., eKeyframeTypeFree));
+    c.addKeyFrame(KeyFrame(20., 0., -1., -1., eKeyframeTypeFree));
+}
+
+U64
+curveHash(const Curve& c)
+{
+    ContentHasher h;
+    c.appendContentHash(h);
+
+    return h.finalize();
+}
+} // anon namespace
+
+TEST(Curve, WeightedKeyChangesSegmentsNotKeys)
+{
+    Curve c;
+    addFreeKeys(c);
+    const double before5 = c.getValueAt(5.);
+    const double before15 = c.getValueAt(15.);
+    const double integralBefore = c.getIntegrateFromTo(0., 20.);
+    const U64 hashBefore = curveHash(c);
+
+    const KeyFrame key = c.setKeyFrameTangents(0., 0., 0.8, 0.8, 1);
+    EXPECT_EQ(0.8, key.getLeftWeight());
+    EXPECT_EQ(0.8, key.getRightWeight());
+    EXPECT_EQ(eKeyframeTypeFree, key.getInterpolation());
+
+    EXPECT_EQ(0., c.getValueAt(0.));
+    EXPECT_EQ(5., c.getValueAt(10.));
+    EXPECT_EQ(0., c.getValueAt(20.));
+    EXPECT_NE(before5, c.getValueAt(5.));
+    EXPECT_NE(before15, c.getValueAt(15.));
+    // Longer flat handles at the peak keep the curve nearer the peak for longer.
+    EXPECT_GT(c.getValueAt(5.), before5);
+    EXPECT_GT(c.getIntegrateFromTo(0., 20.), integralBefore);
+    EXPECT_NEAR(0., c.getDerivativeAt(10.), 1e-9);
+
+    // Only the weights changed, so only they can have moved the hash.
+    EXPECT_NE(hashBefore, curveHash(c));
+    c.setKeyFrameTangents(0., 0., Interpolation::kDefaultTangentWeight, Interpolation::kDefaultTangentWeight, 1);
+    EXPECT_EQ(hashBefore, curveHash(c));
+    EXPECT_EQ(before5, c.getValueAt(5.));
+    EXPECT_EQ(before15, c.getValueAt(15.));
+}
+
+TEST(Curve, LeavingFreeResetsWeights)
+{
+    Curve c;
+    addFreeKeys(c);
+    c.setKeyFrameTangents(0., 0., 0.6, 0.2, 1);
+
+    const KeyFrame smooth = c.setKeyFrameInterpolation(eKeyframeTypeSmooth, 1);
+    EXPECT_EQ(Interpolation::kDefaultTangentWeight, smooth.getLeftWeight());
+    EXPECT_EQ(Interpolation::kDefaultTangentWeight, smooth.getRightWeight());
+
+    // Weights given to a key that is not Free or Broken do not hold.
+    const KeyFrame stillSmooth = c.setKeyFrameTangents(0., 0., 0.6, 0.2, 1);
+    EXPECT_EQ(Interpolation::kDefaultTangentWeight, stillSmooth.getLeftWeight());
+    EXPECT_EQ(Interpolation::kDefaultTangentWeight, stillSmooth.getRightWeight());
+}
+
+TEST(Curve, CopiesKeepWeights)
+{
+    Curve c;
+    addFreeKeys(c);
+    c.setKeyFrameTangents(0., 0., 0.6, 0.2, 1);
+    const U64 hash = curveHash(c);
+
+    Curve cloned;
+    cloned.clone(c);
+    Curve assigned;
+    assigned = c;
+    Curve copied(c);
+
+    for (const Curve* other : { &cloned, &assigned, &copied }) {
+        KeyFrame key;
+        ASSERT_TRUE(other->getKeyFrameWithIndex(1, &key));
+        EXPECT_EQ(0.6, key.getLeftWeight());
+        EXPECT_EQ(0.2, key.getRightWeight());
+        EXPECT_EQ(c.getValueAt(5.), other->getValueAt(5.));
+        EXPECT_EQ(hash, curveHash(*other));
+    }
+}

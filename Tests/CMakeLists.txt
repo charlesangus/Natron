@@ -131,6 +131,7 @@ set(Tests_SOURCES
     TrackerLayer_Test.cpp
     Tracker_Test.cpp
     TypedPassthrough_Test.cpp
+    WeightedInterpolation_Test.cpp
     WriteAllLayers_Test.cpp
     ImageConvert_Test.cpp
     ImageMetadata_Test.cpp

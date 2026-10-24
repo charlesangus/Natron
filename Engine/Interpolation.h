@@ -36,57 +36,122 @@ NATRON_NAMESPACE_ENTER
 
 namespace Interpolation {
 /**
+ * @brief A tangent's weight is its handle's extent in time, as a fraction of the span of the
+ * segment it reaches into. Weights stay below 1 so that time is strictly monotonic along every
+ * segment, and above 0 so that its derivative stays finite.
+ **/
+constexpr double kDefaultTangentWeight = 1. / 3.;
+constexpr double kMinTangentWeight = 0.01;
+constexpr double kMaxTangentWeight = 0.99;
+
+/// w within [kMinTangentWeight, kMaxTangentWeight], or kDefaultTangentWeight when w is NaN.
+double clampTangentWeight(double w) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Whether the segment from a key of type interp to one of type interpNext evaluates as a
+ * Bezier in (time, value). Otherwise it is the Hermite cubic in time, which is the Bezier whose
+ * inner weights are both kDefaultTangentWeight.
+ **/
+bool isWeightedSegment(KeyframeTypeEnum interp,
+                       KeyframeTypeEnum interpNext,
+                       double vcurWeightRight,
+                       double vnextWeightLeft) WARN_UNUSED_RETURN;
+
+/**
  * @brief Interpolates using the control points P0(t0,v0) , P3(t3,v3)
  * and the derivatives P1(t1,v1) (being the derivative at P0 with respect to
  * t \in [t1,t2]) and P2(t2,v2) (being the derivative at P3 with respect to
  * t \in [t1,t2]) the value at 'currentTime' using the
  * interpolation method "interp".
+ * vcurWeightRight and vnextWeightLeft are the inner tangent weights (@see isWeightedSegment()).
  **/
-double interpolate(double tcur, const double vcur, //start control point
-                   const double vcurDerivRight, //being the derivative dv/dt at tcur
-                   const double vnextDerivLeft, //being the derivative dv/dt at tnext
-                   double tnext, const double vnext, //end control point
+double interpolate(double tcur, const double vcur, // start control point
+                   const double vcurDerivRight, // being the derivative dv/dt at tcur
+                   const double vnextDerivLeft, // being the derivative dv/dt at tnext
+                   const double vcurWeightRight,
+                   const double vnextWeightLeft,
+                   double tnext, const double vnext, // end control point
                    double currentTime,
                    KeyframeTypeEnum interp,
                    KeyframeTypeEnum interpNext) WARN_UNUSED_RETURN;
 
 /// derive at currentTime. The derivative is with respect to currentTime
-double derive(double tcur, const double vcur, //start control point
-              const double vcurDerivRight, //being the derivative dv/dt at tcur
-              const double vnextDerivLeft, //being the derivative dv/dt at tnext
-              double tnext, const double vnext, //end control point
+double derive(double tcur, const double vcur, // start control point
+              const double vcurDerivRight, // being the derivative dv/dt at tcur
+              const double vnextDerivLeft, // being the derivative dv/dt at tnext
+              const double vcurWeightRight,
+              const double vnextWeightLeft,
+              double tnext, const double vnext, // end control point
               double currentTime,
               KeyframeTypeEnum interp,
               KeyframeTypeEnum interpNext) WARN_UNUSED_RETURN;
 
 /// derive at currentTime. The derivative is with respect to currentTime. The function is clamped between vmin an vmax.
-double derive_clamp(double tcur, const double vcur, //start control point
-                    const double vcurDerivRight, //being the derivative dv/dt at tcur
-                    const double vnextDerivLeft, //being the derivative dv/dt at tnext
-                    double tnext, const double vnext, //end control point
+double derive_clamp(double tcur, const double vcur, // start control point
+                    const double vcurDerivRight, // being the derivative dv/dt at tcur
+                    const double vnextDerivLeft, // being the derivative dv/dt at tnext
+                    const double vcurWeightRight,
+                    const double vnextWeightLeft,
+                    double tnext, const double vnext, // end control point
                     double currentTime,
                     double vmin, double vmax,
                     KeyframeTypeEnum interp,
                     KeyframeTypeEnum interpNext) WARN_UNUSED_RETURN;
 
 /// integrate from time1 to time2 - be careful that time1 and time2 have to be in the range [tcur,tnext]
-double integrate(double tcur, const double vcur, //start control point
-                 const double vcurDerivRight, //being the derivative dv/dt at tcur
-                 const double vnextDerivLeft, //being the derivative dv/dt at tnext
-                 double tnext, const double vnext, //end control point
+double integrate(double tcur, const double vcur, // start control point
+                 const double vcurDerivRight, // being the derivative dv/dt at tcur
+                 const double vnextDerivLeft, // being the derivative dv/dt at tnext
+                 const double vcurWeightRight,
+                 const double vnextWeightLeft,
+                 double tnext, const double vnext, // end control point
                  double time1, double time2,
                  KeyframeTypeEnum interp,
                  KeyframeTypeEnum interpNext) WARN_UNUSED_RETURN;
 
 /// integrate from time1 to time2 - be careful that time1 and time2 have to be in the range [tcur,tnext]. The function is clamped between vmin an vmax.
-double integrate_clamp(double tcur, const double vcur, //start control point
-                       const double vcurDerivRight, //being the derivative dv/dt at tcur
-                       const double vnextDerivLeft, //being the derivative dv/dt at tnext
-                       double tnext, const double vnext, //end control point
+double integrate_clamp(double tcur, const double vcur, // start control point
+                       const double vcurDerivRight, // being the derivative dv/dt at tcur
+                       const double vnextDerivLeft, // being the derivative dv/dt at tnext
+                       const double vcurWeightRight,
+                       const double vnextWeightLeft,
+                       double tnext, const double vnext, // end control point
                        double time1, double time2,
                        double vmin, double vmax,
                        KeyframeTypeEnum interp,
                        KeyframeTypeEnum interpNext) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The segment between two keys as a cubic Bezier in (time, value), whatever its weights:
+ * in u = (t - tcur) / (tnext - tcur), the control points are (0, vcur),
+ * (wR, vcur + vcurDerivRight wR span), (1 - wL, vnext - vnextDerivLeft wL span) and (1, vnext).
+ * The functions above use these for weighted segments only, so that unweighted ones keep the
+ * Hermite evaluation exactly.
+ **/
+double interpolateBezier(double tcur, double vcur,
+                         double vcurDerivRight, double vnextDerivLeft,
+                         double vcurWeightRight, double vnextWeightLeft,
+                         double tnext, double vnext,
+                         double currentTime) WARN_UNUSED_RETURN;
+
+double deriveBezier(double tcur, double vcur,
+                    double vcurDerivRight, double vnextDerivLeft,
+                    double vcurWeightRight, double vnextWeightLeft,
+                    double tnext, double vnext,
+                    double currentTime) WARN_UNUSED_RETURN;
+
+double integrateBezier(double tcur, double vcur,
+                       double vcurDerivRight, double vnextDerivLeft,
+                       double vcurWeightRight, double vnextWeightLeft,
+                       double tnext, double vnext,
+                       double time1, double time2) WARN_UNUSED_RETURN;
+
+double integrateBezierClamp(double tcur, double vcur,
+                            double vcurDerivRight, double vnextDerivLeft,
+                            double vcurWeightRight, double vnextWeightLeft,
+                            double tnext, double vnext,
+                            double time1, double time2,
+                            double vmin, double vmax) WARN_UNUSED_RETURN;
 
 /**
  * @brief This function will set the left and right derivative of 'cur', depending on the interpolation method 'interp' and the

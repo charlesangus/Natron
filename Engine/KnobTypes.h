@@ -1185,6 +1185,7 @@ public:
     CurvePtr getDefaultParametricCurve(int dimension) const;
     Natron::StatusEnum addControlPoint(Natron::ValueChangedReasonEnum reason, int dimension, double key, double value, Natron::KeyframeTypeEnum interpolation = Natron::KeyframeTypeEnum::eKeyframeTypeSmooth) WARN_UNUSED_RETURN;
     Natron::StatusEnum addControlPoint(Natron::ValueChangedReasonEnum reason, int dimension, double key, double value, double leftDerivative, double rightDerivative, Natron::KeyframeTypeEnum interpolation = Natron::KeyframeTypeEnum::eKeyframeTypeSmooth) WARN_UNUSED_RETURN;
+    Natron::StatusEnum addControlPoint(Natron::ValueChangedReasonEnum reason, int dimension, double key, double value, const KeyTangents& tangents, Natron::KeyframeTypeEnum interpolation) WARN_UNUSED_RETURN;
     Natron::StatusEnum getValue(int dimension, double parametricPosition, double *returnValue) const WARN_UNUSED_RETURN;
     Natron::StatusEnum getNControlPoints(int dimension, int *returnValue) const WARN_UNUSED_RETURN;
     Natron::StatusEnum getNthControlPoint(int dimension,
@@ -1197,6 +1198,11 @@ public:
                                   double *value,
                                   double *leftDerivative,
                                   double *rightDerivative) const WARN_UNUSED_RETURN;
+    Natron::StatusEnum getNthControlPoint(int dimension,
+                                          int nthCtl,
+                                          double* key,
+                                          double* value,
+                                          KeyTangents* tangents) const WARN_UNUSED_RETURN;
 
     Natron::StatusEnum setNthControlPointInterpolation(Natron::ValueChangedReasonEnum reason,
                                                int dimension,
@@ -1217,6 +1223,12 @@ public:
                                   double leftDerivative,
                                   double rightDerivative) WARN_UNUSED_RETURN;
 
+    Natron::StatusEnum setNthControlPoint(Natron::ValueChangedReasonEnum reason,
+                                          int dimension,
+                                          int nthCtl,
+                                          double key,
+                                          double value,
+                                          const KeyTangents& tangents) WARN_UNUSED_RETURN;
 
     Natron::StatusEnum deleteControlPoint(Natron::ValueChangedReasonEnum reason, int dimension, int nthCtl) WARN_UNUSED_RETURN;
     Natron::StatusEnum deleteAllControlPoints(Natron::ValueChangedReasonEnum reason, int dimension) WARN_UNUSED_RETURN;

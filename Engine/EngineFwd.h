@@ -168,6 +168,7 @@ class ImageKey;
 class ImageParams;
 class ImageLayerDesc;
 class KeyFrame;
+struct KeyTangents;
 class KnobBool;
 class KnobButton;
 class KnobChannelSelect;

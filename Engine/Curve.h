@@ -35,6 +35,7 @@
 #include <utility>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Interpolation.h"
 #include "Global/GlobalDefines.h"
 #include "Serialization/CurveSerialization.h"
 
@@ -45,9 +46,23 @@ NATRON_NAMESPACE_ENTER
 class ContentHasher;
 
 /**
+ * @brief Both tangents of a keyframe: the derivatives and their weights, each weight a fraction
+ * of the neighbouring segment's duration.
+ **/
+struct KeyTangents {
+    double left = 0.;
+    double right = 0.;
+    double leftWeight = Interpolation::kDefaultTangentWeight;
+    double rightWeight = Interpolation::kDefaultTangentWeight;
+};
+
+/**
  * @brief A KeyFrame is a lightweight pair <time,value>. These are the values that are used
  * to interpolate a Curve. The _leftDerivative and _rightDerivative can be
  * used by the interpolation method of the curve.
+ * Free and Broken keys also carry a weight per tangent (@see Interpolation::isWeightedSegment()).
+ * Every other type keeps both weights at Interpolation::kDefaultTangentWeight: setting a weight
+ * on such a key does nothing, and changing a key to such a type resets its weights.
  **/
 
 class KeyFrame
@@ -60,7 +75,9 @@ public:
              double initialValue,
              double leftDerivative = 0.,
              double rightDerivative = 0.,
-             KeyframeTypeEnum interpolation = eKeyframeTypeSmooth);
+             KeyframeTypeEnum interpolation = eKeyframeTypeSmooth,
+             double leftWeight = Interpolation::kDefaultTangentWeight,
+             double rightWeight = Interpolation::kDefaultTangentWeight);
 
     KeyFrame(const KeyFrame & other);
 
@@ -70,11 +87,7 @@ public:
 
     bool operator==(const KeyFrame & o) const
     {
-        return o._time == _time &&
-               o._value == _value &&
-               o._interpolation == _interpolation &&
-               o._leftDerivative == _leftDerivative &&
-               o._rightDerivative == _rightDerivative;
+        return o._time == _time && o._value == _value && o._interpolation == _interpolation && o._leftDerivative == _leftDerivative && o._rightDerivative == _rightDerivative && o._leftWeight == _leftWeight && o._rightWeight == _rightWeight;
     }
 
     bool operator!=(const KeyFrame & o) const
@@ -94,6 +107,15 @@ public:
 
     void setRightDerivative(double v);
 
+    double getLeftWeight() const;
+
+    double getRightWeight() const;
+
+    /// Clamped by Interpolation::clampTangentWeight().
+    void setLeftWeight(double w);
+
+    void setRightWeight(double w);
+
     void setValue(double v);
 
     void setTime(double time);
@@ -108,6 +130,8 @@ private:
     double _value;
     double _leftDerivative;
     double _rightDerivative;
+    double _leftWeight;
+    double _rightWeight;
     KeyframeTypeEnum _interpolation;
 };
 
@@ -303,17 +327,12 @@ private:
     KeyFrame setKeyFrameRightDerivativeInternal(double value, int index, int* nextIndex);
 
 public:
-
-
     /**
-     * @brief Set the right and left derivatives  of the keyframe positioned at index index and returns the new  keyframe.
+     * @brief Set the right and left derivatives and weights of the keyframe positioned at index index and returns
+     * the new keyframe. The weights only hold on a Free or Broken key.
      * Also the index of the new keyframe is returned in newIndex.
      **/
-    KeyFrame setKeyFrameDerivatives(double left, double right, int index, int* newIndex = NULL);
-
-private:
-
-    KeyFrame setKeyFrameDerivativesInternal(double left, double right, int index, int* newIndex);
+    KeyFrame setKeyFrameTangents(double left, double right, double leftWeight, double rightWeight, int index, int* newIndex = NULL);
 
 public:
 
@@ -362,7 +381,7 @@ public:
 
     /**
      * @brief Appends everything that decides this curve's values to h: periodicity, X and Y
-     * ranges and every keyframe's time, value, interpolation and tangents. MT-safe.
+     * ranges and every keyframe's time, value, interpolation, tangents and weights. MT-safe.
      **/
     void appendContentHash(ContentHasher& h) const;
 

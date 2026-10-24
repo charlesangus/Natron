@@ -2109,6 +2109,29 @@ KnobParametric::addControlPoint(ValueChangedReasonEnum reason,
 }
 
 StatusEnum
+KnobParametric::addControlPoint(ValueChangedReasonEnum reason,
+                                int dimension,
+                                double key,
+                                double value,
+                                const KeyTangents& tangents,
+                                KeyframeTypeEnum interpolation)
+{
+    /// Mt-safe as Curve is MT-safe
+    if ((dimension >= (int)_curves.size()) || std::isnan(key) || // check for NaN
+        std::isinf(key) || std::isnan(value) || // check for NaN
+        std::isinf(value)) {
+        return eStatusFailed;
+    }
+
+    KeyFrame k(key, value, tangents.left, tangents.right, interpolation, tangents.leftWeight, tangents.rightWeight);
+    _curves[dimension]->addKeyFrame(k);
+    Q_EMIT curveChanged(dimension);
+    evaluateValueChange(0, getCurrentTime(), ViewSpec::all(), reason);
+
+    return eStatusOK;
+}
+
+StatusEnum
 KnobParametric::getValue(int dimension,
                          double parametricPosition,
                          double *returnValue) const
@@ -2186,6 +2209,32 @@ KnobParametric::getNthControlPoint(int dimension,
 }
 
 StatusEnum
+KnobParametric::getNthControlPoint(int dimension,
+                                   int nthCtl,
+                                   double* key,
+                                   double* value,
+                                   KeyTangents* tangents) const
+{
+    /// Mt-safe as Curve is MT-safe
+    if (dimension >= (int)_curves.size()) {
+        return eStatusFailed;
+    }
+    KeyFrame kf;
+    bool ret = getParametricCurve(dimension)->getKeyFrameWithIndex(nthCtl, &kf);
+    if (!ret) {
+        return eStatusFailed;
+    }
+    *key = kf.getTime();
+    *value = kf.getValue();
+    tangents->left = kf.getLeftDerivative();
+    tangents->right = kf.getRightDerivative();
+    tangents->leftWeight = kf.getLeftWeight();
+    tangents->rightWeight = kf.getRightWeight();
+
+    return eStatusOK;
+}
+
+StatusEnum
 KnobParametric::setNthControlPointInterpolation(ValueChangedReasonEnum reason,
                                                 int dimension,
                                                 int nThCtl,
@@ -2239,6 +2288,33 @@ KnobParametric::setNthControlPoint(ValueChangedReasonEnum reason,
                                    double leftDerivative,
                                    double rightDerivative)
 {
+    /// Mt-safe as Curve is MT-safe
+    if (dimension >= (int)_curves.size()) {
+        return eStatusFailed;
+    }
+    int newIdx;
+    KeyFrame moved;
+    try {
+        moved = _curves[dimension]->setKeyFrameValueAndTime(key, value, nthCtl, &newIdx);
+    } catch (...) {
+        return eStatusFailed;
+    }
+
+    _curves[dimension]->setKeyFrameTangents(leftDerivative, rightDerivative, moved.getLeftWeight(), moved.getRightWeight(), newIdx);
+    Q_EMIT curveChanged(dimension);
+    evaluateValueChange(0, getCurrentTime(), ViewSpec::all(), reason);
+
+    return eStatusOK;
+}
+
+StatusEnum
+KnobParametric::setNthControlPoint(ValueChangedReasonEnum reason,
+                                   int dimension,
+                                   int nthCtl,
+                                   double key,
+                                   double value,
+                                   const KeyTangents& tangents)
+{
     ///Mt-safe as Curve is MT-safe
     if ( dimension >= (int)_curves.size() ) {
         return eStatusFailed;
@@ -2250,7 +2326,7 @@ KnobParametric::setNthControlPoint(ValueChangedReasonEnum reason,
         return eStatusFailed;
     }
 
-    _curves[dimension]->setKeyFrameDerivatives(leftDerivative, rightDerivative, newIdx);
+    _curves[dimension]->setKeyFrameTangents(tangents.left, tangents.right, tangents.leftWeight, tangents.rightWeight, newIdx);
     Q_EMIT curveChanged(dimension);
     evaluateValueChange(0, getCurrentTime(), ViewSpec::all(), reason);
 

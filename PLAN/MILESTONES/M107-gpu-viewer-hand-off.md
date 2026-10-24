@@ -469,3 +469,12 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
   - `insertCacheTiles` allocates the cache entries serially, holds them under one `FrameEntryLocker`, and copies with `parallelForOnGlobalPool`.
   - Beyond the brief, `OpenGLViewerI.h` and `Gui/ViewerGL.{h,cpp}` change the virtual to `consumeCompletedHandoffReadbacks(fn)`.
   - New `GlInteropTest.*HostCopyInPlace` cases. Checked with `-fsyntax-only` and clang-format.
+- 2026-10-23 — **M107.P7.T2 code in, awaiting the phase build.**
+  - Each claimed readback becomes a `FillJob` on the global pool at priority 8, stored per slot. Readbacks that `present` copied out run as detached jobs.
+  - A waiter never needs a free pool thread: `wait()` runs a job that hasn't started inline, and `cancel()` drops it.
+  - `present` waits on the fill of the slot it reuses, and `destroyRing` waits for or cancels fills before it unmaps. Every rebuild, device loss, `release` and the destructor go through `destroyRing`.
+  - Tile allocation moved into the job, because `getTextureOrCreate` is lock-safe.
+  - A `CacheFillGate`, closed in `~ViewerInstance`, covers a fill that outlives the viewer instance.
+  - New `ViewerHandoff` cases: `PresentWaitsForAFillStillReadingTheSlotItReuses` and `ReleaseWaitsForARunningFillAndCancelsAQueuedOne`.
+  - Risk for P7.T3/P7.T4: the fill's `parallelForOnGlobalPool` helpers queue at priority 1, behind render work, so copies may run mostly on the job's own thread during playback.
+  - Checked with `-fsyntax-only` and clang-format.

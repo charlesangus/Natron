@@ -218,7 +218,7 @@ future core work has solid ground to build on.
 | M156 | GPU Download Throughput In Comps | doing | M109 | gpu | E5 | [M156-gpu-download-throughput-in-comps.md](PLAN/MILESTONES/M156-gpu-download-throughput-in-comps.md) |
 | M157 | Relicense To GPLv3 Or Later | todo | - |  | E2 | [M157-relicense-to-gplv3-or-later.md](PLAN/MILESTONES/M157-relicense-to-gplv3-or-later.md) |
 | M158 | Node Toolbar As Menu | done | - | bosley-native-nodes | E10 | [M158-node-toolbar-as-menu.md](PLAN/MILESTONES/M158-node-toolbar-as-menu.md) |
-| M161 | Startup Compositor Crash | doing | - | bosley-native-nodes | E10 | [M161-startup-compositor-crash.md](PLAN/MILESTONES/M161-startup-compositor-crash.md) |
+| M161 | Startup Compositor Crash | done | - | bosley-native-nodes | E10 | [M161-startup-compositor-crash.md](PLAN/MILESTONES/M161-startup-compositor-crash.md) |
 | M170 | Engine Render Races | done | - | bosley-native-nodes | E14 | [M170-engine-render-races.md](PLAN/MILESTONES/M170-engine-render-races.md) |
 | M162 | OFX CUDA And OpenCL Suites | todo | M86 |  | E5 | [M162-ofx-cuda-and-opencl-suites.md](PLAN/MILESTONES/M162-ofx-cuda-and-opencl-suites.md) |
 | M171 | GPU Correctness Fixes | todo | - |  | E5 | [M171-gpu-correctness-fixes.md](PLAN/MILESTONES/M171-gpu-correctness-fixes.md) |
@@ -258,6 +258,6 @@ future core work has solid ground to build on.
 
 - **M113 - Native Warp Nodes:** UAT with the user: screenshots from `m113_warp.py` and `build/appimages/M113-0c04c69d7.AppImage`.
 
-- **M161 - Startup Compositor Crash:** After M161 merges, its lane picks up M19 - USD/Hydra Foundation (reserved for bosley-native-nodes; also needs M107 - GPU Viewer Hand-off done).
+- **M19 - USD/Hydra Foundation:** reserved for bosley-native-nodes to follow M161 (merged); still waits on M107 - GPU Viewer Hand-off (gpu PM).
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.
 - **M166 - Non-Float Plane Model:** the user wants to rethink the model before it is planned: Read emitting EXR half/uint32 layers natively, and possibly a bit depth per layer. Settle the framing in `/cat-discuss`, then elaborate.

@@ -18,15 +18,18 @@ Follow-up to M44 - Trackball Colour Editing. At the default properties width the
   - **Puck:** how the reveal graphic's marker behaves, **relative** (starts at the disc's centre, travels with the stroke) or **absolute** (sits where the knob's current value falls on the gradient). Only matters with C, A+C or W.
 - The reveal graphic: C mode shows the real `ColorWheelWidget`; S, T and V show discs of the wheel's diameter with the same outer ring, filled with a gradient that says what the stroke does. S: hue shifts left and right, white at the bottom to highly saturated at the top. T: warm to cool left to right, green to magenta bottom to top. V: white at the top right, black at the bottom left.
 - An AppImage and test card for the user's pick, then a cleanup that makes the winner the only layout.
+- **After the UAT pick (2026-10-24), superseding the axes above:** the panel spans the label column to the row's last button, with custom sliders (whole-slider relative drag) paired with Natron's SpinBox, in the knob. User preferences: global-mode feedback (Crosshair + reveal, Widget cursor) and track size (Regular; Large: a wheel up to 400 px with r/g/b/a and Hue…Tint stacked to its right). Right-click exits global mode, as Esc does, without opening a context menu. The S/T/V reveal discs show the drag's result (see P3.T9).
 
 **Out:**
-- The r/g/b/a channel lines move nowhere and keep their right inset on every axis; only the panel's Hue…Tint lines can overflow. (none)
-- Keeping any losing axis as a user preference. (none)
+- In Regular the r/g/b/a lines stay above the panel; they move only in Large. (none)
+- Keeping any losing axis as a user preference; only Feedback and track size are preferences. (none)
 - Changes to the colour maths, the gesture rates, global-mode keys or the icons, and to what the HUD's readout says (only where it is drawn changes). (M44 - Trackball Colour Editing shipped them; icon polish is M56 - Visual And Menu Polish)
 - Simplified and viewer colour knobs, which keep the old popup. (none)
 - Any other cursor designs, such as a per-mode glyph cursor or a cursor that becomes the trackball: pitched and not picked. (none)
 
 **Edge cases:**
+- Large in a bin too narrow for wheel + right column: the Regular arrangement is used.
+- Right-click during a left-button stroke: ignored; the stroke continues.
 - A properties bin narrower than the layout's minimum: the wheel never shrinks below 160 px; the sliders give way first, then the panel scrolls with the page as today.
 - A wide or floating bin: the wheel stops at its cap; the extra width goes to the sliders (horizontal styles) or stays empty to the right (vertical style).
 - Bin-top with no colour knob on the new top node: the bin-top panel hides.
@@ -199,6 +202,76 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
 
 ## Phase 119.3: Keep the winner
 
+Re-planned 2026-10-24 from the user's UAT pick (see ## Decisions). T2, T3, T4 and T6 all edit `ColorTrackballGlobalMode.cpp`/`KnobGuiColor.cpp`, so they run in sequence.
+
+- [ ] M119.P3.T1 — Add the trackball feedback and track-size preferences
+  - files: `Engine/Settings.h`, `Engine/Settings.cpp`
+  - approach: two `KnobChoice`s on `_uiPage`, declared like `_useCursorPositionIncrements` (`Settings.cpp:625`): `colorTrackballFeedback` {Crosshair + reveal, Widget cursor}, default Crosshair + reveal; `colorTrackballSize` {Regular, Large}, default Regular; typed getters; changes reach the GUI through `settingChanged` (`Settings.cpp:2234`). No other values, no migration (no backward compat).
+  - verify: `EngineTests` or `GuiTests` case: defaults read back as Crosshair+reveal and Regular; setting each emits `settingChanged` once; a settings save and reload round-trips both.
+  - size: M
+
+- [ ] M119.P3.T2 — Drive global-mode feedback from the preference; delete Today, Crosshair, Reveal and the absolute puck
+  - files: `Gui/ColorTrackballGlobalMode.{h,cpp}`, `Gui/ColorTrackballReveal.{h,cpp}`, `Gui/ColorPanelLayoutDev.{h,cpp}`, `Tests/ColorTrackballGlobalMode_Test.cpp`, `Tests/ColorTrackballReveal_Test.cpp`
+  - approach: replace `ColorPanelLayout::Feedback`/`Puck` with a two-value enum read from T1's setting; a change mid-stroke is still deferred to `endStroke()`. Delete the Today/Crosshair/Reveal branches, `Puck` and the absolute path (`colorTrackballRevealDiscPuck`/`…WheelState` keep only relative). Both values keep the crosshair override and the following HUD exactly as P1.T11/T12/T14/T15 built them.
+  - verify: `GuiTests --gtest_filter=ColorTrackballGlobalMode*:ColorTrackballReveal*`: each preference value shows its graphic; flipping the setting mid-stroke takes effect after release; no override cursor is left after exit; `grep -n 'Puck\|Feedback::Today' Gui Tests` is empty.
+  - size: L
+
+- [ ] M119.P3.T3 — Fix the corrupted following HUD: make it a window from construction, and mask the reveal to its disc
+  - files: `Gui/ColorTrackballHud.{h,cpp}`, `Gui/KnobGuiColor.{h,cpp}`, `Gui/ColorTrackballGlobalMode.cpp`, `Tests/ColorTrackballHud_Test.cpp`
+  - approach: likely cause: `setFollowCursor(true)` reparents a child widget into a top-level window at runtime (`Gui/ColorTrackballHud.cpp:177-210`), which is mapped but never painted, so it shows stale panel pixels. Build the HUD as a window with `followCursorWindowFlags()` from birth, with an opaque fill (`autoFillBackground`, plus a frame in the QSS role's colour). Delete `setFollowCursor`'s reparenting, the `_preFollow*` restore state, and `attach/detachGlobalModeHud`. After `adjustSize()`/`move()`, `update()` the HUD. Give `ColorTrackballReveal` a circular `setMask` so it is round without a compositor.
+  - verify: `GuiTests --gtest_filter=ColorTrackballHud*` (the HUD is a window, not a child of any panel). Xvfb (in T10's script): after engage and a pointer move, `QScreen::grabWindow(0, hud.frameGeometry())` matches `hud.grab()` (mean channel difference under 4) and the region contains the "Mode C" label's text pixels; the reveal shot shows no black corners.
+  - size: M
+
+- [ ] M119.P3.T4 — Exit global mode on a right-click, with no context menu
+  - files: `Gui/ColorTrackballGlobalMode.{h,cpp}`, `Tests/ColorTrackballGlobalMode_Test.cpp`
+  - approach: in `handleMousePress`, a `Qt::RightButton` press with no other button held calls `exit()`, the same path as Esc. Set a `_swallowRightClickTail` flag and keep the event filter installed until the matching release and the `QEvent::ContextMenu` have been eaten (or the next unrelated event clears the flag), so nothing under the pointer opens a menu. A right press during a left stroke is ignored, as today.
+  - verify: GuiTests: synthetic right press+release+ContextMenu while engaged → `isEngaged()==false`, `QApplication::overrideCursor()==nullptr`, ContextMenu reported as filtered. T10's script right-clicks over a node's properties panel during global mode, checks the mode ended, the cursor was restored and no `QMenu` is visible.
+  - size: M
+
+- [ ] M119.P3.T5 — Delete the bin-top placement
+  - files: `Gui/ColorTrackballBinPanel.{h,cpp}` and `Tests/ColorTrackballBinPanel_Test.cpp` (delete), `Gui/PropertiesBinWrapper.{h,cpp}`, `Gui/KnobGuiColor.cpp` (`binTopPlacement`, :236, :486, :576, :781, :1010), `Tests/CMakeLists.txt`
+  - approach: ▾ goes back to only the in-knob panel; Ctrl+E/Ctrl+Up/Down are untouched. Remove `Placement` from `ColorPanelLayout`.
+  - verify: `GuiTests --gtest_filter=KnobGuiColor*:ColorTrackballGlobalMode*` green; `grep -rn BinPanel Gui Tests` is empty.
+  - size: M
+
+- [ ] M119.P3.T6 — Make Custom sliders with both edges extended the only layout, and delete the dev switch
+  - files: `Gui/ColorPanelLayoutDev.{h,cpp}` (delete), `Gui/ColorAdjustPanel.{h,cpp}`, `Gui/KnobGuiColor.cpp`, `Gui/ScaleSliderQWidget.{h,cpp}` (drop the vertical path), `Tests/ColorAdjustPanel_Test.cpp`, `Tests/ScaleSliderQWidget_Test.cpp`
+  - approach: hard-code Custom + extendLeft + extendRight (`KnobGuiColor.cpp:983-988`; keep `getFullWidthRowWidget`). Delete the Natron and Vertical styles, the dev bar, the env var, the `layoutChanged` rebuild, `setOrientation` and the vertical tests.
+  - verify: `GuiTests --gtest_filter=ColorAdjustPanel*:ScaleSliderQWidget*:KnobGuiColor*` green; `grep -rn 'NATRON_COLOR_PANEL_DEV\|ColorPanelLayout' Gui Tests` is empty.
+  - size: L
+
+- [ ] M119.P3.T7 — Make the whole custom slider a relative drag
+  - files: `Gui/ColorEditSlider.{h,cpp}`, `Gui/ColorAdjustPanel.cpp`, `Tests/ColorEditSlider_Test.cpp`
+  - approach: a press on the marker no longer starts an absolute drag. Every drag is relative at the gear (minimum track length per a44785f42). Drop the `absolute` argument from `gestureMoved` and its handling in the panel; the SpinBox stays the only way to type a value.
+  - verify: `GuiTests --gtest_filter=ColorEditSlider*:ColorAdjustPanel*`: a press on the marker followed by 40 px is the same delta as a 40 px drag elsewhere; a click without a move leaves the value unchanged; one undo step per drag.
+  - size: M
+
+- [ ] M119.P3.T8 — Build the Large track size: a bigger wheel with r/g/b/a and Hue…Tint stacked to its right
+  - files: `Gui/ColorAdjustPanel.{h,cpp}`, `Gui/KnobGuiColor.cpp`, `Gui/KnobGuiValue.{h,cpp}`, `Tests/ColorAdjustPanel_Test.cpp`
+  - approach: reading of the user's sketch (`build/appimages/M119-uat-large-layout.png`): in Large the wheel grows to cover the label column down past Multiply/Offset/Gamma; the knob's r/g/b/a lines leave their place above the panel and stack in one column right of the wheel, with Hue…Tint under them; the knob row keeps the label and button cluster. With `colorTrackballSize == Large` and ▾ open, reparent the knob's channel lines (the row's r line and `dimensionLines` g/b/a, `KnobGuiValue.cpp:689-749`) into the top of the panel's right column. The wheel is square at the right column's height, capped at 400 px. Regular is T6's layout. Folding ▾, or switching the setting (live through `settingChanged`, deferred past a gesture), puts the lines back under the same update guard and layout flush as P1.T3. If the bin is narrower than the Large minimum, use the Regular arrangement.
+  - verify: `GuiTests --gtest_filter=ColorAdjustPanel*:KnobGuiColor*` on Grade `gain` at 500 px: in Large the "g" slider's left x is right of the wheel's right edge, and the wheel is larger than Regular's (still ≤400). Folding returns "g" to its Regular position; a drag on "g" in Large is one undo step; a 300 px bin falls back to Regular.
+  - size: L
+
+- [ ] M119.P3.T9 — Redesign the S, T and V reveal discs to show what a drag does, with S following the value live
+  - files: `Gui/ColorModeDiscWidget.{h,cpp}`, `Gui/ColorTrackballReveal.cpp`, `Tests/ColorModeDiscWidget_Test.cpp`
+  - approach: drop the hue-wheel ring on S/T/V. Ring and fill show one function: the colour a drag towards that point produces (from `Engine/ColorWheelMath.h`, through the display converter); every direction is derived from the gesture's sign, so the disc shows where a drag that way actually goes. S: current hue −30° on the left and +30° on the right (replacing `kHueSpanDegrees = 300`), full saturation at the top, white at the bottom; the reveal feeds the live value each stroke move, and the cache is keyed on hue to 1° so the S disc re-colours as you drag; with an undefined hue (saturation ≈ 0) centre on the knob's last defined hue, else 0°. T: warm orange on the right, cool blue on the left, green and magenta on the vertical axis. V: white top and right, black bottom and left. T and V are static. The puck stays relative.
+  - verify: `GuiTests --gtest_filter=ColorModeDiscWidget*`: S's left and right rim samples are 30°±3° from the set hue and its top is more saturated than its bottom; changing the hue by 60° rotates both rim samples; T's right rim is warmer than its left; V's top-right rim is lighter than its bottom-left; each mode samples no plain hue ring.
+  - size: L
+
+- [ ] M119.P3.T10 — End build, refresh the evidence script to the final layout, and package the approval AppImage
+  - files: `Tests/gui/m119_trackball_layout.py`
+  - approach: drop every dev-switch and bin-top combination. Capture Regular and Large at default and 2× width; both feedback preferences; S/T/V reveal shots including S mid-drag; T3's HUD pixel check; T4's right-click check; keep the size, undo and no-flash checks. One `fast` build, full ctest, `package.sh`; share screenshots before the AppImage.
+  - verify: ctest all green; `results.txt` has no FAIL; the user approves on the AppImage.
+  - size: M
+
+**Verification gate:** full ctest green; `Tests/gui/m119_trackball_layout.py` reports no FAIL, and in it the following HUD's on-screen pixels match its own render and a right-click ends global mode with the cursor restored and no context menu; both feedback preferences and both track sizes work live on the AppImage; the wheel is larger than 160 px at the default width in Regular and larger still in Large; the S/T/V discs show the drag result and S follows the value live; no `NATRON_COLOR_PANEL_DEV`, `ColorPanelLayout`, bin-top, vertical-slider or absolute-puck code remains; the user approved on an AppImage.
+
+## Decisions`, then re-check Phase 119.3's briefs against it (PLAN-FORMAT.md §5a).
+  - verify: the AppImage launches with `--version`; the user's pick is recorded in `## Decisions`.
+  - size: S
+
+## Phase 119.3: Keep the winner
+
 These briefs name every file a losing axis could leave behind; the PM narrows each one to the pick recorded at P2.T1.
 
 - [ ] M119.P3.T1 — Make the picked combination the only layout and delete the dev switch and every losing path
@@ -240,3 +313,4 @@ These briefs name every file a losing axis could leave behind; the PM narrows ea
 - 2026-10-24 — **Host reboot mid-run:** every Phase 119.1 task except T9 is committed (e73dfd841, 308e64a35, 511cb32f0, 518afca81, b6b46833b, ebcc66784, 49aaeef37, 0751c682e, c323d41e5, 02a287bd2, 6cc3ab7c0, a44785f42). Remote fast ctest on a44785f42 is green (run 40067778845); T9's evidence script is re-run on that AppImage before the boxes are checked.
 - 2026-10-24 — **User's pick at P2.T1 UAT** (on `M119-a44785f42.AppImage`): Left and Right bounds both on (the layout stretches into the label column and out to the row's last button). Style: Custom sliders, with one change — drop click-on-indicator; the whole slider is a relative drag. Placement: In the knob (the user's annotated screenshot shows it; bin-top was not chosen). Puck: relative only. Feedback: Crosshair + reveal and Widget cursor both kept, as a user preference (the other Feedback values go). New: a Regular/Large track-size preference for the stretched layout — in Large the trackball is bigger, with the RGBA channel sliders and the custom H/S/V/Temp/Tint sliders stacked beside it, right of the wheel (sketch: `build/appimages/M119-uat-large-layout.png`); Regular is today's pick. Bugs: the HUD shows up corrupted (visible in the evidence shots). Redesign of the S/T/V global-mode reveal rings: no plain coloured rings; each ring shows what the drag does — S: left ≈30° hue to one side, right ≈30° to the other, full saturation at top, white at bottom, and in S mode the ring's colours shift live as you drag; T: warm orange right, cool blue left, green and magenta top and bottom; V: white top and right, black bottom and left. Wheel size bounds (160/320 px) and the reveal's 240 px were not objected to; they stand.
 - 2026-10-24 — **User addition:** a right-click exits global mode.
+- 2026-10-24 — **Phase 119.3 re-planned** (consultant, from the UAT pick): ten tasks. Defaults taken where the pick was silent: Large wheel cap 400 px DPI-scaled (Regular stays 160/320); the T disc's vertical axis and every disc direction follow the gesture's sign; S with an undefined hue centres on the knob's last defined hue, else 0°. HUD corruption diagnosis is likely, not proven, so T3's verify is a pixel check.

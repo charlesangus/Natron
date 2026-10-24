@@ -146,8 +146,9 @@ _settle_ms = int(os.environ.get("NATRON_DIAG_SETTLE_MS", "3000"))
 
 
 def _say(msg):
-    sys.stderr.write("[startup-gl-matrix] %s\n" % msg)
-    sys.stderr.flush()
+    # Natron replaces sys.stderr with a catcher that has no flush(), and its output
+    # reaches the log late; write to the real descriptor.
+    os.write(2, ("[startup-gl-matrix] %s\n" % msg).encode())
 
 
 def _main_window():

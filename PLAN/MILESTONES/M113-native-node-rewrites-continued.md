@@ -129,7 +129,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 113.1: Shared per-pixel-coordinate sampler
 
-- [ ] M113.P1.T1 — Add a per-pixel-coordinate row sampler with wrap modes to the resampler
+- [x] M113.P1.T1 — Add a per-pixel-coordinate row sampler with wrap modes to the resampler
   - files: `Engine/Nodes/Image/Resampler.h`, `Engine/Nodes/Image/Resampler.cpp`, `Tests/Native/ResamplerCoordMap_Test.cpp` (new)
   - approach:
     - Add `resampleRowFromCoords(const SourceImage&, const float* sx, const float* sy, const float* jacobian /*nullable*/, int n, filter, clamp, blackOutside, WrapMode wrapU, WrapMode wrapV, float* out, nComps)`. It calls `interpolateSuper` when a Jacobian is given and `interpolate` otherwise.
@@ -139,7 +139,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the new test covers an identity coordinate map against a direct copy (bit-exact with impulse), each wrap mode on a 4×4 ramp, a NaN coordinate giving 0, and a Jacobian-scaled minification that matches `resampleRow` with an equivalent scale matrix within 1e-5. It runs at the phase build.
   - size: L
 
-- [ ] M113.P1.T2 — Add the Slang coordinate-map sampling module on top of `resample.slang`
+- [x] M113.P1.T2 — Add the Slang coordinate-map sampling module on top of `resample.slang`
   - files: `Engine/Gpu/Kernels/coordmap.slang` (new), `Engine/Gpu/Kernels/coordmap.cmake` (new, per-kernel fragment per M120 - Native Node Port Kit), `Tests/Native/CoordMapGpu_Test.cpp` (new)
   - approach:
     - Import M85 - Native GPU Kernels's `resample.slang` and expose `sampleAt(src, sx, sy, J, filter, clamp, blackOutside, wrapU, wrapV)` with the same wrap and non-finite rules as P1.T1.
@@ -149,7 +149,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 113.2: IDistort and STMap
 
-- [ ] M113.P2.T1 — Add the native STMap node on the CPU
+- [x] M113.P2.T1 — Add the native STMap node on the CPU
   - files: `Engine/Nodes/Transform/STMap.{h,cpp}` (new), `Engine/Nodes/Transform/STMap.reg.inc`, `Tests/Native/NativeSTMap_Test.cpp` (new)
   - approach:
     - `STMap` v1. Inputs are UV (0, which sets the format) and Source (1), plus the host mask.
@@ -165,7 +165,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the test covers an identity ST map reproducing Source, each wrap mode, offset/scale, U/V from a non-colour layer, UV disconnected giving black, and mask/mix from the base. It runs at the phase build.
   - size: L
 
-- [ ] M113.P2.T2 — Add the native IDistort node on the CPU
+- [x] M113.P2.T2 — Add the native IDistort node on the CPU
   - files: `Engine/Nodes/Transform/IDistort.{h,cpp}` (new), `Engine/Nodes/Transform/IDistort.reg.inc`, `Tests/Native/NativeIDistort_Test.cpp` (new)
   - approach:
     - `IDistort` v1. Inputs are Source (0) and UV (1), plus the host mask.
@@ -188,7 +188,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 113.3: CornerPin
 
-- [ ] M113.P3.T1 — Add the native CornerPin node on the CPU, Masked merged in
+- [x] M113.P3.T1 — Add the native CornerPin node on the CPU, Masked merged in
   - files: `Engine/Nodes/Transform/CornerPin.{h,cpp}` (new), `Engine/Nodes/Transform/CornerPinKnobs.h` (new: shared knob script names), `Engine/Nodes/Transform/{CornerPin,CornerPinKnobs}.reg.inc`, `Tests/Native/NativeCornerPin_Test.cpp` (new)
   - approach:
     - `CornerPin` v1. Source input plus the host mask (one node, no Masked variant).
@@ -225,7 +225,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 113.4: Mirror
 
-- [ ] M113.P4.T1 — Add the native Mirror node as a concatenating flip
+- [x] M113.P4.T1 — Add the native Mirror node as a concatenating flip
   - files: `Engine/Nodes/Transform/Mirror.{h,cpp}` (new), `Engine/Nodes/Transform/Mirror.reg.inc`, `Tests/Native/NativeMirror_Test.cpp` (new)
   - approach:
     - `Mirror` v1 with `flip` and `flop`. `getTransform` returns the reflection about the source RoD centre, so it concatenates.
@@ -237,7 +237,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 113.5: Retire the OFX warps
 
-- [ ] M113.P5.T1 — Retire the OFX IDistort, STMap, CornerPin, CornerPinMasked and Mirror and fix their references
+- [x] M113.P5.T1 — Retire the OFX IDistort, STMap, CornerPin, CornerPinMasked and Mirror and fix their references
   - files: `Engine/OfxRetired/<ofx-plugin-id>` (five new marker files, per M120 - Native Node Port Kit), `Engine/OfxEffectInstance.cpp` (`:1279-1287` entries), `Tests/DefaultChannelSet_Test.cpp`, `Tests/LayerKnobsRender_Test.cpp`, `Tests/ColorViewsRender_Test.cpp`
   - approach:
     - Add one `Engine/OfxRetired/<ofx-plugin-id>` marker per OFX ID (IDistort, STMap, CornerPin, CornerPinMasked and Mirror), each naming its native replacement, so the host skips them.

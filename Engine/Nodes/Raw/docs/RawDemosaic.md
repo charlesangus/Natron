@@ -6,12 +6,17 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
 `release-5.6.2`), C paths only. The kernels are in `RawKernels.h`:
 - `RawDemosaicBasics.cpp`: PPG, RCD, the photosite modes, green equilibration, colour smoothing.
 - `RawDemosaicAmaze.cpp`: AMaZE.
+- `RawDemosaicLmmse.cpp`: LMMSE (`lmmse.c`).
 - `RawDemosaicVng.cpp`: VNG.
 - `RawDemosaicMarkesteijn.cpp`: Markesteijn.
 
 - Raw in at the prepared stage, image out. The output is RGBA with alpha 1.
-- **Method (Bayer)**: RCD (the default), PPG, AMaZE or VNG4. **Method (X-Trans)**: Markesteijn
-  1-pass (the default), Markesteijn 3-pass or VNG.
+- **Method (Bayer)**: RCD (the default), PPG, AMaZE or VNG4, then the photosite modes, then LMMSE.
+  **Method (X-Trans)**: Markesteijn 1-pass (the default), Markesteijn 3-pass or VNG.
+- **LMMSE Refine**: darktable's five levels: basic, median (the default), 3x median, refine &
+  medians and 2x refine + medians. It is shown only when the method is LMMSE, as in darktable's
+  `gui_changed()`. LMMSE works in darktable's gamma space, scaled by the processed maximum, and PPG
+  fills the outer 4 photosites.
 - **Photosite modes**, appended to both method lists so saved values keep their meaning:
   "passthrough (monochrome)" puts each photosite's value in R, G and B; "photosite color (debug)"
   puts it in its own CFA colour's channel and 0 in the others (darktable's `passthrough.c`). They
@@ -23,7 +28,7 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
 - **Edge Threshold**: PPG's pre-median.
 - **Color Smoothing**: 0 to 5 median passes.
 - Data without a CFA passes through as an image with alpha 1. One channel fills R, G and B.
-- RCD is scaled by the processed maximum and AMaZE clips at the processed minimum. Both come from
+- RCD and LMMSE are scaled by the processed maximum and AMaZE clips at the processed minimum. Both come from
   `raw/processed_maximum`, as darktable takes them from its pipe.
 - Like darktable, it falls back to VNG when the whole image is under 16 photosites on a side.
   AMaZE also falls back below 33, because it reads 32 rows and columns in, and Markesteijn
@@ -35,17 +40,25 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
   - AMaZE aligns its buffer to its own 128-photosite tile grid, counted from the image's top-left,
     one block before the window. Its seams carry state in place, so no fixed halo reproduces the
     full frame.
+  - LMMSE does the same with darktable's 136-photosite tiles, which load 128 rows and columns,
+    advance by 112 and write the middle 112. The first and last tiles of the image write further
+    out and median and refine differently. So the buffer starts one tile before the window's first
+    tile and ends 4 photosites past the last tile's reads, or at the image edge.
   - A tile is therefore bit for bit the same pixels as the full frame. Full green matching
     measures the whole image once per source and settings.
 - Every per-tile scratch buffer starts zeroed. darktable reuses one per thread, which makes some
-  of its tile-edge reads depend on the tile the thread ran before.
+  of its tile-edge reads depend on the tile the thread ran before. For LMMSE this keeps darktable's
+  zeros past the image edge, so the photosites just inside the PPG frame are not exactly neutral
+  on a flat field.
 - The output metadata drops `raw/cfa_pattern`, `raw/cfa_origin`, `raw/stage`, `raw/black_levels`
   and `raw/white_level`. It keeps `raw/cam_to_xyz` and the white balance keys for RawInputColor.
 - It renders at full resolution only, and the host downscales the result for a proxy.
 
 Tests: `Tests/Native/NativeRawDemosaic_Test.cpp`, on synthetic Bayer and X-Trans mosaics. Real
 X-Trans files and darktable-reference comparisons come later. `NativeRawDemosaicPassthrough_Test.cpp` covers the photosite modes on hand-checked
-Bayer and X-Trans patterns, and their tiles against the full frame.
+Bayer and X-Trans patterns, and their tiles against the full frame. `NativeRawDemosaicLmmse_Test.cpp`
+covers LMMSE tiles against the full frame at every refine level and two CFA phases, a flat field, and
+the LMMSE Refine knob's visibility.
 
 GPU: PPG and RCD without green equilibration or colour smoothing, and the pass-through of data
 without a CFA, in `Engine/Gpu/Kernels/demosaic_bayer.slang`, following the passes of darktable's
@@ -57,7 +70,7 @@ column ranges and its half-width plane indexing, so it gives the values the CPU 
 a band's result does not depend on the band, as a tile's does not. The passes read global memory;
 none uses workgroup-shared tiles. The device divides within 2.5 ulp: bound
 `ParityTolerance::transcendental()` for PPG and RCD, `ParityTolerance::exact()` for the
-pass-through. AMaZE, VNG and Markesteijn have no GPU path, nor does local equilibration or colour
+pass-through. AMaZE, VNG and Markesteijn have no GPU path, nor LMMSE (darktable has none either), nor does local equilibration or colour
 smoothing; full equilibration measures the whole source per frame, as Inpaint Opposed does. Any of
 them keeps the node, and its raw run, on the CPU. GPU tests:
 `Tests/Native/NativeRawDemosaicGpu_Test.cpp`, PPG and RCD on the Bayer fixture inside the image and

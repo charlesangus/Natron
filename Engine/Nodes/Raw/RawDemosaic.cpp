@@ -63,7 +63,7 @@ inline constexpr InputSpec kRawDemosaicInputs[] = {
 constexpr NodeSpec kRawDemosaicNodeSpec = {
     .id = PLUGINID_NATRON_RAWDEMOSAIC,
     .label = "RawDemosaic",
-    .description = "Reconstructs full RGB pixels from the colour filter array of prepared raw data: RCD, PPG, AMaZE or VNG4 "
+    .description = "Reconstructs full RGB pixels from the colour filter array of prepared raw data: RCD, PPG, AMaZE, VNG4 or LMMSE "
                    "for a Bayer sensor, Markesteijn or VNG for an X-Trans one, or the photosites shown as they are. Data without a colour filter array passes "
                    "through. Outputs an image with an alpha of 1; RawInputColor then takes it to the working space.",
     .grouping = PLUGIN_GROUP_RAW,
@@ -85,6 +85,7 @@ enum class Algorithm {
     PPG,
     RCD,
     AMaZE,
+    LMMSE,
     VNG,
     Markesteijn1,
     Markesteijn3,
@@ -94,7 +95,7 @@ enum class Algorithm {
 
 // How far each algorithm reads around a pixel it outputs, so that the pixel does not depend on
 // where the buffer it runs over ends: darktable's tiling overlaps, checked bit for bit against
-// whole-image runs. AMaZE instead aligns its buffer with its own tile grid.
+// whole-image runs. AMaZE and LMMSE instead align their buffers with their own tile grids.
 int
 algorithmHalo(Algorithm algorithm)
 {
@@ -115,6 +116,7 @@ algorithmHalo(Algorithm algorithm)
 
         return 18;
     case Algorithm::AMaZE:
+    case Algorithm::LMMSE:
     case Algorithm::PassThrough:
     case Algorithm::PhotositeMonochrome:
     case Algorithm::PhotositeColor:
@@ -153,6 +155,7 @@ struct RawDemosaic::Settings {
     RawDemosaicGreenEqEnum greenEq = eRawDemosaicGreenEqNone;
     float edgeThreshold = 0.f;
     int smoothing = 0;
+    int lmmseRefine = (int)eRawDemosaicLmmseMedian;
     float processedMaximum = 1.f;
     float processedMinimum = 1.f;
     float iso = 0.f;
@@ -165,6 +168,7 @@ RawDemosaic::RawDemosaic(NodePtr node)
     , _greenEq()
     , _edgeThreshold()
     , _colorSmoothing()
+    , _lmmseRefine()
     , _greenMutex()
     , _greenValid(false)
     , _greenKey(0)
@@ -213,6 +217,7 @@ RawDemosaic::initializeKnobs()
     bayer.push_back(ChoiceOption("vng4", "VNG4", tr("Variable Number of Gradients, four colours: smooth, for images with maze artefacts.").toStdString()));
     bayer.push_back(ChoiceOption("passthroughMonochrome", tr("passthrough (monochrome)").toStdString(), tr("Every photosite's value in all three channels, with no demosaicing.").toStdString()));
     bayer.push_back(ChoiceOption("photositeColor", tr("photosite color (debug)").toStdString(), tr("Every photosite's value in its own colour's channel only, with no demosaicing.").toStdString()));
+    bayer.push_back(ChoiceOption("lmmse", "LMMSE", tr("Linear Minimum Mean Square-error Estimation: suited best to high ISO images, slow.").toStdString()));
     KnobChoicePtr bayerMethod = createKnob<KnobChoice>(tr("Method (Bayer)"));
     bayerMethod->setName(kRawDemosaicParamBayerMethod);
     bayerMethod->setHintToolTip(tr("The demosaicing method for a Bayer sensor."));
@@ -273,6 +278,57 @@ RawDemosaic::initializeKnobs()
     smoothing->setAnimationEnabled(false);
     page->addKnob(smoothing);
     _colorSmoothing = smoothing;
+
+    std::vector<ChoiceOption> refines;
+    refines.push_back(ChoiceOption("basic", tr("basic").toStdString(), ""));
+    refines.push_back(ChoiceOption("median", tr("median").toStdString(), ""));
+    refines.push_back(ChoiceOption("3xMedian", tr("3x median").toStdString(), ""));
+    refines.push_back(ChoiceOption("refineMedians", tr("refine & medians").toStdString(), ""));
+    refines.push_back(ChoiceOption("2xRefineMedians", tr("2x refine + medians").toStdString(), ""));
+    KnobChoicePtr lmmseRefine = createKnob<KnobChoice>(tr("LMMSE Refine"));
+    lmmseRefine->setName(kRawDemosaicParamLmmseRefine);
+    lmmseRefine->setHintToolTip(tr("LMMSE refinement steps. The median steps average the output, refine adds some recalculation of the red and blue channels."));
+    lmmseRefine->populateChoices(refines);
+    lmmseRefine->setDefaultValue((int)eRawDemosaicLmmseMedian);
+    lmmseRefine->setAnimationEnabled(false);
+    page->addKnob(lmmseRefine);
+    _lmmseRefine = lmmseRefine;
+
+    refreshMethodKnobsVisibility();
+}
+
+void
+RawDemosaic::refreshMethodKnobsVisibility()
+{
+    const KnobChoicePtr bayerMethod = _bayerMethod.lock();
+    const KnobChoicePtr lmmseRefine = _lmmseRefine.lock();
+
+    if (bayerMethod && lmmseRefine) {
+        lmmseRefine->setSecret(bayerMethod->getValue() != (int)eRawDemosaicBayerLMMSE);
+    }
+}
+
+void
+RawDemosaic::onKnobsLoaded()
+{
+    refreshMethodKnobsVisibility();
+}
+
+bool
+RawDemosaic::knobChanged(KnobI* k,
+                         ValueChangedReasonEnum /*reason*/,
+                         ViewSpec /*view*/,
+                         double /*time*/,
+                         bool /*originatedFromMainThread*/)
+{
+    const KnobChoicePtr bayerMethod = _bayerMethod.lock();
+
+    if (!bayerMethod || (k != bayerMethod.get())) {
+        return false;
+    }
+    refreshMethodKnobsVisibility();
+
+    return true;
 }
 
 std::optional<RawDemosaic::Settings>
@@ -303,6 +359,9 @@ RawDemosaic::resolveSettings(double time,
             break;
         case eRawDemosaicBayerVNG4:
             s.algorithm = Algorithm::VNG;
+            break;
+        case eRawDemosaicBayerLMMSE:
+            s.algorithm = Algorithm::LMMSE;
             break;
         case eRawDemosaicBayerPassthroughMonochrome:
             s.algorithm = Algorithm::PhotositeMonochrome;
@@ -344,6 +403,7 @@ RawDemosaic::resolveSettings(double time,
     }
     s.edgeThreshold = (float)reader.value(_edgeThreshold);
     s.smoothing = std::max(0, std::min(5, (int)reader.value(_colorSmoothing)));
+    s.lmmseRefine = std::max((int)eRawDemosaicLmmseBasic, std::min((int)eRawDemosaicLmmse2xRefineMedians, (int)reader.value(_lmmseRefine)));
     const std::array<double, 3> maximum = RawMetadata::getProcessedMaximum(source).value_or(std::array<double, 3> { 1., 1., 1. });
     s.processedMaximum = std::fmax(1.0f, (float)std::max({ maximum[0], maximum[1], maximum[2] }));
     s.processedMinimum = std::fmax(1.0f, (float)std::min({ maximum[0], maximum[1], maximum[2] }));
@@ -368,12 +428,21 @@ RawDemosaic::sourceRegionFor(const RectI& window,
     }
     const bool local = (settings->greenEq == eRawDemosaicGreenEqLocal) || (settings->greenEq == eRawDemosaicGreenEqBoth);
     const int extra = settings->smoothing + (local ? 2 : 0);
-    if (settings->algorithm != Algorithm::AMaZE) {
+    if ((settings->algorithm != Algorithm::AMaZE) && (settings->algorithm != Algorithm::LMMSE)) {
         return RawNodeSupport::expandForKernel(window, algorithmHalo(settings->algorithm) + extra, settings->layout.period(), kMinimumBuffer, rod);
     }
     const RectI grown = RectI(window.x1 - extra, window.y1 - extra, window.x2 + extra, window.y2 + extra).intersect(rod);
     if (grown.isNull()) {
         return grown;
+    }
+    if (settings->algorithm == Algorithm::LMMSE) {
+        // The span ends 4 photosites past the last tile's reads, beyond the 2 local green
+        // matching leaves untouched.
+        int c0, c1, r0, r1;
+        RawKernels::lmmseSpan(grown.x1 - rod.x1, grown.x2 - rod.x1, rod.width(), &c0, &c1);
+        RawKernels::lmmseSpan(rod.y2 - grown.y2, rod.y2 - grown.y1, rod.height(), &r0, &r1);
+
+        return RectI(rod.x1 + c0, rod.y2 - r1, rod.x1 + c1, rod.y2 - r0);
     }
     // Local green equilibration leaves the 2 last rows and columns of its buffer as they were.
     const int endMargin = local ? 2 : 0;
@@ -537,6 +606,9 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
             break;
         case Algorithm::AMaZE:
             RawKernels::amaze(in, out.data.data(), width, height, filters, s.processedMinimum, parallel);
+            break;
+        case Algorithm::LMMSE:
+            RawKernels::lmmse(out.data.data(), in, width, height, filters, s.lmmseRefine, s.processedMaximum, parallel);
             break;
         case Algorithm::VNG:
             RawKernels::vng(out.data.data(), in, width, height, filters, xtrans, false, parallel);

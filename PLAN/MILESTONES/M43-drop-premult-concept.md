@@ -63,13 +63,13 @@ This milestone removes all of that. Premult stops being state that flows through
 
 ## Phase 43.2: openfx-misc fork holds no premult state
 
-- [ ] M43.P2.T1 — Drop `premultChanged` and the clip-premult auto-toggle from the lasting plugins
+- [x] M43.P2.T1 — Drop `premultChanged` and the clip-premult auto-toggle from the lasting plugins
   - files: fork `charlesangus/openfx-misc`: the lasting plugins P1.T2 lists (at most 5 files; P1.T2 adds P2.T3 onward for the rest)
   - approach: Delete the `kParamPremultChanged` define, descriptor, fetch and member, and the `changedClip` block that switches on `_srcClip->getPreMultiplication()` (pattern: Grade `:155, 785, 815-816, 960, 1192-1217, 1408`). Keep the `unPremultBy`/`unPremultByChannel` params and their maths. A plugin that reads `getPreMultiplication()` for its own maths keeps that read, which P1.T3's knob now drives.
   - verify: `git grep -n premultChanged <files>` is empty, no `changedClip` handler reads `getPreMultiplication()`, and the fork build is green.
   - size: M
 
-- [ ] M43.P2.T2 — Bump `OPENFX_MISC_REF` and check the unpremult maths
+- [x] M43.P2.T2 — Bump `OPENFX_MISC_REF` and check the unpremult maths
   - files: `tools/ci/local/fetch-assets.sh`
   - approach: Point the ref at the merge of the P2 removal tasks, and add a delta line to the openfx-misc comment block. After the phase build, render one lasting colour plugin with `(Un)premult by` on over a Constant(rgb 1, a 0.5).
   - verify: the render matches the M38.P10.T10 formula, and full `ctest` is green.
@@ -77,19 +77,19 @@ This milestone removes all of that. Premult stops being state that flows through
 
 ## Phase 43.3: Host cleanup and guards
 
-- [ ] M43.P3.T1 — Delete `hideDeprecatedPremultKnobs`
+- [x] M43.P3.T1 — Delete `hideDeprecatedPremultKnobs`
   - files: `Engine/OfxEffectInstance.cpp`, `Engine/OfxEffectInstance.h`, `Tests/ChannelSetRender_Test.cpp`
   - approach: Remove the call (`:511`), `hidePremultKnobOnHolder` and `hideDeprecatedPremultKnobs` (`:645-670`, `.h:357`). Rewrite `ChannelSetRender_Test.cpp:701-736` so it asserts that `getKnobByName("premultChanged")` is null on a lasting plugin, instead of asserting that the knob is secret.
   - verify: `ctest -R ChannelSetRender` is green.
   - size: M
 
-- [ ] M43.P3.T2 — Remove `premultChanged` from the test plugins, parity filter and docs
+- [x] M43.P3.T2 — Remove `premultChanged` from the test plugins, parity filter and docs
   - files: `Tests/OfxTestPlugins/natronTest/RoutingTestPlugins.cpp`, `Tests/NativeParity.cpp`, `Tests/NativeParity.h`, `Engine/Nodes/README.md`
   - approach: Delete `kParamPremultChanged` and its descriptor (`RoutingTestPlugins.cpp:574, 765`). Drop `"premultChanged"` from `isOfxInternalKnobName` (`NativeParity.cpp:212`, doc `.h:335`). Reword `README.md:955`, and document the `Input alpha` knob there.
   - verify: `ctest -R 'Native|Routing|Parity'` is green, and `git grep -n premultChanged Engine Tests` is empty.
   - size: M
 
-- [ ] M43.P3.T3 — Gtest guarding premult absence across every registered plugin
+- [x] M43.P3.T3 — Gtest guarding premult absence across every registered plugin
   - files: `Tests/PremultAbsence_Test.cpp`
   - approach: Iterate the app's plugin list, create each OFX and native node, and assert that no knob is named `premult`, `premultChannel`, `premultChanged`, `filePremult`, `outputPremult` or `inputPremult`. `inputAlpha` is allowed only on OFX nodes. Plugins that M145 - OFX Fork Plugin Purge will delete are exempt by ID, from P1.T2's list, until it lands. If the ctest environment does not load the fetched bundles, skip that part with a logged count and record the gap.
   - verify: `ctest -R PremultAbsence` is green, and the logged plugin count is above 100.
@@ -97,6 +97,7 @@ This milestone removes all of that. Premult stops being state that flows through
 
 ## Decisions
 
+- 2026-10-24 — **Phases 2–3 verified (PM):** fast build on a2c3d52e7 is 390/390 on both ctest legs. `PremultAbsence` logs 211 plugins checked, 41 exempt. The six openfx-io OCIO plug-ins (`premult`, `premultChannel`) joined the exemption list under M127 - Native OCIO Nodes, since M145 deletes them. P2.T2's unpremult maths is covered by `ChannelSetRenderUnPremultByTest.GainIsUnPremultipliedByTheSelectedChannel` (a lasting colour plugin with `(Un)premult by` against the M38 formula), which passes on both legs.
 - 2026-10-24 — **Phases 2–3 scope adjustments (PM).** (1) `CImg/CImgOperator.{cpp,h}` (CImgBilateralGuided) read the `_premultChanged` member that P2.T1 removes and had the same auto-toggle, so they join P2.T1's files. (2) NoOp stays OFX but still had an `outputPremult` choice the Phase 1 audit missed. That is premult state held by a node, which the user's ruling rules out, and the host now discards it, so the fork removes the param and its `setOutputPremultiplication` call rather than exempting NoOp from the guard. (3) The guard's exemption list (plugins M145 deletes) is M122's ColorMatrix, ColorSuppress, HSVTool, HueCorrect, HueCorrect1, HueKeyer, Premult, Unpremult and the 26 ColorTransform IDs, plus M130's GodRays. The test fails once an exempt ID is no longer loaded, so each entry is removed as M145 lands. (4) The gate grep can't be empty over `Tests`, because the guard tests must name the banned knobs. It becomes `git grep -n -E 'premultChanged|filePremult|outputPremult|inputPremult|hideDeprecatedPremult|_outputPreMultiplication' Engine Gui libs/OpenFX/HostSupport` empty, plus the same over `Tests` matching only `PremultAbsence_Test.cpp` and `ChannelSetRender_Test.cpp`. `inputAlpha` is checked by the guard test, not the grep, because of the unrelated Deep `targetInputAlpha` knob.
 
 - 2026-10-24 — **User decision: no `Input alpha` knob.** P1.T2's audit found no plugin that stays OFX and reads clip premult for its maths (only `premultChanged`/auto-toggle UI in CImgFilter, ClipTest and DenoiseSharpen), so the knob would ship on no plugin. Clips and fetched images answer Unpremultiplied; premult storage, derivation, read-back and the plugin params are still removed. P1.T3 becomes: clip premult answers Unpremultiplied (no knob). P1.T4's test proves a plugin's reported output premult is discarded and never reaches downstream clips, images or `NodeMetadata`. P3.T3's guard bans `inputAlpha` too. P2.T1's files: `CImg/CImgFilter.cpp`, `CImg/CImgFilter.h`, `ClipTest/ClipTest.cpp`, `DenoiseSharpen/DenoiseSharpen.cpp`; no P2.T3+.

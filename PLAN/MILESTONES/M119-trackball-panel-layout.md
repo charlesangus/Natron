@@ -328,13 +328,13 @@ Design reference: `build/m119-mockup/` in the lane (mockup.py, NOTES.md, hud-{C,
 
 ## Phase 119.6: Proportional ring, global-mode highlight on the sunken block (UAT round 4)
 
-- [ ] M119.P6.T1 — The hue ring's thickness scales with the wheel
+- [x] M119.P6.T1 — The hue ring's thickness scales with the wheel
   - files: `Gui/ColorWheelWidget.h`, `Gui/ColorWheelWidget.cpp`, `Gui/ColorTrackballReveal.cpp`, `Tests/ColorWheelWidget_Test.cpp`
   - approach: the ring's width is a fixed fraction of the wheel's radius (today's proportion at the default 1/3 width), with a small floor so it stays legible at the smallest wheel; the disc, pucks and line hit areas follow. Applies to the panel wheel and the global-mode reveal.
   - verify: GuiTests: ring width / outer radius is constant within 1 px across 4 wheel sizes; the evidence script's size shots show it.
   - size: M
 
-- [ ] M119.P6.T2 — In global mode, highlight the active knob's sunken block instead of the orange outline
+- [x] M119.P6.T2 — In global mode, highlight the active knob's sunken block instead of the orange outline
   - files: `Gui/KnobGuiColor.cpp`, `Gui/ColorTrackballGlobalMode.cpp`, `Gui/Resources/Stylesheets/mainstyle.qss`, the sunken-backdrop widget from P5.T3
   - approach: remove the orange highlight drawn while a knob is engaged in global mode (most visible around the S/R buttons). While global mode is engaged on a knob, its sunken block is drawn highlighted (a lighter edge and slightly lighter fill derived from the palette's highlight, not saturated orange); with the panel closed the block appears around the knob row for the duration. Switching knobs (Ctrl+up/down) moves the highlight.
   - verify: GuiTests: engaged, the active knob's backdrop is visible and highlighted and no widget in the row keeps the old orange style; ending global mode restores it. Screenshots in the evidence script.
@@ -350,6 +350,7 @@ Design reference: `build/m119-mockup/` in the lane (mockup.py, NOTES.md, hud-{C,
 
 ## Decisions
 
+- 2026-10-24 — **Phase 6 evidence (PM):** release build on 950fe5847 is 397/397 on both legs. `m119_trackball_layout.py` reports no failures on 1ef406920's script: the ring is 12/72.5 of the outer radius at every size (9 px quarter-default to 38 px half-wide), and exactly one highlighted block follows the engaged knob (open, closed, Ctrl+Down, Esc). The first run's two failures were the script measuring Multiply's panel and gain's 22 px main row without its split channel lines. Screenshots sent; P6.T3 waits on the user's approval. The global-mode button keeps its orange 'on' fill pending the user's call.
 - 2026-10-24 — **UAT round 4 (user):** "looking good". Two last changes: make the ring proportional to the trackball (it seems always the same size now); remove the orange highlight visible mainly around the S/R buttons in global mode and instead highlight the sunken area of the active knob. PM call: with the panel closed, the sunken block still appears around the active knob's row while global mode is engaged. Phase 119.6 added.
 
 - 2026-10-24 — **Phase 119.5 built (PM):** release 21409530d (rebased on main) passed 397/397 on both legs, and the evidence script has no failures (`build/m119-gui-p5b/`). The old `PanelWidthDecidesTheWheelSize` test, which encoded Regular/Large sizing, is retired. The wheel's diameter is its fraction of the row, capped so the lines keep their 241 px minimum width and floored at the line column's height (114 px). So at the default 508 px panel width, 1/2 gives 204 px and 1/5 floors at 114 px; at 998 px each fraction is exact. Screenshots sent; P5.T4 waits on the user's approval of `build/appimages/M119-21409530d.AppImage`.

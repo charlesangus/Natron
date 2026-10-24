@@ -111,7 +111,7 @@ The rest of the milestone runs everything once, fixes what fails because of the 
   - verify: in the P1.T4 run, `ctest -R '^Gpu\.GlInteropTest' -V` in the NVIDIA container shows an NVIDIA GL renderer and UUID match. Remote CI on lavapipe stays green.
   - size: S
 
-- [ ] M91.P1.T3 — Make auto device selection deterministic on hosts with several GPUs, and log the choice
+- [x] M91.P1.T3 — Make auto device selection deterministic on hosts with several GPUs, and log the choice
   - files: `Engine/Gpu/GpuDevice.h`, `Engine/Gpu/GpuDevice.cpp`, `Engine/GpuContext.cpp`, `Tests/Gpu/GpuDevice_Test.cpp`
   - approach: Move the auto pick into a pure function, `pickAutoDevice(const std::vector<GpuDeviceCandidate>&)`, where a candidate holds the index, type, largest device-local heap and whether it meets requirements. Order by type rank, then larger device-local heap, then lower index. Record a short `selectionReason` in `GpuDeviceInfo`, e.g. `auto: discrete, 8 GiB, over Quadro P400 (2 GiB), llvmpipe (cpu)`, or `NATRON_GPU_DEVICE=1`. Add device name, driver version and reason to the existing "GPU compute ready" line in `GpuContext.cpp` (one line, a different hunk from M107's `evictedCopy` change). Explicit selectors (index, name, Preferences UUID) behave as before.
   - verify: new `GpuDeviceTest` cases feed fake candidates (3070 Ti, P400, llvmpipe) in every permutation and always get the 3070 Ti; plus only-llvmpipe, larger-device-fails-requirements, and two identical discrete GPUs tie-breaking to the lower index. In the P1.T4 run, the engine log names the RTX 3070 Ti with that reason.

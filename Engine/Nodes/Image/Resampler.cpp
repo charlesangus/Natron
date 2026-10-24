@@ -857,16 +857,142 @@ namespace {
         }
     }
 
+    const double kCoordLimit = 1073741824.;
+
+    /*
+     * Wraps one coordinate into [lo, hi) per WrapMode, setting *moved when eWrapClamp changed
+     * it. Returns false when the result is not finite (the pixel is outside); otherwise the
+     * coordinate is also clamped to +-kCoordLimit so the samplers' int conversions stay defined.
+     */
+    inline bool
+    wrapCoord(double* s,
+              WrapMode mode,
+              double lo,
+              double hi,
+              bool* moved)
+    {
+        double v = *s;
+        const double w = hi - lo;
+
+        *moved = false;
+        if (w > 0.) {
+            switch (mode) {
+            case eWrapClamp:
+                if (v < lo + 0.5) {
+                    v = lo + 0.5;
+                    *moved = true;
+                } else if (v > hi - 0.5) {
+                    v = hi - 0.5;
+                    *moved = true;
+                }
+                break;
+            case eWrapRepeat:
+                if (std::isfinite(v)) {
+                    v -= w * std::floor((v - lo) / w);
+                }
+                break;
+            case eWrapMirror:
+                if (std::isfinite(v)) {
+                    const double r = (v - lo) - 2. * w * std::floor((v - lo) / (2. * w));
+                    v = lo + ((r <= w) ? r : (2. * w - r));
+                }
+                break;
+            case eWrapNone:
+                break;
+            }
+        }
+        if (!std::isfinite(v)) {
+            return false;
+        }
+        *s = (std::max)(-kCoordLimit, (std::min)(v, kCoordLimit));
+        return true;
+    }
+
+    inline double
+    finiteOrZero(double v)
+    {
+        return std::isfinite(v) ? v : 0.;
+    }
+
+    inline float
+    finiteFloatOrZero(double v)
+    {
+        const float f = (float)v;
+
+        return std::isfinite(f) ? f : 0.f;
+    }
+
+    template <int N, FilterEnum filter, bool clamp>
+    void
+    resampleCoordsT(const SourceImage& src,
+                    const float* sx,
+                    const float* sy,
+                    const float* jacobian,
+                    int n,
+                    bool blackOutside,
+                    WrapMode wrapU,
+                    WrapMode wrapV,
+                    const RectI& domain,
+                    float* out,
+                    int nComps)
+    {
+        const RectI& b = src.bounds;
+        float tmpPix[N];
+
+        for (int i = 0; i < n; ++i, out += nComps) {
+            double fx = sx[i];
+            double fy = sy[i];
+            bool movedX = false;
+            bool movedY = false;
+            if (!wrapCoord(&fx, wrapU, domain.x1, domain.x2, &movedX) || !wrapCoord(&fy, wrapV, domain.y1, domain.y2, &movedY)) {
+                for (int c = 0; c < nComps; ++c) {
+                    out[c] = 0.f;
+                }
+                continue;
+            }
+            if ((filter == eFilterImpulse) || !jacobian) {
+                interpolateT<N, filter, clamp>(fx, fy, src, blackOutside, tmpPix);
+            } else {
+                const float* J = jacobian + (std::size_t)i * 4;
+                double Jxx = finiteOrZero(J[0]);
+                double Jxy = finiteOrZero(J[1]);
+                double Jyx = finiteOrZero(J[2]);
+                double Jyy = finiteOrZero(J[3]);
+                bool xinside = (b.x1 <= fx + 0.5 && fx - 0.5 < b.x2);
+                bool yinside = (b.y1 <= fy + 0.5 && fy - 0.5 < b.y2);
+                if (blackOutside && !(xinside && yinside)) {
+                    xinside = yinside = false;
+                }
+                if (!xinside || movedX) {
+                    Jxx = Jxy = 0.;
+                }
+                if (!yinside || movedY) {
+                    Jyx = Jyy = 0.;
+                }
+                interpolateSuperT<N, filter, clamp>(fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
+            }
+            const int nc = (std::min)(N, nComps);
+            for (int c = 0; c < nc; ++c) {
+                out[c] = tmpPix[c];
+            }
+            for (int c = nc; c < nComps; ++c) {
+                out[c] = 0.f;
+            }
+        }
+    }
+
     typedef bool (*InterpolateFn)(double, double, const SourceImage&, bool, float*);
     typedef void (*InterpolateSuperFn)(double, double, double, double, double, double, const SourceImage&, bool, float*);
     typedef void (*RowFn)(const ResampleParams&, const SourceImage&, int, int, int, float*);
     typedef void (*MotionBlurPixelFn)(const ResampleParams&, const SourceImage&, int, int, float*, int*);
+    typedef void (*CoordsFn)(const SourceImage&, const float*, const float*, const float*, int, bool, WrapMode, WrapMode, const RectI&, float*, int);
 
     struct KernelTable {
         InterpolateFn interpolate;
         InterpolateSuperFn interpolateSuper;
         RowFn row;
         MotionBlurPixelFn motionBlurPixel;
+        CoordsFn coords;
     };
 
     template <int N, FilterEnum filter, bool clamp>
@@ -879,6 +1005,7 @@ namespace {
         t.interpolateSuper = &interpolateSuperT<N, filter, clamp>;
         t.row = &resampleRowT<N, filter, clamp>;
         t.motionBlurPixel = &motionBlurPixelT<N, filter, clamp>;
+        t.coords = &resampleCoordsT<N, filter, clamp>;
 
         return t;
     }
@@ -1202,6 +1329,87 @@ resampleRow(const ResampleParams& params,
         return;
     }
     selectKernels(src.nComps, params.filter, params.clamp).row(params, src, y, x1, x2, dst);
+}
+
+void
+resampleRowFromCoords(const SourceImage& src,
+                      const float* sx,
+                      const float* sy,
+                      const float* jacobian,
+                      int n,
+                      FilterEnum filter,
+                      bool clamp,
+                      bool blackOutside,
+                      WrapMode wrapU,
+                      WrapMode wrapV,
+                      float* out,
+                      int nComps,
+                      const RectI* wrapDomain)
+{
+    if ((n <= 0) || (nComps <= 0)) {
+        return;
+    }
+    if (!src.isValid()) {
+        zeroPixels(out, n * nComps);
+        return;
+    }
+    const RectI& domain = (wrapDomain && (wrapDomain->x2 > wrapDomain->x1) && (wrapDomain->y2 > wrapDomain->y1)) ? *wrapDomain : src.bounds;
+    selectKernels(src.nComps, filter, clamp).coords(src, sx, sy, jacobian, n, blackOutside, wrapU, wrapV, domain, out, nComps);
+}
+
+namespace {
+    inline double
+    rowDerivative(const float* s,
+                  int i,
+                  int n)
+    {
+        if (n < 2) {
+            return 0.;
+        }
+        if (i == 0) {
+            return (double)s[1] - (double)s[0];
+        }
+        if (i == n - 1) {
+            return (double)s[n - 1] - (double)s[n - 2];
+        }
+        return ((double)s[i + 1] - (double)s[i - 1]) / 2.;
+    }
+
+    inline double
+    columnDerivative(const float* prev,
+                     const float* row,
+                     const float* next,
+                     int i)
+    {
+        if (prev && next) {
+            return ((double)next[i] - (double)prev[i]) / 2.;
+        }
+        if (next) {
+            return (double)next[i] - (double)row[i];
+        }
+        if (prev) {
+            return (double)row[i] - (double)prev[i];
+        }
+        return 0.;
+    }
+} // anon namespace
+
+void
+coordJacobians(const float* sxPrev,
+               const float* sx,
+               const float* sxNext,
+               const float* syPrev,
+               const float* sy,
+               const float* syNext,
+               int n,
+               float* jacobian)
+{
+    for (int i = 0; i < n; ++i, jacobian += 4) {
+        jacobian[0] = finiteFloatOrZero(rowDerivative(sx, i, n));
+        jacobian[1] = finiteFloatOrZero(columnDerivative(sxPrev, sx, sxNext, i));
+        jacobian[2] = finiteFloatOrZero(rowDerivative(sy, i, n));
+        jacobian[3] = finiteFloatOrZero(columnDerivative(syPrev, sy, syNext, i));
+    }
 }
 
 void

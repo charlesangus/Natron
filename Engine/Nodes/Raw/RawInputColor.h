@@ -22,8 +22,8 @@
  * (commit 20891f6c6fa7), src/iop/colorin.c and src/common/colorspaces.c, Copyright (C)
  * 2009-2026 darktable developers, distributed under the GNU GPL version 3 or later: its matrix
  * input profiles, their fallbacks (commit_params()) and the file-derived default
- * (reload_defaults()). Its ICC path is not ported: the working space is the project's OpenColorIO
- * one.
+ * (reload_defaults()), its built-in generic input profiles, its gamut clipping
+ * (process_cmatrix_proper()) and its working profile. Its ICC path is not ported.
  */
 
 #ifndef Engine_Nodes_Raw_RawInputColor_h
@@ -43,6 +43,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Raw/RawColorMath.h"
+#include "Engine/Nodes/Raw/RawColorProfiles.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
 #define PLUGINID_NATRON_RAWINPUTCOLOR "fr.natron.RawInputColor"
@@ -53,6 +54,8 @@
 #define kRawInputColorParamRow0 "matrixRow0"
 #define kRawInputColorParamRow1 "matrixRow1"
 #define kRawInputColorParamRow2 "matrixRow2"
+#define kRawInputColorParamWorkingProfile "workingProfile"
+#define kRawInputColorParamGamutClipping "gamutClipping"
 
 // The option ids of the Input Profile choice. A project saves the id, so options added to the
 // list later do not move a saved choice.
@@ -63,6 +66,27 @@
 #define kRawInputColorProfileAlternateMatrix "alternateMatrix"
 #define kRawInputColorProfileLinearRec709 "linearRec709"
 #define kRawInputColorProfileCustom "custom"
+#define kRawInputColorProfileSrgb "srgb"
+#define kRawInputColorProfileAdobeRgb "adobeRgb"
+#define kRawInputColorProfileRec709 "rec709"
+#define kRawInputColorProfileLinearRec2020 "linearRec2020"
+#define kRawInputColorProfilePqRec2020 "pqRec2020"
+#define kRawInputColorProfileHlgRec2020 "hlgRec2020"
+#define kRawInputColorProfilePqP3 "pqP3"
+#define kRawInputColorProfileHlgP3 "hlgP3"
+#define kRawInputColorProfileDisplayP3 "displayP3"
+#define kRawInputColorProfileLinearProPhoto "linearProPhoto"
+#define kRawInputColorProfileLinearXyz "linearXyz"
+#define kRawInputColorProfileLab "lab"
+#define kRawInputColorProfileLinearInfraredBgr "linearInfraredBgr"
+#define kRawInputColorProfileBrg "brg"
+
+// The option ids of the Working Profile choice: the project's working space, then the generic
+// profile ids above that darktable offers as working profiles.
+#define kRawInputColorWorkingProject "project"
+
+// The option ids of the Gamut Clipping choice, the generic profile ids above besides off.
+#define kRawInputColorGamutOff "off"
 
 NATRON_NAMESPACE_ENTER
 
@@ -77,8 +101,44 @@ enum RawInputColorProfileEnum {
     eRawInputColorProfileVendorMatrix,
     eRawInputColorProfileAlternateMatrix,
     eRawInputColorProfileLinearRec709,
-    eRawInputColorProfileCustom
+    eRawInputColorProfileCustom,
+    eRawInputColorProfileSrgb,
+    eRawInputColorProfileAdobeRgb,
+    eRawInputColorProfileRec709,
+    eRawInputColorProfileLinearRec2020,
+    eRawInputColorProfilePqRec2020,
+    eRawInputColorProfileHlgRec2020,
+    eRawInputColorProfilePqP3,
+    eRawInputColorProfileHlgP3,
+    eRawInputColorProfileDisplayP3,
+    eRawInputColorProfileLinearProPhoto,
+    eRawInputColorProfileLinearXyz,
+    eRawInputColorProfileLab,
+    eRawInputColorProfileLinearInfraredBgr,
+    eRawInputColorProfileBrg
 };
+
+/**
+ * @brief The built-in profile of a generic input profile, linear Rec709 included; nullopt for the
+ * camera matrices and Custom.
+ **/
+std::optional<RawColorProfiles::Space> rawInputColorProfileSpace(RawInputColorProfileEnum profile);
+
+/**
+ * @brief The working profile at index in the Working Profile choice, nullopt for the project's
+ * working space (and an index out of range).
+ **/
+std::optional<RawColorProfiles::Space> rawInputColorWorkingProfileAt(int index);
+
+int rawInputColorWorkingProfileIndex(const std::optional<RawColorProfiles::Space>& space);
+
+/**
+ * @brief The gamut at index in the Gamut Clipping choice, nullopt for off (and an index out of
+ * range).
+ **/
+std::optional<RawColorProfiles::Space> rawInputColorGamutAt(int index);
+
+int rawInputColorGamutIndex(const std::optional<RawColorProfiles::Space>& space);
 
 /**
  * @brief The profile at index in the Input Profile choice, Linear Rec709 for an index out of range.
@@ -100,7 +160,8 @@ RawInputColorProfileEnum rawInputColorDefaultProfile(const ImageMetadata& source
 /**
  * @brief The camera RGB to XYZ (D65) matrix of a matrix profile for source, nullopt when source
  * does not have it: no embedded or standard matrix, or no entry for its camera in darktable's
- * enhanced, vendor or alternate table. Custom has none here.
+ * enhanced, vendor or alternate table. Custom has none here. For a generic profile its linear RGB
+ * to XYZ (D65) matrix, for linear XYZ and Lab the adaptation from D50 to D65.
  **/
 std::optional<RawColorMath::Mat3> rawInputColorProfileMatrix(RawInputColorProfileEnum profile,
                                                              const ImageMetadata& source);
@@ -128,10 +189,27 @@ inline constexpr InputSpec kRawInputColorInputs[] = {
  * inverse of the project's working-to-XYZ matrix, which the OpenColorIO config gives; a working
  * space with no matrix to XYZ (a log space) is treated as linear Rec. 709. When the source
  * carries raw/wb_late_correction, camera RGB is multiplied by it before the matrix.
+ *
+ * A generic input profile's tone curve linearises first, as darktable's tables do, extrapolating
+ * above 1; Lab goes to XYZ (D50) first. Gamut clipping clamps to [0, 1] in a linear RGB gamut
+ * between the input matrix and the working space. A working profile other than the project's
+ * writes the output in that profile, its tone curve included.
  **/
 struct RawInputColorOp {
     struct Params {
+        // Input to working space, or to the clipping gamut when clip is set.
         std::array<float, 9> matrix;
+        // The clipping gamut to the working space.
+        std::array<float, 9> gamutToWorking;
+        // The late correction, applied before a non-linear tone curve; linear profiles have it in
+        // matrix's columns instead.
+        std::array<float, 3> correction;
+        RawColorProfiles::Trc inputTrc;
+        RawColorProfiles::Trc outputTrc;
+        bool lab;
+        bool clip;
+        // Something the GPU kernel, one matrix, does not do.
+        bool cpuOnly;
     };
 
     static constexpr NodeSpec kNodeSpec = {
@@ -175,6 +253,8 @@ struct RawInputColorOp {
     KnobBoolWPtr profileOverride;
     KnobChoiceWPtr profile;
     KnobDoubleWPtr rows[3];
+    KnobChoiceWPtr workingProfile;
+    KnobChoiceWPtr gamutClipping;
 };
 
 static_assert(PointOp<RawInputColorOp>);
@@ -212,6 +292,11 @@ private:
     // While the override is off the choice shows the source's default, which is what a render uses.
     void showSourceProfile();
 
+    // The profile a render uses, after the fallbacks.
+    RawInputColorProfileEnum usedProfile(const ImageMetadata& source,
+                                         RawInputColorProfileEnum* requested) const;
+
+    // The fallback warning, and a note when the output is not in the project's working space.
     void refreshProfileWarning();
 
     RawNodeSupport::OwnedMessage _message;

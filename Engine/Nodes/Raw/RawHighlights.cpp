@@ -20,7 +20,8 @@
 /*
  * A port of darktable's highlight reconstruction module, DARKTABLE_REF release-5.6.2 (commit
  * 20891f6c6fa7), src/iop/highlights.c with src/iop/hlreconstruct/opposed.c, lch.c,
- * inpaint.c and the reference average of segbased.c, Copyright (C) 2009-2026 darktable developers. The opposed
+ * inpaint.c and the reference average of segbased.c, the segmentation itself being ported in
+ * RawSegmentation.cpp and RawHighlightsSegments.cpp, Copyright (C) 2009-2026 darktable developers. The opposed
  * algorithm was developed by garagecoder and Iain of the G'MIC team with Hanno Schwalm. darktable
  * is distributed under the GNU GPL version 3 or later, so this file is too.
  */
@@ -50,6 +51,7 @@
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Raw/RawGpuParams.h"
+#include "Engine/Nodes/Raw/RawSegmentation.h"
 #include "Engine/RectD.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -91,6 +93,31 @@ const float kClipMagicOpposed = 0.987f;
 const float kClipMagicInpaint = 1.0f;
 
 const char* const kModeUnavailable = "highlights: mode not available for this type of image. falling back to inpaint opposed.";
+
+struct RecoveryChoice {
+    const char* id;
+    const char* label;
+    RawKernels::SegmentsRecoveryEnum recovery;
+};
+
+// darktable's Rebuild menu, in its order, which is not that of the mode values.
+const RecoveryChoice kRecoveryChoices[] = {
+    { "off", "Off", RawKernels::eSegmentsRecoveryOff },
+    { "generic", "Generic", RawKernels::eSegmentsRecoveryAdapt },
+    { "flatGeneric", "Flat Generic", RawKernels::eSegmentsRecoveryAdaptFlat },
+    { "small", "Small Segments", RawKernels::eSegmentsRecoverySmall },
+    { "large", "Large Segments", RawKernels::eSegmentsRecoveryLarge },
+    { "flatSmall", "Flat Small Segments", RawKernels::eSegmentsRecoverySmallFlat },
+    { "flatLarge", "Flat Large Segments", RawKernels::eSegmentsRecoveryLargeFlat },
+};
+
+RawKernels::SegmentsRecoveryEnum
+recoveryFromIndex(int index)
+{
+    const int count = (int)(sizeof(kRecoveryChoices) / sizeof(kRecoveryChoices[0]));
+
+    return ((index >= 0) && (index < count)) ? kRecoveryChoices[index].recovery : RawKernels::eSegmentsRecoveryOff;
+}
 
 const float kSqrt3 = (float)1.7320508075688772935274463415058723669L;
 const float kSqrt12 = (float)3.4641016151377545870548926830117447339L;
@@ -600,6 +627,7 @@ rawHighlightsModeRequirement(RawHighlightsModeEnum mode)
     switch (mode) {
     case eRawHighlightsModeLCh:
     case eRawHighlightsModeInpaint:
+    case eRawHighlightsModeSegments:
         return eRawHighlightsRequiresCfa;
     case eRawHighlightsModeClip:
     case eRawHighlightsModeUnclipped:
@@ -643,6 +671,11 @@ struct RawHighlights::Settings {
     RawLayout layout;
     std::array<float, 3> coeffs = { 1.f, 1.f, 1.f };
     RectI sourceRoD;
+    int combine = 2;
+    float candidating = 0.4f;
+    RawKernels::SegmentsRecoveryEnum recovery = RawKernels::eSegmentsRecoveryOff;
+    float strength = 0.f;
+    float noiseLevel = 0.f;
 };
 
 RawHighlights::RawHighlights(NodePtr node)
@@ -650,15 +683,20 @@ RawHighlights::RawHighlights(NodePtr node)
     , _mode()
     , _clip()
     , _clipOverride()
+    , _combine()
+    , _candidating()
+    , _recovery()
+    , _strength()
+    , _noiseLevel()
     , _message()
     , _chromaMutex()
     , _chromaValid(false)
     , _chromaKey(0)
     , _chroma { 0.f, 0.f, 0.f }
-    , _inpaintMutex()
-    , _inpaintValid(false)
-    , _inpaintKey(0)
-    , _inpaint()
+    , _frameMutex()
+    , _frameValid(false)
+    , _frameKey(0)
+    , _frame()
 {
     setSupportsRenderScaleMaybe(eSupportsNo);
 }
@@ -693,6 +731,7 @@ RawHighlights::initializeKnobs()
     modes.push_back(ChoiceOption("opposed", tr("Inpaint Opposed").toStdString(), tr("Rebuilds a clipped photosite from the opposed colours around it, corrected by the chrominance measured next to the clipped areas of the whole image.").toStdString()));
     modes.push_back(ChoiceOption("lch", tr("Reconstruct in LCh").toStdString(), tr("Rebuilds clipped photosites keeping their lightness and scaling their chroma. Inpaint Opposed on data without a colour filter array.").toStdString()));
     modes.push_back(ChoiceOption("inpaint", tr("Reconstruct Color").toStdString(), tr("Rebuilds a clipped photosite from the next photosite of another colour along its row and column, by the colour ratios of the unclipped photosites before it. Inpaint Opposed on data without a colour filter array.").toStdString()));
+    modes.push_back(ChoiceOption("segments", tr("Segmentation Based").toStdString(), tr("Inpaint Opposed, then rebuilds each clipped segment of a colour from a candidate found next to it, and can rebuild the areas where every colour is clipped. Inpaint Opposed on data without a colour filter array.").toStdString()));
     mode->populateChoices(modes);
     mode->setDefaultValue((int)eRawHighlightsModeOpposed);
     mode->setAnimationEnabled(false);
@@ -718,7 +757,96 @@ RawHighlights::initializeKnobs()
     page->addKnob(clipOverride);
     _clipOverride = clipOverride;
 
+    KnobIntPtr combine = createKnob<KnobInt>(tr("Combine"));
+    combine->setName(kRawHighlightsParamCombine);
+    combine->setHintToolTip(tr("Combine closely related clipped segments by morphological operations.\nThis often leads to improved color reconstruction for tiny segments before dark background."));
+    combine->setDefaultValue(2);
+    combine->setMinimum(0);
+    combine->setMaximum(8);
+    combine->setDisplayMinimum(0);
+    combine->setDisplayMaximum(8);
+    page->addKnob(combine);
+    _combine = combine;
+
+    KnobDoublePtr candidating = createKnob<KnobDouble>(tr("Candidating"));
+    candidating->setName(kRawHighlightsParamCandidating);
+    candidating->setHintToolTip(tr("Select inpainting after segmentation analysis.\nIncrease to favor candidates found in segmentation analysis, decrease for opposed means inpainting."));
+    candidating->setDefaultValue(0.4);
+    candidating->setMinimum(0.);
+    candidating->setMaximum(1.);
+    candidating->setDisplayMinimum(0.);
+    candidating->setDisplayMaximum(1.);
+    page->addKnob(candidating);
+    _candidating = candidating;
+
+    KnobChoicePtr recovery = createKnob<KnobChoice>(tr("Rebuild"));
+    recovery->setName(kRawHighlightsParamRecovery);
+    recovery->setHintToolTip(tr("Approximate lost data in regions with all photosites clipped, the effect depends on segment size and border gradients.\n"
+                                "Choose a mode tuned for segment size or the generic mode that tries to find best settings for every segment.\n"
+                                "Small means areas with a diameter less than 25 pixels, large is best for greater than 100.\n"
+                                "The flat modes ignore narrow unclipped structures (like powerlines) to keep highlights rebuilt and avoid gradients."));
+    std::vector<ChoiceOption> recoveries;
+    for (const RecoveryChoice& choice : kRecoveryChoices) {
+        recoveries.push_back(ChoiceOption(choice.id, tr(choice.label).toStdString(), std::string()));
+    }
+    recovery->populateChoices(recoveries);
+    recovery->setDefaultValue(0);
+    recovery->setAnimationEnabled(false);
+    page->addKnob(recovery);
+    _recovery = recovery;
+
+    KnobDoublePtr strength = createKnob<KnobDouble>(tr("Strength"));
+    strength->setName(kRawHighlightsParamStrength);
+    strength->setHintToolTip(tr("Set strength of rebuilding in regions with all photosites clipped."));
+    strength->setDefaultValue(0.);
+    strength->setMinimum(0.);
+    strength->setMaximum(1.);
+    strength->setDisplayMinimum(0.);
+    strength->setDisplayMaximum(1.);
+    page->addKnob(strength);
+    _strength = strength;
+
+    KnobDoublePtr noiseLevel = createKnob<KnobDouble>(tr("Noise Level"));
+    noiseLevel->setName(kRawHighlightsParamNoiseLevel);
+    noiseLevel->setHintToolTip(tr("Add noise to visually blend the reconstructed areas\ninto the rest of the noisy image. Useful at high ISO."));
+    noiseLevel->setDefaultValue(0.);
+    noiseLevel->setMinimum(0.);
+    noiseLevel->setMaximum(0.5);
+    noiseLevel->setDisplayMinimum(0.);
+    noiseLevel->setDisplayMaximum(0.5);
+    page->addKnob(noiseLevel);
+    _noiseLevel = noiseLevel;
+
     refreshOverride();
+    refreshSegmentsVisibility();
+}
+
+// darktable's gui_changed(): the segmentation knobs follow the requested method, so they stay put
+// while a source without a CFA makes the node fall back.
+void
+RawHighlights::refreshSegmentsVisibility()
+{
+    const KnobChoicePtr mode = _mode.lock();
+    const KnobChoicePtr recovery = _recovery.lock();
+
+    if (!mode || !recovery) {
+        return;
+    }
+    const bool useSegmentation = (mode->getValue() == (int)eRawHighlightsModeSegments);
+    const bool useRecovery = useSegmentation && (recoveryFromIndex(recovery->getValue()) != RawKernels::eSegmentsRecoveryOff);
+    if (const KnobIntPtr knob = _combine.lock()) {
+        knob->setSecret(!useSegmentation);
+    }
+    if (const KnobDoublePtr knob = _candidating.lock()) {
+        knob->setSecret(!useSegmentation);
+    }
+    recovery->setSecret(!useSegmentation);
+    if (const KnobDoublePtr knob = _strength.lock()) {
+        knob->setSecret(!useRecovery);
+    }
+    if (const KnobDoublePtr knob = _noiseLevel.lock()) {
+        knob->setSecret(!useRecovery);
+    }
 }
 
 void
@@ -757,7 +885,7 @@ RawHighlights::refreshModeWarning(double time)
     const int value = mode->getValue();
     const RawLayout layout = RawLayout::fromMetadata(getSourceMetadata(time, ViewIdx(0))).value_or(RawLayout());
     bool fellBack = false;
-    if ((value >= (int)eRawHighlightsModeClip) && (value <= (int)eRawHighlightsModeInpaint)) {
+    if ((value >= (int)eRawHighlightsModeClip) && (value <= (int)eRawHighlightsModeSegments)) {
         (void)sanitiseRawHighlightsMode((RawHighlightsModeEnum)value, layout, &fellBack);
     }
     if (fellBack) {
@@ -778,6 +906,7 @@ void
 RawHighlights::onKnobsLoaded()
 {
     refreshOverride();
+    refreshSegmentsVisibility();
     showSourceClip(getCurrentTime());
     refreshModeWarning(getCurrentTime());
 }
@@ -791,9 +920,16 @@ RawHighlights::knobChanged(KnobI* k,
 {
     const KnobBoolPtr overrideKnob = _clipOverride.lock();
     const KnobChoicePtr mode = _mode.lock();
+    const KnobChoicePtr recovery = _recovery.lock();
 
     if (mode && (k == mode.get())) {
+        refreshSegmentsVisibility();
         refreshModeWarning(time);
+
+        return true;
+    }
+    if (recovery && (k == recovery.get())) {
+        refreshSegmentsVisibility();
 
         return true;
     }
@@ -821,7 +957,7 @@ RawHighlights::resolveSettings(double time,
     const KnobReader reader(time, view);
     const int mode = reader.value(_mode);
     s.layout = RawLayout::fromMetadata(source).value_or(RawLayout());
-    const RawHighlightsModeEnum requested = ((mode >= (int)eRawHighlightsModeClip) && (mode <= (int)eRawHighlightsModeInpaint)) ? (RawHighlightsModeEnum)mode : eRawHighlightsModeOpposed;
+    const RawHighlightsModeEnum requested = ((mode >= (int)eRawHighlightsModeClip) && (mode <= (int)eRawHighlightsModeSegments)) ? (RawHighlightsModeEnum)mode : eRawHighlightsModeOpposed;
     s.mode = sanitiseRawHighlightsMode(requested, s.layout, &s.fellBack);
     const double threshold = reader.value(_clipOverride) ? reader.value(_clip) : std::min(1., RawMetadata::getLinearResponseLimit(source));
     s.clip = (float)(threshold * RawMetadata::getWhiteLevel(source).value_or(1.));
@@ -829,6 +965,13 @@ RawHighlights::resolveSettings(double time,
         for (int c = 0; c < 3; ++c) {
             s.coeffs[c] = (float)(*applied)[c];
         }
+    }
+    if (s.mode == eRawHighlightsModeSegments) {
+        s.combine = reader.value(_combine);
+        s.candidating = (float)reader.value(_candidating);
+        s.recovery = recoveryFromIndex(reader.value(_recovery));
+        s.strength = (float)reader.value(_strength);
+        s.noiseLevel = (float)reader.value(_noiseLevel);
     }
 
     return s;
@@ -863,7 +1006,7 @@ RawHighlights::getRegionsOfInterest(double time,
     const double par = getAspectRatio(getSourceInput());
     const bool lchOnCfa = (settings->mode == eRawHighlightsModeLCh) && settings->layout.hasCfa();
     RectI need;
-    if ((settings->mode == eRawHighlightsModeOpposed) || (settings->mode == eRawHighlightsModeInpaint) || ((settings->mode == eRawHighlightsModeLCh) && !lchOnCfa)) {
+    if ((settings->mode == eRawHighlightsModeOpposed) || (settings->mode == eRawHighlightsModeInpaint) || (settings->mode == eRawHighlightsModeSegments) || ((settings->mode == eRawHighlightsModeLCh) && !lchOnCfa)) {
         need = settings->sourceRoD;
     } else if (lchOnCfa) {
         const RectI window = PassExec::toPixelEnclosing(renderWindow, scale, par);
@@ -920,7 +1063,6 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     const int sourceInput = getSourceInput();
     const bool hasCfa = s.layout.hasCfa();
     const RawHighlightsModeEnum mode = (!hasCfa && (s.mode == eRawHighlightsModeLCh)) ? eRawHighlightsModeOpposed : s.mode;
-    const bool inpaint = (mode == eRawHighlightsModeInpaint);
 
     RawNodeSupport::LockedSource source;
     ImageLayerDesc layer;
@@ -948,38 +1090,44 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     const int nComps = source.nComps;
 
     std::array<float, 3> chroma = { 0.f, 0.f, 0.f };
-    std::shared_ptr<const std::vector<float>> inpaintMosaic;
+    std::shared_ptr<const std::vector<float>> frameMosaic;
     float clips[3] = { s.clip, s.clip, s.clip };
-    if (mode == eRawHighlightsModeOpposed) {
-        const float clipval = kClipMagicOpposed * s.clip;
-        for (int c = 0; c < 3; ++c) {
-            clips[c] = clipval * s.coeffs[c];
-        }
-        const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
+    const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
+    float opposedClips[3];
+    for (int c = 0; c < 3; ++c) {
+        opposedClips[c] = kClipMagicOpposed * s.clip * s.coeffs[c];
+    }
+    // Segmentation Based starts from Inpaint Opposed, whose chrominance it shares, as darktable's
+    // chrominance cache leaves the mode out. whole is the source when the caller has it.
+    const auto opposedChromaOf = [&](const ImageView* whole) {
         std::lock_guard<std::mutex> lock(_chromaMutex);
         if (!_chromaValid || (_chromaKey != key)) {
-            std::optional<ImageView> whole;
-            RawNodeSupport::TopDownBuffer wholeBuffer;
-            viewWholeSource(source, s.sourceRoD, parallel, &whole, &wholeBuffer);
+            std::optional<ImageView> own;
+            RawNodeSupport::TopDownBuffer ownBuffer;
+            if (!whole) {
+                viewWholeSource(source, s.sourceRoD, parallel, &own, &ownBuffer);
+                whole = &*own;
+            }
             if (hasCfa) {
-                _chroma = opposedChroma(*whole, CfaLookup(s.layout, s.sourceRoD), clips, parallel);
+                _chroma = opposedChroma(*whole, CfaLookup(s.layout, s.sourceRoD), opposedClips, parallel);
             } else if (nComps >= 3) {
-                _chroma = linearOpposedChroma(*whole, clips, parallel);
+                _chroma = linearOpposedChroma(*whole, opposedClips, parallel);
             } else {
                 _chroma = { 0.f, 0.f, 0.f };
             }
             _chromaKey = key;
             _chromaValid = !cancel.check();
         }
-        chroma = _chroma;
-    } else if (inpaint) {
-        for (int c = 0; c < 3; ++c) {
-            clips[c] = kClipMagicInpaint * s.clip * s.coeffs[c];
-        }
-        const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
-        std::lock_guard<std::mutex> lock(_inpaintMutex);
-        if (!_inpaintValid || (_inpaintKey != key)) {
-            _inpaint.reset();
+
+        return _chroma;
+    };
+    if (mode == eRawHighlightsModeOpposed) {
+        std::copy(opposedClips, opposedClips + 3, clips);
+        chroma = opposedChromaOf(NULL);
+    } else if ((mode == eRawHighlightsModeInpaint) || (mode == eRawHighlightsModeSegments)) {
+        std::lock_guard<std::mutex> lock(_frameMutex);
+        if (!_frameValid || (_frameKey != key)) {
+            _frame.reset();
             std::optional<ImageView> whole;
             RawNodeSupport::TopDownBuffer wholeBuffer;
             viewWholeSource(source, s.sourceRoD, parallel, &whole, &wholeBuffer);
@@ -993,12 +1141,42 @@ RawHighlights::renderOp(const RenderActionArgs& args,
             } else {
                 RawNodeSupport::xtransAt(s.layout, s.sourceRoD, xtrans);
             }
-            RawKernels::inpaintColor(whole->pixel(0, 0), whole->rowStride, whole->nComps, mosaic->data(), width, height, filters, xtrans, clips, parallel);
-            _inpaint = std::move(mosaic);
-            _inpaintKey = key;
-            _inpaintValid = !cancel.check();
+            if (mode == eRawHighlightsModeInpaint) {
+                float inpaintClips[3];
+                for (int c = 0; c < 3; ++c) {
+                    inpaintClips[c] = kClipMagicInpaint * s.clip * s.coeffs[c];
+                }
+                RawKernels::inpaintColor(whole->pixel(0, 0), whole->rowStride, whole->nComps, mosaic->data(), width, height, filters, xtrans, inpaintClips, parallel);
+            } else {
+                const std::array<float, 3> wholeChroma = opposedChromaOf(&*whole);
+                const ImageView& view = *whole;
+                const CfaLookup cfa(s.layout, s.sourceRoD);
+                float* opposed = mosaic->data();
+                parallel(height, [&](int row) {
+                    float* line = opposed + (std::size_t)row * (std::size_t)width;
+                    for (int col = 0; col < width; ++col) {
+                        const float v = view.at(row, col);
+                        const int color = cfa.at(row, col);
+                        line[col] = (v >= opposedClips[color]) ? std::max(v, calcRefavg(view, cfa, row, col) + wholeChroma[color]) : v;
+                    }
+                });
+                RawKernels::SegmentsParams params;
+                params.clip = s.clip;
+                for (int c = 0; c < 3; ++c) {
+                    params.coeffs[c] = s.coeffs[c];
+                }
+                params.candidating = s.candidating;
+                params.combine = s.combine;
+                params.recovery = s.recovery;
+                params.strength = s.strength;
+                params.noiseLevel = s.noiseLevel;
+                RawKernels::segmentsHighlights(whole->pixel(0, 0), whole->rowStride, whole->nComps, opposed, width, height, filters, xtrans, params, parallel);
+            }
+            _frame = std::move(mosaic);
+            _frameKey = key;
+            _frameValid = !cancel.check();
         }
-        inpaintMosaic = _inpaint;
+        frameMosaic = _frame;
     } else if (mode == eRawHighlightsModeLCh) {
         clips[0] = clips[1] = clips[2] = kClipMagicLCh * s.clip;
     } else {
@@ -1040,7 +1218,8 @@ RawHighlights::renderOp(const RenderActionArgs& args,
                         }
                         break;
                     case eRawHighlightsModeInpaint:
-                        v = (*inpaintMosaic)[(std::size_t)row * (std::size_t)rod.width() + (std::size_t)col];
+                    case eRawHighlightsModeSegments:
+                        v = (*frameMosaic)[(std::size_t)row * (std::size_t)rod.width() + (std::size_t)col];
                         break;
                     case eRawHighlightsModeLCh:
                         v = (s.layout.period() == 2) ? lchBayer(in, cfa, row, col, clips[0]) : lchXTrans(in, cfa, row, col, clips[0]);

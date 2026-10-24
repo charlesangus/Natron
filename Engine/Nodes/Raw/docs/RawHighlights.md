@@ -15,8 +15,8 @@ Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
   warning ("highlights: mode not available for this type of image. falling back to inpaint
   opposed."); the Method knob keeps the choice, so a CFA source brings it back. Each mode
   declares the sensor it needs in `rawHighlightsModeRequirement()`: Reconstruct in LCh and
-  Reconstruct Color need a CFA, and the modes not yet ported need a CFA (Segmentation) or a Bayer
-  mosaic (Guided Laplacians).
+  Reconstruct Color and Segmentation Based need a CFA, and Guided Laplacians, not yet ported, needs a
+  Bayer mosaic.
 - **Clip Highlights** clips every photosite to the threshold, whatever its colour, which turns
   clipped areas white.
 - **Unclipped** is an identity.
@@ -43,7 +43,17 @@ Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
 - Image borders are those of the whole source, never of a tile. darktable's X-Trans LCh keeps a
   ring buffer of clipped columns, which is evaluated directly here with the same result.
 - Clip, LCh and Reconstruct Color set `raw/processed_maximum` the way darktable updates its processed maximum.
-- The segmentation and guided Laplacian modes are not ported.
+- **Segmentation Based** (`segbased.c` and `segmentation.c`, `RawKernels::segmentsHighlights()`)
+  starts from Inpaint Opposed and its chroma, then works on three planes at a third of the mosaic
+  size: clipped areas are dilated by **Combine Segments** and flood-filled into segments, and
+  each segment takes the cube of the most suitable unclipped neighbourhood around it, as
+  **Candidating** weighs smoothness against the opposed result. **Rebuild** adds a gradient to
+  all-clipped segments, scaled by **Strength**, with Poisson noise at **Noise Level** seeded from
+  each segment's position, so renders repeat. Strength and Noise Level show only when Rebuild is
+  not off. The whole frame is computed once per `RawNodeSupport::frameKey()` and each render
+  copies its window. It has no GPU path and none of darktable's mask views. Where darktable
+  races in the candidate pass, segments are applied in darktable's serial order.
+- The guided Laplacian mode is not ported.
 - It renders at full resolution only.
 
 Tests: `Tests/Native/NativeRawHighlightsDefaults_Test.cpp` for the threshold default, its

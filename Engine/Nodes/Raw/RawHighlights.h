@@ -52,6 +52,11 @@
 #define kRawHighlightsParamMode "mode"
 #define kRawHighlightsParamClip "clip"
 #define kRawHighlightsParamClipOverride "clipOverride"
+#define kRawHighlightsParamCombine "combine"
+#define kRawHighlightsParamCandidating "candidating"
+#define kRawHighlightsParamRecovery "recovery"
+#define kRawHighlightsParamStrength "strength"
+#define kRawHighlightsParamNoiseLevel "noiseLevel"
 
 NATRON_NAMESPACE_ENTER
 
@@ -60,7 +65,8 @@ enum RawHighlightsModeEnum {
     eRawHighlightsModeUnclipped,
     eRawHighlightsModeOpposed,
     eRawHighlightsModeLCh,
-    eRawHighlightsModeInpaint
+    eRawHighlightsModeInpaint,
+    eRawHighlightsModeSegments
 };
 
 /**
@@ -94,8 +100,11 @@ RawHighlightsModeEnum sanitiseRawHighlightsMode(RawHighlightsModeEnum mode,
  * X-Trans photosites keeping lightness and scaling chroma, and is Inpaint Opposed on data without
  * a CFA, as in darktable. Reconstruct Color rebuilds a clipped photosite from the next photosite of
  * another colour along rows and columns, by ratios learned from the unclipped photosites on the
- * way; it needs a CFA and works over the whole frame, which it keeps per source and settings, one
- * float per photosite.
+ * way. Segmentation Based starts from Inpaint Opposed, segments the clipped areas of each colour
+ * plane and rebuilds each segment from a candidate found next to it; Rebuild also lifts the areas
+ * where every colour is clipped by a gradient grown inwards from their edges. Reconstruct Color and
+ * Segmentation Based need a CFA and work over the whole frame, which they keep per source and
+ * settings, one float per photosite.
  *
  * The clipping threshold shows the smaller of 1 and raw/linear_response_limit until Override
  * Clipping Threshold is on.
@@ -144,6 +153,8 @@ private:
 
     void refreshModeWarning(double time);
 
+    void refreshSegmentsVisibility();
+
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
@@ -156,7 +167,8 @@ private:
      * @brief Clip Highlights, and Reconstruct in LCh on a Bayer or X-Trans mosaic. Inpaint Opposed
      * measures its chrominance over the whole source with double sums, which a region's strips
      * and the GPU's float arithmetic cannot reproduce, so it stays on the CPU, as does LCh without
-     * a CFA, which is Inpaint Opposed. Reconstruct Color is a whole-frame scan and stays on the CPU.
+     * a CFA, which is Inpaint Opposed. Reconstruct Color and Segmentation Based are whole-frame scans
+     * and stay on the CPU.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -185,6 +197,11 @@ private:
     KnobChoiceWPtr _mode;
     KnobDoubleWPtr _clip;
     KnobBoolWPtr _clipOverride;
+    KnobIntWPtr _combine;
+    KnobDoubleWPtr _candidating;
+    KnobChoiceWPtr _recovery;
+    KnobDoubleWPtr _strength;
+    KnobDoubleWPtr _noiseLevel;
     RawNodeSupport::OwnedMessage _message;
 
     // The chrominance of Inpaint Opposed, for the source and settings its key names.
@@ -193,11 +210,12 @@ private:
     U64 _chromaKey;
     std::array<float, 3> _chroma;
 
-    // The Reconstruct Color mosaic of the whole source, for the source and settings its key names.
-    std::mutex _inpaintMutex;
-    bool _inpaintValid;
-    U64 _inpaintKey;
-    std::shared_ptr<const std::vector<float>> _inpaint;
+    // The Reconstruct Color or Segmentation Based mosaic of the whole source, for the source and
+    // settings its key names.
+    std::mutex _frameMutex;
+    bool _frameValid;
+    U64 _frameKey;
+    std::shared_ptr<const std::vector<float>> _frame;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -28,10 +28,11 @@
 
 #include "Global/Macros.h"
 
-#include <string>
-#include <list>
-#include <vector>
 #include <cstddef>
+#include <list>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "Global/Enums.h"
 
@@ -105,6 +106,7 @@ public:
         , deviceProcess()
         , deviceStats()
         , deviceCacheTiles()
+        , deviceRootHold()
 #endif
         , rod()
         , pixelAspectRatio(1.)
@@ -172,6 +174,9 @@ public:
 
     // Set when the frame may enter the viewer cache; empty otherwise.
     std::vector<DeviceCacheTile> deviceCacheTiles;
+
+    // Keeps deviceColor on the device, out of reach of the pool's eviction, until the frame is shown or dropped.
+    std::shared_ptr<void> deviceRootHold;
 #endif
 
     // The RoD of the src image

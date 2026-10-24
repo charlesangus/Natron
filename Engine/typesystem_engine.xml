@@ -1361,7 +1361,8 @@
                     return {};
                 }
                 %PYARG_0 = PyTuple_New(5);
-                PyTuple_SET_ITEM(%PYARG_0, 0, %CONVERTTOPYTHON[Natron::KeyframeTypeEnum]((Natron::KeyframeTypeEnum)interpolation));
+                Natron::KeyframeTypeEnum interpolationType = (Natron::KeyframeTypeEnum)interpolation;
+                PyTuple_SET_ITEM(%PYARG_0, 0, %CONVERTTOPYTHON[Natron::KeyframeTypeEnum](interpolationType));
                 PyTuple_SET_ITEM(%PYARG_0, 1, %CONVERTTOPYTHON[double](left));
                 PyTuple_SET_ITEM(%PYARG_0, 2, %CONVERTTOPYTHON[double](right));
                 PyTuple_SET_ITEM(%PYARG_0, 3, %CONVERTTOPYTHON[double](leftWeight));

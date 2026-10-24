@@ -20,8 +20,10 @@
 /*
  * The camera matrix handling of darktable's input colour module, DARKTABLE_REF release-5.6.2
  * (commit 20891f6c6fa7), src/iop/colorin.c and src/common/colorspaces.c, Copyright (C)
- * 2009-2026 darktable developers, distributed under the GNU GPL version 3 or later. Its ICC
- * path is not ported: the working space is the project's OpenColorIO one.
+ * 2009-2026 darktable developers, distributed under the GNU GPL version 3 or later: its matrix
+ * input profiles, their fallbacks (commit_params()) and the file-derived default
+ * (reload_defaults()). Its ICC path is not ported: the working space is the project's OpenColorIO
+ * one.
  */
 
 #ifndef Engine_Nodes_Raw_RawInputColor_h
@@ -36,6 +38,7 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <optional>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -45,32 +48,86 @@
 #define PLUGINID_NATRON_RAWINPUTCOLOR "fr.natron.RawInputColor"
 #define PLUGIN_MAJOR_NATRON_RAWINPUTCOLOR 1
 
-#define kRawInputColorParamMatrix "matrix"
+#define kRawInputColorParamProfileOverride "inputProfileOverride"
+#define kRawInputColorParamProfile "inputProfile"
 #define kRawInputColorParamRow0 "matrixRow0"
 #define kRawInputColorParamRow1 "matrixRow1"
 #define kRawInputColorParamRow2 "matrixRow2"
 
+// The option ids of the Input Profile choice. A project saves the id, so options added to the
+// list later do not move a saved choice.
+#define kRawInputColorProfileEmbeddedMatrix "embeddedMatrix"
+#define kRawInputColorProfileStandardMatrix "standardMatrix"
+#define kRawInputColorProfileEnhancedMatrix "enhancedMatrix"
+#define kRawInputColorProfileVendorMatrix "vendorMatrix"
+#define kRawInputColorProfileAlternateMatrix "alternateMatrix"
+#define kRawInputColorProfileLinearRec709 "linearRec709"
+#define kRawInputColorProfileCustom "custom"
+
 NATRON_NAMESPACE_ENTER
 
-enum RawInputColorMatrixEnum {
-    eRawInputColorMatrixFile = 0,
-    eRawInputColorMatrixStandard,
-    eRawInputColorMatrixCustom
+/**
+ * @brief The input profiles, darktable's dt_colorspaces_color_profile_type_t ones this node
+ * offers plus Natron's Custom. Not the choice's indices: rawInputColorProfileAt() maps those.
+ **/
+enum RawInputColorProfileEnum {
+    eRawInputColorProfileEmbeddedMatrix = 0,
+    eRawInputColorProfileStandardMatrix,
+    eRawInputColorProfileEnhancedMatrix,
+    eRawInputColorProfileVendorMatrix,
+    eRawInputColorProfileAlternateMatrix,
+    eRawInputColorProfileLinearRec709,
+    eRawInputColorProfileCustom
 };
+
+/**
+ * @brief The profile at index in the Input Profile choice, Linear Rec709 for an index out of range.
+ **/
+RawInputColorProfileEnum rawInputColorProfileAt(int index);
+
+/**
+ * @brief The index of profile in the Input Profile choice.
+ **/
+int rawInputColorProfileIndex(RawInputColorProfileEnum profile);
+
+/**
+ * @brief darktable's file-derived default (colorin reload_defaults()): the embedded matrix when
+ * the source carries raw/dng_d65_matrix, the standard matrix when it carries raw/cam_to_xyz,
+ * linear Rec709 otherwise.
+ **/
+RawInputColorProfileEnum rawInputColorDefaultProfile(const ImageMetadata& source);
+
+/**
+ * @brief The camera RGB to XYZ (D65) matrix of a matrix profile for source, nullopt when source
+ * does not have it: no embedded or standard matrix, or no entry for its camera in darktable's
+ * enhanced, vendor or alternate table. Custom has none here.
+ **/
+std::optional<RawColorMath::Mat3> rawInputColorProfileMatrix(RawInputColorProfileEnum profile,
+                                                             const ImageMetadata& source);
+
+/**
+ * @brief The profile used for requested, after darktable's fallbacks (colorin commit_params()):
+ * enhanced, vendor and alternate fall back to embedded, embedded to standard, standard to linear
+ * Rec709. Sets camToXyz to its matrix. Custom is returned as is, camToXyz untouched.
+ **/
+RawInputColorProfileEnum rawInputColorResolveProfile(RawInputColorProfileEnum requested,
+                                                     const ImageMetadata& source,
+                                                     RawColorMath::Mat3* camToXyz);
 
 inline constexpr InputSpec kRawInputColorInputs[] = {
     InputSpec { .label = "Source" },
 };
 
 /**
- * @brief Camera RGB to the project's working space, after RawDemosaic. The camera matrix,
- * raw/cam_to_xyz from the source's metadata unless overridden, is turned into the RGB space whose
- * primaries are its columns' chromaticities and whose white is D65, as darktable builds its input
- * profile from it; XYZ goes to the working space through the inverse of the project's
- * working-to-XYZ matrix, which the OpenColorIO config gives. The Standard matrix, and the
- * fallback when the source has no camera matrix, is linear Rec. 709. A working space with no
- * matrix to XYZ (a log space) is treated as linear Rec. 709. When the source carries
- * raw/wb_late_correction, camera RGB is multiplied by it before the matrix.
+ * @brief Camera RGB to the project's working space, after RawDemosaic, through the input
+ * profile's camera RGB to XYZ (D65) matrix. The file's matrices (raw/dng_d65_matrix and
+ * raw/cam_to_xyz) become the RGB space whose primaries are their columns' chromaticities and
+ * whose white is D65, as darktable builds its input profile from them; darktable's enhanced,
+ * vendor and alternate tables give primaries and a white, adapted to D65 with Bradford. Unless
+ * overridden the profile is the file-derived default. XYZ goes to the working space through the
+ * inverse of the project's working-to-XYZ matrix, which the OpenColorIO config gives; a working
+ * space with no matrix to XYZ (a log space) is treated as linear Rec. 709. When the source
+ * carries raw/wb_late_correction, camera RGB is multiplied by it before the matrix.
  **/
 struct RawInputColorOp {
     struct Params {
@@ -115,7 +172,8 @@ struct RawInputColorOp {
     static RawColorMath::Mat3 xyzToWorking(const KnobHolder* holder);
 
     KnobHolder* holder = nullptr;
-    KnobChoiceWPtr matrixMode;
+    KnobBoolWPtr profileOverride;
+    KnobChoiceWPtr profile;
     KnobDoubleWPtr rows[3];
 };
 
@@ -142,10 +200,21 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+
+    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+
     virtual ImageMetadata deriveOutputMetadata(double time,
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void refreshEnabled();
+
+    // While the override is off the choice shows the source's default, which is what a render uses.
+    void showSourceProfile();
+
+    void refreshProfileWarning();
+
+    RawNodeSupport::OwnedMessage _message;
 };
 
 NATRON_NAMESPACE_EXIT

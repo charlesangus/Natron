@@ -51,9 +51,9 @@ the D65 multipliers and leave the adaptation to colour calibration.
   synthetic mosaics, at darktable's defaults otherwise (clipping threshold 1).
 - demosaic: the method under test; no green equilibration, colour smoothing, dual demosaic or
   capture sharpening.
-- colorin: the standard matrix (rawspeed's camera matrix, which RawInputColor's "From File"
-  uses; darktable's default "enhanced matrix" would pick its own tuned matrix for some cameras),
-  no gamut clipping, no blue mapping, linear Rec. 709 working space.
+- colorin: the standard color matrix (rawspeed's camera matrix, which darktable and RawInputColor
+  default to for a raw file that is not a DNG), no gamut clipping, no blue mapping, linear Rec. 709
+  working space.
 - colorout: linear Rec. 709, matrix path (`force_lcms2=FALSE`). darktable's matrices are D50
   adapted with Bradford on both sides, so camera white maps to Rec. 709 white as it does in
   RawInputColor's camera to XYZ D65 matrix; the test converts Natron's output from the project's

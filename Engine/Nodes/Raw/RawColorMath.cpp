@@ -594,41 +594,105 @@ d65White()
 }
 
 std::optional<Mat3>
-whiteNormalisedCameraToXyz(const Mat3& camToXyz)
+rgbToXyz(const Mat3& primaries,
+         const Vec3& white)
 {
-    Mat3 primaries;
+    // Little CMS's _cmsBuildRGB2XYZtransferMatrix(): each primary at its chromaticity, scaled so
+    // RGB (1, 1, 1) is the white's chromaticity at Y = 1.
+    Mat3 columns;
 
     for (int k = 0; k < 3; ++k) {
-        const double norm = camToXyz[k] + camToXyz[3 + k] + camToXyz[6 + k];
+        const double norm = primaries[k] + primaries[3 + k] + primaries[6 + k];
         if (norm == 0.) {
             return std::nullopt;
         }
-        const double x = camToXyz[k] / norm;
-        const double y = camToXyz[3 + k] / norm;
+        const double x = primaries[k] / norm;
+        const double y = primaries[3 + k] / norm;
         if (y == 0.) {
             return std::nullopt;
         }
-        primaries[k] = x / y;
-        primaries[3 + k] = 1.;
-        primaries[6 + k] = (1. - x - y) / y;
+        columns[k] = x / y;
+        columns[3 + k] = 1.;
+        columns[6 + k] = (1. - x - y) / y;
     }
-    const std::optional<Mat3> inverse = invert(primaries);
-    if (!inverse) {
+    const std::optional<Mat3> inverse = invert(columns);
+    const double whiteNorm = white[0] + white[1] + white[2];
+    if (!inverse || (whiteNorm == 0.) || (white[1] == 0.)) {
         return std::nullopt;
     }
-    // Lcms builds the profile from the white's chromaticity at Y = 1.
-    const Vec3 d65 = d65White();
-    const double sum = d65[0] + d65[1] + d65[2];
-    const Vec3 white = { (d65[0] / sum) / (d65[1] / sum), 1., (d65[2] / sum) / (d65[1] / sum) };
-    const Vec3 scale = apply(*inverse, white);
+    const double wx = white[0] / whiteNorm;
+    const double wy = white[1] / whiteNorm;
+    const Vec3 whiteXyz = { wx / wy, 1., (1. - wx - wy) / wy };
+    const Vec3 scale = apply(*inverse, whiteXyz);
     Mat3 out;
     for (int r = 0; r < 3; ++r) {
         for (int k = 0; k < 3; ++k) {
-            out[r * 3 + k] = primaries[r * 3 + k] * scale[k];
+            out[r * 3 + k] = columns[r * 3 + k] * scale[k];
         }
     }
 
     return out;
+}
+
+std::optional<Mat3>
+whiteNormalisedCameraToXyz(const Mat3& camToXyz)
+{
+    return rgbToXyz(camToXyz, d65White());
+}
+
+Vec3
+lcmsD50White()
+{
+    return Vec3 { 0.9642, 1.0, 0.8249 };
+}
+
+std::optional<Mat3>
+bradford(const Vec3& from,
+         const Vec3& to)
+{
+    // Little CMS's ComputeChromaticAdaptation() with its Bradford cone matrix, the linear form
+    // without the blue non-linearity.
+    const Mat3 cone = { 0.8951, 0.2664, -0.1614,
+                        -0.7502, 1.7135, 0.0367,
+                        0.0389, -0.0685, 1.0296 };
+    const Vec3 coneFrom = apply(cone, from);
+    const Vec3 coneTo = apply(cone, to);
+    const std::optional<Mat3> coneInverse = invert(cone);
+
+    if (!coneInverse) {
+        return std::nullopt;
+    }
+    Mat3 gain = { 0., 0., 0., 0., 0., 0., 0., 0., 0. };
+    for (int c = 0; c < 3; ++c) {
+        if (coneFrom[c] == 0.) {
+            return std::nullopt;
+        }
+        gain[c * 4] = coneTo[c] / coneFrom[c];
+    }
+
+    return multiply(*coneInverse, multiply(gain, cone));
+}
+
+std::optional<Mat3>
+profileCameraToXyz(const Mat3& primaries,
+                   const Vec3& white)
+{
+    const std::optional<Mat3> toWhite = rgbToXyz(primaries, white);
+    const double whiteNorm = white[0] + white[1] + white[2];
+
+    if (!toWhite || (whiteNorm == 0.) || (white[1] == 0.)) {
+        return std::nullopt;
+    }
+    // cmsCreateRGBProfile() stores the colorants adapted to D50; darktable's working profile
+    // takes D50 back to D65 the same way, which is where Natron's XYZ is.
+    const Vec3 whiteXyz = { white[0] / white[1], 1., white[2] / white[1] };
+    const std::optional<Mat3> toD50 = bradford(whiteXyz, lcmsD50White());
+    const std::optional<Mat3> toD65 = bradford(lcmsD50White(), d65White());
+    if (!toD50 || !toD65) {
+        return std::nullopt;
+    }
+
+    return multiply(*toD65, multiply(*toD50, *toWhite));
 }
 } // namespace RawColorMath
 

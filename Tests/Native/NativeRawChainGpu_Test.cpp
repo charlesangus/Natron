@@ -108,7 +108,7 @@ protected:
 
 #ifdef NATRON_HAVE_GPU
 
-// The matrix of every mode against the CPU, on demosaiced camera RGB.
+// The matrix of every kind of input profile against the CPU, on demosaiced camera RGB.
 TEST_F(NativeRawChainGpuTest, InputColorMatchesTheCpu)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -117,20 +117,22 @@ TEST_F(NativeRawChainGpuTest, InputColorMatchesTheCpu)
     }
     const Chain c = createChain(eRawHighlightsModeClip);
     ASSERT_TRUE(c.read && c.prepare && c.temperature && c.highlights && c.demosaic && c.inputColor);
-    KnobChoicePtr matrix = c.inputColor->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawInputColorParamMatrix);
-    ASSERT_TRUE(bool(matrix));
+    KnobBoolPtr profileOverride = c.inputColor->getEffectInstance()->getKnobByNameAndType<KnobBool>(kRawInputColorParamProfileOverride);
+    KnobChoicePtr profile = c.inputColor->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawInputColorParamProfile);
+    ASSERT_TRUE(profileOverride && profile);
     KnobDoublePtr row1 = c.inputColor->getEffectInstance()->getKnobByNameAndType<KnobDouble>(kRawInputColorParamRow1);
     ASSERT_TRUE(bool(row1));
+    profileOverride->setValue(true);
 
-    for (int mode : { (int)eRawInputColorMatrixFile, (int)eRawInputColorMatrixStandard, (int)eRawInputColorMatrixCustom }) {
-        matrix->setValue(mode);
-        if (mode == (int)eRawInputColorMatrixCustom) {
+    for (const char* mode : { kRawInputColorProfileStandardMatrix, kRawInputColorProfileEnhancedMatrix, kRawInputColorProfileLinearRec709, kRawInputColorProfileCustom }) {
+        profile->setValueFromID(mode, 0);
+        if (std::string(mode) == kRawInputColorProfileCustom) {
             row1->setValue(-0.35, ViewSpec::all(), 0);
             row1->setValue(1.4, ViewSpec::all(), 1);
             row1->setValue(-0.05, ViewSpec::all(), 2);
         }
         const GpuQuery query = rgbaQueryFor(c.inputColor);
-        expectGpuMatchesCpu(*runtime, c.inputColor, c.demosaic, kWindow, kInputColorGpuTolerance, std::string("RawInputColor matrix ") + std::to_string(mode), &query);
+        expectGpuMatchesCpu(*runtime, c.inputColor, c.demosaic, kWindow, kInputColorGpuTolerance, std::string("RawInputColor profile ") + mode, &query);
     }
 }
 

@@ -120,6 +120,37 @@ std::optional<Vec3> cameraReferenceMultipliers(const Mat3& xyzToCam);
 std::optional<Mat3> whiteNormalisedCameraToXyz(const Mat3& camToXyz);
 
 /**
+ * @brief The RGB to XYZ matrix of the RGB space whose primaries have the chromaticities of
+ * primaries' columns and whose white, RGB (1, 1, 1), has white's chromaticity at Y = 1, as Little
+ * CMS builds it before any adaptation. Only the chromaticities of the inputs count. nullopt when
+ * they are degenerate.
+ **/
+std::optional<Mat3> rgbToXyz(const Mat3& primaries,
+                             const Vec3& white);
+
+/**
+ * @brief Little CMS's D50 white, XYZ with Y = 1, the profile connection space darktable's ICC
+ * profiles adapt to.
+ **/
+Vec3 lcmsD50White();
+
+/**
+ * @brief Little CMS's linear Bradford adaptation from the white from to the white to, both XYZ.
+ * nullopt when from has a zero cone response.
+ **/
+std::optional<Mat3> bradford(const Vec3& from,
+                             const Vec3& to);
+
+/**
+ * @brief The camera RGB to XYZ (D65) matrix of a profile darktable builds with
+ * cmsCreateRGBProfile() from primaries (XYZ columns) and a white (XYZ), as its enhanced, vendor
+ * and alternate matrices are: rgbToXyz(), Bradford adapted to D50 as Little CMS stores the
+ * colorants, then from D50 to D65 as darktable's working profile reads them back.
+ **/
+std::optional<Mat3> profileCameraToXyz(const Mat3& primaries,
+                                       const Vec3& white);
+
+/**
  * @brief darktable's D65 white, XYZ with Y = 1.
  **/
 Vec3 d65White();

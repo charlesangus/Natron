@@ -348,13 +348,13 @@ Design reference: `build/m119-mockup/` in the lane (mockup.py, NOTES.md, hud-{C,
 
 ## Phase 119.7: Sunken block polish (UAT round 5)
 
-- [ ] M119.P7.T1 — Give the sunken block margins and stop its contents painting their own backgrounds
+- [x] M119.P7.T1 — Give the sunken block margins and stop its contents painting their own backgrounds
   - files: `Gui/KnobGuiColor.cpp`, `Gui/KnobGuiColor.h`, `Gui/Resources/Stylesheets/mainstyle.qss`, the panel layout code that places the backdrop
   - approach: the block needs an inner margin between its edge and the label, row and panel, and an outer margin to its neighbouring knobs, so it no longer sits tight or overlaps them. Reuse the existing spacing constants and qss metrics (no new magic numbers). The labels and knob widgets inside the block must draw transparent over it rather than with their own background.
   - verify: the GUI script measures a non-zero inner and outer margin equal to the reused constant and checks a label pixel inside the block matches the block fill; screenshots.
   - size: M
 
-- [ ] M119.P7.T2 — Global mode marks the engaged block with a highlight-coloured outline, and the button loses its orange fill
+- [x] M119.P7.T2 — Global mode marks the engaged block with a highlight-coloured outline, and the button loses its orange fill
   - files: `Gui/KnobGuiColor.cpp`, `Gui/Resources/Stylesheets/mainstyle.qss`, `Tests/KnobGuiColorWheelWidth_Test.cpp`, `Tests/gui/m119_trackball_layout.py`
   - approach: the engaged block keeps the plain sunken fill; its outline takes the theme's highlight colour (the orange used for selection). Remove the global-mode button's orange 'on' fill rule.
   - verify: unit tests updated; the script checks the engaged block's outline pixel is the highlight colour, its fill equals the plain block's, and the button has no orange fill; screenshots.
@@ -370,6 +370,7 @@ Design reference: `build/m119-mockup/` in the lane (mockup.py, NOTES.md, hud-{C,
 
 ## Decisions
 
+- 2026-10-24 — **Round 5 details (user):** the engaged outline stays 1 px, in the selection colour on all four sides. The block's 6 px top padding is added only while the panel is open, so the row shifts down 6 px on open; its side padding is reserved permanently, so the toggle never moves sideways. Evidence: release 397/397 on 7c8ff148f; `m119_trackball_layout.py` 246/246 after the probe fix in 7d45f637b. The two earlier failures were the probe reading under the global-mode hint window. Screenshots sent; P7.T3 waits on the user's approval.
 - 2026-10-24 — **UAT round 5 (user):** the lighter sunken block reads better, but it has no inner or outer margin, so it is tight and overlaps its neighbours, and the labels and knobs inside draw their own background. Remove the global-mode button's orange fill. Instead of lightening the engaged block, colour its outline with the highlight colour (orange). Reuse existing spacing constants. Phase 119.7 added; P6.T3's approval is superseded by P7.T3.
 - 2026-10-24 — **Phase 6 evidence (PM):** release build on 950fe5847 is 397/397 on both legs. `m119_trackball_layout.py` reports no failures on 1ef406920's script: the ring is 12/72.5 of the outer radius at every size (9 px quarter-default to 38 px half-wide), and exactly one highlighted block follows the engaged knob (open, closed, Ctrl+Down, Esc). The first run's two failures were the script measuring Multiply's panel and gain's 22 px main row without its split channel lines. Screenshots sent; P6.T3 waits on the user's approval. The global-mode button keeps its orange 'on' fill pending the user's call.
 - 2026-10-24 — **UAT round 4 (user):** "looking good". Two last changes: make the ring proportional to the trackball (it seems always the same size now); remove the orange highlight visible mainly around the S/R buttons in global mode and instead highlight the sunken area of the active knob. PM call: with the panel closed, the sunken block still appears around the active knob's row while global mode is engaged. Phase 119.6 added.

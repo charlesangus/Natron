@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
@@ -91,6 +92,7 @@ gpuCapableIds()
         PLUGINID_NATRON_RAWINPUTCOLOR,
         PLUGINID_NATRON_RAWCOLORCALIBRATION,
         PLUGINID_NATRON_DISSOLVE,
+        PLUGINID_NATRON_EDGEDETECT,
     };
 
     return ids;

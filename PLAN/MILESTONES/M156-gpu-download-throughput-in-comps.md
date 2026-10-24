@@ -41,6 +41,18 @@ Scouted facts (main `31636d20d`, 2026-10-20; re-check at promotion):
   - verify: The Decisions entry accounts for at least 80% of each comp's measured gap, or says what remains unexplained.
   - size: L
 
+- [ ] M156.P1.T3 — Time every region transfer on the device (runs before P1.T2 resumes)
+  - files: Engine/GpuRegionTask.cpp, Engine/RenderStats.{h,cpp}, tools/bench/gpu_region_summary.py, Tests/GpuResidency_Test.cpp
+  - approach:
+    - Give a whole region a timestamp pool with one query pair per download and upload slot. Pass it in `issueDownloads()` (~:1226-1270) and `upload()` (~:849), as `options.timestampPool`/`timestampQuery`, which `GpuTransfer.cpp:672` already honours. Read it in `finishDownloads()` (~:1384). Reset the pool on the device: host reset is off, and the pair is written on the transfer queue.
+    - Time serial-strip downloads and uploads too: `downloadStrip()` with `flight == nullptr` (~:1803-1890) and the strip upload (~:1626). Give them a pool of strips × slots.
+    - Record pinned downloads (`downloadPinned()`, ~:1276) in `downloads` and `downloadBytes`, flagged as pinned.
+    - Add an `uploads` list mirroring `downloads`.
+    - `transferExposedMs` stays host-measured: it is the exposure the gate judges. Device copy time is reported beside it.
+    - The summary prints upload and download device rates per region, and the timestamped share.
+  - verify: remote `fast --tests` green on both legs. The P1.T1 test is extended so that every download and upload entry of a whole and a pipelined region has a non-null `deviceMs` on a device with timestamps. On the GPU host, one keying_grade UHD a-cold run shows ≥ 95% of download and upload bytes timestamped.
+  - size: M
+
 ## Phase 156.2: Fix
 
 Tasks are inserted from M156.P1.T2's attribution.
@@ -61,3 +73,11 @@ Tasks are inserted from M156.P1.T2's attribution.
 - 2026-10-23 — **M156.P1.T1 code in (`8f415277a`), awaiting the remote build.** Each region record gains `downloads: [{strip, bytes, deviceMs, queueFamily, queueIndex, comps, format, staged}]`, filled only when the profile is on (`RegionReport::recordDownloads`). `deviceMs` comes from the pipelined strip path's existing timestamp queries. It is `null` for whole-region and serial-strip downloads, which have no timestamps, so P1.T2 may need timestamps added there before it can attribute those. There is no conversion flag, because both download paths are plain device→host copies (staged or imported). Beyond the brief, the change touches `Engine/RenderStats.*` and `Engine/RenderScheduler.{h,cpp}` (7 lines of plumbing), `Tests/RenderProfile_Test.cpp` and `tools/bench/gpu-region-profile-sample.jsonl`. The test is `GpuResidency.RegionRecordListsEveryDownloadAndTheirBytesAddUp`, in `Tests/GpuResidency_Test.cpp` to reuse its fused-region fixture.
 - 2026-10-23 — **Overlap with M64 - Tiled Rendering on `Engine/RenderScheduler.cpp` accepted (user):** M156 runs, and M64 rebases over these lines if it resumes, as already agreed for M86 - OFX 1.5 GPU Suites.
 - 2026-10-23 — **M156.P1.T1 done.** Remote `fast --tests` of `8f415277a` is green on both scheduler legs (run 40051202693). `GpuResidencyTest.RegionRecordListsEveryDownloadAndTheirBytesAddUp` passed in both legs, not skipped, and `RenderProfileTest.*` is unchanged. The GPU-host half of the verify (the summary of one keying_grade UHD run shows the new columns) is folded into P1.T2's first bench run, which builds the release AppImage anyway.
+- 2026-10-23 — **M156.P1.T2 stopped at its P1.T1 check** (`.local/m156/p1t2/`; boot `9e915d0b`, RADV GFX1201, AppImage `8f415277a`). The GPU-host half of P1.T1's verify passes: the summary prints the Downloads table. But only 12–33% of comp download bytes are timestamped, because whole regions carry most of them and have no timestamps. Uploads are untimed too, and pinned downloads aren't recorded. M156.P1.T3 was inserted to time them, and P1.T2 resumes after it.
+  - **Same-boot GpuBench floor (host import):** UHD up 11.5 / down 12.8 GB/s, 8K 11.0 / 12.0.
+  - **Directional, one a-cold run each:** exposed-transfer ratio keying_grade 2.10×, cg_multipass 1.94×, defocus_retime 3.12×. Whole-region host-timed rates are 1.9–8.6 GB/s down and 2.4–8.1 up.
+  - **Even timestamped pipelined copies are slow:** 1.9–5.3 GB/s. Every region does 1–3 large (44–133 MB) imported copies, none staged. So the copy itself looks more likely than "many small downloads": imported-page mapping/IOMMU, or contention with compute.
+  - **For Phase 2:** compare an import copy with compute idle against GpuBench.
+  - **Comp sizes:** the comps' 8K case records the same bytes as UHD (UHD sources), so 8K adds no information for these comps.
+  - **Host changes:** RAM is ~62 GB available now (M109 saw ~91 GB), and `/dev/shm` is 64 MB.
+- 2026-10-23 — **`transferExposedMs` stays host-measured** (PM). It measures exposure, which is what the gate judges; device copy times are added beside it, not in place of it.

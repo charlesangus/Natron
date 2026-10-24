@@ -545,7 +545,7 @@ private:
 
     void teardownPreview();
 
-    NodePtr findOrCreatePreviewReader(const std::string& filetype);
+    NodePtr findOrCreatePreviewReader(const std::string& pluginID);
 
     void refreshPreviewAfterSelectionChange();
 

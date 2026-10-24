@@ -5,7 +5,8 @@ defaults (output unless a colour knob's eyedropper is on, with Ctrl+Alt picking 
 Sections (all run by default; M138_SECTIONS=file-dialog,placement,picker-defaults picks a subset):
   file-dialog      Read's create-time file dialog: into a subfolder, Back, Forward twice (the second
                    lands on a disabled button), the preview toggle with no selection and with a PNG
-                   selected, toggled off, dialog closed and reopened, toggled again.
+                   selected, then a scanline, a tiled and a deep tiled EXR with no error, toggled off, dialog
+                   closed and reopened, toggled again.
   placement        Preferences is centred within the availableGeometry of the screen it is on.
   picker-defaults  Constant(0.25) -> Grade(x2) in the viewer, then a Read, with the eyedropper of the
                    Grade's offset colour knob off and on.
@@ -15,7 +16,7 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xv
         [-e M138_SECTIONS=file-dialog] -w /home/bosley/git/Natron natron-dev \
         Tests/gui/run-gui-test.sh Tests/gui/m138_papercuts.py build/fast/App/Natron
 
-Screenshots: m138-file-dialog-preview.png, m138-picker-01..04 (the info bar in each state).
+Screenshots: m138-file-dialog-preview.png, m138-file-dialog-preview-m138-{green-scanline,blue-tiled,deep-red-tiled}.png, m138-picker-01..04 (the info bar in each state).
 
 Like the other scripts, mouse input is sent straight to the widgets as synthetic events; the
 file dialog is modal, but the script's timers keep running inside its nested event loop.
@@ -53,18 +54,35 @@ try:
 
     FILES_DIR = os.path.abspath(os.path.join(gt.OUT, "m138-files"))
     PNG_NAME = "m138-red.png"
+    EXR_FIXTURES = (("m138-green-scanline.exr", None, (0.1, 0.9, 0.1)), ("m138-blue-tiled.exr", (64, 64), (0.1, 0.1, 0.9)),
+                    ("m138-deep-red-tiled.exr", (64, 64), (0.9, 0.1, 0.1)))
 
     wanted = os.environ.get("M138_SECTIONS")
     selected = [s for s in (wanted.split(",") if wanted else ALL_SECTIONS)]
 
     # ---- helpers --------------------------------------------------------------------------
 
-    def make_png(path, rgb):
-        """A 64x48 solid-colour PNG."""
+    def make_deep_exr(path, rgb, width, height, tile):
+        """A tiled deep EXR with one opaque sample per pixel. oiiotool only: OIIO's Python deep
+        writing needs per-pixel sample setup that is not worth a fallback here."""
+        color = ",".join(str(v) for v in rgb) + ",1"
+        try:
+            subprocess.run(["oiiotool", "--pattern", "constant:color=" + color, "%dx%d" % (width, height), "4",
+                            "--chnames", "R,G,B,A", "--ch", "R,G,B,A,Z=1.0", "--deepen",
+                            "--tile", str(tile[0]), str(tile[1]), "-o", path],
+                           check=True, capture_output=True)
+            return True
+        except (OSError, subprocess.CalledProcessError):
+            return False
+
+    def make_image(path, rgb, width=64, height=48, depth="uint8", tile=None):
+        """A solid-colour image; tile=(w, h) writes a tiled file, None a scanline one."""
         os.makedirs(os.path.dirname(path), exist_ok=True)
         color = ",".join(str(v) for v in rgb)
+        layout = ["--tile", str(tile[0]), str(tile[1])] if tile else ["--scanline"]
         try:
-            subprocess.run(["oiiotool", "--pattern", "constant:color=" + color, "64x48", "3", "-d", "uint8", "-o", path],
+            subprocess.run(["oiiotool", "--pattern", "constant:color=" + color, "%dx%d" % (width, height), "3",
+                            "-d", depth] + layout + ["-o", path],
                            check=True, capture_output=True)
             return True
         except (OSError, subprocess.CalledProcessError):
@@ -72,10 +90,12 @@ try:
         try:
             import OpenImageIO as oiio
             import numpy
-            pixels = numpy.empty((48, 64, 3), dtype=numpy.float32)
+            pixels = numpy.empty((height, width, 3), dtype=numpy.float32)
             pixels[:, :] = rgb
             out = oiio.ImageOutput.create(path)
-            spec = oiio.ImageSpec(64, 48, 3, "uint8")
+            spec = oiio.ImageSpec(width, height, 3, depth)
+            if tile:
+                spec.tile_width, spec.tile_height = tile
             ok = out.open(path, spec) and out.write_image(pixels)
             out.close()
             return bool(ok)
@@ -83,8 +103,16 @@ try:
             return False
 
     def make_fixtures():
-        ok = make_png(os.path.join(FILES_DIR, PNG_NAME), (0.9, 0.1, 0.1))
-        return ok and make_png(os.path.join(FILES_DIR, "sub", "m138-inner.png"), (0.1, 0.1, 0.9))
+        ok = make_image(os.path.join(FILES_DIR, PNG_NAME), (0.9, 0.1, 0.1))
+        ok = ok and make_image(os.path.join(FILES_DIR, "sub", "m138-inner.png"), (0.1, 0.1, 0.9))
+        # Sizes that are not a multiple of the tile size, so edge tiles are partial.
+        for name, tile, rgb in EXR_FIXTURES:
+            path = os.path.join(FILES_DIR, name)
+            if "-deep-" in name:
+                ok = ok and make_deep_exr(path, rgb, 300, 200, tile)
+            else:
+                ok = ok and make_image(path, rgb, 300, 200, "half", tile)
+        return ok
 
     def node_graph_view():
         views = [v for v in gt.widgets_of("NodeGraph") if v.isVisible()]
@@ -205,13 +233,18 @@ try:
     def preview_viewers(dialog):
         return [t for t in visible_of("ViewerTab") if ancestor_of_class(t, "SequenceFileDialog") is dialog]
 
-    def preview_is_red(dialog):
+    def preview_dominant(dialog, channel):
+        """True when the centre of the dialog's preview is clearly the given channel (0 r, 1 g, 2 b)."""
         glv = [g for g in visible_of("ViewerGL") if ancestor_of_class(g, "SequenceFileDialog") is dialog]
         if not glv:
             return False
         centre = glv[0].mapToGlobal(glv[0].rect().center())
         c = QGuiApplication.primaryScreen().grabWindow(0).toImage().pixelColor(centre.x(), centre.y())
-        return c.red() > c.green() + 30 and c.red() > c.blue() + 30
+        rgb = (c.red(), c.green(), c.blue())
+        return all(rgb[channel] > rgb[i] + 30 for i in range(3) if i != channel)
+
+    def preview_is_red(dialog):
+        return preview_dominant(dialog, 0)
 
     def file_dialog_section():
         gt.section("file-dialog")
@@ -253,6 +286,17 @@ try:
         ok = yield ("until", lambda: preview_is_red(dialog), POLL_TIMEOUT_S)
         check(ok, "the preview shows the red PNG")
         widget_shot(dialog, "m138-file-dialog-preview")
+
+        # Each EXR has its own colour, so the previous image still on screen cannot pass the check.
+        for name, _, rgb in EXR_FIXTURES:
+            check(select_file(dialog, name), "selected " + name + " in the dialog")
+            channel = rgb.index(max(rgb))
+            ok = yield ("until", lambda: preview_dominant(dialog, channel), POLL_TIMEOUT_S)
+            check(ok, "the preview shows " + name)
+            yield ("sleep", RENDER_MS)
+            errors = [m for m in gt.viewer_messages() if "error" in m.lower()]
+            check(not errors, "no error previewing " + name + (": " + "; ".join(errors) if errors else ""))
+            widget_shot(dialog, "m138-file-dialog-preview-" + name.rsplit(".", 1)[0])
 
         toggle.click()
         yield ("sleep", SETTLE_MS)

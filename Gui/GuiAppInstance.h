@@ -49,13 +49,13 @@ public:
     ViewerTab* viewerUI;
     NodePtr viewerNodeInternal;
     NodeGuiPtr viewerNode;
-    NodePtr readerNode;
+    std::map<std::string, NodePtr> readerNodes; // by plugin ID
 
     FileDialogPreviewProvider()
         : viewerUI(0)
         , viewerNodeInternal()
         , viewerNode()
-        , readerNode()
+        , readerNodes()
     {}
 };
 

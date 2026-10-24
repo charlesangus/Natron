@@ -32,9 +32,10 @@
 #elif defined(Q_OS_WIN)
 #  include <qt_windows.h>
 #endif
-#include <cassert>
-#include <locale>
 #include <algorithm>
+#include <cassert>
+#include <limits>
+#include <locale>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
@@ -2765,23 +2766,20 @@ SequenceFileDialog::setVisible(bool visible)
 }
 
 NodePtr
-SequenceFileDialog::findOrCreatePreviewReader(const std::string& filetype)
+SequenceFileDialog::findOrCreatePreviewReader(const std::string& pluginID)
 {
-    if (_preview->readerNode) {
-        return _preview->readerNode;
+    NodePtr& slot = _preview->readerNodes[pluginID];
+    if (slot) {
+        return slot;
     }
-    Q_UNUSED(filetype);
-    CreateNodeArgs args( PLUGINID_NATRON_READ, NodeCollectionPtr() );
+    CreateNodeArgs args(pluginID, NodeCollectionPtr());
     args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
     args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
     args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
     args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, NATRON_FILE_DIALOG_PREVIEW_READER_NAME);
-    NodePtr reader = _gui->getApp()->createNode(args);
-    if (reader) {
-        _preview->readerNode = reader;
-    }
+    slot = _gui->getApp()->createNode(args);
 
-    return _preview->readerNode;
+    return slot;
 }
 
 void
@@ -2793,8 +2791,13 @@ SequenceFileDialog::refreshPreviewAfterSelectionChange()
     }
 
     std::string pattern = selectedFiles();
-    QString qpattern = QString::fromUtf8( pattern.c_str() );
-    std::string ext = QtCompat::removeFileExtension(qpattern).toLower().toStdString();
+    SequenceParsing::SequenceFromPattern sequence;
+    FileSystemModel::filesListFromPattern(pattern, &sequence);
+    const std::string firstFile = (sequence.empty() || sequence.begin()->second.empty()) ? pattern : sequence.begin()->second.begin()->second;
+    std::string pluginID = appPTR->getReaderPluginIDForFile(firstFile);
+    if (pluginID.empty()) {
+        pluginID = PLUGINID_NATRON_READ;
+    }
 
     NodePtr currentInput = _preview->viewerNode->getNode()->getInput(0);
     if (currentInput) {
@@ -2803,7 +2806,7 @@ SequenceFileDialog::refreshPreviewAfterSelectionChange()
 
     _gui->getApp()->getProject()->setAutoSetProjectFormatEnabled(false);
 
-    NodePtr reader = findOrCreatePreviewReader(ext);
+    NodePtr reader = findOrCreatePreviewReader(pluginID);
     if (reader) {
         KnobIPtr foundFileKnob = reader->getKnobByName(kOfxImageEffectFileParamName);
         KnobFile* fileKnob = dynamic_cast<KnobFile*>( foundFileKnob.get() );
@@ -2814,8 +2817,16 @@ SequenceFileDialog::refreshPreviewAfterSelectionChange()
 
         double firstFrame, lastFrame;
         reader->getEffectInstance()->getFrameRange_public(reader->getHashValue(), &firstFrame, &lastFrame);
-        viewerUI->setTimelineBounds(firstFrame, lastFrame);
-        viewerUI->centerOn(firstFrame, lastFrame);
+        // DeepRead reports no frame range of its own, so a deep sequence takes the files' frames.
+        const bool unbounded = firstFrame <= std::numeric_limits<int>::min() || lastFrame >= std::numeric_limits<int>::max();
+        if (unbounded && sequence.size() > 1) {
+            firstFrame = sequence.begin()->first;
+            lastFrame = sequence.rbegin()->first;
+        }
+        if (!unbounded || sequence.size() > 1) {
+            viewerUI->setTimelineBounds(firstFrame, lastFrame);
+            viewerUI->centerOn(firstFrame, lastFrame);
+        }
     }
     viewerUI->getInternalNode()->renderCurrentFrame(true);
 }

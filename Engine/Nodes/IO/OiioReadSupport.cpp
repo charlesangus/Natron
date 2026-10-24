@@ -551,6 +551,10 @@ decode(const std::string& path,
     if (spec.depth > 1) {
         return fail(error, "Volume images are not supported: " + path);
     }
+    // OIIO's flat reads on a deep part fail with a misleading "without an open file" error.
+    if (spec.deep) {
+        return fail(error, path + " holds deep data; read it with DeepRead");
+    }
     if (chbegin < 0 || chend <= chbegin || chend > spec.nchannels) {
         return fail(error, "Channel range out of bounds for " + path);
     }

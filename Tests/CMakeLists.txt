@@ -197,6 +197,7 @@ set(GuiTests_SOURCES
     google-mock/src/gmock-all.cc
     ColorAdjustPanel_Test.cpp
     ColorKnobUndoMerge_Test.cpp
+    ColorModeDiscWidget_Test.cpp
     ColorPickerLabel_Test.cpp
     ColorTrackballGlobalMode_Test.cpp
     ColorTrackballHud_Test.cpp

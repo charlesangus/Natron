@@ -122,14 +122,18 @@ decodeManifestYaml(std::string_view text,
     }
     BundleManifest manifest;
     manifest.formatVersion = readInt(reader.get("formatVersion"), "manifest.formatVersion");
-    if (manifest.formatVersion > kBundleFormatVersion) {
-        throw YamlNewerFormatError("This project was saved by a newer Natron (bundle format version " + std::to_string(manifest.formatVersion) + "; this version reads up to " + std::to_string(kBundleFormatVersion) + ")");
-    }
     if (manifest.formatVersion < 1) {
         fail(reader.get("formatVersion"), "manifest.formatVersion", "invalid format version " + std::to_string(manifest.formatVersion));
     }
+    // project.yaml carries the version a reader must refuse; the manifest only informs, so a
+    // newer one still gives its author and dates, but its member list may mean something else.
+    const bool newer = manifest.formatVersion > kBundleFormatVersion;
+    if (newer && warnings) {
+        warnings->push_back("manifest.yaml was written by a newer Natron (bundle format version " + std::to_string(manifest.formatVersion) + "; this version reads up to " + std::to_string(kBundleFormatVersion) + "): only its author and dates are read");
+    }
+    YamlWarnings* const keyWarnings = newer ? nullptr : warnings;
     if (YAML::Node app = reader.get("app")) {
-        MapReader appReader(app, "manifest.app", warnings);
+        MapReader appReader(app, "manifest.app", keyWarnings);
         if (YAML::Node version = appReader.get("version")) {
             manifest.appVersion = readString(version, "manifest.app.version");
         }
@@ -146,6 +150,9 @@ decodeManifestYaml(std::string_view text,
     }
     if (YAML::Node created = reader.get("created")) {
         manifest.creationDate = readInt64(created, "manifest.created");
+    }
+    if (newer) {
+        return manifest;
     }
     if (YAML::Node members = reader.get("members")) {
         if (!members.IsSequence()) {

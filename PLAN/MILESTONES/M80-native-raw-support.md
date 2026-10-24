@@ -340,7 +340,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
     - The existing `RawReferenceTest` and `NativeRawHighlightsTest.MatchesTheDarktableReference` still pass against the regenerated files. Compiled at P7.T18.
   - size: M
 
-- [ ] M80.P7.T3 — Parity-audit tool and mapping
+- [x] M80.P7.T3 — Parity-audit tool and mapping
   - files: new `tools/raw/parity-audit.py`, new `tools/raw/darktable-parity.json`
   - approach:
     - The script parses, at `DARKTABLE_REF` (`/tmp/dt-src-562` or `build/darktable-src`):
@@ -575,6 +575,12 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
     - Port the `markfixed` branches of `_process_bayer`/`_process_xtrans`/`_process_monochrome` (hotpixels.c:147, 204, 301): the darktable marker pattern, default off.
     - darktable never marks in thumbnails or exports (hotpixels.c:377); the scope in Natron is user call 3.
   - verify: gtest checks injected hot pixels get darktable's marker pattern on Bayer and X-Trans, and off is unchanged. There is no darktable render, because darktable disables marking on export. Compiled at P7.T26.
+  - size: M
+
+- [ ] M80.P7.T38 — RawDenoise: band positions (darktable's curve x)
+  - files: `Engine/Nodes/Raw/RawDenoise.cpp/.h`, `Engine/Nodes/Raw/docs/RawDenoise.md`, `Tests/Native/NativeRawDenoise*_Test.cpp`, `tools/raw/make-reference.py` (one moved-x job, rendered in T2)
+  - approach: darktable's `dt_iop_rawdenoise_params_t` stores x and y per band per channel (`x[DT_RAWDENOISE_NONE][DT_IOP_RAWDENOISE_BANDS]`); its GUI drags x (`x_move`). Natron exposes only y. Add per-band position knobs with darktable's defaults, feed them to the existing curve evaluation as darktable's `process` does, and keep the y knobs. Found by the P7.T3 audit.
+  - verify: gtest: default x equals today's output bit for bit; a moved x changes the band weights as a hand evaluation of darktable's curve says; the darktable comparison of the moved-x job passes. Compiled at P7.T26.
   - size: M
 
 - [ ] M80.P7.T25 — Large-image check for the new whole-frame and big-halo modes
@@ -819,4 +825,4 @@ Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 r
 - **Uncommitted in the worktree:** a stopped Phase 80.3 implementer's partial work (`Engine/Nodes/Raw/`, RawPrepare/Temperature/Highlights/Demosaic/InputColor tests and icons, `RawDevelop_Test.cpp`, `RawTestSource.h`, `Tests/gui/m80_raw.py`, edits to `AppManager.cpp`, `NativeRead.cpp`, `RawMetadata.{h,cpp}`, `Settings.{h,cpp}`). Unknown completeness (it was mid-way through demosaic tests): review it with a fresh implementer that finishes Phase 80.3 rather than trusting it as done.
 - **Also uncommitted:** the three user-supplied fixtures in `Tests/fixtures/raw/` (CR2, RAF, linear DNG; ~140 MB). They must be committed via **Git LFS** (`.gitattributes`), with `lfs: true` added to every CI checkout that runs ctest, plus `Tests/fixtures/raw/README.md` (raw.pixls.us, CC0). That's the first step of the remaining Phase 80.2 unit (P2.T1, T3, T4, T5).
 - `syntax-check.py` can't configure this worktree (no local rawspeed); implementers ran `-fsyntax-only` with the main checkout's `build/syntax/compile_commands.json` re-pointed here, rawspeed headers at `build/rawspeed-src`.
-- Late addition: a helper agent of the stopped Phase 80.3 implementer finished X-Trans work, also uncommitted: `Engine/Nodes/Raw/RawDemosaicMarkesteijn.cpp` (`RawKernels::markesteijn()`, tile 122, no FDC) and `RawDemosaicVng.cpp` (`RawKernels::vng()` for Bayer VNG4 and X-Trans, `vngLinearInterpolate()`). Checked standalone in `/tmp/xtrans-check/`: flat patches neutral at all 36 phases, tiled = full frame, threaded = serial. Halos: Markesteijn 1-pass 12, 3-pass 18, VNG 6 for both variants. Move the `vngLinearInterpolate` declaration into `RawKernels.h` (it is declared locally in the Markesteijn file). The Markesteijn paths have had no ASan run.
+- Late addition: a helper agent of the stopped Phase 80.3 implementer finished X-Trans work, also uncommitted: `Engine/Nodes/Raw/RawDemosaicMarkesteijn.cpp` (`RawKernels::markesteijn()`, tile 122, no FDC) and `RawDemosaicVng.cpp` (`RawKernels::vng()` for Bayer VNG4 and X-Trans, `vngLinearInterpolate()`). Checked standalone in `/tmp/xtrans-check/`: flat patches neutral at all 36 phases, tiled = full frame, threaded = serial. Halos: Markesteijn 1-pass 12, 3-pass 18, VNG 6 for both variants. Move the `vngLinearInterpolate` declaration into `RawKernels.h` (it is declared locally in the Markesteijn file). The Markesteijn paths have had no ASan run.\n- 2026-10-23 — P7.T3 audit (code 57e04c547): 84 MISSING rows — 60 channelmixerrgb (T30–T36), 23 demosaic (T19–T23), 1 rawdenoise band x (new T38). Natron's flat-field default matches darktable's `reload_defaults` (embedded when the file has gain maps); colorin's default is file-derived per T15.\n

@@ -117,8 +117,8 @@ UID_GID="$(id -u):$(id -g)"
 # a real X server here) regardless of any client-side env var -- so this is
 # not optional for running Natron's GUI locally, only for headless
 # build/test use, which is why it's skipped when no GPU is present.
-# /dev/dri only exists on hosts exposing a GPU via DRI (Mesa: Intel/AMD;
-# NVIDIA needs nvidia-container-toolkit's --gpus instead, out of scope here).
+# /dev/dri only exists on hosts exposing a GPU via DRI (Mesa: Intel/AMD);
+# NVIDIA hosts are handled in the --gpu block below via nvidia-container-toolkit.
 DRI_DOCKER_ARGS=()
 if [[ -e /dev/dri ]]; then
     DRI_DOCKER_ARGS+=(--device=/dev/dri)
@@ -134,6 +134,7 @@ if [[ -e /dev/dri ]]; then
 fi
 
 GPU_DOCKER_ARGS=()
+NVIDIA_RUNTIME=0
 if [[ "${GPU}" == "1" ]]; then
     RENDER_NODE_OK=0
     for node in /dev/dri/renderD*; do
@@ -149,6 +150,28 @@ if [[ "${GPU}" == "1" ]]; then
         exit 1
     fi
     GPU_DOCKER_ARGS+=(-e NATRON_DEV_GPU=1)
+    # nvidia-container-toolkit injects the driver libraries and the Vulkan/EGL
+    # vendor files at container start, but only for containers created with
+    # the nvidia runtime, so an existing container needs --recreate.
+    runtimes="$(docker info --format '{{json .Runtimes}}' 2>/dev/null || true)"
+    if [[ -e /dev/nvidiactl && "${runtimes}" == *'"nvidia"'* ]]; then
+        NVIDIA_RUNTIME=1
+        GPU_DOCKER_ARGS+=(--runtime=nvidia
+            -e NVIDIA_VISIBLE_DEVICES=all
+            -e "NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,display")
+    fi
+fi
+
+# Memory cap, sized per host by memcap.sh (75% of the Docker daemon's memory,
+# at least 4 GiB kept back; NATRON_DEV_MEMORY overrides, "0" turns it off).
+# Swap is capped at the same value, so a runaway build or test is OOM-killed
+# inside the container instead of swapping the host until it falls over.
+MEM_CAP_MIB="$("${SCRIPT_DIR}/memcap.sh" --mib --docker)" || exit 1
+MEM_DOCKER_ARGS=()
+MEM_CAP_BYTES=0
+if (( MEM_CAP_MIB > 0 )); then
+    MEM_DOCKER_ARGS=("--memory=${MEM_CAP_MIB}m" "--memory-swap=${MEM_CAP_MIB}m")
+    MEM_CAP_BYTES=$(( MEM_CAP_MIB * 1048576 ))
 fi
 
 # --- optional forced recreate -----------------------------------------------
@@ -210,6 +233,7 @@ if [[ "${STATE}" == "missing" ]]; then
         --security-opt seccomp=unconfined \
         "${DRI_DOCKER_ARGS[@]+"${DRI_DOCKER_ARGS[@]}"}" \
         "${GPU_DOCKER_ARGS[@]+"${GPU_DOCKER_ARGS[@]}"}" \
+        "${MEM_DOCKER_ARGS[@]+"${MEM_DOCKER_ARGS[@]}"}" \
         -v "${REPO_ROOT}:${REPO_ROOT}" \
         -v "${CCACHE_DIR_HOST}:${CCACHE_MOUNT}" \
         -v "${HOME_VOLUME}:${HOME_MOUNT}" \
@@ -248,11 +272,26 @@ if [[ "${STATE}" == "missing" ]]; then
     # makes the cache survive image rebuilds.
     sed -i '/^max_size/d; /^compiler_check/d' "${CCACHE_DIR_HOST}/ccache.conf" 2>/dev/null || true
 
-elif [[ "${STATE}" == "stopped" ]]; then
-    echo "devshell.sh: starting existing (stopped) container '${CONTAINER_NAME}'..." >&2
-    docker start "${CONTAINER_NAME}" >/dev/null
+else
+    # Unlike the runtime and mounts, the memory cap can change on an existing
+    # container, so containers made before the cap existed, or on a host
+    # whose memory changed, pick it up without --recreate.
+    if [[ "${MEM_CAP_BYTES}" -gt 0 ]] \
+        && [[ "$(docker container inspect -f '{{.HostConfig.Memory}}' "${CONTAINER_NAME}")" != "${MEM_CAP_BYTES}" ]]; then
+        echo "devshell.sh: capping '${CONTAINER_NAME}' at $(( MEM_CAP_BYTES / 1048576 )) MiB (NATRON_DEV_MEMORY overrides)" >&2
+        if ! docker update "${MEM_DOCKER_ARGS[@]}" "${CONTAINER_NAME}" >/dev/null; then
+            echo "devshell.sh: could not apply the memory cap to '${CONTAINER_NAME}'; continuing uncapped" >&2
+        fi
+    fi
+    if [[ "${GPU}" == "1" && "${NVIDIA_RUNTIME}" == "1" ]] \
+        && [[ "$(docker container inspect -f '{{.HostConfig.Runtime}}' "${CONTAINER_NAME}")" != "nvidia" ]]; then
+        echo "devshell.sh: '${CONTAINER_NAME}' was not created with the nvidia runtime; use --recreate for the NVIDIA GPU" >&2
+    fi
+    if [[ "${STATE}" == "stopped" ]]; then
+        echo "devshell.sh: starting existing (stopped) container '${CONTAINER_NAME}'..." >&2
+        docker start "${CONTAINER_NAME}" >/dev/null
+    fi
 fi
-# else: already running -- nothing to do, just exec below.
 
 # --- run the requested command ----------------------------------------------
 # Note: the base image's entrypoint prints a large NVIDIA/CUDA banner, but

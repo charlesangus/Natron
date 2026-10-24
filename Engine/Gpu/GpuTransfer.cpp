@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <exception>
@@ -12,6 +13,7 @@
 #include <list>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 namespace gpu {
@@ -352,6 +354,10 @@ struct GpuTransfer::Impl {
     std::atomic<uint64_t> uploadImports { 0 };
     std::atomic<uint64_t> downloadImports { 0 };
     std::atomic<uint64_t> droppedImports { 0 };
+    std::atomic<uint64_t> stagedDisabled { 0 };
+    std::atomic<uint64_t> stagedUnaligned { 0 };
+    std::atomic<uint64_t> stagedImportFailed { 0 };
+    std::atomic<uint64_t> stagedForgotten { 0 };
 
     std::mutex retireMutex;
     std::vector<Retired> retired;
@@ -749,22 +755,61 @@ struct GpuTransfer::Impl {
         return true;
     }
 
-    // Covers [p, p + bytes) with imported buffers, or returns false for the staging path. Uncached
+    // Logs the first failure only: a driver that rejects one import rejects the rest the same way.
+    static void noteImportFailure(const GpuStatus& st, VkDeviceSize len)
+    {
+        static std::atomic<bool> logged { false };
+        if (!logged.exchange(true)) {
+            std::fprintf(stderr, "GpuTransfer: host import of %llu bytes failed (VkResult %d: %s); transfers fall back to staging\n",
+                         static_cast<unsigned long long>(len), static_cast<int>(st.result), st.message.c_str());
+        }
+    }
+
+    GpuStatus createImport(void* host, VkDeviceSize len, GpuBuffer& out) const
+    {
+        if (opt.failHostImportsForTests) {
+            GpuStatus st;
+            st.result = VK_ERROR_INITIALIZATION_FAILED;
+            st.message = "host import failed on request";
+            return st;
+        }
+        return GpuBuffer::createHostImported(dev, host, len, kImportUsage, out);
+    }
+
+    void countStaged(StagedReason reason)
+    {
+        switch (reason) {
+        case StagedReason::Disabled:
+            ++stagedDisabled;
+            break;
+        case StagedReason::Unaligned:
+            ++stagedUnaligned;
+            break;
+        case StagedReason::ImportFailed:
+            ++stagedImportFailed;
+            break;
+        case StagedReason::Forgotten:
+            ++stagedForgotten;
+            break;
+        }
+    }
+
+    // Covers [p, p + bytes) with imported buffers, or returns why the staging path is taken instead. Uncached
     // imports land in `owned` and must outlive the transfer that uses them. A range that cached imports
     // already cover needs no alignment: copies out of an import may start and end anywhere in it.
-    bool resolveImports(const void* p, VkDeviceSize bytes, std::vector<ImportSeg>& segs, std::vector<GpuBuffer>& owned,
-                        ImportOrigin origin)
+    std::optional<StagedReason> resolveImports(const void* p, VkDeviceSize bytes, std::vector<ImportSeg>& segs,
+                                               std::vector<GpuBuffer>& owned, ImportOrigin origin)
     {
         const uintptr_t base = reinterpret_cast<uintptr_t>(p);
-        if (importAlignment == 0 || p == nullptr) {
-            return false;
+        if (importAlignment == 0) {
+            return StagedReason::Disabled;
         }
         const bool aligned = base % importAlignment == 0 && bytes % importAlignment == 0;
         if (opt.cacheHostImports && (cachedImports.load() != 0 || pendingCount.load() != 0)) {
             std::unique_lock<std::mutex> lock(importMutex);
             for (;;) {
                 if (coverFromCache(base, bytes, segs)) {
-                    return true;
+                    return std::nullopt;
                 }
                 // An aligned range imports what is missing itself, and waits for overlapping imports there.
                 if (aligned || !pendingOverlaps(base, base + bytes)) {
@@ -774,24 +819,25 @@ struct GpuTransfer::Impl {
             }
         }
         if (!aligned) {
-            return false;
+            return StagedReason::Unaligned;
         }
         char* host = static_cast<char*>(const_cast<void*>(p));
         if (!opt.cacheHostImports) {
             for (VkDeviceSize pos = 0; pos < bytes;) {
                 const VkDeviceSize len = std::min(importPieceMax, bytes - pos);
                 GpuBuffer b;
-                if (!GpuBuffer::createHostImported(dev, host + pos, len, kImportUsage, b)) {
+                if (const GpuStatus st = createImport(host + pos, len, b); !st) {
                     segs.clear();
                     owned.clear();
-                    return false;
+                    noteImportFailure(st, len);
+                    return StagedReason::ImportFailed;
                 }
                 countImport(len, origin);
                 segs.push_back({ b.buffer(), 0, pos, len, 0 });
                 owned.push_back(std::move(b));
                 pos += len;
             }
-            return true;
+            return std::nullopt;
         }
 
         // Pinning takes long enough that holding the lock through it would serialize every thread's imports,
@@ -828,7 +874,8 @@ struct GpuTransfer::Impl {
             lock.unlock();
 
             CachedImport entry;
-            const bool created = static_cast<bool>(GpuBuffer::createHostImported(dev, host + pos, len, kImportUsage, entry.buffer));
+            const GpuStatus createStatus = createImport(host + pos, len, entry.buffer);
+            const bool created = static_cast<bool>(createStatus);
             if (created) {
                 countImport(len, origin);
                 if (opt.onImportCreated) {
@@ -856,13 +903,17 @@ struct GpuTransfer::Impl {
             importCv.notify_all();
             if (!created || forgotten) {
                 segs.clear();
-                return false;
+                if (!created) {
+                    noteImportFailure(createStatus, len);
+                    return StagedReason::ImportFailed;
+                }
+                return StagedReason::Forgotten;
             }
             if (keep) {
                 pos += len;
             }
         }
-        return true;
+        return std::nullopt;
     }
 
     bool prepare(HostRange range)
@@ -872,7 +923,7 @@ struct GpuTransfer::Impl {
         }
         std::vector<ImportSeg> segs;
         std::vector<GpuBuffer> owned;
-        return resolveImports(range.data, range.bytes, segs, owned, ImportOrigin::Prepare);
+        return !resolveImports(range.data, range.bytes, segs, owned, ImportOrigin::Prepare).has_value();
     }
 
     void markUsed(const std::vector<ImportSeg>& segs, std::vector<GpuBuffer>& owned, TimelineValue use)
@@ -995,7 +1046,11 @@ struct GpuTransfer::Impl {
         {
             std::vector<ImportSeg> segs;
             std::vector<GpuBuffer> owned;
-            const bool imported = resolveImports(src.data, bytes, segs, owned, ImportOrigin::Upload);
+            const std::optional<StagedReason> staged = resolveImports(src.data, bytes, segs, owned, ImportOrigin::Upload);
+            const bool imported = !staged.has_value();
+            if (staged) {
+                countStaged(*staged);
+            }
             std::lock_guard<std::mutex> lock(upMutex);
             if (o.path) {
                 *o.path = imported ? TransferPath::HostImport : TransferPath::Staging;
@@ -1102,7 +1157,11 @@ struct GpuTransfer::Impl {
         uint64_t v = 0;
         std::vector<ImportSeg> segs;
         std::vector<GpuBuffer> owned;
-        const bool imported = resolveImports(dst.data, bytes, segs, owned, ImportOrigin::Download);
+        const std::optional<StagedReason> staged = resolveImports(dst.data, bytes, segs, owned, ImportOrigin::Download);
+        const bool imported = !staged.has_value();
+        if (staged) {
+            countStaged(*staged);
+        }
         std::lock_guard<std::mutex> lock(downMutex);
         if (o.path) {
             *o.path = imported ? TransferPath::HostImport : TransferPath::Staging;
@@ -1664,6 +1723,18 @@ GpuTransfer::hostImportStats() const
     s.dropped = m.droppedImports.load();
     s.cached = m.cachedImports.load();
     return s;
+}
+
+StagedReasonCounts
+GpuTransfer::stagedReasons() const
+{
+    const Impl& m = *impl_;
+    StagedReasonCounts c;
+    c.disabled = m.stagedDisabled.load();
+    c.unaligned = m.stagedUnaligned.load();
+    c.importFailed = m.stagedImportFailed.load();
+    c.forgotten = m.stagedForgotten.load();
+    return c;
 }
 
 bool

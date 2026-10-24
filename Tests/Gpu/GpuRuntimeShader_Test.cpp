@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -45,6 +46,11 @@ static_assert(offsetof(Params, offset) == 32);
 struct PushConstants {
     uint32_t width;
     uint32_t height;
+};
+
+struct Reference {
+    std::vector<float> values;
+    std::vector<float> bound;
 };
 
 struct Lut {
@@ -128,6 +134,9 @@ protected:
         GpuPipelineCacheOptions o;
         o.directory = dir;
         cache = std::make_unique<GpuPipelineCache>(*dev, o);
+        VkPhysicalDeviceProperties props {};
+        vkGetPhysicalDeviceProperties(dev->physicalDevice(), &props);
+        subTexelPrecisionBits = props.limits.subTexelPrecisionBits;
     }
 
     void TearDown() override
@@ -146,9 +155,9 @@ protected:
         check.expectClean("the test");
     }
 
-    // The sample values are multiples of 1/256 and the gains and offset keep the LUT coordinate on a
-    // 1/32 texel grid, so the texture unit's fixed-point filter weights are exact and the result
-    // can be held to kTolerance on any driver.
+    // The sample values are multiples of 1/256, which keeps the fp32 reference exact. A device may
+    // round linear-filter weights to subTexelPrecisionBits fractional bits, and that rounding sets
+    // the per-sample bound in reference().
     std::vector<float> makeInput(float scale) const
     {
         std::vector<float> in(size_t(kWidth) * kHeight * 4);
@@ -277,7 +286,8 @@ protected:
     }
 
     // The texel-centre convention of the shader: coord = (v * (N - 1) + 0.5) / N per axis, clamped to edge.
-    static void sampleLut(const Lut& lut, GpuTextureFilter filter, const float coord[3], float out[3])
+    static void sampleLut(const Lut& lut, GpuTextureFilter filter, const float coord[3], float out[3],
+                          float sensitivity[3])
     {
         float pos[3];
         int32_t lo[3], hi[3];
@@ -306,45 +316,77 @@ protected:
                 v += w * texel(cx ? hi[0] : lo[0], cy ? hi[1] : lo[1], cz ? hi[2] : lo[2], ch);
             }
             out[ch] = v;
+            // A weight error of e on one axis moves the result by e times the value change across
+            // that axis's cell, which differs per corner of the other two axes.
+            float sum = 0.f;
+            for (uint32_t a = 0; a < 3; ++a) {
+                float widest = 0.f;
+                for (int corner = 0; corner < 4; ++corner) {
+                    int32_t lo3[3] = { lo[0], lo[1], lo[2] };
+                    int32_t hi3[3] = { lo[0], lo[1], lo[2] };
+                    uint32_t bit = 0;
+                    for (uint32_t b = 0; b < 3; ++b) {
+                        if (b == a) {
+                            hi3[b] = hi[b];
+                        } else {
+                            const int32_t at = ((corner >> bit++) & 1) ? hi[b] : lo[b];
+                            lo3[b] = hi3[b] = at;
+                        }
+                    }
+                    widest = std::max(widest,
+                                      std::fabs(texel(hi3[0], hi3[1], hi3[2], ch) - texel(lo3[0], lo3[1], lo3[2], ch)));
+                }
+                sum += widest;
+            }
+            sensitivity[ch] = sum;
         }
     }
 
     // Axes a LUT does not have have size 1 and so always sample texel 0.
-    std::vector<float> reference(const Lut& lut, GpuTextureFilter filter, const std::vector<float>& input,
-                                 const Params& p) const
+    Reference reference(const Lut& lut, GpuTextureFilter filter, const std::vector<float>& input,
+                        const Params& p) const
     {
-        std::vector<float> ref(input.size());
+        Reference ref;
+        ref.values.resize(input.size());
+        ref.bound.assign(input.size(), kTolerance);
+        const float weightError = std::ldexp(1.f, -int(subTexelPrecisionBits));
         for (size_t i = 0; i < input.size() / 4; ++i) {
-            float c[3], coord[3], l[3];
+            float c[3], coord[3], l[3], sensitivity[3];
             for (int ch = 0; ch < 3; ++ch) {
                 c[ch] = std::clamp(input[i * 4 + ch] * p.gain[ch] + p.offset, 0.f, 1.f);
                 coord[ch] = (c[ch] * float(lut.size[ch] - 1) + 0.5f) / float(lut.size[ch]);
             }
-            sampleLut(lut, filter, coord, l);
+            sampleLut(lut, filter, coord, l, sensitivity);
             for (int ch = 0; ch < 3; ++ch) {
-                ref[i * 4 + ch] = (c[ch] + (l[ch] - c[ch]) * p.strength) * p.tint[ch];
+                ref.values[i * 4 + ch] = (c[ch] + (l[ch] - c[ch]) * p.strength) * p.tint[ch];
+                if (filter == GpuTextureFilter::Linear) {
+                    ref.bound[i * 4 + ch] += std::fabs(p.strength * p.tint[ch]) * weightError * sensitivity[ch];
+                }
             }
-            ref[i * 4 + 3] = input[i * 4 + 3] * p.gain[3];
+            ref.values[i * 4 + 3] = input[i * 4 + 3] * p.gain[3];
         }
         return ref;
     }
 
-    void expectMatches(const std::vector<float>& got, const std::vector<float>& ref)
+    void expectMatches(const std::vector<float>& got, const Reference& ref)
     {
-        ASSERT_EQ(got.size(), ref.size());
-        float worst = 0.f;
+        ASSERT_EQ(got.size(), ref.values.size());
+        float worstRatio = 0.f;
         size_t worstAt = 0;
         for (size_t i = 0; i < got.size(); ++i) {
-            const float d = std::fabs(got[i] - ref[i]);
-            if (!(d <= worst)) {
-                worst = d;
+            const float ratio = std::fabs(got[i] - ref.values[i]) / ref.bound[i];
+            if (!(ratio <= worstRatio)) {
+                worstRatio = ratio;
                 worstAt = i;
             }
         }
-        EXPECT_LE(worst, kTolerance) << "worst at element " << worstAt << ": got " << got[worstAt] << ", expected "
-                                     << ref[worstAt];
+        std::printf("[          ] worst error/bound %.3f (subTexelPrecisionBits %u)\n", (double)worstRatio, subTexelPrecisionBits);
+        EXPECT_LE(worstRatio, 1.f) << "worst at element " << worstAt << ": got " << got[worstAt] << ", expected "
+                                   << ref.values[worstAt] << ", bound " << ref.bound[worstAt]
+                                   << " (error/bound " << worstRatio << ")";
     }
 
+    uint32_t subTexelPrecisionBits = 0;
     std::unique_ptr<GpuDevice> dev;
     gputest::ValidationCheck check;
     std::string dir;

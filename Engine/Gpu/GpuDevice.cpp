@@ -46,6 +46,57 @@ namespace {
         }
     }
 
+    const char* typeName(VkPhysicalDeviceType t)
+    {
+        switch (t) {
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+            return "discrete";
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+            return "integrated";
+        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+            return "virtual";
+        case VK_PHYSICAL_DEVICE_TYPE_CPU:
+            return "cpu";
+        default:
+            return "other";
+        }
+    }
+
+    std::string sizeText(uint64_t bytes)
+    {
+        constexpr uint64_t kGiB = 1ull << 30;
+        constexpr uint64_t kMiB = 1ull << 20;
+        if (bytes >= kGiB) {
+            return std::to_string((bytes + kGiB / 2) / kGiB) + " GiB";
+        }
+        return std::to_string((bytes + kMiB / 2) / kMiB) + " MiB";
+    }
+
+    // NVIDIA packs driverVersion as 10.8.8.6 bits rather than the Vulkan 7.10.12 layout.
+    std::string driverVersionText(const VkPhysicalDeviceProperties& p)
+    {
+        const uint32_t v = p.driverVersion;
+        if (p.vendorID == 0x10DE) {
+            return std::to_string(v >> 22) + "." + std::to_string((v >> 14) & 0xff) + "."
+                + std::to_string((v >> 6) & 0xff);
+        }
+        return std::to_string(VK_API_VERSION_MAJOR(v)) + "." + std::to_string(VK_API_VERSION_MINOR(v)) + "."
+            + std::to_string(VK_API_VERSION_PATCH(v));
+    }
+
+    uint64_t largestDeviceLocalHeap(VkPhysicalDevice pd)
+    {
+        VkPhysicalDeviceMemoryProperties mem {};
+        vkGetPhysicalDeviceMemoryProperties(pd, &mem);
+        uint64_t localHeap = 0;
+        for (uint32_t i = 0; i < mem.memoryHeapCount; ++i) {
+            if (mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+                localHeap = std::max<uint64_t>(localHeap, mem.memoryHeaps[i].size);
+            }
+        }
+        return localHeap;
+    }
+
     struct Features {
         VkPhysicalDeviceVulkan11Features f11 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
         VkPhysicalDeviceVulkan12Features f12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
@@ -183,6 +234,46 @@ isUnifiedMemory(VkPhysicalDeviceType type)
     return (type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) || (type == VK_PHYSICAL_DEVICE_TYPE_CPU);
 }
 
+std::optional<GpuAutoPick>
+pickAutoDevice(const std::vector<GpuDeviceCandidate>& candidates)
+{
+    std::vector<size_t> order;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        if (candidates[i].meetsRequirements) {
+            order.push_back(i);
+        }
+    }
+    if (order.empty()) {
+        return std::nullopt;
+    }
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        const GpuDeviceCandidate& x = candidates[a];
+        const GpuDeviceCandidate& y = candidates[b];
+        if (typeRank(x.type) != typeRank(y.type)) {
+            return typeRank(x.type) < typeRank(y.type);
+        }
+        if (x.deviceLocalHeapSize != y.deviceLocalHeapSize) {
+            return x.deviceLocalHeapSize > y.deviceLocalHeapSize;
+        }
+        return x.index < y.index;
+    });
+
+    const GpuDeviceCandidate& best = candidates[order.front()];
+    GpuAutoPick pick;
+    pick.candidate = order.front();
+    pick.reason = std::string("auto: ") + typeName(best.type) + ", " + sizeText(best.deviceLocalHeapSize);
+    for (size_t k = 1; k < order.size(); ++k) {
+        const GpuDeviceCandidate& other = candidates[order[k]];
+        pick.reason += (k == 1 ? ", over " : ", ") + other.name;
+        if (other.type == best.type) {
+            pick.reason += " (" + sizeText(other.deviceLocalHeapSize) + ")";
+        } else {
+            pick.reason += std::string(" (") + typeName(other.type) + ")";
+        }
+    }
+    return pick;
+}
+
 GpuStatus
 GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out)
 {
@@ -222,10 +313,12 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     }
 
     std::string selector = options.deviceSelector;
-    if (selector.empty()) {
-        if (const char* env = std::getenv("NATRON_GPU_DEVICE")) {
-            selector = env;
-        }
+    std::string selectionReason;
+    if (!selector.empty()) {
+        selectionReason = "device selector " + selector;
+    } else if (const char* env = std::getenv("NATRON_GPU_DEVICE")) {
+        selector = env;
+        selectionReason = std::string("NATRON_GPU_DEVICE=") + env;
     }
 
     std::vector<VkPhysicalDeviceProperties> props(pds.size());
@@ -261,16 +354,17 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
                             + "' lacks Vulkan 1.3, timelineSemaphore, synchronization2 or storageBuffer16BitAccess");
         }
     } else {
-        int bestRank = 99;
+        std::vector<GpuDeviceCandidate> candidates(pds.size());
         for (size_t i = 0; i < pds.size(); ++i) {
-            if (!meetsRequirements(pds[i], props[i])) {
-                continue;
-            }
-            const int rank = typeRank(props[i].deviceType);
-            if (rank < bestRank) {
-                bestRank = rank;
-                pick = static_cast<int>(i);
-            }
+            candidates[i].index = static_cast<uint32_t>(i);
+            candidates[i].type = props[i].deviceType;
+            candidates[i].deviceLocalHeapSize = largestDeviceLocalHeap(pds[i]);
+            candidates[i].name = props[i].deviceName;
+            candidates[i].meetsRequirements = meetsRequirements(pds[i], props[i]);
+        }
+        if (const std::optional<GpuAutoPick> best = pickAutoDevice(candidates)) {
+            pick = static_cast<int>(candidates[best->candidate].index);
+            selectionReason = best->reason;
         }
         if (pick < 0) {
             return fail(VK_ERROR_FEATURE_NOT_PRESENT, "no device meets the required features");
@@ -283,6 +377,8 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     dev->info_.type = pp.deviceType;
     dev->info_.apiVersion = pp.apiVersion;
     dev->info_.physicalDeviceIndex = static_cast<uint32_t>(pick);
+    dev->info_.driverVersion = driverVersionText(pp);
+    dev->info_.selectionReason = std::move(selectionReason);
 
     uint32_t nf = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(dev->physical_, &nf, nullptr);
@@ -375,15 +471,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
         dev->info_.minImportedHostPointerAlignment
             = dev->info_.externalMemoryHost ? hostProps.minImportedHostPointerAlignment : 0;
 
-        VkPhysicalDeviceMemoryProperties mem {};
-        vkGetPhysicalDeviceMemoryProperties(dev->physical_, &mem);
-        uint64_t localHeap = 0;
-        for (uint32_t i = 0; i < mem.memoryHeapCount; ++i) {
-            if (mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
-                localHeap = std::max<uint64_t>(localHeap, mem.memoryHeaps[i].size);
-            }
-        }
-        dev->info_.deviceLocalHeapSize = localHeap;
+        dev->info_.deviceLocalHeapSize = largestDeviceLocalHeap(dev->physical_);
         dev->info_.unifiedMemory = isUnifiedMemory(dev->info_.type);
     }
 

@@ -103,7 +103,9 @@ if [[ "${DO_CPU}" -eq 1 ]]; then
         before="$(cat /proc/loadavg | cut -d' ' -f1)"
         echo "== CPU ${tag} (${topo} n=${n} ${label} ${dims}, load1 ${before})"
         rm -f "${OUT}"/work/*.exr
+        # shellcheck disable=SC2046 # memcap.sh prints separate flags, or nothing when the cap is off
         docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/natron-bench-home \
+            $("${REPO_ROOT}/tools/ci/local/memcap.sh" --docker-args) \
             -e BENCH_TOPO="${topo}" -e BENCH_N="${n}" -e BENCH_RES="${label}" -e BENCH_SIZE="${dims}" \
             -e BENCH_FRAMES="${frames}" -e BENCH_BLUR_SIZE="${blur}" -e BENCH_OUT="${OUT}/cpu-results.jsonl" \
             -e BENCH_WORK="${OUT}/work" -e BENCH_RENDERER="${RENDERER}" -e OFX_PLUGIN_PATH="${PLUGINS}" \

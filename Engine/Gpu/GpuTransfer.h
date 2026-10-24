@@ -30,6 +30,9 @@ struct GpuTransferOptions {
     // Called on the importing thread, with no lock held, between creating an import meant for the cache and
     // caching it, so that tests can interleave forgetHostAllocation() with it.
     std::function<void(const void* host, VkDeviceSize bytes)> onImportCreated;
+    // Makes every host-pointer import fail as a driver rejection would, so that tests can reach the
+    // ImportFailed staged reason.
+    bool failHostImportsForTests = false;
 };
 
 enum class TransferPath {
@@ -109,6 +112,28 @@ struct HostImportStats {
     uint64_t dropped = 0;
     // Imports in the cache now.
     uint64_t cached = 0;
+};
+
+// Why a transfer went through the staging ring instead of importing its host memory.
+enum class StagedReason {
+    // Host import is unsupported or turned off.
+    Disabled,
+    // The range is not aligned for import and no cached import covers it.
+    Unaligned,
+    // The driver or the buffer rejected the import.
+    ImportFailed,
+    // The range was forgotten while its import was being created.
+    Forgotten,
+};
+
+// Uploads and downloads that took the staging path, by reason.
+struct StagedReasonCounts {
+    uint64_t disabled = 0;
+    uint64_t unaligned = 0;
+    uint64_t importFailed = 0;
+    uint64_t forgotten = 0;
+
+    uint64_t total() const { return disabled + unaligned + importFailed + forgotten; }
 };
 
 struct TransferFrame {
@@ -235,6 +260,8 @@ public:
     // Bytes of host memory imported so far, cached or not.
     uint64_t hostImportBytes() const;
     HostImportStats hostImportStats() const;
+    // Uploads and downloads that went through staging so far, by reason. prepareImport() does not count.
+    StagedReasonCounts stagedReasons() const;
 
 private:
     struct Impl;

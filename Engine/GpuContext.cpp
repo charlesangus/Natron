@@ -488,12 +488,15 @@ GpuContext::initialize()
                 shared.runtime = std::move(runtime);
                 finish(true);
                 const std::chrono::steady_clock::time_point ready = std::chrono::steady_clock::now();
-                qInfo().noquote() << QString::fromLatin1("GPU compute ready after %1 ms (loader, instance, device and runtime %2 ms, "
+                qInfo().noquote() << QString::fromLatin1("GPU compute ready on %5 (driver %6, selected by %7) after %1 ms (loader, instance, device and runtime %2 ms, "
                                                          "host import calibration %3 ms, staging calibration %4 ms)")
                                          .arg(elapsedMs(_createdAt, ready), 0, 'f', 1)
                                          .arg(elapsedMs(_createdAt, created), 0, 'f', 1)
                                          .arg(timings.importMs, 0, 'f', 1)
-                                         .arg(timings.stagingMs, 0, 'f', 1);
+                                         .arg(timings.stagingMs, 0, 'f', 1)
+                                         .arg(QString::fromStdString(shared.deviceName),
+                                              QString::fromStdString(shared.runtime->device().info().driverVersion),
+                                              QString::fromStdString(shared.runtime->device().info().selectionReason));
 
                 return;
             }

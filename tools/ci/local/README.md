@@ -464,6 +464,19 @@ own `natron-dev-gpu-home` volume. On top of the normal container it:
 
 - refuses to start unless some `/dev/dri/renderD*` is readable and writable
   by the invoking user, rather than silently falling back to lavapipe;
+- on a host with `/dev/nvidiactl` whose Docker daemon has the `nvidia` runtime
+  (nvidia-container-toolkit), creates the container with `--runtime=nvidia`
+  and `NVIDIA_VISIBLE_DEVICES=all`,
+  `NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,display`, so the host
+  driver, its Vulkan ICD and its EGL vendor file are injected alongside the
+  `/dev/dri` passthrough. Inside, `nvidia-smi -L` lists the NVIDIA GPUs and the
+  Vulkan device list shows them ahead of llvmpipe. No `VK_*` or
+  `__EGL_VENDOR_LIBRARY_DIRS` override is needed.
+
+A container keeps the runtime it was created with, so an existing `--gpu`
+container must be recreated to pick up the NVIDIA runtime: pass `--recreate`
+(caches are kept) or use a fresh name, e.g.
+`NATRON_DEV_CONTAINER=natron-dev-m91-gpu`.
 
 On an AMD RX 7900 XTX host, the Vulkan device list inside it is:
 
@@ -497,6 +510,41 @@ then `sudo udevadm control --reload && sudo udevadm trigger -s drm` (or
 reboot). Without it, a manual `chmod 666 /dev/dri/renderD128` works until
 the next reboot, after which `--gpu` refuses to start again. Note this
 grants every local user access to the GPU's render node.
+
+## Memory cap
+
+Every container `devshell.sh` makes (normal, `--gpu`, lane) is capped at 75%
+of the Docker daemon's memory, keeping at least 4 GiB back for the host. Swap
+is capped at the same value, so a build, test or render that outgrows the cap
+is OOM-killed inside the container (exit 137, `docker inspect -f
+'{{.State.OOMKilled}}'` says `true`) instead of swapping the host until it
+stops responding. `tools/ci/local/memcap.sh` holds the rule:
+
+```
+tools/ci/local/memcap.sh --mib --docker     # the cap on this host, in MiB
+NATRON_DEV_MEMORY=12g tools/ci/local/devshell.sh   # a different cap
+NATRON_DEV_MEMORY=0 tools/ci/local/devshell.sh --recreate   # no cap
+```
+
+`NATRON_DEV_MEMORY` takes a whole number with an optional `b`/`k`/`m`/`g`
+suffix and nothing else; a literal `0` turns the cap off, and a nonzero value
+that rounds to 0 MiB (such as `512k`) is rejected. On a host with under 8 GiB
+the default is half its memory rather than 75%, since the 4 GiB reserve would
+leave next to none.
+
+The cap follows the host, so no host needs its own setting. An existing
+container picks up a new or changed cap the next time `devshell.sh` runs,
+without `--recreate`. Removing the cap does need `--recreate`.
+
+Work that does not go through `devshell.sh` gets the same cap this way:
+
+- a hand-rolled container: add `$(tools/ci/local/memcap.sh --docker-args)`
+  to the `docker run` line (`tools/gpu-spike/run-bench.sh` does this);
+- a host-native run, such as an AppImage render or `GpuTests` on the host:
+  prefix it with `tools/ci/local/memcap.sh`, which runs it in a systemd
+  user scope with `MemoryMax` and `MemorySwapMax=0`. Where there is no
+  systemd user session (macOS, inside a container) it runs the command
+  uncapped and prints a warning.
 
 ## Worktree lanes
 

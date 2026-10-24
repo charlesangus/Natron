@@ -101,4 +101,15 @@
 #define kNatronTestOCIOConfigParamInputSpace "ocioInputSpace"
 #define kNatronTestOCIOConfigParamOutputSpace "ocioOutputSpace"
 
+// Renders, in R and G, the PreMultiplicationEnum its Source clip and its fetched Source image
+// report (eImageOpaque 0, eImagePreMultiplied 1, eImageUnPreMultiplied 2; G is -1 with no
+// image), and reports reportedPremult on its output clip.
+#define kNatronTestPremultProbePluginID "fr.natron.test.PremultProbe"
+#define kNatronTestPremultProbeMajor 1
+#define kNatronTestPremultProbeParamReported "reportedPremult"
+#define kNatronTestPremultProbeReportedPreMultiplied 0
+#define kNatronTestPremultProbeReportedOpaque 1
+#define kNatronTestPremultProbeReportedPreMultipliedID "premultiplied"
+#define kNatronTestPremultProbeReportedOpaqueID "opaque"
+
 #endif // Tests_OfxTestPlugins_NatronTestPluginIDs_h

@@ -1057,10 +1057,12 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
     OfxImageCommon* retCommon = 0;
     if (retImage) {
         OfxImage* ofxImage = new OfxImage(renderData, image, true, renderWindow, transform, components, nComps, par);
+        ofxImage->setStringProperty(kOfxImageEffectPropPreMultiplication, getPremult());
         *retImage = ofxImage;
         retCommon = ofxImage;
     } else if (retTexture) {
         OfxTexture* ofxTex = new OfxTexture(renderData, image, true, renderWindow, transform, components, nComps, par);
+        ofxTex->setStringProperty(kOfxImageEffectPropPreMultiplication, getPremult());
         *retTexture = ofxTex;
         retCommon = ofxTex;
     }

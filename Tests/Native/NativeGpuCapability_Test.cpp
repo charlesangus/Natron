@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
+#include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
@@ -89,6 +90,7 @@ gpuCapableIds()
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_RAWINPUTCOLOR,
         PLUGINID_NATRON_RAWCOLORCALIBRATION,
+        PLUGINID_NATRON_DISSOLVE,
     };
 
     return ids;

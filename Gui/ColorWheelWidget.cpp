@@ -61,7 +61,9 @@ const double kGrey = kColorPivotGrey;
 const double kPi = 3.14159265358979323846;
 
 const double kMargin = 3.0;
-const double kRingWidth = 12.0;
+// 12 px on the 151 px wheel the panel shows by default, so that size keeps its look.
+const double kRingWidthFraction = 12.0 / 72.5;
+const double kRingMinWidth = 6.0;
 const double kRingGap = 2.0;
 const double kHueTableStep = 0.25;
 const double kCrossArm = 5.0;
@@ -303,7 +305,9 @@ colorWheelRingOuterRadius(const QSize& size)
 double
 colorWheelRingInnerRadius(const QSize& size)
 {
-    return std::max(0.0, colorWheelRingOuterRadius(size) - TO_DPIX(kRingWidth));
+    const double outer = colorWheelRingOuterRadius(size);
+
+    return std::max(0.0, outer - std::max(TO_DPIX(kRingMinWidth), outer * kRingWidthFraction));
 }
 
 double

@@ -155,9 +155,12 @@ public:
 
     /**
      * @brief The sunken block drawn behind the knob's row and its open panel, in the page's
-     * grid; null or hidden while the panel is closed.
+     * grid; null or hidden while the panel is closed, unless global mode is engaged on the
+     * knob, when it surrounds the row alone. While engaged it is drawn highlighted.
      **/
     QWidget* getOpenBackdrop() const;
+
+    bool isGlobalModeHighlighted() const;
 
     ColorKnobEditSession* getEditSession();
 
@@ -298,6 +301,7 @@ private:
     int _configCallbackId;
     QPointer<QWidget> _openBackdrop;
     std::vector<QPointer<QWidget>> _openBlockWidgets;
+    bool _globalModeHighlighted;
 };
 
 NATRON_NAMESPACE_EXIT

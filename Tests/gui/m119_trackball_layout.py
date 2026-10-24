@@ -12,7 +12,7 @@ What it covers, one section each:
 - sizes: for each colorTrackballWheelWidth preference (1/2, 1/3, 1/4, 1/5), at the default bin
   width and at twice it: a screenshot, the wheel square at that fraction of the panel's width (or
   as tall as the line column when that is larger) flush left, and the Hue line ending at the
-  panel's right edge.
+  panel's right edge. The hue ring's width is measured on each wheel (pixel probe).
 - panel-toggle: the knob's panel button shows the dropdown icon folded and exactly that icon
   flipped top to bottom while open, also after a value change and a slider drag (never a swatch).
 - no-flash: no widget of the Grade panel paints at a geometry other than its settled one while
@@ -20,6 +20,9 @@ What it covers, one section each:
 - undo: a slider drag is one undo step, including a drag that starts on the marker.
 - fresh-engage: global mode starts in C on every fresh engage, and keeps its mode across a knob
   switch while engaged.
+- engaged-highlight: while engaged, the target knob's sunken block is drawn highlighted (a grey
+  tint, not the selection colour), around the row and its panel when open and around the row
+  alone when closed; it moves with a Ctrl+Down knob switch and leaving the mode clears it.
 - feedback: for each value of the colorTrackballFeedback preference (Crosshair + reveal, Widget
   cursor), the override cursor before, during and after a stroke, the following HUD on real
   pointer moves (also at the screen's edge), the reveal graphic at the press point, the widget
@@ -31,6 +34,8 @@ What it covers, one section each:
 - reveal: screenshots of the C, S, T and V graphics, S mid-drag (the disc recentres on the live
   hue, and only an x drag changes it), and a press at the screen's corner keeps the graphic on
   screen.
+- ring: the ring's width over its outer radius is the same, within the probe's pixel error, on
+  every panel wheel size and on the C reveal's wheel.
 
 Knob widgets carry no object name; KnobGui puts the knob's script name in bold at the start of its
 tooltip, so that is how a knob's widgets are found. The Grade's "Gain" knob is named "white".
@@ -539,6 +544,45 @@ try:
             return
         crop(global_rect(w), name, pad)
 
+    def ring_probe(wheel):
+        """(outer radius, ring width) in logical px, measured on the wheel's own render along the
+        rays left and right of its centre: the run of saturated pixels between the ring's dark
+        hairlines, from the outermost one in. None when no ring is found."""
+        if wheel is None or not wheel.isVisible():
+            return None
+        pix = wheel.grab()
+        dpr = pix.devicePixelRatio() or 1.0
+        img = pix.toImage()
+        cx, cy = img.width() // 2, img.height() // 2
+
+        def ringish(x):
+            c = img.pixelColor(x, cy)
+            return c.alpha() > 200 and c.hsvSaturationF() > 0.3 and c.valueF() > 0.25
+
+        found = []
+        for xs in (range(img.width() - 1, cx, -1), range(0, cx)):
+            xs = list(xs)
+            start = next((i for i, x in enumerate(xs) if ringish(x)), None)
+            if start is None:
+                continue
+            end = start
+            while end + 1 < len(xs) and ringish(xs[end + 1]):
+                end += 1
+            found.append((abs(xs[start] - cx) + 1, end - start + 1))
+        if not found:
+            return None
+        outer = sum(f[0] for f in found) / float(len(found)) / dpr
+        width = sum(f[1] for f in found) / float(len(found)) / dpr
+        return outer, width
+
+    def highlighted_backdrops(root):
+        return [w for w in live_children(root)
+                if w.objectName() == "ColorAdjustOpenBackdrop" and w.isVisible() and w.property("colorGlobalModeHighlighted")]
+
+    def backdrop_fill(backdrop):
+        img = backdrop.grab().toImage()
+        return img.pixelColor(img.width() // 2, img.height() // 2)
+
     def gain_values(node, name=GAIN):
         p = node.getParam(name)
         return tuple(round(p.getValue(d), 5) for d in range(p.getNumDimensions()))
@@ -679,6 +723,7 @@ try:
 
         # =========================================================================================
         gt.section("sizes")
+        ring_probes = []
         widths = [default_width, min(2 * default_width, screen_rect().width() - 300)]
         report("NOTE bin widths: default %d, wide %d" % tuple(widths))
         if not selector.isChecked():
@@ -722,6 +767,11 @@ try:
                 check(abs(global_rect(hue).right() - row_right) <= EDGE_TOLERANCE + 1,
                       "%s: the Hue line ends at the row's right edge (%d, row %d)" % (tag, global_rect(hue).right(), row_right))
                 check(global_rect(hue).left() > global_rect(wheel).right(), "%s: the lines sit right of the wheel" % tag)
+                probe = ring_probe(wheel)
+                if check(probe is not None, "%s: found the hue ring on the wheel" % tag):
+                    ring_probes.append((tag, wheel.width(), probe[0], probe[1]))
+                    report("NOTE ring %s: wheel %d px, outer radius %.1f px, ring width %.1f px, ratio %.3f"
+                           % (tag, wheel.width(), probe[0], probe[1], probe[1] / probe[0]))
                 crop_widget(bin_wrapper(), "size-" + tag)
         set_wheel_width(WHEEL_WIDTH_DEFAULT)
         set_bin_width(default_width)
@@ -833,6 +883,69 @@ try:
         check(not engaged(), "Ctrl+E again leaves global mode")
         raise_panel(grade)
         yield ("sleep", PANEL_MS)
+
+        # =========================================================================================
+        gt.section("engaged-highlight")
+        gain_row = knob_row(gp, GAIN)
+        selector = child_named(gain_row, "ColorSelectorButton")
+        if not selector.isChecked():
+            selector.click()
+            yield ("sleep", PANEL_MS)
+        plain = [w for w in live_children(gp) if w.objectName() == "ColorAdjustOpenBackdrop" and w.isVisible()]
+        plain_fill = backdrop_fill(plain[0]) if plain else None
+        check(not highlighted_backdrops(gp), "before engaging, no sunken block is highlighted")
+        child_named(gain_row, "ColorGlobalModeButton").click()
+        yield ("sleep", SETTLE_MS)
+        check(engaged(), "the global-mode button engages the mode on gain")
+        check(gain_row.property("_natronColorTrackballTarget") is None, "the row carries no target border property")
+        lit = highlighted_backdrops(gp)
+        if check(len(lit) == 1, "panel open: exactly one sunken block is highlighted (%d)" % len(lit)):
+            block = global_rect(lit[0])
+            ap = active_adjust_panel(gp)
+            check(block.contains(global_rect(gain_row)), "panel open: the block surrounds gain's row")
+            check(ap is not None and block.contains(global_rect(ap)), "panel open: the block surrounds gain's panel")
+            fill = backdrop_fill(lit[0])
+            report("NOTE engaged block fill %s, saturation %.2f; plain fill %s"
+                   % (fill.name(), fill.hsvSaturationF(), plain_fill.name() if plain_fill is not None else None))
+            check(fill.hsvSaturationF() < 0.25, "panel open: the highlight is a grey tint, not the selection colour (saturation %.2f)"
+                  % fill.hsvSaturationF())
+            if plain_fill is not None:
+                check(fill.lightnessF() > plain_fill.lightnessF(), "panel open: the highlighted block is lighter than the plain one")
+        crop_widget(gp, "engaged-panel-open", 4)
+
+        selector.click()
+        yield ("sleep", PANEL_MS)
+        check(engaged() and not selector.isChecked(), "closing gain's panel keeps global mode engaged")
+        lit = highlighted_backdrops(gp)
+        if check(len(lit) == 1, "panel closed: the sunken block is still highlighted (%d)" % len(lit)):
+            block = global_rect(lit[0])
+            row_rect = global_rect(gain_row)
+            label = knob_label_cell(gp, GAIN, gain_row.parentWidget())
+            check(block.contains(row_rect), "panel closed: the block surrounds gain's row")
+            check(label is None or block.contains(global_rect(label)), "panel closed: the block surrounds gain's label")
+            report("NOTE panel closed: block %s, row %s" % (fmt_rect(block), fmt_rect(row_rect)))
+            check(block.height() <= row_rect.height() + px(12), "panel closed: the block is the row alone (%d px, row %d px)"
+                  % (block.height(), row_rect.height()))
+        crop_widget(gp, "engaged-panel-closed", 4)
+
+        target_before = hud_knob()
+        send_key(Qt.Key_Down, Qt.ControlModifier)
+        yield ("sleep", PANEL_MS)
+        target_after = hud_knob()
+        report("NOTE highlight switch: HUD target before %r, after %r" % (target_before, target_after))
+        check(target_after != target_before, "Ctrl+Down moves global mode to the next knob")
+        lit = highlighted_backdrops(gp)
+        if check(len(lit) == 1, "after the switch: exactly one sunken block is highlighted (%d)" % len(lit)):
+            check(not global_rect(lit[0]).intersects(global_rect(gain_row).adjusted(0, 2, 0, -2)), "after the switch: the highlight left gain's row")
+        crop_widget(gp, "engaged-after-switch", 4)
+
+        send_key(Qt.Key_Escape)
+        yield ("sleep", SETTLE_MS)
+        check(not engaged(), "Esc leaves global mode")
+        check(not highlighted_backdrops(gp), "after leaving: no sunken block is highlighted")
+        if not selector.isChecked():
+            selector.click()
+            yield ("sleep", PANEL_MS)
 
         # =========================================================================================
         gt.section("feedback")
@@ -1058,6 +1171,13 @@ try:
                       "%s: the graphic is the %s" % (mode, "wheel" if mode == "C" else "gradient disc"))
                 side = disc_widget(r).width()
                 check(abs(side - px(REVEAL_DIAMETER)) <= 1, "%s: the graphic is %d px" % (mode, side))
+                if mode == "C":
+                    reveal_wheel = next((c for c in r.children() if isinstance(c, QWidget) and gt.class_name(c) == "ColorWheelWidget"), None)
+                    probe = ring_probe(reveal_wheel)
+                    if check(probe is not None, "C: found the hue ring on the reveal's wheel"):
+                        ring_probes.append(("reveal-C", reveal_wheel.width(), probe[0], probe[1]))
+                        report("NOTE ring reveal-C: wheel %d px, outer radius %.1f px, ring width %.1f px, ratio %.3f"
+                               % (reveal_wheel.width(), probe[0], probe[1], probe[1] / probe[0]))
                 crop(r.frameGeometry(), "reveal-%s-press" % mode, 10)
             for k in range(1, 9):
                 global_move(QPoint(press.x() + 8 * k, press.y() - 5 * k))
@@ -1124,6 +1244,22 @@ try:
         set_gain(grade, (1.0, 1.0, 1.0, 1.0))
         set_feedback(0)
         yield ("sleep", SETTLE_MS)
+
+        # =========================================================================================
+        gt.section("ring")
+        reference = next((p for p in ring_probes if p[0] == "third-default"), None)
+        if check(reference is not None, "the default third-width wheel's ring was measured"):
+            ratio = reference[3] / reference[2]
+            report("NOTE ring reference: %s, ratio %.3f" % (reference[0], ratio))
+            for tag, side, outer, width in ring_probes:
+                expected = ratio * outer
+                check(abs(width - expected) <= 2.0, "%s (%d px): the ring is the same fraction of the radius (%.1f px, expected %.1f)"
+                      % (tag, side, width, expected))
+            smallest = min(ring_probes, key=lambda p: p[2])
+            largest = max(ring_probes, key=lambda p: p[2])
+            if largest[2] > 1.5 * smallest[2]:
+                check(largest[3] > smallest[3] + 2, "the ring on the largest wheel (%s) is wider than on the smallest (%s): %.1f vs %.1f px"
+                      % (largest[0], smallest[0], largest[3], smallest[3]))
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

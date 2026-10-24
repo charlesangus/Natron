@@ -32,6 +32,7 @@
 #include <vector>
 
 #include <QApplication>
+#include <QColor>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -141,6 +142,24 @@ QImage
 argb(const QPixmap& pix)
 {
     return pix.toImage().convertToFormat(QImage::Format_ARGB32);
+}
+
+// The backdrop's fill at its centre and its inset edge midway down its left side.
+struct BackdropColors {
+    QColor fill;
+    QColor edge;
+};
+
+BackdropColors
+backdropColors(QWidget* backdrop)
+{
+    const QImage image = argb(backdrop->grab());
+    BackdropColors c;
+
+    c.fill = QColor::fromRgb(image.pixel(image.width() / 2, image.height() / 2));
+    c.edge = QColor::fromRgb(image.pixel(0, image.height() / 2));
+
+    return c;
 }
 
 } // namespace
@@ -416,4 +435,107 @@ TEST_F(KnobGuiColorWheelWidth, AnOpenPanelAndItsRowSitInOneSunkenBlock)
     EXPECT_TRUE(!_gui->getOpenBackdrop() || !_gui->getOpenBackdrop()->isVisible());
     EXPECT_FALSE(_label->property("_natronColorAdjustOpen").toBool());
     EXPECT_FALSE(_field->property("_natronColorAdjustOpen").toBool());
+}
+
+TEST_F(KnobGuiColorWheelWidth, GlobalModeLightensTheOpenKnobsSunkenBlock)
+{
+    build(600);
+    setExpanded(true);
+    QWidget* backdrop = _gui->getOpenBackdrop();
+    ASSERT_TRUE(backdrop);
+    ASSERT_TRUE(backdrop->isVisible());
+    const BackdropColors normal = backdropColors(backdrop);
+
+    _gui->setGlobalModeHighlighted(true);
+    settle();
+    EXPECT_TRUE(_gui->isGlobalModeHighlighted());
+    ASSERT_EQ(backdrop, _gui->getOpenBackdrop());
+    EXPECT_TRUE(backdrop->isVisible());
+    EXPECT_TRUE(backdrop->geometry().contains(rectIn(panel(), _page.get()))) << "the panel";
+
+    const BackdropColors engaged = backdropColors(backdrop);
+    EXPECT_GT(engaged.fill.lightnessF(), normal.fill.lightnessF());
+    EXPECT_GT(engaged.edge.lightnessF(), normal.edge.lightnessF());
+    // A tint, not a bright highlight colour.
+    EXPECT_LT(engaged.fill.saturationF(), 0.25);
+    EXPECT_LT(engaged.edge.saturationF(), 0.35);
+
+    // The row no longer carries the stylesheet border that drew the selection colour around it.
+    EXPECT_FALSE(_field->property("_natronColorTrackballTarget").isValid());
+
+    // Leaving global mode gives the open knob its plain sunken block back.
+    _gui->setGlobalModeHighlighted(false);
+    settle();
+    EXPECT_FALSE(_gui->isGlobalModeHighlighted());
+    ASSERT_TRUE(_gui->getOpenBackdrop());
+    EXPECT_TRUE(_gui->getOpenBackdrop()->isVisible());
+    const BackdropColors after = backdropColors(_gui->getOpenBackdrop());
+    EXPECT_EQ(normal.fill.rgb(), after.fill.rgb());
+    EXPECT_EQ(normal.edge.rgb(), after.edge.rgb());
+}
+
+TEST_F(KnobGuiColorWheelWidth, GlobalModeOnAClosedKnobShowsTheBlockAroundItsRowAlone)
+{
+    build(600);
+    EXPECT_TRUE(!_gui->getOpenBackdrop() || !_gui->getOpenBackdrop()->isVisible());
+
+    _gui->setGlobalModeHighlighted(true);
+    settle();
+    EXPECT_FALSE(_gui->isAdjustPanelExpanded());
+    QWidget* backdrop = _gui->getOpenBackdrop();
+    ASSERT_TRUE(backdrop);
+    EXPECT_TRUE(backdrop->isVisible());
+
+    const QRect block = backdrop->geometry();
+    const QRect label = rectIn(_label, _page.get());
+    const QRect field = rectIn(_field, _page.get());
+    EXPECT_TRUE(block.contains(label)) << "the label";
+    EXPECT_TRUE(block.contains(field)) << "the knob's row";
+    EXPECT_LE(block.bottom(), std::max(label.bottom(), field.bottom()) + 1) << "the row alone";
+    EXPECT_TRUE(_label->property("_natronColorAdjustOpen").toBool());
+    EXPECT_TRUE(_field->property("_natronColorAdjustOpen").toBool());
+
+    const BackdropColors engaged = backdropColors(backdrop);
+    EXPECT_LT(engaged.fill.saturationF(), 0.25);
+
+    _gui->setGlobalModeHighlighted(false);
+    settle();
+    EXPECT_TRUE(!_gui->getOpenBackdrop() || !_gui->getOpenBackdrop()->isVisible());
+    EXPECT_FALSE(_label->property("_natronColorAdjustOpen").toBool());
+    EXPECT_FALSE(_field->property("_natronColorAdjustOpen").toBool());
+}
+
+// Global mode highlights a knob first and then opens it, and a knob switch does the reverse on
+// the knob it leaves, which stays open.
+TEST_F(KnobGuiColorWheelWidth, OpeningAnEngagedKnobGrowsTheHighlightedBlockToThePanel)
+{
+    build(600);
+    _gui->setGlobalModeHighlighted(true);
+    settle();
+    ASSERT_TRUE(_gui->getOpenBackdrop());
+    const BackdropColors rowOnly = backdropColors(_gui->getOpenBackdrop());
+
+    setExpanded(true);
+    QWidget* backdrop = _gui->getOpenBackdrop();
+    ASSERT_TRUE(backdrop);
+    EXPECT_TRUE(backdrop->isVisible());
+    EXPECT_TRUE(backdrop->geometry().contains(rectIn(_field, _page.get()))) << "the knob's row";
+    EXPECT_TRUE(backdrop->geometry().contains(rectIn(panel(), _page.get()))) << "the panel";
+    EXPECT_EQ(rowOnly.fill.rgb(), backdropColors(backdrop).fill.rgb());
+
+    _gui->setGlobalModeHighlighted(false);
+    settle();
+    ASSERT_TRUE(_gui->getOpenBackdrop());
+    EXPECT_TRUE(_gui->getOpenBackdrop()->isVisible());
+    EXPECT_LT(backdropColors(_gui->getOpenBackdrop()).fill.lightnessF(), rowOnly.fill.lightnessF());
+
+    // Closing the panel while engaged keeps the highlighted block, shrunk back to the row.
+    _gui->setGlobalModeHighlighted(true);
+    settle();
+    setExpanded(false);
+    backdrop = _gui->getOpenBackdrop();
+    ASSERT_TRUE(backdrop);
+    EXPECT_TRUE(backdrop->isVisible());
+    EXPECT_TRUE(backdrop->geometry().contains(rectIn(_field, _page.get())));
+    EXPECT_EQ(rowOnly.fill.rgb(), backdropColors(backdrop).fill.rgb());
 }

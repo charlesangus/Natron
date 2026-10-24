@@ -1071,3 +1071,51 @@ TEST(ColorWheelWidget, DiscFollowsTheShortSideAndStaysCentred)
 
     EXPECT_NEAR(2.0 * wide.getDiscRadius() * disc.devicePixelRatio(), disc.width(), 2.0);
 }
+
+TEST(ColorWheelWidget, RingWidthScalesWithTheWheel)
+{
+    const int sides[4] = { 120, 160, 240, 320 };
+    double ratio = 0.0;
+
+    for (int i = 0; i < 4; ++i) {
+        ColorWheelWidget wheel;
+
+        setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.2);
+        wheel.resize(sides[i], sides[i]);
+        QApplication::processEvents();
+        ASSERT_EQ(QSize(sides[i], sides[i]), wheel.size());
+
+        const double outer = wheel.getRingOuterRadius();
+        const double width = outer - wheel.getRingInnerRadius();
+
+        ASSERT_GT(outer, 0.0);
+        if (i == 0) {
+            ratio = width / outer;
+            EXPECT_GT(width, 0.0);
+            continue;
+        }
+        EXPECT_NEAR(ratio * outer, width, 1.0) << "side " << sides[i];
+    }
+
+    // The ring at the largest size is visibly wider than at the smallest.
+    ColorWheelWidget small, large;
+
+    setUpWheel(small, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.2);
+    setUpWheel(large, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.2);
+    small.resize(120, 120);
+    large.resize(320, 320);
+    QApplication::processEvents();
+    EXPECT_GT(large.getRingOuterRadius() - large.getRingInnerRadius(), 1.5 * (small.getRingOuterRadius() - small.getRingInnerRadius()));
+
+    // A press near the ring's inner edge on the large wheel lands on the ring, not the disc.
+    GestureRecorder rec(large);
+    const QPointF c = large.getDiscCentre();
+    const double r = large.getRingInnerRadius() + 2.0;
+
+    ASSERT_GT(r, large.getDiscRadius());
+    pressAt(large, c + QPointF(0.0, -r));
+    ASSERT_EQ(1u, rec.edits.size());
+    EXPECT_EQ(eColorAxisHue, rec.edits[0].axis);
+    EXPECT_TRUE(rec.edits[0].absolute);
+    releaseAt(large, c + QPointF(0.0, -r));
+}

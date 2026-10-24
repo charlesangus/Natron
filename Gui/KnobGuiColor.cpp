@@ -233,6 +233,16 @@ repolishTree(QWidget* root)
     }
 }
 
+QColor
+mixColors(const QColor& a,
+          const QColor& b,
+          double t)
+{
+    return QColor::fromRgbF(a.redF() + (b.redF() - a.redF()) * t,
+                            a.greenF() + (b.greenF() - a.greenF()) * t,
+                            a.blueF() + (b.blueF() - a.blueF()) * t);
+}
+
 // Spans the page grid's cells for the knob's row and its panel, under them. The widgets in
 // those cells turn their stylesheet background transparent while it shows (mainstyle.qss,
 // _natronColorAdjustOpen), so this fill also covers the grid's spacing between them. The
@@ -243,11 +253,22 @@ class AdjustPanelBackdrop
 public:
     explicit AdjustPanelBackdrop(QWidget* parent)
         : QWidget(parent)
+        , _highlighted(false)
     {
         setObjectName(QString::fromUtf8("ColorAdjustOpenBackdrop"));
         setAttribute(Qt::WA_TransparentForMouseEvents);
         setFocusPolicy(Qt::NoFocus);
         setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    }
+
+    void setHighlighted(bool highlighted)
+    {
+        if (_highlighted != highlighted) {
+            _highlighted = highlighted;
+            // Read by the GUI evidence scripts, which cannot reach this class.
+            setProperty("colorGlobalModeHighlighted", highlighted);
+            update();
+        }
     }
 
 protected:
@@ -256,20 +277,35 @@ protected:
         const QPalette palette = QApplication::palette();
         const QColor base = palette.color(QPalette::Mid);
         const QColor sunken = palette.color(QPalette::Dark);
-        const QColor fill = QColor::fromRgbF((base.redF() + sunken.redF()) / 2.,
-                                             (base.greenF() + sunken.greenF()) / 2.,
-                                             (base.blueF() + sunken.blueF()) / 2.);
+        const QColor raised = palette.color(QPalette::Light);
+        QColor fill = mixColors(base, sunken, 0.5);
+        QColor shadowEdge = sunken.darker(140);
+        QColor lightEdge = raised;
+
+        if (_highlighted) {
+            // The highlight colour is only a tint: greyed down and mixed in lightly, so the
+            // engaged knob reads as lifted without competing with the colours being edited.
+            const QColor h = palette.color(QPalette::Highlight).toHsl();
+            const QColor tint = QColor::fromHslF(std::max<float>(0.f, h.hslHueF()), h.hslSaturationF() * 0.4f, 0.6f);
+            fill = mixColors(mixColors(fill, raised, 0.3), tint, 0.12);
+            shadowEdge = mixColors(raised, tint, 0.35).lighter(115);
+            lightEdge = shadowEdge;
+        }
+
         const QRect r = rect();
         QPainter p(this);
 
         p.fillRect(r, fill);
-        p.setPen(sunken.darker(140));
+        p.setPen(shadowEdge);
         p.drawLine(r.topLeft(), r.topRight());
         p.drawLine(r.topLeft(), r.bottomLeft());
-        p.setPen(palette.color(QPalette::Light));
+        p.setPen(lightEdge);
         p.drawLine(r.bottomLeft(), r.bottomRight());
         p.drawLine(r.topRight(), r.bottomRight());
     }
+
+private:
+    bool _highlighted;
 };
 
 } // namespace
@@ -432,6 +468,7 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _configCallbackId(-1)
     , _openBackdrop()
     , _openBlockWidgets()
+    , _globalModeHighlighted(false)
 {
     KnobColorPtr k = _knob.lock();
     assert(k);
@@ -584,14 +621,19 @@ KnobGuiColor::setGlobalModeHighlighted(bool highlighted)
     if (_globalModeButton) {
         _globalModeButton->setChecked(highlighted);
     }
-    if (!_rowContainer) {
+    if (_globalModeHighlighted == highlighted) {
         return;
     }
-    _rowContainer->setProperty(colorTrackballTargetPropertyName(), highlighted);
-    // Qt only re-evaluates property selectors on polish.
-    _rowContainer->style()->unpolish(_rowContainer.data());
-    _rowContainer->style()->polish(_rowContainer.data());
-    _rowContainer->update();
+    _globalModeHighlighted = highlighted;
+    if (_adjustPanel) {
+        refreshOpenBackdrop();
+    }
+}
+
+bool
+KnobGuiColor::isGlobalModeHighlighted() const
+{
+    return _globalModeHighlighted;
 }
 
 ProjectColorManagementPtr
@@ -785,6 +827,8 @@ KnobGuiColor::refreshOpenBackdrop()
     const int fieldIndex = (grid && field) ? grid->indexOf(field) : -1;
     const int fullIndex = grid ? grid->indexOf(fullWidthRow) : -1;
     const bool open = isAdjustPanelExpanded() && !_adjustPanel->isHidden() && fullWidthRow && !fullWidthRow->isHidden() && (fieldIndex >= 0) && (fullIndex >= 0);
+    // Engaged with the panel closed, the block still marks the knob, around its row alone.
+    const bool rowOnly = !open && _globalModeHighlighted && (fieldIndex >= 0) && !field->isHidden() && _colorSelectorButton && !_colorSelectorButton->isHidden();
 
     setOpenBlockTagged(false);
     if (_openBackdrop) {
@@ -793,14 +837,17 @@ KnobGuiColor::refreshOpenBackdrop()
         }
         _openBackdrop->hide();
     }
-    if (!open) {
+    if (!open && !rowOnly) {
         return;
     }
 
     int firstRow, lastRow, rowSpan, column, columnSpan;
     grid->getItemPosition(fieldIndex, &firstRow, &column, &rowSpan, &columnSpan);
-    grid->getItemPosition(fullIndex, &lastRow, &column, &rowSpan, &columnSpan);
-    lastRow += rowSpan - 1;
+    lastRow = firstRow + rowSpan - 1;
+    if (open) {
+        grid->getItemPosition(fullIndex, &lastRow, &column, &rowSpan, &columnSpan);
+        lastRow += rowSpan - 1;
+    }
 
     // Rows are found afresh each time: knobs created later can shift the page's grid.
     for (int i = 0; i < grid->count(); ++i) {
@@ -819,6 +866,7 @@ KnobGuiColor::refreshOpenBackdrop()
         _openBackdrop = new AdjustPanelBackdrop(page);
         QObject::connect(fullWidthRow, &QObject::destroyed, _openBackdrop.data(), &QObject::deleteLater);
     }
+    static_cast<AdjustPanelBackdrop*>(_openBackdrop.data())->setHighlighted(_globalModeHighlighted);
     grid->addWidget(_openBackdrop.data(), firstRow, 0, lastRow - firstRow + 1, std::max(1, grid->columnCount()));
     _openBackdrop->lower();
     _openBackdrop->show();
@@ -1158,6 +1206,8 @@ KnobGuiColor::_show()
     }
     if (isAdjustPanelExpanded()) {
         _adjustPanel->show();
+        refreshOpenBackdrop();
+    } else if (_globalModeHighlighted && _adjustPanel) {
         refreshOpenBackdrop();
     }
 }

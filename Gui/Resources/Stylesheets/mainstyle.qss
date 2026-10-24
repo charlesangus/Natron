@@ -37,14 +37,10 @@ Natron--NodeSettingsPanel[_selected="false"] {
     border-radius: 2px;
 }
 
-QWidget[_natronColorTrackballTarget="true"] {
-    border: 1px solid %1;
-    border-radius: 2px;
-}
-
-/* A colour knob with its adjust panel open: the cells of its row and panel let the sunken
-   block painted under them (KnobGuiColor's backdrop) show through. Only plain containers and
-   labels go transparent; fields, sliders and buttons keep their own backgrounds. */
+/* A colour knob with its adjust panel open, or with global mode engaged on it: the cells of
+   its row and panel let the sunken block painted under them (KnobGuiColor's backdrop) show
+   through. Only plain containers and labels go transparent; fields, sliders and buttons keep
+   their own backgrounds. */
 QWidget[_natronColorAdjustOpen="true"],
 QWidget[_natronColorAdjustOpen="true"] .QWidget,
 QWidget[_natronColorAdjustOpen="true"] QLabel {

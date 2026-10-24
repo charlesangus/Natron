@@ -58,8 +58,9 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief The hue ring ColorWheelWidget draws around its disc, shared with every other disc that
  * wears the same ring. For a widget of size size, the ring's outer edge sits a small margin in
- * from the shorter side's half, the ring has a fixed width, and the disc starts a small gap
- * inside it; all three are DPI-scaled widget pixels.
+ * from the shorter side's half, the ring's width is a fixed fraction of that outer radius (never
+ * below a small legibility floor), and the disc starts a small gap inside it; all three are
+ * DPI-scaled widget pixels.
  **/
 double colorWheelRingOuterRadius(const QSize& size);
 double colorWheelRingInnerRadius(const QSize& size);

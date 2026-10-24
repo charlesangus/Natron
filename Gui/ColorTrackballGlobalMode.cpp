@@ -105,12 +105,6 @@ neutralValue()
 
 } // namespace
 
-const char*
-colorTrackballTargetPropertyName()
-{
-    return "_natronColorTrackballTarget";
-}
-
 ColorGlobalModeKeyAction
 classifyColorGlobalModeKey(int key,
                            Qt::KeyboardModifiers modifiers,

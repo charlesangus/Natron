@@ -65,12 +65,6 @@ class ColorTrackballReveal;
 class WindowHighlightFrame;
 
 /**
- * @brief The bool dynamic property set on the global-mode target's row container while the
- * mode is engaged on it, for the application stylesheet to highlight the row by.
- **/
-const char* colorTrackballTargetPropertyName();
-
-/**
  * @brief What a key press does while the global trackball mode is engaged. Everything that is
  * not one of the mode's own keys is swallowed, so a stray key never reaches the widget that
  * happens to have focus (the node graph, a viewer) and acts on it behind the mode's back.

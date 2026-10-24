@@ -246,19 +246,19 @@ Re-planned 2026-10-24 from the user's UAT pick (see ## Decisions). T2, T3, T4 an
   - verify: `GuiTests --gtest_filter=ColorEditSlider*:ColorAdjustPanel*`: a press on the marker followed by 40 px is the same delta as a 40 px drag elsewhere; a click without a move leaves the value unchanged; one undo step per drag.
   - size: M
 
-- [ ] M119.P3.T8 — Build the Large track size: a bigger wheel with r/g/b/a and Hue…Tint stacked to its right
+- [x] M119.P3.T8 — Build the Large track size: a bigger wheel with r/g/b/a and Hue…Tint stacked to its right
   - files: `Gui/ColorAdjustPanel.{h,cpp}`, `Gui/KnobGuiColor.cpp`, `Gui/KnobGuiValue.{h,cpp}`, `Tests/ColorAdjustPanel_Test.cpp`
   - approach: reading of the user's sketch (`build/appimages/M119-uat-large-layout.png`): in Large the wheel grows to cover the label column down past Multiply/Offset/Gamma; the knob's r/g/b/a lines leave their place above the panel and stack in one column right of the wheel, with Hue…Tint under them; the knob row keeps the label and button cluster. With `colorTrackballSize == Large` and ▾ open, reparent the knob's channel lines (the row's r line and `dimensionLines` g/b/a, `KnobGuiValue.cpp:689-749`) into the top of the panel's right column. The wheel is square at the right column's height, capped at 400 px. Regular is T6's layout. Folding ▾, or switching the setting (live through `settingChanged`, deferred past a gesture), puts the lines back under the same update guard and layout flush as P1.T3. If the bin is narrower than the Large minimum, use the Regular arrangement.
   - verify: `GuiTests --gtest_filter=ColorAdjustPanel*:KnobGuiColor*` on Grade `gain` at 500 px: in Large the "g" slider's left x is right of the wheel's right edge, and the wheel is larger than Regular's (still ≤400). Folding returns "g" to its Regular position; a drag on "g" in Large is one undo step; a 300 px bin falls back to Regular.
   - size: L
 
-- [ ] M119.P3.T9 — Redesign the S, T and V reveal discs to show what a drag does, with S following the value live
+- [x] M119.P3.T9 — Redesign the S, T and V reveal discs to show what a drag does, with S following the value live
   - files: `Gui/ColorModeDiscWidget.{h,cpp}`, `Gui/ColorTrackballReveal.cpp`, `Tests/ColorModeDiscWidget_Test.cpp`
   - approach: drop the hue-wheel ring on S/T/V. Ring and fill show one function: the colour a drag towards that point produces (from `Engine/ColorWheelMath.h`, through the display converter); every direction is derived from the gesture's sign, so the disc shows where a drag that way actually goes. S: current hue −30° on the left and +30° on the right (replacing `kHueSpanDegrees = 300`), full saturation at the top, white at the bottom; the reveal feeds the live value each stroke move, and the cache is keyed on hue to 1° so the S disc re-colours as you drag; with an undefined hue (saturation ≈ 0) centre on the knob's last defined hue, else 0°. T: warm orange on the right, cool blue on the left, green and magenta on the vertical axis. V: white top and right, black bottom and left. T and V are static. The puck stays relative.
   - verify: `GuiTests --gtest_filter=ColorModeDiscWidget*`: S's left and right rim samples are 30°±3° from the set hue and its top is more saturated than its bottom; changing the hue by 60° rotates both rim samples; T's right rim is warmer than its left; V's top-right rim is lighter than its bottom-left; each mode samples no plain hue ring.
   - size: L
 
-- [ ] M119.P3.T11 — The panel's toggle button shows a drop-up (▴) while the trackball is open
+- [x] M119.P3.T11 — The panel's toggle button shows a drop-up (▴) while the trackball is open
   - files: `Gui/KnobGuiColor.{h,cpp}` (the ▾ toggle next to the 4/swatch buttons), its icon resources if it uses one, `Tests/KnobGuiColor_Test.cpp` (or the GUI test that covers the toggle)
   - approach: while the in-knob panel is shown, the toggle displays an up-pointing chevron (▴) with tooltip "Hide the colour panel"; folded, it shows ▾ as today. Today the open state shows a colour swatch, which reads as a colour button, so users don't see how to close the panel. Find where the open state swaps the button's look and replace it; keep the button's size and position so nothing reflows. Runs before T10, which screenshots it.
   - verify: GuiTests: the toggle's icon/text differs between folded and open and matches ▾/▴ (compare against the resources used, or the text glyph); its tooltip changes; clicking it while open folds the panel. T10's script captures both states.

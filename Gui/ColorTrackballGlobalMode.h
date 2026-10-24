@@ -144,6 +144,19 @@ bool colorGlobalModeFeedbackAttachesHud(ColorPanelLayout::Feedback feedback);
 bool colorGlobalModeFeedbackHudFollowsCursor(ColorPanelLayout::Feedback feedback);
 
 /**
+ * @brief Where the HUD sits while the mode is engaged. A Feedback with no HUD in a panel wins
+ * over the Placement; with the Today feedback, BinTop puts it in the bin-top trackball panel.
+ **/
+enum ColorGlobalModeHudHomeEnum {
+    eColorGlobalModeHudHomeNone,
+    eColorGlobalModeHudHomeKnobColumn,
+    eColorGlobalModeHudHomeBinPanel,
+    eColorGlobalModeHudHomeCursor
+};
+
+ColorGlobalModeHudHomeEnum colorGlobalModeHudHome(ColorPanelLayout::Feedback feedback, ColorPanelLayout::Placement placement);
+
+/**
  * @brief Whether a press brings up the mode graphic at the press point for the stroke's length.
  **/
 bool colorGlobalModeFeedbackRevealsOnPress(ColorPanelLayout::Feedback feedback);
@@ -466,6 +479,7 @@ private:
 
     Gui* _gui;
     bool _engaged;
+    ColorPanelLayout::Placement _placement;
     std::weak_ptr<KnobGuiColor> _target;
     QPointer<KnobGuiColor> _targetObject;
     std::vector<QMetaObject::Connection> _targetConnections;

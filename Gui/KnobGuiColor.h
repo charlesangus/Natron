@@ -172,6 +172,11 @@ public:
     ColorKnobEditSession* getEditSession();
 
     /**
+     * @brief The working to display conversion the knob's adjustment panel draws with.
+     **/
+    ColorAdjustPanel::DisplayConverter getDisplayConverter() const;
+
+    /**
      * @brief Records this knob as the last one touched on its panel, for the global trackball
      * mode's target resolution. Called on every edit session's Start, and by the app-wide
      * ColorKnobTouchTracker filter when a press, wheel or focus-in lands on the row or panel
@@ -207,7 +212,8 @@ public:
     /**
      * @brief Moves hud into this knob's below-row column, right after the channel lines and
      * before the adjust panel, wrapped in the same update guard as setAdjustPanelExpanded() so
-     * the insertion settles without a paint at a stale geometry.
+     * the insertion settles without a paint at a stale geometry. In the BinTop placement it
+     * goes into the bin-top trackball panel instead.
      **/
     void attachGlobalModeHud(QWidget* hud);
 
@@ -308,6 +314,9 @@ private:
     QPointer<ColorAdjustPanel> _adjustPanel;
     QPointer<QWidget> _rowContainer;
     std::unique_ptr<ColorKnobEditSession> _editSession;
+    // The ▾ is open with the knob's editing pushed up to the bin-top panel rather than shown
+    // in its own column.
+    bool _adjustPanelInBin;
     std::weak_ptr<ProjectColorManagement> _configCallbackOwner;
     int _configCallbackId;
 };

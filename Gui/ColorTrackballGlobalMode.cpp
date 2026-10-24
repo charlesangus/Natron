@@ -248,6 +248,20 @@ colorGlobalModeFeedbackAttachesHud(ColorPanelLayout::Feedback feedback)
     return feedback == ColorPanelLayout::Feedback::Today;
 }
 
+ColorGlobalModeHudHomeEnum
+colorGlobalModeHudHome(ColorPanelLayout::Feedback feedback,
+                       ColorPanelLayout::Placement placement)
+{
+    if (colorGlobalModeFeedbackHudFollowsCursor(feedback)) {
+        return eColorGlobalModeHudHomeCursor;
+    }
+    if (!colorGlobalModeFeedbackAttachesHud(feedback)) {
+        return eColorGlobalModeHudHomeNone;
+    }
+
+    return (placement == ColorPanelLayout::Placement::BinTop) ? eColorGlobalModeHudHomeBinPanel : eColorGlobalModeHudHomeKnobColumn;
+}
+
 bool
 colorGlobalModeFeedbackHudFollowsCursor(ColorPanelLayout::Feedback feedback)
 {
@@ -633,6 +647,7 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
     : QObject(0)
     , _gui(gui)
     , _engaged(false)
+    , _placement(ColorPanelLayoutDev::instance()->getLayout().placement)
     , _target()
     , _targetObject()
     , _targetConnections()
@@ -682,10 +697,29 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
         updateHud();
         syncReveal();
     });
-    // Only Feedback and Puck matter here; the other axes leave both unchanged and offer() false.
+    // Feedback and Puck go through the switch; the other axes leave both unchanged and offer()
+    // false. A Placement change moves an attached HUD between the knob's column and the bin
+    // top: KnobGuiColor::attachGlobalModeHud() picks the home from the placement.
     QObject::connect(ColorPanelLayoutDev::instance(), &ColorPanelLayoutDev::layoutChanged, this, [this]() {
-        if (_feedback.offer(ColorPanelLayoutDev::instance()->getLayout(), _strokeActive)) {
+        const ColorPanelLayout layout = ColorPanelLayoutDev::instance()->getLayout();
+        const bool placementChanged = (layout.placement != _placement);
+
+        _placement = layout.placement;
+        if (_feedback.offer(layout, _strokeActive)) {
             applyFeedback();
+
+            return;
+        }
+        if (!placementChanged || !_engaged) {
+            return;
+        }
+
+        KnobGuiColor* target = getTarget();
+        ColorTrackballHud* hud = _hud.data();
+
+        if (target && hud && !hud->isFollowingCursor() && hud->parentWidget()) {
+            target->detachGlobalModeHud(hud);
+            target->attachGlobalModeHud(hud);
         }
     });
     QObject::connect(this, &ColorTrackballGlobalMode::knobListEndReached, this, [this](int direction) {

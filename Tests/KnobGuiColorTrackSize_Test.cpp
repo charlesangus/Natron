@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -369,8 +371,23 @@ TEST_F(KnobGuiColorTrackSize, ThePanelToggleShowsAnUpChevronWhileOpenAndFoldsOnC
     ASSERT_FALSE(toggle->icon().isNull());
     const QImage open = toggle->icon().pixmap(iconSize).toImage();
     EXPECT_NE(folded, open);
-    // The up chevron is the down chevron mirrored top to bottom.
-    EXPECT_EQ(folded.mirrored(false, true), open);
+    // The up chevron is the down chevron mirrored top to bottom; the two are rasterised from
+    // separate resources, so they agree up to antialiasing.
+    const QImage mirrored = folded.mirrored(false, true).convertToFormat(QImage::Format_ARGB32);
+    const QImage openArgb = open.convertToFormat(QImage::Format_ARGB32);
+    ASSERT_EQ(mirrored.size(), openArgb.size());
+    long long alphaDifference = 0;
+    long long alphaMass = 0;
+    for (int y = 0; y < openArgb.height(); ++y) {
+        for (int x = 0; x < openArgb.width(); ++x) {
+            const int a = qAlpha(mirrored.pixel(x, y));
+            const int b = qAlpha(openArgb.pixel(x, y));
+            alphaDifference += std::abs(a - b);
+            alphaMass += std::max(a, b);
+        }
+    }
+    ASSERT_GT(alphaMass, 0);
+    EXPECT_LT(static_cast<double>(alphaDifference) / static_cast<double>(alphaMass), 0.25);
     EXPECT_NE(foldedTip, toggle->toolTip());
     EXPECT_TRUE(toggle->toolTip().contains(QString::fromUtf8("Hide")));
     EXPECT_EQ(size, toggle->size());

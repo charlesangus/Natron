@@ -517,6 +517,9 @@ ColorAdjustPanelPrivate::updateWheelSize()
     int available = q->contentsRect().width() - (areaLayout ? areaLayout->spacing() : 0) - columnMinimum;
 
     wheel->setPreferredDiameter(available);
+    // In Large the wheel can be taller than the column of lines. Its minimum height holds the
+    // row open to the whole square, so the row does not clip it to the lines' height.
+    wheel->setMinimumHeight(large ? wheel->getPreferredDiameter() : 0);
 }
 
 int

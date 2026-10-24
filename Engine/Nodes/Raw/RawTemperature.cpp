@@ -121,6 +121,22 @@ resolvedMultipliers(int modeIndex,
 
     return RawTemperatureOp::modeMultipliers((modeIndex == (int)eRawTemperatureModeCameraReference) ? eRawTemperatureModeCameraReference : eRawTemperatureModeAsShot, source);
 }
+
+// dt_colorspaces_conversion_matrices_rgb() and _xyz() take d65_color_matrix over
+// adobe_XYZ_to_CAM: only the DNG matrix carries AnalogBalance, which rawspeed does not apply to
+// the data.
+std::optional<RawColorMath::Mat3>
+sourceXyzToCam(const ImageMetadata& source)
+{
+    if (const std::optional<std::array<double, 9>> dng = RawMetadata::getDngD65Matrix(source)) {
+        return *dng;
+    }
+    if (const std::optional<std::array<double, 9>> camToXyz = RawMetadata::getCamToXyz(source)) {
+        return RawColorMath::invert(*camToXyz);
+    }
+
+    return std::nullopt;
+}
 } // namespace
 
 void
@@ -243,12 +259,8 @@ RawTemperatureOp::pickedCoefficients(const std::array<float, 3>& mean)
 RawColorMath::CameraMatrices
 RawTemperatureOp::sourceMatrices(const ImageMetadata& source)
 {
-    const std::optional<std::array<double, 9>> camToXyz = RawMetadata::getCamToXyz(source);
-
-    if (camToXyz) {
-        if (const std::optional<RawColorMath::Mat3> xyzToCam = RawColorMath::invert(*camToXyz)) {
-            return RawColorMath::cameraMatrices(*xyzToCam);
-        }
+    if (const std::optional<RawColorMath::Mat3> xyzToCam = sourceXyzToCam(source)) {
+        return RawColorMath::cameraMatrices(*xyzToCam);
     }
 
     return RawColorMath::srgbCameraMatrices();
@@ -264,12 +276,9 @@ RawTemperatureOp::modeMultipliers(RawTemperatureModeEnum mode,
             return RawColorMath::Vec3 { (*asShot)[0] / (*asShot)[1], 1., (*asShot)[2] / (*asShot)[1] };
         }
     }
-    const std::optional<std::array<double, 9>> camToXyz = RawMetadata::getCamToXyz(source);
-    if (camToXyz) {
-        if (const std::optional<RawColorMath::Mat3> xyzToCam = RawColorMath::invert(*camToXyz)) {
-            if (const std::optional<RawColorMath::Vec3> reference = RawColorMath::cameraReferenceMultipliers(*xyzToCam)) {
-                return *reference;
-            }
+    if (const std::optional<RawColorMath::Mat3> xyzToCam = sourceXyzToCam(source)) {
+        if (const std::optional<RawColorMath::Vec3> reference = RawColorMath::cameraReferenceMultipliers(*xyzToCam)) {
+            return *reference;
         }
     }
     // No colour matrix: darktable's _find_coeffs() takes the camera's first preset, whatever

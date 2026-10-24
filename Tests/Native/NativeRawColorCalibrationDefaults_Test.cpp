@@ -115,7 +115,7 @@ protected:
     void SetUp() OVERRIDE
     {
         RawReferenceFixture::SetUp();
-        setRec2020WorkingSpace();
+        setLinearRec709WorkingSpace();
     }
 
     static const char* fileName(const RawReference::CropSite& site)
@@ -215,19 +215,14 @@ protected:
         compareCrop(name.c_str(), site, node, (file + reference + ".tif").c_str(), site.xtrans ? RawReference::kMarkesteijnClass : RawReference::kRCDClass);
     }
 
-    void setRec2020WorkingSpace()
+    // make-reference.py sets colorin's working profile to linear Rec709, and the clips act on
+    // working RGB.
+    void setLinearRec709WorkingSpace()
     {
         KnobChoicePtr workingSpace = getApp()->getProject()->getKnobByNameAndType<KnobChoice>("workingSpace");
         ASSERT_TRUE(bool(workingSpace));
-        for (const ChoiceOption& option : workingSpace->getEntries_mt_safe()) {
-            const QString id = QString::fromUtf8(option.id.c_str());
-            if (id.contains(QString::fromUtf8("2020")) && id.contains(QString::fromUtf8("linear"), Qt::CaseInsensitive)) {
-                workingSpace->setValueFromID(option.id, 0);
-
-                return;
-            }
-        }
-        FAIL() << "the project offers no linear Rec. 2020 working space";
+        workingSpace->setValueFromID("Linear Rec.709 (sRGB)", 0);
+        ASSERT_EQ(std::string("Linear Rec.709 (sRGB)"), getApp()->getProject()->getWorkingColorSpace());
     }
 };
 

@@ -47,6 +47,22 @@
 
 NATRON_NAMESPACE_ENTER
 
+// onInputChanged() invalidates from the consumer, but the removed edge may have been the only path
+// between it and the detached input, so a kind the input derived through that edge (a requirement
+// from downstream, possibly across a group boundary) would otherwise stay memoized.
+static void
+invalidateDetachedInputDataKind(const NodePtr& detached)
+{
+    if (!detached) {
+        return;
+    }
+    AppInstancePtr app = detached->getApp();
+    if (!app || app->getProject()->isProjectClosing()) {
+        return;
+    }
+    detached->invalidateEffectiveOutputDataKindCache();
+}
+
 /**
  * @brief Resolves links of the graph in the case of containers (that do not do any rendering but only contain nodes inside)
  * so that algorithms that cycle the tree from bottom to top
@@ -871,6 +887,7 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiInp
         }
     }
 
+    NodePtr detachedInput;
     {
         QMutexLocker l(&_imp->inputsMutex);
         ///Set the input
@@ -880,6 +897,9 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiInp
             if (curIn) {
                 QObject::connect( curIn.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );
                 curIn->disconnectOutput(useGuiInputs, this);
+                if (curIn != input) {
+                    detachedInput = curIn;
+                }
             }
             _imp->inputs[inputNumber] = input;
             _imp->guiInputs[inputNumber] = input;
@@ -905,6 +925,7 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiInp
         mustCallEnd = true;
         ///Call the instance changed action with a reason clip changed
         onInputChanged(inputNumber);
+        invalidateDetachedInputDataKind(detachedInput);
     }
 
     computeHash();
@@ -1117,6 +1138,7 @@ Node::disconnectInput(int inputNumber)
         beginInputEdition();
         mustCallEnd = true;
         onInputChanged(inputNumber);
+        invalidateDetachedInputDataKind(inputShared);
     }
     computeHash();
 
@@ -1180,6 +1202,7 @@ Node::disconnectInputInternal(Node* input, bool useGuiValues)
             beginInputEdition();
             mustCallEnd = true;
             onInputChanged(found);
+            invalidateDetachedInputDataKind(inputShared);
         }
         computeHash();
 

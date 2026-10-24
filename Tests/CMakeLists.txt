@@ -35,6 +35,7 @@ set(Tests_SOURCES
     ContentHasher_Test.cpp
     Curve_Test.cpp
     DataKind_Test.cpp
+    DataKindGroup_Test.cpp
     DataKindProjectLoad_Test.cpp
     DeepChannelNodes_Test.cpp
     DeepExpressionEvaluator_Test.cpp

@@ -1836,6 +1836,12 @@ private:
     bool findDataKindConflictDownstream(const DataKindConstraint& constraint, NodePtr* conflictingNode) const;
 
     /**
+     * @brief For a group node: whether constraint arriving at its input inputNb conflicts with
+     * what the GroupInput standing for that input feeds, inside the group and beyond its output.
+     **/
+    bool findDataKindConflictInsideGroup(int inputNb, const DataKindConstraint& constraint, NodePtr* conflictingNode) const;
+
+    /**
      * @brief The nodes whose hash folds in this one's: outputs through group redirections, and
      * the internal nodes of a roto paint tree.
      **/

@@ -37,6 +37,7 @@
 #include <QtCore/QtGlobal>
 
 #include "BaseTest.h"
+#include "DataKindTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -66,6 +67,8 @@ struct AddPyPlugsDirToNatronPluginPath {
 #endif
         const QByteArray existing = qgetenv(NATRON_PLUGIN_PATH_ENV_VAR);
         QByteArray path(NATRON_TESTS_PYPLUGS_DIR);
+        path += pathSep;
+        path += NATRON_TESTS_FIXTURES_DIR "/pyplugs";
         if (!existing.isEmpty()) {
             path = existing + pathSep + path;
         }
@@ -73,6 +76,9 @@ struct AddPyPlugsDirToNatronPluginPath {
     }
 };
 const AddPyPlugsDirToNatronPluginPath addPyPlugsDirToNatronPluginPath;
+
+// Test-only PyPlug under Tests/fixtures/pyplugs: a group around a deep gain, not a bundled plugin.
+const char* const kDeepGainGroupPyPlug = "test.natron.pyplug.DeepGainGroup";
 
 // fr.inria.SplitAndJoin is excluded: it does "from NatronGui import *", so
 // AppManager::loadPythonGroups() deliberately never registers it in this background test
@@ -201,4 +207,34 @@ TEST_F(PyPlugInstantiateTest, ChannelAgnosticInnerNodesOfPyPlugsArePinnedToColor
         }
         EXPECT_GT(channelAgnosticNodesChecked, 0) << pluginID << " has no channel-agnostic inner node to check";
     }
+}
+
+// A PyPlug is a group node like any other, so one whose inner chain is deep has a deep output
+// whether or not anything feeds it, connects to a deep consumer and is refused by an image one.
+TEST_F(PyPlugInstantiateTest, PyPlugWithDeepInnerChainHasADeepOutputKind)
+{
+    // The fixture is in-tree, so a missing registration is a failure here, not a skip.
+    ASSERT_TRUE(isPluginLoaded(kDeepGainGroupPyPlug)) << "PyPlug fixtures under " NATRON_TESTS_FIXTURES_DIR "/pyplugs were not registered as plugins";
+
+    NodePtr pyplug = createNode(QString::fromUtf8(kDeepGainGroupPyPlug));
+    ASSERT_TRUE(bool(pyplug));
+    ASSERT_TRUE(std::dynamic_pointer_cast<NodeGroup>(pyplug->getEffectInstance()) != NULL);
+
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindDeep, pyplug->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr deepSink = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+    ASSERT_TRUE(deepSource && deepSink && imageSink);
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, pyplug->canConnectInput(deepSource, 0));
+    ASSERT_TRUE(pyplug->connectInput(deepSource, 0));
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, deepSink->canConnectInput(pyplug, 0));
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, imageSink->canConnectInput(pyplug, 0));
+    ASSERT_TRUE(deepSink->connectInput(pyplug, 0));
+    EXPECT_FALSE(deepSink->hasPersistentMessage());
+    EXPECT_FALSE(pyplug->hasPersistentMessage());
 }

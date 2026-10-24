@@ -33,14 +33,71 @@
 
 #include "BaseTest.h"
 #include "DataKindTestEffect.h"
+#include "DeepRenderTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_USING
+
+namespace {
+
+// A root-level group with no Input or Output yet, and a node created inside it, so that each test
+// wires its own chain.
+NodePtr
+createEmptyRootGroup(const ProjectPtr& project)
+{
+    CreateNodeArgs args(PLUGINID_NATRON_GROUP, project);
+
+    args.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+
+    return project->getApp()->createNode(args);
+}
+
+NodePtr
+createInsideGroup(const NodePtr& group,
+                  const std::string& pluginID)
+{
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+
+    if (!collection) {
+        return NodePtr();
+    }
+    CreateNodeArgs args(pluginID, collection);
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+
+    return group->getApp()->createNode(args);
+}
+
+NodePtr
+innerNodeByName(const NodePtr& group,
+                const std::string& name)
+{
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+
+    return collection ? collection->getNodeByName(name) : NodePtr();
+}
+
+bool
+hasDataKindMessage(const NodePtr& node)
+{
+    if (!node->hasPersistentMessage()) {
+        return false;
+    }
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+
+    return message.contains(QString::fromUtf8("kind of data"));
+}
+
+} // namespace
 
 // Kinds are never serialized: a project can only end up on disk with a kind-invalid edge if it was
 // wired up bypassing canConnectInput() (e.g. the way NodeWrapper::connectInput() does for Python
@@ -324,4 +381,124 @@ TEST_F(BaseTest, AdapterEdgeSurvivesSaveAndLoadWithNoError)
     sink2->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.isEmpty());
     EXPECT_FALSE(sink2->hasPersistentMessage());
+}
+
+// A deep chain inside a group is nothing a project file records: the group's kind follows what
+// feeds its GroupOutput, so reloading has to re-derive deep at the group's output and at the
+// GroupInput inside, and judge the edges on either side against that without finding a conflict.
+TEST_F(BaseTest, DeepChainInsideGroupSurvivesSaveAndLoadWithSameKindsAndNoConflicts)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr group = createEmptyRootGroup(project);
+    NodePtr deepSink = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+
+    ASSERT_TRUE(deepSource && group && deepSink);
+    NodePtr groupInput = createInsideGroup(group, PLUGINID_NATRON_INPUT);
+    NodePtr innerGain = createInsideGroup(group, kTestPluginIDDeepRenderGain);
+    NodePtr groupOutput = createInsideGroup(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(groupInput && innerGain && groupOutput);
+    ASSERT_TRUE(innerGain->connectInput(groupInput, 0));
+    ASSERT_TRUE(groupOutput->connectInput(innerGain, 0));
+    ASSERT_EQ(Node::eCanConnectInput_ok, group->canConnectInput(deepSource, 0));
+    ASSERT_TRUE(group->connectInput(deepSource, 0));
+    ASSERT_EQ(Node::eCanConnectInput_ok, deepSink->canConnectInput(group, 0));
+    ASSERT_TRUE(deepSink->connectInput(group, 0));
+
+    bool ambiguous = true;
+    ASSERT_EQ(eDataKindDeep, group->getEffectiveOutputDataKind(&ambiguous));
+    ASSERT_FALSE(ambiguous);
+
+    const std::string groupName = group->getScriptName();
+    const std::string sinkName = deepSink->getScriptName();
+    const std::string sourceName = deepSource->getScriptName();
+    const std::string inputName = groupInput->getScriptName();
+    const std::string gainName = innerGain->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("kind-group-deep.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr group2 = project->getNodeByName(groupName);
+    NodePtr sink2 = project->getNodeByName(sinkName);
+    ASSERT_TRUE(group2 && sink2);
+    ASSERT_TRUE(bool(group2->getInput(0)));
+    EXPECT_EQ(sourceName, group2->getInput(0)->getScriptName());
+    ASSERT_TRUE(bool(sink2->getRealInput(0)));
+    EXPECT_EQ(groupName, sink2->getRealInput(0)->getScriptName());
+
+    ambiguous = true;
+    EXPECT_EQ(eDataKindDeep, group2->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+
+    NodePtr input2 = innerNodeByName(group2, inputName);
+    NodePtr gain2 = innerNodeByName(group2, gainName);
+    ASSERT_TRUE(input2 && gain2);
+    EXPECT_EQ(eDataKindDeep, input2->getEffectiveOutputDataKind());
+    EXPECT_EQ(eDataKindDeep, gain2->getEffectiveOutputDataKind());
+
+    NodesList all;
+    project->getNodes_recursive(all, false);
+    for (NodesList::const_iterator it = all.begin(); it != all.end(); ++it) {
+        EXPECT_FALSE(hasDataKindMessage(*it)) << (*it)->getScriptName();
+    }
+}
+
+// The same walk, with a chain inside the group that really cannot take what reaches the group
+// from outside: the edge is kept as saved and the load reports it on the inner node that cannot
+// handle it, the way a flat graph reports its own bad edge.
+TEST_F(BaseTest, ConflictingChainInsideGroupReportsOnLoad)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr group = createEmptyRootGroup(project);
+
+    ASSERT_TRUE(deepSource && group);
+    NodePtr groupInput = createInsideGroup(group, PLUGINID_NATRON_INPUT);
+    NodePtr innerImageSink = createInsideGroup(group, kTestPluginIDDataKindImageSink);
+    NodePtr groupOutput = createInsideGroup(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(groupInput && innerImageSink && groupOutput);
+    ASSERT_TRUE(innerImageSink->connectInput(groupInput, 0));
+    ASSERT_TRUE(groupOutput->connectInput(innerImageSink, 0));
+
+    // Wired past canConnectInput(), as a script or a PyPlug can.
+    ASSERT_EQ(Node::eCanConnectInput_incompatibleDataKind, group->canConnectInput(deepSource, 0));
+    ASSERT_TRUE(group->connectInput(deepSource, 0));
+
+    const std::string groupName = group->getScriptName();
+    const std::string sourceName = deepSource->getScriptName();
+    const std::string sinkName = innerImageSink->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("kind-group-conflict.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr group2 = project->getNodeByName(groupName);
+    ASSERT_TRUE(bool(group2));
+    ASSERT_TRUE(bool(group2->getInput(0)));
+    EXPECT_EQ(sourceName, group2->getInput(0)->getScriptName());
+
+    NodePtr sink2 = innerNodeByName(group2, sinkName);
+    ASSERT_TRUE(bool(sink2));
+    EXPECT_TRUE(hasDataKindMessage(sink2));
 }

@@ -1450,6 +1450,18 @@ NodeGroup::getRealInputForInput(bool useGuiConnexions,
     return NodePtr();
 }
 
+NodePtr
+NodeGroup::getGroupInputNode(int inputNb) const
+{
+    QMutexLocker k(&_imp->nodesLock);
+
+    if ((inputNb < 0) || (inputNb >= (int)_imp->inputs.size())) {
+        return NodePtr();
+    }
+
+    return _imp->inputs[inputNb].lock();
+}
+
 void
 NodeGroup::getInputsOutputs(NodesList* nodes,
                             bool useGuiConnexions) const

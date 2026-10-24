@@ -711,6 +711,78 @@ protected:
     }
 #endif
 
+    // A device that writes timestamps on its transfer and compute queues times every copy a profiled region makes.
+    static bool transfersTimed()
+    {
+#ifdef NATRON_HAVE_GPU
+        return runtime()->transfer().timestampsSupported();
+#else
+        return false;
+#endif
+    }
+
+    // Renders run with the profile on and returns the region records it wrote.
+    std::vector<std::string> renderRegionRecords(FrameRun* run,
+                                                 bool* rendered)
+    {
+        std::vector<std::string> regions;
+        QTemporaryDir profileDir;
+        if (!profileDir.isValid()) {
+            *rendered = false;
+
+            return regions;
+        }
+        RenderScheduler::setProfilePath((profileDir.path() + QString::fromUtf8("/profile")).toStdString());
+        *rendered = render(run);
+        RenderScheduler::flushProfile();
+        const std::string profilePath = RenderScheduler::getProfileFilePath();
+        RenderScheduler::setProfilePath(std::string());
+        for (const std::string& record : readProfileRecords(profilePath)) {
+            if (record.compare(0, 17, "{\"kind\":\"region\",") == 0) {
+                regions.push_back(record);
+            }
+        }
+
+        return regions;
+    }
+
+    /**
+     * @brief Checks the uploads or downloads a region record lists: count copies, each with all its fields, a strip
+     * index exactly when the region ran as strips, a device time on a device that writes timestamps, and bytes that
+     * add up to the record's bytesField.
+     **/
+    static void expectTransferList(const std::string& record,
+                                   const char* list,
+                                   const char* bytesField,
+                                   int count,
+                                   bool stripped)
+    {
+        const QJsonObject region = QJsonDocument::fromJson(QByteArray::fromStdString(record)).object();
+        ASSERT_TRUE(region.contains(QString::fromUtf8(list))) << list << " in " << record;
+        const QJsonArray copies = region.value(QString::fromUtf8(list)).toArray();
+        EXPECT_EQ(count, copies.size()) << list << " in " << record;
+        const bool downloads = (std::strcmp(list, "downloads") == 0);
+        const bool timed = transfersTimed();
+        double bytes = 0.;
+        for (const QJsonValue& value : copies) {
+            const QJsonObject copy = value.toObject();
+            const char* keys[] = { "strip", "bytes", "deviceMs", "queueFamily", "queueIndex", "comps", "format", "staged" };
+            for (const char* key : keys) {
+                EXPECT_TRUE(copy.contains(QString::fromUtf8(key))) << key << " of " << list << " in " << record;
+            }
+            EXPECT_EQ(downloads, copy.contains(QString::fromUtf8("pinned"))) << list << " in " << record;
+            EXPECT_GT(copy.value(QString::fromUtf8("comps")).toInt(), 0) << list << " in " << record;
+            EXPECT_EQ(stripped, copy.value(QString::fromUtf8("strip")).toInt() >= 0) << list << " in " << record;
+            if (timed) {
+                EXPECT_TRUE(copy.value(QString::fromUtf8("deviceMs")).isDouble()) << "an untimed copy in " << list << " of " << record;
+                EXPECT_GE(copy.value(QString::fromUtf8("deviceMs")).toDouble(), 0.) << list << " in " << record;
+            }
+            bytes += copy.value(QString::fromUtf8("bytes")).toDouble();
+        }
+        EXPECT_GT(bytes, 0.) << list << " in " << record;
+        EXPECT_EQ(region.value(QString::fromUtf8(bytesField)).toDouble(), bytes) << list << " in " << record;
+    }
+
     static int fallbacksOf(const FrameRun& run,
                            const std::string& reason)
     {
@@ -902,8 +974,9 @@ TEST_F(GpuResidencyTest, RegionKernelTimeIsNotCountedTwiceWhenTheLastMemberDownl
     EXPECT_EQ(1, run.stats->getDownloadCount());
 }
 
-// The region's record lists each download with its size, queue and path, and the sizes add up to the bytes it moved.
-TEST_F(GpuResidencyTest, RegionRecordListsEveryDownloadAndTheirBytesAddUp)
+// The region's record lists each upload and download with its size, queue, path and device time, and the sizes add up
+// to the bytes it moved.
+TEST_F(GpuResidencyTest, RegionRecordListsEveryTransferAndTheirBytesAddUp)
 {
     if (!gpuOrSkip()) {
         return;
@@ -924,39 +997,15 @@ TEST_F(GpuResidencyTest, RegionRecordListsEveryDownloadAndTheirBytesAddUp)
     ASSERT_EQ(1u, run.graph.regions.size());
     ASSERT_EQ(2u, run.graph.regions[0].members.size());
 
-    QTemporaryDir profileDir;
-    ASSERT_TRUE(profileDir.isValid());
-    RenderScheduler::setProfilePath((profileDir.path() + QString::fromUtf8("/profile")).toStdString());
-    const bool rendered = render(&run);
-    RenderScheduler::flushProfile();
-    const std::string profilePath = RenderScheduler::getProfileFilePath();
-    RenderScheduler::setProfilePath(std::string());
+    bool rendered = false;
+    const std::vector<std::string> records = renderRegionRecords(&run, &rendered);
     ASSERT_TRUE(rendered);
-
-    int regionRecords = 0;
-    for (const std::string& record : readProfileRecords(profilePath)) {
-        if (record.compare(0, 17, "{\"kind\":\"region\",") != 0) {
-            continue;
-        }
-        ++regionRecords;
-        const QJsonObject object = QJsonDocument::fromJson(QByteArray::fromStdString(record)).object();
-        ASSERT_TRUE(object.contains(QString::fromUtf8("downloads"))) << record;
-        const QJsonArray downloads = object.value(QString::fromUtf8("downloads")).toArray();
-        EXPECT_EQ(run.stats->getDownloadCount(), downloads.size()) << record;
-        double bytes = 0.;
-        for (const QJsonValue& value : downloads) {
-            const QJsonObject download = value.toObject();
-            const char* keys[] = { "strip", "bytes", "deviceMs", "queueFamily", "queueIndex", "comps", "format", "staged" };
-            for (const char* key : keys) {
-                EXPECT_TRUE(download.contains(QString::fromUtf8(key))) << key << " in " << record;
-            }
-            EXPECT_GT(download.value(QString::fromUtf8("comps")).toInt(), 0) << record;
-            bytes += download.value(QString::fromUtf8("bytes")).toDouble();
-        }
-        EXPECT_GT(bytes, 0.) << record;
-        EXPECT_EQ(object.value(QString::fromUtf8("downloadBytes")).toDouble(), bytes) << record;
+    ASSERT_EQ(1u, records.size());
+    if (!transfersTimed()) {
+        std::printf("[          ] the device writes no timestamps, so the copies' device times are not checked\n");
     }
-    EXPECT_EQ(1, regionRecords);
+    expectTransferList(records.front(), "uploads", "uploadBytes", run.stats->getUploadCount(), false);
+    expectTransferList(records.front(), "downloads", "downloadBytes", run.stats->getDownloadCount(), false);
 }
 
 TEST_F(GpuResidencyTest, SharedProducerRendersOnceAndDownloadsOnlyCpuOutputs)
@@ -1850,6 +1899,37 @@ TEST_F(GpuResidencyTest, PipelinedStripsMatchTheWholeRegionExactly)
         EXPECT_EQ(0.f, worstDiff(wholePixels, tiledPixels));
         expectReleased(tiled);
         EXPECT_EQ(liveBefore, runtime()->pool().stats().liveBytes);
+    }
+}
+
+// Run as strips, one at a time or pipelined, the region's record lists the upload and download of every strip, each
+// with its device time, and their sizes add up to the bytes the region moved.
+TEST_F(GpuResidencyTest, StripRegionRecordTimesEveryTransfer)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    std::string error;
+
+    setGpuStripOverridesForTests(1u << 20, 0);
+    const GpuStripPipelining modes[] = { GpuStripPipelining::On, GpuStripPipelining::Off };
+    for (GpuStripPipelining mode : modes) {
+        const bool on = (mode == GpuStripPipelining::On);
+        SCOPED_TRACE(on ? "pipelined" : "serial");
+        setGpuStripPipeliningForTests(mode);
+        FrameRun tiled;
+        ASSERT_TRUE(prepareStripFrame(chain, &tiled, &error)) << error;
+        bool rendered = false;
+        const std::vector<std::string> records = renderRegionRecords(&tiled, &rendered);
+        ASSERT_TRUE(rendered);
+        EXPECT_EQ(0, fallbacksOf(tiled));
+        EXPECT_EQ((on && canPipeline()) ? 1 : 0, tiled.stats->getGpuPipelinedRegions());
+        EXPECT_GT(tiled.stats->getUploadCount(), 2);
+        ASSERT_EQ(1u, records.size());
+        expectTransferList(records.front(), "uploads", "uploadBytes", tiled.stats->getUploadCount(), true);
+        expectTransferList(records.front(), "downloads", "downloadBytes", tiled.stats->getDownloadCount(), true);
     }
 }
 

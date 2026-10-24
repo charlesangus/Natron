@@ -183,7 +183,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
 
 ## Phase 110.2: Recorders on the foundations
 
-- [ ] M110.P2.T1 — Record EdgeDetect's pass list on the GPU
+- [x] M110.P2.T1 — Record EdgeDetect's pass list on the GPU
   - files: `Engine/Nodes/Filter/EdgeDetect.h`, `Engine/Nodes/Filter/EdgeDetect.cpp`, `Engine/Gpu/Kernels/edgedetect.slang` (new), `Engine/Gpu/Kernels/edgedetect.cmake` (new), `Engine/Nodes/Filter/docs/EdgeDetect.md`, `Tests/Native/NativeEdgeDetectGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach:
     - Set `list.gpu` in `edgeDetectPasses` to a `PassGpuRecorder` in `EdgeDetect.cpp`, following `Blur.cpp`'s `lineGpuRecorder`. Dispatch through `ctx.dispatch(gpu::GpuKernelId::edgedetect_*, ...)`, with the parameter blocks mirrored by `static_assert`. The steps run in this order:
@@ -202,7 +202,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: at the phase build, `NativeEdgeDetectGpu_Test`, `NativeEdgeDetect_Test` and `NativeGpuCapability_Test` pass on lavapipe.
   - size: L
 
-- [ ] M110.P2.T2 — Run Position on the offset-form GPU executor
+- [x] M110.P2.T2 — Run Position on the offset-form GPU executor
   - files: `Engine/Nodes/Transform/Position.h`, `Engine/Nodes/Transform/docs/Position.md`, `Tests/Native/NativePositionGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach:
     - Add `kResamplesOnGpu = true` and the P1.T4 concept's `static_assert`.
@@ -211,7 +211,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: at the phase build, `NativePositionGpu_Test`, `NativePosition_Test` and `NativeGpuCapability_Test` pass on lavapipe.
   - size: M
 
-- [ ] M110.P2.T3 — Replace the row matte with a separable matte both executors read
+- [x] M110.P2.T3 — Replace the row matte with a separable matte both executors read
   - files: `Engine/Nodes/Image/ResampleExecutor.{h,cpp}`, `Engine/Nodes/Image/StagedImageEffect.h`, `Engine/Nodes/Image/Op.h`, `Engine/Gpu/GpuResample.{h,cpp}`, `Engine/Gpu/Kernels/offset.slang`, `Engine/Nodes/Transform/Crop.{h,cpp}`
   - approach:
     - Replace `ResampleRowMatte` with `ResampleMatte { std::function<double(int x)> column; std::function<double(int y)> row; }` over output pixels at the render scale. The executors sample it over the window on the action or record thread.
@@ -228,7 +228,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: at the phase build, `NativeCrop_Test` (CPU parity against the OFX plug-in, unchanged constants), `StagedResample_Test` and `StagedOffsetGpu_Test` pass. A new case in `StagedOffsetGpu_Test` gives a test op a matte with zero, partial and NaN-source pixels and holds the GPU to `resampling()`, with the zero cases exact.
   - size: L
 
-- [ ] M110.P2.T4 — Add a channel-route description, base class and device kernel for the channel nodes
+- [x] M110.P2.T4 — Add a channel-route description, base class and device kernel for the channel nodes
   - files: `Engine/Nodes/Channel/ChannelCopy.h`, `Engine/Nodes/Channel/ChannelCopy.cpp`, `Engine/Gpu/Kernels/channelroute.slang` (new), `Engine/Gpu/Kernels/channelroute.cmake` (new), `Tests/Native/ChannelRouteGpu_Test.cpp` (new), `Tests/Native/ChannelRouteCpu_Test.cpp` (new)
   - approach:
     - In `ChannelCopy`, add `struct ChannelRoute`:
@@ -444,3 +444,4 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **Test bugs, code fine:** GpuResidency's CPU-only member is now Merge (EdgeDetect has a GPU path). Position's parity window uses the source's real pixel region (PAR ≠ 1), expects zeros where the CPU produces no plane, and sets channels through `channels`. `ChannelRouteCpu_Test`'s `fillTyped` deadlocked by calling `getBounds()` under its own write lock.
   - **EdgeDetect:** recursive filters with suppression after erosion or `expandRoD` flip pixels on near-ties within `iir()`'s tolerance, so those cases now use no erosion, or no suppression. Simple and box filters still cover suppression after erosion.
   - **Still owed:** impulse and box (draft mode forces impulse) still pay for the exact maths. The old-vs-new resample bench on the GPU host stands, after M156.P1.T2.
+- 2026-10-24 — **Phase 110.2 build green for P2.T1–P2.T4** (remote `fast --tests` of `9b8a816b1`, run 40091898992, both legs; 342 of 343 entries pass). Transform, EdgeDetect, Position, ChannelRoute and GpuResidency all pass with the fixes. The one failure is P3.T1's new `NativeCropGpuTest` (`CropMatchesTheCpuRender`, `InputRegionIsTheNodesRegionOfInterest`, `NaNSourceOnTheBorderIsWrittenZero`, both legs), sent to a consultant. P2.T5 is being implemented in the lane.

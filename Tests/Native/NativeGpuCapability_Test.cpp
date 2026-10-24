@@ -37,6 +37,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
@@ -93,6 +94,8 @@ gpuCapableIds()
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_DISSOLVE,
         PLUGINID_NATRON_EDGEDETECT,
+        PLUGINID_NATRON_SHUFFLE,
+        PLUGINID_NATRON_SHUFFLECOPY,
     };
 
     return ids;

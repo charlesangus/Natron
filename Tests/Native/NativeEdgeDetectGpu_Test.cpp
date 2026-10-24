@@ -347,22 +347,33 @@ channelsOfPlane(int nComps)
 // - blur size 5, which runs the pre-blur and the smoothing derivative blurs: every filter and mode
 //   on RGBA without suppression, and with it on RGB, whose noise leaves no ties for it to flip on;
 // - an expanded region of definition, where the buffer reads the source's nearest pixel.
+// The recursive (quasi-)Gaussian derivatives are held to the IIR tolerance, and suppression is a
+// discontinuous decision on them, so they meet suppression only where the noise leaves no ties:
+// never after an erosion or dilation, whose flat plateaus are ties, nor beside a nearest-pixel
+// extension, whose repeated columns are. The finite and box derivatives match bit for bit and
+// cover suppression after both.
 std::vector<ParityCase>
 parityCases()
 {
     std::vector<ParityCase> cases;
+    const auto erosion = [](int f, bool nms, int index) {
+        const bool recursive = (f == 3) || (f == 4);
+
+        return (nms && recursive) ? 0. : kErodeSizes[index % 3];
+    };
 
     for (int f = 0; f < kNFilters; ++f) {
         for (int m = 0; m < kNModes; ++m) {
             for (bool nms : { false, true }) {
-                cases.push_back(ParityCase { f, m, nms, kErodeSizes[(f + m) % 3], 0., 4, 0xFu, false, true });
+                cases.push_back(ParityCase { f, m, nms, erosion(f, nms, f + m), 0., 4, 0xFu, false, true });
             }
         }
     }
     for (int nComps = 1; nComps <= 3; ++nComps) {
         for (int f = 0; f < kNFilters; ++f) {
             for (int m = 0; m < kNModes; ++m) {
-                cases.push_back(ParityCase { f, m, ((f + m) % 2) != 0, kErodeSizes[(f + m + nComps) % 3], 0., nComps, channelsOfPlane(nComps), false, false });
+                const bool nms = ((f + m) % 2) != 0;
+                cases.push_back(ParityCase { f, m, nms, erosion(f, nms, f + m + nComps), 0., nComps, channelsOfPlane(nComps), false, false });
             }
         }
     }
@@ -370,7 +381,7 @@ parityCases()
         for (int m = 0; m < kNModes; ++m) {
             for (bool nms : { false, true }) {
                 const int f = (2 * m + (nms ? 1 : 0) + (int)processed) % kNFilters;
-                cases.push_back(ParityCase { f, m, nms, kErodeSizes[(m + (nms ? 1 : 0)) % 3], 0., 4, processed, false, false });
+                cases.push_back(ParityCase { f, m, nms, erosion(f, nms, m + (nms ? 1 : 0)), 0., 4, processed, false, false });
             }
         }
     }
@@ -383,7 +394,7 @@ parityCases()
         }
     }
     for (int f : { 0, 4, 5 }) {
-        cases.push_back(ParityCase { f, 3, true, 2., 0., 4, 0xFu, true, true });
+        cases.push_back(ParityCase { f, 3, f != 4, 2., 0., 4, 0xFu, true, true });
     }
 
     return cases;

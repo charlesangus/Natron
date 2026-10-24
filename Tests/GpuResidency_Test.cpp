@@ -1250,7 +1250,7 @@ TEST_F(GpuResidencyTest, OutOfMemoryAtTheSecondRegionRendersItOnTheCpu)
     expectMatchesCpu(chain.sink, run);
 }
 
-// The EdgeDetect has no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
+// The Merge has no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
 TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
 {
     if (!gpuOrSkip()) {
@@ -1258,18 +1258,19 @@ TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
     }
     NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
     NodePtr grade = makeGrade(1.25, 0.05);
-    NodePtr edge = makeNode(PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT);
-    ASSERT_TRUE(source && grade && edge);
+    NodePtr merge = makeNode(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE);
+    ASSERT_TRUE(source && grade && merge);
     connectNodes(source, grade, 0, true);
-    connectNodes(grade, edge, 0, true);
+    connectNodes(grade, merge, 0, true);
+    connectNodes(grade, merge, 1, true);
 
     FrameRun run;
     std::string error;
-    ASSERT_TRUE(prepareFrame(edge, &run, &error)) << error;
+    ASSERT_TRUE(prepareFrame(merge, &run, &error)) << error;
     const int gradeTask = taskOf(run.graph, grade);
-    const int edgeTask = taskOf(run.graph, edge);
-    ASSERT_TRUE(gradeTask >= 0 && edgeTask >= 0);
-    assignRegions(&run.graph, { { gradeTask, edgeTask } });
+    const int mergeTask = taskOf(run.graph, merge);
+    ASSERT_TRUE(gradeTask >= 0 && mergeTask >= 0);
+    assignRegions(&run.graph, { { gradeTask, mergeTask } });
 
     ASSERT_TRUE(render(&run));
     EXPECT_EQ(1, fallbacksOf(run));
@@ -1277,9 +1278,9 @@ TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
     EXPECT_EQ(0, run.stats->getGpuRegionRetries());
     EXPECT_EQ(0, run.stats->getGpuRegionsRun());
     EXPECT_EQ(1, renderRoICallsOf(run, grade));
-    EXPECT_EQ(1, renderRoICallsOf(run, edge));
+    EXPECT_EQ(1, renderRoICallsOf(run, merge));
     expectReleased(run);
-    expectMatchesCpu(edge, run);
+    expectMatchesCpu(merge, run);
 }
 
 // The device is lost in the middle of the second region: the frame renders again, all on the CPU, and the next render

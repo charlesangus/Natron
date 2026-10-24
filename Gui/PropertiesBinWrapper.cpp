@@ -28,7 +28,10 @@
 #include <stdexcept>
 
 #include <QApplication>
+#include <QScrollArea>
+#include <QVBoxLayout>
 
+#include "Gui/ColorTrackballBinPanel.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/Gui.h"
 #include "Gui/KnobWidgetDnD.h"
@@ -44,6 +47,34 @@ PropertiesBinWrapper::PropertiesBinWrapper(Gui* parent)
 
 PropertiesBinWrapper::~PropertiesBinWrapper()
 {
+}
+
+ColorTrackballBinPanel*
+PropertiesBinWrapper::getColorTrackballPanel()
+{
+    if (_colorTrackballPanel) {
+        return _colorTrackballPanel.data();
+    }
+
+    QVBoxLayout* binLayout = qobject_cast<QVBoxLayout*>(layout());
+
+    if (!binLayout) {
+        return 0;
+    }
+    _colorTrackballPanel = new ColorTrackballBinPanel(getGui(), this);
+
+    // Below the bin's own button row, above the scroll area holding the node panels.
+    int index = 0;
+
+    for (int i = 0; i < binLayout->count(); ++i) {
+        if (qobject_cast<QScrollArea*>(binLayout->itemAt(i)->widget())) {
+            index = i;
+            break;
+        }
+    }
+    binLayout->insertWidget(index, _colorTrackballPanel.data());
+
+    return _colorTrackballPanel.data();
 }
 
 void

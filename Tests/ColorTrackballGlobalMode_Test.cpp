@@ -458,6 +458,26 @@ TEST(ColorTrackballGlobalModeFeedback, OnlyCrosshairFeedbacksShowTheCrosshairAnd
     EXPECT_TRUE(colorPanelFeedbackUsesPuck(F::WidgetCursor));
 }
 
+TEST(ColorTrackballGlobalModeFeedback, ANonTodayFeedbackWinsOverTheBinTopPlacement)
+{
+    typedef ColorPanelLayout::Feedback F;
+    typedef ColorPanelLayout::Placement P;
+
+    EXPECT_EQ(eColorGlobalModeHudHomeKnobColumn, colorGlobalModeHudHome(F::Today, P::InKnob));
+    EXPECT_EQ(eColorGlobalModeHudHomeBinPanel, colorGlobalModeHudHome(F::Today, P::BinTop));
+
+    const F others[] = { F::Crosshair, F::Reveal, F::CrosshairReveal, F::WidgetCursor };
+
+    for (F feedback : others) {
+        const ColorGlobalModeHudHomeEnum expected = colorGlobalModeFeedbackHudFollowsCursor(feedback) ? eColorGlobalModeHudHomeCursor : eColorGlobalModeHudHomeNone;
+
+        EXPECT_EQ(expected, colorGlobalModeHudHome(feedback, P::InKnob));
+        EXPECT_EQ(expected, colorGlobalModeHudHome(feedback, P::BinTop));
+    }
+    EXPECT_EQ(eColorGlobalModeHudHomeCursor, colorGlobalModeHudHome(F::Crosshair, P::BinTop));
+    EXPECT_EQ(eColorGlobalModeHudHomeNone, colorGlobalModeHudHome(F::Reveal, P::BinTop));
+}
+
 TEST(ColorTrackballGlobalModeFeedback, DefaultsAreTodayAndRelative)
 {
     ColorPanelLayout l;

@@ -54,3 +54,7 @@ Tasks are inserted from M156.P1.T2's attribution.
   - size: M
 
 **Verification gate:** ctest green on both scheduler legs (lavapipe, `NATRON_TEST_REQUIRE_GPU`); on the GPU host, each of keying_grade, cg_multipass and defocus_retime at UHD and 8K exposes ≤ 1.2× the same-boot GpuBench-rate transfer floor, or the Decisions entry says why a residual can't be closed and the user accepts it; no single-node region regresses against M109.P8.T1.
+
+## Decisions
+
+- 2026-10-23 — **Claimed by the gpu PM as the third lane** beside M107 - GPU Viewer Hand-off and M110 - Remaining Native GPU Ports. Freshness check passed on main `bf781cbcd`: every listed file exists and M109 and M154 are done. Its only overlap with running rows is at directory level (`tools/bench/` with M80 - Native RAW Support and M64 - Tiled Rendering, different files). M86 - OFX 1.5 GPU Suites was passed over because it overlaps M107 on `ViewerInstance.cpp` and `GlInterop.*`. M87 - Point-Op Kernel Fusion was passed over because its stub is blocked on evidence that so far argues against it.

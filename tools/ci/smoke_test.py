@@ -800,14 +800,14 @@ def _write_time_offset_fixture_copy(dir_path, output_dir):
     # fixture to a zero offset.
     # tools/ci/regen_read_time_offset.py regenerates the fixture.
     #
-    # The token is in project.yaml. Natron reads any repacked zip; only the
-    # member alignment is lost.
+    # The token is in the bundle's project.yaml. Natron reads any repacked zip;
+    # only the member alignment is lost.
     copy_path = os.path.join(dir_path, "read-time-offset.ntpz")
     with zipfile.ZipFile(fixture_path) as src, \
             zipfile.ZipFile(copy_path, "w", zipfile.ZIP_STORED) as dst:
         for info in src.infolist():
             data = src.read(info.filename)
-            if info.filename == "project.yaml":
+            if info.filename.rsplit("/", 1)[-1] == "project.yaml":
                 data = data.decode("utf-8").replace(
                     READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN, output_dir
                 ).encode("utf-8")

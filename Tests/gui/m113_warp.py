@@ -1,8 +1,8 @@
 """Checks the native warp nodes in the running GUI: STMap and IDistort reading U and V from a
 non-colour layer, the CornerPin viewer overlay, and the Tracker's export to a CornerPin.
 
-The source is a CheckerBoard whose four boxes around the image centre are red (top left), green
-(top right), blue (bottom right) and yellow (bottom left), so the colour on the viewer at a point
+The source is a CheckerBoard whose four boxes around the image centre are green (top left), red
+(top right), yellow (bottom right) and blue (bottom left), so the colour on the viewer at a point
 says which part of the source the warp sampled. The UV maps are Constant nodes, copied by a Shuffle
 into a project layer called "warp" with the first two channels swapped. The swap makes the colour
 plane of the UV input a decoy: a node that read it instead of the layer would land in another box.
@@ -42,7 +42,7 @@ BOX_COLOURS = {
     "color2": (0.1, 0.1, 0.9, 1.0),
     "color3": (0.9, 0.9, 0.1, 1.0),
 }
-QUADRANT_CLASS = {"top-left": "red", "top-right": "green", "bottom-right": "blue", "bottom-left": "yellow"}
+QUADRANT_CLASS = {"top-left": "green", "top-right": "red", "bottom-right": "yellow", "bottom-left": "blue"}
 
 CENTRE_AND_NEIGHBOURS = ((0.5, 0.5), (0.45, 0.5), (0.55, 0.5), (0.5, 0.45), (0.5, 0.55))
 STMAP_POINTS = ((0.5, 0.5), (0.35, 0.5), (0.65, 0.5), (0.5, 0.35), (0.5, 0.65))
@@ -84,6 +84,8 @@ try:
         return p
 
     def connect(node, input_nb, source):
+        if node.getInput(input_nb) is not None:
+            node.disconnectInput(input_nb)
         return gt.require(node.connectInput(input_nb, source),
                           "connect %s input %d to %s" % (node.getLabel(), input_nb, source.getLabel()))
 
@@ -108,10 +110,10 @@ try:
         return 0.0, 0.0, FALLBACK_SIZE[0], FALLBACK_SIZE[1]
 
     def make_checker(x, y):
-        """A CheckerBoard with boxes a quarter of the image across and no lines, and its size."""
+        """A CheckerBoard with boxes half the image across and no lines, and its size."""
         checker = create(PLUGIN_CHECKER, x, y)
         _x, _y, w, h = rod_size(checker)
-        param(checker, "boxSize").set(w / 4.0, h / 4.0)
+        param(checker, "boxSize").set(w / 2.0, h / 2.0)
         for name, rgba in BOX_COLOURS.items():
             param(checker, name).set(*rgba)
         for name in ("lineWidth", "centerlineWidth"):
@@ -418,6 +420,9 @@ try:
             tracks.append(track)
         check(len(tracks) == 4, "four tracks hold centre keyframes at frames %s" % (TRACK_FRAMES,))
 
+        # The Tracker only acts on its buttons while a viewer shows it, so the solve needs one.
+        connect(viewer, 0, tracker)
+        yield ("sleep", SETTLE_MS)
         param(tracker, "computeTransform").trigger()
 
         def solved():
@@ -428,7 +433,6 @@ try:
 
         ok = yield ("until", solved, SOLVE_TIMEOUT_S)
         check(ok, "the tracker solves its CornerPin from the four tracks")
-
         def worst_error(node, label):
             worst = 0.0
             for i in range(4):
@@ -501,6 +505,7 @@ try:
         destroy_all([linked, baked, tracker, checker])
 
     def steps():
+        viewer_node()
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
         gt.require(ok, "viewer widget is up")
         gt.close_all_panels()

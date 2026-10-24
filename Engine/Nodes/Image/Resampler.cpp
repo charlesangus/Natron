@@ -204,6 +204,33 @@ namespace {
         return (std::max)(lo, (std::min)(v, hiExclusive - 1));
     }
 
+    /*
+     * floor(v), saturated at +-2^30, far outside any source, NaN on the low side: converting a
+     * double outside int's range is undefined. The GPU's toPos (resamplecore.slang) saturates alike.
+     */
+    inline int
+    floorToInt(double v)
+    {
+        const double limit = 1073741824.;
+        if (v > limit) {
+            return (int)limit;
+        }
+        if (!(v >= -limit)) {
+            return -(int)limit;
+        }
+        return (int)std::floor(v);
+    }
+
+    /*
+     * The samples a variance-to-error quotient asks for: none more when it is negative, not
+     * finite, or at or past 2^31, as x86's INT_MIN for those always gave.
+     */
+    inline int
+    samplesForVariance(double q)
+    {
+        return (q >= 0. && q < 2147483648.) ? (int)q : 0;
+    }
+
     template <int N, FilterEnum filter, bool clamp>
     bool
     interpolateT(double fx,
@@ -224,8 +251,8 @@ namespace {
         switch (filter) {
         case eFilterImpulse:
         case eFilterBox: {
-            int mx = (int)std::floor(fx);
-            int my = (int)std::floor(fy);
+            int mx = floorToInt(fx);
+            int my = floorToInt(fy);
             if (!blackOutside) {
                 mx = clampCoord(mx, b.x1, b.x2);
                 my = clampCoord(my, b.y1, b.y2);
@@ -245,8 +272,8 @@ namespace {
         }
         case eFilterBilinear:
         case eFilterCubic: {
-            int cx = (int)std::floor(fx - 0.5);
-            int cy = (int)std::floor(fy - 0.5);
+            int cx = floorToInt(fx - 0.5);
+            int cy = floorToInt(fy - 0.5);
             int nx = cx + 1;
             int ny = cy + 1;
             if (!blackOutside) {
@@ -287,8 +314,8 @@ namespace {
             break;
         }
         default: {
-            int cx = (int)std::floor(fx - 0.5);
-            int cy = (int)std::floor(fy - 0.5);
+            int cx = floorToInt(fx - 0.5);
+            int cy = floorToInt(fy - 0.5);
             int px = cx - 1;
             int py = cy - 1;
             int nx = cx + 1;
@@ -604,7 +631,8 @@ namespace {
             y1 = (std::min)(y1, y);
             x2 = (std::max)(x2, x);
             y2 = (std::max)(y2, y);
-            if ((x2 <= x1) || (y2 <= y1)) {
+            // NaN corners fall back to the centre too, before integrate2d floors them.
+            if (!(x1 < x2) || !(y1 < y2)) {
                 interpolateT<N, filter, clamp>(fx, fy, src, blackOutside, tmpPix);
                 return;
             }
@@ -799,7 +827,7 @@ namespace {
                     } else {
                         var[c] = (accPix2[c] - mean[c] * mean[c] * sample) / (sample - 1);
                         if (maxsamples < maxIt) {
-                            maxsamples = (std::max)(maxsamples, (std::min)((int)(var[c] / maxErr2), maxIt));
+                            maxsamples = (std::max)(maxsamples, (std::min)(samplesForVariance(var[c] / maxErr2), maxIt));
                         }
                     }
                 }
@@ -811,7 +839,7 @@ namespace {
                     } else {
                         var[c] = accPix2[c] / acc - mean[c] * mean[c];
                         if (maxsamples < maxIt) {
-                            maxsamples = (std::max)(maxsamples, (std::min)((int)(var[c] / maxErr2), maxIt));
+                            maxsamples = (std::max)(maxsamples, (std::min)(samplesForVariance(var[c] / maxErr2), maxIt));
                         }
                     }
                 }
@@ -1099,8 +1127,9 @@ supersampleLevels(double Jxx,
     if ((dx <= 1.) && (dy <= 1.)) {
         return false;
     }
-    double sx = (dx <= 1.) ? 0. : (std::min)(std::log(dx) / (2 * std::log(3.)), 4.);
-    double sy = (dy <= 1.) ? 0. : (std::min)(std::log(dy) / (2 * std::log(3.)), 4.);
+    // A NaN norm takes level 0 rather than reaching the int conversion below.
+    double sx = (dx > 1.) ? (std::min)(std::log(dx) / (2 * std::log(3.)), 4.) : 0.;
+    double sy = (dy > 1.) ? (std::min)(std::log(dy) / (2 * std::log(3.)), 4.) : 0.;
     // Rounding rather than ceil puts the jump to the next level at a scale of sqrt(3), so a
     // scale just above 1 is not supersampled.
     *levelX = (int)std::ceil(sx - 0.5);

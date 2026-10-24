@@ -666,7 +666,7 @@ static const float kFastLimit = 4194304.0;
 
 // The bound on how far a row's two-float position, and the box corners and source-relative
 // offsets made from it, can lie from the CPU's doubles. With u = 2^-24 and M the sum of the
-// magnitudes involved: dblToFF loses u^2 |h|, each ffMulFDekker, ffAdd and ffAddF adds at most
+// magnitudes involved: dblToFF loses u^2 |h|, each ffMulF, ffAdd and ffAddF adds at most
 // 3u^2 of its operands, and each double rounding is below u^2 / 32 of M: under 21u^2 M in all.
 // Twice that covers toPos rounding a fraction across 1 or 0; 2^-42 M = 64u^2 M leaves room for
 // the float rounding of M itself.
@@ -712,8 +712,8 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
         return false;
     const float exPos = (exactRows & 1u) != 0 ? 0.0 : ex;
     const float eyPos = (exactRows & 2u) != 0 ? 0.0 : ey;
-    const FF fx = ffAdd(ffAdd(ffMulFDekker(h00, px), ffMulFDekker(h01, py)), h02);
-    const FF fy = ffAdd(ffAdd(ffMulFDekker(h10, px), ffMulFDekker(h11, py)), h12);
+    const FF fx = ffAdd(ffAdd(ffMulF(h00, px), ffMulF(h01, py)), h02);
+    const FF fy = ffAdd(ffAdd(ffMulF(h10, px), ffMulF(h11, py)), h12);
     const Pos cx = toPos(fx);
     const Pos cy = toPos(fy);
     const int2 cell = int2(cx.i, cy.i);
@@ -963,13 +963,12 @@ FF blurWeight(uint t)
     return ffMake(asfloat(blurBuf[base + 13]), asfloat(blurBuf[base + 14]));
 }
 
-// The samples the variance asks for, as the CPU's (int)(var / maxErr2); 0 asks for none more. On
-// x86 the CPU's conversion of a quotient at or past 2^31, or of a NaN, gives INT_MIN, which asks for
-// none more either.
+// The samples the variance asks for, as Resampler's samplesForVariance: a quotient that is negative,
+// not finite, or at or past 2^31 asks for none more.
 int samplesForVariance(FF var, FF maxErr2)
 {
     const FF q = ffDiv(var, maxErr2);
-    if (!(q.hi >= 0.0) || !(q.hi < 2147483648.0))
+    if (!isFiniteBits(q.hi) || !(q.hi >= 0.0) || !(q.hi < 2147483648.0))
         return 0;
     return max(toPos(q).i, 0);
 }

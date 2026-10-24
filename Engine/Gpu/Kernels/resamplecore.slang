@@ -70,37 +70,6 @@ FF ffAddF(FF a, float b)
     return ffQuick(s.hi, lo);
 }
 
-// Veltkamp's split: hi carries the top 12 bits of the significand, so products of halves are exact.
-void ffSplit(float a, out float hi, out float lo)
-{
-    precise float t = a * 4097.0;
-    precise float h = t - (t - a);
-    precise float l = a - h;
-    hi = h;
-    lo = l;
-}
-
-// Dekker's exact product error, as Vulkan does not require fma() to round once (lavapipe does not).
-float ffProductError(float a, float b, float p)
-{
-    float ah;
-    float al;
-    float bh;
-    float bl;
-    ffSplit(a, ah, al);
-    ffSplit(b, bh, bl);
-    precise float e = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
-    return e;
-}
-
-FF ffMulF(FF a, float b)
-{
-    precise float p = a.hi * b;
-    const float e = ffProductError(a.hi, b, p);
-    precise float lo = e + a.lo * b;
-    return ffQuick(p, lo);
-}
-
 // Dekker's split: a = hi + lo with both halves 12 bits wide, so their products are exact.
 FF ffSplit(float a)
 {
@@ -110,14 +79,19 @@ FF ffSplit(float a)
     return ffMake(hi, lo);
 }
 
-// ffMulF with an error-free a.hi * b built from correctly rounded products and sums alone, which
-// Vulkan requires, rather than from fma, which it lets a device leave unfused.
-FF ffMulFDekker(FF a, float b)
+// Dekker's exact product error, as Vulkan does not require fma() to round once (lavapipe does not).
+float ffProductError(float a, float b, float p)
 {
-    const FF sa = ffSplit(a.hi);
+    const FF sa = ffSplit(a);
     const FF sb = ffSplit(b);
-    precise float p = a.hi * b;
     precise float e = ((sa.hi * sb.hi - p) + sa.hi * sb.lo + sa.lo * sb.hi) + sa.lo * sb.lo;
+    return e;
+}
+
+FF ffMulF(FF a, float b)
+{
+    precise float p = a.hi * b;
+    const float e = ffProductError(a.hi, b, p);
     precise float lo = e + a.lo * b;
     return ffQuick(p, lo);
 }
@@ -180,8 +154,26 @@ struct Pos
     float f;
 };
 
+// Positions saturate at +-2^30, far outside any source, as Resampler's floorToInt does, NaN on the
+// low side: converting a float outside int's range (or a NaN) is undefined in SPIR-V. Finiteness is
+// read from the bits, which no relaxed rewrite of a float comparison can change.
+static const float kPosLimit = 1073741824.0;
+
+bool isFiniteBits(float v)
+{
+    return (asuint(v) & 0x7f800000u) != 0x7f800000u;
+}
+
 Pos toPos(FF a)
 {
+    Pos p;
+    if (!isFiniteBits(a.hi) || abs(a.hi) > kPosLimit)
+    {
+        // Bits at most +Inf's: positive and not NaN.
+        p.i = (asuint(a.hi) <= 0x7f800000u) ? int(kPosLimit) : -int(kPosLimit);
+        p.f = 0.0;
+        return p;
+    }
     float fl = floor(a.hi);
     precise float f = (a.hi - fl) + a.lo;
     if (f < 0.0)
@@ -194,7 +186,6 @@ Pos toPos(FF a)
         fl += 1.0;
         f -= 1.0;
     }
-    Pos p;
     p.i = int(fl);
     p.f = f;
     return p;
@@ -553,6 +544,9 @@ FF corner(FF f, FF a, FF b, float sa, float sb)
     return ffAdd(ffAdd(f, sa < 0.0 ? ffNeg(ha) : ha), sb < 0.0 ? ffNeg(hb) : hb);
 }
 
+// GpuResample.h's kGpuResampleMaxLevel: at most 3^4 x 3^4 supersamples.
+static const int kMaxLevel = 4;
+
 int pow3(int e)
 {
     int r = 1;
@@ -586,8 +580,8 @@ float4 interpolateSuperAt(ResampleSource src, uint filter, bool clampOn, FF fx, 
             && outsideBounds(src, corner(fx, Jxx, Jxy, 1.0, 1.0), corner(fy, Jyx, Jyy, 1.0, 1.0)))
             return tmp;
     }
-    const int isx = int(bits & 7u);
-    const int isy = int((bits >> 3) & 7u);
+    const int isx = min(int(bits & 7u), kMaxLevel);
+    const int isy = min(int((bits >> 3) & 7u), kMaxLevel);
     if (isx == 0 && isy == 0)
         return tmp;
 
@@ -672,7 +666,7 @@ uint jacobianStates(FF Jxx, FF Jxy, FF Jyx, FF Jyy)
     uint levelY = 0;
     float threshold = 3.0;
     [ForceUnroll]
-    for (int n = 0; n < 4; ++n)
+    for (int n = 0; n < kMaxLevel; ++n)
     {
         if (ffLess(ffMake(threshold, 0.0), dx))
             ++levelX;

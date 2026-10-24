@@ -309,14 +309,13 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
     if (s) {
         VkResult waited = vkWaitForFences(vk, 1, &fence, VK_TRUE, timeoutNs);
         if (waited == VK_TIMEOUT) {
-            // The work still runs, and the fence, the command buffer, the scratch buffers and the caller's buffers it
-            // uses must all outlive it, so it is waited for without a bound. Latching a loss first stops new work
-            // from queueing behind it and sends the caller down its device-loss path.
-            device.check(VK_ERROR_DEVICE_LOST, "vkWaitForFences");
-            std::fprintf(stderr, "GpuRecordContext::submitAndWait: fence wait timed out after %llu ms, now waiting without limit\n", (unsigned long long)(timeoutNs / 1000000));
-            std::fflush(stderr);
-            waited = vkWaitForFences(vk, 1, &fence, VK_TRUE, UINT64_MAX);
-            s = { VK_ERROR_DEVICE_LOST, "GpuRecordContext::submitAndWait: the device work timed out" };
+            std::fprintf(stderr, "GpuRecordContext::submitAndWait: the device work did not finish within %llu ms; the GPU device is treated as lost\n",
+                         static_cast<unsigned long long>(timeoutNs / 1000000));
+            device.abandonInFlightWork("vkWaitForFences");
+            parkInFlightWork();
+            // The fence is leaked with the rest, and the command buffer goes with its pool.
+            cmd_ = VK_NULL_HANDLE;
+            return { VK_ERROR_DEVICE_LOST, "GpuRecordContext::submitAndWait: the device work timed out" };
         }
         if (waited != VK_SUCCESS) {
             s = device.check(waited, "vkWaitForFences");
@@ -329,6 +328,23 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
         cmd_ = VK_NULL_HANDLE;
     }
     return s;
+}
+
+void
+GpuRecordContext::parkInFlightWork()
+{
+    struct InFlight {
+        std::vector<GpuBufferHandle> held;
+        std::deque<GpuUniformBuffer> uniforms;
+        std::vector<std::unique_ptr<GpuTexture>> textures;
+        std::vector<std::shared_ptr<GpuKernel>> kernels;
+    };
+    auto parked = std::make_shared<InFlight>();
+    parked->held = std::move(held_);
+    parked->uniforms = std::move(uniforms_);
+    parked->textures = std::move(textures_);
+    parked->kernels = std::move(kernels_);
+    GpuDevice::parkForever(std::move(parked));
 }
 
 } // namespace gpu

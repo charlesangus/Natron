@@ -179,7 +179,9 @@ public:
 
     /**
      * @brief Recreates the runtime when it was lost and no holdRuntime() token is alive. A failed recreation is not
-     * tried again for a few seconds, since every render start asks. Returns whether the runtime is usable.
+     * tried again for a few seconds, since every render start asks. A loss caused by a timed-out GPU operation is
+     * never recovered: the first call after it logs once that GPU compute is off for the session. Returns whether the
+     * runtime is usable.
      **/
     bool recoverIfLost();
 

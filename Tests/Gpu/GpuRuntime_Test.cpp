@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -180,30 +181,49 @@ TEST_F(GpuRuntimeTest, RecreateReturnsToReadyAndDispatches)
     EXPECT_GE(rt->registry().creationCount(fillId), 1u);
 }
 
-TEST_F(GpuRuntimeTest, TimedOutSubmissionIsALossThatOutlivesItsWork)
+TEST_F(GpuRuntimeTest, TimedOutSubmissionIsALossThatReturnsWithoutWaitingForItsWork)
 {
     GpuStatus s = make();
     GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
 
     constexpr uint32_t side = 1024;
+    constexpr VkDeviceSize bytes = VkDeviceSize(side) * side * sizeof(uint32_t);
+    GpuBuffer callerOwned;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(rt->device(), bytes, kGpuBufferDefaultUsage, callerOwned).ok());
     std::unique_ptr<GpuRecordContext> ctx;
     ASSERT_TRUE(rt->newRecordContext(ctx).ok());
-    GpuBuffer* target = nullptr;
-    ASSERT_TRUE(ctx->scratch(VkDeviceSize(side) * side * sizeof(uint32_t), target).ok());
+    GpuBuffer* scratch = nullptr;
+    ASSERT_TRUE(ctx->scratch(bytes, scratch).ok());
     const FillParams p { side, side, 0 };
     // Enough work that a zero timeout finds it still running.
     for (int i = 0; i < 512; ++i) {
+        GpuBuffer* target = (i % 2) ? scratch : &callerOwned;
         ASSERT_TRUE(ctx->dispatch(fillId, { target }, p, { side, side, 1 }).ok());
         ctx->computeBarrier();
     }
+    const auto begin = std::chrono::steady_clock::now();
     s = ctx->submitAndWait(0);
     ASSERT_EQ(s.result, VK_ERROR_DEVICE_LOST) << s.message;
     EXPECT_EQ(rt->state(), GpuRuntimeState::Lost);
+    EXPECT_TRUE(rt->device().hasAbandonedWork());
+    // The work may still be running: the context and the caller's buffer are released without freeing what it uses.
     ctx.reset();
+    callerOwned.reset();
 
-    ASSERT_TRUE(rt->recreate().ok());
-    EXPECT_EQ(rt->leakedAllocationsAtLastTeardown(), 0u);
-    EXPECT_EQ(runFill(), 0u);
+    // A render meets these first and falls back to the CPU.
+    GpuBufferHandle h;
+    EXPECT_EQ(rt->acquire(kBytes, h).result, VK_ERROR_DEVICE_LOST);
+    EXPECT_EQ(rt->newRecordContext(ctx).result, VK_ERROR_DEVICE_LOST);
+    GpuStatus failure;
+    EXPECT_EQ(runFill(&failure), ~size_t(0));
+    EXPECT_EQ(failure.result, VK_ERROR_DEVICE_LOST);
+
+    EXPECT_LT(std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count(), 20.);
+    // Recreating would leak another device per retry if the work hangs every time.
+    EXPECT_FALSE(rt->recreate().ok());
+    EXPECT_EQ(rt->state(), GpuRuntimeState::Lost);
+    EXPECT_TRUE(rt->device().hasAbandonedWork());
+    EXPECT_FALSE(rt->recreate().ok());
 }
 
 TEST_F(GpuRuntimeTest, RecreateFromReadyHasNoLeaks)

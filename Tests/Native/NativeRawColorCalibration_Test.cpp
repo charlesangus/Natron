@@ -192,6 +192,8 @@ protected:
         connectNodes(inputColor, node, 0, true);
         effectOf(inputColor)->getKnobByNameAndType<KnobBool>(kRawInputColorParamProfileOverride)->setValue(true);
         effectOf(inputColor)->getKnobByNameAndType<KnobChoice>(kRawInputColorParamProfile)->setValueFromID("linearRec709", 0);
+        // The tests set the CAT knobs themselves rather than take the file's defaults.
+        effectOf(node)->getKnobByNameAndType<KnobBool>(kRawColorCalibrationParamCatOverride)->setValue(true);
         *above = inputColor;
 
         return node;
@@ -440,8 +442,8 @@ TEST_F(NativeRawColorCalibrationTest, ColorfulnessVersionOneSwapsRedAndBlue)
 /**
  * darktable's colour calibration jobs (make-reference.py colour_calibration_jobs()) on the Develop
  * RAW chain, white balance as shot, with RawColorCalibration after RawInputColor and darktable's
- * linear Rec2020 working space. The camera illuminant jobs need the raw file's white balance,
- * which the node does not read yet.
+ * linear Rec2020 working space. The camera illuminant and default jobs are in
+ * NativeRawColorCalibrationDefaults_Test.cpp.
  **/
 class NativeRawColorCalibrationReferenceTest
     : public RawReferenceFixture {
@@ -459,7 +461,8 @@ protected:
         ASSERT_TRUE(bool(node)) << name;
         connectNodes(chain.inputColor, node, 0, true);
 
-        // colour_calibration_jobs()'s channelmixerrgb_params() defaults.
+        // colour_calibration_jobs()'s channelmixerrgb_params() defaults, over the file's.
+        boolKnob(node, kRawColorCalibrationParamCatOverride)->setValue(true);
         doubleKnob(node, kRawColorCalibrationParamTemperature)->setValue(4500.);
         configure(node);
 

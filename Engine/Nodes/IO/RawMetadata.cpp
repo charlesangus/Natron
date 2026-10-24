@@ -380,6 +380,20 @@ setWbLateCorrection(ImageMetadata* metadata,
     setFixedVector(metadata, kRawMetadataWbLateCorrection, correction);
 }
 
+bool
+getCatApplied(const ImageMetadata& metadata)
+{
+    const std::optional<int> applied = metadata.getInt(kRawMetadataCatApplied);
+
+    return applied && (*applied != 0);
+}
+
+void
+setCatApplied(ImageMetadata* metadata)
+{
+    metadata->setInt(kRawMetadataCatApplied, 1);
+}
+
 std::optional<std::string>
 getMake(const ImageMetadata& metadata)
 {

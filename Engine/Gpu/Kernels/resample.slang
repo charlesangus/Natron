@@ -1,9 +1,9 @@
 // Resampler::resampleRow for affine inverse matrices: the ten filters of Resampler::filter1D,
 // Resampler::interpolate and Resampler::interpolateSuper (supersampling and the box integration),
 // reading the source from a storage buffer. resample_main samples one matrix; resample_blur_main
-// averages several per pixel as Resampler::motionBlurPixel does. Sample positions are carried in two
-// floats, so that the filter taps and the integer cells the CPU picks with its double positions are
-// the same here. GpuResampleParams in Engine/Gpu/GpuResample.h mirrors ResampleParams.
+// averages several per pixel as Resampler::motionBlurPixel does. Sample positions, and every floor
+// and comparison taken from them, are the CPU's doubles bit for bit; the filter weights use them as
+// two floats. GpuResampleParams in Engine/Gpu/GpuResample.h mirrors ResampleParams.
 
 StructuredBuffer<float> srcBuf;
 RWStructuredBuffer<float> dstBuf;
@@ -12,7 +12,7 @@ RWStructuredBuffer<float> dstBuf;
 StructuredBuffer<uint> blurBuf;
 
 // The destination's offset addresses the output origin. The source's addresses (srcX1, srcY1).
-// The matrix rows (h00 h01 h02) and (h10 h11 h12) are each a double split into hi + lo. `states`
+// The matrix rows (h00 h01 h02) and (h10 h11 h12) are the doubles' bits, low word first. `states`
 // holds one byte per Jacobian state (bit 0: x inside, bit 1: y inside): levelX in bits 0-2,
 // levelY in bits 3-5, bit 6 set when that Jacobian is zero. resample_blur_main reads the matrices
 // and their states from blurBuf instead.
@@ -34,18 +34,18 @@ struct ResampleParams
     uint filter;
     uint flags;
     uint states;
-    float h00Hi;
-    float h01Hi;
-    float h02Hi;
-    float h10Hi;
-    float h11Hi;
-    float h12Hi;
-    float h00Lo;
-    float h01Lo;
-    float h02Lo;
-    float h10Lo;
-    float h11Lo;
-    float h12Lo;
+    uint h00Lo;
+    uint h00Hi;
+    uint h01Lo;
+    uint h01Hi;
+    uint h02Lo;
+    uint h02Hi;
+    uint h10Lo;
+    uint h10Hi;
+    uint h11Lo;
+    uint h11Hi;
+    uint h12Lo;
+    uint h12Hi;
 };
 [[vk::push_constant]] ConstantBuffer<ResampleParams> rp;
 
@@ -119,11 +119,6 @@ FF ffMulF(FF a, float b)
     return ffQuick(p, lo);
 }
 
-FF ffHalf(FF a)
-{
-    return ffMake(a.hi * 0.5, a.lo * 0.5);
-}
-
 FF ffNeg(FF a)
 {
     return ffMake(-a.hi, -a.lo);
@@ -157,16 +152,6 @@ FF ffDiv(FF a, FF b)
 bool ffLess(FF a, FF b)
 {
     return a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo);
-}
-
-FF ffMin(FF a, FF b)
-{
-    return ffLess(b, a) ? b : a;
-}
-
-FF ffMax(FF a, FF b)
-{
-    return ffLess(a, b) ? b : a;
 }
 
 // A position as its floor and its fraction: i + f with f in [0, 1]. The fraction reaches 1 only
@@ -207,6 +192,368 @@ float posValue(Pos p)
 bool posAbove(Pos p, int n)
 {
     return p.i > n || (p.i == n && p.f > 0.0);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// IEEE binary64 addition and multiplication, rounded to nearest even in 32-bit integer arithmetic.
+// Impulse and box take floor() of the CPU's double positions, and Reformat's exact scales put
+// those positions on integers, where two floats (48 bits, and only as exact as the device's fma)
+// round to the other side. Results are assumed normal: subnormals flush to zero and the exponent
+// is not checked for overflow, which no sample position reaches.
+
+// The raw bits of a double.
+struct Dbl
+{
+    uint lo;
+    uint hi;
+};
+
+Dbl dblMake(uint lo, uint hi)
+{
+    Dbl d;
+    d.lo = lo;
+    d.hi = hi;
+    return d;
+}
+
+bool dblIsZero(Dbl d)
+{
+    return (d.hi & 0x7fffffffu) == 0 && d.lo == 0;
+}
+
+bool dblNegative(Dbl d)
+{
+    return (d.hi >> 31) != 0;
+}
+
+Dbl dblNeg(Dbl d)
+{
+    return dblMake(d.lo, d.hi ^ 0x80000000u);
+}
+
+// |a| < |b|: the magnitude bits order as the magnitudes do.
+bool dblMagLess(Dbl a, Dbl b)
+{
+    const uint ah = a.hi & 0x7fffffffu;
+    const uint bh = b.hi & 0x7fffffffu;
+    return ah < bh || (ah == bh && a.lo < b.lo);
+}
+
+bool dblLess(Dbl a, Dbl b)
+{
+    if (dblIsZero(a) && dblIsZero(b))
+        return false;
+    const bool an = dblNegative(a);
+    if (an != dblNegative(b))
+        return an;
+    return an ? dblMagLess(b, a) : dblMagLess(a, b);
+}
+
+Dbl dblMin(Dbl a, Dbl b)
+{
+    return dblLess(b, a) ? b : a;
+}
+
+Dbl dblMax(Dbl a, Dbl b)
+{
+    return dblLess(a, b) ? b : a;
+}
+
+// 96-bit unsigned integers, x the low word.
+
+uint3 u96Shl(uint3 v, uint s)
+{
+    if (s >= 96)
+        return uint3(0, 0, 0);
+    if (s >= 64)
+    {
+        v = uint3(0, 0, v.x);
+        s -= 64;
+    }
+    else if (s >= 32)
+    {
+        v = uint3(0, v.x, v.y);
+        s -= 32;
+    }
+    if (s == 0)
+        return v;
+    return uint3(v.x << s, (v.y << s) | (v.x >> (32 - s)), (v.z << s) | (v.y >> (32 - s)));
+}
+
+uint3 u96Shr(uint3 v, uint s)
+{
+    if (s >= 96)
+        return uint3(0, 0, 0);
+    if (s >= 64)
+    {
+        v = uint3(v.z, 0, 0);
+        s -= 64;
+    }
+    else if (s >= 32)
+    {
+        v = uint3(v.y, v.z, 0);
+        s -= 32;
+    }
+    if (s == 0)
+        return v;
+    return uint3((v.x >> s) | (v.y << (32 - s)), (v.y >> s) | (v.z << (32 - s)), v.z >> s);
+}
+
+// The bits [0, n) of a word, n at most 32.
+uint lowMask(uint n)
+{
+    return n >= 32 ? 0xffffffffu : (1u << n) - 1u;
+}
+
+// Whether any of bits [0, n) is set.
+bool u96AnyBelow(uint3 v, uint n)
+{
+    if (n <= 32)
+        return (v.x & lowMask(n)) != 0;
+    if (n <= 64)
+        return v.x != 0 || (v.y & lowMask(n - 32)) != 0;
+    return v.x != 0 || v.y != 0 || (v.z & lowMask(min(n - 64, 32u))) != 0;
+}
+
+bool u96Bit(uint3 v, uint n)
+{
+    const uint w = n < 32 ? v.x : (n < 64 ? v.y : v.z);
+    return ((w >> (n & 31u)) & 1u) != 0;
+}
+
+// The index of the highest set bit, -1 for zero.
+int u96Msb(uint3 v)
+{
+    if (v.z != 0)
+        return 64 + int(firstbithigh(v.z));
+    if (v.y != 0)
+        return 32 + int(firstbithigh(v.y));
+    if (v.x != 0)
+        return int(firstbithigh(v.x));
+    return -1;
+}
+
+uint3 u96Add(uint3 a, uint3 b)
+{
+    const uint x = a.x + b.x;
+    const uint cx = x < a.x ? 1u : 0u;
+    const uint y0 = a.y + b.y;
+    const uint y = y0 + cx;
+    const uint cy = (y0 < a.y || y < y0) ? 1u : 0u;
+    return uint3(x, y, a.z + b.z + cy);
+}
+
+// a - b for a >= b.
+uint3 u96Sub(uint3 a, uint3 b)
+{
+    const uint x = a.x - b.x;
+    const uint bx = a.x < b.x ? 1u : 0u;
+    const uint y0 = a.y - b.y;
+    const uint y = y0 - bx;
+    const uint by = (a.y < b.y || y0 < bx) ? 1u : 0u;
+    return uint3(x, y, a.z - b.z - by);
+}
+
+// The 64-bit product of two words, as (low, high).
+uint2 mulWide(uint a, uint b)
+{
+    const uint a0 = a & 0xffffu;
+    const uint a1 = a >> 16;
+    const uint b0 = b & 0xffffu;
+    const uint b1 = b >> 16;
+    const uint p00 = a0 * b0;
+    const uint p01 = a0 * b1;
+    const uint p10 = a1 * b0;
+    const uint p11 = a1 * b1;
+    const uint mid = (p00 >> 16) + (p01 & 0xffffu) + (p10 & 0xffffu);
+    return uint2((p00 & 0xffffu) | (mid << 16), p11 + (p01 >> 16) + (p10 >> 16) + (mid >> 16));
+}
+
+// A double as (-1)^neg * m * 2^e with m below 2^53.
+struct DblParts
+{
+    bool neg;
+    int e;
+    uint3 m;
+};
+
+DblParts dblUnpack(Dbl d)
+{
+    DblParts p;
+    p.neg = dblNegative(d);
+    const int be = int((d.hi >> 20) & 0x7ffu);
+    const uint frac = d.hi & 0xfffffu;
+    if (be == 0)
+    {
+        p.e = -1074;
+        p.m = uint3(d.lo, frac, 0);
+    }
+    else
+    {
+        p.e = be - 1075;
+        p.m = uint3(d.lo, frac | 0x100000u, 0);
+    }
+    return p;
+}
+
+// (-1)^neg * n * 2^e rounded to the nearest double, ties to even.
+Dbl dblRound(bool neg, uint3 n, int e)
+{
+    const uint sign = neg ? 0x80000000u : 0u;
+    const int top = u96Msb(n);
+    if (top < 0)
+        return dblMake(0, sign);
+    uint3 m;
+    if (top <= 52)
+    {
+        m = u96Shl(n, uint(52 - top));
+        e -= 52 - top;
+    }
+    else
+    {
+        const uint s = uint(top - 52);
+        m = u96Shr(n, s);
+        if (u96Bit(n, s - 1) && (u96AnyBelow(n, s - 1) || (m.x & 1u) != 0))
+        {
+            m = u96Add(m, uint3(1, 0, 0));
+            if ((m.y >> 21) != 0)
+            {
+                m = u96Shr(m, 1);
+                e += 1;
+            }
+        }
+        e += int(s);
+    }
+    const int be = e + 1075;
+    if (be <= 0)
+        return dblMake(0, sign);
+    return dblMake(m.x, sign | (uint(be) << 20) | (m.y & 0xfffffu));
+}
+
+Dbl dblFromInt(int v)
+{
+    const uint mag = v < 0 ? uint(0 - v) : uint(v);
+    return dblRound(v < 0, uint3(mag, 0, 0), 0);
+}
+
+Dbl dblHalf(Dbl d)
+{
+    if (dblIsZero(d))
+        return d;
+    const DblParts p = dblUnpack(d);
+    return dblRound(p.neg, p.m, p.e - 1);
+}
+
+// a * (k / 2), which is how the CPU's pixel-centre ordinate x + 0.5 enters, with k = 2x + 1.
+Dbl dblMulHalfInt(Dbl a, int k)
+{
+    const bool neg = dblNegative(a) != (k < 0);
+    if (dblIsZero(a) || k == 0)
+        return dblMake(0, neg ? 0x80000000u : 0u);
+    const DblParts p = dblUnpack(a);
+    const uint mag = k < 0 ? uint(0 - k) : uint(k);
+    const uint2 low = mulWide(p.m.x, mag);
+    const uint2 high = mulWide(p.m.y, mag);
+    const uint mid = low.y + high.x;
+    const uint carry = mid < low.y ? 1u : 0u;
+    return dblRound(neg, uint3(low.x, mid, high.y + carry), p.e - 1);
+}
+
+Dbl dblAdd(Dbl a, Dbl b)
+{
+    if (dblIsZero(b))
+        return dblIsZero(a) ? dblMake(0, a.hi & b.hi) : a;
+    if (dblIsZero(a))
+        return b;
+    if (dblMagLess(a, b))
+    {
+        const Dbl t = a;
+        a = b;
+        b = t;
+    }
+    const DblParts pa = dblUnpack(a);
+    const DblParts pb = dblUnpack(b);
+    // With the larger operand 40 bits up, an aligned smaller one either fits exactly or loses bits
+    // far enough below the rounding position that one sticky bit in their place rounds the same.
+    const uint d = uint(pa.e - pb.e);
+    const uint3 na = u96Shl(pa.m, 40);
+    uint3 nb;
+    if (d <= 40)
+    {
+        nb = u96Shl(pb.m, 40 - d);
+    }
+    else
+    {
+        nb = u96Shr(pb.m, d - 40);
+        if (u96AnyBelow(pb.m, d - 40))
+            nb.x |= 1u;
+    }
+    if (pa.neg == pb.neg)
+        return dblRound(pa.neg, u96Add(na, nb), pa.e - 40);
+    const uint3 diff = u96Sub(na, nb);
+    if (all(diff == uint3(0, 0, 0)))
+        return dblMake(0, 0);
+    return dblRound(pa.neg, diff, pa.e - 40);
+}
+
+Dbl dblSub(Dbl a, Dbl b)
+{
+    return dblAdd(a, dblNeg(b));
+}
+
+// Positions are clamped this far out, beyond any source or output; the CPU's int conversion of
+// such a floor is undefined anyway.
+static const int kDblFloorLimit = 0x40000000;
+
+int dblFloor(Dbl d)
+{
+    if (dblIsZero(d))
+        return 0;
+    const DblParts p = dblUnpack(d);
+    if (p.e >= 0)
+        return p.neg ? -kDblFloorLimit : kDblFloorLimit;
+    const uint s = uint(-p.e);
+    const uint3 whole = u96Shr(p.m, s);
+    if (whole.y != 0 || whole.z != 0 || whole.x >= uint(kDblFloorLimit))
+        return p.neg ? -kDblFloorLimit : kDblFloorLimit;
+    const int v = int(whole.x);
+    if (!p.neg)
+        return v;
+    return u96AnyBelow(p.m, s) ? -v - 1 : -v;
+}
+
+// 2^n, zero below the normal range.
+float pow2f(int n)
+{
+    if (n < -126)
+        return 0.0;
+    return asfloat(uint(min(n, 127) + 127) << 23);
+}
+
+// The double to two floats, its 53 bits split 24 + 29 so that the high part is exact.
+FF dblToFF(Dbl d)
+{
+    if (dblIsZero(d))
+        return ffMake(0.0, 0.0);
+    const DblParts p = dblUnpack(d);
+    const uint top = (p.m.y << 3) | (p.m.x >> 29);
+    const uint bottom = p.m.x & 0x1fffffffu;
+    const float s = p.neg ? -1.0 : 1.0;
+    return ffQuick(s * float(top) * pow2f(p.e + 29), s * float(bottom) * pow2f(p.e));
+}
+
+float dblToFloat(Dbl d)
+{
+    const FF f = dblToFF(d);
+    return f.hi + f.lo;
+}
+
+Pos dblToPos(Dbl d)
+{
+    Pos p;
+    p.i = dblFloor(d);
+    p.f = dblToFloat(dblSub(d, dblFromInt(p.i)));
+    return p;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -308,9 +655,10 @@ float4 filter4(uint filter, bool clampOn, float4 Ip, float4 Ic, float4 In, float
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Resampler's interpolateT: false (and zero) when every tap is outside the source.
+// Resampler's interpolateT: false (and zero) when every tap is outside the source. Impulse and box
+// read the source pixel `cell`, the floor of the position, which the other filters ignore.
 
-bool interpolate(uint filter, bool clampOn, FF fx, FF fy, out float4 result)
+bool interpolate(uint filter, bool clampOn, FF fx, FF fy, int2 cell, out float4 result)
 {
     result = float4(0.0, 0.0, 0.0, 0.0);
     if (!srcValid())
@@ -319,8 +667,8 @@ bool interpolate(uint filter, bool clampOn, FF fx, FF fy, out float4 result)
 
     if (filter == kFilterImpulse || filter == kFilterBox)
     {
-        int mx = toPos(fx).i;
-        int my = toPos(fy).i;
+        int mx = cell.x;
+        int my = cell.y;
         if (!black)
         {
             mx = clampCoord(mx, rp.srcX1, rp.srcX2);
@@ -520,18 +868,19 @@ float4 integrate2d(Pos x1, Pos y1, Pos x2, Pos y2, bool zeroOutside)
     return v;
 }
 
-bool outsideBounds(FF x, FF y)
+bool outsideBounds(Dbl x, Dbl y)
 {
-    const int ix = toPos(x).i;
-    const int iy = toPos(y).i;
+    const int ix = dblFloor(x);
+    const int iy = dblFloor(y);
     return ix < rp.srcX1 || rp.srcX2 <= ix || iy < rp.srcY1 || rp.srcY2 <= iy;
 }
 
-FF corner(FF f, FF a, FF b, float sa, float sb)
+// f + sa * a / 2 + sb * b / 2, added in the CPU's order.
+Dbl corner(Dbl f, Dbl a, Dbl b, float sa, float sb)
 {
-    const FF ha = ffHalf(a);
-    const FF hb = ffHalf(b);
-    return ffAdd(ffAdd(f, sa < 0.0 ? ffNeg(ha) : ha), sb < 0.0 ? ffNeg(hb) : hb);
+    const Dbl ha = dblHalf(a);
+    const Dbl hb = dblHalf(b);
+    return dblAdd(dblAdd(f, sa < 0.0 ? dblNeg(ha) : ha), sb < 0.0 ? dblNeg(hb) : hb);
 }
 
 int pow3(int e)
@@ -543,57 +892,59 @@ int pow3(int e)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Resampler's interpolateSuperT for the Jacobian (Jxx Jxy; Jyx Jyy) of state `state`.
+// Resampler's interpolateSuperT for the Jacobian (Jxx Jxy; Jyx Jyy) of state `state`, at the position
+// (x, y), which is (fx, fy) as two floats and falls in source pixel `cell`.
 
-float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF Jyy, uint states, uint state)
+float4 interpolateSuper(uint filter, bool clampOn, Dbl x, Dbl y, FF fx, FF fy, int2 cell, Dbl Jxx, Dbl Jxy, Dbl Jyx, Dbl Jyy,
+                        uint states, uint state)
 {
     float4 tmp;
     const uint bits = (states >> (8 * state)) & 0xffu;
     if ((bits & 0x40u) != 0)
     {
-        interpolate(filter, clampOn, fx, fy, tmp);
+        interpolate(filter, clampOn, fx, fy, cell, tmp);
         return tmp;
     }
     if (filter == kFilterBox)
     {
-        const FF c0x = corner(fx, Jxx, Jxy, -1.0, -1.0);
-        const FF c0y = corner(fy, Jyx, Jyy, -1.0, -1.0);
-        const FF c1x = corner(fx, Jxx, Jxy, 1.0, -1.0);
-        const FF c1y = corner(fy, Jyx, Jyy, 1.0, -1.0);
-        const FF c2x = corner(fx, Jxx, Jxy, -1.0, 1.0);
-        const FF c2y = corner(fy, Jyx, Jyy, -1.0, 1.0);
-        const FF c3x = corner(fx, Jxx, Jxy, 1.0, 1.0);
-        const FF c3y = corner(fy, Jyx, Jyy, 1.0, 1.0);
-        const FF x1 = ffMin(ffMin(c0x, c1x), ffMin(c2x, c3x));
-        const FF x2 = ffMax(ffMax(c0x, c1x), ffMax(c2x, c3x));
-        const FF y1 = ffMin(ffMin(c0y, c1y), ffMin(c2y, c3y));
-        const FF y2 = ffMax(ffMax(c0y, c1y), ffMax(c2y, c3y));
-        if (!ffLess(x1, x2) || !ffLess(y1, y2))
+        const Dbl c0x = corner(x, Jxx, Jxy, -1.0, -1.0);
+        const Dbl c0y = corner(y, Jyx, Jyy, -1.0, -1.0);
+        const Dbl c1x = corner(x, Jxx, Jxy, 1.0, -1.0);
+        const Dbl c1y = corner(y, Jyx, Jyy, 1.0, -1.0);
+        const Dbl c2x = corner(x, Jxx, Jxy, -1.0, 1.0);
+        const Dbl c2y = corner(y, Jyx, Jyy, -1.0, 1.0);
+        const Dbl c3x = corner(x, Jxx, Jxy, 1.0, 1.0);
+        const Dbl c3y = corner(y, Jyx, Jyy, 1.0, 1.0);
+        const Dbl x1 = dblMin(dblMin(c0x, c1x), dblMin(c2x, c3x));
+        const Dbl x2 = dblMax(dblMax(c0x, c1x), dblMax(c2x, c3x));
+        const Dbl y1 = dblMin(dblMin(c0y, c1y), dblMin(c2y, c3y));
+        const Dbl y2 = dblMax(dblMax(c0y, c1y), dblMax(c2y, c3y));
+        if (!dblLess(x1, x2) || !dblLess(y1, y2))
         {
-            interpolate(filter, clampOn, fx, fy, tmp);
+            interpolate(filter, clampOn, fx, fy, cell, tmp);
             return tmp;
         }
-        const Pos px1 = toPos(ffAddF(x1, -float(rp.srcX1)));
-        const Pos px2 = toPos(ffAddF(x2, -float(rp.srcX1)));
-        const Pos py1 = toPos(ffAddF(y1, -float(rp.srcY1)));
-        const Pos py2 = toPos(ffAddF(y2, -float(rp.srcY1)));
-        float4 v = integrate2d(px1, py1, px2, py2, blackOutside());
-        const FF wx = ffAdd(x2, ffNeg(x1));
-        const FF wy = ffAdd(y2, ffNeg(y1));
-        precise float s = (wx.hi + wx.lo) * (wy.hi + wy.lo);
+        const Dbl ox = dblFromInt(rp.srcX1);
+        const Dbl oy = dblFromInt(rp.srcY1);
+        const Dbl rx1 = dblSub(x1, ox);
+        const Dbl rx2 = dblSub(x2, ox);
+        const Dbl ry1 = dblSub(y1, oy);
+        const Dbl ry2 = dblSub(y2, oy);
+        float4 v = integrate2d(dblToPos(rx1), dblToPos(ry1), dblToPos(rx2), dblToPos(ry2), blackOutside());
+        precise float s = dblToFloat(dblSub(rx2, rx1)) * dblToFloat(dblSub(ry2, ry1));
         if (s != 0.0)
             v /= s;
         return v;
     }
 
-    const bool inside = interpolate(filter, clampOn, fx, fy, tmp);
+    const bool inside = interpolate(filter, clampOn, fx, fy, cell, tmp);
     if (!inside)
     {
         // A black centre is only kept when the whole back-transformed pixel is outside.
-        if (outsideBounds(corner(fx, Jxx, Jxy, -1.0, -1.0), corner(fy, Jyx, Jyy, -1.0, -1.0))
-            && outsideBounds(corner(fx, Jxx, Jxy, 1.0, -1.0), corner(fy, Jyx, Jyy, 1.0, -1.0))
-            && outsideBounds(corner(fx, Jxx, Jxy, -1.0, 1.0), corner(fy, Jyx, Jyy, -1.0, 1.0))
-            && outsideBounds(corner(fx, Jxx, Jxy, 1.0, 1.0), corner(fy, Jyx, Jyy, 1.0, 1.0)))
+        if (outsideBounds(corner(x, Jxx, Jxy, -1.0, -1.0), corner(y, Jyx, Jyy, -1.0, -1.0))
+            && outsideBounds(corner(x, Jxx, Jxy, 1.0, -1.0), corner(y, Jyx, Jyy, 1.0, -1.0))
+            && outsideBounds(corner(x, Jxx, Jxy, -1.0, 1.0), corner(y, Jyx, Jyy, -1.0, 1.0))
+            && outsideBounds(corner(x, Jxx, Jxy, 1.0, 1.0), corner(y, Jyx, Jyy, 1.0, 1.0)))
             return tmp;
     }
     const int isx = int(bits & 7u);
@@ -603,20 +954,20 @@ float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy,
 
     const int nisx = pow3(isx);
     const int nisy = pow3(isy);
-    const float jxx = Jxx.hi + Jxx.lo;
-    const float jxy = Jxy.hi + Jxy.lo;
-    const float jyx = Jyx.hi + Jyx.lo;
-    const float jyy = Jyy.hi + Jyy.lo;
-    for (int y = -nisy / 2; y <= nisy / 2; ++y)
+    const float jxx = dblToFloat(Jxx);
+    const float jxy = dblToFloat(Jxy);
+    const float jyx = dblToFloat(Jyx);
+    const float jyy = dblToFloat(Jyy);
+    for (int sy = -nisy / 2; sy <= nisy / 2; ++sy)
     {
-        for (int x = -nisx / 2; x <= nisx / 2; ++x)
+        for (int sx = -nisx / 2; sx <= nisx / 2; ++sx)
         {
-            if (x != 0 || y != 0)
+            if (sx != 0 || sy != 0)
             {
-                const float ox = (jxx * float(x)) / float(nisx) + (jxy * float(y)) / float(nisy);
-                const float oy = (jyx * float(x)) / float(nisx) + (jyy * float(y)) / float(nisy);
+                const float ox = (jxx * float(sx)) / float(nisx) + (jxy * float(sy)) / float(nisy);
+                const float oy = (jyx * float(sx)) / float(nisx) + (jyy * float(sy)) / float(nisy);
                 float4 s;
-                interpolate(kFilterBilinear, false, ffAddF(fx, ox), ffAddF(fy, oy), s);
+                interpolate(kFilterBilinear, false, ffAddF(fx, ox), ffAddF(fy, oy), int2(0, 0), s);
                 tmp += s;
             }
         }
@@ -629,12 +980,12 @@ float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy,
 // The matrix rows (h00 h01 h02) and (h10 h11 h12), with `states` as in ResampleParams.
 struct Matrix
 {
-    FF h00;
-    FF h01;
-    FF h02;
-    FF h10;
-    FF h11;
-    FF h12;
+    Dbl h00;
+    Dbl h01;
+    Dbl h02;
+    Dbl h10;
+    Dbl h11;
+    Dbl h12;
     uint states;
 };
 
@@ -644,29 +995,34 @@ float4 samplePixel(Matrix m, int x, int y)
         return float4(0.0, 0.0, 0.0, 0.0);
     const uint filter = rp.filter;
     const bool clampOn = (rp.flags & kFlagClamp) != 0;
-    const float px = float(x) + 0.5;
-    const float py = float(y) + 0.5;
-    const FF fx = ffAdd(ffAdd(ffMulF(m.h00, px), ffMulF(m.h01, py)), m.h02);
-    const FF fy = ffAdd(ffAdd(ffMulF(m.h10, px), ffMulF(m.h11, py)), m.h12);
+    // The CPU's h00 * (x + 0.5) + h01 * (y + 0.5) + h02, in that order and unfused.
+    const int kx = 2 * x + 1;
+    const int ky = 2 * y + 1;
+    const Dbl dx = dblAdd(dblAdd(dblMulHalfInt(m.h00, kx), dblMulHalfInt(m.h01, ky)), m.h02);
+    const Dbl dy = dblAdd(dblAdd(dblMulHalfInt(m.h10, kx), dblMulHalfInt(m.h11, ky)), m.h12);
+    const FF fx = dblToFF(dx);
+    const FF fy = dblToFF(dy);
+    const int2 cell = int2(dblFloor(dx), dblFloor(dy));
 
     float4 r;
     if (filter == kFilterImpulse)
     {
-        interpolate(filter, clampOn, fx, fy, r);
+        interpolate(filter, clampOn, fx, fy, cell, r);
         return r;
     }
-    // x1 <= fx + 0.5 && fx - 0.5 < x2, and likewise for y.
-    bool xinside = toPos(ffAddF(fx, 0.5)).i >= rp.srcX1 && toPos(ffAddF(fx, -0.5)).i < rp.srcX2;
-    bool yinside = toPos(ffAddF(fy, 0.5)).i >= rp.srcY1 && toPos(ffAddF(fy, -0.5)).i < rp.srcY2;
+    const Dbl half = dblMake(0, 0x3fe00000u);
+    // x1 <= x + 0.5 && x - 0.5 < x2, and likewise for y.
+    bool xinside = dblFloor(dblAdd(dx, half)) >= rp.srcX1 && dblFloor(dblSub(dx, half)) < rp.srcX2;
+    bool yinside = dblFloor(dblAdd(dy, half)) >= rp.srcY1 && dblFloor(dblSub(dy, half)) < rp.srcY2;
     if (blackOutside() && !(xinside && yinside))
     {
         xinside = false;
         yinside = false;
     }
-    const FF zero = ffMake(0.0, 0.0);
+    const Dbl zero = dblMake(0, 0);
     const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
-    return interpolateSuper(filter, clampOn, fx, fy, xinside ? m.h00 : zero, xinside ? m.h01 : zero, yinside ? m.h10 : zero,
-                            yinside ? m.h11 : zero, m.states, state);
+    return interpolateSuper(filter, clampOn, dx, dy, fx, fy, cell, xinside ? m.h00 : zero, xinside ? m.h01 : zero,
+                            yinside ? m.h10 : zero, yinside ? m.h11 : zero, m.states, state);
 }
 
 void storePixel(uint3 tid, float4 v)
@@ -683,12 +1039,12 @@ void resample_main(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= rp.width || tid.y >= rp.height)
         return;
     Matrix m;
-    m.h00 = ffMake(rp.h00Hi, rp.h00Lo);
-    m.h01 = ffMake(rp.h01Hi, rp.h01Lo);
-    m.h02 = ffMake(rp.h02Hi, rp.h02Lo);
-    m.h10 = ffMake(rp.h10Hi, rp.h10Lo);
-    m.h11 = ffMake(rp.h11Hi, rp.h11Lo);
-    m.h12 = ffMake(rp.h12Hi, rp.h12Lo);
+    m.h00 = dblMake(rp.h00Lo, rp.h00Hi);
+    m.h01 = dblMake(rp.h01Lo, rp.h01Hi);
+    m.h02 = dblMake(rp.h02Lo, rp.h02Hi);
+    m.h10 = dblMake(rp.h10Lo, rp.h10Hi);
+    m.h11 = dblMake(rp.h11Lo, rp.h11Hi);
+    m.h12 = dblMake(rp.h12Lo, rp.h12Hi);
     m.states = rp.states;
     storePixel(tid, samplePixel(m, rp.outX + int(tid.x), rp.outY + int(tid.y)));
 }
@@ -700,8 +1056,8 @@ void resample_main(uint3 tid : SV_DispatchThreadID)
 
 // The header: matrix count, minimum samples, maximum samples, the seed's offset
 // (unsigned(0x10000 * motionBlur)), the squared maximum error as hi and lo float bits, and 1 when the
-// matrices are weighted. A matrix: hi of h00 h01 h02 h10 h11 h12, then their lo, its states, and its
-// weight as hi and lo float bits.
+// matrices are weighted. A matrix: the double bits of h00 h01 h02 h10 h11 h12, low word first, its
+// states, and its weight as hi and lo float bits.
 static const uint kBlurHeaderWords = 8;
 static const uint kBlurMatrixWords = 16;
 
@@ -726,12 +1082,12 @@ Matrix blurMatrix(uint t)
 {
     const uint base = kBlurHeaderWords + t * kBlurMatrixWords;
     Matrix m;
-    m.h00 = ffMake(asfloat(blurBuf[base + 0]), asfloat(blurBuf[base + 6]));
-    m.h01 = ffMake(asfloat(blurBuf[base + 1]), asfloat(blurBuf[base + 7]));
-    m.h02 = ffMake(asfloat(blurBuf[base + 2]), asfloat(blurBuf[base + 8]));
-    m.h10 = ffMake(asfloat(blurBuf[base + 3]), asfloat(blurBuf[base + 9]));
-    m.h11 = ffMake(asfloat(blurBuf[base + 4]), asfloat(blurBuf[base + 10]));
-    m.h12 = ffMake(asfloat(blurBuf[base + 5]), asfloat(blurBuf[base + 11]));
+    m.h00 = dblMake(blurBuf[base + 0], blurBuf[base + 1]);
+    m.h01 = dblMake(blurBuf[base + 2], blurBuf[base + 3]);
+    m.h02 = dblMake(blurBuf[base + 4], blurBuf[base + 5]);
+    m.h10 = dblMake(blurBuf[base + 6], blurBuf[base + 7]);
+    m.h11 = dblMake(blurBuf[base + 8], blurBuf[base + 9]);
+    m.h12 = dblMake(blurBuf[base + 10], blurBuf[base + 11]);
     m.states = blurBuf[base + 12];
     return m;
 }

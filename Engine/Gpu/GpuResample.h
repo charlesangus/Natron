@@ -28,8 +28,8 @@ struct GpuResampleParams {
     uint32_t filter;
     uint32_t flags;
     uint32_t states;
-    float hHi[6];
-    float hLo[6];
+    // The matrix's six doubles, each as its low then its high 32 bits.
+    uint32_t hBits[12];
 };
 static_assert(sizeof(GpuResampleParams) == 112);
 

@@ -27,14 +27,21 @@
 
 #ifdef __NATRON_LINUX__
 
-#include <stdexcept>
 #include <iostream>
+#include <mutex>
+#include <optional>
 #include <sstream> // stringstream
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <dlfcn.h>
 
+#include <QThread>
+
 #include "Engine/AppManager.h"
 #include "Engine/OSGLContext.h"
+#include "Engine/StartupGLDiag.h"
 #include "Global/GLIncludes.h"
 
 extern "C"
@@ -124,7 +131,10 @@ typedef GLXContext (*PFNGLXCREATECONTEXTATTRIBSARBPROC)(Display*, GLXFBConfig, G
 typedef XVisualInfo* (*PFNGLXGETVISUALFROMFBCONFIGPROC)(Display*, GLXFBConfig);
 typedef GLXWindow (*PFNGLXCREATEWINDOWPROC)(Display*, GLXFBConfig, Window, const int*);
 typedef void (*PFNGLXDESTROYWINDOWPROC)(Display*, GLXWindow);
-typedef void (*PFNGLXMAKECONTEXTCURRENTPROC)(Display*, GLXDrawable, GLXDrawable, GLXContext);
+typedef Bool (*PFNGLXMAKECONTEXTCURRENTPROC)(Display*, GLXDrawable, GLXDrawable, GLXContext);
+typedef Display* (*PFNGLXGETCURRENTDISPLAYPROC)();
+typedef GLXDrawable (*PFNGLXGETCURRENTDRAWABLEPROC)();
+typedef GLXDrawable (*PFNGLXGETCURRENTREADDRAWABLEPROC)();
 typedef Bool (*PFNGLXISDIRECT)(Display*, GLXContext);
 
 // https://www.opengl.org/registry/specs/MESA/glx_query_renderer.txt
@@ -176,6 +186,9 @@ struct OSGLContext_glx_dataPrivate
     PFNGLXCREATEWINDOWPROC CreateWindow;
     PFNGLXDESTROYWINDOWPROC DestroyWindow;
     PFNGLXMAKECONTEXTCURRENTPROC MakeContextCurrent;
+    PFNGLXGETCURRENTDISPLAYPROC GetCurrentDisplay;
+    PFNGLXGETCURRENTDRAWABLEPROC GetCurrentDrawable;
+    PFNGLXGETCURRENTREADDRAWABLEPROC GetCurrentReadDrawable;
     PFNGLXISDIRECT IsDirect;
 
     // GLX 1.4 and extension functions
@@ -259,6 +272,182 @@ extensionSupported(const OSGLContext_glx_data* data,
     return false;
 }
 
+namespace {
+
+struct SavedGLXBinding {
+    Display* display = nullptr;
+    GLXDrawable draw = 0;
+    GLXDrawable read = 0;
+    GLXContext context = nullptr;
+};
+
+// Qt records which context it made current on each thread and skips its own
+// glXMakeCurrent while that record matches, never asking GLX. So when Natron
+// binds one of its contexts on the GUI thread, whatever it displaced (usually
+// Qt's widget compositor context) is put back when Natron releases its
+// context, rather than leaving nothing bound under a context Qt still
+// believes current.
+struct PendingRestore {
+    SavedGLXBinding displaced;
+    // The Natron context bound last over the displaced binding. Anything else
+    // bound at release time means Qt has rebound its own context since, and
+    // that binding is left alone.
+    GLXContext natronContext = nullptr;
+};
+
+// The GUI thread keeps one frame per live ScopedGLXBindingRestore, above a
+// base frame for make-currents outside any scope. Make-currents only touch
+// the top frame, so one inside a scope never consumes the restore owed to an
+// enclosing Natron make-current.
+struct RestoreFrame {
+    std::optional<PendingRestore> pending;
+    // What the scope that pushed this frame puts back when it ends.
+    SavedGLXBinding scopeSaved;
+};
+
+// Only the GUI thread pushes and pops frames; a context destroyed on another
+// thread may still have to rewrite them.
+std::mutex g_restoreMutex;
+std::vector<RestoreFrame> g_restoreFrames(1);
+
+SavedGLXBinding
+captureGLXBinding(const OSGLContext_glx_data* glxInfo)
+{
+    SavedGLXBinding b;
+
+    b.context = glxInfo->_imp->GetCurrentContext();
+    b.display = glxInfo->_imp->GetCurrentDisplay ? glxInfo->_imp->GetCurrentDisplay() : nullptr;
+    b.draw = glxInfo->_imp->GetCurrentDrawable ? glxInfo->_imp->GetCurrentDrawable() : 0;
+    b.read = glxInfo->_imp->GetCurrentReadDrawable ? glxInfo->_imp->GetCurrentReadDrawable() : b.draw;
+
+    return b;
+}
+
+bool
+sameGLXBinding(const SavedGLXBinding& a,
+               const SavedGLXBinding& b)
+{
+    return (a.context == b.context) && (a.draw == b.draw) && (a.read == b.read);
+}
+
+// Qt's GLX context belongs to Qt's own X connection, so it is restored with
+// the display it was current on rather than Natron's. The read drawable can
+// differ from the draw drawable, so glXMakeContextCurrent restores both.
+bool
+restoreGLXBinding(const OSGLContext_glx_data* glxInfo,
+                  const SavedGLXBinding& saved,
+                  const char* tag,
+                  const void* caller)
+{
+    const StartupGLDiag::GLXBinding before = StartupGLDiag::currentGLXBinding();
+    bool ok;
+
+    if (saved.context) {
+        Display* display = saved.display ? saved.display : glxInfo->_imp->x11.display;
+        if (glxInfo->_imp->MakeContextCurrent) {
+            ok = glxInfo->_imp->MakeContextCurrent(display, saved.draw, saved.read, saved.context);
+        } else {
+            ok = glxInfo->_imp->MakeCurrent(display, saved.draw, saved.context);
+        }
+    } else {
+        ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
+    }
+    StartupGLDiag::GLXBinding target;
+    target.context = saved.context;
+    target.drawable = saved.draw;
+    StartupGLDiag::logMakeCurrent(tag, caller, target, before, ok);
+
+    return ok;
+}
+
+std::optional<PendingRestore>
+takePendingRestore()
+{
+    std::lock_guard<std::mutex> k(g_restoreMutex);
+    std::optional<PendingRestore> pending = g_restoreFrames.back().pending;
+    g_restoreFrames.back().pending.reset();
+
+    return pending;
+}
+
+// Rewrites every frame so nothing restores the dying context: a binding that
+// would have put it back gets what it had displaced instead (or nothing), and
+// a restore owed to its release is dropped. Frames are walked oldest first,
+// so a substitution found in one frame applies to the frames above it.
+// Returns what the dying context displaced, for when it is current now.
+SavedGLXBinding
+forgetGLXContext(GLXContext dying)
+{
+    std::lock_guard<std::mutex> k(g_restoreMutex);
+    SavedGLXBinding substitute;
+
+    for (RestoreFrame& frame : g_restoreFrames) {
+        if (frame.scopeSaved.context == dying) {
+            frame.scopeSaved = substitute;
+        }
+        if (!frame.pending) {
+            continue;
+        }
+        if (frame.pending->displaced.context == dying) {
+            frame.pending->displaced = substitute;
+        }
+        if (frame.pending->natronContext == dying) {
+            substitute = frame.pending->displaced;
+            frame.pending.reset();
+        }
+    }
+
+    return substitute;
+}
+
+} // anonymous namespace
+
+struct ScopedGLXBindingRestore::Imp {
+    const OSGLContext_glx_data* glxInfo = nullptr;
+    bool guiThread = false;
+    // Only used off the GUI thread; there the saved binding lives in the
+    // frame this scope pushed, where a dying context can rewrite it.
+    SavedGLXBinding saved;
+};
+
+ScopedGLXBindingRestore::ScopedGLXBindingRestore()
+    : _imp(new Imp)
+{
+    const OSGLContext_glx_data* glxInfo = appPTR ? appPTR->getGLXData() : nullptr;
+
+    if (!glxInfo || !glxInfo->_imp->x11.display) {
+        return;
+    }
+    _imp->glxInfo = glxInfo;
+    const SavedGLXBinding saved = captureGLXBinding(glxInfo);
+    _imp->guiThread = QThread::isMainThread();
+    if (_imp->guiThread) {
+        std::lock_guard<std::mutex> k(g_restoreMutex);
+        RestoreFrame frame;
+        frame.scopeSaved = saved;
+        g_restoreFrames.push_back(frame);
+    } else {
+        _imp->saved = saved;
+    }
+}
+
+ScopedGLXBindingRestore::~ScopedGLXBindingRestore()
+{
+    if (!_imp->glxInfo) {
+        return;
+    }
+    SavedGLXBinding saved = _imp->saved;
+    if (_imp->guiThread) {
+        std::lock_guard<std::mutex> k(g_restoreMutex);
+        assert(g_restoreFrames.size() > 1);
+        saved = g_restoreFrames.back().scopeSaved;
+        g_restoreFrames.pop_back();
+    }
+    if (!sameGLXBinding(captureGLXBinding(_imp->glxInfo), saved)) {
+        restoreGLXBinding(_imp->glxInfo, saved, "scoped-restore:exit", __builtin_return_address(0));
+    }
+}
+
 typedef void (*GLPFNglproc)(void);
 static GLPFNglproc
 getProcAddress(const OSGLContext_glx_data* data,
@@ -328,6 +517,9 @@ OSGLContext_x11::initGLXData(OSGLContext_glx_data* glxInfo)
     glxInfo->_imp->GetProcAddressARB = (PFNGLXGETPROCADDRESSPROC)dlsym(glxInfo->_imp->handle, "glXGetProcAddressARB");
     glxInfo->_imp->GetVisualFromFBConfig = (PFNGLXGETVISUALFROMFBCONFIGPROC)dlsym(glxInfo->_imp->handle, "glXGetVisualFromFBConfig");
     glxInfo->_imp->MakeContextCurrent = (PFNGLXMAKECONTEXTCURRENTPROC)dlsym(glxInfo->_imp->handle, "glXMakeContextCurrent");
+    glxInfo->_imp->GetCurrentDisplay = (PFNGLXGETCURRENTDISPLAYPROC)dlsym(glxInfo->_imp->handle, "glXGetCurrentDisplay");
+    glxInfo->_imp->GetCurrentDrawable = (PFNGLXGETCURRENTDRAWABLEPROC)dlsym(glxInfo->_imp->handle, "glXGetCurrentDrawable");
+    glxInfo->_imp->GetCurrentReadDrawable = (PFNGLXGETCURRENTREADDRAWABLEPROC)dlsym(glxInfo->_imp->handle, "glXGetCurrentReadDrawable");
     glxInfo->_imp->IsDirect = (PFNGLXISDIRECT)dlsym(glxInfo->_imp->handle, "glXIsDirect");
 
     if ( !glxInfo->_imp->QueryExtension(glxInfo->_imp->x11.display, &glxInfo->_imp->errorBase, &glxInfo->_imp->eventBase) ) {
@@ -840,23 +1032,36 @@ OSGLContext_x11::~OSGLContext_x11()
 
     assert(glxInfo);
 
-
+    // Released before its drawable goes away, so nothing is ever left bound
+    // to a destroyed drawable or context.
+    if (_imp->glxContextHandle) {
+        const SavedGLXBinding displaced = forgetGLXContext(_imp->glxContextHandle);
+        if (glxInfo->_imp->GetCurrentContext() == _imp->glxContextHandle) {
+            // What it displaced was recorded on the GUI thread, so only that
+            // thread gets it back.
+            if (QThread::isMainThread() && displaced.context) {
+                restoreGLXBinding(glxInfo, displaced, "~OSGLContext_x11:restore-before-destroy", __builtin_return_address(0));
+            } else {
+                const StartupGLDiag::GLXBinding before = StartupGLDiag::currentGLXBinding();
+                const bool ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
+                StartupGLDiag::logMakeCurrent("~OSGLContext_x11:unset-before-destroy", __builtin_return_address(0), StartupGLDiag::GLXBinding(), before, ok);
+            }
+        }
+    }
     if (_imp->glxWindowHandle) {
         glxInfo->_imp->DestroyWindow(glxInfo->_imp->x11.display, _imp->glxWindowHandle);
         _imp->glxWindowHandle = 0;
     }
     if (_imp->glxContextHandle) {
-
-        if (glxInfo->_imp->GetCurrentContext() == _imp->glxContextHandle) {
-            glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
-        }
         glxInfo->_imp->DestroyContext(glxInfo->_imp->x11.display, _imp->glxContextHandle);
         _imp->glxContextHandle = 0;
     }
 }
 
 bool
-OSGLContext_x11::makeContextCurrent(const OSGLContext_x11* context)
+OSGLContext_x11::makeContextCurrent(const OSGLContext_x11* context,
+                                    const char* diagTag,
+                                    const void* diagCaller)
 {
     const OSGLContext_glx_data* glxInfo = appPTR->getGLXData();
 
@@ -866,11 +1071,67 @@ OSGLContext_x11::makeContextCurrent(const OSGLContext_x11* context)
         return false;
     }
 
-    if (context) {
-        return glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, context->_imp->glxWindowHandle, context->_imp->glxContextHandle);
-    } else {
-        return glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
+    const bool diag = StartupGLDiag::enabled();
+    StartupGLDiag::GLXBinding before, target;
+    if (diag) {
+        before = StartupGLDiag::currentGLXBinding();
+        if (context) {
+            target.context = context->_imp->glxContextHandle;
+            target.drawable = context->_imp->glxWindowHandle;
+        }
     }
+
+    const bool guiThread = QThread::isMainThread();
+    bool ok;
+    if (context) {
+        bool savedHere = false;
+        if (guiThread) {
+            const SavedGLXBinding current = captureGLXBinding(glxInfo);
+            std::lock_guard<std::mutex> k(g_restoreMutex);
+            std::optional<PendingRestore>& pending = g_restoreFrames.back().pending;
+            if (!pending) {
+                pending = PendingRestore { current, nullptr };
+                savedHere = true;
+            }
+        }
+        ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, context->_imp->glxWindowHandle, context->_imp->glxContextHandle);
+        if (guiThread) {
+            std::lock_guard<std::mutex> k(g_restoreMutex);
+            std::optional<PendingRestore>& pending = g_restoreFrames.back().pending;
+            if (ok && pending) {
+                pending->natronContext = context->_imp->glxContextHandle;
+            } else if (!ok && savedHere) {
+                // A failed glXMakeCurrent leaves the previous binding in
+                // place, so there is nothing to restore later.
+                pending.reset();
+            }
+        }
+    } else {
+        std::optional<PendingRestore> pending;
+        if (guiThread) {
+            pending = takePendingRestore();
+        }
+        if (pending) {
+            const std::string tag = std::string(diagTag ? diagTag : "OSGLContext_x11::makeContextCurrent");
+            if (glxInfo->_imp->GetCurrentContext() != pending->natronContext) {
+                if (diag) {
+                    const StartupGLDiag::GLXBinding now = StartupGLDiag::currentGLXBinding();
+                    StartupGLDiag::logMakeCurrent((tag + ":foreign-binding-kept").c_str(), diagCaller ? diagCaller : __builtin_return_address(0), now, now, true);
+                }
+
+                return true;
+            }
+
+            return restoreGLXBinding(glxInfo, pending->displaced, (tag + ":restore-displaced").c_str(), diagCaller ? diagCaller : __builtin_return_address(0));
+        }
+        ok = glxInfo->_imp->MakeCurrent(glxInfo->_imp->x11.display, None, NULL);
+    }
+
+    if (diag) {
+        StartupGLDiag::logMakeCurrent(diagTag ? diagTag : "OSGLContext_x11::makeContextCurrent", diagCaller ? diagCaller : __builtin_return_address(0), target, before, ok);
+    }
+
+    return ok;
 }
 
 bool
@@ -920,7 +1181,11 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
     if (!glxInfo->_imp->x11.display) {
         return;
     }
-    if (!glxInfo->_imp->MESA_query_renderer) {
+    // The probe binds contexts of its own on whatever thread asks, possibly
+    // over a context Qt believes current there.
+    const ScopedGLXBindingRestore restoreOnExit;
+    if (!glxInfo->_imp->MESA_query_renderer || StartupGLDiag::switchOn(StartupGLDiag::Switch::ForceProbeContext)) {
+        StartupGLDiag::logSwitchAction(StartupGLDiag::Switch::ForceProbeContext, "probed the OpenGL renderer through a probe context");
         std::unique_ptr<OSGLContext_x11> context;
         try {
             context.reset( new OSGLContext_x11(FramebufferConfig(), GLVersion.major, GLVersion.minor, false, GLRendererID(), 0) );
@@ -930,7 +1195,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
             return;
         }
 
-        if ( !makeContextCurrent( context.get() ) ) {
+        if (!makeContextCurrent(context.get(), "getGPUInfos:probe")) {
             return;
         }
 
@@ -938,6 +1203,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
             OSGLContext::checkOpenGLVersion();
         } catch (const std::exception& e) {
             std::cerr << e.what() << std::endl;
+            makeContextCurrent(nullptr, "getGPUInfos:release");
 
             return;
         }
@@ -954,6 +1220,8 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
         info.accelerated = !OSGLContext::isSoftwareRendererName(info.rendererName);
         info.hasUuid = OSGLContext::readCurrentDeviceUuid(getProcAddress(glxInfo, "glGetUnsignedBytei_vEXT"), &info.deviceUuid);
         renderers.push_back(info);
+
+        makeContextCurrent(nullptr, "getGPUInfos:release");
     } else {
         // Just use the first screen
         const int screen = 0;
@@ -1042,7 +1310,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
                     continue;
                 }
 
-                if (!makeContextCurrent(context.get())) {
+                if (!makeContextCurrent(context.get(), "getGPUInfos:probe-mesa")) {
                     ++renderer;
                     continue;
                 }
@@ -1054,6 +1322,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
                     std::cerr << ss.str() << std::endl;
 #endif
                     std::cerr << e.what() << std::endl;
+                    makeContextCurrent(nullptr, "getGPUInfos:release-mesa");
                     ++renderer;
                     continue;
                 }
@@ -1068,7 +1337,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
 
                 renderers.push_back(info);
 
-                makeContextCurrent(0);
+                makeContextCurrent(nullptr, "getGPUInfos:release-mesa");
             }
             ++renderer;
         } while (gotRenderer);

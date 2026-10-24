@@ -135,6 +135,7 @@
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoSmear.h"
 #include "Engine/StandardPaths.h"
+#include "Engine/StartupGLDiag.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/ThreadPool.h"
 #include "Engine/TrackerNode.h"
@@ -748,9 +749,12 @@ AppManager::loadInternal(const CLArgs& cl)
     _imp->_settings = std::make_shared<Settings>();
     _imp->_settings->initializeKnobsPublic();
 
-    bool hasGLForRendering = hasOpenGLForRequirements(eOpenGLRequirementsTypeRendering, 0);
-    if (_imp->hasInitializedOpenGLFunctions && hasGLForRendering) {
-        OSGLContext::getGPUInfos(_imp->openGLRenderers);
+    StartupGLDiag::logActiveSwitches();
+
+    // Probed even when the rendering requirements are not met, since the
+    // About window and the requirements message list what was found.
+    if (_imp->hasInitializedOpenGLFunctions) {
+        _imp->probeOpenGLRenderersOnce();
         for (std::list<OpenGLRendererInfo>::iterator it = _imp->openGLRenderers.begin(); it != _imp->openGLRenderers.end(); ++it) {
             qDebug() << "Found OpenGL Renderer:" << it->rendererName.c_str() << ", Vendor:" << it->vendorName.c_str()
                      << ", OpenGL Version:" << it->glVersionString.c_str() << ", Max. Texture Size" << it->maxTextureSize <<
@@ -909,8 +913,8 @@ AppManager::initializeOpenGLFunctionsOnce(bool createOpenGLContext)
                     vdata.error = rdata.error;
                     rdata.hasRequirements = false;
                     vdata.hasRequirements = false;
-                    AppManagerPrivate::addOpenGLRequirementsString(rdata.error, eOpenGLRequirementsTypeRendering);
-                    AppManagerPrivate::addOpenGLRequirementsString(vdata.error, eOpenGLRequirementsTypeViewer);
+                    _imp->addOpenGLRequirementsString(rdata.error, eOpenGLRequirementsTypeRendering);
+                    _imp->addOpenGLRequirementsString(vdata.error, eOpenGLRequirementsTypeViewer);
                 }
 
 
@@ -923,8 +927,8 @@ AppManager::initializeOpenGLFunctionsOnce(bool createOpenGLContext)
                 vdata.hasRequirements = false;
                 vdata.error = tr("Error while creating OpenGL context: %1").arg(QString::fromUtf8(e.what()));
                 rdata.error = tr("Error while creating OpenGL context: %1").arg(QString::fromUtf8(e.what()));
-                AppManagerPrivate::addOpenGLRequirementsString(rdata.error, eOpenGLRequirementsTypeRendering);
-                AppManagerPrivate::addOpenGLRequirementsString(vdata.error, eOpenGLRequirementsTypeViewer);
+                _imp->addOpenGLRequirementsString(rdata.error, eOpenGLRequirementsTypeRendering);
+                _imp->addOpenGLRequirementsString(vdata.error, eOpenGLRequirementsTypeViewer);
                 checkRenderingReq = false;
             }
             if (!glContext) {

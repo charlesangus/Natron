@@ -4615,6 +4615,9 @@ void
 EffectInstance::dettachAllOpenGLContexts()
 {
     QMutexLocker<QRecursiveMutex> locker(&_imp->attachedContextsMutex);
+    // Runs on the GUI thread when a node is deactivated, where the final
+    // unset would otherwise drop Qt's own context.
+    const OSGLContextBindingRestore restoreOnExit;
 
     for (EffectInstance::OpenGLContextEffectsMap::iterator it = _imp->attachedContexts.begin(); it != _imp->attachedContexts.end(); ++it) {
         OSGLContextPtr context = it->first.lock();

@@ -576,13 +576,14 @@ AboutWindow::updateLibrariesVersions()
                        .arg( appPTR->getHoedownVersion() )
                        .arg( appPTR->getCeresVersion() )
                        .arg( appPTR->getOpenMVGVersion() );
-    std::list<OpenGLRendererInfo> openGLRenderers;
-    OSGLContext::getGPUInfos(openGLRenderers);
+    // Probing again here would bind GL contexts on the GUI thread under Qt's
+    // own, so the list comes from the startup probe.
+    const std::list<OpenGLRendererInfo>& openGLRenderers = appPTR->getOpenGLRenderers();
     if ( !openGLRenderers.empty() ) {
         libsText += (QLatin1String("<h3>") +
                      tr("OpenGL renderers:") +
                      QLatin1String("</h3>"));
-        for (std::list<OpenGLRendererInfo>::iterator it = openGLRenderers.begin(); it != openGLRenderers.end(); ++it) {
+        for (std::list<OpenGLRendererInfo>::const_iterator it = openGLRenderers.begin(); it != openGLRenderers.end(); ++it) {
             libsText += (QLatin1String("<p>") +
                          tr("%1 from %2").arg( QString::fromUtf8( it->rendererName.c_str() ) )
                                         .arg( QString::fromUtf8( it->vendorName.c_str() ) ) +

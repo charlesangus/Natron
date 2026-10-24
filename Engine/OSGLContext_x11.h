@@ -70,7 +70,9 @@ public:
 
     static void initGLXData(OSGLContext_glx_data* glxInfo);
     static void destroyGLXData(OSGLContext_glx_data* glxInfo);
-    static bool makeContextCurrent(const OSGLContext_x11* context);
+    static bool makeContextCurrent(const OSGLContext_x11* context,
+                                   const char* diagTag = nullptr,
+                                   const void* diagCaller = nullptr);
     static bool threadHasACurrentContext();
     static void getGPUInfos(std::list<OpenGLRendererInfo>& renderers);
 
@@ -81,6 +83,21 @@ public:
 private:
     friend struct OSGLContext_x11Private;
     std::unique_ptr<OSGLContext_x11Private> _imp;
+};
+
+// Puts back the calling thread's GLX context and drawable when it goes out of
+// scope, however the scope exits.
+class ScopedGLXBindingRestore {
+public:
+    ScopedGLXBindingRestore();
+    ~ScopedGLXBindingRestore();
+
+    ScopedGLXBindingRestore(const ScopedGLXBindingRestore&) = delete;
+    ScopedGLXBindingRestore& operator=(const ScopedGLXBindingRestore&) = delete;
+
+private:
+    struct Imp;
+    std::unique_ptr<Imp> _imp;
 };
 
 NATRON_NAMESPACE_EXIT

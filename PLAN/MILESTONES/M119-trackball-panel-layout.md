@@ -233,3 +233,7 @@ These briefs name every file a losing axis could leave behind; the PM narrows ea
 - 2026-10-24 — **Real cursor is hidden during a reveal stroke (user, on recommendation):** the puck is the feedback.
 - 2026-10-24 — **The following HUD is a frameless click-through top-level window that flips at screen edges (user, on recommendation).**
 - 2026-10-24 — **WidgetCursor feedback added (user):** the mode widget replaces the cursor on entering global mode, follows the pointer, and freezes in place on press. Task M119.P1.T15, which depends on T14.
+- 2026-10-24 — **Claimed with M138 in new lanes 3 and 4 (user).** Freshness check at claim: anchors (`ColorWheelWidget.cpp:584`, `bed0a3207`) still hold; deps M56, M69 are done.
+- 2026-10-24 — **T10 and T3 have no unit test:** `engage()` needs a real `Gui`, and GuiTests has no harness that builds a Grade properties panel. Their checks (re-engage shows "C"; left/right edges at 500 px) go into T9's Xvfb script.
+- 2026-10-24 — **T13 duplicates the wheel's ring code** in `ColorModeDiscWidget.cpp` because `ColorWheelWidget` was being edited in parallel; T14 makes both share one ring function.
+- 2026-10-24 — Code so far: T10 `ebcc66784`, T5 `308e64a35`, T13 `0751c682e`, T1–T3 `e73dfd841`; checked off after T9's build.

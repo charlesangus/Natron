@@ -72,25 +72,25 @@ The milestone also fixes the two preset bugs found in the M93 - Serialization Bo
 
 ## Phase 114.2: Commands outlive their widgets
 
-- [ ] M114.P2.T1 — Make knob undo commands address engine knobs
+- [x] M114.P2.T1 — Make knob undo commands address engine knobs
   - files: `Gui/KnobUndoCommand.h`, `Gui/KnobUndoCommand.cpp`, `Gui/KnobGui.h`, `Gui/KnobGui.cpp`, `Gui/KnobGui20.cpp`
   - approach: `KnobUndoCommand<T>`, `MultipleKnobEditsUndoCommand` and `PasteUndoCommand` store `KnobIWPtr`. They do their value and keyframe work on the knob, and look up `knob->getKnobGuiPointer()` only for optional refresh. If the knob is dead, the command goes obsolete. Constructors may still take a `KnobGuiPtr`. Keep the merge semantics (`Tests/ColorKnobUndoMerge_Test.cpp`, `Tests/KnobUndoHash_Test.cpp` stay green).
   - verify: `tools/ci/remote/build.sh debug --tests` and the P2.T3 script.
   - size: L
 
-- [ ] M114.P2.T2 — Audit every other command for widget pointers that die on rebuild, and re-key them
+- [x] M114.P2.T2 — Audit every other command for widget pointers that die on rebuild, and re-key them
   - files: `Gui/KnobGuiValue.cpp` (`DimensionsFoldCommand`), `Gui/ColorKnobEditSession.cpp`, `Gui/CurveEditorUndoRedo.h`, `Gui/CurveEditorUndoRedo.cpp`, `Gui/DopeSheetEditorUndoRedo.cpp`
   - approach: Wherever a command holds a `KnobGui`, `CurveGui` or `DSKnob` and only needs the knob, re-key it to the knob, resolving the view object at execution time. List the commands left untouched, and why (`NodeGraphUndoRedo`, `MultiInstancePanel`, `RotoPanel` and Roto/Tracker hold nodes or items, not knob GUIs), in the PR.
   - verify: `tools/ci/remote/build.sh debug --tests`; P2.T3 covers a curve key edit across a rebuild.
   - size: M
 
-- [ ] M114.P2.T3 — Delete the stack-clearing workaround, and test history across a knob GUI rebuild
+- [x] M114.P2.T3 — Delete the stack-clearing workaround, and test history across a knob GUI rebuild
   - files: `Gui/KnobGuiContainerHelper.h`, `Gui/KnobGuiContainerHelper.cpp`, `Tests/gui/m114_rebuild_undo.py` (new)
   - approach: Remove `clearUndoRedoStack`, `cmdBeingPushed`, `clearedStackDuringPush`, `onDeleteCurCmdLater` and the call in `refreshGuiForKnobsChanges`. Test: edit a plugin knob and a user knob, add a user knob via Manage User Params (`recreateUserKnobs`), key a knob in the curve editor, then undo everything in order and redo.
   - verify: `tools/ci/remote/build.sh fast`, then `Tests/gui/run-gui-test.sh Tests/gui/m114_rebuild_undo.py <AppImage>` exits 0.
   - size: M
 
-- [ ] M114.P2.T4 — Record edits to knobs that do not trigger a render
+- [x] M114.P2.T4 — Record edits to knobs that do not trigger a render
   - files: `Gui/KnobGui.cpp`, `Gui/KnobUndoCommand.cpp`, `Tests/UndoHistory_Test.cpp`, `Tests/gui/m114_global_undo.py`
   - approach: `KnobGui::pushUndoCommand` (`Gui/KnobGui.cpp` ~:171) applies and discards the command for a knob that cannot be undone or does not trigger a render, so a node label, the label's font size, a note or any other non-render project knob never reaches the history. Push every user edit of a persistent project knob into the global history whatever its render flag; keep the discard only for knobs that are genuinely not undoable (buttons, transient UI-only knobs). Add one Xvfb check that changes Blur1's label font size from the Node page and undoes it with Ctrl+Z.
   - verify: the phase build; the new unit case and the GUI check pass.
@@ -128,6 +128,7 @@ The milestone also fixes the two preset bugs found in the M93 - Serialization Bo
 
 ## Decisions
 
+- 2026-10-24 — **Phase 2 verified (PM):** release build on f389b8f3c is 391/391 on both legs. On that AppImage `m114_global_undo.py` has 0 failures, including the new label-font-size section; `m114_rebuild_undo.py` has 0 failures (setup 6, edits 12, rebuild 3, after-rebuild 4, undo-redo 14). Both script fixes were test-side. PySide invalidates `findChildren` wrappers when their parent panel's wrapper is collected, so the script types while it holds the panel. Window shortcuts only fire once the main window is active again after typing into a panel. Commands left untouched in P2.T2: node graph, MultiInstancePanel, RotoPanel and the engine roto/tracker commands hold nodes or items; NodeGui's command wraps an engine command; the script editor's holds only the editor; restore-defaults and set-expression already address the knob; the colour edit session pushes the knob value command.
 - 2026-10-24 — **Phase 1 verified; non-render knob edits join Phase 2 (PM):** fast build on ea293de30 is 390/390 on both legs, and `m114_global_undo.py` (script 3b06c630f) reports 0 failures against that AppImage. The script needed only test fixes: a viewer for an empty project, activating the window before the graph drag, live curve-editor and dope-sheet widgets, and typing into a visible parameter. Its first typing target was the hidden label font-size box on the Node page, and that edit never reached the history because `KnobGui::pushUndoCommand` (`Gui/KnobGui.cpp` ~:171) discards commands for knobs that do not trigger a render. That predates M114, but it breaks the milestone's goal that every project edit is recorded, so P2.T4 fixes it.
 - 2026-10-24 — **User decisions:** panel undo/redo buttons are a filtered view of the global history (a panel undo is allowed when no later entry touches that node; graph moves and connections don't block it). A preset apply resets absent knobs to default except: label, sublabel and disable; Read/Write file paths; roto/tracker content absent from the preset; and the target's own user knobs (undo removes user knobs the preset added).
 - 2026-10-24 — **Elaborated from the stub (PM, opus consultant).** The stub's `WriteNode` encoder-swap case is gone (M76 deleted `Engine/WriteNode.cpp`); knob-GUI rebuilds through `recreateUserKnobs` still lose history, which Phase 114.2 fixes. The split with M92 - Linked Nodes stays: M114 changes how commands are pushed and what they address; M92's new link commands should address knobs (P2.T1) and list every node they touch. M106.P2.T1 should reuse this milestone's touched-node sets and obsolete skipping.

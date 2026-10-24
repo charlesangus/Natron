@@ -38,8 +38,10 @@
 #include "NativeParity.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScheduler.h"
 
@@ -70,6 +72,13 @@ struct GpuParityImage {
     int nComps = 4;
     std::vector<float> pixels;
     GpuViewLayout layout;
+};
+
+// An extra layer of input `inputNb` for runRenderGpu(), read in addition to the input's own image.
+struct GpuParityLayerImage {
+    int inputNb = 0;
+    ImageLayerDesc layer;
+    GpuParityImage image;
 };
 
 struct GpuRunResult {
@@ -132,16 +141,19 @@ private:
 };
 
 // Uploads the images, records effect.renderGpu() over outputRect into output views laid out as
-// `layout` says, submits, waits and downloads. `query.nComps` is the output's component count. The
-// mask, when given, goes to the effect's mask input. The test fails when the effect does not accept
-// the query or does not render.
+// `layout` says, submits, waits and downloads. `query.nComps` is the output's component count and
+// `query.plane` the plane rendered, taken as RGBA or Alpha by nComps when left unset. The mask, when
+// given, goes to the effect's mask input, which only a StagedImageEffect has. `layers` are uploaded
+// into GpuRenderArgs::layerInputs. The test fails when the effect does not accept the query or does
+// not render.
 GpuRunResult runRenderGpu(GpuParityRuntime& runtime,
-                          StagedImageEffect& effect,
+                          NativeEffectBase& effect,
                           const GpuQuery& query,
                           const std::vector<GpuParityImage>& inputs,
                           const GpuParityImage* mask,
                           const RectI& outputRect,
-                          const GpuViewLayout& layout = GpuViewLayout());
+                          const GpuViewLayout& layout = GpuViewLayout(),
+                          const std::vector<GpuParityLayerImage>& layers = std::vector<GpuParityLayerImage>());
 
 #endif // NATRON_HAVE_GPU
 

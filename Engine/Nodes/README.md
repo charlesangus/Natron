@@ -824,13 +824,14 @@ an integer `which`).
   transform and samples the whole source.
 - *Offset form*: `offset(params, ctx)` returns the whole-pixel translation at
   the render scale (output pixel (i, j) shows source pixel (i - x, j - y)). It
-  offers no matrix and takes none, and is CPU only. It may add
-  `rowMatte(params, ctx)`, a `ResampleRowMatte` that weights each shifted row
-  (an empty one weights nothing), and
+  offers no matrix and takes none. It may add `matte(params, ctx)`, a
+  separable `ResampleMatte` of a column and a row weight that both executors
+  apply to each shifted pixel (a zero weight writes 0, one of 1 or more keeps
+  the pixel), and
   `static constexpr bool kClipsSourceToRoI = true`, to read the source as zero
   outside the region of interest it was fetched for, as an OpenFX host shows it.
   Position is the plain form. Crop is the full one: its offset is the
-  translation `reformat` needs, its row matte is the black border and the
+  translation `reformat` needs, its matte is the black border and the
   softness fade, and it clips the source to its region of interest.
 
 **Composite** is a fold, not a fixed source list. `inputs()` returns a

@@ -323,11 +323,10 @@ concept GpuCompositeOp = CompositeOp<OP> && requires(const OP& op, const typenam
  * with it whether the node offers its matrix.
  *
  * The offset form has offset(), the whole-pixel translation at the context's scale; it neither
- * offers a matrix nor accepts one. It may also have rowMatte(params, context), returning the
- * ResampleRowMatte that weights each shifted row (an empty one weights nothing), and
+ * offers a matrix nor accepts one. It may also have matte(params, context), returning the
+ * separable ResampleMatte that weighs each shifted pixel (an unset one weighs nothing), and
  * `static constexpr bool kClipsSourceToRoI = true` to read the source as zero outside the region
- * of interest it was fetched for. Either form may run on the GPU (GpuResampleOp), except that the
- * GPU never applies a row matte: a request that carries one stays on the CPU.
+ * of interest it was fetched for. Either form may run on the GPU (GpuResampleOp), matte included.
  **/
 template <typename OP>
 concept MatrixResampleMembers = requires(const OP& op, const typename OP::Params& params, const PassContext& context, double amount, bool invert, TransformMath::Mat3* matrix) {
@@ -356,7 +355,7 @@ concept OffsetResampleOp = ResampleOp<OP> && OffsetResampleMembers<OP>;
  * `static constexpr bool kResamplesOnGpu = true`; every other Resample op stays on the CPU. The
  * GPU renders the matrix form (GpuMatrixResampleOp) whenever its sampling matrices are affine and
  * no transform is concatenated into its source, motion and directional blur included, and the
- * offset form (GpuOffsetResampleOp) whenever its request carries no row matte.
+ * offset form (GpuOffsetResampleOp) always.
  *
  * Any Resample op may also have costHint(params, context), returning
  * std::optional<GpuCostHint>, to describe its cost to the GPU cost model.

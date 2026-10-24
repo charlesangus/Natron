@@ -49,10 +49,12 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/RawDecodeSupport.h"
 #include "Engine/Nodes/Raw/RawDevelop.h"
+#include "Engine/Nodes/Raw/RawHighlights.h"
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_USING
@@ -77,12 +79,21 @@ static_assert(kRowShift % kPeriod == 0, "the shift between the bands must be who
 static_assert(kWidth % kPeriod == 0, "the frame must hold whole periods");
 static_assert(kCompareFirstRow - kRowShift >= 128 && kCompareFirstRow + kCompareRows - kRowShift <= kBottomBandRows, "the compared rows must lie inside the bottom band, away from the image edge");
 
-// The developed chain, rendered over bands of rows, must stay under half the bytes of the whole
-// frame as float RGBA. Rendering the frame in one piece costs several times that (every stage
-// holds a full-frame image), so the bound catches a path that materialises the frame while
-// leaving room for the bands' own stages, the read-back planes and the demosaic scratch.
+// With every stage asking only for what its window needs (Highlights set to Clip), the developed
+// chain rendered over bands of rows must stay under half the bytes of the whole frame as float
+// RGBA. Rendering the frame in one piece costs several times that (every stage holds a full-frame
+// image), so the bound catches a path that materialises the frame while leaving room for the
+// bands' own stages, the read-back planes and the demosaic scratch.
 constexpr std::size_t kFrameRgbaBytes = (std::size_t)kWidth * (std::size_t)kHeight * 4 * sizeof(float);
-constexpr std::size_t kMaxPeakGrowthBytes = kFrameRgbaBytes / 2;
+constexpr std::size_t kMaxBandGrowthBytes = kFrameRgbaBytes / 2;
+
+// Inpaint Opposed, the default, measures a chrominance over the whole mosaic, so it asks for its
+// whole source. The test source never changes, so the node cache keeps whole the outputs of the
+// source and of the two stages above Highlights: three one-channel frames. Highlights reads its
+// whole source in place and keeps three floats, so beyond those frames the bands cost what they
+// cost with Clip. A second whole-frame copy, or any RGBA frame, goes over.
+constexpr std::size_t kMosaicBytes = (std::size_t)kWidth * (std::size_t)kHeight * sizeof(float);
+constexpr std::size_t kMaxOpposedGrowthBytes = 3 * kMosaicBytes + kMaxBandGrowthBytes;
 
 float
 scene(int x,
@@ -169,45 +180,63 @@ TEST_F(RawLargeTest, HundredMegapixelMosaicDevelopsAtTheFarCornerWithinTheMemory
 
     const RawDevelop::Chain chain = RawDevelop::buildChain(source);
     ASSERT_TRUE(chain.complete());
+    KnobChoicePtr highlightsMode = chain.highlights->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawHighlightsParamMode);
+    ASSERT_TRUE(bool(highlightsMode));
 
     const std::size_t peakBefore = peakResidentBytes();
     ASSERT_GT(peakBefore, 0u);
 
-    std::string error;
-    RenderedPlane bottom;
-    ASSERT_TRUE(renderRawTestPlane(chain.inputColor, RectI(0, 0, kWidth, kBottomBandRows), &bottom, &error)) << error;
-    RenderedPlane top;
-    ASSERT_TRUE(renderRawTestPlane(chain.inputColor, RectI(0, kHeight - kTopBandRows, kWidth, kHeight), &top, &error)) << error;
-    ASSERT_GE(bottom.channels.size(), 3u);
-    ASSERT_EQ(bottom.channels.size(), top.channels.size());
+    // Renders the two bands and checks that the far corner matches the near one and is written.
+    const auto developBands = [&](const char* method) {
+        SCOPED_TRACE(method);
+        std::string error;
+        RenderedPlane bottom;
+        ASSERT_TRUE(renderRawTestPlane(chain.inputColor, RectI(0, 0, kWidth, kBottomBandRows), &bottom, &error)) << error;
+        RenderedPlane top;
+        ASSERT_TRUE(renderRawTestPlane(chain.inputColor, RectI(0, kHeight - kTopBandRows, kWidth, kHeight), &top, &error)) << error;
+        ASSERT_GE(bottom.channels.size(), 3u);
+        ASSERT_EQ(bottom.channels.size(), top.channels.size());
 
-    std::size_t mismatches = 0;
-    for (int y = kCompareFirstRow; y < kCompareFirstRow + kCompareRows; ++y) {
-        for (int x = 0; x < kWidth; ++x) {
-            for (int c = 0; c < 3; ++c) {
-                const float farValue = rawTestPlaneValue(top, x, y, c);
-                const float nearValue = rawTestPlaneValue(bottom, x, y - kRowShift, c);
-                if (!(std::fabs(farValue - nearValue) <= 1e-5f)) {
-                    ++mismatches;
+        std::size_t mismatches = 0;
+        for (int y = kCompareFirstRow; y < kCompareFirstRow + kCompareRows; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    const float farValue = rawTestPlaneValue(top, x, y, c);
+                    const float nearValue = rawTestPlaneValue(bottom, x, y - kRowShift, c);
+                    if (!(std::fabs(farValue - nearValue) <= 1e-5f)) {
+                        ++mismatches;
+                    }
                 }
             }
         }
-    }
-    EXPECT_EQ(0u, mismatches);
+        EXPECT_EQ(0u, mismatches);
 
-    // Nothing else writes the corner, so a wrong offset leaves zeros (or garbage) there.
-    for (int y = kHeight - 8; y < kHeight; ++y) {
-        for (int x = kWidth - 8; x < kWidth; ++x) {
-            for (int c = 0; c < 3; ++c) {
-                const float v = rawTestPlaneValue(top, x, y, c);
-                EXPECT_TRUE(std::isfinite(v) && (v > 0.f)) << "(" << x << ", " << y << ") channel " << c << " = " << v;
+        // Nothing else writes the corner, so a wrong offset leaves zeros (or garbage) there.
+        for (int y = kHeight - 8; y < kHeight; ++y) {
+            for (int x = kWidth - 8; x < kWidth; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    const float v = rawTestPlaneValue(top, x, y, c);
+                    EXPECT_TRUE(std::isfinite(v) && (v > 0.f)) << "(" << x << ", " << y << ") channel " << c << " = " << v;
+                }
             }
         }
-    }
+    };
+    const auto growthSinceStart = [peakBefore]() {
+        const std::size_t peak = peakResidentBytes();
 
-    const std::size_t peakAfter = peakResidentBytes();
-    const std::size_t growth = (peakAfter > peakBefore) ? (peakAfter - peakBefore) : 0;
-    EXPECT_LT(growth, kMaxPeakGrowthBytes) << "peak RSS grew by " << growth << " bytes, bound " << kMaxPeakGrowthBytes << " (half of one " << kWidth << "x" << kHeight << " float RGBA frame)";
+        return (peak > peakBefore) ? (peak - peakBefore) : 0;
+    };
+
+    // The peak only rises, so the band-limited chain goes first.
+    highlightsMode->setValue((int)eRawHighlightsModeClip);
+    developBands("Clip");
+    const std::size_t bandGrowth = growthSinceStart();
+    EXPECT_LT(bandGrowth, kMaxBandGrowthBytes) << "with Clip, peak RSS grew by " << bandGrowth << " bytes, bound " << kMaxBandGrowthBytes << " (half of one " << kWidth << "x" << kHeight << " float RGBA frame)";
+
+    highlightsMode->setValue((int)eRawHighlightsModeOpposed);
+    developBands("Inpaint Opposed");
+    const std::size_t opposedGrowth = growthSinceStart();
+    EXPECT_LT(opposedGrowth, kMaxOpposedGrowthBytes) << "with Inpaint Opposed, peak RSS grew by " << opposedGrowth << " bytes, bound " << kMaxOpposedGrowthBytes << " (three one-channel " << kWidth << "x" << kHeight << " frames and the Clip bound)";
 }
 
 // Two Reads of one file, and threads asking the decode cache for different parts of it at once,
@@ -251,10 +280,16 @@ TEST_F(RawLargeTest, TwoReadsAndConcurrentRequestsOfOneFileDecodeOnce)
     EXPECT_EQ(0, failures.load());
 
     const RectI window(header->window.x1 + 37, header->window.y1 + 23, header->window.x1 + 37 + 48, header->window.y1 + 23 + 40);
+    // A render that bypasses the cache empties every cache, which purges the Reads and drops the
+    // decoded file with them, as Clear All Caches does. Only the image cache is emptied here, so
+    // that the second Read renders instead of reusing the first one's image, and both go to the
+    // decode cache.
     RenderedPlane a;
     RenderedPlane b;
-    ASSERT_TRUE(renderRawTestPlane(first, window, &a, &error)) << error;
-    ASSERT_TRUE(renderRawTestPlane(second, window, &b, &error)) << error;
+    appPTR->clearNodeCache();
+    ASSERT_TRUE(renderRawTestPlane(first, window, &a, &error, false)) << error;
+    appPTR->clearNodeCache();
+    ASSERT_TRUE(renderRawTestPlane(second, window, &b, &error, false)) << error;
     EXPECT_EQ(a.pixels, b.pixels);
 
     EXPECT_EQ(1, decodes.load());

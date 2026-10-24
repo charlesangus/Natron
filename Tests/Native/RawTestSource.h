@@ -265,13 +265,17 @@ rawTestMetadata(const std::string& pattern,
 }
 
 /**
- * @brief Renders the colour layer of node over window, bypassing the cache.
+ * @brief Renders the colour layer of node over window. With byPassCache (the default) the render
+ * bypasses the cache and empties every cache before and after, as renderNodePlanesDirect() does,
+ * which purges the nodes too: a Read drops its decoded file. Without it the caches are left as
+ * they are.
  **/
 inline bool
 renderRawTestPlane(const NodePtr& node,
                    const RectI& window,
                    RenderedPlane* plane,
-                   std::string* error)
+                   std::string* error,
+                   bool byPassCache = true)
 {
     std::list<ImageLayerDesc> layers;
 
@@ -280,7 +284,7 @@ renderRawTestPlane(const NodePtr& node,
         if (it->isColorLayer()) {
             std::list<ImageLayerDesc> colour(1, *it);
             std::vector<RenderedPlane> planes;
-            if (!renderNodePlanesDirect(node, 1., ViewIdx(0), 0, window, colour, &planes, error) || (planes.size() != 1)) {
+            if (!renderNodePlanesDirect(node, 1., ViewIdx(0), 0, window, colour, &planes, error, byPassCache) || (planes.size() != 1)) {
                 return false;
             }
             *plane = planes[0];

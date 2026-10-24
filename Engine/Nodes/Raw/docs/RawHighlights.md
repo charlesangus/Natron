@@ -15,8 +15,9 @@ Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
   threshold x the `raw/wb_applied` multiplier of each colour. A clipped photosite becomes the
   larger of itself and the cube of the mean cube roots of the opposed colours in its 3x3
   neighbourhood, plus a chrominance offset. That offset is measured over the whole image on the
-  unclipped photosites next to clipped ones. The node reads the whole source for it, once per
-  source and settings, so every tile agrees. Linear data gets darktable's linear variant.
+  unclipped photosites next to clipped ones. The node asks for the whole source and reads it for
+  the offset in place, once per source and settings, so every tile agrees; each render copies
+  only its window with a 2-photosite halo. Linear data gets darktable's linear variant.
 - **Reconstruct in LCh** works on Bayer and X-Trans mosaics with a 2-photosite halo, as darktable's
   `process_lch_bayer()` and `process_lch_xtrans()` do. On data without a CFA it is Inpaint
   Opposed, as in darktable.

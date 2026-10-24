@@ -36,6 +36,8 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstddef>
+#include <optional>
 #include <vector>
 
 #include "Engine/AppManager.h"
@@ -120,19 +122,25 @@ struct CfaLookup {
 };
 
 /**
- * @brief A top-down buffer read with image coordinates: (row, col) counted from the top-left of
- * the image's region of definition.
+ * @brief Pixels read with image coordinates: (row, col) counted from the top-left of the
+ * image's region of definition, from a top-down buffer or in place from a source image.
  **/
 struct ImageView {
-    const RawNodeSupport::TopDownBuffer* buffer = nullptr;
+    const float* base = nullptr;
+    std::ptrdiff_t rowStride = 0;
+    int nComps = 0;
     int row0 = 0;
     int col0 = 0;
     int imageWidth = 0;
     int imageHeight = 0;
 
+    ImageView() = default;
+
     ImageView(const RawNodeSupport::TopDownBuffer& b,
               const RectI& rod)
-        : buffer(&b)
+        : base(b.data.data())
+        , rowStride((std::ptrdiff_t)b.width() * b.nComps)
+        , nComps(b.nComps)
         , row0(rod.y2 - b.rect.y2)
         , col0(b.rect.x1 - rod.x1)
         , imageWidth(rod.width())
@@ -140,10 +148,42 @@ struct ImageView {
     {
     }
 
+    /**
+     * @brief A view of rod read in place from source, or nullopt when the source does not hold
+     * all of rod.
+     **/
+    static std::optional<ImageView> inPlace(const RawNodeSupport::LockedSource& source,
+                                            const RectI& rod)
+    {
+        if (!source.access || rod.isNull() || !source.bounds.contains(rod)) {
+            return std::nullopt;
+        }
+        const float* top = (const float*)source.access->pixelAt(rod.x1, rod.y2 - 1);
+        if (!top) {
+            return std::nullopt;
+        }
+        std::ptrdiff_t stride = 0;
+        if (rod.height() > 1) {
+            const float* next = (const float*)source.access->pixelAt(rod.x1, rod.y2 - 2);
+            if (!next) {
+                return std::nullopt;
+            }
+            stride = next - top;
+        }
+        ImageView view;
+        view.base = top;
+        view.rowStride = stride;
+        view.nComps = source.nComps;
+        view.imageWidth = rod.width();
+        view.imageHeight = rod.height();
+
+        return view;
+    }
+
     const float* pixel(int row,
                        int col) const
     {
-        return &buffer->data[((std::size_t)(row - row0) * (std::size_t)buffer->width() + (std::size_t)(col - col0)) * (std::size_t)buffer->nComps];
+        return base + (std::ptrdiff_t)(row - row0) * rowStride + (std::ptrdiff_t)(col - col0) * nComps;
     }
 
     float at(int row,
@@ -718,9 +758,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     const RectI& roi = args.roi;
 
     RectI need = roi;
-    if (mode == eRawHighlightsModeOpposed) {
-        need = s.sourceRoD;
-    } else if (mode == eRawHighlightsModeLCh) {
+    if ((mode == eRawHighlightsModeOpposed) || (mode == eRawHighlightsModeLCh)) {
         need = RectI(roi.x1 - 2, roi.y1 - 2, roi.x2 + 2, roi.y2 + 2).intersect(s.sourceRoD);
     }
     RawNodeSupport::TopDownBuffer buffer;
@@ -739,10 +777,20 @@ RawHighlights::renderOp(const RenderActionArgs& args,
         const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
         std::lock_guard<std::mutex> lock(_chromaMutex);
         if (!_chromaValid || (_chromaKey != key)) {
+            // The whole source is read in place: a copy would hold a second whole frame during
+            // the measurement. A source that does not hold the whole region is copied instead,
+            // with zeros where it has no pixels.
+            std::optional<ImageView> whole = ImageView::inPlace(source, s.sourceRoD);
+            RawNodeSupport::TopDownBuffer wholeBuffer;
+            if (!whole) {
+                wholeBuffer.allocate(s.sourceRoD, source.nComps);
+                RawNodeSupport::readTopDown(source, &wholeBuffer, parallel);
+                whole.emplace(wholeBuffer, s.sourceRoD);
+            }
             if (hasCfa) {
-                _chroma = opposedChroma(in, CfaLookup(s.layout, s.sourceRoD), clips, parallel);
+                _chroma = opposedChroma(*whole, CfaLookup(s.layout, s.sourceRoD), clips, parallel);
             } else if (nComps >= 3) {
-                _chroma = linearOpposedChroma(in, clips, parallel);
+                _chroma = linearOpposedChroma(*whole, clips, parallel);
             } else {
                 _chroma = { 0.f, 0.f, 0.f };
             }

@@ -50,12 +50,13 @@ CLANG_DIAG_ON(uninitialized)
 
 #include <ofxNatron.h>
 
-#include "Engine/Curve.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/TrackerContext.h"
@@ -79,7 +80,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/TableModelView.h"
 
 #define kTrackCenterName "center"
-#define kTrackInvertName "invert"
 
 #define COL_ENABLED 0
 #define COL_SCRIPT_NAME 1
@@ -2306,14 +2306,12 @@ getCornerPinPoint(Node* node,
                   bool isFrom,
                   int index)
 {
-    assert(0 <= index && index < 4);
-    QString name = isFrom ? QString::fromUtf8("from%1").arg(index + 1) : QString::fromUtf8("to%1").arg(index + 1);
-    KnobIPtr knob = node->getKnobByName( name.toStdString() );
-    assert(knob);
-    KnobDoublePtr  ret = std::dynamic_pointer_cast<KnobDouble>(knob);
-    assert(ret);
+    static const char* const fromNames[4] = { kCornerPinNodeParamFrom1, kCornerPinNodeParamFrom2, kCornerPinNodeParamFrom3, kCornerPinNodeParamFrom4 };
+    static const char* const toNames[4] = { kCornerPinNodeParamTo1, kCornerPinNodeParamTo2, kCornerPinNodeParamTo3, kCornerPinNodeParamTo4 };
 
-    return ret;
+    assert(0 <= index && index < 4);
+
+    return std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(isFrom ? fromNames[index] : toNames[index]));
 }
 }
 
@@ -2334,10 +2332,12 @@ TrackerPanelPrivateV1::createCornerPinFromSelection(const std::list<Node*> & sel
     int i = 0;
     for (std::list<Node*>::const_iterator it = selection.begin(); it != selection.end(); ++it, ++i) {
         centers[i] = getCenterKnobForTracker(*it);
-        assert(centers[i]);
+        if (!centers[i]) {
+            return;
+        }
     }
     GuiAppInstancePtr app = publicInterface->getGui()->getApp();
-    CreateNodeArgs args(PLUGINID_OFX_CORNERPIN, publicInterface->getMainInstance()->getGroup() );
+    CreateNodeArgs args(PLUGINID_NATRON_CORNERPIN, publicInterface->getMainInstance()->getGroup());
     args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
     args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
     NodePtr cornerPin = app->createNode(args);
@@ -2366,13 +2366,14 @@ TrackerPanelPrivateV1::createCornerPinFromSelection(const std::list<Node*> & sel
 
     for (unsigned int i = 0; i < selection.size(); ++i) {
         fromPoints[i] = getCornerPinPoint(cornerPin.get(), true, i);
-        assert(fromPoints[i] && centers[i]);
+        toPoints[i] = getCornerPinPoint(cornerPin.get(), false, i);
+        if (!fromPoints[i] || !toPoints[i]) {
+            continue;
+        }
         for (int j = 0; j < fromPoints[i]->getDimension(); ++j) {
             fromPoints[i]->setValue(centers[i]->getValueAtTime(timeForFromPoints, j), ViewSpec::all(), j);
         }
 
-        toPoints[i] = getCornerPinPoint(cornerPin.get(), false, i);
-        assert(toPoints[i]);
         if (!linked) {
             toPoints[i]->cloneAndUpdateGui( centers[i].get() );
         } else {
@@ -2390,20 +2391,18 @@ TrackerPanelPrivateV1::createCornerPinFromSelection(const std::list<Node*> & sel
 
     ///Disable all non used points
     for (unsigned int i = selection.size(); i < 4; ++i) {
-        QString enableName = QString::fromUtf8("enable%1").arg(i + 1);
-        KnobIPtr knob = cornerPin->getKnobByName( enableName.toStdString() );
-        assert(knob);
-        KnobBool* enableKnob = dynamic_cast<KnobBool*>( knob.get() );
-        assert(enableKnob);
-        enableKnob->setValue(false);
+        static const char* const enableNames[4] = { kCornerPinNodeParamEnable1, kCornerPinNodeParamEnable2, kCornerPinNodeParamEnable3, kCornerPinNodeParamEnable4 };
+        KnobBoolPtr enableKnob = std::dynamic_pointer_cast<KnobBool>(cornerPin->getKnobByName(enableNames[i]));
+        if (enableKnob) {
+            enableKnob->setValue(false);
+        }
     }
 
     if (invert) {
-        KnobIPtr invertKnob = cornerPin->getKnobByName(kTrackInvertName);
-        assert(invertKnob);
-        KnobBool* isBool = dynamic_cast<KnobBool*>( invertKnob.get() );
-        assert(isBool);
-        isBool->setValue(true);
+        KnobBoolPtr invertKnob = std::dynamic_pointer_cast<KnobBool>(cornerPin->getKnobByName(kCornerPinNodeParamInvert));
+        if (invertKnob) {
+            invertKnob->setValue(true);
+        }
     }
 } // createCornerPinFromSelection
 

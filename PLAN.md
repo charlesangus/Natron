@@ -192,7 +192,7 @@ future core work has solid ground to build on.
 | M133 | ZDefocus Lens Aberrations | todo | M131 |  | E3 | [M133-zdefocus-lens-aberrations.md](PLAN/MILESTONES/M133-zdefocus-lens-aberrations.md) |
 | M117 | GUI Perf Harness And Baseline | todo | - |  | E10 | [M117-gui-perf-harness-and-baseline.md](PLAN/MILESTONES/M117-gui-perf-harness-and-baseline.md) |
 | M118 | Large Graph GUI Responsiveness | todo | M117, M56 |  | E10 | [M118-large-graph-gui-responsiveness.md](PLAN/MILESTONES/M118-large-graph-gui-responsiveness.md) |
-| M119 | Trackball Panel Layout | doing | M56, M69 | bosley-native-nodes | E10 | [M119-trackball-panel-layout.md](PLAN/MILESTONES/M119-trackball-panel-layout.md) |
+| M119 | Trackball Panel Layout | blocked | M56, M69 | bosley-native-nodes | E10 | [M119-trackball-panel-layout.md](PLAN/MILESTONES/M119-trackball-panel-layout.md) |
 | M134 | Output Picker Pixel Aspect | todo | - |  | E10 | [M134-output-picker-pixel-aspect.md](PLAN/MILESTONES/M134-output-picker-pixel-aspect.md) |
 | M135 | Flaky Test Fixes | done | - | bosley-native-nodes | E2 | [M135-pool-sharing-flake-fix.md](PLAN/MILESTONES/M135-pool-sharing-flake-fix.md) |
 | M136 | Edge Policy Investigation | todo | - |  | E3 | [M136-edge-policy-investigation.md](PLAN/MILESTONES/M136-edge-policy-investigation.md) |
@@ -240,6 +240,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **M119 - Trackball Panel Layout:** paused at its P2.T1 UAT (2026-10-24, same rule as M16). Needs the user's layout pick from `build/appimages/M119-uat.md` with `build/appimages/M119-a44785f42.AppImage` (launch with `NATRON_COLOR_PANEL_DEV=1`; remote fast ctest green, evidence script 0 failures): the winning combination, Feedback and Puck, the reveal graphic's 240 px and HUD offset, and the 160/320 px bounds. Resumes at Phase 119.3.
 - **M138 - GUI Papercuts:** paused at its UAT (2026-10-24, same rule as M16). Needs the user's sign-off on `build/appimages/M138-uat.md` with `build/appimages/M138-b9095c319.AppImage` (release, 334/334; GUI scripts 57/0 and 413/0). Resumes at the gate, PR, review and merge.
 - **M16 - Project Format Redesign:** paused at P7.T3 UAT (2026-10-24, per the user's rule for this run: blocked on feedback → open question, pause, pick up the next E3 milestone). Needs the user's sign-off on `build/appimages/M16-uat.md` with `build/appimages/M16-ba521118c.AppImage` (release, 342/342 tests). Resumes at the gate, PR, review and merge.
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.

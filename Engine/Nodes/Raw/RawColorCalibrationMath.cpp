@@ -953,6 +953,284 @@ lchToXyY(const Vec3& lch)
 {
     return luvToXyY(lchToLuv(lch));
 }
+
+namespace {
+    float
+    scalarProduct(const Vec3& v1,
+                  const Vec3& v2)
+    {
+        float acc = 0.f;
+        for (int c = 0; c < 3; ++c) {
+            acc += v1[c] * v2[c];
+        }
+        return acc;
+    }
+
+    float
+    euclideanNorm(const Vec3& v)
+    {
+        return std::fmax(std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), kNormMin);
+    }
+
+    // fmaxf() returns the other operand for a NaN, which is how darktable's clips drop NaNs.
+    void
+    clipNegNan(Vec3& v)
+    {
+        for (int c = 0; c < 3; ++c) {
+            v[c] = std::fmax(v[c], 0.f);
+        }
+    }
+
+    // _gamut_mapping().
+    Vec3
+    gamutMapping(const Vec3& input,
+                 float compression,
+                 bool clip)
+    {
+        const float sum = input[0] + input[1] + input[2];
+        const float Y = input[1];
+        Vec3 xyY = { (sum > 0.0f) ? input[0] / sum : static_cast<float>(kD50x),
+                     (sum > 0.0f) ? input[1] / sum : static_cast<float>(kD50y),
+                     Y };
+        Vec3 uvY = xyYToUvY(xyY);
+        const float delta[2] = { kLuvD50[0] - uvY[0], kLuvD50[1] - uvY[1] };
+        const float Delta = Y * (delta[0] * delta[0] + delta[1] * delta[1]);
+        const float correction = (compression == 0.0f) ? 0.f : std::pow(Delta, compression);
+        for (int c = 0; c < 2; ++c) {
+            // Stopping at D50 keeps the correction from flipping the hue to its opposite.
+            const float tmp = correction * delta[c] + uvY[c];
+            uvY[c] = (uvY[c] > kLuvD50[c]) ? std::fmax(tmp, kLuvD50[c]) : std::fmin(tmp, kLuvD50[c]);
+        }
+        xyY = uvYToXyY(uvY);
+        if (clip) {
+            for (int c = 0; c < 2; ++c) {
+                xyY[c] = std::fmax(xyY[c], 0.0f);
+            }
+        }
+        xyY[1] = std::fmax(xyY[1], kNormMin);
+        // Z = Y (1 - x - y) / y would be negative.
+        const float scale = xyY[0] + xyY[1];
+        if (scale >= 1.f) {
+            xyY[0] /= scale;
+            xyY[1] /= scale;
+        }
+        return xyYToXyz(xyY);
+    }
+
+    // _luma_chroma().
+    Vec3
+    lumaChroma(const Vec3& input,
+               const Vec3& saturation,
+               const Vec3& lightness,
+               SaturationVersion version)
+    {
+        float norm = euclideanNorm(input);
+        const float avg = std::fmax((input[0] + input[1] + input[2]) / 3.0f, kNormMin);
+        if (!(norm > 0.f && avg > 0.f)) {
+            return input;
+        }
+        const float invSqrt3 = 0.5773502691896258f;
+        const float mix = scalarProduct(input, lightness);
+        if (version == SaturationVersion::V3) {
+            norm *= invSqrt3;
+        }
+        Vec3 output;
+        for (int c = 0; c < 3; ++c) {
+            output[c] = input[c] / norm;
+        }
+        float coeffRatio = 0.f;
+        if (version == SaturationVersion::V1) {
+            for (int c = 0; c < 3; ++c) {
+                coeffRatio += (1.0f - output[c]) * (1.0f - output[c]) * saturation[c];
+            }
+        } else {
+            coeffRatio = scalarProduct(output, saturation) / 3.f;
+        }
+        for (int c = 0; c < 3; ++c) {
+            // A ratio already negative may stay so, or bright saturated blues would turn black.
+            const float minRatio = (output[c] < 0.0f) ? output[c] : 0.0f;
+            output[c] = std::fmax((1.0f - output[c]) * coeffRatio + output[c], minRatio);
+        }
+        if (version == SaturationVersion::V3) {
+            norm /= euclideanNorm(output) * invSqrt3;
+        }
+        norm *= std::fmax(1.f + mix / avg, 0.f);
+        for (int c = 0; c < 3; ++c) {
+            output[c] *= norm;
+        }
+        return output;
+    }
+} // namespace
+
+Kernel
+makeKernel(const Settings& s,
+           const Mat3& rgbToXyz,
+           const Mat3& xyzToRgb,
+           const RawCameraWhite* camera,
+           const Vec4* customWb)
+{
+    Kernel k;
+    k.version = s.version;
+
+    const float normR = s.normalizeR ? (s.red[0] + s.red[1] + s.red[2]) : 1.0f;
+    const float normG = s.normalizeG ? (s.green[0] + s.green[1] + s.green[2]) : 1.0f;
+    const float normB = s.normalizeB ? (s.blue[0] + s.blue[1] + s.blue[2]) : 1.0f;
+    const float normSat = s.normalizeSaturation ? (s.saturation[0] + s.saturation[1] + s.saturation[2]) / 3.f : 0.0f;
+    const float normLight = s.normalizeLightness ? (s.lightness[0] + s.lightness[1] + s.lightness[2]) / 3.f : 0.0f;
+    float normGrey = s.grey[0] + s.grey[1] + s.grey[2];
+    k.applyGrey = (s.grey[0] != 0.f) || (s.grey[1] != 0.f) || (s.grey[2] != 0.f);
+    if (!s.normalizeGrey || normGrey == 0.f) {
+        normGrey = 1.f;
+    }
+
+    Mat3 mix;
+    for (int i = 0; i < 3; ++i) {
+        mix[0 * 3 + i] = s.red[i] / normR;
+        mix[1 * 3 + i] = s.green[i] / normG;
+        mix[2 * 3 + i] = s.blue[i] / normB;
+        k.saturation[i] = -s.saturation[i] + normSat;
+        k.lightness[i] = s.lightness[i] - normLight;
+        k.grey[i] = s.grey[i] / normGrey;
+    }
+    // The first algorithm weighs red and blue the other way round.
+    if (s.version == SaturationVersion::V1) {
+        k.saturation[0] = -s.saturation[2] + normSat;
+        k.saturation[2] = -s.saturation[0] + normSat;
+    }
+
+    k.adaptation = s.adaptation;
+    k.clip = s.clip;
+    k.gamut = (s.gamut == 0.f) ? s.gamut : 1.f / s.gamut;
+
+    Xy xy = { s.x, s.y };
+    if (const std::optional<Xy> found = illuminantToXy(s.illuminant, camera, customWb, s.temperature, s.fluorescent, s.led)) {
+        xy = *found;
+    }
+    // The camera illuminant is found at commit time, and so is the adaptation that suits it.
+    if (s.illuminant == Illuminant::Camera) {
+        k.adaptation = checkIfCloseToDaylight(xy.x, xy.y).adaptation;
+    }
+    k.illuminant = convertAnyXyzToLms(illuminantXyToXyz(xy.x, xy.y), k.adaptation);
+    k.p = std::pow(0.818155f / k.illuminant[2], 0.0834f);
+
+    k.rgbToXyz = rgbToXyz;
+    k.xyzToRgb = xyzToRgb;
+    switch (k.adaptation) {
+    case Adaptation::FullBradford:
+    case Adaptation::LinearBradford:
+        k.rgbToLms = makeRgbToBradfordLms(rgbToXyz);
+        k.mixToXyz = makeBradfordLmsToXyz(mix);
+        break;
+    case Adaptation::Cat16:
+        k.rgbToLms = makeRgbToCat16Lms(rgbToXyz);
+        k.mixToXyz = makeCat16LmsToXyz(mix);
+        break;
+    case Adaptation::Xyz:
+        k.rgbToLms = rgbToXyz;
+        k.mixToXyz = mix;
+        break;
+    case Adaptation::Rgb:
+    case Adaptation::Last:
+        k.rgbToLms = Mat3 { 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f };
+        k.mixToXyz = multiplyMatrices(rgbToXyz, mix);
+        break;
+    }
+    return k;
+}
+
+void
+processPixel(const Kernel& k,
+             const float* in,
+             float* out)
+{
+    const float minval = k.clip ? 0.0f : -FLT_MAX;
+    Vec3 tempTwo = { std::fmax(in[0], minval), std::fmax(in[1], minval), std::fmax(in[2], minval) };
+    Vec3 tempOne;
+
+    switch (k.adaptation) {
+    case Adaptation::FullBradford: {
+        tempOne = applyMatrix(k.rgbToXyz, tempTwo);
+        const float Y = tempOne[1];
+        tempTwo = convertXyzToBradfordLms(tempOne);
+        downscaleVector(tempTwo, Y);
+        tempOne = bradfordAdaptD50(tempTwo, k.illuminant, k.p, true);
+        upscaleVector(tempOne, Y);
+        tempTwo = tempOne;
+        break;
+    }
+    case Adaptation::LinearBradford:
+        tempOne = applyMatrix(k.rgbToLms, tempTwo);
+        tempTwo = bradfordAdaptD50(tempOne, k.illuminant, k.p, false);
+        break;
+    case Adaptation::Cat16:
+        tempOne = applyMatrix(k.rgbToLms, tempTwo);
+        tempTwo = cat16AdaptD50(tempOne, k.illuminant, 1.0f, true);
+        break;
+    case Adaptation::Xyz:
+        tempOne = applyMatrix(k.rgbToXyz, tempTwo);
+        tempTwo = xyzAdaptD50(tempOne, k.illuminant);
+        break;
+    case Adaptation::Rgb:
+    case Adaptation::Last:
+        break;
+    }
+
+    tempOne = applyMatrix(k.mixToXyz, tempTwo);
+    if (k.clip) {
+        clipNegNan(tempOne);
+    }
+    tempTwo = gamutMapping(tempOne, k.gamut, k.clip);
+
+    switch (k.adaptation) {
+    case Adaptation::FullBradford:
+    case Adaptation::LinearBradford:
+    case Adaptation::Cat16:
+    case Adaptation::Xyz:
+        tempOne = convertAnyXyzToLms(tempTwo, k.adaptation);
+        break;
+    case Adaptation::Rgb:
+    case Adaptation::Last:
+        tempOne = applyMatrix(k.xyzToRgb, tempTwo);
+        break;
+    }
+    if (k.clip) {
+        clipNegNan(tempOne);
+    }
+
+    tempTwo = lumaChroma(tempOne, k.saturation, k.lightness, k.version);
+    if (k.clip) {
+        clipNegNan(tempTwo);
+    }
+
+    if (k.applyGrey) {
+        // The grey stays in the adaptation's space, as darktable leaves it.
+        const float grey = std::fmax(scalarProduct(tempTwo, k.grey), 0.0f);
+        tempTwo = { grey, grey, grey };
+    } else {
+        switch (k.adaptation) {
+        case Adaptation::FullBradford:
+        case Adaptation::LinearBradford:
+        case Adaptation::Cat16:
+        case Adaptation::Xyz:
+            tempOne = convertAnyLmsToXyz(tempTwo, k.adaptation);
+            break;
+        case Adaptation::Rgb:
+        case Adaptation::Last:
+            tempOne = applyMatrix(k.rgbToXyz, tempTwo);
+            break;
+        }
+        if (k.clip) {
+            clipNegNan(tempOne);
+        }
+        tempTwo = applyMatrix(k.xyzToRgb, tempOne);
+        if (k.clip) {
+            clipNegNan(tempTwo);
+        }
+    }
+    out[0] = tempTwo[0];
+    out[1] = tempTwo[1];
+    out[2] = tempTwo[2];
+}
 } // namespace RawColorCalibrationMath
 
 NATRON_NAMESPACE_EXIT

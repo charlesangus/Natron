@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
+#include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Nodes/Transform/Transform.h"
@@ -85,6 +86,7 @@ gpuCapableIds()
         PLUGINID_NATRON_REFORMAT,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
+        PLUGINID_NATRON_DISSOLVE,
     };
 
     return ids;

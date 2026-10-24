@@ -91,20 +91,34 @@ float uvAt(WarpUV uv, int component, int x, int y)
     return uvBuf[uv.offset + uint(y - uv.y1) * uv.stride + uint(x - uv.x1) * uv.comps + uint(component)];
 }
 
+// The double-float error terms of an infinite or overflowing operand are inf - inf, so the result
+// would be NaN where the CPU's double expression gives an infinity, which clamp wrapping moves to
+// the edge rather than reading black. Plain float arithmetic keeps the infinity and its sign.
+float finiteOrFloat(FF v, float fallback)
+{
+    return isFiniteF(v.hi) ? v.hi : fallback;
+}
+
 // The source coordinate of pixel (x, y), rounded to float once from the double-float value of the
 // CPU's double expression.
 float2 stmapCoord(Warp w, int x, int y)
 {
-    const FF u = ffMul(ffAdd(ffMake(uvAt(w.uv, w.uv.u, x, y), 0.0), ffNeg(w.uOffset)), w.uScale);
-    const FF v = ffMul(ffAdd(ffMake(uvAt(w.uv, w.uv.v, x, y), 0.0), ffNeg(w.vOffset)), w.vScale);
-    return float2(ffAdd(w.originX, ffMul(u, w.width)).hi, ffAdd(w.originY, ffMul(v, w.height)).hi);
+    const float mapU = uvAt(w.uv, w.uv.u, x, y);
+    const float mapV = uvAt(w.uv, w.uv.v, x, y);
+    const FF u = ffMul(ffAdd(ffMake(mapU, 0.0), ffNeg(w.uOffset)), w.uScale);
+    const FF v = ffMul(ffAdd(ffMake(mapV, 0.0), ffNeg(w.vOffset)), w.vScale);
+    return float2(finiteOrFloat(ffAdd(w.originX, ffMul(u, w.width)), w.originX.hi + (mapU - w.uOffset.hi) * w.uScale.hi * w.width.hi),
+                  finiteOrFloat(ffAdd(w.originY, ffMul(v, w.height)), w.originY.hi + (mapV - w.vOffset.hi) * w.vScale.hi * w.height.hi));
 }
 
 float2 idistortCoord(Warp w, int x, int y)
 {
-    const FF u = ffMul(ffAdd(ffMake(uvAt(w.uv, w.uv.u, x, y), 0.0), ffNeg(w.uOffset)), w.uScale);
-    const FF v = ffMul(ffAdd(ffMake(uvAt(w.uv, w.uv.v, x, y), 0.0), ffNeg(w.vOffset)), w.vScale);
-    return float2(ffAdd(ffMake(float(x) + 0.5, 0.0), u).hi, ffAdd(ffMake(float(y) + 0.5, 0.0), v).hi);
+    const float mapU = uvAt(w.uv, w.uv.u, x, y);
+    const float mapV = uvAt(w.uv, w.uv.v, x, y);
+    const FF u = ffMul(ffAdd(ffMake(mapU, 0.0), ffNeg(w.uOffset)), w.uScale);
+    const FF v = ffMul(ffAdd(ffMake(mapV, 0.0), ffNeg(w.vOffset)), w.vScale);
+    return float2(finiteOrFloat(ffAdd(ffMake(float(x) + 0.5, 0.0), u), float(x) + 0.5 + (mapU - w.uOffset.hi) * w.uScale.hi),
+                  finiteOrFloat(ffAdd(ffMake(float(y) + 0.5, 0.0), v), float(y) + 0.5 + (mapV - w.vOffset.hi) * w.vScale.hi));
 }
 
 float centralDifference(float before, float after)

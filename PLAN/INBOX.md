@@ -51,3 +51,14 @@
 ### 2026-10-23T23:40:00Z — info
 - refs: none
 - Pre-existing race, found by M80 - Native RAW Support's debug build (run 40033444348, ctest legacy leg; the serial rerun passed): `SchedulerEquivalence.NodeFeedingSourceAndMaskIsTwoEdges` segfaulted in `QEventDispatcherGlib::wakeUp` ← `QObject::deleteLater` ← a destructor run while a `shared_ptr` was released, on a pooled thread. Likely cause: `AbortableRenderInfo::~AbortableRenderInfo()` (`Engine/AbortableRenderInfo.cpp:107-113`) calls `deleteLater()` on a `QTimer` owned by the creating pool thread, which may be exiting (the test changes `QThreadPool::globalInstance()->setMaxThreadCount` across 16/4/1). The queued `startTimerInOriginalThread` never runs on pool threads (no event loop), so the abort timeout is already inert there. A fix (timer owned by the main thread) changes behaviour; worth its own milestone or a M31 entry.
+
+### 2026-10-24T01:22:11+00:00 — change-request
+- refs: M119
+- Also for the trackball/global mode control: 
+  
+  - global mode should make the cursor a crosshair (pitch some designs)
+  - the hud can follow the cursor, offset below and to the right
+  - would like to try out some various other UI designs for global mode, like the trackball appearing in C mode when you click, and similar images for the other modes that give feedback on what you're doing
+  - could also try making the cursor change to that UI (trackball etc) 
+  
+  Pitch some designs.

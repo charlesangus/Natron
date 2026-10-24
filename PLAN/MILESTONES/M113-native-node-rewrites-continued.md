@@ -204,7 +204,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the test covers 4/3/2/1/0 enabled points against hand-computed matrices, invert, amount 0 giving identity, a degenerate fallback, concatenation with a following Transform matching one combined resample, and motion blur on an animated pin. It runs at the phase build.
   - size: L
 
-- [ ] M113.P3.T2 — Move the tracker's internal CornerPin and export to the native node
+- [x] M113.P3.T2 — Move the tracker's internal CornerPin and export to the native node
   - files: `Engine/TrackerContextPrivate.cpp`, `Engine/TrackerContextPrivate.h`, `Engine/TrackerContext.cpp`, `Engine/EffectInstance.h` (`PLUGINID_OFX_CORNERPIN` → the native ID), `Gui/MultiInstancePanel.cpp` (delete the dead CornerPin export at `:2306-2412` and its commented call site)
   - approach:
     - Create the native `CornerPin` by ID, and drop the "requires Misc.ofx.bundle" error path.
@@ -214,7 +214,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: an existing or new tracker test (`Tests/Tracker*_Test.cpp`, or add `Tests/TrackerCornerPin_Test.cpp`) creates a tracker, checks every duplicated knob is non-null, and exports to a CornerPin whose `to` points follow the track. Xvfb check at the gate: track a fixture, export CornerPin, and the overlay draws.
   - size: L
 
-- [ ] M113.P3.T3 — Run CornerPin on the GPU
+- [x] M113.P3.T3 — Run CornerPin on the GPU
   - files: `Engine/Nodes/Transform/CornerPin.cpp`, `Engine/Nodes/Transform/CornerPin.costseed.inc` (new), `Tests/Native/NativeCornerPinGpu_Test.cpp` (new)
   - approach:
     - Reuse M85 - Native GPU Kernels's Transform matrix GPU path (`resample.slang`) with CornerPin's projective matrix, and motion blur through M85.P5.T2's port.

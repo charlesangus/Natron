@@ -204,19 +204,19 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
 
 Re-planned 2026-10-24 from the user's UAT pick (see ## Decisions). T2, T3, T4 and T6 all edit `ColorTrackballGlobalMode.cpp`/`KnobGuiColor.cpp`, so they run in sequence.
 
-- [ ] M119.P3.T1 — Add the trackball feedback and track-size preferences
+- [x] M119.P3.T1 — Add the trackball feedback and track-size preferences
   - files: `Engine/Settings.h`, `Engine/Settings.cpp`
   - approach: two `KnobChoice`s on `_uiPage`, declared like `_useCursorPositionIncrements` (`Settings.cpp:625`): `colorTrackballFeedback` {Crosshair + reveal, Widget cursor}, default Crosshair + reveal; `colorTrackballSize` {Regular, Large}, default Regular; typed getters; changes reach the GUI through `settingChanged` (`Settings.cpp:2234`). No other values, no migration (no backward compat).
   - verify: `EngineTests` or `GuiTests` case: defaults read back as Crosshair+reveal and Regular; setting each emits `settingChanged` once; a settings save and reload round-trips both.
   - size: M
 
-- [ ] M119.P3.T2 — Drive global-mode feedback from the preference; delete Today, Crosshair, Reveal and the absolute puck
+- [x] M119.P3.T2 — Drive global-mode feedback from the preference; delete Today, Crosshair, Reveal and the absolute puck
   - files: `Gui/ColorTrackballGlobalMode.{h,cpp}`, `Gui/ColorTrackballReveal.{h,cpp}`, `Gui/ColorPanelLayoutDev.{h,cpp}`, `Tests/ColorTrackballGlobalMode_Test.cpp`, `Tests/ColorTrackballReveal_Test.cpp`
   - approach: replace `ColorPanelLayout::Feedback`/`Puck` with a two-value enum read from T1's setting; a change mid-stroke is still deferred to `endStroke()`. Delete the Today/Crosshair/Reveal branches, `Puck` and the absolute path (`colorTrackballRevealDiscPuck`/`…WheelState` keep only relative). Both values keep the crosshair override and the following HUD exactly as P1.T11/T12/T14/T15 built them.
   - verify: `GuiTests --gtest_filter=ColorTrackballGlobalMode*:ColorTrackballReveal*`: each preference value shows its graphic; flipping the setting mid-stroke takes effect after release; no override cursor is left after exit; `grep -rn 'ColorPanelLayout::Puck\|Puck::\|Feedback::' Gui Tests` is empty (the wheel's and disc's marker keep the name puck).
   - size: L
 
-- [ ] M119.P3.T3 — Fix the corrupted following HUD: make it a window from construction, and mask the reveal to its disc
+- [x] M119.P3.T3 — Fix the corrupted following HUD: make it a window from construction, and mask the reveal to its disc
   - files: `Gui/ColorTrackballHud.{h,cpp}`, `Gui/KnobGuiColor.{h,cpp}`, `Gui/ColorTrackballGlobalMode.cpp`, `Tests/ColorTrackballHud_Test.cpp`
   - approach: likely cause: `setFollowCursor(true)` reparents a child widget into a top-level window at runtime (`Gui/ColorTrackballHud.cpp:177-210`), which is mapped but never painted, so it shows stale panel pixels. Build the HUD as a window with `followCursorWindowFlags()` from birth, with an opaque fill (`autoFillBackground`, plus a frame in the QSS role's colour). Delete `setFollowCursor`'s reparenting, the `_preFollow*` restore state, and `attach/detachGlobalModeHud`. After `adjustSize()`/`move()`, `update()` the HUD. Give `ColorTrackballReveal` a circular `setMask` so it is round without a compositor.
   - verify: `GuiTests --gtest_filter=ColorTrackballHud*` (the HUD is a window, not a child of any panel). Xvfb (in T10's script): after engage and a pointer move, `QScreen::grabWindow(0, hud.frameGeometry())` matches `hud.grab()` (mean channel difference under 4) and the region contains the "Mode C" label's text pixels; the reveal shot shows no black corners.

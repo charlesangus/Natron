@@ -1058,3 +1058,101 @@ GPU_TEST_F(GpuTransferTest, StripDownloadProceedsOnceItsChunkIsPrepared)
     t.forgetHostAllocation(p, 3 * kChunk);
     munmap(p, 3 * kChunk);
 }
+
+GPU_TEST_F(GpuTransferTest, StagedUploadsCountTheirReason)
+{
+    constexpr VkDeviceSize kBytes = VkDeviceSize(1) << 20;
+    GpuBuffer buf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kBytes, kGpuBufferDefaultUsage, buf).ok());
+    StreamOptions so;
+    so.handoff = ComputeHandoff::None;
+
+    GpuTransferOptions off;
+    off.allowHostImport = false;
+    auto disabled = make(off);
+    ASSERT_TRUE(disabled != nullptr);
+    TimelineValue done;
+    ASSERT_TRUE(disabled->upload({ srcs_[0].get(), kBytes }, buf, 0, done, so).ok());
+    ASSERT_TRUE(disabled->wait(done).ok());
+    StagedReasonCounts c = disabled->stagedReasons();
+    EXPECT_EQ(c.disabled, 1u);
+    EXPECT_EQ(c.total(), 1u);
+
+    auto t = make({});
+    ASSERT_TRUE(t != nullptr);
+    if (!t->hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    ASSERT_TRUE(t->upload({ srcs_[0].get() + 16, kBytes - 4096 }, buf, 0, done, so).ok());
+    ASSERT_TRUE(t->wait(done).ok());
+    c = t->stagedReasons();
+    EXPECT_EQ(c.unaligned, 1u);
+    EXPECT_EQ(c.total(), 1u);
+
+    TransferPath path = TransferPath::Staging;
+    so.path = &path;
+    ASSERT_TRUE(t->upload({ srcs_[0].get(), kBytes }, buf, 0, done, so).ok());
+    ASSERT_TRUE(t->wait(done).ok());
+    EXPECT_EQ(path, TransferPath::HostImport);
+    EXPECT_EQ(t->stagedReasons().total(), 1u) << "an imported upload was counted as staged";
+
+    EXPECT_FALSE(t->prepareImport({ srcs_[0].get() + 16, kBytes - 4096 }));
+    EXPECT_EQ(t->stagedReasons().total(), 1u) << "prepareImport() counted as a staged transfer";
+}
+
+GPU_TEST_F(GpuTransferTest, UploadOfAForgottenRangeCountsForgotten)
+{
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool created = false;
+    bool release = false;
+    GpuTransferOptions o;
+    o.cacheHostImports = true;
+    o.onImportCreated = [&](const void*, VkDeviceSize) {
+        std::unique_lock<std::mutex> lock(mutex);
+        created = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return release; });
+    };
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+    if (!t->hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    constexpr size_t kBytes = size_t(2) << 20;
+    void* p = mapImportable(kBytes, t->hostImportAlignment());
+    if (!p) {
+        GPUTEST_SKIP() << "import alignment exceeds the page size";
+    }
+    GpuBuffer buf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kBytes, kGpuBufferDefaultUsage, buf).ok());
+
+    StreamOptions so;
+    so.handoff = ComputeHandoff::None;
+    TransferPath path = TransferPath::HostImport;
+    so.path = &path;
+    GpuStatus status;
+    TimelineValue done;
+    std::thread uploader([&] { status = t->upload({ p, kBytes }, buf, 0, done, so); });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return created; });
+    }
+    std::thread releaser([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+        cv.notify_all();
+    });
+    t->forgetHostAllocation(p, kBytes);
+    uploader.join();
+    releaser.join();
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_TRUE(t->wait(done).ok());
+    EXPECT_EQ(path, TransferPath::Staging);
+    const StagedReasonCounts c = t->stagedReasons();
+    EXPECT_EQ(c.forgotten, 1u);
+    EXPECT_EQ(c.total(), 1u);
+    munmap(p, kBytes);
+}

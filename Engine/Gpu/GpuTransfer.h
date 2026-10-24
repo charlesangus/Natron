@@ -111,6 +111,28 @@ struct HostImportStats {
     uint64_t cached = 0;
 };
 
+// Why a transfer went through the staging ring instead of importing its host memory.
+enum class StagedReason {
+    // Host import is unsupported or turned off.
+    Disabled,
+    // The range is not aligned for import and no cached import covers it.
+    Unaligned,
+    // The driver or the buffer rejected the import.
+    ImportFailed,
+    // The range was forgotten while its import was being created.
+    Forgotten,
+};
+
+// Uploads and downloads that took the staging path, by reason.
+struct StagedReasonCounts {
+    uint64_t disabled = 0;
+    uint64_t unaligned = 0;
+    uint64_t importFailed = 0;
+    uint64_t forgotten = 0;
+
+    uint64_t total() const { return disabled + unaligned + importFailed + forgotten; }
+};
+
 struct TransferFrame {
     const void* src = nullptr;
     void* dst = nullptr;
@@ -235,6 +257,8 @@ public:
     // Bytes of host memory imported so far, cached or not.
     uint64_t hostImportBytes() const;
     HostImportStats hostImportStats() const;
+    // Uploads and downloads that went through staging so far, by reason. prepareImport() does not count.
+    StagedReasonCounts stagedReasons() const;
 
 private:
     struct Impl;

@@ -364,8 +364,10 @@ TEST(ScaleSliderQWidget, VerticalPressJumpsToTheFractionFromTheBottom)
 {
     std::unique_ptr<ScaleSliderQWidget> s(makeVerticalSlider(0., 1., 0.));
 
-    // a quarter of the way up the track, the bottom row being the minimum
-    sendVerticalMouse(s.get(), QEvent::MouseButtonPress, (kWidgetWidth - 1) * 0.75);
-    EXPECT_NEAR(0.25, s->getPosition(), 1e-9);
-    sendVerticalMouse(s.get(), QEvent::MouseButtonRelease, (kWidgetWidth - 1) * 0.75);
+    // The track runs from the bottom row (minimum) to the top row (maximum), the convention the
+    // marker is drawn with; mouse events carry whole pixels, so row 224 is 75 of the 299 steps up.
+    const int row = kWidgetWidth - 1 - 75;
+    sendVerticalMouse(s.get(), QEvent::MouseButtonPress, row);
+    EXPECT_NEAR(75. / (kWidgetWidth - 1), s->getPosition(), 1e-9);
+    sendVerticalMouse(s.get(), QEvent::MouseButtonRelease, row);
 }

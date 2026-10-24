@@ -183,6 +183,10 @@ ColorTrackballHud::setFollowCursor(bool follow)
     }
     _followCursor = follow;
     setParent(0, follow ? followCursorWindowFlags() : Qt::WindowFlags());
+    if (!follow) {
+        // reparenting with empty flags keeps the old window-type and input flags; drop them so the widget is a plain child again
+        setWindowFlags(windowFlags() & ~followCursorWindowFlags() & ~Qt::WindowType_Mask);
+    }
     setAttribute(Qt::WA_ShowWithoutActivating, follow);
     setAttribute(Qt::WA_TransparentForMouseEvents, follow);
     if (follow) {

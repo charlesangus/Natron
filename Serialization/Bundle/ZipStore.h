@@ -54,6 +54,12 @@ public:
 inline constexpr std::size_t kZipMemberAlignment = 64;
 inline constexpr std::string_view kNatronProjectMimeType = "application/vnd.natron.project+zip";
 
+/**
+ * @brief Empty when name is acceptable as a member name (relative, no '.' or '..' components,
+ * no backslash or NUL), else why it is not.
+ **/
+std::string zipMemberNameProblem(std::string_view name);
+
 std::uint32_t zipCrc32(std::span<const std::byte> data, std::uint32_t crc = 0);
 
 /**
@@ -72,14 +78,16 @@ public:
     /**
      * @brief Creates (truncating) the archive at path and writes the leading `mimetype` member,
      * stored with no extra field so the mime type sits at a fixed offset for file sniffers.
+     * A non-empty root is a folder every member, `mimetype` included, is written under; the
+     * names addMember takes are relative to it.
      **/
-    explicit ZipWriter(const std::string& path, std::string_view mimeType = kNatronProjectMimeType);
+    explicit ZipWriter(const std::string& path, std::string_view mimeType = kNatronProjectMimeType, std::string_view root = std::string_view());
 
     /**
      * @brief The same, writing to output, which must outlive the writer. finish() leaves
      * flushing and closing whatever output writes to to its owner.
      **/
-    explicit ZipWriter(ZipOutput& output, std::string_view mimeType = kNatronProjectMimeType);
+    explicit ZipWriter(ZipOutput& output, std::string_view mimeType = kNatronProjectMimeType, std::string_view root = std::string_view());
     ~ZipWriter();
 
     ZipWriter(const ZipWriter&) = delete;
@@ -110,6 +118,7 @@ private:
     void close();
 
     std::string _path;
+    std::string _root;
     std::FILE* _file = nullptr;
     ZipOutput* _output = nullptr;
     std::uint64_t _offset = 0;

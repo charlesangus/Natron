@@ -246,21 +246,23 @@ TEST(ProjectBundle, MembersAreWrittenInTheirFixedOrder)
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     const std::string path = dir.filePath(QString::fromUtf8("order.ntpz")).toStdString();
-    makeWriter("2026-10-22T10:00:00Z").write(path);
+    ProjectBundleWriter orderWriter = makeWriter("2026-10-22T10:00:00Z");
+    orderWriter.setRootFolder("order");
+    orderWriter.write(path);
 
     ZipReader archive(path);
     std::vector<std::string> names;
     for (const Serialization::ZipMember& member : archive.members()) {
         names.push_back(member.name);
     }
-    const std::vector<std::string> expected = { "mimetype", "manifest.yaml", "project.yaml", kStrokeBlob, kTrackBlob };
+    const std::vector<std::string> expected = { "order/mimetype", "order/manifest.yaml", "order/project.yaml", std::string("order/") + kStrokeBlob, std::string("order/") + kTrackBlob };
     EXPECT_EQ(expected, names);
-    EXPECT_EQ(std::string(Serialization::kNatronProjectMimeType), asText(archive.data("mimetype")));
+    EXPECT_EQ(std::string(Serialization::kNatronProjectMimeType), asText(archive.data("order/mimetype")));
 
-    const BundleManifest manifest = Serialization::decodeManifestYaml(asText(archive.data("manifest.yaml")));
+    const BundleManifest manifest = Serialization::decodeManifestYaml(asText(archive.data("order/manifest.yaml")));
     ASSERT_EQ(3u, manifest.members.size());
     for (const Serialization::BundleManifestMember& listed : manifest.members) {
-        const Serialization::ZipMember* member = archive.find(listed.name);
+        const Serialization::ZipMember* member = archive.find("order/" + listed.name);
         ASSERT_TRUE(member) << listed.name;
         EXPECT_EQ(member->size, listed.size) << listed.name;
         EXPECT_EQ(member->crc32, listed.crc32) << listed.name;
@@ -311,10 +313,11 @@ TEST(ProjectBundle, AMissingBlobWarnsAndLeavesItsItemEmpty)
     makeWriter("2026-10-22T10:00:00Z").write(complete);
     {
         ZipReader source(complete);
-        ZipWriter copy(damaged);
+        ZipWriter copy(damaged, Serialization::kNatronProjectMimeType, "damaged");
         for (const Serialization::ZipMember& member : source.members()) {
-            if ((member.name != "mimetype") && (member.name != kStrokeBlob)) {
-                copy.addMember(member.name, source.data(member));
+            const std::string relative = member.name.substr(member.name.find('/') + 1);
+            if ((relative != "mimetype") && (relative != kStrokeBlob)) {
+                copy.addMember(relative, source.data(member));
             }
         }
         copy.finish();
@@ -346,12 +349,58 @@ TEST(ProjectBundle, TwoSavesOfTheSameProjectDifferOnlyInTheManifest)
     for (std::size_t i = 0; i < a.members().size(); ++i) {
         const Serialization::ZipMember& ma = a.members()[i];
         const Serialization::ZipMember& mb = b.members()[i];
-        ASSERT_EQ(ma.name, mb.name);
-        if (ma.name == "manifest.yaml") {
+        ASSERT_EQ(ma.name.substr(ma.name.find('/')), mb.name.substr(mb.name.find('/')));
+        if (ma.name.ends_with("/manifest.yaml")) {
             EXPECT_NE(asText(a.data(ma)), asText(b.data(mb)));
         } else {
             EXPECT_EQ(asText(a.data(ma)), asText(b.data(mb))) << ma.name;
         }
+    }
+}
+
+TEST(ProjectBundle, EveryMemberSitsUnderTheStemAlignedAndSavesAreByteIdentical)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string first = dir.filePath(QString::fromUtf8("first.ntpz")).toStdString();
+    const std::string second = dir.filePath(QString::fromUtf8("second.ntpz")).toStdString();
+    ProjectBundleWriter a = makeWriter("2026-10-22T10:00:00Z");
+    a.setRootFolder("test");
+    a.write(first);
+    ProjectBundleWriter b = makeWriter("2026-10-22T10:00:00Z");
+    b.setRootFolder("test");
+    b.write(second);
+    EXPECT_EQ(readFileBytes(first), readFileBytes(second));
+
+    ZipReader archive(first);
+    ASSERT_FALSE(archive.members().empty());
+    for (const Serialization::ZipMember& member : archive.members()) {
+        EXPECT_TRUE(member.name.starts_with("test/")) << member.name;
+        if (member.name != "test/mimetype") {
+            EXPECT_EQ(0u, member.dataOffset % Serialization::kZipMemberAlignment) << member.name;
+        }
+    }
+    EXPECT_EQ("test/mimetype", archive.members().front().name);
+    EXPECT_EQ(Serialization::ProjectFileKind::eBundle, Serialization::detectProjectFileKind(first));
+    ProjectBundleReader reader(first);
+    EXPECT_EQ(12, reader.readProject().timelineCurrentTime);
+}
+
+TEST(ProjectBundle, AnUnusableStemFallsBackToProject)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::vector<std::string> stems = { "", "..", "a/b", "a\\b", ".", std::string("a\0b", 3) };
+    for (const std::string& stem : stems) {
+        const std::string path = dir.filePath(QString::fromUtf8("bad.ntpz")).toStdString();
+        ProjectBundleWriter writer = makeWriter("2026-10-22T10:00:00Z");
+        writer.setRootFolder(stem);
+        writer.write(path);
+        ZipReader archive(path);
+        for (const Serialization::ZipMember& member : archive.members()) {
+            EXPECT_TRUE(member.name.starts_with("project/")) << member.name;
+        }
+        EXPECT_NO_THROW(ProjectBundleReader(path).readProject());
     }
 }
 

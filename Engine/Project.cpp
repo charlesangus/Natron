@@ -776,6 +776,14 @@ Project::saveProjectInternal(const QString & path,
         toSerialization(&projectSerialization);
         writer.setProject(projectSerialization);
 
+        // The bundle folder is named after the project file, never after an autosave or temporary
+        // file, so a save and the autosave of the same project agree.
+        QString bundleFileName = autoSave ? name : QFileInfo(filePath).fileName();
+        if (bundleFileName.endsWith(QString::fromUtf8(".ntpz"), Qt::CaseInsensitive)) {
+            bundleFileName.chop(5);
+        }
+        writer.setRootFolder(bundleFileName.toStdString());
+
         Serialization::BundleManifest manifest;
         manifest.appVersion = NATRON_VERSION_STRING;
         manifest.appCommit = GIT_COMMIT;

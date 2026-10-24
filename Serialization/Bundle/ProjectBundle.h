@@ -39,9 +39,10 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 /**
- * @brief A project bundle (.ntpz): a ZipStore archive whose members are, in this order,
- * `mimetype`, `manifest.yaml`, `project.yaml`, then the blob members of project.yaml sorted by
- * path. Any other member a reader finds is ignored. Writing the same project twice gives the same bytes
+ * @brief A project bundle (.ntpz): a ZipStore archive whose members all sit under one folder
+ * named after the project file, in this order: `<stem>/mimetype`, `<stem>/manifest.yaml`,
+ * `<stem>/project.yaml`, then the blob members of project.yaml sorted by path. A reader also
+ * accepts the same members at the archive root. Any other member a reader finds is ignored. Writing the same project twice gives the same bytes
  * except for manifest.yaml.
  **/
 
@@ -83,6 +84,13 @@ public:
     void setProject(const ProjectSerialization& project);
 
     /**
+     * @brief The folder every member is written under, normally the project file name without
+     * `.ntpz`. An empty name, one with a '/' or one that is not a valid member name falls back
+     * to `project`. Manifest member names are relative to this folder.
+     **/
+    void setRootFolder(std::string_view folder);
+
+    /**
      * @brief The manifest to write. Its member list is ignored: write() fills in the real one.
      **/
     void setManifest(const BundleManifest& manifest);
@@ -118,6 +126,7 @@ public:
 private:
     void writeMembers(ZipWriter& writer) const;
 
+    std::string _rootFolder;
     std::string _projectYaml;
     MemoryBlobStore _blobs;
     BundleManifest _manifest;
@@ -166,6 +175,7 @@ private:
     void validate();
 
     ZipReader _archive;
+    std::string _root;
     BundleManifest _manifest;
 };
 

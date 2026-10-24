@@ -1931,7 +1931,6 @@ try:
               "the Ctrl+Shift+Alt rectangle reads the input, 0.25, marked in")
         gt.shot("picker-03-rect-alt-in.png")
 
-        # With a colour knob's eyedropper active the defaults swap: the input by default, the output on Ctrl+Alt.
         gt.close_all_panels()
         eg = create("net.sf.openfx.GradePlugin", 8000, 300)
         set_all(eg.getParam("multiply"), 2.0)

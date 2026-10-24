@@ -1273,7 +1273,7 @@ Gui::handleOpenFilesFromUrls(const QList<QUrl>& urls,
             ensureScriptEditorVisible();
         } else {
             const std::map<int, SequenceParsing::FileNameContent>& frames = sequence->getFrameIndexes();
-            std::string readerPluginID = appPTR->getReaderPluginIDForFile(frames.empty() ? std::string() : frames.begin()->second.absoluteFileName());
+            std::string readerPluginID = appPTR->getReaderPluginIDForFile(frames.empty() ? std::string() : frames.begin()->second.absoluteFileName(), getApp()->getProject());
             if ( readerPluginID.empty() ) {
                 Dialogs::errorDialog("Reader", "No plugin capable of decoding " + extLower + " was found.");
             } else {

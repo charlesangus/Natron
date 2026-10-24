@@ -668,9 +668,11 @@ public:
     std::string getReaderPluginIDForFileType(const std::string & extension) const;
     /**
      * @brief The reader for the file at `path`: DeepRead for a deep image, otherwise the reader for
-     * its extension. Empty when neither applies.
+     * its extension. Empty when neither applies. With a `project`, `[Project]`-style and
+     * project-relative paths are resolved through it before the file is probed.
      **/
-    std::string getReaderPluginIDForFile(const std::string& path) const;
+    std::string getReaderPluginIDForFile(const std::string& path,
+                                         const ProjectPtr& project = ProjectPtr()) const;
     std::string getWriterPluginIDForFileType(const std::string & extension) const;
 
     static void setApplicationLocale();

@@ -119,8 +119,6 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 NATRON_NAMESPACE_ENTER
 
-// Outside knob picking the viewer reads the output; while an eyedropper is active it reads the
-// input. The alternate shortcuts select the other source.
 static bool
 resolvePickOutput(const Gui* gui,
                   bool alternate)

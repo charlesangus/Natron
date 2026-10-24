@@ -380,7 +380,6 @@ GuiApplicationManager::setFileToOpen(const QString & str)
 bool
 GuiApplicationManager::handleImageFileOpenRequest(const std::string& filename)
 {
-    std::string readerFileType = appPTR->getReaderPluginIDForFile(filename);
     AppInstancePtr mainInstance = appPTR->getTopLevelInstance();
     bool instanceCreated = false;
 
@@ -393,6 +392,7 @@ GuiApplicationManager::handleImageFileOpenRequest(const std::string& filename)
         return false;
     }
 
+    const std::string readerFileType = appPTR->getReaderPluginIDForFile(filename, mainInstance->getProject());
     CreateNodeArgs args(readerFileType, mainInstance->getProject() );
     args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, filename);
     args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);

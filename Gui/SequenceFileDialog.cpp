@@ -2794,7 +2794,7 @@ SequenceFileDialog::refreshPreviewAfterSelectionChange()
     SequenceParsing::SequenceFromPattern sequence;
     FileSystemModel::filesListFromPattern(pattern, &sequence);
     const std::string firstFile = (sequence.empty() || sequence.begin()->second.empty()) ? pattern : sequence.begin()->second.begin()->second;
-    std::string pluginID = appPTR->getReaderPluginIDForFile(firstFile);
+    std::string pluginID = appPTR->getReaderPluginIDForFile(firstFile, _gui ? _gui->getApp()->getProject() : ProjectPtr());
     if (pluginID.empty()) {
         pluginID = PLUGINID_NATRON_READ;
     }

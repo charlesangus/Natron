@@ -1,4 +1,4 @@
-"""GUI checks for the M138 papercuts: the file dialog's history and preview buttons not crashing,
+"""GUI checks for the GUI papercuts: the file dialog's history and preview buttons not crashing,
 the Preferences window opening centred on the screen's available area, and the colour-picker
 defaults (output unless a colour knob's eyedropper is on, with Ctrl+Alt picking the other source).
 

@@ -3431,8 +3431,13 @@ AppManager::getReaderPluginIDForFileType(const std::string & extension) const
 }
 
 std::string
-AppManager::getReaderPluginIDForFile(const std::string& path) const
+AppManager::getReaderPluginIDForFile(const std::string& originalPath,
+                                     const ProjectPtr& project) const
 {
+    std::string path = originalPath;
+    if (project) {
+        project->canonicalizePath(path);
+    }
     const std::string::size_type dot = path.find_last_of('.');
     const std::string::size_type sep = path.find_last_of('/');
     const std::string extension = (dot == std::string::npos || (sep != std::string::npos && dot < sep)) ? std::string() : path.substr(dot + 1);

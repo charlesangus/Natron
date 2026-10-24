@@ -994,7 +994,7 @@ AppInstance::createReader(const std::string& filename,
                           CreateNodeArgs& args)
 {
     args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, filename);
-    const std::string readerID = appPTR->getReaderPluginIDForFile(filename);
+    const std::string readerID = appPTR->getReaderPluginIDForFile(filename, getProject());
     if (!readerID.empty()) {
         args.setProperty<std::string>(kCreateNodeArgsPropPluginID, readerID);
     }
@@ -1213,7 +1213,7 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
                 return node;
             }
             args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, picked);
-            const std::string readerID = appPTR->getReaderPluginIDForFile(picked);
+            const std::string readerID = appPTR->getReaderPluginIDForFile(picked, getProject());
             if (!readerID.empty()) {
                 findId = QString::fromStdString(readerID);
             }

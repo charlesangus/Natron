@@ -505,3 +505,4 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
     - Ring builds still block the GUI thread, now at `initializeGL`/resize.
     - The headless first-frame bench only benefits if it creates a `ViewerGL`.
   - **Checked:** `-fsyntax-only` on 38 TUs.
+- 2026-10-23 — **Phase 107.7 CI line green:** remote `fast --tests` of `ed113a3e6` (P7.T1–T5, run 40054501349) passes every ctest entry in both scheduler legs on lavapipe, with 42 M107-suite cases per leg, the new staged-frame and fill-lifetime cases included. Still owed on the GPU host, once M156's bench frees it: the RADV suites, UAT readback/hostsync/cpu/`lost@40`, and the headless rerun against main for playback fps, the 8K stalls and first frame. The release AppImage is building.

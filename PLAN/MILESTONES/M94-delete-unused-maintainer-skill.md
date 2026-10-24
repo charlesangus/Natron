@@ -38,3 +38,4 @@ depended on it).
 ## Decisions
 
 - 2026-10-24 — **Delete rather than maintain `skills/natron-maintainer` (PM):** this reverses M12.P1.T1's "fix, don't delete" call. Its premise was that the file is read as live agent instruction, which doesn't hold here: there is no `CLAUDE.md`, no `.claude/` and no auto-discovery, so nothing loads it, and it had gone stale again. No tracked file outside `docs/decisions/` referenced it. Done in 7001de23b.
+- 2026-10-24 — **Shipped:** PR #85 squash-merged as 45cec5b8a after one Codex review round with no findings; PR CI green. It only deletes a markdown file, so lanes pick it up at their next rebase rather than through an immediate rebase-and-regate (PM).

@@ -582,6 +582,7 @@ RawColorCalibrationOp::createKnobs(KnobHolder* knobHolder,
                    defaults.clip);
 
     createSpotKnobs(knobHolder, cat);
+    createCheckerKnobs(knobHolder, cat);
 
     const Vec3* rowDefaults[eRawColorCalibrationRowCount] = { &defaults.red, &defaults.green, &defaults.blue, &defaults.saturation, &defaults.lightness, &defaults.grey };
     const bool normalizeDefaults[eRawColorCalibrationRowCount] = { defaults.normalizeR, defaults.normalizeG, defaults.normalizeB, defaults.normalizeSaturation, defaults.normalizeLightness, defaults.normalizeGrey };
@@ -1129,6 +1130,7 @@ void
 RawColorCalibration::onInputChanged(int /*inputNo*/)
 {
     refreshSpotDefaults();
+    refreshCheckerDefaults();
     refreshCameraOption();
     showSourceDefaults();
     refreshEnabled();
@@ -1141,6 +1143,7 @@ RawColorCalibration::onMetadataRefreshed(const NodeMetadata& metadata)
 {
     ImageNode<RawColorCalibrationOp>::onMetadataRefreshed(metadata);
     refreshSpotDefaults();
+    refreshCheckerDefaults();
     refreshCameraOption();
     showSourceDefaults();
     refreshEnabled();
@@ -1161,6 +1164,7 @@ RawColorCalibration::onKnobsLoaded()
         _lastIlluminant = rawColorCalibrationIlluminantAt(illuminantKnob->getValue());
     }
     refreshSpotDefaults();
+    refreshCheckerDefaults();
     refreshCameraOption();
     showSourceDefaults();
     refreshVisibility();
@@ -1186,6 +1190,16 @@ RawColorCalibration::knobChanged(KnobI* k,
 
     if (is(o.pick)) {
         (void)pickSpot(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+
+        return true;
+    }
+    if (is(o.calibrate)) {
+        (void)calibrateChecker(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+
+        return true;
+    }
+    if (is(o.validate)) {
+        (void)validateChecker(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

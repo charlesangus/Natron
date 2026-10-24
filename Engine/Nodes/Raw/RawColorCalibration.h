@@ -45,6 +45,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Raw/RawColorCalibrationChecker.h"
 #include "Engine/Nodes/Raw/RawColorCalibrationMath.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
@@ -91,6 +92,22 @@
 #define kRawColorCalibrationParamSpotBottomLeft "spotBottomLeft"
 #define kRawColorCalibrationParamSpotSize "spotSize"
 #define kRawColorCalibrationParamPick "pick"
+
+// The Calibrate with a Color Checker group of the CAT tab. The corners are the chart's guides
+// (its white dots), in pixels of the input.
+#define kRawColorCalibrationGroupChecker "colorChecker"
+#define kRawColorCalibrationParamCheckerChart "checkerChart"
+#define kRawColorCalibrationParamCheckerOptimize "checkerOptimize"
+#define kRawColorCalibrationParamCheckerPatchScale "checkerPatchScale"
+#define kRawColorCalibrationParamCheckerTopLeft "checkerTopLeft"
+#define kRawColorCalibrationParamCheckerTopRight "checkerTopRight"
+#define kRawColorCalibrationParamCheckerBottomRight "checkerBottomRight"
+#define kRawColorCalibrationParamCheckerBottomLeft "checkerBottomLeft"
+#define kRawColorCalibrationParamCheckerCornerEnable "checkerCornerEnable"
+#define kRawColorCalibrationParamCheckerOverlayPoints "checkerOverlayPoints"
+#define kRawColorCalibrationParamCheckerReport "checkerReport"
+#define kRawColorCalibrationParamCalibrate "calibrate"
+#define kRawColorCalibrationParamValidate "validate"
 
 // The tabs.
 #define kRawColorCalibrationTabCat "catTab"
@@ -304,6 +321,10 @@ struct RawColorCalibrationOp {
     void createSpotKnobs(KnobHolder* holder,
                          const KnobGroupPtr& tab);
 
+    // The Calibrate with a Color Checker group, after the area color mapping.
+    void createCheckerKnobs(KnobHolder* holder,
+                            const KnobGroupPtr& tab);
+
     /**
      * @brief The matrix from the working space of the project of holder to XYZ (D50); linear
      * Rec. 709's when the project has no matrix to XYZ.
@@ -338,6 +359,16 @@ struct RawColorCalibrationOp {
     KnobDoubleWPtr spotBottomLeft;
     KnobDoubleWPtr spotSize;
     KnobButtonWPtr pick;
+    KnobChoiceWPtr checkerChart;
+    KnobChoiceWPtr checkerOptimize;
+    KnobDoubleWPtr checkerPatchScale;
+    // Top left, top right, bottom right and bottom left, the order of the ideal box.
+    KnobDoubleWPtr checkerCorners[4];
+    KnobBoolWPtr checkerCornerEnable[4];
+    KnobChoiceWPtr checkerOverlayPoints;
+    KnobStringWPtr checkerReport;
+    KnobButtonWPtr calibrate;
+    KnobButtonWPtr validate;
 };
 
 static_assert(PointOp<RawColorCalibrationOp>);
@@ -367,6 +398,23 @@ public:
      * File Defaults on, in one undo step, as applying a darktable preset does.
      **/
     void applyChosenPreset();
+
+    /**
+     * @brief Reads the source at full scale over the chart, fits the illuminant and the channel
+     * mix that map it onto the chart's references (_extract_color_checker()), and writes them
+     * as _commit_profile_callback() does, with Override File Defaults on, in one undo step. The
+     * quality report goes in the Report knob. False, changing nothing but the report, when there
+     * is no source or the chart cannot be read.
+     **/
+    bool calibrateChecker(double time,
+                          ViewIdx view);
+
+    /**
+     * @brief The delta E of the node's output over the chart (_validate_color_checker()), in the
+     * Report knob. False when there is no source or the chart cannot be read.
+     **/
+    bool validateChecker(double time,
+                         ViewIdx view);
 
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -421,6 +469,21 @@ private:
     // While the spot area knobs are at their defaults, moves those defaults to darktable's default
     // picker box, 2% to 98% of the source's format.
     void refreshSpotDefaults();
+
+    // While the chart corners are at their defaults, moves those defaults 2% inside the
+    // source's format.
+    void refreshCheckerDefaults();
+
+    // The chart, its corners and the patch scale the checker knobs give.
+    RawColorCalibrationChecker::ChartPlacement checkerPlacement(double time) const;
+
+    // The source's working RGB at full scale over the chart's corners, through kernel when given.
+    std::optional<RawColorCalibrationChecker::RgbImage> readChecker(double time,
+                                                                    ViewIdx view,
+                                                                    const RawColorCalibrationChecker::ChartPlacement& placement,
+                                                                    const RawColorCalibrationMath::Kernel* kernel);
+
+    void showCheckerReport(const std::string& report);
 
     // _auto_set_illuminant() on the last picked mean: measure writes the target, correction the
     // custom illuminant, with Override File Defaults on.

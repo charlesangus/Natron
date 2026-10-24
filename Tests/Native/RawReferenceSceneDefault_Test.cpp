@@ -25,7 +25,6 @@
 
 #include "RawReferenceSupport.h"
 
-#include <cmath>
 #include <string>
 
 #include <QString>
@@ -124,41 +123,9 @@ TEST_F(RawReferenceSceneDefaultTest, RafDefaultChainMatchesDarktable)
     compareWithReference(RawReference::rafSite(), "RAF scene-referred default", "fujifilm-x-pro2-scene-referred-default.tif", RawReference::kMarkesteijnClass);
 }
 
-// The linear DNG has no mosaic: the default chain passes its three channels through RawDemosaic
-// and develops them to a lit, finite image.
-TEST_F(RawReferenceSceneDefaultTest, LinearDngDevelops)
+// The linear DNG has no mosaic, so demosaic passes its channels through; the README gives it the
+// RCD class.
+TEST_F(RawReferenceSceneDefaultTest, LinearDngDefaultChainMatchesDarktable)
 {
-    const RawReference::CropSite site = dngSite();
-    const RawDevelop::Chain chain = createDefaultChain(site);
-    ASSERT_TRUE(chain.complete());
-    expectSceneReferredDefaults(chain, "DNG");
-
-    const RectD rod = regionOfDefinition(chain.colorCalibration);
-    ASSERT_EQ(site.developedWidth, (int)rod.width());
-    ASSERT_EQ(site.developedHeight, (int)rod.height());
-    const int y1 = (int)rod.y2 - site.top - RawReference::kCropSize;
-    const RectI window((int)rod.x1 + site.left, y1, (int)rod.x1 + site.left + RawReference::kCropSize, y1 + RawReference::kCropSize);
-    RenderedPlane plane;
-    std::string error;
-    ASSERT_TRUE(renderRawTestPlane(chain.colorCalibration, window, &plane, &error)) << error;
-    ASSERT_GE(plane.channels.size(), 3u);
-
-    double sum[3] = { 0., 0., 0. };
-    int nonFinite = 0;
-    for (int y = window.y1; y < window.y2; ++y) {
-        for (int x = window.x1; x < window.x2; ++x) {
-            for (int c = 0; c < 3; ++c) {
-                const float v = rawTestPlaneValue(plane, x, y, c);
-                if (!std::isfinite(v)) {
-                    ++nonFinite;
-                } else {
-                    sum[c] += v;
-                }
-            }
-        }
-    }
-    EXPECT_EQ(0, nonFinite);
-    for (int c = 0; c < 3; ++c) {
-        EXPECT_GT(sum[c], 0.) << c;
-    }
+    compareWithReference(dngSite(), "DNG scene-referred default", "canon-eos-5d-mark-iii-linear-rgb-scene-referred-default.tif", RawReference::kRCDClass);
 }

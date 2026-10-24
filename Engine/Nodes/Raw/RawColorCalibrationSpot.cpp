@@ -480,6 +480,15 @@ RawColorCalibration::initializeKnobs()
 
     if (NodePtr node = getNode()) {
         node->addRectangleInteract(op().spotBottomLeft.lock(), op().spotSize.lock(), KnobBoolPtr(), KnobBoolPtr());
+
+        const RawColorCalibrationOp& o = op();
+        const KnobDoublePtr corners[4] = { o.checkerCorners[0].lock(), o.checkerCorners[1].lock(), o.checkerCorners[2].lock(), o.checkerCorners[3].lock() };
+        // The interact draws nothing while its from points are secret, so the corners are both.
+        node->addCornerPinInteract(corners[0], corners[1], corners[2], corners[3],
+                                   corners[0], corners[1], corners[2], corners[3],
+                                   o.checkerCornerEnable[0].lock(), o.checkerCornerEnable[1].lock(),
+                                   o.checkerCornerEnable[2].lock(), o.checkerCornerEnable[3].lock(),
+                                   o.checkerOverlayPoints.lock(), KnobBoolPtr(), KnobBoolPtr());
     }
 }
 

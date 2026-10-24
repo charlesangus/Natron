@@ -34,26 +34,6 @@
 #include "Serialization/SerializationFwd.h"
 #include "Serialization/TrackerSerialization.h"
 
-#define NATRON_SERIALIZATION_NODE_INTRODUCES_ROTO 2
-#define NATRON_SERIALIZATION_NODE_INTRODUCES_MULTI_INSTANCE 3
-#define NATRON_SERIALIZATION_NODE_INTRODUCES_USER_KNOBS 4
-#define NATRON_SERIALIZATION_NODE_INTRODUCES_GROUPS 5
-#define NATRON_SERIALIZATION_NODE_EMBEDS_MULTI_INSTANCE_CHILDREN 6
-#define NATRON_SERIALIZATION_NODE_INTRODUCES_SCRIPT_NAME 7
-#define NATRON_SERIALIZATION_NODE_INTRODUCES_PYTHON_MODULE 8
-#define NATRON_SERIALIZATION_NODE_CHANGE_INPUTS_SERIALIZATION 9
-#define NATRON_SERIALIZATION_NODE_INTRODUCES_USER_COMPONENTS 10
-#define NATRON_SERIALIZATION_NODE_INTRODUCES_PYTHON_MODULE_VERSION 11
-#define NATRON_SERIALIZATION_NODE_INTRODUCES_CACHE_ID 12
-#define NATRON_SERIALIZATION_NODE_SERIALIZE_PYTHON_MODULE_ALWAYS 13
-#define NATRON_SERIALIZATION_NODE_SERIALIZE_PAGE_INDEX 14
-#define NATRON_SERIALIZATION_NODE_INTRODUCES_TRACKER_CONTEXT 15
-#define NATRON_SERIALIZATION_NODE_REMOVES_USER_COMPONENTS 16
-#define NATRON_SERIALIZATION_NODE_ALWAYS_SAVES_CHANNEL_SET 17
-#define NATRON_SERIALIZATION_NODE_VERSION NATRON_SERIALIZATION_NODE_ALWAYS_SAVES_CHANNEL_SET
-
-#define NATRON_SERIALIZATION_NODE_COLLECTION_VERSION 1
-
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
@@ -69,15 +49,54 @@ struct LayerSerialization {
 };
 
 /**
+ * @brief Where a node sits in the node graph and how it is coloured. Each part is saved only
+ * when its flag is set. color is the user colour, or a backdrop's body colour; it is never the
+ * category colour.
+ **/
+struct NodeLayoutSerialization {
+    bool hasPosition;
+    double x;
+    double y;
+
+    bool hasSize;
+    double width;
+    double height;
+
+    bool hasColor;
+    float colorR;
+    float colorG;
+    float colorB;
+
+    bool hasOverlayColor;
+    float overlayR;
+    float overlayG;
+    float overlayB;
+
+    NodeLayoutSerialization()
+        : hasPosition(false)
+        , x(0.)
+        , y(0.)
+        , hasSize(false)
+        , width(0.)
+        , height(0.)
+        , hasColor(false)
+        , colorR(0.f)
+        , colorG(0.f)
+        , colorB(0.f)
+        , hasOverlayColor(false)
+        , overlayR(0.f)
+        , overlayG(0.f)
+        , overlayB(0.f)
+    {
+    }
+};
+
+/**
  * @brief The saved state of one node: its plug-in, names and knobs, its input connections, its
  * roto and tracker data, its user knob layout and, for a group or a multi-instance node, the
- * nodes it holds. Node names are script names; a name read from a file older than script names
- * is already converted to one.
+ * nodes it holds. Node names are script names.
  **/
 struct NodeSerialization {
-    // The class version the node was loaded from, NATRON_SERIALIZATION_NODE_VERSION otherwise.
-    unsigned int version;
-
     std::string label;
     std::string scriptName;
     std::string pluginID;
@@ -88,15 +107,13 @@ struct NodeSerialization {
     std::string pythonModule;
     unsigned int pythonModuleVersion;
 
+    NodeLayoutSerialization layout;
+
     // The knobs that differ from their defaults, or carry an expression or a link.
     std::list<KnobSerialization> knobs;
 
     // Input label to the script name of the node connected there.
     std::map<std::string, std::string> inputs;
-
-    // Files older than NATRON_SERIALIZATION_NODE_CHANGE_INPUTS_SERIALIZATION save inputs by
-    // index instead of by label; such a node has these and no inputs.
-    std::vector<std::string> oldInputs;
 
     // Still read and written so the file layout is stable, but ignored on load and saved as 0.
     std::uint64_t knobsAge;
@@ -121,17 +138,16 @@ struct NodeSerialization {
     std::string cacheID;
 
     NodeSerialization()
-        : version(NATRON_SERIALIZATION_NODE_VERSION)
-        , label()
+        : label()
         , scriptName()
         , pluginID()
         , pluginMajorVersion(-1)
         , pluginMinorVersion(-1)
         , pythonModule()
         , pythonModuleVersion(0)
+        , layout()
         , knobs()
         , inputs()
-        , oldInputs()
         , knobsAge(0)
         , masterNodeName()
         , hasRotoContext(false)

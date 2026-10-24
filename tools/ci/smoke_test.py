@@ -128,6 +128,7 @@ import sys
 import tempfile
 import traceback
 import zlib
+import zipfile
 
 # Scene-linear 0.18 -- the standard 18% mid-grey -- and the 8-bit code
 # value it lands on once encoded into an sRGB PNG. SRGB_GREY_CODE is
@@ -781,7 +782,7 @@ def _repo_root():
     if not plugin_path:
         raise AssertionError(
             "OFX_PLUGIN_PATH is not set -- cannot locate the repository "
-            "root to find Tests/fixtures/read-time-offset.ntp."
+            "root to find Tests/fixtures/read-time-offset.ntpz."
         )
     assets_dir = os.path.dirname(os.path.normpath(plugin_path))
     build_dir = os.path.dirname(assets_dir)
@@ -790,10 +791,7 @@ def _repo_root():
 
 def _write_time_offset_fixture_copy(dir_path, output_dir):
     fixture_path = os.path.join(_repo_root(), "Tests", "fixtures",
-                                 "read-time-offset.ntp")
-    with open(fixture_path, "r") as f:
-        content = f.read()
-
+                                 "read-time-offset.ntpz")
     # Read1's timeOffset knob in this fixture is 50, not 0. A first attempt
     # at this check used the default offset of 0 and passed green against
     # the broken -i code path -- i.e. it tested nothing, since with
@@ -801,11 +799,20 @@ def _write_time_offset_fixture_copy(dir_path, output_dir):
     # sequenceTime = t - timeOffset to get wrong. Do not "simplify" this
     # fixture to a zero offset.
     # tools/ci/regen_read_time_offset.py regenerates the fixture.
-    content = content.replace(READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN, output_dir)
-
-    copy_path = os.path.join(dir_path, "read-time-offset.ntp")
-    with open(copy_path, "w") as f:
-        f.write(content)
+    #
+    # The token is in the bundle's project.yaml. Natron reads any repacked zip;
+    # only the member alignment is lost.
+    copy_path = os.path.join(dir_path, "read-time-offset.ntpz")
+    with zipfile.ZipFile(fixture_path) as src, \
+            zipfile.ZipFile(copy_path, "w", zipfile.ZIP_STORED) as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename.rsplit("/", 1)[-1] == "project.yaml":
+                data = data.decode("utf-8").replace(
+                    READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN, output_dir
+                ).encode("utf-8")
+            dst.writestr(zipfile.ZipInfo(info.filename, info.date_time), data,
+                         compress_type=zipfile.ZIP_STORED)
     return copy_path
 
 
@@ -815,7 +822,7 @@ def check_reader_cli_time_offset_regression():
     Engine/AppInstance.cpp applies -i's filename with a bare
     KnobFile::setValue(): the reader's own filename handler refreshes
     originalFrameRange/firstFrame/lastFrame/startingTime from the new file,
-    but never timeOffset. Tests/fixtures/read-time-offset.ntp's Read1 node
+    but never timeOffset. Tests/fixtures/read-time-offset.ntpz's Read1 node
     carries a non-zero timeOffset for exactly this reason (see
     _write_time_offset_fixture_copy() above): with the stale offset, every
     requested time maps outside the sequence domain and the reader's
@@ -870,7 +877,7 @@ def check_reader_cli_time_offset_regression():
             "rendering frames 1-3 through `%s` produced byte-identical "
             "output for %r even though the 3 input frames at %r differ. "
             "Read1's timeOffset (50, non-zero by design -- see "
-            "Tests/fixtures/read-time-offset.ntp) was not refreshed when -i "
+            "Tests/fixtures/read-time-offset.ntpz) was not refreshed when -i "
             "set a new filename, so every requested frame time maps "
             "outside the sequence domain and the reader's before/after "
             "hold collapses frames 1-3 onto a single held input frame."
@@ -878,6 +885,106 @@ def check_reader_cli_time_offset_regression():
         )
     _mark("[smoke] OK: -i Read1 <file> rendered 3 distinct frames %r "
           "despite a stale non-zero timeOffset" % (frame_paths,))
+
+
+def _call_capturing_native_output(func):
+    """Return func()'s result and what was written to the process's stdout
+    and stderr while it ran.
+
+    Natron reports a project it refuses to load through std::cerr, beneath
+    Python's sys.stderr, so only redirecting the file descriptors themselves
+    catches the message.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    with tempfile.TemporaryFile() as sink:
+        saved_stdout = os.dup(1)
+        saved_stderr = os.dup(2)
+        try:
+            os.dup2(sink.fileno(), 1)
+            os.dup2(sink.fileno(), 2)
+            try:
+                result = func()
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os.dup2(saved_stdout, 1)
+                os.dup2(saved_stderr, 2)
+        finally:
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+        sink.seek(0)
+        output = sink.read().decode("utf-8", "replace")
+    return result, output
+
+
+def check_project_bundle_round_trip():
+    """app.saveProject() writes a .ntpz bundle that app.loadProject() reads
+    back, and app.loadProject() refuses a project in the legacy XML format."""
+    tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-ntpz-")
+    path = os.path.join(tmpdir, "round-trip.ntpz")
+
+    app.resetProject()
+    constant = app.createNode("net.sf.openfx.ConstantPlugin")
+    grade = app.createNode("net.sf.openfx.GradePlugin")
+    if constant is None or grade is None:
+        raise AssertionError("cannot create the Constant -> Grade graph to save")
+    constant.getParam("color").set(0.5, 0.25, 0.125, 1.0)
+    constant.getParam("color").setValueAtTime(0.75, 10, 0)
+    grade.getParam("multiply").set(2.0, 1.5, 1.0, 1.0)
+    if not grade.connectInput(0, constant):
+        raise AssertionError("Effect.connectInput(0, constant) failed for Grade")
+    constant_name = constant.getScriptName()
+    grade_name = grade.getScriptName()
+
+    if not app.saveProject(path):
+        raise AssertionError("app.saveProject(%r) returned False" % (path,))
+    if not zipfile.is_zipfile(path):
+        raise AssertionError("app.saveProject(%r) did not write a zip "
+                             "archive there" % (path,))
+    with zipfile.ZipFile(path) as bundle:
+        members = bundle.namelist()
+    if members[:3] != ["round-trip/mimetype", "round-trip/manifest.yaml",
+                       "round-trip/project.yaml"]:
+        raise AssertionError("%r is not laid out as a project bundle: %r"
+                             % (path, members))
+    _mark("[smoke] app.saveProject() wrote the bundle %r: %r" % (path, members))
+
+    loaded = app.loadProject(path)
+    if loaded is None:
+        raise AssertionError("app.loadProject(%r) returned None" % (path,))
+    constant = loaded.getNode(constant_name)
+    grade = loaded.getNode(grade_name)
+    if constant is None or grade is None:
+        raise AssertionError("the loaded project lacks %s or %s"
+                             % (constant_name, grade_name))
+    color = constant.getParam("color")
+    multiply = grade.getParam("multiply")
+    found = (color.getValueAtTime(10, 0), color.getValue(1),
+             multiply.getValue(0), multiply.getValue(1))
+    if found != (0.75, 0.25, 2.0, 1.5):
+        raise AssertionError("the loaded Constant color and Grade multiply "
+                             "are %r, expected (0.75, 0.25, 2.0, 1.5)"
+                             % (found,))
+    source = grade.getInput(0)
+    if source is None or source.getScriptName() != constant_name:
+        raise AssertionError("the loaded %s is not connected to %s"
+                             % (grade_name, constant_name))
+    _mark("[smoke] OK: app.loadProject() read back %r" % (path,))
+
+    old_format = os.path.join(_repo_root(), "Tests", "fixtures",
+                              "old-format.ntp")
+    result, output = _call_capturing_native_output(
+        lambda: app.loadProject(old_format))
+    if result is not None:
+        raise AssertionError("app.loadProject(%r) loaded a project in the "
+                             "legacy XML format" % (old_format,))
+    if "Legacy .ntp projects are not supported" not in output:
+        raise AssertionError("app.loadProject(%r) returned None without the "
+                             "legacy-format message; it printed:\n%s"
+                             % (old_format, output))
+    _mark("[smoke] OK: app.loadProject() refused the legacy XML format: %s"
+          % (output.strip().splitlines()[-1],))
 
 
 _RENDER_SCHEDULER_MODES = ("legacy", "taskgraph")
@@ -931,6 +1038,7 @@ def main():
     check_exr_to_png_colorspace()
     check_misc_effect_render()
     check_deep_write_render()
+    check_project_bundle_round_trip()
     check_reader_cli_time_offset_regression()
 
     # NOTE: not covered here -- PyGuiApplication::addMenuCommand()

@@ -327,6 +327,9 @@ public:
     ///Works only in eFileDialogModeSave mode.
     std::string filesToSave();
 
+    /// Pre-fills the file name of a save dialog.
+    void setSuggestedFileName(const QString& name);
+
     ///Returns the path of the directory returned by currentDirectory() but whose path has been made
     ///relative to the selected user project path.
     std::string selectedDirectory() const;
@@ -451,6 +454,13 @@ private:
     bool sequenceModeEnabled() const;
 
     bool isDirectory(const QString & name) const;
+
+    /**
+     * @brief True when an open dialog that lists project.yaml among its filters is given a folder
+     * holding one: Open takes the folder as the project instead of entering it. A trailing
+     * separator, as set by a double-click, still means entering it.
+     **/
+    bool isProjectFolderToOpen(const QString& name) const;
 
     QFileSystemModel* getFavoriteSystemModel() const;
 

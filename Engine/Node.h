@@ -825,13 +825,20 @@ public:
     bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
 
     /**
-     * @brief If the session is a GUI session, then this function sets the position of the node on the nodegraph.
+     * @brief Set the position of the node on the nodegraph. It is stored on the node and, in a
+     * GUI session, forwarded to the node's GUI. getPosition() returns the stored value.
      **/
     void setPosition(double x, double y);
     void getPosition(double *x, double *y) const;
 
     void setSize(double w, double h);
     void getSize(double* w, double* h) const;
+
+    /**
+     * @brief Whether the size was ever set, on the node or by its GUI. A node never sized has no
+     * layout size to save.
+     **/
+    bool hasSize() const;
 
     /**
      * @brief Get the colour of the node as it appears on the nodegraph: the user colour
@@ -843,6 +850,27 @@ public:
     bool hasUserColor() const;
     void getUserColor(double* r, double* g, double* b) const;
     void resetColor();
+
+    /**
+     * @brief Set the suggested overlay colour, stored on the node and forwarded to the GUI.
+     **/
+    void setOverlayColor(double r, double g, double b);
+    bool hasOverlayColor() const;
+
+    /**
+     * @brief The overlay colour held by the node itself, without asking its GUI. Meaningful when
+     * hasOverlayColor() is true.
+     **/
+    void getStoredOverlayColor(double* r, double* g, double* b) const;
+
+    /**
+     * @brief Store-only counterparts of the setters above, for the node's GUI to mirror its own
+     * changes into. They never call back into the GUI.
+     **/
+    void setLayoutFromGuiPosition(double x, double y);
+    void setLayoutFromGuiSize(double w, double h);
+    void setLayoutFromGuiUserColor(bool hasColor, double r, double g, double b);
+    void setLayoutFromGuiOverlayColor(bool hasColor, double r, double g, double b);
 
     std::string getKnobChangedCallback() const;
     std::string getInputChangedCallback() const;
@@ -1444,6 +1472,10 @@ public:
 
     void computeFrameRangeForReader(KnobI* fileKnob);
 
+    /**
+     * @brief The overlay colour the GUI shows if there is one, otherwise the stored one.
+     * Returns false if there is none.
+     **/
     bool getOverlayColor(double* r, double* g, double* b) const;
 
     bool canHandleRenderScaleForOverlays() const;

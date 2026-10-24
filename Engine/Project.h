@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -35,6 +36,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QDateTime>
 #include <QObject>
+#include <QStringList>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -87,11 +89,73 @@ public:
     typedef std::shared_ptr<ProjectTLSData> ProjectDataTLSPtr;
 
     /**
-     * @brief Loads the project with the given path and name corresponding to a file on disk.
+     * @brief What a path opens as a project: the file or folder the reader opens (source), and
+     * the directory (path, with a trailing separator) and file name the project is known by.
+     * A folder is known by the bundle it is saved as, so `/a/test/` is `/a/` + `test.ntpz`.
+     **/
+    struct OpenTarget {
+        QString source;
+        QString path;
+        QString name;
+        bool isFolder = false;
+    };
+
+    /**
+     * @brief Says whether path can be opened as a project without touching any project. path is
+     * a bundle (any zip archive, whatever its extension), a folder holding project.yaml, or a
+     * project.yaml file, which stands for its folder. Otherwise returns false with a message
+     * for the user in error: the legacy-format message for an old XML project or any other
+     * `.ntp` file, "<file name> is not a Natron project" for anything else. Whether a bundle
+     * or folder really holds a readable project is only known once it is read.
+     **/
+    static bool classifyOpenTarget(const QString& path, OpenTarget* out, QString* error);
+
+    /**
+     * @brief The name of the file that makes a folder a project (an unzipped bundle): project.yaml.
+     **/
+    static QString folderProjectFileName();
+
+    /**
+     * @brief Loads the project at path + name: a file, a folder or a project.yaml, as
+     * classifyOpenTarget() describes. A path it refuses is reported and the current project is
+     * left untouched; otherwise the current project is reset before loading.
      **/
     bool loadProject(const QString & path, const QString & name, bool isUntitledAutosave = false, bool attemptToLoadAutosave = true);
 
+    /**
+     * @brief True when the project was opened from a folder and not saved since: the bundle
+     * named by getProjectPath() + getProjectFilename() may not exist, or may hold another version.
+     **/
+    bool isLoadedFromFolder() const;
+
     bool hasMissingPluginNode() const;
+
+    /**
+     * @brief Records a problem that loading worked around, such as an input whose node is
+     * missing, and writes it to the error log. The list is emptied when the next load starts.
+     **/
+    void addLoadWarning(const QString& warning);
+
+    QStringList getLoadWarnings() const;
+
+    /**
+     * @brief Writes a project file at filePath without ever leaving a partial one there:
+     * writeArchive writes the whole archive to a new file in the same directory, beforeReplace
+     * runs once it is complete and synced, then that file replaces filePath. When writeArchive
+     * or the file system fails, filePath is left as it was and std::runtime_error is thrown
+     * (or whatever writeArchive threw).
+     **/
+    static void writeProjectFileAtomically(const QString& filePath,
+                                           const std::function<void(Serialization::ZipOutput&)>& writeArchive,
+                                           const std::function<void()>& beforeReplace = std::function<void()>());
+
+    /**
+     * @brief Makes room for a save over filePath that keeps saveVersions versions: drops the
+     * oldest numbered backups, shifts the rest up by one and links (or copies) the current
+     * filePath to filePath.~1~. filePath itself is never removed or renamed, so it survives
+     * when the save that follows fails.
+     **/
+    static void rotateBackups(const QString& filePath, int saveVersions);
 
     /**
      * @brief Saves the project with the given path and name corresponding to a file on disk.
@@ -120,8 +184,7 @@ public:
      **/
     static QString autoSavesDir() WARN_UNUSED_RETURN;
 
-
-    bool findAutoSaveForProject(const QString& projectPath, const QString& projectName, QString* autoSaveFileName);
+    bool findAutoSaveForProject(const OpenTarget& target, QString* autoSaveFileName);
 
     /**
      * @brief Returns true if the project is currently loading.
@@ -498,12 +561,12 @@ private:
 
     void setProjectDefaultFormat(const Format & f);
 
-    bool loadProjectInternal(const QString & path, const QString & name, bool isAutoSave,
-                             bool isUntitledAutosave, bool* mustSave);
+    bool loadProjectInternal(const QString& path, const QString& name, const QString& source,
+                             bool isAutoSave, bool isUntitledAutosave, bool* mustSave);
 
     QString saveProjectInternal(const QString & path, const QString & name, bool autosave, bool updateProjectProperties);
 
-
+    void reportLoadWarnings();
 
     void doResetEnd(bool aboutToQuit);
 

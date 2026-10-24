@@ -135,7 +135,7 @@ protected:
 
     // Builds Constant -> native Write in the test project, with a different grey on each frame, writes
     // frames kFirst..kLast as 32-bit EXR, records what the Constant renders, and saves the project.
-    // Returns the saved .ntp path, or an empty string on failure.
+    // Returns the saved .ntpz path, or an empty string on failure.
     std::string buildAndSaveSubProject()
     {
         NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
@@ -193,7 +193,7 @@ protected:
         getApp()->startWritersRendering(false, works);
 
         QString savedPath;
-        if (!project()->saveProject(_dir->path() + QLatin1Char('/'), QString::fromUtf8("sub.ntp"), &savedPath)) {
+        if (!project()->saveProject(_dir->path() + QLatin1Char('/'), QString::fromUtf8("sub.ntpz"), &savedPath)) {
             ADD_FAILURE() << "saving the sub-project failed";
 
             return std::string();

@@ -247,12 +247,12 @@ Settings::initializeKnobsGeneral()
     _saveVersions->disableSlider();
     _saveVersions->setMinimum(0);
     _saveVersions->setMaximum(32);
-    _saveVersions->setHintToolTip( tr("Number of versions created (for backup) when saving newer versions of a file.\n"
-                                      "This option keeps saved versions of your file in the same directory, adding "
-                                      ".~1~, .~2~, etc., with the number increasing to the number of versions you specify.\n"
-                                      "Older files will be named with a higher number. E.g. with the default setting of 2, "
-                                      "you will have three versions of your file: *.ntp (last saved), *.ntp.~1~ (second "
-                                      "last saved), *.~2~ (third last saved).") );
+    _saveVersions->setHintToolTip(tr("Number of versions created (for backup) when saving newer versions of a file.\n"
+                                     "This option keeps saved versions of your file in the same directory, adding "
+                                     ".~1~, .~2~, etc., with the number increasing to the number of versions you specify.\n"
+                                     "Older files will be named with a higher number. E.g. with the default setting of 2, "
+                                     "you will have three versions of your file: *.ntpz (last saved), *.ntpz.~1~ (second "
+                                     "last saved), *.~2~ (third last saved)."));
     _generalTab->addKnob(_saveVersions);
 
     _hostName = AppManager::createKnob<KnobChoice>( this, tr("Appear to plug-ins as") );
@@ -645,12 +645,6 @@ Settings::initializeKnobsUserInterface()
                                            "as default layout for new projects. You can export/import a layout to/from a file "
                                            "from the Layout menu. If empty, the default application layout is used.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
     _uiPage->addKnob(_defaultLayoutFile);
-
-    _loadProjectsWorkspace = AppManager::createKnob<KnobBool>( this, tr("Load workspace embedded within projects") );
-    _loadProjectsWorkspace->setName("loadProjectWorkspace");
-    _loadProjectsWorkspace->setHintToolTip( tr("When checked, when loading a project, the workspace (windows layout) will also be loaded, otherwise it "
-                                               "will use your current layout.") );
-    _uiPage->addKnob(_loadProjectsWorkspace);
 
 #ifdef Q_OS_WIN
     _enableConsoleWindow = AppManager::createKnob<KnobBool>( this, tr("Enable console window") );
@@ -1557,7 +1551,6 @@ Settings::setDefaultValues()
     _maxPanelsOpened->setDefaultValue(10, 0);
     _useCursorPositionIncrements->setDefaultValue(true);
     //_defaultLayoutFile
-    _loadProjectsWorkspace->setDefaultValue(false);
 #ifdef Q_OS_WIN
     _enableConsoleWindow->setDefaultValue(false);
 #endif
@@ -3218,12 +3211,6 @@ std::string
 Settings::getDefaultLayoutFile() const
 {
     return _defaultLayoutFile->getValue();
-}
-
-bool
-Settings::getLoadProjectWorkspce() const
-{
-    return _loadProjectsWorkspace->getValue();
 }
 
 #ifdef Q_OS_WIN

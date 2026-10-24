@@ -536,7 +536,7 @@ TEST_F(TimeVaryingLayersTest, KeyedDisableSurvivesSaveLoad)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("keyed-disable-roundtrip.ntp");
+    const QString fileName = QString::fromUtf8("keyed-disable-roundtrip.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));

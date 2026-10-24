@@ -2363,7 +2363,7 @@ try:
 
         fb_name = fb.getScriptName()
         fg_name = fg.getScriptName()
-        fold_path = os.path.join(gt.OUT, "fold-state.ntp")
+        fold_path = os.path.join(gt.OUT, "fold-state.ntpz")
         if check(app.saveProjectAs(fold_path), "save the project to " + fold_path):
             if check(app.resetProject(), "reset the project (close, keep the window)"):
                 check(app.getNode(fb_name) is None and app.getNode(fg_name) is None, "the reset removed the Blur and the Grade")

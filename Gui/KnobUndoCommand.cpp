@@ -25,19 +25,9 @@
 
 #include "KnobUndoCommand.h"
 
-#include <stdexcept>
-#include <sstream> // stringstream
 #include <QDebug>
-#if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
-GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
-// clang-format off
-GCC_DIAG_OFF(unused-parameter)
-// /opt/local/include/boost/serialization/smart_cast.hpp:254:25: warning: unused parameter 'u' [-Wunused-parameter]
-#include <boost/serialization/map.hpp>
-GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
-GCC_DIAG_ON(unused-parameter)
-// clang-format on
-#endif
+#include <sstream> // stringstream
+#include <stdexcept>
 
 #include "Serialization/KnobSerialization.h"
 

@@ -131,7 +131,7 @@ TEST_F(NativeReadSkeletonTest, MajorAndFilenameSurviveSaveAndLoad)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("native-read.ntp");
+    const QString fileName = QString::fromUtf8("native-read.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 

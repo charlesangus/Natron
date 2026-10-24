@@ -123,31 +123,8 @@ Gui::openRecentFile()
     QAction *action = qobject_cast<QAction *>( sender() );
 
     if (action) {
-        QFileInfo f( action->data().toString() );
-        QString path = f.path() + QLatin1Char('/');
-        QString filename = path + f.fileName();
-        int openedProject = appPTR->isProjectAlreadyOpened( filename.toStdString() );
-        if (openedProject != -1) {
-            AppInstancePtr instance = appPTR->getAppInstance(openedProject);
-            if (instance) {
-                GuiAppInstance* guiApp = dynamic_cast<GuiAppInstance*>( instance.get() );
-                assert(guiApp);
-                if (guiApp) {
-                    guiApp->getGui()->activateWindow();
-
-                    return;
-                }
-            }
-        }
-
-        ///if the current graph has no value, just load the project in the same window
-        if ( getApp()->getProject()->isGraphWorthLess() ) {
-            getApp()->getProject()->loadProject( path, f.fileName() );
-        } else {
-            CLArgs cl;
-            AppInstancePtr newApp = appPTR->newAppInstance(cl, false);
-            newApp->getProject()->loadProject( path, f.fileName() );
-        }
+        AppInstancePtr appInstance = openProjectInternal(action->data().toString().toStdString(), true);
+        Q_UNUSED(appInstance);
     }
 }
 

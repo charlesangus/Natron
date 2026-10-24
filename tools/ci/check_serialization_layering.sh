@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Enforces the Serialization/README.md layering rule: Serialization/ is a
-# plain-data library with no Engine/, Gui/, Qt or Python includes, and only
-# Serialization/BoostXml/ may include boost.archive or boost.serialization.
+# plain-data library with no Engine/, Gui/, Qt, Python or boost.archive /
+# boost.serialization includes.
 #
 # Usage: tools/ci/check_serialization_layering.sh
 
@@ -43,11 +43,6 @@ check_pattern() {
 while IFS= read -r -d '' file; do
     relative_path="${file#"${repo_root}"/}"
 
-    is_boost_xml_file=0
-    case "$relative_path" in
-        Serialization/BoostXml/*) is_boost_xml_file=1 ;;
-    esac
-
     check_pattern "$file" "$relative_path" \
         '^[[:space:]]*#include[[:space:]]*[<"]Engine/' \
         "Serialization/ must not include Engine/"
@@ -64,11 +59,9 @@ while IFS= read -r -d '' file; do
         '^[[:space:]]*#include[[:space:]]*[<"]Python\.h[">]' \
         "Serialization/ must not include Python.h"
 
-    if [ "$is_boost_xml_file" -eq 0 ]; then
-        check_pattern "$file" "$relative_path" \
-            '^[[:space:]]*#include[[:space:]]*[<"]boost/(archive|serialization)/' \
-            "boost.archive/boost.serialization may only be included under Serialization/BoostXml/"
-    fi
+    check_pattern "$file" "$relative_path" \
+        '^[[:space:]]*#include[[:space:]]*[<"]boost/(archive|serialization)/' \
+        "Serialization/ must not include boost.archive or boost.serialization"
 done < <(find "$serialization_dir" -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.cpp' -o -name '*.cc' \) -print0)
 
 if [ "$violation_count" -ne 0 ]; then

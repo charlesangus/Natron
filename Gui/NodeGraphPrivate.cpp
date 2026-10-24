@@ -43,7 +43,6 @@
 #include "Gui/ThemedIcon.h"
 
 #include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -197,7 +196,6 @@ NodeGraphPrivate::copyNodesInternal(const NodesGuiList& selection,
 {
     ///Clear clipboard
     clipboard.nodes.clear();
-    clipboard.nodesUI.clear();
     clipboard.sourceNodes.clear();
 
     NodesGuiList nodesToCopy = selection;
@@ -219,10 +217,7 @@ NodeGraphPrivate::copyNodesInternal(const NodesGuiList& selection,
             if (node) {
                 node->toSerialization(ns.get(), true);
             }
-            Serialization::NodeGuiSerializationPtr nGuiS = std::make_shared<Serialization::NodeGuiSerialization>();
-            (*it)->toSerialization(nGuiS.get());
             clipboard.nodes.push_back(ns);
-            clipboard.nodesUI.push_back(nGuiS);
             clipboard.sourceNodes.push_back(node);
         }
     }

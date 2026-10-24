@@ -307,9 +307,33 @@ public:
 
     void writeToScriptEditor(const QString& message);
 
+    /**
+     * @brief Saves the project as a .ntpz project bundle. A project already saved by the user is
+     * saved again to its own file and filename is ignored; otherwise this is saveProjectAs().
+     * Project path variables such as [Project] in filename are expanded. Returns false when the
+     * project could not be saved.
+     **/
     bool saveProject(const QString& filename);
+
+    /**
+     * @brief Saves the project as a .ntpz project bundle at filename, which becomes the project's
+     * file. Project path variables in filename are expanded. Returns false when the project could
+     * not be saved.
+     **/
     bool saveProjectAs(const QString& filename);
     bool saveTempProject(const QString& filename);
+
+    /**
+     * @brief Loads the .ntpz project bundle at filename, or the unzipped bundle folder (or its
+     * project.yaml) there. In background mode it replaces the current project and returns this
+     * application; in the GUI it is opened the way the Open Project menu entry opens one.
+     * Returns None, without raising, when the path does not exist or cannot be loaded; the
+     * reason is reported as an error: a damaged file, one that is not a Natron project, a
+     * project saved by a newer Natron, or a project in the old XML .ntp format, which this
+     * version cannot open. A path that is refused before loading leaves the current project
+     * as it was. Problems the load worked around, such as a missing input node, are
+     * reported as warnings and the project still loads.
+     **/
     App* loadProject(const QString& filename);
 
     ///Close the current project but keep the window

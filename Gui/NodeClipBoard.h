@@ -28,31 +28,14 @@
 
 #include "Global/Macros.h"
 
-#include <cassert>
 #include <list>
 #include <memory>
-
-#if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
-GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
-// clang-format off
-GCC_DIAG_OFF(unused-parameter)
-#include <boost/archive/xml_iarchive.hpp>
-#include <boost/archive/xml_oarchive.hpp>
-#include <boost/serialization/split_member.hpp>
-#include <boost/serialization/version.hpp>
-GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
-GCC_DIAG_ON(unused-parameter)
-// clang-format on
-#endif
 
 #include "Engine/EngineFwd.h"
 
 #include "Gui/GuiFwd.h"
 
-#include "Serialization/BoostXml/NodeXml.h"
-#include "Serialization/BoostXml/ProjectGuiXml.h"
 #include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -60,62 +43,21 @@ class NodeClipBoard
 {
 public:
     std::list<Serialization::NodeSerializationPtr> nodes;
-    std::list<Serialization::NodeGuiSerializationPtr> nodesUI;
 
-    // The node each item of nodes was copied from, null for an item read from an archive. It
-    // is not archived: a serialization does not reference its node.
+    // The node each item of nodes was copied from, or null. It is not put on the system
+    // clipboard: a serialization does not reference its node.
     std::list<NodePtr> sourceNodes;
 
     NodeClipBoard()
         : nodes()
-        , nodesUI()
         , sourceNodes()
     {
     }
 
     bool isEmpty() const
     {
-        return nodes.empty() && nodesUI.empty();
+        return nodes.empty();
     }
-
-    template<class Archive>
-    void save(Archive & ar,
-              const unsigned int /*version*/) const
-
-    {
-        int nNodes = nodes.size();
-
-        assert( nodes.size() == nodesUI.size() );
-        ar & ::boost::serialization::make_nvp("NbNodes", nNodes);
-        std::list<Serialization::NodeGuiSerializationPtr>::const_iterator itUI = nodesUI.begin();
-        for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = nodes.begin();
-             it != nodes.end(); ++it, ++itUI) {
-            ar & ::boost::serialization::make_nvp("Node", **it);
-            ar & ::boost::serialization::make_nvp("NodeUI", **itUI);
-        }
-    }
-
-    template<class Archive>
-    void load(Archive & ar,
-              const unsigned int /*version*/)
-    {
-        nodes.clear();
-        nodesUI.clear();
-        sourceNodes.clear();
-        int nNodes;
-        ar & ::boost::serialization::make_nvp("NbNodes", nNodes);
-        for (int i = 0; i < nNodes; ++i) {
-            Serialization::NodeSerializationPtr nS = std::make_shared<Serialization::NodeSerialization>();
-            ar & ::boost::serialization::make_nvp("Node", *nS);
-            nodes.push_back(nS);
-            sourceNodes.push_back(NodePtr());
-            Serialization::NodeGuiSerializationPtr nGui = std::make_shared<Serialization::NodeGuiSerialization>();
-            ar & ::boost::serialization::make_nvp("NodeUI", *nGui);
-            nodesUI.push_back(nGui);
-        }
-    }
-
-    BOOST_SERIALIZATION_SPLIT_MEMBER()
 };
 
 NATRON_NAMESPACE_EXIT

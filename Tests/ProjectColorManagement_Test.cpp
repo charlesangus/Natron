@@ -518,7 +518,7 @@ TEST_F(ProjectColorManagementPageTest, EveryColorKnobRoundTripsThroughSaveAndLoa
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
-    saveResetAndLoad(tmp, "color-roundtrip.ntp");
+    saveResetAndLoad(tmp, "color-roundtrip.ntpz");
 
     EXPECT_EQ(std::string(kCGURI), activeID("ocioConfig"));
     EXPECT_EQ(std::string(kCGURI), project()->getColorManagement()->getConfigSource());
@@ -569,7 +569,7 @@ TEST_F(ProjectColorManagementPageTest, SwitchingToCGRepopulatesKeepsSharedNamesA
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
-    saveResetAndLoad(tmp, "color-switch.ntp");
+    saveResetAndLoad(tmp, "color-switch.ntpz");
 
     EXPECT_EQ(std::string(kCGURI), project()->getOCIOConfigSource());
     EXPECT_EQ(resolved, project()->getFileColorSpace(eFileColorCategory8Bit));
@@ -605,22 +605,22 @@ TEST_F(ProjectColorManagementPageTest, ConfigFileEnabledStateIsRederivedAfterLoa
     choiceKnob("ocioConfig")->setValueFromID(kCustomConfigID, 0);
     ASSERT_TRUE(configFileKnob()->isEnabled(0));
     configFileKnob()->setAllDimensionsEnabled(false);
-    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("custom.ntp"), &saved));
+    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("custom.ntpz"), &saved));
 
     choiceKnob("ocioConfig")->setValueFromID(kStudioURI, 0);
     ASSERT_FALSE(configFileKnob()->isEnabled(0));
     configFileKnob()->setAllDimensionsEnabled(true);
-    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("builtin.ntp"), &saved));
+    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("builtin.ntpz"), &saved));
 
     project()->reset(false, true);
-    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("builtin.ntp")));
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("builtin.ntpz")));
     EXPECT_EQ(std::string(kStudioURI), project()->getOCIOConfigSource());
     EXPECT_EQ(file.toStdString(), configFileKnob()->getValue());
     EXPECT_FALSE(configFileKnob()->isEnabled(0));
     EXPECT_TRUE(choiceKnob("ocioConfig")->isEnabled(0));
 
     project()->reset(false, true);
-    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("custom.ntp")));
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("custom.ntpz")));
     EXPECT_EQ(std::string(kCustomConfigID), activeID("ocioConfig"));
     EXPECT_TRUE(configFileKnob()->isEnabled(0));
     EXPECT_TRUE(hasEntry("workingSpace", "raw"));
@@ -801,21 +801,21 @@ TEST_F(ProjectOCIOEnvOverrideTest, ASavedConfigIsIgnoredUnderOCIOAndComesBackWit
 
     choiceKnob("ocioConfig")->setValueFromID(kCGURI, 0);
     ASSERT_EQ(std::string(kCGURI), project()->getColorManagement()->getConfigSource());
-    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("cg.ntp"), &saved));
+    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("cg.ntpz"), &saved));
 
     setEnvironment(kStudioURI, false);
     project()->reset(false, true);
-    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("cg.ntp")));
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("cg.ntpz")));
 
     EXPECT_EQ(std::string(kStudioURI), project()->getOCIOConfigSource());
     EXPECT_EQ(std::string(kStudioURI), project()->getColorManagement()->getConfigSource());
     EXPECT_EQ(std::string(kCGURI), activeID("ocioConfig"));
     expectConfigKnobsOverridden(kStudioURI);
-    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("cg-under-override.ntp"), &saved));
+    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("cg-under-override.ntpz"), &saved));
 
     setEnvironment(0, false);
     project()->reset(false, true);
-    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("cg-under-override.ntp")));
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("cg-under-override.ntpz")));
 
     EXPECT_EQ(std::string(kCGURI), activeID("ocioConfig"));
     EXPECT_EQ(std::string(kCGURI), project()->getOCIOConfigSource());
@@ -833,13 +833,13 @@ TEST_F(ProjectOCIOEnvOverrideTest, AProjectSavedOnTheStudioDefaultLoadsAsStudioW
     QString saved;
 
     ASSERT_EQ(std::string(kStudioURI), activeID("ocioConfig"));
-    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("studio.ntp"), &saved));
+    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("studio.ntpz"), &saved));
 
     preferenceConfigKnob()->setValueFromID(kCGURI, 0);
     setEnvironment(0, false);
     project()->reset(false, true);
     ASSERT_EQ(std::string(kCGURI), activeID("ocioConfig"));
-    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("studio.ntp")));
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("studio.ntpz")));
 
     EXPECT_EQ(std::string(kStudioURI), activeID("ocioConfig"));
     EXPECT_EQ(std::string(kStudioURI), project()->getColorManagement()->getConfigSource());
@@ -903,12 +903,12 @@ TEST_F(ProjectOCIOEnvOverrideTest, OCIOPathVariableUsesTheOverrideDirectoryAndIs
     project()->reset(false, true);
     ASSERT_TRUE(ocioPathVariable(&value));
     EXPECT_EQ(cfgDir, value);
-    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("override.ntp"), &saved));
+    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("override.ntpz"), &saved));
 
     setEnvironment(0, false);
     project()->reset(false, true);
     EXPECT_FALSE(ocioPathVariable(&value));
-    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("override.ntp")));
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("override.ntpz")));
     EXPECT_EQ(std::string(kStudioURI), project()->getOCIOConfigSource());
     EXPECT_FALSE(ocioPathVariable(&value));
 }

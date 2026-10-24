@@ -259,7 +259,7 @@ Application::event(QEvent* e)
         // http://www.freedesktop.org/wiki/Specifications/AddingMIMETutor/
         // http://www.freedesktop.org/wiki/Specifications/shared-mime-info-spec/
         // The MIME types for Natron documents are:
-        // *.ntp: application/vnd.natron.project
+        // *.ntpz: application/vnd.natron.project
         // *.nps: application/vnd.natron.nodepresets
         // *.nl: application/vnd.natron.layout
         assert(_app);
@@ -1153,7 +1153,6 @@ void
 GuiApplicationManager::clearNodeClipBoard()
 {
     _imp->_nodeCB.nodes.clear();
-    _imp->_nodeCB.nodesUI.clear();
     _imp->_nodeCB.sourceNodes.clear();
 }
 

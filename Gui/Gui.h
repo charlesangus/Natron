@@ -215,10 +215,7 @@ public:
     void createDefaultLayout1();
 
     ///Make the layout according to the serialization.
-    ///@param enableOldProjectCompatibility When true, the default Gui layout will be created
-    ///prior to restoring. This is because older projects didn't have as much info to recreate the entire layout.
-    void restoreLayout(bool wipePrevious, bool enableOldProjectCompatibility,
-                       const Serialization::GuiLayoutSerialization& layoutSerialization);
+    void restoreLayout(bool wipePrevious, const Serialization::GuiLayoutSerialization& layoutSerialization);
 
     /**
      * @brief Fills serialization with the layout of the application: the main window, then the
@@ -280,8 +277,8 @@ public:
     std::string popOpenFileDialog(bool sequenceDialog,
                                   const std::vector<std::string> & initialfilters, const std::string & initialDir,
                                   bool allowRelativePaths);
-    std::string popSaveFileDialog(bool sequenceDialog, const std::vector<std::string> & initialfilters, const std::string & initialDir,
-                                  bool allowRelativePaths);
+    std::string popSaveFileDialog(bool sequenceDialog, const std::vector<std::string>& initialfilters, const std::string& initialDir,
+                                  bool allowRelativePaths, const std::string& suggestedFileName = std::string());
     std::string openImageSequenceDialog();
     std::string saveImageSequenceDialog();
 
@@ -304,10 +301,6 @@ public:
     void updateRecentFileActions();
 
     static QPixmap screenShot(QWidget* w);
-
-    void loadProjectGui(bool isAutosave, const Serialization::ProjectGuiSerialization& serialization) const;
-
-    void saveProjectGui(Serialization::ProjectGuiSerialization* serialization);
 
     void setColorPickersColor(double r, double g, double b, double a);
 

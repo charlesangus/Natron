@@ -1168,6 +1168,7 @@ Gui::fileSequencesFromUrls(const QList<QUrl>& urls,
 
     QStringList supportedExtensions;
     supportedExtensions.push_back( QString::fromLatin1(NATRON_PROJECT_FILE_EXT) );
+    supportedExtensions.push_back(QString::fromLatin1("ntp"));
     supportedExtensions.push_back( QString::fromLatin1("py") );
 
     std::vector<std::string> readersFormat;
@@ -1233,10 +1234,22 @@ void
 Gui::handleOpenFilesFromUrls(const QList<QUrl>& urls,
                              const QPoint& globalPos)
 {
+    // A project folder, or its project.yaml, is one project and not a folder of files to read.
+    QList<QUrl> fileUrls;
+    for (const QUrl& url : urls) {
+        Project::OpenTarget target;
+        QString refusal;
+        if (Project::classifyOpenTarget(url.toLocalFile(), &target, &refusal) && target.isFolder) {
+            AppInstancePtr appInstance = openProject(url.toLocalFile().toStdString());
+            Q_UNUSED(appInstance);
+        } else {
+            fileUrls.push_back(url);
+        }
+    }
+
     std::vector<SequenceParsing::SequenceFromFilesPtr> sequences;
 
-
-    fileSequencesFromUrls(urls, &sequences);
+    fileSequencesFromUrls(fileUrls, &sequences);
     QWidget* widgetUnderMouse = QApplication::widgetAt(globalPos);
     NodeGraph* graph = isNodeGraphChild(widgetUnderMouse);
 
@@ -1261,7 +1274,7 @@ Gui::handleOpenFilesFromUrls(const QList<QUrl>& urls,
         //std::string ext = sequence->fileExtension();
         std::string extLower = sequence->fileExtension();
         std::transform(extLower.begin(), extLower.end(), extLower.begin(), [](char c) { return std::tolower(c, std::locale()); });
-        if (extLower == NATRON_PROJECT_FILE_EXT) {
+        if (extLower == NATRON_PROJECT_FILE_EXT || extLower == "ntp") {
             const std::map<int, SequenceParsing::FileNameContent>& content = sequence->getFrameIndexes();
             assert( !content.empty() );
             AppInstancePtr appInstance = openProject( content.begin()->second.absoluteFileName() );

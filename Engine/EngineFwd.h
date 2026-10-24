@@ -38,15 +38,10 @@
 // boost
 
 namespace boost {
-namespace archive {
-class xml_iarchive;
-class xml_oarchive;
-}
 namespace serialization {
 class access;
 }
 }
-
 
 // Qt
 

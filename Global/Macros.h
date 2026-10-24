@@ -86,13 +86,13 @@ namespace Python { }
 #define NATRON_ISSUE_TRACKER_URL "https://github.com/NatronGitHub/Natron/issues"
 
 // The MIME types for Natron documents are:
-// *.ntp: application/vnd.natron.project
+// *.ntpz: application/vnd.natron.project
 // *.nps: application/vnd.natron.nodepresets
 // *.nl: application/vnd.natron.layout
 // these MIME types are also used in:
 // - NatronInfo.plist (for OSX)
 // - tools/linux/include/qs/natron.qs
-#define NATRON_PROJECT_FILE_EXT "ntp"
+#define NATRON_PROJECT_FILE_EXT "ntpz"
 #define NATRON_PROJECT_FILE_MIME_TYPE "application/vnd.natron.project"
 #define NATRON_PROJECT_UNTITLED "Untitled." NATRON_PROJECT_FILE_EXT
 #define NATRON_CACHE_FILE_EXT "ntc"

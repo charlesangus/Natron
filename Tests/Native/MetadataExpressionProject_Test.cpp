@@ -114,7 +114,7 @@ TEST_F(MetadataExpressionProjectTest, LabelExpressionReadsAFileAttributeAcrossSa
 
     ProjectPtr project = getApp()->getProject();
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("metadata-expression.ntp");
+    const QString fileName = QString::fromUtf8("metadata-expression.ntpz");
     QString savedFilePath;
 
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));

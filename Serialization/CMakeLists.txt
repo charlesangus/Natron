@@ -20,13 +20,12 @@
 file(GLOB NatronSerialization_HEADERS *.h)
 file(GLOB NatronSerialization_SOURCES *.cpp)
 
-# BoostXml/ is the one subdirectory allowed to include boost.serialization
-# and boost.archive (enforced by tools/ci/check_serialization_layering.sh);
-# everything else here is plain data, see Serialization/README.md.
-file(GLOB_RECURSE NatronSerializationBoostXml_HEADERS BoostXml/*.h)
-file(GLOB_RECURSE NatronSerializationBoostXml_SOURCES BoostXml/*.cpp)
-list(APPEND NatronSerialization_HEADERS ${NatronSerializationBoostXml_HEADERS})
-list(APPEND NatronSerialization_SOURCES ${NatronSerializationBoostXml_SOURCES})
+file(GLOB_RECURSE NatronSerializationBundle_HEADERS Bundle/*.h)
+file(GLOB_RECURSE NatronSerializationBundle_SOURCES Bundle/*.cpp)
+file(GLOB_RECURSE NatronSerializationYaml_HEADERS Yaml/*.h)
+file(GLOB_RECURSE NatronSerializationYaml_SOURCES Yaml/*.cpp)
+list(APPEND NatronSerialization_HEADERS ${NatronSerializationBundle_HEADERS} ${NatronSerializationYaml_HEADERS})
+list(APPEND NatronSerialization_SOURCES ${NatronSerializationBundle_SOURCES} ${NatronSerializationYaml_SOURCES})
 
 add_library(NatronSerialization STATIC ${NatronSerialization_HEADERS} ${NatronSerialization_SOURCES})
 
@@ -35,11 +34,10 @@ target_include_directories(NatronSerialization
         ..
 )
 
-# Boost is only ever used by Serialization/BoostXml/ translation units, kept
-# PRIVATE so NatronSerialization's own public interface -- what Engine links
-# PUBLIC -- depends on the standard library alone.
+# yaml-cpp is PRIVATE so NatronSerialization's own public interface -- what
+# Engine links PUBLIC -- depends on the standard library alone.
 target_link_libraries(NatronSerialization
     PRIVATE
-        Boost::headers
-        Boost::serialization
+        yaml-cpp::yaml-cpp
+        ZLIB::ZLIB
 )

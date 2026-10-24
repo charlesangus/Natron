@@ -31,9 +31,12 @@
 #include <cerrno> // errno
 #include <cstdlib> // strtoul
 #include <fstream>
+#include <functional>
 #include <ios>
+#include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 #include <stdexcept>
 
@@ -44,6 +47,7 @@
 #define snprintf _snprintf
 #elif defined(__NATRON_UNIX__)
 #include <pwd.h> //for getpwuid
+#include <unistd.h> // link
 #endif
 
 #include <QCoreApplication>
@@ -55,7 +59,7 @@
 #include <QFileInfo>
 #include <QHostInfo>
 #include <QRegularExpression>
-#include <QTemporaryFile>
+#include <QSaveFile>
 #include <QTextStream>
 #include <QThread>
 #include <QTimer>
@@ -65,17 +69,16 @@
 
 #include <OpenColorIO/OpenColorIO.h>
 
+#include "Global/GitVersion.h"
 #include "Global/StrUtils.h"
-#include "Global/FStreamsSupport.h"
 #ifdef DEBUG
 #include "Global/FloatingPointExceptions.h"
 #endif
 
-#include "Serialization/BoostXml/ProjectGuiXml.h"
-#include "Serialization/BoostXml/ProjectXml.h"
-#include "Serialization/BoostXml/RotoXml.h"
-#include "Serialization/ProjectGuiSerialization.h"
+#include "Serialization/Bundle/ProjectBundle.h"
+#include "Serialization/Bundle/ZipStore.h"
 #include "Serialization/ProjectSerialization.h"
+#include "Serialization/Yaml/YamlScalars.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -228,7 +231,105 @@ public:
     }
 };
 
+QString
+legacyProjectMessage()
+{
+    return Project::tr("Legacy .ntp projects are not supported. This version of %1 only opens .%2 projects.")
+        .arg(QString::fromUtf8(NATRON_APPLICATION_NAME), QString::fromUtf8(NATRON_PROJECT_FILE_EXT));
+}
+
+QString
+notAProjectMessage(const QString& fileName)
+{
+    return Project::tr("%1 is not a %2 project").arg(fileName, QString::fromUtf8(NATRON_APPLICATION_NAME));
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+QString
+Project::folderProjectFileName()
+{
+    return QString::fromUtf8(Serialization::kBundleProjectMember.data(), (int)Serialization::kBundleProjectMember.size());
+}
+
+bool
+Project::classifyOpenTarget(const QString& path,
+                            OpenTarget* out,
+                            QString* error)
+{
+    if (path.isEmpty()) {
+        *error = tr("No project file was given.");
+
+        return false;
+    }
+    const QString absolute = QDir::cleanPath(QDir::current().absoluteFilePath(path));
+    const QFileInfo info(absolute);
+    if (!info.exists()) {
+        *error = tr("%1: no such file.").arg(absolute);
+
+        return false;
+    }
+
+    const QString projectYaml = folderProjectFileName();
+    QString folder;
+    if (info.isDir()) {
+        folder = absolute;
+    } else if (info.fileName() == projectYaml) {
+        folder = info.absolutePath();
+    }
+
+    if (!folder.isEmpty()) {
+        const QFileInfo folderInfo(folder);
+        QString stem = folderInfo.fileName();
+        if (!QFileInfo(QDir(folder).filePath(projectYaml)).isFile()) {
+            *error = notAProjectMessage(stem.isEmpty() ? folder : stem);
+
+            return false;
+        }
+        if (stem.isEmpty()) {
+            stem = QString::fromUtf8("project");
+        }
+        QString parent = folderInfo.absolutePath();
+        StrUtils::ensureLastPathSeparator(parent);
+        out->source = folder;
+        out->path = parent;
+        out->name = stem + QLatin1Char('.') + QString::fromUtf8(NATRON_PROJECT_FILE_EXT);
+        out->isFolder = true;
+
+        return true;
+    }
+
+    // Content decides, so a renamed bundle still opens; only the old XML format, or a .ntp that
+    // is not a bundle, gets the legacy message.
+    const Serialization::ProjectFileKind kind = Serialization::detectProjectFileKind(absolute.toStdString());
+    if ((kind == Serialization::ProjectFileKind::eLegacyXml) || ((kind != Serialization::ProjectFileKind::eBundle) && (info.suffix().compare(QString::fromUtf8("ntp"), Qt::CaseInsensitive) == 0))) {
+        *error = legacyProjectMessage();
+
+        return false;
+    }
+    if (kind != Serialization::ProjectFileKind::eBundle) {
+        *error = notAProjectMessage(info.fileName());
+
+        return false;
+    }
+
+    QString directory = info.absolutePath();
+    StrUtils::ensureLastPathSeparator(directory);
+    out->source = absolute;
+    out->path = directory;
+    out->name = info.fileName();
+    out->isFolder = false;
+
+    return true;
+} // Project::classifyOpenTarget
+
+bool
+Project::isLoadedFromFolder() const
+{
+    QMutexLocker l(&_imp->projectLock);
+
+    return _imp->loadedFromFolder;
+}
 
 bool
 Project::loadProject(const QString & path,
@@ -236,23 +337,37 @@ Project::loadProject(const QString & path,
                      bool isUntitledAutosave,
                      bool attemptToLoadAutosave)
 {
+    QString targetPath = path;
+    if (!targetPath.isEmpty()) {
+        StrUtils::ensureLastPathSeparator(targetPath);
+    }
+    targetPath += name;
+    OpenTarget target;
+    QString refusal;
+    if (!classifyOpenTarget(targetPath, &target, &refusal)) {
+        Dialogs::errorDialog(tr("Project loader").toStdString(), refusal.toStdString());
+
+        return false;
+    }
+
     reset(false, true);
 
     try {
-        QString realPath = path;
-        StrUtils::ensureLastPathSeparator(realPath);
-        QString realName = name;
+        const QString& realPath = target.path;
+        QString realName = target.name;
+        QString source = target.source;
         bool isAutoSave = isUntitledAutosave;
         if (!getApp()->isBackground() && !isUntitledAutosave) {
             // In Gui mode, attempt to load an auto-save for this project if there's one.
             QString autosaveFileName;
-            bool hasAutoSave = findAutoSaveForProject(realPath, name, &autosaveFileName);
+            bool hasAutoSave = findAutoSaveForProject(target, &autosaveFileName);
             if (hasAutoSave) {
                 StandardButtonEnum ret = eStandardButtonNo;
                 if (attemptToLoadAutosave) {
                     QString text = tr("A recent auto-save of %1 was found.\n"
                                       "Would you like to use it instead? "
-                                      "Clicking No will remove this auto-save.").arg(name);
+                                      "Clicking No will remove this auto-save.")
+                                       .arg(target.name);
                     ret = Dialogs::questionDialog(tr("Auto-save").toStdString(),
                                                   text.toStdString(), false, StandardButtons(eStandardButtonYes | eStandardButtonNo),
                                                   eStandardButtonYes);
@@ -261,17 +376,24 @@ Project::loadProject(const QString & path,
                     QFile::remove(realPath + autosaveFileName);
                 } else {
                     realName = autosaveFileName;
+                    source = realPath + realName;
                     isAutoSave = true;
                     {
                         QMutexLocker k(&_imp->projectLock);
-                        _imp->lastAutoSaveFilePath = realPath + realName;
+                        _imp->lastAutoSaveFilePath = source;
                     }
                 }
             }
         }
 
         bool mustSave = false;
-        if ( !loadProjectInternal(realPath, realName, isAutoSave, isUntitledAutosave, &mustSave) ) {
+        const bool loaded = loadProjectInternal(realPath, realName, source, isAutoSave, isUntitledAutosave, &mustSave);
+        if (loaded) {
+            QMutexLocker k(&_imp->projectLock);
+            _imp->loadedFromFolder = target.isFolder;
+        }
+        reportLoadWarnings();
+        if (!loaded) {
             appPTR->showErrorLog();
         } else if (mustSave) {
             // Saving now would replace the file with a version that no longer matches what the
@@ -279,6 +401,11 @@ Project::loadProject(const QString & path,
             if (hasMissingPluginNode()) {
                 appPTR->writeToErrorLog_mt_safe(tr("Project loader"), QDateTime::currentDateTime(),
                                                 tr("The project was not saved automatically after loading because a plug-in it uses is missing."));
+            } else if (target.isFolder) {
+                // The bundle a folder saves to may already exist and hold other work, so only
+                // the user may decide to write it.
+                appPTR->writeToErrorLog_mt_safe(tr("Project loader"), QDateTime::currentDateTime(),
+                                                tr("The project was not saved automatically after loading because it was opened from a folder."));
             } else {
                 saveProject(realPath, realName, 0);
             }
@@ -455,95 +582,74 @@ Project::reportDataKindConflicts()
 } // Project::reportDataKindConflicts
 
 bool
-Project::loadProjectInternal(const QString & path,
-                             const QString & name,
+Project::loadProjectInternal(const QString& path,
+                             const QString& name,
+                             const QString& source,
                              bool isAutoSave,
                              bool isUntitledAutosave,
                              bool* mustSave)
 {
     FlagSetter loadingProjectRAII(true, &_imp->isLoadingProject, &_imp->isLoadingProjectMutex);
-    QString filePath = path + name;
+    const QString& filePath = source;
     std::cout << tr("Loading project: %1").arg(filePath).toStdString() << std::endl;
 
     if ( !QFile::exists(filePath) ) {
         throw std::invalid_argument( QString( filePath + QString::fromUtf8(" : no such file.") ).toStdString() );
     }
 
-    bool ret = false;
-    FStreamsSupport::ifstream ifile;
-    FStreamsSupport::open( &ifile, filePath.toStdString() );
-    if (!ifile) {
-        throw std::runtime_error( tr("Failed to open %1").arg(filePath).toStdString() );
+    {
+        QMutexLocker k(&_imp->loadWarningsMutex);
+        _imp->loadWarnings.clear();
     }
 
-    if ( (NATRON_VERSION_MAJOR == 1) && (NATRON_VERSION_MINOR == 0) && (NATRON_VERSION_REVISION == 0) ) {
-        ///Try to determine if the project was made during Natron v1.0.0 - RC2 or RC3 to detect a bug we introduced at that time
-        ///in the BezierCP class serialisation
-        bool foundV = false;
-        QFile f(filePath);
-        f.open(QIODevice::ReadOnly);
-        QTextStream fs(&f);
-        while ( !fs.atEnd() ) {
-            QString line = fs.readLine();
-
-            if ( (line.indexOf( QString::fromUtf8("Natron v1.0.0 RC2") ) != -1) || (line.indexOf( QString::fromUtf8("Natron v1.0.0 RC3") ) != -1) ) {
-                appPTR->setProjectCreatedDuringRC2Or3(true);
-                Serialization::setReadingRC2OrRC3Archive(true);
-                foundV = true;
-                break;
-            }
-        }
-        if (!foundV) {
-            appPTR->setProjectCreatedDuringRC2Or3(false);
-            Serialization::setReadingRC2OrRC3Archive(false);
-        }
+    const std::string filePathStd = filePath.toStdString();
+    switch (Serialization::detectProjectFileKind(filePathStd)) {
+    case Serialization::ProjectFileKind::eBundle:
+    case Serialization::ProjectFileKind::eDirectory:
+    case Serialization::ProjectFileKind::eProjectYaml:
+        break;
+    case Serialization::ProjectFileKind::eLegacyXml:
+        throw std::runtime_error(legacyProjectMessage().toStdString());
+    case Serialization::ProjectFileKind::eUnknown:
+        throw std::runtime_error(notAProjectMessage(QFileInfo(filePath).fileName()).toStdString());
     }
 
     LoadProjectSplashScreen_RAII __raii_splashscreen__(getApp(), name);
 
-    // Outside the try block: when reading fails, the header it read first still names the build
-    // that saved the file, for the error message below.
+    // Lives until loading ends: decoded data may still point into the mapped archive.
+    std::unique_ptr<Serialization::ProjectBundleReader> bundle;
     Serialization::ProjectSerialization projectSerialization;
-    // Nothing read yet: until the archive fills it, it must not name a saving build.
-    projectSerialization.version = 0;
+    Serialization::YamlWarnings warnings;
     try {
-        bool bgProject;
-        boost::archive::xml_iarchive iArchive(ifile);
-        {
-            FlagSetter __raii_loadingProjectInternal__(true, &_imp->isLoadingProjectInternal, &_imp->isLoadingProjectMutex);
-
-            iArchive >> boost::serialization::make_nvp("Background_project", bgProject);
-            iArchive >> boost::serialization::make_nvp("Project", projectSerialization);
-            ret = fromSerialization(projectSerialization, name, path, mustSave);
-        } // __raii_loadingProjectInternal__
-
-        // A background app leaves the GUI section of the file unread.
-        if (!bgProject && !getApp()->isBackground()) {
-            Serialization::ProjectGuiSerialization projectGuiSerialization;
-            iArchive >> boost::serialization::make_nvp("ProjectGui", projectGuiSerialization);
-            getApp()->loadProjectGui(isAutoSave, projectGuiSerialization);
-        }
-    } catch (const std::exception &e) {
-        _imp->setProjectBeingLoadedInfo(projectSerialization);
-        const ProjectBeingLoadedInfo& pInfo = getApp()->getProjectBeingLoadedInfo();
-        if (pInfo.vMajor > NATRON_VERSION_MAJOR ||
-            (pInfo.vMajor == NATRON_VERSION_MAJOR && pInfo.vMinor > NATRON_VERSION_MINOR) ||
-            (pInfo.vMajor == NATRON_VERSION_MAJOR && pInfo.vMinor == NATRON_VERSION_MINOR && pInfo.vRev > NATRON_VERSION_REVISION)) {
-            QString message = tr("This project was saved with a more recent version (%1.%2.%3) of %4. Projects are not forward compatible and may only be opened in a version of %4 equal or more recent than the version that saved it.").arg(pInfo.vMajor).arg(pInfo.vMinor).arg(pInfo.vRev).arg(QString::fromUtf8(NATRON_APPLICATION_NAME));
-            throw std::runtime_error(message.toStdString());
-        }
-        throw std::runtime_error( tr("Unrecognized or damaged project file:").toStdString() + ' ' + e.what());
-    } catch (...) {
-        _imp->setProjectBeingLoadedInfo(projectSerialization);
-        const ProjectBeingLoadedInfo& pInfo = getApp()->getProjectBeingLoadedInfo();
-        if (pInfo.vMajor > NATRON_VERSION_MAJOR ||
-            (pInfo.vMajor == NATRON_VERSION_MAJOR && pInfo.vMinor > NATRON_VERSION_MINOR) ||
-            (pInfo.vMajor == NATRON_VERSION_MAJOR && pInfo.vMinor == NATRON_VERSION_MINOR && pInfo.vRev > NATRON_VERSION_REVISION)) {
-            QString message = tr("This project was saved with a more recent version (%1.%2.%3) of %4. Projects are not forward compatible and may only be opened in a version of %4 equal or more recent than the version that saved it.").arg(pInfo.vMajor).arg(pInfo.vMinor).arg(pInfo.vRev).arg(QString::fromUtf8(NATRON_APPLICATION_NAME));
-            throw std::runtime_error(message.toStdString());
-        }
-        throw std::runtime_error( tr("Unrecognized or damaged project file").toStdString() );
+        bundle = std::make_unique<Serialization::ProjectBundleReader>(filePathStd);
+        projectSerialization = bundle->readProject(&warnings);
+    } catch (const Serialization::ProjectBundleError& e) {
+        throw std::runtime_error(e.what());
+    } catch (const Serialization::YamlNewerFormatError& e) {
+        throw std::runtime_error(e.what());
+    } catch (const Serialization::YamlError& e) {
+        throw std::runtime_error(tr("Unrecognized or damaged project file: %1").arg(QString::fromUtf8(e.what())).toStdString());
     }
+    for (const std::string& warning : warnings) {
+        addLoadWarning(QString::fromUtf8(warning.c_str()));
+    }
+
+    const Serialization::BundleManifest& manifest = bundle->manifest();
+    projectSerialization.creationDate = manifest.creationDate;
+
+    bool ret = false;
+    {
+        FlagSetter __raii_loadingProjectInternal__(true, &_imp->isLoadingProjectInternal, &_imp->isLoadingProjectMutex);
+
+        ret = fromSerialization(projectSerialization, name, path, mustSave);
+    } // __raii_loadingProjectInternal__
+
+    // The manifest holds what changes on every save, so that project.yaml does not.
+    _imp->lastAuthorName->setValue(manifest.author);
+    const QDateTime savedOn = QDateTime::fromString(QString::fromUtf8(manifest.saveDate.c_str()), Qt::ISODate);
+    _imp->saveDate->setValue(savedOn.isValid() ? savedOn.toLocalTime().toString().toStdString() : manifest.saveDate);
+
+    getApp()->onProjectNodesRestored();
 
     // After every node is restored, so that no node's saved config wins.
     pushOCIOConfigToNodes();
@@ -678,23 +784,6 @@ Project::saveProject_imp(const QString & path,
     return true;
 } // Project::saveProject_imp
 
-static bool
-fileCopy(const QString & source,
-         const QString & dest)
-{
-    QFile sourceFile(source);
-    QFile destFile(dest);
-    bool success = true;
-
-    success &= sourceFile.open( QFile::ReadOnly );
-    success &= destFile.open( QFile::WriteOnly | QFile::Truncate );
-    success &= destFile.write( sourceFile.readAll() ) >= 0;
-    sourceFile.close();
-    destFile.close();
-
-    return success;
-}
-
 static QStringList
 findBackups(const QString & filePath)
 {
@@ -741,6 +830,38 @@ nextBackup(const QString & filePath)
         return filePath.left(match.capturedStart()) + QString::fromUtf8(".~%1~").arg(i + 1);
     } else {
         return filePath + QString::fromUtf8(".~1~");
+    }
+}
+
+void
+Project::rotateBackups(const QString& filePath,
+                       int saveVersions)
+{
+    // The list is ordered and starts with filePath itself when it exists, so its first
+    // saveVersions entries are what survives the save: filePath (about to be replaced) plus
+    // saveVersions - 1 numbered backups.
+    QStringList backups = findBackups(filePath);
+    const bool targetExists = !backups.isEmpty() && backups.first() == filePath;
+    while (backups.size() > std::max(saveVersions, targetExists ? 1 : 0)) {
+        QFile::remove(backups.last());
+        backups.removeLast();
+    }
+    if (saveVersions <= 0) {
+        return;
+    }
+    for (int i = backups.size() - 1; i >= (targetExists ? 1 : 0); --i) {
+        QFile::rename(backups.at(i), nextBackup(backups.at(i)));
+    }
+    if (!targetExists) {
+        return;
+    }
+    // filePath must stay in place until the new file has been committed over it, or a failed
+    // commit would leave no project at all. A hard link costs nothing whatever the bundle size and
+    // keeps the old contents when the commit renames the new file over filePath; a copy covers
+    // file systems without hard links.
+    const QString backup = nextBackup(filePath);
+    if (::link(QFile::encodeName(filePath).constData(), QFile::encodeName(backup).constData()) != 0) {
+        QFile::copy(filePath, backup);
     }
 }
 
@@ -795,86 +916,54 @@ Project::saveProjectInternal(const QString & path,
     std::string newFilePath = _imp->runOnProjectSaveCallback(filePath.toStdString(), autoSave);
     filePath = QString::fromUtf8( newFilePath.c_str() );
 
-    /// Use a temporary file to save, so if Natron crashes it doesn't corrupt the user save.
-    // Same directory as the destination so the final rename stays on one filesystem. The name must be unique
-    // per save: concurrent saves (other processes, or other threads) in the same millisecond would otherwise
-    // share one file.
-    static std::atomic<unsigned int> saveCounter(0);
-    const QString tmpFilename = filePath + QString::fromUtf8(".%1.%2.tmp").arg(QCoreApplication::applicationPid()).arg(saveCounter.fetch_add(1));
+    /// Fix file paths before saving.
+    QString oldProjectPath = QString::fromUtf8(_imp->getProjectPath().c_str());
 
-    {
-        FStreamsSupport::ofstream ofile;
-        FStreamsSupport::open( &ofile, tmpFilename.toStdString() );
-        if (!ofile) {
-            throw std::runtime_error( tr("Failed to open file ").toStdString() + tmpFilename.toStdString() );
-        }
-
-        ///Fix file paths before saving.
-        QString oldProjectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );
-
-        if (!autoSave && updateProjectProperties) {
-            _imp->autoSetProjectDirectory(path);
-            _imp->saveDate->setValue( timeStr.toStdString() );
-            _imp->lastAuthorName->setValue( generateGUIUserName() );
-            _imp->natronVersion->setValue( generateUserFriendlyNatronVersionName() );
-        }
-
-        try {
-            boost::archive::xml_oarchive oArchive(ofile);
-            bool bgProject = getApp()->isBackground();
-            oArchive << boost::serialization::make_nvp("Background_project", bgProject);
-            Serialization::ProjectSerialization projectSerialization;
-            toSerialization(&projectSerialization);
-            oArchive << boost::serialization::make_nvp("Project", projectSerialization);
-            if (!bgProject) {
-                AppInstancePtr app = getApp();
-                Serialization::ProjectGuiSerialization projectGuiSerialization;
-                if (app && app->saveProjectGui(&projectGuiSerialization)) {
-                    oArchive << boost::serialization::make_nvp("ProjectGui", projectGuiSerialization);
-                }
-            }
-        } catch (...) {
-            if (!autoSave && updateProjectProperties) {
-                ///Reset the old project path in case of failure.
-                _imp->autoSetProjectDirectory(oldProjectPath);
-            }
-            throw;
-        }
-    } // ofile
-
-    if (!autoSave) {
-        // rotate backups
-        int saveVersions = appPTR->getCurrentSettings()->saveVersions();
-        // find the list of ordered backups (including the file itself if it exists)
-        QStringList backups = findBackups(filePath);
-        // remove extra backups
-        for (int i = backups.size() - 1; i >= saveVersions; --i) {
-            if ( QFile::exists(backups.last()) ) {
-                QFile::remove(backups.last());
-            }
-            backups.removeLast();
-        }
-        // rename existing backups
-        for (int i = backups.size() - 1; i >= 0; --i) {
-            QFile::rename(backups.at(i), nextBackup(backups.at(i)));
-        }
+    if (!autoSave && updateProjectProperties) {
+        _imp->autoSetProjectDirectory(path);
+        _imp->saveDate->setValue(timeStr.toStdString());
+        _imp->lastAuthorName->setValue(generateGUIUserName());
+        _imp->natronVersion->setValue(generateUserFriendlyNatronVersionName());
     }
 
-    if (!QFile::rename(tmpFilename, filePath)) {
-        // QFile::rename() may fail, e.g. if tmpFilename and filePath are not on the same partition
-        if (!QFile::copy(tmpFilename, filePath)) {
-            int nAttemps = 0;
+    try {
+        Serialization::ProjectBundleWriter writer;
+        Serialization::ProjectSerialization projectSerialization;
+        toSerialization(&projectSerialization);
+        writer.setProject(projectSerialization);
 
-            while ( nAttemps < 10 && !fileCopy(tmpFilename, filePath) ) {
-                ++nAttemps;
-            }
-
-            if (nAttemps >= 10) {
-                throw std::runtime_error( "Failed to save to " + filePath.toStdString() );
-            }
+        // The bundle folder is named after the project file, never after an autosave or temporary
+        // file, so a save and the autosave of the same project agree.
+        QString bundleFileName = autoSave ? name : QFileInfo(filePath).fileName();
+        if (bundleFileName.endsWith(QString::fromUtf8(".ntpz"), Qt::CaseInsensitive)) {
+            bundleFileName.chop(5);
         }
+        writer.setRootFolder(bundleFileName.toStdString());
 
-        QFile::remove(tmpFilename);
+        Serialization::BundleManifest manifest;
+        manifest.appVersion = NATRON_VERSION_STRING;
+        manifest.appCommit = GIT_COMMIT;
+        manifest.saveDate = time.toUTC().toString(Qt::ISODate).toStdString();
+        manifest.author = generateGUIUserName();
+        manifest.creationDate = getProjectCreationTime();
+        writer.setManifest(manifest);
+
+        writeProjectFileAtomically(filePath, [&writer](Serialization::ZipOutput& output) { writer.write(output); }, [&]() {
+            if (autoSave) {
+                return;
+            }
+            rotateBackups(filePath, appPTR->getCurrentSettings()->saveVersions()); });
+    } catch (const Serialization::YamlError& e) {
+        if (!autoSave && updateProjectProperties) {
+            _imp->autoSetProjectDirectory(oldProjectPath);
+        }
+        throw std::runtime_error(tr("The project could not be saved: %1").arg(QString::fromUtf8(e.what())).toStdString());
+    } catch (...) {
+        if (!autoSave && updateProjectProperties) {
+            /// Reset the old project path in case of failure.
+            _imp->autoSetProjectDirectory(oldProjectPath);
+        }
+        throw;
     }
 
     if (!autoSave && updateProjectProperties) {
@@ -888,6 +977,7 @@ Project::saveProjectInternal(const QString & path,
             _imp->setProjectPath( path.toStdString() );
             QMutexLocker l(&_imp->projectLock);
             _imp->hasProjectBeenSavedByUser = true;
+            _imp->loadedFromFolder = false;
             _imp->ageSinceLastSave = time;
         }
         Q_EMIT projectNameChanged(path + name, false); //< notify the gui so it can update the title
@@ -907,6 +997,102 @@ Project::saveProjectInternal(const QString & path,
 
     return filePath;
 } // saveProjectInternal
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+class SaveFileOutput
+    : public Serialization::ZipOutput {
+public:
+    explicit SaveFileOutput(QSaveFile* file)
+        : _file(file)
+    {
+    }
+
+    void write(const void* data,
+               std::size_t size) override
+    {
+        const char* bytes = static_cast<const char*>(data);
+        while (size > 0) {
+            const qint64 written = _file->write(bytes, (qint64)size);
+            if (written <= 0) {
+                throw std::runtime_error(Project::tr("Failed to write %1: %2").arg(_file->fileName()).arg(_file->errorString()).toStdString());
+            }
+            bytes += written;
+            size -= (std::size_t)written;
+        }
+    }
+
+private:
+    QSaveFile* _file;
+};
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+void
+Project::writeProjectFileAtomically(const QString& filePath,
+                                    const std::function<void(Serialization::ZipOutput&)>& writeArchive,
+                                    const std::function<void()>& beforeReplace)
+{
+    // QSaveFile writes next to filePath, syncs, then renames over it, so the file at filePath is
+    // always either the previous complete project or the new one. Destroyed without commit(), it
+    // removes what it wrote.
+    QSaveFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        throw std::runtime_error(tr("Failed to open file %1: %2").arg(filePath).arg(file.errorString()).toStdString());
+    }
+    SaveFileOutput output(&file);
+    writeArchive(output);
+    if (!file.flush()) {
+        throw std::runtime_error(tr("Failed to write %1: %2").arg(filePath).arg(file.errorString()).toStdString());
+    }
+    if (beforeReplace) {
+        beforeReplace();
+    }
+    if (!file.commit()) {
+        throw std::runtime_error(tr("Failed to save to %1: %2").arg(filePath).arg(file.errorString()).toStdString());
+    }
+}
+
+void
+Project::addLoadWarning(const QString& warning)
+{
+    appPTR->writeToErrorLog_mt_safe(tr("Project loader"), QDateTime::currentDateTime(), warning);
+    QMutexLocker k(&_imp->loadWarningsMutex);
+    _imp->loadWarnings.push_back(warning);
+}
+
+QStringList
+Project::getLoadWarnings() const
+{
+    QMutexLocker k(&_imp->loadWarningsMutex);
+
+    return _imp->loadWarnings;
+}
+
+void
+Project::reportLoadWarnings()
+{
+    const QStringList warnings = getLoadWarnings();
+
+    if (warnings.isEmpty()) {
+        return;
+    }
+    if (getApp()->isBackground()) {
+        for (const QString& warning : warnings) {
+            std::cerr << warning.toStdString() << std::endl;
+        }
+
+        return;
+    }
+    // A dialog cannot usefully show thousands of lines; the error log keeps every one.
+    const int shownCount = 20;
+    QStringList shown = warnings.mid(0, shownCount);
+    if (warnings.size() > shownCount) {
+        shown.push_back(tr("... and %1 more, see the error log.").arg(warnings.size() - shownCount));
+    }
+    const QString message = tr("The project was loaded, but some of it could not be restored:") + QLatin1Char('\n') + shown.join(QLatin1Char('\n'));
+    Dialogs::warningDialog(tr("Project loader").toStdString(), message.toStdString());
+}
 
 void
 Project::autoSave()
@@ -985,12 +1171,11 @@ Project::onAutoSaveFutureFinished()
 }
 
 bool
-Project::findAutoSaveForProject(const QString& projectPath,
-                                const QString& projectName,
+Project::findAutoSaveForProject(const OpenTarget& target,
                                 QString* autoSaveFileName)
 {
-    QString projectAbsFilePath = projectPath + projectName;
-    QDir savesDir(projectPath);
+    const QString projectAbsFilePath = target.path + target.name;
+    QDir savesDir(target.path);
     QStringList entries = savesDir.entryList(QDir::Files | QDir::NoDotAndDotDot);
 
     Q_FOREACH(const QString &entry, entries) {
@@ -1004,12 +1189,24 @@ Project::findAutoSaveForProject(const QString& projectPath,
         if ( (suffixPos == -1) || entry.contains( QString::fromUtf8("RENDER_SAVE") ) ) {
             continue;
         }
-        QString filename = projectPath + entry.left( suffixPos + ntpExt.size() );
-        if ( (filename == projectAbsFilePath) && QFile::exists(filename) ) {
-            *autoSaveFileName = entry;
-
-            return true;
+        QString filename = target.path + entry.left(suffixPos + ntpExt.size());
+        if (filename != projectAbsFilePath) {
+            continue;
         }
+        if (target.isFolder) {
+            // The folder's bundle need not exist, and the autosave may be from the bundle rather
+            // than from this folder: it only stands for the folder if it is newer than its edits.
+            const QFileInfo autoSaveInfo(savesDir.filePath(entry));
+            const QFileInfo projectYamlInfo(QDir(target.source).filePath(folderProjectFileName()));
+            if (autoSaveInfo.lastModified() <= projectYamlInfo.lastModified()) {
+                continue;
+            }
+        } else if (!QFile::exists(filename)) {
+            continue;
+        }
+        *autoSaveFileName = entry;
+
+        return true;
     }
 
     return false;
@@ -1286,22 +1483,24 @@ Project::initializeKnobs()
 
     _imp->envVars = AppManager::createKnob<KnobPath>( this, tr("Project Paths") );
     _imp->envVars->setName("projectPaths");
-    _imp->envVars->setHintToolTip( tr("Specify here project paths. Any path can be used "
-                                      "in file paths and can be used between brackets, for example: \n"
-                                      "[%1]MyProject.ntp \n"
-                                      "You can add as many project paths as you want and can name them as you want. This way it "
-                                      "makes it easy to share your projects and move files around."
-                                      " You can chain up paths, like so:\n "
-                                      "[%1] = <PathToProject> \n"
-                                      "[Scene1] = [%1]/Rush/S_01 \n"
-                                      "[Shot1] = [Scene1]/Shot001 \n"
-                                      "By default if a file-path is NOT absolute (i.e: not starting with '/' "
-                                      " on Unix or a drive name on Windows) "
-                                      "then it will be expanded using the [%1] path. "
-                                      "Absolute paths are treated as normal."
-                                      " The [%1] path will be set automatically to "
-                                      " the location of the project file when saving and loading a project."
-                                      " The [%2] path will also be set automatically for better sharing of projects with reader nodes.").arg( QString::fromUtf8(NATRON_PROJECT_ENV_VAR_NAME) ).arg( QString::fromUtf8(NATRON_OCIO_ENV_VAR_NAME) ) );
+    _imp->envVars->setHintToolTip(tr("Specify here project paths. Any path can be used "
+                                     "in file paths and can be used between brackets, for example: \n"
+                                     "[%1]MyProject.ntpz \n"
+                                     "You can add as many project paths as you want and can name them as you want. This way it "
+                                     "makes it easy to share your projects and move files around."
+                                     " You can chain up paths, like so:\n "
+                                     "[%1] = <PathToProject> \n"
+                                     "[Scene1] = [%1]/Rush/S_01 \n"
+                                     "[Shot1] = [Scene1]/Shot001 \n"
+                                     "By default if a file-path is NOT absolute (i.e: not starting with '/' "
+                                     " on Unix or a drive name on Windows) "
+                                     "then it will be expanded using the [%1] path. "
+                                     "Absolute paths are treated as normal."
+                                     " The [%1] path will be set automatically to "
+                                     " the location of the project file when saving and loading a project."
+                                     " The [%2] path will also be set automatically for better sharing of projects with reader nodes.")
+                                      .arg(QString::fromUtf8(NATRON_PROJECT_ENV_VAR_NAME))
+                                      .arg(QString::fromUtf8(NATRON_OCIO_ENV_VAR_NAME)));
     _imp->envVars->setSecret(false);
     _imp->envVars->setMultiPath(true);
 
@@ -2603,7 +2802,7 @@ Project::removeLastAutosave()
 
     /*
      * Since we may have saved the project to an old project, overwriting the existing file, there might be
-     * a oldProject.ntp.autosave file next to it that belonged to the old project, make sure it gets removed too
+     * a oldProject.ntpz.autosave file next to it that belonged to the old project, make sure it gets removed too
      */
     QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );
     QString projectFilename = QString::fromUtf8( _imp->getProjectFilename().c_str() );
@@ -2761,6 +2960,7 @@ Project::doResetEnd(bool aboutToQuit)
             QMutexLocker l(&_imp->projectLock);
             _imp->autoSetProjectFormat = appPTR->getCurrentSettings()->isAutoProjectFormatEnabled();
             _imp->hasProjectBeenSavedByUser = false;
+            _imp->loadedFromFolder = false;
             _imp->projectCreationTime = QDateTime::currentDateTime().toMSecsSinceEpoch();
             _imp->setProjectFilename(NATRON_PROJECT_UNTITLED);
             _imp->setProjectPath("");

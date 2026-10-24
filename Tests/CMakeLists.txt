@@ -106,6 +106,7 @@ set(Tests_SOURCES
     ProjectOCIOPlugins_Test.cpp
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
+    Serialization/ProjectEquivalence.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
     ReadFormat_Test.cpp
@@ -217,14 +218,11 @@ set(GuiTests_SOURCES
     NodeGraphConnect_Test.cpp
     NodeGraphPickUp_Test.cpp
     NodeGraphSplice_Test.cpp
-    NodeGuiUserColorSerialization_Test.cpp
-    ProjectGuiXmlEquivalence_Test.cpp
     RenderDialogRange_Test.cpp
     ScaleSliderQWidget_Test.cpp
     ShuffleMatrix_Test.cpp
     TabMenuBridge_Test.cpp
     ThemedIcon_Test.cpp
-    ViewerDataSerialization_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )

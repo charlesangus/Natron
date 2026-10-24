@@ -24,12 +24,16 @@
 // ***** END PYTHON BLOCK *****
 
 #include <algorithm>
+#include <cctype>
+#include <exception>
 #include <list>
+#include <set>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QDir>
 #include <QFile>
 #include <QObject>
 #include <QString>
@@ -55,12 +59,120 @@
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
+#include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectBundleTestHelpers.h"
+#include "Serialization/ProjectSerialization.h"
 
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
 
 NATRON_NAMESPACE_USING
+
+namespace {
+
+std::string
+lowerCase(std::string text)
+{
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+    return text;
+}
+
+Serialization::ProjectSerialization
+readSavedProject(const QString& savedFilePath)
+{
+    try {
+        return Serialization::ProjectBundleReader(savedFilePath.toStdString()).readProject();
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "Cannot read back " << savedFilePath.toStdString() << ": " << e.what();
+
+        return Serialization::ProjectSerialization();
+    }
+}
+
+void
+collectKnobNames(const std::list<Serialization::NodeSerializationPtr>& nodes,
+                 std::set<std::string>* names)
+{
+    for (const Serialization::NodeSerializationPtr& node : nodes) {
+        for (const Serialization::KnobSerialization& knob : node->knobs) {
+            names->insert(knob.name);
+        }
+        collectKnobNames(node->children, names);
+    }
+}
+
+bool
+writeBytes(const QString& path,
+           const std::string& bytes)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+
+    return file.write(bytes.data(), (qint64)bytes.size()) == (qint64)bytes.size();
+}
+
+} // namespace
+
+TEST(ProjectOpenTarget, ClassifiesBundlesFoldersAndRefusals)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dir = QDir::cleanPath(tmp.path()) + QLatin1Char('/');
+    const QDir tmpDir(tmp.path());
+    ASSERT_TRUE(tmpDir.mkpath(QString::fromUtf8("test")));
+    ASSERT_TRUE(tmpDir.mkpath(QString::fromUtf8("empty")));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("test/project.yaml"), "format: natron-project\n"));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("renamed.bin"), std::string("PK\x03\x04", 4) + std::string(60, '\0')));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("old.ntp"), "<?xml version=\"1.0\"?>\n<!DOCTYPE boost_serialization>\n"));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("plain.ntp"), "not xml at all\n"));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("xml.ntpz"), "<?xml version=\"1.0\"?>\n"));
+    ASSERT_TRUE(writeBytes(dir + QString::fromUtf8("image.png"), std::string("\x89PNG\r\n\x1a\n", 8) + std::string(56, '\0')));
+
+    for (const char* folderPath : { "test", "test/", "test/project.yaml" }) {
+        SCOPED_TRACE(folderPath);
+        Project::OpenTarget target;
+        QString error;
+        ASSERT_TRUE(Project::classifyOpenTarget(dir + QString::fromUtf8(folderPath), &target, &error)) << error.toStdString();
+        EXPECT_TRUE(target.isFolder);
+        EXPECT_EQ((dir + QString::fromUtf8("test")).toStdString(), target.source.toStdString());
+        EXPECT_EQ(dir.toStdString(), target.path.toStdString());
+        EXPECT_EQ(std::string("test." NATRON_PROJECT_FILE_EXT), target.name.toStdString());
+    }
+
+    {
+        Project::OpenTarget target;
+        QString error;
+        ASSERT_TRUE(Project::classifyOpenTarget(dir + QString::fromUtf8("renamed.bin"), &target, &error)) << error.toStdString();
+        EXPECT_FALSE(target.isFolder);
+        EXPECT_EQ((dir + QString::fromUtf8("renamed.bin")).toStdString(), target.source.toStdString());
+        EXPECT_EQ(dir.toStdString(), target.path.toStdString());
+        EXPECT_EQ(std::string("renamed.bin"), target.name.toStdString());
+    }
+
+    const struct {
+        const char* fileName;
+        const char* expected;
+    } refused[] = {
+        { "old.ntp", "Legacy .ntp projects are not supported." },
+        { "plain.ntp", "Legacy .ntp projects are not supported." },
+        { "xml.ntpz", "Legacy .ntp projects are not supported." },
+        { "image.png", "image.png is not a " NATRON_APPLICATION_NAME " project" },
+        { "empty", "empty is not a " NATRON_APPLICATION_NAME " project" },
+        { "missing.ntpz", "no such file" },
+    };
+    for (const auto& refusal : refused) {
+        SCOPED_TRACE(refusal.fileName);
+        Project::OpenTarget target;
+        QString error;
+        EXPECT_FALSE(Project::classifyOpenTarget(dir + QString::fromUtf8(refusal.fileName), &target, &error));
+        EXPECT_NE(std::string::npos, error.toStdString().find(refusal.expected)) << error.toStdString();
+    }
+}
 
 // Exercises Project::saveProject()/loadProject() end to end: builds a generator -> writer graph,
 // sets a distinctive value on one knob of each kind that Engine/*Serialization.h treats
@@ -107,7 +219,7 @@ TEST_F(BaseTest, RoundTripsNodesConnectionsAndKnobValues)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("roundtrip.ntp");
+    const QString fileName = QString::fromUtf8("roundtrip.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -174,17 +286,14 @@ TEST_F(BaseTest, RoundTripKeepsNodeHashAndWritesNoKnobsAge)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("hash-roundtrip.ntp");
+    const QString fileName = QString::fromUtf8("hash-roundtrip.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 
-    QFile saved(savedFilePath);
-    ASSERT_TRUE(saved.open(QIODevice::ReadOnly));
-    const QByteArray contents = saved.readAll();
-    saved.close();
-    EXPECT_TRUE(contents.contains("<KnobsAge>0</KnobsAge>"));
-    EXPECT_FALSE(contents.contains("<KnobsAge>1</KnobsAge>"));
+    const std::string projectYaml = readBundleMember(savedFilePath, Serialization::kBundleProjectMember);
+    ASSERT_NE(std::string::npos, projectYaml.find(generatorName + ":")) << projectYaml;
+    EXPECT_EQ(std::string::npos, lowerCase(projectYaml).find("knobsage")) << projectYaml;
 
     project->reset(false, true);
     ASSERT_TRUE(project->loadProject(dirPath, fileName));
@@ -209,7 +318,7 @@ makeThreeChannelLayer(const std::string& id)
 
 // Exercises the project-level LayerRegistry (Project::addLayer/removeLayer/findLayer/
 // getLayerRegistrySnapshot) through a save/reset/load cycle: built-ins are never written
-// to the .ntp, non-built-in layers (both user- and file-origin) are, project reset drops
+// to the .ntpz, non-built-in layers (both user- and file-origin) are, project reset drops
 // everything back to built-ins + depth, and loading restores exactly what was saved while
 // emitting projectLayersChanged() exactly once.
 TEST_F(BaseTest, RoundTripsLayerRegistry)
@@ -229,20 +338,30 @@ TEST_F(BaseTest, RoundTripsLayerRegistry)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("layers-roundtrip.ntp");
+    const QString fileName = QString::fromUtf8("layers-roundtrip.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
     ASSERT_TRUE(QFile::exists(savedFilePath));
 
     {
-        QFile f(savedFilePath);
-        ASSERT_TRUE(f.open(QIODevice::ReadOnly | QIODevice::Text));
-        const QString contents = QString::fromUtf8(f.readAll());
-        EXPECT_TRUE(contents.contains(QString::fromUtf8("<Layers")));
-        EXPECT_TRUE(contents.contains(QString::fromUtf8("diffuse")));
-        EXPECT_FALSE(contents.contains(QString::fromUtf8(kNatronColorLayerID)));
-        EXPECT_FALSE(contents.contains(QString::fromUtf8("Backward")));
+        const Serialization::ProjectSerialization saved = readSavedProject(savedFilePath);
+        std::set<std::string> savedLayerIDs;
+        for (const Serialization::LayerRegistryEntrySerialization& entry : saved.layers) {
+            savedLayerIDs.insert(entry.layer.layerID);
+        }
+        EXPECT_EQ(1u, savedLayerIDs.count("diffuse"));
+        EXPECT_EQ(1u, savedLayerIDs.count("specular"));
+        std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
+        int builtins = 0;
+        for (const LayerRegistryEntry& entry : *snapshot) {
+            if (entry.origin == LayerRegistryEntry::eOriginBuiltin) {
+                ++builtins;
+                EXPECT_EQ(0u, savedLayerIDs.count(entry.desc.getLayerID())) << entry.desc.getLayerID();
+            }
+        }
+        EXPECT_GT(builtins, 0);
+        EXPECT_EQ(0u, savedLayerIDs.count(kNatronColorLayerID));
     }
 
     project->reset(false, true);
@@ -321,18 +440,17 @@ TEST_F(BaseTest, SavedProjectContainsNoUserComponents)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("no-usercomponents.ntp");
+    const QString fileName = QString::fromUtf8("no-usercomponents.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
     ASSERT_TRUE(QFile::exists(savedFilePath));
 
-    QFile f(savedFilePath);
-    ASSERT_TRUE(f.open(QIODevice::ReadOnly | QIODevice::Text));
-    const QString contents = QString::fromUtf8(f.readAll());
-    f.close();
-    EXPECT_FALSE(contents.contains(QString::fromUtf8("UserComponents")))
-        << "Saved project should not contain UserComponents element";
+    const std::string projectYaml = readBundleMember(savedFilePath, Serialization::kBundleProjectMember);
+    ASSERT_NE(std::string::npos, projectYaml.find(generator->getScriptName() + ":")) << projectYaml;
+    EXPECT_EQ(std::string::npos, lowerCase(projectYaml).find("usercomponents"))
+        << "Saved project should not contain user components:\n"
+        << projectYaml;
 }
 
 namespace {
@@ -411,18 +529,17 @@ TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoices
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("multiplane-twins.ntp");
+    const QString fileName = QString::fromUtf8("multiplane-twins.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 
     {
-        QFile f(savedFilePath);
-        ASSERT_TRUE(f.open(QIODevice::ReadOnly | QIODevice::Text));
-        const QString contents = QString::fromUtf8(f.readAll());
-        EXPECT_TRUE(contents.contains(QString::fromUtf8("<Name>hostChannelU</Name>")));
-        EXPECT_FALSE(contents.contains(QString::fromUtf8("<Name>channelU</Name>")));
-        EXPECT_FALSE(contents.contains(QString::fromUtf8("<Name>" kNatronOfxParamProcessA "</Name>")));
-        EXPECT_FALSE(contents.contains(QString::fromUtf8("<Name>processAllPlanes</Name>")));
+        std::set<std::string> savedKnobs;
+        collectKnobNames(readSavedProject(savedFilePath).nodes.nodes, &savedKnobs);
+        EXPECT_EQ(1u, savedKnobs.count("hostChannelU"));
+        EXPECT_EQ(0u, savedKnobs.count("channelU"));
+        EXPECT_EQ(0u, savedKnobs.count(kNatronOfxParamProcessA));
+        EXPECT_EQ(0u, savedKnobs.count("processAllPlanes"));
     }
 
     project->reset(false, true);
@@ -505,7 +622,7 @@ protected:
             return KnobDoublePtr();
         }
         const QString dirPath = tmp.path() + QLatin1Char('/');
-        const QString fileName = QString::fromUtf8("fold-state.ntp");
+        const QString fileName = QString::fromUtf8("fold-state.ntpz");
         QString savedFilePath;
         if (!project->saveProject(dirPath, fileName, &savedFilePath)) {
             ADD_FAILURE() << "saveProject() failed";

@@ -59,26 +59,6 @@ MissingPluginNode::getStoredSerialization() const
     return _stored;
 }
 
-void
-MissingPluginNode::setStoredGuiChildren(const std::string& nodeName,
-                                        const std::list<Serialization::NodeGuiSerializationPtr>& children)
-{
-    QMutexLocker k(&_storedMutex);
-
-    _guiChildrenNodeName = nodeName;
-    _guiChildren = children;
-}
-
-std::list<Serialization::NodeGuiSerializationPtr>
-MissingPluginNode::getStoredGuiChildren(std::string* nodeName) const
-{
-    QMutexLocker k(&_storedMutex);
-
-    *nodeName = _guiChildrenNodeName;
-
-    return _guiChildren;
-}
-
 std::string
 MissingPluginNode::getShortPluginName(const std::string& pluginID)
 {
@@ -162,14 +142,8 @@ MissingPluginNode::onKnobsAboutToBeLoaded(const Serialization::NodeSerialization
         QMutexLocker k(&_storedMutex);
         _stored = serialization;
         _inputLabels.clear();
-        if (!serialization->inputs.empty()) {
-            for (const auto& input : serialization->inputs) {
-                _inputLabels.push_back(input.first);
-            }
-        } else {
-            for (std::size_t i = 0; i < serialization->oldInputs.size(); ++i) {
-                _inputLabels.push_back(std::to_string(i));
-            }
+        for (const auto& input : serialization->inputs) {
+            _inputLabels.push_back(input.first);
         }
         rebuildSpec();
     }

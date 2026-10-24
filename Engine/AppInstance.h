@@ -284,21 +284,10 @@ public:
     }
 
     /**
-     * @brief Restores the GUI section of a project file once the project's nodes exist. The
-     * project only reads that section for an app that is not in the background.
+     * @brief Called once a loaded project has created and restored all of its nodes.
      **/
-    virtual void loadProjectGui(bool /*isAutosave*/,
-                                const Serialization::ProjectGuiSerialization& /*serialization*/) const
+    virtual void onProjectNodesRestored()
     {
-    }
-
-    /**
-     * @brief Fills serialization with the GUI section of a project file. Returns false when the
-     * app has no GUI to save, in which case the project file has no GUI section.
-     **/
-    virtual bool saveProjectGui(Serialization::ProjectGuiSerialization* /*serialization*/)
-    {
-        return false;
     }
 
     virtual void setupViewersForViews(const std::vector<std::string>& /*viewNames*/)
@@ -391,14 +380,6 @@ public:
     virtual void clearViewersLastRenderedTexture() {}
 
     virtual void toggleAutoHideGraphInputs() {}
-
-    /**
-     * @brief In Natron v1.0.0 plug-in IDs were lower case only due to a bug in OpenFX host support.
-     * To be able to load projects created in Natron v1.0.0 we must identity that the project was created in this version
-     * and try to load plug-ins with their lower case ID instead.
-     **/
-    void setProjectWasCreatedWithLowerCaseIDs(bool b);
-    bool wasProjectCreatedWithLowerCaseIDs() const;
 
     bool isCreatingPythonGroup() const;
 

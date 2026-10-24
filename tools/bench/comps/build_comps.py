@@ -1,4 +1,4 @@
-# Builds one of the three synthetic UHD float comps (COMP=keying_grade|cg_multipass|defocus_retime) and saves it as .ntp.
+# Builds one of the three synthetic UHD float comps (COMP=keying_grade|cg_multipass|defocus_retime) and saves it as .ntpz.
 # Run inside NatronRenderer:
 #
 #   COMP=keying_grade COMPS_OUT=tools/bench/comps NatronRenderer -b tools/bench/comps/build_comps.py
@@ -9,14 +9,67 @@
 
 import os
 import re
+import struct
+import zipfile
+import zlib
 
 import NatronEngine
 
 OUT = os.environ.get("COMPS_OUT", os.path.join(os.getcwd(), "tools", "bench", "comps"))
 RENDER_DIR = os.path.join(os.getcwd(), "build", "bench", "m82-profile", "out")
-# [Project] expands to the directory holding the .ntp, so the saved comps carry no host paths.
+# [Project] expands to the directory holding the .ntpz, so the saved comps carry no host paths.
 WRITE_PATTERN = "[Project]/../../../build/bench/m82-profile/out/%s.####.exr"
 LAST_FRAME = 8
+COMP = os.environ["COMP"]
+
+
+ZIP_ALIGNMENT = 64
+ALIGNMENT_EXTRA_ID = 0x1986
+
+
+def rewrite_project(data):
+    text = data.decode("utf-8").replace(os.path.abspath(OUT), "")
+    text = re.sub(r'"[^"\n]*\.####\.exr"', '"%s"' % (WRITE_PATTERN % COMP), text)
+    return text.encode("utf-8")
+
+
+def update_manifest(data, members):
+    # Same member line as the C++ manifest writer: size as a decimal, crc32 as 8 lowercase hex digits.
+    text = data.decode("utf-8")
+    for name, content in members:
+        if name in ("mimetype", "manifest.yaml"):
+            continue
+        line = '{name: "%s", size: %d, crc32: "%08x"}' % (name, len(content), zlib.crc32(content))
+        text, count = re.subn(r'\{name: "%s", size: \d+, crc32: "[0-9a-f]{8}"\}' % re.escape(name), line, text)
+        if count != 1:
+            raise RuntimeError("manifest.yaml has %d entries for %s" % (count, name))
+    return text.encode("utf-8")
+
+
+def write_bundle(path, members, root):
+    """Stored zip laid out like Serialization/Bundle/ZipStore.cpp: every member sits under root (the file name without .ntpz) and every member but mimetype has its data on a 64-byte boundary."""
+    out = bytearray()
+    central = bytearray()
+    dos_time, dos_date = 0, (1 << 5) | 1
+    for index, (name, data) in enumerate(members):
+        raw = (root + "/" + name).encode("utf-8")
+        flags = 0 if name.isascii() else 1 << 11
+        extra = b""
+        if index > 0:
+            data_start = len(out) + 30 + len(raw) + 4
+            pad = (ZIP_ALIGNMENT - data_start % ZIP_ALIGNMENT) % ZIP_ALIGNMENT
+            extra = struct.pack("<HH", ALIGNMENT_EXTRA_ID, pad) + bytes(pad)
+        crc = zlib.crc32(data)
+        offset = len(out)
+        out += struct.pack("<IHHHHHIIIHH", 0x04034B50, 10, flags, 0, dos_time, dos_date, crc, len(data), len(data), len(raw), len(extra))
+        out += raw + extra + data
+        central += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, (3 << 8) | 20, 10, flags, 0, dos_time, dos_date, crc, len(data), len(data), len(raw), 0, 0, 0, 0, 0o100644 << 16, offset)
+        central += raw
+    directory_offset = len(out)
+    out += central
+    out += struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, len(members), len(members), len(central), directory_offset, 0)
+    with open(path, "wb") as f:
+        f.write(out)
 
 
 def make(plugin_id, name):
@@ -154,15 +207,16 @@ def finish(comp, root):
     pin_output_space(writer)
     choice(writer, "bitDepth", "32f")
     choice(writer, "compression", "none")
-    path = os.path.join(OUT, comp + ".ntp")
+    path = os.path.join(OUT, comp + ".ntpz")
     app.saveProject(path)
     # The saved Project variable is the directory at save time; Natron resets it on load.
-    with open(path, "r", encoding="utf-8") as handle:
-        text = handle.read()
-    text = text.replace(os.path.abspath(OUT), "")
-    text = re.sub(r"<Value>[^<]*\.####\.exr</Value>", "<Value>%s</Value>" % (WRITE_PATTERN % comp), text)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
+    with zipfile.ZipFile(path) as src:
+        members = [(info.filename.split("/", 1)[1], src.read(info.filename)) for info in src.infolist() if not info.is_dir()]
+    members = [(name, rewrite_project(data) if name == "project.yaml" else data) for name, data in members]
+    members = [(name, update_manifest(data, members) if name == "manifest.yaml" else data) for name, data in members]
+    repacked = path + ".repack"
+    write_bundle(repacked, members, comp)
+    os.replace(repacked, path)
     for leftover in (path + ".lock", path + ".~1~"):
         if os.path.exists(leftover):
             os.remove(leftover)

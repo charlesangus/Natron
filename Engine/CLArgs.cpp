@@ -108,6 +108,10 @@ public:
     QStringList::iterator hasToken(const QString& longName, const QString& shortName);
     QStringList::iterator hasOutputToken(QString& indexStr);
     QStringList::iterator findFileNameWithExtension(const QString& extension);
+
+    // An unzipped project: a folder, or the project.yaml inside one.
+    QStringList::iterator findProjectFolderArgument();
+    static bool isProjectFolderArgument(const QString& arg);
 };
 
 CLArgs::CLArgs()
@@ -366,12 +370,12 @@ CLArgs::printUsage(const std::string& programName)
                      "      1-10:1,20-30:2,40-50\n"
                      "      1329,2450,123,1-10:2\n"
                      "Sample uses:\n"
-                     "  %1 /Users/Me/MyNatronProjects/MyProject.ntp\n"
-                     "  %1 -b -w MyWriter /Users/Me/MyNatronProjects/MyProject.ntp\n"
-                     "  %1Renderer -w MyWriter /Users/Me/MyNatronProjects/MyProject.ntp\n"
-                     "  %1Renderer -w MyWriter /FastDisk/Pictures/sequence'###'.exr 1-100 /Users/Me/MyNatronProjects/MyProject.ntp\n"
-                     "  %1Renderer -w MyWriter -w MySecondWriter 1-10 /Users/Me/MyNatronProjects/MyProject.ntp\n"
-                     "  %1Renderer -w MyWriter 1-10 -l /Users/Me/Scripts/onProjectLoaded.py /Users/Me/MyNatronProjects/MyProject.ntp\n"
+                     "  %1 /Users/Me/MyNatronProjects/MyProject.ntpz\n"
+                     "  %1 -b -w MyWriter /Users/Me/MyNatronProjects/MyProject.ntpz\n"
+                     "  %1Renderer -w MyWriter /Users/Me/MyNatronProjects/MyProject.ntpz\n"
+                     "  %1Renderer -w MyWriter /FastDisk/Pictures/sequence'###'.exr 1-100 /Users/Me/MyNatronProjects/MyProject.ntpz\n"
+                     "  %1Renderer -w MyWriter -w MySecondWriter 1-10 /Users/Me/MyNatronProjects/MyProject.ntpz\n"
+                     "  %1Renderer -w MyWriter 1-10 -l /Users/Me/Scripts/onProjectLoaded.py /Users/Me/MyNatronProjects/MyProject.ntpz\n"
                      "\n"
                      /* Text must hold in 80 columns ************************************************/
                      "Options for the execution of Python scripts:\n"
@@ -571,6 +575,33 @@ CLArgsPrivate::findFileNameWithExtension(const QString& extension)
     }
 
     return args.end();
+}
+
+QStringList::iterator
+CLArgsPrivate::findProjectFolderArgument()
+{
+    for (QStringList::iterator it = args.begin(); it != args.end(); ++it) {
+        if (isProjectFolderArgument(*it)) {
+            return it;
+        }
+    }
+
+    return args.end();
+}
+
+bool
+CLArgsPrivate::isProjectFolderArgument(const QString& arg)
+{
+    if (arg.startsWith(QChar::fromLatin1('-'))) {
+        return false;
+    }
+    QString path = arg;
+#ifdef __NATRON_UNIX__
+    path = AppManager::qt_tildeExpansion(path);
+#endif
+    const QFileInfo info(path);
+
+    return info.isDir() || (info.fileName() == QString::fromUtf8("project.yaml"));
 }
 
 QStringList::iterator
@@ -985,9 +1016,7 @@ CLArgsPrivate::parse()
         if ( it != args.end() && !it->startsWith( QChar::fromLatin1('-') ) ) {
             // Check that it's neither a python script, a natron project, nor a frame range.
             QRegularExpression re( QRegularExpression::anchoredPattern( QString::fromUtf8("[0-9\\-,]*") ) ); // Matches frame ranges.
-            if (!it->endsWith(QString::fromUtf8(".py"), Qt::CaseInsensitive) &&
-                !it->endsWith(QString::fromUtf8(".ntp"), Qt::CaseInsensitive) &&
-                !re.match(*it).hasMatch()) {
+            if (!it->endsWith(QString::fromUtf8(".py"), Qt::CaseInsensitive) && !it->endsWith(QString::fromUtf8("." NATRON_PROJECT_FILE_EXT), Qt::CaseInsensitive) && !it->endsWith(QString::fromUtf8(".ntp"), Qt::CaseInsensitive) && !isProjectFolderArgument(*it) && !re.match(*it).hasMatch()) {
                 w.filename = *it;
 #ifdef __NATRON_UNIX__
                 w.filename = AppManager::qt_tildeExpansion(w.filename);
@@ -1111,7 +1140,14 @@ CLArgsPrivate::parse()
 
     {
         QStringList::iterator it = findFileNameWithExtension( QString::fromUtf8(NATRON_PROJECT_FILE_EXT) );
-        if ( it == args.end() ) {
+        // An old .ntp is taken too, so that the loader explains why it cannot be opened.
+        if (it == args.end()) {
+            it = findFileNameWithExtension(QString::fromUtf8("ntp"));
+        }
+        if (it == args.end()) {
+            it = findProjectFolderArgument();
+        }
+        if (it == args.end()) {
             it = findFileNameWithExtension( QString::fromUtf8("py") );
             if (it != args.end()) {
                 isPythonScript = true;

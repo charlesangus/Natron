@@ -28,7 +28,6 @@
 #include <list>
 #include <memory>
 #include <set>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -44,8 +43,8 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/Node.h"
 
-#include "Serialization/BoostXml/KnobXml.h"
 #include "Serialization/KnobSerialization.h"
+#include "Serialization/Yaml/KnobYaml.h"
 
 NATRON_NAMESPACE_USING
 
@@ -902,24 +901,15 @@ TEST_F(BaseTest, KnobChannelSetSerializationRoundTrip)
     const std::vector<ChannelSetRow> expected = source->getRows();
     ASSERT_EQ(3u, expected.size());
 
-    std::stringstream buffer;
-    {
-        Serialization::KnobSerialization serialization;
-        source->toSerialization(&serialization);
-        boost::archive::xml_oarchive archive(buffer);
-        archive << boost::serialization::make_nvp("Knob", serialization);
-    }
-
-    Serialization::KnobSerialization loaded;
-    {
-        boost::archive::xml_iarchive archive(buffer);
-        archive >> boost::serialization::make_nvp("Knob", loaded);
-    }
-
-    EXPECT_EQ(std::string("ChannelSet"), loaded.typeName);
+    Serialization::KnobSerialization serialization;
+    source->toSerialization(&serialization);
+    std::list<Serialization::KnobSerialization> decoded = Serialization::decodeKnobsYaml(Serialization::encodeKnobsYaml({ serialization }));
+    ASSERT_EQ(1u, decoded.size());
+    Serialization::KnobSerialization& loaded = decoded.front();
     EXPECT_EQ(source->getName(), loaded.name);
 
     KnobChannelSetPtr loadedSet = makeKnob();
+    Serialization::completeKnobSerialization(&loaded, KnobChannelSet::typeNameStatic(), loadedSet->getDimension());
     ASSERT_TRUE(loadedSet->fromSerialization(loaded));
     std::vector<ChannelSetRow> actual = loadedSet->getRows();
     ASSERT_EQ(expected.size(), actual.size());

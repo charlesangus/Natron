@@ -156,18 +156,6 @@ public:
 
     virtual void restoreStateAfterCreation() OVERRIDE FINAL;
 
-    /**
-     * @brief Fills serialization with what a project file saves for this node in the node graph
-     * and, for a group, for the nodes it holds that are part of the project.
-     **/
-    void toSerialization(Serialization::NodeGuiSerialization* serialization) const;
-
-    /**
-     * @brief Applies the colours, position, preview state and size saved in serialization to
-     * this node, as pasting a copied node does.
-     **/
-    void fromSerialization(const Serialization::NodeGuiSerialization& serialization);
-
     NodePtr getNode() const
     {
         return _internalNode.lock();
@@ -322,16 +310,22 @@ public:
     virtual bool hasUserColor() const OVERRIDE FINAL;
 
     /**
+     * @brief clearUserColor() as a user edit: the node then saves no user colour. Programmatic
+     * colouring goes through Node instead, which already holds the value it saves.
+     **/
+    void clearUserColorByUser();
+
+    /**
+     * @brief resize() as a user edit: the resulting size becomes the one the node saves. Default
+     * and content-driven sizing do not, so a re-saved project keeps the size it was loaded with.
+     **/
+    void resizeByUser(int width, int height);
+
+    /**
      * @brief Reads the user colour flag and value under one lock. Returns false, leaving
      * color untouched, when no user colour is set.
      **/
     bool getUserColor(QColor* color) const;
-
-    /**
-     * @brief Resets the body to the category colour and applies the user colour the
-     * serialization resolves to, so a saved project follows later Preferences changes.
-     **/
-    void restoreCategoryAndUserColor(const Serialization::NodeGuiSerialization& serialization);
 
     /**
      * @brief Re-applies this node's category body colour after a Preferences
@@ -341,6 +335,7 @@ public:
     void refreshCategoryColor();
 
     void setOverlayColor(const QColor& c);
+    virtual void setOverlayColor(double r, double g, double b) OVERRIDE FINAL;
 
     void refreshKnobsAfterTimeChange(bool onlyTimeEvaluationKnobs, SequenceTime time);
 
@@ -640,7 +635,21 @@ protected:
      **/
     virtual void applyDisabledState(bool disabled);
 
+    virtual QVariant itemChange(GraphicsItemChange change, const QVariant& value) OVERRIDE;
+
 private:
+    /**
+     * @brief Shows the category colour, then the user colour the node holds, if any.
+     **/
+    void applyNodeColor();
+
+    /**
+     * @brief Shows the size, position and overlay colour the node holds, e.g. from a loaded
+     * project or a paste.
+     **/
+    void applyNodeGeometryAndOverlayColor();
+
+    void storeUserColorInNode(bool hasColor, const QColor& color);
 
     int getPluginIconWidth() const;
 

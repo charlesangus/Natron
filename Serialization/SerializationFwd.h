@@ -42,15 +42,11 @@ struct KnobMasterSerialization;
 struct KnobSerialization;
 struct LayerRegistryEntrySerialization;
 struct LayerSerialization;
-struct NodeBackdropSerialization;
 struct NodeCollectionSerialization;
-struct NodeGuiSerialization;
 struct NodeSerialization;
 struct PaneLayoutSerialization;
-struct ProjectGuiSerialization;
 struct ProjectSavedByVersionSerialization;
 struct ProjectSerialization;
-struct PythonPanelSerialization;
 struct RotoContextSerialization;
 struct RotoDrawableItemSerialization;
 struct RotoItemSerialization;
@@ -62,9 +58,8 @@ struct SplitterChildSerialization;
 struct SplitterSerialization;
 struct TrackSerialization;
 struct TrackerContextSerialization;
-struct ViewerDataSerialization;
+class ZipOutput;
 
-typedef std::shared_ptr<NodeGuiSerialization> NodeGuiSerializationPtr;
 typedef std::shared_ptr<NodeSerialization> NodeSerializationPtr;
 }
 NATRON_NAMESPACE_EXIT

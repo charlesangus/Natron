@@ -850,7 +850,7 @@ protected:
     }
 
     // Builds Constant -> native Write in the test project, renders frames 1..3 with a different grey
-    // on each, and saves it. Returns the saved .ntp path, or an empty string on failure.
+    // on each, and saves it. Returns the saved .ntpz path, or an empty string on failure.
     std::string buildAndSavePrecompSubProject(const QTemporaryDir& dir)
     {
         resetProject();
@@ -886,7 +886,7 @@ protected:
         getApp()->startWritersRendering(false, works);
 
         QString savedPath;
-        if (!project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("sub.ntp"), &savedPath)) {
+        if (!project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("sub.ntpz"), &savedPath)) {
             return std::string();
         }
 
@@ -1511,12 +1511,12 @@ TEST_P(CacheEquivalenceBenchCompTest, EditsAndDisables)
 
 INSTANTIATE_TEST_CASE_P(Comps,
                         CacheEquivalenceBenchCompTest,
-                        ::testing::Values(BenchComp { "keying_grade.ntp", eRenderSchedulerModeLegacy, 0 },
-                                          BenchComp { "keying_grade.ntp", eRenderSchedulerModeTaskGraph, 0 },
-                                          BenchComp { "cg_multipass.ntp", eRenderSchedulerModeLegacy, 0 },
-                                          BenchComp { "cg_multipass.ntp", eRenderSchedulerModeTaskGraph, 0 },
-                                          BenchComp { "defocus_retime.ntp", eRenderSchedulerModeLegacy, 3 },
-                                          BenchComp { "defocus_retime.ntp", eRenderSchedulerModeTaskGraph, 3 }));
+                        ::testing::Values(BenchComp { "keying_grade.ntpz", eRenderSchedulerModeLegacy, 0 },
+                                          BenchComp { "keying_grade.ntpz", eRenderSchedulerModeTaskGraph, 0 },
+                                          BenchComp { "cg_multipass.ntpz", eRenderSchedulerModeLegacy, 0 },
+                                          BenchComp { "cg_multipass.ntpz", eRenderSchedulerModeTaskGraph, 0 },
+                                          BenchComp { "defocus_retime.ntpz", eRenderSchedulerModeLegacy, 3 },
+                                          BenchComp { "defocus_retime.ntpz", eRenderSchedulerModeTaskGraph, 3 }));
 
 // Each bundled plugin is rendered on a checkerboard feeding every input, and each sampled knob
 // dimension is perturbed, rendered, reverted and rendered again through the caches before that

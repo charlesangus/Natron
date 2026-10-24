@@ -108,13 +108,65 @@ Node::getOverlayColor(double* r,
 {
     NodeGuiIPtr gui_i = getNodeGui();
 
-    if (!gui_i) {
+    if (gui_i && gui_i->getOverlayColor(r, g, b)) {
+        return true;
+    }
+    QMutexLocker k(&_imp->layoutMutex);
+    if (!_imp->overlayColorSet) {
         return false;
     }
+    *r = _imp->overlayColor[0];
+    *g = _imp->overlayColor[1];
+    *b = _imp->overlayColor[2];
 
-    return gui_i->getOverlayColor(r, g, b);
+    return true;
 }
 
+void
+Node::setOverlayColor(double r,
+                      double g,
+                      double b)
+{
+    setLayoutFromGuiOverlayColor(true, r, g, b);
+    NodeGuiIPtr gui_i = getNodeGui();
+    if (gui_i) {
+        gui_i->setOverlayColor(r, g, b);
+    }
+}
+
+bool
+Node::hasOverlayColor() const
+{
+    QMutexLocker k(&_imp->layoutMutex);
+
+    return _imp->overlayColorSet;
+}
+
+void
+Node::getStoredOverlayColor(double* r,
+                            double* g,
+                            double* b) const
+{
+    QMutexLocker k(&_imp->layoutMutex);
+
+    *r = _imp->overlayColor[0];
+    *g = _imp->overlayColor[1];
+    *b = _imp->overlayColor[2];
+}
+
+void
+Node::setLayoutFromGuiOverlayColor(bool hasColor,
+                                   double r,
+                                   double g,
+                                   double b)
+{
+    QMutexLocker k(&_imp->layoutMutex);
+
+    _imp->overlayColorSet = hasColor;
+    _imp->overlayColor[0] = hasColor ? r : 0.;
+    _imp->overlayColor[1] = hasColor ? g : 0.;
+    _imp->overlayColor[2] = hasColor ? b : 0.;
+}
 
 void
 Node::drawHostOverlay(double time,

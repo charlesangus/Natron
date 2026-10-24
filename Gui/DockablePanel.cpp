@@ -1483,6 +1483,7 @@ DockablePanel::onOverlayButtonClicked()
             _imp->_overlayColor = c;
             _imp->_hasOverlayColor = true;
         }
+        node->setLayoutFromGuiOverlayColor(true, c.redF(), c.greenF(), c.blueF());
     } else {
         if (!hadOverlayColor) {
             {
@@ -1492,6 +1493,8 @@ DockablePanel::onOverlayButtonClicked()
             QIcon pixOverlay;
             appPTR->getIcon(NATRON_PIXMAP_OVERLAY, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pixOverlay);
             _imp->_overlayButton->setIcon(pixOverlay);
+        } else {
+            onOverlayColorDialogColorChanged(oldColor);
         }
     }
     Gui* gui = getGui();
@@ -1540,7 +1543,7 @@ DockablePanel::resetUserColor()
     if (!node) {
         return;
     }
-    node->clearUserColor();
+    node->clearUserColorByUser();
 }
 
 void
@@ -1559,6 +1562,7 @@ DockablePanel::resetHostOverlayColor()
         QMutexLocker locker(&_imp->_currentColorMutex);
         _imp->_hasOverlayColor = false;
     }
+    node->setLayoutFromGuiOverlayColor(false, 0., 0., 0.);
     QIcon pixOverlay;
     appPTR->getIcon(NATRON_PIXMAP_OVERLAY, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pixOverlay);
     _imp->_overlayButton->setIcon(pixOverlay);

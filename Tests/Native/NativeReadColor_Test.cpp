@@ -656,7 +656,7 @@ TEST_F(NativeReadColorTest, ALoadedNodeKeepsItsSavedInputSpace)
     // A restored node that guessed again would take this new default.
     setProjectSpace("colorSpace8Bit", kGamma22Space);
 
-    saveResetAndLoad(tmp, "native-read-colour.ntp");
+    saveResetAndLoad(tmp, "native-read-colour.ntpz");
 
     ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory8Bit));
     picked = project()->getNodeByName(pickedName);
@@ -700,7 +700,7 @@ TEST_F(NativeReadColorTest, AnUnknownInputSpaceIsReported)
     EXPECT_NE(std::string::npos, persistentMessage(node).find(kUnknownSpace)) << persistentMessage(node);
 
     const std::string name = node->getScriptName();
-    saveResetAndLoad(tmp, "native-read-unknown-space.ntp");
+    saveResetAndLoad(tmp, "native-read-unknown-space.ntpz");
     node = project()->getNodeByName(name);
     ASSERT_TRUE(bool(node));
     EXPECT_EQ(std::string(kUnknownSpace), stringValue(node, kInputSpaceKnob));

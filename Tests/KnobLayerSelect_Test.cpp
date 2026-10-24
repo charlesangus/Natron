@@ -28,7 +28,6 @@
 #include <list>
 #include <memory>
 #include <set>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -47,8 +46,8 @@
 #include "Engine/Node.h"
 #include "Engine/OfxMultiplaneChoice.h"
 
-#include "Serialization/BoostXml/KnobXml.h"
 #include "Serialization/KnobSerialization.h"
+#include "Serialization/Yaml/KnobYaml.h"
 
 NATRON_NAMESPACE_USING
 
@@ -425,23 +424,15 @@ TEST_F(BaseTest, KnobLayerSelectNoneSerializationRoundTrip)
     source->setAllowNone(true);
     source->setLayer("");
 
-    std::stringstream buffer;
-    {
-        Serialization::KnobSerialization serialization;
-        source->toSerialization(&serialization);
-        boost::archive::xml_oarchive archive(buffer);
-        archive << boost::serialization::make_nvp("Knob", serialization);
-    }
-
-    Serialization::KnobSerialization loaded;
-    {
-        boost::archive::xml_iarchive archive(buffer);
-        archive >> boost::serialization::make_nvp("Knob", loaded);
-    }
-
-    EXPECT_EQ(std::string("LayerSelect"), loaded.typeName);
+    Serialization::KnobSerialization serialization;
+    source->toSerialization(&serialization);
+    std::list<Serialization::KnobSerialization> decoded = Serialization::decodeKnobsYaml(Serialization::encodeKnobsYaml({ serialization }));
+    ASSERT_EQ(1u, decoded.size());
+    Serialization::KnobSerialization& loaded = decoded.front();
+    EXPECT_EQ(source->getName(), loaded.name);
 
     KnobLayerSelectPtr loadedSelect = makeLayerSelectKnob();
+    Serialization::completeKnobSerialization(&loaded, KnobLayerSelect::typeNameStatic(), loadedSelect->getDimension());
     ASSERT_TRUE(loadedSelect->fromSerialization(loaded));
     EXPECT_EQ(std::string(""), loadedSelect->getLayer());
     EXPECT_EQ(source->getValue(), loadedSelect->getValue());
@@ -459,23 +450,15 @@ TEST_F(BaseTest, KnobLayerSelectSerializationRoundTrip)
     source->setLayer("diffuse");
     source->setChannels(channels("R", "G"));
 
-    std::stringstream buffer;
-    {
-        Serialization::KnobSerialization serialization;
-        source->toSerialization(&serialization);
-        boost::archive::xml_oarchive archive(buffer);
-        archive << boost::serialization::make_nvp("Knob", serialization);
-    }
-
-    Serialization::KnobSerialization loaded;
-    {
-        boost::archive::xml_iarchive archive(buffer);
-        archive >> boost::serialization::make_nvp("Knob", loaded);
-    }
-
-    EXPECT_EQ(std::string("LayerSelect"), loaded.typeName);
+    Serialization::KnobSerialization serialization;
+    source->toSerialization(&serialization);
+    std::list<Serialization::KnobSerialization> decoded = Serialization::decodeKnobsYaml(Serialization::encodeKnobsYaml({ serialization }));
+    ASSERT_EQ(1u, decoded.size());
+    Serialization::KnobSerialization& loaded = decoded.front();
+    EXPECT_EQ(source->getName(), loaded.name);
 
     KnobLayerSelectPtr loadedSelect = makeLayerSelectKnob();
+    Serialization::completeKnobSerialization(&loaded, KnobLayerSelect::typeNameStatic(), loadedSelect->getDimension());
     ASSERT_TRUE(loadedSelect->fromSerialization(loaded));
     EXPECT_EQ(std::string("diffuse"), loadedSelect->getLayer());
     EXPECT_EQ(channels("R", "G"), loadedSelect->getChannels());
@@ -585,23 +568,15 @@ TEST_F(BaseTest, KnobChannelSelectSerializationRoundTrip)
     ASSERT_TRUE(bool(source));
     source->set("diffuse.G");
 
-    std::stringstream buffer;
-    {
-        Serialization::KnobSerialization serialization;
-        source->toSerialization(&serialization);
-        boost::archive::xml_oarchive archive(buffer);
-        archive << boost::serialization::make_nvp("Knob", serialization);
-    }
-
-    Serialization::KnobSerialization loaded;
-    {
-        boost::archive::xml_iarchive archive(buffer);
-        archive >> boost::serialization::make_nvp("Knob", loaded);
-    }
-
-    EXPECT_EQ(std::string("ChannelSelect"), loaded.typeName);
+    Serialization::KnobSerialization serialization;
+    source->toSerialization(&serialization);
+    std::list<Serialization::KnobSerialization> decoded = Serialization::decodeKnobsYaml(Serialization::encodeKnobsYaml({ serialization }));
+    ASSERT_EQ(1u, decoded.size());
+    Serialization::KnobSerialization& loaded = decoded.front();
+    EXPECT_EQ(source->getName(), loaded.name);
 
     KnobChannelSelectPtr loadedSelect = makeChannelSelectKnob();
+    Serialization::completeKnobSerialization(&loaded, KnobChannelSelect::typeNameStatic(), loadedSelect->getDimension());
     ASSERT_TRUE(loadedSelect->fromSerialization(loaded));
     EXPECT_EQ(std::string("diffuse.G"), loadedSelect->get());
     EXPECT_EQ(source->getValue(), loadedSelect->getValue());

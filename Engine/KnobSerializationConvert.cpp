@@ -44,6 +44,7 @@
 #include <SequenceParsing.h>
 
 #include "Serialization/KnobSerialization.h"
+#include "Serialization/Yaml/KnobYaml.h"
 
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
@@ -343,13 +344,23 @@ canSaveOneDimensionForAll(const KnobI* knob,
     return true;
 }
 
+bool
+hasSavedDefaultValues(const Serialization::KnobSerialization& serialization)
+{
+    for (std::size_t i = 0; i < serialization.dimensions.size(); ++i) {
+        if (serialization.dimensions[i].defaultValue) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void
 restoreDimensionsFoldState(KnobI* knob,
                            const Serialization::KnobSerialization& serialization)
 {
-    // Older projects saved every dimension of a folded knob too, so their entry count says
-    // nothing: the knob is left for a new GUI to fold or not from its values.
-    if ((serialization.version < NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS) || (serialization.dimension < 2) || serialization.dimensions.empty() || !canFoldDimensions(knob)) {
+    if ((serialization.dimension < 2) || serialization.dimensions.empty() || !canFoldDimensions(knob)) {
         return;
     }
     knob->restoreDimensionsUnfoldedInGui(serialization.dimensions.size() > 1);
@@ -410,7 +421,6 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
 
     const int dimension = getDimension();
 
-    serialization->version = NATRON_SERIALIZATION_KNOB_VERSION;
     serialization->name = getName();
     serialization->typeName = typeName();
     serialization->dimension = dimension;
@@ -574,17 +584,31 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
 } // KnobHelper::toSerialization
 
 bool
-KnobHelper::fromSerialization(const Serialization::KnobSerialization& serialization)
+KnobHelper::fromSerialization(const Serialization::KnobSerialization& savedSerialization)
 {
+    const Serialization::KnobSerialization serialization = completeKnobSerializationForKnob(*this, savedSerialization);
+
     if (typeName() != serialization.typeName) {
         return false;
     }
-    KnobIPtr serializedKnob = createDetachedKnobFromSerialization(serialization);
+    KnobIPtr serializedKnob = createDetachedKnob(serialization.typeName, serialization.dimension);
     if (!serializedKnob) {
         return false;
     }
+    // Derivatives are recomputed as the curves load, which a periodic curve computes across its
+    // wrap-around.
+    KnobParametric* isParametric = dynamic_cast<KnobParametric*>(this);
+    KnobParametric* serializedParametric = dynamic_cast<KnobParametric*>(serializedKnob.get());
+    if (isParametric && serializedParametric && (isParametric->getDimension() > 0)) {
+        CurvePtr curve = isParametric->getParametricCurve(0);
+        serializedParametric->setPeriodic(curve && curve->isCurvePeriodic());
+    }
+    loadDetachedKnob(serialization, serializedKnob);
 
-    cloneDefaultValues(serializedKnob.get());
+    // A plug-in knob's defaults belong to the plug-in and are not saved, so the live ones stay.
+    if (hasSavedDefaultValues(serialization)) {
+        cloneDefaultValues(serializedKnob.get());
+    }
 
     KnobChoice* isChoice = dynamic_cast<KnobChoice*>(this);
     if (isChoice) {
@@ -663,6 +687,28 @@ KnobI::restoreExpressionsFromSerialization(const Serialization::KnobSerializatio
         QString error = QString::fromUtf8("Failed to restore expression: %1").arg(QString::fromUtf8(e.what()));
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(getName().c_str()), QDateTime::currentDateTime(), error);
     }
+}
+
+Serialization::KnobSerialization
+completeKnobSerializationForKnob(const KnobI& liveKnob,
+                                 const Serialization::KnobSerialization& serialization)
+{
+    Serialization::KnobSerialization completed = serialization;
+    if (!completed.typeName.empty()) {
+        return completed;
+    }
+    const KnobChoice* isChoice = dynamic_cast<const KnobChoice*>(&liveKnob);
+    std::vector<std::string> entries;
+    if (isChoice) {
+        std::vector<ChoiceOption> options = isChoice->getEntries_mt_safe();
+        entries.reserve(options.size());
+        for (std::size_t i = 0; i < options.size(); ++i) {
+            entries.push_back(options[i].id);
+        }
+    }
+    Serialization::completeKnobSerialization(&completed, liveKnob.typeName(), liveKnob.getDimension(), isChoice ? &entries : NULL);
+
+    return completed;
 }
 
 KnobIPtr

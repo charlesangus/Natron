@@ -25,12 +25,14 @@
 
 #include "NodeSettingsPanel.h"
 
-#include <vector>
-#include <list>
-#include <string>
 #include <exception>
 #include <fstream>
+#include <istream>
+#include <iterator>
+#include <list>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <QStyle>
 
@@ -53,8 +55,9 @@
 #include "Gui/TrackerPanel.h"
 #include "Gui/RotoPanel.h"
 
-#include "Serialization/BoostXml/NodeXml.h"
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/Yaml/PresetYaml.h"
+#include "Serialization/Yaml/YamlScalars.h"
 
 using std::make_pair;
 NATRON_NAMESPACE_ENTER
@@ -240,19 +243,19 @@ NodeSettingsPanel::onImportPresetsActionTriggered()
 
         return;
     }
+    const std::string text((std::istreambuf_iterator<char>(ifile)), std::istreambuf_iterator<char>());
+
+    if (Serialization::isXmlDocument(text)) {
+        Dialogs::errorDialog(tr("Presets").toStdString(), tr("This preset uses the old XML .nps format, which this version of Natron cannot open (no compatibility, by design).").toStdString(), false);
+
+        return;
+    }
 
     std::list<Serialization::NodeSerializationPtr> nodeSerialization;
     try {
-        int nNodes;
-        boost::archive::xml_iarchive iArchive(ifile);
-        iArchive >> boost::serialization::make_nvp("NodesCount", nNodes);
-        for (int i = 0; i < nNodes; ++i) {
-            Serialization::NodeSerializationPtr node = std::make_shared<Serialization::NodeSerialization>();
-            iArchive >> boost::serialization::make_nvp("Node", *node);
-            nodeSerialization.push_back(node);
-        }
-    } catch (const std::exception & e) {
-        Dialogs::errorDialog( "Presets", e.what() );
+        nodeSerialization = Serialization::decodePresetYaml(text);
+    } catch (const std::exception& e) {
+        Dialogs::errorDialog(tr("Presets").toStdString(), tr("Cannot read the preset %1: %2").arg(QString::fromUtf8(filename.c_str())).arg(QString::fromUtf8(e.what())).toStdString(), false);
 
         return;
     }
@@ -263,7 +266,7 @@ NodeSettingsPanel::onImportPresetsActionTriggered()
                           .arg(QString::fromUtf8(filename.c_str()))
                           .arg(QString::fromUtf8(nodeSerialization.front()->pluginID.c_str()))
                           .arg(QString::fromUtf8(node->getNode()->getPluginID().c_str()));
-        Dialogs::errorDialog( tr("Presets").toStdString(), err.toStdString() );
+        Dialogs::errorDialog(tr("Presets").toStdString(), err.toStdString());
 
         return;
     }
@@ -294,6 +297,17 @@ NodeSettingsPanel::onExportPresetsActionTriggered()
         filename.append("." NATRON_PRESETS_FILE_EXT);
     }
 
+    NodeGuiPtr node = getNode();
+    std::list<Serialization::NodeSerializationPtr> nodeSerialization;
+    node->serializeInternal(nodeSerialization);
+    std::string text;
+    try {
+        text = Serialization::encodePresetYaml(nodeSerialization);
+    } catch (const std::exception& e) {
+        Dialogs::errorDialog(tr("Presets").toStdString(), e.what());
+
+        return;
+    }
 
     FStreamsSupport::ofstream ofile;
     FStreamsSupport::open(&ofile, filename);
@@ -303,22 +317,11 @@ NodeSettingsPanel::onExportPresetsActionTriggered()
 
         return;
     }
-
-    NodeGuiPtr node = getNode();
-    std::list<Serialization::NodeSerializationPtr> nodeSerialization;
-    node->serializeInternal(nodeSerialization);
-    try {
-        int nNodes = nodeSerialization.size();
-        boost::archive::xml_oarchive oArchive(ofile);
-        oArchive << boost::serialization::make_nvp("NodesCount", nNodes);
-        for (std::list<Serialization::NodeSerializationPtr>::iterator it = nodeSerialization.begin();
-             it != nodeSerialization.end(); ++it) {
-            oArchive << boost::serialization::make_nvp("Node", **it);
-        }
-    }  catch (const std::exception & e) {
-        Dialogs::errorDialog( "Presets", e.what() );
-
-        return;
+    ofile << text;
+    ofile.close();
+    if (ofile.fail()) {
+        Dialogs::errorDialog(tr("Presets").toStdString(),
+                             tr("Failed to write file %1.").arg(QString::fromUtf8(filename.c_str())).toStdString(), false);
     }
 }
 

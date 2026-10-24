@@ -302,9 +302,10 @@ findMaster(const KnobIPtr & knob,
 }
 
 void
-KnobI::restoreLinks(const NodesList & allNodes,
+KnobI::restoreLinks(const NodesList& allNodes,
                     const std::map<std::string, std::string>& oldNewScriptNamesMapping,
-                    bool throwOnFailure)
+                    bool throwOnFailure,
+                    std::vector<std::string>* missingTargets)
 {
     KnobIPtr thisKnob = shared_from_this();
     for (std::vector<Link>::const_iterator l = _links.begin(); l != _links.end(); ++l) {
@@ -312,9 +313,12 @@ KnobI::restoreLinks(const NodesList & allNodes,
         if (!linkedKnob) {
             if (throwOnFailure) {
                 throw std::runtime_error(std::string("KnobI::restoreLinks(): Could not restore link to node/knob/track ") + l->nodeName + '/' + l->knobName + '/' + l->trackName);
-            } else {
-                continue;
             }
+            if (missingTargets) {
+                const std::string& nodeName = l->nodeNameFull.empty() ? l->nodeName : l->nodeNameFull;
+                missingTargets->push_back(nodeName + '.' + (l->trackName.empty() ? std::string() : l->trackName + '.') + l->knobName);
+            }
+            continue;
         }
         if (linkedKnob == thisKnob) {
             qDebug() << "Link for" << getName().c_str()

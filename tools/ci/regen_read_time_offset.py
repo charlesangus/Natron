@@ -1,12 +1,12 @@
-"""Regenerate Tests/fixtures/read-time-offset.ntp.
+"""Regenerate Tests/fixtures/read-time-offset.ntpz.
 
 Run through NatronRenderer, which supplies the `app` global (the same way
 tools/ci/smoke_test.py is run), with the output path in the environment
 because a script run this way has no __file__ or argv to take it from:
 
-    READ_TIME_OFFSET_FIXTURE_PATH=$PWD/Tests/fixtures/read-time-offset.ntp \
+    READ_TIME_OFFSET_FIXTURE_PATH=$PWD/Tests/fixtures/read-time-offset.ntpz \
     OFX_PLUGIN_PATH=$PWD/build/assets/Plugins \
-    xvfb-run --auto-servernum NatronRenderer tools/ci/regen_read_time_offset.py
+    xvfb-run --auto-servernum NatronRenderer -b tools/ci/regen_read_time_offset.py
 
 The fixture is a native Read (timeOffset 50, in time-offset frame mode, the
 only mode that honours it) feeding a native Write whose output directory is the

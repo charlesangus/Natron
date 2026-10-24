@@ -25,7 +25,9 @@
 
 #include "Project.h"
 
+#include <algorithm>
 #include <cassert>
+#include <iterator>
 #include <list>
 #include <memory>
 #include <string>
@@ -121,6 +123,46 @@ deepCopyNodeSerialization(const Serialization::NodeSerialization& source)
     return copy;
 }
 
+// A hidden multi-instance child is placed by its parent, so only a node of the project carries a layout.
+void
+layoutToSerialization(const Node& node,
+                      Serialization::NodeLayoutSerialization* layout)
+{
+    *layout = Serialization::NodeLayoutSerialization();
+
+    double x, y;
+    node.getPosition(&x, &y);
+    layout->hasPosition = true;
+    layout->x = x;
+    layout->y = y;
+
+    if (node.hasSize()) {
+        double w, h;
+        node.getSize(&w, &h);
+        layout->hasSize = true;
+        layout->width = w;
+        layout->height = h;
+    }
+
+    if (node.hasUserColor()) {
+        double r, g, b;
+        node.getUserColor(&r, &g, &b);
+        layout->hasColor = true;
+        layout->colorR = (float)r;
+        layout->colorG = (float)g;
+        layout->colorB = (float)b;
+    }
+
+    if (node.hasOverlayColor()) {
+        double r, g, b;
+        node.getStoredOverlayColor(&r, &g, &b);
+        layout->hasOverlayColor = true;
+        layout->overlayR = (float)r;
+        layout->overlayG = (float)g;
+        layout->overlayB = (float)b;
+    }
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 void
@@ -138,15 +180,16 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     const Serialization::NodeSerializationPtr stored = placeholder ? placeholder->getStoredSerialization() : Serialization::NodeSerializationPtr();
     if (stored) {
         *serialization = *deepCopyNodeSerialization(*stored);
-        serialization->version = NATRON_SERIALIZATION_NODE_VERSION;
         serialization->label = getLabel_mt_safe();
         serialization->scriptName = getScriptName_mt_safe();
         serialization->knobsAge = 0;
         serialization->cacheID = getCacheID();
         serialization->inputs.clear();
-        serialization->oldInputs.clear();
         if (serializeInputs) {
             getInputNames(serialization->inputs);
+        }
+        if (getParentMultiInstanceName().empty()) {
+            layoutToSerialization(*this, &serialization->layout);
         }
 
         return;
@@ -238,6 +281,9 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     }
 
     serialization->multiInstanceParentName = getParentMultiInstanceName();
+    if (serialization->multiInstanceParentName.empty()) {
+        layoutToSerialization(*this, &serialization->layout);
+    }
 
     NodesList multiInstanceChildren;
     getChildrenMultiInstance(&multiInstanceChildren);
@@ -318,11 +364,18 @@ Project::toSerialization(Serialization::ProjectSerialization* serialization) con
         serialization->layers.push_back(entry);
     }
 
+    // What every save changes is in the bundle manifest, so that re-saving an unchanged project
+    // writes the same project document.
+    const KnobI* const savedEachTime[] = { _imp->natronVersion.get(), _imp->lastAuthorName.get(), _imp->saveDate.get() };
+
     const std::vector<KnobIPtr> knobs = getKnobs_mt_safe();
     for (std::size_t i = 0; i < knobs.size(); ++i) {
         KnobGroup* isGroup = dynamic_cast<KnobGroup*>(knobs[i].get());
         KnobPage* isPage = dynamic_cast<KnobPage*>(knobs[i].get());
         KnobButton* isButton = dynamic_cast<KnobButton*>(knobs[i].get());
+        if (std::find(std::begin(savedEachTime), std::end(savedEachTime), knobs[i].get()) != std::end(savedEachTime)) {
+            continue;
+        }
         if (knobs[i]->getIsPersistent() && !isGroup && !isPage && !isButton && knobs[i]->hasModificationsForSerialization()) {
             serialization->projectKnobs.push_back(Serialization::KnobSerialization());
             knobs[i]->toSerialization(&serialization->projectKnobs.back());
@@ -348,11 +401,6 @@ void
 ProjectPrivate::setProjectBeingLoadedInfo(const Serialization::ProjectSerialization& serialization) const
 {
     const Serialization::ProjectSavedByVersionSerialization& savedBy = serialization.savedByVersion;
-    // Files between these versions only name the saving build when its version string parsed.
-    const bool fileNamesSavingBuild = (serialization.version >= NATRON_SERIALIZATION_PROJECT_CHANGE_VERSION_SERIALIZATION) || ((serialization.version >= NATRON_SERIALIZATION_PROJECT_INTRODUCES_NATRON_VERSION) && (savedBy.versionMajor != -1));
-    if (!fileNamesSavingBuild) {
-        return;
-    }
     ProjectBeingLoadedInfo projectBeingLoadedInfo;
     projectBeingLoadedInfo.vMajor = savedBy.versionMajor;
     projectBeingLoadedInfo.vMinor = savedBy.versionMinor;
@@ -389,7 +437,6 @@ ProjectPrivate::restoreFromSerialization(const Serialization::ProjectSerializati
                                      serialization.projectKnobs,
                                      serialization.timelineCurrentTime,
                                      serialization.nodes.nodes,
-                                     serialization.version < NATRON_SERIALIZATION_PROJECT_REMOVES_TIMELINE_BOUNDS,
                                      name,
                                      path,
                                      mustSave);

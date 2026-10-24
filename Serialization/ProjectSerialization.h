@@ -23,21 +23,12 @@
 #include "Global/Macros.h"
 
 #include <list>
-#include <map>
 #include <string>
 
 #include "Serialization/BasicSerialization.h"
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/SerializationFwd.h"
-
-#define NATRON_SERIALIZATION_PROJECT_INTRODUCES_NATRON_VERSION 2
-#define NATRON_SERIALIZATION_PROJECT_REMOVES_NODE_COUNTERS 3
-#define NATRON_SERIALIZATION_PROJECT_REMOVES_TIMELINE_BOUNDS 4
-#define NATRON_SERIALIZATION_PROJECT_INTRODUCES_GROUPS 5
-#define NATRON_SERIALIZATION_PROJECT_CHANGE_VERSION_SERIALIZATION 6
-#define NATRON_SERIALIZATION_PROJECT_ADDS_LAYERS 7
-#define NATRON_SERIALIZATION_PROJECT_VERSION NATRON_SERIALIZATION_PROJECT_ADDS_LAYERS
 
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
@@ -58,10 +49,7 @@ struct LayerRegistryEntrySerialization {
 };
 
 /**
- * @brief The Natron build that saved a project. -1 and empty strings for what the file does
- * not say: files older than NATRON_SERIALIZATION_PROJECT_CHANGE_VERSION_SERIALIZATION only
- * record the version numbers, and files older than
- * NATRON_SERIALIZATION_PROJECT_INTRODUCES_NATRON_VERSION record nothing.
+ * @brief The Natron build that saved a project.
  **/
 struct ProjectSavedByVersionSerialization {
     int versionMajor;
@@ -89,10 +77,6 @@ struct ProjectSavedByVersionSerialization {
  * formats and layers the user added, the timeline position and when it was created.
  **/
 struct ProjectSerialization {
-    // The class version the project was loaded from, NATRON_SERIALIZATION_PROJECT_VERSION
-    // otherwise.
-    unsigned int version;
-
     ProjectSavedByVersionSerialization savedByVersion;
 
     NodeCollectionSerialization nodes;
@@ -107,27 +91,14 @@ struct ProjectSerialization {
     // Milliseconds since the epoch.
     long long creationDate;
 
-    // Only read from files older than NATRON_SERIALIZATION_PROJECT_REMOVES_TIMELINE_BOUNDS,
-    // and unused: the frame range is recomputed from the readers instead.
-    int legacyTimelineLeftBound;
-    int legacyTimelineRightBound;
-
-    // Only read from files older than NATRON_SERIALIZATION_PROJECT_REMOVES_NODE_COUNTERS,
-    // and unused.
-    std::map<std::string, int> legacyNodeCounters;
-
     ProjectSerialization()
-        : version(NATRON_SERIALIZATION_PROJECT_VERSION)
-        , savedByVersion()
+        : savedByVersion()
         , nodes()
         , projectKnobs()
         , additionalFormats()
         , layers()
         , timelineCurrentTime(0)
         , creationDate(0)
-        , legacyTimelineLeftBound(0)
-        , legacyTimelineRightBound(0)
-        , legacyNodeCounters()
     {
     }
 };

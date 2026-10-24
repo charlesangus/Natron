@@ -108,7 +108,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ViewerTab.h"
 
 #include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 
 #define NATRON_STATE_INDICATOR_OFFSET 5
 
@@ -478,6 +477,9 @@ NodeGui::initialize(NodeGraph* dag,
 
     restoreStateAfterCreation();
 
+    applyNodeGeometryAndOverlayColor();
+    setFlag(QGraphicsItem::ItemSendsGeometryChanges);
+
     ///Link the position of the node to the position of the parent multi-instance
     const std::string parentMultiInstanceName = internalNode->getParentMultiInstanceName();
     if ( !parentMultiInstanceName.empty() ) {
@@ -495,6 +497,79 @@ NodeGui::initialize(NodeGraph* dag,
         internalNode->initializeHostOverlays();
     }
 } // initialize
+
+void
+NodeGui::applyNodeColor()
+{
+    NodePtr node = getNode();
+    QColor categoryColor;
+
+    if (getCategoryColor(node, &categoryColor)) {
+        setCurrentColor(categoryColor);
+    }
+    if (!node || !node->hasUserColor()) {
+        return;
+    }
+    double r, g, b;
+    node->getUserColor(&r, &g, &b);
+    const QColor userColor = QColor::fromRgbF(r, g, b);
+    if (colorIsBody()) {
+        setCurrentColor(userColor);
+    } else {
+        setUserColor(userColor);
+    }
+}
+
+void
+NodeGui::applyNodeGeometryAndOverlayColor()
+{
+    NodePtr node = getNode();
+
+    if (!node) {
+        return;
+    }
+    if (node->hasSize()) {
+        double w, h;
+        node->getSize(&w, &h);
+        resize(qRound(w), qRound(h), colorIsBody());
+    }
+    double x, y;
+    node->getPosition(&x, &y);
+    if (QPointF(x, y) != pos()) {
+        refreshPosition(x, y, true);
+    }
+    if (node->hasOverlayColor()) {
+        double r, g, b;
+        node->getStoredOverlayColor(&r, &g, &b);
+        setOverlayColor(QColor::fromRgbF(r, g, b));
+    }
+}
+
+void
+NodeGui::storeUserColorInNode(bool hasColor,
+                              const QColor& color)
+{
+    NodePtr node = getNode();
+
+    if (node) {
+        node->setLayoutFromGuiUserColor(hasColor, color.redF(), color.greenF(), color.blueF());
+    }
+}
+
+QVariant
+NodeGui::itemChange(GraphicsItemChange change,
+                    const QVariant& value)
+{
+    if (change == QGraphicsItem::ItemPositionHasChanged) {
+        NodePtr node = _internalNode.lock();
+        if (node) {
+            const QPointF p = value.toPointF();
+            node->setLayoutFromGuiPosition(p.x(), p.y());
+        }
+    }
+
+    return QGraphicsItem::itemChange(change, value);
+}
 
 bool
 NodeGui::getCategoryColor(const NodePtr& internalNode,
@@ -521,49 +596,6 @@ NodeGui::getCategoryColor(const NodePtr& internalNode,
     return true;
 }
 
-// The colour the grouping ladder that predates node categories gave a non-backdrop node,
-// which is what archives without a stored user colour recorded for an unedited node. It
-// differs from getCategoryColor() wherever categories moved a node: Reader/Writer/Generator
-// beat the Deep grouping, 3D groupings were the default node colour, and no label keyword
-// was consulted.
-static bool
-getLegacyCategoryColor(const NodePtr& internalNode,
-                       QColor* color)
-{
-    if (!internalNode) {
-        return false;
-    }
-    EffectInstancePtr iseffect = internalNode->getEffectInstance();
-    if (!iseffect) {
-        return false;
-    }
-    std::list<std::string> grouping;
-    internalNode->getPluginGrouping(&grouping);
-    const std::string majGroup = grouping.empty() ? std::string() : grouping.front();
-    NodeCategoryEnum category;
-
-    if (iseffect->isReader()) {
-        category = eNodeCategoryRead;
-    } else if (iseffect->isWriter()) {
-        category = eNodeCategoryWrite;
-    } else if (iseffect->isGenerator()) {
-        category = eNodeCategoryGenerator;
-    } else if (majGroup == PLUGIN_GROUP_DEEP) {
-        category = eNodeCategoryDeep;
-    } else {
-        // An empty label gives the keyword heuristic nothing to match, leaving only the
-        // exact major-grouping table, which is what the old ladder consulted.
-        category = Node::categoryFromGroupingAndLabel(majGroup, std::string());
-    }
-    float r, g, b;
-    appPTR->getCurrentSettings()->getNodeCategoryColor(category, &r, &g, &b);
-    color->setRgbF(Image::clamp<qreal>(r, 0., 1.),
-                   Image::clamp<qreal>(g, 0., 1.),
-                   Image::clamp<qreal>(b, 0., 1.));
-
-    return true;
-}
-
 void
 NodeGui::restoreStateAfterCreation()
 {
@@ -572,12 +604,8 @@ NodeGui::restoreStateAfterCreation()
         return;
     }
 
-    ///Refresh the disabled knob
+    applyNodeColor();
 
-    QColor color;
-    if (getCategoryColor(internalNode, &color)) {
-        setCurrentColor(color);
-    }
     KnobBoolPtr disabledknob = internalNode->getDisabledKnob();
     if ( disabledknob && disabledknob->getValue() ) {
         onDisabledKnobToggled(true);
@@ -611,6 +639,11 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
     assert(propsLayout);
     NodeGuiPtr thisShared = shared_from_this();
     _settingsPanel = createPanel(propsLayout, thisShared);
+    if (_settingsPanel && shownNode && shownNode->hasOverlayColor()) {
+        double r, g, b;
+        shownNode->getStoredOverlayColor(&r, &g, &b);
+        _settingsPanel->setOverlayColor(QColor::fromRgbF(r, g, b));
+    }
 
     initializeKnobs();
     beginEditKnobs();
@@ -916,13 +949,20 @@ NodeGui::createGui()
 void
 NodeGui::onSettingsPanelColorChanged(const QColor & color)
 {
+    NodePtr node = getNode();
+    const bool hadUserColor = colorIsBody() ? (node && node->hasUserColor()) : hasUserColor();
+
+    // Compared at 8 bits per channel, the precision the colour dialog hands back, so
+    // confirming the dialog unchanged does not turn the body colour into a user colour.
+    if (!hadUserColor && (color.rgb() == getCurrentColor().rgb())) {
+        return;
+    }
     if (colorIsBody()) {
         setCurrentColor(color);
-    } else if (hasUserColor() || (color.rgb() != getCurrentColor().rgb())) {
-        // Compared at 8 bits per channel, the precision the colour dialog hands back, so
-        // confirming the dialog unchanged does not turn the body colour into a user colour.
+    } else {
         setUserColor(color);
     }
+    storeUserColorInNode(true, color);
 }
 
 void
@@ -1674,7 +1714,13 @@ NodeGui::getOverlayColor(double* r,
                          double* b) const
 {
     if ( !getSettingPanel() ) {
-        return false;
+        NodePtr node = getNode();
+        if (!node || !node->hasOverlayColor()) {
+            return false;
+        }
+        node->getStoredOverlayColor(r, g, b);
+
+        return true;
     }
     if (_overlayLocked) {
         *r = 0.5;
@@ -3033,14 +3079,6 @@ NodeGui::destroyGui()
                 break;
             }
         }
-
-        for (std::list<Serialization::NodeGuiSerializationPtr>::iterator it = cb.nodesUI.begin();
-             it != cb.nodesUI.end(); ++it) {
-            if ((*it)->nodeName == internalNode->getFullyQualifiedName()) {
-                cb.nodesUI.erase(it);
-                break;
-            }
-        }
     }
 
     //Delete edges
@@ -3620,6 +3658,34 @@ NodeGui::refreshPanelColorIndicator()
     }
 }
 
+void
+NodeGui::clearUserColorByUser()
+{
+    clearUserColor();
+    storeUserColorInNode(false, QColor());
+}
+
+void
+NodeGui::resizeByUser(int width,
+                      int height)
+{
+    if (!canResize()) {
+        return;
+    }
+    resize(width, height);
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    int w, h;
+    {
+        QMutexLocker k(&_mtSafeSizeMutex);
+        w = _mtSafeWidth;
+        h = _mtSafeHeight;
+    }
+    node->setLayoutFromGuiSize(w, h);
+}
+
 bool
 NodeGui::hasUserColor() const
 {
@@ -3642,37 +3708,6 @@ NodeGui::getUserColor(QColor* color) const
 }
 
 void
-NodeGui::restoreCategoryAndUserColor(const Serialization::NodeGuiSerialization& serialization)
-{
-    NodePtr node = getNode();
-    QColor categoryColor;
-    const bool hasCategoryColor = getCategoryColor(node, &categoryColor);
-    float category[3] = { 0.f, 0.f, 0.f };
-    float legacyCategory[3] = { 0.f, 0.f, 0.f };
-    bool hasLegacyCategoryColor = false;
-
-    if (hasCategoryColor) {
-        setCurrentColor(categoryColor);
-        categoryColor.getRgbF(&category[0], &category[1], &category[2]);
-        QColor legacyColor;
-        hasLegacyCategoryColor = getLegacyCategoryColor(node, &legacyColor);
-        if (hasLegacyCategoryColor) {
-            legacyColor.getRgbF(&legacyCategory[0], &legacyCategory[1], &legacyCategory[2]);
-        }
-    }
-
-    float r, g, b;
-    if (Serialization::resolveNodeGuiUserColor(serialization,
-                                               hasCategoryColor ? category : NULL,
-                                               hasLegacyCategoryColor ? legacyCategory : NULL,
-                                               &r, &g, &b)) {
-        setUserColor(QColor::fromRgbF(r, g, b));
-    } else {
-        clearUserColor();
-    }
-}
-
-void
 NodeGui::refreshCategoryColor()
 {
     if (colorIsBody()) {
@@ -3690,6 +3725,14 @@ NodeGui::setOverlayColor(const QColor& c)
     if (_settingsPanel) {
         _settingsPanel->setOverlayColor(c);
     }
+}
+
+void
+NodeGui::setOverlayColor(double r,
+                         double g,
+                         double b)
+{
+    setOverlayColor(QColor::fromRgbF(r, g, b));
 }
 
 void

@@ -425,7 +425,8 @@ NodeGraph::createNodeGUI(const NodePtr & node,
     assert(node_ui);
     node_ui->initialize(this, node);
 
-    if (isBd) {
+    // A backdrop from a serialization already has the layout it was saved with.
+    if (isBd && !args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization)) {
         BackdropGui* bd = dynamic_cast<BackdropGui*>( node_ui.get() );
         assert(bd);
         NodesGuiList selectedNodes = _imp->_selection;
@@ -444,10 +445,9 @@ NodeGraph::createNodeGUI(const NodePtr & node,
             QPointF scenePos(bbox.x() - border, bbox.y() - border);
 
             bd->setPos( bd->mapToParent( bd->mapFromScene(scenePos) ) );
-            bd->resize(bbox.width() + 2 * border, bbox.height() + 2 * border - headerHeight);
+            bd->resizeByUser(bbox.width() + 2 * border, bbox.height() + 2 * border - headerHeight);
         }
     }
-
 
     {
         QMutexLocker l(&_imp->_nodesMutex);

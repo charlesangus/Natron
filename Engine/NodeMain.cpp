@@ -128,6 +128,21 @@ Node::load(const CreateNodeArgs& args)
 
     _imp->effect->initializeOverlayInteract();
 
+    if (serialization) {
+        const Serialization::NodeLayoutSerialization& layout = serialization->layout;
+        if (layout.hasPosition) {
+            setPosition(layout.x, layout.y);
+        }
+        if (layout.hasSize) {
+            setSize(layout.width, layout.height);
+        }
+        if (layout.hasColor) {
+            setColor(layout.colorR, layout.colorG, layout.colorB);
+        }
+        if (layout.hasOverlayColor) {
+            setOverlayColor(layout.overlayR, layout.overlayG, layout.overlayB);
+        }
+    }
 
     if ( _imp->supportedDepths.empty() ) {
         //From the spec:

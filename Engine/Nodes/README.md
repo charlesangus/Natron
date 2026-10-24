@@ -75,9 +75,20 @@ returned from `nodeSpec()`, and implements those `EffectInstance` and
 that is specific to one kind of data -- see "Single hierarchy" above. What it
 does add is kind-agnostic: the spec, the `route()` identity hook, `KnobReader`
 and `bakeParams()`, and the GPU virtuals (`canRenderOnGpu()`, `renderGpu()`,
-`getGpuInputRoI()`, `getGpuInputLayer()`, `getGpuStageSummary()`,
-`gpuCostHint()`), which refuse by default. The engine casts to
+`getGpuInputRoI()`, `getGpuInputLayer()`, `getGpuExtraInputLayers()`,
+`getGpuStageSummary()`, `gpuCostHint()`), which refuse by default
+(`getGpuExtraInputLayers()` asks for no extra layers). The engine casts to
 `NativeEffectBase` to reach them.
+
+A GPU render is per plane. `GpuQuery::plane` is the plane the task renders, and
+`canRenderOnGpu()` and `getGpuInputLayer()` answer for it. A node that reads an
+input in more than one layer for one output plane returns the layers beyond
+`getGpuInputLayer()`'s from `getGpuExtraInputLayers()`; the region engine hands
+them over in `GpuRenderArgs::layerInputs`, one `GpuLayerInput` per input and
+layer. The Shuffle family derives from `ChannelRouteEffect`
+(`Engine/Nodes/Channel/ChannelCopy.h`): the node implements `channelRoute()` for
+a plane, and the CPU render and the GPU `channelroute` kernel both run that
+route, so the node writes no `renderGpu()` of its own.
 
 What it supplies so a subclass doesn't have to:
 
@@ -911,7 +922,9 @@ point pass, over scratch slots; `Pass::lineX()`, `lineY()`, `gather()` and
 `point()` build them and say their halo and growth. `PassList::gpu` is one
 recorder for the whole list, because Blur's GPU kernels fuse their passes. An op
 may add `costHint(params, ctx)` for the GPU cost model; without it the list's
-sigma gives one. A node narrows the region of definition the list gives by
+sigma gives one. EdgeDetect's recorder (`edgeDetectGpuRecorder()` in
+`EdgeDetect.cpp`) runs its pre-blur, derivative, combine and morphology passes
+over the same buffer the CPU passes use. A node narrows the region of definition the list gives by
 overriding `clipRegionOfDefinition()` (Blur's "Crop To Format").
 
 **Route.** `route()` returns the `Route` as for any node, here from the op's
@@ -938,12 +951,19 @@ an integer `which`).
 - *Offset form*: `offset(params, ctx)` returns the whole-pixel translation at
   the render scale (output pixel (i, j) shows source pixel (i - x, j - y)). It
   offers no matrix and takes none. It may add `matte(params, ctx)`, a
-  separable `ResampleMatte` of a column and a row weight that both executors
-  apply to each shifted pixel (a zero weight writes 0, one of 1 or more keeps
-  the pixel), and
+  separable `ResampleMatte` of a column and a row weight; the weight of pixel
+  (x, y) is `column(x) * row(y)`, and an unset function weighs 1. Both executors
+  apply it to each shifted pixel: a weight of 0 writes 0 rather than multiplying,
+  so a NaN or infinite source pixel there becomes 0; a weight of 1 or more keeps
+  the pixel; any other weight multiplies each channel in double and rounds to
+  float. A matte with neither function set weighs nothing. The weights are
+  sampled over the render window on the thread running the action or recording,
+  never from band threads. The offset form also runs on the GPU, with its
+  matte, and always qualifies since nothing is concatenated into its source. It
+  may add
   `static constexpr bool kClipsSourceToRoI = true`, to read the source as zero
   outside the region of interest it was fetched for, as an OpenFX host shows it.
-  Position is the plain form. Crop is the full one: its offset is the
+  Position is the plain form; both run on the GPU. Crop is the full one: its offset is the
   translation `reformat` needs, its matte is the black border and the
   softness fade, and it clips the source to its region of interest.
 
@@ -956,7 +976,7 @@ in turn: `io.src[0]` is the result so far, `io.src[1]` the next input's row, and
 `step()` writes the processed channels to `io.dst`. Mask and mix apply once, to
 the final result. An input is read in the layer its `InputSpec::layer` names and
 reads zero wherever it has no pixel. An op reading several inputs at once is not
-supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage.
+supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage. A Composite op runs on the GPU if it has `gpu(params)` returning a `GpuOpRef` (`GpuCompositeOp`); Dissolve does.
 
 **Custom** is the way out, and the cost of it is that the node owns its pixels.
 A Custom node derives from `StagedImageEffect` directly, returns
@@ -1227,7 +1247,16 @@ plugin, and states its tolerance in this section: a node row above gets a GPU
 bound beside its CPU class, or a measured exception below it, in the same change
 that lets the node answer `canRenderOnGpu()`. Vulkan division is 2.5 ulp and
 `pow` and the trigonometric functions are looser still, so a GPU bound is
-usually wider than the CPU class of the same node.
+usually wider than the CPU class of the same node. The bounds are in the node
+docs (`Engine/Nodes/**/docs/*.md`), in a GPU paragraph or row beside the CPU
+class, with any measured exception and the test that holds it.
+
+A task that renders several planes runs on the GPU as one region member per
+plane, each with its own `GpuQuery::plane`. A plane the node passes through is
+an identity member that shares the slot of the image it aliases, so it costs no
+dispatch. Placement (`makeGpuTaskPlanes()` in `Engine/GpuPlacement.cpp`) puts
+the task on the GPU only if every plane it renders answers `canRenderOnGpu()`
+and every extra input layer is one its input carries.
 
 `Tests/Native/NativeGpuParity.{h,cpp}` is the shared harness. A test names its
 bound with `ParityTolerance` and compares through `compareImages()`.

@@ -27,13 +27,21 @@
 
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include <QComboBox>
+#include <QCursor>
+#include <QGuiApplication>
+#include <QObject>
+#include <QWidget>
 
 #include <gtest/gtest.h>
 
 #include "Engine/ColorWheelMath.h"
 
+#include "Gui/ColorPanelLayoutDev.h"
 #include "Gui/ColorTrackballGlobalMode.h"
 #include "Gui/ColorTrackballHud.h"
 
@@ -388,4 +396,209 @@ TEST(ColorTrackballGlobalModeStroke, LongPowerValueStrokeParksAtTheGammaCap)
         previous = r.value.rgb[0];
     }
     EXPECT_NEAR(kPowerGammaMax, previous, 1e-9);
+}
+
+namespace {
+int
+overrideCursorDepth()
+{
+    // Pops everything to count it, then puts the same shapes back in the same order.
+    std::vector<Qt::CursorShape> shapes;
+
+    while (QGuiApplication::overrideCursor()) {
+        shapes.push_back(QGuiApplication::overrideCursor()->shape());
+        QGuiApplication::restoreOverrideCursor();
+    }
+    for (std::size_t i = shapes.size(); i > 0; --i) {
+        QGuiApplication::setOverrideCursor(QCursor(shapes[i - 1]));
+    }
+
+    return (int)shapes.size();
+}
+
+ColorPanelLayout
+withFeedback(ColorPanelLayout::Feedback feedback,
+             ColorPanelLayout::Puck puck = ColorPanelLayout::Puck::Relative)
+{
+    ColorPanelLayout l;
+
+    l.feedback = feedback;
+    l.puck = puck;
+
+    return l;
+}
+} // namespace
+
+TEST(ColorTrackballGlobalModeFeedback, OnlyCrosshairFeedbacksShowTheCrosshairAndFollowingHud)
+{
+    typedef ColorPanelLayout::Feedback F;
+
+    EXPECT_FALSE(colorGlobalModeFeedbackShowsCrosshair(F::Today));
+    EXPECT_TRUE(colorGlobalModeFeedbackShowsCrosshair(F::Crosshair));
+    EXPECT_FALSE(colorGlobalModeFeedbackShowsCrosshair(F::Reveal));
+    EXPECT_TRUE(colorGlobalModeFeedbackShowsCrosshair(F::CrosshairReveal));
+    EXPECT_FALSE(colorGlobalModeFeedbackShowsCrosshair(F::WidgetCursor));
+
+    EXPECT_TRUE(colorGlobalModeFeedbackAttachesHud(F::Today));
+    EXPECT_FALSE(colorGlobalModeFeedbackAttachesHud(F::Crosshair));
+    EXPECT_FALSE(colorGlobalModeFeedbackAttachesHud(F::Reveal));
+    EXPECT_FALSE(colorGlobalModeFeedbackAttachesHud(F::CrosshairReveal));
+    EXPECT_FALSE(colorGlobalModeFeedbackAttachesHud(F::WidgetCursor));
+
+    EXPECT_FALSE(colorGlobalModeFeedbackHudFollowsCursor(F::Today));
+    EXPECT_TRUE(colorGlobalModeFeedbackHudFollowsCursor(F::Crosshair));
+    EXPECT_FALSE(colorGlobalModeFeedbackHudFollowsCursor(F::Reveal));
+    EXPECT_TRUE(colorGlobalModeFeedbackHudFollowsCursor(F::CrosshairReveal));
+
+    EXPECT_FALSE(colorPanelFeedbackUsesPuck(F::Today));
+    EXPECT_FALSE(colorPanelFeedbackUsesPuck(F::Crosshair));
+    EXPECT_TRUE(colorPanelFeedbackUsesPuck(F::Reveal));
+    EXPECT_TRUE(colorPanelFeedbackUsesPuck(F::CrosshairReveal));
+    EXPECT_TRUE(colorPanelFeedbackUsesPuck(F::WidgetCursor));
+}
+
+TEST(ColorTrackballGlobalModeFeedback, DefaultsAreTodayAndRelative)
+{
+    ColorPanelLayout l;
+    ColorGlobalModeFeedbackSwitch sw;
+
+    EXPECT_TRUE(l.feedback == ColorPanelLayout::Feedback::Today);
+    EXPECT_TRUE(l.puck == ColorPanelLayout::Puck::Relative);
+    EXPECT_TRUE(sw.getFeedback() == ColorPanelLayout::Feedback::Today);
+    EXPECT_TRUE(sw.getPuck() == ColorPanelLayout::Puck::Relative);
+}
+
+TEST(ColorTrackballGlobalModeFeedback, AChangeOutsideAStrokeAppliesAtOnce)
+{
+    ColorGlobalModeFeedbackSwitch sw;
+
+    EXPECT_TRUE(sw.offer(withFeedback(ColorPanelLayout::Feedback::Crosshair), false));
+    EXPECT_TRUE(sw.getFeedback() == ColorPanelLayout::Feedback::Crosshair);
+    EXPECT_FALSE(sw.offer(withFeedback(ColorPanelLayout::Feedback::Crosshair), false));
+    EXPECT_FALSE(sw.strokeEnded());
+
+    // Another axis changing leaves Feedback and Puck as they were.
+    ColorPanelLayout other = withFeedback(ColorPanelLayout::Feedback::Crosshair);
+
+    other.extendLeft = true;
+    other.placement = ColorPanelLayout::Placement::BinTop;
+    EXPECT_FALSE(sw.offer(other, false));
+
+    EXPECT_TRUE(sw.offer(withFeedback(ColorPanelLayout::Feedback::Crosshair, ColorPanelLayout::Puck::Absolute), false));
+    EXPECT_TRUE(sw.getPuck() == ColorPanelLayout::Puck::Absolute);
+}
+
+TEST(ColorTrackballGlobalModeFeedback, AChangeMidStrokeWaitsForTheStrokeToEnd)
+{
+    ColorGlobalModeFeedbackSwitch sw;
+
+    EXPECT_FALSE(sw.offer(withFeedback(ColorPanelLayout::Feedback::Reveal, ColorPanelLayout::Puck::Absolute), true));
+    EXPECT_TRUE(sw.getFeedback() == ColorPanelLayout::Feedback::Today);
+    EXPECT_TRUE(sw.getPuck() == ColorPanelLayout::Puck::Relative);
+
+    // Only the latest of several mid-stroke changes is kept.
+    EXPECT_FALSE(sw.offer(withFeedback(ColorPanelLayout::Feedback::CrosshairReveal, ColorPanelLayout::Puck::Absolute), true));
+    EXPECT_TRUE(sw.strokeEnded());
+    EXPECT_TRUE(sw.getFeedback() == ColorPanelLayout::Feedback::CrosshairReveal);
+    EXPECT_TRUE(sw.getPuck() == ColorPanelLayout::Puck::Absolute);
+    EXPECT_FALSE(sw.strokeEnded());
+
+    // A value set and then reverted within one stroke leaves nothing to apply at its end.
+    EXPECT_FALSE(sw.offer(withFeedback(ColorPanelLayout::Feedback::Today), true));
+    EXPECT_FALSE(sw.offer(withFeedback(ColorPanelLayout::Feedback::CrosshairReveal, ColorPanelLayout::Puck::Absolute), true));
+    EXPECT_FALSE(sw.strokeEnded());
+    EXPECT_TRUE(sw.getFeedback() == ColorPanelLayout::Feedback::CrosshairReveal);
+}
+
+TEST(ColorTrackballGlobalModeFeedback, CrosshairIsPushedOnceAndRestoredOnce)
+{
+    const int baseline = overrideCursorDepth();
+
+    {
+        ColorGlobalModeOverrideCursor crosshair(Qt::CrossCursor);
+
+        EXPECT_FALSE(crosshair.isHeld());
+        crosshair.setHeld(true);
+        ASSERT_TRUE(QGuiApplication::overrideCursor() != nullptr);
+        EXPECT_EQ(Qt::CrossCursor, QGuiApplication::overrideCursor()->shape());
+        EXPECT_EQ(baseline + 1, overrideCursorDepth());
+
+        // Engage while engaged, then exit followed by a leave for a modal widget.
+        crosshair.setHeld(true);
+        EXPECT_EQ(baseline + 1, overrideCursorDepth());
+        crosshair.setHeld(false);
+        crosshair.setHeld(false);
+        EXPECT_EQ(baseline, overrideCursorDepth());
+
+        // A second engage/exit cycle.
+        crosshair.setHeld(true);
+        EXPECT_EQ(Qt::CrossCursor, QGuiApplication::overrideCursor()->shape());
+        crosshair.setHeld(false);
+        EXPECT_EQ(baseline, overrideCursorDepth());
+
+        // Destroyed while held, as when the Gui goes away mid-session.
+        crosshair.setHeld(true);
+    }
+    EXPECT_EQ(baseline, overrideCursorDepth());
+}
+
+TEST(ColorTrackballGlobalModeFeedback, TodayNeverTouchesTheCursor)
+{
+    const int baseline = overrideCursorDepth();
+    ColorGlobalModeOverrideCursor crosshair(Qt::CrossCursor);
+
+    // What the controller asks for on engage and on exit with Today in effect.
+    crosshair.setHeld(colorGlobalModeFeedbackShowsCrosshair(ColorPanelLayout::Feedback::Today));
+    EXPECT_EQ(baseline, overrideCursorDepth());
+    crosshair.setHeld(false);
+    EXPECT_EQ(baseline, overrideCursorDepth());
+}
+
+TEST(ColorTrackballGlobalModeFeedback, SwitchSettersEmitAndThePuckComboFollowsFeedback)
+{
+    qputenv("NATRON_COLOR_PANEL_DEV", "1");
+    ColorPanelLayoutDev::reloadForTests();
+
+    ColorPanelLayoutDev* dev = ColorPanelLayoutDev::instance();
+    int changes = 0;
+    QObject guard;
+
+    QObject::connect(dev, &ColorPanelLayoutDev::layoutChanged, &guard, [&changes]() {
+        ++changes;
+    });
+    std::unique_ptr<QWidget> bar(ColorPanelLayoutDev::createDevBar(nullptr));
+
+    ASSERT_TRUE(bar != nullptr);
+
+    QComboBox* feedback = bar->findChild<QComboBox*>(QString::fromUtf8("ColorPanelDevFeedback"));
+    QComboBox* puck = bar->findChild<QComboBox*>(QString::fromUtf8("ColorPanelDevPuck"));
+
+    ASSERT_TRUE(feedback != nullptr);
+    ASSERT_TRUE(puck != nullptr);
+    EXPECT_FALSE(puck->isEnabled());
+
+    dev->setFeedback(ColorPanelLayout::Feedback::Crosshair);
+    EXPECT_EQ(1, changes);
+    EXPECT_FALSE(puck->isEnabled());
+    EXPECT_EQ((int)ColorPanelLayout::Feedback::Crosshair, feedback->currentData().toInt());
+
+    dev->setFeedback(ColorPanelLayout::Feedback::Reveal);
+    EXPECT_EQ(2, changes);
+    EXPECT_TRUE(puck->isEnabled());
+
+    dev->setPuck(ColorPanelLayout::Puck::Absolute);
+    EXPECT_EQ(3, changes);
+    EXPECT_EQ((int)ColorPanelLayout::Puck::Absolute, puck->currentData().toInt());
+    dev->setPuck(ColorPanelLayout::Puck::Absolute);
+    EXPECT_EQ(3, changes);
+
+    // The bar's own combo drives the switch.
+    feedback->setCurrentIndex(feedback->findData((int)ColorPanelLayout::Feedback::Today));
+    EXPECT_TRUE(dev->getLayout().feedback == ColorPanelLayout::Feedback::Today);
+    EXPECT_FALSE(puck->isEnabled());
+
+    bar.reset();
+    dev->setLayout(ColorPanelLayout());
+    qunsetenv("NATRON_COLOR_PANEL_DEV");
+    ColorPanelLayoutDev::reloadForTests();
 }

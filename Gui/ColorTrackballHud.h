@@ -30,7 +30,10 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QPoint>
 #include <QPointer>
+#include <QRect>
+#include <QSize>
 #include <QString>
 #include <QWidget>
 CLANG_DIAG_ON(deprecated)
@@ -77,6 +80,13 @@ struct ColorTrackballHudState {
 };
 
 /**
+ * @brief Where a HUD of hudSize following the pointer at cursor goes: offset below and to the
+ * right of it, or on the other side of it on any axis where that would leave screen, and in
+ * any case kept on screen. An empty screen leaves just the offset applied.
+ **/
+QPoint colorTrackballHudFollowPosition(const QPoint& cursor, const QSize& hudSize, const QRect& screen, const QPoint& offset);
+
+/**
  * @brief The global trackball mode's own readout, inserted into the target knob's own column
  * in the properties bin, under its channel lines, so it scrolls with the knob: the node and
  * knob (n/N), the mode
@@ -101,7 +111,33 @@ public:
 
     void setState(const ColorTrackballHudState& state);
 
+    /**
+     * @brief The flags the HUD's own window has while it follows the cursor: a frameless tool
+     * window on top of everything that never takes focus or input.
+     **/
+    static Qt::WindowFlags followCursorWindowFlags();
+
+    /**
+     * @brief Turns the HUD into a window of its own that followCursorTo() places by the
+     * pointer, or back into a plain parentless widget ready to be attached to a knob's column.
+     * Either way it is taken out of any layout it was in and left hidden.
+     **/
+    void setFollowCursor(bool follow);
+
+    bool isFollowingCursor() const
+    {
+        return _followCursor;
+    }
+
+    /**
+     * @brief Places the following HUD by the pointer at globalCursor, by
+     * colorTrackballHudFollowPosition() on the screen holding it. Ignored when not following.
+     **/
+    void followCursorTo(const QPoint& globalCursor);
+
 private:
+    void placeByCursor();
+
     static QString modeAxesDescription(ColorGlobalModeEnum mode);
     static void setLegendLit(QLabel* label, bool lit);
 
@@ -113,6 +149,8 @@ private:
     QLabel* _legendT;
     QLabel* _legendV;
     QLabel* _endOfListLabel;
+    bool _followCursor;
+    QPoint _cursor;
 };
 
 /**

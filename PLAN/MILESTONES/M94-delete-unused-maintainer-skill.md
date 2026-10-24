@@ -13,7 +13,7 @@ drift problem, delete it rather than maintain it.
 
 ## Phase 94.1: Remove the directory
 
-- [ ] M94.P1.T1 — Delete the skills/ directory
+- [x] M94.P1.T1 — Delete the skills/ directory
   - files: `skills/natron-maintainer/SKILL.md` (and the now-empty `skills/`
     directory)
   - approach: `git rm -r skills/`. Before removing, grep the tracked tree
@@ -34,3 +34,7 @@ drift problem, delete it rather than maintain it.
 file outside `.plan/` and `docs/decisions/` references
 `skills/natron-maintainer`; a clean build is unaffected (no build input
 depended on it).
+
+## Decisions
+
+- 2026-10-24 — **Delete rather than maintain `skills/natron-maintainer` (PM):** this reverses M12.P1.T1's "fix, don't delete" call. Its premise was that the file is read as live agent instruction, which doesn't hold here: there is no `CLAUDE.md`, no `.claude/` and no auto-discovery, so nothing loads it, and it had gone stale again. No tracked file outside `docs/decisions/` referenced it. Done in 7001de23b.

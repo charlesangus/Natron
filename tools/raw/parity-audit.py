@@ -6,11 +6,16 @@ input-profile list, and the hand list of GUI-only controls in darktable-parity.j
 darktable-parity.json maps each item to a node knob or option with darktable's default, to N/A with
 a reason, or to DEFERRED. An item without an entry is MISSING.
 
-Usage: python3 -I tools/raw/parity-audit.py [--darktable-ref DIR] [--mapping FILE]
+Knobs and options a node has beyond darktable's are EXTRA, each with a reason in the mapping's
+"extras". With --write-docs the script rewrites the "darktable controls" section of each node's
+Engine/Nodes/Raw/docs/<node>.md from the same rows; without it a stale section is a problem.
+
+Usage: python3 -I tools/raw/parity-audit.py [--darktable-ref DIR] [--mapping FILE] [--write-docs]
 
 DARKTABLE_REF (environment variable or --darktable-ref) defaults to /tmp/dt-src-562, then
-build/darktable-src. The exit status is non-zero on any MISSING row and on any mapped knob or option
-that the sources under Engine/Nodes/Raw do not define.
+build/darktable-src. The exit status is non-zero on any MISSING row, on any mapped knob or option
+that the sources under Engine/Nodes/Raw do not define, on a node knob neither mapped nor listed as
+EXTRA, and on a stale docs section.
 """
 
 import argparse
@@ -23,6 +28,8 @@ from collections import OrderedDict
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 NODE_DIR = os.path.join(REPO, "Engine", "Nodes", "Raw")
+DOCS_DIR = os.path.join(NODE_DIR, "docs")
+DOCS_HEADING = "## darktable controls"
 
 # darktable module -> the node that ports it (file stem under Engine/Nodes/Raw)
 MODULES = OrderedDict([
@@ -72,9 +79,10 @@ class Item:
 
 
 def parse_params(module, text):
-    """Fields of dt_iop_<module>_params_t: [(name, type, default, description)]."""
-    match = re.search(r"typedef struct dt_iop_%s_params_t\s*\{(.*?)\}\s*dt_iop_%s_params_t;" % (module, module),
-                      text, re.S)
+    """Fields of the module's introspected params struct: [(name, type, default, description)]."""
+    introspection = re.search(r"DT_MODULE_INTROSPECTION\(\s*\d+\s*,\s*(\w+)\s*\)", text)
+    struct = introspection.group(1) if introspection else "dt_iop_%s_params_t" % module
+    match = re.search(r"typedef struct %s\s*\{(.*?)\}\s*%s;" % (struct, struct), text, re.S)
     if not match:
         return []
     fields = []
@@ -169,18 +177,19 @@ def node_literals(module):
     if not os.path.isdir(NODE_DIR):
         return literals, names
     for filename in sorted(os.listdir(NODE_DIR)):
-        if not (filename.startswith(stem + ".") or filename.startswith(stem + "Kernel")):
+        if not filename.startswith(stem):
             continue
         if not filename.endswith((".h", ".cpp", ".inc")):
             continue
         text = read(os.path.join(NODE_DIR, filename))
-        literals.update(re.findall(r'"([^"\\]*)"', text))
-        names.update(re.findall(r'#define\s+kRaw\w*Param\w*\s+"([^"]+)"', text))
+        literals.update(re.findall(r'"((?:[^"\\\n]|\\.)*)"', text))
+        names.update(re.findall(r'#define\s+kRaw\w*(?:Param|Tab)\w*\s+"([^"]+)"', text))
         names.update(re.findall(r'setName\(\s*"([^"]+)"\s*\)', text))
     return literals, names
 
 
 DENOISE_NAME = re.compile(r"^strength(All|Red|Green|Blue)(Coarsest|Coarse|Medium|Fine|Finest)$")
+CALIBRATION_ROW_NAME = re.compile(r"^(red|green|blue|saturation|lightness|grey)(R|G|B|Normalize)$")
 
 
 def knob_defined(module, knob, names, literals):
@@ -190,7 +199,70 @@ def knob_defined(module, knob, names, literals):
     if module == "rawdenoise" and DENOISE_NAME.match(knob):
         channel, band = DENOISE_NAME.match(knob).groups()
         return {"strength", channel, band} <= literals
+    # RawColorCalibration names a row's knobs row + channel, and its toggle row + "Normalize".
+    if module == "channelmixerrgb" and CALIBRATION_ROW_NAME.match(knob):
+        row, suffix = CALIBRATION_ROW_NAME.match(knob).groups()
+        return row in names and (suffix in literals or suffix in names)
     return False
+
+
+# Name fragments the node composes into knob names (see knob_defined); they name no knob.
+NAME_FRAGMENTS = {
+    "channelmixerrgb": {"red", "green", "blue", "saturation", "lightness", "grey", "Normalize"},
+}
+
+
+def check_ref(module, knob, option, cache):
+    if module not in cache:
+        cache[module] = node_literals(module)
+    literals, names = cache[module]
+    if not knob_defined(module, knob, names, literals):
+        return "knob '%s' is not defined in %s" % (knob, MODULES[module])
+    if option and option not in literals:
+        return "option '%s' of knob '%s' is not in %s" % (option, knob, MODULES[module])
+    return None
+
+
+def entry_refs(entry):
+    return entry.get("targets") or [{"knob": entry.get("knob"), "option": entry.get("option")}]
+
+
+def check_extras(mapping, cache):
+    """The EXTRA rows [(module, knob, option, reason)] and their problems."""
+    rows = []
+    problems = []
+    referenced = {}
+    for key, entry in mapping.get("entries", {}).items():
+        if entry.get("status") == "mapped":
+            for ref in entry_refs(entry):
+                referenced.setdefault(key.split("|")[0], set()).add(ref.get("knob"))
+    extras = mapping.get("extras", {})
+    listed = {}
+    for key, reason in extras.items():
+        module, _, target = key.partition("|")
+        knob, _, option = target.partition("=")
+        if module not in MODULES:
+            problems.append("extras %s: no such module" % key)
+            continue
+        if not reason:
+            problems.append("extras %s: EXTRA has no reason" % key)
+        problem = check_ref(module, knob, option or None, cache)
+        if problem:
+            problems.append("extras %s: %s" % (key, problem))
+        listed.setdefault(module, set()).add(knob)
+        rows.append((module, knob, option or None, reason))
+    for module in MODULES:
+        if module not in cache:
+            cache[module] = node_literals(module)
+        _, names = cache[module]
+        for name in sorted(names):
+            if name in referenced.get(module, set()) or name in listed.get(module, set()):
+                continue
+            if name in NAME_FRAGMENTS.get(module, set()):
+                continue
+            problems.append("%s: knob '%s' of %s is neither mapped nor an EXTRA with a reason"
+                            % (module, name, MODULES[module]))
+    return rows, problems
 
 
 def check_entry(item, entry, cache):
@@ -203,31 +275,30 @@ def check_entry(item, entry, cache):
         if not entry.get("reason"):
             problems.append("%s has no reason" % status)
         return problems
-    refs = entry.get("targets") or [{"knob": entry.get("knob"), "option": entry.get("option")}]
-    if item.module not in cache:
-        cache[item.module] = node_literals(item.module)
-    literals, names = cache[item.module]
-    for ref in refs:
+    for ref in entry_refs(entry):
         knob = ref.get("knob")
-        option = ref.get("option")
         if not knob:
             problems.append("mapped without a knob")
             continue
-        if not knob_defined(item.module, knob, names, literals):
-            problems.append("knob '%s' is not defined in %s" % (knob, MODULES[item.module]))
-        elif option and option not in literals:
-            problems.append("option '%s' of knob '%s' is not in %s" % (option, knob, MODULES[item.module]))
+        problem = check_ref(item.module, knob, ref.get("option"), cache)
+        if problem:
+            problems.append(problem)
+        expect = ref.get("expect", entry.get("expect"))
+        if isinstance(expect, str) and not problem:
+            problem = check_ref(item.module, knob, expect, cache)
+            if problem:
+                problems.append("expected " + problem)
     return problems
 
 
-def natron_text(entry):
+def natron_text(entry, full=False):
     if entry.get("status") != "mapped":
         return "%s: %s" % (entry["status"], entry.get("reason", ""))
-    refs = entry.get("targets") or [{"knob": entry.get("knob"), "option": entry.get("option")}]
+    refs = entry_refs(entry)
     parts = []
     for ref in refs:
         parts.append("%s=%s" % (ref["knob"], ref["option"]) if ref.get("option") else ref["knob"])
-    if len(parts) > 3:
+    if len(parts) > 3 and not full:
         parts = parts[:2] + ["... (%d knobs)" % len(refs)]
     text = ", ".join(parts)
     if entry.get("note"):
@@ -240,16 +311,89 @@ def default_text(item):
     dt_default = item.dt_default
     if entry and entry.get("default") is not None:
         dt_default = str(entry["default"])
-    text = dt_default or ""
-    if entry and entry.get("natron_default") is not None:
-        text += " [Natron: %s]" % entry["natron_default"]
-    return text
+    return dt_default or ""
+
+
+def value_text(value):
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return str(value)
+
+
+def natron_default_text(entry):
+    """The node's default: the documented one, the image's, or the knobs' static 'expect'."""
+    if not entry or entry.get("status") != "mapped":
+        return ""
+    if entry.get("natron_default") is not None:
+        return str(entry["natron_default"])
+    if entry.get("file"):
+        return "from the image"
+    if "expect" in entry:
+        return value_text(entry["expect"])
+    values = [value_text(ref["expect"]) for ref in entry_refs(entry) if "expect" in ref]
+    return ", ".join(values)
+
+
+def cell(text):
+    return str(text).replace("|", "/")
+
+
+def docs_section(module, items, extras):
+    lines = [DOCS_HEADING, "",
+             "Generated by `python3 -I tools/raw/parity-audit.py --write-docs` from",
+             "`tools/raw/darktable-parity.json`: every control of darktable's `%s` and where it is here." % module,
+             "",
+             "| darktable item | Natron knob/option | darktable default | Natron default | status |",
+             "| --- | --- | --- | --- | --- |"]
+    for item in items:
+        if item.module != module:
+            continue
+        natron = natron_text(item.entry, full=True) if item.entry else ""
+        lines.append("| %s | %s | %s | %s | %s |" % (cell(item.label), cell(natron), cell(default_text(item)),
+                                                    cell(natron_default_text(item.entry)), item.status))
+    for extra_module, knob, option, reason in extras:
+        if extra_module == module:
+            lines.append("| | %s | | | EXTRA: %s |" % (cell("%s=%s" % (knob, option) if option else knob), cell(reason)))
+    return "\n".join(lines) + "\n"
+
+
+def splice_docs(text, section):
+    """text with its darktable controls section, up to the next level-2 heading, replaced."""
+    start = text.find("\n" + DOCS_HEADING + "\n")
+    if start < 0:
+        return text.rstrip("\n") + "\n\n" + section
+    start += 1
+    following = text.find("\n## ", start + len(DOCS_HEADING))
+    rest = text[following + 1:] if following >= 0 else ""
+    return text[:start] + section + ("\n" + rest if rest else "")
+
+
+def sync_docs(items, extras, write):
+    """The docs files whose section is stale; with write, rewrites them instead."""
+    stale = []
+    for module, stem in MODULES.items():
+        path = os.path.join(DOCS_DIR, stem + ".md")
+        if not os.path.isfile(path):
+            stale.append("%s: no %s" % (module, os.path.relpath(path, REPO)))
+            continue
+        text = read(path)
+        updated = splice_docs(text, docs_section(module, items, extras))
+        if updated == text:
+            continue
+        if write:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(updated)
+        else:
+            stale.append("%s: the darktable controls section is stale (run with --write-docs)"
+                         % os.path.relpath(path, REPO))
+    return stale
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--darktable-ref", default=None)
     parser.add_argument("--mapping", default=os.path.join(HERE, "darktable-parity.json"))
+    parser.add_argument("--write-docs", action="store_true")
     args = parser.parse_args()
 
     ref = find_ref(args.darktable_ref)
@@ -274,24 +418,29 @@ def main():
     for key in entries:
         if key not in used:
             problems.append("%s: no such darktable item (stale mapping)" % key)
+    extras, extra_problems = check_extras(mapping, cache)
+    problems += extra_problems
+    problems += sync_docs(items, extras, args.write_docs)
 
     print("darktable source: %s\n" % ref)
-    print("| module | darktable item | Natron knob/option | default | status |")
-    print("|---|---|---|---|---|")
+    print("| module | darktable item | Natron knob/option | darktable default | Natron default | status |")
+    print("|---|---|---|---|---|---|")
     for item in items:
         natron = natron_text(item.entry) if item.entry else ""
-        print("| %s | %s | %s | %s | %s |" % (item.module, item.label.replace("|", "/"),
-                                              natron.replace("|", "/"),
-                                              default_text(item).replace("|", "/"), item.status))
+        print("| %s | %s | %s | %s | %s | %s |" % (item.module, cell(item.label), cell(natron), cell(default_text(item)),
+                                                   cell(natron_default_text(item.entry)), item.status))
+    for module, knob, option, reason in extras:
+        print("| %s | | %s | | | EXTRA: %s |" % (module, cell("%s=%s" % (knob, option) if option else knob), cell(reason)))
 
-    print("\n| module | mapped | N/A | DEFERRED | MISSING | BAD |")
-    print("|---|---|---|---|---|---|")
-    total = OrderedDict((s, 0) for s in ("mapped", "N/A", "DEFERRED", "MISSING", "BAD"))
+    print("\n| module | mapped | N/A | DEFERRED | MISSING | BAD | EXTRA |")
+    print("|---|---|---|---|---|---|---|")
+    total = OrderedDict((s, 0) for s in ("mapped", "N/A", "DEFERRED", "MISSING", "BAD", "EXTRA"))
     for module in MODULES:
         counts = OrderedDict((s, 0) for s in total)
         for item in items:
             if item.module == module:
                 counts[item.status] += 1
+        counts["EXTRA"] = sum(1 for row in extras if row[0] == module)
         for status in total:
             total[status] += counts[status]
         print("| %s | %s |" % (module, " | ".join(str(counts[s]) for s in total)))

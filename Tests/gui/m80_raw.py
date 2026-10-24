@@ -19,8 +19,8 @@ and then:
 Without the fixtures (a checkout without Git LFS has pointer files) the dropped file is an empty
 .cr2 and those sections are skipped.
 
-Raw data keeps the units of the file, so a Read or a RawToImage shows white at the viewer's
-default gain; each is shown again with the gain lowered to the 16-bit range (the *-gain.png shots).
+The Viewer scales a raw-stage edge to 0-1 for display (black and white levels from its metadata),
+so a Read shows a visible mosaic at the default gain; RawToImage keeps the sensor's values.
 The demosaic methods are shown at 200%.
 
 Shots, under $NATRON_GUI_TEST_OUT: m80-develop-raw.png and m80-develop-all.png (the node graph),
@@ -29,7 +29,6 @@ m80-panel-<node>.png (each panel).
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m80_raw.py
 """
-import math
 import os
 import re
 import sys
@@ -497,19 +496,14 @@ try:
                 check(info_line_has(mode), "%s: the info line reads %s (%r)" % (label, mode, info_line_texts()))
                 white = chain[0].getParam("whiteLevel").getValue()
                 report("NOTE %s: RawPrepare's white level knob %r" % (label, white))
-                stops = -math.log2(white) if white > 1 else -14.0
-                set_gain(stops)
-                yield ("sleep", 1500)
-                yield from wait_render(None, 30.0)
+                check(white > 1 and white != 65535, "%s: RawPrepare's white level knob shows the file's value (%r)" % (label, white))
                 samples = viewer_samples()
-                st = stats(samples)
-                report("NOTE %s at %.1f f-stops: mean RGB %r, chroma %.3f, luma spread %d" % (label, stops, st["mean"], st["chroma"], luma_spread(samples)))
+                report("NOTE %s at gain 0: mean RGB %r, chroma %.3f, luma spread %d" % (label, st["mean"], st["chroma"], luma_spread(samples)))
+                check(sum(st["mean"]) / 3.0 < 245, "%s: scaled to 0-1 by the Viewer, not blown out to white at gain 0 (mean %r)" % (label, st["mean"]))
                 if mode == "RAW mosaic":
-                    check(greyscale(st) and luma_spread(samples) > 10, "%s: scaled to its white level, the mosaic shows as a grey picture" % label)
+                    check(greyscale(st) and luma_spread(samples) > 10, "%s: the mosaic shows as a visible grey picture at gain 0" % label)
                 else:
-                    check(st["chroma"] > 0.02, "%s: scaled to its white level, the linear raw shows three channels" % label)
-                gt.shot(shot + "-gain.png")
-                set_gain(0.0)
+                    check(st["chroma"] > 0.02, "%s: the linear raw shows three channels at gain 0" % label)
             st = yield from view(cr2_chain[2], "CR2 RawHighlights", "m80-viewer-highlights-mosaic.png")
             check(info_line_has("RAW mosaic"), "CR2 RawHighlights: a raw edge mid-chain reads RAW mosaic (%r)" % info_line_texts())
             check(greyscale(st) and st["spread"] <= 3, "CR2 RawHighlights: the white-balanced mosaic still shows as grey")

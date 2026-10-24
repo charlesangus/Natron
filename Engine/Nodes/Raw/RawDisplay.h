@@ -28,7 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <optional>
+#include <vector>
+
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/RectI.h"
 
@@ -36,7 +40,7 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief How raw data is shown as an image, shared by the Viewer and RawToImage: the values are
- * kept as they are, with no demosaic, scaling or colour. A mosaic, one value per photosite,
+ * kept as they are, with no demosaic or colour, and scaled only when a Normalisation is given. A mosaic, one value per photosite,
  * becomes grey (red, green and blue all the photosite's value); linear raw keeps its channels,
  * a single one again as grey. Alpha is 1.
  **/
@@ -53,6 +57,27 @@ enum ModeEnum {
  **/
 ModeEnum modeOf(const ImageMetadata& metadata,
                 int nComps);
+
+/**
+ * @brief What the Viewer subtracts and divides by to show a raw-stage stream between 0 and 1: the
+ * black level of each photosite's colour (of each channel without a CFA) and the span up to the
+ * white level.
+ **/
+struct Normalisation {
+    RawLayout layout;
+    std::vector<double> black;
+    double white = 1.;
+
+    double blackAt(int x,
+                   int y,
+                   int channel) const;
+};
+
+/**
+ * @brief The normalisation of a raw-stage stream with a white level, nullopt for a prepared
+ * stream (already between 0 and 1) or when the metadata is missing.
+ **/
+std::optional<Normalisation> normalisationOf(const ImageMetadata& metadata);
 
 /**
  * @brief "RAW mosaic" or "RAW linear", the Viewer's info line for raw input.
@@ -83,16 +108,19 @@ toRgba(const float* raw,
  * @brief Writes window of dst, a float image of 1 to 4 channels, from the raw float image src:
  * channel c of each pixel is channel c of toRgba() (a one-channel dst gets the alpha, 1, as
  * Natron's one-channel images are alpha). A pixel src does not cover reads as zero, alpha
- * included.
+ * included. With a normalisation, each source value is first taken to (value - black) / (white -
+ * black); RawToImage passes none, to keep the sensor's values.
  **/
 void convert(const Image& src,
              Image* dst,
-             const RectI& window);
+             const RectI& window,
+             const Normalisation* normalisation = nullptr);
 
 /**
  * @brief An RGBA float image over src's bounds, converted from src by convert().
  **/
-ImagePtr toDisplayImage(const ImagePtr& src);
+ImagePtr toDisplayImage(const ImagePtr& src,
+                        const Normalisation* normalisation = nullptr);
 } // namespace RawDisplay
 
 NATRON_NAMESPACE_EXIT

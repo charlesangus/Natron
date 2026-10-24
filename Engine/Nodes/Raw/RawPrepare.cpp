@@ -161,6 +161,8 @@ RawPrepare::initializeKnobs()
     whiteLevel->setMinimum(0.);
     whiteLevel->setDisplayMinimum(0.);
     whiteLevel->setDisplayMaximum(65535.);
+    whiteLevel->setDecimals(0);
+    whiteLevel->setIncrement(1.);
     page->addKnob(whiteLevel);
     _whiteLevel = whiteLevel;
 
@@ -223,9 +225,46 @@ RawPrepare::refreshOverrides()
 }
 
 void
+RawPrepare::showSourceLevels(double time)
+{
+    const KnobBoolPtr blackOverride = _blackOverride.lock();
+    const KnobBoolPtr whiteOverride = _whiteOverride.lock();
+    const bool showBlack = blackOverride && !blackOverride->getValue();
+    const bool showWhite = whiteOverride && !whiteOverride->getValue();
+
+    if (!showBlack && !showWhite) {
+        return;
+    }
+    const ImageMetadata source = getSourceMetadata(time, ViewIdx(0));
+    if (showBlack) {
+        const std::optional<std::vector<double>> levels = RawMetadata::getBlackLevels(source);
+        KnobDoublePtr knob = _blackLevels.lock();
+        if (levels && knob) {
+            for (int i = 0; i < 4; ++i) {
+                knob->setValue((*levels)[(std::size_t)i % levels->size()], ViewSpec::all(), i);
+            }
+        }
+    }
+    if (showWhite) {
+        const std::optional<double> white = RawMetadata::getWhiteLevel(source);
+        KnobDoublePtr knob = _whiteLevel.lock();
+        if (white && knob) {
+            knob->setValue(*white);
+        }
+    }
+}
+
+void
+RawPrepare::onInputChanged(int /*inputNo*/)
+{
+    showSourceLevels(getCurrentTime());
+}
+
+void
 RawPrepare::onKnobsLoaded()
 {
     refreshOverrides();
+    showSourceLevels(getCurrentTime());
 }
 
 bool
@@ -244,6 +283,9 @@ RawPrepare::knobChanged(KnobI* k,
         return false;
     }
     refreshOverrides();
+    if (!static_cast<KnobBool*>(k)->getValue()) {
+        showSourceLevels(time);
+    }
     // Turning an override on in the interface starts it from what the raw file says, which the
     // user then edits; a script or a project load sets the values it wants itself.
     if (((reason != eValueChangedReasonUserEdited) && (reason != eValueChangedReasonNatronGuiEdited)) || !static_cast<KnobBool*>(k)->getValue()) {

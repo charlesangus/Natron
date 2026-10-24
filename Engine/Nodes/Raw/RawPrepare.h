@@ -121,6 +121,8 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
@@ -154,6 +156,9 @@ private:
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void refreshOverrides();
+
+    // While an override is off its knobs show the source's value, which is what a render uses.
+    void showSourceLevels(double time);
 
     KnobBoolWPtr _blackOverride;
     KnobDoubleWPtr _blackLevels;

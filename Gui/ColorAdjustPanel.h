@@ -143,6 +143,12 @@ public:
 Q_SIGNALS:
     void valuesEdited(KnobColorValue value, ColorAdjustPanel::GesturePhaseEnum phase, QString undoLabel);
 
+    /**
+     * @brief The width at which the wheel is still as tall as the lines and the lines still have
+     * their minimum width, whatever width the panel has now.
+     **/
+    virtual QSize minimumSizeHint() const OVERRIDE;
+
 protected:
     virtual void resizeEvent(QResizeEvent* e) OVERRIDE;
 

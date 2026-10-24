@@ -384,6 +384,58 @@ TEST_F(KnobGuiColorWheelWidth, AtANarrowWidthTheWheelIsAsTallAsTheSliderColumn)
     EXPECT_EQ(panel()->contentsRect().left(), rectIn(wheel(), panel()).left());
 }
 
+TEST_F(KnobGuiColorWheelWidth, WhenTheColumnHeightAndTheLinesCannotBothFitThePanelReportsTheWidthThatDoes)
+{
+    build(200);
+    setWheelWidth(Settings::eColorTrackballWheelWidthFifth);
+    setExpanded(true);
+    ASSERT_TRUE(panel()->isVisible());
+
+    QGridLayout* lines = qobject_cast<QGridLayout*>(panel()->getSpinBox(eColorSliderKindHue)->parentWidget()->layout());
+    ASSERT_TRUE(lines);
+
+    int fieldWidth = 0;
+    int trackWidth = 0;
+    for (ColorSliderKindEnum kind : kKinds) {
+        fieldWidth = std::max(fieldWidth, panel()->getSpinBox(kind)->minimumWidth());
+        trackWidth = std::max(trackWidth, panel()->getCustomSlider(kind)->minimumSizeHint().width());
+    }
+    QWidget* caption = lines->itemAtPosition(0, 0)->widget();
+    ASSERT_TRUE(caption);
+    const int linesMinimum = caption->minimumWidth() + fieldWidth + 2 * lines->horizontalSpacing() + trackWidth;
+    const int spacing = panel()->getEditArea()->layout()->spacing();
+    const int columnHeight = sliderColumn().height();
+
+    ASSERT_GT(columnHeight, _page->width() - spacing - linesMinimum) << "the fixture must be over-constrained";
+    EXPECT_GE(wheel()->height(), columnHeight - 2);
+
+    const int expectedMinimum = wheel()->height() + spacing + linesMinimum;
+    const int minimum = panel()->minimumSizeHint().width();
+
+    EXPECT_NEAR(expectedMinimum, minimum, 2);
+    EXPECT_GT(minimum, _page->width());
+
+    // Given the minimum, the lines sit right of the wheel and inside the panel.
+    _page->setFixedWidth(minimum + blockPadX() + 1);
+    settle();
+
+    EXPECT_GE(panel()->width(), minimum);
+    EXPECT_GE(wheel()->height(), columnHeight - 2);
+    EXPECT_EQ(wheel()->width(), wheel()->height());
+    const QRect wheelRect = rectIn(wheel(), panel());
+    const QRect bounds(QPoint(0, 0), panel()->size());
+    for (ColorSliderKindEnum kind : kKinds) {
+        QWidget* widgets[] = { panel()->getCustomSlider(kind), panel()->getSpinBox(kind) };
+        for (QWidget* w : widgets) {
+            ASSERT_TRUE(w);
+            const QRect r = rectIn(w, panel());
+            EXPECT_GT(r.left(), wheelRect.right());
+            EXPECT_TRUE(bounds.contains(r)) << "a line must not clip outside the panel";
+            EXPECT_GE(w->width(), w->minimumSizeHint().width());
+        }
+    }
+}
+
 TEST_F(KnobGuiColorWheelWidth, TheOpenToggleIsTheClosedIconFlippedAndNeverASwatch)
 {
     build(600);

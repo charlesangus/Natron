@@ -38,6 +38,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QMargins>
 #include <QResizeEvent>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
@@ -317,6 +318,8 @@ struct ColorAdjustPanelPrivate {
     void connectEditArea();
     void updateWheelSize();
     int linesMinimumWidth(int trackWidth) const;
+    int shortestTrackWidth() const;
+    int minimumPanelWidth() const;
 
     int sliderIndex(const QObject* s) const;
     int spinBoxIndex(const QObject* s) const;
@@ -438,25 +441,46 @@ ColorAdjustPanelPrivate::linesMinimumWidth(int trackWidth) const
     return captionWidth + fieldWidth + 2 * linesLayout->horizontalSpacing() + trackWidth;
 }
 
-// The wheel takes its share of the width, but never less than the lines' height. It also never
-// takes so much that the lines lose their caption, field and shortest track: a minimum width
-// that grew with the panel's own width would hold the panel wider than its parent gives it.
-void
-ColorAdjustPanelPrivate::updateWheelSize()
+int
+ColorAdjustPanelPrivate::shortestTrackWidth() const
 {
-    QHBoxLayout* areaLayout = qobject_cast<QHBoxLayout*>(editArea->layout());
     int trackWidth = 0;
 
     for (int i = 0; i < kLineCount; ++i) {
         trackWidth = std::max(trackWidth, customSliders[i]->minimumSizeHint().width());
     }
 
+    return trackWidth;
+}
+
+// The narrowest the panel can be without the wheel dropping below the lines' height or the
+// lines below their minimum. It does not depend on the wheel's current size, which follows the
+// panel's width.
+int
+ColorAdjustPanelPrivate::minimumPanelWidth() const
+{
+    QHBoxLayout* areaLayout = qobject_cast<QHBoxLayout*>(editArea->layout());
+    const int spacing = areaLayout ? areaLayout->spacing() : 0;
+    const int columnHeight = linesArea->sizeHint().height();
+
+    return std::max(columnHeight, 1) + spacing + linesMinimumWidth(shortestTrackWidth());
+}
+
+// The wheel takes its share of the width, but never less than the lines' height. It also never
+// takes so much that the lines lose their caption, field and shortest track: a minimum width
+// that grew with the panel's own width would hold the panel wider than its parent gives it. When
+// the lines' height and their minimum width do not both fit, minimumSizeHint() reports the width
+// that does, so the parent scrolls rather than squeezing the lines.
+void
+ColorAdjustPanelPrivate::updateWheelSize()
+{
+    QHBoxLayout* areaLayout = qobject_cast<QHBoxLayout*>(editArea->layout());
     const int width = q->contentsRect().width();
     const int spacing = areaLayout ? areaLayout->spacing() : 0;
     const int columnHeight = linesArea->sizeHint().height();
     int diameter = (int)std::floor(width * wheelFraction + 0.5);
 
-    diameter = std::min(diameter, width - spacing - linesMinimumWidth(trackWidth));
+    diameter = std::min(diameter, width - spacing - linesMinimumWidth(shortestTrackWidth()));
     diameter = std::max(diameter, std::max(columnHeight, 1));
     wheel->setFixedSize(diameter, diameter);
 }
@@ -981,6 +1005,15 @@ ColorAdjustPanel::setDisplayConverter(const DisplayConverter& converter)
     _imp->converter = converter;
     _imp->wheel->setDisplayConverter(converter);
     _imp->refreshGradients();
+}
+
+QSize
+ColorAdjustPanel::minimumSizeHint() const
+{
+    const QSize hint = QWidget::minimumSizeHint();
+    const QMargins m = contentsMargins();
+
+    return QSize(_imp->minimumPanelWidth() + m.left() + m.right(), hint.height());
 }
 
 void

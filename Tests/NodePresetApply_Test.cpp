@@ -40,12 +40,15 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Project.h"
+#include "Engine/RotoContext.h"
+#include "Engine/RotoDrawableItem.h"
 #include "Engine/ViewIdx.h"
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/Yaml/PresetYaml.h"
 
 #include <ofxImageEffect.h>
+#include <ofxNatron.h>
 
 NATRON_NAMESPACE_USING
 
@@ -97,6 +100,32 @@ protected:
         EXPECT_EQ((std::size_t)1, decoded.size());
 
         return decoded.empty() ? Serialization::NodeSerialization() : *decoded.front();
+    }
+
+    static bool carries(const Serialization::NodeSerialization& preset,
+                        const std::string& name)
+    {
+        for (std::list<Serialization::KnobSerialization>::const_iterator it = preset.knobs.begin(); it != preset.knobs.end(); ++it) {
+            if (it->name == name) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    static bool carriesUserKnob(const Serialization::NodeSerialization& preset,
+                                const std::string& name)
+    {
+        for (std::list<Serialization::GroupKnobSerialization>::const_iterator page = preset.userPages.begin(); page != preset.userPages.end(); ++page) {
+            for (std::list<Serialization::GroupKnobChildSerialization>::const_iterator it = page->children.begin(); it != page->children.end(); ++it) {
+                if (!it->isGroup && (it->knob.name == name)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     template <class K>
@@ -186,38 +215,90 @@ TEST_F(NodePresetApply, APresetFromADefaultNodeResetsKeyframesExpressionsLinksAn
     EXPECT_TRUE(created.empty());
 }
 
-TEST_F(NodePresetApply, APresetKeepsTheLabelDisableSwitchAndUserKnobs)
+TEST_F(NodePresetApply, APresetKeepsTheLabelDisableSwitchAndUserKnobsItCarriesOtherValuesFor)
 {
     NodePtr source = createBlur();
     NodePtr linkSource = createBlur();
     NodePtr target = createBlur();
     ASSERT_TRUE(source && linkSource && target);
     ASSERT_NO_FATAL_FAILURE(modifyTarget(target, linkSource));
+    knob<KnobBool>(source, kDisableNodeKnobName)->setValue(true);
+    knob<KnobBool>(target, kDisableNodeKnobName)->setValue(false);
+    knob<KnobString>(source, kUserLabelKnobName)->setValue(std::string("preset label"));
+    ASSERT_TRUE(bool(addUserDouble(source, kOwnUserKnob, 7.)));
     KnobDoublePtr own = addUserDouble(target, kOwnUserKnob, 2.);
     ASSERT_TRUE(bool(own));
 
+    const Serialization::NodeSerialization preset = presetFileOf(snapshot(source));
+    ASSERT_TRUE(carries(preset, kDisableNodeKnobName));
+    ASSERT_TRUE(carries(preset, kUserLabelKnobName));
+    ASSERT_TRUE(carriesUserKnob(preset, kOwnUserKnob));
     std::list<KnobIPtr> created;
-    target->applyPresetSerialization(presetFileOf(snapshot(source)), Node::ePresetApplyModePreset, &created);
+    target->applyPresetSerialization(preset, Node::ePresetApplyModePreset, &created);
 
-    EXPECT_TRUE(knob<KnobBool>(target, kDisableNodeKnobName)->getValue());
+    EXPECT_FALSE(knob<KnobBool>(target, kDisableNodeKnobName)->getValue());
     EXPECT_EQ(std::string("kept label"), knob<KnobString>(target, kUserLabelKnobName)->getValue());
     KnobDoublePtr ownAfter = knob<KnobDouble>(target, kOwnUserKnob);
     ASSERT_TRUE(bool(ownAfter));
+    EXPECT_EQ(own, ownAfter);
     EXPECT_DOUBLE_EQ(2., ownAfter->getValue());
+    EXPECT_TRUE(created.empty());
 }
 
-TEST_F(NodePresetApply, APresetKeepsAWritersFile)
+TEST_F(NodePresetApply, APresetKeepsAWritersFileSublabelLabelAndDisableSwitch)
 {
     NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE));
     NodePtr target = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE));
     ASSERT_TRUE(source && target);
+    KnobOutputFilePtr sourceFile = knob<KnobOutputFile>(source, kOfxImageEffectFileParamName);
     KnobOutputFilePtr file = knob<KnobOutputFile>(target, kOfxImageEffectFileParamName);
-    ASSERT_TRUE(bool(file));
+    KnobStringPtr sourceSublabel = knob<KnobString>(source, kNatronOfxParamStringSublabelName);
+    KnobStringPtr sublabel = knob<KnobString>(target, kNatronOfxParamStringSublabelName);
+    ASSERT_TRUE(sourceFile && file && sourceSublabel && sublabel);
+    sourceFile->setValue(std::string("/tmp/preset_source.####.exr"));
+    sourceSublabel->setValue(std::string("preset sublabel"));
+    knob<KnobString>(source, kUserLabelKnobName)->setValue(std::string("preset label"));
+    knob<KnobBool>(source, kDisableNodeKnobName)->setValue(true);
     file->setValue(std::string("/tmp/preset_target.####.exr"));
+    sublabel->setValue(std::string("target sublabel"));
+    knob<KnobString>(target, kUserLabelKnobName)->setValue(std::string("target label"));
 
-    target->applyPresetSerialization(presetFileOf(snapshot(source)), Node::ePresetApplyModePreset, NULL);
+    const Serialization::NodeSerialization preset = presetFileOf(snapshot(source));
+    ASSERT_TRUE(carries(preset, kOfxImageEffectFileParamName));
+    ASSERT_TRUE(carries(preset, kNatronOfxParamStringSublabelName));
+    ASSERT_TRUE(carries(preset, kUserLabelKnobName));
+    ASSERT_TRUE(carries(preset, kDisableNodeKnobName));
+    target->applyPresetSerialization(preset, Node::ePresetApplyModePreset, NULL);
 
     EXPECT_EQ(std::string("/tmp/preset_target.####.exr"), file->getValue());
+    EXPECT_EQ(std::string("target sublabel"), sublabel->getValue());
+    EXPECT_EQ(std::string("target label"), knob<KnobString>(target, kUserLabelKnobName)->getValue());
+    EXPECT_FALSE(knob<KnobBool>(target, kDisableNodeKnobName)->getValue());
+}
+
+TEST_F(NodePresetApply, APresetKeepsTheRotoShapesAndUndoingWithTheSnapshotRestoresThem)
+{
+    NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    NodePtr target = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(source && target);
+    RotoContextPtr sourceRoto = source->getRotoContext();
+    RotoContextPtr roto = target->getRotoContext();
+    ASSERT_TRUE(sourceRoto && roto);
+    ASSERT_TRUE(bool(sourceRoto->makeEllipse(10., 10., 20., true, 0.)));
+    ASSERT_TRUE(bool(sourceRoto->makeEllipse(50., 50., 20., true, 0.)));
+    ASSERT_TRUE(bool(roto->makeEllipse(100., 100., 40., true, 0.)));
+    const std::list<RotoDrawableItemPtr> shapes = roto->getCurvesByRenderOrder(false);
+    ASSERT_EQ((std::size_t)1, shapes.size());
+
+    const Serialization::NodeSerialization before = snapshot(target);
+    const Serialization::NodeSerialization preset = presetFileOf(snapshot(source));
+    ASSERT_TRUE(preset.hasRotoContext);
+    target->applyPresetSerialization(preset, Node::ePresetApplyModePreset, NULL);
+
+    EXPECT_EQ(shapes, roto->getCurvesByRenderOrder(false));
+
+    target->applyPresetSerialization(before, Node::ePresetApplyModeSnapshot, NULL);
+    EXPECT_EQ(yamlOf(before), yamlOf(snapshot(target)));
 }
 
 TEST_F(NodePresetApply, ASparsePresetSetsItsKnobsAndResetsTheRest)

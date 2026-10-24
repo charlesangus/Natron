@@ -297,8 +297,10 @@ Node::restoreUserKnobs(const Serialization::NodeSerialization& serialization)
 
 namespace {
 
-// Knobs a preset leaves alone when it does not mention them: they describe this particular node
-// (what it is called, whether it is on, which file it reads or writes) rather than its look.
+// Knobs a preset never changes, whatever it holds: they describe this particular node (what it is
+// called, whether it is on, which file it reads or writes) rather than its look. Every reader and
+// writer, native, deep or OpenFX, names its file knob kOfxImageEffectFileParamName, and a reader
+// its proxy file kOfxImageEffectProxyParamName.
 bool
 isKeptByPresets(const KnobIPtr& knob)
 {
@@ -306,8 +308,11 @@ isKeptByPresets(const KnobIPtr& knob)
     if ((name == kUserLabelKnobName) || (name == kNatronOfxParamStringSublabelName) || (name == kDisableNodeKnobName)) {
         return true;
     }
+    if ((name != kOfxImageEffectFileParamName) && (name != kOfxImageEffectProxyParamName)) {
+        return false;
+    }
 
-    return (name == kOfxImageEffectFileParamName) && (dynamic_cast<KnobFile*>(knob.get()) || dynamic_cast<KnobOutputFile*>(knob.get()));
+    return dynamic_cast<KnobFile*>(knob.get()) || dynamic_cast<KnobOutputFile*>(knob.get());
 }
 
 bool
@@ -335,6 +340,24 @@ removeKnobLinks(const KnobIPtr& knob)
     }
 }
 
+// Drops the user knobs of a preset's user pages that this node already has a knob of the same name
+// for, so that the node's own knobs keep their definition and value. Groups stay, for the new
+// knobs they hold.
+void
+removeExistingUserKnobs(const Node& node,
+                        std::list<Serialization::GroupKnobChildSerialization>* children)
+{
+    for (std::list<Serialization::GroupKnobChildSerialization>::iterator it = children->begin(); it != children->end();) {
+        if (it->isGroup) {
+            removeExistingUserKnobs(node, &it->group.children);
+        } else if (node.getKnobByName(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->knob.name))) {
+            it = children->erase(it);
+            continue;
+        }
+        ++it;
+    }
+}
+
 } // anon namespace
 
 void
@@ -345,8 +368,29 @@ Node::applyPresetSerialization(const Serialization::NodeSerialization& serializa
     assert(QThread::currentThread() == qApp->thread());
     assert(_imp->knobsInitialized);
 
+    const bool isPreset = (mode == ePresetApplyModePreset);
+    Serialization::NodeSerialization presetPart;
+    if (isPreset) {
+        // What the preset may change: everything but the knobs it keeps, the node's own user
+        // knobs and the roto shapes and tracks.
+        presetPart = serialization;
+        presetPart.knobs.remove_if([this](const Serialization::KnobSerialization& k) {
+            const KnobIPtr knob = getKnobByName(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(k.name));
+
+            return knob && isKeptByPresets(knob);
+        });
+        for (std::list<Serialization::GroupKnobSerialization>::iterator it = presetPart.userPages.begin(); it != presetPart.userPages.end(); ++it) {
+            removeExistingUserKnobs(*this, &it->children);
+        }
+        presetPart.hasRotoContext = false;
+        presetPart.rotoContext = Serialization::RotoContextSerialization();
+        presetPart.hasTrackerContext = false;
+        presetPart.trackerContext = Serialization::TrackerContextSerialization();
+    }
+    const Serialization::NodeSerialization& applied = isPreset ? presetPart : serialization;
+
     std::set<std::string> savedKnobs;
-    for (std::list<Serialization::KnobSerialization>::const_iterator it = serialization.knobs.begin(); it != serialization.knobs.end(); ++it) {
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = applied.knobs.begin(); it != applied.knobs.end(); ++it) {
         savedKnobs.insert(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name));
     }
 
@@ -363,10 +407,10 @@ Node::applyPresetSerialization(const Serialization::NodeSerialization& serializa
         if (!isPresetResettable(knob)) {
             continue;
         }
-        const bool saved = savedKnobs.count(knob->getName()) > 0;
-        if (!saved && (mode == ePresetApplyModePreset) && isKeptByPresets(knob)) {
+        if (isPreset && isKeptByPresets(knob)) {
             continue;
         }
+        const bool saved = savedKnobs.count(knob->getName()) > 0;
         removeKnobLinks(knob);
         for (int i = 0; i < knob->getDimension(); ++i) {
             // fromSerialization() replaces values and curves but only ever adds expressions.
@@ -380,30 +424,24 @@ Node::applyPresetSerialization(const Serialization::NodeSerialization& serializa
     }
 
     // Loading roto shapes or tracks appends them to the existing ones.
-    if (_imp->rotoContext) {
-        const bool hasShapes = serialization.hasRotoContext && !serialization.rotoContext.baseLayer.children.empty();
-        if (hasShapes || (mode == ePresetApplyModeSnapshot)) {
-            const std::list<RotoLayerPtr>& layers = _imp->rotoContext->getLayers();
-            if (!layers.empty()) {
-                const std::list<RotoItemPtr> items = layers.front()->getItems();
-                for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
-                    _imp->rotoContext->removeItem(*it);
-                }
+    if (!isPreset && _imp->rotoContext) {
+        const std::list<RotoLayerPtr>& layers = _imp->rotoContext->getLayers();
+        if (!layers.empty()) {
+            const std::list<RotoItemPtr> items = layers.front()->getItems();
+            for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+                _imp->rotoContext->removeItem(*it);
             }
         }
     }
-    if (_imp->trackContext) {
-        const bool hasTracks = serialization.hasTrackerContext && !serialization.trackerContext.tracks.empty();
-        if (hasTracks || (mode == ePresetApplyModeSnapshot)) {
-            std::vector<TrackMarkerPtr> markers;
-            _imp->trackContext->getAllMarkers(&markers);
-            for (std::vector<TrackMarkerPtr>::const_iterator it = markers.begin(); it != markers.end(); ++it) {
-                _imp->trackContext->removeMarker(*it);
-            }
+    if (!isPreset && _imp->trackContext) {
+        std::vector<TrackMarkerPtr> markers;
+        _imp->trackContext->getAllMarkers(&markers);
+        for (std::vector<TrackMarkerPtr>::const_iterator it = markers.begin(); it != markers.end(); ++it) {
+            _imp->trackContext->removeMarker(*it);
         }
     }
 
-    fromSerialization(serialization, true);
+    fromSerialization(applied, true);
 
     bool userKnobsChanged = false;
     const KnobsVec knobsAfter = getKnobs();
@@ -417,7 +455,7 @@ Node::applyPresetSerialization(const Serialization::NodeSerialization& serializa
     }
 
     const std::map<std::string, std::string> noRenames;
-    storeKnobsLinks(serialization, noRenames);
+    storeKnobsLinks(applied, noRenames);
     NodesList allNodes;
     AppInstancePtr app = getApp();
     if (app) {

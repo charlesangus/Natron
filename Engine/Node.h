@@ -191,9 +191,10 @@ public:
                            bool updateKnobGui = false);
 
     enum PresetApplyModeEnum {
-        // A preset file. Knobs it leaves out are reset except the label, the sublabel, the
-        // disable switch and a Read or Write file path, which a preset does not own. Roto shapes
-        // and tracks are replaced only when it carries some.
+        // A preset file. Knobs it leaves out are reset. The label, the sublabel, the disable
+        // switch, a reader's or writer's file paths, the roto shapes and tracks and the node's
+        // own user knobs are not the preset's: they keep their value, animation, expressions
+        // and links whatever the preset holds for them.
         ePresetApplyModePreset,
 
         // A toSerialization() snapshot of this node. A knob it leaves out was at its default

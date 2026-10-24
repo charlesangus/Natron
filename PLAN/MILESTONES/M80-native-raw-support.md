@@ -328,7 +328,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
     - The README table lists each new reference with its tolerance class.
   - size: L
 
-- [ ] M80.P7.T2 — Regenerate all darktable references in the container, once
+- [x] M80.P7.T2 — Regenerate all darktable references in the container, once
   - files: `Tests/fixtures/raw/reference/*` (new TIFFs and DNGs, Git LFS), `Tests/fixtures/raw/README.md`
   - approach:
     - Run `tools/raw/make-reference.sh` once for every job from T1 and T29. Record T29's "[commit color calibration]" lines in the README.
@@ -367,7 +367,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: the new gtests pass, with mean/max error reported per mode. Compiled at P7.T18.
   - size: L
 
-- [ ] M80.P7.T5 — Raw metadata for file-derived defaults: make/model, LinearResponseLimit, DNG embedded matrix
+- [x] M80.P7.T5 — Raw metadata for file-derived defaults: make/model, LinearResponseLimit, DNG embedded matrix
   - files: `Engine/Nodes/IO/RawMetadata.h/.cpp`, `Engine/Nodes/IO/RawDecodeSupport.cpp`, `Tests/Native/RawMetadata_Test.cpp`, `Tests/Native/RawDecodeSupport_Test.cpp`
   - approach:
     - Add these keys:
@@ -384,7 +384,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
     - Compiled at P7.T18.
   - size: M
 
-- [ ] M80.P7.T6 — Parse DNG GainMap opcodes into metadata
+- [x] M80.P7.T6 — Parse DNG GainMap opcodes into metadata
   - files: new `Engine/Nodes/IO/RawDngOpcodes.h/.cpp`, `Engine/Nodes/IO/RawDecodeSupport.cpp`, `Engine/Nodes/IO/RawMetadata.h/.cpp`, new `Tests/Native/RawDngOpcodes_Test.cpp`
   - approach:
     - Port darktable `src/common/dng_opcode.c` `dt_dng_opcode_process_opcode_list_2` (GainMap, opcode 9; big-endian `_get_double`/`_get_float`). rawspeed returns `GainMap → nullptr` and never applies it (`DngOpcodes.cpp:778`), so Natron parses the OPCODELIST2 bytes itself.
@@ -394,7 +394,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest parses the T2 synthetic GainMap DNG (four maps, values and geometry exact). A DNG with no opcodes yields no key, and a truncated opcode list fails cleanly. Compiled at P7.T18.
   - size: M
 
-- [ ] M80.P7.T7 — RawPrepare: flat-field correction from embedded GainMaps
+- [x] M80.P7.T7 — RawPrepare: flat-field correction from embedded GainMaps
   - files: `Engine/Nodes/Raw/RawPrepare.cpp/.h`, `Engine/Nodes/Raw/docs/RawPrepare.md`, new `Tests/Native/NativeRawPrepareFlatField_Test.cpp`
   - approach:
     - Add a Flat Field choice: Disabled / Embedded GainMap. The default is Embedded GainMap, which is darktable's file-derived default: on only when `_check_gain_maps` accepts the maps.
@@ -404,7 +404,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest plus the darktable comparison on the GainMap DNG, on and off. A crop by an odd pixel count still matches. A file without maps is unchanged with the knob on. Compiled at P7.T18.
   - size: M
 
-- [ ] M80.P7.T8 — RawHighlights: LinearResponseLimit clip default, per-sensor mode rules, clipped-mask view
+- [x] M80.P7.T8 — RawHighlights: LinearResponseLimit clip default, per-sensor mode rules, clipped-mask view
   - files: `Engine/Nodes/Raw/RawHighlights.cpp/.h`, `Engine/Nodes/Raw/docs/RawHighlights.md`, new `Tests/Native/NativeRawHighlightsDefaults_Test.cpp`
   - approach:
     - The clipping threshold shows min(1, `raw/linear_response_limit`) until overridden. This follows RawPrepare's override pattern from P5.T4 (highlights.c:1255 `reload_defaults`).
@@ -414,7 +414,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks the LRL DNG default is 0.8 and the CR2's is 1, plus the fallback per sensor type. The darktable comparison passes on the LRL DNG, and the clipped mask matches a hand-computed mask. Compiled at P7.T18.
   - size: M
 
-- [ ] M80.P7.T9 — RawHighlights: Reconstruct Color mode
+- [x] M80.P7.T9 — RawHighlights: Reconstruct Color mode
   - files: new `Engine/Nodes/Raw/RawHighlightsInpaint.cpp`, `Engine/Nodes/Raw/RawKernels.h`, `Engine/Nodes/Raw/RawHighlights.cpp`, new `Tests/Native/NativeRawHighlightsInpaint_Test.cpp`
   - approach:
     - Port darktable `src/iop/hlreconstruct/inpaint.c` (`interpolate_color`, `interpolate_color_xtrans`, `interp_pix_xtrans`): row and column scans in four directions over the whole frame.
@@ -423,7 +423,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks tiled = full frame bit for bit, plus the darktable comparison on the Bayer and X-Trans clipped-disc DNGs. Compiled at P7.T18.
   - size: M
 
-- [ ] M80.P7.T10 — RawHighlights: Segmentation Based mode
+- [x] M80.P7.T10 — RawHighlights: Segmentation Based mode
   - files: new `Engine/Nodes/Raw/RawHighlightsSegments.cpp`, new `Engine/Nodes/Raw/RawSegmentation.h/.cpp`, `Engine/Nodes/Raw/RawHighlights.cpp/.h`, new `Tests/Native/NativeRawHighlightsSegments_Test.cpp`
   - approach:
     - Port darktable `hlreconstruct/segbased.c` (`_process_segmentation`, `_calc_plane_candidates`, `_segment_gradients`, `_add_poisson_noise`, `_masks_extend_border`) and `hlreconstruct/segmentation.c` (`dt_segmentize_plane`, `dt_segments_combine`, `_floodfill_segmentize`, dilate/erode).
@@ -435,7 +435,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks tiled = full frame, plus the darktable comparison on both synthetic DNGs for rebuild off, generic and small segments. The masks are non-empty exactly on the clipped disc. Compiled at P7.T18.
   - size: L
 
-- [ ] M80.P7.T11 — RawHighlights: Guided Laplacians mode (Bayer)
+- [x] M80.P7.T11 — RawHighlights: Guided Laplacians mode (Bayer)
   - files: new `Engine/Nodes/Raw/RawHighlightsLaplacian.cpp`, `Engine/Nodes/Raw/RawKernels.h`, `Engine/Nodes/Raw/RawHighlights.cpp/.h`, new `Tests/Native/NativeRawHighlightsLaplacian_Test.cpp`
   - approach:
     - Port darktable `hlreconstruct/laplacian.c` `process_laplacian_bayer`, `_interpolate_and_mask`, `guide_laplacians`, `heat_PDE_diffusion`, `wavelets_process` and `_remosaic_and_replace`.
@@ -446,7 +446,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks tiled = full frame, plus the darktable comparison on the Bayer DNG (defaults and the iterations/noise/solid-colour variant). X-Trans falls back to Opposed per T8. Compiled at P7.T18.
   - size: L
 
-- [ ] M80.P7.T12 — RawTemperature: camera presets and finetune, with darktable's as-shot fallback
+- [x] M80.P7.T12 — RawTemperature: camera presets and finetune, with darktable's as-shot fallback
   - files: `Engine/Nodes/Raw/RawTemperature.cpp/.h`, new `Engine/Nodes/Raw/RawWbPresets.h/.cpp`, new `Engine/Nodes/Raw/data/wb_presets.json` (from `DARKTABLE_REF`), `Engine/CMakeLists.txt` (install to `Resources/darktable/` like `cameras.xml`), new `Tests/Native/NativeRawTemperaturePresets_Test.cpp`
   - approach:
     - Port `src/common/wb_presets.c` (load, lookup by `raw/make`/`raw/model`, `dt_wb_preset_interpolate`).
@@ -456,7 +456,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks the 5D III "Daylight" coefficients equal wb_presets.json, and a between-tunings finetune equals a hand interpolation. The X-Pro2 lists its 7 presets. A camera without presets shows none. The "user coefficients" darktable comparison passes. Compiled at P7.T18.
   - size: L
 
-- [ ] M80.P7.T13 — RawTemperature: From Image Area (spot) mode
+- [x] M80.P7.T13 — RawTemperature: From Image Area (spot) mode
   - files: `Engine/Nodes/Raw/RawTemperature.cpp/.h`, `Engine/Nodes/Raw/docs/RawTemperature.md`, new `Tests/Native/NativeRawTemperatureSpot_Test.cpp`
   - approach:
     - Add Spot Area bottom-left/size knobs, drawn with the host rectangle interact (`node->addRectangleInteract`, as `Engine/Nodes/Image/ExtentKnobs.cpp:276` does), and a "Pick" button.
@@ -466,7 +466,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest on a synthetic mosaic with known per-colour means gives the expected coefficients for Bayer and X-Trans. The render then equals Custom with the same coefficients. There is no darktable render, because darktable-cli can't pick. Compiled at P7.T18.
   - size: M
 
-- [ ] M80.P7.T14 — RawTemperature "As Shot to Reference" and RawInputColor's late correction
+- [x] M80.P7.T14 — RawTemperature "As Shot to Reference" and RawInputColor's late correction
   - files: `Engine/Nodes/Raw/RawTemperature.cpp`, `Engine/Nodes/IO/RawMetadata.h/.cpp` (`raw/wb_late_correction`, `raw/wb_d65_coeffs`), `Engine/Nodes/Raw/RawInputColor.cpp`, new `Tests/Native/NativeRawLateCorrection_Test.cpp`
   - approach:
     - The new mode applies the as-shot coefficients, as darktable does (`_publish_chroma`, temperature.c:515–530). It publishes D65coeffs/as_shot per channel as `raw/wb_late_correction`, which travels through Highlights and Demosaic metadata. In every mode, RawTemperature also publishes darktable's D65 coefficients (`chr->D65coeffs`) as `raw/wb_d65_coeffs`. RawColorCalibration's `_get_white_balance_coeff` port needs them (T32).
@@ -476,7 +476,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks that As Shot to Reference into InputColor equals Camera Reference into InputColor within float error, and that `raw/wb_d65_coeffs` is present in every mode and equals the Camera Reference coefficients, plus the darktable comparison of the preset-4 render. Compiled at P7.T18.
   - size: M
 
-- [ ] M80.P7.T15 — RawInputColor: darktable's matrix profile types and file-derived default
+- [x] M80.P7.T15 — RawInputColor: darktable's matrix profile types and file-derived default
   - files: `Engine/Nodes/Raw/RawInputColor.cpp/.h`, new `Engine/Nodes/Raw/RawColorMatrices.h/.cpp` (tables from `src/common/colormatrices.c`), `Engine/Nodes/Raw/RawColorMath.cpp/.h`, new `Tests/Native/NativeRawInputColorProfiles_Test.cpp`
   - approach:
     - Replace the mode choice with an Input Profile choice.
@@ -490,7 +490,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks the default per fixture (CR2 → Standard, linear DNG → Embedded), plus the darktable comparisons for every matrix type T2 rendered. Compiled at P7.T18.
   - size: L
 
-- [ ] M80.P7.T16 — RawInputColor: generic input profiles
+- [x] M80.P7.T16 — RawInputColor: generic input profiles
   - files: `Engine/Nodes/Raw/RawInputColor.cpp`, new `Engine/Nodes/Raw/RawColorProfiles.h/.cpp`, `Engine/Nodes/Raw/docs/RawInputColor.md`, new `Tests/Native/NativeRawInputColorGeneric_Test.cpp`
   - approach:
     - Add every `colorspaces.c` built-in with `++in_pos` that isn't a file: sRGB, Adobe RGB (compatible), linear Rec709 (renames "Standard (Linear Rec. 709)"), Rec709, linear Rec2020, PQ/HLG Rec2020, PQ/HLG P3, Display P3, linear ProPhoto, linear XYZ, Lab, linear infrared BGR, BRG.
@@ -500,7 +500,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest round-trips each profile against an analytic reference, plus the darktable comparisons for each generic profile. Compiled at P7.T18.
   - size: M
 
-- [ ] M80.P7.T17 — RawInputColor: gamut clipping and working profile
+- [x] M80.P7.T17 — RawInputColor: gamut clipping and working profile
   - files: `Engine/Nodes/Raw/RawInputColor.cpp/.h`, `Engine/Nodes/Raw/RawColorProfiles.cpp`, new `Tests/Native/NativeRawInputColorClipping_Test.cpp`
   - approach:
     - Gamut Clipping: off / sRGB / Adobe RGB / linear Rec709 / linear Rec2020, default off. Port `process_cmatrix_proper` with darktable's `nmatrix`/`lmatrix` clip to the chosen RGB gamut (colorin.c:1026).
@@ -509,7 +509,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks out-of-gamut values clip to the chosen gamut and in-gamut values are untouched, plus the darktable comparisons for the 4 clipping options. Compiled at P7.T18.
   - size: M
 
-- [ ] M80.P7.T18 — Build checkpoint A
+- [x] M80.P7.T18 — Build checkpoint A
   - files: (none new; fixes go to the owning task's files)
   - approach:
     - Run `tools/ci/local/syntax-check.py --root .worktrees/m80` on the changed TUs.
@@ -518,7 +518,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: ctest is green on both legs, including every new `Tests/Native/*Raw*` test, the T4 comparisons and the updated `NativeGpuCapabilityTest`. T4–T17 get checked off.
   - size: M
 
-- [ ] M80.P7.T19 — RawDemosaic: passthrough (monochrome) and photosite colour, Bayer and X-Trans
+- [x] M80.P7.T19 — RawDemosaic: passthrough (monochrome) and photosite colour, Bayer and X-Trans
   - files: `Engine/Nodes/Raw/RawDemosaic.cpp/.h`, `Engine/Nodes/Raw/RawDemosaicBasics.cpp`, `Engine/Nodes/Raw/RawKernels.h`, new `Tests/Native/NativeRawDemosaicPassthrough_Test.cpp`
   - approach:
     - Port `demosaicing/passthrough.c` (`passthrough_monochrome`, `passthrough_color`) as Point ops. Add the options to both method knobs.
@@ -819,6 +819,7 @@ Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 r
 - 2026-10-24 — Fast build with tests of `7be5ffca2` (run 40048743972) green on both legs: `RawReferenceTest` (with the Markesteijn outlier budget), `RawLargeTest` (decode once; separate band and whole-source memory bounds) and the Viewer normalisation pass. P5.T1, P5.T2, P5.T4, P2.T4 and P3.T8 checked; P5.T3 waits for the Phase 80.7 panel re-run (T27) and the user's screenshot approval. User calls on color calibration: RawTemperature's own default becomes As Shot to Reference; the node ships its GPU kernel here; it lives in the Raw group as `RawColorCalibration`.
 - 2026-10-23 — P7.T12: As Shot's missing-white-balance fallback follows darktable's `_find_coeffs` (colour-matrix D65, then the camera's first preset row, then 2/1/1.5), not the task text's "Daylight, then D65" order; Camera Reference uses `reload_defaults`' order (matrix, then the tuning-0 daylight/direct-sunlight row). darktable's own code wins over a brief's paraphrase. P7.T10–T12 committed (f2ee98118, fe8caea68, 4fb3a8e37), checked off after P7.T18.
 - 2026-10-23 — P7.T3 audit (code 57e04c547): 84 MISSING rows — 60 channelmixerrgb (T30–T36), 23 demosaic (T19–T23), 1 rawdenoise band x (new T38). Natron's flat-field default matches darktable's `reload_defaults` (embedded when the file has gain maps); colorin's default is file-derived per T15.
+- 2026-10-24 — **Checkpoint A (P7.T18):** debug `--tests` on ca3bd3ca2 371/371 green (after four test-only fixes: highlights tests swapping sources without disconnecting and missing the clip override; input-colour tests feeding raw data straight into RawInputColor); release `--tests` on bdc363e05 372/373 — the one failure is T20's new `NativeRawDemosaicLmmseTest.TilesMatchTheFullFrameWithLocalGreensAndSmoothing` (render returns no plane, then the test segfaults), routed to T20. The regenerated references (T2, fb98e7c19) pass the existing `RawReferenceTest` and highlights comparisons. T2, T5–T17 and T19 checked off; T4 remains (not yet implemented).
 
 ## Handoff (2026-10-22, PM paused by user)
 

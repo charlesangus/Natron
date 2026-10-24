@@ -17,14 +17,17 @@ its OpenCL path.
   **Crop** margins when **Override Crop** is on. It moves to the origin, and the CFA origin moves
   with it (`RawLayout::croppedTo()`), so every photosite keeps its colour.
 - The output's metadata has `raw/stage` `prepared`, zero black levels, a white level of 1,
-  `raw/crop` covering the whole output and `raw/processed_maximum` (1, 1, 1).
+  `raw/crop` covering the whole output, `raw/sensor` moved with the kept area and
+  `raw/processed_maximum` (1, 1, 1).
 - **Flat Field** (Disabled / Embedded GainMap, default Embedded GainMap) multiplies each Bayer
   photosite by the gain of its cell's map from `raw/gain_maps`, after the black and white scaling.
   It is a port of `_check_gain_maps` and the gain-map branch of `process`: four single-plane maps
   with pitch 2 over the whole sensor, one per cell of the sensor's top-left 2x2 block, all on one
-  grid, interpolated bilinearly at the photosite's position in the sensor, counted from the
-  sensor's top. The position is the sensor's, not the kept area's, so a crop does not move the
-  maps. With no such maps the control is hidden, as in darktable. X-Trans and linear data are
+  grid, interpolated bilinearly at the photosite's position in the uncropped sensor
+  (`raw/sensor`), counted from its top-left corner. The maps must span the uncropped sensor, and
+  each photosite takes the map of its cell in the uncropped sensor's 2x2 block, as darktable does.
+  The position is the uncropped sensor's, not the active area's or the kept area's, so neither the
+  file's active-area margins nor a crop move the maps or swap their cells. With no such maps the control is hidden, as in darktable. X-Trans and linear data are
   never corrected.
 - It renders at full resolution only (`supportsRenderScale` is no), because resampling a mosaic
   has no meaning.

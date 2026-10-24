@@ -101,8 +101,8 @@ flatFieldHint(bool available)
     return QCoreApplication::translate("RawPrepare", "The raw file has no embedded GainMaps that can be applied, so this does nothing. Applying needs four single-plane Bayer maps over the whole sensor that share one grid.").toStdString();
 }
 
-// The cell of the 2x2 block at the sensor's top-left corner that sensor pixel (col, row), counted
-// from the top-left, is on.
+// The cell of the 2x2 block at the uncropped sensor's top-left corner that sensor pixel (col, row),
+// counted from that corner, is on.
 inline int
 sensorCell(int col,
            int row)
@@ -469,6 +469,7 @@ RawPrepare::resolveSettings(double time,
         s.div[i] = (div != 0.f) ? div : 1.f;
     }
 
+    s.sensor = RawMetadata::getSensor(source).value_or(s.sourceRoD);
     s.kept = s.sourceRoD;
     if (reader.value(_cropOverride)) {
         const int left = std::max(0, (int)reader.value(_cropLeft));
@@ -489,7 +490,7 @@ RawPrepare::resolveSettings(double time,
     if (s.hasCfa && (s.layout.period() == 2)) {
         const std::vector<DngGainMap> maps = RawMetadata::getGainMaps(source);
         if (!maps.empty()) {
-            if (std::shared_ptr<const FlatField> field = acceptGainMaps(maps, s.sourceRoD.width(), s.sourceRoD.height())) {
+            if (std::shared_ptr<const FlatField> field = acceptGainMaps(maps, s.sensor.width(), s.sensor.height())) {
                 s.flatFieldAvailable = true;
                 if (reader.value(_flatField) == eRawPrepareFlatFieldEmbedded) {
                     s.flatField = std::move(field);
@@ -562,6 +563,11 @@ RawPrepare::deriveOutputMetadata(double time,
     RawMetadata::setWhiteLevel(&metadata, 1.);
     RawMetadata::setProcessedMaximum(&metadata, { 1., 1., 1. });
     RawMetadata::setCrop(&metadata, RectI(0, 0, settings->kept.width(), settings->kept.height()));
+    if (RawMetadata::getSensor(metadata)) {
+        RectI sensor = settings->sensor;
+        sensor.translate(-settings->kept.x1, -settings->kept.y1);
+        RawMetadata::setSensor(&metadata, sensor);
+    }
     if (settings->hasCfa) {
         settings->layout.croppedTo(settings->kept.x1, settings->kept.y1).writeTo(&metadata);
     }
@@ -625,8 +631,10 @@ RawPrepare::renderOp(const RenderActionArgs& args,
     const RectI& roi = args.roi;
     RenderCancellation cancel(this);
     const FlatField* flat = s.flatField.get();
-    const int sensorW = s.sourceRoD.width();
-    const int sensorH = s.sourceRoD.height();
+    // darktable lays the maps over the uncropped sensor: positions, sizes and cell parities are
+    // the uncropped sensor's, whatever the active area or the kept area.
+    const int sensorW = s.sensor.width();
+    const int sensorH = s.sensor.height();
     const float imToRelX = 1.0f / (float)sensorW;
     const float imToRelY = 1.0f / (float)sensorH;
     const RawKernels::ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, appPTR->getNCPUsAvailableForEffect());
@@ -650,7 +658,7 @@ RawPrepare::renderOp(const RenderActionArgs& args,
             int sensorRow = 0;
             float yFrac = 0.f;
             if (flat) {
-                sensorRow = s.sourceRoD.y2 - 1 - sy;
+                sensorRow = s.sensor.y2 - 1 - sy;
                 const float yMap = std::min(std::max(((float)sensorRow * imToRelY - flat->originV) * (1.0f / flat->spacingV), 0.f), (float)flat->mapH);
                 const uint32_t y0 = std::min((uint32_t)yMap, (uint32_t)flat->mapH - 1);
                 const uint32_t y1 = std::min(y0 + 1, (uint32_t)flat->mapH - 1);
@@ -671,7 +679,7 @@ RawPrepare::renderOp(const RenderActionArgs& args,
                         out[c] = (v - s.sub[id]) / s.div[id];
                     }
                     if (flat && in && (nComps > 0)) {
-                        const int sensorCol = sx - s.sourceRoD.x1;
+                        const int sensorCol = sx - s.sensor.x1;
                         const int f = sensorCell(sensorCol, sensorRow);
                         const float xMap = std::min(std::max(((float)sensorCol * imToRelX - flat->originH) * (1.0f / flat->spacingH), 0.f), (float)flat->mapW);
                         const uint32_t x0 = std::min((uint32_t)xMap, (uint32_t)flat->mapW - 1);

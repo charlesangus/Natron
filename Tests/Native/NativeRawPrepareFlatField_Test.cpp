@@ -167,14 +167,15 @@ protected:
         BaseTest::SetUp();
     }
 
-    NodePtr createPrepare(const ImageMetadata& metadata)
+    NodePtr createPrepare(const ImageMetadata& metadata,
+                          const RectI& rod = RectI(0, 0, kWidth, kHeight))
     {
         NodePtr source = createNode(QString::fromUtf8(kRawTestSourceID));
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWPREPARE));
 
         EXPECT_TRUE(source && node);
         if (source && node) {
-            dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(RectI(0, 0, kWidth, kHeight), 1, mosaicValue, metadata);
+            dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(rod, 1, mosaicValue, metadata);
             connectNodes(source, node, 0, true);
         }
         _source = source;
@@ -327,6 +328,50 @@ TEST_F(NativeRawPrepareFlatFieldTest, AnOddCropKeepsEachPhotositesGain)
             ASSERT_NEAR(expected, rawTestPlaneValue(plane, x, y, 0), 1e-5) << x << "," << y;
         }
     }
+}
+
+// A Read's image is the active area, but the maps cover the uncropped sensor: they are accepted
+// against its size, and each photosite takes the gain at its uncropped position from the map of
+// its uncropped cell, even with an odd active-area offset on both axes.
+TEST_F(NativeRawPrepareFlatFieldTest, AnOddActiveAreaUsesUncroppedPositionsAndCells)
+{
+    const RectI sensor(0, 0, kWidth, kHeight);
+    // 1 photosite of margin on the left, 3 on top.
+    const RectI active(1, 2, kWidth - 2, kHeight - 3);
+    ImageMetadata metadata = metadataWith(syntheticMaps());
+    RawMetadata::setSensor(&metadata, sensor);
+    RawMetadata::setCrop(&metadata, active);
+    NodePtr node = createPrepare(metadata, active);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(flatFieldActive(node));
+
+    const RectI window(0, 0, active.width(), active.height());
+    RenderedPlane plane;
+    std::string error;
+    ASSERT_TRUE(renderRawTestPlane(node, window, &plane, &error)) << error;
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const int sx = x + active.x1;
+            const int sy = y + active.y1;
+            const double expected = preparedValue(sx, sy) * expectedGain(sx - sensor.x1, sensor.y2 - 1 - sy);
+            ASSERT_NEAR(expected, rawTestPlaneValue(plane, x, y, 0), 1e-5) << x << "," << y;
+        }
+    }
+
+    StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect);
+    const ImageMetadata out = effect->getOutputMetadata(1., ViewIdx(0));
+    EXPECT_EQ(RectI(-active.x1, -active.y1, kWidth - active.x1, kHeight - active.y1), RawMetadata::getSensor(out).value_or(RectI()));
+}
+
+// Maps that span only the active area do not cover a larger uncropped sensor, so they are rejected.
+TEST_F(NativeRawPrepareFlatFieldTest, MapsSizedToTheActiveAreaDoNotFitALargerSensor)
+{
+    ImageMetadata metadata = metadataWith(syntheticMaps());
+    RawMetadata::setSensor(&metadata, RectI(-1, 0, kWidth, kHeight + 2));
+    NodePtr node = createPrepare(metadata);
+    ASSERT_TRUE(bool(node));
+    EXPECT_FALSE(flatFieldActive(node));
 }
 
 TEST_F(NativeRawPrepareFlatFieldTest, ActiveMapsTakeTheNodeOffTheGpu)

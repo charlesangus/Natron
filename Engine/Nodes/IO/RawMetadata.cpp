@@ -302,6 +302,25 @@ setCrop(ImageMetadata* metadata,
     metadata->setIntVector(kRawMetadataCrop, std::vector<int> { crop.x1, crop.y1, crop.x2, crop.y2 });
 }
 
+std::optional<RectI>
+getSensor(const ImageMetadata& metadata)
+{
+    const std::optional<std::vector<int>> sensor = metadata.getIntVector(kRawMetadataSensor);
+
+    if (!sensor || (sensor->size() != 4)) {
+        return std::nullopt;
+    }
+
+    return RectI((*sensor)[0], (*sensor)[1], (*sensor)[2], (*sensor)[3]);
+}
+
+void
+setSensor(ImageMetadata* metadata,
+          const RectI& sensor)
+{
+    metadata->setIntVector(kRawMetadataSensor, std::vector<int> { sensor.x1, sensor.y1, sensor.x2, sensor.y2 });
+}
+
 std::optional<double>
 getIso(const ImageMetadata& metadata)
 {

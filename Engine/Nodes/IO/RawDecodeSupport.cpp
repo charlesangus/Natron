@@ -599,6 +599,7 @@ namespace {
         }
 
         RawMetadata::setCrop(&metadata, window);
+        RawMetadata::setSensor(&metadata, header->format);
         if (raw.metadata.isoSpeed > 0) {
             RawMetadata::setIso(&metadata, (double)raw.metadata.isoSpeed);
         }

@@ -187,6 +187,7 @@ TEST_F(RawDecodeSupportTest, HeaderMatchesRawspeedForEachFixture)
 
         const ImageMetadata& metadata = header->metadata;
         EXPECT_EQ(std::optional<RectI>(header->window), RawMetadata::getCrop(metadata));
+        EXPECT_EQ(std::optional<RectI>(header->format), RawMetadata::getSensor(metadata));
         EXPECT_EQ(std::optional<RawStageEnum>(eRawStageRaw), RawMetadata::getStage(metadata));
         if (raw.whitePoint) {
             EXPECT_EQ(std::optional<double>((double)*raw.whitePoint), RawMetadata::getWhiteLevel(metadata));

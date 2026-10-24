@@ -230,6 +230,7 @@ TEST(RawMetadata, EveryKeyRoundTrips)
     const std::array<double, 9> matrix = { 0.6, 0.2, 0.15, 0.25, 0.7, 0.05, 0.02, 0.1, 0.9 };
     RawMetadata::setCamToXyz(&metadata, matrix);
     RawMetadata::setCrop(&metadata, RectI(8, 4, 6008, 4004));
+    RawMetadata::setSensor(&metadata, RectI(0, 0, 6024, 4020));
     RawMetadata::setIso(&metadata, 400.);
     RawMetadata::setExposure(&metadata, 1. / 125.);
     RawMetadata::setStage(&metadata, eRawStagePrepared);
@@ -241,6 +242,7 @@ TEST(RawMetadata, EveryKeyRoundTrips)
     const std::optional<RectI> crop = RawMetadata::getCrop(metadata);
     ASSERT_TRUE(crop.has_value());
     EXPECT_EQ(RectI(8, 4, 6008, 4004), *crop);
+    EXPECT_EQ(std::optional<RectI>(RectI(0, 0, 6024, 4020)), RawMetadata::getSensor(metadata));
     EXPECT_EQ(std::optional<double>(400.), RawMetadata::getIso(metadata));
     EXPECT_EQ(std::optional<double>(1. / 125.), RawMetadata::getExposure(metadata));
     EXPECT_EQ(std::optional<RawStageEnum>(eRawStagePrepared), RawMetadata::getStage(metadata));
@@ -282,6 +284,7 @@ TEST(RawMetadata, WrongShapesReadAsAbsent)
     metadata.setDoubleVector(kRawMetadataWbCoeffs, std::vector<double> { 1., 2. });
     metadata.setDoubleVector(kRawMetadataCamToXyz, std::vector<double>(8, 0.));
     metadata.setIntVector(kRawMetadataCrop, std::vector<int> { 0, 0, 1 });
+    metadata.setIntVector(kRawMetadataSensor, std::vector<int> { 0, 0, 1, 1, 1 });
     metadata.setDoubleVector(kRawMetadataBlackLevels, std::vector<double>());
     metadata.setString(kRawMetadataWhiteLevel, "16383");
     metadata.setString(kRawMetadataStage, "demosaiced");
@@ -289,6 +292,7 @@ TEST(RawMetadata, WrongShapesReadAsAbsent)
     EXPECT_FALSE(RawMetadata::getWbCoeffs(metadata).has_value());
     EXPECT_FALSE(RawMetadata::getCamToXyz(metadata).has_value());
     EXPECT_FALSE(RawMetadata::getCrop(metadata).has_value());
+    EXPECT_FALSE(RawMetadata::getSensor(metadata).has_value());
     EXPECT_FALSE(RawMetadata::getBlackLevels(metadata).has_value());
     EXPECT_FALSE(RawMetadata::getWhiteLevel(metadata).has_value());
     EXPECT_FALSE(RawMetadata::getStage(metadata).has_value());

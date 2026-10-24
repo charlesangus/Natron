@@ -139,6 +139,8 @@ public:
         bool hasCfa = false;
         RawLayout layout;
         RectI sourceRoD;
+        // The uncropped sensor (raw/sensor), or the source's region when the source does not say.
+        RectI sensor;
         RectI kept;
         // Set when Flat Field is on and the source has maps that can be applied.
         std::shared_ptr<const FlatField> flatField;

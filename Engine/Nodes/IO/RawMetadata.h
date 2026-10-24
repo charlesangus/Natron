@@ -53,6 +53,7 @@
 #define kRawMetadataWbCoeffs "raw/wb_coeffs"
 #define kRawMetadataCamToXyz "raw/cam_to_xyz"
 #define kRawMetadataCrop "raw/crop"
+#define kRawMetadataSensor "raw/sensor"
 #define kRawMetadataIso "raw/iso"
 #define kRawMetadataExposure "raw/exposure"
 #define kRawMetadataStage "raw/stage"
@@ -245,6 +246,13 @@ void setCamToXyz(ImageMetadata* metadata, const std::array<double, 9>& matrix);
  **/
 std::optional<RectI> getCrop(const ImageMetadata& metadata);
 void setCrop(ImageMetadata* metadata, const RectI& crop);
+
+/**
+ * @brief raw/sensor: the whole uncropped sensor, active area and margins, in pixels. raw/crop
+ * lies inside it. The DNG GainMaps are laid out over it.
+ **/
+std::optional<RectI> getSensor(const ImageMetadata& metadata);
+void setSensor(ImageMetadata* metadata, const RectI& sensor);
 
 std::optional<double> getIso(const ImageMetadata& metadata);
 void setIso(ImageMetadata* metadata, double iso);

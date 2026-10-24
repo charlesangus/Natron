@@ -363,7 +363,7 @@ public Q_SLOTS:
     void seekUrl(const QUrl & url);
 
     ///same as setDirectory but for the look-in combobox
-    void onLookingComboboxChanged(const QString &);
+    void onLookingComboboxChanged(int index);
 
     ///slot called when the selected directory changed, it updates the view with the (not yet fetched) directory.
     void updateView(const QString & currentDirectory);
@@ -439,6 +439,8 @@ public Q_SLOTS:
     void onHeaderViewSortIndicatorChanged(int logicalIndex, Qt::SortOrder order);
 
     virtual void done(int r) OVERRIDE FINAL;
+
+    virtual void setVisible(bool visible) OVERRIDE FINAL;
 
 private:
     ///set the view to show this model index which is a directory
@@ -528,7 +530,18 @@ private:
 
     bool restoreState(const QByteArray & state, bool restoreDirectory, bool* directoryRestored);
 
-    void createViewerPreviewNode();
+    bool createViewerPreviewNode();
+
+    /**
+     * @brief Puts the shared preview viewer, hidden, into this dialog. Must run before the dialog's
+     * window is created: Qt recreates a shown top-level window to give it an OpenGL surface when an
+     * OpenGL widget first enters it, which hides a modal dialog and ends its exec().
+     * Returns false if the viewer could not be created or another dialog holds it.
+     **/
+    bool attachPreview();
+
+    /// The preview viewer if it is inside this dialog, else NULL.
+    ViewerTab* attachedPreviewViewer() const;
 
     void teardownPreview();
 

@@ -25,10 +25,11 @@
 
 #include "ViewerGLPrivate.h"
 
-#include <cassert>
 #include <algorithm> // min, max
+#include <cassert>
 #include <cmath> // sin, cos
 #include <cstring> // for std::memcpy
+#include <memory> // destroy_at, construct_at
 #include <stdexcept>
 
 #include "Global/GLIncludes.h" //!<must be included before QGlWidget because of gl.h and glew.h
@@ -67,6 +68,56 @@
 
 
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief Deletes the GL objects of a viewer in its current context, which must be current, and returns
+ * it to its state before initializeGL(). QOpenGLWidget destroys its context whenever the widget moves to
+ * another top-level window and calls initializeGL() again in the new one, so nothing may outlive it.
+ **/
+template <class ViewerGLImpl>
+static void
+releaseViewerGLResources(ViewerGLImpl& imp)
+{
+    imp.deleteOCIOTextures();
+    imp.ocioShaderDesc.reset();
+    imp.shaderCacheID.clear();
+    if (imp.shaderRGB) {
+        imp.shaderRGB->removeAllShaders();
+        imp.shaderRGB.reset();
+    }
+    if (imp.shaderBlack) {
+        imp.shaderBlack->removeAllShaders();
+        imp.shaderBlack.reset();
+    }
+    imp.shaderLoaded = false;
+    for (int i = 0; i < 2; ++i) {
+        imp.displayTextures[i].texture.reset();
+    }
+    imp.partialUpdateTextures.clear();
+
+    if (appPTR && appPTR->isOpenGLLoaded()) {
+        glCheckError();
+        for (std::size_t i = 0; i < imp.pboIds.size(); ++i) {
+            glDeleteBuffers(1, &imp.pboIds[i]);
+        }
+        imp.pboIds.clear();
+        imp.updateViewerPboIndex = 0;
+        glDeleteBuffers(1, &imp.vboVerticesId);
+        glDeleteBuffers(1, &imp.vboTexturesId);
+        glDeleteBuffers(1, &imp.iboTriangleStripId);
+        imp.vboVerticesId = 0;
+        imp.vboTexturesId = 0;
+        imp.iboTriangleStripId = 0;
+        glDeleteTextures(1, &imp.checkerboardTextureID);
+        imp.checkerboardTextureID = 0;
+        glCheckError();
+    }
+
+    // The glyph atlases are textures of this context: delete them here, and let the next context
+    // build its own instead of binding these names.
+    std::destroy_at(&imp.textRenderer);
+    std::construct_at(&imp.textRenderer);
+}
 
 /*This class is the the core of the viewer : what displays images, overlays, etc...
    Everything related to OpenGL will (almost always) be in this class */
@@ -161,33 +212,12 @@ ViewerGL::Implementation::~Implementation()
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-    _this->makeCurrent();
-
-    deleteOCIOTextures();
-    if (shaderRGB) {
-        shaderRGB->removeAllShaders();
-        shaderRGB.reset();
-    }
-    if (shaderBlack) {
-        shaderBlack->removeAllShaders();
-        shaderBlack.reset();
-    }
-    for (int i = 0; i < 2; ++i) {
-        displayTextures[i].texture.reset();
-    }
-    partialUpdateTextures.clear();
-
-    if ( appPTR && appPTR->isOpenGLLoaded() ) {
-        glCheckError();
-        for (U32 i = 0; i < this->pboIds.size(); ++i) {
-            glDeleteBuffers(1, &this->pboIds[i]);
-        }
-        glCheckError();
-        glDeleteBuffers(1, &this->vboVerticesId);
-        glDeleteBuffers(1, &this->vboTexturesId);
-        glDeleteBuffers(1, &this->iboTriangleStripId);
-        glCheckError();
-        glDeleteTextures(1, &this->checkerboardTextureID);
+    // Without a context the GL objects were never created or were released with the last one.
+    if (QOpenGLContext* context = _this->context()) {
+        // ~QOpenGLWidget destroys the context once this object is gone.
+        QObject::disconnect(context, &QOpenGLContext::aboutToBeDestroyed, _this, nullptr);
+        _this->makeCurrent();
+        releaseViewerGLResources(*this);
     }
 }
 
@@ -450,6 +480,11 @@ ViewerGL::Implementation::initializeGL()
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     _this->makeCurrent();
+    // QOpenGLWidget keeps the dying context usable by makeCurrent() while it emits this.
+    QObject::connect(_this->context(), &QOpenGLContext::aboutToBeDestroyed, _this, [this]() {
+        _this->makeCurrent();
+        releaseViewerGLResources(*this);
+    });
     initAndCheckGlExtensions();
 
     int format, internalFormat, glType;

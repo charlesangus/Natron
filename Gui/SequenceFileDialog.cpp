@@ -286,7 +286,7 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
     _lookInCombobox = new FileDialogComboBox(this, _buttonsWidget);
     _lookInCombobox->setMinimumWidth(200);
     _buttonsLayout->addWidget(_lookInCombobox);
-    QObject::connect( _lookInCombobox, SIGNAL(activated(QString)), this, SLOT(onLookingComboboxChanged(QString)) );
+    QObject::connect(_lookInCombobox, &QComboBox::activated, this, &SequenceFileDialog::onLookingComboboxChanged);
     _lookInCombobox->setInsertPolicy(QComboBox::NoInsert);
     _lookInCombobox->setDuplicatesEnabled(false);
 
@@ -610,6 +610,7 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
 
 SequenceFileDialog::~SequenceFileDialog()
 {
+    teardownPreview();
     _model->resetCompletly(false);
 
     QSettings settings( QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME) );
@@ -945,7 +946,8 @@ SequenceFileDialog::onSelectionChanged()
     }
 
     ///refrsh preview if any
-    if ( _preview && _preview->viewerUI && _preview->viewerUI->isVisible() ) {
+    ViewerTab* previewViewer = attachedPreviewViewer();
+    if (previewViewer && previewViewer->isVisible()) {
         refreshPreviewAfterSelectionChange();
     }
 } // onSelectionChanged
@@ -1296,9 +1298,13 @@ void
 SequenceFileDialog::previousFolder()
 {
     if ( !_history.isEmpty() && (_currentHistoryLocation > 0) ) {
+        // pathChanged() recognises the entry at _currentHistoryLocation, so move first and
+        // move back if the folder can no longer be opened.
         --_currentHistoryLocation;
         QString previousHistory = _history.at(_currentHistoryLocation);
-        setDirectory(previousHistory);
+        if (!setDirectory(previousHistory)) {
+            ++_currentHistoryLocation;
+        }
     }
 }
 
@@ -1308,7 +1314,9 @@ SequenceFileDialog::nextFolder()
     if ( !_history.isEmpty() && (_currentHistoryLocation < _history.size() - 1) ) {
         ++_currentHistoryLocation;
         QString nextHistory = _history.at(_currentHistoryLocation);
-        setDirectory(nextHistory);
+        if (!setDirectory(nextHistory)) {
+            --_currentHistoryLocation;
+        }
     }
 }
 
@@ -1620,11 +1628,11 @@ SequenceFileDialog::autoCompleteFileName(const QString & text)
 }
 
 void
-SequenceFileDialog::onLookingComboboxChanged(const QString & /*path*/)
+SequenceFileDialog::onLookingComboboxChanged(int row)
 {
-    QModelIndex index = _lookInCombobox->model()->index( _lookInCombobox->currentIndex(),
-                                                         _lookInCombobox->modelColumn(),
-                                                         _lookInCombobox->rootModelIndex() );
+    QModelIndex index = _lookInCombobox->model()->index(row,
+                                                        _lookInCombobox->modelColumn(),
+                                                        _lookInCombobox->rootModelIndex());
 
     if ( !index.isValid() ) {
         return;
@@ -2649,73 +2657,111 @@ SequenceFileDialog::onSelectionLineEditing(const QString & text)
 void
 SequenceFileDialog::onTogglePreviewButtonClicked(bool toggled)
 {
-    _togglePreviewButton->setDown(toggled);
-    assert(_preview);
-    if (!_preview->viewerNode) {
-        createViewerPreviewNode();
+    ViewerTab* viewerUI = attachedPreviewViewer();
+    if (!viewerUI) {
+        qWarning("SequenceFileDialog: no preview viewer is available in this dialog");
+        _togglePreviewButton->setChecked(false);
+        _togglePreviewButton->setDown(false);
+
+        return;
     }
+    _togglePreviewButton->setDown(toggled);
+    viewerUI->setVisible(toggled);
     if (toggled) {
-        if ( !_preview->viewerUI->parentWidget() ) {
-            _centerAreaLayout->addWidget(_preview->viewerUI);
-        }
-        if ( !_preview->viewerUI->isVisible() ) {
-            _preview->viewerUI->setVisible(true);
-        }
         refreshPreviewAfterSelectionChange();
-    } else {
-        if ( _preview->viewerUI->isVisible() ) {
-            _preview->viewerUI->setVisible(false);
-        }
     }
 }
 
-void
+bool
 SequenceFileDialog::createViewerPreviewNode()
 {
     CreateNodeArgs args( PLUGINID_NATRON_VIEWER, NodeCollectionPtr() );
     args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, NATRON_FILE_DIALOG_PREVIEW_VIEWER_NAME);
     args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
 
-    _preview->viewerNodeInternal = _gui->getApp()->createNode(args);
-    assert(_preview->viewerNodeInternal);
-    NodeGuiIPtr viewerNodeGui = _preview->viewerNodeInternal->getNodeGui();
-    _preview->viewerNode = std::dynamic_pointer_cast<NodeGui>(viewerNodeGui);
-    assert(_preview->viewerNode);
-    _preview->viewerNode->hideGui();
+    NodePtr viewerNode = _gui->getApp()->createNode(args);
+    if (!viewerNode) {
+        return false;
+    }
+    NodeGuiPtr viewerNodeGui = std::dynamic_pointer_cast<NodeGui>(viewerNode->getNodeGui());
+    ViewerInstance* viewerInstance = viewerNode->isEffectViewer();
+    ViewerGL* viewerGL = viewerInstance ? dynamic_cast<ViewerGL*>(viewerInstance->getUiContext()) : 0;
+    ViewerTab* viewerUI = viewerGL ? viewerGL->getViewerTab() : 0;
+    if (!viewerNodeGui || !viewerUI) {
+        viewerNode->destroyNode(true, false);
 
-    ViewerInstance* viewerInstance = _preview->viewerNodeInternal->isEffectViewer();
-    assert(viewerInstance);
-    if (!viewerInstance) {
-        // coverity[dead_error_line]
-        return;
+        return false;
     }
-    ViewerGL* viewerGL = dynamic_cast<ViewerGL*>( viewerInstance->getUiContext() );
-    assert(viewerGL);
-    if (!viewerGL) {
-        // coverity[dead_error_line]
-        return;
-    }
-    _preview->viewerUI = viewerGL->getViewerTab();
-    assert(_preview->viewerUI);
-    if (!_preview->viewerUI) {
-        return;
-    }
-    _preview->viewerUI->setAsFileDialogViewer();
+    viewerNodeGui->hideGui();
+
+    viewerUI->setAsFileDialogViewer();
 
     ///Set a custom timeline so that it is not in synced with the rest of the viewers of the app
     TimeLinePtr newTimeline( new TimeLine(NULL) );
-    _preview->viewerUI->setCustomTimeline(newTimeline);
-    _preview->viewerUI->setClipToProject(false);
-    _preview->viewerUI->setLeftToolbarVisible(false);
-    _preview->viewerUI->setRightToolbarVisible(false);
-    _preview->viewerUI->setTopToolbarVisible(false);
-    _preview->viewerUI->setInfobarVisible(false);
-    _preview->viewerUI->setPlayerVisible(false);
-    TabWidget* parent = dynamic_cast<TabWidget*>( _preview->viewerUI->parentWidget() );
+    viewerUI->setCustomTimeline(newTimeline);
+    viewerUI->setClipToProject(false);
+    viewerUI->setLeftToolbarVisible(false);
+    viewerUI->setRightToolbarVisible(false);
+    viewerUI->setTopToolbarVisible(false);
+    viewerUI->setInfobarVisible(false);
+    viewerUI->setPlayerVisible(false);
+    TabWidget* parent = dynamic_cast<TabWidget*>(viewerUI->parentWidget());
     if (parent) {
-        parent->removeTab(_preview->viewerUI, true);
+        parent->removeTab(viewerUI, true);
     }
-    _preview->viewerUI->setParent(NULL);
+    viewerUI->hide();
+    viewerUI->setParent(NULL);
+
+    _preview->viewerNodeInternal = viewerNode;
+    _preview->viewerNode = viewerNodeGui;
+    _preview->viewerUI = viewerUI;
+
+    return true;
+}
+
+bool
+SequenceFileDialog::attachPreview()
+{
+    if (!_preview) {
+        return false;
+    }
+    if (!_preview->viewerUI && !createViewerPreviewNode()) {
+        return false;
+    }
+    ViewerTab* viewerUI = _preview->viewerUI;
+    if (viewerUI->parentWidget() == _centerArea) {
+        return true;
+    }
+    if (viewerUI->parentWidget()) {
+        // Another open file dialog shows the preview.
+        return false;
+    }
+    _centerAreaLayout->addWidget(viewerUI);
+    viewerUI->setVisible(false);
+
+    return true;
+}
+
+ViewerTab*
+SequenceFileDialog::attachedPreviewViewer() const
+{
+    if (!_preview || !_preview->viewerUI || (_preview->viewerUI->parentWidget() != _centerArea)) {
+        return 0;
+    }
+
+    return _preview->viewerUI;
+}
+
+void
+SequenceFileDialog::setVisible(bool visible)
+{
+    if (visible && _togglePreviewButton) {
+        const bool attached = attachPreview();
+        _togglePreviewButton->setChecked(false);
+        _togglePreviewButton->setDown(false);
+        _togglePreviewButton->setEnabled(attached);
+    }
+    QDialog::setVisible(visible);
 }
 
 NodePtr
@@ -2741,14 +2787,14 @@ SequenceFileDialog::findOrCreatePreviewReader(const std::string& filetype)
 void
 SequenceFileDialog::refreshPreviewAfterSelectionChange()
 {
-    if ( !_preview->viewerUI->isVisible() ) {
+    ViewerTab* viewerUI = attachedPreviewViewer();
+    if (!viewerUI || !viewerUI->isVisible() || !_preview->viewerNode) {
         return;
     }
 
     std::string pattern = selectedFiles();
     QString qpattern = QString::fromUtf8( pattern.c_str() );
     std::string ext = QtCompat::removeFileExtension(qpattern).toLower().toStdString();
-    assert(_preview->viewerNode);
 
     NodePtr currentInput = _preview->viewerNode->getNode()->getInput(0);
     if (currentInput) {
@@ -2768,26 +2814,33 @@ SequenceFileDialog::refreshPreviewAfterSelectionChange()
 
         double firstFrame, lastFrame;
         reader->getEffectInstance()->getFrameRange_public(reader->getHashValue(), &firstFrame, &lastFrame);
-        _preview->viewerUI->setTimelineBounds(firstFrame, lastFrame);
-        _preview->viewerUI->centerOn(firstFrame, lastFrame);
+        viewerUI->setTimelineBounds(firstFrame, lastFrame);
+        viewerUI->centerOn(firstFrame, lastFrame);
     }
-    _preview->viewerUI->getInternalNode()->renderCurrentFrame(true);
+    viewerUI->getInternalNode()->renderCurrentFrame(true);
 }
 
 ///Reset everything as it was prior to the dialog being opened, also avoid the nodes being deleted
 void
 SequenceFileDialog::teardownPreview()
 {
-    if (_preview && _preview->viewerUI) {
-        ///Don't delete the viewer when closing the dialog!
-        _centerAreaLayout->removeWidget(_preview->viewerUI);
-        _preview->viewerUI->setParent(NULL);
-        _preview->viewerUI->hide();
-        assert(_gui);
-        bool autoSetProjectFormatEnabled = _gui->getApp()->getProject()->isAutoSetProjectFormatEnabled();
-        if (autoSetProjectFormatEnabled != _wasAutosetProjectFormatEnabled) {
-            _gui->getApp()->getProject()->setAutoSetProjectFormatEnabled(_wasAutosetProjectFormatEnabled);
-        }
+    ViewerTab* viewerUI = attachedPreviewViewer();
+    if (!viewerUI) {
+        return;
+    }
+    /// Don't delete the viewer with the dialog: it is shared by all file dialogs.
+    viewerUI->abortRendering();
+    viewerUI->hide();
+    _centerAreaLayout->removeWidget(viewerUI);
+    viewerUI->setParent(NULL);
+    if (_togglePreviewButton) {
+        _togglePreviewButton->setChecked(false);
+        _togglePreviewButton->setDown(false);
+    }
+    assert(_gui);
+    bool autoSetProjectFormatEnabled = _gui->getApp()->getProject()->isAutoSetProjectFormatEnabled();
+    if (autoSetProjectFormatEnabled != _wasAutosetProjectFormatEnabled) {
+        _gui->getApp()->getProject()->setAutoSetProjectFormatEnabled(_wasAutosetProjectFormatEnabled);
     }
 }
 

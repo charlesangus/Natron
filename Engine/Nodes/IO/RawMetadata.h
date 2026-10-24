@@ -66,6 +66,7 @@
 #define kRawMetadataWbLateCorrection "raw/wb_late_correction"
 #define kRawMetadataWbD65Coeffs "raw/wb_d65_coeffs"
 #define kRawMetadataSensorWhiteLevel "raw/sensor_white_level"
+#define kRawMetadataCatApplied "raw/cat_applied"
 
 #define kRawCfaPatternNone "none"
 #define kRawStageRaw "raw"
@@ -282,6 +283,13 @@ void setWbD65Coeffs(ImageMetadata* metadata, const std::array<double, 3>& coeffs
  **/
 std::optional<std::array<double, 3>> getWbLateCorrection(const ImageMetadata& metadata);
 void setWbLateCorrection(ImageMetadata* metadata, const std::array<double, 3>& correction);
+
+/**
+ * @brief raw/cat_applied: 1 once a RawColorCalibration has adapted the illuminant to D50
+ * (darktable's chroma adaptation, the instance that owns the CAT). Absent until one has.
+ **/
+bool getCatApplied(const ImageMetadata& metadata);
+void setCatApplied(ImageMetadata* metadata);
 
 /**
  * @brief raw/make and raw/model: rawspeed's canonical camera names, the spelling darktable's

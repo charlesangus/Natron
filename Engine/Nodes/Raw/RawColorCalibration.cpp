@@ -31,15 +31,22 @@
 
 #include "RawColorCalibration.h"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <vector>
+
+#include <QStringList>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Raw/RawColorMath.h"
+#include "Engine/Nodes/Raw/RawTemperature.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 
@@ -54,8 +61,8 @@ struct IlluminantOption {
     const char* id;
 };
 
-// The illuminants darktable's combobox offers without a raw image. The detection modes need its
-// AI build, and the camera illuminant needs the raw file's white balance.
+// The illuminants darktable's combobox offers, the camera's last: reload_defaults() appends it for
+// a raw image only. The detection modes need darktable's AI build.
 const IlluminantOption kIlluminantOptions[] = {
     { Illuminant::Pipe, "pipe" },
     { Illuminant::A, "a" },
@@ -65,7 +72,24 @@ const IlluminantOption kIlluminantOptions[] = {
     { Illuminant::Led, "led" },
     { Illuminant::BlackBody, "blackBody" },
     { Illuminant::Custom, "custom" },
+    { Illuminant::Camera, "camera" },
 };
+
+const int kIlluminantCount = (int)(sizeof(kIlluminantOptions) / sizeof(kIlluminantOptions[0]));
+
+std::vector<ChoiceOption>
+illuminantChoiceOptions(bool withCamera)
+{
+    std::vector<ChoiceOption> options;
+
+    for (const IlluminantOption& option : kIlluminantOptions) {
+        if (withCamera || (option.illuminant != Illuminant::Camera)) {
+            options.push_back(ChoiceOption(option.id, EffectInstance::tr(illuminantLabel(option.illuminant)).toStdString(), std::string()));
+        }
+    }
+
+    return options;
+}
 
 const char* const kAdaptationIds[] = { "linearBradford", "cat16", "nonLinearBradford", "xyz", "none" };
 const char* const kFluorescentIds[] = { "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12" };
@@ -103,6 +127,115 @@ const char* const kRowHints[eRawColorCalibrationRowCount] = {
 const char* const kChannelNames[3] = { "R", "G", "B" };
 
 const char* const kGreyNormalizationDisabled = QT_TRANSLATE_NOOP("Natron::EffectInstance", "color calibration: the sum of the gray channel parameters is zero, normalization will be disabled.");
+const char* const kDoubleCat = QT_TRANSLATE_NOOP("Natron::EffectInstance", "double CAT applied: a RawColorCalibration upstream already provides chromatic adaptation. "
+                                                                           "This can lead to inconsistencies unless you know what you are doing.");
+const char* const kWhiteBalanceTwice = QT_TRANSLATE_NOOP("Natron::EffectInstance", "white balance applied twice: RawTemperature is not using the camera reference illuminant, "
+                                                                                   "which will cause issues here with chromatic adaptation. Either set it to Camera Reference "
+                                                                                   "(or As Shot to Reference) or disable chromatic adaptation here.");
+
+using Coeffs = std::array<double, 3>;
+
+// dt_dev_equal_chroma(): equal within 1e-5 per channel, compared in float.
+bool
+equalChroma(const Coeffs& a,
+            const Coeffs& b)
+{
+    for (int c = 0; c < 3; ++c) {
+        if (!(std::fabs((float)a[c] - (float)b[c]) < 0.00001f)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+Coeffs
+toCoeffs(const RawColorMath::Vec3& v)
+{
+    return Coeffs { v[0], v[1], v[2] };
+}
+
+// chroma D65coeffs: what RawTemperature published, else what it would publish.
+Coeffs
+d65Coeffs(const ImageMetadata& source)
+{
+    if (const std::optional<Coeffs> d65 = RawMetadata::getWbD65Coeffs(source)) {
+        return *d65;
+    }
+
+    return toCoeffs(RawTemperatureOp::modeMultipliers(eRawTemperatureModeCameraReference, source));
+}
+
+// chroma wb_coeffs: the multipliers RawTemperature applied, 1 without one. Once RawInputColor has
+// applied the late correction it rewrites raw/wb_applied to the D65 multipliers, where darktable's
+// chroma keeps the white balance module's: D65 / late correction.
+Coeffs
+chromaWbCoeffs(const ImageMetadata& source)
+{
+    const std::optional<Coeffs> applied = RawMetadata::getWbApplied(source);
+
+    if (!applied) {
+        return Coeffs { 1., 1., 1. };
+    }
+    const std::optional<Coeffs> late = RawMetadata::getWbLateCorrection(source);
+    const std::optional<Coeffs> d65 = RawMetadata::getWbD65Coeffs(source);
+    if (late && d65 && equalChroma(*applied, *d65)) {
+        Coeffs wb = *applied;
+        for (int c = 0; c < 3; ++c) {
+            if ((*late)[c] != 0.) {
+                wb[c] = (*d65)[c] / (*late)[c];
+            }
+        }
+
+        return wb;
+    }
+
+    return *applied;
+}
+
+// _dev_is_D65_chroma().
+bool
+isD65Chroma(const ImageMetadata& source)
+{
+    const Coeffs wb = chromaWbCoeffs(source);
+
+    if (RawMetadata::getWbLateCorrection(source)) {
+        return equalChroma(wb, toCoeffs(RawTemperatureOp::modeMultipliers(eRawTemperatureModeAsShot, source)));
+    }
+
+    return equalChroma(wb, d65Coeffs(source));
+}
+
+// The image fields find_temperature_from_raw_coeffs() reads: the as-shot coefficients and the
+// XYZ to camera matrices. raw/cam_to_xyz is the inverse of darktable's adobe_XYZ_to_CAM.
+RawCameraWhite
+cameraWhite(const ImageMetadata& source)
+{
+    RawCameraWhite camera;
+
+    camera.matrixCorrectionSupported = rawColorCalibrationIsRawSource(source);
+    if (const std::optional<Coeffs> wb = RawMetadata::getWbCoeffs(source)) {
+        camera.wbCoeffs = { (float)(*wb)[0], (float)(*wb)[1], (float)(*wb)[2], 0.f };
+    }
+    if (const std::optional<std::array<double, 9>> dng = RawMetadata::getDngD65Matrix(source)) {
+        Mat3 m;
+        for (int i = 0; i < 9; ++i) {
+            m[i] = (float)(*dng)[i];
+        }
+        camera.d65ColorMatrix = m;
+    }
+    if (const std::optional<std::array<double, 9>> camToXyz = RawMetadata::getCamToXyz(source)) {
+        if (const std::optional<RawColorMath::Mat3> xyzToCam = RawColorMath::invert(*camToXyz)) {
+            Mat3 m;
+            for (int i = 0; i < 9; ++i) {
+                m[i] = (float)(*xyzToCam)[i];
+            }
+            camera.adobeXyzToCam = m;
+        }
+    }
+
+    return camera;
+}
 
 KnobGroupPtr
 addTab(KnobHolder* holder,
@@ -220,23 +353,81 @@ enumAt(int index,
 Illuminant
 rawColorCalibrationIlluminantAt(int index)
 {
-    const int count = (int)(sizeof(kIlluminantOptions) / sizeof(kIlluminantOptions[0]));
-
-    return (index >= 0 && index < count) ? kIlluminantOptions[index].illuminant : Illuminant::D;
+    return (index >= 0 && index < kIlluminantCount) ? kIlluminantOptions[index].illuminant : Illuminant::D;
 }
 
 int
 rawColorCalibrationIlluminantIndex(Illuminant illuminant)
 {
-    const int count = (int)(sizeof(kIlluminantOptions) / sizeof(kIlluminantOptions[0]));
-
-    for (int i = 0; i < count; ++i) {
+    for (int i = 0; i < kIlluminantCount; ++i) {
         if (kIlluminantOptions[i].illuminant == illuminant) {
             return i;
         }
     }
 
     return -1;
+}
+
+bool
+rawColorCalibrationIsRawSource(const ImageMetadata& source)
+{
+    return RawMetadata::getWbCoeffs(source) || RawMetadata::getCamToXyz(source) || RawMetadata::getDngD65Matrix(source) || RawMetadata::getMake(source);
+}
+
+bool
+rawColorCalibrationWhiteBalanceRatio(const ImageMetadata& source,
+                                     Vec4* customWb)
+{
+    *customWb = { 1.f, 1.f, 1.f, 1.f };
+    if (!rawColorCalibrationIsRawSource(source)) {
+        return true;
+    }
+    if (isD65Chroma(source)) {
+        return false;
+    }
+    const Coeffs d65 = d65Coeffs(source);
+    const Coeffs wb = chromaWbCoeffs(source);
+    const bool valid = (d65[0] > 0.) && (d65[1] > 0.) && (d65[2] > 0.);
+    const bool changed = ((float)wb[0] > 1.f) || ((float)wb[1] > 1.f) || ((float)wb[2] > 1.f);
+    // A white balance other than the reference, a preset say: the ratio that takes it to D65.
+    if (valid && changed) {
+        for (int c = 0; c < 3; ++c) {
+            (*customWb)[c] = (float)d65[c] / (float)wb[c];
+        }
+    }
+
+    return false;
+}
+
+RawColorCalibrationSourceDefaults
+rawColorCalibrationSourceDefaults(const ImageMetadata& source)
+{
+    const CalibrationSettings defaults;
+    RawColorCalibrationSourceDefaults d = { defaults.illuminant, defaults.adaptation, defaults.temperature, defaults.x, defaults.y };
+
+    // darktable also falls back to the plain channel mixer for a monochrome image, which nothing
+    // marks once RawDemosaic has dropped the mosaic's description.
+    if (RawMetadata::getCatApplied(source)) {
+        d.illuminant = Illuminant::Pipe;
+        d.adaptation = Adaptation::Rgb;
+
+        return d;
+    }
+    d.adaptation = Adaptation::Cat16;
+    Vec4 customWb;
+    if (!rawColorCalibrationWhiteBalanceRatio(source, &customWb)) {
+        if (const std::optional<Xy> xy = findTemperatureFromRawCoeffs(cameraWhite(source), &customWb)) {
+            d.x = xy->x;
+            d.y = xy->y;
+            d.illuminant = Illuminant::Camera;
+        }
+        const DaylightCheck check = checkIfCloseToDaylight(d.x, d.y);
+        d.temperature = check.temperature;
+        d.illuminant = check.illuminant;
+        d.adaptation = check.adaptation;
+    }
+
+    return d;
 }
 
 std::string
@@ -284,6 +475,12 @@ RawColorCalibrationOp::createKnobs(KnobHolder* knobHolder,
 
     KnobGroupPtr cat = addTab(knobHolder, page, kRawColorCalibrationTabCat, "CAT", "Chromatic adaptation transform.");
 
+    catOverride = addBool(knobHolder, cat, kRawColorCalibrationParamCatOverride, EffectInstance::tr("Override File Defaults"),
+                          EffectInstance::tr("Use the adaptation, illuminant and temperature below instead of the ones the source calls for: "
+                                             "for a raw file, CAT16 on the camera's white balance, as a daylight, a black body or a custom illuminant; "
+                                             "pipe and none when a RawColorCalibration upstream already adapts; D 5003 K otherwise."),
+                          false);
+
     std::vector<ChoiceOption> adaptationOptions;
     for (int i = 0; i < static_cast<int>(Adaptation::Last); ++i) {
         adaptationOptions.push_back(ChoiceOption(kAdaptationIds[i], EffectInstance::tr(adaptationLabel(static_cast<Adaptation>(i))).toStdString(), std::string()));
@@ -310,13 +507,10 @@ RawColorCalibrationOp::createKnobs(KnobHolder* knobHolder,
     cat->addKnob(cct);
     approxCct = cct;
 
-    std::vector<ChoiceOption> illuminantOptions;
-    for (const IlluminantOption& option : kIlluminantOptions) {
-        illuminantOptions.push_back(ChoiceOption(option.id, EffectInstance::tr(illuminantLabel(option.illuminant)).toStdString(), std::string()));
-    }
     illuminant = addChoice(knobHolder, cat, kRawColorCalibrationParamIlluminant, "Illuminant",
-                           "The illuminant of the scene, which the adaptation turns into D50 white.",
-                           illuminantOptions, rawColorCalibrationIlluminantIndex(defaults.illuminant));
+                           "The illuminant of the scene, which the adaptation turns into D50 white. "
+                           "As shot in camera, offered for a raw file, follows the white balance RawTemperature applies, at every render.",
+                           illuminantChoiceOptions(true), rawColorCalibrationIlluminantIndex(defaults.illuminant));
 
     std::vector<ChoiceOption> fluorescentOptions;
     for (int i = 0; i < static_cast<int>(Fluorescent::Last); ++i) {
@@ -464,7 +658,7 @@ RawColorCalibrationOp::workingToXyzD50(const KnobHolder* knobHolder)
 
 RawColorCalibrationOp::Params
 RawColorCalibrationOp::bake(const KnobReader& reader,
-                            const ImageMetadata& /*source*/) const
+                            const ImageMetadata& source) const
 {
     const Mat3 toXyz = workingToXyzD50(holder);
     RawColorMath::Mat3 toXyzDouble;
@@ -477,7 +671,21 @@ RawColorCalibrationOp::bake(const KnobReader& reader,
         fromXyz[i] = inverse ? (float)(*inverse)[i] : (((i % 4) == 0) ? 1.f : 0.f);
     }
 
-    return makeKernel(settings(reader), toXyz, fromXyz, nullptr, nullptr);
+    CalibrationSettings s = settings(reader);
+    if (!reader.valueOr(catOverride, false)) {
+        const RawColorCalibrationSourceDefaults d = rawColorCalibrationSourceDefaults(source);
+        s.illuminant = d.illuminant;
+        s.adaptation = d.adaptation;
+        s.temperature = d.temperature;
+        s.x = d.x;
+        s.y = d.y;
+    }
+    // The camera illuminant is found again at every render, from the white balance upstream.
+    const RawCameraWhite camera = cameraWhite(source);
+    Vec4 customWb;
+    (void)rawColorCalibrationWhiteBalanceRatio(source, &customWb);
+
+    return makeKernel(s, toXyz, fromXyz, &camera, &customWb);
 }
 
 bool
@@ -526,6 +734,7 @@ RawColorCalibrationOp::gpu(const Params& /*params*/) const
 RawColorCalibration::RawColorCalibration(NodePtr node)
     : ImageNode<RawColorCalibrationOp>(node)
     , _message()
+    , _lastIlluminant(CalibrationSettings().illuminant)
     , _lastDaylightTemperature(CalibrationSettings().temperature)
     , _lastBlackBodyTemperature(CalibrationSettings().temperature)
     , _syncing(false)
@@ -608,7 +817,11 @@ RawColorCalibration::showIlluminant()
     chromaKnob->setValue(lch[1]);
 
     Xy xy = { px, py };
-    const std::optional<Xy> found = illuminantToXy(rawColorCalibrationIlluminantAt(illuminantKnob->getValue()), nullptr, nullptr, (float)temperatureKnob->getValue(),
+    const ImageMetadata source = getSourceMetadata(getCurrentTime(), ViewIdx(0));
+    const RawCameraWhite camera = cameraWhite(source);
+    Vec4 customWb;
+    (void)rawColorCalibrationWhiteBalanceRatio(source, &customWb);
+    const std::optional<Xy> found = illuminantToXy(rawColorCalibrationIlluminantAt(illuminantKnob->getValue()), &camera, &customWb, (float)temperatureKnob->getValue(),
                                                    enumAt(fluorescentKnob->getValue(), Fluorescent::Last, Fluorescent::F3), enumAt(ledKnob->getValue(), Led::Last, Led::B5));
     if (found) {
         xy = *found;
@@ -632,9 +845,27 @@ RawColorCalibration::syncIlluminant(bool illuminantChanged,
     if (!illuminantKnob || !fluorescentKnob || !ledKnob || !temperatureKnob || !xKnob || !yKnob) {
         return;
     }
+    const KnobChoicePtr adaptationKnob = o.adaptation.lock();
     const Illuminant illuminant = rawColorCalibrationIlluminantAt(illuminantKnob->getValue());
     float temperature = (float)temperatureKnob->getValue();
+    float px = (float)xKnob->getValue();
+    float py = (float)yKnob->getValue();
+    std::optional<Adaptation> adaptation;
 
+    // Leaving the camera illuminant starts from the camera's white balance, and so does choosing
+    // it: x and y from the raw coefficients, the temperature and the adaptation that suit them.
+    if (illuminantChanged && ((_lastIlluminant == Illuminant::Camera) || (illuminant == Illuminant::Camera)) && (_lastIlluminant != illuminant)) {
+        const ImageMetadata source = getSourceMetadata(getCurrentTime(), ViewIdx(0));
+        Vec4 customWb;
+        (void)rawColorCalibrationWhiteBalanceRatio(source, &customWb);
+        if (const std::optional<Xy> xy = findTemperatureFromRawCoeffs(cameraWhite(source), &customWb)) {
+            px = xy->x;
+            py = xy->y;
+        }
+        const DaylightCheck check = checkIfCloseToDaylight(px, py);
+        temperature = check.temperature;
+        adaptation = check.adaptation;
+    }
     if (illuminantChanged) {
         if (illuminant == Illuminant::D) {
             temperature = _lastDaylightTemperature;
@@ -649,8 +880,6 @@ RawColorCalibration::syncIlluminant(bool illuminantChanged,
             _lastBlackBodyTemperature = temperature;
         }
     }
-    float px = (float)xKnob->getValue();
-    float py = (float)yKnob->getValue();
     if ((illuminant != Illuminant::Custom) && (illuminant != Illuminant::Camera)) {
         const std::optional<Xy> found = illuminantToXy(illuminant, nullptr, nullptr, temperature,
                                                        enumAt(fluorescentKnob->getValue(), Fluorescent::Last, Fluorescent::F3), enumAt(ledKnob->getValue(), Led::Last, Led::B5));
@@ -674,7 +903,11 @@ RawColorCalibration::syncIlluminant(bool illuminantChanged,
     if ((float)temperatureKnob->getValue() != temperature) {
         temperatureKnob->setValue(temperature);
     }
+    if (adaptation && adaptationKnob && (adaptationKnob->getValue() != static_cast<int>(*adaptation))) {
+        adaptationKnob->setValue(static_cast<int>(*adaptation));
+    }
     _syncing = wasSyncing;
+    _lastIlluminant = illuminant;
 }
 
 void
@@ -706,12 +939,13 @@ RawColorCalibration::applyHueChroma()
 }
 
 void
-RawColorCalibration::refreshGreyWarning()
+RawColorCalibration::refreshWarnings()
 {
     const RawColorCalibrationOp& o = op();
     const KnobBoolPtr normalizeGrey = o.normalize[eRawColorCalibrationRowGrey].lock();
     float grey[3] = { 0.f, 0.f, 0.f };
     bool used = false;
+    QStringList warnings;
 
     for (int c = 0; c < 3; ++c) {
         const KnobDoublePtr knob = o.rows[eRawColorCalibrationRowGrey][c].lock();
@@ -719,10 +953,174 @@ RawColorCalibration::refreshGreyWarning()
         used = used || (grey[c] != 0.f);
     }
     if (used && normalizeGrey && normalizeGrey->getValue() && (grey[0] + grey[1] + grey[2] == 0.f)) {
-        _message.post(getNode(), eMessageTypeWarning, tr(kGreyNormalizationDisabled).toStdString());
-    } else {
-        _message.withdraw(getNode());
+        warnings.push_back(tr(kGreyNormalizationDisabled));
     }
+
+    // _set_trouble_messages(). RawTemperature applying a white balance stands for darktable's
+    // enabled white balance module, without which darktable posts nothing; so its third
+    // problem, a white balance disabled but enabled by default, cannot arise.
+    const KnobChoicePtr illuminantKnob = o.illuminant.lock();
+    const KnobChoicePtr adaptationKnob = o.adaptation.lock();
+    if (getInput(getSourceInput()) && illuminantKnob && adaptationKnob) {
+        const ImageMetadata source = getSourceMetadata(getCurrentTime(), ViewIdx(0));
+        Illuminant illuminant = rawColorCalibrationIlluminantAt(illuminantKnob->getValue());
+        Adaptation adaptation = enumAt(adaptationKnob->getValue(), Adaptation::Last, Adaptation::Rgb);
+        const KnobBoolPtr overrideKnob = o.catOverride.lock();
+        if (overrideKnob && !overrideKnob->getValue()) {
+            const RawColorCalibrationSourceDefaults d = rawColorCalibrationSourceDefaults(source);
+            illuminant = d.illuminant;
+            adaptation = d.adaptation;
+        }
+        const bool valid = (illuminant != Illuminant::Pipe) && (adaptation != Adaptation::Rgb);
+        const bool temperatureEnabled = RawMetadata::getWbApplied(source).has_value();
+        const bool upstreamCat = RawMetadata::getCatApplied(source);
+        if (valid && temperatureEnabled && upstreamCat) {
+            warnings.push_back(tr(kDoubleCat));
+        } else if (valid && temperatureEnabled && !upstreamCat && rawColorCalibrationIsRawSource(source) && !isD65Chroma(source)) {
+            warnings.push_back(tr(kWhiteBalanceTwice));
+        }
+    }
+
+    if (warnings.isEmpty()) {
+        _message.withdraw(getNode());
+    } else {
+        _message.post(getNode(), eMessageTypeWarning, warnings.join(QString::fromUtf8("\n")).toStdString());
+    }
+}
+
+void
+RawColorCalibration::refreshEnabled()
+{
+    const RawColorCalibrationOp& o = op();
+    const KnobBoolPtr overrideKnob = o.catOverride.lock();
+    const KnobChoicePtr illuminantKnob = o.illuminant.lock();
+
+    if (!overrideKnob || !illuminantKnob) {
+        return;
+    }
+    const bool overridden = overrideKnob->getValue();
+    const KnobIPtr knobs[] = { illuminantKnob, o.temperature.lock(), o.hue.lock(), o.chroma.lock(), o.x.lock(), o.y.lock() };
+    for (const KnobIPtr& knob : knobs) {
+        if (knob) {
+            knob->setAllDimensionsEnabled(overridden);
+        }
+    }
+    // gui_update(): the camera illuminant sets its own adaptation.
+    if (const KnobChoicePtr adaptationKnob = o.adaptation.lock()) {
+        adaptationKnob->setAllDimensionsEnabled(overridden && (rawColorCalibrationIlluminantAt(illuminantKnob->getValue()) != Illuminant::Camera));
+    }
+}
+
+void
+RawColorCalibration::showSourceDefaults()
+{
+    const RawColorCalibrationOp& o = op();
+    const KnobBoolPtr overrideKnob = o.catOverride.lock();
+    const KnobChoicePtr illuminantKnob = o.illuminant.lock();
+    const KnobChoicePtr adaptationKnob = o.adaptation.lock();
+    const KnobDoublePtr temperatureKnob = o.temperature.lock();
+    const KnobDoublePtr xKnob = o.x.lock();
+    const KnobDoublePtr yKnob = o.y.lock();
+
+    if (!overrideKnob || !illuminantKnob || !adaptationKnob || !temperatureKnob || !xKnob || !yKnob || overrideKnob->getValue() || !getInput(getSourceInput())) {
+        return;
+    }
+    const RawColorCalibrationSourceDefaults d = rawColorCalibrationSourceDefaults(getSourceMetadata(getCurrentTime(), ViewIdx(0)));
+    const bool wasSyncing = _syncing;
+    _syncing = true;
+    const int illuminantIndex = rawColorCalibrationIlluminantIndex(d.illuminant);
+    if (illuminantKnob->getValue() != illuminantIndex) {
+        illuminantKnob->setValue(illuminantIndex);
+    }
+    if (adaptationKnob->getValue() != static_cast<int>(d.adaptation)) {
+        adaptationKnob->setValue(static_cast<int>(d.adaptation));
+    }
+    if ((float)temperatureKnob->getValue() != d.temperature) {
+        temperatureKnob->setValue(d.temperature);
+    }
+    if ((float)xKnob->getValue() != d.x) {
+        xKnob->setValue(d.x);
+    }
+    if ((float)yKnob->getValue() != d.y) {
+        yKnob->setValue(d.y);
+    }
+    _syncing = wasSyncing;
+    _lastIlluminant = d.illuminant;
+    _lastDaylightTemperature = d.temperature;
+    _lastBlackBodyTemperature = d.temperature;
+    refreshVisibility();
+    showIlluminant();
+}
+
+void
+RawColorCalibration::refreshCameraOption()
+{
+    const KnobChoicePtr illuminantKnob = op().illuminant.lock();
+
+    if (!illuminantKnob || !getInput(getSourceInput())) {
+        return;
+    }
+    const int cameraIndex = rawColorCalibrationIlluminantIndex(Illuminant::Camera);
+    const bool offered = illuminantKnob->getNumEntries() > cameraIndex;
+    const bool wanted = rawColorCalibrationIsRawSource(getSourceMetadata(getCurrentTime(), ViewIdx(0))) || (illuminantKnob->getValue() == cameraIndex);
+    if (offered != wanted) {
+        illuminantKnob->populateChoices(illuminantChoiceOptions(wanted));
+    }
+}
+
+ImageMetadata
+RawColorCalibration::deriveOutputMetadata(double time,
+                                          ViewIdx view)
+{
+    ImageMetadata metadata = ImageNode<RawColorCalibrationOp>::deriveOutputMetadata(time, view);
+    const RawColorCalibrationOp& o = op();
+    const KnobBoolPtr overrideKnob = o.catOverride.lock();
+    const KnobChoicePtr illuminantKnob = o.illuminant.lock();
+    const KnobChoicePtr adaptationKnob = o.adaptation.lock();
+
+    if (!overrideKnob || !illuminantKnob || !adaptationKnob) {
+        return metadata;
+    }
+    Illuminant illuminant;
+    Adaptation adaptation;
+    if (overrideKnob->getValue()) {
+        illuminant = rawColorCalibrationIlluminantAt(illuminantKnob->getValue());
+        adaptation = enumAt(adaptationKnob->getValue(), Adaptation::Last, Adaptation::Rgb);
+    } else {
+        const RawColorCalibrationSourceDefaults d = rawColorCalibrationSourceDefaults(getSourceMetadata(time, view));
+        illuminant = d.illuminant;
+        adaptation = d.adaptation;
+    }
+    // The camera illuminant always adapts by CAT16 (_check_if_close_to_daylight()).
+    if (illuminant == Illuminant::Camera) {
+        adaptation = Adaptation::Cat16;
+    }
+    if ((illuminant != Illuminant::Pipe) && (adaptation != Adaptation::Rgb)) {
+        RawMetadata::setCatApplied(&metadata);
+    }
+
+    return metadata;
+}
+
+void
+RawColorCalibration::onInputChanged(int /*inputNo*/)
+{
+    refreshCameraOption();
+    showSourceDefaults();
+    refreshEnabled();
+    showIlluminant();
+    refreshWarnings();
+}
+
+void
+RawColorCalibration::onMetadataRefreshed(const NodeMetadata& metadata)
+{
+    ImageNode<RawColorCalibrationOp>::onMetadataRefreshed(metadata);
+    refreshCameraOption();
+    showSourceDefaults();
+    refreshEnabled();
+    showIlluminant();
+    refreshWarnings();
 }
 
 void
@@ -734,10 +1132,16 @@ RawColorCalibration::onKnobsLoaded()
         _lastDaylightTemperature = (float)temperatureKnob->getDefaultValue(0);
         _lastBlackBodyTemperature = _lastDaylightTemperature;
     }
+    if (const KnobChoicePtr illuminantKnob = op().illuminant.lock()) {
+        _lastIlluminant = rawColorCalibrationIlluminantAt(illuminantKnob->getValue());
+    }
+    refreshCameraOption();
+    showSourceDefaults();
     refreshVisibility();
+    refreshEnabled();
     refreshVersionVisibility();
     showIlluminant();
-    refreshGreyWarning();
+    refreshWarnings();
 }
 
 bool
@@ -759,21 +1163,31 @@ RawColorCalibration::knobChanged(KnobI* k,
     const bool isHueChroma = is(o.hue) || is(o.chroma);
     const bool isXy = is(o.x) || is(o.y);
     const bool isAdaptation = is(o.adaptation);
+    const bool isOverride = is(o.catOverride);
     bool isGrey = is(o.normalize[eRawColorCalibrationRowGrey]);
     for (int c = 0; c < 3; ++c) {
         isGrey = isGrey || is(o.rows[eRawColorCalibrationRowGrey][c]);
     }
 
-    if (!isIlluminant && !isSource && !isTemperature && !isHueChroma && !isXy && !isAdaptation && !isGrey) {
+    if (!isIlluminant && !isSource && !isTemperature && !isHueChroma && !isXy && !isAdaptation && !isGrey && !isOverride) {
         return false;
     }
     if (isGrey) {
-        refreshGreyWarning();
+        refreshWarnings();
+
+        return true;
+    }
+    if (isOverride) {
+        showSourceDefaults();
+        refreshEnabled();
+        refreshWarnings();
 
         return true;
     }
     if (isIlluminant || isAdaptation) {
         refreshVisibility();
+        refreshEnabled();
+        refreshWarnings();
     }
     if (isAdaptation) {
         return true;
@@ -783,6 +1197,10 @@ RawColorCalibration::knobChanged(KnobI* k,
     // A load or a time change sets every knob to what was saved, which is already consistent;
     // only an edit moves the others.
     if (_syncing || loading || (reason == eValueChangedReasonTimeChanged) || (reason == eValueChangedReasonSlaveRefresh) || (reason == eValueChangedReasonRestoreDefault)) {
+        if (isIlluminant && !_syncing) {
+            _lastIlluminant = rawColorCalibrationIlluminantAt(op().illuminant.lock()->getValue());
+        }
+
         return true;
     }
     if (isHueChroma) {

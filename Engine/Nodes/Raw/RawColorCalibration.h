@@ -22,7 +22,9 @@
  * release-5.6.2 (commit 20891f6c6fa7), src/iop/channelmixerrgb.c, Copyright (C) 2020-2026
  * darktable developers, distributed under the GNU GPL version 3 or later: its params, their
  * defaults and ranges, its notebook pages, _update_illuminants(), _update_approx_cct(),
- * _illum_xy_callback() and gui_changed(). The pixel maths are in RawColorCalibrationMath.
+ * _illum_xy_callback(), gui_changed(), reload_defaults(), _get_white_balance_coeff(),
+ * _dev_is_D65_chroma(), _declare_cat_on_pipe() and _set_trouble_messages(). The pixel maths are
+ * in RawColorCalibrationMath.
  */
 
 #ifndef Engine_Nodes_Raw_RawColorCalibration_h
@@ -46,6 +48,7 @@
 #define PLUGINID_NATRON_RAWCOLORCALIBRATION "fr.natron.RawColorCalibration"
 #define PLUGIN_MAJOR_NATRON_RAWCOLORCALIBRATION 1
 
+#define kRawColorCalibrationParamCatOverride "catOverride"
 #define kRawColorCalibrationParamAdaptation "adaptation"
 #define kRawColorCalibrationParamApproxCct "approxCct"
 #define kRawColorCalibrationParamIlluminant "illuminant"
@@ -115,6 +118,38 @@ std::string rawColorCalibrationNormalizeKnobName(RawColorCalibrationRowEnum row)
 std::string rawColorCalibrationCctText(float x,
                                        float y);
 
+/**
+ * @brief darktable's reload_defaults() for the image source describes: the illuminant, the
+ * adaptation, the temperature and the chromaticity the node uses while its Override File
+ * Defaults is off. Pipe and none when a RawColorCalibration upstream already adapts
+ * (raw/cat_applied); for a raw source, the camera's white balance through
+ * find_temperature_from_raw_coeffs() and _check_if_close_to_daylight(); D 5003 K and CAT16
+ * otherwise.
+ **/
+struct RawColorCalibrationSourceDefaults {
+    RawColorCalibrationMath::Illuminant illuminant;
+    RawColorCalibrationMath::Adaptation adaptation;
+    float temperature;
+    float x;
+    float y;
+};
+
+RawColorCalibrationSourceDefaults rawColorCalibrationSourceDefaults(const ImageMetadata& source);
+
+/**
+ * @brief Whether source comes from a camera raw file, whose white balance the camera illuminant
+ * reads (darktable's dt_image_is_matrix_correction_supported()).
+ **/
+bool rawColorCalibrationIsRawSource(const ImageMetadata& source);
+
+/**
+ * @brief darktable's _get_white_balance_coeff() on source's raw/ metadata: the ratio of the D65
+ * multipliers to the ones RawTemperature applied, 1 when it applied the camera reference (or the
+ * as-shot ones with the late correction). True, with a ratio of 1, for a source that is not raw.
+ **/
+bool rawColorCalibrationWhiteBalanceRatio(const ImageMetadata& source,
+                                          RawColorCalibrationMath::Vec4* customWb);
+
 inline constexpr InputSpec kRawColorCalibrationInputs[] = {
     InputSpec { .label = "Source" },
 };
@@ -173,6 +208,7 @@ struct RawColorCalibrationOp {
     static RawColorCalibrationMath::Mat3 workingToXyzD50(const KnobHolder* holder);
 
     KnobHolder* holder = nullptr;
+    KnobBoolWPtr catOverride;
     KnobChoiceWPtr adaptation;
     KnobStringWPtr approxCct;
     KnobChoiceWPtr illuminant;
@@ -213,6 +249,24 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+
+    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+
+    // raw/cat_applied while the node adapts (darktable's _declare_cat_on_pipe()).
+    virtual ImageMetadata deriveOutputMetadata(double time,
+                                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // While Override File Defaults is off the CAT knobs show the source's defaults and are
+    // disabled; the adaptation is disabled while the illuminant is the camera's.
+    void refreshEnabled();
+
+    // reload_defaults() into the knobs, while Override File Defaults is off.
+    void showSourceDefaults();
+
+    // The camera illuminant is offered for a raw source only (or while it is the value).
+    void refreshCameraOption();
+
     // _update_illuminants().
     void refreshVisibility();
 
@@ -226,12 +280,14 @@ private:
     void syncIlluminant(bool illuminantChanged,
                         bool temperatureChanged);
 
-    void refreshGreyWarning();
+    // The gray normalization warning and _set_trouble_messages(), in the node's one message.
+    void refreshWarnings();
 
     // gui_update() shows the saturation algorithm only for an edit made before version 3.
     void refreshVersionVisibility();
 
     RawNodeSupport::OwnedMessage _message;
+    RawColorCalibrationMath::Illuminant _lastIlluminant;
     float _lastDaylightTemperature;
     float _lastBlackBodyTemperature;
     bool _syncing;

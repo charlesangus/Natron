@@ -184,11 +184,22 @@ Triage of the baseline: P2.T1 (GlInterop) and P2.T4 (device limits) were not tri
   - verify: the test passes 3 times in a row on the RTX 3070 Ti and on lavapipe CI.
   - size: M
 
-- [ ] M91.P2.T6 — Gate build for the Phase 2 fixes
+- [x] M91.P2.T6 — Gate build for the Phase 2 fixes
   - files: none in code. Output goes to `.local/m91/p2/`.
   - approach: one remote `fast --tests` on the milestone HEAD carrying every P2 fix. Rerun P1.T4 (a) and (b) and the P1.T5 checks from the new build tree and AppImage.
   - verify: every gpu-labelled suite and the engine ctest (both schedulers, `NATRON_GPU=force`) pass on the RTX 3070 Ti. The remote CI legs on lavapipe are green. Failures filed as follow-ups are listed.
   - size: M
+
+P2.T6 result (2026-10-24, build f2cb62759, CI run 40058465161; artifacts in `.local/m91/p2/`, same recipe as P1.T4):
+
+| Run | Total | Pass | Fail | Device |
+|---|---|---|---|---|
+| `ctest -L gpu` (REQUIRE_GPU, REQUIRE_GPU_HARDWARE) | 47 | 47 | 0 | RTX 3070 Ti |
+| engine ctest, `NATRON_GPU=force`, legacy | 335 | 335 | 0 | RTX 3070 Ti |
+| engine ctest, `NATRON_GPU=force`, taskgraph | 335 | 335 | 0 | RTX 3070 Ti |
+
+- Lut2DLinear/Lut3DLinear pass in both registrations. `RegionMembersAreTimedOnTheDevice` passes 3/3 standalone and in both full runs. The new GpuTransfer staged-reason tests pass. `PipelinedFramesTimeline` passed in every run.
+- The t5 render (keying_grade, auto, taskgraph, frames 1-6) used host-import for all 46 uploads and 46 downloads, with 0 staged and no `host import ... failed` line. The earlier 11 staged transfers did not recur, and no driver import refusal was seen.
 
 ## Phase 91.3: Viewer hand-off on NVIDIA GL (⚑ start after M107 - GPU Viewer Hand-off merges)
 

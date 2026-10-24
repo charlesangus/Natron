@@ -81,3 +81,8 @@ Tasks are inserted from M156.P1.T2's attribution.
   - **Comp sizes:** the comps' 8K case records the same bytes as UHD (UHD sources), so 8K adds no information for these comps.
   - **Host changes:** RAM is ~62 GB available now (M109 saw ~91 GB), and `/dev/shm` is 64 MB.
 - 2026-10-23 — **`transferExposedMs` stays host-measured** (PM). It measures exposure, which is what the gate judges; device copy times are added beside it, not in place of it.
+- 2026-10-23 — **M156.P1.T3 code in (`d4eb41d68`), awaiting the remote build.**
+  - **Pools:** the timestamp pool code is factored into `createQueries(nStrips, timeMembers)`, and the pipelined layout is unchanged. Whole regions and serial strips get pools only when profiling, reset on the compute queue before any copy, and read once at the end.
+  - **Record:** `GpuDownloadRecord` → `GpuTransferRecord` (+`pinned`), and `recordDownloads` → `recordTransfers`. A new `uploads` list comes first. Pinned downloads are recorded (`deviceMs` null) and counted in `downloadBytes`. `ownDownloadBytes()` excludes them, so the cost model's `observeTransfer`/`predictedTransferMs` see exactly what they did before.
+  - **Test:** renamed to `RegionRecordListsEveryTransferAndTheirBytesAddUp`, plus a sibling `StripRegionRecordTimesEveryTransfer`.
+  - **Caveats for P1.T2:** a staged copy's `deviceMs` includes ring-wait idle time, so its rate is a lower bound. Pinned downloads stay untimed, so the ≥ 95% timestamped check excludes pinned bytes.

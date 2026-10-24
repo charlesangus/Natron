@@ -74,7 +74,8 @@ enum RawDemosaicXTransMethodEnum {
     eRawDemosaicXTransVNG,
     eRawDemosaicXTransPassthroughMonochrome,
     eRawDemosaicXTransPhotositeColor,
-    eRawDemosaicXTransMarkesteijn3Dual
+    eRawDemosaicXTransMarkesteijn3Dual,
+    eRawDemosaicXTransFDC
 };
 
 enum RawDemosaicLmmseRefineEnum {
@@ -95,7 +96,7 @@ enum RawDemosaicGreenEqEnum {
 /**
  * @brief Raw to image: darktable's demosaic module on prepared raw data. A Bayer mosaic is
  * demosaiced by RCD (the default), PPG, AMaZE, VNG4 or LMMSE, an X-Trans one by Markesteijn 1-pass (the
- * default), Markesteijn 3-pass or VNG, or either left as photosites (passthrough monochrome, photosite
+ * default), Markesteijn 3-pass, VNG or Frequency Domain Chroma, or either left as photosites (passthrough monochrome, photosite
  * colour), after the optional green equilibration (Bayer) and
  * followed by the optional colour smoothing passes. The dual methods (RCD, AMaZE, Markesteijn
  * 3-pass) blend the method's output with VNG's where the image has little detail, by Dual
@@ -104,7 +105,7 @@ enum RawDemosaicGreenEqEnum {
  * and drops the CFA and the raw stage.
  *
  * Each render reads its window grown by what the method reads around a pixel, aligned to the CFA
- * period (and, for AMaZE and LMMSE, to their own tile grids), so a tile is bit for bit the same pixels
+ * period (and, for AMaZE, LMMSE and Frequency Domain Chroma, to their own tile grids), so a tile is bit for bit the same pixels
  * as the full frame. Full green equilibration measures the whole image, once per source and
  * settings. Renders at full resolution only.
  **/
@@ -147,8 +148,13 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
-    // darktable's gui_changed(): LMMSE Refine shows only for the LMMSE method, Dual Threshold only
-    // for a dual method.
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+
+    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+
+    // darktable's gui_changed() for the source's sensor, read from its CFA: only that sensor's
+    // method list and the knobs its method uses show. With no source, or one without a CFA, both
+    // lists show.
     void refreshMethodKnobsVisibility();
 
     virtual bool isOpIdentity(double time,
@@ -161,7 +167,7 @@ private:
 
     /**
      * @brief PPG and RCD, without green equilibration or colour smoothing, and the pass-through of
-     * data without a CFA. AMaZE, VNG, Markesteijn and the dual methods have no GPU path yet. Full green
+     * data without a CFA. AMaZE, VNG, Markesteijn, Frequency Domain Chroma and the dual methods have no GPU path yet. Full green
      * equilibration measures the whole source once per frame, which a region's strips cannot
      * share, and local equilibration and colour smoothing are not ported, so any of them keeps the
      * node on the CPU. LMMSE has no GPU path, as in darktable.

@@ -205,6 +205,34 @@ void markesteijn(float* out,
                  const ParallelFor& parallel);
 
 /**
+ * @brief darktable's xtrans_fdc_interpolate(): Markesteijn 1-pass for the luma, with chroma from
+ * the mosaic's frequency domain. Up to ISO 1600 (darktable's default crossover) the chroma is a
+ * per-pixel hybrid of FDC's and Markesteijn's, above it FDC's alone. Photosites mirrored across
+ * the edges reach 14 photosites in; below 15 photosites a side the output is the linear
+ * interpolation of vngLinearInterpolate() instead.
+ **/
+void fdc(float* out,
+         const float* in,
+         int width,
+         int height,
+         const std::uint8_t (*xtrans)[6],
+         int iso,
+         const ParallelFor& parallel);
+
+/**
+ * @brief The buffer [*b0, *b1) fdc() runs over to output [start, end) of an axis of n photosites
+ * exactly as a run over the whole axis does. fdc()'s result depends on its 122-photosite tiles,
+ * laid every 96 from 13 before the buffer's first photosite, and the tiles at the buffer's ends
+ * read mirrored photosites; so the buffer starts on the axis's grid one tile before the window's
+ * first and ends where the window's last tile stops reading, or at the axis's end.
+ **/
+void fdcSpan(int start,
+             int end,
+             int n,
+             int* b0,
+             int* b1);
+
+/**
  * @brief darktable's _slider2contrast(): the detail blend threshold of a Dual Threshold slider
  * value.
  **/

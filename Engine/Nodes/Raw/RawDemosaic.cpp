@@ -64,7 +64,7 @@ constexpr NodeSpec kRawDemosaicNodeSpec = {
     .id = PLUGINID_NATRON_RAWDEMOSAIC,
     .label = "RawDemosaic",
     .description = "Reconstructs full RGB pixels from the colour filter array of prepared raw data: RCD, PPG, AMaZE, VNG4 or LMMSE "
-                   "for a Bayer sensor, Markesteijn or VNG for an X-Trans one, RCD, AMaZE or Markesteijn 3-pass blended with VNG in flat areas (dual), "
+                   "for a Bayer sensor, Markesteijn, VNG or Frequency Domain Chroma for an X-Trans one, RCD, AMaZE or Markesteijn 3-pass blended with VNG in flat areas (dual), "
                    "or the photosites shown as they are. Data without a colour filter array passes "
                    "through. Outputs an image with an alpha of 1; RawInputColor then takes it to the working space.",
     .grouping = PLUGIN_GROUP_RAW,
@@ -90,13 +90,14 @@ enum class Algorithm {
     VNG,
     Markesteijn1,
     Markesteijn3,
+    FDC,
     PhotositeMonochrome,
     PhotositeColor
 };
 
 // How far each algorithm reads around a pixel it outputs, so that the pixel does not depend on
 // where the buffer it runs over ends: darktable's tiling overlaps, checked bit for bit against
-// whole-image runs. AMaZE and LMMSE instead align their buffers with their own tile grids.
+// whole-image runs. AMaZE, LMMSE and FDC instead align their buffers with their own tile grids.
 int
 algorithmHalo(Algorithm algorithm)
 {
@@ -118,6 +119,7 @@ algorithmHalo(Algorithm algorithm)
         return 18;
     case Algorithm::AMaZE:
     case Algorithm::LMMSE:
+    case Algorithm::FDC:
     case Algorithm::PassThrough:
     case Algorithm::PhotositeMonochrome:
     case Algorithm::PhotositeColor:
@@ -247,6 +249,7 @@ RawDemosaic::initializeKnobs()
     xtrans.push_back(ChoiceOption("passthroughMonochrome", tr("passthrough (monochrome)").toStdString(), tr("Every photosite's value in all three channels, with no demosaicing.").toStdString()));
     xtrans.push_back(ChoiceOption("photositeColor", tr("photosite color (debug)").toStdString(), tr("Every photosite's value in its own colour's channel only, with no demosaicing.").toStdString()));
     xtrans.push_back(ChoiceOption("markesteijn3Dual", tr("Markesteijn 3-pass (dual)").toStdString(), tr("Markesteijn 3-pass where the image has detail, VNG where it is flat, blended by Dual Threshold.").toStdString()));
+    xtrans.push_back(ChoiceOption("fdc", tr("Frequency Domain Chroma").toStdString(), tr("Markesteijn 1-pass for the luma, with the chroma taken from the mosaic's frequency domain: fewer colour artefacts at high ISO. Up to ISO 1600 the chroma is a per-pixel hybrid with Markesteijn's.").toStdString()));
     KnobChoicePtr xtransMethod = createKnob<KnobChoice>(tr("Method (X-Trans)"));
     xtransMethod->setName(kRawDemosaicParamXTransMethod);
     xtransMethod->setHintToolTip(tr("The demosaicing method for an X-Trans sensor."));
@@ -328,23 +331,73 @@ RawDemosaic::refreshMethodKnobsVisibility()
 {
     const KnobChoicePtr bayerMethod = _bayerMethod.lock();
     const KnobChoicePtr xtransMethod = _xtransMethod.lock();
+    const KnobChoicePtr greenEq = _greenEq.lock();
+    const KnobDoublePtr edgeThreshold = _edgeThreshold.lock();
+    const KnobIntPtr colorSmoothing = _colorSmoothing.lock();
     const KnobChoicePtr lmmseRefine = _lmmseRefine.lock();
     const KnobDoublePtr dualThreshold = _dualThreshold.lock();
 
-    if (bayerMethod && lmmseRefine) {
-        lmmseRefine->setSecret(bayerMethod->getValue() != (int)eRawDemosaicBayerLMMSE);
+    if (!bayerMethod || !xtransMethod || !greenEq || !edgeThreshold || !colorSmoothing || !lmmseRefine || !dualThreshold) {
+        return;
     }
-    if (bayerMethod && xtransMethod && dualThreshold) {
-        // The node does not know the sensor here, so either list's dual method shows the knob.
-        const int bayer = bayerMethod->getValue();
-        const bool dual = (bayer == (int)eRawDemosaicBayerRCDDual) || (bayer == (int)eRawDemosaicBayerAMaZEDual) || (xtransMethod->getValue() == (int)eRawDemosaicXTransMarkesteijn3Dual);
-        dualThreshold->setSecret(!dual);
+    int period = 0;
+    if (getInput(getSourceInput())) {
+        if (const std::optional<RawLayout> layout = RawLayout::fromMetadata(getSourceMetadata(getCurrentTime(), ViewIdx(0)))) {
+            period = layout->period();
+        }
+    }
+    const int bayer = bayerMethod->getValue();
+    const int xtrans = xtransMethod->getValue();
+    const bool bayerDual = (bayer == (int)eRawDemosaicBayerRCDDual) || (bayer == (int)eRawDemosaicBayerAMaZEDual);
+    const bool xtransDual = (xtrans == (int)eRawDemosaicXTransMarkesteijn3Dual);
+
+    if (period == 2) {
+        const bool passing = (bayer == (int)eRawDemosaicBayerPassthroughMonochrome) || (bayer == (int)eRawDemosaicBayerPhotositeColor);
+        bayerMethod->setSecret(false);
+        xtransMethod->setSecret(true);
+        edgeThreshold->setSecret(bayer != (int)eRawDemosaicBayerPPG);
+        greenEq->setSecret(passing);
+        colorSmoothing->setSecret(passing || bayerDual);
+        dualThreshold->setSecret(!bayerDual);
+        lmmseRefine->setSecret(bayer != (int)eRawDemosaicBayerLMMSE);
+    } else if (period == 6) {
+        const bool passing = (xtrans == (int)eRawDemosaicXTransPassthroughMonochrome) || (xtrans == (int)eRawDemosaicXTransPhotositeColor);
+        bayerMethod->setSecret(true);
+        xtransMethod->setSecret(false);
+        edgeThreshold->setSecret(true);
+        greenEq->setSecret(true);
+        colorSmoothing->setSecret(passing || xtransDual);
+        dualThreshold->setSecret(!xtransDual);
+        lmmseRefine->setSecret(true);
+    } else {
+        // With no source, or one without a CFA, the sensor is unknown: both lists and every knob
+        // either of them uses stay available.
+        bayerMethod->setSecret(false);
+        xtransMethod->setSecret(false);
+        edgeThreshold->setSecret(false);
+        greenEq->setSecret(false);
+        colorSmoothing->setSecret(false);
+        dualThreshold->setSecret(!bayerDual && !xtransDual);
+        lmmseRefine->setSecret(bayer != (int)eRawDemosaicBayerLMMSE);
     }
 }
 
 void
 RawDemosaic::onKnobsLoaded()
 {
+    refreshMethodKnobsVisibility();
+}
+
+void
+RawDemosaic::onInputChanged(int /*inputNo*/)
+{
+    refreshMethodKnobsVisibility();
+}
+
+void
+RawDemosaic::onMetadataRefreshed(const NodeMetadata& metadata)
+{
+    StagedImageEffect::onMetadataRefreshed(metadata);
     refreshMethodKnobsVisibility();
 }
 
@@ -432,6 +485,9 @@ RawDemosaic::resolveSettings(double time,
         case eRawDemosaicXTransVNG:
             s.algorithm = Algorithm::VNG;
             break;
+        case eRawDemosaicXTransFDC:
+            s.algorithm = Algorithm::FDC;
+            break;
         case eRawDemosaicXTransPassthroughMonochrome:
             s.algorithm = Algorithm::PhotositeMonochrome;
             break;
@@ -484,7 +540,7 @@ RawDemosaic::sourceRegionFor(const RectI& window,
     }
     const bool local = (settings->greenEq == eRawDemosaicGreenEqLocal) || (settings->greenEq == eRawDemosaicGreenEqBoth);
     const int extra = settings->smoothing + (local ? 2 : 0);
-    if ((settings->algorithm != Algorithm::AMaZE) && (settings->algorithm != Algorithm::LMMSE)) {
+    if ((settings->algorithm != Algorithm::AMaZE) && (settings->algorithm != Algorithm::LMMSE) && (settings->algorithm != Algorithm::FDC)) {
         const int own = algorithmHalo(settings->algorithm);
         const int halo = settings->dual ? std::max(own + kDualMaskReach, kDualLowReach) : own;
         return RawNodeSupport::expandForKernel(window, halo + extra, settings->layout.period(), kMinimumBuffer, rod);
@@ -502,6 +558,13 @@ RawDemosaic::sourceRegionFor(const RectI& window,
         int c0, c1, r0, r1;
         RawKernels::lmmseSpan(grown.x1 - rod.x1, grown.x2 - rod.x1, rod.width(), &c0, &c1);
         RawKernels::lmmseSpan(rod.y2 - grown.y2, rod.y2 - grown.y1, rod.height(), &r0, &r1);
+
+        return RectI(rod.x1 + c0, rod.y2 - r1, rod.x1 + c1, rod.y2 - r0);
+    }
+    if (settings->algorithm == Algorithm::FDC) {
+        int c0, c1, r0, r1;
+        RawKernels::fdcSpan(grown.x1 - rod.x1, grown.x2 - rod.x1, rod.width(), &c0, &c1);
+        RawKernels::fdcSpan(rod.y2 - grown.y2, rod.y2 - grown.y1, rod.height(), &r0, &r1);
 
         return RectI(rod.x1 + c0, rod.y2 - r1, rod.x1 + c1, rod.y2 - r0);
     }
@@ -679,6 +742,10 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
             break;
         case Algorithm::Markesteijn3:
             RawKernels::markesteijn(out.data.data(), in, width, height, xtrans, 3, parallel);
+            break;
+        case Algorithm::FDC:
+            // darktable passes the image's ISO as an int.
+            RawKernels::fdc(out.data.data(), in, width, height, xtrans, (int)s.iso, parallel);
             break;
         case Algorithm::PhotositeMonochrome:
             RawKernels::passthroughMonochrome(out.data.data(), in, width, height, parallel);

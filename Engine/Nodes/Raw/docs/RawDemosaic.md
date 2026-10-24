@@ -9,6 +9,7 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
 - `RawDemosaicLmmse.cpp`: LMMSE (`lmmse.c`).
 - `RawDemosaicVng.cpp`: VNG.
 - `RawDemosaicMarkesteijn.cpp`: Markesteijn.
+- `RawDemosaicFdc.cpp`: Frequency Domain Chroma (`xtrans_fdc_interpolate()` in `xtrans.c`).
 - `RawDemosaicDual.cpp`: dual demosaicing (`dual.c`) with the detail mask it builds
   (`dt_masks_calc_scharr_mask()` and `dt_masks_calc_detail_blend()` from `develop/masks/detail.c`,
   `dt_gaussian_fast_blur()` from `common/gaussian.c`).
@@ -17,7 +18,23 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
 - **Method (Bayer)**: RCD (the default), PPG, AMaZE or VNG4, then the photosite modes, then LMMSE,
   then RCD (dual) and AMaZE (dual).
   **Method (X-Trans)**: Markesteijn 1-pass (the default), Markesteijn 3-pass or VNG, then the
-  photosite modes, then Markesteijn 3-pass (dual).
+  photosite modes, then Markesteijn 3-pass (dual), then Frequency Domain Chroma.
+- **Knob visibility** follows darktable's `gui_changed()` for the source's sensor, read from its
+  CFA when the input changes or its metadata is refreshed. A Bayer source shows only the Bayer
+  list, an X-Trans one only the X-Trans list. Edge Threshold shows for PPG only, Match Greens for
+  Bayer only, Color Smoothing unless the method is a photosite mode or dual, Dual Threshold for a
+  dual method only and LMMSE Refine for LMMSE only. With no source, or one without a CFA, both
+  lists, Edge Threshold, Match Greens and Color Smoothing show, LMMSE Refine shows for the Bayer
+  LMMSE and Dual Threshold when either list holds a dual method.
+- **Frequency Domain Chroma** (appended): darktable's `xtrans_fdc_interpolate()`. Markesteijn
+  1-pass gives the luma; the chroma is demodulated from the mosaic by four complex 13x13 filters
+  and median-filtered. Up to ISO 1600 (`raw/iso`, truncated to an integer as darktable does) each
+  chroma channel takes FDC's value only where both of FDC's are about as small as Markesteijn's, above it FDC's alone. 1600
+  is the default of darktable's `plugins/darkroom/demosaic/fdc_xover_iso` preference, which is not
+  exposed. The filter tables are copied verbatim. The hybrid's test for V compares FDC's `|u|`
+  with `1.02 |v|` of Markesteijn, where `1.02 |u|` looks meant, as darktable writes it. Pure FDC is not exact
+  on a flat field: its tabulated filters leave the chroma about 5e-4 off a 0.35 grey. Unlike
+  Markesteijn it ends without VNG's linear interpolation of the border. No GPU path.
 - **Dual methods** (appended, so saved values keep their meaning): darktable's `dual_demosaic()`
   after the method, on the same green-matched mosaic. A blend mask is built from the method's
   output: the white balance is undone (1 / `raw/wb_applied`, none when absent, as darktable uses
@@ -30,8 +47,7 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
   1e-7). Below 16 photosites a side the tiny-image VNG fallback applies and there is no blend.
   `dt_fast_hypotf()` is taken as the plain square root of the sum of squares of darktable's
   `-ffast-math` Release builds. darktable's "show dual mask" view is not ported. No GPU path.
-- **Dual Threshold**: 0 to 1, default 0.2 (darktable's `dual_thrs`). Shown only when either
-  method list holds a dual method, since the node does not know the sensor when knobs change.
+- **Dual Threshold**: 0 to 1, default 0.2 (darktable's `dual_thrs`). Shown only for a dual method.
 - **LMMSE Refine**: darktable's five levels: basic, median (the default), 3x median, refine &
   medians and 2x refine + medians. It is shown only when the method is LMMSE, as in darktable's
   `gui_changed()`. LMMSE works in darktable's gamma space, scaled by the processed maximum, and PPG
@@ -46,13 +62,14 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
   is 0.0001 x `raw/iso`.
 - **Edge Threshold**: PPG's pre-median.
 - **Color Smoothing**: 0 to 5 median passes. Forced off for a dual method, as darktable's
-  `commit_params()` does (darktable also hides it then; here it stays visible).
+  `commit_params()` does, and hidden then.
 - Data without a CFA passes through as an image with alpha 1. One channel fills R, G and B.
 - RCD and LMMSE are scaled by the processed maximum and AMaZE clips at the processed minimum. Both come from
   `raw/processed_maximum`, as darktable takes them from its pipe.
 - Like darktable, it falls back to VNG when the whole image is under 16 photosites on a side.
   AMaZE also falls back below 33, because it reads 32 rows and columns in, and Markesteijn
-  3-pass below 19, because it mirrors 18 photosites in from the edges.
+  3-pass below 19, because it mirrors 18 photosites in from the edges. Frequency Domain Chroma
+  mirrors 14 in, which the 16 photosites cover.
 - **Tiling.** A render reads its window grown by the method's reach, aligned to the CFA period
   from the source's top-left photosite, at least 32 photosites per side.
   - The reach is darktable's tiling overlap: PPG 8, RCD 10, VNG 6, Markesteijn 12 and 18. Colour
@@ -66,6 +83,11 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
     advance by 112 and write the middle 112. The first and last tiles of the image write further
     out and median and refine differently. So the buffer starts one tile before the window's first
     tile and ends 4 photosites past the last tile's reads, or at the image edge.
+  - Frequency Domain Chroma lays darktable's 122-photosite tiles every 96 from 13 before the
+    buffer's top-left, and a tile's result depends on where it sits. Its buffer starts on the
+    image's grid one tile before the window's first and ends where the window's last tile stops
+    reading (13 past its output), or at the image edge. The window is first grown by the colour
+    smoothing passes.
   - A tile is therefore bit for bit the same pixels as the full frame. Full green matching
     measures the whole image once per source and settings.
 - Every per-tile scratch buffer starts zeroed. darktable reuses one per thread, which makes some
@@ -83,7 +105,10 @@ covers LMMSE tiles against the full frame at every refine level and two CFA phas
 the LMMSE Refine knob's visibility. `NativeRawDemosaicDual_Test.cpp` covers the three dual methods:
 tiles against the full frame at thresholds 0.2 and 0.6 (and with local green matching), threshold 0
 equal to the plain method, busy areas keeping the method and flat ones not, colour smoothing being
-off, and the Dual Threshold knob's default, range and visibility.
+off, and the Dual Threshold knob's default, range and visibility. `NativeRawDemosaicFdc_Test.cpp`
+covers Frequency Domain Chroma tiles against the full frame on its tile seams at ISO 400 and 3200, a
+flat field at all 36 X-Trans phases in both modes, and the knobs' visibility with a Bayer source,
+an X-Trans source and none.
 
 GPU: PPG and RCD without green equilibration or colour smoothing, and the pass-through of data
 without a CFA, in `Engine/Gpu/Kernels/demosaic_bayer.slang`, following the passes of darktable's
@@ -95,7 +120,7 @@ column ranges and its half-width plane indexing, so it gives the values the CPU 
 a band's result does not depend on the band, as a tile's does not. The passes read global memory;
 none uses workgroup-shared tiles. The device divides within 2.5 ulp: bound
 `ParityTolerance::transcendental()` for PPG and RCD, `ParityTolerance::exact()` for the
-pass-through. AMaZE, VNG, Markesteijn and the dual methods have no GPU path, nor LMMSE (darktable has none either), nor does local equilibration or colour
+pass-through. AMaZE, VNG, Markesteijn, Frequency Domain Chroma and the dual methods have no GPU path, nor LMMSE (darktable has none either), nor does local equilibration or colour
 smoothing; full equilibration measures the whole source per frame, as Inpaint Opposed does. Any of
 them keeps the node, and its raw run, on the CPU. GPU tests:
 `Tests/Native/NativeRawDemosaicGpu_Test.cpp`, PPG and RCD on the Bayer fixture inside the image and

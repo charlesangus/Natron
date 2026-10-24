@@ -362,6 +362,7 @@ jobs:
               exit 1
             fi
           fi
+          grep -m1 'model name' /proc/cpuinfo; nproc; grep -o -w 'avx512f' /proc/cpuinfo | head -1 || true
           mkdir -p ctest-logs
           rc=0
           tools/ci/local/test.sh ctest "$PRESET" 2>&1 | tee "ctest-logs/ctest-${{ matrix.scheduler }}.log" || rc=$?

@@ -21,6 +21,7 @@
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
 // "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
 #include <Python.h>
+#include <cstdio>
 // ***** END PYTHON BLOCK *****
 
 #include "Global/Macros.h"
@@ -534,6 +535,8 @@ expectGpuMatchesCpu(GpuParityRuntime& runtime,
         ASSERT_FALSE(rois.empty()) << level;
         for (const RectI& roi : rois) {
             const std::string what = level + " " + describeRoI(roi);
+            std::fprintf(stderr, "[parity] CPU render: %s\n", what.c_str());
+            std::fflush(stderr);
             RenderedPlane cpu;
             ASSERT_TRUE(renderColor(node, mipmapLevel, roi, &cpu)) << what;
             ASSERT_EQ(4u, cpu.channels.size()) << what;
@@ -541,6 +544,8 @@ expectGpuMatchesCpu(GpuParityRuntime& runtime,
 
             GpuParityImage image;
             ASSERT_TRUE(sourceImage(source, *effect, mipmapLevel, roi, &image)) << what;
+            std::fprintf(stderr, "[parity] GPU render: %s\n", what.c_str());
+            std::fflush(stderr);
             const GpuRunResult run = runRenderGpu(runtime, *effect, query, std::vector<GpuParityImage>(1, image), query.hasMask ? &mask : nullptr, roi, outputLayout());
             ASSERT_TRUE(run.ok) << what;
             EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";

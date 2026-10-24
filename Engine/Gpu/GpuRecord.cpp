@@ -3,6 +3,7 @@
 #include "GpuPipelineCache.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <vector>
 
 namespace gpu {
@@ -312,6 +313,8 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
             // uses must all outlive it, so it is waited for without a bound. Latching a loss first stops new work
             // from queueing behind it and sends the caller down its device-loss path.
             device.check(VK_ERROR_DEVICE_LOST, "vkWaitForFences");
+            std::fprintf(stderr, "GpuRecordContext::submitAndWait: fence wait timed out after %llu ms, now waiting without limit\n", (unsigned long long)(timeoutNs / 1000000));
+            std::fflush(stderr);
             waited = vkWaitForFences(vk, 1, &fence, VK_TRUE, UINT64_MAX);
             s = { VK_ERROR_DEVICE_LOST, "GpuRecordContext::submitAndWait: the device work timed out" };
         }

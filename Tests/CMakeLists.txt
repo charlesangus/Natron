@@ -92,6 +92,7 @@ set(Tests_SOURCES
     Gpu/RawRegionGpu_Test.cpp
     NodeCategory_Test.cpp
     TabMenuSettings_Test.cpp
+    SettingsColorTrackball_Test.cpp
     NodeColorSampler_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp

@@ -56,6 +56,16 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
+    enum ColorTrackballFeedbackEnum {
+        eColorTrackballFeedbackCrosshairReveal = 0,
+        eColorTrackballFeedbackWidgetCursor
+    };
+
+    enum ColorTrackballSizeEnum {
+        eColorTrackballSizeRegular = 0,
+        eColorTrackballSizeLarge
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -245,6 +255,10 @@ public:
 #endif
 
     bool useCursorPositionIncrements() const;
+
+    ColorTrackballFeedbackEnum getColorTrackballFeedback() const;
+
+    ColorTrackballSizeEnum getColorTrackballSize() const;
 
     bool isAutoProjectFormatEnabled() const;
 
@@ -498,6 +512,8 @@ private:
     KnobBoolPtr _renderOnEditingFinished;
     KnobIntPtr _maxPanelsOpened;
     KnobBoolPtr _useCursorPositionIncrements;
+    KnobChoicePtr _colorTrackballFeedback;
+    KnobChoicePtr _colorTrackballSize;
     KnobFilePtr _defaultLayoutFile;
 #ifdef Q_OS_WIN
     KnobBoolPtr _enableConsoleWindow;

@@ -1095,9 +1095,10 @@ TEST_F(GpuResidencyTest, MaskRenderedInTheRegionIsNeverDownloaded)
 }
 
 // The Grade feeding the source also feeds the mask from its extra layer, so it is asked for two planes: it renders the
-// colour plane and passes the extra layer through from the source. Nothing asks the source for that layer, so no task
-// stores an image of it the pass-through plane could alias, and the region renders on the CPU.
-TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu)
+// colour plane and passes the extra layer through from the source. The request asks the source for that layer on the
+// producer's behalf, so the pass-through plane is an identity member on the source's upload of it, and the mask is
+// read there in the region as the CPU reads it from the source's image.
+TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneIsReadThroughItsPassThrough)
 {
     if (!gpuOrSkip()) {
         return;
@@ -1118,26 +1119,31 @@ TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu)
     const int producerTask = taskOf(run.graph, producer);
     const int gradeTask = taskOf(run.graph, grade);
     ASSERT_TRUE(producerTask >= 0 && gradeTask >= 0);
+    std::vector<std::string> expectedLayers = { kNatronColorLayerID, kParitySourceExtraLayerID };
+    std::sort(expectedLayers.begin(), expectedLayers.end());
     std::vector<std::string> producerLayers;
     for (const ImageLayerDesc& layer : run.graph.tasks[producerTask].components) {
         producerLayers.push_back(layer.getLayerID());
     }
     std::sort(producerLayers.begin(), producerLayers.end());
-    std::vector<std::string> expectedLayers = { kNatronColorLayerID, kParitySourceExtraLayerID };
-    std::sort(expectedLayers.begin(), expectedLayers.end());
     EXPECT_EQ(expectedLayers, producerLayers) << "the producer renders the source's plane and the mask's layer";
     const int sourceTask = taskOf(run.graph, source);
     ASSERT_TRUE(sourceTask >= 0);
+    std::vector<std::string> sourceLayers;
     for (const ImageLayerDesc& layer : run.graph.tasks[sourceTask].components) {
-        EXPECT_NE(std::string(kParitySourceExtraLayerID), layer.getLayerID()) << "the source is asked for the layer the producer passes through";
+        sourceLayers.push_back(layer.getLayerID());
     }
+    std::sort(sourceLayers.begin(), sourceLayers.end());
+    EXPECT_EQ(expectedLayers, sourceLayers) << "the source is asked for the layer the producer passes through";
     assignRegions(&run.graph, { { producerTask, gradeTask } });
 
     ASSERT_TRUE(render(&run));
-    EXPECT_EQ(1, fallbacksOf(run));
-    EXPECT_EQ(1, fallbacksOf(run, "GPU refused"));
-    EXPECT_EQ(0, run.stats->getGpuRegionsRun());
-    EXPECT_EQ(1, renderRoICallsOf(run, grade));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, producer));
+    EXPECT_EQ(1, gpuRunsOf(run, grade));
+    EXPECT_EQ(0, renderRoICallsOf(run, grade)) << "the Grade rendered on the CPU";
+    EXPECT_EQ(2, run.stats->getUploadCount()) << "the source's colour plane and its extra layer, once each";
     expectReleased(run);
     expectMatchesCpu(grade, run);
 }

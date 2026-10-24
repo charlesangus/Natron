@@ -368,6 +368,12 @@ rawColorCalibrationIlluminantIndex(Illuminant illuminant)
     return -1;
 }
 
+RawCameraWhite
+rawColorCalibrationCameraWhite(const ImageMetadata& source)
+{
+    return cameraWhite(source);
+}
+
 bool
 rawColorCalibrationIsRawSource(const ImageMetadata& source)
 {
@@ -473,6 +479,8 @@ RawColorCalibrationOp::createKnobs(KnobHolder* knobHolder,
     holder = knobHolder;
     const CalibrationSettings defaults;
 
+    createPresetKnobs(knobHolder, page);
+
     KnobGroupPtr cat = addTab(knobHolder, page, kRawColorCalibrationTabCat, "CAT", "Chromatic adaptation transform.");
 
     catOverride = addBool(knobHolder, cat, kRawColorCalibrationParamCatOverride, EffectInstance::tr("Override File Defaults"),
@@ -573,6 +581,8 @@ RawColorCalibrationOp::createKnobs(KnobHolder* knobHolder,
                    EffectInstance::tr("Clip negative values to 0 at every step, in RGB, LMS and XYZ, and keep the gamut compression from producing negative chromaticities."),
                    defaults.clip);
 
+    createSpotKnobs(knobHolder, cat);
+
     const Vec3* rowDefaults[eRawColorCalibrationRowCount] = { &defaults.red, &defaults.green, &defaults.blue, &defaults.saturation, &defaults.lightness, &defaults.grey };
     const bool normalizeDefaults[eRawColorCalibrationRowCount] = { defaults.normalizeR, defaults.normalizeG, defaults.normalizeB, defaults.normalizeSaturation, defaults.normalizeLightness, defaults.normalizeGrey };
     for (int r = 0; r < eRawColorCalibrationRowCount; ++r) {
@@ -630,6 +640,24 @@ RawColorCalibrationOp::settings(const KnobReader& reader) const
     return s;
 }
 
+CalibrationSettings
+RawColorCalibrationOp::effectiveSettings(const KnobReader& reader,
+                                         const ImageMetadata& source) const
+{
+    CalibrationSettings s = settings(reader);
+
+    if (!reader.valueOr(catOverride, false)) {
+        const RawColorCalibrationSourceDefaults d = rawColorCalibrationSourceDefaults(source);
+        s.illuminant = d.illuminant;
+        s.adaptation = d.adaptation;
+        s.temperature = d.temperature;
+        s.x = d.x;
+        s.y = d.y;
+    }
+
+    return s;
+}
+
 Mat3
 RawColorCalibrationOp::workingToXyzD50(const KnobHolder* knobHolder)
 {
@@ -671,15 +699,7 @@ RawColorCalibrationOp::bake(const KnobReader& reader,
         fromXyz[i] = inverse ? (float)(*inverse)[i] : (((i % 4) == 0) ? 1.f : 0.f);
     }
 
-    CalibrationSettings s = settings(reader);
-    if (!reader.valueOr(catOverride, false)) {
-        const RawColorCalibrationSourceDefaults d = rawColorCalibrationSourceDefaults(source);
-        s.illuminant = d.illuminant;
-        s.adaptation = d.adaptation;
-        s.temperature = d.temperature;
-        s.x = d.x;
-        s.y = d.y;
-    }
+    const CalibrationSettings s = effectiveSettings(reader, source);
     // The camera illuminant is found again at every render, from the white balance upstream.
     const RawCameraWhite camera = cameraWhite(source);
     Vec4 customWb;
@@ -737,6 +757,7 @@ RawColorCalibration::RawColorCalibration(NodePtr node)
     , _lastIlluminant(CalibrationSettings().illuminant)
     , _lastDaylightTemperature(CalibrationSettings().temperature)
     , _lastBlackBodyTemperature(CalibrationSettings().temperature)
+    , _spotMean()
     , _syncing(false)
 {
 }
@@ -1105,6 +1126,7 @@ RawColorCalibration::deriveOutputMetadata(double time,
 void
 RawColorCalibration::onInputChanged(int /*inputNo*/)
 {
+    refreshSpotDefaults();
     refreshCameraOption();
     showSourceDefaults();
     refreshEnabled();
@@ -1116,6 +1138,7 @@ void
 RawColorCalibration::onMetadataRefreshed(const NodeMetadata& metadata)
 {
     ImageNode<RawColorCalibrationOp>::onMetadataRefreshed(metadata);
+    refreshSpotDefaults();
     refreshCameraOption();
     showSourceDefaults();
     refreshEnabled();
@@ -1135,6 +1158,7 @@ RawColorCalibration::onKnobsLoaded()
     if (const KnobChoicePtr illuminantKnob = op().illuminant.lock()) {
         _lastIlluminant = rawColorCalibrationIlluminantAt(illuminantKnob->getValue());
     }
+    refreshSpotDefaults();
     refreshCameraOption();
     showSourceDefaults();
     refreshVisibility();
@@ -1147,8 +1171,8 @@ RawColorCalibration::onKnobsLoaded()
 bool
 RawColorCalibration::knobChanged(KnobI* k,
                                  ValueChangedReasonEnum reason,
-                                 ViewSpec /*view*/,
-                                 double /*time*/,
+                                 ViewSpec view,
+                                 double time,
                                  bool /*originatedFromMainThread*/)
 {
     const RawColorCalibrationOp& o = op();
@@ -1157,6 +1181,22 @@ RawColorCalibration::knobChanged(KnobI* k,
 
         return knob && (k == knob.get());
     };
+
+    if (is(o.pick)) {
+        (void)pickSpot(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+
+        return true;
+    }
+    if (is(o.applyPreset)) {
+        applyChosenPreset();
+
+        return true;
+    }
+    if (is(o.spotMode) || is(o.spotUseMixing) || is(o.spotLightness) || is(o.spotHue) || is(o.spotChroma)) {
+        onSpotSettingsChanged(reason);
+
+        return true;
+    }
     const bool isIlluminant = is(o.illuminant);
     const bool isSource = is(o.fluorescent) || is(o.led);
     const bool isTemperature = is(o.temperature);

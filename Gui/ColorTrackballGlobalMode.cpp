@@ -812,6 +812,7 @@ ColorTrackballGlobalMode::engage(const KnobGuiColorPtr& target)
     endStroke();
     setTarget(target);
     if (!_engaged) {
+        setMode(eColorGlobalModeC);
         _engaged = true;
         _heldButtons = Qt::NoButton;
         _wheelAccumulator = 0;

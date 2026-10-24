@@ -205,8 +205,10 @@ public:
     }
 
     /**
-     * @brief Engages on target, or moves an engaged mode onto it. False, leaving the mode as
-     * it was, when target is null or has no adjustment panel (simplified and viewer knobs).
+     * @brief Engages on target, or moves an engaged mode onto it. A fresh engage starts in
+     * mode C whatever mode the previous invocation left; moving an already-engaged mode onto
+     * another knob keeps the current mode. False, leaving the mode as it was, when target is
+     * null or has no adjustment panel (simplified and viewer knobs).
      **/
     bool engage(const KnobGuiColorPtr& target);
 
@@ -229,6 +231,10 @@ public:
      **/
     void getTargetPosition(int* n, int* count) const;
 
+    /**
+     * @brief The current mode. Reset to C by every fresh engage(), so it does not carry over
+     * between invocations or nodes; only retargeting an engaged mode keeps it.
+     **/
     ColorGlobalModeEnum getMode() const
     {
         return _mode;

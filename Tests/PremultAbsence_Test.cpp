@@ -156,8 +156,8 @@ const char* const kBannedKnobNames[] = {
     "inputAlpha",
 };
 
-// OFX plug-ins that still declare a banned knob at the pinned openfx-misc and that M145 - OFX
-// Fork Plugin Purge deletes once their port lands. Remove each entry with that deletion.
+// OFX plug-ins that still declare a banned knob at the pinned openfx-misc or openfx-io and that
+// M145 - OFX Fork Plugin Purge deletes once their port lands. Remove each entry with that deletion.
 const char* const kExemptOfxPluginIDs[] = {
     // M122 - Native Colour Utilities
     "net.sf.openfx.ColorMatrixPlugin",
@@ -196,6 +196,13 @@ const char* const kExemptOfxPluginIDs[] = {
     "net.sf.openfx.xyYToXYZ",
     // M130 - Native Edge-Preserving And Directional Filters
     "net.sf.openfx.GodRays",
+    // M127 - Native OCIO Nodes
+    "fr.inria.openfx.OCIOCDLTransform",
+    "fr.inria.openfx.OCIOColorSpace",
+    "fr.inria.openfx.OCIODisplay",
+    "fr.inria.openfx.OCIOFileTransform",
+    "fr.inria.openfx.OCIOLogConvert",
+    "fr.inria.openfx.OCIOLookTransform",
 };
 
 } // anonymous namespace

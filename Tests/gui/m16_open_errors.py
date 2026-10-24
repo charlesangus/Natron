@@ -118,12 +118,14 @@ try:
         dialog = QApplication.activeModalWidget()
         if dialog is None or gt.class_name(dialog) != "SequenceFileDialog":
             return False
-        edits = [w for w in dialog.findChildren(QLineEdit) if gt.class_name(w) == "FileDialogLineEdit"]
+        edits = [w for w in dialog.findChildren(QLineEdit) if gt.class_name(w) == "LineEdit"]
         if not edits:
+            report("NOTE open dialog line edits: %r" % [gt.class_name(w) for w in dialog.findChildren(QLineEdit)])
             return False
-        edits[0].setText(path)
+        edits[0].setText(path)  # the selection edit is created before the filter edit
         button = push_button(dialog, "Open")
         if button is None:
+            report("NOTE open dialog buttons: %r" % [(gt.class_name(b), b.text()) for b in dialog.findChildren(QAbstractButton)])
             return False
         button.click()
         return True
@@ -140,7 +142,7 @@ try:
         require(submit_open_dialog(path), "typed " + path + " into the open dialog and pressed Open")
         texts = []
         if expect_error:
-            ok = yield ("until", lambda: modal_class() == "MessageBox", DIALOG_TIMEOUT_S)
+            ok = yield ("until", lambda: modal_class() == "QMessageBox", DIALOG_TIMEOUT_S)
             if ok:
                 dialog = QApplication.activeModalWidget()
                 texts.append(dialog_text(dialog))
@@ -190,7 +192,7 @@ try:
         trigger_later(action, flag)
         prompt = None
         if expect_prompt:
-            ok = yield ("until", lambda: modal_class() == "MessageBox", DIALOG_TIMEOUT_S)
+            ok = yield ("until", lambda: modal_class() == "QMessageBox", DIALOG_TIMEOUT_S)
             check(ok, "the replace prompt appeared (modal is %r)" % modal_class())
             if ok:
                 dialog = QApplication.activeModalWidget()
@@ -214,7 +216,8 @@ try:
     def valid_bundle(path):
         try:
             with zipfile.ZipFile(path) as z:
-                return "project.yaml" in z.namelist()
+                stem = os.path.splitext(os.path.basename(path))[0]
+                return stem + "/project.yaml" in z.namelist()
         except (OSError, zipfile.BadZipFile):
             return False
 
@@ -237,8 +240,14 @@ try:
         require(len(saved_nodes) >= 2, "the fixture graph has nodes")
         require(app.saveProjectAs(BUNDLE), "saved the fixture project to " + BUNDLE)
         require(valid_bundle(BUNDLE), "the saved bundle holds project.yaml")
+        stem = os.path.splitext(os.path.basename(BUNDLE))[0] + "/"
         with zipfile.ZipFile(BUNDLE) as z:
-            z.extractall(FOLDER)
+            for info in z.infolist():
+                if info.filename.startswith(stem) and not info.is_dir():
+                    target = os.path.join(FOLDER, info.filename[len(stem):])
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with z.open(info) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
         require(os.path.isfile(os.path.join(FOLDER, "project.yaml")), "unzipped the bundle into " + FOLDER)
         # Folder saves land on <folder>.ntpz, which must not exist yet for the no-prompt case.
         os.remove(BUNDLE)
@@ -273,6 +282,9 @@ try:
         check(prompt is None, "no replace prompt when the .ntpz is not there")
         check(valid_bundle(FOLDER_BUNDLE), "Save wrote %s beside the folder" % FOLDER_BUNDLE)
 
+        # A save clears the folder state, so reopen the folder to get the replace prompt.
+        yield from open_through_dialog(FOLDER, False)
+        yield ("sleep", SETTLE_MS)
         old = time.time() - 3600
         os.utime(FOLDER_BUNDLE, (old, old))
         prompt = yield from save_through_menu(True, "Cancel")

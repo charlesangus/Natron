@@ -58,6 +58,7 @@ GCC_DIAG_ON(maybe-uninitialized)
 
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/RectD.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerFrameAccessor.h"
@@ -157,8 +158,6 @@ GCC_DIAG_ON(maybe-uninitialized)
 #define kTrackerParamExportButtonLabel "Export"
 #define kTrackerParamExportButtonHint "Creates a node referencing the tracked data. The node type depends on the node selected by the Transform Type parameter. " \
     "The type of transformation applied by the created node depends on the Motion Type parameter. To activate this button you must select set the Motion Type to something other than None"
-
-#define kCornerPinInvertParamName "invert"
 
 #define kTrackerParamTransformType "transformType"
 #define kTrackerParamTransformTypeLabel "Transform Type"
@@ -277,32 +276,9 @@ GCC_DIAG_ON(maybe-uninitialized)
 #define kTransformParamShutterOffset "shutterOffset"
 #define kTransformParamCustomShutterOffset "shutterCustomOffset"
 
-#define kCornerPinParamFrom "from"
-#define kCornerPinParamTo "to"
-
-#define kCornerPinParamFrom1 "from1"
-#define kCornerPinParamFrom2 "from2"
-#define kCornerPinParamFrom3 "from3"
-#define kCornerPinParamFrom4 "from4"
-
-#define kCornerPinParamSetToInputRoD "setToInputRod"
-#define kCornerPinParamSetToInputRoDLabel "Set to Input Rod"
-#define kCornerPinParamSetToInputRoDHint "Set the 4 from points to the image rectangle in input of the tracker node"
-
-#define kCornerPinParamTo1 "to1"
-#define kCornerPinParamTo2 "to2"
-#define kCornerPinParamTo3 "to3"
-#define kCornerPinParamTo4 "to4"
-
-#define kCornerPinParamEnable1 "enable1"
-#define kCornerPinParamEnable2 "enable2"
-#define kCornerPinParamEnable3 "enable3"
-#define kCornerPinParamEnable4 "enable4"
-
-#define kCornerPinParamOverlayPoints "overlayPoints"
-
-#define kCornerPinParamMatrix "transform"
-
+#define kTrackerParamSetToInputRoD "setToInputRod"
+#define kTrackerParamSetToInputRoDLabel "Set to Input Rod"
+#define kTrackerParamSetToInputRoDHint "Set the 4 from points to the image rectangle in input of the tracker node"
 
 NATRON_NAMESPACE_ENTER
 

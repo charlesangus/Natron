@@ -33,7 +33,7 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
 
 ## Phase 138.1: File-picker crash
 
-- [ ] M138.P1.T1 — Write the GUI script (all sections) and capture the crash backtrace
+- [x] M138.P1.T1 — Write the GUI script (all sections) and capture the crash backtrace
   - files: `Tests/gui/m138_papercuts.py` (new), `Gui/SequenceFileDialog.cpp` (object names only)
   - approach:
     - Give `_nextButton`, `_previousButton` and `_togglePreviewButton` object names (`:299`, `:306`, `:439`).
@@ -43,7 +43,7 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
     - Suspects to check first: `createViewerPreviewNode` dereferences a null `getNodeGui()` or a null `createNode` result (`:2676-2681`); `viewerUI` left null while `viewerNode` is set, crashing on the next toggle (`:2651-2656`, `:2695-2699`); moving the `ViewerGL` into a new top-level window recreates its GL context and `initializeGL` (`Gui/ViewerGL.cpp:1205`, `Gui/ViewerGLPrivate.cpp:448`) re-runs against stale state.
   - verify: the script reproduces the crash on the current build, and the backtrace is recorded.
   - size: M
-- [ ] M138.P1.T2 — Fix the crash at the cause the backtrace shows
+- [x] M138.P1.T2 — Fix the crash at the cause the backtrace shows
   - files: `Gui/SequenceFileDialog.cpp`, and whatever the backtrace names (≤3 files)
   - approach: fix the root cause. Also replace the assert-only guards in `onTogglePreviewButtonClicked` and `createViewerPreviewNode` with real checks: on failure, uncheck the button and leave `_preview` clean so the next click retries. No silent catch-all.
   - verify: the `file-dialog` section passes with no crash, and the ▶ preview shows the PNG.
@@ -51,14 +51,14 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
 
 ## Phase 138.2: Open on the user's monitor
 
-- [ ] M138.P2.T1 — Add a screen-placement helper with a unit test
+- [x] M138.P2.T1 — Add a screen-placement helper with a unit test
   - files: `Gui/WindowPlacement.h` (new), `Gui/WindowPlacement.cpp` (new), `Tests/WindowPlacement_Test.cpp` (new), `Tests/CMakeLists.txt` (`GuiTests_SOURCES`)
   - approach:
     - Pure functions: `int screenIndexAt(const std::vector<QRect>& geoms, QPoint p, int fallback)`; `QPoint centredTopLeft(const QRect& avail, QSize size)`, clamped to `avail` and keeping its origin.
     - A thin wrapper `placeOnUserScreen(QWidget* w, const QWidget* anchor)`: the anchor window's `screen()` when the anchor is visible and not minimised, else `QGuiApplication::screenAt(QCursor::pos())`, else the primary screen.
   - verify: `GuiTests --gtest_filter=WindowPlacement*` covers two side-by-side screens, a screen at a negative origin, a point in no screen (fallback), and a window larger than the screen (clamped).
   - size: M
-- [ ] M138.P2.T2 — Use the helper for both splashes and Preferences
+- [x] M138.P2.T2 — Use the helper for both splashes and Preferences
   - files: `Gui/SplashScreen.cpp`, `Gui/PreferencesPanel.cpp`
   - approach: the splash calls `placeOnUserScreen(this, nullptr)` after `resize`/`show` (`:92-94`, `:145-147`); the load-project splash passes `QApplication::activeWindow()` as the anchor. `PreferencesPanel::showEvent` passes `parentWidget()` (the `Gui` window, `Gui/Gui30.cpp:679`).
   - verify: with Xvfb's single screen, `m138_papercuts.py` section `placement` checks that Preferences is centred within the screen's `availableGeometry`. Multi-monitor behaviour is checked at UAT on the AppImage.
@@ -66,7 +66,7 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
 
 ## Phase 138.3: Picker defaults
 
-- [ ] M138.P3.T1 — Default the picker source to the output, and to the input only while knob picking
+- [x] M138.P3.T1 — Default the picker source to the output, and to the input only while knob picking
   - files: `Gui/ViewerGL.cpp`, `Gui/ViewerGLPrivate.h`, `Gui/ActionShortcuts.h`, `Gui/GuiApplicationManager10.cpp`, `Gui/InfoViewerWidget.cpp`
   - approach:
     - Add `bool ViewerGL::resolvePickOutput(bool alternate)`: `knob = getGui()->hasPickers(); return alternate ? knob : !knob;`.
@@ -75,7 +75,7 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
     - Rewrite the in/out tooltip (`InfoViewerWidget.cpp:84-85`).
   - verify: the PM's build compiles cleanly, and P3.T2's script passes.
   - size: M
-- [ ] M138.P3.T2 — Update the picker GUI checks to the new defaults
+- [x] M138.P3.T2 — Update the picker GUI checks to the new defaults
   - files: `Tests/gui/m69_cleanup.py` (section `picker-in-out`, `:1887-1935`); `Tests/gui/m138_papercuts.py`'s `picker-defaults` section is written by P1.T1
   - approach:
     - Without an eyedropper, viewing Constant(0.25)→Grade(×2): hover, Ctrl-click and the rectangle read 0.5 "out"; Ctrl+Alt reads 0.25 "in".
@@ -99,3 +99,4 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
 - 2026-10-23 — Build mode on this host is remote: the gate's `fast` build is `tools/ci/remote/build.sh fast --tests`.
 - 2026-10-24 — **P1.T1 reproduction (fast build 9cca3b082):** the crash is the ▶ preview toggle, every click, not the history `>`. `onTogglePreviewButtonClicked` (`SequenceFileDialog.cpp:2659`) re-parents the top-level preview viewer (made top-level at `:2718`) into `_centerAreaLayout`; destroying its native window hides the dialog (`QWidgetWindow::~QWidgetWindow` → `QDialogPrivate::setVisible(false)`), ending `exec()` without `finished`. `popOpenFileDialog` (`Gui/Gui20.cpp:1024-1026`) then destroys the dialog with the viewer still inside (`teardownPreview()` runs only from `closeEvent`/`done`, `:2793-2805`). Top frames: `QOpenGLShaderProgram::removeAllShaders` ← `ViewerGL::Implementation::~Implementation` ← `ViewerGL::~ViewerGL` ← … `ViewerTab::~ViewerTab` ← `SequenceFileDialog::~SequenceFileDialog` ← `Gui::popOpenFileDialog` ← `Gui::openImageSequenceDialog` ← `NativeRead::onEffectCreated`.
 - 2026-10-24 — Also found and folded into P1.T2 (same file): the "Look in" combo connects the Qt5-only `activated(QString)` (`:289`), so choosing a folder there does nothing; Forward into a folder deleted after Back advances `_currentHistoryLocation` before `setDirectory` fails (`:1306-1312`).
+- 2026-10-24 — **All tasks verified on fast build b9095c319+b90f877b7 (remote, 334/334 ctest):** `m138_papercuts.py` 57 PASS / 0 FAIL (file-dialog 26: ▶ shows the PNG in the dialog, toggles off, works after reopen; placement; picker-defaults 24), `m69_cleanup.py` 413 PASS / 0 FAIL. Code: P2 71fbf663d, P3 13e650a33, P1.T1 9cca3b082 + cb2502fca, P1.T2 b9095c319, script fixes b90f877b7. The ▶ fix: the shared preview viewer joins the dialog before its window exists (Qt 6 recreates a shown window when a GL widget first joins it, which hid the modal dialog), `ViewerGL` releases its GL objects and `TextRenderer` atlases on `aboutToBeDestroyed` and skips uploads while context-less. Other GL widgets' `TextRenderer`s went to the inbox.

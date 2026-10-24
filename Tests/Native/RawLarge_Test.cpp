@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -53,8 +54,11 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/RawDecodeSupport.h"
+#include "Engine/Nodes/IO/RawDngOpcodes.h"
+#include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/Nodes/Raw/RawDevelop.h"
 #include "Engine/Nodes/Raw/RawHighlights.h"
+#include "Engine/Nodes/Raw/RawPrepare.h"
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_USING
@@ -95,12 +99,71 @@ constexpr std::size_t kMaxBandGrowthBytes = kFrameRgbaBytes / 2;
 constexpr std::size_t kMosaicBytes = (std::size_t)kWidth * (std::size_t)kHeight * sizeof(float);
 constexpr std::size_t kMaxOpposedGrowthBytes = 3 * kMosaicBytes + kMaxBandGrowthBytes;
 
+// The per-mode bounds below are counted in one-channel frames (kMosaicBytes, F) over what the
+// bands cost with Clip. Every band and corner render starts from an empty node cache: a cached
+// image asked for a second region grows to the bounding box of both, so two bands rendered
+// against a warm cache would hold every stage over the whole frame.
+//
+// Reconstruct Color, Segmentation Based and Guided Laplacians ask for the whole source, so the
+// source, RawPrepare and RawTemperature hold whole frames while they run (3 F), and Highlights
+// reads the last in place. Reconstruct Color keeps one float per photosite (F).
+constexpr std::size_t kMaxInpaintGrowthBytes = 3 * kMosaicBytes + kMosaicBytes + kMaxBandGrowthBytes;
+
+// Segmentation Based keeps the same frame (F) and, while it computes it, works on planes of one
+// value per 3x3 block: 8 float planes, 4 segment id planes and the combine scratch, 13 planes of
+// F / 9, plus a flood-fill stack of F / 144 for each plane segmented. 14 F / 9
+// covers both.
+constexpr std::size_t kMaxSegmentsGrowthBytes = 3 * kMosaicBytes + kMosaicBytes + 14 * kMosaicBytes / 9 + kMaxBandGrowthBytes;
+
+// Guided Laplacians keeps an RGBA image at a quarter of each side (F / 4) and builds it with five
+// more of the same size (mask, temp, HF and two LF), F * 6 / 4 in all.
+constexpr std::size_t kMaxLaplacianGrowthBytes = 3 * kMosaicBytes + 6 * kMosaicBytes / 4 + kMaxBandGrowthBytes;
+
+// Flat Field, LMMSE, the dual methods, Frequency Domain Chroma and capture sharpening with a set
+// radius read their window grown by a halo or a tile span of a few hundred photosites at most, so
+// they take the Clip bound.
+constexpr std::size_t kMaxWindowedGrowthBytes = kMaxBandGrowthBytes;
+
+// Capture sharpening's automatic radius measures the centre 60 % x 60 % of the frame, and
+// RawDemosaic merges that rectangle into the region it asks of its source, so a band asks for the
+// bounding box of the band and the centre: 80 % of the frame. The source, RawPrepare,
+// RawTemperature and RawHighlights each hold that (4 x 4 F / 5), RawHighlights copies its window
+// into a top-down buffer (4 F / 5), and the measurement copies the centre twice (2 x 9 F / 25):
+// 118 F / 25.
+constexpr std::size_t kMaxAutoCaptureGrowthBytes = 118 * kMosaicBytes / 25 + kMaxBandGrowthBytes;
+
+// The side of the corner windows rendered on their own and compared with the bands.
+constexpr int kCornerSize = 64;
+
+// Clipped squares every kBlobPeriod photosites, away from the corner windows, give the highlight
+// modes something to rebuild; they are bright in every colour, so Segmentation Based also has
+// areas where all of them clip.
+constexpr int kBlobPeriod = 256;
+constexpr int kBlobStart = 100;
+constexpr int kBlobSize = 12;
+static_assert((kWidth - kCornerSize) % kBlobPeriod >= kBlobStart + kBlobSize && (kHeight - kCornerSize) % kBlobPeriod >= kBlobStart + kBlobSize, "the corner windows must miss the clipped squares");
+
 float
 scene(int x,
       int y,
       int colour)
 {
     return 0.1f + 0.05f * (float)colour + 0.2f * (float)((x % kPeriod) + (y % kPeriod)) / (float)(2 * (kPeriod - 1));
+}
+
+float
+clippedScene(int x,
+             int y,
+             int colour)
+{
+    const int bx = x % kBlobPeriod;
+    const int by = y % kBlobPeriod;
+
+    if ((bx >= kBlobStart) && (bx < kBlobStart + kBlobSize) && (by >= kBlobStart) && (by < kBlobStart + kBlobSize)) {
+        return 1.5f;
+    }
+
+    return scene(x, y, colour);
 }
 
 // Peak resident set size of this process in bytes, or 0 when /proc cannot be read.
@@ -122,6 +185,87 @@ peakResidentBytes()
     std::fclose(f);
 
     return kb * 1024;
+}
+
+// Sets the peak resident set size back to the current one (Linux 4.0 and later). When it fails the
+// peak keeps what earlier modes reached, so a mode's growth over it can only be smaller than the
+// mode's own.
+void
+resetPeakResident()
+{
+    std::FILE* f = std::fopen("/proc/self/clear_refs", "w");
+
+    if (f) {
+        std::fputs("5", f);
+        std::fclose(f);
+    }
+}
+
+// Four maps of 5 x 4 points over the whole sensor, a different gain at every point and cell.
+std::vector<DngGainMap>
+largeGainMaps()
+{
+    std::vector<DngGainMap> maps;
+
+    for (int cell = 0; cell < 4; ++cell) {
+        DngGainMap g;
+        g.top = (uint32_t)(cell >> 1);
+        g.left = (uint32_t)(cell & 1);
+        g.bottom = kHeight;
+        g.right = kWidth;
+        g.plane = 0;
+        g.planes = 1;
+        g.rowPitch = 2;
+        g.colPitch = 2;
+        g.mapPointsV = 4;
+        g.mapPointsH = 5;
+        g.mapSpacingV = 1. / 3.;
+        g.mapSpacingH = 1. / 4.;
+        g.mapOriginV = 0.;
+        g.mapOriginH = 0.;
+        g.mapPlanes = 1;
+        for (uint32_t r = 0; r < g.mapPointsV; ++r) {
+            for (uint32_t c = 0; c < g.mapPointsH; ++c) {
+                g.gains.push_back(0.9f + 0.02f * (float)cell + 0.01f * (float)r + 0.005f * (float)c);
+            }
+        }
+        maps.push_back(g);
+    }
+
+    return maps;
+}
+
+// Every pixel of window, which lies inside band, matches band; and the 8 x 8 pixels of window at
+// the image's corner it touches are written.
+void
+expectWindowMatchesBand(const RenderedPlane& window,
+                        const RenderedPlane& band,
+                        int cornerY)
+{
+    ASSERT_GE(window.channels.size(), 3u);
+    ASSERT_EQ(window.channels.size(), band.channels.size());
+    ASSERT_TRUE(band.window.contains(window.window));
+
+    std::size_t mismatches = 0;
+    for (int y = window.window.y1; y < window.window.y2; ++y) {
+        for (int x = window.window.x1; x < window.window.x2; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                if (!(std::fabs(rawTestPlaneValue(window, x, y, c) - rawTestPlaneValue(band, x, y, c)) <= 1e-5f)) {
+                    ++mismatches;
+                }
+            }
+        }
+    }
+    EXPECT_EQ(0u, mismatches);
+
+    for (int y = cornerY; y < cornerY + 8; ++y) {
+        for (int x = kWidth - 8; x < kWidth; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const float v = rawTestPlaneValue(window, x, y, c);
+                EXPECT_TRUE(std::isfinite(v) && (v > 0.f)) << "(" << x << ", " << y << ") channel " << c << " = " << v;
+            }
+        }
+    }
 }
 } // namespace
 
@@ -158,6 +302,79 @@ protected:
         }
 
         return read;
+    }
+
+    // A 12288 x 8192 test source of pattern holding value(x, y, colour), with the black and white
+    // levels, white balance and camera matrix of the first test, and maps as its GainMaps.
+    NodePtr createLargeSource(const std::string& pattern,
+                              float (*value)(int, int, int),
+                              const std::vector<DngGainMap>& maps = std::vector<DngGainMap>())
+    {
+        NodePtr source = createNode(QString::fromUtf8(kRawTestSourceID));
+
+        EXPECT_TRUE(bool(source));
+        if (!source) {
+            return source;
+        }
+        ImageMetadata metadata = rawTestMetadata(pattern, 0, 0, eRawStageRaw);
+        RawMetadata::setBlackLevels(&metadata, { 0., 0., 0., 0. });
+        RawMetadata::setWhiteLevel(&metadata, 1.);
+        RawMetadata::setWbCoeffs(&metadata, { 1.2, 1., 1.1 });
+        RawMetadata::setCamToXyz(&metadata, { 0.4124, 0.3576, 0.1805, 0.2126, 0.7152, 0.0722, 0.0193, 0.1192, 0.9505 });
+        if (!maps.empty()) {
+            RawMetadata::setGainMaps(&metadata, maps);
+        }
+        const std::optional<RawLayout> layout = RawLayout::fromMetadata(metadata);
+        EXPECT_TRUE(bool(layout));
+        if (!layout) {
+            return NodePtr();
+        }
+        const RawLayout cfa = *layout;
+        dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(RectI(0, 0, kWidth, kHeight), 1, [cfa, value](int x, int y, int) { return value(x, y, cfa.colourAt(x, y)); }, metadata);
+
+        return source;
+    }
+
+    // Renders the two bands and the two far corners of output, each from an empty node cache but
+    // for the second corner, which shares the first's, and checks that the peak resident set
+    // grew by less than bound over the whole run and that each corner rendered on its own matches
+    // the band holding it.
+    void developWithinBound(const NodePtr& output,
+                            const char* mode,
+                            std::size_t bound,
+                            const char* boundText)
+    {
+        SCOPED_TRACE(mode);
+        appPTR->clearNodeCache();
+        resetPeakResident();
+        const std::size_t before = peakResidentBytes();
+        ASSERT_GT(before, 0u);
+
+        std::string error;
+        RenderedPlane bottom;
+        ASSERT_TRUE(renderRawTestPlane(output, RectI(0, 0, kWidth, kBottomBandRows), &bottom, &error, false)) << error;
+        appPTR->clearNodeCache();
+        RenderedPlane top;
+        ASSERT_TRUE(renderRawTestPlane(output, RectI(0, kHeight - kTopBandRows, kWidth, kHeight), &top, &error, false)) << error;
+        appPTR->clearNodeCache();
+        RenderedPlane low;
+        ASSERT_TRUE(renderRawTestPlane(output, RectI(kWidth - kCornerSize, 0, kWidth, kCornerSize), &low, &error, false)) << error;
+        RenderedPlane high;
+        ASSERT_TRUE(renderRawTestPlane(output, RectI(kWidth - kCornerSize, kHeight - kCornerSize, kWidth, kHeight), &high, &error, false)) << error;
+        appPTR->clearNodeCache();
+
+        const std::size_t peak = peakResidentBytes();
+        const std::size_t growth = (peak > before) ? (peak - before) : 0;
+        EXPECT_LT(growth, bound) << "with " << mode << ", peak RSS grew by " << growth << " bytes, bound " << bound << " (" << boundText << ")";
+
+        {
+            SCOPED_TRACE("bottom right corner");
+            expectWindowMatchesBand(low, bottom, 0);
+        }
+        {
+            SCOPED_TRACE("top right corner");
+            expectWindowMatchesBand(high, top, kHeight - 8);
+        }
     }
 };
 
@@ -237,6 +454,95 @@ TEST_F(RawLargeTest, HundredMegapixelMosaicDevelopsAtTheFarCornerWithinTheMemory
     developBands("Inpaint Opposed");
     const std::size_t opposedGrowth = growthSinceStart();
     EXPECT_LT(opposedGrowth, kMaxOpposedGrowthBytes) << "with Inpaint Opposed, peak RSS grew by " << opposedGrowth << " bytes, bound " << kMaxOpposedGrowthBytes << " (three one-channel " << kWidth << "x" << kHeight << " frames and the Clip bound)";
+}
+
+// The highlight modes that rebuild from the whole frame keep it per source and settings, so the
+// four renders of each mode stay within the frames the mode holds.
+TEST_F(RawLargeTest, HundredMegapixelWholeFrameHighlightModesStayWithinTheirBounds)
+{
+    NodePtr source = createLargeSource("RGGB", &clippedScene);
+    ASSERT_TRUE(bool(source));
+    const RawDevelop::Chain chain = RawDevelop::buildChain(source);
+    ASSERT_TRUE(chain.complete());
+    KnobChoicePtr highlightsMode = chain.highlights->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawHighlightsParamMode);
+    ASSERT_TRUE(bool(highlightsMode));
+
+    highlightsMode->setValue((int)eRawHighlightsModeInpaint);
+    developWithinBound(chain.inputColor, "Reconstruct Color", kMaxInpaintGrowthBytes, "four one-channel frames and the Clip bound");
+    highlightsMode->setValue((int)eRawHighlightsModeSegments);
+    developWithinBound(chain.inputColor, "Segmentation Based", kMaxSegmentsGrowthBytes, "four one-channel frames, 14/9 of one for the segmentation and the Clip bound");
+    highlightsMode->setValue((int)eRawHighlightsModeLaplacian);
+    developWithinBound(chain.inputColor, "Guided Laplacians", kMaxLaplacianGrowthBytes, "4.5 one-channel frames and the Clip bound");
+}
+
+TEST_F(RawLargeTest, HundredMegapixelFlatFieldStaysWithinTheBandBound)
+{
+    NodePtr source = createLargeSource("RGGB", &scene, largeGainMaps());
+    ASSERT_TRUE(bool(source));
+    const RawDevelop::Chain chain = RawDevelop::buildChain(source);
+    ASSERT_TRUE(chain.complete());
+    KnobChoicePtr highlightsMode = chain.highlights->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawHighlightsParamMode);
+    KnobChoicePtr flatField = chain.prepare->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawPrepareParamFlatField);
+    ASSERT_TRUE(highlightsMode && flatField);
+
+    highlightsMode->setValue((int)eRawHighlightsModeClip);
+    flatField->setValue((int)eRawPrepareFlatFieldEmbedded);
+    const std::optional<RawPrepare::Settings> settings = dynamic_cast<RawPrepare*>(chain.prepare->getEffectInstance().get())->resolveSettings(0., ViewIdx(0));
+    ASSERT_TRUE(settings && settings->flatField);
+    developWithinBound(chain.inputColor, "Flat Field", kMaxWindowedGrowthBytes, "the Clip bound");
+}
+
+TEST_F(RawLargeTest, HundredMegapixelBayerDemosaicModesStayWithinTheirBounds)
+{
+    NodePtr source = createLargeSource("RGGB", &scene);
+    ASSERT_TRUE(bool(source));
+    const RawDevelop::Chain chain = RawDevelop::buildChain(source);
+    ASSERT_TRUE(chain.complete());
+    const EffectInstancePtr demosaic = chain.demosaic->getEffectInstance();
+    KnobChoicePtr highlightsMode = chain.highlights->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawHighlightsParamMode);
+    KnobChoicePtr method = demosaic->getKnobByNameAndType<KnobChoice>(kRawDemosaicParamBayerMethod);
+    KnobBoolPtr capture = demosaic->getKnobByNameAndType<KnobBool>(kRawDemosaicParamCaptureSharpen);
+    KnobDoublePtr captureRadius = demosaic->getKnobByNameAndType<KnobDouble>(kRawDemosaicParamCaptureRadius);
+    ASSERT_TRUE(highlightsMode && method && capture && captureRadius);
+    highlightsMode->setValue((int)eRawHighlightsModeClip);
+
+    method->setValue((int)eRawDemosaicBayerLMMSE);
+    developWithinBound(chain.inputColor, "LMMSE", kMaxWindowedGrowthBytes, "the Clip bound");
+    method->setValue((int)eRawDemosaicBayerRCDDual);
+    developWithinBound(chain.inputColor, "RCD (dual)", kMaxWindowedGrowthBytes, "the Clip bound");
+    method->setValue((int)eRawDemosaicBayerAMaZEDual);
+    developWithinBound(chain.inputColor, "AMaZE (dual)", kMaxWindowedGrowthBytes, "the Clip bound");
+
+    method->setValue((int)eRawDemosaicBayerRCD);
+    capture->setValue(true);
+    captureRadius->setValue(0.8);
+    developWithinBound(chain.inputColor, "capture sharpening, radius 0.8", kMaxWindowedGrowthBytes, "the Clip bound");
+    captureRadius->setValue(0.);
+    developWithinBound(chain.inputColor, "capture sharpening, automatic radius", kMaxAutoCaptureGrowthBytes, "118/25 one-channel frames and the Clip bound");
+    EXPECT_TRUE(bool(dynamic_cast<RawDemosaic*>(demosaic.get())->lastAutoCaptureRadius()));
+}
+
+TEST_F(RawLargeTest, HundredMegapixelXTransDemosaicModesStayWithinTheBandBound)
+{
+    const std::string xtrans = "GGRGGB"
+                               "GGBGGR"
+                               "BRGRBG"
+                               "GGBGGR"
+                               "GGRGGB"
+                               "RBGBRG";
+    NodePtr source = createLargeSource(xtrans, &scene);
+    ASSERT_TRUE(bool(source));
+    const RawDevelop::Chain chain = RawDevelop::buildChain(source);
+    ASSERT_TRUE(chain.complete());
+    KnobChoicePtr highlightsMode = chain.highlights->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawHighlightsParamMode);
+    KnobChoicePtr method = chain.demosaic->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawDemosaicParamXTransMethod);
+    ASSERT_TRUE(highlightsMode && method);
+    highlightsMode->setValue((int)eRawHighlightsModeClip);
+
+    method->setValue((int)eRawDemosaicXTransMarkesteijn3Dual);
+    developWithinBound(chain.inputColor, "Markesteijn 3-pass (dual)", kMaxWindowedGrowthBytes, "the Clip bound");
+    method->setValue((int)eRawDemosaicXTransFDC);
+    developWithinBound(chain.inputColor, "Frequency Domain Chroma", kMaxWindowedGrowthBytes, "the Clip bound");
 }
 
 // Two Reads of one file, and threads asking the decode cache for different parts of it at once,

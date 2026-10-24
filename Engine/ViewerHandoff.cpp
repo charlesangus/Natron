@@ -38,6 +38,8 @@
 #include <exception>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <QtCore/QDebug>
@@ -60,6 +62,9 @@ const VkDeviceSize kProbeCapacity = 4096;
 // Ahead of the render tasks and their fork-join helpers, since present() blocks the GL thread on a fill that has not
 // finished once the ring comes round to its slot.
 const int kFillRunnablePriority = 8;
+
+// Ahead of the render tasks too, since the first frame's render thread waits for the compile in prepare().
+const int kPrecompileRunnablePriority = 8;
 
 // GpuKernel's descriptor pools hold 1024 sets; on a device without push descriptors they are
 // recycled once no frame is in flight, and waited for when frames never stop overlapping.
@@ -133,6 +138,50 @@ struct Device {
     std::shared_ptr<void> token;
     gpu::GpuRuntime* runtime = nullptr;
     std::unique_ptr<ViewerGpuProcess> process;
+};
+
+// A precompile() handed to the pool. The device is taken by the worker when it starts, or dropped by the GL thread
+// to abandon it before then, so that a queued compile holds no runtime token.
+struct Precompile {
+    std::mutex mutex;
+    std::shared_ptr<Device> device;
+    ViewerHandoffProcessorFn processor;
+    gpu::GlPixelFormat format = gpu::GlPixelFormat::Rgba32F;
+
+    void abandon()
+    {
+        // Released outside the lock, as this may be the last reference to the device.
+        std::shared_ptr<Device> dev;
+        ViewerHandoffProcessorFn fn;
+        {
+            std::lock_guard<std::mutex> k(mutex);
+            dev.swap(device);
+            fn.swap(processor);
+        }
+    }
+
+    void run()
+    {
+        std::shared_ptr<Device> dev;
+        ViewerHandoffProcessorFn fn;
+        {
+            std::lock_guard<std::mutex> k(mutex);
+            dev.swap(device);
+            fn.swap(processor);
+        }
+        if (!dev || dev->runtime->isLost()) {
+            return;
+        }
+        // A failure stays silent here: the process remembers it, and the frame's own prepare() reports it.
+        try {
+            ProjectColorManagement::DisplayProcessorPtr resolved;
+            if ((format == gpu::GlPixelFormat::Bgra8) && fn) {
+                resolved = fn();
+            }
+            dev->process->prepare(resolved, format);
+        } catch (...) {
+        }
+    }
 };
 
 struct PendingReadback {
@@ -327,6 +376,14 @@ struct ViewerHandoff::Imp {
     unsigned dispatchesSinceRelease = 0;
     std::uint64_t nextStagedId = 1;
 
+    std::optional<std::pair<std::string, ViewerHandoffFormat>> precompileRequest;
+    ViewerHandoffProcessorFn precompileProcessor;
+    std::shared_ptr<Precompile> precompiling;
+    std::array<std::size_t, kTextureCount> reserved {};
+    // Set when a ring could not be built at its reserved size, so that every paint does not try again; cleared by a
+    // larger reservation and by a device loss.
+    std::array<bool, kTextureCount> reserveFailed {};
+
     // The rung last written to the log; unset until the first one is.
     std::optional<ViewerHandoffRung> loggedRung;
 
@@ -421,6 +478,28 @@ struct ViewerHandoff::Imp {
         dispatchesSinceRelease = 0;
     }
 
+    void abandonPrecompile()
+    {
+        if (precompiling) {
+            precompiling->abandon();
+            precompiling.reset();
+        }
+    }
+
+    void startPrecompile(const std::shared_ptr<Device>& dev)
+    {
+        abandonPrecompile();
+        if (!precompileRequest || !dev || dev->runtime->isLost()) {
+            return;
+        }
+        std::shared_ptr<Precompile> job = std::make_shared<Precompile>();
+        job->device = dev;
+        job->processor = precompileProcessor;
+        job->format = pixelFormatOf(precompileRequest->second);
+        precompiling = job;
+        QThreadPool::globalInstance()->start([job]() { job->run(); }, kPrecompileRunnablePriority);
+    }
+
     void drop(const std::string& why,
               bool lost)
     {
@@ -432,12 +511,14 @@ struct ViewerHandoff::Imp {
             reason = why;
         }
         rung.store(ViewerHandoffRung::Cpu, std::memory_order_release);
+        abandonPrecompile();
         old.reset();
         owned.clear();
         cancelFills(detachedFills);
         wantedCapacity = 0;
         if (lost) {
             buildFailed = false;
+            reserveFailed = {};
         }
     }
 
@@ -647,6 +728,7 @@ struct ViewerHandoff::Imp {
             reason = why;
         }
         rung.store(*picked, std::memory_order_release);
+        startPrecompile(dev);
     }
 
     // Steps every ring down to the next rung that builds. False once none is left.
@@ -844,6 +926,37 @@ struct ViewerHandoff::Imp {
         return accept();
     }
 
+    // Builds the ring of index at its reserved size unless it already holds it, or while it holds a staged frame.
+    ViewerHandoffResult applyReservation(Device& dev,
+                                         int index)
+    {
+        Ring& ring = rings[index];
+        const std::size_t bytes = reserved[index];
+        if (!bytes || reserveFailed[index] || (ring.interop && (ring.interop->capacity() >= bytes))) {
+            return accept();
+        }
+        if (ring.interop && ring.holdsStaged()) {
+            return accept();
+        }
+        destroyRing(ring);
+        const ViewerHandoffResult r = buildRing(dev, index, std::max(bytes, wantedCapacity));
+        if (!r && currentDevice()) {
+            reserveFailed[index] = true;
+        }
+
+        return r;
+    }
+
+    void applyReservations(const std::shared_ptr<Device>& dev)
+    {
+        for (int i = 0; i < kTextureCount; ++i) {
+            if (currentDevice() != dev) {
+                return;
+            }
+            applyReservation(*dev, i);
+        }
+    }
+
     ViewerHandoffResult grow(Device& dev)
     {
         for (int i = 0; i < kTextureCount; ++i) {
@@ -928,15 +1041,60 @@ ViewerHandoff::maintain()
 
             return false;
         }
-
-        return true;
+    } else {
+        if (_imp->buildFailed) {
+            return false;
+        }
+        _imp->build();
+        dev = _imp->currentDevice();
+        if (!dev) {
+            return false;
+        }
     }
-    if (_imp->buildFailed) {
-        return false;
-    }
-    _imp->build();
+    _imp->applyReservations(dev);
 
     return bool(_imp->currentDevice());
+}
+
+void
+ViewerHandoff::precompile(const std::string& key,
+                          ViewerHandoffFormat format,
+                          const ViewerHandoffProcessorFn& processor)
+{
+    if (_imp->precompileRequest && (_imp->precompileRequest->first == key) && (_imp->precompileRequest->second == format)) {
+        return;
+    }
+    _imp->precompileRequest.emplace(key, format);
+    _imp->precompileProcessor = processor;
+    _imp->startPrecompile(_imp->currentDevice());
+}
+
+ViewerHandoffResult
+ViewerHandoff::reserve(int textureIndex,
+                       std::size_t bytes)
+{
+    if ((textureIndex < 0) || (textureIndex >= kTextureCount)) {
+        return refuse("texture index " + std::to_string(textureIndex) + " out of range");
+    }
+    if (_imp->claiming) {
+        return refuse("reserve() while a readback is claimed");
+    }
+    std::size_t& reserved = _imp->reserved[textureIndex];
+    if (reserved >= bytes) {
+        return accept();
+    }
+    reserved = bytes;
+    _imp->reserveFailed[textureIndex] = false;
+    if (!maintain()) {
+        return refuse("rung cpu: " + rungReason());
+    }
+    const std::size_t built = capacity(textureIndex);
+    if (built < bytes) {
+        return refuse("slots of " + std::to_string(bytes) + " bytes are not built: "
+                      + (_imp->rings[textureIndex].holdsStaged() ? std::string("the ring holds a staged frame") : rungReason()));
+    }
+
+    return accept();
 }
 
 ViewerHandoffResult
@@ -1162,6 +1320,10 @@ ViewerHandoff::release()
 {
     assert(!_imp->claiming);
     _imp->drop("released", false);
+    _imp->precompileRequest.reset();
+    _imp->precompileProcessor = ViewerHandoffProcessorFn();
+    _imp->reserved = {};
+    _imp->reserveFailed = {};
     _imp->created = false;
     _imp->buildFailed = false;
     _imp->loader = GlProcLoader();

@@ -122,6 +122,12 @@ using ViewerHandoffReadbackFn = std::function<void(const ViewerHandoffReadback&)
 using ViewerHandoffClaimFn = std::function<ViewerHandoffReadbackFn(std::uint64_t token)>;
 
 /**
+ * @brief The display processor a precompile() compiles for, called on the worker that compiles it, since building an
+ * OCIO processor can take long enough to be felt on the GL thread. It must not need the GL thread or the ViewerHandoff.
+ **/
+using ViewerHandoffProcessorFn = std::function<ProjectColorManagement::DisplayProcessorPtr()>;
+
+/**
  * @brief Success, or a refusal whose reason completes "viewer handoff: " for
  * RenderStats::incLegacyFallbacks(). A refused frame must take the CPU path.
  **/
@@ -139,8 +145,8 @@ struct ViewerHandoffResult {
  *
  * The rung is the best that both the GL context and the device reach, ZeroCopy, then HostSync,
  * then Readback; NATRON_VIEWER_HANDOFF names a rung to start the descent from, and "cpu" turns the
- * hand-off off. A GpuContext::holdRuntime() token is held exactly while device resources exist.
- * Once the runtime is lost they are all released and the rung reads Cpu; maintain() builds them
+ * hand-off off. A GpuContext::holdRuntime() token is held exactly while device resources exist,
+ * which a precompile() still running when they are released keeps until it finishes. Once the runtime is lost they are all released and the rung reads Cpu; maintain() builds them
  * again once the context has recovered.
  *
  * Threads: rung() and prepare() are safe from any thread. Every other call, destruction included,
@@ -194,6 +200,28 @@ public:
      **/
     ViewerHandoffResult prepare(const ProjectColorManagement::DisplayProcessorPtr& processor,
                                 ViewerHandoffFormat format);
+
+    /**
+     * @brief Starts compiling the viewer process of \p format, with the display processor that \p processor returns
+     * for Bgra8 frames, on the global thread pool, so that the first frame finds it compiled. A prepare() or present()
+     * that needs it meanwhile waits for this compile rather than starting another. \p key names the request, and a
+     * call with the key and format of the last one does nothing. The last request is compiled again whenever the
+     * device is built again, as after a loss, until release().
+     *
+     * Never waits for the compile. release() and a device loss drop one the pool has not started yet; one already
+     * running keeps the device it compiles on, and so the runtime's recovery, only until it finishes.
+     **/
+    void precompile(const std::string& key,
+                    ViewerHandoffFormat format,
+                    const ViewerHandoffProcessorFn& processor);
+
+    /**
+     * @brief Builds the ring of \p textureIndex now, with slots of at least \p bytes, rather than at its first
+     * present(), and builds it again at that size after a device loss, until release(). A ring holding a staged frame
+     * grows once it holds none, and no ring shrinks. A ring that cannot be built at that size is left to present().
+     **/
+    ViewerHandoffResult reserve(int textureIndex,
+                                std::size_t bytes);
 
     /**
      * @brief Runs the viewer process of \p root into a slot of the ring of \p textureIndex and
@@ -260,12 +288,13 @@ public:
      **/
     ViewerHandoffResult ensureCapacity(std::size_t bytes);
 
-    // The slot capacity of the ring of textureIndex; 0 before its first present().
+    // The slot capacity of the ring of textureIndex; 0 before its first present() or reserve().
     std::size_t capacity(int textureIndex) const;
 
     /**
      * @brief Releases every GL object, device resource and pinned root, after cancelling or waiting for
-     * the readback work still pending. The rung is Cpu until the next create().
+     * the readback work still pending, and forgets the precompile() and reserve() requests. The rung is
+     * Cpu until the next create().
      **/
     void release();
 

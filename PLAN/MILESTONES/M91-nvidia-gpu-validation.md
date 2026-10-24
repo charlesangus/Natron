@@ -178,7 +178,7 @@ Triage of the baseline: P2.T1 (GlInterop) and P2.T4 (device limits) were not tri
   - verify: `GpuRuntimeShaderTest.*` passes on the RTX 3070 Ti (both registrations) and on lavapipe CI. The worst d/bound ratio is printed and below 1. A deliberately swapped channel or axis (an error around 0.1) would still fail; check by reasoning or a temporary local edit that is not committed.
   - size: M
 
-- [ ] M91.P2.T5 — Make the pipelined-strip residency timing test assert what the design guarantees
+- [x] M91.P2.T5 — Make the pipelined-strip residency timing test assert what the design guarantees
   - files: `Tests/GpuResidency_Test.cpp`
   - approach: `RegionMembersAreTimedOnTheDevice` fails 12/12 on NVIDIA in pipelined-strips mode with a near-constant gap of about 0.07-0.09 ms (6-9%). Whole and serial strips are within 1.2%. The cause is correct device time that no member owns. Pipelined strips record the compute→transfer queue-ownership release barriers inside the timed strip interval, after the last member's timestamp (`GpuRegionTask.cpp` `submitStrip` ~1931-1975, handoff `Record` vs `Submit` ~1602/1807). NVIDIA charges real time for that release; lavapipe and RADV make it nearly free. Keep the 5% equality check for whole and serial. For pipelined, assert nesting, `EXPECT_LE(sumMs, report.kernelMs + eps)` with eps = 2 × strips × timestampPeriod, plus a sanity floor `EXPECT_GT(sumMs, 0.5 * report.kernelMs)`. Add a short why-comment about the release barriers. No engine change, which also avoids the M107 file.
   - verify: the test passes 3 times in a row on the RTX 3070 Ti and on lavapipe CI.

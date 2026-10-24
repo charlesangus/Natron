@@ -1370,14 +1370,9 @@ OfxEffectInstance::defaultProcessesAllLayers() const
     static const std::set<std::string> processAllLayers = {
         // Transform and distortion
         "net.sf.openfx.DirBlur",
-        "net.sf.openfx.CornerPinPlugin",
-        "net.sf.openfx.CornerPinMaskedPlugin",
         "net.sf.openfx.Card3D",
         "net.sf.openfx.AdjustRoDPlugin",
         "net.sf.openfx.SpriteSheet",
-        "net.sf.openfx.Mirror",
-        "net.sf.openfx.IDistort",
-        "net.sf.openfx.STMap",
         "net.sf.openfx.LensDistortion",
         "fr.inria.openfx.OIIOResize",
         "net.fxarena.openfx.Reflection",

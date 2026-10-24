@@ -358,27 +358,26 @@ IDistort::getRegionsOfInterest(double time,
     }
 }
 
-void
-IDistort::getComponentsNeededAndProduced(double time,
-                                         ViewIdx view,
-                                         EffectInstance::ComponentsNeededMap* comps,
-                                         double* passThroughTime,
-                                         int* passThroughView,
-                                         int* passThroughInputNb)
+bool
+IDistort::getInputLayersRead(int inputNb,
+                             double time,
+                             ViewIdx view,
+                             std::list<ImageLayerDesc>* layers)
 {
-    StagedImageEffect::getComponentsNeededAndProduced(time, view, comps, passThroughTime, passThroughView, passThroughInputNb);
-
-    std::list<ImageLayerDesc>& uvPlanes = (*comps)[kIDistortInputUV];
-    uvPlanes.clear();
+    if (inputNb != kIDistortInputUV) {
+        return false;
+    }
     UVChannel u;
     UVChannel v;
     resolveUVChannels(time, view, &u, &v);
     if (u.valid) {
-        uvPlanes.push_back(u.layer);
+        layers->push_back(u.layer);
     }
     if (v.valid && (!u.valid || !(v.layer == u.layer))) {
-        uvPlanes.push_back(v.layer);
+        layers->push_back(v.layer);
     }
+
+    return !layers->empty();
 }
 
 bool

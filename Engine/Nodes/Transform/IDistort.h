@@ -165,16 +165,11 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
-    /**
-     * @brief The default planes, with the UV input's replaced by the layers the U and V selectors
-     * resolve to.
-     **/
-    virtual void getComponentsNeededAndProduced(double time,
-                                                ViewIdx view,
-                                                EffectInstance::ComponentsNeededMap* comps,
-                                                double* passThroughTime,
-                                                int* passThroughView,
-                                                int* passThroughInputNb) OVERRIDE FINAL;
+    // The layers the U and V selectors resolve to, read from the UV input.
+    virtual bool getInputLayersRead(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
 
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,

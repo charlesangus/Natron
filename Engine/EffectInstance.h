@@ -2541,6 +2541,19 @@ protected:
                                                 int* passThroughView,
                                                 int* passThroughInput);
 
+    /**
+     * @brief Whether a non-multiplanar effect reads input inputNb in layers its own selectors
+     * pick, rather than in the ones planned for every non-mask input. When true, layers holds
+     * them, and they replace that input's planes in the default components needed, so the
+     * request pass renders them upstream for the CPU and GPU paths alike.
+     **/
+    virtual bool getInputLayersRead(int /*inputNb*/,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    std::list<ImageLayerDesc>* /*layers*/)
+    {
+        return false;
+    }
 
     virtual void setInteractColourPicker(const OfxRGBAColourD& /*color*/, bool /*setColor*/, bool /*hasColor*/)
     {

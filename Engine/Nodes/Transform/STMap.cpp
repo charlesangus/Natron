@@ -460,27 +460,26 @@ STMap::getRegionsOfInterest(double time,
     }
 } // STMap::getRegionsOfInterest
 
-void
-STMap::getComponentsNeededAndProduced(double time,
-                                      ViewIdx view,
-                                      EffectInstance::ComponentsNeededMap* comps,
-                                      double* passThroughTime,
-                                      int* passThroughView,
-                                      int* passThroughInputNb)
+bool
+STMap::getInputLayersRead(int inputNb,
+                          double time,
+                          ViewIdx view,
+                          std::list<ImageLayerDesc>* layers)
 {
-    StagedImageEffect::getComponentsNeededAndProduced(time, view, comps, passThroughTime, passThroughView, passThroughInputNb);
-
-    std::list<ImageLayerDesc>& uvLayers = (*comps)[kSTMapInputUV];
-    uvLayers.clear();
+    if (inputNb != kSTMapInputUV) {
+        return false;
+    }
     UVChannel u;
     UVChannel v;
     resolveUVChannels(time, view, &u, &v);
     if (u.valid) {
-        appendUnique(u.layer, &uvLayers);
+        appendUnique(u.layer, layers);
     }
     if (v.valid) {
-        appendUnique(v.layer, &uvLayers);
+        appendUnique(v.layer, layers);
     }
+
+    return !layers->empty();
 }
 
 bool

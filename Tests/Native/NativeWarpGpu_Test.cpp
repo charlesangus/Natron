@@ -635,7 +635,8 @@ TEST_F(NativeWarpGpuTest, MixAndDraftMatchTheCpuFrame)
     expectParity(source, idistort, ParityTolerance::resampling(), "IDistort mix");
 }
 
-// Disconnected, IDistort passes the Source through and STMap renders black, on either device.
+// Disconnected, IDistort passes the Source through on either device. STMap is black with an empty
+// region of definition, so neither device renders a plane to compare.
 TEST_F(NativeWarpGpuTest, DisconnectedUVMatchesTheCpuFrame)
 {
     resetProject();
@@ -644,6 +645,12 @@ TEST_F(NativeWarpGpuTest, DisconnectedUVMatchesTheCpuFrame)
     NodePtr stmap = makeSTMap(source, NodePtr(), "cubic");
     NodePtr idistort = makeIDistort(source, NodePtr(), "cubic");
     ASSERT_TRUE(stmap && idistort);
-    expectParity(source, stmap, ParityTolerance::exact(), "STMap without UV", false);
+
+    EffectInstancePtr effect = stmap->getEffectInstance();
+    RectD rod;
+    bool isProjectFormat = false;
+    const StatusEnum stat = effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat);
+    EXPECT_TRUE((stat != eStatusOK) || rod.isNull()) << "STMap without UV";
+
     expectParity(source, idistort, ParityTolerance::exact(), "IDistort without UV", false);
 }

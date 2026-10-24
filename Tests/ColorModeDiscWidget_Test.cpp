@@ -40,6 +40,7 @@
 
 #include "Gui/ColorModeDiscWidget.h"
 #include "Gui/ColorWheelWidget.h"
+#include "Gui/DisplayLegendColour.h"
 
 NATRON_NAMESPACE_USING
 
@@ -64,11 +65,22 @@ rec709()
     return LumaBasis(kRec709LumaWeights, kRec709ToXYZ);
 }
 
+// An sRGB display of a linear Rec.709 working space.
+void
+srgbDisplay(float* rgb,
+            int count)
+{
+    for (int i = 0; i < 3 * count; ++i) {
+        rgb[i] = (float)srgbEncode(rgb[i]);
+    }
+}
+
 QImage
 renderMode(ColorModeDiscWidget& disc,
-           ColorGlobalModeEnum mode)
+           ColorGlobalModeEnum mode,
+           const ColorModeDiscWidget::DisplayConverter& converter = &identity)
 {
-    disc.setDisplayConverter(&identity);
+    disc.setDisplayConverter(converter);
     disc.setMode(mode);
     disc.resize(kDiscSize, kDiscSize);
     disc.show();
@@ -134,19 +146,41 @@ signedDegrees(double d)
     return d;
 }
 
-// The plane hue the knob's own maths reads off a drawn colour, so the check is in the same
-// degrees the S disc is laid out in rather than HSV's.
-double
-planeHueOf(const LumaBasis& basis,
-           const QColor& c)
+OkLab
+okLabOf(const QColor& c)
 {
-    KnobColorValue v = neutralGainValue();
+    const double rgb[3] = { srgbDecode(c.redF()), srgbDecode(c.greenF()), srgbDecode(c.blueF()) };
 
-    v.rgb[0] = c.redF();
-    v.rgb[1] = c.greenF();
-    v.rgb[2] = c.blueF();
+    return linearSrgbToOkLab(rgb);
+}
 
-    return planeHue(toPlane(eColorKnobRoleGain, basis, v));
+double
+okHueOf(const QColor& c)
+{
+    const OkLab lab = okLabOf(c);
+
+    return std::atan2(lab.b, lab.a) * 180.0 / M_PI;
+}
+
+double
+okChromaOf(const QColor& c)
+{
+    const OkLab lab = okLabOf(c);
+
+    return std::hypot(lab.a, lab.b);
+}
+
+// The OKLab hue, in degrees, an sRGB display shows for a plane hue: the hue the S disc draws
+// for a drag that turns the knob to it.
+double
+legendHueOf(const LumaBasis& basis,
+            double planeDegrees)
+{
+    const ColorWheelHueTable table = buildColorWheelHueTable(basis);
+    const int k = colorWheelHueIndex(planeDegrees);
+    std::vector<float> rgb(table.rgb.begin() + 3 * k, table.rgb.begin() + 3 * k + 3);
+
+    return displayLegendHues(rgb, &srgbDisplay)[0] * 180.0 / M_PI;
 }
 
 KnobColorValue
@@ -207,7 +241,7 @@ eightRimSamples(const ColorModeDiscWidget& disc,
 }
 } // anonymous namespace
 
-TEST(ColorModeDiscWidget, SaturationRimRunsThirtyDegreesEitherSideOfTheHue)
+TEST(ColorModeDiscWidget, SaturationRimRunsSixtyDegreesEitherSideOfTheHue)
 {
     const LumaBasis basis = rec709();
     ColorModeDiscWidget disc;
@@ -216,12 +250,14 @@ TEST(ColorModeDiscWidget, SaturationRimRunsThirtyDegreesEitherSideOfTheHue)
     disc.setCentreValue(eColorKnobRoleGain, valueWithHue(basis, 40.0));
     EXPECT_EQ(40, disc.getCentreHue());
 
-    QImage image = renderMode(disc, eColorGlobalModeS);
+    QImage image = renderMode(disc, eColorGlobalModeS, &srgbDisplay);
 
     ASSERT_FALSE(image.isNull());
     // A drag right turns the hue up, as globalModeEdit's S does for a positive dx.
-    EXPECT_NEAR(-30.0, signedDegrees(planeHueOf(basis, rimAt(disc, image, 180.0)) - 40.0), 3.0);
-    EXPECT_NEAR(30.0, signedDegrees(planeHueOf(basis, rimAt(disc, image, 0.0)) - 40.0), 3.0);
+    EXPECT_NEAR(0.0, signedDegrees(okHueOf(rimAt(disc, image, 180.0)) - legendHueOf(basis, -20.0)), 3.0);
+    EXPECT_NEAR(0.0, signedDegrees(okHueOf(rimAt(disc, image, 0.0)) - legendHueOf(basis, 100.0)), 3.0);
+    // The -Sat edge is neutral grey.
+    EXPECT_GT(whiteness(rimAt(disc, image, 270.0)), 0.97);
     EXPECT_GT(whiteness(rimAt(disc, image, 270.0)), whiteness(rimAt(disc, image, 90.0)) + 0.3);
     EXPECT_GT(whiteness(sampleAt(disc, image, 0.0, -0.7)), whiteness(sampleAt(disc, image, 0.0, 0.7)) + 0.3);
 }
@@ -233,10 +269,7 @@ TEST(ColorModeDiscWidget, SaturationRimFollowsTheLiveHue)
 
     disc.setBasis(basis);
     disc.setCentreValue(eColorKnobRoleGain, valueWithHue(basis, 40.0));
-
-    QImage before = renderMode(disc, eColorGlobalModeS);
-    double leftBefore = planeHueOf(basis, rimAt(disc, before, 180.0));
-    double rightBefore = planeHueOf(basis, rimAt(disc, before, 0.0));
+    renderMode(disc, eColorGlobalModeS, &srgbDisplay);
 
     disc.setCentreValue(eColorKnobRoleGain, valueWithHue(basis, 100.0));
     EXPECT_EQ(100, disc.getCentreHue());
@@ -244,8 +277,8 @@ TEST(ColorModeDiscWidget, SaturationRimFollowsTheLiveHue)
     QImage after = disc.grab().toImage();
 
     ASSERT_FALSE(after.isNull());
-    EXPECT_NEAR(60.0, signedDegrees(planeHueOf(basis, rimAt(disc, after, 180.0)) - leftBefore), 3.0);
-    EXPECT_NEAR(60.0, signedDegrees(planeHueOf(basis, rimAt(disc, after, 0.0)) - rightBefore), 3.0);
+    EXPECT_NEAR(0.0, signedDegrees(okHueOf(rimAt(disc, after, 180.0)) - legendHueOf(basis, 40.0)), 3.0);
+    EXPECT_NEAR(0.0, signedDegrees(okHueOf(rimAt(disc, after, 0.0)) - legendHueOf(basis, 160.0)), 3.0);
 }
 
 TEST(ColorModeDiscWidget, NeutralValueKeepsTheLastDefinedHueElseZero)
@@ -269,7 +302,7 @@ TEST(ColorModeDiscWidget, TemperatureRimIsWarmAtTheRightAndMagentaAtTheTop)
 
     disc.setBasis(rec709());
 
-    QImage image = renderMode(disc, eColorGlobalModeT);
+    QImage image = renderMode(disc, eColorGlobalModeT, &srgbDisplay);
 
     ASSERT_FALSE(image.isNull());
 
@@ -279,26 +312,48 @@ TEST(ColorModeDiscWidget, TemperatureRimIsWarmAtTheRightAndMagentaAtTheTop)
     QColor top = rimAt(disc, image, 90.0);
 
     EXPECT_GT(right.red() - right.blue(), left.red() - left.blue() + 60);
+    EXPECT_GT(right.red(), right.blue());
+    EXPECT_GT(left.blue(), left.red());
     EXPECT_GT(bottom.green() - (bottom.red() + bottom.blue()) / 2, top.green() - (top.red() + top.blue()) / 2 + 60);
+    EXPECT_GT(top.red(), top.green());
+    EXPECT_GT(top.blue(), top.green());
 
     QColor innerLeft = sampleAt(disc, image, -0.7, 0.0);
     QColor innerRight = sampleAt(disc, image, 0.7, 0.0);
 
     EXPECT_GT(innerRight.red() - innerRight.blue(), innerLeft.red() - innerLeft.blue());
+
+    // Chroma stays within the legend's cap all the way round, and the centre is neutral.
+    for (int k = 0; k < 16; ++k) {
+        EXPECT_LT(okChromaOf(rimAt(disc, image, k * 22.5)), 0.16) << "degrees " << k * 22.5;
+    }
+    EXPECT_GT(whiteness(sampleAt(disc, image, 0.0, 0.0)), 0.97);
 }
 
-TEST(ColorModeDiscWidget, ValueRimIsWhiteTopAndRightAndBlackBottomAndLeft)
+TEST(ColorModeDiscWidget, ValueRunsFromBlackThroughMidGreyToWhite)
 {
     ColorModeDiscWidget disc;
-    QImage image = renderMode(disc, eColorGlobalModeV);
+    QImage image = renderMode(disc, eColorGlobalModeV, &srgbDisplay);
 
     ASSERT_FALSE(image.isNull());
-    EXPECT_GT(rimAt(disc, image, 45.0).lightness(), rimAt(disc, image, 225.0).lightness() + 200);
-    EXPECT_GE(rimAt(disc, image, 90.0).lightness(), 240);
-    EXPECT_GE(rimAt(disc, image, 0.0).lightness(), 240);
-    EXPECT_LE(rimAt(disc, image, 270.0).lightness(), 15);
-    EXPECT_LE(rimAt(disc, image, 180.0).lightness(), 15);
+
+    // The centre is mid grey as the display shows it.
+    const int midGrey = (int)std::lround(srgbEncode(kColorPivotGrey) * 255.0);
+    const QColor centre = sampleAt(disc, image, 0.0, 0.0);
+
+    EXPECT_NEAR(midGrey, centre.red(), 3);
+    EXPECT_NEAR(midGrey, centre.green(), 3);
+    EXPECT_NEAR(midGrey, centre.blue(), 3);
+
+    // The ends sit on the rim's diagonal.
+    EXPECT_GE(rimAt(disc, image, 45.0).lightness(), 245);
+    EXPECT_LE(rimAt(disc, image, 225.0).lightness(), 15);
+    EXPECT_GT(rimAt(disc, image, 90.0).lightness(), midGrey + 60);
+    EXPECT_GT(rimAt(disc, image, 0.0).lightness(), midGrey + 60);
+    EXPECT_LT(rimAt(disc, image, 270.0).lightness(), midGrey - 60);
+    EXPECT_LT(rimAt(disc, image, 180.0).lightness(), midGrey - 60);
     EXPECT_GT(sampleAt(disc, image, 0.6, 0.6).lightness(), sampleAt(disc, image, -0.6, -0.6).lightness() + 100);
+    EXPECT_GT(whiteness(rimAt(disc, image, 45.0)), 0.97);
 }
 
 TEST(ColorModeDiscWidget, NoModeDrawsThePlainHueRing)

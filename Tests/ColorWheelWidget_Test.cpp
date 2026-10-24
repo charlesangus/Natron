@@ -52,6 +52,7 @@
 
 #include "Gui/ColorAdjustPanel.h"
 #include "Gui/ColorWheelWidget.h"
+#include "Gui/DisplayLegendColour.h"
 
 NATRON_NAMESPACE_USING
 
@@ -365,6 +366,45 @@ TEST(ColorWheelWidget, OffsetNeutralCentrePixelIsAchromatic)
 
     ASSERT_FALSE(disc.isNull());
     expectAchromatic(disc.pixel(disc.width() / 2, disc.height() / 2));
+}
+
+// The ring is a perceptual legend: every hue at the legend's lightness for that hue and at
+// nearly the same chroma, whatever the working space and display.
+TEST(ColorWheelWidget, RingHuesShareALightnessAndChroma)
+{
+    const double Ro = 80.0;
+    const double Ri = 68.0;
+    const double mid = 0.5 * (Ro + Ri);
+    const DisplayLegendConverter converters[2] = {
+        DisplayLegendConverter(), [](float* rgb, int count) {
+            for (int i = 0; i < 3 * count; ++i) {
+                rgb[i] = (float)srgbEncode(rgb[i]);
+            }
+        }
+    };
+
+    for (const DisplayLegendConverter& converter : converters) {
+        QImage ring = renderColorWheelRing(acescg(), Ro, Ri, 1.0, converter);
+        double minL = 1.0;
+        double maxL = 0.0;
+
+        ASSERT_FALSE(ring.isNull());
+        for (int k = 0; k < 24; ++k) {
+            const double angle = (k * 15.0 + 7.0) * kPi / 180.0;
+            const QColor c = QColor::fromRgba(ring.pixel((int)std::lround(Ro + mid * std::cos(angle)), (int)std::lround(Ro - mid * std::sin(angle))));
+            const double rgb[3] = { srgbDecode(c.redF()), srgbDecode(c.greenF()), srgbDecode(c.blueF()) };
+            const OkLab lab = linearSrgbToOkLab(rgb);
+            const double C = std::hypot(lab.a, lab.b);
+
+            EXPECT_EQ(255, c.alpha()) << k;
+            EXPECT_NEAR(displayLegendHueLightness(std::atan2(lab.b, lab.a)), lab.L, 0.02) << k;
+            EXPECT_GT(C, 0.11) << k;
+            EXPECT_LT(C, 0.155) << k;
+            minL = std::min(minL, lab.L);
+            maxL = std::max(maxL, lab.L);
+        }
+        EXPECT_LT(maxL - minL, 0.13);
+    }
 }
 
 TEST(ColorWheelWidget, OffDiscWhiteMarkerCaretPointsAtWhite)

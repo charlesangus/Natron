@@ -25,108 +25,131 @@
 
 #include "ColorTrackballHud.h"
 
+#include <algorithm>
+#include <cmath>
+
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QColor>
+#include <QCoreApplication>
 #include <QEvent>
 #include <QFont>
+#include <QFontMetrics>
+#include <QFontMetricsF>
 #include <QGuiApplication>
-#include <QHBoxLayout>
-#include <QLabel>
-#include <QLayout>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPen>
+#include <QPolygon>
+#include <QRegion>
 #include <QScreen>
-#include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/AppManager.h"
 #include "Engine/Settings.h"
 
 #include "Gui/GuiApplicationManager.h"
 
 NATRON_NAMESPACE_ENTER
 
-ColorTrackballHud::ColorTrackballHud()
-    : QWidget(nullptr, followCursorWindowFlags())
-    , _targetLabel(new QLabel(this))
-    , _modeLabel(new QLabel(this))
-    , _valuesLabel(new QLabel(this))
-    , _legendC(new QLabel(QString::fromUtf8("C"), this))
-    , _legendS(new QLabel(QString::fromUtf8("S"), this))
-    , _legendT(new QLabel(QString::fromUtf8("T"), this))
-    , _legendV(new QLabel(QString::fromUtf8("V"), this))
-    , _endOfListLabel(new QLabel(this))
-    , _cursor()
-{
-    setAttribute(Qt::WA_ShowWithoutActivating, true);
-    setAttribute(Qt::WA_TransparentForMouseEvents, true);
-    // Without a compositor nothing paints behind a frameless window, so the fill is opaque.
-    setAutoFillBackground(true);
-    setObjectName(QString::fromUtf8("ColorTrackballHud"));
-    _targetLabel->setObjectName(QString::fromUtf8("ColorTrackballHudTarget"));
-    _modeLabel->setObjectName(QString::fromUtf8("ColorTrackballHudMode"));
-    _valuesLabel->setObjectName(QString::fromUtf8("ColorTrackballHudValues"));
-    _legendC->setObjectName(QString::fromUtf8("ColorTrackballHudLegendC"));
-    _legendS->setObjectName(QString::fromUtf8("ColorTrackballHudLegendS"));
-    _legendT->setObjectName(QString::fromUtf8("ColorTrackballHudLegendT"));
-    _legendV->setObjectName(QString::fromUtf8("ColorTrackballHudLegendV"));
-    _endOfListLabel->setObjectName(QString::fromUtf8("ColorTrackballHudEndOfList"));
-
-    QLabel* acceptLegend = new QLabel(tr("Esc/Enter: accept"), this);
-    QLabel* stepLegend = new QLabel(tr("Ctrl+up/down: switch knob"), this);
-
-    acceptLegend->setObjectName(QString::fromUtf8("ColorTrackballHudLegendAccept"));
-    stepLegend->setObjectName(QString::fromUtf8("ColorTrackballHudLegendStepKnob"));
-
-    QHBoxLayout* legendLayout = new QHBoxLayout();
-
-    legendLayout->setContentsMargins(0, 0, 0, 0);
-    legendLayout->setSpacing(10);
-    legendLayout->addWidget(_legendC);
-    legendLayout->addWidget(_legendS);
-    legendLayout->addWidget(_legendT);
-    legendLayout->addWidget(_legendV);
-    legendLayout->addStretch();
-
-    // On a line of their own: the HUD is only as wide as the knob's column, which at the
-    // default properties width cannot fit the mode keys and both hints on one line.
-    QHBoxLayout* hintLayout = new QHBoxLayout();
-
-    hintLayout->setContentsMargins(0, 0, 0, 0);
-    hintLayout->setSpacing(10);
-    hintLayout->addWidget(acceptLegend);
-    hintLayout->addWidget(stepLegend);
-    hintLayout->addStretch();
-
-    _modeLabel->setWordWrap(true);
-    _valuesLabel->setWordWrap(true);
-    _endOfListLabel->setWordWrap(true);
-
-    QVBoxLayout* mainLayout = new QVBoxLayout(this);
-
-    mainLayout->setContentsMargins(6, 4, 6, 4);
-    mainLayout->setSpacing(2);
-    mainLayout->addWidget(_targetLabel);
-    mainLayout->addWidget(_modeLabel);
-    mainLayout->addWidget(_valuesLabel);
-    mainLayout->addLayout(legendLayout);
-    mainLayout->addLayout(hintLayout);
-    mainLayout->addWidget(_endOfListLabel);
-
-    _endOfListLabel->setVisible(false);
-    setLegendLit(_legendC, false);
-    setLegendLit(_legendS, false);
-    setLegendLit(_legendT, false);
-    setLegendLit(_legendV, false);
-}
-
-ColorTrackballHud::~ColorTrackballHud()
-{
-}
-
 namespace {
+// Sizes before DPI scaling.
+const double kFollowOffset = 16.;
+const double kPillFontPx = 12.;
+const double kPillPadX = 6.;
+const double kPillPadY = 4.;
+const double kTitleFontPx = 13.;
+const double kHintFontPx = 11.;
+const double kBlockPadX = 10.;
+const double kBlockPadTop = 5.;
+const double kBlockPadBottom = 8.;
+const double kBlockRadius = 7.;
+const double kTitleAdvance = 21.;
+const double kKeyWidth = 18.;
+const double kKeyHeight = 17.;
+const double kKeyGap = 6.;
+const double kKeyAdvance = 22.;
+const double kHintAdvance = 16.;
+
+const QColor kTextColour(232, 232, 232);
+const QColor kDimColour(170, 170, 170);
+const QColor kKeyFill(40, 40, 40);
+const QColor kKeyEdge(110, 110, 110);
+const QColor kLitKeyText(20, 20, 20);
+
+const ColorGlobalModeEnum kModes[4] = { eColorGlobalModeC, eColorGlobalModeS, eColorGlobalModeT, eColorGlobalModeV };
+
+QString
+hudText(const char* text)
+{
+    return QCoreApplication::translate("ColorTrackballHud", text);
+}
+
+QStringList
+gearHints()
+{
+    return QStringList() << hudText("Ctrl 10x slower") << hudText("Shift 4x faster") << hudText("Ctrl+Shift 100x slower");
+}
+
+QString
+gearSeparator()
+{
+    return QString::fromUtf8("   ");
+}
+
+QString
+keyHints()
+{
+    return hudText("Esc/Enter: accept   Ctrl+up/down: switch knob");
+}
+
+QString
+chromaHint()
+{
+    return hudText("Drag toward a hue to push the colour that way");
+}
+
+double
+dpiY(double v)
+{
+    return appPTR ? TO_DPIY(v) : v;
+}
+
+QFont
+pixelFont(const QFont& base,
+          double px,
+          bool bold)
+{
+    QFont f(base);
+
+    f.setPixelSize(std::max(1, (int)std::lround(dpiY(px))));
+    f.setBold(bold);
+
+    return f;
+}
+
+QColor
+selectionColour()
+{
+    if (appPTR && appPTR->getCurrentSettings()) {
+        double r = 0.;
+        double g = 0.;
+        double b = 0.;
+
+        appPTR->getCurrentSettings()->getSelectionColor(&r, &g, &b);
+
+        QColor c;
+
+        c.setRgbF(r, g, b);
+
+        return c;
+    }
+
+    return QColor(247, 147, 30);
+}
+
 // One axis of colorTrackballHudFollowPosition: lo and hi bound the screen, hi exclusive.
 int
 followAxis(int cursor,
@@ -150,63 +173,17 @@ followAxis(int cursor,
     return p;
 }
 
-// Away from the pointer by this much, before DPI scaling.
-const double kFollowOffset = 16.;
+void
+paintPanel(QPainter& painter,
+           const QRectF& rect,
+           double radius)
+{
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(colorTrackballHudEdge(), 1.0));
+    painter.setBrush(colorTrackballHudFill());
+    painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
+}
 } // namespace
-
-QPoint
-colorTrackballHudFollowPosition(const QPoint& cursor,
-                                const QSize& hudSize,
-                                const QRect& screen,
-                                const QPoint& offset)
-{
-    if (screen.isEmpty()) {
-        return cursor + offset;
-    }
-
-    return QPoint(followAxis(cursor.x(), hudSize.width(), screen.left(), screen.left() + screen.width(), offset.x()),
-                  followAxis(cursor.y(), hudSize.height(), screen.top(), screen.top() + screen.height(), offset.y()));
-}
-
-Qt::WindowFlags
-ColorTrackballHud::followCursorWindowFlags()
-{
-    return Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::WindowTransparentForInput | Qt::WindowDoesNotAcceptFocus;
-}
-
-void
-ColorTrackballHud::paintEvent(QPaintEvent* e)
-{
-    QWidget::paintEvent(e);
-
-    QPainter painter(this);
-
-    painter.setPen(palette().color(QPalette::Mid));
-    painter.drawRect(rect().adjusted(0, 0, -1, -1));
-}
-
-void
-ColorTrackballHud::followCursorTo(const QPoint& globalCursor)
-{
-    _cursor = globalCursor;
-    placeByCursor();
-}
-
-void
-ColorTrackballHud::placeByCursor()
-{
-    QScreen* screen = QGuiApplication::screenAt(_cursor);
-
-    if (!screen) {
-        screen = QGuiApplication::primaryScreen();
-    }
-
-    const QRect screenRect = screen ? screen->geometry() : QRect();
-    const QPoint offset((int)TO_DPIX(kFollowOffset), (int)TO_DPIY(kFollowOffset));
-
-    move(colorTrackballHudFollowPosition(_cursor, size(), screenRect, offset));
-    update();
-}
 
 QString
 colorGlobalModeKeyName(ColorGlobalModeEnum mode)
@@ -225,90 +202,305 @@ colorGlobalModeKeyName(ColorGlobalModeEnum mode)
     return QString();
 }
 
-QString
-ColorTrackballHud::modeAxesDescription(ColorGlobalModeEnum mode)
+Qt::WindowFlags
+colorTrackballFollowCursorWindowFlags()
 {
-    switch (mode) {
-    case eColorGlobalModeC:
-        return tr("trackball (drag moves hue and saturation together)");
-    case eColorGlobalModeS:
-        return tr("x = hue, y = saturation");
-    case eColorGlobalModeT:
-        return tr("x = temp, y = tint");
-    case eColorGlobalModeV:
-        return tr("either axis = value");
-    }
-
-    return QString();
+    return Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::WindowTransparentForInput | Qt::WindowDoesNotAcceptFocus;
 }
 
-void
-ColorTrackballHud::setLegendLit(QLabel* label,
-                                bool lit)
+int
+colorTrackballHudLitGear(double g)
 {
-    if (!label) {
-        return;
-    }
+    const double held[3] = { gear(true, false), gear(false, true), gear(true, true) };
 
-    QFont f = label->font();
-
-    f.setBold(lit);
-    label->setFont(f);
-    // A plain bool property, read by the tests and available to a stylesheet rule, rather than
-    // baking a colour in here: the HUD has no opinion on what "lit" looks like beyond bold.
-    label->setProperty("trackballHudKeyLit", lit);
-}
-
-void
-ColorTrackballHud::setState(const ColorTrackballHudState& state)
-{
-    _targetLabel->setText(tr("%1 - %2 (%3/%4)")
-                              .arg(state.nodeLabel)
-                              .arg(state.knobLabel)
-                              .arg(state.knobIndex)
-                              .arg(state.knobCount));
-
-    _modeLabel->setText(tr("Mode %1: %2").arg(colorGlobalModeKeyName(state.mode)).arg(modeAxesDescription(state.mode)));
-
-    QString values;
-
-    switch (state.mode) {
-    case eColorGlobalModeC:
-    case eColorGlobalModeS:
-        values = state.chromaValid
-            ? tr("Hue %1deg  Sat %2").arg(state.hueDegrees, 0, 'f', 1).arg(state.saturation, 0, 'f', 4)
-            : tr("Hue/Sat unavailable");
-        break;
-    case eColorGlobalModeT:
-        if (!state.chromaValid) {
-            values = tr("Temp/tint unavailable");
-        } else if (isRatioRole(state.role)) {
-            values = tr("Temp %1 mired  Tint %2").arg(state.temp, 0, 'f', 1).arg(state.tint, 0, 'f', 1);
-        } else {
-            values = tr("Temp %1  Tint %2 (axis)").arg(state.temp, 0, 'f', 4).arg(state.tint, 0, 'f', 4);
+    for (int i = 0; i < 3; ++i) {
+        if (std::abs(g - held[i]) <= 1e-9 * std::max(1.0, held[i])) {
+            return i;
         }
-        break;
-    case eColorGlobalModeV:
-        values = tr("Value");
-        break;
     }
-    values += tr("  Y %1  A %2  Gear x%3")
-                  .arg(state.luma, 0, 'f', 3)
-                  .arg(state.value.hasAlpha ? QString::number(state.value.a, 'f', 3) : QString::fromUtf8("-"))
-                  .arg(state.gear, 0, 'f', 2);
-    _valuesLabel->setText(values);
 
-    setLegendLit(_legendC, state.mode == eColorGlobalModeC);
-    setLegendLit(_legendS, state.mode == eColorGlobalModeS);
-    setLegendLit(_legendT, state.mode == eColorGlobalModeT);
-    setLegendLit(_legendV, state.mode == eColorGlobalModeV);
+    return -1;
+}
 
-    _endOfListLabel->setText(state.endOfListMessage);
-    _endOfListLabel->setVisible(!state.endOfListMessage.isEmpty());
-    // A window of its own does not take its size from a layout, and a new size near an edge
-    // can need the other side of the pointer.
-    adjustSize();
-    placeByCursor();
+QPoint
+colorTrackballHudFollowPosition(const QPoint& cursor,
+                                const QSize& hudSize,
+                                const QRect& screen,
+                                const QPoint& offset)
+{
+    if (screen.isEmpty()) {
+        return cursor + offset;
+    }
+
+    return QPoint(followAxis(cursor.x(), hudSize.width(), screen.left(), screen.left() + screen.width(), offset.x()),
+                  followAxis(cursor.y(), hudSize.height(), screen.top(), screen.top() + screen.height(), offset.y()));
+}
+
+QRegion
+colorTrackballRoundedRegion(const QRect& rect,
+                            double radius)
+{
+    QPainterPath path;
+
+    path.addRoundedRect(QRectF(rect), radius, radius);
+
+    return QRegion(path.toFillPolygon().toPolygon());
+}
+
+double
+colorTrackballHudBlockRadius()
+{
+    return dpiY(kBlockRadius);
+}
+
+QColor
+colorTrackballHudFill()
+{
+    return QColor(26, 26, 26);
+}
+
+QColor
+colorTrackballHudEdge()
+{
+    return QColor(58, 58, 58);
+}
+
+ColorTrackballPill::ColorTrackballPill(QWidget* parent)
+    : QWidget(parent)
+    , _text()
+{
+    setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    setFocusPolicy(Qt::NoFocus);
+}
+
+ColorTrackballPill::~ColorTrackballPill()
+{
+}
+
+void
+ColorTrackballPill::setText(const QString& text)
+{
+    _text = text;
+    resize(sizeHint());
+    update();
+}
+
+QSize
+ColorTrackballPill::sizeHint() const
+{
+    const QFontMetrics fm(pixelFont(font(), kPillFontPx, false));
+
+    return QSize(fm.horizontalAdvance(_text) + (int)std::ceil(2.0 * dpiY(kPillPadX)), fm.height() + (int)std::ceil(2.0 * dpiY(kPillPadY)));
+}
+
+void
+ColorTrackballPill::paintEvent(QPaintEvent* /*e*/)
+{
+    QPainter painter(this);
+
+    paintPanel(painter, QRectF(rect()), 0.5 * height());
+    painter.setFont(pixelFont(font(), kPillFontPx, false));
+    painter.setPen(kTextColour);
+    painter.drawText(rect(), Qt::AlignCenter, _text);
+}
+
+ColorTrackballHudBlock::ColorTrackballHudBlock(QWidget* parent,
+                                               Qt::WindowFlags flags)
+    : QWidget(parent, flags)
+    , _state()
+    , _cursor()
+    , _followsCursor(false)
+{
+    setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    setAttribute(Qt::WA_ShowWithoutActivating, true);
+    setFocusPolicy(Qt::NoFocus);
+    setObjectName(QString::fromUtf8("ColorTrackballHudBlock"));
+    if (!parent) {
+        // Only the rounded panel shows; without a compositor the corners would paint black.
+        setAttribute(Qt::WA_TranslucentBackground, true);
+    }
+    setState(_state);
+}
+
+ColorTrackballHudBlock::~ColorTrackballHudBlock()
+{
+}
+
+void
+ColorTrackballHudBlock::setState(const ColorTrackballHudState& state)
+{
+    _state = state;
+    // For scripts, which see this as a plain QWidget.
+    setProperty("trackballHudKnob", state.knobLabel);
+    setProperty("trackballHudMode", colorGlobalModeKeyName(state.mode));
+
+    const QSize s = sizeHint();
+
+    if (s != size()) {
+        resize(s);
+        if (_followsCursor) {
+            followCursorTo(_cursor);
+        }
+    }
+    if (isWindow()) {
+        setMask(colorTrackballRoundedRegion(QRect(QPoint(0, 0), s), dpiY(kBlockRadius)));
+    }
+    update();
+}
+
+QStringList
+ColorTrackballHudBlock::lines() const
+{
+    QStringList keys;
+
+    for (ColorGlobalModeEnum m : kModes) {
+        keys << colorGlobalModeKeyName(m);
+    }
+
+    QStringList out;
+
+    out << _state.knobLabel << keys.join(QString::fromUtf8(" ")) << gearHints().join(gearSeparator()) << keyHints();
+    if (_state.mode == eColorGlobalModeC) {
+        out << chromaHint();
+    }
+    if (!_state.endOfListMessage.isEmpty()) {
+        out << _state.endOfListMessage;
+    }
+
+    return out;
+}
+
+int
+ColorTrackballHudBlock::litGear() const
+{
+    return colorTrackballHudLitGear(_state.gear);
+}
+
+QSize
+ColorTrackballHudBlock::sizeHint() const
+{
+    const QFontMetrics title(pixelFont(font(), kTitleFontPx, true));
+    const QFontMetrics hint(pixelFont(font(), kHintFontPx, false));
+    const QFontMetrics litHint(pixelFont(font(), kHintFontPx, true));
+    const QStringList gears = gearHints();
+    const int lit = litGear();
+    int gearWidth = 2 * hint.horizontalAdvance(gearSeparator());
+
+    for (int i = 0; i < gears.size(); ++i) {
+        gearWidth += (i == lit ? litHint : hint).horizontalAdvance(gears[i]);
+    }
+
+    int w = std::max(title.horizontalAdvance(_state.knobLabel), gearWidth);
+
+    w = std::max(w, hint.horizontalAdvance(keyHints()));
+    w = std::max(w, (int)std::ceil(dpiY(4 * kKeyWidth + 3 * kKeyGap)));
+
+    double h = kBlockPadTop + kTitleAdvance + kKeyAdvance + 2 * kHintAdvance + kBlockPadBottom;
+
+    if (_state.mode == eColorGlobalModeC) {
+        w = std::max(w, hint.horizontalAdvance(chromaHint()));
+        h += kHintAdvance;
+    }
+    if (!_state.endOfListMessage.isEmpty()) {
+        w = std::max(w, hint.horizontalAdvance(_state.endOfListMessage));
+        h += kHintAdvance;
+    }
+
+    return QSize(w + (int)std::ceil(2.0 * dpiY(kBlockPadX)), (int)std::ceil(dpiY(h)));
+}
+
+void
+ColorTrackballHudBlock::paintEvent(QPaintEvent* /*e*/)
+{
+    QPainter painter(this);
+    const QColor accent = selectionColour();
+    const QFont titleFont = pixelFont(font(), kTitleFontPx, true);
+    const QFont hintFont = pixelFont(font(), kHintFontPx, false);
+    const QFont litFont = pixelFont(font(), kHintFontPx, true);
+    const double cx = 0.5 * width();
+    double y = dpiY(kBlockPadTop);
+
+    paintPanel(painter, QRectF(rect()), dpiY(kBlockRadius));
+
+    painter.setFont(titleFont);
+    painter.setPen(kTextColour);
+    painter.drawText(QRectF(0.0, y, width(), dpiY(kTitleAdvance)), Qt::AlignHCenter | Qt::AlignTop, _state.knobLabel);
+    y += dpiY(kTitleAdvance);
+
+    const double kw = dpiY(kKeyWidth);
+    const double kh = dpiY(kKeyHeight);
+    const double gap = dpiY(kKeyGap);
+    double kx = cx - 0.5 * (4 * kw + 3 * gap);
+
+    painter.setFont(pixelFont(font(), kHintFontPx, true));
+    for (ColorGlobalModeEnum m : kModes) {
+        const bool isLit = (m == _state.mode);
+        const QRectF key(kx, y, kw, kh);
+
+        painter.setPen(isLit ? QPen(Qt::NoPen) : QPen(kKeyEdge, 1.0));
+        painter.setBrush(isLit ? accent : kKeyFill);
+        painter.drawRoundedRect(key.adjusted(0.5, 0.5, -0.5, -0.5), dpiY(3.0), dpiY(3.0));
+        painter.setPen(isLit ? kLitKeyText : kDimColour);
+        painter.drawText(key, Qt::AlignCenter, colorGlobalModeKeyName(m));
+        kx += kw + gap;
+    }
+    y += dpiY(kKeyAdvance);
+
+    const QStringList gears = gearHints();
+    const int lit = litGear();
+    const QFontMetricsF hint(hintFont);
+    const QFontMetricsF litHint(litFont);
+    double total = 2 * hint.horizontalAdvance(gearSeparator());
+
+    for (int i = 0; i < gears.size(); ++i) {
+        total += (i == lit ? litHint : hint).horizontalAdvance(gears[i]);
+    }
+
+    double gx = cx - 0.5 * total;
+
+    for (int i = 0; i < gears.size(); ++i) {
+        const bool isLit = (i == lit);
+
+        painter.setFont(isLit ? litFont : hintFont);
+        painter.setPen(isLit ? accent : kDimColour);
+        painter.drawText(QPointF(gx, y + hint.ascent()), gears[i]);
+        gx += (isLit ? litHint : hint).horizontalAdvance(gears[i]) + hint.horizontalAdvance(gearSeparator());
+    }
+    y += dpiY(kHintAdvance);
+
+    QStringList rest;
+
+    rest << keyHints();
+    if (_state.mode == eColorGlobalModeC) {
+        rest << chromaHint();
+    }
+    if (!_state.endOfListMessage.isEmpty()) {
+        rest << _state.endOfListMessage;
+    }
+    painter.setFont(hintFont);
+    painter.setPen(kDimColour);
+    for (const QString& line : rest) {
+        painter.drawText(QRectF(0.0, y, width(), dpiY(kHintAdvance)), Qt::AlignHCenter | Qt::AlignTop, line);
+        y += dpiY(kHintAdvance);
+    }
+}
+
+void
+ColorTrackballHudBlock::followCursorTo(const QPoint& globalCursor)
+{
+    _cursor = globalCursor;
+    _followsCursor = true;
+
+    QScreen* screen = QGuiApplication::screenAt(globalCursor);
+
+    if (!screen) {
+        screen = QGuiApplication::primaryScreen();
+    }
+
+    const QRect screenRect = screen ? screen->geometry() : QRect();
+    const int offset = (int)std::lround(dpiY(kFollowOffset));
+
+    move(colorTrackballHudFollowPosition(globalCursor, size(), screenRect, QPoint(offset, offset)));
 }
 
 WindowHighlightFrame::WindowHighlightFrame(QWidget* window)

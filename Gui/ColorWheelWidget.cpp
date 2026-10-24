@@ -52,6 +52,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/AppManager.h"
 #include "Engine/Settings.h"
 
+#include "Gui/DisplayLegendColour.h"
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
@@ -61,6 +63,7 @@ const double kPi = 3.14159265358979323846;
 const double kMargin = 3.0;
 const double kRingWidth = 12.0;
 const double kRingGap = 2.0;
+const double kHueTableStep = 0.25;
 const double kCrossArm = 5.0;
 const double kCaretLength = 6.0;
 const double kCaretHalfWidth = 4.0;
@@ -351,19 +354,13 @@ buildColorWheelHueTable(const LumaBasis& basis)
         }
         table.limit[k] = lo;
 
-        // Backing off the gamut edge keeps a little of the other channels, so neighbouring
-        // hues stay distinguishable instead of collapsing onto the three primaries' corners.
-        if (!inGamut(0.8 * lo, rgb)) {
-            continue;
-        }
-
-        double m = std::max(rgb[0], std::max(rgb[1], rgb[2]));
-
-        if (m <= 0.0) {
+        // Only the direction is used: a step well inside the gamut, so no channel clips and
+        // bends the hue the display reads off it.
+        if (!inGamut(kHueTableStep * lo, rgb)) {
             continue;
         }
         for (int i = 0; i < 3; ++i) {
-            table.rgb[3 * k + i] = (float)(rgb[i] / m);
+            table.rgb[3 * k + i] = (float)rgb[i];
         }
     }
 
@@ -395,9 +392,16 @@ renderColorWheelRing(const LumaBasis& basis,
     }
 
     ColorWheelHueTable table = buildColorWheelHueTable(basis);
+    const std::vector<double> hues = displayLegendHues(table.rgb, converter);
+    std::vector<int> bytes(3 * kColorWheelHueTableSize, 0);
 
-    if (converter) {
-        converter(table.rgb.data(), kColorWheelHueTableSize);
+    for (int k = 0; k < kColorWheelHueTableSize; ++k) {
+        double rgb[3];
+
+        okLchToGamutLinearSrgb(displayLegendHueLightness(hues[k]), kDisplayLegendChroma, hues[k], rgb);
+        for (int i = 0; i < 3; ++i) {
+            bytes[3 * k + i] = toByte((float)srgbEncode(rgb[i]));
+        }
     }
 
     QImage image(n, n, QImage::Format_ARGB32);
@@ -420,7 +424,7 @@ renderColorWheelRing(const LumaBasis& basis,
 
             int k = colorWheelHueIndex(std::atan2(-dy, dx) * 180.0 / kPi);
 
-            image.setPixel(i, j, qRgba(toByte(table.rgb[3 * k]), toByte(table.rgb[3 * k + 1]), toByte(table.rgb[3 * k + 2]), (int)(coverage * 255.0 + 0.5)));
+            image.setPixel(i, j, qRgba(bytes[3 * k], bytes[3 * k + 1], bytes[3 * k + 2], (int)(coverage * 255.0 + 0.5)));
         }
     }
     image.setDevicePixelRatio(dpr);

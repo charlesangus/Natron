@@ -24,7 +24,7 @@ What it covers, one section each:
   pointer moves (also at the screen's edge), the reveal graphic at the press point, the widget
   cursor following, freezing on press and resuming on release; a modal dialog and repeated
   cycles leave no override cursor.
-- hud: the following HUD is a window from construction, and its on-screen pixels match its own
+- hud: the hint block's own window (Crosshair + reveal, no stroke) is a window, and its on-screen pixels match its own
   render.
 - right-click: a right-click ends global mode, restores the cursor, and opens no context menu.
 - reveal: screenshots of the C, S, T and V graphics, S mid-drag (the disc recentres on the live
@@ -454,15 +454,23 @@ try:
         return any(b.isChecked() for b in named("ColorGlobalModeButton"))
 
     def hud():
-        return first_named("ColorTrackballHud")
+        # The hint block's own window, by the pointer while engaged in Crosshair + reveal with no
+        # stroke; with a disc up the block is the reveal's child "ColorTrackballHudBlock".
+        return first_named("ColorTrackballHudWindow")
+
+    def hud_block():
+        return first_named("ColorTrackballHudWindow", True) or first_named("ColorTrackballHudBlock", True)
 
     def hud_mode_text():
-        w = first_named("ColorTrackballHudMode")
-        return w.text() if w is not None else None
+        w = hud_block()
+        return w.property("trackballHudMode") if w is not None else None
 
     def hud_mode():
-        t = hud_mode_text() or ""
-        return t[5:6] if t.startswith("Mode ") else None
+        return hud_mode_text() or None
+
+    def hud_knob():
+        w = hud_block()
+        return w.property("trackballHudKnob") if w is not None else None
 
     def cursor_name():
         c = QApplication.overrideCursor()
@@ -767,10 +775,10 @@ try:
         send_key(Qt.Key_S)
         yield ("sleep", 200)
         check(hud_mode() == "S", "S picks mode S (HUD %r)" % hud_mode_text())
-        target_before = (first_named("ColorTrackballHudTarget").text() if first_named("ColorTrackballHudTarget") else None)
+        target_before = hud_knob()
         send_key(Qt.Key_Down, Qt.ControlModifier)
         yield ("sleep", 300)
-        target_after = (first_named("ColorTrackballHudTarget").text() if first_named("ColorTrackballHudTarget") else None)
+        target_after = hud_knob()
         report("NOTE HUD target before Ctrl+Down %r, after %r" % (target_before, target_after))
         check(target_after != target_before, "Ctrl+Down moves global mode to the next knob")
         check(hud_mode() == "S", "switching knob while engaged keeps mode S (HUD %r)" % hud_mode_text())
@@ -783,7 +791,7 @@ try:
         ctrl_e()
         yield ("sleep", SETTLE_MS)
         check(engaged(), "Ctrl+E engages on the ColorCorrect")
-        target_cc = first_named("ColorTrackballHudTarget").text() if first_named("ColorTrackballHudTarget") else None
+        target_cc = hud_knob()
         report("NOTE HUD target on the ColorCorrect: %r" % target_cc)
         check(hud_mode() == "C", "Ctrl+E on a second node after leaving in S shows C (HUD %r)" % hud_mode_text())
         gt.shot("fresh-engage-second-node.png")
@@ -813,8 +821,11 @@ try:
             if not check(engaged(), "%s: engaged on gain" % name):
                 continue
             before = cursor_name()
-            h = hud()
-            check(h is not None and h.isVisible() and h.isWindow(), "%s: the HUD is its own window" % name)
+            h = hud() if fb == 0 else None
+            if fb == 1:
+                check(hud() is None or not hud().isVisible(), "%s: no following hint window; the block sits under the disc" % name)
+            else:
+                check(h is not None and h.isVisible() and h.isWindow(), "%s: the hint block is its own window" % name)
             if h is not None:
                 flags = h.windowFlags()
                 check(bool(flags & Qt.WindowTransparentForInput) and bool(flags & Qt.FramelessWindowHint),
@@ -824,13 +835,13 @@ try:
             yield ("sleep", 300)
             hp = h.pos() if h is not None else None
             off = round(px(HUD_OFFSET))
-            check(hp is not None and abs(hp.x() - (p.x() + off)) <= 2 and abs(hp.y() - (p.y() + off)) <= 2,
+            check(fb == 1 or hp is not None and abs(hp.x() - (p.x() + off)) <= 2 and abs(hp.y() - (p.y() + off)) <= 2,
                   "%s: a real pointer move to (400, 300) puts the HUD at +%d (HUD at %r)" % (name, off, hp))
             edge = QPoint(screen_rect().right() - 4, screen_rect().bottom() - 4)
             QCursor.setPos(edge)
             yield ("sleep", 300)
             hg = h.frameGeometry() if h is not None else None
-            check(hg is not None and hg.right() < edge.x() and hg.bottom() < edge.y() and screen_rect().contains(hg),
+            check(fb == 1 or hg is not None and hg.right() < edge.x() and hg.bottom() < edge.y() and screen_rect().contains(hg),
                   "%s: near the bottom-right edge the HUD flips left of and above the pointer (%s, pointer %r)"
                   % (name, fmt_rect(hg) if hg else None, edge))
             gt.shot("feedback-%s-hud-edge.png" % name)

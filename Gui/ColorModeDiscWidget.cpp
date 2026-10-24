@@ -40,6 +40,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/AppManager.h"
 
 #include "Gui/ColorWheelWidget.h"
+#include "Gui/DisplayLegendColour.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -50,29 +51,28 @@ const double kPi = 3.14159265358979323846;
 const double kPuckRadius = 5.0;
 const double kSizeHint = 240.0;
 
-const double kHueReachDegrees = 30.0;
-const double kGamutReach = 0.9;
+const double kHueReachDegrees = 60.0;
 const int kLattice = 48;
 const double kNeutralSaturation = 1e-9;
+const double kSqrt2 = 1.41421356237309504880;
+
+// T's four patches sit on the screen axes and blend by cos(angle off the patch)^sharpness,
+// fading linearly from the neutral centre to full strength at kTRadialFull of the radius.
+const double kTSharpness = 3.0;
+const double kTChroma = 0.145;
+const double kTRadialFull = 0.85;
+const double kTTempStepMired = 100.0;
+const double kTTintStep = 10.0;
+const double kTAxisStep = 0.05;
+
+// V's ramp spans these OKLab lightnesses at the diagonal's ends, about 0.003 and 0.96 linear.
+const double kVLightnessSpan = 0.42;
 
 const double kRec709ToXYZ[9] = {
     0.4124564, 0.3575761, 0.1804375,
     0.2126729, 0.7151522, 0.0721750,
     0.0193339, 0.1191920, 0.9503041
 };
-
-PlanePoint
-planePoint(double x,
-           double y)
-{
-    PlanePoint p;
-
-    p.x = x;
-    p.y = y;
-    p.valid = true;
-
-    return p;
-}
 
 int
 toByte(float v)
@@ -94,119 +94,189 @@ clamp01(double v)
 }
 
 void
-normalise(double rgb[3])
+encodeLinear(const double linear[3],
+             double encoded[3])
 {
-    double m = std::max(rgb[0], std::max(rgb[1], rgb[2]));
-
-    if (m > 0.0) {
-        for (int i = 0; i < 3; ++i) {
-            rgb[i] /= m;
-        }
+    for (int i = 0; i < 3; ++i) {
+        encoded[i] = srgbEncode(linear[i]);
     }
 }
 
-// The colour a drag of (dx, dy), in units of the disc radius with dy running down as screen
-// pixels do, produces. Each axis takes globalModeEdit's sign for the same pixel delta, so the
-// disc shows where a drag that way goes.
-struct DragSampler {
-    ColorGlobalModeEnum mode;
-    const LumaBasis& basis;
-    double centreHue;
-    ColorWheelHueTable hues;
+double
+signOf(double v)
+{
+    return (v > 0.0) ? 1.0 : ((v < 0.0) ? -1.0 : 0.0);
+}
+
+double
+midGreyLightness()
+{
+    const double grey[3] = { kGrey, kGrey, kGrey };
+
+    return linearSrgbToOkLab(grey).L;
+}
+
+KnobColorValue
+greyValue()
+{
+    KnobColorValue v = neutralGainValue();
+
+    v.rgb[0] = v.rgb[1] = v.rgb[2] = kGrey;
+
+    return v;
+}
+
+// Working-space colours a step from mid grey toward warm, magenta, cool and green, in that
+// order (screen angles 0, 90, 180 and 270 degrees). False when the basis has no way to walk
+// either the locus or its linear axes.
+bool
+tempTintDirections(const LumaBasis& basis,
+                   float rgb[12])
+{
+    const double steps[4][2] = {
+        { kTTempStepMired, 0.0 }, { 0.0, kTTintStep }, { -kTTempStepMired, 0.0 }, { 0.0, -kTTintStep }
+    };
     TempTintAxes axes;
+    bool axesRead = false;
 
-    DragSampler(ColorGlobalModeEnum m,
-                const LumaBasis& b,
-                double hue)
-        : mode(m)
-        , basis(b)
-        , centreHue(hue)
-    {
-        if (mode == eColorGlobalModeS) {
-            hues = buildColorWheelHueTable(basis);
-        } else if (mode == eColorGlobalModeT) {
-            axes = linearTempTintAxes(basis);
-        }
-    }
+    for (int k = 0; k < 4; ++k) {
+        ChromaEditResult r = fromTempTint(eColorKnobRoleGain, basis, greyValue(), steps[k][0], steps[k][1]);
+        double c[3];
 
-    bool sample(double dx,
-                double dy,
-                double rgb[3]) const
-    {
-        rgb[0] = rgb[1] = rgb[2] = kGrey;
-
-        switch (mode) {
-        case eColorGlobalModeS: {
-            double degrees = centreHue + dx * kHueReachDegrees;
-            double theta = degrees * kPi / 180.0;
-            double s = clamp01((1.0 - dy) / 2.0) * kGamutReach * hues.limit[colorWheelHueIndex(degrees)];
-            ChromaEditResult r = fromPlane(eColorKnobRoleGain, basis, neutralGainValue(), planePoint(s * std::cos(theta), s * std::sin(theta)), kGrey);
-
-            if (!r.valid) {
-                return false;
-            }
+        if (r.valid) {
             for (int i = 0; i < 3; ++i) {
-                rgb[i] = std::max(0.0, r.value.rgb[i]);
+                c[i] = r.value.rgb[i];
             }
-            normalise(rgb);
-
-            return true;
-        }
-        case eColorGlobalModeT: {
+        } else {
+            if (!axesRead) {
+                axes = linearTempTintAxes(basis);
+                axesRead = true;
+            }
             if (!axes.valid) {
                 return false;
             }
 
-            double distance = std::hypot(dx, dy);
+            const double t = signOf(steps[k][0]);
+            const double n = signOf(steps[k][1]);
 
-            if (!(distance > 0.0)) {
-                rgb[0] = rgb[1] = rgb[2] = 1.0;
+            join(basis, kGrey, kTAxisStep * (t * axes.temp[0] + n * axes.tint[0]), kTAxisStep * (t * axes.temp[1] + n * axes.tint[1]), c);
+        }
+        for (int i = 0; i < 3; ++i) {
+            rgb[3 * k + i] = (float)std::max(0.0, c[i]);
+        }
+    }
 
-                return true;
+    return true;
+}
+
+// What a drag of (dx, dy) does, in units of the disc radius with dy running down as screen
+// pixels do, as display-encoded sRGB. Each axis takes globalModeEdit's sign for the same pixel
+// delta. Only the hues come from the working space and the display conversion; lightness and
+// chroma are the legend's own, so the disc reads as a map of directions, not as swatches.
+struct LegendSampler {
+    ColorGlobalModeEnum mode;
+    double centreHue;
+    std::vector<double> hues;
+    OkLab patches[4];
+    bool patchesValid;
+    double greyL;
+
+    LegendSampler(ColorGlobalModeEnum m,
+                  const LumaBasis& basis,
+                  const ColorModeDiscWidget::DisplayConverter& converter,
+                  double hue,
+                  const std::vector<double>& planeHues)
+        : mode(m)
+        , centreHue(hue)
+        , hues(planeHues)
+        , patchesValid(false)
+        , greyL(midGreyLightness())
+    {
+        if (mode != eColorGlobalModeT) {
+            return;
+        }
+
+        std::vector<float> directions(12, (float)kGrey);
+
+        if (!tempTintDirections(basis, directions.data())) {
+            return;
+        }
+
+        const std::vector<double> h = displayLegendHues(directions, converter);
+
+        for (int k = 0; k < 4; ++k) {
+            double rgb[3];
+
+            okLchToGamutLinearSrgb(displayLegendHueLightness(h[k]), kTChroma, h[k], rgb);
+            patches[k] = linearSrgbToOkLab(rgb);
+        }
+        patchesValid = true;
+    }
+
+    void sample(double dx,
+                double dy,
+                double encoded[3]) const
+    {
+        double rgb[3] = { kGrey, kGrey, kGrey };
+
+        switch (mode) {
+        case eColorGlobalModeS: {
+            if (hues.empty()) {
+                break;
             }
 
-            double temp = dx / distance;
-            double tint = -dy / distance;
-            double a = temp * axes.temp[0] + tint * axes.tint[0];
-            double b = temp * axes.temp[1] + tint * axes.tint[1];
-            double unit[3];
+            const double h = hues[colorWheelHueIndex(centreHue + dx * kHueReachDegrees)];
 
-            join(basis, 0.0, a, b, unit);
-
-            // Scaled per direction to just inside the gamut at mid-grey, so every rim colour
-            // is as vivid as the working space allows instead of fading where one axis is short.
-            double reach = 0.0;
-
-            for (int i = 0; i < 3; ++i) {
-                if (unit[i] < 0.0) {
-                    double limit = kGrey / -unit[i];
-
-                    reach = (reach > 0.0) ? std::min(reach, limit) : limit;
-                }
+            okLchToGamutLinearSrgb(displayLegendHueLightness(h), kDisplayLegendChroma * clamp01((1.0 - dy) / 2.0), h, rgb);
+            break;
+        }
+        case eColorGlobalModeT: {
+            if (!patchesValid) {
+                break;
             }
-            if (!(reach > 0.0)) {
-                return false;
-            }
-            for (int i = 0; i < 3; ++i) {
-                rgb[i] = std::max(0.0, kGrey + std::min(1.0, distance) * kGamutReach * reach * unit[i]);
-            }
-            normalise(rgb);
 
-            return true;
+            const double phi = std::atan2(-dy, dx);
+            OkLab lab;
+            double sum = 0.0;
+
+            for (int k = 0; k < 4; ++k) {
+                const double w = std::pow(std::max(0.0, std::cos(phi - k * kPi / 2.0)), kTSharpness);
+
+                lab.L += w * patches[k].L;
+                lab.a += w * patches[k].a;
+                lab.b += w * patches[k].b;
+                sum += w;
+            }
+            if (sum > 0.0) {
+                lab.L /= sum;
+                lab.a /= sum;
+                lab.b /= sum;
+            }
+
+            const double fade = clamp01(std::hypot(dx, dy) / kTRadialFull);
+            const double L = kDisplayLegendNeutralLightness + (lab.L - kDisplayLegendNeutralLightness) * fade;
+
+            okLchToGamutLinearSrgb(L, fade * std::hypot(lab.a, lab.b), std::atan2(lab.b, lab.a), rgb);
+            break;
         }
         case eColorGlobalModeV: {
-            KnobColorValue c = setValue(eColorKnobRoleGain, basis, neutralGainValue(), clamp01(0.5 + 0.5 * (dx - dy)));
+            // Divided by sqrt 2 so the ends land on the rim's diagonal instead of plateauing
+            // before it.
+            const double t = std::max(-1.0, std::min(1.0, (dx - dy) / kSqrt2));
+            OkLab lab;
 
+            lab.L = greyL + kVLightnessSpan * t;
+            okLabToLinearSrgb(lab, rgb);
             for (int i = 0; i < 3; ++i) {
-                rgb[i] = std::max(0.0, c.rgb[i]);
+                rgb[i] = clamp01(rgb[i]);
             }
-
-            return true;
+            break;
         }
         case eColorGlobalModeC:
         default:
-            return false;
+            break;
         }
+        encodeLinear(rgb, encoded);
     }
 };
 
@@ -239,6 +309,9 @@ ColorModeDiscWidget::ColorModeDiscWidget(QWidget* parent)
     , _hasDefinedHue(false)
     , _lastDefinedHue(0.0)
     , _puck(0.0, 0.0)
+    , _hues()
+    , _huesGeneration(0)
+    , _huesValid(false)
 {
     setAttribute(Qt::WA_TranslucentBackground, true);
 }
@@ -426,33 +499,21 @@ ColorModeDiscWidget::gradientImage() const
 
     image.fill(Qt::transparent);
 
-    DragSampler sampler(_mode, _basis, _hue);
+    LegendSampler sampler(_mode, _basis, _converter, _hue, (_mode == eColorGlobalModeS) ? planeHues() : std::vector<double>());
     double RoDev = Ro * dpr;
     double Rdev = R * dpr;
-    std::vector<int> indices;
-    std::vector<int> alphas;
-    std::vector<float> rgb;
 
     // Evaluated on a lattice over the unit disc's bounding square and interpolated: an S drag
     // rebuilds this on every degree of hue, and a per-pixel plane solve is too slow for that.
     const int L = kLattice;
-    std::vector<double> lattice(3 * L * L, kGrey);
+    std::vector<double> lattice(3 * L * L, 0.0);
 
     for (int j = 0; j < L; ++j) {
         for (int i = 0; i < L; ++i) {
-            double c[3];
-
-            if (sampler.sample(2.0 * i / (L - 1) - 1.0, 2.0 * j / (L - 1) - 1.0, c)) {
-                for (int k = 0; k < 3; ++k) {
-                    lattice[3 * (j * L + i) + k] = c[k];
-                }
-            }
+            sampler.sample(2.0 * i / (L - 1) - 1.0, 2.0 * j / (L - 1) - 1.0, &lattice[3 * (j * L + i)]);
         }
     }
 
-    indices.reserve(n * n);
-    alphas.reserve(n * n);
-    rgb.reserve(3 * n * n);
     for (int j = 0; j < n; ++j) {
         for (int i = 0; i < n; ++i) {
             double px = (i + 0.5) - RoDev;
@@ -472,25 +533,16 @@ ColorModeDiscWidget::gradientImage() const
             int y0 = std::min((int)fy, L - 2);
             double tx = fx - x0;
             double ty = fy - y0;
+            int bytes[3];
 
-            indices.push_back(j * n + i);
-            alphas.push_back((int)(coverage * 255.0 + 0.5));
             for (int k = 0; k < 3; ++k) {
                 double a = lattice[3 * (y0 * L + x0) + k] * (1.0 - tx) + lattice[3 * (y0 * L + x0 + 1) + k] * tx;
                 double b = lattice[3 * ((y0 + 1) * L + x0) + k] * (1.0 - tx) + lattice[3 * ((y0 + 1) * L + x0 + 1) + k] * tx;
 
-                rgb.push_back((float)(a * (1.0 - ty) + b * ty));
+                bytes[k] = toByte((float)(a * (1.0 - ty) + b * ty));
             }
+            image.setPixel(i, j, qRgba(bytes[0], bytes[1], bytes[2], (int)(coverage * 255.0 + 0.5)));
         }
-    }
-    if (_converter && !rgb.empty()) {
-        _converter(rgb.data(), (int)(rgb.size() / 3));
-    }
-    for (std::size_t k = 0; k < indices.size(); ++k) {
-        int i = indices[k] % n;
-        int j = indices[k] / n;
-
-        image.setPixel(i, j, qRgba(toByte(rgb[3 * k]), toByte(rgb[3 * k + 1]), toByte(rgb[3 * k + 2]), alphas[k]));
     }
     image.setDevicePixelRatio(dpr);
 
@@ -499,6 +551,18 @@ ColorModeDiscWidget::gradientImage() const
 
     return _gradient;
 } // ColorModeDiscWidget::gradientImage
+
+const std::vector<double>&
+ColorModeDiscWidget::planeHues() const
+{
+    if (!_huesValid || (_huesGeneration != _generation)) {
+        _hues = displayLegendHues(buildColorWheelHueTable(_basis).rgb, _converter);
+        _huesGeneration = _generation;
+        _huesValid = true;
+    }
+
+    return _hues;
+}
 
 void
 ColorModeDiscWidget::paintEvent(QPaintEvent* /*e*/)

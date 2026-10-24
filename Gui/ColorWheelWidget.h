@@ -66,9 +66,10 @@ double colorWheelRingInnerRadius(const QSize& size);
 double colorWheelDiscRadius(const QSize& size);
 
 /**
- * @brief The ring's colours, one entry per degree of plane hue (0 = +x, counter-clockwise): rgb
- * holds the working-space colour 0.8 of the way to the gamut edge, scaled so its largest channel
- * is 1, and limit the gamut edge's plane radius itself. Not display-converted.
+ * @brief The ring's hues, one entry per degree of plane hue (0 = +x, counter-clockwise): rgb
+ * holds the working-space colour a quarter of the way from mid grey to the gamut edge, which
+ * only gives the hue its direction, and limit the gamut edge's plane radius itself. Not
+ * display-converted.
  **/
 struct ColorWheelHueTable {
     std::vector<float> rgb;
@@ -86,8 +87,9 @@ int colorWheelHueIndex(double degrees);
 
 /**
  * @brief The anti-aliased ring between innerRadius and outerRadius (widget pixels), rendered at
- * dpr into a square image 2 * outerRadius wide whose centre is the ring's. converter, when set,
- * turns the table into display colour first.
+ * dpr into a square image 2 * outerRadius wide whose centre is the ring's. Each hue is the
+ * table's direction as converter displays it (see displayLegendHues), drawn at the legend's
+ * lightness and chroma (DisplayLegendColour.h).
  **/
 QImage renderColorWheelRing(const LumaBasis& basis, double outerRadius, double innerRadius, double dpr, const std::function<void(float* rgb, int count)>& converter);
 

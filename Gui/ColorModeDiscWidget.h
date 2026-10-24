@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -48,15 +49,16 @@ NATRON_NAMESPACE_ENTER
  * rect, laid out like ColorWheelWidget's, showing what a drag towards each point does, and a
  * small ring marker for the puck.
  *
- * Ring and fill are one function of the drag direction: the colour a drag that way produces,
- * with the ring holding the colour at the disc's rim in that direction. Directions follow the
- * gesture's sign in globalModeEdit. S runs from the centre hue -30 degrees on the left to +30
- * degrees on the right, with full saturation at the top and white at the bottom, and follows
- * the live value's hue. T runs cool blue on the left to warm orange on the right and green at
- * the bottom to magenta at the top. V runs black at the bottom and left to white at the top and
- * right. The colours come from ColorWheelMath and pass through the display converter. C has no
- * gradient: the C reveal is the real ColorWheelWidget, and C here draws the wheel's ring and an
- * empty disc.
+ * Ring and fill are one function of the drag direction, with the ring holding the rim's colour
+ * in that direction. Directions follow the gesture's sign in globalModeEdit. S runs from the
+ * centre hue -60 degrees on the left to +60 degrees on the right, with the most chroma at the
+ * top and neutral grey at the bottom, and follows the live value's hue. T is warm on the right,
+ * cool on the left, magenta at the top and green at the bottom, fading to neutral grey in the
+ * centre. V runs from mid grey in the centre to black at the bottom-left rim and white at the
+ * top-right rim. Only the hues come from ColorWheelMath and the display converter; lightness
+ * and chroma are set in OKLab (DisplayLegendColour.h), so every disc is a legend of directions
+ * rather than a swatch of the colours a drag produces. C has no gradient: the C reveal is the
+ * real ColorWheelWidget, and C here draws the wheel's ring and an empty disc.
  *
  * The puck is a position in [-1, 1]^2 (x right, y up) and is clamped to the disc's rim. The
  * images are cached per size, mode and, in S, centre hue to the degree, and rebuilt lazily on
@@ -132,6 +134,9 @@ private:
     const QImage& ringImage() const;
     const QImage& gradientImage() const;
 
+    // The display's OKLab hue of each whole degree of plane hue, for the S disc.
+    const std::vector<double>& planeHues() const;
+
     ColorGlobalModeEnum _mode;
     LumaBasis _basis;
     DisplayConverter _converter;
@@ -144,6 +149,9 @@ private:
     mutable CacheKey _ringKey;
     mutable QImage _gradient;
     mutable CacheKey _gradientKey;
+    mutable std::vector<double> _hues;
+    mutable unsigned _huesGeneration;
+    mutable bool _huesValid;
 };
 
 NATRON_NAMESPACE_EXIT

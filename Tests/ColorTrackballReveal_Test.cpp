@@ -25,15 +25,19 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <vector>
 
 #include <QCursor>
 #include <QGuiApplication>
+#include <QPointF>
 #include <QRect>
+#include <QRectF>
 #include <QRegion>
 #include <QScreen>
+#include <QStringList>
 
 #include <gtest/gtest.h>
 
@@ -127,13 +131,39 @@ syncCursors(ColorGlobalModeCursors& cursors,
 }
 
 QPoint
-windowCentre(const QWidget& w)
+discCentre(const ColorTrackballReveal& reveal)
 {
-    return w.pos() + QPoint(w.width() / 2, w.height() / 2);
+    return reveal.pos() + reveal.getDiscCentre();
 }
+
+// The distance from p to the nearest point of r.
+double
+distanceToRect(const QPointF& p,
+               const QRectF& r)
+{
+    const double x = std::max(r.left(), std::min(p.x(), r.right()));
+    const double y = std::max(r.top(), std::min(p.y(), r.bottom()));
+
+    return std::hypot(p.x() - x, p.y() - y);
+}
+
+ColorTrackballHudState
+hudState(ColorGlobalModeEnum mode)
+{
+    ColorTrackballHudState state;
+
+    state.knobLabel = QString::fromUtf8("Gain");
+    state.mode = mode;
+
+    return state;
+}
+
+const ColorTrackballReveal::PillSideEnum kSides[4] = {
+    ColorTrackballReveal::ePillRight, ColorTrackballReveal::ePillLeft, ColorTrackballReveal::ePillTop, ColorTrackballReveal::ePillBottom
+};
 } // namespace
 
-TEST(ColorTrackballReveal, WindowIsAClickThroughToolWindowOfTheRevealSize)
+TEST(ColorTrackballReveal, WindowIsAClickThroughToolWindowHoldingTheDiscAndTheBlock)
 {
     ColorTrackballReveal reveal;
     const Qt::WindowFlags flags = reveal.windowFlags();
@@ -147,39 +177,170 @@ TEST(ColorTrackballReveal, WindowIsAClickThroughToolWindowOfTheRevealSize)
     EXPECT_TRUE(reveal.testAttribute(Qt::WA_ShowWithoutActivating));
     EXPECT_TRUE(reveal.testAttribute(Qt::WA_TransparentForMouseEvents));
     EXPECT_TRUE(reveal.testAttribute(Qt::WA_TranslucentBackground));
-    EXPECT_EQ(ColorTrackballReveal::diameter(), reveal.width());
-    EXPECT_EQ(ColorTrackballReveal::diameter(), reveal.height());
+
+    for (ColorGlobalModeEnum mode : { eColorGlobalModeC, eColorGlobalModeS, eColorGlobalModeT, eColorGlobalModeV }) {
+        reveal.setMode(mode);
+        reveal.setHudState(hudState(mode));
+
+        const QRect all(QPoint(0, 0), reveal.size());
+
+        EXPECT_EQ(QSize(ColorTrackballReveal::diameter(), ColorTrackballReveal::diameter()), reveal.getDiscRect().size()) << (int)mode;
+        EXPECT_TRUE(all.contains(reveal.getDiscRect())) << (int)mode;
+        EXPECT_TRUE(all.contains(reveal.getHudBlock()->geometry())) << (int)mode;
+        EXPECT_GT(reveal.height(), ColorTrackballReveal::diameter()) << (int)mode;
+        for (ColorTrackballReveal::PillSideEnum side : kSides) {
+            if (!reveal.getPill(side)->isHidden()) {
+                EXPECT_TRUE(all.contains(reveal.getPill(side)->geometry())) << (int)mode << " " << (int)side;
+            }
+        }
+    }
 }
 
-TEST(ColorTrackballReveal, IsMaskedToItsDisc)
+TEST(ColorTrackballReveal, IsMaskedToItsDiscPillsAndBlock)
 {
     ColorTrackballReveal reveal;
+
+    reveal.setMode(eColorGlobalModeS);
+    reveal.setHudState(hudState(eColorGlobalModeS));
+
     const QRegion mask = reveal.mask();
-    const int side = reveal.width();
+    const QRect disc = reveal.getDiscRect();
+    const QRect block = reveal.getHudBlock()->geometry();
 
     EXPECT_FALSE(mask.isEmpty());
     EXPECT_FALSE(mask.contains(QPoint(0, 0)));
-    EXPECT_FALSE(mask.contains(QPoint(side - 1, side - 1)));
-    EXPECT_TRUE(mask.contains(QPoint(side / 2, side / 2)));
+    EXPECT_FALSE(mask.contains(disc.topLeft() + QPoint(2, 2)));
+    EXPECT_FALSE(mask.contains(QPoint(disc.right() - 2, disc.top() + 2)));
+    EXPECT_TRUE(mask.contains(reveal.getDiscCentre()));
+    EXPECT_TRUE(mask.contains(block.center()));
+    for (ColorTrackballReveal::PillSideEnum side : kSides) {
+        EXPECT_TRUE(mask.contains(reveal.getPill(side)->geometry().center())) << (int)side;
+    }
+
+    // In C the pills are gone, and so is their part of the mask.
+    reveal.setMode(eColorGlobalModeC);
+    EXPECT_FALSE(reveal.mask().contains(reveal.getPill(ColorTrackballReveal::ePillRight)->geometry().center()));
+    EXPECT_TRUE(reveal.mask().contains(reveal.getHudBlock()->geometry().center()));
 }
 
-TEST(ColorTrackballReveal, PositionIsCentredAndClampedToTheScreen)
+TEST(ColorTrackballReveal, DirectionLabelsPerMode)
+{
+    const QString minus(QChar(0x2212));
+    ColorTrackballRevealLabels s = colorTrackballRevealDirectionLabels(eColorGlobalModeS);
+    ColorTrackballRevealLabels t = colorTrackballRevealDirectionLabels(eColorGlobalModeT);
+    ColorTrackballRevealLabels v = colorTrackballRevealDirectionLabels(eColorGlobalModeV);
+    ColorTrackballRevealLabels c = colorTrackballRevealDirectionLabels(eColorGlobalModeC);
+
+    EXPECT_EQ(QString::fromUtf8("+Hue"), s.right);
+    EXPECT_EQ(minus + QString::fromUtf8("Hue"), s.left);
+    EXPECT_EQ(QString::fromUtf8("+Sat"), s.top);
+    EXPECT_EQ(minus + QString::fromUtf8("Sat"), s.bottom);
+    EXPECT_EQ(QString::fromUtf8("Warmer"), t.right);
+    EXPECT_EQ(QString::fromUtf8("Cooler"), t.left);
+    EXPECT_EQ(QString::fromUtf8("Less green"), t.top);
+    EXPECT_EQ(QString::fromUtf8("Greener"), t.bottom);
+    EXPECT_EQ(QString::fromUtf8("+Val"), v.right);
+    EXPECT_EQ(QString::fromUtf8("+Val"), v.top);
+    EXPECT_EQ(minus + QString::fromUtf8("Val"), v.left);
+    EXPECT_EQ(minus + QString::fromUtf8("Val"), v.bottom);
+    EXPECT_TRUE(c.right.isEmpty() && c.left.isEmpty() && c.top.isEmpty() && c.bottom.isEmpty());
+}
+
+TEST(ColorTrackballReveal, PillsSitOnTheirSideOutsideTheRingAndTheBlockUnderneath)
+{
+    ColorTrackballReveal reveal;
+
+    for (ColorGlobalModeEnum mode : { eColorGlobalModeS, eColorGlobalModeT, eColorGlobalModeV }) {
+        reveal.setMode(mode);
+        reveal.setHudState(hudState(mode));
+
+        const ColorTrackballRevealLabels labels = colorTrackballRevealDirectionLabels(mode);
+        const QPointF c = reveal.getDiscCentre();
+        const double Ro = colorWheelRingOuterRadius(reveal.getDiscRect().size());
+        const QRect right = reveal.getPill(ColorTrackballReveal::ePillRight)->geometry();
+        const QRect left = reveal.getPill(ColorTrackballReveal::ePillLeft)->geometry();
+        const QRect top = reveal.getPill(ColorTrackballReveal::ePillTop)->geometry();
+        const QRect bottom = reveal.getPill(ColorTrackballReveal::ePillBottom)->geometry();
+
+        EXPECT_EQ(labels.right, reveal.getPill(ColorTrackballReveal::ePillRight)->text()) << (int)mode;
+        EXPECT_EQ(labels.left, reveal.getPill(ColorTrackballReveal::ePillLeft)->text()) << (int)mode;
+        EXPECT_EQ(labels.top, reveal.getPill(ColorTrackballReveal::ePillTop)->text()) << (int)mode;
+        EXPECT_EQ(labels.bottom, reveal.getPill(ColorTrackballReveal::ePillBottom)->text()) << (int)mode;
+
+        // Each is on its own side, and none reaches the ring.
+        EXPECT_GT(right.left(), c.x() + Ro) << (int)mode;
+        EXPECT_LT(left.right(), c.x() - Ro) << (int)mode;
+        EXPECT_LT(top.bottom(), c.y() - Ro) << (int)mode;
+        EXPECT_GT(bottom.top(), c.y() + Ro) << (int)mode;
+        EXPECT_NEAR(c.y(), right.center().y(), 1.0) << (int)mode;
+        EXPECT_NEAR(c.y(), left.center().y(), 1.0) << (int)mode;
+        EXPECT_NEAR(c.x(), top.center().x(), 1.0) << (int)mode;
+        EXPECT_NEAR(c.x(), bottom.center().x(), 1.0) << (int)mode;
+        for (ColorTrackballReveal::PillSideEnum side : kSides) {
+            const QRect r = reveal.getPill(side)->geometry();
+
+            EXPECT_FALSE(reveal.getPill(side)->isHidden()) << (int)mode << " " << (int)side;
+            EXPECT_GE(distanceToRect(c, QRectF(r)), Ro + 4.0) << (int)mode << " " << (int)side;
+        }
+
+        const QRect block = reveal.getHudBlock()->geometry();
+
+        EXPECT_GT(block.top(), bottom.bottom()) << (int)mode;
+        EXPECT_NEAR(c.x(), block.center().x(), 1.0) << (int)mode;
+        for (ColorTrackballReveal::PillSideEnum side : kSides) {
+            EXPECT_FALSE(block.intersects(reveal.getPill(side)->geometry())) << (int)mode << " " << (int)side;
+        }
+    }
+
+    // C has no pills; the block sits right under the ring.
+    reveal.setMode(eColorGlobalModeC);
+    for (ColorTrackballReveal::PillSideEnum side : kSides) {
+        EXPECT_TRUE(reveal.getPill(side)->isHidden()) << (int)side;
+    }
+    EXPECT_GT(reveal.getHudBlock()->geometry().top(), reveal.getDiscCentre().y() + colorWheelRingOuterRadius(reveal.getDiscRect().size()));
+}
+
+TEST(ColorTrackballReveal, TheBlockShowsTheKnobNameAndTheActiveMode)
+{
+    ColorTrackballReveal reveal;
+    ColorTrackballHudState state = hudState(eColorGlobalModeT);
+
+    state.knobLabel = QString::fromUtf8("Lift");
+    reveal.setMode(eColorGlobalModeT);
+    reveal.setHudState(state);
+
+    const QStringList lines = reveal.getHudBlock()->lines();
+
+    ASSERT_FALSE(lines.isEmpty());
+    EXPECT_EQ(QString::fromUtf8("Lift"), lines[0]);
+    EXPECT_EQ(eColorGlobalModeT, reveal.getHudBlock()->litKey());
+    // The knob alone: no node name, no position in the knob list.
+    EXPECT_FALSE(lines[0].contains(QString::fromUtf8(" - ")));
+    EXPECT_FALSE(lines[0].contains(QString::fromUtf8("/")));
+}
+
+TEST(ColorTrackballReveal, PositionPutsTheDiscOnTheCentreAndClampsTheWindow)
 {
     const QRect screen(0, 0, 1920, 1080);
     const QSize size(240, 240);
+    const QPoint half(120, 120);
 
-    EXPECT_EQ(QPoint(380, 280), colorTrackballRevealPosition(QPoint(500, 400), size, screen));
-    EXPECT_EQ(QPoint(0, 0), colorTrackballRevealPosition(QPoint(3, 4), size, screen));
-    EXPECT_EQ(QPoint(1680, 840), colorTrackballRevealPosition(QPoint(1915, 1075), size, screen));
+    EXPECT_EQ(QPoint(380, 280), colorTrackballRevealPosition(QPoint(500, 400), half, size, screen));
+    EXPECT_EQ(QPoint(0, 0), colorTrackballRevealPosition(QPoint(3, 4), half, size, screen));
+    EXPECT_EQ(QPoint(1680, 840), colorTrackballRevealPosition(QPoint(1915, 1075), half, size, screen));
 
     // A second screen to the right of the first.
     const QRect right(1920, 0, 1280, 1024);
 
-    EXPECT_EQ(QPoint(1920, 904 - 120), colorTrackballRevealPosition(QPoint(1925, 904), size, right));
-    EXPECT_EQ(QPoint(380, 280), colorTrackballRevealPosition(QPoint(500, 400), size, QRect()));
+    EXPECT_EQ(QPoint(1920, 904 - 120), colorTrackballRevealPosition(QPoint(1925, 904), half, size, right));
+    EXPECT_EQ(QPoint(380, 280), colorTrackballRevealPosition(QPoint(500, 400), half, size, QRect()));
+
+    // A window taller than its disc, with the disc at its top: the disc goes on the centre.
+    EXPECT_EQ(QPoint(400, 280), colorTrackballRevealPosition(QPoint(500, 400), QPoint(100, 120), QSize(320, 400), screen));
+    EXPECT_EQ(QPoint(400, 1080 - 400), colorTrackballRevealPosition(QPoint(500, 1000), QPoint(100, 120), QSize(320, 400), screen));
 }
 
-TEST(ColorTrackballReveal, APressCentresTheWindowAndACornerKeepsItInside)
+TEST(ColorTrackballReveal, APressCentresTheDiscAndACornerKeepsTheWindowInside)
 {
     QScreen* screen = QGuiApplication::primaryScreen();
 
@@ -187,21 +348,22 @@ TEST(ColorTrackballReveal, APressCentresTheWindowAndACornerKeepsItInside)
 
     const QRect g = screen->geometry();
     ColorTrackballReveal reveal;
-    const int half = reveal.width() / 2;
 
-    ASSERT_GE(g.width(), 500 + half);
-    ASSERT_GE(g.height(), 400 + half);
+    reveal.setMode(eColorGlobalModeS);
+    reveal.setHudState(hudState(eColorGlobalModeS));
+    ASSERT_GE(g.width(), reveal.width() + 80);
+    ASSERT_GE(g.height(), reveal.height() + 80);
 
-    const QPoint press = g.topLeft() + QPoint(500, 400);
+    const QPoint press = g.topLeft() + reveal.getDiscCentre() + QPoint(40, 40);
 
     reveal.centreOn(press);
-    EXPECT_EQ(press, windowCentre(reveal));
+    EXPECT_EQ(press, discCentre(reveal));
 
     // Following the pointer is the same placement, repeated on every move.
     const QPoint moved = press + QPoint(-37, 22);
 
     reveal.centreOn(moved);
-    EXPECT_EQ(moved, windowCentre(reveal));
+    EXPECT_EQ(moved, discCentre(reveal));
 
     reveal.centreOn(g.topLeft());
     EXPECT_EQ(g.topLeft(), reveal.pos());
@@ -213,24 +375,61 @@ TEST(ColorTrackballReveal, APressCentresTheWindowAndACornerKeepsItInside)
 TEST(ColorTrackballReveal, SetModeSwapsTheWidgetInPlace)
 {
     ColorTrackballReveal reveal;
+    const QPoint press(500, 400);
 
+    reveal.setHudState(hudState(eColorGlobalModeC));
+    reveal.centreOn(press);
     reveal.setMode(eColorGlobalModeC);
     EXPECT_TRUE(reveal.getModeWidget() == reveal.getWheel());
     EXPECT_FALSE(reveal.getWheel()->isHidden());
     EXPECT_TRUE(reveal.getDisc()->isHidden());
 
+    const QPoint placed = discCentre(reveal);
+
     for (ColorGlobalModeEnum mode : { eColorGlobalModeS, eColorGlobalModeT, eColorGlobalModeV }) {
         reveal.setMode(mode);
+        reveal.setHudState(hudState(mode));
         EXPECT_TRUE(reveal.getModeWidget() == reveal.getDisc());
         EXPECT_EQ(mode, reveal.getDisc()->getMode());
         EXPECT_FALSE(reveal.getDisc()->isHidden());
         EXPECT_TRUE(reveal.getWheel()->isHidden());
-        EXPECT_EQ(QRect(0, 0, reveal.width(), reveal.height()), reveal.getDisc()->geometry());
+        EXPECT_EQ(reveal.getDiscRect(), reveal.getDisc()->geometry());
+        // The window grows for the pills, but the disc stays where it was on screen.
+        EXPECT_EQ(placed, discCentre(reveal)) << (int)mode;
     }
 
     reveal.setMode(eColorGlobalModeC);
     EXPECT_TRUE(reveal.getModeWidget() == reveal.getWheel());
-    EXPECT_EQ(QRect(0, 0, reveal.width(), reveal.height()), reveal.getWheel()->geometry());
+    EXPECT_EQ(reveal.getDiscRect(), reveal.getWheel()->geometry());
+    EXPECT_EQ(placed, discCentre(reveal));
+}
+
+TEST(ColorTrackballReveal, ReleaseReturnsThePointerToThePressAndTheRevealStaysPut)
+{
+    QScreen* screen = QGuiApplication::primaryScreen();
+
+    ASSERT_TRUE(screen != 0);
+
+    const QRect g = screen->geometry();
+    const QPoint press = g.topLeft() + QPoint(400, 300);
+    const QPoint dragEnd = press + QPoint(150, -90);
+    ColorTrackballReveal reveal;
+
+    reveal.setMode(eColorGlobalModeS);
+    reveal.setHudState(hudState(eColorGlobalModeS));
+    reveal.centreOn(press);
+
+    const QPoint placed = reveal.pos();
+
+    QCursor::setPos(dragEnd);
+    ASSERT_EQ(dragEnd, QCursor::pos());
+
+    ASSERT_TRUE(colorGlobalModeReturnPointer(press));
+    EXPECT_EQ(press, QCursor::pos());
+    // A following graphic is re-placed on the returned pointer, which is where it already is.
+    reveal.centreOn(QCursor::pos());
+    EXPECT_EQ(placed, reveal.pos());
+    EXPECT_EQ(press, discCentre(reveal));
 }
 
 TEST(ColorTrackballReveal, PuckStartsInTheCentreAndMovesWithTheStroke)
@@ -358,7 +557,7 @@ TEST(ColorTrackballRevealFeedback, WhatEachFeedbackShows)
         for (bool stroke : { false, true }) {
             ColorGlobalModeFeedbackState off = colorGlobalModeFeedbackState(f, false, stroke);
 
-            EXPECT_FALSE(off.crosshair || off.blankCursor || off.graphicShown || off.graphicFollowsPointer);
+            EXPECT_FALSE(off.crosshair || off.blankCursor || off.graphicShown || off.graphicFollowsPointer || off.hudBlockFollowsPointer);
         }
     }
 
@@ -369,6 +568,9 @@ TEST(ColorTrackballRevealFeedback, WhatEachFeedbackShows)
     EXPECT_FALSE(revealIdle.graphicShown || revealIdle.blankCursor);
     EXPECT_TRUE(revealStroke.crosshair && revealStroke.graphicShown && revealStroke.blankCursor);
     EXPECT_FALSE(revealStroke.graphicFollowsPointer);
+    // With no disc up the hint block has its own window by the pointer; a stroke's disc carries it.
+    EXPECT_TRUE(revealIdle.hudBlockFollowsPointer);
+    EXPECT_FALSE(revealStroke.hudBlockFollowsPointer);
 
     ColorGlobalModeFeedbackState widgetIdle = colorGlobalModeFeedbackState(kWidgetCursor, true, false);
     ColorGlobalModeFeedbackState widgetStroke = colorGlobalModeFeedbackState(kWidgetCursor, true, true);
@@ -377,6 +579,7 @@ TEST(ColorTrackballRevealFeedback, WhatEachFeedbackShows)
     EXPECT_TRUE(widgetIdle.graphicShown && widgetIdle.blankCursor && widgetIdle.graphicFollowsPointer);
     EXPECT_TRUE(widgetStroke.graphicShown && widgetStroke.blankCursor);
     EXPECT_FALSE(widgetStroke.graphicFollowsPointer);
+    EXPECT_FALSE(widgetIdle.hudBlockFollowsPointer || widgetStroke.hudBlockFollowsPointer);
 
     EXPECT_TRUE(colorGlobalModeFeedbackGraphicIsCursor(kWidgetCursor));
     EXPECT_FALSE(colorGlobalModeFeedbackGraphicIsCursor(kCrosshairReveal));

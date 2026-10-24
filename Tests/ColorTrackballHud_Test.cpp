@@ -33,14 +33,13 @@
 #include <QEvent>
 #include <QEventLoop>
 #include <QGuiApplication>
-#include <QLabel>
 #include <QObject>
 #include <QPoint>
 #include <QRect>
 #include <QScreen>
 #include <QSize>
 #include <QString>
-#include <QVBoxLayout>
+#include <QStringList>
 #include <QWidget>
 
 #include <gtest/gtest.h>
@@ -48,127 +47,22 @@
 #include "Engine/ColorWheelMath.h"
 
 #include "Gui/ColorTrackballHud.h"
-#include "Gui/KnobGuiColor.h"
 
 NATRON_NAMESPACE_USING
 
 namespace {
-
-QLabel*
-labelByName(const ColorTrackballHud& hud,
-            const char* name)
-{
-    return hud.findChild<QLabel*>(QString::fromUtf8(name));
-}
-
-bool
-isLegendLit(const ColorTrackballHud& hud,
-            const char* name)
-{
-    QLabel* label = labelByName(hud, name);
-
-    return label && label->property("trackballHudKeyLit").toBool();
-}
-
 ColorTrackballHudState
-stateForC()
+stateFor(ColorGlobalModeEnum mode)
 {
     ColorTrackballHudState state;
 
-    state.nodeLabel = QString::fromUtf8("Grade1");
-    state.knobLabel = QString::fromUtf8("white");
-    state.knobIndex = 2;
-    state.knobCount = 7;
-    state.mode = eColorGlobalModeC;
-    state.value.rgb[0] = state.value.rgb[1] = state.value.rgb[2] = 1.5;
-    state.value.a = 1.0;
-    state.value.hasAlpha = true;
-    state.luma = 0.503;
+    state.knobLabel = QString::fromUtf8("Gain");
+    state.mode = mode;
     state.gear = 1.0;
-    state.chromaValid = true;
-    state.hueDegrees = 124.3;
-    state.saturation = 0.082;
 
     return state;
 }
-
 } // namespace
-
-TEST(ColorTrackballHud, ShowsTheTargetAndModeC)
-{
-    ColorTrackballHud hud;
-
-    hud.setState(stateForC());
-
-    const QString target = labelByName(hud, "ColorTrackballHudTarget")->text();
-
-    EXPECT_TRUE(target.contains(QString::fromUtf8("Grade1")));
-    EXPECT_TRUE(target.contains(QString::fromUtf8("white")));
-    EXPECT_TRUE(target.contains(QString::fromUtf8("2")));
-    EXPECT_TRUE(target.contains(QString::fromUtf8("7")));
-
-    const QString values = labelByName(hud, "ColorTrackballHudValues")->text();
-
-    EXPECT_TRUE(values.contains(QString::fromUtf8("124.3")));
-    EXPECT_TRUE(values.contains(QString::fromUtf8("0.0820")));
-    EXPECT_TRUE(values.contains(QString::fromUtf8("0.503")));
-    EXPECT_TRUE(values.contains(QString::fromUtf8("1.000")));
-    EXPECT_TRUE(values.contains(QString::fromUtf8("x1.00")));
-}
-
-TEST(ColorTrackballHud, LightsOnlyTheActiveModeKey)
-{
-    ColorTrackballHud hud;
-    ColorTrackballHudState state = stateForC();
-
-    state.mode = eColorGlobalModeC;
-    hud.setState(state);
-    EXPECT_TRUE(isLegendLit(hud, "ColorTrackballHudLegendC"));
-    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendT"));
-    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendV"));
-
-    state.mode = eColorGlobalModeT;
-    state.temp = 12.3;
-    state.tint = -4.1;
-    hud.setState(state);
-    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendC"));
-    EXPECT_TRUE(isLegendLit(hud, "ColorTrackballHudLegendT"));
-    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendV"));
-
-    const QString tValues = labelByName(hud, "ColorTrackballHudValues")->text();
-
-    EXPECT_TRUE(tValues.contains(QString::fromUtf8("12.3")));
-    EXPECT_TRUE(tValues.contains(QString::fromUtf8("-4.1")));
-
-    state.mode = eColorGlobalModeV;
-    hud.setState(state);
-    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendC"));
-    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendT"));
-    EXPECT_TRUE(isLegendLit(hud, "ColorTrackballHudLegendV"));
-}
-
-TEST(ColorTrackballHud, OffsetTempTintReadsInAxisUnitsNotMired)
-{
-    ColorTrackballHud hud;
-    ColorTrackballHudState state = stateForC();
-
-    state.mode = eColorGlobalModeT;
-    state.role = eColorKnobRoleOffset;
-    state.temp = 0.0123;
-    state.tint = -0.0045;
-    hud.setState(state);
-
-    const QString values = labelByName(hud, "ColorTrackballHudValues")->text();
-
-    EXPECT_FALSE(values.contains(QString::fromUtf8("mired")));
-    EXPECT_TRUE(values.contains(QString::fromUtf8("0.0123")));
-    EXPECT_TRUE(values.contains(QString::fromUtf8("-0.0045")));
-
-    state.role = eColorKnobRoleGain;
-    state.temp = 12.3;
-    hud.setState(state);
-    EXPECT_TRUE(labelByName(hud, "ColorTrackballHudValues")->text().contains(QString::fromUtf8("mired")));
-}
 
 TEST(ColorTrackballHud, ModeKeyNames)
 {
@@ -178,64 +72,97 @@ TEST(ColorTrackballHud, ModeKeyNames)
     EXPECT_EQ(QString::fromUtf8("V"), colorGlobalModeKeyName(eColorGlobalModeV));
 }
 
-TEST(ColorTrackballHud, LightsOnlySForModeS)
+TEST(ColorTrackballHud, BlockShowsTheKnobNameKeysAndHintsInOrder)
 {
-    ColorTrackballHud hud;
-    ColorTrackballHudState state = stateForC();
+    ColorTrackballHudBlock block;
 
-    state.mode = eColorGlobalModeS;
-    hud.setState(state);
+    block.setState(stateFor(eColorGlobalModeS));
 
-    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendC"));
-    EXPECT_TRUE(isLegendLit(hud, "ColorTrackballHudLegendS"));
-    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendT"));
-    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendV"));
+    const QStringList lines = block.lines();
 
-    const QString values = labelByName(hud, "ColorTrackballHudValues")->text();
-
-    EXPECT_TRUE(values.contains(QString::fromUtf8("124.3")));
-    EXPECT_TRUE(values.contains(QString::fromUtf8("0.0820")));
+    ASSERT_EQ(4, lines.size());
+    EXPECT_EQ(QString::fromUtf8("Gain"), lines[0]);
+    EXPECT_EQ(QString::fromUtf8("C S T V"), lines[1]);
+    EXPECT_EQ(QString::fromUtf8("Ctrl 10x slower   Shift 4x faster   Ctrl+Shift 100x slower"), lines[2]);
+    EXPECT_EQ(QString::fromUtf8("Esc/Enter: accept   Ctrl+up/down: switch knob"), lines[3]);
+    EXPECT_EQ(eColorGlobalModeS, block.litKey());
+    EXPECT_EQ(-1, block.litGear());
+    EXPECT_GT(block.width(), 0);
+    EXPECT_GT(block.height(), 0);
 }
 
-TEST(ColorTrackballHud, ReportsAnInvalidChromaReadoutInsteadOfStaleNumbers)
+TEST(ColorTrackballHud, BlockAddsTheChromaHintInCAndTheEndOfListMessage)
 {
-    ColorTrackballHud hud;
-    ColorTrackballHudState state = stateForC();
+    ColorTrackballHudBlock block;
+    ColorTrackballHudState state = stateFor(eColorGlobalModeC);
 
-    state.chromaValid = false;
-    hud.setState(state);
+    block.setState(state);
 
-    const QString values = labelByName(hud, "ColorTrackballHudValues")->text();
+    const int plainHeight = block.height();
 
-    EXPECT_TRUE(values.contains(QString::fromUtf8("unavailable")));
-    EXPECT_FALSE(values.contains(QString::fromUtf8("124.3")));
-}
-
-TEST(ColorTrackballHud, ShowsAndHidesTheEndOfListMessage)
-{
-    ColorTrackballHud hud;
-
-    // isVisible() only means anything once the top-level widget itself has been shown: Qt
-    // reports every descendant of an unshown top-level as not visible regardless of its own
-    // explicit show/hide state.
-    hud.show();
-    QApplication::processEvents();
-
-    ColorTrackballHudState state = stateForC();
-
-    EXPECT_FALSE(labelByName(hud, "ColorTrackballHudEndOfList")->isVisible());
+    ASSERT_EQ(5, block.lines().size());
+    EXPECT_EQ(QString::fromUtf8("Drag toward a hue to push the colour that way"), block.lines()[4]);
 
     state.endOfListMessage = QString::fromUtf8("Last colour knob.");
-    hud.setState(state);
+    block.setState(state);
+    ASSERT_EQ(6, block.lines().size());
+    EXPECT_EQ(state.endOfListMessage, block.lines()[5]);
+    EXPECT_GT(block.height(), plainHeight);
 
-    QLabel* endOfList = labelByName(hud, "ColorTrackballHudEndOfList");
+    state.mode = eColorGlobalModeV;
+    state.endOfListMessage.clear();
+    block.setState(state);
+    EXPECT_EQ(4, block.lines().size());
+    EXPECT_EQ(eColorGlobalModeV, block.litKey());
+}
 
-    EXPECT_TRUE(endOfList->isVisible());
-    EXPECT_EQ(QString::fromUtf8("Last colour knob."), endOfList->text());
+TEST(ColorTrackballHud, BlockLightsTheHeldGear)
+{
+    EXPECT_EQ(-1, colorTrackballHudLitGear(gear(false, false)));
+    EXPECT_EQ(0, colorTrackballHudLitGear(gear(true, false)));
+    EXPECT_EQ(1, colorTrackballHudLitGear(gear(false, true)));
+    EXPECT_EQ(2, colorTrackballHudLitGear(gear(true, true)));
 
-    state.endOfListMessage = QString();
-    hud.setState(state);
-    EXPECT_FALSE(endOfList->isVisible());
+    ColorTrackballHudBlock block;
+    ColorTrackballHudState state = stateFor(eColorGlobalModeT);
+
+    state.gear = gear(true, false);
+    block.setState(state);
+    EXPECT_EQ(0, block.litGear());
+}
+
+TEST(ColorTrackballHud, PillIsSizedToItsText)
+{
+    ColorTrackballPill shortPill;
+    ColorTrackballPill longPill;
+
+    shortPill.setText(QString::fromUtf8("+Hue"));
+    longPill.setText(QString::fromUtf8("Less green"));
+    EXPECT_EQ(QString::fromUtf8("+Hue"), shortPill.text());
+    EXPECT_GT(shortPill.width(), 0);
+    EXPECT_GT(longPill.width(), shortPill.width());
+    EXPECT_EQ(shortPill.height(), longPill.height());
+    EXPECT_TRUE(shortPill.testAttribute(Qt::WA_TransparentForMouseEvents));
+}
+
+TEST(ColorTrackballHud, BlockWindowIsAClickThroughToolWindow)
+{
+    ColorTrackballHudBlock block(nullptr, colorTrackballFollowCursorWindowFlags());
+    const Qt::WindowFlags flags = block.windowFlags();
+
+    EXPECT_TRUE(block.isWindow());
+    EXPECT_TRUE(block.isHidden());
+    EXPECT_EQ((int)Qt::Tool, (int)(flags & Qt::WindowType_Mask));
+    EXPECT_TRUE(flags.testFlag(Qt::FramelessWindowHint));
+    EXPECT_TRUE(flags.testFlag(Qt::WindowStaysOnTopHint));
+    EXPECT_TRUE(flags.testFlag(Qt::WindowTransparentForInput));
+    EXPECT_TRUE(flags.testFlag(Qt::WindowDoesNotAcceptFocus));
+    EXPECT_TRUE(block.testAttribute(Qt::WA_ShowWithoutActivating));
+    EXPECT_TRUE(block.testAttribute(Qt::WA_TransparentForMouseEvents));
+    // Masked to its rounded panel, so its corners never paint black without a compositor.
+    EXPECT_FALSE(block.mask().isEmpty());
+    EXPECT_FALSE(block.mask().contains(QPoint(0, 0)));
+    EXPECT_TRUE(block.mask().contains(QPoint(block.width() / 2, block.height() / 2)));
 }
 
 TEST(ColorTrackballHud, FrameOverADummyWidgetTracksAResize)
@@ -286,24 +213,6 @@ TEST(ColorTrackballHud, FollowPositionIsBelowRightAndFlipsAtTheScreenEdges)
     EXPECT_EQ(QPoint(116, 116), colorTrackballHudFollowPosition(QPoint(100, 100), size, QRect(), offset));
 }
 
-TEST(ColorTrackballHud, IsAClickThroughToolWindowWithAnOpaqueFillFromConstruction)
-{
-    ColorTrackballHud hud;
-    const Qt::WindowFlags flags = hud.windowFlags();
-
-    EXPECT_TRUE(hud.parentWidget() == 0);
-    EXPECT_TRUE(hud.isWindow());
-    EXPECT_TRUE(hud.isHidden());
-    EXPECT_TRUE(hud.autoFillBackground());
-    EXPECT_EQ((int)Qt::Tool, (int)(flags & Qt::WindowType_Mask));
-    EXPECT_TRUE(flags.testFlag(Qt::FramelessWindowHint));
-    EXPECT_TRUE(flags.testFlag(Qt::WindowStaysOnTopHint));
-    EXPECT_TRUE(flags.testFlag(Qt::WindowTransparentForInput));
-    EXPECT_TRUE(flags.testFlag(Qt::WindowDoesNotAcceptFocus));
-    EXPECT_TRUE(hud.testAttribute(Qt::WA_ShowWithoutActivating));
-    EXPECT_TRUE(hud.testAttribute(Qt::WA_TransparentForMouseEvents));
-}
-
 namespace {
 class PaintCounter
     : public QObject {
@@ -322,62 +231,62 @@ protected:
 };
 }
 
-TEST(ColorTrackballHud, ATextChangeAndAMoveLeaveItRepainted)
+TEST(ColorTrackballHud, ANewStateAndAMoveLeaveTheBlockWindowRepainted)
 {
-    ColorTrackballHud hud;
+    ColorTrackballHudBlock block(nullptr, colorTrackballFollowCursorWindowFlags());
     PaintCounter counter;
 
-    hud.setState(stateForC());
-    hud.show();
+    block.setState(stateFor(eColorGlobalModeS));
+    block.show();
     QElapsedTimer timer;
     timer.start();
-    while (!hud.isVisible() && timer.elapsed() < 2000) {
+    while (!block.isVisible() && timer.elapsed() < 2000) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     }
     QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
-    hud.installEventFilter(&counter);
+    block.installEventFilter(&counter);
 
-    ColorTrackballHudState longer = stateForC();
+    ColorTrackballHudState longer = stateFor(eColorGlobalModeS);
 
     longer.endOfListMessage = QString::fromUtf8("Last colour knob.");
-    hud.setState(longer);
-    hud.followCursorTo(QPoint(120, 130));
+    block.setState(longer);
+    block.followCursorTo(QPoint(120, 130));
     QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
     EXPECT_GE(counter.count, 1);
-    hud.hide();
+    block.hide();
 }
 
-TEST(ColorTrackballHud, FollowingHudSitsAtTheOffsetAndFlipsNearTheEdges)
+TEST(ColorTrackballHud, FollowingBlockSitsAtTheOffsetAndFlipsNearTheEdges)
 {
     QScreen* screen = QGuiApplication::primaryScreen();
 
     ASSERT_TRUE(screen != 0);
 
     const QRect g = screen->geometry();
-    ColorTrackballHud hud;
+    ColorTrackballHudBlock block(nullptr, colorTrackballFollowCursorWindowFlags());
 
-    hud.setState(stateForC());
-    ASSERT_LE(g.left() + 116 + hud.width(), g.left() + g.width());
-    ASSERT_LE(g.top() + 116 + hud.height(), g.top() + g.height());
+    block.setState(stateFor(eColorGlobalModeS));
+    ASSERT_LE(g.left() + 116 + block.width(), g.left() + g.width());
+    ASSERT_LE(g.top() + 116 + block.height(), g.top() + g.height());
 
     const QPoint near = g.topLeft() + QPoint(100, 100);
 
-    hud.followCursorTo(near);
-    EXPECT_EQ(near + QPoint(16, 16), hud.pos());
+    block.followCursorTo(near);
+    EXPECT_EQ(near + QPoint(16, 16), block.pos());
 
     const QPoint corner(g.left() + g.width() - 10, g.top() + g.height() - 10);
 
-    hud.followCursorTo(corner);
-    EXPECT_LT(hud.geometry().right(), corner.x());
-    EXPECT_LT(hud.geometry().bottom(), corner.y());
-    EXPECT_GE(hud.geometry().left(), g.left());
-    EXPECT_GE(hud.geometry().top(), g.top());
+    block.followCursorTo(corner);
+    EXPECT_LT(block.geometry().right(), corner.x());
+    EXPECT_LT(block.geometry().bottom(), corner.y());
+    EXPECT_GE(block.geometry().left(), g.left());
+    EXPECT_GE(block.geometry().top(), g.top());
 
     // A new state that resizes it is placed by the same cursor again.
-    ColorTrackballHudState longer = stateForC();
+    ColorTrackballHudState longer = stateFor(eColorGlobalModeC);
 
     longer.endOfListMessage = QString::fromUtf8("Last colour knob.");
-    hud.setState(longer);
-    EXPECT_LT(hud.geometry().right(), corner.x());
-    EXPECT_LT(hud.geometry().bottom(), corner.y());
+    block.setState(longer);
+    EXPECT_LT(block.geometry().right(), corner.x());
+    EXPECT_LT(block.geometry().bottom(), corner.y());
 }

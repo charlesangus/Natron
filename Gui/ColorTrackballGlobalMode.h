@@ -59,7 +59,8 @@ class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
 
-class ColorTrackballHud;
+class ColorTrackballHudBlock;
+struct ColorTrackballHudState;
 class ColorTrackballReveal;
 class WindowHighlightFrame;
 
@@ -148,7 +149,16 @@ struct ColorGlobalModeFeedbackState {
     bool blankCursor = false;
     bool graphicShown = false;
     bool graphicFollowsPointer = false;
+    /// The hint block has a window of its own by the pointer while engaged with no graphic up;
+    /// with one up it sits under the graphic's disc.
+    bool hudBlockFollowsPointer = false;
 };
+
+/**
+ * @brief Moves the pointer to target, as a released stroke does to return it to where the
+ * stroke began. False where the platform leaves it where it was (Wayland).
+ **/
+bool colorGlobalModeReturnPointer(const QPoint& target);
 
 ColorGlobalModeFeedbackState colorGlobalModeFeedbackState(Settings::ColorTrackballFeedbackEnum feedback, bool engaged, bool strokeActive);
 
@@ -450,13 +460,14 @@ private:
     QString strokeLabel() const;
     void setGear(double gearFactor);
 
-    ColorTrackballHud* ensureHud();
+    ColorTrackballHudBlock* ensureHudBlock();
     ColorTrackballReveal* ensureReveal();
     void syncReveal();
+    void syncHudBlock(const ColorGlobalModeFeedbackState& state);
     void showChrome();
     void hideChrome();
+    ColorTrackballHudState hudState() const;
     void updateHud();
-    void refreshTargetPosition();
 
     void beginStroke();
     void moveStroke(const QPointF& globalPos, Qt::KeyboardModifiers modifiers, bool spontaneous);
@@ -512,16 +523,15 @@ private:
     ColorGlobalModeFeedbackSwitch _feedback;
     ColorGlobalModeCursors _cursors;
     QPoint _pointerPos;
+    QPoint _strokeStartPos;
 
-    QPointer<ColorTrackballHud> _hud;
+    QPointer<ColorTrackballHudBlock> _hudBlock;
     QPointer<ColorTrackballReveal> _reveal;
     bool _revealFollowing;
     const void* _revealKnob;
     ColorKnobRoleEnum _revealRole;
     std::vector<QPointer<WindowHighlightFrame>> _highlightFrames;
     QString _endOfListMessage;
-    int _targetPosition;
-    int _targetCount;
 };
 
 NATRON_NAMESPACE_EXIT

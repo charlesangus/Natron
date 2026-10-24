@@ -323,6 +323,12 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
 
 ## Phase 110.4: Acceptance chain, docs and the GPU host
 
+- [ ] M110.P4.T4 — Ask upstream for the planes a node passes through (runs before P4.T1)
+  - files: `Engine/ParallelRenderArgs.cpp`, `Engine/ParallelRenderArgs.h` (if needed), `Tests/Native/GpuMultiPlaneRegion_Test.cpp`, `Tests/GpuResidency_Test.cpp`
+  - approach: The request pass doesn't ask a node's pass-through input for the planes the node passes through, so in Read → Grade → Shuffle (Shuffle reading another layer) the Grade can't alias that plane as an identity member and stays on the CPU. When a consumer requests a plane that a node passes through (`getComponentsNeededAndProduced_public`), propagate the request for that plane to the pass-through input at the same time and view, as `renderRoI` would fetch it. Keep the CPU render's results unchanged. Then re-check `MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu`: its pinned assertion that the source lacks the layer may now flip. Update it only if the GPU render matches the CPU, and say why in the test.
+  - verify: at the phase build, a new `GpuMultiPlaneRegion_Test` case puts Grade → Shuffle (in2 from another layer of the source) in one region matching the CPU, and `RenderScheduler_Test`, `GpuResidency_Test`, `GpuPlacement_Test`, every `Tests/Native/*Gpu_Test` and the CPU render suites stay green in both legs.
+  - size: L
+
 - [ ] M110.P4.T1 — Test the Read → Reformat → Grade → Shuffle → Write chain as one region
   - files: `Tests/Native/NativeGpuChain_Test.cpp` (new)
   - approach:
@@ -472,3 +478,4 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **CPU output:** expected to stay bit-identical, so no plugin-major bump.
   - **Risk:** a task whose only plane is a pass-through has to place as an identity member (the RemoveLayers → Grade end-to-end case).
   - **Gap:** the non-float `cpuOnly` path is untested for the whole family, because the parity source is float only.
+- 2026-10-24 — **M110.P4.T4 inserted before P4.T1** (PM). P2.T5's report showed that the request pass never asks upstream for pass-through planes, so P4.T1's multi-plane chain case would split at the Grade. This is in scope under the user's "widen multi-plane regions to every node". `Engine/ParallelRenderArgs.cpp` overlaps only M64 - Tiled Rendering, which is parked; it rebases over these lines if it resumes, as already agreed for `RenderScheduler.cpp`.

@@ -497,7 +497,7 @@ From the P7.T3 UAT (2026-10-24). Crash evidence (consultant, unconfirmed until T
   - verify: compiled and run at P9.T9.
   - size: M
 
-- [ ] M16.P9.T8 — Xvfb GUI check of File>Open
+- [x] M16.P9.T8 — Xvfb GUI check of File>Open
   - files: new `Tests/gui/m16_open_errors.py` (run with `Tests/gui/run-gui-test.sh`)
   - approach: seed `checkForUpdates=false`. Trigger `actionOpen_project`, find the `SequenceFileDialog` via `activeModalWidget`, type a `.ntp` path and accept: one error dialog with the legacy text, process alive, graph unchanged, no recent-files entry. Repeat with a non-empty graph (no new window), a `.png`, a folder, and a folder Save (`.ntpz` beside it).
   - verify: passes against the P9.T9 fast AppImage; screenshots shared.

@@ -138,7 +138,7 @@ private Q_SLOTS:
     void onWheelGestureFinished(bool moved);
     void onSliderResetRequested();
     void onCustomSliderGestureStarted();
-    void onCustomSliderGestureMoved(double value, bool absolute, QString axisLabel);
+    void onCustomSliderGestureMoved(double value, QString axisLabel);
     void onCustomSliderGestureFinished(bool moved);
     void onSpinBoxValueChanged(double value);
 

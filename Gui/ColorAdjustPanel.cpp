@@ -1072,7 +1072,6 @@ ColorAdjustPanel::onCustomSliderGestureStarted()
 
 void
 ColorAdjustPanel::onCustomSliderGestureMoved(double value,
-                                             bool absolute,
                                              QString axisLabel)
 {
     int index = _imp->sliderIndex(sender());
@@ -1083,14 +1082,7 @@ ColorAdjustPanel::onCustomSliderGestureMoved(double value,
 
     ColorSliderKindEnum kind = kLineKinds[index];
 
-    if (absolute) {
-        bool replaces = false;
-        ColorEdit edit = _imp->lineEdit(kind, value, _imp->segmentBase, &replaces);
-
-        _imp->step(edit, replaces, axisLabel);
-    } else {
-        _imp->step(_imp->lineNudge(kind, value), false, axisLabel);
-    }
+    _imp->step(_imp->lineNudge(kind, value), false, axisLabel);
 }
 
 void

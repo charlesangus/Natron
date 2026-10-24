@@ -51,7 +51,7 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 // This text becomes part of an undo command's label verbatim, so it has to read as a
-// finished phrase on its own ("value slider (absolute)"), not just a value's name.
+// finished phrase on its own ("value slider (relative)"), not just a value's name.
 QString
 sliderKindName(ColorSliderKindEnum kind)
 {
@@ -135,7 +135,6 @@ onMarker(const QRectF& r,
 struct ColorEditSliderPrivate {
     enum DragKindEnum {
         eDragKindNone,
-        eDragKindAbsolute,
         eDragKindRelative
     };
 
@@ -147,8 +146,7 @@ struct ColorEditSliderPrivate {
     QGradientStops gradientStops;
 
     DragKindEnum dragKind;
-    double dragGrabOffsetPx; // absolute drag only: press x minus the marker's own x at press time
-    double dragLastX; // relative drag only: re-read every move, so the gear can change mid-drag
+    double dragLastX; // re-read every move, so the gear can change mid-drag
     bool gestureStarted; // gestureStarted() is only emitted lazily, on the drag's first real move
     bool hoverMarker;
 
@@ -160,7 +158,6 @@ struct ColorEditSliderPrivate {
         , value(0.)
         , gradientStops()
         , dragKind(eDragKindNone)
-        , dragGrabOffsetPx(0.)
         , dragLastX(0.)
         , gestureStarted(false)
         , hoverMarker(false)
@@ -342,12 +339,11 @@ ColorEditSlider::paintEvent(QPaintEvent* /*e*/)
         p.setPen(QPen(dragging ? selectionColor : QColor(235, 235, 235), 1.8));
         p.drawPolyline(poly);
     } else {
-        QColor fill = (dragging && (_imp->dragKind == ColorEditSliderPrivate::eDragKindAbsolute)) ? selectionColor : _imp->hoverMarker ? QColor(226, 226, 226)
-                                                                                                                                       : QColor(210, 210, 210);
+        QColor fill = _imp->hoverMarker ? QColor(226, 226, 226) : QColor(210, 210, 210);
         p.setPen(QPen(Qt::black, 1));
         p.setBrush(fill);
         p.drawRect(QRectF(mx - kMarkerHalfWidth, r.top() + 1., 2. * kMarkerHalfWidth, r.height() - 2.));
-        if (dragging && (_imp->dragKind == ColorEditSliderPrivate::eDragKindRelative)) {
+        if (dragging) {
             p.setPen(QPen(selectionColor, 2));
             p.setBrush(Qt::NoBrush);
             p.drawRect(QRectF(mx - kMarkerHalfWidth - 1., r.top() + 0.5, 2. * kMarkerHalfWidth + 2., r.height() - 1.));
@@ -365,13 +361,9 @@ ColorEditSlider::mousePressEvent(QMouseEvent* e)
     }
 
     QRectF r = trackRect();
-    SliderRange rng = _imp->range();
     double x = e->position().x();
-    bool absolute = onMarker(r, rng, _imp->value, x);
-    double mx = r.left() + valueToMarker(rng, _imp->value) * r.width();
 
-    _imp->dragKind = absolute ? ColorEditSliderPrivate::eDragKindAbsolute : ColorEditSliderPrivate::eDragKindRelative;
-    _imp->dragGrabOffsetPx = absolute ? (x - mx) : 0.;
+    _imp->dragKind = ColorEditSliderPrivate::eDragKindRelative;
     _imp->dragLastX = x;
     _imp->gestureStarted = false;
     setFocus();
@@ -406,22 +398,15 @@ ColorEditSlider::mouseMoveEvent(QMouseEvent* e)
         Q_EMIT gestureStarted();
     }
 
-    bool absolute = _imp->dragKind == ColorEditSliderPrivate::eDragKindAbsolute;
-    QString label = sliderKindName(_imp->kind) + QString::fromUtf8(" slider (") + QString::fromUtf8(absolute ? "absolute" : "relative") + QString::fromUtf8(")");
+    QString label = sliderKindName(_imp->kind) + QString::fromUtf8(" slider (relative)");
+    double g = gear(modifierHasControl(e), modifierHasShift(e));
+    // A cramped track still spreads the range over at least kMinTrackPx, so a squeezed
+    // panel never turns a short nudge into a jump of the whole range.
+    double perPixel = (_imp->relativeRate > 0.) ? _imp->relativeRate : (rng.rangeMax - rng.rangeMin) / std::max(w, TO_DPIX(kMinTrackPx));
+    double delta = (x - _imp->dragLastX) * perPixel * g;
 
-    if (absolute) {
-        double frac = (x - _imp->dragGrabOffsetPx - r.left()) / w;
-        _imp->value = markerToValue(rng, frac);
-        Q_EMIT gestureMoved(_imp->value, true, label);
-    } else {
-        double g = gear(modifierHasControl(e), modifierHasShift(e));
-        // A cramped track still spreads the range over at least kMinTrackPx, so a squeezed
-        // panel never turns a short nudge into a jump of the whole range.
-        double perPixel = (_imp->relativeRate > 0.) ? _imp->relativeRate : (rng.rangeMax - rng.rangeMin) / std::max(w, TO_DPIX(kMinTrackPx));
-        double delta = (x - _imp->dragLastX) * perPixel * g;
-        _imp->value += delta;
-        Q_EMIT gestureMoved(delta, false, label);
-    }
+    _imp->value += delta;
+    Q_EMIT gestureMoved(delta, label);
     _imp->dragLastX = x;
     update();
 }

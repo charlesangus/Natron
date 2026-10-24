@@ -711,7 +711,7 @@ TEST(ColorAdjustPanel, PairsColorEditSlidersWithNatronSpinBoxes)
     }
 }
 
-TEST(ColorAdjustPanel, MarkerDragIsOneUndoStepAndTheSpinBoxFollows)
+TEST(ColorAdjustPanel, MarkerPressDragIsRelativeOneUndoStepAndTheSpinBoxFollows)
 {
     ColorAdjustPanel panel;
     LumaBasis basis = acescg();
@@ -724,15 +724,15 @@ TEST(ColorAdjustPanel, MarkerDragIsOneUndoStepAndTheSpinBoxFollows)
     ASSERT_TRUE(value);
 
     double before = value->value();
-    double expected = before + 40. * customUnitsPerPixel(value);
+    double expected = before + 40. * customUnitsPerPixel(value) * gear(false, false);
 
-    customDrag(value, customMarkerX(value), 40., Qt::ControlModifier);
+    customDrag(value, customMarkerX(value), 40.);
 
     EXPECT_EQ(1, rec.starts);
     EXPECT_GE(rec.moves, 1);
     EXPECT_EQ(1, rec.ends);
     EXPECT_FALSE(panel.isEditing());
-    EXPECT_EQ(QString::fromUtf8("value slider (absolute)"), rec.endLabel);
+    EXPECT_EQ(QString::fromUtf8("value slider (relative)"), rec.endLabel);
     EXPECT_NEAR(expected, std::log2(luma(basis, rec.endValue.rgb)), 1e-9);
     EXPECT_NEAR(expected, panel.getSpinBox(eColorSliderKindValue)->value(), 1e-3);
     EXPECT_NEAR(expected, value->value(), 1e-9);

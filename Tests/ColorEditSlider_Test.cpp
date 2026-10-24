@@ -132,7 +132,6 @@ struct GestureSpy {
     int finished = 0;
     int resets = 0;
     double lastValue = 0.;
-    bool lastAbsolute = false;
     QString lastLabel;
     bool lastMoved = false;
 
@@ -141,10 +140,9 @@ struct GestureSpy {
         QObject::connect(s, &ColorEditSlider::gestureStarted, [this]() {
             ++started;
         });
-        QObject::connect(s, &ColorEditSlider::gestureMoved, [this](double value, bool absolute, QString label) {
+        QObject::connect(s, &ColorEditSlider::gestureMoved, [this](double value, QString label) {
             ++moved;
             lastValue = value;
-            lastAbsolute = absolute;
             lastLabel = label;
         });
         QObject::connect(s, &ColorEditSlider::gestureFinished, [this](bool movedFlag) {
@@ -181,12 +179,52 @@ TEST(ColorEditSlider, MarkerDragMovesByExactlyThatManyPixelsOfRangeRegardlessOfM
         sendMove(s.get(), mx + 40., mod);
         sendRelease(s.get(), mx + 40., mod);
 
-        EXPECT_NEAR(40. * unitsPerPixel(s.get(), range), s->value(), 1e-9);
+        EXPECT_NEAR(40. * unitsPerPixel(s.get(), range) * gear(mod.testFlag(Qt::ControlModifier), mod.testFlag(Qt::ShiftModifier)), s->value(), 1e-9);
         EXPECT_EQ(1, spy.started);
         EXPECT_EQ(1, spy.finished);
-        EXPECT_TRUE(spy.lastAbsolute);
-        EXPECT_EQ(QString::fromUtf8("value slider (absolute)"), spy.lastLabel);
+        EXPECT_EQ(QString::fromUtf8("value slider (relative)"), spy.lastLabel);
     }
+}
+
+TEST(ColorEditSlider, PressOnMarkerDragsByTheSameDeltaAsDraggingFromElsewhere)
+{
+    TrackballRates rates;
+    std::unique_ptr<ColorEditSlider> onMarker(makeSlider(eColorSliderKindValue, eColorKnobRoleGain));
+    std::unique_ptr<ColorEditSlider> elsewhere(makeSlider(eColorSliderKindValue, eColorKnobRoleGain));
+    SliderRange range = sliderMapping(eColorSliderKindValue, eColorKnobRoleGain, rates);
+
+    onMarker->setValue(0.);
+    elsewhere->setValue(0.);
+
+    double mx = markerX(onMarker.get(), range, 0.);
+    double other = onMarker->trackRect().left() + 5.;
+
+    sendPress(onMarker.get(), mx);
+    sendMove(onMarker.get(), mx + 40.);
+    sendRelease(onMarker.get(), mx + 40.);
+    sendPress(elsewhere.get(), other);
+    sendMove(elsewhere.get(), other + 40.);
+    sendRelease(elsewhere.get(), other + 40.);
+
+    EXPECT_NEAR(40. * unitsPerPixel(onMarker.get(), range), onMarker->value(), 1e-9);
+    EXPECT_NEAR(elsewhere->value(), onMarker->value(), 1e-12);
+}
+
+TEST(ColorEditSlider, ClickOnMarkerWithoutMovingLeavesTheValueUnchanged)
+{
+    TrackballRates rates;
+    std::unique_ptr<ColorEditSlider> s(makeSlider(eColorSliderKindValue, eColorKnobRoleGain));
+    SliderRange range = sliderMapping(eColorSliderKindValue, eColorKnobRoleGain, rates);
+
+    s->setValue(0.5);
+    GestureSpy spy(s.get());
+    double mx = markerX(s.get(), range, 0.5);
+
+    sendPress(s.get(), mx);
+    sendRelease(s.get(), mx);
+
+    EXPECT_EQ(0.5, s->value());
+    EXPECT_EQ(0, spy.total());
 }
 
 TEST(ColorEditSlider, RelativeDragWithCtrlMovesOneTenthAsFar)
@@ -208,7 +246,6 @@ TEST(ColorEditSlider, RelativeDragWithCtrlMovesOneTenthAsFar)
     // 80 px at Ctrl's gear is 8 px of range.
     EXPECT_NEAR(8. * unitsPerPixel(s.get(), range), s->value(), 1e-9);
     EXPECT_NEAR(80. * unitsPerPixel(s.get(), range) * gear(true, false), s->value(), 1e-9);
-    EXPECT_FALSE(spy.lastAbsolute);
     EXPECT_EQ(QString::fromUtf8("value slider (relative)"), spy.lastLabel);
 }
 
@@ -252,7 +289,7 @@ TEST(ColorEditSlider, PressingPastEitherEndDragsRelativelyAndDoesNotSnap)
     SliderRange range = sliderMapping(eColorSliderKindValue, eColorKnobRoleGain, rates);
 
     // Past the high end: the marker itself paints clamped to the rim, but the chevron is not
-    // the marker, so a press there is a relative drag, not an absolute jump back onto the rim.
+    // the marker, so a press there drags from the unclamped value instead of jumping back onto the rim.
     double pastEnd = range.rangeMax + 1.;
     s->setValue(pastEnd);
     GestureSpy spy(s.get());
@@ -262,7 +299,6 @@ TEST(ColorEditSlider, PressingPastEitherEndDragsRelativelyAndDoesNotSnap)
     sendMove(s.get(), chevronX + 6.);
 
     ASSERT_EQ(1, spy.moved);
-    EXPECT_FALSE(spy.lastAbsolute);
     EXPECT_GT(s->value(), range.rangeMax);
 
     sendRelease(s.get(), chevronX + 6.);

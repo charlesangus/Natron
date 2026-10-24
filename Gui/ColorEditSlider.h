@@ -49,8 +49,8 @@ struct ColorEditSliderPrivate;
 
 /**
  * @brief A single horizontal gesture control for one colour-wheel axis: a track painted with
- * a caller-supplied gradient and a marker placed through ColorWheelMath::sliderMapping. Dragging
- * the marker sets the value absolutely; dragging anywhere else nudges it relatively, at the gear
+ * a caller-supplied gradient and a marker placed through ColorWheelMath::sliderMapping. Every drag,
+ * whether or not it starts on the marker, nudges the value relatively, at the gear
  * held during each move. Past either end of the range the marker becomes a chevron. It knows its
  * ColorKnobRoleEnum (which only changes its range, through sliderMapping) and nothing else about
  * any knob: the owner reads its gesture signals and does every bit of ColorWheelMath::applyEdit
@@ -107,10 +107,10 @@ Q_SIGNALS:
 
     void gestureStarted();
 
-    // value is in range()'s own unit: the marker drag's target when absolute is true, otherwise
-    // the increment since the previous gestureMoved of this gesture (never the total, so a
-    // caller that re-applies from its own gesture-start value never double-counts it).
-    void gestureMoved(double value, bool absolute, QString axisLabel);
+    // delta is in range()'s own unit: the increment since the previous gestureMoved of this
+    // gesture (never the total, so a caller that re-applies from its own gesture-start value
+    // never double-counts it).
+    void gestureMoved(double delta, QString axisLabel);
 
     void gestureFinished(bool moved);
 

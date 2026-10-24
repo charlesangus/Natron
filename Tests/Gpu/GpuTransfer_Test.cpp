@@ -1100,6 +1100,31 @@ GPU_TEST_F(GpuTransferTest, StagedUploadsCountTheirReason)
     EXPECT_EQ(t->stagedReasons().total(), 1u) << "prepareImport() counted as a staged transfer";
 }
 
+GPU_TEST_F(GpuTransferTest, UploadWhoseImportFailsCountsImportFailed)
+{
+    constexpr VkDeviceSize kBytes = VkDeviceSize(1) << 20;
+    GpuTransferOptions o;
+    o.failHostImportsForTests = true;
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+    if (!t->hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    GpuBuffer buf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kBytes, kGpuBufferDefaultUsage, buf).ok());
+    StreamOptions so;
+    so.handoff = ComputeHandoff::None;
+    TransferPath path = TransferPath::HostImport;
+    so.path = &path;
+    TimelineValue done;
+    ASSERT_TRUE(t->upload({ srcs_[0].get(), kBytes }, buf, 0, done, so).ok());
+    ASSERT_TRUE(t->wait(done).ok());
+    EXPECT_EQ(path, TransferPath::Staging);
+    const StagedReasonCounts c = t->stagedReasons();
+    EXPECT_EQ(c.importFailed, 1u);
+    EXPECT_EQ(c.total(), 1u);
+}
+
 GPU_TEST_F(GpuTransferTest, UploadOfAForgottenRangeCountsForgotten)
 {
     std::mutex mutex;

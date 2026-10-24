@@ -10,7 +10,7 @@ set(KERNEL_DIR "${NATRON_ROOT}/Engine/Gpu/Kernels")
 
 # The engine's Grade runs through the wrapped pixel path, so the standalone grade kernel lives
 # here. slangc resolves `import gradeops` next to the source file, hence the staging directory
-# holding both; the CONFIGURE_DEPENDS copies keep it in step with the engine's gradeops.
+# holding both; configure_file re-copies them whenever either source changes.
 set(SPIKE_KERNEL_DIR "${CMAKE_CURRENT_BINARY_DIR}/kernels")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/kernels/grade.slang" "${SPIKE_KERNEL_DIR}/grade.slang" COPYONLY)
 configure_file("${KERNEL_DIR}/gradeops.slang" "${SPIKE_KERNEL_DIR}/gradeops.slang" COPYONLY)

@@ -526,6 +526,12 @@ NATRON_DEV_MEMORY=12g tools/ci/local/devshell.sh   # a different cap
 NATRON_DEV_MEMORY=0 tools/ci/local/devshell.sh --recreate   # no cap
 ```
 
+`NATRON_DEV_MEMORY` takes a whole number with an optional `b`/`k`/`m`/`g`
+suffix and nothing else; a literal `0` turns the cap off, and a nonzero value
+that rounds to 0 MiB (such as `512k`) is rejected. On a host with under 8 GiB
+the default is half its memory rather than 75%, since the 4 GiB reserve would
+leave next to none.
+
 The cap follows the host, so no host needs its own setting. An existing
 container picks up a new or changed cap the next time `devshell.sh` runs,
 without `--recreate`. Removing the cap does need `--recreate`.

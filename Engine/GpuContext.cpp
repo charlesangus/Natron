@@ -494,9 +494,9 @@ GpuContext::initialize()
                                          .arg(elapsedMs(_createdAt, created), 0, 'f', 1)
                                          .arg(timings.importMs, 0, 'f', 1)
                                          .arg(timings.stagingMs, 0, 'f', 1)
-                                         .arg(QString::fromStdString(shared.deviceName))
-                                         .arg(QString::fromStdString(shared.runtime->device().info().driverVersion))
-                                         .arg(QString::fromStdString(shared.runtime->device().info().selectionReason));
+                                         .arg(QString::fromStdString(shared.deviceName),
+                                              QString::fromStdString(shared.runtime->device().info().driverVersion),
+                                              QString::fromStdString(shared.runtime->device().info().selectionReason));
 
                 return;
             }

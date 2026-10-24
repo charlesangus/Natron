@@ -30,6 +30,9 @@ struct GpuTransferOptions {
     // Called on the importing thread, with no lock held, between creating an import meant for the cache and
     // caching it, so that tests can interleave forgetHostAllocation() with it.
     std::function<void(const void* host, VkDeviceSize bytes)> onImportCreated;
+    // Makes every host-pointer import fail as a driver rejection would, so that tests can reach the
+    // ImportFailed staged reason.
+    bool failHostImportsForTests = false;
 };
 
 enum class TransferPath {

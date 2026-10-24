@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -379,10 +380,10 @@ protected:
                 worstAt = i;
             }
         }
+        std::printf("[          ] worst error/bound %.3f (subTexelPrecisionBits %u)\n", (double)worstRatio, subTexelPrecisionBits);
         EXPECT_LE(worstRatio, 1.f) << "worst at element " << worstAt << ": got " << got[worstAt] << ", expected "
                                    << ref.values[worstAt] << ", bound " << ref.bound[worstAt]
-                                   << " (error/bound " << worstRatio << ", subTexelPrecisionBits "
-                                   << subTexelPrecisionBits << ")";
+                                   << " (error/bound " << worstRatio << ")";
     }
 
     uint32_t subTexelPrecisionBits = 0;

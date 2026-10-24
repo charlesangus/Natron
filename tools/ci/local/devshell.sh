@@ -134,6 +134,7 @@ if [[ -e /dev/dri ]]; then
 fi
 
 GPU_DOCKER_ARGS=()
+NVIDIA_RUNTIME=0
 if [[ "${GPU}" == "1" ]]; then
     RENDER_NODE_OK=0
     for node in /dev/dri/renderD*; do
@@ -152,8 +153,9 @@ if [[ "${GPU}" == "1" ]]; then
     # nvidia-container-toolkit injects the driver libraries and the Vulkan/EGL
     # vendor files at container start, but only for containers created with
     # the nvidia runtime, so an existing container needs --recreate.
-    if [[ -e /dev/nvidiactl ]] \
-        && docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"'; then
+    runtimes="$(docker info --format '{{json .Runtimes}}' 2>/dev/null || true)"
+    if [[ -e /dev/nvidiactl && "${runtimes}" == *'"nvidia"'* ]]; then
+        NVIDIA_RUNTIME=1
         GPU_DOCKER_ARGS+=(--runtime=nvidia
             -e NVIDIA_VISIBLE_DEVICES=all
             -e NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,display)
@@ -164,10 +166,12 @@ fi
 # at least 4 GiB kept back; NATRON_DEV_MEMORY overrides, "0" turns it off).
 # Swap is capped at the same value, so a runaway build or test is OOM-killed
 # inside the container instead of swapping the host until it falls over.
-read -r -a MEM_DOCKER_ARGS <<< "$("${SCRIPT_DIR}/memcap.sh" --docker-args)"
+MEM_CAP_MIB="$("${SCRIPT_DIR}/memcap.sh" --mib --docker)" || exit 1
+MEM_DOCKER_ARGS=()
 MEM_CAP_BYTES=0
-if [[ "${#MEM_DOCKER_ARGS[@]}" -gt 0 ]]; then
-    MEM_CAP_BYTES=$(( $("${SCRIPT_DIR}/memcap.sh" --mib --docker) * 1048576 ))
+if (( MEM_CAP_MIB > 0 )); then
+    MEM_DOCKER_ARGS=("--memory=${MEM_CAP_MIB}m" "--memory-swap=${MEM_CAP_MIB}m")
+    MEM_CAP_BYTES=$(( MEM_CAP_MIB * 1048576 ))
 fi
 
 # --- optional forced recreate -----------------------------------------------
@@ -275,7 +279,13 @@ else
     if [[ "${MEM_CAP_BYTES}" -gt 0 ]] \
         && [[ "$(docker container inspect -f '{{.HostConfig.Memory}}' "${CONTAINER_NAME}")" != "${MEM_CAP_BYTES}" ]]; then
         echo "devshell.sh: capping '${CONTAINER_NAME}' at $(( MEM_CAP_BYTES / 1048576 )) MiB (NATRON_DEV_MEMORY overrides)" >&2
-        docker update "${MEM_DOCKER_ARGS[@]}" "${CONTAINER_NAME}" >/dev/null
+        if ! docker update "${MEM_DOCKER_ARGS[@]}" "${CONTAINER_NAME}" >/dev/null; then
+            echo "devshell.sh: could not apply the memory cap to '${CONTAINER_NAME}'; continuing uncapped" >&2
+        fi
+    fi
+    if [[ "${GPU}" == "1" && "${NVIDIA_RUNTIME}" == "1" ]] \
+        && [[ "$(docker container inspect -f '{{.HostConfig.Runtime}}' "${CONTAINER_NAME}")" != "nvidia" ]]; then
+        echo "devshell.sh: '${CONTAINER_NAME}' was not created with the nvidia runtime; use --recreate for the NVIDIA GPU" >&2
     fi
     if [[ "${STATE}" == "stopped" ]]; then
         echo "devshell.sh: starting existing (stopped) container '${CONTAINER_NAME}'..." >&2

@@ -765,6 +765,17 @@ struct GpuTransfer::Impl {
         }
     }
 
+    GpuStatus createImport(void* host, VkDeviceSize len, GpuBuffer& out) const
+    {
+        if (opt.failHostImportsForTests) {
+            GpuStatus st;
+            st.result = VK_ERROR_INITIALIZATION_FAILED;
+            st.message = "host import failed on request";
+            return st;
+        }
+        return GpuBuffer::createHostImported(dev, host, len, kImportUsage, out);
+    }
+
     void countStaged(StagedReason reason)
     {
         switch (reason) {
@@ -793,9 +804,6 @@ struct GpuTransfer::Impl {
         if (importAlignment == 0) {
             return StagedReason::Disabled;
         }
-        if (p == nullptr) {
-            return StagedReason::Unaligned;
-        }
         const bool aligned = base % importAlignment == 0 && bytes % importAlignment == 0;
         if (opt.cacheHostImports && (cachedImports.load() != 0 || pendingCount.load() != 0)) {
             std::unique_lock<std::mutex> lock(importMutex);
@@ -818,7 +826,7 @@ struct GpuTransfer::Impl {
             for (VkDeviceSize pos = 0; pos < bytes;) {
                 const VkDeviceSize len = std::min(importPieceMax, bytes - pos);
                 GpuBuffer b;
-                if (const GpuStatus st = GpuBuffer::createHostImported(dev, host + pos, len, kImportUsage, b); !st) {
+                if (const GpuStatus st = createImport(host + pos, len, b); !st) {
                     segs.clear();
                     owned.clear();
                     noteImportFailure(st, len);
@@ -866,7 +874,7 @@ struct GpuTransfer::Impl {
             lock.unlock();
 
             CachedImport entry;
-            const GpuStatus createStatus = GpuBuffer::createHostImported(dev, host + pos, len, kImportUsage, entry.buffer);
+            const GpuStatus createStatus = createImport(host + pos, len, entry.buffer);
             const bool created = static_cast<bool>(createStatus);
             if (created) {
                 countImport(len, origin);

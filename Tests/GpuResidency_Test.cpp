@@ -1992,9 +1992,9 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
         if (mode == 2 && report.stripsInFlight > 1) {
             // Pipelined strips time the compute-to-transfer queue-ownership release barriers inside the strip
             // interval, after the last member's stamp. They belong to no member and cost real time on some
-            // drivers, so the members only nest inside the kernel time. The slack covers timestamp rounding, a
-            // few microseconds per strip.
-            const double timestampSlackMs = 0.005 * (double)report.strips;
+            // drivers, so the members only nest inside the kernel time. The slack is two timestamp ticks of
+            // rounding per strip.
+            const double timestampSlackMs = 2.0 * (double)report.strips * runtime()->transfer().timestampPeriodNs() * 1e-6;
             EXPECT_LE(sumMs, report.kernelMs + timestampSlackMs);
             EXPECT_GT(sumMs, 0.5 * report.kernelMs);
         } else {

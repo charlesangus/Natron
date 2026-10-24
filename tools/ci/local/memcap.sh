@@ -13,8 +13,13 @@
 # 4 GiB back for the desktop and everything else. "The target" is the Docker
 # daemon's MemTotal for --docker-args (which is the VM's memory under Docker
 # Desktop, not the Mac's) and /proc/meminfo for host commands. Override with
-# NATRON_DEV_MEMORY, in docker's size syntax (e.g. 12g, 8192m) or as "0" to
-# turn the cap off.
+# NATRON_DEV_MEMORY, as a whole number with an optional b/k/m/g suffix (e.g.
+# 12g, 8192m; nothing else is accepted) or as a literal "0" to turn the cap
+# off. A nonzero value that rounds to 0 MiB is an error, not "off".
+#
+# The one exception to the 4 GiB reserve: on a host with under 8 GiB, half the
+# memory goes to the workload instead, since the reserve would leave next to
+# none.
 #
 # Swap is capped at the same value as memory (`--memory-swap` equal to
 # `--memory`, `MemorySwapMax=0`): a capped process that swaps instead of dying
@@ -46,20 +51,30 @@ total_mib() {
 }
 
 to_mib() {
-    local v="${1,,}" n unit
+    local v n unit mib
+    v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     n="${v%%[a-z]*}"
     unit="${v#"${n}"}"
     [[ -n "${n}" && "${n}" =~ ^[0-9]+$ ]] || { echo "memcap.sh: bad NATRON_DEV_MEMORY '${1}'" >&2; exit 2; }
     case "${unit}" in
-        g|gb|gi|gib) echo $(( n * 1024 )) ;;
-        m|mb|mi|mib) echo "${n}" ;;
-        k|kb|ki|kib) echo $(( n / 1024 )) ;;
-        ''|b) echo $(( n / 1048576 )) ;;
+        g|gb|gi|gib) mib=$(( n * 1024 )) ;;
+        m|mb|mi|mib) mib="${n}" ;;
+        k|kb|ki|kib) mib=$(( n / 1024 )) ;;
+        ''|b) mib=$(( n / 1048576 )) ;;
         *) echo "memcap.sh: bad NATRON_DEV_MEMORY unit '${1}'" >&2; exit 2 ;;
     esac
+    if (( mib == 0 )); then
+        echo "memcap.sh: NATRON_DEV_MEMORY '${1}' rounds to 0 MiB; use a literal 0 to turn the cap off" >&2
+        exit 2
+    fi
+    echo "${mib}"
 }
 
 cap_mib() {
+    if [[ "${NATRON_DEV_MEMORY:-}" == "0" ]]; then
+        echo 0
+        return
+    fi
     if [[ -n "${NATRON_DEV_MEMORY:-}" ]]; then
         to_mib "${NATRON_DEV_MEMORY}"
         return
@@ -68,7 +83,7 @@ cap_mib() {
     total="$(total_mib "$1")"
     reserve=$(( total / 4 ))
     (( reserve >= 4096 )) || reserve=4096
-    # A host with under ~6 GiB gets half its memory rather than next to none.
+    # A host with under 8 GiB gets half its memory rather than next to none.
     if (( total - reserve < total / 2 )); then
         echo $(( total / 2 ))
     else

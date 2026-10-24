@@ -535,3 +535,13 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
 - 2026-10-24 — **Resumed by the gpu PM after a host crash (~09:16) and a reboot onto different hardware** (boot `d728f1eb`, RX 7900 XTX / Navi 31, radeonsi only through Xvfb's llvmpipe as before, ~193 GB available). P6.T3's sweep had started at ~09:15 on the previous boot and left no matrix data, so it restarts on this boot; only same-boot pairs count. Rebased onto main `d82d560f6` (M159, no shared files) as `1941b46bc`; remote `fast --tests` dispatched for the gate's CI line.
 - 2026-10-24 — **P6.T3's sweep paused for the user's desktop rerun** (the two would share the GPU). The desktop script failed with "could not extract" because it ran a relative `--base` path from inside its extract directory; `viewer-bench.sh` now resolves `--cand`, `--base` and `--fixtures` to absolute paths. The sweep restarts from round 1 on boot `d728f1eb` once the desktop run is done.
 - 2026-10-24 — **Gate line "CI" passes on `1941b46bc`** (rebased onto main `d82d560f6`; remote `fast --tests`, run 40104095207, lavapipe): 339/339 in both scheduler legs, with the same 42 M107-suite cases per leg as on `ed113a3e6`.
+- 2026-10-24 — **Desktop rerun done, so the zero-copy and "0 root downloads" gate lines pass** (the user's X11 session, radeonsi GL 4.6 on `:0`, RX 7900 XTX, Mesa 26.2.3; boot `d728f1eb`; 3 rounds; candidate `ed113a3e6` against main `v0.1.0-beta45`; `.local/m107/p6t2/desktop/out-20261024-105836/`). `VERDICT rungs reached: zerocopy hostsync readback; root-download check: PASS`: every hand-off run downloaded 0 root bytes (180/180 regions), against 133 MB (UHD) and 531 MB (8K) per region on main. Medians, first / tweak / seek in ms, then playback fps:
+
+  | Case | zerocopy | hostsync | readback | main gpu |
+  |---|---|---|---|---|
+  | UHD 8u | 109 / 16 / 42 / 74.2 | 118 / 22 / 48 / 64.8 | 129 / 24 / 51 / 67.9 | 285 / 143 / 188 / 6.22 |
+  | UHD 32f | 104 / 17 / 43 / 43.3 | 123 / 33 / 61 / 52.6 | 163 / 42 / 70 / 29.3 | 326 / 49 / 83 / 24.3 |
+  | 8K 8u | 336 / 56 / 153 / 26.9 | 342 / 69 / 173 / 30.2 | 376 / 79 / 189 / 21.0 | 848 / 550 / 744 / 1.70 |
+  | 8K 32f | 303 / 56 / 153 / 12.7 | 360 / 100 / 197 / 13.9 | 530 / 133 / 246 / 6.53 | 1139 / 176 / 321 / 6.39 |
+
+  Every rung beats main on every column; the candidate's CPU rung equals main's CPU. Main's worst playback gap is 2.0 s (UHD 8u) and 9.2 s (8K 8u); the candidate's worst on any GPU rung is 191 ms (8K 32f zerocopy) and 568 ms (8K 32f readback). **Observation for P6.T3:** hostsync plays back faster than zerocopy at UHD 32f (52.6 vs 43.3 fps) and 8K 8u/32f, while zerocopy wins first, tweak and seek. Recorded, not chased. P6.T3's sweep restarted on the same boot after this run.

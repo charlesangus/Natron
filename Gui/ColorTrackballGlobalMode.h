@@ -283,6 +283,42 @@ private:
 };
 
 /**
+ * @brief What is left of a right click after it has exited the mode: its release and the
+ * context-menu request, which Qt raises on the press or the release depending on the platform
+ * and which would otherwise open a menu under the pointer. Each is eaten once; a press or key
+ * press that is not part of the click ends the wait.
+ **/
+class ColorGlobalModeRightClickTail {
+public:
+    ColorGlobalModeRightClickTail()
+        : _release(false)
+        , _menu(false)
+    {
+    }
+
+    void arm()
+    {
+        _release = true;
+        _menu = true;
+    }
+
+    bool isArmed() const
+    {
+        return _release || _menu;
+    }
+
+    /**
+     * @brief True when the event belongs to the click and must be eaten.
+     **/
+    bool consume(QEvent::Type type,
+                 Qt::MouseButton button);
+
+private:
+    bool _release;
+    bool _menu;
+};
+
+/**
  * @brief The global trackball mode: once engaged on a colour knob, a click-drag anywhere in
  * the application's windows adjusts that knob (C = a trackball translate of hue and
  * saturation together, S = hue on x and saturation on y, T = temperature and tint, V = value),
@@ -470,6 +506,7 @@ private:
 
     int _wheelAccumulator;
     std::set<int> _swallowedKeys;
+    ColorGlobalModeRightClickTail _rightClickTail;
     QList<QKeySequence> _passThrough;
 
     ColorGlobalModeFeedbackSwitch _feedback;

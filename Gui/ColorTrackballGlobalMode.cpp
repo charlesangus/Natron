@@ -605,6 +605,38 @@ ColorTrackballGlobalMode::instanceFor(Gui* gui)
     return controller;
 }
 
+bool
+ColorGlobalModeRightClickTail::consume(QEvent::Type type,
+                                       Qt::MouseButton button)
+{
+    switch (type) {
+    case QEvent::MouseButtonRelease:
+        if (_release && (button == Qt::RightButton)) {
+            _release = false;
+
+            return true;
+        }
+        break;
+    case QEvent::ContextMenu:
+        if (_menu) {
+            _menu = false;
+
+            return true;
+        }
+        break;
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::KeyPress:
+        _release = false;
+        _menu = false;
+        break;
+    default:
+        break;
+    }
+
+    return false;
+}
+
 ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
     : QObject(0)
     , _gui(gui)
@@ -631,6 +663,7 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
     , _grabbed()
     , _wheelAccumulator(0)
     , _swallowedKeys()
+    , _rightClickTail()
     , _passThrough()
     , _feedback()
     , _cursors()
@@ -679,7 +712,7 @@ ColorTrackballGlobalMode::~ColorTrackballGlobalMode()
     // filter is removed, nothing is pushed or repainted.
     QCoreApplication* app = QCoreApplication::instance();
 
-    if (_engaged && app) {
+    if ((_engaged || _rightClickTail.isArmed()) && app) {
         app->removeEventFilter(this);
     }
     for (std::size_t i = 0; i < _targetConnections.size(); ++i) {
@@ -1340,6 +1373,16 @@ ColorTrackballGlobalMode::handleMousePress(QObject* watched,
 {
     const bool first = (_heldButtons == Qt::NoButton);
 
+    if (first && (e->button() == Qt::RightButton)) {
+        _rightClickTail.arm();
+        exit();
+        // exit() removed the filter; it stays until the click's release and menu request are eaten.
+        if (QCoreApplication* app = QCoreApplication::instance()) {
+            app->installEventFilter(this);
+        }
+
+        return true;
+    }
     _heldButtons |= e->button();
     if (!first) {
         return true;
@@ -1536,6 +1579,20 @@ ColorTrackballGlobalMode::eventFilter(QObject* watched,
                                       QEvent* event)
 {
     if (!_engaged) {
+        if (_rightClickTail.isArmed()) {
+            const Qt::MouseButton button = (event->type() == QEvent::MouseButtonRelease) ? static_cast<QMouseEvent*>(event)->button() : Qt::NoButton;
+            const bool eaten = _rightClickTail.consume(event->type(), button);
+
+            if (!_rightClickTail.isArmed()) {
+                if (QCoreApplication* app = QCoreApplication::instance()) {
+                    app->removeEventFilter(this);
+                }
+            }
+            if (eaten) {
+                return true;
+            }
+        }
+
         return QObject::eventFilter(watched, event);
     }
 

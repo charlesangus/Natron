@@ -579,3 +579,45 @@ TEST(ColorTrackballGlobalModeFeedback, TheDevBarHasNoFeedbackControls)
     qunsetenv("NATRON_COLOR_PANEL_DEV");
     ColorPanelLayoutDev::reloadForTests();
 }
+
+TEST(ColorTrackballGlobalModeRightClick, ReleaseAndContextMenuAreEatenOnce)
+{
+    ColorGlobalModeRightClickTail tail;
+
+    EXPECT_FALSE(tail.isArmed());
+    EXPECT_FALSE(tail.consume(QEvent::ContextMenu, Qt::NoButton));
+    tail.arm();
+    EXPECT_TRUE(tail.isArmed());
+    EXPECT_FALSE(tail.consume(QEvent::MouseMove, Qt::NoButton));
+    EXPECT_FALSE(tail.consume(QEvent::MouseButtonRelease, Qt::LeftButton));
+    EXPECT_TRUE(tail.consume(QEvent::MouseButtonRelease, Qt::RightButton));
+    EXPECT_TRUE(tail.isArmed());
+    EXPECT_FALSE(tail.consume(QEvent::MouseButtonRelease, Qt::RightButton));
+    EXPECT_TRUE(tail.consume(QEvent::ContextMenu, Qt::NoButton));
+    EXPECT_FALSE(tail.isArmed());
+    EXPECT_FALSE(tail.consume(QEvent::ContextMenu, Qt::NoButton));
+}
+
+TEST(ColorTrackballGlobalModeRightClick, MenuMayComeBeforeTheRelease)
+{
+    ColorGlobalModeRightClickTail tail;
+
+    tail.arm();
+    EXPECT_TRUE(tail.consume(QEvent::ContextMenu, Qt::NoButton));
+    EXPECT_TRUE(tail.consume(QEvent::MouseButtonRelease, Qt::RightButton));
+    EXPECT_FALSE(tail.isArmed());
+}
+
+TEST(ColorTrackballGlobalModeRightClick, AnUnrelatedPressOrKeyEndsTheWait)
+{
+    ColorGlobalModeRightClickTail tail;
+
+    tail.arm();
+    EXPECT_FALSE(tail.consume(QEvent::MouseButtonPress, Qt::LeftButton));
+    EXPECT_FALSE(tail.isArmed());
+    EXPECT_FALSE(tail.consume(QEvent::ContextMenu, Qt::NoButton));
+
+    tail.arm();
+    EXPECT_FALSE(tail.consume(QEvent::KeyPress, Qt::NoButton));
+    EXPECT_FALSE(tail.isArmed());
+}

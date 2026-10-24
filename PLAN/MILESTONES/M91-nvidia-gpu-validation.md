@@ -129,7 +129,7 @@ The rest of the milestone runs everything once, fixes what fails because of the 
   - verify: the findings section shows auto picking the RTX 3070 Ti with host-import active (or the logged reason why not), region placement in the render profile, and `GlInteropQt` best rungs on `:0` and Xvfb with byte-exact checksums (or the `missing` string).
   - size: M
 
-- [ ] M91.P1.T6 — Triage the baseline and turn Phase 91.2's template tasks into concrete tasks
+- [x] M91.P1.T6 — Triage the baseline and turn Phase 91.2's template tasks into concrete tasks
   - files: this milestone file (plan branch)
   - approach: Map each vendor-specific failure to one P2 template, or file it as a follow-up milestone stub when the fix is large (more than about one M task, or design work). Delete the P2 templates nothing triggered. Route non-vendor failures to their owner. Route GlInterop and viewer failures per P2.T1's sequencing rule.
   - verify: every failure in the findings section has a P2 task, a follow-up stub or a written "not vendor-specific → <owner>" line. P2 contains only triggered tasks.
@@ -162,36 +162,26 @@ P1.T5 (2026-10-23, fast AppImage d338d2af1 on the host; artifacts in `.local/m91
 - Host-import transfers: uploads 52 HostImport / 4 Staged, downloads 49 HostImport / 7 Staged. The staged ones fall in frames 1-3 across regions, and no reason is logged. Triage this in P1.T6.
 - GlInteropQt (in the NVIDIA container): on `:0` with NVIDIA GL 4.6.0 580.178.04 the path is **zero-copy**, 0.244 ms at 256x192, checksums MATCH. Under Xvfb (llvmpipe GL) it falls back to **readback-pbo** with logged blockers (no GL_EXT_semaphore(_fd), UUID mismatch), checksums MATCH. That is the expected rung.
 
-## Phase 91.2: Vendor-specific fixes (template tasks; instantiate only what P1.T6 triggers)
+## Phase 91.2: Vendor-specific fixes (triaged by P1.T6)
 
-- [ ] M91.P2.T1 — (if GlInterop zero-copy or hostsync fails under NVIDIA GL) Fix the GL import or semaphore path
-  - files: `Engine/Gpu/GlInterop.cpp`, `Tests/Gpu/GlInterop_Test.cpp` (**both are M107 files**)
-  - approach: **Sequencing:** while M107 - GPU Viewer Hand-off is in progress, send the finding and a proposed patch to M107's owner through the inbox rather than editing these files; once M107 has merged, fix it here on top of its double-buffered `GlInterop`. Suspects, in order: (1) GL requires a dedicated import, so the Vulkan allocation must carry `VkMemoryDedicatedAllocateInfo` naming the buffer — check the VMA pool path with `pMemoryAllocateNext` really emits it; (2) the `glImportMemoryFdEXT` size must equal the `VkDeviceMemory` allocation size (NVIDIA is strict) — compare `ai.offset + ai.size`, including `kImportSlack`, with `VkMemoryRequirements.size`; (3) `glWaitSemaphoreEXT` / `glSignalSemaphoreEXT` buffer lists and layouts; (4) binary semaphore reuse order across `produce`/`upload`; (5) the right `GL_DEVICE_UUID_EXT` index with two NVIDIA GPUs.
-  - verify: `Gpu.GlInteropTest.*` passes every path on NVIDIA EGL, zero-copy best and byte-exact. `GlInteropQt` on `:0` gives `best=zero-copy`. Lavapipe CI stays green.
+Triage of the baseline: P2.T1 (GlInterop) and P2.T4 (device limits) were not triggered and are dropped. Zero-copy and every limit held on NVIDIA. `GpuTransferTest.PipelinedFramesTimeline` is classed host-capacity: it failed only under RAM pressure, the engine's staging fallback was correct, and it passed on every rerun. It gets no task, but P2.T6 must see it pass. `Shards/CacheEquivalenceSweepTest` was caused by stale local assets and is not vendor-related. The diagnosis for each task below was done read-only on the RTX 3070 Ti.
+
+- [ ] M91.P2.T2 — Record why a transfer took the staging path instead of host-import, and log import failures once
+  - files: `Engine/Gpu/GpuTransfer.cpp`, `Engine/Gpu/GpuTransfer.h`, `Engine/RenderScheduler.h`, `Engine/RenderStats.cpp`, `Tests/Gpu/GpuTransfer_Test.cpp`. **Not** `Engine/GpuRegionTask.cpp`, which M107 is changing.
+  - approach: In the keying_grade render, 11 of 112 region transfers were staged with `importCount` 0 and no reason recorded. `resolveImports` (~755-868) has three silent exits: an unaligned or uncached range (expected); `createHostImported` failing with its `GpuStatus` discarded (~785, ~821); and a pending import forgotten mid-flight. Make `resolveImports` report a reason enum (Unaligned, ImportFailed with the VkResult/message, Forgotten, Disabled). Expose per-reason staged counters on GpuTransfer and fold them into the region report / profile JSON (`stagedReasons`) from RenderScheduler/RenderStats, without going through `GpuRegionTask.cpp`'s `notePath`. Log ImportFailed once per run (rate-limited) with its VkResult. Unaligned stays silent apart from the counter.
+  - verify: a `GpuTransfer_Test` case forces each reason (an unaligned pointer, and a failing import if it can be provoked, e.g. a non-host pointer) and checks the counter. Remote CI (lavapipe) is green. P2.T6 re-runs the t5 render and records the reasons for the staged transfers. If they are ImportFailed on NVIDIA (e.g. `VK_ERROR_INVALID_EXTERNAL_HANDLE` from overlapping or still-registered pages), file a follow-up to chase `forget()` and pool reuse rather than fixing it here.
   - size: M
 
-- [ ] M91.P2.T2 — (if host-import fails, or falls back silently) Fix host-pointer import on NVIDIA
-  - files: `Engine/Gpu/GpuTransfer.cpp`, `Engine/HostImageMemory.cpp`, `Tests/Gpu/GpuTransfer_Test.cpp`
-  - approach: Suspects: memory type choice from `vkGetMemoryHostPointerPropertiesEXT`'s `memoryTypeBits` (NVIDIA offers only host-visible, non-device-local types); importing `aligned_alloc` huge-page buffers (`HostImageMemory.cpp:245`); size padding to 4096; the 4 GiB per-copy chunk on imported buffers; the cached-import free hook. Any fallback to staging must be logged once with its reason.
-  - verify: the `GpuTransfer_Test` host-import cases pass on NVIDIA. P1.T5's render shows `hostImport` true, or a logged fallback reason. Lavapipe CI stays green.
+- [ ] M91.P2.T3 — Derive the linear-LUT test tolerance from the device's subTexelPrecisionBits
+  - files: `Tests/Gpu/GpuRuntimeShader_Test.cpp`
+  - approach: `Lut3DLinear`/`Lut2DLinear` fail on NVIDIA with worst errors of 1.55e-4 / 1.26e-5 against `kTolerance` 1e-5. That is legal under Vulkan: filter weights need only `subTexelPrecisionBits` (8) fractional bits, and the per-sample spec bounds are 2.57e-4 / 3.12e-4. The reference uses exact fp32 weights, and lavapipe and RADV happen to match it exactly. The test-comment premise (a 1/32 grid) is also wrong: the inputs sit on a 1/256 grid. Fix the test, not the engine. Production OCIO/runtime GLSL calls `texture()` itself, and the viewer's GL_LINEAR path has the same error class. In `SetUp` read `VkPhysicalDeviceProperties::limits.subTexelPrecisionBits` via `vkGetPhysicalDeviceProperties(dev->physicalDevice(), …)`. Have the reference also return a per-element bound for Linear: per channel `strength * |tint[ch]| * 2^-bits * Σ_axes max over the cell's corners of |texel(hi_a) - texel(lo_a)|`, added to `kTolerance`. Nearest keeps `kTolerance` alone. `expectMatches` checks `d <= bound[i]` and prints the worst d/bound ratio. Rewrite the comment at ~149-151 to state the real rationale.
+  - verify: `GpuRuntimeShaderTest.*` passes on the RTX 3070 Ti (both registrations) and on lavapipe CI. The worst d/bound ratio is printed and below 1. A deliberately swapped channel or axis (an error around 0.1) would still fail; check by reasoning or a temporary local edit that is not committed.
   - size: M
 
-- [ ] M91.P2.T3 — (if GPU-vs-CPU parity fails) Make the failing kernel agree, or justify a tolerance the spec allows
-  - files: `Engine/Gpu/Kernels/<kernel>.slang` (whichever failed), `Tests/Gpu/Tolerance.h` or `Tests/Native/NativeGpuParity.{h,cpp}`, plus the failing test file
-  - approach: Suspects: fp32 denormals (NVIDIA can't preserve them); FMA contraction where the reference assumes unfused arithmetic; `pow`/`exp2`/`log2` precision at the SPIR-V precision-table limits; inf/NaN edge cases (`shaderSignedZeroInfNanPreserveFloat32` is true). If the result is legal under the precision rules, extend the existing GPU slack the same way as Grade's "value-or-0 for subnormals" rule, record a decision, and add an NVIDIA column to the design note's §3. Otherwise fix the kernel explicitly, as with the earlier `pow(v, 0)` fix. Never widen a tolerance just because RADV would still pass.
-  - verify: the failing parity suites pass on NVIDIA and still pass on lavapipe (CI). Any widened bound is listed in the decision with its worst-case NVIDIA value.
-  - size: M
-
-- [ ] M91.P2.T4 — (if a device-limit or memory-heap assumption fails) Respect NVIDIA's limits
-  - files: `Engine/Gpu/GpuKernel.cpp`, `Engine/Gpu/GpuBuffer.cpp`, `Engine/Gpu/GpuBufferPool.cpp`, `Engine/Gpu/GpuTexture.cpp`, plus a matching `Tests/Gpu/*_Test.cpp`
-  - approach: Suspects: (1) a dispatch with Y or Z groups over 65535 — `GpuKernel::record` errors rather than splitting; fold extra rows into Z, or split with a base offset; (2) `VMA_MEMORY_USAGE_AUTO` + `HOST_ACCESS` buffers (`GpuKernel.cpp:136`, `GpuTexture.cpp:198`) landing in the 246 MiB BAR heap and exhausting it; (3) budget and eviction under 8 GiB VRAM; (4) compute/transfer queue-family assumptions. Read every limit from the device; never hard-code one.
-  - verify: the failing case passes on NVIDIA. A test forcing a small device limit covers the split path and runs on lavapipe in CI.
-  - size: M
-
-- [ ] M91.P2.T5 — (if timeouts, hangs, corruption or validation errors appear) Fix the synchronization bug NVIDIA exposes
-  - files: `Engine/Gpu/GpuTransfer.cpp`, `Engine/Gpu/GpuRecord.cpp`, `Engine/Gpu/GpuRuntime.cpp`, `Engine/GpuRegionTask.cpp` (only after M107.P5 has merged; an M107/M109 hotspot), plus the failing test
-  - approach: suspects are a missing queue-family ownership release/acquire between transfer family 1 and compute family 2, timeline-semaphore wait values, and `synchronization2` stage/access masks RADV happens to tolerate. Use the P1.T4 validation-layer run if one was obtained.
-  - verify: the failing suite passes 3 times in a row on NVIDIA, and on lavapipe CI.
+- [ ] M91.P2.T5 — Make the pipelined-strip residency timing test assert what the design guarantees
+  - files: `Tests/GpuResidency_Test.cpp`
+  - approach: `RegionMembersAreTimedOnTheDevice` fails 12/12 on NVIDIA in pipelined-strips mode with a near-constant gap of about 0.07-0.09 ms (6-9%). Whole and serial strips are within 1.2%. The cause is correct device time that no member owns. Pipelined strips record the compute→transfer queue-ownership release barriers inside the timed strip interval, after the last member's timestamp (`GpuRegionTask.cpp` `submitStrip` ~1931-1975, handoff `Record` vs `Submit` ~1602/1807). NVIDIA charges real time for that release; lavapipe and RADV make it nearly free. Keep the 5% equality check for whole and serial. For pipelined, assert nesting, `EXPECT_LE(sumMs, report.kernelMs + eps)` with eps = 2 × strips × timestampPeriod, plus a sanity floor `EXPECT_GT(sumMs, 0.5 * report.kernelMs)`. Add a short why-comment about the release barriers. No engine change, which also avoids the M107 file.
+  - verify: the test passes 3 times in a row on the RTX 3070 Ti and on lavapipe CI.
   - size: M
 
 - [ ] M91.P2.T6 — Gate build for the Phase 2 fixes
@@ -247,3 +237,5 @@ If M107 hasn't merged when Phase 91.2 finishes, skip this phase and file it as a
 - 2026-10-23 — User allowed agents to briefly open test windows on the `:0` Plasma session for the NVIDIA GL checks (P1.T5, Phase 91.3).
 - 2026-10-23 — P1.T4: tools/gpu-spike had bit-rotted (standalone grade.slang deleted in M137); the spike now carries its own copy of the old grade_main kernel staged beside the engine gradeops module (code: 2c03da4d3 on milestone/m91-nvidia-gpu-validation). GpuBench smoke on the RTX 3070 Ti ran with hostImport=1.
 - 2026-10-23 — User: no Quadro P400 runs at all, not even the optional small-VRAM data point (P1.T4 and later).
+
+- 2026-10-23 — P1.T6 triage: Phase 91.2 keeps P2.T2 (staged-reason logging), P2.T3 (spec-derived LUT tolerance, test-only) and P2.T5 (pipelined timing assertion, test-only); P2.T1 and P2.T4 were dropped as not triggered. Follow-up observed, not M91 scope: in pipelined strips, per-member times are inflated (Grade 0.21 ms vs 0.045 ms serial), which skews GpuCostModel calibration samples. It needs a follow-up milestone, to be filed by /cat-plan.

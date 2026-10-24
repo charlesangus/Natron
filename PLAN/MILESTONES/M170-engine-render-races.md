@@ -46,7 +46,7 @@ This milestone fixes two engine races that surfaced as test flakes. In the first
 
 ## Phase 170.2: AbortableRenderInfo timer ownership
 
-- [ ] M170.P2.T1 — Decide who owns the abort timer, and get the behaviour change approved by the user
+- [x] M170.P2.T1 — Decide who owns the abort timer, and get the behaviour change approved by the user
   - files: `Engine/AbortableRenderInfo.cpp`, `Engine/AbortableRenderInfo.h` (read only; the decision goes in this milestone's `## Decisions`)
   - approach: Compare three options and recommend one. (a) Create the timer lazily inside `setAborted()` only, owned by the main thread (`moveToThread(qApp->thread())`), and start and stop it through queued calls to the main thread. This fixes the crash and makes the timeout work for pool-created renders. (b) Have one app-wide watchdog on the main thread that scans aborted renders older than `NATRON_ABORT_TIMEOUT_MS`, with no `QTimer` per info. (c) Keep today's inert behaviour on pool threads: use no timer when the creating thread has no event loop, and delete the timer directly in the destructor. For each option, state the user-visible change: does the stalled-render dialog now appear for plug-ins that stall while being aborted from viewer or pool renders? Also state the cost under heavy abort churn on many-core machines, and the behaviour in background mode, where there is no dialog.
   - verify: The user approves the chosen option before T2 starts, and the decision is recorded.
@@ -65,3 +65,7 @@ This milestone fixes two engine races that surfaced as test flakes. In the first
   - size: M
 
 **Verification gate:** `tools/ci/remote/build.sh debug --tests` passes all of ctest. `NativeWriteReadBackTest` shows 0 failures in 480 suite runs with 8 parallel copies on 4 cores, with M138's workaround removed. `SchedulerEquivalence` and `AbortableRenderInfo_Test` show 0 failures in 100 repeats with 8 parallel copies.
+
+## Decisions
+
+- 2026-10-24 — **User decision: one app-wide abort watchdog (option b).** `AbortableRenderInfo` loses its per-render `QTimer`, `ownerThread`, `timerMutex` and the start signal. `setAborted()` adds a weak pointer and a timestamp, under a mutex, to one main-thread watchdog, whose timer runs only while that list is non-empty. One scan can raise a single merged stalled-render dialog and skips renders that already have one open. This removes the `QEventDispatcherGlib::wakeUp` crash by design, along with the race between `onAbortTimerTimeout` and the destructor. The stalled-render dialog now works for renders created on pool threads: it fires 5 s after an abort when a non-IO plug-in is still inside an action. Background mode is unchanged: there the main thread is blocked and the watchdog only logs. Rejected: (a) a per-render main-thread timer, which costs more under abort churn and can stack dialogs; (c) leaving pool renders inert, which keeps the two-thread design.

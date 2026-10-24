@@ -246,7 +246,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: at the phase build, `ChannelRouteGpu_Test` and `ChannelRouteCpu_Test` pass on lavapipe, and `ShuffleRender_Test`, `AddLayersRender_Test` and `RemoveLayersRender_Test` pass unchanged.
   - size: L
 
-- [ ] M110.P2.T5 — Let multi-plane tasks join regions as one member per plane
+- [x] M110.P2.T5 — Let multi-plane tasks join regions as one member per plane
   - files: `Engine/GpuPlacement.h`, `Engine/GpuPlacement.cpp`, `Engine/GpuRegionTask.cpp`, `Tests/Native/GpuMultiPlaneRegion_Test.cpp` (new), `Tests/GpuResidency_Test.cpp`
   - approach:
     - **Overlaps M156: sequence it after M156's edits to these files merge, or rebase onto them.** Do not touch `GpuRegionStrips.*`.
@@ -274,7 +274,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
 
 ## Phase 110.3: Crop and the channel nodes
 
-- [ ] M110.P3.T1 — Run Crop, softness included, on the GPU
+- [x] M110.P3.T1 — Run Crop, softness included, on the GPU
   - files: `Engine/Nodes/Transform/Crop.h`, `Engine/Nodes/Transform/docs/Crop.md`, `Tests/Native/NativeCropGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach:
     - Add `kResamplesOnGpu = true` and the offset concept's `static_assert`.
@@ -465,3 +465,4 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **The CPU runs the route:** `Shuffle::render` and `fetchInputPlane` are gone. Per component, the route resolves exactly as the old render did. A source is a constant, a channel of a named layer, or a colour bit of the input's colour plane. Colour bits not written come from the main input. Missing inputs, layers and channels read 0. Every source is `eNonFloatReadsZero`. Read as bit-identical, so no plugin-major bump; the CPU suites at the build are the proof.
   - **Never returns false.** `cpuOnly` is set when `checkExtraChannelsPresent` fails, which the engine still reports, and when a read input is non-float at either its fetched or its stored depth. That is conservative.
   - **Test coverage gap:** ShuffleCopy with input 2 (the main input) disconnected has no GPU parity case.
+- 2026-10-24 — **P2.T5 and P3.T1 done, so Phase 110.2's gate is green.** Remote `fast --tests` of `cc4a0f96e` (run 40094020594) passes all 344 entries in both legs. `GpuMultiPlaneRegionTest` and `NativeCropGpuTest` ran, with no skips in either suite.

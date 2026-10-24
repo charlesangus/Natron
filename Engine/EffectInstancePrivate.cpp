@@ -40,6 +40,9 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 const int kActionsCacheMinStates = 64;
+// Bounds the memory held for a node scrubbed across a long sequence; the entries are cheap to
+// rebuild.
+const std::size_t kMaxCachedMetadataFrames = 256;
 } // anonymous namespace
 
 ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
@@ -49,6 +52,9 @@ ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
     , _identityCache()
     , _rodCache()
     , _framesNeededCache()
+    , _componentsNeededCache()
+    , _metadataCache()
+    , _timeInvariantMetadata()
 {
 }
 
@@ -86,6 +92,7 @@ ActionsCache::ActionsCache(int maxAvailableHashes)
     , _instances()
     , _instancesByHash()
     , _maxInstances((std::size_t)maxAvailableHashes)
+    , _metadataGeneration(0)
 {
 }
 
@@ -356,6 +363,103 @@ ActionsCache::setTimeDomainResult(U64 hash,
     cache._timeDomainSet = true;
     cache._timeDomain.min = first;
     cache._timeDomain.max = last;
+}
+
+NodeMetadataConstPtr
+ActionsCache::getMetadataResult(U64 hash,
+                                double time,
+                                ViewIdx view)
+{
+    QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
+
+    if (!cache) {
+        return NodeMetadataConstPtr();
+    }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
+
+    MetadataCacheMap::const_iterator found = cache->_metadataCache.find(key);
+
+    return found == cache->_metadataCache.end() ? NodeMetadataConstPtr() : found->second;
+}
+
+void
+ActionsCache::setMetadataResult(U64 hash,
+                                double time,
+                                ViewIdx view,
+                                const NodeMetadataConstPtr& metadata,
+                                U64 generation)
+{
+    QMutexLocker l(&_cacheMutex);
+
+    // An invalidation that raced the derivation must not be undone by storing a result that may
+    // predate it.
+    if (generation != _metadataGeneration) {
+        return;
+    }
+    ActionsCacheInstance& cache = getOrCreateActionCache(hash);
+    if (cache._metadataCache.size() >= kMaxCachedMetadataFrames) {
+        cache._metadataCache.clear();
+    }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
+
+    cache._metadataCache[key] = metadata;
+}
+
+NodeMetadataConstPtr
+ActionsCache::getTimeInvariantMetadataResult(U64 hash)
+{
+    QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
+
+    return cache ? cache->_timeInvariantMetadata : NodeMetadataConstPtr();
+}
+
+void
+ActionsCache::setTimeInvariantMetadataResult(U64 hash,
+                                             const NodeMetadataConstPtr& metadata,
+                                             U64 generation)
+{
+    QMutexLocker l(&_cacheMutex);
+
+    if (generation != _metadataGeneration) {
+        return;
+    }
+    getOrCreateActionCache(hash)._timeInvariantMetadata = metadata;
+}
+
+U64
+ActionsCache::getMetadataGeneration() const
+{
+    QMutexLocker l(&_cacheMutex);
+
+    return _metadataGeneration;
+}
+
+void
+ActionsCache::moveMetadataGeneration()
+{
+    QMutexLocker l(&_cacheMutex);
+
+    ++_metadataGeneration;
+}
+
+void
+ActionsCache::clearMetadataResults()
+{
+    QMutexLocker l(&_cacheMutex);
+
+    ++_metadataGeneration;
+    for (InstancesList::iterator it = _instances.begin(); it != _instances.end(); ++it) {
+        it->_metadataCache.clear();
+        it->_timeInvariantMetadata.reset();
+    }
 }
 
 EffectInstance::RenderArgs::RenderArgs()

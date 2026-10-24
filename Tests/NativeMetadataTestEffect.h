@@ -31,6 +31,7 @@
 #include <atomic>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -55,6 +56,11 @@ public:
         , _tag()
         , _derivations(0)
         , _extra()
+        , _nComps()
+        , _bitDepth()
+        , _par()
+        , _format()
+        , _nodeMetadataDerivations(0)
     {
     }
 
@@ -91,6 +97,32 @@ public:
         return _derivations.load();
     }
 
+    // How often the node metadata were derived at a frame, through getPreferredMetadataAt().
+    int nodeMetadataDerivationCount() const
+    {
+        return _nodeMetadataDerivations.load();
+    }
+
+    KnobIntPtr getNCompsKnob() const
+    {
+        return _nComps.lock();
+    }
+
+    KnobIntPtr getBitDepthKnob() const
+    {
+        return _bitDepth.lock();
+    }
+
+    KnobDoublePtr getParKnob() const
+    {
+        return _par.lock();
+    }
+
+    KnobIntPtr getFormatKnob() const
+    {
+        return _format.lock();
+    }
+
     // Unlike a knob change, leaves the caches of the nodes downstream in place, so a test can
     // tell whether one of them answered from its own cache.
     void dropOwnMetadataCache()
@@ -104,7 +136,46 @@ public:
         invalidateOutputMetadata();
     }
 
+protected:
+    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL
+    {
+        applyNodeMetadata(getCurrentTime(), metadata);
+
+        return eStatusOK;
+    }
+
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx /*view*/,
+                                              NodeMetadata& metadata) OVERRIDE FINAL
+    {
+        ++_nodeMetadataDerivations;
+        applyNodeMetadata(time, metadata);
+
+        return eStatusOK;
+    }
+
 private:
+    void applyNodeMetadata(double time,
+                           NodeMetadata& metadata)
+    {
+        KnobIntPtr nComps = _nComps.lock();
+        KnobIntPtr bitDepth = _bitDepth.lock();
+        KnobDoublePtr par = _par.lock();
+        KnobIntPtr format = _format.lock();
+        if (!nComps || !bitDepth || !par || !format) {
+            return;
+        }
+        metadata.setNComps(-1, nComps->getValueAtTime(time));
+        metadata.setComponentsType(-1, kNatronColorLayerID);
+        metadata.setBitDepth(-1, static_cast<ImageBitDepthEnum>(bitDepth->getValueAtTime(time)));
+        metadata.setPixelAspectRatio(-1, par->getValueAtTime(time));
+        const int width = format->getValueAtTime(time, 0);
+        const int height = format->getValueAtTime(time, 1);
+        if ((width > 0) && (height > 0)) {
+            metadata.setOutputFormat(RectI(0, 0, width, height));
+        }
+    }
+
     static constexpr NodeSpec kNodeSpec = {
         .id = kTestPluginIDMetadataSource,
         .label = "Test Metadata Source",
@@ -126,11 +197,42 @@ private:
         tag->setDefaultValue(1);
         page->addKnob(tag);
         _tag = tag;
+
+        KnobIntPtr nComps = createKnob<KnobInt>(std::string("Components"));
+        nComps->setName("nComps");
+        nComps->setDefaultValue(4);
+        page->addKnob(nComps);
+        _nComps = nComps;
+
+        KnobIntPtr bitDepth = createKnob<KnobInt>(std::string("Bit Depth"));
+        bitDepth->setName("bitDepth");
+        bitDepth->setDefaultValue(static_cast<int>(eImageBitDepthFloat));
+        page->addKnob(bitDepth);
+        _bitDepth = bitDepth;
+
+        KnobDoublePtr par = createKnob<KnobDouble>(std::string("Pixel Aspect Ratio"));
+        par->setName("par");
+        par->setDefaultValue(1.);
+        page->addKnob(par);
+        _par = par;
+
+        // Width and height; 0 keeps the default format.
+        KnobIntPtr format = createKnob<KnobInt>(std::string("Format"), 2);
+        format->setName("format");
+        format->setDefaultValue(0, 0);
+        format->setDefaultValue(0, 1);
+        page->addKnob(format);
+        _format = format;
     }
 
     KnobIntWPtr _tag;
     std::atomic<int> _derivations;
     ImageMetadata _extra;
+    KnobIntWPtr _nComps;
+    KnobIntWPtr _bitDepth;
+    KnobDoubleWPtr _par;
+    KnobIntWPtr _format;
+    std::atomic<int> _nodeMetadataDerivations;
 };
 
 NATRON_NAMESPACE_EXIT

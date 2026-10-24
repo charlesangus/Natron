@@ -38,6 +38,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/ImageLocker.h"
 #include "Engine/Knob.h" // for KnobHolder
+#include "Engine/NodeMetadata.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/RectD.h"
@@ -1103,13 +1104,81 @@ public:
      **/
     StatusEnum getPreferredMetadata_public(NodeMetadata& metadata);
 
+    /**
+     * @brief The metadata of this node's output and clips at time and view, cached per (hash,
+     * time, view). A node that is an identity there reports, for its output, the metadata of the
+     * input it passes through at the identity time and view. Otherwise it is
+     * getDefaultMetadataAt(), then getPreferredMetadataAt() unless the node is disabled at time,
+     * clamped to what the node supports. An OpenFX node answers getTimeInvariantMetadata() when
+     * it is not an identity. Callable from any thread, holding no lock: it reads the node's hash,
+     * which may recompute dirty hashes.
+     **/
+    NodeMetadataConstPtr getMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The metadata one refresh computes, which is the same at every frame: cached per
+     * hash for a native node; for an OpenFX node, the answer of its last clip preferences.
+     **/
+    NodeMetadataConstPtr getTimeInvariantMetadata() WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Drops every getMetadata() and getTimeInvariantMetadata() result of this node, for a
+     * change of its metadata that leaves its hash alone. Callable from any thread.
+     **/
+    void dropCachedMetadata();
+
 protected:
 
     virtual StatusEnum getPreferredMetadata(NodeMetadata& /*metadata*/) { return eStatusOK; }
 
+    /**
+     * @brief As getPreferredMetadata(), at time and view: metadata holds getDefaultMetadataAt()
+     * on entry. Called from any thread, possibly more than once for the same frame, so it must
+     * read only this node's knobs at time, its inputs' getMetadata() and project settings.
+     **/
+    virtual StatusEnum getPreferredMetadataAt(double /*time*/,
+                                              ViewIdx /*view*/,
+                                              NodeMetadata& metadata)
+    {
+        return getPreferredMetadata(metadata);
+    }
+
+    /**
+     * @brief The metadata the inputs give at time and view, read from each input's getMetadata()
+     * at that time and view.
+     **/
+    StatusEnum getDefaultMetadataAt(double time, ViewIdx view, NodeMetadata& metadata);
+
 private:
 
     StatusEnum getDefaultMetadata(NodeMetadata& metadata);
+
+    StatusEnum getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr>& inputs,
+                                            const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                                            bool atTime,
+                                            NodeMetadata& metadata);
+
+    void getInputsMetadataAt(double time,
+                             ViewIdx view,
+                             std::vector<EffectInstancePtr>* inputs,
+                             std::vector<NodeMetadataConstPtr>* inputsMetadata);
+
+    void getInputsRefreshedMetadata(std::vector<EffectInstancePtr>* inputs,
+                                    std::vector<NodeMetadataConstPtr>* inputsMetadata);
+
+    NodeMetadataConstPtr getRefreshedMetadata() const;
+
+    NodeMetadataConstPtr deriveMetadataAt(U64 hash, double time, ViewIdx view);
+
+    NodeMetadataConstPtr deriveTimeInvariantMetadata();
+
+    NodeMetadataConstPtr applyIdentityRule(U64 hash, double time, ViewIdx view, const NodeMetadataConstPtr& own);
+
+    NodeMetadataConstPtr getOpenFXMetadataAt(U64 hash, double time, ViewIdx view);
+
+    NodeMetadataConstPtr getOpenFXTimeInvariantMetadata();
+
+    void dropDownstreamCachedMetadata();
 
 public:
 

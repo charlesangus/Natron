@@ -1748,10 +1748,14 @@ Node::onMetadataChangedUnderSameHash()
         EffectInstancePtr effect = output->getEffectInstance();
         if (effect) {
             effect->dropCachedOutputMetadata();
+            effect->dropCachedMetadata();
         }
         output->_imp->metadataRevision.fetch_add(1);
         output->refreshMetadataReaders(true);
         output->appendOutputsWithGroupRedirection(&toVisit);
+    }
+    if (_imp->effect) {
+        _imp->effect->dropCachedMetadata();
     }
     _imp->metadataRevision.fetch_add(1);
     refreshMetadataReaders(true);

@@ -106,6 +106,7 @@ typedef std::map<ActionKey, IdentityResults, CompareActionsCacheKeys> IdentityCa
 typedef std::map<ActionKey, RectD, CompareActionsCacheKeys> RoDCacheMap;
 typedef std::map<ActionKey, FramesNeededMap, CompareActionsCacheKeys> FramesNeededCacheMap;
 typedef std::map<ActionKey, ComponentsNeededResults, CompareActionsCacheKeys> ComponentsNeededCacheMap;
+typedef std::map<ActionKey, NodeMetadataConstPtr, CompareActionsCacheKeys> MetadataCacheMap;
 
 /**
  * @brief This class stores all results of the following actions:
@@ -163,6 +164,34 @@ public:
 
     void setTimeDomainResult(U64 hash, double first, double last);
 
+    /**
+     * @brief The node metadata stored under (hash, time, view), or null. The results of one hash
+     * are capped to a fixed count of frames.
+     **/
+    NodeMetadataConstPtr getMetadataResult(U64 hash, double time, ViewIdx view);
+
+    /**
+     * @brief Stores metadata under (hash, time, view), unless the metadata generation moved past
+     * generation, which getMetadataGeneration() returned before the metadata was derived.
+     **/
+    void setMetadataResult(U64 hash, double time, ViewIdx view, const NodeMetadataConstPtr& metadata, U64 generation);
+
+    NodeMetadataConstPtr getTimeInvariantMetadataResult(U64 hash);
+
+    void setTimeInvariantMetadataResult(U64 hash, const NodeMetadataConstPtr& metadata, U64 generation);
+
+    U64 getMetadataGeneration() const;
+
+    /**
+     * @brief Moves the metadata generation, so a derivation in flight does not store its result.
+     **/
+    void moveMetadataGeneration();
+
+    /**
+     * @brief Drops the metadata stored under every hash and moves the metadata generation.
+     **/
+    void clearMetadataResults();
+
 private:
     mutable QMutex _cacheMutex; //< protects everything in the cache
     struct ActionsCacheInstance
@@ -174,6 +203,8 @@ private:
         RoDCacheMap _rodCache;
         FramesNeededCacheMap _framesNeededCache;
         ComponentsNeededCacheMap _componentsNeededCache;
+        MetadataCacheMap _metadataCache;
+        NodeMetadataConstPtr _timeInvariantMetadata;
 
         ActionsCacheInstance();
     };
@@ -184,6 +215,7 @@ private:
     InstancesList _instances;
     std::unordered_map<U64, InstancesList::iterator> _instancesByHash;
     std::size_t _maxInstances;
+    U64 _metadataGeneration;
     ActionsCacheInstance* findActionCache(U64 hash);
     ActionsCacheInstance & getOrCreateActionCache(U64 newHash);
 };
@@ -433,6 +465,15 @@ public:
                         const EffectInstancePtr& treeRoot)  WARN_UNUSED_RETURN;
 
     void checkMetadata(NodeMetadata &metadata);
+
+    /**
+     * @brief The validation half of checkMetadata(), with no warning set: clamps the depths and
+     * components to what the node supports and widens the colour layout to what the node writes.
+     * inputsMetadata holds the output metadata of each input, null where none is connected.
+     **/
+    void clampMetadata(const std::vector<EffectInstancePtr>& inputs,
+                       const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                       NodeMetadata& metadata);
 };
 
 

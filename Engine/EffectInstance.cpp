@@ -26,15 +26,15 @@
 #include "EffectInstance.h"
 #include "EffectInstancePrivate.h"
 
-#include <map>
-#include <sstream> // stringstream
 #include <algorithm> // min, max
-#include <fstream>
 #include <bitset>
 #include <cassert>
+#include <fstream>
 #include <limits>
-#include <stdexcept>
+#include <map>
 #include <sstream> // stringstream
+#include <stdexcept>
+#include <unordered_set>
 
 #include <QReadWriteLock>
 #include <QCoreApplication>
@@ -5954,6 +5954,7 @@ EffectInstance::onNodeHashChanged(U64 hash)
     // to an earlier state is served the ones it had then. Reloading a file changed on disk re-keys
     // the node through its stamp; Reload also drops the node's results, for changes the stamp misses.
     _imp->actionsCache->useHash(hash);
+    _imp->actionsCache->moveMetadataGeneration();
 
     NodePtr node = _node.lock();
     if (node) {
@@ -6184,12 +6185,43 @@ EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
 
 }
 
+static void
+metadataComponentsToLayers(int nComps,
+                           const std::string& componentsType,
+                           ImageLayerDesc* layer,
+                           ImageLayerDesc* pairedLayer)
+{
+    if (componentsType == kNatronColorLayerID) {
+        *layer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
+    } else if (componentsType == kNatronDisparityComponentsLabel) {
+        *layer = ImageLayerDesc::getDisparityLeftComponents();
+        *pairedLayer = ImageLayerDesc::getDisparityRightComponents();
+    } else if (componentsType == kNatronMotionComponentsLabel) {
+        *layer = ImageLayerDesc::getBackwardMotionComponents();
+        *pairedLayer = ImageLayerDesc::getForwardMotionComponents();
+    } else {
+        *layer = ImageLayerDesc::getNoneComponents();
+    }
+}
+
+static int
+metadataNComps(const NodeMetadata& metadata,
+               int inputNb)
+{
+    if ((inputNb == -1) && (metadata.getOutputStorageNComps() > 0) && (metadata.getComponentsType(-1) == kNatronColorLayerID)) {
+        return metadata.getOutputStorageNComps();
+    }
+
+    return metadata.getNComps(inputNb);
+}
+
 // The colour channels the streams on the non-mask inputs carry, read from each input's own
 // output metadata rather than from this node's clips, which may already be clamped to wider
 // layouts. False when no such input is connected.
 static bool
 getInputsColorStorageBits(const EffectInstance* self,
                           const std::vector<EffectInstancePtr>& inputs,
+                          const std::vector<NodeMetadataConstPtr>& inputsMetadata,
                           std::bitset<4>* bits)
 {
     NodePtr node = self->getNode();
@@ -6197,11 +6229,11 @@ getInputsColorStorageBits(const EffectInstance* self,
 
     bits->reset();
     for (std::size_t i = 0; i < inputs.size(); ++i) {
-        if (!inputs[i] || self->isInputMask(i) || (node && node->isInputOnlyAlpha(i))) {
+        if (!inputs[i] || !inputsMetadata[i] || self->isInputMask(i) || (node && node->isInputOnlyAlpha(i))) {
             continue;
         }
         ImageLayerDesc layer, pairedLayer;
-        inputs[i]->getMetadataComponents(-1, &layer, &pairedLayer);
+        metadataComponentsToLayers(metadataNComps(*inputsMetadata[i], -1), inputsMetadata[i]->getComponentsType(-1), &layer, &pairedLayer);
         if (!layer.isColorLayer() || (layer.getNumComponents() == 0)) {
             continue;
         }
@@ -6215,13 +6247,13 @@ getInputsColorStorageBits(const EffectInstance* self,
 static int
 getUnmappedComponentsForInput(EffectInstance* self,
                               int inputNb,
-                              const std::vector<EffectInstancePtr>& inputs,
+                              const std::vector<NodeMetadataConstPtr>& inputsMetadata,
                               int firstNonOptionalConnectedInputComps)
 {
     int rawComps;
 
-    if (inputs[inputNb]) {
-        rawComps = inputs[inputNb]->getMetadataNComps(-1);
+    if (inputsMetadata[inputNb]) {
+        rawComps = metadataNComps(*inputsMetadata[inputNb], -1);
     } else {
         ///The node is not connected but optional, return the closest supported components
         ///of the first connected non optional input.
@@ -6243,8 +6275,78 @@ getUnmappedComponentsForInput(EffectInstance* self,
     return rawComps;
 }
 
+NodeMetadataConstPtr
+EffectInstance::getRefreshedMetadata() const
+{
+    refreshInputRelatedDataIfStale();
+    QMutexLocker k(&_imp->metadataMutex);
+
+    return std::make_shared<const NodeMetadata>(_imp->metadata);
+}
+
+void
+EffectInstance::getInputsRefreshedMetadata(std::vector<EffectInstancePtr>* inputs,
+                                           std::vector<NodeMetadataConstPtr>* inputsMetadata)
+{
+    const int nInputs = getNInputs();
+
+    inputs->assign(nInputs, EffectInstancePtr());
+    inputsMetadata->assign(nInputs, NodeMetadataConstPtr());
+    for (int i = 0; i < nInputs; ++i) {
+        (*inputs)[i] = getInput(i);
+        if ((*inputs)[i]) {
+            (*inputsMetadata)[i] = (*inputs)[i]->getRefreshedMetadata();
+        }
+    }
+}
+
+void
+EffectInstance::getInputsMetadataAt(double time,
+                                    ViewIdx view,
+                                    std::vector<EffectInstancePtr>* inputs,
+                                    std::vector<NodeMetadataConstPtr>* inputsMetadata)
+{
+    const int nInputs = getNInputs();
+
+    inputs->assign(nInputs, EffectInstancePtr());
+    inputsMetadata->assign(nInputs, NodeMetadataConstPtr());
+    for (int i = 0; i < nInputs; ++i) {
+        (*inputs)[i] = getInput(i);
+        if ((*inputs)[i]) {
+            (*inputsMetadata)[i] = (*inputs)[i]->getMetadata(time, view);
+        }
+    }
+}
+
 StatusEnum
 EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
+{
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+
+    getInputsRefreshedMetadata(&inputs, &inputsMetadata);
+
+    return getDefaultMetadataFromInputs(inputs, inputsMetadata, false, metadata);
+}
+
+StatusEnum
+EffectInstance::getDefaultMetadataAt(double time,
+                                     ViewIdx view,
+                                     NodeMetadata& metadata)
+{
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+
+    getInputsMetadataAt(time, view, &inputs, &inputsMetadata);
+
+    return getDefaultMetadataFromInputs(inputs, inputsMetadata, true, metadata);
+}
+
+StatusEnum
+EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr>& inputs,
+                                             const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                                             bool atTime,
+                                             NodeMetadata& metadata)
 {
     NodePtr node = getNode();
 
@@ -6253,7 +6355,7 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
     }
 
     const bool multiBitDepth = supportsMultipleClipDepths();
-    int nInputs = getNInputs();
+    int nInputs = (int)inputs.size();
     metadata.clearAndResize(nInputs);
 
     // OK find the deepest chromatic component on our input clips and the one with the
@@ -6264,35 +6366,33 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
 
     //Default to the project frame rate
     double frameRate = getApp()->getProjectFrameRate();
-    std::vector<EffectInstancePtr> inputs(nInputs);
 
     // Find the components of the first non optional connected input
     // They will be used for disconnected input
     int firstNonOptionalConnectedInputComps = 0;
     for (std::size_t i = 0; i < inputs.size(); ++i) {
-        inputs[i] = getInput(i);
-        if ( !firstNonOptionalConnectedInputComps && inputs[i] && !isInputOptional(i) ) {
-            firstNonOptionalConnectedInputComps = inputs[i]->getMetadataNComps(-1);
+        if (!firstNonOptionalConnectedInputComps && inputsMetadata[i] && !isInputOptional(i)) {
+            firstNonOptionalConnectedInputComps = metadataNComps(*inputsMetadata[i], -1);
         }
     }
 
     double inputPar = 1.;
     bool inputParSet = false;
     for (int i = 0; i < nInputs; ++i) {
-        const EffectInstancePtr& input = inputs[i];
+        const NodeMetadataConstPtr& input = inputsMetadata[i];
         if (input) {
-            frameRate = std::max( frameRate, input->getFrameRate() );
+            frameRate = std::max(frameRate, input->getOutputFrameRate());
         }
 
 
         if (input) {
             if (!inputParSet) {
-                inputPar = input->getAspectRatio(-1);
+                inputPar = input->getPixelAspectRatio(-1);
                 inputParSet = true;
             }
         }
 
-        int rawComp = getUnmappedComponentsForInput(this, i, inputs, firstNonOptionalConnectedInputComps);
+        int rawComp = getUnmappedComponentsForInput(this, i, inputsMetadata, firstNonOptionalConnectedInputComps);
         ImageBitDepthEnum rawDepth = input ? input->getBitDepth(-1) : eImageBitDepthFloat;
 
         if (input) {
@@ -6339,12 +6439,7 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
 
     // now add the input gubbins to the per inputs metadata
     for (int i = -1; i < (int)inputs.size(); ++i) {
-        EffectInstance* effect = 0;
-        if (i >= 0) {
-            effect = inputs[i].get();
-        } else {
-            effect = this;
-        }
+        const NodeMetadata* inputMetadata = (i >= 0) ? inputsMetadata[i].get() : 0;
 
         double par;
         if (!multipleClipsPAR) {
@@ -6352,8 +6447,11 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
         } else {
             if (inputParSet) {
                 par = inputPar;
+            } else if (i >= 0) {
+                par = inputMetadata ? inputMetadata->getPixelAspectRatio(-1) : projectPAR;
             } else {
-                par = effect ? effect->getAspectRatio(-1) : projectPAR;
+                // At a time, this node's own answer is the one being derived.
+                par = atTime ? projectPAR : getAspectRatio(-1);
             }
         }
         metadata.setPixelAspectRatio(i, par);
@@ -6361,13 +6459,13 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
         bool isOptional = i >= 0 && isInputOptional(i);
         if (i >= 0) {
             if (isOptional) {
-                if (!firstOptionalInputFormatSet && effect) {
-                    firstOptionalInputFormat = effect->getOutputFormat();
+                if (!firstOptionalInputFormatSet && inputMetadata) {
+                    firstOptionalInputFormat = inputMetadata->getOutputFormat();
                     firstOptionalInputFormatSet = true;
                 }
             } else {
-                if (!firstNonOptionalInputFormatSet && effect) {
-                    firstNonOptionalInputFormat = effect->getOutputFormat();
+                if (!firstNonOptionalInputFormatSet && inputMetadata) {
+                    firstNonOptionalInputFormat = inputMetadata->getOutputFormat();
                     firstNonOptionalInputFormatSet = true;
                 }
             }
@@ -6380,7 +6478,7 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
             int remappedComps = mostComponents;
             remappedComps = findClosestSupportedComponents(i, ImageLayerDesc::mapNCompsToColorLayer(remappedComps)).getNumComponents();
             std::bitset<4> inputsStorageBits;
-            if ((i == -1) && !isWriter() && node->getLayerKnob() && getInputsColorStorageBits(this, inputs, &inputsStorageBits)) {
+            if ((i == -1) && !isWriter() && node->getLayerKnob() && getInputsColorStorageBits(this, inputs, inputsMetadata, &inputsStorageBits)) {
                 // Offered unclamped, so checkMetadata() can tell a plug-in that picked its output
                 // layout from one that kept the stream's, whose output it may then narrow.
                 remappedComps = ImageLayerDesc::narrowestColorStorageCovering(inputsStorageBits).getNumComponents();
@@ -6391,8 +6489,8 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
             metadata.setBitDepth(i, depth);
         } else {
 
-            int rawComps = getUnmappedComponentsForInput(this, i, inputs, firstNonOptionalConnectedInputComps);
-            ImageBitDepthEnum rawDepth = effect ? effect->getBitDepth(-1) : eImageBitDepthFloat;
+            int rawComps = getUnmappedComponentsForInput(this, i, inputsMetadata, firstNonOptionalConnectedInputComps);
+            ImageBitDepthEnum rawDepth = inputMetadata ? inputMetadata->getBitDepth(-1) : eImageBitDepthFloat;
 
             ImageBitDepthEnum depth = multiBitDepth ? node->getClosestSupportedBitDepth(rawDepth) : deepestBitDepth;
             metadata.setBitDepth(i, depth);
@@ -6416,7 +6514,203 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
     metadata.setOutputFormat(outputFormat);
 
     return eStatusOK;
-} // EffectInstance::getDefaultMetadata
+} // EffectInstance::getDefaultMetadataFromInputs
+
+// Copies what an output carries, leaving this node's clips alone.
+static void
+copyOutputMetadata(const NodeMetadata& from,
+                   NodeMetadata* to)
+{
+    to->setNComps(-1, from.getNComps(-1));
+    to->setComponentsType(-1, from.getComponentsType(-1));
+    to->setBitDepth(-1, from.getBitDepth(-1));
+    to->setPixelAspectRatio(-1, from.getPixelAspectRatio(-1));
+    to->setOutputStorageNComps(from.getOutputStorageNComps());
+    to->setOutputFormat(from.getOutputFormat());
+    to->setOutputFrameRate(from.getOutputFrameRate());
+    to->setOutputFielding(from.getOutputFielding());
+    to->setIsContinuous(from.getIsContinuous());
+    to->setIsFrameVarying(to->getIsFrameVarying() || from.getIsFrameVarying());
+}
+
+NodeMetadataConstPtr
+EffectInstance::applyIdentityRule(U64 hash,
+                                  double time,
+                                  ViewIdx view,
+                                  const NodeMetadataConstPtr& own)
+{
+    // The identity is asked over this node's own format, not over a format read back through
+    // getMetadata(), which would recurse into this very derivation.
+    double inputTime = time;
+    ViewIdx inputView = view;
+    int inputNb = -1;
+    bool identity = false;
+    try {
+        identity = isIdentity_public(false, hash, time, RenderScale::identity, own->getOutputFormat(), view, &inputTime, &inputView, &inputNb);
+    } catch (...) {
+        identity = false;
+    }
+    if (!identity || (inputNb < 0)) {
+        return own;
+    }
+    EffectInstancePtr input = getInput(inputNb);
+    if (!input) {
+        return own;
+    }
+    NodeMetadataConstPtr inputMetadata = input->getMetadata(inputTime, inputView);
+    if (!inputMetadata) {
+        return own;
+    }
+    std::shared_ptr<NodeMetadata> metadata = std::make_shared<NodeMetadata>(*own);
+    copyOutputMetadata(*inputMetadata, metadata.get());
+
+    return metadata;
+}
+
+NodeMetadataConstPtr
+EffectInstance::deriveMetadataAt(U64 hash,
+                                 double time,
+                                 ViewIdx view)
+{
+    NodeMetadata metadata;
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+
+    getInputsMetadataAt(time, view, &inputs, &inputsMetadata);
+    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, true, metadata);
+    if ((stat != eStatusFailed) && !getNode()->isNodeDisabled(time)) {
+        getPreferredMetadataAt(time, view, metadata);
+    }
+    _imp->clampMetadata(inputs, inputsMetadata, metadata);
+
+    return applyIdentityRule(hash, time, view, std::make_shared<const NodeMetadata>(metadata));
+}
+
+NodeMetadataConstPtr
+EffectInstance::deriveTimeInvariantMetadata()
+{
+    NodeMetadata metadata;
+    const int nInputs = getNInputs();
+    std::vector<EffectInstancePtr> inputs(nInputs);
+    std::vector<NodeMetadataConstPtr> inputsMetadata(nInputs);
+
+    for (int i = 0; i < nInputs; ++i) {
+        inputs[i] = getInput(i);
+        if (inputs[i]) {
+            inputsMetadata[i] = inputs[i]->getTimeInvariantMetadata();
+        }
+    }
+    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, false, metadata);
+    if ((stat != eStatusFailed) && !getNode()->isNodeDisabledAtAllTimes()) {
+        getPreferredMetadata(metadata);
+    }
+    _imp->clampMetadata(inputs, inputsMetadata, metadata);
+
+    return std::make_shared<const NodeMetadata>(metadata);
+}
+
+// OpenFX nodes. Their clip preferences run on the main thread only and act on the clips, so
+// their own answer is the one the last refresh gave, the same at every frame; only an identity
+// makes it vary, by passing an input through.
+NodeMetadataConstPtr
+EffectInstance::getOpenFXTimeInvariantMetadata()
+{
+    return getRefreshedMetadata();
+}
+
+NodeMetadataConstPtr
+EffectInstance::getOpenFXMetadataAt(U64 hash,
+                                    double time,
+                                    ViewIdx view)
+{
+    return applyIdentityRule(hash, time, view, getOpenFXTimeInvariantMetadata());
+}
+// End of OpenFX nodes.
+
+NodeMetadataConstPtr
+EffectInstance::getMetadata(double time,
+                            ViewIdx view)
+{
+    NodePtr node = getNode();
+
+    if (!node) {
+        return getRefreshedMetadata();
+    }
+    // As NativeEffectBase::getOutputMetadata(): refresh first so the hash read is the one the
+    // derivation sees, and read the generation after the hash so that a change in between
+    // keeps the result from being stored.
+    refreshInputRelatedDataIfStale();
+    const U64 hash = node->getHashValue();
+    NodeMetadataConstPtr cached = _imp->actionsCache->getMetadataResult(hash, time, view);
+    if (cached) {
+        return cached;
+    }
+    const U64 generation = _imp->actionsCache->getMetadataGeneration();
+    NodeMetadataConstPtr metadata = isOpenFX() ? getOpenFXMetadataAt(hash, time, view) : deriveMetadataAt(hash, time, view);
+    if (node->getHashValue() == hash) {
+        _imp->actionsCache->setMetadataResult(hash, time, view, metadata, generation);
+    }
+
+    return metadata;
+}
+
+NodeMetadataConstPtr
+EffectInstance::getTimeInvariantMetadata()
+{
+    NodePtr node = getNode();
+
+    if (!node) {
+        return getRefreshedMetadata();
+    }
+    if (isOpenFX()) {
+        return getOpenFXTimeInvariantMetadata();
+    }
+    refreshInputRelatedDataIfStale();
+    const U64 hash = node->getHashValue();
+    NodeMetadataConstPtr cached = _imp->actionsCache->getTimeInvariantMetadataResult(hash);
+    if (cached) {
+        return cached;
+    }
+    const U64 generation = _imp->actionsCache->getMetadataGeneration();
+    NodeMetadataConstPtr metadata = deriveTimeInvariantMetadata();
+    if (node->getHashValue() == hash) {
+        _imp->actionsCache->setTimeInvariantMetadataResult(hash, metadata, generation);
+    }
+
+    return metadata;
+}
+
+void
+EffectInstance::dropCachedMetadata()
+{
+    _imp->actionsCache->clearMetadataResults();
+}
+
+void
+EffectInstance::dropDownstreamCachedMetadata()
+{
+    NodePtr node = getNode();
+
+    if (!node) {
+        return;
+    }
+    std::unordered_set<const Node*> visited;
+    std::vector<NodePtr> toVisit;
+    visited.insert(node.get());
+    node->appendOutputsWithGroupRedirection(&toVisit);
+    while (!toVisit.empty()) {
+        NodePtr output = std::move(toVisit.back());
+        toVisit.pop_back();
+        if (!output || !visited.insert(output.get()).second) {
+            continue;
+        }
+        EffectInstancePtr effect = output->getEffectInstance();
+        if (effect) {
+            effect->dropCachedMetadata();
+        }
+        output->appendOutputsWithGroupRedirection(&toVisit);
+    }
+}
 
 RectI
 EffectInstance::getOutputFormat() const
@@ -6424,36 +6718,6 @@ EffectInstance::getOutputFormat() const
     refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
     return _imp->metadata.getOutputFormat();
-}
-
-static void
-metadataComponentsToLayers(int nComps,
-                           const std::string& componentsType,
-                           ImageLayerDesc* layer,
-                           ImageLayerDesc* pairedLayer)
-{
-    if (componentsType == kNatronColorLayerID) {
-        *layer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
-    } else if (componentsType == kNatronDisparityComponentsLabel) {
-        *layer = ImageLayerDesc::getDisparityLeftComponents();
-        *pairedLayer = ImageLayerDesc::getDisparityRightComponents();
-    } else if (componentsType == kNatronMotionComponentsLabel) {
-        *layer = ImageLayerDesc::getBackwardMotionComponents();
-        *pairedLayer = ImageLayerDesc::getForwardMotionComponents();
-    } else {
-        *layer = ImageLayerDesc::getNoneComponents();
-    }
-}
-
-static int
-metadataNComps(const NodeMetadata& metadata,
-               int inputNb)
-{
-    if ((inputNb == -1) && (metadata.getOutputStorageNComps() > 0) && (metadata.getComponentsType(-1) == kNatronColorLayerID)) {
-        return metadata.getOutputStorageNComps();
-    }
-
-    return metadata.getNComps(inputNb);
 }
 
 void
@@ -6614,6 +6878,9 @@ EffectInstance::refreshMetadata_internal()
         // count only once the file is loaded) while the hash does not, so entries keyed on
         // the current hash would otherwise survive this refresh stale.
         _imp->actionsCache->clearComponentsNeededResults();
+        // The refreshed metadata feed getDefaultMetadata(), and are an OpenFX node's own answer
+        // at every frame.
+        _imp->actionsCache->clearMetadataResults();
     }
 
     return ret;
@@ -6640,6 +6907,9 @@ EffectInstance::refreshMetadata_public(bool recurse)
                 node->refreshChannelSelectors();
             }
         }
+        if (ret) {
+            dropDownstreamCachedMetadata();
+        }
         node->markDownstreamInputRelatedDataStale();
 
         return ret;
@@ -6660,20 +6930,17 @@ EffectInstance::refreshMetadata_public(bool recurse)
     }
 }
 
-/**
- * @brief The purpose of this function is to check that the meta data returned by the plug-ins are valid and to
- * check for warnings
- **/
 void
-EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
+EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePtr>& inputs,
+                                              const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                                              NodeMetadata& md)
 {
     NodePtr node = _publicInterface->getNode();
 
     if (!node) {
         return;
     }
-    //Make sure it is valid
-    int nInputs = node->getNInputs();
+    int nInputs = (int)inputs.size();
 
     const bool outputKeptInputsStorage = (md.getComponentsType(-1) == kNatronColorLayerID) && (md.getOutputStorageNComps() > 0) && (md.getNComps(-1) == md.getOutputStorageNComps());
     md.setOutputStorageNComps(0);
@@ -6686,114 +6953,19 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
         }
     }
 
-
-    ///Set a warning on the node if the bitdepth conversion from one of the input clip to the output clip is lossy
-    QString bitDepthWarning = tr("This nodes converts higher bit depths images from its inputs to work. As "
-                                 "a result of this process, the quality of the images is degraded. The following conversions are done:");
-    bitDepthWarning.append( QChar::fromLatin1('\n') );
-    bool setBitDepthWarning = false;
     const bool supportsMultipleClipDepths = _publicInterface->supportsMultipleClipDepths();
     const bool supportsMultipleClipPARs = _publicInterface->supportsMultipleClipPARs();
-    const bool supportsMultipleClipFPSs = _publicInterface->supportsMultipleClipFPSs();
-    std::vector<EffectInstancePtr> inputs(nInputs);
+    const ImageBitDepthEnum outputDepth = md.getBitDepth(-1);
+    const double outputPAR = md.getPixelAspectRatio(-1);
     for (int i = 0; i < nInputs; ++i) {
-        inputs[i] = _publicInterface->getInput(i);
-    }
-
-
-    ImageBitDepthEnum outputDepth = md.getBitDepth(-1);
-    double outputPAR = md.getPixelAspectRatio(-1);
-    bool outputFrameRateSet = false;
-    double outputFrameRate = md.getOutputFrameRate();
-    bool mustWarnFPS = false;
-    bool mustWarnPAR = false;
-
-    int nbConnectedInputs = 0;
-    for (int i = 0; i < nInputs; ++i) {
-        //Check that the bitdepths are all the same if the plug-in doesn't support multiple depths
-        if ( !supportsMultipleClipDepths && (md.getBitDepth(i) != outputDepth) ) {
+        // Check that the bitdepths are all the same if the plug-in doesn't support multiple depths
+        if (!supportsMultipleClipDepths && (md.getBitDepth(i) != outputDepth)) {
             md.setBitDepth(i, outputDepth);
         }
-
-        const double pixelAspect = md.getPixelAspectRatio(i);
-
-        if (!supportsMultipleClipPARs) {
-            if (pixelAspect != outputPAR) {
-                mustWarnPAR = true;
-                md.setPixelAspectRatio(i, outputPAR);
-            }
-        }
-
-        if (!inputs[i]) {
-            continue;
-        }
-
-        ++nbConnectedInputs;
-
-        const double fps = inputs[i]->getFrameRate();
-
-
-
-        if (!supportsMultipleClipFPSs) {
-            if (!outputFrameRateSet) {
-                outputFrameRate = fps;
-                outputFrameRateSet = true;
-            } else if (std::abs(outputFrameRate - fps) > 0.01) {
-                // We have several inputs with different frame rates
-                mustWarnFPS = true;
-            }
-        }
-
-
-        ImageBitDepthEnum inputOutputDepth = inputs[i]->getBitDepth(-1);
-
-        //If the bit-depth conversion will be lossy, warn the user
-        if ( Image::isBitDepthConversionLossy( inputOutputDepth, md.getBitDepth(i) ) ) {
-            bitDepthWarning.append( QString::fromUtf8( inputs[i]->getNode()->getLabel_mt_safe().c_str() ) );
-            bitDepthWarning.append( QString::fromUtf8(" (") + QString::fromUtf8( Image::getDepthString(inputOutputDepth).c_str() ) + QChar::fromLatin1(')') );
-            bitDepthWarning.append( QString::fromUtf8(" ----> ") );
-            bitDepthWarning.append( QString::fromUtf8( node->getLabel_mt_safe().c_str() ) );
-            bitDepthWarning.append( QString::fromUtf8(" (") + QString::fromUtf8( Image::getDepthString( md.getBitDepth(i) ).c_str() ) + QChar::fromLatin1(')') );
-            bitDepthWarning.append( QChar::fromLatin1('\n') );
-            setBitDepthWarning = true;
-        }
-
-
-        if ( !supportsMultipleClipPARs && (pixelAspect != outputPAR) ) {
-            qDebug() << node->getScriptName_mt_safe().c_str() << ": The input " << inputs[i]->getNode()->getScriptName_mt_safe().c_str()
-                     << ") has a pixel aspect ratio (" << md.getPixelAspectRatio(i)
-                     << ") different than the output clip (" << outputPAR << ") but it doesn't support multiple clips PAR. "
-                     << "This should have been handled earlier before connecting the nodes, @see Node::canConnectInput.";
+        if (!supportsMultipleClipPARs && (md.getPixelAspectRatio(i) != outputPAR)) {
+            md.setPixelAspectRatio(i, outputPAR);
         }
     }
-
-    std::map<Node::StreamWarningEnum, QString> warnings;
-    if (setBitDepthWarning) {
-        warnings[Node::eStreamWarningBitdepth] = bitDepthWarning;
-    } else {
-        warnings[Node::eStreamWarningBitdepth] = QString();
-    }
-
-    if (mustWarnFPS && nbConnectedInputs > 1) {
-        QString fpsWarning = tr("One or multiple inputs have a frame rate different of the output. "
-                                "It is not handled correctly by this node. To remove this warning make sure all inputs have "
-                                "the same frame-rate, either by adjusting project settings or the upstream Read node.");
-        warnings[Node::eStreamWarningFrameRate] = fpsWarning;
-    } else {
-        warnings[Node::eStreamWarningFrameRate] = QString();
-    }
-
-    if (mustWarnPAR && nbConnectedInputs > 1) {
-        QString parWarnings = tr("One or multiple input have a pixel aspect ratio different of the output. It is not "
-                                 "handled correctly by this node and may yield unwanted results. Please adjust the "
-                                 "pixel aspect ratios of the inputs so that they match by using a Reformat node.");
-        warnings[Node::eStreamWarningPixelAspectRatio] = parWarnings;
-    } else {
-        warnings[Node::eStreamWarningPixelAspectRatio] = QString();
-    }
-
-
-    node->setStreamWarnings(warnings);
 
     // An effect that explicitly writes a colour channel its stream lacks (e.g. a Grade on rgba over
     // RGB) widens its output and every colour input to RGBA together: the plane has to hold that
@@ -6807,7 +6979,7 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
         // bits below, hiding a colour channel the real upstream stream never had. Read the
         // connected inputs' own unclamped metadata instead, so the check sees the true storage.
         std::bitset<4> storageBits;
-        const bool hasInputStorage = getInputsColorStorageBits(_publicInterface, inputs, &storageBits);
+        const bool hasInputStorage = getInputsColorStorageBits(_publicInterface, inputs, inputsMetadata, &storageBits);
         if (!hasInputStorage) {
             storageBits = ImageLayerDesc::colorStorageBits(ImageLayerDesc::mapNCompsToColorLayer(md.getNComps(-1)));
         }
@@ -6847,7 +7019,116 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
             }
         }
     }
-} //refreshMetadataProxy
+} // EffectInstance::Implementation::clampMetadata
+
+/**
+ * @brief The purpose of this function is to check that the meta data returned by the plug-ins are valid and to
+ * check for warnings
+ **/
+void
+EffectInstance::Implementation::checkMetadata(NodeMetadata& md)
+{
+    NodePtr node = _publicInterface->getNode();
+
+    if (!node) {
+        return;
+    }
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+    _publicInterface->getInputsRefreshedMetadata(&inputs, &inputsMetadata);
+    int nInputs = (int)inputs.size();
+
+    const bool supportsMultipleClipPARs = _publicInterface->supportsMultipleClipPARs();
+    const bool supportsMultipleClipFPSs = _publicInterface->supportsMultipleClipFPSs();
+    const double outputPAR = md.getPixelAspectRatio(-1);
+    std::vector<bool> parDiffers(nInputs, false);
+    bool mustWarnPAR = false;
+    for (int i = 0; i < nInputs; ++i) {
+        parDiffers[i] = !supportsMultipleClipPARs && (md.getPixelAspectRatio(i) != outputPAR);
+        mustWarnPAR |= parDiffers[i];
+    }
+
+    clampMetadata(inputs, inputsMetadata, md);
+
+    /// Set a warning on the node if the bitdepth conversion from one of the input clip to the output clip is lossy
+    QString bitDepthWarning = tr("This nodes converts higher bit depths images from its inputs to work. As "
+                                 "a result of this process, the quality of the images is degraded. The following conversions are done:");
+    bitDepthWarning.append(QChar::fromLatin1('\n'));
+    bool setBitDepthWarning = false;
+
+    bool outputFrameRateSet = false;
+    double outputFrameRate = md.getOutputFrameRate();
+    bool mustWarnFPS = false;
+
+    int nbConnectedInputs = 0;
+    for (int i = 0; i < nInputs; ++i) {
+        if (!inputs[i]) {
+            continue;
+        }
+
+        ++nbConnectedInputs;
+
+        const double fps = inputs[i]->getFrameRate();
+
+        if (!supportsMultipleClipFPSs) {
+            if (!outputFrameRateSet) {
+                outputFrameRate = fps;
+                outputFrameRateSet = true;
+            } else if (std::abs(outputFrameRate - fps) > 0.01) {
+                // We have several inputs with different frame rates
+                mustWarnFPS = true;
+            }
+        }
+
+        ImageBitDepthEnum inputOutputDepth = inputs[i]->getBitDepth(-1);
+
+        //If the bit-depth conversion will be lossy, warn the user
+        if ( Image::isBitDepthConversionLossy( inputOutputDepth, md.getBitDepth(i) ) ) {
+            bitDepthWarning.append( QString::fromUtf8( inputs[i]->getNode()->getLabel_mt_safe().c_str() ) );
+            bitDepthWarning.append( QString::fromUtf8(" (") + QString::fromUtf8( Image::getDepthString(inputOutputDepth).c_str() ) + QChar::fromLatin1(')') );
+            bitDepthWarning.append( QString::fromUtf8(" ----> ") );
+            bitDepthWarning.append( QString::fromUtf8( node->getLabel_mt_safe().c_str() ) );
+            bitDepthWarning.append( QString::fromUtf8(" (") + QString::fromUtf8( Image::getDepthString( md.getBitDepth(i) ).c_str() ) + QChar::fromLatin1(')') );
+            bitDepthWarning.append( QChar::fromLatin1('\n') );
+            setBitDepthWarning = true;
+        }
+
+        if (parDiffers[i]) {
+            qDebug() << node->getScriptName_mt_safe().c_str() << ": The input " << inputs[i]->getNode()->getScriptName_mt_safe().c_str()
+                     << ") has a pixel aspect ratio (" << md.getPixelAspectRatio(i)
+                     << ") different than the output clip (" << outputPAR << ") but it doesn't support multiple clips PAR. "
+                     << "This should have been handled earlier before connecting the nodes, @see Node::canConnectInput.";
+        }
+    }
+
+    std::map<Node::StreamWarningEnum, QString> warnings;
+    if (setBitDepthWarning) {
+        warnings[Node::eStreamWarningBitdepth] = bitDepthWarning;
+    } else {
+        warnings[Node::eStreamWarningBitdepth] = QString();
+    }
+
+    if (mustWarnFPS && nbConnectedInputs > 1) {
+        QString fpsWarning = tr("One or multiple inputs have a frame rate different of the output. "
+                                "It is not handled correctly by this node. To remove this warning make sure all inputs have "
+                                "the same frame-rate, either by adjusting project settings or the upstream Read node.");
+        warnings[Node::eStreamWarningFrameRate] = fpsWarning;
+    } else {
+        warnings[Node::eStreamWarningFrameRate] = QString();
+    }
+
+    if (mustWarnPAR && nbConnectedInputs > 1) {
+        QString parWarnings = tr("One or multiple input have a pixel aspect ratio different of the output. It is not "
+                                 "handled correctly by this node and may yield unwanted results. Please adjust the "
+                                 "pixel aspect ratios of the inputs so that they match by using a Reformat node.");
+        warnings[Node::eStreamWarningPixelAspectRatio] = parWarnings;
+    } else {
+        warnings[Node::eStreamWarningPixelAspectRatio] = QString();
+    }
+
+
+    node->setStreamWarnings(warnings);
+} // EffectInstance::Implementation::checkMetadata
 
 void
 EffectInstance::refreshExtraStateAfterTimeChanged(bool isPlayback,

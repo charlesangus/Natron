@@ -170,6 +170,24 @@ protected:
             << "queryTime=" << queryTime << " timelineFrame=" << timelineFrame << " present=" << layerIDsString(present);
     }
 
+    // A routing node's output metadata at a frame are those of the input `which` routes there.
+    void expectMetadataLayoutOfRoutedInput(const NodePtr& switchNode,
+                                           double frame)
+    {
+        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName("which"));
+        if (!which) {
+            return;
+        }
+        NodePtr routed = switchNode->getInput(which->getValueAtTime(frame));
+        ASSERT_TRUE(bool(routed)) << "frame=" << frame;
+        NodeMetadataConstPtr routedMetadata = routed->getEffectInstance()->getMetadata(frame, ViewIdx(0));
+        NodeMetadataConstPtr metadata = switchNode->getEffectInstance()->getMetadata(frame, ViewIdx(0));
+        ASSERT_TRUE(metadata && routedMetadata) << "frame=" << frame;
+        EXPECT_EQ(std::string(kNatronColorLayerID), metadata->getComponentsType(-1)) << "frame=" << frame;
+        EXPECT_EQ(routedMetadata->getComponentsType(-1), metadata->getComponentsType(-1)) << "frame=" << frame;
+        EXPECT_EQ(routedMetadata->getNComps(-1), metadata->getNComps(-1)) << "frame=" << frame;
+    }
+
     // Each query order runs on a graph built from scratch: on a graph an earlier order already
     // queried, every answer could come from a cache filled in that earlier order.
     void expectDiffuseOnlyAtFrame1InEitherQueryOrder(GraphBuilder build)
@@ -190,6 +208,8 @@ protected:
             const int secondFrame = 3 - firstFrame;
             expectPresentDiffuseAt(effect, firstFrame, secondFrame, firstFrame == 1);
             expectPresentDiffuseAt(effect, secondFrame, firstFrame, secondFrame == 1);
+            expectMetadataLayoutOfRoutedInput(graph.underTest, firstFrame);
+            expectMetadataLayoutOfRoutedInput(graph.underTest, secondFrame);
 
             for (std::size_t i = 0; i < graph.constantInputs.size(); ++i) {
                 EffectInstancePtr input = graph.constantInputs[i].first->getEffectInstance();
@@ -420,6 +440,8 @@ public:
                     }
                 }
                 EXPECT_EQ(expectDiffuse, selectedDiffuse) << "frame=" << frame;
+
+                expectMetadataLayoutOfRoutedInput(graph.underTest, frame);
             }
         }
     }

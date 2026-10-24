@@ -142,6 +142,7 @@ set(Tests_SOURCES
     ImageMetadata_Test.cpp
     NativeMetadata_Test.cpp
     NativeMetadataPolicy_Test.cpp
+    PerFrameMetadata_Test.cpp
     OfxMetadataBridge_Test.cpp
     OfxRetired_Test.cpp
     OfxTestPlugin_Test.cpp

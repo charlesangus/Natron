@@ -213,7 +213,7 @@ Re-planned 2026-10-24 from the user's UAT pick (see ## Decisions). T2, T3, T4 an
 - [ ] M119.P3.T2 — Drive global-mode feedback from the preference; delete Today, Crosshair, Reveal and the absolute puck
   - files: `Gui/ColorTrackballGlobalMode.{h,cpp}`, `Gui/ColorTrackballReveal.{h,cpp}`, `Gui/ColorPanelLayoutDev.{h,cpp}`, `Tests/ColorTrackballGlobalMode_Test.cpp`, `Tests/ColorTrackballReveal_Test.cpp`
   - approach: replace `ColorPanelLayout::Feedback`/`Puck` with a two-value enum read from T1's setting; a change mid-stroke is still deferred to `endStroke()`. Delete the Today/Crosshair/Reveal branches, `Puck` and the absolute path (`colorTrackballRevealDiscPuck`/`…WheelState` keep only relative). Both values keep the crosshair override and the following HUD exactly as P1.T11/T12/T14/T15 built them.
-  - verify: `GuiTests --gtest_filter=ColorTrackballGlobalMode*:ColorTrackballReveal*`: each preference value shows its graphic; flipping the setting mid-stroke takes effect after release; no override cursor is left after exit; `grep -n 'Puck\|Feedback::Today' Gui Tests` is empty.
+  - verify: `GuiTests --gtest_filter=ColorTrackballGlobalMode*:ColorTrackballReveal*`: each preference value shows its graphic; flipping the setting mid-stroke takes effect after release; no override cursor is left after exit; `grep -rn 'ColorPanelLayout::Puck\|Puck::\|Feedback::' Gui Tests` is empty (the wheel's and disc's marker keep the name puck).
   - size: L
 
 - [ ] M119.P3.T3 — Fix the corrupted following HUD: make it a window from construction, and mask the reveal to its disc

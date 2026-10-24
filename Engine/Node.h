@@ -1989,6 +1989,7 @@ private:
     /**
      * @brief Recomputes the hashes if they are dirty. With requireCleanInputs, gives up and
      * returns false if a hash it folds in is dirty, which only a concurrent mark or a cycle causes.
+     * Without it, folds the dirty hash in but leaves this node dirty.
      **/
     bool recomputeHashIfDirty(bool requireCleanInputs, HashWalk* walk);
 

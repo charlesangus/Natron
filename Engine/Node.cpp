@@ -1601,25 +1601,29 @@ Node::recomputeHashIfDirty(bool requireCleanInputs,
         // The inputs checked are the ones hashed.
         HashInputs inputs;
         getHashInputs(&inputs);
-        if (requireCleanInputs) {
-            for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
-                const NodePtr& input = inputs.bySlot[i].second;
-                if (input && input->isHashDirty()) {
-                    return false;
-                }
-            }
-            for (std::size_t i = 0; i < inputs.metadataSources.size(); ++i) {
-                if (inputs.metadataSources[i]->isHashDirty()) {
-                    return false;
-                }
-            }
+        bool inputsClean = true;
+        for (std::size_t i = 0; inputsClean && (i < inputs.bySlot.size()); ++i) {
+            const NodePtr& input = inputs.bySlot[i].second;
+            inputsClean = !input || !input->isHashDirty();
+        }
+        for (std::size_t i = 0; inputsClean && (i < inputs.metadataSources.size()); ++i) {
+            inputsClean = !inputs.metadataSources[i]->isHashDirty();
+        }
+        if (!inputsClean && requireCleanInputs) {
+            return false;
         }
         {
             HashComputeScope computing;
             changed = computeHashInternal(walk->projectDigest(*this, epoch), inputs, &contentHash);
         }
-        _imp->hashCleanEpoch.store(epoch);
-        _imp->hashCleanGeneration.store(generation);
+        // Folded over a dirty input, the hash may stand for a state the graph has left, so the
+        // node stays dirty: a mark flush stops at a dirty node that is not queued, on the promise
+        // that everything folding it in is dirty too, and a clean node here would keep that stale
+        // hash, and its mark count, through the edits that flush skips.
+        if (inputsClean) {
+            _imp->hashCleanEpoch.store(epoch);
+            _imp->hashCleanGeneration.store(generation);
+        }
     }
 
     // Run outside the recompute lock, since they take the effect's and knobs' locks. The cache entries
@@ -1635,7 +1639,8 @@ void
 Node::refreshDirtyHashes()
 {
     // Another attempt is only needed when a concurrent mark lands mid-refresh. The last one
-    // accepts dirty inputs, so that a cycle still settles.
+    // accepts dirty inputs, so that a read under contention or in a cycle still gets a hash, but
+    // leaves the nodes that folded one in dirty.
     const int attempts = 4;
     NodePtr self = weak_from_this().lock();
 

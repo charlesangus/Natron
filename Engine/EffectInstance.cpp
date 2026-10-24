@@ -6698,7 +6698,8 @@ EffectInstance::getMetadata(double time,
     // the other state: the mark count, read before the hash, catches that. The generation catches
     // a drop under the same hash. A knob stores its value before it marks, so a derive can also
     // see a value the hash and marks do not yet reflect: the write snapshot, read before both,
-    // catches that.
+    // catches that. A hash read under contention can be folded over a dirty input and stand for a
+    // state the graph has left; such a node stays dirty, so only an up-to-date hash keys an entry.
     refreshInputRelatedDataIfStale();
     const U64 writes = KnobContentWrite::snapshot();
     const U64 marks = node->getHashMarkCount();
@@ -6709,7 +6710,8 @@ EffectInstance::getMetadata(double time,
     }
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     NodeMetadataConstPtr metadata = isOpenFX() ? getOpenFXMetadataAt(hash, time, view) : deriveMetadataAt(hash, time, view);
-    if ((node->getHashMarkCount() == marks) && (node->getHashValue() == hash) && KnobContentWrite::isSettled(writes)) {
+    U64 hashAfter = 0;
+    if ((node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == hash) && KnobContentWrite::isSettled(writes)) {
         _imp->actionsCache->setMetadataResult(hash, time, view, metadata, generation);
     }
 
@@ -6738,7 +6740,8 @@ EffectInstance::getTimeInvariantMetadata()
     }
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     NodeMetadataConstPtr metadata = deriveTimeInvariantMetadata();
-    if ((node->getHashMarkCount() == marks) && (node->getHashValue() == hash) && KnobContentWrite::isSettled(writes)) {
+    U64 hashAfter = 0;
+    if ((node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == hash) && KnobContentWrite::isSettled(writes)) {
         _imp->actionsCache->setTimeInvariantMetadataResult(hash, metadata, generation);
     }
 

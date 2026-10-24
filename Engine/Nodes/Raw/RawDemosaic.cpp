@@ -64,7 +64,8 @@ constexpr NodeSpec kRawDemosaicNodeSpec = {
     .id = PLUGINID_NATRON_RAWDEMOSAIC,
     .label = "RawDemosaic",
     .description = "Reconstructs full RGB pixels from the colour filter array of prepared raw data: RCD, PPG, AMaZE, VNG4 or LMMSE "
-                   "for a Bayer sensor, Markesteijn or VNG for an X-Trans one, or the photosites shown as they are. Data without a colour filter array passes "
+                   "for a Bayer sensor, Markesteijn or VNG for an X-Trans one, RCD, AMaZE or Markesteijn 3-pass blended with VNG in flat areas (dual), "
+                   "or the photosites shown as they are. Data without a colour filter array passes "
                    "through. Outputs an image with an alpha of 1; RawInputColor then takes it to the working space.",
     .grouping = PLUGIN_GROUP_RAW,
     .majorVersion = PLUGIN_MAJOR_NATRON_RAWDEMOSAIC,
@@ -126,6 +127,12 @@ algorithmHalo(Algorithm algorithm)
     return 0;
 }
 
+// How far a pixel of dual demosaicing's blend mask reads the high-frequency output: 1 for the
+// Scharr gradient and 4 for darktable's 9x9 blur. The VNG side reads VNG's halo plus one per
+// smoothing pass of its 2.
+const int kDualMaskReach = 5;
+const int kDualLowReach = 6 + 2;
+
 const int kAmazeGrid = 128;
 const int kAmazeTileEnd = 144;
 const int kMinimumBuffer = 32;
@@ -156,6 +163,9 @@ struct RawDemosaic::Settings {
     float edgeThreshold = 0.f;
     int smoothing = 0;
     int lmmseRefine = (int)eRawDemosaicLmmseMedian;
+    bool dual = false;
+    float dualThreshold = 0.2f;
+    float wb[3] = { 1.f, 1.f, 1.f };
     float processedMaximum = 1.f;
     float processedMinimum = 1.f;
     float iso = 0.f;
@@ -169,6 +179,7 @@ RawDemosaic::RawDemosaic(NodePtr node)
     , _edgeThreshold()
     , _colorSmoothing()
     , _lmmseRefine()
+    , _dualThreshold()
     , _greenMutex()
     , _greenValid(false)
     , _greenKey(0)
@@ -218,6 +229,8 @@ RawDemosaic::initializeKnobs()
     bayer.push_back(ChoiceOption("passthroughMonochrome", tr("passthrough (monochrome)").toStdString(), tr("Every photosite's value in all three channels, with no demosaicing.").toStdString()));
     bayer.push_back(ChoiceOption("photositeColor", tr("photosite color (debug)").toStdString(), tr("Every photosite's value in its own colour's channel only, with no demosaicing.").toStdString()));
     bayer.push_back(ChoiceOption("lmmse", "LMMSE", tr("Linear Minimum Mean Square-error Estimation: suited best to high ISO images, slow.").toStdString()));
+    bayer.push_back(ChoiceOption("rcdDual", tr("RCD (dual)").toStdString(), tr("RCD where the image has detail, VNG4 where it is flat, blended by Dual Threshold.").toStdString()));
+    bayer.push_back(ChoiceOption("amazeDual", tr("AMaZE (dual)").toStdString(), tr("AMaZE where the image has detail, VNG4 where it is flat, blended by Dual Threshold.").toStdString()));
     KnobChoicePtr bayerMethod = createKnob<KnobChoice>(tr("Method (Bayer)"));
     bayerMethod->setName(kRawDemosaicParamBayerMethod);
     bayerMethod->setHintToolTip(tr("The demosaicing method for a Bayer sensor."));
@@ -233,6 +246,7 @@ RawDemosaic::initializeKnobs()
     xtrans.push_back(ChoiceOption("vng", "VNG", tr("Variable Number of Gradients: fast.").toStdString()));
     xtrans.push_back(ChoiceOption("passthroughMonochrome", tr("passthrough (monochrome)").toStdString(), tr("Every photosite's value in all three channels, with no demosaicing.").toStdString()));
     xtrans.push_back(ChoiceOption("photositeColor", tr("photosite color (debug)").toStdString(), tr("Every photosite's value in its own colour's channel only, with no demosaicing.").toStdString()));
+    xtrans.push_back(ChoiceOption("markesteijn3Dual", tr("Markesteijn 3-pass (dual)").toStdString(), tr("Markesteijn 3-pass where the image has detail, VNG where it is flat, blended by Dual Threshold.").toStdString()));
     KnobChoicePtr xtransMethod = createKnob<KnobChoice>(tr("Method (X-Trans)"));
     xtransMethod->setName(kRawDemosaicParamXTransMethod);
     xtransMethod->setHintToolTip(tr("The demosaicing method for an X-Trans sensor."));
@@ -269,7 +283,7 @@ RawDemosaic::initializeKnobs()
 
     KnobIntPtr smoothing = createKnob<KnobInt>(tr("Color Smoothing"));
     smoothing->setName(kRawDemosaicParamColorSmoothing);
-    smoothing->setHintToolTip(tr("Passes of a median filter on the colour differences after demosaicing, against colour artefacts."));
+    smoothing->setHintToolTip(tr("Passes of a median filter on the colour differences after demosaicing, against colour artefacts. Off for the dual methods."));
     smoothing->setDefaultValue(0);
     smoothing->setMinimum(0);
     smoothing->setMaximum(5);
@@ -294,6 +308,18 @@ RawDemosaic::initializeKnobs()
     page->addKnob(lmmseRefine);
     _lmmseRefine = lmmseRefine;
 
+    KnobDoublePtr dualThreshold = createKnob<KnobDouble>(tr("Dual Threshold"));
+    dualThreshold->setName(kRawDemosaicParamDualThreshold);
+    dualThreshold->setHintToolTip(tr("Dual methods only: how much local detail keeps the high-frequency method's output; flatter areas take VNG's. "
+                                     "0 keeps the high-frequency method everywhere."));
+    dualThreshold->setDefaultValue(0.2);
+    dualThreshold->setMinimum(0.);
+    dualThreshold->setMaximum(1.);
+    dualThreshold->setDisplayMinimum(0.);
+    dualThreshold->setDisplayMaximum(1.);
+    page->addKnob(dualThreshold);
+    _dualThreshold = dualThreshold;
+
     refreshMethodKnobsVisibility();
 }
 
@@ -301,10 +327,18 @@ void
 RawDemosaic::refreshMethodKnobsVisibility()
 {
     const KnobChoicePtr bayerMethod = _bayerMethod.lock();
+    const KnobChoicePtr xtransMethod = _xtransMethod.lock();
     const KnobChoicePtr lmmseRefine = _lmmseRefine.lock();
+    const KnobDoublePtr dualThreshold = _dualThreshold.lock();
 
     if (bayerMethod && lmmseRefine) {
         lmmseRefine->setSecret(bayerMethod->getValue() != (int)eRawDemosaicBayerLMMSE);
+    }
+    if (bayerMethod && xtransMethod && dualThreshold) {
+        // The node does not know the sensor here, so either list's dual method shows the knob.
+        const int bayer = bayerMethod->getValue();
+        const bool dual = (bayer == (int)eRawDemosaicBayerRCDDual) || (bayer == (int)eRawDemosaicBayerAMaZEDual) || (xtransMethod->getValue() == (int)eRawDemosaicXTransMarkesteijn3Dual);
+        dualThreshold->setSecret(!dual);
     }
 }
 
@@ -322,8 +356,9 @@ RawDemosaic::knobChanged(KnobI* k,
                          bool /*originatedFromMainThread*/)
 {
     const KnobChoicePtr bayerMethod = _bayerMethod.lock();
+    const KnobChoicePtr xtransMethod = _xtransMethod.lock();
 
-    if (!bayerMethod || (k != bayerMethod.get())) {
+    if (!k || ((k != bayerMethod.get()) && (k != xtransMethod.get()))) {
         return false;
     }
     refreshMethodKnobsVisibility();
@@ -357,6 +392,14 @@ RawDemosaic::resolveSettings(double time,
         case eRawDemosaicBayerAMaZE:
             s.algorithm = ((width < 33) || (height < 33)) ? Algorithm::VNG : Algorithm::AMaZE;
             break;
+        case eRawDemosaicBayerAMaZEDual:
+            s.algorithm = ((width < 33) || (height < 33)) ? Algorithm::VNG : Algorithm::AMaZE;
+            s.dual = true;
+            break;
+        case eRawDemosaicBayerRCDDual:
+            s.algorithm = Algorithm::RCD;
+            s.dual = true;
+            break;
         case eRawDemosaicBayerVNG4:
             s.algorithm = Algorithm::VNG;
             break;
@@ -382,6 +425,10 @@ RawDemosaic::resolveSettings(double time,
             // image has.
             s.algorithm = ((width < 19) || (height < 19)) ? Algorithm::VNG : Algorithm::Markesteijn3;
             break;
+        case eRawDemosaicXTransMarkesteijn3Dual:
+            s.algorithm = ((width < 19) || (height < 19)) ? Algorithm::VNG : Algorithm::Markesteijn3;
+            s.dual = true;
+            break;
         case eRawDemosaicXTransVNG:
             s.algorithm = Algorithm::VNG;
             break;
@@ -402,7 +449,16 @@ RawDemosaic::resolveSettings(double time,
         s.algorithm = Algorithm::VNG;
     }
     s.edgeThreshold = (float)reader.value(_edgeThreshold);
-    s.smoothing = std::max(0, std::min(5, (int)reader.value(_colorSmoothing)));
+    // darktable's commit_params() turns colour smoothing off for a dual method, tiny image or not;
+    // dual_demosaic() itself does nothing below 16 photosites.
+    s.smoothing = s.dual ? 0 : std::max(0, std::min(5, (int)reader.value(_colorSmoothing)));
+    s.dual = s.dual && !tiny;
+    s.dualThreshold = (float)std::max(0., std::min(1., (double)reader.value(_dualThreshold)));
+    if (const std::optional<std::array<double, 3>> applied = RawMetadata::getWbApplied(source)) {
+        for (int c = 0; c < 3; ++c) {
+            s.wb[c] = 1.0f / (float)(*applied)[c];
+        }
+    }
     s.lmmseRefine = std::max((int)eRawDemosaicLmmseBasic, std::min((int)eRawDemosaicLmmse2xRefineMedians, (int)reader.value(_lmmseRefine)));
     const std::array<double, 3> maximum = RawMetadata::getProcessedMaximum(source).value_or(std::array<double, 3> { 1., 1., 1. });
     s.processedMaximum = std::fmax(1.0f, (float)std::max({ maximum[0], maximum[1], maximum[2] }));
@@ -429,9 +485,14 @@ RawDemosaic::sourceRegionFor(const RectI& window,
     const bool local = (settings->greenEq == eRawDemosaicGreenEqLocal) || (settings->greenEq == eRawDemosaicGreenEqBoth);
     const int extra = settings->smoothing + (local ? 2 : 0);
     if ((settings->algorithm != Algorithm::AMaZE) && (settings->algorithm != Algorithm::LMMSE)) {
-        return RawNodeSupport::expandForKernel(window, algorithmHalo(settings->algorithm) + extra, settings->layout.period(), kMinimumBuffer, rod);
+        const int own = algorithmHalo(settings->algorithm);
+        const int halo = settings->dual ? std::max(own + kDualMaskReach, kDualLowReach) : own;
+        return RawNodeSupport::expandForKernel(window, halo + extra, settings->layout.period(), kMinimumBuffer, rod);
     }
-    const RectI grown = RectI(window.x1 - extra, window.y1 - extra, window.x2 + extra, window.y2 + extra).intersect(rod);
+    // AMaZE's span leaves at least 16 photosites past the grown window on each inner side, more
+    // than VNG and its smoothing read.
+    const int grow = extra + (settings->dual ? kDualMaskReach : 0);
+    const RectI grown = RectI(window.x1 - grow, window.y1 - grow, window.x2 + grow, window.y2 + grow).intersect(rod);
     if (grown.isNull()) {
         return grown;
     }
@@ -628,6 +689,9 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
         case Algorithm::PassThrough:
             break;
         }
+        if (s.dual) {
+            RawKernels::dualDemosaic(out.data.data(), in, width, height, filters, xtrans, s.dualThreshold, s.wb, parallel);
+        }
         if (s.smoothing > 0) {
             RawKernels::colorSmoothing(out.data.data(), width, height, s.smoothing, parallel);
         }
@@ -675,7 +739,7 @@ RawDemosaic::canRenderOpOnGpu(const GpuQuery& query) const
     if (settings->algorithm == Algorithm::PassThrough) {
         return true;
     }
-    if ((settings->algorithm == Algorithm::PhotositeMonochrome) || (settings->algorithm == Algorithm::PhotositeColor)) {
+    if ((settings->algorithm == Algorithm::PhotositeMonochrome) || (settings->algorithm == Algorithm::PhotositeColor) || settings->dual) {
         return false;
     }
 

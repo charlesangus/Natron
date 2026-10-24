@@ -120,17 +120,20 @@ TEST_F(NativeRawHighlightsDefaultsTest, ClipDefaultsToTheLinearResponseLimit)
 
 TEST_F(NativeRawHighlightsDefaultsTest, TheShownClipFollowsTheInputUntilOverridden)
 {
-    NodePtr node = createHighlights(createSource("RGGB", 1, 0.8));
+    NodePtr first = createSource("RGGB", 1, 0.8);
+    NodePtr node = createHighlights(first);
     ASSERT_TRUE(bool(node));
     EXPECT_DOUBLE_EQ(0.8, clipOf(node));
 
+    disconnectNodes(first, node, true);
     connectNodes(createSource("RGGB", 1, 0.6), node, 0, true);
     EXPECT_DOUBLE_EQ(0.6, clipOf(node));
 }
 
 TEST_F(NativeRawHighlightsDefaultsTest, AnOverrideSticksAcrossInputChanges)
 {
-    NodePtr node = createHighlights(createSource("RGGB", 1, 0.8));
+    NodePtr first = createSource("RGGB", 1, 0.8);
+    NodePtr node = createHighlights(first);
     ASSERT_TRUE(bool(node));
     EffectInstancePtr effect = node->getEffectInstance();
 
@@ -138,6 +141,7 @@ TEST_F(NativeRawHighlightsDefaultsTest, AnOverrideSticksAcrossInputChanges)
     effect->getKnobByNameAndType<KnobDouble>(kRawHighlightsParamClip)->setValue(0.5);
     EXPECT_DOUBLE_EQ(0.5, clipOf(node));
 
+    disconnectNodes(first, node, true);
     connectNodes(createSource("RGGB", 1, 0.6), node, 0, true);
     EXPECT_DOUBLE_EQ(0.5, clipOf(node));
 

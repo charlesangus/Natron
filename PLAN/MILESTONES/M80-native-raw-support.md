@@ -259,6 +259,8 @@ Kernels are Slang under `Engine/Gpu/Kernels/`, each with its own `<kernel>.cmake
 
 ## Phase 80.7: Full darktable control parity
 
+> **Deferred (user, 2026-10-23):** darkroom-only display aids — the highlights mask views (clipped, candidates, combine, strength), the dual-demosaic mask, the capture-sharpen sharpened-areas and radius views, and hot-pixel Mark Fixed — are not built in this phase. They wait for a rich viewer-overlay milestone (requested via the inbox). Implementers skip the "Show Mask"/view parts of T8, T10, T21 and T23; T24 is cancelled; the T28 audit marks those rows DEFERRED with that reason, not MISSING.
+
 This phase gives each ported module every user-facing control darktable `release-5.6.2` has, at darktable's defaults, including the defaults darktable takes from the file.
 
 New knobs and modes, by module:
@@ -563,7 +565,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - verify: gtest checks tiled = full frame. The auto radius equals darktable's logged autoradius for the CR2 and RAF within 1e-3. The darktable comparisons pass (fixed and auto). Compiled at P7.T26.
   - size: L
 
-- [ ] M80.P7.T24 — RawHotPixels: Mark Fixed Pixels
+- [ ] ~~M80.P7.T24 — RawHotPixels: Mark Fixed Pixels~~ (cancelled 2026-10-23: deferred to the viewer-overlay milestone)
   - files: `Engine/Nodes/Raw/RawHotPixels.cpp/.h`, `Engine/Nodes/Raw/docs/RawHotPixels.md`, new `Tests/Native/NativeRawHotPixelsMark_Test.cpp`
   - approach:
     - Port the `markfixed` branches of `_process_bayer`/`_process_xtrans`/`_process_monochrome` (hotpixels.c:147, 204, 301): the darktable marker pattern, default off.
@@ -669,6 +671,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
 - 2026-10-23 — **User decision: a port means every control.** Each ported darktable module (rawprepare, temperature, highlights, demosaic, colorin, hotpixels, cacorrect, rawdenoise) gets a knob for every user-facing control of its `dt_iop_*_params_t` and GUI at `release-5.6.2`, with darktable's defaults, including defaults darktable derives from the file. Earlier tasks enumerated a subset of modes and controls (e.g. highlights clip/opposed/LCh; demosaic PPG/RCD/AMaZE/Markesteijn/VNG) and nobody checked them against darktable's params; a parity audit on 2026-10-23 found the gaps. Phase 80.7 closes them. GPU kernels for the newly ported modes go to M81 - Raw GPU Kernels, like the other non-core-chain kernels. The milestone's existing exclusions stay: ICC/DCP profile files, SSE/OpenCL code paths, lens correction (M160), multi-frame raw.
 - 2026-10-23 — Phase 80.7 planned from the parity audit (consultant). User calls: spot white balance is a rectangle on the viewer plus a Pick button that stores coefficients once; colorin's Working Profile defaults to the project working space plus darktable's options; 4-colour (CYGM/RGBE) controls are N/A because the Read rejects 4-colour sensors; file-derived defaults use RawPrepare's show-the-file's-value-until-overridden pattern, and choice defaults resolve per file (Flat Field Embedded when GainMaps exist; Input Profile Embedded for a DNG, Standard otherwise); `wb_presets.json` ships in the repo under `Engine/Nodes/Raw/data/`, installed to `Resources/darktable/`.
 - 2026-10-23 — **User decision: port darktable's color calibration as a node** rather than default to As Shot. With it, the Develop chain can use darktable's scene-referred default (As Shot to Reference plus a CAT). Tasks to be added to Phase 80.7. Open: how darkroom-only display aids (mask views, dual mask, capture-sharpen masks, hot-pixel markers) show — the user asked whether nodes can draw arbitrary viewer overlays; being scouted.
+- 2026-10-23 — User decision: defer darktable's darkroom-only display aids (mask views, dual mask, capture-sharpen views, hot-pixel markers) until Natron has rich viewer overlays (overlaid images, handles, arbitrary drawing). Today native nodes can only use stock host overlays (no custom `drawOverlay`), no overlay can draw per-pixel data, and nodes can't query the existing viewer-render flag (`isRenderUserInteraction`). A milestone for that was requested through the inbox.
 
 ## Handoff (2026-10-22, PM paused by user)
 

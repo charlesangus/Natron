@@ -225,7 +225,7 @@ If M107 hasn't merged when Phase 91.2 finishes, skip this phase and file it as a
 
 ## Phase 91.4: Benchmarks and documentation
 
-- [ ] M91.P4.T1 — Microbenchmarks on the RTX 3070 Ti: GpuBench, ImportCost, transfers and interop
+- [x] M91.P4.T1 — Microbenchmarks on the RTX 3070 Ti: GpuBench, ImportCost, transfers and interop
   - files: none in code (unless `run-bench.sh`/`run-host.sh` need their RADV wording or stale image tag fixed). Output goes to `.local/m91/bench/`.
   - approach: Run `tools/gpu-spike/run-bench.sh --no-cpu --sizes uhd,8k,16k --runs 2` (24k needs ~9.2 GB host RAM this host doesn't have free). Run `ImportCost` through `run-host.sh`. Take the `GpuTransfer_Test` pipelined UHD timings (§2.1 source) and `GlInterop_Test` per-path timings (§2.5) from the P2.T6 or P3.T2 runs. Use the release preset for the gpu-spike build; run with no other load; record `nvidia-smi -q -d CLOCK,PCIE` next to the numbers.
   - verify: CSVs and summaries exist for each size. A table mirrors §2.1, §2.2, §2.3 and §2.5 with NVIDIA values, plus the host's PCIe link, CPU and RAM.
@@ -256,3 +256,4 @@ If M107 hasn't merged when Phase 91.2 finishes, skip this phase and file it as a
 - 2026-10-23 — User: no Quadro P400 runs at all, not even the optional small-VRAM data point (P1.T4 and later).
 - 2026-10-23 — P1.T6 triage: Phase 91.2 keeps P2.T2 (staged-reason logging), P2.T3 (spec-derived LUT tolerance, test-only) and P2.T5 (pipelined timing assertion, test-only); P2.T1 and P2.T4 were dropped as not triggered. Follow-up observed, not M91 scope: in pipelined strips, per-member times are inflated (Grade 0.21 ms vs 0.045 ms serial), which skews GpuCostModel calibration samples. It needs a follow-up milestone, to be filed by /cat-plan.
 - 2026-10-23 — P2.T2 scoped down: the counters, the once-per-run ImportFailed log and the tests landed. Wiring the counts into the region profile needs `GpuRegionTask.cpp` (an M107 file), so it moved to P3.T0, after M107 merges. ImportFailed has no test because no deterministic way to make a driver reject an aligned pointer was found. The P2.T6 rerun reads the stderr log to see whether NVIDIA rejects imports.
+- 2026-10-24 — P4.T1 ran at uhd and 8k only. 16k was dropped as host-capacity: the host swapped (about 5 GiB free, 26 GB of swap in use) and one cell took 294 s. CPU columns were not run because they need graph_bench. The link is PCIe gen2 x16, the platform maximum, so transfers are 4x slower than on RADV while blur kernels are 2.5-7x faster. Desktop apps hold about 4 GiB of VRAM, and the 4 GB ImportCost case hit VK_ERROR_OUT_OF_DEVICE_MEMORY (host-capacity). Tables are in `.local/m91/bench/nvidia-tables.md` and get folded into the design note by P4.T3.

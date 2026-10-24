@@ -98,6 +98,8 @@ inline constexpr ImagePipelineSpec kCornerPinPipeline = {
 struct CornerPinOp {
     using Params = CornerPinNodeParams;
 
+    static constexpr bool kResamplesOnGpu = true;
+
     void createKnobs(KnobHolder* holder,
                      const KnobPagePtr& page);
 
@@ -169,6 +171,8 @@ struct CornerPinOp {
     KnobChoiceWPtr shutterOffset;
     KnobDoubleWPtr shutterCustomOffset;
 };
+
+static_assert(GpuResampleOp<CornerPinOp>);
 
 /**
  * @brief CornerPin: maps four "from" points onto four "to" points, with the host mask and mix.

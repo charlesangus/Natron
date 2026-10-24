@@ -64,7 +64,7 @@ constexpr NodeSpec kRawDemosaicNodeSpec = {
     .id = PLUGINID_NATRON_RAWDEMOSAIC,
     .label = "RawDemosaic",
     .description = "Reconstructs full RGB pixels from the colour filter array of prepared raw data: RCD, PPG, AMaZE or VNG4 "
-                   "for a Bayer sensor, Markesteijn or VNG for an X-Trans one. Data without a colour filter array passes "
+                   "for a Bayer sensor, Markesteijn or VNG for an X-Trans one, or the photosites shown as they are. Data without a colour filter array passes "
                    "through. Outputs an image with an alpha of 1; RawInputColor then takes it to the working space.",
     .grouping = PLUGIN_GROUP_RAW,
     .majorVersion = PLUGIN_MAJOR_NATRON_RAWDEMOSAIC,
@@ -87,7 +87,9 @@ enum class Algorithm {
     AMaZE,
     VNG,
     Markesteijn1,
-    Markesteijn3
+    Markesteijn3,
+    PhotositeMonochrome,
+    PhotositeColor
 };
 
 // How far each algorithm reads around a pixel it outputs, so that the pixel does not depend on
@@ -114,6 +116,8 @@ algorithmHalo(Algorithm algorithm)
         return 18;
     case Algorithm::AMaZE:
     case Algorithm::PassThrough:
+    case Algorithm::PhotositeMonochrome:
+    case Algorithm::PhotositeColor:
         break;
     }
 
@@ -207,6 +211,8 @@ RawDemosaic::initializeKnobs()
     bayer.push_back(ChoiceOption("ppg", "PPG", tr("Patterned Pixel Grouping: fast.").toStdString()));
     bayer.push_back(ChoiceOption("amaze", "AMaZE", tr("Aliasing Minimization and Zipper Elimination: the most detail, slower.").toStdString()));
     bayer.push_back(ChoiceOption("vng4", "VNG4", tr("Variable Number of Gradients, four colours: smooth, for images with maze artefacts.").toStdString()));
+    bayer.push_back(ChoiceOption("passthroughMonochrome", tr("passthrough (monochrome)").toStdString(), tr("Every photosite's value in all three channels, with no demosaicing.").toStdString()));
+    bayer.push_back(ChoiceOption("photositeColor", tr("photosite color (debug)").toStdString(), tr("Every photosite's value in its own colour's channel only, with no demosaicing.").toStdString()));
     KnobChoicePtr bayerMethod = createKnob<KnobChoice>(tr("Method (Bayer)"));
     bayerMethod->setName(kRawDemosaicParamBayerMethod);
     bayerMethod->setHintToolTip(tr("The demosaicing method for a Bayer sensor."));
@@ -220,6 +226,8 @@ RawDemosaic::initializeKnobs()
     xtrans.push_back(ChoiceOption("markesteijn1", tr("Markesteijn 1-pass").toStdString(), tr("Frank Markesteijn's method in one pass.").toStdString()));
     xtrans.push_back(ChoiceOption("markesteijn3", tr("Markesteijn 3-pass").toStdString(), tr("Frank Markesteijn's method in three passes: fewer artefacts, slower.").toStdString()));
     xtrans.push_back(ChoiceOption("vng", "VNG", tr("Variable Number of Gradients: fast.").toStdString()));
+    xtrans.push_back(ChoiceOption("passthroughMonochrome", tr("passthrough (monochrome)").toStdString(), tr("Every photosite's value in all three channels, with no demosaicing.").toStdString()));
+    xtrans.push_back(ChoiceOption("photositeColor", tr("photosite color (debug)").toStdString(), tr("Every photosite's value in its own colour's channel only, with no demosaicing.").toStdString()));
     KnobChoicePtr xtransMethod = createKnob<KnobChoice>(tr("Method (X-Trans)"));
     xtransMethod->setName(kRawDemosaicParamXTransMethod);
     xtransMethod->setHintToolTip(tr("The demosaicing method for an X-Trans sensor."));
@@ -296,6 +304,12 @@ RawDemosaic::resolveSettings(double time,
         case eRawDemosaicBayerVNG4:
             s.algorithm = Algorithm::VNG;
             break;
+        case eRawDemosaicBayerPassthroughMonochrome:
+            s.algorithm = Algorithm::PhotositeMonochrome;
+            break;
+        case eRawDemosaicBayerPhotositeColor:
+            s.algorithm = Algorithm::PhotositeColor;
+            break;
         default:
             s.algorithm = Algorithm::RCD;
             break;
@@ -312,12 +326,20 @@ RawDemosaic::resolveSettings(double time,
         case eRawDemosaicXTransVNG:
             s.algorithm = Algorithm::VNG;
             break;
+        case eRawDemosaicXTransPassthroughMonochrome:
+            s.algorithm = Algorithm::PhotositeMonochrome;
+            break;
+        case eRawDemosaicXTransPhotositeColor:
+            s.algorithm = Algorithm::PhotositeColor;
+            break;
         default:
             s.algorithm = Algorithm::Markesteijn1;
             break;
         }
     }
-    if (tiny && (s.algorithm != Algorithm::PassThrough)) {
+    // The photosite modes are exempt from darktable's fallback on tiny images, as it exempts them.
+    const bool point = (s.algorithm == Algorithm::PassThrough) || (s.algorithm == Algorithm::PhotositeMonochrome) || (s.algorithm == Algorithm::PhotositeColor);
+    if (tiny && !point) {
         s.algorithm = Algorithm::VNG;
     }
     s.edgeThreshold = (float)reader.value(_edgeThreshold);
@@ -525,6 +547,12 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
         case Algorithm::Markesteijn3:
             RawKernels::markesteijn(out.data.data(), in, width, height, xtrans, 3, parallel);
             break;
+        case Algorithm::PhotositeMonochrome:
+            RawKernels::passthroughMonochrome(out.data.data(), in, width, height, parallel);
+            break;
+        case Algorithm::PhotositeColor:
+            RawKernels::passthroughColor(out.data.data(), in, width, height, filters, xtrans, parallel);
+            break;
         case Algorithm::PassThrough:
             break;
         }
@@ -574,6 +602,9 @@ RawDemosaic::canRenderOpOnGpu(const GpuQuery& query) const
     }
     if (settings->algorithm == Algorithm::PassThrough) {
         return true;
+    }
+    if ((settings->algorithm == Algorithm::PhotositeMonochrome) || (settings->algorithm == Algorithm::PhotositeColor)) {
+        return false;
     }
 
     return ((settings->algorithm == Algorithm::PPG) || (settings->algorithm == Algorithm::RCD)) && (settings->greenEq == eRawDemosaicGreenEqNone) && (settings->smoothing == 0);

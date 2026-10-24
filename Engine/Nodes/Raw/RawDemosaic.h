@@ -58,13 +58,17 @@ enum RawDemosaicBayerMethodEnum {
     eRawDemosaicBayerRCD = 0,
     eRawDemosaicBayerPPG,
     eRawDemosaicBayerAMaZE,
-    eRawDemosaicBayerVNG4
+    eRawDemosaicBayerVNG4,
+    eRawDemosaicBayerPassthroughMonochrome,
+    eRawDemosaicBayerPhotositeColor
 };
 
 enum RawDemosaicXTransMethodEnum {
     eRawDemosaicXTransMarkesteijn1 = 0,
     eRawDemosaicXTransMarkesteijn3,
-    eRawDemosaicXTransVNG
+    eRawDemosaicXTransVNG,
+    eRawDemosaicXTransPassthroughMonochrome,
+    eRawDemosaicXTransPhotositeColor
 };
 
 enum RawDemosaicGreenEqEnum {
@@ -77,7 +81,8 @@ enum RawDemosaicGreenEqEnum {
 /**
  * @brief Raw to image: darktable's demosaic module on prepared raw data. A Bayer mosaic is
  * demosaiced by RCD (the default), PPG, AMaZE or VNG4, an X-Trans one by Markesteijn 1-pass (the
- * default), Markesteijn 3-pass or VNG, after the optional green equilibration (Bayer) and
+ * default), Markesteijn 3-pass or VNG, or either left as photosites (passthrough monochrome, photosite
+ * colour), after the optional green equilibration (Bayer) and
  * followed by the optional colour smoothing passes. Data without a CFA passes through. The output
  * is RGBA with an alpha of 1, and its metadata keeps the camera matrix and white balance keys
  * and drops the CFA and the raw stage.

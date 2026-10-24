@@ -186,6 +186,19 @@ void passthroughMonochrome(float* out,
                            const ParallelFor& parallel);
 
 /**
+ * @brief darktable's passthrough_color(): each photosite's value in its own CFA colour's channel
+ * only, the other three channels 0. filters is kFiltersXTrans or a Bayer word; xtrans is read for
+ * the former.
+ **/
+void passthroughColor(float* out,
+                      const float* in,
+                      int width,
+                      int height,
+                      std::uint32_t filters,
+                      const std::uint8_t (*xtrans)[6],
+                      const ParallelFor& parallel);
+
+/**
  * @brief darktable's color_smoothing(): passes of a 3x3 median on the red and blue differences
  * to green, leaving the outermost row and column of the buffer untouched.
  **/

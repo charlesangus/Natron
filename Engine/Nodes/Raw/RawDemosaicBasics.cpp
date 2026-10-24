@@ -593,6 +593,25 @@ passthroughMonochrome(float* out,
     });
 }
 
+void
+passthroughColor(float* out,
+                 const float* in,
+                 int width,
+                 int height,
+                 std::uint32_t filters,
+                 const std::uint8_t (*xtrans)[6],
+                 const ParallelFor& parallel)
+{
+    parallel(height, [&](int row) {
+        for (int col = 0; col < width; ++col) {
+            const std::size_t p = (std::size_t)row * width + col;
+            const int ch = fcol(row, col, filters, xtrans);
+            out[4 * p] = out[4 * p + 1] = out[4 * p + 2] = out[4 * p + 3] = 0.0f;
+            out[4 * p + ch] = in[p];
+        }
+    });
+}
+
 namespace {
     inline void
     swapMed(float* med,

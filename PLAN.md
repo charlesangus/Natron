@@ -218,7 +218,7 @@ future core work has solid ground to build on.
 | M156 | GPU Download Throughput In Comps | doing | M109 | gpu | E5 | [M156-gpu-download-throughput-in-comps.md](PLAN/MILESTONES/M156-gpu-download-throughput-in-comps.md) |
 | M157 | Relicense To GPLv3 Or Later | todo | - |  | E2 | [M157-relicense-to-gplv3-or-later.md](PLAN/MILESTONES/M157-relicense-to-gplv3-or-later.md) |
 | M158 | Node Toolbar As Menu | done | - | bosley-native-nodes | E10 | [M158-node-toolbar-as-menu.md](PLAN/MILESTONES/M158-node-toolbar-as-menu.md) |
-| M161 | Startup Compositor Crash | blocked | - | bosley-native-nodes | E10 | [M161-startup-compositor-crash.md](PLAN/MILESTONES/M161-startup-compositor-crash.md) |
+| M161 | Startup Compositor Crash | doing | - | bosley-native-nodes | E10 | [M161-startup-compositor-crash.md](PLAN/MILESTONES/M161-startup-compositor-crash.md) |
 | M170 | Engine Render Races | doing | - | bosley-native-nodes | E14 | [M170-engine-render-races.md](PLAN/MILESTONES/M170-engine-render-races.md) |
 | M162 | OFX CUDA And OpenCL Suites | todo | M86 |  | E5 | [M162-ofx-cuda-and-opencl-suites.md](PLAN/MILESTONES/M162-ofx-cuda-and-opencl-suites.md) |
 | M171 | GPU Correctness Fixes | todo | - |  | E5 | [M171-gpu-correctness-fixes.md](PLAN/MILESTONES/M171-gpu-correctness-fixes.md) |
@@ -253,7 +253,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M161 - Startup Compositor Crash:** waiting on the user's diagnostic run on the NVIDIA host (P1.T3): `build/appimages/M161-diag.md` with `M161-diag-e4ac87b1a.AppImage` and `startup-gl-matrix.sh`; send back the tarball(s). Phase 161.2 starts from the result. After M161 merges, its lane picks up M19 - USD/Hydra Foundation (reserved for bosley-native-nodes; also needs M107 - GPU Viewer Hand-off done).
+- **M161 - Startup Compositor Crash:** After M161 merges, its lane picks up M19 - USD/Hydra Foundation (reserved for bosley-native-nodes; also needs M107 - GPU Viewer Hand-off done).
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.
 - **M16 - Project Format Redesign:** UAT round 2 with the user (P9.T10): `build/appimages/M16-uat.md` with `M16-d7138ee99.AppImage`.
 - **M166 - Non-Float Plane Model:** the user wants to rethink the model before it is planned: Read emitting EXR half/uint32 layers natively, and possibly a bit depth per layer. Settle the framing in `/cat-discuss`, then elaborate.

@@ -486,3 +486,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **New case:** `ShuffleReadsAnotherLayerThroughAGradeInOneRegion`.
   - **Risk:** an upstream node now carries pass-through planes, and if it can't resolve them it stays on the CPU, where before it went to the GPU colour-only.
 - 2026-10-24 — **Phase 110.3 build (`6ce6924b8`, run 40095221631): P3.T2 done, P3.T3 red.** 345 of 346 entries pass in both legs, including `NativeShuffleGpuTest` and every CPU suite for the Shuffle and Layers families, so the CPU output is unchanged. `NativeLayersGpuTest` fails `AddLayersFollowsTimeVaryingLayers`, `RemoveLayersFollowsTimeVaryingLayers` and `RunsInARegionEndToEnd`. A consultant is fixing them against HEAD, which includes P4.T4.
+- 2026-10-24 — **M110.P4.T1 code in (`08d60e522`), building with P4.T4 and the Layers fix.**
+  - **Case 1:** `flat-rgba-pattern.exr` → Reformat (27x21, distort, keys) → Grade → Shuffle (R↔B, alpha 1).
+  - **Case 2:** `flat-three-layers.exr`, with the Shuffle's green from `specular.B`. It needs P4.T4 to forward `specular` through two hops (the Reformat and the Grade).
+  - **Assertions:** exactly one region of exactly those three nodes, the Read and the Write outside it, one GPU run each, and parity within `resampling()`.

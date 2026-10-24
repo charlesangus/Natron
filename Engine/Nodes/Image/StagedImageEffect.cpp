@@ -617,6 +617,13 @@ StagedImageEffect::deriveOutputMetadata(double time,
 }
 
 bool
+StagedImageEffect::presentsOnlyPassThroughLayers(double time,
+                                                 ViewIdx view)
+{
+    return route(time, view).kind == Route::Kind::Input;
+}
+
+bool
 StagedImageEffect::isIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,

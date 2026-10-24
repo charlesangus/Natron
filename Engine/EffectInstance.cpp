@@ -4989,9 +4989,9 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         }
     }
 
-    // A node disabled at `time` renders its pass-through input unchanged, so it produces no layer
-    // of its own there and every layer of that input passes through.
-    if (getNode()->isNodeDisabled(time)) {
+    // A node disabled at `time`, or one that outputs its pass-through input unchanged there,
+    // produces no layer of its own and every layer of that input passes through.
+    if (getNode()->isNodeDisabled(time) || presentsOnlyPassThroughLayers(time, view)) {
         ViewIdx ptView;
         getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
         *passThroughView = ptView;

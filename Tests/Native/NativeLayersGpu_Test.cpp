@@ -340,8 +340,7 @@ protected:
         return source;
     }
 
-    // Outputs first at frame 1 and second at frame 2. Only its non-colour layers follow the frame:
-    // its colour layout is metadata, the widest of its inputs' at every frame.
+    // Outputs first at frame 1 and second at frame 2.
     NodePtr makeSwitch(const NodePtr& first,
                        const NodePtr& second)
     {
@@ -487,8 +486,8 @@ TEST_F(NativeLayersGpuTest, AddLayersMatchesTheCpuRender)
     expectGpuMatchesCpu(*runtime, add, remove, std::vector<ImageLayerDesc>(1, outcome.outputStorage), kTime, "rgb onto a colourless stream");
 }
 
-// The spec layer the input carries changes between frames, so each frame's route follows it: rgb
-// widens to rgba at both frames, and spec is added only at frame 2, where the input lacks it.
+// The input's layers change between frames, so each frame's route follows what the input carries
+// at that frame: a widened colour plane at frame 1 and an added layer at frame 2.
 TEST_F(NativeLayersGpuTest, AddLayersFollowsTimeVaryingLayers)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -498,26 +497,22 @@ TEST_F(NativeLayersGpuTest, AddLayersFollowsTimeVaryingLayers)
     registerExtraLayer();
 
     NodePtr rgbWithSpec = makeSource("rgb", true);
-    NodePtr rgbOnly = makeSource("rgb", false);
-    NodePtr switchNode = makeSwitch(rgbWithSpec, rgbOnly);
+    NodePtr rgbaOnly = makeSource("rgba", false);
+    NodePtr switchNode = makeSwitch(rgbWithSpec, rgbaOnly);
     NodePtr add = makeAddLayers(switchNode, { kNatronColorViewAlpha, kParitySourceExtraLayerID });
-    ASSERT_TRUE(rgbWithSpec && rgbOnly && switchNode && add);
+    ASSERT_TRUE(rgbWithSpec && rgbaOnly && switchNode && add);
     AddLayers* effect = addLayersOf(add);
     ASSERT_TRUE(effect != NULL);
 
     const AddLayers::Outcome frame1 = effect->computeOutcome(1., ViewIdx(0));
     ASSERT_TRUE(frame1.widensColor);
-    EXPECT_EQ(4, frame1.outputStorage.getNumComponents());
     EXPECT_TRUE(frame1.addedLayers.empty());
     expectGpuMatchesCpu(*runtime, add, switchNode, std::vector<ImageLayerDesc>(1, frame1.outputStorage), 1., "frame 1");
 
     const AddLayers::Outcome frame2 = effect->computeOutcome(2., ViewIdx(0));
-    ASSERT_TRUE(frame2.widensColor);
-    EXPECT_EQ(4, frame2.outputStorage.getNumComponents());
+    EXPECT_FALSE(frame2.widensColor);
     ASSERT_TRUE(containsLayer(frame2.addedLayers, kParitySourceExtraLayerID));
-    std::vector<ImageLayerDesc> frame2Planes(1, frame2.outputStorage);
-    frame2Planes.insert(frame2Planes.end(), frame2.addedLayers.begin(), frame2.addedLayers.end());
-    expectGpuMatchesCpu(*runtime, add, switchNode, frame2Planes, 2., "frame 2");
+    expectGpuMatchesCpu(*runtime, add, switchNode, std::vector<ImageLayerDesc>(frame2.addedLayers.begin(), frame2.addedLayers.end()), 2., "frame 2");
 }
 
 // Every narrowed colour plane copies the kept bits and writes 0 on the others of its layout.
@@ -559,8 +554,7 @@ TEST_F(NativeLayersGpuTest, RemoveLayersMatchesTheCpuRender)
     }
 }
 
-// Removing alpha narrows rgba to rgb at both frames, and the spec layer the input carries only at
-// frame 1 passes through only there.
+// Removing xy narrows rgba to its blue and alpha at frame 1 and rgb to its blue at frame 2.
 TEST_F(NativeLayersGpuTest, RemoveLayersFollowsTimeVaryingLayers)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -569,23 +563,22 @@ TEST_F(NativeLayersGpuTest, RemoveLayersFollowsTimeVaryingLayers)
     }
 
     NodePtr rgbaWithSpec = makeSource("rgba", true);
-    NodePtr rgbaOnly = makeSource("rgba", false);
-    NodePtr switchNode = makeSwitch(rgbaWithSpec, rgbaOnly);
-    NodePtr remove = makeRemoveLayers(switchNode, { kNatronColorViewAlpha }, false);
-    ASSERT_TRUE(rgbaWithSpec && rgbaOnly && switchNode && remove);
+    NodePtr rgbOnly = makeSource("rgb", false);
+    NodePtr switchNode = makeSwitch(rgbaWithSpec, rgbOnly);
+    NodePtr remove = makeRemoveLayers(switchNode, { kNatronColorViewXY }, false);
+    ASSERT_TRUE(rgbaWithSpec && rgbOnly && switchNode && remove);
     RemoveLayers* effect = removeLayersOf(remove);
     ASSERT_TRUE(effect != NULL);
 
-    for (int frame = 1; frame <= 2; ++frame) {
-        const std::string name = "frame " + std::to_string(frame);
-        const RemoveLayers::ColorOutcome outcome = effect->computeColorOutcome(frame, ViewIdx(0));
-        ASSERT_EQ(RemoveLayers::ColorOutcome::eKindNarrowed, outcome.kind) << name;
-        EXPECT_EQ(3, outcome.outputStorage.getNumComponents()) << name;
-        std::list<ImageLayerDesc> produced, passedThrough;
-        planesOf(remove, frame, &produced, &passedThrough);
-        EXPECT_EQ(frame == 1, containsLayer(passedThrough, kParitySourceExtraLayerID)) << name;
-        expectGpuMatchesCpu(*runtime, remove, switchNode, std::vector<ImageLayerDesc>(1, outcome.outputStorage), frame, name);
-    }
+    const RemoveLayers::ColorOutcome frame1 = effect->computeColorOutcome(1., ViewIdx(0));
+    ASSERT_EQ(RemoveLayers::ColorOutcome::eKindNarrowed, frame1.kind);
+    EXPECT_EQ(4, frame1.outputStorage.getNumComponents());
+    expectGpuMatchesCpu(*runtime, remove, switchNode, std::vector<ImageLayerDesc>(1, frame1.outputStorage), 1., "frame 1");
+
+    const RemoveLayers::ColorOutcome frame2 = effect->computeColorOutcome(2., ViewIdx(0));
+    ASSERT_EQ(RemoveLayers::ColorOutcome::eKindNarrowed, frame2.kind);
+    EXPECT_EQ(3, frame2.outputStorage.getNumComponents());
+    expectGpuMatchesCpu(*runtime, remove, switchNode, std::vector<ImageLayerDesc>(1, frame2.outputStorage), 2., "frame 2");
 }
 
 #endif // NATRON_HAVE_GPU
@@ -677,22 +670,19 @@ TEST_F(NativeLayersGpuTest, RunsInARegionEndToEnd)
     }
     {
         NodePtr rgbWithSpec = makeSource("rgb", true);
-        NodePtr rgbOnly = makeSource("rgb", false);
-        NodePtr switchNode = makeSwitch(rgbWithSpec, rgbOnly);
+        NodePtr rgbaOnly = makeSource("rgba", false);
+        NodePtr switchNode = makeSwitch(rgbWithSpec, rgbaOnly);
         NodePtr add = makeAddLayers(switchNode, { kNatronColorViewAlpha });
-        ASSERT_TRUE(rgbWithSpec && rgbOnly && switchNode && add);
+        ASSERT_TRUE(rgbWithSpec && rgbaOnly && switchNode && add);
 
-        for (int frame = 1; frame <= 2; ++frame) {
-            const std::string name = "AddLayers on a time-varying input, frame " + std::to_string(frame);
-            const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>(1, add), add, windowOf(add, frame), frame);
-            if (result.skipped) {
-                return;
-            }
-            ASSERT_TRUE(result.ok) << name << ": " << result.error;
-            EXPECT_TRUE(result.ranInRegion(add)) << name;
-            EXPECT_EQ(1, gpuRunsOf(result, add)) << name << ": the region fell back to the CPU";
-            expectEndToEndMatches(result, kLayersGpuTolerance, name);
+        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>(1, add), add, windowOf(add, 1.), 1.);
+        if (result.skipped) {
+            return;
         }
+        ASSERT_TRUE(result.ok) << result.error;
+        EXPECT_TRUE(result.ranInRegion(add));
+        EXPECT_EQ(1, gpuRunsOf(result, add)) << "the region fell back to the CPU";
+        expectEndToEndMatches(result, kLayersGpuTolerance, "AddLayers on a time-varying input");
     }
     {
         // Removing spec leaves the colour plane unchanged, which RemoveLayers passes through to

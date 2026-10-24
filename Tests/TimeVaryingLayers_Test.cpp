@@ -39,6 +39,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "NativeParity.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/AppInstance.h"
@@ -51,7 +52,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/RemoveLayers.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
@@ -467,6 +470,68 @@ TEST_F(TimeVaryingLayersTest, ReversedSwitchOnAllSelectorListsRoutedInputLayers)
 TEST_F(TimeVaryingLayersTest, ReversedSwitchOnDiffuseRowSelectorListsRoutedInputLayers)
 {
     expectSwitchSelectorListsRoutedInput(&TimeVaryingLayersTest::buildReversedSwitchDiffuseRow);
+}
+
+// A Switch outputs only its active input, so its colour layout is that input's at each frame
+// rather than the widest of its inputs': RGB at frame 1, RGBA at frame 2, and none at frame 3,
+// where it routes a stream whose colour plane a RemoveLayers dropped.
+TEST_F(TimeVaryingLayersTest, SwitchPresentsRoutedInputColorLayout)
+{
+    for (int order = 0; order < 2; ++order) {
+        SCOPED_TRACE(order == 0 ? "frames queried forwards" : "frames queried backwards");
+        getApp()->getProject()->reset(false, true);
+
+        NodePtr rgb = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+        NodePtr rgba = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+        NodePtr rgbaWithSpec = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+        NodePtr remove = createNode(QString::fromUtf8(PLUGINID_NATRON_REMOVELAYERS));
+        NodePtr switchNode = createNode(QString::fromUtf8(PLUGINID_NATRON_SWITCH));
+        ASSERT_TRUE(rgb && rgba && rgbaWithSpec && remove && switchNode);
+        setParitySourceComponents(rgb, "rgb");
+        setParitySourceComponents(rgba, "rgba");
+        setParitySourceComponents(rgbaWithSpec, "rgba");
+        setParitySourceExtraLayer(rgbaWithSpec, true);
+
+        connectNodes(rgbaWithSpec, remove, 0, true);
+        KnobChannelSetPtr removed = std::dynamic_pointer_cast<KnobChannelSet>(remove->getKnobByName(kRemoveLayersParamChannels));
+        KnobChoicePtr operation = std::dynamic_pointer_cast<KnobChoice>(remove->getKnobByName(kRemoveLayersParamOperation));
+        ASSERT_TRUE(removed && operation);
+        removed->setLayer(0, kNatronColorViewRGBA, NULL);
+        operation->setValue((int)RemoveLayers::eOperationRemove);
+
+        connectNodes(rgb, switchNode, 0, true);
+        connectNodes(rgba, switchNode, 1, true);
+        connectNodes(remove, switchNode, 2, true);
+        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kSwitchParamWhich));
+        ASSERT_TRUE(bool(which));
+        which->setValueAtTime(1, 0, ViewSpec::all(), 0);
+        which->setValueAtTime(2, 1, ViewSpec::all(), 0);
+        which->setValueAtTime(3, 2, ViewSpec::all(), 0);
+
+        std::list<ImageLayerDesc> colorless;
+        remove->getEffectInstance()->getPresentLayers(3, ViewIdx(0), -1, &colorless);
+        ASSERT_FALSE(containsColorLayer(colorless)) << layerIDsString(colorless);
+
+        const EffectInstancePtr effect = switchNode->getEffectInstance();
+        ASSERT_TRUE(bool(effect));
+        const int frames[] = { 1, 2, 3 };
+        for (int i = 0; i < 3; ++i) {
+            const int frame = frames[(order == 0) ? i : (2 - i)];
+            getApp()->getTimeLine()->seekFrame((frame % 3) + 1, false, NULL, eTimelineChangeReasonOtherSeek);
+
+            std::list<ImageLayerDesc> present;
+            effect->getPresentLayers(frame, ViewIdx(0), -1, &present);
+            int colorComponents = 0;
+            for (const ImageLayerDesc& layer : present) {
+                if (layer.isColorLayer()) {
+                    colorComponents = layer.getNumComponents();
+                }
+            }
+            const int expected = (frame == 1) ? 3 : ((frame == 2) ? 4 : 0);
+            EXPECT_EQ(expected, colorComponents) << "frame=" << frame << " present=" << layerIDsString(present);
+            EXPECT_EQ(frame == 3, containsLayer(present, kParitySourceExtraLayerID)) << "frame=" << frame << " present=" << layerIDsString(present);
+        }
+    }
 }
 
 // A one-frame absolute FrameWindow, a hold, passes its input through at the held frame, so its layers are that frame's

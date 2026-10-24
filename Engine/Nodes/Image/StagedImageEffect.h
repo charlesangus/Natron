@@ -288,6 +288,12 @@ protected:
     virtual ImageMetadata deriveOutputMetadata(double time,
                                                ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Whether route() chooses an input at time and view, whatever the op kind.
+     **/
+    virtual bool presentsOnlyPassThroughLayers(double time,
+                                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool isIdentity(double time,
                             const RenderScale& scale,
                             const RectI& roi,

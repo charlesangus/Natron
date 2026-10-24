@@ -23,8 +23,9 @@
  * darktable developers, distributed under the GNU GPL version 3 or later: its params, their
  * defaults and ranges, its notebook pages, _update_illuminants(), _update_approx_cct(),
  * _illum_xy_callback(), gui_changed(), reload_defaults(), _get_white_balance_coeff(),
- * _dev_is_D65_chroma(), _declare_cat_on_pipe() and _set_trouble_messages(). The pixel maths are
- * in RawColorCalibrationMath.
+ * _dev_is_D65_chroma(), _declare_cat_on_pipe(), _set_trouble_messages(), the area color mapping
+ * (_auto_set_illuminant(), _spot_settings_changed_callback()) and init_presets(). The pixel maths
+ * are in RawColorCalibrationMath.
  */
 
 #ifndef Engine_Nodes_Raw_RawColorCalibration_h
@@ -38,7 +39,9 @@
 
 #include "Global/Macros.h"
 
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -72,6 +75,22 @@
 #define kRawColorCalibrationParamLightness "lightness"
 #define kRawColorCalibrationParamGrey "grey"
 #define kRawColorCalibrationParamNormalizeSuffix "Normalize"
+
+// The built-in presets, above the tabs.
+#define kRawColorCalibrationParamPreset "preset"
+#define kRawColorCalibrationParamApplyPreset "applyPreset"
+
+// The Area Color Mapping group of the CAT tab.
+#define kRawColorCalibrationGroupSpot "areaMapping"
+#define kRawColorCalibrationParamSpotMode "spotMode"
+#define kRawColorCalibrationParamSpotUseMixing "spotUseMixing"
+#define kRawColorCalibrationParamSpotInput "spotInput"
+#define kRawColorCalibrationParamSpotLightness "spotLightness"
+#define kRawColorCalibrationParamSpotHue "spotHue"
+#define kRawColorCalibrationParamSpotChroma "spotChroma"
+#define kRawColorCalibrationParamSpotBottomLeft "spotBottomLeft"
+#define kRawColorCalibrationParamSpotSize "spotSize"
+#define kRawColorCalibrationParamPick "pick"
 
 // The tabs.
 #define kRawColorCalibrationTabCat "catTab"
@@ -150,6 +169,75 @@ bool rawColorCalibrationIsRawSource(const ImageMetadata& source);
 bool rawColorCalibrationWhiteBalanceRatio(const ImageMetadata& source,
                                           RawColorCalibrationMath::Vec4* customWb);
 
+/**
+ * @brief The fields of the source's raw/ metadata find_temperature_from_raw_coeffs() reads.
+ **/
+RawColorCalibrationMath::RawCameraWhite rawColorCalibrationCameraWhite(const ImageMetadata& source);
+
+/**
+ * @brief darktable's area mode: correction sets the illuminant that maps the picked area to the
+ * target, measure sets the target to what the node makes of the picked area.
+ **/
+enum RawColorCalibrationSpotModeEnum {
+    eRawColorCalibrationSpotModeCorrection = 0,
+    eRawColorCalibrationSpotModeMeasure,
+};
+
+/**
+ * @brief A CIE LCh(ab) colour against D50: lightness 0 to 100, chroma, hue in degrees.
+ **/
+struct RawColorCalibrationSpotLch {
+    float lightness;
+    float chroma;
+    float hue;
+};
+
+/**
+ * @brief The LCh of the working RGB rgb, which workingToXyzD50 takes to XYZ (D50): the input
+ * report of _auto_set_illuminant().
+ **/
+RawColorCalibrationSpotLch rawColorCalibrationSpotInput(const RawColorCalibrationMath::Vec3& rgb,
+                                                        const RawColorCalibrationMath::Mat3& workingToXyzD50);
+
+/**
+ * @brief _auto_set_illuminant() in measure mode: the LCh of rgb once settings' illuminant is
+ * adapted to D50 and, with useMixing, once the R, G and B rows mix it. camera and customWb serve
+ * the camera illuminant.
+ **/
+RawColorCalibrationSpotLch rawColorCalibrationMeasureSpot(const RawColorCalibrationMath::Vec3& rgb,
+                                                          const RawColorCalibrationMath::Mat3& workingToXyzD50,
+                                                          const RawColorCalibrationMath::Settings& settings,
+                                                          const RawColorCalibrationMath::RawCameraWhite* camera,
+                                                          const RawColorCalibrationMath::Vec4* customWb,
+                                                          bool useMixing);
+
+/**
+ * @brief _auto_set_illuminant() in correction mode: the custom illuminant chromaticity whose
+ * adaptation in settings' space maps the chromaticity of rgb to target's, with useMixing before
+ * the R, G and B rows mix it.
+ **/
+RawColorCalibrationMath::Xy rawColorCalibrationCorrectSpot(const RawColorCalibrationMath::Vec3& rgb,
+                                                           const RawColorCalibrationMath::Mat3& workingToXyzD50,
+                                                           const RawColorCalibrationMath::Settings& settings,
+                                                           const RawColorCalibrationSpotLch& target,
+                                                           bool useMixing);
+
+/**
+ * @brief The adaptation the node applies with settings: the camera illuminant adapts by CAT16.
+ **/
+RawColorCalibrationMath::Adaptation rawColorCalibrationEffectiveAdaptation(const RawColorCalibrationMath::Settings& settings);
+
+/**
+ * @brief One of darktable's built-in presets (init_presets()): every param it stores.
+ **/
+struct RawColorCalibrationPreset {
+    const char* id;
+    const char* label;
+    RawColorCalibrationMath::Settings settings;
+};
+
+const std::vector<RawColorCalibrationPreset>& rawColorCalibrationPresets();
+
 inline constexpr InputSpec kRawColorCalibrationInputs[] = {
     InputSpec { .label = "Source" },
 };
@@ -202,6 +290,21 @@ struct RawColorCalibrationOp {
     RawColorCalibrationMath::Settings settings(const KnobReader& reader) const;
 
     /**
+     * @brief settings(), with the source's defaults in place of the CAT knobs while Override File
+     * Defaults is off: the params the node renders with.
+     **/
+    RawColorCalibrationMath::Settings effectiveSettings(const KnobReader& reader,
+                                                        const ImageMetadata& source) const;
+
+    // The Preset choice and Apply, on page above the tabs.
+    void createPresetKnobs(KnobHolder* holder,
+                           const KnobPagePtr& page);
+
+    // The Area Color Mapping group, at the end of the CAT tab.
+    void createSpotKnobs(KnobHolder* holder,
+                         const KnobGroupPtr& tab);
+
+    /**
      * @brief The matrix from the working space of the project of holder to XYZ (D50); linear
      * Rec. 709's when the project has no matrix to XYZ.
      **/
@@ -224,6 +327,17 @@ struct RawColorCalibrationOp {
     KnobDoubleWPtr rows[eRawColorCalibrationRowCount][3];
     KnobBoolWPtr normalize[eRawColorCalibrationRowCount];
     KnobChoiceWPtr version;
+    KnobChoiceWPtr preset;
+    KnobButtonWPtr applyPreset;
+    KnobChoiceWPtr spotMode;
+    KnobBoolWPtr spotUseMixing;
+    KnobStringWPtr spotInput;
+    KnobDoubleWPtr spotLightness;
+    KnobDoubleWPtr spotHue;
+    KnobDoubleWPtr spotChroma;
+    KnobDoubleWPtr spotBottomLeft;
+    KnobDoubleWPtr spotSize;
+    KnobButtonWPtr pick;
 };
 
 static_assert(PointOp<RawColorCalibrationOp>);
@@ -240,7 +354,23 @@ public:
 
     virtual ~RawColorCalibration();
 
+    /**
+     * @brief Reads the source at full scale over the spot area, keeps the mean of its R, G and B,
+     * and applies it in the area mode (applySpot()), in one undo step. False, changing nothing,
+     * when there is no source or the area misses it.
+     **/
+    bool pickSpot(double time,
+                  ViewIdx view);
+
+    /**
+     * @brief Writes the preset chosen in the Preset knob into every param and turns Override
+     * File Defaults on, in one undo step, as applying a darktable preset does.
+     **/
+    void applyChosenPreset();
+
 private:
+    virtual void initializeKnobs() OVERRIDE FINAL;
+
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,
@@ -286,7 +416,30 @@ private:
     // gui_update() shows the saturation algorithm only for an edit made before version 3.
     void refreshVersionVisibility();
 
+    // While the spot area knobs are at their defaults, moves those defaults to darktable's default
+    // picker box, 2% to 98% of the source's format.
+    void refreshSpotDefaults();
+
+    // _auto_set_illuminant() on the last picked mean: measure writes the target, correction the
+    // custom illuminant, with Override File Defaults on.
+    void applySpot(double time,
+                   ViewIdx view,
+                   bool oneUndoStep);
+
+    // The spot settings changed: in correction mode, map the last pick to the new target, as
+    // _spot_settings_changed_callback() does.
+    void onSpotSettingsChanged(ValueChangedReasonEnum reason);
+
+    // Every param of settings into the knobs, with Override File Defaults on.
+    void writeSettings(const RawColorCalibrationMath::Settings& settings);
+
+    // The knobs' visibility, enabled state, labels and warnings after writing params.
+    void refreshAfterWrite();
+
     RawNodeSupport::OwnedMessage _message;
+    // The mean working RGB of the last pick: kept for the session only, as darktable keeps the
+    // picked colour, so that a change of target re-applies it.
+    std::optional<RawColorCalibrationMath::Vec3> _spotMean;
     RawColorCalibrationMath::Illuminant _lastIlluminant;
     float _lastDaylightTemperature;
     float _lastBlackBodyTemperature;

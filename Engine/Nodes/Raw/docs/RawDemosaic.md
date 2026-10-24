@@ -4,7 +4,7 @@ Tolerance: none recorded.
 
 Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaicing/`, darktable
 `release-5.6.2`), C paths only. The kernels are in `RawKernels.h`:
-- `RawDemosaicBasics.cpp`: PPG, RCD, green equilibration, colour smoothing.
+- `RawDemosaicBasics.cpp`: PPG, RCD, the photosite modes, green equilibration, colour smoothing.
 - `RawDemosaicAmaze.cpp`: AMaZE.
 - `RawDemosaicVng.cpp`: VNG.
 - `RawDemosaicMarkesteijn.cpp`: Markesteijn.
@@ -12,6 +12,12 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
 - Raw in at the prepared stage, image out. The output is RGBA with alpha 1.
 - **Method (Bayer)**: RCD (the default), PPG, AMaZE or VNG4. **Method (X-Trans)**: Markesteijn
   1-pass (the default), Markesteijn 3-pass or VNG.
+- **Photosite modes**, appended to both method lists so saved values keep their meaning:
+  "passthrough (monochrome)" puts each photosite's value in R, G and B; "photosite color (debug)"
+  puts it in its own CFA colour's channel and 0 in the others (darktable's `passthrough.c`). They
+  are Point ops with no halo, and darktable's tiny-image fallback to VNG does not apply to them.
+  Match Greens and Color Smoothing still apply, as in darktable. No GPU path: they keep the node
+  on the CPU. darktable's "Monochrome" (a true mono sensor) is the no-CFA pass-through below.
 - **Match Greens**: Bayer only, darktable's local, full or both averages. The local threshold
   is 0.0001 x `raw/iso`.
 - **Edge Threshold**: PPG's pre-median.
@@ -38,7 +44,8 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
 - It renders at full resolution only, and the host downscales the result for a proxy.
 
 Tests: `Tests/Native/NativeRawDemosaic_Test.cpp`, on synthetic Bayer and X-Trans mosaics. Real
-X-Trans files and darktable-reference comparisons come later.
+X-Trans files and darktable-reference comparisons come later. `NativeRawDemosaicPassthrough_Test.cpp` covers the photosite modes on hand-checked
+Bayer and X-Trans patterns, and their tiles against the full frame.
 
 GPU: PPG and RCD without green equilibration or colour smoothing, and the pass-through of data
 without a CFA, in `Engine/Gpu/Kernels/demosaic_bayer.slang`, following the passes of darktable's

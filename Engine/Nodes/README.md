@@ -588,14 +588,62 @@ nowhere else to go, since it is not part of the graph's result. That is a
 design intent, not current behavior -- `ViewerInstance` declares image inputs
 like every other node here and no flattening exists to run.
 
-## Known limitation: groups are an image barrier
+## Groups resolve kinds from what is inside them
 
-`NodeGroup` declares no kinds of its own, so it takes `EffectInstance`'s
-image/image default: a deep or scene chain inside a group is reported as image
-at the group node's external output, and connecting that output to a deep or
-scene input is rejected. Resolving a group's effective kind from its internal
-`GroupOutput` (and its inputs from the corresponding `GroupInput` nodes) is a
-design decision that has not been made yet.
+A `Group` node, a PyPlug instance (which is a group) and a group nested in a group
+carry whatever kind their inner graph does, for every kind: image, deep, scene and
+raw. `NodeGroup` declares polymorphic inputs and output, and `Node` resolves them
+from the graph instead of from a declaration. Nothing needs to be stated on the
+group, and there are no per-`GroupInput`/`GroupOutput` kind knobs.
+
+- **Output.** A group's effective output kind is the effective kind of whatever
+  feeds its `GroupOutput`, merged under the same rules as an unfed `Dot`. A deep
+  node feeding `GroupOutput` makes the group deep, so a deep-only consumer
+  connects to the group's output and renders the same samples as it would
+  without the group. The group renders nothing itself: `getInput` redirects
+  through it, so the deep render path never sees the group node.
+- **Inputs.** A group input has no declared kind. When it is connected outside, it
+  carries what is connected there; when it is unconnected, it takes what the
+  consumers of its `GroupInput` inside require. A `GroupInput` resolves upstream
+  through the group's real input, one graph up.
+- **Conflicts.** The downstream walk that collects requirements and finds
+  conflicts continues into the matching `GroupInput`'s consumers when it reaches a
+  group's input, and on to the group node's outputs when it reaches a
+  `GroupOutput`. So a mismatch inside a group (say a deep source into a group
+  whose inner consumer takes only image) is refused or reported at the external
+  edge that causes it, with a message naming the inner node that cannot take the
+  data. An unconnected group input whose inner consumer is deep-only is deep, and
+  connecting an image source to it is rejected with
+  `eCanConnectInput_incompatibleDataKind`.
+- **Invalidation.** Resolved kinds are cached per node, and a change anywhere
+  invalidates the connected component in both directions. The walk crosses group
+  boundaries too: a change to what feeds `GroupOutput` invalidates the enclosing
+  group node and goes on to its outputs, and a change to a group's input reaches
+  the `GroupInput` inside. Swapping the node that feeds `GroupOutput` from image
+  to deep therefore flips the group's kind and re-reports the conflicts of the
+  consumers below it. Nested groups propagate both ways, to any depth.
+- **Nested groups** resolve recursively, under the same thread-local cycle guard
+  as every other kind walk.
+- **PyPlugs.** A PyPlug whose inner chain is deep instantiates with a deep output
+  kind and connects to a deep consumer, exactly as the equivalent group does.
+- **Kinds are not serialized.** They stay derived. A project reloads with the same
+  kinds, and conflicts are checked once the whole graph is restored
+  (`Project::reportDataKindConflicts`), so a saved project with a deep chain in a
+  group loads with no spurious conflicts and a genuinely conflicting one reports
+  on load.
+
+Edge cases:
+
+- A group whose `GroupOutput` is unconnected resolves as an unfed polymorphic node
+  does (the usual ambiguity rules): nothing reaches the output, so nothing the
+  inputs carry constrains it.
+- A group input connected outside but unused inside resolves from the external
+  input alone.
+- A group input unconnected outside resolves from what its `GroupInput`'s
+  consumers inside require.
+- Several group inputs of different kinds resolve independently.
+- The explicit-conversion rule above still holds: a group does not convert kinds,
+  it only reports the kind of what is inside it.
 
 ## Testing
 

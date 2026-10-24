@@ -25,6 +25,7 @@
 
 #include "AddLayers.h"
 
+#include <cstddef>
 #include <list>
 #include <memory>
 #include <set>
@@ -47,7 +48,7 @@
 NATRON_NAMESPACE_ENTER
 
 AddLayers::AddLayers(NodePtr node)
-    : NativeEffectBase(node)
+    : ChannelRouteEffect(node)
     , _layers()
     , _subLabel()
     , _registrySignature()
@@ -252,44 +253,34 @@ AddLayers::route(double time,
     return Route::input(0, time);
 }
 
-StatusEnum
-AddLayers::render(const RenderActionArgs& args)
+bool
+AddLayers::channelRoute(double time,
+                        ViewIdx view,
+                        const ImageLayerDesc& plane,
+                        ChannelRoute* route)
 {
-    const Outcome outcome = computeOutcome(args.time, args.view);
+    *route = ChannelRoute();
 
-    // Fetched before any image is locked: fetching renders upstream, which may write into a
-    // cached image this render would otherwise already hold a read lock on.
-    ImagePtr colorSource;
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        if (it->first.isColorLayer() && (outcome.inputStorage.getNumComponents() > 0)) {
-            RectI inputRoI;
-            colorSource = getImage(0, args.time, args.mappedScale, args.view, NULL, &outcome.inputStorage, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
-            break;
+    const Outcome outcome = computeOutcome(time, view);
+    const int nPlaneComps = plane.getNumComponents();
+    route->components.assign((std::size_t)nPlaneComps, ChannelRouteComponent::zero());
+    if (!plane.isColorLayer() || (outcome.inputStorage.getNumComponents() == 0)) {
+        return true;
+    }
+
+    route->sources.push_back(ChannelRouteSource(0, outcome.inputStorage, ChannelRouteSource::eNonFloatConverts));
+    for (int c = 0; (c < nPlaneComps) && (c < 4); ++c) {
+        const int bit = ResolvedLayer::channelBit(plane, c);
+        if (outcome.inputBits[bit]) {
+            route->components[c] = ChannelRouteComponent::colorBit(0, bit);
         }
     }
 
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        const ImageLayerDesc& plane = it->first;
-        const ImagePtr& outImage = it->second;
-        if (!outImage) {
-            continue;
-        }
+    EffectInstancePtr input = getInput(0);
+    route->cpuOnly = input && ((getBitDepth(0) != eImageBitDepthFloat) || (input->getBitDepth(-1) != eImageBitDepthFloat));
 
-        if (!plane.isColorLayer() || !colorSource) {
-            outImage->fillZero(args.roi);
-            continue;
-        }
-
-        const std::vector<int> srcChannels = ChannelCopy::mapColorChannels(plane, *colorSource, outcome.inputBits);
-        Image::ReadAccess src(colorSource.get());
-        const StatusEnum stat = ChannelCopy::copyChannels(&src, colorSource->getBitDepth(), outImage.get(), args.roi, srcChannels, *this);
-        if ((stat != eStatusOK) || aborted()) {
-            return stat;
-        }
-    }
-
-    return eStatusOK;
-} // AddLayers::render
+    return true;
+} // AddLayers::channelRoute
 
 std::string
 AddLayers::buildSubLabel()

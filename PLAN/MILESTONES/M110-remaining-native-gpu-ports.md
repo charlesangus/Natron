@@ -319,6 +319,16 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: at the phase build, `NativeLayersGpu_Test`, `AddLayers_Test`, `AddLayersRender_Test`, `RemoveLayers_Test`, `RemoveLayersRender_Test`, `TimeVaryingLayers_Test`, `DeepChannelNodes_Test` (the deep nodes share the `ChannelCopy` helpers) and `NativeGpuCapability_Test` pass on lavapipe, with the CPU suites unchanged.
   - size: L
 
+- [ ] M110.P3.T4 — Make a routing node present only its active input's layers, colour layout included, at each frame
+  - files: `Engine/EffectInstance.{h,cpp}`, `Engine/Nodes/Image/StagedImageEffect.{h,cpp}`, `Tests/Native/NativeLayersGpu_Test.cpp`, `Tests/TimeVaryingLayers_Test.cpp`
+  - approach: Add a virtual `presentsOnlyPassThroughLayers(time, view)`, default false. `StagedImageEffect` answers true for Route ops whose `route()` is Input at that time. When it is true, `getComponentsNeededAndProduced_public` takes the disabled-node branch: produce nothing, and pass through the routed input's layers at the routed time, colour layout included. A Switch routed to a colourless input then presents no colour. `NodeMetadata` stays time-invariant until the per-frame metadata milestone lands.
+  - verify: at the phase build, the following all pass on lavapipe in both legs:
+    - `d40ab5123`'s narrowing reverted, so the Layers GPU Switch cases vary colour by frame (rgb+spec at f1, rgba at f2) and match CPU and GPU;
+    - a new `TimeVaryingLayers_Test` case: Switch present layers are RGB at f1 and RGBA at f2, and none for a colourless input;
+    - the Switch, TimeVaryingLayers, scheduler-equivalence and cache-equivalence suites.
+    The viewer shows an RGB frame of an RGBA-metadata Switch correctly; check it in the UAT.
+  - size: M
+
 **Phase gate:** a single `tools/ci/remote/build.sh fast --tests` passes, including the three tasks' tests on lavapipe.
 
 ## Phase 110.4: Acceptance chain, docs and the GPU host
@@ -502,3 +512,4 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **Not covered:** a pass-through node as the render root stays an unplanned pull.
 - 2026-10-24 — **A Switch must pass through only its active input's layers, colour layout included, at each frame** (user). Today it presents the widest colour layout of all its inputs at every frame, because metadata is time-invariant. That is a bug, not a constraint to test around. `d40ab5123`'s Layers tests, which vary only non-colour layers, are a stopgap. A consultant is scoping the fix: one M110 task, or its own milestone. Once it lands, the tests go back to varying the colour layout by frame.
 - 2026-10-24 — **Node metadata must not be time-invariant** (user: "Node metadata should absolutely not be the same at every frame, there's no reason that should be the case"). This widens the Switch ruling: components and colour layout, PAR, fps, premult and the rest should be per frame for every node. It is architecture work beyond M110's scope, so the consultant is scoping it as its own milestone, with the Switch fix possibly riding on it. The new milestone goes to `/cat-plan` through the inbox.
+- 2026-10-24 — **M110.P3.T4 inserted (PM, consultant-scoped)** to apply the user's Switch ruling now. Per-frame layers go through the components path, which is already keyed on (hash, time, view). This needs no time-varying `NodeMetadata`, so it ships ahead of the per-frame metadata milestone, which goes to `/cat-plan` through the inbox. Remaining gap until that milestone: the Switch's metadata, which the Viewer, Write and OFX clips read, still declares the widest input.

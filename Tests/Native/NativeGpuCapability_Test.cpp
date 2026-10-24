@@ -54,6 +54,7 @@
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Nodes/Transform/Transform.h"
@@ -87,6 +88,7 @@ gpuCapableIds()
         PLUGINID_NATRON_TRANSFORMMASKED,
         PLUGINID_NATRON_REFORMAT,
         PLUGINID_NATRON_POSITION,
+        PLUGINID_NATRON_CROP,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_DISSOLVE,

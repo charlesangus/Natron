@@ -810,17 +810,21 @@ canRecordResampleGpu(const EffectInstance& effect,
 #endif
 }
 
-RectI
-resampleGpuSourceRoI(const EffectInstance& effect,
-                     int sourceInput,
-                     double time,
-                     ViewIdx view,
-                     const RectI& outputRect,
-                     const RenderScale& scale)
+namespace {
+// The source's entry of the node's regions of interest over outputRect, in canonical
+// coordinates; false without a connected source, for an empty outputRect, or when the node
+// names no region for the source.
+bool
+sourceCanonicalRoI(const EffectInstance& effect,
+                   const EffectInstancePtr& input,
+                   double time,
+                   ViewIdx view,
+                   const RectI& outputRect,
+                   const RenderScale& scale,
+                   RectD* roi)
 {
-    EffectInstancePtr input = (sourceInput >= 0) ? effect.getInput(sourceInput) : EffectInstancePtr();
     if (!input || outputRect.isNull()) {
-        return outputRect;
+        return false;
     }
     const RectD window = outputRect.toCanonical_noClipping(scale.toMipmapLevel(), effect.getAspectRatio(-1));
     // The region actions only read knobs and the inputs' regions of definition.
@@ -834,10 +838,31 @@ resampleGpuSourceRoI(const EffectInstance& effect,
     self.getRegionsOfInterest_public(time, scale, rod, window, view, &rois);
     RoIMap::const_iterator found = rois.find(input);
     if (found == rois.end()) {
+        return false;
+    }
+    *roi = found->second;
+
+    return true;
+}
+} // anonymous namespace
+
+RectI
+resampleGpuSourceRoI(const EffectInstance& effect,
+                     int sourceInput,
+                     double time,
+                     ViewIdx view,
+                     const RectI& outputRect,
+                     const RenderScale& scale)
+{
+    EffectInstancePtr input = (sourceInput >= 0) ? effect.getInput(sourceInput) : EffectInstancePtr();
+    RectD roi;
+    if (!sourceCanonicalRoI(effect, input, time, view, outputRect, scale, &roi)) {
         return outputRect;
     }
 
-    return clampedPixelEnclosing(found->second, scale, effect.getAspectRatio(sourceInput));
+    // The source renders its region of interest in its own pixels, as the CPU's request pass
+    // asks it to, even when this node's source clip reports another pixel aspect ratio.
+    return clampedPixelEnclosing(roi, scale, input->getAspectRatio(-1));
 }
 
 StatusEnum
@@ -875,9 +900,19 @@ recordResampleGpu(EffectInstance& effect,
         }
         RectD srcRoD;
         if (sourceRegionOfDefinition(input, time, scale, query.view, &srcRoD)) {
-            RectI valid = intersectPixels(inputView.bounds, clampedPixelEnclosing(srcRoD, scale, effect.getAspectRatio(sourceInput)));
-            if (matrix || request.clipSourceToRoI) {
+            RectI valid = intersectPixels(inputView.bounds, clampedPixelEnclosing(srcRoD, scale, input->getAspectRatio(-1)));
+            if (matrix) {
                 valid = intersectPixels(valid, resampleGpuSourceRoI(effect, sourceInput, time, query.view, rect, scale));
+            } else if (request.clipSourceToRoI) {
+                // runResampleCpu() clips to the region getImage() reports, which encloses the
+                // region of interest at the source clip's pixel aspect ratio. A node that does not
+                // take several clip ratios reports its own there, whatever the source renders in.
+                RectD roi;
+                if (sourceCanonicalRoI(effect, input, time, query.view, rect, scale, &roi)) {
+                    valid = intersectPixels(valid, clampedPixelEnclosing(roi, scale, effect.getAspectRatio(sourceInput)));
+                } else {
+                    valid = intersectPixels(valid, rect);
+                }
             }
             source = PassExec::cropGpuView(inputView, valid);
         }

@@ -633,8 +633,11 @@ has no row there: `isViewerOnlyAdapter` allows raw to image only into a
 its virtual answers, and needs a `RawToImage` upstream. The Viewer asks a raw
 input for its own plane, whatever layer the Viewer is set to, and shows it
 through `RawDisplay` (`Engine/Nodes/Raw/RawDisplay.*`, shared with
-`RawToImage`). The values are kept as they are, with no demosaic: a mosaic
-shows as grey and linear raw shows its channels, with alpha 1. The info line
+`RawToImage`). There is no demosaic: a mosaic shows as grey and linear raw
+shows its channels, with alpha 1. The Viewer alone scales a `raw`-stage edge
+to 0-1 for display, subtracting the black level of each photosite's colour and
+dividing by white minus black (nothing is scaled without a white level, and a
+`prepared` stream already is 0-1); `RawToImage` keeps the sensor's values. The info line
 reads "RAW mosaic" or "RAW linear" instead of the layer and depth.
 
 ## Groups resolve kinds from what is inside them

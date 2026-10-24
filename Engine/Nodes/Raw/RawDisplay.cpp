@@ -25,6 +25,7 @@
 
 #include "RawDisplay.h"
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string>
@@ -49,6 +50,39 @@ modeOf(const ImageMetadata& metadata,
     return (nComps <= 1) ? eModeMosaic : eModeLinear;
 }
 
+double
+Normalisation::blackAt(int x,
+                       int y,
+                       int channel) const
+{
+    if (black.empty()) {
+        return 0.;
+    }
+    std::size_t index = (std::size_t)channel;
+    if (layout.hasCfa()) {
+        index = (std::size_t)((((y - layout.originY()) & 1) * 2) + ((x - layout.originX()) & 1));
+    }
+
+    return black[index % black.size()];
+}
+
+std::optional<Normalisation>
+normalisationOf(const ImageMetadata& metadata)
+{
+    const std::optional<RawStageEnum> stage = RawMetadata::getStage(metadata);
+    const std::optional<double> white = RawMetadata::getWhiteLevel(metadata);
+
+    if (!stage || (*stage != eRawStageRaw) || !white) {
+        return std::nullopt;
+    }
+    Normalisation n;
+    n.layout = RawLayout::fromMetadata(metadata).value_or(RawLayout());
+    n.black = RawMetadata::getBlackLevels(metadata).value_or(std::vector<double>());
+    n.white = *white;
+
+    return n;
+}
+
 const char*
 label(ModeEnum mode)
 {
@@ -58,7 +92,8 @@ label(ModeEnum mode)
 void
 convert(const Image& src,
         Image* dst,
-        const RectI& window)
+        const RectI& window,
+        const Normalisation* normalisation)
 {
     if (!dst || (src.getBitDepth() != eImageBitDepthFloat) || (dst->getBitDepth() != eImageBitDepthFloat)) {
         return;
@@ -82,7 +117,19 @@ convert(const Image& src,
             if ((x >= srcBounds.x1) && (x < srcBounds.x2) && (y >= srcBounds.y1) && (y < srcBounds.y2)) {
                 const float* srcPixel = (const float*)in.pixelAt(x, y);
                 if (srcPixel) {
-                    toRgba(srcPixel, srcComps, rgba);
+                    float value[4] = { 0.f, 0.f, 0.f, 0.f };
+                    const int n = std::min(srcComps, 4);
+                    for (int c = 0; c < n; ++c) {
+                        value[c] = srcPixel[c];
+                        if (normalisation) {
+                            const double black = normalisation->blackAt(x, y, c);
+                            const double span = normalisation->white - black;
+                            if (span != 0.) {
+                                value[c] = (float)((srcPixel[c] - black) / span);
+                            }
+                        }
+                    }
+                    toRgba(value, n, rgba);
                 }
             }
             for (int c = 0; c < dstComps; ++c) {
@@ -93,13 +140,14 @@ convert(const Image& src,
 }
 
 ImagePtr
-toDisplayImage(const ImagePtr& src)
+toDisplayImage(const ImagePtr& src,
+               const Normalisation* normalisation)
 {
     if (!src) {
         return ImagePtr();
     }
     ImagePtr dst = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), src->getRoD(), src->getBounds(), src->getMipmapLevel(), src->getPixelAspectRatio(), eImageBitDepthFloat, src->getFieldingOrder(), false);
-    convert(*src, dst.get(), src->getBounds());
+    convert(*src, dst.get(), src->getBounds(), normalisation);
 
     return dst;
 }

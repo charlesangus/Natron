@@ -1400,6 +1400,7 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
         if (outArgs->rawUpstream) {
             NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(outArgs->activeInputToRender.get());
             const ImageMetadata metadata = native ? native->getOutputMetadata(time, view) : ImageMetadata();
+            outArgs->rawNormalisation = RawDisplay::normalisationOf(metadata);
             rawLabel = RawDisplay::label(RawDisplay::modeOf(metadata, outArgs->activeInputToRender->getMetadataNComps(-1)));
         }
         std::lock_guard<std::mutex> lock(_rawDisplayLabelMutex);
@@ -1781,7 +1782,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }*/
 
         if (inArgs.rawUpstream && colorImage) {
-            colorImage = RawDisplay::toDisplayImage(colorImage);
+            colorImage = RawDisplay::toDisplayImage(colorImage, inArgs.rawNormalisation ? &*inArgs.rawNormalisation : nullptr);
             inArgs.params->colorImage = colorImage;
             alphaImage = (inArgs.channels == eDisplayChannelsMatte) ? colorImage : ImagePtr();
         }

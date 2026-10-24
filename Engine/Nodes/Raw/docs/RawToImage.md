@@ -13,7 +13,7 @@ without it.
     value;
   - linear raw keeps its channels (three as red, green and blue, one as grey);
   - alpha is 1.
-- No demosaic, scaling or colour: the values stay in the raw data's units, so an unprepared
+- No demosaic, scaling or colour (unlike the Viewer, which scales a raw-stage edge to 0-1 for display): the values stay in the raw data's units, so an unprepared
   mosaic is in sensor counts. Use RawPrepare, RawDemosaic and RawInputColor to develop it.
 - The region of definition is the source's. Renders at full resolution only, since a mosaic
   resampled to a coarser level mixes the colours of its photosites.

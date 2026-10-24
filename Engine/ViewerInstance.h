@@ -30,9 +30,11 @@
 
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Raw/RawDisplay.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/SchedulerEligibility.h"
@@ -50,6 +52,7 @@ public:
     EffectInstancePtr activeInputToRender;
     bool deepUpstream;
     bool rawUpstream = false;
+    std::optional<RawDisplay::Normalisation> rawNormalisation;
     bool forceRender;
     int activeInputIndex;
     U64 activeInputHash;

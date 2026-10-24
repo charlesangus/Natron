@@ -28,6 +28,7 @@
 #include <cstring>
 #include <list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/RawDecodeSupport.h"
+#include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
 #include "Engine/Project.h"
@@ -93,7 +95,7 @@ protected:
     }
 
     // What the Viewer shows of a raw input over window: the input's own plane, as the Viewer asks
-    // for it, through RawDisplay.
+    // for it, through RawDisplay, scaled as the Viewer scales it.
     ImagePtr displayed(const NodePtr& input,
                        const RectI& window,
                        std::string* error)
@@ -116,7 +118,28 @@ protected:
             }
         }
 
-        return RawDisplay::toDisplayImage(raw);
+        NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(effect.get());
+        const std::optional<RawDisplay::Normalisation> normalisation = native ? RawDisplay::normalisationOf(native->getOutputMetadata(0., ViewIdx(0))) : std::nullopt;
+        EXPECT_TRUE(normalisation.has_value());
+
+        return RawDisplay::toDisplayImage(raw, normalisation ? &*normalisation : nullptr);
+    }
+
+    // The value the Viewer shows for the sensor value v of channel c at (x, y).
+    static float expectedShown(const ImageMetadata& metadata,
+                               int x,
+                               int y,
+                               int c,
+                               float v)
+    {
+        const std::optional<RawDisplay::Normalisation> n = RawDisplay::normalisationOf(metadata);
+        EXPECT_TRUE(n.has_value());
+        if (!n) {
+            return v;
+        }
+        const double black = n->blackAt(x, y, c);
+
+        return (float)((v - black) / (n->white - black));
     }
 };
 
@@ -175,18 +198,23 @@ TEST_F(ViewerRawTest, MosaicDisplaysAsGreyWithTheMosaicValues)
 
         std::vector<float> mosaic((std::size_t)window.area());
         ASSERT_TRUE(RawDecodeSupport::decode(fixture->path(), window, mosaic.data(), (std::size_t)window.width(), &error)) << error;
+        const ImageMetadata metadata = effect->getOutputMetadata(0., ViewIdx(0));
         Image::ReadAccess access(shown.get());
         std::size_t mismatches = 0;
+        bool varies = false;
         for (int y = window.y1; y < window.y2; ++y) {
             for (int x = window.x1; x < window.x2; ++x) {
                 const float* rgba = (const float*)access.pixelAt(x, y);
-                const float value = mosaic[(std::size_t)(y - window.y1) * (std::size_t)window.width() + (std::size_t)(x - window.x1)];
+                const float raw = mosaic[(std::size_t)(y - window.y1) * (std::size_t)window.width() + (std::size_t)(x - window.x1)];
+                const float value = expectedShown(metadata, x, y, 0, raw);
+                varies = varies || (value != raw);
                 if ((rgba[0] != value) || (rgba[1] != value) || (rgba[2] != value) || (rgba[3] != 1.f)) {
                     ++mismatches;
                 }
             }
         }
         EXPECT_EQ(0u, mismatches);
+        EXPECT_TRUE(varies) << "the display differs from the sensor values";
         EXPECT_FALSE(read->hasPersistentMessage());
     }
 }
@@ -220,7 +248,8 @@ TEST_F(ViewerRawTest, LinearDngDisplaysItsThreeChannels)
         for (int x = window.x1; x < window.x2; ++x) {
             const float* rgba = (const float*)access.pixelAt(x, y);
             const float* want = linear.data() + ((std::size_t)(y - window.y1) * (std::size_t)window.width() + (std::size_t)(x - window.x1)) * 3;
-            if ((rgba[0] != want[0]) || (rgba[1] != want[1]) || (rgba[2] != want[2]) || (rgba[3] != 1.f)) {
+            const ImageMetadata metadata = effect->getOutputMetadata(0., ViewIdx(0));
+            if ((rgba[0] != expectedShown(metadata, x, y, 0, want[0])) || (rgba[1] != expectedShown(metadata, x, y, 1, want[1])) || (rgba[2] != expectedShown(metadata, x, y, 2, want[2])) || (rgba[3] != 1.f)) {
                 ++mismatches;
             }
             channelsDiffer = channelsDiffer || (want[0] != want[1]) || (want[1] != want[2]);
@@ -228,4 +257,56 @@ TEST_F(ViewerRawTest, LinearDngDisplaysItsThreeChannels)
     }
     EXPECT_EQ(0u, mismatches);
     EXPECT_TRUE(channelsDiffer) << "the three channels are shown, not one of them as grey";
+}
+
+TEST_F(ViewerRawTest, NormalisationScalesARawStageMosaicByTheBlackOfEachColour)
+{
+    ImageMetadata metadata;
+    RawLayout::fromPattern("RGGB", 0, 0)->writeTo(&metadata);
+    RawMetadata::setBlackLevels(&metadata, { 10., 20., 30., 40. });
+    RawMetadata::setWhiteLevel(&metadata, 110.);
+    RawMetadata::setStage(&metadata, eRawStageRaw);
+    const std::optional<RawDisplay::Normalisation> n = RawDisplay::normalisationOf(metadata);
+    ASSERT_TRUE(n.has_value());
+
+    const RectI bounds(0, 0, 4, 4);
+    ImagePtr src = std::make_shared<Image>(ImageLayerDesc::getAlphaComponents(), RectD(0, 0, 4, 4), bounds, 0, 1., eImageBitDepthFloat, eImageFieldingOrderNone, false);
+    {
+        Image::WriteAccess access(src.get());
+        for (int y = 0; y < 4; ++y) {
+            for (int x = 0; x < 4; ++x) {
+                *(float*)access.pixelAt(x, y) = 60.f;
+            }
+        }
+    }
+    const ImagePtr shown = RawDisplay::toDisplayImage(src, &*n);
+    const ImagePtr kept = RawDisplay::toDisplayImage(src);
+    Image::ReadAccess shownAccess(shown.get());
+    Image::ReadAccess keptAccess(kept.get());
+    const float blacks[4] = { 10.f, 20.f, 30.f, 40.f };
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            const float black = blacks[(y & 1) * 2 + (x & 1)];
+            const float* rgba = (const float*)shownAccess.pixelAt(x, y);
+            EXPECT_NEAR((60.f - black) / (110.f - black), rgba[0], 1e-6f);
+            EXPECT_EQ(rgba[0], rgba[1]);
+            EXPECT_EQ(rgba[0], rgba[2]);
+            EXPECT_EQ(60.f, ((const float*)keptAccess.pixelAt(x, y))[0]);
+        }
+    }
+}
+
+TEST_F(ViewerRawTest, NormalisationPreparedStreamsAndMissingMetadataAreNotScaled)
+{
+    ImageMetadata metadata;
+    RawMetadata::setBlackLevels(&metadata, { 10. });
+    RawMetadata::setWhiteLevel(&metadata, 110.);
+    EXPECT_FALSE(RawDisplay::normalisationOf(metadata).has_value());
+
+    RawMetadata::setStage(&metadata, eRawStagePrepared);
+    EXPECT_FALSE(RawDisplay::normalisationOf(metadata).has_value());
+
+    ImageMetadata noWhite;
+    RawMetadata::setStage(&noWhite, eRawStageRaw);
+    EXPECT_FALSE(RawDisplay::normalisationOf(noWhite).has_value());
 }

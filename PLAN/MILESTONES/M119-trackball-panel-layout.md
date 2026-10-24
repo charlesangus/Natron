@@ -196,7 +196,9 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
 
 - [x] M119.P2.T1 — Package the spike AppImage and write the test card
   - files: none in the tree (`build/appimages/`, the test card goes in the PM's message to the user)
-  - approach: `package.sh` on the `fast` build. The test card says to launch with `NATRON_COLOR_PANEL_DEV=1`, lists the six axes (the four layout axes plus Feedback and Puck) and what each does, the measured wheel size and track length per combination at the default width, and the questions: which combination wins, which Feedback value and Puck behaviour win (and whether the graphic's 240 px and the HUD's offset are right), and whether the 320 px cap and the 160 px floor are right. Share the key screenshots before the AppImage. Record the user's pick and any tuning in `## Decisions`, then re-check Phase 119.3's briefs against it (PLAN-FORMAT.md §5a).
+  - approach: `package.sh` on the `fast` build. The test card says to launch with `NATRON_COLOR_PANEL_DEV=1`, lists the six axes (the four layout axes plus Feedback and Puck) and what each does, the measured wheel size and track length per combination at the default width, and the questions: which combination wins, which Feedback value and Puck behaviour win (and whether the graphic's 240 px and the HUD's offset are right), and whether the 320 px cap and the 160 px floor are right. Share the key screenshots before the AppImage. Record the user's pick and any tuning in `## Decisions`
+- 2026-10-24 — **UAT round 3 (user):** Regular is a bit small and Large too large, and in Regular the sliders don't fill the space. Replace Regular/Large with a preference of 1/2, 1/3, 1/4 or 1/5 of the horizontal space; the wheel sits flush left, the sliders take the rest, and the wheel is never smaller than the sliders' height. The open toggle still becomes a colour swatch: it must be the vertical mirror of the dropdown icon. A knob with its panel open needs clearer identification, e.g. a sunken look over the whole knob. PM calls: default 1/3; the sunken look is one frame around the row and its panel. Phase 119.5 added.
+, then re-check Phase 119.3's briefs against it (PLAN-FORMAT.md §5a).
   - verify: the AppImage launches with `--version`; the user's pick is recorded in `## Decisions`.
   - size: S
 
@@ -298,7 +300,33 @@ Design reference: `build/m119-mockup/` in the lane (mockup.py, NOTES.md, hud-{C,
   - verify: ctest green; results.txt no FAIL; the user approves on the AppImage.
   - size: M
 
-**Verification gate:** full ctest green; `Tests/gui/m119_trackball_layout.py` reports no FAIL, and in it the split HUD labels sit outside the ring per mode, the cursor returns to the stroke's start on release, and a right-click ends global mode with the cursor restored and no context menu; both feedback preferences and both track sizes work live on the AppImage; the wheel is larger than 160 px at the default width in Regular and larger still in Large; the S/T/V discs show the drag result and S follows the value live; the panel toggle shows ▴ while open; no `NATRON_COLOR_PANEL_DEV`, `ColorPanelLayout`, bin-top, vertical-slider or absolute-puck code remains; the user approved on an AppImage.
+## Phase 119.5: Fractional wheel width, filling sliders, toggle icon, sunken open knob (UAT round 3)
+
+- [ ] M119.P5.T1 — Wheel width as a fraction of the row; sliders fill the rest
+  - files: the track-size preference in `Engine/Settings.{h,cpp}` (today Regular/Large), `Gui/ColorAdjustPanel*.cpp` (`ColorAdjustPanelPrivate::updateWheelSize`), `Tests/` tests of the panel layout and setting
+  - approach: replace Regular/Large with a choice of 1/2, 1/3, 1/4, 1/5 of the panel's horizontal space (default 1/3). The wheel sits flush left; its diameter is that fraction of the available width, but never less than the total height of the slider column beside it. The sliders take all remaining width and stretch with the panel. The setting applies live. No migration of the old value (clean break).
+  - verify: GuiTests: at 1/2, 1/3, 1/4 and 1/5 the wheel's width is the fraction of the row within 2 px, flush left; sliders end at the row's right edge; at a narrow width the wheel equals the slider column's height.
+  - size: L
+
+- [ ] M119.P5.T2 — The open panel's toggle is the vertical mirror of the dropdown icon, never a colour swatch
+  - files: `Gui/KnobGuiColor.cpp` (`refreshAdjustPanelToolTip(bool)`, the swatch/button refresh path), `Gui/Resources/Images/chevrons-up.svg`, `NATRON_PIXMAP_COLOR_ADJUST_DROPUP`
+  - approach: find why the button still shows a colour swatch while the panel is open (a swatch refresh on value change likely repaints the button after P3.T11 set the icon) and make the open state always show the up icon. The up icon is the down icon mirrored vertically, generated from the same source so the two match exactly.
+  - verify: GuiTests: with the panel open, after a value change and after a slider drag, the button's icon equals the down icon flipped vertically (pixel compare); closed, it is the down icon.
+  - size: M
+
+- [ ] M119.P5.T3 — A knob with its panel open reads as one sunken block
+  - files: `Gui/KnobGuiColor.cpp`, the panel container, the knob row's widget/styles
+  - approach: while the panel is open, the knob's row and its panel are drawn together as one sunken area: a single frame around both with a slightly darker background and an inset edge, so it stands apart from neighbouring knobs. Closed, the row looks as today.
+  - verify: GuiTests: open, the frame encloses the knob row and the panel; closed, no frame. Screenshots to the user.
+  - size: M
+
+- [ ] M119.P5.T4 — Build, evidence script and approval AppImage
+  - files: `Tests/gui/m119_trackball_layout.py`
+  - approach: update the size section to the four fractions, add a toggle-icon check and a sunken-block shot; one release build with tests; Xvfb run; share screenshots, then the AppImage.
+  - verify: ctest green; results.txt no FAIL; the user approves.
+  - size: M
+
+**Verification gate:** full ctest green; `Tests/gui/m119_trackball_layout.py` reports no FAIL, and in it the split HUD labels sit outside the ring per mode, the cursor returns to the stroke's start on release, and a right-click ends global mode with the cursor restored and no context menu; both feedback preferences and all four wheel fractions work live on the AppImage; the wheel takes its fraction of the row (never less than the sliders' height), flush left, and the sliders fill the rest; the open panel's toggle is the mirrored dropdown icon and the open knob reads as one sunken block; the S/T/V discs show the drag result and S follows the value live; no `NATRON_COLOR_PANEL_DEV`, `ColorPanelLayout`, bin-top, vertical-slider or absolute-puck code remains; the user approved on an AppImage.
 
 ## Decisions
 

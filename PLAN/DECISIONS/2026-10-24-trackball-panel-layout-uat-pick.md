@@ -1,0 +1,3 @@
+# Trackball panel layout: UAT pick (2026-10-24)
+
+Answers the open question on M119 - Trackball Panel Layout's P2.T1 UAT. The colour panel keeps one layout: stretched left and right, custom sliders that are a relative drag across their whole length, placed in the knob, with a relative puck. A preference chooses between two global-mode feedback styles (crosshair with the reveal graphic, or the widget cursor), and another between Regular and Large track sizes; Large enlarges the wheel and stacks the RGBA and H/S/V/Temp/Tint sliders beside it. The S/T/V reveal rings show what the drag does rather than a plain colour ring. Full detail is in M119's `## Decisions`.

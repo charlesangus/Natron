@@ -101,3 +101,7 @@
   - An OFX node's clip preferences are computed once per hash, and OFX tests are unchanged.
   - Metadata is queried off the main thread with no deadlock or stale value (M144's acceptance).
   - Scheduler-equivalence, cache-equivalence and TimeVaryingLayers suites are green.
+
+### 2026-10-24T14:56:00Z — info
+- refs: none
+- The user, during M110 - Remaining Native GPU Ports (2026-10-24 13:15Z): "nodes are not supposed to be holding premult information either, that was supposed to be ripped out". The board has M43 - Drop Premult Concept as `cancelled`, and premult state is still in main (e.g. `ImagePremultiplicationEnum`, `getOutputPremultiplication`, OFX `kOfxImageEffectPropPreMultiplication` in Engine). Planning needs to reconcile the cancellation with the user's statement: revive M43 or file a new milestone to remove premult from node metadata. The per-frame metadata stub above already leaves premult out.

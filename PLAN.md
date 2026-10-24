@@ -91,7 +91,7 @@ future core work has solid ground to build on.
 | M58 | Write Multiplane Pixel Bug | done |  |  | E4 | [M58-write-multiplane-pixel-data-bug.md](PLAN/MILESTONES/M58-write-multiplane-pixel-data-bug.md) |
 | M59 | Pre-Commit Auto-Format | done |  |  | E2 | [M59-pre-commit-auto-format.md](PLAN/MILESTONES/M59-pre-commit-auto-format.md) |
 | M38 | Layer Channel Widget | done |  |  | E4 | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
-| M43 | ~~Drop Premult Concept~~ | cancelled |  |  | E4 | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
+| M43 | Drop Premult Concept | todo | - |  | E4 | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M34 | Native Shuffle Node | done |  |  | E4 | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M61 | Time-Varying Layers | done |  |  | E4 | [M61-layers-that-vary-with-time.md](PLAN/MILESTONES/M61-layers-that-vary-with-time.md) |
 | M65 | RGBA Layers | done |  |  | E4 | [M65-rgba-rgb-alpha-layers.md](PLAN/MILESTONES/M65-rgba-rgb-alpha-layers.md) |

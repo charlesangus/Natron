@@ -198,8 +198,9 @@ public:
     }
 
     /**
-     * @brief What opening the bundle found wrong without refusing it: an unreadable or stale
-     * manifest, members ignored outside the root.
+     * @brief What opening the bundle found wrong without refusing it: an unreadable manifest,
+     * members ignored outside the root. A stale manifest is reported by readProject(), which
+     * knows which absent members project.yaml names.
      **/
     const YamlWarnings& warnings() const
     {
@@ -209,10 +210,12 @@ public:
     std::string_view projectYaml() const;
 
     /**
-     * @brief Decodes project.yaml. warnings receives warnings() first, then what decoding
-     * reports: a blob member project.yaml names that the bundle lacks leaves that item's data
-     * empty. A project.yaml from a newer Natron throws YamlNewerFormatError; anything else that
-     * does not decode throws YamlError.
+     * @brief Decodes project.yaml. warnings receives warnings() first, then one warning for a
+     * manifest that does not match the members, then what decoding reports: a blob member
+     * project.yaml names that the bundle lacks leaves that item's data empty. Such a member is
+     * reported there only, even when the manifest lists it, so each problem is reported once.
+     * A project.yaml from a newer Natron throws YamlNewerFormatError; anything else that does
+     * not decode throws YamlError.
      **/
     ProjectSerialization readProject(YamlWarnings* warnings = nullptr) const;
 
@@ -230,9 +233,17 @@ private:
     std::optional<ZipReader> _archive;
     std::unique_ptr<DirectorySource> _directory;
     std::string _root;
+    struct ManifestMismatch {
+        std::string name;
+        bool absent;
+    };
+
     BundleManifest _manifest;
     bool _hasManifest = false;
     YamlWarnings _warnings;
+    std::vector<ManifestMismatch> _manifestMismatches;
+    // The members findMember() was asked for and did not find, while readProject() decodes.
+    mutable std::vector<std::string> _missingLookups;
 };
 
 } // namespace Serialization

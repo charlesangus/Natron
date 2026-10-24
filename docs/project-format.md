@@ -301,6 +301,8 @@ column tables. In `project.yaml` the table's descriptor is a flow map:
   descriptor as `data:`, a base64 `!!binary` scalar holding the same bytes.
 
 If a named blob is missing from the bundle, the loader warns and leaves that item's data empty.
+That is the only warning for it: the stale-manifest warning leaves out a listed blob that
+`project.yaml` names, and lists one that nothing names.
 
 The blob itself is little-endian (`Serialization/Bundle/BlobTable.*`). The columns are typed
 arrays stored one after the other (structure of arrays):

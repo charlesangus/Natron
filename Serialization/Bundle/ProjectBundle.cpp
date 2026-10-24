@@ -354,10 +354,6 @@ ProjectBundleReader::readManifest()
     _hasManifest = true;
     _warnings.insert(_warnings.end(), decodeWarnings.begin(), decodeWarnings.end());
 
-    // A blob that is listed but absent is reported once, when the item that needs it is read,
-    // so it is not repeated here as a stale manifest.
-    auto isBlob = [](const std::string& name) { return name.starts_with("blobs/"); };
-    std::vector<std::string> mismatches;
     for (const BundleManifestMember& listed : _manifest.members) {
         const std::string name = _root + listed.name;
         std::uint32_t size = 0;
@@ -365,9 +361,7 @@ ProjectBundleReader::readManifest()
         if (_directory) {
             const std::optional<std::span<const std::byte>> data = _directory->findMember(name);
             if (!data) {
-                if (!isBlob(listed.name)) {
-                    mismatches.push_back(listed.name + " is missing");
-                }
+                _manifestMismatches.push_back({ listed.name, true });
                 continue;
             }
             size = static_cast<std::uint32_t>(std::min<std::size_t>(data->size(), UINT32_MAX));
@@ -375,20 +369,15 @@ ProjectBundleReader::readManifest()
         } else {
             const ZipMember* member = _archive->find(name);
             if (!member) {
-                if (!isBlob(listed.name)) {
-                    mismatches.push_back(listed.name + " is missing");
-                }
+                _manifestMismatches.push_back({ listed.name, true });
                 continue;
             }
             size = member->size;
             crc = member->crc32;
         }
         if ((size != listed.size) || (crc != listed.crc32)) {
-            mismatches.push_back(listed.name + " differs");
+            _manifestMismatches.push_back({ listed.name, false });
         }
-    }
-    if (!mismatches.empty()) {
-        _warnings.push_back("manifest.yaml does not match the project's members, so it is probably out of date: " + listNames(mismatches));
     }
 }
 
@@ -403,17 +392,41 @@ ProjectBundleReader::projectYaml() const
 ProjectSerialization
 ProjectBundleReader::readProject(YamlWarnings* warnings) const
 {
-    if (warnings) {
-        warnings->insert(warnings->end(), _warnings.begin(), _warnings.end());
+    _missingLookups.clear();
+    YamlWarnings decodeWarnings;
+    ProjectSerialization project = decodeProjectYaml(projectYaml(), *this, &decodeWarnings);
+    if (!warnings) {
+        return project;
     }
 
-    return decodeProjectYaml(projectYaml(), *this, warnings);
+    // An absent member that project.yaml names was already reported, with the item it empties,
+    // while decoding; the manifest check reports every other mismatch.
+    std::vector<std::string> mismatches;
+    for (const ManifestMismatch& mismatch : _manifestMismatches) {
+        if (!mismatch.absent) {
+            mismatches.push_back(mismatch.name + " differs");
+        } else if (std::find(_missingLookups.begin(), _missingLookups.end(), mismatch.name) == _missingLookups.end()) {
+            mismatches.push_back(mismatch.name + " is missing");
+        }
+    }
+    warnings->insert(warnings->end(), _warnings.begin(), _warnings.end());
+    if (!mismatches.empty()) {
+        warnings->push_back("manifest.yaml does not match the project's members, so it is probably out of date: " + listNames(mismatches));
+    }
+    warnings->insert(warnings->end(), decodeWarnings.begin(), decodeWarnings.end());
+
+    return project;
 }
 
 std::optional<std::span<const std::byte>>
 ProjectBundleReader::findMember(std::string_view path) const
 {
-    return rawMember(_root + std::string(path));
+    std::optional<std::span<const std::byte>> bytes = rawMember(_root + std::string(path));
+    if (!bytes) {
+        _missingLookups.emplace_back(path);
+    }
+
+    return bytes;
 }
 
 } // namespace Serialization

@@ -30,6 +30,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <list>
+#include <map>
 #include <span>
 #include <sstream>
 #include <string>
@@ -50,6 +52,7 @@
 #include "ProjectEquivalence.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 
@@ -268,6 +271,7 @@ protected:
         EXPECT_TRUE(bool(generator) && bool(writer));
         connectNodes(generator, writer, 0, true);
         *expected = captureProjectSnapshot(getApp()->getProject());
+        _savedPathVariables = pathVariables();
 
         QString savedPath;
         EXPECT_TRUE(getApp()->getProject()->saveProject(dir.path() + QLatin1Char('/'), stem + QString::fromUtf8(".ntpz"), &savedPath));
@@ -300,16 +304,52 @@ protected:
         return warnings;
     }
 
-    // Opens target and expects the graph in expected, with the given number of load warnings.
+    std::list<std::vector<std::string>> pathVariables() const
+    {
+        std::list<std::vector<std::string>> table;
+        KnobPathPtr knob = getApp()->getProject()->getEnvVarKnob();
+        EXPECT_TRUE(bool(knob));
+        if (knob) {
+            knob->getTable(&table);
+        }
+
+        return table;
+    }
+
+    // The snapshot without the project path variables, which loading points at the folder the
+    // project was opened from.
+    static ProjectSnapshot withoutPathVariables(ProjectSnapshot snapshot)
+    {
+        std::erase_if(snapshot.entries, [](const auto& entry) { return entry.first.starts_with("project knob projectPaths"); });
+
+        return snapshot;
+    }
+
+    // Opens target and expects the graph in expected, with the given number of load warnings and
+    // the [Project] path variable at projectDirectory.
     void expectOpensAs(const QString& target,
                        const ProjectSnapshot& expected,
-                       std::size_t warningCount)
+                       std::size_t warningCount,
+                       const QString& projectDirectory)
     {
         SCOPED_TRACE(target.toStdString());
         std::string output;
         ASSERT_TRUE(open(target, &output)) << output;
         EXPECT_EQ(warningCount, loadWarnings().size()) << joined(loadWarnings());
-        EXPECT_TRUE(projectsAreEquivalent(expected, captureProjectSnapshot(getApp()->getProject())));
+
+        std::list<std::vector<std::string>> expectedPaths = _savedPathVariables;
+        bool foundProjectRow = false;
+        for (std::vector<std::string>& row : expectedPaths) {
+            if ((row.size() == 2) && (row[0] == NATRON_PROJECT_ENV_VAR_NAME)) {
+                row[1] = projectDirectory.toStdString();
+                foundProjectRow = true;
+            }
+        }
+        if (!foundProjectRow) {
+            expectedPaths.push_back({ NATRON_PROJECT_ENV_VAR_NAME, projectDirectory.toStdString() });
+        }
+        EXPECT_EQ(expectedPaths, pathVariables());
+        EXPECT_TRUE(projectsAreEquivalent(withoutPathVariables(expected), withoutPathVariables(captureProjectSnapshot(getApp()->getProject()))));
     }
 
     // The members of the saved bundle at path, in archive order, with names as saved.
@@ -336,6 +376,8 @@ protected:
     {
         return name.substr(name.find('/') + 1);
     }
+
+    std::list<std::vector<std::string>> _savedPathVariables;
 };
 
 TEST_F(ProjectOpenTest, ASavedProjectSitsUnderItsStemAndOpensBack)
@@ -351,7 +393,7 @@ TEST_F(ProjectOpenTest, ASavedProjectSitsUnderItsStemAndOpensBack)
         EXPECT_EQ(0u, member.name.rfind("test/", 0)) << member.name;
     }
 
-    expectOpensAs(saved, expected, 0);
+    expectOpensAs(saved, expected, 0, tmp.path());
 }
 
 TEST_F(ProjectOpenTest, ADeflatedRezipWithoutMimetypeAtTheRootAndAStaleManifestWarnsOnce)
@@ -383,7 +425,7 @@ TEST_F(ProjectOpenTest, ADeflatedRezipWithoutMimetypeAtTheRootAndAStaleManifestW
     const QString path = tmp.filePath(QString::fromUtf8("rezipped.ntpz"));
     ASSERT_TRUE(writeBytes(path.toStdString(), zip.data(), zip.size()));
 
-    expectOpensAs(path, expected, 1);
+    expectOpensAs(path, expected, 1, tmp.path());
     const std::vector<std::string> warnings = loadWarnings();
     ASSERT_EQ(1u, warnings.size());
     EXPECT_NE(std::string::npos, warnings.front().find("manifest.yaml")) << warnings.front();
@@ -408,11 +450,11 @@ TEST_F(ProjectOpenTest, AZipWithDirectoryEntriesOpensAlsoRenamed)
     const std::vector<std::byte> zip = buildZip(entries);
     const QString zipped = tmp.filePath(QString::fromUtf8("zipped.ntpz"));
     ASSERT_TRUE(writeBytes(zipped.toStdString(), zip.data(), zip.size()));
-    expectOpensAs(zipped, expected, 0);
+    expectOpensAs(zipped, expected, 0, tmp.path());
 
     const QString renamed = tmp.filePath(QString::fromUtf8("other-name.bin"));
     ASSERT_TRUE(QFile::rename(zipped, renamed));
-    expectOpensAs(renamed, expected, 0);
+    expectOpensAs(renamed, expected, 0, tmp.path());
 }
 
 TEST_F(ProjectOpenTest, AFolderAndItsProjectYamlOpenLikeTheArchive)
@@ -430,8 +472,10 @@ TEST_F(ProjectOpenTest, AFolderAndItsProjectYamlOpenLikeTheArchive)
     }
     const std::filesystem::path folder = unzipped / "test";
 
-    expectOpensAs(QString::fromStdString(folder.string()), expected, 0);
-    expectOpensAs(QString::fromStdString((folder / "project.yaml").string()), expected, 0);
+    // A folder opens as <parent>/<folder>.ntpz, so the project directory is the folder's parent.
+    const QString parent = QString::fromStdString(unzipped.string());
+    expectOpensAs(QString::fromStdString(folder.string()), expected, 0, parent);
+    expectOpensAs(QString::fromStdString((folder / "project.yaml").string()), expected, 0, parent);
 }
 
 TEST_F(ProjectOpenTest, ALegacyXmlAndANonProjectAreRefusedBeforeAnyReset)

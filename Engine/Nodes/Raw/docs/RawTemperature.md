@@ -7,7 +7,11 @@ Port of the raw part of darktable's white balance module (`src/iop/temperature.c
 blackbody and daylight spectra, and Little CMS's `cmsWhitePointFromTemp()` are included.
 
 - Raw in, raw out, at the prepared stage. Any other stage is a persistent error.
-- **Mode**:
+- **Mode**, As Shot to Reference by default, darktable's default under its default
+  `scene-referred (sigmoid)` workflow (`reload_defaults()` sets `DT_IOP_TEMP_D65_LATE` when
+  `dt_is_scene_referred()`). darktable's `none` and display-referred workflows default to as shot;
+  Natron has no workflow preference, so every RawTemperature, in Develop RAW or not, starts at As
+  Shot to Reference.
   - **As Shot** takes `raw/wb_coeffs`, normalised to green 1. Without usable values it falls
     back as darktable's `_find_coeffs()` does: on the Camera Reference multipliers of the colour
     matrix, then on the camera's first preset normalised to green 1, then on (2, 1, 1.5).
@@ -23,6 +27,12 @@ blackbody and daylight spectra, and Little CMS's `cmsWhitePointFromTemp()` are i
     the Camera Reference multipliers divided by the As Shot ones, per channel, as darktable's
     `_publish_chroma()` sets `late_correction`. RawHighlights and RawDemosaic pass it on;
     RawInputColor multiplies by it before its matrix. Any other mode removes the key.
+    This mode white-balances the image only together with a chromatic adaptation after
+    RawInputColor: RawInputColor ends at the camera's D65 reference, and the illuminant the photo
+    was lit by is left for RawColorCalibration (which Develop RAW puts last) to adapt. Without a
+    CAT the image keeps the scene's cast. RawColorCalibration warns when the white balance and its
+    CAT disagree: "white balance applied twice" when it adapts after a white balance other than
+    the reference (As Shot, say), as darktable's `_set_trouble_messages()` does.
 - **Spot Bottom Left** and **Spot Size** are the area Pick reads, drawn as a rectangle in the
   viewer. While untouched they follow darktable's default picker box, 2% to 98% of the source's
   format.
@@ -76,7 +86,9 @@ a camera without presets, and the fallbacks without as-shot multipliers or a mat
 `Tests/Native/NativeRawTemperatureSpot_Test.cpp` picks Bayer, X-Trans and linear mosaics with known
 per-colour means. `Tests/Native/NativeRawLateCorrection_Test.cpp` checks As Shot to Reference
 through RawHighlights, RawDemosaic and RawInputColor against Camera Reference, and
-`raw/wb_d65_coeffs` in every mode.
+`raw/wb_d65_coeffs` in every mode. `Tests/Native/RawReferenceSceneDefault_Test.cpp` compares the
+Develop RAW chain at its defaults, As Shot to Reference followed by RawColorCalibration, with
+darktable's scene-referred default render of the CR2 and RAF crops.
 
 GPU: `rawtemperature_wrapped` (`Engine/Gpu/Kernels/rawprepare.slang`), the op's `gpu()`, with the
 CFA layout and the three multipliers in `RawTemperatureGpuParams`. One product per channel, as on

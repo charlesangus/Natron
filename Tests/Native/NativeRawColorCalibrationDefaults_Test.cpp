@@ -39,6 +39,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawColorCalibrationMath.h"
+#include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/Nodes/Raw/RawTemperature.h"
 
 NATRON_NAMESPACE_USING
@@ -315,4 +316,29 @@ TEST_F(NativeRawColorCalibrationDefaultsTest, SecondInstanceDefaultsToPipe)
     knob<KnobChoice>(second, kRawColorCalibrationParamIlluminant)->setValueFromID("d", 0);
     EXPECT_TRUE(warningOf(second).contains(QString::fromUtf8("double CAT applied"))) << warningOf(second).toStdString();
     EXPECT_TRUE(warningOf(first).isEmpty()) << warningOf(first).toStdString();
+}
+
+// reload_defaults(): a monochrome image (dt_image_is_monochrome()) gets the plain channel mixer.
+// RawDemosaic's passthrough (monochrome) marks it, as darktable's DT_IMAGE_MONOCHROME_BAYER does.
+TEST_F(NativeRawColorCalibrationDefaultsTest, MonochromeDefaultsToPipe)
+{
+    RawDevelop::Chain chain;
+    NodePtr node = createCalibrated(RawReference::cr2Site(), eRawTemperatureModeAsShotToReference, &chain);
+    ASSERT_TRUE(bool(node));
+    EXPECT_FALSE(RawMetadata::getMonochrome(outputMetadata(chain.inputColor)));
+
+    ImageMetadata marked = outputMetadata(chain.inputColor);
+    RawMetadata::setMonochrome(&marked);
+    const RawColorCalibrationSourceDefaults d = rawColorCalibrationSourceDefaults(marked);
+    EXPECT_EQ(Cal::Illuminant::Pipe, d.illuminant);
+    EXPECT_EQ(Cal::Adaptation::Rgb, d.adaptation);
+
+    knob<KnobChoice>(chain.demosaic, kRawDemosaicParamBayerMethod)->setValue((int)eRawDemosaicBayerPassthroughMonochrome);
+    const ImageMetadata passthrough = outputMetadata(chain.inputColor);
+    EXPECT_TRUE(RawMetadata::getMonochrome(passthrough));
+    EXPECT_EQ(Cal::Illuminant::Pipe, rawColorCalibrationSourceDefaults(passthrough).illuminant);
+    EXPECT_EQ(Cal::Adaptation::Rgb, rawColorCalibrationSourceDefaults(passthrough).adaptation);
+
+    knob<KnobChoice>(chain.demosaic, kRawDemosaicParamBayerMethod)->setValue((int)eRawDemosaicBayerRCD);
+    EXPECT_FALSE(RawMetadata::getMonochrome(outputMetadata(chain.inputColor)));
 }

@@ -411,9 +411,9 @@ rawColorCalibrationSourceDefaults(const ImageMetadata& source)
     const CalibrationSettings defaults;
     RawColorCalibrationSourceDefaults d = { defaults.illuminant, defaults.adaptation, defaults.temperature, defaults.x, defaults.y };
 
-    // darktable also falls back to the plain channel mixer for a monochrome image, which nothing
-    // marks once RawDemosaic has dropped the mosaic's description.
-    if (RawMetadata::getCatApplied(source)) {
+    // darktable also falls back to the plain channel mixer for a monochrome image
+    // (dt_image_is_monochrome()), which raw/monochrome marks.
+    if (RawMetadata::getCatApplied(source) || RawMetadata::getMonochrome(source)) {
         d.illuminant = Illuminant::Pipe;
         d.adaptation = Adaptation::Rgb;
 
@@ -994,7 +994,7 @@ RawColorCalibration::refreshWarnings()
             illuminant = d.illuminant;
             adaptation = d.adaptation;
         }
-        const bool valid = (illuminant != Illuminant::Pipe) && (adaptation != Adaptation::Rgb);
+        const bool valid = (illuminant != Illuminant::Pipe) && (adaptation != Adaptation::Rgb) && !RawMetadata::getMonochrome(source);
         const bool temperatureEnabled = RawMetadata::getWbApplied(source).has_value();
         const bool upstreamCat = RawMetadata::getCatApplied(source);
         if (valid && temperatureEnabled && upstreamCat) {

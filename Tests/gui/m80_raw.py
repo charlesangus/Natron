@@ -1,6 +1,6 @@
 """Develop RAW in the interface: a camera raw file dropped on the node graph becomes a Read with
-RawPrepare, RawTemperature, RawHighlights, RawDemosaic and RawInputColor below it, connected in that
-order inside a backdrop titled "Develop RAW". One undo removes the Read, the chain and the
+RawPrepare, RawTemperature, RawHighlights, RawDemosaic, RawInputColor and RawColorCalibration below
+it, connected in that order inside a backdrop titled "Develop RAW". One undo removes the Read, the chain and the
 backdrop together, and one redo brings them all back. Python's createReader(), a new filename on an
 existing Read, the preference turned off and a project reload add no chain.
 
@@ -46,7 +46,7 @@ SETTLE_MS = 500
 READ_ID = "fr.inria.built-in.Read"
 BACKDROP_ID = "fr.inria.built-in.BackDrop"
 CHAIN_IDS = ["fr.natron.RawPrepare", "fr.natron.RawTemperature", "fr.natron.RawHighlights",
-             "fr.natron.RawDemosaic", "fr.natron.RawInputColor"]
+             "fr.natron.RawDemosaic", "fr.natron.RawInputColor", "fr.natron.RawColorCalibration"]
 EXTRA_IDS = ["fr.natron.RawCACorrect", "fr.natron.RawHotPixels", "fr.natron.RawDenoise"]
 TO_IMAGE_ID = "fr.natron.RawToImage"
 BAYER_METHODS = ["rcd", "ppg", "amaze", "vng4"]
@@ -538,17 +538,20 @@ try:
 
             gt.section("temperature")
             temperature = cr2_chain[1]
+            # RawColorCalibration derives its default illuminant from the applied white balance
+            # and would adapt the cast away, so the cast is read before it.
+            input_color = cr2_chain[CHAIN_IDS.index("fr.natron.RawInputColor")]
             temperature.getParam("temperature").setValue(3000.0)
             check(temperature.getParam("mode").getValue() == 2, "editing the temperature switches the mode to Custom")
             report("NOTE 3000 K multipliers %r" % [temperature.getParam(c).getValue() for c in ("red", "green", "blue")])
-            warm = yield from view(cr2_chain[-1], "CR2 at 3000 K", "m80-viewer-temperature-3000k.png")
+            warm = yield from view(input_color, "CR2 at 3000 K", "m80-viewer-temperature-3000k.png")
             temperature.getParam("temperature").setValue(9000.0)
             report("NOTE 9000 K multipliers %r" % [temperature.getParam(c).getValue() for c in ("red", "green", "blue")])
-            cool = yield from view(cr2_chain[-1], "CR2 at 9000 K", "m80-viewer-temperature-9000k.png")
+            cool = yield from view(input_color, "CR2 at 9000 K", "m80-viewer-temperature-9000k.png")
             check(warm["mean"][2] - warm["mean"][0] > cool["mean"][2] - cool["mean"][0] + 10,
                   "a 3000 K white point makes the image bluer than 9000 K (B-R %.1f vs %.1f)"
                   % (warm["mean"][2] - warm["mean"][0], cool["mean"][2] - cool["mean"][0]))
-            set_choice(temperature, "mode", "asShot")
+            set_choice(temperature, "mode", "asShotToReference")
 
             gt.section("optional nodes")
             hx, hy = cr2_chain[2].getPosition()

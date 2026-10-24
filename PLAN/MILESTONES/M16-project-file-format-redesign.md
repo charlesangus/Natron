@@ -445,7 +445,7 @@ Applies the 2026-10-23 user decision (see `## Decisions`): the bundle is `mimety
   - verify: ctest green including `NodeLayout.*`, `ProjectBundle.*`, `ProjectYaml.*`, `ClipboardYaml.*`, `ProjectGuiYaml.*`, `BundleLoadTest.*`, `MissingPlugin*`; P8.T11 passes; P8.T13's grep is empty.
   - size: M
 
-- [ ] M16.P8.T16 — Regenerate fixtures and bench comps
+- [x] M16.P8.T16 — Regenerate fixtures and bench comps
   - files: `Tests/fixtures/read-time-offset.ntpz`, `tools/bench/comps/*.ntpz`
   - approach: `tools/ci/regen_read_time_offset.py` and `tools/bench/comps/build_comps.py` through `NatronRenderer -b` from the P8.T15 fast AppImage (`LD_LIBRARY_PATH` unset, `xvfb-run`). Never hand-edit.
   - verify: `unzip -Z1` lists only `mimetype manifest.yaml project.yaml`; a second regeneration gives a byte-identical `project.yaml`; fixture ctests pass on the next remote debug build.

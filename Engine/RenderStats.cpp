@@ -823,7 +823,22 @@ formatRegionRecord(unsigned long long frameSequence,
                   times.prepareWaitMs, times.uploadsImported, times.uploadsStaged, times.downloadsImported,
                   times.downloadsStaged, times.importsAtUpload, times.importsAtDownload);
     line.append(num);
-    line.append(",\"fallback\":\"");
+    line.append(",\"downloads\":[");
+    for (std::size_t i = 0; i < times.downloads.size(); ++i) {
+        const GpuDownloadRecord& d = times.downloads[i];
+        char ms[32];
+        if (d.deviceMs >= 0.) {
+            std::snprintf(ms, sizeof(ms), "%.6f", d.deviceMs);
+        } else {
+            std::snprintf(ms, sizeof(ms), "null");
+        }
+        std::snprintf(num, sizeof(num),
+                      "%s{\"strip\":%d,\"bytes\":%llu,\"deviceMs\":%s,\"queueFamily\":%u,\"queueIndex\":%u,"
+                      "\"comps\":%d,\"format\":\"f32\",\"staged\":%d}",
+                      (i > 0) ? "," : "", d.strip, d.bytes, ms, d.queueFamily, d.queueIndex, d.comps, d.staged ? 1 : 0);
+        line.append(num);
+    }
+    line.append("],\"fallback\":\"");
     for (std::size_t i = 0; i < times.fallback.size(); ++i) {
         const char c = times.fallback[i];
         if ((c == '"') || (c == '\\')) {

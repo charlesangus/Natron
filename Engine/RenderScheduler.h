@@ -49,6 +49,7 @@
 #include "Engine/FrameRenderContext.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/RectI.h"
+#include "Engine/RenderStats.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -292,6 +293,10 @@ public:
         // while the region ran. Shared counters, like importCount.
         unsigned long long importsAtUpload = 0;
         unsigned long long importsAtDownload = 0;
+
+        // Set by the scheduler when the profile is on; the region then lists each download it issued.
+        bool recordDownloads = false;
+        std::vector<GpuDownloadRecord> downloads;
 
         // The device was lost: the scheduler renders the whole frame again on the CPU, whatever the body returned.
         bool deviceLost = false;

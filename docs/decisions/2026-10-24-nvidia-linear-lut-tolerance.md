@@ -1,0 +1,3 @@
+# Linear-filter LUT tests bound error by the device's subTexelPrecisionBits
+
+`GpuRuntimeShaderTest.Lut3DLinear` and `Lut2DLinear` now bound the linear-filter error by the device's `subTexelPrecisionBits` (8 on NVIDIA) instead of the exact-weight 1e-5. On the RTX 3070 Ti the worst errors were 1.55e-4 (3D) and 1.26e-5 (2D), which the Vulkan filtering precision rules allow. NVIDIA's 8-bit filter weights are spec-legal, and production code calls `texture()` too, so the same error class applies there. The test was fixed, not the engine. RADV and lavapipe happened to match the exact-weight reference.

@@ -208,6 +208,43 @@ public:
                                 const ViewerHandoffFrame& frame);
 
     /**
+     * @brief Runs the viewer process of \p root into a slot of the ring of \p textureIndex as present() does, without
+     * uploading it, so that the device computes it while the GL thread does other work. *staged receives the id that
+     * presentStaged() or discardStaged() then takes; a ring holds at most kSlots staged frames, and present() needs a
+     * slot free of them. A frame the slots must first grow for is refused, so that no staged frame is lost to the
+     * growth.
+     **/
+    ViewerHandoffResult stage(int textureIndex,
+                              const GpuDeviceImagePtr& root,
+                              const ViewerHandoffParams& params,
+                              const ViewerHandoffFrame& frame,
+                              std::uint64_t* staged);
+
+    /**
+     * @brief Whether the device is still computing the staged frame, without waiting; false once it has finished or
+     * was lost, as presentStaged() then tells.
+     **/
+    bool stagedComputing(int textureIndex,
+                         std::uint64_t staged);
+
+    /**
+     * @brief Uploads the staged frame into \p frame's rectangle of \p glTexture, waiting for the device if it has not
+     * finished. \p frame must be the one stage() was given. A refusal, such as for a frame lost when its ring was
+     * rebuilt or the device was, leaves the root unpinned, so that the frame can take the CPU path.
+     **/
+    ViewerHandoffResult presentStaged(int textureIndex,
+                                      std::uint64_t staged,
+                                      unsigned int glTexture,
+                                      const ViewerHandoffFrame& frame);
+
+    /**
+     * @brief Frees the slot of a staged frame that will not be shown. Its readback, if it asked for one, still
+     * completes. Nothing happens for a frame already lost.
+     **/
+    void discardStaged(int textureIndex,
+                       std::uint64_t staged);
+
+    /**
      * @brief Passes \p claim the token of each readback whose device copy has finished since the last
      * call, without waiting for the others, and starts the work it returns on the global thread pool.
      * A readback is lost when its ring is rebuilt or the device is, and so is its work if it has not

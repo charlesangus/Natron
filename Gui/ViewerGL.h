@@ -198,6 +198,19 @@ public:
                                                          int textureIndex,
                                                          const ViewerHandoffParams& params,
                                                          TexturePtr* texture) OVERRIDE FINAL;
+    virtual ViewerHandoffResult stageDeviceImage(const GpuDeviceImagePtr& root,
+                                                 const TextureRect& roiRounded,
+                                                 int textureIndex,
+                                                 const ViewerHandoffParams& params,
+                                                 std::uint64_t* staged) OVERRIDE FINAL;
+    virtual bool isStagedDeviceImageComputing(int textureIndex, std::uint64_t staged) OVERRIDE FINAL;
+    virtual ViewerHandoffResult transferStagedDeviceImageToGPU(std::uint64_t staged,
+                                                               const GpuDeviceImagePtr& root,
+                                                               const TextureRect& roiRounded,
+                                                               const RectI& roi,
+                                                               int textureIndex,
+                                                               TexturePtr* texture) OVERRIDE FINAL;
+    virtual void discardStagedDeviceImage(int textureIndex, std::uint64_t staged) OVERRIDE FINAL;
     virtual void consumeCompletedHandoffReadbacks(const ViewerHandoffClaimFn& claim) OVERRIDE FINAL;
 #endif
     virtual void clearLastRenderedImage() OVERRIDE FINAL;
@@ -544,6 +557,18 @@ private:
     virtual void resizeGL(int width, int height) OVERRIDE FINAL;
 
 private:
+#ifdef NATRON_HAVE_GPU
+    // Sizes the display texture of textureIndex to roiRounded and runs upload into it, keeping root for the colour
+    // picker once upload succeeds.
+    ViewerHandoffResult transferHandoffFrame(const GpuDeviceImagePtr& root,
+                                             const TextureRect& roiRounded,
+                                             const RectI& roi,
+                                             int textureIndex,
+                                             const std::function<ViewerHandoffResult(unsigned int glTexture, const ViewerHandoffFrame& frame)>& upload,
+                                             TexturePtr* texture);
+
+    ViewerHandoffFrame handoffFrameFor(const TextureRect& roiRounded) const;
+#endif
 
     void setParametricParamsPickerColor(const OfxRGBAColourD& color, bool setColor, bool hasColor);
 

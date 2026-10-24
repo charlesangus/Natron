@@ -319,6 +319,10 @@ ViewerInstance::invalidateUiContext()
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     _imp->uiContext = NULL;
+#ifdef NATRON_HAVE_GPU
+    _imp->stagedFrames[0].reset();
+    _imp->stagedFrames[1].reset();
+#endif
 }
 
 int
@@ -362,6 +366,9 @@ void
 ViewerInstance::executeDisconnectTextureRequestOnMainThread(int index,bool clearRoD)
 {
     assert( QThread::currentThread() == qApp->thread() );
+#ifdef NATRON_HAVE_GPU
+    _imp->discardStagedFrame(index);
+#endif
     if (_imp->uiContext) {
         _imp->uiContext->disconnectInputTexture(index, clearRoD);
     }
@@ -3409,14 +3416,157 @@ ViewerInstance::ViewerInstancePrivate::scheduleCachePoll()
 }
 #endif // NATRON_HAVE_GPU
 
+#ifdef NATRON_HAVE_GPU
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// Short, since a staged frame is shown only when the next one arrives or this poll finds it finished.
+const int kStagedFramePollMs = 1;
+
+TextureRect
+deviceTextureRect(const UpdateViewerParams& params)
+{
+    const UpdateViewerParams::CachedTile& firstTile = params.tiles.front();
+    TextureRect texRect;
+    texRect.par = firstTile.rect.par;
+    texRect.closestPo2 = firstTile.rect.closestPo2;
+    texRect.set(params.roi);
+
+    return texRect;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+std::uint64_t
+ViewerInstance::ViewerInstancePrivate::assignReadbackToken(UpdateViewerParams& params)
+{
+    const bool wantsCacheFill = !params.deviceCacheTiles.empty() && (params.tileSize > 0);
+    params.deviceProcess.readbackToken = wantsCacheFill ? nextReadbackToken++ : 0;
+
+    return params.deviceProcess.readbackToken;
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::addCacheFill(const UpdateViewerParams& params)
+{
+    PendingCacheFill fill;
+    fill.token = params.deviceProcess.readbackToken;
+    fill.tiles = params.deviceCacheTiles;
+    fill.roi = params.roi;
+    fill.bounds = params.rod.toPixelEnclosing(params.mipmapLevel, params.pixelAspectRatio);
+    fill.tileSize = params.tileSize;
+    fill.bytesPerPixel = (params.depth == eImageBitDepthFloat) ? 16 : 4;
+    pendingCacheFills.push_back(fill);
+    while (pendingCacheFills.size() > kMaxPendingCacheFills) {
+        pendingCacheFills.pop_front();
+    }
+    scheduleCachePoll();
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::presentDeviceFrame(const UpdateViewerParamsPtr& params,
+                                                          TexturePtr* texture,
+                                                          ImagePtr* deviceDownload)
+{
+    const TextureRect texRect = deviceTextureRect(*params);
+    const bool wantsCacheFill = assignReadbackToken(*params) != 0;
+    const ViewerHandoffResult presented = uiContext->transferDeviceImageToGPU(params->deviceColor, texRect, params->roiNotRoundedToTileSize,
+                                                                              params->textureIndex, params->deviceProcess, texture);
+    // present() pins the root for as long as the device reads it, and a pinned root cannot be downloaded, neither by
+    // the CPU fallback below nor by the picker reading the frame on screen.
+    params->deviceRootHold.reset();
+    if (presented && wantsCacheFill) {
+        addCacheFill(*params);
+    }
+    if (!presented) {
+        noteHandoffRefusal(params->deviceStats, presented.reason);
+        *deviceDownload = drawDeviceRootOnCpu(uiContext, *params, texRect, texture);
+    }
+}
+
+bool
+ViewerInstance::ViewerInstancePrivate::stageDeviceFrame(const UpdateViewerParamsPtr& params)
+{
+    StagedDeviceFrame staged;
+    staged.params = params;
+    staged.texRect = deviceTextureRect(*params);
+    const bool wantsCacheFill = assignReadbackToken(*params) != 0;
+    if (!uiContext->stageDeviceImage(params->deviceColor, staged.texRect, params->textureIndex, params->deviceProcess, &staged.id)) {
+        return false;
+    }
+    params->deviceRootHold.reset();
+    if (wantsCacheFill) {
+        addCacheFill(*params);
+    }
+    stagedFrames[params->textureIndex] = staged;
+
+    return true;
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::showStagedFrame(const StagedDeviceFrame& staged)
+{
+    const UpdateViewerParamsPtr& params = staged.params;
+    TexturePtr texture;
+    ImagePtr deviceDownload;
+    const ViewerHandoffResult presented = uiContext->transferStagedDeviceImageToGPU(staged.id, params->deviceColor, staged.texRect,
+                                                                                    params->roiNotRoundedToTileSize, params->textureIndex, &texture);
+    if (!presented) {
+        noteHandoffRefusal(params->deviceStats, presented.reason);
+        deviceDownload = drawDeviceRootOnCpu(uiContext, *params, staged.texRect, &texture);
+    }
+    showFrame(params, texture, deviceDownload, true);
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::discardStagedFrame(int textureIndex)
+{
+    std::optional<StagedDeviceFrame> staged;
+    staged.swap(stagedFrames[textureIndex]);
+    if (staged && uiContext) {
+        uiContext->discardStagedDeviceImage(textureIndex, staged->id);
+    }
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::scheduleStagedFlush()
+{
+    if (stagedFlushScheduled || (!stagedFrames[0] && !stagedFrames[1])) {
+        return;
+    }
+    stagedFlushScheduled = true;
+    QTimer::singleShot(kStagedFramePollMs, Qt::PreciseTimer, this, [this]() {
+        stagedFlushScheduled = false;
+        if (!uiContext) {
+            stagedFrames[0].reset();
+            stagedFrames[1].reset();
+
+            return;
+        }
+        uiContext->makeOpenGLcontextCurrent();
+        bool shown = false;
+        for (int i = 0; i < 2; ++i) {
+            if (!stagedFrames[i] || uiContext->isStagedDeviceImageComputing(i, stagedFrames[i]->id)) {
+                continue;
+            }
+            std::optional<StagedDeviceFrame> staged;
+            staged.swap(stagedFrames[i]);
+            showStagedFrame(*staged);
+            shown = true;
+        }
+        if (shown) {
+            uiContext->redraw();
+        }
+        scheduleStagedFlush();
+    });
+}
+#endif // NATRON_HAVE_GPU
+
 void
 ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
-    // QMutexLocker locker(&updateViewerMutex);
-    // if (updateViewerRunning) {
     uiContext->makeOpenGLcontextCurrent();
 #ifdef NATRON_HAVE_GPU
     pollCacheReadbacks();
@@ -3433,114 +3583,106 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
     }
     checkAndUpdateDisplayAge(params->textureIndex, age);
 
-    {
+    assert((params->isPartialRect && params->tiles.size() == 1) || !params->isPartialRect);
 
-        assert( (params->isPartialRect && params->tiles.size() == 1) || !params->isPartialRect );
-
-        TexturePtr texture;
-        ImagePtr deviceDownload;
-        bool deviceFrame = false;
+    TexturePtr texture;
+    ImagePtr deviceDownload;
+    bool deviceFrame = false;
 #ifdef NATRON_HAVE_GPU
-        if (params->deviceColor) {
-            assert(!params->isPartialRect);
-            deviceFrame = true;
-            const UpdateViewerParams::CachedTile& firstTile = params->tiles.front();
-            TextureRect texRect;
-            texRect.par = firstTile.rect.par;
-            texRect.closestPo2 = firstTile.rect.closestPo2;
-            texRect.set(params->roi);
-            const bool wantsCacheFill = !params->deviceCacheTiles.empty() && (params->tileSize > 0);
-            params->deviceProcess.readbackToken = wantsCacheFill ? nextReadbackToken++ : 0;
-            const ViewerHandoffResult presented = uiContext->transferDeviceImageToGPU(params->deviceColor, texRect, params->roiNotRoundedToTileSize,
-                                                                                      params->textureIndex, params->deviceProcess, &texture);
-            // present() pins the root for as long as the device reads it, and a pinned root cannot be downloaded,
-            // neither by the CPU fallback below nor by the picker reading the frame on screen.
-            params->deviceRootHold.reset();
-            if (presented && wantsCacheFill) {
-                PendingCacheFill fill;
-                fill.token = params->deviceProcess.readbackToken;
-                fill.tiles = params->deviceCacheTiles;
-                fill.roi = params->roi;
-                fill.bounds = params->rod.toPixelEnclosing(params->mipmapLevel, params->pixelAspectRatio);
-                fill.tileSize = params->tileSize;
-                fill.bytesPerPixel = (params->depth == eImageBitDepthFloat) ? 16 : 4;
-                pendingCacheFills.push_back(fill);
-                while (pendingCacheFills.size() > kMaxPendingCacheFills) {
-                    pendingCacheFills.pop_front();
-                }
-                scheduleCachePoll();
-            }
-            if (!presented) {
-                noteHandoffRefusal(params->deviceStats, presented.reason);
-                deviceDownload = drawDeviceRootOnCpu(uiContext, *params, texRect, &texture);
-            }
+    std::optional<StagedDeviceFrame> previous;
+    previous.swap(stagedFrames[params->textureIndex]);
+    // In playback the readback rung shows the frame before this one while the device computes this one, rather than
+    // blocking the main thread on it; a frame of a single render is shown at once, as nothing follows it to wait for.
+    if (params->deviceColor && params->isSequential && (uiContext->handoffRung() == ViewerHandoffRung::Readback) && stageDeviceFrame(params)) {
+        if (previous) {
+            showStagedFrame(*previous);
         }
-#endif
-        bool isFirstTile = true;
-        for (std::list<UpdateViewerParams::CachedTile>::iterator it = params->tiles.begin(); it != params->tiles.end(); ++it) {
-            if (!it->ramBuffer) {
-                continue;
-            }
+        scheduleStagedFlush();
 
-            // For cached tiles, some tiles might not have the standard tile, (i.e: the last tile column/row).
-            // Since the internal buffer is rounded to the tile size anyway we want the glTexSubImage2D call to ensure
-            // that we upload the full internal buffer
-            TextureRect texRect;
-            texRect.par = it->rect.par;
-            texRect.closestPo2 = it->rect.closestPo2;
-            texRect.set(it->rectRounded);
-    
-            assert(params->roi.contains(texRect));
-            uiContext->transferBufferFromRAMtoGPU(it->ramBuffer, it->bytesCount, params->roi, params->roiNotRoundedToTileSize, texRect, params->textureIndex, params->isPartialRect, isFirstTile, &texture);
-            isFirstTile = false;
-        }
-
-
-        NodePtr rotoPaintNode;
-        RotoStrokeItemPtr curStroke;
-        bool isDrawing = false;
-        instance->getApp()->getActiveRotoDrawingStroke(&rotoPaintNode, &curStroke, &isDrawing);
-
-        const UpdateViewerParams::CachedTile& firstTile = params->tiles.front();
-        ImagePtr originalImage;
-        originalImage = params->colorImage;
-        DeepImagePtr deepImage = params->deepImage;
-        if (firstTile.cachedData && !originalImage) {
-            originalImage = firstTile.cachedData->getInternalImage();
-            deepImage = firstTile.cachedData->getInternalDeepImage();
-        }
-        if (!originalImage) {
-            originalImage = deviceDownload;
-        }
-        ImageBitDepthEnum depth;
-        if (originalImage) {
-            depth = originalImage->getBitDepth();
-        } else if (deviceFrame) {
-            depth = eImageBitDepthFloat;
+        return;
+    }
+    if (previous) {
+        // Playback must not skip a frame and a partial rect draws over the frame before it, while any other frame
+        // replaces the staged one entirely.
+        if (params->isSequential || params->isPartialRect) {
+            showStagedFrame(*previous);
         } else {
-            assert(firstTile.cachedData);
-            if (firstTile.cachedData) {
-                depth = (ImageBitDepthEnum)firstTile.cachedData->getKey().getBitDepth();
-            } else {
-                depth = eImageBitDepthByte;
-            }
+            uiContext->discardStagedDeviceImage(params->textureIndex, previous->id);
+        }
+    }
+    if (params->deviceColor) {
+        assert(!params->isPartialRect);
+        deviceFrame = true;
+        presentDeviceFrame(params, &texture, &deviceDownload);
+    }
+#endif
+    showFrame(params, texture, deviceDownload, deviceFrame);
+} // ViewerInstance::ViewerInstancePrivate::updateViewer
+
+void
+ViewerInstance::ViewerInstancePrivate::showFrame(const UpdateViewerParamsPtr& params,
+                                                 TexturePtr texture,
+                                                 const ImagePtr& deviceDownload,
+                                                 bool deviceFrame)
+{
+    bool isFirstTile = true;
+    for (std::list<UpdateViewerParams::CachedTile>::iterator it = params->tiles.begin(); it != params->tiles.end(); ++it) {
+        if (!it->ramBuffer) {
+            continue;
         }
 
-        uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod, params->pixelAspectRatio, depth, params->mipmapLevel, params->gain, params->gamma, params->offset, params->recenterViewport, params->viewportCenter, params->isPartialRect);
-        if ( !params->isPartialRect && (originalImage || deviceFrame) ) {
-            uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);
-        }
+        // For cached tiles, some tiles might not have the standard tile, (i.e: the last tile column/row).
+        // Since the internal buffer is rounded to the tile size anyway we want the glTexSubImage2D call to ensure
+        // that we upload the full internal buffer
+        TextureRect texRect;
+        texRect.par = it->rect.par;
+        texRect.closestPo2 = it->rect.closestPo2;
+        texRect.set(it->rectRounded);
 
-        if (!isDrawing) {
-            uiContext->updateColorPicker(params->textureIndex);
+        assert(params->roi.contains(texRect));
+        uiContext->transferBufferFromRAMtoGPU(it->ramBuffer, it->bytesCount, params->roi, params->roiNotRoundedToTileSize, texRect, params->textureIndex, params->isPartialRect, isFirstTile, &texture);
+        isFirstTile = false;
+    }
+
+    NodePtr rotoPaintNode;
+    RotoStrokeItemPtr curStroke;
+    bool isDrawing = false;
+    instance->getApp()->getActiveRotoDrawingStroke(&rotoPaintNode, &curStroke, &isDrawing);
+
+    const UpdateViewerParams::CachedTile& firstTile = params->tiles.front();
+    ImagePtr originalImage;
+    originalImage = params->colorImage;
+    DeepImagePtr deepImage = params->deepImage;
+    if (firstTile.cachedData && !originalImage) {
+        originalImage = firstTile.cachedData->getInternalImage();
+        deepImage = firstTile.cachedData->getInternalDeepImage();
+    }
+    if (!originalImage) {
+        originalImage = deviceDownload;
+    }
+    ImageBitDepthEnum depth;
+    if (originalImage) {
+        depth = originalImage->getBitDepth();
+    } else if (deviceFrame) {
+        depth = eImageBitDepthFloat;
+    } else {
+        assert(firstTile.cachedData);
+        if (firstTile.cachedData) {
+            depth = (ImageBitDepthEnum)firstTile.cachedData->getKey().getBitDepth();
+        } else {
+            depth = eImageBitDepthByte;
         }
     }
 
-    //
-    //        updateViewerRunning = false;
-    //    }
-    //    updateViewerCond.wakeOne();
-} // ViewerInstance::ViewerInstancePrivate::updateViewer
+    uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod, params->pixelAspectRatio, depth, params->mipmapLevel, params->gain, params->gamma, params->offset, params->recenterViewport, params->viewportCenter, params->isPartialRect);
+    if (!params->isPartialRect && (originalImage || deviceFrame)) {
+        uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);
+    }
+
+    if (!isDrawing) {
+        uiContext->updateColorPicker(params->textureIndex);
+    }
+}
 
 bool
 ViewerInstance::isInputOptional(int n) const

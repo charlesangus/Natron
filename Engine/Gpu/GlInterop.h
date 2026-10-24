@@ -126,6 +126,9 @@ public:
     // of a GL_TEXTURE_2D whose internal format accepts the frame's pixel format.
     GpuStatus upload(int slot, unsigned int texture, int x, int y);
 
+    // Consumes the pending produce() of `slot` without uploading it, so the slot can be produced into again.
+    GpuStatus discard(int slot);
+
 private:
     struct Gl;
 

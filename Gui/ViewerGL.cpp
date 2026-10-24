@@ -1805,6 +1805,47 @@ ViewerGL::prepareHandoff(const ProjectColorManagement::DisplayProcessorPtr& proc
     return _imp->handoff->prepare(processor, format);
 }
 
+ViewerHandoffFrame
+ViewerGL::handoffFrameFor(const TextureRect& roiRounded) const
+{
+    ViewerHandoffFrame frame;
+    frame.width = (unsigned)roiRounded.width();
+    frame.height = (unsigned)roiRounded.height();
+    frame.format = (getBitDepth() == eImageBitDepthByte) ? ViewerHandoffFormat::Bgra8 : ViewerHandoffFormat::Rgba32F;
+    frame.x = 0;
+    frame.y = 0;
+
+    return frame;
+}
+
+ViewerHandoffResult
+ViewerGL::transferHandoffFrame(const GpuDeviceImagePtr& root,
+                               const TextureRect& roiRounded,
+                               const RectI& roi,
+                               int textureIndex,
+                               const std::function<ViewerHandoffResult(unsigned int glTexture, const ViewerHandoffFrame& frame)>& upload,
+                               TexturePtr* texture)
+{
+    const ViewerHandoffFrame frame = handoffFrameFor(roiRounded);
+    const Texture::DataTypeEnum dataType = (frame.format == ViewerHandoffFormat::Bgra8) ? Texture::eDataTypeByte : Texture::eDataTypeFloat;
+    TextureInfo& info = _imp->displayTextures[textureIndex];
+    GLTexturePtr tex = displayTextureOfType(&info.texture, dataType);
+    info.roiNotRoundedToTileSize.set(roi);
+    info.roiNotRoundedToTileSize.closestPo2 = roiRounded.closestPo2;
+    info.roiNotRoundedToTileSize.par = roiRounded.par;
+    tex->ensureTextureHasSize(roiRounded, 0);
+
+    const ViewerHandoffResult result = upload(tex->getTexID(), frame);
+    glCheckError();
+    if (result) {
+        *texture = tex;
+        QMutexLocker k(&_imp->lastRenderedImageMutex);
+        info.pendingDeviceRoot = root;
+    }
+
+    return result;
+}
+
 ViewerHandoffResult
 ViewerGL::transferDeviceImageToGPU(const GpuDeviceImagePtr& root,
                                    const TextureRect& roiRounded,
@@ -1818,48 +1859,96 @@ ViewerGL::transferDeviceImageToGPU(const GpuDeviceImagePtr& root,
     assert( QOpenGLContext::currentContext() == context() );
     assert(textureIndex == 0 || textureIndex == 1);
 
-    ViewerHandoffResult result;
     if (!_imp->handoff) {
+        ViewerHandoffResult result;
+        result.reason = "rung cpu";
+
+        return result;
+    }
+    ViewerHandoff& handoff = *_imp->handoff;
+
+    const auto present = [&](unsigned int glTexture, const ViewerHandoffFrame& frame) {
+        // present() refuses a frame larger than the slots it already has, so they grow first rather than costing
+        // this frame a fallback.
+        const std::size_t capacity = handoff.capacity(textureIndex);
+        if ((capacity > 0) && (capacity < frame.bytes())) {
+            if (ViewerHandoffResult grown = handoff.ensureCapacity(frame.bytes()); !grown) {
+                return grown;
+            }
+        }
+
+        return handoff.present(textureIndex, root, params, glTexture, frame);
+    };
+
+    return transferHandoffFrame(root, roiRounded, roi, textureIndex, present, texture);
+} // ViewerGL::transferDeviceImageToGPU
+
+ViewerHandoffResult
+ViewerGL::stageDeviceImage(const GpuDeviceImagePtr& root,
+                           const TextureRect& roiRounded,
+                           int textureIndex,
+                           const ViewerHandoffParams& params,
+                           std::uint64_t* staged)
+{
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(QOpenGLContext::currentContext() == context());
+    assert(textureIndex == 0 || textureIndex == 1);
+
+    if (!_imp->handoff) {
+        ViewerHandoffResult result;
         result.reason = "rung cpu";
 
         return result;
     }
 
-    const Texture::DataTypeEnum dataType = (getBitDepth() == eImageBitDepthByte) ? Texture::eDataTypeByte : Texture::eDataTypeFloat;
-    TextureInfo& info = _imp->displayTextures[textureIndex];
-    GLTexturePtr tex = displayTextureOfType(&info.texture, dataType);
-    info.roiNotRoundedToTileSize.set(roi);
-    info.roiNotRoundedToTileSize.closestPo2 = roiRounded.closestPo2;
-    info.roiNotRoundedToTileSize.par = roiRounded.par;
-    tex->ensureTextureHasSize(roiRounded, 0);
+    return _imp->handoff->stage(textureIndex, root, params, handoffFrameFor(roiRounded), staged);
+}
 
-    ViewerHandoffFrame frame;
-    frame.width = (unsigned)roiRounded.width();
-    frame.height = (unsigned)roiRounded.height();
-    frame.format = (dataType == Texture::eDataTypeFloat) ? ViewerHandoffFormat::Rgba32F : ViewerHandoffFormat::Bgra8;
-    frame.x = 0;
-    frame.y = 0;
+bool
+ViewerGL::isStagedDeviceImageComputing(int textureIndex,
+                                       std::uint64_t staged)
+{
+    assert(qApp && qApp->thread() == QThread::currentThread());
 
-    // present() refuses a frame larger than the slots it already has, so they grow first rather than costing this
-    // frame a fallback.
-    const std::size_t capacity = _imp->handoff->capacity(textureIndex);
-    if ( (capacity > 0) && (capacity < frame.bytes()) ) {
-        result = _imp->handoff->ensureCapacity( frame.bytes() );
-        if (!result) {
-            return result;
-        }
+    return _imp->handoff && _imp->handoff->stagedComputing(textureIndex, staged);
+}
+
+ViewerHandoffResult
+ViewerGL::transferStagedDeviceImageToGPU(std::uint64_t staged,
+                                         const GpuDeviceImagePtr& root,
+                                         const TextureRect& roiRounded,
+                                         const RectI& roi,
+                                         int textureIndex,
+                                         TexturePtr* texture)
+{
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(QOpenGLContext::currentContext() == context());
+    assert(textureIndex == 0 || textureIndex == 1);
+
+    if (!_imp->handoff) {
+        ViewerHandoffResult result;
+        result.reason = "rung cpu";
+
+        return result;
     }
+    ViewerHandoff& handoff = *_imp->handoff;
 
-    result = _imp->handoff->present(textureIndex, root, params, tex->getTexID(), frame);
-    glCheckError();
-    if (result) {
-        *texture = tex;
-        QMutexLocker k(&_imp->lastRenderedImageMutex);
-        info.pendingDeviceRoot = root;
+    const auto present = [&](unsigned int glTexture, const ViewerHandoffFrame& frame) {
+        return handoff.presentStaged(textureIndex, staged, glTexture, frame);
+    };
+
+    return transferHandoffFrame(root, roiRounded, roi, textureIndex, present, texture);
+}
+
+void
+ViewerGL::discardStagedDeviceImage(int textureIndex,
+                                   std::uint64_t staged)
+{
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    if (_imp->handoff) {
+        _imp->handoff->discardStaged(textureIndex, staged);
     }
-
-    return result;
-} // ViewerGL::transferDeviceImageToGPU
+}
 
 void
 ViewerGL::consumeCompletedHandoffReadbacks(const ViewerHandoffClaimFn& claim)

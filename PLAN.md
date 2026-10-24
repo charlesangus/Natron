@@ -218,7 +218,7 @@ future core work has solid ground to build on.
 | M156 | GPU Download Throughput In Comps | doing | M109 | gpu | E5 | [M156-gpu-download-throughput-in-comps.md](PLAN/MILESTONES/M156-gpu-download-throughput-in-comps.md) |
 | M157 | Relicense To GPLv3 Or Later | todo | - |  | E2 | [M157-relicense-to-gplv3-or-later.md](PLAN/MILESTONES/M157-relicense-to-gplv3-or-later.md) |
 | M158 | Node Toolbar As Menu | done | - | bosley-native-nodes | E10 | [M158-node-toolbar-as-menu.md](PLAN/MILESTONES/M158-node-toolbar-as-menu.md) |
-| M161 | Startup Compositor Crash | doing | - | bosley-native-nodes | E10 | [M161-startup-compositor-crash.md](PLAN/MILESTONES/M161-startup-compositor-crash.md) |
+| M161 | Startup Compositor Crash | blocked | - | bosley-native-nodes | E10 | [M161-startup-compositor-crash.md](PLAN/MILESTONES/M161-startup-compositor-crash.md) |
 
 # Epics
 
@@ -241,4 +241,5 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **M161 - Startup Compositor Crash:** waiting on the user's diagnostic run on the NVIDIA host (P1.T3): `build/appimages/M161-diag.md` with `M161-diag-e4ac87b1a.AppImage` and `startup-gl-matrix.sh`; send back the tarball(s). Phase 161.2 starts from the result.
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.

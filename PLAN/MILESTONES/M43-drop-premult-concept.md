@@ -37,7 +37,7 @@ This milestone removes all of that. Premult stops being state that flows through
 
 ## Phase 43.1: Host answers premult from an explicit knob and stores nothing
 
-- [x] M43.P1.T1 — Remove premult storage and derivation from the OpenFX HostSupport fork
+- [ ] M43.P1.T1 — Remove premult storage and derivation from the OpenFX HostSupport fork
   - files: `libs/OpenFX/HostSupport/include/ofxhImageEffect.h`, `libs/OpenFX/HostSupport/src/ofxhImageEffect.cpp`, `libs/OpenFX/HostSupport/src/ofxhClip.cpp`, `libs/OpenFX` submodule pointer
   - approach: Delete `_outputPreMultiplication`, its copy at `:656`, `getOutputPreMultiplication()`, the premult branch of `setDefaultClipPreferences` (`:2647-2751`), the read-back at `:2947` and the debug print at `:2951`. In `setupClipPreferencesArgs` (`:2782`), keep the `kOfxImageEffectPropPreMultiplication` slot so that plugin setters do not throw, and never read it back. Clip premult becomes a host-supplied value, so change the `ofxhClip.cpp:250, 815` defaults to `kOfxImageUnPreMultiplied` and let the host's clip instance override the getter. Merge the fork PR, then bump the pointer.
   - verify: `git -C libs/OpenFX grep -n _outputPreMultiplication` is empty and `git grep kOfxImageOpaque HostSupport/src` is empty. The phase build plus full `ctest` is green.
@@ -49,13 +49,13 @@ This milestone removes all of that. Premult stops being state that flows through
   - verify: Every plugin ID in the shipped bundles appears in the section with one of the three marks, and every lasting plugin that reads premult is assigned to a P2 task or to P1.T3's knob list.
   - size: M
 
-- [x] M43.P1.T3 — Add the host `Input alpha` knob and answer clip premult from it
+- [ ] M43.P1.T3 — Add the host `Input alpha` knob and answer clip premult from it
   - files: `Engine/OfxEffectInstance.cpp`, `Engine/OfxEffectInstance.h`, `Engine/OfxClipInstance.cpp`, `Engine/OfxClipInstance.h`
   - approach: On OFX nodes whose plugin P1.T2 marked as reading clip premult, create a host choice knob `inputAlpha` ("Input alpha": Premultiplied / Unpremultiplied, default Premultiplied) at the top of the main page, next to where other host knobs are inserted. `OfxClipInstance` answers `getPremult` (`OfxClipInstance.cpp:283`) and the fetched image's premult property (`:1473`) from that knob for source clips, and Unpremultiplied for mask clips and for nodes without the knob. Nothing reads the plugin's output premult. The knob is an ordinary knob: hashed, saved, undoable and scriptable.
   - verify: covered by P1.T4's gtest, plus a Python check that `inputAlpha` exists on one in-scope plugin and is absent on a native node and on an OFX plugin outside the list.
   - size: M
 
-- [x] M43.P1.T4 — Gtest proving premult comes only from the knob and never flows downstream
+- [ ] M43.P1.T4 — Gtest proving premult comes only from the knob and never flows downstream
   - files: `Tests/OfxTestPlugins/natronTest/RoutingTestPlugins.cpp`, `Tests/OfxTestPlugins/natronTest/NatronTestPluginIDs.h`, `Tests/PremultAbsence_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: Add a test plugin whose `getClipPreferences` calls `setOutputPremultiplication(eImagePreMultiplied)` (or `eImageOpaque`, selected by a param), and which records `getPreMultiplication()` from its source clip and from fetched images. Mark it in scope for the knob. In the gtest, chain two instances. Assert that the downstream node sees exactly its own `inputAlpha` value on the clip and on the image whatever the upstream node set, that flipping the upstream param leaves the upstream `NodeMetadata` and the downstream node's input unchanged, and that flipping `inputAlpha` changes only that node's hash.
   - verify: `ctest -R PremultAbsence` is green, and so is the rest of the suite.

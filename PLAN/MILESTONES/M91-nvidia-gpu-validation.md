@@ -263,3 +263,10 @@ If M107 hasn't merged when Phase 91.2 finishes, skip this phase and file it as a
 - 2026-10-24 — Gate: project-wide decisions published to docs/decisions/ (code: 3cc6be88b on milestone/m91-nvidia-gpu-validation). Waiting on gh re-auth for the final remote fast --tests gate build, PR and review.
 - 2026-10-24 — Gate: rebased onto main d82d560f6 (tip 20b8bb43b), PR #84 opened, remote fast --tests gate build dispatched. Review by a Claude subagent: the Codex rate-limit probe failed.
 - 2026-10-24 — Review round 1 on PR #84 (Claude, opus; Codex probe failed): 14 findings, none high. 13 fixed (code: f5e236975 on milestone/m91-nvidia-gpu-validation), and finding 2 was declined: the VK/EGL override exports were conditional on need, and P1.T1 showed none was needed. The fixes were small and targeted, so there is no second round. The gate build was re-dispatched on f5e236975.
+- 2026-10-24 — Gate on the RTX 3070 Ti (fast build f5e236975, CI run 40117508064; `.local/m91/gate/summary.md`):
+  - `ctest -L gpu` passed 47/47 twice. GlInterop reached zero-copy through NVIDIA EGL. The new ImportFailed test passes. LUT worst error/bound: 3D 0.921, 2D 0.086 (subTexelPrecisionBits 8).
+  - Auto picked the RTX 3070 Ti with host-import, 48/48 transfers imported and none staged. GlInteropQt on `:0` reached zero-copy with both checksums matching.
+  - Lavapipe CI passed 337/337 on both legs.
+  - Full engine ctest with `NATRON_GPU=force` passed after retries: 335/337 legacy and 334/337 taskgraph on the first `-j4` run. All 5 failures pass on a serial cold-cache retry, and none is vendor-specific:
+    - NativeWriteLarge ×2, new on main: two frames over 2 GB filled the 4 GiB `/tmp` tmpfs. Host capacity.
+    - CacheEquivalenceSweep/15 on taskgraph: "scheduler did not complete the frame". This matches the pre-existing blocking-render / scheduler-idle race on main that M138 already reported through the inbox.

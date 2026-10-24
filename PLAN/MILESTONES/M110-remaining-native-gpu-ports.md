@@ -76,7 +76,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
 - A separable Resample matte that both the CPU and the GPU executors read, replacing `ResampleRowMatte`.
 - A multi-plane GPU API (`GpuQuery::plane`, layer inputs in `GpuRenderArgs`, `getGpuExtraInputLayers`).
 - Multi-plane region members: one member per requested plane, planes the node passes through as identity members, and extra input slots per layer.
-- A `ChannelRouteEffect` base plus a `channelroute` kernel for the channel nodes.
+- A `ChannelRouteEffect` base, a `channelroute` kernel and a CPU route executor. The channel nodes' CPU and GPU paths both run one `ChannelRoute` description.
 - A parity test and a GPU bound in the node doc for each port, plus the capability allowlist.
 - A forced-region chain test, Read → Reformat → Grade → Shuffle → Write, run on lavapipe and RADV.
 - README updates.
@@ -229,19 +229,21 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - size: L
 
 - [ ] M110.P2.T4 — Add a channel-route description, base class and device kernel for the channel nodes
-  - files: `Engine/Nodes/Channel/ChannelCopy.h`, `Engine/Nodes/Channel/ChannelCopy.cpp`, `Engine/Gpu/Kernels/channelroute.slang` (new), `Engine/Gpu/Kernels/channelroute.cmake` (new), `Tests/Native/ChannelRouteGpu_Test.cpp` (new)
+  - files: `Engine/Nodes/Channel/ChannelCopy.h`, `Engine/Nodes/Channel/ChannelCopy.cpp`, `Engine/Gpu/Kernels/channelroute.slang` (new), `Engine/Gpu/Kernels/channelroute.cmake` (new), `Tests/Native/ChannelRouteGpu_Test.cpp` (new), `Tests/Native/ChannelRouteCpu_Test.cpp` (new)
   - approach:
     - In `ChannelCopy`, add `struct ChannelRoute`:
       - `sources`: a list of `{inputNb, ImageLayerDesc layer}`;
       - per output component, either a source index plus channel index, or a constant 0 or 1.
     - Add `class ChannelRouteEffect : public NativeEffectBase`. It implements FINAL `opKind()` (Point), `canRenderOnGpu`, `getGpuInputLayer`, `getGpuExtraInputLayers`, `getGpuInputRoI` (the output rect) and `renderGpu` from one pure virtual: `bool channelRoute(double time, ViewIdx view, const ImageLayerDesc& plane, ChannelRoute* route) const`.
       - `false` means CPU.
-      - Float bit depth only.
+      - The GPU takes float bit depth only. The route carries a `cpuOnly` flag for non-float sources.
+      - Each source also says how a non-float plane is read, so every node keeps today's behaviour: Shuffle reads it as 0 (`Shuffle.cpp:870`), while AddLayers and RemoveLayers convert it through `copyChannels`' depth table. Unifying this is out of scope (user); see the inbox item.
       - The first source per input goes to `inputs[]`, the rest to `layerInputs`.
     - `renderGpu` records one `channelroute` dispatch per source, each writing its mapped channels and reading 0 outside the source's bounds or for a missing view. A final dispatch writes the constants. Compute barriers separate the dispatches.
+    - Add `runChannelRouteCpu(effect, args, route per plane)` in `ChannelCopy.cpp`. It fetches each source as stored before taking any lock, generalises `selectCopyRow`'s depth table to one source per channel, writes the constants, and reads 0 outside a source's bounds, as the GPU does. `ChannelRouteEffect::render` is FINAL and calls it.
     - The four nodes are moved onto this base in Phase 110.3. This is a shared executor and description, so no node writes its own `renderGpu`.
-    - The test effect derives from `ChannelRouteEffect` with a fixed route: two layers of one input plus a second input, with constants. It runs through P1.T5's `runRenderGpu` with extra layer images, checks `exact()` against a hand-computed reference, and checks `writtenOutside == 0`.
-  - verify: at the phase build, `ChannelRouteGpu_Test` passes on lavapipe, and `ShuffleRender_Test`, `AddLayersRender_Test` and `RemoveLayersRender_Test` pass unchanged.
+    - The test effect derives from `ChannelRouteEffect` with a fixed route: two layers of one input plus a second input, with constants. It runs through P1.T5's `runRenderGpu` with extra layer images, checks `exact()` against a hand-computed reference, and checks `writtenOutside == 0`. `ChannelRouteCpu_Test` runs the same routes through `runChannelRouteCpu`, at byte, short and float, with both non-float read modes.
+  - verify: at the phase build, `ChannelRouteGpu_Test` and `ChannelRouteCpu_Test` pass on lavapipe, and `ShuffleRender_Test`, `AddLayersRender_Test` and `RemoveLayersRender_Test` pass unchanged.
   - size: L
 
 - [ ] M110.P2.T5 — Let multi-plane tasks join regions as one member per plane
@@ -289,7 +291,8 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
     - Implement `channelRoute` from the CPU's own resolution: `getEffectiveSource`, `getSlotInput`/`getSlotLayer`, `getOutputLayer`, `getOutputColorBits` and `getOutputColorStorage`.
       - Colour bits not written come from the main input's colour plane.
       - A colour channel the input lacks reads 0.
-    - Return false wherever the CPU render would fail `checkExtraChannelsPresent` or would read a non-float plane. Leave the CPU `render()` untouched.
+    - Return false (CPU) wherever `checkExtraChannelsPresent` would fail, which stays the engine's pre-render gate, or a source is non-float.
+    - Delete `Shuffle::render` and `fetchInputPlane`. The table-building code (`Shuffle.cpp:881-963`) moves into `channelRoute`, and the CPU runs the route. A non-float source plane still reads 0, as today.
     - Test with the GPU-vs-CPU harness (`exact()`):
       - rgba channel swaps with constants 0 and 1;
       - in2 from a second layer (fixture `flat-seq-layers.0001.exr` or the test multi-layer source);
@@ -298,13 +301,13 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
       - a missing non-colour channel refusing the GPU.
     - Add `renderEndToEnd` cases that check `ranInRegion`.
     - Add both IDs to the allowlist. Replace "Tolerance: none recorded." in both docs with an `exact` row and the GPU bound.
-  - verify: at the phase build, `NativeShuffleGpu_Test`, `Shuffle_Test`, `ShuffleRender_Test`, `ShuffleMatrix_Test`, `ColorViewsRender_Test`, `NativeChannelNodesSpec_Test` and `NativeGpuCapability_Test` pass on lavapipe.
+  - verify: at the phase build, `NativeShuffleGpu_Test`, `Shuffle_Test`, `ShuffleRender_Test`, `ShuffleMatrix_Test`, `ColorViewsRender_Test`, `NativeChannelNodesSpec_Test` and `NativeGpuCapability_Test` pass on lavapipe. The existing CPU suites are unchanged, so the CPU output is bit-identical. If it can't be, bump `PLUGIN_MAJOR` for Shuffle and ShuffleCopy and record why.
   - size: L
 
 - [ ] M110.P3.T3 — Move AddLayers and RemoveLayers onto the channel route
   - files: `Engine/Nodes/Channel/AddLayers.{h,cpp}`, `Engine/Nodes/Channel/RemoveLayers.{h,cpp}`, `Engine/Nodes/Channel/docs/{AddLayers,RemoveLayers}.md`, `Tests/Native/NativeLayersGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach:
-    - Derive both from `ChannelRouteEffect`.
+    - Derive both from `ChannelRouteEffect`, and delete both `render()`s: the CPU runs the route and keeps today's depth conversion.
     - AddLayers' route comes from `computeOutcome`:
       - an added non-colour layer is all constant 0;
       - a widened colour plane copies `inputBits` from the input's colour storage via `mapColorChannels` and writes 0 elsewhere;
@@ -313,7 +316,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
     - Keep AddLayers' `appendNodeContentHash` override.
     - Test GPU against CPU (`exact()`) for each outcome kind and for time-varying layers, with `renderEndToEnd` cases checking `ranInRegion`.
     - Add both IDs to the allowlist. Record the tolerance in both docs.
-  - verify: at the phase build, `NativeLayersGpu_Test`, `AddLayers_Test`, `AddLayersRender_Test`, `RemoveLayers_Test`, `RemoveLayersRender_Test`, `TimeVaryingLayers_Test` and `NativeGpuCapability_Test` pass on lavapipe.
+  - verify: at the phase build, `NativeLayersGpu_Test`, `AddLayers_Test`, `AddLayersRender_Test`, `RemoveLayers_Test`, `RemoveLayersRender_Test`, `TimeVaryingLayers_Test`, `DeepChannelNodes_Test` (the deep nodes share the `ChannelCopy` helpers) and `NativeGpuCapability_Test` pass on lavapipe, with the CPU suites unchanged.
   - size: L
 
 **Phase gate:** a single `tools/ci/remote/build.sh fast --tests` passes, including the three tasks' tests on lavapipe.
@@ -368,7 +371,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
 ## Decisions
 
 - 2026-10-23 — **Elaborated at claim by a consultant**, scouted on bf781cbcd.
-- 2026-10-23 — **The Shuffle family runs on the GPU through a shared `ChannelRouteEffect` base** (in `ChannelCopy`), whose FINAL GPU virtuals record a node-supplied `ChannelRoute` with one `channelroute` kernel. M137.P4.T2 kept these nodes off `StagedImageEffect`, so a Point/Composite body does not fit. A shared description and executor keeps to the rule that no node hand-writes `renderGpu`. Their CPU `render()` stays as it is, and the parity tests hold the two paths together.
+- 2026-10-23 — **The Shuffle family runs on the GPU through a shared `ChannelRouteEffect` base** (in `ChannelCopy`), whose FINAL GPU virtuals record a node-supplied `ChannelRoute` with one `channelroute` kernel. M137.P4.T2 kept these nodes off `StagedImageEffect`, so a Point/Composite body does not fit. A shared description and executor keeps to the rule that no node hand-writes `renderGpu`. ~~Their CPU `render()` stays as it is.~~ Superseded below: the CPU runs the route too.
 - 2026-10-23 — **Multi-plane tasks become one region member per plane.** Planes the node passes through become identity members, and extra input layers become extra input slots. This keeps `Member::outSlot` singular, so `GpuRegionStrips.*` (M156) is not touched. The overlap with M156 is confined to M110.P2.T5.
 - 2026-10-23 — **Crop's `ResampleRowMatte` closure gives way to a separable `ResampleMatte` that both executors read.** The rule is one description and two executors. Crop's matte is a product of a column weight and a row weight, every zero case is a whole row or column, and zero is written rather than multiplied, which matches the CPU on NaN and infinity. Crop's CPU output must stay bit-identical; otherwise its plugin major is bumped (hard cut).
 - 2026-10-23 — **Dissolve is ported as a GPU Composite step, not the stub's "multi-input point op".** M137 made it `OpKind::Composite`, and `GpuCompositeOp` is the framework's route for that kind.
@@ -391,3 +394,5 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **Test:** `GpuLineFilter_Test` runs ~1,300 small submits on lavapipe.
   - **Watch:** van Vliet σ 30 at order 1 sits near the 1e-4 bound.
   - **Checked:** `-fsyntax-only`, and `slangc` from m107's `.natron-deps`.
+- 2026-10-23 — **The Shuffle family uses option C** (user): one `ChannelRoute` description, run by both a CPU and a GPU executor in `ChannelCopy`, and the four nodes' hand-written `render()`s go. The consultant's comparison ruled out B-lite (`StagedImageEffect` ops reading extra layers). The staged pipeline reads sources in the plane being rendered and mapped to the clip (`StagePlan.cpp:641-644`), `RowIO` has one `nComps` (`PixelKernel.h:69-80`), `getGpuInputLayer` is FINAL, and the stage stack is float-only (`StagedImageEffect.cpp:63-66`). B-lite would need ~700–900 framework lines and lose AddLayers' and RemoveLayers' non-float support. P2.T5's `getGpuExtraInputLayers` is the engine mechanism either way. CPU output must stay bit-identical, or the plugin major is bumped.
+- 2026-10-23 — **Non-float source planes keep each node's current behaviour** (user): Shuffle reads them as 0, AddLayers and RemoveLayers convert them. How non-float planes should be handled, perhaps as their own kind beside deep and image, is a bigger question and out of scope. It is filed to the inbox for investigation.

@@ -98,7 +98,7 @@ Three small GUI fixes reported on 2026-10-18. Clicking `>` in the file picker cr
   - verify: the M138 GUI script imports and drag-drops a deep EXR and gets a DeepRead whose viewer shows the image; a flat EXR still gets a Read.
   - size: M
 
-- [ ] M138.P4.T2 — Build, Xvfb re-run and UAT AppImage
+- [x] M138.P4.T2 — Build, Xvfb re-run and UAT AppImage
   - files: none
   - approach: fast build with tests, the M138 GUI scripts under Xvfb, `package.sh`, and an AppImage for the user to re-check the EXR preview.
   - verify: ctest and the GUI scripts green; the user confirms the EXR preview.

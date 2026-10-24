@@ -505,6 +505,7 @@ private:
     virtual SchedulingPolicyEnum getSchedulingPolicy() const OVERRIDE FINAL;
     virtual void aboutToStartRender() OVERRIDE FINAL;
     virtual void onRenderStopped(bool aborted) OVERRIDE FINAL;
+    void runAfterRenderCallback(const OutputEffectInstancePtr& effect, bool aborted);
     OutputEffectInstanceWPtr _effect;
     mutable QMutex _currentTimeMutex;
     int _currentTime;
@@ -767,6 +768,12 @@ public:
      * @brief Returns true if playback is active
      **/
     bool isDoingSequentialRender() const;
+
+    /**
+     * @brief Blocks until isDoingSequentialRender() is false or stopWaiting() returns true, without
+     * polling. @see GenericSchedulerThread::waitUntilNotActive
+     **/
+    void waitUntilSequentialRenderStops(const std::function<bool()>& stopWaiting) const;
 
 public Q_SLOTS:
 

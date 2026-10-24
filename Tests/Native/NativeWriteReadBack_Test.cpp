@@ -26,14 +26,12 @@
 #include "Global/Macros.h"
 
 #include <bitset>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <list>
 #include <memory>
 #include <set>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -221,13 +219,6 @@ protected:
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(effect, 1, 1, 1, false));
         getApp()->startWritersRendering(false, works);
-        // The blocking render returns once the scheduler thread reports the sequence finished, but
-        // that thread only goes idle afterwards. Until it does the Write counts as rendering a
-        // sequence, so it neither reads back nor renders for a viewer.
-        const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        while (effect->isDoingSequentialRender() && (std::chrono::steady_clock::now() < deadline)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
         ASSERT_FALSE(effect->isDoingSequentialRender());
     }
 

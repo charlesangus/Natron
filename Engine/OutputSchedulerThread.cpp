@@ -2809,6 +2809,59 @@ DefaultScheduler::aboutToStartRender()
 } // DefaultScheduler::aboutToStartRender
 
 void
+DefaultScheduler::runAfterRenderCallback(const OutputEffectInstancePtr& effect,
+                                         bool aborted)
+{
+    std::string cb = effect->getNode()->getAfterRenderCallback();
+    if (cb.empty()) {
+        return;
+    }
+
+    std::vector<std::string> args;
+    std::string error;
+    try {
+        NATRON_PYTHON_NAMESPACE::getFunctionArguments(cb, &error, &args);
+    } catch (const std::exception& e) {
+        effect->getApp()->appendToScriptEditor(std::string("Failed to get signature of afterRender callback: ")
+                                               + e.what());
+
+        return;
+    }
+
+    if (!error.empty()) {
+        effect->getApp()->appendToScriptEditor("Failed to get signature of afterRender callback: " + error);
+
+        return;
+    }
+
+    std::string signatureError;
+    signatureError.append("The after render callback supports the following signature(s):\n");
+    signatureError.append("- callback(aborted, thisNode, app)");
+    if ((args.size() != 3) || (args[0] != "aborted") || (args[1] != "thisNode") || (args[2] != "app")) {
+        effect->getApp()->appendToScriptEditor("Wrong signature of afterRender callback: " + signatureError);
+
+        return;
+    }
+
+    std::stringstream ss;
+    std::string appStr = effect->getApp()->getAppIDString();
+    std::string outputNodeName = appStr + "." + effect->getNode()->getFullyQualifiedName();
+    ss << cb << "(";
+    if (aborted) {
+        ss << "True, ";
+    } else {
+        ss << "False, ";
+    }
+    ss << outputNodeName << ", " << appStr << ")";
+    std::string script = ss.str();
+    try {
+        runCallbackWithVariables(QString::fromUtf8(script.c_str()));
+    } catch (...) {
+        // Ignore expcetions in callback since the render is finished anyway
+    }
+} // DefaultScheduler::runAfterRenderCallback
+
+void
 DefaultScheduler::onRenderStopped(bool aborted)
 {
     OutputEffectInstancePtr effect = _effect.lock();
@@ -2823,54 +2876,10 @@ DefaultScheduler::onRenderStopped(bool aborted)
         appPTR->writeToOutputPipe(longText, QString::fromUtf8(kRenderingFinishedStringShort), true);
     }
 
+    runAfterRenderCallback(effect, aborted);
+
+    // Last, so that a blocking render, which this releases, returns only once its callback has run.
     effect->notifyRenderFinished();
-
-    std::string cb = effect->getNode()->getAfterRenderCallback();
-    if ( !cb.empty() ) {
-        std::vector<std::string> args;
-        std::string error;
-        try {
-            NATRON_PYTHON_NAMESPACE::getFunctionArguments(cb, &error, &args);
-        } catch (const std::exception& e) {
-            effect->getApp()->appendToScriptEditor( std::string("Failed to get signature of afterRender callback: ")
-                                                    + e.what() );
-
-            return;
-        }
-
-        if ( !error.empty() ) {
-            effect->getApp()->appendToScriptEditor("Failed to get signature of afterRender callback: " + error);
-
-            return;
-        }
-
-        std::string signatureError;
-        signatureError.append("The after render callback supports the following signature(s):\n");
-        signatureError.append("- callback(aborted, thisNode, app)");
-        if ( (args.size() != 3) || (args[0] != "aborted") || (args[1] != "thisNode") || (args[2] != "app") ) {
-            effect->getApp()->appendToScriptEditor("Wrong signature of afterRender callback: " + signatureError);
-
-            return;
-        }
-
-
-        std::stringstream ss;
-        std::string appStr = effect->getApp()->getAppIDString();
-        std::string outputNodeName = appStr + "." + effect->getNode()->getFullyQualifiedName();
-        ss << cb << "(";
-        if (aborted) {
-            ss << "True, ";
-        } else {
-            ss << "False, ";
-        }
-        ss << outputNodeName << ", " << appStr << ")";
-        std::string script = ss.str();
-        try {
-            runCallbackWithVariables( QString::fromUtf8( script.c_str() ) );
-        } catch (...) {
-            //Ignore expcetions in callback since the render is finished anyway
-        }
-    }
 } // DefaultScheduler::onRenderStopped
 
 ////////////////////////////////////////////////////////////
@@ -3531,6 +3540,14 @@ bool
 RenderEngine::isDoingSequentialRender() const
 {
     return _imp->scheduler ? _imp->scheduler->isWorking() : false;
+}
+
+void
+RenderEngine::waitUntilSequentialRenderStops(const std::function<bool()>& stopWaiting) const
+{
+    if (_imp->scheduler) {
+        _imp->scheduler->waitUntilNotActive(stopWaiting);
+    }
 }
 
 void

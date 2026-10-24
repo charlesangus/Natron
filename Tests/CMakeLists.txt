@@ -27,6 +27,7 @@ set(Tests_SOURCES
     AddLayers_Test.cpp
     AddLayersRender_Test.cpp
     BaseTest.cpp
+    BlockingRenderIdle_Test.cpp
     ChannelSetRender_Test.cpp
     CLArgs_Test.cpp
     ColorViews_Test.cpp

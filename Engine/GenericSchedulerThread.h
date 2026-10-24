@@ -26,6 +26,8 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <functional>
+
 #include <QThread>
 
 #include "Engine/EngineFwd.h"
@@ -189,6 +191,20 @@ public:
     {
         return getThreadState() == eThreadStateActive;
     }
+
+    /**
+     * @brief Blocks the calling thread until the thread is not eThreadStateActive, until it has
+     * left eThreadStateActive at least once since this call began, or until stopWaiting() returns
+     * true. stopWaiting() is evaluated with the thread state lock held each time the state changes,
+     * so it must not call back into this object.
+     **/
+    void waitUntilNotActive(const std::function<bool()>& stopWaiting) const;
+
+    /**
+     * @brief Test-only: every thread of this class sleeps this long after its task returns and
+     * before it leaves eThreadStateActive. 0 disables the delay.
+     **/
+    static void setIdleTransitionDelayForTesting(int milliseconds);
 
     /**
      * @brief Requests the thread to execute the given task. Inherit GenericThreadStartArgs to customize the action.

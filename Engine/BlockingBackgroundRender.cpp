@@ -38,6 +38,7 @@ CLANG_DIAG_ON(deprecated-register)
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/OutputEffectInstance.h"
+#include "Engine/OutputSchedulerThread.h"
 #include "Engine/Settings.h"
 
 NATRON_NAMESPACE_ENTER
@@ -57,17 +58,30 @@ BlockingBackgroundRender::blockingRender(bool enableRenderStats,
 {
     // avoid race condition: the code must work even if renderFullSequence() calls notifyFinished()
     // immediately.
-    QMutexLocker locker(&_runningMutex);
+    {
+        QMutexLocker locker(&_runningMutex);
 
-    assert(_running == false);
-    _running = true;
-    _writer->renderFullSequence(true, enableRenderStats, this, first, last, frameStep);
-    if (appPTR->getCurrentSettings()->getNumberOfThreads() == -1) {
-        _running = false;
-    } else {
+        assert(_running == false);
+        _running = true;
+        _writer->renderFullSequence(true, enableRenderStats, this, first, last, frameStep);
+        if (appPTR->getCurrentSettings()->getNumberOfThreads() == -1) {
+            _running = false;
+
+            return;
+        }
         while (_running) {
             _runningCond.wait(locker.mutex());
         }
+    }
+
+    // notifyFinished() runs on the scheduler thread before it leaves its active state, and until it
+    // does the writer still counts as rendering a sequence. If another sequence was queued on this
+    // writer it has taken over the scheduler, and the writer is legitimately busy with it.
+    RenderEnginePtr engine = _writer->getRenderEngine();
+    if (engine) {
+        engine->waitUntilSequentialRenderStops([this]() {
+            return _writer->hasRenderSequenceRequestOtherThan(this);
+        });
     }
 }
 

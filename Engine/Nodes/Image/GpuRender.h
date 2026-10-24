@@ -35,6 +35,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -55,6 +56,8 @@ struct GpuQuery {
     double time;
     ViewIdx view;
     RenderScale mappedScale;
+    // The plane the task renders; nComps is its component count.
+    ImageLayerDesc plane;
     int nComps;
     ImageBitDepthEnum bitDepth;
     bool hasMask;
@@ -84,6 +87,7 @@ struct GpuQuery {
         : time(0.)
         , view(0)
         , mappedScale()
+        , plane()
         , nComps(4)
         , bitDepth(eImageBitDepthFloat)
         , hasMask(false)
@@ -205,12 +209,29 @@ struct GpuShaderInputs {
     }
 };
 
+// An input read in a layer beyond the one getGpuInputLayer() names for it.
+struct GpuLayerInput {
+    int inputNb;
+    ImageLayerDesc layer;
+    GpuImageView view;
+
+    GpuLayerInput()
+        : inputNb(-1)
+        , layer()
+        , view()
+    {
+    }
+};
+
 struct GpuRenderArgs {
     GpuQuery query;
     RectI outputRect;
 
     // Indexed by input number; an input that is not connected has a null buffer.
     std::vector<GpuImageView> inputs;
+
+    // The layers of getGpuExtraInputLayers(), one entry per input and layer.
+    std::vector<GpuLayerInput> layerInputs;
     GpuImageView output;
     gpu::GpuRecordContext& context;
 
@@ -218,6 +239,7 @@ struct GpuRenderArgs {
         : query()
         , outputRect()
         , inputs()
+        , layerInputs()
         , output()
         , context(ctx)
     {

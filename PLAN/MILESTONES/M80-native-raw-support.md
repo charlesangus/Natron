@@ -267,6 +267,7 @@ New knobs and modes, by module:
 - **RawPrepare:** Flat Field (disabled / embedded GainMap). The default is embedded when the DNG carries four Bayer GainMaps.
 - **RawTemperature:**
   - Two new modes: "From Image Area" (spot) and "As Shot to Reference".
+  - The default mode becomes As Shot to Reference, darktable's default under its scene-referred workflow (T36).
   - A camera preset list from `wb_presets.json`, with Finetune.
   - The as-shot fallback chain for files that record no as-shot white balance.
 - **RawHighlights:**
@@ -287,14 +288,17 @@ New knobs and modes, by module:
   - Working Profile (user call 4).
   - The as-shot-to-reference late correction.
 - **RawHotPixels:** Mark Fixed Pixels.
+- **RawColorCalibration (new node, darktable's color calibration `channelmixerrgb`):** every control of its params v3 and GUI: CAT (adaptation, illuminant with F/LED sources, temperature, hue/chroma, gamut compression, clip), the R/G/B/colorfulness/brightness/gray mixing rows with normalize, the saturation algorithm, area color mapping, color-checker calibration and the built-in presets. Defaults come from the file. Develop RAW inserts it after RawInputColor (T29–T37).
 - **RawCACorrect and RawDenoise:** already complete. I checked them against the code: denoise's curve x positions are fixed in darktable, so the 4x5 strength knobs cover them.
 
 Not ported, as N/A rows in the audit:
 - ICC/DCP `filename` and `filename_work`.
 - colorin `intent` and `blue_mapping`: no widget in 5.6.2.
 - 4-colour sensors: temperature `various`, Bayer4 demosaic methods (user call 5).
+- channelmixerrgb illuminant detection from surfaces/edges: compiled out in 5.6.2 (`// #define AI_ACTIVATED`, channelmixerrgb.c:36). Its cosmetic GUI (illuminant and spot swatches, slider gradients, CCT label) is N/A too; the CCT goes in a tooltip.
+- Deferred with the display aids above: RawColorCalibration's checker patch-grid and ΔE overlay (`gui_post_expose`); the audit marks it DEFERRED.
 
-GPU kernels for every new mode go to M81: each new mode returns false from the node's `canRenderOpOnGpu`, as AMaZE does.
+GPU kernels for every new mode go to M81: each new mode returns false from the node's `canRenderOpOnGpu`, as AMaZE does. The exception is RawColorCalibration: it joins the default Develop chain, so its kernel is built here (T35, user 2026-10-23).
 
 The tasks below are serial within a node, because they share its `.cpp`. Separate nodes can run in parallel lanes, and every task adds its own test file rather than sharing one.
 
@@ -327,7 +331,7 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
 - [ ] M80.P7.T2 — Regenerate all darktable references in the container, once
   - files: `Tests/fixtures/raw/reference/*` (new TIFFs and DNGs, Git LFS), `Tests/fixtures/raw/README.md`
   - approach:
-    - Run `tools/raw/make-reference.sh` once for every job from T1.
+    - Run `tools/raw/make-reference.sh` once for every job from T1 and T29. Record T29's "[commit color calibration]" lines in the README.
     - Check `docker ps` first. If the Docker Hub pull fails, generate on a host that can pull (per the milestone's assumption).
     - Commit through LFS, upload the LFS objects, and record the darktable autoradius line and every file's SHA-256 in the README.
   - verify:
@@ -340,10 +344,10 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - files: new `tools/raw/parity-audit.py`, new `tools/raw/darktable-parity.json`
   - approach:
     - The script parses, at `DARKTABLE_REF` (`/tmp/dt-src-562` or `build/darktable-src`):
-      - every `dt_iop_*_params_t` field and enum `$DESCRIPTION` value of rawprepare, temperature, highlights, demosaic, colorin, hotpixels, cacorrect and rawdenoise;
+      - every `dt_iop_*_params_t` field and enum `$DESCRIPTION` value of rawprepare, temperature, highlights, demosaic, colorin, hotpixels, cacorrect, rawdenoise and channelmixerrgb (its enums in `src/common/illuminants.h` and `src/common/chromatic_adaptation.h` too);
       - colorin's input-profile list (`colorspaces.c` entries with `++in_pos`, plus the image-profile types in `update_profile_list`);
-      - a hand list of GUI-only controls that change the darkroom output (highlights mask modes, dual mask, capture-sharpen masks, temperature presets, finetune and spot).
-    - The JSON maps each item to a node knob or choice option with darktable's default, or to N/A with a reason (ICC file, no widget, 4-colour sensor).
+      - a hand list of GUI-only controls that change the darkroom output (highlights mask modes, dual mask, capture-sharpen masks, temperature presets, finetune and spot; color calibration's area mapping mode, take-mixing toggle, target lightness/hue/chroma and picker; its checker chart, optimize-for, patch scale, calibrate, validate and patch overlay; its built-in presets).
+    - The JSON maps each item to a node knob or choice option with darktable's default, or to N/A with a reason (ICC file, no widget, 4-colour sensor, compiled out (`AI_ACTIVATED`), cosmetic GUI), or to DEFERRED (display aid).
     - The script prints a markdown table (darktable item | Natron knob/option | default | status). It exits non-zero on any MISSING row, or on a knob name it can't find as a `#define kRaw*Param`/`setName` in `Engine/Nodes/Raw`.
     - Seed the JSON with today's state; the gaps listed above show as MISSING. Implementation tasks don't edit the JSON; T28 does.
   - verify: the script runs and reproduces the 2026-10-23 audit's gaps as MISSING rows, plus the mask-view rows the audit missed. Python only; no build.
@@ -463,13 +467,13 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
   - size: M
 
 - [ ] M80.P7.T14 — RawTemperature "As Shot to Reference" and RawInputColor's late correction
-  - files: `Engine/Nodes/Raw/RawTemperature.cpp`, `Engine/Nodes/IO/RawMetadata.h/.cpp` (`raw/wb_late_correction`), `Engine/Nodes/Raw/RawInputColor.cpp`, new `Tests/Native/NativeRawLateCorrection_Test.cpp`
+  - files: `Engine/Nodes/Raw/RawTemperature.cpp`, `Engine/Nodes/IO/RawMetadata.h/.cpp` (`raw/wb_late_correction`, `raw/wb_d65_coeffs`), `Engine/Nodes/Raw/RawInputColor.cpp`, new `Tests/Native/NativeRawLateCorrection_Test.cpp`
   - approach:
-    - The new mode applies the as-shot coefficients, as darktable does (`_publish_chroma`, temperature.c:515–530). It publishes D65coeffs/as_shot per channel as `raw/wb_late_correction`, which travels through Highlights and Demosaic metadata.
+    - The new mode applies the as-shot coefficients, as darktable does (`_publish_chroma`, temperature.c:515–530). It publishes D65coeffs/as_shot per channel as `raw/wb_late_correction`, which travels through Highlights and Demosaic metadata. In every mode, RawTemperature also publishes darktable's D65 coefficients (`chr->D65coeffs`) as `raw/wb_d65_coeffs`. RawColorCalibration's `_get_white_balance_coeff` port needs them (T32).
     - RawInputColor multiplies by it before the matrix, except for Lab (colorin.c:1198–1210, `process_cmatrix` coefficients).
-    - The default stays As Shot (user call 1).
+    - The default changes to As Shot to Reference in T36 (user, 2026-10-23; supersedes user call 1).
     - InputColor's GPU kernel gets the coefficients in its parameter block, or reports no GPU path while they are set. Prefer the parameter block if it needs no kernel change beyond a multiply; otherwise M81.
-  - verify: gtest checks that As Shot to Reference into InputColor equals Camera Reference into InputColor within float error, plus the darktable comparison of the preset-4 render. Compiled at P7.T18.
+  - verify: gtest checks that As Shot to Reference into InputColor equals Camera Reference into InputColor within float error, and that `raw/wb_d65_coeffs` is present in every mode and equals the Camera Reference coefficients, plus the darktable comparison of the preset-4 render. Compiled at P7.T18.
   - size: M
 
 - [ ] M80.P7.T15 — RawInputColor: darktable's matrix profile types and file-derived default
@@ -587,18 +591,18 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
 - [ ] M80.P7.T26 — Build checkpoint B
   - files: (none new)
   - approach:
-    - Run the syntax check, then remote debug `--tests` and the release gate, covering T19–T25 plus anything reopened from A.
+    - Run the syntax check, then remote debug `--tests` and the release gate, covering T19–T25 and T30–T36 plus anything reopened from A.
     - Re-run failures with `-V` and route them to their tasks.
-  - verify: ctest is green on both legs, including every new P7 test and `RawLargeTest`. T19–T25 get checked off.
+  - verify: ctest is green on both legs, including every new P7 test, the RawColorCalibration darktable comparisons and GPU parity test, and `RawLargeTest`. T19–T25 and T30–T36 get checked off.
   - size: M
 
 - [ ] M80.P7.T27 — Xvfb panels re-run and screenshots
   - files: `Tests/gui/m80_raw.py`, node panel layouts in `Engine/Nodes/Raw/*.cpp` (labels, pages and conditional visibility only)
   - approach:
     - Use the Xvfb recipe (`build/deeprepro/run-gui.sh`, `checkForUpdates` pre-seeded off) on the release build.
-    - Every new knob has darktable's conditional visibility: Laplacian and segmentation knobs per mode, Dual Threshold only for dual modes, LMMSE Refine only for LMMSE, capture-sharpen knobs under a Capture Sharpen group, Finetune only for presets with tunings, Flat Field only with GainMaps.
-    - Script these steps: open the Bayer, X-Trans and linear-DNG fixtures; switch every new mode; pick a spot rectangle; choose a camera preset; toggle every mask view.
-    - Screenshot each node panel per mode group, plus the viewer for each mask view, and share them with the user for approval.
+    - Every new knob has darktable's conditional visibility: Laplacian and segmentation knobs per mode, Dual Threshold only for dual modes, LMMSE Refine only for LMMSE, capture-sharpen knobs under a Capture Sharpen group, Finetune only for presets with tunings, Flat Field only with GainMaps. RawColorCalibration follows `_update_illuminants`: temperature for D/Planckian, F source for F, LED source for LED, hue/chroma for custom, all illuminant knobs hidden when adaptation is none, and adaptation disabled for as shot in camera. Its pages are CAT, R, G, B, Colorfulness, Brightness and Gray, plus Area Color Mapping and Calibrate With a Color Checker groups.
+    - Script these steps: open the Bayer, X-Trans and linear-DNG fixtures; check Develop RAW holds six nodes with RawColorCalibration last and RawTemperature on As Shot to Reference; switch every new mode; pick a spot rectangle; choose a camera preset; on RawColorCalibration, switch every adaptation and illuminant, run Pick in both area modes, place the checker corner pin, press Calibrate and Validate, and apply a preset; toggle every mask view.
+    - Screenshot each node panel per mode group (each RawColorCalibration page included), plus the viewer for each mask view and with RawColorCalibration's spot rectangle and checker corner pin, and share them with the user for approval.
   - verify: the script passes under Xvfb, and the user approves the screenshots.
   - size: M
 
@@ -612,27 +616,161 @@ The tasks below are serial within a node, because they share its `.cpp`. Separat
       - Embedded vs Standard matrix on DNG vs CR2;
       - X-Trans method Markesteijn 1-pass;
       - the capture-sharpen threshold from the image.
+      - RawTemperature's As Shot to Reference default;
+      - RawColorCalibration's adaptation, illuminant, temperature and hue/chroma per fixture (darktable's logged commit line from T29/T2), and pipe + none on a monochrome or already-adapted input.
     - Paste the table into the milestone's `## Decisions`.
   - verify:
     - The audit table has no MISSING rows; every row is a knob, an option or a justified N/A/EXTRA.
-    - `RawParity_Test` passes. It is compiled at the next build; if that build falls outside this phase, schedule a P7.T29 build.
+    - `RawParity_Test` passes. Compiled at P7.T37.
+  - size: M
+
+RawColorCalibration ports darktable's color calibration (`src/iop/channelmixerrgb.c`, params v3) as an image-in/image-out Point op in `Engine/Nodes/Raw/`, Tab menu `Raw/`, placed after RawInputColor in the project working space. Unlike the other raw nodes it is image kind and does not check `raw/stage`. It has every control darktable has, at darktable's defaults (`dt_iop_channelmixer_rgb_params_t`, channelmixerrgb.c:91-115, and `reload_defaults`, :3862):
+- **CAT page:**
+  - Adaptation: linear Bradford / CAT16 / non-linear Bradford / XYZ / none. Default CAT16; pipe + none on monochrome input or when a CAT is already applied upstream.
+  - Illuminant: same as pipeline (D50) / A / D (daylight) / E / F / LED / Planckian / custom / as shot in camera. Default D. On a raw with a matrix it resolves per file to D, Planckian or custom.
+  - F source F1–F12, default F3.
+  - LED source B1–B5, BH1, RGB1, V1, V2, default B5.
+  - Temperature 1667–25000 K (soft range 3000–7000), default 5003 or file-derived.
+  - Hue° and Chroma%, stored as x, y; default 0.333/0.333 or file-derived.
+  - Gamut compression 0–12, default 1.
+  - Clip negative RGB, default on.
+- **Mixing pages:** R, G and B rows of 3 coefficients each (−2…2), default identity. Colorfulness, Brightness and Gray rows, default 0. Six Normalize toggles, default off. Saturation algorithm v1/v2/v3, default v3.
+- **Area color mapping:**
+  - Area mode: correction / measure, default correction.
+  - Take channel mixing into account, default on.
+  - Target lightness 50, hue 0, chroma 0.
+  - Area rectangle and Pick.
+- **Color checker:**
+  - Chart: 7 options, default Xrite ColorChecker 24 pre-2014.
+  - Optimize for: 8 options, default none.
+  - Patch scale 0.5.
+  - Corner pin, Calibrate and Validate.
+- **Presets:** darktable's 10 built-ins, with Apply.
+
+Deferred as a display aid: the checker patch-grid and ΔE overlay (`gui_post_expose`, :2682). N/A:
+- Detection from surfaces/edges: compiled out (`// #define AI_ACTIVATED`, :36).
+- Cosmetic swatches, slider gradients and the CCT label (shown in a tooltip instead).
+- Legacy-version import.
+
+Order: T29 after T1 and before T2. T30 → T31 → T32 → T33 → T34 → T35 run serially, since they share the node's `.cpp`. T32 needs T5 and T14. T36 needs T14 and T32. T37 follows T27 and T28.
+
+- [ ] M80.P7.T29 — Add color calibration jobs to the reference harness
+  - files: `tools/raw/make-reference.py`, `tools/raw/make-reference.sh`, `Tests/fixtures/raw/README.md`
+  - approach:
+    - Runs after T1 (same files) and before T2. Pack `dt_iop_channelmixer_rgb_params_t` at v3 (`DT_MODULE_INTROSPECTION(3, …)`, channelmixerrgb.c:70): six float[4] rows, six normalize gbooleans, illuminant, illum_fluo, illum_led, adaptation, x, y, temperature, gamut, clip, version. Add it as a `channelmixerrgb` history entry after colorin.
+    - Jobs on the CR2 and RAF crops, temperature as shot unless stated:
+      - each adaptation at D 4500 K (none with a non-identity mix);
+      - each illuminant at CAT16: pipe, A, E, F2, F11, LED B1, LED RGB1, Planckian 3200 K, custom xy;
+      - as shot in camera, with temperature as shot and with preset 4 (as shot to reference), which exercises `_get_white_balance_coeff`;
+      - gamut 0/1/4 × clip on/off;
+      - R/G/B mixing with normalize on and off;
+      - colorfulness ±0.5 × v1/v2/v3;
+      - brightness;
+      - gray, normalized and not.
+    - As shot in camera on the linear DNG (embedded matrix).
+    - A scene-referred default job: `--conf plugins/darkroom/workflow=scene-referred (sigmoid)` with auto-presets applied, and history entries that disable sigmoid, exposure and sharpen. Record darktable's `-d params` "[commit color calibration] temp= xy=" line per fixture in the README. If the auto-presets don't apply under darktable-cli, pack the logged illuminant explicitly and say so.
+  - verify: `python3 -I -m py_compile`; a dry run lists every job and writes every XMP; the README table lists each reference with its tolerance class. T2 renders them.
+  - size: M
+
+- [ ] M80.P7.T30 — Port darktable's illuminant and chromatic-adaptation maths
+  - files: new `Engine/Nodes/Raw/RawColorCalibrationMath.h/.cpp`, new `Tests/Native/RawColorCalibrationMath_Test.cpp`
+  - approach:
+    - From `src/common/illuminants.h`: `illuminant_to_xy` with the fluorescent and LED tables, `CCT_to_xy_daylight`, `CCT_to_xy_blackbody`, `xy_to_CCT`, `CCT_reverse_lookup` (serial and deterministic, LUT built once and thread-safe), `xy_to_uv`, `find_temperature_from_raw_coeffs`, `WB_coeffs_to_illuminant_xy`, `matrice_pseudoinverse`, `illuminant_xy_to_XYZ`.
+    - From `src/common/chromatic_adaptation.h`: `convert_any_XYZ_to_LMS`, `convert_any_LMS_to_XYZ`, `make_RGB_to_Bradford_LMS`, `make_Bradford_LMS_to_XYZ`, `make_RGB_to_CAT16_LMS`, `make_CAT16_LMS_to_XYZ`, `bradford_adapt_D50`, `CAT16_adapt_D50`, `XYZ_adapt_D50`, `convert_D50_to_LMS`, `chroma_adapt_pixel`.
+    - The xyY/uvY/Lab/LCh conversions they use, and `_check_if_close_to_daylight` (channelmixerrgb.c:1216).
+    - Reuse `RawColorMath::Mat3` where it fits, and keep darktable's header.
+  - verify: gtest against a table produced by compiling the darktable headers standalone in /tmp: daylight and Planckian xy at several CCTs, the A/E/F/LED xy, CCT round trips, a CAT16/Bradford/XYZ adaptation of D50 that is the identity, and `find_temperature_from_raw_coeffs` on the CR2's metadata. Compiled at P7.T26.
+  - size: L
+
+- [ ] M80.P7.T31 — RawColorCalibration node: knobs, mixing and the per-pixel op
+  - files: new `Engine/Nodes/Raw/RawColorCalibration.h/.cpp` + per-node files (`RawColorCalibration.reg.inc`, `Engine/Nodes/Raw/docs/RawColorCalibration.md`, icon), new `Tests/Native/NativeRawColorCalibration_Test.cpp`
+  - approach:
+    - Image in and out, Tab `Raw/`, with the CAT and mixing knobs from the intro at their static defaults.
+    - `bake` ports `commit_params` (channelmixerrgb.c:3047): norms, MIX, the saturation/lightness/grey rows (v1 swaps R and B), gamut 1/g, the illuminant LMS, and p.
+    - `row` ports `_loop_switch` (:771), `_gamut_mapping` (:648) and `_luma_chroma` (:706) exactly, including the NaN-aware max and the clip steps.
+    - Working matrices: RGB→XYZ D50 = Bradford(D65→D50) × `ProjectColorManagement::getWorkingToXYZ` (D65, ProjectColorManagement.h:162). darktable's pipe is ICC D50, so "same as pipeline" stays the identity. Fall back the way `RawInputColorOp::xyzToWorking` does.
+    - The Hue/Chroma knobs map to x,y through xyY↔LCh.
+    - Visibility follows `_update_illuminants` (:3175). `knobChanged` ports `gui_changed` (:3981): it remembers the daylight and Planckian temperatures, recomputes x,y on an illuminant, F, LED or temperature change, and updates the temperature from xy.
+    - `isIdentity` when nothing would change a pixel.
+  - verify: `expectNativeIdentity`; pipe illuminant + identity mix + gamut 0 + clip off is the identity within 1e-6; the darktable comparisons for every T29 job except the camera and scene-default ones, with the test project's working space set to linear Rec709 as the harness uses. Compiled at P7.T26.
+  - size: L
+
+- [ ] M80.P7.T32 — RawColorCalibration: file-derived defaults, "as shot in camera", double-CAT and white-balance warnings
+  - files: `Engine/Nodes/Raw/RawColorCalibration.cpp/.h`, `Engine/Nodes/IO/RawMetadata.h/.cpp` (`raw/cat_applied`, plus getters for `raw/wb_d65_coeffs` and `raw/wb_late_correction` if T14 left any out), new `Tests/Native/NativeRawColorCalibrationDefaults_Test.cpp`
+  - approach:
+    - Port `reload_defaults` (:3862) with RawPrepare's shown-until-overridden pattern:
+      - A raw input with a matrix gets CAT16. `find_temperature_from_raw_coeffs` and `_check_if_close_to_daylight` then pick D, Planckian or custom, plus the temperature and x,y.
+      - Monochrome input, or `raw/cat_applied` upstream (darktable's first instance owns the CAT, `_declare_cat_on_pipe` :1173), gets pipe + none.
+      - Other input keeps D 5003 K and CAT16.
+    - The node publishes `raw/cat_applied` while it adapts.
+    - "As shot in camera" is offered only when the metadata allows it. It re-resolves on every render, as `process` does (:2190):
+      - Port `_get_white_balance_coeff` (:614) and `_dev_is_D65_chroma` on `raw/wb_coeffs` (as shot), `raw/wb_applied`, `raw/wb_d65_coeffs` and the presence of `raw/wb_late_correction`.
+      - The matrix is `raw/dng_d65_matrix` (T5) if present, else `raw/cam_to_xyz` (stored as the inverse of rawspeed's XYZ→CAM, RawDecodeSupport.cpp:560).
+      - Adaptation is disabled and forced to CAT16 while the illuminant is the camera's.
+    - Port `_set_trouble_messages` (:1981) as node warnings: double CAT, white balance applied twice, and a RawTemperature not at reference or as shot to reference.
+  - verify: the defaults on the CR2, RAF and DNG equal darktable's logged commit line from T29 (temperature within 1 K, xy within 1e-4); the darktable comparisons for the camera-illuminant jobs (as shot and preset 4) pass; a second instance downstream defaults to pipe + none and warns. Compiled at P7.T26.
+  - size: L
+
+- [ ] M80.P7.T33 — RawColorCalibration: area color mapping (spot) and built-in presets
+  - files: `Engine/Nodes/Raw/RawColorCalibration.cpp/.h`, new `Engine/Nodes/Raw/RawColorCalibrationSpot.cpp`, `Engine/Nodes/Raw/docs/RawColorCalibration.md`, new `Tests/Native/NativeRawColorCalibrationSpot_Test.cpp`
+  - approach:
+    - Spot area bottom-left/size knobs with `node->addRectangleInteract` (ExtentKnobs.cpp:276).
+    - Area Mode (correction/measure, default correction), Take Channel Mixing Into Account (on), Target Lightness 50 / Hue 0 / Chroma 0.
+    - A Pick button reads the input mean over the area at full scale (Grade's `normalize()` pattern, as T13), then ports `_auto_set_illuminant` (:4161). Measure writes the target L/h/c. Correction writes x,y, custom illuminant and temperature.
+    - Snapshot semantics. The targets are per-node knobs, where darktable keeps them in global conf.
+    - A Preset choice plus an Apply button port `init_presets`' 10 entries (:387): six monochrome film presets, basic channel mixer, and swaps of G/B, G/R and R/B.
+  - verify: on a synthetic patch, correction maps the area to the target within ΔE 0.1 with and without mixing; measure followed by correction on the same area is a no-op; each preset writes darktable's values. No darktable render, because the picker is GUI-only. Compiled at P7.T26.
+  - size: M
+
+- [ ] M80.P7.T34 — RawColorCalibration: color-checker calibration
+  - files: new `Engine/Nodes/Raw/RawColorCalibrationChecker.h/.cpp`, new `Engine/Nodes/Raw/RawColorCheckerData.h` (from `src/common/colorchecker.h`), `Engine/Nodes/Raw/RawColorCalibration.cpp/.h`, new `Tests/Native/NativeRawColorCalibrationChecker_Test.cpp`
+  - approach:
+    - A corner pin through `Node::addCornerPinInteract` (Node.h:1536): hidden "from" knobs at the ideal box, visible "to" knobs on the chart corners.
+    - Chart (7 options, default Xrite pre-2014), Optimize For (8 options, default none), Patch Scale 0.5.
+    - Calibrate reads the input at full scale and ports `_extract_patches` (:1426), using `get_homography` from `src/chart/common.c:23`. It then ports `_extract_color_checker` (:1642), with `pseudo_solve_gaussian` from `src/iop/gaussian_elimination.h` and the per-strategy patch weights, and commits as `_commit_profile_callback` (:2933): custom x,y, temperature, and the R/G/B rows.
+    - Validate ports `_validate_color_checker` (:1939) and `_compute_patches_delta_E` (:1288). Average and maximum ΔE 2000 go in the node info.
+    - The patch-grid overlay is deferred.
+  - verify: a synthetic chart (each chart's reference Lab through a known illuminant and 3×3) is recovered within tolerance; the ΔE report equals a hand computation; all 7 charts give the right patch counts and layouts. Compiled at P7.T26.
+  - size: L
+
+- [ ] M80.P7.T35 — GPU kernel for RawColorCalibration
+  - files: new `Engine/Gpu/Kernels/rawcolorcalibration.slang`, new `Engine/Gpu/Kernels/rawcolorcalibration.cmake`, `Engine/Nodes/Raw/RawColorCalibration.cpp`, `Engine/Nodes/Raw/RawGpuParams.h`, new `Tests/Native/NativeRawColorCalibrationGpu_Test.cpp`, `Tests/Native/NativeGpuCapability_Test.cpp` (allowlist)
+  - approach:
+    - Mirror `rawinputcolor.slang` and `RawInputColorOp::gpu`.
+    - The CPU bakes the parameter block: RGB→LMS, MIX→XYZ and XYZ→RGB matrices, illuminant LMS, p, gamut, the saturation/lightness/grey rows, and the adaptation, version, clip and apply-grey flags.
+    - The kernel switches on adaptation and keeps the CPU's NaN-aware clipping and `powf` semantics.
+    - The camera illuminant is resolved in `bake`, so the kernel never sees it. Spot, checker and presets only write knobs.
+  - verify: CPU/GPU parity per adaptation × version × clip × gamut on RADV/llvmpipe, at RawInputColor's GPU tolerance class; `NativeGpuCapabilityTest` allowlists the node. Compiled at P7.T26.
+  - size: M
+
+- [ ] M80.P7.T36 — Develop RAW: insert RawColorCalibration; RawTemperature defaults to As Shot to Reference
+  - files: `Engine/Nodes/Raw/RawDevelop.h/.cpp`, `Engine/Nodes/Raw/RawTemperature.cpp`, `Engine/Nodes/Raw/docs/RawTemperature.md`, `Tests/Native/RawDevelop_Test.cpp`, new `Tests/Native/RawReferenceSceneDefault_Test.cpp`
+  - approach:
+    - `Chain` gains `colorCalibration` after `inputColor`: the slot arrays at RawDevelop.cpp:119 and :154, `addNodesToCreationOf` (:163), and the backdrop height.
+    - RawTemperature's own mode knob default becomes As Shot to Reference for every instance, not only inside Develop. This is darktable's default under its default `scene-referred (sigmoid)` workflow (temperature.c:1518, `darktableconfig.xml.in` workflow). The user approved it on 2026-10-23, superseding user call 1.
+    - The docs say the mode only white-balances when a CAT follows, and that RawColorCalibration warns otherwise.
+  - verify: RawDevelop_Test checks six nodes in order, linked, inside the backdrop; a fresh RawTemperature defaults to As Shot to Reference; the whole default chain on the CR2 and RAF matches T29's scene-referred default job within the README class; the linear DNG develops. Compiled at P7.T26.
+  - size: M
+
+- [ ] M80.P7.T37 — Build checkpoint C
+  - files: (none new; fixes go to the owning task's files)
+  - approach:
+    - Run `tools/ci/local/syntax-check.py` on the changed TUs, then one remote `tools/ci/remote/build.sh debug --tests` and one release gate.
+    - Covers T27's panel layout edits, T28's `RawParity_Test`, and anything reopened from B.
+    - Re-run failures with `-V` and route each to its task.
+  - verify: ctest is green on both legs, including `RawParity_Test` and every `*RawColorCalibration*` test. T27 (after user approval) and T28 get checked off.
   - size: M
 
 **Verification gate:**
-- `ctest` is green, including every new `Tests/Native/*Raw*`, `NativeReadRaw`, `NativeSourceKind`, `RawKindFramework`, `RawParity` and core-chain GPU parity test. The GPU tests run on RADV/llvmpipe as the existing GPU tests do.
-- Every darktable control (each `dt_iop_*_params_t` field, enum value and output-changing GUI control of rawprepare, temperature, highlights, demosaic, colorin, hotpixels, cacorrect and rawdenoise at `release-5.6.2`) has a knob with darktable's default, including file-derived defaults. The parity audit table (`tools/raw/parity-audit.py`, M80.P7.T28) has no MISSING rows.
-- The darktable reference comparisons (M80.P5.T1, M80.P7.T2) pass within their stated tolerances for every mode darktable-cli can render, on the Bayer, X-Trans, linear-DNG and synthetic fixtures. The modes it can't render (spot white balance, preset selection, hot-pixel marking) have hand-computed tests.
-- Every mode added in Phase 80.7 reports no GPU path and renders on the CPU (GPU in M81 - Raw GPU Kernels).
+- `ctest` is green, including every new `Tests/Native/*Raw*`, `NativeReadRaw`, `NativeSourceKind`, `RawKindFramework`, `RawParity` and core-chain GPU parity test, `NativeRawColorCalibrationGpu` included. The GPU tests run on RADV/llvmpipe as the existing GPU tests do.
+- Every darktable control (each `dt_iop_*_params_t` field, enum value and output-changing GUI control of rawprepare, temperature, highlights, demosaic, colorin, hotpixels, cacorrect, rawdenoise and channelmixerrgb at `release-5.6.2`) has a knob with darktable's default, including file-derived defaults. The parity audit table (`tools/raw/parity-audit.py`, M80.P7.T28) has no MISSING rows.
+- The darktable reference comparisons (M80.P5.T1, M80.P7.T2) pass within their stated tolerances for every mode darktable-cli can render, on the Bayer, X-Trans, linear-DNG and synthetic fixtures. The modes it can't render (spot white balance, preset selection, color calibration's area mapping, checker calibration and presets) have hand-computed tests.
+- Develop RAW inserts RawColorCalibration after RawInputColor, RawTemperature defaults to As Shot to Reference, and the default chain matches darktable's scene-referred default render (M80.P7.T36).
+- Every mode added in Phase 80.7 reports no GPU path and renders on the CPU (GPU in M81 - Raw GPU Kernels), except RawColorCalibration, which has a GPU kernel with a CPU parity test (M80.P7.T35).
 - The large-image test (M80.P5.T2, extended by M80.P7.T25) passes, including the new whole-frame modes, within its stated memory bounds.
-- The Xvfb script (M80.P5.T3, re-run by M80.P7.T27) passes, and the user has approved the screenshots.
-
-## Decisions`.
-- `ctest` is green, including every new `Tests/Native/*Raw*`, `NativeReadRaw`, `NativeSourceKind`, `RawKindFramework` and core-chain GPU parity test. The GPU tests run on RADV/llvmpipe as the existing GPU tests do.
-- The darktable reference comparison (M80.P5.T1) passes within its stated tolerances on a Bayer and an X-Trans fixture.
 - A linear DNG reads as raw and develops.
 - An unsupported-camera stub shows the named error.
-- The large-image test (M80.P5.T2) passes.
-- The Xvfb script (M80.P5.T3) passes, and the user has approved the screenshots.
+- The Xvfb script (M80.P5.T3, re-run by M80.P7.T27) passes, and the user has approved the screenshots.
 
 ## Decisions
 

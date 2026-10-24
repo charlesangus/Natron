@@ -60,6 +60,14 @@ namespace {
         return u;
     }
 
+    void doubleBits(double v, uint32_t* words)
+    {
+        uint64_t u;
+        std::memcpy(&u, &v, sizeof(u));
+        words[0] = static_cast<uint32_t>(u);
+        words[1] = static_cast<uint32_t>(u >> 32);
+    }
+
     uint32_t packStates(const std::array<GpuResampleJacobian, 4>& jacobians)
     {
         uint32_t states = 0;
@@ -109,9 +117,7 @@ namespace {
             const GpuResampleMatrix& m = r.matrices[i];
             uint32_t* w = &words[kBlurHeaderWords + i * kBlurMatrixWords];
             for (int k = 0; k < 6; ++k) {
-                splitDouble(m.matrix[k], hi, lo);
-                w[k] = floatBits(hi);
-                w[6 + k] = floatBits(lo);
+                doubleBits(m.matrix[k], &w[2 * k]);
             }
             w[12] = packStates(m.jacobians);
             splitDouble(m.weight, hi, lo);
@@ -190,7 +196,7 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     if (!blurred) {
         const GpuResampleMatrix& m = r.matrices[0];
         for (int k = 0; k < 6; ++k) {
-            splitDouble(m.matrix[k], p.hHi[k], p.hLo[k]);
+            doubleBits(m.matrix[k], &p.hBits[2 * k]);
         }
         p.states = packStates(m.jacobians);
         return ctx.dispatch(GpuKernelId::resample, { src, r.dst.buffer, r.dst.buffer }, p, { p.width, p.height, 1 });

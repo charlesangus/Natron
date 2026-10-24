@@ -46,6 +46,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/GpuRender.h"
@@ -138,13 +139,18 @@ protected:
     static bool setProcessChannels(const NodePtr& node,
                                    const std::bitset<4>& channels)
     {
-        const char* const names[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
-
+        KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
+        if (!channelSet) {
+            return false;
+        }
+        const char* const names[4] = { "R", "G", "B", "A" };
+        std::vector<std::string> enabled;
         for (int c = 0; c < 4; ++c) {
-            if (!setKnobValues(node, names[c], { channels[c] ? 1. : 0. })) {
-                return false;
+            if (channels[c]) {
+                enabled.push_back(names[c]);
             }
         }
+        channelSet->setChannels(0, enabled);
 
         return true;
     }
@@ -365,12 +371,18 @@ expectShiftMatches(GpuParityRuntime& runtime,
     ASSERT_EQ(4, query.nComps) << what;
     ASSERT_TRUE(effect->canRenderOnGpu(query)) << what;
 
+    // A window wholly outside the node's region of definition renders no plane on the CPU; the
+    // frame there is zero.
     RenderedPlane cpu;
-    ASSERT_TRUE(renderColor(node, mipmapLevel, roi, &cpu)) << what;
-    ASSERT_EQ(4u, cpu.channels.size()) << what;
-    ASSERT_EQ(roi, cpu.window) << what;
+    if (roi.intersects(pixelRegionOfDefinition(node, mipmapLevel))) {
+        ASSERT_TRUE(renderColor(node, mipmapLevel, roi, &cpu)) << what;
+        ASSERT_EQ(4u, cpu.channels.size()) << what;
+        ASSERT_EQ(roi, cpu.window) << what;
+    } else {
+        cpu.pixels.assign((std::size_t)roi.area() * 4, 0.f);
+    }
 
-    const RectI bounds = effect->getGpuInputRoI(0, roi, RenderScale::fromMipmapLevel(mipmapLevel)).intersect(paritySourceWindow(source, kTime, mipmapLevel));
+    const RectI bounds = effect->getGpuInputRoI(0, roi, RenderScale::fromMipmapLevel(mipmapLevel)).intersect(pixelRegionOfDefinition(source, mipmapLevel));
     std::vector<GpuParityImage> inputs(1);
     if (!bounds.isNull()) {
         ASSERT_TRUE(sourceImage(source, mipmapLevel, bounds, &inputs[0])) << what;

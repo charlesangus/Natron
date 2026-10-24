@@ -209,9 +209,10 @@ void
 fillTyped(Image& image,
           int seed)
 {
-    Image::WriteAccess access(&image);
+    // getBounds() takes the image's read lock, which a thread holding its write lock cannot take.
     const RectI bounds = image.getBounds();
     const int nComps = (int)image.getComponentsCount();
+    Image::WriteAccess access(&image);
 
     for (int y = bounds.y1; y < bounds.y2; ++y) {
         for (int x = bounds.x1; x < bounds.x2; ++x) {

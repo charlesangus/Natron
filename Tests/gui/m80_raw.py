@@ -477,18 +477,27 @@ try:
         for area in panel.findChildren(QScrollArea):
             area.setMinimumHeight(0)
 
+    tab_widgets_alive = []
+
     def knob_tabs(node):
-        """The tab widget of the node's tab groups (not the panel's own page tabs), or None."""
+        """The tab widget of the node's tab groups (not the panel's own page tabs), or None. The findChildren list is kept
+        in tab_widgets_alive: PySide invalidates the wrappers when the list is freed, so a widget returned from here would be dead."""
         panel = panel_of(node)
         if panel is None:
             return None
-        for w in panel.findChildren(QTabWidget):
+        tab_widgets_alive[:] = [panel] + panel.findChildren(QTabWidget)
+        for w in tab_widgets_alive[1:]:
             try:
                 if w.parent() is not None and gt.class_name(w.parent()) == "TabGroup":
                     return w
             except RuntimeError:
                 continue
         return None
+
+    def select_tab(node, index):
+        tabs = knob_tabs(node)
+        if tabs is not None:
+            tabs.setCurrentIndex(index)
 
     def highlights_section(highlights):
         saved = {n: highlights.getParam(n).getValue() for n in ("mode", "recovery")}
@@ -553,7 +562,7 @@ try:
                 tuned.append(preset)
         report("NOTE %s RawTemperature: presets with Finetune shown %r" % (label, tuned))
         if tuned_expected:
-            expected = [p for p in TUNED_CR2_PRESETS if p in presets]
+            expected = [p for p in presets if p.lower() in [t.lower() for t in TUNED_CR2_PRESETS]]
             check(expected and all(p in tuned for p in expected),
                   "%s RawTemperature: Finetune shows for the presets with tunings %r" % (label, expected))
             chosen = expected[0] if expected else presets[0]
@@ -577,9 +586,8 @@ try:
         yield from open_panel(cal)
         cal.getParam("areaMapping").setOpened(True)
         cal.getParam("colorChecker").setOpened(True)
-        tabs = knob_tabs(cal)
-        if tabs is not None:
-            tabs.setCurrentIndex(0)
+        yield ("sleep", SETTLE_MS)
+        select_tab(cal, 0)
         enabled_wrong = []
         for adaptation in ADAPTATIONS:
             try_choice(cal, "illuminant", "d")
@@ -658,10 +666,11 @@ try:
         tabs = knob_tabs(cal)
         if check(tabs is not None and tabs.count() == 7, "RawColorCalibration shows seven tabs (%r)"
                  % ([tabs.tabText(i) for i in range(tabs.count())] if tabs is not None else None)):
-            for i in range(tabs.count()):
-                tabs.setCurrentIndex(i)
-                yield from panel_shot(cal, "m80-panel-RawColorCalibration-tab-%d-%s.png" % (i + 1, re.sub(r"\W+", "", tabs.tabText(i)).lower()))
-            tabs.setCurrentIndex(0)
+            titles = [tabs.tabText(i) for i in range(tabs.count())]
+            for i, title in enumerate(titles):
+                select_tab(cal, i)
+                yield from panel_shot(cal, "m80-panel-RawColorCalibration-tab-%d-%s.png" % (i + 1, re.sub(r"\W+", "", title).lower()))
+            select_tab(cal, 0)
 
     def steps():
         ok = yield ("until", lambda: root_graph() is not None and main_window() is not None, STARTUP_TIMEOUT_S)

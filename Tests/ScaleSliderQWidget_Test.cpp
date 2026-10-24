@@ -99,6 +99,37 @@ sendRelease(QWidget* w,
     QApplication::sendEvent(w, &e);
 }
 
+ScaleSliderQWidget*
+makeVerticalSlider(double minV,
+                   double maxV,
+                   double initial)
+{
+    ScaleSliderQWidget* s = new ScaleSliderQWidget(minV, maxV, initial, false, ScaleSliderQWidget::eDataTypeDouble, nullptr);
+
+    s->setOrientation(Qt::Vertical);
+    s->resize(kWidgetHeight, kWidgetWidth);
+    s->show();
+    QApplication::processEvents();
+    s->setMinimumAndMaximum(minV, maxV);
+
+    return s;
+}
+
+void
+sendVerticalMouse(QWidget* w,
+                  QEvent::Type type,
+                  double y,
+                  Qt::KeyboardModifiers mods = Qt::NoModifier)
+{
+    const QPointF pos(kWidgetHeight / 2., y);
+    const bool isMove = type == QEvent::MouseMove;
+    const bool isRelease = type == QEvent::MouseButtonRelease;
+    QMouseEvent e(type, pos, w->mapToGlobal(pos), isMove ? Qt::NoButton : Qt::LeftButton,
+                  isRelease ? Qt::NoButton : Qt::LeftButton, mods);
+
+    QApplication::sendEvent(w, &e);
+}
+
 } // namespace
 
 TEST(ScaleSliderQWidget, PlainPressJumpsProportionallyToTheClickedPosition)
@@ -301,4 +332,40 @@ TEST(ScaleSliderQWidget, KeyboardModifiersNoLongerRescaleTheWidgetSTicks)
     QKeyEvent release(QEvent::KeyRelease, Qt::Key_Control, Qt::NoModifier);
     QApplication::sendEvent(s.get(), &release);
     EXPECT_NEAR(before, s->increment(), 1e-12);
+}
+
+TEST(ScaleSliderQWidget, VerticalDragUpwardRaisesTheValueByThePixelDeltaOverTheHeight)
+{
+    std::unique_ptr<ScaleSliderQWidget> s(makeVerticalSlider(0., 1., 0.));
+
+    sendVerticalMouse(s.get(), QEvent::MouseButtonPress, 200.);
+    const double start = s->getPosition();
+    sendVerticalMouse(s.get(), QEvent::MouseMove, 170.); // 30 px up
+    const double end = s->getPosition();
+    sendVerticalMouse(s.get(), QEvent::MouseButtonRelease, 170.);
+
+    EXPECT_NEAR(0.1, end - start, 1e-9);
+}
+
+TEST(ScaleSliderQWidget, VerticalCtrlDragGearsTheUpwardDrag)
+{
+    std::unique_ptr<ScaleSliderQWidget> s(makeVerticalSlider(0., 1., 0.5));
+
+    sendVerticalMouse(s.get(), QEvent::MouseButtonPress, 250., Qt::ControlModifier);
+    EXPECT_DOUBLE_EQ(0.5, s->getPosition());
+    sendVerticalMouse(s.get(), QEvent::MouseMove, 150., Qt::ControlModifier); // 100 px up
+    const double end = s->getPosition();
+    sendVerticalMouse(s.get(), QEvent::MouseButtonRelease, 150., Qt::ControlModifier);
+
+    EXPECT_NEAR(0.5 + 0.1 / 3., end, 1e-6);
+}
+
+TEST(ScaleSliderQWidget, VerticalPressJumpsToTheFractionFromTheBottom)
+{
+    std::unique_ptr<ScaleSliderQWidget> s(makeVerticalSlider(0., 1., 0.));
+
+    // a quarter of the way up the track, the bottom row being the minimum
+    sendVerticalMouse(s.get(), QEvent::MouseButtonPress, (kWidgetWidth - 1) * 0.75);
+    EXPECT_NEAR(0.25, s->getPosition(), 1e-9);
+    sendVerticalMouse(s.get(), QEvent::MouseButtonRelease, (kWidgetWidth - 1) * 0.75);
 }

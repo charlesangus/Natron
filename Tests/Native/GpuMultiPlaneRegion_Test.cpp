@@ -46,10 +46,13 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
+#include "Engine/LayerRegistry.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Channel/ChannelCopy.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/Grade.h"
@@ -458,4 +461,57 @@ TEST_F(GpuMultiPlaneRegionTest, ShuffleReadsAnotherLayerThroughAGradeInOneRegion
     EXPECT_EQ(1, gpuRunsOf(result, grade)) << "the region fell back to the CPU";
     EXPECT_EQ(1, gpuRunsOf(result, shuffle)) << "the region fell back to the CPU";
     expectMatchesCpu(result, ParityTolerance::arithmetic());
+}
+
+// The AddLayers adds the extra layer, which needs nothing of its source, and passes the colour plane through, so it has
+// no edge to its source until the Shuffle asks it for colour. The request then adds that edge, so the colour plane is
+// an identity member on the source's upload, the added layer a member of its own, and both nodes run in one region.
+TEST_F(GpuMultiPlaneRegionTest, AddLayersPassesColourThroughBesideTheLayerItAddsInOneRegion)
+{
+    std::string error;
+    const LayerRegistry::AddResultEnum registered = getApp()->getProject()->addLayer(paritySourceExtraLayer(), LayerRegistryEntry::eOriginUser, &error);
+    ASSERT_TRUE((registered == LayerRegistry::eAddResultAdded) || (registered == LayerRegistry::eAddResultGrown)) << error;
+
+    NodePtr source = makeSource(false);
+    NodePtr add = createNode(QString::fromUtf8(PLUGINID_NATRON_ADDLAYERS));
+    NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(source && add && shuffle);
+    connectNodes(source, add, 0, true);
+    connectNodes(add, shuffle, Shuffle::eInputMain, true);
+    KnobChannelSetPtr rows = std::dynamic_pointer_cast<KnobChannelSet>(add->getKnobByName(kAddLayersParamLayers));
+    ASSERT_TRUE(bool(rows));
+    rows->setLayer(0, kParitySourceExtraLayerID, NULL);
+    AddLayers* effect = dynamic_cast<AddLayers*>(add->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+    const AddLayers::Outcome outcome = effect->computeOutcome(kTime, ViewIdx(0));
+    ASSERT_FALSE(outcome.widensColor);
+    ASSERT_EQ(1u, outcome.addedLayers.size());
+
+    const std::pair<const char*, std::string> layers[] = {
+        { kShuffleParamIn1, kNatronColorViewRGBA },
+        { kShuffleParamIn2, kParitySourceExtraLayerID },
+        { kShuffleParamOut1, kNatronColorViewRGBA },
+        { kShuffleParamOut2, std::string() },
+    };
+    for (const std::pair<const char*, std::string>& layer : layers) {
+        KnobLayerSelectPtr knob = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(layer.first));
+        ASSERT_TRUE(bool(knob)) << layer.first;
+        knob->setLayer(layer.second);
+    }
+    KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mapping));
+    mapping->setSource(1, 0, ShuffleSource::makeInput(2, 1));
+    mapping->setSource(1, 2, ShuffleSource::makeOne());
+
+    const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ add, shuffle }), shuffle, paritySourceWindow(source, kTime, 0), kTime);
+    if (result.skipped) {
+        return;
+    }
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_EQ(1u, result.regions.size());
+    EXPECT_TRUE(result.ranInRegion(add));
+    EXPECT_TRUE(result.ranInRegion(shuffle));
+    EXPECT_EQ(1, gpuRunsOf(result, add)) << "the region fell back to the CPU";
+    EXPECT_EQ(1, gpuRunsOf(result, shuffle)) << "the region fell back to the CPU";
+    expectMatchesCpu(result, ParityTolerance::exact());
 }

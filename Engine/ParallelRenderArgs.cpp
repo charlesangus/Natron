@@ -70,13 +70,15 @@ struct PlanesRequest {
 /**
  * @brief Queues on pending the layers of added that the effect of request passes through rather than produces, asked
  * of its pass-through input at the pass-through time and view and at request's mipmap level, where renderRoI() fetches
- * them. Only an input the request already walks there through an edge is asked, so its task renders the layer, the
- * fetch finds it in the frame store, and the graph gains no task nor edge.
+ * them, so its task renders the layer and the fetch finds it in the frame store.
+ * A target that needs nothing from that input has no edge to it, yet renderRoI() still pulls the layer from it, so the
+ * edge is added here when the input's frame/view was walked over the target's whole RoI: the pull becomes planned.
+ * Only a requested layer that resolves to a pass-through adds one, so a graph that passes nothing through is unchanged.
  **/
 void
 queuePassThroughPlanes(FrameRequestMap& requests,
                        const PlanesRequest& request,
-                       const FrameViewRequest& target,
+                       FrameViewRequest* target,
                        const std::list<ImageLayerDesc>& added,
                        std::vector<PlanesRequest>* pending)
 {
@@ -100,20 +102,9 @@ queuePassThroughPlanes(FrameRequestMap& requests,
     if ((produced == neededComps.end()) || passThroughLayers.empty() || !input) {
         return;
     }
-    const NodePtr inputNode = input->getNode();
-    bool walked = false;
-    for (const FrameViewRequest::TaskEdge& edge : target.dependencies) {
-        if ((edge.inputNb == passThroughInput) && (edge.time == passThroughTime) && (edge.view == ViewIdx(passThroughView)) && (edge.mipmapLevel == request.mipmapLevel) && (edge.node.lock() == inputNode)) {
-            walked = true;
-            break;
-        }
-    }
-    if (!walked) {
-        return;
-    }
 
     PlanesRequest passed;
-    passed.node = inputNode;
+    passed.node = input->getNode();
     passed.time = passThroughTime;
     passed.view = ViewIdx(passThroughView);
     passed.mipmapLevel = request.mipmapLevel;
@@ -126,9 +117,42 @@ queuePassThroughPlanes(FrameRequestMap& requests,
             passed.comps.push_back(*found);
         }
     }
-    if (!passed.comps.empty()) {
-        pending->push_back(std::move(passed));
+    if (passed.comps.empty()) {
+        return;
     }
+
+    bool walked = false;
+    for (const FrameViewRequest::TaskEdge& edge : target->dependencies) {
+        if ((edge.inputNb == passThroughInput) && (edge.time == passed.time) && (edge.view == passed.view) && (edge.node.lock() == passed.node)) {
+            // An edge at another level is a task the fetch does not read, and a second task at this level would
+            // render the input twice, so the pull stays as it was.
+            if (edge.mipmapLevel != passed.mipmapLevel) {
+                return;
+            }
+            walked = true;
+            break;
+        }
+    }
+    if (!walked) {
+        FrameViewRequest* inputRequest = requests.findFrameViewRequest(passed.node, passed.time, passed.view);
+        if (!inputRequest || inputRequest->finalData.finalRoi.isNull() || !inputRequest->finalData.finalRoi.contains(target->finalData.finalRoi)) {
+            return;
+        }
+        // Every dependency must stay numbered before its consumer.
+        if ((inputRequest->dfsPostOrder == -1) || (target->dfsPostOrder == -1) || (inputRequest->dfsPostOrder >= target->dfsPostOrder)) {
+            return;
+        }
+        FrameViewRequest::TaskEdge edge;
+        edge.node = passed.node;
+        edge.time = passed.time;
+        edge.view = passed.view;
+        edge.mipmapLevel = passed.mipmapLevel;
+        edge.inputNb = passThroughInput;
+        target->dependencies.push_back(edge);
+        ++inputRequest->consumers;
+    }
+
+    pending->push_back(std::move(passed));
 } // queuePassThroughPlanes
 
 } // namespace
@@ -164,10 +188,13 @@ mergeRequestedComponents(FrameRequestMap& requests,
                 added.push_back(layer);
             }
         }
-        if (added.empty() || target->dependencies.empty()) {
+        if (added.empty()) {
             continue;
         }
         if (target->globalData.isIdentity) {
+            if (target->dependencies.empty()) {
+                continue;
+            }
             // An identity frame/view renders nothing itself, so whatever is requested from it is requested from its
             // alias target.
             const FrameViewRequest::TaskEdge& alias = target->dependencies.front();
@@ -180,7 +207,7 @@ mergeRequestedComponents(FrameRequestMap& requests,
             pending.push_back(std::move(aliased));
             continue;
         }
-        queuePassThroughPlanes(requests, request, *target, added, &pending);
+        queuePassThroughPlanes(requests, request, target, added, &pending);
     }
 } // mergeRequestedComponents
 

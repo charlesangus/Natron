@@ -47,6 +47,9 @@
 #include <mutex>
 #include <system_error>
 #include <utility>
+#include <vector>
+
+#include <QDebug>
 
 #include "RawSpeed-API.h"
 #include "tiff/TiffEntry.h"
@@ -55,6 +58,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/MemoryInfo.h"
+#include "Engine/Nodes/IO/RawDngOpcodes.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/IO/RawspeedRuntime.h"
 #include "Engine/Nodes/Raw/RawColorMath.h"
@@ -237,6 +241,32 @@ namespace {
         }
 
         return std::nullopt;
+    }
+
+    // rawspeed never applies GainMap opcodes, so the OpcodeList2 bytes are parsed here. A list that
+    // does not parse leaves the key out.
+    std::vector<DngGainMap>
+    gainMaps(rawspeed::RawDecoder& decoder)
+    {
+        try {
+            const rawspeed::TiffIFD* root = decoder.getRootIFD();
+            const rawspeed::TiffEntry* entry = root ? root->getEntryRecursive(rawspeed::TiffTag::OPCODELIST2) : nullptr;
+            if (!entry || (entry->type != rawspeed::TiffDataType::UNDEFINED && entry->type != rawspeed::TiffDataType::BYTE)) {
+                return {};
+            }
+            std::vector<uint8_t> bytes(entry->count);
+            for (uint32_t i = 0; i < entry->count; ++i) {
+                bytes[i] = entry->getByte(i);
+            }
+            std::string error;
+            if (std::optional<std::vector<DngGainMap>> maps = RawDngOpcodes::parseOpcodeList2GainMaps(bytes.data(), bytes.size(), &error)) {
+                return std::move(*maps);
+            }
+            qWarning() << "Ignoring the DNG OpcodeList2:" << error.c_str();
+        } catch (const std::exception&) {
+        }
+
+        return {};
     }
 
     // DNG 1.6 tags that rawspeed's TiffTag does not name.
@@ -577,6 +607,9 @@ namespace {
         }
         if (const std::optional<std::array<double, 9>> d65 = dngD65Matrix(decoder)) {
             RawMetadata::setDngD65Matrix(&metadata, *d65);
+        }
+        if (const std::vector<DngGainMap> maps = gainMaps(decoder); !maps.empty()) {
+            RawMetadata::setGainMaps(&metadata, maps);
         }
         RawMetadata::setStage(&metadata, eRawStageRaw);
 

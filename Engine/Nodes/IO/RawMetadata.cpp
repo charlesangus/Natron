@@ -393,6 +393,25 @@ setDngD65Matrix(ImageMetadata* metadata,
     setFixedVector(metadata, kRawMetadataDngD65Matrix, matrix);
 }
 
+std::vector<DngGainMap>
+getGainMaps(const ImageMetadata& metadata)
+{
+    if (const std::optional<std::vector<double>> values = metadata.getDoubleVector(kRawMetadataGainMaps)) {
+        if (std::optional<std::vector<DngGainMap>> maps = RawDngOpcodes::deserializeGainMaps(*values)) {
+            return std::move(*maps);
+        }
+    }
+
+    return {};
+}
+
+void
+setGainMaps(ImageMetadata* metadata,
+            const std::vector<DngGainMap>& maps)
+{
+    metadata->setDoubleVector(kRawMetadataGainMaps, RawDngOpcodes::serializeGainMaps(maps));
+}
+
 std::optional<RawStageEnum>
 getStage(const ImageMetadata& metadata)
 {

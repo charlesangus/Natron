@@ -225,6 +225,7 @@ future core work has solid ground to build on.
 | M163 | Incremental Bezier Edits | todo | - |  | E6 | [M163-incremental-bezier-edits.md](PLAN/MILESTONES/M163-incremental-bezier-edits.md) |
 | M164 | Viewer Node Knobs | todo | M16, M107 |  | E3 | [M164-viewer-node-knobs.md](PLAN/MILESTONES/M164-viewer-node-knobs.md) |
 | M165 | Rich Viewer Overlays | todo | M80 |  | E3 | [M165-rich-viewer-overlays.md](PLAN/MILESTONES/M165-rich-viewer-overlays.md) |
+| M166 | Non-Float Plane Model | todo | - |  | E14 | [M166-non-float-plane-model.md](PLAN/MILESTONES/M166-non-float-plane-model.md) |
 
 # Epics
 
@@ -250,3 +251,4 @@ future core work has solid ground to build on.
 - **M161 - Startup Compositor Crash:** waiting on the user's diagnostic run on the NVIDIA host (P1.T3): `build/appimages/M161-diag.md` with `M161-diag-e4ac87b1a.AppImage` and `startup-gl-matrix.sh`; send back the tarball(s). Phase 161.2 starts from the result.
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.
 - **M16 - Project Format Redesign:** UAT round 2 with the user (P9.T10): `build/appimages/M16-uat.md` with `M16-d7138ee99.AppImage`.
+- **M166 - Non-Float Plane Model:** the user wants to rethink the model before it is planned: Read emitting EXR half/uint32 layers natively, and possibly a bit depth per layer. Settle the framing in `/cat-discuss`, then elaborate.

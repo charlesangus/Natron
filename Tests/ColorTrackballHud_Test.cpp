@@ -30,9 +30,11 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QEventLoop>
 #include <QGuiApplication>
 #include <QLabel>
+#include <QObject>
 #include <QPoint>
 #include <QRect>
 #include <QScreen>
@@ -273,7 +275,7 @@ TEST(ColorTrackballHud, AttachPutsTheHudRightAfterTheChannelLinesAndDetachRemove
     QWidget row;
     QWidget channelLines;
     QWidget panel;
-    ColorTrackballHud hud;
+    QWidget hud;
 
     columnLayout->addWidget(&row);
     columnLayout->addWidget(&channelLines);
@@ -297,7 +299,7 @@ TEST(ColorTrackballHud, AttachWithNoChannelLinesGoesRightAfterTheRow)
     QVBoxLayout* columnLayout = new QVBoxLayout(&column);
     QWidget row;
     QWidget panel;
-    ColorTrackballHud hud;
+    QWidget hud;
 
     columnLayout->addWidget(&row);
     columnLayout->addWidget(&panel);
@@ -326,7 +328,7 @@ TEST(ColorTrackballHud, AttachTwiceMovesTheHudInsteadOfDuplicatingIt)
     columnBLayout->addWidget(&rowB);
     columnBLayout->addWidget(&channelLinesB);
 
-    ColorTrackballHud hud;
+    QWidget hud;
 
     attachColorGlobalModeHud(columnALayout, &channelLinesA, &hud);
     EXPECT_EQ(2, columnALayout->indexOf(&hud));
@@ -359,28 +361,15 @@ TEST(ColorTrackballHud, FollowPositionIsBelowRightAndFlipsAtTheScreenEdges)
     EXPECT_EQ(QPoint(116, 116), colorTrackballHudFollowPosition(QPoint(100, 100), size, QRect(), offset));
 }
 
-TEST(ColorTrackballHud, FollowingMakesItAClickThroughToolWindowOutOfTheColumn)
+TEST(ColorTrackballHud, IsAClickThroughToolWindowWithAnOpaqueFillFromConstruction)
 {
-    QWidget column;
-    QVBoxLayout* columnLayout = new QVBoxLayout(&column);
-    QWidget row;
-    QWidget channelLines;
     ColorTrackballHud hud;
-
-    columnLayout->addWidget(&row);
-    columnLayout->addWidget(&channelLines);
-    attachColorGlobalModeHud(columnLayout, &channelLines, &hud);
-    ASSERT_EQ(2, columnLayout->indexOf(&hud));
-
-    hud.setFollowCursor(true);
-
     const Qt::WindowFlags flags = hud.windowFlags();
 
-    EXPECT_TRUE(hud.isFollowingCursor());
-    EXPECT_EQ(-1, columnLayout->indexOf(&hud));
     EXPECT_TRUE(hud.parentWidget() == 0);
     EXPECT_TRUE(hud.isWindow());
     EXPECT_TRUE(hud.isHidden());
+    EXPECT_TRUE(hud.autoFillBackground());
     EXPECT_EQ((int)Qt::Tool, (int)(flags & Qt::WindowType_Mask));
     EXPECT_TRUE(flags.testFlag(Qt::FramelessWindowHint));
     EXPECT_TRUE(flags.testFlag(Qt::WindowStaysOnTopHint));
@@ -388,6 +377,49 @@ TEST(ColorTrackballHud, FollowingMakesItAClickThroughToolWindowOutOfTheColumn)
     EXPECT_TRUE(flags.testFlag(Qt::WindowDoesNotAcceptFocus));
     EXPECT_TRUE(hud.testAttribute(Qt::WA_ShowWithoutActivating));
     EXPECT_TRUE(hud.testAttribute(Qt::WA_TransparentForMouseEvents));
+}
+
+namespace {
+class PaintCounter
+    : public QObject {
+public:
+    int count = 0;
+
+protected:
+    bool eventFilter(QObject*, QEvent* e) override
+    {
+        if (e->type() == QEvent::Paint) {
+            ++count;
+        }
+
+        return false;
+    }
+};
+}
+
+TEST(ColorTrackballHud, ATextChangeAndAMoveLeaveItRepainted)
+{
+    ColorTrackballHud hud;
+    PaintCounter counter;
+
+    hud.setState(stateForC());
+    hud.show();
+    QElapsedTimer timer;
+    timer.start();
+    while (!hud.isVisible() && timer.elapsed() < 2000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    }
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+    hud.installEventFilter(&counter);
+
+    ColorTrackballHudState longer = stateForC();
+
+    longer.endOfListMessage = QString::fromUtf8("Last colour knob.");
+    hud.setState(longer);
+    hud.followCursorTo(QPoint(120, 130));
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+    EXPECT_GE(counter.count, 1);
+    hud.hide();
 }
 
 TEST(ColorTrackballHud, FollowingHudSitsAtTheOffsetAndFlipsNearTheEdges)
@@ -400,7 +432,6 @@ TEST(ColorTrackballHud, FollowingHudSitsAtTheOffsetAndFlipsNearTheEdges)
     ColorTrackballHud hud;
 
     hud.setState(stateForC());
-    hud.setFollowCursor(true);
     ASSERT_LE(g.left() + 116 + hud.width(), g.left() + g.width());
     ASSERT_LE(g.top() + 116 + hud.height(), g.top() + g.height());
 
@@ -424,47 +455,4 @@ TEST(ColorTrackballHud, FollowingHudSitsAtTheOffsetAndFlipsNearTheEdges)
     hud.setState(longer);
     EXPECT_LT(hud.geometry().right(), corner.x());
     EXPECT_LT(hud.geometry().bottom(), corner.y());
-}
-
-TEST(ColorTrackballHud, FollowCursorToIsIgnoredWhenNotFollowing)
-{
-    ColorTrackballHud hud;
-
-    hud.move(5, 7);
-    hud.followCursorTo(QPoint(100, 100));
-    EXPECT_EQ(QPoint(5, 7), hud.pos());
-}
-
-TEST(ColorTrackballHud, AfterFollowingItAttachesUnderTheKnobAsBefore)
-{
-    QWidget column;
-    QVBoxLayout* columnLayout = new QVBoxLayout(&column);
-    QWidget row;
-    QWidget channelLines;
-    QWidget panel;
-    ColorTrackballHud hud;
-
-    columnLayout->addWidget(&row);
-    columnLayout->addWidget(&channelLines);
-    columnLayout->addWidget(&panel);
-
-    const Qt::WindowFlags beforeFollowing = hud.windowFlags();
-    const bool showedWithoutActivating = hud.testAttribute(Qt::WA_ShowWithoutActivating);
-
-    hud.setFollowCursor(true);
-    hud.setFollowCursor(false);
-
-    EXPECT_FALSE(hud.isFollowingCursor());
-    // A parentless widget is always a window to Qt; every other flag is the one it had before.
-    EXPECT_EQ(beforeFollowing | Qt::Window, hud.windowFlags());
-    EXPECT_FALSE(hud.windowFlags().testFlag(Qt::WindowTransparentForInput));
-    EXPECT_FALSE(hud.testAttribute(Qt::WA_TransparentForMouseEvents));
-    EXPECT_EQ(showedWithoutActivating, hud.testAttribute(Qt::WA_ShowWithoutActivating));
-
-    attachColorGlobalModeHud(columnLayout, &channelLines, &hud);
-
-    EXPECT_EQ(2, columnLayout->indexOf(&hud));
-    EXPECT_EQ(&column, hud.parentWidget());
-    EXPECT_FALSE(hud.isWindow());
-    EXPECT_EQ(beforeFollowing & ~Qt::WindowType_Mask, hud.windowFlags() & ~Qt::WindowType_Mask);
 }

@@ -565,42 +565,6 @@ KnobGuiColor::getGlobalModeColumnWidget() const
 }
 
 void
-KnobGuiColor::attachGlobalModeHud(QWidget* hud)
-{
-    QVBoxLayout* columnLayout = getBelowRowColumnLayout();
-
-    if (!columnLayout || !hud) {
-        return;
-    }
-    if (binTopPlacement()) {
-        if (ColorTrackballBinPanel* binPanel = ColorTrackballBinPanel::instanceFor(getGui())) {
-            binPanel->attachHud(hud);
-
-            return;
-        }
-    }
-
-    QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
-    UpdatesHeldOff held(topWidget);
-
-    attachColorGlobalModeHud(columnLayout, getDimensionLinesWidget(), hud);
-    activateLayoutsUpToInclusive(columnLayout->parentWidget(), topWidget);
-}
-
-void
-KnobGuiColor::detachGlobalModeHud(QWidget* hud)
-{
-    QVBoxLayout* columnLayout = getBelowRowColumnLayout();
-    QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
-    UpdatesHeldOff held(topWidget);
-
-    detachColorGlobalModeHud(hud);
-    if (columnLayout) {
-        activateLayoutsUpToInclusive(columnLayout->parentWidget(), topWidget);
-    }
-}
-
-void
 KnobGuiColor::engageGlobalMode()
 {
     Gui* gui = getGui();

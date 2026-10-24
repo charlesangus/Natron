@@ -32,6 +32,7 @@
 #include <QCursor>
 #include <QGuiApplication>
 #include <QRect>
+#include <QRegion>
 #include <QScreen>
 
 #include <gtest/gtest.h>
@@ -148,6 +149,18 @@ TEST(ColorTrackballReveal, WindowIsAClickThroughToolWindowOfTheRevealSize)
     EXPECT_TRUE(reveal.testAttribute(Qt::WA_TranslucentBackground));
     EXPECT_EQ(ColorTrackballReveal::diameter(), reveal.width());
     EXPECT_EQ(ColorTrackballReveal::diameter(), reveal.height());
+}
+
+TEST(ColorTrackballReveal, IsMaskedToItsDisc)
+{
+    ColorTrackballReveal reveal;
+    const QRegion mask = reveal.mask();
+    const int side = reveal.width();
+
+    EXPECT_FALSE(mask.isEmpty());
+    EXPECT_FALSE(mask.contains(QPoint(0, 0)));
+    EXPECT_FALSE(mask.contains(QPoint(side - 1, side - 1)));
+    EXPECT_TRUE(mask.contains(QPoint(side / 2, side / 2)));
 }
 
 TEST(ColorTrackballReveal, PositionIsCentredAndClampedToTheScreen)

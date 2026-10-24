@@ -34,6 +34,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLayout>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QPen>
 #include <QScreen>
@@ -47,8 +48,8 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
-ColorTrackballHud::ColorTrackballHud(QWidget* parent)
-    : QWidget(parent)
+ColorTrackballHud::ColorTrackballHud()
+    : QWidget(nullptr, followCursorWindowFlags())
     , _targetLabel(new QLabel(this))
     , _modeLabel(new QLabel(this))
     , _valuesLabel(new QLabel(this))
@@ -57,12 +58,12 @@ ColorTrackballHud::ColorTrackballHud(QWidget* parent)
     , _legendT(new QLabel(QString::fromUtf8("T"), this))
     , _legendV(new QLabel(QString::fromUtf8("V"), this))
     , _endOfListLabel(new QLabel(this))
-    , _followCursor(false)
-    , _preFollowWindowFlags()
-    , _preFollowShowWithoutActivating(false)
-    , _preFollowTransparentForMouseEvents(false)
     , _cursor()
 {
+    setAttribute(Qt::WA_ShowWithoutActivating, true);
+    setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    // Without a compositor nothing paints behind a frameless window, so the fill is opaque.
+    setAutoFillBackground(true);
     setObjectName(QString::fromUtf8("ColorTrackballHud"));
     _targetLabel->setObjectName(QString::fromUtf8("ColorTrackballHudTarget"));
     _modeLabel->setObjectName(QString::fromUtf8("ColorTrackballHudMode"));
@@ -174,47 +175,19 @@ ColorTrackballHud::followCursorWindowFlags()
 }
 
 void
-ColorTrackballHud::setFollowCursor(bool follow)
+ColorTrackballHud::paintEvent(QPaintEvent* e)
 {
-    hide();
+    QWidget::paintEvent(e);
 
-    QWidget* parent = parentWidget();
-    QLayout* layout = parent ? parent->layout() : 0;
+    QPainter painter(this);
 
-    if (layout) {
-        layout->removeWidget(this);
-    }
-    if (follow == _followCursor) {
-        if (follow) {
-            adjustSize();
-        }
-
-        return;
-    }
-    _followCursor = follow;
-    if (follow) {
-        _preFollowWindowFlags = windowFlags();
-        _preFollowShowWithoutActivating = testAttribute(Qt::WA_ShowWithoutActivating);
-        _preFollowTransparentForMouseEvents = testAttribute(Qt::WA_TransparentForMouseEvents);
-        setAttribute(Qt::WA_ShowWithoutActivating, true);
-        setAttribute(Qt::WA_TransparentForMouseEvents, true);
-        setParent(0, followCursorWindowFlags());
-        adjustSize();
-    } else {
-        // Qt ORs WindowTransparentForInput into the flags of any reparent made while
-        // WA_TransparentForMouseEvents is set, so the attribute goes back first.
-        setAttribute(Qt::WA_ShowWithoutActivating, _preFollowShowWithoutActivating);
-        setAttribute(Qt::WA_TransparentForMouseEvents, _preFollowTransparentForMouseEvents);
-        setParent(0, _preFollowWindowFlags);
-    }
+    painter.setPen(palette().color(QPalette::Mid));
+    painter.drawRect(rect().adjusted(0, 0, -1, -1));
 }
 
 void
 ColorTrackballHud::followCursorTo(const QPoint& globalCursor)
 {
-    if (!_followCursor) {
-        return;
-    }
     _cursor = globalCursor;
     placeByCursor();
 }
@@ -232,6 +205,7 @@ ColorTrackballHud::placeByCursor()
     const QPoint offset((int)TO_DPIX(kFollowOffset), (int)TO_DPIY(kFollowOffset));
 
     move(colorTrackballHudFollowPosition(_cursor, size(), screenRect, offset));
+    update();
 }
 
 QString
@@ -333,10 +307,8 @@ ColorTrackballHud::setState(const ColorTrackballHudState& state)
     _endOfListLabel->setVisible(!state.endOfListMessage.isEmpty());
     // A window of its own does not take its size from a layout, and a new size near an edge
     // can need the other side of the pointer.
-    if (_followCursor) {
-        adjustSize();
-        placeByCursor();
-    }
+    adjustSize();
+    placeByCursor();
 }
 
 WindowHighlightFrame::WindowHighlightFrame(QWidget* window)

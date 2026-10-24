@@ -42,7 +42,7 @@ try:
     from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QPoint, QPointF, Qt
     from PySide6.QtGui import QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListView, QMainWindow, QWidget
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QListView, QMainWindow, QTreeView, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -51,7 +51,7 @@ try:
     _watchdog_file = open(os.path.join(gt.OUT, "watchdog.txt"), "w")
     faulthandler.dump_traceback_later(WATCHDOG_S, exit=True, file=_watchdog_file)
 
-    FILES_DIR = os.path.join(gt.OUT, "m138-files")
+    FILES_DIR = os.path.abspath(os.path.join(gt.OUT, "m138-files"))
     PNG_NAME = "m138-red.png"
 
     wanted = os.environ.get("M138_SECTIONS")
@@ -173,8 +173,12 @@ try:
         return dialog.findChild(QWidget, name)
 
     def dialog_line_edit(dialog):
-        found = [w for w in dialog.findChildren(QLineEdit) if gt.class_name(w) == "FileDialogLineEdit"]
-        return found[-1] if found else None
+        """The file-name field. FileDialogLineEdit has no Q_OBJECT, so it reports itself as a
+        LineEdit, as does the filter field; that one sits beside its drop-down button."""
+        found = [w for w in dialog.findChildren(QLineEdit)
+                 if gt.class_name(w) == "LineEdit" and w.parentWidget() is not None
+                 and not w.parentWidget().findChildren(QAbstractButton)]
+        return found[0] if found else None
 
     def go_to(dialog, path):
         """Types a directory into the dialog's name field and presses Return, as a user does."""
@@ -184,7 +188,8 @@ try:
         QApplication.processEvents()
 
     def select_file(dialog, name):
-        tree = next((v for v in dialog.findChildren(QWidget) if gt.class_name(v) == "SequenceDialogView"), None)
+        # SequenceDialogView has no Q_OBJECT, so it reports itself as a QTreeView.
+        tree = next((v for v in dialog.findChildren(QTreeView) if v.isVisible()), None)
         if tree is None:
             return False
         model = tree.model()

@@ -4454,26 +4454,34 @@ ViewerGL::getColorAtRect(const RectD& rect, // rectangle in canonical coordinate
     unsigned int mipmapLevel = (unsigned int)getMipmapLevelCombinedToZoomFactor();
     ImagePtr image = getLastRenderedImageByMipmapLevel(textureIndex, mipmapLevel);
 
-    if (image) {
-        mipmapLevel = image->getMipmapLevel();
-        *imgMm = mipmapLevel;
+    if (!image) {
+        return false;
     }
 
-    ///Convert to pixel coords
+    mipmapLevel = image->getMipmapLevel();
+    *imgMm = mipmapLevel;
+
+    // Same mapping as getColorAt(), applied to each edge (floor, not enclosing).
+    const double par = image->getPixelAspectRatio();
+    const double scale = 1. / (1 << mipmapLevel);
     RectI rectPixel;
-    rectPixel.x1 = int( std::floor( rect.left() ) ) >> mipmapLevel;
-    rectPixel.y1 = int( std::floor( rect.bottom() ) ) >> mipmapLevel;
-    rectPixel.x2 = int( std::floor( rect.right() ) ) >> mipmapLevel;
-    rectPixel.y2 = int( std::floor( rect.top() ) ) >> mipmapLevel;
+    rectPixel.x1 = (int)std::floor(rect.left() * scale / par);
+    rectPixel.y1 = (int)std::floor(rect.bottom() * scale);
+    rectPixel.x2 = (int)std::floor(rect.right() * scale / par);
+    rectPixel.y2 = (int)std::floor(rect.top() * scale);
     assert( rect.bottom() <= rect.top() && rect.left() <= rect.right() );
     assert( rectPixel.y1 <= rectPixel.y2 && rectPixel.x1 <= rectPixel.x2 );
+    // A sub-pixel rect still samples the pixel under it, like the point pick.
+    if (rectPixel.x2 <= rectPixel.x1) {
+        rectPixel.x2 = rectPixel.x1 + 1;
+    }
+    if (rectPixel.y2 <= rectPixel.y1) {
+        rectPixel.y2 = rectPixel.y1 + 1;
+    }
     double rSum = 0.;
     double gSum = 0.;
     double bSum = 0.;
     double aSum = 0.;
-    if (!image) {
-        return false;
-    }
 
     ImageBitDepthEnum depth = image->getBitDepth();
 

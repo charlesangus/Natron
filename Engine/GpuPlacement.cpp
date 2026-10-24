@@ -488,8 +488,17 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
                     const FrameRenderContext& context,
                     GpuQuery* query)
 {
+    return (task.components.size() == 1) && makeGpuQueryForTaskPlane(task, task.components.front(), context, query);
+}
+
+bool
+makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
+                         const ImageLayerDesc& plane,
+                         const FrameRenderContext& context,
+                         GpuQuery* query)
+{
     const NodePtr& node = task.key.node;
-    if (!node || (task.components.size() != 1) || !context.getRequest()) {
+    if (!node || !context.getRequest()) {
         return false;
     }
     EffectInstancePtr effect = node->getEffectInstance();
@@ -501,12 +510,12 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
     if ((nodeRequest == context.getRequest()->end()) || !nodeRequest->second) {
         return false;
     }
-    const ImageLayerDesc& plane = task.components.front();
 
     query->time = task.key.time;
     query->view = task.key.view;
     const bool rendersFullScale = (task.key.mipmapLevel != 0) && (native->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
     query->mappedScale = RenderScale::fromMipmapLevel(rendersFullScale ? 0 : task.key.mipmapLevel);
+    query->plane = plane;
     query->nComps = plane.getNumComponents();
     query->bitDepth = task.bitdepth;
 
@@ -535,7 +544,135 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
     query->unPremultInPlane = (stages.divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, stages.divisorLayer, stages.divisorChannel) >= 0);
 
     return true;
-} // makeGpuQueryForTask
+} // makeGpuQueryForTaskPlane
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+bool
+containsSameLayer(const std::list<ImageLayerDesc>& layers,
+                  const ImageLayerDesc& layer)
+{
+    for (const ImageLayerDesc& other : layers) {
+        if ((other == layer) && (other.getChannels() == layer.getChannels())) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Whether the request asks the input of edge for layer and the input renders it or passes it through, so that its
+// task stores an image of that layer.
+bool
+inputCarriesLayer(const FrameRequestMap& request,
+                  const FrameViewRequest::TaskEdge& edge,
+                  const ImageLayerDesc& layer)
+{
+    const NodePtr input = edge.node.lock();
+    const EffectInstancePtr effect = input ? input->getEffectInstance() : EffectInstancePtr();
+    const FrameRequestMap::const_iterator inputRequest = input ? request.find(input) : request.end();
+    const FrameViewRequest* fvRequest = input ? request.findFrameViewRequest(input, edge.time, edge.view) : 0;
+    if (!effect || (inputRequest == request.end()) || !inputRequest->second || !fvRequest || !containsSameLayer(fvRequest->componentsRequested, layer)) {
+        return false;
+    }
+    EffectInstance::ComponentsNeededMap comps;
+    std::list<ImageLayerDesc> passThroughLayers;
+    double passThroughTime = 0.;
+    int passThroughView = 0;
+    std::bitset<4> processChannels;
+    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    int passThroughInput = -1;
+    effect->getComponentsNeededAndProduced_public(inputRequest->second->nodeHash, edge.time, edge.view, &comps, &passThroughLayers, &passThroughTime,
+                                                  &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInput);
+    const EffectInstance::ComponentsNeededMap::const_iterator produced = comps.find(-1);
+
+    return ((produced != comps.end()) && containsSameLayer(produced->second, layer)) || containsSameLayer(passThroughLayers, layer);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+bool
+makeGpuTaskPlanes(const FrameGraph::Task& task,
+                  const FrameRenderContext& context,
+                  std::vector<GpuTaskPlane>* planes)
+{
+    planes->clear();
+    const NodePtr& node = task.key.node;
+    const std::shared_ptr<FrameRequestMap>& request = context.getRequest();
+    if (!node || task.components.empty() || !request) {
+        return false;
+    }
+    NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+    FrameRequestMap::const_iterator nodeRequest = request->find(node);
+    const FrameViewRequest* fvRequest = request->findFrameViewRequest(node, task.key.time, task.key.view);
+    if (!native || !native->opKind() || (nodeRequest == request->end()) || !nodeRequest->second || !fvRequest) {
+        return false;
+    }
+
+    // What renderRoI() renders and passes through.
+    EffectInstance::ComponentsNeededMap comps;
+    std::list<ImageLayerDesc> passThroughLayers;
+    double passThroughTime = 0.;
+    int passThroughView = 0;
+    std::bitset<4> processChannels;
+    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    int passThroughInput = -1;
+    native->getComponentsNeededAndProduced_public(nodeRequest->second->nodeHash, task.key.time, task.key.view, &comps, &passThroughLayers, &passThroughTime,
+                                                  &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInput);
+    const EffectInstance::ComponentsNeededMap::const_iterator produced = comps.find(-1);
+    const std::list<ImageLayerDesc> outputLayers = (produced == comps.end()) ? std::list<ImageLayerDesc>() : produced->second;
+    const int nInputs = native->getNInputs();
+
+    for (const ImageLayerDesc& plane : task.components) {
+        GpuTaskPlane entry;
+        entry.plane = plane;
+        if (ImageLayerDesc::findEquivalentLayer(plane, outputLayers.begin(), outputLayers.end()) != outputLayers.end()) {
+            if (!makeGpuQueryForTaskPlane(task, plane, context, &entry.query) || !native->canRenderOnGpu(entry.query)) {
+                return false;
+            }
+            for (const FrameViewRequest::TaskEdge& edge : fvRequest->dependencies) {
+                if (!edge.node.lock() || (edge.inputNb < 0) || (edge.inputNb >= nInputs)) {
+                    continue;
+                }
+                std::vector<ImageLayerDesc> extraLayers;
+                if (!native->getGpuExtraInputLayers(edge.inputNb, plane, task.key.time, task.key.view, &extraLayers)) {
+                    return false;
+                }
+                for (const ImageLayerDesc& layer : extraLayers) {
+                    if (!inputCarriesLayer(*request, edge, layer)) {
+                        return false;
+                    }
+                }
+            }
+            planes->push_back(entry);
+            continue;
+        }
+        const std::list<ImageLayerDesc>::const_iterator passed = ImageLayerDesc::findEquivalentLayer(plane, passThroughLayers.begin(), passThroughLayers.end());
+        if (passed == passThroughLayers.end()) {
+            continue;
+        }
+        entry.passThrough = true;
+        entry.passThroughInput = passThroughInput;
+        entry.passThroughLayer = *passed;
+        entry.passThroughTime = passThroughTime;
+        entry.passThroughView = ViewIdx(passThroughView);
+        bool resolved = false;
+        for (const FrameViewRequest::TaskEdge& edge : fvRequest->dependencies) {
+            if ((edge.inputNb == passThroughInput) && (edge.time == passThroughTime) && (edge.view == entry.passThroughView) && edge.node.lock()) {
+                const NodePtr input = edge.node.lock();
+                const FrameViewRequest* inputRequest = request->findFrameViewRequest(input, edge.time, edge.view);
+                resolved = inputRequest && containsSameLayer(inputRequest->componentsRequested, entry.passThroughLayer);
+                break;
+            }
+        }
+        if (!resolved) {
+            return false;
+        }
+        planes->push_back(entry);
+    }
+
+    return !planes->empty();
+} // makeGpuTaskPlanes
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
@@ -598,13 +735,9 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
     PlacementInputs inputs;
 
     inputs.canRenderOnGpu = [context](const FrameGraph::Task& task) -> bool {
-        GpuQuery query;
-        if (!context || !makeGpuQueryForTask(task, *context, &query)) {
-            return false;
-        }
-        const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(task.key.node->getEffectInstance().get());
+        std::vector<GpuTaskPlane> planes;
 
-        return native && native->canRenderOnGpu(query);
+        return context && makeGpuTaskPlanes(task, *context, &planes);
     };
 
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;

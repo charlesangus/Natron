@@ -29,13 +29,15 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/RenderScheduler.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
-
-struct GpuQuery;
 
 /**
  * @brief What placeGraph() asks about the tasks of a graph. Every callback is optional.
@@ -91,12 +93,47 @@ GpuPlacementAvailableFunc setGpuPlacementAvailableFunc(GpuPlacementAvailableFunc
 bool isGpuPlacementAvailable();
 
 /**
- * @brief The query the effect of task is asked through canRenderOnGpu(). False when the task cannot go to the GPU
- * whatever the effect answers: it is not a native image effect, or renders more than one plane.
+ * @brief The query the effect of task is asked through canRenderOnGpu() for its single plane. False when the task
+ * cannot go to the GPU whatever the effect answers: it is not a native image effect, or renders more than one plane.
  **/
 bool makeGpuQueryForTask(const FrameGraph::Task& task,
                          const FrameRenderContext& context,
                          GpuQuery* query);
+
+/**
+ * @brief Like makeGpuQueryForTask(), for plane, one of the planes of task.
+ **/
+bool makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
+                              const ImageLayerDesc& plane,
+                              const FrameRenderContext& context,
+                              GpuQuery* query);
+
+/**
+ * @brief How a GPU region produces one plane of a task: the effect renders it with query, or, for a plane the node
+ * passes through, it is the image of input passThroughInput in passThroughLayer, read at passThroughTime and
+ * passThroughView.
+ **/
+struct GpuTaskPlane {
+    ImageLayerDesc plane;
+    bool passThrough = false;
+    GpuQuery query;
+    int passThroughInput = -1;
+    ImageLayerDesc passThroughLayer;
+    double passThroughTime = 0.;
+    ViewIdx passThroughView;
+};
+
+/**
+ * @brief The planes of task a GPU region produces, in task.components order. A plane the node neither produces nor
+ * passes through has no entry, as renderRoI() leaves it out of its output. False when the task cannot go to the GPU:
+ * it is not a native image effect, the effect refuses the query of a plane it produces, or cannot say which layers it
+ * reads, a layer it reads beyond getGpuInputLayer()'s is not one its input is asked for and carries, or a plane it
+ * passes through is not asked of the pass-through input at the time and view it is read at. Placement and the region
+ * engine both ask it, so they agree.
+ **/
+bool makeGpuTaskPlanes(const FrameGraph::Task& task,
+                       const FrameRenderContext& context,
+                       std::vector<GpuTaskPlane>* planes);
 
 /**
  * @brief The inputs placeGraph() takes in a render: the effects and the image cache are asked, and, while the GPU

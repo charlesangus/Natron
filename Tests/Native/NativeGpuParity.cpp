@@ -560,16 +560,9 @@ placeOnGpu(FrameRun* run,
     const FrameRenderContextPtr context = run->context;
     PlacementInputs inputs;
     inputs.canRenderOnGpu = [gpuNodes, context](const FrameGraph::Task& task) {
-        if (!gpuNodes.count(task.key.node.get())) {
-            return false;
-        }
-        GpuQuery query;
-        if (!makeGpuQueryForTask(task, *context, &query)) {
-            return false;
-        }
-        const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(task.key.node->getEffectInstance().get());
+        std::vector<GpuTaskPlane> planes;
 
-        return native && native->canRenderOnGpu(query);
+        return gpuNodes.count(task.key.node.get()) && makeGpuTaskPlanes(task, *context, &planes);
     };
     placeGraph(run->graph, inputs);
 }

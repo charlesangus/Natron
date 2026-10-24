@@ -266,6 +266,41 @@ TEST(NativeRawColorCalibrationChecker, ChartsHaveDarktablesLayouts)
     }
 }
 
+// A grey, white or black index pointing at the wrong patch (a swapped pair, a shifted row) leaves
+// every layout check green and only skews the calibration.
+TEST(NativeRawColorCalibrationChecker, GreyWhiteAndBlackIndicesPickTheNeutralPatches)
+{
+    constexpr float kNeutralChroma = 8.f;
+    constexpr float kGreyTolerance = 3.f;
+
+    for (int t = 0; t < (int)ColorCheckerTarget::Last; ++t) {
+        const ColorChecker& checker = RawColorCheckerData::colorChecker((ColorCheckerTarget)t);
+        SCOPED_TRACE(checker.name);
+
+        std::vector<std::size_t> neutrals;
+        for (std::size_t k = 0; k < checker.patches; ++k) {
+            const float* lab = checker.values[k].Lab;
+            if (std::hypot(lab[1], lab[2]) < kNeutralChroma) {
+                neutrals.push_back(k);
+            }
+        }
+        ASSERT_FALSE(neutrals.empty());
+
+        const auto lightness = [&](std::size_t k) { return checker.values[k].Lab[0]; };
+        const std::size_t closestTo50 = *std::min_element(neutrals.begin(), neutrals.end(),
+                                                          [&](std::size_t a, std::size_t b) { return std::fabs(lightness(a) - 50.f) < std::fabs(lightness(b) - 50.f); });
+        const std::size_t brightest = *std::max_element(neutrals.begin(), neutrals.end(),
+                                                        [&](std::size_t a, std::size_t b) { return lightness(a) < lightness(b); });
+        const std::size_t darkest = *std::min_element(neutrals.begin(), neutrals.end(),
+                                                      [&](std::size_t a, std::size_t b) { return lightness(a) < lightness(b); });
+
+        EXPECT_EQ(checker.middleGrey, closestTo50);
+        EXPECT_NEAR(lightness(checker.middleGrey), 50.f, kGreyTolerance);
+        EXPECT_EQ(checker.white, brightest);
+        EXPECT_EQ(checker.black, darkest);
+    }
+}
+
 TEST(NativeRawColorCalibrationChecker, HomographyMapsCornersAndRoundTrips)
 {
     const std::optional<Checker::Homography> toBox = Checker::getHomography(Checker::idealBox(), kBox);

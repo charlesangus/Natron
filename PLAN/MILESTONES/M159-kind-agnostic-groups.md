@@ -64,3 +64,4 @@ Groups, and the PyPlug instances that are groups, stop being an image barrier. A
 ## Decisions
 
 - 2026-10-24 — **Claimed by bosley-native-nodes** as the next E3 milestone while M16 waits on UAT (user's rule for this run). M79 - Layered Document Readers was skipped: its stub is still `Blocked on:` a decoding-library choice. Overlap: `Engine/Nodes/README.md` with M110.P4.T2 (different section; rebase on merge).
+- 2026-10-24 — **Host reboot mid-run:** T1–T5 code is committed (d2b2385dd, ad689a1bd, 7cafec80e, d65d903e7). The remote run on d65d903e7 failed only the group save/load case, a test bug (`getInput` redirects through the group); fixed in f4f87055e. Boxes are checked once the re-run is green; T5 still needs the Xvfb screenshot and the user's approval.

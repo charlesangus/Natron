@@ -53,9 +53,11 @@ NATRON_NAMESPACE_USING
 // the widget compositor does and check the GLX binding after each Natron GL
 // operation.
 //
-// They need GLX through Qt's xcb platform, so under the default offscreen
-// platform they print a skip line and pass. Run them for real with
-//   QT_QPA_PLATFORM=xcb Tests/gui/run-gl-tests.sh 'GuiThreadGLBinding.*' <build>/Tests/GuiTests
+// guimain.cpp runs GuiTests on Qt's offscreen platform, whose OpenGL contexts
+// are GLX contexts on a connection to $DISPLAY, so the tests need a reachable
+// X server with GLX (ctest runs under xvfb-run in CI). Without one they print
+// a skip line and pass, unless NATRON_TEST_REQUIRE_GL=1, which ctest sets for
+// this suite, turns the skip into a failure.
 // NATRON_DIAG_GL_FORCE_PROBE_CONTEXT=1 makes the probe take the probe-context
 // path NVIDIA drivers take; it is read once per process, during
 // AppManager::load(), so it has to be in the environment at launch.
@@ -89,6 +91,7 @@ resolveGLX(const char* symbol)
 struct GLXBinding {
     void* context = nullptr;
     unsigned long drawable = 0;
+    unsigned long readDrawable = 0;
 };
 
 GLXBinding
@@ -96,10 +99,12 @@ currentGLXBinding()
 {
     static const auto getContext = reinterpret_cast<GetCurrentContextFn>(resolveGLX("glXGetCurrentContext"));
     static const auto getDrawable = reinterpret_cast<GetCurrentDrawableFn>(resolveGLX("glXGetCurrentDrawable"));
+    static const auto getReadDrawable = reinterpret_cast<GetCurrentDrawableFn>(resolveGLX("glXGetCurrentReadDrawable"));
     GLXBinding b;
 
     b.context = getContext ? getContext() : nullptr;
     b.drawable = getDrawable ? getDrawable() : 0;
+    b.readDrawable = getReadDrawable ? getReadDrawable() : 0;
 
     return b;
 }
@@ -115,7 +120,7 @@ skipWithoutGLX(const char* reason)
         return true;
     }
     std::cout << "[  SKIPPED ] GuiThreadGLBinding: " << reason
-              << "; run under QT_QPA_PLATFORM=xcb Tests/gui/run-gl-tests.sh with NATRON_TEST_REQUIRE_GL=1" << std::endl;
+              << "; run with DISPLAY set to an X server with GLX" << std::endl;
 
     return true;
 }
@@ -177,7 +182,20 @@ protected:
 
         EXPECT_EQ(_qtNative, now.context) << "GLX context after " << after << " is not Qt's";
         EXPECT_EQ(_qtBinding.drawable, now.drawable) << "GLX drawable after " << after << " is not Qt's";
+        EXPECT_EQ(_qtBinding.readDrawable, now.readDrawable) << "GLX read drawable after " << after << " is not Qt's";
         EXPECT_EQ(_qtContext.get(), QOpenGLContext::currentContext()) << "Qt's current context after " << after;
+    }
+
+    std::unique_ptr<OSGLContext> createNatronContext()
+    {
+        std::unique_ptr<OSGLContext> context;
+        try {
+            context.reset(new OSGLContext(FramebufferConfig(), nullptr));
+        } catch (const std::exception& e) {
+            ADD_FAILURE() << "creating an OSGLContext failed: " << e.what();
+        }
+
+        return context;
     }
 
     bool _skip = false;
@@ -237,4 +255,88 @@ TEST_F(GuiThreadGLBinding, DestroyingContextKeepsQtContextBound)
 
     context.reset();
     expectQtBindingKept("destroying an OSGLContext");
+}
+
+TEST_F(GuiThreadGLBinding, UnsetKeepsContextQtReboundInBetween)
+{
+    if (_skip) {
+        return;
+    }
+    std::unique_ptr<OSGLContext> context = createNatronContext();
+    ASSERT_TRUE(context != nullptr);
+
+    // A second Qt context, so restoring what Natron displaced would visibly
+    // replace the binding Qt made in between.
+    QOpenGLContext otherQtContext;
+    otherQtContext.setFormat(_qtContext->format());
+    ASSERT_TRUE(otherQtContext.create());
+    QOffscreenSurface otherSurface;
+    otherSurface.setFormat(otherQtContext.format());
+    otherSurface.create();
+    ASSERT_TRUE(otherSurface.isValid());
+
+    context->setContextCurrentNoRender();
+    ASSERT_TRUE(otherQtContext.makeCurrent(&otherSurface));
+    const GLXBinding qtRebound = currentGLXBinding();
+    ASSERT_NE(_qtNative, qtRebound.context);
+
+    OSGLContext::unsetCurrentContextNoRender();
+    const GLXBinding now = currentGLXBinding();
+    EXPECT_EQ(qtRebound.context, now.context) << "unsetCurrentContextNoRender replaced the context Qt bound after Natron's";
+    EXPECT_EQ(qtRebound.drawable, now.drawable) << "unsetCurrentContextNoRender replaced the drawable Qt bound after Natron's";
+    EXPECT_EQ(&otherQtContext, QOpenGLContext::currentContext());
+
+    otherQtContext.doneCurrent();
+    ASSERT_TRUE(_qtContext->makeCurrent(_surface.get()));
+    context.reset();
+    expectQtBindingKept("destroying the OSGLContext");
+}
+
+TEST_F(GuiThreadGLBinding, DestroyingContextWithPendingRestoreRebindsQtContext)
+{
+    if (_skip) {
+        return;
+    }
+    std::unique_ptr<OSGLContext> context = createNatronContext();
+    ASSERT_TRUE(context != nullptr);
+
+    context->setContextCurrentNoRender();
+    ASSERT_NE(_qtNative, currentGLXBinding().context);
+    void* const natronNative = currentGLXBinding().context;
+    {
+        // This scope saves the Natron binding, and the restore owed to it is
+        // set aside, while the context it would put back is destroyed.
+        const OSGLContextBindingRestore restoreOnExit;
+        context.reset();
+        expectQtBindingKept("destroying the current OSGLContext inside a binding-restore scope");
+    }
+    EXPECT_NE(natronNative, currentGLXBinding().context) << "the scope put back the destroyed context";
+    expectQtBindingKept("leaving the binding-restore scope");
+
+    std::unique_ptr<OSGLContext> other = createNatronContext();
+    ASSERT_TRUE(other != nullptr);
+    other->setContextCurrentNoRender();
+    OSGLContext::unsetCurrentContextNoRender();
+    expectQtBindingKept("a later setContextCurrentNoRender + unsetCurrentContextNoRender");
+}
+
+TEST_F(GuiThreadGLBinding, TwoSetsThenOneUnsetRestoresQtContext)
+{
+    if (_skip) {
+        return;
+    }
+    std::unique_ptr<OSGLContext> first = createNatronContext();
+    std::unique_ptr<OSGLContext> second = createNatronContext();
+    ASSERT_TRUE(first && second);
+
+    // EffectInstance::dettachAllOpenGLContexts binds each attached context in
+    // turn and unsets once at the end.
+    first->setContextCurrentNoRender();
+    second->setContextCurrentNoRender();
+    OSGLContext::unsetCurrentContextNoRender();
+    expectQtBindingKept("two setContextCurrentNoRender calls + one unsetCurrentContextNoRender");
+
+    second.reset();
+    first.reset();
+    expectQtBindingKept("destroying both OSGLContexts");
 }

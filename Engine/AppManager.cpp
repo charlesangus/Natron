@@ -751,10 +751,9 @@ AppManager::loadInternal(const CLArgs& cl)
 
     StartupGLDiag::logActiveSwitches();
 
-    bool hasGLForRendering = hasOpenGLForRequirements(eOpenGLRequirementsTypeRendering, 0);
-    if (StartupGLDiag::switchOn(StartupGLDiag::Switch::SkipGLProbe)) {
-        StartupGLDiag::logSwitchAction(StartupGLDiag::Switch::SkipGLProbe, "skipped the startup OpenGL renderer probe");
-    } else if (_imp->hasInitializedOpenGLFunctions && hasGLForRendering) {
+    // Probed even when the rendering requirements are not met, since the
+    // About window and the requirements message list what was found.
+    if (_imp->hasInitializedOpenGLFunctions) {
         _imp->probeOpenGLRenderersOnce();
         for (std::list<OpenGLRendererInfo>::iterator it = _imp->openGLRenderers.begin(); it != _imp->openGLRenderers.end(); ++it) {
             qDebug() << "Found OpenGL Renderer:" << it->rendererName.c_str() << ", Vendor:" << it->vendorName.c_str()
@@ -762,12 +761,7 @@ AppManager::loadInternal(const CLArgs& cl)
                 ",Max GPU Memory:" << printAsRAM(it->maxMemBytes);;
         }
     }
-    std::vector<GpuDeviceSummary> gpuDevices;
-    if (StartupGLDiag::switchOn(StartupGLDiag::Switch::SkipVulkanEnum)) {
-        StartupGLDiag::logSwitchAction(StartupGLDiag::Switch::SkipVulkanEnum, "skipped the Vulkan device enumeration");
-    } else {
-        gpuDevices = enumerateGpuDevices();
-    }
+    const std::vector<GpuDeviceSummary> gpuDevices = enumerateGpuDevices();
     _imp->_settings->populateGpuDevices(gpuDevices);
 
     // Settings: we must load these and set the custom settings (using python) ASAP, before creating the OFX Plugin Cache

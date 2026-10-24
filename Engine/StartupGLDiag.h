@@ -79,13 +79,9 @@ void logMakeCurrent(const char* tag,
 // and flags MISMATCH when they disagree.
 void checkpoint(const char* name);
 
-// Startup isolation switches. Each is read once from its environment
-// variable ("1" turns it on) and works whether or not NATRON_DIAG_GL is set.
+// Diagnostic switches. Each is read once from its environment variable ("1"
+// turns it on) and works whether or not NATRON_DIAG_GL is set.
 enum class Switch {
-    SkipGLProbe, // NATRON_DIAG_SKIP_GL_PROBE
-    SkipVulkanEnum, // NATRON_DIAG_SKIP_VK_ENUM
-    GpuInitSync, // NATRON_DIAG_GPU_INIT_SYNC
-    NoSplashPump, // NATRON_DIAG_NO_SPLASH_PUMP
     // Makes the GLX renderer probe create and bind a probe context even when
     // GLX_MESA_query_renderer is available, so Mesa hosts run the path NVIDIA
     // drivers take.
@@ -99,10 +95,6 @@ void logActiveSwitches();
 
 // Logs that an active switch changed what startup did.
 void logSwitchAction(Switch s, const char* action);
-
-// The caller runs on the QCoreApplication thread, the only thread where Qt
-// keeps a GL context of its own. False before the application exists.
-bool onGuiThread();
 
 } // namespace StartupGLDiag
 

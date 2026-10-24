@@ -58,7 +58,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
-#include "Engine/StartupGLDiag.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Global/QtCompat.h"
@@ -136,13 +135,7 @@ GuiApplicationManager::setLoadingStatus(const QString & str)
     if ( isLoaded() ) {
         return;
     }
-    if (StartupGLDiag::switchOn(StartupGLDiag::Switch::NoSplashPump)) {
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            StartupGLDiag::logSwitchAction(StartupGLDiag::Switch::NoSplashPump, "splash text is not updated, so loading status does not pump events");
-        }
-    } else if (_imp->_splashScreen) {
+    if (_imp->_splashScreen) {
         _imp->_splashScreen->updateText(str);
     }
 }

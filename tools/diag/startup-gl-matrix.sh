@@ -12,7 +12,7 @@
 #                      a snapshot; the snapshot taken just before the first failing
 #                      launch is kept and the run stops there.
 #   --mode matrix      Interleaved launches over every configuration: baseline,
-#                      each NATRON_DIAG_* switch, NATRON_GPU=off,
+#                      NATRON_DIAG_GL_FORCE_PROBE_CONTEXT=1, NATRON_GPU=off,
 #                      QT_DISABLE_SHADER_DISK_CACHE=1, __GL_SHADER_DISK_CACHE=0 and
 #                      a fresh XDG_CACHE_HOME.
 #   --mode replay <snapshot>
@@ -328,8 +328,7 @@ run_launch() {
     } > "$log"
     # The braces take bash's own "Segmentation fault" job report off the terminal.
     {
-        env -u NATRON_DIAG_SKIP_GL_PROBE -u NATRON_DIAG_SKIP_VK_ENUM -u NATRON_DIAG_GPU_INIT_SYNC \
-            -u NATRON_DIAG_NO_SPLASH_PUMP -u NATRON_DIAG_GL_FORCE_PROBE_CONTEXT \
+        env -u NATRON_DIAG_GL_FORCE_PROBE_CONTEXT \
             NATRON_DIAG_QUIT_SCRIPT="$QUIT_SCRIPT" NATRON_DIAG_SETTLE_MS="$SETTLE_MS" \
             "$@" \
             timeout -k 5 "$TIMEOUT_S" "$APPIMAGE" -c "$QUIT_CMD" >> "$log" 2>&1 < /dev/null
@@ -358,10 +357,6 @@ DIAG_ENV=(NATRON_DIAG_GL=1 "QT_LOGGING_RULES=qt.rhi.*=true;qt.opengl.diskcache=t
 # name|VAR=value ... ; @FRESH_CACHE@ becomes a new empty directory per launch.
 MATRIX_CONFIGS=(
     "baseline|"
-    "skip-gl-probe|NATRON_DIAG_SKIP_GL_PROBE=1"
-    "skip-vk-enum|NATRON_DIAG_SKIP_VK_ENUM=1"
-    "gpu-init-sync|NATRON_DIAG_GPU_INIT_SYNC=1"
-    "no-splash-pump|NATRON_DIAG_NO_SPLASH_PUMP=1"
     "force-probe-context|NATRON_DIAG_GL_FORCE_PROBE_CONTEXT=1"
     "gpu-off|NATRON_GPU=off"
     "qt-no-diskcache|QT_DISABLE_SHADER_DISK_CACHE=1"

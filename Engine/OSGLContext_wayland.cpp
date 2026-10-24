@@ -31,8 +31,11 @@
 #include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <vector>
 
 #include <dlfcn.h>
+
+#include <QThread>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -130,10 +133,20 @@ struct PendingRestore {
     EGLContext natronContext = EGL_NO_CONTEXT;
 };
 
-// Only the GUI thread fills it; a context destroyed on another thread may
-// still have to clear it.
-std::mutex g_pendingRestoreMutex;
-std::optional<PendingRestore> g_pendingRestore;
+// The GUI thread keeps one frame per live ScopedEGLBindingRestore, above a
+// base frame for make-currents outside any scope. Make-currents only touch
+// the top frame, so one inside a scope never consumes the restore owed to an
+// enclosing Natron make-current.
+struct RestoreFrame {
+    std::optional<PendingRestore> pending;
+    // What the scope that pushed this frame puts back when it ends.
+    SavedEGLBinding scopeSaved;
+};
+
+// Only the GUI thread pushes and pops frames; a context destroyed on another
+// thread may still have to rewrite them.
+std::mutex g_restoreMutex;
+std::vector<RestoreFrame> g_restoreFrames(1);
 
 SavedEGLBinding
 captureEGLBinding(const OSGLContext_egl_data* eglInfo)
@@ -155,6 +168,13 @@ captureEGLBinding(const OSGLContext_egl_data* eglInfo)
     return b;
 }
 
+bool
+sameEGLBinding(const SavedEGLBinding& a,
+               const SavedEGLBinding& b)
+{
+    return (a.context == b.context) && (a.draw == b.draw) && (a.read == b.read) && (a.api == b.api);
+}
+
 // Qt's EGL context may live on its own EGLDisplay, so it is restored with the
 // display it was current on rather than Natron's.
 bool
@@ -162,7 +182,12 @@ restoreEGLBinding(const OSGLContext_egl_data* eglInfo,
                   const SavedEGLBinding& saved)
 {
     if (saved.context == EGL_NO_CONTEXT) {
-        return eglInfo->_imp->MakeCurrent(eglInfo->_imp->dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        // Releasing acts on the API bound now, which holds Natron's context,
+        // so the saved API is bound only afterwards.
+        const bool ok = eglInfo->_imp->MakeCurrent(eglInfo->_imp->dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        eglInfo->_imp->BindAPI(saved.api);
+
+        return ok;
     }
     eglInfo->_imp->BindAPI(saved.api);
 
@@ -172,11 +197,41 @@ restoreEGLBinding(const OSGLContext_egl_data* eglInfo,
 std::optional<PendingRestore>
 takePendingRestore()
 {
-    std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
-    std::optional<PendingRestore> pending = g_pendingRestore;
-    g_pendingRestore.reset();
+    std::lock_guard<std::mutex> k(g_restoreMutex);
+    std::optional<PendingRestore> pending = g_restoreFrames.back().pending;
+    g_restoreFrames.back().pending.reset();
 
     return pending;
+}
+
+// Rewrites every frame so nothing restores the dying context: a binding that
+// would have put it back gets what it had displaced instead (or nothing), and
+// a restore owed to its release is dropped. Frames are walked oldest first,
+// so a substitution found in one frame applies to the frames above it.
+// Returns what the dying context displaced, for when it is current now.
+SavedEGLBinding
+forgetEGLContext(EGLContext dying)
+{
+    std::lock_guard<std::mutex> k(g_restoreMutex);
+    SavedEGLBinding substitute;
+
+    for (RestoreFrame& frame : g_restoreFrames) {
+        if (frame.scopeSaved.context == dying) {
+            frame.scopeSaved = substitute;
+        }
+        if (!frame.pending) {
+            continue;
+        }
+        if (frame.pending->displaced.context == dying) {
+            frame.pending->displaced = substitute;
+        }
+        if (frame.pending->natronContext == dying) {
+            substitute = frame.pending->displaced;
+            frame.pending.reset();
+        }
+    }
+
+    return substitute;
 }
 
 } // anonymous namespace
@@ -184,8 +239,9 @@ takePendingRestore()
 struct ScopedEGLBindingRestore::Imp {
     const OSGLContext_egl_data* eglInfo = nullptr;
     bool guiThread = false;
+    // Only used off the GUI thread; there the saved binding lives in the
+    // frame this scope pushed, where a dying context can rewrite it.
     SavedEGLBinding saved;
-    std::optional<PendingRestore> outerPending;
 };
 
 ScopedEGLBindingRestore::ScopedEGLBindingRestore()
@@ -197,13 +253,15 @@ ScopedEGLBindingRestore::ScopedEGLBindingRestore()
         return;
     }
     _imp->eglInfo = eglInfo;
-    _imp->saved = captureEGLBinding(eglInfo);
-    // A make-current inside the scope must not consume the restore owed to
-    // an enclosing Natron make-current, so it is set aside until the scope
-    // ends.
-    _imp->guiThread = StartupGLDiag::onGuiThread();
+    const SavedEGLBinding saved = captureEGLBinding(eglInfo);
+    _imp->guiThread = QThread::isMainThread();
     if (_imp->guiThread) {
-        _imp->outerPending = takePendingRestore();
+        std::lock_guard<std::mutex> k(g_restoreMutex);
+        RestoreFrame frame;
+        frame.scopeSaved = saved;
+        g_restoreFrames.push_back(frame);
+    } else {
+        _imp->saved = saved;
     }
 }
 
@@ -212,13 +270,15 @@ ScopedEGLBindingRestore::~ScopedEGLBindingRestore()
     if (!_imp->eglInfo) {
         return;
     }
-    const SavedEGLBinding now = captureEGLBinding(_imp->eglInfo);
-    if ((now.context != _imp->saved.context) || (now.draw != _imp->saved.draw) || (now.read != _imp->saved.read) || (now.api != _imp->saved.api)) {
-        restoreEGLBinding(_imp->eglInfo, _imp->saved);
-    }
+    SavedEGLBinding saved = _imp->saved;
     if (_imp->guiThread) {
-        std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
-        g_pendingRestore = _imp->outerPending;
+        std::lock_guard<std::mutex> k(g_restoreMutex);
+        assert(g_restoreFrames.size() > 1);
+        saved = g_restoreFrames.back().scopeSaved;
+        g_restoreFrames.pop_back();
+    }
+    if (!sameEGLBinding(captureEGLBinding(_imp->eglInfo), saved)) {
+        restoreEGLBinding(_imp->eglInfo, saved);
     }
 }
 
@@ -673,20 +733,15 @@ OSGLContext_wayland::~OSGLContext_wayland()
     // Released before its surface goes away, so nothing is ever left bound
     // to a destroyed surface or context.
     if (_imp->eglContextHandle != EGL_NO_CONTEXT) {
+        const SavedEGLBinding displaced = forgetEGLContext(_imp->eglContextHandle);
         if (eglInfo->_imp->GetCurrentContext() == _imp->eglContextHandle) {
-            std::optional<PendingRestore> pending;
-            if (StartupGLDiag::onGuiThread()) {
-                pending = takePendingRestore();
-            }
-            if (pending && (pending->displaced.context != _imp->eglContextHandle)) {
-                restoreEGLBinding(eglInfo, pending->displaced);
+            // What it displaced was recorded on the GUI thread, so only that
+            // thread gets it back.
+            if (QThread::isMainThread()) {
+                restoreEGLBinding(eglInfo, displaced);
             } else {
                 eglInfo->_imp->MakeCurrent(eglInfo->_imp->dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             }
-        }
-        std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
-        if (g_pendingRestore && (g_pendingRestore->displaced.context == _imp->eglContextHandle)) {
-            g_pendingRestore.reset();
         }
     }
     if (_imp->eglSurfaceHandle != EGL_NO_SURFACE) {
@@ -718,32 +773,35 @@ OSGLContext_wayland::makeContextCurrent(const OSGLContext_wayland* context)
         return false;
     }
 
-    const bool guiThread = StartupGLDiag::onGuiThread();
+    const bool guiThread = QThread::isMainThread();
     if (context != nullptr) {
         bool savedHere = false;
         if (guiThread) {
-            std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
-            if (!g_pendingRestore) {
-                g_pendingRestore = PendingRestore { captureEGLBinding(eglInfo), EGL_NO_CONTEXT };
+            const SavedEGLBinding current = captureEGLBinding(eglInfo);
+            std::lock_guard<std::mutex> k(g_restoreMutex);
+            std::optional<PendingRestore>& pending = g_restoreFrames.back().pending;
+            if (!pending) {
+                pending = PendingRestore { current, EGL_NO_CONTEXT };
                 savedHere = true;
             }
         }
         if (!eglInfo->_imp->BindAPI(EGL_OPENGL_API)) {
             if (savedHere) {
-                std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
-                g_pendingRestore.reset();
+                std::lock_guard<std::mutex> k(g_restoreMutex);
+                g_restoreFrames.back().pending.reset();
             }
             throw std::runtime_error("EGL: Could not bind with OpenGL API");
         }
         const bool ok = eglInfo->_imp->MakeCurrent(eglInfo->_imp->dpy, context->_imp->eglSurfaceHandle, context->_imp->eglSurfaceHandle, context->_imp->eglContextHandle);
         if (guiThread) {
-            std::lock_guard<std::mutex> k(g_pendingRestoreMutex);
-            if (ok && g_pendingRestore) {
-                g_pendingRestore->natronContext = context->_imp->eglContextHandle;
+            std::lock_guard<std::mutex> k(g_restoreMutex);
+            std::optional<PendingRestore>& pending = g_restoreFrames.back().pending;
+            if (ok && pending) {
+                pending->natronContext = context->_imp->eglContextHandle;
             } else if (!ok && savedHere) {
                 // A failed eglMakeCurrent leaves the previous binding in
                 // place, so there is nothing to restore later.
-                g_pendingRestore.reset();
+                pending.reset();
             }
         }
         return ok;

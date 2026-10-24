@@ -51,8 +51,10 @@ endforeach()
 
 # Sends the renderer probe down the probe-context path NVIDIA drivers take even under Mesa. The
 # switch is read once, during start-up, so it has to be in the process environment.
+# NATRON_TEST_REQUIRE_GL=1 fails the suite instead of skipping it when no GLX context can be made,
+# since ctest runs under xvfb-run, where Qt's offscreen platform reaches GLX.
 if(NOT "GuiThreadGLBinding" IN_LIST NATRON_GTEST_SUITE_TESTS)
     message(FATAL_ERROR "SuiteProperties.cmake: 'GuiThreadGLBinding' is not a registered test; "
                         "update the suite name or it would silently lose its properties.")
 endif()
-set_tests_properties(GuiThreadGLBinding PROPERTIES ENVIRONMENT "NATRON_DIAG_GL_FORCE_PROBE_CONTEXT=1")
+set_tests_properties(GuiThreadGLBinding PROPERTIES ENVIRONMENT "NATRON_DIAG_GL_FORCE_PROBE_CONTEXT=1;NATRON_TEST_REQUIRE_GL=1")

@@ -45,10 +45,8 @@
 #include <unistd.h>
 
 #include <QtCore/QByteArray>
-#include <QtCore/QCoreApplication>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QString>
-#include <QtCore/QThread>
 #include <QtCore/QtGlobal>
 
 NATRON_NAMESPACE_ENTER
@@ -571,10 +569,6 @@ namespace {
     };
 
     constexpr SwitchInfo kSwitches[] = {
-        { Switch::SkipGLProbe, "NATRON_DIAG_SKIP_GL_PROBE" },
-        { Switch::SkipVulkanEnum, "NATRON_DIAG_SKIP_VK_ENUM" },
-        { Switch::GpuInitSync, "NATRON_DIAG_GPU_INIT_SYNC" },
-        { Switch::NoSplashPump, "NATRON_DIAG_NO_SPLASH_PUMP" },
         { Switch::ForceProbeContext, "NATRON_DIAG_GL_FORCE_PROBE_CONTEXT" },
     };
 
@@ -646,14 +640,6 @@ logSwitchAction(Switch s,
         return;
     }
     writeLine(std::string("switch ") + switchEnv(s) + ": " + (action ? action : "?"));
-}
-
-bool
-onGuiThread()
-{
-    const QCoreApplication* app = QCoreApplication::instance();
-
-    return app && (QThread::currentThread() == app->thread());
 }
 
 } // namespace StartupGLDiag

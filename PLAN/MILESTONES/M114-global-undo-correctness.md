@@ -122,4 +122,5 @@ The milestone also fixes the two preset bugs found in the M93 - Serialization Bo
 
 ## Decisions
 
+- 2026-10-24 — **User decisions:** panel undo/redo buttons are a filtered view of the global history (a panel undo is allowed when no later entry touches that node; graph moves and connections don't block it). A preset apply resets absent knobs to default except: label, sublabel and disable; Read/Write file paths; roto/tracker content absent from the preset; and the target's own user knobs (undo removes user knobs the preset added).
 - 2026-10-24 — **Elaborated from the stub (PM, opus consultant).** The stub's `WriteNode` encoder-swap case is gone (M76 deleted `Engine/WriteNode.cpp`); knob-GUI rebuilds through `recreateUserKnobs` still lose history, which Phase 114.2 fixes. The split with M92 - Linked Nodes stays: M114 changes how commands are pushed and what they address; M92's new link commands should address knobs (P2.T1) and list every node they touch. M106.P2.T1 should reuse this milestone's touched-node sets and obsolete skipping.

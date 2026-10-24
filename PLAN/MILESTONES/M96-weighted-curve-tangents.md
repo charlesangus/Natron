@@ -7,13 +7,13 @@ This milestone gives each tangent a weight: the handle's time extent as a fracti
 ## Scope
 
 **In:**
-- `KeyFrame` gains a per-key `weighted` flag plus `leftWeight`/`rightWeight`: the fraction of the adjacent segment's time span, default exactly `1/3`, clamped to `[kMinTangentWeight, kMaxTangentWeight]` (0.01 to 0.99, which keeps time monotonic in every segment). Only Free (`F`) and Broken (`X`) keys can be weighted.
+- `KeyFrame` gains `leftWeight`/`rightWeight`: the fraction of the adjacent segment's time span, default exactly `1/3`, clamped to `[kMinTangentWeight, kMaxTangentWeight]` (0.01 to 0.99, which keeps time monotonic in every segment). Every Free (`F`) and Broken (`X`) key is weighted (user decision): there is no per-key flag; a segment whose inner weights are both exactly 1/3 evaluates on today's Hermite path, so existing curves are unchanged until a handle is dragged.
 - Weighted evaluation for value, derivative, integral and clamped integral (`Engine/Interpolation.*`), wired into `Curve::getValueAt/getDerivativeAt/getIntegrateFromTo` (`Engine/Curve.cpp:946/1032/1094`) and into `CurveSnapshot::valueAt` (`Engine/Nodes/Image/CurveSnapshot.h:93-137`).
 - Weights included in `KeyFrame::operator==`, `Curve::appendContentHash` (`Engine/Curve.cpp:383-401`) and the knob key-equality checks (`Engine/KnobImpl.h:1576`, :2926).
 - A knob-level tangent setter that carries weights, replacing `moveDerivativesAtTime`/`moveDerivativeAtTime` (`Engine/Knob.h:668-669`) (clean break).
 - M16 YAML curve tokens for weighted keys, `docs/project-format.md`, and the clipboard, which goes through the same codec.
 - Python: per-key tangent get/set on `AnimatedParam`, and weights on `ParametricParam` control points.
-- Curve editor: weighted handles drawn at their true control points; a drag that sets slope and length; unbroken coupling; a "Weighted tangents" toggle action; undo.
+- Curve editor: Free/Broken handles drawn at their true control points; a drag that sets slope and length; unbroken coupling; undo.
 - The curve-editor and dope-sheet HiDPI hit-test at `QT_SCALE_FACTOR=2`.
 
 **Out:**
@@ -100,7 +100,7 @@ This milestone gives each tangent a weight: the handle's time extent as a fracti
   - verify: five gtests in the style of `CurveTangentJoin_Test`: a weighted Free drag doubles the right weight and the left weight doubles too; Broken changes one side only; undo restores the bits; merged drags undo in one step; an unweighted drag leaves the weights at exactly 1/3.
   - size: L
 
-- [ ] M96.P3.T4 — Add an undoable "Weighted tangents" toggle to the curve editor
+- [ ] ~~M96.P3.T4 — Add an undoable "Weighted tangents" toggle to the curve editor~~ (cancelled 2026-10-24: the user chose always-weighted Free/Broken keys, so there is no flag to toggle)
   - files: `Gui/CurveWidgetPrivate.cpp`, `Gui/CurveWidget.h`, `Gui/CurveWidget.cpp`, `Gui/ActionShortcuts.h`, `Gui/CurveEditorUndoRedo.cpp`
   - approach: A checkable action in the interpolation menu next to Free and Join (:256-264), shortcut ID `weighted`, handled in `keyPressEvent` (:1635). A `SetKeysWeightedCommand` turns the flag on (converting auto types to Free and keeping slopes) or off (resetting to 1/3), for all selected keys, undoable.
   - verify: P3.T5's `toggle` section; the P3.T3 gtest extended with a toggle-and-undo case.
@@ -116,6 +116,7 @@ This milestone gives each tangent a weight: the handle's time extent as a fracti
 
 ## Decisions
 
+- 2026-10-24 — **User decision: always weighted (Blender/AE style).** Every Free/Broken key shows true handles and every handle drag sets slope and length; there is no per-key `weighted` flag and no toggle (P3.T4 cancelled). Implementation notes for the tasks, which still mention the flag: drop `_weighted`/`weighted` everywhere (KeyFrame, `KeyTangents`, the Python tuple, the YAML tokens — `FW`/`XW` are written only when a weight differs from 1/3, so untouched curves stay byte-identical); "unweighted" in the tasks means "both inner weights exactly 1/3", which keeps the Hermite path; changing a key away from F/X resets its weights to 1/3; P3.T2 draws every F/X key's handles at true control points (no zoom clamp), and the m69 `curve-join` handle-length check is updated to the new behaviour rather than kept; P3.T5's `toggle` and `unweighted` sections become a check that a never-dragged key's curve is bit-identical to before.
 - 2026-10-24 — **Elaborated from the stub (PM, opus consultant); PM calls on the consultant's open points.** Weight unit: a fraction of the adjacent span, clamped 0.01–0.99 (survives retimes and key moves, keeps time monotonic). Unbroken coupling: the other handle scales by the same factor, keeping the ratio. Format: stay at formatVersion 1, since an old reader refuses `FW`/`XW` rather than misreading them, which M16's versioning rule allows. Parametric curves with weighted segments fall back to CPU; GPU evaluation is a follow-up. The dope sheet's identical DPR division is fixed in P3.T1. Deps become M93, M16: P2 targets M16's YAML codec, so the lane rebases onto main after M16 merges and before P2.
 - 2026-10-13 — Handle length belongs here, not in M69 - Minor Cleanup: the user decided at the M69 UAT (2026-10-12) that M69 drops its visual-only follow-the-cursor handle drawing instead of implementing length.
 - 2026-10-13 — The curve-editor HiDPI hit-test bug lives here (user, from an inbox report): this milestone already reworks curve-editor picking and handles.

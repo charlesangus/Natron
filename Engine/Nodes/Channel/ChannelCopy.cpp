@@ -652,6 +652,21 @@ ChannelRouteEffect::getGpuExtraInputLayers(int inputNb,
     return true;
 }
 
+bool
+ChannelRouteEffect::readsGpuInput(int inputNb,
+                                  const ImageLayerDesc& plane,
+                                  double time,
+                                  ViewIdx view) const
+{
+    ChannelRoute route;
+
+    if (!resolveGpuRoute(time, view, plane, &route)) {
+        return true;
+    }
+
+    return !routeLayersOfInput(route, inputNb).empty();
+}
+
 StatusEnum
 ChannelRouteEffect::renderGpu(const GpuRenderArgs& args)
 {

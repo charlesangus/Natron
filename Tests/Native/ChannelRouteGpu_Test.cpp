@@ -259,7 +259,7 @@ queryFor(const ImageLayerDesc& plane)
 } // namespace
 
 // The first layer a route reads of an input is the input's own, the others are extra layers, each
-// named once; an input the route does not read is handed over in the plane.
+// named once; an input the route does not read is handed over in the plane, and reported unread.
 TEST(ChannelRouteGpuTest, InputLayersFollowTheRoute)
 {
     std::shared_ptr<ChannelRouteGpuTestEffect> effect(new ChannelRouteGpuTestEffect(NodePtr()));
@@ -267,6 +267,8 @@ TEST(ChannelRouteGpuTest, InputLayersFollowTheRoute)
     effect->route.sources.push_back(ChannelRouteSource(0, extraLayer(), ChannelRouteSource::eNonFloatReadsZero));
     const ImageLayerDesc& plane = ImageLayerDesc::getRGBAComponents();
 
+    EXPECT_TRUE(effect->readsGpuInput(0, plane, 1., ViewIdx(0)));
+    EXPECT_TRUE(effect->readsGpuInput(1, plane, 1., ViewIdx(0)));
     ImageLayerDesc layer;
     ASSERT_TRUE(effect->getGpuInputLayer(0, plane, 1., ViewIdx(0), &layer));
     EXPECT_EQ(ImageLayerDesc::getRGBAComponents(), layer);
@@ -284,8 +286,11 @@ TEST(ChannelRouteGpuTest, InputLayersFollowTheRoute)
     effect->route = constantsRoute();
     ASSERT_TRUE(effect->getGpuInputLayer(1, plane, 1., ViewIdx(0), &layer));
     EXPECT_EQ(plane, layer);
+    EXPECT_FALSE(effect->readsGpuInput(0, plane, 1., ViewIdx(0)));
+    EXPECT_FALSE(effect->readsGpuInput(1, plane, 1., ViewIdx(0)));
 
     effect->describable = false;
+    EXPECT_TRUE(effect->readsGpuInput(0, plane, 1., ViewIdx(0)));
     EXPECT_FALSE(effect->getGpuInputLayer(0, plane, 1., ViewIdx(0), &layer));
     EXPECT_FALSE(effect->getGpuExtraInputLayers(0, plane, 1., ViewIdx(0), &extra));
 }

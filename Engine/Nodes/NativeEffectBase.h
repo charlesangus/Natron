@@ -338,6 +338,20 @@ public:
     }
 
     /**
+     * @brief Whether renderGpu() reads input inputNb at all when this node renders plane at time
+     * and view. The region engine hands an unread input over in no layer, so a plane made of
+     * constants never asks its input for a layer the input does not carry. The default reads
+     * every input.
+     **/
+    virtual bool readsGpuInput(int /*inputNb*/,
+                               const ImageLayerDesc& /*plane*/,
+                               double /*time*/,
+                               ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    /**
      * @brief Records the dispatches that fill args.output over args.outputRect. Only called
      * when canRenderOnGpu() accepted args.query; the default fails.
      **/

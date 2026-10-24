@@ -287,6 +287,15 @@ public:
                                         std::vector<ImageLayerDesc>* layers) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
+     * @brief Whether the route of plane names a source on input inputNb; true when the node
+     * cannot describe the plane, so getGpuInputLayer() then refuses it.
+     **/
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
      * @brief One channelroute dispatch per source, each writing the components it feeds, then one
      * writing the constants and every component whose source has no image.
      **/

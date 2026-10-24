@@ -664,7 +664,8 @@ private:
     }
 
     // The input slots of a member rendering its plane: one per input it reads, in getGpuInputLayer()'s layer, then one
-    // per layer getGpuExtraInputLayers() adds.
+    // per layer getGpuExtraInputLayers() adds. An input readsGpuInput() leaves out keeps no slot, since the layer it
+    // would be read in may be one its task never renders.
     bool planInputs(const std::vector<std::pair<int, int>>& edges,
                     Member* member)
     {
@@ -676,12 +677,14 @@ private:
         member->inputSlotInput.resize(member->nInputs);
         member->inputSlotLayer.assign(member->nInputs, ImageLayerDesc());
         std::vector<int> inputTasks(member->nInputs, -1);
+        std::vector<bool> unread(member->nInputs, false);
         for (int inputNb = 0; inputNb < member->nInputs; ++inputNb) {
             member->inputSlotInput[inputNb] = inputNb;
+            unread[inputNb] = !effect->readsGpuInput(inputNb, member->plane, task.key.time, task.key.view);
         }
         for (std::size_t e = 0; e < edges.size(); ++e) {
             const int inputNb = edges[e].first;
-            if ((inputNb < 0) || (inputNb >= member->nInputs)) {
+            if ((inputNb < 0) || (inputNb >= member->nInputs) || unread[inputNb]) {
                 continue;
             }
             ImageLayerDesc layer;
@@ -702,7 +705,7 @@ private:
         }
 
         for (int inputNb = 0; inputNb < member->nInputs; ++inputNb) {
-            if ((member->inputSlots[inputNb] < 0) && effect->getInput(inputNb) && !effect->isInputMask(inputNb)) {
+            if ((member->inputSlots[inputNb] < 0) && !unread[inputNb] && effect->getInput(inputNb) && !effect->isInputMask(inputNb)) {
                 return fail(member->task, "a connected input has no task to read");
             }
         }

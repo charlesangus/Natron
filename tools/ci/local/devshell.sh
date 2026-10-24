@@ -117,8 +117,8 @@ UID_GID="$(id -u):$(id -g)"
 # a real X server here) regardless of any client-side env var -- so this is
 # not optional for running Natron's GUI locally, only for headless
 # build/test use, which is why it's skipped when no GPU is present.
-# /dev/dri only exists on hosts exposing a GPU via DRI (Mesa: Intel/AMD;
-# NVIDIA needs nvidia-container-toolkit's --gpus instead, out of scope here).
+# /dev/dri only exists on hosts exposing a GPU via DRI (Mesa: Intel/AMD);
+# NVIDIA hosts are handled in the --gpu block below via nvidia-container-toolkit.
 DRI_DOCKER_ARGS=()
 if [[ -e /dev/dri ]]; then
     DRI_DOCKER_ARGS+=(--device=/dev/dri)
@@ -149,6 +149,15 @@ if [[ "${GPU}" == "1" ]]; then
         exit 1
     fi
     GPU_DOCKER_ARGS+=(-e NATRON_DEV_GPU=1)
+    # nvidia-container-toolkit injects the driver libraries and the Vulkan/EGL
+    # vendor files at container start, but only for containers created with
+    # the nvidia runtime, so an existing container needs --recreate.
+    if [[ -e /dev/nvidiactl ]] \
+        && docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"'; then
+        GPU_DOCKER_ARGS+=(--runtime=nvidia
+            -e NVIDIA_VISIBLE_DEVICES=all
+            -e NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,display)
+    fi
 fi
 
 # --- optional forced recreate -----------------------------------------------

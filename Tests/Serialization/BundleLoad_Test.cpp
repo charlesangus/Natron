@@ -52,6 +52,7 @@
 #include "ProjectEquivalence.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
@@ -607,6 +608,60 @@ TEST_F(BundleLoadTest, AMissingBlobWarnsAndLeavesItsStrokeEmpty)
     RotoStrokeItemPtr loadedStroke = std::dynamic_pointer_cast<RotoStrokeItem>(loadedContext->getItemByName(strokeName));
     ASSERT_TRUE(bool(loadedStroke));
     EXPECT_TRUE(loadedStroke->getXControlPoints().empty());
+}
+
+TEST_F(BundleLoadTest, AMultiInstanceTrackerReopensWithItsInstancesAttached)
+{
+    NodePtr main = createNode(QString::fromUtf8(PLUGINID_OFX_TRACKERPM));
+    ASSERT_TRUE(bool(main));
+    ASSERT_TRUE(main->isMultiInstance()) << "TrackerPM did not open in the tracker context";
+    std::vector<std::string> instanceNames;
+    for (int i = 0; i < 2; ++i) {
+        CreateNodeArgs args(PLUGINID_OFX_TRACKERPM, getApp()->getProject());
+        args.setProperty<std::string>(kCreateNodeArgsPropMultiInstanceParentName, main->getScriptName());
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+        args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+        NodePtr instance = getApp()->createNode(args);
+        ASSERT_TRUE(bool(instance));
+        ASSERT_EQ(main, instance->getParentMultiInstance());
+        instanceNames.push_back(instance->getScriptName());
+    }
+    const std::string mainName = main->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    QString savedPath;
+    ASSERT_TRUE(getApp()->getProject()->saveProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("tracker.ntpz"), &savedPath));
+    getApp()->getProject()->reset(false, true);
+
+    std::string output;
+    ASSERT_TRUE(loadFile(savedPath, &output)) << output;
+    EXPECT_TRUE(loadWarnings().empty()) << joined(loadWarnings());
+
+    const auto byScriptName = [this](const std::string& name) {
+        const NodesList nodes = getApp()->getProject()->getNodes();
+        for (const NodePtr& candidate : nodes) {
+            if (candidate->getScriptName() == name) {
+                return candidate;
+            }
+        }
+
+        return NodePtr();
+    };
+    NodePtr loadedMain = byScriptName(mainName);
+    ASSERT_TRUE(bool(loadedMain));
+    EXPECT_TRUE(loadedMain->isMultiInstance());
+    EXPECT_FALSE(bool(loadedMain->getParentMultiInstance()));
+    NodesList loadedInstances;
+    loadedMain->getChildrenMultiInstance(&loadedInstances);
+    EXPECT_EQ(instanceNames.size(), loadedInstances.size());
+    for (const std::string& name : instanceNames) {
+        SCOPED_TRACE(name);
+        NodePtr instance = byScriptName(name);
+        ASSERT_TRUE(bool(instance));
+        EXPECT_EQ(mainName, instance->getParentMultiInstanceName());
+        EXPECT_EQ(loadedMain, instance->getParentMultiInstance());
+    }
 }
 
 TEST_F(BundleLoadTest, TheOldXmlFormatsAreRefusedWithTheOldFormatMessage)

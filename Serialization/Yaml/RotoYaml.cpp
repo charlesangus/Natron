@@ -672,15 +672,20 @@ namespace YamlDetail {
                     segments.push_back((long long)table.rows);
                 }
                 if (!missing) {
-                    long long total = 0;
+                    // Each count is checked against the rows still unclaimed rather than summed,
+                    // so hand-edited counts cannot overflow into a total that matches the table.
+                    std::size_t remaining = table.rows;
                     for (long long count : segments) {
                         if (count < 0) {
                             fail(segmentsNode, context + ".segments", "a negative sample count");
                         }
-                        total += count;
+                        if ((unsigned long long)count > remaining) {
+                            fail(segmentsNode, context + ".segments", "the segments hold more samples than the table's " + std::to_string(table.rows));
+                        }
+                        remaining -= (std::size_t)count;
                     }
-                    if (total != (long long)table.rows) {
-                        fail(segmentsNode ? segmentsNode : samples, context + ".segments", "the segments hold " + std::to_string(total) + " samples, the table " + std::to_string(table.rows));
+                    if (remaining != 0) {
+                        fail(segmentsNode ? segmentsNode : samples, context + ".segments", "the segments hold " + std::to_string(table.rows - remaining) + " samples, the table " + std::to_string(table.rows));
                     }
                     const int uniform = interpolationNode ? readInterpolationToken(interpolationNode, context + ".interp") : kYamlKeyframeLinear;
                     if (keyframeStoresDerivatives(uniform)) {
@@ -695,7 +700,7 @@ namespace YamlDetail {
                     for (long long count : segments) {
                         stroke->strokes.push_back(RotoStrokeCurvesSerialization());
                         RotoStrokeCurvesSerialization& curves = stroke->strokes.back();
-                        for (long long i = 0; i < count; ++i, ++row) {
+                        for (long long i = 0; (i < count) && (row < table.rows); ++i, ++row) {
                             KeyFrameSerialization key;
                             key.time = time[row];
                             key.interpolation = checkedInterpolation(interp[row], samples, context + ".samples");

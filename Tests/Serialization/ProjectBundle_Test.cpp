@@ -45,6 +45,7 @@
 #include <gtest/gtest.h>
 
 #include <QDir>
+#include <QFile>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -685,6 +686,55 @@ TEST(ProjectBundle, AFailedSaveLeavesThePreviousFileIntact)
 
     QDir listing(dir.path());
     EXPECT_EQ(QStringList() << QString::fromUtf8("project.ntpz"), listing.entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot));
+}
+
+TEST(ProjectBundle, BackupRotationLeavesTheTargetInPlaceUntilTheNewFileIsCommitted)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = dir.filePath(QString::fromUtf8("project.ntpz"));
+    const QString backup1 = path + QString::fromUtf8(".~1~");
+    const QString backup2 = path + QString::fromUtf8(".~2~");
+
+    const ProjectBundleWriter previous = makeWriter("2026-10-22T10:00:00Z");
+    Project::writeProjectFileAtomically(path, [&previous](Serialization::ZipOutput& output) {
+        previous.write(output);
+    });
+    const std::vector<std::byte> before = readFileBytes(path.toStdString());
+    ASSERT_FALSE(before.empty());
+    writeFileText(backup1.toStdString(), "older backup");
+
+    ProjectSerialization changed = makeProject();
+    changed.timelineCurrentTime = 99;
+    ProjectBundleWriter next;
+    next.setProject(changed);
+
+    // Throwing after the rotation stands for a commit that fails once the backups have moved:
+    // either way the new file is discarded without replacing the target.
+    const auto failAfterRotating = [&path, &next](int saveVersions) {
+        EXPECT_THROW(Project::writeProjectFileAtomically(path, [&next](Serialization::ZipOutput& output) { next.write(output); }, [&path, saveVersions]() {
+            Project::rotateBackups(path, saveVersions);
+            throw std::runtime_error("commit failed"); }), std::runtime_error);
+    };
+
+    failAfterRotating(2);
+    EXPECT_EQ(before, readFileBytes(path.toStdString()));
+    EXPECT_EQ(before, readFileBytes(backup1.toStdString()));
+    const std::span<const std::byte> older = asBytes("older backup");
+    EXPECT_EQ(std::vector<std::byte>(older.begin(), older.end()), readFileBytes(backup2.toStdString()));
+
+    Project::writeProjectFileAtomically(path, [&next](Serialization::ZipOutput& output) { next.write(output); }, [&path]() { Project::rotateBackups(path, 2); });
+    const std::vector<std::byte> after = readFileBytes(path.toStdString());
+    EXPECT_EQ(99, ProjectBundleReader(path.toStdString()).readProject().timelineCurrentTime);
+    EXPECT_EQ(before, readFileBytes(backup1.toStdString()));
+    EXPECT_EQ(before, readFileBytes(backup2.toStdString()));
+    EXPECT_FALSE(QFile::exists(path + QString::fromUtf8(".~3~")));
+
+    // Keeping no versions drops every backup, still never the target.
+    failAfterRotating(0);
+    EXPECT_EQ(after, readFileBytes(path.toStdString()));
+    EXPECT_FALSE(QFile::exists(backup1));
+    EXPECT_FALSE(QFile::exists(backup2));
 }
 
 TEST(ProjectBundle, TheMembersMayBeAtTheTopOrInAnyOneFolder)

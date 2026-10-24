@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -522,6 +523,87 @@ TEST(ZipStore, RejectsBadDeflateStreams)
         ZipReader reader { std::span<const std::byte>(zip) };
         EXPECT_THROW(reader.data("a.bin"), ZipError);
     }
+}
+
+TEST(ZipStore, RefusesDeflatedMembersDeclaringMoreThanTheLimits)
+{
+    // A few bytes of deflate claiming almost 4 GiB: refused on open, before any allocation.
+    {
+        RawMember bomb = deflatedMember("blobs/a.bin", compressibleBytes(1000));
+        bomb.uncompressedSize = 0xFFFFFF00u;
+        std::vector<std::byte> zip = buildZip({ bomb });
+        EXPECT_THROW(ZipReader { std::span<const std::byte>(zip) }, ZipError);
+    }
+    // Enough deflated bytes for the ratio, but a size over the per-member cap.
+    {
+        RawMember large;
+        large.name = "blobs/a.bin";
+        large.method = 8;
+        large.uncompressedSize = static_cast<std::uint32_t>(Serialization::kZipMaxInflatedMemberSize + 1);
+        large.payload.resize(large.uncompressedSize / Serialization::kZipMaxDeflateRatio + 1);
+        std::vector<std::byte> zip = buildZip({ large });
+        EXPECT_THROW(ZipReader { std::span<const std::byte>(zip) }, ZipError);
+    }
+    // Members each within the per-member cap whose sizes add up past the total cap.
+    {
+        std::vector<RawMember> members;
+        std::uint64_t total = 0;
+        for (int i = 0; total <= Serialization::kZipMaxInflatedTotalSize; ++i) {
+            RawMember member;
+            member.name = "blobs/" + std::to_string(i) + ".bin";
+            member.method = 8;
+            member.uncompressedSize = static_cast<std::uint32_t>(Serialization::kZipMaxInflatedMemberSize);
+            member.payload.resize(member.uncompressedSize / Serialization::kZipMaxDeflateRatio + 1);
+            total += member.uncompressedSize;
+            members.push_back(std::move(member));
+        }
+        std::vector<std::byte> zip = buildZip(members);
+        EXPECT_THROW(ZipReader { std::span<const std::byte>(zip) }, ZipError);
+        members.pop_back();
+        zip = buildZip(members);
+        EXPECT_NO_THROW(ZipReader { std::span<const std::byte>(zip) });
+    }
+    // Deflate at its best stays within the ratio, so highly compressible data still opens.
+    {
+        const std::vector<std::byte> zeros(4 << 20);
+        std::vector<std::byte> zip = buildZip({ deflatedMember("blobs/zeros.bin", zeros) });
+        ZipReader reader { std::span<const std::byte>(zip) };
+        EXPECT_NO_THROW(reader.verify());
+        EXPECT_EQ(reader.data("blobs/zeros.bin").size(), zeros.size());
+    }
+}
+
+TEST(ZipStore, VerifyStreamsDeflatedMembersAndCatchesEveryBadStream)
+{
+    const std::vector<std::byte> a = compressibleBytes(300000);
+    std::vector<std::byte> zip = buildZip({ deflatedMember("a.bin", a), deflatedMember("empty.bin", std::vector<std::byte>()) });
+    ZipReader reader { std::span<const std::byte>(zip) };
+    EXPECT_NO_THROW(reader.verify());
+    EXPECT_NO_THROW(reader.verify("a.bin"));
+    EXPECT_NO_THROW(reader.verify("empty.bin"));
+    EXPECT_THROW(reader.verify("absent.bin"), ZipError);
+    std::span<const std::byte> data = reader.data("a.bin");
+    ASSERT_EQ(data.size(), a.size());
+    EXPECT_EQ(std::memcmp(data.data(), a.data(), a.size()), 0);
+
+    // Each way a deflate stream can be wrong is caught by the streaming check as by data().
+    const auto verifyFails = [&a](const std::function<void(RawMember&)>& damage) {
+        RawMember member = deflatedMember("a.bin", a);
+        damage(member);
+        std::vector<std::byte> bad = buildZip({ member });
+        ZipReader badReader { std::span<const std::byte>(bad) };
+        EXPECT_THROW(badReader.verify("a.bin"), ZipError);
+        EXPECT_THROW(badReader.verify(), ZipError);
+    };
+    verifyFails([](RawMember& m) { m.payload.resize(m.payload.size() / 2); });
+    verifyFails([](RawMember& m) { m.uncompressedSize -= 10; });
+    verifyFails([](RawMember& m) { m.uncompressedSize += 10; });
+    verifyFails([](RawMember& m) { m.crc ^= 1; });
+    verifyFails([](RawMember& m) {
+        for (std::byte& byte : m.payload) {
+            byte = static_cast<std::byte>(0xFF);
+        }
+    });
 }
 
 TEST(ZipStore, RefusesUnsupportedMethodsByName)

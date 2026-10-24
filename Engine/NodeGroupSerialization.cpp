@@ -28,8 +28,10 @@
 #include <cassert>
 #include <list>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include <QDateTime>
 #include <QDebug>
@@ -143,7 +145,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
     ///Problem: we have lost the nodes connections. To do so we restore them using the serialization of a child.
     ///This map contains all the parents that must be reconnected and an iterator to the child serialization
     std::map<NodePtr, std::list<Serialization::NodeSerializationPtr>::const_iterator> parentsToReconnect;
-    std::list<Serialization::NodeSerializationPtr> multiInstancesToRecurse;
+    std::list<std::pair<NodePtr, Serialization::NodeSerializationPtr>> multiInstancesToRecurse;
     std::map<NodePtr, Serialization::NodeSerializationPtr> createdNodes;
     for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = serializedNodes.begin(); it != serializedNodes.end(); ++it) {
         std::string pluginID = (*it)->pluginID;
@@ -357,13 +359,25 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             } else {
                 ///For multi-instances, wait for the group to be entirely created then load the sub-tracks in a separate loop.
                 assert( n->isMultiInstance() );
-                multiInstancesToRecurse.push_back(*it);
+                multiInstancesToRecurse.push_back(std::make_pair(n, *it));
             }
         }
     } // for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = serializedNodes.begin(); it != serializedNodes.end(); ++it) {
 
-    for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = multiInstancesToRecurse.begin(); it != multiInstancesToRecurse.end(); ++it) {
-        NodeCollection::restoreFromSerialization((*it)->children, group, true, moduleUpdatesProcessed);
+    for (const std::pair<NodePtr, Serialization::NodeSerializationPtr>& multiInstance : multiInstancesToRecurse) {
+        // The project file records an instance only by nesting it under its main instance, so
+        // the link is restored from that nesting, against the main instance's name as created.
+        const std::string parentName = multiInstance.first->getScriptName();
+        std::list<Serialization::NodeSerializationPtr> instances;
+        for (const Serialization::NodeSerializationPtr& child : multiInstance.second->children) {
+            Serialization::NodeSerializationPtr instance = child;
+            if (instance->multiInstanceParentName != parentName) {
+                instance = std::make_shared<Serialization::NodeSerialization>(*child);
+                instance->multiInstanceParentName = parentName;
+            }
+            instances.push_back(instance);
+        }
+        NodeCollection::restoreFromSerialization(instances, group, true, moduleUpdatesProcessed);
     }
 
     appInst->updateProjectLoadStatus( tr("Restoring graph links in group: %1").arg(groupName) );

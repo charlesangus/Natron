@@ -481,6 +481,30 @@ TEST(RotoYaml, SelfContainedDocumentsInlineTheirBlobs)
     EXPECT_TRUE(warnings.empty());
 }
 
+TEST(RotoYaml, StrokeSegmentCountsMustExactlyCoverTheSampleRows)
+{
+    const RotoContextSerialization roto = contextWith({ asChild(makeStroke("Stroke1", "Layer1", { 3 }, 1)) });
+    Serialization::MemoryBlobStore blobs;
+    const std::string text = Serialization::encodeRotoYaml(roto, "RotoPaint1", blobs);
+    const std::string original = "segments: [3]";
+    ASSERT_NE(std::string::npos, text.find(original)) << text;
+
+    YamlWarnings warnings;
+    EXPECT_NO_THROW(Serialization::decodeRotoYaml(text, blobs, &warnings));
+
+    // The first two would wrap a 64-bit sum around to the table's 3 rows.
+    for (const std::string& segments : { std::string("segments: [9223372036854775807, 9223372036854775807, 5]"),
+                                         std::string("segments: [-1, 4]"),
+                                         std::string("segments: [2, 2]"),
+                                         std::string("segments: [4]"),
+                                         std::string("segments: [1, 1]") }) {
+        SCOPED_TRACE(segments);
+        std::string edited = text;
+        edited.replace(edited.find(original), original.size(), segments);
+        EXPECT_THROW(Serialization::decodeRotoYaml(edited, blobs, &warnings), Serialization::YamlError);
+    }
+}
+
 TEST(RotoYaml, MissingBlobGivesAWarningAndAnEmptyStroke)
 {
     const RotoContextSerialization roto = contextWith({ asChild(makeStroke("Stroke1", "Layer1", { 100 }, 1)) });

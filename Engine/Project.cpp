@@ -47,6 +47,7 @@
 #define snprintf _snprintf
 #elif defined(__NATRON_UNIX__)
 #include <pwd.h> //for getpwuid
+#include <unistd.h> // link
 #endif
 
 #include <QCoreApplication>
@@ -832,6 +833,38 @@ nextBackup(const QString & filePath)
     }
 }
 
+void
+Project::rotateBackups(const QString& filePath,
+                       int saveVersions)
+{
+    // The list is ordered and starts with filePath itself when it exists, so its first
+    // saveVersions entries are what survives the save: filePath (about to be replaced) plus
+    // saveVersions - 1 numbered backups.
+    QStringList backups = findBackups(filePath);
+    const bool targetExists = !backups.isEmpty() && backups.first() == filePath;
+    while (backups.size() > std::max(saveVersions, targetExists ? 1 : 0)) {
+        QFile::remove(backups.last());
+        backups.removeLast();
+    }
+    if (saveVersions <= 0) {
+        return;
+    }
+    for (int i = backups.size() - 1; i >= (targetExists ? 1 : 0); --i) {
+        QFile::rename(backups.at(i), nextBackup(backups.at(i)));
+    }
+    if (!targetExists) {
+        return;
+    }
+    // filePath must stay in place until the new file has been committed over it, or a failed
+    // commit would leave no project at all. A hard link costs nothing whatever the bundle size and
+    // keeps the old contents when the commit renames the new file over filePath; a copy covers
+    // file systems without hard links.
+    const QString backup = nextBackup(filePath);
+    if (::link(QFile::encodeName(filePath).constData(), QFile::encodeName(backup).constData()) != 0) {
+        QFile::copy(filePath, backup);
+    }
+}
+
 QString
 Project::saveProjectInternal(const QString & path,
                              const QString & name,
@@ -919,21 +952,7 @@ Project::saveProjectInternal(const QString & path,
             if (autoSave) {
                 return;
             }
-            // rotate backups
-            int saveVersions = appPTR->getCurrentSettings()->saveVersions();
-            // find the list of ordered backups (including the file itself if it exists)
-            QStringList backups = findBackups(filePath);
-            // remove extra backups
-            for (int i = backups.size() - 1; i >= saveVersions; --i) {
-                if ( QFile::exists(backups.last()) ) {
-                    QFile::remove(backups.last());
-                }
-                backups.removeLast();
-            }
-            // rename existing backups
-            for (int i = backups.size() - 1; i >= 0; --i) {
-                QFile::rename(backups.at(i), nextBackup(backups.at(i)));
-            } });
+            rotateBackups(filePath, appPTR->getCurrentSettings()->saveVersions()); });
     } catch (const Serialization::YamlError& e) {
         if (!autoSave && updateProjectProperties) {
             _imp->autoSetProjectDirectory(oldProjectPath);

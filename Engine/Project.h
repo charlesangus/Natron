@@ -150,6 +150,14 @@ public:
                                            const std::function<void()>& beforeReplace = std::function<void()>());
 
     /**
+     * @brief Makes room for a save over filePath that keeps saveVersions versions: drops the
+     * oldest numbered backups, shifts the rest up by one and links (or copies) the current
+     * filePath to filePath.~1~. filePath itself is never removed or renamed, so it survives
+     * when the save that follows fails.
+     **/
+    static void rotateBackups(const QString& filePath, int saveVersions);
+
+    /**
      * @brief Saves the project with the given path and name corresponding to a file on disk.
      * @param autoSave If true then it will save the project in a temporary file instead (see autoSave()).
      * @returns The actual filepath of the file saved

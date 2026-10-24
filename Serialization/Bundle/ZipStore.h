@@ -55,6 +55,17 @@ inline constexpr std::size_t kZipMemberAlignment = 64;
 inline constexpr std::string_view kNatronProjectMimeType = "application/vnd.natron.project+zip";
 
 /**
+ * @brief Limits the reader puts on deflated members, whose declared size it would otherwise
+ * allocate on trust. Deflate cannot expand data more than 1032 times (one 258-byte match per two
+ * bits), so a member declaring more is lying and is refused before anything is allocated. The
+ * size caps sit far above any real project member while keeping a crafted archive from claiming
+ * more memory than a modest machine has; stored members need no cap, they are views into the file.
+ **/
+inline constexpr std::uint64_t kZipMaxDeflateRatio = 1032;
+inline constexpr std::uint64_t kZipMaxInflatedMemberSize = std::uint64_t(2) << 30;
+inline constexpr std::uint64_t kZipMaxInflatedTotalSize = std::uint64_t(8) << 30;
+
+/**
  * @brief Empty when name is acceptable as a member name (relative, no '.' or '..' components,
  * no backslash or NUL), else why it is not.
  **/
@@ -141,7 +152,8 @@ class ZipReader {
 public:
     /**
      * @brief Maps the archive at path read-only and validates its whole structure up front; every
-     * malformed or unsupported archive throws ZipError here rather than on member access.
+     * malformed or unsupported archive, including one whose deflated members break the
+     * kZipMax* limits, throws ZipError here rather than on member access.
      *
      * The mapping is shared with the file, so truncating the file while the reader lives raises
      * SIGBUS on access: callers must not let the archive be rewritten in place while it is open.
@@ -188,8 +200,10 @@ public:
     std::span<const std::byte> data(std::string_view name) const;
 
     /**
-     * @brief Checks the CRC-32 of every member, or of one, throwing ZipError on a mismatch.
-     * Opening an archive does not check CRCs so that mapping a large one stays cheap.
+     * @brief Checks the CRC-32 of every member, or of one, throwing ZipError on a mismatch or a
+     * bad deflate stream. Opening an archive does not check CRCs so that mapping a large one
+     * stays cheap. Deflated members are checked through a small fixed window and not kept, so
+     * verifying members nobody reads costs no memory.
      **/
     void verify() const;
     void verify(std::string_view name) const;
@@ -199,6 +213,7 @@ private:
 
     void parse();
     void unmap() noexcept;
+    void verifyMember(const ZipMember& member) const;
 
     const std::byte* _bytes = nullptr;
     std::size_t _size = 0;

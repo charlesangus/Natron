@@ -564,6 +564,7 @@ ZipReader::parse()
     }
 
     const std::size_t directoryEnd = static_cast<std::size_t>(directoryOffset) + directorySize;
+    std::uint64_t inflatedTotal = 0;
     std::size_t pos = directoryOffset;
     _members.reserve(entryCount);
     for (std::uint32_t i = 0; i < entryCount; ++i) {
@@ -617,6 +618,18 @@ ZipReader::parse()
         }
         if ((method == kMethodStored) && (compressedSize != size)) {
             fail(label + "stored member with differing compressed and uncompressed sizes");
+        }
+        if (method == kMethodDeflated) {
+            if (size > kZipMaxDeflateRatio * compressedSize) {
+                fail(label + "declares " + std::to_string(size) + " bytes from " + std::to_string(compressedSize) + " deflated bytes, more than deflate can produce");
+            }
+            if (size > kZipMaxInflatedMemberSize) {
+                fail(label + "declares " + std::to_string(size) + " uncompressed bytes, more than the " + std::to_string(kZipMaxInflatedMemberSize) + " a deflated member may hold");
+            }
+            inflatedTotal += size;
+            if (inflatedTotal > kZipMaxInflatedTotalSize) {
+                fail("deflated members declare more than " + std::to_string(kZipMaxInflatedTotalSize) + " uncompressed bytes in total");
+            }
         }
         if (startDisk != 0) {
             fail(label + "multi-disk archives are not supported");
@@ -756,22 +769,74 @@ ZipReader::data(std::string_view name) const
 }
 
 void
+ZipReader::verifyMember(const ZipMember& member) const
+{
+    const std::string label = _origin + ": member \"" + member.name + "\": ";
+    // data() hands out an empty deflated member without inflating it, so it is checked the same way.
+    if ((member.method == kMethodStored) || (member.size == 0)) {
+        if (zipCrc32(std::span<const std::byte>(_bytes + member.dataOffset, member.size)) != member.crc32) {
+            throw ZipError(label + "CRC-32 mismatch");
+        }
+
+        return;
+    }
+
+    z_stream strm {};
+    if (inflateInit2(&strm, -MAX_WBITS) != Z_OK) {
+        throw ZipError(label + "cannot initialise inflate");
+    }
+    struct InflateEnd {
+        z_stream* strm;
+        ~InflateEnd() { inflateEnd(strm); }
+    } inflateEndGuard { &strm };
+
+    std::vector<std::byte> window(64 * 1024);
+    strm.next_in = reinterpret_cast<Bytef*>(const_cast<std::byte*>(_bytes + member.dataOffset));
+    strm.avail_in = member.compressedSize;
+    std::uint64_t produced = 0;
+    std::uint32_t crc = 0;
+    int ret = Z_OK;
+    while (ret == Z_OK) {
+        strm.next_out = reinterpret_cast<Bytef*>(window.data());
+        strm.avail_out = static_cast<uInt>(window.size());
+        ret = inflate(&strm, Z_NO_FLUSH);
+        const std::size_t got = window.size() - strm.avail_out;
+        produced += got;
+        if (produced > member.size) {
+            throw ZipError(label + "deflate stream is longer than its declared size of " + std::to_string(member.size) + " bytes");
+        }
+        crc = zipCrc32(std::span<const std::byte>(window.data(), got), crc);
+    }
+    if (ret == Z_BUF_ERROR) {
+        throw ZipError(label + "deflate stream is truncated");
+    }
+    if (ret != Z_STREAM_END) {
+        throw ZipError(label + "corrupt deflate stream");
+    }
+    if (produced != member.size) {
+        throw ZipError(label + "deflate stream is shorter than its declared size of " + std::to_string(member.size) + " bytes");
+    }
+    if (crc != member.crc32) {
+        throw ZipError(label + "CRC-32 mismatch");
+    }
+}
+
+void
 ZipReader::verify() const
 {
     for (const ZipMember& member : _members) {
-        if (zipCrc32(data(member)) != member.crc32) {
-            throw ZipError(_origin + ": member \"" + member.name + "\": CRC-32 mismatch");
-        }
+        verifyMember(member);
     }
 }
 
 void
 ZipReader::verify(std::string_view name) const
 {
-    std::span<const std::byte> bytes = data(name);
-    if (zipCrc32(bytes) != find(name)->crc32) {
-        throw ZipError(_origin + ": member \"" + std::string(name) + "\": CRC-32 mismatch");
+    const ZipMember* member = find(name);
+    if (!member) {
+        throw ZipError(_origin + ": no member \"" + std::string(name) + "\"");
     }
+    verifyMember(*member);
 }
 
 } // namespace Serialization

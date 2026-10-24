@@ -343,8 +343,7 @@ ChannelCopy::metadataColorStorage(const EffectInstance& effect,
                                   double time,
                                   ViewIdx view)
 {
-    EffectInstancePtr input = effect.getInput(inputNb);
-    NodeMetadataConstPtr metadata = input ? input->getMetadata(time, view) : NodeMetadataConstPtr();
+    NodeMetadataConstPtr metadata = effect.getInputMetadataAt(inputNb, time, view);
 
     if (!metadata || (metadata->getComponentsType(-1) != kNatronColorLayerID)) {
         return ImageLayerDesc();

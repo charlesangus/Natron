@@ -163,7 +163,10 @@ protected:
         while (rendered && (finished.load() < kThreads) && (timer.elapsed() < kTimeoutMs)) {
             std::vector<RenderedPlane> planes;
             std::string error;
-            EXPECT_TRUE(renderNodePlanesDirect(rendered, 1., ViewIdx(0), 0, RectI(0, 0, 4, 4), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+            // Through the cache: a render that bypasses it first clears every cache, which
+            // refreshes every node in the project on this thread and so moves the hash mark
+            // counts the callers check, whatever the pool threads do.
+            EXPECT_TRUE(renderNodePlanesDirect(rendered, 1., ViewIdx(0), 0, RectI(0, 0, 4, 4), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, false)) << error;
             ++*renders;
         }
         const qint64 remaining = kTimeoutMs - timer.elapsed();

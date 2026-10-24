@@ -1122,6 +1122,15 @@ public:
     NodeMetadataConstPtr getTimeInvariantMetadata() WARN_UNUSED_RETURN;
 
     /**
+     * @brief What a derivation of this node's metadata at time and view reads for input inputNb:
+     * that input's getMetadata(time, view), or null when it is not connected. While this thread
+     * derives this node's time-invariant answer, which reads no frame, it is instead the input's
+     * answer that derivation's defaults came from, so one answer never mixes the input's
+     * time-invariant metadata with its metadata at the current frame.
+     **/
+    NodeMetadataConstPtr getInputMetadataAt(int inputNb, double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
      * @brief Drops every getMetadata() and getTimeInvariantMetadata() result of this node, for a
      * change of its metadata that leaves its hash alone. Callable from any thread.
      **/
@@ -1134,7 +1143,7 @@ protected:
     /**
      * @brief As getPreferredMetadata(), at time and view: metadata holds getDefaultMetadataAt()
      * on entry. Called from any thread, possibly more than once for the same frame, so it must
-     * read only this node's knobs at time, its inputs' getMetadata() and project settings.
+     * read only this node's knobs at time, its inputs' getInputMetadataAt() and project settings.
      **/
     virtual StatusEnum getPreferredMetadataAt(double /*time*/,
                                               ViewIdx /*view*/,
@@ -2538,6 +2547,10 @@ public:
         // test that asks for this effect's own layers must not re-enter that choice.
         bool resolvingLayersPassThrough;
 
+        // Set while this thread derives the effect's time-invariant metadata: the inputs' answers
+        // that derivation started from, which getInputMetadataAt() then returns.
+        const std::vector<NodeMetadataConstPtr>* timeInvariantInputsMetadata;
+
         EffectTLSData()
             : beginEndRenderCount(0)
             , actionRecursionLevel(0)
@@ -2548,6 +2561,7 @@ public:
             , currentRenderArgs()
             , userLayerStrings()
             , resolvingLayersPassThrough(false)
+            , timeInvariantInputsMetadata(NULL)
         {
         }
     };

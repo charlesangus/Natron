@@ -503,8 +503,7 @@ double
 Reformat::getSourcePixelAspectRatio(double time,
                                     ViewIdx view) const
 {
-    EffectInstancePtr input = getInput(0);
-    NodeMetadataConstPtr metadata = input ? input->getMetadata(time, view) : NodeMetadataConstPtr();
+    NodeMetadataConstPtr metadata = getInputMetadataAt(0, time, view);
 
     return metadata ? metadata->getPixelAspectRatio(-1) : 1.;
 }

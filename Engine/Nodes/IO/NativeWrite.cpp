@@ -1811,8 +1811,7 @@ NativeWrite::selectedFormat(double time,
     const int type = formatType ? formatType->getValueAtTime(time, 0, view) : (int)eFormatTypeProject;
 
     if (type == eFormatTypeInput) {
-        EffectInstancePtr input = getInput(0);
-        NodeMetadataConstPtr inputMetadata = input ? input->getMetadata(time, view) : NodeMetadataConstPtr();
+        NodeMetadataConstPtr inputMetadata = getInputMetadataAt(0, time, view);
         if (inputMetadata) {
             const RectI inputFormat = inputMetadata->getOutputFormat();
             if ((inputFormat.x2 > inputFormat.x1) && (inputFormat.y2 > inputFormat.y1)) {

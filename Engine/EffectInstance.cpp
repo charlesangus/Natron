@@ -6151,10 +6151,57 @@ EffectInstance::isPaintingOverItselfEnabled() const
     return isDuringPaintStrokeCreationThreadLocal();
 }
 
+namespace {
+// Points getInputMetadataAt() at the inputs' answers a derivation started from, or at nothing,
+// for as long as that derivation runs on this thread.
+class InputsMetadataScope {
+public:
+    InputsMetadataScope(const std::vector<NodeMetadataConstPtr>** slot,
+                        const std::vector<NodeMetadataConstPtr>* inputsMetadata)
+        : _slot(slot)
+        , _previous(*slot)
+    {
+        *_slot = inputsMetadata;
+    }
+
+    ~InputsMetadataScope()
+    {
+        *_slot = _previous;
+    }
+
+    InputsMetadataScope(const InputsMetadataScope&) = delete;
+    InputsMetadataScope& operator=(const InputsMetadataScope&) = delete;
+
+private:
+    const std::vector<NodeMetadataConstPtr>** _slot;
+    const std::vector<NodeMetadataConstPtr>* _previous;
+};
+} // anon namespace
+
+NodeMetadataConstPtr
+EffectInstance::getInputMetadataAt(int inputNb,
+                                   double time,
+                                   ViewIdx view) const
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+    if (tls && tls->timeInvariantInputsMetadata) {
+        const std::vector<NodeMetadataConstPtr>& inputsMetadata = *tls->timeInvariantInputsMetadata;
+
+        return ((inputNb >= 0) && (inputNb < (int)inputsMetadata.size())) ? inputsMetadata[inputNb] : NodeMetadataConstPtr();
+    }
+    EffectInstancePtr input = getInput(inputNb);
+
+    return input ? input->getMetadata(time, view) : NodeMetadataConstPtr();
+}
+
 StatusEnum
 EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
 {
-    StatusEnum stat = getDefaultMetadata(metadata);
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+
+    getInputsRefreshedMetadata(&inputs, &inputsMetadata);
+    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, false, metadata);
 
     if (stat == eStatusFailed) {
         return stat;
@@ -6180,7 +6227,10 @@ EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
             }
         }
         // Native nodes answer at a time only; the timeless answer is theirs at the frame the knobs
-        // read by default, which is what their timeless answer used to read.
+        // read by default, which is what their timeless answer used to read. Their inputs are
+        // read as the defaults above read them, not at that frame.
+        const InputsMetadataScope scope(&_imp->tlsData->getOrCreateTLSData()->timeInvariantInputsMetadata, &inputsMetadata);
+
         return getPreferredMetadataAt(getCurrentTime(), getCurrentView(), metadata);
     }
     return stat;
@@ -6581,6 +6631,8 @@ EffectInstance::deriveMetadataAt(U64 hash,
     getInputsMetadataAt(time, view, &inputs, &inputsMetadata);
     StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, true, metadata);
     if ((stat != eStatusFailed) && !getNode()->isNodeDisabled(time)) {
+        // Asked from inside this node's time-invariant derivation, this answer is still at time.
+        const InputsMetadataScope scope(&_imp->tlsData->getOrCreateTLSData()->timeInvariantInputsMetadata, NULL);
         getPreferredMetadataAt(time, view, metadata);
     }
     _imp->clampMetadata(inputs, inputsMetadata, metadata);
@@ -6605,6 +6657,7 @@ EffectInstance::deriveTimeInvariantMetadata()
     StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, false, metadata);
     if ((stat != eStatusFailed) && !getNode()->isNodeDisabledAtAllTimes()) {
         // As getPreferredMetadata_public().
+        const InputsMetadataScope scope(&_imp->tlsData->getOrCreateTLSData()->timeInvariantInputsMetadata, &inputsMetadata);
         getPreferredMetadataAt(getCurrentTime(), getCurrentView(), metadata);
     }
     _imp->clampMetadata(inputs, inputsMetadata, metadata);

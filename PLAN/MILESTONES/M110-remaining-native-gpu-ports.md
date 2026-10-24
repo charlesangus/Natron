@@ -284,7 +284,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: at the phase build, `NativeCropGpu_Test`, `NativeCrop_Test` and `NativeGpuCapability_Test` pass on lavapipe.
   - size: M
 
-- [ ] M110.P3.T2 — Move Shuffle and ShuffleCopy onto the channel route
+- [x] M110.P3.T2 — Move Shuffle and ShuffleCopy onto the channel route
   - files: `Engine/Nodes/Channel/Shuffle.h`, `Engine/Nodes/Channel/Shuffle.cpp`, `Engine/Nodes/Channel/docs/Shuffle.md`, `Engine/Nodes/Channel/docs/ShuffleCopy.md`, `Tests/Native/NativeShuffleGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach:
     - Derive `Shuffle` from `ChannelRouteEffect`; `ShuffleCopy` inherits it.
@@ -485,3 +485,4 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - **Mask-layer test flipped,** as the Scope allows, and renamed `MaskInAnotherLayerThanItsProducersPlaneIsReadThroughItsPassThrough`. It now expects a GPU region matching the CPU. The expectation is unproven, and it reverts if the build shows a mismatch.
   - **New case:** `ShuffleReadsAnotherLayerThroughAGradeInOneRegion`.
   - **Risk:** an upstream node now carries pass-through planes, and if it can't resolve them it stays on the CPU, where before it went to the GPU colour-only.
+- 2026-10-24 — **Phase 110.3 build (`6ce6924b8`, run 40095221631): P3.T2 done, P3.T3 red.** 345 of 346 entries pass in both legs, including `NativeShuffleGpuTest` and every CPU suite for the Shuffle and Layers families, so the CPU output is unchanged. `NativeLayersGpuTest` fails `AddLayersFollowsTimeVaryingLayers`, `RemoveLayersFollowsTimeVaryingLayers` and `RunsInARegionEndToEnd`. A consultant is fixing them against HEAD, which includes P4.T4.

@@ -9,11 +9,14 @@ What it covers, one section each:
 - bounds: on a Grade's gain at a 500 px bin, the panel starts in the label column and runs the
   Hue slider on to the row's last button while the "g" channel line keeps its inset, and a Blur's
   size row does not move when the panel opens.
-- sizes: at the default bin width and at twice it: a screenshot, the wheel's diameter and the
-  Hue track's length.
+- sizes: for the Regular and Large colorTrackballSize preferences, at the default bin width and
+  at twice it: a screenshot, the wheel's diameter (above 160 px at the default width in Regular,
+  larger in Large, up to 400 px), the Hue track's length, and in Large the nine lines
+  (r, g, b, a, Hue, Sat, Value, Temp, Tint) beside a wheel on their left.
+- panel-toggle: the knob's panel button shows a down chevron folded and an up chevron open.
 - no-flash: no widget of the Grade panel paints at a geometry other than its settled one while
-  the panel is folded and unfolded (a paint logger, as M44 used for the dropdown).
-- undo: a slider drag is one undo step.
+  the panel is folded and unfolded (a paint logger).
+- undo: a slider drag is one undo step, including a drag that starts on the marker.
 - fresh-engage: global mode starts in C on every fresh engage, and keeps its mode across a knob
   switch while engaged.
 - feedback: for each value of the colorTrackballFeedback preference (Crosshair + reveal, Widget
@@ -21,8 +24,12 @@ What it covers, one section each:
   pointer moves (also at the screen's edge), the reveal graphic at the press point, the widget
   cursor following, freezing on press and resuming on release; a modal dialog and repeated
   cycles leave no override cursor.
-- reveal: screenshots of the C, S, T and V graphics, and a press at the screen's corner keeps
-  the graphic on screen.
+- hud: the following HUD is a window from construction, and its on-screen pixels match its own
+  render.
+- right-click: a right-click ends global mode, restores the cursor, and opens no context menu.
+- reveal: screenshots of the C, S, T and V graphics, S mid-drag (the disc recentres on the live
+  hue, and only an x drag changes it), and a press at the screen's corner keeps the graphic on
+  screen.
 
 Knob widgets carry no object name; KnobGui puts the knob's script name in bold at the start of its
 tooltip, so that is how a knob's widgets are found. The Grade's "Gain" knob is named "white".
@@ -50,6 +57,8 @@ T3_BIN_WIDTH = 500
 EDGE_TOLERANCE = 1
 WHEEL_MIN = 160
 WHEEL_MAX = 320
+WHEEL_MAX_LARGE = 400
+SIZE_NAMES = {0: "regular", 1: "large"}
 HUD_OFFSET = 16
 REVEAL_DIAMETER = 240
 
@@ -62,8 +71,8 @@ try:
     import NatronEngine
     import shiboken6
     from PySide6.QtCore import QEvent, QMetaObject, QObject, QPoint, QPointF, QRect, Qt
-    from PySide6.QtGui import QCursor, QGuiApplication, QKeyEvent, QMouseEvent
-    from PySide6.QtWidgets import QApplication, QDialog, QGridLayout, QLabel, QMainWindow, QScrollArea, QSplitter, QWidget
+    from PySide6.QtGui import QContextMenuEvent, QCursor, QGuiApplication, QImage, QKeyEvent, QMouseEvent
+    from PySide6.QtWidgets import QApplication, QDialog, QGridLayout, QLabel, QMainWindow, QMenu, QScrollArea, QSplitter, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -296,9 +305,37 @@ try:
         found.sort(key=lambda s: s.mapToGlobal(QPoint(0, 0)).y())
         return found[0] if found else None
 
-    def set_feedback(value):
-        NatronEngine.natron.getSettings().getParam("colorTrackballFeedback").set(value)
+    def set_pref(name, value):
+        NatronEngine.natron.getSettings().getParam(name).set(value)
         QApplication.processEvents()
+
+    def set_feedback(value):
+        set_pref("colorTrackballFeedback", value)
+
+    def set_size(value):
+        set_pref("colorTrackballSize", value)
+
+    def grab_screen(rect):
+        r = rect.intersected(screen_rect())
+        return QGuiApplication.primaryScreen().grabWindow(0, r.x(), r.y(), r.width(), r.height()).toImage() \
+            .convertToFormat(QImage.Format_RGB32)
+
+    def image_diff(a, b, tolerance=6):
+        """The fraction of pixels whose channels differ by more than tolerance."""
+        if a.size() != b.size() or a.isNull():
+            return 1.0
+        bad = 0
+        for y in range(a.height()):
+            for x in range(a.width()):
+                pa, pb = a.pixel(x, y), b.pixel(x, y)
+                if (abs(((pa >> 16) & 255) - ((pb >> 16) & 255)) > tolerance
+                        or abs(((pa >> 8) & 255) - ((pb >> 8) & 255)) > tolerance
+                        or abs((pa & 255) - (pb & 255)) > tolerance):
+                    bad += 1
+        return bad / float(a.width() * a.height())
+
+    def pixel_distance(a, b):
+        return sum(abs(((a >> sh) & 255) - ((b >> sh) & 255)) for sh in (16, 8, 0))
 
     # ---- the active adjust panel and its parts -----------------------------------------------------
 
@@ -336,6 +373,10 @@ try:
             if w.objectName() == "ColorAdjustCustomSlider" + title:
                 return w
         return None
+
+    def channel_lines_in(panel, name=GAIN):
+        """The knob's own channel sliders, which sit inside the panel only in the Large layout."""
+        return [w for w in all_inside(panel) if gt.class_name(w) == "ScaleSliderQWidget" and tagged(w, name)]
 
     def measure(panel):
         if not alive(panel):
@@ -614,32 +655,80 @@ try:
         widths = [default_width, min(2 * default_width, screen_rect().width() - 300)]
         report("NOTE bin widths: default %d, wide %d" % tuple(widths))
         table = []
-        for wi, width in enumerate(widths):
-            got = set_bin_width(width)
-            yield ("sleep", SETTLE_MS)
-            report("NOTE bin width %d (asked %d)" % (got, width))
-            ap = wheels = None
+        measured = {}
+        for size in (0, 1):
+            set_size(size)
             yield ("sleep", PANEL_MS)
-            ap = active_adjust_panel(gp)
-            d, track = measure(ap)
-            if d < 0:
-                ap = None
+            for wi, width in enumerate(widths):
+                got = set_bin_width(width)
+                yield ("sleep", SETTLE_MS)
                 yield ("sleep", PANEL_MS)
                 ap = active_adjust_panel(gp)
                 d, track = measure(ap)
-            name = "size-%s" % ("default" if wi == 0 else "wide")
-            if d < 0:
-                wheels = [(w.width(), w.height(), w.isVisible()) for w in live_children(ap if alive(ap) else gp)
-                          if gt.class_name(w) == "ColorWheelWidget"]
-                report("NOTE   no wheel: adjust panel %r visible=%r, wheels %r"
-                       % (ap.objectName() if alive(ap) else None, alive(ap) and ap.isVisible(), wheels))
-            table.append((width, d, track))
-            report("NOTE size bin=%d: wheel %d px, Hue track %d px" % (got, d, track))
-            check(px(WHEEL_MIN) - 1 <= d <= px(WHEEL_MAX) + 1 and track > 0,
-                  "at %d px: a %d px wheel in [160, 320] and a %d px Hue track" % (got, d, track))
-            crop_widget(bin_wrapper(), name)
+                if d < 0:
+                    yield ("sleep", PANEL_MS)
+                    ap = active_adjust_panel(gp)
+                    d, track = measure(ap)
+                tag = "%s-%s" % (SIZE_NAMES[size], "default" if wi == 0 else "wide")
+                lines = len(channel_lines_in(ap)) if d >= 0 else 0
+                large = lines > 0
+                measured[(size, wi)] = d
+                table.append((got, SIZE_NAMES[size], d, track, lines))
+                report("NOTE size %s bin=%d: wheel %d px, Hue track %d px, %d channel lines inside the panel"
+                       % (tag, got, d, track, lines))
+                limit = WHEEL_MAX_LARGE if size == 1 else WHEEL_MAX
+                check(px(WHEEL_MIN) - 1 <= d <= px(limit) + 1 and track > 0,
+                      "%s at %d px: a %d px wheel in [160, %d] and a %d px Hue track" % (tag, got, d, limit, track))
+                check(large == (size == 1),
+                      "%s: the channel lines are %s the panel (%d inside)" % (tag, "inside" if size == 1 else "outside", lines))
+                if size == 1 and large and ap is not None:
+                    names = ["Hue", "Sat", "Value", "Temp", "Tint"]
+                    have = [n for n in names if line_slider(ap, n) is not None]
+                    check(len(have) == 5 and lines == 4, "%s: nine lines, r g b a and Hue Sat Value Temp Tint (%d + %d)"
+                          % (tag, lines, len(have)))
+                    wheel = wheel_of(ap)
+                    first_line = min(channel_lines_in(ap), key=lambda w: w.mapToGlobal(QPoint(0, 0)).x())
+                    check(wheel.mapToGlobal(QPoint(0, 0)).x() + wheel.width() <= first_line.mapToGlobal(QPoint(0, 0)).x(),
+                          "%s: the wheel sits left of the lines" % tag)
+                    check(wheel.width() == wheel.height(), "%s: the wheel is square (%dx%d)" % (tag, wheel.width(), wheel.height()))
+                crop_widget(bin_wrapper(), "size-" + tag)
+        check(measured.get((0, 0), -1) > px(WHEEL_MIN), "Regular at the default width: the wheel is above 160 px (%r)" % measured.get((0, 0)))
+        check(measured.get((1, 0), -1) > measured.get((0, 0), 1 << 30),
+              "Large at the default width: the wheel is larger than Regular's (%r against %r)" % (measured.get((1, 0)), measured.get((0, 0))))
+        check(measured.get((1, 1), -1) > measured.get((0, 1), 1 << 30),
+              "Large at twice the width: the wheel is larger than Regular's (%r against %r)" % (measured.get((1, 1)), measured.get((0, 1))))
+        set_size(0)
         set_bin_width(default_width)
+        yield ("sleep", PANEL_MS)
+
+        # =========================================================================================
+        gt.section("panel-toggle")
+        selector = child_named(knob_row(gp, GAIN), "ColorSelectorButton")
+        if selector.isChecked():
+            selector.click()
+            yield ("sleep", SETTLE_MS)
+        folded_icon = selector.icon().pixmap(selector.iconSize()).toImage()
+        folded_tip = selector.toolTip()
+        crop_widget(knob_row(gp, GAIN), "toggle-folded", 4)
+        selector.click()
+        yield ("sleep", PANEL_MS)
+        check(selector.isChecked() and active_adjust_panel(gp) is not None, "the button opens the panel")
+        open_icon = selector.icon().pixmap(selector.iconSize()).toImage()
+        crop_widget(knob_row(gp, GAIN), "toggle-open", 4)
+        check(not folded_icon.isNull() and not open_icon.isNull() and image_diff(folded_icon.convertToFormat(QImage.Format_RGB32),
+                                                                                  open_icon.convertToFormat(QImage.Format_RGB32), 0) > 0.0,
+              "the open panel's button icon differs from the folded one")
+        check(open_icon.size() == folded_icon.size(), "the two icons are the same size (%dx%d)" % (open_icon.width(), open_icon.height()))
+        mirrored = folded_icon.mirrored(False, True)
+        check(image_diff(mirrored.convertToFormat(QImage.Format_ARGB32), open_icon.convertToFormat(QImage.Format_ARGB32), 24) < 0.1,
+              "the open icon is the folded chevron turned up")
+        check(selector.toolTip() != folded_tip, "the tooltip changes with the state")
+        report("NOTE tooltips: folded %r, open %r" % (folded_tip[:60], selector.toolTip()[:60]))
+        selector.click()
         yield ("sleep", SETTLE_MS)
+        check(not selector.isChecked(), "the button folds the panel again")
+        selector.click()
+        yield ("sleep", PANEL_MS)
 
         # =========================================================================================
         gt.section("no-flash")
@@ -843,6 +932,67 @@ try:
         yield ("until", lambda: win.isActiveWindow(), 5.0)
 
         # =========================================================================================
+        gt.section("hud")
+        set_feedback(0)
+        yield ("sleep", SETTLE_MS)
+        QCursor.setPos(screen_rect().center())
+        yield ("sleep", 200)
+        child_named(knob_row(gp, GAIN), "ColorGlobalModeButton").click()
+        yield ("sleep", SETTLE_MS)
+        h = hud()
+        if check(engaged() and h is not None, "engaged for the HUD check"):
+            check(h.isWindow(), "the HUD is a window while following")
+            p = QPoint(400, 300)
+            QCursor.setPos(p)
+            yield ("sleep", 400)
+            h.update()
+            yield ("sleep", 300)
+            own = h.grab().toImage().convertToFormat(QImage.Format_RGB32)
+            on_screen = grab_screen(QRect(h.mapToGlobal(QPoint(0, 0)), h.size()))
+            frac = image_diff(own, on_screen, 6)
+            report("NOTE HUD %s at %r, own render %dx%d, screen grab %dx%d, %.4f of pixels differ"
+                   % (fmt_rect(h.frameGeometry()), h.pos(), own.width(), own.height(), on_screen.width(), on_screen.height(), frac))
+            check(own.size() == on_screen.size() and frac < 0.02,
+                  "the following HUD's on-screen pixels match its own render (%.4f differ)" % frac)
+            on_screen.save(os.path.join(gt.OUT, "hud-on-screen.png"))
+            own.save(os.path.join(gt.OUT, "hud-own-render.png"))
+            report("SHOT hud-on-screen.png and hud-own-render.png")
+            send_key(Qt.Key_Escape)
+            yield ("sleep", SETTLE_MS)
+        check(not engaged(), "Esc leaves global mode after the HUD check")
+
+        # =========================================================================================
+        gt.section("right-click")
+        for fb in (0, 1):
+            name = FEEDBACK_NAMES[fb]
+            set_feedback(fb)
+            yield ("sleep", SETTLE_MS)
+            QCursor.setPos(centre)
+            yield ("sleep", 200)
+            child_named(knob_row(gp, GAIN), "ColorGlobalModeButton").click()
+            yield ("sleep", SETTLE_MS)
+            if not check(engaged(), "%s: engaged before the right-click" % name):
+                continue
+            check(cursor_name() != "none", "%s: an override cursor is up while engaged (%s)" % (name, cursor_name()))
+            target = main_window().mapFromGlobal(centre)
+            send_mouse(main_window(), QEvent.MouseButtonPress, target, Qt.RightButton, Qt.RightButton)
+            yield ("sleep", 300)
+            check(not engaged(), "%s: a right-click ends global mode" % name)
+            check(QApplication.overrideCursor() is None, "%s: the cursor is restored after the right-click (%s)" % (name, cursor_name()))
+            check(not reveal_shown(), "%s: no mode graphic after the right-click" % name)
+            h = hud()
+            check(h is None or not h.isVisible(), "%s: no HUD after the right-click" % name)
+            send_mouse(main_window(), QEvent.MouseButtonRelease, target, Qt.RightButton, Qt.NoButton)
+            QApplication.sendEvent(main_window(), QContextMenuEvent(QContextMenuEvent.Mouse, target, centre))
+            yield ("sleep", 400)
+            menus = [m for m in QApplication.topLevelWidgets() if isinstance(m, QMenu) and m.isVisible()]
+            check(QApplication.activePopupWidget() is None and not menus,
+                  "%s: no context menu opens (%d visible menus)" % (name, len(menus)))
+            check(QApplication.overrideCursor() is None, "%s: no override cursor after the release and menu request (%s)" % (name, cursor_name()))
+        set_feedback(0)
+        yield ("sleep", SETTLE_MS)
+
+        # =========================================================================================
         gt.section("reveal")
         start_gain = (1.4, 1.1, 0.7, 1.0)
         set_feedback(0)
@@ -875,6 +1025,43 @@ try:
             check(not reveal_shown(), "%s: release hides the graphic" % mode)
             send_key(Qt.Key_Escape)
             yield ("sleep", SETTLE_MS)
+        # S mid-drag: an x drag moves the hue, so the disc recentres; a y drag leaves the hue alone.
+        for axis, delta in (("x", (70, 0)), ("y", (0, -70))):
+            set_gain(grade, start_gain)
+            yield ("sleep", 200)
+            child_named(knob_row(gp, GAIN), "ColorGlobalModeButton").click()
+            yield ("sleep", SETTLE_MS)
+            send_key(Qt.Key_S)
+            yield ("sleep", 200)
+            press = QPoint(centre.x() - 200, centre.y())
+            global_press(press)
+            yield ("sleep", 300)
+            r = reveal_window()
+            if not check(r is not None and r.isVisible(), "S %s drag: the disc is up on press" % axis):
+                send_key(Qt.Key_Escape)
+                continue
+            rect = r.frameGeometry()
+            w = rect.width()
+            probes = [QPoint(rect.center().x() + dx, rect.center().y() + dy)
+                      for dx, dy in ((int(-0.18 * w), int(-0.18 * w)), (int(0.18 * w), int(0.18 * w)))]
+            before = grab_screen(rect)
+            crop(rect, "reveal-S-%s-drag-start" % axis, 10)
+            for k in range(1, 9):
+                global_move(QPoint(press.x() + delta[0] * k // 8, press.y() + delta[1] * k // 8))
+            yield ("sleep", 300)
+            after = grab_screen(rect)
+            crop(rect, "reveal-S-%s-drag-mid" % axis, 10)
+            moved = max(pixel_distance(before.pixel(q.x() - rect.x(), q.y() - rect.y()), after.pixel(q.x() - rect.x(), q.y() - rect.y()))
+                        for q in probes)
+            report("NOTE S %s drag: largest probe colour change %d" % (axis, moved))
+            if axis == "x":
+                check(moved > 30, "S x drag: the disc recentres on the live hue (probe change %d)" % moved)
+            else:
+                check(moved <= 12, "S y drag: the hue, and so the disc, stays put (probe change %d)" % moved)
+            global_release(QPoint(press.x() + delta[0], press.y() + delta[1]))
+            yield ("sleep", 300)
+            send_key(Qt.Key_Escape)
+            yield ("sleep", SETTLE_MS)
         set_gain(grade, start_gain)
         child_named(knob_row(gp, GAIN), "ColorGlobalModeButton").click()
         yield ("sleep", SETTLE_MS)
@@ -895,9 +1082,9 @@ try:
         yield ("sleep", SETTLE_MS)
 
 
-        report("NOTE size table (bin width, layout, wheel px, Hue track px):")
-        for width, text, d, track in table:
-            report("NOTE   %4d  %-28s wheel %3d  Hue %3d" % (width, text, d, track))
+        report("NOTE size table (bin width, size, wheel px, Hue track px, channel lines in the panel):")
+        for width, text, d, track, lines in table:
+            report("NOTE   %4d  %-8s wheel %3d  Hue %3d  lines %d" % (width, text, d, track, lines))
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

@@ -291,6 +291,26 @@ void rawDenoiseXTrans(const float* in,
                       float threshold,
                       const float force[4][kRawDenoiseBands],
                       const ParallelFor& parallel);
+
+/**
+ * @brief darktable's Reconstruct Color highlights mode (a1ex's colour inpainting) over a whole
+ * mosaic: four scans, along each row both ways and then along each column both ways, rebuild a
+ * clipped photosite from the next one of another colour by a ratio learned from the unclipped
+ * photosites passed on the way; the result is the mean of the four rebuilds. in is read in
+ * place, photosite (row, col) at in[row * inRowStride + col * inPixelStride]; out holds one float
+ * per photosite, row-major and width wide. clip is the clipping level of red, green and blue;
+ * xtrans is read when filters == kFiltersXTrans, filters when it is a Bayer word.
+ **/
+void inpaintColor(const float* in,
+                  std::ptrdiff_t inRowStride,
+                  std::ptrdiff_t inPixelStride,
+                  float* out,
+                  int width,
+                  int height,
+                  std::uint32_t filters,
+                  const std::uint8_t (*xtrans)[6],
+                  const float clip[3],
+                  const ParallelFor& parallel);
 } // namespace RawKernels
 
 NATRON_NAMESPACE_EXIT

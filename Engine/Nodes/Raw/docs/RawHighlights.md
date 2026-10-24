@@ -3,7 +3,7 @@
 Tolerance: none recorded.
 
 Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
-`hlreconstruct/opposed.c`, `lch.c` and the reference average of `segbased.c`, darktable
+`hlreconstruct/opposed.c`, `lch.c`, `inpaint.c` and the reference average of `segbased.c`, darktable
 `release-5.6.2`).
 
 - Raw in, raw out, at the prepared stage.
@@ -14,8 +14,8 @@ Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
 - A mode the source cannot run falls back to Inpaint Opposed with darktable's message as a node
   warning ("highlights: mode not available for this type of image. falling back to inpaint
   opposed."); the Method knob keeps the choice, so a CFA source brings it back. Each mode
-  declares the sensor it needs in `rawHighlightsModeRequirement()`: Reconstruct in LCh needs a
-  CFA, and the modes not yet ported need a CFA (Segmentation, Reconstruct Color) or a Bayer
+  declares the sensor it needs in `rawHighlightsModeRequirement()`: Reconstruct in LCh and
+  Reconstruct Color need a CFA, and the modes not yet ported need a CFA (Segmentation) or a Bayer
   mosaic (Guided Laplacians).
 - **Clip Highlights** clips every photosite to the threshold, whatever its colour, which turns
   clipped areas white.
@@ -30,10 +30,20 @@ Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
 - **Reconstruct in LCh** works on Bayer and X-Trans mosaics with a 2-photosite halo, as darktable's
   `process_lch_bayer()` and `process_lch_xtrans()` do. On data without a CFA it is Inpaint
   Opposed, as in darktable.
+- **Reconstruct Color** (`inpaint.c`, a1ex's colour inpainting) scans every row both ways and then
+  every column both ways over the whole frame (`RawKernels::inpaintColor()`). A clipped photosite
+  is rebuilt from the next one in the scan: from its value times a colour ratio that decays
+  exponentially over the unclipped pairs passed on the way (Bayer), or per colour pair (X-Trans,
+  looking diagonally at the start of a 2x2 green block); the result is the mean of the four
+  rebuilds. The threshold is the clipping threshold times the `raw/wb_applied` multiplier of each
+  colour. The node keeps the result as one float per photosite under `RawNodeSupport::frameKey()`,
+  reading the source in place, and each render copies its window. On data without a CFA it falls
+  back to Inpaint Opposed. The label and the value are appended to the Method choice after
+  Reconstruct in LCh.
 - Image borders are those of the whole source, never of a tile. darktable's X-Trans LCh keeps a
   ring buffer of clipped columns, which is evaluated directly here with the same result.
-- Clip and LCh set `raw/processed_maximum` the way darktable updates its processed maximum.
-- The segmentation, guided Laplacian and inpaint-colour modes are not ported.
+- Clip, LCh and Reconstruct Color set `raw/processed_maximum` the way darktable updates its processed maximum.
+- The segmentation and guided Laplacian modes are not ported.
 - It renders at full resolution only.
 
 Tests: `Tests/Native/NativeRawHighlightsDefaults_Test.cpp` for the threshold default, its
@@ -46,7 +56,7 @@ GPU: Clip Highlights (`rawhighlights_clip`, bound `ParityTolerance::exact()`) an
 LCh on a Bayer or X-Trans mosaic (`rawhighlights_lch`, bound `ParityTolerance::transcendental()`
 for its square root and divisions), both wrapped kernels in `Engine/Gpu/Kernels/rawhighlights.slang`.
 LCh reads the source through the wrap's view, which the node asks to be the window grown by 2 and
-clipped to the source (`getOpGpuInputRoI()`). Inpaint Opposed stays on the CPU: its chrominance is
+clipped to the source (`getOpGpuInputRoI()`). Reconstruct Color is a whole-frame scan and stays on the CPU. Inpaint Opposed stays on the CPU: its chrominance is
 a double-precision sum over the whole source, kept per frame under `RawNodeSupport::frameKey()`,
 which neither a region's strips nor float sums on the device reproduce. LCh without a CFA is
 Inpaint Opposed and stays on the CPU too. With either, the raw run the node is in stays on the CPU

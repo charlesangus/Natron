@@ -509,7 +509,7 @@ From the P7.T3 UAT (2026-10-24). Crash evidence (consultant, unconfirmed until T
   - verify: ctest and smoke green; `xmllint --noout` and `update-mime-database` on a temp copy give `application/x-natron` for a renamed `.ntpz`.
   - size: M
 
-- [ ] M16.P9.T10 — Release AppImage and UAT round 2
+- [x] M16.P9.T10 — Release AppImage and UAT round 2
   - files: `build/appimages/M16-<sha>.AppImage`, `build/appimages/M16-uat.md`
   - approach: `package.sh` and the launch check. New UAT steps: the `.ntp` and `.png` error dialogs with no crash; `unzip` → a `test/` folder; an edit plus a Python re-zip; folder open and Save; a renamed file. Stop for the user.
   - verify: the user signs off.
@@ -525,6 +525,7 @@ UAT (P7.T3).
 
 ## Decisions
 
+- 2026-10-24 — **UAT round 2 approved (user):** the user signed off on `M16-d7138ee99.AppImage` with `build/appimages/M16-uat.md`. Rebased onto main (after M94 and M134) as f6ef3b815 for the PR.
 - 2026-10-10 — **User decision: clean break, no backwards compatibility.** No import of old XML `.ntp`, `.nps` or `.nl` files. Opening one gives a clear old-format message and never crashes. The boost XML reader and writer and `Serialization/BoostXml/` are deleted, and so is the version-gated legacy migration code (legacy colour rows, the channel set below v17, knob layers below v14, timeline bounds, RC2/RC3). The fixtures and bench comps are regenerated through their scripts (`tools/ci/regen_read_time_offset.py`, `tools/bench/comps/build_comps.sh`). The two hand-written legacy-version fixtures (`channel-set-legacy-defaults.ntp`, `m65-legacy-color.ntp`) are **deleted, not regenerated**: they exist only to test the migration being removed, and any current-behaviour assertion in their tests is rebuilt in code. The size/speed benchmark is a one-off taken while both writers exist; its numbers stay in `BASELINE.md` and the scripts are deleted. Presets are new-format YAML only. Extends `docs/decisions/2026-09-18-clean-break-no-project-compat.md`.
 - 2026-10-10 — **User decision: the bundle extension is `.ntpz`**, used in dialogs, MIME and desktop associations, autosave (`.ntpz.autosave`), recent files, the NatronRenderer CLI and the Python API docs. `.ntp` is recognised only to give the old-format message.
 - 2026-10-10 — **User decision (confirmed 2026-10-10): connections are sibling-relative.** Group membership is stored by nesting (a group's `children:` map). A consumer's `inputs:` names a sibling's script name, keyed by input label. Expressions, links and `gui.yaml` keys stay fully qualified. **This amends `DECISIONS/2026-09-05-project-format-bundle-design.md`**, which said fully-qualified targets. Natron connections never cross group boundaries, and fully-qualified targets would rewrite every inner connection when a group is renamed.

@@ -255,5 +255,4 @@ future core work has solid ground to build on.
 
 - **M161 - Startup Compositor Crash:** After M161 merges, its lane picks up M19 - USD/Hydra Foundation (reserved for bosley-native-nodes; also needs M107 - GPU Viewer Hand-off done).
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.
-- **M16 - Project Format Redesign:** UAT round 2 with the user (P9.T10): `build/appimages/M16-uat.md` with `M16-d7138ee99.AppImage`.
 - **M166 - Non-Float Plane Model:** the user wants to rethink the model before it is planned: Read emitting EXR half/uint32 layers natively, and possibly a bit depth per layer. Settle the framing in `/cat-discuss`, then elaborate.

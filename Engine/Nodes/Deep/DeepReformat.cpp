@@ -233,7 +233,9 @@ DeepReformat::route(double time,
 }
 
 StatusEnum
-DeepReformat::getPreferredMetadata(NodeMetadata& metadata)
+DeepReformat::getPreferredMetadataAt(double /*time*/,
+                                     ViewIdx /*view*/,
+                                     NodeMetadata& metadata)
 {
     int width = 0;
     int height = 0;

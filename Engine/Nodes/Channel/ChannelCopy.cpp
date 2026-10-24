@@ -35,6 +35,7 @@
 
 #include "Engine/EffectInstance.h"
 #include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/RectI.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -338,21 +339,23 @@ ChannelCopy::findColorStorage(const std::list<ImageLayerDesc>& layers)
 
 ImageLayerDesc
 ChannelCopy::metadataColorStorage(const EffectInstance& effect,
-                                  int inputNb)
+                                  int inputNb,
+                                  double time,
+                                  ViewIdx view)
 {
     EffectInstancePtr input = effect.getInput(inputNb);
+    NodeMetadataConstPtr metadata = input ? input->getMetadata(time, view) : NodeMetadataConstPtr();
 
-    if (!input) {
+    if (!metadata || (metadata->getComponentsType(-1) != kNatronColorLayerID)) {
+        return ImageLayerDesc();
+    }
+    // The stream's own layout, which a colour output may carry narrower than its clip's.
+    const int nComps = (metadata->getOutputStorageNComps() > 0) ? metadata->getOutputStorageNComps() : metadata->getNComps(-1);
+    if (nComps <= 0) {
         return ImageLayerDesc();
     }
 
-    ImageLayerDesc layer, pairedLayer;
-    input->getMetadataComponents(-1, &layer, &pairedLayer);
-    if (!layer.isColorLayer() || (layer.getNumComponents() == 0)) {
-        return ImageLayerDesc();
-    }
-
-    return ImageLayerDesc::mapNCompsToColorLayer(layer.getNumComponents());
+    return ImageLayerDesc::mapNCompsToColorLayer(nComps);
 }
 
 std::vector<int>

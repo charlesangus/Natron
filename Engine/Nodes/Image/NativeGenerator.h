@@ -134,13 +134,16 @@ public:
     void getFrameRange(double* first,
                        double* last) const;
 
-    StatusEnum getPreferredMetadata(NodeMetadata& metadata) const WARN_UNUSED_RETURN;
+    StatusEnum getPreferredMetadataAt(double time,
+                                      ViewIdx view,
+                                      NodeMetadata& metadata) const WARN_UNUSED_RETURN;
 
     /**
      * @brief Only ofx/framerate and ofx/pixelaspect. ofx/frame is omitted because it numbers an
      * image within a source and a generator has none.
      **/
-    ImageMetadata deriveOutputMetadata() const WARN_UNUSED_RETURN;
+    ImageMetadata deriveOutputMetadata(double time,
+                                       ViewIdx view) const WARN_UNUSED_RETURN;
 
 private:
     EffectInstance* _effect;
@@ -232,15 +235,17 @@ protected:
         _generator.getFrameRange(first, last);
     }
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return _generator.getPreferredMetadata(metadata);
+        return _generator.getPreferredMetadataAt(time, view, metadata);
     }
 
-    virtual ImageMetadata deriveOutputMetadata(double /*time*/,
-                                               ViewIdx /*view*/) OVERRIDE FINAL WARN_UNUSED_RETURN
+    virtual ImageMetadata deriveOutputMetadata(double time,
+                                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return _generator.deriveOutputMetadata();
+        return _generator.deriveOutputMetadata(time, view);
     }
 
 private:

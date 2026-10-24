@@ -162,7 +162,9 @@ private:
     {
     }
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN
+    virtual StatusEnum getPreferredMetadataAt(double /*time*/,
+                                              ViewIdx /*view*/,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         std::lock_guard<std::mutex> lock(_mutex);
         metadata.setNComps(-1, _nComps);

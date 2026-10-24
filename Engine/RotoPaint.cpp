@@ -1300,7 +1300,9 @@ RotoPaint::refreshExtraStateAfterTimeChanged(bool isPlayback,
 }
 
 StatusEnum
-RotoPaint::getPreferredMetadata(NodeMetadata& metadata)
+RotoPaint::getPreferredMetadataAt(double /*time*/,
+                                  ViewIdx /*view*/,
+                                  NodeMetadata& metadata)
 {
     metadata.setNComps( -1, 4 );
     metadata.setComponentsType(-1, kNatronColorLayerID);

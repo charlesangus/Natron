@@ -6179,7 +6179,9 @@ EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
                 effect->onSyncPrivateDataRequested(); //syncPrivateData_other_thread();
             }
         }
-        return getPreferredMetadata(metadata);
+        // Native nodes answer at a time only; the timeless answer is theirs at the frame the knobs
+        // read by default, which is what their timeless answer used to read.
+        return getPreferredMetadataAt(getCurrentTime(), getCurrentView(), metadata);
     }
     return stat;
 
@@ -6602,7 +6604,8 @@ EffectInstance::deriveTimeInvariantMetadata()
     }
     StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, false, metadata);
     if ((stat != eStatusFailed) && !getNode()->isNodeDisabledAtAllTimes()) {
-        getPreferredMetadata(metadata);
+        // As getPreferredMetadata_public().
+        getPreferredMetadataAt(getCurrentTime(), getCurrentView(), metadata);
     }
     _imp->clampMetadata(inputs, inputsMetadata, metadata);
 

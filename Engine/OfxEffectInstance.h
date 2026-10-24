@@ -130,6 +130,14 @@ public:
      **/
     void dropStaleClipMetadata();
 
+    /**
+     * @brief For tests only: runs the plug-in's clip preferences on the calling thread, which
+     * may be any thread, over metadata, which holds the default answer on entry and the
+     * plug-in's on return. Holds the preferences lock for writing, so it waits for the actions
+     * that read the clips, and it pushes nothing to the clips or to the node.
+     **/
+    StatusEnum getClipPreferencesOnAnyThreadForTest(NodeMetadata& metadata);
+
 public:
     /********OVERRIDDEN FROM EFFECT INSTANCE*************/
     virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;

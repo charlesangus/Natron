@@ -294,6 +294,15 @@ protected:
     virtual bool presentsOnlyPassThroughLayers(double time,
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Where route() answers Black, RGBA float at the project format and PAR, as a node
+     * with no input answers; the identity rule covers an Input answer, and None keeps the
+     * default derivation. A node that overrides this has no Black answer.
+     **/
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE;
+
     virtual bool isIdentity(double time,
                             const RenderScale& scale,
                             const RectI& roi,

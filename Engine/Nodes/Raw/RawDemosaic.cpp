@@ -907,7 +907,9 @@ RawDemosaic::getRegionsOfInterest(double time,
 }
 
 StatusEnum
-RawDemosaic::getPreferredMetadata(NodeMetadata& metadata)
+RawDemosaic::getPreferredMetadataAt(double /*time*/,
+                                    ViewIdx /*view*/,
+                                    NodeMetadata& metadata)
 {
     metadata.setNComps(-1, 4);
 

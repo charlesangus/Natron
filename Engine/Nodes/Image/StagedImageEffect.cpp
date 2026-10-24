@@ -34,9 +34,13 @@
 
 #include <QString>
 
+#include "Engine/AppInstance.h"
+#include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Project.h"
 #include "Engine/RectD.h"
 
 NATRON_NAMESPACE_ENTER
@@ -614,6 +618,26 @@ StagedImageEffect::deriveOutputMetadata(double time,
     }
 
     return NativeEffectBase::deriveOutputMetadata(time, view);
+}
+
+StatusEnum
+StagedImageEffect::getPreferredMetadataAt(double time,
+                                          ViewIdx view,
+                                          NodeMetadata& metadata)
+{
+    if (route(time, view).kind != Route::Kind::Black) {
+        return eStatusOK;
+    }
+    // The defaults come from whichever inputs are connected, which a Black answer reads none of.
+    Format projectFormat;
+    getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+    metadata.setNComps(-1, 4);
+    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setBitDepth(-1, eImageBitDepthFloat);
+    metadata.setPixelAspectRatio(-1, projectFormat.getPixelAspectRatio());
+    metadata.setOutputFormat(projectFormat);
+
+    return eStatusOK;
 }
 
 bool

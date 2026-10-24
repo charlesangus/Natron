@@ -853,7 +853,9 @@ ChromaKeyer::initializeKnobs()
 }
 
 StatusEnum
-ChromaKeyer::getPreferredMetadata(NodeMetadata& metadata)
+ChromaKeyer::getPreferredMetadataAt(double /*time*/,
+                                    ViewIdx /*view*/,
+                                    NodeMetadata& metadata)
 {
     // The output is RGBA whatever the source: the foreground key is its alpha.
     metadata.setNComps(-1, 4);

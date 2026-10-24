@@ -687,7 +687,9 @@ MergeNode::deriveOutputMetadata(double time,
 }
 
 StatusEnum
-MergeNode::getPreferredMetadata(NodeMetadata& metadata)
+MergeNode::getPreferredMetadataAt(double /*time*/,
+                                  ViewIdx /*view*/,
+                                  NodeMetadata& metadata)
 {
     // The output always has an alpha channel: an RGB B is transparent outside A, so A and B in
     // RGB still give RGBA. The inputs are read in the output's layout.

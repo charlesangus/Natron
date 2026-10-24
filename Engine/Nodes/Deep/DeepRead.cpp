@@ -71,10 +71,6 @@ DeepRead::initializeKnobs()
     filename->setName("filename");
     filename->setAsInputImage();
     filename->setHintToolTip(tr("The deep EXR file to read."));
-    // OFX hosts re-run getClipPreferences after any param the plugin declares via
-    // addClipPreferencesSlaveParam (see ReadOIIO's filename param); NativeEffectBase has no such
-    // wiring, so without this getPreferredMetadata() is only ever consulted once, at node
-    // creation, before a file is chosen.
     filename->setIsMetadataSlave(true);
     page->addKnob(filename);
     _filename = filename;
@@ -153,9 +149,12 @@ isFrameSequencePattern(const std::string& pattern)
 }
 
 StatusEnum
-DeepRead::getPreferredMetadata(NodeMetadata& metadata)
+DeepRead::getPreferredMetadataAt(double time,
+                                 ViewIdx /*view*/,
+                                 NodeMetadata& metadata)
 {
-    const std::string filename = getFilenameAtTime(getCurrentTime());
+    // Each frame of a sequence is its own file, with its own display window.
+    const std::string filename = getFilenameAtTime(time);
 
     if (filename.empty()) {
         return eStatusFailed;

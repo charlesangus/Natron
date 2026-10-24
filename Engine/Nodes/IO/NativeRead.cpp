@@ -1040,7 +1040,9 @@ NativeRead::knobChanged(KnobI* k,
 }
 
 StatusEnum
-NativeRead::getPreferredMetadata(NodeMetadata& metadata)
+NativeRead::getPreferredMetadataAt(double time,
+                                   ViewIdx view,
+                                   NodeMetadata& metadata)
 {
     metadata.setBitDepth(-1, eImageBitDepthFloat);
     metadata.setComponentsType(-1, kNatronColorLayerID);
@@ -1048,8 +1050,9 @@ NativeRead::getPreferredMetadata(NodeMetadata& metadata)
 
     metadata.setIsFrameVarying(true);
 
-    // The format is one per node, so a frame that loads nothing still reports the sequence's.
-    const Target target = targetAtTime(getCurrentTime());
+    // The frame's own file, or the held one when the missing-frame mode holds. A frame that renders
+    // black or an error has no file, so it reports the sequence's representative frame.
+    const Target target = targetAtTime(time);
     const std::string path = target.kind == ReadTimeDomain::Result::eFile ? target.path : representativePath();
     if (path.empty()) {
         return eStatusOK;
@@ -1069,9 +1072,8 @@ NativeRead::getPreferredMetadata(NodeMetadata& metadata)
     if (!header || header->subimages.empty()) {
         return eStatusOK;
     }
-    // The format is one per node, so it is the main view's.
     OiioReadSupport::PartChannels colour;
-    const bool hasColour = colourPartOf(*header, projectViewName(ViewIdx(0)), &colour);
+    const bool hasColour = colourPartOf(*header, projectViewName(view), &colour);
     const OIIO::ImageSpec& spec = header->subimages[hasColour ? (std::size_t)colour.subimage : 0];
 
     // OpenFX formats must start at (0, 0), so a positive display-window origin only widens the
@@ -1090,7 +1092,8 @@ NativeRead::deriveOutputMetadata(double time,
 {
     ImageMetadata metadata;
 
-    metadata.setDouble(kOfxMetadataKeyPixelAspect, getAspectRatio(-1));
+    NodeMetadataConstPtr own = getMetadata(time, view);
+    metadata.setDouble(kOfxMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
 
     // A frame that loads black or an error has no file to describe, and a key whose value is
     // unknown is left out rather than published empty.

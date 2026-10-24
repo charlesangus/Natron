@@ -47,6 +47,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -55,6 +56,7 @@
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
+#include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
@@ -486,4 +488,40 @@ TEST_F(NativeReformatTest, EdgePixelsDoNotDependOnTheRequestWindow)
 TEST_F(NativeReformatTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_REFORMAT, PLUGIN_MAJOR_NATRON_REFORMAT, "Reformat");
+}
+
+// A keyed box gives each frame its own format and PAR, whichever frame the timeline is on.
+TEST_F(NativeReformatTest, AnAnimatedBoxIsEachFramesFormat)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr node = createNode(QString::fromUtf8(kReformatID), kNativeReformatMajor);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(isNative(node));
+    setParitySourceOrigin(source, 0, 0);
+    connectNodes(source, node, 0, true);
+    ASSERT_TRUE(setKnobValue(node, kReformatParamType, kReformatParamTypeOptionToBox));
+    ASSERT_TRUE(setKnobValues(node, kReformatParamBoxFixed, { 1. }));
+    KnobInt* boxSize = dynamic_cast<KnobInt*>(node->getKnobByName(kReformatParamBoxSize).get());
+    KnobDouble* boxPar = dynamic_cast<KnobDouble*>(node->getKnobByName(kReformatParamBoxPar).get());
+    ASSERT_TRUE(boxSize && boxPar);
+    boxSize->setValueAtTime(1, 32, ViewSpec::all(), 0);
+    boxSize->setValueAtTime(1, 24, ViewSpec::all(), 1);
+    boxSize->setValueAtTime(2, 100, ViewSpec::all(), 0);
+    boxSize->setValueAtTime(2, 50, ViewSpec::all(), 1);
+    boxPar->setValueAtTime(1, 1., ViewSpec::all(), 0);
+    boxPar->setValueAtTime(2, 2., ViewSpec::all(), 0);
+    ASSERT_TRUE(boxSize->isAnimated(0) && boxPar->isAnimated(0));
+
+    const SequenceTime timelineFrames[2] = { 2, 1 };
+    for (int t = 0; t < 2; ++t) {
+        getApp()->getTimeLine()->seekFrame(timelineFrames[t], false, NULL, eTimelineChangeReasonOtherSeek);
+        NodeMetadataConstPtr first = node->getEffectInstance()->getMetadata(1, ViewIdx(0));
+        NodeMetadataConstPtr second = node->getEffectInstance()->getMetadata(2, ViewIdx(0));
+        ASSERT_TRUE(first && second);
+        EXPECT_EQ(RectI(0, 0, 32, 24), first->getOutputFormat()) << "timeline at " << timelineFrames[t];
+        EXPECT_DOUBLE_EQ(1., first->getPixelAspectRatio(-1)) << "timeline at " << timelineFrames[t];
+        EXPECT_EQ(RectI(0, 0, 100, 50), second->getOutputFormat()) << "timeline at " << timelineFrames[t];
+        EXPECT_DOUBLE_EQ(2., second->getPixelAspectRatio(-1)) << "timeline at " << timelineFrames[t];
+    }
 }

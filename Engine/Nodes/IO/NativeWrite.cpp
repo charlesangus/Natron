@@ -1130,15 +1130,17 @@ NativeWrite::automaticOutputSpace() const
 }
 
 StatusEnum
-NativeWrite::getPreferredMetadata(NodeMetadata& metadata)
+NativeWrite::getPreferredMetadataAt(double time,
+                                    ViewIdx view,
+                                    NodeMetadata& metadata)
 {
     KnobOutputFilePtr filename = _filename.lock();
     if (!filename) {
         return eStatusOK;
     }
-    // The node's format is that of the frame on show: the file's when that frame is read back.
+    // The file's format when this frame and view are read back from disk.
     std::string path;
-    const std::shared_ptr<const OiioReadSupport::Header> header = readBackFrame(getCurrentTime(), ViewIdx(0), &path);
+    const std::shared_ptr<const OiioReadSupport::Header> header = readBackFrame(time, view, &path);
     if (!header) {
         // An RGBA input whose file gets no alpha, because the format has none or the channel set
         // leaves it out, makes an RGB output: the alpha is not in the file, so not in the output.
@@ -1158,7 +1160,7 @@ NativeWrite::getPreferredMetadata(NodeMetadata& metadata)
         return eStatusOK;
     }
     OiioReadSupport::PartChannels colour;
-    const bool hasColour = OiioReadSupport::colourPartOf(*header, viewNameOf(getApp()->getProject()->getProjectViewNames(), ViewIdx(0)), &colour);
+    const bool hasColour = OiioReadSupport::colourPartOf(*header, viewNameOf(getApp()->getProject()->getProjectViewNames(), view), &colour);
     const OIIO::ImageSpec& spec = header->subimages[hasColour ? (std::size_t)colour.subimage : 0];
 
     // OpenFX formats must start at (0, 0), so a positive display-window origin only widens the
@@ -1806,15 +1808,16 @@ NativeWrite::selectedFormat(double time,
                             double* par) const
 {
     KnobChoicePtr formatType = _formatType.lock();
-    const int type = formatType ? formatType->getValue() : (int)eFormatTypeProject;
+    const int type = formatType ? formatType->getValueAtTime(time, 0, view) : (int)eFormatTypeProject;
 
     if (type == eFormatTypeInput) {
         EffectInstancePtr input = getInput(0);
-        if (input) {
-            const RectI inputFormat = input->getOutputFormat();
+        NodeMetadataConstPtr inputMetadata = input ? input->getMetadata(time, view) : NodeMetadataConstPtr();
+        if (inputMetadata) {
+            const RectI inputFormat = inputMetadata->getOutputFormat();
             if ((inputFormat.x2 > inputFormat.x1) && (inputFormat.y2 > inputFormat.y1)) {
                 *display = inputFormat;
-                *par = getAspectRatio(0);
+                *par = inputMetadata->getPixelAspectRatio(-1);
 
                 return;
             }
@@ -1857,7 +1860,8 @@ NativeWrite::resolveWindow(double time,
         if (input->getRegionOfDefinition_public(input->getRenderHash(), time, RenderScale::identity, view, &window->rod, &isProjectFormat) == eStatusFailed) {
             return false;
         }
-        window->par = getAspectRatio(0);
+        NodeMetadataConstPtr inputMetadata = input->getMetadata(time, view);
+        window->par = inputMetadata ? inputMetadata->getPixelAspectRatio(-1) : 1.;
     }
 
     return true;

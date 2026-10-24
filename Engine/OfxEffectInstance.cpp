@@ -2024,6 +2024,21 @@ OfxEffectInstance::getPreferredMetadata(NodeMetadata& metadata)
 }
 
 StatusEnum
+OfxEffectInstance::getClipPreferencesOnAnyThreadForTest(NodeMetadata& metadata)
+{
+    if (!_imp->created || !_imp->effect) {
+        return eStatusFailed;
+    }
+    assert(_imp->context != eContextNone);
+
+    RECURSIVE_ACTION();
+    SET_CAN_SET_VALUE(false);
+    QWriteLocker l(&_imp->preferencesLock);
+
+    return _imp->effect->getClipPreferences_safe(metadata);
+}
+
+StatusEnum
 OfxEffectInstance::getRegionOfDefinition(U64 /*hash*/,
                                          double time,
                                          const RenderScale & scale,

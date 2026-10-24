@@ -1053,7 +1053,9 @@ Keyer::onKnobsLoaded()
 }
 
 StatusEnum
-Keyer::getPreferredMetadata(NodeMetadata& metadata)
+Keyer::getPreferredMetadataAt(double /*time*/,
+                              ViewIdx /*view*/,
+                              NodeMetadata& metadata)
 {
     // The output is RGBA whatever the source: the foreground key is its alpha.
     metadata.setNComps(-1, 4);

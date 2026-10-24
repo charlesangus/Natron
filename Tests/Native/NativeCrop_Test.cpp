@@ -50,6 +50,7 @@
 #include "Engine/HostOverlaySupport.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
@@ -57,7 +58,9 @@
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
+#include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -500,4 +503,36 @@ TEST_F(NativeCropTest, ReformatOnDefaultMakesTheSourceExtentTheOutputFormat)
 TEST_F(NativeCropTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP, "Crop");
+}
+
+// With reformat, a keyed rectangle gives each frame its own format, whichever frame the timeline
+// is on.
+TEST_F(NativeCropTest, AnAnimatedRectangleIsEachFramesFormat)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr crop = createNode(QString::fromUtf8(kCropID), kNativeCropMajor);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(isNative(crop));
+    setParitySourceOrigin(source, 0, 0);
+    connectNodes(source, crop, 0, true);
+    ASSERT_TRUE(setKnobValues(crop, kCropParamReformat, { 1. }));
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    KnobDouble* size = dynamic_cast<KnobDouble*>(crop->getKnobByName(kNativeGeneratorParamSize).get());
+    ASSERT_TRUE(size != NULL);
+    size->setValueAtTime(1, 40., ViewSpec::all(), 0);
+    size->setValueAtTime(1, 30., ViewSpec::all(), 1);
+    size->setValueAtTime(2, 20., ViewSpec::all(), 0);
+    size->setValueAtTime(2, 16., ViewSpec::all(), 1);
+    ASSERT_TRUE(size->isAnimated(0) && size->isAnimated(1));
+
+    const SequenceTime timelineFrames[2] = { 2, 1 };
+    for (int t = 0; t < 2; ++t) {
+        getApp()->getTimeLine()->seekFrame(timelineFrames[t], false, NULL, eTimelineChangeReasonOtherSeek);
+        NodeMetadataConstPtr first = crop->getEffectInstance()->getMetadata(1, ViewIdx(0));
+        NodeMetadataConstPtr second = crop->getEffectInstance()->getMetadata(2, ViewIdx(0));
+        ASSERT_TRUE(first && second);
+        EXPECT_EQ(RectI(0, 0, 40, 30), first->getOutputFormat()) << "timeline at " << timelineFrames[t];
+        EXPECT_EQ(RectI(0, 0, 20, 16), second->getOutputFormat()) << "timeline at " << timelineFrames[t];
+    }
 }

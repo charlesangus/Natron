@@ -137,13 +137,6 @@ public:
     }
 
 protected:
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL
-    {
-        applyNodeMetadata(getCurrentTime(), metadata);
-
-        return eStatusOK;
-    }
-
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx /*view*/,
                                               NodeMetadata& metadata) OVERRIDE FINAL

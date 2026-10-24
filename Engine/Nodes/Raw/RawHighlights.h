@@ -36,8 +36,10 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
@@ -57,7 +59,8 @@ enum RawHighlightsModeEnum {
     eRawHighlightsModeClip = 0,
     eRawHighlightsModeUnclipped,
     eRawHighlightsModeOpposed,
-    eRawHighlightsModeLCh
+    eRawHighlightsModeLCh,
+    eRawHighlightsModeInpaint
 };
 
 /**
@@ -89,7 +92,10 @@ RawHighlightsModeEnum sanitiseRawHighlightsMode(RawHighlightsModeEnum mode,
  * Opposed rebuilds a clipped photosite from the opposed colours around it plus a chrominance
  * offset measured over the whole image next to the clipped areas; LCh rebuilds clipped Bayer and
  * X-Trans photosites keeping lightness and scaling chroma, and is Inpaint Opposed on data without
- * a CFA, as in darktable.
+ * a CFA, as in darktable. Reconstruct Color rebuilds a clipped photosite from the next photosite of
+ * another colour along rows and columns, by ratios learned from the unclipped photosites on the
+ * way; it needs a CFA and works over the whole frame, which it keeps per source and settings, one
+ * float per photosite.
  *
  * The clipping threshold shows the smaller of 1 and raw/linear_response_limit until Override
  * Clipping Threshold is on.
@@ -150,7 +156,7 @@ private:
      * @brief Clip Highlights, and Reconstruct in LCh on a Bayer or X-Trans mosaic. Inpaint Opposed
      * measures its chrominance over the whole source with double sums, which a region's strips
      * and the GPU's float arithmetic cannot reproduce, so it stays on the CPU, as does LCh without
-     * a CFA, which is Inpaint Opposed.
+     * a CFA, which is Inpaint Opposed. Reconstruct Color is a whole-frame scan and stays on the CPU.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -186,6 +192,12 @@ private:
     bool _chromaValid;
     U64 _chromaKey;
     std::array<float, 3> _chroma;
+
+    // The Reconstruct Color mosaic of the whole source, for the source and settings its key names.
+    std::mutex _inpaintMutex;
+    bool _inpaintValid;
+    U64 _inpaintKey;
+    std::shared_ptr<const std::vector<float>> _inpaint;
 };
 
 NATRON_NAMESPACE_EXIT

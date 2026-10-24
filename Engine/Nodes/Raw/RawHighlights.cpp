@@ -19,8 +19,8 @@
 
 /*
  * A port of darktable's highlight reconstruction module, DARKTABLE_REF release-5.6.2 (commit
- * 20891f6c6fa7), src/iop/highlights.c with src/iop/hlreconstruct/opposed.c, lch.c and the
- * reference average of segbased.c, Copyright (C) 2009-2026 darktable developers. The opposed
+ * 20891f6c6fa7), src/iop/highlights.c with src/iop/hlreconstruct/opposed.c, lch.c,
+ * inpaint.c and the reference average of segbased.c, Copyright (C) 2009-2026 darktable developers. The opposed
  * algorithm was developed by garagecoder and Iain of the G'MIC team with Hanno Schwalm. darktable
  * is distributed under the GNU GPL version 3 or later, so this file is too.
  */
@@ -37,6 +37,8 @@
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -86,6 +88,7 @@ constexpr ImagePipelineSpec kRawHighlightsPipeline = {
 const float kClipMagicClip = 1.0f;
 const float kClipMagicLCh = 1.0f;
 const float kClipMagicOpposed = 0.987f;
+const float kClipMagicInpaint = 1.0f;
 
 const char* const kModeUnavailable = "highlights: mode not available for this type of image. falling back to inpaint opposed.";
 
@@ -194,6 +197,26 @@ struct ImageView {
         return *pixel(row, col);
     }
 };
+
+/**
+ * @brief The whole of rod read in place from source: a copy would hold a second whole frame
+ * during the computation. A source that does not hold the whole region is copied into buffer
+ * instead, with zeros where it has no pixels.
+ **/
+void
+viewWholeSource(const RawNodeSupport::LockedSource& source,
+                const RectI& rod,
+                const RawKernels::ParallelFor& parallel,
+                std::optional<ImageView>* view,
+                RawNodeSupport::TopDownBuffer* buffer)
+{
+    *view = ImageView::inPlace(source, rod);
+    if (!*view) {
+        buffer->allocate(rod, source.nComps);
+        RawNodeSupport::readTopDown(source, buffer, parallel);
+        view->emplace(*buffer, rod);
+    }
+}
 
 // segbased.c's _calc_refavg() with linear output and no late correction.
 float
@@ -576,6 +599,7 @@ rawHighlightsModeRequirement(RawHighlightsModeEnum mode)
 {
     switch (mode) {
     case eRawHighlightsModeLCh:
+    case eRawHighlightsModeInpaint:
         return eRawHighlightsRequiresCfa;
     case eRawHighlightsModeClip:
     case eRawHighlightsModeUnclipped:
@@ -631,6 +655,10 @@ RawHighlights::RawHighlights(NodePtr node)
     , _chromaValid(false)
     , _chromaKey(0)
     , _chroma { 0.f, 0.f, 0.f }
+    , _inpaintMutex()
+    , _inpaintValid(false)
+    , _inpaintKey(0)
+    , _inpaint()
 {
     setSupportsRenderScaleMaybe(eSupportsNo);
 }
@@ -664,6 +692,7 @@ RawHighlights::initializeKnobs()
     modes.push_back(ChoiceOption("unclipped", tr("Unclipped").toStdString(), tr("Leaves the data as it is.").toStdString()));
     modes.push_back(ChoiceOption("opposed", tr("Inpaint Opposed").toStdString(), tr("Rebuilds a clipped photosite from the opposed colours around it, corrected by the chrominance measured next to the clipped areas of the whole image.").toStdString()));
     modes.push_back(ChoiceOption("lch", tr("Reconstruct in LCh").toStdString(), tr("Rebuilds clipped photosites keeping their lightness and scaling their chroma. Inpaint Opposed on data without a colour filter array.").toStdString()));
+    modes.push_back(ChoiceOption("inpaint", tr("Reconstruct Color").toStdString(), tr("Rebuilds a clipped photosite from the next photosite of another colour along its row and column, by the colour ratios of the unclipped photosites before it. Inpaint Opposed on data without a colour filter array.").toStdString()));
     mode->populateChoices(modes);
     mode->setDefaultValue((int)eRawHighlightsModeOpposed);
     mode->setAnimationEnabled(false);
@@ -728,7 +757,7 @@ RawHighlights::refreshModeWarning(double time)
     const int value = mode->getValue();
     const RawLayout layout = RawLayout::fromMetadata(getSourceMetadata(time, ViewIdx(0))).value_or(RawLayout());
     bool fellBack = false;
-    if ((value >= (int)eRawHighlightsModeClip) && (value <= (int)eRawHighlightsModeLCh)) {
+    if ((value >= (int)eRawHighlightsModeClip) && (value <= (int)eRawHighlightsModeInpaint)) {
         (void)sanitiseRawHighlightsMode((RawHighlightsModeEnum)value, layout, &fellBack);
     }
     if (fellBack) {
@@ -792,7 +821,7 @@ RawHighlights::resolveSettings(double time,
     const KnobReader reader(time, view);
     const int mode = reader.value(_mode);
     s.layout = RawLayout::fromMetadata(source).value_or(RawLayout());
-    const RawHighlightsModeEnum requested = ((mode >= (int)eRawHighlightsModeClip) && (mode <= (int)eRawHighlightsModeLCh)) ? (RawHighlightsModeEnum)mode : eRawHighlightsModeOpposed;
+    const RawHighlightsModeEnum requested = ((mode >= (int)eRawHighlightsModeClip) && (mode <= (int)eRawHighlightsModeInpaint)) ? (RawHighlightsModeEnum)mode : eRawHighlightsModeOpposed;
     s.mode = sanitiseRawHighlightsMode(requested, s.layout, &s.fellBack);
     const double threshold = reader.value(_clipOverride) ? reader.value(_clip) : std::min(1., RawMetadata::getLinearResponseLimit(source));
     s.clip = (float)(threshold * RawMetadata::getWhiteLevel(source).value_or(1.));
@@ -834,7 +863,7 @@ RawHighlights::getRegionsOfInterest(double time,
     const double par = getAspectRatio(getSourceInput());
     const bool lchOnCfa = (settings->mode == eRawHighlightsModeLCh) && settings->layout.hasCfa();
     RectI need;
-    if ((settings->mode == eRawHighlightsModeOpposed) || ((settings->mode == eRawHighlightsModeLCh) && !lchOnCfa)) {
+    if ((settings->mode == eRawHighlightsModeOpposed) || (settings->mode == eRawHighlightsModeInpaint) || ((settings->mode == eRawHighlightsModeLCh) && !lchOnCfa)) {
         need = settings->sourceRoD;
     } else if (lchOnCfa) {
         const RectI window = PassExec::toPixelEnclosing(renderWindow, scale, par);
@@ -853,7 +882,7 @@ RawHighlights::deriveOutputMetadata(double time,
     const KnobReader reader(time, view);
     const int mode = reader.value(_mode);
 
-    if ((mode != (int)eRawHighlightsModeClip) && (mode != (int)eRawHighlightsModeLCh)) {
+    if ((mode != (int)eRawHighlightsModeClip) && (mode != (int)eRawHighlightsModeLCh) && (mode != (int)eRawHighlightsModeInpaint)) {
         return metadata;
     }
     // Clipping moves the white point to one level for every channel, as darktable records it.
@@ -863,7 +892,7 @@ RawHighlights::deriveOutputMetadata(double time,
     }
     const std::optional<RawLayout> layout = RawLayout::fromMetadata(metadata);
     const bool linear = !layout || !layout->hasCfa();
-    if (linear && (mode == (int)eRawHighlightsModeLCh)) {
+    if (linear && (mode != (int)eRawHighlightsModeClip)) {
         return metadata;
     }
     const double m = linear ? std::fmax(1., std::min({ (*maximum)[0], (*maximum)[1], (*maximum)[2] }))
@@ -891,6 +920,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     const int sourceInput = getSourceInput();
     const bool hasCfa = s.layout.hasCfa();
     const RawHighlightsModeEnum mode = (!hasCfa && (s.mode == eRawHighlightsModeLCh)) ? eRawHighlightsModeOpposed : s.mode;
+    const bool inpaint = (mode == eRawHighlightsModeInpaint);
 
     RawNodeSupport::LockedSource source;
     ImageLayerDesc layer;
@@ -918,6 +948,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     const int nComps = source.nComps;
 
     std::array<float, 3> chroma = { 0.f, 0.f, 0.f };
+    std::shared_ptr<const std::vector<float>> inpaintMosaic;
     float clips[3] = { s.clip, s.clip, s.clip };
     if (mode == eRawHighlightsModeOpposed) {
         const float clipval = kClipMagicOpposed * s.clip;
@@ -927,16 +958,9 @@ RawHighlights::renderOp(const RenderActionArgs& args,
         const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
         std::lock_guard<std::mutex> lock(_chromaMutex);
         if (!_chromaValid || (_chromaKey != key)) {
-            // The whole source is read in place: a copy would hold a second whole frame during
-            // the measurement. A source that does not hold the whole region is copied instead,
-            // with zeros where it has no pixels.
-            std::optional<ImageView> whole = ImageView::inPlace(source, s.sourceRoD);
+            std::optional<ImageView> whole;
             RawNodeSupport::TopDownBuffer wholeBuffer;
-            if (!whole) {
-                wholeBuffer.allocate(s.sourceRoD, source.nComps);
-                RawNodeSupport::readTopDown(source, &wholeBuffer, parallel);
-                whole.emplace(wholeBuffer, s.sourceRoD);
-            }
+            viewWholeSource(source, s.sourceRoD, parallel, &whole, &wholeBuffer);
             if (hasCfa) {
                 _chroma = opposedChroma(*whole, CfaLookup(s.layout, s.sourceRoD), clips, parallel);
             } else if (nComps >= 3) {
@@ -948,6 +972,33 @@ RawHighlights::renderOp(const RenderActionArgs& args,
             _chromaValid = !cancel.check();
         }
         chroma = _chroma;
+    } else if (inpaint) {
+        for (int c = 0; c < 3; ++c) {
+            clips[c] = kClipMagicInpaint * s.clip * s.coeffs[c];
+        }
+        const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
+        std::lock_guard<std::mutex> lock(_inpaintMutex);
+        if (!_inpaintValid || (_inpaintKey != key)) {
+            _inpaint.reset();
+            std::optional<ImageView> whole;
+            RawNodeSupport::TopDownBuffer wholeBuffer;
+            viewWholeSource(source, s.sourceRoD, parallel, &whole, &wholeBuffer);
+            const int width = s.sourceRoD.width();
+            const int height = s.sourceRoD.height();
+            auto mosaic = std::make_shared<std::vector<float>>((std::size_t)width * (std::size_t)height, 0.f);
+            std::uint8_t xtrans[6][6] = {};
+            std::uint32_t filters = RawKernels::kFiltersXTrans;
+            if (s.layout.period() == 2) {
+                filters = RawNodeSupport::bayerFiltersAt(s.layout, s.sourceRoD);
+            } else {
+                RawNodeSupport::xtransAt(s.layout, s.sourceRoD, xtrans);
+            }
+            RawKernels::inpaintColor(whole->pixel(0, 0), whole->rowStride, whole->nComps, mosaic->data(), width, height, filters, xtrans, clips, parallel);
+            _inpaint = std::move(mosaic);
+            _inpaintKey = key;
+            _inpaintValid = !cancel.check();
+        }
+        inpaintMosaic = _inpaint;
     } else if (mode == eRawHighlightsModeLCh) {
         clips[0] = clips[1] = clips[2] = kClipMagicLCh * s.clip;
     } else {
@@ -987,6 +1038,9 @@ RawHighlights::renderOp(const RenderActionArgs& args,
                         if (v >= clips[color]) {
                             v = std::max(v, calcRefavg(in, cfa, row, col) + chroma[color]);
                         }
+                        break;
+                    case eRawHighlightsModeInpaint:
+                        v = (*inpaintMosaic)[(std::size_t)row * (std::size_t)rod.width() + (std::size_t)col];
                         break;
                     case eRawHighlightsModeLCh:
                         v = (s.layout.period() == 2) ? lchBayer(in, cfa, row, col, clips[0]) : lchXTrans(in, cfa, row, col, clips[0]);

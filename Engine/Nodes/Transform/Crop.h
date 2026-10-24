@@ -88,6 +88,8 @@ struct CropOp {
 
     static constexpr bool kClipsSourceToRoI = true;
 
+    static constexpr bool kResamplesOnGpu = true;
+
     Params bake(const KnobReader& reader) const;
 
     /**
@@ -119,7 +121,7 @@ struct CropOp {
     KnobBoolWPtr blackOutside;
 };
 
-static_assert(ResampleOp<CropOp> && !MatrixResampleOp<CropOp>);
+static_assert(GpuOffsetResampleOp<CropOp> && !MatrixResampleOp<CropOp>);
 
 /**
  * @brief Crop: keeps the pixels inside a rectangle, optionally fading them to black at its edges

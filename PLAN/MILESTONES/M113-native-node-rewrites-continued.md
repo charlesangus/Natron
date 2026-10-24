@@ -247,7 +247,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: a test asserts each retired ID fails to load and its native replacement does. The full ctest passes at the gate.
   - size: M
 
-- [ ] M113.P5.T2 — Move the remaining warp references in tests to the native IDs
+- [x] M113.P5.T2 — Move the remaining warp references in tests to the native IDs
   - files: `Tests/ProjectSerialization_Test.cpp`, `Tests/KnobLayerSelect_Test.cpp`
   - approach: swap the OFX warp IDs and knob names for the native ones where the test's point still applies. Delete the cases that only covered OFX plumbing (the multiplane UV picker).
   - verify: both tests pass at the gate.

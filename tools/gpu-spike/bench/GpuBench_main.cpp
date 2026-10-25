@@ -1089,8 +1089,19 @@ public:
         for (VkCommandBuffer cmd : cmd_) {
             VkCommandBufferBeginInfo bi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
             vkBeginCommandBuffer(cmd, &bi);
+            // The two command buffers in flight share the buffers, so each copy, the first included, waits on the last.
+            VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+            mb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            dep.memoryBarrierCount = 1;
+            dep.pMemoryBarriers = &mb;
             for (int i = 0; i < 4; ++i) {
+                vkCmdPipelineBarrier2(cmd, &dep);
                 vkCmdCopyBuffer(cmd, a_.buffer, b_.buffer, 1, &r);
+                vkCmdPipelineBarrier2(cmd, &dep);
                 vkCmdCopyBuffer(cmd, b_.buffer, a_.buffer, 1, &r);
             }
             vkEndCommandBuffer(cmd);

@@ -117,10 +117,10 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
   - verify: tests cover Transform with and without a mask, mask invert, and mix. `NativePluginList_Test` has no TransformMasked.
   - size: M
 
-- [ ] M111.P3.T2 — Fold Erode and Dilate into ErodeDilate
-  - files: `Engine/Nodes/Filter/ErodeDilate.{h,cpp}`, `Engine/AppManager.cpp`, `Tests/Native/NativeErodeDilate_Test.cpp`
-  - approach: one ID, `ErodeDilate`. A signed size: positive erodes and negative dilates, as in Nuke's FilterErode. The tooltip must state the range correctly. There are no Erode or Dilate menu entries.
-  - verify: tests for erode, dilate and size 0 identity.
+- [ ] M111.P3.T2 — Fold Erode and Dilate into ErodeDilate, and IErode and IDilate into IErodeDilate
+  - files: `Engine/Nodes/Filter/ErodeDilate.{h,cpp}`, `Engine/Nodes/Filter/IErodeDilate.{h,cpp}`, `Engine/AppManager.cpp`, `Tests/Native/NativeErodeDilate_Test.cpp`, `Tests/Native/NativeIErodeDilate_Test.cpp`, `Tests/Native/NativeIErodeDilateGpu_Test.cpp`
+  - approach: one ID, `ErodeDilate`. A signed size: positive erodes and negative dilates, as in Nuke's FilterErode. The tooltip must state the range correctly. There are no Erode or Dilate menu entries. The Map-driven variants from M184 - Variable-Size Filter Kit fold the same way into one `IErodeDilate`, with both its size and size-at-black signed (the per-pixel radius may cross zero, switching between erode and dilate), and the I-variant pairing (IVariantRegistry) updated to pair ErodeDilate with IErodeDilate.
+  - verify: tests for erode, dilate and size 0 identity, for both nodes; IErodeDilate CPU/GPU parity, including a Map ramp that crosses size 0.
   - size: M
 
 - [ ] M111.P3.T3 — Fold Solid into Constant
@@ -188,3 +188,7 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 - `git grep` finds no reverse-domain native ID and no `PLUGINID_OFX_`, `getPluginBinaryFromOldID` or `TransformMasked`.
 - Every bundled PyPlug renders.
 - The user signs off the UAT.
+
+## Decisions
+
+- 2026-10-25 — **The I-variants fold too (user):** whatever merges Erode and Dilate into one node also merges IErode and IDilate into one IErodeDilate.

@@ -17,11 +17,12 @@ Scouted facts (main `31636d20d`, 2026-10-20; re-check at promotion):
 **In:**
 - A per-download breakdown in the region profile record (count, bytes, rate, queue, whether it overlapped a kernel).
 - Diagnosing the comp-vs-single-node download-rate gap on the three comps at UHD and 8K.
-- Fixing the measured causes, in order of impact.
+- Fixing the measured causes, in order of impact, for uploads as well as downloads (user, 2026-10-24).
+- Pricing uploads and downloads at their own GpuBench rates in the transfer floor the gate judges.
 
 **Out:**
 - Fresh-buffer page zeroing: M154 - Fresh Buffer Page Zeroing.
-- Upload rate, kernel speed, and placement policy beyond charging the corrected transfer cost: none.
+- Kernel speed, and placement policy beyond charging the corrected transfer cost: none. (Upload rate moved In, 2026-10-24.)
 - Single-node regions, already at 0.9–1.08× of the floor: none.
 
 **Assumptions:**
@@ -35,7 +36,7 @@ Scouted facts (main `31636d20d`, 2026-10-20; re-check at promotion):
   - verify: A ctest case runs a two-member fused region on lavapipe and asserts the new fields are present and their byte total equals the region's output bytes; on the GPU host, the summary of one keying_grade UHD run shows the new columns.
   - size: M
 
-- [ ] M156.P1.T2 — Diagnose the comp download gap
+- [x] M156.P1.T2 — Diagnose the comp download gap
   - files: PLAN/MILESTONES/M156-gpu-download-throughput-in-comps.md
   - approach: On the GPU host, with the stripped `release` AppImage and a same-boot GpuBench run, bench keying_grade, cg_multipass and defocus_retime at UHD and 8K (`a-cold` and `bc` kinds) plus one single-node 16k region as a control. Attribute the gap between each comp's download rate and GpuBench's to the request's candidates (small downloads, layout/format conversion, unpipelined last strip) or anything else the breakdown shows. Record the attribution in Decisions with numbers; the PM then inserts one fix task per cause as M156.P2.T1 onward, largest first, each sized M or larger.
   - verify: The Decisions entry accounts for at least 80% of each comp's measured gap, or says what remains unexplained.
@@ -55,7 +56,23 @@ Scouted facts (main `31636d20d`, 2026-10-20; re-check at promotion):
 
 ## Phase 156.2: Fix
 
-Tasks are inserted from M156.P1.T2's attribution.
+- [ ] M156.P2.T1 — Split the cold-copy slowdown between clock ramp and first-touch, without touching GPU clocks
+  - files: tools/gpu-spike/bench/GpuBench_main.cpp
+  - approach: Add GpuBench modes that copy one UHD image (a) after an idle gap of 0/10/30/60 ms with warm, cached imports, (b) into a freshly `aligned_alloc`'d, newly imported buffer with no warm pass and no idle gap, and (c) both. Report device up/down rates for the first copy against the steady state. **Do not change `power_dpm_force_performance_level` or any clock setting** (user). Instead, when the gap matters, add a mode (d) that keeps the GPU busy with a tiny dummy dispatch during the gap, to show whether a busy GPU removes the penalty.
+  - verify: The CSV shows which mode reproduces in-app rates (7–9 down / 5.6–6.8 up, from P1.T2), and Decisions records the split with numbers.
+  - size: M
+
+- [ ] M156.P2.T2 — Remove the cold-copy penalty in regions, both directions
+  - files: Engine/GpuRegionTask.cpp, Engine/Gpu/GpuTransfer.cpp, Engine/Gpu/GpuBufferPool.cpp
+  - approach: Take the branch P2.T1 measures. If it's a ramp after idle: record a region's command buffers before its upload (record runs ~:1395-1430), submit upload, kernels and download back to back so the GPU never idles inside a region, and queue the next region's upload during the current one's host work. If it's first-touch: import and GPU-touch upload sources and download destinations at prepare time (`awaitPreparedDownloads`, ~:1308), and reuse cached imports across regions.
+  - verify: On the GPU host, same boot, a-cold and bc device downloads ≥ 13 GB/s and uploads ≥ 9 GB/s on all three comps; no single-node region regresses; ctest green on both scheduler legs.
+  - size: L
+
+- [ ] M156.P2.T3 — Price uploads at the upload rate in the floor
+  - files: tools/bench/gpu_region_summary.py, tools/bench/gpu_region_bench.sh
+  - approach: Add `--import-rate-up` and price `uploadBytes` and `downloadBytes` separately in `pipelined_floor_ms` (`gpu_region_summary.py:96-99`). The bench script passes both GpuBench rates.
+  - verify: The in-file self-test covers the two-rate floor, and re-summarising boot `1a6741d9`'s runs gives floors 15–33% higher.
+  - size: M
 
 ## Phase 156.3: Re-bench
 
@@ -92,3 +109,5 @@ Tasks are inserted from M156.P1.T2's attribution.
   - **Folded into P1.T2:** the GPU-host "≥ 95% timestamped" check (pinned bytes excluded) moves to P1.T2's resumed first run. P1.T2 resumes when M107.P6.T3's bench frees the host.
 - 2026-10-24 — **Resumed by the gpu PM after a host crash and a reboot onto different hardware** (boot `d728f1eb`, RX 7900 XTX / Navi 31, ~193 GB available, against P1.T2's first run on an R9700 / GFX1201). P1.T2's attribution and the gate compare only against a same-boot GpuBench floor, so earlier numbers stay directional. Rebased onto main `d82d560f6` (M159, no shared files) as `1f66ff36c`. P1.T2 still waits for M107.P6.T3's bench to free the host.
 - 2026-10-24 — **Rebased onto main `121a8289c` as `d762dc13f`** (M16, M170, M134, M94, M80, M138; no shared files). The host rebooted again (boot `1a6741d9`, same RX 7900 XTX). M16 moved the comps to `.ntpz`, which the rebased branch loads. A release AppImage of `d762dc13f` is building for P1.T2. `fast --tests` waits for the Phase 2 fixes, so one gate build covers them.
+- 2026-10-24 — **M156.P1.T2 attribution** (boot `1a6741d9`, RX 7900 XTX, AppImage `d762dc13f`, GpuBench import 16.1 down / 10.5 up; `.local/m156/p1t2/run-1a6741d9/`). 100% of transfer bytes are timestamped and none pinned. Exposed/floor: keying 2.51× a-cold / 1.87× bc, cg_multipass 2.14 / 2.03, defocus 2.70 / 2.31. Device downloads run 7.9–11.1 GB/s, against 14.2–14.7 for the 16k control. The gap splits into: slow device download 27–49%, slow device upload 29–48%, the floor pricing uploads at the download rate 15–33%, and a host-side residual on defocus of 15–21%. Ruled out: small copies (one 133 MB copy per whole region), format conversion (plain `vkCmdCopyBuffer`, the same `GpuTransfer` code GpuBench uses), compute contention (sub-2 ms-kernel regions are equally slow, and GpuBench Copy ≈ Blur100), and the last strip (20–27%, in 1–2 regions). Copies speed up with GPU busy time: first copy 7.2–7.9 GB/s, later 9.0–10.4, and a strip ramp of 7.1→10.5. GpuBench never measures the cold state (cached imports, an unmeasured warm pass). So the cause is a ramp after idle or first-touch of fresh imports, and P2.T1 splits the two.
+- 2026-10-24 — **Uploads are in scope** (user), since they make up half the gap and the ≤1.2× gate is out of reach without them. **The floor takes two rates** (user), uploads priced at GpuBench's upload rate (P2.T3). **No GPU clock forcing** (user: "I don't want to mess with the GPU clocks"), so P2.T1 tells ramp from first-touch with idle-gap, fresh-import and keep-busy modes only.

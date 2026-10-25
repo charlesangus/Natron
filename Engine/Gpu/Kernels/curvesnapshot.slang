@@ -65,10 +65,38 @@ CurveFF curveAdd(CurveFF a, CurveFF b)
     return curveQuickSum(s.hi, lo);
 }
 
+// Veltkamp's split: hi carries the top 12 bits of the significand, so products of halves are
+// exact. The split is not finite once |a| passes about 8.3e34, where a * 4097 overflows.
+void curveSplit(float a, out float hi, out float lo)
+{
+    precise float t = a * 4097.0;
+    precise float h = t - (t - a);
+    hi = h;
+    lo = a - h;
+}
+
+// The error of the float product p of a and b, by Dekker's split: fma() need not round once on
+// every device (lavapipe does not), and a fused error term is then wrong or lost. An operand too
+// large to split gets 0 rather than a NaN beside a finite p, and so does a product under 1e-30,
+// whose error is denormal and which a device may flush on one side of the split but not the other.
+float curveProductError(float a, float b, float p)
+{
+    if (!(abs(p) >= 1e-30))
+        return 0.0;
+    float ah;
+    float al;
+    float bh;
+    float bl;
+    curveSplit(a, ah, al);
+    curveSplit(b, bh, bl);
+    precise float e = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
+    return isfinite(e) ? e : 0.0;
+}
+
 CurveFF curveMul(CurveFF a, CurveFF b)
 {
     precise float p = a.hi * b.hi;
-    precise float e = fma(a.hi, b.hi, -p);
+    precise float e = curveProductError(a.hi, b.hi, p);
     precise float lo = e + (a.hi * b.lo + a.lo * b.hi);
     return curveQuickSum(p, lo);
 }
@@ -163,7 +191,7 @@ struct CurveTableRange
         precise float d = dh + dl;
         precise float dRest = dl - (d - dh);
         precise float ph = d * scaleHi;
-        precise float pl = fma(d, scaleHi, -ph) + (d * scaleLo + dRest * scaleHi);
+        precise float pl = curveProductError(d, scaleHi, ph) + (d * scaleLo + dRest * scaleHi);
         precise float sh = ph + pl;
         precise float sl = pl - (sh - ph);
         const float last = float(CS_TABLE_SIZE - 1);
@@ -193,7 +221,7 @@ struct CurveTableRange
         precise float ev = eh - b;
         precise float el = (b - (eh - ev)) + (-a - ev);
         precise float qh = ah * eh;
-        precise float ql = fma(ah, eh, -qh) + (ah * el + al * eh);
+        precise float ql = curveProductError(ah, eh, qh) + (ah * el + al * eh);
         precise float r = a + qh;
         precise float rv = r - a;
         precise float rErr = (a - (r - rv)) + (qh - rv);

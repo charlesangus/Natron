@@ -296,7 +296,9 @@ enum class PassKind : unsigned char {
 
 /**
  * @brief The scratch buffers a pass reads and writes: nPlanes planes of width x height floats
- * over rect per slot, slot 0 holding the divided source when the passes start.
+ * over rect per slot, slot 0 holding the divided source when the passes start. channelBits holds
+ * the channel of each plane, in the bit space of pixelKernelChannelBit() for an nComps-channel
+ * image, for a pass that combines channels.
  **/
 struct PassScratch {
     RectI rect;
@@ -305,6 +307,8 @@ struct PassScratch {
     int nPlanes = 0;
     std::size_t planeSize = 0;
     std::vector<float*> buffers;
+    int nComps = 0;
+    std::vector<int> channelBits;
 
     float* plane(int slot,
                  int p) const

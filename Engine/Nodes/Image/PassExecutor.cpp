@@ -1087,6 +1087,10 @@ runPassesCpu(EffectInstance& effect,
             scratch.nPlanes = nPlanes;
             scratch.planeSize = planeSize;
             scratch.buffers.push_back(buffer);
+            scratch.nComps = job.nComps;
+            for (int c : planes.channel) {
+                scratch.channelBits.push_back(pixelKernelChannelBit(job.nComps, c));
+            }
             for (HostScratchFloats& slot : extraStorage) {
                 slot.reserve(bufferSize);
                 scratch.buffers.push_back(slot.data());

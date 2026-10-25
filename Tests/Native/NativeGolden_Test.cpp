@@ -42,10 +42,12 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Color/Saturation.h"
+#include "Engine/Nodes/Filter/Bloom.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/EdgeExtend.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Filter/Glow.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
@@ -457,6 +459,42 @@ TEST_F(NativeGoldenTest, Sharpen)
     v.push_back(variant("box", [](const GoldenGraph& g) { return choice(g, kSharpenParamFilter, kBlurParamFilterBox) && num(g, kSharpenParamSize, { 7., 2. }); }));
     v.push_back(filterMaskMix(soften));
     run(filterSpec("Sharpen", PLUGINID_NATRON_SHARPEN, PLUGIN_MAJOR_NATRON_SHARPEN), v);
+}
+
+TEST_F(NativeGoldenTest, Bloom)
+{
+    const Apply pyramid = [](const GoldenGraph& g) { return num(g, kBloomParamSize, { 6. }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("pyramid", pyramid));
+    v.push_back(variant("anisotropic", [](const GoldenGraph& g) {
+        return num(g, kBloomParamSize, { 12., 3. }) && num(g, kBloomParamRatio, { 1.5 }) && num(g, kBloomParamCount, { 4. });
+    }));
+    v.push_back(variant("single", [](const GoldenGraph& g) { return num(g, kBloomParamSize, { 8. }) && num(g, kBloomParamCount, { 1. }); }));
+    v.push_back(variant("gaussian", [](const GoldenGraph& g) {
+        return choice(g, kBloomParamFilter, kBlurParamFilterGaussian) && num(g, kBloomParamSize, { 4. }) && num(g, kBloomParamCount, { 3. });
+    }));
+    v.push_back(variant("box", [](const GoldenGraph& g) {
+        return choice(g, kBloomParamFilter, kBlurParamFilterBox) && num(g, kBloomParamSize, { 3. }) && num(g, kBloomParamCount, { 3. });
+    }));
+    v.push_back(filterMaskMix(pyramid));
+    run(filterSpec("Bloom", PLUGINID_NATRON_BLOOM, PLUGIN_MAJOR_NATRON_BLOOM), v);
+}
+
+TEST_F(NativeGoldenTest, Glow)
+{
+    const Apply small = [](const GoldenGraph& g) { return num(g, kGlowParamThreshold, { 0.1 }) && num(g, kGlowParamSize, { 3. }) && num(g, kGlowParamCount, { 3. }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default", [](const GoldenGraph& g) { return num(g, kGlowParamThreshold, { 0.1 }); }));
+    v.push_back(variant("small", small));
+    v.push_back(variant("preview", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamPreview, { 1. }); }));
+    v.push_back(variant("graded", [small](const GoldenGraph& g) {
+        return small(g) && num(g, kGlowParamTint, { 1.5, 0.75, 0.5 }) && num(g, kGlowParamBrightness, { 2. }) && num(g, kGlowParamSaturation, { 0.4 }) && num(g, kGlowParamGamma, { 1.8 }) && num(g, kGlowParamStretch, { 0.5 });
+    }));
+    v.push_back(variant("screenAddInput", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamScreen, { 1. }) && num(g, kGlowParamAddInput, { 1. }); }));
+    v.push_back(variant("glowOnly", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamGlowOnly, { 1. }); }));
+    v.push_back(variant("box", [small](const GoldenGraph& g) { return small(g) && choice(g, kGlowParamFilter, kBlurParamFilterBox); }));
+    v.push_back(filterMaskMix(small));
+    run(filterSpec("Glow", PLUGINID_NATRON_GLOW, PLUGIN_MAJOR_NATRON_GLOW), v);
 }
 
 TEST_F(NativeGoldenTest, Erode)

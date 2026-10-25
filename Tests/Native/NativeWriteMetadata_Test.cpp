@@ -92,17 +92,20 @@ writeSourceExr(const std::string& path)
     return writeImage(path, spec);
 }
 
-// A plain 4-channel EXR of the given size and pixel aspect ratio.
+// A plain 4-channel EXR of the given size and pixel aspect ratio, naming its source in a custom
+// "mySource" attribute.
 bool
 writeSizedExr(const std::string& path,
               int width,
               int height,
-              float par)
+              float par,
+              const std::string& source)
 {
     OIIO::ImageSpec spec(width, height, 4, OIIO::TypeDesc::FLOAT);
 
     spec.attribute("compression", "none");
     spec.attribute("PixelAspectRatio", par);
+    spec.attribute("mySource", source);
 
     return writeImage(path, spec);
 }
@@ -468,8 +471,8 @@ TEST(OiioWriteMetadata, TimecodeAndEdgecodeAreRebuiltFromTheirStrings)
 TEST_F(NativeWriteMetadataTest, EachFileOfASequenceTakesItsOwnFramesFormat)
 {
     for (int frame = 1; frame <= 2; ++frame) {
-        ASSERT_TRUE(writeSizedExr(pathOf("narrow.000" + std::to_string(frame) + ".exr"), 8, 6, 1.f));
-        ASSERT_TRUE(writeSizedExr(pathOf("wide.000" + std::to_string(frame) + ".exr"), 16, 12, 2.f));
+        ASSERT_TRUE(writeSizedExr(pathOf("narrow.000" + std::to_string(frame) + ".exr"), 8, 6, 1.f, "narrow"));
+        ASSERT_TRUE(writeSizedExr(pathOf("wide.000" + std::to_string(frame) + ".exr"), 16, 12, 2.f, "wide"));
     }
     NodePtr narrow = createRead(pathOf("narrow.####.exr"));
     NodePtr wide = createRead(pathOf("wide.####.exr"));
@@ -485,6 +488,12 @@ TEST_F(NativeWriteMetadataTest, EachFileOfASequenceTakesItsOwnFramesFormat)
     which->setValueAtTime(2, 1, ViewSpec::all(), 0);
     configureWrite(pathOf("out.####.exr"));
 
+    // The key/value metadata follows the input the Switch routes to at each frame.
+    NativeEffectBase* switchEffect = nativeEffectOf(switchNode);
+    ASSERT_TRUE(switchEffect != NULL);
+    EXPECT_EQ(std::optional<std::string>("narrow"), switchEffect->getOutputMetadata(1., ViewIdx(0)).getString("exr/mySource"));
+    EXPECT_EQ(std::optional<std::string>("wide"), switchEffect->getOutputMetadata(2., ViewIdx(0)).getString("exr/mySource"));
+
     renderFrames(1, 2);
 
     const std::optional<OIIO::ImageSpec> first = specOf(pathOf("out.0001.exr"));
@@ -497,4 +506,6 @@ TEST_F(NativeWriteMetadataTest, EachFileOfASequenceTakesItsOwnFramesFormat)
     EXPECT_EQ(16, second->full_width);
     EXPECT_EQ(12, second->full_height);
     EXPECT_FLOAT_EQ(2.f, second->get_float_attribute("PixelAspectRatio", 1.f));
+    EXPECT_EQ("narrow", first->get_string_attribute("mySource"));
+    EXPECT_EQ("wide", second->get_string_attribute("mySource"));
 }

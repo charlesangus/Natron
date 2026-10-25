@@ -114,6 +114,18 @@ public:
 private:
     std::function<void()> _onChange;
 };
+
+// Tags cmd with the gesture of the widget that made the edit (0 for a typed commit), so the
+// steps of one drag or scroll fold into one undo step while separate edits stay separate.
+template <typename T>
+KnobUndoCommand<T>*
+inGesture(KnobUndoCommand<T>* cmd,
+          quint64 gestureKey)
+{
+    cmd->setGestureKey(gestureKey);
+
+    return cmd;
+}
 } // namespace
 
 struct KnobGuiValuePrivate
@@ -1038,11 +1050,12 @@ KnobGuiValue::dimensionSliderEditingEnd(int dimension,
     }
     _imp->spinBoxes[dimension].first->setValue(d);
     d = valueAccordingToType(true, dimension, d);
+    const quint64 gestureKey = slider->getGestureKey();
     if (doubleKnob) {
-        pushUndoCommand(new KnobUndoCommand<double>(shared_from_this(), doubleKnob->getValue(dimension), d, dimension, false));
+        pushUndoCommand(inGesture(new KnobUndoCommand<double>(shared_from_this(), doubleKnob->getValue(dimension), d, dimension, false), gestureKey));
     } else {
         assert(intKnob);
-        pushUndoCommand(new KnobUndoCommand<int>(shared_from_this(), intKnob->getValue(dimension), (int)d, dimension, false));
+        pushUndoCommand(inGesture(new KnobUndoCommand<int>(shared_from_this(), intKnob->getValue(dimension), (int)d, dimension, false), gestureKey));
     }
 
     std::vector<double> values(_imp->spinBoxes.size());
@@ -1586,6 +1599,7 @@ KnobGuiValue::sliderEditingEnd(double d)
         d = str.toDouble();
     }
     std::vector<double> newValuesVec;
+    const quint64 gestureKey = _imp->slider ? _imp->slider->getGestureKey() : 0;
     if (_imp->dimensionSwitchButton) {
         // The folded slider stands for every dimension, but one driven by an expression or a
         // link keeps its driver's value. Driven trailing dimensions are left out of the undo
@@ -1613,7 +1627,7 @@ KnobGuiValue::sliderEditingEnd(double d)
                 newValues.push_back(driven[i] ? old : d);
                 newValuesVec.push_back(driven[i] ? old : d);
             }
-            pushUndoCommand( new KnobUndoCommand<double>(shared_from_this(), oldValues, newValues, false) );
+            pushUndoCommand(new KnobUndoCommand<double>(shared_from_this(), oldValues, newValues, false, gestureKey));
         } else {
             assert(intKnob);
             std::list<int> oldValues, newValues;
@@ -1624,7 +1638,7 @@ KnobGuiValue::sliderEditingEnd(double d)
                 newValues.push_back(driven[i] ? old : (int)d);
                 newValuesVec.push_back(driven[i] ? old : d);
             }
-            pushUndoCommand( new KnobUndoCommand<int>(shared_from_this(), oldValues, newValues, false) );
+            pushUndoCommand(new KnobUndoCommand<int>(shared_from_this(), oldValues, newValues, false, gestureKey));
         }
         for (int i = written; i < (int)_imp->spinBoxes.size(); ++i) {
             newValuesVec.push_back(doubleKnob ? doubleKnob->getValue(i) : (double)intKnob->getValue(i));
@@ -1633,10 +1647,10 @@ KnobGuiValue::sliderEditingEnd(double d)
         _imp->spinBoxes[0].first->setValue(d);
         d = valueAccordingToType(true, 0, d);
         if (doubleKnob) {
-            pushUndoCommand( new KnobUndoCommand<double>(shared_from_this(), doubleKnob->getValue(0), d, 0, false) );
+            pushUndoCommand(inGesture(new KnobUndoCommand<double>(shared_from_this(), doubleKnob->getValue(0), d, 0, false), gestureKey));
         } else {
             assert(intKnob);
-            pushUndoCommand( new KnobUndoCommand<int>(shared_from_this(), intKnob->getValue(0), (int)d, 0, false) );
+            pushUndoCommand(inGesture(new KnobUndoCommand<int>(shared_from_this(), intKnob->getValue(0), (int)d, 0, false), gestureKey));
         }
         newValuesVec.push_back(d);
     }
@@ -1682,11 +1696,12 @@ KnobGuiValue::onSpinBoxValueChanged()
         spinBoxDim = -1;
     }
 
+    const quint64 gestureKey = changedBox ? changedBox->getGestureKey() : 0;
     if (spinBoxDim != -1) {
         if (doubleKnob) {
-            pushUndoCommand( new KnobUndoCommand<double>(shared_from_this(), oldValue[spinBoxDim], newValue[spinBoxDim], spinBoxDim, false) );
+            pushUndoCommand(inGesture(new KnobUndoCommand<double>(shared_from_this(), oldValue[spinBoxDim], newValue[spinBoxDim], spinBoxDim, false), gestureKey));
         } else {
-            pushUndoCommand( new KnobUndoCommand<int>(shared_from_this(), (int)oldValue[spinBoxDim], (int)newValue[spinBoxDim], spinBoxDim, false) );
+            pushUndoCommand(inGesture(new KnobUndoCommand<int>(shared_from_this(), (int)oldValue[spinBoxDim], (int)newValue[spinBoxDim], spinBoxDim, false), gestureKey));
         }
     } else {
         if (doubleKnob) {
@@ -1695,14 +1710,14 @@ KnobGuiValue::onSpinBoxValueChanged()
                 newValues.push_back(newValue[i]);
                 oldValues.push_back(oldValue[i]);
             }
-            pushUndoCommand( new KnobUndoCommand<double>(shared_from_this(), oldValues, newValues, false) );
+            pushUndoCommand(new KnobUndoCommand<double>(shared_from_this(), oldValues, newValues, false, gestureKey));
         } else {
             std::list<int> oldValues, newValues;
             for (std::size_t i = 0; i < _imp->spinBoxes.size(); ++i) {
                 newValues.push_back( (int)newValue[i] );
                 oldValues.push_back( (int)oldValue[i] );
             }
-            pushUndoCommand( new KnobUndoCommand<int>(shared_from_this(), oldValues, newValues, false) );
+            pushUndoCommand(new KnobUndoCommand<int>(shared_from_this(), oldValues, newValues, false, gestureKey));
         }
     }
 

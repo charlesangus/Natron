@@ -26,6 +26,7 @@
 #include "UndoHistory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <deque>
 
@@ -38,7 +39,18 @@
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 
+#include "Gui/UndoGesture.h"
+
 NATRON_NAMESPACE_ENTER
+
+quint64
+UndoGesture::newKey()
+{
+    // 0 means "no gesture", so the first key handed out is 1.
+    static std::atomic<quint64> counter(0);
+
+    return ++counter;
+}
 
 UndoScope::UndoScope()
     : _owner(0)

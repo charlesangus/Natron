@@ -290,7 +290,7 @@ DSMoveKeysAndNodesCommand::mergeWith(const QUndoCommand *other)
     const DSMoveKeysAndNodesCommand *cmd = dynamic_cast<const DSMoveKeysAndNodesCommand *>(other);
 
     assert(cmd);
-    if ( !cmd || ( cmd->id() != id() ) ) {
+    if (!cmd || (cmd->id() != id()) || !inSameGestureAs(*cmd)) {
         return false;
     }
 
@@ -492,7 +492,7 @@ DSTransformKeysCommand::mergeWith(const QUndoCommand *other)
     const DSTransformKeysCommand *cmd = dynamic_cast<const DSTransformKeysCommand *>(other);
 
     assert(cmd);
-    if ( !cmd || ( cmd->id() != id() ) ) {
+    if (!cmd || (cmd->id() != id()) || !inSameGestureAs(*cmd)) {
         return false;
     }
 
@@ -588,7 +588,7 @@ DSLeftTrimReaderCommand::mergeWith(const QUndoCommand *other)
     const DSLeftTrimReaderCommand *cmd = dynamic_cast<const DSLeftTrimReaderCommand *>(other);
 
     assert(cmd);
-    if ( !cmd || ( cmd->id() != id() ) ) {
+    if (!cmd || (cmd->id() != id()) || !inSameGestureAs(*cmd)) {
         return false;
     }
 
@@ -675,7 +675,7 @@ DSRightTrimReaderCommand::mergeWith(const QUndoCommand *other)
     const DSRightTrimReaderCommand *cmd = dynamic_cast<const DSRightTrimReaderCommand *>(other);
 
     assert(cmd);
-    if ( !cmd || ( cmd->id() != id() ) ) {
+    if (!cmd || (cmd->id() != id()) || !inSameGestureAs(*cmd)) {
         return false;
     }
 
@@ -732,7 +732,7 @@ DSSlipReaderCommand::mergeWith(const QUndoCommand *other)
     const DSSlipReaderCommand *cmd = dynamic_cast<const DSSlipReaderCommand *>(other);
 
     assert(cmd);
-    if ( !cmd || ( cmd->id() != id() ) ) {
+    if (!cmd || (cmd->id() != id()) || !inSameGestureAs(*cmd)) {
         return false;
     }
 

@@ -368,6 +368,13 @@ public:
     // User interaction
     void deleteSelectedKeyframes();
 
+    /**
+     * @brief Delimits one drag in the view, from the press to the release: the moves, trims,
+     * slips and transforms it pushes fold into one undo step, and the next drag makes another.
+     **/
+    void beginEditGesture();
+    void endEditGesture();
+
     void moveSelectedKeysAndNodes(double dt);
     void trimReaderLeft(const DSNodePtr &reader, double newFirstFrame);
     void trimReaderRight(const DSNodePtr &reader, double newLastFrame);

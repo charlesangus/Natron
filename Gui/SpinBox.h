@@ -107,6 +107,14 @@ public:
 
     double getLastValidValueBeforeValidation() const;
 
+    /**
+     * @brief The undo gesture the value being emitted by valueChanged() belongs to: one for each
+     * Alt+drag scrub, held arrow key or quick run of wheel notches, so its steps fold into one
+     * undo step. A typed value committed with Return or on focus out is a discrete edit and
+     * reports 0. Only meaningful while valueChanged() is being emitted.
+     **/
+    quint64 getGestureKey() const;
+
 protected:
 
     void increment(int delta, int shift);
@@ -143,6 +151,8 @@ private:
 
 
     void setValue_internal(double d, bool reformat);
+
+    void emitValueChanged(double d, quint64 gestureKey);
 
     void setText(const QString &str, int cursorPos);
 

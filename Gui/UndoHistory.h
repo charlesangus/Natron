@@ -105,8 +105,11 @@ struct UndoHistoryPrivate;
  * entries. Pushing a command drops every undone entry.
  *
  * A command is merged (QUndoCommand::id()/mergeWith()) only into the newest entry, and only when
- * both have the same owner. Obsolete commands, and commands whose owner or any touched holder
- * has been destroyed, are skipped and dropped instead of being executed.
+ * both have the same owner. The history has no merge window of its own: the commands that fold
+ * consecutive edits do so only within one gesture (see UndoGesture), so two separate edits of
+ * the same thing are two entries in the global history and in every owner's view. Obsolete
+ * commands, and commands whose owner or any touched holder has been destroyed, are skipped and
+ * dropped instead of being executed.
  *
  * Edits that have no command pushed for them, those made from Python, are added with
  * recordApplied() while a step is open or a pushed command executes. A step makes one entry of

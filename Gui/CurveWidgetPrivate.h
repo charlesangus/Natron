@@ -30,13 +30,14 @@
 
 #include "Global/GLIncludes.h" //!<must be included before QGlWidget because of gl.h and glew.h
 
+#include "Engine/OfxOverlayInteract.h"
 #include "Gui/CurveEditorUndoRedo.h" // MoveTangentCommand
 #include "Gui/CurveGui.h"
+#include "Gui/GuiFwd.h"
 #include "Gui/Menu.h"
 #include "Gui/TextRenderer.h"
+#include "Gui/UndoGesture.h"
 #include "Gui/ZoomContext.h"
-#include "Gui/GuiFwd.h"
-#include "Engine/OfxOverlayInteract.h"
 
 #include <QSize>
 
@@ -175,6 +176,8 @@ public:
     std::pair<MoveTangentCommand::SelectedTangentEnum, KeyPtr> _selectedDerivative;
     bool _tangentDragForceBreak; //< Ctrl was held when the tangent drag started
     bool _evaluateOnPenUp; //< true if we must re-evaluate the nodes associated to the selected keyframes on penup
+    // From a press to its release: the key, tangent and box drags of one press are one undo step.
+    UndoGesture _dragGesture;
     QPointF _keyDragLastMovement;
     Gui* _gui;
     GLuint savedTexture;

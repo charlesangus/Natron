@@ -535,7 +535,7 @@ MoveKeysCommand::mergeWith(const QUndoCommand * command)
 {
     const MoveKeysCommand* cmd = dynamic_cast<const MoveKeysCommand*>(command);
 
-    if ( cmd && ( cmd->id() == id() ) ) {
+    if (cmd && (cmd->id() == id()) && inSameGestureAs(*cmd)) {
         if ( cmd->_keys.size() != _keys.size() ) {
             return false;
         }
@@ -940,7 +940,7 @@ MoveTangentCommand::mergeWith(const QUndoCommand * command)
 {
     const MoveTangentCommand* cmd = dynamic_cast<const MoveTangentCommand*>(command);
 
-    if ( cmd && ( cmd->id() == id() ) ) {
+    if (cmd && (cmd->id() == id()) && inSameGestureAs(*cmd)) {
         if (cmd->_key != _key) {
             return false;
         }
@@ -1235,7 +1235,7 @@ TransformKeysCommand::mergeWith(const QUndoCommand * command)
 {
     const TransformKeysCommand* cmd = dynamic_cast<const TransformKeysCommand*>(command);
 
-    if ( cmd && ( cmd->id() == id() ) ) {
+    if (cmd && (cmd->id() == id()) && inSameGestureAs(*cmd)) {
         if ( cmd->_keys.size() != _keys.size() ) {
             return false;
         }

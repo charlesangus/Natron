@@ -14,6 +14,10 @@ connecting the viewer with the "1" key. Ctrl+Z/Ctrl+Shift+Z go through QTest, wh
 shortcut-override step that QApplication.sendEvent() skips (see m55_input_pipes.py's
 trigger_undo()), so the main window's undo shortcut is what is being tested. Roto shapes are not
 drawn: that needs synthetic pen strokes in the GL viewer.
+
+Three values typed one after another into the same parameter are three separate commits, so the
+panel's undo button must step back through them one click at a time (0.1, 0.25, 0.5, then 1);
+only one continuous gesture, a drag or a held arrow key, folds into a single step.
 """
 import os
 import sys
@@ -153,6 +157,20 @@ try:
         box.setText(str(value))
         send_key(box, Qt.Key_Return)
         return True
+
+    def mix_box(name):
+        """The visible, enabled spin box of the node's mix parameter, found by its tooltip."""
+        p = panel_of(name)
+        if p is None:
+            return None
+        for w in p.findChildren(QLineEdit):
+            if (gt.class_name(w) == "SpinBox" and w.isEnabled() and w.isVisible()
+                    and "Mix factor" in w.toolTip()):
+                return w
+        return None
+
+    def mix_value(name):
+        return app.getNode(name).getParam("mix").getValue()
 
     def show_page(name, page_label):
         p = panel_of(name)
@@ -513,6 +531,32 @@ try:
         shortcut(panel_of(a), redo=True)
         yield ("sleep", SETTLE_MS)
         check(label_text(a) == label_after, "Ctrl+Shift+Z re-applied the font size (%r)" % (label_text(a),))
+
+        # ---- three values typed into one knob are three undo steps, never one.
+        gt.section("separate-commits")
+        e = create(BLUR, 1200, 0).getScriptName()
+        ok = yield ("until", lambda: mix_box(e) is not None, 10.0)
+        gt.require(ok, "found the mix spin box on %s's panel" % e)
+        gt.require(abs(mix_value(e) - 1.0) < 1e-9, "%s's mix starts at 1" % e, "mix %r" % (mix_value(e),))
+        for value in (0.5, 0.25, 0.1):
+            box = mix_box(e)
+            gt.require(box is not None, "the mix spin box is still on %s's panel" % e)
+            box.setFocus()
+            box.setText(str(value))
+            send_key(box, Qt.Key_Return)
+            box = None
+            yield ("sleep", SETTLE_MS)
+            gt.require(abs(mix_value(e) - value) < 1e-9, "typing %g set %s's mix" % (value, e),
+                       "mix %r" % (mix_value(e),))
+        for expected in (0.25, 0.5, 1.0):
+            undo_e = panel_button(e, "Undo")
+            gt.require(undo_e is not None and undo_e.isEnabled(), "%s's panel undo is enabled" % e)
+            undo_e.click()
+            undo_e = None
+            yield ("sleep", SETTLE_MS)
+            check(abs(mix_value(e) - expected) < 1e-9,
+                  "one click of %s's panel undo brought mix back to %g" % (e, expected),
+                  "mix %r" % (mix_value(e),))
 
         faulthandler.cancel_dump_traceback_later()
 

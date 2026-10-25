@@ -56,6 +56,7 @@
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeGui.h"
+#include "Gui/UndoGesture.h"
 #include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_ENTER
@@ -158,6 +159,7 @@ public:
     std::vector<DopeSheetKey> keyframesClipboard;
     TimeLinePtr timeline;
     DopeSheetEditor* editor;
+    UndoGesture editGesture;
 };
 
 DopeSheetPrivate::DopeSheetPrivate(DopeSheetEditor* editor,
@@ -168,6 +170,7 @@ DopeSheetPrivate::DopeSheetPrivate(DopeSheetEditor* editor,
     , keyframesClipboard()
     , timeline()
     , editor(editor)
+    , editGesture()
 {
 }
 
@@ -662,6 +665,17 @@ struct SortDecreasingFunctor
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
+void
+DopeSheet::beginEditGesture()
+{
+    _imp->editGesture.begin();
+}
+
+void
+DopeSheet::endEditGesture()
+{
+    _imp->editGesture.end();
+}
 
 void
 DopeSheet::moveSelectedKeysAndNodes(double dt)
@@ -724,7 +738,9 @@ DopeSheet::moveSelectedKeysAndNodes(double dt)
         scope.touchNode((*it)->getInternalNode());
     }
     scope.ownByOnlyTouched();
-    _imp->pushUndoCommand(new DSMoveKeysAndNodesCommand(selectedKeyframes, selectedNodes, dt, _imp->editor), scope);
+    DSMoveKeysAndNodesCommand* cmd = new DSMoveKeysAndNodesCommand(selectedKeyframes, selectedNodes, dt, _imp->editor);
+    cmd->setGestureKey(_imp->editGesture.key());
+    _imp->pushUndoCommand(cmd, scope);
 } // DopeSheet::moveSelectedKeysAndNodes
 
 void
@@ -751,7 +767,9 @@ DopeSheet::trimReaderLeft(const DSNodePtr &reader,
         return;
     }
 
-    _imp->pushUndoCommand(new DSLeftTrimReaderCommand(reader, firstFrame, newFirstFrame), scopeForNode(reader->getInternalNode()));
+    DSLeftTrimReaderCommand* cmd = new DSLeftTrimReaderCommand(reader, firstFrame, newFirstFrame);
+    cmd->setGestureKey(_imp->editGesture.key());
+    _imp->pushUndoCommand(cmd, scopeForNode(reader->getInternalNode()));
 }
 
 void
@@ -777,7 +795,9 @@ DopeSheet::trimReaderRight(const DSNodePtr &reader,
         return;
     }
 
-    _imp->pushUndoCommand(new DSRightTrimReaderCommand(reader, lastFrame, newLastFrame, _imp->editor), scopeForNode(node));
+    DSRightTrimReaderCommand* cmd = new DSRightTrimReaderCommand(reader, lastFrame, newLastFrame, _imp->editor);
+    cmd->setGestureKey(_imp->editGesture.key());
+    _imp->pushUndoCommand(cmd, scopeForNode(node));
 }
 
 bool
@@ -832,7 +852,9 @@ DopeSheet::slipReader(const DSNodePtr &reader,
     dt = std::max( dt, (double)(currentLastFrame - originalLastFrame) );
 
     if (dt != 0) {
-        _imp->pushUndoCommand(new DSSlipReaderCommand(reader, dt, _imp->editor), scopeForNode(reader->getInternalNode()));
+        DSSlipReaderCommand* cmd = new DSSlipReaderCommand(reader, dt, _imp->editor);
+        cmd->setGestureKey(_imp->editGesture.key());
+        _imp->pushUndoCommand(cmd, scopeForNode(reader->getInternalNode()));
     }
 }
 
@@ -987,7 +1009,9 @@ DopeSheet::transformSelectedKeys(const Transform::Matrix3x3& transform)
     std::vector<DSNodePtr> selectedNodes;
     _imp->selectionModel->getCurrentSelection(&selectedKeyframes, &selectedNodes);
 
-    _imp->pushUndoCommand(new DSTransformKeysCommand(selectedKeyframes, transform, _imp->editor), scopeForKeys(selectedKeyframes));
+    DSTransformKeysCommand* cmd = new DSTransformKeysCommand(selectedKeyframes, transform, _imp->editor);
+    cmd->setGestureKey(_imp->editGesture.key());
+    _imp->pushUndoCommand(cmd, scopeForKeys(selectedKeyframes));
 }
 
 void

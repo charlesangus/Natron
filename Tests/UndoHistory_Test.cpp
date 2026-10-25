@@ -55,6 +55,7 @@
 #include "Gui/KnobGuiValue.h"
 #include "Gui/KnobUndoCommand.h"
 
+#include "Gui/UndoGesture.h"
 #include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_USING
@@ -716,13 +717,16 @@ TEST_F(UndoHistoryTest, APushedEditWithRecordsInsideAStepJoinsTheStep)
 }
 
 namespace {
-// What a node panel does with a knob GUI's pushes: record them in the window's history.
+// What a node panel does with a knob GUI's pushes: record them in the window's history, owned by
+// the panel's holder when one is given so that the panel's own undo reaches them.
 class HistoryKnobGuiContainer
     : public KnobGuiContainerI {
 public:
-    explicit HistoryKnobGuiContainer(UndoHistory* history)
+    explicit HistoryKnobGuiContainer(UndoHistory* history,
+                                     KnobHolder* owner = 0)
         : KnobGuiContainerI()
         , _history(history)
+        , _owner(owner)
     {
     }
 
@@ -738,7 +742,7 @@ public:
 
     virtual void pushUndoCommand(QUndoCommand* cmd) OVERRIDE FINAL
     {
-        _history->push(cmd);
+        _history->push(cmd, _owner ? UndoScope(_owner) : UndoScope());
     }
 
     virtual KnobGuiPtr getKnobGui(const KnobIPtr& /*knob*/) const OVERRIDE FINAL
@@ -753,6 +757,7 @@ public:
 
 private:
     UndoHistory* _history;
+    KnobHolder* _owner;
 };
 
 // A project knob: its holder has the real (background) AppInstance that KnobUndoCommand needs.
@@ -985,4 +990,110 @@ TEST_F(NodeKnobUndo, AnEditOfAUserKnobSurvivesThePresetRecreatingIt)
     EXPECT_EQ(1, history.count());
     history.undo();
     EXPECT_DOUBLE_EQ(6., recreated->getValue(0));
+}
+
+// Typing three values into the same knob, each committed on its own, must take three undos to
+// unwind, from the global undo and from the panel's own undo alike. Folding them sent one undo
+// straight back to the value before the first edit.
+TEST_F(NodeKnobUndo, SeparateCommitsOnOneKnobAreSeparateGlobalUndoSteps)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(blur->getKnobByName(kOfxMixParamName));
+    ASSERT_TRUE(bool(mix));
+    ASSERT_DOUBLE_EQ(1., mix->getValue(0));
+
+    UndoHistory history;
+    HistoryKnobGuiContainer container(&history, UndoScope::holderForNode(blur));
+    KnobGuiPtr knobGui = std::make_shared<KnobGuiDouble>(mix, &container);
+
+    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, 1., 0.5, 0, false));
+    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, 0.5, 0.25, 0, false));
+    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, 0.25, 0.1, 0, false));
+    EXPECT_DOUBLE_EQ(0.1, mix->getValue(0));
+    ASSERT_EQ(3, history.count());
+
+    history.undo();
+    EXPECT_DOUBLE_EQ(0.25, mix->getValue(0));
+    history.undo();
+    EXPECT_DOUBLE_EQ(0.5, mix->getValue(0));
+    history.undo();
+    EXPECT_DOUBLE_EQ(1., mix->getValue(0));
+    EXPECT_FALSE(history.canUndo());
+}
+
+TEST_F(NodeKnobUndo, SeparateCommitsOnOneKnobAreSeparatePanelUndoSteps)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(blur->getKnobByName(kOfxMixParamName));
+    ASSERT_TRUE(bool(mix));
+
+    KnobHolder* owner = UndoScope::holderForNode(blur);
+    ASSERT_NE(owner, (KnobHolder*)0);
+    UndoHistory history;
+    HistoryKnobGuiContainer container(&history, owner);
+    KnobGuiPtr knobGui = std::make_shared<KnobGuiDouble>(mix, &container);
+
+    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, 1., 0.5, 0, false));
+    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, 0.5, 0.25, 0, false));
+    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, 0.25, 0.1, 0, false));
+    ASSERT_EQ(3, history.count());
+
+    ASSERT_TRUE(history.canUndo(owner));
+    history.undo(owner);
+    EXPECT_DOUBLE_EQ(0.25, mix->getValue(0));
+    history.undo(owner);
+    EXPECT_DOUBLE_EQ(0.5, mix->getValue(0));
+    history.undo(owner);
+    EXPECT_DOUBLE_EQ(1., mix->getValue(0));
+    EXPECT_FALSE(history.canUndo(owner));
+
+    history.redo(owner);
+    EXPECT_DOUBLE_EQ(0.5, mix->getValue(0));
+}
+
+// A drag pushes once per mouse move; all of one drag is one undo step, and the next drag is
+// another even though it edits the same knob.
+TEST_F(NodeKnobUndo, PushesOfOneGestureAreOneUndoStep)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(blur->getKnobByName(kOfxMixParamName));
+    ASSERT_TRUE(bool(mix));
+
+    KnobHolder* owner = UndoScope::holderForNode(blur);
+    UndoHistory history;
+    HistoryKnobGuiContainer container(&history, owner);
+    KnobGuiPtr knobGui = std::make_shared<KnobGuiDouble>(mix, &container);
+
+    UndoGesture drag;
+    drag.begin();
+    double previous = 1.;
+    for (int step = 1; step <= 6; ++step) {
+        const double next = 1. - 0.1 * step;
+        KnobUndoCommand<double>* cmd = new KnobUndoCommand<double>(knobGui, previous, next, 0, false);
+        cmd->setGestureKey(drag.key());
+        knobGui->pushUndoCommand(cmd);
+        previous = next;
+    }
+    drag.end();
+    EXPECT_EQ(1, history.count());
+    EXPECT_DOUBLE_EQ(0.4, mix->getValue(0));
+
+    drag.begin();
+    for (int step = 1; step <= 3; ++step) {
+        const double next = 0.4 - 0.1 * step;
+        KnobUndoCommand<double>* cmd = new KnobUndoCommand<double>(knobGui, previous, next, 0, false);
+        cmd->setGestureKey(drag.key());
+        knobGui->pushUndoCommand(cmd);
+        previous = next;
+    }
+    drag.end();
+    EXPECT_EQ(2, history.count());
+
+    history.undo(owner);
+    EXPECT_DOUBLE_EQ(0.4, mix->getValue(0));
+    history.undo(owner);
+    EXPECT_DOUBLE_EQ(1., mix->getValue(0));
 }

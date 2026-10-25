@@ -41,6 +41,7 @@
 #include "Engine/EngineFwd.h"
 
 #include "Gui/GuiFwd.h"
+#include "Gui/UndoGesture.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -242,9 +243,11 @@ private:
     bool _firstRedoCalled;
 };
 
+// Pushed on each mouse move of a resize; the moves of one drag fold into one undo step, see
+// UndoGesture.
 class ResizeBackdropCommand
-    : public QUndoCommand
-{
+    : public QUndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(ResizeBackdropCommand)
 
 public:
@@ -269,7 +272,6 @@ private:
     int _w, _h;
     int _oldW, _oldH;
 };
-
 
 class DecloneMultipleNodesCommand
     : public QUndoCommand

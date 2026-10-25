@@ -499,7 +499,9 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
         int h = newPos.y() - p.y();
         checkAndStartAutoScrollTimer(newPos);
         mustUpdate = true;
-        pushUndoCommand(new ResizeBackdropCommand(_imp->_backdropResized, w, h), NodesGuiList(1, _imp->_backdropResized));
+        ResizeBackdropCommand* cmd = new ResizeBackdropCommand(_imp->_backdropResized, w, h);
+        cmd->setGestureKey(_imp->_dragGesture.key());
+        pushUndoCommand(cmd, NodesGuiList(1, _imp->_backdropResized));
         _imp->cursorSet = true;
         setCursor( QCursor(Qt::SizeFDiagCursor) );
         break;

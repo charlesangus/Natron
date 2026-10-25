@@ -281,6 +281,7 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
     EventStateEnum state = _imp->_evtState;
 
     _imp->_evtState = eEventStateNone;
+    _imp->_dragGesture.end();
 
     _imp->autoScrollTimer.stop();
 

@@ -43,6 +43,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Transform.h"
 
 #include "Gui/GuiFwd.h"
+#include "Gui/UndoGesture.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -264,8 +265,11 @@ private:
 
 //////////////////////////////MOVE KEY COMMAND//////////////////////////////////////////////
 
+// Each mouse move of a drag pushes one of these; they fold into one undo step only within the
+// drag's gesture (see UndoGesture). The same goes for MoveTangentCommand and TransformKeysCommand.
 class MoveKeysCommand
-    : public CurveEditorCommand {
+    : public CurveEditorCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(MoveKeysCommand)
 
 public:
@@ -355,7 +359,8 @@ private:
 };
 
 class MoveTangentCommand
-    : public CurveEditorCommand {
+    : public CurveEditorCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(MoveTangentCommand)
 
 public:
@@ -454,7 +459,8 @@ private:
 };
 
 class TransformKeysCommand
-    : public CurveEditorCommand {
+    : public CurveEditorCommand,
+      public UndoGestureMember {
 public:
 
     TransformKeysCommand(CurveWidget* widget,

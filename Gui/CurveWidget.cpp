@@ -969,6 +969,7 @@ CurveWidget::mousePressEvent(QMouseEvent* e)
         ce->onInputEventCalled();
     }
 
+    _imp->_dragGesture.begin();
     setFocus();
     ////
     // right button: popup menu
@@ -1179,6 +1180,9 @@ CurveWidget::mouseReleaseEvent(QMouseEvent*)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
+
+    // Nothing is pushed on release, so the drag's gesture can end before the release is handled.
+    _imp->_dragGesture.end();
 
     if (_imp->_evaluateOnPenUp) {
         _imp->_evaluateOnPenUp = false;

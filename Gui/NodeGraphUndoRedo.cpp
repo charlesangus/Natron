@@ -872,7 +872,7 @@ ResizeBackdropCommand::mergeWith(const QUndoCommand *command)
 {
     const ResizeBackdropCommand* rCmd = dynamic_cast<const ResizeBackdropCommand*>(command);
 
-    if (!rCmd) {
+    if (!rCmd || !inSameGestureAs(*rCmd)) {
         return false;
     }
     NodeGuiPtr bd = _bd.lock();

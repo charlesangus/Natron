@@ -223,6 +223,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
 
     takeClickFocus();
 
+    _imp->_dragGesture.begin();
     _imp->_hasMovedOnce = false;
     _imp->_spliceCancelled = false;
     _imp->_deltaSinceMousePress = QPointF(0, 0);

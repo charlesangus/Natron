@@ -53,21 +53,27 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Variant.h"
 #include "Engine/ViewIdx.h"
 
-#include "Gui/KnobGui.h"
-#include "Gui/Gui.h"
 #include "Gui/CurveEditor.h"
 #include "Gui/CurveWidget.h"
+#include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiFwd.h"
+#include "Gui/KnobGui.h"
+#include "Gui/UndoGesture.h"
 
 NATRON_NAMESPACE_ENTER
 
 //================================================================
 
-template<typename T>
+/**
+ * @brief Sets a knob's value. Consecutive commands on the same knob and dimensions fold into
+ * one undo step only when they belong to the same gesture (see UndoGesture): the widget that
+ * pushes them passes its gesture's key, or leaves it at 0 for a discrete commit.
+ **/
+template <typename T>
 class KnobUndoCommand
-    : public QUndoCommand
-{
+    : public QUndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(KnobUndoCommand)
 
 public:
@@ -88,7 +94,6 @@ public:
         , _merge(true)
         , _refreshGuiFirstTime(refreshGui)
         , _firstRedoCalled(false)
-        , _mergeKey(0)
     {
         _oldValue.push_back(oldValue);
         _newValue.push_back(newValue);
@@ -98,9 +103,8 @@ public:
     /// and produces an unresolved symbol error.
     ///
     /// The lists cover the knob's first oldValue.size() dimensions, so a caller can leave the
-    /// trailing ones untouched. mergeKey, when non-zero, scopes merging to commands sharing the
-    /// same key (one key per gesture), so two back-to-back gestures on the same knob stay two
-    /// undo steps instead of folding into one; 0 merges on knob and dimension alone.
+    /// trailing ones untouched. mergeKey is the key of the gesture the edit belongs to, 0 for a
+    /// discrete commit that never folds with another command.
     KnobUndoCommand(const KnobGuiPtr& knob,
                     const std::list<T>& oldValue,
                     const std::list<T>& newValue,
@@ -118,8 +122,8 @@ public:
         , _merge(true)
         , _refreshGuiFirstTime(refreshGui)
         , _firstRedoCalled(false)
-        , _mergeKey(mergeKey)
     {
+        setGestureKey(mergeKey);
     }
 
     virtual ~KnobUndoCommand() OVERRIDE
@@ -127,8 +131,7 @@ public:
     }
 
     /**
-     * @brief When false, consecutive edits of the same knob stay separate undo steps
-     * instead of being compressed into one.
+     * @brief When false, the command never folds with another, even one of its own gesture.
      **/
     void setMergeable(bool mergeable)
     {
@@ -333,9 +336,8 @@ private:
             return false;
         }
 
-        // A non-zero key scopes the merge to its own gesture: two commands can only merge when
-        // they are both unkeyed or share the same key.
-        if (((_mergeKey != 0) || (knobCommand->_mergeKey != 0)) && (_mergeKey != knobCommand->_mergeKey)) {
+        // Two separate edits of the same knob, typed values or two drags, stay two undo steps.
+        if (!inSameGestureAs(*knobCommand)) {
             return false;
         }
         if (knobCommand->_newValue.size() < _newValue.size()) {
@@ -374,9 +376,7 @@ private:
     bool _merge;
     bool _refreshGuiFirstTime;
     bool _firstRedoCalled;
-    quint64 _mergeKey;
 };
-
 
 /**
  * @brief This class is used by the internal knob when it wants to group multiple edits into a single undo/redo action.

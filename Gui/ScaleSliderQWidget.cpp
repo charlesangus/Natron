@@ -50,6 +50,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiDefines.h"
 #include "Gui/GuiMacros.h"
 #include "Gui/ThemedIcon.h"
+#include "Gui/UndoGesture.h"
 #include "Gui/ZoomContext.h"
 #include "Gui/ticks.h"
 
@@ -88,6 +89,7 @@ struct ScaleSliderQWidgetPrivate
     QColor lineColor;
     QGradientStops trackGradient;
     bool allowDraftModeSetting;
+    UndoGesture gesture;
 
     ScaleSliderQWidgetPrivate(QWidget* parent,
                               double min,
@@ -119,6 +121,7 @@ struct ScaleSliderQWidgetPrivate
         , lineColor(Qt::black)
         , trackGradient()
         , allowDraftModeSetting(allowDraftModeSetting)
+        , gesture()
     {
         font.setPointSize( (font.pointSize() * NATRON_FONT_SIZE_10) / NATRON_FONT_SIZE_13 );
         assert( std::isfinite(minimum) && std::isfinite(maximum) && std::isfinite(initialPos) );
@@ -190,6 +193,12 @@ ScaleSliderQWidget::isReadOnly() const
     return _imp->readOnly;
 }
 
+quint64
+ScaleSliderQWidget::getGestureKey() const
+{
+    return _imp->gesture.key();
+}
+
 void
 ScaleSliderQWidget::mousePressEvent(QMouseEvent* e)
 {
@@ -200,6 +209,7 @@ ScaleSliderQWidget::mousePressEvent(QMouseEvent* e)
         if ( modifierHasAlt(e) ) {
             Q_EMIT resetToDefaultRequested();
         } else {
+            _imp->gesture.begin();
             QPoint newClick =  e->pos();
             _imp->oldClick = newClick;
             _imp->dragGear = gear(modifierHasControl(e), modifierHasShift(e));
@@ -266,6 +276,7 @@ ScaleSliderQWidget::mouseReleaseEvent(QMouseEvent* e)
         }
         Q_EMIT editingFinished(hasMoved);
     }
+    _imp->gesture.end();
     QWidget::mouseReleaseEvent(e);
 }
 

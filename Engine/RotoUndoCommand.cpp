@@ -76,6 +76,7 @@ MoveControlPointsUndoCommand::MoveControlPointsUndoCommand(const RotoPaintIntera
     , _time(time)
     , _pointsToDrag(toDrag)
 {
+    setGestureKey(roto->undoGesture.key());
     setText( tr("Move control points").toStdString() );
 
     assert(roto);
@@ -193,6 +194,9 @@ MoveControlPointsUndoCommand::mergeWith(const UndoCommandPtr& other)
     if (!mvCmd) {
         return false;
     }
+    if (!inSameGestureAs(*mvCmd)) {
+        return false;
+    }
 
     if ( ( mvCmd->_pointsToDrag.size() != _pointsToDrag.size() ) || (mvCmd->_time != _time) || ( mvCmd->_selectedTool.lock() != _selectedTool.lock() )
          || ( mvCmd->_rippleEditEnabled != _rippleEditEnabled) || ( mvCmd->_featherLinkEnabled != _featherLinkEnabled) ) {
@@ -237,6 +241,7 @@ TransformUndoCommand::TransformUndoCommand(const RotoPaintInteractPtr& roto,
     , _originalPoints()
     , _selectedPoints()
 {
+    setGestureKey(roto->undoGesture.key());
     _matrix = std::make_shared<Transform::Matrix3x3>();
 
     std::list<std::pair<BezierCPPtr, BezierCPPtr> > selected;
@@ -332,6 +337,9 @@ TransformUndoCommand::mergeWith(const UndoCommandPtr& other)
     const TransformUndoCommand* cmd = dynamic_cast<const TransformUndoCommand*>( other.get() );
 
     if (!cmd) {
+        return false;
+    }
+    if (!inSameGestureAs(*cmd)) {
         return false;
     }
 
@@ -761,6 +769,7 @@ MoveTangentUndoCommand::MoveTangentUndoCommand(const RotoPaintInteractPtr& roto,
     , _left(left)
     , _breakTangents(breakTangents)
 {
+    setGestureKey(roto->undoGesture.key());
     roto->getSelection(&_selectedCurves, &_selectedPoints);
     BezierCPPtr counterPart;
     if ( cp->isFeatherPoint() ) {
@@ -956,6 +965,9 @@ MoveTangentUndoCommand::mergeWith(const UndoCommandPtr &other)
     if (!mvCmd) {
         return false;
     }
+    if (!inSameGestureAs(*mvCmd)) {
+        return false;
+    }
     if ( (mvCmd->_tangentBeingDragged != _tangentBeingDragged) || (mvCmd->_left != _left) || (mvCmd->_featherLinkEnabled != _featherLinkEnabled)
          || ( mvCmd->_rippleEditEnabled != _rippleEditEnabled) ) {
         return false;
@@ -986,6 +998,7 @@ MoveFeatherBarUndoCommand::MoveFeatherBarUndoCommand(const RotoPaintInteractPtr&
     , _grabbedPoint(point)
     , _bars()
 {
+    setGestureKey(roto->undoGesture.key());
     assert(point.first && point.second);
     roto->getSelection(&_selectedCurves, &_selectedPoints);
 
@@ -1186,6 +1199,9 @@ MoveFeatherBarUndoCommand::mergeWith(const UndoCommandPtr& other)
     if (!mvCmd) {
         return false;
     }
+    if (!inSameGestureAs(*mvCmd)) {
+        return false;
+    }
     if ((mvCmd->_grabbedPoint != _grabbedPoint) || (mvCmd->_bars.size() != _bars.size()) || (mvCmd->_rippleEditEnabled != _rippleEditEnabled) || (mvCmd->_time != _time)) {
         return false;
     }
@@ -1338,6 +1354,7 @@ SmoothCuspUndoCommand::SmoothCuspUndoCommand(const RotoPaintInteractPtr& roto,
     , curves(data)
     , _pixelScale(pixelScale)
 {
+    setGestureKey(roto->undoGesture.key());
     for (std::list<SmoothCuspCurveData>::iterator it = curves.begin(); it != curves.end(); ++it) {
         for (SelectedPointList::const_iterator it2 = it->newPoints.begin(); it2 != it->newPoints.end(); ++it2) {
             BezierCPPtr firstCpy( new BezierCP(*(*it2).first) );
@@ -1418,6 +1435,9 @@ SmoothCuspUndoCommand::mergeWith(const UndoCommandPtr& other)
     if (!sCmd) {
         return false;
     }
+    if (!inSameGestureAs(*sCmd)) {
+        return false;
+    }
     if ( ( sCmd->curves.size() != curves.size() ) ||
          ( sCmd->_cusp != _cusp) || ( sCmd->_time != _time) ) {
         return false;
@@ -1468,6 +1488,7 @@ MakeBezierUndoCommand::MakeBezierUndoCommand(const RotoPaintInteractPtr& roto,
     , _lastPointAdded(-1)
     , _isOpenBezier(isOpenBezier)
 {
+    setGestureKey(roto->undoGesture.key());
     if (!_newCurve) {
         _curveNonExistant = true;
     } else {
@@ -1583,6 +1604,9 @@ MakeBezierUndoCommand::mergeWith(const UndoCommandPtr& other)
     if (!sCmd) {
         return false;
     }
+    if (!inSameGestureAs(*sCmd)) {
+        return false;
+    }
 
     if ( sCmd->_createdPoint || (sCmd->_newCurve != _newCurve) ) {
         return false;
@@ -1622,6 +1646,7 @@ MakeEllipseUndoCommand::MakeEllipseUndoCommand(const RotoPaintInteractPtr& roto,
     , _toy(toy)
     , _time(time)
 {
+    setGestureKey(roto->undoGesture.key());
     if (!_create) {
         _curve = roto->getBezierBeingBuild();
     }
@@ -1745,6 +1770,9 @@ MakeEllipseUndoCommand::mergeWith(const UndoCommandPtr &other)
     if (!sCmd) {
         return false;
     }
+    if (!inSameGestureAs(*sCmd)) {
+        return false;
+    }
     if ( (sCmd->_curve != _curve) || sCmd->_create ) {
         return false;
     }
@@ -1788,6 +1816,7 @@ MakeRectangleUndoCommand::MakeRectangleUndoCommand(const RotoPaintInteractPtr& r
     , _toy(toy)
     , _time(time)
 {
+    setGestureKey(roto->undoGesture.key());
     if (!_create) {
         _curve = roto->getBezierBeingBuild();
     }
@@ -1875,6 +1904,9 @@ MakeRectangleUndoCommand::mergeWith(const UndoCommandPtr &other)
     const MakeRectangleUndoCommand* sCmd = dynamic_cast<const MakeRectangleUndoCommand*>( other.get() );
 
     if (!sCmd) {
+        return false;
+    }
+    if (!inSameGestureAs(*sCmd)) {
         return false;
     }
     if ( (sCmd->_curve != _curve) || sCmd->_create ) {

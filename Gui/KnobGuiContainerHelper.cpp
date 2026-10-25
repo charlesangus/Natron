@@ -47,6 +47,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/KnobGuiGroup.h"
 #include "Gui/TabGroup.h"
 #include "Gui/ThemedIcon.h"
+#include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -59,28 +60,30 @@ struct KnobGuiContainerHelperPrivate
     KnobsGuiMapping knobsMap;
     KnobPageGuiWPtr currentPage;
     PagesMap pages;
-    QUndoStackPtr undoStack; /*!< undo/redo stack*/
-    QUndoCommand* cmdBeingPushed;
-    bool clearedStackDuringPush;
+    UndoHistory* history;
+    KnobHolder* undoOwner;
+    // Only without a history.
+    std::unique_ptr<QUndoStack> undoStack;
     std::unique_ptr<KnobGuiContainerSignalsHandler> signals;
 
     KnobGuiContainerHelperPrivate(KnobGuiContainerHelper* p,
                                   KnobHolder* holder,
-                                  const QUndoStackPtr& stack)
+                                  UndoHistory* history,
+                                  KnobHolder* undoOwner)
         : _p(p)
         , holder(holder)
         , knobsMap()
         , currentPage()
         , pages()
+        , history(history)
+        , undoOwner(undoOwner)
         , undoStack()
-        , cmdBeingPushed(0)
-        , clearedStackDuringPush(false)
-        , signals( new KnobGuiContainerSignalsHandler(p) )
+        , signals(new KnobGuiContainerSignalsHandler(p))
     {
-        if (stack) {
-            undoStack = stack;
+        if (history) {
+            signals->connectUndoHistory(history);
         } else {
-            undoStack = std::make_shared<QUndoStack>();
+            undoStack.reset(new QUndoStack);
         }
     }
 
@@ -92,10 +95,11 @@ struct KnobGuiContainerHelperPrivate
 };
 
 KnobGuiContainerHelper::KnobGuiContainerHelper(KnobHolder* holder,
-                                               const QUndoStackPtr& stack)
+                                               UndoHistory* history,
+                                               KnobHolder* undoOwner)
     : KnobGuiContainerI()
     , DockablePanelI()
-    , _imp( new KnobGuiContainerHelperPrivate(this, holder, stack) )
+    , _imp(new KnobGuiContainerHelperPrivate(this, holder, history, undoOwner))
 {
 }
 
@@ -1035,9 +1039,7 @@ KnobGuiContainerHelper::refreshGuiForKnobsChanges(bool restorePageIndex)
     }
     _imp->pages.clear();
 
-    //Clear undo/Redo stack so that KnobGui pointers are not lying around
-    clearUndoRedoStack();
-
+    // Undo commands address knobs rather than their GUIs, so the history survives the rebuild.
     recreateKnobsInternal(curPage, restorePageIndex);
     _imp->refreshPagesEnabledness();
 }
@@ -1165,6 +1167,10 @@ KnobGuiContainerHelper::getPagesCount() const
 const QUndoCommand*
 KnobGuiContainerHelper::getLastUndoCommand() const
 {
+    if (_imp->history) {
+        return _imp->history->getLastCommand();
+    }
+
     return _imp->undoStack->command(_imp->undoStack->index() - 1);
 }
 
@@ -1176,39 +1182,66 @@ KnobGuiContainerHelper::pushUndoCommand(QUndoCommand* cmd)
 
         return;
     }
-    _imp->undoStack->setActive();
-    _imp->cmdBeingPushed = cmd;
-    _imp->clearedStackDuringPush = false;
+    if (_imp->history) {
+        // The history's changed() signal refreshes the buttons.
+        _imp->history->push(cmd, UndoScope(_imp->undoOwner));
+
+        return;
+    }
     _imp->undoStack->push(cmd);
-
-    //We may be in a situation where the command was not pushed because the stack was cleared
-    if (!_imp->clearedStackDuringPush) {
-        _imp->cmdBeingPushed = 0;
-    }
-    refreshUndoRedoButtonsEnabledNess( _imp->undoStack->canUndo(), _imp->undoStack->canRedo() );
+    refreshUndoRedoButtons();
 }
 
-QUndoStackPtr
-KnobGuiContainerHelper::getUndoStack() const
+bool
+KnobGuiContainerHelper::canUndo() const
 {
-    return _imp->undoStack;
+    return _imp->history ? _imp->history->canUndo(_imp->undoOwner) : _imp->undoStack->canUndo();
 }
 
-void
-KnobGuiContainerHelper::clearUndoRedoStack()
+bool
+KnobGuiContainerHelper::canRedo() const
 {
-    if (_imp->undoStack) {
-        _imp->undoStack->clear();
-        _imp->clearedStackDuringPush = true;
-        _imp->signals->s_deleteCurCmdLater();
-        refreshUndoRedoButtonsEnabledNess( _imp->undoStack->canUndo(), _imp->undoStack->canRedo() );
-    }
+    return _imp->history ? _imp->history->canRedo(_imp->undoOwner) : _imp->undoStack->canRedo();
 }
 
 void
-KnobGuiContainerSignalsHandler::onDeleteCurCmdLaterTriggered()
+KnobGuiContainerHelper::undo()
 {
-    _container->onDeleteCurCmdLater();
+    if (_imp->history) {
+        _imp->history->undo(_imp->undoOwner);
+    } else {
+        _imp->undoStack->undo();
+        refreshUndoRedoButtons();
+    }
+}
+
+void
+KnobGuiContainerHelper::redo()
+{
+    if (_imp->history) {
+        _imp->history->redo(_imp->undoOwner);
+    } else {
+        _imp->undoStack->redo();
+        refreshUndoRedoButtons();
+    }
+}
+
+void
+KnobGuiContainerHelper::refreshUndoRedoButtons()
+{
+    refreshUndoRedoButtonsEnabledNess(canUndo(), canRedo());
+}
+
+void
+KnobGuiContainerSignalsHandler::connectUndoHistory(UndoHistory* history)
+{
+    QObject::connect(history, SIGNAL(changed()), this, SLOT(onUndoHistoryChanged()));
+}
+
+void
+KnobGuiContainerSignalsHandler::onUndoHistoryChanged()
+{
+    _container->refreshUndoRedoButtons();
 }
 
 void
@@ -1228,15 +1261,6 @@ KnobGuiContainerSignalsHandler::onPageSecretnessChanged()
             it->second->tab->setVisible(!isPage->getIsSecret());
             break;
         }
-    }
-}
-
-void
-KnobGuiContainerHelper::onDeleteCurCmdLater()
-{
-    if (_imp->cmdBeingPushed) {
-        _imp->undoStack->clear();
-        _imp->cmdBeingPushed = 0;
     }
 }
 

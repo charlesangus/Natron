@@ -216,7 +216,9 @@ public Q_SLOTS:
 private:
 
     RotoContextPtr _roto;
-    KnobIPtr _internalKnob;
+    // The engine knob is kept apart from its GUI so that undo commands holding this curve still
+    // reach the knob after its panel GUI has been rebuilt.
+    KnobIWPtr _internalKnob;
     KnobGuiWPtr _knob; //< ptr to the knob holding this curve
     int _dimension; //< which dimension is this curve representing
 };

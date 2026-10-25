@@ -70,6 +70,7 @@
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Timer.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/UpdateViewerParams.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
@@ -2005,6 +2006,8 @@ OutputSchedulerThread::runCallbackWithVariables(const QString& callback)
         OutputEffectInstancePtr effect = _imp->outputEffect.lock();
         QString script = callback;
         std::string appID = effect->getApp()->getAppIDString();
+        // Callbacks run by a render are not edits the user made.
+        UndoSuppressGuard noUndo(effect->getApp());
         std::string nodeName = effect->getNode()->getFullyQualifiedName();
         std::string nodeFullName = appID + "." + nodeName;
         script.append( QString::fromUtf8( nodeFullName.c_str() ) );

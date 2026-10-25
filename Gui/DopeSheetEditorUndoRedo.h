@@ -28,8 +28,9 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
+#include <list>
 #include <map>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -44,11 +45,11 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Transform.h"
 
 #include "Gui/GuiFwd.h"
+#include "Gui/UndoGesture.h"
 
 NATRON_NAMESPACE_ENTER
 
 typedef std::list<DopeSheetKeyPtr> DopeSheetKeyPtrList;
-
 
 /**
  * Here you put the definitions of all your dope sheet undo commands.
@@ -65,7 +66,9 @@ typedef std::list<DopeSheetKeyPtr> DopeSheetKeyPtrList;
  * If you want to make your custom command compressible, define a new
  * compression ID in <NatronSources>/Engine/Global/GlobalDefines.h. Override
  * id() by returning this ID. Finally, override mergeWith() to define the
- * merge behavior.
+ * merge behavior. A command pushed once per mouse move also inherits
+ * UndoGestureMember and refuses to merge outside its gesture, so two separate
+ * drags stay two undo steps.
  *
  * See the Qt documentation to learn more about the command compression.
  *
@@ -109,14 +112,13 @@ typedef std::list<DopeSheetKeyPtr> DopeSheetKeyPtrList;
  * - paste the keyframes actually present in the clipboard
  */
 
-
 /**
  * @brief The DSMoveKeysAndNodesCommand class describes an action that moves
  * the current selected keyframes on the dope sheet timeline.
  */
 class DSMoveKeysAndNodesCommand
-    : public QUndoCommand
-{
+    : public QUndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(DSMoveKeysAndNodesCommand)
 
 public:
@@ -140,16 +142,21 @@ private:
 
 private:
     DopeSheetKeyPtrList _keys;
-    std::vector<DSNodePtr> _nodes;
+    // Nodes rather than their dope sheet rows, which are recreated when a panel is rebuilt.
+    struct MovedNode {
+        NodeWPtr node;
+        DopeSheetItemType type;
+    };
+
+    std::vector<MovedNode> _nodes;
     NodesWList _allDifferentNodes;
     double _dt;
     DopeSheetEditor *_model;
 };
 
-
 class DSTransformKeysCommand
-    : public QUndoCommand
-{
+    : public QUndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(DSTransformKeysCommand)
 
 public:
@@ -169,18 +176,21 @@ private:
      * @brief Move the selected keyframes by 'dt' on the dope sheet timeline.
      */
     void transformKey(const DopeSheetKeyPtr& key);
+    bool knobsAreAlive() const;
 
 private:
 
 
     struct TransformKeyData
     {
+        KnobIWPtr knob;
+        int dimension;
         DopeSheetKeyPtrList keys;
         CurvePtr oldCurve;
         CurvePtr newCurve;
     };
 
-    typedef std::map<DSKnobPtr, TransformKeyData> TransformKeys;
+    typedef std::list<TransformKeyData> TransformKeys;
 
     bool _firstRedoCalled;
     Transform::Matrix3x3 _transform;
@@ -188,14 +198,13 @@ private:
     DopeSheetEditor *_model;
 };
 
-
 /**
  * @brief The DSLeftTrimReaderCommand class class describes an undoable action
  * that trim a reader by changing the value of its first frame.
  */
 class DSLeftTrimReaderCommand
-    : public QUndoCommand
-{
+    : public QUndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(DSLeftTrimReaderCommand)
 
 public:
@@ -217,19 +226,18 @@ private:
     void trimLeft(double firstFrame);
 
 private:
-    DSNodeWPtr _readerContext;
+    NodeWPtr _reader;
     double _oldTime;
     double _newTime;
 };
-
 
 /**
  * @brief The DSRightTrimReaderCommand class describes an undoable action that
  * trim a reader by changing the value of its last frame.
  */
 class DSRightTrimReaderCommand
-    : public QUndoCommand
-{
+    : public QUndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(DSRightTrimReaderCommand)
 
 public:
@@ -252,7 +260,7 @@ private:
     void trimRight(double lastFrame);
 
 private:
-    DSNodeWPtr _readerContext;
+    NodeWPtr _reader;
     double _oldTime;
     double _newTime;
 };
@@ -262,8 +270,8 @@ private:
  * a reader by changing both its first and last frames.
  */
 class DSSlipReaderCommand
-    : public QUndoCommand
-{
+    : public QUndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(DSSlipReaderCommand)
 
 public:
@@ -285,11 +293,10 @@ private:
     void slipReader(double dt);
 
 private:
-    DSNodeWPtr _readerContext;
+    NodeWPtr _reader;
     double _dt;
     DopeSheetEditor *_model;
 };
-
 
 /**
  * @brief The DSRemoveKeysCommand class describes an undoable action that
@@ -408,7 +415,12 @@ private:
     int _refKeyindex;
     bool _pasteRelativeToRefTime;
     std::vector<DopeSheetKey> _keys;
-    std::list<DSKnobWPtr> _dstKnobs;
+    struct DstKnob {
+        KnobIWPtr knob;
+        int dimension;
+    };
+
+    std::list<DstKnob> _dstKnobs;
     DopeSheetEditor *_model;
 };
 

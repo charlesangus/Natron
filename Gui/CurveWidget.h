@@ -164,7 +164,6 @@ public:
 
     void refreshCurveDisplayTangents(CurveGui* curve);
 
-    QUndoStack* getUndoStack() const;
     void pushUndoCommand(QUndoCommand* cmd);
 
     // The interact will be drawn after the background and before any curve

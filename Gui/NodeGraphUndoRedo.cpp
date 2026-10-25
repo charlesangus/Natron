@@ -59,28 +59,50 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
-MoveMultipleNodesCommand::MoveMultipleNodesCommand(const NodesGuiList & nodes,
+namespace {
+// True when the pointer once held a node that has since been destroyed, as opposed to never
+// holding one (a null source of a connection, for instance).
+bool
+lostNode(const NodeGuiWPtr& node)
+{
+    const NodeGuiWPtr never;
+
+    return node.expired() && (node.owner_before(never) || never.owner_before(node));
+}
+} // anonymous namespace
+
+MoveMultipleNodesCommand::MoveMultipleNodesCommand(const NodesGuiList& nodes,
                                                    double dx,
                                                    double dy,
-                                                   QUndoCommand *parent)
+                                                   QUndoCommand* parent)
     : QUndoCommand(parent)
     , _firstRedoCalled(false)
-    , _nodes(nodes)
+    , _nodes(nodes.begin(), nodes.end())
     , _dx(dx)
     , _dy(dy)
 {
     assert( !nodes.empty() );
+    setText(tr("Move node(s)"));
 }
 
 void
 MoveMultipleNodesCommand::move(double dx,
                                double dy)
 {
-    for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        QPointF pos = (*it)->getPos_mt_safe();
-        (*it)->setPosition(pos.x() + dx, pos.y() + dy);
+    bool movedAny = false;
+
+    for (std::list<NodeGuiWPtr>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
+        NodeGuiPtr node = it->lock();
+        if (!node) {
+            continue;
+        }
+        QPointF pos = node->getPos_mt_safe();
+        node->setPosition(pos.x() + dx, pos.y() + dy);
+        movedAny = true;
     }
-    setText( tr("Move node(s)") );
+    if (!movedAny) {
+        setObsolete(true);
+    }
 }
 
 void
@@ -181,6 +203,9 @@ AddMultipleNodesCommand::undo()
 
     for (std::list<NodeGuiWPtr>::const_iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
         NodeGuiPtr node = it->lock();
+        if (!node) {
+            continue;
+        }
         std::list<ViewerInstance* > viewers;
         node->getNode()->hasViewersConnected(&viewers);
         for (std::list<ViewerInstance* >::iterator it2 = viewers.begin(); it2 != viewers.end(); ++it2) {
@@ -213,7 +238,15 @@ AddMultipleNodesCommand::redo()
     std::list<ViewerInstance*> viewersToRefresh;
     std::list<NodeGuiPtr> nodes;
     for (std::list<NodeGuiWPtr>::const_iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        nodes.push_back( it->lock() );
+        NodeGuiPtr node = it->lock();
+        if (node) {
+            nodes.push_back(node);
+        }
+    }
+    if (nodes.empty()) {
+        setObsolete(true);
+
+        return;
     }
     if (_firstRedoCalled) {
         for (std::list<NodeGuiPtr> ::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
@@ -314,6 +347,12 @@ RemoveMultipleNodesCommand::undo()
          it != _nodes.end();
          ++it) {
         NodeGuiPtr node = it->node.lock();
+        if (!node) {
+            if (next != _nodes.end()) {
+                ++next;
+            }
+            continue;
+        }
         NodesList outputsToRestore;
         for (NodesWList::const_iterator it2 = it->outputsToRestore.begin(); it2 != it->outputsToRestore.end(); ++it2) {
             NodePtr output = it2->lock();
@@ -366,6 +405,12 @@ RemoveMultipleNodesCommand::redo()
          it != _nodes.end();
          ++it) {
         NodeGuiPtr node = it->node.lock();
+        if (!node) {
+            if (next != _nodes.end()) {
+                ++next;
+            }
+            continue;
+        }
         ///Make a copy before calling deactivate which will modify the list
         NodesWList outputs = node->getNode()->getGuiOutputs();
         std::list<ViewerInstance* > viewers;
@@ -475,6 +520,11 @@ ConnectCommand::undo()
     NodeGuiPtr oldSrc = _oldSrc.lock();
     NodeGuiPtr dst = _dst.lock();
 
+    if (!dst || lostNode(_newSrc) || lostNode(_oldSrc)) {
+        setObsolete(true);
+
+        return;
+    }
     doConnect(newSrc,
               oldSrc,
               dst,
@@ -494,6 +544,11 @@ ConnectCommand::redo()
     NodeGuiPtr oldSrc = _oldSrc.lock();
     NodeGuiPtr dst = _dst.lock();
 
+    if (!dst || lostNode(_newSrc) || lostNode(_oldSrc)) {
+        setObsolete(true);
+
+        return;
+    }
     doConnect(oldSrc,
               newSrc,
               dst,
@@ -587,7 +642,11 @@ InsertNodeCommand::undo()
     NodeGuiPtr exitNode = _newSrc.lock();
     NodeGuiPtr dst = _dst.lock();
 
-    assert(exitNode);
+    if (!exitNode || !dst || lostNode(_oldSrc)) {
+        setObsolete(true);
+
+        return;
+    }
 
     NodePtr oldSrcInternal = oldSrc ? oldSrc->getNode() : NodePtr();
     NodePtr exitNodeInternal = exitNode->getNode();
@@ -616,7 +675,11 @@ InsertNodeCommand::redo()
     NodeGuiPtr dst = _dst.lock();
     NodeGuiPtr entryNode = _entryNode.lock();
 
-    assert(exitNode && entryNode);
+    if (!exitNode || !entryNode || !dst || lostNode(_oldSrc)) {
+        setObsolete(true);
+
+        return;
+    }
 
     NodePtr oldSrcInternal = oldSrc ? oldSrc->getNode() : NodePtr();
     NodePtr exitNodeInternal = exitNode->getNode();
@@ -771,7 +834,7 @@ ResizeBackdropCommand::ResizeBackdropCommand(const NodeGuiPtr& bd,
 
     _oldW = bbox.width();
     _oldH = bbox.height();
-    setText( tr("Resize %1").arg( QString::fromUtf8( _bd->getNode()->getLabel().c_str() ) ) );
+    setText(tr("Resize %1").arg(QString::fromUtf8(bd->getNode()->getLabel().c_str())));
 }
 
 ResizeBackdropCommand::~ResizeBackdropCommand()
@@ -781,13 +844,27 @@ ResizeBackdropCommand::~ResizeBackdropCommand()
 void
 ResizeBackdropCommand::undo()
 {
-    _bd->resizeByUser(_oldW, _oldH);
+    NodeGuiPtr bd = _bd.lock();
+
+    if (!bd) {
+        setObsolete(true);
+
+        return;
+    }
+    bd->resizeByUser(_oldW, _oldH);
 }
 
 void
 ResizeBackdropCommand::redo()
 {
-    _bd->resizeByUser(_w, _h);
+    NodeGuiPtr bd = _bd.lock();
+
+    if (!bd) {
+        setObsolete(true);
+
+        return;
+    }
+    bd->resizeByUser(_w, _h);
 }
 
 bool
@@ -795,10 +872,11 @@ ResizeBackdropCommand::mergeWith(const QUndoCommand *command)
 {
     const ResizeBackdropCommand* rCmd = dynamic_cast<const ResizeBackdropCommand*>(command);
 
-    if (!rCmd) {
+    if (!rCmd || !inSameGestureAs(*rCmd)) {
         return false;
     }
-    if (rCmd->_bd != _bd) {
+    NodeGuiPtr bd = _bd.lock();
+    if (!bd || (rCmd->_bd.lock() != bd)) {
         return false;
     }
     _w = rCmd->_w;
@@ -832,7 +910,11 @@ void
 DecloneMultipleNodesCommand::undo()
 {
     for (std::list<NodeToDeclone>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        it->node.lock()->getNode()->getEffectInstance()->slaveAllKnobs( it->master.lock()->getEffectInstance().get(), false );
+        NodeGuiPtr node = it->node.lock();
+        NodePtr master = it->master.lock();
+        if (node && master) {
+            node->getNode()->getEffectInstance()->slaveAllKnobs(master->getEffectInstance().get(), false);
+        }
     }
 
     _graph->getGui()->getApp()->triggerAutoSave();
@@ -842,7 +924,10 @@ void
 DecloneMultipleNodesCommand::redo()
 {
     for (std::list<NodeToDeclone>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        it->node.lock()->getNode()->getEffectInstance()->unslaveAllKnobs();
+        NodeGuiPtr node = it->node.lock();
+        if (node) {
+            node->getNode()->getEffectInstance()->unslaveAllKnobs();
+        }
     }
 
     _graph->getGui()->getApp()->triggerAutoSave();
@@ -1160,9 +1245,9 @@ RearrangeNodesCommand::RearrangeNodesCommand(const std::list<NodeGuiPtr> & nodes
         for (std::list<TreeNode>::const_iterator it2 = treeNodes.begin(); it2 != treeNodes.end(); ++it2) {
             NodeToRearrange n;
             n.node = it2->first;
-            QSize size = n.node->getSize();
+            QSize size = it2->first->getSize();
             n.newPos = it2->second - QPointF(size.width() / 2., size.height() / 2.);
-            n.oldPos = n.node->pos();
+            n.oldPos = it2->first->pos();
             _nodes.push_back(n);
         }
     }
@@ -1173,7 +1258,10 @@ void
 RearrangeNodesCommand::undo()
 {
     for (std::list<NodeToRearrange>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        it->node->refreshPosition(it->oldPos.x(), it->oldPos.y(), true);
+        NodeGuiPtr node = it->node.lock();
+        if (node) {
+            node->refreshPosition(it->oldPos.x(), it->oldPos.y(), true);
+        }
     }
 }
 
@@ -1181,7 +1269,10 @@ void
 RearrangeNodesCommand::redo()
 {
     for (std::list<NodeToRearrange>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        it->node->refreshPosition(it->newPos.x(), it->newPos.y(), true);
+        NodeGuiPtr node = it->node.lock();
+        if (node) {
+            node->refreshPosition(it->newPos.x(), it->newPos.y(), true);
+        }
     }
 }
 
@@ -1200,7 +1291,10 @@ void
 DisableNodesCommand::undo()
 {
     for (std::list<NodeGuiWPtr>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        it->lock()->getNode()->setNodeDisabled(false);
+        NodeGuiPtr node = it->lock();
+        if (node) {
+            node->getNode()->setNodeDisabled(false);
+        }
     }
 }
 
@@ -1208,7 +1302,10 @@ void
 DisableNodesCommand::redo()
 {
     for (std::list<NodeGuiWPtr>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        it->lock()->getNode()->setNodeDisabled(true);
+        NodeGuiPtr node = it->lock();
+        if (node) {
+            node->getNode()->setNodeDisabled(true);
+        }
     }
 }
 
@@ -1227,7 +1324,10 @@ void
 EnableNodesCommand::undo()
 {
     for (std::list<NodeGuiWPtr>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        it->lock()->getNode()->setNodeDisabled(true);
+        NodeGuiPtr node = it->lock();
+        if (node) {
+            node->getNode()->setNodeDisabled(true);
+        }
     }
 }
 
@@ -1235,7 +1335,10 @@ void
 EnableNodesCommand::redo()
 {
     for (std::list<NodeGuiWPtr>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        it->lock()->getNode()->setNodeDisabled(false);
+        NodeGuiPtr node = it->lock();
+        if (node) {
+            node->getNode()->setNodeDisabled(false);
+        }
     }
 }
 
@@ -1256,7 +1359,10 @@ LoadNodePresetsCommand::getListAsShared(const std::list<NodeWPtr>& original,
                                         std::list<NodePtr>& shared) const
 {
     for (std::list<NodeWPtr>::const_iterator it = original.begin(); it != original.end(); ++it) {
-        shared.push_back( it->lock() );
+        NodePtr node = it->lock();
+        if (node) {
+            shared.push_back(node);
+        }
     }
 }
 
@@ -1270,9 +1376,13 @@ LoadNodePresetsCommand::undo()
     _isUndone = true;
 
     NodeGuiPtr node = _node.lock();
+    if (!node) {
+        return;
+    }
     NodePtr internalNode = node->getNode();
     MultiInstancePanelPtr panel = node->getMultiInstancePanel();
-    internalNode->fromSerialization(*_oldSerialization.front(), true);
+
+    // The children are swapped first: the snapshot's links to them only resolve against active nodes.
     if (panel) {
         std::list<NodePtr> newChildren, oldChildren;
         getListAsShared(_newChildren, newChildren);
@@ -1280,13 +1390,9 @@ LoadNodePresetsCommand::undo()
         panel->removeInstances(newChildren);
         panel->addInstances(oldChildren);
     }
-
-    NodesList allNodes;
-    internalNode->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
-
-    std::map<std::string, std::string> oldNewScriptNames;
-    internalNode->storeKnobsLinks(*_oldSerialization.front(), oldNewScriptNames);
-    internalNode->restoreKnobsLinks(allNodes, oldNewScriptNames, true); // may not fail
+    internalNode->deleteUserKnobs(_createdUserKnobs);
+    _createdUserKnobs.clear();
+    internalNode->applyPresetSerialization(*_oldSerialization.front(), Node::ePresetApplyModeSnapshot, NULL);
 
     internalNode->getEffectInstance()->incrHashAndEvaluate(true, true);
     internalNode->getApp()->triggerAutoSave();
@@ -1296,11 +1402,13 @@ void
 LoadNodePresetsCommand::redo()
 {
     NodeGuiPtr node = _node.lock();
+    if (!node) {
+        return;
+    }
     NodePtr internalNode = node->getNode();
     MultiInstancePanelPtr panel = node->getMultiInstancePanel();
 
     if (!_firstRedoCalled) {
-        ///Serialize the current state of the node
         node->serializeInternal(_oldSerialization);
 
         if (panel) {
@@ -1326,7 +1434,7 @@ LoadNodePresetsCommand::redo()
         }
     }
 
-    internalNode->fromSerialization(*_newSerializations.front(), true);
+    // As in undo, the preset's links to the new children only resolve once those are active.
     if (panel) {
         std::list<NodePtr> oldChildren, newChildren;
         getListAsShared(_oldChildren, oldChildren);
@@ -1336,13 +1444,10 @@ LoadNodePresetsCommand::redo()
             panel->addInstances(newChildren);
         }
     }
+    std::list<KnobIPtr> created;
+    internalNode->applyPresetSerialization(*_newSerializations.front(), Node::ePresetApplyModePreset, &created);
+    _createdUserKnobs.assign(created.begin(), created.end());
 
-    NodesList allNodes;
-    internalNode->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
-
-    std::map<std::string, std::string> oldNewScriptNames;
-    internalNode->storeKnobsLinks(*_newSerializations.front(), oldNewScriptNames);
-    internalNode->restoreKnobsLinks(allNodes, oldNewScriptNames, true); // may not fail
     internalNode->getEffectInstance()->incrHashAndEvaluate(true, true);
     internalNode->getApp()->triggerAutoSave();
     _firstRedoCalled = true;
@@ -1369,6 +1474,11 @@ RenameNodeUndoRedoCommand::undo()
 {
     NodeGuiPtr node = _node.lock();
 
+    if (!node) {
+        setObsolete(true);
+
+        return;
+    }
     node->setName(_oldName);
 }
 
@@ -1377,6 +1487,11 @@ RenameNodeUndoRedoCommand::redo()
 {
     NodeGuiPtr node = _node.lock();
 
+    if (!node) {
+        setObsolete(true);
+
+        return;
+    }
     node->setName(_newName);
 }
 
@@ -1478,6 +1593,9 @@ ExtractNodeUndoRedoCommand::undo()
 
     for (std::list<ExtractedTree>::iterator it = _trees.begin(); it != _trees.end(); ++it) {
         NodeGuiPtr output = it->output.node.lock();
+        if (!output) {
+            continue;
+        }
         ///Connect and move output
         for (std::list<std::pair<int, NodeWPtr> >::iterator it2 = it->output.outputs.begin(); it2 != it->output.outputs.end(); ++it2) {
             NodePtr node = it2->second.lock();
@@ -1494,6 +1612,9 @@ ExtractNodeUndoRedoCommand::undo()
         ///Connect and move inputs
         for (std::list<ExtractedInput>::iterator it2 = it->inputs.begin(); it2 != it->inputs.end(); ++it2) {
             NodeGuiPtr input = it2->node.lock();
+            if (!input) {
+                continue;
+            }
             for (U32 i  =  0; i < it2->inputs.size(); ++i) {
                 if ( it2->inputs[i].lock() ) {
                     input->getNode()->connectInput(it2->inputs[i].lock(), i);
@@ -1510,6 +1631,9 @@ ExtractNodeUndoRedoCommand::undo()
 
         for (std::list<NodeGuiWPtr>::iterator it2 = it->inbetweenNodes.begin(); it2 != it->inbetweenNodes.end(); ++it2) {
             NodeGuiPtr node = it2->lock();
+            if (!node) {
+                continue;
+            }
             QPointF curPos = node->getPos_mt_safe();
             node->refreshPosition(curPos.x() - 200, curPos.y(), true);
         }
@@ -1537,6 +1661,9 @@ ExtractNodeUndoRedoCommand::redo()
     for (std::list<ExtractedTree>::iterator it = _trees.begin(); it != _trees.end(); ++it) {
         std::list<ViewerInstance* > tmp;
         NodeGuiPtr output = it->output.node.lock();
+        if (!output) {
+            continue;
+        }
         output->getNode()->hasViewersConnected(&tmp);
 
         for (std::list<ViewerInstance* >::iterator it2 = tmp.begin(); it2 != tmp.end(); ++it2) {
@@ -1551,7 +1678,7 @@ ExtractNodeUndoRedoCommand::redo()
             const std::vector<NodeWPtr> &inputs = selectedInput.inputs;
             NodeGuiPtr selectedInputNode = selectedInput.node.lock();
             NodePtr inputToConnectTo;
-            for (U32 i = 0; i < inputs.size(); ++i) {
+            for (U32 i = 0; selectedInputNode && i < inputs.size(); ++i) {
                 if ( inputs[i].lock() && !selectedInputNode->getNode()->getEffectInstance()->isInputOptional(i) &&
                      !selectedInputNode->getNode()->getEffectInstance()->isInputRotoBrush(i) ) {
                     inputToConnectTo = inputs[i].lock();
@@ -1589,6 +1716,9 @@ ExtractNodeUndoRedoCommand::redo()
         ///Disconnect and move inputs
         for (std::list<ExtractedInput>::iterator it2 = it->inputs.begin(); it2 != it->inputs.end(); ++it2) {
             NodeGuiPtr node = it2->node.lock();
+            if (!node) {
+                continue;
+            }
             for (U32 i  =  0; i < it2->inputs.size(); ++i) {
                 if ( it2->inputs[i].lock() ) {
                     node->getNode()->disconnectInput(i);
@@ -1604,6 +1734,9 @@ ExtractNodeUndoRedoCommand::redo()
 
         for (std::list<NodeGuiWPtr>::iterator it2 = it->inbetweenNodes.begin(); it2 != it->inbetweenNodes.end(); ++it2) {
             NodeGuiPtr node = it2->lock();
+            if (!node) {
+                continue;
+            }
             QPointF curPos = node->getPos_mt_safe();
             node->refreshPosition(curPos.x() + 200, curPos.y(), true);
         }
@@ -1663,12 +1796,15 @@ GroupFromSelectionCommand::undo()
         }
     }
     _graph->setSelection(nodesToSelect);
-    _group.lock()->getNode()->deactivate(NodesList(),
-                                         true,
-                                         false,
-                                         true,
-                                         true,
-                                         false);
+    NodeGuiPtr group = _group.lock();
+    if (group) {
+        group->getNode()->deactivate(NodesList(),
+                                     true,
+                                     false,
+                                     true,
+                                     true,
+                                     false);
+    }
 
     _isRedone = false;
 }
@@ -1699,7 +1835,13 @@ GroupFromSelectionCommand::redo()
 
     NodeGroupPtr isGrp;
     if (_firstRedoCalled) {
-        isGrp = std::dynamic_pointer_cast<NodeGroup>(_group.lock()->getNode()->getEffectInstance());
+        NodeGuiPtr group = _group.lock();
+        if (!group) {
+            setObsolete(true);
+
+            return;
+        }
+        isGrp = std::dynamic_pointer_cast<NodeGroup>(group->getNode()->getEffectInstance());
         assert(isGrp);
         if (!isGrp) {
             throw std::logic_error("GroupFromSelectionCommand::redo()");
@@ -2147,8 +2289,8 @@ InlineGroupCommand::undo()
                     node->getNode()->deactivate(NodesList(), false, false, true, false, false);
                 }
             }
+            nodesToSelect.push_back(groupNode);
         }
-        nodesToSelect.push_back(groupNode);
     }
     _graph->setSelection(nodesToSelect);
     for (std::set<ViewerInstance*>::iterator it = viewers.begin(); it != viewers.end(); ++it) {

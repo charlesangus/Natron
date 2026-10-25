@@ -87,6 +87,13 @@ public:
 
     void setReadOnly(bool ro);
 
+    /**
+     * @brief The undo gesture of the drag in progress, from the press to the release, or 0
+     * outside one. positionChanged() and editingFinished() are emitted with it still set, so
+     * every value one drag pushes folds into a single undo step and the next drag starts another.
+     **/
+    quint64 getGestureKey() const;
+
     // the size of a pixel increment (used to round the value)
     double increment();
 

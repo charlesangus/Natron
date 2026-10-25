@@ -69,6 +69,7 @@
 #include "Gui/ScriptEditor.h"
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 

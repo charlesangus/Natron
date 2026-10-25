@@ -115,11 +115,10 @@ ProjectGui::create(ProjectPtr projectInternal,
                                container,
                                DockablePanel::eHeaderModeReadOnlyName,
                                false,
-                               QUndoStackPtr(),
+                               projectInternal.get(),
                                tr("Project Settings"),
                                tr("The settings of the current project."),
                                parent);
-
 
     _created = true;
 }

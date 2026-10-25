@@ -64,6 +64,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/PythonPanels.h" // PyModelDialog
 #include "Gui/TabWidget.h"
 #include "Gui/ThemedIcon.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
 
 #include <QOpenGLContext>
@@ -98,9 +99,23 @@ CurveWidget::pushUndoCommand(QUndoCommand* cmd)
 {
     CurveEditor* editor = dynamic_cast<CurveEditor*>(_imp->_selectionModel);
     CurveEditorCommand* curveCmd = dynamic_cast<CurveEditorCommand*>(cmd);
-    if (editor && curveCmd) {
-        std::list<CurveGuiPtr> editedCurves;
+    UndoScope scope;
+    std::list<CurveGuiPtr> editedCurves;
+    if (curveCmd) {
         curveCmd->getEditedCurves(&editedCurves);
+        for (std::list<CurveGuiPtr>::const_iterator it = editedCurves.begin(); it != editedCurves.end(); ++it) {
+            if (KnobCurveGui* knobCurve = dynamic_cast<KnobCurveGui*>(it->get())) {
+                scope.touchKnob(knobCurve->getInternalKnob());
+            } else if (BezierCPCurveGui* bezierCurve = dynamic_cast<BezierCPCurveGui*>(it->get())) {
+                RotoContextPtr roto = bezierCurve->getRotoContext();
+                if (roto) {
+                    scope.touchNode(roto->getNode());
+                }
+            }
+        }
+        scope.ownByOnlyTouched();
+    }
+    if (editor && curveCmd) {
         std::list<CurveGuiPtr> foldedCurves;
         for (std::list<CurveGuiPtr>::const_iterator it = editedCurves.begin(); it != editedCurves.end(); ++it) {
             if (editor->isFoldedKnobDimensionZero(it->get()) && (std::find(foldedCurves.begin(), foldedCurves.end(), *it) == foldedCurves.end())) {
@@ -112,14 +127,12 @@ CurveWidget::pushUndoCommand(QUndoCommand* cmd)
         }
     }
 
-    _imp->_undoStack->setActive();
-    _imp->_undoStack->push(cmd);
-}
+    if (!_imp->_gui) {
+        delete cmd;
 
-QUndoStack*
-CurveWidget::getUndoStack() const
-{
-    return _imp->_undoStack.get();
+        return;
+    }
+    _imp->_gui->getUndoHistory()->push(cmd, scope);
 }
 
 ///////////////////////////////////////////////////////////////////
@@ -962,6 +975,7 @@ CurveWidget::mousePressEvent(QMouseEvent* e)
         ce->onInputEventCalled();
     }
 
+    _imp->_dragGesture.begin();
     setFocus();
     ////
     // right button: popup menu
@@ -1172,6 +1186,9 @@ CurveWidget::mouseReleaseEvent(QMouseEvent*)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
+
+    // Nothing is pushed on release, so the drag's gesture can end before the release is handled.
+    _imp->_dragGesture.end();
 
     if (_imp->_evaluateOnPenUp) {
         _imp->_evaluateOnPenUp = false;
@@ -1726,7 +1743,14 @@ CurveWidget::setSelectedKeys(const SelectedKeys & keys)
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
-    _imp->_selectedKeyFrames = keys;
+    // An undo command may hold curves that were replaced when their panel was rebuilt; only the
+    // keys of curves still shown can be selected.
+    _imp->_selectedKeyFrames.clear();
+    for (SelectedKeys::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        if (std::find(_imp->_curves.begin(), _imp->_curves.end(), it->first) != _imp->_curves.end()) {
+            _imp->_selectedKeyFrames.insert(*it);
+        }
+    }
     refreshSelectedKeysAndUpdate();
 }
 

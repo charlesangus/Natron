@@ -28,12 +28,13 @@
 #include <cassert>
 #include <stdexcept>
 
-#include <QUndoStack>
 #include <QApplication>
 #include <QKeyEvent>
+#include <QUndoCommand>
 
-#include "Gui/TabWidget.h"
 #include "Gui/Gui.h"
+#include "Gui/TabWidget.h"
+#include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -94,28 +95,21 @@ PanelWidget::enterEventBase()
     if ( _gui && _gui->isFocusStealingPossible() ) {
         _thisWidget->setFocus();
 
-        //Make this stack the active one
-        QUndoStack* stack = getUndoStack();
-        if (stack) {
-            stack->setActive();
-        }
         return true;
     }
     return false;
 }
 
 void
-PanelWidget::pushUndoCommand(QUndoCommand* command)
+PanelWidget::pushUndoCommand(QUndoCommand* command,
+                             const UndoScope& scope)
 {
-    QUndoStack* stack = getUndoStack();
+    if (!_gui) {
+        delete command;
 
-    if (stack) {
-        stack->setActive();
-        stack->push(command);
-    } else {
-        //You are trying to push a command to a widget that do not own a stack!
-        assert(false);
+        return;
     }
+    _gui->getUndoHistory()->push(command, scope);
 }
 
 bool

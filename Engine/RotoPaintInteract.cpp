@@ -1720,7 +1720,11 @@ RotoPaintInteract::smoothSelectedCurve()
         }
     }
     if ( !datas.empty() ) {
-        p->publicInterface->pushUndoCommand( new SmoothCuspUndoCommand(shared_from_this(), datas, time, false, pixelScale) );
+        SmoothCuspUndoCommand* cmd = new SmoothCuspUndoCommand(shared_from_this(), datas, time, false, pixelScale);
+        // A shortcut or menu action is one undo step per trigger: the knob action that runs this
+        // cannot tell a held key's auto-repeat from a separate press.
+        cmd->setGestureKey(0);
+        p->publicInterface->pushUndoCommand(cmd);
 
         return true;
     }
@@ -1762,7 +1766,11 @@ RotoPaintInteract::cuspSelectedCurve()
         }
     }
     if ( !datas.empty() ) {
-        p->publicInterface->pushUndoCommand( new SmoothCuspUndoCommand(shared_from_this(), datas, time, true, pixelScale) );
+        SmoothCuspUndoCommand* cmd = new SmoothCuspUndoCommand(shared_from_this(), datas, time, true, pixelScale);
+        // A shortcut or menu action is one undo step per trigger: the knob action that runs this
+        // cannot tell a held key's auto-repeat from a separate press.
+        cmd->setGestureKey(0);
+        p->publicInterface->pushUndoCommand(cmd);
 
         return true;
     }
@@ -1850,8 +1858,12 @@ RotoPaintInteract::moveSelectedCpsWithKeyArrows(int x,
         p->publicInterface->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
         double time = p->publicInterface->getCurrentTime();
 
-        p->publicInterface->pushUndoCommand( new MoveControlPointsUndoCommand(shared_from_this(), points, (double)x * pixelScale.first,
-                                                                              (double)y * pixelScale.second, time) );
+        MoveControlPointsUndoCommand* cmd = new MoveControlPointsUndoCommand(shared_from_this(), points, (double)x * pixelScale.first,
+                                                                             (double)y * pixelScale.second, time);
+        // Each nudge is its own undo step: the knob action that runs this cannot tell a held
+        // arrow's auto-repeat from a separate press, so it never folds into the previous nudge.
+        cmd->setGestureKey(0);
+        p->publicInterface->pushUndoCommand(cmd);
         computeSelectedCpsBBOX();
         p->publicInterface->getNode()->getRotoContext()->evaluateChange();
 

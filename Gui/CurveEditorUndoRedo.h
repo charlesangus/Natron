@@ -43,6 +43,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Transform.h"
 
 #include "Gui/GuiFwd.h"
+#include "Gui/UndoGesture.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -136,15 +137,6 @@ public:
 
     virtual ~FoldedCurveEditCommand() OVERRIDE;
 
-private:
-    virtual void undo() OVERRIDE FINAL;
-    virtual void redo() OVERRIDE FINAL;
-    virtual int id() const OVERRIDE FINAL;
-    virtual bool mergeWith(const QUndoCommand* command) OVERRIDE FINAL;
-
-    void copyDimensionZeroToOthers();
-    void restoreOtherDimensions();
-
     struct FoldedKnob {
         KnobIPtr knob;
         CurveGuiPtr dimensionZeroCurve;
@@ -153,10 +145,19 @@ private:
         std::vector<CurvePtr> curvesBeforeFirstRedo;
     };
 
+private:
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+    virtual int id() const OVERRIDE FINAL;
+    virtual bool mergeWith(const QUndoCommand* command) OVERRIDE FINAL;
+
+    void copyDimensionZeroToOthers();
+    void restoreOtherDimensions();
+    bool knobsAreAlive() const;
+
     CurveEditor* _editor;
     std::unique_ptr<QUndoCommand> _inner;
     std::list<FoldedKnob> _knobs;
-    std::list<KnobGuiWPtr> _knobGuis;
     bool _snapshotsTaken;
 };
 
@@ -171,7 +172,7 @@ public:
     struct KeyToAdd
     {
         CurveGuiPtr curveUI;
-        KnobGuiWPtr knobUI;
+        KnobIWPtr knob;
         int dimension;
         std::vector<KeyFrame> keyframes;
     };
@@ -264,8 +265,11 @@ private:
 
 //////////////////////////////MOVE KEY COMMAND//////////////////////////////////////////////
 
+// Each mouse move of a drag pushes one of these; they fold into one undo step only within the
+// drag's gesture (see UndoGesture). The same goes for MoveTangentCommand and TransformKeysCommand.
 class MoveKeysCommand
-    : public CurveEditorCommand {
+    : public CurveEditorCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(MoveKeysCommand)
 
 public:
@@ -355,7 +359,8 @@ private:
 };
 
 class MoveTangentCommand
-    : public CurveEditorCommand {
+    : public CurveEditorCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(MoveTangentCommand)
 
 public:
@@ -454,7 +459,8 @@ private:
 };
 
 class TransformKeysCommand
-    : public CurveEditorCommand {
+    : public CurveEditorCommand,
+      public UndoGestureMember {
 public:
 
     TransformKeysCommand(CurveWidget* widget,

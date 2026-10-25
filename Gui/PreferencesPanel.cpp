@@ -398,10 +398,10 @@ public:
     void makeGuiActionForShortcut(GuiAppShorcuts::iterator guiGroupIterator, BoundAction* action);
 };
 
-PreferencesPanel::PreferencesPanel(Gui *parent)
+PreferencesPanel::PreferencesPanel(Gui* parent)
     : QWidget(parent)
-    , KnobGuiContainerHelper( appPTR->getCurrentSettings().get(), QUndoStackPtr() )
-    , _imp( new PreferencesPanelPrivate(this, parent) )
+    , KnobGuiContainerHelper(appPTR->getCurrentSettings().get(), 0, 0)
+    , _imp(new PreferencesPanelPrivate(this, parent))
 {
 }
 

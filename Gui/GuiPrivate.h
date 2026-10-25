@@ -75,13 +75,10 @@ public:
     StandardButtonEnum _lastQuestionDialogAnswer; //< stores the last question answer
     bool _lastStopAskingAnswer;
 
-    ///ptrs to the undo/redo actions from the active stack.
-    QPointer<QAction> _currentUndoAction;
-    QPointer<QAction> _currentRedoAction;
-
-    ///all the undo stacks of Natron are gathered here
-    QUndoGroup* _undoStacksGroup;
-    std::map<QUndoStack*, std::pair<QAction*, QAction*> > _undoStacksActions;
+    // The project window's single undo history and the Edit menu actions that walk it.
+    UndoHistory* undoHistory;
+    QAction* actionUndo;
+    QAction* actionRedo;
 
     ///all the splitters used to separate the "panes" of the application
     mutable QMutex _splittersMutex;
@@ -268,8 +265,6 @@ public:
     void restoreGuiGeometry();
 
     void saveGuiGeometry();
-
-    void setUndoRedoActions(QAction* undoAction, QAction* redoAction);
 
     void addToolButton(QAction* groupingMenuAction);
 

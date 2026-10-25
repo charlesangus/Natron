@@ -184,7 +184,7 @@ public:
 
     void restoreDefault();
 
-    int getMaximumUndoRedoNodeGraph() const;
+    int getMaximumUndoSteps() const;
 
     int getAutoSaveDelayMS() const;
 
@@ -580,7 +580,7 @@ private:
     KnobBoolPtr _autoScroll;
     KnobBoolPtr _autoTurbo;
     KnobBoolPtr _snapNodesToConnections;
-    KnobIntPtr _maxUndoRedoNodeGraph;
+    KnobIntPtr _maxUndoSteps;
     KnobIntPtr _disconnectedArrowLength;
     KnobBoolPtr _useInputAForMergeAutoConnect;
     KnobBoolPtr _usePluginIconsInNodeGraph;

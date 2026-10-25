@@ -41,6 +41,7 @@
 #include "Engine/EngineFwd.h"
 
 #include "Gui/GuiFwd.h"
+#include "Gui/UndoGesture.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -71,7 +72,7 @@ private:
     void move(double dx, double dy);
 
     bool _firstRedoCalled;
-    NodesGuiList _nodes;
+    std::list<NodeGuiWPtr> _nodes;
     double _dx, _dy;
 };
 
@@ -242,9 +243,11 @@ private:
     bool _firstRedoCalled;
 };
 
+// Pushed on each mouse move of a resize; the moves of one drag fold into one undo step, see
+// UndoGesture.
 class ResizeBackdropCommand
-    : public QUndoCommand
-{
+    : public QUndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(ResizeBackdropCommand)
 
 public:
@@ -265,12 +268,10 @@ public:
     virtual bool mergeWith(const QUndoCommand *command);
 
 private:
-
-    NodeGuiPtr _bd;
+    NodeGuiWPtr _bd;
     int _w, _h;
     int _oldW, _oldH;
 };
-
 
 class DecloneMultipleNodesCommand
     : public QUndoCommand
@@ -311,7 +312,7 @@ public:
 
     struct NodeToRearrange
     {
-        NodeGuiPtr node;
+        NodeGuiWPtr node;
         QPointF oldPos, newPos;
     };
 
@@ -384,6 +385,7 @@ private:
     NodeGuiWPtr _node;
     std::list<NodeWPtr> _oldChildren, _newChildren; //< children if multi-instance
     std::list<Serialization::NodeSerializationPtr> _newSerializations, _oldSerialization;
+    std::list<KnobIWPtr> _createdUserKnobs;
 };
 
 class RenameNodeUndoRedoCommand

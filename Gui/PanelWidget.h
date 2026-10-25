@@ -81,7 +81,12 @@ public:
      */
     void handleUnCaughtKeyUpEvent(QKeyEvent* e);
 
-    virtual void pushUndoCommand(QUndoCommand* command);
+    /**
+     * @brief Records the command in the window's undo history. There is deliberately no
+     * overload without a scope: an entry that names nothing it touches would never go obsolete
+     * when those nodes are deleted.
+     **/
+    void pushUndoCommand(QUndoCommand* command, const UndoScope& scope);
 
     /*
      * @brief Called whenever this panel is made the current tab in the parent tab widget
@@ -89,9 +94,6 @@ public:
     virtual void onPanelMadeCurrent() {}
 
 protected:
-
-    virtual QUndoStack* getUndoStack() const { return 0; }
-
     virtual void notifyGuiClosing() {}
 
     /**

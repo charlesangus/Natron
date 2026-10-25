@@ -134,7 +134,8 @@ NodeGraph::connectCurrentViewerToSelection(int inputNB,
     assert(foundInput);
 
     ///and push a connect command to the selected node.
-    pushUndoCommand( new ConnectCommand(this, foundInput, foundInput->getSource(), selected) );
+    pushUndoCommand(new ConnectCommand(this, foundInput, foundInput->getSource(), selected),
+                    NodesGuiList { foundInput->getDest(), foundInput->getSource(), selected });
 
 } // connectCurrentViewerToSelection
 
@@ -264,7 +265,7 @@ NodeGraph::removeNode(const NodeGuiPtr & node)
     node->setUserSelected(false);
     NodesGuiList nodesToRemove;
     nodesToRemove.push_back(node);
-    pushUndoCommand( new RemoveMultipleNodesCommand(this, nodesToRemove) );
+    pushUndoCommand(new RemoveMultipleNodesCommand(this, nodesToRemove), nodesToRemove);
 } // NodeGraph::removeNode
 
 void
@@ -352,8 +353,7 @@ NodeGraph::deleteSelection()
             (*it)->setUserSelected(false);
         }
 
-
-        pushUndoCommand( new RemoveMultipleNodesCommand(this, nodesToRemove) );
+        pushUndoCommand(new RemoveMultipleNodesCommand(this, nodesToRemove), nodesToRemove);
         _imp->_selection.clear();
     }
 } // deleteSelection

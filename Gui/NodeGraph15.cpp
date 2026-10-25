@@ -141,7 +141,8 @@ NodeGraph::connectInputArrowToNode(Edge* arrow,
     bool ok = handleConnectionError(nodeHoldingEdge, target, arrow->getInputNumber());
     arrow->stackBefore(target.get());
     if (ok) {
-        pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), target));
+        pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), target),
+                        NodesGuiList { nodeHoldingEdge, arrow->getSource(), target });
     }
 
     return ok;
@@ -241,7 +242,8 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
         _imp->_pickedUpArrowDest.reset();
         _imp->_pickedUpArrowInput = -1;
         if (arrow->getSource()) {
-            pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), NodeGuiPtr()));
+            pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), NodeGuiPtr()),
+                            NodesGuiList { arrow->getDest(), arrow->getSource() });
         }
         if (nodeHoldingEdge) {
             nodeHoldingEdge->refreshEdges();
@@ -279,6 +281,7 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
     EventStateEnum state = _imp->_evtState;
 
     _imp->_evtState = eEventStateNone;
+    _imp->_dragGesture.end();
 
     _imp->autoScrollTimer.stop();
 
@@ -310,8 +313,9 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
                             Edge* foundInput = targetNode->getInputArrow(preferredInput);
                             assert(foundInput);
                             foundSrc = true;
-                            pushUndoCommand( new ConnectCommand( this, foundInput,
-                                                                 foundInput->getSource(), _imp->_arrowSelected->getSource() ) );
+                            pushUndoCommand(new ConnectCommand(this, foundInput,
+                                                               foundInput->getSource(), _imp->_arrowSelected->getSource()),
+                                            NodesGuiList { targetNode, foundInput->getSource(), _imp->_arrowSelected->getSource() });
                         }
                     }
                 }
@@ -322,8 +326,9 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
         // Output edges can never be really connected, they're just there
         // So the user understands some nodes can have output
         if ( !foundSrc && !_imp->_arrowSelected->isOutputEdge() && _imp->_arrowSelected->getSource() ) {
-            pushUndoCommand( new ConnectCommand( this, _imp->_arrowSelected, _imp->_arrowSelected->getSource(),
-                                                 NodeGuiPtr() ) );
+            pushUndoCommand(new ConnectCommand(this, _imp->_arrowSelected, _imp->_arrowSelected->getSource(),
+                                               NodeGuiPtr()),
+                            NodesGuiList { nodeHoldingEdge, _imp->_arrowSelected->getSource() });
         }
 
 
@@ -378,14 +383,19 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
                 resetSplicePlan();
 
                 QUndoCommand* spliceCommand = new QUndoCommand(tr("Insert nodes"));
+                NodesGuiList touched = nodesToMove;
+                touched.push_back(pipe->getDest());
+                touched.push_back(pipe->getSource());
+                touched.push_back(exitGui);
+                touched.push_back(entryGui);
                 if (hasMoved) {
                     new MoveMultipleNodesCommand(nodesToMove, _imp->_deltaSinceMousePress.x(), _imp->_deltaSinceMousePress.y(), spliceCommand);
                 }
                 new InsertNodeCommand(this, pipe, exitGui, entryGui, entryInput, spliceCommand);
-                pushUndoCommand(spliceCommand);
+                pushUndoCommand(spliceCommand, touched);
             } else {
                 if (hasMoved) {
-                    pushUndoCommand(new MoveMultipleNodesCommand(nodesToMove, _imp->_deltaSinceMousePress.x(), _imp->_deltaSinceMousePress.y()));
+                    pushUndoCommand(new MoveMultipleNodesCommand(nodesToMove, _imp->_deltaSinceMousePress.x(), _imp->_deltaSinceMousePress.y()), nodesToMove);
                 }
             }
         }

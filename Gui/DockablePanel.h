@@ -74,10 +74,10 @@ public:
                            QVBoxLayout* container,
                            HeaderModeEnum headerMode,
                            bool useScrollAreasForTabs,
-                           const QUndoStackPtr& stack,
-                           const QString & initialName = QString(),
-                           const QString & helpToolTip = QString(),
-                           QWidget *parent = 0);
+                           KnobHolder* undoOwner,
+                           const QString& initialName = QString(),
+                           const QString& helpToolTip = QString(),
+                           QWidget* parent = 0);
 
     virtual ~DockablePanel() OVERRIDE;
 
@@ -290,8 +290,6 @@ private:
         Q_EMIT selected();
         QFrame::mousePressEvent(e);
     }
-
-    virtual void focusInEvent(QFocusEvent* e) OVERRIDE FINAL;
 
     QString helpString() const;
 

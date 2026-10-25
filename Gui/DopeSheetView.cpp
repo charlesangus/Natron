@@ -3377,6 +3377,7 @@ DopeSheetView::mousePressEvent(QMouseEvent *e)
     running_in_main_thread();
 
     _imp->model->getEditor()->onInputEventCalled();
+    _imp->model->beginEditGesture();
 
     bool didSomething = false;
 
@@ -3616,6 +3617,9 @@ void
 DopeSheetView::mouseReleaseEvent(QMouseEvent *e)
 {
     Q_UNUSED(e);
+
+    // Nothing a drag edits is pushed on release, so its gesture can end first.
+    _imp->model->endEditGesture();
 
     bool mustRedraw = false;
 

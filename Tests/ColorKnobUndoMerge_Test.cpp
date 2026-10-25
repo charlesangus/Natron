@@ -46,6 +46,7 @@
 #include "Gui/KnobGuiColor.h"
 #include "Gui/KnobGuiContainerI.h"
 #include "Gui/KnobUndoCommand.h"
+#include "Gui/UndoGesture.h"
 
 NATRON_NAMESPACE_USING
 
@@ -231,7 +232,7 @@ TEST(ColorKnobUndoMerge, UndoTextNamesTheKnobAndTheAxis)
     EXPECT_EQ(QString::fromUtf8("White: trackball"), cmd->text());
 }
 
-TEST(ColorKnobUndoMerge, SliderStyleDragStillMergesAsBefore)
+TEST(ColorKnobUndoMerge, SeparateUnkeyedEditsStayTwoUndoSteps)
 {
     KnobColorPtr knob = makeWhiteKnob();
     ASSERT_TRUE(bool(knob));
@@ -253,9 +254,35 @@ TEST(ColorKnobUndoMerge, SliderStyleDragStillMergesAsBefore)
     *last.begin() = 0.6;
     knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, start, last, false));
 
-    // Two zero-key pushes on the same knob and dimensions still fold into one drag.
-    EXPECT_EQ(1, container.undoStack.count());
+    // Key 0 means each push is a separate commit, so editing the same knob twice must leave
+    // two undo steps; folding them made one undo jump back past both edits.
+    EXPECT_EQ(2, container.undoStack.count());
     EXPECT_DOUBLE_EQ(0.6, knob->getValue(0));
+}
+
+TEST(ColorKnobUndoMerge, PushesOfOneGestureFoldIntoOneUndoStep)
+{
+    KnobColorPtr knob = makeWhiteKnob();
+    ASSERT_TRUE(bool(knob));
+
+    FakeKnobGuiContainer container;
+    KnobGuiPtr knobGui = std::make_shared<KnobGuiColor>(knob, &container);
+
+    std::list<double> start;
+    for (int i = 0; i < 4; ++i) {
+        start.push_back(knob->getValue(i));
+    }
+
+    UndoGesture drag;
+    drag.begin();
+    for (int step = 1; step <= 5; ++step) {
+        std::list<double> next = start;
+        *next.begin() = 0.1 * step;
+        knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, start, next, false, drag.key()));
+    }
+    drag.end();
+    EXPECT_EQ(1, container.undoStack.count());
+    EXPECT_DOUBLE_EQ(0.5, knob->getValue(0));
 }
 
 TEST(ColorKnobUndoMerge, NonZeroMergeKeysOnlyMergeWhenEqual)

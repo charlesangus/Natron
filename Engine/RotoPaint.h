@@ -130,6 +130,12 @@ public:
     virtual bool isHostChannelSelectorSupported(bool* defaultR, bool* defaultG, bool* defaultB, bool* defaultA) const OVERRIDE WARN_UNUSED_RETURN;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    /**
+     * @brief The viewer overlay state the roto undo commands act on. Tests use it to build those
+     * commands without a viewer.
+     **/
+    RotoPaintInteractPtr getInteract() const;
+
 public Q_SLOTS:
 
 

@@ -32,12 +32,13 @@
 #include <QDebug>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
+#include <QAction>
 #include <QCloseEvent>
+#include <QKeySequence>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include <QApplication> // qApp
-#include <QMenuBar>
-#include <QUndoGroup>
 #include <QDesktopServices>
+#include <QMenuBar>
 #include <QUrl>
 
 #include "Engine/Node.h"
@@ -61,6 +62,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/ProjectGui.h"
 #include "Gui/RenderStatsDialog.h"
 #include "Gui/ThemedIcon.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
 
 NATRON_NAMESPACE_ENTER
@@ -113,10 +115,11 @@ Gui::~Gui()
 #ifdef DEBUG
     qDebug() << "Gui::~Gui()" << (void*)(this);
 #endif
+    // Commands hold nodes; they must go while the graphs they refer to still exist.
+    _imp->undoHistory->clear();
     _imp->_nodeGraphArea->invalidateAllNodesParenting();
     delete _imp->_errorLog;
     delete _imp->_projectGui;
-    delete _imp->_undoStacksGroup;
     _imp->_viewerTabs.clear();
 }
 
@@ -244,7 +247,8 @@ Gui::abortProject(bool quitApp,
     }
     _imp->saveGuiGeometry();
 
-    _imp->setUndoRedoActions(0, 0);
+    // Commands hold nodes, so the history goes before the project destroys them.
+    _imp->undoHistory->clear();
     if (quitApp) {
         if (app) {
             app->quit();
@@ -269,10 +273,6 @@ Gui::abortProject(bool quitApp,
         restoreDefaultLayout();
         setGuiAboutToClose(false);
     }
-
-    ///Reset current undo/reso actions
-    _imp->_currentUndoAction = 0;
-    _imp->_currentRedoAction = 0;
 
     return true;
 }
@@ -505,6 +505,26 @@ Gui::createMenuActions()
     _imp->actionSaveAndIncrementVersion = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionSaveAndIncrVersion, kShortcutDescActionSaveAndIncrVersion, this);
     QObject::connect( _imp->actionSaveAndIncrementVersion, SIGNAL(triggered()), this, SLOT(saveAndIncrVersion()) );
 
+    // Window shortcuts on this Gui's own windows, like the color trackball action below: with two
+    // projects open, two application shortcuts on Ctrl+Z would be ambiguous and neither would
+    // fire. registerFloatingWindow() adds them to each floating pane so it undoes its own project.
+    // Text fields still consume Ctrl+Z through ShortcutOverride.
+    _imp->actionUndo = new QAction(tr("Undo"), this);
+    _imp->actionUndo->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Z));
+    _imp->actionUndo->setShortcutContext(Qt::WindowShortcut);
+    _imp->actionUndo->setEnabled(false);
+    QObject::connect(_imp->actionUndo, &QAction::triggered, _imp->undoHistory, [this]() { _imp->undoHistory->undo(); });
+
+    _imp->actionRedo = new QAction(tr("Redo"), this);
+    _imp->actionRedo->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z));
+    _imp->actionRedo->setShortcutContext(Qt::WindowShortcut);
+    _imp->actionRedo->setEnabled(false);
+    QObject::connect(_imp->actionRedo, &QAction::triggered, _imp->undoHistory, [this]() { _imp->undoHistory->redo(); });
+    addAction(_imp->actionUndo);
+    addAction(_imp->actionRedo);
+
+    QObject::connect(_imp->undoHistory, &UndoHistory::changed, this, &Gui::onUndoHistoryChanged);
+
     _imp->actionPreferences = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionPreferences, kShortcutDescActionPreferences, this);
     _imp->actionPreferences->setMenuRole(QAction::PreferencesRole);
     QObject::connect( _imp->actionPreferences, SIGNAL(triggered()), this, SLOT(showSettings()) );
@@ -713,6 +733,9 @@ Gui::createMenuActions()
     _imp->menuFile->addSeparator();
     _imp->menuFile->addAction(_imp->actionExit);
 
+    _imp->menuEdit->addAction(_imp->actionUndo);
+    _imp->menuEdit->addAction(_imp->actionRedo);
+    _imp->menuEdit->addSeparator();
     _imp->menuEdit->addAction(_imp->actionPreferences);
 
     _imp->menuLayout->addAction(_imp->actionImportLayout);

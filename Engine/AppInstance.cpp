@@ -84,6 +84,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
+#include "Engine/UndoRecorder.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -184,6 +185,9 @@ public:
 
     AppInstance::NodeCreationContext creationContext;
 
+    std::shared_ptr<UndoRecorderI> undoRecorder;
+    int replayingUndo;
+
     AppInstancePrivate(int appID,
                        AppInstance* app)
 
@@ -202,6 +206,8 @@ public:
         , invalidExprKnobs()
         , projectBeingLoaded()
         , creationContext()
+        , undoRecorder()
+        , replayingUndo(0)
     {
     }
 
@@ -261,6 +267,55 @@ AppInstance::isCreatingNodeTree() const
     QMutexLocker k(&_imp->creatingGroupMutex);
 
     return _imp->_creatingTree;
+}
+
+void
+AppInstance::setUndoRecorder(const std::shared_ptr<UndoRecorderI>& recorder)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    _imp->undoRecorder = recorder;
+}
+
+std::shared_ptr<UndoRecorderI>
+AppInstance::getUndoRecorder() const
+{
+    return _imp->undoRecorder;
+}
+
+std::shared_ptr<UndoRecorderI>
+AppInstance::getRecordingUndoRecorder() const
+{
+    if (!_imp->undoRecorder || (QThread::currentThread() != qApp->thread())) {
+        return std::shared_ptr<UndoRecorderI>();
+    }
+    if (_imp->replayingUndo || isCreatingNodeTree() || isCreatingPythonGroup()) {
+        return std::shared_ptr<UndoRecorderI>();
+    }
+    if (_imp->_currentProject && (_imp->_currentProject->isLoadingProject() || _imp->_currentProject->isProjectClosing())) {
+        return std::shared_ptr<UndoRecorderI>();
+    }
+    if (!_imp->undoRecorder->isRecording()) {
+        return std::shared_ptr<UndoRecorderI>();
+    }
+
+    return _imp->undoRecorder;
+}
+
+void
+AppInstance::setReplayingUndo(bool replaying)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (replaying) {
+        ++_imp->replayingUndo;
+    } else if (_imp->replayingUndo > 0) {
+        --_imp->replayingUndo;
+    }
+}
+
+bool
+AppInstance::isReplayingUndo() const
+{
+    return _imp->replayingUndo > 0;
 }
 
 void
@@ -542,6 +597,7 @@ AppInstance::getWritersWorkForCL(const CLArgs& cl,
 void
 AppInstancePrivate::executeCommandLinePythonCommands(const CLArgs& args)
 {
+    UndoSuppressGuard noUndo(_publicInterface->shared_from_this());
     const std::list<std::string>& commands = args.getPythonCommands();
 
     for (std::list<std::string>::const_iterator it = commands.begin(); it != commands.end(); ++it) {
@@ -724,6 +780,7 @@ AppInstance::loadInternal(const CLArgs& cl,
 bool
 AppInstance::loadPythonScript(const QFileInfo& file)
 {
+    UndoSuppressGuard noUndo(shared_from_this());
     std::string addToPythonPath("sys.path.append(\"");
 
     addToPythonPath += file.path().toStdString();
@@ -935,6 +992,8 @@ AppInstance::createNodeFromPythonModule(Plugin* plugin,
         ss << ")\n";
         std::string err;
         std::string output;
+        // The nodes the script builds undo with the container's creation, not one by one.
+        UndoSuppressGuard noUndo(shared_from_this());
         if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(ss.str(), &err, &output) ) {
             Dialogs::errorDialog(tr("Group plugin creation error").toStdString(), err);
             if (containerNode) {
@@ -1482,6 +1541,12 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
 NodePtr
 AppInstance::createNode(CreateNodeArgs & args)
 {
+    // A node the user creates is one undo step together with whatever its creation callback edits.
+    std::unique_ptr<UndoStepGuard> step;
+    if (args.getProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand)) {
+        step.reset(new UndoStepGuard(shared_from_this(), std::string()));
+    }
+
     return createNodeInternal(args);
 }
 
@@ -2300,6 +2365,7 @@ AppInstance::printAutoDeclaredVariable(const std::string& /*str*/)
 void
 AppInstance::execOnProjectCreatedCallback()
 {
+    UndoSuppressGuard noUndo(shared_from_this());
     std::string cb = appPTR->getCurrentSettings()->getOnProjectCreatedCB();
 
     if ( cb.empty() ) {

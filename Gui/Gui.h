@@ -154,9 +154,10 @@ public:
 
     static void loadStyleSheet();
 
-    void registerNewUndoStack(QUndoStack* stack);
-
-    void removeUndoStack(QUndoStack* stack);
+    /**
+     * @brief The undo history every project edit made in this window is recorded in.
+     **/
+    UndoHistory* getUndoHistory() const;
 
     /**
      * @brief An error dialog with title and text customizable
@@ -611,7 +612,7 @@ public Q_SLOTS:
 
     void rebuildNodesToolBox();
 
-    void onCurrentUndoStackChanged(QUndoStack* stack);
+    void onUndoHistoryChanged();
 
     void showSettings();
 

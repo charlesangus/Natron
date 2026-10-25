@@ -33,10 +33,11 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
-#include "Engine/Project.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/EffectInstance.h"
+#include "Engine/Project.h"
+#include "Engine/PythonUndoCommands.h"
 #include "Engine/Settings.h"
 
 #include "Engine/EngineFwd.h"
@@ -98,6 +99,17 @@ App::getCollectionFromGroup(Group* group) const
     return collection;
 }
 
+// A script that asks for the node graph's own undo command gets it; otherwise the node is recorded
+// in the script's step once it exists.
+static void
+recordCreatedNode(const NodePtr& node,
+                  const CreateNodeArgs& args)
+{
+    if (!args.getProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand)) {
+        recordPythonNodeCreated(node);
+    }
+}
+
 static void makeCreateNodeArgs(const AppInstancePtr& app,
                                const QString& pluginID,
                                int majorVersion,
@@ -152,8 +164,6 @@ static void makeCreateNodeArgs(const AppInstancePtr& app,
             app->appendToScriptEditor(ss.str());
         }
     }
-
-
 }
 
 
@@ -171,6 +181,8 @@ App::createNode(const QString& pluginID,
 
     NodePtr node = getInternalApp()->createNode(args);
     if (node) {
+        recordCreatedNode(node, args);
+
         return new Effect(node);
     } else {
         return NULL;
@@ -191,6 +203,8 @@ App::createReader(const QString& filename,
 
     NodePtr node = getInternalApp()->createReader(filename.toStdString(), args);
     if (node) {
+        recordCreatedNode(node, args);
+
         return new Effect(node);
     } else {
         return NULL;
@@ -209,6 +223,8 @@ App::createWriter(const QString& filename,
     makeCreateNodeArgs(getInternalApp(), QString::fromUtf8(PLUGINID_NATRON_WRITE), -1, collection, props, &args);
     NodePtr node = getInternalApp()->createWriter(filename.toStdString(), args);
     if (node) {
+        recordCreatedNode(node, args);
+
         return new Effect(node);
     } else {
         return NULL;

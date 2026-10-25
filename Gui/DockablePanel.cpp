@@ -101,13 +101,13 @@ DockablePanel::DockablePanel(Gui* gui,
                              QVBoxLayout* container,
                              HeaderModeEnum headerMode,
                              bool useScrollAreasForTabs,
-                             const QUndoStackPtr& stack,
-                             const QString & initialName,
-                             const QString & helpToolTip,
-                             QWidget *parent)
+                             KnobHolder* undoOwner,
+                             const QString& initialName,
+                             const QString& helpToolTip,
+                             QWidget* parent)
     : QFrame(parent)
-    , KnobGuiContainerHelper(holder, stack)
-    , _imp( new DockablePanelPrivate(this, gui, holder, container, headerMode, useScrollAreasForTabs, helpToolTip) )
+    , KnobGuiContainerHelper(holder, (undoOwner && gui) ? gui->getUndoHistory() : 0, undoOwner)
+    , _imp(new DockablePanelPrivate(this, gui, holder, container, headerMode, useScrollAreasForTabs, helpToolTip))
 {
     setContainerWidget(this);
 
@@ -319,7 +319,7 @@ DockablePanel::DockablePanel(Gui* gui,
         _imp->_undoButton->setFixedSize(mediumBSize);
         _imp->_undoButton->setIconSize(mediumIconSize);
         _imp->_undoButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Undo the last change made to this operator."), NATRON_NAMESPACE::WhiteSpaceNormal) );
-        _imp->_undoButton->setEnabled(false);
+        _imp->_undoButton->setEnabled(canUndo());
         _imp->_undoButton->setFocusPolicy(Qt::NoFocus);
         QIcon icRedo;
         appPTR->getIcon(NATRON_PIXMAP_REDO, iconSize, &icRedo);
@@ -327,7 +327,7 @@ DockablePanel::DockablePanel(Gui* gui,
         _imp->_redoButton->setFixedSize(mediumBSize);
         _imp->_redoButton->setIconSize(mediumIconSize);
         _imp->_redoButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Redo the last change undone to this operator."), NATRON_NAMESPACE::WhiteSpaceNormal) );
-        _imp->_redoButton->setEnabled(false);
+        _imp->_redoButton->setEnabled(canRedo());
         _imp->_redoButton->setFocusPolicy(Qt::NoFocus);
 
         QIcon icRestore;
@@ -878,26 +878,14 @@ DockablePanel::refreshUndoRedoButtonsEnabledNess(bool canUndo,
 void
 DockablePanel::onUndoClicked()
 {
-    QUndoStackPtr stack = getUndoStack();
-
-    stack->undo();
-    if (_imp->_undoButton && _imp->_redoButton) {
-        _imp->_undoButton->setEnabled( stack->canUndo() );
-        _imp->_redoButton->setEnabled( stack->canRedo() );
-    }
+    undo();
     Q_EMIT undoneChange();
 }
 
 void
 DockablePanel::onRedoPressed()
 {
-    QUndoStackPtr stack = getUndoStack();
-
-    stack->redo();
-    if (_imp->_undoButton && _imp->_redoButton) {
-        _imp->_undoButton->setEnabled( stack->canUndo() );
-        _imp->_redoButton->setEnabled( stack->canRedo() );
-    }
+    redo();
     Q_EMIT redoneChange();
 }
 
@@ -1591,14 +1579,6 @@ DockablePanel::setOverlayColor(const QColor& c)
 }
 
 void
-DockablePanel::focusInEvent(QFocusEvent* e)
-{
-    QFrame::focusInEvent(e);
-
-    getUndoStack()->setActive();
-}
-
-void
 DockablePanel::onRightClickMenuRequested(const QPoint & pos)
 {
     QWidget* emitter = qobject_cast<QWidget*>( sender() );
@@ -1711,7 +1691,7 @@ DockablePanel::setKeyOnAllParameters()
                     k.curveUI = *it2;
                     KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it2->get() );
                     if (isKnobCurve) {
-                        k.knobUI = isKnobCurve->getKnobGui();
+                        k.knob = isKnobCurve->getInternalKnob();
                         k.dimension = isKnobCurve->getDimension();
                     } else {
                         k.dimension = 0;

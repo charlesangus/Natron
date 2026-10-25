@@ -267,10 +267,6 @@ public:
 
     void removeSettingsPanel();
 
-    QUndoStackPtr getUndoStack() const;
-
-    void removeUndoStack();
-
     void discardGraphPointer();
     /**
      * @brief Given the rectangle r, move the node down so it doesn't belong
@@ -693,6 +689,12 @@ private:
 
     void initializeInputsForInspector();
 
+    /**
+     * @brief Pushes to the window's history as an entry owned by this node, whether or not its
+     * settings panel exists.
+     **/
+    void pushToUndoHistory(QUndoCommand* command);
+
     /*pointer to the dag*/
     NodeGraph* _graph;
 
@@ -803,7 +805,6 @@ private:
     mutable QMutex _mtSafeSizeMutex;
     int _mtSafeWidth, _mtSafeHeight;
     HostOverlayPtr _hostOverlay;
-    QUndoStackPtr _undoStack; /*!< undo/redo stack*/
     bool _overlayLocked;
     NodeGuiIndicatorPtr _availableViewsIndicator;
     NodeGuiIndicatorPtr _passThroughIndicator;

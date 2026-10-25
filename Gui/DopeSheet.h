@@ -240,19 +240,23 @@ private:
 class DopeSheetKey
 {
 public:
-    DopeSheetKey(const DSKnobPtr &knob,
+    DopeSheetKey(const DSKnobPtr& knob,
                  const KeyFrame& kf)
         : context(knob)
         , key(kf)
+        , knob(knob ? knob->getInternalKnob() : KnobIPtr())
+        , dimension(knob ? knob->getDimension() : 0)
     {
         DSKnobPtr knobContext = context.lock();
 
         assert(knobContext);
     }
 
-    DopeSheetKey(const DopeSheetKey &other)
+    DopeSheetKey(const DopeSheetKey& other)
         : context(other.context)
         , key(other.key)
+        , knob(other.knob)
+        , dimension(other.dimension)
     {}
 
     friend bool operator==(const DopeSheetKey &key,
@@ -295,6 +299,11 @@ public:
 
     DSKnobWPtr context;
     KeyFrame key;
+
+    // The dope sheet recreates its knob contexts whenever a panel is rebuilt, so undo commands
+    // address the key through the knob and dimension instead.
+    KnobIWPtr knob;
+    int dimension;
 };
 
 typedef DopeSheetKeyPtr DopeSheetKeyPtr;
@@ -359,6 +368,13 @@ public:
     // User interaction
     void deleteSelectedKeyframes();
 
+    /**
+     * @brief Delimits one drag in the view, from the press to the release: the moves, trims,
+     * slips and transforms it pushes fold into one undo step, and the next drag makes another.
+     **/
+    void beginEditGesture();
+    void endEditGesture();
+
     void moveSelectedKeysAndNodes(double dt);
     void trimReaderLeft(const DSNodePtr &reader, double newFirstFrame);
     void trimReaderRight(const DSNodePtr &reader, double newLastFrame);
@@ -381,8 +397,6 @@ public:
     SequenceTime getCurrentFrame() const;
 
     void renameSelectedNode();
-
-    QUndoStack* getUndoStack() const;
 
 Q_SIGNALS:
     void modelChanged();

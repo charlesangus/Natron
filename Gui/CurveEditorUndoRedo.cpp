@@ -37,6 +37,7 @@
 #include "Gui/CurveWidget.h"
 #include "Gui/KnobGui.h"
 #include "Gui/KnobGuiValue.h"
+#include "Gui/KnobUndoCommand.h"
 
 #include "Engine/Bezier.h"
 #include "Engine/Knob.h"
@@ -47,6 +48,21 @@
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
+
+// Curve GUIs are recreated when a panel is rebuilt, but a command may still hold the old one. Its
+// engine knob and curve stay valid, so the command keeps working on them; only when the knob itself
+// has been deleted is the command dropped. Roto and bezier curves are owned by their items.
+static bool
+curveKnobIsDead(const CurveGui* curve)
+{
+    const KnobCurveGui* isKnobCurve = dynamic_cast<const KnobCurveGui*>(curve);
+
+    if (!isKnobCurve || isKnobCurve->getRotoContext()) {
+        return false;
+    }
+
+    return !lockUndoKnob(KnobIWPtr(isKnobCurve->getInternalKnob()));
+}
 
 //////////////////////////////ADD MULTIPLE KEYS COMMAND//////////////////////////////////////////////
 AddKeysCommand::AddKeysCommand(CurveWidget* editor,
@@ -69,15 +85,13 @@ AddKeysCommand::AddKeysCommand(CurveWidget* editor,
     KeyToAdd k;
 
     k.curveUI = curve;
-    KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( curve.get() );
-    KnobGuiPtr guiKnob;
+    KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>(curve.get());
     if (isKnobCurve) {
-        guiKnob = isKnobCurve->getKnobGui();
+        k.knob = isKnobCurve->getInternalKnob();
         k.dimension = isKnobCurve->getDimension();
     } else {
         k.dimension = 0;
     }
-    k.knobUI = guiKnob;
     k.keyframes = keys;
     _keys.push_back(k);
 
@@ -91,13 +105,14 @@ AddKeysCommand::addOrRemoveKeyframe(bool isSetKeyCommand,
     for (KeysToAddList::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->curveUI.get() );
         BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>( it->curveUI.get() );
-        KnobGuiPtr guiKnob = it->knobUI.lock();
-        KnobIPtr knob;
+        KnobIPtr knob = lockUndoKnob(it->knob);
 
-        if (guiKnob) {
-            knob = guiKnob->getKnob();
-        } else if (isKnobCurve) {
-            knob = isKnobCurve->getInternalKnob();
+        if (!knob && isKnobCurve) {
+            knob = lockUndoKnob(KnobIWPtr(isKnobCurve->getInternalKnob()));
+        }
+        if (isKnobCurve && !knob) {
+            setObsolete(true);
+            continue;
         }
         KnobParametricPtr isParametric;
         if (knob) {
@@ -124,13 +139,11 @@ AddKeysCommand::addOrRemoveKeyframe(bool isSetKeyCommand,
             }
         }
 
-        if (guiKnob && !isParametric) {
-            if (isKnobCurve) {
-                if (add) {
-                    guiKnob->setKeyframes( it->keyframes, isKnobCurve->getDimension(), ViewIdx(0) );
-                } else {
-                    guiKnob->removeKeyframes( it->keyframes, isKnobCurve->getDimension(), ViewIdx(0) );
-                }
+        if (isKnobCurve && !isKnobCurve->getRotoContext() && !isParametric) {
+            if (add) {
+                KnobGui::setKnobKeyframes(knob, it->keyframes, isKnobCurve->getDimension(), ViewIdx(0));
+            } else {
+                KnobGui::removeKnobKeyframes(knob, it->keyframes, isKnobCurve->getDimension(), ViewIdx(0));
             }
         } else {
             for (std::size_t i = 0; i < it->keyframes.size(); ++i) {
@@ -160,15 +173,13 @@ AddKeysCommand::addOrRemoveKeyframe(bool isSetKeyCommand,
                             }
                         }
                     } else {
-                        KnobParametricPtr parametricKnob = std::dynamic_pointer_cast<KnobParametric>( isKnobCurve->getInternalKnob() );
-
-                        if (parametricKnob) {
-                            StatusEnum st = parametricKnob->deleteControlPoint( eValueChangedReasonUserEdited, it->dimension,
-                                                                                it->curveUI->getInternalCurve()->keyFrameIndex( it->keyframes[i].getTime() ) );
+                        if (isParametric) {
+                            StatusEnum st = isParametric->deleteControlPoint(eValueChangedReasonUserEdited, it->dimension,
+                                                                             it->curveUI->getInternalCurve()->keyFrameIndex(it->keyframes[i].getTime()));
                             assert(st == eStatusOK);
                             Q_UNUSED(st);
                         } else {
-                            isKnobCurve->getInternalKnob()->deleteValueAtTime( eCurveChangeReasonCurveEditor, it->keyframes[i].getTime(), ViewIdx(0),  isKnobCurve->getDimension(), i == 0 );
+                            knob->deleteValueAtTime(eCurveChangeReasonCurveEditor, it->keyframes[i].getTime(), ViewIdx(0), isKnobCurve->getDimension(), i == 0);
                         }
                     }
                 } else if (isBezierCurve) {
@@ -236,7 +247,12 @@ SetKeysCommand::undo()
     BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>( _guiCurve.get() );
 
     if (isKnobCurve) {
-        KnobIPtr knob = isKnobCurve->getInternalKnob();
+        KnobIPtr knob = lockUndoKnob(KnobIWPtr(isKnobCurve->getInternalKnob()));
+        if (!knob) {
+            setObsolete(true);
+
+            return;
+        }
         KnobParametricPtr isParametric = std::dynamic_pointer_cast<KnobParametric>(knob);
         if (!isParametric) {
             knob->cloneCurve(ViewSpec::all(), isKnobCurve->getDimension(), *_oldCurve);
@@ -271,16 +287,15 @@ RemoveKeysCommand::addOrRemoveKeyframe(bool add)
     std::set<KnobIPtr> knobsSet;
     for (std::map<CurveGuiPtr, std::vector<KeyFrame> >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
-        BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>( it->first.get() );
-        KnobGuiPtr guiKnob;
-        if (isKnobCurve) {
-            guiKnob = isKnobCurve->getKnobGui();
-        }
-
+        BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>(it->first.get());
         KnobIPtr knob;
 
         if (isKnobCurve) {
-            knob = isKnobCurve->getInternalKnob();
+            knob = lockUndoKnob(KnobIWPtr(isKnobCurve->getInternalKnob()));
+            if (!knob) {
+                setObsolete(true);
+                continue;
+            }
         }
         KnobParametricPtr isParametric;
 
@@ -294,11 +309,11 @@ RemoveKeysCommand::addOrRemoveKeyframe(bool add)
             isParametric = std::dynamic_pointer_cast<KnobParametric>(knob);
         }
 
-        if (guiKnob && isKnobCurve && !isParametric) {
+        if (isKnobCurve && !isKnobCurve->getRotoContext() && !isParametric) {
             if (add) {
-                guiKnob->setKeyframes( it->second, isKnobCurve->getDimension(), ViewIdx(0) );
+                KnobGui::setKnobKeyframes(knob, it->second, isKnobCurve->getDimension(), ViewIdx(0));
             } else {
-                guiKnob->removeKeyframes( it->second, isKnobCurve->getDimension(), ViewIdx(0) );
+                KnobGui::removeKnobKeyframes(knob, it->second, isKnobCurve->getDimension(), ViewIdx(0));
             }
         } else {
             for (std::size_t i = 0; i < it->second.size(); ++i) {
@@ -326,14 +341,12 @@ RemoveKeysCommand::addOrRemoveKeyframe(bool add)
                             }
                         }
                     } else {
-                        KnobParametricPtr knob = std::dynamic_pointer_cast<KnobParametric>( isKnobCurve->getInternalKnob() );
-
-                        if (knob) {
-                            StatusEnum st = knob->deleteControlPoint( eValueChangedReasonUserEdited, isKnobCurve->getDimension(),
-                                                                      it->first->getInternalCurve()->keyFrameIndex( it->second[i].getTime() ) );
+                        if (isParametric) {
+                            StatusEnum st = isParametric->deleteControlPoint(eValueChangedReasonUserEdited, isKnobCurve->getDimension(),
+                                                                             it->first->getInternalCurve()->keyFrameIndex(it->second[i].getTime()));
                             Q_UNUSED(st);
                         } else {
-                            isKnobCurve->getInternalKnob()->deleteValueAtTime( eCurveChangeReasonCurveEditor, it->second[i].getTime(), ViewSpec::all(), isKnobCurve->getDimension(), i == 0 );
+                            knob->deleteValueAtTime(eCurveChangeReasonCurveEditor, it->second[i].getTime(), ViewSpec::all(), isKnobCurve->getDimension(), i == 0);
                         }
                     }
                 } else if (isBezierCurve) {
@@ -347,7 +360,6 @@ RemoveKeysCommand::addOrRemoveKeyframe(bool add)
                 } // if (isKnobCurve) {
             } // for (std::size_t i = 0; i < it->second.size(); ++i) {
         } // if (guiKnob) {
- 
     }
 
     for (std::set<KnobIPtr>::iterator it = knobsSet.begin(); it!=knobsSet.end(); ++it) {
@@ -454,6 +466,14 @@ void
 MoveKeysCommand::move(double dt,
                       double dv)
 {
+    for (std::map<CurveGuiPtr, std::vector<MoveKeysCommand::KeyToMove>>::iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        if (curveKnobIsDead(it->first.get())) {
+            setObsolete(true);
+
+            return;
+        }
+    }
+
     //Prevent all redraws from moveKey
     _widget->setUpdatesEnabled(false);
 
@@ -463,9 +483,8 @@ MoveKeysCommand::move(double dt,
     for (std::map<CurveGuiPtr, std::vector<MoveKeysCommand::KeyToMove> >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
         if (isKnobCurve) {
-            // A knob curve with no GUI and no roto context is a plain knob (as in unit tests).
-            RotoContextPtr roto = isKnobCurve->getKnobGui() ? RotoContextPtr() : isKnobCurve->getRotoContext();
-            if (!isKnobCurve->getKnobGui() && roto) {
+            if (isKnobCurve->getRotoContext()) {
+                RotoContextPtr roto = isKnobCurve->getRotoContext();
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }
@@ -516,7 +535,7 @@ MoveKeysCommand::mergeWith(const QUndoCommand * command)
 {
     const MoveKeysCommand* cmd = dynamic_cast<const MoveKeysCommand*>(command);
 
-    if ( cmd && ( cmd->id() == id() ) ) {
+    if (cmd && (cmd->id() == id()) && inSameGestureAs(*cmd)) {
         if ( cmd->_keys.size() != _keys.size() ) {
             return false;
         }
@@ -575,15 +594,22 @@ SetKeysInterpolationCommand::SetKeysInterpolationCommand(CurveWidget* widget,
 void
 SetKeysInterpolationCommand::setNewInterpolation(bool undo)
 {
+    for (std::list<KeyInterpolationChange>::iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        if (curveKnobIsDead(it->key->curve.get())) {
+            setObsolete(true);
+
+            return;
+        }
+    }
+
     std::list<KnobI*> differentKnobs;
     std::list<RotoContextPtr> rotoToEvaluate;
 
     for (std::list<KeyInterpolationChange >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->key->curve.get() );
         if (isKnobCurve) {
-            // A knob curve with no GUI and no roto context is a plain knob (as in unit tests).
-            RotoContextPtr roto = isKnobCurve->getKnobGui() ? RotoContextPtr() : isKnobCurve->getRotoContext();
-            if (!isKnobCurve->getKnobGui() && roto) {
+            if (isKnobCurve->getRotoContext()) {
+                RotoContextPtr roto = isKnobCurve->getRotoContext();
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }
@@ -845,6 +871,11 @@ MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
 void
 MoveTangentCommand::setNewDerivatives(bool undo)
 {
+    if (curveKnobIsDead(_key->curve.get())) {
+        setObsolete(true);
+
+        return;
+    }
     KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( _key->curve.get() );
 
     if (isKnobCurve) {
@@ -909,7 +940,7 @@ MoveTangentCommand::mergeWith(const QUndoCommand * command)
 {
     const MoveTangentCommand* cmd = dynamic_cast<const MoveTangentCommand*>(command);
 
-    if ( cmd && ( cmd->id() == id() ) ) {
+    if (cmd && (cmd->id() == id()) && inSameGestureAs(*cmd)) {
         if (cmd->_key != _key) {
             return false;
         }
@@ -965,6 +996,13 @@ JoinTangentsCommand::JoinTangentsCommand(CurveWidget* widget,
 void
 JoinTangentsCommand::setNewDerivatives(bool undo)
 {
+    for (std::list<JoinedTangentChange>::iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        if (curveKnobIsDead(it->key->curve.get())) {
+            setObsolete(true);
+
+            return;
+        }
+    }
     for (std::list<JoinedTangentChange>::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>(it->key->curve.get());
         if (!isKnobCurve) {
@@ -1114,15 +1152,22 @@ transform(const Transform::Matrix3x3& matrix,
 void
 TransformKeysCommand::transformKeys(const Transform::Matrix3x3& matrix)
 {
+    for (SelectedKeys::iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        if (curveKnobIsDead(it->first.get())) {
+            setObsolete(true);
+
+            return;
+        }
+    }
+
     std::list<KnobHolder*> differentKnobs;
     std::list<RotoContextPtr> rotoToEvaluate;
 
     for (SelectedKeys::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
         if (isKnobCurve) {
-            // A knob curve with no GUI and no roto context is a plain knob (as in unit tests).
-            RotoContextPtr roto = isKnobCurve->getKnobGui() ? RotoContextPtr() : isKnobCurve->getRotoContext();
-            if (!isKnobCurve->getKnobGui() && roto) {
+            if (isKnobCurve->getRotoContext()) {
+                RotoContextPtr roto = isKnobCurve->getRotoContext();
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }
@@ -1190,7 +1235,7 @@ TransformKeysCommand::mergeWith(const QUndoCommand * command)
 {
     const TransformKeysCommand* cmd = dynamic_cast<const TransformKeysCommand*>(command);
 
-    if ( cmd && ( cmd->id() == id() ) ) {
+    if (cmd && (cmd->id() == id()) && inSameGestureAs(*cmd)) {
         if ( cmd->_keys.size() != _keys.size() ) {
             return false;
         }
@@ -1217,15 +1262,17 @@ namespace {
 
 // Until the copy is done, dimension 0 holds a different curve from the others: each value change
 // in between would otherwise unfold the knob in its panel and show its hidden curves again.
+// The panel GUIs are looked up now rather than when the command was made, since a panel rebuild
+// replaces them.
 class FoldStateHold {
 public:
     FoldStateHold(CurveEditor* editor,
-                  const std::list<KnobGuiWPtr>& knobGuis)
+                  const std::list<FoldedCurveEditCommand::FoldedKnob>& knobs)
         : _editor(editor)
         , _knobGuis()
     {
-        for (std::list<KnobGuiWPtr>::const_iterator it = knobGuis.begin(); it != knobGuis.end(); ++it) {
-            KnobGuiPtr knobGui = it->lock();
+        for (std::list<FoldedCurveEditCommand::FoldedKnob>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            KnobGuiPtr knobGui = KnobGui::getLiveGui(it->knob);
             KnobGuiValue* isValue = dynamic_cast<KnobGuiValue*>(knobGui.get());
             if (isValue) {
                 isValue->setFoldStateHeld(true);
@@ -1276,7 +1323,6 @@ FoldedCurveEditCommand::FoldedCurveEditCommand(CurveEditor* editor,
     , _editor(editor)
     , _inner(inner)
     , _knobs()
-    , _knobGuis()
     , _snapshotsTaken(false)
 {
     for (std::list<CurveGuiPtr>::const_iterator it = foldedDimensionZeroCurves.begin(); it != foldedDimensionZeroCurves.end(); ++it) {
@@ -1302,10 +1348,6 @@ FoldedCurveEditCommand::FoldedCurveEditCommand(CurveEditor* editor,
         folded.knob = knob;
         folded.dimensionZeroCurve = *it;
         _knobs.push_back(folded);
-        KnobGuiPtr knobGui = isKnobCurve->getKnobGui();
-        if (knobGui) {
-            _knobGuis.push_back(knobGui);
-        }
     }
     setText(_inner->text());
 }
@@ -1349,21 +1391,48 @@ FoldedCurveEditCommand::restoreOtherDimensions()
     }
 }
 
+bool
+FoldedCurveEditCommand::knobsAreAlive() const
+{
+    for (std::list<FoldedKnob>::const_iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
+        if (!lockUndoKnob(KnobIWPtr(it->knob))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void
 FoldedCurveEditCommand::undo()
 {
-    FoldStateHold hold(_editor, _knobGuis);
+    if (!knobsAreAlive()) {
+        setObsolete(true);
+
+        return;
+    }
+    FoldStateHold hold(_editor, _knobs);
 
     // The wrapped command undoes first so that the restore has the last word on dimensions 1..n,
     // even for one the wrapped command also edited.
     _inner->undo();
+    if (_inner->isObsolete()) {
+        setObsolete(true);
+
+        return;
+    }
     restoreOtherDimensions();
 }
 
 void
 FoldedCurveEditCommand::redo()
 {
-    FoldStateHold hold(_editor, _knobGuis);
+    if (!knobsAreAlive()) {
+        setObsolete(true);
+
+        return;
+    }
+    FoldStateHold hold(_editor, _knobs);
 
     if (!_snapshotsTaken) {
         for (std::list<FoldedKnob>::iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
@@ -1379,6 +1448,11 @@ FoldedCurveEditCommand::redo()
         _snapshotsTaken = true;
     }
     _inner->redo();
+    if (_inner->isObsolete()) {
+        setObsolete(true);
+
+        return;
+    }
     copyDimensionZeroToOthers();
 }
 

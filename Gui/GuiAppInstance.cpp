@@ -59,18 +59,20 @@
 
 #include "Serialization/NodeSerialization.h"
 
-#include "Gui/GuiApplicationManager.h"
-#include "Gui/Gui.h"
 #include "Gui/BackdropGui.h"
-#include "Gui/NodeGraph.h"
-#include "Gui/NodeGui.h"
+#include "Gui/Gui.h"
+#include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGuiFile.h"
 #include "Gui/MultiInstancePanel.h"
+#include "Gui/NodeGraph.h"
+#include "Gui/NodeGui.h"
 #include "Gui/ProgressPanel.h"
-#include "Gui/ViewerTab.h"
-#include "Gui/SplashScreen.h"
+#include "Gui/PythonUndoRecorder.h"
 #include "Gui/ScriptEditor.h"
+#include "Gui/SplashScreen.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
+#include "Gui/ViewerTab.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -276,6 +278,12 @@ GuiAppInstance::aboutToQuit()
 
         _imp->_gui->notifyGuiClosing();
 
+        // The recorder records into the window's history, which goes with the window.
+        setUndoRecorder(UndoRecorderPtr());
+        if (_imp->_gui->getUndoHistory()) {
+            _imp->_gui->getUndoHistory()->setReplayHook(std::function<void(bool)>());
+        }
+
         AppInstance::aboutToQuit();
 
         _imp->_isClosing = true;
@@ -325,6 +333,18 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
     StartupGLDiag::checkpoint("createGui:before");
     _imp->_gui->createGui();
     StartupGLDiag::checkpoint("createGui:after");
+
+    {
+        UndoHistory* history = _imp->_gui->getUndoHistory();
+        setUndoRecorder(std::make_shared<PythonUndoRecorder>(history, thisShared));
+        AppInstanceWPtr app = thisShared;
+        history->setReplayHook([app](bool replaying) {
+            AppInstancePtr locked = app.lock();
+            if (locked) {
+                locked->setReplayingUndo(replaying);
+            }
+        });
+    }
 
     printAutoDeclaredVariable(_imp->declareAppAndParamsString);
 

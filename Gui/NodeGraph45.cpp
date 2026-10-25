@@ -539,7 +539,7 @@ NodeGraph::onNodeNameEditDialogFinished()
                 Dialogs::errorDialog(dialog->getNode()->getNode()->getLabel(), newName.toStdString() + " is a Python keyword");
             } else {
                 QString oldName = QString::fromUtf8( dialog->getNode()->getNode()->getLabel().c_str() );
-                pushUndoCommand( new RenameNodeUndoRedoCommand(dialog->getNode(), oldName, newName) );
+                pushUndoCommand(new RenameNodeUndoRedoCommand(dialog->getNode(), oldName, newName), NodesGuiList(1, dialog->getNode()));
             }
         }
         dialog->deleteLater();
@@ -550,7 +550,7 @@ void
 NodeGraph::extractSelectedNode()
 {
     if ( !_imp->_selection.empty() ) {
-        pushUndoCommand( new ExtractNodeUndoRedoCommand(this, _imp->_selection) );
+        pushUndoCommand(new ExtractNodeUndoRedoCommand(this, _imp->_selection), _imp->_selection);
     }
 }
 
@@ -558,7 +558,7 @@ void
 NodeGraph::createGroupFromSelection()
 {
     if ( !_imp->_selection.empty() ) {
-        pushUndoCommand( new GroupFromSelectionCommand(this, _imp->_selection) );
+        pushUndoCommand(new GroupFromSelectionCommand(this, _imp->_selection), _imp->_selection);
     }
 }
 
@@ -574,7 +574,7 @@ NodeGraph::expandSelectedGroups()
         }
     }
     if ( !nodes.empty() ) {
-        pushUndoCommand( new InlineGroupCommand(this, nodes) );
+        pushUndoCommand(new InlineGroupCommand(this, nodes), nodes);
     } else {
         Dialogs::warningDialog( tr("Expand group").toStdString(), tr("You must select a group to expand first").toStdString() );
     }

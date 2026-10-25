@@ -62,20 +62,19 @@
 using std::make_pair;
 NATRON_NAMESPACE_ENTER
 
-
-NodeSettingsPanel::NodeSettingsPanel(const MultiInstancePanelPtr & multiPanel,
+NodeSettingsPanel::NodeSettingsPanel(const MultiInstancePanelPtr& multiPanel,
                                      Gui* gui,
-                                     const NodeGuiPtr &NodeUi,
+                                     const NodeGuiPtr& NodeUi,
                                      QVBoxLayout* container,
-                                     QWidget *parent)
+                                     QWidget* parent)
     : DockablePanel(gui,
-                    multiPanel.get() != NULL ? dynamic_cast<KnobHolder*>( multiPanel.get() ) : NodeUi->getNode()->getEffectInstance().get(),
+                    multiPanel.get() != NULL ? dynamic_cast<KnobHolder*>(multiPanel.get()) : NodeUi->getNode()->getEffectInstance().get(),
                     container,
                     DockablePanel::eHeaderModeFullyFeatured,
                     false,
-                    NodeUi->getUndoStack(),
-                    QString::fromUtf8( NodeUi->getNode()->getLabel().c_str() ),
-                    QString::fromUtf8( NodeUi->getNode()->getPluginDescription().c_str() ),
+                    NodeUi->getNode()->getEffectInstance().get(),
+                    QString::fromUtf8(NodeUi->getNode()->getLabel().c_str()),
+                    QString::fromUtf8(NodeUi->getNode()->getPluginDescription().c_str()),
                     parent)
     , _nodeGUI(NodeUi)
     , _selected(false)

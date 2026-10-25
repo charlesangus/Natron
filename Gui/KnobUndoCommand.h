@@ -28,12 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <iterator>
 #include <list>
 #include <map>
 #include <vector>
 
 #include <QDebug>
+#include <QPointer>
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QUndoCommand>
@@ -42,30 +44,36 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Global/GlobalDefines.h"
 
-#include "Engine/Variant.h"
 #include "Engine/Curve.h"
-#include "Engine/TimeLine.h"
-#include "Engine/Curve.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
-#include "Engine/EffectInstance.h"
+#include "Engine/TimeLine.h"
+#include "Engine/UndoKnobRef.h"
+#include "Engine/Variant.h"
 #include "Engine/ViewIdx.h"
 
-#include "Gui/KnobGui.h"
-#include "Gui/Gui.h"
 #include "Gui/CurveEditor.h"
 #include "Gui/CurveWidget.h"
+#include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiFwd.h"
+#include "Gui/KnobGui.h"
+#include "Gui/UndoGesture.h"
 
 NATRON_NAMESPACE_ENTER
 
 //================================================================
 
-template<typename T>
+/**
+ * @brief Sets a knob's value. Consecutive commands on the same knob and dimensions fold into
+ * one undo step only when they belong to the same gesture (see UndoGesture): the widget that
+ * pushes them passes its gesture's key, or leaves it at 0 for a discrete commit.
+ **/
+template <typename T>
 class KnobUndoCommand
-    : public QUndoCommand
-{
+    : public QUndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(KnobUndoCommand)
 
 public:
@@ -79,14 +87,13 @@ public:
         , _dimension(dimension)
         , _oldValue()
         , _newValue()
-        , _knob(knob)
+        , _knob(knob->getKnob())
         , _valueChangedReturnCode(1)
         , _newKeys(1)
         , _oldKeys(1)
         , _merge(true)
         , _refreshGuiFirstTime(refreshGui)
         , _firstRedoCalled(false)
-        , _mergeKey(0)
     {
         _oldValue.push_back(oldValue);
         _newValue.push_back(newValue);
@@ -96,9 +103,8 @@ public:
     /// and produces an unresolved symbol error.
     ///
     /// The lists cover the knob's first oldValue.size() dimensions, so a caller can leave the
-    /// trailing ones untouched. mergeKey, when non-zero, scopes merging to commands sharing the
-    /// same key (one key per gesture), so two back-to-back gestures on the same knob stay two
-    /// undo steps instead of folding into one; 0 merges on knob and dimension alone.
+    /// trailing ones untouched. mergeKey is the key of the gesture the edit belongs to, 0 for a
+    /// discrete commit that never folds with another command.
     KnobUndoCommand(const KnobGuiPtr& knob,
                     const std::list<T>& oldValue,
                     const std::list<T>& newValue,
@@ -109,15 +115,15 @@ public:
         , _dimension(-1)
         , _oldValue(oldValue)
         , _newValue(newValue)
-        , _knob(knob)
+        , _knob(knob->getKnob())
         , _valueChangedReturnCode(oldValue.size())
         , _newKeys(oldValue.size())
         , _oldKeys(oldValue.size())
         , _merge(true)
         , _refreshGuiFirstTime(refreshGui)
         , _firstRedoCalled(false)
-        , _mergeKey(mergeKey)
     {
+        setGestureKey(mergeKey);
     }
 
     virtual ~KnobUndoCommand() OVERRIDE
@@ -125,8 +131,7 @@ public:
     }
 
     /**
-     * @brief When false, consecutive edits of the same knob stay separate undo steps
-     * instead of being compressed into one.
+     * @brief When false, the command never folds with another, even one of its own gesture.
      **/
     void setMergeable(bool mergeable)
     {
@@ -138,12 +143,13 @@ private:
     {
         bool modifiedKeyFrame = false;
         int i = 0;
-        KnobGuiPtr knobUI = _knob.lock();
+        KnobIPtr knob = _knob.lock();
 
-        if (!knobUI) {
+        if (!knob) {
+            setObsolete(true);
+
             return;
         }
-        KnobIPtr knob = knobUI->getKnob();
 
         KnobHolder* holder = knob->getHolder();
 
@@ -170,21 +176,20 @@ private:
                 knob->unblockValueChanges();
             }
 
+            KnobGui::setKnobValue(knob, dimension, *it, NULL, refreshUI, !refreshUI ? eValueChangedReasonUserEdited : eValueChangedReasonNatronGuiEdited);
 
-            knobUI->setValue(dimension, *it, NULL, refreshUI, !refreshUI ? eValueChangedReasonUserEdited : eValueChangedReasonNatronGuiEdited);
-
-            if ( knob->getHolder()->getApp() ) {
+            if (holder && holder->getApp()) {
                 if (_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeAdded) {
                     try {
-                        knobUI->removeKeyFrame( _newKeys[i].getTime(), dimension, ViewIdx(0) );
+                        KnobGui::removeKnobKeyframe(knob, _newKeys[i].getTime(), dimension, ViewIdx(0));
                     } catch (std::exception&) {
                         qDebug() << "KnobUndoCommand::undo: could not remove keyframe from knob" << knob->getName().c_str() << "at time" << _newKeys[i].getTime() << "dimension" << dimension;
                         // ignore
                     }
                     modifiedKeyFrame = true;
                 } else if (_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeModified) {
-                    knobUI->removeKeyFrame( _newKeys[i].getTime(), dimension, ViewIdx(0) );
-                    knobUI->setKeyframe( _oldKeys[i].getTime(), dimension, ViewIdx(0) );
+                    KnobGui::removeKnobKeyframe(knob, _newKeys[i].getTime(), dimension, ViewIdx(0));
+                    KnobGui::setKnobKeyframe(knob, _oldKeys[i].getTime(), dimension, ViewIdx(0));
                     modifiedKeyFrame = true;
                 }
             }
@@ -196,11 +201,15 @@ private:
         }
 
         ///This will refresh all dimensions
-        knobUI->onInternalValueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronGuiEdited);
+        KnobGuiPtr knobUI = KnobGui::getLiveGui(knob);
+        if (knobUI) {
+            knobUI->onInternalValueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronGuiEdited);
+        }
 
         knob->endChanges();
-        if (modifiedKeyFrame && knobUI->getGui()) {
-            knobUI->getGui()->getCurveEditor()->getCurveWidget()->refreshSelectedKeysAndUpdate();
+        Gui* gui = KnobGui::getGuiForKnob(knob);
+        if (modifiedKeyFrame && gui) {
+            gui->getCurveEditor()->getCurveWidget()->refreshSelectedKeysAndUpdate();
         }
 
         EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
@@ -218,12 +227,13 @@ private:
     virtual void redo() OVERRIDE FINAL
     {
         double time = 0;
-        KnobGuiPtr knobUI = _knob.lock();
+        KnobIPtr knob = _knob.lock();
 
-        if (!knobUI) {
+        if (!knob) {
+            setObsolete(true);
+
             return;
         }
-        KnobIPtr knob = knobUI->getKnob();
 
         KnobHolder* holder = knob->getHolder();
 
@@ -262,7 +272,7 @@ private:
                 knob->unblockValueChanges();
             }
 
-            _valueChangedReturnCode[i] = knobUI->setValue(dimension, *it, &_newKeys[i], refreshUI, !refreshUI ? eValueChangedReasonUserEdited : eValueChangedReasonNatronGuiEdited);
+            _valueChangedReturnCode[i] = KnobGui::setKnobValue(knob, dimension, *it, &_newKeys[i], refreshUI, !refreshUI ? eValueChangedReasonUserEdited : eValueChangedReasonNatronGuiEdited);
             if ((_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeAdded) || (_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeModified)) {
                 modifiedKeyFrames = true;
             }
@@ -280,14 +290,18 @@ private:
 
         ///This will refresh all dimensions
         if (_firstRedoCalled || _refreshGuiFirstTime) {
-            knobUI->onInternalValueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronGuiEdited);
+            KnobGuiPtr knobUI = KnobGui::getLiveGui(knob);
+            if (knobUI) {
+                knobUI->onInternalValueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronGuiEdited);
+            }
         }
 
 
         knob->endChanges();
 
-        if (modifiedKeyFrames && knobUI->getGui()) {
-            knobUI->getGui()->getCurveEditor()->getCurveWidget()->refreshSelectedKeysAndUpdate();
+        Gui* gui = KnobGui::getGuiForKnob(knob);
+        if (modifiedKeyFrames && gui) {
+            gui->getCurveEditor()->getCurveWidget()->refreshSelectedKeysAndUpdate();
         }
 
         EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
@@ -317,14 +331,13 @@ private:
             return false;
         }
 
-        KnobGuiPtr knob = knobCommand->_knob.lock();
-        if ( (_knob.lock() != knob) || !_merge || !knobCommand->_merge || (_dimension != knobCommand->_dimension) ) {
+        KnobIPtr knob = knobCommand->_knob.lock();
+        if (!knob || (_knob.lock() != knob) || !_merge || !knobCommand->_merge || (_dimension != knobCommand->_dimension)) {
             return false;
         }
 
-        // A non-zero key scopes the merge to its own gesture: two commands can only merge when
-        // they are both unkeyed or share the same key.
-        if (((_mergeKey != 0) || (knobCommand->_mergeKey != 0)) && (_mergeKey != knobCommand->_mergeKey)) {
+        // Two separate edits of the same knob, typed values or two drags, stay two undo steps.
+        if (!inSameGestureAs(*knobCommand)) {
             return false;
         }
         if (knobCommand->_newValue.size() < _newValue.size()) {
@@ -356,16 +369,14 @@ private:
     int _dimension;
     std::list<T> _oldValue;
     std::list<T> _newValue;
-    KnobGuiWPtr _knob;
+    UndoKnobRef _knob;
     std::vector<int> _valueChangedReturnCode;
     std::vector<KeyFrame> _newKeys;
     std::vector<KeyFrame>  _oldKeys;
     bool _merge;
     bool _refreshGuiFirstTime;
     bool _firstRedoCalled;
-    quint64 _mergeKey;
 };
-
 
 /**
  * @brief This class is used by the internal knob when it wants to group multiple edits into a single undo/redo action.
@@ -387,11 +398,16 @@ private:
     };
 
     ///For each knob, the second member points to a clone of the knob before the first redo() call was made
-    typedef std::map<KnobGuiWPtr, std::list<ValueToSet>, std::owner_less<KnobGuiWPtr>> ParamsMap;
+    typedef std::map<UndoKnobRef, std::list<ValueToSet>> ParamsMap;
     ParamsMap knobs;
     bool createNew;
     bool firstRedoCalled;
     ValueChangedReasonEnum _reason;
+
+    // The holder of the first knob that still resolves, or null when none does.
+    KnobHolder* liveHolder() const;
+
+    static bool isCurrentFrame(const KnobIPtr& knob, double time);
 
 public:
 
@@ -458,10 +474,12 @@ public:
     virtual void redo();
 
 private:
+    // The holder of the first knob that still resolves, or null when none does.
+    KnobHolder* liveHolder() const;
 
     bool _isNodeReset;
     int _targetDim;
-    std::list<KnobIWPtr> _knobs;
+    std::list<UndoKnobRef> _knobs;
     std::list<KnobIPtr> _clones;  // owned by this
 };
 
@@ -481,8 +499,7 @@ public:
     virtual void redo();
 
 private:
-
-    KnobIWPtr _knob;
+    UndoKnobRef _knob;
     std::vector<std::string> _oldExprs;
     std::vector<bool> _hadRetVar;
     std::string _newExpr;

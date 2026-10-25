@@ -34,13 +34,14 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QWheelEvent>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
-#include <QDoubleValidator>
-#include <QIntValidator>
-#include <QStyle> // in QtGui on Qt4, in QtWidgets on Qt5
 #include <QApplication>
 #include <QDebug>
+#include <QDoubleValidator>
+#include <QElapsedTimer>
+#include <QIntValidator>
 #include <QMenu>
 #include <QPainter>
+#include <QStyle> // in QtGui on Qt4, in QtWidgets on Qt5
 
 #include "Engine/Variant.h"
 #include "Engine/Settings.h"
@@ -53,12 +54,20 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/KnobGui.h"
 #include "Gui/KnobWidgetDnD.h"
 #include "Gui/SpinBoxValidator.h"
+#include "Gui/UndoGesture.h"
 
 #define SPINBOX_MAX_WIDTH 50
 #define SPINBOX_MIN_WIDTH 35
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+// Wheel notches closer together than this are one scroll and one undo step; a longer pause
+// starts another. A mouse wheel has no press or release to delimit the gesture.
+const qint64 kWheelGesturePauseMs = 500;
+
+} // namespace
 
 struct SpinBoxPrivate
 {
@@ -89,6 +98,36 @@ struct SpinBoxPrivate
     SpinBoxValidator* customValidator;
     QPoint lastMousePos;
 
+    enum IncrementSourceEnum {
+        eIncrementSourceNone,
+        eIncrementSourceWheel,
+        eIncrementSourceArrowKey,
+        eIncrementSourceMouseDrag
+    };
+
+    // The gesture increment() steps belong to, and what drives it.
+    UndoGesture incrementGesture;
+    IncrementSourceEnum incrementSource;
+    QElapsedTimer lastWheel;
+    // The key getGestureKey() reports while valueChanged() is emitted.
+    quint64 emittingGestureKey;
+
+    void beginIncrementGesture(IncrementSourceEnum source)
+    {
+        incrementGesture.begin();
+        incrementSource = source;
+    }
+
+    void endIncrementGesture()
+    {
+        incrementGesture.end();
+        incrementSource = eIncrementSourceNone;
+    }
+
+    bool continuesIncrementGesture(IncrementSourceEnum source) const
+    {
+        return incrementGesture.isOpen() && (incrementSource == source);
+    }
 
     SpinBoxPrivate(SpinBox::SpinBoxTypeEnum type)
         : type(type)
@@ -107,6 +146,10 @@ struct SpinBoxPrivate
         , useLineColor(false)
         , lineColor(Qt::black)
         , customValidator(0)
+        , incrementGesture()
+        , incrementSource(eIncrementSourceNone)
+        , lastWheel()
+        , emittingGestureKey(0)
     {
     }
 
@@ -273,10 +316,29 @@ SpinBox::setValue(int d)
 void
 SpinBox::interpretReturn()
 {
+    _imp->endIncrementGesture();
     if ( validateText() ) {
         //setValue_internal(text().toDouble(), true, true); // force a reformat
-        Q_EMIT valueChanged( value() );
+        emitValueChanged(value(), 0);
     }
+}
+
+quint64
+SpinBox::getGestureKey() const
+{
+    return _imp->emittingGestureKey;
+}
+
+void
+SpinBox::emitValueChanged(double d,
+                          quint64 gestureKey)
+{
+    // Saved and restored rather than cleared, in case a slot makes this box emit again.
+    const quint64 previous = _imp->emittingGestureKey;
+
+    _imp->emittingGestureKey = gestureKey;
+    Q_EMIT valueChanged(d);
+    _imp->emittingGestureKey = previous;
 }
 
 QString
@@ -339,7 +401,7 @@ SpinBox::increment(int delta,
         val = std::max( miniD, std::min(val, maxiD) );
         if (val != oldVal) {
             setValue(val);
-            Q_EMIT valueChanged(val);
+            emitValueChanged(val, _imp->incrementGesture.key());
         }
 
         return;
@@ -619,7 +681,7 @@ SpinBox::increment(int delta,
     // Set the selection
     assert( newPos + 1 <= newStr.size() );
     setSelection(newPos + 1, -1);
-    Q_EMIT valueChanged( value() );
+    emitValueChanged(value(), _imp->incrementGesture.key());
 } // increment
 
 void
@@ -635,6 +697,10 @@ SpinBox::wheelEvent(QWheelEvent* e)
          !hasFocus() ) { // wheel is only effective when the widget has focus (click it first, then wheel)
         return;
     }
+    if (!_imp->continuesIncrementGesture(SpinBoxPrivate::eIncrementSourceWheel) || !_imp->lastWheel.isValid() || (_imp->lastWheel.elapsed() > kWheelGesturePauseMs)) {
+        _imp->beginIncrementGesture(SpinBoxPrivate::eIncrementSourceWheel);
+    }
+    _imp->lastWheel.start();
     int delta = e->angleDelta().y();
     int shift = 0;
     if ( modCASIsShift(e) ) {
@@ -690,7 +756,8 @@ SpinBox::focusOutEvent(QFocusEvent* e)
                 assert(ok);
             }
             QLineEdit::setText(newValueStr);
-            Q_EMIT valueChanged(newValue);
+            _imp->endIncrementGesture();
+            emitValueChanged(newValue, 0);
         }
     } else {
         bool ok;
@@ -700,6 +767,7 @@ SpinBox::focusOutEvent(QFocusEvent* e)
             QLineEdit::setText(_imp->valueWhenEnteringFocus);
         }
     }
+    _imp->endIncrementGesture();
     LineEdit::focusOutEvent(e);
 }
 
@@ -709,6 +777,10 @@ SpinBox::keyPressEvent(QKeyEvent* e)
     //qDebug() << "keypress";
     if ( isEnabled() && !isReadOnly() ) {
         if ( (e->key() == Qt::Key_Up) || (e->key() == Qt::Key_Down) ) {
+            // A held key's auto-repeats are one gesture; each separate press starts another.
+            if (!e->isAutoRepeat() || !_imp->continuesIncrementGesture(SpinBoxPrivate::eIncrementSourceArrowKey)) {
+                _imp->beginIncrementGesture(SpinBoxPrivate::eIncrementSourceArrowKey);
+            }
             int delta = (e->key() == Qt::Key_Up) ? 120 : -120;
             int shift = 0;
             if ( modCASIsShift(e) ) {
@@ -719,6 +791,7 @@ SpinBox::keyPressEvent(QKeyEvent* e)
             }
             increment(delta, shift);
         } else {
+            _imp->endIncrementGesture();
             _imp->valueWhenEnteringFocus = text();
             _imp->hasChangedSinceLastValidation = true;
             QLineEdit::keyPressEvent(e);
@@ -808,6 +881,8 @@ SpinBox::mousePressEvent(QMouseEvent *e)
 {
     _imp->lastMousePos = e->pos();
     _imp->ms = SpinBoxPrivate::eSpinBoxMouseStateDragging;
+    // An Alt+drag scrub from here to the release is one gesture.
+    _imp->beginIncrementGesture(SpinBoxPrivate::eIncrementSourceMouseDrag);
     QLineEdit::mousePressEvent(e);
 }
 
@@ -815,6 +890,9 @@ void
 SpinBox::mouseReleaseEvent(QMouseEvent* e)
 {
     _imp->ms = SpinBoxPrivate::eSpinBoxMouseStateIdle;
+    if (_imp->incrementSource == SpinBoxPrivate::eIncrementSourceMouseDrag) {
+        _imp->endIncrementGesture();
+    }
     QLineEdit::mouseReleaseEvent(e);
 }
 

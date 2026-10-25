@@ -92,12 +92,9 @@ class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QUndoCommand;
-class QUndoGroup;
-class QUndoStack;
 class QVBoxLayout;
 class QWheelEvent;
 class QWidget;
-typedef std::shared_ptr<QUndoStack> QUndoStackPtr;
 
 class QOpenGLShaderProgram;
 
@@ -228,6 +225,8 @@ class TimeLineGui;
 class TrackerGui;
 class TrackerPanel;
 class TrackerPanelV1;
+class UndoHistory;
+class UndoScope;
 class VerticalColorBar;
 class ViewerGL;
 class ViewerTab;

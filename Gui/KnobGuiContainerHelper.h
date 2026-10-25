@@ -83,21 +83,13 @@ public:
         : QObject()
         , _container(container)
     {
-        QObject::connect(this, SIGNAL( deleteCurCmdLater() ), this, SLOT( onDeleteCurCmdLaterTriggered() ), Qt::QueuedConnection);
     }
+
+    void connectUndoHistory(UndoHistory* history);
 
     virtual ~KnobGuiContainerSignalsHandler()
     {
     }
-
-    void s_deleteCurCmdLater()
-    {
-        Q_EMIT deleteCurCmdLater();
-    }
-
-Q_SIGNALS:
-
-    void deleteCurCmdLater();
 
 public Q_SLOTS:
 
@@ -105,7 +97,7 @@ public Q_SLOTS:
 
     void onPageSecretnessChanged();
 
-    void onDeleteCurCmdLaterTriggered();
+    void onUndoHistoryChanged();
 
 private:
 
@@ -122,13 +114,13 @@ class KnobGuiContainerHelper
 
 {
 public:
-
     /**
      * @brief Creates a new container that will be used to display the knobs inside the given holder.
-     * The option QUndoStack stack can be given in parameter so that we do not make our own undo/redo stack but
-     * use this one instead.
+     * With a history, commands are pushed to it as entries owned by undoOwner and the undo/redo buttons
+     * step through that owner's entries. Without one, the container keeps a private undo stack: that is
+     * for holders outside the project, such as the preferences and Python panels.
      **/
-    KnobGuiContainerHelper(KnobHolder* holder, const QUndoStackPtr& stack);
+    KnobGuiContainerHelper(KnobHolder* holder, UndoHistory* history, KnobHolder* undoOwner);
 
     virtual ~KnobGuiContainerHelper();
 
@@ -175,9 +167,14 @@ public:
     const KnobsGuiMapping& getKnobsMapping() const;
 
     /**
-     * @brief Returns the undo/redo stack used for commands applied on knobs
+     * @brief Undo/redo of the commands applied on this container's knobs, as offered by its buttons.
      **/
-    QUndoStackPtr getUndoStack() const;
+    bool canUndo() const;
+    bool canRedo() const;
+    void undo();
+    void redo();
+
+    void refreshUndoRedoButtons();
 
     /**
      * @brief Returns whether paging is enabled or not. If paging is disabled, there should only be a single page
@@ -326,8 +323,6 @@ private:
 
     void refreshPagesOrder(const KnobPageGuiPtr& curTabName, bool restorePageIndex);
 
-    void clearUndoRedoStack();
-
     KnobGuiPtr findKnobGuiOrCreate(const KnobIPtr & knob,
                                    bool makeNewLine,
                                    int lastKnobLineSpacing,
@@ -337,8 +332,6 @@ private:
     void initializeKnobVectorInternal(const KnobsVec& siblingsVec, KnobsVec* regularKnobsVec);
 
     void recreateKnobsInternal(const KnobPageGuiPtr& curPage, bool restorePageIndex);
-
-    void onDeleteCurCmdLater();
 
     friend class KnobGuiContainerSignalsHandler;
     std::unique_ptr<KnobGuiContainerHelperPrivate> _imp;

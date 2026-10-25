@@ -863,7 +863,10 @@ KnobGuiString::onFontSizeChanged(double size)
     text.remove( i, currentSize.size() );
     text.insert( i, QString::number(size) );
     _fontSize = size;
-    pushUndoCommand( new KnobUndoCommand<std::string>( shared_from_this(), knob->getValue(0), text.toStdString() ) );
+    KnobUndoCommand<std::string>* cmd = new KnobUndoCommand<std::string>(shared_from_this(), knob->getValue(0), text.toStdString());
+    // A scroll or Alt+drag over the size box is one undo step; each typed size is its own.
+    cmd->setGestureKey(_fontSizeSpinBox ? _fontSizeSpinBox->getGestureKey() : 0);
+    pushUndoCommand(cmd);
 }
 
 void

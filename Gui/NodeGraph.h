@@ -118,7 +118,13 @@ public:
 
     void centerOnItem(QGraphicsItem* item);
 
-    void setUndoRedoStackLimit(int limit);
+    using PanelWidget::pushUndoCommand;
+
+    /**
+     * @brief Records the command as changing the state of the given nodes, so that their
+     * panels' undo waits for it to be undone first.
+     **/
+    void pushUndoCommand(QUndoCommand* command, const NodesGuiList& touchedNodes);
 
     void deleteNodePermanantly(const NodeGuiPtr& n);
 
@@ -305,7 +311,6 @@ private:
     virtual void wheelEvent(QWheelEvent* e) OVERRIDE FINAL;
     virtual void focusInEvent(QFocusEvent* e) OVERRIDE FINAL;
     virtual void focusOutEvent(QFocusEvent* e) OVERRIDE FINAL;
-    virtual QUndoStack* getUndoStack() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
 

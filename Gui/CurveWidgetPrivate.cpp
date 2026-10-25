@@ -97,7 +97,6 @@ CurveWidgetPrivate::CurveWidgetPrivate(Gui* gui,
     , _tangentDragForceBreak(false)
     , _evaluateOnPenUp(false)
     , _keyDragLastMovement()
-    , _undoStack(new QUndoStack)
     , _gui(gui)
     , savedTexture(0)
     , sizeH()
@@ -112,7 +111,6 @@ CurveWidgetPrivate::CurveWidgetPrivate(Gui* gui,
 
     _nextCurveAddedColor.setHsv(200, 255, 255);
     //_rightClickMenu->setFont( QFont(appFont,appFontSize) );
-    _gui->registerNewUndoStack( _undoStack.get() );
 }
 
 CurveWidgetPrivate::~CurveWidgetPrivate()
@@ -1337,7 +1335,9 @@ CurveWidgetPrivate::moveSelectedKeyFrames(const QPointF & oldClick_opengl,
 
     if ( (dt != 0) || (dv != 0) ) {
         bool updateOnPenUpOnly = appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
-        _widget->pushUndoCommand( new MoveKeysCommand(_widget, keysToMove, dt, dv, !updateOnPenUpOnly) );
+        MoveKeysCommand* cmd = new MoveKeysCommand(_widget, keysToMove, dt, dv, !updateOnPenUpOnly);
+        cmd->setGestureKey(_dragGesture.key());
+        _widget->pushUndoCommand(cmd);
         _evaluateOnPenUp = true;
     }
     //update last drag movement
@@ -1438,7 +1438,9 @@ CurveWidgetPrivate::transformSelectedKeyFrames(const QPointF & oldClick_opengl,
                 }
             }
         }
-        _widget->pushUndoCommand( new TransformKeysCommand(_widget, keysToTransform, center.x(), center.y(), tx, ty, sx, sy, !updateOnPenUpOnly) );
+        TransformKeysCommand* cmd = new TransformKeysCommand(_widget, keysToTransform, center.x(), center.y(), tx, ty, sx, sy, !updateOnPenUpOnly);
+        cmd->setGestureKey(_dragGesture.key());
+        _widget->pushUndoCommand(cmd);
         _evaluateOnPenUp = true;
     }
     //update last drag movement
@@ -1467,7 +1469,9 @@ CurveWidgetPrivate::moveSelectedTangent(const QPointF & pos)
     ///to modifying the keyframe, and set it back to its original value afterwards.
     bool updateOnPenUpOnly = appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
 
-    _widget->pushUndoCommand(new MoveTangentCommand(_widget, _selectedDerivative.first, key, dx, dy, !updateOnPenUpOnly, _tangentDragForceBreak));
+    MoveTangentCommand* cmd = new MoveTangentCommand(_widget, _selectedDerivative.first, key, dx, dy, !updateOnPenUpOnly, _tangentDragForceBreak);
+    cmd->setGestureKey(_dragGesture.key());
+    _widget->pushUndoCommand(cmd);
 } // moveSelectedTangent
 
 void

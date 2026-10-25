@@ -57,6 +57,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
+#include "Engine/UndoRecorder.h"
 
 #include "Gui/Button.h"
 #include "Gui/ClickableLabel.h"
@@ -206,9 +207,12 @@ KnobGuiButton::emitValueChanged(bool clicked)
             writers.push_back(node);
             showRenderDialog(getGui(), writers);
         } else {
+            UndoStepGuard undoStep(k->getHolder() ? k->getHolder()->getApp() : AppInstancePtr(), k->getLabel());
             k->trigger();
         }
     } else {
+        // What the button's callback changes is undone in one step.
+        UndoStepGuard undoStep(k->getHolder() ? k->getHolder()->getApp() : AppInstancePtr(), k->getLabel());
         k->trigger();
     }
 }

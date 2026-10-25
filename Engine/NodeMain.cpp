@@ -25,7 +25,12 @@
 
 #include "NodePrivate.h"
 
+#include <set>
+
 #include <QThread>
+
+#include <ofxImageEffect.h>
+#include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
@@ -35,12 +40,18 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
 
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/RotoContext.h"
+#include "Engine/RotoLayer.h"
+#include "Engine/TrackerContext.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -283,6 +294,203 @@ Node::restoreUserKnobs(const Serialization::NodeSerialization& serialization)
         }
     }
     setPagesOrder(serialization.pagesOrder);
+}
+
+namespace {
+
+// Knobs a preset never changes, whatever it holds: they describe this particular node (what it is
+// called, whether it is on, which file it reads or writes) rather than its look. Every reader and
+// writer, native, deep or OpenFX, names its file knob kOfxImageEffectFileParamName, and a reader
+// its proxy file kOfxImageEffectProxyParamName. A Precomp's file is the project it reads.
+bool
+isKeptByPresets(const KnobIPtr& knob)
+{
+    const std::string& name = knob->getName();
+    if ((name == kUserLabelKnobName) || (name == kNatronOfxParamStringSublabelName) || (name == kDisableNodeKnobName)) {
+        return true;
+    }
+    if ((name != kOfxImageEffectFileParamName) && (name != kOfxImageEffectProxyParamName) && (name != kPrecompParamProjectFilename)) {
+        return false;
+    }
+
+    return dynamic_cast<KnobFile*>(knob.get()) || dynamic_cast<KnobOutputFile*>(knob.get());
+}
+
+bool
+isPresetResettable(const KnobIPtr& knob)
+{
+    if (knob->isUserKnob() || !knob->getIsPersistent()) {
+        return false;
+    }
+    KnobI* k = knob.get();
+
+    return !dynamic_cast<KnobPage*>(k) && !dynamic_cast<KnobGroup*>(k) && !dynamic_cast<KnobButton*>(k) && !dynamic_cast<KnobSeparator*>(k);
+}
+
+void
+removeKnobLinks(const KnobIPtr& knob)
+{
+    KnobIPtr aliasMaster = knob->getAliasMaster();
+    if (aliasMaster) {
+        knob->setKnobAsAliasOfThis(aliasMaster, false);
+    }
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if (knob->isSlave(i)) {
+            knob->unSlave(i, false);
+        }
+    }
+}
+
+// Drops the user knobs of a preset's user pages that this node already has a knob of the same name
+// for, so that the node's own knobs keep their definition and value. Groups stay, for the new
+// knobs they hold.
+void
+removeExistingUserKnobs(const Node& node,
+                        std::list<Serialization::GroupKnobChildSerialization>* children)
+{
+    for (std::list<Serialization::GroupKnobChildSerialization>::iterator it = children->begin(); it != children->end();) {
+        if (it->isGroup) {
+            removeExistingUserKnobs(node, &it->group.children);
+        } else if (node.getKnobByName(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->knob.name))) {
+            it = children->erase(it);
+            continue;
+        }
+        ++it;
+    }
+}
+
+} // anon namespace
+
+void
+Node::applyPresetSerialization(const Serialization::NodeSerialization& serialization,
+                               PresetApplyModeEnum mode,
+                               std::list<KnobIPtr>* createdUserKnobs)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    assert(_imp->knobsInitialized);
+
+    const bool isPreset = (mode == ePresetApplyModePreset);
+    Serialization::NodeSerialization presetPart;
+    if (isPreset) {
+        // What the preset may change: everything but the knobs it keeps, the node's own user
+        // knobs and the roto shapes and tracks.
+        presetPart = serialization;
+        presetPart.knobs.remove_if([this](const Serialization::KnobSerialization& k) {
+            const KnobIPtr knob = getKnobByName(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(k.name));
+
+            return knob && isKeptByPresets(knob);
+        });
+        for (std::list<Serialization::GroupKnobSerialization>::iterator it = presetPart.userPages.begin(); it != presetPart.userPages.end(); ++it) {
+            removeExistingUserKnobs(*this, &it->children);
+        }
+        presetPart.hasRotoContext = false;
+        presetPart.rotoContext = Serialization::RotoContextSerialization();
+        presetPart.hasTrackerContext = false;
+        presetPart.trackerContext = Serialization::TrackerContextSerialization();
+    }
+    const Serialization::NodeSerialization& applied = isPreset ? presetPart : serialization;
+
+    std::set<std::string> savedKnobs;
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = applied.knobs.begin(); it != applied.knobs.end(); ++it) {
+        savedKnobs.insert(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name));
+    }
+
+    const KnobsVec knobsBefore = getKnobs();
+    std::set<KnobIPtr> userKnobsBefore;
+    for (KnobsVec::const_iterator it = knobsBefore.begin(); it != knobsBefore.end(); ++it) {
+        if ((*it)->isUserKnob()) {
+            userKnobsBefore.insert(*it);
+        }
+    }
+
+    for (KnobsVec::const_iterator it = knobsBefore.begin(); it != knobsBefore.end(); ++it) {
+        const KnobIPtr& knob = *it;
+        if (!isPresetResettable(knob)) {
+            continue;
+        }
+        if (isPreset && isKeptByPresets(knob)) {
+            continue;
+        }
+        const bool saved = savedKnobs.count(knob->getName()) > 0;
+        removeKnobLinks(knob);
+        for (int i = 0; i < knob->getDimension(); ++i) {
+            // fromSerialization() replaces values and curves but only ever adds expressions.
+            if (saved) {
+                knob->clearExpression(i, true);
+            } else {
+                // The plug-in decides a knob's visibility from the values it depends on.
+                knob->resetToDefaultValueWithoutSecretNessAndEnabledNess(i);
+            }
+        }
+    }
+
+    // Loading roto shapes or tracks appends them to the existing ones.
+    if (!isPreset && _imp->rotoContext) {
+        const std::list<RotoLayerPtr>& layers = _imp->rotoContext->getLayers();
+        if (!layers.empty()) {
+            const std::list<RotoItemPtr> items = layers.front()->getItems();
+            for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+                _imp->rotoContext->removeItem(*it);
+            }
+        }
+    }
+    if (!isPreset && _imp->trackContext) {
+        std::vector<TrackMarkerPtr> markers;
+        _imp->trackContext->getAllMarkers(&markers);
+        for (std::vector<TrackMarkerPtr>::const_iterator it = markers.begin(); it != markers.end(); ++it) {
+            _imp->trackContext->removeMarker(*it);
+        }
+    }
+
+    fromSerialization(applied, true);
+
+    bool userKnobsChanged = false;
+    const KnobsVec knobsAfter = getKnobs();
+    for (KnobsVec::const_iterator it = knobsAfter.begin(); it != knobsAfter.end(); ++it) {
+        if ((*it)->isUserKnob() && (userKnobsBefore.count(*it) == 0)) {
+            userKnobsChanged = true;
+            if (createdUserKnobs) {
+                createdUserKnobs->push_back(*it);
+            }
+        }
+    }
+
+    const std::map<std::string, std::string> noRenames;
+    storeKnobsLinks(applied, noRenames);
+    NodesList allNodes;
+    AppInstancePtr app = getApp();
+    if (app) {
+        app->getProject()->getActiveNodesExpandGroups(&allNodes);
+    }
+    // A link to a node that is gone stays unresolved rather than abort the rest of the apply.
+    restoreKnobsLinks(allNodes, noRenames, false);
+
+    if (userKnobsChanged) {
+        _imp->effect->recreateUserKnobs(true);
+        // recreateUserKnobs() only declares the knobs to Python when a settings panel exists, and
+        // deleting a knob expects its attribute to be there.
+        declarePythonFields();
+    }
+} // Node::applyPresetSerialization
+
+void
+Node::deleteUserKnobs(const std::list<KnobIWPtr>& knobs)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    bool deleted = false;
+    // Children before the pages and groups they were created in, which delete their children too.
+    for (std::list<KnobIWPtr>::const_reverse_iterator it = knobs.rbegin(); it != knobs.rend(); ++it) {
+        KnobIPtr knob = it->lock();
+        if (!knob || !knob->isUserKnob() || (getKnobByName(knob->getName()) != knob)) {
+            continue;
+        }
+        _imp->effect->deleteKnob(knob.get(), true);
+        deleted = true;
+    }
+    if (deleted) {
+        _imp->effect->recreateUserKnobs(true);
+    }
 }
 
 void

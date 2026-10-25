@@ -67,7 +67,6 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , cacheSizeHidden(true)
     , _refreshCacheTextTimer()
     , _navigator(NULL)
-    , _undoStack(NULL)
     , _menu(NULL)
     , _tL(NULL)
     , _tR(NULL)
@@ -140,7 +139,7 @@ bool
 NodeGraphPrivate::rearrangeSelectedNodes()
 {
     if ( !_selection.empty() ) {
-        _publicInterface->pushUndoCommand( new RearrangeNodesCommand(_selection) );
+        _publicInterface->pushUndoCommand(new RearrangeNodesCommand(_selection), _selection);
 
         return true;
     }

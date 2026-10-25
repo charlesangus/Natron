@@ -29,14 +29,13 @@
 #include <stdexcept>
 #include <sstream> // stringstream
 
+#include <QAction>
 #include <QApplication>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QSplitter>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
-#include <QSplitter>
-#include <QHeaderView>
-#include <QUndoStack> // in QtGui on Qt4, in QtWidgets on Qt5
-#include <QAction>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QMouseEvent>
@@ -57,18 +56,19 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 #include "Gui/ActionShortcuts.h"
 #include "Gui/CurveGui.h"
-#include "Gui/NodeGui.h"
-#include "Gui/KnobGui.h"
-#include "Gui/LineEdit.h"
+#include "Gui/DockablePanel.h"
+#include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiMacros.h"
-#include "Gui/Gui.h"
-#include "Gui/DockablePanel.h"
-#include "Gui/GuiAppInstance.h"
+#include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Label.h"
+#include "Gui/LineEdit.h"
+#include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/TabWidget.h"
+#include "Gui/UndoHistory.h"
 
 #include "Gui/GuiFwd.h"
 
@@ -127,8 +127,6 @@ struct CurveEditorPrivate
     LineEdit* filterEdit;
     QWidget* leftPaneContainer;
     QVBoxLayout* leftPaneLayout;
-    std::unique_ptr<QUndoStack> undoStack;
-    QAction* undoAction, *redoAction;
     QWidget* expressionContainer;
     QHBoxLayout* expressionLayout;
     Label* knobLabel;
@@ -150,9 +148,6 @@ struct CurveEditorPrivate
         , filterEdit(0)
         , leftPaneContainer(0)
         , leftPaneLayout(0)
-        , undoStack(new QUndoStack)
-        , undoAction(0)
-        , redoAction(0)
         , expressionContainer(0)
         , expressionLayout(0)
         , knobLabel(0)
@@ -172,11 +167,7 @@ CurveEditor::CurveEditor(Gui* gui,
     , PanelWidget(this, gui)
     , _imp( new CurveEditorPrivate() )
 {
-    setObjectName( QString::fromUtf8("CurveEditor") );
-    _imp->undoAction = _imp->undoStack->createUndoAction( this, tr("&Undo") );
-    _imp->undoAction->setShortcuts(QKeySequence::Undo);
-    _imp->redoAction = _imp->undoStack->createRedoAction( this, tr("&Redo") );
-    _imp->redoAction->setShortcuts(QKeySequence::Redo);
+    setObjectName(QString::fromUtf8("CurveEditor"));
 
     _imp->mainLayout = new QVBoxLayout(this);
     _imp->mainLayout->setContentsMargins(0, 0, 0, 0);
@@ -331,11 +322,6 @@ CurveEditor::recursiveSelect(QTreeWidgetItem* cur,
             }
         }
     }
-}
-
-std::pair<QAction*, QAction*> CurveEditor::getUndoRedoActions() const
-{
-    return std::make_pair(_imp->undoAction, _imp->redoAction);
 }
 
 void
@@ -1871,13 +1857,10 @@ CurveEditor::setSelectedCurveExpression(const QString& expression)
             return;
         }
     }
-    pushUndoCommand( new SetExpressionCommand(knob, false, dim, expr) );
-}
-
-QUndoStack*
-CurveEditor::getUndoStack() const
-{
-    return _imp->curveWidget ? _imp->curveWidget->getUndoStack() : 0;
+    UndoScope scope;
+    scope.touchKnob(knob);
+    scope.ownByOnlyTouched();
+    pushUndoCommand(new SetExpressionCommand(knob, false, dim, expr), scope);
 }
 
 void

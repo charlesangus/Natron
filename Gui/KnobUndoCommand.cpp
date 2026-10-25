@@ -44,13 +44,15 @@
 NATRON_NAMESPACE_ENTER
 struct PasteUndoCommandPrivate
 {
-    KnobGuiWPtr knob;
+    UndoKnobRef knob;
     KnobClipBoardType type;
     int fromDimension;
     int targetDimension;
     // A copy of the target knob as it was before the paste, which undo copies back from.
     KnobIPtr originalKnob;
     KnobIPtr fromKnob;
+    // The knob a link paste slaves to, which must still exist when the link is redone.
+    UndoKnobRef linkSource;
 
     PasteUndoCommandPrivate()
         : knob()
@@ -70,11 +72,12 @@ PasteUndoCommand::PasteUndoCommand(const KnobGuiPtr& knob,
     : QUndoCommand(0)
     , _imp( new PasteUndoCommandPrivate() )
 {
-    _imp->knob = knob;
+    _imp->knob = UndoKnobRef(knob->getKnob());
     _imp->type = type;
     _imp->fromDimension = fromDimension;
     _imp->targetDimension = targetDimension;
     _imp->fromKnob = fromKnob;
+    _imp->linkSource = UndoKnobRef(fromKnob);
 
     {
         Serialization::KnobSerialization originalSerialization;
@@ -84,7 +87,7 @@ PasteUndoCommand::PasteUndoCommand(const KnobGuiPtr& knob,
     assert(_imp->originalKnob);
 
     assert(knob);
-    assert( _imp->targetDimension >= -1 && _imp->targetDimension < _imp->knob.lock()->getKnob()->getDimension() );
+    assert(_imp->targetDimension >= -1 && _imp->targetDimension < knob->getKnob()->getDimension());
     assert( _imp->fromDimension >= -1 && _imp->fromDimension < _imp->fromKnob->getDimension() );
     QString text;
     switch (type) {
@@ -121,7 +124,22 @@ void
 PasteUndoCommand::copyFrom(const KnobIPtr& serializedKnob,
                            bool isRedo)
 {
-    KnobIPtr internalKnob = _imp->knob.lock()->getKnob();
+    KnobIPtr internalKnob = _imp->knob.lock();
+
+    if (!internalKnob) {
+        setObsolete(true);
+
+        return;
+    }
+    KnobIPtr linkSource;
+    if ((_imp->type == eKnobClipBoardTypeCopyLink) && isRedo) {
+        linkSource = _imp->linkSource.lock();
+        if (!linkSource) {
+            setObsolete(true);
+
+            return;
+        }
+    }
 
     switch (_imp->type) {
     case eKnobClipBoardTypeCopyAnim: {
@@ -183,9 +201,9 @@ PasteUndoCommand::copyFrom(const KnobIPtr& serializedKnob,
             if ( ( _imp->targetDimension == -1) || ( i == _imp->targetDimension) ) {
                 if (isRedo) {
                     if (_imp->fromDimension != -1) {
-                        internalKnob->slaveTo(i, serializedKnob, _imp->fromDimension);
+                        internalKnob->slaveTo(i, linkSource, _imp->fromDimension);
                     } else {
-                        internalKnob->slaveTo(i, serializedKnob, i);
+                        internalKnob->slaveTo(i, linkSource, i);
                     }
                 } else {
                     internalKnob->unSlave(i, false);
@@ -215,7 +233,7 @@ MultipleKnobEditsUndoCommand::MultipleKnobEditsUndoCommand(const KnobGuiPtr& kno
         //qDebug() << "new MultipleKnobEditsUndoCommand";
     }
     assert(knob);
-    std::list<ValueToSet>& vlist = knobs[knob];
+    std::list<ValueToSet>& vlist = knobs[UndoKnobRef(knob->getKnob())];
     ValueToSet v;
     v.newValue = value;
     v.dimension = dimension;
@@ -281,21 +299,42 @@ MultipleKnobEditsUndoCommand::createCopyForKnob(const KnobIPtr & originalKnob)
     return copy;
 }
 
+KnobHolder*
+MultipleKnobEditsUndoCommand::liveHolder() const
+{
+    for (ParamsMap::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        KnobIPtr knob = it->first.lock();
+        if (knob && knob->getHolder()) {
+            return knob->getHolder();
+        }
+    }
+
+    return 0;
+}
+
+bool
+MultipleKnobEditsUndoCommand::isCurrentFrame(const KnobIPtr& knob,
+                                             double time)
+{
+    KnobHolder* holder = knob->getHolder();
+    AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+
+    return app && (time == app->getTimeLine()->currentFrame());
+}
+
 void
 MultipleKnobEditsUndoCommand::undo()
 {
-    assert( !knobs.empty() );
-    KnobHolder* holder = knobs.begin()->first.lock()->getKnob()->getHolder();
-    if (holder) {
-        holder->beginChanges();
+    KnobHolder* holder = liveHolder();
+    if (!holder) {
+        setObsolete(true);
+
+        return;
     }
+    holder->beginChanges();
 
     for (ParamsMap::iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        KnobGuiPtr knobUI = it->first.lock();
-        if (!knobUI) {
-            continue;
-        }
-        KnobIPtr knob = knobUI->getKnob();
+        KnobIPtr knob = it->first.lock();
         if (!knob) {
             continue;
         }
@@ -313,22 +352,22 @@ MultipleKnobEditsUndoCommand::undo()
 
             if (retCode == KnobHelper::eValueChangedReturnCodeKeyframeAdded) {
                 //qDebug() << "Undo " << knob->getName().c_str() << "[" << it2->dimension << "] remove keyFrame";
-                knobUI->removeKeyFrame( it2->time, it2->dimension, ViewIdx(0) );
+                KnobGui::removeKnobKeyframe(knob, it2->time, it2->dimension, ViewIdx(0));
             } else {
                 if (it2->setKeyFrame) {
-                    bool refreshGui =  it2->time == knob->getHolder()->getApp()->getTimeLine()->currentFrame();
+                    bool refreshGui = isCurrentFrame(knob, it2->time);
                     if (isInt) {
                         //qDebug() << "Undo " << knob->getName().c_str() << "[" << it2->dimension << "] to " << it2->oldValue.toInt() << "at time" << it2->time;
-                        knobUI->setValueAtTime<int>(it2->dimension, it2->oldValue.toInt(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
+                        KnobGui::setKnobValueAtTime<int>(knob, it2->dimension, it2->oldValue.toInt(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
                     } else if (isBool) {
                         //qDebug() << "Undo " << knob->getName().c_str() << "[" << it2->dimension << "] to " << it2->oldValue.toBool() << "at time" << it2->time;
-                        knobUI->setValueAtTime<bool>(it2->dimension, it2->oldValue.toBool(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
+                        KnobGui::setKnobValueAtTime<bool>(knob, it2->dimension, it2->oldValue.toBool(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
                     } else if (isDouble) {
                         //qDebug() << "Undo " << knob->getName().c_str() << "[" << it2->dimension << "] to " << it2->oldValue.toDouble() << "at time" << it2->time;
-                        knobUI->setValueAtTime<double>(it2->dimension, it2->oldValue.toDouble(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
+                        KnobGui::setKnobValueAtTime<double>(knob, it2->dimension, it2->oldValue.toDouble(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
                     } else if (isString) {
                         //qDebug() << "Undo " << knob->getName().c_str() << "[" << it2->dimension << "] to " << it2->oldValue.toString() << "at time" << it2->time;
-                        knobUI->setValueAtTime<std::string>(it2->dimension, it2->oldValue.toString().toStdString(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
+                        KnobGui::setKnobValueAtTime<std::string>(knob, it2->dimension, it2->oldValue.toString().toStdString(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
                     } else {
                         assert(false);
                     }
@@ -342,26 +381,26 @@ MultipleKnobEditsUndoCommand::undo()
                         int oldValue = it2->oldValue.toInt();
                         if (isInt->getValueAtTime(it2->time, it2->dimension) != oldValue) {
                             //qDebug() << "Undo" << knob->getName().c_str() << "[" << it2->dimension << "] to " << it2->oldValue.toInt();
-                            knobUI->setValue<int>(it2->dimension, oldValue, &k, true, _reason);
+                            KnobGui::setKnobValue<int>(knob, it2->dimension, oldValue, &k, true, _reason);
                         }
                     } else if (isBool) {
                         bool oldValue = it2->oldValue.toBool();
                         if (isBool->getValueAtTime(it2->time, it2->dimension) != oldValue) {
                             //qDebug() << "Undo" << knob->getName().c_str() << "[" << it2->dimension << "] to " << it2->oldValue.toBool();
-                            knobUI->setValue<bool>(it2->dimension, oldValue, &k, true, _reason);
+                            KnobGui::setKnobValue<bool>(knob, it2->dimension, oldValue, &k, true, _reason);
                         }
                     } else if (isDouble) {
                         double oldValue = it2->oldValue.toDouble();
                         if (isDouble->getValueAtTime(it2->time, it2->dimension) != oldValue) {
                             //qDebug() << "Undo" << knob->getName().c_str() << "[" << it2->dimension << "] to " << it2->oldValue.toDouble();
-                            knobUI->setValue<double>(it2->dimension, oldValue, &k, true, _reason);
+                            KnobGui::setKnobValue<double>(knob, it2->dimension, oldValue, &k, true, _reason);
                         }
                     } else if (isString) {
                         std::string oldValue = it2->oldValue.toString().toStdString();
                         if (isString->getValueAtTime(it2->time, it2->dimension) != oldValue) {
                             //qDebug() << "Undo" << knob->getName().c_str() << "[" << it2->dimension << "] to " << it2->oldValue.toString();
-                            knobUI->setValue<std::string>(it2->dimension, oldValue,
-                                                          &k, true, _reason);
+                            KnobGui::setKnobValue<std::string>(knob, it2->dimension, oldValue,
+                                                               &k, true, _reason);
                         }
                     } else {
                         assert(false);
@@ -372,28 +411,23 @@ MultipleKnobEditsUndoCommand::undo()
         knob->endChanges();
     }
 
-
-    if (holder) {
-        holder->endChanges();
-    }
+    holder->endChanges();
 } // MultipleKnobEditsUndoCommand::undo
 
 void
 MultipleKnobEditsUndoCommand::redo()
 {
-    assert( !knobs.empty() );
-    KnobHolder* holder = knobs.begin()->first.lock()->getKnob()->getHolder();
-    if (holder) {
-        holder->beginChanges();
+    KnobHolder* holder = liveHolder();
+    if (!holder) {
+        setObsolete(true);
+
+        return;
     }
+    holder->beginChanges();
 
     ///this is the first redo command, set values
     for (ParamsMap::iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        KnobGuiPtr knobUI = it->first.lock();
-        if (!knobUI) {
-            continue;
-        }
-        KnobIPtr knob = knobUI->getKnob();
+        KnobIPtr knob = it->first.lock();
         if (!knob) {
             continue;
         }
@@ -422,16 +456,16 @@ MultipleKnobEditsUndoCommand::redo()
 
             if (it2->setKeyFrame) {
                 bool keyAdded = false;
-                bool refreshGui =  it2->time == knob->getHolder()->getApp()->getTimeLine()->currentFrame();
+                bool refreshGui = isCurrentFrame(knob, it2->time);
                 if (isInt) {
-                    keyAdded = knobUI->setValueAtTime<int>(it2->dimension, it2->newValue.toInt(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
+                    keyAdded = KnobGui::setKnobValueAtTime<int>(knob, it2->dimension, it2->newValue.toInt(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
                 } else if (isBool) {
-                    keyAdded = knobUI->setValueAtTime<bool>(it2->dimension, it2->newValue.toBool(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
+                    keyAdded = KnobGui::setKnobValueAtTime<bool>(knob, it2->dimension, it2->newValue.toBool(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
                 } else if (isDouble) {
-                    keyAdded = knobUI->setValueAtTime<double>(it2->dimension, it2->newValue.toDouble(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
+                    keyAdded = KnobGui::setKnobValueAtTime<double>(knob, it2->dimension, it2->newValue.toDouble(), it2->time, ViewIdx(0), &k, refreshGui, _reason);
                 } else if (isString) {
-                    keyAdded = knobUI->setValueAtTime<std::string>(it2->dimension, it2->newValue.toString().toStdString(), it2->time,
-                                                                   ViewIdx(0), &k, refreshGui, _reason);
+                    keyAdded = KnobGui::setKnobValueAtTime<std::string>(knob, it2->dimension, it2->newValue.toString().toStdString(), it2->time,
+                                                                        ViewIdx(0), &k, refreshGui, _reason);
                 } else {
                     assert(false);
                 }
@@ -440,22 +474,22 @@ MultipleKnobEditsUndoCommand::redo()
                 if (isInt) {
                     int newValue = it2->newValue.toInt();
                     if (isInt->getValueAtTime(it2->time, it2->dimension) != newValue) {
-                        it2->setValueRetCode = knobUI->setValue<int>(it2->dimension, newValue, &k, true, _reason);
+                        it2->setValueRetCode = KnobGui::setKnobValue<int>(knob, it2->dimension, newValue, &k, true, _reason);
                     }
                 } else if (isBool) {
                     bool newValue = it2->newValue.toBool();
                     if (isBool->getValueAtTime(it2->time, it2->dimension) != newValue) {
-                        it2->setValueRetCode = knobUI->setValue<bool>(it2->dimension, newValue, &k, true, _reason);
+                        it2->setValueRetCode = KnobGui::setKnobValue<bool>(knob, it2->dimension, newValue, &k, true, _reason);
                     }
                 } else if (isDouble) {
                     double newValue = it2->newValue.toDouble();
                     if (isDouble->getValueAtTime(it2->time, it2->dimension) != newValue) {
-                        it2->setValueRetCode = knobUI->setValue<double>(it2->dimension, newValue, &k, true, _reason);
+                        it2->setValueRetCode = KnobGui::setKnobValue<double>(knob, it2->dimension, newValue, &k, true, _reason);
                     }
                 } else if (isString) {
                     std::string newValue = it2->newValue.toString().toStdString();
                     if (isString->getValueAtTime(it2->time, it2->dimension) != newValue) {
-                        it2->setValueRetCode = knobUI->setValue<std::string>(it2->dimension, newValue, &k, true, _reason);
+                        it2->setValueRetCode = KnobGui::setKnobValue<std::string>(knob, it2->dimension, newValue, &k, true, _reason);
                     }
                 } else {
                     assert(false);
@@ -468,9 +502,7 @@ MultipleKnobEditsUndoCommand::redo()
         knob->endChanges();
     }
 
-    if (holder) {
-        holder->endChanges();
-    }
+    holder->endChanges();
 
     firstRedoCalled = true;
     //qDebug() << "redo: firstRedoCalled=true";
@@ -505,15 +537,12 @@ MultipleKnobEditsUndoCommand::mergeWith(const QUndoCommand *command)
             ParamsMap::const_iterator otherIt = knobCommand->knobs.begin();
             bool oneDifferent = false;
             for (; thisIt != knobs.end() && otherIt != knobCommand->knobs.end(); ++thisIt) {
-                KnobGuiPtr thisItKey = thisIt->first.lock();
-                KnobGuiPtr otherItKey = otherIt->first.lock();
-
-                if (otherIt->first.lock() < thisIt->first.lock()) {
+                if (otherIt->first < thisIt->first) {
                     //qDebug() << thisItKey->getKnob()->getName().c_str() << "!=" << otherItKey->getKnob()->getName().c_str();
                     
                     oneDifferent = true;
                     break;
-                } else if (!(thisIt->first.lock() < otherIt->first.lock())) {
+                } else if (!(thisIt->first < otherIt->first)) {
                     //qDebug() << thisItKey->getKnob()->getName().c_str() << "==" << otherItKey->getKnob()->getName().c_str();
                     ++otherIt;
                 }
@@ -600,11 +629,11 @@ RestoreDefaultsCommand::RestoreDefaultsCommand(bool isNodeReset,
     , _knobs()
 {
     for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        _knobs.push_back(*it);
+        _knobs.push_back(UndoKnobRef(*it));
         _clones.push_back( MultipleKnobEditsUndoCommand::createCopyForKnob(*it) );
     }
 
-    KnobIPtr first = _knobs.front().lock();
+    KnobIPtr first = knobs.empty() ? KnobIPtr() : knobs.front();
     KnobHolder* holder = first ? first->getHolder() : nullptr;
     EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
     QString holderName;
@@ -612,7 +641,7 @@ RestoreDefaultsCommand::RestoreDefaultsCommand(bool isNodeReset,
         holderName = QString::fromUtf8( effect->getNode()->getLabel().c_str() );
     }
 
-    if (_knobs.size() == 1) {
+    if ((_knobs.size() == 1) && first) {
         setText( tr("Reset %1.%2 to default").arg(holderName).arg( QString::fromUtf8( first->getLabel().c_str() ) ) );
     } else {
         setText( tr("Reset %1 to default").arg(holderName) );
@@ -625,21 +654,18 @@ RestoreDefaultsCommand::undo()
     assert( _clones.size() == _knobs.size() );
 
     std::list<SequenceTime> times;
-    KnobIPtr first = _knobs.front().lock();
-    KnobHolder* holder = first ? first->getHolder() : nullptr;
-    AppInstancePtr app;
-    if (holder) {
-        app = holder->getApp();
+    KnobHolder* holder = liveHolder();
+    if (!holder) {
+        setObsolete(true);
+
+        return;
     }
-    assert(app);
+    AppInstancePtr app = holder->getApp();
     std::list<KnobIPtr>::iterator itClone = _clones.begin();
-    for (std::list<KnobIWPtr>::const_iterator it = _knobs.begin(); it != _knobs.end(); ++it, ++itClone) {
+    for (std::list<UndoKnobRef>::const_iterator it = _knobs.begin(); it != _knobs.end(); ++it, ++itClone) {
+        // A knob that is gone keeps its clone: a later preset may recreate it.
         KnobIPtr itKnob = it->lock();
         if (!itKnob) {
-            // The Knob probably doesn't exist anymore.
-            // We won't need the clone, so we may as well release it (we own it).
-            itClone->reset();
-
             continue;
         }
         if (!*itClone) {
@@ -649,7 +675,7 @@ RestoreDefaultsCommand::undo()
         }
         itKnob->cloneAndUpdateGui( itClone->get() );
 
-        if ( itKnob->getHolder()->getApp() ) {
+        if (itKnob->getHolder() && itKnob->getHolder()->getApp()) {
             int dim = itKnob->getDimension();
             for (int i = 0; i < dim; ++i) {
                 if ( (i == _targetDim) || (_targetDim == -1) ) {
@@ -664,33 +690,48 @@ RestoreDefaultsCommand::undo()
             }
         }
     }
-    app->addMultipleKeyframeIndicatorsAdded(times, true);
+    if (app) {
+        app->addMultipleKeyframeIndicatorsAdded(times, true);
+    }
 
     holder->incrHashAndEvaluate(true, true);
-    if ( app ) {
+    if (app) {
         app->redrawAllViewers();
     }
+}
+
+KnobHolder*
+RestoreDefaultsCommand::liveHolder() const
+{
+    for (std::list<UndoKnobRef>::const_iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
+        KnobIPtr knob = it->lock();
+        if (knob && knob->getHolder()) {
+            return knob->getHolder();
+        }
+    }
+
+    return 0;
 }
 
 void
 RestoreDefaultsCommand::redo()
 {
     std::list<SequenceTime> times;
-    KnobIPtr first = _knobs.front().lock();
-    AppInstancePtr app;
-    KnobHolder* holder = first ? first->getHolder() : nullptr;
+    KnobHolder* holder = liveHolder();
+    if (!holder) {
+        setObsolete(true);
+
+        return;
+    }
+    AppInstancePtr app = holder->getApp();
     EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
 
-    if (holder) {
-        app = holder->getApp();
-        holder->beginChanges();
-    }
-
+    holder->beginChanges();
 
     /*
        First reset all knobs values, this will not call instanceChanged action
      */
-    for (std::list<KnobIWPtr>::iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
+    for (std::list<UndoKnobRef>::iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
         KnobIPtr itKnob = it->lock();
         if (!itKnob) {
             continue;
@@ -736,7 +777,7 @@ RestoreDefaultsCommand::redo()
     if (app) {
         time = app->getTimeLine()->currentFrame();
     }
-    for (std::list<KnobIWPtr>::iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
+    for (std::list<UndoKnobRef>::iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
         KnobIPtr itKnob = it->lock();
         if (!itKnob) {
             continue;
@@ -750,8 +791,7 @@ RestoreDefaultsCommand::redo()
         app->removeMultipleKeyframeIndicator(times, true);
     }
 
-
-    if ( holder && holder->getApp() ) {
+    if (app) {
         holder->endChanges();
     }
 
@@ -759,11 +799,9 @@ RestoreDefaultsCommand::redo()
         isEffect->purgeCaches();
     }
 
-    if ( holder ) {
-        holder->incrHashAndEvaluate(true, true);
-        if ( app ) {
-            app->redrawAllViewers();
-        }
+    holder->incrHashAndEvaluate(true, true);
+    if (app) {
+        app->redrawAllViewers();
     }
 } // RestoreDefaultsCommand::redo
 
@@ -793,6 +831,8 @@ SetExpressionCommand::undo()
     KnobIPtr knob = _knob.lock();
 
     if (!knob) {
+        setObsolete(true);
+
         return;
     }
     for (int i = 0; i < knob->getDimension(); ++i) {
@@ -813,6 +853,8 @@ SetExpressionCommand::redo()
     KnobIPtr knob = _knob.lock();
 
     if (!knob) {
+        setObsolete(true);
+
         return;
     }
     if (_dimension == -1) {

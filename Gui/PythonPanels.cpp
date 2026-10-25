@@ -37,6 +37,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/PyNode.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 
 #include "Gui/DialogButtonBox.h"
@@ -159,9 +160,16 @@ DialogParamHolder::onKnobValueChanged(KnobI* k,
         std::string script = ss.str();
         std::string err;
         std::string output;
-        if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output) ) {
+        bool ok;
+        {
+            // The dialog's own parameters are not part of the project, but what the callback
+            // changes in it is.
+            UndoStepGuard undoStep(getApp(), k->getLabel());
+            ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output);
+        }
+        if (!ok) {
             getApp()->appendToScriptEditor( tr("Failed to execute callback: %1").arg( QString::fromUtf8( err.c_str() ) ).toStdString() );
-        } else if ( !output.empty() ) {
+        } else if (!output.empty()) {
             getApp()->appendToScriptEditor(output);
         }
 
@@ -212,13 +220,12 @@ PyModalDialog::PyModalDialog(Gui* gui,
     _imp->centerLayout = new QVBoxLayout(_imp->centerContainer);
     _imp->centerLayout->setContentsMargins(0, 0, 0, 0);
 
-
     _imp->panel = new DockablePanel(gui,
                                     _imp->holder,
                                     _imp->mainLayout,
                                     DockablePanel::eHeaderModeNoHeader,
                                     false,
-                                    QUndoStackPtr(),
+                                    0,
                                     QString(), QString(),
                                     _imp->centerContainer);
     _imp->panel->turnOffPages();
@@ -415,7 +422,7 @@ PyPanel::PyPanel(const QString& scriptName,
                                         _imp->mainLayout,
                                         DockablePanel::eHeaderModeNoHeader,
                                         false,
-                                        QUndoStackPtr(),
+                                        0,
                                         QString(), QString(),
                                         _imp->centerContainer);
         _imp->panel->turnOffPages();

@@ -104,6 +104,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/SpinBox.h"
 #include "Gui/ThemedIcon.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 
@@ -365,7 +366,6 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _mtSafeWidth(0)
     , _mtSafeHeight(0)
     , _hostOverlay()
-    , _undoStack(new QUndoStack())
     , _overlayLocked(false)
     , _availableViewsIndicator()
     , _passThroughIndicator()
@@ -1048,14 +1048,6 @@ NodeGui::togglePreview()
         node->togglePreview();
     }
     togglePreview_internal();
-}
-
-void
-NodeGui::removeUndoStack()
-{
-    if (_graph && _graph->getGui() && _undoStack) {
-        _graph->getGui()->removeUndoStack( _undoStack.get() );
-    }
 }
 
 void
@@ -2627,13 +2619,37 @@ NodeGui::restoreInternal(const NodeGuiPtr& thisShared,
 {
     assert(internalSerialization.size() >= 1);
 
-    getSettingPanel()->pushUndoCommand( new LoadNodePresetsCommand(thisShared, internalSerialization) );
+    LoadNodePresetsCommand* command = new LoadNodePresetsCommand(thisShared, internalSerialization);
+    Gui* gui = _graph ? _graph->getGui() : 0;
+    if (!gui) {
+        command->redo();
+        delete command;
+
+        return;
+    }
+    NodePtr node = getNode();
+    UndoScope scope(UndoScope::holderForNode(node));
+    // The preset replaces the multi-instance children wholesale.
+    NodesList children;
+    node->getChildrenMultiInstance(&children);
+    for (NodesList::const_iterator it = children.begin(); it != children.end(); ++it) {
+        scope.touchNode(*it);
+    }
+    gui->getUndoHistory()->push(command, scope);
 }
 
-QUndoStackPtr
-NodeGui::getUndoStack() const
+void
+NodeGui::pushToUndoHistory(QUndoCommand* command)
 {
-    return _undoStack;
+    Gui* gui = _graph ? _graph->getGui() : 0;
+
+    if (!gui) {
+        command->redo();
+        delete command;
+
+        return;
+    }
+    gui->getUndoHistory()->push(command, UndoScope(UndoScope::holderForNode(getNode())));
 }
 
 void
@@ -3025,10 +3041,6 @@ NodeGui::destroyGui()
     if (!guiObj) {
         return;
     }
-
-    //Remove undo stack
-    removeUndoStack();
-
 
     NodeGuiPtr thisShared = shared_from_this();
 
@@ -4478,13 +4490,7 @@ public:
 void
 NodeGui::pushUndoCommand(const UndoCommandPtr& command)
 {
-    NodeSettingsPanel* panel = getSettingPanel();
-
-    if (!panel) {
-        command->redo();
-    } else {
-        panel->pushUndoCommand( new NodeUndoRedoCommand(command) );
-    }
+    pushToUndoHistory(new NodeUndoRedoCommand(command));
 }
 
 void

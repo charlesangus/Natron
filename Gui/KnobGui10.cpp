@@ -340,16 +340,18 @@ KnobGui::onHorizontalInterpActionTriggered()
 }
 
 void
-KnobGui::setKeyframe(double time,
-                     int dimension,
-                     ViewSpec view)
+KnobGui::setKnobKeyframe(const KnobIPtr& knob,
+                         double time,
+                         int dimension,
+                         ViewSpec view)
 {
-    KnobIPtr knob = getKnob();
-
     assert( knob->getHolder()->getApp() );
 
     bool keyAdded = knob->onKeyFrameSet(time, view, dimension);
-    Q_EMIT keyFrameSet();
+    KnobGuiPtr gui = getLiveGui(knob);
+    if (gui) {
+        Q_EMIT gui->keyFrameSet();
+    }
 
     if ( !knob->getIsSecret() && keyAdded && knob->isDeclaredByPlugin() ) {
         knob->getHolder()->getApp()->addKeyframeIndicator(time);
@@ -357,17 +359,19 @@ KnobGui::setKeyframe(double time,
 }
 
 void
-KnobGui::setKeyframe(double time,
-                     const KeyFrame& key,
-                     int dimension,
-                     ViewSpec view)
+KnobGui::setKnobKeyframe(const KnobIPtr& knob,
+                         double time,
+                         const KeyFrame& key,
+                         int dimension,
+                         ViewSpec view)
 {
-    KnobIPtr knob = getKnob();
-
     assert( knob->getHolder()->getApp() );
 
     bool keyAdded = knob->onKeyFrameSet(time, view, key, dimension);
-    Q_EMIT keyFrameSet();
+    KnobGuiPtr gui = getLiveGui(knob);
+    if (gui) {
+        Q_EMIT gui->keyFrameSet();
+    }
     if ( !knob->getIsSecret() && keyAdded && knob->isDeclaredByPlugin() ) {
         knob->getHolder()->getApp()->addKeyframeIndicator(time);
     }
@@ -414,7 +418,7 @@ KnobGui::onSetKeyActionTriggered()
 
                 keyToAdd.keyframes.push_back(kf);
                 keyToAdd.curveUI = *it;
-                keyToAdd.knobUI = thisShared;
+                keyToAdd.knob = knob;
                 keyToAdd.dimension = i;
                 toAdd.push_back(keyToAdd);
             }
@@ -424,35 +428,35 @@ KnobGui::onSetKeyActionTriggered()
 }
 
 void
-KnobGui::removeKeyFrame(double time,
-                        int dimension,
-                        ViewSpec view)
+KnobGui::removeKnobKeyframe(const KnobIPtr& knob,
+                            double time,
+                            int dimension,
+                            ViewSpec view)
 {
-    KnobIPtr knob = getKnob();
-
     CurvePtr curve = knob->getCurve(view, dimension);
     bool copyCurveValueAtTimeToInternalValue = false;
     if (curve) {
         copyCurveValueAtTimeToInternalValue = curve->getKeyFramesCount() == 1;
     }
     knob->onKeyFrameRemoved(time, view, dimension, copyCurveValueAtTimeToInternalValue);
-    Q_EMIT keyFrameRemoved();
-
+    KnobGuiPtr gui = getLiveGui(knob);
+    if (gui) {
+        Q_EMIT gui->keyFrameRemoved();
+    }
 
     assert( knob->getHolder()->getApp() );
     if ( !knob->getIsSecret() ) {
         knob->getHolder()->getApp()->removeKeyFrameIndicator(time);
     }
-    updateGUI(dimension);
+    refreshLiveGui(knob, dimension);
 }
 
 void
-KnobGui::setKeyframes(const std::vector<KeyFrame>& keys,
-                      int dimension,
-                      ViewSpec view)
+KnobGui::setKnobKeyframes(const KnobIPtr& knob,
+                          const std::vector<KeyFrame>& keys,
+                          int dimension,
+                          ViewSpec view)
 {
-    KnobIPtr knob = getKnob();
-
     assert( knob->getHolder()->getApp() );
     knob->beginChanges();
     std::list<SequenceTime> times;
@@ -463,35 +467,32 @@ KnobGui::setKeyframes(const std::vector<KeyFrame>& keys,
         }
     }
     knob->endChanges();
-    Q_EMIT keyFrameSet();
+    KnobGuiPtr gui = getLiveGui(knob);
+    if (gui) {
+        Q_EMIT gui->keyFrameSet();
+    }
     if ( !knob->getIsSecret() && knob->isDeclaredByPlugin() ) {
         knob->getHolder()->getApp()->addMultipleKeyframeIndicatorsAdded(times, true);
     }
 }
 
 void
-KnobGui::removeKeyframes(const std::vector<KeyFrame>& keys,
-                         int dimension,
-                         ViewSpec view)
+KnobGui::removeKnobKeyframes(const KnobIPtr& knob,
+                             const std::vector<KeyFrame>& keys,
+                             int dimension,
+                             ViewSpec view)
 {
-    KnobIPtr knob = getKnob();
-
     knob->beginChanges();
     for (std::size_t i = 0; i < keys.size(); ++i) {
         knob->onKeyFrameRemoved(keys[i].getTime(), view, dimension, i == 0);
     }
     knob->endChanges();
-    /*assert( knob->getHolder()->getApp() );
-       if ( !knob->getIsSecret() ) {
-        std::list<SequenceTime> times;
-        for (std::size_t i = 0; i < keys.size(); ++i) {
-            times.push_back(keys[i].getTime());
-        }
-        knob->getHolder()->getApp()->getTimeLine()->removeMultipleKeyframeIndicator(times, true);
-       }*/
 
-    Q_EMIT keyFrameRemoved();
-    updateGUI(dimension);
+    KnobGuiPtr gui = getLiveGui(knob);
+    if (gui) {
+        Q_EMIT gui->keyFrameRemoved();
+    }
+    refreshLiveGui(knob, dimension);
 }
 
 QString

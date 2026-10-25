@@ -34,21 +34,11 @@
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
+#include "Gui/UndoGesture.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
-
-// One counter for the whole process: every colour gesture (a wheel or slider drag in the
-// adjustment panel, a global-mode stroke) gets its own key, so consecutive gestures on the same
-// knob never merge into one undo step. 0 means "no key", so the count starts at 1.
-quint64
-allocateMergeKey()
-{
-    static quint64 counter = 0;
-
-    return ++counter;
-}
 
 // Whether a gesture may write this dimension: one driven by an expression or a link is left to
 // its driver.
@@ -239,7 +229,9 @@ ColorKnobEditSession::begin(const QString& label)
     _active = true;
     _moved = false;
     _label = label;
-    _mergeKey = allocateMergeKey();
+    // Every colour gesture (a wheel or slider drag in the adjustment panel, a global-mode
+    // stroke) gets its own key, so consecutive gestures on the same knob never merge.
+    _mergeKey = UndoGesture::newKey();
     _current = toKnobValues(readKnobValue(knob));
     _committed = _current;
 

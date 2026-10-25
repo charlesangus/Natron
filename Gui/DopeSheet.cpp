@@ -32,9 +32,8 @@
 // Qt includes
 #include <QDebug>
 #include <QSize>
-#include <QtEvents>
 #include <QTreeWidget>
-#include <QUndoStack>
+#include <QtEvents>
 
 // Natron includes
 #include "Engine/GroupInput.h"
@@ -54,9 +53,11 @@
 #include "Gui/Gui.h"
 #include "Gui/KnobGui.h"
 #include "Gui/Menu.h"
-#include "Gui/NodeGui.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphUndoRedo.h"
+#include "Gui/NodeGui.h"
+#include "Gui/UndoGesture.h"
+#include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -149,27 +150,27 @@ public:
     Node * getNearestReaderFromInputs_recursive(Node *node, std::list<Node*>& markedNodes) const;
     void getInputsConnected_recursive(Node *node, std::vector<DSNodePtr> *result) const;
 
-    void pushUndoCommand(QUndoCommand *cmd);
+    void pushUndoCommand(QUndoCommand* cmd, const UndoScope& scope);
 
     /* attributes */
     DopeSheet *q_ptr;
     DSTreeItemNodeMap treeItemNodeMap;
-    DopeSheetSelectionModel *selectionModel;
-    std::unique_ptr<QUndoStack> undoStack;
+    DopeSheetSelectionModel* selectionModel;
     std::vector<DopeSheetKey> keyframesClipboard;
     TimeLinePtr timeline;
     DopeSheetEditor* editor;
+    UndoGesture editGesture;
 };
 
 DopeSheetPrivate::DopeSheetPrivate(DopeSheetEditor* editor,
-                                   DopeSheet *qq)
-    : q_ptr(qq),
-    treeItemNodeMap(),
-    selectionModel( new DopeSheetSelectionModel(qq) ),
-    undoStack( new QUndoStack(qq) ),
-    keyframesClipboard(),
-    timeline(),
-    editor(editor)
+                                   DopeSheet* qq)
+    : q_ptr(qq)
+    , treeItemNodeMap()
+    , selectionModel(new DopeSheetSelectionModel(qq))
+    , keyframesClipboard()
+    , timeline()
+    , editor(editor)
+    , editGesture()
 {
 }
 
@@ -179,14 +180,65 @@ DopeSheetPrivate::~DopeSheetPrivate()
 }
 
 void
-DopeSheetPrivate::pushUndoCommand(QUndoCommand *cmd)
+DopeSheetPrivate::pushUndoCommand(QUndoCommand* cmd,
+                                  const UndoScope& scope)
 {
     if (editor) {
-        editor->pushUndoCommand(cmd);
+        editor->pushUndoCommand(cmd, scope);
     } else {
         delete cmd;
     }
 }
+
+namespace {
+void
+touchKey(UndoScope* scope,
+         const DopeSheetKey& key)
+{
+    DSKnobPtr knob = key.getContext();
+
+    if (knob) {
+        scope->touchKnob(knob->getInternalKnob());
+    }
+}
+
+UndoScope
+scopeForKeys(const DopeSheetKeyPtrList& keys)
+{
+    UndoScope scope;
+
+    for (DopeSheetKeyPtrList::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        touchKey(&scope, **it);
+    }
+    scope.ownByOnlyTouched();
+
+    return scope;
+}
+
+UndoScope
+scopeForKeys(const std::vector<DopeSheetKey>& keys)
+{
+    UndoScope scope;
+
+    for (std::vector<DopeSheetKey>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        touchKey(&scope, *it);
+    }
+    scope.ownByOnlyTouched();
+
+    return scope;
+}
+
+UndoScope
+scopeForNode(const NodePtr& node)
+{
+    UndoScope scope;
+
+    scope.touchNode(node);
+    scope.ownByOnlyTouched();
+
+    return scope;
+}
+} // anon namespace
 
 Node*
 DopeSheetPrivate::getNearestTimeFromOutputs_recursive(Node *node,
@@ -272,20 +324,13 @@ DopeSheetPrivate::getInputsConnected_recursive(Node *node,
     }
 }
 
-QUndoStack*
-DopeSheet::getUndoStack() const
-{
-    return _imp->undoStack.get();
-}
-
 DopeSheet::DopeSheet(Gui *gui,
                      DopeSheetEditor* editor,
                      const TimeLinePtr &timeline)
     : _imp( new DopeSheetPrivate(editor, this) )
 {
+    Q_UNUSED(gui);
     _imp->timeline = timeline;
-
-    gui->registerNewUndoStack( _imp->undoStack.get() );
 }
 
 DopeSheet::~DopeSheet()
@@ -576,7 +621,7 @@ DopeSheet::deleteSelectedKeyframes()
 
     _imp->selectionModel->clearKeyframeSelection();
 
-    _imp->pushUndoCommand( new DSRemoveKeysCommand(toRemove, _imp->editor) );
+    _imp->pushUndoCommand(new DSRemoveKeysCommand(toRemove, _imp->editor), scopeForKeys(toRemove));
 }
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
@@ -620,6 +665,17 @@ struct SortDecreasingFunctor
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
+void
+DopeSheet::beginEditGesture()
+{
+    _imp->editGesture.begin();
+}
+
+void
+DopeSheet::endEditGesture()
+{
+    _imp->editGesture.end();
+}
 
 void
 DopeSheet::moveSelectedKeysAndNodes(double dt)
@@ -674,7 +730,17 @@ DopeSheet::moveSelectedKeysAndNodes(double dt)
         selectedKeyframes.push_back(*it);
     }
 
-    _imp->pushUndoCommand( new DSMoveKeysAndNodesCommand(selectedKeyframes, selectedNodes, dt, _imp->editor) );
+    UndoScope scope;
+    for (DopeSheetKeyPtrList::const_iterator it = selectedKeyframes.begin(); it != selectedKeyframes.end(); ++it) {
+        touchKey(&scope, **it);
+    }
+    for (std::vector<DSNodePtr>::const_iterator it = selectedNodes.begin(); it != selectedNodes.end(); ++it) {
+        scope.touchNode((*it)->getInternalNode());
+    }
+    scope.ownByOnlyTouched();
+    DSMoveKeysAndNodesCommand* cmd = new DSMoveKeysAndNodesCommand(selectedKeyframes, selectedNodes, dt, _imp->editor);
+    cmd->setGestureKey(_imp->editGesture.key());
+    _imp->pushUndoCommand(cmd, scope);
 } // DopeSheet::moveSelectedKeysAndNodes
 
 void
@@ -701,7 +767,9 @@ DopeSheet::trimReaderLeft(const DSNodePtr &reader,
         return;
     }
 
-    _imp->pushUndoCommand( new DSLeftTrimReaderCommand(reader, firstFrame, newFirstFrame) );
+    DSLeftTrimReaderCommand* cmd = new DSLeftTrimReaderCommand(reader, firstFrame, newFirstFrame);
+    cmd->setGestureKey(_imp->editGesture.key());
+    _imp->pushUndoCommand(cmd, scopeForNode(reader->getInternalNode()));
 }
 
 void
@@ -727,7 +795,9 @@ DopeSheet::trimReaderRight(const DSNodePtr &reader,
         return;
     }
 
-    _imp->pushUndoCommand( new DSRightTrimReaderCommand(reader, lastFrame, newLastFrame, _imp->editor) );
+    DSRightTrimReaderCommand* cmd = new DSRightTrimReaderCommand(reader, lastFrame, newLastFrame, _imp->editor);
+    cmd->setGestureKey(_imp->editGesture.key());
+    _imp->pushUndoCommand(cmd, scopeForNode(node));
 }
 
 bool
@@ -782,7 +852,9 @@ DopeSheet::slipReader(const DSNodePtr &reader,
     dt = std::max( dt, (double)(currentLastFrame - originalLastFrame) );
 
     if (dt != 0) {
-        _imp->pushUndoCommand( new DSSlipReaderCommand(reader, dt, _imp->editor) );
+        DSSlipReaderCommand* cmd = new DSSlipReaderCommand(reader, dt, _imp->editor);
+        cmd->setGestureKey(_imp->editGesture.key());
+        _imp->pushUndoCommand(cmd, scopeForNode(reader->getInternalNode()));
     }
 }
 
@@ -847,7 +919,7 @@ DopeSheet::onNodeNameEditDialogFinished()
                 Dialogs::errorDialog(dialog->getNode()->getNode()->getLabel(), newName.toStdString() + " is a Python keyword");
             } else {
                 QString oldName = QString::fromUtf8( dialog->getNode()->getNode()->getLabel().c_str() );
-                _imp->pushUndoCommand( new RenameNodeUndoRedoCommand(dialog->getNode(), oldName, newName) );
+                _imp->pushUndoCommand(new RenameNodeUndoRedoCommand(dialog->getNode(), oldName, newName), scopeForNode(dialog->getNode()->getNode()));
             }
         }
         dialog->deleteLater();
@@ -873,7 +945,12 @@ DopeSheet::pasteKeys(bool relative)
             Dialogs::warningDialog(tr("Paste").toStdString(), tr("You must select at least one parameter dimension on the left to perform this action").toStdString());
             return;
         }
-        _imp->pushUndoCommand( new DSPasteKeysCommand(toPaste, dstKnobs, relative, _imp->editor) );
+        UndoScope scope;
+        for (std::list<DSKnobPtr>::const_iterator it = dstKnobs.begin(); it != dstKnobs.end(); ++it) {
+            scope.touchKnob((*it)->getInternalKnob());
+        }
+        scope.ownByOnlyTouched();
+        _imp->pushUndoCommand(new DSPasteKeysCommand(toPaste, dstKnobs, relative, _imp->editor), scope);
     }
 }
 
@@ -887,7 +964,12 @@ DopeSheet::pasteKeys(const std::vector<DopeSheetKey>& keys, bool relative)
             Dialogs::warningDialog(tr("Paste").toStdString(), tr("You must select at least one parameter dimension on the left to perform this action").toStdString());
             return;
         }
-        _imp->pushUndoCommand( new DSPasteKeysCommand(keys, dstKnobs, relative, _imp->editor) );
+        UndoScope scope;
+        for (std::list<DSKnobPtr>::const_iterator it = dstKnobs.begin(); it != dstKnobs.end(); ++it) {
+            scope.touchKnob((*it)->getInternalKnob());
+        }
+        scope.ownByOnlyTouched();
+        _imp->pushUndoCommand(new DSPasteKeysCommand(keys, dstKnobs, relative, _imp->editor), scope);
     }
 }
 
@@ -914,7 +996,7 @@ DopeSheet::setSelectedKeysInterpolation(KeyframeTypeEnum keyType)
         changes.push_back(change);
     }
 
-    _imp->pushUndoCommand( new DSSetSelectedKeysInterpolationCommand(changes, _imp->editor) );
+    _imp->pushUndoCommand(new DSSetSelectedKeysInterpolationCommand(changes, _imp->editor), scopeForKeys(selectedKeyframes));
 }
 
 void
@@ -927,7 +1009,9 @@ DopeSheet::transformSelectedKeys(const Transform::Matrix3x3& transform)
     std::vector<DSNodePtr> selectedNodes;
     _imp->selectionModel->getCurrentSelection(&selectedKeyframes, &selectedNodes);
 
-    _imp->pushUndoCommand( new DSTransformKeysCommand(selectedKeyframes, transform, _imp->editor) );
+    DSTransformKeysCommand* cmd = new DSTransformKeysCommand(selectedKeyframes, transform, _imp->editor);
+    cmd->setGestureKey(_imp->editGesture.key());
+    _imp->pushUndoCommand(cmd, scopeForKeys(selectedKeyframes));
 }
 
 void

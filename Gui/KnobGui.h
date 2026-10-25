@@ -133,16 +133,39 @@ public:
 
     virtual bool shouldAddStretch() const { return true; }
 
+    /**
+     * @brief Records cmd in the undo history and runs it, or only runs it for an edit that
+     * isUndoableEdit() rejects.
+     **/
     void pushUndoCommand(QUndoCommand* cmd);
     const QUndoCommand* getLastUndoCommand() const;
 
+    /**
+     * @brief Whether a user edit of the knob belongs in the undo history: it is undoable and
+     * either triggers a render or is saved with the project. Buttons are actions, not saved
+     * state, so they count only when they trigger a render.
+     **/
+    static bool isUndoableEdit(const KnobIPtr& knob);
 
-    void setKeyframe(double time, int dimension, ViewSpec view);
-    void setKeyframe(double time, const KeyFrame& key, int dimension, ViewSpec view);
-    void removeKeyFrame(double time, int dimension, ViewSpec view);
+    /**
+     * @brief The knob's settings-panel GUI, or null when there is none or it has been removed.
+     * Undo commands address the knob itself, because a panel rebuild replaces its KnobGui, and
+     * use this only to refresh whatever GUI is current when they run.
+     **/
+    static KnobGuiPtr getLiveGui(const KnobIPtr& knob);
 
-    void setKeyframes(const std::vector<KeyFrame>& keys, int dimension, ViewSpec view);
-    void removeKeyframes(const std::vector<KeyFrame>& keys, int dimension, ViewSpec view);
+    /**
+     * @brief The main window of the knob's project, or null without one.
+     **/
+    static Gui* getGuiForKnob(const KnobIPtr& knob);
+
+    // Keyframe edits made by undo commands: the knob changes and the timeline and current GUI
+    // follow.
+    static void setKnobKeyframe(const KnobIPtr& knob, double time, int dimension, ViewSpec view);
+    static void setKnobKeyframe(const KnobIPtr& knob, double time, const KeyFrame& key, int dimension, ViewSpec view);
+    static void removeKnobKeyframe(const KnobIPtr& knob, double time, int dimension, ViewSpec view);
+    static void setKnobKeyframes(const KnobIPtr& knob, const std::vector<KeyFrame>& keys, int dimension, ViewSpec view);
+    static void removeKnobKeyframes(const KnobIPtr& knob, const std::vector<KeyFrame>& keys, int dimension, ViewSpec view);
 
     QString getScriptNameHtml() const;
 
@@ -202,18 +225,26 @@ public:
     void setAllKeyframeMarkersOnTimeline(int dim);
     void setKeyframeMarkerOnTimeline(double time);
 
-    /*This function is used by KnobUndoCommand. Calling this in a onInternalValueChanged/valueChanged
+    static void setKeyframeMarkerOnTimeline(const KnobIPtr& knob, double time);
+
+    /**
+     * @brief Refreshes the widgets of the knob's live GUI, if it has any. dimension -1 is all.
+     **/
+    static void refreshLiveGui(const KnobIPtr& knob, int dimension);
+
+    /*Used by KnobUndoCommand. Calling this in a onInternalValueChanged/valueChanged
        signal/slot sequence can cause an infinite loop.*/
-    template<typename T>
-    int setValue(int dimension,
-                 const T & v,
-                 KeyFrame* newKey,
-                 bool refreshGui,
-                 ValueChangedReasonEnum reason)
+    template <typename T>
+    static int setKnobValue(const KnobIPtr& knobI,
+                            int dimension,
+                            const T& v,
+                            KeyFrame* newKey,
+                            bool refreshGui,
+                            ValueChangedReasonEnum reason)
     {
         KnobHelper::ValueChangedReturnCodeEnum ret = KnobHelper::eValueChangedReturnCodeNothingChanged;
 
-        Knob<T>* knob = dynamic_cast<Knob<T>*>( getKnob().get() );
+        Knob<T>* knob = dynamic_cast<Knob<T>*>(knobI.get());
         assert(knob);
         if (knob) {
             ret = knob->setValue(v, ViewSpec::current(), dimension, reason, newKey);
@@ -221,29 +252,33 @@ public:
         if ( (ret > 0) && (ret != KnobHelper::eValueChangedReturnCodeNothingChanged) && (reason == eValueChangedReasonUserEdited) ) {
             assert(newKey != nullptr);
             if (ret == KnobHelper::eValueChangedReturnCodeKeyframeAdded && newKey != nullptr) {
-                setKeyframeMarkerOnTimeline( newKey->getTime() );
+                setKeyframeMarkerOnTimeline(knobI, newKey->getTime());
             }
-            Q_EMIT keyFrameSet();
+            KnobGuiPtr gui = getLiveGui(knobI);
+            if (gui) {
+                Q_EMIT gui->keyFrameSet();
+            }
         }
         if (refreshGui) {
-            updateGUI(dimension);
+            refreshLiveGui(knobI, dimension);
         }
 
         return (int)ret;
     }
 
-    /*This function is used by KnobUndoCommand. Calling this in a onInternalValueChanged/valueChanged
+    /*Used by KnobUndoCommand. Calling this in a onInternalValueChanged/valueChanged
        signal/slot sequence can cause an infinite loop.*/
-    template<typename T>
-    bool setValueAtTime(int dimension,
-                        const T & v,
-                        double time,
-                        ViewSpec view,
-                        KeyFrame* newKey,
-                        bool refreshGui,
-                        ValueChangedReasonEnum reason)
+    template <typename T>
+    static bool setKnobValueAtTime(const KnobIPtr& knobI,
+                                   int dimension,
+                                   const T& v,
+                                   double time,
+                                   ViewSpec view,
+                                   KeyFrame* newKey,
+                                   bool refreshGui,
+                                   ValueChangedReasonEnum reason)
     {
-        Knob<T>* knob = dynamic_cast<Knob<T>*>( getKnob().get() );
+        Knob<T>* knob = dynamic_cast<Knob<T>*>(knobI.get());
         assert(knob);
         KnobHelper::ValueChangedReturnCodeEnum addedKey = KnobHelper::eValueChangedReturnCodeNothingChanged;
         if (knob) {
@@ -251,10 +286,10 @@ public:
         }
         if ( (knob) && (reason == eValueChangedReasonUserEdited) ) {
             assert(newKey);
-            setKeyframeMarkerOnTimeline( newKey->getTime() );
+            setKeyframeMarkerOnTimeline(knobI, newKey->getTime());
         }
         if (refreshGui) {
-            updateGUI(dimension);
+            refreshLiveGui(knobI, dimension);
         }
 
         return ( (addedKey != KnobHelper::eValueChangedReturnCodeNoKeyframeAdded) &&

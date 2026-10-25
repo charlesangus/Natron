@@ -213,7 +213,7 @@ PrecompNode::initializeKnobs()
     KnobPagePtr mainPage = AppManager::createKnob<KnobPage>( this, tr("Controls") );
     KnobFilePtr filename = AppManager::createKnob<KnobFile>( this, tr("Project Filename (.%1)").arg( QString::fromUtf8(NATRON_PROJECT_FILE_EXT) ) );
 
-    filename->setName("projectFilename");
+    filename->setName(kPrecompParamProjectFilename);
     filename->setHintToolTip( tr("The absolute file path of the project to use as a pre-comp.").toStdString() );
     filename->setAnimationEnabled(false);
     filename->setAddNewLine(false);

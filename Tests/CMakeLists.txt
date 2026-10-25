@@ -79,6 +79,7 @@ set(Tests_SOURCES
     NodeDestroyWatcher_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
+    RotoUndoGesture_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
     LayerKnobs_Test.cpp
@@ -91,6 +92,7 @@ set(Tests_SOURCES
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp
     NodeCategory_Test.cpp
+    NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
     SettingsColorTrackball_Test.cpp
     NodeColorSampler_Test.cpp
@@ -111,6 +113,7 @@ set(Tests_SOURCES
     PyKeyTangents_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
+    PythonUndo_Test.cpp
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp
     RemoveLayersRender_Test.cpp
@@ -234,6 +237,7 @@ set(GuiTests_SOURCES
     TabMenuBridge_Test.cpp
     TextRenderer_Test.cpp
     ThemedIcon_Test.cpp
+    UndoHistory_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )

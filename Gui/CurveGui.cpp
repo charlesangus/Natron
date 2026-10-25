@@ -622,15 +622,15 @@ CurveGui::getKeyFrames() const
     return getInternalCurve()->getKeyFrames_mt_safe();
 }
 
-KnobCurveGui::KnobCurveGui(CurveWidget *curveWidget,
-                           CurvePtr  curve,
+KnobCurveGui::KnobCurveGui(CurveWidget* curveWidget,
+                           CurvePtr curve,
                            const KnobGuiPtr& knob,
                            int dimension,
-                           const QString & name,
-                           const QColor & color,
+                           const QString& name,
+                           const QColor& color,
                            int thickness)
     : CurveGui(curveWidget, curve, name, color, thickness)
-    , _internalKnob()
+    , _internalKnob(knob ? knob->getKnob() : KnobIPtr())
     , _knob(knob)
     , _dimension(dimension)
 {
@@ -720,9 +720,7 @@ KnobCurveGui::getInternalCurve() const
 KnobIPtr
 KnobCurveGui::getInternalKnob() const
 {
-    KnobGuiPtr knob = getKnobGui();
-
-    return knob ? knob->getKnob() : _internalKnob;
+    return _internalKnob.lock();
 }
 
 int

@@ -176,7 +176,6 @@ public:
     bool cacheSizeHidden;
     QTimer _refreshCacheTextTimer;
     Navigator* _navigator;
-    QUndoStack* _undoStack;
     QMenu* _menu;
     QGraphicsItem *_tL, *_tR, *_bR, *_bL;
     bool _refreshOverlays;
@@ -204,6 +203,7 @@ public:
     int _pickedUpArrowInput = -1;
 
     NodeGuiPtr _backdropResized; //< the backdrop being resized
+    UndoGesture _dragGesture; //< from a press to its release, so one resize drag is one undo step
     NodesGuiList _selection;
 
     //To avoid calling unsetCursor too much

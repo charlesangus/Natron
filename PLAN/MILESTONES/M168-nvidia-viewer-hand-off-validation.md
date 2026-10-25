@@ -6,7 +6,7 @@ Deps: M107 - GPU Viewer Hand-off, M91 - NVIDIA GPU Validation. Needs the NVIDIA 
 
 ## Phase 168.1: Viewer hand-off on NVIDIA GL
 
-- [ ] M168.P1.T1 — Surface the staged-transfer reasons in the region profile (was M91.P3.T0)
+- [x] M168.P1.T1 — Surface the staged-transfer reasons in the region profile (was M91.P3.T0)
   - files: `Engine/GpuRegionTask.cpp`, `Engine/RenderScheduler.h`, `Engine/RenderScheduler.cpp`, `Engine/RenderStats.h`, `Engine/RenderStats.cpp`
   - approach: M91.P2.T2 added `GpuTransfer::stagedReasons()`, but `RegionReport` is filled only in `GpuRegionTask.cpp`, which is an M107 file. After M107 merges: snapshot `stagedReasons()` beside `importStatsBefore` (~l.353) and write the deltas into new `RegionReport` staged* fields next to `importsAtUpload` (~l.394). Copy them into `GpuRegionTimes` in `RenderScheduler.cpp` (~l.1303). In `formatRegionRecord`, write `"stagedReasons":{"disabled":N,"unaligned":N,"importFailed":N,"forgotten":N}` only when a count is nonzero, so the exact-match string in `RenderProfile_Test.cpp` (~l.336) is unchanged.
   - verify: a `RenderProfile_Test` case with a nonzero staged count emits the object. The t5 render's profile shows reasons for every staged transfer.

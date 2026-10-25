@@ -93,9 +93,13 @@ namespace {
         return (p - (a + ab * t)).GetLength();
     }
 
+    // An axis shorter than this on screen points too nearly at the camera to drag along.
+    const double kMinAxisPixels = 3.;
+
     /**
-     * @brief The parameter s of the point origin + s * direction nearest the ray through pixel. False
-     * if the line is (nearly) along the ray.
+     * @brief The parameter s of the point origin + s * direction under pixel, measured on screen:
+     * pixel is moved square onto the line's image, so motion across the line changes nothing, and
+     * the ray through that foot meets the line. False if the line is (nearly) along the view.
      **/
     bool
     closestLineParameter(const View& view,
@@ -104,17 +108,33 @@ namespace {
                          const GfVec2d& pixel,
                          double* s)
     {
-        GfVec3d rayOrigin, rayDirection;
-
-        pickRay(view, pixel, &rayOrigin, &rayDirection);
         const double a = GfDot(direction, direction);
+
+        if (a <= 0.) {
+            return false;
+        }
+        // A handle's length along the line from origin, as the line's image is drawn.
+        const GfVec3d tip = origin + direction * (worldSizeOfPixel(view, origin) * kHandleLengthPixels / std::sqrt(a));
+        GfVec2d originPixel, tipPixel;
+        if (!project(view, origin, &originPixel) || !project(view, tip, &tipPixel)) {
+            return false;
+        }
+        const GfVec2d screenLine = tipPixel - originPixel;
+        const double screenLengthSquared = screenLine.GetLengthSq();
+        if (screenLengthSquared < kMinAxisPixels * kMinAxisPixels) {
+            return false;
+        }
+        const GfVec2d foot = originPixel + screenLine * (GfDot(pixel - originPixel, screenLine) / screenLengthSquared);
+
+        GfVec3d rayOrigin, rayDirection;
+        pickRay(view, foot, &rayOrigin, &rayDirection);
         const double b = GfDot(direction, rayDirection);
         const double c = GfDot(rayDirection, rayDirection);
         const GfVec3d w = origin - rayOrigin;
         const double d = GfDot(direction, w);
         const double e = GfDot(rayDirection, w);
         const double denominator = a * c - b * b;
-        if ((a <= 0.) || (denominator <= 1e-9 * a * c)) {
+        if (denominator <= 1e-9 * a * c) {
             return false;
         }
         *s = (b * e - c * d) / denominator;

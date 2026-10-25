@@ -237,6 +237,8 @@ TEST(SceneGizmo, DragsMapToKnobChanges)
     ASSERT_TRUE(computeDragChange(view, doubled, makeHandle(eHandleKindTranslate, 1), pixelOf(view, PXR_NS::GfVec3d(0., 1., 0.)),
                                   pixelOf(view, PXR_NS::GfVec3d(0., 3., 0.)), &change));
     EXPECT_NEAR(1., change, 1e-6);
+    // The Z arrow points at the camera, so there is no line on screen to drag along.
+    EXPECT_FALSE(computeDragChange(view, frame, makeHandle(eHandleKindTranslate, 2), PXR_NS::GfVec2d(128., 128.), PXR_NS::GfVec2d(140., 128.), &change));
 
     // A ring: degrees about its axis, counter-clockwise seen from the axis's tip.
     ASSERT_TRUE(computeDragChange(view, frame, makeHandle(eHandleKindRotate, 2), pixelOf(view, PXR_NS::GfVec3d(1., 0., 0.)),
@@ -256,6 +258,10 @@ TEST(SceneGizmo, DragsMapToKnobChanges)
     ASSERT_TRUE(computeDragChange(view, frame, makeHandle(eHandleKindScale, 0), pixelOf(view, PXR_NS::GfVec3d(1., 0., 0.)),
                                   pixelOf(view, PXR_NS::GfVec3d(-1., 0., 0.)), &change));
     EXPECT_DOUBLE_EQ(0.001, change);
+    // Moving across the box's axis leaves the scale as it was.
+    ASSERT_TRUE(computeDragChange(view, frame, makeHandle(eHandleKindScale, 0), pixelOf(view, PXR_NS::GfVec3d(1., 0., 0.)),
+                                  pixelOf(view, PXR_NS::GfVec3d(1., 1., 0.)), &change));
+    EXPECT_NEAR(1., change, 1e-6);
     // The box follows the rotated axis: after a quarter turn about Z, X scales along world Y.
     const Frame turned = computeFrame(PXR_NS::GfMatrix4d(1.), PXR_NS::GfVec3d(0.), PXR_NS::GfVec3d(0., 0., 90.), PXR_NS::GfVec3d(0.), eSceneRotateOrderXYZ);
     ASSERT_TRUE(computeDragChange(view, turned, makeHandle(eHandleKindScale, 0), pixelOf(view, PXR_NS::GfVec3d(0., 1., 0.)),

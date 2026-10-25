@@ -303,6 +303,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **M127 - Native OCIO Nodes, Phase 126.3 (GPU):** two departures from M126's runtime-shader contract need the user. (1) OCIO always puts its uniform block at set 0 binding 0, which the contract reserves for the source buffer; proposed: find source/destination by reserved name or declared binding instead of 0/1. (2) Node LUTs can't reach M107's per-cacheID texture cache and would be re-uploaded per record; proposed: an optional cache key on `GpuShaderTexture`, with the GPU context keeping device textures by key (shared by viewer and nodes). Also: CDL values are baked into OCIO's shader, so slider drags compile new pipelines; proposed: accept that and limit "no recompile" to OCIODisplay's gain/gamma/channel. Phase 126.4 proceeds meanwhile.
 - **M198 - RenderEngine On Node, M199 - Remove Legacy Scheduler, M200 - Folded Knob Shared Storage, M201 - Trimap Removal:** do not start without the user's go-ahead (user, 2026-10-25, M31 triage). Each stub's `Blocked on:` names what the user is waiting for. M202 - Clean-Hash Cache Stores needs no go-ahead.
 - **M174 - Wayland Support:** blocked until the user approves starting it (user, 2026-10-24). Stub; elaborate on approval.
 

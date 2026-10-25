@@ -3,6 +3,7 @@
 #include "GpuRecord.h"
 
 #include <algorithm>
+#include <bit>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -16,6 +17,8 @@ namespace {
     constexpr uint32_t kFlagClamp = 1;
     constexpr uint32_t kFlagBlackOutside = 2;
     constexpr uint32_t kFlagSrcValid = 4;
+    constexpr uint32_t kFlagExactRowX = 8;
+    constexpr uint32_t kFlagExactRowY = 16;
 
     // Mirrors kFilterImpulse and kFilterBox in Kernels/resample.slang.
     constexpr uint32_t kFilterImpulse = 0;
@@ -93,6 +96,47 @@ namespace {
         }
     }
 
+    // The exponent of v's lowest set bit, for v nonzero and finite.
+    int lowestBit(double v)
+    {
+        int e = 0;
+        const double m = std::frexp(std::fabs(v), &e);
+        return e - 53 + std::countr_zero(static_cast<uint64_t>(std::ldexp(m, 53)));
+    }
+
+    // Whether h0 (x + 0.5) + h1 (y + 0.5) + h2, and it plus or minus a half, is exact in floats at
+    // every pixel of `output`: every term and partial sum is then a multiple of 2^q below 2^(q + 24).
+    // The exact kernels' two-float positions are then the CPU's doubles, so a position on an
+    // integer, which an exact scale puts every pixel on, needs no emulated doubles.
+    bool rowExactInFloats(double h0, double h1, double h2, const GpuBlurRect& output)
+    {
+        for (double h : { h0, h1, h2 }) {
+            if (!(std::fabs(h) < 0x1p100) || static_cast<double>(static_cast<float>(h)) != h) {
+                return false;
+            }
+        }
+        int q = -1;
+        if (h0 != 0.) {
+            q = std::min(q, lowestBit(h0) - 1);
+        }
+        if (h1 != 0.) {
+            q = std::min(q, lowestBit(h1) - 1);
+        }
+        if (h2 != 0.) {
+            q = std::min(q, lowestBit(h2));
+        }
+        const double px = std::max(std::fabs(output.x1 + 0.5), std::fabs(output.x2 - 0.5));
+        const double py = std::max(std::fabs(output.y1 + 0.5), std::fabs(output.y2 - 0.5));
+        // A bit to spare for the rounding of the bound itself.
+        return std::fabs(h0) * px + std::fabs(h1) * py + std::fabs(h2) + 0.5 < std::ldexp(1., q + 23);
+    }
+
+    uint32_t exactRowFlags(const std::array<double, 6>& m, const GpuBlurRect& output)
+    {
+        return (rowExactInFloats(m[0], m[1], m[2], output) ? kFlagExactRowX : 0u)
+            | (rowExactInFloats(m[3], m[4], m[5], output) ? kFlagExactRowY : 0u);
+    }
+
     uint32_t packStates(const std::array<GpuResampleJacobian, 4>& jacobians)
     {
         uint32_t states = 0;
@@ -163,6 +207,9 @@ namespace {
             splitDouble(m.weight, hi, lo);
             w[13] = floatBits(hi);
             w[14] = floatBits(lo);
+            if (exactPositions(r.filter)) {
+                w[15] = exactRowFlags(m.matrix, r.output) / kFlagExactRowX;
+            }
         }
         return uploadWords(ctx, std::as_bytes(std::span<const uint32_t>(words)), out);
     }
@@ -228,6 +275,9 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
         const GpuResampleMatrix& m = r.matrices[0];
         packMatrix(m.matrix, exact, p.matrix);
         p.states = packStates(m.jacobians);
+        if (exact) {
+            p.flags |= exactRowFlags(m.matrix, r.output);
+        }
         return ctx.dispatch(exact ? GpuKernelId::resample_exact : GpuKernelId::resample, { src, r.dst.buffer, r.dst.buffer }, p,
                             { p.width, p.height, 1 });
     }

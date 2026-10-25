@@ -5,8 +5,9 @@
 // floats, which the bilinear to notch filters are continuous in. Impulse and box pick a source pixel,
 // and box a supersampling state, by floors of the CPU's double positions that two floats round to the
 // other side of on exact scales; their entries, resample_exact_main and resample_blur_exact_main,
-// compute those positions bit for bit. The integer double emulation is kept out of the two-float
-// entries because it is many times slower to run and to compile.
+// decide every floor as those doubles do: with two floats where those lie provably clear of the
+// decision, and with the doubles computed bit for bit otherwise. The integer double emulation is
+// kept out of the two-float entries because it is many times slower to run and to compile.
 // GpuResampleParams in Engine/Gpu/GpuResample.h mirrors ResampleParams.
 
 StructuredBuffer<float> srcBuf;
@@ -70,6 +71,10 @@ static const uint kFilterNotch = 9;
 static const uint kFlagClamp = 1;
 static const uint kFlagBlackOutside = 2;
 static const uint kFlagSrcValid = 4;
+// The exact entries' matrix rows whose float evaluation Engine/Gpu/GpuResample.cpp found exact
+// over the whole window; the blurred entry has them per matrix.
+static const uint kFlagExactRowX = 8;
+static const uint kFlagExactRowY = 16;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Two-float arithmetic: a value is hi + lo with |lo| at most half an ulp of hi.
@@ -121,6 +126,27 @@ FF ffMulF(FF a, float b)
 {
     precise float p = a.hi * b;
     precise float e = fma(a.hi, b, -p);
+    precise float lo = e + a.lo * b;
+    return ffQuick(p, lo);
+}
+
+// Dekker's split: a = hi + lo with both halves 12 bits wide, so their products are exact.
+FF ffSplit(float a)
+{
+    precise float c = 4097.0 * a;
+    precise float hi = c - (c - a);
+    precise float lo = a - hi;
+    return ffMake(hi, lo);
+}
+
+// ffMulF with an error-free a.hi * b built from correctly rounded products and sums alone, which
+// Vulkan requires, rather than from fma, which it lets a device leave unfused.
+FF ffMulFDekker(FF a, float b)
+{
+    const FF sa = ffSplit(a.hi);
+    const FF sb = ffSplit(b);
+    precise float p = a.hi * b;
+    precise float e = ((sa.hi * sb.hi - p) + sa.hi * sb.lo + sa.lo * sb.hi) + sa.lo * sb.lo;
     precise float lo = e + a.lo * b;
     return ffQuick(p, lo);
 }
@@ -1093,6 +1119,166 @@ float4 samplePixelExact(MatrixBits m, int x, int y)
     return v;
 }
 
+// Positions, sources and bounds stay below this, so that the float pixel centres and source
+// origins are exact and every floor fits an int.
+static const float kFastLimit = 4194304.0;
+
+// The bound on how far a row's two-float position, and the box corners and source-relative
+// offsets made from it, can lie from the CPU's doubles. With u = 2^-24 and M the sum of the
+// magnitudes involved: dblToFF loses u^2 |h|, each ffMulFDekker, ffAdd and ffAddF adds at most
+// 3u^2 of its operands, and each double rounding is below u^2 / 32 of M: under 21u^2 M in all.
+// Twice that covers toPos rounding a fraction across 1 or 0; 2^-42 M = 64u^2 M leaves room for
+// the float rounding of M itself.
+float decisionBound(FF h0, FF h1, FF h2, float px, float py, int origin)
+{
+    const float m = abs(h0.hi) * abs(px) + abs(h1.hi) * abs(py) + abs(h2.hi) + abs(h0.hi) + abs(h1.hi) + abs(float(origin)) + 1.0;
+    return m * pow2f(-42);
+}
+
+// Whether a value within e of p, which toPos gave, may have a floor other than p.i.
+bool nearInteger(Pos p, float e)
+{
+    return e > 0.0 && (p.f <= e || p.f >= 1.0 - e);
+}
+
+// Whether floor(v) >= n may differ from p.i >= n for a value v within e of p.
+bool floorGeAmbiguous(Pos p, float e, int n)
+{
+    return e > 0.0 && ((p.f <= e && p.i == n) || (p.f >= 1.0 - e && p.i + 1 == n));
+}
+
+// samplePixelExact from two-float positions, false where one of its floors may differ from the
+// doubles'. Away from the source edges a box corner's floor only moves weight between neighbouring
+// pixels by its distance to the integer, so only the floors that switch a pixel in or out of the
+// integration count. `exactRows` holds kFlagExactRowX and kFlagExactRowY shifted to bits 0 and 1.
+bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r)
+{
+    r = float4(0.0, 0.0, 0.0, 0.0);
+    if (abs(x) >= int(kFastLimit) || abs(y) >= int(kFastLimit))
+        return false;
+    const FF h00 = dblToFF(mb.h00);
+    const FF h01 = dblToFF(mb.h01);
+    const FF h02 = dblToFF(mb.h02);
+    const FF h10 = dblToFF(mb.h10);
+    const FF h11 = dblToFF(mb.h11);
+    const FF h12 = dblToFF(mb.h12);
+    const float px = float(x) + 0.5;
+    const float py = float(y) + 0.5;
+    const float ex = decisionBound(h00, h01, h02, px, py, rp.srcX1);
+    const float ey = decisionBound(h10, h11, h12, px, py, rp.srcY1);
+    if (!(ex < kFastLimit * pow2f(-42)) || !(ey < kFastLimit * pow2f(-42)))
+        return false;
+    const float exPos = (exactRows & 1u) != 0 ? 0.0 : ex;
+    const float eyPos = (exactRows & 2u) != 0 ? 0.0 : ey;
+    const FF fx = ffAdd(ffAdd(ffMulFDekker(h00, px), ffMulFDekker(h01, py)), h02);
+    const FF fy = ffAdd(ffAdd(ffMulFDekker(h10, px), ffMulFDekker(h11, py)), h12);
+    const Pos cx = toPos(fx);
+    const Pos cy = toPos(fy);
+    const int2 cell = int2(cx.i, cy.i);
+    const bool cellExact = !nearInteger(cx, exPos) && !nearInteger(cy, eyPos);
+    if (rp.filter != kFilterBox)
+    {
+        if (cellExact)
+            cellPixel(cell, r);
+        return cellExact;
+    }
+
+    const Pos ax = toPos(ffAddF(fx, 0.5));
+    const Pos bx = toPos(ffAddF(fx, -0.5));
+    const Pos ay = toPos(ffAddF(fy, 0.5));
+    const Pos by = toPos(ffAddF(fy, -0.5));
+    if (floorGeAmbiguous(ax, exPos, rp.srcX1) || floorGeAmbiguous(bx, exPos, rp.srcX2) || floorGeAmbiguous(ay, eyPos, rp.srcY1)
+        || floorGeAmbiguous(by, eyPos, rp.srcY2))
+        return false;
+    bool xinside = ax.i >= rp.srcX1 && bx.i < rp.srcX2;
+    bool yinside = ay.i >= rp.srcY1 && by.i < rp.srcY2;
+    if (blackOutside() && !(xinside && yinside))
+    {
+        xinside = false;
+        yinside = false;
+    }
+    const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
+    if ((((mb.states >> (8 * state)) & 0xffu) & 0x40u) != 0)
+    {
+        if (cellExact)
+            cellPixel(cell, r);
+        return cellExact;
+    }
+
+    // Corners less than twice the bound apart may coincide in the doubles and not here, or the
+    // reverse; a Jacobian row that is exactly zero collapses them in both.
+    const FF zero = ffMake(0.0, 0.0);
+    const FF jxx = xinside ? h00 : zero;
+    const FF jxy = xinside ? h01 : zero;
+    const FF jyx = yinside ? h10 : zero;
+    const FF jyy = yinside ? h11 : zero;
+    const bool zeroX = !xinside || (dblIsZero(mb.h00) && dblIsZero(mb.h01));
+    const bool zeroY = !yinside || (dblIsZero(mb.h10) && dblIsZero(mb.h11));
+    if ((!zeroX && max(abs(jxx.hi), abs(jxy.hi)) * 0.5 <= 2.0 * ex) || (!zeroY && max(abs(jyx.hi), abs(jyy.hi)) * 0.5 <= 2.0 * ey))
+        return false;
+    FF x1 = fx;
+    FF x2 = fx;
+    FF y1 = fy;
+    FF y2 = fy;
+    [loop]
+    for (int k = 0; k < 4; ++k)
+    {
+        const float sa = (k & 1) != 0 ? 1.0 : -1.0;
+        const float sb = (k & 2) != 0 ? 1.0 : -1.0;
+        const FF qx = corner(fx, jxx, jxy, sa, sb);
+        const FF qy = corner(fy, jyx, jyy, sa, sb);
+        if (k == 0 || ffLess(qx, x1))
+            x1 = qx;
+        if (k == 0 || ffLess(x2, qx))
+            x2 = qx;
+        if (k == 0 || ffLess(qy, y1))
+            y1 = qy;
+        if (k == 0 || ffLess(y2, qy))
+            y2 = qy;
+    }
+    if (!ffLess(x1, x2) || !ffLess(y1, y2))
+    {
+        if (cellExact)
+            cellPixel(cell, r);
+        return cellExact;
+    }
+    const FF rx1 = ffAddF(x1, -float(rp.srcX1));
+    const FF rx2 = ffAddF(x2, -float(rp.srcX1));
+    const FF ry1 = ffAddF(y1, -float(rp.srcY1));
+    const FF ry2 = ffAddF(y2, -float(rp.srcY1));
+    const Pos px1 = toPos(rx1);
+    const Pos px2 = toPos(rx2);
+    const Pos py1 = toPos(ry1);
+    const Pos py2 = toPos(ry2);
+    // integrate1d keeps the edge pixel's full weight once a footprint starts at or past the far
+    // edge or ends before the near one, so those two floors switch it; elsewhere they are continuous.
+    const int awidth = rp.srcX2 - rp.srcX1;
+    const int aheight = rp.srcY2 - rp.srcY1;
+    if (floorGeAmbiguous(px1, ex, awidth) || floorGeAmbiguous(px2, ex, 0) || floorGeAmbiguous(py1, ey, aheight)
+        || floorGeAmbiguous(py2, ey, 0))
+        return false;
+    float4 v = integrate2d(px1, py1, px2, py2, blackOutside());
+    const FF wx = ffAdd(rx2, ffNeg(rx1));
+    const FF wy = ffAdd(ry2, ffNeg(ry1));
+    precise float s = (wx.hi + wx.lo) * (wy.hi + wy.lo);
+    if (s != 0.0)
+        v /= s;
+    r = v;
+    return true;
+}
+
+// samplePixelFast where it decides, else samplePixelExact: one call site of each keeps a single
+// copy of the emulated doubles in the compiled kernel.
+float4 samplePixelDecided(MatrixBits m, uint exactRows, int x, int y)
+{
+    if (!srcValid())
+        return float4(0.0, 0.0, 0.0, 0.0);
+    float4 r;
+    if (samplePixelFast(m, exactRows, x, y, r))
+        return r;
+    return samplePixelExact(m, x, y);
+}
+
 void storePixel(uint3 tid, float4 v)
 {
     const uint base = rp.dstOffset + tid.y * rp.dstStride + tid.x * rp.nComps;
@@ -1131,7 +1317,8 @@ void resample_exact_main(uint3 tid : SV_DispatchThreadID)
     m.h11 = dblMake(rp.m8, rp.m9);
     m.h12 = dblMake(rp.m10, rp.m11);
     m.states = rp.states;
-    storePixel(tid, samplePixelExact(m, rp.outX + int(tid.x), rp.outY + int(tid.y)));
+    const uint exactRows = (rp.flags / kFlagExactRowX) & 3u;
+    storePixel(tid, samplePixelDecided(m, exactRows, rp.outX + int(tid.x), rp.outY + int(tid.y)));
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1142,8 +1329,8 @@ void resample_exact_main(uint3 tid : SV_DispatchThreadID)
 // The header: matrix count, minimum samples, maximum samples, the seed's offset
 // (unsigned(0x10000 * motionBlur)), the squared maximum error as hi and lo float bits, and 1 when the
 // matrices are weighted. A matrix: twelve words holding h00 h01 h02 h10 h11 h12 as the push
-// constants' m0-m11 do for the entry that reads them, its states, and its weight as hi and lo float
-// bits.
+// constants' m0-m11 do for the entry that reads them, its states, its weight as hi and lo float
+// bits, and for the exact entry its exact rows as samplePixelFast takes them.
 static const uint kBlurHeaderWords = 8;
 static const uint kBlurMatrixWords = 16;
 
@@ -1227,7 +1414,7 @@ struct ExactSampler : IBlurSampler
 {
     float4 sample(uint t, int x, int y)
     {
-        return samplePixelExact(blurMatrixBits(t), x, y);
+        return samplePixelDecided(blurMatrixBits(t), blurBuf[kBlurHeaderWords + t * kBlurMatrixWords + 15], x, y);
     }
 };
 

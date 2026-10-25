@@ -76,6 +76,7 @@ isAppAttributeName(const AppInstancePtr& app,
                    const std::string& name)
 {
     bool found = false;
+    PythonGILLocker pgl;
     PyObject* mainModule = NATRON_PYTHON_NAMESPACE::getMainModule();
     PyObject* appObject = (app && mainModule) ? PyObject_GetAttrString(mainModule, app->getAppIDString().c_str()) : 0;
 

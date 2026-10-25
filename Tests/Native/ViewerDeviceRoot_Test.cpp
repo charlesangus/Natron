@@ -57,6 +57,7 @@
 #include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
@@ -65,6 +66,7 @@
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
+#include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/UpdateViewerParams.h"
 #include "Engine/ViewIdx.h"
@@ -121,7 +123,8 @@ registerViewerPluginOnce()
     });
 }
 
-// The viewer widget as the render thread sees it: a single tile covering the whole frame at 100%.
+// The viewer widget as the render thread sees it: the whole frame at 100%, in tiles of the size the viewer cache
+// was set up for.
 class FakeViewerUi
     : public OpenGLViewerI {
 public:
@@ -179,22 +182,32 @@ public:
         const RectI frame(0, 0, kSize >> mipmapLevel, kSize >> mipmapLevel);
         RectI roi = rod.toPixelEnclosing(mipmapLevel, par);
         roi.clip(frame);
+        // The viewer cache is tiled at the settings' tile size and bit depth, so every texture tile must be too.
+        const int tile = 1 << appPTR->getCurrentSettings()->getViewerTilesPowerOf2();
         if (tileSize) {
-            *tileSize = kSize;
+            *tileSize = tile;
         }
         if (roiNotRounded) {
             *roiNotRounded = roi;
         }
-        if (!roi.isNull()) {
-            if (tiles) {
-                tiles->push_back(roi);
-            }
-            if (tilesRounded) {
-                tilesRounded->push_back(frame);
+        if (roi.isNull()) {
+            return roi;
+        }
+        const RectI rounded((roi.x1 / tile) * tile, (roi.y1 / tile) * tile,
+                            ((roi.x2 + tile - 1) / tile) * tile, ((roi.y2 + tile - 1) / tile) * tile);
+        for (int y = rounded.y1; y < rounded.y2; y += tile) {
+            for (int x = rounded.x1; x < rounded.x2; x += tile) {
+                const RectI t(x, y, x + tile, y + tile);
+                if (tilesRounded) {
+                    tilesRounded->push_back(t);
+                }
+                if (tiles) {
+                    tiles->push_back(t.intersect(roi));
+                }
             }
         }
 
-        return roi.isNull() ? roi : frame;
+        return rounded;
     }
 
     RectI getExactImageRectangleDisplayed(int /*texIndex*/,
@@ -208,7 +221,7 @@ public:
         return roi;
     }
 
-    ImageBitDepthEnum getBitDepth() const OVERRIDE { return eImageBitDepthFloat; }
+    ImageBitDepthEnum getBitDepth() const OVERRIDE { return appPTR->getCurrentSettings()->getViewersBitDepth(); }
     bool isUserRegionOfInterestEnabled() const OVERRIDE { return false; }
     RectD getUserRegionOfInterest() const OVERRIDE { return RectD(); }
     void clearPartialUpdateTextures() OVERRIDE { }
@@ -344,10 +357,20 @@ anyTileHoldsRam(const UpdateViewerParams& params)
     return false;
 }
 
+const char* const kTexturesBitDepthKnob = "texturesBitDepth";
+
+KnobChoice*
+texturesBitDepthKnob()
+{
+    return dynamic_cast<KnobChoice*>(appPTR->getCurrentSettings()->getKnobByName(kTexturesBitDepthKnob).get());
+}
+
 } // namespace
 
+// The parameter is the "Viewer textures bit depth" choice the viewer cache and the viewer's textures follow.
 class ViewerDeviceRoot
-    : public BaseTest {
+    : public BaseTest,
+      public ::testing::WithParamInterface<std::string> {
 protected:
     ViewerDeviceRoot()
         : BaseTest()
@@ -356,7 +379,9 @@ protected:
         , _viewer(0)
         , _viewerNode()
         , _savedMode(eRenderSchedulerModeTaskGraph)
+        , _savedTexturesDepth(-1)
         , _skipReason()
+        , _depthSkipReason()
     {
     }
 
@@ -368,6 +393,7 @@ protected:
         ProjectPtr project = getApp()->getProject();
         project->reset(false, true);
         project->setOrAddProjectFormat(Format(0, 0, kSize, kSize, "viewerDeviceRoot64", 1.));
+        selectTexturesDepth(GetParam());
         appPTR->clearAllCaches();
 
         GpuContextOptions options;
@@ -407,6 +433,7 @@ protected:
         appPTR->clearAllCaches();
         getApp()->getProject()->reset(false, true);
         _gpu.reset();
+        restoreTexturesDepth();
         appPTR->setRenderSchedulerMode(_savedMode);
         BaseTest::TearDown();
     }
@@ -414,6 +441,11 @@ protected:
     // The bundled gtest has no GTEST_SKIP, so each test returns early on false.
     bool gpuOrSkip()
     {
+        if (!_depthSkipReason.empty()) {
+            std::printf("[  SKIPPED ] %s\n", _depthSkipReason.c_str());
+
+            return false;
+        }
         if (_gpu) {
             return true;
         }
@@ -499,15 +531,62 @@ protected:
         return outcome;
     }
 
+    /**
+     * @brief Picks the viewer textures bit depth by its choice id and retiles the viewer cache for it. The retile is
+     * explicit so the cache's tile size is right even when the choice already held that value.
+     **/
+    void selectTexturesDepth(const std::string& id)
+    {
+        KnobChoice* choice = texturesBitDepthKnob();
+        ASSERT_TRUE(choice != NULL);
+        _savedTexturesDepth = choice->getValue();
+        const bool wantsFloat = (id == "32f");
+        if (wantsFloat && !appPTR->isTextureFloatSupported()) {
+            _depthSkipReason = "no OpenGL float texture support, so the viewer cannot use 32-bit textures";
+
+            return;
+        }
+        const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].id == id) {
+                choice->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+                appPTR->onViewerTileCacheSizeChanged();
+                ASSERT_EQ(wantsFloat ? eImageBitDepthFloat : eImageBitDepthByte, appPTR->getCurrentSettings()->getViewersBitDepth());
+
+                return;
+            }
+        }
+        FAIL() << "no viewer textures bit depth " << id;
+    }
+
+    void restoreTexturesDepth()
+    {
+        KnobChoice* choice = texturesBitDepthKnob();
+        if (!choice || (_savedTexturesDepth < 0)) {
+            return;
+        }
+        if (choice->getValue() != _savedTexturesDepth) {
+            choice->setValue(_savedTexturesDepth, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+        }
+        appPTR->onViewerTileCacheSizeChanged();
+    }
+
+    ImageBitDepthEnum expectedDepth() const
+    {
+        return (GetParam() == "32f") ? eImageBitDepthFloat : eImageBitDepthByte;
+    }
+
     FakeViewerUi _ui;
     std::unique_ptr<GpuContext> _gpu;
     ViewerInstance* _viewer;
     NodePtr _viewerNode;
     RenderSchedulerModeEnum _savedMode;
+    int _savedTexturesDepth;
     std::string _skipReason;
+    std::string _depthSkipReason;
 };
 
-TEST_F(ViewerDeviceRoot, ADeviceRootReplacesTheRamTiles)
+TEST_P(ViewerDeviceRoot, ADeviceRootReplacesTheRamTiles)
 {
     if (!gpuOrSkip()) {
         return;
@@ -521,6 +600,7 @@ TEST_F(ViewerDeviceRoot, ADeviceRootReplacesTheRamTiles)
     EXPECT_TRUE(record->wanted);
     ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, outcome.ret);
     ASSERT_TRUE(bool(outcome.params));
+    EXPECT_EQ(expectedDepth(), outcome.params->depth);
     EXPECT_TRUE(bool(outcome.params->deviceColor));
     EXPECT_EQ(record->delivered, outcome.params->deviceColor);
     EXPECT_FALSE(bool(outcome.params->colorImage));
@@ -533,7 +613,7 @@ TEST_F(ViewerDeviceRoot, ADeviceRootReplacesTheRamTiles)
     record->delivered.reset();
 }
 
-TEST_F(ViewerDeviceRoot, AViewerOnTheCpuRungKeepsTheRamPath)
+TEST_P(ViewerDeviceRoot, AViewerOnTheCpuRungKeepsTheRamPath)
 {
     if (!gpuOrSkip()) {
         return;
@@ -548,6 +628,7 @@ TEST_F(ViewerDeviceRoot, AViewerOnTheCpuRungKeepsTheRamPath)
     EXPECT_FALSE(record->wanted);
     ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, outcome.ret);
     ASSERT_TRUE(bool(outcome.params));
+    EXPECT_EQ(expectedDepth(), outcome.params->depth);
     EXPECT_FALSE(bool(outcome.params->deviceColor));
     EXPECT_TRUE(bool(outcome.params->colorImage));
     EXPECT_TRUE(anyTileHoldsRam(*outcome.params));
@@ -557,7 +638,7 @@ TEST_F(ViewerDeviceRoot, AViewerOnTheCpuRungKeepsTheRamPath)
     record->delivered.reset();
 }
 
-TEST_F(ViewerDeviceRoot, AutoContrastKeepsTheRamPath)
+TEST_P(ViewerDeviceRoot, AutoContrastKeepsTheRamPath)
 {
     if (!gpuOrSkip()) {
         return;
@@ -572,6 +653,7 @@ TEST_F(ViewerDeviceRoot, AutoContrastKeepsTheRamPath)
     EXPECT_FALSE(record->wanted);
     ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, outcome.ret);
     ASSERT_TRUE(bool(outcome.params));
+    EXPECT_EQ(expectedDepth(), outcome.params->depth);
     EXPECT_FALSE(bool(outcome.params->deviceColor));
     EXPECT_TRUE(anyTileHoldsRam(*outcome.params));
     EXPECT_EQ(0, _ui.prepares.load());
@@ -581,7 +663,7 @@ TEST_F(ViewerDeviceRoot, AutoContrastKeepsTheRamPath)
     _viewer->onAutoContrastChanged(false, false);
 }
 
-TEST_F(ViewerDeviceRoot, ARefusedPrepareDownloadsTheDeviceRoot)
+TEST_P(ViewerDeviceRoot, ARefusedPrepareDownloadsTheDeviceRoot)
 {
     if (!gpuOrSkip()) {
         return;
@@ -597,6 +679,7 @@ TEST_F(ViewerDeviceRoot, ARefusedPrepareDownloadsTheDeviceRoot)
     EXPECT_TRUE(record->wanted);
     ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, outcome.ret);
     ASSERT_TRUE(bool(outcome.params));
+    EXPECT_EQ(expectedDepth(), outcome.params->depth);
     EXPECT_FALSE(bool(outcome.params->deviceColor));
     EXPECT_TRUE(bool(outcome.params->colorImage));
     EXPECT_TRUE(anyTileHoldsRam(*outcome.params));
@@ -607,5 +690,7 @@ TEST_F(ViewerDeviceRoot, ARefusedPrepareDownloadsTheDeviceRoot)
     outcome = RenderOutcome();
     record->delivered.reset();
 }
+
+INSTANTIATE_TEST_CASE_P(TexturesBitDepth, ViewerDeviceRoot, ::testing::Values(std::string("8u"), std::string("32f")));
 
 #endif // NATRON_HAVE_GPU

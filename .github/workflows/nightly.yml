@@ -227,3 +227,109 @@ jobs:
           fi
 
           exit "${status}"
+
+  nightly_gpu_off:
+    name: gpu-off-build-and-test
+    runs-on: ubuntu-latest
+    container:
+      image: aswf/ci-vfxall:2027-clang21.1
+    defaults:
+      run:
+        shell: bash -l {0}
+    env:
+      CI: 'True'
+      NATRON_IN_CONTAINER: 1
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 3G
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+        with:
+          submodules: recursive
+          lfs: false
+
+      - name: Install git-lfs
+        run: tools/ci/local/install-git-lfs.sh
+
+      - name: List LFS objects
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore LFS objects
+        uses: actions/cache@v6.1.0
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+
+      - name: Pull LFS objects
+        run: |
+          git lfs install --local
+          git lfs pull
+
+      # The -gpuoff suffix keeps these entries apart from the GPU-on release
+      # family: objects compiled without NATRON_GPU differ, and sharing one
+      # entry would make the two jobs evict each other's objects.
+      - name: Restore ccache
+        id: restore_ccache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-linux-release-gpuoff-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-release-gpuoff-${{ github.head_ref || github.ref_name }}-
+            ccache-linux-release-gpuoff-main-
+
+      - name: Cache test assets
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            build/assets/Plugins
+            build/assets/TestPlugins
+            build/assets/CImg
+            build/assets/rawspeed
+          key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
+
+      - name: Fetch test assets
+        run: tools/ci/local/fetch-assets.sh
+
+      - name: Build (release, GPU off)
+        run: tools/ci/local/build.sh release --no-ccache-stats --cmake-arg -DNATRON_GPU=OFF
+
+      - name: Show NATRON_GPU cache entry
+        run: grep '^NATRON_GPU' build/release/CMakeCache.txt
+
+      # NATRON_TEST_REQUIRE_GPU is deliberately unset: a GPU-off build has no
+      # device, so GPU-dependent tests must skip rather than fail.
+      - name: Run ctest suite (release, GPU off)
+        id: run_ctest
+        continue-on-error: true
+        run: tools/ci/local/test.sh ctest release
+
+      - name: Upload ctest log artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Linux Release GPU-Off Test Logs
+          path: ${{ github.workspace }}/build/release/Testing/Temporary/LastTest.log
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
+      - name: Check test results
+        if: always()
+        run: |
+          echo "ctest outcome: ${{ steps.run_ctest.outcome }}"
+          if [[ "${{ steps.run_ctest.outcome }}" == "failure" ]]; then
+            echo "::error::ctest (release, GPU off) failed"
+            exit 1
+          fi

@@ -91,6 +91,15 @@ SceneMetadata readLayerMetadata(const PXR_NS::SdfLayerRefPtr& layer,
  * go through StageCache to share them.
  **/
 PXR_NS::UsdStageRefPtr compose(const ScenePayload& payload);
+
+/**
+ * @brief The timecode of payload's composed stage at frame of a project running at
+ * framesPerSecond: the same instant in seconds, frame x the stage's time codes per second /
+ * framesPerSecond. Identical to frame when the rates match.
+ **/
+double frameToTimeCode(const ScenePayload& payload,
+                       double frame,
+                       double framesPerSecond);
 } // namespace SceneOps
 
 NATRON_NAMESPACE_EXIT

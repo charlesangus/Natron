@@ -37,6 +37,7 @@
 #undef emit
 #endif
 
+#include <pxr/base/tf/errorMark.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/pxr.h>
 #include <pxr/usd/sdf/attributeSpec.h>
@@ -48,6 +49,8 @@
 #include <pxr/usd/usd/attribute.h>
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/bboxCache.h>
+#include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/tokens.h>
 
 #ifdef NATRON_USD_INCLUDES_RESTORE_EMIT

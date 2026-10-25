@@ -146,6 +146,19 @@ compose(const ScenePayload& payload)
     // No session layer: the stage is shared read-only between consumers, so nothing may edit it.
     return PXR_NS::UsdStage::Open(root, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadAll);
 }
+
+double
+frameToTimeCode(const ScenePayload& payload,
+                double frame,
+                double framesPerSecond)
+{
+    if (framesPerSecond <= 0.) {
+        return frame;
+    }
+
+    return frame * payload.getMetadata().timeCodesPerSecond / framesPerSecond;
+}
+
 } // namespace SceneOps
 
 struct SceneLayerMemo::Implementation {

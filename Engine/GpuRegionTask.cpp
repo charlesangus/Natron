@@ -388,6 +388,7 @@ private:
         const std::uint64_t importsBefore = _runtime.transfer().hostImportCount();
         const std::uint64_t importBytesBefore = _runtime.transfer().hostImportBytes();
         const gpu::HostImportStats importStatsBefore = _runtime.transfer().hostImportStats();
+        const gpu::StagedReasonCounts stagedBefore = _runtime.transfer().stagedReasons();
         std::vector<GpuStrip> strips;
         if (!plan() || !resolveInputs() || !planStrips(&strips) || !allocateDownloadImages(strips)) {
             return failed();
@@ -431,6 +432,11 @@ private:
             const gpu::HostImportStats importStats = _runtime.transfer().hostImportStats();
             _report->importsAtUpload = importStats.atUpload - importStatsBefore.atUpload;
             _report->importsAtDownload = importStats.atDownload - importStatsBefore.atDownload;
+            const gpu::StagedReasonCounts staged = _runtime.transfer().stagedReasons();
+            _report->stagedDisabled = staged.disabled - stagedBefore.disabled;
+            _report->stagedUnaligned = staged.unaligned - stagedBefore.unaligned;
+            _report->stagedImportFailed = staged.importFailed - stagedBefore.importFailed;
+            _report->stagedForgotten = staged.forgotten - stagedBefore.forgotten;
             _report->predictedTransferMs = GpuCostModel::session().transferMs((double)_report->uploadBytes, (double)ownDownloadBytes());
         }
         if (isAborted()) {

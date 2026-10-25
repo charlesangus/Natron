@@ -1311,6 +1311,10 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             times.downloadsStaged = report.downloadsStaged;
             times.importsAtUpload = report.importsAtUpload;
             times.importsAtDownload = report.importsAtDownload;
+            times.stagedDisabled = report.stagedDisabled;
+            times.stagedUnaligned = report.stagedUnaligned;
+            times.stagedImportFailed = report.stagedImportFailed;
+            times.stagedForgotten = report.stagedForgotten;
             times.uploads = std::move(report.uploads);
             times.downloads = std::move(report.downloads);
             times.fallback = report.cpuFallback;

@@ -294,6 +294,12 @@ public:
         unsigned long long importsAtUpload = 0;
         unsigned long long importsAtDownload = 0;
 
+        // Transfers of the region that fell back to staging, by reason.
+        unsigned long long stagedDisabled = 0;
+        unsigned long long stagedUnaligned = 0;
+        unsigned long long stagedImportFailed = 0;
+        unsigned long long stagedForgotten = 0;
+
         // Set by the scheduler when the profile is on; the region then lists each upload and download it issued, and
         // timestamps them on the device when it can.
         bool recordTransfers = false;

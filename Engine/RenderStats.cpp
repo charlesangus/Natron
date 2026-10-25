@@ -854,6 +854,12 @@ formatRegionRecord(unsigned long long frameSequence,
                   times.prepareWaitMs, times.uploadsImported, times.uploadsStaged, times.downloadsImported,
                   times.downloadsStaged, times.importsAtUpload, times.importsAtDownload);
     line.append(num);
+    if ((times.stagedDisabled | times.stagedUnaligned | times.stagedImportFailed | times.stagedForgotten) != 0) {
+        std::snprintf(num, sizeof(num),
+                      ",\"stagedReasons\":{\"disabled\":%llu,\"unaligned\":%llu,\"importFailed\":%llu,\"forgotten\":%llu}",
+                      times.stagedDisabled, times.stagedUnaligned, times.stagedImportFailed, times.stagedForgotten);
+        line.append(num);
+    }
     appendTransferRecords(&line, "uploads", times.uploads, false);
     appendTransferRecords(&line, "downloads", times.downloads, true);
     line.append(",\"fallback\":\"");

@@ -295,6 +295,10 @@ struct GpuRegionTimes {
     unsigned long long downloadsStaged = 0;
     unsigned long long importsAtUpload = 0;
     unsigned long long importsAtDownload = 0;
+    unsigned long long stagedDisabled = 0;
+    unsigned long long stagedUnaligned = 0;
+    unsigned long long stagedImportFailed = 0;
+    unsigned long long stagedForgotten = 0;
     std::vector<GpuTransferRecord> uploads;
     std::vector<GpuTransferRecord> downloads;
 

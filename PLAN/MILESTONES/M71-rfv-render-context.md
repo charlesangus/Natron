@@ -1,12 +1,14 @@
 # M71 - RFV Render Context
 
+> **Split 2026-10-25 (user):** the render-context core moved to M178 - Render Context Core, which this milestone now depends on along with M70 - RFV Declaration And Storage. M178 renames the context type `RenderContext`, adds namespaces, fan-out, cross-context edges and `ContextReadSource` (the read-set hook this milestone's expression scan plugs into). What remains here: the expression read-set scan, the Python `rfv` object, the Set node overlay and the behaviour tests.
+
 Reverse-Flow Variables, part 2 of 3 (design in `DECISIONS/2026-10-08-reverse-flow-variables-design.md`, which governs on any ambiguity). Depends on M70 - RFV Declaration And Storage. This milestone makes variables flow up the graph per path, evaluate in expressions through `rfv`, and key every cache correctly. The hard part is that the render machinery is keyed by node (args map, `FrameRequestMap`, `FrameStore::TaskKey`, `ImageKey`, `ActionsCache`) and assumes one context per node per frame. Nodes that read no RFV must collapse to one context so existing graphs render and cache exactly as before.
 
 Scouting notes: `treeRoot` is the viewer/writer requester only, with about 10 setter sites; identity nodes never execute, so the Set node's overlay happens in the request pass (`visitRequestPassItem`, `Engine/ParallelRenderArgs.cpp`), not in `render`. Expression results are cached in `Knob<T>::_exprRes`, keyed by time only (`Engine/KnobImpl.h`). Pool threads get frame args lazily via `createFromFrameContext` (`Engine/TLSHolderImpl.h`).
 
 ## Phase 71.1: Context value and read-set
 
-- [ ] M71.P1.T1 — RFV context value type
+- [ ] ~~M71.P1.T1 — RFV context value type~~ — moved 2026-10-25 to M178.P1.T1 of M178 - Render Context Core.
   - files: `Engine/RFVContext.h`, `Engine/RFVContext.cpp` (new), `Engine/CMakeLists.txt`, `Tests/RFVContext_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: an immutable map name → variant (bool, int64, double, string, vector of double/int/string, matching what the knob types can hold), with `overlay(other)` returning a new context, `restrictTo(nameSet)`, and a stable 64-bit `hash()` (order-independent, bit-exact for doubles). Cheap copy through a shared pointer. `readsAll` sentinel for the restriction.
   - verify: gtest for overlay precedence, restriction, hash stability and hash equality of equal contexts built in different orders.
@@ -14,11 +16,11 @@ Scouting notes: `treeRoot` is the viewer/writer requester only, with about 10 se
 
 - [ ] M71.P1.T2 — Expression read-set scan
   - files: `Engine/Knob.cpp`, `Engine/Knob.h` (new `KnobHelper::getRFVReadSet`), `Engine/RFV.cpp`
-  - approach: scan each expression's source for `rfv.<name>`, `rfv('<name>')` and `rfv["<name>"]`; any other use of the name `rfv` (passed to a function, `getattr`, computed key) marks the knob as reads-all. Recompute when the expression changes.
+  - approach: register the scan as an M178 - Render Context Core `ContextReadSource` on the knob. Scan each expression's source for `rfv.<name>`, `rfv('<name>')` and `rfv["<name>"]`; any other use of the name `rfv` (passed to a function, `getattr`, computed key) marks the knob as reads-all. Recompute when the expression changes.
   - verify: gtest table of expression strings → expected read-set / reads-all.
   - size: M
 
-- [ ] M71.P1.T3 — Per-node upstream read-set
+- [ ] ~~M71.P1.T3 — Per-node upstream read-set~~ — moved 2026-10-25 to M178.P1.T2 of M178 - Render Context Core.
   - files: `Engine/Node.cpp`, `Engine/Node.h`, `Engine/NodeInputs.cpp`
   - approach: `Node::getUpstreamRFVReadSet()` is the union of the node's own knob read-sets, a Set node's own knob expressions, and a per-node hook `Node::getExtraRFVReads()` that a native node overrides to name variables it reads outside expressions (RFVSwitch's variable name; default empty), and the read-sets of all inputs and expression-dependency nodes. Memoize; invalidate with the same events that recompute `computeHashRecursive` (the input connection changes and expression changes). Beware of cycles through expression dependencies: use a visited set.
   - verify: gtest on a three-node chain plus an expression dependency from a side branch: read-sets are as expected, and editing an expression updates it.
@@ -32,7 +34,7 @@ Scouting notes: `treeRoot` is the viewer/writer requester only, with about 10 se
   - verify: gtest sets `rfv.a` through the project and evaluates an expression `rfv.a * 2` outside a render (value 2×), and `rfv.missing is None` evaluates True.
   - size: M
 
-- [ ] M71.P2.T2 — Bypass the expression result cache for RFV reads
+- [ ] ~~M71.P2.T2 — Bypass the expression result cache for RFV reads~~ — moved 2026-10-25 to M178.P3.T1 (keyed, not bypassed) of M178 - Render Context Core.
   - files: `Engine/KnobImpl.h` (`getValueFromExpression`, `evaluateExpression`, the `_exprRes` fill sites), `Engine/Knob.cpp`
   - approach: if a knob's expression has a non-empty read-set or reads-all, never read or write `_exprRes` for it. Everything else keeps the cache. Avoid taking `_valueMutex` for longer than today.
   - verify: gtest evaluates one expression knob under two different contexts back-to-back on one frame and gets two values; a non-RFV expression still hits the cache (a counter on `executeExpression` stays at 1).
@@ -42,29 +44,29 @@ Scouting notes: `treeRoot` is the viewer/writer requester only, with about 10 se
 
 - [ ] M71.P3.T1 — Carry a context through the request pass and apply Set overlays
   - files: `Engine/ParallelRenderArgs.h`, `Engine/ParallelRenderArgs.cpp` (`visitRequestPassItem`, `getInputsRoIsFunctor`), `Engine/Nodes/RFV/ReverseFlowVariableSet.cpp`
-  - approach: request pass items carry an `RFVContextPtr` (root: project base values evaluated at the root's time). When an item passes a Set node, evaluate its declared variables at that item's time **under the incoming context** and push the overlay onto its input edge item. Every other node passes the context along unchanged. Record on each `NodeFrameRequest` the context key `ctx.restrictTo(node->getUpstreamRFVReadSet()).hash()`. No forking of maps yet.
+  - approach: on top of M178 - Render Context Core's request-pass contexts, the root context is the project base values evaluated at the root's time, and the Set node overrides M178's `getInputContexts` to return one overlaid context. When an item passes a Set node, evaluate its declared variables at that item's time **under the incoming context** and push the overlay onto its input edge item. Every other node passes the context along unchanged. M178 records the per-node key.
   - verify: gtest builds the user's example graph and inspects the request pass: a reader under Set1 holds a=Set1's value, under Set2 holds Set2's.
   - size: L
 
-- [ ] M71.P3.T2 — Key the args map and request map by (node, context key)
+- [ ] ~~M71.P3.T2 — Key the args map and request map by (node, context key)~~ — moved 2026-10-25 to M178.P2.T2 of M178 - Render Context Core.
   - files: `Engine/ParallelRenderArgs.h`, `Engine/ParallelRenderArgs.cpp` (`buildArgsMap`, `FrameRequestMap`), `Engine/FrameRenderContext.cpp`
   - approach: introduce `NodeCtxKey {NodePtr, uint64 ctxKey}`; nodes with an empty effective read-set always use ctxKey 0, so their entries are shared as today. Keep a thin lookup overload for callers that have no context.
   - verify: gtest on the diamond graph: the reader appears twice in the request map, a context-free node once.
   - size: L
 
-- [ ] M71.P3.T3 — Key the scheduler tasks by context
+- [ ] ~~M71.P3.T3 — Key the scheduler tasks by context~~ — moved 2026-10-25 to M178.P2.T3 (with cross-context edges) of M178 - Render Context Core.
   - files: `Engine/RenderScheduler.h`, `Engine/RenderScheduler.cpp`, `Engine/FrameRenderContext.h`
   - approach: add the context key to `FrameStore::TaskKey` and `SharedOutputKey` and to `FrameGraph::Task` identity, so the diamond produces two reader tasks and the shared context-free ancestors produce one. Edges connect each task to the dependency with the matching context key.
   - verify: `Tests/FrameGraphBuild_Test.cpp` gains a case: task counts for the user's example and the diamond, with context-free nodes shared.
   - size: L
 
-- [ ] M71.P3.T4 — Fold the context key into the render hash
+- [ ] ~~M71.P3.T4 — Fold the context key into the render hash~~ — moved 2026-10-25 to M178.P2.T4 of M178 - Render Context Core.
   - files: `Engine/EffectInstance.cpp` (`getRenderHash`), `Engine/ParallelRenderArgs.cpp` (`visitRequestPassItem` where `nodeHash` is set), `Engine/ViewerInstance.cpp` (texture cache hash)
   - approach: mix the node's context key into `args->nodeHash` / `NodeFrameRequest::nodeHash`; the existing consumers (`ImageKey`, `ActionsCache`, `DeepImageKey`, the viewer texture cache) take `nodeHash` as input and need no change. Context key 0 must leave the hash unchanged, so existing cache keys and `NATRON_CACHE_VERSION` stay valid.
   - verify: with `CountingTestEffect`, the same reader under two different contexts renders twice and under two equal contexts renders once; a context-free node's hash is unchanged.
   - size: M
 
-- [ ] M71.P3.T5 — Install the context on the executing thread
+- [ ] ~~M71.P3.T5 — Install the context on the executing thread~~ — moved 2026-10-25 to M178.P2.T5 of M178 - Render Context Core.
   - files: `Engine/RenderScheduler.cpp` (`executeTask`), `Engine/TLSHolderImpl.h` (`createFromFrameContext`), `Engine/EffectInstance.cpp` (legacy path's setter)
   - approach: the task body runs under a `FrameContextScope` that selects the args entry for the task's `(node, ctxKey)`, so the `rfv` object on a pool thread sees that entry's context. Do the same on the legacy (non-scheduler) render path, which `Tests/RenderBothWays.h` still compares against. OpenMP workers inside plugins stay unsupported, as for the existing frame args.
   - verify: `renderBothWays` on the user's example is bit-identical across both schedulers and 1 vs N pool threads.

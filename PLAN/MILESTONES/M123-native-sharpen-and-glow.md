@@ -102,7 +102,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 122.2: Bloom and Glow
 
-- [ ] M123.P2.T1 — Write the native Bloom node (CPU)
+- [x] M123.P2.T1 — Write the native Bloom node (CPU)
   - files: `Engine/Nodes/Filter/Bloom.h`, `Engine/Nodes/Filter/Bloom.cpp`, `Engine/Nodes/Filter/Bloom.reg.inc`
   - approach:
     - Sum `count` blurs of sizes `size * ratio^i`, normalised by the count, with knobs for `size`, `ratio` (2), `count` (5) and `filter`.
@@ -111,7 +111,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeBloom` passes.
   - size: L
 
-- [ ] M123.P2.T2 — Test Bloom on CPU
+- [x] M123.P2.T2 — Test Bloom on CPU
   - files: `Tests/Native/NativeBloom_Test.cpp`
   - approach:
     - A constant is preserved, since the sum is normalised.
@@ -121,7 +121,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeBloom` passes.
   - size: M
 
-- [ ] M123.P2.T3 — Bloom on the GPU
+- [x] M123.P2.T3 — Bloom on the GPU
   - files: `Engine/Gpu/Kernels/bloom.slang`, `Engine/Gpu/Kernels/bloom.cmake`, `Engine/Nodes/Filter/Bloom.cpp`, `Tests/Native/NativeBloomGpu_Test.cpp`
   - approach:
     - Use downsample and upsample kernels plus `blur.slang` passes per level.
@@ -129,7 +129,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeBloomGpu` passes on RADV within 1e-4 relative.
   - size: L
 
-- [ ] M123.P2.T4 — Write the native Glow node on the Bloom kernel (CPU and GPU)
+- [x] M123.P2.T4 — Write the native Glow node on the Bloom kernel (CPU and GPU)
   - files: `Engine/Nodes/Filter/Glow.h`, `Engine/Nodes/Filter/Glow.cpp`, `Engine/Gpu/Kernels/glow.slang`, `Engine/Nodes/Filter/Glow.reg.inc`, `Tests/Native/NativeGlow_Test.cpp`
   - approach:
     - The node runs three steps in order:
@@ -144,7 +144,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
     - The test's GPU parity case on RADV, within 1e-4 relative.
   - size: L
 
-- [ ] M123.P2.T5 — Remove the Glow PyPlug and update its tests
+- [x] M123.P2.T5 — Remove the Glow PyPlug and update its tests
   - files: `Gui/Resources/PyPlugs/Glow.py`, `Gui/Resources/PyPlugs/Glow.png`, `Gui/GuiResources.qrc`, `Tests/PyPlugInstantiate_Test.cpp`
   - approach:
     - Delete the PyPlug and its resources.

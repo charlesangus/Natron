@@ -328,6 +328,14 @@ protected:
         refreshStatus();
     }
 
+    // A node a project load creates drops the messages it posts until it is created, which
+    // includes the one onKnobsLoaded() posts, so the status is shown again once it is.
+    virtual void onEffectCreated(bool /*mayCreateFileDialog*/,
+                                 const CreateNodeArgs& /*args*/) OVERRIDE
+    {
+        refreshStatus();
+    }
+
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec /*view*/,

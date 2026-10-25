@@ -50,6 +50,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/ColorMatrix.h"
@@ -510,7 +511,9 @@ TEST_F(NativeColourUtilGpuTest, MatchesTheCpuRender)
             applyThreshold(op, kThresholdSettings[1]);
         } else {
             // Alpha too, so the divisor channel is itself processed.
-            ASSERT_TRUE(setKnobValues(op, kNatronOfxParamProcessA, std::vector<double>(1, 1.)));
+            KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(op->getKnobByName(kNodeParamChannelSet));
+            ASSERT_TRUE(bool(channelSet)) << id;
+            channelSet->setChannels(0, std::vector<std::string> { "R", "G", "B", "A" });
         }
         if (HasFatalFailure()) {
             return;

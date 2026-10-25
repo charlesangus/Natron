@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <bitset>
 #include <cfloat>
 #include <cmath>
 #include <functional>
@@ -48,6 +49,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Premult.h"
@@ -76,15 +78,25 @@ divisorSelector(const NodePtr& node)
     return node ? dynamic_cast<KnobChannelSelect*>(node->getKnobByName(kUnPremultByKnobName).get()) : NULL;
 }
 
-bool
-boolDefault(const NodePtr& node,
-            const char* name)
+// The colour channels the node's Channels knob processes on an RGBA source, as R, G, B, A bits.
+std::bitset<4>
+processedRgbaChannels(const NodePtr& node)
 {
-    KnobBool* knob = dynamic_cast<KnobBool*>(node->getKnobByName(name).get());
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
 
-    EXPECT_TRUE(knob != NULL) << name;
+    EXPECT_TRUE(bool(channels));
+    if (!channels) {
+        return std::bitset<4>();
+    }
+    const std::vector<ResolvedLayer> resolved = channels->resolve(std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()));
+    std::bitset<4> bits;
+    for (const ResolvedLayer& layer : resolved) {
+        if (layer.desc.isColorLayer()) {
+            bits |= layer.channels;
+        }
+    }
 
-    return knob && knob->getValue();
+    return bits;
 }
 
 bool
@@ -229,10 +241,7 @@ TEST_F(NativePremultTest, DefaultsAreRgbByTheAlphaChannel)
         ASSERT_TRUE(select != NULL);
         EXPECT_EQ(std::string(kNatronColorViewRGBA) + ".A", select->get());
         EXPECT_EQ(std::string(divide ? "Unpremult by" : "Premult by"), select->getLabel());
-        EXPECT_TRUE(boolDefault(node, kNatronOfxParamProcessR));
-        EXPECT_TRUE(boolDefault(node, kNatronOfxParamProcessG));
-        EXPECT_TRUE(boolDefault(node, kNatronOfxParamProcessB));
-        EXPECT_FALSE(boolDefault(node, kNatronOfxParamProcessA));
+        EXPECT_EQ(std::bitset<4>(0x7), processedRgbaChannels(node));
     }
 }
 

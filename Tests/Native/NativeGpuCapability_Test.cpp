@@ -47,6 +47,8 @@
 #include "Engine/Nodes/Color/ColorMatrix.h"
 #include "Engine/Nodes/Color/Colorspace.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Color/HSVTool.h"
+#include "Engine/Nodes/Color/HueCorrect.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
@@ -58,6 +60,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/Keyer/HueKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -125,6 +128,9 @@ gpuCapableIds()
         PLUGINID_NATRON_COLORMATRIX,
         PLUGINID_NATRON_THRESHOLD,
         PLUGINID_NATRON_COLORSPACE,
+        PLUGINID_NATRON_HSVTOOL,
+        PLUGINID_NATRON_HUECORRECT,
+        PLUGINID_NATRON_HUEKEYER,
     };
 
     return ids;

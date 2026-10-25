@@ -36,6 +36,8 @@
 #include "NativeGolden.h"
 #include "NativeParity.h"
 
+#include "Engine/KnobChannelSet.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
@@ -44,6 +46,8 @@
 #include "Engine/Nodes/Color/ColorMatrix.h"
 #include "Engine/Nodes/Color/Colorspace.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Color/HSVTool.h"
+#include "Engine/Nodes/Color/HueCorrect.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
@@ -56,6 +60,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/Keyer/HueKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
@@ -84,6 +89,20 @@ choice(const GoldenGraph& g,
        const std::string& id)
 {
     return setKnobValue(g.node, name, id);
+}
+
+// Sets the node's Channels knob to process R, G, B and A of the colour plane.
+bool
+processRgba(const GoldenGraph& g)
+{
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(g.node->getKnobByName(kNodeParamChannelSet));
+
+    if (!channels) {
+        return false;
+    }
+    channels->setChannels(0, std::vector<std::string> { "R", "G", "B", "A" });
+
+    return true;
 }
 
 GoldenVariant
@@ -298,7 +317,7 @@ addPremultVariants(std::vector<GoldenVariant>* v)
 {
     v->push_back(variant("default"));
     v->push_back(variant("byG", [](const GoldenGraph& g) { return setGoldenChannelSelect(g.node, kUnPremultByKnobName, "rgba.G"); }));
-    v->push_back(variant("processA", [](const GoldenGraph& g) { return num(g, kNatronOfxParamProcessA, { 1. }); }));
+    v->push_back(variant("processA", processRgba));
     v->push_back(variant("none", [](const GoldenGraph& g) { return setGoldenChannelSelect(g.node, kUnPremultByKnobName, std::string()); }));
     v->push_back(maskVariant("maskmix", [](const GoldenGraph& g) { return num(g, kOfxMixParamName, { 0.6 }); }));
 }
@@ -358,6 +377,66 @@ TEST_F(NativeGoldenTest, Colorspace)
     v.push_back(variant("labToYuv601", models(ColorMath::eColorspaceModelLab, ColorMath::eColorspaceModelYUV601)));
     addPremultAndMaskMix(&v, toLab);
     run(filterSpec("Colorspace", PLUGINID_NATRON_COLORSPACE, PLUGIN_MAJOR_NATRON_COLORSPACE), v);
+}
+
+TEST_F(NativeGoldenTest, HSVTool)
+{
+    const Apply greens = [](const GoldenGraph& g) {
+        return num(g, kHSVToolParamHueRange, { 60., 180. }) && num(g, kHSVToolParamHueRangeRolloff, { 30. }) && num(g, kHSVToolParamHueRotation, { 40. }) && num(g, kHSVToolParamSaturationAdjustment, { 0.2 }) && num(g, kHSVToolParamBrightnessAdjustment, { -0.1 });
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("greens", greens));
+    v.push_back(variant("acrossRed", [](const GoldenGraph& g) {
+        return num(g, kHSVToolParamHueRange, { 300., 60. }) && num(g, kHSVToolParamHueRotationGain, { 0.5 }) && num(g, kHSVToolParamSaturationRange, { 0.2, 0.9 }) && num(g, kHSVToolParamSaturationAdjustmentGain, { 1.5 }) && num(g, kHSVToolParamOutputAlpha, { (double)HSVToolOp::eOutputAlphaAll });
+    }));
+    v.push_back(variant("clamps", [greens](const GoldenGraph& g) { return greens(g) && num(g, kHSVToolParamClampBlack, { 1. }) && num(g, kHSVToolParamClampWhite, { 1. }); }));
+    addPremultAndMaskMix(&v, greens);
+    run(filterSpec("HSVTool", PLUGINID_NATRON_HSVTOOL, PLUGIN_MAJOR_NATRON_HSVTOOL), v);
+}
+
+// Sets point `nth` of one HueCorrect curve to value.
+static bool
+hueCurvePoint(const GoldenGraph& g,
+              int curve,
+              int nth,
+              double value)
+{
+    KnobParametricPtr knob = std::dynamic_pointer_cast<KnobParametric>(g.node->getKnobByName(kHueCorrectParamHue));
+    double key = 0.;
+    double old = 0.;
+
+    return knob && (knob->getNthControlPoint(curve, nth, &key, &old) == eStatusOK) && (knob->setNthControlPoint(eValueChangedReasonUserEdited, curve, nth, key, value) == eStatusOK);
+}
+
+TEST_F(NativeGoldenTest, HueCorrect)
+{
+    // Desaturate and darken greens, warm the reds.
+    const Apply greens = [](const GoldenGraph& g) {
+        return hueCurvePoint(g, HueCorrectOp::eCurveSat, 2, 0.3) && hueCurvePoint(g, HueCorrectOp::eCurveLum, 2, 0.7) && hueCurvePoint(g, HueCorrectOp::eCurveRed, 1, 1.4);
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("greens", greens));
+    v.push_back(variant("hueShiftSuppress", [](const GoldenGraph& g) {
+        return hueCurvePoint(g, HueCorrectOp::eCurveHue, 3, 1.4) && hueCurvePoint(g, HueCorrectOp::eCurveGSup, 2, 0.4) && hueCurvePoint(g, HueCorrectOp::eCurveSatThrsh, 2, 0.3);
+    }));
+    v.push_back(variant("mixLuminance", [greens](const GoldenGraph& g) { return greens(g) && num(g, kHueCorrectParamMixLuminance, { 0.7 }); }));
+    v.push_back(variant("clamps", [greens](const GoldenGraph& g) { return greens(g) && num(g, kHueCorrectParamClampBlack, { 1. }) && num(g, kHueCorrectParamClampWhite, { 1. }); }));
+    addPremultAndMaskMix(&v, greens);
+    run(filterSpec("HueCorrect", PLUGINID_NATRON_HUECORRECT, PLUGIN_MAJOR_NATRON_HUECORRECT), v);
+}
+
+TEST_F(NativeGoldenTest, HueKeyer)
+{
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("acrossRed", [](const GoldenGraph& g) {
+        return num(g, kHueKeyerParamHueLow, { 0.85 }) && num(g, kHueKeyerParamHueLowFull, { 0.95 }) && num(g, kHueKeyerParamHueHighFull, { 0.05 }) && num(g, kHueKeyerParamHueHigh, { 0.15 }) && num(g, kHueKeyerParamSatLow, { 0. });
+    }));
+    v.push_back(variant("invert", [](const GoldenGraph& g) { return num(g, kHueKeyerParamInvert, { 1. }) && num(g, kHueKeyerParamSatHigh, { 2. }); }));
+    v.push_back(filterMaskMix([](const GoldenGraph& g) { return num(g, kHueKeyerParamHueLow, { 0.1 }) && num(g, kHueKeyerParamHueHigh, { 0.6 }); }));
+    run(filterSpec("HueKeyer", PLUGINID_NATRON_HUEKEYER, PLUGIN_MAJOR_NATRON_HUEKEYER), v);
 }
 
 TEST_F(NativeGoldenTest, ColorCorrect)

@@ -2681,7 +2681,8 @@ getExportGroupNode(const NodePtr& node)
  * The linked member of group that the export of dimension of knob on node links it to, or -1 if it
  * writes no link for it. Each member links to the first member before it in the group that its script
  * can name. The first one it can name links to nothing unless the script of that member cannot name it
- * back, so that each pair is written once.
+ * back, so that each pair is written once. An alias is never a partner: linking to the member it is an
+ * alias of joins the same group, whichever of the two the script runs first.
  */
 static int
 getExportLinkPartner(const KnobLinkGroup& group,
@@ -2700,7 +2701,8 @@ getExportLinkPartner(const KnobLinkGroup& group,
         }
         KnobIPtr partner = members[i].knob.lock();
         NodePtr partnerNode = getLinkMemberNode(partner);
-        if (!members[i].linked || !canExportLinkTo(node, groupNode, partnerNode)) {
+        // An alias is written through its own alias statement, which joins it to the group of its master.
+        if (!members[i].linked || members[i].alias || !canExportLinkTo(node, groupNode, partnerNode)) {
             continue;
         }
         if (isBefore) {
@@ -2769,7 +2771,7 @@ exportKnobLinks(int indentLevel,
 
                 // Two-way links that are not aliases (those were written above), each pair once.
                 KnobLinkGroupPtr group = (*it2)->getLinkGroup(i);
-                if (!group || group->isPermanent() || !group->isMemberLinked(it2->get(), i)) {
+                if (!group || !group->isMemberLinked(it2->get(), i)) {
                     continue;
                 }
                 const int partnerIndex = getExportLinkPartner(*group, *it2, i, node, groupNode);

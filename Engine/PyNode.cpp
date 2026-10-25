@@ -317,7 +317,7 @@ Effect::createLinkedNode()
     if (!source || !checkHolderIsEditable(source->getEffectInstance().get())) {
         return NULL;
     }
-    if (source->isEffectViewer() || source->isMultiInstance() || source->getParentMultiInstance() || !Node::canPluginBeLinkedNode(source->getPluginID())) {
+    if (!source->canBeLinkedNode()) {
         const std::string message = "The node " + source->getScriptName_mt_safe() + " cannot be a Linked Node.";
         PyErr_SetString(PyExc_ValueError, message.c_str());
 

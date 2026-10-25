@@ -1246,6 +1246,11 @@ public:
     static bool canPluginBeLinkedNode(const std::string& pluginID);
 
     /**
+     * @brief False for the nodes linkAllKnobsTo() refuses: viewers, multi-instance nodes and their instances.
+     **/
+    bool canBeLinkedNode() const;
+
+    /**
      * @brief Unlinks every knob of this node from its link groups that are not permanent. If unlinkedKnobs is
      * given, the knobs that were unlinked are appended to it, for relinkKnobs() to undo.
      **/

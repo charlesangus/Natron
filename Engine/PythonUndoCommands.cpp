@@ -186,6 +186,20 @@ collectGroupLinkNodes(const KnobIPtr& knob,
     }
 }
 
+// Emits linkChanged() for every live member of the group.
+void
+notifyLinkGroupMembers(const KnobLinkGroupPtr& group)
+{
+    std::vector<KnobLinkGroup::Member> members = group->getMembers();
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        KnobIPtr member = it->knob.lock();
+        KnobSignalSlotHandlerPtr handler = member ? member->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+        if (handler) {
+            handler->s_linkChanged();
+        }
+    }
+}
+
 KnobState
 captureKnobState(const KnobIPtr& knob)
 {
@@ -211,9 +225,13 @@ captureKnobState(const KnobIPtr& knob)
 
 void
 applyKnobExpressions(const KnobIPtr& knob,
-                     const KnobState& state)
+                     const KnobState& state,
+                     int dimension = -1)
 {
     for (int i = 0; i < knob->getDimension(); ++i) {
+        if ((dimension != -1) && (i != dimension)) {
+            continue;
+        }
         knob->clearExpression(i, true);
         if ((i < (int)state.expressions.size()) && !state.expressions[i].empty()) {
             try {
@@ -252,9 +270,10 @@ applyKnobState(const KnobIPtr& knob,
                 knob->leaveLinkGroups(i);
             }
         }
-        if (state.values) {
-            knob->clone(state.values);
-        }
+    }
+    // An alias kept as it was is linked: its recorded state goes back to its master through the group.
+    if (state.values) {
+        knob->clone(state.values);
     }
     applyKnobExpressions(knob, state);
     if (!keepAlias) {
@@ -268,9 +287,9 @@ applyKnobState(const KnobIPtr& knob,
                 }
             }
         }
-        // Each dimension rejoins a group with the member it shared it with, which still holds the
-        // shared state. One that had unlinked unlinks again, back to the state it had of its own.
-        bool unlinked = false;
+        // Each dimension rejoins a group with the member it shared it with. Rejoining adopts the group's
+        // current state, so the recorded state is put back afterwards: through the group to every member
+        // for a dimension that was linked, as the knob's own for one that had unlinked.
         for (std::vector<KnobGroupLink>::const_iterator it = state.groupLinks.begin(); it != state.groupLinks.end(); ++it) {
             KnobIPtr partner = it->partner.lock();
             if (!partner || !knob->linkTo(it->dimension, partner, it->partnerDimension)) {
@@ -278,17 +297,19 @@ applyKnobState(const KnobIPtr& knob,
             }
             linksChanged = true;
             KnobLinkGroupPtr group = knob->getLinkGroup(it->dimension);
-            if (group) {
-                group->setMemberNodeLink(knob.get(), it->dimension, it->nodeLink);
-                group->setMemberNodeLink(partner.get(), it->partnerDimension, it->partnerNodeLink);
+            if (!group) {
+                continue;
             }
-            unlinked |= !it->linked;
-        }
-        if (unlinked && knob->unlinkFromGroups()) {
+            group->setMemberNodeLink(knob.get(), it->dimension, it->nodeLink);
+            group->setMemberNodeLink(partner.get(), it->partnerDimension, it->partnerNodeLink);
+            if (!it->linked) {
+                group->setMemberLinked(knob.get(), it->dimension, false);
+                notifyLinkGroupMembers(group);
+            }
             if (state.values) {
-                knob->clone(state.values);
+                knob->clone(state.values.get(), it->dimension, std::min(it->dimension, state.values->getDimension() - 1));
             }
-            applyKnobExpressions(knob, state);
+            applyKnobExpressions(knob, state, it->dimension);
         }
     }
     knob->endChanges();

@@ -287,9 +287,10 @@ fillMasterSerialization(const std::pair<int, KnobIPtr>& master,
 }
 
 /*
- * The id a link group is saved under: the lowest "node.knob.dimension" among its members on active
- * nodes. Every member saved at the same time gets the same id, and two groups never share one,
- * since a knob dimension is in one group at most and active node names are unique.
+ * The id a link group is saved under: the lowest "node.knob.dimension" or "node/track.knob.dimension"
+ * among its members on active nodes and their tracks. Every member saved at the same time gets the
+ * same id, and two groups never share one, since a knob dimension is in one group at most and active
+ * node names, and the script names of a tracker's tracks, are unique.
  */
 std::string
 linkGroupSerializationId(const KnobLinkGroup& group)
@@ -299,12 +300,25 @@ linkGroupSerializationId(const KnobLinkGroup& group)
 
     for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
         KnobIPtr knob = it->knob.lock();
-        EffectInstance* effect = knob ? dynamic_cast<EffectInstance*>(knob->getHolder()) : 0;
-        NodePtr node = effect ? effect->getNode() : NodePtr();
+        KnobHolder* holder = knob ? knob->getHolder() : 0;
+        NodePtr node;
+        std::string track;
+        if (EffectInstance* effect = dynamic_cast<EffectInstance*>(holder)) {
+            node = effect->getNode();
+        } else if (TrackMarker* marker = dynamic_cast<TrackMarker*>(holder)) {
+            // The tracker saves its tracks under its own lock, so the track is not looked up in it here.
+            TrackerContextPtr context = marker->getContext();
+            if (context) {
+                node = context->getNode();
+                track = marker->getScriptName_mt_safe();
+            }
+        }
         if (!node || !node->isActivated()) {
             continue;
         }
-        const std::string name = node->getFullyQualifiedName() + '.' + knob->getName() + '.' + std::to_string(it->dimension);
+        // '/' is never part of a script name, so a track's id cannot be taken for a node's.
+        const std::string owner = track.empty() ? node->getFullyQualifiedName() : node->getFullyQualifiedName() + '/' + track;
+        const std::string name = owner + '.' + knob->getName() + '.' + std::to_string(it->dimension);
         if (id.empty() || (name < id)) {
             id = name;
         }
@@ -499,10 +513,11 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
             dimensionData.master = masterData;
         }
 
-        // A two-way link group is saved as an id its members saved alongside share. A permanent group
-        // is an alias, saved through its alias master above.
+        // A two-way link group is saved as an id its members saved alongside share. An alias member is
+        // saved through its alias master above instead, and loading joins the other members of its
+        // group to the group that alias forms again.
         KnobLinkGroupPtr group = getLinkGroup(i);
-        if (group && !group->isPermanent()) {
+        if (group && !group->isMemberAlias(this, i)) {
             const std::string id = linkGroupSerializationId(*group);
             if (!id.empty()) {
                 dimensionData.linkGroup.emplace();
@@ -688,7 +703,7 @@ KnobHelper::fromSerialization(const Serialization::KnobSerialization& savedSeria
 } // KnobHelper::fromSerialization
 
 void
-KnobI::storeLinksFromSerialization(const Serialization::KnobSerialization& serialization)
+KnobI::storeLinkGroupsFromSerialization(const Serialization::KnobSerialization& serialization)
 {
     _storedLinkGroups.clear();
     for (std::size_t i = 0; (i < serialization.dimensions.size()) && ((int)i < getDimension()); ++i) {
@@ -702,6 +717,12 @@ KnobI::storeLinksFromSerialization(const Serialization::KnobSerialization& seria
             _storedLinkGroups.push_back(stored);
         }
     }
+}
+
+void
+KnobI::storeLinksFromSerialization(const Serialization::KnobSerialization& serialization)
+{
+    storeLinkGroupsFromSerialization(serialization);
 
     if (serialization.masterIsAlias) {
         if (serialization.dimensions.empty()) {

@@ -27,8 +27,11 @@
 
 #include <memory>
 #include <string>
+#include <thread>
 
 #include <gtest/gtest.h>
+
+#include <QtCore/QObject>
 
 #include "BaseTest.h"
 
@@ -603,4 +606,145 @@ TEST_F(KnobLinkGroupTest, PasteBetweenDifferentCountsPastesTheSharedComponents)
     EXPECT_DOUBLE_EQ(10., v3->getValue(0));
     EXPECT_DOUBLE_EQ(20., v3->getValue(1));
     EXPECT_DOUBLE_EQ(3., v3->getValue(2));
+}
+
+TEST_F(KnobLinkGroupTest, AnotherThreadsSyncIsDeferredToTheSyncingThread)
+{
+    linkThree();
+    KnobLinkGroupPtr group = a->getLinkGroup(0);
+    ASSERT_NE(nullptr, group);
+
+    KnobLinkGroup::SyncRequest request;
+    request.knob = b;
+    request.dimension = 0;
+    request.time = 0.;
+    request.view = ViewSpec::all();
+    request.reason = eValueChangedReasonUserEdited;
+
+    ASSERT_EQ(KnobLinkGroup::eSyncStateAcquired, group->beginSync(NULL));
+    EXPECT_EQ(KnobLinkGroup::eSyncStateReentrant, group->beginSync(&request));
+    KnobLinkGroup::SyncStateEnum other = KnobLinkGroup::eSyncStateAcquired;
+    std::thread thread([&]() {
+        other = group->beginSync(&request);
+    });
+    thread.join();
+    EXPECT_EQ(KnobLinkGroup::eSyncStateDeferred, other);
+
+    KnobLinkGroup::SyncRequest next;
+    ASSERT_TRUE(group->endSync(&next));
+    EXPECT_EQ(KnobIPtr(b), next.knob.lock());
+    EXPECT_EQ(0, next.dimension);
+    EXPECT_FALSE(group->endSync(&next));
+
+    // Released: the next thread to sync owns the group.
+    std::thread after([&]() {
+        other = group->beginSync(NULL);
+        if (other == KnobLinkGroup::eSyncStateAcquired) {
+            KnobLinkGroup::SyncRequest none;
+            EXPECT_FALSE(group->endSync(&none));
+        }
+    });
+    after.join();
+    EXPECT_EQ(KnobLinkGroup::eSyncStateAcquired, other);
+}
+
+TEST_F(KnobLinkGroupTest, AnEditFromAnotherThreadDuringASyncReachesEveryMember)
+{
+    linkThree();
+    KnobLinkGroupPtr group = a->getLinkGroup(0);
+    ASSERT_NE(nullptr, group);
+
+    // While a's edit is copied to the others, b is edited and another thread asks for b's state to be
+    // copied, as b's own push does when it runs on that thread.
+    bool fired = false;
+    QObject::connect(c->getSignalSlotHandler().get(), &KnobSignalSlotHandler::valueChanged, [&](ViewSpec, int, int) {
+        if (fired) {
+            return;
+        }
+        fired = true;
+        b->setValue(9.);
+        KnobLinkGroup::SyncRequest request;
+        request.knob = b;
+        request.dimension = 0;
+        request.time = 0.;
+        request.view = ViewSpec::all();
+        request.reason = eValueChangedReasonUserEdited;
+        KnobLinkGroup::SyncStateEnum state = KnobLinkGroup::eSyncStateAcquired;
+        std::thread thread([&]() {
+            state = group->beginSync(&request);
+            if (state == KnobLinkGroup::eSyncStateAcquired) {
+                // The slot ran after the sync: release what this thread took.
+                KnobLinkGroup::SyncRequest none;
+                group->endSync(&none);
+            }
+        });
+        thread.join();
+        EXPECT_EQ(KnobLinkGroup::eSyncStateDeferred, state);
+    });
+
+    a->setValue(5.);
+    ASSERT_TRUE(fired);
+    EXPECT_DOUBLE_EQ(9., a->getValue(0));
+    EXPECT_DOUBLE_EQ(9., b->getValue(0));
+    EXPECT_DOUBLE_EQ(9., c->getValue(0));
+}
+
+TEST_F(KnobLinkGroupTest, RemovingAnAliasFromAPasteLinkGroupLetsItsMembersUnlinkAgain)
+{
+    // c is Paste-Linked to a, then b, the inner knob of a Group, becomes an alias of a.
+    a->setValue(2.);
+    ASSERT_TRUE(c->linkTo(-1, a, -1));
+    EXPECT_FALSE(c->isLinkPermanent(0));
+    ASSERT_TRUE(b->setKnobAsAliasOfThis(a, true));
+    EXPECT_EQ(a->getLinkGroup(0), b->getLinkGroup(0));
+    EXPECT_TRUE(c->isLinkPermanent(0));
+    b->setValue(3.);
+    EXPECT_DOUBLE_EQ(3., c->getValue(0));
+
+    ASSERT_TRUE(b->setKnobAsAliasOfThis(a, false));
+    EXPECT_EQ(nullptr, b->getLinkGroup(0));
+    EXPECT_DOUBLE_EQ(3., b->getValue(0));
+    ASSERT_TRUE(c->isLinked(0));
+    EXPECT_FALSE(c->isLinkPermanent(0));
+    EXPECT_FALSE(a->getLinkGroup(0)->isPermanent());
+    EXPECT_DOUBLE_EQ(3., a->getValue(0));
+    EXPECT_DOUBLE_EQ(3., c->getValue(0));
+    a->setValue(4.);
+    EXPECT_DOUBLE_EQ(4., c->getValue(0));
+    EXPECT_DOUBLE_EQ(3., b->getValue(0));
+
+    EXPECT_TRUE(c->unlinkFromGroups());
+    a->setValue(5.);
+    EXPECT_DOUBLE_EQ(4., c->getValue(0));
+}
+
+TEST_F(KnobLinkGroupTest, RemovingAnAliasByDeletingItLetsTheOthersUnlinkAgain)
+{
+    ASSERT_TRUE(c->linkTo(-1, a, -1));
+    ASSERT_TRUE(b->setKnobAsAliasOfThis(a, true));
+    EXPECT_TRUE(c->isLinkPermanent(0));
+    a->setValue(6.);
+
+    nodeB->getEffectInstance()->deleteKnob(b.get(), false);
+    b.reset();
+    EXPECT_FALSE(c->isLinkPermanent(0));
+    EXPECT_DOUBLE_EQ(6., c->getValue(0));
+    EXPECT_TRUE(c->unlinkFromGroups());
+}
+
+TEST_F(KnobLinkGroupTest, DeletingALinkedKnobNotifiesEveryLinkedNode)
+{
+    linkThree();
+    int changedA = 0;
+    int changedB = 0;
+    int changedC = 0;
+    QObject::connect(nodeA.get(), &Node::linksChanged, [&]() { ++changedA; });
+    QObject::connect(nodeB.get(), &Node::linksChanged, [&]() { ++changedB; });
+    QObject::connect(nodeC.get(), &Node::linksChanged, [&]() { ++changedC; });
+
+    nodeB->getEffectInstance()->deleteKnob(b.get(), false);
+    b.reset();
+    EXPECT_GE(changedA, 1);
+    EXPECT_GE(changedB, 1);
+    EXPECT_GE(changedC, 1);
 }

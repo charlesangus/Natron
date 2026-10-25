@@ -469,7 +469,7 @@ NodeGraph::createLinkedNodes(const QPointF& scenePos)
             return;
         }
         // A missing-plugin placeholder is saved back unchanged, so a Linked Node of it would lose its links on save.
-        if ((*it)->getNode()->isMultiInstance() || !(*it)->getNode()->getEffectInstance()->getIsEditable()) {
+        if (!(*it)->getNode()->canBeLinkedNode() || !(*it)->getNode()->getEffectInstance()->getIsEditable()) {
             Dialogs::errorDialog(tr("Create Linked Node").toStdString(),
                                  tr("%1 cannot be a Linked Node.").arg(QString::fromUtf8((*it)->getNode()->getLabel().c_str())).toStdString());
 
@@ -521,8 +521,16 @@ NodeGraph::createLinkedNodes(const QPointF& scenePos)
 
     // Linking last makes each copy adopt its original's value, animation and expression as they are, with
     // the expressions read in each copy's own context, rather than the ones restored above.
+    QStringList notLinked;
     for (std::list<std::pair<NodePtr, NodePtr>>::const_iterator it = linkedNodes.begin(); it != linkedNodes.end(); ++it) {
-        ignore_result(it->first->linkAllKnobsTo(it->second));
+        if (!it->first->linkAllKnobsTo(it->second)) {
+            notLinked.push_back(QString::fromUtf8(it->second->getLabel().c_str()));
+        }
+    }
+    if (!notLinked.isEmpty()) {
+        // The preflight above refuses what linkAllKnobsTo() refuses; a copy left unlinked anyway stays, undoable with the others.
+        Dialogs::errorDialog(tr("Create Linked Node").toStdString(),
+                             tr("The copy of %1 could not be linked to it.").arg(notLinked.join(QString::fromUtf8(", "))).toStdString());
     }
 
     pushUndoCommand(new AddMultipleNodesCommand(this, newNodesList), newNodesList);

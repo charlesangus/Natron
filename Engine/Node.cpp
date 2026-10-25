@@ -5973,17 +5973,17 @@ Node::canPluginBeLinkedNode(const std::string& pluginID)
     return pluginID != PLUGINID_NATRON_VIEWER;
 }
 
-static bool
-canBeLinkedNode(const Node& node)
+bool
+Node::canBeLinkedNode() const
 {
-    return node.getEffectInstance() && !node.isEffectViewer() && Node::canPluginBeLinkedNode(node.getPluginID()) && !node.isMultiInstance() && !node.getParentMultiInstance();
+    return getEffectInstance() && !isEffectViewer() && canPluginBeLinkedNode(getPluginID()) && !isMultiInstance() && !getParentMultiInstance();
 }
 
 bool
 Node::linkAllKnobsTo(const NodePtr& other)
 {
     assert(QThread::currentThread() == qApp->thread());
-    if (!other || (other.get() == this) || !canBeLinkedNode(*this) || !canBeLinkedNode(*other) || (getPluginID() != other->getPluginID())) {
+    if (!other || (other.get() == this) || !canBeLinkedNode() || !other->canBeLinkedNode() || (getPluginID() != other->getPluginID())) {
         return false;
     }
 

@@ -1317,6 +1317,12 @@ public:
     void storeLinksFromSerialization(const Serialization::KnobSerialization& serialization);
 
     /**
+     * @brief Stores only the link groups serialization saved, for KnobHelper::restoreLinkGroups(). Used by
+     * holders such as track markers whose one-way links belong to their subsystem and are not restored.
+     **/
+    void storeLinkGroupsFromSerialization(const Serialization::KnobSerialization& serialization);
+
+    /**
      * @brief Restores the expressions serialization saved, with each old node script name of
      * oldNewScriptNamesMapping replaced by its new one. Only valid once every knob the
      * expressions may refer to exists.
@@ -2055,6 +2061,20 @@ private:
      * groups and to every other linked member, re-evaluating each member that changed.
      **/
     void pushStateToLinkGroups(int dimension, double time, ViewSpec view, Natron::ValueChangedReasonEnum reason);
+
+    /**
+     * @brief Copies the state of the given linked dimension to its group and to every other linked member.
+     * The calling thread must be the one copying the group's state.
+     **/
+    void copyStateToLinkGroup(const KnobLinkGroupPtr& group, int dimension, double time, ViewSpec view, Natron::ValueChangedReasonEnum reason);
+
+    /**
+     * @brief Ends the calling thread's copy of the group's state, after making the copies other threads
+     * requested meanwhile.
+     **/
+    static void finishLinkGroupSync(const KnobLinkGroupPtr& group);
+
+    friend class KnobLinkGroupSyncLocker;
 
     virtual bool slaveToInternal(int dimension, const KnobIPtr &  other, int otherDimension, Natron::ValueChangedReasonEnum reason
                                  , bool ignoreMasterPersistence) OVERRIDE FINAL WARN_UNUSED_RETURN;

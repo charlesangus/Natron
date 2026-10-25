@@ -247,3 +247,71 @@ TEST_F(PyLinksTest, APasteLinkInAGroupSurvivesAPyPlugExportAndReload)
     secondSize->setValue(8.0, ViewSpec::all(), 1);
     EXPECT_EQ(8.0, firstSize->getValue(1));
 }
+
+// A Paste Link to a knob that has an alias is written to the PyPlug as a linkTo() to the knob, not
+// to the alias, and an instance of the PyPlug has the three in one group.
+TEST_F(PyLinksTest, APasteLinkInAGroupWithAnAliasSurvivesAPyPlugExportAndReload)
+{
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(groupNode != nullptr);
+    NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(groupNode->getEffectInstance());
+    ASSERT_TRUE(group != nullptr);
+
+    CreateNodeArgs pasteArgs(PLUGINID_NATRON_BLUR, group);
+    NodePtr pasted = getApp()->createNode(pasteArgs);
+    CreateNodeArgs targetArgs(PLUGINID_NATRON_BLUR, group);
+    NodePtr target = getApp()->createNode(targetArgs);
+    CreateNodeArgs aliasArgs(PLUGINID_NATRON_BLUR, group);
+    NodePtr alias = getApp()->createNode(aliasArgs);
+    ASSERT_TRUE(pasted && target && alias);
+    const std::string pastedName = pasted->getScriptName();
+    const std::string targetName = target->getScriptName();
+    const std::string aliasName = alias->getScriptName();
+
+    sizeOf(target)->setValue(3.0, ViewSpec::all(), 0);
+    ASSERT_TRUE(sizeOf(alias)->setKnobAsAliasOfThis(sizeOf(target), true));
+    ASSERT_TRUE(sizeOf(pasted)->linkTo(-1, sizeOf(target), -1));
+    ASSERT_EQ(sizeOf(pasted)->getLinkGroup(0), sizeOf(alias)->getLinkGroup(0));
+
+    QString output;
+    group->exportGroupToPython(QString::fromUtf8("test.pyplug.pastelinkalias"), QString::fromUtf8("PasteLinkAliasGroup"), QString(), QString(), QString::fromUtf8("Other"), 1, output);
+
+    EXPECT_EQ(1, output.count(QString::fromUtf8(".setAsAlias(")));
+    EXPECT_EQ(2, output.count(QString::fromUtf8(".linkTo(")));
+
+    getApp()->getProject()->reset(false, true);
+
+    std::string interpError, interpOutput;
+    ASSERT_TRUE(interpretPythonScript(output.toStdString(), &interpError, &interpOutput)) << interpError;
+
+    CreateNodeArgs containerArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    containerArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr container = getApp()->createNode(containerArgs);
+    ASSERT_TRUE(container != nullptr);
+
+    const std::string appVar = getApp()->getAppIDString();
+    const std::string callScript = "createInstance(" + appVar + ", " + appVar + "." + container->getFullyQualifiedName() + ")\n";
+    ASSERT_TRUE(interpretPythonScript(callScript, &interpError, &interpOutput)) << interpError;
+
+    NodeGroupPtr containerGroup = std::dynamic_pointer_cast<NodeGroup>(container->getEffectInstance());
+    ASSERT_TRUE(containerGroup != nullptr);
+    NodePtr pasted2 = containerGroup->getNodeByName(pastedName);
+    NodePtr target2 = containerGroup->getNodeByName(targetName);
+    NodePtr alias2 = containerGroup->getNodeByName(aliasName);
+    ASSERT_TRUE(pasted2 && target2 && alias2);
+    KnobDoublePtr pastedSize = sizeOf(pasted2);
+    KnobDoublePtr targetSize = sizeOf(target2);
+    KnobDoublePtr aliasSize = sizeOf(alias2);
+    ASSERT_TRUE(pastedSize && targetSize && aliasSize);
+
+    EXPECT_EQ(KnobIPtr(targetSize), aliasSize->getAliasMaster());
+    ASSERT_TRUE(pastedSize->getLinkGroup(0) != nullptr);
+    EXPECT_EQ(pastedSize->getLinkGroup(0), targetSize->getLinkGroup(0));
+    EXPECT_EQ(pastedSize->getLinkGroup(0), aliasSize->getLinkGroup(0));
+    EXPECT_EQ(3.0, pastedSize->getValue(0));
+
+    pastedSize->setValue(6.0, ViewSpec::all(), 0);
+    EXPECT_EQ(6.0, aliasSize->getValue(0));
+    EXPECT_EQ(6.0, targetSize->getValue(0));
+}

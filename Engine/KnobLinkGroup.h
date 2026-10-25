@@ -28,14 +28,16 @@
 
 #include "Global/Macros.h"
 
-#include <atomic>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <QtCore/QMutex>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ViewIdx.h"
+#include "Global/Enums.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -52,7 +54,8 @@ struct KnobLinkedDimension {
  * @brief A two-way link between knob dimensions. Members have no master: the group holds the
  * current value, animation and expression, and every linked member keeps a copy of them, which
  * KnobHelper updates whenever any linked member changes. A member that unlinks stays in the group,
- * so that it can rejoin it later. The group dissolves when it has a single live member left.
+ * so that it can rejoin it later. The group dissolves when it has a single live member left. An alias
+ * makes the group permanent until it leaves; the other members then stay linked as an ordinary group.
  **/
 class KnobLinkGroup {
 public:
@@ -67,6 +70,9 @@ public:
         // True if the member joined through Node::linkAllKnobsTo(). Two members that are both node links
         // make their nodes Linked Nodes; a Paste Link member in the same group does not.
         bool nodeLink;
+
+        // True if the member is an alias of another member. A group is permanent while it has one.
+        bool alias;
     };
 
     /**
@@ -86,8 +92,12 @@ public:
     std::string getExpression(bool* hasRetVariable) const;
     void setExpression(const std::string& expression, bool hasRetVariable);
 
+    /**
+     * @brief True while a live member is an alias: the group then cannot be left by unlinking.
+     **/
     bool isPermanent() const;
-    void setPermanent(bool permanent);
+    bool isMemberAlias(const KnobI* knob, int dimension) const;
+    void setMemberAlias(const KnobI* knob, int dimension, bool alias);
 
     /**
      * @brief True if the member joined the group by linking whole nodes rather than single knobs.
@@ -118,11 +128,41 @@ public:
     std::vector<Member> clearMembers();
 
     /**
-     * @brief Returns false if the group is already copying a member's state to the others, in which
-     * case the caller is that copy echoing back and must not start another one.
+     * @brief A member dimension whose state is to be copied to the group and the other members.
      **/
-    bool beginSync();
-    void endSync();
+    struct SyncRequest {
+        KnobIWPtr knob;
+        int dimension;
+        double time;
+        ViewSpec view;
+        ValueChangedReasonEnum reason;
+    };
+
+    enum SyncStateEnum {
+        // The calling thread now copies the group's state and must call endSync().
+        eSyncStateAcquired,
+
+        // The calling thread is already copying the group's state: the caller is that copy echoing back
+        // and must not start another one.
+        eSyncStateReentrant,
+
+        // Another thread is copying the group's state. The request, if any, was recorded and that thread
+        // makes it before it ends, so a thread never waits on another while it holds its own knob locks.
+        eSyncStateDeferred
+    };
+
+    /**
+     * @brief Starts copying a member's state to the others. request, if not null, is what another thread
+     * already copying the group's state makes for the caller.
+     **/
+    SyncStateEnum beginSync(const SyncRequest* request);
+
+    /**
+     * @brief Ends the copy the calling thread started, unless another thread requested one meanwhile: then
+     * returns true with the latest such request in next, and the calling thread keeps copying the group's
+     * state until it calls endSync() again.
+     **/
+    bool endSync(SyncRequest* next);
 
 private:
     explicit KnobLinkGroup(const KnobHelperPtr& stateKnob);
@@ -131,9 +171,12 @@ private:
     KnobHelperPtr _stateKnob;
     std::string _expression;
     bool _expressionHasRet;
-    bool _permanent;
     std::vector<Member> _members;
-    std::atomic<bool> _syncing;
+
+    // The thread copying the group's state, or a default id when none is.
+    std::thread::id _syncThread;
+    bool _hasPendingSync;
+    SyncRequest _pendingSync;
 };
 
 NATRON_NAMESPACE_EXIT

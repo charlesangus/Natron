@@ -354,6 +354,9 @@ TrackMarker::fromSerialization(const Serialization::TrackSerialization& serializ
                 (*it2)->blockValueChanges();
                 (*it2)->clone(serializedKnob);
                 (*it2)->unblockValueChanges();
+                // Paste Links between tracks are rebuilt by KnobHelper::restoreLinkGroups() with the rest of
+                // what loads with this track.
+                (*it2)->storeLinkGroupsFromSerialization(*it);
                 break;
             }
         }

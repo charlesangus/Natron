@@ -45,6 +45,8 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/TrackMarker.h"
+#include "Engine/TrackerContext.h"
 #include "Engine/ViewIdx.h"
 
 #include "Serialization/NodeSerialization.h"
@@ -351,4 +353,156 @@ TEST_F(LinkedNodeTest, PastedCopiesOfLinkedNodesAreLinkedOnlyToEachOther)
     KnobHelper::restoreLinkGroups(NodesList(1, single));
     EXPECT_FALSE(single->isLinkedNode());
     EXPECT_FALSE(knobOf(single)->isLinked(0));
+}
+
+TEST_F(LinkedNodeTest, PasteLinksBetweenTracksSurviveASaveAndReload)
+{
+    NodePtr tracker = createNode(QString::fromUtf8(PLUGINID_NATRON_TRACKER));
+    ASSERT_TRUE(bool(tracker));
+    TrackerContextPtr context = tracker->getTrackerContext();
+    ASSERT_TRUE(bool(context));
+    TrackMarkerPtr first = context->createMarker();
+    TrackMarkerPtr second = context->createMarker();
+    ASSERT_TRUE(first && second);
+    ASSERT_TRUE(second->getOffsetKnob()->linkTo(-1, first->getOffsetKnob(), -1));
+    first->getOffsetKnob()->setValue(0.25, ViewSpec::all(), 0);
+    ASSERT_DOUBLE_EQ(0.25, second->getOffsetKnob()->getValue(0));
+    // A track's knob linked to a node's knob is saved under the same group.
+    ASSERT_TRUE(knobOf(original)->linkTo(0, first->getOffsetKnob(), 0));
+    ASSERT_DOUBLE_EQ(0.25, knobOf(original)->getValue(0));
+
+    const std::string trackerName = tracker->getScriptName();
+    const std::string originalName = original->getScriptName();
+    const std::string firstName = first->getScriptName_mt_safe();
+    const std::string secondName = second->getScriptName_mt_safe();
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("linked-tracks.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    first.reset();
+    second.reset();
+    context.reset();
+    tracker.reset();
+    original.reset();
+    copy.reset();
+    third.reset();
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    tracker = project->getNodeByName(trackerName);
+    original = project->getNodeByName(originalName);
+    ASSERT_TRUE(tracker && original);
+    context = tracker->getTrackerContext();
+    ASSERT_TRUE(bool(context));
+    first = context->getMarkerByName(firstName);
+    second = context->getMarkerByName(secondName);
+    ASSERT_TRUE(first && second);
+
+    EXPECT_TRUE(first->getOffsetKnob()->isLinked(0));
+    EXPECT_TRUE(second->getOffsetKnob()->isLinked(0));
+    EXPECT_EQ(first->getOffsetKnob()->getLinkGroup(0), second->getOffsetKnob()->getLinkGroup(0));
+    EXPECT_EQ(first->getOffsetKnob()->getLinkGroup(0), knobOf(original)->getLinkGroup(0));
+    EXPECT_DOUBLE_EQ(0.25, second->getOffsetKnob()->getValue(0));
+    second->getOffsetKnob()->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.5, first->getOffsetKnob()->getValue(0));
+    EXPECT_DOUBLE_EQ(0.5, knobOf(original)->getValue(0));
+}
+
+TEST_F(LinkedNodeTest, APasteLinkInAGroupWithAnAliasSurvivesASaveAndReload)
+{
+    // third's knob is Paste-Linked to original's, then copy's knob becomes an alias of original's, which
+    // makes the group permanent.
+    ASSERT_TRUE(knobOf(third)->linkTo(-1, knobOf(original), -1));
+    ASSERT_TRUE(knobOf(copy)->setKnobAsAliasOfThis(knobOf(original), true));
+    knobOf(original)->setValue(0.25, ViewSpec::all(), 0);
+    ASSERT_TRUE(knobOf(third)->isLinkPermanent(0));
+    ASSERT_DOUBLE_EQ(0.25, knobOf(third)->getValue(0));
+
+    const std::string originalName = original->getScriptName();
+    const std::string copyName = copy->getScriptName();
+    const std::string thirdName = third->getScriptName();
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("alias-and-paste-link.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    original.reset();
+    copy.reset();
+    third.reset();
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    original = project->getNodeByName(originalName);
+    copy = project->getNodeByName(copyName);
+    third = project->getNodeByName(thirdName);
+    ASSERT_TRUE(original && copy && third);
+
+    // The alias, its target and the Paste-Linked knob are in one permanent group again.
+    ASSERT_TRUE(bool(knobOf(original)->getLinkGroup(0)));
+    EXPECT_EQ(KnobIPtr(knobOf(original)), knobOf(copy)->getAliasMaster());
+    EXPECT_EQ(knobOf(original)->getLinkGroup(0), knobOf(copy)->getLinkGroup(0));
+    EXPECT_EQ(knobOf(original)->getLinkGroup(0), knobOf(third)->getLinkGroup(0));
+    EXPECT_TRUE(knobOf(third)->isLinked(0));
+    EXPECT_TRUE(knobOf(original)->isLinkPermanent(0));
+    EXPECT_TRUE(knobOf(third)->isLinkPermanent(0));
+    EXPECT_FALSE(knobOf(third)->unlinkFromGroups());
+    EXPECT_DOUBLE_EQ(0.25, knobOf(third)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.25, knobOf(copy)->getValue(0));
+    knobOf(third)->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.5, knobOf(original)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.5, knobOf(copy)->getValue(0));
+    knobOf(copy)->setValue(0.75, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.75, knobOf(original)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.75, knobOf(third)->getValue(0));
+
+    // Without the alias, the Paste Link is an ordinary one again.
+    ASSERT_TRUE(knobOf(copy)->setKnobAsAliasOfThis(knobOf(original), false));
+    EXPECT_EQ(nullptr, knobOf(copy)->getLinkGroup(0));
+    EXPECT_FALSE(knobOf(third)->isLinkPermanent(0));
+    EXPECT_EQ(knobOf(original)->getLinkGroup(0), knobOf(third)->getLinkGroup(0));
+    EXPECT_TRUE(knobOf(third)->unlinkFromGroups());
+    knobOf(original)->setValue(0.125, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.75, knobOf(third)->getValue(0));
+}
+
+TEST_F(LinkedNodeTest, OnlyTheTrackerExportOneWayLinksAreRestored)
+{
+    NodePtr tracker = createNode(QString::fromUtf8(PLUGINID_NATRON_TRACKER));
+    ASSERT_TRUE(bool(tracker));
+    KnobDoublePtr trackerKnob;
+    const KnobsVec& trackerKnobs = tracker->getKnobs();
+    for (KnobsVec::const_iterator it = trackerKnobs.begin(); it != trackerKnobs.end(); ++it) {
+        KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(*it);
+        if (knob && knob->getHolder() == tracker->getEffectInstance().get()) {
+            trackerKnob = knob;
+            break;
+        }
+    }
+    ASSERT_TRUE(bool(trackerKnob));
+
+    NodesList allNodes;
+    getApp()->getProject()->getNodes_recursive(allNodes, true);
+    const std::map<std::string, std::string> noRenames;
+
+    // A one-way link to a plain node's knob, which only a hand-edited file holds, is not restored.
+    KnobDoublePtr slave = knobOf(copy);
+    slave->storeLink(0, original->getFullyQualifiedName(), original->getScriptName(), std::string(), knobName, 0);
+    slave->restoreLinks(allNodes, noRenames, false);
+    EXPECT_FALSE(slave->isSlave(0));
+    EXPECT_FALSE(slave->isLinked(0));
+
+    // The one the Tracker's linked export makes to its own knobs is.
+    slave->storeLink(0, tracker->getFullyQualifiedName(), tracker->getScriptName(), std::string(), trackerKnob->getName(), 0);
+    slave->restoreLinks(allNodes, noRenames, false);
+    EXPECT_TRUE(slave->isSlave(0));
+    EXPECT_EQ(KnobIPtr(trackerKnob), slave->getMaster(0).second);
 }

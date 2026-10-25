@@ -372,6 +372,42 @@ TEST_F(PythonUndo, UnlinkingAndRelinkingAreRestoredExactly)
     EXPECT_EQ(2.0, size->getValue(0));
 }
 
+// Undoing a Python edit of a linked knob restores the value it had in every knob of the group, and the
+// knobs stay linked.
+TEST_F(PythonUndo, UndoingAnEditOfALinkedKnobRestoresTheWholeGroup)
+{
+    NodePtr target = createBlur();
+    NodePtr source = createBlur();
+    NodePtr other = createBlur();
+    ASSERT_TRUE(target && source && other);
+    KnobDoublePtr size = sizeOf(target);
+    KnobDoublePtr sourceSize = sizeOf(source);
+    KnobDoublePtr otherSize = sizeOf(other);
+    ASSERT_TRUE(size && sourceSize && otherSize);
+    ASSERT_TRUE(size->linkTo(-1, sourceSize, -1));
+    ASSERT_TRUE(otherSize->linkTo(-1, sourceSize, -1));
+    sourceSize->setValue(7.0, ViewSpec::all(), 0);
+    ASSERT_EQ(7.0, otherSize->getValue(0));
+
+    ASSERT_TRUE(runStep(py(target) + ".size.setValue(3.0, 0)\n"));
+    ASSERT_EQ(3.0, sourceSize->getValue(0));
+    ASSERT_EQ(3.0, otherSize->getValue(0));
+
+    undoAll();
+    EXPECT_TRUE(size->isLinked(0));
+    EXPECT_EQ(7.0, size->getValue(0));
+    EXPECT_EQ(7.0, sourceSize->getValue(0));
+    EXPECT_EQ(7.0, otherSize->getValue(0));
+    sourceSize->setValue(8.0, ViewSpec::all(), 0);
+    EXPECT_EQ(8.0, size->getValue(0));
+    EXPECT_EQ(8.0, otherSize->getValue(0));
+
+    redoAll();
+    EXPECT_EQ(3.0, size->getValue(0));
+    EXPECT_EQ(3.0, sourceSize->getValue(0));
+    EXPECT_EQ(3.0, otherSize->getValue(0));
+}
+
 TEST_F(PythonUndo, AKeyframeLoopIsOneRecord)
 {
     NodePtr node = createBlur();

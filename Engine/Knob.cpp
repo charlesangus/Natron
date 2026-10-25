@@ -304,6 +304,22 @@ findMaster(const KnobIPtr & knob,
     return KnobIPtr();
 }
 
+/*
+ * The one-way links a file may hold are those a subsystem makes between knobs of separate nodes, which
+ * nothing recreates when the node is created: the Tracker's "Export" with "Link" slaves the CornerPin or
+ * Transform it creates to knobs of the Tracker node. Every other one-way link is either recreated with
+ * its node (the Tracker's internal nodes, which are not saved), kept by its own holder's serialization
+ * (Roto items, tracks), never saved (MultiInstance), or a user link, which is a link group.
+ */
+static bool
+isRestorableOneWayLinkMaster(const KnobIPtr& master)
+{
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(master->getHolder());
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    return node && node->getTrackerContext();
+}
+
 void
 KnobI::restoreLinks(const NodesList& allNodes,
                     const std::map<std::string, std::string>& oldNewScriptNamesMapping,
@@ -337,10 +353,13 @@ KnobI::restoreLinks(const NodesList& allNodes,
             }
        } else if (l->dimension == -1) {
             setKnobAsAliasOfThis(linkedKnob, true);
-        } else {
-            assert(l->slaveDimension >= 0);
-            slaveTo(l->slaveDimension, linkedKnob, l->dimension);
-        }
+       } else if (isRestorableOneWayLinkMaster(linkedKnob)) {
+           assert(l->slaveDimension >= 0);
+           slaveTo(l->slaveDimension, linkedKnob, l->dimension);
+       } else {
+           qDebug() << "Link for" << getName().c_str() << "to" << l->nodeName.c_str() << '/' << l->knobName.c_str()
+                    << "is a one-way link no part of Natron saves: links between knobs are link groups";
+       }
     }
     _links.clear();
 }
@@ -733,9 +752,69 @@ KnobHelper::getExpressionRecursionLevel() const
     return tls->expressionRecursionLevel;
 }
 
+namespace {
+
+// The node a link group member belongs to: the node of its effect, or the tracker node of a track's knob.
+NodePtr
+linkMemberNode(const KnobI* knob)
+{
+    KnobHolder* holder = knob ? knob->getHolder() : 0;
+
+    if (EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder)) {
+        return isEffect->getNode();
+    }
+    if (TrackMarker* isMarker = dynamic_cast<TrackMarker*>(holder)) {
+        TrackerContextPtr context = isMarker->getContext();
+
+        return context ? context->getNode() : NodePtr();
+    }
+
+    return NodePtr();
+}
+
+// Adds the nodes of the live members of the link groups of the knob's given dimension (or of all of
+// them for -1), the knob's own node included, to nodes.
+void
+collectLinkGroupNodes(const KnobI& knob,
+                      int dimension,
+                      NodesList* nodes)
+{
+    for (int i = 0; i < knob.getDimension(); ++i) {
+        if ((dimension != -1) && (i != dimension)) {
+            continue;
+        }
+        KnobLinkGroupPtr group = knob.getLinkGroup(i);
+        if (!group) {
+            continue;
+        }
+        std::vector<KnobLinkGroup::Member> members = group->getMembers();
+        for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+            KnobIPtr member = it->knob.lock();
+            NodePtr node = linkMemberNode(member.get());
+            if (node && (std::find(nodes->begin(), nodes->end(), node) == nodes->end())) {
+                nodes->push_back(node);
+            }
+        }
+    }
+}
+
+void
+emitNodesLinksChanged(const NodesList& nodes)
+{
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        Q_EMIT(*it)->linksChanged();
+    }
+}
+
+} // anon namespace
+
 void
 KnobHelper::deleteKnob()
 {
+    // The badges and link lines of every node that shared a group with this knob change.
+    NodesList linkedNodes;
+    collectLinkGroupNodes(*this, -1, &linkedNodes);
+
     // An alias of this knob, or the knob this one is an alias of, becomes an ordinary knob that keeps its value.
     KnobIPtr thisShared = shared_from_this();
     KnobsVec aliases = getAliasesOfThis();
@@ -749,6 +828,7 @@ KnobHelper::deleteKnob()
 
     // Before the expressions are cleared below, or the clearing would reach the linked knobs.
     leaveAllLinkGroups();
+    emitNodesLinksChanged(linkedNodes);
 
     KnobI::ListenerDimsMap listenersCpy = _imp->listeners;
 
@@ -5545,34 +5625,35 @@ KnobI::areTypesCompatibleForSlave(KnobI* lhs,
     return false;
 }
 
-namespace {
-
+/**
+ * @brief Makes the calling thread the one copying a group's state while in scope, unless it already is
+ * or another thread is, and makes the copies other threads requested meanwhile before it lets go.
+ **/
 class KnobLinkGroupSyncLocker {
 public:
-    explicit KnobLinkGroupSyncLocker(const KnobLinkGroupPtr& group)
+    explicit KnobLinkGroupSyncLocker(const KnobLinkGroupPtr& group,
+                                     const KnobLinkGroup::SyncRequest* request = 0)
         : _group(group)
-        , _locked(group->beginSync())
+        , _state(group->beginSync(request))
     {
     }
 
     ~KnobLinkGroupSyncLocker()
     {
-        if (_locked) {
-            _group->endSync();
+        if (_state == KnobLinkGroup::eSyncStateAcquired) {
+            KnobHelper::finishLinkGroupSync(_group);
         }
     }
 
     bool isLocked() const
     {
-        return _locked;
+        return _state == KnobLinkGroup::eSyncStateAcquired;
     }
 
 private:
     KnobLinkGroupPtr _group;
-    bool _locked;
+    KnobLinkGroup::SyncStateEnum _state;
 };
-
-} // anon namespace
 
 void
 KnobHelper::setLinkGroupInternal(int dimension,
@@ -5899,37 +5980,71 @@ KnobHelper::pushStateToLinkGroups(int dimension,
         return;
     }
 
-    // A button press changes no value, but must still reach the linked buttons.
-    const bool alwaysEvaluate = dynamic_cast<KnobButton*>(this) != 0;
     for (std::size_t i = 0; i < groups.size(); ++i) {
         const int dim = groups[i].first;
         const KnobLinkGroupPtr& group = groups[i].second;
         if (!group->isMemberLinked(this, dim)) {
             continue;
         }
-        KnobLinkGroupSyncLocker locker(group);
+        KnobLinkGroup::SyncRequest request;
+        request.knob = weak_from_this();
+        request.dimension = dim;
+        request.time = time;
+        request.view = view;
+        request.reason = reason;
+        KnobLinkGroupSyncLocker locker(group, &request);
         if (!locker.isLocked()) {
             continue;
         }
-        group->getStateKnob()->copyLinkStateFrom(this, 0, dim, false);
-        group->setExpression(getExpression(dim), isExpressionUsingRetVariable(dim));
-
-        std::vector<KnobLinkGroup::Member> members = group->getMembers();
-        for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
-            if (!it->linked || ((it->key == this) && (it->dimension == dim))) {
-                continue;
-            }
-            KnobIPtr knob = it->knob.lock();
-            KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
-            if (!helper) {
-                continue;
-            }
-            if (!helper->adoptLinkGroupState(group, it->dimension, time, view, eValueChangedReasonSlaveRefresh) && alwaysEvaluate) {
-                helper->evaluateValueChangeInternal(it->dimension, time, view, eValueChangedReasonSlaveRefresh, reason);
-            }
-        }
+        copyStateToLinkGroup(group, dim, time, view, reason);
     }
 } // KnobHelper::pushStateToLinkGroups
+
+void
+KnobHelper::copyStateToLinkGroup(const KnobLinkGroupPtr& group,
+                                 int dimension,
+                                 double time,
+                                 ViewSpec view,
+                                 ValueChangedReasonEnum reason)
+{
+    // A button press changes no value, but must still reach the linked buttons.
+    const bool alwaysEvaluate = dynamic_cast<KnobButton*>(this) != 0;
+
+    group->getStateKnob()->copyLinkStateFrom(this, 0, dimension, false);
+    group->setExpression(getExpression(dimension), isExpressionUsingRetVariable(dimension));
+
+    std::vector<KnobLinkGroup::Member> members = group->getMembers();
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        if (!it->linked || ((it->key == this) && (it->dimension == dimension))) {
+            continue;
+        }
+        KnobIPtr knob = it->knob.lock();
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (!helper) {
+            continue;
+        }
+        if (!helper->adoptLinkGroupState(group, it->dimension, time, view, eValueChangedReasonSlaveRefresh) && alwaysEvaluate) {
+            helper->evaluateValueChangeInternal(it->dimension, time, view, eValueChangedReasonSlaveRefresh, reason);
+        }
+    }
+}
+
+void
+KnobHelper::finishLinkGroupSync(const KnobLinkGroupPtr& group)
+{
+    KnobLinkGroup::SyncRequest next;
+
+    while (group->endSync(&next)) {
+        // Another thread's member changed while this thread copied the group's state: its change was
+        // left to this thread, and goes to the group and the other members now.
+        KnobIPtr knob = next.knob.lock();
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (helper && (helper->getLinkGroup(next.dimension) == group) && group->isMemberLinked(helper, next.dimension)) {
+            helper->copyStateToLinkGroup(group, next.dimension, next.time, next.view, next.reason);
+        }
+        next = KnobLinkGroup::SyncRequest();
+    }
+}
 
 bool
 KnobHelper::linkDimensionTo(int dimension,
@@ -6013,7 +6128,7 @@ KnobHelper::linkAsAlias(const KnobIPtr& other)
     for (int i = 0; i < getDimension(); ++i) {
         KnobLinkGroupPtr group = getLinkGroup(i);
         if (group && group->isMemberLinked(this, i)) {
-            group->setPermanent(true);
+            group->setMemberAlias(this, i, true);
             notifyLinkGroupMembers(group);
         }
     }
@@ -6063,6 +6178,9 @@ KnobHelper::relinkToGroups()
 void
 KnobHelper::leaveLinkGroups(int dimension)
 {
+    // The badges and link lines of every node that shared a group with this knob change.
+    NodesList affectedNodes;
+    collectLinkGroupNodes(*this, dimension, &affectedNodes);
     bool left = false;
 
     for (int i = 0; i < getDimension(); ++i) {
@@ -6073,6 +6191,9 @@ KnobHelper::leaveLinkGroups(int dimension)
     }
     if (left && _signalSlotHandler) {
         _signalSlotHandler->s_linkChanged();
+    }
+    if (left) {
+        emitNodesLinksChanged(affectedNodes);
     }
 }
 
@@ -6099,7 +6220,16 @@ KnobHelper::restoreLinkGroups(const NodesList& nodes)
     };
     std::map<std::string, std::vector<StoredMember>> stored;
     for (NodesList::const_iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
-        const KnobsVec knobs = (*it)->getKnobs();
+        KnobsVec knobs = (*it)->getKnobs();
+        TrackerContextPtr tracker = (*it)->getTrackerContext();
+        if (tracker) {
+            std::vector<TrackMarkerPtr> markers;
+            tracker->getAllMarkers(&markers);
+            for (std::vector<TrackMarkerPtr>::const_iterator m = markers.begin(); m != markers.end(); ++m) {
+                const KnobsVec markerKnobs = (*m)->getKnobs_mt_safe();
+                knobs.insert(knobs.end(), markerKnobs.begin(), markerKnobs.end());
+            }
+        }
         for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
             const std::vector<StoredLinkGroup> groups = (*k)->takeStoredLinkGroups();
             KnobHelperPtr helper = std::dynamic_pointer_cast<KnobHelper>(*k);
@@ -6135,27 +6265,55 @@ KnobHelper::restoreLinkGroups(const NodesList& nodes)
             continue;
         }
 
-        // The group starts from the state of a member that was linked when saved; unlinked members
-        // keep their own state, as they did when saved.
-        std::size_t anchorIndex = 0;
+        // A member an alias was restored onto already is in the group that alias forms, which holds the
+        // state the alias restored: the other members join that group, whichever was restored first.
+        std::size_t anchorIndex = members.size();
+        KnobLinkGroupPtr group;
         for (std::size_t i = 0; i < members.size(); ++i) {
-            if (members[i].linked) {
+            KnobLinkGroupPtr g = members[i].knob->getLinkGroup(members[i].dimension);
+            if (g && g->isPermanent()) {
                 anchorIndex = i;
+                group = g;
                 break;
             }
         }
-        const StoredMember& anchor = members[anchorIndex];
-        KnobLinkGroupPtr group = KnobLinkGroup::create(anchor.knob);
         if (!group) {
-            continue;
+            // The group starts from the state of a member that was linked when saved; unlinked members
+            // keep their own state, as they did when saved.
+            anchorIndex = 0;
+            for (std::size_t i = 0; i < members.size(); ++i) {
+                if (members[i].linked) {
+                    anchorIndex = i;
+                    break;
+                }
+            }
+            const StoredMember& seed = members[anchorIndex];
+            group = KnobLinkGroup::create(seed.knob);
+            if (!group) {
+                continue;
+            }
+            group->getStateKnob()->copyLinkStateFrom(seed.knob.get(), 0, seed.dimension, false);
+            group->setExpression(seed.knob->getExpression(seed.dimension), seed.knob->isExpressionUsingRetVariable(seed.dimension));
         }
-        group->getStateKnob()->copyLinkStateFrom(anchor.knob.get(), 0, anchor.dimension, false);
-        group->setExpression(anchor.knob->getExpression(anchor.dimension), anchor.knob->isExpressionUsingRetVariable(anchor.dimension));
+        const StoredMember& anchor = members[anchorIndex];
 
         std::vector<const StoredMember*> joined;
         for (std::size_t i = 0; i < members.size(); ++i) {
             const StoredMember& m = members[i];
             if ((i != anchorIndex) && !m.knob->isTypeCompatible(anchor.knob)) {
+                continue;
+            }
+            const KnobLinkGroupPtr memberGroup = m.knob->getLinkGroup(m.dimension);
+            if (memberGroup && (memberGroup != group) && memberGroup->isPermanent()) {
+                // Leaving it would break the alias that made it permanent.
+                continue;
+            }
+            NodePtr node = linkMemberNode(m.knob.get());
+            if (node && (std::find(linkedNodes.begin(), linkedNodes.end(), node) == linkedNodes.end())) {
+                linkedNodes.push_back(node);
+            }
+            if (memberGroup == group) {
+                group->setMemberNodeLink(m.knob.get(), m.dimension, m.nodeLink);
                 continue;
             }
             m.knob->leaveLinkGroup(m.dimension);
@@ -6164,11 +6322,6 @@ KnobHelper::restoreLinkGroups(const NodesList& nodes)
             group->setMemberNodeLink(m.knob.get(), m.dimension, m.nodeLink);
             m.knob->setLinkGroupInternal(m.dimension, group);
             joined.push_back(&m);
-            EffectInstance* effect = dynamic_cast<EffectInstance*>(m.knob->getHolder());
-            NodePtr node = effect ? effect->getNode() : NodePtr();
-            if (node && (std::find(linkedNodes.begin(), linkedNodes.end(), node) == linkedNodes.end())) {
-                linkedNodes.push_back(node);
-            }
         }
         if (group->getLiveMembersCount() < 2) {
             dissolveLinkGroupIfAlone(group);

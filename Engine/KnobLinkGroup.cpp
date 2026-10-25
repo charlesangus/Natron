@@ -26,6 +26,7 @@
 #include "KnobLinkGroup.h"
 
 #include <algorithm>
+#include <cassert>
 
 #include "Engine/AppManager.h"
 #include "Engine/Knob.h"
@@ -52,9 +53,10 @@ KnobLinkGroup::KnobLinkGroup(const KnobHelperPtr& stateKnob)
     , _stateKnob(stateKnob)
     , _expression()
     , _expressionHasRet(false)
-    , _permanent(false)
     , _members()
-    , _syncing(false)
+    , _syncThread()
+    , _hasPendingSync(false)
+    , _pendingSync()
 {
 }
 
@@ -93,15 +95,38 @@ KnobLinkGroup::isPermanent() const
 {
     QMutexLocker k(&_mutex);
 
-    return _permanent;
+    return std::any_of(_members.begin(), _members.end(), [](const Member& m) { return m.alias && !m.knob.expired(); });
 }
 
-void
-KnobLinkGroup::setPermanent(bool permanent)
+bool
+KnobLinkGroup::isMemberAlias(const KnobI* knob,
+                             int dimension) const
 {
     QMutexLocker k(&_mutex);
 
-    _permanent = permanent;
+    for (std::vector<Member>::const_iterator it = _members.begin(); it != _members.end(); ++it) {
+        if ((it->key == knob) && (it->dimension == dimension)) {
+            return it->alias;
+        }
+    }
+
+    return false;
+}
+
+void
+KnobLinkGroup::setMemberAlias(const KnobI* knob,
+                              int dimension,
+                              bool alias)
+{
+    QMutexLocker k(&_mutex);
+
+    for (std::vector<Member>::iterator it = _members.begin(); it != _members.end(); ++it) {
+        if ((it->key == knob) && (it->dimension == dimension)) {
+            it->alias = alias;
+
+            return;
+        }
+    }
 }
 
 bool
@@ -154,6 +179,7 @@ KnobLinkGroup::addMember(const KnobIPtr& knob,
     m.dimension = dimension;
     m.linked = true;
     m.nodeLink = false;
+    m.alias = false;
     _members.push_back(m);
 }
 
@@ -258,18 +284,45 @@ KnobLinkGroup::clearMembers()
     return ret;
 }
 
-bool
-KnobLinkGroup::beginSync()
+KnobLinkGroup::SyncStateEnum
+KnobLinkGroup::beginSync(const SyncRequest* request)
 {
-    bool expected = false;
+    const std::thread::id thisThread = std::this_thread::get_id();
+    QMutexLocker k(&_mutex);
 
-    return _syncing.compare_exchange_strong(expected, true);
+    if (_syncThread == std::thread::id()) {
+        _syncThread = thisThread;
+
+        return eSyncStateAcquired;
+    }
+    if (_syncThread == thisThread) {
+        return eSyncStateReentrant;
+    }
+    if (request) {
+        // Each copy replaces the whole state of the group, so only the latest request matters.
+        _pendingSync = *request;
+        _hasPendingSync = true;
+    }
+
+    return eSyncStateDeferred;
 }
 
-void
-KnobLinkGroup::endSync()
+bool
+KnobLinkGroup::endSync(SyncRequest* next)
 {
-    _syncing = false;
+    QMutexLocker k(&_mutex);
+
+    assert(_syncThread == std::this_thread::get_id());
+    if (_hasPendingSync) {
+        *next = _pendingSync;
+        _pendingSync = SyncRequest();
+        _hasPendingSync = false;
+
+        return true;
+    }
+    _syncThread = std::thread::id();
+
+    return false;
 }
 
 NATRON_NAMESPACE_EXIT

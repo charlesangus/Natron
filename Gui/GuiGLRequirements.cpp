@@ -130,6 +130,10 @@ requestedFormat(const QSurfaceFormat& base,
         }
     }
 
+    // Without DeprecatedFunctions Qt asks for a forward-compatible context from 3.0 up, and Mesa
+    // answers a forward-compatible compatibility-profile request with a core-profile context.
+    format.setOption(QSurfaceFormat::DeprecatedFunctions, format.profile() != QSurfaceFormat::CoreProfile);
+
     return format;
 }
 
@@ -137,6 +141,12 @@ bool
 isRequestOverridden()
 {
     return !qEnvironmentVariableIsEmpty(kRequestVersionEnv) || !qEnvironmentVariableIsEmpty(kRequestProfileEnv);
+}
+
+bool
+isRefusalDialogSuppressed()
+{
+    return isRequestOverridden() || !qEnvironmentVariableIsEmpty(kNoDialogEnv);
 }
 
 void

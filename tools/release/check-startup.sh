@@ -513,7 +513,9 @@ fi
 
 echo "    Xvfb display :$DISPLAY_NUMBER, reached over xcb"
 
-GUI_ENV=("${PROBE_ENV[@]}" "DISPLAY=:$DISPLAY_NUMBER")
+# A GUI that refuses the OpenGL context says why on stderr and in a dialog; the
+# dialog would hold the probe until the timeout, so only the stderr report is kept.
+GUI_ENV=("${PROBE_ENV[@]}" "DISPLAY=:$DISPLAY_NUMBER" "NATRON_GUI_GL_NO_DIALOG=1")
 if [[ -n "$GUI_PRELOAD" ]]; then
     GUI_ENV+=("LD_PRELOAD=$GUI_PRELOAD" "LIBGL_ALWAYS_SOFTWARE=1")
 fi

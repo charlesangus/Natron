@@ -41,8 +41,8 @@ NATRON_NAMESPACE_ENTER
  * The requested version and profile can be forced for testing through the environment:
  * NATRON_GUI_GL_REQUEST_VERSION=<major>.<minor> and NATRON_GUI_GL_REQUEST_PROFILE=core|compatibility.
  * Mesa may still hand out a newer context than the one requested; MESA_GL_VERSION_OVERRIDE caps it.
- * When either variable is set, a refused context is reported on stderr only, without a dialog, so a
- * test run cannot block on it.
+ * When either variable is set, or NATRON_GUI_GL_NO_DIALOG is, a refused context is reported on
+ * stderr only, without a dialog, so an unattended run cannot block on it.
  **/
 namespace GuiGLRequirements {
 const int kRequiredMajorVersion = 4;
@@ -50,6 +50,7 @@ const int kRequiredMinorVersion = 5;
 
 const char* const kRequestVersionEnv = "NATRON_GUI_GL_REQUEST_VERSION";
 const char* const kRequestProfileEnv = "NATRON_GUI_GL_REQUEST_PROFILE";
+const char* const kNoDialogEnv = "NATRON_GUI_GL_NO_DIALOG";
 
 struct ContextInfo {
     bool created = false;
@@ -74,7 +75,8 @@ Verdict judge(const ContextInfo& info);
 QString profileName(QSurfaceFormat::OpenGLContextProfile profile);
 
 /**
- * @brief The format the GUI requests: @p base with an OpenGL 4.5 compatibility profile, unless the
+ * @brief The format the GUI requests: @p base with an OpenGL 4.5 compatibility profile and
+ * DeprecatedFunctions set (a compatibility profile is never forward-compatible), unless the
  * overrides (the values of the environment variables above, empty when unset) say otherwise. An
  * override that cannot be parsed is ignored and described in @p warning.
  **/
@@ -84,6 +86,12 @@ QSurfaceFormat requestedFormat(const QSurfaceFormat& base,
                                QString* warning);
 
 bool isRequestOverridden();
+
+/**
+ * @brief True when a refused context must be reported on stderr only: the request is overridden
+ * or NATRON_GUI_GL_NO_DIALOG is set.
+ **/
+bool isRefusalDialogSuppressed();
 
 /**
  * @brief Makes requestedFormat() the default format of every QOpenGLWidget and QOpenGLContext.

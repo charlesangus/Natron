@@ -342,7 +342,7 @@ GuiApplicationManager::checkGLContextRequirements()
 
     const QString platform = QGuiApplication::platformName();
     const bool canShowDialog = platform != QLatin1String("offscreen") && platform != QLatin1String("minimal");
-    if (canShowDialog && !GuiGLRequirements::isRequestOverridden()) {
+    if (canShowDialog && !GuiGLRequirements::isRefusalDialogSuppressed()) {
         QMessageBox::critical(nullptr, QString::fromUtf8(NATRON_APPLICATION_NAME), verdict.message);
     }
 

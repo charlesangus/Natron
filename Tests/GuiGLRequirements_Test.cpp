@@ -104,6 +104,7 @@ TEST(GuiGLRequirements, RequestsCompatibility45KeepingTheBaseFormat)
     EXPECT_EQ(5, format.minorVersion());
     EXPECT_EQ(QSurfaceFormat::CompatibilityProfile, format.profile());
     EXPECT_EQ(QSurfaceFormat::OpenGL, format.renderableType());
+    EXPECT_TRUE(format.testOption(QSurfaceFormat::DeprecatedFunctions));
     EXPECT_EQ(24, format.depthBufferSize());
     EXPECT_EQ(8, format.stencilBufferSize());
     EXPECT_TRUE(warning.isEmpty());
@@ -116,11 +117,13 @@ TEST(GuiGLRequirements, OverridesForceTheRequest)
     EXPECT_EQ(2, old.majorVersion());
     EXPECT_EQ(1, old.minorVersion());
     EXPECT_EQ(QSurfaceFormat::CompatibilityProfile, old.profile());
+    EXPECT_TRUE(old.testOption(QSurfaceFormat::DeprecatedFunctions));
 
     const QSurfaceFormat core = GuiGLRequirements::requestedFormat(QSurfaceFormat(), QByteArray(), QByteArray("Core"), &warning);
     EXPECT_EQ(4, core.majorVersion());
     EXPECT_EQ(5, core.minorVersion());
     EXPECT_EQ(QSurfaceFormat::CoreProfile, core.profile());
+    EXPECT_FALSE(core.testOption(QSurfaceFormat::DeprecatedFunctions));
     EXPECT_TRUE(warning.isEmpty());
 }
 

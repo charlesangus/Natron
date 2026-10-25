@@ -1,0 +1,257 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include <list>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include <QFile>
+#include <QString>
+#include <QTemporaryDir>
+
+#include "BaseTest.h"
+#include "Native/NativePluginIdentity.h"
+#include "RenderBothWays.h"
+
+#include "Engine/AppInstance.h"
+#include "Engine/Curve.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Project.h"
+#include "Engine/RFV.h"
+#include "Engine/RectI.h"
+#include "Engine/ViewIdx.h"
+
+NATRON_NAMESPACE_USING
+
+namespace {
+
+KnobGroupPtr
+variablesGroupOf(const NodePtr& node)
+{
+    return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kReverseFlowVariableSetParamVariables));
+}
+
+std::vector<std::string>
+declaredNames(const std::vector<RFV::VariableDeclaration>& declarations)
+{
+    std::vector<std::string> names;
+    for (std::size_t i = 0; i < declarations.size(); ++i) {
+        names.push_back(declarations[i].name);
+    }
+
+    return names;
+}
+
+} // namespace
+
+TEST_F(BaseTest, RFVSetNodeIsRegisteredWithAnEmptyRFVGroup)
+{
+    expectNativeIdentity(PLUGINID_NATRON_REVERSEFLOWVARIABLESET, 1, "ReverseFlowVariableSet");
+
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(node));
+    EXPECT_EQ(std::string(PLUGINID_NATRON_REVERSEFLOWVARIABLESET), node->getPluginID());
+
+    KnobPagePtr page = std::dynamic_pointer_cast<KnobPage>(node->getKnobByName(kReverseFlowVariableSetParamPage));
+    ASSERT_TRUE(page != nullptr);
+    EXPECT_TRUE(page->isUserKnob());
+
+    KnobGroupPtr group = variablesGroupOf(node);
+    ASSERT_TRUE(group != nullptr);
+    EXPECT_TRUE(group->isRFVGroup());
+    EXPECT_TRUE(group->isUserKnob());
+    EXPECT_TRUE(group->getParentKnob() == page);
+    EXPECT_TRUE(group->getChildren().empty());
+
+    EXPECT_TRUE(RFV::getDeclaredVariables(node->getEffectInstance().get()).empty());
+
+    // It forwards whatever kind feeds it.
+    EXPECT_EQ(eDataKindPolymorphic, node->getEffectiveOutputDataKind());
+}
+
+// The node has no render of its own: rendering it must resolve to its input through the identity
+// route, so its output is the CheckerBoard's, bit for bit.
+TEST_F(BaseTest, RFVSetNodePassesItsInputThroughUnchanged)
+{
+    ProjectPtr project = getApp()->getProject();
+    project->setOrAddProjectFormat(Format(0, 0, 64, 48, "rfvSetNodeFormat", 1.));
+
+    NodePtr checkerBoard = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD), PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(checkerBoard && setNode);
+    connectNodes(checkerBoard, setNode, 0, true);
+    EXPECT_EQ(eDataKindImage, setNode->getEffectiveOutputDataKind());
+
+    // A declared variable does not change the pixels either.
+    EffectInstancePtr effect = setNode->getEffectInstance();
+    KnobDoublePtr gain = effect->createDoubleKnob("rfvGain", "Gain", 1);
+    ASSERT_TRUE(variablesGroupOf(setNode)->addKnob(gain));
+    gain->setValue(0.5);
+
+    const RectI roi(0, 0, 64, 48);
+    const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+
+    std::vector<RenderedPlane> direct;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(checkerBoard, 0., ViewIdx(0), 0, roi, layers, &direct, &error)) << error;
+    ASSERT_EQ(1u, direct.size());
+
+    std::vector<RenderedPlane> throughSet;
+    ASSERT_TRUE(renderNodePlanesDirect(setNode, 0., ViewIdx(0), 0, roi, layers, &throughSet, &error)) << error;
+    ASSERT_EQ(1u, throughSet.size());
+
+    EXPECT_EQ(direct[0].window, throughSet[0].window);
+    EXPECT_EQ(direct[0].channels, throughSet[0].channels);
+    ASSERT_EQ(direct[0].pixels.size(), throughSet[0].pixels.size());
+    ASSERT_FALSE(direct[0].pixels.empty());
+
+    // Bit-identical, so compared as floats with ==, not with a tolerance.
+    std::size_t firstMismatch = direct[0].pixels.size();
+    for (std::size_t i = 0; i < direct[0].pixels.size(); ++i) {
+        if (direct[0].pixels[i] != throughSet[0].pixels[i]) {
+            firstMismatch = i;
+            break;
+        }
+    }
+    EXPECT_EQ(direct[0].pixels.size(), firstMismatch) << "first differing float at index " << firstMismatch;
+
+    // The CheckerBoard is not a single flat colour, so the comparison above is not vacuous.
+    bool varies = false;
+    for (std::size_t i = 4; i < direct[0].pixels.size() && !varies; ++i) {
+        varies = direct[0].pixels[i] != direct[0].pixels[i % 4];
+    }
+    EXPECT_TRUE(varies);
+}
+
+TEST_F(BaseTest, RFVSetNodeVariablesSurviveSaveAndLoad)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(setNode));
+    const std::string setNodeName = setNode->getScriptName();
+    EffectInstancePtr effect = setNode->getEffectInstance();
+    ASSERT_TRUE(bool(effect));
+    KnobGroupPtr group = variablesGroupOf(setNode);
+    ASSERT_TRUE(group != nullptr);
+
+    KnobDoublePtr gain = effect->createDoubleKnob("rfvGain", "Gain", 1);
+    KnobStringPtr shot = effect->createStringKnob("rfvShot", "Shot");
+    KnobIntPtr offset = effect->createIntKnob("rfvOffset", "Offset", 2);
+    KnobBoolPtr enabled = effect->createBoolKnob("rfvEnabled", "Enabled");
+    KnobDoublePtr ramp = effect->createDoubleKnob("rfvRamp", "Ramp", 1);
+    ASSERT_TRUE(group->addKnob(gain));
+    ASSERT_TRUE(group->addKnob(shot));
+    ASSERT_TRUE(group->addKnob(offset));
+    ASSERT_TRUE(group->addKnob(enabled));
+    ASSERT_TRUE(group->addKnob(ramp));
+    effect->recreateUserKnobs(false);
+
+    gain->setValue(0.25);
+    shot->setValue("sh010");
+    offset->setValue(3, ViewSpec::all(), 0);
+    offset->setValue(-7, ViewSpec::all(), 1);
+    enabled->setValue(true);
+    ramp->setValueAtTime(1., 0.5, ViewSpec::all(), 0);
+    ramp->setValueAtTime(10., 2., ViewSpec::all(), 0);
+    ramp->setValueAtTime(20., -1., ViewSpec::all(), 0);
+    const double rampMid = ramp->getValueAtTime(5., 0);
+
+    const std::vector<std::string> savedNames = declaredNames(RFV::getDeclaredVariables(effect.get()));
+    const std::vector<std::string> expectedNames = { "rfvGain", "rfvShot", "rfvOffset", "rfvEnabled", "rfvRamp" };
+    ASSERT_EQ(expectedNames, savedNames);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("rfv-set-node.ntpz");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    project->reset(false, true);
+    ASSERT_TRUE(project->getNodeByName(setNodeName).get() == NULL);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr setNode2 = project->getNodeByName(setNodeName);
+    ASSERT_TRUE(bool(setNode2));
+    EffectInstancePtr effect2 = setNode2->getEffectInstance();
+
+    // The saved page and group are the ones the node creates, not copies next to them.
+    KnobGroupPtr group2 = variablesGroupOf(setNode2);
+    ASSERT_TRUE(group2 != nullptr);
+    EXPECT_TRUE(group2->isRFVGroup());
+    EXPECT_FALSE(setNode2->getKnobByName(std::string(kReverseFlowVariableSetParamVariables) + "2"));
+    EXPECT_FALSE(setNode2->getKnobByName(std::string(kReverseFlowVariableSetParamPage) + "2"));
+
+    const std::vector<RFV::VariableDeclaration> declarations = RFV::getDeclaredVariables(effect2.get());
+    EXPECT_EQ(savedNames, declaredNames(declarations));
+    for (std::size_t i = 0; i < declarations.size(); ++i) {
+        EXPECT_TRUE(declarations[i].knob->getParentKnob() == group2) << declarations[i].name;
+    }
+
+    KnobDouble* gain2 = dynamic_cast<KnobDouble*>(setNode2->getKnobByName("rfvGain").get());
+    ASSERT_TRUE(gain2 != NULL);
+    EXPECT_DOUBLE_EQ(0.25, gain2->getValue());
+
+    KnobString* shot2 = dynamic_cast<KnobString*>(setNode2->getKnobByName("rfvShot").get());
+    ASSERT_TRUE(shot2 != NULL);
+    EXPECT_EQ(std::string("sh010"), shot2->getValue());
+
+    KnobInt* offset2 = dynamic_cast<KnobInt*>(setNode2->getKnobByName("rfvOffset").get());
+    ASSERT_TRUE(offset2 != NULL);
+    ASSERT_EQ(2, offset2->getDimension());
+    EXPECT_EQ(3, offset2->getValue(0));
+    EXPECT_EQ(-7, offset2->getValue(1));
+
+    KnobBool* enabled2 = dynamic_cast<KnobBool*>(setNode2->getKnobByName("rfvEnabled").get());
+    ASSERT_TRUE(enabled2 != NULL);
+    EXPECT_TRUE(enabled2->getValue());
+
+    KnobDouble* ramp2 = dynamic_cast<KnobDouble*>(setNode2->getKnobByName("rfvRamp").get());
+    ASSERT_TRUE(ramp2 != NULL);
+    CurvePtr curve = ramp2->getCurve(ViewIdx(0), 0);
+    ASSERT_TRUE(curve != nullptr);
+    ASSERT_EQ(3, curve->getKeyFramesCount());
+    const double times[3] = { 1., 10., 20. };
+    const double values[3] = { 0.5, 2., -1. };
+    for (int i = 0; i < 3; ++i) {
+        KeyFrame key;
+        ASSERT_TRUE(curve->getKeyFrameWithIndex(i, &key));
+        EXPECT_DOUBLE_EQ(times[i], key.getTime());
+        EXPECT_DOUBLE_EQ(values[i], key.getValue());
+    }
+    EXPECT_DOUBLE_EQ(rampMid, ramp2->getValueAtTime(5., 0));
+}

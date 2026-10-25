@@ -333,11 +333,8 @@ public:
      * the args getParallelRenderArgsTLS() returns once they are installed. installSequence, when given, receives
      * every installation in order, including a node installed twice, and collectedNodes the nodes whose args the
      * destructor invalidates.
-     * Returns true when it aborted a viewer render because a pulled node's input-related data was stale off the main
-     * thread. The caller must then return before running any action: the hashes are already the refreshed ones, so a
-     * RoD or components result computed from the stale data would be cached where the queued fresh render looks.
      **/
-    static bool buildArgsMap(double time,
+    static void buildArgsMap(double time,
                              ViewIdx view,
                              bool isRenderUserInteraction,
                              bool isSequential,
@@ -373,16 +370,10 @@ public:
         return _installedArgs;
     }
 
-    bool isAbortedForStaleInputData() const
-    {
-        return _abortedForStaleInputData;
-    }
-
     virtual ~ParallelRenderArgsSetter();
 
 private:
     std::map<NodePtr, ParallelRenderArgsPtr> _installedArgs;
-    bool _abortedForStaleInputData;
 };
 
 NATRON_NAMESPACE_EXIT

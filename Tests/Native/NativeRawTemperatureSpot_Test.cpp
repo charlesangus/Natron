@@ -239,7 +239,7 @@ TEST_F(NativeRawTemperatureSpotTest, TheDefaultSpotIsDarktablesBoxOnTheSourceFor
     const RawLayout layout = *RawLayout::fromPattern("RGGB");
     NodePtr node = createTemperature(1, mosaicValue(layout), rawTestMetadata("RGGB", 0, 0, eRawStagePrepared));
     ASSERT_TRUE(bool(node));
-    const RectI format = node->getEffectInstance()->getInput(0)->getOutputFormat();
+    const RectI format = node->getEffectInstance()->getInput(0)->getTimeInvariantMetadata()->getOutputFormat();
     ASSERT_FALSE(format.isNull());
     KnobDoublePtr bottomLeft = knobDouble(node, kRawTemperatureParamSpotBottomLeft);
     KnobDoublePtr size = knobDouble(node, kRawTemperatureParamSpotSize);

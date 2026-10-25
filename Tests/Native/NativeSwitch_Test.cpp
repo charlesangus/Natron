@@ -123,7 +123,7 @@ renderRoIDirect(const NodePtr& node,
                                        RenderStatsPtr());
     EffectInstancePtr effect = node->getEffectInstance();
     const RectI window = fullWindow();
-    const RectD canonicalWindow = window.toCanonical_noClipping(0, effect->getAspectRatio(-1));
+    const RectD canonicalWindow = window.toCanonical_noClipping(0, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
     FrameRequestMap request;
 
     if (EffectInstance::computeRequestPass(time, ViewIdx(0), 0, canonicalWindow, node, request) == eStatusFailed) {

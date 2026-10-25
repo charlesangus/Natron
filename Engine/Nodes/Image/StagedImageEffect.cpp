@@ -184,6 +184,8 @@ StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
 
 RectI
 StagedImageEffect::getGpuInputRoI(int inputNb,
+                                  double time,
+                                  ViewIdx view,
                                   const RectI& outputRect,
                                   const RenderScale& scale) const
 {
@@ -191,19 +193,16 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
     const int source = getSourceInput();
 
     if ((inputNb == source) && (kind == OpKind::Passes)) {
-        return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
+        return passListSourceRoI(outputRect, opPasses(time, view, scale));
     }
     if ((inputNb == source) && (kind == OpKind::Resample) && opResamplesOnGpu()) {
-        const double time = getCurrentTime();
-        const ViewIdx view = getCurrentView();
-
         return resampleGpuSourceRoI(*this, source, time, view, outputRect, scale);
     }
     if (kind == OpKind::Custom) {
-        return getOpGpuInputRoI(inputNb, outputRect, scale);
+        return getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
     }
 
-    return NativeEffectBase::getGpuInputRoI(inputNb, outputRect, scale);
+    return NativeEffectBase::getGpuInputRoI(inputNb, time, view, outputRect, scale);
 }
 
 bool
@@ -393,11 +392,13 @@ StagedImageEffect::isMaskApplied() const
 }
 
 PassContext
-StagedImageEffect::getPassContext(const RenderScale& scale) const
+StagedImageEffect::getPassContext(double time,
+                                  ViewIdx view,
+                                  const RenderScale& scale) const
 {
     PassContext context;
     const int source = getSourceInput();
-    const double par = ((source >= 0) && getInput(source)) ? getAspectRatio(source) : 0.;
+    const double par = ((source >= 0) && getInput(source)) ? getRenderMetadata(time, view)->getPixelAspectRatio(source) : 0.;
 
     context.scale = scale;
     if (par != 0.) {
@@ -454,7 +455,8 @@ StagedImageEffect::getRegionOfDefinition(U64 hash,
     if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &srcRoD, &isProjectFormat) == eStatusFailed) {
         return eStatusFailed;
     }
-    const RectI srcRoDPixel = PassExec::toPixelEnclosing(srcRoD, scale, getAspectRatio(source));
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    const RectI srcRoDPixel = PassExec::toPixelEnclosing(srcRoD, scale, metadata->getPixelAspectRatio(source));
 
     RectI rodPixel = srcRoDPixel;
     bool changed = false;
@@ -472,7 +474,7 @@ StagedImageEffect::getRegionOfDefinition(U64 hash,
     if (!changed) {
         return NativeEffectBase::getRegionOfDefinition(hash, time, scale, view, rod);
     }
-    *rod = PassExec::toCanonical(rodPixel, scale, getAspectRatio(-1));
+    *rod = PassExec::toCanonical(rodPixel, scale, metadata->getPixelAspectRatio(-1));
 
     return eStatusOK;
 } // StagedImageEffect::getRegionOfDefinition
@@ -506,7 +508,7 @@ StagedImageEffect::getRegionsOfInterest(double time,
         }
     }
 
-    const double par = getAspectRatio(source);
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(source);
     const RectI rectPixel = PassExec::toPixelEnclosing(renderWindow, scale, par);
     RectD srcRoI = PassExec::toCanonical(passListSourceRoI(rectPixel, opPasses(time, view, scale)), scale, par);
     if (doMasking && (mix != 1.)) {

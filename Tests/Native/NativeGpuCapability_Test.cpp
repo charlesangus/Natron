@@ -166,5 +166,5 @@ TEST_F(NativeGpuCapabilityTest, DefaultsDeclineAndPassTheRegionThrough)
     ASSERT_TRUE(effect != nullptr);
 
     const RectI roi(10, 20, 110, 220);
-    EXPECT_EQ(roi, effect->getGpuInputRoI(0, roi, RenderScale()));
+    EXPECT_EQ(roi, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale()));
 }

@@ -195,7 +195,7 @@ protected:
         KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(node->getKnobByName("ocioInputSpace").get());
         ASSERT_TRUE(inputSpace != NULL);
         inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-        node->getEffectInstance()->refreshMetadata_public(false);
+        node->getEffectInstance()->dropCachedMetadata();
     }
 
     // Compares the plane with OIIO's own read of the file, converted to float with the same
@@ -399,7 +399,7 @@ TEST_F(NativeReadDecodeTest, RegionOfDefinitionIsTheDataWindowAndFormatIsTheDisp
     EXPECT_EQ(expected.y2, rod.y2);
     EXPECT_NE(RectI(0, 0, ref.spec.width, ref.spec.height), dataWindow);
 
-    EXPECT_TRUE(RectI(0, 0, ref.spec.full_x + ref.spec.full_width, ref.spec.full_height) == read->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, ref.spec.full_x + ref.spec.full_width, ref.spec.full_height) == read->getTimeInvariantMetadata()->getOutputFormat());
 }
 
 TEST_F(NativeReadDecodeTest, ComponentsFollowTheFilesColourChannels)
@@ -418,13 +418,13 @@ TEST_F(NativeReadDecodeTest, ComponentCountOfTheMetadataFollowsTheFile)
     ImageLayerDesc paired;
 
     setFile(node, std::string(NATRON_TESTS_FIXTURES_DIR "/png-8bit.png"));
-    effect->getMetadataComponents(-1, &layer, &paired);
+    EffectInstance::getLayersFromMetadata(*effect->getTimeInvariantMetadata(), -1, &layer, &paired);
     EXPECT_EQ(3u, layer.getChannels().size());
     setFile(node, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-alpha-only.exr"));
-    effect->getMetadataComponents(-1, &layer, &paired);
+    EffectInstance::getLayersFromMetadata(*effect->getTimeInvariantMetadata(), -1, &layer, &paired);
     EXPECT_EQ(1u, layer.getChannels().size());
     setFile(node, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
-    effect->getMetadataComponents(-1, &layer, &paired);
+    EffectInstance::getLayersFromMetadata(*effect->getTimeInvariantMetadata(), -1, &layer, &paired);
     EXPECT_EQ(4u, layer.getChannels().size());
 }
 
@@ -487,7 +487,7 @@ TEST_F(NativeReadDecodeTest, AFileWithoutAnyColourChannelGivesABlackRgbaPlane)
     setFile(node, path);
     ImageLayerDesc layer;
     ImageLayerDesc paired;
-    node->getEffectInstance()->getMetadataComponents(-1, &layer, &paired);
+    EffectInstance::getLayersFromMetadata(*node->getEffectInstance()->getTimeInvariantMetadata(), -1, &layer, &paired);
     EXPECT_EQ(4u, layer.getChannels().size());
 
     std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
@@ -527,7 +527,7 @@ TEST_F(NativeReadDecodeTest, ALuminanceFileFillsRedGreenAndBlueWithItsValue)
         setFile(node, path);
         ImageLayerDesc layer;
         ImageLayerDesc paired;
-        node->getEffectInstance()->getMetadataComponents(-1, &layer, &paired);
+        EffectInstance::getLayersFromMetadata(*node->getEffectInstance()->getTimeInvariantMetadata(), -1, &layer, &paired);
         EXPECT_EQ(3u, layer.getChannels().size());
 
         std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBComponents());
@@ -566,7 +566,7 @@ TEST_F(NativeReadDecodeTest, ALuminanceAndAlphaFileGivesRgbaWithTheAlphaIntact)
     setFile(node, path);
     ImageLayerDesc layer;
     ImageLayerDesc paired;
-    node->getEffectInstance()->getMetadataComponents(-1, &layer, &paired);
+    EffectInstance::getLayersFromMetadata(*node->getEffectInstance()->getTimeInvariantMetadata(), -1, &layer, &paired);
     EXPECT_EQ(4u, layer.getChannels().size());
 
     std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());

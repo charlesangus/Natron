@@ -121,9 +121,9 @@ public:
                                 ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief The output pixel aspect ratio, 1 when the effect has none yet.
+     * @brief The output pixel aspect ratio at time and view, 1 when the effect has none yet.
      **/
-    double getPixelAspectRatio() const WARN_UNUSED_RETURN;
+    double getPixelAspectRatio(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     bool knobChanged(KnobI* k,
                      ValueChangedReasonEnum reason,

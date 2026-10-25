@@ -261,6 +261,8 @@ public:
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual RectI getGpuInputRoI(int /*inputNb*/,
+                                 double /*time*/,
+                                 ViewIdx /*view*/,
                                  const RectI& outputRect,
                                  const RenderScale& /*scale*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {

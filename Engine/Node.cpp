@@ -2930,7 +2930,7 @@ Node::makeInfoForInput(int inputNumber) const
         ss << "</font><br />";
     }
     {
-        ImageBitDepthEnum depth = _imp->effect->getBitDepth(inputNumber);
+        ImageBitDepthEnum depth = _imp->effect->getMetadata(time, ViewIdx(0))->getBitDepth(inputNumber);
         QString depthStr = tr("unknown");
         switch (depth) {
             case eImageBitDepthByte:
@@ -2949,19 +2949,20 @@ Node::makeInfoForInput(int inputNumber) const
         }
         ss << "<b>" << tr("BitDepth:").toStdString() << "</b> <font color=#c8c8c8>" << depthStr.toStdString() << "</font><br />";
     }
+    const NodeMetadataConstPtr inputMetadata = input->getMetadata(time, ViewIdx(0));
     {
-        RectI format = input->getOutputFormat();
+        RectI format = inputMetadata->getOutputFormat();
         if ( !format.isNull() ) {
             ss << "<b>" << tr("Format (pixels):").toStdString() << "</b> <font color=#c8c8c8>";
             ss << tr("left = %1 bottom = %2 right = %3 top = %4").arg(format.x1).arg(format.y1).arg(format.x2).arg(format.y2).toStdString() << "</font><br />";
         }
     }
     { // par
-        double par = input->getAspectRatio(-1);
+        double par = inputMetadata->getPixelAspectRatio(-1);
         ss << "<b>" << tr("Pixel aspect ratio:").toStdString() << "</b> <font color=#c8c8c8>" << par << "</font><br />";
     }
     { // fps
-        double fps = input->getFrameRate();
+        double fps = inputMetadata->getOutputFrameRate();
         ss << "<b>" << tr("Frame rate:").toStdString() << "</b> <font color=#c8c8c8>" << tr("%1fps").arg(fps).toStdString() << "</font><br />";
     }
     {
@@ -4742,7 +4743,8 @@ Node::makePreviewImage(SequenceTime time,
 
     const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
 
-    const double par = effect->getAspectRatio(-1);
+    const NodeMetadataConstPtr metadata = effect->getMetadata(time, ViewIdx(0));
+    const double par = metadata->getPixelAspectRatio(-1);
     const RectI renderWindow = rod.toPixelEnclosing(mipmapLevel, par);
 
     NodePtr thisNode = shared_from_this();
@@ -4778,10 +4780,10 @@ Node::makePreviewImage(SequenceTime time,
         frameRenderArgs.updateNodesRequest(request);
 
         std::list<ImageLayerDesc> requestedComps;
-        ImageBitDepthEnum depth = effect->getBitDepth(-1);
+        ImageBitDepthEnum depth = metadata->getBitDepth(-1);
         {
             ImageLayerDesc layer, pairedLayer;
-            effect->getMetadataComponents(-1, &layer, &pairedLayer);
+            EffectInstance::getLayersFromMetadata(*metadata, -1, &layer, &pairedLayer);
             requestedComps.push_back(layer);
         }
 
@@ -5487,16 +5489,6 @@ Node::getPersistentMessage(QString* message,
                            int* type,
                            bool prefixLabelAndType) const
 {
-    bool hasChannelSelectorMessage;
-    {
-        QMutexLocker k(&_imp->persistentMessageMutex);
-        hasChannelSelectorMessage = _imp->persistentMessageFromChannelSelector;
-    }
-    // The refresh is what clears a missing-channel message an upstream edit resolved.
-    if (hasChannelSelectorMessage) {
-        const_cast<Node*>(this)->refreshInputRelatedDataIfStale();
-    }
-
     QMutexLocker k(&_imp->persistentMessageMutex);
 
     *type = _imp->persistentMessageType;
@@ -7260,7 +7252,7 @@ Node::Implementation::onMaskSelectorChanged(int inputNb,
 
     if (!isRefreshingInputRelatedData) {
         ///Clip preferences have changed
-        effect->refreshMetadata_public(true);
+        effect->refreshMetadataSideEffects();
     }
 }
 
@@ -7778,7 +7770,7 @@ addIdentityNodesRecursively(const Node* caller,
                 double inputTimeId;
                 ViewIdx identityView;
                 int inputNbId;
-                RectI format = node->getEffectInstance()->getOutputFormat();
+                RectI format = node->getEffectInstance()->getMetadata(time, view)->getOutputFormat();
 
                 // Uncached: the output format is not the node's image, and the identity cache keeps
                 // whole-image answers keyed on the hash alone, which the node's own render would then
@@ -8019,9 +8011,6 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
     assert( QThread::currentThread() == qApp->thread() );
     RefreshingInputData_RAII _refreshingflag( _imp.get() );
     InputRelatedDataRefreshScope refreshing;
-    // Cleared before the refresh reads anything, so that an edit landing during it leaves the
-    // node to be refreshed again.
-    _imp->inputRelatedDataStale.store(false);
     {
         QMutexLocker k(&_imp->pluginsPropMutex);
         _imp->mustComputeInputRelatedData = false;
@@ -8056,7 +8045,10 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
                 }
             }
         }
-        hasChanged |= _imp->effect->refreshMetadata_public(false);
+        // Renders compute their metadata per frame and need nothing from here. An OpenFX node
+        // derives (and pushes to its clips) its time-invariant answer for its new state, and the
+        // UI hook below follows the answer at the current frame.
+        (void)_imp->effect->getTimeInvariantMetadata();
     }
 
     refreshChannelSelectors();
@@ -8065,6 +8057,8 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
     _imp->notifyLayerReferencesChanged();
 
     refreshIdentityState();
+
+    _imp->effect->refreshCurrentFrameMetadata(getApp()->getTimeLine()->currentFrame(), false);
 
     if (loadingProject) {
         hasChanged |= refreshHashNow();
@@ -8239,8 +8233,6 @@ Node::refreshShownInputRelatedData(std::set<Node*>& visited)
         return false;
     }
     if (!isInputRelatedDataDirty()) {
-        _imp->inputRelatedDataStale.store(false);
-
         return false;
     }
 
@@ -8279,14 +8271,13 @@ Node::refreshInputRelatedDataAfterInputChange()
 {
     assert(QThread::currentThread() == qApp->thread());
     markAllInputRelatedDataDirty();
-    markDownstreamInputRelatedDataStale();
+    refreshShownDownstreamInputRelatedData();
 
     NodeGroup* isGroup = dynamic_cast<NodeGroup*>(_imp->effect.get());
     if (isGroup) {
         // A container's inputs feed the nodes inside it, which are refreshed as nodes downstream
         // of the edit. A container with a host layer knob (Write) lists its own inputs' layers on
         // it, so its selectors are refreshed here like those of the node the edit is on.
-        _imp->inputRelatedDataStale.store(true);
         if (_imp->layerKnob.lock()) {
             refreshChannelSelectors();
         }
@@ -8299,7 +8290,7 @@ Node::refreshInputRelatedDataAfterInputChange()
 }
 
 void
-Node::markDownstreamInputRelatedDataStale()
+Node::refreshShownDownstreamInputRelatedData()
 {
     assert(QThread::currentThread() == qApp->thread());
 
@@ -8308,29 +8299,42 @@ Node::markDownstreamInputRelatedDataStale()
     // Breadth first: the vector is the queue, read from the front without erasing.
     std::vector<NodePtr> toVisit;
     appendOutputsWithGroupRedirection(&toVisit);
-    std::vector<NodePtr> shown;
+    std::vector<NodePtr> reached;
     for (std::size_t next = 0; next < toVisit.size(); ++next) {
         NodePtr node = toVisit[next];
         if (!node || !visited.insert(node.get()).second) {
             continue;
         }
         node->markAllInputRelatedDataDirty();
-        node->_imp->inputRelatedDataStale.store(true);
-        if (node->isSettingsPanelVisible()) {
-            shown.push_back(node);
-        }
+        reached.push_back(node);
         node->appendOutputsWithGroupRedirection(&toVisit);
     }
 
-    for (std::size_t i = 0; i < shown.size(); ++i) {
-        shown[i]->refreshInputRelatedDataIfStale();
+    // The draft flag is the one piece of this data a render reads; it only reads the inputs'
+    // flags, so it is settled here for every node reached, without reading a hash. Breadth-first
+    // order is upstream first on a chain; a diamond takes another pass.
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (std::size_t i = 0; i < reached.size(); ++i) {
+            if (reached[i]->_imp->effect) {
+                changed |= reached[i]->refreshDraftFlagInternal(reached[i]->getInputs_copy());
+            }
+        }
     }
-}
 
-bool
-Node::isInputRelatedDataStale() const
-{
-    return _imp->inputRelatedDataStale.load();
+    // The rest is what panels and the node graph show: the nodes whose settings panel is visible,
+    // and those showing a missing-channel message the edit may have resolved, are refreshed now.
+    // The others are refreshed when their panel is shown (refreshPanelInputRelatedData()).
+    for (std::size_t i = 0; i < reached.size(); ++i) {
+        bool hasChannelSelectorMessage;
+        {
+            QMutexLocker k(&reached[i]->_imp->persistentMessageMutex);
+            hasChannelSelectorMessage = reached[i]->_imp->persistentMessageFromChannelSelector;
+        }
+        if (hasChannelSelectorMessage || reached[i]->isSettingsPanelVisible()) {
+            reached[i]->refreshPanelInputRelatedData();
+        }
+    }
 }
 
 Node::InputRelatedDataRefreshDeferral::InputRelatedDataRefreshDeferral()
@@ -8343,104 +8347,50 @@ Node::InputRelatedDataRefreshDeferral::~InputRelatedDataRefreshDeferral()
     --inputRelatedDataRefreshDeferralDepth;
 }
 
-void
-Node::refreshInputRelatedDataIfStale()
+bool
+Node::canRunMainThreadMetadataRefresh() const
 {
-    if (!_imp->inputRelatedDataStale.load() || (QThread::currentThread() != qApp->thread())) {
-        return;
+    if (QThread::currentThread() != qApp->thread()) {
+        return false;
     }
-    if ((hashComputeDepth > 0) || (inputRelatedDataRefreshDepth > 0) || (inputRelatedDataRefreshDeferralDepth > 0)) {
-        return;
+    if ((hashComputeDepth > 0) || (inputRelatedDataRefreshDeferralDepth > 0)) {
+        return false;
     }
     if (!_imp->effect || !isNodeCreated() || !isActivated()) {
-        return;
+        return false;
     }
     {
         QMutexLocker k(&_imp->isBeingDestroyedMutex);
         if (_imp->isBeingDestroyed) {
-            return;
+            return false;
         }
     }
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
-    if (!project || app->isCreatingNodeTree() || project->isLoadingProject() || project->isProjectClosing()) {
-        return;
+    if (!project || project->isProjectClosing()) {
+        return false;
+    }
+    // While the project loads or a node tree is created, only the refresh that follows covers it.
+    if ((app->isCreatingNodeTree() || project->isLoadingProject()) && (inputRelatedDataRefreshDepth == 0)) {
+        return false;
     }
 
-    std::set<Node*> visited;
-    refreshShownInputRelatedData(visited);
+    return true;
 }
 
 void
-Node::refreshInputRelatedDataForRender()
+Node::refreshPanelInputRelatedData()
 {
-    if (QThread::currentThread() != qApp->thread()) {
+    // A refresh already running orders the nodes it reaches itself, inputs first.
+    if ((inputRelatedDataRefreshDepth > 0) || !canRunMainThreadMetadataRefresh()) {
         return;
     }
-    NodePtr self = weak_from_this().lock();
-    if (!self) {
-        return;
+    if (isInputRelatedDataDirty()) {
+        std::set<Node*> visited;
+        refreshShownInputRelatedData(visited);
+    } else {
+        _imp->effect->refreshCurrentFrameMetadata(getApp()->getTimeLine()->currentFrame(), false);
     }
-    std::unordered_set<const Node*> visited;
-    std::vector<NodePtr> toVisit(1, self);
-    std::vector<NodePtr> reached;
-    visited.insert(self.get());
-    auto reach = [&visited, &toVisit](const NodePtr& node) {
-        if (node && visited.insert(node.get()).second) {
-            toVisit.push_back(node);
-        }
-    };
-    while (!toVisit.empty()) {
-        NodePtr node = toVisit.back();
-        toVisit.pop_back();
-        reached.push_back(node);
-
-        int shown[2] = { -1, -1 };
-        ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(node->_imp->effect.get());
-        if (isViewer) {
-            isViewer->getActiveInputs(shown[0], shown[1]);
-        }
-        const int maxInputs = node->getNInputs();
-        for (int i = 0; i < maxInputs; ++i) {
-            if (!isViewer || (i == shown[0]) || (i == shown[1])) {
-                reach(node->getInput(i));
-            }
-        }
-        // The inputs of a group lead around the nodes inside it, which render it.
-        NodeGroup* isGroup = node->isEffectGroup();
-        if (isGroup) {
-            reach(isGroup->getOutputNode(false));
-        }
-        // The paint tree is rendered through the RotoPaint node without being upstream of it, so
-        // its edits leave the RotoPaint node itself clean.
-        RotoContextPtr roto = node->getRotoContext();
-        if (roto) {
-            NodesList paintTree;
-            roto->getRotoPaintTreeNodes(&paintTree);
-            for (NodesList::const_iterator it = paintTree.begin(); it != paintTree.end(); ++it) {
-                reach(*it);
-            }
-        }
-    }
-
-    for (std::size_t i = 0; i < reached.size(); ++i) {
-        reached[i]->refreshInputRelatedDataIfStale();
-    }
-} // Node::refreshInputRelatedDataForRender
-
-void
-Node::requestInputRelatedDataRefresh()
-{
-    if (_imp->inputRelatedDataRefreshRequested.exchange(true)) {
-        return;
-    }
-    NodeWPtr weakSelf = weak_from_this();
-    QMetaObject::invokeMethod(qApp, [weakSelf]() {
-        NodePtr node = weakSelf.lock();
-        if (node) {
-            node->_imp->inputRelatedDataRefreshRequested.store(false);
-            node->refreshInputRelatedDataIfStale();
-        } }, Qt::QueuedConnection);
 }
 
 bool

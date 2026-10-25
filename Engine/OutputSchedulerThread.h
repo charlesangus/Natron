@@ -849,10 +849,6 @@ private:
 
     void renderCurrentFrameInternal(bool enableRenderStats, bool canAbort);
 
-    // Called where a render is requested, which may be the main thread: the scheduler and render
-    // threads it starts cannot refresh what an edit left stale.
-    void refreshInputRelatedDataForRender();
-
     /**
      * The following functions are called by the OutputThreadScheduler to Q_EMIT the corresponding signals
      **/

@@ -637,8 +637,13 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
 
             getNode()->setValuesFromSerialization(args);
 
-            ///Set default metadata since the OpenFX plug-in may fetch images in its constructor
-            setDefaultMetadata();
+            // The plug-in may fetch images in its constructor: its clips get the defaults its
+            // inputs give until its own clip preferences run.
+            {
+                NodeMetadata defaults;
+                getDefaultMetadataAt(getCurrentTime(), getCurrentView(), defaults);
+                onTimeInvariantMetadataDerived(defaults);
+            }
 
             {
                 ///Take the preferences lock so that it cannot be modified throughout the action.
@@ -1935,7 +1940,7 @@ OfxEffectInstance::mapContextToString(ContextEnum ctx)
 }
 
 void
-OfxEffectInstance::onMetadataRefreshed(const NodeMetadata& metadata)
+OfxEffectInstance::onTimeInvariantMetadataDerived(const NodeMetadata& metadata)
 {
     //////////////// Actually push to the clips the preferences and set the flags on the effect, protected by a write lock.
 
@@ -2093,7 +2098,7 @@ private:
 };
 
 StatusEnum
-OfxEffectInstance::getPreferredMetadata(NodeMetadata& metadata)
+OfxEffectInstance::getTimeInvariantClipPreferences(NodeMetadata& metadata)
 {
     if (!_imp->created || !_imp->effect) {
         return eStatusFailed;
@@ -2116,7 +2121,7 @@ OfxEffectInstance::getPreferredMetadata(NodeMetadata& metadata)
         SET_CAN_SET_VALUE(true);
 
         ///First push the "default" meta-datas to the clips so that they get proper values
-        onMetadataRefreshed(metadata);
+        onTimeInvariantMetadataDerived(metadata);
 
         // Not alongside a per-frame call, unless nested in one this thread runs.
         ClipPreferencesSerialiser serial(this);
@@ -2213,7 +2218,8 @@ OfxEffectInstance::requestDeferredEditsRefresh()
         }
         effect->_imp->deferredEditsRefreshRequested.store(false);
         // Runs the clip preferences on the main thread, where the plug-in's edits apply.
-        effect->refreshMetadata_public(true); }, Qt::QueuedConnection);
+        effect->dropCachedMetadataDownstream();
+        effect->refreshMetadataSideEffects(); }, Qt::QueuedConnection);
 }
 
 NodeMetadataConstPtr
@@ -3849,7 +3855,7 @@ OfxEffectInstance::getComponentsNeededAndProduced(double time,
 
                         ImageLayerDesc layer;
                         if ((*it2) == kFnOfxImagePlaneColour) {
-                            layer = ImageLayerDesc::mapNCompsToColorLayer(getMetadataNComps(index));
+                            layer = ImageLayerDesc::mapNCompsToColorLayer(getNCompsFromMetadata(*getMetadata(time, view), index));
                         } else {
                             layer = ImageLayerDesc::mapOFXPlaneStringToLayer(*it2);
                         }

@@ -174,7 +174,7 @@ protected:
                      unsigned mipmapLevel)
     {
         const RectD rod = regionOfDefinition(pair.native, kTime, RenderScale::fromMipmapLevel(mipmapLevel));
-        RectI window = rod.toPixelEnclosing(mipmapLevel, pair.native->getEffectInstance()->getAspectRatio(-1));
+        RectI window = rod.toPixelEnclosing(mipmapLevel, pair.native->getEffectInstance()->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
 
         window.x1 -= 2;
         window.y1 -= 2;
@@ -271,8 +271,8 @@ TEST_F(NativeReformatTest, ToProjectFormatFromTheSourceRoD)
     expectParity(pair, "project", true);
 
     EffectInstancePtr effect = pair.native->getEffectInstance();
-    EXPECT_EQ(1., effect->getAspectRatio(-1));
-    const RectI format = effect->getOutputFormat();
+    EXPECT_EQ(1., effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
+    const RectI format = effect->getTimeInvariantMetadata()->getOutputFormat();
     EXPECT_EQ(0, format.x1);
     EXPECT_EQ(0, format.y1);
     EXPECT_EQ(40, format.x2);
@@ -289,7 +289,7 @@ TEST_F(NativeReformatTest, ToFormatWithAPixelAspectRatio)
     ASSERT_TRUE(setKnobOnBoth(pair, kNatronParamFormatSize, { 40., 30. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kNatronParamFormatPar, { 1.09 }));
     expectParity(pair, "format-par", true);
-    EXPECT_EQ(1.09, pair.native->getEffectInstance()->getAspectRatio(-1));
+    EXPECT_EQ(1.09, pair.native->getEffectInstance()->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
 }
 
 TEST_F(NativeReformatTest, FitIntoAFixedBox)
@@ -439,11 +439,11 @@ TEST_F(NativeReformatTest, AnimatedBoxGivesTheOutputFormatAtTheMetadataFrame)
 
     EffectInstancePtr effect = pair.native->getEffectInstance();
     getApp()->getTimeLine()->seekFrame(5, false, NULL, eTimelineChangeReasonOtherSeek);
-    effect->refreshMetadata_public(false);
-    EXPECT_EQ(RectI(0, 0, 60, 40), effect->getOutputFormat());
+    effect->dropCachedMetadata();
+    EXPECT_EQ(RectI(0, 0, 60, 40), effect->getTimeInvariantMetadata()->getOutputFormat());
     getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
-    effect->refreshMetadata_public(false);
-    EXPECT_EQ(RectI(0, 0, 50, 20), effect->getOutputFormat());
+    effect->dropCachedMetadata();
+    EXPECT_EQ(RectI(0, 0, 50, 20), effect->getTimeInvariantMetadata()->getOutputFormat());
 }
 
 TEST_F(NativeReformatTest, EdgePixelsDoNotDependOnTheRequestWindow)

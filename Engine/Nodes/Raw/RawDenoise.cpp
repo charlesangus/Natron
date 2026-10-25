@@ -249,7 +249,7 @@ RawDenoise::getRegionsOfInterest(double time,
     if (!input || !settings || !settings->passThrough.empty()) {
         return;
     }
-    const double par = getAspectRatio(getSourceInput());
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     const RectI need = sourceRegionFor(PassExec::toPixelEnclosing(renderWindow, scale, par), *settings);
     (*ret)[input] = PassExec::toCanonical(need, scale, par);
 }

@@ -231,7 +231,7 @@ protected:
         KnobFile* knob = dynamic_cast<KnobFile*>(node->getKnobByName(kOfxImageEffectFileParamName).get());
         ASSERT_TRUE(knob != NULL);
         knob->setValue(file);
-        node->getEffectInstance()->refreshMetadata_public(false);
+        node->getEffectInstance()->dropCachedMetadata();
     }
 
     // What the GUI does when the user types into an int knob.
@@ -445,8 +445,8 @@ TEST_F(NativeReadMetadataTest, AFileFrameRateIsPlainMetadataAndNotTheOutputRate)
 
     EXPECT_FALSE(metadata.contains("ofx/framerate"));
     EXPECT_EQ(std::optional<double>(24000. / 1001.), metadata.getDouble("exr/FramesPerSecond"));
-    EXPECT_DOUBLE_EQ(empty->getEffectInstance()->getFrameRate(), read->getEffectInstance()->getFrameRate());
-    EXPECT_NE(24000. / 1001., read->getEffectInstance()->getFrameRate());
+    EXPECT_DOUBLE_EQ(empty->getEffectInstance()->getTimeInvariantMetadata()->getOutputFrameRate(), read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFrameRate());
+    EXPECT_NE(24000. / 1001., read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFrameRate());
 }
 
 TEST_F(NativeReadMetadataTest, KeysReachANativeNodePastADot)

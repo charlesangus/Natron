@@ -276,8 +276,6 @@ public:
 
     ///A cache for components available
     std::list<KnobIWPtr> overlaySlaves;
-    mutable QMutex metadataMutex;
-    NodeMetadata metadata;
     bool runningClipPreferences; //only used on main thread
     // The current frame's metadata last given to onCurrentFrameMetadataChanged(). Main thread only.
     NodeMetadataConstPtr currentFrameMetadata;
@@ -297,7 +295,7 @@ public:
     bool isDoingInstanceSafeRender; // true if this instance is rendering
     mutable QMutex renderClonesMutex;
     std::list<EffectInstancePtr> renderClonesPool;
-    bool mustSyncPrivateData; //!< true if the effect's knobs were changed but instanceChanged could not be called (e.g. when loading a PyPlug), so that syncPrivateData should be called in getPreferredMetadata_public before calling getPreferredMetadata
+    bool mustSyncPrivateData; //!< true if the effect's knobs were changed but instanceChanged could not be called (e.g. when loading a PyPlug), so that syncPrivateData should be called before the main-thread time-invariant derivation calls the clip preferences
     mutable QMutex mustSyncPrivateDataMutex; //!< protects mustSyncPrivateData
 
 public:

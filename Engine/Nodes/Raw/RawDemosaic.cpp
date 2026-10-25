@@ -1222,6 +1222,8 @@ RawDemosaic::getOpGpuInputLayer(int inputNb,
 
 RectI
 RawDemosaic::getOpGpuInputRoI(int inputNb,
+                              double time,
+                              ViewIdx view,
                               const RectI& outputRect,
                               const RenderScale& /*scale*/) const
 {
@@ -1229,7 +1231,7 @@ RawDemosaic::getOpGpuInputRoI(int inputNb,
         return outputRect;
     }
 
-    return const_cast<RawDemosaic*>(this)->sourceRegionFor(outputRect, getCurrentTime(), getCurrentView());
+    return const_cast<RawDemosaic*>(this)->sourceRegionFor(outputRect, time, view);
 }
 
 #ifdef NATRON_HAVE_GPU

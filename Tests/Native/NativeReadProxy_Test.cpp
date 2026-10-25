@@ -144,7 +144,7 @@ protected:
         KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(node->getKnobByName("ocioInputSpace").get());
         ASSERT_TRUE(inputSpace != NULL);
         inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-        node->getEffectInstance()->refreshMetadata_public(false);
+        node->getEffectInstance()->dropCachedMetadata();
     }
 
     NodePtr createStillRead(const QTemporaryDir& dir)
@@ -255,7 +255,7 @@ TEST_F(NativeReadProxyTest, TheRegionOfDefinitionIsTheFullResolutionOneAtEveryLe
     }
     NativeRead* read = dynamic_cast<NativeRead*>(node->getEffectInstance().get());
     ASSERT_TRUE(read != NULL);
-    EXPECT_TRUE(RectI(0, 0, kFullSize, kFullSize) == read->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, kFullSize, kFullSize) == read->getTimeInvariantMetadata()->getOutputFormat());
 }
 
 TEST_F(NativeReadProxyTest, WithoutAProxyMipmapOneDownscalesTheFullFile)

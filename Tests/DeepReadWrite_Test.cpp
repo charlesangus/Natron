@@ -508,9 +508,9 @@ TEST_F(DeepReadWriteTest, OutputFormatIsTheFilesDisplayWindowNotTheProjectDefaul
     NodePtr read = createDeepRead(fixturePath("deep-scanline.exr"));
 
     ASSERT_TRUE(read != NULL);
-    read->getEffectInstance()->refreshMetadata_public(false);
+    read->getEffectInstance()->dropCachedMetadata();
 
-    EXPECT_TRUE(fullFrame() == read->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(fullFrame() == read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 }
 
 // Reproduces the real-world bug report: with no explicit refresh call, setting the filename
@@ -522,13 +522,13 @@ TEST_F(DeepReadWriteTest, OutputFormatRefreshesWhenTheFileKnobChangesWithNoExpli
 
     ASSERT_TRUE(read != NULL);
 
-    const RectI projectDefaultFormat = read->getEffectInstance()->getOutputFormat();
+    const RectI projectDefaultFormat = read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
 
     KnobFile* knob = dynamic_cast<KnobFile*>(read->getKnobByName("filename").get());
     ASSERT_TRUE(knob != NULL);
     knob->setValue(fixturePath("deep-scanline.exr").toStdString());
 
-    EXPECT_TRUE(fullFrame() == read->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(fullFrame() == read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
     EXPECT_FALSE(fullFrame() == projectDefaultFormat);
 }
 
@@ -927,8 +927,8 @@ TEST_F(DeepReadWriteTest, ASequenceIsFrameVaryingAndAStillIsNot)
     NodePtr still = createDeepRead(fixturePath("deep-layers.exr"));
     ASSERT_TRUE(sequence && still);
 
-    EXPECT_TRUE(sequence->getEffectInstance()->isFrameVarying());
-    EXPECT_FALSE(still->getEffectInstance()->isFrameVarying());
+    EXPECT_TRUE(sequence->getEffectInstance()->getTimeInvariantMetadata()->getIsFrameVarying());
+    EXPECT_FALSE(still->getEffectInstance()->getTimeInvariantMetadata()->getIsFrameVarying());
 }
 
 // Each frame of a sequence reports the display window of its own file, whichever frame the

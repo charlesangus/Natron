@@ -282,14 +282,14 @@ public:
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
     virtual SequentialPreferenceEnum getSequentialPreference() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL;
+    virtual StatusEnum getTimeInvariantClipPreferences(NodeMetadata& metadata) OVERRIDE FINAL;
     virtual NodeMetadataConstPtr getPreferredMetadataForInputs(U64 hash,
                                                                double time,
                                                                ViewIdx view,
                                                                const std::vector<EffectInstancePtr>& inputs,
                                                                const std::vector<NodeMetadataConstPtr>& inputsMetadata,
                                                                const NodeMetadata& defaults) OVERRIDE FINAL;
-    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+    virtual void onTimeInvariantMetadataDerived(const NodeMetadata& metadata) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
     virtual void dropCachedOutputMetadata() OVERRIDE FINAL;
     virtual void getComponentsNeededAndProduced(double time, ViewIdx view,

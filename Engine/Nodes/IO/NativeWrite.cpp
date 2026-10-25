@@ -1270,7 +1270,7 @@ NativeWrite::getComponentsNeededAndProduced(double time,
                 it->second.clear();
             }
         }
-        produced = readBackLayers(*header, view);
+        produced = readBackLayers(*header, time, view);
 
         return;
     }
@@ -1300,12 +1300,13 @@ NativeWrite::inputPlanes(double time,
 
 std::list<ImageLayerDesc>
 NativeWrite::readBackLayers(const OiioReadSupport::Header& header,
+                            double time,
                             ViewIdx view) const
 {
     std::list<ImageLayerDesc> layers;
     ImageLayerDesc colourLayer;
     ImageLayerDesc pairedLayer;
-    getMetadataComponents(-1, &colourLayer, &pairedLayer);
+    getLayersFromMetadata(*getRenderMetadata(time, view), -1, &colourLayer, &pairedLayer);
 
     const std::string viewName = viewNameOf(getApp()->getProject()->getProjectViewNames(), view);
     OiioReadSupport::PartChannels colourPart;

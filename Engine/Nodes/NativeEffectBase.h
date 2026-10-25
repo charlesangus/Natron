@@ -299,10 +299,12 @@ public:
     }
 
     /**
-     * @brief The region of input inputNb that renderGpu() reads to produce outputRect; wider
-     * than outputRect for a node with a halo.
+     * @brief The region of input inputNb that renderGpu() reads to produce outputRect at time and
+     * view; wider than outputRect for a node with a halo.
      **/
     virtual RectI getGpuInputRoI(int /*inputNb*/,
+                                 double /*time*/,
+                                 ViewIdx /*view*/,
                                  const RectI& outputRect,
                                  const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
     {

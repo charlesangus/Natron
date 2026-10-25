@@ -1379,7 +1379,7 @@ Keyer::renderOpGpu(const GpuRenderArgs& args)
             return none;
         }
 
-        return PassExec::cropGpuView(v, v.bounds.intersect(rod.toPixelEnclosing(scale, getAspectRatio(inputNb))));
+        return PassExec::cropGpuView(v, v.bounds.intersect(rod.toPixelEnclosing(scale, getRenderMetadata(time, view)->getPixelAspectRatio(inputNb))));
     };
 
     const int srcNComps = getResolvedInputNComps(kKeyerInputSource, time, view);

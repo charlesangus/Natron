@@ -295,7 +295,7 @@ OfxClipInstance::getUnmappedBitDepth() const
 
     if (inputNode) {
         ///Get the input node's output preferred bit depth
-        ImageBitDepthEnum depth = inputNode->getBitDepth(-1);
+        ImageBitDepthEnum depth = inputNode->getTimeInvariantMetadata()->getBitDepth(-1);
 
         switch (depth) {
         case eImageBitDepthByte:
@@ -353,9 +353,9 @@ OfxClipInstance::getUnmappedComponents() const
 
         ImageLayerDesc metadataLayer, metadataPairedLayer;
         if (_isOutput) {
-            effect->getMetadataOutputClipComponents(&metadataLayer, &metadataPairedLayer);
+            EffectInstance::getOutputClipLayersFromMetadata(*effect->getTimeInvariantMetadata(), &metadataLayer, &metadataPairedLayer);
         } else {
-            effect->getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
+            EffectInstance::getLayersFromMetadata(*effect->getTimeInvariantMetadata(), -1, &metadataLayer, &metadataPairedLayer);
         }
 
         // Default to RGBA
@@ -370,10 +370,11 @@ OfxClipInstance::getUnmappedComponents() const
         if (_imp->optional) {
             effect = getEffectHolder();
             int nInputs = effect->getNInputs();
+            const NodeMetadataConstPtr holderMetadata = effect->getTimeInvariantMetadata();
             for (int i = 0; i < nInputs; ++i) {
 
                 ImageLayerDesc metadataLayer, metadataPairedLayer;
-                effect->getMetadataComponents(i, &metadataLayer, &metadataPairedLayer);
+                EffectInstance::getLayersFromMetadata(*holderMetadata, i, &metadataLayer, &metadataPairedLayer);
 
                 if (metadataLayer.getNumComponents() > 0) {
                     ret = ImageLayerDesc::mapLayerToOFXComponentsTypeString(metadataLayer);
@@ -525,7 +526,7 @@ OfxClipInstance::getFormat() const
 
     RectI nRect;
     if ( isOutput() || (getName() == CLIP_OFX_ROTO) ) {
-        nRect = effect->getOutputFormat();
+        nRect = effect->getTimeInvariantMetadata()->getOutputFormat();
     } else {
         EffectInstancePtr inputNode = getAssociatedNode();
         if (inputNode) {
@@ -536,7 +537,7 @@ OfxClipInstance::getFormat() const
             effect->getApp()->getProject()->getProjectDefaultFormat(&f);
             nRect = f;
         } else {
-            nRect = inputNode->getOutputFormat();
+            nRect = inputNode->getTimeInvariantMetadata()->getOutputFormat();
         }
     }
     OfxRectI ret = {nRect.x1, nRect.y1, nRect.x2, nRect.y2};
@@ -558,7 +559,7 @@ OfxClipInstance::getFrameRate() const
     EffectInstancePtr effect = getEffectHolder();
 
     if ( isOutput() || (getName() == CLIP_OFX_ROTO) ) {
-        return effect->getFrameRate();
+        return effect->getTimeInvariantMetadata()->getOutputFrameRate();
     }
 
     EffectInstancePtr inputNode = getAssociatedNode();
@@ -568,7 +569,7 @@ OfxClipInstance::getFrameRate() const
     if (!inputNode) {
         return effect->getApp()->getProjectFrameRate();
     } else {
-        return inputNode->getFrameRate();
+        return inputNode->getTimeInvariantMetadata()->getOutputFrameRate();
     }
 }
 
@@ -613,11 +614,11 @@ OfxClipInstance::getFieldOrder() const
         return natronsFieldingToOfxFielding(eImageFieldingOrderNone);
     }
     if ( isOutput() ) {
-        return natronsFieldingToOfxFielding( effect->getFieldingOrder() );
+        return natronsFieldingToOfxFielding(effect->getTimeInvariantMetadata()->getOutputFielding());
     } else {
         EffectInstancePtr associatedNode = getAssociatedNode();
 
-        return associatedNode ? natronsFieldingToOfxFielding( associatedNode->getFieldingOrder() ) : natronsFieldingToOfxFielding(eImageFieldingOrderNone);
+        return associatedNode ? natronsFieldingToOfxFielding(associatedNode->getTimeInvariantMetadata()->getOutputFielding()) : natronsFieldingToOfxFielding(eImageFieldingOrderNone);
     }
 }
 
@@ -672,7 +673,7 @@ OfxClipInstance::getUnmappedFrameRate() const
 
     if (inputNode) {
         ///Get the input node  preferred frame rate
-        return inputNode->getFrameRate();
+        return inputNode->getTimeInvariantMetadata()->getOutputFrameRate();
     } else {
         ///The node is not connected, return project frame rate
         return getEffectHolder()->getApp()->getProjectFrameRate();
@@ -716,11 +717,11 @@ OfxClipInstance::getContinuousSamples() const
         return false;
     }
     if ( isOutput() ) {
-        return effect->canRenderContinuously();
+        return effect->getTimeInvariantMetadata()->getIsContinuous();
     } else {
         EffectInstancePtr associatedNode = getAssociatedNode();
 
-        return associatedNode ? associatedNode->canRenderContinuously() : false;
+        return associatedNode ? associatedNode->getTimeInvariantMetadata()->getIsContinuous() : false;
     }
 }
 

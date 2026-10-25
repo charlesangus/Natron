@@ -180,7 +180,7 @@ protected:
         KnobFile* sourceKnob = dynamic_cast<KnobFile*>(_read->getKnobByName(kOfxImageEffectFileParamName).get());
         ASSERT_TRUE(sourceKnob != NULL);
         sourceKnob->setValue(source);
-        _read->getEffectInstance()->refreshMetadata_public(false);
+        _read->getEffectInstance()->dropCachedMetadata();
 
         connectNodes(_read, _dot, 0, true);
         connectNodes(_dot, _write, 0, true);
@@ -247,7 +247,7 @@ protected:
         EXPECT_TRUE(knob != NULL);
         if (knob) {
             knob->setValue(source);
-            read->getEffectInstance()->refreshMetadata_public(false);
+            read->getEffectInstance()->dropCachedMetadata();
         }
 
         return read;
@@ -267,7 +267,7 @@ protected:
             return ImageMetadata();
         }
         knob->setValue(path);
-        read->getEffectInstance()->refreshMetadata_public(false);
+        read->getEffectInstance()->dropCachedMetadata();
         NativeEffectBase* effect = nativeEffectOf(read);
         EXPECT_TRUE(effect != NULL);
 

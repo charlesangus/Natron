@@ -783,9 +783,6 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                                            NodePtr(),
                                            false,
                                            stats);
-        if (tls.isAbortedForStaleInputData()) {
-            return eViewerRenderRetCodeRedraw;
-        }
         NodesList rotoPaintNodes;
         if (rotoPaintNode) {
             if (activeStroke) {
@@ -1634,21 +1631,18 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 
     if (useTLS) {
         frameArgs = std::make_shared<ViewerParallelRenderArgsSetter>(inArgs.params->time,
-                                                                       inArgs.params->view,
-                                                                       !isSequentialRender,
-                                                                       isSequentialRender,
-                                                                       inArgs.params->abortInfo,
-                                                                       getNode(),
-                                                                       inArgs.params->textureIndex,
-                                                                       getTimeline().get(),
-                                                                       false,
-                                                                       rotoPaintNode,
-                                                                       inArgs.activeInputToRender->getNode(),
-                                                                       inArgs.draftModeEnabled,
-                                                                       stats);
-        if (frameArgs->isAbortedForStaleInputData()) {
-            return eViewerRenderRetCodeRedraw;
-        }
+                                                                     inArgs.params->view,
+                                                                     !isSequentialRender,
+                                                                     isSequentialRender,
+                                                                     inArgs.params->abortInfo,
+                                                                     getNode(),
+                                                                     inArgs.params->textureIndex,
+                                                                     getTimeline().get(),
+                                                                     false,
+                                                                     rotoPaintNode,
+                                                                     inArgs.activeInputToRender->getNode(),
+                                                                     inArgs.draftModeEnabled,
+                                                                     stats);
     }
 
 

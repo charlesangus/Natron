@@ -3487,7 +3487,7 @@ EffectInstance::evaluate(bool isSignificant,
     NodePtr node = getNode();
 
     if ( refreshMetadatas && node->isNodeCreated() ) {
-        refreshMetadata_public(true);
+        refreshMetadataSideEffects();
     }
 
     /*
@@ -4995,9 +4995,6 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
                                                       int* passThroughInputNb)
 
 {
-    // The layers follow the metadata, and a refresh that changes it drops the results cached here.
-    refreshInputRelatedDataIfStale();
-
     RECURSIVE_ACTION();
 
     // Computed while this effect's own isIdentity() is choosing its pass-through input, the
@@ -5623,7 +5620,7 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
     // While creating a PyPlug, never handle changes, but call syncPrivateData before any other action,
     // fixes https://github.com/MrKepzie/Natron/issues/1637
     if (getApp()->isCreatingPythonGroup() && kh && kh->isDeclaredByPlugin() && !wasFormatKnobCaught) {
-        // must sync private data in EffectInstance::getPreferredMetadata_public()
+        // synced before the next time-invariant clip preferences (see deriveTimeInvariantMetadata())
         QMutexLocker l(&_imp->mustSyncPrivateDataMutex);
         _imp->mustSyncPrivateData = true;
     } else if (kh && kh->isDeclaredByPlugin() && !wasFormatKnobCaught) {
@@ -6151,7 +6148,7 @@ isFrameVaryingOrAnimated_impl(const EffectInstance* node,
     }
     // Inserted as false before recursing so a node reached again while its inputs are still being walked does not loop.
     std::map<const EffectInstance*, bool>::iterator slot = memo.insert(std::make_pair(node, false)).first;
-    bool ret = node->isFrameVarying() || node->getHasAnimation() || node->getNode()->getRotoContext();
+    bool ret = const_cast<EffectInstance*>(node)->getTimeInvariantMetadata()->getIsFrameVarying() || node->getHasAnimation() || node->getNode()->getRotoContext();
     if (!ret) {
         int maxInputs = node->getNInputs();
         for (int i = 0; i < maxInputs; ++i) {
@@ -6214,6 +6211,31 @@ private:
     const std::vector<NodeMetadataConstPtr>** _slot;
     const std::vector<NodeMetadataConstPtr>* _previous;
 };
+
+// What getTimeInvariantMetadata() answers on this thread while it derives that very answer: a
+// clip of the plug-in whose preferences run asks for it, and reads what the inputs give.
+class TimeInvariantInProgressScope {
+public:
+    TimeInvariantInProgressScope(NodeMetadataConstPtr* slot,
+                                 const NodeMetadataConstPtr& inProgress)
+        : _slot(slot)
+        , _previous(*slot)
+    {
+        *_slot = inProgress;
+    }
+
+    ~TimeInvariantInProgressScope()
+    {
+        *_slot = _previous;
+    }
+
+    TimeInvariantInProgressScope(const TimeInvariantInProgressScope&) = delete;
+    TimeInvariantInProgressScope& operator=(const TimeInvariantInProgressScope&) = delete;
+
+private:
+    NodeMetadataConstPtr* _slot;
+    NodeMetadataConstPtr _previous;
+};
 } // anon namespace
 
 NodeMetadataConstPtr
@@ -6230,49 +6252,6 @@ EffectInstance::getInputMetadataAt(int inputNb,
     EffectInstancePtr input = getInput(inputNb);
 
     return input ? input->getMetadata(time, view) : NodeMetadataConstPtr();
-}
-
-StatusEnum
-EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
-{
-    std::vector<EffectInstancePtr> inputs;
-    std::vector<NodeMetadataConstPtr> inputsMetadata;
-
-    getInputsRefreshedMetadata(&inputs, &inputsMetadata);
-    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, false, metadata);
-
-    if (stat == eStatusFailed) {
-        return stat;
-    }
-    // Metadata are time-invariant and not refreshed when the time changes, so a Disable that
-    // varies with time is resolved as enabled: downstream metadata then stay the same on every
-    // frame, and are those of the frames where this node actually renders.
-    if (!getNode()->isNodeDisabledAtAllTimes()) {
-        // call syncPrivateData if necessary. Only the main thread's refresh does: the plug-in may
-        // set parameters in it, and the per-frame answers asked from other threads never come here.
-        bool mustSyncPrivateData = false;
-        if (QThread::currentThread() == qApp->thread()) {
-            QMutexLocker l(&_imp->mustSyncPrivateDataMutex);
-            mustSyncPrivateData = _imp->mustSyncPrivateData;
-            _imp->mustSyncPrivateData = false;
-        }
-        if (mustSyncPrivateData) {
-            // for now, only OfxEffectInstance has syncPrivateData capabilities, but
-            // syncPrivateData() could also be a virtual member of EffectInstance
-            OfxEffectInstance* effect = dynamic_cast<OfxEffectInstance*>(this);
-            if (effect) {
-                effect->onSyncPrivateDataRequested(); //syncPrivateData_other_thread();
-            }
-        }
-        // Native nodes answer at a time only; the timeless answer is theirs at the frame the knobs
-        // read by default, which is what their timeless answer used to read. Their inputs are
-        // read as the defaults above read them, not at that frame.
-        const InputsMetadataScope scope(&_imp->tlsData->getOrCreateTLSData()->timeInvariantInputsMetadata, &inputsMetadata);
-
-        return getPreferredMetadataAt(getCurrentTime(), getCurrentView(), metadata);
-    }
-    return stat;
-
 }
 
 static void
@@ -6365,31 +6344,6 @@ getUnmappedComponentsForInput(EffectInstance* self,
     return rawComps;
 }
 
-NodeMetadataConstPtr
-EffectInstance::getRefreshedMetadata() const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return std::make_shared<const NodeMetadata>(_imp->metadata);
-}
-
-void
-EffectInstance::getInputsRefreshedMetadata(std::vector<EffectInstancePtr>* inputs,
-                                           std::vector<NodeMetadataConstPtr>* inputsMetadata)
-{
-    const int nInputs = getNInputs();
-
-    inputs->assign(nInputs, EffectInstancePtr());
-    inputsMetadata->assign(nInputs, NodeMetadataConstPtr());
-    for (int i = 0; i < nInputs; ++i) {
-        (*inputs)[i] = getInput(i);
-        if ((*inputs)[i]) {
-            (*inputsMetadata)[i] = (*inputs)[i]->getRefreshedMetadata();
-        }
-    }
-}
-
 void
 EffectInstance::getInputsMetadataAt(double time,
                                     ViewIdx view,
@@ -6409,17 +6363,6 @@ EffectInstance::getInputsMetadataAt(double time,
 }
 
 StatusEnum
-EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
-{
-    std::vector<EffectInstancePtr> inputs;
-    std::vector<NodeMetadataConstPtr> inputsMetadata;
-
-    getInputsRefreshedMetadata(&inputs, &inputsMetadata);
-
-    return getDefaultMetadataFromInputs(inputs, inputsMetadata, false, metadata);
-}
-
-StatusEnum
 EffectInstance::getDefaultMetadataAt(double time,
                                      ViewIdx view,
                                      NodeMetadata& metadata)
@@ -6429,13 +6372,12 @@ EffectInstance::getDefaultMetadataAt(double time,
 
     getInputsMetadataAt(time, view, &inputs, &inputsMetadata);
 
-    return getDefaultMetadataFromInputs(inputs, inputsMetadata, true, metadata);
+    return getDefaultMetadataFromInputs(inputs, inputsMetadata, metadata);
 }
 
 StatusEnum
 EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr>& inputs,
                                              const std::vector<NodeMetadataConstPtr>& inputsMetadata,
-                                             bool atTime,
                                              NodeMetadata& metadata)
 {
     NodePtr node = getNode();
@@ -6540,8 +6482,8 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
             } else if (i >= 0) {
                 par = inputMetadata ? inputMetadata->getPixelAspectRatio(-1) : projectPAR;
             } else {
-                // At a time, this node's own answer is the one being derived.
-                par = atTime ? projectPAR : getAspectRatio(-1);
+                // This node's own answer is the one being derived.
+                par = projectPAR;
             }
         }
         metadata.setPixelAspectRatio(i, par);
@@ -6739,7 +6681,7 @@ EffectInstance::deriveMetadataAt(U64 hash,
     std::vector<NodeMetadataConstPtr> inputsMetadata;
 
     getInputsMetadataAt(time, view, &inputs, &inputsMetadata);
-    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, true, metadata);
+    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, metadata);
     // A disabled node passes its input through whole; an enabled one keeps what it sets itself.
     const bool disabled = getNode()->isNodeDisabled(time);
     const NodeMetadata defaults = metadata;
@@ -6767,24 +6709,69 @@ EffectInstance::deriveTimeInvariantMetadata()
             inputsMetadata[i] = inputs[i]->getTimeInvariantMetadata();
         }
     }
-    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, false, metadata);
+    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, metadata);
+    const TimeInvariantInProgressScope inProgress(&_imp->tlsData->getOrCreateTLSData()->timeInvariantInProgress, std::make_shared<const NodeMetadata>(metadata));
+    // A Disable that varies with time is resolved as enabled: this answer is then the one of the
+    // frames where the node actually renders.
     if ((stat != eStatusFailed) && !getNode()->isNodeDisabledAtAllTimes()) {
-        // As getPreferredMetadata_public().
+        // Native nodes answer at a time only; the timeless answer is theirs at the frame the knobs
+        // read by default. Their inputs are read as the defaults above read them, not at that frame.
         const InputsMetadataScope scope(&_imp->tlsData->getOrCreateTLSData()->timeInvariantInputsMetadata, &inputsMetadata);
-        getPreferredMetadataAt(getCurrentTime(), getCurrentView(), metadata);
+        if (isOpenFX()) {
+            // Only the main thread gets here: the plug-in may set parameters in its private data sync.
+            bool mustSyncPrivateData = false;
+            {
+                QMutexLocker l(&_imp->mustSyncPrivateDataMutex);
+                mustSyncPrivateData = _imp->mustSyncPrivateData;
+                _imp->mustSyncPrivateData = false;
+            }
+            OfxEffectInstance* effect = mustSyncPrivateData ? dynamic_cast<OfxEffectInstance*>(this) : NULL;
+            if (effect) {
+                effect->onSyncPrivateDataRequested();
+            }
+            getTimeInvariantClipPreferences(metadata);
+        } else {
+            getPreferredMetadataAt(getCurrentTime(), getCurrentView(), metadata);
+        }
     }
     _imp->clampMetadata(inputs, inputsMetadata, metadata);
 
     return std::make_shared<const NodeMetadata>(metadata);
 }
 
-// OpenFX nodes. Their time-invariant answer is the one the last refresh gave. At a frame, an
-// identity passes an input through and runs no plug-in action for it; otherwise the plug-in's
-// clip preferences answer for what its inputs give there.
-NodeMetadataConstPtr
-EffectInstance::getOpenFXTimeInvariantMetadata()
+bool
+EffectInstance::mayDeriveOpenFXTimeInvariantMetadata() const
 {
-    return getRefreshedMetadata();
+    NodePtr node = getNode();
+
+    return node && node->canRunMainThreadMetadataRefresh();
+}
+
+// OpenFX nodes. At a frame, an identity passes an input through and runs no plug-in action for it;
+// otherwise the plug-in's clip preferences answer for what its inputs give there.
+NodeMetadataConstPtr
+EffectInstance::getOpenFXMetadataForInputsAt(U64 hash,
+                                             double time,
+                                             ViewIdx view,
+                                             const NodeMetadataConstPtr& fallback)
+{
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+    getInputsMetadataOverFramesNeeded(hash, time, view, &inputs, &inputsMetadata);
+    NodeMetadata defaults;
+    if (getDefaultMetadataFromInputs(inputs, inputsMetadata, defaults) == eStatusFailed) {
+        return fallback ? fallback : std::make_shared<const NodeMetadata>(defaults);
+    }
+    NodeMetadataConstPtr own = getPreferredMetadataForInputs(hash, time, view, inputs, inputsMetadata, defaults);
+    if (own) {
+        return own;
+    }
+    if (fallback) {
+        return fallback;
+    }
+    clampMetadataForInputs(inputs, inputsMetadata, defaults);
+
+    return std::make_shared<const NodeMetadata>(defaults);
 }
 
 namespace {
@@ -6875,7 +6862,7 @@ EffectInstance::getOpenFXMetadataAt(U64 hash,
                                     double time,
                                     ViewIdx view)
 {
-    const NodeMetadataConstPtr timeInvariant = getOpenFXTimeInvariantMetadata();
+    const NodeMetadataConstPtr timeInvariant = getTimeInvariantMetadata();
     if (!timeInvariant) {
         return timeInvariant;
     }
@@ -6886,16 +6873,7 @@ EffectInstance::getOpenFXMetadataAt(U64 hash,
         return passedThrough;
     }
 
-    std::vector<EffectInstancePtr> inputs;
-    std::vector<NodeMetadataConstPtr> inputsMetadata;
-    getInputsMetadataOverFramesNeeded(hash, time, view, &inputs, &inputsMetadata);
-    NodeMetadata defaults;
-    if (getDefaultMetadataFromInputs(inputs, inputsMetadata, true, defaults) == eStatusFailed) {
-        return timeInvariant;
-    }
-    NodeMetadataConstPtr own = getPreferredMetadataForInputs(hash, time, view, inputs, inputsMetadata, defaults);
-
-    return own ? own : timeInvariant;
+    return getOpenFXMetadataForInputsAt(hash, time, view, timeInvariant);
 }
 // End of OpenFX nodes.
 
@@ -6917,7 +6895,7 @@ EffectInstance::getMetadata(double time,
 
     *hashOut = 0;
     if (!node) {
-        return getRefreshedMetadata();
+        return std::make_shared<const NodeMetadata>();
     }
     // The identity check can ask for this node's layers (an OpenFX clip's components, a render's
     // planes), which read its metadata: that is the answer being checked, whatever the time, since
@@ -6928,15 +6906,13 @@ EffectInstance::getMetadata(double time,
 
         return checking->own;
     }
-    // Refresh first so the hash read is the one the derivation sees. An upstream edit only marks
-    // this node, so its hash is not recomputed while the derivation runs and can read the same
+    // An upstream edit only marks this node, so its hash is not recomputed while the derivation runs and can read the same
     // again after an input changed and changed back meanwhile, with the derivation having seen
     // the other state: the mark count, read before the hash, catches that. The generation catches
     // a drop under the same hash. A knob stores its value before it marks, so a derive can also
     // see a value the hash and marks do not yet reflect: the write snapshot, read before both,
     // catches that. A hash read under contention can be folded over a dirty input and stand for a
     // state the graph has left; such a node stays dirty, so only an up-to-date hash keys an entry.
-    refreshInputRelatedDataIfStale();
     const U64 writes = KnobContentWrite::snapshot();
     const U64 marks = node->getHashMarkCount();
     const U64 hash = node->getHashValue();
@@ -6961,13 +6937,14 @@ EffectInstance::getTimeInvariantMetadata()
     NodePtr node = getNode();
 
     if (!node) {
-        return getRefreshedMetadata();
+        return std::make_shared<const NodeMetadata>();
     }
-    if (isOpenFX()) {
-        return getOpenFXTimeInvariantMetadata();
+    // Asked again from inside its own derivation (see TimeInvariantInProgressScope).
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+    if (tls && tls->timeInvariantInProgress) {
+        return tls->timeInvariantInProgress;
     }
     // As getMetadata().
-    refreshInputRelatedDataIfStale();
     const U64 writes = KnobContentWrite::snapshot();
     const U64 marks = node->getHashMarkCount();
     const U64 hash = node->getHashValue();
@@ -6975,8 +6952,21 @@ EffectInstance::getTimeInvariantMetadata()
     if (cached) {
         return cached;
     }
+    const bool openFX = isOpenFX();
+    if (openFX && !mayDeriveOpenFXTimeInvariantMetadata()) {
+        return getOpenFXMetadataForInputsAt(hash, getCurrentTime(), getCurrentView(), NodeMetadataConstPtr());
+    }
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
-    NodeMetadataConstPtr metadata = deriveTimeInvariantMetadata();
+    NodeMetadataConstPtr metadata;
+    if (openFX) {
+        // The parameters the plug-in sets in its clip preferences come back to
+        // refreshMetadataSideEffects(), which waits for this derivation to end.
+        ClipPreferencesRunning_RAII runningflag_(this);
+        metadata = deriveTimeInvariantMetadata();
+        onTimeInvariantMetadataDerived(*metadata);
+    } else {
+        metadata = deriveTimeInvariantMetadata();
+    }
     U64 hashAfter = 0;
     if ((node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == hash) && KnobContentWrite::isSettled(writes)) {
         _imp->actionsCache->setTimeInvariantMetadataResult(hash, metadata, generation);
@@ -7046,13 +7036,16 @@ void
 EffectInstance::dropCachedMetadata()
 {
     _imp->actionsCache->clearMetadataResults();
+    // Produced planes follow the metadata (a reader reports the file's colour component count only
+    // once the file is loaded), so they are as stale.
+    _imp->actionsCache->clearComponentsNeededResults();
 }
 
 void
-EffectInstance::dropDownstreamCachedMetadata()
+EffectInstance::dropCachedMetadataDownstream()
 {
+    dropCachedMetadata();
     NodePtr node = getNode();
-
     if (!node) {
         return;
     }
@@ -7072,189 +7065,6 @@ EffectInstance::dropDownstreamCachedMetadata()
         }
         output->appendOutputsWithGroupRedirection(&toVisit);
     }
-}
-
-RectI
-EffectInstance::getOutputFormat() const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-    return _imp->metadata.getOutputFormat();
-}
-
-void
-EffectInstance::getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const
-{
-    refreshInputRelatedDataIfStale();
-    int nComps;
-    std::string componentsType;
-    {
-        QMutexLocker k(&_imp->metadataMutex);
-        nComps = metadataNComps(_imp->metadata, inputNb);
-        componentsType = _imp->metadata.getComponentsType(inputNb);
-    }
-    metadataComponentsToLayers(nComps, componentsType, layer, pairedLayer);
-}
-
-void
-EffectInstance::getMetadataOutputClipComponents(ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const
-{
-    refreshInputRelatedDataIfStale();
-    int nComps;
-    std::string componentsType;
-    {
-        QMutexLocker k(&_imp->metadataMutex);
-        nComps = _imp->metadata.getNComps(-1);
-        componentsType = _imp->metadata.getComponentsType(-1);
-    }
-    metadataComponentsToLayers(nComps, componentsType, layer, pairedLayer);
-}
-
-int
-EffectInstance::getMetadataNComps(int inputNb) const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-    return metadataNComps(_imp->metadata, inputNb);
-}
-
-ImageBitDepthEnum
-EffectInstance::getBitDepth(int inputNb) const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getBitDepth(inputNb);
-}
-
-double
-EffectInstance::getFrameRate() const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getOutputFrameRate();
-}
-
-double
-EffectInstance::getAspectRatio(int inputNb) const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getPixelAspectRatio(inputNb);
-}
-
-bool
-EffectInstance::isFrameVarying() const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getIsFrameVarying();
-}
-
-bool
-EffectInstance::canRenderContinuously() const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getIsContinuous();
-}
-
-/**
- * @brief Returns the field ordering of images produced by this plug-in
- **/
-ImageFieldingOrderEnum
-EffectInstance::getFieldingOrder() const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getOutputFielding();
-}
-
-void
-EffectInstance::refreshInputRelatedDataIfStale() const
-{
-    // Checked before the node is locked: the getters calling this are hot on render threads, which
-    // never refresh.
-    if (QThread::currentThread() != qApp->thread()) {
-        return;
-    }
-    NodePtr node = _node.lock();
-
-    if (node) {
-        node->refreshInputRelatedDataIfStale();
-    }
-}
-
-void
-EffectInstance::setDefaultMetadata()
-{
-    NodeMetadata metadata;
-    StatusEnum stat = getDefaultMetadata(metadata);
-
-    if (stat == eStatusFailed) {
-        return;
-    }
-    {
-        QMutexLocker k(&_imp->metadataMutex);
-        _imp->metadata = metadata;
-    }
-    onMetadataRefreshed(metadata);
-}
-
-bool
-EffectInstance::setMetadataInternal(const NodeMetadata& metadata)
-{
-    bool ret;
-    {
-        QMutexLocker k(&_imp->metadataMutex);
-        ret = metadata != _imp->metadata;
-        if (ret) {
-            _imp->metadata = metadata;
-        }
-    }
-    return ret;
-}
-
-bool
-EffectInstance::refreshMetadata_internal()
-{
-    NodeMetadata metadata;
-
-    // Recomputing a dirty hash drops the metadata the plug-in cached for the state it replaced.
-    NodePtr node = _node.lock();
-    if (node) {
-        node->getHashValue();
-    }
-    getPreferredMetadata_public(metadata);
-    {
-        std::vector<EffectInstancePtr> inputs;
-        std::vector<NodeMetadataConstPtr> inputsMetadata;
-        getInputsRefreshedMetadata(&inputs, &inputsMetadata);
-        _imp->clampMetadata(inputs, inputsMetadata, metadata);
-    }
-
-    bool ret = setMetadataInternal(metadata);
-    onMetadataRefreshed(metadata);
-    if (ret) {
-        // Produced planes follow the metadata (a reader reports the file's color component
-        // count only once the file is loaded) while the hash does not, so entries keyed on
-        // the current hash would otherwise survive this refresh stale.
-        _imp->actionsCache->clearComponentsNeededResults();
-        // The refreshed metadata feed getDefaultMetadata(), and are an OpenFX node's own answer
-        // at every frame.
-        _imp->actionsCache->clearMetadataResults();
-    }
-    AppInstancePtr app = getApp();
-    if (app) {
-        refreshCurrentFrameMetadata(app->getTimeLine()->currentFrame(), true);
-    }
-
-    return ret;
 }
 
 void
@@ -7278,48 +7088,34 @@ EffectInstance::refreshCurrentFrameMetadata(double time,
     }
 }
 
-bool
-EffectInstance::refreshMetadata_public(bool recurse)
+void
+EffectInstance::refreshMetadataSideEffects()
 {
     assert( QThread::currentThread() == qApp->thread() );
 
-    if (recurse) {
-        if (_imp->runningClipPreferences) {
-            return false;
-        }
-        NodePtr node = getNode();
-        bool ret;
-        {
-            ClipPreferencesRunning_RAII runningflag_(this);
-            ret = refreshMetadata_public(false);
-            node->refreshIdentityState();
-
-            if (!node->duringInputChangedAction()) {
-                /// The channels selector refreshing is already taken care of in the inputChanged action
-                node->refreshChannelSelectors();
-            }
-        }
-        if (ret) {
-            dropDownstreamCachedMetadata();
-        }
-        node->markDownstreamInputRelatedDataStale();
-
-        return ret;
-    } else {
-        bool ret = refreshMetadata_internal();
-        if (ret) {
-            NodePtr node = getNode();
-            NodesList children;
-            node->getChildrenMultiInstance(&children);
-            if ( !children.empty() ) {
-                for (NodesList::iterator it = children.begin(); it != children.end(); ++it) {
-                    (*it)->getEffectInstance()->refreshMetadata_internal();
-                }
-            }
-        }
-
-        return ret;
+    // The clip preferences this refresh runs may set parameters, whose changes come back here.
+    if (_imp->runningClipPreferences) {
+        return;
     }
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    {
+        ClipPreferencesRunning_RAII runningflag_(this);
+        // An OpenFX node derives (and pushes to its clips) the answer for its new state here.
+        getTimeInvariantMetadata();
+        AppInstancePtr app = getApp();
+        if (app) {
+            refreshCurrentFrameMetadata(app->getTimeLine()->currentFrame(), true);
+        }
+        node->refreshIdentityState();
+        if (!node->duringInputChangedAction()) {
+            // The inputChanged action refreshes the channel selectors itself.
+            node->refreshChannelSelectors();
+        }
+    }
+    node->refreshShownDownstreamInputRelatedData();
 }
 
 void
@@ -7571,11 +7367,14 @@ EffectInstance::getRecursionLevel() const
     return tls->actionRecursionLevel;
 }
 
-void
+bool
 EffectInstance::setClipPreferencesRunning(bool running)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    const bool previous = _imp->runningClipPreferences;
     _imp->runningClipPreferences = running;
+
+    return previous;
 }
 
 NATRON_NAMESPACE_EXIT

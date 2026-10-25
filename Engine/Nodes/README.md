@@ -1030,7 +1030,7 @@ colour of each photosite in whatever window it renders.
 
 A raw-to-image node that changes the channel count -- a one-channel mosaic in,
 RGB out, as a demosaic does -- declares its own output components by
-overriding `getPreferredMetadata()`, and overrides `deriveOutputMetadata()` to
+overriding `getPreferredMetadataAt(time, view, md)`, and overrides `deriveOutputMetadata()` to
 drop the `raw/` keys that no longer describe its output (the CFA pattern and
 origin, and `raw/stage` once the output is an image). Neither is `FINAL` in
 `StagedImageEffect` or `ImageNode`, so a subclass of either can; a demosaic

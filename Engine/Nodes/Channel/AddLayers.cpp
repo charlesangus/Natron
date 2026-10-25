@@ -278,7 +278,7 @@ AddLayers::channelRoute(double time,
     }
 
     EffectInstancePtr input = getInput(0);
-    route->cpuOnly = input && ((getBitDepth(0) != eImageBitDepthFloat) || (input->getBitDepth(-1) != eImageBitDepthFloat));
+    route->cpuOnly = input && ((getRenderMetadata(time, view)->getBitDepth(0) != eImageBitDepthFloat) || (input->getRenderMetadata(time, view)->getBitDepth(-1) != eImageBitDepthFloat));
 
     return true;
 } // AddLayers::channelRoute
@@ -368,7 +368,7 @@ AddLayers::refreshForRegistryChange()
     }
 
     node->markHashDirty();
-    refreshMetadata_public(true);
+    refreshMetadataSideEffects();
 }
 
 void

@@ -372,11 +372,6 @@ public:
     virtual void onScriptNameChanged(const std::string& /*fullyQualifiedName*/) {}
 
     /**
-     * @brief Returns the node output format
-     **/
-    RectI getOutputFormat() const;
-
-    /**
      * @brief Forwarded to the node's render views count
      **/
     int getRenderViewsCount() const WARN_UNUSED_RETURN;
@@ -1043,17 +1038,14 @@ public:
     EffectInstancePtr getNearestNonIdentity(double time);
 
     /**
-     * @brief Refreshes this effect's metadata, and with recurse its identity state and channel
-     * selectors too, while the input-related data of the nodes downstream is only marked stale
-     * (see Node::markDownstreamInputRelatedDataStale()). Main thread only.
+     * @brief What a change that may move this node's metadata refreshes on the main thread: the
+     * main-thread side effects of this node's answer at the current frame (an OpenFX node's
+     * time-invariant answer pushed to its clips, its identity state, channel selectors and
+     * refreshCurrentFrameMetadata()), then those of the nodes downstream whose settings panel is
+     * shown (see Node::refreshShownDownstreamInputRelatedData()). A change that leaves the hash
+     * alone drops the cached answers first (dropCachedMetadataDownstream()). Main thread only.
      **/
-    bool refreshMetadata_public(bool recurse);
-
-    /**
-     * @brief Node::refreshInputRelatedDataIfStale() on this effect's node: what a reader of the
-     * metadata or layers outside a render calls first. Callable from any thread.
-     **/
-    void refreshInputRelatedDataIfStale() const;
+    void refreshMetadataSideEffects();
 
     /**
      * @brief Refreshes what the GUI shows of this node's metadata at time, the timeline's current
@@ -1081,20 +1073,7 @@ public:
         return true;
     }
 
-    void setDefaultMetadata();
-
 protected:
-
-    bool refreshMetadata_internal();
-
-    bool setMetadataInternal(const NodeMetadata& metadata);
-
-    /**
-     * @brief Called after a refresh of the time-invariant metadata, which an OpenFX node pushes to
-     * its clips as the answer of actions with no frame of their own.
-     **/
-    virtual void onMetadataRefreshed(const NodeMetadata& /*metadata*/) {}
-
     /**
      * @brief The main-thread side effects of the metadata at the timeline's current frame:
      * menus, panel state and the like. Called by refreshCurrentFrameMetadata(); renders never
@@ -1103,26 +1082,13 @@ protected:
     virtual void onCurrentFrameMetadataChanged(const NodeMetadata& /*metadata*/) { }
 
     friend class ClipPreferencesRunning_RAII;
-    void setClipPreferencesRunning(bool running);
+    // Returns the previous state, so that the scopes nest.
+    bool setClipPreferencesRunning(bool running);
 
 public:
 
 
     ///////////////////////Metadatas related////////////////////////
-
-    /**
-     * @brief Returns the preferred metadata to render with
-     * This should only be called to compute the clip preferences, call the appropriate
-     * getters to get the actual values.
-     * The default implementation gives reasonable values appropriate to the context of the node (the inputs)
-     * and the values reported by the supported components/bitdepth
-     *
-     * This should not be reimplemented except for OpenFX which already has its default specification
-     * for clip Preferences, see setDefaultClipPreferences()
-     * Returns eStatusOK on success, eStatusFailed on failure.
-     *
-     **/
-    StatusEnum getPreferredMetadata_public(NodeMetadata& metadata);
 
     /**
      * @brief The metadata of this node's output and clips at time and view, cached per (hash,
@@ -1163,17 +1129,22 @@ public:
     NodeMetadataConstPtr getRenderMetadata(const ParallelRenderArgsPtr& frameArgs, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief What getMetadataComponents(), getMetadataNComps() and
-     * getMetadataOutputClipComponents() report, read from metadata rather than from the last
-     * refresh.
+     * @brief The layers metadata gives for inputNb (-1 for the output, the layout it stores and
+     * advertises downstream), its component count, and the layers the plug-in's own output clip
+     * renders into, which can be wider than what the output stores.
      **/
     static void getLayersFromMetadata(const NodeMetadata& metadata, int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer);
     static int getNCompsFromMetadata(const NodeMetadata& metadata, int inputNb);
     static void getOutputClipLayersFromMetadata(const NodeMetadata& metadata, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer);
 
     /**
-     * @brief The metadata one refresh computes, which is the same at every frame: cached per
-     * hash for a native node; for an OpenFX node, the answer of its last clip preferences.
+     * @brief The metadata that is the same at every frame, cached per hash, derived from the
+     * inputs' own. For an OpenFX node it is the plug-in's clip preferences, run on the main thread
+     * where the plug-in may sync its private data and edit its parameters, and pushed to its clips
+     * as the answer of actions that have no frame of their own. Asked where that cannot run (off
+     * the main thread, or where Node::InputRelatedDataRefreshDeferral defers it), an OpenFX node
+     * that has no answer for its hash yet answers its clip preferences at the current frame
+     * instead, and caches nothing here.
      **/
     NodeMetadataConstPtr getTimeInvariantMetadata() WARN_UNUSED_RETURN;
 
@@ -1192,21 +1163,40 @@ public:
      **/
     void dropCachedMetadata();
 
-protected:
-
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& /*metadata*/) { return eStatusOK; }
-
     /**
-     * @brief As getPreferredMetadata(), at time and view: metadata holds getDefaultMetadataAt()
-     * on entry. Called from any thread, possibly more than once for the same frame, so it must
-     * read only this node's knobs at time, its inputs' getInputMetadataAt() and project settings.
+     * @brief dropCachedMetadata() on this node and every node downstream of it: a change of this
+     * node's metadata that leaves its hash alone leaves theirs alone too.
+     **/
+    void dropCachedMetadataDownstream();
+
+protected:
+    /**
+     * @brief The metadata this node produces at time and view: metadata holds
+     * getDefaultMetadataAt() on entry, and the default leaves it so. Called from any thread,
+     * possibly more than once for the same frame, so it must read only this node's knobs at time,
+     * its inputs' getInputMetadataAt() and project settings.
      **/
     virtual StatusEnum getPreferredMetadataAt(double /*time*/,
                                               ViewIdx /*view*/,
-                                              NodeMetadata& metadata)
+                                              NodeMetadata& /*metadata*/)
     {
-        return getPreferredMetadata(metadata);
+        return eStatusOK;
     }
+
+    /**
+     * @brief An OpenFX node's time-invariant clip preferences: metadata holds what its inputs'
+     * time-invariant answers give on entry. Main thread only; see getTimeInvariantMetadata().
+     **/
+    virtual StatusEnum getTimeInvariantClipPreferences(NodeMetadata& /*metadata*/)
+    {
+        return eStatusOK;
+    }
+
+    /**
+     * @brief Called on the main thread with an OpenFX node's new time-invariant answer, which it
+     * pushes to its clips for the actions that have no frame of their own.
+     **/
+    virtual void onTimeInvariantMetadataDerived(const NodeMetadata& /*metadata*/) { }
 
     /**
      * @brief The metadata the inputs give at time and view, read from each input's getMetadata()
@@ -1250,23 +1240,14 @@ protected:
                                            std::vector<NodeMetadataConstPtr>* inputsMetadata);
 
 private:
-
-    StatusEnum getDefaultMetadata(NodeMetadata& metadata);
-
     StatusEnum getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr>& inputs,
                                             const std::vector<NodeMetadataConstPtr>& inputsMetadata,
-                                            bool atTime,
                                             NodeMetadata& metadata);
 
     void getInputsMetadataAt(double time,
                              ViewIdx view,
                              std::vector<EffectInstancePtr>* inputs,
                              std::vector<NodeMetadataConstPtr>* inputsMetadata);
-
-    void getInputsRefreshedMetadata(std::vector<EffectInstancePtr>* inputs,
-                                    std::vector<NodeMetadataConstPtr>* inputsMetadata);
-
-    NodeMetadataConstPtr getRefreshedMetadata() const;
 
     NodeMetadataConstPtr deriveMetadataAt(U64 hash, double time, ViewIdx view);
 
@@ -1276,19 +1257,11 @@ private:
 
     NodeMetadataConstPtr getOpenFXMetadataAt(U64 hash, double time, ViewIdx view);
 
-    NodeMetadataConstPtr getOpenFXTimeInvariantMetadata();
+    NodeMetadataConstPtr getOpenFXMetadataForInputsAt(U64 hash, double time, ViewIdx view, const NodeMetadataConstPtr& fallback);
 
-    void dropDownstreamCachedMetadata();
+    bool mayDeriveOpenFXTimeInvariantMetadata() const;
 
 public:
-
-
-
-    /**
-     * @brief Returns whether the effect is frame-varying (i.e: a Reader with different images in the sequence)
-     **/
-    bool isFrameVarying() const;
-
     /**
      * @brief Returns whether the current node and/or the tree upstream is frame varying or animated.
      * It is frame varying/animated if at least one of the node is animated/varying
@@ -1299,44 +1272,6 @@ public:
      * @brief Same as above, sharing the memo across calls so that evaluating many nodes of one graph visits each node once.
      **/
     bool isFrameVaryingOrAnimated_Recursive(std::map<const EffectInstance*, bool>* memo) const;
-
-    /**
-     * @brief Returns the preferred output frame rate to render with
-     **/
-    double getFrameRate() const;
-
-    /**
-     * @brief If true, the plug-in knows how to render frames at non integer times. If false
-     * this is the hint indicating that the plug-ins can only render integer frame times (such as a Reader)
-     **/
-    bool canRenderContinuously() const;
-
-    /**
-     * @brief Returns the field ordering of images produced by this plug-in
-     **/
-    ImageFieldingOrderEnum getFieldingOrder() const;
-
-    /**
-     * @brief Returns the pixel aspect ratio, depth and components for the given input.
-     * If inputNb equals -1 then this function will check the output components.
-     **/
-    double getAspectRatio(int inputNb) const;
-
-    /**
-     * @brief For inputNb == -1, the colour layout the output stores and advertises downstream,
-     * which can be narrower than what the plug-in's output clip renders
-     * (see getMetadataOutputClipComponents()).
-     **/
-    void getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const;
-    int getMetadataNComps(int inputNb) const;
-
-    /**
-     * @brief The components the plug-in's own output clip renders into.
-     **/
-    void getMetadataOutputClipComponents(ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const;
-
-    ImageBitDepthEnum getBitDepth(int inputNb) const;
-
 
     ///////////////////////End Metadatas related////////////////////////
 
@@ -2642,6 +2577,10 @@ public:
         // that derivation started from, which getInputMetadataAt() then returns.
         const std::vector<NodeMetadataConstPtr>* timeInvariantInputsMetadata;
 
+        // Set while this thread derives the effect's time-invariant metadata: what
+        // getTimeInvariantMetadata() answers until that derivation ends.
+        NodeMetadataConstPtr timeInvariantInProgress;
+
         // The time and view an ActionTimeViewScope set, innermost last.
         std::list<std::pair<double, ViewIdx>> actionTimeView;
 
@@ -2656,6 +2595,7 @@ public:
             , userLayerStrings()
             , resolvingLayersPassThrough(false)
             , timeInvariantInputsMetadata(NULL)
+            , timeInvariantInProgress()
             , actionTimeView()
         {
         }
@@ -2999,18 +2939,18 @@ private:
 class ClipPreferencesRunning_RAII
 {
     EffectInstance* _effect;
+    bool _previous;
 
 public:
-
     ClipPreferencesRunning_RAII(EffectInstance* effect)
         : _effect(effect)
+        , _previous(effect->setClipPreferencesRunning(true))
     {
-        _effect->setClipPreferencesRunning(true);
     }
 
     ~ClipPreferencesRunning_RAII()
     {
-        _effect->setClipPreferencesRunning(false);
+        _effect->setClipPreferencesRunning(_previous);
     }
 };
 

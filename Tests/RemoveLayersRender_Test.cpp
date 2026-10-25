@@ -388,7 +388,7 @@ protected:
                                            0 /*mipmapLevel*/,
                                            ViewIdx(0),
                                            false /*byPassCache*/,
-                                           rod.toPixelEnclosing(0, effect->getAspectRatio(-1)),
+                                           rod.toPixelEnclosing(0, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1)),
                                            rod,
                                            components,
                                            eImageBitDepthFloat,
@@ -911,12 +911,12 @@ TEST_F(RemoveLayersRenderTest, MetadataDoNotDependOnTheFrameTheTimelineIsOn)
     ASSERT_EQ(RemoveLayers::ColorOutcome::eKindDropped, remove->computeColorOutcome(1., ViewIdx(0)).kind);
     ASSERT_EQ(RemoveLayers::ColorOutcome::eKindNarrowed, remove->computeColorOutcome(2., ViewIdx(0)).kind);
 
-    remove->refreshMetadata_public(true);
-    const int nCompsParkedOnFrame2 = remove->getMetadataNComps(-1);
+    remove->dropCachedMetadata();
+    const int nCompsParkedOnFrame2 = EffectInstance::getNCompsFromMetadata(*remove->getTimeInvariantMetadata(), -1);
 
     getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
-    remove->refreshMetadata_public(true);
-    const int nCompsParkedOnFrame1 = remove->getMetadataNComps(-1);
+    remove->dropCachedMetadata();
+    const int nCompsParkedOnFrame1 = EffectInstance::getNCompsFromMetadata(*remove->getTimeInvariantMetadata(), -1);
 
     EXPECT_EQ(nCompsParkedOnFrame1, nCompsParkedOnFrame2);
     EXPECT_EQ(3, nCompsParkedOnFrame2);

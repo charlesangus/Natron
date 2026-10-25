@@ -119,10 +119,10 @@ public:
             _metadata = metadata;
         }
         invalidateOutputMetadata();
-        // The component count lives in the node metadata computed when the node was created, which
-        // nothing else recomputes before a downstream node reads it; recursing marks the nodes
-        // already connected below as stale too.
-        refreshMetadata_public(true);
+        // The component count is in no hash, so the cached metadata of this node and of those
+        // below it describe the old count.
+        dropCachedMetadataDownstream();
+        refreshMetadataSideEffects();
     }
 
     void setMetadata(const ImageMetadata& metadata)

@@ -343,8 +343,8 @@ TEST_F(NativeCropTest, ReformatOnFormatSetsTheOutputFormat)
     ASSERT_TRUE(setKnobValues(node, kCropParamReformat, { 1. }));
 
     EffectInstancePtr effect = node->getEffectInstance();
-    EXPECT_EQ(2., effect->getAspectRatio(-1));
-    const RectI format = effect->getOutputFormat();
+    EXPECT_EQ(2., effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
+    const RectI format = effect->getTimeInvariantMetadata()->getOutputFormat();
     EXPECT_EQ(0, format.x1);
     EXPECT_EQ(0, format.y1);
     EXPECT_EQ(50, format.x2);
@@ -463,11 +463,11 @@ TEST_F(NativeCropTest, ReformatOnSizeMakesTheRectangleTheOutputFormat)
 
     ASSERT_TRUE(setBoolAsUser(crop, kCropParamReformat, true));
     EffectInstancePtr effect = crop->getEffectInstance();
-    const RectI format = effect->getOutputFormat();
+    const RectI format = effect->getTimeInvariantMetadata()->getOutputFormat();
     EXPECT_EQ(RectI(0, 0, 40, 30), format);
-    EXPECT_EQ(1., effect->getAspectRatio(-1));
+    EXPECT_EQ(1., effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
     EXPECT_EQ(RectD(0., 0., 40., 30.), regionOfDefinition(crop, kTime));
-    EXPECT_EQ(RectI(0, 0, 40, 30), downstream->getEffectInstance()->getOutputFormat());
+    EXPECT_EQ(RectI(0, 0, 40, 30), downstream->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     std::vector<RenderedPlane> moved;
     ASSERT_TRUE(renderNodePlanesDirect(crop, kTime, ViewIdx(0), 0, RectI(0, 0, 40, 30), layers, &moved, &error)) << error;
@@ -476,10 +476,10 @@ TEST_F(NativeCropTest, ReformatOnSizeMakesTheRectangleTheOutputFormat)
     EXPECT_EQ(inPlace[0].pixels, moved[0].pixels);
 
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { 24., 12. }));
-    EXPECT_EQ(RectI(0, 0, 24, 12), effect->getOutputFormat());
+    EXPECT_EQ(RectI(0, 0, 24, 12), effect->getTimeInvariantMetadata()->getOutputFormat());
 
     ASSERT_TRUE(setBoolAsUser(crop, kCropParamReformat, false));
-    EXPECT_EQ(RectI(0, 0, 64, 48), effect->getOutputFormat());
+    EXPECT_EQ(RectI(0, 0, 64, 48), effect->getTimeInvariantMetadata()->getOutputFormat());
 }
 
 TEST_F(NativeCropTest, ReformatOnDefaultMakesTheSourceExtentTheOutputFormat)
@@ -496,7 +496,7 @@ TEST_F(NativeCropTest, ReformatOnDefaultMakesTheSourceExtentTheOutputFormat)
 
     const RectD sourceRoD = regionOfDefinition(source, kTime);
     const RectI expected(0, 0, (int)(sourceRoD.x2 - sourceRoD.x1), (int)(sourceRoD.y2 - sourceRoD.y1));
-    EXPECT_EQ(expected, crop->getEffectInstance()->getOutputFormat());
+    EXPECT_EQ(expected, crop->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
     EXPECT_EQ(RectD(0., 0., expected.x2, expected.y2), regionOfDefinition(crop, kTime));
 }
 

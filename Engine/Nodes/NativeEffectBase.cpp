@@ -383,8 +383,6 @@ NativeEffectBase::getOutputMetadata(double time,
                                     ViewIdx view)
 {
     const MetadataKey key(time, view.value());
-    // Before the hash is read, since a refresh can move it.
-    refreshInputRelatedDataIfStale();
     // The hash covers this node's knobs and everything upstream of it, and an edit only marks it
     // dirty: reading it recomputes it, so a cache filled under another hash is stale.
     const NodePtr node = getNode();

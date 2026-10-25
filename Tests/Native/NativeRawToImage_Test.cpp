@@ -122,7 +122,7 @@ TEST_F(NativeRawToImageTest, OutputIsAnImageAnImageInputAccepts)
 
     ASSERT_TRUE(node && imageSink);
     EXPECT_EQ(Node::eCanConnectInput_ok, imageSink->canConnectInput(node, 0));
-    EXPECT_EQ(4, node->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*node->getEffectInstance()->getTimeInvariantMetadata(), -1));
 }
 
 TEST_F(NativeRawToImageTest, MosaicBecomesGreyWithTheInputValues)

@@ -114,9 +114,10 @@ NativeGenerator::getRegionOfDefinition(double time,
 }
 
 double
-NativeGenerator::getPixelAspectRatio() const
+NativeGenerator::getPixelAspectRatio(double time,
+                                     ViewIdx view) const
 {
-    const double par = _effect->getAspectRatio(-1);
+    const double par = _effect->getRenderMetadata(time, view)->getPixelAspectRatio(-1);
 
     return (par == 0.) ? 1. : par;
 }

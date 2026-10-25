@@ -269,7 +269,7 @@ protected:
             if (inputSpace) {
                 inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
             }
-            node->getEffectInstance()->refreshMetadata_public(false);
+            node->getEffectInstance()->dropCachedMetadata();
         }
 
         return node;
@@ -549,7 +549,7 @@ TEST_F(NativeReadViewsTest, AReadCreatedWithItsFileGetsTheViewsAndTheColourDefau
 
     // The per-view checks below compare with the raw pixels, so the file is read without conversion.
     inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-    node->getEffectInstance()->refreshMetadata_public(false);
+    node->getEffectInstance()->dropCachedMetadata();
 
     const int left = projectViewIndex("left");
     const int right = projectViewIndex("right");

@@ -101,7 +101,7 @@ TEST_F(MetadataExpressionProjectTest, LabelExpressionReadsAFileAttributeAcrossSa
     KnobFile* file = dynamic_cast<KnobFile*>(read->getKnobByName(kOfxImageEffectFileParamName).get());
     ASSERT_TRUE(file != NULL);
     file->setValue(exrPath);
-    read->getEffectInstance()->refreshMetadata_public(false);
+    read->getEffectInstance()->dropCachedMetadata();
 
     const std::string readName = read->getScriptName();
     const std::string holderName = holder->getScriptName();

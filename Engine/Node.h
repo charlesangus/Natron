@@ -1450,9 +1450,7 @@ public:
     bool hasAnyPersistentMessage() const;
 
     /**
-     * @brief The persistent message. A missing-channel message is first rechecked by
-     * refreshInputRelatedDataIfStale(), which may recompute dirty hashes, so the caller must not
-     * hold a lock it takes.
+     * @brief The persistent message.
      **/
     void getPersistentMessage(QString* message, int* type, bool prefixLabelAndType = true) const;
 
@@ -1702,31 +1700,41 @@ public:
 
     /**
      * @brief What an edit of this node's inputs refreshes: this node's input-related data now,
-     * after that of its dirty inputs, while the nodes downstream are only marked stale (see
-     * markDownstreamInputRelatedDataStale()). Main thread only.
+     * after that of its dirty inputs, then refreshShownDownstreamInputRelatedData(). Main thread
+     * only.
      **/
     void refreshInputRelatedDataAfterInputChange();
 
     /**
-     * @brief Marks the input-related data (metadata, produced layers, channel selectors) of every
-     * node downstream of this one stale, reading no hash, so that a branch nothing reads is never
-     * rehashed for it. Each node is refreshed by refreshInputRelatedDataIfStale() once it is read;
-     * the nodes whose settings panel is visible are shown, and are refreshed now. Main thread only.
+     * @brief Marks the input-related data (produced layers, channel selectors, identity state,
+     * the current-frame metadata hook) of every node downstream of this one dirty, reading no
+     * hash, so that a branch nothing shows is never rehashed for it. Renders read none of it but
+     * the draft flag, which is settled here for every node reached. The nodes whose settings panel
+     * is visible, or that show a missing-channel message, are refreshed now; the others when their
+     * panel is shown. Main thread only.
      **/
-    void markDownstreamInputRelatedDataStale();
+    void refreshShownDownstreamInputRelatedData();
 
     /**
-     * @brief Refreshes this node's input-related data, after that of its dirty inputs, if an edit
-     * upstream left it stale. A viewer refreshes only the inputs it shows. Reads the hashes of the
-     * nodes it refreshes. Callable from any thread, but does nothing off the main thread, inside a
-     * hash recompute or another refresh, while the project loads or closes, or while a node tree
-     * is being created: those read the data as it stands, and the refresh that follows them
-     * covers it.
+     * @brief The UI hook of a settings panel being shown: refreshes this node's input-related
+     * data, after that of its dirty inputs, if an edit upstream left it dirty, and otherwise only
+     * fires EffectInstance::refreshCurrentFrameMetadata() at the current frame. A viewer
+     * refreshes only the inputs it shows. Does nothing unless canRunMainThreadMetadataRefresh(),
+     * or inside another refresh.
      **/
-    void refreshInputRelatedDataIfStale();
+    void refreshPanelInputRelatedData();
 
     /**
-     * @brief While one lives on the calling thread, refreshInputRelatedDataIfStale() does nothing
+     * @brief Whether a main-thread refresh of this node's metadata side effects (and an OpenFX
+     * node's time-invariant derivation, which runs plug-in actions and may set parameters) may run
+     * here: on the main thread, outside a hash recompute and an InputRelatedDataRefreshDeferral,
+     * on a created, activated node not being destroyed, while the project is not closing, and,
+     * while it loads or a node tree is being created, only inside the refresh that follows those.
+     **/
+    bool canRunMainThreadMetadataRefresh() const;
+
+    /**
+     * @brief While one lives on the calling thread, canRunMainThreadMetadataRefresh() is false
      * there. Held by a caller that may sit under a lock a refresh takes in the other order: an
      * OpenFX clip fetching its input's metadata runs under the host's metadata mutex, while a
      * refresh takes an effect's clip preferences lock for writing, which a render holds for
@@ -1741,24 +1749,6 @@ public:
         InputRelatedDataRefreshDeferral(const InputRelatedDataRefreshDeferral&);
         InputRelatedDataRefreshDeferral& operator=(const InputRelatedDataRefreshDeferral&);
     };
-
-    /**
-     * @brief What a render of this node refreshes before it reads metadata and layers:
-     * refreshInputRelatedDataIfStale() on every node upstream of it, the paint trees of RotoPaint
-     * nodes and the nodes inside groups included, and through a viewer only the inputs it shows. Each node is looked at, not
-     * only the stale ones' inputs: a viewer refreshed while it showed other inputs, and a RotoPaint
-     * node whose paint tree was edited, are clean above stale nodes. Does nothing off the main
-     * thread.
-     **/
-    void refreshInputRelatedDataForRender();
-
-    bool isInputRelatedDataStale() const;
-
-    /**
-     * @brief Has the main thread run refreshInputRelatedDataIfStale() on this node soon, for a
-     * reader off the main thread that found it stale. Callable from any thread.
-     **/
-    void requestInputRelatedDataRefresh();
 
     void markAllInputRelatedDataDirty();
 

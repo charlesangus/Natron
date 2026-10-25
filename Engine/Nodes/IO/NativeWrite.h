@@ -268,7 +268,7 @@ private:
 
     // The colour plane, when the file has one, and every other layer of `header` as the native
     // Read groups them for `view`; read back declares these whatever the input offers.
-    std::list<ImageLayerDesc> readBackLayers(const OiioReadSupport::Header& header, ViewIdx view) const WARN_UNUSED_RETURN;
+    std::list<ImageLayerDesc> readBackLayers(const OiioReadSupport::Header& header, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     // The views a render of `view` puts in its file: several when one file takes every view of
     // the project (rendered under view 0), none when another view's render writes the file.

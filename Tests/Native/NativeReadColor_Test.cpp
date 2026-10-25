@@ -202,7 +202,7 @@ protected:
         KnobFile* file = dynamic_cast<KnobFile*>(node->getKnobByName(kOfxImageEffectFileParamName).get());
         ASSERT_TRUE(file != NULL);
         file->setValue(path);
-        node->getEffectInstance()->refreshMetadata_public(false);
+        node->getEffectInstance()->dropCachedMetadata();
     }
 
     void setProjectSpace(const char* knobName,

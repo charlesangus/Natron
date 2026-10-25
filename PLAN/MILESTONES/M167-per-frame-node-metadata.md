@@ -254,6 +254,7 @@ Deps: M100 - Content Node Hashing.
 
 ## Decisions
 
+- 2026-10-25 — **P6.T4 first bench (bosley-native-nodes):** interleaved main (2b90bbec3) vs M167 release AppImages, 3 rounds, host load 10-17: wide N=500 tiny per frame +42% (min) / +55% (median), chain N=500 tiny range +36% / +48%, comp N=200 hd per frame +38% / +25%; the other cases within ±11%. Over the 5% bar; profiling before any re-run. Raw results in build/bench/m167/.
 - 2026-10-25 — **Phase 6 T1-T3 calls (bosley-native-nodes):** the downstream walk still settles the draft flag and refreshes nodes showing a missing-channel message; nodes with no visible panel update channel selectors and identity state when their panel opens or the frame changes (renders don't read them); an off-main-thread OFX read before the main thread derives its answer computes an uncached per-frame clip-preferences answer, which P6.T4's bench must cover; Raw* knob/visibility code keeps `getCurrentTime()` as UI-only.
 - 2026-10-25 — **Phase 5 screenshots approved (user):** the viewer format, PAR and channel menus follow the frame over a keyed Switch; Phase 5 gate passed.
 - 2026-10-25 — **Phase 5 gate (bosley-native-nodes):** fast build 434/434 on 772f92d7d (after the identity-check message fix), and `Tests/gui/m167_viewer_follows_frame.py` (e934a0c3e) passes with 0 failures; screenshots shared, awaiting approval.

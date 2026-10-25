@@ -377,6 +377,9 @@ struct Pass {
  * stage has one. The recorder writes filtered over output, the passes running over domain: output
  * grown by the halo and clipped to rod, this effect's region of definition. Dispatches the
  * recorder makes in sequence must be separated by compute barriers; the executor orders its own.
+ * inputs holds the effect's other inputs by input number, each cropped to that input's region of
+ * definition, outside which it reads zero; an input that is disconnected, not read on the GPU or
+ * empty there, and the source's own entry, are views without a buffer.
  **/
 struct PassGpuIO {
     gpu::GpuRecordContext& context;
@@ -392,6 +395,7 @@ struct PassGpuIO {
     // The processed channels, in the bit space of pixelKernelChannelBit(); the finish restores the
     // others from the source, but a recorder that combines channels must leave them out.
     std::bitset<4> channels;
+    std::vector<GpuImageView> inputs;
 
     explicit PassGpuIO(gpu::GpuRecordContext& ctx)
         : context(ctx)

@@ -77,7 +77,9 @@ struct IBlurParams {
  * whose Map gives a radius of 0 throughout is a pass-through copy.
  *
  * It is a Passes pipeline driven by its own render rather than an ImageNode op, because its
- * passes read the Map, an Aux input the host never blends.
+ * passes read the Map, an Aux input the host never blends. On the GPU the pass runner hands the
+ * recorder the Map, which builds the table in exact 64-bit integers of a quantised plane instead
+ * of doubles (Kernels/iblur.slang); a box radius above the GPU's cap stays on the CPU.
  **/
 class IBlur
     : public StagedImageEffect {
@@ -116,6 +118,15 @@ public:
      **/
     static std::string mapNotConnectedMessage() WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The Map is read only while its channel resolves; otherwise its Map Channel reads 0
+     * everywhere, as outside its image.
+     **/
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 protected:
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
@@ -152,16 +163,31 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The passes over the full range of the Map, without work.
+    // The passes over the full range of the Map, without CPU work; with a GPU recorder while no
+    // box radius exceeds the GPU's cap.
     virtual PassList opPasses(double time,
                               ViewIdx view,
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // No GPU path yet.
-    virtual bool opPassesOnGpu() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return false;
-    }
+    // The Map in the layer its channel resolves in.
+    virtual bool opPassesInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The Map over the source's region of interest, as getRegionsOfInterest() asks for it.
+    virtual RectI opPassesInputRoI(int inputNb,
+                                   const RectI& outputRect,
+                                   const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The GPU recorder of opPasses(): the passes for params at context's scale, reading the Map's
+    // channel at time and view from io.
+    StatusEnum recordGpu(const PassGpuIO& io,
+                         double time,
+                         ViewIdx view,
+                         const IBlurParams& params,
+                         const PassContext& context) const WARN_UNUSED_RETURN;
 
     // Posts the warning while the Map is disconnected, and takes back its own once connected.
     void refreshMapWarning();

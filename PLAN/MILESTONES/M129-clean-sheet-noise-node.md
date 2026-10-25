@@ -151,7 +151,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 128.3: Node
 
-- [ ] M129.P3.T1 — Add the native Noise generator
+- [x] M129.P3.T1 — Add the native Noise generator
   - files: `Engine/Nodes/Generator/Noise.{h,cpp}` (new), `Engine/Nodes/Generator/Noise.reg.inc`, `Tests/Native/NativeNoise_Test.cpp` (new)
   - approach:
     - `Noise` v1 on `NativeGenerator`, with the knobs in Scope's assumption.
@@ -161,7 +161,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the test covers tile invariance (a 4-strip render bit-equals a whole render), render-scale invariance at sample points, the transform rotating the pattern, evolution animating, per-channel decorrelation, and the octave cap. It runs at the phase build.
   - size: L
 
-- [ ] M129.P3.T2 — Run Noise on the GPU
+- [x] M129.P3.T2 — Run Noise on the GPU
   - files: `Engine/Gpu/Kernels/noise.slang` (new), `Engine/Nodes/Generator/Noise.cpp`, `Engine/Gpu/Kernels/noise.cmake`, `Tests/Native/NativeNoiseGpu_Test.cpp` (new)
   - approach:
     - An `IPixelOp` over `noisecore.slang` run through `runWrapped`.

@@ -26,13 +26,13 @@ The per-context render core shared by E13 - RFV and E15 - Loops And I-Nodes, spl
 
 ## Phase 178.1: Context and read-sets
 
-- [ ] M178.P1.T1 — Write the render context value type
+- [x] M178.P1.T1 — Write the render context value type
   - files: `Engine/RenderContext.h`, `Engine/RenderContext.cpp` (new), `Engine/CMakeLists.txt`, `Tests/RenderContext_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: An immutable map from a namespaced name (`ns`, `name`) to a variant (bool, int64, double, string, vectors of double/int/string). `overlay(other)` returns a new context; `restrictTo(readSet)` keeps only named entries (a reads-all sentinel keeps everything); `hash()` is a stable, order-independent 64-bit hash, bit-exact for doubles, and the empty context hashes to 0. Shared-pointer copies. This replaces M71.P1.T1.
   - verify: gtest covers overlay precedence, restriction, namespace separation (`loop.t` vs `t`), hash stability, equal hashes for equal contexts built in different orders, and empty → 0.
   - size: M
 
-- [ ] M178.P1.T2 — Per-knob and per-node upstream read-sets
+- [x] M178.P1.T2 — Per-knob and per-node upstream read-sets
   - files: `Engine/Knob.h`, `Engine/Knob.cpp`, `Engine/Node.h`, `Engine/Node.cpp`, `Engine/NodeInputs.cpp`
   - approach: `KnobI::getContextReadSet()` returns the union of sources registered on the knob (a `ContextReadSource` interface that expressions, in M71, and native drivers, in M180, implement; none by default). `Node::getUpstreamContextReadSet()` is the union of its own knobs' read-sets, a virtual `Node::getExtraContextReads()`, its inputs' and expression-dependency nodes' read-sets. Memoize and invalidate on the events that recompute `computeHashRecursive`; use a visited set against expression cycles. This replaces M71.P1.T3, minus the expression scan.
   - verify: gtest on a three-node chain plus a side-branch expression dependency, with a test read source on one knob: read-sets are as expected, and removing the source updates them.

@@ -1619,16 +1619,20 @@ resolveRoles(const ProjectColorManagement& cm,
 const char* const kWorkingSpaceRoles[] = { "scene_linear" };
 const char* const kLogRoles[] = { "compositing_log", "scene_linear" };
 const char* const kIntegerRoles[] = { "texture_paint", "color_picking", "scene_linear" };
+const int kColorManagementKnobCount = 7;
 
 /*
  * Repopulates the knob and, when its active name is not among the new options, switches it to
- * the first available fallback, recording "label: old -> new" in fallbacks.
+ * the first available fallback, recording "label: old -> new" in fallbacks. A name equal to
+ * previousDefault was the outgoing config's own default rather than a user choice, so replacing
+ * it is not recorded.
  */
 void
 repopulateWithFallback(const KnobChoicePtr& knob,
                        const std::vector<ChoiceOption>& options,
                        const std::vector<std::string>& fallbackNames,
-                       QStringList* fallbacks)
+                       QStringList* fallbacks,
+                       const std::string& previousDefault = std::string())
 {
     const std::string old = knob->getActiveEntry().id;
 
@@ -1641,7 +1645,7 @@ repopulateWithFallback(const KnobChoicePtr& knob,
         return;
     }
     knob->setValueFromID(target, 0);
-    if (!old.empty() && (old != target) && fallbacks) {
+    if (!old.empty() && (old != target) && (old != previousDefault) && fallbacks) {
         fallbacks->push_back(QString::fromUtf8("%1: %2 -> %3")
                                  .arg(QString::fromUtf8(knob->getLabel().c_str()))
                                  .arg(QString::fromUtf8(old.c_str()))
@@ -1651,13 +1655,14 @@ repopulateWithFallback(const KnobChoicePtr& knob,
 
 void
 repopulateViewerViews(ProjectPrivate* imp,
-                      QStringList* fallbacks)
+                      QStringList* fallbacks,
+                      const std::string& previousDefault = std::string())
 {
     const ProjectColorManagement& cm = *imp->colorManagement;
     const std::string display = imp->viewerDisplay->getActiveEntry().id;
     std::vector<std::string> fallbackNames(1, cm.getDefaultView(display));
 
-    repopulateWithFallback(imp->viewerView, namesToOptions(cm.getViews(display)), fallbackNames, fallbacks);
+    repopulateWithFallback(imp->viewerView, namesToOptions(cm.getViews(display)), fallbackNames, fallbacks, previousDefault);
 }
 
 /*
@@ -2117,6 +2122,19 @@ Project::refreshColorManagement(bool warnOnFallback)
     // file that changed on disk, the same source is loaded again.
     const U64 sourceStamp = isOCIOConfigFile(source) ? FileStampRegistry::instance().stamp(source) : 0;
 
+    // What the outgoing config would have chosen for each knob, read while the menus still hold
+    // its names; a knob left at that default follows the new config without a warning.
+    std::string previousDefaults[kColorManagementKnobCount];
+    if (cm.getConfig()) {
+        previousDefaults[0] = firstPresent(_imp->workingSpace->getEntries_mt_safe(), resolveRoles(cm, kWorkingSpaceRoles));
+        previousDefaults[1] = firstPresent(_imp->colorSpace8Bit->getEntries_mt_safe(), withRoles(kDefaultColorSpace8Bit, resolveRoles(cm, kIntegerRoles)));
+        previousDefaults[2] = firstPresent(_imp->colorSpace16Bit->getEntries_mt_safe(), withRoles(kDefaultColorSpace16Bit, resolveRoles(cm, kIntegerRoles)));
+        previousDefaults[3] = firstPresent(_imp->colorSpaceLog->getEntries_mt_safe(), withRoles(kDefaultColorSpaceLog, resolveRoles(cm, kLogRoles)));
+        previousDefaults[4] = firstPresent(_imp->colorSpaceFloat->getEntries_mt_safe(), withRoles(kDefaultColorSpaceFloat, resolveRoles(cm, kWorkingSpaceRoles)));
+        previousDefaults[5] = cm.getDefaultDisplay();
+        previousDefaults[6] = cm.getDefaultView(_imp->viewerDisplay->getActiveEntry().id);
+    }
+
     // Choosing Custom before picking a file is an intermediate state, not an error.
     if (!source.empty() && (!cm.getConfig() || (source != cm.getConfigSource()) || (sourceStamp != _imp->loadedOCIOConfigStamp))) {
         std::string error;
@@ -2148,13 +2166,13 @@ Project::refreshColorManagement(bool warnOnFallback)
 
     QStringList fallbacks;
     const std::vector<ChoiceOption> spaces = colorSpaceOptions(cm);
-    repopulateWithFallback(_imp->workingSpace, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks);
-    repopulateWithFallback(_imp->colorSpace8Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks);
-    repopulateWithFallback(_imp->colorSpace16Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks);
-    repopulateWithFallback(_imp->colorSpaceLog, spaces, resolveRoles(cm, kLogRoles), &fallbacks);
-    repopulateWithFallback(_imp->colorSpaceFloat, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks);
-    repopulateWithFallback(_imp->viewerDisplay, namesToOptions(cm.getDisplays()), std::vector<std::string>(1, cm.getDefaultDisplay()), &fallbacks);
-    repopulateViewerViews(_imp.get(), &fallbacks);
+    repopulateWithFallback(_imp->workingSpace, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks, previousDefaults[0]);
+    repopulateWithFallback(_imp->colorSpace8Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks, previousDefaults[1]);
+    repopulateWithFallback(_imp->colorSpace16Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks, previousDefaults[2]);
+    repopulateWithFallback(_imp->colorSpaceLog, spaces, resolveRoles(cm, kLogRoles), &fallbacks, previousDefaults[3]);
+    repopulateWithFallback(_imp->colorSpaceFloat, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks, previousDefaults[4]);
+    repopulateWithFallback(_imp->viewerDisplay, namesToOptions(cm.getDisplays()), std::vector<std::string>(1, cm.getDefaultDisplay()), &fallbacks, previousDefaults[5]);
+    repopulateViewerViews(_imp.get(), &fallbacks, previousDefaults[6]);
 
     if (warnOnFallback && !fallbacks.isEmpty()) {
         const QString message = tr("The OpenColorIO config \"%1\" does not define some of the project's colorspaces, displays or views. "

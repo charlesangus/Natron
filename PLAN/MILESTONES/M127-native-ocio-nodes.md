@@ -157,6 +157,8 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-25 — **Shared GPU texture cache budget (bosley-native-nodes):** the keyed texture cache shared by the viewer and the OCIO nodes is bounded at 256 MB, evicting least-recently-used textures nothing holds; the viewer's old per-cacheID cache was unbounded.
+- 2026-10-25 — **Config-look exposure is baked (bosley-native-nodes):** OCIO bakes exposure from a config's YAML look into the shader text; only transforms built in code with dynamic properties get uniforms, so editing such a look recompiles.
 - 2026-10-25 — **GPU contract departures (user):** agreed as proposed. (1) The OCIO shader's source and destination buffers are found by reserved name or declared binding, not bindings 0/1, since OCIO puts its uniform block at set 0 binding 0. (2) `GpuShaderTexture` gains an optional cache key; the GPU context keeps device textures by key, shared by the viewer and nodes. (3) CDL slider changes may compile new pipelines; "no recompile" is limited to OCIODisplay's gain, gamma and channel.
 - 2026-10-13 — **Nuke's node set, with LogConvert folded into OCIOColorSpace as a role preset** (user).
 - 2026-10-13 — **GPU through runtime compilation of OCIO's own shader** (user). This was chosen over translating ops into precompiled kernels or baking a shaped 3D LUT. The compiler and descriptor work is M126 - Runtime GPU Shaders.

@@ -268,3 +268,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - The AppImage is built with `package.sh` for UAT.
 - No retired OFX ID loads.
 Shipped: phase 6 at 0c1fe3168 (release gate green, run 40239056993).
+Review round (Codex, PR #114): Threshold icon and CPU cost seeds fixed at 137eaaafa; release gate green. GPU seeds pending the GPU host; UAT pending.

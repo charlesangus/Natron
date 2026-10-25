@@ -1044,7 +1044,7 @@ TEST_F(StagedImageEffectGpuTest, HostAcceptsAFoldReadingASelectedLayer)
     ASSERT_EQ(4, plane.getNumComponents());
 
     for (const std::string& aLayer : { std::string(kNatronColorViewRGBA), std::string(kParitySourceExtraLayerID) }) {
-        setAlphaFold(fold, AlphaFoldMode::Layer, aLayer, "A", kParitySourceExtraLayerID, true);
+        setAlphaFold(fold, AlphaFoldMode::Layer, aLayer, "A", aLayer, true);
         if (HasFatalFailure()) {
             return;
         }
@@ -1053,6 +1053,13 @@ TEST_F(StagedImageEffectGpuTest, HostAcceptsAFoldReadingASelectedLayer)
         gAlphaFoldKernel = 0;
         EXPECT_TRUE(effect->canRenderOnGpu(queryFor(fold.op, plane))) << aLayer;
     }
+
+    // An alpha layer with another channel count than its layer fails the render, so stays on the CPU.
+    setAlphaFold(fold, AlphaFoldMode::Layer, kNatronColorViewRGBA, "A", kParitySourceExtraLayerID, true);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(effect->canRenderOnGpu(queryFor(fold.op, plane)));
     gAlphaFoldKernel = -1;
 }
 
@@ -1084,20 +1091,22 @@ TEST_F(StagedImageEffectGpuTest, AlphaFoldRunsInARegionAndMatchesTheCpuFrame)
         AlphaFoldMode mode;
         const char* aLayer;
         const char* aAlphaChannel;
+        const char* aAlphaLayer;
         bool foldA2;
     };
+    // A per-channel alpha layer has as many channels as the layer it is the alpha of.
     const Case cases[] = {
-        { AlphaFoldMode::Channel, kParitySourceExtraLayerID, "A", false },
-        { AlphaFoldMode::Channel, kParitySourceExtraLayerID, "A", true },
-        { AlphaFoldMode::Channel, kNatronColorViewRGBA, "R", true },
-        { AlphaFoldMode::Layer, kParitySourceExtraLayerID, "A", false },
-        { AlphaFoldMode::Layer, kNatronColorViewRGBA, "A", true },
-        { AlphaFoldMode::ReadLayer, kNatronColorViewRGBA, "R", true },
-        { AlphaFoldMode::ReadLayer, kParitySourceExtraLayerID, "R", true },
+        { AlphaFoldMode::Channel, kParitySourceExtraLayerID, "A", kParitySourceExtraLayerID, false },
+        { AlphaFoldMode::Channel, kParitySourceExtraLayerID, "A", kParitySourceExtraLayerID, true },
+        { AlphaFoldMode::Channel, kNatronColorViewRGBA, "R", kParitySourceExtraLayerID, true },
+        { AlphaFoldMode::Layer, kParitySourceExtraLayerID, "A", kParitySourceExtraLayerID, false },
+        { AlphaFoldMode::Layer, kNatronColorViewRGBA, "A", kNatronColorViewRGBA, true },
+        { AlphaFoldMode::ReadLayer, kNatronColorViewRGBA, "R", kParitySourceExtraLayerID, true },
+        { AlphaFoldMode::ReadLayer, kParitySourceExtraLayerID, "R", kParitySourceExtraLayerID, true },
     };
     for (const Case& c : cases) {
         const std::string what = "alpha mode " + std::to_string((int)c.mode) + ", A in " + c.aLayer + ", alpha " + c.aAlphaChannel + (c.foldA2 ? ", with A2" : "");
-        setAlphaFold(fold, c.mode, c.aLayer, c.aAlphaChannel, kParitySourceExtraLayerID, c.foldA2);
+        setAlphaFold(fold, c.mode, c.aLayer, c.aAlphaChannel, c.aAlphaLayer, c.foldA2);
         if (HasFatalFailure()) {
             return;
         }

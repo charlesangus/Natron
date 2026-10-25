@@ -182,15 +182,12 @@ public:
                                         std::vector<ImageLayerDesc>* layers) const OVERRIDE WARN_UNUSED_RETURN;
 
     /**
-     * @brief The default layers, plus, for a Composite op, the selected layers and alpha layers its
-     * inputs read (stageSourcesNeededLayers()), so that the request pass plans them upstream.
+     * @brief For a Composite op, the selected layers and alpha layers its inputs read
+     * (stageSourcesNeededLayers()), so that the request pass plans them upstream.
      **/
-    virtual void getComponentsNeededAndProduced(double time,
-                                                ViewIdx view,
-                                                EffectInstance::ComponentsNeededMap* comps,
-                                                double* passThroughTime,
-                                                int* passThroughView,
-                                                int* passThroughInputNb) OVERRIDE;
+    virtual void addInputLayersNeeded(double time,
+                                      ViewIdx view,
+                                      EffectInstance::ComponentsNeededMap* comps) OVERRIDE;
 
     /**
      * @brief Records a Point or Composite op's gpu() description through the StagePlan of
@@ -364,6 +361,16 @@ protected:
                                      ViewIdx /*view*/) const WARN_UNUSED_RETURN
     {
         return CompositeInputs();
+    }
+
+    /**
+     * @brief A Composite op's error(params) at time and view, which fails the render with that
+     * message; nullopt for an op without it or of another kind.
+     **/
+    virtual std::optional<std::string> opError(double /*time*/,
+                                               ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return std::nullopt;
     }
 
     virtual bool opHasMatrix() const WARN_UNUSED_RETURN
@@ -728,6 +735,19 @@ private:
             Q_UNUSED(view);
 
             return CompositeInputs();
+        }
+    }
+
+    virtual std::optional<std::string> opError(double time,
+                                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        if constexpr ((PIPELINE.op == OpKind::Composite) && FailingCompositeOp<OP>) {
+            return _op.error(bake(time, view));
+        } else {
+            Q_UNUSED(time);
+            Q_UNUSED(view);
+
+            return std::nullopt;
         }
     }
 

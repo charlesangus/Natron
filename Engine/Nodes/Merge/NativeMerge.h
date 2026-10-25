@@ -28,6 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <optional>
+#include <string>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Merge/MergeOps.h"
@@ -43,6 +46,10 @@
 #define kNativeMergeParamBLayer "bLayer"
 #define kNativeMergeParamAAlpha "aAlpha"
 #define kNativeMergeParamBAlpha "bAlpha"
+#define kNativeMergeParamAAlphaSource "aAlphaSource"
+#define kNativeMergeParamBAlphaSource "bAlphaSource"
+#define kNativeMergeParamAAlphaLayer "aAlphaLayer"
+#define kNativeMergeParamBAlphaLayer "bAlphaLayer"
 
 // Option IDs of the bbox, metadata from and frame range from choices.
 #define kNativeMergeBBoxUnion "union"
@@ -51,6 +58,11 @@
 #define kNativeMergeBBoxB "B"
 #define kNativeMergeFromA "A"
 #define kNativeMergeFromB "B"
+
+// Option IDs of the A and B alpha source choices.
+#define kNativeMergeAlphaUniversal "universal"
+#define kNativeMergeAlphaPerLayer "perLayer"
+#define kNativeMergeAlphaPerChannel "perChannel"
 
 // Inputs: B, A, Mask, then A2..A64, Nuke's order.
 #define kNativeMergeInputB 0
@@ -78,14 +90,27 @@ nativeMergeAInput(int k)
 
 /**
  * @brief Merge: A over B with one of MergeOps' operators, then A2 over the result, and so on. A
- * and B are each read in their own layer with a universal alpha channel, and the result goes to
- * the target layer. Every other layer of B passes through.
+ * and B are each read in their own layer with an alpha from their own source, and the result goes
+ * to the target layer. Every other layer of B passes through.
  **/
 struct NativeMergeOp {
+    /**
+     * @brief Where one side's alpha comes from. Universal is one channel for every merged channel;
+     * PerLayer is the read layer's own A or alpha channel, else the universal channel; PerChannel
+     * is an alpha layer whose channel i is the alpha of merged channel i.
+     **/
+    enum class AlphaSource : unsigned char {
+        Universal = 0,
+        PerLayer,
+        PerChannel
+    };
+
     struct Params {
         MergeOps::Operator op;
         // Whether a transparent A (A and its alpha all zero) leaves B unchanged under op.
         bool identityForTransparentA;
+        AlphaSource aAlpha;
+        AlphaSource bAlpha;
     };
 
     static constexpr NodeSpec kNodeSpec = {
@@ -122,6 +147,12 @@ struct NativeMergeOp {
               const RowIO& io) const;
 
     /**
+     * @brief The render error for a non-separable operator given a per-channel alpha layer on
+     * either side: it blends whole colours, so no one channel's alpha is its alpha.
+     **/
+    std::optional<std::string> error(const Params& params) const;
+
+    /**
      * @brief Whether op merging a transparent A (A = 0, a = 0) over any B gives B exactly, so a
      * missing A, or a stretch of row with nothing in A, leaves B unchanged.
      **/
@@ -135,10 +166,14 @@ struct NativeMergeOp {
     KnobLayerSelectWPtr bLayer;
     KnobChannelSelectWPtr aAlpha;
     KnobChannelSelectWPtr bAlpha;
+    KnobChoiceWPtr aAlphaSource;
+    KnobChoiceWPtr bAlphaSource;
+    KnobLayerSelectWPtr aAlphaLayer;
+    KnobLayerSelectWPtr bAlphaLayer;
     KnobStringWPtr subLabel;
 };
 
-static_assert(CompositeOp<NativeMergeOp>);
+static_assert(FailingCompositeOp<NativeMergeOp>);
 
 /**
  * @brief The Merge node. Named apart from MergeNode, the OpenFX-era Merge it replaces, and from
@@ -197,6 +232,9 @@ private:
 
     // Shows the operator's name next to the node's label.
     void refreshSubLabel();
+
+    // Shows each side's universal channel or alpha layer as its alpha source uses them.
+    void refreshAlphaKnobs();
 
     // The region of definition of inputNb in *rod, an empty one for a region it fails to give;
     // false when nothing is connected to it.

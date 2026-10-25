@@ -29,7 +29,10 @@
 #include <cstddef>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#include <QString>
 
 #include <ofxNatron.h>
 
@@ -185,6 +188,105 @@ createAlphaSelect(KnobHolder* holder,
 
     return alpha;
 }
+
+KnobChoicePtr
+createAlphaSourceChoice(KnobHolder* holder,
+                        const KnobPagePtr& page,
+                        const std::string& label,
+                        const std::string& name,
+                        const std::string& hint)
+{
+    KnobChoicePtr source = AppManager::createKnob<KnobChoice>(holder, label);
+
+    source->setName(name);
+    source->setHintToolTip(hint);
+    std::vector<ChoiceOption> options;
+    options.push_back(ChoiceOption(kNativeMergeAlphaUniversal, EffectInstance::tr("Universal").toStdString(),
+                                   EffectInstance::tr("One channel is the alpha of every merged channel.").toStdString()));
+    options.push_back(ChoiceOption(kNativeMergeAlphaPerLayer, EffectInstance::tr("Per-layer").toStdString(),
+                                   EffectInstance::tr("The merged layer's own channel named A or alpha, in any case, is its alpha; "
+                                                      "a layer without one takes the universal channel.")
+                                       .toStdString()));
+    options.push_back(ChoiceOption(kNativeMergeAlphaPerChannel, EffectInstance::tr("Per-channel").toStdString(),
+                                   EffectInstance::tr("An alpha layer's channel i is the alpha of merged channel i. It must have as "
+                                                      "many channels as the merged layer.")
+                                       .toStdString()));
+    source->populateChoices(options);
+    source->setDefaultValue((int)NativeMergeOp::AlphaSource::Universal);
+    source->setAnimationEnabled(false);
+    source->setIsMetadataSlave(true);
+    page->addKnob(source);
+
+    return source;
+}
+
+KnobLayerSelectPtr
+createAlphaLayerSelect(KnobHolder* holder,
+                       const KnobPagePtr& page,
+                       const std::string& label,
+                       const std::string& name,
+                       const std::string& hint)
+{
+    KnobLayerSelectPtr layer = AppManager::createKnob<KnobLayerSelect>(holder, label, 1, false);
+
+    layer->setName(name);
+    layer->setHintToolTip(hint);
+    layer->setWithChannelButtons(false);
+    layer->setAllowNone(true);
+    layer->setAnimationEnabled(false);
+    layer->setIsMetadataSlave(true);
+    page->addKnob(layer);
+
+    return layer;
+}
+
+NativeMergeOp::AlphaSource
+alphaSourceValue(const KnobReader& reader,
+                 const KnobChoiceWPtr& knob)
+{
+    const int value = reader.value(knob);
+
+    return ((value >= 0) && (value <= (int)NativeMergeOp::AlphaSource::PerChannel)) ? (NativeMergeOp::AlphaSource)value : NativeMergeOp::AlphaSource::Universal;
+}
+
+// The framework's alpha source for one side, from its universal channel and alpha layer knobs.
+CompositeAlpha
+compositeAlpha(NativeMergeOp::AlphaSource source,
+               std::string_view channelKnob,
+               std::string_view layerKnob)
+{
+    switch (source) {
+    case NativeMergeOp::AlphaSource::PerLayer:
+
+        return CompositeAlpha::readLayer(channelKnob);
+    case NativeMergeOp::AlphaSource::PerChannel:
+
+        return CompositeAlpha::layer(layerKnob);
+    case NativeMergeOp::AlphaSource::Universal:
+        break;
+    }
+
+    return CompositeAlpha::channel(channelKnob);
+}
+
+// Shows a side's universal channel unless it reads a per-channel alpha layer, and its alpha layer
+// only then.
+void
+refreshSideAlphaKnobs(const KnobChoiceWPtr& source,
+                      const KnobChannelSelectWPtr& channel,
+                      const KnobLayerSelectWPtr& layer)
+{
+    KnobChoicePtr sourceKnob = source.lock();
+    KnobChannelSelectPtr channelKnob = channel.lock();
+    KnobLayerSelectPtr layerKnob = layer.lock();
+
+    if (!sourceKnob || !channelKnob || !layerKnob) {
+        return;
+    }
+    const bool perChannel = (sourceKnob->getValue() == (int)NativeMergeOp::AlphaSource::PerChannel);
+    channelKnob->setSecret(perChannel);
+    layerKnob->setSecret(!perChannel);
+}
 } // anonymous namespace
 
 void
@@ -247,16 +349,28 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
 
     aLayer = createLayerSelect(holder, page, EffectInstance::tr("A Layer").toStdString(), kNativeMergeParamALayer,
                                EffectInstance::tr("The layer every A input is read in. A layer an input lacks reads as zero.").toStdString());
+    aAlphaSource = createAlphaSourceChoice(holder, page, EffectInstance::tr("A Alpha Source").toStdString(), kNativeMergeParamAAlphaSource,
+                                           EffectInstance::tr("Where each A input's alpha, a, comes from.").toStdString());
     aAlpha = createAlphaSelect(holder, page, EffectInstance::tr("A Alpha").toStdString(), kNativeMergeParamAAlpha,
-                               EffectInstance::tr("The channel of each A input that is its alpha, a, for every merged channel. "
-                                                  "None gives an alpha of 0.")
+                               EffectInstance::tr("The channel of each A input that is its alpha, a, for every merged channel, "
+                                                  "and for a layer without its own alpha under Per-layer. None gives an alpha of 0.")
                                    .toStdString());
+    aAlphaLayer = createAlphaLayerSelect(holder, page, EffectInstance::tr("A Alpha Layer").toStdString(), kNativeMergeParamAAlphaLayer,
+                                         EffectInstance::tr("The layer of each A input whose channel i is the alpha of merged channel i. "
+                                                            "None, or a layer an input lacks, gives an alpha of 0.")
+                                             .toStdString());
     bLayer = createLayerSelect(holder, page, EffectInstance::tr("B Layer").toStdString(), kNativeMergeParamBLayer,
                                EffectInstance::tr("The layer B is read in. Choosing it also sets the output layer.").toStdString());
+    bAlphaSource = createAlphaSourceChoice(holder, page, EffectInstance::tr("B Alpha Source").toStdString(), kNativeMergeParamBAlphaSource,
+                                           EffectInstance::tr("Where B's alpha, b, comes from.").toStdString());
     bAlpha = createAlphaSelect(holder, page, EffectInstance::tr("B Alpha").toStdString(), kNativeMergeParamBAlpha,
-                               EffectInstance::tr("The channel of B that is its alpha, b, for every merged channel. None gives "
-                                                  "an alpha of 0.")
+                               EffectInstance::tr("The channel of B that is its alpha, b, for every merged channel, and for a "
+                                                  "layer without its own alpha under Per-layer. None gives an alpha of 0.")
                                    .toStdString());
+    bAlphaLayer = createAlphaLayerSelect(holder, page, EffectInstance::tr("B Alpha Layer").toStdString(), kNativeMergeParamBAlphaLayer,
+                                         EffectInstance::tr("The layer of B whose channel i is the alpha of merged channel i. None, or "
+                                                            "a layer B lacks, gives an alpha of 0.")
+                                             .toStdString());
 } // NativeMergeOp::createKnobs
 
 NativeMergeOp::Params
@@ -267,8 +381,23 @@ NativeMergeOp::bake(const KnobReader& reader) const
 
     params.op = ((value >= 0) && (value < (int)MergeOps::eOperatorCount)) ? (MergeOps::Operator)value : MergeOps::eOver;
     params.identityForTransparentA = isIdentityForTransparentA(params.op);
+    params.aAlpha = alphaSourceValue(reader, aAlphaSource);
+    params.bAlpha = alphaSourceValue(reader, bAlphaSource);
 
     return params;
+}
+
+std::optional<std::string>
+NativeMergeOp::error(const Params& params) const
+{
+    if (MergeOps::isSeparable(params.op) || ((params.aAlpha != AlphaSource::PerChannel) && (params.bAlpha != AlphaSource::PerChannel))) {
+        return std::nullopt;
+    }
+
+    return EffectInstance::tr("The %1 operator blends whole colours, so it cannot take a per-channel alpha layer. Choose a "
+                              "universal or per-layer alpha source.")
+        .arg(QString::fromUtf8(MergeOps::operatorName(params.op)))
+        .toStdString();
 }
 
 bool
@@ -321,22 +450,23 @@ NativeMergeOp::route(const Params& params,
 }
 
 CompositeInputs
-NativeMergeOp::inputs(const Params& /*params*/,
+NativeMergeOp::inputs(const Params& params,
                       const RouteContext& context) const
 {
     CompositeInputs folded;
+    const CompositeAlpha aAlphaOf = compositeAlpha(params.aAlpha, kNativeMergeParamAAlpha, kNativeMergeParamAAlphaLayer);
 
-    folded.base = CompositeInput { kNativeMergeInputB, kNativeMergeParamBLayer, CompositeAlpha::channel(kNativeMergeParamBAlpha) };
+    folded.base = CompositeInput { kNativeMergeInputB, kNativeMergeParamBLayer, compositeAlpha(params.bAlpha, kNativeMergeParamBAlpha, kNativeMergeParamBAlphaLayer) };
     for (int k = 0; k < kNativeMergeMaxAInputs; ++k) {
         const int inputNb = nativeMergeAInput(k);
         if (context.isConnected(inputNb)) {
-            folded.add(CompositeInput { inputNb, kNativeMergeParamALayer, CompositeAlpha::channel(kNativeMergeParamAAlpha) });
+            folded.add(CompositeInput { inputNb, kNativeMergeParamALayer, aAlphaOf });
         }
     }
     // With no A connected, an operator that is not an identity then (route() answers the others)
     // merges a transparent A: input A, which reads zero.
     if (folded.further.empty()) {
-        folded.add(CompositeInput { kNativeMergeInputA, kNativeMergeParamALayer, CompositeAlpha::channel(kNativeMergeParamAAlpha) });
+        folded.add(CompositeInput { kNativeMergeInputA, kNativeMergeParamALayer, aAlphaOf });
     }
 
     return folded;
@@ -408,8 +538,18 @@ NativeMerge::initializeKnobs()
         node->declareLayerKnob(op().aAlpha.lock(), kNativeMergeInputA, LayerKnobSpec::eRoleInputBound);
         node->declareLayerKnob(op().bLayer.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
         node->declareLayerKnob(op().bAlpha.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(op().aAlphaLayer.lock(), kNativeMergeInputA, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(op().bAlphaLayer.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
     }
     refreshSubLabel();
+    refreshAlphaKnobs();
+}
+
+void
+NativeMerge::refreshAlphaKnobs()
+{
+    refreshSideAlphaKnobs(op().aAlphaSource, op().aAlpha, op().aAlphaLayer);
+    refreshSideAlphaKnobs(op().bAlphaSource, op().bAlpha, op().bAlphaLayer);
 }
 
 void
@@ -442,6 +582,14 @@ NativeMerge::knobChanged(KnobI* k,
         return true;
     }
 
+    KnobChoicePtr aAlphaSource = op().aAlphaSource.lock();
+    KnobChoicePtr bAlphaSource = op().bAlphaSource.lock();
+    if ((aAlphaSource && (k == aAlphaSource.get())) || (bAlphaSource && (k == bAlphaSource.get()))) {
+        refreshAlphaKnobs();
+
+        return true;
+    }
+
     // The output defaults to the B layer: a user's choice of B's layer moves the output with it.
     KnobLayerSelectPtr bLayer = op().bLayer.lock();
     if (bLayer && (k == bLayer.get()) && (reason == eValueChangedReasonUserEdited)) {
@@ -460,6 +608,7 @@ void
 NativeMerge::onKnobsLoaded()
 {
     refreshSubLabel();
+    refreshAlphaKnobs();
 }
 
 Route

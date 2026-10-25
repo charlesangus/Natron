@@ -843,6 +843,7 @@ TEST_F(StagedCompositeTest, AlphaLayerChannelCountMismatchIsARenderError)
     setLayerKnob(fold.op, kStagedParamALayer, kParitySourceExtraLayerID);
     std::vector<float> got;
     EXPECT_TRUE(renderRGBA(fold.op, fold.window, &got));
+    message.clear();
     fold.op->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }

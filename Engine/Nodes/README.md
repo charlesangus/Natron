@@ -983,7 +983,7 @@ fails with an error naming both; or the read layer's own `A`/`alpha` channel, fa
 a channel select. When any folded input has one, `step()` gets `io.alpha[0]` (the result's)
 and `io.alpha[1]` (the input's) as strided spans, an input without one reading zero, and writes
 the new result's alpha to `io.dstAlpha`; the base's alpha source gives the first result's. An op
-reading several inputs at once is not supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage. A Composite op runs on the GPU if it has `gpu(params)` returning a `GpuOpRef` (`GpuCompositeOp`); Dissolve does. Its kernel is built with `runCompositeStep` (`compositestep.slang`), or with `runCompositeAlphaStep` (`compositealpha.slang`) when its inputs have alpha sources, the fold then carrying the result's alpha between dispatches as the CPU does. A selected layer other than the rendered plane is handed over beside it (`getGpuExtraInputLayers()`), and the node asks for it upstream (`getComponentsNeededAndProduced()`); a base read in a layer whose channel count differs from the plane's stays on the CPU.
+reading several inputs at once is not supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage. A Composite op runs on the GPU if it has `gpu(params)` returning a `GpuOpRef` (`GpuCompositeOp`); Dissolve does. Its kernel is built with `runCompositeStep` (`compositestep.slang`), or with `runCompositeAlphaStep` (`compositealpha.slang`) when its inputs have alpha sources, the fold then carrying the result's alpha between dispatches as the CPU does. A selected layer other than the rendered plane is handed over beside it (`getGpuExtraInputLayers()`), and the node asks for it upstream (`addInputLayersNeeded()`); a base read in a layer whose channel count differs from the plane's stays on the CPU.
 
 **Custom** is the way out, and the cost of it is that the node owns its pixels.
 A Custom node derives from `StagedImageEffect` directly, returns
@@ -1130,7 +1130,7 @@ source plane, the divisor layer (through the "(Un)premult by" selector) and the
 mask layer (through the mask selector), all at the render window, and a Passes
 or Resample op widens the source's region of interest by its halo or filter
 reach. A node that reads more -- another input, another time, a wider window --
-declares it through `getRegionsOfInterest()`, `getComponentsNeededAndProduced()`
+declares it through `getRegionsOfInterest()`, `addInputLayersNeeded()`
 and `getFramesNeeded()` (Dissolve and Merge do). `isIdentity()` is composed from
 `route()` and the op, matching the OpenFX conditions so identities become
 identity tasks. No node here touches deep data or GL.

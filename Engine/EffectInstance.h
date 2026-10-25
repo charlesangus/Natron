@@ -2555,6 +2555,19 @@ protected:
         return false;
     }
 
+    /**
+     * @brief Adds to comps the layers the effect reads from its inputs beside those
+     * getComponentsNeededDefault() plans from the layer knob, mask and divisor, so that the request
+     * pass plans them upstream. Called at the end of getComponentsNeededDefault(), which is all a
+     * non-multi-planar effect gets: getComponentsNeededAndProduced() is only called on a
+     * multi-planar one.
+     **/
+    virtual void addInputLayersNeeded(double /*time*/,
+                                      ViewIdx /*view*/,
+                                      EffectInstance::ComponentsNeededMap* /*comps*/)
+    {
+    }
+
     virtual void setInteractColourPicker(const OfxRGBAColourD& /*color*/, bool /*setColor*/, bool /*hasColor*/)
     {
 

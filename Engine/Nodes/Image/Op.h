@@ -31,6 +31,8 @@
 #include <concepts>
 #include <cstdint>
 #include <cstring>
+#include <optional>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -370,6 +372,15 @@ concept CompositeOp = BakesParams<OP> && std::copyable<typename OP::Params> && r
     { op.isIdentity(params) } -> std::convertible_to<bool>;
     { op.inputs(params, context) } -> std::same_as<CompositeInputs>;
     { op.step(params, io) } -> std::same_as<void>;
+};
+
+/**
+ * @brief A Composite op whose Params can make a render impossible: error(params) is then the
+ * message the render fails with, and nullopt otherwise. Such Params never render on the GPU.
+ **/
+template <typename OP>
+concept FailingCompositeOp = CompositeOp<OP> && requires(const OP& op, const typename OP::Params& params) {
+    { op.error(params) } -> std::same_as<std::optional<std::string>>;
 };
 
 /**

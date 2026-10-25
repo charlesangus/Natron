@@ -4961,6 +4961,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
             }
         }
     }
+    addInputLayersNeeded(time, view, comps);
 } // EffectInstance::getComponentsNeededDefault
 
 void

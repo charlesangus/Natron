@@ -149,7 +149,7 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
 bool
 StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
 {
-    if (rawStageError(query.time, query.view)) {
+    if (rawStageError(query.time, query.view) || opError(query.time, query.view)) {
         return false;
     }
     const OpKind kind = imagePipelineSpec().op;
@@ -251,14 +251,10 @@ StagedImageEffect::getGpuExtraInputLayers(int inputNb,
 }
 
 void
-StagedImageEffect::getComponentsNeededAndProduced(double time,
-                                                  ViewIdx view,
-                                                  EffectInstance::ComponentsNeededMap* comps,
-                                                  double* passThroughTime,
-                                                  int* passThroughView,
-                                                  int* passThroughInputNb)
+StagedImageEffect::addInputLayersNeeded(double time,
+                                        ViewIdx view,
+                                        EffectInstance::ComponentsNeededMap* comps)
 {
-    NativeEffectBase::getComponentsNeededAndProduced(time, view, comps, passThroughTime, passThroughView, passThroughInputNb);
     if (imagePipelineSpec().op != OpKind::Composite) {
         return;
     }
@@ -275,6 +271,9 @@ StagedImageEffect::renderGpu(const GpuRenderArgs& args)
     const GpuQuery& query = args.query;
     const OpKind kind = imagePipelineSpec().op;
 
+    // canRenderOnGpu() turns down every frame render() fails with an error, so one rendered here
+    // has none and withdraws the error an earlier CPU frame posted.
+    postStageError(std::nullopt);
     if (kind == OpKind::Passes) {
         return recordPassesGpu(*this, resolveGpuPlan(query), args, opPasses(query.time, query.view, query.mappedScale));
     }
@@ -756,6 +755,9 @@ StagedImageEffect::render(const RenderActionArgs& args)
     StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), args.time, args.view, args.processChannels);
     resolveStageSources(nodeSpec(), inputs, &plan);
     std::optional<std::string> error = checksRawStage ? rawStageError(args.time, args.view) : std::nullopt;
+    if (!error) {
+        error = opError(args.time, args.view);
+    }
     if (!error) {
         error = stageSourcesError(*this, plan, args.time, args.view);
     }

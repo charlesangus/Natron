@@ -2209,6 +2209,13 @@ public:
         knobs.push_back(globalCustomOffset);
 
 #endif // ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
+
+        // These knobs edit the selected items, so they are off until a selection turns them on.
+        // Making that their default here rather than when the shapes load keeps a new node and a
+        // loaded one serializing the same enabled state.
+        for (std::list<KnobIWPtr>::iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            it->lock()->setDefaultAllDimensionsEnabled(false);
+        }
     }
 
     /**

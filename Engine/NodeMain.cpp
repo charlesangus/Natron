@@ -40,6 +40,7 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
 
 #include "Engine/KnobChannelSelect.h"
@@ -300,7 +301,7 @@ namespace {
 // Knobs a preset never changes, whatever it holds: they describe this particular node (what it is
 // called, whether it is on, which file it reads or writes) rather than its look. Every reader and
 // writer, native, deep or OpenFX, names its file knob kOfxImageEffectFileParamName, and a reader
-// its proxy file kOfxImageEffectProxyParamName.
+// its proxy file kOfxImageEffectProxyParamName. A Precomp's file is the project it reads.
 bool
 isKeptByPresets(const KnobIPtr& knob)
 {
@@ -308,7 +309,7 @@ isKeptByPresets(const KnobIPtr& knob)
     if ((name == kUserLabelKnobName) || (name == kNatronOfxParamStringSublabelName) || (name == kDisableNodeKnobName)) {
         return true;
     }
-    if ((name != kOfxImageEffectFileParamName) && (name != kOfxImageEffectProxyParamName)) {
+    if ((name != kOfxImageEffectFileParamName) && (name != kOfxImageEffectProxyParamName) && (name != kPrecompParamProjectFilename)) {
         return false;
     }
 

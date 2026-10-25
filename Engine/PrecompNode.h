@@ -31,6 +31,8 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/EngineFwd.h"
 
+#define kPrecompParamProjectFilename "projectFilename"
+
 NATRON_NAMESPACE_ENTER
 
 struct PrecompNodePrivate;

@@ -39,6 +39,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
@@ -274,6 +275,32 @@ TEST_F(NodePresetApply, APresetKeepsAWritersFileSublabelLabelAndDisableSwitch)
     EXPECT_EQ(std::string("target sublabel"), sublabel->getValue());
     EXPECT_EQ(std::string("target label"), knob<KnobString>(target, kUserLabelKnobName)->getValue());
     EXPECT_FALSE(knob<KnobBool>(target, kDisableNodeKnobName)->getValue());
+}
+
+TEST_F(NodePresetApply, APresetKeepsAPrecompsProjectFileAndUndoingWithTheSnapshotRestoresTheNodeExactly)
+{
+    NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_PRECOMP));
+    NodePtr target = createNode(QString::fromUtf8(PLUGINID_NATRON_PRECOMP));
+    ASSERT_TRUE(source && target);
+    KnobFilePtr sourceFile = knob<KnobFile>(source, kPrecompParamProjectFilename);
+    KnobFilePtr file = knob<KnobFile>(target, kPrecompParamProjectFilename);
+    KnobChoicePtr sourceOnError = knob<KnobChoice>(source, "onError");
+    ASSERT_TRUE(sourceFile && file && sourceOnError);
+    ASSERT_GT(sourceOnError->getNumEntries(), 1);
+    sourceFile->setValue(std::string("/tmp/preset_source.ntp"));
+    sourceOnError->setValue((sourceOnError->getDefaultValue(0) + 1) % sourceOnError->getNumEntries());
+    file->setValue(std::string("/tmp/preset_target.ntp"));
+
+    const Serialization::NodeSerialization before = snapshot(target);
+    const Serialization::NodeSerialization preset = presetFileOf(snapshot(source));
+    ASSERT_TRUE(carries(preset, kPrecompParamProjectFilename));
+    target->applyPresetSerialization(preset, Node::ePresetApplyModePreset, NULL);
+
+    EXPECT_EQ(std::string("/tmp/preset_target.ntp"), file->getValue());
+    EXPECT_EQ(sourceOnError->getValue(), knob<KnobChoice>(target, "onError")->getValue());
+
+    target->applyPresetSerialization(before, Node::ePresetApplyModeSnapshot, NULL);
+    EXPECT_EQ(yamlOf(before), yamlOf(snapshot(target)));
 }
 
 TEST_F(NodePresetApply, APresetKeepsTheRotoShapesAndUndoingWithTheSnapshotRestoresThem)

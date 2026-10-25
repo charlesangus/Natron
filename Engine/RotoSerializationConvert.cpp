@@ -385,8 +385,10 @@ RotoContext::fromSerialization(const Serialization::RotoContextSerialization& se
     _imp->featherLink = serialization.featherLink;
     _imp->rippleEdit = serialization.rippleEdit;
 
+    // Which of these knobs are on follows from the selection restored below, not from what the
+    // node's knobs loaded.
     for (std::list<KnobIWPtr>::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        it->lock()->setDefaultAllDimensionsEnabled(false);
+        it->lock()->setAllDimensionsEnabled(false);
     }
 
     assert(_imp->layers.size() == 1);

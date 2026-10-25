@@ -254,6 +254,7 @@ Deps: M100 - Content Node Hashing.
 
 ## Decisions
 
+- 2026-10-25 — **Phase 5 screenshots approved (user):** the viewer format, PAR and channel menus follow the frame over a keyed Switch; Phase 5 gate passed.
 - 2026-10-25 — **Phase 5 gate (bosley-native-nodes):** fast build 434/434 on 772f92d7d (after the identity-check message fix), and `Tests/gui/m167_viewer_follows_frame.py` (e934a0c3e) passes with 0 failures; screenshots shared, awaiting approval.
 - 2026-10-25 — **Phase 4 gate passed (PM):** fast 420/420 both legs on 925ce9569; OfxPerFrameMetadata, PerFrameMetadata and OfxClipPreferencesThread clean over 50 repeats, and OfxPerFrameMetadata over 4 parallel x 50. The switched-input case uses RGBPoint: PointMatrix writes alpha by default, and the M65 write-widening rule correctly turns its RGB frame into RGBA.
 - 2026-10-25 — **Phase 4 departures approved (user):** per-frame OpenFX clip-preferences calls run inline on the asking thread, not on a dedicated pool (a pool thread would queue for the read lock behind a waiting writer while the caller holds it, and may need the caller GIL). The ABBA fixed is the clip fetch triggering a refresh under the instance mutex (Node::InputRelatedDataRefreshDeferral); onNodeHashChanged was already ordered. onSyncPrivateDataRequested stays in the main-thread refresh, which per-frame calls never reach. begin/endSequenceRender get no frame answer. Deferred plug-in param writes leave the OFX property out of step with its knob until the queued refresh.

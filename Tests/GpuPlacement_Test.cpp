@@ -1234,11 +1234,13 @@ TEST(GpuCostModel, UnseededOpJoinsTheRegionOfItsGpuNeighbours)
 }
 
 // sink 0 (CPU) <- OCIODisplay 1 <- Grade 2 <- OCIOColorSpace 3 <- reader 4 (CPU). The OCIO nodes have no measured
-// rows, so neither is priced, but they are GPU-capable neighbours of the seeded Grade and join its region: the colour
+// rows, so neither is priced, but they are GPU-capable neighbours of the seeded Grade, which gains on the GPU, and join its region: the colour
 // pipeline is one region whose only download is the display's output.
 TEST(GpuCostModel, OcioColorPipelineFormsOneRegion)
 {
     CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+    fixture.model.setCpuSeed(kGradeId, 10., 1.);
+    fixture.model.setGpuSeed(kGradeId, 0.01);
 
     fixture.traits[1] = GpuTaskTraits("OCIODisplay");
     fixture.traits[2] = GpuTaskTraits(kGradeId);

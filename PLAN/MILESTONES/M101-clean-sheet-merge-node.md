@@ -146,7 +146,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
 
 ## Phase 101.7: Composite framework — alpha and layer sources
 
-- [ ] M101.P7.T1 — Add per-input layer and alpha sources to Composite ops on the CPU
+- [x] M101.P7.T1 — Add per-input layer and alpha sources to Composite ops on the CPU
   - files: `Engine/Nodes/Image/Op.h`, `Engine/Nodes/Image/StagePlan.{h,cpp}`, `Engine/Nodes/Image/PixelKernel.h`, `Tests/Native/StagedComposite_Test.cpp`
   - approach:
     - `CompositeInput`, and the base, gain an optional read layer, which overrides the `InputSpec::layer` resolution, and an optional alpha source: none, one channel of a layer, or an alpha layer read per channel.
@@ -156,7 +156,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
   - verify: new `StagedComposite_Test` cases use a test op that folds A in a selected layer with a universal alpha from `rgba.A`, and with a per-channel alpha layer, both against hand-computed rows. They also cover the mismatch error. `NativeDissolve_Test` is unchanged.
   - size: L
 
-- [ ] M101.P7.T2 — Let the GPU region engine hand an input over in several layers
+- [x] M101.P7.T2 — Let the GPU region engine hand an input over in several layers
   - files: `Engine/GpuRegionTask.{h,cpp}`, `Engine/GpuPlacement.cpp`, `Engine/Nodes/Image/StagePlan.cpp` (`stageGpuInputLayer`), `Tests/GpuResidency_Test.cpp`
   - approach:
     - An external or resident input may be requested in more than one layer: the plane rendered, a selected layer, and an alpha layer. Each is uploaded or kept resident as its own buffer.
@@ -165,7 +165,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
   - verify: a new `GpuResidency_Test` case runs a region whose consumer reads one upstream input in two layers. It checks one upload per layer per external input, and that nothing breaks the region. The existing placement and residency tests pass.
   - size: L
 
-- [ ] M101.P7.T3 — Fold Select-layer inputs and alpha sources on the GPU
+- [x] M101.P7.T3 — Fold Select-layer inputs and alpha sources on the GPU
   - files: `Engine/Gpu/Kernels/compositestep.slang`, `Engine/Nodes/Image/StagePlan.{h,cpp}` (`canRunStageSourcesGpu`, `recordStagesGpu`), `Tests/Native/StagedImageEffectGpu_Test.cpp`
   - approach:
     - `runCompositeStep` gains bindings for the result's alpha and the step input's alpha, plus a stride, in the op's parameter buffer or the 16 spare push-constant bytes.
@@ -227,7 +227,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
   - verify: tests merge `rgba` + `beauty` + `spec` in All matching, a two-layer List, and a layer absent on A. All other layers on B are untouched.
   - size: M
 
-- [ ] M101.P3.T2 — Add the per-side alpha source modes: Universal, Per-layer and Per-channel
+- [x] M101.P3.T2 — Add the per-side alpha source modes: Universal, Per-layer and Per-channel
   - files: `Engine/Nodes/Merge/NativeMerge.{h,cpp}`, `Tests/Native/NativeMergeNode_Test.cpp`
   - approach:
     - Add a per-side `alpha source` choice, plus the universal channel select and the per-channel alpha-layer select (input-bound).

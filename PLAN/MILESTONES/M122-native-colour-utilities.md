@@ -123,7 +123,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 121.2: Colorspace
 
-- [ ] M122.P2.T1 — Native Colorspace node, CPU
+- [x] M122.P2.T1 — Native Colorspace node, CPU
   - files: `Engine/Nodes/Color/Colorspace.h`, `Engine/Nodes/Color/Colorspace.cpp`, `Engine/Nodes/Image/ColorMath.h`, `Engine/Nodes/Color/Colorspace.reg.inc`, `Tests/Native/NativeColorspace_Test.cpp`
   - approach:
     - `colorspace_in` and `colorspace_out` model choices. The input model converts to linear RGB, then RGB converts to the output model.
@@ -134,7 +134,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, the test checks round-trips for every model within 1e-5 on HDR and negative inputs, the XYZ of a working-space white equals the white point, and Rec.709 primaries map to the expected Lab reference values.
   - size: L
 
-- [ ] M122.P2.T2 — Colorspace GPU kernel
+- [x] M122.P2.T2 — Colorspace GPU kernel
   - files: `Engine/Gpu/Kernels/colorspace.slang`, `Engine/Gpu/Kernels/colorspace.cmake`, `Engine/Nodes/Color/Colorspace.cpp`, `Tests/Native/NativeColorspaceGpu_Test.cpp`, `Engine/Nodes/Color/Colorspace.costseed.inc`
   - approach: the same model functions in Slang, selected by two ints. The 3×3 matrices go in params. Keep the code paths identical to the CPU, so there is no fast-math divergence.
   - verify: at the phase build, parity on RADV within 1e-5 absolute for every in/out pair on a test ramp that includes HDR and negatives.
@@ -142,7 +142,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 121.3: HSVTool, HueCorrect, HueKeyer
 
-- [ ] M122.P3.T1 — Native HSVTool, scene-linear
+- [x] M122.P3.T1 — Native HSVTool, scene-linear
   - files: `Engine/Nodes/Color/HSVTool.h`, `Engine/Nodes/Color/HSVTool.cpp`, `Engine/Nodes/Color/HSVTool.reg.inc`, `Tests/Native/NativeHSVTool_Test.cpp`
   - approach:
     - Hue range with rolloff, saturation range with rolloff, and value range with rolloff. The value range defaults to 0..∞ (upper bound "none"), so HDR values are selected.
@@ -152,7 +152,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, the test covers the default being identity, V > 1 selected by the default range, hue rotation wrapping, the rolloff ramp, and the alpha outputs.
   - size: M
 
-- [ ] M122.P3.T2 — Native HueCorrect
+- [x] M122.P3.T2 — Native HueCorrect
   - files: `Engine/Nodes/Color/HueCorrect.h`, `Engine/Nodes/Color/HueCorrect.cpp`, `Engine/Nodes/Color/HueCurves.h`, `Engine/Nodes/Color/HueCorrect.reg.inc`, `Tests/Native/NativeHueCorrect_Test.cpp`
   - approach:
     - One `KnobParametric` with the curves (sat, lum, r, g, b, r_sup, g_sup, b_sup, sat_thrsh) over a periodic hue domain, following the ColorLookup pattern.
@@ -161,7 +161,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, the test covers flat curves being identity, a sat curve dip desaturating only that hue, suppress curves, and HDR values passing through scaled, not clipped.
   - size: M
 
-- [ ] M122.P3.T3 — Clean-sheet HueKeyer
+- [x] M122.P3.T3 — Clean-sheet HueKeyer
   - files: `Engine/Nodes/Keyer/HueKeyer.h`, `Engine/Nodes/Keyer/HueKeyer.cpp`, `Engine/Nodes/Keyer/HueKeyer.reg.inc`, `Tests/Native/NativeHueKeyer_Test.cpp`
   - approach:
     - Two four-value trapezoids, in M95 - Knob Cleanup And Keyer Redesign's trapezoid-keyer style:
@@ -173,7 +173,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, the test covers the trapezoid edges, hue wrapping across red, the product intersection, and zero saturation giving a satKey of 0 unless satLow ≤ 0.
   - size: M
 
-- [ ] M122.P3.T4 — GPU kernels for HSVTool, HueCorrect and HueKeyer
+- [x] M122.P3.T4 — GPU kernels for HSVTool, HueCorrect and HueKeyer
   - files: `Engine/Gpu/Kernels/hue.slang`, `Engine/Gpu/Kernels/hue.cmake`, `Engine/Nodes/Color/HSVTool.cpp`, `Engine/Nodes/Color/HueCorrect.cpp`, `Engine/Nodes/Keyer/HueKeyer.cpp`
   - approach:
     - HSVTool and HueKeyer are analytic `IPixelOp`s.

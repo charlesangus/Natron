@@ -368,6 +368,23 @@ TEST(RenderStatsGpuCounters, RegionRecordFormat)
     EXPECT_NE(unpriced.find("\"newImportBytes\":4096,\"predictedTransferMs\":null,\"overlapStrips\":1,\"prepareWaitMs\":"), std::string::npos) << unpriced;
 }
 
+TEST(RenderStatsGpuCounters, RegionRecordEmitsStagedReasonsOnlyWhenNonzero)
+{
+    std::vector<int> tasks;
+    tasks.push_back(1);
+
+    GpuRegionTimes times;
+    EXPECT_EQ(formatRegionRecord(1, 1, tasks, times).find("stagedReasons"), std::string::npos);
+
+    times.stagedUnaligned = 3;
+    times.stagedForgotten = 1;
+    const std::string line = formatRegionRecord(1, 1, tasks, times);
+    const std::size_t reasons = line.find("\"importsAtDownload\":0,\"stagedReasons\":{\"disabled\":0,\"unaligned\":3,\"importFailed\":0,\"forgotten\":1}");
+    ASSERT_NE(reasons, std::string::npos) << line;
+    EXPECT_GT(line.find(",\"fallback\":", reasons), reasons) << line;
+    EXPECT_NE(line.find(",\"fallback\":", reasons), std::string::npos) << line;
+}
+
 TEST(RenderStatsGpuCounters, RegionRecordFormatCarriesTheFallbackAndRetries)
 {
     std::vector<int> tasks;

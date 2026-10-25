@@ -481,6 +481,15 @@ public:
      **/
     virtual CurveContextKindEnum getCurveContextKind() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The columns and context-menu actions a curve host adds to its panel's curve list, or
+     * null for none. Owned by the effect. Only read when getCurveContextKind() is not None.
+     **/
+    virtual RotoCurvePanelHook* getCurvePanelHook() const WARN_UNUSED_RETURN
+    {
+        return 0;
+    }
+
     virtual bool isPaintingOverItselfEnabled() const WARN_UNUSED_RETURN;
 
     /**

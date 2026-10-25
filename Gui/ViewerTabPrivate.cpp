@@ -435,22 +435,26 @@ ViewerTabPrivate::getLayerViewsAvailabelAtTime(double time,
     }
 }
 
-std::list<ViewerTabPrivate::PluginViewerContext>::iterator
-ViewerTabPrivate::findActiveNodeContextForPlugin(const std::string& pluginID)
+std::string
+ViewerTabPrivate::getViewerSlot(const NodePtr& node)
 {
-    // Roto and RotoPaint are 2 different plug-ins but we don't want them at the same time in the viewer
-    bool isRotoOrRotoPaint = pluginID == PLUGINID_NATRON_ROTO || pluginID == PLUGINID_NATRON_ROTOPAINT;
-    for (std::list<PluginViewerContext>::iterator it = currentNodeContext.begin(); it != currentNodeContext.end(); ++it) {
-        if (isRotoOrRotoPaint) {
-            if (it->pluginID == PLUGINID_NATRON_ROTO || it->pluginID == PLUGINID_NATRON_ROTOPAINT) {
-                return it;
-            }
-        } else {
-            if (it->pluginID == pluginID) {
-                return it;
-            }
-        }
+    // Curve hosts (Roto, RotoPaint, and any node editing curves) are different plug-ins but we
+    // don't want two of them at the same time in the viewer. The key can't clash with a plug-in ID.
+    EffectInstancePtr effect = node->getEffectInstance();
+    if (effect && (effect->getCurveContextKind() != EffectInstance::eCurveContextKindNone)) {
+        return std::string("<curve host>");
+    }
 
+    return node->getPluginID();
+}
+
+std::list<ViewerTabPrivate::PluginViewerContext>::iterator
+ViewerTabPrivate::findActiveNodeContextForSlot(const std::string& slot)
+{
+    for (std::list<PluginViewerContext>::iterator it = currentNodeContext.begin(); it != currentNodeContext.end(); ++it) {
+        if (it->slot == slot) {
+            return it;
+        }
     }
 
     return currentNodeContext.end();
@@ -459,7 +463,7 @@ ViewerTabPrivate::findActiveNodeContextForPlugin(const std::string& pluginID)
 bool
 ViewerTabPrivate::hasInactiveNodeViewerContext(const NodePtr& node)
 {
-    std::list<ViewerTabPrivate::PluginViewerContext>::iterator found = findActiveNodeContextForPlugin( node->getPluginID() );
+    std::list<ViewerTabPrivate::PluginViewerContext>::iterator found = findActiveNodeContextForSlot(getViewerSlot(node));
 
     if ( found == currentNodeContext.end() ) {
         return false;

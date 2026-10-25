@@ -296,6 +296,12 @@ public:
 
     void emitRefreshViewerOverlays();
 
+    /**
+     * @brief Tells the panel to re-read the columns the host's RotoCurvePanelHook adds for item,
+     * or for every item if item is null.
+     **/
+    void emitItemPanelColumnsChanged(const RotoItemPtr& item);
+
     void getBeziersKeyframeTimes(std::list<double>* times) const;
 
     /**
@@ -345,6 +351,7 @@ Q_SIGNALS:
     void itemGloballyActivatedChanged(const RotoItemPtr&);
     void itemScriptNameChanged(const RotoItemPtr&);
     void itemLabelChanged(const RotoItemPtr&);
+    void itemPanelColumnsChanged(const RotoItemPtr&);
 
 public Q_SLOTS:
 

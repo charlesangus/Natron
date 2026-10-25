@@ -247,6 +247,7 @@ class RenderingFlagSetter;
 class RotoContext;
 class RotoCurveContext;
 class RotoCurveInteract;
+class RotoCurvePanelHook;
 class RotoDrawableItem;
 class RotoItem;
 class RotoLayer;

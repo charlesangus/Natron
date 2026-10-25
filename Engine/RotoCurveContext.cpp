@@ -1647,6 +1647,12 @@ RotoCurveContext::emitRefreshViewerOverlays()
 }
 
 void
+RotoCurveContext::emitItemPanelColumnsChanged(const RotoItemPtr& item)
+{
+    Q_EMIT itemPanelColumnsChanged(item);
+}
+
+void
 RotoCurveContext::getBeziersKeyframeTimes(std::list<double>* times) const
 {
     std::list<RotoDrawableItemPtr> splines = getCurvesByRenderOrder();

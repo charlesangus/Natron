@@ -3526,10 +3526,20 @@ EffectInstance::message(MessageTypeEnum type,
     return node ? node->message(type, content) : false;
 }
 
+namespace {
+bool isCheckingIdentityForMetadata(const EffectInstance* effect);
+}
+
 void
 EffectInstance::setPersistentMessage(MessageTypeEnum type,
                                      const std::string & content)
 {
+    // The identity rule asks a metadata question at every current-frame refresh, not a render's:
+    // a plug-in error posted from it would overwrite the host's own report, which nothing then
+    // clears. A render asking the same identity still posts it.
+    if (isCheckingIdentityForMetadata(this)) {
+        return;
+    }
     NodePtr node = getNode();
     assert(node);
     if (node) {
@@ -6674,6 +6684,12 @@ findIdentityCheck(const EffectInstance* effect)
     }
 
     return 0;
+}
+
+bool
+isCheckingIdentityForMetadata(const EffectInstance* effect)
+{
+    return findIdentityCheck(effect) != 0;
 }
 } // anon namespace
 

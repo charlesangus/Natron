@@ -49,6 +49,7 @@
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
+#include "Engine/Nodes/Filter/EdgeExtend.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
@@ -118,6 +119,7 @@ gpuCapableIds()
         PLUGINID_NATRON_IBLUR,
         PLUGINID_NATRON_IERODE,
         PLUGINID_NATRON_IDILATE,
+        PLUGINID_NATRON_EDGEEXTEND,
         PLUGINID_NATRON_SHARPEN,
         PLUGINID_NATRON_SHUFFLE,
         PLUGINID_NATRON_SHUFFLECOPY,

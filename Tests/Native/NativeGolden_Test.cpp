@@ -44,6 +44,7 @@
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
+#include "Engine/Nodes/Filter/EdgeExtend.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
@@ -420,6 +421,20 @@ TEST_F(NativeGoldenTest, EdgeDetect)
     }));
     v.push_back(filterMaskMix(sobel));
     run(filterSpec("EdgeDetect", PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT), v);
+}
+
+TEST_F(NativeGoldenTest, EdgeExtend)
+{
+    const Apply wide = [](const GoldenGraph& g) { return num(g, kEdgeExtendParamSize, { 20. }) && num(g, kEdgeExtendParamSlices, { 8. }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("wide", wide));
+    v.push_back(variant("oneslice", [](const GoldenGraph& g) { return num(g, kEdgeExtendParamSize, { 6. }) && num(g, kEdgeExtendParamSlices, { 1. }); }));
+    v.push_back(variant("premultiplied", [](const GoldenGraph& g) {
+        return num(g, kEdgeExtendParamPremultiplyInput, { 0. }) && num(g, kEdgeExtendParamUnpremultiplyOutput, { 0. });
+    }));
+    v.push_back(filterMaskMix(wide));
+    run(filterSpec("EdgeExtend", PLUGINID_NATRON_EDGEEXTEND, PLUGIN_MAJOR_NATRON_EDGEEXTEND), v);
 }
 
 TEST_F(NativeGoldenTest, Sharpen)

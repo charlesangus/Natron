@@ -172,6 +172,12 @@ struct NativeMergeOp {
     std::optional<std::string> error(const Params& params) const;
 
     /**
+     * @brief The merge kernel (Kernels/merge.slang) with the operator. A non-separable operator
+     * blends a colour, so it runs on the GPU for three or four components only.
+     **/
+    GpuOpRef gpu(const Params& params) const;
+
+    /**
      * @brief Whether op merging a transparent A (A = 0, a = 0) over any B gives B exactly, so a
      * missing A, or a stretch of row with nothing in A, leaves B unchanged.
      **/
@@ -195,6 +201,7 @@ struct NativeMergeOp {
 };
 
 static_assert(FailingCompositeOp<NativeMergeOp>);
+static_assert(GpuCompositeOp<NativeMergeOp>);
 
 /**
  * @brief The Merge node. Named apart from MergeNode, the OpenFX-era Merge it replaces, and from

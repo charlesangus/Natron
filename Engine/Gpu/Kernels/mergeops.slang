@@ -41,6 +41,9 @@ module mergeops;
 //   luminosity SetLum(a·B, b·Lum(A))
 // Their fourth channel follows over, A + B(1-a). The colour clip is dropped, so HDR colours
 // survive. Separable operators treat every channel alike, the fourth included.
+//
+// `precise` keeps a multiply apart from the add it feeds, as the CPU twin's unfused arithmetic has
+// them, so the Porter-Duff operators match it exactly on the GPU (Engine/Gpu/Kernels/merge.slang).
 
 public static const uint MERGE_ATOP = 0;
 public static const uint MERGE_AVERAGE = 1;
@@ -103,7 +106,10 @@ float mergeMin(float x, float y)
 float mergeScreen(float A, float B)
 {
     if (A <= 1.0 && B <= 1.0)
-        return A + B - A * B;
+    {
+        precise float r = A + B - A * B;
+        return r;
+    }
     return mergeMax(A, B);
 }
 
@@ -124,7 +130,10 @@ public float mergeSeparable(uint op, float A, float a, float B, float b)
     switch (op)
     {
     case MERGE_ATOP:
-        return A * b + B * (1.0 - a);
+    {
+        precise float r = A * b + B * (1.0 - a);
+        return r;
+    }
     case MERGE_AVERAGE:
         return (A + B) * 0.5;
     case MERGE_COLOR_BURN:
@@ -132,25 +141,34 @@ public float mergeSeparable(uint op, float A, float a, float B, float b)
     case MERGE_COLOR_DODGE:
         return (A < 1.0) ? B / (1.0 - A) : A;
     case MERGE_CONJOINT_OVER:
+    {
         if (a >= b)
             return A;
         if (b <= 0.0)
             return A + B;
-        return A + B * (1.0 - a / b);
+        precise float r = A + B * (1.0 - a / b);
+        return r;
+    }
     case MERGE_COPY:
         return A;
     case MERGE_DIFFERENCE:
         return abs(A - B);
     case MERGE_DISJOINT_OVER:
+    {
         if (a >= 1.0)
             return A;
         if (a + b <= 1.0)
             return A + B;
-        return A + B * (1.0 - a) / b;
+        precise float r = A + B * (1.0 - a) / b;
+        return r;
+    }
     case MERGE_DIVIDE:
         return (B != 0.0) ? A / B : 0.0;
     case MERGE_EXCLUSION:
-        return A + B - 2.0 * A * B;
+    {
+        precise float r = A + B - 2.0 * A * B;
+        return r;
+    }
     case MERGE_FREEZE:
         return (B > 0.0) ? 1.0 - mergeSignedSqrt(1.0 - A) / B : 0.0;
     case MERGE_FROM:
@@ -167,13 +185,19 @@ public float mergeSeparable(uint op, float A, float a, float B, float b)
     case MERGE_HARD_LIGHT:
         return mergeHardLight(A, B);
     case MERGE_HYPOT:
-        return sqrt(A * A + B * B);
+    {
+        precise float s = A * A + B * B;
+        return sqrt(s);
+    }
     case MERGE_IN:
         return A * b;
     case MERGE_MASK:
         return B * a;
     case MERGE_MATTE:
-        return A * a + B * (1.0 - a);
+    {
+        precise float r = A * a + B * (1.0 - a);
+        return r;
+    }
     case MERGE_MAX:
         return mergeMax(A, B);
     case MERGE_MIN:
@@ -185,7 +209,10 @@ public float mergeSeparable(uint op, float A, float a, float B, float b)
     case MERGE_OUT:
         return A * (1.0 - b);
     case MERGE_OVER:
-        return A + B * (1.0 - a);
+    {
+        precise float r = A + B * (1.0 - a);
+        return r;
+    }
     case MERGE_OVERLAY:
         return mergeHardLight(B, A);
     case MERGE_PIN_LIGHT:
@@ -204,9 +231,15 @@ public float mergeSeparable(uint op, float A, float a, float B, float b)
     case MERGE_STENCIL:
         return B * (1.0 - a);
     case MERGE_UNDER:
-        return A * (1.0 - b) + B;
+    {
+        precise float r = A * (1.0 - b) + B;
+        return r;
+    }
     case MERGE_XOR:
-        return A * (1.0 - b) + B * (1.0 - a);
+    {
+        precise float r = A * (1.0 - b) + B * (1.0 - a);
+        return r;
+    }
     default:
         return B;
     }

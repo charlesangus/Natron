@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -47,6 +48,9 @@
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -67,6 +71,18 @@ enum FromEnum {
 
 // Pixels a step merges at a time, so that the gathered alphas fit on the stack.
 const int kStepChunk = 256;
+
+#ifdef NATRON_HAVE_GPU
+// The parameter block of StepMerge in merge.slang. Operator indices are mergeops' MERGE_*, the
+// order of MergeOps::Operator.
+struct NativeMergeGpuParams {
+    std::uint32_t op;
+    std::uint32_t identityForTransparentA;
+};
+
+static_assert(sizeof(NativeMergeGpuParams) == 8, "must match StepMerge in merge.slang");
+static_assert(MergeOps::eOperatorCount == 39, "must match MERGE_OPERATOR_COUNT in mergeops.slang");
+#endif
 
 // The alphas of pixels x0..x0+width-1 of a row, nComps per pixel in the row's layout, zero for a
 // row without any.
@@ -463,6 +479,26 @@ NativeMergeOp::error(const Params& params) const
                               "universal or per-layer alpha source.")
         .arg(QString::fromUtf8(MergeOps::operatorName(params.op)))
         .toStdString();
+}
+
+GpuOpRef
+NativeMergeOp::gpu(const Params& params) const
+{
+#ifdef NATRON_HAVE_GPU
+    NativeMergeGpuParams block = {};
+    block.op = (std::uint32_t)params.op;
+    block.identityForTransparentA = params.identityForTransparentA ? 1u : 0u;
+    GpuOpRef ref = GpuOpRef::compiled((int)gpu::GpuKernelId::merge, block);
+    if (!MergeOps::isSeparable(params.op)) {
+        ref.acceptedComponents = GpuOpRef::componentsBit(3) | GpuOpRef::componentsBit(4);
+    }
+
+    return ref;
+#else
+    Q_UNUSED(params);
+
+    return GpuOpRef::none();
+#endif
 }
 
 bool

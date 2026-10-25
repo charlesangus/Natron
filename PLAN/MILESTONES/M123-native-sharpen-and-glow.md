@@ -216,6 +216,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Decisions
 
+- 2026-10-25 — **Sharpen calls (bosley-native-nodes):** plain ID "Sharpen"; the threshold is relative (detail/value), weight ramping linearly from 0 at t to 1 at 2t (epsilon 1e-6), and Laplacian ignores it; nearest-pixel edges and no output growth, as Blur. GPU parity holds FIR filters to 1e-5 absolute and the recursive/box filters to Blur's 1e-4 IIR tolerance, on the [0,1] parity source. Filters are multi-pass ops through PassExecutor (SpatialFilterSupport.h is gone); the filters README needs a note that Sharpen uses the Premult stage.
 - 2026-10-13 — **Family in scope (user, /cat-plan grill):** Sharpen, Bloom with a native Glow, EdgeExtend and a native EdgeBlur. ChromaBlur and the expensive CImg PDE filters stay on OFX.
 - 2026-10-13 — **Redesign, not port (user):** Nuke-like knob sets, scene-linear maths, plain IDs, siblings consolidated. Sharpen absorbs Soften and Laplacian as modes.
 - 2026-10-13 — **GPU ships with each port (user):** every node has a GPU kernel and a parity test in this milestone, after M85 - Native GPU Kernels.

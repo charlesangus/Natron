@@ -157,6 +157,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-25 — **GPU contract departures (user):** agreed as proposed. (1) The OCIO shader's source and destination buffers are found by reserved name or declared binding, not bindings 0/1, since OCIO puts its uniform block at set 0 binding 0. (2) `GpuShaderTexture` gains an optional cache key; the GPU context keeps device textures by key, shared by the viewer and nodes. (3) CDL slider changes may compile new pipelines; "no recompile" is limited to OCIODisplay's gain, gamma and channel.
 - 2026-10-13 — **Nuke's node set, with LogConvert folded into OCIOColorSpace as a role preset** (user).
 - 2026-10-13 — **GPU through runtime compilation of OCIO's own shader** (user). This was chosen over translating ops into precompiled kernels or baking a shaped 3D LUT. The compiler and descriptor work is M126 - Runtime GPU Shaders.
 - 2026-10-19 — **Reuse M107 - GPU Viewer Hand-off's `Engine/OcioVulkanShader` helper** (gpu PM, via inbox): the viewer and the nodes then share one OCIO shader generator and LUT cache. M107 joins Deps.

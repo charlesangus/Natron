@@ -133,7 +133,7 @@ future core work has solid ground to build on.
 | M89 | Shared Worktree Ccache | done | - |  | E2 | [M89-shared-worktree-ccache.md](PLAN/MILESTONES/M89-shared-worktree-ccache.md) |
 | M90 | Render Path Serial Overhead | done | M84 | bosley-native-nodes | E6 | [M90-render-path-serial-overhead.md](PLAN/MILESTONES/M90-render-path-serial-overhead.md) |
 | M91 | NVIDIA GPU Validation | done | M84 | bosley-faux | E5 | [M91-nvidia-gpu-validation.md](PLAN/MILESTONES/M91-nvidia-gpu-validation.md) |
-| M116 | GPU Region Overlay | todo | M81, M85, M86, M87, M91, M107, M108, M109, M110, M162 |  | E5 | [M116-gpu-region-overlay.md](PLAN/MILESTONES/M116-gpu-region-overlay.md) |
+| M116 | GPU Region Overlay | todo | M81, M85, M91, M107, M108, M109, M110 |  | E5 | [M116-gpu-region-overlay.md](PLAN/MILESTONES/M116-gpu-region-overlay.md) |
 | M27 | Real Debug Build | done | - | | E2 | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | done | M75 | bosley-native-nodes | E3 | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M31 | ~~Architectural Cleanup~~ | cancelled | M75, M76 |  | E14 | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |

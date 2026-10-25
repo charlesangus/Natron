@@ -24,9 +24,21 @@ only. It is a Passes op: one gather pass with a 2-photosite halo, 1 without a CF
   of fixed pixels it shows.
 - It renders at full resolution only.
 
+GPU: the pass records on the GPU (`Engine/Gpu/Kernels/rawhotpixels.slang`, `rawhotpixels_fill` then
+`rawhotpixels_detect`), bound `ParityTolerance::exact()`. The source is copied into a buffer of the
+CPU's extent, zero outside the pixels that exist, and each photosite is tested as on the CPU. An
+X-Trans photosite finds its four neighbours with `colourAt()` in the kernel, in darktable's search
+order. The only arithmetic is the one product `value * strength / 2`, marked `precise` so that it
+stays a single rounded multiply; everything else is a comparison or a copy, so the result is bit
+for bit the CPU's. Planes are the pixel's channels, each tested alone, and the border photosites
+are copied as on the CPU.
+
 Tests: `Tests/Native/NativeRawHotPixels_Test.cpp`, on synthetic Bayer, X-Trans and linear data.
 Hot pixels injected into a dim smooth mosaic become the largest of their neighbours, and nothing
 else changes. A clean mosaic comes back bit for bit, and tiles match the full frame.
+`Tests/Native/NativeRawHotPixelsGpu_Test.cpp` holds the GPU to the CPU render under
+`ParityTolerance::exact()` on the CR2, RAF and linear DNG fixtures with injected hot pixels, at
+several strengths, in both detection modes and over several windows, and checks strength 0.
 
 ## darktable controls
 

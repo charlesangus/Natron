@@ -58,6 +58,7 @@
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
+#include "Engine/Nodes/Raw/RawHotPixels.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
 #include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Nodes/Transform/Crop.h"
@@ -106,6 +107,7 @@ gpuCapableIds()
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_RAWINPUTCOLOR,
         PLUGINID_NATRON_RAWCOLORCALIBRATION,
+        PLUGINID_NATRON_RAWHOTPIXELS,
         PLUGINID_NATRON_DISSOLVE,
         PLUGINID_NATRON_EDGEDETECT,
         PLUGINID_NATRON_SHUFFLE,

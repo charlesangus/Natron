@@ -30,4 +30,25 @@ nextSizeClassOf(uint64_t size)
     return sizeClassOf(sizeClassOf(size) + 1);
 }
 
+// The largest request a pool serving it with buffers up to nextSizeClassOf() keeps within `limit` bytes, such as a
+// storage buffer range; 0 when even the smallest class is over it.
+constexpr uint64_t
+largestSizeWithin(uint64_t limit)
+{
+    if (nextSizeClassOf(1) > limit) {
+        return 0;
+    }
+    uint64_t lo = 1;
+    uint64_t hi = limit;
+    while (lo < hi) {
+        const uint64_t mid = lo + (hi - lo + 1) / 2;
+        if (nextSizeClassOf(mid) <= limit) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return lo;
+}
+
 } // namespace gpu

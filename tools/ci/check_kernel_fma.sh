@@ -25,9 +25,7 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 kernels_dir="${1:-${repo_root}/Engine/Gpu/Kernels}"
 
-# M113 - Native Warp Nodes replaces these with Dekker products on its branch; delete the entry
-# when that lands (the script fails once the file has no match left).
-allowlist=(resample.slang)
+allowlist=()
 
 if [ ! -d "$kernels_dir" ]; then
     echo "error: ${kernels_dir} not found" >&2

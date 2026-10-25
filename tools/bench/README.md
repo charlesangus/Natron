@@ -258,3 +258,22 @@ page_fault_bench [-s GiB] [-a mmap|aligned|mmap2m] [-t write|rw|populate] [-n TH
   THP `enabled`, `defrag` and `use_zero_page` settings. `-j` prints the same fields as one JSON object.
 - It refuses a buffer (plus load buffers) above half of `MemAvailable`. The vmstat deltas are system-wide, so
   run it on an otherwise quiet host.
+
+## Raw GPU bench
+
+`raw_gpu_bench.sh` times the first frame of the raw Develop chain (Read, RawPrepare, RawHotPixels,
+RawDenoise, RawTemperature, RawHighlights in Clip mode, RawDemosaic, RawInputColor, Write to EXR) with
+`NATRON_GPU=off` and `auto`, one fresh process per render, no warm-up and an empty `XDG_CACHE_HOME`.
+
+```
+tools/bench/raw_gpu_bench.sh --app <Natron.AppImage> [--rounds 3] [--out DIR] [--big FILE] [--dry-run]
+```
+
+- Cases: the RAF with Markesteijn 1-pass and 3-pass, the CR2 with AMaZE, plus `--big FILE` (or a raw of
+  60 MB or more found in `build/assets` or `Tests/fixtures`). Off and auto alternate per case, the order
+  flipping each round.
+- `DIR/results.jsonl` has one line per render: case, mode, round, first-frame ms, GPU region count (from the
+  `NATRON_RENDER_PROFILE` records, so region membership can be checked in `DIR/<tag>.prof*`), exit status,
+  boot id and `MemAvailable`. `DIR/table.txt` has the median first-frame ms off and auto and the speed-up.
+- A case is skipped, with a line in `DIR/skips.log`, when `MemAvailable` is below the raw file size times
+  `BENCH_NEED_FACTOR` (default 40, at least 4 GiB). `--dry-run` lists the cases and the memory probe.

@@ -86,6 +86,18 @@ public:
     // A scratch request was refused for lack of device memory, which node code reports only as a failure to record.
     bool ranOutOfMemory() const { return outOfMemory_; }
 
+    // The largest buffer a dispatch binds: the device's maxStorageBufferRange, or the cap of
+    // setMaxStorageBufferBytesForTests() when smaller. A dispatch binding a larger buffer fails.
+    uint64_t maxStorageBufferBytes() const;
+
+    // The largest scratch() request whose buffer, as the pool rounds and reuses it, a dispatch still binds; 0 when
+    // none is.
+    uint64_t maxScratchBytes() const;
+
+    // Caps maxStorageBufferBytes() in every context, so that a test sees what a device with that limit does; 0
+    // removes the cap.
+    static void setMaxStorageBufferBytesForTests(uint64_t bytes);
+
     // Records a write of `data` into dst at `offset`, visible to later dispatches. Both offset and size
     // must be multiples of 4, and the size at most 65536 bytes.
     GpuStatus updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::span<const std::byte> data);
@@ -114,6 +126,7 @@ public:
 
 private:
     void parkInFlightWork();
+    GpuStatus checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const;
 
     GpuRecordContext(GpuKernelRegistry& registry, GpuBufferPool* pool, GpuPipelineCache* pipelines)
         : registry_(registry)

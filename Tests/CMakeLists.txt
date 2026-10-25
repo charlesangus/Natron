@@ -91,6 +91,7 @@ set(Tests_SOURCES
     Native/NativeGolden.cpp
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp
+    Gpu/RawAmazeGpu_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
@@ -173,6 +174,10 @@ if(NATRON_GPU)
     # Gpu/RawRegionGpu_Test registers this at run time to read a raw layout back from the device.
     slang_add_kernel(raw_test_layout_probe ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/rawprepare.slang ENTRY rawlayout_probe)
     target_link_libraries(Tests PRIVATE raw_test_layout_probe)
+    # Native/NativeRawDemosaicXTransGpu_Test registers this at run time as the serial walk the GPU
+    # Markesteijn green minima and maxima are held to.
+    slang_add_kernel(raw_test_markesteijn_minmax_serial ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/demosaic_markesteijn.slang ENTRY markesteijn_minmax_serial)
+    target_link_libraries(Tests PRIVATE raw_test_markesteijn_minmax_serial)
 endif()
 # Compiler, build type and the flags that set optimisation and FMA contraction, so fast
 # (Release at -O1), release (RelWithDebInfo) and debug builds stamp distinct goldens.

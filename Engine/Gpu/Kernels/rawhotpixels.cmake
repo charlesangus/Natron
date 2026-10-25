@@ -1,0 +1,2 @@
+slang_add_kernel(rawhotpixels_fill Kernels/rawhotpixels.slang ENTRY rawhotpixels_fill REGISTRY NatronGpu)
+slang_add_kernel(rawhotpixels_detect Kernels/rawhotpixels.slang ENTRY rawhotpixels_detect REGISTRY NatronGpu)

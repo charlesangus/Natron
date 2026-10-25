@@ -1,12 +1,19 @@
 #include "GpuRecord.h"
 
 #include "GpuPipelineCache.h"
+#include "GpuSizeClass.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 namespace gpu {
+
+namespace {
+    std::atomic<uint64_t> gMaxStorageBufferBytesForTests { 0 };
+} // namespace
 
 GpuStatus
 GpuRecordContext::create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out, GpuBufferPool* pool,
@@ -67,6 +74,9 @@ GpuRecordContext::dispatch(GpuKernelId kernel, std::span<const GpuBuffer* const>
         if (!buffers[i] || !*buffers[i]) {
             return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatch: empty buffer at binding " + std::to_string(i) };
         }
+        if (GpuStatus s = checkBindable("GpuRecordContext::dispatch", (uint32_t)i, buffers[i]->size()); !s) {
+            return s;
+        }
         handles[i] = buffers[i]->buffer();
     }
     return k->record(cmd_, handles, push, threads);
@@ -78,6 +88,14 @@ GpuRecordContext::dispatchBindings(GpuKernelId kernel, std::span<const GpuBindin
 {
     if (!open_) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: context already submitted" };
+    }
+    for (const GpuBinding& b : bindings) {
+        if (b.kind != GpuBinding::Kind::StorageBuffer) {
+            continue;
+        }
+        if (GpuStatus s = checkBindable("GpuRecordContext::dispatchBindings", b.binding, b.bufferSize); !s) {
+            return s;
+        }
     }
     GpuKernel* k = nullptr;
     if (GpuStatus s = registry_.get(kernel, k); !s) {
@@ -106,6 +124,14 @@ GpuRecordContext::dispatchBindings(const std::shared_ptr<GpuKernel>& kernel, std
     }
     if (!kernel) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: no kernel" };
+    }
+    for (const GpuBinding& b : bindings) {
+        if (b.kind != GpuBinding::Kind::StorageBuffer) {
+            continue;
+        }
+        if (GpuStatus s = checkBindable("GpuRecordContext::dispatchBindings", b.binding, b.bufferSize); !s) {
+            return s;
+        }
     }
     if (std::find(kernels_.begin(), kernels_.end(), kernel) == kernels_.end()) {
         kernels_.push_back(kernel);
@@ -167,6 +193,37 @@ GpuRecordContext::computeBarrier()
     dep.memoryBarrierCount = 1;
     dep.pMemoryBarriers = &mb;
     vkCmdPipelineBarrier2(cmd_, &dep);
+}
+
+uint64_t
+GpuRecordContext::maxStorageBufferBytes() const
+{
+    const uint64_t device = registry_.device().info().maxStorageBufferRange;
+    const uint64_t cap = gMaxStorageBufferBytesForTests.load(std::memory_order_relaxed);
+    return (cap != 0) ? std::min(device, cap) : device;
+}
+
+uint64_t
+GpuRecordContext::maxScratchBytes() const
+{
+    return largestSizeWithin(maxStorageBufferBytes());
+}
+
+void
+GpuRecordContext::setMaxStorageBufferBytesForTests(uint64_t bytes)
+{
+    gMaxStorageBufferBytesForTests.store(bytes, std::memory_order_relaxed);
+}
+
+// The descriptors bind whole buffers, and one over the range is invalid however little of it the kernel reads.
+GpuStatus
+GpuRecordContext::checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const
+{
+    const uint64_t range = maxStorageBufferBytes();
+    if (bytes > range) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, std::string(where) + ": the " + std::to_string(bytes) + "-byte buffer at binding " + std::to_string(binding) + " is over the " + std::to_string(range) + "-byte storage buffer range" };
+    }
+    return {};
 }
 
 GpuStatus

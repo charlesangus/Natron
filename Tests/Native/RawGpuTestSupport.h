@@ -174,41 +174,20 @@ protected:
                                       const GpuQuery* customQuery = NULL)
     {
         RenderedPlane cpu;
-        StagedImageEffect* effect = stagedOf(node);
+        std::vector<float> gpu;
 
-        EXPECT_TRUE(effect != NULL) << what;
-        if (!effect || !renderCpu(node, window, &cpu)) {
+        if (!renderBothWays(runtime, node, source, window, what, customQuery, &cpu, &gpu)) {
             return cpu;
         }
-        const RectI sourceWindow = effect->getGpuInputRoI(0, window, RenderScale::identity);
-        RenderedPlane input;
-        if (!renderCpu(source, sourceWindow, &input)) {
-            return cpu;
-        }
-        const GpuQuery query = customQuery ? *customQuery : queryFor((int)cpu.channels.size());
-        EXPECT_TRUE(effect->canRenderOnGpu(query)) << what;
-        if (!effect->canRenderOnGpu(query)) {
-            return cpu;
-        }
-        const GpuRunResult run = runRenderGpu(runtime, *effect, query, std::vector<GpuParityImage>(1, imageOf(input)), nullptr, window);
-        EXPECT_TRUE(run.ok) << what;
-        if (!run.ok) {
-            return cpu;
-        }
-        EXPECT_EQ(0u, run.writtenOutside) << what;
-        EXPECT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
-        if (cpu.pixels.size() != run.pixels.size()) {
-            return cpu;
-        }
-        const ImageDiff diff = compareImages(cpu.pixels, run.pixels, tolerance);
+        const ImageDiff diff = compareImages(cpu.pixels, gpu, tolerance);
         const std::size_t first = diff.firstMismatchIndex;
         EXPECT_EQ(0u, diff.mismatches) << what << ": " << diff.mismatches << " of " << diff.compared << " floats differ, the first at float " << first
-                                       << " (cpu " << cpu.pixels[first] << ", gpu " << run.pixels[first] << "), the worst by " << diff.worstAbsolute;
+                                       << " (cpu " << cpu.pixels[first] << ", gpu " << gpu[first] << "), the worst by " << diff.worstAbsolute;
         double worstRatio = 0.;
         for (std::size_t i = 0; i < cpu.pixels.size(); ++i) {
             const double reference = cpu.pixels[i];
             const double bound = tolerance.absolute + tolerance.relative * std::max(1., std::fabs(reference));
-            const double error = std::fabs(reference - (double)run.pixels[i]);
+            const double error = std::fabs(reference - (double)gpu[i]);
             if (std::isfinite(error) && error > 0.) {
                 worstRatio = std::max(worstRatio, bound > 0. ? error / bound : std::numeric_limits<double>::infinity());
             }
@@ -216,6 +195,129 @@ protected:
         std::printf("[          ] %s: %zu floats, worst difference %g, worst error/bound %.3f\n", what.c_str(), diff.compared, diff.worstAbsolute, worstRatio);
 
         return cpu;
+    }
+
+    /**
+     * @brief As expectGpuMatchesCpu(), for a method that compares values the device may round
+     * differently from the CPU, so that an isolated pixel can take the other branch. The bounds
+     * are relative to the CPU render's mean colour level, as RawReference::Tolerance's are: the
+     * mean error of the colour channels within mean, and at most outlierBudget pixels with a
+     * colour channel off by more than max. Every float the two renders disagree on being finite,
+     * and alpha, must match exactly. Returns the CPU render.
+     **/
+    RenderedPlane expectGpuMatchesCpuWithin(GpuParityRuntime& runtime,
+                                            const NodePtr& node,
+                                            const NodePtr& source,
+                                            const RectI& window,
+                                            double mean,
+                                            double max,
+                                            int outlierBudget,
+                                            const std::string& what,
+                                            const GpuQuery* customQuery = NULL)
+    {
+        RenderedPlane cpu;
+        std::vector<float> gpu;
+
+        if (!renderBothWays(runtime, node, source, window, what, customQuery, &cpu, &gpu)) {
+            return cpu;
+        }
+        const std::size_t nComps = cpu.channels.size();
+        const std::size_t colours = std::min<std::size_t>(3, nComps);
+        const std::size_t nPixels = (nComps > 0) ? cpu.pixels.size() / nComps : 0;
+        double sum = 0.;
+        double level = 0.;
+        double worst = 0.;
+        std::size_t worstPixel = 0;
+        std::size_t nonFinite = 0;
+        std::size_t otherMismatches = 0;
+        std::vector<double> pixelErrors(nPixels, 0.);
+        for (std::size_t p = 0; p < nPixels; ++p) {
+            for (std::size_t c = 0; c < nComps; ++c) {
+                const float a = cpu.pixels[p * nComps + c];
+                const float b = gpu[p * nComps + c];
+                const bool same = (a == b) || (std::isnan(a) && std::isnan(b));
+                if (c >= colours) {
+                    otherMismatches += same ? 0 : 1;
+                    continue;
+                }
+                const double error = same ? 0. : std::fabs((double)a - (double)b);
+                if (!std::isfinite(error)) {
+                    ++nonFinite;
+                    continue;
+                }
+                sum += error;
+                level += std::isfinite(a) ? std::fabs((double)a) : 0.;
+                pixelErrors[p] = std::max(pixelErrors[p], error);
+            }
+            if (pixelErrors[p] > worst) {
+                worst = pixelErrors[p];
+                worstPixel = p;
+            }
+        }
+        const double count = (double)(colours * nPixels);
+        EXPECT_GT(count, 0.) << what;
+        if (count <= 0.) {
+            return cpu;
+        }
+        const double meanError = sum / count;
+        level /= count;
+        EXPECT_GT(level, 0.) << what << ": the CPU render is black";
+        if (level <= 0.) {
+            return cpu;
+        }
+        const int outliers = (int)std::count_if(pixelErrors.begin(), pixelErrors.end(), [&](double e) { return e > max * level; });
+        const int width = std::max(1, window.width());
+        std::printf("[          ] %s: mean error %g (%.2e of the mean level %g), worst %g (%.2e) at %d,%d, %d of %zu pixels over %.0e\n", what.c_str(), meanError,
+                    meanError / level, level, worst, worst / level, window.x1 + (int)(worstPixel % width), window.y1 + (int)(worstPixel / width), outliers, nPixels, max);
+        EXPECT_EQ(0u, nonFinite) << what << ": colour floats finite on one side only";
+        EXPECT_EQ(0u, otherMismatches) << what << ": alpha differs";
+        EXPECT_LE(meanError / level, mean) << what;
+        EXPECT_LE(outliers, outlierBudget) << what << ": worst error " << worst / level << " of the mean level";
+
+        return cpu;
+    }
+
+private:
+    // The CPU render of node over window and its renderGpu() render, fed the CPU render of source
+    // over the region the GPU path reads, or false with the failure reported.
+    bool renderBothWays(GpuParityRuntime& runtime,
+                        const NodePtr& node,
+                        const NodePtr& source,
+                        const RectI& window,
+                        const std::string& what,
+                        const GpuQuery* customQuery,
+                        RenderedPlane* cpu,
+                        std::vector<float>* gpu)
+    {
+        StagedImageEffect* effect = stagedOf(node);
+
+        EXPECT_TRUE(effect != NULL) << what;
+        if (!effect || !renderCpu(node, window, cpu)) {
+            return false;
+        }
+        const RectI sourceWindow = effect->getGpuInputRoI(0, window, RenderScale::identity);
+        RenderedPlane input;
+        if (!renderCpu(source, sourceWindow, &input)) {
+            return false;
+        }
+        const GpuQuery query = customQuery ? *customQuery : queryFor((int)cpu->channels.size());
+        EXPECT_TRUE(effect->canRenderOnGpu(query)) << what;
+        if (!effect->canRenderOnGpu(query)) {
+            return false;
+        }
+        GpuRunResult run = runRenderGpu(runtime, *effect, query, std::vector<GpuParityImage>(1, imageOf(input)), nullptr, window);
+        EXPECT_TRUE(run.ok) << what;
+        if (!run.ok) {
+            return false;
+        }
+        EXPECT_EQ(0u, run.writtenOutside) << what;
+        EXPECT_EQ(cpu->pixels.size(), run.pixels.size()) << what;
+        if (cpu->pixels.size() != run.pixels.size()) {
+            return false;
+        }
+        *gpu = std::move(run.pixels);
+
+        return true;
     }
 #endif // NATRON_HAVE_GPU
 };

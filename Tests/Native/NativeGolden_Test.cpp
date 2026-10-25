@@ -493,7 +493,9 @@ TEST_F(NativeGoldenTest, Glow)
     v.push_back(variant("screenAddInput", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamScreen, { 1. }) && num(g, kGlowParamAddInput, { 1. }); }));
     v.push_back(variant("glowOnly", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamGlowOnly, { 1. }); }));
     v.push_back(variant("box", [small](const GoldenGraph& g) { return small(g) && choice(g, kGlowParamFilter, kBlurParamFilterBox); }));
-    v.push_back(filterMaskMix(small));
+    v.push_back(maskVariant("mask", small));
+    v.push_back(variant("rotated", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamStretch, { 0.6 }) && num(g, kGlowParamRotate, { 30. }); }));
+    v.push_back(variant("hue", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamIsolateHue, { 1. }) && num(g, kGlowParamPickHue, { 0.8, 0.2, 0.2 }); }));
     run(filterSpec("Glow", PLUGINID_NATRON_GLOW, PLUGIN_MAJOR_NATRON_GLOW), v);
 }
 

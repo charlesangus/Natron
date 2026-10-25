@@ -38,7 +38,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
 
-#define PLUGINID_NATRON_IBLUR "fr.natron.IBlur"
+#define PLUGINID_NATRON_IBLUR "IBlur"
 #define PLUGIN_MAJOR_NATRON_IBLUR 1
 
 #define kIBlurParamSize "size"

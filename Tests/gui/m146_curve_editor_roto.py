@@ -66,13 +66,18 @@ try:
                 return True
         return False
 
+    _editor_keepalive = []
+
     def editor_tree():
         """The curve editor's tree, found again on every call: a wrapper held across a yield is
-        marked deleted."""
+        marked deleted. The editor's wrapper is kept alive with it, since a child wrapper dies with
+        its parent's."""
         editors = gt.widgets_of("CurveEditor")
         if not editors:
             return None
         trees = editors[0].findChildren(QTreeWidget)
+        if trees:
+            _editor_keepalive[:] = [editors[0]]
         return trees[0] if trees else None
 
     def rows_under(item, depth=0):
@@ -170,6 +175,10 @@ try:
         shape_name = bez.getScriptName()
         roto_label = roto.getLabel()
         check(bez.getNumControlPoints() == 4, "the Bezier has four control points")
+        app.selectNode(roto, True)
+        QMetaObject.invokeMethod(root_graph(), "showSelectedNodeSettingsPanel")
+        ok = yield ("until", gt.any_panel_open, 10.0)
+        check(ok, "the RotoPaint node's settings panel opened")
         yield ("sleep", SETTLE_MS)
 
         editors = gt.widgets_of("CurveEditor")

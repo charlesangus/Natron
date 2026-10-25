@@ -58,7 +58,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
-#include "Engine/Settings.h"
 
 #include "Gui/ComboBox.h"
 #include "Gui/DialogButtonBox.h"
@@ -160,12 +159,6 @@ writerOutputFileName(const NodePtr& node)
     }
 
     return QString::fromUtf8(outputFileKnob->getValue().c_str());
-}
-
-bool
-rendersInSeparateProcess()
-{
-    return appPTR->getCurrentSettings()->isRenderInSeparatedProcessEnabled();
 }
 } // anonymous namespace
 
@@ -344,6 +337,7 @@ RenderDialog::RenderDialog(Gui* gui,
     QObject::connect(_imp->firstSpin, SIGNAL(valueChanged(double)), this, SLOT(onRangeValueChanged(double)));
     QObject::connect(_imp->lastSpin, SIGNAL(valueChanged(double)), this, SLOT(onRangeValueChanged(double)));
     QObject::connect(_imp->stepSpin, SIGNAL(valueChanged(double)), this, SLOT(onRangeValueChanged(double)));
+    QObject::connect(_imp->backgroundCheck, SIGNAL(toggled(bool)), this, SLOT(onBackgroundToggled(bool)));
     QObject::connect(_imp->buttons, SIGNAL(accepted()), this, SLOT(onOkClicked()));
     QObject::connect(_imp->buttons, SIGNAL(rejected()), this, SLOT(reject()));
 
@@ -395,7 +389,7 @@ RenderDialog::refreshValidation()
 
     bool hasError = _imp->writers.empty();
     QString message = hasError ? tr("There is no writer to render.") : QString();
-    const bool separateProcess = rendersInSeparateProcess();
+    const bool separateProcess = _imp->backgroundCheck->isChecked();
 
     for (std::vector<WriterRowInfo>::const_iterator it = _imp->writers.begin(); it != _imp->writers.end(); ++it) {
         RenderRange range = resolveRenderRange(preset, it->writerFirst, it->writerLast, it->writerStep,
@@ -415,8 +409,8 @@ RenderDialog::refreshValidation()
             message = tr("First frame is greater than the last frame.");
             break;
         case eRenderRangeErrorNegativeFirstInSeparateProcess:
-            message = tr("Rendering in a separate process cannot start before frame 0. "
-                         "Change the frame range, or turn off \"Render in a separate process\" in the Preferences.");
+            message = tr("A background render runs in a separate process, which cannot start before frame 0. "
+                         "Change the frame range, or render in the foreground.");
             break;
         case eRenderRangeErrorNone:
             break;
@@ -446,6 +440,12 @@ RenderDialog::onRangeValueChanged(double /*value*/)
 }
 
 void
+RenderDialog::onBackgroundToggled(bool /*checked*/)
+{
+    refreshValidation();
+}
+
+void
 RenderDialog::onOkClicked()
 {
     sessionState.preset = (RenderRangePresetEnum)_imp->presetCombo->activeIndex();
@@ -469,7 +469,7 @@ RenderDialog::getRenderWorks() const
     custom.step = (int)_imp->stepSpin->value();
 
     bool useStats = (_imp->gui && _imp->gui->getApp()) ? _imp->gui->getApp()->isRenderStatsActionChecked() : false;
-    const bool separateProcess = rendersInSeparateProcess();
+    const bool separateProcess = _imp->backgroundCheck->isChecked();
 
     for (std::vector<WriterRowInfo>::const_iterator it = _imp->writers.begin(); it != _imp->writers.end(); ++it) {
         RenderRange range = resolveRenderRange(preset, it->writerFirst, it->writerLast, it->writerStep,
@@ -629,7 +629,7 @@ runForegroundRender(Gui* gui,
     // progress dialog, since the error dialog's event loop can run their signals and timers.
     std::string startError;
     try {
-        gui->getApp()->startWritersRendering(false, works);
+        gui->getApp()->startWritersRendering(eRenderModeForeground, works);
     } catch (const std::exception& e) {
         startError = e.what();
     }
@@ -752,7 +752,7 @@ showRenderDialog(Gui* gui,
 
     if (dialog.isBackgroundChecked()) {
         try {
-            gui->getApp()->startWritersRendering(false, works);
+            gui->getApp()->startWritersRendering(eRenderModeBackground, works);
         } catch (const std::exception& e) {
             Dialogs::errorDialog(RenderDialog::tr("Render").toStdString(), e.what());
         }

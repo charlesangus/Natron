@@ -2794,17 +2794,23 @@ public:
     bool areKnobsFrozen() const;
 
     /**
-     * @brief Makes all output nodes connected downstream to this node abort any rendering.
-     * Should be called prior to changing the state of the user interface that could impact the
-     * final image.
+     * @brief Called before an edit that could change the final image: aborts the viewer renders
+     * downstream of this holder and lets them restart. Other renders never see an edit made while
+     * they run, so they are left alone.
      **/
-    virtual void abortAnyEvaluation(bool keepOldestRender = true) { Q_UNUSED(keepOldestRender); }
+    virtual void abortViewerRendersForEdit() { }
 
     /**
-     * @brief abortAnyEvaluation() for a change being made, deferred to the end of the outermost
-     * begin/endChanges bracket when the change is made inside a nested one.
+     * @brief Aborts every render downstream of this holder without restarting it, for a change
+     * that leaves nothing to render, such as deactivation.
      **/
-    void abortAnyEvaluationForChange();
+    virtual void abortAllRendersReadingThis() { }
+
+    /**
+     * @brief abortViewerRendersForEdit() for a change being made, deferred to the end of the
+     * outermost begin/endChanges bracket when the change is made inside a nested one.
+     **/
+    void abortViewerRendersForChange();
 
     /**
      * @brief Dequeues all values set in the queues for all knobs

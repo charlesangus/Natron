@@ -1143,7 +1143,7 @@ Knob<T>::setValue(const T & v,
         if ( holder && getEvaluateOnChange() ) {
             //We explicitly abort rendering now and do not wait for it to be done in EffectInstance::evaluate()
             //because the actual value change (which will call evaluate()) may arise well later
-            holder->abortAnyEvaluation();
+            holder->abortViewerRendersForEdit();
         }
 
         KnobHelper::ValueChangedReturnCodeEnum returnValue;
@@ -1559,7 +1559,7 @@ Knob<T>::setValueAtTime(double time,
         if ( holder && getEvaluateOnChange() ) {
             //We explicitly abort rendering now and do not wait for it to be done in EffectInstance::evaluate()
             //because the actual value change (which will call evaluate()) may arise well later
-            holder->abortAnyEvaluation();
+            holder->abortViewerRendersForEdit();
         }
 
         QueuedSetValueAtTimePtr qv = std::make_shared<QueuedSetValueAtTime>( time, view, dimension, v, *newKey, reason, isValueChangesBlocked() );

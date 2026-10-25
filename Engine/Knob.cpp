@@ -6850,7 +6850,7 @@ KnobHolder::onDoEvaluateOnMainThread(bool significant,
 }
 
 void
-KnobHolder::abortAnyEvaluationForChange()
+KnobHolder::abortViewerRendersForChange()
 {
     {
         QMutexLocker l(&_imp->evaluationBlockedMutex);
@@ -6863,7 +6863,7 @@ KnobHolder::abortAnyEvaluationForChange()
             return;
         }
     }
-    abortAnyEvaluation();
+    abortViewerRendersForEdit();
 }
 
 void
@@ -7012,7 +7012,7 @@ KnobHolder::endChanges(bool discardRendering)
     }
 
     if (mustAbort) {
-        abortAnyEvaluation();
+        abortViewerRendersForEdit();
     }
 
     // Call getClipPreferences & render

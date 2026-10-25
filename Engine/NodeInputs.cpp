@@ -819,7 +819,7 @@ Node::connectInput(const NodePtr & input,
     }
 
     bool useGuiInputs = isNodeRendering();
-    _imp->effect->abortAnyEvaluation();
+    _imp->effect->abortViewerRendersForEdit();
 
     {
         ///Check for invalid index
@@ -965,7 +965,7 @@ Node::replaceInput(const NodePtr& input,
 
 
     bool useGuiInputs = isNodeRendering();
-    _imp->effect->abortAnyEvaluation();
+    _imp->effect->abortViewerRendersForEdit();
     return replaceInputInternal(input, inputNumber, useGuiInputs);
 } // Node::replaceInput
 
@@ -1013,7 +1013,7 @@ Node::switchInput0And1()
     }
 
     bool useGuiInputs = isNodeRendering();
-    _imp->effect->abortAnyEvaluation();
+    _imp->effect->abortViewerRendersForEdit();
 
     {
         QMutexLocker l(&_imp->inputsMutex);
@@ -1113,7 +1113,7 @@ Node::disconnectInput(int inputNumber)
         destroyed = _imp->isBeingDestroyed;
     }
     if (!destroyed) {
-        _imp->effect->abortAnyEvaluation();
+        _imp->effect->abortViewerRendersForEdit();
     }
 
     {
@@ -1242,7 +1242,7 @@ Node::disconnectInput(Node* input)
 {
 
     bool useGuiValues = isNodeRendering();
-    _imp->effect->abortAnyEvaluation();
+    _imp->effect->abortViewerRendersForEdit();
     return disconnectInputInternal(input, useGuiValues);
 } // Node::disconnectInput
 

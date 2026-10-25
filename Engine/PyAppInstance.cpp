@@ -356,7 +356,7 @@ App::renderInternal(bool forceBlocking,
 
     PythonGILUnlocker pgl;
 
-    getInternalApp()->startWritersRendering(forceBlocking, l);
+    getInternalApp()->startWritersRendering(forceBlocking ? eRenderModeBlocking : eRenderModeForeground, l);
 }
 
 void
@@ -403,7 +403,7 @@ App::renderInternal(bool forceBlocking,
 
     PythonGILUnlocker pgl;
 
-    getInternalApp()->startWritersRendering(forceBlocking, l);
+    getInternalApp()->startWritersRendering(forceBlocking ? eRenderModeBlocking : eRenderModeForeground, l);
 }
 
 Param*

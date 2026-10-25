@@ -735,10 +735,10 @@ AppInstance::loadInternal(const CLArgs& cl,
 
         ///launch renders
         if ( !writersWork.empty() ) {
-            startWritersRendering(false, writersWork);
+            startWritersRendering(eRenderModeBlocking, writersWork);
         } else {
             std::list<std::string> writers;
-            startWritersRenderingFromNames( cl.areRenderStatsEnabled(), false, writers, cl.getFrameRanges() );
+            startWritersRenderingFromNames(cl.areRenderStatsEnabled(), eRenderModeBlocking, writers, cl.getFrameRanges());
         }
     } else if (appPTR->getAppType() == AppManager::eAppTypeInterpreter) {
         QFileInfo info( cl.getScriptFilename() );
@@ -1870,9 +1870,9 @@ AppInstance::triggerAutoSave()
 
 void
 AppInstance::startWritersRenderingFromNames(bool enableRenderStats,
-                                            bool doBlockingRender,
+                                            RenderModeEnum mode,
                                             const std::list<std::string>& writers,
-                                            const std::list<std::pair<int, std::pair<int, int> > >& frameRanges)
+                                            const std::list<std::pair<int, std::pair<int, int>>>& frameRanges)
 {
     std::list<RenderWork> renderers;
 
@@ -1944,25 +1944,26 @@ AppInstance::startWritersRenderingFromNames(bool enableRenderStats,
         throw std::invalid_argument("Project file is missing a writer node. This project cannot render anything.");
     }
 
-    startWritersRendering(doBlockingRender, renderers);
+    startWritersRendering(mode, renderers);
 } // AppInstance::startWritersRenderingFromNames
 
 void
-AppInstance::startWritersRendering(bool doBlockingRender,
+AppInstance::startWritersRendering(RenderModeEnum mode,
                                    const std::list<RenderWork>& writers)
 {
     if ( writers.empty() ) {
         return;
     }
 
-    bool renderInSeparateProcess = appPTR->getCurrentSettings()->isRenderInSeparatedProcessEnabled();
+    const bool blocking = (mode == eRenderModeBlocking) || appPTR->isBackground();
+    const bool renderInSeparateProcess = !blocking && (mode == eRenderModeBackground);
 
     // Asked for from an event loop the running save spun on this thread: the render save would
     // have to wait for a save that cannot end before this call returns. A render that does not
     // block its caller can start once the save is over.
-    if (renderInSeparateProcess && !doBlockingRender && !appPTR->isBackground() && getProject()->isSavingOnCurrentThread()) {
-        QTimer::singleShot(0, this, [this, doBlockingRender, writers]() {
-            startWritersRendering(doBlockingRender, writers);
+    if (renderInSeparateProcess && getProject()->isSavingOnCurrentThread()) {
+        QTimer::singleShot(0, this, [this, mode, writers]() {
+            startWritersRendering(mode, writers);
         });
 
         return;
@@ -2011,7 +2012,7 @@ AppInstance::startWritersRendering(bool doBlockingRender,
         return;
     }
 
-    if (appPTR->isBackground() || doBlockingRender) {
+    if (blocking) {
         // blocking call, we don't want this function to return pre-maturely, in which case it would kill the app
         // Each item's thread only waits for its render, so it must not hold one of the global pool's threads, which
         // the Task graph scheduler runs the frames' work on: with a pool of one, that render would never start.

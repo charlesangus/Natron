@@ -111,6 +111,17 @@ enum CreateNodeStatusEnum {
     eCreateNodeStatusFailed
 };
 
+// How AppInstance::startWritersRendering runs its renders. A background (no GUI) app has no event
+// loop to return to, so it runs every mode as eRenderModeBlocking.
+enum RenderModeEnum {
+    // In this process, returning at once; the caller keeps the user from editing while it runs.
+    eRenderModeForeground,
+    // In a separate process, rendering the project as saved when the render is started.
+    eRenderModeBackground,
+    // In this process, returning once every render has finished.
+    eRenderModeBlocking
+};
+
 class UndoRecorderI;
 
 class AppInstance
@@ -362,10 +373,10 @@ public:
      * will be rendered using the frame ranges.
      **/
     void startWritersRenderingFromNames(bool enableRenderStats,
-                                        bool doBlockingRender,
+                                        RenderModeEnum mode,
                                         const std::list<std::string>& writers,
-                                        const std::list<std::pair<int, std::pair<int, int> > >& frameRanges);
-    void startWritersRendering(bool doBlockingRender, const std::list<RenderWork>& writers);
+                                        const std::list<std::pair<int, std::pair<int, int>>>& frameRanges);
+    void startWritersRendering(RenderModeEnum mode, const std::list<RenderWork>& writers);
 
     /**
      * @brief Turns the -w/--writer arguments of cl into RenderWork requests, resolving each

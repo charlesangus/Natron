@@ -336,7 +336,7 @@ ProgressTaskInfo::restartTask()
         _imp->refreshButtons();
         std::list<AppInstance::RenderWork> works;
         works.push_back(w);
-        node->getApp()->startWritersRendering(false, works);
+        node->getApp()->startWritersRendering(eRenderModeForeground, works);
     }
 }
 

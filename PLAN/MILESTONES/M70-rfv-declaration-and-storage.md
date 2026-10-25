@@ -82,6 +82,7 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
 
 ## Decisions
 
+- 2026-10-25 — **Project variables and M114 undo (bosley-native-nodes):** `app.createRFV*Param` is not recorded in the global undo history, matching M114's rule that project-level creation (addProjectLayer and the like) isn't; value edits to a variable are recorded through M114's per-knob path, and variables created on a Set node through the node API are recorded by M114's node path. A panel rebuild keeps its current user page (`DockablePanel::setPagesOrder` matches by page script name).
 - 2026-10-25 — **Project variables from Python (bosley-native-nodes):** dedicated `app.createRFV<Type>Param(name, label)` methods with the UserParamHolder creators' arguments, raising ValueError on an existing, invalid or refused name, and on a name that is already an App attribute (a variable can't hide `render` or `createNode`). Variables are re-declared as `app.<name>` after a load and a reset. Reset deletes the project's variables.
 - 2026-10-25 — **RFV group invariant both ways (bosley-native-nodes):** a flagged group refuses a non-variable child in addKnob/insertKnob, as setAsRFVGroup refuses while one exists; on load a refused child is logged and dropped.
 - 2026-10-25 — **getDeclaredVariables failure mode (bosley-native-nodes):** a bad child is left out with a message, duplicate names reject every holder of the name, and every flagged group in the holder is read.

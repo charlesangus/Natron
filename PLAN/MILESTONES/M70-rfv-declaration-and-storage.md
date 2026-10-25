@@ -18,13 +18,13 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
 
 ## Phase 70.2: The Set node
 
-- [ ] M70.P2.T1 — Add the `ReverseFlowVariableSet` native node
+- [x] M70.P2.T1 — Add the `ReverseFlowVariableSet` native node
   - files: `Engine/Nodes/RFV/ReverseFlowVariableSet.h`, `.cpp` (new), `Engine/AppManager.cpp` (one registration line), `Engine/CMakeLists.txt`
   - approach: model on `Engine/Nodes/TypedPassthrough.{h,cpp}`: polymorphic data kind in and out, `isIdentity` returns true with input 0, no `render()`. `initializeKnobs` creates a user page holding one RFV group. Read `Engine/Nodes/README.md` first. Grouping "Other" (or the closest existing one).
   - verify: a gtest creates the node, connects a Checkerboard through it and renders; the output is bit-identical to the input.
   - size: M
 
-- [ ] M70.P2.T2 — Persist variables added to a Set node across save and load
+- [x] M70.P2.T2 — Persist variables added to a Set node across save and load
   - files: `Tests/RFVSetNode_Test.cpp` (new), `Tests/CMakeLists.txt`; fix in `Engine/NodeGroup.cpp` / `Engine/Node.cpp` only if user knobs under the flagged group fail to restore
   - approach: add children (Double, String, Int2D, Bool, an animated Double) to the node's RFV group through `KnobHolder::create*Knob` + `recreateUserKnobs`, save the project, load it, and compare values and animation curves.
   - verify: the test passes; the reloaded node's `RFV::getDeclaredVariables` matches the saved list.
@@ -32,13 +32,13 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
 
 ## Phase 70.3: The project RFV group
 
-- [ ] M70.P3.T1 — Add a project RFV group and restore its user knobs on load
+- [x] M70.P3.T1 — Add a project RFV group and restore its user knobs on load
   - files: `Engine/Project.cpp` (`initializeKnobs`), `Engine/ProjectPrivate.cpp` (`restoreFromSerialization`), `Engine/ProjectSerialization.cpp`
   - approach: create an RFV group on the project settings. Serialization already writes persistent modified knobs; on restore, recreate the project's user knobs under the RFV group from the serialization *before* the by-name match. Mirror the `isUserKnob()` restore in `NodeGroup.cpp`.
   - verify: `Tests/ProjectSerialization_Test.cpp` gains a case: add three project variables (one animated), save, load into a fresh project, and values and curves match.
   - size: M
 
-- [ ] M70.P3.T2 — Python entry point for declaring project variables
+- [x] M70.P3.T2 — Python entry point for declaring project variables
   - files: `Engine/PyAppInstance.h`, `Engine/PyAppInstance.cpp`, `Engine/PyNode.cpp` (reuse the `UserParamHolder` creators)
   - approach: expose `app.createRFV...Param(name, ...)` (or a restricted `UserParamHolder` over the project RFV group) for Int, Double, Bool, String, Choice, Color and the 2D/3D variants. Each creates the knob inside the project RFV group. Declaring a name that exists replaces nothing and raises. Because `declareCurrentAppVariable_Python` only declares knobs existing at that moment, rerun it after creation.
   - verify: a gtest runs a Python snippet that creates two project variables and reads them back through `app.getProjectParam`.

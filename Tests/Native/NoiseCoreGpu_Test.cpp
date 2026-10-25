@@ -56,13 +56,13 @@ using NoiseCore::NoiseParams;
 
 namespace {
 
-// noisecore.slang's NoiseSampleParams.
+// noisecore_test.slang's NoiseSampleParams.
 struct NoiseSampleParams {
     NoiseParams noise;
     uint32_t count;
 };
 static_assert(std::is_trivially_copyable<NoiseSampleParams>::value, "pushed to the GPU");
-static_assert(sizeof(NoiseSampleParams) == 60, "must match noisecore.slang");
+static_assert(sizeof(NoiseSampleParams) == 60, "must match noisecore_test.slang");
 
 // How a configuration's GPU result must match the CPU's.
 enum class Match {

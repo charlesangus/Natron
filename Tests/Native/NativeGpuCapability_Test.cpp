@@ -44,9 +44,12 @@
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
+#include "Engine/Nodes/Color/ColorMatrix.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
+#include "Engine/Nodes/Color/Threshold.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
@@ -116,6 +119,10 @@ gpuCapableIds()
         PLUGINID_NATRON_SHUFFLECOPY,
         PLUGINID_NATRON_ADDLAYERS,
         PLUGINID_NATRON_REMOVELAYERS,
+        PLUGINID_NATRON_PREMULT,
+        PLUGINID_NATRON_UNPREMULT,
+        PLUGINID_NATRON_COLORMATRIX,
+        PLUGINID_NATRON_THRESHOLD,
     };
 
     return ids;

@@ -30,6 +30,8 @@
 
 #include <gtest/gtest.h>
 
+#include <ofxNatron.h>
+
 #include "BaseTest.h"
 #include "NativeGolden.h"
 #include "NativeParity.h"
@@ -39,9 +41,12 @@
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
+#include "Engine/Nodes/Color/ColorMatrix.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
+#include "Engine/Nodes/Color/Threshold.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
@@ -283,6 +288,56 @@ TEST_F(NativeGoldenTest, Saturation)
     }));
     addPremultAndMaskMix(&v, boost);
     run(filterSpec("Saturation", PLUGINID_NATRON_SATURATION, PLUGIN_MAJOR_NATRON_SATURATION), v);
+}
+
+// Premult and Unpremult: the default divisor (alpha), another channel as the divisor, alpha
+// processed too, no divisor at all, and a mask with mix.
+void
+addPremultVariants(std::vector<GoldenVariant>* v)
+{
+    v->push_back(variant("default"));
+    v->push_back(variant("byG", [](const GoldenGraph& g) { return setGoldenChannelSelect(g.node, kUnPremultByKnobName, "rgba.G"); }));
+    v->push_back(variant("processA", [](const GoldenGraph& g) { return num(g, kNatronOfxParamProcessA, { 1. }); }));
+    v->push_back(variant("none", [](const GoldenGraph& g) { return setGoldenChannelSelect(g.node, kUnPremultByKnobName, std::string()); }));
+    v->push_back(maskVariant("maskmix", [](const GoldenGraph& g) { return num(g, kOfxMixParamName, { 0.6 }); }));
+}
+
+TEST_F(NativeGoldenTest, Premult)
+{
+    std::vector<GoldenVariant> v;
+    addPremultVariants(&v);
+    run(filterSpec("Premult", PLUGINID_NATRON_PREMULT, PLUGIN_MAJOR_NATRON_PREMULT), v);
+}
+
+TEST_F(NativeGoldenTest, Unpremult)
+{
+    std::vector<GoldenVariant> v;
+    addPremultVariants(&v);
+    run(filterSpec("Unpremult", PLUGINID_NATRON_UNPREMULT, PLUGIN_MAJOR_NATRON_PREMULT), v);
+}
+
+TEST_F(NativeGoldenTest, ColorMatrix)
+{
+    const Apply hdr = [](const GoldenGraph& g) {
+        return num(g, kColorMatrixParamOutputRed, { 1.75, -0.4, 0.25, 0.5 }) && num(g, kColorMatrixParamOutputGreen, { 0.3, 2.5, -0.8, 0. }) && num(g, kColorMatrixParamOutputBlue, { -1.2, 0.1, 3., -0.25 }) && num(g, kColorMatrixParamOutputAlpha, { 0.2, 0.3, 0.1, 0.6 });
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("hdr", hdr));
+    v.push_back(variant("clamps", [hdr](const GoldenGraph& g) { return hdr(g) && num(g, kColorMatrixParamClampBlack, { 1. }) && num(g, kColorMatrixParamClampWhite, { 1. }); }));
+    addPremultAndMaskMix(&v, hdr);
+    run(filterSpec("ColorMatrix", PLUGINID_NATRON_COLORMATRIX, PLUGIN_MAJOR_NATRON_COLORMATRIX), v);
+}
+
+TEST_F(NativeGoldenTest, Threshold)
+{
+    const Apply ramp = [](const GoldenGraph& g) { return num(g, kThresholdParamLevel, { 0.5, 0.25, 1.2, 0.5 }) && num(g, kThresholdParamSoftness, { 0.25, 0.5, 0.4, 0.1 }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("hard", [](const GoldenGraph& g) { return num(g, kThresholdParamLevel, { 0.5, 1., -0.1, 0.5 }); }));
+    v.push_back(variant("ramp", ramp));
+    addPremultAndMaskMix(&v, ramp);
+    run(filterSpec("Threshold", PLUGINID_NATRON_THRESHOLD, PLUGIN_MAJOR_NATRON_THRESHOLD), v);
 }
 
 TEST_F(NativeGoldenTest, ColorCorrect)

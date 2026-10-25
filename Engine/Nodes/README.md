@@ -871,6 +871,12 @@ them:
   a Source input, and a Composite or Resample op cannot have it (no one divisor
   applies to several inputs, and a resampler reads the source as stored); both
   are compile errors.
+- **`Divisor`** gives the op the same selector, starting on `rgba.A` and
+  labelled `ImagePipelineSpec::divisorLabel`, but divides and multiplies
+  nothing: the op reads `RowIO::divisor` itself (on the GPU,
+  `runWrappedDivisor<>` hands it to an `IDivisorPixelOp`). With None picked the
+  node is an identity. It excludes `Premult` and needs a Point op; Premult and
+  Unpremult use it.
 - **`MaskMix`** blends each processed channel of the op's result with the
   *undivided* source by mask x `mix`, with the `ofxsMaskMixPix()` arithmetic. It
   needs a Mask input.

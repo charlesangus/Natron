@@ -3311,16 +3311,28 @@ Node::createUnPremultSelector(const KnobPagePtr& mainPage)
         pluginChannel->setIsPersistent(false);
     }
 
-    KnobChannelSelectPtr channel = _imp->effect->createChannelSelectKnob(kUnPremultByKnobName, tr(kUnPremultByKnobLabel).toStdString(), false);
+    // A Divisor stage hands the channel to the node's own maths: a Premult or Unpremult node,
+    // whose whole work is the multiply or the divide, and which starts on alpha.
+    const StagedImageEffect* staged = dynamic_cast<const StagedImageEffect*>(_imp->effect.get());
+    const bool divisorToOp = !pluginDeclaresPair && staged && staged->imagePipelineSpec().stages.has(Stage::Divisor);
+    const char* label = (divisorToOp && staged->imagePipelineSpec().divisorLabel) ? staged->imagePipelineSpec().divisorLabel : kUnPremultByKnobLabel;
+    KnobChannelSelectPtr channel = _imp->effect->createChannelSelectKnob(kUnPremultByKnobName, tr(label).toStdString(), false);
     channel->setAnimationEnabled(false);
-    // A KnobChannelSelect left empty reads as rgba.A, which is the right default for a mask
-    // footer but not here: the plug-in's own bool defaulted to off, and quietly unpremultiplying
-    // every colour node by alpha is not something to turn on behind the user's back.
-    channel->setDefaultValue(channel->encode(std::string()));
-    channel->setHintToolTip(tr("Divide the image by this channel of the source before processing, and multiply it "
-                               "back afterwards. Any layer.channel of the source, or None for no (un)premult. Use it "
-                               "where the values being processed are premultiplied, as any correction that moves the "
-                               "black point has to be done unpremultiplied."));
+    if (divisorToOp) {
+        channel->setDefaultValue(channel->encode(std::string(kNatronColorViewRGBA) + ".A"));
+        channel->setHintToolTip(tr("The channel this node multiplies or divides the processed channels by. Any "
+                                   "layer.channel of the source, or None to leave the image as it is."));
+    } else {
+        // A KnobChannelSelect left empty reads as rgba.A, which is the right default for a mask
+        // footer but not here: the plug-in's own bool defaulted to off, and quietly
+        // unpremultiplying every colour node by alpha is not something to turn on behind the
+        // user's back.
+        channel->setDefaultValue(channel->encode(std::string()));
+        channel->setHintToolTip(tr("Divide the image by this channel of the source before processing, and multiply it "
+                                   "back afterwards. Any layer.channel of the source, or None for no (un)premult. Use it "
+                                   "where the values being processed are premultiplied, as any correction that moves the "
+                                   "black point has to be done unpremultiplied."));
+    }
     _imp->layerKnobSources[channel.get()] = LayerKnobSource(channel, LayerKnobSource::kPreferredInput, LayerKnobSpec::eRoleInputBound);
     if (mainPage) {
         mainPage->addKnob(channel);

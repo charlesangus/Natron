@@ -62,6 +62,7 @@ Exact native I-warps (user, 2026-10-24). Slicing a transform and blending the sl
 
 ## Decisions
 
+- 2026-10-25 — **Interpolation and Map wording (bosley-native-nodes):** skew blends linearly with the Map amount, matching how Transform's own amount knob blends it, rather than in log space; per-pixel matrices come from exact matrices at 256–512 Map values joined by Hermite interpolation (exact at 0, ½ and 1). The Map knobs' tooltips must not speak of sizes on a warp node; fixed with the docs task.
 - 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file. ITransform/ICornerPin are Custom ops; the branch is rebased onto main before STMap/IDistort GPU work.
 - 2026-10-25 — **Interpolate the transform, never blend slices:** slicing a transform ghosts; per-pixel matrices through the coordinate-map resampler are exact.
 - 2026-10-25 — **Output-space Map (user):** one lookup, exact, lines up with the result.

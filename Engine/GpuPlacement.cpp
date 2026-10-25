@@ -468,12 +468,27 @@ placeGraph(FrameGraph& graph,
     // Dropping a whole region keeps the contraction acyclic: a cycle through its members, now separate nodes, would
     // have been one through the region. So does splitting a region into parts with no edge between them. Dropping a
     // single member does not, hence the check.
+    // A region with no priced member has no cost to judge it by: two or more candidates still keep their images on
+    // the device between them, but a lone one would pay transfers for nothing it is known to save.
+    const auto settleUnpriced = [&](int l) {
+        const std::vector<int>& members = regionMembers[l];
+        const std::ptrdiff_t nCandidates = std::count_if(members.begin(), members.end(), [&](int m) {
+            return candidate[m];
+        });
+        if (nCandidates >= 2) {
+            accept(l);
+
+            return;
+        }
+        for (int m : members) {
+            label[m] = -1;
+        }
+        regionMembers[l].clear();
+    };
+
     for (int r : formed) {
         if (!anyPriced(regionMembers[r])) {
-            for (int m : regionMembers[r]) {
-                label[m] = -1;
-            }
-            regionMembers[r].clear();
+            settleUnpriced(r);
             continue;
         }
         if (!inputs.regionGain) {
@@ -487,10 +502,7 @@ placeGraph(FrameGraph& graph,
             queue.erase(queue.begin());
             const std::vector<int> members = regionMembers[q];
             if (!anyPriced(members)) {
-                for (int m : members) {
-                    label[m] = -1;
-                }
-                regionMembers[q].clear();
+                settleUnpriced(q);
                 continue;
             }
             if (inputs.regionGain(graph, describeRegion(graph, members, label, q, identity)) > 0.) {

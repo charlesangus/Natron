@@ -1059,7 +1059,10 @@ dependencies, form a run, and a run with a task that has no GPU path (neither
 cached nor an identity) stays on the CPU entirely, so a mosaic never crosses
 between the devices in the middle of it (`placeGraph()`, `taskReadsRaw()`). A raw node renders
 at full scale only, and a region refuses such a node at a proxy level, so its task there is never
-a GPU candidate (`makeGpuQueryForTask()`).
+a GPU candidate (`makeGpuQueryForTask()`). The raw nodes have no cost seed rows, so the cost
+model does not price them: a region of two or more connected GPU candidates with no priced member
+goes to the GPU without a cost check, and a lone unpriced candidate stays on the CPU
+(`PlacementInputs::isPriced`).
 
 ### The GPU side of an op
 

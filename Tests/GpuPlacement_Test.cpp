@@ -1110,7 +1110,7 @@ TEST(GpuCostModel, EveryGpuNodeIsSeeded)
 }
 
 // sink 0 (CPU) <- X 1 <- reader 2 (CPU), X a GPU-capable op with no rows. Even with free transfers it never makes a
-// region on its own, nor with another unpriced op.
+// region on its own.
 TEST(GpuCostModel, UnseededOpAloneStaysOnTheCpu)
 {
     CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
@@ -1126,15 +1126,73 @@ TEST(GpuCostModel, UnseededOpAloneStaysOnTheCpu)
     fixture.place();
     EXPECT_TRUE(fixture.graph.regions.empty());
     EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+}
 
+// sink 0 (CPU) <- X 1 <- Y 2 <- reader 3 (CPU), X and Y GPU-capable ops with no rows. Two connected candidates make a
+// region with no cost to veto it, whatever the transfers cost.
+TEST(GpuCostModel, UnseededPairMakesARegion)
+{
     CostFixture pair(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
+
     pair.traits[1] = unseededTraits();
     pair.traits[2] = unseededTraits();
-    pair.model.setTransferRates(unified);
     pair.place();
-    EXPECT_TRUE(pair.graph.regions.empty());
-    EXPECT_EQ(pair.graph.tasks[1].device, FrameGraph::Device::Cpu);
-    EXPECT_EQ(pair.graph.tasks[2].device, FrameGraph::Device::Cpu);
+    ASSERT_EQ(pair.graph.regions.size(), 1u);
+    EXPECT_EQ(pair.graph.regions[0].members, std::vector<int>({ 2, 1 }));
+    EXPECT_EQ(pair.graph.tasks[1].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(pair.graph.tasks[2].device, FrameGraph::Device::Gpu);
+}
+
+// sink 0 (CPU) <- X 1 <- Y 2 <- Z 3 <- reader 4 (CPU), three GPU-capable ops with no rows: one region of all three.
+TEST(GpuCostModel, UnseededChainMakesOneRegion)
+{
+    CostFixture chain(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    for (int t : { 1, 2, 3 }) {
+        chain.traits[t] = unseededTraits();
+    }
+    chain.place();
+    ASSERT_EQ(chain.graph.regions.size(), 1u);
+    const FrameGraph::Region& region = chain.graph.regions[0];
+    EXPECT_EQ(region.members, std::vector<int>({ 3, 2, 1 }));
+    EXPECT_EQ(region.externalInputs, std::vector<int>({ 4 }));
+    ASSERT_EQ(region.outputs.size(), 1u);
+    EXPECT_EQ(region.outputs[0].task, 1);
+    EXPECT_EQ(chain.graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(chain.graph.tasks[4].device, FrameGraph::Device::Cpu);
+}
+
+// sink 0 (CPU) <- X 1 <- Y 2 <- Grade 3 <- reader 4 (CPU), X and Y with no rows, the Grade far slower on the GPU. The
+// region loses, shrinking drops the Grade, and the unpriced pair left keeps the GPU.
+TEST(GpuCostModel, UnseededPairLeftByShrinkingKeepsTheGpu)
+{
+    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    fixture.model.setCpuSeed(kGradeId, 0.01, 1.);
+    fixture.model.setGpuSeed(kGradeId, 10.);
+    fixture.traits[1] = unseededTraits();
+    fixture.traits[2] = unseededTraits();
+    fixture.traits[3] = GpuTaskTraits(kGradeId);
+    fixture.place();
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 2, 1 }));
+    EXPECT_EQ(fixture.graph.tasks[3].device, FrameGraph::Device::Cpu);
+}
+
+// sink 0 (CPU) <- X 1 <- Grade 2 <- reader 3 (CPU), X with no rows, the Grade far slower on the GPU. Shrinking leaves X
+// alone, which stays on the CPU.
+TEST(GpuCostModel, UnseededOpLeftAloneByShrinkingStaysOnTheCpu)
+{
+    CostFixture fixture(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
+
+    fixture.model.setCpuSeed(kGradeId, 0.01, 1.);
+    fixture.model.setGpuSeed(kGradeId, 10.);
+    fixture.traits[1] = unseededTraits();
+    fixture.traits[2] = GpuTaskTraits(kGradeId);
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Cpu);
 }
 
 // sink 0 (CPU) <- Grade 1 <- X 2 <- Grade 3 <- reader 4 (CPU), X a GPU-capable op with no rows. The two Grades gain on

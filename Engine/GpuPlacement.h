@@ -55,8 +55,9 @@ struct PlacementInputs {
     // Whether the task's effect reads raw-kind data from an input. Unset: none does.
     std::function<bool(const FrameGraph::Task&)> readsRaw;
 
-    // Whether the task's costs are known. A candidate whose are not never makes a region on its own: it runs on the GPU
-    // only within a region that holds a task whose are. Unset: every task's are.
+    // Whether the task's costs are known. A candidate whose are not counts nothing towards a region's gain. A region
+    // with no priced member is placed without regionGain: on the GPU when it holds two or more candidates, else on
+    // the CPU. Unset: every task's are.
     std::function<bool(const FrameGraph::Task&)> isPriced;
 
     // What running a region on the GPU gains over the CPU; it is accepted when positive, else shrunk. The graph it is
@@ -83,7 +84,7 @@ const int kMaxRegionShrinkSteps = 16;
  * does, else starts a region of its own. The invariant holds after every step, so each region is convex: no path leaves
  * it, through a CPU task or another region, and comes back, which is what lets a region run as one task. Each region is
  * then evaluated with regionGain, in topological order. A region, or a part left by shrinking, with no priced member
- * stays on the CPU unevaluated.
+ * is not evaluated: it goes to the GPU when it holds two or more candidates, and a lone candidate stays on the CPU.
  *
  * A region that gains nothing is shrunk greedily: each step drops the member on its boundary (with a dependency or a
  * consumer outside it, or the root) whose removal leaves the most gain, among those whose removal keeps the

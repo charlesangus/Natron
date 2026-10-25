@@ -186,7 +186,7 @@ public:
 
     /**
      * @brief Whether the plugin has both a CPU and a GPU row, seeded or measured. Without both, any price would be a
-     * guess, so placement neither counts its time nor lets it make a region of its own.
+     * guess, so placement does not count its time, and a region with no priced member is placed by its size alone.
      **/
     bool isPriced(const GpuTaskTraits& traits) const;
 

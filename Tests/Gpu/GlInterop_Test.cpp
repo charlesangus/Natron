@@ -777,18 +777,18 @@ GPU_TEST_F(GlInteropTest, UhdLatency)
         ASSERT_TRUE(gi->produce(
                           frame,
                           [&](VkCommandBuffer cb, VkBuffer dst) {
-                          staging.copyTo(cb, source.buffer);
-                          VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-                          mb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-                          mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                          mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-                          mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-                          VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
-                          dep.memoryBarrierCount = 1;
-                          dep.pMemoryBarriers = &mb;
-                          vkCmdPipelineBarrier2(cb, &dep);
-                          return source.copyTo(cb, dst);
-                      },
+                              staging.copyTo(cb, source.buffer);
+                              VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+                              mb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+                              mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                              mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+                              mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+                              VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+                              dep.memoryBarrierCount = 1;
+                              dep.pMemoryBarriers = &mb;
+                              vkCmdPipelineBarrier2(cb, &dep);
+                              return source.copyTo(cb, dst);
+                          },
                           {}, &slot)
                         .ok());
         ASSERT_TRUE(gi->upload(slot, tex, 0, 0).ok());

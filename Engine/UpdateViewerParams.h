@@ -75,8 +75,7 @@ public:
 #ifdef NATRON_HAVE_GPU
     // A tile of a device frame to be written to the viewer cache from the display buffer: the key it is
     // looked up under and where its tileSize x tileSize buffer sits in the texture.
-    struct DeviceCacheTile
-    {
+    struct DeviceCacheTile {
         FrameKey key;
         RectI rectRounded;
     };

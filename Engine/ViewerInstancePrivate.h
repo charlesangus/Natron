@@ -210,8 +210,7 @@ public:
     };
 
     // A device frame whose display buffer is being copied to host memory, to become cache tiles.
-    struct PendingCacheFill
-    {
+    struct PendingCacheFill {
         std::uint64_t token = 0;
         std::vector<UpdateViewerParams::DeviceCacheTile> tiles;
         RectI roi;

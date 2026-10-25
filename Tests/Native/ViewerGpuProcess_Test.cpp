@@ -87,8 +87,13 @@ const float kPadValue = 1e6f;
 #ifdef NATRON_HAVE_GPU
 
 const DisplayChannelsEnum kChannels[] = {
-    eDisplayChannelsRGB, eDisplayChannelsR, eDisplayChannelsG, eDisplayChannelsB,
-    eDisplayChannelsA, eDisplayChannelsY, eDisplayChannelsMatte,
+    eDisplayChannelsRGB,
+    eDisplayChannelsR,
+    eDisplayChannelsG,
+    eDisplayChannelsB,
+    eDisplayChannelsA,
+    eDisplayChannelsY,
+    eDisplayChannelsMatte,
 };
 
 const char*
@@ -250,8 +255,7 @@ cpuReference(const ImagePtr& image,
 
 // Records ViewerGpuProcess::record() into a command buffer of its own, as GlInterop::produce()
 // would, and waits for it.
-class Dispatcher
-{
+class Dispatcher {
 public:
     explicit Dispatcher(gpu::GpuRuntime& runtime)
         : _runtime(runtime)
@@ -428,7 +432,7 @@ compareEightBit(const std::vector<std::byte>& gpuBytes,
             const int got = int((gpu[i] >> shifts[k]) & 0xffu);
             const int diff = std::abs(expected - got);
             const int tolerance = (k == 0) ? 0 : 1;
-            if ( (k > 0) && thresholdInputs && inThresholdBand( (*thresholdInputs)[i * 4 + std::size_t(k - 1)] ) ) {
+            if ((k > 0) && thresholdInputs && inThresholdBand((*thresholdInputs)[i * 4 + std::size_t(k - 1)])) {
                 ++stats->thresholdBand;
                 continue;
             }
@@ -443,7 +447,7 @@ compareEightBit(const std::vector<std::byte>& gpuBytes,
                     const int y = kRect.y1 + int(i / std::size_t(kRect.width()));
                     std::ostringstream s;
                     s << "pixel (" << x << ", " << y << ") byte " << "ARGB"[k] << ": cpu " << expected << ", gpu " << got;
-                    if ( thresholdInputs && (k > 0) ) {
+                    if (thresholdInputs && (k > 0)) {
                         s << std::setprecision(9) << " (cpu display value " << (*thresholdInputs)[i * 4 + std::size_t(k - 1)] << ")";
                     }
                     first = s.str();
@@ -640,7 +644,7 @@ TEST(ViewerGpuProcess, EightBitMatchesTheCpuInEveryDisplayMode)
                         const gpu::GpuStatus s = dispatcher.run(process, gpu::GlPixelFormat::Bgra8, c, &got);
                         ASSERT_TRUE(bool(s)) << label << ": " << s.message;
                         std::vector<float> thresholdInputs;
-                        if ( (gamma <= 0.) && c.processor ) {
+                        if ((gamma <= 0.) && c.processor) {
                             thresholdInputs = cpuDisplayValues(image, c);
                         }
                         compareEightBit(got, cpuReference<U32>(image, c, eImageBitDepthByte, 1), thresholdInputs.empty() ? nullptr : &thresholdInputs,

@@ -140,7 +140,7 @@ OcioVulkanShader::build(const OCIO::ConstGPUProcessorRcPtr& processor,
 bool
 OcioVulkanShader::fillUniforms(std::vector<std::byte>& block) const
 {
-    block.assign(std::max<std::size_t>({block.size(), _uniformBytes, 16}), std::byte(0));
+    block.assign(std::max<std::size_t>({ block.size(), _uniformBytes, 16 }), std::byte(0));
     if (!_desc) {
         return true;
     }

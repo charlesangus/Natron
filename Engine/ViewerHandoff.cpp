@@ -400,9 +400,9 @@ struct ViewerHandoff::Imp {
             std::lock_guard<std::mutex> k(mutex);
             why = reason;
         }
-        QString line = QString::fromLatin1("Viewer hand-off rung: %1").arg( QString::fromLatin1( toString(r) ) );
+        QString line = QString::fromLatin1("Viewer hand-off rung: %1").arg(QString::fromLatin1(toString(r)));
         if (!why.empty()) {
-            line += QString::fromLatin1(" (%1)").arg( QString::fromStdString(why) );
+            line += QString::fromLatin1(" (%1)").arg(QString::fromStdString(why));
         }
         qInfo().noquote() << line;
     }

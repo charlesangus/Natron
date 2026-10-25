@@ -1,6 +1,6 @@
 #include <QApplication>
-#include <QGuiApplication>
 #include <QElapsedTimer>
+#include <QGuiApplication>
 #include <QImage>
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>

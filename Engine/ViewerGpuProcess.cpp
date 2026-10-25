@@ -77,128 +77,123 @@ enum GammaModeEnum {
     eGammaModePow = 2,
 };
 
-const char* const kPushBlock =
-    "layout(push_constant) uniform ViewerPush {\n"
-    "    int rectX1; int rectY1; uint width; uint height;\n"
-    "    int boundsX1; int boundsY1; int boundsX2; int boundsY2;\n"
-    "    uint inOffset; int rowStride; int nComps; int rOffset;\n"
-    "    int gOffset; int bOffset; int luminance; int matteIndex;\n"
-    "    float gain; float offset; int gammaMode; float invGamma;\n"
-    "} pc;\n";
+const char* const kPushBlock = "layout(push_constant) uniform ViewerPush {\n"
+                               "    int rectX1; int rectY1; uint width; uint height;\n"
+                               "    int boundsX1; int boundsY1; int boundsX2; int boundsY2;\n"
+                               "    uint inOffset; int rowStride; int nComps; int rOffset;\n"
+                               "    int gOffset; int bOffset; int luminance; int matteIndex;\n"
+                               "    float gain; float offset; int gammaMode; float invGamma;\n"
+                               "} pc;\n";
 
 // The fetch follows scaleToTexture8bits_generic and scaleToTexture32bitsGeneric case by case,
 // including which components a short pixel leaves at 0 or 1.
-const char* const kFetch =
-    "float viewerComp(uint base, int c) {\n"
-    "    return (c < pc.nComps) ? viewerIn.px[base + uint(c)] : 0.0;\n"
-    "}\n"
-    "vec4 viewerFetch(int x, int y) {\n"
-    "    bool inside = x >= pc.boundsX1 && x < pc.boundsX2 && y >= pc.boundsY1 && y < pc.boundsY2;\n"
-    "    if (!inside) {\n"
-    "        return vec4(0.0, 0.0, 0.0, (!kEightBit && pc.nComps < 4) ? 1.0 : 0.0);\n"
-    "    }\n"
-    "    uint base = pc.inOffset + uint(y - pc.boundsY1) * uint(pc.rowStride) + uint((x - pc.boundsX1) * pc.nComps);\n"
-    "    float r = viewerComp(base, pc.rOffset);\n"
-    "    float g = viewerComp(base, pc.gOffset);\n"
-    "    float b = 0.0;\n"
-    "    float a = 1.0;\n"
-    "    if (pc.nComps >= 4) {\n"
-    "        b = viewerComp(base, pc.bOffset);\n"
-    "        a = viewerIn.px[base + 3u];\n"
-    "    } else if (pc.nComps == 3) {\n"
-    "        b = viewerComp(base, pc.bOffset);\n"
-    "    } else if (pc.nComps == 1) {\n"
-    "        g = r;\n"
-    "        b = r;\n"
-    "    }\n"
-    "    return vec4(r, g, b, a);\n"
-    "}\n"
-    "float viewerMatte(vec4 c) {\n"
-    "    switch (pc.matteIndex) {\n"
-    "    case 0: return c.r;\n"
-    "    case 1: return c.g;\n"
-    "    case 2: return c.b;\n"
-    "    case 3: return c.a;\n"
-    "    default: return 0.0;\n"
-    "    }\n"
-    "}\n";
+const char* const kFetch = "float viewerComp(uint base, int c) {\n"
+                           "    return (c < pc.nComps) ? viewerIn.px[base + uint(c)] : 0.0;\n"
+                           "}\n"
+                           "vec4 viewerFetch(int x, int y) {\n"
+                           "    bool inside = x >= pc.boundsX1 && x < pc.boundsX2 && y >= pc.boundsY1 && y < pc.boundsY2;\n"
+                           "    if (!inside) {\n"
+                           "        return vec4(0.0, 0.0, 0.0, (!kEightBit && pc.nComps < 4) ? 1.0 : 0.0);\n"
+                           "    }\n"
+                           "    uint base = pc.inOffset + uint(y - pc.boundsY1) * uint(pc.rowStride) + uint((x - pc.boundsX1) * pc.nComps);\n"
+                           "    float r = viewerComp(base, pc.rOffset);\n"
+                           "    float g = viewerComp(base, pc.gOffset);\n"
+                           "    float b = 0.0;\n"
+                           "    float a = 1.0;\n"
+                           "    if (pc.nComps >= 4) {\n"
+                           "        b = viewerComp(base, pc.bOffset);\n"
+                           "        a = viewerIn.px[base + 3u];\n"
+                           "    } else if (pc.nComps == 3) {\n"
+                           "        b = viewerComp(base, pc.bOffset);\n"
+                           "    } else if (pc.nComps == 1) {\n"
+                           "        g = r;\n"
+                           "        b = r;\n"
+                           "    }\n"
+                           "    return vec4(r, g, b, a);\n"
+                           "}\n"
+                           "float viewerMatte(vec4 c) {\n"
+                           "    switch (pc.matteIndex) {\n"
+                           "    case 0: return c.r;\n"
+                           "    case 1: return c.g;\n"
+                           "    case 2: return c.b;\n"
+                           "    case 3: return c.a;\n"
+                           "    default: return 0.0;\n"
+                           "    }\n"
+                           "}\n";
 
 // Unfused like the CPU's float arithmetic (built without FMA), so that a value on a rounding edge
 // lands on the same code.
-const char* const kEightBitHelpers =
-    "uint viewerFloatToInt0xff01(float v) {\n"
-    "    if (!(v > 0.0)) return 0u;\n"
-    "    if (v >= 1.0) return 0xff00u;\n"
-    "    precise float s = v * 65280.0 + 0.5;\n"
-    "    return uint(s);\n"
-    "}\n"
-    "uint viewerFloatToInt256(float v) {\n"
-    "    if (!(v > 0.0)) return 0u;\n"
-    "    if (v >= 1.0) return 255u;\n"
-    "    precise float s = v * 255.0 + 0.5;\n"
-    "    return uint(s);\n"
-    "}\n"
-    "uint viewerHash(uvec2 p) {\n"
-    "    uint h = (p.x * 0x9e3779b9u) ^ ((p.y + 0x7f4a7c15u) * 0x85ebca6bu);\n"
-    "    h ^= h >> 16;\n"
-    "    h *= 0x7feb352du;\n"
-    "    h ^= h >> 15;\n"
-    "    h *= 0x846ca68bu;\n"
-    "    h ^= h >> 16;\n"
-    "    return h;\n"
-    "}\n"
-    "vec3 viewerGamma(vec3 c) {\n"
-    "    if (pc.gammaMode == 0) {\n"
-    "        return vec3(greaterThanEqual(c, vec3(kThreshold)));\n"
-    "    }\n"
-    "    if (pc.gammaMode == 2) {\n"
-    "        return pow(max(c, vec3(0.0)), vec3(pc.invGamma));\n"
-    "    }\n"
-    "    return c;\n"
-    "}\n";
+const char* const kEightBitHelpers = "uint viewerFloatToInt0xff01(float v) {\n"
+                                     "    if (!(v > 0.0)) return 0u;\n"
+                                     "    if (v >= 1.0) return 0xff00u;\n"
+                                     "    precise float s = v * 65280.0 + 0.5;\n"
+                                     "    return uint(s);\n"
+                                     "}\n"
+                                     "uint viewerFloatToInt256(float v) {\n"
+                                     "    if (!(v > 0.0)) return 0u;\n"
+                                     "    if (v >= 1.0) return 255u;\n"
+                                     "    precise float s = v * 255.0 + 0.5;\n"
+                                     "    return uint(s);\n"
+                                     "}\n"
+                                     "uint viewerHash(uvec2 p) {\n"
+                                     "    uint h = (p.x * 0x9e3779b9u) ^ ((p.y + 0x7f4a7c15u) * 0x85ebca6bu);\n"
+                                     "    h ^= h >> 16;\n"
+                                     "    h *= 0x7feb352du;\n"
+                                     "    h ^= h >> 15;\n"
+                                     "    h *= 0x846ca68bu;\n"
+                                     "    h ^= h >> 16;\n"
+                                     "    return h;\n"
+                                     "}\n"
+                                     "vec3 viewerGamma(vec3 c) {\n"
+                                     "    if (pc.gammaMode == 0) {\n"
+                                     "        return vec3(greaterThanEqual(c, vec3(kThreshold)));\n"
+                                     "    }\n"
+                                     "    if (pc.gammaMode == 2) {\n"
+                                     "        return pow(max(c, vec3(0.0)), vec3(pc.invGamma));\n"
+                                     "    }\n"
+                                     "    return c;\n"
+                                     "}\n";
 
 // The CPU diffuses each row's error serially from a random start; a dither that depends only on
 // the pixel's position keeps every invocation independent and lands on the same two codes the
 // error diffusion can pick, floor(v16 / 256) and the one above.
-const char* const kEightBitMain =
-    "void main() {\n"
-    "    uvec2 gid = gl_GlobalInvocationID.xy;\n"
-    "    if (gid.x >= pc.width || gid.y >= pc.height) return;\n"
-    "    int x = pc.rectX1 + int(gid.x);\n"
-    "    int y = pc.rectY1 + int(gid.y);\n"
-    "    vec4 c = viewerFetch(x, y);\n"
-    "    float m = viewerMatte(c);\n"
-    "    if (pc.luminance != 0) {\n"
-    "        precise float l = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;\n"
-    "        c.rgb = vec3(l);\n"
-    "    }\n"
-    "    uint alphaCode = viewerFloatToInt256(c.a);\n"
-    "    precise vec3 graded = c.rgb * pc.gain + pc.offset;\n"
-    "    vec3 shown = viewerGamma(OCIODisplay(vec4(graded, c.a)).rgb);\n"
-    "    uint dither = viewerHash(uvec2(ivec2(x, y))) & 0xffu;\n"
-    "    uint r = (viewerFloatToInt0xff01(shown.r) + dither) >> 8;\n"
-    "    uint g = (viewerFloatToInt0xff01(shown.g) + dither) >> 8;\n"
-    "    uint b = (viewerFloatToInt0xff01(shown.b) + dither) >> 8;\n"
-    "    if (pc.matteIndex >= 0) {\n"
-    "        float matteShown = OCIODisplay(vec4(m, m, m, 1.0)).r;\n"
-    "        r = min(255u, r + viewerFloatToInt256(matteShown) / 2u);\n"
-    "    }\n"
-    "    viewerOut.px[gid.y * pc.width + gid.x] = (alphaCode << 24) | (r << 16) | (g << 8) | b;\n"
-    "}\n";
+const char* const kEightBitMain = "void main() {\n"
+                                  "    uvec2 gid = gl_GlobalInvocationID.xy;\n"
+                                  "    if (gid.x >= pc.width || gid.y >= pc.height) return;\n"
+                                  "    int x = pc.rectX1 + int(gid.x);\n"
+                                  "    int y = pc.rectY1 + int(gid.y);\n"
+                                  "    vec4 c = viewerFetch(x, y);\n"
+                                  "    float m = viewerMatte(c);\n"
+                                  "    if (pc.luminance != 0) {\n"
+                                  "        precise float l = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;\n"
+                                  "        c.rgb = vec3(l);\n"
+                                  "    }\n"
+                                  "    uint alphaCode = viewerFloatToInt256(c.a);\n"
+                                  "    precise vec3 graded = c.rgb * pc.gain + pc.offset;\n"
+                                  "    vec3 shown = viewerGamma(OCIODisplay(vec4(graded, c.a)).rgb);\n"
+                                  "    uint dither = viewerHash(uvec2(ivec2(x, y))) & 0xffu;\n"
+                                  "    uint r = (viewerFloatToInt0xff01(shown.r) + dither) >> 8;\n"
+                                  "    uint g = (viewerFloatToInt0xff01(shown.g) + dither) >> 8;\n"
+                                  "    uint b = (viewerFloatToInt0xff01(shown.b) + dither) >> 8;\n"
+                                  "    if (pc.matteIndex >= 0) {\n"
+                                  "        float matteShown = OCIODisplay(vec4(m, m, m, 1.0)).r;\n"
+                                  "        r = min(255u, r + viewerFloatToInt256(matteShown) / 2u);\n"
+                                  "    }\n"
+                                  "    viewerOut.px[gid.y * pc.width + gid.x] = (alphaCode << 24) | (r << 16) | (g << 8) | b;\n"
+                                  "}\n";
 
-const char* const kFloatMain =
-    "void main() {\n"
-    "    uvec2 gid = gl_GlobalInvocationID.xy;\n"
-    "    if (gid.x >= pc.width || gid.y >= pc.height) return;\n"
-    "    vec4 c = viewerFetch(pc.rectX1 + int(gid.x), pc.rectY1 + int(gid.y));\n"
-    "    if (pc.luminance != 0) {\n"
-    "        c.rgb = vec3(0.299 * c.r + 0.587 * c.g + 0.114 * c.b);\n"
-    "    }\n"
-    "    if (pc.matteIndex >= 0) {\n"
-    "        c.r += viewerMatte(c) * 0.5;\n"
-    "    }\n"
-    "    viewerOut.px[gid.y * pc.width + gid.x] = c;\n"
-    "}\n";
+const char* const kFloatMain = "void main() {\n"
+                               "    uvec2 gid = gl_GlobalInvocationID.xy;\n"
+                               "    if (gid.x >= pc.width || gid.y >= pc.height) return;\n"
+                               "    vec4 c = viewerFetch(pc.rectX1 + int(gid.x), pc.rectY1 + int(gid.y));\n"
+                               "    if (pc.luminance != 0) {\n"
+                               "        c.rgb = vec3(0.299 * c.r + 0.587 * c.g + 0.114 * c.b);\n"
+                               "    }\n"
+                               "    if (pc.matteIndex >= 0) {\n"
+                               "        c.r += viewerMatte(c) * 0.5;\n"
+                               "    }\n"
+                               "    viewerOut.px[gid.y * pc.width + gid.x] = c;\n"
+                               "}\n";
 
 const char* const kPassThroughDisplay = "vec4 OCIODisplay(vec4 c) { return c; }\n";
 
@@ -453,16 +448,16 @@ ViewerGpuProcess::record(VkCommandBuffer cmd,
                          const gpu::GlFrame& frame,
                          const ViewerGpuProcessParams& params)
 {
-    if ( (params.rect.width() != (int)frame.width) || (params.rect.height() != (int)frame.height) ) {
+    if ((params.rect.width() != (int)frame.width) || (params.rect.height() != (int)frame.height)) {
         return failure("ViewerGpuProcess: the rect is not the frame's size");
     }
-    if ( !input.buffer || (input.nComps < 1) || (input.nComps > 4) ) {
+    if (!input.buffer || (input.nComps < 1) || (input.nComps > 4)) {
         return failure("ViewerGpuProcess: the input has no buffer or an unsupported component count");
     }
-    if ( (input.byteOffset % sizeof(float) != 0) || (input.byteOffset / sizeof(float) > std::numeric_limits<uint32_t>::max()) ) {
+    if ((input.byteOffset % sizeof(float) != 0) || (input.byteOffset / sizeof(float) > std::numeric_limits<uint32_t>::max())) {
         return failure("ViewerGpuProcess: the input's offset is not a float index");
     }
-    if ( (frame.width == 0) || (frame.height == 0) ) {
+    if ((frame.width == 0) || (frame.height == 0)) {
         return gpu::GpuStatus();
     }
 

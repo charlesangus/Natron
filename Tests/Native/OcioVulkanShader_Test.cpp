@@ -351,7 +351,7 @@ linearFilterError(gpu::GpuRuntime& runtime,
     vkGetPhysicalDeviceProperties(runtime.device().physicalDevice(), &properties);
     double largestStep = 0.;
     for (const OcioVulkanShader::Texture& t : shader.textures()) {
-        if ( (t.desc.dimensions == 3) || (t.desc.filter != gpu::GpuTextureFilter::Linear) ) {
+        if ((t.desc.dimensions == 3) || (t.desc.filter != gpu::GpuTextureFilter::Linear)) {
             continue;
         }
         const std::size_t channels = t.desc.channels;

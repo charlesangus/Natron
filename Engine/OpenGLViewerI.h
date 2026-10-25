@@ -40,7 +40,6 @@
 #include "Engine/ViewerHandoff.h"
 #endif
 
-
 NATRON_NAMESPACE_ENTER
 
 

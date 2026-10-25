@@ -520,13 +520,13 @@ viewerFrameCanTakeDeviceRoot(const ViewerArgs& inArgs,
                              const std::list<ImageLayerDesc>& components,
                              OpenGLViewerI* uiContext)
 {
-    if ( !uiContext || (uiContext->handoffRung() == ViewerHandoffRung::Cpu) ) {
+    if (!uiContext || (uiContext->handoffRung() == ViewerHandoffRung::Cpu)) {
         return false;
     }
     if (inArgs.autoContrast) {
         return false;
     }
-    if ( (inArgs.channels == eDisplayChannelsMatte) && (components.size() > 1) ) {
+    if ((inArgs.channels == eDisplayChannelsMatte) && (components.size() > 1)) {
         return false;
     }
 
@@ -689,7 +689,7 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
         FrameRenderContextPtr context = FrameRenderContext::createFromSetter(*setter, inArgs.params->abortInfo, stats, inArgs.params->time, view);
         context->setRequest(request);
 #ifdef NATRON_HAVE_GPU
-        context->setWantsRootOnDevice( viewerFrameCanTakeDeviceRoot(inArgs, components, uiContext) );
+        context->setWantsRootOnDevice(viewerFrameCanTakeDeviceRoot(inArgs, components, uiContext));
 #else
         Q_UNUSED(uiContext);
 #endif
@@ -1904,12 +1904,12 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 #ifdef NATRON_HAVE_GPU
                     if (frameContext) {
                         std::map<ImageLayerDesc, GpuDeviceImagePtr> devicePlanes = frameContext->takeRootDevicePlanes();
-                        if ( frameContext->wantsRootOnDevice() && (retCode == EffectInstance::eRenderRoIRetCodeOk) && !devicePlanes.empty() ) {
-                            std::map<ImageLayerDesc, GpuDeviceImagePtr>::const_iterator found = devicePlanes.find( requestedComponents.front() );
-                            if ( (found == devicePlanes.end()) && (devicePlanes.size() == 1) ) {
+                        if (frameContext->wantsRootOnDevice() && (retCode == EffectInstance::eRenderRoIRetCodeOk) && !devicePlanes.empty()) {
+                            std::map<ImageLayerDesc, GpuDeviceImagePtr>::const_iterator found = devicePlanes.find(requestedComponents.front());
+                            if ((found == devicePlanes.end()) && (devicePlanes.size() == 1)) {
                                 found = devicePlanes.begin();
                             }
-                            if ( (found != devicePlanes.end()) && found->second ) {
+                            if ((found != devicePlanes.end()) && found->second) {
                                 const ViewerHandoffFormat format = (inArgs.params->depth == eImageBitDepthFloat) ? ViewerHandoffFormat::Rgba32F : ViewerHandoffFormat::Bgra8;
                                 // Compiled here so that the main thread drawing the root never has to.
                                 const ViewerHandoffResult prepared = _imp->uiContext->prepareHandoff(inArgs.params->displayProcessor, format);
@@ -1919,7 +1919,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                     layers.clear();
                                 } else {
                                     noteHandoffRefusal(stats, prepared.reason);
-                                    if ( layers.empty() ) {
+                                    if (layers.empty()) {
                                         ImagePtr downloaded = found->second->downloadToRam();
                                         if (downloaded) {
                                             layers[found->first] = downloaded;
@@ -2015,12 +2015,11 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }
 #ifdef NATRON_HAVE_GPU
         if (deviceColor) {
-            if ( ( (inArgs.channels == eDisplayChannelsA) || (inArgs.channels == eDisplayChannelsMatte) ) &&
-                 ( (alphaChannelIndex < 0) || ( alphaChannelIndex >= deviceColor->nComps() ) ) ) {
+            if (((inArgs.channels == eDisplayChannelsA) || (inArgs.channels == eDisplayChannelsMatte)) && ((alphaChannelIndex < 0) || (alphaChannelIndex >= deviceColor->nComps()))) {
                 return eViewerRenderRetCodeBlack;
             }
             // The CPU path finds no matte image when the only plane rendered is not the colour layer, and shows black.
-            if ( (inArgs.channels == eDisplayChannelsMatte) && (inArgs.params->alphaLayer != inArgs.params->layer) ) {
+            if ((inArgs.channels == eDisplayChannelsMatte) && (inArgs.params->alphaLayer != inArgs.params->layer)) {
                 return eViewerRenderRetCodeBlack;
             }
             // The tiles keep describing the texture the root is drawn into, without any RAM buffer.
@@ -2485,7 +2484,7 @@ viewerProcessRectOnCpu(const ImageConstPtr& input,
                        const RectI& rect,
                        void* output)
 {
-    if ( rect.isNull() || !input || !output ) {
+    if (rect.isNull() || !input || !output) {
         return;
     }
     const RenderViewerArgs args(input, matte, channels, depth, gain, gamma, offset, displayProcessor, alphaChannelIndex, true, 0);
@@ -3271,8 +3270,8 @@ drawDeviceRootOnCpu(OpenGLViewerI* uiContext,
     const ImageConstPtr matte = process.matteOverlay ? ImageConstPtr(downloaded) : ImageConstPtr();
     // viewerProcessRectOnCpu() reads a rect whose bottom-left corner is off the image as all empty, so only the part
     // the root covers is processed.
-    const RectI drawn = rect.intersect( downloaded->getBounds() );
-    if ( !drawn.isNull() ) {
+    const RectI drawn = rect.intersect(downloaded->getBounds());
+    if (!drawn.isNull()) {
         const bool whole = (drawn == rect);
         const std::size_t drawnRowBytes = drawn.width() * pixelBytes;
         std::vector<unsigned char> part(whole ? 0 : drawnRowBytes * drawn.height());
@@ -3333,13 +3332,13 @@ ViewerInstance::ViewerInstancePrivate::insertCacheTiles(const PendingCacheFill& 
     FrameEntryLocker entryLocker(this);
     for (std::vector<UpdateViewerParams::DeviceCacheTile>::const_iterator it = fill.tiles.begin(); it != fill.tiles.end(); ++it) {
         const RectI& r = it->rectRounded;
-        if ( (r.width() != fill.tileSize) || (r.height() != fill.tileSize) || !fill.roi.contains(r) ) {
+        if ((r.width() != fill.tileSize) || (r.height() != fill.tileSize) || !fill.roi.contains(r)) {
             continue;
         }
         FrameParamsPtr frameParams(new FrameParams(fill.bounds, it->key.getBitDepth(), tileBounds, ImagePtr()));
         FrameEntryPtr entry;
         // A tile that is in the cache already is complete, and another thread may be filling it.
-        if ( appPTR->getTextureOrCreate(it->key, frameParams, &entryLocker, &entry) || !entry ) {
+        if (appPTR->getTextureOrCreate(it->key, frameParams, &entryLocker, &entry) || !entry) {
             continue;
         }
         entry->allocateMemory();
@@ -3362,7 +3361,7 @@ ViewerInstance::ViewerInstancePrivate::insertCacheTiles(const PendingCacheFill& 
 void
 ViewerInstance::ViewerInstancePrivate::pollCacheReadbacks()
 {
-    if ( pendingCacheFills.empty() ) {
+    if (pendingCacheFills.empty()) {
         return;
     }
     if (!uiContext) {

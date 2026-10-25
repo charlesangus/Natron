@@ -245,8 +245,7 @@ cpuFallbacksOf(const FrameRun& run)
  * output is the frame's root.
  **/
 class ViewerRootOnDevice
-    : public BaseTest
-{
+    : public BaseTest {
 protected:
     ViewerRootOnDevice()
         : BaseTest()
@@ -256,7 +255,7 @@ protected:
         , _swapped(false)
         , _gpuReady(false)
         , _skipReason()
-        , _last( std::make_shared<RenderScheduler::RegionReport>() )
+        , _last(std::make_shared<RenderScheduler::RegionReport>())
     {
     }
 
@@ -266,7 +265,7 @@ protected:
         ProjectPtr project = getApp()->getProject();
         project->reset(false, true);
         project->setAutoSetProjectFormatEnabled(false);
-        project->setOrAddProjectFormat( Format(0, 0, kWidth, kHeight, "viewerRootOnDevice", 1.) );
+        project->setOrAddProjectFormat(Format(0, 0, kWidth, kHeight, "viewerRootOnDevice", 1.));
         appPTR->clearAllCaches();
 
         _scheduler = appPTR->getRenderScheduler();
@@ -288,9 +287,9 @@ protected:
 
         GpuContext* app = appPTR->getGpuContext();
         if (app) {
-            app->waitForInit( std::chrono::seconds(60) );
+            app->waitForInit(std::chrono::seconds(60));
         }
-        if ( app && app->isAvailable() ) {
+        if (app && app->isAvailable()) {
             _gpuReady = true;
 
             return;
@@ -301,13 +300,13 @@ protected:
         options.infoLog = [unavailable](const std::string& line) {
             *unavailable = line;
         };
-        std::unique_ptr<GpuContext> forced( new GpuContext(options) );
-        if ( !forced->waitForInit( std::chrono::seconds(60) ) || !forced->isAvailable() ) {
+        std::unique_ptr<GpuContext> forced(new GpuContext(options));
+        if (!forced->waitForInit(std::chrono::seconds(60)) || !forced->isAvailable()) {
             _skipReason = unavailable->empty() ? std::string("no Vulkan device") : *unavailable;
 
             return;
         }
-        _swappedContext = appPTR->swapGpuContextForTests( std::move(forced) );
+        _swappedContext = appPTR->swapGpuContextForTests(std::move(forced));
         _swapped = true;
         _gpuReady = true;
     }
@@ -320,7 +319,7 @@ protected:
         appPTR->clearAllCaches();
         getApp()->getProject()->reset(false, true);
         if (_swapped) {
-            std::unique_ptr<GpuContext> forced = appPTR->swapGpuContextForTests( std::move(_swappedContext) );
+            std::unique_ptr<GpuContext> forced = appPTR->swapGpuContextForTests(std::move(_swappedContext));
             forced.reset();
             _swapped = false;
         }
@@ -334,7 +333,7 @@ protected:
             return true;
         }
         const char* require = std::getenv("NATRON_TEST_REQUIRE_GPU");
-        if ( require && (std::strcmp(require, "1") == 0) ) {
+        if (require && (std::strcmp(require, "1") == 0)) {
             ADD_FAILURE() << "NATRON_TEST_REQUIRE_GPU=1 but " << _skipReason;
         } else {
             std::printf("[  SKIPPED ] %s\n", _skipReason.c_str());
@@ -347,38 +346,35 @@ protected:
                      int major)
     {
         NodePtr node = createNode(QString::fromUtf8(pluginID), major);
-        EXPECT_TRUE( bool(node) ) << pluginID;
+        EXPECT_TRUE(bool(node)) << pluginID;
 
         return node;
     }
 
     bool makeChain()
     {
-        if ( !_sourceDir.isValid() ) {
+        if (!_sourceDir.isValid()) {
             return false;
         }
         const std::string path = writeSource(_sourceDir);
-        if ( path.empty() ) {
+        if (path.empty()) {
             return false;
         }
         _read = makeNode(PLUGINID_NATRON_READ, PLUGIN_MAJOR_NATRON_READ);
         _grade = makeNode(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
         _blur = makeNode(PLUGINID_NATRON_BLUR, PLUGIN_MAJOR_NATRON_BLUR);
         _colorCorrect = makeNode(PLUGINID_NATRON_COLORCORRECT, PLUGIN_MAJOR_NATRON_COLORCORRECT);
-        if ( !_read || !_grade || !_blur || !_colorCorrect ) {
+        if (!_read || !_grade || !_blur || !_colorCorrect) {
             return false;
         }
-        KnobFile* file = dynamic_cast<KnobFile*>( _read->getKnobByName(kOfxImageEffectFileParamName).get() );
+        KnobFile* file = dynamic_cast<KnobFile*>(_read->getKnobByName(kOfxImageEffectFileParamName).get());
         if (!file) {
             return false;
         }
         file->setValue(path);
         _read->getEffectInstance()->refreshMetadata_public(false);
         const std::string master = kColorCorrectGroupMaster;
-        if ( !setKnobValues(_grade, "multiply", { 1.25, 1.25, 1.25, 1.25 }) || !setKnobValues(_grade, "offset", { 0.05, 0.05, 0.05, 0.05 }) ||
-             !setKnobValues(_blur, kBlurParamSize, { 9., 9. }) ||
-             !setKnobValues(_colorCorrect, master + kColorCorrectParamSaturation, { 0.8, 0.8, 0.8, 0.8 }) ||
-             !setKnobValues(_colorCorrect, master + kColorCorrectParamGain, { 1.1, 1.1, 1.1, 1.1 }) ) {
+        if (!setKnobValues(_grade, "multiply", { 1.25, 1.25, 1.25, 1.25 }) || !setKnobValues(_grade, "offset", { 0.05, 0.05, 0.05, 0.05 }) || !setKnobValues(_blur, kBlurParamSize, { 9., 9. }) || !setKnobValues(_colorCorrect, master + kColorCorrectParamSaturation, { 0.8, 0.8, 0.8, 0.8 }) || !setKnobValues(_colorCorrect, master + kColorCorrectParamGain, { 1.1, 1.1, 1.1, 1.1 })) {
             return false;
         }
         connectNodes(_read, _grade, 0, true);
@@ -431,7 +427,7 @@ protected:
                                                   run->stats);
         run->context->setRequest(request);
         run->graph = RenderScheduler::buildGraph(run->context, root, kTime, ViewIdx(0), 0 /*mipmapLevel*/);
-        if ( run->graph.tasks.empty() ) {
+        if (run->graph.tasks.empty()) {
             *error = "empty graph";
 
             return false;
@@ -446,18 +442,18 @@ protected:
     {
         std::set<const Node*> gpu;
         for (const NodePtr& node : gpuNodes) {
-            gpu.insert( node.get() );
+            gpu.insert(node.get());
         }
         PlacementInputs inputs;
         inputs.canRenderOnGpu = [gpu, context](const FrameGraph::Task& task) {
-            if ( !gpu.count( task.key.node.get() ) ) {
+            if (!gpu.count(task.key.node.get())) {
                 return false;
             }
             GpuQuery query;
-            if ( !makeGpuQueryForTask(task, *context, &query) ) {
+            if (!makeGpuQueryForTask(task, *context, &query)) {
                 return false;
             }
-            const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>( task.key.node->getEffectInstance().get() );
+            const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(task.key.node->getEffectInstance().get());
 
             return native && native->canRenderOnGpu(query);
         };
@@ -470,11 +466,11 @@ protected:
                            FrameRun* run,
                            std::string* error)
     {
-        if ( !prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), run, error) ) {
+        if (!prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), run, error)) {
             return false;
         }
-        placeGraph( run->graph, gpuOnly(run->context, { _grade, _blur, _colorCorrect }) );
-        if ( (run->graph.regions.size() != 1) || (run->graph.regions[0].members.size() != 3) ) {
+        placeGraph(run->graph, gpuOnly(run->context, { _grade, _blur, _colorCorrect }));
+        if ((run->graph.regions.size() != 1) || (run->graph.regions[0].members.size() != 3)) {
             *error = "the chain is not one region of three members";
 
             return false;
@@ -490,7 +486,7 @@ protected:
         run->future = _scheduler->submit(run->context, std::move(run->graph), RenderScheduler::Priority::Interactive);
         QElapsedTimer timer;
         timer.start();
-        while ( !run->future->isFinished() ) {
+        while (!run->future->isFinished()) {
             if (timer.elapsed() > kFrameTimeoutMs) {
                 _scheduler->abort(run->context);
                 run->future->wait();
@@ -508,21 +504,21 @@ protected:
                        std::string* error)
     {
         FrameRun run;
-        if ( !prepareChainFrame(false, &run, error) ) {
+        if (!prepareChainFrame(false, &run, error)) {
             return false;
         }
-        if ( !render(&run) ) {
+        if (!render(&run)) {
             *error = "the frame without the flag failed";
 
             return false;
         }
         const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
-        if ( planes.empty() || !planes.begin()->second || !run.context->takeRootDevicePlanes().empty() ) {
+        if (planes.empty() || !planes.begin()->second || !run.context->takeRootDevicePlanes().empty()) {
             *error = "the frame without the flag has no RAM root, or a device one";
 
             return false;
         }
-        if ( (run.stats->getGpuRegionsRun() != 1) || (run.stats->getDownloadCount() != 1) ) {
+        if ((run.stats->getGpuRegionsRun() != 1) || (run.stats->getDownloadCount() != 1)) {
             *error = "the frame without the flag did not run one region downloading its root";
 
             return false;
@@ -549,26 +545,26 @@ protected:
 
 TEST_F(ViewerRootOnDevice, TheRootStaysOnTheDeviceAndMatchesTheRamRoot)
 {
-    if ( !gpuOrSkip() ) {
+    if (!gpuOrSkip()) {
         return;
     }
-    ASSERT_TRUE( makeChain() );
+    ASSERT_TRUE(makeChain());
     const RectI window(0, 0, kWidth, kHeight);
     ImagePtr ramRoot;
     std::string error;
-    ASSERT_TRUE( renderRamRoot(&ramRoot, &error) ) << error;
+    ASSERT_TRUE(renderRamRoot(&ramRoot, &error)) << error;
     const std::vector<float> want = readRgba(ramRoot, window);
-    ASSERT_TRUE( anyNonZero(want) ) << "the RAM root is black, which proves nothing";
+    ASSERT_TRUE(anyNonZero(want)) << "the RAM root is black, which proves nothing";
 
     FrameRun run;
-    ASSERT_TRUE( prepareChainFrame(true, &run, &error) ) << error;
+    ASSERT_TRUE(prepareChainFrame(true, &run, &error)) << error;
     QTemporaryDir profileDir;
-    ASSERT_TRUE( profileDir.isValid() );
-    RenderScheduler::setProfilePath( (profileDir.path() + QString::fromUtf8("/profile")).toStdString() );
+    ASSERT_TRUE(profileDir.isValid());
+    RenderScheduler::setProfilePath((profileDir.path() + QString::fromUtf8("/profile")).toStdString());
     const bool rendered = render(&run);
     RenderScheduler::flushProfile();
     const std::string profilePath = RenderScheduler::getProfileFilePath();
-    RenderScheduler::setProfilePath( std::string() );
+    RenderScheduler::setProfilePath(std::string());
     ASSERT_TRUE(rendered);
 
     const RenderScheduler::RegionReport report = *_last;
@@ -580,7 +576,7 @@ TEST_F(ViewerRootOnDevice, TheRootStaysOnTheDeviceAndMatchesTheRamRoot)
     EXPECT_EQ(0, run.stats->getDownloadCount());
     EXPECT_EQ(0, run.context->getStore().downloadCount());
     EXPECT_EQ(0, legacyFallbacksOf(run, kStripsReason));
-    EXPECT_TRUE( run.future->getRootPlanes().empty() );
+    EXPECT_TRUE(run.future->getRootPlanes().empty());
 
     int regionRecords = 0;
     for (const std::string& record : readProfileRecords(profilePath)) {
@@ -596,60 +592,60 @@ TEST_F(ViewerRootOnDevice, TheRootStaysOnTheDeviceAndMatchesTheRamRoot)
     std::map<ImageLayerDesc, GpuDeviceImagePtr> devicePlanes = run.context->takeRootDevicePlanes();
     ASSERT_EQ(1u, devicePlanes.size());
     const GpuDeviceImagePtr device = devicePlanes.begin()->second;
-    ASSERT_TRUE( bool(device) );
-    EXPECT_EQ( ramRoot->getBounds(), device->bounds() );
+    ASSERT_TRUE(bool(device));
+    EXPECT_EQ(ramRoot->getBounds(), device->bounds());
     const ImagePtr downloaded = device->downloadToRam();
-    ASSERT_TRUE( bool(downloaded) );
-    EXPECT_EQ( 0.f, worstDiff( want, readRgba(downloaded, window) ) );
+    ASSERT_TRUE(bool(downloaded));
+    EXPECT_EQ(0.f, worstDiff(want, readRgba(downloaded, window)));
 }
 
 TEST_F(ViewerRootOnDevice, AnEvictedRootKeepsItsPixels)
 {
-    if ( !gpuOrSkip() ) {
+    if (!gpuOrSkip()) {
         return;
     }
-    ASSERT_TRUE( makeChain() );
+    ASSERT_TRUE(makeChain());
     const RectI window(0, 0, kWidth, kHeight);
     ImagePtr ramRoot;
     std::string error;
-    ASSERT_TRUE( renderRamRoot(&ramRoot, &error) ) << error;
+    ASSERT_TRUE(renderRamRoot(&ramRoot, &error)) << error;
 
     FrameRun run;
-    ASSERT_TRUE( prepareChainFrame(true, &run, &error) ) << error;
-    ASSERT_TRUE( render(&run) );
+    ASSERT_TRUE(prepareChainFrame(true, &run, &error)) << error;
+    ASSERT_TRUE(render(&run));
     std::map<ImageLayerDesc, GpuDeviceImagePtr> devicePlanes = run.context->takeRootDevicePlanes();
     ASSERT_EQ(1u, devicePlanes.size());
     const GpuDeviceImagePtr device = devicePlanes.begin()->second;
-    ASSERT_TRUE( bool(device) );
+    ASSERT_TRUE(bool(device));
     const std::size_t bytes = device->bytes();
     ASSERT_GT(bytes, 0u);
 
     gpu::GpuRuntime* runtime = appPTR->getGpuContext()->runtime();
-    EXPECT_GE(runtime->pool().evict( std::numeric_limits<std::uint64_t>::max() ), (std::uint64_t)bytes);
+    EXPECT_GE(runtime->pool().evict(std::numeric_limits<std::uint64_t>::max()), (std::uint64_t)bytes);
     EXPECT_EQ(0u, device->bytes()) << "the pool could not reclaim the root";
     EXPECT_EQ(nullptr, device->pin());
     EXPECT_EQ(1, run.stats->getEvictions());
     const ImagePtr copy = device->downloadToRam();
-    ASSERT_TRUE( bool(copy) );
-    EXPECT_EQ( 0.f, worstDiff( readRgba(ramRoot, window), readRgba(copy, window) ) );
+    ASSERT_TRUE(bool(copy));
+    EXPECT_EQ(0.f, worstDiff(readRgba(ramRoot, window), readRgba(copy, window)));
 }
 
 TEST_F(ViewerRootOnDevice, ForcedStripsDownloadTheRootAndCountIt)
 {
-    if ( !gpuOrSkip() ) {
+    if (!gpuOrSkip()) {
         return;
     }
-    ASSERT_TRUE( makeChain() );
+    ASSERT_TRUE(makeChain());
     const RectI window(0, 0, kWidth, kHeight);
     ImagePtr ramRoot;
     std::string error;
-    ASSERT_TRUE( renderRamRoot(&ramRoot, &error) ) << error;
+    ASSERT_TRUE(renderRamRoot(&ramRoot, &error)) << error;
 
     // A 1 MB storage buffer range holds 256 rows of the 256-pixel RGBA float image, so the region strips.
     setGpuStripOverridesForTests(1u << 20, 64);
     FrameRun run;
-    ASSERT_TRUE( prepareChainFrame(true, &run, &error) ) << error;
-    ASSERT_TRUE( render(&run) );
+    ASSERT_TRUE(prepareChainFrame(true, &run, &error)) << error;
+    ASSERT_TRUE(render(&run));
 
     const RenderScheduler::RegionReport report = *_last;
     EXPECT_EQ(0, cpuFallbacksOf(run));
@@ -658,26 +654,26 @@ TEST_F(ViewerRootOnDevice, ForcedStripsDownloadTheRootAndCountIt)
     const std::size_t rootBytes = (std::size_t)ramRoot->getBounds().area() * 4 * sizeof(float);
     EXPECT_EQ(rootBytes, report.downloadBytes);
     EXPECT_GT(run.stats->getDownloadCount(), 0);
-    EXPECT_EQ( (unsigned long long)rootBytes, run.stats->getDownloadBytes() );
+    EXPECT_EQ((unsigned long long)rootBytes, run.stats->getDownloadBytes());
     EXPECT_EQ(1, legacyFallbacksOf(run, kStripsReason));
-    EXPECT_TRUE( run.context->takeRootDevicePlanes().empty() );
+    EXPECT_TRUE(run.context->takeRootDevicePlanes().empty());
 
     const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
-    ASSERT_FALSE( planes.empty() );
-    EXPECT_EQ( 0.f, worstDiff( readRgba(ramRoot, window), readRgba(planes.begin()->second, window) ) );
+    ASSERT_FALSE(planes.empty());
+    EXPECT_EQ(0.f, worstDiff(readRgba(ramRoot, window), readRgba(planes.begin()->second, window)));
 }
 
 // With the root's download charged, the transfer outweighs what the GPU saves and placement leaves the chain on the
 // CPU; kept on the device, the same chain at the same size goes to the GPU whole.
 TEST_F(ViewerRootOnDevice, PlacementAcceptsTheRegionOnceTheRootStaysOnTheDevice)
 {
-    if ( !gpuOrSkip() ) {
+    if (!gpuOrSkip()) {
         return;
     }
-    ASSERT_TRUE( makeChain() );
+    ASSERT_TRUE(makeChain());
     FrameRun run;
     std::string error;
-    ASSERT_TRUE( prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error) ) << error;
+    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error)) << error;
     const FrameGraph base = run.graph;
     const int gradeTask = taskOf(base, _grade);
     const int blurTask = taskOf(base, _blur);
@@ -729,15 +725,15 @@ TEST_F(ViewerRootOnDevice, PlacementAcceptsTheRegionOnceTheRootStaysOnTheDevice)
 // downloaded plus the root's download time.
 TEST_F(ViewerRootOnDevice, RenderPlacementChargesTheRootOnlyWhenItIsDownloaded)
 {
-    if ( !gpuOrSkip() ) {
+    if (!gpuOrSkip()) {
         return;
     }
-    ASSERT_TRUE( makeChain() );
+    ASSERT_TRUE(makeChain());
     FrameRun run;
     std::string error;
-    ASSERT_TRUE( prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error) ) << error;
+    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error)) << error;
     FrameGraph whole = run.graph;
-    placeGraph( whole, gpuOnly(run.context, { _grade, _blur, _colorCorrect }) );
+    placeGraph(whole, gpuOnly(run.context, { _grade, _blur, _colorCorrect }));
     ASSERT_EQ(1u, whole.regions.size());
     const int colorCorrectTask = taskOf(whole, _colorCorrect);
     ASSERT_TRUE(colorCorrectTask >= 0);
@@ -745,7 +741,7 @@ TEST_F(ViewerRootOnDevice, RenderPlacementChargesTheRootOnlyWhenItIsDownloaded)
     GpuCostModel& session = GpuCostModel::session();
     const GpuTransferRates saved = session.transferRates();
     const PlacementInputs inputs = makeRenderPlacementInputs(run.context);
-    ASSERT_TRUE( bool(inputs.regionGain) );
+    ASSERT_TRUE(bool(inputs.regionGain));
     struct RatesBack {
         GpuCostModel& model;
         GpuTransferRates rates;
@@ -763,8 +759,8 @@ TEST_F(ViewerRootOnDevice, RenderPlacementChargesTheRootOnlyWhenItIsDownloaded)
     const double downloaded = inputs.regionGain(whole, whole.regions[0]);
     run.context->setWantsRootOnDevice(true);
     const double kept = inputs.regionGain(whole, whole.regions[0]);
-    ASSERT_TRUE( std::isfinite(downloaded) && std::isfinite(kept) );
-    const double rootMs = session.transferMs( 0., (double)whole.tasks[colorCorrectTask].estimatedBytes );
+    ASSERT_TRUE(std::isfinite(downloaded) && std::isfinite(kept));
+    const double rootMs = session.transferMs(0., (double)whole.tasks[colorCorrectTask].estimatedBytes);
     ASSERT_GT(rootMs, 0.);
     EXPECT_NEAR(rootMs, kept - downloaded, rootMs * 1e-6);
 }
@@ -773,10 +769,10 @@ TEST_F(ViewerRootOnDevice, RenderPlacementChargesTheRootOnlyWhenItIsDownloaded)
 // whole once the root is kept on the device: stripping would only download it.
 TEST_F(ViewerRootOnDevice, ARootKeptOnTheDeviceIsNeverStrippedToHideItsTransfer)
 {
-    if ( !gpuOrSkip() ) {
+    if (!gpuOrSkip()) {
         return;
     }
-    if ( !appPTR->getGpuContext()->runtime()->device().info().pushDescriptor ) {
+    if (!appPTR->getGpuContext()->runtime()->device().info().pushDescriptor) {
         std::printf("[  SKIPPED ] the device has no push descriptors, so strips never run pipelined\n");
 
         return;
@@ -786,17 +782,17 @@ TEST_F(ViewerRootOnDevice, ARootKeptOnTheDeviceIsNeverStrippedToHideItsTransfer)
     NodePtr source = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
     NodePtr grade = makeNode(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
     ASSERT_TRUE(source && grade);
-    ASSERT_TRUE( setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize) );
-    ASSERT_TRUE( setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }) );
-    ASSERT_TRUE( setKnobValues(source, kNativeGeneratorParamSize, { (double)width, (double)height }) );
-    ASSERT_TRUE( setKnobValues(source, kConstantParamColor, { 0.25, 0.5, 0.75, 1. }) );
-    ASSERT_TRUE( setKnobValues(grade, "multiply", { 1.5, 1.5, 1.5, 1.5 }) );
+    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)width, (double)height }));
+    ASSERT_TRUE(setKnobValues(source, kConstantParamColor, { 0.25, 0.5, 0.75, 1. }));
+    ASSERT_TRUE(setKnobValues(grade, "multiply", { 1.5, 1.5, 1.5, 1.5 }));
     connectNodes(source, grade, 0, true);
     const RectI window(0, 0, width, height);
 
     GpuCostModel& session = GpuCostModel::session();
     const GpuTransferRates savedRates = session.transferRates();
-    const double savedKernel = session.gpuMs(GpuTaskTraits( grade->getPluginID() ), 1.);
+    const double savedKernel = session.gpuMs(GpuTaskTraits(grade->getPluginID()), 1.);
     struct CostBack {
         GpuCostModel& model;
         GpuTransferRates rates;
@@ -805,7 +801,7 @@ TEST_F(ViewerRootOnDevice, ARootKeptOnTheDeviceIsNeverStrippedToHideItsTransfer)
         ~CostBack()
         {
             model.setTransferRates(rates);
-            if ( std::isfinite(kernelMsPerMpx) ) {
+            if (std::isfinite(kernelMsPerMpx)) {
                 model.setGpuSeed(pluginId, kernelMsPerMpx);
             }
         }
@@ -822,18 +818,18 @@ TEST_F(ViewerRootOnDevice, ARootKeptOnTheDeviceIsNeverStrippedToHideItsTransfer)
         SCOPED_TRACE(rootOnDevice ? "root kept on the device" : "root downloaded");
         FrameRun run;
         std::string error;
-        ASSERT_TRUE( prepareFrame(grade, window, &run, &error) ) << error;
-        placeGraph( run.graph, gpuOnly(run.context, { grade }) );
+        ASSERT_TRUE(prepareFrame(grade, window, &run, &error)) << error;
+        placeGraph(run.graph, gpuOnly(run.context, { grade }));
         ASSERT_EQ(1u, run.graph.regions.size());
         run.context->setWantsRootOnDevice(rootOnDevice != 0);
-        ASSERT_TRUE( render(&run) );
+        ASSERT_TRUE(render(&run));
         const RenderScheduler::RegionReport report = *_last;
         EXPECT_EQ(0, cpuFallbacksOf(run));
         if (!rootOnDevice) {
             EXPECT_GE(report.strips, kGpuStripMaxInFlight);
             EXPECT_TRUE(report.overlapStrips);
             const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
-            ASSERT_FALSE( planes.empty() );
+            ASSERT_FALSE(planes.empty());
             stripped = readRgba(planes.begin()->second, window);
         } else {
             EXPECT_EQ(0, report.strips);
@@ -844,8 +840,8 @@ TEST_F(ViewerRootOnDevice, ARootKeptOnTheDeviceIsNeverStrippedToHideItsTransfer)
             std::map<ImageLayerDesc, GpuDeviceImagePtr> devicePlanes = run.context->takeRootDevicePlanes();
             ASSERT_EQ(1u, devicePlanes.size());
             const ImagePtr downloaded = devicePlanes.begin()->second->downloadToRam();
-            ASSERT_TRUE( bool(downloaded) );
-            EXPECT_EQ( 0.f, worstDiff( stripped, readRgba(downloaded, window) ) );
+            ASSERT_TRUE(bool(downloaded));
+            EXPECT_EQ(0.f, worstDiff(stripped, readRgba(downloaded, window)));
         }
     }
 }

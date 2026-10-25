@@ -72,8 +72,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-class ScopedEnv
-{
+class ScopedEnv {
 public:
     // A null value unsets the variable.
     ScopedEnv(const char* name,
@@ -148,8 +147,7 @@ eglLoader(const char* name)
 
 // A surfaceless EGL desktop-GL context, with libEGL loaded at run time so that the test binary
 // does not link it.
-class EglSurfaceless
-{
+class EglSurfaceless {
 public:
     std::string error;
     GlFns gl;
@@ -157,8 +155,7 @@ public:
     bool init()
     {
         // The dev image's /usr/local glvnd lists only the NVIDIA EGL vendor.
-        if (!std::getenv("__EGL_VENDOR_LIBRARY_FILENAMES") && (::access("/usr/share/glvnd/egl_vendor.d/50_mesa.json", R_OK) == 0) &&
-            (::access("/usr/local/share/glvnd/egl_vendor.d", F_OK) == 0)) {
+        if (!std::getenv("__EGL_VENDOR_LIBRARY_FILENAMES") && (::access("/usr/share/glvnd/egl_vendor.d/50_mesa.json", R_OK) == 0) && (::access("/usr/local/share/glvnd/egl_vendor.d", F_OK) == 0)) {
             ::setenv("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/50_mesa.json", 1);
         }
         _lib = ::dlopen("libEGL.so.1", RTLD_NOW | RTLD_LOCAL);
@@ -168,13 +165,11 @@ public:
             return false;
         }
         auto sym = [this](auto& fn, const char* name) {
-            fn = reinterpret_cast<std::remove_reference_t<decltype(fn)> >(::dlsym(_lib, name));
+            fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(::dlsym(_lib, name));
 
             return fn != nullptr;
         };
-        if (!sym(gEglGetProcAddress, "eglGetProcAddress") || !sym(_queryString, "eglQueryString") || !sym(_initialize, "eglInitialize") ||
-            !sym(_bindApi, "eglBindAPI") || !sym(_createContext, "eglCreateContext") || !sym(_makeCurrent, "eglMakeCurrent") ||
-            !sym(_destroyContext, "eglDestroyContext") || !sym(_terminate, "eglTerminate")) {
+        if (!sym(gEglGetProcAddress, "eglGetProcAddress") || !sym(_queryString, "eglQueryString") || !sym(_initialize, "eglInitialize") || !sym(_bindApi, "eglBindAPI") || !sym(_createContext, "eglCreateContext") || !sym(_makeCurrent, "eglMakeCurrent") || !sym(_destroyContext, "eglDestroyContext") || !sym(_terminate, "eglTerminate")) {
             error = "libEGL lacks core entry points";
 
             return false;
@@ -221,7 +216,7 @@ public:
             return false;
         }
         auto get = [](auto& fn, const char* name) {
-            fn = reinterpret_cast<std::remove_reference_t<decltype(fn)> >(gEglGetProcAddress(name));
+            fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(gEglGetProcAddress(name));
         };
         get(gl.GenTextures, "glGenTextures");
         get(gl.DeleteTextures, "glDeleteTextures");
@@ -526,8 +521,7 @@ floatMismatches(const std::vector<float>& gpu,
 }
 
 // A GPU context, a current GL context, and the textures a test presents into.
-class Harness
-{
+class Harness {
 public:
     std::unique_ptr<GpuContext> context;
     EglSurfaceless egl;
@@ -780,7 +774,7 @@ TEST(ViewerHandoff, ReadbackMatchesTheTextureOnEveryRung)
             }
             // More requests than the ring has slots, so that an uncollected copy has to be harvested before
             // its slot is produced into again.
-            std::map<std::uint64_t, std::vector<unsigned char> > expected;
+            std::map<std::uint64_t, std::vector<unsigned char>> expected;
             for (std::uint64_t token = 1; token <= 3; ++token) {
                 ViewerHandoffParams params = paramsFor(c, kRect);
                 params.gain = 0.25 * double(token);

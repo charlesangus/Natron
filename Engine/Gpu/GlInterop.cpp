@@ -8,8 +8,8 @@
 #include <cstdio>
 #include <cstring>
 #include <set>
-#include <vector>
 #include <string_view>
+#include <vector>
 
 namespace gpu {
 

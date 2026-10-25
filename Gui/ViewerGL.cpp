@@ -146,7 +146,7 @@ ViewerGL::ViewerGL(ViewerTab* parent,
     QObject::connect( appPTR, SIGNAL(checkerboardSettingsChanged()), this, SLOT(onCheckerboardSettingsChanged()) );
 
 #ifdef NATRON_HAVE_GPU
-    _imp->handoff.reset( new ViewerHandoff( appPTR->getGpuContext() ) );
+    _imp->handoff.reset(new ViewerHandoff(appPTR->getGpuContext()));
 #endif
 }
 
@@ -156,7 +156,7 @@ ViewerGL::~ViewerGL()
     assert( qApp && qApp->thread() == QThread::currentThread() );
 #ifdef NATRON_HAVE_GPU
     QObject::disconnect(_imp->handoffContextConnection);
-    if ( _imp->handoff && context() ) {
+    if (_imp->handoff && context()) {
         makeCurrent();
     }
     _imp->handoff.reset();
@@ -1246,7 +1246,7 @@ ViewerGL::initializeGL()
     QOpenGLContext* glContext = QOpenGLContext::currentContext();
     if (_imp->handoff && glContext) {
         _imp->handoff->create([glContext](const char* name) -> void* {
-            return reinterpret_cast<void*>( glContext->getProcAddress(name) );
+            return reinterpret_cast<void*>(glContext->getProcAddress(name));
         });
         QObject::disconnect(_imp->handoffContextConnection);
         _imp->handoffContextConnection = QObject::connect(glContext, &QOpenGLContext::aboutToBeDestroyed, this, [this]() {
@@ -1665,14 +1665,14 @@ GLTexturePtr
 displayTextureOfType(GLTexturePtr* texture,
                      Texture::DataTypeEnum dataType)
 {
-    if ( (*texture)->type() != dataType ) {
+    if ((*texture)->type() != dataType) {
         int format, internalFormat, glType;
         if (dataType == Texture::eDataTypeFloat) {
             Texture::getRecommendedTexParametersForRGBAFloatTexture(&format, &internalFormat, &glType);
         } else {
             Texture::getRecommendedTexParametersForRGBAByteTexture(&format, &internalFormat, &glType);
         }
-        texture->reset( new Texture(GL_TEXTURE_2D, GL_LINEAR, GL_NEAREST, GL_CLAMP_TO_EDGE, dataType, format, internalFormat, glType) );
+        texture->reset(new Texture(GL_TEXTURE_2D, GL_LINEAR, GL_NEAREST, GL_CLAMP_TO_EDGE, dataType, format, internalFormat, glType));
     }
 
     return *texture;
@@ -1914,8 +1914,8 @@ ViewerGL::transferDeviceImageToGPU(const GpuDeviceImagePtr& root,
                                    TexturePtr* texture)
 {
     // always running in the main thread
-    assert( qApp && qApp->thread() == QThread::currentThread() );
-    assert( QOpenGLContext::currentContext() == context() );
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(QOpenGLContext::currentContext() == context());
     assert(textureIndex == 0 || textureIndex == 1);
 
     if (!_imp->handoff) {
@@ -2012,7 +2012,7 @@ ViewerGL::discardStagedDeviceImage(int textureIndex,
 void
 ViewerGL::consumeCompletedHandoffReadbacks(const ViewerHandoffClaimFn& claim)
 {
-    assert( qApp && qApp->thread() == QThread::currentThread() );
+    assert(qApp && qApp->thread() == QThread::currentThread());
     if (_imp->handoff) {
         _imp->handoff->consumeCompletedReadbacks(claim);
     }
@@ -4540,7 +4540,7 @@ lastRenderedTileAt(TextureInfo& info,
         if (image) {
             info.lastRenderedTiles[level] = image;
             info.memoryHeldByLastRenderedImages += image->size();
-            internalNode->registerPluginMemory( image->size() );
+            internalNode->registerPluginMemory(image->size());
         } else if (failedDownload) {
             *failedDownload = true;
         }
@@ -4932,7 +4932,7 @@ ViewerGL::getViewedNode(int textureIndex,
 void
 ViewerGL::renderLastImageOnDemand(int textureIndex) const
 {
-    assert( qApp && qApp->thread() == QThread::currentThread() );
+    assert(qApp && qApp->thread() == QThread::currentThread());
 
     unsigned int level;
     SequenceTime time;
@@ -4955,7 +4955,7 @@ ViewerGL::renderLastImageOnDemand(int textureIndex) const
     QMutexLocker l(&_imp->lastRenderedImageMutex);
     TextureInfo& info = _imp->displayTextures[textureIndex];
     // A newer frame may have reached the texture while the image rendered.
-    if ( !info.imageOnDemand || (info.mipmapLevel != level) || (info.time != time) ) {
+    if (!info.imageOnDemand || (info.mipmapLevel != level) || (info.time != time)) {
         return;
     }
     // A failed render is not retried: the histogram asks again on every redraw.
@@ -4963,7 +4963,7 @@ ViewerGL::renderLastImageOnDemand(int textureIndex) const
     if (image) {
         info.lastRenderedTiles[level] = image;
         info.memoryHeldByLastRenderedImages += image->size();
-        getInternalNode()->registerPluginMemory( image->size() );
+        getInternalNode()->registerPluginMemory(image->size());
     }
 }
 
@@ -5089,7 +5089,7 @@ ViewerGL::pickColorAt(double x,
     if (!pickOutput) {
         unsigned int displayedLevel;
         ImageLayerDesc layer;
-        if ( getDisplayedLevelAndLayer(textureIndex, getMipmapLevelCombinedToZoomFactor(), &displayedLevel, &layer) ) {
+        if (getDisplayedLevelAndLayer(textureIndex, getMipmapLevelCombinedToZoomFactor(), &displayedLevel, &layer)) {
             if (getInputColorAtCanonicalRect(textureIndex, displayedLevel, layer, RectD(x, y, x, y), r, g, b, a)) {
                 *mipmapLevel = displayedLevel;
                 *fromInput = true;
@@ -5117,7 +5117,7 @@ ViewerGL::pickColorAtRect(const RectD& rect, // rectangle in canonical coordinat
     if (!pickOutput) {
         unsigned int displayedLevel;
         ImageLayerDesc layer;
-        if ( getDisplayedLevelAndLayer(textureIndex, getMipmapLevelCombinedToZoomFactor(), &displayedLevel, &layer) ) {
+        if (getDisplayedLevelAndLayer(textureIndex, getMipmapLevelCombinedToZoomFactor(), &displayedLevel, &layer)) {
             if (getInputColorAtCanonicalRect(textureIndex, displayedLevel, layer, rect, r, g, b, a)) {
                 *mipmapLevel = displayedLevel;
                 *fromInput = true;

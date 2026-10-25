@@ -57,8 +57,7 @@ NATRON_NAMESPACE_ENTER
  * Dynamic properties (exposure, contrast, ...) are uniforms, not part of the text or cacheID(),
  * so changing one needs fillUniforms() again and no new pipeline.
  **/
-class OcioVulkanShader
-{
+class OcioVulkanShader {
 public:
     static constexpr unsigned kUniformBinding = 0;
 
@@ -107,12 +106,11 @@ public:
      * OcioVulkanShader::cacheID() and shared by every later lookup. The textures must be released
      * before the runtime, and any recorded work that samples them must be finished first.
      **/
-    class Resources
-    {
+    class Resources {
     public:
         explicit Resources(gpu::GpuRuntime& runtime);
 
-        typedef std::vector<std::shared_ptr<const gpu::GpuTexture> > TextureList;
+        typedef std::vector<std::shared_ptr<const gpu::GpuTexture>> TextureList;
 
         /**
          * @brief The textures of \p shader, in textures() order; creates them on the first lookup of
@@ -130,7 +128,7 @@ public:
 
     private:
         gpu::GpuRuntime& _runtime;
-        std::map<std::string, std::shared_ptr<const TextureList> > _entries;
+        std::map<std::string, std::shared_ptr<const TextureList>> _entries;
         std::size_t _texturesCreated = 0;
     };
 

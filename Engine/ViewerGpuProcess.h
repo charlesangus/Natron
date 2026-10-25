@@ -77,8 +77,7 @@ struct ViewerGpuProcessParams {
  * others that need it, and does not hold up those that need another. Every kernel, uniform block and LUT texture it hands to
  * recorded work stays alive until the object is destroyed, which must wait for that work.
  **/
-class ViewerGpuProcess
-{
+class ViewerGpuProcess {
 public:
     static constexpr unsigned kInputBinding = 24;
     static constexpr unsigned kOutputBinding = 25;
@@ -150,7 +149,7 @@ private:
     std::mutex _mutex;
     std::mutex _resourcesMutex;
     OcioVulkanShader::Resources _resources;
-    std::map<std::string, std::shared_ptr<const Pipeline> > _pipelines;
+    std::map<std::string, std::shared_ptr<const Pipeline>> _pipelines;
     std::map<std::string, std::shared_future<Built>> _building;
 
     // A pipeline that cannot be built fails again without a recompile on every frame the CPU then

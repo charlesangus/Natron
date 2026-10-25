@@ -17,7 +17,6 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
 // "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
@@ -91,41 +90,40 @@ registerViewerPluginOnce()
 
     std::call_once(once, []() {
         try {
-            if ( appPTR->getPluginBinary(QString::fromUtf8(PLUGINID_NATRON_VIEWER), -1, -1, false) ) {
+            if (appPTR->getPluginBinary(QString::fromUtf8(PLUGINID_NATRON_VIEWER), -1, -1, false)) {
                 return;
             }
         } catch (const std::exception&) {
         }
-        EffectInstancePtr node( ViewerInstance::BuildEffect( NodePtr() ) );
+        EffectInstancePtr node(ViewerInstance::BuildEffect(NodePtr()));
         std::map<std::string, void (*)()> functions;
-        functions.insert( std::make_pair("BuildEffect", (void (*)())&ViewerInstance::BuildEffect) );
+        functions.insert(std::make_pair("BuildEffect", (void (*)())&ViewerInstance::BuildEffect));
         LibraryBinary* binary = new LibraryBinary(functions);
 
         std::list<std::string> grouping;
         node->getPluginGrouping(&grouping);
         QStringList qgrouping;
         for (std::list<std::string>::iterator it = grouping.begin(); it != grouping.end(); ++it) {
-            qgrouping.push_back( QString::fromUtf8( it->c_str() ) );
+            qgrouping.push_back(QString::fromUtf8(it->c_str()));
         }
 
-        Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8( node->getPluginID().c_str() ), QString::fromUtf8( node->getPluginLabel().c_str() ),
+        Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
                                            QString(), QStringList(), node->isReader(), node->isWriter(), binary, node->renderThreadSafety() == eRenderSafetyUnsafe,
                                            node->getMajorVersion(), node->getMinorVersion(), false);
         // Registered after AppManager::load(), so the label-without-suffix the script name is made
         // from was never assigned.
-        p->setLabelWithoutSuffix( Plugin::makeLabelWithoutSuffix( p->getPluginLabel() ) );
+        p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
         std::list<PluginActionShortcut> shortcuts;
         node->getPluginShortcuts(&shortcuts);
         p->setShorcuts(shortcuts);
-        p->setOpenGLRenderSupport( node->supportsOpenGLRender() );
+        p->setOpenGLRenderSupport(node->supportsOpenGLRender());
         p->setForInternalUseOnly(true);
     });
 }
 
 // The viewer widget as the render thread sees it: a single tile covering the whole frame at 100%.
 class FakeViewerUi
-    : public OpenGLViewerI
-{
+    : public OpenGLViewerI {
 public:
     FakeViewerUi()
         : timeline()
@@ -145,7 +143,7 @@ public:
                                        ViewerHandoffFormat /*format*/) OVERRIDE
     {
         ++prepares;
-        if ( QCoreApplication::instance() && (QThread::currentThread() == QCoreApplication::instance()->thread()) ) {
+        if (QCoreApplication::instance() && (QThread::currentThread() == QCoreApplication::instance()->thread())) {
             preparedOnMainThread = true;
         }
         ViewerHandoffResult result;
@@ -159,7 +157,7 @@ public:
 
     bool isViewerUIVisible() const OVERRIDE { return false; }
     double getZoomFactor() const OVERRIDE { return 1.; }
-    void fitImageToFormat() OVERRIDE {}
+    void fitImageToFormat() OVERRIDE { }
     bool isClippingImageToFormat() const OVERRIDE { return true; }
 
     RectI getImageRectangleDisplayed(const RectI& pixelRod,
@@ -187,7 +185,7 @@ public:
         if (roiNotRounded) {
             *roiNotRounded = roi;
         }
-        if ( !roi.isNull() ) {
+        if (!roi.isNull()) {
             if (tiles) {
                 tiles->push_back(roi);
             }
@@ -205,7 +203,7 @@ public:
                                           unsigned int mipmapLevel) OVERRIDE
     {
         RectI roi = rod.toPixelEnclosing(mipmapLevel, par);
-        roi.clip( RectI(0, 0, kSize >> mipmapLevel, kSize >> mipmapLevel) );
+        roi.clip(RectI(0, 0, kSize >> mipmapLevel, kSize >> mipmapLevel));
 
         return roi;
     }
@@ -213,7 +211,7 @@ public:
     ImageBitDepthEnum getBitDepth() const OVERRIDE { return eImageBitDepthFloat; }
     bool isUserRegionOfInterestEnabled() const OVERRIDE { return false; }
     RectD getUserRegionOfInterest() const OVERRIDE { return RectD(); }
-    void clearPartialUpdateTextures() OVERRIDE {}
+    void clearPartialUpdateTextures() OVERRIDE { }
 
     void transferBufferFromRAMtoGPU(const unsigned char* /*ramBuffer*/,
                                     size_t /*bytesCount*/,
@@ -244,17 +242,17 @@ public:
     {
     }
 
-    void setLastRenderedDeepImage(int /*textureIndex*/, unsigned int /*mipmapLevel*/, const DeepImagePtr& /*deepImage*/) OVERRIDE {}
-    void disconnectInputTexture(int /*textureIndex*/, bool /*clearRoD*/) OVERRIDE {}
-    void updateColorPicker(int /*textureIndex*/, int /*x*/, int /*y*/) OVERRIDE {}
+    void setLastRenderedDeepImage(int /*textureIndex*/, unsigned int /*mipmapLevel*/, const DeepImagePtr& /*deepImage*/) OVERRIDE { }
+    void disconnectInputTexture(int /*textureIndex*/, bool /*clearRoD*/) OVERRIDE { }
+    void updateColorPicker(int /*textureIndex*/, int /*x*/, int /*y*/) OVERRIDE { }
 
     void getTextureColorAt(int /*x*/, int /*y*/, double* r, double* g, double* b, double* a) OVERRIDE
     {
         *r = *g = *b = *a = 0.;
     }
 
-    void makeOpenGLcontextCurrent() OVERRIDE {}
-    void removeGUI() OVERRIDE {}
+    void makeOpenGLcontextCurrent() OVERRIDE { }
+    void removeGUI() OVERRIDE { }
     ViewIdx getCurrentView() const OVERRIDE { return ViewIdx(0); }
 
     int getCurrentlyDisplayedTime() const OVERRIDE
@@ -269,23 +267,23 @@ public:
     }
 
     ViewerCompositingOperatorEnum getCompositingOperator() const OVERRIDE { return eViewerCompositingOperatorNone; }
-    void setCompositingOperator(ViewerCompositingOperatorEnum /*op*/) OVERRIDE {}
+    void setCompositingOperator(ViewerCompositingOperatorEnum /*op*/) OVERRIDE { }
 
     TimeLinePtr getTimeline() const OVERRIDE
     {
         return timeline;
     }
 
-    void saveOpenGLContext() OVERRIDE {}
-    void restoreOpenGLContext() OVERRIDE {}
-    void clearLastRenderedImage() OVERRIDE {}
-    void redrawNow() OVERRIDE {}
-    void toWidgetCoordinates(double* /*x*/, double* /*y*/) const OVERRIDE {}
-    void toCanonicalCoordinates(double* /*x*/, double* /*y*/) const OVERRIDE {}
+    void saveOpenGLContext() OVERRIDE { }
+    void restoreOpenGLContext() OVERRIDE { }
+    void clearLastRenderedImage() OVERRIDE { }
+    void redrawNow() OVERRIDE { }
+    void toWidgetCoordinates(double* /*x*/, double* /*y*/) const OVERRIDE { }
+    void toCanonicalCoordinates(double* /*x*/, double* /*y*/) const OVERRIDE { }
     int getWidgetFontHeight() const OVERRIDE { return 10; }
     int getStringWidthForCurrentFont(const std::string& string) const OVERRIDE { return (int)string.size() * 6; }
-    void swapOpenGLBuffers() OVERRIDE {}
-    void redraw() OVERRIDE {}
+    void swapOpenGLBuffers() OVERRIDE { }
+    void redraw() OVERRIDE { }
 
     void getViewportSize(double& width, double& height) const OVERRIDE
     {
@@ -349,8 +347,7 @@ anyTileHoldsRam(const UpdateViewerParams& params)
 } // namespace
 
 class ViewerDeviceRoot
-    : public BaseTest
-{
+    : public BaseTest {
 protected:
     ViewerDeviceRoot()
         : BaseTest()
@@ -370,7 +367,7 @@ protected:
         appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
         ProjectPtr project = getApp()->getProject();
         project->reset(false, true);
-        project->setOrAddProjectFormat( Format(0, 0, kSize, kSize, "viewerDeviceRoot64", 1.) );
+        project->setOrAddProjectFormat(Format(0, 0, kSize, kSize, "viewerDeviceRoot64", 1.));
         appPTR->clearAllCaches();
 
         GpuContextOptions options;
@@ -380,15 +377,15 @@ protected:
             *unavailable = line;
         };
         std::unique_ptr<GpuContext> gpu(new GpuContext(options));
-        if ( gpu->waitForInit( std::chrono::seconds(60) ) && gpu->isAvailable() ) {
+        if (gpu->waitForInit(std::chrono::seconds(60)) && gpu->isAvailable()) {
             _gpu = std::move(gpu);
         } else {
             _skipReason = unavailable->empty() ? std::string("no Vulkan device") : *unavailable;
         }
 
-        NodePtr constant = createNode( QString::fromUtf8(PLUGINID_NATRON_CONSTANT) );
+        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
         registerViewerPluginOnce();
-        CreateNodeArgs viewerArgs( PLUGINID_NATRON_VIEWER, getApp()->getProject() );
+        CreateNodeArgs viewerArgs(PLUGINID_NATRON_VIEWER, getApp()->getProject());
         viewerArgs.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
         _viewerNode = getApp()->createNode(viewerArgs);
         ASSERT_TRUE(constant && _viewerNode);
@@ -401,7 +398,7 @@ protected:
 
     virtual void TearDown() OVERRIDE
     {
-        ViewerInstance::setSchedulerResultHookForTests( ViewerInstance::SchedulerResultHook() );
+        ViewerInstance::setSchedulerResultHookForTests(ViewerInstance::SchedulerResultHook());
         if (_viewer) {
             _viewer->invalidateUiContext();
         }
@@ -421,7 +418,7 @@ protected:
             return true;
         }
         const char* require = std::getenv("NATRON_TEST_REQUIRE_GPU");
-        if ( require && (std::strcmp(require, "1") == 0) ) {
+        if (require && (std::strcmp(require, "1") == 0)) {
             ADD_FAILURE() << "NATRON_TEST_REQUIRE_GPU=1 but " << _skipReason;
         } else {
             std::printf("[  SKIPPED ] %s\n", _skipReason.c_str());
@@ -440,11 +437,11 @@ protected:
     {
         gpu::GpuRuntime* runtime = _gpu->runtime();
         ViewerInstance::setSchedulerResultHookForTests([record, runtime, dropRamPlanes](const FrameRenderContextPtr& context,
-                                                                                         std::map<ImageLayerDesc, ImagePtr>* rootPlanes) {
+                                                                                        std::map<ImageLayerDesc, ImagePtr>* rootPlanes) {
             std::lock_guard<std::mutex> k(record->lock);
             ++record->calls;
             record->wanted = context && context->wantsRootOnDevice();
-            if ( !context || !rootPlanes || rootPlanes->empty() || !rootPlanes->begin()->second ) {
+            if (!context || !rootPlanes || rootPlanes->empty() || !rootPlanes->begin()->second) {
                 return;
             }
             const ImagePtr& ram = rootPlanes->begin()->second;
@@ -454,7 +451,7 @@ protected:
             layout.bounds = ram->getBounds();
             layout.mipmapLevel = ram->getMipmapLevel();
             gpu::GpuBufferHandle handle;
-            if ( !runtime->acquire(layout.deviceBytes(), handle) ) {
+            if (!runtime->acquire(layout.deviceBytes(), handle)) {
                 return;
             }
             GpuDeviceImagePtr device = GpuDeviceImage::create(*runtime, handle, layout, RenderStatsPtr());
@@ -479,9 +476,8 @@ protected:
         const U64 viewerHash = _viewer->getHash();
         ViewerArgsPtr args[2];
         args[0] = std::make_shared<ViewerArgs>();
-        const ViewerInstance::ViewerRenderRetCode prepared =
-            _viewer->getRenderViewerArgsAndCheckCache_public(time, false, ViewIdx(0), 0, viewerHash, true, NodePtr(), stats, args[0].get());
-        if ( (prepared == ViewerInstance::eViewerRenderRetCodeFail) || (prepared == ViewerInstance::eViewerRenderRetCodeBlack) ) {
+        const ViewerInstance::ViewerRenderRetCode prepared = _viewer->getRenderViewerArgsAndCheckCache_public(time, false, ViewIdx(0), 0, viewerHash, true, NodePtr(), stats, args[0].get());
+        if ((prepared == ViewerInstance::eViewerRenderRetCodeFail) || (prepared == ViewerInstance::eViewerRenderRetCodeBlack)) {
             outcome.ret = prepared;
 
             return outcome;
@@ -513,13 +509,13 @@ protected:
 
 TEST_F(ViewerDeviceRoot, ADeviceRootReplacesTheRamTiles)
 {
-    if ( !gpuOrSkip() ) {
+    if (!gpuOrSkip()) {
         return;
     }
     std::shared_ptr<HookRecord> record = std::make_shared<HookRecord>();
     deliverDeviceRoot(record, true);
 
-    RenderOutcome outcome = renderFrame( std::make_shared<RenderStats>(false) );
+    RenderOutcome outcome = renderFrame(std::make_shared<RenderStats>(false));
 
     ASSERT_EQ(1, record->calls);
     EXPECT_TRUE(record->wanted);
@@ -528,10 +524,10 @@ TEST_F(ViewerDeviceRoot, ADeviceRootReplacesTheRamTiles)
     EXPECT_TRUE(bool(outcome.params->deviceColor));
     EXPECT_EQ(record->delivered, outcome.params->deviceColor);
     EXPECT_FALSE(bool(outcome.params->colorImage));
-    EXPECT_FALSE( anyTileHoldsRam(*outcome.params) );
-    EXPECT_EQ( std::size_t(0), outcome.params->sizeInRAM() );
+    EXPECT_FALSE(anyTileHoldsRam(*outcome.params));
+    EXPECT_EQ(std::size_t(0), outcome.params->sizeInRAM());
     EXPECT_EQ(1, _ui.prepares.load());
-    EXPECT_FALSE( _ui.preparedOnMainThread.load() );
+    EXPECT_FALSE(_ui.preparedOnMainThread.load());
 
     outcome = RenderOutcome();
     record->delivered.reset();
@@ -539,14 +535,14 @@ TEST_F(ViewerDeviceRoot, ADeviceRootReplacesTheRamTiles)
 
 TEST_F(ViewerDeviceRoot, AViewerOnTheCpuRungKeepsTheRamPath)
 {
-    if ( !gpuOrSkip() ) {
+    if (!gpuOrSkip()) {
         return;
     }
     _ui.rung = ViewerHandoffRung::Cpu;
     std::shared_ptr<HookRecord> record = std::make_shared<HookRecord>();
     deliverDeviceRoot(record, false);
 
-    RenderOutcome outcome = renderFrame( std::make_shared<RenderStats>(false) );
+    RenderOutcome outcome = renderFrame(std::make_shared<RenderStats>(false));
 
     ASSERT_EQ(1, record->calls);
     EXPECT_FALSE(record->wanted);
@@ -554,7 +550,7 @@ TEST_F(ViewerDeviceRoot, AViewerOnTheCpuRungKeepsTheRamPath)
     ASSERT_TRUE(bool(outcome.params));
     EXPECT_FALSE(bool(outcome.params->deviceColor));
     EXPECT_TRUE(bool(outcome.params->colorImage));
-    EXPECT_TRUE( anyTileHoldsRam(*outcome.params) );
+    EXPECT_TRUE(anyTileHoldsRam(*outcome.params));
     EXPECT_EQ(0, _ui.prepares.load());
 
     outcome = RenderOutcome();
@@ -563,21 +559,21 @@ TEST_F(ViewerDeviceRoot, AViewerOnTheCpuRungKeepsTheRamPath)
 
 TEST_F(ViewerDeviceRoot, AutoContrastKeepsTheRamPath)
 {
-    if ( !gpuOrSkip() ) {
+    if (!gpuOrSkip()) {
         return;
     }
     _viewer->onAutoContrastChanged(true, false);
     std::shared_ptr<HookRecord> record = std::make_shared<HookRecord>();
     deliverDeviceRoot(record, false);
 
-    RenderOutcome outcome = renderFrame( std::make_shared<RenderStats>(false) );
+    RenderOutcome outcome = renderFrame(std::make_shared<RenderStats>(false));
 
     ASSERT_EQ(1, record->calls);
     EXPECT_FALSE(record->wanted);
     ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, outcome.ret);
     ASSERT_TRUE(bool(outcome.params));
     EXPECT_FALSE(bool(outcome.params->deviceColor));
-    EXPECT_TRUE( anyTileHoldsRam(*outcome.params) );
+    EXPECT_TRUE(anyTileHoldsRam(*outcome.params));
     EXPECT_EQ(0, _ui.prepares.load());
 
     outcome = RenderOutcome();
@@ -587,7 +583,7 @@ TEST_F(ViewerDeviceRoot, AutoContrastKeepsTheRamPath)
 
 TEST_F(ViewerDeviceRoot, ARefusedPrepareDownloadsTheDeviceRoot)
 {
-    if ( !gpuOrSkip() ) {
+    if (!gpuOrSkip()) {
         return;
     }
     _ui.refusePrepare = true;
@@ -603,10 +599,10 @@ TEST_F(ViewerDeviceRoot, ARefusedPrepareDownloadsTheDeviceRoot)
     ASSERT_TRUE(bool(outcome.params));
     EXPECT_FALSE(bool(outcome.params->deviceColor));
     EXPECT_TRUE(bool(outcome.params->colorImage));
-    EXPECT_TRUE( anyTileHoldsRam(*outcome.params) );
+    EXPECT_TRUE(anyTileHoldsRam(*outcome.params));
     EXPECT_EQ(1, _ui.prepares.load());
     const std::map<std::string, int> reasons = stats->getLegacyFallbackReasons();
-    EXPECT_EQ( 1u, reasons.count("viewer handoff: refused by the test") );
+    EXPECT_EQ(1u, reasons.count("viewer handoff: refused by the test"));
 
     outcome = RenderOutcome();
     record->delivered.reset();

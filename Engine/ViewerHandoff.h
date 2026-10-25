@@ -155,8 +155,7 @@ struct ViewerHandoffResult {
  * again, and rebuilding a ring, losing the device and release() cancel it if it has not started and wait for it if
  * it has.
  **/
-class ViewerHandoff
-{
+class ViewerHandoff {
 public:
     using GlProcLoader = std::function<void*(const char*)>;
 

@@ -166,13 +166,13 @@ Deps: M100 - Content Node Hashing.
   - verify: the phase build; `Tracker`, `NodeColorSampler` and `ViewerScheduler` green.
   - size: M
 
-- [ ] M167.P3.T7 — Regression tests for edits during non-abortable renders (M144 acceptance)
+- [ ] ~~M167.P3.T7 — Regression tests for edits during non-abortable renders (M144 acceptance)~~ (cancelled 2026-10-24: the user ruled mid-render edits impossible outside the viewer; moved to M177)
   - files: `Tests/MidRenderEdit_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: Three renders — a 20-frame blocking file render of a NativeWrite, a 10-frame track, a colour-sampler pass. During each, a test hook changes an upstream Switch's `which`, a Reformat size and a Read file from the main thread. Assert: the job completes under a 60 s guard; every cached or written frame's stored hash equals the hash recomputed from that frame's inputs at its snapshot; each frame's metadata, header channels and size match a fresh render of that state.
   - verify: the phase build; `ctest -R MidRenderEdit --repeat until-fail:50` in natron-dev with 8 parallel copies: 0 failures.
   - size: L
 
-**Phase gate:** one `tools/ci/remote/build.sh fast --tests` is green in both legs, including `SchedulerEquivalence`, `CacheEquivalence`, `TimeVaryingLayers` and `MidRenderEdit`.
+**Phase gate:** one `tools/ci/remote/build.sh fast --tests` is green in both legs, including `SchedulerEquivalence`, `CacheEquivalence` and `TimeVaryingLayers`.
 
 ## Phase 167.4: OpenFX boundary: per-frame answers
 
@@ -254,6 +254,7 @@ Deps: M100 - Content Node Hashing.
 
 ## Decisions
 
+- 2026-10-24 — **No render but the viewer sees mid-render edits (user):** a foreground Write render blocks the UI behind a modal; a background render works from a frozen copy captured at submission; tracking and the colour sampler block the UI like a foreground render; only viewer renders restart on a knob change. That work is M177 - Renders Isolated From Edits, not M167. Consequences here: revert the abortAnyEvaluation changes from Phase 3 (no blocking-render exemption, no viewer-only rule), and drop Tests/MidRenderEdit_Test.cpp; M144 acceptance for file, tracker and sampler renders under edits moves to M177. M167 keeps the per-frame snapshot those renders read (P3.T6) and its hash-match test.
 - 2026-10-24 — **Phase 2 gate passed (PM):** fast 404/404 both legs on 886c0baf1; `PerFrameMetadataTest.*:OfxClipPreferencesThread*` clean over 300 repeats, and `ConcurrentQueriesCacheOnlyConsistentAnswers` clean over 4 parallel x 200. The only `getCurrentTime` left near `getPreferredMetadataAt` is the base-class current-time wrapper, not an override derivation.
 - 2026-10-24 — **Cache race, third cause (PM, from gdb on the HEAD test binary):** 200-repeat runs still failed `ConcurrentQueriesCacheOnlyConsistentAnswers` after the write gate (7b170e390). Root cause: `Node::refreshDirtyHashes`'s last retry (`recomputeHashIfDirty(false)`) hashed over a still-dirty input's old hash and marked the node clean. The mark flush stops at dirty inputs, so a downstream node could hold a clean, stale hash before any derive began, and no during-derive check catches that. Fix 886c0baf1: hashing over a dirty input leaves the node dirty, and metadata is cached only under `getHashValueIfUpToDate`. Left as follow-ups (inbox): the identity, actions/RoD and image caches also accept a not-up-to-date hash; `NativeEffectBase::getOutputMetadata` has no mark-count or write check, so it can cache under an A→B→A hash.
 - 2026-10-24 — **P1.T1 inventory and the P4 thread-model recommendation (PM, from the spike in 70a03eb30; needs user approval before P4):**

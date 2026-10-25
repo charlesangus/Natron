@@ -67,7 +67,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 122.1: Sharpen
 
-- [ ] M123.P1.T1 — Write the native Sharpen node (CPU) with Sharpen, Soften and Laplacian modes
+- [x] M123.P1.T1 — Write the native Sharpen node (CPU) with Sharpen, Soften and Laplacian modes
   - files: `Engine/Nodes/Filter/Sharpen.h`, `Engine/Nodes/Filter/Sharpen.cpp`, `Engine/Nodes/Filter/Sharpen.reg.inc`
   - approach:
     - Copy `Blur.cpp`'s structure: plane jobs from `SpatialFilterSupport.h`, a blur through `LineFilter::forFilter`, then a per-pixel combine.
@@ -77,7 +77,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeSharpen` (written in T2) passes.
   - size: M
 
-- [ ] M123.P1.T2 — Test Sharpen on CPU
+- [x] M123.P1.T2 — Test Sharpen on CPU
   - files: `Tests/Native/NativeSharpen_Test.cpp`
   - approach:
     - Use a step edge and an HDR plate (values 0.01..50) as fixtures.
@@ -91,7 +91,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeSharpen` passes.
   - size: M
 
-- [ ] M123.P1.T3 — Sharpen on the GPU
+- [x] M123.P1.T3 — Sharpen on the GPU
   - files: `Engine/Gpu/Kernels/sharpen.slang`, `Engine/Gpu/Kernels/sharpen.cmake`, `Engine/Nodes/Filter/Sharpen.cpp`, `Tests/Native/NativeSharpenGpu_Test.cpp`
   - approach:
     - Reuse `blur.slang`'s separable passes for the blur, then a combine kernel built on M85 - Native GPU Kernels's `pixelwrap.slang` finish pass.
@@ -155,7 +155,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 122.3: EdgeExtend and EdgeBlur
 
-- [ ] M123.P3.T1 — Write the native EdgeExtend node (CPU)
+- [x] M123.P3.T1 — Write the native EdgeExtend node (CPU)
   - files: `Engine/Nodes/Filter/EdgeExtend.h`, `Engine/Nodes/Filter/EdgeExtend.cpp`, `Engine/Nodes/Filter/EdgeExtend.reg.inc`, `Tests/Native/NativeEdgeExtend_Test.cpp`
   - approach:
     - Knobs: `size` (10), `slices` (5), `premultiplyInput` (on), `unpremultiplyOutput` (on).
@@ -168,7 +168,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeEdgeExtend` passes.
   - size: M
 
-- [ ] M123.P3.T2 — EdgeExtend on the GPU
+- [x] M123.P3.T2 — EdgeExtend on the GPU
   - files: `Engine/Gpu/Kernels/edgeextend.slang`, `Engine/Gpu/Kernels/edgeextend.cmake`, `Engine/Nodes/Filter/EdgeExtend.cpp`, `Tests/Native/NativeEdgeExtendGpu_Test.cpp`
   - approach: run `blur.slang` passes per slice, plus a divide-and-over combine kernel per slice, keeping the iterations resident.
   - verify: at the phase build, `ctest -R NativeEdgeExtendGpu` passes on RADV within 1e-4 relative.
@@ -216,6 +216,8 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Decisions
 
+- 2026-10-25 — **Bloom spike 1 (CPU) results (bosley-native-nodes):** a decimated pyramid with a [1 3 3 1] downsample and bicubic upsample stays within 4e-4 to 3e-3 RMS (relative to peak) of the full-resolution FIR sum on an HDR plate at sizes 3 to 400, count 5, and tiles are bit-exact across windows (seam test exact for every variant). The full-resolution IIR sum (the CPU-fallback-free alternative) differs from the FIR sum by 6e-4 to 4e-2 RMS, ten times more, because the recursive filter is a different kernel; with FIR the default, the pyramid is the closer match. Box downsampling is markedly worse (up to 1e-2 RMS). The spike's CPU timings are not representative of an optimised pyramid. Spike 2 (GPU cost on the RX 7900 XTX) decides between them.
+- 2026-10-25 — **EdgeExtend with no active slice is an identity (bosley-native-nodes):** at sizes where every slice's sigma falls below the FIR minimum, both paths pass the source through, including the premultiply round trip; output can step slightly as a slice crosses that threshold.
 - 2026-10-25 — **Bloom default filter FIR Gaussian (user).**
 - 2026-10-25 — **Bloom keeps GPU residency (user):** no CPU fallback for large Bloom sizes if at all possible, so option A (full-resolution FIR sum falling back to the CPU over 512 px) is out. If no option is a clear winner, spike the candidates (pyramid in PassExecutor, a custom op, other GPU-resident schemes) and measure before choosing.
 - 2026-10-25 — **EdgeBlur's external matte waits on M184 (bosley-native-nodes):** a PassExecutor op reads one source plus a mask; M184 (Variable-Size Filter Kit) already extends the pass runner with views of extra (Aux) inputs on CPU and GPU (IBlur's Map), which is exactly what EdgeBlur's Matte input needs. P3.T3 is built on that once M184 merges, rather than as a Custom op or a second framework change. EdgeExtend follows CImg: each slice merges the running result over its blur and the divide happens once at the end.

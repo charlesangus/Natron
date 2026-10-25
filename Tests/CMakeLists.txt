@@ -58,6 +58,7 @@ set(Tests_SOURCES
     GeneratorLayer_Test.cpp
     GLScheduler_Test.cpp
     GpuContext_Test.cpp
+    GpuMemberTiming_Test.cpp
     GpuPlacement_Test.cpp
     GpuRegionFallback_Test.cpp
     GpuResidency_Test.cpp

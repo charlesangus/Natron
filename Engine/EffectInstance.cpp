@@ -4750,6 +4750,26 @@ EffectInstance::processesNoChannel(double time,
     return !isResolvingLayersPassThrough() && outputFollowsLayerKnob(time, view) && !getNode()->hasAtLeastOneChannelToProcess(time, view);
 }
 
+bool
+EffectInstance::selectsOnlyLayersWithNoChannel(double time,
+                                               ViewIdx view) const
+{
+    if (isResolvingLayersPassThrough() || !outputFollowsLayerKnob(time, view)) {
+        return false;
+    }
+    std::vector<ResolvedLayer> selected;
+    if (!getNode()->resolveLayerKnob(time, view, &selected) || selected.empty()) {
+        return false;
+    }
+    for (std::vector<ResolvedLayer>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (it->channels.any()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void
 EffectInstance::getLayersPassThroughInput(double time,
                                           ViewIdx view,
@@ -5022,10 +5042,11 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
     }
 
     // A node disabled at `time`, one that outputs its pass-through input unchanged there, or one
-    // whose selection processes no channel (an identity of that input, as isIdentity_public()
-    // answers) produces no layer of its own and every layer of that input passes through. A
-    // target layer the input lacks is then not presented, as nothing would write it.
-    if (getNode()->isNodeDisabled(time) || presentsOnlyPassThroughLayers(time, view) || processesNoChannel(time, view)) {
+    // whose selection picks layers but none of their channels (an identity of that input, as
+    // isIdentity_public() answers) produces no layer of its own and every layer of that input
+    // passes through. A target layer the input lacks is then not presented, as nothing would
+    // write it. A selection that picks no layer at all falls back to the metadata planes below.
+    if (getNode()->isNodeDisabled(time) || presentsOnlyPassThroughLayers(time, view) || selectsOnlyLayersWithNoChannel(time, view)) {
         ViewIdx ptView;
         getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
         *passThroughView = ptView;

@@ -2357,6 +2357,13 @@ private:
      **/
     bool processesNoChannel(double time, ViewIdx view) const;
 
+    /**
+     * @brief Whether the output follows the layer knob and its selection resolves to at least one
+     * layer but to no channel on any of them. Unlike processesNoChannel(), a selection resolving
+     * to no layer is excluded: it falls back to the metadata planes, processed on every channel.
+     **/
+    bool selectsOnlyLayersWithNoChannel(double time, ViewIdx view) const;
+
     void getComponentsNeededDefault(double time, ViewIdx view,
                                     EffectInstance::ComponentsNeededMap* comps,
                                     std::list<ImageLayerDesc>* passThroughLayers,

@@ -467,6 +467,9 @@ Node::applyPresetSerialization(const Serialization::NodeSerialization& serializa
 
     if (userKnobsChanged) {
         _imp->effect->recreateUserKnobs(true);
+        // recreateUserKnobs() only declares the knobs to Python when a settings panel exists, and
+        // deleting a knob expects its attribute to be there.
+        declarePythonFields();
     }
 } // Node::applyPresetSerialization
 

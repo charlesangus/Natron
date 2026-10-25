@@ -8829,7 +8829,11 @@ Node::removeParameterFromPython(const std::string& parameterName)
         qDebug() << QString::fromUtf8("removeParameterFromPython(): attribute ") + QString::fromUtf8( nodeFullName.c_str() ) + QString::fromUtf8(" is not defined");
         throw std::logic_error(std::string("removeParameterFromPython(): attribute ") + nodeFullName + " is not defined");
     }
-    assert( PyObject_HasAttrString( nodeObj, parameterName.c_str() ) );
+    // declarePythonFields() skips knobs whose name is not a valid Python identifier, so those have
+    // no attribute to delete.
+    if (!PyObject_HasAttrString(nodeObj, parameterName.c_str())) {
+        return;
+    }
     std::string script = "del " + nodeFullName + "." + parameterName;
     if ( !appPTR->isBackground() ) {
         getApp()->printAutoDeclaredVariable(script);

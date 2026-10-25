@@ -159,6 +159,19 @@ protected:
         return added;
     }
 
+    // Whether the node's Python object has an attribute for the parameter, which the interpreter
+    // reports by raising when it is missing.
+    bool pythonExposes(const NodePtr& node,
+                       const std::string& param)
+    {
+        const std::string nodeObj = getApp()->getAppIDString() + "." + node->getFullyQualifiedName();
+        const std::string script = "if not hasattr(" + nodeObj + ", '" + param + "'):\n    raise AttributeError('" + param + "')\n";
+        std::string error;
+        std::string output;
+
+        return NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output);
+    }
+
     // Modifies every kind of state a preset apply must clear: keyframes, an expression, a link
     // and a plain value, plus the exceptions a preset leaves alone.
     void modifyTarget(const NodePtr& target,
@@ -374,6 +387,7 @@ TEST_F(NodePresetApply, APresetAddsItsUserKnobsAndUndoingWithTheSnapshotRestores
     EXPECT_DOUBLE_EQ(6., added->getValue());
     ASSERT_EQ((std::size_t)1, created.size());
     EXPECT_EQ(KnobIPtr(added), created.front());
+    EXPECT_TRUE(pythonExposes(target, kAddedUserKnob));
     EXPECT_DOUBLE_EQ(9., knob<KnobDouble>(target, kBlurParamSize)->getValue(0));
     EXPECT_NE(beforeYaml, yamlOf(snapshot(target)));
 
@@ -384,6 +398,7 @@ TEST_F(NodePresetApply, APresetAddsItsUserKnobsAndUndoingWithTheSnapshotRestores
     target->applyPresetSerialization(before, Node::ePresetApplyModeSnapshot, NULL);
 
     EXPECT_FALSE(bool(target->getKnobByName(kAddedUserKnob)));
+    EXPECT_FALSE(pythonExposes(target, kAddedUserKnob));
     KnobDoublePtr own = knob<KnobDouble>(target, kOwnUserKnob);
     ASSERT_TRUE(bool(own));
     EXPECT_DOUBLE_EQ(2., own->getValue());

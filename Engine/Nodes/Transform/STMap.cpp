@@ -78,13 +78,15 @@ inputRegion(const EffectInstancePtr& input,
     return input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, rod, &isProjectFormat) != eStatusFailed;
 }
 
-// One channel of the UV input, locked on the calling thread; with no image it reads 0.
+// One channel of the UV input, locked on the calling thread; with no image, and outside its
+// bounds, it reads outside.
 struct UVPlane {
     ImagePtr image;
     int channel = -1;
     int nComps = 0;
     RectI bounds;
     std::shared_ptr<Image::ReadAccess> access;
+    float outside = 0.f;
 
     void readRow(int x0,
                  int y,
@@ -92,11 +94,11 @@ struct UVPlane {
                  float* row) const
     {
         if (!access) {
-            std::fill(row, row + width, 0.f);
+            std::fill(row, row + width, outside);
 
             return;
         }
-        PassExec::readChannelRow(image.get(), access.get(), bounds, nComps, channel, x0, y, width, 0.f, row);
+        PassExec::readChannelRow(image.get(), access.get(), bounds, nComps, channel, x0, y, width, outside, row);
     }
 };
 } // namespace
@@ -225,6 +227,15 @@ STMap::initializeKnobs()
     page->addKnob(formatFrom);
     _formatFrom = formatFrom;
 
+    KnobBoolPtr uvAlpha = createKnob<KnobBool>(tr("UV Alpha"));
+    uvAlpha->setName(kSTMapParamUVAlpha);
+    uvAlpha->setDefaultValue(true);
+    uvAlpha->setHintToolTip(tr("When checked, the alpha of the layer U Channel reads from marks where the map holds a "
+                               "position: output pixels where it is 0 or less are black. A layer without alpha, or a "
+                               "pixel outside the UV input's region of definition, counts as opaque."));
+    page->addKnob(uvAlpha);
+    _uvAlpha = uvAlpha;
+
     KnobChoicePtr filter = createKnob<KnobChoice>(tr(kResamplerParamFilterTypeLabel));
     filter->setName(kResamplerParamFilterType);
     filter->setHintToolTip(tr(kResamplerParamFilterTypeHint));
@@ -301,6 +312,10 @@ STMap::readSettings(double time,
     };
     settings->wrapU = wrapMode(_wrapU.lock());
     settings->wrapV = wrapMode(_wrapV.lock());
+    KnobBoolPtr uvAlpha = _uvAlpha.lock();
+    if (uvAlpha) {
+        settings->uvAlpha = uvAlpha->getValueAtTime(time, 0, view);
+    }
 } // STMap::readSettings
 
 void
@@ -324,6 +339,22 @@ STMap::resolveUVChannels(double time,
             channels[i]->valid = knobs[i]->resolve(present, &channels[i]->layer, &channels[i]->channel) && (channels[i]->channel >= 0);
         }
     }
+}
+
+STMap::UVChannel
+STMap::uvAlphaChannel(const UVChannel& u,
+                      const UVChannel& v)
+{
+    const UVChannel& used = u.valid ? u : v;
+    UVChannel alpha;
+    if (!used.valid || !used.layer.isColorLayer() || !ImageLayerDesc::colorStorageBits(used.layer).test(3)) {
+        return alpha;
+    }
+    alpha.channel = ImageLayerDesc::colorViewChannelIndex(ImageLayerDesc::colorViewForNComps(used.layer.getNumComponents()).getLayerID(), 3);
+    alpha.layer = used.layer;
+    alpha.valid = (alpha.channel >= 0) && (alpha.channel < used.layer.getNumComponents());
+
+    return alpha;
 }
 
 bool
@@ -508,6 +539,10 @@ STMap::renderOp(const RenderActionArgs& args,
     // U and V, fetched and locked here, on the calling thread; the band threads only read
     // through these.
     UVPlane uvPlanes[2];
+    // Off the map, as with no map at all, every position is valid, so an opaque map renders the
+    // same with UV Alpha on or off.
+    UVPlane alphaPlane;
+    bool gated = false;
     if (hasDomain) {
         UVChannel uvChannels[2];
         resolveUVChannels(args.time, args.view, &uvChannels[0], &uvChannels[1]);
@@ -534,6 +569,16 @@ STMap::renderOp(const RenderActionArgs& args,
             uvPlanes[i].nComps = (int)uvImages[i]->getComponentsCount();
             uvPlanes[i].bounds = uvImages[i]->getBounds();
             uvPlanes[i].access = std::make_shared<Image::ReadAccess>(uvImages[i].get());
+        }
+        if (settings.uvAlpha) {
+            const UVChannel alpha = uvAlphaChannel(uvChannels[0], uvChannels[1]);
+            const UVPlane& holder = uvChannels[0].valid ? uvPlanes[0] : uvPlanes[1];
+            if (alpha.valid && holder.access && (alpha.channel < holder.nComps)) {
+                alphaPlane = holder;
+                alphaPlane.channel = alpha.channel;
+                alphaPlane.outside = 1.f;
+                gated = true;
+            }
         }
     }
 
@@ -622,6 +667,15 @@ STMap::renderOp(const RenderActionArgs& args,
                 Resampler::resampleRowFromCoords(source, &sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width,
                                                  settings.filter, settings.clamp, settings.blackOutside, settings.wrapU, settings.wrapV,
                                                  &out[0], io.nComps, &domain);
+                if (gated) {
+                    std::vector<float> alphaRow(io.width);
+                    alphaPlane.readRow(io.x0, io.y, io.width, &alphaRow[0]);
+                    for (int i = 0; i < io.width; ++i) {
+                        if (!(alphaRow[i] > 0.f)) {
+                            std::fill(&out[(std::size_t)i * io.nComps], &out[(std::size_t)(i + 1) * io.nComps], 0.f);
+                        }
+                    }
+                }
             }
             for (int c = 0; c < io.nComps; ++c) {
                 if (!io.channels[pixelKernelChannelBit(io.nComps, c)]) {
@@ -764,7 +818,18 @@ STMap::renderOpGpu(const GpuRenderArgs& args)
     setWarpGpuDouble(domain.width(), params.width);
     setWarpGpuDouble(domain.height(), params.height);
 
-    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::stmap, params, kSTMapInputUV, uvLayer, uChannel, vChannel);
+    int alphaChannel = -1;
+    if (settings.uvAlpha) {
+        UVChannel u;
+        UVChannel v;
+        resolveUVChannels(query.time, query.view, &u, &v);
+        const UVChannel alpha = uvAlphaChannel(u, v);
+        if (alpha.valid && (alpha.layer == uvLayer)) {
+            alphaChannel = alpha.channel;
+        }
+    }
+
+    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::stmap, params, kSTMapInputUV, uvLayer, uChannel, vChannel, alphaChannel);
 #else
     Q_UNUSED(args);
 

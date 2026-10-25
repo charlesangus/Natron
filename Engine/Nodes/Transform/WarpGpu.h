@@ -67,9 +67,10 @@ struct WarpGpuParams {
     float originY[2] = { 0.f, 0.f };
     float width[2] = { 0.f, 0.f };
     float height[2] = { 0.f, 0.f };
+    int32_t alphaComponent = -1;
 };
 
-static_assert(sizeof(WarpGpuParams) == 33 * 4, "stmap.slang reads 33 words");
+static_assert(sizeof(WarpGpuParams) == 34 * 4, "stmap.slang reads 34 words");
 
 inline constexpr uint32_t kWarpGpuClamp = 1;
 inline constexpr uint32_t kWarpGpuBlackOutside = 2;
@@ -136,7 +137,7 @@ warpGpuInputRoI(const EffectInstance& effect,
 
 // Records kernel, stmap.slang's stmap or idistort entry, through plan: the Source cropped to its
 // region of definition, as the CPU fetches it, is both sampled and blended under the mask and mix.
-// uChannel and vChannel are channels of uvLayer, -1 for none.
+// uChannel, vChannel and alphaChannel are channels of uvLayer, -1 for none.
 inline StatusEnum
 recordWarpGpu(EffectInstance& effect,
               const StagePlan& plan,
@@ -146,7 +147,8 @@ recordWarpGpu(EffectInstance& effect,
               int uvInput,
               const ImageLayerDesc& uvLayer,
               int uChannel,
-              int vChannel)
+              int vChannel,
+              int alphaChannel = -1)
 {
     GpuRenderArgs cropped = args;
     const int sourceInput = plan.sourceInput;
@@ -165,9 +167,9 @@ recordWarpGpu(EffectInstance& effect,
         return eStatusFailed;
     }
     if (uv.buffer) {
-        const int channels[2] = { uChannel, vChannel };
-        int32_t* const components[2] = { &params.uComponent, &params.vComponent };
-        for (int k = 0; k < 2; ++k) {
+        const int channels[3] = { uChannel, vChannel, alphaChannel };
+        int32_t* const components[3] = { &params.uComponent, &params.vComponent, &params.alphaComponent };
+        for (int k = 0; k < 3; ++k) {
             if ((channels[k] < 0) || (channels[k] >= uvLayer.getNumComponents())) {
                 continue;
             }

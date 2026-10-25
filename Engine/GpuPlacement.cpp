@@ -303,6 +303,15 @@ placeGraph(FrameGraph& graph,
     if (inputs.readsRaw) {
         dropIncompleteRawRuns(graph, inputs.readsRaw, identity, cached, &candidate);
     }
+    std::vector<bool> priced(n, false);
+    for (int t : order) {
+        priced[t] = candidate[t] && (!inputs.isPriced || inputs.isPriced(graph.tasks[t]));
+    }
+    const auto anyPriced = [&](const std::vector<int>& members) {
+        return std::any_of(members.begin(), members.end(), [&](int m) {
+            return priced[m];
+        });
+    };
 
     // Labels are working region ids; a merge empties the regions it absorbs.
     std::vector<int> label(n, -1);
@@ -459,7 +468,29 @@ placeGraph(FrameGraph& graph,
     // Dropping a whole region keeps the contraction acyclic: a cycle through its members, now separate nodes, would
     // have been one through the region. So does splitting a region into parts with no edge between them. Dropping a
     // single member does not, hence the check.
+    // A region with no priced member has no cost to judge it by: two or more candidates still keep their images on
+    // the device between them, but a lone one would pay transfers for nothing it is known to save.
+    const auto settleUnpriced = [&](int l) {
+        const std::vector<int>& members = regionMembers[l];
+        const std::ptrdiff_t nCandidates = std::count_if(members.begin(), members.end(), [&](int m) {
+            return candidate[m];
+        });
+        if (nCandidates >= 2) {
+            accept(l);
+
+            return;
+        }
+        for (int m : members) {
+            label[m] = -1;
+        }
+        regionMembers[l].clear();
+    };
+
     for (int r : formed) {
+        if (!anyPriced(regionMembers[r])) {
+            settleUnpriced(r);
+            continue;
+        }
         if (!inputs.regionGain) {
             accept(r);
             continue;
@@ -470,6 +501,10 @@ placeGraph(FrameGraph& graph,
             const int q = queue.front();
             queue.erase(queue.begin());
             const std::vector<int> members = regionMembers[q];
+            if (!anyPriced(members)) {
+                settleUnpriced(q);
+                continue;
+            }
             if (inputs.regionGain(graph, describeRegion(graph, members, label, q, identity)) > 0.) {
                 accept(q);
                 continue;
@@ -763,14 +798,12 @@ taskReadsRaw(const FrameGraph::Task& task)
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-// Only a task the model has a GPU cost for is a candidate.
 void
 judgeWithCostModel(PlacementInputs* inputs,
                    GpuCostModel* model)
 {
-    const std::function<bool(const FrameGraph::Task&)> effectCanRender = inputs->canRenderOnGpu;
-    inputs->canRenderOnGpu = [model, effectCanRender](const FrameGraph::Task& task) -> bool {
-        return model->hasGpuCost(model->traitsOf(task)) && effectCanRender(task);
+    inputs->isPriced = [model](const FrameGraph::Task& task) -> bool {
+        return model->isPriced(model->traitsOf(task));
     };
 }
 

@@ -398,6 +398,11 @@ NoiseOp::createKnobs(KnobHolder* holder,
                                              "Centre of rotation and scale.", 2, 0.5, -DBL_MAX, DBL_MAX, -10000., 10000.);
     centerKnob->setSpatial(true);
     centerKnob->setDefaultValuesAreNormalized(true);
+    // setDefaultValue applies the default immediately, so it has to be set again once the knob
+    // knows it is normalized, for the value to become the middle of the project format.
+    for (int d = 0; d < 2; ++d) {
+        centerKnob->setDefaultValue(0.5, d);
+    }
     centerKnob->disableSlider();
     center = centerKnob;
 

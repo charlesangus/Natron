@@ -66,13 +66,13 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
   - verify: gtest: project declares `a` (Double) and another Set node declares `b` (String); on a third Set node, choosing `a` then `b` adds two matching children, and a name already present is not offered again.
   - size: M
 
-- [ ] M70.P5.T2 — `RFV::promoteToProject` operation
+- [x] M70.P5.T2 — `RFV::promoteToProject` operation
   - files: `Engine/RFV.cpp`, `Engine/RFV.h`, `Tests/RFVSetNode_Test.cpp`
   - approach: copies a variable knob from a Set node's RFV group into the project's RFV group (same type, dimensions, value, animation curves, label and hint). Refuses with a clear error if the project already declares that name. The node's own variable stays, so it keeps overriding the project value.
   - verify: gtest: promote an animated Double; the project knob's curve and value match, and a second promote of the same name fails. A gtest runs promote, undo and redo: undo removes the project's copy, redo restores it with the same value and animation.
   - size: M
 
-- [ ] M70.P5.T3 — Right-click "Add to project variables" on a Set-node variable
+- [x] M70.P5.T3 — Right-click "Add to project variables" on a Set-node variable
   - files: `Gui/KnobGui.cpp`, `Gui/KnobGui.h`
   - approach: the knob's context menu gains the item only when the knob is a direct child of a Set node's RFV group (not on the project's own group). Disabled, with a tooltip, when the project already declares the name. Calls `RFV::promoteToProject` as one undo step in M114's undo history. The node's own knob is never disabled, read-only or greyed out by a promote; only the menu item disables.
   - verify: Xvfb GUI run: right-click a variable on a Set node, choose the item, and see it appear in the project Variables section; screenshot of the menu. After the promote the node's knob is still enabled and editable (shown in a screenshot), and Ctrl+Z removes the variable from the project Variables section.

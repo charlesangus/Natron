@@ -215,7 +215,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
 
 ## Phase 101.3: Layers and alpha modes
 
-- [ ] M101.P3.T1 — Add the `layers` modes: Single, All matching and List
+- [x] M101.P3.T1 — Add the `layers` modes: Single, All matching and List
   - files: `Engine/Nodes/Merge/NativeMerge.{h,cpp}`, `Tests/Native/NativeMergeNode_Test.cpp`
   - approach:
     - Add the `layers` choice.
@@ -241,7 +241,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
 
 ## Phase 101.4: GPU path
 
-- [ ] M101.P4.T1 — Add the Merge GPU op and register it
+- [x] M101.P4.T1 — Add the Merge GPU op and register it
   - files: `Engine/Gpu/Kernels/mergeops.slang`, `Engine/Gpu/Kernels/mergeops.cmake` (new), `Engine/Nodes/Merge/NativeMerge.{h,cpp}`
   - approach:
     - Add the `IBinaryPixelOp` body and a `runCompositeStep` entry point to `mergeops.slang`, registered in the GPU registry through its `.cmake` fragment, as `compositestep_halveadd` is.
@@ -252,7 +252,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
   - verify: covered by P4.T2's parity test.
   - size: L
 
-- [ ] M101.P4.T2 — Test CPU/GPU parity and region chaining for Merge
+- [x] M101.P4.T2 — Test CPU/GPU parity and region chaining for Merge
   - files: `Tests/Gpu/GpuMerge_Test.cpp` (new), `Tests/Gpu/CMakeLists.txt`
   - approach:
     - On lavapipe, compare the GPU and CPU output for every operator × alpha mode × layer mode (including A `spec` over B `rgba`), with two A inputs, mask and mix. Use exact tolerance for Porter-Duff operators and transcendental for blend modes, per the "Parity tolerances" table.
@@ -268,7 +268,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
 
 ## Phase 101.5: Replace the old Merge
 
-- [ ] M101.P5.T1 — Move RotoPaint's internal merges to the new node
+- [x] M101.P5.T1 — Move RotoPaint's internal merges to the new node
   - files: `Engine/RotoContext.{cpp,h}`, `Engine/RotoContextPrivate.h`, `Engine/RotoDrawableItem.{cpp,h}`, `Engine/RotoPaint.cpp`, `Engine/RotoStrokeItem.cpp`
   - approach:
     - Create `Merge` instead of `PLUGINID_OFX_MERGE`.
@@ -277,31 +277,31 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
   - verify: the existing Roto/RotoPaint tests, plus a manual paint-stroke check in the GUI, at the gate.
   - size: M
 
-- [ ] M101.P5.T2 — Move the bundled PyPlugs to the new node (Glow, LightWrap, DropShadow, EdgeBlur)
+- [x] M101.P5.T2 — Move the bundled PyPlugs to the new node (Glow, LightWrap, DropShadow, EdgeBlur)
   - files: `Gui/Resources/PyPlugs/Glow.py`, `LightWrap.py`, `DropShadow.py`, `EdgeBlur.py`
   - approach: replace the old Merge IDs with `Merge` and set `operation` explicitly where a preset ID was used. Input indices are unchanged. Map any `AChannels`/`BChannels`/`OutputChannels`/`screenAlpha` settings to the new layer and alpha knobs. `screenAlpha` has no equivalent, so note any PyPlug whose output changes.
   - verify: `PyPlugNativeParams_Test` (updated in P5.T5) and rendering each PyPlug on a fixture at the gate.
   - size: M
 
-- [ ] M101.P5.T3 — Move the bundled PyPlugs to the new node (PIKColor, ZMask)
+- [x] M101.P5.T3 — Move the bundled PyPlugs to the new node (PIKColor, ZMask)
   - files: `Gui/Resources/PyPlugs/PIKColor.py`, `ZMask.py`
   - approach: as P5.T2. `Fill.py` no longer references Merge.
   - verify: as P5.T2.
   - size: M
 
-- [ ] M101.P5.T4 — Point the CPU tests that use Merge incidentally at the new node
+- [x] M101.P5.T4 — Point the CPU tests that use Merge incidentally at the new node
   - files: `Tests/ColorViewsRender_Test.cpp`, `Tests/DefaultChannelSet_Test.cpp`, `Tests/LayerKnobs_Test.cpp`, `Tests/PoolSharing_Test.cpp`, `Tests/gui/m69_cleanup.py`
   - approach: swap the ID and the knob names. Keep each test's intent. Where a test asserted old-node behaviour that no longer exists (alpha masking, OFX defaults), rewrite the assertion for the new behaviour and say so in the report.
   - verify: these tests pass at the gate.
   - size: M
 
-- [ ] M101.P5.T5 — Point the metadata, catalogue and PyPlug tests at the new node
+- [x] M101.P5.T5 — Point the metadata, catalogue and PyPlug tests at the new node
   - files: `Tests/NativeMetadataPolicy_Test.cpp`, `Tests/NativeMetadata_Test.cpp`, `Tests/NodeCategory_Test.cpp`, `Tests/OfxMetadataBridge_Test.cpp`, `Tests/Native/NativePluginList_Test.cpp` (and `Tests/Native/PyPlugNativeParams_Test.cpp`, `Tests/Native/BlurFIRGaussian_Test.cpp` if they reference Merge)
   - approach: as P5.T4. `NativePluginList_Test` must expect `Merge` and no `net.sf.openfx.Merge*` IDs.
   - verify: these tests pass at the gate.
   - size: M
 
-- [ ] M101.P5.T6 — Delete the old Merge
+- [x] M101.P5.T6 — Delete the old Merge
   - files: `Engine/Nodes/Merge/Merge.{h,cpp}`, `MergeOperators.{h,cpp}`, the 10 old `.reg.inc` fragments, `Merge.costseed.inc` and `docs/Merge*.md`, `Tests/Native/NativeMerge_Test.cpp`, `Tests/Native/MergeOperators_Test.cpp`, plus the references in `AppInstance.cpp`, `GuiApplicationManager.cpp`, `NodeGui.cpp`, `Node.cpp`, `ParallelRenderArgs.cpp`, `EffectInstance.h`, `NodeDocumentation.cpp`, `tools/genStaticDocs.sh`, `tools/release/check-startup.sh` and `tools/bench/*`
   - approach:
     - Delete the files and every reference: `git grep` for `PLUGINID_NATRON_MERGE`, `PLUGINID_OFX_MERGE`, `net.sf.openfx.Merge`, `MergeNode` and `MergeOperators` until nothing remains outside `docs/decisions/` history.
@@ -310,7 +310,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
   - verify: the grep is empty, and the full build and test suite pass at the gate.
   - size: M
 
-- [ ] M101.P5.T7 — Point the GPU and scheduler tests that use Merge at the new node
+- [x] M101.P5.T7 — Point the GPU and scheduler tests that use Merge at the new node
   - files: `Tests/GLScheduler_Test.cpp`, `Tests/GpuPlacement_Test.cpp`, `Tests/GpuResidency_Test.cpp`, `Tests/FrameGraphBuild_Test.cpp`, `Tests/GraphScaling_Test.cpp`
   - approach: as P5.T4. Where a placement test expected the old Custom Merge to break a region, expect the new one to join it, and say so.
   - verify: these tests pass at the gate.

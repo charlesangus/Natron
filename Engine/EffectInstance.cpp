@@ -6025,10 +6025,6 @@ EffectInstance::abortAnyEvaluation(bool keepOldestRender)
         }
     }
     for (std::list<OutputEffectInstance*>::const_iterator it = outputNodes.begin(); it != outputNodes.end(); ++it) {
-        // A blocking render has a caller waiting on it to finish, so an edit must not cut it short.
-        if (keepOldestRender && (*it)->getRenderEngine()->isDoingBlockingRender()) {
-            continue;
-        }
         //Abort and allow playback to restart but do not block, when this function returns any ongoing render may very
         //well not be finished
         if (keepOldestRender) {

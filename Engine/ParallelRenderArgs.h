@@ -365,16 +365,6 @@ public:
     static void setMetadataSnapshotHookForTests(const MetadataSnapshotHook& hook);
 
     /**
-     * @brief Called by buildArgsMap() on the setting-up thread once a frame's snapshot is final and
-     * before the frame renders, so a test can record what the frame renders under and edit the
-     * graph while it renders.
-     **/
-    typedef std::function<void(const NodePtr& treeRoot, double time, ViewIdx view,
-                               const std::map<NodePtr, ParallelRenderArgsPtr>& args)>
-        FrameSnapshotHook;
-    static void setFrameSnapshotHookForTests(const FrameSnapshotHook& hook);
-
-    /**
      * @brief The frame args the first constructor installed on this thread, each node mapped to the args
      * getParallelRenderArgsTLS() returns for it. Empty when built from an existing args map.
      **/

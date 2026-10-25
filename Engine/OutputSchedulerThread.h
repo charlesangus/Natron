@@ -274,11 +274,6 @@ public:
     void notifyRenderFailure(const std::string& errorMessage);
 
     /**
-     * @brief Returns true if the current run was started as a blocking render. Safe from any thread.
-     **/
-    bool isRunningBlocking() const;
-
-    /**
      * @brief Returns the thread render arguments as set in the livingRunArgs
      * This can only be called on the scheduler thread (this)
      **/
@@ -772,11 +767,6 @@ public:
      * @brief Returns true if playback is active
      **/
     bool isDoingSequentialRender() const;
-
-    /**
-     * @brief Returns true if the render in progress was started blocking (it must run to completion)
-     **/
-    bool isDoingBlockingRender() const;
 
     /**
      * @brief Blocks until isDoingSequentialRender() is false or stopWaiting() returns true, without

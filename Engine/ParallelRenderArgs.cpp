@@ -1107,7 +1107,6 @@ typedef std::map<NodePtr,FindDependenciesNode> FindDependenciesMap;
 namespace {
 std::mutex g_metadataSnapshotHookMutex;
 ParallelRenderArgsSetter::MetadataSnapshotHook g_metadataSnapshotHook;
-ParallelRenderArgsSetter::FrameSnapshotHook g_frameSnapshotHook;
 
 // A snapshot that raced an edit is retaken at most this many times, then kept as it is: a graph
 // edited faster than it can be snapshotted must still render.
@@ -1190,13 +1189,6 @@ ParallelRenderArgsSetter::setMetadataSnapshotHookForTests(const MetadataSnapshot
 {
     std::lock_guard<std::mutex> lock(g_metadataSnapshotHookMutex);
     g_metadataSnapshotHook = hook;
-}
-
-void
-ParallelRenderArgsSetter::setFrameSnapshotHookForTests(const FrameSnapshotHook& hook)
-{
-    std::lock_guard<std::mutex> lock(g_metadataSnapshotHookMutex);
-    g_frameSnapshotHook = hook;
 }
 
 /**
@@ -1448,14 +1440,6 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
             for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = out->begin(); it != out->end(); ++it) {
                 it->second->nodeHash = it->first->getHashValue();
             }
-        }
-        FrameSnapshotHook hook;
-        {
-            std::lock_guard<std::mutex> lock(g_metadataSnapshotHookMutex);
-            hook = g_frameSnapshotHook;
-        }
-        if (hook) {
-            hook(treeRoot, time, view, *out);
         }
     }
 

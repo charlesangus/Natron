@@ -25,11 +25,14 @@ WATCHDOG_S = 300
 SETTLE_MS = 500
 COL_OPERATOR = 3
 COL_COLOR = 5
+MIN_CURVE_INK = 200  # a box outline across the viewer is thousands of pixels
 PAINT_COLUMNS = (6, 7)  # MAX_COLS without/with NATRON_ROTO_INVERTIBLE
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QMetaObject
+    from PySide6.QtCore import QMetaObject, QPoint, Qt
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QTreeWidget
 
     import guitest as gt
@@ -101,6 +104,34 @@ try:
         check(not tree.isColumnHidden(COL_OPERATOR), "%s's curve list shows the Operator column" % name)
         check(not tree.isColumnHidden(COL_COLOR), "%s's curve list shows the Color column" % name)
 
+    def visible_viewer():
+        viewers = [w for w in gt.widgets_of("ViewerGL") if w.isVisible()]
+        return viewers[0] if viewers else None
+
+    def grab_viewer():
+        """A screen grab of the first visible viewer (a widget grab of the GL viewer can come out
+        blank under llvmpipe), or None if there is none."""
+        w = visible_viewer()
+        if w is None:
+            return None
+        QApplication.processEvents()
+        origin = w.mapToGlobal(QPoint(0, 0))
+        return QGuiApplication.primaryScreen().grabWindow(
+            0, origin.x(), origin.y(), w.width(), w.height()).toImage()
+
+    def curve_pixels(img):
+        """The (x, y) positions of the red curve overlay in a viewer grab. The viewer changes size
+        when a host's buttons bar appears, so grabs are compared by colour, not position."""
+        if img is None:
+            return []
+        points = []
+        for y in range(img.height()):
+            for x in range(img.width()):
+                c = img.pixelColor(x, y)
+                if c.red() > 150 and c.green() < 90 and c.blue() < 90:
+                    points.append((x, y))
+        return points
+
     def steps():
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the node graph is on screen")
@@ -153,6 +184,70 @@ try:
         check(ok, "closing the RotoPaint panel hands the viewer slot back to the Roto node")
         check(not viewer_interface_shown(paint), "the RotoPaint node's viewer interface is gone")
         gt.shot("m146-slot-handback.png")
+
+        gt.section("inactive-host-curves-drawn-without-input")
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        ctx = roto.getRotoContext()
+        require(ctx is not None, "the Roto node has a roto context")
+        bez = ctx.createBezier(300.0, 200.0, 1.0)
+        require(bez is not None, "created a Bezier on the Roto node")
+        for x, y in ((1500.0, 200.0), (1500.0, 800.0), (300.0, 800.0)):
+            bez.addControlPoint(x, y)
+        bez.setCurveFinished(True)
+        ok = yield ("until", lambda: visible_viewer() is not None, POLL_TIMEOUT_S)
+        require(ok, "a viewer is on screen")
+        # Overlays are only drawn for nodes on the path feeding the viewer.
+        require(paint.connectInput(0, roto), "connected Roto to RotoPaint")
+        require(viewer.connectInput(0, paint), "connected RotoPaint to the viewer")
+        app.selectNode(viewer, True)
+        yield ("sleep", 2 * SETTLE_MS)
+        baseline = curve_pixels(grab_viewer())
+        report("NOTE no-panel grab has %d curve pixels" % len(baseline))
+        check(len(baseline) < MIN_CURVE_INK, "with no panel open the curve is not drawn in the viewer")
+        gt.shot("m146-slot-curve-no-panels.png")
+
+        open_panel(view, roto)
+        ok = yield ("until", lambda: viewer_interface_shown(roto), POLL_TIMEOUT_S)
+        require(ok, "the Roto node owns the viewer slot")
+        yield ("sleep", SETTLE_MS)
+        owner = grab_viewer()
+        owner_px = curve_pixels(owner)
+        report("NOTE owner grab has %d curve pixels" % len(owner_px))
+        check(len(owner_px) > MIN_CURVE_INK, "the owning host's curve is drawn in the viewer")
+        gt.shot("m146-slot-curve-owner.png")
+
+        open_panel(view, paint)
+        ok = yield ("until", lambda: viewer_interface_shown(paint), POLL_TIMEOUT_S)
+        require(ok, "the RotoPaint node took the viewer slot")
+        check(panel_of(roto) is not None, "the Roto node's settings panel is still open")
+        yield ("sleep", SETTLE_MS)
+        inactive = grab_viewer()
+        inactive_px = curve_pixels(inactive)
+        report("NOTE inactive grab has %d curve pixels" % len(inactive_px))
+        check(len(inactive_px) > MIN_CURVE_INK,
+              "the inactive host's curve is still drawn in the viewer")
+        gt.shot("m146-slot-curve-inactive.png")
+
+        curve_points = sorted(inactive_px, key=lambda p: (p[1], p[0]))
+        check(len(curve_points) > MIN_CURVE_INK, "the curve's pixels are found in the inactive grab")
+        if curve_points:
+            x, y = curve_points[len(curve_points) // 2]
+            report("NOTE clicking the inactive host's curve at viewer pixel (%d, %d)" % (x, y))
+            QTest.mouseClick(visible_viewer(), Qt.LeftButton, Qt.NoModifier, QPoint(x, y))
+            yield ("sleep", SETTLE_MS)
+            # The Python API has no query for the selected curves of a roto context, so that the
+            # click selected nothing is judged from the picture and the slot owner alone.
+            check(viewer_interface_shown(paint), "clicking the inactive host's curve leaves the slot with RotoPaint")
+            gt.shot("m146-slot-curve-inactive-clicked.png")
+
+        QMetaObject.invokeMethod(panel_of(roto), "closePanel")
+        yield ("sleep", SETTLE_MS)
+        after_close = curve_pixels(grab_viewer())
+        report("NOTE after closing Roto's panel the grab has %d curve pixels" % len(after_close))
+        check(len(after_close) < MIN_CURVE_INK,
+              "closing the Roto panel removes its curve overlay from the viewer")
+        gt.shot("m146-slot-curve-closed.png")
 
         faulthandler.cancel_dump_traceback_later()
 

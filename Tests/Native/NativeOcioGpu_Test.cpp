@@ -26,9 +26,11 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <fstream>
+#include <iomanip>
 #include <memory>
 #include <string>
 #include <vector>
@@ -76,6 +78,16 @@ ParityTolerance
 ocioTolerance()
 {
     return ParityTolerance::make(0., 1e-4);
+}
+
+// The display's gamma 2.2 after the ACES 2.0 SDR output transform. Saturated cyan pixels leave
+// that transform with R near 0.001, where a single float ulp of input G moves R by up to 3e-6 and
+// the device's own rounding by about 1e-5. The gamma's slope there is about 19, so the shown R
+// differs by up to about 2e-4 with both paths doing the same math in the same order.
+ParityTolerance
+displayGammaTolerance()
+{
+    return ParityTolerance::make(0., 5e-4);
 }
 
 // A 1D LUT of 4096 entries, smooth enough that a device's 8-bit linear-filter weights stay far
@@ -147,7 +159,8 @@ protected:
     // matched. Returns false when there is no GPU or the render failed.
     bool expectGpuParity(const NodePtr& source,
                          const NodePtr& node,
-                         const std::string& what)
+                         const std::string& what,
+                         const ParityTolerance& tolerance = ocioTolerance())
     {
         const RectI window = paritySourceWindow(source, kTime, 0);
         const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>(1, node), node, window, kTime);
@@ -164,8 +177,33 @@ protected:
         if (result.cpu.size() != result.gpu.size()) {
             return false;
         }
-        const ImageDiff diff = compareImages(result.cpu, result.gpu, ocioTolerance());
-        EXPECT_EQ(0u, diff.mismatches) << what << ": first at float " << diff.firstMismatchIndex;
+        const ImageDiff diff = compareImages(result.cpu, result.gpu, tolerance);
+        if (diff.mismatches == 0) {
+            return true;
+        }
+
+        // The mismatch furthest outside its bound, as a multiple of it.
+        const int nComps = 4;
+        std::size_t worst = diff.firstMismatchIndex;
+        double worstRatio = 0.;
+        for (std::size_t i = 0; i < result.cpu.size(); ++i) {
+            if (tolerance.accepts(result.cpu[i], result.gpu[i])) {
+                continue;
+            }
+            const double bound = tolerance.absolute + tolerance.relative * std::max(1., std::fabs((double)result.cpu[i]));
+            const double d = std::fabs((double)result.cpu[i] - (double)result.gpu[i]);
+            const double ratio = (bound > 0. && d == d) ? d / bound : HUGE_VAL;
+            if (ratio > worstRatio) {
+                worstRatio = ratio;
+                worst = i;
+            }
+        }
+        const RectI& w = result.window;
+        const std::size_t at = worst / nComps;
+        EXPECT_EQ(0u, diff.mismatches) << std::setprecision(9) << what << ": " << diff.mismatches << " mismatches, worst at (" << (w.x1 + (int)(at % w.width())) << ","
+                                       << (w.y1 + (int)(at / w.width())) << ") channel " << (worst % nComps) << " cpu " << result.cpu[worst]
+                                       << " gpu " << result.gpu[worst] << ", tolerance absolute " << tolerance.absolute << " relative "
+                                       << tolerance.relative << "; largest absolute difference " << diff.worstAbsolute;
 
         return true;
     }
@@ -191,9 +229,9 @@ TEST_F(NativeOcioGpuTest, DisplayMatchesTheCpu)
     }
     ASSERT_TRUE(setKnobValues(node, kOCIODisplayParamGain, std::vector<double>(1, 2.)));
     ASSERT_TRUE(setKnobValues(node, kOCIODisplayParamGamma, std::vector<double>(1, 2.2)));
-    expectGpuParity(source, node, "gain 2, gamma 2.2");
+    expectGpuParity(source, node, "gain 2, gamma 2.2", displayGammaTolerance());
     ASSERT_TRUE(setKnobValue(node, kOCIODisplayParamChannel, "luminance"));
-    expectGpuParity(source, node, "luminance");
+    expectGpuParity(source, node, "luminance", displayGammaTolerance());
     ASSERT_TRUE(setKnobValue(node, kOCIODisplayParamChannel, "a"));
     ASSERT_TRUE(setKnobValues(node, kOCIODisplayParamGamma, std::vector<double>(1, 0.)));
     expectGpuParity(source, node, "alpha, gamma 0");

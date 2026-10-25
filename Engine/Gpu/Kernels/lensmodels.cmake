@@ -1,0 +1,1 @@
+slang_add_kernel(lensmodels_test Kernels/lensmodels_test.slang ENTRY lensmodels_test_main REGISTRY NatronGpu)

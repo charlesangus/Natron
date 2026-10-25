@@ -46,6 +46,12 @@
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/Transform/LensModels3DE.h"
+#include "Engine/Nodes/Transform/LensModelsGpu.h"
+#include "Engine/Nodes/Transform/WarpGpu.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -1114,5 +1120,142 @@ LensDistortion::renderOp(const RenderActionArgs& args,
 
     return eStatusOK;
 } // LensDistortion::renderOp
+
+namespace {
+// The parameter block of Engine/Gpu/Kernels/lensdistortion.slang, word for word: the settings, then
+// the packed model. A double is carried as a float pair, hi and lo, whose sum the kernel computes
+// with.
+struct LensDistortionGpuParams {
+    uint32_t filter = 0;
+    uint32_t flags = 0;
+    uint32_t direction = 0;
+    uint32_t reserved = 0;
+    float scaleX[2] = { 1.f, 0.f };
+    float scaleY[2] = { 1.f, 0.f };
+    float toSourceX[2] = { 1.f, 0.f };
+    float sourceX1[2] = { 0.f, 0.f };
+    float sourceY1[2] = { 0.f, 0.f };
+    float sourceWidth[2] = { 1.f, 0.f };
+    float sourceHeight[2] = { 1.f, 0.f };
+    uint32_t pad[2] = { 0, 0 };
+    LensModelGpu model;
+};
+
+// lensdistortion.slang's kLensDistortionModelBase.
+static_assert(offsetof(LensDistortionGpuParams, model) == 20 * 4, "lensdistortion.slang reads the model from word 20");
+static_assert(sizeof(LensDistortionGpuParams) == 120 * 4, "lensdistortion.slang reads 120 words");
+
+const uint32_t kLensDistortionGpuClamp = 1;
+const uint32_t kLensDistortionGpuBlackOutside = 2;
+const uint32_t kLensDistortionGpuJacobian = 4;
+const uint32_t kLensDistortionGpuSample = 8;
+const uint32_t kLensDistortionGpuSTMap = 16;
+} // namespace
+
+bool
+LensDistortion::canRenderOpOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    return (query.bitDepth == eImageBitDepthFloat) && canRunStagesGpu(resolveGpuPlan(query), query);
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+bool
+LensDistortion::getOpGpuInputLayer(int inputNb,
+                                   const ImageLayerDesc& plane,
+                                   double time,
+                                   ViewIdx view,
+                                   ImageLayerDesc* layer) const
+{
+    stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+    return true;
+}
+
+RectI
+LensDistortion::getOpGpuInputRoI(int inputNb,
+                                 const RectI& outputRect,
+                                 const RenderScale& scale) const
+{
+    if (inputNb == kLensDistortionInputSource) {
+        Settings settings;
+        readSettings(getCurrentTime(), getCurrentView(), &settings);
+        // As getRegionsOfInterest: the whole Source when it is sampled, the window for the blend.
+        if (!settings.stmap) {
+            return warpGpuInputRoI(*this, inputNb, kLensDistortionInputSource, -1, outputRect, scale);
+        }
+    }
+
+    return StagedImageEffect::getOpGpuInputRoI(inputNb, outputRect, scale);
+}
+
+StatusEnum
+LensDistortion::renderOpGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuQuery& query = args.query;
+    if (!canRenderOpOnGpu(query)) {
+        return eStatusFailed;
+    }
+    Settings settings;
+    readSettings(query.time, query.view, &settings);
+    if (query.draftMode) {
+        settings.filter = Resampler::eFilterImpulse;
+    }
+    Geometry geometry;
+    getGeometry(query.time, query.view, &geometry);
+    const LensModels::Model model = buildModel(query.time, query.view, geometry);
+
+    LensDistortionGpuParams params;
+    params.filter = (uint32_t)settings.filter;
+    params.flags = (settings.clamp ? kLensDistortionGpuClamp : 0u) | (settings.blackOutside ? kLensDistortionGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kLensDistortionGpuJacobian : 0u);
+    if (model.valid) {
+        if (!settings.stmap) {
+            params.flags |= kLensDistortionGpuSample;
+        } else if (!geometry.sourceFormat.isNull()) {
+            params.flags |= kLensDistortionGpuSTMap;
+        }
+    }
+    // Each output pixel reads the Source where the opposite direction sends it.
+    params.direction = (uint32_t)((settings.direction == LensModels::eDirectionDistort) ? LensModels::eDirectionUndistort : LensModels::eDirectionDistort);
+    setLensModelGpuDouble(query.mappedScale.toOfxPointD().x, params.scaleX);
+    setLensModelGpuDouble(query.mappedScale.toOfxPointD().y, params.scaleY);
+    setLensModelGpuDouble(geometry.par / geometry.sourcePar, params.toSourceX);
+    if (!geometry.sourceFormat.isNull()) {
+        setLensModelGpuDouble(geometry.sourceFormat.x1, params.sourceX1);
+        setLensModelGpuDouble(geometry.sourceFormat.y1, params.sourceY1);
+        setLensModelGpuDouble(geometry.sourceFormat.width(), params.sourceWidth);
+        setLensModelGpuDouble(geometry.sourceFormat.height(), params.sourceHeight);
+    }
+    params.model = packLensModelGpu(model);
+
+    // The Source cropped to its region of definition, as the CPU fetches it, is both sampled and
+    // blended under the mask and mix.
+    const StagePlan plan = resolveGpuPlan(query);
+    GpuRenderArgs cropped = args;
+    const int sourceInput = plan.sourceInput;
+    const bool sourceStaged = (sourceInput >= 0) && (sourceInput < (int)cropped.inputs.size());
+    if (sourceStaged && !stageGpuInputView(*this, args, sourceInput, &cropped.inputs[sourceInput])) {
+        return eStatusFailed;
+    }
+    if (!sourceStaged || !cropped.inputs[sourceInput].buffer) {
+        params.flags &= ~kLensDistortionGpuSample;
+    }
+
+    PixelKernelGpu op;
+    op.kernel = (int)gpu::GpuKernelId::lensdistortion;
+    op.setParams(params);
+
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>());
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+} // LensDistortion::renderOpGpu
 
 NATRON_NAMESPACE_EXIT

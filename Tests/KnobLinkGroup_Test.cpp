@@ -52,7 +52,12 @@ makeDoubleKnob(const NodePtr& node,
                const std::string& name,
                int dimension = 1)
 {
-    return AppManager::createKnob<KnobDouble>(node->getEffectInstance().get(), name, dimension, false);
+    KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(node->getEffectInstance().get(), name, dimension, false);
+    // An expression resolves thisParam as a Python attribute of the node, which a knob added after
+    // node creation lacks until the node redeclares its fields.
+    node->declarePythonFields();
+
+    return knob;
 }
 
 /**

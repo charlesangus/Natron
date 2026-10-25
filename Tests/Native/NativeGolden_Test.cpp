@@ -49,6 +49,7 @@
 #include "Engine/Nodes/Color/HSVTool.h"
 #include "Engine/Nodes/Color/HueCorrect.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Posterize.h"
 #include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Color/Threshold.h"
@@ -60,6 +61,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/Keyer/Despill.h"
 #include "Engine/Nodes/Keyer/HueKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -360,6 +362,28 @@ TEST_F(NativeGoldenTest, Threshold)
     run(filterSpec("Threshold", PLUGINID_NATRON_THRESHOLD, PLUGIN_MAJOR_NATRON_THRESHOLD), v);
 }
 
+TEST_F(NativeGoldenTest, Posterize)
+{
+    const Apply bands = [](const GoldenGraph& g) { return num(g, kPosterizeParamLevels, { 5. }); };
+    const auto dithered = [](const std::string& id) {
+        return [id](const GoldenGraph& g) { return num(g, kPosterizeParamLevels, { 4. }) && choice(g, kPosterizeParamDither, id); };
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("bands", bands));
+    v.push_back(variant("range", [](const GoldenGraph& g) { return num(g, kPosterizeParamLevels, { 3.5 }) && num(g, kPosterizeParamRangeMin, { -0.25 }) && num(g, kPosterizeParamRangeMax, { 2. }); }));
+    v.push_back(variant("bayer2x2", dithered("bayer2x2")));
+    v.push_back(variant("bayer4x4", dithered("bayer4x4")));
+    v.push_back(variant("bayer8x8", dithered("bayer8x8")));
+    v.push_back(variant("vac14x14", dithered("vac14x14")));
+    v.push_back(variant("vac25x25", dithered("vac25x25")));
+    v.push_back(variant("random", dithered("random")));
+    v.push_back(variant("randomStatic", [dithered](const GoldenGraph& g) { return dithered("random")(g) && num(g, kPosterizeParamSeed, { 77. }) && num(g, kPosterizeParamStaticSeed, { 1. }); }));
+    v.push_back(variant("alpha", [bands](const GoldenGraph& g) { return bands(g) && processRgba(g); }));
+    addPremultAndMaskMix(&v, bands);
+    run(filterSpec("Posterize", PLUGINID_NATRON_POSTERIZE, PLUGIN_MAJOR_NATRON_POSTERIZE), v);
+}
+
 TEST_F(NativeGoldenTest, Colorspace)
 {
     const auto models = [](int in, int out) {
@@ -437,6 +461,23 @@ TEST_F(NativeGoldenTest, HueKeyer)
     v.push_back(variant("invert", [](const GoldenGraph& g) { return num(g, kHueKeyerParamInvert, { 1. }) && num(g, kHueKeyerParamSatHigh, { 2. }); }));
     v.push_back(filterMaskMix([](const GoldenGraph& g) { return num(g, kHueKeyerParamHueLow, { 0.1 }) && num(g, kHueKeyerParamHueHigh, { 0.6 }); }));
     run(filterSpec("HueKeyer", PLUGINID_NATRON_HUEKEYER, PLUGIN_MAJOR_NATRON_HUEKEYER), v);
+}
+
+TEST_F(NativeGoldenTest, Despill)
+{
+    const Apply blue = [](const GoldenGraph& g) { return num(g, kDespillParamScreenColor, { 0., 0., 1. }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("blue", blue));
+    v.push_back(variant("custom", [](const GoldenGraph& g) {
+        return num(g, kDespillParamScreenColor, { 0.07, 0.65, 0.16 }) && choice(g, kDespillParamLimit, "custom") && num(g, kDespillParamLimitWeights, { 0.7, 0.3 });
+    }));
+    v.push_back(variant("maxLimit", [](const GoldenGraph& g) { return choice(g, kDespillParamLimit, "max") && num(g, kDespillParamStrength, { 0.6 }); }));
+    v.push_back(variant("minLimitExpand", [](const GoldenGraph& g) { return choice(g, kDespillParamLimit, "min") && num(g, kDespillParamExpand, { 0.4 }); }));
+    v.push_back(variant("replace", [](const GoldenGraph& g) { return num(g, kDespillParamReplaceColor, { 0.8, 0.5, 0.3 }) && num(g, kDespillParamLumaRestore, { 1. }); }));
+    v.push_back(variant("spillMap", [](const GoldenGraph& g) { return choice(g, kDespillParamSpillMap, "alpha"); }));
+    addPremultAndMaskMix(&v, blue);
+    run(filterSpec("Despill", PLUGINID_NATRON_DESPILL, PLUGIN_MAJOR_NATRON_DESPILL), v);
 }
 
 TEST_F(NativeGoldenTest, ColorCorrect)

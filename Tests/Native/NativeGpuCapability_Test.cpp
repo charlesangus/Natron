@@ -50,6 +50,7 @@
 #include "Engine/Nodes/Color/HSVTool.h"
 #include "Engine/Nodes/Color/HueCorrect.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Posterize.h"
 #include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Color/Threshold.h"
@@ -60,6 +61,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/Keyer/Despill.h"
 #include "Engine/Nodes/Keyer/HueKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -131,6 +133,8 @@ gpuCapableIds()
         PLUGINID_NATRON_HSVTOOL,
         PLUGINID_NATRON_HUECORRECT,
         PLUGINID_NATRON_HUEKEYER,
+        PLUGINID_NATRON_DESPILL,
+        PLUGINID_NATRON_POSTERIZE,
     };
 
     return ids;

@@ -601,7 +601,7 @@ OfxClipInstance::getRegionOfDefinitionInternal(OfxTime time,
 
         return;
     } else if (effect) {
-        RotoContextPtr rotoCtx = effect->getNode()->getRotoContext();
+        RotoCurveContextPtr rotoCtx = effect->getNode()->getCurveContext();
         if ( rotoCtx && (getName() == CLIP_OFX_ROTO) ) {
             rotoCtx->getMaskRegionOfDefinition(time, view, &rod);
             ret->x1 = rod.x1;

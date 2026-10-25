@@ -2618,7 +2618,7 @@ exportAllNodeKnobs(int indentLevel,
         WRITE_INDENT(indentLevel); WRITE_STATIC_LINE("lastNode.refreshUserParamsGUI()");
     }
 
-    RotoContextPtr roto = node->getRotoContext();
+    RotoCurveContextPtr roto = node->getCurveContext();
     if (roto) {
         const std::list<RotoLayerPtr>& layers = roto->getLayers();
 
@@ -2854,7 +2854,7 @@ exportGroupInternal(int indentLevel,
     NodesList rotos;
     NodesList newNodes;
     for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        if ( (*it)->isRotoPaintingNode() || (*it)->isRotoNode() ) {
+        if ((*it)->getCurveContext()) {
             rotos.push_back(*it);
         } else {
             newNodes.push_back(*it);

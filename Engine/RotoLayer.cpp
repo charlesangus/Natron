@@ -87,11 +87,11 @@ NATRON_NAMESPACE_ENTER
 
 ////////////////////////////////////Layer////////////////////////////////////
 
-RotoLayer::RotoLayer(const RotoContextPtr& context,
-                     const std::string & n,
+RotoLayer::RotoLayer(const RotoCurveContextPtr& context,
+                     const std::string& n,
                      const RotoLayerPtr& parent)
     : RotoItem(context, n, parent)
-    , _imp( new RotoLayerPrivate() )
+    , _imp(new RotoLayerPrivate())
 {
 }
 
@@ -130,14 +130,14 @@ RotoLayer::clone(const RotoItem* other)
         RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(*it);
         if (isBezier) {
             BezierPtr copy( new Bezier(*isBezier, this_shared) );
-            copy->createNodes();
+            getContext()->onItemCreated(copy, true);
             copies.push_back(copy);
         } else if (isStroke) {
             RotoStrokeItemPtr copy( new RotoStrokeItem( isStroke->getBrushType(),
                                                                         isStroke->getContext(),
                                                                         isStroke->getScriptName() + "copy",
                                                                         RotoLayerPtr() ) );
-            copy->createNodes();
+            getContext()->onItemCreated(copy, true);
             copies.push_back(copy);
             strokes.push_back(copy);
         } else {
@@ -186,7 +186,7 @@ RotoLayer::addItem(const RotoItemPtr & item,
     }
     // The children are hashed in order.
     invalidateContentHash();
-    getContext()->refreshRotoPaintTree();
+    getContext()->onStructureChanged();
 }
 
 void
@@ -224,7 +224,7 @@ RotoLayer::insertItem(const RotoItemPtr & item,
     }
     invalidateContentHash();
     getContext()->declareItemAsPythonField(item);
-    getContext()->refreshRotoPaintTree();
+    getContext()->onStructureChanged();
 }
 
 void
@@ -250,7 +250,7 @@ RotoLayer::removeItem(const RotoItemPtr& item)
     if (isStroke) {
         isStroke->disconnectNodes();
     }
-    getContext()->refreshRotoPaintTree();
+    getContext()->onStructureChanged();
 }
 
 int

@@ -176,14 +176,13 @@ public:
                  const QColor & color,
                  int thickness = 1);
 
-
-    KnobCurveGui(CurveWidget *curveWidget,
-                 CurvePtr  curve,
+    KnobCurveGui(CurveWidget* curveWidget,
+                 CurvePtr curve,
                  const KnobIPtr& knob,
-                 const RotoContextPtr& roto,
+                 const RotoCurveContextPtr& roto,
                  int dimension,
-                 const QString & name,
-                 const QColor & color,
+                 const QString& name,
+                 const QColor& color,
                  int thickness = 1);
 
     virtual ~KnobCurveGui();
@@ -196,7 +195,7 @@ public:
     }
 
     virtual double evaluate(bool useExpr, double x) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    RotoContextPtr getRotoContext() const { return _roto; }
+    RotoCurveContextPtr getRotoContext() const { return _roto; }
 
     KnobIPtr getInternalKnob() const;
 
@@ -215,7 +214,7 @@ public Q_SLOTS:
 
 private:
 
-    RotoContextPtr _roto;
+    RotoCurveContextPtr _roto;
     // The engine knob is kept apart from its GUI so that undo commands holding this curve still
     // reach the knob after its panel GUI has been rebuilt.
     KnobIWPtr _internalKnob;
@@ -227,17 +226,16 @@ class BezierCPCurveGui
     : public CurveGui
 {
 public:
-
-    BezierCPCurveGui(CurveWidget *curveWidget,
+    BezierCPCurveGui(CurveWidget* curveWidget,
                      const BezierPtr& bezier,
-                     const RotoContextPtr& roto,
-                     const QString & name,
-                     const QColor & color,
+                     const RotoCurveContextPtr& roto,
+                     const QString& name,
+                     const QColor& color,
                      int thickness = 1);
 
     virtual ~BezierCPCurveGui();
 
-    RotoContextPtr getRotoContext() const { return _rotoContext; }
+    RotoCurveContextPtr getRotoContext() const { return _rotoContext; }
 
     BezierPtr getBezier() const;
     virtual double evaluate(bool useExpr, double x) const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -258,7 +256,7 @@ private:
 
 
     BezierPtr _bezier;
-    RotoContextPtr _rotoContext;
+    RotoCurveContextPtr _rotoContext;
 };
 
 NATRON_NAMESPACE_EXIT

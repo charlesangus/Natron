@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <list>
 #include <string>
 #include <vector>
@@ -396,6 +397,33 @@ TEST_F(RotoLayerTest, LayerUsersCountOnlyTheRotoContainer)
     EXPECT_EQ(error.find(rotoName), error.rfind(rotoName)) << error;
     EXPECT_EQ(std::string::npos, error.find("_Effect")) << error;
     EXPECT_EQ(std::string::npos, error.find("_Merge")) << error;
+
+    project->reset(false, true);
+}
+
+TEST_F(RotoLayerTest, RotoPaintBezierGetsItsRenderNodes)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr paint = roto->getRotoContext();
+    ASSERT_TRUE(bool(paint));
+    EXPECT_EQ(paint.get(), roto->getCurveContext().get());
+
+    BezierPtr square = addSquare(roto);
+    ASSERT_TRUE(bool(square));
+    NodePtr effectNode = square->getEffectNode();
+    NodePtr mergeNode = square->getMergeNode();
+    ASSERT_TRUE(bool(effectNode));
+    ASSERT_TRUE(bool(mergeNode));
+
+    NodesList tree;
+    paint->getRotoPaintTreeNodes(&tree);
+    EXPECT_NE(tree.end(), std::find(tree.begin(), tree.end(), effectNode));
+    EXPECT_NE(tree.end(), std::find(tree.begin(), tree.end(), mergeNode));
 
     project->reset(false, true);
 }

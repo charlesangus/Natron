@@ -177,7 +177,7 @@ Node::load(const CreateNodeArgs& args)
     restoreSublabel();
 
     declarePythonFields();
-    if  ( getRotoContext() ) {
+    if (getCurveContext()) {
         declareRotoPythonField();
     }
     if ( getTrackerContext() ) {

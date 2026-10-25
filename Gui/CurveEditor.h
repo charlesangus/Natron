@@ -252,7 +252,7 @@ public:
 
     QString getName() const;
 
-    RotoContextPtr getContext() const;
+    RotoCurveContextPtr getContext() const;
     const std::list<NodeCurveEditorElement*>& getElements() const;
     NodeCurveEditorElement* findElement(const KnobGuiPtr& knob, int dimension) const;
 

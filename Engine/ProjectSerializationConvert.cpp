@@ -257,7 +257,7 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         serialization->masterNodeName = masterNode->getFullyQualifiedName();
     }
 
-    RotoContextPtr roto = getRotoContext();
+    RotoCurveContextPtr roto = getCurveContext();
     if (roto && !roto->isEmpty()) {
         serialization->hasRotoContext = true;
         roto->toSerialization(&serialization->rotoContext);

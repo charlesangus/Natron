@@ -529,7 +529,7 @@ BezierCurve::getCompositingOperatorParam() const
     return 0;
 }
 
-Roto::Roto(const RotoContextPtr& ctx)
+Roto::Roto(const RotoCurveContextPtr& ctx)
     : _ctx(ctx)
 {
 }

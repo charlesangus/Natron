@@ -467,6 +467,20 @@ public:
         return false;
     }
 
+    enum CurveContextKindEnum {
+        eCurveContextKindNone = 0,
+        // Layers and Beziers only: no render nodes, no strokes, no paint pages.
+        eCurveContextKindGeometry,
+        // A RotoContext: strokes, the paint pages and the internal render tree.
+        eCurveContextKindPaint
+    };
+
+    /**
+     * @brief Which curve context the node holds, created along with the node. Paint for RotoPaint,
+     * Roto and the internal OFX Roto plug-in, None otherwise.
+     **/
+    virtual CurveContextKindEnum getCurveContextKind() const WARN_UNUSED_RETURN;
+
     virtual bool isPaintingOverItselfEnabled() const WARN_UNUSED_RETURN;
 
     /**

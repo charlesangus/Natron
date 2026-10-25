@@ -148,8 +148,7 @@ public:
     ///this is so the child of a multi-instance can retrieve the pointer to it's main instance
     void fetchParentMultiInstancePointer();
 
-
-    ///If the node can have a roto context, create it
+    /// Creates the curve context EffectInstance::getCurveContextKind() asks for, if any
     void createRotoContextConditionnally();
 
     void createTrackerContextConditionnally();
@@ -456,6 +455,11 @@ public:
      * @brief Returns a pointer to the rotoscoping context if the node is in the paint context, otherwise NULL.
      **/
     RotoContextPtr getRotoContext() const;
+
+    /**
+     * @brief Returns the context holding the node's Roto curves, paint or geometry-only, otherwise NULL.
+     **/
+    RotoCurveContextPtr getCurveContext() const;
     TrackerContextPtr getTrackerContext() const;
 
     U64 getRotoAge() const;

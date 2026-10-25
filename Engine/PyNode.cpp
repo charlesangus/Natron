@@ -1153,7 +1153,7 @@ UserParamHolder::refreshUserParamsGUI()
 Roto*
 Effect::getRotoContext() const
 {
-    RotoContextPtr roto = getInternalNode()->getRotoContext();
+    RotoCurveContextPtr roto = getInternalNode()->getCurveContext();
 
     if (roto) {
         return new Roto(roto);

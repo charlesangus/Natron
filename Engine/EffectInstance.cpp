@@ -1015,7 +1015,7 @@ EffectInstance::getImage(int inputNb,
     RotoDrawableItemPtr attachedStroke = node->getAttachedRotoItem();
 
     if (attachedStroke) {
-        roto = attachedStroke->getContext();
+        roto = attachedStroke->getPaintContext();
     }
     bool useRotoInput = false;
     bool inputIsRotoBrush = roto && isInputRotoBrush(inputNb);
@@ -6003,7 +6003,7 @@ EffectInstance::abortAnyEvaluation(bool keepOldestRender)
         RotoDrawableItemPtr attachedStroke = getNode()->getAttachedRotoItem();
         if (attachedStroke) {
             ///For nodes internal to the rotopaint tree, check outputs of the rotopaint node instead
-            RotoContextPtr context = attachedStroke->getContext();
+            RotoCurveContextPtr context = attachedStroke->getContext();
             assert(context);
             if (context) {
                 NodePtr rotonode = context->getNode();
@@ -6112,7 +6112,7 @@ isFrameVaryingOrAnimated_impl(const EffectInstance* node,
     }
     // Inserted as false before recursing so a node reached again while its inputs are still being walked does not loop.
     std::map<const EffectInstance*, bool>::iterator slot = memo.insert(std::make_pair(node, false)).first;
-    bool ret = node->isFrameVarying() || node->getHasAnimation() || node->getNode()->getRotoContext();
+    bool ret = node->isFrameVarying() || node->getHasAnimation() || node->getNode()->getCurveContext();
     if (!ret) {
         int maxInputs = node->getNInputs();
         for (int i = 0; i < maxInputs; ++i) {
@@ -6148,6 +6148,18 @@ bool
 EffectInstance::isPaintingOverItselfEnabled() const
 {
     return isDuringPaintStrokeCreationThreadLocal();
+}
+
+EffectInstance::CurveContextKindEnum
+EffectInstance::getCurveContextKind() const
+{
+    NodePtr node = getNode();
+
+    if (node && (node->getPluginID() == PLUGINID_OFX_ROTO)) {
+        return eCurveContextKindPaint;
+    }
+
+    return eCurveContextKindNone;
 }
 
 StatusEnum

@@ -58,6 +58,8 @@ public:
 
     virtual bool isRotoPaintNode() const OVERRIDE FINAL WARN_UNUSED_RETURN  { return true; }
 
+    virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN { return eCurveContextKindPaint; }
+
     virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return 1;

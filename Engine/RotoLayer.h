@@ -63,9 +63,8 @@ class RotoLayer
     : public RotoItem
 {
 public:
-
-    RotoLayer(const RotoContextPtr& context,
-              const std::string & name,
+    RotoLayer(const RotoCurveContextPtr& context,
+              const std::string& name,
               const RotoLayerPtr& parent);
 
     explicit RotoLayer(const RotoLayer & other);

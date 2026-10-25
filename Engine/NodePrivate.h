@@ -213,6 +213,7 @@ public:
         , layerKnob()
         , layerKnobSpec()
         , layerKnobSources()
+        , curveContext()
         , rotoContext()
         , trackContext()
         , imagesBeingRenderedMutex()
@@ -461,7 +462,8 @@ public:
     KnobIWPtr layerKnob;
     LayerKnobSpec layerKnobSpec;
     std::map<const KnobI*, LayerKnobSource> layerKnobSources;
-    RotoContextPtr rotoContext; //< valid when the node has a rotoscoping context (i.e: paint context)
+    RotoCurveContextPtr curveContext; //< valid when the node hosts Roto curves, see EffectInstance::getCurveContextKind()
+    RotoContextPtr rotoContext; //< the same object as curveContext when that is a paint context, NULL otherwise
     TrackerContextPtr trackContext;
     mutable QMutex imagesBeingRenderedMutex;
     QWaitCondition imagesBeingRenderedCond;

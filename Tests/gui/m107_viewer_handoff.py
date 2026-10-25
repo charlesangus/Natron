@@ -583,8 +583,14 @@ try:
         if "histogram" in CASES:
             gt.section("histogram")
             viewer_tab_widget = viewer_widget()
-            panes = [p for p in gt.widgets_of("TabWidget") if p.isVisible() and not p.isAncestorOf(viewer_tab_widget)]
-            pane = panes[0] if panes else next(p for p in gt.widgets_of("TabWidget") if p.isVisible())
+            # allWidgets() comes from a pointer-keyed set, so its order changes between runs. The histogram's size, and
+            # with it the coloured pixel count, follows the pane it opens in, so every run must pick the same pane.
+            def pane_key(p):
+                origin = p.mapToGlobal(QPoint(0, 0))
+                return (p.objectName(), origin.y(), origin.x())
+            visible = sorted((p for p in gt.widgets_of("TabWidget") if p.isVisible()), key=pane_key)
+            panes = [p for p in visible if not p.isAncestorOf(viewer_tab_widget)]
+            pane = panes[0] if panes else visible[0]
             report("NOTE histogram pane: %s" % ("a pane without the viewer" if panes else "the viewer's own pane"))
             QMetaObject.invokeMethod(pane, "newHistogramHere")
             ok = yield ("until", lambda: any(h.isVisible() for h in gt.widgets_of("Histogram")), POLL_TIMEOUT_S)

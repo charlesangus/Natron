@@ -194,17 +194,19 @@ protected:
         return switchNode;
     }
 
-    NodePtr createPointMatrixBelow(const NodePtr& input)
+    // The PointMatrix whose channel set leaves alpha alone, so its output keeps its input's
+    // layout: one that writes alpha widens an RGB stream to RGBA.
+    NodePtr createRGBPointBelow(const NodePtr& input)
     {
-        NodePtr pointMatrix = createNode(QString::fromUtf8(kNatronTestPointMatrixPluginID), kNatronTestPointMatrixMajor);
-        EXPECT_TRUE(bool(pointMatrix));
-        if (!pointMatrix) {
-            return pointMatrix;
+        NodePtr rgbPoint = createNode(QString::fromUtf8(kNatronTestRGBPointPluginID), kNatronTestRGBPointMajor);
+        EXPECT_TRUE(bool(rgbPoint));
+        if (!rgbPoint) {
+            return rgbPoint;
         }
-        connectNodes(input, pointMatrix, 0, true);
-        EXPECT_TRUE(ofxEffectOf(pointMatrix) != NULL);
+        connectNodes(input, rgbPoint, 0, true);
+        EXPECT_TRUE(ofxEffectOf(rgbPoint) != NULL);
 
-        return pointMatrix;
+        return rgbPoint;
     }
 
     // A FrameWindow over `input` reading frames first..last, relative to the frame rendered
@@ -243,11 +245,11 @@ TEST_F(OfxPerFrameMetadataTest, SwitchedInputRunsClipPreferencesOncePerLayout)
 
     NodePtr switchNode = createKeyedSwitch();
     ASSERT_TRUE(bool(switchNode));
-    NodePtr pointMatrix = createPointMatrixBelow(switchNode);
-    ASSERT_TRUE(bool(pointMatrix));
-    OfxEffectInstance* effect = ofxEffectOf(pointMatrix);
+    NodePtr rgbPoint = createRGBPointBelow(switchNode);
+    ASSERT_TRUE(bool(rgbPoint));
+    OfxEffectInstance* effect = ofxEffectOf(rgbPoint);
     ASSERT_TRUE(effect != NULL);
-    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(pointMatrix->getKnobByName(kNatronTestPointMatrixParamMix));
+    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(rgbPoint->getKnobByName(kNatronTestPointMatrixParamMix));
     ASSERT_TRUE(bool(mix));
 
     // A new hash, so that whatever the graph's construction asked is not reused, and every call
@@ -260,7 +262,7 @@ TEST_F(OfxPerFrameMetadataTest, SwitchedInputRunsClipPreferencesOncePerLayout)
         for (int i = 0; i < kFrames; ++i) {
             // Each thread starts at a different frame, so that both layouts are asked at once.
             const int frame = 1 + ((i + t * 7) % kFrames);
-            NodeMetadataConstPtr metadata = pointMatrix->getEffectInstance()->getMetadata(frame, ViewIdx(0));
+            NodeMetadataConstPtr metadata = rgbPoint->getEffectInstance()->getMetadata(frame, ViewIdx(0));
             const int expected = (frame == 1) ? 3 : 4;
             if (!metadata || (nCompsOf(metadata, -1) != expected) || (nCompsOf(metadata, 0) != expected)) {
                 ++wrong;
@@ -270,8 +272,8 @@ TEST_F(OfxPerFrameMetadataTest, SwitchedInputRunsClipPreferencesOncePerLayout)
                                  std::function<void()>()));
 
     EXPECT_EQ(0, wrong.load());
-    EXPECT_EQ(3, nCompsAt(pointMatrix, 1));
-    EXPECT_EQ(4, nCompsAt(pointMatrix, 2));
+    EXPECT_EQ(3, nCompsAt(rgbPoint, 1));
+    EXPECT_EQ(4, nCompsAt(rgbPoint, 2));
     EXPECT_EQ(callsBefore + 2, effect->getPerFrameClipPreferencesCallCountForTest());
 }
 
@@ -366,15 +368,15 @@ TEST_F(OfxPerFrameMetadataTest, QueriesDuringMainThreadEditsDoNotDeadlock)
 
     NodePtr switchNode = createKeyedSwitch();
     ASSERT_TRUE(bool(switchNode));
-    NodePtr pointMatrix = createPointMatrixBelow(switchNode);
-    ASSERT_TRUE(bool(pointMatrix));
-    NodePtr window = createFrameWindowBelow(pointMatrix, 0, 1, false);
+    NodePtr rgbPoint = createRGBPointBelow(switchNode);
+    ASSERT_TRUE(bool(rgbPoint));
+    NodePtr window = createFrameWindowBelow(rgbPoint, 0, 1, false);
     ASSERT_TRUE(bool(window));
-    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(pointMatrix->getKnobByName(kNatronTestPointMatrixParamMix));
+    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(rgbPoint->getKnobByName(kNatronTestPointMatrixParamMix));
     KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kSwitchParamWhich));
     ASSERT_TRUE(mix && which);
 
-    const std::vector<NodePtr> queried = { pointMatrix, window };
+    const std::vector<NodePtr> queried = { rgbPoint, window };
     std::atomic<int> nullAnswers(0);
     int edits = 0;
     ASSERT_TRUE(runOnPoolThreads([&](int t) {

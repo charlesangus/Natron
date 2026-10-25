@@ -476,6 +476,10 @@ GpuKernel::findBinding(std::string_view name) const
 
 GpuKernel::~GpuKernel()
 {
+    // Work that never finished may still use the pipeline and the descriptor sets allocated from the pool.
+    if (device_.hasAbandonedWork()) {
+        return;
+    }
     const VkDevice dev = device_.device();
     if (pool_) {
         vkDestroyDescriptorPool(dev, pool_, nullptr);
@@ -672,7 +676,8 @@ void
 GpuKernel::releaseDescriptors()
 {
     std::lock_guard<std::mutex> lock(poolMutex_);
-    if (pool_) {
+    // Resetting frees the sets that work which never finished may still read, so the pool is kept as it is.
+    if (pool_ && !device_.hasAbandonedWork()) {
         vkResetDescriptorPool(device_.device(), pool_, 0);
     }
 }

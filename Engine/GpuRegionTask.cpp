@@ -1057,7 +1057,9 @@ private:
 
             std::list<ImagePtr> images;
             bool found = _store.find(input.key, needed, pixelRoI, &images);
-            // Only another colour layout stands for a colour layer; any other layer is read as stored or not at all.
+            // The conversion below copies channels by position, which is only right between two layouts
+            // of the colour plane: only another colour layout stands for a colour layer, and any other
+            // layer is read as stored or not at all.
             if (!found && slot.layout.layer.isColorLayer()) {
                 for (const ImageLayerDesc& layer : input.components) {
                     if (layer.isColorLayer()) {

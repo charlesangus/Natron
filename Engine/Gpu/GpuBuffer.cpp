@@ -57,7 +57,7 @@ GpuBuffer::moveFrom(GpuBuffer& o) noexcept
 void
 GpuBuffer::reset()
 {
-    if (device_) {
+    if (device_ && !device_->hasAbandonedWork()) {
         if (allocation_) {
             vmaDestroyBuffer(device_->allocator(), buffer_, allocation_);
         } else if (buffer_ != VK_NULL_HANDLE) {

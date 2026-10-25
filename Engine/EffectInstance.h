@@ -62,8 +62,7 @@
 #define PLUGINID_OFX_GRADE        "net.sf.openfx.GradePlugin"
 #define PLUGINID_OFX_COLORCORRECT "net.sf.openfx.ColorCorrectPlugin"
 #define PLUGINID_OFX_COLORLOOKUP  "net.sf.openfx.ColorLookupPlugin"
-#define PLUGINID_OFX_BLURCIMG     "net.sf.cimg.CImgBlur"
-#define PLUGINID_OFX_CORNERPIN    "net.sf.openfx.CornerPinPlugin"
+#define PLUGINID_OFX_BLURCIMG "net.sf.cimg.CImgBlur"
 #define PLUGINID_OFX_CONSTANT     "net.sf.openfx.ConstantPlugin"
 #define PLUGINID_OFX_TIMEOFFSET   "net.sf.openfx.timeOffset"
 #define PLUGINID_OFX_FRAMEHOLD    "net.sf.openfx.FrameHold"
@@ -2542,6 +2541,19 @@ protected:
                                                 int* passThroughView,
                                                 int* passThroughInput);
 
+    /**
+     * @brief Whether a non-multiplanar effect reads input inputNb in layers its own selectors
+     * pick, rather than in the ones planned for every non-mask input. When true, layers holds
+     * them, and they replace that input's planes in the default components needed, so the
+     * request pass renders them upstream for the CPU and GPU paths alike.
+     **/
+    virtual bool getInputLayersRead(int /*inputNb*/,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    std::list<ImageLayerDesc>* /*layers*/)
+    {
+        return false;
+    }
 
     virtual void setInteractColourPicker(const OfxRGBAColourD& /*color*/, bool /*setColor*/, bool /*hasColor*/)
     {

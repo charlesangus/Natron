@@ -400,6 +400,11 @@ protected:
     }
 
     /**
+     * @brief The StagePlan the GPU executor runs for query.
+     **/
+    StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
+
+    /**
      * @brief Lets a node narrow the region of definition its passes give, in pixels at scale:
      * rod, which is srcRoD, the source's region, grown unless that is empty. Returns whether it
      * changed rod; the default changes nothing.
@@ -420,8 +425,6 @@ private:
      * nullopt when the pipeline needs none or the source is at the one it needs.
      **/
     std::optional<std::string> rawStageError(double time, ViewIdx view) const WARN_UNUSED_RETURN;
-
-    StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
 
     ResampleRegionStages getResampleRegionStages(double time,
                                                  ViewIdx view) const WARN_UNUSED_RETURN;

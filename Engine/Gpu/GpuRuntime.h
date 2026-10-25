@@ -172,7 +172,7 @@ public:
 
     // Waits for the device where possible, destroys everything, creates the device again with the
     // original options, invalidates the registry and returns to Ready. Fails, staying Lost, when the
-    // device cannot be created.
+    // device cannot be created. Also fails, staying Lost, once the device abandoned work that timed out.
     GpuStatus recreate();
 
     // VMA allocations still alive when the previous device was torn down, after every component that owns

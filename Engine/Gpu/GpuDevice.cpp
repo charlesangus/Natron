@@ -561,6 +561,9 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
 
 GpuDevice::~GpuDevice()
 {
+    if (hasAbandonedWork()) {
+        return;
+    }
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
     }
@@ -645,10 +648,28 @@ GpuDevice::injectFault(GpuFaultPlan::Kind kind, uint64_t inOperations)
 void
 GpuDevice::drainQueues()
 {
-    if (device_ == VK_NULL_HANDLE) {
+    if ((device_ == VK_NULL_HANDLE) || hasAbandonedWork()) {
         return;
     }
     waitIdleLocked();
+}
+
+void
+GpuDevice::abandonInFlightWork(const char* what)
+{
+    // Set before the loss is latched, so that whoever sees the loss also sees there is nothing to drain.
+    abandoned_.store(true, std::memory_order_release);
+    check(VK_ERROR_DEVICE_LOST, what);
+}
+
+void
+GpuDevice::parkForever(std::shared_ptr<void> object)
+{
+    // Heap-allocated and never freed, so that exit runs no destructor on what is parked.
+    static std::mutex* const mutex = new std::mutex;
+    static std::vector<std::shared_ptr<void>>* const parked = new std::vector<std::shared_ptr<void>>;
+    std::lock_guard<std::mutex> lock(*mutex);
+    parked->push_back(std::move(object));
 }
 
 VkResult

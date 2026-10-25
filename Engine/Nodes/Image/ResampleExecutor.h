@@ -207,10 +207,10 @@ StatusEnum resampleTransform(EffectInstance& effect,
  * @brief Whether recordResampleGpu() can render request through plan for query: a plan the GPU
  * stages run (canRunStagesGpu()) for no more components than the kernels take, then, for the
  * matrix form, no transform concatenated into the source, and sampling matrices at the query's
- * time, view and scale that are all affine and no more than the kernel takes (motion and
- * directional blur are accepted). The offset form, matte included, always qualifies: the host
- * never concatenates into its source. Depends only on the query and the node's settings, so
- * placement and recording agree.
+ * time, view and scale that are all finite (affine or projective) and no more than the kernel
+ * takes (motion and directional blur are accepted). The offset form, matte included, always
+ * qualifies: the host never concatenates into its source. Depends only on the query and the
+ * node's settings, so placement and recording agree.
  **/
 bool canRecordResampleGpu(const EffectInstance& effect,
                           const StagePlan& plan,

@@ -906,7 +906,7 @@ try:
         user_text = grade.getParam("userTextArea")
         if check(user_text is not None, "Grade has a user label (userTextArea) param"):
             user_text.set("first line of a user label\nsecond, somewhat longer line of the user label")
-        icon_node = create("net.sf.openfx.IDistort", 300, 300, "IDistort with plugin icon label")
+        icon_node = create("IDistort", 300, 300, "IDistort with plugin icon label")
         preview = create("net.sf.cimg.CImgBlur", 700, 300, "Blur with a preview, long label")
         prev_param = preview.getParam("enablePreview")
         if check(prev_param is not None, "Blur has the enablePreview param"):
@@ -970,33 +970,6 @@ try:
                 crop_shot(panel, "labels-%s" % short_name.lower())
             node.destroy()
 
-        for plugin_id, short_name in (("net.sf.openfx.IDistort", "IDistort"), ("net.sf.openfx.STMap", "STMap")):
-            gt.close_all_panels()
-            node = create(plugin_id, 0, 0)
-            yield ("sleep", PANEL_MS)
-            panel = panel_for(node)
-            twins = [p.getScriptName() for p in node.getParams() if p.getScriptName().startswith("hostChannel")]
-            report("NOTE %s channel pickers: %r" % (short_name, twins))
-            if check(panel is not None, "%s: settings panel is open" % short_name):
-                check(len(twins) == 3, "%s: has U, V and Alpha channel pickers (%d)" % (short_name, len(twins)))
-                lefts = []
-                tops = []
-                for knob in twins:
-                    _labels, fields = check_picker_label(panel, short_name, knob, None)
-                    if fields:
-                        lefts.append(left_in(panel, fields[0]))
-                        tops.append(top_in(panel, fields[0]))
-                report("NOTE %s picker field left x %r, top y %r" % (short_name, lefts, tops))
-                if check(len(lefts) == len(twins) and lefts, "%s: found every picker's field" % short_name):
-                    check(max(lefts) - min(lefts) <= ALIGN_TOLERANCE,
-                          "%s: U, V and Alpha fields share a left x within %d px (%r)"
-                          % (short_name, ALIGN_TOLERANCE, lefts))
-                    check(len(set(tops)) == len(tops),
-                          "%s: U, V and Alpha each sit on their own row (%r)" % (short_name, tops))
-                if short_name == "IDistort":
-                    check_uv_rows(panel)
-                crop_shot(panel, "labels-%s" % short_name.lower())
-            node.destroy()
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
 

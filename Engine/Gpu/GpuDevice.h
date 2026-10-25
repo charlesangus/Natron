@@ -180,8 +180,18 @@ public:
 
     // Waits until every queue is idle even once a loss was latched: an injected loss leaves the device running
     // the work submitted before it, which may still read or write host memory its owner is about to free. On a
-    // device that is really lost the wait returns at once. Holds every queue lock for the wait.
+    // device that is really lost the wait returns at once, and after abandonInFlightWork() it is skipped. Holds
+    // every queue lock for the wait.
     void drainQueues();
+
+    // Latches a loss for work that was submitted but did not finish in time. Vulkan cannot cancel it and it may
+    // never finish, so from then on nothing waits for the queues and nothing it may use is destroyed: buffers,
+    // textures and the device itself leak instead, and their owners park what they hold with parkForever().
+    void abandonInFlightWork(const char* what);
+    bool hasAbandonedWork() const { return abandoned_.load(std::memory_order_acquire); }
+
+    // Keeps `object` alive until the process exits, without ever destroying it.
+    static void parkForever(std::shared_ptr<void> object);
 
 private:
     struct Queue {
@@ -215,6 +225,7 @@ private:
     std::atomic<uint64_t> operations_ { 0 };
     std::function<void()> onDeviceLost_;
     std::atomic<bool> lost_ { false };
+    std::atomic<bool> abandoned_ { false };
 };
 
 } // namespace gpu

@@ -102,8 +102,9 @@ public:
     void writeTimestamp(VkQueryPool pool, uint32_t query);
 
     // Ends the buffer, submits it and blocks until the queue finished it. The context cannot record afterwards.
-    // Work still running after timeoutNs latches a device loss and fails with VK_ERROR_DEVICE_LOST, but the call
-    // returns only once that work is done or the device really is lost, so that the buffers it uses outlive it.
+    // Work still running after timeoutNs fails at once with VK_ERROR_DEVICE_LOST, through
+    // GpuDevice::abandonInFlightWork(): what the context holds is parked, and the buffers the caller bound are not
+    // freed when it destroys them, so the work never writes released memory.
     GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull);
 
     // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done, without
@@ -112,6 +113,8 @@ public:
     GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal);
 
 private:
+    void parkInFlightWork();
+
     GpuRecordContext(GpuKernelRegistry& registry, GpuBufferPool* pool, GpuPipelineCache* pipelines)
         : registry_(registry)
         , bufferPool_(pool)

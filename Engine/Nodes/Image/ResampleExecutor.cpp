@@ -244,7 +244,7 @@ regionParams(const ResampleRequest& request,
     params.blackOutside = settings.blackOutside;
     params.isIdentity = settings.transformIsIdentity;
     params.doMasking = stages.doMasking;
-    params.mix = stages.doMasking ? stages.mix : 1.;
+    params.mix = stages.mix;
 
     return params;
 }
@@ -309,15 +309,11 @@ intersectPixels(const RectI& a,
     return a.intersect(b);
 }
 
-// Resampler's isAffine: the CPU samples such a matrix without the perspective division, and the
-// GPU kernel only takes such matrices.
+// The GPU kernel takes affine and projective matrices alike, but only finite ones.
 bool
-isAffineMatrix(const Mat3& H)
+isFiniteMatrix(const Mat3& H)
 {
-    if ((H(2, 0) != 0.) || (H(2, 1) != 0.) || (H(2, 2) != 1.)) {
-        return false;
-    }
-    for (int k = 0; k < 6; ++k) {
+    for (int k = 0; k < 9; ++k) {
         if (!std::isfinite(H.m[k])) {
             return false;
         }
@@ -328,7 +324,7 @@ isAffineMatrix(const Mat3& H)
 
 // The matrices a GPU render of request samples at time and scale, built as runResampleCpu()
 // builds them for a source without a concatenated transform; false when there are none or one
-// is not affine.
+// is not finite.
 bool
 gpuSamplingTransforms(const EffectInstance& effect,
                       int sourceInput,
@@ -356,7 +352,7 @@ gpuSamplingTransforms(const EffectInstance& effect,
         transforms->motionBlur = 0.;
     }
     for (const Mat3& H : transforms->invTransforms) {
-        if (!isAffineMatrix(H)) {
+        if (!isFiniteMatrix(H)) {
             return false;
         }
     }
@@ -391,11 +387,13 @@ recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
         for (int k = 0; k < 6; ++k) {
             m.matrix[k] = H.m[k];
         }
+        m.perspective = { H(2, 0), H(2, 1), H(2, 2) };
         if (!transforms.alphas.empty()) {
             m.weight = transforms.alphas[i];
         }
-        // The Jacobian the CPU samples with, by which axes fall inside the source.
-        for (int state = 1; state < 4; ++state) {
+        // The Jacobian the CPU samples an affine matrix with, by which axes fall inside the
+        // source. The kernel works a projective matrix's out per pixel.
+        for (int state = 1; state < 4 && !m.isProjective(); ++state) {
             const bool x = (state & 1) != 0;
             const bool y = (state & 2) != 0;
             const double Jxx = x ? H(0, 0) : 0.;
@@ -681,7 +679,7 @@ resampleRegionOfDefinition(EffectInstance& effect,
     rod->x2 = srcRoD.x2 + dx;
     rod->y1 = srcRoD.y1 + dy;
     rod->y2 = srcRoD.y2 + dy;
-    if (stages.doMasking) {
+    if (stages.doMasking || (stages.mix != 1.)) {
         rod->merge(srcRoD);
     }
 

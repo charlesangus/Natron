@@ -105,6 +105,11 @@ GpuKernelRegistry::creationCount(GpuKernelId id) const
 void
 GpuKernelRegistry::destroyPoolsLocked()
 {
+    // A command buffer of work that never finished may still be executing out of one of these pools.
+    if (device_.hasAbandonedWork()) {
+        pools_.clear();
+        return;
+    }
     for (auto& [thread, pool] : pools_) {
         vkDestroyCommandPool(device_.device(), pool, nullptr);
     }

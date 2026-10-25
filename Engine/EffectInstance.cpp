@@ -4929,13 +4929,18 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
             continue;
         }
 
-        std::list<ImageLayerDesc> metadataPlanes;
-        getMetadataPlanes(this, i, &metadataPlanes);
-        if (hasLayerKnob) {
-            appendSelectedPlanes(selected, metadataPlanes, &inputPlanes, NULL);
-        }
-        if (inputPlanes.empty()) {
-            inputPlanes = metadataPlanes;
+        std::list<ImageLayerDesc> readLayers;
+        if (getInputLayersRead(i, time, view, &readLayers)) {
+            inputPlanes = readLayers;
+        } else {
+            std::list<ImageLayerDesc> metadataPlanes;
+            getMetadataPlanes(this, i, &metadataPlanes);
+            if (hasLayerKnob) {
+                appendSelectedPlanes(selected, metadataPlanes, &inputPlanes, NULL);
+            }
+            if (inputPlanes.empty()) {
+                inputPlanes = metadataPlanes;
+            }
         }
 
         // The "(Un)premult by" divisor is fetched from every non-mask input next to the planes

@@ -25,15 +25,18 @@
 
 #include "TrackerContextPrivate.h"
 
+#include <algorithm>
 #include <sstream> // stringstream
 
 #if defined(CERES_USE_OPENMP) && defined(_OPENMP)
 #include <omp.h>
 #endif
 
+#include <QDateTime>
 #include <QThreadPool>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/Curve.h"
 #include "Engine/Image.h"
 #include "Engine/KnobChannelSet.h"
@@ -55,31 +58,41 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Creates a duplicate of the knob identified by knobName which is a knob in the internalNode onto the effect and add it to the given page.
- * If otherNode is set, also fetch a knob of the given name on the otherNode and link it to the newly created knob.
+ * If otherNode is set, also fetch the knob named otherKnobName (knobName when empty) on the otherNode and link it to the newly created knob.
+ * A missing knob is logged and skipped.
  **/
 
 template <typename KNOBTYPE>
 std::shared_ptr<KNOBTYPE>
-createDuplicateKnob( const std::string& knobName,
-                     const NodePtr& internalNode,
-                     const EffectInstancePtr& effect,
-                     const KnobPagePtr& page = KnobPagePtr(),
-                     const KnobGroupPtr& group = KnobGroupPtr(),
-                     const NodePtr& otherNode = NodePtr() )
+createDuplicateKnob(const std::string& knobName,
+                    const NodePtr& internalNode,
+                    const EffectInstancePtr& effect,
+                    const KnobPagePtr& page = KnobPagePtr(),
+                    const KnobGroupPtr& group = KnobGroupPtr(),
+                    const NodePtr& otherNode = NodePtr(),
+                    const std::string& otherKnobName = std::string())
 {
     KnobIPtr internalNodeKnob = internalNode->getKnobByName(knobName);
 
     if (!internalNodeKnob) {
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(internalNode->getScriptName_mt_safe().c_str()), QDateTime::currentDateTime(),
+                                        QString::fromUtf8("Tracker: no knob named \"%1\" to duplicate").arg(QString::fromUtf8(knobName.c_str())));
+
         return std::shared_ptr<KNOBTYPE>();
     }
-    assert(internalNodeKnob);
     KnobIPtr duplicateKnob = internalNodeKnob->createDuplicateOnHolder(effect.get(), page, group, -1, true, internalNodeKnob->getName(), internalNodeKnob->getLabel(), internalNodeKnob->getHintToolTip(), false, false);
 
     if (otherNode) {
-        KnobIPtr otherNodeKnob = otherNode->getKnobByName(knobName);
-        assert(otherNodeKnob);
-        for (int i = 0; i < otherNodeKnob->getDimension(); ++i) {
-            otherNodeKnob->slaveTo(i, duplicateKnob, i);
+        const std::string& otherName = otherKnobName.empty() ? knobName : otherKnobName;
+        KnobIPtr otherNodeKnob = otherNode->getKnobByName(otherName);
+        if (!otherNodeKnob) {
+            appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(otherNode->getScriptName_mt_safe().c_str()), QDateTime::currentDateTime(),
+                                            QString::fromUtf8("Tracker: no knob named \"%1\" to link").arg(QString::fromUtf8(otherName.c_str())));
+        } else {
+            const int nDims = std::min(otherNodeKnob->getDimension(), duplicateKnob->getDimension());
+            for (int i = 0; i < nDims; ++i) {
+                otherNodeKnob->slaveTo(i, duplicateKnob, i);
+            }
         }
     }
 
@@ -146,14 +159,12 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
 
         {
             QString cornerPinName = fixedNamePrefix + QLatin1String("CornerPin");
-            CreateNodeArgs args(PLUGINID_OFX_CORNERPIN, isTrackerNode);
+            CreateNodeArgs args(PLUGINID_NATRON_CORNERPIN, isTrackerNode);
             args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
             args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
             args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, cornerPinName.toStdString());
             NodePtr cpNode = node->getApp()->createNode(args);
-            if (!cpNode) {
-                throw std::runtime_error( tr("The Tracker node requires the Misc.ofx.bundle plug-in to be installed").toStdString() );
-            }
+            assert(cpNode);
             cpNode->setNodeDisabled(true);
             cornerPinNode = cpNode;
         }
@@ -555,34 +566,37 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
     } // tNode
     NodePtr cNode = cornerPinNode.lock();
     if (cNode) {
-        KnobGroupPtr  toGroupKnob = AppManager::createKnob<KnobGroup>(effect.get(), tr(kCornerPinParamTo), 1);
-        toGroupKnob->setName(kCornerPinParamTo);
+        KnobGroupPtr toGroupKnob = AppManager::createKnob<KnobGroup>(effect.get(), tr("To"), 1);
+        toGroupKnob->setName(kCornerPinNodeParamToGroup);
         toGroupKnob->setAsTab();
         toGroupKnob->setSecret(true);
         transformPage->addKnob(toGroupKnob);
         toGroup = toGroupKnob;
 
-        KnobGroupPtr  fromGroupKnob = AppManager::createKnob<KnobGroup>(effect.get(), tr(kCornerPinParamFrom), 1);
-        fromGroupKnob->setName(kCornerPinParamFrom);
+        KnobGroupPtr fromGroupKnob = AppManager::createKnob<KnobGroup>(effect.get(), tr("From"), 1);
+        fromGroupKnob->setName(kCornerPinNodeParamFromGroup);
         fromGroupKnob->setAsTab();
         fromGroupKnob->setSecret(true);
         transformPage->addKnob(fromGroupKnob);
         fromGroup = fromGroupKnob;
 
-        const char* fromPointNames[4] = {kCornerPinParamFrom1, kCornerPinParamFrom2, kCornerPinParamFrom3, kCornerPinParamFrom4};
-        const char* toPointNames[4] = {kCornerPinParamTo1, kCornerPinParamTo2, kCornerPinParamTo3, kCornerPinParamTo4};
-        const char* enablePointNames[4] = {kCornerPinParamEnable1, kCornerPinParamEnable2, kCornerPinParamEnable3, kCornerPinParamEnable4};
+        const char* fromPointNames[4] = { kCornerPinNodeParamFrom1, kCornerPinNodeParamFrom2, kCornerPinNodeParamFrom3, kCornerPinNodeParamFrom4 };
+        const char* toPointNames[4] = { kCornerPinNodeParamTo1, kCornerPinNodeParamTo2, kCornerPinNodeParamTo3, kCornerPinNodeParamTo4 };
+        const char* enablePointNames[4] = { kCornerPinNodeParamEnable1, kCornerPinNodeParamEnable2, kCornerPinNodeParamEnable3, kCornerPinNodeParamEnable4 };
 
         for (int i = 0; i < 4; ++i) {
             fromPoints[i] = createDuplicateKnob<KnobDouble>(fromPointNames[i], cNode, effect, transformPage, fromGroupKnob);
 
-            toPoints[i] = createDuplicateKnob<KnobDouble>(toPointNames[i], cNode, effect, transformPage, toGroupKnob);
-            toPoints[i].lock()->setAddNewLine(false);
+            KnobDoublePtr toKnob = createDuplicateKnob<KnobDouble>(toPointNames[i], cNode, effect, transformPage, toGroupKnob);
+            if (toKnob) {
+                toKnob->setAddNewLine(false);
+            }
+            toPoints[i] = toKnob;
             enableToPoint[i] = createDuplicateKnob<KnobBool>(enablePointNames[i], cNode, effect, transformPage, toGroupKnob);
         }
-        KnobButtonPtr setToInputRod = AppManager::createKnob<KnobButton>(effect.get(), tr(kCornerPinParamSetToInputRoDLabel), 1);
-        setToInputRod->setName(kCornerPinParamSetToInputRoD);
-        setToInputRod->setHintToolTip( tr(kCornerPinParamSetToInputRoDHint) );
+        KnobButtonPtr setToInputRod = AppManager::createKnob<KnobButton>(effect.get(), tr(kTrackerParamSetToInputRoDLabel), 1);
+        setToInputRod->setName(kTrackerParamSetToInputRoD);
+        setToInputRod->setHintToolTip(tr(kTrackerParamSetToInputRoDHint));
         fromGroupKnob->addKnob(setToInputRod);
         setFromPointsToInputRod = setToInputRod;
 
@@ -591,10 +605,13 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
         fromGroupKnob->addKnob(cornerPinSet);
         cornerPinFromPointsSetOnceAutomatically = cornerPinSet;
 
-        cornerPinOverlayPoints = createDuplicateKnob<KnobChoice>(kCornerPinParamOverlayPoints, cNode, effect, transformPage);
-        cornerPinOverlayPoints.lock()->setSecret(true);
+        KnobChoicePtr overlayPoints = createDuplicateKnob<KnobChoice>(kCornerPinNodeParamOverlayPoints, cNode, effect, transformPage);
+        if (overlayPoints) {
+            overlayPoints->setSecret(true);
+            cornerPinOverlayPoints = overlayPoints;
+        }
 
-        KnobDoublePtr matrix = createDuplicateKnob<KnobDouble>(kCornerPinParamMatrix, cNode, effect, transformPage);
+        KnobDoublePtr matrix = createDuplicateKnob<KnobDouble>(kCornerPinNodeParamExtraMatrix, cNode, effect, transformPage);
         if (matrix) {
             cornerPinMatrix = matrix;
             matrix->setSecret(true);
@@ -603,30 +620,30 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
 
     // Add filtering & motion blur knobs
     if (tNode) {
-        KnobBoolPtr invertTransformKnob = createDuplicateKnob<KnobBool>(kTransformParamInvert, tNode, effect, transformPage, KnobGroupPtr(), cNode);
+        KnobBoolPtr invertTransformKnob = createDuplicateKnob<KnobBool>(kTransformParamInvert, tNode, effect, transformPage, KnobGroupPtr(), cNode, kCornerPinNodeParamInvert);
         invertTransformKnob->setSecret(true);
         invertTransform = invertTransformKnob;
-        KnobChoicePtr filterKnob = createDuplicateKnob<KnobChoice>(kTransformParamFilter, tNode, effect, transformPage, KnobGroupPtr(), cNode);
+        KnobChoicePtr filterKnob = createDuplicateKnob<KnobChoice>(kTransformParamFilter, tNode, effect, transformPage, KnobGroupPtr(), cNode, kCornerPinNodeParamFilter);
         filterKnob->setSecret(true);
         filterKnob->setAddNewLine(false);
         filter = filterKnob;
-        KnobBoolPtr clampKnob = createDuplicateKnob<KnobBool>(kTransformParamClamp, tNode, effect, transformPage, KnobGroupPtr(), cNode);
+        KnobBoolPtr clampKnob = createDuplicateKnob<KnobBool>(kTransformParamClamp, tNode, effect, transformPage, KnobGroupPtr(), cNode, kCornerPinNodeParamClamp);
         clampKnob->setSecret(true);
         clampKnob->setAddNewLine(false);
         clamp = clampKnob;
-        KnobBoolPtr blackOutsideKnob = createDuplicateKnob<KnobBool>(kTransformParamBlackOutside, tNode, effect, transformPage, KnobGroupPtr(), cNode);
+        KnobBoolPtr blackOutsideKnob = createDuplicateKnob<KnobBool>(kTransformParamBlackOutside, tNode, effect, transformPage, KnobGroupPtr(), cNode, kCornerPinNodeParamBlackOutside);
         blackOutsideKnob->setSecret(true);
         blackOutside = blackOutsideKnob;
-        KnobDoublePtr motionBlurKnob = createDuplicateKnob<KnobDouble>(kTransformParamMotionBlur, tNode, effect, transformPage, KnobGroupPtr(), cNode);
+        KnobDoublePtr motionBlurKnob = createDuplicateKnob<KnobDouble>(kTransformParamMotionBlur, tNode, effect, transformPage, KnobGroupPtr(), cNode, kCornerPinNodeParamMotionBlur);
         motionBlurKnob->setSecret(true);
         motionBlur = motionBlurKnob;
-        KnobDoublePtr shutterKnob = createDuplicateKnob<KnobDouble>(kTransformParamShutter, tNode, effect, transformPage, KnobGroupPtr(), cNode);
+        KnobDoublePtr shutterKnob = createDuplicateKnob<KnobDouble>(kTransformParamShutter, tNode, effect, transformPage, KnobGroupPtr(), cNode, kCornerPinNodeParamShutter);
         shutterKnob->setSecret(true);
         shutter = shutterKnob;
-        KnobChoicePtr shutterOffsetKnob = createDuplicateKnob<KnobChoice>(kTransformParamShutterOffset, tNode, effect, transformPage, KnobGroupPtr(), cNode);
+        KnobChoicePtr shutterOffsetKnob = createDuplicateKnob<KnobChoice>(kTransformParamShutterOffset, tNode, effect, transformPage, KnobGroupPtr(), cNode, kCornerPinNodeParamShutterOffset);
         shutterOffsetKnob->setSecret(true);
         shutterOffset = shutterOffsetKnob;
-        KnobDoublePtr customShutterOffsetKnob = createDuplicateKnob<KnobDouble>(kTransformParamCustomShutterOffset, tNode, effect, transformPage, KnobGroupPtr(), cNode);
+        KnobDoublePtr customShutterOffsetKnob = createDuplicateKnob<KnobDouble>(kTransformParamCustomShutterOffset, tNode, effect, transformPage, KnobGroupPtr(), cNode, kCornerPinNodeParamShutterCustomOffset);
         customShutterOffsetKnob->setSecret(true);
         customShutterOffset = customShutterOffsetKnob;
 

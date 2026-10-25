@@ -1,5 +1,6 @@
 #include "GpuTexture.h"
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -284,11 +285,12 @@ GpuTexture::upload(std::span<const float> texels)
     if (s) {
         VkResult waited = vkWaitForFences(dev, 1, &fence, VK_TRUE, kUploadTimeoutNs);
         if (waited == VK_TIMEOUT) {
-            // The staging buffer and the command buffer must outlive the copy, so it is waited for without a bound
-            // once the loss is latched, as GpuRecordContext::submitAndWait does.
-            device_.check(VK_ERROR_DEVICE_LOST, "vkWaitForFences");
-            waited = vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX);
-            s = fail(VK_ERROR_DEVICE_LOST, "GpuTexture::create: the upload timed out");
+            std::fprintf(stderr, "GpuTexture::create: the upload did not finish within %llu ms; the GPU device is treated as lost\n",
+                         static_cast<unsigned long long>(kUploadTimeoutNs / 1000000));
+            device_.abandonInFlightWork("vkWaitForFences");
+            // The copy may still run, so the staging buffer, the fence and the command pool are leaked.
+            staging.allocation = nullptr;
+            return fail(VK_ERROR_DEVICE_LOST, "GpuTexture::create: the upload timed out");
         }
         if (waited != VK_SUCCESS) {
             s = device_.check(waited, "vkWaitForFences");
@@ -305,6 +307,9 @@ GpuTexture::upload(std::span<const float> texels)
 
 GpuTexture::~GpuTexture()
 {
+    if (device_.hasAbandonedWork()) {
+        return;
+    }
     const VkDevice dev = device_.device();
     if (sampler_) {
         vkDestroySampler(dev, sampler_, nullptr);

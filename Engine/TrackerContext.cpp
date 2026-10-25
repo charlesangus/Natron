@@ -758,39 +758,29 @@ TrackerContext::endSelection(TrackSelectionReason reason)
     --_imp->selectionRecursion;
 }
 
-#if 0
 static
 KnobDoublePtr
 getCornerPinPoint(Node* node,
                   bool isFrom,
                   int index)
 {
-    assert(0 <= index && index < 4);
-    QString name = isFrom ? QString::fromUtf8("from%1").arg(index + 1) : QString::fromUtf8("to%1").arg(index + 1);
-    KnobIPtr knob = node->getKnobByName( name.toStdString() );
-    assert(knob);
-    KnobDoublePtr  ret = std::dynamic_pointer_cast<KnobDouble>(knob);
-    assert(ret);
+    static const char* const fromNames[4] = { kCornerPinNodeParamFrom1, kCornerPinNodeParamFrom2, kCornerPinNodeParamFrom3, kCornerPinNodeParamFrom4 };
+    static const char* const toNames[4] = { kCornerPinNodeParamTo1, kCornerPinNodeParamTo2, kCornerPinNodeParamTo3, kCornerPinNodeParamTo4 };
 
-    return ret;
+    assert(0 <= index && index < 4);
+
+    return std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(isFrom ? fromNames[index] : toNames[index]));
 }
 
-#endif
-
-static
-KnobDoublePtr
-getCornerPinPoint(Node* node,
-                  bool isFrom,
-                  int index)
+static KnobBoolPtr
+getCornerPinEnable(Node* node,
+                   int index)
 {
-    assert(0 <= index && index < 4);
-    QString name = isFrom ? QString::fromUtf8("from%1").arg(index + 1) : QString::fromUtf8("to%1").arg(index + 1);
-    KnobIPtr knob = node->getKnobByName( name.toStdString() );
-    assert(knob);
-    KnobDoublePtr  ret = std::dynamic_pointer_cast<KnobDouble>(knob);
-    assert(ret);
+    static const char* const enableNames[4] = { kCornerPinNodeParamEnable1, kCornerPinNodeParamEnable2, kCornerPinNodeParamEnable3, kCornerPinNodeParamEnable4 };
 
-    return ret;
+    assert(0 <= index && index < 4);
+
+    return std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(enableNames[index]));
 }
 
 void
@@ -819,7 +809,7 @@ TrackerContext::exportTrackDataFromExportOptions()
     QString pluginID;
     switch (transformType) {
     case eTrackerTransformNodeCornerPin:
-        pluginID = QString::fromUtf8(PLUGINID_OFX_CORNERPIN);
+        pluginID = QString::fromUtf8(PLUGINID_NATRON_CORNERPIN);
         break;
     case eTrackerTransformNodeTransform:
         pluginID = QString::fromUtf8(PLUGINID_OFX_TRANSFORM);
@@ -849,36 +839,48 @@ TrackerContext::exportTrackDataFromExportOptions()
 
     switch (transformType) {
     case eTrackerTransformNodeCornerPin: {
-        KnobDoublePtr cornerPinToPoints[4];
-        KnobDoublePtr cornerPinFromPoints[4];
+        for (int i = 0; i < 4; ++i) {
+            KnobDoublePtr trackerFrom = _imp->fromPoints[i].lock();
+            KnobDoublePtr trackerTo = _imp->toPoints[i].lock();
+            KnobBoolPtr trackerEnable = _imp->enableToPoint[i].lock();
 
-
-        for (unsigned int i = 0; i < 4; ++i) {
-            cornerPinFromPoints[i] = getCornerPinPoint(createdNode.get(), true, i);
-            assert(cornerPinFromPoints[i]);
-            for (int j = 0; j < cornerPinFromPoints[i]->getDimension(); ++j) {
-                cornerPinFromPoints[i]->setValue(_imp->fromPoints[i].lock()->getValueAtTime(timeForFromPoints, j), ViewSpec(0), j);
+            KnobDoublePtr fromKnob = getCornerPinPoint(createdNode.get(), true, i);
+            if (fromKnob && trackerFrom) {
+                for (int d = 0; d < fromKnob->getDimension(); ++d) {
+                    fromKnob->setValue(trackerFrom->getValueAtTime(timeForFromPoints, d), ViewSpec(0), d);
+                }
             }
 
-            cornerPinToPoints[i] = getCornerPinPoint(createdNode.get(), false, i);
-            assert(cornerPinToPoints[i]);
-            if (!linked) {
-                cornerPinToPoints[i]->cloneAndUpdateGui( _imp->toPoints[i].lock().get() );
-            } else {
-                bool ok = false;
-                for (int d = 0; d < cornerPinToPoints[i]->getDimension(); ++d) {
-                    ok = dynamic_cast<KnobI*>( cornerPinToPoints[i].get() )->slaveTo(d, _imp->toPoints[i].lock(), d);
+            KnobDoublePtr toKnob = getCornerPinPoint(createdNode.get(), false, i);
+            if (toKnob && trackerTo) {
+                if (!linked) {
+                    toKnob->cloneAndUpdateGui(trackerTo.get());
+                } else {
+                    for (int d = 0; d < toKnob->getDimension(); ++d) {
+                        dynamic_cast<KnobI*>(toKnob.get())->slaveTo(d, trackerTo, d);
+                    }
                 }
-                (void)ok;
-                assert(ok);
+            }
+
+            KnobBoolPtr enableKnob = getCornerPinEnable(createdNode.get(), i);
+            if (enableKnob && trackerEnable) {
+                if (!linked) {
+                    enableKnob->cloneAndUpdateGui(trackerEnable.get());
+                } else {
+                    dynamic_cast<KnobI*>(enableKnob.get())->slaveTo(0, trackerEnable, 0);
+                }
             }
         }
         {
-            KnobIPtr knob = createdNode->getKnobByName(kCornerPinParamMatrix);
-            if (knob) {
-                KnobDouble* isType = dynamic_cast<KnobDouble*>( knob.get() );
-                if (isType) {
-                    isType->cloneAndUpdateGui( _imp->cornerPinMatrix.lock().get() );
+            KnobDoublePtr matrixKnob = std::dynamic_pointer_cast<KnobDouble>(createdNode->getKnobByName(kCornerPinNodeParamExtraMatrix));
+            KnobDoublePtr trackerMatrix = _imp->cornerPinMatrix.lock();
+            if (matrixKnob && trackerMatrix) {
+                if (!linked) {
+                    matrixKnob->cloneAndUpdateGui(trackerMatrix.get());
+                } else {
+                    for (int d = 0; d < matrixKnob->getDimension(); ++d) {
+                        dynamic_cast<KnobI*>(matrixKnob.get())->slaveTo(d, trackerMatrix, d);
+                    }
                 }
             }
         }

@@ -122,7 +122,7 @@ CLANG_DIAG_ON(uninitialized)
 #define NATRON_MAGNETIC_GRID_RELEASE_DISTANCE 30
 
 #define NATRON_ELLIPSE_WARN_DIAMETER 10
-
+#define NATRON_LINK_BADGE_DIAMETER 16
 
 #define NATRON_PLUGIN_ICON_SIZE 20
 #define PLUGIN_ICON_OFFSET 2
@@ -923,11 +923,13 @@ NodeGui::createGui()
 
     // Shown whatever the line preferences, so a Linked Node stays recognisable when its partners are
     // off-screen or in another group.
+    // Larger than the 10 px warning badges so the letter stays legible at the corner.
+    const double linkDiam = TO_DPIX(NATRON_LINK_BADGE_DIAMETER);
     QGradientStops linkGrad;
     linkGrad.push_back(qMakePair(0., QColor(Qt::white)));
     linkGrad.push_back(qMakePair(0.3, QColor(70, 140, 255)));
     linkGrad.push_back(qMakePair(1., QColor(30, 60, 120)));
-    _linkedNodeIndicator.reset(new NodeGuiIndicator(getDagGui(), depth + 2, QString::fromUtf8("L"), bbox.bottomLeft(), ellipseDiam, ellipseDiam, linkGrad, QColor(255, 255, 255), this));
+    _linkedNodeIndicator.reset(new NodeGuiIndicator(getDagGui(), depth + 2, QString::fromUtf8("L"), bbox.bottomLeft(), linkDiam, linkDiam, linkGrad, QColor(255, 255, 255), this));
     _linkedNodeIndicator->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("This node is a Linked Node: its parameters are linked to those of "
                                                                                "one or more nodes of the same kind. Use Unlink Node to make it independent."),
                                                                             NATRON_NAMESPACE::WhiteSpaceNormal));

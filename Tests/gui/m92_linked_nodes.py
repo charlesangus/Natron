@@ -28,7 +28,7 @@ PARAM = "size"
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtCore import QMetaObject, QPoint, Qt
     from PySide6.QtGui import QCursor
     from PySide6.QtWidgets import QApplication
 
@@ -82,6 +82,13 @@ try:
         QTest.keyClick(graph, key, mods)
         QApplication.processEvents()
 
+    def frame_all():
+        """Frames every node of the root graph (the Frame All Nodes action with nothing selected)."""
+        app.clearSelection()
+        QApplication.processEvents()
+        QMetaObject.invokeMethod(root_graph(), "centerOnAllNodes")
+        QApplication.processEvents()
+
     def select_only(name):
         app.selectNode(app.getNode(name), True)
         QApplication.processEvents()
@@ -90,8 +97,7 @@ try:
         """The visible link lines of the root graph, as a dict kind -> count."""
         counts = {"nodes": 0, "knob": 0, "expression": 0, "glyph": 0}
         graph = root_graph()
-        scene = graph.scene()
-        for item in scene.items():
+        for item in graph.items():
             if not item.isVisible():
                 continue
             tip = item.toolTip().replace("&nbsp;", " ")
@@ -174,6 +180,8 @@ try:
         yield ("sleep", SETTLE_MS)
         c = lines()
         check(c["nodes"] == 1 and c["glyph"] == 2, "a user colour leaves the line and the glyphs (%r)" % c)
+        frame_all()
+        yield ("sleep", SETTLE_MS)
         gt.shot("m92_linked_pair.png")
 
         gt.section("unlink node")
@@ -182,6 +190,8 @@ try:
         yield ("sleep", SETTLE_MS)
         c = lines()
         check(c["nodes"] == 0 and c["glyph"] == 0, "Unlink Node removes the line and the glyphs (%r)" % c)
+        frame_all()
+        yield ("sleep", SETTLE_MS)
         gt.shot("m92_unlinked.png")
         graph_key(Qt.Key_Z, Qt.ControlModifier)
         yield ("sleep", SETTLE_MS)
@@ -228,6 +238,8 @@ try:
         c = lines()
         check(c["expression"] == 1, "the expression draws one arrow (%r)" % c)
         check(c["nodes"] == 1, "the dashed line is still drawn (%r)" % c)
+        frame_all()
+        yield ("sleep", SETTLE_MS)
         gt.shot("m92_link_and_expression.png")
 
         gt.section("line preferences")
@@ -245,6 +257,8 @@ try:
         set_colour_pref("linkLineColor", 1.0, 0.0, 1.0)
         set_colour_pref("expressionLineColor", 1.0, 1.0, 0.0)
         yield ("sleep", SETTLE_MS)
+        frame_all()
+        yield ("sleep", SETTLE_MS)
         gt.shot("m92_recoloured_lines.png")
         set_colour_pref("linkLineColor", 70. / 255., 140. / 255., 1.0)
         set_colour_pref("expressionLineColor", 143. / 255., 201. / 255., 103. / 255.)
@@ -255,6 +269,8 @@ try:
         c = lines()
         check(c["expression"] == 0 and c["nodes"] == 0, "Shift+E hides every link and expression line (%r)" % c)
         check(c["glyph"] == 2, "Shift+E leaves the glyph (%r)" % c)
+        frame_all()
+        yield ("sleep", SETTLE_MS)
         gt.shot("m92_lines_hidden.png")
         graph_key(Qt.Key_E, Qt.ShiftModifier)
         yield ("sleep", SETTLE_MS)

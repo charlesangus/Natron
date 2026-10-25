@@ -82,19 +82,19 @@ This milestone gives each tangent a weight: the handle's time extent as a fracti
 
 ## Phase 96.3: Curve editor
 
-- [ ] M96.P3.T1 — Fix the curve-editor and dope-sheet hit-test at device pixel ratio 2
+- [x] M96.P3.T1 — Fix the curve-editor and dope-sheet hit-test at device pixel ratio 2
   - files: `Gui/CurveWidget.cpp`, `Gui/CurveWidgetPrivate.cpp`, `Gui/DopeSheetView.cpp`
   - approach: Confirm the assumption first: log `resizeGL`'s w/h against `width()`/`height()` at `QT_SCALE_FACTOR=2`. If they are logical, stop dividing by the DPR when setting `zoomCtx.setScreenSize` (:604-612). Keep `glViewport` and the projection in device pixels (`w*dpr`), and audit `isNearbyCurve/KeyFrame/Tangent` (:654-867) and the `e->pos()`/`e->position()` mapping (:1340) so all of them use one logical space. Same fix in `DopeSheetView.cpp:3249-3256`. Do not touch `initializeGL` (M172).
   - verify: P3.T5's `hidpi-pick` section passes at `QT_SCALE_FACTOR=2` and at 1×; m56's 2× curve-editor shot unchanged.
   - size: M
 
-- [ ] M96.P3.T2 — Draw weighted handles at their control points, and sample weighted segments correctly
+- [x] M96.P3.T2 — Draw weighted handles at their control points, and sample weighted segments correctly
   - files: `Gui/CurveWidgetPrivate.cpp`, `Gui/CurveGui.cpp`, `Gui/CurveGui.h`
   - approach: In `refreshKeyTangents`, place a weighted key's handles at (t ± w·span, v ± slope·w·span), with no zoom clamp. Unweighted keys and outer handles keep today's clamped drawing. In `CurveGui`'s adaptive step (:150-215) the Hermite second-derivative estimate is wrong for weighted segments: bound the step from the Bezier's control polygon, or use a fixed 2-px step, and evaluate through `Curve::getValueAt`.
   - verify: P3.T5's `weighted-draw` section: the drawn curve passes within 1 px of `getValueAt` samples, and the handle tip lies on the true control point.
   - size: M
 
-- [ ] M96.P3.T3 — Make a handle drag set weight and slope, with unbroken coupling and undo
+- [x] M96.P3.T3 — Make a handle drag set weight and slope, with unbroken coupling and undo
   - files: `Gui/CurveEditorUndoRedo.h`, `Gui/CurveEditorUndoRedo.cpp`, `Gui/CurveWidgetPrivate.cpp`, `Tests/CurveWeightedTangent_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: `moveSelectedTangent` (:1455) passes the cursor point. On a weighted key, `MoveTangentCommand` (:666-870) computes slope = dy/dx and weight = |dx|/span, clamped. Free (unbroken): the other side takes the same slope, and its weight scales by the same factor as the dragged one. Broken or Ctrl-drag: the other side is untouched. On an unweighted key the drag sets slope only, as today. Store and restore the old weights and flag; `mergeWith` keeps the first old state. Both the knob and the parametric branch go through the P1 setters. `JoinTangentsCommand` (:876+) keeps the weights.
   - verify: five gtests in the style of `CurveTangentJoin_Test`: a weighted Free drag doubles the right weight and the left weight doubles too; Broken changes one side only; undo restores the bits; merged drags undo in one step; an unweighted drag leaves the weights at exactly 1/3.
@@ -116,6 +116,7 @@ This milestone gives each tangent a weight: the handle's time extent as a fracti
 
 ## Decisions
 
+- 2026-10-24 — **Phase 3 checks (PM):** release 405/405 on b52b90ff0; debug 409/409 both legs on 8da2c16fe; m96_weighted_tangents.py 0 failures at 1x and QT_SCALE_FACTOR=2 after the script fix 07cb86f22, and m69_cleanup.py and m56_visual.py pass. GUI bench not run: it lands with M117, not on main. Waiting on the user screenshot approval for P3.T5 and the gate.
 - 2026-10-24 — **Phase 2 verified (PM):** fast build on 7f80a6480 is 404/404 on both legs. Weights are written as FW/XW tokens only when they differ from 1/3, and formatVersion stays 1. A weight outside 0.01–0.99 passed from Python raises ValueError rather than being clamped (PM call: an explicit API should not silently move the user's value). The weighted calls are named `addControlPointWithWeights` and `setNthControlPointWithWeights`: an overload of `addControlPoint` made shiboken route existing 6-argument calls with an interpolation enum (ZMask, LightWrap, Glow) into the weight slot. `getNthControlPoint` now returns a 7-tuple. Both weighted bindings return early on a Python error via inject-code.
 - 2026-10-24 — **User decision: always weighted (Blender/AE style).** Every Free/Broken key shows true handles and every handle drag sets slope and length; there is no per-key `weighted` flag and no toggle (P3.T4 cancelled). Implementation notes for the tasks, which still mention the flag: drop `_weighted`/`weighted` everywhere (KeyFrame, `KeyTangents`, the Python tuple, the YAML tokens — `FW`/`XW` are written only when a weight differs from 1/3, so untouched curves stay byte-identical); "unweighted" in the tasks means "both inner weights exactly 1/3", which keeps the Hermite path; changing a key away from F/X resets its weights to 1/3; P3.T2 draws every F/X key's handles at true control points (no zoom clamp), and the m69 `curve-join` handle-length check is updated to the new behaviour rather than kept; P3.T5's `toggle` and `unweighted` sections become a check that a never-dragged key's curve is bit-identical to before.
 - 2026-10-24 — **Elaborated from the stub (PM, opus consultant); PM calls on the consultant's open points.** Weight unit: a fraction of the adjacent span, clamped 0.01–0.99 (survives retimes and key moves, keeps time monotonic). Unbroken coupling: the other handle scales by the same factor, keeping the ratio. Format: stay at formatVersion 1, since an old reader refuses `FW`/`XW` rather than misreading them, which M16's versioning rule allows. Parametric curves with weighted segments fall back to CPU; GPU evaluation is a follow-up. The dope sheet's identical DPR division is fixed in P3.T1. Deps become M93, M16: P2 targets M16's YAML codec, so the lane rebases onto main after M16 merges and before P2.

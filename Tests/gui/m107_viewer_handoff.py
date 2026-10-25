@@ -13,7 +13,7 @@ Per viewer texture mode (8u, 32f) the cases are, in M107_CASES (comma list, defa
   wipe       the B Grade connected as viewer input B and the A/B wipe on, then off and B disconnected again
   pan        zoom to 200% and a middle-button drag that brings new image area into view
   picker     the info bar's RGBA values at three viewport points, and the viewed node's output picked
-             (Ctrl+Alt+click) at the middle one
+             (Ctrl+click) at the middle one
   sweep      Grade multiply stepped through 16 values; every step must change the picture, and the last one
              must be darker than the first
   cache      after the sweep, multiply back to 1: the frame shown at the sweep's first step again (from the
@@ -342,12 +342,12 @@ try:
         return None
 
     def pick_output_at(w, fx, fy):
-        """Ctrl+Alt+clicks a viewport point and returns the viewed node's output values the info bar then shows,
-        or None, then clicks again to leave the picker."""
+        """Ctrl+clicks a viewport point and returns the viewed node's output values the info bar then shows,
+        or None, then clicks again to leave the picker. Ctrl+Alt picks the input when no eyedropper is on."""
         target = QPoint(int(w.width() * fx), int(w.height() * fy))
         QTest.mouseMove(w, target)
         yield ("sleep", 300)
-        mods = Qt.ControlModifier | Qt.AltModifier
+        mods = Qt.ControlModifier
         mouse(w, QEvent.MouseButtonPress, target, Qt.LeftButton, Qt.LeftButton, mods)
         mouse(w, QEvent.MouseButtonRelease, target, Qt.LeftButton, Qt.NoButton, mods)
         yield ("sleep", 300)

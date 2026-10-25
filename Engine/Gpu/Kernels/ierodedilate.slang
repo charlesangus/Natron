@@ -1,3 +1,5 @@
+import mapremap;
+
 // IErode's and IDilate's passes, after the workers of Engine/Nodes/Filter/IErodeDilate.cpp and
 // IErodeDilateKernels there, one component at a time. The work buffer covers the CPU's scratch
 // rect, the domain of domWidth x domHeight pixels from (domX1, domY1): level k of the row tables
@@ -5,7 +7,7 @@
 //
 // Minima and maxima are exact, and the radii and the blends are the CPU's float operations in the
 // same order, precise so that none contracts, so the result matches the CPU's bit for bit; only
-// the Map's remap divides, where a device that does not round its division correctly may differ
+// the Map's gamma divides, where a device that does not round its division correctly may differ
 // from the CPU by an ulp of the Map value.
 //
 // MorphParams and MorphConstants mirror IErodeDilateGpuParams and IErodeDilateGpuConstants in
@@ -25,9 +27,9 @@ struct MorphConstants
     int mapY1;
     int mapX2;
     int mapY2;
-    // MapInputParams::remap()'s knobs, as the CPU rounds them to float.
-    float black;
-    float white;
+    // MapInputParams::remap()'s exponent, 1 / Map Gamma; kMapSmooth in mapFlags is its smooth.
+    float exponent;
+    uint remapPad;
     // The Map value outside the Map image, or everywhere without a Map, as the CPU computes it.
     float outside;
     // IErodeDilateAxis of x and y.
@@ -81,17 +83,7 @@ static const uint kTakeMax = 2;
 static const uint kMapConnected = 1;
 static const uint kMapRead = 2;
 static const uint kMapInvert = 4;
-
-bool isFinite(float v)
-{
-    return (asuint(v) & 0x7f800000u) != 0x7f800000u;
-}
-
-// By its bits, as a comparison need not see a NaN.
-bool isNan(float v)
-{
-    return !isFinite(v) && (asuint(v) & 0x007fffffu) != 0u;
-}
+static const uint kMapSmooth = 8;
 
 // IErodeDilateKernels' reduce(), in the same argument order.
 float reduce(float a, float b, bool takeMax)
@@ -112,22 +104,10 @@ float blend(float a, float b, float t)
     return r;
 }
 
-// MapInputParams::remap(), in float as there.
+// MapInputParams::remap(), by mapremap.slang.
 float remapMap(MorphConstants k, float raw)
 {
-    const float v = ((k.mapFlags & kMapInvert) != 0u) ? 1.0 - raw : raw;
-    float m;
-    if (k.white == k.black) {
-        m = (v >= k.white) ? 1.0 : 0.0;
-    } else {
-        precise float num = v - k.black;
-        precise float den = k.white - k.black;
-        m = num / den;
-    }
-    // A NaN sample reads as black.
-    if (isNan(m) || !(m > 0.0))
-        return 0.0;
-    return (m >= 1.0) ? 1.0 : m;
+    return mapRemap(raw, (k.mapFlags & kMapInvert) != 0u, (k.mapFlags & kMapSmooth) != 0u, k.exponent);
 }
 
 // IErodeDilateAxis::at().

@@ -353,7 +353,7 @@ struct IErodeDilateSpec {
                                  "\n"
                                  "Where the Map is white the element has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
                                  "and in between a size in between; a fractional size blends the results of the sizes either side of it, so the result changes smoothly with the Map. "
-                                 "Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, and Map Black and Map White set the Map values that give Size At Black and Size. "
+                                 "Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. "
                                  "Outside the Map image, the Map reads black. With no Map connected, the element has the Size everywhere.\n"
                                  "\n"
                                  "The element is a rectangle of 2*size+1 pixels, as Dilate's, or a disc (an ellipse when the two sizes differ). At a whole Size where the Map is white, "
@@ -362,7 +362,7 @@ struct IErodeDilateSpec {
                                  "\n"
                                  "Where the Map is white the element has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
                                  "and in between a size in between; a fractional size blends the results of the sizes either side of it, so the result changes smoothly with the Map. "
-                                 "Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, and Map Black and Map White set the Map values that give Size At Black and Size. "
+                                 "Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. "
                                  "Outside the Map image, the Map reads black. With no Map connected, the element has the Size everywhere.\n"
                                  "\n"
                                  "The element is a rectangle of 2*size+1 pixels, as Erode's, or a disc (an ellipse when the two sizes differ). At a whole Size where the Map is white, "
@@ -505,6 +505,7 @@ const uint32_t kGpuTakeMax = 2;
 const uint32_t kGpuMapConnected = 1;
 const uint32_t kGpuMapRead = 2;
 const uint32_t kGpuMapInvert = 4;
+const uint32_t kGpuMapSmooth = 8;
 
 // Mirrors MorphParams in Kernels/ierodedilate.slang, which has no padding between members.
 struct IErodeDilateGpuParams {
@@ -544,8 +545,8 @@ struct IErodeDilateGpuConstants {
     int32_t mapY1;
     int32_t mapX2;
     int32_t mapY2;
-    float black;
-    float white;
+    float exponent;
+    uint32_t remapPad;
     float outside;
     float blackRx;
     float whiteRx;
@@ -553,7 +554,7 @@ struct IErodeDilateGpuConstants {
     float whiteRy;
 };
 static_assert(sizeof(IErodeDilateGpuConstants) == 64);
-static_assert(offsetof(IErodeDilateGpuConstants, black) == 36);
+static_assert(offsetof(IErodeDilateGpuConstants, exponent) == 36);
 static_assert(offsetof(IErodeDilateGpuConstants, blackRx) == 48);
 
 // The float index of pixel (x, y) of image, or false when the image exceeds the kernels' 32-bit
@@ -635,9 +636,8 @@ recordIErodeDilateGpu(const PassGpuIO& io,
     }
 
     IErodeDilateGpuConstants k {};
-    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u);
-    k.black = (float)params.map.black;
-    k.white = (float)params.map.white;
+    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u);
+    k.exponent = params.map.exponent;
     // A disconnected Map reads 1 everywhere, a connected one raw 0 outside its image.
     k.outside = mapConnected ? params.map.remap(0.f) : 1.f;
     k.blackRx = axisX.black;
@@ -798,6 +798,8 @@ IErodeDilateNode<MODE>::initializeKnobs()
 {
     const KnobPagePtr page = createControlsPage();
 
+    _map.createSizeAtBlackKnob(this, page, 2);
+
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(this, tr("Size"), 2);
     sizeKnob->setName(kIErodeDilateParamSize);
     sizeKnob->setHintToolTip(tr("Half the width and height of the structuring element where the Map is white, in pixel units (>=0): the rectangle is 2*size+1 pixels wide, the disc's radius is size. A fractional size blends the results of the whole sizes either side of it."));
@@ -828,7 +830,7 @@ IErodeDilateNode<MODE>::initializeKnobs()
     page->addKnob(shapeKnob);
     _shape = shapeKnob;
 
-    _map.createKnobs(this, page, 2);
+    _map.createKnobs(this, page);
 
     KnobBoolPtr expandRoDKnob = AppManager::createKnob<KnobBool>(this, tr("Expand RoD"));
     expandRoDKnob->setName(kIErodeDilateParamExpandRoD);

@@ -26,7 +26,10 @@
 #include "MapInput.h"
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -41,25 +44,96 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+float
+floatFromBits(uint32_t bits)
+{
+    return std::bit_cast<float>(bits);
+}
+
+// The coefficients of log2(f) = s * (c1 + c3 s^2 + c5 s^4 + c7 s^6 + c9 s^8), s = (f - 1) / (f + 1),
+// that is 2 / (ln 2 (2i + 1)), and of 2^r = sum of (ln 2)^i / i! r^i up to r^7, by their bits so
+// that the kernels use the same floats.
+constexpr uint32_t kLog2Coefficients[] = { 0x4038aa3bu, 0x3f76384fu, 0x3f13bb63u, 0x3ed30bb1u, 0x3ea4258au };
+constexpr uint32_t kExp2Coefficients[] = { 0x3f800000u, 0x3f317218u, 0x3e75fdf0u, 0x3d635847u, 0x3c1d955bu, 0x3aaec3ffu, 0x39218489u, 0x377fe5feu };
+// The smallest normal float, and the float nearest sqrt(2).
+constexpr uint32_t kSmallestNormal = 0x00800000u;
+constexpr uint32_t kSqrt2 = 0x3fb504f3u;
+
+} // namespace
+
+float
+mapGammaPow(float m,
+            float exponent)
+{
+    if (m < floatFromBits(kSmallestNormal)) {
+        return 0.f;
+    }
+    // m = f * 2^k, with f in [sqrt(2)/2, sqrt(2)].
+    const uint32_t bits = std::bit_cast<uint32_t>(m);
+    int k = (int)(bits >> 23) - 127;
+    float f = floatFromBits((bits & 0x007fffffu) | 0x3f800000u);
+    if (f > floatFromBits(kSqrt2)) {
+        f = f * 0.5f;
+        k += 1;
+    }
+    const float num = f - 1.f;
+    const float den = f + 1.f;
+    const float s = num / den;
+    const float s2 = s * s;
+    const int nLog = (int)(sizeof(kLog2Coefficients) / sizeof(kLog2Coefficients[0]));
+    float p = floatFromBits(kLog2Coefficients[nLog - 1]);
+    for (int i = nLog - 2; i >= 0; --i) {
+        const float t = p * s2;
+        p = t + floatFromBits(kLog2Coefficients[i]);
+    }
+    const float logF = p * s;
+    const float log2M = (float)k + logF;
+    const float y = exponent * log2M;
+    if (!(y >= -125.f)) {
+        return 0.f;
+    }
+    // 2^y = 2^r * 2^n, with r in [-1/2, 1/2] and n in [-125, 0].
+    const float shifted = y + 0.5f;
+    const float n = std::floor(shifted);
+    const float r = y - n;
+    const int nExp = (int)(sizeof(kExp2Coefficients) / sizeof(kExp2Coefficients[0]));
+    float q = floatFromBits(kExp2Coefficients[nExp - 1]);
+    for (int i = nExp - 2; i >= 0; --i) {
+        const float t = q * r;
+        q = t + floatFromBits(kExp2Coefficients[i]);
+    }
+    const float scale = floatFromBits((uint32_t)((int)n + 127) << 23);
+    const float result = q * scale;
+
+    return (result < 1.f) ? result : 1.f;
+} // mapGammaPow
+
 float
 MapInputParams::remap(float raw) const
 {
-    // Float precision throughout, so a sample equal to the black or white knob maps to exactly 0 or 1.
     const float v = invert ? 1.f - raw : raw;
-    const float blackF = (float)black;
-    const float whiteF = (float)white;
-    float m;
-    if (whiteF == blackF) {
-        m = (v >= whiteF) ? 1.f : 0.f;
-    } else {
-        m = (v - blackF) / (whiteF - blackF);
-    }
     // A NaN sample reads as black.
-    if (!(m > 0.f)) {
+    if (!(v > 0.f)) {
         return 0.f;
     }
+    if (v >= 1.f) {
+        return 1.f;
+    }
+    float m = v;
+    if (exponent != 1.f) {
+        m = mapGammaPow(m, exponent);
+    }
+    if (smooth) {
+        // Smoothstep, 3m^2 - 2m^3, in the order the kernels use.
+        const float square = m * m;
+        const float twice = m * 2.f;
+        const float slope = 3.f - twice;
+        m = square * slope;
+    }
 
-    return (m >= 1.f) ? 1.f : m;
+    return m;
 }
 
 double
@@ -131,46 +205,10 @@ MapPlane::tileRange(const RectI& rect) const
 }
 
 void
-MapInput::createKnobs(KnobHolder* holder,
-                      const KnobPagePtr& page,
-                      int sizeDimensions)
+MapInput::createSizeAtBlackKnob(KnobHolder* holder,
+                                const KnobPagePtr& page,
+                                int sizeDimensions)
 {
-    KnobChannelSelectPtr channel = AppManager::createKnob<KnobChannelSelect>(holder, EffectInstance::tr("Map Channel"));
-    channel->setName(kMapInputParamChannel);
-    channel->setAnimationEnabled(false);
-    channel->setDefaultValue(channel->encode(std::string(kNatronColorViewRGBA) + ".A"));
-    channel->setHintToolTip(EffectInstance::tr("The channel of the Map input, in any of its layers, that scales the effect per "
-                                               "pixel. A channel the input does not have, or None, reads 0."));
-    page->addKnob(channel);
-    _channel = channel;
-
-    KnobBoolPtr invert = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Invert Map"));
-    invert->setName(kMapInputParamInvert);
-    invert->setDefaultValue(false);
-    invert->setHintToolTip(EffectInstance::tr("Use 1 - Map before Map Black and Map White apply."));
-    page->addKnob(invert);
-    _invert = invert;
-
-    KnobDoublePtr black = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Map Black"));
-    black->setName(kMapInputParamBlack);
-    black->setDefaultValue(0.);
-    black->setDisplayMinimum(0.);
-    black->setDisplayMaximum(1.);
-    black->setAddNewLine(false);
-    black->setHintToolTip(EffectInstance::tr("The Map value that gives Size At Black. Values between Map Black and Map White "
-                                             "give sizes in between; values beyond them clamp."));
-    page->addKnob(black);
-    _black = black;
-
-    KnobDoublePtr white = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Map White"));
-    white->setName(kMapInputParamWhite);
-    white->setDefaultValue(1.);
-    white->setDisplayMinimum(0.);
-    white->setDisplayMaximum(1.);
-    white->setHintToolTip(EffectInstance::tr("The Map value that gives the full Size."));
-    page->addKnob(white);
-    _white = white;
-
     KnobDoublePtr sizeAtBlack = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Size At Black"), sizeDimensions);
     sizeAtBlack->setName(kMapInputParamSizeAtBlack);
     for (int d = 0; d < sizeDimensions; ++d) {
@@ -184,6 +222,58 @@ MapInput::createKnobs(KnobHolder* holder,
     page->addKnob(sizeAtBlack);
     _sizeAtBlack = sizeAtBlack;
     _sizeDimensions = sizeDimensions;
+}
+
+void
+MapInput::createKnobs(KnobHolder* holder,
+                      const KnobPagePtr& page)
+{
+    KnobChannelSelectPtr channel = AppManager::createKnob<KnobChannelSelect>(holder, EffectInstance::tr("Map Channel"));
+    channel->setName(kMapInputParamChannel);
+    channel->setAnimationEnabled(false);
+    channel->setDefaultValue(channel->encode(std::string(kNatronColorViewRGBA) + ".A"));
+    channel->setHintToolTip(EffectInstance::tr("The channel of the Map input, in any of its layers, that scales the effect per "
+                                               "pixel. A channel the input does not have, or None, reads 0."));
+    page->addKnob(channel);
+    _channel = channel;
+
+    KnobBoolPtr invert = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Invert Map"));
+    invert->setName(kMapInputParamInvert);
+    invert->setDefaultValue(false);
+    invert->setHintToolTip(EffectInstance::tr("Use 1 - Map before Map Gamma and Map Response apply."));
+    page->addKnob(invert);
+    _invert = invert;
+
+    KnobChoicePtr response = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Map Response"));
+    response->setName(kMapInputParamResponse);
+    response->setHintToolTip(EffectInstance::tr("How Map values between 0 and 1, after Map Gamma, become sizes between Size At "
+                                                "Black and Size."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kMapInputParamResponseLinear, EffectInstance::tr("Linear").toStdString(),
+                                       EffectInstance::tr("The size follows the Map value in proportion.").toStdString()));
+        options.push_back(ChoiceOption(kMapInputParamResponseSmooth, EffectInstance::tr("Smooth").toStdString(),
+                                       EffectInstance::tr("Smoothstep, 3m^2 - 2m^3: the size eases out of Size At Black and into "
+                                                          "Size.")
+                                           .toStdString()));
+        response->populateChoices(options);
+    }
+    response->setDefaultValue(0);
+    response->setAddNewLine(false);
+    page->addKnob(response);
+    _response = response;
+
+    KnobDoublePtr gamma = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Map Gamma"));
+    gamma->setName(kMapInputParamGamma);
+    gamma->setDefaultValue(1.);
+    gamma->setMinimum(0.01);
+    gamma->setDisplayMinimum(0.2);
+    gamma->setDisplayMaximum(5.);
+    gamma->setHintToolTip(EffectInstance::tr("Raises the Map, clamped to [0,1], to the power 1/gamma, as the Gamma node does: "
+                                             "above 1 the sizes lean towards Size, below 1 towards Size At Black. 0 and 1 "
+                                             "stay put."));
+    page->addKnob(gamma);
+    _gamma = gamma;
 } // MapInput::createKnobs
 
 void
@@ -201,8 +291,8 @@ MapInput::bake(const KnobReader& reader) const
 {
     MapInputParams params;
     params.invert = reader.value(_invert);
-    params.black = reader.value(_black);
-    params.white = reader.value(_white);
+    params.smooth = (reader.value(_response) == 1);
+    params.exponent = (float)(1. / std::max(0.01, reader.value(_gamma)));
     for (int d = 0; d < 2; ++d) {
         params.sizeAtBlack[d] = reader.value(_sizeAtBlack, std::min(d, _sizeDimensions - 1));
     }

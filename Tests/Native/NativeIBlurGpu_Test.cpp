@@ -250,9 +250,13 @@ TEST_F(NativeIBlurGpuTest, ConnectedMapMatchesTheCpu)
     expectParity(std::vector<NodePtr>({ iblur }), iblur, kIBlurTolerance, "size at black, inverted");
 
     ASSERT_TRUE(setKnobValues(iblur, kMapInputParamInvert, { 0. }));
-    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamBlack, { 0.25 }));
-    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamWhite, { 0.75 }));
-    expectParity(std::vector<NodePtr>({ iblur }), iblur, kIBlurTolerance, "remapped");
+    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamGamma, { 2. }));
+    ASSERT_TRUE(setKnobValue(iblur, kMapInputParamResponse, std::string(kMapInputParamResponseSmooth)));
+    expectParity(std::vector<NodePtr>({ iblur }), iblur, kIBlurTolerance, "gamma 2, smooth");
+
+    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamGamma, { 0.5 }));
+    ASSERT_TRUE(setKnobValue(iblur, kMapInputParamResponse, std::string(kMapInputParamResponseLinear)));
+    expectParity(std::vector<NodePtr>({ iblur }), iblur, kIBlurTolerance, "gamma 0.5, linear");
 }
 
 // A disconnected Map is white: the Size everywhere.

@@ -601,7 +601,7 @@ TEST_F(NativeIErodeDilateTest, Golden)
             return sized(g) && setKnobValues(g.node, kMapInputParamSizeAtBlack, { 2., 4.5 }) && setKnobValues(g.node, kMapInputParamInvert, { 1. });
         }));
         v.push_back(goldenVariant("remap", false, [sized](const GoldenGraph& g) {
-            return sized(g) && setKnobValues(g.node, kMapInputParamBlack, { 0.25 }) && setKnobValues(g.node, kMapInputParamWhite, { 0.75 }) && setKnobValues(g.node, kIErodeDilateParamExpandRoD, { 0. });
+            return sized(g) && setKnobValues(g.node, kMapInputParamGamma, { 0.5 }) && setKnobValue(g.node, kMapInputParamResponse, std::string(kMapInputParamResponseSmooth)) && setKnobValues(g.node, kIErodeDilateParamExpandRoD, { 0. });
         }));
         v.push_back(goldenVariant("maskmix", true, [sized](const GoldenGraph& g) {
             return sized(g) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });

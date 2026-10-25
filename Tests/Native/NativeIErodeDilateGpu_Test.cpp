@@ -249,9 +249,13 @@ TEST_F(NativeIErodeDilateGpuTest, ConnectedMapMatchesTheCpu)
         expectParity(std::vector<NodePtr>({ node }), node, name + "size at black, inverted");
 
         ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 0. }));
-        ASSERT_TRUE(setKnobValues(node, kMapInputParamBlack, { 0.25 }));
-        ASSERT_TRUE(setKnobValues(node, kMapInputParamWhite, { 0.75 }));
-        expectParity(std::vector<NodePtr>({ node }), node, name + "remapped");
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamGamma, { 2. }));
+        ASSERT_TRUE(setKnobValue(node, kMapInputParamResponse, std::string(kMapInputParamResponseSmooth)));
+        expectParity(std::vector<NodePtr>({ node }), node, name + "gamma 2, smooth");
+
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamGamma, { 0.5 }));
+        ASSERT_TRUE(setKnobValue(node, kMapInputParamResponse, std::string(kMapInputParamResponseLinear)));
+        expectParity(std::vector<NodePtr>({ node }), node, name + "gamma 0.5, linear");
     }
 }
 

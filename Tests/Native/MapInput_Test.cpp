@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <string_view>
@@ -69,24 +71,79 @@ TEST(MapInput, RemapDefaultsPassValuesInRange)
     EXPECT_EQ(1.f, params.remap(1.f));
 }
 
-TEST(MapInput, RemapBlackAndWhitePoints)
+// Gamma 1 with the Linear response is the clamped sample, bit for bit.
+TEST(MapInput, RemapGammaOneLinearIsTheClampedSample)
+{
+    const MapInputParams params;
+    for (int i = 0; i <= 4096; ++i) {
+        const float v = (float)i / 4096.f;
+        EXPECT_EQ(v, params.remap(v)) << v;
+        const float above = std::nextafter(v, 2.f);
+        EXPECT_EQ(std::min(above, 1.f), params.remap(above)) << above;
+    }
+}
+
+// Gamma above 1 brightens the Map and below 1 darkens it, as the Gamma node: the value is raised to 1/gamma.
+TEST(MapInput, RemapGammaRaisesToOneOverGamma)
 {
     MapInputParams params;
-    params.black = 0.2;
-    params.white = 0.6;
-    EXPECT_EQ(0.f, params.remap(0.2f));
-    EXPECT_NEAR(0.5f, params.remap(0.4f), 1e-6f);
-    EXPECT_EQ(1.f, params.remap(0.6f));
+    params.exponent = 0.5f;
+    EXPECT_NEAR(0.5f, params.remap(0.25f), 2e-7f) << "gamma 2";
+    EXPECT_GT(params.remap(0.25f), 0.25f);
+    EXPECT_EQ(0.f, params.remap(0.f));
+    EXPECT_EQ(1.f, params.remap(1.f));
 
-    params.black = 0.8;
-    params.white = 0.4;
-    EXPECT_EQ(1.f, params.remap(0.4f)) << "black above white reverses the ramp";
-    EXPECT_NEAR(0.5f, params.remap(0.6f), 1e-6f);
+    params.exponent = 2.f;
+    EXPECT_NEAR(0.25f, params.remap(0.5f), 2e-7f) << "gamma 0.5";
+    EXPECT_LT(params.remap(0.5f), 0.5f);
+    EXPECT_EQ(0.f, params.remap(0.f));
+    EXPECT_EQ(1.f, params.remap(1.f));
+}
 
-    params.black = 0.5;
-    params.white = 0.5;
-    EXPECT_EQ(0.f, params.remap(0.49f)) << "equal points make a step";
-    EXPECT_EQ(1.f, params.remap(0.5f));
+TEST(MapInput, GammaPowIsCloseToPowAndMonotonic)
+{
+    for (float exponent : { 0.2f, 1.f / 2.2f, 0.5f, 2.f, 5.f, 100.f }) {
+        float previous = 0.f;
+        for (int i = 1; i < 4096; ++i) {
+            const float m = (float)i / 4096.f;
+            const float got = mapGammaPow(m, exponent);
+            EXPECT_NEAR(std::pow((double)m, (double)exponent), (double)got, 3e-7) << m << "^" << exponent;
+            EXPECT_GE(got, previous) << m << "^" << exponent;
+            EXPECT_LE(got, 1.f);
+            previous = got;
+        }
+    }
+    EXPECT_EQ(0.f, mapGammaPow(1e-30f, 5.f)) << "below 2^-125";
+    EXPECT_EQ(0.f, mapGammaPow(std::numeric_limits<float>::denorm_min(), 0.5f));
+}
+
+TEST(MapInput, RemapSmoothIsSmoothstep)
+{
+    MapInputParams params;
+    params.smooth = true;
+    EXPECT_EQ(0.f, params.remap(0.f));
+    EXPECT_EQ(1.f, params.remap(1.f));
+    EXPECT_EQ(0.5f, params.remap(0.5f));
+    EXPECT_EQ(0.15625f, params.remap(0.25f));
+    for (int i = 0; i <= 256; ++i) {
+        const double m = i / 256.;
+        EXPECT_NEAR(3. * m * m - 2. * m * m * m, (double)params.remap((float)m), 1e-6) << m;
+    }
+
+    const MapInputParams linear;
+    EXPECT_LT(params.remap(0.25f), linear.remap(0.25f)) << "Smooth eases out of black";
+    EXPECT_GT(params.remap(0.75f), linear.remap(0.75f)) << "and into white";
+}
+
+// The gamma applies before the smoothstep.
+TEST(MapInput, RemapGammaThenSmooth)
+{
+    MapInputParams params;
+    params.exponent = 0.5f;
+    params.smooth = true;
+    EXPECT_NEAR(0.5f, params.remap(0.25f), 1e-6f) << "smoothstep(0.25^(1/2))";
+    EXPECT_EQ(0.f, params.remap(0.f));
+    EXPECT_EQ(1.f, params.remap(1.f));
 }
 
 TEST(MapInput, RemapInvertsBeforeTheRemap)
@@ -95,9 +152,8 @@ TEST(MapInput, RemapInvertsBeforeTheRemap)
     params.invert = true;
     EXPECT_EQ(1.f, params.remap(0.f));
     EXPECT_EQ(0.f, params.remap(1.f));
-    params.black = 0.5;
-    EXPECT_EQ(0.f, params.remap(0.75f)) << "1 - 0.75 is below Map Black";
-    EXPECT_NEAR(0.5f, params.remap(0.25f), 1e-6f);
+    params.exponent = 2.f;
+    EXPECT_NEAR(0.0625f, params.remap(0.75f), 1e-7f) << "(1 - 0.75)^2";
 }
 
 TEST(MapInput, RemapClampsToUnitRange)
@@ -124,7 +180,8 @@ TEST(MapInput, FillReadsTheChannelAndRemaps)
     const RectI bounds(0, 0, 4, 3);
     ImagePtr image = alphaImage(bounds, [](int x, int y) { return 0.25f * x + 0.1f * y; });
     MapInputParams params;
-    params.white = 0.5;
+    params.exponent = 0.5f;
+    params.smooth = true;
     MapPlane plane;
     MapInput::fill(image.get(), 3, params, bounds, &plane);
     for (int y = bounds.y1; y < bounds.y2; ++y) {
@@ -132,7 +189,7 @@ TEST(MapInput, FillReadsTheChannelAndRemaps)
             EXPECT_EQ(params.remap(0.25f * x + 0.1f * y), plane.at(x, y)) << x << "," << y;
         }
     }
-    EXPECT_EQ(1.f, plane.at(3, 2)) << "0.95 is beyond Map White";
+    EXPECT_GT(plane.at(1, 1), 0.35f) << "gamma 2 then Smooth lifts 0.35";
 }
 
 TEST(MapInput, FillReadsZeroOutsideTheMap)

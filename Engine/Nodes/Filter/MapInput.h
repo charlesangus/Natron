@@ -40,8 +40,10 @@
 #define kMapInputLabel "Map"
 #define kMapInputParamChannel "mapChannel"
 #define kMapInputParamInvert "mapInvert"
-#define kMapInputParamBlack "mapBlack"
-#define kMapInputParamWhite "mapWhite"
+#define kMapInputParamResponse "mapResponse"
+#define kMapInputParamResponseLinear "linear"
+#define kMapInputParamResponseSmooth "smooth"
+#define kMapInputParamGamma "mapGamma"
 #define kMapInputParamSizeAtBlack "sizeAtBlack"
 
 NATRON_NAMESPACE_ENTER
@@ -60,13 +62,15 @@ inline constexpr InputSpec kMapInputSpec = {
 
 /**
  * @brief The Map knobs at one time and view. remap() turns a raw Map sample into the Map value,
- * in [0,1]: inverted first when invert is set, then mapBlack to 0 and mapWhite to 1. sizeAt()
- * turns a Map value into a size, sizeAtBlack at 0 and the node's own size at 1.
+ * in [0,1]: inverted first when invert is set, clamped to [0,1], raised to the power exponent,
+ * 1 / Map Gamma, and then shaped by smoothstep when smooth is set. Exponent 1 without smooth
+ * leaves the clamped sample as it is. sizeAt() turns a Map value into a size, sizeAtBlack at 0
+ * and the node's own size at 1.
  **/
 struct MapInputParams {
     bool invert = false;
-    double black = 0.;
-    double white = 1.;
+    bool smooth = false;
+    float exponent = 1.f;
     double sizeAtBlack[2] = { 0., 0. };
 
     float remap(float raw) const WARN_UNUSED_RETURN;
@@ -118,20 +122,33 @@ private:
 };
 
 /**
+ * @brief m^exponent for m in (0,1) and exponent > 0, from additions, multiplications, one division
+ * and exact bit operations in a fixed order, so that the GPU kernels, which repeat them in
+ * Engine/Gpu/Kernels/mapremap.slang, compute the same float. Within about 1e-7 of the exact power;
+ * a result below 2^-125 is 0.
+ **/
+float mapGammaPow(float m, float exponent) WARN_UNUSED_RETURN;
+
+/**
  * @brief The Map convention shared by the variable-size filters: an optional Aux input named Map,
- * a channel of any of its layers, invert and black/white remap points, and a size at black that
+ * a channel of any of its layers, invert, a response curve and gamma, and a size at black that
  * pairs with the node's own size, the size at white. A node holds one MapInput, calls
- * createKnobs() from initializeKnobs() and declareLayerKnob() once its node exists, reports
- * getInputLayersRead() for the Map input, bakes the knobs with bake() and reads the Map for its
- * render window with read().
+ * createSizeAtBlackKnob() just before adding its size knob and createKnobs() after it from
+ * initializeKnobs(), declareLayerKnob() once its node exists, reports getInputLayersRead() for
+ * the Map input, bakes the knobs with bake() and reads the Map for its render window with read().
  **/
 class MapInput {
 public:
     /**
-     * @brief Adds the Map knobs to page. sizeDimensions is the dimension count of the node's
-     * size knob, which sizeAtBlack matches.
+     * @brief Adds Size At Black to page. sizeDimensions is the dimension count of the node's size
+     * knob, which it matches.
      **/
-    void createKnobs(KnobHolder* holder, const KnobPagePtr& page, int sizeDimensions);
+    void createSizeAtBlackKnob(KnobHolder* holder, const KnobPagePtr& page, int sizeDimensions);
+
+    /**
+     * @brief Adds the Map's channel, invert, response and gamma knobs to page.
+     **/
+    void createKnobs(KnobHolder* holder, const KnobPagePtr& page);
 
     void declareLayerKnob(const NodePtr& node, int inputNb) const;
 
@@ -182,8 +199,8 @@ public:
 private:
     KnobChannelSelectWPtr _channel;
     KnobBoolWPtr _invert;
-    KnobDoubleWPtr _black;
-    KnobDoubleWPtr _white;
+    KnobChoiceWPtr _response;
+    KnobDoubleWPtr _gamma;
     KnobDoubleWPtr _sizeAtBlack;
     int _sizeDimensions = 0;
 };

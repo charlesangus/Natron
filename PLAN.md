@@ -232,6 +232,7 @@ future core work has solid ground to build on.
 | M169 | Pipelined Strip Member Timing | todo | M107, M91 |  | E5 | [M169-pipelined-strip-member-timing.md](PLAN/MILESTONES/M169-pipelined-strip-member-timing.md) |
 | M173 | Global Mode For Value Knobs | todo | M119 |  | E10 | [M173-global-mode-for-value-knobs.md](PLAN/MILESTONES/M173-global-mode-for-value-knobs.md) |
 | M174 | Wayland Support | blocked | - |  | E1 | [M174-wayland-support.md](PLAN/MILESTONES/M174-wayland-support.md) |
+| M175 | Build Script Jobs And Test Legs | todo | - |  | E2 | [M175-build-script-jobs-and-test-legs.md](PLAN/MILESTONES/M175-build-script-jobs-and-test-legs.md) |
 
 # Epics
 

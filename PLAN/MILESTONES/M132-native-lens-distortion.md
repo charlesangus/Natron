@@ -69,7 +69,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 131.1: Models
 
-- [ ] M132.P1.T1 — Port the lens-model library with Newton inversion and analytic Jacobians
+- [x] M132.P1.T1 — Port the lens-model library with Newton inversion and analytic Jacobians
   - files: `Engine/Nodes/Transform/LensModels.h` (new), `Engine/Nodes/Transform/LensModels.cpp` (new), `Tests/Native/LensModels_Test.cpp` (new)
   - approach:
     - An engine-free library: an abstract `LensModel { distort(p), undistort(p), jacobian(p, direction) }` over normalized lens coordinates, with a generic Newton inverse (damped, bounded iterations, a convergence flag) and a finite-difference Jacobian fallback.
@@ -78,7 +78,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the test covers round trips (distort∘undistort) within 1e-6 over a grid for both models, analytic Jacobian against finite differences, and reference values computed from the openfx-misc formulas. It runs at the phase build.
   - size: L
 
-- [ ] M132.P1.T2 — Add the 3DE Classic and four 3DE4 models
+- [x] M132.P1.T2 — Add the 3DE Classic and four 3DE4 models
   - files: `Engine/Nodes/Transform/LensModels3DE.h` (new), `Engine/Nodes/Transform/LensModels3DE.cpp` (new), `Tests/Native/LensModels3DE_Test.cpp` (new)
   - approach:
     - Port 3DE Classic, Anamorphic Degree 6, Radial Fisheye Degree 8, Radial Standard Degree 4 and Anamorphic Standard Degree 4 onto P1.T1's interface.
@@ -87,7 +87,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: round-trip and Jacobian tests as P1.T1 for all five, plus SDK reference points where published. It runs at the phase build.
   - size: L
 
-- [ ] M132.P1.T3 — Decide PFBarrel and port it if cheap
+- [x] M132.P1.T3 — Decide PFBarrel and port it if cheap
   - files: `Engine/Nodes/Transform/LensModels.cpp`, `Tests/Native/LensModels_Test.cpp`, this milestone file (`## Decisions`)
   - approach:
     - Read openfx-misc's PFBarrel (`pfC3`, `pfC5`, squeeze, `pfP`, and the `.pfb` file reader).
@@ -98,7 +98,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 131.2: Node on the CPU
 
-- [ ] M132.P2.T1 — Add the native LensDistortion node
+- [x] M132.P2.T1 — Add the native LensDistortion node
   - files: `Engine/Nodes/Transform/LensDistortion.{h,cpp}` (new), `Engine/Nodes/Transform/LensDistortion.reg.inc`, `Tests/Native/NativeLensDistortion_Test.cpp` (new)
   - approach:
     - `LensDistortion` v1. Source input plus the host mask.

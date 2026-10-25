@@ -4521,23 +4521,34 @@ ViewerGL::clearLastRenderedTexture()
     }
 }
 
+#ifndef NATRON_HAVE_GPU
+class ViewerHandoff;
+#endif
+
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-// The RAM image of a level, downloading the device root it was drawn from the first time it is asked for. A level
-// whose download fails reads as empty until the next frame. lastRenderedImageMutex must be held.
+// The RAM image of a level, downloading the device root it was drawn from the first time it is asked for. The
+// hand-off keeps the root pinned until the device has read it, which a frame just presented may not have. A level
+// whose download fails reads as empty, and keeps its root for the next request to try again. lastRenderedImageMutex
+// must be held.
 ImagePtr
 lastRenderedTileAt(TextureInfo& info,
                    unsigned int level,
                    ViewerInstance* internalNode,
+                   ViewerHandoff* handoff,
                    bool* failedDownload)
 {
     ImagePtr image = info.lastRenderedTiles[level];
 #ifdef NATRON_HAVE_GPU
     if (!image && info.lastRenderedDeviceTiles[level]) {
-        GpuDeviceImagePtr root;
-        root.swap(info.lastRenderedDeviceTiles[level]);
+        const GpuDeviceImagePtr& root = info.lastRenderedDeviceTiles[level];
         image = root->downloadToRam();
+        if (!image && handoff) {
+            handoff->unpinRoots();
+            image = root->downloadToRam();
+        }
         if (image) {
+            info.lastRenderedDeviceTiles[level].reset();
             info.lastRenderedTiles[level] = image;
             info.memoryHeldByLastRenderedImages += image->size();
             internalNode->registerPluginMemory(image->size());
@@ -4547,6 +4558,7 @@ lastRenderedTileAt(TextureInfo& info,
     }
 #else
     Q_UNUSED(internalNode);
+    Q_UNUSED(handoff);
     Q_UNUSED(failedDownload);
 #endif
 
@@ -4565,10 +4577,15 @@ ViewerGL::getLastRenderedImage(int textureIndex) const
         return ImagePtr();
     }
     renderLastImageOnDemand(textureIndex);
+#ifdef NATRON_HAVE_GPU
+    ViewerHandoff* handoff = _imp->handoff.get();
+#else
+    ViewerHandoff* handoff = NULL;
+#endif
     QMutexLocker l(&_imp->lastRenderedImageMutex);
     TextureInfo& info = _imp->displayTextures[textureIndex];
     for (U32 i = 0; i < info.lastRenderedTiles.size(); ++i) {
-        ImagePtr mipmap = lastRenderedTileAt(info, i, getInternalNode(), NULL);
+        ImagePtr mipmap = lastRenderedTileAt(info, i, getInternalNode(), handoff, NULL);
         if (mipmap) {
             return mipmap;
         }
@@ -4589,13 +4606,18 @@ ViewerGL::getLastRenderedImageByMipmapLevel(int textureIndex,
     }
     renderLastImageOnDemand(textureIndex);
 
+#ifdef NATRON_HAVE_GPU
+    ViewerHandoff* handoff = _imp->handoff.get();
+#else
+    ViewerHandoff* handoff = NULL;
+#endif
     QMutexLocker l(&_imp->lastRenderedImageMutex);
     TextureInfo& info = _imp->displayTextures[textureIndex];
     assert(info.lastRenderedTiles.size() > mipmapLevel);
 
     ViewerInstance* internalNode = getInternalNode();
     bool failedDownload = false;
-    ImagePtr mipmap = lastRenderedTileAt(info, mipmapLevel, internalNode, &failedDownload);
+    ImagePtr mipmap = lastRenderedTileAt(info, mipmapLevel, internalNode, handoff, &failedDownload);
     if (mipmap) {
         return mipmap;
     }
@@ -4607,7 +4629,7 @@ ViewerGL::getLastRenderedImageByMipmapLevel(int textureIndex,
     //Find an image at higher scale
     if (mipmapLevel > 0) {
         for (int i = (int)mipmapLevel - 1; i >= 0; --i) {
-            mipmap = lastRenderedTileAt(info, i, internalNode, NULL);
+            mipmap = lastRenderedTileAt(info, i, internalNode, handoff, NULL);
             if (mipmap) {
                 return mipmap;
             }
@@ -4616,7 +4638,7 @@ ViewerGL::getLastRenderedImageByMipmapLevel(int textureIndex,
 
     //Find an image at lower scale
     for (U32 i = mipmapLevel + 1; i < info.lastRenderedTiles.size(); ++i) {
-        mipmap = lastRenderedTileAt(info, i, internalNode, NULL);
+        mipmap = lastRenderedTileAt(info, i, internalNode, handoff, NULL);
         if (mipmap) {
             return mipmap;
         }

@@ -1255,6 +1255,21 @@ ViewerHandoff::discardStaged(int textureIndex,
 }
 
 void
+ViewerHandoff::unpinRoots()
+{
+    if (_imp->claiming) {
+        return;
+    }
+    // A loss is left for the next maintain() to drop, since destroying the rings needs the GL context current.
+    bool lost = false;
+    for (Ring& ring : _imp->rings) {
+        if (ring.interop && !lost) {
+            _imp->collect(ring, true, &lost);
+        }
+    }
+}
+
+void
 ViewerHandoff::consumeCompletedReadbacks(const ViewerHandoffClaimFn& claim)
 {
     if (_imp->claiming) {

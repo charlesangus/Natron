@@ -135,6 +135,30 @@ inputValue(int x,
     return v;
 }
 
+typedef float (*InputFn)(int x, int y, int c);
+
+// Values either side of gamma 0's threshold at 1.0, the closest a float gets to it included.
+float
+nearOneValue(int x,
+             int y,
+             int c)
+{
+    static const float values[] = {
+        1.f,
+        std::nextafter(1.f, 0.f),
+        0.999995f,
+        0.99999f,
+        0.9999f,
+        std::nextafter(1.f, 2.f),
+        1.00001f,
+        0.5f,
+        0.f,
+    };
+    const int n = int(sizeof(values) / sizeof(values[0]));
+
+    return values[((x - kBounds.x1) + 2 * (y - kBounds.y1) + c) % n];
+}
+
 const ImageLayerDesc&
 layerFor(int nComps)
 {
@@ -151,7 +175,8 @@ layerFor(int nComps)
 }
 
 ImagePtr
-makeImage(int nComps)
+makeImage(int nComps,
+          InputFn value = inputValue)
 {
     const RectD rod(kBounds.x1, kBounds.y1, kBounds.x2, kBounds.y2);
     ImagePtr image = std::make_shared<Image>(layerFor(nComps), rod, kBounds, 0, 1., eImageBitDepthFloat, eImageFieldingOrderNone, false);
@@ -160,7 +185,7 @@ makeImage(int nComps)
         float* row = (float*)w.pixelAt(kBounds.x1, y);
         for (int x = kBounds.x1; x < kBounds.x2; ++x) {
             for (int c = 0; c < nComps; ++c) {
-                row[(x - kBounds.x1) * nComps + c] = inputValue(x, y, c);
+                row[(x - kBounds.x1) * nComps + c] = value(x, y, c);
             }
         }
     }
@@ -171,14 +196,15 @@ makeImage(int nComps)
 // The same pixels as makeImage(), laid out with an offset and padded rows so that the kernel must
 // use the view's layout.
 std::vector<float>
-packedInput(int nComps)
+packedInput(int nComps,
+            InputFn value)
 {
     const int stride = kBounds.width() * nComps + kRowPadFloats;
     std::vector<float> packed(std::size_t(kPadFloats) + std::size_t(stride) * kBounds.height() + 16, kPadValue);
     for (int y = kBounds.y1; y < kBounds.y2; ++y) {
         for (int x = kBounds.x1; x < kBounds.x2; ++x) {
             for (int c = 0; c < nComps; ++c) {
-                packed[kPadFloats + (y - kBounds.y1) * stride + (x - kBounds.x1) * nComps + c] = inputValue(x, y, c);
+                packed[kPadFloats + (y - kBounds.y1) * stride + (x - kBounds.x1) * nComps + c] = value(x, y, c);
             }
         }
     }
@@ -285,10 +311,11 @@ public:
 
     bool ready() const { return _pool && _fence && _out; }
 
-    void setInput(int nComps)
+    void setInput(int nComps,
+                  InputFn value = inputValue)
     {
         _in.reset();
-        const std::vector<float> packed = packedInput(nComps);
+        const std::vector<float> packed = packedInput(nComps, value);
         const gpu::GpuStatus s = gpu::GpuBuffer::createStaging(_runtime.device(), packed.size() * sizeof(float), gpu::kGpuBufferDefaultUsage, _in);
         ASSERT_TRUE(bool(s)) << s.message;
         std::memcpy(_in.mapped(), packed.data(), packed.size() * sizeof(float));
@@ -572,6 +599,13 @@ exactProcessor(const OCIO::ConstProcessorRcPtr& processor)
     return p;
 }
 
+// OCIO optimises the identity matrix away, which leaves a processor that is a no-op.
+OCIO::ConstProcessorRcPtr
+makeIdentityProcessor()
+{
+    return OCIO::Config::CreateRaw()->getProcessor(OCIO::MatrixTransform::Create());
+}
+
 struct NamedProcessor {
     const char* name;
     ProjectColorManagement::DisplayProcessorPtr processor;
@@ -606,12 +640,16 @@ TEST(ViewerGpuProcess, EightBitMatchesTheCpuInEveryDisplayMode)
     OCIO::ConstProcessorRcPtr lut = makeLutProcessor(dir, &error);
     fs::remove_all(dir, ec);
     ASSERT_TRUE(bool(lut)) << error;
+    const OCIO::ConstProcessorRcPtr identity = makeIdentityProcessor();
+    ASSERT_TRUE(identity && identity->isNoOp());
 
     const NamedProcessor processors[] = {
         { "no-ocio", ProjectColorManagement::DisplayProcessorPtr() },
+        { "identity", exactProcessor(identity) },
         { "studio-sdr", exactProcessor(studio->processor) },
         { "luts", exactProcessor(lut) },
     };
+    const int processorCount = int(sizeof(processors) / sizeof(processors[0]));
 
     ViewerGpuProcess process(runtime);
     for (const NamedProcessor& p : processors) {
@@ -623,14 +661,14 @@ TEST(ViewerGpuProcess, EightBitMatchesTheCpuInEveryDisplayMode)
     ASSERT_TRUE(dispatcher.ready());
     const double grades[][2] = { { 1., 0. }, { 0.5, -0.2 }, { 0.5, 0.2 }, { 4., -0.2 }, { 4., 0.2 } };
     const double gammas[] = { 1., 2.2, 0. };
-    EightBitStats stats[3];
+    EightBitStats stats[processorCount];
     for (int nComps = 1; nComps <= 4; ++nComps) {
         const ImagePtr image = makeImage(nComps);
         dispatcher.setInput(nComps);
         if (::testing::Test::HasFatalFailure()) {
             return;
         }
-        for (int pi = 0; pi < 3; ++pi) {
+        for (int pi = 0; pi < processorCount; ++pi) {
             for (DisplayChannelsEnum channels : kChannels) {
                 for (const auto& grade : grades) {
                     for (double gamma : gammas) {
@@ -644,7 +682,7 @@ TEST(ViewerGpuProcess, EightBitMatchesTheCpuInEveryDisplayMode)
                         const gpu::GpuStatus s = dispatcher.run(process, gpu::GlPixelFormat::Bgra8, c, &got);
                         ASSERT_TRUE(bool(s)) << label << ": " << s.message;
                         std::vector<float> thresholdInputs;
-                        if ((gamma <= 0.) && c.processor) {
+                        if ((gamma <= 0.) && c.processor && !c.processor->processor->isNoOp()) {
                             thresholdInputs = cpuDisplayValues(image, c);
                         }
                         compareEightBit(got, cpuReference<U32>(image, c, eImageBitDepthByte, 1), thresholdInputs.empty() ? nullptr : &thresholdInputs,
@@ -657,9 +695,69 @@ TEST(ViewerGpuProcess, EightBitMatchesTheCpuInEveryDisplayMode)
             }
         }
     }
-    for (int pi = 0; pi < 3; ++pi) {
+    for (int pi = 0; pi < processorCount; ++pi) {
         std::printf("[viewer-gpu] %-10s %zu codes, %zu one code off, worst %d, %zu in the gamma 0 threshold band\n", processors[pi].name,
                     stats[pi].codes, stats[pi].offByOne, stats[pi].worst, stats[pi].thresholdBand);
+    }
+#endif
+}
+
+TEST(ViewerGpuProcess, GammaZeroThresholdsAtOneWithoutATransform)
+{
+#ifndef NATRON_HAVE_GPU
+    reportNoGpu("built without the GPU backend");
+#else
+    std::unique_ptr<GpuParityRuntime> holder;
+    if (!createRuntime(holder)) {
+        return;
+    }
+    gpu::GpuRuntime& runtime = holder->runtime();
+
+    const OCIO::ConstProcessorRcPtr identity = makeIdentityProcessor();
+    ASSERT_TRUE(identity && identity->isNoOp());
+    const NamedProcessor processors[] = {
+        { "no-ocio", ProjectColorManagement::DisplayProcessorPtr() },
+        { "identity", exactProcessor(identity) },
+    };
+
+    ViewerGpuProcess process(runtime);
+    for (const NamedProcessor& p : processors) {
+        const gpu::GpuStatus s = process.prepare(p.processor, gpu::GlPixelFormat::Bgra8);
+        ASSERT_TRUE(bool(s)) << p.name << ": " << s.message;
+    }
+
+    Dispatcher dispatcher(runtime);
+    ASSERT_TRUE(dispatcher.ready());
+    for (int nComps = 1; nComps <= 4; ++nComps) {
+        const ImagePtr image = makeImage(nComps, nearOneValue);
+        dispatcher.setInput(nComps, nearOneValue);
+        if (::testing::Test::HasFatalFailure()) {
+            return;
+        }
+        for (const NamedProcessor& p : processors) {
+            for (DisplayChannelsEnum channels : kChannels) {
+                Case c = makeCase(channels, nComps);
+                c.gamma = 0.;
+                c.processor = p.processor;
+                const std::string label = describe(p.name, nComps, c);
+                std::vector<std::byte> got;
+                const gpu::GpuStatus s = dispatcher.run(process, gpu::GlPixelFormat::Bgra8, c, &got);
+                ASSERT_TRUE(bool(s)) << label << ": " << s.message;
+                const std::vector<U32> cpu = cpuReference<U32>(image, c, eImageBitDepthByte, 1);
+                // The red of the first pixels of the bottom row holds 1, then the floats just under it.
+                if ((nComps == 4) && (channels == eDisplayChannelsRGB)) {
+                    EXPECT_EQ(0xffu, (cpu[0] >> 16) & 0xffu) << label;
+                    EXPECT_EQ(0u, (cpu[1] >> 16) & 0xffu) << label;
+                    EXPECT_EQ(0u, (cpu[2] >> 16) & 0xffu) << label;
+                    EXPECT_EQ(0u, (cpu[3] >> 16) & 0xffu) << label;
+                }
+                EightBitStats stats;
+                compareEightBit(got, cpu, nullptr, label, &stats);
+                if (::testing::Test::HasFatalFailure()) {
+                    return;
+                }
+            }
+        }
     }
 #endif
 }

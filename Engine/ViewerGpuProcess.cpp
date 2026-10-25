@@ -317,7 +317,9 @@ ViewerGpuProcess::pipelineFor(const ProjectColorManagement::DisplayProcessorPtr&
                               std::shared_ptr<const Pipeline>& out)
 {
     const bool eightBit = (format == gpu::GlPixelFormat::Bgra8);
-    const bool withOcio = eightBit && processor && processor->processor;
+    // A no-op processor leaves the CPU's values untouched, so the pass-through kernel matches it exactly, gamma 0's
+    // threshold at 1.0 included.
+    const bool withOcio = eightBit && processor && processor->processor && !processor->processor->isNoOp();
     std::string key = eightBit ? "8:" : "f:";
     if (withOcio) {
         try {

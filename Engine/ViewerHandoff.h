@@ -272,6 +272,13 @@ public:
                        std::uint64_t staged);
 
     /**
+     * @brief Waits for the device to finish reading every root a slot keeps pinned, staged frames' included, and
+     * unpins them, so that they can be downloaded. Does not need the GL context current. Nothing happens while a
+     * readback is claimed, and roots stay pinned after a device loss until maintain() releases them.
+     **/
+    void unpinRoots();
+
+    /**
      * @brief Passes \p claim the token of each readback whose device copy has finished since the last
      * call, without waiting for the others, and starts the work it returns on the global thread pool.
      * A readback is lost when its ring is rebuilt or the device is, and so is its work if it has not

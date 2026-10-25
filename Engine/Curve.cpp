@@ -561,6 +561,31 @@ Curve::addKeyFrame(KeyFrame key)
     return it.second;
 }
 
+bool
+Curve::hasKeyFrameEquivalentTo(KeyFrame key) const
+{
+    QMutexLocker l(&_imp->_lock);
+
+    if ((_imp->type == CurvePrivate::eCurveTypeBool) || (_imp->type == CurvePrivate::eCurveTypeString) || (_imp->type == CurvePrivate::eCurveTypeInt) || (_imp->type == CurvePrivate::eCurveTypeIntConstantInterp)) {
+        key.setInterpolation(eKeyframeTypeConstant);
+    }
+    KeyFrameSet::const_iterator it = find(key.getTime());
+    if (it == _imp->keyFrames.end()) {
+        return false;
+    }
+    if ((it->getValue() != key.getValue()) || (it->getInterpolation() != key.getInterpolation()) || (it->getLeftWeight() != key.getLeftWeight()) || (it->getRightWeight() != key.getRightWeight())) {
+        return false;
+    }
+
+    // Other interpolations derive the tangents from the neighbours; these keep the key's own.
+    const KeyframeTypeEnum interpolation = key.getInterpolation();
+    if ((interpolation == eKeyframeTypeFree) || (interpolation == eKeyframeTypeBroken)) {
+        return (it->getLeftDerivative() == key.getLeftDerivative()) && (it->getRightDerivative() == key.getRightDerivative());
+    }
+
+    return true;
+}
+
 std::pair<KeyFrameSet::iterator, bool> Curve::addKeyFrameNoUpdate(const KeyFrame & cp)
 {
     // PRIVATE - should not lock

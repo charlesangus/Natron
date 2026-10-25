@@ -976,6 +976,11 @@ RotoDrawableItem::restoreSavedKnobs(const std::list<Serialization::KnobSerializa
         std::memcpy(_imp->overlayColor, overlayColor, sizeof(double) * 4);
     }
 
+    if (!_imp->mergeNode) {
+        // A geometry-only context gives its items no render nodes to push the values to.
+        return;
+    }
+
     RotoStrokeType type;
     RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(this);
     if (isStroke) {

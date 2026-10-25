@@ -18,7 +18,7 @@
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
-APPIMAGE= OUT= BIG= ROUNDS=3 DRY=0
+APPIMAGE='' OUT='' BIG='' ROUNDS=3 DRY=0
 BIG_DIRS=${BENCH_BIG_DIRS:-"build/assets Tests/fixtures"}
 NEED_FACTOR=${BENCH_NEED_FACTOR:-40}
 read -r -a APPIMAGE_ARGV <<<"${BENCH_APPIMAGE_ARGS:---appimage-extract-and-run}"
@@ -225,7 +225,7 @@ with_display() {
 }
 
 run_one() {
-    local name=$1 file=$2 bayer=$3 xtrans=$4 mode=$5 round=$6 tag avail need cache render_dir t0 code res regions gpu_nodes first
+    local name=$1 file=$2 bayer=$3 xtrans=$4 mode=$5 round=$6 tag avail need cache render_dir t0 code regions gpu_nodes first
     tag=$name-$mode-r$round
     avail=$(mem_available_kb)
     need=$(need_kb_for "$file")

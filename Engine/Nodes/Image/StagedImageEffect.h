@@ -163,7 +163,9 @@ public:
     /**
      * @brief For a Point, Composite or Passes op, or a Resample op that opts into the GPU, the layer
      * its plane is read in, except for the mask input, which is read in the layer its mask channel
-     * resolves in. For a Custom op, getOpGpuInputLayer(). False for every other op.
+     * resolves in, and a Composite input read in a selected colour layer of another colour layout,
+     * read in that layer (stageGpuSourceInputLayer()). For a Custom op, getOpGpuInputLayer(). False
+     * for every other op.
      **/
     virtual bool getGpuInputLayer(int inputNb,
                                   const ImageLayerDesc& plane,

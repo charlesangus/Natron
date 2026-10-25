@@ -308,8 +308,8 @@ bool canRunStagesGpu(const StagePlan& plan,
  * @brief Whether the GPU executor can fold plan's Composite inputs for query: a base input and no
  * divisor. An input that reads a selected layer or has an alpha source needs plan's
  * compositeLayers, no stageSourcesError(), and its layers readable beside the query's plane
- * (stageGpuLayerRead()); a selected base layer must have the plane's channel count, since the fold
- * starts from it. The region engine hands the mask input over in its mask layer alone, so no folded
+ * (stageGpuLayerRead()) beside the layer the input is handed over in (stageGpuSourceInputLayer());
+ * a selected base layer must have the plane's channel count, since the fold starts from it. The region engine hands the mask input over in its mask layer alone, so no folded
  * input can be the input the MaskMix stage reads its mask from.
  **/
 bool canRunStageSourcesGpu(const StagePlan& plan,
@@ -337,11 +337,23 @@ void stageGpuInputLayer(const EffectInstance& effect,
                         ImageLayerDesc* layer);
 
 /**
+ * @brief The layer the GPU executor hands Composite input inputNb over in when plan renders plane:
+ * the selected colour layer every further input reading inputNb reads it in, in the layout
+ * runStagesCpu() reads it in, when plane is a colour layer of another colour layout; plane
+ * otherwise, and always for the base, blend and mask inputs, whose views the fold and the stages
+ * read in plane's layout. Needs plan's compositeLayers; plane without them.
+ **/
+ImageLayerDesc stageGpuSourceInputLayer(const StagePlan& plan,
+                                        int inputNb,
+                                        const ImageLayerDesc& plane) WARN_UNUSED_RETURN;
+
+/**
  * @brief Where the GPU executor finds a layer a Composite input reads, whole or only its channel
- * `channel` when that is not -1, from an input handed over in plane: in the input's own view
- * (Plane), in a layer handed over beside it (Extra, see getGpuExtraInputLayers()), or nowhere
- * (Unreadable): the request pass plans one colour layout per input, so a colour layer in another
- * colour layout than plane is only read through plane's view, and only one channel of it.
+ * `channel` when that is not -1, from an input handed over in plane (stageGpuSourceInputLayer()):
+ * in the input's own view (Plane), in a layer handed over beside it (Extra, see
+ * getGpuExtraInputLayers()), or nowhere (Unreadable): the request pass plans one colour layout per
+ * input, so a colour layer in another colour layout than plane is only read through plane's view,
+ * and only one channel of it.
  **/
 enum class StageGpuLayerRead {
     Plane,
@@ -356,7 +368,7 @@ StageGpuLayerRead stageGpuLayerRead(const ImageLayerDesc& layer,
 /**
  * @brief Appends to layers the layers beyond plane that the GPU executor reads input inputNb of
  * effect in for plan's Composite inputs at time and view: a selected layer and an alpha layer
- * each, unless plane's view holds it. False when one of them is Unreadable.
+ * each, unless the input's own view, in stageGpuSourceInputLayer(), holds it. False when one of them is Unreadable.
  **/
 bool stageSourcesGpuLayers(EffectInstance& effect,
                            const StagePlan& plan,

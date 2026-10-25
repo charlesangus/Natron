@@ -312,17 +312,18 @@ makeStageGpuWrap(const StagePlan& plan,
 } // makeStageGpuWrap
 
 // The view args hands input inputNb over in for layer, read whole or only its channel `channel`
-// when that is not -1: the input's own for the plane, else the layer input naming it. Null when
-// args hands none over.
+// when that is not -1: the input's own for the layer plan hands it over in
+// (stageGpuSourceInputLayer()), else the layer input naming it. Null when args hands none over.
 const GpuImageView*
-findStageGpuView(const GpuRenderArgs& args,
+findStageGpuView(const StagePlan& plan,
+                 const GpuRenderArgs& args,
                  int inputNb,
                  const ImageLayerDesc& layer,
                  int channel)
 {
     const GpuImageView* view = nullptr;
 
-    if (stageGpuLayerRead(layer, channel, args.query.plane) == StageGpuLayerRead::Plane) {
+    if (stageGpuLayerRead(layer, channel, stageGpuSourceInputLayer(plan, inputNb, args.query.plane)) == StageGpuLayerRead::Plane) {
         if ((inputNb >= 0) && (inputNb < (int)args.inputs.size())) {
             view = &args.inputs[inputNb];
         }
@@ -341,7 +342,8 @@ findStageGpuView(const GpuRenderArgs& args,
 // A Composite input as args hands it over, in the layer `layers` names for it when given; one not
 // handed over reads zero, as runStagesCpu() reads it.
 bool
-makeStageGpuInput(const StageSource& source,
+makeStageGpuInput(const StagePlan& plan,
+                  const StageSource& source,
                   const StageSourceLayers* layers,
                   const GpuRenderArgs& args,
                   gpu::GpuWrapView* view)
@@ -350,7 +352,7 @@ makeStageGpuInput(const StageSource& source,
     view->nComps = (uint32_t)args.query.nComps;
     const int inputNb = source.inputNb;
     if (layers && !layers->mapped) {
-        const GpuImageView* layerView = layers->read ? findStageGpuView(args, inputNb, layers->layer, -1) : nullptr;
+        const GpuImageView* layerView = layers->read ? findStageGpuView(plan, args, inputNb, layers->layer, -1) : nullptr;
 
         return !layerView || toWrapView(*layerView, view);
     }
@@ -384,7 +386,8 @@ uploadKernelParams(gpu::GpuRecordContext& ctx,
 // A Composite input's alpha as args hands it over; one with no alpha, or not handed over, reads
 // zero, as runStagesCpu() reads it.
 bool
-makeStageGpuAlpha(const StageSource& source,
+makeStageGpuAlpha(const StagePlan& plan,
+                  const StageSource& source,
                   const StageSourceLayers& layers,
                   const GpuRenderArgs& args,
                   gpu::GpuWrapAlpha* alpha)
@@ -393,7 +396,7 @@ makeStageGpuAlpha(const StageSource& source,
     if (!layers.hasAlpha()) {
         return true;
     }
-    const GpuImageView* view = findStageGpuView(args, source.inputNb, layers.alphaLayer, layers.alphaChannel);
+    const GpuImageView* view = findStageGpuView(plan, args, source.inputNb, layers.alphaLayer, layers.alphaChannel);
     if (!view) {
         return true;
     }
@@ -445,12 +448,12 @@ recordKernelOp(const StagePlan& plan,
         const auto layersOf = [&](std::size_t k) {
             return hasLayers ? &plan.compositeLayers[k] : nullptr;
         };
-        if (!makeStageGpuInput(plan.composite[0], layersOf(0), args, &base)) {
+        if (!makeStageGpuInput(plan, plan.composite[0], layersOf(0), args, &base)) {
             return eStatusFailed;
         }
         further.resize(plan.composite.size() - 1);
         for (std::size_t k = 1; k < plan.composite.size(); ++k) {
-            if (!makeStageGpuInput(plan.composite[k], layersOf(k), args, &further[k - 1])) {
+            if (!makeStageGpuInput(plan, plan.composite[k], layersOf(k), args, &further[k - 1])) {
                 return eStatusFailed;
             }
         }
@@ -460,7 +463,7 @@ recordKernelOp(const StagePlan& plan,
             }
             alphas.resize(plan.composite.size());
             for (std::size_t k = 0; k < plan.composite.size(); ++k) {
-                if (!makeStageGpuAlpha(plan.composite[k], plan.compositeLayers[k], args, &alphas[k])) {
+                if (!makeStageGpuAlpha(plan, plan.composite[k], plan.compositeLayers[k], args, &alphas[k])) {
                     return eStatusFailed;
                 }
             }
@@ -1287,6 +1290,29 @@ canRunStagesGpu(const StagePlan& plan,
     return stageGpuDivisorComponent(plan, query, &component);
 }
 
+ImageLayerDesc
+stageGpuSourceInputLayer(const StagePlan& plan,
+                         int inputNb,
+                         const ImageLayerDesc& plane)
+{
+    if (!plane.isColorLayer() || (plan.composite.size() < 2) || (plan.compositeLayers.size() != plan.composite.size()) || (inputNb == plan.composite[0].inputNb) || (inputNb == plan.sourceInput) || (plan.applyMask && (inputNb == plan.maskInput))) {
+        return plane;
+    }
+    ImageLayerDesc selected;
+    for (std::size_t s = 1; s < plan.composite.size(); ++s) {
+        const StageSourceLayers& layers = plan.compositeLayers[s];
+        if ((plan.composite[s].inputNb != inputNb) || !layers.read || !layers.layer.isColorLayer()) {
+            continue;
+        }
+        if (layers.mapped || ((selected.getNumComponents() > 0) && (selected != layers.layer))) {
+            return plane;
+        }
+        selected = layers.layer;
+    }
+
+    return (selected.getNumComponents() > 0) ? selected : plane;
+}
+
 bool
 canRunStageSourcesGpu(const StagePlan& plan,
                       const GpuQuery& query)
@@ -1312,13 +1338,14 @@ canRunStageSourcesGpu(const StagePlan& plan,
         if (stageSourceLayersError(layers)) {
             return false;
         }
+        const ImageLayerDesc inputLayer = stageGpuSourceInputLayer(plan, source.inputNb, query.plane);
         if (layers.read && !layers.mapped) {
-            const StageGpuLayerRead read = stageGpuLayerRead(layers.layer, -1, query.plane);
+            const StageGpuLayerRead read = stageGpuLayerRead(layers.layer, -1, inputLayer);
             if ((read == StageGpuLayerRead::Unreadable) || ((s == 0) && (read == StageGpuLayerRead::Extra) && (layers.layer.getNumComponents() != query.nComps))) {
                 return false;
             }
         }
-        if (layers.hasAlpha() && (stageGpuLayerRead(layers.alphaLayer, layers.alphaChannel, query.plane) == StageGpuLayerRead::Unreadable)) {
+        if (layers.hasAlpha() && (stageGpuLayerRead(layers.alphaLayer, layers.alphaChannel, inputLayer) == StageGpuLayerRead::Unreadable)) {
             return false;
         }
     }
@@ -1423,16 +1450,25 @@ stageSourcesGpuLayers(EffectInstance& effect,
                       ViewIdx view,
                       std::vector<ImageLayerDesc>* layers)
 {
-    for (const StageSource& source : plan.composite) {
+    StagePlan resolved = plan;
+    resolved.time = time;
+    resolved.view = view;
+    resolveStageSourcesLayers(effect, &resolved);
+    if (resolved.compositeLayers.size() != resolved.composite.size()) {
+        return true;
+    }
+    const ImageLayerDesc inputLayer = stageGpuSourceInputLayer(resolved, inputNb, plane);
+    for (std::size_t s = 0; s < resolved.composite.size(); ++s) {
+        const StageSource& source = resolved.composite[s];
         if ((source.inputNb != inputNb) || (source.layerKnob.empty() && (source.alpha.kind == CompositeAlpha::Kind::None))) {
             continue;
         }
-        const StageSourceLayers read = resolveStageSourceLayers(effect, source, time, view);
-        // A plane read in the clip layout is plane itself.
-        if (read.read && !read.mapped && !appendStageGpuLayer(read.layer, -1, plane, layers)) {
+        const StageSourceLayers& read = resolved.compositeLayers[s];
+        // A plane read in the clip layout is the input's own view.
+        if (read.read && !read.mapped && !appendStageGpuLayer(read.layer, -1, inputLayer, layers)) {
             return false;
         }
-        if (read.hasAlpha() && !appendStageGpuLayer(read.alphaLayer, read.alphaChannel, plane, layers)) {
+        if (read.hasAlpha() && !appendStageGpuLayer(read.alphaLayer, read.alphaChannel, inputLayer, layers)) {
             return false;
         }
     }

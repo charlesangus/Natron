@@ -219,6 +219,13 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
         return false;
     }
     stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+    if ((kind == OpKind::Composite) && !isInputMask(inputNb)) {
+        // Resolving only reads knobs and the node's inputs' layers.
+        StagedImageEffect* self = const_cast<StagedImageEffect*>(this);
+        StagePlan plan = resolveSourcesPlan(time, view, plane);
+        resolveStageSourcesLayers(*self, &plan);
+        *layer = stageGpuSourceInputLayer(plan, inputNb, plane);
+    }
 
     return true;
 }
@@ -241,8 +248,12 @@ StagedImageEffect::resolveSourcesPlan(double time,
                                       const ImageLayerDesc& plane) const
 {
     StagePlan plan;
+    const CompositeInputs inputs = opInputsForPlane(time, view, plane);
 
-    resolveStageSources(nodeSpec(), opInputsForPlane(time, view, plane), &plan);
+    plan.time = time;
+    plan.view = view;
+    plan.sourceInput = inputs.blend();
+    resolveStageSources(nodeSpec(), inputs, &plan);
 
     return plan;
 }

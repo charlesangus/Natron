@@ -70,3 +70,8 @@ When a `QOpenGLWidget` moves to another top-level window (a pane floated out or 
   - size: M
 
 **Verification gate:** `tools/ci/remote/build.sh fast --tests` is green, including `TextRenderer.*` under `Tests/gui/run-gl-tests.sh`. A debug build (`tools/ci/remote/build.sh debug --tests`) is also green, because the `glIsTexture` asserts in `TextRenderer.cpp` only fire there. `Tests/gui/run-gui-test.sh Tests/gui/m172_gl_context_loss.py <AppImage>` passes every section on a packaged AppImage, `m138_papercuts.py` still passes, and the user has approved the screenshots. The GUI bench does not apply, because no `Gui/NodeGraph*` or `Gui/NodeGui*` file is touched; if P1.T2 turns out to need a change in `NodeGui.cpp` for `HostOverlay`, it applies again.
+
+## Decisions
+
+- 2026-10-25 — **Screenshots approved (user).**
+- 2026-10-25 — **Implementation and GUI proof (PM):** release 418/418 on b06a54fe4 including TextRenderer.* (4 GL cases); m172_gl_context_loss.py 0 failures on the fixed AppImage and 10 failures on a pre-fix AppImage (timeline, histogram, curve, dopesheet, host-overlay at floated and floated-twice). Under Xvfb/llvmpipe the bug shows as solid glyph boxes (a stale atlas name binds an empty texture in the new context), not blank text, so the script also checks the solid-box fraction; redocked windows render correctly even pre-fix. Deviations: param-interact is skipped (no bundled plugin has a non-parametric custom interact); host-overlay uses Position, whose label HostOverlay draws, instead of Transform.

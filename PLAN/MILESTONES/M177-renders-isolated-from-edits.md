@@ -40,19 +40,19 @@ Filed from M167 - Per-Frame Node Metadata, Phase 3, which inherited M144's "edit
 
 ## Phase 177.1: The edit rule and render modes
 
-- [ ] M177.P1.T1 — Edits abort only viewer renders
+- [x] M177.P1.T1 — Edits abort only viewer renders
   - files: `Engine/EffectInstance.cpp` (`abortAnyEvaluation` :6050-6093), `Tests/RenderIsolation_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: In the loop over `outputNodes`, when `keepOldestRender` is true (the edit path), call `abortRenderingAutoRestart()` only on engines whose effect is a `ViewerInstance`. When it is false (deactivation), keep aborting every engine. Leave `hasOutputNodesConnected` (`Node.cpp:4110`) alone; M198 re-keys it.
   - verify: three gtests. (1) A blocking 20-frame Write render, built like `RenderSchedulerAbort_Test.cpp:587-660`, with a `frameRendered` DirectConnection that edits an upstream knob at frame 3 from a second thread: `renderFinished` gives 0 and all 20 files exist. (2) Deactivating the upstream node at frame 3 gives 1. (3) In the `ViewerScheduler` fixture (`Tests/ViewerScheduler_Test.cpp`), an edit during a viewer render aborts it.
   - size: M
 
-- [ ] M177.P1.T2 — Name the two abort intents
+- [x] M177.P1.T2 — Name the two abort intents
   - files: `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp`, `Engine/Knob.h` (:2801-2807), `Engine/Knob.cpp`, `Engine/KnobImpl.h`, `Engine/NodeInputs.cpp`, `Engine/Node.cpp`
   - approach: Split `abortAnyEvaluation(bool)` into `abortViewerRendersForEdit()` and `abortAllRendersReadingThis()`, and rename `abortAnyEvaluationForChange` to match. A mechanical rename the compiler drives, with no behaviour change.
   - verify: phase build; `git grep -n abortAnyEvaluation Engine Gui` is empty; P1.T1's tests pass.
   - size: M
 
-- [ ] M177.P1.T3 — Explicit render mode; background means separate process
+- [x] M177.P1.T3 — Explicit render mode; background means separate process
   - files: `Engine/AppInstance.h`, `Engine/AppInstance.cpp` (:1951-2051), `Engine/Settings.h`, `Engine/Settings.cpp` (:410-414, :2859), `Gui/RenderDialog.cpp`, plus one-line caller edits
   - approach:
     - Add `enum RenderModeEnum {eRenderModeForeground, eRenderModeBackground, eRenderModeBlocking}` and pass it to `startWritersRendering`.

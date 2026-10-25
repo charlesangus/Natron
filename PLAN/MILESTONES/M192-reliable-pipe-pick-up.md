@@ -33,7 +33,7 @@ Clicking a connected pipe to pick it up fails unless the cursor is perfectly sti
 
 ## Phase 192.1: Click versus drag
 
-- [ ] M192.P1.T1 — Make pick-up tolerate movement under the drag distance
+- [x] M192.P1.T1 — Make pick-up tolerate movement under the drag distance
   - files: `Gui/NodeGraphPickUp.h`, `Gui/NodeGraphPickUp.cpp`, `Gui/NodeGraph15.cpp`, `Gui/NodeGraphPrivate.h`, `Tests/NodeGraphPickUp_Test.cpp`
   - approach: Replace the boolean `movedSincePress` input of `shouldStartPickUp` with the press-to-release distance (scene or view pixels, compared against `QApplication::startDragDistance()` scaled with `TO_DPIX`). Record the press position in `mousePressEvent` and compute the distance in `mouseReleaseEvent` (`NodeGraph15.cpp:285`) instead of `_hasMovedOnce`; drop Ctrl from the `hasMovedOnce` expression for the edge-release path only. Keep the node-drag path's use of `_hasMovedOnce` untouched.
   - verify: `NodeGraphPickUp_Test` cases for jittered click (picks up), click just over the threshold (drag), and the existing still-click and drag cases, all pass.
@@ -41,13 +41,13 @@ Clicking a connected pipe to pick it up fails unless the cursor is perfectly sti
 
 ## Phase 192.2: End-aware pick-up
 
-- [ ] M192.P2.T1 — Pure end-selection helper
+- [x] M192.P2.T1 — Pure end-selection helper
   - files: `Gui/NodeGraphPickUp.h`, `Gui/NodeGraphPickUp.cpp`, `Tests/NodeGraphPickUp_Test.cpp`
   - approach: Add `pickedUpEnd(clickPos, lineP1, lineP2)` returning source or destination end by nearest endpoint, ties to source. No Qt widgets; unit-tested with fake coordinates.
   - verify: gtest cases for click near each end, at the midpoint, and on a degenerate zero-length line.
   - size: S
 
-- [ ] M192.P2.T2 — Carry the nearest end and allow output-edge pick-up
+- [x] M192.P2.T2 — Carry the nearest end and allow output-edge pick-up
   - files: `Gui/NodeGraph15.cpp`, `Gui/NodeGraph10.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/Edge.cpp`
   - approach: Extend the carried-arrow state with the carried end. Use `pickedUpEnd` on press/release to choose it. Carrying the destination end calls `dragDest`-style following (`Edge.cpp` `dragDest`) and on a node drop reconnects the source to that node's preferred input via `getPreferredInputForConnection`; carrying the source end keeps today's path. Remove `!isOutputEdge` from `shouldStartPickUp`. Drop on empty space issues the `ConnectCommand` with a null source/disconnect; Escape restores.
   - verify: manual under Xvfb via T3's script; both ends carried and dropped on a node connect correctly, empty-space drop disconnects, Escape restores, one undo step each.
@@ -55,7 +55,7 @@ Clicking a connected pipe to pick it up fails unless the cursor is perfectly sti
 
 ## Phase 192.3: GUI coverage
 
-- [ ] M192.P3.T1 — GUI script for click-with-jitter and end-aware pick-up
+- [x] M192.P3.T1 — GUI script for click-with-jitter and end-aware pick-up
   - files: `Tests/gui/m192_pipe_pickup.py` (new)
   - approach: Modelled on `Tests/gui/m55_node_graph.py` helpers (`send_mouse`, `begin_drag`, `drag_step`). Sections: press/release with 2 px of intermediate moves picks up; press-drag beyond threshold behaves as a drag; click near arrowhead carries the downstream end, click mid-pipe/near source carries the source end; output-edge click carries; Escape and empty-space drop. Verify through `getInput()`.
   - verify: script passes under Xvfb on a `package.sh` AppImage.

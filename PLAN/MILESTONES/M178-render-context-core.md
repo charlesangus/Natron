@@ -72,25 +72,25 @@ The per-context render core shared by E13 - RFV and E15 - Loops And I-Nodes, spl
 
 ## Phase 178.3: Caches
 
-- [ ] M178.P3.T1 — Key the expression result cache by context
+- [x] M178.P3.T1 — Key the expression result cache by context
   - files: `Engine/KnobImpl.h` (`getValueFromExpression`, `evaluateExpression`, `_exprRes` fill sites), `Engine/Knob.cpp`
   - approach: Key `_exprRes` by (time, view, restricted context key) instead of time only, for knobs with a non-empty read-set; others keep today's key. Don't hold `_valueMutex` longer than today. This replaces M71.P2.T2's bypass, which would re-run Python per read.
   - verify: gtest evaluates one expression-like test knob under two keys on one frame (two values) and repeats each (no re-evaluation; a counter stays at 2); a context-free knob still hits once.
   - size: M
 
-- [ ] M178.P3.T2 — Size the actions cache to the contexts in flight
+- [x] M178.P3.T2 — Size the actions cache to the contexts in flight
   - files: `Engine/EffectInstancePrivate.cpp`, `Engine/EffectInstancePrivate.h`
   - approach: The LRU holds max(kMin, 2×threads) hashes (`EffectInstancePrivate.cpp:460`), which N contexts thrash. Grow its capacity per frame to the node's context count from the request pass (bounded by the M178 context cap), shrinking back after the frame.
   - verify: gtest with a 64-context fan-out: each context's RoD/RoI actions run once per frame (counter), not repeatedly.
   - size: M
 
-- [ ] M178.P3.T3 — Snapshot metadata per (node, context)
+- [x] M178.P3.T3 — Snapshot metadata per (node, context)
   - files: `Engine/ParallelRenderArgs.cpp`, `Engine/EffectInstance.cpp` (`getMetadata(time, view)` from M167), `Tests/RenderContextMetadata_Test.cpp`
   - approach: The per-frame metadata snapshot M167 - Per-Frame Node Metadata stores beside `nodeHash` is taken per `(node, ctxKey)`; since the context key is folded into the hash, `ActionsCache` keys it per context with no further change. Main-thread UI keeps reading the base context.
   - verify: gtest: a fan-out test node whose contexts drive a Reformat-like test node's output size reports a different format per context downstream, and a context-free node's metadata is computed once.
   - size: M
 
-- [ ] M178.P3.T4 — Warn on runaway context counts
+- [x] M178.P3.T4 — Warn on runaway context counts
   - files: `Engine/ParallelRenderArgs.cpp`, `Engine/Node.cpp` (persistent message)
   - approach: Count contexts per frame in the request pass; past 4096, log one warning per render naming the fan-out nodes and set a persistent warning badge on the outermost one, cleared when the count drops.
   - verify: gtest with a 2×64×64 nested test fan-out: the render completes and the warning is logged once.

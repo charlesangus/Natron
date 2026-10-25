@@ -114,6 +114,7 @@ set(Tests_SOURCES
     ProjectSerialization_Test.cpp
     Serialization/ProjectEquivalence.cpp
     PyKeyTangents_Test.cpp
+    PyLinks_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
     PythonUndo_Test.cpp

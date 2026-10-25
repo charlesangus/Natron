@@ -398,21 +398,6 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             continue;
         }
 
-        ///restore slave/master link if any
-        const std::string& masterNodeName = it->second->masterNodeName;
-        if ( !masterNodeName.empty() ) {
-            ///find such a node
-            NodePtr masterNode = it->first->getApp()->getNodeByFullySpecifiedName(masterNodeName);
-
-            if (!masterNode) {
-                appInst->getProject()->addLoadWarning(tr("%1 \u2192 %2: node not found; its parameters were left unlinked")
-                                                          .arg(QString::fromUtf8(it->second->scriptName.c_str()))
-                                                          .arg(QString::fromUtf8(masterNodeName.c_str())));
-            } else {
-                it->first->getEffectInstance()->slaveAllKnobs( masterNode->getEffectInstance().get(), true );
-            }
-        }
-
         if ( !parentName.empty() ) {
             //The parent will have connection mades for its children
             continue;

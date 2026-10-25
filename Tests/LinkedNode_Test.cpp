@@ -26,11 +26,15 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <map>
+#include <memory>
 #include <string>
 
 #include <gtest/gtest.h>
 
+#include <QtCore/QFile>
 #include <QtCore/QObject>
+#include <QtCore/QTemporaryDir>
 
 #include "BaseTest.h"
 
@@ -42,6 +46,8 @@
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
+
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_USING
 
@@ -217,4 +223,132 @@ TEST_F(LinkedNodeTest, PasteLinkingOntoALinkedNodeDoesNotMakeALinkedNode)
 
     knobOf(original)->setValue(0.25, ViewSpec::all(), 0);
     EXPECT_DOUBLE_EQ(0.25, knobOf(third)->getValue(0));
+}
+
+TEST_F(LinkedNodeTest, LinkGroupsSurviveASaveAndReload)
+{
+    NodePtr pasteSource = createNode(_generatorPluginID);
+    NodePtr pasteTarget = createNode(_generatorPluginID);
+    ASSERT_TRUE(pasteSource && pasteTarget);
+
+    ASSERT_TRUE(copy->linkAllKnobsTo(original));
+    ASSERT_TRUE(third->linkAllKnobsTo(original));
+    knobOf(original)->setValue(0.25, ViewSpec::all(), 0);
+    ASSERT_TRUE(knobOf(third)->unlinkFromGroups());
+    knobOf(third)->setValue(0.875, ViewSpec::all(), 0);
+    ASSERT_TRUE(knobOf(pasteTarget)->linkTo(-1, knobOf(pasteSource), -1));
+    knobOf(pasteSource)->setValue(0.5, ViewSpec::all(), 0);
+
+    const std::string originalName = original->getScriptName();
+    const std::string copyName = copy->getScriptName();
+    const std::string thirdName = third->getScriptName();
+    const std::string pasteSourceName = pasteSource->getScriptName();
+    const std::string pasteTargetName = pasteTarget->getScriptName();
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("linked-nodes.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    original.reset();
+    copy.reset();
+    third.reset();
+    pasteSource.reset();
+    pasteTarget.reset();
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    original = project->getNodeByName(originalName);
+    copy = project->getNodeByName(copyName);
+    third = project->getNodeByName(thirdName);
+    pasteSource = project->getNodeByName(pasteSourceName);
+    pasteTarget = project->getNodeByName(pasteTargetName);
+    ASSERT_TRUE(original && copy && third && pasteSource && pasteTarget);
+
+    // The three Linked Nodes are linked again, two-way.
+    EXPECT_TRUE(original->isLinkedNode());
+    EXPECT_TRUE(copy->isLinkedNode());
+    EXPECT_TRUE(third->isLinkedNode());
+    NodesList linked;
+    original->getLinkedNodes(&linked);
+    EXPECT_TRUE(contains(linked, copy));
+    EXPECT_TRUE(contains(linked, third));
+    EXPECT_DOUBLE_EQ(0.25, knobOf(copy)->getValue(0));
+    knobOf(copy)->setValue(0.375, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.375, knobOf(original)->getValue(0));
+    knobOf(original)->setValue(0.625, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.625, knobOf(copy)->getValue(0));
+
+    // The unlinked knob kept its own value and re-links on request.
+    EXPECT_FALSE(knobOf(third)->isLinked(0));
+    EXPECT_TRUE(knobOf(third)->hasRelinkableGroups());
+    EXPECT_DOUBLE_EQ(0.875, knobOf(third)->getValue(0));
+    ASSERT_TRUE(knobOf(third)->relinkToGroups());
+    EXPECT_DOUBLE_EQ(0.625, knobOf(third)->getValue(0));
+    knobOf(third)->setValue(0.125, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.125, knobOf(original)->getValue(0));
+
+    // The Paste Link survives, and does not make Linked Nodes.
+    EXPECT_TRUE(knobOf(pasteTarget)->isLinked(0));
+    EXPECT_FALSE(pasteSource->isLinkedNode());
+    EXPECT_FALSE(pasteTarget->isLinkedNode());
+    EXPECT_DOUBLE_EQ(0.5, knobOf(pasteTarget)->getValue(0));
+    knobOf(pasteTarget)->setValue(0.75, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.75, knobOf(pasteSource)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.125, knobOf(original)->getValue(0));
+}
+
+TEST_F(LinkedNodeTest, PastedCopiesOfLinkedNodesAreLinkedOnlyToEachOther)
+{
+    ASSERT_TRUE(copy->linkAllKnobsTo(original));
+    knobOf(original)->setValue(0.25, ViewSpec::all(), 0);
+
+    // What a paste does: the copies are made from the copied nodes' serializations, then their
+    // links are restored together.
+    Serialization::NodeSerialization originalSerialization, copySerialization;
+    original->toSerialization(&originalSerialization, false);
+    copy->toSerialization(&copySerialization, false);
+    NodePtr pastedOriginal = createNode(_generatorPluginID);
+    NodePtr pastedCopy = createNode(_generatorPluginID);
+    ASSERT_TRUE(pastedOriginal && pastedCopy);
+    pastedOriginal->fromSerialization(originalSerialization);
+    pastedCopy->fromSerialization(copySerialization);
+    const std::map<std::string, std::string> noRenames;
+    pastedOriginal->storeKnobsLinks(originalSerialization, noRenames);
+    pastedCopy->storeKnobsLinks(copySerialization, noRenames);
+    NodesList pasted;
+    pasted.push_back(pastedOriginal);
+    pasted.push_back(pastedCopy);
+    KnobHelper::restoreLinkGroups(pasted);
+
+    EXPECT_TRUE(pastedOriginal->isLinkedNode());
+    EXPECT_TRUE(pastedCopy->isLinkedNode());
+    NodesList linked;
+    pastedOriginal->getLinkedNodes(&linked);
+    EXPECT_TRUE(contains(linked, pastedCopy));
+    EXPECT_FALSE(contains(linked, original));
+    EXPECT_FALSE(contains(linked, copy));
+    EXPECT_DOUBLE_EQ(0.25, knobOf(pastedCopy)->getValue(0));
+
+    knobOf(pastedCopy)->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.5, knobOf(pastedOriginal)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.25, knobOf(original)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.25, knobOf(copy)->getValue(0));
+
+    knobOf(original)->setValue(0.75, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.75, knobOf(copy)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.5, knobOf(pastedCopy)->getValue(0));
+
+    // A single pasted copy has nothing to link to.
+    NodePtr single = createNode(_generatorPluginID);
+    ASSERT_TRUE(single != nullptr);
+    single->fromSerialization(copySerialization);
+    single->storeKnobsLinks(copySerialization, noRenames);
+    KnobHelper::restoreLinkGroups(NodesList(1, single));
+    EXPECT_FALSE(single->isLinkedNode());
+    EXPECT_FALSE(knobOf(single)->isLinked(0));
 }

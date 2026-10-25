@@ -1230,11 +1230,7 @@ public:
     void refreshPreviewsRecursivelyUpstream(double time);
 
 public:
-    void onAllKnobsSlaved(bool isSlave, KnobHolder* master);
-
     void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master, int dimension, bool isSlave, bool isExpression);
-
-    NodePtr getMasterNode() const;
 
     /**
      * @brief Makes this node a Linked Node of other, which must be of the same plug-in: each knob declared
@@ -2106,8 +2102,6 @@ public Q_SLOTS:
         Q_EMIT previewImageChanged(time);
     }
 
-    void onMasterNodeDeactivated();
-
     void onInputLabelChanged(const QString & name);
 
     void notifySettingsPanelClosed(bool closed )
@@ -2196,8 +2190,6 @@ Q_SIGNALS:
     ///how much has just changed, this not the new value but the difference between the new value
     ///and the old value
     void pluginMemoryUsageChanged(qint64 mem);
-
-    void allKnobsSlaved(bool b);
 
     ///Called when a knob is either slaved or unslaved
     void knobsLinksChanged();

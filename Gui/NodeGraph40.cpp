@@ -511,10 +511,13 @@ NodeGraph::createLinkedNodes(const QPointF& scenePos)
 
     //Restore links once all children are created for alias knobs/expressions
     std::list<Serialization::NodeSerializationPtr>::iterator itS = serializations.begin();
+    NodesList copies;
     for (std::list<NodeGuiPtr> ::iterator it = newNodesList.begin(); it != newNodesList.end(); ++it, ++itS) {
         (*it)->getNode()->storeKnobsLinks(**itS, oldNewScriptNamesMapping);
         (*it)->getNode()->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, true); // a copy of an existing node should never fail
+        copies.push_back((*it)->getNode());
     }
+    KnobHelper::restoreLinkGroups(copies);
 
     // Linking last makes each copy adopt its original's value, animation and expression as they are, with
     // the expressions read in each copy's own context, rather than the ones restored above.

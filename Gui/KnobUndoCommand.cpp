@@ -91,18 +91,71 @@ emitKnobLinksChanged(const KnobIPtr& knob,
     }
 }
 
-struct PasteUndoCommandPrivate
+void
+getKnobLinkPartners(const KnobIPtr& knob,
+                    int dimension,
+                    std::vector<KnobLinkPartner>* partners)
 {
-    // A dimension of the target that was linked before a link paste, and a member of its group that undo
-    // links it back to.
-    struct PreviousLink {
-        int dimension;
-        bool nodeLink;
-        UndoKnobRef partner;
-        int partnerDimension;
-        bool partnerNodeLink;
-    };
+    const int first = (dimension == -1) ? 0 : dimension;
+    const int last = (dimension == -1) ? knob->getDimension() : dimension + 1;
 
+    for (int i = first; i < last; ++i) {
+        if (!knob->isLinked(i) || knob->isLinkPermanent(i)) {
+            continue;
+        }
+        KnobLinkGroupPtr group = knob->getLinkGroup(i);
+        if (!group) {
+            continue;
+        }
+        std::vector<KnobLinkGroup::Member> members = group->getMembers();
+        const KnobLinkGroup::Member* chosen = 0;
+        KnobIPtr chosenKnob;
+        for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+            KnobIPtr partner = it->knob.lock();
+            if (!partner || !it->linked || ((partner == knob) && (it->dimension == i))) {
+                continue;
+            }
+            const bool otherHolder = (partner->getHolder() != knob->getHolder());
+            if (!chosen || otherHolder) {
+                chosen = &*it;
+                chosenKnob = partner;
+            }
+            if (otherHolder) {
+                break;
+            }
+        }
+        if (!chosen) {
+            continue;
+        }
+        KnobLinkPartner link;
+        link.knob = UndoKnobRef(knob);
+        link.dimension = i;
+        link.nodeLink = group->isMemberNodeLink(knob.get(), i);
+        link.partner = UndoKnobRef(chosenKnob);
+        link.partnerDimension = chosen->dimension;
+        link.partnerNodeLink = chosen->nodeLink;
+        partners->push_back(link);
+    }
+}
+
+void
+restoreKnobLinkPartners(const std::vector<KnobLinkPartner>& partners)
+{
+    for (std::vector<KnobLinkPartner>::const_iterator it = partners.begin(); it != partners.end(); ++it) {
+        KnobIPtr knob = it->knob.lock();
+        KnobIPtr partner = it->partner.lock();
+        if (!knob || !partner || !knob->linkTo(it->dimension, partner, it->partnerDimension)) {
+            continue;
+        }
+        KnobLinkGroupPtr group = knob->getLinkGroup(it->dimension);
+        if (group) {
+            group->setMemberNodeLink(knob.get(), it->dimension, it->nodeLink);
+            group->setMemberNodeLink(partner.get(), it->partnerDimension, it->partnerNodeLink);
+        }
+    }
+}
+
+struct PasteUndoCommandPrivate {
     UndoKnobRef knob;
     KnobClipBoardType type;
     int fromDimension;
@@ -114,7 +167,8 @@ struct PasteUndoCommandPrivate
     UndoKnobRef linkSource;
     // The dimensions of the target a link paste links, found before the paste.
     std::vector<int> linkDimensions;
-    std::vector<PreviousLink> previousLinks;
+    // The dimensions of the target that were linked before a link paste, and the members undo links them back to.
+    std::vector<KnobLinkPartner> previousLinks;
     // The nodes the target shared a link group with before the paste, whose link lines a paste changes.
     NodesList previousLinkNodes;
 
@@ -165,22 +219,7 @@ PasteUndoCommand::PasteUndoCommand(const KnobGuiPtr& knob,
             if (!internalKnob->isLinked(i)) {
                 continue;
             }
-            KnobLinkGroupPtr group = internalKnob->getLinkGroup(i);
-            std::vector<KnobLinkGroup::Member> members = group->getMembers();
-            for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
-                KnobIPtr partner = it->knob.lock();
-                if (!partner || !it->linked || ((partner == internalKnob) && (it->dimension == i))) {
-                    continue;
-                }
-                PasteUndoCommandPrivate::PreviousLink link;
-                link.dimension = i;
-                link.nodeLink = group->isMemberNodeLink(internalKnob.get(), i);
-                link.partner = UndoKnobRef(partner);
-                link.partnerDimension = it->dimension;
-                link.partnerNodeLink = it->nodeLink;
-                _imp->previousLinks.push_back(link);
-                break;
-            }
+            getKnobLinkPartners(internalKnob, i, &_imp->previousLinks);
         }
     }
 
@@ -243,18 +282,7 @@ PasteUndoCommand::undo()
         internalKnob->leaveLinkGroups(*it);
         internalKnob->cloneAndUpdateGui(_imp->originalKnob.get(), *it, *it);
     }
-    // A dimension that was linked rejoins a group with the member it was linked to, which still holds the shared state.
-    for (std::vector<PasteUndoCommandPrivate::PreviousLink>::const_iterator it = _imp->previousLinks.begin(); it != _imp->previousLinks.end(); ++it) {
-        KnobIPtr partner = it->partner.lock();
-        if (!partner || !internalKnob->linkTo(it->dimension, partner, it->partnerDimension)) {
-            continue;
-        }
-        KnobLinkGroupPtr group = internalKnob->getLinkGroup(it->dimension);
-        if (group) {
-            group->setMemberNodeLink(internalKnob.get(), it->dimension, it->nodeLink);
-            group->setMemberNodeLink(partner.get(), it->partnerDimension, it->partnerNodeLink);
-        }
-    }
+    restoreKnobLinkPartners(_imp->previousLinks);
     internalKnob->endChanges();
     emitKnobLinksChanged(internalKnob, linkNodes);
 } // undo

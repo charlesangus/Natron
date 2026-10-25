@@ -482,6 +482,30 @@ TEST(KnobYaml, LinkFormsRoundTrip)
     expectKnobsEqual(YamlTest::canonicalKnob(unsaved), decoded.back());
 }
 
+TEST(KnobYaml, LinkGroupsRoundTrip)
+{
+    KnobSerialization knob = makeKnob(kKnobTypes[2], eKnobVariantStatic);
+    Serialization::KnobLinkGroupSerialization nodeLink;
+    nodeLink.id = "Blur1.size.0";
+    nodeLink.nodeLink = true;
+    knob.dimensions[0].linkGroup = nodeLink;
+    Serialization::KnobLinkGroupSerialization unlinked;
+    unlinked.id = "Group1.Blur2.size.1";
+    unlinked.linked = false;
+    knob.dimensions[1].linkGroup = unlinked;
+
+    const std::string text = Serialization::encodeKnobsYaml({ knob });
+    EXPECT_NE(text.find("linkGroup: \"Blur1.size.0\", nodeLink: true"), std::string::npos) << text;
+    EXPECT_NE(text.find("linkGroup: \"Group1.Blur2.size.1\", unlinked: true"), std::string::npos) << text;
+    std::list<KnobSerialization> decoded = Serialization::decodeKnobsYaml(text);
+    ASSERT_EQ(1u, decoded.size());
+    Serialization::completeKnobSerialization(&decoded.front(), "Double", 2);
+    expectKnobsEqual(YamlTest::canonicalKnob(knob), decoded.front());
+    // A linked dimension keeps its own value in the file.
+    EXPECT_TRUE(decoded.front().dimensions[0].value.has_value());
+    EXPECT_EQ(text, Serialization::encodeKnobsYaml(decoded));
+}
+
 TEST(KnobYaml, SpecialDoublesAndAwkwardStrings)
 {
     KnobSerialization doubles = makeKnob(kKnobTypes[6], eKnobVariantStatic);

@@ -192,8 +192,7 @@ public:
         , renderInstancesSharedMutex()
         , contentHashMutex()
         , contentHash(0)
-        , masterNodeMutex()
-        , masterNode()
+        , nodeLinksMutex()
         , nodeLinks()
         , nodeSettingsPage()
         , nodeLabelKnob()
@@ -428,8 +427,7 @@ public:
     mutable QMutex hashedMetadataSourcesMutex; //< protects the two fields below
     mutable U64 hashedMetadataSourcesGeneration = 0; //< 0 until filled, see KnobHelper::getHashedMetadataSourcesGeneration()
     mutable std::vector<NodeWPtr> hashedMetadataSources;
-    mutable QMutex masterNodeMutex; //< protects masterNode and nodeLinks
-    NodeWPtr masterNode; //< this points to the master when the node is a clone
+    mutable QMutex nodeLinksMutex; //< protects nodeLinks
     KnobLinkList nodeLinks; //< these point to the parents of the params links
 
     KnobPageWPtr nodeSettingsPage;

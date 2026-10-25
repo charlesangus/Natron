@@ -433,6 +433,32 @@ public:
     static KnobIPtr createCopyForKnob(const KnobIPtr & originalKnob);
 };
 
+/**
+ * @brief A dimension of a knob that is linked two-way, and a member of its link group that it can
+ * be linked back to after it has left the group.
+ **/
+struct KnobLinkPartner {
+    UndoKnobRef knob;
+    int dimension;
+    bool nodeLink;
+    UndoKnobRef partner;
+    int partnerDimension;
+    bool partnerNodeLink;
+};
+
+/**
+ * @brief Appends to partners the partner of each linked dimension of knob, or of the given dimension
+ * only, skipping permanent groups. The partner is a member on another holder when the group has
+ * one, so that linking back also rejoins the group of a knob linked to knobs of its own node.
+ **/
+void getKnobLinkPartners(const KnobIPtr& knob, int dimension, std::vector<KnobLinkPartner>* partners);
+
+/**
+ * @brief Links each recorded dimension back to its partner, which still holds the group's shared
+ * state, and restores both members' node-link flags.
+ **/
+void restoreKnobLinkPartners(const std::vector<KnobLinkPartner>& partners);
+
 struct PasteUndoCommandPrivate;
 class PasteUndoCommand
     : public QUndoCommand

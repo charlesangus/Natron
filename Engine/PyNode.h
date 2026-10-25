@@ -246,6 +246,30 @@ public:
     void destroy(bool autoReconnect = true);
 
     /**
+     * @brief Creates a Linked Node of this node next to it: a copy whose parameters are linked two-way to
+     * the ones of this node, and for a group the nodes inside it to the ones of this group. Raises ValueError
+     * for a viewer, a multi-instance node or a node that stands in for a missing plug-in.
+     **/
+    Effect* createLinkedNode();
+
+    /**
+     * @brief Unlinks every parameter of the node from the parameters it is linked to, except alias links.
+     * Each one keeps its value, animation and expression and can be linked back with Param.relink().
+     * Returns False if no parameter was linked.
+     **/
+    bool unlinkAllParams();
+
+    /**
+     * @brief True if the node is a Linked Node of another node, or another node is a Linked Node of it.
+     **/
+    bool isLinkedNode() const;
+
+    /**
+     * @brief The nodes this node is a Linked Node of.
+     **/
+    std::list<Effect*> getLinkedNodes() const;
+
+    /**
      * @brief Returns the maximum number of inputs that can be connected to the node.
      **/
     int getMaxInputCount() const;

@@ -13,7 +13,7 @@ the dashed lines, "<------->" for the lines of knob links and "(master)" for exp
 glyph by its "is a Linked Node" tool tip. Line colours and dash patterns are only checked in the
 screenshots.
 
-Phase 92.3's knob links are checked in node panels: the link circle at the end of a linked knob's
+Knob links are checked in node panels: the link circle at the end of a linked knob's
 row (object name "knobLinkButton", dynamic property "linked"), its click to unlink and to re-link
 through the confirmation dialog, the Unlink / Re-link items, and Copy Link / Paste Link through
 the knob's right-click menu, each step undone and redone.

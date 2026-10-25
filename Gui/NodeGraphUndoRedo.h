@@ -358,6 +358,7 @@ private:
     std::list<NodeGuiWPtr>_nodes;
 };
 
+struct KnobLinkPartner;
 
 class LoadNodePresetsCommand
     : public QUndoCommand
@@ -384,6 +385,8 @@ private:
     std::list<NodeWPtr> _oldChildren, _newChildren; //< children if multi-instance
     std::list<Serialization::NodeSerializationPtr> _newSerializations, _oldSerialization;
     std::list<KnobIWPtr> _createdUserKnobs;
+    // The node's two-way links before the preset, which the preset removes and undo links back.
+    std::vector<KnobLinkPartner> _linkPartners;
 };
 
 class RenameNodeUndoRedoCommand

@@ -3680,13 +3680,6 @@ EffectInstance::unregisterPluginMemory(size_t nBytes)
 }
 
 void
-EffectInstance::onAllKnobsSlaved(bool isSlave,
-                                 KnobHolder* master)
-{
-    getNode()->onAllKnobsSlaved(isSlave, master);
-}
-
-void
 EffectInstance::onKnobSlaved(const KnobIPtr& slave,
                              const KnobIPtr& master,
                              int dimension,

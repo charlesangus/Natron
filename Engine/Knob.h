@@ -1324,6 +1324,28 @@ public:
     void restoreExpressionsFromSerialization(const Serialization::KnobSerialization& serialization,
                                              const std::map<std::string, std::string>& oldNewScriptNamesMapping);
 
+    /**
+     * @brief The link group a dimension was saved in, kept by storeLinksFromSerialization() until
+     * KnobHelper::restoreLinkGroups() rebuilds the groups of everything that was saved with it.
+     **/
+    struct StoredLinkGroup {
+        int dimension;
+        std::string id;
+        bool linked;
+        bool nodeLink;
+    };
+
+    /**
+     * @brief Returns the link groups storeLinksFromSerialization() kept and forgets them.
+     **/
+    std::vector<StoredLinkGroup> takeStoredLinkGroups()
+    {
+        std::vector<StoredLinkGroup> ret;
+        ret.swap(_storedLinkGroups);
+
+        return ret;
+    }
+
 private:
     struct Link {
         int slaveDimension;
@@ -1349,6 +1371,7 @@ private:
     };
 
     std::vector<Link> _links;
+    std::vector<StoredLinkGroup> _storedLinkGroups;
 
 public:
 
@@ -1922,6 +1945,15 @@ public:
     virtual bool hasRelinkableGroups() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual KnobLinkGroupPtr getLinkGroup(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual std::vector<KnobLinkedDimension> getLinkedKnobs() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Rebuilds the link groups that storeLinksFromSerialization() kept on the knobs of nodes,
+     * and of the nodes inside them, once all of them exist: the dimensions saved with the same group
+     * id are linked to each other only, never to a knob that was not saved with them. A group id saved
+     * for a single dimension, or for dimensions already in one group together, changes nothing.
+     **/
+    static void restoreLinkGroups(const NodesList& nodes);
+
     virtual U64 getContentHash() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual U64 getDimensionContentHash(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void invalidateContentHash() OVERRIDE FINAL;
@@ -3123,13 +3155,6 @@ public:
 
     void initializeKnobsPublic();
 
-    bool isSlave() const;
-
-    ///Slave all the knobs of this holder to the other holder.
-    void slaveAllKnobs(KnobHolder* other, bool restore);
-
-    void unslaveAllKnobs();
-
     /**
      * @brief Returns the local current time of the timeline
      **/
@@ -3203,20 +3228,9 @@ protected:
 
     virtual void onSignificantEvaluateAboutToBeCalled(KnobI* /*knob*/) {}
 
-    /**
-     * @brief Called when the knobHolder is made slave or unslaved.
-     * @param master The master knobHolder.
-     * @param isSlave Whether this KnobHolder is now slaved or not.
-     * If false, master will be NULL.
-     **/
-    virtual void onAllKnobsSlaved(bool /*isSlave*/,
-                                  KnobHolder* /*master*/)
-    {
-    }
-
 public:
     /**
-     * @brief Same as onAllKnobsSlaved but called when only 1 knob is slaved, or when a dimension of slave
+     * @brief Called when a dimension of slave is slaved to or unslaved from master, or when it
      * starts or stops reading master in its expression (isExpression).
      **/
     virtual void onKnobSlaved(const KnobIPtr& /*slave*/,

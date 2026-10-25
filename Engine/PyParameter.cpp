@@ -444,41 +444,129 @@ Param::copy(Param* other,
     return true;
 }
 
-bool
-Param::slaveTo(Param* other,
-               int thisDimension,
-               int otherDimension)
+// Knob link changes do not emit Node::linksChanged(): emits it on the knob's node, the nodes it is
+// now linked to and the ones in previousLinkNodes, so that their link lines are redrawn.
+static void
+emitParamLinksChanged(const KnobIPtr& knob,
+                      const NodesList& previousLinkNodes)
 {
-    if (!checkIsEditable()) {
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    if (node) {
+        node->emitLinksChanged(previousLinkNodes);
+    }
+}
+
+// The nodes the knob's node is linked to now, which must redraw their link lines if a link changes.
+static NodesList
+getParamLinkNodes(const KnobIPtr& knob)
+{
+    NodesList nodes;
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    if (node) {
+        node->getKnobLinkedNodes(&nodes);
+    }
+
+    return nodes;
+}
+
+bool
+Param::linkTo(Param* other,
+              int thisDimension,
+              int otherDimension)
+{
+    if (!other || !checkIsEditable() || !other->checkIsEditable()) {
         return false;
     }
-    recordPythonKnobEdit(getInternalKnob());
     KnobIPtr thisKnob = _knob.lock();
     KnobIPtr otherKnob = other->_knob.lock();
 
-    if ( !KnobI::areTypesCompatibleForSlave( thisKnob.get(), otherKnob.get() ) ) {
+    if (!thisKnob || !otherKnob) {
         return false;
     }
-    if ( (thisDimension < 0) || ( thisDimension >= thisKnob->getDimension() ) || (otherDimension < 0) || ( otherDimension >= otherKnob->getDimension() ) ) {
+    if ((thisDimension < -1) || (thisDimension >= thisKnob->getDimension()) || (otherDimension < -1) || (otherDimension >= otherKnob->getDimension())) {
         return false;
     }
+    recordPythonKnobEdit(thisKnob);
+    NodesList previousLinkNodes = getParamLinkNodes(thisKnob);
+    if (!thisKnob->linkTo(thisDimension, otherKnob, otherDimension)) {
+        return false;
+    }
+    emitParamLinksChanged(thisKnob, previousLinkNodes);
 
-    return thisKnob->slaveTo(thisDimension, otherKnob, otherDimension);
+    return true;
 }
 
-void
-Param::unslave(int dimension)
+bool
+Param::unlink()
 {
     if (!checkIsEditable()) {
-        return;
+        return false;
     }
-    recordPythonKnobEdit(getInternalKnob());
     KnobIPtr thisKnob = _knob.lock();
 
     if (!thisKnob) {
-        return;
+        return false;
     }
-    thisKnob->unSlave(dimension, false);
+    for (int i = 0; i < thisKnob->getDimension(); ++i) {
+        if (thisKnob->isLinkPermanent(i)) {
+            const std::string message = "The parameter " + thisKnob->getName() + " is an alias or has aliases, so it cannot be unlinked.";
+            PyErr_SetString(PyExc_ValueError, message.c_str());
+
+            return false;
+        }
+    }
+    recordPythonKnobEdit(thisKnob);
+    NodesList previousLinkNodes = getParamLinkNodes(thisKnob);
+    if (!thisKnob->unlinkFromGroups()) {
+        return false;
+    }
+    emitParamLinksChanged(thisKnob, previousLinkNodes);
+
+    return true;
+}
+
+bool
+Param::relink()
+{
+    if (!checkIsEditable()) {
+        return false;
+    }
+    KnobIPtr thisKnob = _knob.lock();
+
+    if (!thisKnob || !thisKnob->hasRelinkableGroups()) {
+        return false;
+    }
+    recordPythonKnobEdit(thisKnob);
+    if (!thisKnob->relinkToGroups()) {
+        return false;
+    }
+    emitParamLinksChanged(thisKnob, NodesList());
+
+    return true;
+}
+
+bool
+Param::isLinked(int dimension) const
+{
+    KnobIPtr thisKnob = _knob.lock();
+
+    if (!thisKnob || (dimension < -1) || (dimension >= thisKnob->getDimension())) {
+        return false;
+    }
+    if (dimension != -1) {
+        return thisKnob->isLinked(dimension);
+    }
+    for (int i = 0; i < thisKnob->getDimension(); ++i) {
+        if (thisKnob->isLinked(i)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 double

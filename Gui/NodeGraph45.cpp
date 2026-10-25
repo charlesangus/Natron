@@ -670,11 +670,13 @@ NodeGraph::copyNodesAndCreateInGroup(const NodesGuiList& nodes,
         getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
 
         std::list<Serialization::NodeSerializationPtr>::const_iterator itSerialization = clipboard.nodes.begin();
+        NodesList copies;
         for (std::list<std::pair<std::string, NodeGuiPtr> > ::iterator it = createdNodes.begin(); it != createdNodes.end(); ++it, ++itSerialization) {
             it->second->getNode()->storeKnobsLinks(**itSerialization, oldNewScriptNamesMapping);
             it->second->getNode()->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, true); // may not fail
+            copies.push_back(it->second->getNode());
         }
-
+        KnobHelper::restoreLinkGroups(copies);
     }
 
     getGui()->getApp()->getProject()->forceComputeInputDependentDataOnAllTrees();

@@ -61,13 +61,13 @@ namespace YamlDetail {
         bool
         isDimensionEmpty(const KnobDimensionSerialization& dimension)
         {
-            return !dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && dimension.enabled;
+            return !dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && !dimension.linkGroup && dimension.enabled;
         }
 
         bool
         isDimensionPlainValue(const KnobDimensionSerialization& dimension)
         {
-            return dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && dimension.enabled;
+            return dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && !dimension.linkGroup && dimension.enabled;
         }
 
         void
@@ -344,6 +344,22 @@ namespace YamlDetail {
                     emitString(em, master.masterNodeName);
                 }
             }
+            if (dimension.linkGroup) {
+                const KnobLinkGroupSerialization& group = *dimension.linkGroup;
+                emitKey(em, "linkGroup");
+                em << YAML::Value;
+                emitString(em, group.id);
+                if (!group.linked) {
+                    emitKey(em, "unlinked");
+                    em << YAML::Value;
+                    emitBool(em, true);
+                }
+                if (group.nodeLink) {
+                    emitKey(em, "nodeLink");
+                    em << YAML::Value;
+                    emitBool(em, true);
+                }
+            }
             if (dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master) {
                 emitKey(em, "value");
                 em << YAML::Value;
@@ -618,6 +634,16 @@ namespace YamlDetail {
                 }
                 if (YAML::Node nodeName = reader.get("nodeName")) {
                     dimension.master->masterNodeName = readString(nodeName, context + ".nodeName");
+                }
+            }
+            if (YAML::Node linkGroup = reader.get("linkGroup")) {
+                dimension.linkGroup.emplace();
+                dimension.linkGroup->id = readString(linkGroup, context + ".linkGroup");
+                if (YAML::Node unlinked = reader.get("unlinked")) {
+                    dimension.linkGroup->linked = !readBool(unlinked, context + ".unlinked");
+                }
+                if (YAML::Node nodeLink = reader.get("nodeLink")) {
+                    dimension.linkGroup->nodeLink = readBool(nodeLink, context + ".nodeLink");
                 }
             }
             if (YAML::Node value = reader.get("value")) {

@@ -2786,7 +2786,6 @@ public:
     virtual void onKnobContentChanged(const KnobI* knob) OVERRIDE FINAL;
 
 private:
-    virtual void onAllKnobsSlaved(bool isSlave, KnobHolder* master) OVERRIDE FINAL;
     enum RenderingFunctorRetEnum
     {
         eRenderingFunctorRetFailed, //< must stop rendering

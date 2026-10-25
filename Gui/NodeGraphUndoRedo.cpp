@@ -44,14 +44,15 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 
-#include "Gui/NodeClipBoard.h"
-#include "Gui/NodeGui.h"
-#include "Gui/NodeGraph.h"
+#include "Gui/Edge.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
-#include "Gui/Edge.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/KnobUndoCommand.h"
 #include "Gui/MultiInstancePanel.h"
+#include "Gui/NodeClipBoard.h"
+#include "Gui/NodeGraph.h"
+#include "Gui/NodeGui.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -1400,6 +1401,9 @@ LoadNodePresetsCommand::undo()
     internalNode->deleteUserKnobs(_createdUserKnobs);
     _createdUserKnobs.clear();
     internalNode->applyPresetSerialization(*_oldSerialization.front(), Node::ePresetApplyModeSnapshot, NULL);
+    // The snapshot only relinks knobs of this node to each other: its links to other nodes are made again here.
+    restoreKnobLinkPartners(_linkPartners);
+    internalNode->emitLinksChanged(NodesList());
 
     internalNode->getEffectInstance()->incrHashAndEvaluate(true, true);
     internalNode->getApp()->triggerAutoSave();
@@ -1417,6 +1421,10 @@ LoadNodePresetsCommand::redo()
 
     if (!_firstRedoCalled) {
         node->serializeInternal(_oldSerialization);
+        const KnobsVec& knobs = internalNode->getKnobs();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            getKnobLinkPartners(*it, -1, &_linkPartners);
+        }
 
         if (panel) {
             const std::list<std::pair<NodeWPtr, bool> >& children = panel->getInstances();
@@ -1454,6 +1462,17 @@ LoadNodePresetsCommand::redo()
     std::list<KnobIPtr> created;
     internalNode->applyPresetSerialization(*_newSerializations.front(), Node::ePresetApplyModePreset, &created);
     _createdUserKnobs.assign(created.begin(), created.end());
+    // The preset removed the links: the nodes they went to redraw their link lines too.
+    NodesList partnerNodes;
+    for (std::vector<KnobLinkPartner>::const_iterator it = _linkPartners.begin(); it != _linkPartners.end(); ++it) {
+        KnobIPtr partner = it->partner.lock();
+        EffectInstance* effect = partner ? dynamic_cast<EffectInstance*>(partner->getHolder()) : 0;
+        NodePtr partnerNode = effect ? effect->getNode() : NodePtr();
+        if (partnerNode && (std::find(partnerNodes.begin(), partnerNodes.end(), partnerNode) == partnerNodes.end())) {
+            partnerNodes.push_back(partnerNode);
+        }
+    }
+    internalNode->emitLinksChanged(partnerNodes);
 
     internalNode->getEffectInstance()->incrHashAndEvaluate(true, true);
     internalNode->getApp()->triggerAutoSave();

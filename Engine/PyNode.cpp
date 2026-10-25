@@ -26,6 +26,7 @@
 #include "PyNode.h"
 
 #include <cassert>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -33,6 +34,7 @@
 #include <vector>
 
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Hash64.h"
 #include "Engine/Knob.h"
@@ -52,6 +54,7 @@
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
@@ -279,6 +282,152 @@ void
 Effect::destroy(bool autoReconnect)
 {
     destroyNodeFromPython(getInternalNode(), autoReconnect);
+}
+
+// Links each node of linked, and of the groups in it, to the node of source with the same script name,
+// as the node graph links the nodes inside a Linked Node of a group. Dots are copied, not linked, and
+// the nodes inside a PyPlug are the ones its script made.
+static void
+linkChildNodesByName(const NodeCollectionPtr& linked,
+                     const NodeCollectionPtr& source)
+{
+    NodesList nodes = linked->getNodes();
+
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        NodePtr sourceNode = source->getNodeByName((*it)->getScriptName());
+        if (!sourceNode) {
+            continue;
+        }
+        if ((*it)->getPluginID() != PLUGINID_NATRON_DOT) {
+            ignore_result((*it)->linkAllKnobsTo(sourceNode));
+        }
+        NodeGroupPtr linkedGroup = std::dynamic_pointer_cast<NodeGroup>((*it)->getEffectInstance());
+        NodeGroupPtr sourceGroup = std::dynamic_pointer_cast<NodeGroup>(sourceNode->getEffectInstance());
+        if (linkedGroup && sourceGroup && (*it)->getPluginPythonModule().empty()) {
+            linkChildNodesByName(linkedGroup, sourceGroup);
+        }
+    }
+}
+
+Effect*
+Effect::createLinkedNode()
+{
+    NodePtr source = getInternalNode();
+
+    if (!source || !checkHolderIsEditable(source->getEffectInstance().get())) {
+        return NULL;
+    }
+    if (source->isEffectViewer() || source->isMultiInstance() || source->getParentMultiInstance() || !Node::canPluginBeLinkedNode(source->getPluginID())) {
+        const std::string message = "The node " + source->getScriptName_mt_safe() + " cannot be a Linked Node.";
+        PyErr_SetString(PyExc_ValueError, message.c_str());
+
+        return NULL;
+    }
+    NodeCollectionPtr collection = source->getGroup();
+    if (!collection) {
+        return NULL;
+    }
+
+    // The copy is made the way the node graph pastes one, then linked last so that it adopts this node's
+    // value, animation and expression as they are.
+    Serialization::NodeSerializationPtr serialization = std::make_shared<Serialization::NodeSerialization>();
+    source->toSerialization(serialization.get());
+    CreateNodeArgs args(serialization->pluginID, collection);
+    args.setProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, serialization);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, serialization->pluginMajorVersion, 0);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, serialization->pluginMinorVersion, 1);
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+    args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
+    args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
+    args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+    NodePtr copy = source->getApp()->createNode(args);
+    if (!copy) {
+        return NULL;
+    }
+    if (collection->checkIfNodeLabelExists(copy->getLabel(), copy.get())) {
+        copy->setLabel(copy->getScriptName());
+    }
+    double x, y, w, h;
+    source->getPosition(&x, &y);
+    source->getSize(&w, &h);
+    copy->setPosition(x + w * 2, y);
+
+    // The nodes inside a group are not made by createNode(), except by a PyPlug's script.
+    NodesList copies(1, copy);
+    NodeGroupPtr copyGroup = std::dynamic_pointer_cast<NodeGroup>(copy->getEffectInstance());
+    if (copyGroup && copy->getPluginPythonModule().empty() && !serialization->children.empty()) {
+        std::map<std::string, bool> moduleUpdatesProcessed;
+        ignore_result(NodeCollection::restoreFromSerialization(serialization->children, copyGroup, true, &moduleUpdatesProcessed));
+        copyGroup->getNodes_recursive(copies, false);
+    }
+    NodesList allNodes;
+    source->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
+    std::map<std::string, std::string> oldNewScriptNamesMapping;
+    if (serialization->scriptName != copy->getScriptName()) {
+        oldNewScriptNamesMapping[serialization->scriptName] = copy->getScriptName();
+    }
+    copy->storeKnobsLinks(*serialization, oldNewScriptNamesMapping);
+    for (NodesList::const_iterator it = copies.begin(); it != copies.end(); ++it) {
+        (*it)->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, false);
+    }
+    KnobHelper::restoreLinkGroups(copies);
+
+    ignore_result(copy->linkAllKnobsTo(source));
+    NodeGroupPtr sourceGroup = std::dynamic_pointer_cast<NodeGroup>(source->getEffectInstance());
+    if (copyGroup && sourceGroup && copy->getPluginPythonModule().empty()) {
+        linkChildNodesByName(copyGroup, sourceGroup);
+    }
+    recordPythonNodeCreated(copy);
+
+    return new Effect(copy);
+}
+
+bool
+Effect::unlinkAllParams()
+{
+    NodePtr node = getInternalNode();
+
+    if (!node || !checkHolderIsEditable(node->getEffectInstance().get())) {
+        return false;
+    }
+    const KnobsVec& knobs = node->getEffectInstance()->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        for (int i = 0; i < (*it)->getDimension(); ++i) {
+            if ((*it)->isLinked(i) && !(*it)->isLinkPermanent(i)) {
+                recordPythonKnobEdit(*it);
+                break;
+            }
+        }
+    }
+
+    return node->unlinkAllKnobs();
+}
+
+bool
+Effect::isLinkedNode() const
+{
+    NodePtr node = getInternalNode();
+
+    return node && node->isLinkedNode();
+}
+
+std::list<Effect*>
+Effect::getLinkedNodes() const
+{
+    std::list<Effect*> ret;
+    NodePtr node = getInternalNode();
+
+    if (!node) {
+        return ret;
+    }
+    NodesList nodes;
+    node->getLinkedNodes(&nodes);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        ret.push_back(new Effect(*it));
+    }
+
+    return ret;
 }
 
 int

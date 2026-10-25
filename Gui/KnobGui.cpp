@@ -804,7 +804,8 @@ KnobGui::createAnimationMenu(QMenu* menu,
         }
     }
 
-    // Internal slave links (clones and other slaveTo users) keep their own unlink item.
+    // Internal slave links are not link groups: the Tracker's linked CornerPin/Transform export and track markers
+    // still slave knobs, and keep this "Unlink from" item.
     if ( isAppKnob && ( ( hasDimensionSlaved && (dimension == -1) ) || dimensionIsSlaved ) ) {
         menu->addSeparator();
 

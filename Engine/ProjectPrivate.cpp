@@ -241,6 +241,7 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
                 }
             }
         }
+        KnobHelper::restoreLinkGroups(allNodes);
 
         // An expression naming a node restored after its own knob was set aside as invalid; with
         // the whole tree restored, what is still invalid refers to something the file lacks.

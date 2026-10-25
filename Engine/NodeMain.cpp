@@ -338,6 +338,10 @@ removeKnobLinks(const KnobIPtr& knob)
         if (knob->isSlave(i)) {
             knob->unSlave(i, false);
         }
+        // Two-way links go too; aliases of this knob stay, as its alias master link did above.
+        if (knob->getLinkGroup(i) && !knob->isLinkPermanent(i)) {
+            knob->leaveLinkGroups(i);
+        }
     }
 }
 
@@ -464,6 +468,7 @@ Node::applyPresetSerialization(const Serialization::NodeSerialization& serializa
     }
     // A link to a node that is gone stays unresolved rather than abort the rest of the apply.
     restoreKnobsLinks(allNodes, noRenames, false);
+    KnobHelper::restoreLinkGroups(NodesList(1, shared_from_this()));
 
     if (userKnobsChanged) {
         _imp->effect->recreateUserKnobs(true);

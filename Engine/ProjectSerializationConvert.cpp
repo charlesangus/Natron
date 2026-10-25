@@ -252,11 +252,6 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         getInputNames(serialization->inputs);
     }
 
-    NodePtr masterNode = getMasterNode();
-    if (masterNode) {
-        serialization->masterNodeName = masterNode->getFullyQualifiedName();
-    }
-
     RotoContextPtr roto = getRotoContext();
     if (roto && !roto->isEmpty()) {
         serialization->hasRotoContext = true;

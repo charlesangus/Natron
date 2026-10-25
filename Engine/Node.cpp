@@ -5867,52 +5867,12 @@ Node::refreshPreviewsRecursivelyDownstream(double time)
 }
 
 void
-Node::onAllKnobsSlaved(bool isSlave,
-                       KnobHolder* master)
-{
-    ///Only called by the main-thread
-    assert( QThread::currentThread() == qApp->thread() );
-
-    if (isSlave) {
-        EffectInstance* effect = dynamic_cast<EffectInstance*>(master);
-        assert(effect);
-        if (effect) {
-            NodePtr masterNode = effect->getNode();
-            {
-                QMutexLocker l(&_imp->masterNodeMutex);
-                _imp->masterNode = masterNode;
-            }
-            QObject::connect(masterNode.get(), SIGNAL(deactivated(bool)), this, SLOT(onMasterNodeDeactivated()));
-            QObject::connect( masterNode.get(), SIGNAL(previewImageChanged(double)), this, SLOT(refreshPreviewImage(double)) );
-        }
-    } else {
-        NodePtr master = getMasterNode();
-        QObject::disconnect(master.get(), SIGNAL(deactivated(bool)), this, SLOT(onMasterNodeDeactivated()));
-        QObject::disconnect( master.get(), SIGNAL(previewImageChanged(double)), this, SLOT(refreshPreviewImage(double)) );
-        {
-            QMutexLocker l(&_imp->masterNodeMutex);
-            _imp->masterNode.reset();
-        }
-    }
-
-    Q_EMIT allKnobsSlaved(isSlave);
-}
-
-void
 Node::onKnobSlaved(const KnobIPtr& slave,
                    const KnobIPtr& master,
                    int dimension,
                    bool isSlave,
                    bool isExpression)
 {
-    ///ignore the call if the node is a clone
-    {
-        QMutexLocker l(&_imp->masterNodeMutex);
-        if ( _imp->masterNode.lock() ) {
-            return;
-        }
-    }
-
     assert( master->getHolder() );
 
 
@@ -5931,7 +5891,7 @@ Node::onKnobSlaved(const KnobIPtr& slave,
     const KnobLinkKindEnum kind = isExpression ? eKnobLinkKindExpression : eKnobLinkKindSlave;
     bool changed = false;
     {
-        QMutexLocker l(&_imp->masterNodeMutex);
+        QMutexLocker l(&_imp->nodeLinksMutex);
         KnobLinkList::iterator found = _imp->nodeLinks.end();
         for (KnobLinkList::iterator it = _imp->nodeLinks.begin(); it != _imp->nodeLinks.end(); ++it) {
             if ((it->kind == kind) && (it->dimension == dimension) && (it->slave.lock() == slave) && (it->master.lock() == master)) {
@@ -5963,7 +5923,7 @@ void
 Node::getKnobsLinks(std::list<Node::KnobLink> & links) const
 {
     {
-        QMutexLocker l(&_imp->masterNodeMutex);
+        QMutexLocker l(&_imp->nodeLinksMutex);
 
         links = _imp->nodeLinks;
     }
@@ -5995,25 +5955,6 @@ Node::getKnobsLinks(std::list<Node::KnobLink> & links) const
             links.push_back(link);
         }
     }
-}
-
-void
-Node::onMasterNodeDeactivated()
-{
-    ///Only called by the main-thread
-    assert( QThread::currentThread() == qApp->thread() );
-    if (!_imp->effect) {
-        return;
-    }
-    _imp->effect->unslaveAllKnobs();
-}
-
-NodePtr
-Node::getMasterNode() const
-{
-    QMutexLocker l(&_imp->masterNodeMutex);
-
-    return _imp->masterNode.lock();
 }
 
 static bool
@@ -8815,10 +8756,6 @@ Node::isSettingsPanelVisibleInternal(std::set<const Node*>& recursionList) const
     recursionList.insert(this);
 
     {
-        NodePtr master = getMasterNode();
-        if (master) {
-            return master->isSettingsPanelVisible();
-        }
         for (KnobLinkList::iterator it = _imp->nodeLinks.begin(); it != _imp->nodeLinks.end(); ++it) {
             NodePtr masterNode = it->masterNode.lock();
             if ( masterNode && (masterNode.get() != this) && masterNode->isSettingsPanelVisibleInternal(recursionList) ) {

@@ -163,6 +163,14 @@ is needed. The map form can hold `value`, `expr` (with `hasRet`), `secret`, `ali
 [Curves](#curves). Only knobs that differ from their default are saved; defaults are saved for
 user knobs, whose definition the file must carry.
 
+A dimension in a two-way link group (Linked Nodes, Paste Link) is written in the map form with
+`linkGroup`, an id shared by the group's members, `unlinked: true` when the dimension was unlinked
+and keeps its own value, and `nodeLink: true` when it joined through a Linked Node. Its value is
+saved as well. The id is the lowest `node.knob.dimension` among the group's members and only
+groups what is loaded together: on load, or on paste, the dimensions with the same id are linked
+to each other and to nothing else. An alias is not a link group in the file: it is written with
+`alias` and the `link` to its master.
+
 ### Example
 
 This is the document the tests pin (`kExampleProjectYaml` in
@@ -354,8 +362,8 @@ place pane layout is saved.
 **Clipboard** (`Serialization/Yaml/ClipboardYaml.*`): `format: natron-clipboard`, and `nodes` in
 the `project.yaml` node schema, so inputs name siblings by script name and position, size and
 colours sit on each node. It travels on the system clipboard as
-`application/vnd.natron.nodes+yaml` next to the same text as `text/plain`. A pasted clone is not
-linked to its original.
+`application/vnd.natron.nodes+yaml` next to the same text as `text/plain`. Pasted copies of Linked
+Nodes, or of knobs linked by Paste Link, are linked to each other and not to their originals.
 
 ## Versioning
 

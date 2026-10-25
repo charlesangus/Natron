@@ -144,10 +144,14 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
             _publicInterface->getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
 
             //Restore links once all children are created for alias knobs/expressions
+            NodesList pastedNodes;
             for (std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>>::iterator it = newNodesMap.begin(); it != newNodesMap.end(); ++it) {
                 it->second->storeKnobsLinks(*(it->first), oldNewScriptNamesMapping);
                 it->second->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, false); // may fail
+                pastedNodes.push_back(it->second);
             }
+            // The pasted copies of linked knobs are linked to each other, not to the knobs they were copied from.
+            KnobHelper::restoreLinkGroups(pastedNodes);
         }
 
         if (newNodesList.size() > 1) {
@@ -235,16 +239,6 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
         n->setLabel(name);
     } else {
         //If we paste the node in a different graph, it can keep its scriptname/label
-    }
-
-    const std::string& masterNodeName = internalSerialization->masterNodeName;
-    if ( !masterNodeName.empty() ) {
-        NodePtr masterNode = _publicInterface->getGui()->getApp()->getProject()->getNodeByName(masterNodeName);
-
-        ///the node could not exist any longer if the user deleted it in the meantime
-        if ( masterNode && masterNode->isActivated() ) {
-            n->getEffectInstance()->slaveAllKnobs( masterNode->getEffectInstance().get(), true );
-        }
     }
 
     //All nodes that are reachable via expressions

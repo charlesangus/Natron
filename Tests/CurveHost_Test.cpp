@@ -52,7 +52,10 @@
 #include "Engine/RotoItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaintInteract.h"
+#include "Engine/RotoPoint.h"
+#include "Engine/RotoStrokeItem.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/RotoSerialization.h"
 
 NATRON_NAMESPACE_USING
 NATRON_PYTHON_NAMESPACE_USING
@@ -178,6 +181,19 @@ TEST_F(CurveHostTest, CopyingRotoPaintCurvesStillCreatesTheirNodes)
     ASSERT_TRUE(bool(square));
     ASSERT_FALSE(paint->getLayers().empty());
 
+    // A stroke built the way the paint tool builds one: nodes first, then inserted into its layer.
+    const int strokeSamples = 12;
+    RotoStrokeItemPtr stroke(new RotoStrokeItem(eRotoStrokeTypeSolid, paint, "Stroke", RotoLayerPtr()));
+    stroke->createNodes();
+    paint->addItem(paint->getLayers().front(), 0, stroke, RotoItem::eSelectionReasonOther);
+    for (int i = 0; i < strokeSamples; ++i) {
+        stroke->appendPoint(i == 0, RotoPoint(4. + i, 4. + 2. * i, 0.5, 1. + 0.1 * i));
+    }
+    stroke->setStrokeFinished();
+    Serialization::RotoStrokeItemSerialization sourceStroke;
+    stroke->toSerialization(&sourceStroke);
+    ASSERT_FALSE(sourceStroke.strokes.empty());
+
     RotoDrawableItemPtr copy = paint->makeDrawableCopy(square, "SquareCopy");
     ASSERT_TRUE(bool(copy));
     EXPECT_TRUE(bool(copy->getEffectNode()));
@@ -201,12 +217,31 @@ TEST_F(CurveHostTest, CopyingRotoPaintCurvesStillCreatesTheirNodes)
     ASSERT_TRUE(bool(duplicate));
     const std::list<RotoItemPtr> duplicatedItems = duplicate->getItems_mt_safe();
     ASSERT_FALSE(duplicatedItems.empty());
+    bool foundStroke = false;
     for (std::list<RotoItemPtr>::const_iterator it = duplicatedItems.begin(); it != duplicatedItems.end(); ++it) {
         RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
         ASSERT_TRUE(bool(drawable));
         EXPECT_TRUE(bool(drawable->getEffectNode()));
         EXPECT_TRUE(bool(drawable->getMergeNode()));
+        RotoStrokeItemPtr duplicatedStroke = std::dynamic_pointer_cast<RotoStrokeItem>(*it);
+        if (duplicatedStroke) {
+            foundStroke = true;
+            EXPECT_EQ("Stroke", duplicatedStroke->getScriptName());
+            Serialization::RotoStrokeItemSerialization copied;
+            duplicatedStroke->toSerialization(&copied);
+            ASSERT_EQ(sourceStroke.strokes.size(), copied.strokes.size());
+            for (std::size_t i = 0; i < copied.strokes.size(); ++i) {
+                auto source = sourceStroke.strokes.begin();
+                auto dup = copied.strokes.begin();
+                std::advance(source, i);
+                std::advance(dup, i);
+                EXPECT_EQ(source->xCurve.keyframes.size(), dup->xCurve.keyframes.size());
+                EXPECT_EQ(source->yCurve.keyframes.size(), dup->yCurve.keyframes.size());
+                EXPECT_GT(dup->xCurve.keyframes.size(), (std::size_t)1);
+            }
+        }
     }
+    EXPECT_TRUE(foundStroke);
 }
 
 TEST_F(CurveHostTest, MovingAControlPointChangesTheContentHash)

@@ -957,15 +957,6 @@ Bezier::Bezier(const RotoCurveContextPtr& ctx,
 {
 }
 
-Bezier::Bezier(const Bezier & other,
-               const RotoLayerPtr& parent)
-    : RotoDrawableItem( other.getContext(), other.getScriptName(), other.getParentLayer(), false )
-    , _imp( new BezierPrivate(false) )
-{
-    clone(&other);
-    setParentLayer(parent);
-}
-
 bool
 Bezier::isOpenBezier() const
 {

@@ -114,7 +114,6 @@ RotoLayer::clone(const RotoItem* other)
     // Built without itemMutex held: creating and attaching a copy's nodes hashes them, and that
     // reads whether this layer is activated, which takes itemMutex.
     RotoItems copies;
-    std::list<RotoStrokeItemPtr> strokes;
     std::list<RotoLayerPtr> layers;
     const RotoItems otherItems = isOtherLayer->getItems_mt_safe();
     for (RotoItems::const_iterator it = otherItems.begin(); it != otherItems.end(); ++it) {
@@ -122,17 +121,18 @@ RotoLayer::clone(const RotoItem* other)
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
         RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(*it);
         if (isBezier) {
-            BezierPtr copy( new Bezier(*isBezier, this_shared) );
+            // clone() needs the copy owned by a shared_ptr, so it runs after construction.
+            BezierPtr copy(new Bezier(getContext(), isBezier->getScriptName(), RotoLayerPtr(), false));
             getContext()->onItemCreated(copy, true);
+            copy->clone(isBezier.get());
+            copy->setParentLayer(this_shared);
             copies.push_back(copy);
         } else if (isStroke) {
-            RotoStrokeItemPtr copy( new RotoStrokeItem( isStroke->getBrushType(),
-                                                                        isStroke->getContext(),
-                                                                        isStroke->getScriptName() + "copy",
-                                                                        RotoLayerPtr() ) );
+            RotoStrokeItemPtr copy(new RotoStrokeItem(isStroke->getBrushType(), getContext(), isStroke->getScriptName(), RotoLayerPtr()));
             getContext()->onItemCreated(copy, true);
+            copy->clone(isStroke.get());
+            copy->setParentLayer(this_shared);
             copies.push_back(copy);
-            strokes.push_back(copy);
         } else {
             assert(isLayer);
             if (isLayer) {
@@ -149,9 +149,6 @@ RotoLayer::clone(const RotoItem* other)
     {
         QMutexLocker l(&itemMutex);
         _imp->items.swap(copies);
-    }
-    for (std::list<RotoStrokeItemPtr>::const_iterator it = strokes.begin(); it != strokes.end(); ++it) {
-        (*it)->setParentLayer(this_shared);
     }
     for (std::list<RotoLayerPtr>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
         getContext()->addLayer(*it);

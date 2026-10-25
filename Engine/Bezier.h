@@ -84,8 +84,8 @@ public:
            const RotoLayerPtr& parent,
            bool isOpenBezier);
 
-    Bezier(const Bezier & other,
-           const RotoLayerPtr& parent);
+    Bezier(const Bezier& other) = delete;
+    Bezier& operator=(const Bezier& other) = delete;
 
     virtual ~Bezier();
 

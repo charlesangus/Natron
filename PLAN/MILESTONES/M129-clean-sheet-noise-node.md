@@ -172,7 +172,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 128.4: Retire the OFX noise nodes
 
-- [ ] M129.P4.T1 — Retire Rand, CImg Noise and CImg Plasma, and fix their references
+- [x] M129.P4.T1 — Retire Rand, CImg Noise and CImg Plasma, and fix their references
   - files: `Engine/OfxRetired/<ofx-plugin-id>` (three markers), `Tests/LayerKnobs_Test.cpp`, `tools/ci/smoke_test.py` (pick another CImg plugin as the bundle check), `tools/bench/make_plates.py`
   - approach:
     - Add `Engine/OfxRetired/net.sf.openfx.Noise`, `Engine/OfxRetired/net.sf.cimg.CImgNoise` and `Engine/OfxRetired/net.sf.cimg.CImgPlasma` markers.

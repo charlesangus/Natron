@@ -276,6 +276,7 @@ TEST_F(NativeGlowTest, InputsAndKnobs)
         { kGlowParamBrightness, 1. },
         { kGlowParamSaturation, 1. },
         { kGlowParamGamma, 1. },
+        { kGlowParamRotate, 0. },
     };
     for (const auto& d : doubles) {
         KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(d.name));
@@ -294,11 +295,19 @@ TEST_F(NativeGlowTest, InputsAndKnobs)
     for (int d = 0; d < 3; ++d) {
         EXPECT_EQ(1., tint->getValue(d));
     }
-    for (const char* name : { kGlowParamPreview, kGlowParamScreen, kGlowParamAddInput, kGlowParamGlowOnly, kGlowParamExpandRoD }) {
+    for (const char* name : { kGlowParamPreview, kGlowParamScreen, kGlowParamAddInput, kGlowParamGlowOnly, kGlowParamExpandRoD, kGlowParamIsolateHue }) {
         KnobBoolPtr knob = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(name));
         ASSERT_TRUE(bool(knob)) << name;
         EXPECT_FALSE(knob->getValue()) << name;
     }
+    KnobColorPtr pickHue = std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(kGlowParamPickHue));
+    ASSERT_TRUE(bool(pickHue));
+    ASSERT_EQ(3, pickHue->getDimension());
+    for (int d = 0; d < 3; ++d) {
+        EXPECT_EQ(0., pickHue->getValue(d));
+    }
+    // The mask multiplies the glow map, so there is no mix of the output with the source.
+    EXPECT_FALSE(bool(node->getKnobByName(kOfxMixParamName)));
 }
 
 // A threshold above the image's luminance leaves no glow map, so the image is unchanged.
@@ -454,8 +463,290 @@ TEST_F(NativeGlowTest, TileMatchesFullFrame)
     }
 }
 
+// Rotate turns the stretched bloom; without a stretch, or by a multiple of 180 degrees, it changes
+// nothing, and a whole turn is no turn.
+TEST_F(NativeGlowTest, RotateWithoutStretchOrByAHalfTurnIsNoTurn)
+{
+    resetProject();
+    NodePtr source = makeScene(0.05, RectI(20, 10, 40, 30), 4., 2., 1.);
+    ASSERT_TRUE(bool(source));
+    NodePtr plain = makeSmallGlow(source);
+    NodePtr turned = makeSmallGlow(source);
+    ASSERT_TRUE(plain && turned);
+    RenderedPlane in, want, got;
+
+    ASSERT_TRUE(setKnobValues(turned, kGlowParamRotate, { 30. }));
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, plain, &in, &want));
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, turned, &in, &got));
+    for (std::size_t i = 0; i < want.pixels.size(); ++i) {
+        ASSERT_EQ(want.pixels[i], got.pixels[i]) << "no stretch, float " << i;
+    }
+
+    ASSERT_TRUE(setKnobValues(plain, kGlowParamStretch, { 0.6 }));
+    ASSERT_TRUE(setKnobValues(turned, kGlowParamStretch, { 0.6 }));
+    for (double angle : { 180., -180., 360., 540. }) {
+        ASSERT_TRUE(setKnobValues(turned, kGlowParamRotate, { angle }));
+        ASSERT_NO_FATAL_FAILURE(renderPair(source, plain, &in, &want));
+        ASSERT_NO_FATAL_FAILURE(renderPair(source, turned, &in, &got));
+        for (std::size_t i = 0; i < want.pixels.size(); ++i) {
+            ASSERT_EQ(want.pixels[i], got.pixels[i]) << "rotate " << angle << ", float " << i;
+        }
+    }
+
+    ASSERT_TRUE(setKnobValues(plain, kGlowParamRotate, { 30. }));
+    for (double angle : { 390., -330. }) {
+        ASSERT_TRUE(setKnobValues(turned, kGlowParamRotate, { angle }));
+        ASSERT_NO_FATAL_FAILURE(renderPair(source, plain, &in, &want));
+        ASSERT_NO_FATAL_FAILURE(renderPair(source, turned, &in, &got));
+        for (std::size_t i = 0; i < want.pixels.size(); ++i) {
+            ASSERT_EQ(want.pixels[i], got.pixels[i]) << "rotate " << angle << " against 30, float " << i;
+        }
+    }
+}
+
+// A quarter turn swaps the bloom's axes: on a square scene symmetric about its diagonal, the glow
+// turned by 90 degrees is the unturned glow transposed.
+TEST_F(NativeGlowTest, RotateByAQuarterTurnTransposesTheGlow)
+{
+    resetProject(64, 64);
+    NodePtr source = makeScene(0., RectI(26, 26, 38, 38), 4., 4., 4.);
+    ASSERT_TRUE(bool(source));
+    NodePtr plain = makeGlow(source);
+    NodePtr turned = makeGlow(source);
+    ASSERT_TRUE(plain && turned);
+    for (const NodePtr& node : { plain, turned }) {
+        ASSERT_TRUE(setKnobValues(node, kGlowParamSize, { 4. }));
+        ASSERT_TRUE(setKnobValues(node, kGlowParamCount, { 3. }));
+        ASSERT_TRUE(setKnobValues(node, kGlowParamStretch, { 0.75 }));
+        ASSERT_TRUE(setKnobValues(node, kGlowParamGlowOnly, { 1. }));
+    }
+    ASSERT_TRUE(setKnobValues(turned, kGlowParamRotate, { 90. }));
+    RenderedPlane in, want, got;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, plain, &in, &want));
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, turned, &in, &got));
+    for (int y = 0; y < 64; ++y) {
+        for (int x = 0; x < 64; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const float w = at(want, y, x, c);
+                ASSERT_NEAR(w, at(got, x, y, c), 1e-5 * std::max(1.f, std::fabs(w))) << "(" << x << "," << y << ") channel " << c;
+            }
+        }
+    }
+    // The unturned bloom is longer across than down.
+    EXPECT_GT(at(want, 44, 32, 0), 4.f * at(want, 32, 44, 0));
+}
+
+// The stretch turns clockwise by rotate: at 45 degrees the glow of a small box streaks along
+// (1, -1), not (1, 1).
+TEST_F(NativeGlowTest, RotateTurnsTheStretchClockwise)
+{
+    resetProject(64, 64);
+    NodePtr source = makeScene(0., RectI(30, 30, 34, 34), 8., 8., 8.);
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeGlow(source);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kGlowParamSize, { 4. }));
+    ASSERT_TRUE(setKnobValues(node, kGlowParamCount, { 3. }));
+    ASSERT_TRUE(setKnobValues(node, kGlowParamStretch, { 0.9 }));
+    ASSERT_TRUE(setKnobValues(node, kGlowParamRotate, { 45. }));
+    ASSERT_TRUE(setKnobValues(node, kGlowParamGlowOnly, { 1. }));
+    RenderedPlane in, out;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &out));
+    // Pixels (37, 26) and (26, 37) lie 5.5 pixels along (1, -1) from the box's centre (32, 32),
+    // pixels (37, 37) and (26, 26) as far along (1, 1).
+    for (int c = 0; c < 3; ++c) {
+        const float along = std::min(at(out, 37, 26, c), at(out, 26, 37, c));
+        const float across = std::max(at(out, 37, 37, c), at(out, 26, 26, c));
+        EXPECT_GT(along, 1e-3f) << "channel " << c;
+        EXPECT_GT(along, 10.f * across) << "channel " << c;
+    }
+}
+
+// A tile of a rotated glow equals the same pixels of the full render.
+TEST_F(NativeGlowTest, RotatedTileMatchesFullFrame)
+{
+    resetProject(160, 64);
+    NodePtr source = makeScene(0.05, RectI(90, 20, 110, 40), 20., 10., 5.);
+    ASSERT_TRUE(bool(source));
+    for (const char* filter : { kBlurParamFilterFIRGaussian, kBlurParamFilterBox }) {
+        NodePtr node = makeGlow(source);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValue(node, kGlowParamFilter, std::string(filter)));
+        ASSERT_TRUE(setKnobValues(node, kGlowParamSize, { 8. }));
+        ASSERT_TRUE(setKnobValues(node, kGlowParamRatio, { 2. }));
+        ASSERT_TRUE(setKnobValues(node, kGlowParamCount, { 2. }));
+        ASSERT_TRUE(setKnobValues(node, kGlowParamStretch, { 0.7 }));
+        ASSERT_TRUE(setKnobValues(node, kGlowParamRotate, { 30. }));
+        const RectI rod = pixelRoD(node);
+        const RectI tile(61, 7, 99, 30);
+        RenderedPlane whole, part;
+        ASSERT_TRUE(renderRGBA(node, rod, &whole));
+        ASSERT_TRUE(renderRGBA(node, tile, &part));
+        for (int y = tile.y1; y < tile.y2; ++y) {
+            for (int x = tile.x1; x < tile.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    ASSERT_NEAR(at(whole, x, y, c), at(part, x, y, c), 1e-6 * std::max(1.f, std::fabs(at(whole, x, y, c)))) << filter << " at (" << x << "," << y << ")";
+                }
+            }
+        }
+    }
+}
+
+// Isolate hue keys the map by the closeness of each pixel's hue to the picked one: 1 at it, 0 from
+// 50 degrees away. A red box glows with red picked, not with green; picked 25 degrees away, its
+// map and glow are halved.
+TEST_F(NativeGlowTest, IsolateHueKeysTheMap)
+{
+    resetProject();
+    NodePtr red = makeScene(0., RectI(20, 10, 40, 30), 4., 0., 0.);
+    NodePtr green = makeScene(0., RectI(20, 10, 40, 30), 0., 4., 0.);
+    ASSERT_TRUE(red && green);
+    for (bool preview : { true, false }) {
+        NodePtr plain = makeSmallGlow(red);
+        NodePtr keyed = makeSmallGlow(red);
+        NodePtr off = makeSmallGlow(green);
+        ASSERT_TRUE(plain && keyed && off);
+        for (const NodePtr& node : { plain, keyed, off }) {
+            ASSERT_TRUE(setKnobValues(node, preview ? kGlowParamPreview : kGlowParamGlowOnly, { 1. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamPickHue, { 1., 0., 0. }));
+        }
+        ASSERT_TRUE(setKnobValues(keyed, kGlowParamIsolateHue, { 1. }));
+        ASSERT_TRUE(setKnobValues(off, kGlowParamIsolateHue, { 1. }));
+        const char* what = preview ? "preview" : "glow only";
+
+        RenderedPlane in, want, got;
+        ASSERT_NO_FATAL_FAILURE(renderPair(red, plain, &in, &want));
+        ASSERT_NO_FATAL_FAILURE(renderPair(red, keyed, &in, &got));
+        for (std::size_t i = 0; i < want.pixels.size(); ++i) {
+            ASSERT_EQ(want.pixels[i], got.pixels[i]) << what << ", red picked, float " << i;
+        }
+        EXPECT_GT(at(want, 30, 20, 0), 1.f) << what;
+
+        RenderedPlane none;
+        ASSERT_NO_FATAL_FAILURE(renderPair(green, off, &in, &none));
+        for (std::size_t i = 0; i < none.pixels.size(); ++i) {
+            if ((i % 4) != 3) {
+                ASSERT_EQ(0.f, none.pixels[i]) << what << ", green box, float " << i;
+            }
+        }
+
+        // The hue of (1, 25 / 60, 0) is 25 degrees.
+        ASSERT_TRUE(setKnobValues(keyed, kGlowParamPickHue, { 1., 25. / 60., 0. }));
+        ASSERT_NO_FATAL_FAILURE(renderPair(red, keyed, &in, &got));
+        for (std::size_t i = 0; i < want.pixels.size(); ++i) {
+            if ((i % 4) != 3) {
+                ASSERT_NEAR(0.5f * want.pixels[i], got.pixels[i], 1e-5 * std::max(1.f, std::fabs(want.pixels[i]))) << what << ", 25 degrees, float " << i;
+            }
+        }
+    }
+}
+
+// The mask multiplies the glow map: a zero mask leaves the source, a half mask halves the map and
+// the glow, and the glow of a masked-out box does not spill into the mask's area.
+TEST_F(NativeGlowTest, MaskMultipliesTheMap)
+{
+    resetProject();
+    NodePtr source = makeScene(0.05, RectI(34, 10, 50, 30), 4., 2., 1.);
+    ASSERT_TRUE(bool(source));
+    const auto makeMask = [&](double alpha, const RectI* box) -> NodePtr {
+        NodePtr mask = makeConstant(0., 0., 0., box);
+        if (mask) {
+            EXPECT_TRUE(setKnobValues(mask, kConstantParamColor, { 0., 0., 0., alpha }));
+        }
+
+        return mask;
+    };
+    const auto masked = [&](const NodePtr& mask) -> NodePtr {
+        NodePtr node = makeSmallGlow(source);
+        if (node && mask) {
+            connectNodes(mask, node, 1, true);
+            EXPECT_TRUE(setKnobValues(node, "enableMask_Mask", { 1. }));
+        }
+
+        return node;
+    };
+
+    NodePtr zero = masked(makeMask(0., NULL));
+    ASSERT_TRUE(bool(zero));
+    RenderedPlane in, out;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, zero, &in, &out));
+    for (std::size_t i = 0; i < in.pixels.size(); ++i) {
+        ASSERT_EQ(in.pixels[i], out.pixels[i]) << "zero mask, float " << i;
+    }
+
+    NodePtr half = masked(makeMask(0.5, NULL));
+    NodePtr plain = makeSmallGlow(source);
+    ASSERT_TRUE(half && plain);
+    for (const char* name : { kGlowParamPreview, kGlowParamGlowOnly }) {
+        for (const NodePtr& node : { half, plain }) {
+            ASSERT_TRUE(setKnobValues(node, kGlowParamPreview, { 0. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamGlowOnly, { 0. }));
+            ASSERT_TRUE(setKnobValues(node, name, { 1. }));
+        }
+        RenderedPlane want, got;
+        ASSERT_NO_FATAL_FAILURE(renderPair(source, plain, &in, &want));
+        ASSERT_NO_FATAL_FAILURE(renderPair(source, half, &in, &got));
+        for (std::size_t i = 0; i < want.pixels.size(); ++i) {
+            if ((i % 4) != 3) {
+                ASSERT_NEAR(0.5f * want.pixels[i], got.pixels[i], 1e-6 * std::max(1.f, std::fabs(want.pixels[i]))) << name << ", half mask, float " << i;
+            }
+        }
+        EXPECT_GT(at(want, 40, 20, 0), 0.5f) << name;
+    }
+
+    // The mask covers the left half; the box lies in the right half, so its map is masked out and
+    // nothing glows, even next to it inside the mask.
+    const RectI left(0, 0, 32, 48);
+    NodePtr spill = masked(makeMask(1., &left));
+    ASSERT_TRUE(bool(spill));
+    ASSERT_TRUE(setKnobValues(spill, kGlowParamGlowOnly, { 1. }));
+    ASSERT_TRUE(setKnobValues(plain, kGlowParamPreview, { 0. }));
+    ASSERT_TRUE(setKnobValues(plain, kGlowParamGlowOnly, { 1. }));
+    RenderedPlane unmasked, spilled;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, plain, &in, &unmasked));
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, spill, &in, &spilled));
+    EXPECT_GT(at(unmasked, 31, 20, 0), 1e-3f);
+    for (std::size_t i = 0; i < spilled.pixels.size(); ++i) {
+        if ((i % 4) != 3) {
+            ASSERT_EQ(0.f, spilled.pixels[i]) << "masked-out box, float " << i;
+        }
+    }
+}
+
+// The map's luminance takes the project working space's luma weights: switching the working space
+// changes Glow's hash and its map.
+TEST_F(NativeGlowTest, WorkingSpaceChangesTheHashAndTheMap)
+{
+    resetProject();
+    ProjectPtr project = getApp()->getProject();
+    KnobChoicePtr workingSpace = project->getKnobByNameAndType<KnobChoice>("workingSpace");
+    ASSERT_TRUE(bool(workingSpace));
+    const std::string original = project->getWorkingColorSpace();
+    NodePtr source = makeScene(0.05, RectI(20, 10, 40, 30), 3., 0.5, 0.2);
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeSmallGlow(source);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kGlowParamPreview, { 1. }));
+
+    workingSpace->setValueFromID("ACEScg", 0);
+    ASSERT_EQ(std::string("ACEScg"), project->getWorkingColorSpace());
+    const U64 acesHash = node->getHashValue();
+    RenderedPlane in, aces;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &aces));
+
+    workingSpace->setValueFromID("Linear Rec.709 (sRGB)", 0);
+    ASSERT_EQ(std::string("Linear Rec.709 (sRGB)"), project->getWorkingColorSpace());
+    const U64 rec709Hash = node->getHashValue();
+    RenderedPlane rec709;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &rec709));
+
+    workingSpace->setValueFromID(original, 0);
+    EXPECT_NE(acesHash, rec709Hash);
+    EXPECT_GT(std::fabs(at(aces, 30, 20, 0) - at(rec709, 30, 20, 0)), 1e-3f);
+}
+
 // Legacy and task-graph renders agree bit for bit, with the default and the screen, add-input and
-// gamma options, and with a mask and mix.
+// gamma options, with a mask, and rotated with hue isolation.
 TEST_F(NativeGlowTest, SameBothWays)
 {
     resetProject();
@@ -490,8 +781,13 @@ TEST_F(NativeGlowTest, SameBothWays)
     setParitySourceOrigin(mask, 8, 4);
     connectNodes(mask, node, 1, true);
     ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", { 1. }));
-    ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
-    expectSame("mask-mix");
+    expectSame("mask");
+
+    ASSERT_TRUE(setKnobValues(node, kGlowParamStretch, { 0.6 }));
+    ASSERT_TRUE(setKnobValues(node, kGlowParamRotate, { 30. }));
+    ASSERT_TRUE(setKnobValues(node, kGlowParamIsolateHue, { 1. }));
+    ASSERT_TRUE(setKnobValues(node, kGlowParamPickHue, { 1., 0.5, 0. }));
+    expectSame("mask-rotate-hue");
 }
 
 // Every filter at every size runs on the GPU in float.
@@ -644,6 +940,12 @@ enum GlowOption : unsigned {
     eOptionAddInput = 8,
     eOptionGrade = 16,
     eOptionExpandRoD = 32,
+    // Rotate 30 degrees, through the resampled frame; needs a stretch.
+    eOptionRotate = 64,
+    // Rotate 90 degrees, on swapped axes; needs a stretch.
+    eOptionQuarterTurn = 128,
+    // Isolate the hue of (1, 0.5, 0), 30 degrees.
+    eOptionHue = 256,
 };
 
 // One node setting. processed is the channel set in RGBA bits; below four components the CPU
@@ -673,7 +975,9 @@ channelsOfPlane(int nComps)
 
 // Every filter on RGB with alpha passed through, each also rendered as a tile; RGBA with alpha
 // glowing; every option; one, two and three components; an R+B subset; a stretched glow deep into
-// the pyramid; the expanded region of definition.
+// the pyramid; the expanded region of definition; rotated stretches, through the resampled frame
+// with a direct and a recursive filter and on swapped axes; hue isolation, alone, on a preview of
+// three components, and with a rotation and the expanded region of definition.
 std::vector<ParityCase>
 parityCases()
 {
@@ -693,6 +997,12 @@ parityCases()
     cases.push_back(ParityCase { kFirFilter, 3., 0., 3, eOptionGrade, 4, 0x5u, false });
     cases.push_back(ParityCase { kFirFilter, 10., 0.7, 4, 0u, 4, 0x7u, true });
     cases.push_back(ParityCase { kFirFilter, 3., 0., 3, eOptionExpandRoD, 4, 0x7u, true });
+    cases.push_back(ParityCase { kFirFilter, 6., 0.6, 3, eOptionRotate, 4, 0x7u, true });
+    cases.push_back(ParityCase { 0, 6., 0.6, 3, eOptionRotate, 4, 0x7u, true });
+    cases.push_back(ParityCase { kFirFilter, 6., 0.6, 3, eOptionQuarterTurn, 4, 0xFu, true });
+    cases.push_back(ParityCase { kFirFilter, 3., 0., 3, eOptionHue, 4, 0xFu, true });
+    cases.push_back(ParityCase { kFirFilter, 3., 0., 3, eOptionHue | eOptionPreview, 3, channelsOfPlane(3), false });
+    cases.push_back(ParityCase { 2, 5., 0.5, 3, eOptionRotate | eOptionHue | eOptionExpandRoD, 4, 0x7u, true });
 
     return cases;
 }
@@ -756,6 +1066,15 @@ TEST_F(NativeGlowTest, GpuMatchesTheCpuRender)
         ASSERT_TRUE(setKnobValues(node, kGlowParamScreen, { (c.options & eOptionScreen) ? 1. : 0. }));
         ASSERT_TRUE(setKnobValues(node, kGlowParamAddInput, { (c.options & eOptionAddInput) ? 1. : 0. }));
         ASSERT_TRUE(setKnobValues(node, kGlowParamExpandRoD, { (c.options & eOptionExpandRoD) ? 1. : 0. }));
+        double rotate = 0.;
+        if (c.options & eOptionRotate) {
+            rotate = 30.;
+        } else if (c.options & eOptionQuarterTurn) {
+            rotate = 90.;
+        }
+        ASSERT_TRUE(setKnobValues(node, kGlowParamRotate, { rotate }));
+        ASSERT_TRUE(setKnobValues(node, kGlowParamIsolateHue, { (c.options & eOptionHue) ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValues(node, kGlowParamPickHue, { 1., 0.5, 0. }));
         if (c.options & eOptionGrade) {
             ASSERT_TRUE(setKnobValues(node, kGlowParamTint, { 1.5, 0.75, 0.5 }));
             ASSERT_TRUE(setKnobValues(node, kGlowParamBrightness, { 2. }));

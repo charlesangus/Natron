@@ -55,6 +55,9 @@ static const uint kGlowOnly = 2;
 static const uint kScreen = 4;
 static const uint kAddInput = 8;
 static const uint kGamma = 16;
+// accBuf holds one weight per pixel of the domain, which the map is multiplied by, in glow_map and
+// in the preview.
+static const uint kWeighted = 32;
 
 static const uint kKindColour = 1;
 static const uint kKindAlpha = 2;
@@ -107,6 +110,7 @@ void glow_map(uint3 tid : SV_DispatchThreadID)
     float s;
     float c;
     mapScale(i, n, s, c);
+    const float w = (params.flags & kWeighted) != 0 ? asfloat(accBuf[tid.y * params.domWidth + tid.x]) : 1.0;
     for (uint ch = 0; ch < n; ++ch)
     {
         const uint kind = kindOf(ch);
@@ -116,7 +120,7 @@ void glow_map(uint3 tid : SV_DispatchThreadID)
             g = params.brightness * tintOf(ch) * (c + params.saturation * (m - c));
         else if (kind == kKindAlpha)
             g = params.brightness * m;
-        mapBuf[i + ch] = asuint(g);
+        mapBuf[i + ch] = asuint(g * w);
     }
 }
 
@@ -138,8 +142,13 @@ void glow_combine(uint3 tid : SV_DispatchThreadID)
     const uint i = inside ? (uint(y - params.domY1) * params.domWidth + uint(x - params.domX1)) * params.channels : 0u;
     float s = 0.0;
     float c = 0.0;
+    float w = 1.0;
     if (inside && (params.flags & kPreview) != 0)
+    {
         mapScale(i, n, s, c);
+        if ((params.flags & kWeighted) != 0)
+            w = asfloat(accBuf[uint(y - params.domY1) * params.domWidth + uint(x - params.domX1)]);
+    }
     for (uint ch = 0; ch < n; ++ch)
     {
         const uint kind = kindOf(ch);
@@ -152,7 +161,7 @@ void glow_combine(uint3 tid : SV_DispatchThreadID)
         float v;
         if ((params.flags & kPreview) != 0)
         {
-            v = src * s;
+            v = (src * s) * w;
         }
         else
         {

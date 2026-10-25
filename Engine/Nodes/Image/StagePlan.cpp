@@ -474,6 +474,13 @@ isStageMaskApplied(const EffectInstance& effect)
     return (maskInput >= 0) && effect.getInput(maskInput) && effect.isMaskEnabled(maskInput);
 }
 
+void
+resolveStageOpMask(EffectInstance& effect,
+                   StagePlan* plan)
+{
+    resolvePlanMask(effect, isStageMaskApplied(effect), plan);
+}
+
 bool
 stageMaskMissesWindow(const EffectInstance& effect,
                       int maskInput,

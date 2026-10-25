@@ -203,6 +203,12 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
     if ((inputNb != source) && (kind == OpKind::Passes) && isAuxInput(*nodeSpec(), inputNb)) {
         return opPassesInputRoI(inputNb, outputRect, scale);
     }
+    if ((inputNb == getMaskInput()) && (kind == OpKind::Passes)) {
+        const PassList list = opPasses(getCurrentTime(), getCurrentView(), scale);
+        if (list.opMask) {
+            return passListSourceRoI(outputRect, list);
+        }
+    }
     if ((inputNb == source) && (kind == OpKind::Resample) && opResamplesOnGpu()) {
         const double time = getCurrentTime();
         const ViewIdx view = getCurrentView();
@@ -521,9 +527,15 @@ StagedImageEffect::getRegionsOfInterest(double time,
 
     const double par = getAspectRatio(source);
     const RectI rectPixel = PassExec::toPixelEnclosing(renderWindow, scale, par);
-    RectD srcRoI = PassExec::toCanonical(passListSourceRoI(rectPixel, opPasses(time, view, scale)), scale, par);
+    const PassList list = opPasses(time, view, scale);
+    RectD srcRoI = PassExec::toCanonical(passListSourceRoI(rectPixel, list), scale, par);
     if (doMasking && (mix != 1.)) {
         srcRoI.merge(renderWindow);
+    }
+    // An op that applies its mask itself reads it wherever it reads the source.
+    EffectInstancePtr maskEffect = (doMasking && list.opMask) ? getInput(getMaskInput()) : EffectInstancePtr();
+    if (maskEffect && (maskEffect != input)) {
+        (*ret)[maskEffect] = srcRoI;
     }
     // The mask may be the same effect as the source, in which case both needs share one entry.
     RoIMap::iterator found = ret->find(input);

@@ -969,6 +969,21 @@ runPassesCpu(EffectInstance& effect,
             mask.reset();
         }
     }
+    // An op that applies its mask itself reads it over the whole buffer instead.
+    StagePlan opMaskPlan = plan;
+    ImagePtr opMask;
+    if (list.opMask) {
+        resolveStageOpMask(effect, &opMaskPlan);
+        if (opMaskPlan.applyMask && (opMaskPlan.maskChannel >= 0)) {
+            RectI maskRoI;
+            opMask = effect.getImage(opMaskPlan.maskInput, args.time, args.mappedScale, args.view, NULL, &opMaskPlan.maskLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &maskRoI);
+        }
+        if (opMask && (opMaskPlan.maskChannel >= (int)opMask->getComponentsCount())) {
+            opMask.reset();
+        }
+    } else {
+        opMaskPlan.applyMask = false;
+    }
 
     const ImageLayerDesc& divisorLayer = plan.divisorLayer;
     const int divisorChannel = plan.divisorChannel;
@@ -1003,7 +1018,7 @@ runPassesCpu(EffectInstance& effect,
         }
         jobs.push_back(job);
     }
-    if (!isFloatImage(mask)) {
+    if (!isFloatImage(mask) || !isFloatImage(opMask)) {
         return eStatusFailed;
     }
 
@@ -1025,6 +1040,11 @@ runPassesCpu(EffectInstance& effect,
     maskSource.image = mask;
     maskSource.channel = plan.maskChannel;
     maskSource.lock();
+    MaskInput opMaskSource;
+    opMaskSource.applied = opMaskPlan.applyMask;
+    opMaskSource.image = opMask;
+    opMaskSource.channel = opMaskPlan.maskChannel;
+    opMaskSource.lock();
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         jobs[j].lock();
     }
@@ -1048,6 +1068,21 @@ runPassesCpu(EffectInstance& effect,
 
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     RenderCancellation cancel(&effect);
+
+    // The op's mask over the buffer, the same for every plane job: 0 outside the mask's image,
+    // everywhere when its channel resolves to none.
+    std::vector<float> opMaskPlane;
+    if (opMaskSource.applied && planeSize) {
+        opMaskPlane.resize(planeSize);
+        forEachLineChunk(bufferHeight, (std::size_t)bufferWidth, nThreads, cancel, [&](int first, int end) {
+            for (int r = first; r < end; ++r) {
+                readChannelRow(opMaskSource.image.get(), opMaskSource.access.get(), opMaskSource.bounds, opMaskSource.nComps, opMaskSource.channel, bufferRect.x1, bufferRect.y1 + r, bufferWidth, 0.f, &opMaskPlane[(std::size_t)r * bufferWidth]);
+            }
+        });
+        if (cancel.check()) {
+            return eStatusOK;
+        }
+    }
 
     // All scratch comes uninitialised from the pooled huge-page allocator, and is released when the
     // function returns. Zeroing it here would fault every page in on this thread alone; instead
@@ -1088,6 +1123,7 @@ runPassesCpu(EffectInstance& effect,
             scratch.planeSize = planeSize;
             scratch.buffers.push_back(buffer);
             scratch.nComps = job.nComps;
+            scratch.mask = opMaskPlane.empty() ? nullptr : opMaskPlane.data();
             for (int c : planes.channel) {
                 scratch.channelBits.push_back(pixelKernelChannelBit(job.nComps, c));
             }
@@ -1268,6 +1304,21 @@ recordPassesGpu(EffectInstance& effect,
         RectI otherValid;
         intersectRects(in.bounds, toPixelEnclosing(otherRoD, scale, effect.getAspectRatio(i)), &otherValid);
         io.inputs[i] = cropGpuView(in, otherValid);
+    }
+    if (list.opMask) {
+        StagePlan maskPlan = plan;
+        resolveStageOpMask(effect, &maskPlan);
+        io.maskApplied = maskPlan.applyMask;
+        const int maskInput = maskPlan.maskInput;
+        // A mask that is not handed over reads zero everywhere.
+        const bool hasMask = (maskInput >= 0) && (maskInput < (int)args.inputs.size()) && args.inputs[maskInput].buffer;
+        if (io.maskApplied && hasMask && (maskPlan.maskChannel >= 0) && (maskPlan.maskChannel < maskPlan.maskLayer.getNumComponents())) {
+            io.mask = args.inputs[maskInput];
+            io.maskComponent = stageGpuMaskViewComponent(maskPlan.maskLayer, maskPlan.maskChannel, io.mask.nComps);
+            if ((io.maskComponent < 0) || (io.maskComponent >= io.mask.nComps) || ((io.mask.byteOffset % sizeof(float)) != 0)) {
+                return eStatusFailed;
+            }
+        }
     }
     if (list.gpu(io) != eStatusOK) {
         return eStatusFailed;

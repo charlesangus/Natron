@@ -298,7 +298,9 @@ enum class PassKind : unsigned char {
  * @brief The scratch buffers a pass reads and writes: nPlanes planes of width x height floats
  * over rect per slot, slot 0 holding the divided source when the passes start. channelBits holds
  * the channel of each plane, in the bit space of pixelKernelChannelBit() for an nComps-channel
- * image, for a pass that combines channels.
+ * image, for a pass that combines channels. mask is set for a list with opMask whose mask is
+ * applied: one plane of width x height floats over rect, the mask's channel there and 0 outside
+ * the mask's image; null when no mask is applied, which reads as 1 everywhere.
  **/
 struct PassScratch {
     RectI rect;
@@ -309,6 +311,7 @@ struct PassScratch {
     std::vector<float*> buffers;
     int nComps = 0;
     std::vector<int> channelBits;
+    const float* mask = nullptr;
 
     float* plane(int slot,
                  int p) const
@@ -384,6 +387,11 @@ struct Pass {
  * inputs holds the effect's other inputs by input number, each cropped to that input's region of
  * definition, outside which it reads zero; an input that is disconnected, not read on the GPU or
  * empty there, and the source's own entry, are views without a buffer.
+ *
+ * For a list with opMask, maskApplied is whether the mask is connected and enabled; mask is then
+ * its view, maskComponent the component of it that holds the mask's channel, and the mask reads 0
+ * outside mask.bounds, everywhere when mask has no buffer or maskComponent is -1. Without an
+ * applied mask, the mask reads 1 everywhere.
  **/
 struct PassGpuIO {
     gpu::GpuRecordContext& context;
@@ -400,6 +408,9 @@ struct PassGpuIO {
     // others from the source, but a recorder that combines channels must leave them out.
     std::bitset<4> channels;
     std::vector<GpuImageView> inputs;
+    bool maskApplied = false;
+    GpuImageView mask;
+    int maskComponent = -1;
 
     explicit PassGpuIO(gpu::GpuRecordContext& ctx)
         : context(ctx)
@@ -413,12 +424,18 @@ using PassGpuRecorder = std::function<StatusEnum(const PassGpuIO&)>;
  * @brief What a Passes op computes for one render: passes in order over scratchSlots scratch
  * buffers, the result read from resultSlot. boundary is how slot 0 reads the source outside its
  * image. gpu records the whole list on the GPU; without it the op stays on the CPU.
+ *
+ * opMask is for an op that applies its mask itself, inside the passes, rather than the MaskMix
+ * stage blending its output with the source: the executors hand the mask over in PassScratch::mask
+ * and PassGpuIO::mask, over the source's region of interest. The op's pipeline must not have the
+ * MaskMix stage.
  **/
 struct PassList {
     std::vector<Pass> passes;
     PassExec::Boundary boundary = PassExec::Boundary::Zero;
     int scratchSlots = 1;
     int resultSlot = 0;
+    bool opMask = false;
     PassGpuRecorder gpu;
 
     bool empty() const WARN_UNUSED_RETURN

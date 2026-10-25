@@ -53,6 +53,9 @@
 #define kGlowParamAddInput "addInput"
 #define kGlowParamGlowOnly "glowOnly"
 #define kGlowParamExpandRoD "expandRoD"
+#define kGlowParamRotate "rotate"
+#define kGlowParamIsolateHue "isolateHue"
+#define kGlowParamPickHue "pickHue"
 
 NATRON_NAMESPACE_ENTER
 
@@ -79,6 +82,12 @@ struct GlowParams {
     bool addInput = false;
     bool glowOnly = false;
     bool expandRoD = false;
+    // Degrees: the bloom runs on the image turned counter-clockwise by rotate, as the PyPlug's
+    // transforms turned it, so the stretch turns clockwise by rotate.
+    double rotate = 0.;
+    bool isolateHue = false;
+    // The hue of the picked colour in degrees, in [0, 360).
+    double hue = 0.;
     double luma[3] = { 0., 0., 0. };
 };
 
@@ -99,6 +108,11 @@ inline constexpr InputSpec kGlowInputs[] = {
  * preview. A processed alpha channel is glowed without tint or saturation, and clamped to [0, 1]
  * outside the preview. Black lies outside the image; expand RoD grows the region of definition by
  * the bloom's reach. Scene-linear: nothing else is clamped.
+ *
+ * The map is multiplied by the mask and, with isolate hue, by the closeness of each pixel's hue to
+ * the picked one: 1 at it, falling linearly to 0 at 50 degrees away, as the PyPlug's HSVTool keyed
+ * it. With a stretch, rotate turns the bloom: the map is resampled bilinearly into the turned
+ * frame, bloomed there, and resampled back.
  **/
 struct GlowOp {
     using Params = GlowParams;
@@ -108,9 +122,9 @@ struct GlowOp {
         .label = "Glow",
         .description = "Make the highlights of the input glow.\n"
                        "\n"
-                       "The pixels brighter than the threshold (by their luminance in the project's working space, with a soft knee) form the glow map. It is graded, bloomed (the mean of count blurs of growing size, as Bloom) and added on top of the input, or screened over it.\n"
+                       "The pixels brighter than the threshold (by their luminance in the project's working space, with a soft knee) form the glow map, which the mask and, optionally, a picked hue restrict. It is graded, bloomed (the mean of count blurs of growing size, as Bloom, stretched along the rotated direction) and added on top of the input, or screened over it.\n"
                        "\n"
-                       "Glow Only outputs the glow alone, to merge later; Preview shows the glow map, to adjust the threshold.",
+                       "Glow Only outputs the glow alone, to merge later; Preview shows the glow map, to adjust the threshold and the hue isolation.",
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_GLOW,
         .minorVersion = 0,
@@ -119,7 +133,8 @@ struct GlowOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        // The mask multiplies the glow map inside the op (PassList::opMask), so there is no MaskMix.
+        .stages = { Stage::Premult, Stage::PassThroughUnprocessed },
         .layers = LayerPolicy::color(true, true, true, false),
         .op = OpKind::Passes,
     };
@@ -127,7 +142,8 @@ struct GlowOp {
     void createKnobs(KnobHolder* holder,
                      const KnobPagePtr& page);
 
-    /// Reads the project's working luma weights too, ACEScg's without a project.
+    /// Reads the project's working luma weights too, ACEScg's without a project. Every node's render
+    /// hash folds in the project's content digest, which covers its working space.
     Params bake(const KnobReader& reader) const;
 
     /// Never: even a bloom that is the identity adds the map.
@@ -155,6 +171,9 @@ struct GlowOp {
     KnobBoolWPtr addInput;
     KnobBoolWPtr glowOnly;
     KnobBoolWPtr expandRoD;
+    KnobDoubleWPtr rotate;
+    KnobBoolWPtr isolateHue;
+    KnobColorWPtr pickHue;
 };
 
 static_assert(PassesOp<GlowOp>);

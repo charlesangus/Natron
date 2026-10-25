@@ -869,6 +869,27 @@ ProjectColorManagement::getTransformProcessor(const OCIO::ConstTransformRcPtr& t
 }
 
 void
+ProjectColorManagement::reloadFile(const std::string& path)
+{
+    // The file caches are process-wide; the config keeps processors it built apart from them.
+    OCIO::ClearAllCaches();
+    QMutexLocker k(&_mutex);
+    if (_config) {
+        // The config is built here and only shared as const; its processor cache is not part of
+        // what the const interface promises.
+        std::const_pointer_cast<OCIO::Config>(_config)->clearProcessorCache();
+    }
+    // A FileTransform describes itself with its source path.
+    for (std::map<std::string, TransformProcessorPtr>::iterator it = _transformCache.begin(); it != _transformCache.end();) {
+        if (path.empty() || (it->first.find(path) != std::string::npos)) {
+            it = _transformCache.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void
 ProjectColorManagement::setWorkingSpace(const std::string& name)
 {
     {

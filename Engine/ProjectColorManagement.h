@@ -154,13 +154,19 @@ public:
      * @brief The processor of \p transform in the loaded config, with \p context's variables set
      * on the config's current context, in order. A processor is cached per description of the
      * transform and set of variables until a config loads, so a transform whose result depends
-     * on more than its description (a file whose contents changed) needs
-     * OCIO_NAMESPACE::ClearAllCaches() and a config load to be read again. Returns null and fills
-     * \p error on failure.
+     * on more than its description (a file whose contents changed) needs reloadFile() to be read
+     * again. Returns null and fills \p error on failure.
      **/
     TransformProcessorPtr getTransformProcessor(const OCIO_NAMESPACE::ConstTransformRcPtr& transform,
                                                 const std::vector<std::pair<std::string, std::string>>& context,
                                                 std::string* error = 0) const;
+
+    /**
+     * @brief Makes the next processor of a transform naming the file \p path read it from disk
+     * again: clears OpenColorIO's file caches and the config's processor cache, and drops the
+     * cached transform processors whose description names \p path, or all of them for an empty one.
+     **/
+    void reloadFile(const std::string& path);
 
     void setWorkingSpace(const std::string& name);
 

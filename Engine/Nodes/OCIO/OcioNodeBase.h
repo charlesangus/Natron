@@ -79,6 +79,12 @@ public:
     OcioNodeKnobs& operator=(const OcioNodeKnobs&) = delete;
 
     /**
+     * @brief Sets the node the knobs belong to, which addSpace() also does, for a node with no
+     * space.
+     **/
+    void attach(KnobHolder* holder);
+
+    /**
      * @brief Adds a space on \p page. The first creates the hidden config pair and the Context
      * group; a later one shares them and goes before the Context group.
      **/
@@ -93,6 +99,18 @@ public:
     std::string space(std::size_t index) const;
 
     /**
+     * @brief The space at \p index, or the working space while it is empty, as its menu shows.
+     **/
+    std::string spaceOrWorking(std::size_t index) const;
+
+    /**
+     * @brief Puts \p knob, one of the node's own, on \p page before the shared Context group, or
+     * at the end when there is none.
+     **/
+    void addKnob(const KnobPagePtr& page,
+                 const KnobIPtr& knob);
+
+    /**
      * @brief The working space the project pushed, else the project's.
      **/
     std::string workingSpace() const;
@@ -105,7 +123,38 @@ public:
     bool knobChanged(KnobI* k,
                      ValueChangedReasonEnum reason);
 
+    /**
+     * @brief Refreshes the space menus, then calls each refresher added, in order.
+     **/
     void refreshMenus();
+
+    /**
+     * @brief Adds \p refresher, for menus of the node's own that list the project's config.
+     **/
+    void addMenuRefresher(const std::function<void()>& refresher);
+
+    ProjectColorManagementPtr colorManagement() const;
+
+    /**
+     * @brief A "direction" menu, Forward then Inverse, not yet on a page.
+     **/
+    static KnobChoicePtr createDirectionKnob(KnobHolder* holder);
+
+    /**
+     * @brief The direction a "direction" menu's \p index selects.
+     **/
+    static OCIO_NAMESPACE::TransformDirection direction(int index);
+
+    /**
+     * @brief Fills \p menu with \p names, each its own id, keeping the entry chosen before.
+     **/
+    static void populateMenu(const KnobChoicePtr& menu,
+                             const std::vector<std::string>& names);
+
+    /**
+     * @brief Makes the next processor of a transform naming the file \p path read it again.
+     **/
+    void reloadFile(const std::string& path) const;
 
     /**
      * @brief The processor of \p transform with the Context variables at \p time. A null
@@ -131,7 +180,7 @@ public:
 
     /**
      * @brief The row of a node rendering \p processor: the source, with the processor applied to
-     * its RGB. Alpha is left as it is.
+     * its RGB. Alpha is left as it is. Allocates nothing.
      **/
     static void applyRow(const OcioProcessor& processor,
                          const RowIO& io);
@@ -141,6 +190,7 @@ private:
 
     KnobHolder* _holder;
     std::vector<std::unique_ptr<OcioSpaceKnobs>> _spaces;
+    std::vector<std::function<void()>> _menuRefreshers;
     std::weak_ptr<ProjectColorManagement> _watched;
     int _watchId;
 };

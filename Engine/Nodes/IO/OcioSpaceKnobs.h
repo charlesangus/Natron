@@ -141,6 +141,11 @@ public:
      **/
     std::vector<std::pair<std::string, std::string>> contextVariables(double time) const;
 
+    /**
+     * @brief The Context group these knobs read their variables from.
+     **/
+    KnobGroupPtr contextGroup() const;
+
 private:
     ProjectPtr project() const;
 

@@ -242,6 +242,12 @@ OcioSpaceKnobs::contextVariables(double time) const
     return variables;
 }
 
+KnobGroupPtr
+OcioSpaceKnobs::contextGroup() const
+{
+    return _context.lock();
+}
+
 void
 OcioSpaceKnobs::refreshMenu()
 {

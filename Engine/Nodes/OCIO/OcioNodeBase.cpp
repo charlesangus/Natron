@@ -27,8 +27,12 @@
 
 #include <cstring>
 
+#include "Global/FloatingPointExceptions.h"
+
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
@@ -38,6 +42,7 @@ NATRON_NAMESPACE_ENTER
 OcioNodeKnobs::OcioNodeKnobs()
     : _holder(nullptr)
     , _spaces()
+    , _menuRefreshers()
     , _watched()
     , _watchId(-1)
 {
@@ -46,6 +51,12 @@ OcioNodeKnobs::OcioNodeKnobs()
 OcioNodeKnobs::~OcioNodeKnobs()
 {
     unwatchConfig();
+}
+
+void
+OcioNodeKnobs::attach(KnobHolder* holder)
+{
+    _holder = holder;
 }
 
 void
@@ -75,6 +86,32 @@ std::string
 OcioNodeKnobs::space(std::size_t index) const
 {
     return index < _spaces.size() ? _spaces[index]->space() : std::string();
+}
+
+std::string
+OcioNodeKnobs::spaceOrWorking(std::size_t index) const
+{
+    const std::string name = space(index);
+
+    return name.empty() ? workingSpace() : name;
+}
+
+void
+OcioNodeKnobs::addKnob(const KnobPagePtr& page,
+                       const KnobIPtr& knob)
+{
+    KnobGroupPtr context = _spaces.empty() ? KnobGroupPtr() : _spaces.front()->contextGroup();
+    if (context) {
+        const std::vector<KnobIPtr> children = page->getChildren();
+        for (std::size_t i = 0; i < children.size(); ++i) {
+            if (children[i] == context) {
+                page->insertKnob((int)i, knob);
+
+                return;
+            }
+        }
+    }
+    page->addKnob(knob);
 }
 
 std::string
@@ -115,6 +152,67 @@ OcioNodeKnobs::refreshMenus()
 {
     for (std::size_t i = 0; i < _spaces.size(); ++i) {
         _spaces[i]->refreshMenu();
+    }
+    for (std::size_t i = 0; i < _menuRefreshers.size(); ++i) {
+        _menuRefreshers[i]();
+    }
+}
+
+void
+OcioNodeKnobs::addMenuRefresher(const std::function<void()>& refresher)
+{
+    _menuRefreshers.push_back(refresher);
+}
+
+ProjectColorManagementPtr
+OcioNodeKnobs::colorManagement() const
+{
+    ProjectPtr p = project();
+
+    return p ? p->getColorManagement() : ProjectColorManagementPtr();
+}
+
+KnobChoicePtr
+OcioNodeKnobs::createDirectionKnob(KnobHolder* holder)
+{
+    KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(holder, tr("Direction").toStdString());
+    knob->setName("direction");
+    knob->setHintToolTip(tr("Forward applies the transform, Inverse undoes it.").toStdString());
+    std::vector<ChoiceOption> options;
+    options.push_back(ChoiceOption("forward", tr("Forward").toStdString(), std::string()));
+    options.push_back(ChoiceOption("inverse", tr("Inverse").toStdString(), std::string()));
+    knob->populateChoices(options);
+    knob->setDefaultValue(0);
+
+    return knob;
+}
+
+OCIO_NAMESPACE::TransformDirection
+OcioNodeKnobs::direction(int index)
+{
+    return (index == 1) ? OCIO_NAMESPACE::TRANSFORM_DIR_INVERSE : OCIO_NAMESPACE::TRANSFORM_DIR_FORWARD;
+}
+
+void
+OcioNodeKnobs::populateMenu(const KnobChoicePtr& menu,
+                            const std::vector<std::string>& names)
+{
+    if (!menu) {
+        return;
+    }
+    std::vector<ChoiceOption> options;
+    options.reserve(names.size());
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        options.push_back(ChoiceOption(names[i]));
+    }
+    menu->populateChoices(options);
+}
+
+void
+OcioNodeKnobs::reloadFile(const std::string& path) const
+{
+    if (ProjectColorManagementPtr cm = colorManagement()) {
+        cm->reloadFile(path);
     }
 }
 
@@ -218,10 +316,21 @@ OcioNodeKnobs::applyRow(const OcioProcessor& processor,
     if (io.dst != io.src[0]) {
         std::memcpy(io.dst, io.src[0], sizeof(float) * io.width * io.nComps);
     }
-    if (processor.cpu) {
+    if (!processor.cpu || (io.width <= 0) || ((io.nComps != 3) && (io.nComps != 4))) {
+        return;
+    }
+    // Pixel by pixel in place: CPUProcessor::apply() builds image helpers per call, which a row
+    // must not allocate. RGB only, so alpha is left as it is.
+    try {
+        const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
+        const OCIO_NAMESPACE::CPUProcessor& cpu = *processor.cpu;
+        float* pixel = io.dst;
+        for (int x = 0; x < io.width; ++x, pixel += io.nComps) {
+            cpu.applyRGB(pixel);
+        }
+    } catch (const std::exception&) {
         // A row that fails keeps the source, as the node does when no processor can be built.
-        std::string error;
-        if (!IoColorSpace::convertRow(*processor.cpu, io.dst, io.width, io.nComps, &error) && (io.dst != io.src[0])) {
+        if (io.dst != io.src[0]) {
             std::memcpy(io.dst, io.src[0], sizeof(float) * io.width * io.nComps);
         }
     }

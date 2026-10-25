@@ -167,7 +167,7 @@ future core work has solid ground to build on.
 | M105 | Live Session Core | todo | M102 |  | E11 | [M105-live-session-core.md](PLAN/MILESTONES/M105-live-session-core.md) |
 | M106 | Live Session Presence And Undo | todo | M105 |  | E11 | [M106-live-session-presence-and-undo.md](PLAN/MILESTONES/M106-live-session-presence-and-undo.md) |
 | M70 | RFV Declaration And Storage | todo |  |  | E13 | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
-| M71 | RFV Render Context | todo |  |  | E13 | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
+| M71 | RFV Render Context | todo | M70, M178 |  | E13 | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | todo |  |  | E13 | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
 | M92 | Linked Nodes | doing | M24 | bosley-native-nodes | E10 | [M92-linked-nodes.md](PLAN/MILESTONES/M92-linked-nodes.md) |
 | M95 | Knob Cleanup And Keyer Redesign | todo | M69, M76, M137 |  | E3 | [M95-knob-cleanup-and-keyer-redesign.md](PLAN/MILESTONES/M95-knob-cleanup-and-keyer-redesign.md) |
@@ -234,6 +234,20 @@ future core work has solid ground to build on.
 | M174 | Wayland Support | blocked | - |  | E1 | [M174-wayland-support.md](PLAN/MILESTONES/M174-wayland-support.md) |
 | M175 | Build Script Jobs And Test Legs | todo | - |  | E2 | [M175-build-script-jobs-and-test-legs.md](PLAN/MILESTONES/M175-build-script-jobs-and-test-legs.md) |
 | M176 | Splice-Vertical Regression | todo | - |  | E10 | [M176-splice-vertical-regression.md](PLAN/MILESTONES/M176-splice-vertical-regression.md) |
+| M178 | Render Context Core | todo | M167 |  | E13 | [M178-render-context-core.md](PLAN/MILESTONES/M178-render-context-core.md) |
+| M179 | Render Graph Continuation | todo | M178 |  | E6 | [M179-render-graph-continuation.md](PLAN/MILESTONES/M179-render-graph-continuation.md) |
+| M180 | Loop Block Core | todo | M178 |  | E15 | [M180-loop-block-core.md](PLAN/MILESTONES/M180-loop-block-core.md) |
+| M181 | Loop Drivers And UI | todo | M180, M71 |  | E15 | [M181-loop-drivers-and-ui.md](PLAN/MILESTONES/M181-loop-drivers-and-ui.md) |
+| M182 | Loop Feedback | todo | M180 |  | E15 | [M182-loop-feedback.md](PLAN/MILESTONES/M182-loop-feedback.md) |
+| M183 | Loop Map Blend | todo | M180, M179, M184 |  | E15 | [M183-loop-map-blend.md](PLAN/MILESTONES/M183-loop-map-blend.md) |
+| M184 | Variable-Size Filter Kit | todo | M120, M137 |  | E15 | [M184-variable-size-filter-kit.md](PLAN/MILESTONES/M184-variable-size-filter-kit.md) |
+| M185 | Variable Warps | todo | M113, M184 |  | E15 | [M185-variable-warps.md](PLAN/MILESTONES/M185-variable-warps.md) |
+| M186 | Exact IDefocus | todo | M131, M184 |  | E15 | [M186-exact-idefocus.md](PLAN/MILESTONES/M186-exact-idefocus.md) |
+| M187 | Variable Sharpen And Glow | todo | M123, M184 |  | E15 | [M187-variable-sharpen-and-glow.md](PLAN/MILESTONES/M187-variable-sharpen-and-glow.md) |
+| M188 | Variable Median And DirBlur | todo | M130, M184 |  | E15 | [M188-variable-median-and-dirblur.md](PLAN/MILESTONES/M188-variable-median-and-dirblur.md) |
+| M189 | Make I-Node Action | todo | M183, M184, M181 |  | E15 | [M189-make-i-node-action.md](PLAN/MILESTONES/M189-make-i-node-action.md) |
+| M190 | Cross-Frame Feedback | todo | M182 |  | E15 | [M190-cross-frame-feedback.md](PLAN/MILESTONES/M190-cross-frame-feedback.md) |
+| M191 | Native VectorBlur | todo | M120, M137 |  | E3 | [M191-native-vectorblur.md](PLAN/MILESTONES/M191-native-vectorblur.md) |
 | M177 | Renders Isolated From Edits | todo | M167 |  | E14 | [M177-renders-isolated-from-edits.md](PLAN/MILESTONES/M177-renders-isolated-from-edits.md) |
 
 # Epics
@@ -254,6 +268,7 @@ future core work has solid ground to build on.
 | E12 | Graph Diff And Merge | Diff and merge node graphs, with a UI to resolve conflicts. |
 | E13 | RFV | Add Reverse-flow Variable feature - arbitrary data that travels up the graph, like frame context. |
 | E14 | Architecture | Solidify architecture, considering correctness, performance, robustness, etc. |
+| E15 | Loops And I-Nodes | Let a Map drive any effect per pixel, through exact native I-nodes and a Houdini-style loop block over any subgraph. |
 
 # Open questions
 

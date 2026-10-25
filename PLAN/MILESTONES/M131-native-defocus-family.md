@@ -3,7 +3,7 @@
 New native nodes with no OFX source:
 - **A shared bokeh kernel library.** Disc, n-blade (blade count, rotation, roundness) and image-input kernels. It is scene-linear, with an optional highlight boost (threshold and gain).
 - **`Defocus`**, at a uniform size.
-- **`IBlur`** and **`IDefocus`**, whose size is driven per pixel by a mask or channel input.
+- ~~**`IBlur`** and **`IDefocus`**~~ moved to E15 - Loops And I-Nodes (user, 2026-10-25): IBlur to M184 - Variable-Size Filter Kit, IDefocus to M186 - Exact IDefocus, which reuses this milestone's bokeh kernel library.
 - **`ZDefocus`**, which turns a depth channel into a circle of confusion (CoC). It uses a layered gather to limit edge bleeding and has a focal-plane overlay and output.
   - Its **real-world lens mode** sets the disc size from focal length, f-stop and film back (user).
   - A `depthUnits` knob sets the depth units.
@@ -33,14 +33,15 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 **In:**
 - The bokeh kernel library.
-- `Defocus`, `IBlur`, `IDefocus` and `ZDefocus`, including ZDefocus's real-world lens mode.
-- CPU and GPU kernels and parity tests for all four.
+- `Defocus` and `ZDefocus`, including ZDefocus's real-world lens mode.
+- CPU and GPU kernels and parity tests for both.
 
 **Out:**
 - Deep input to ZDefocus: E8 - Deep Compositing.
 - Cat-eye or optical vignetting, chromatic aberration, anamorphic squeeze, and textured kernels: M133 - ZDefocus Lens Aberrations.
 - Motion-vector blur. No milestone owns it.
 - Sharpen and Glow: M123 - Native Sharpen And Glow.
+- IBlur and IDefocus: M184 - Variable-Size Filter Kit and M186 - Exact IDefocus.
 - Median, Bilateral and DirBlur: M130 - Native Edge-Preserving And Directional Filters.
 
 **Edge cases:**
@@ -99,7 +100,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 130.2: Variable-size IBlur and IDefocus
 
-- [ ] M131.P2.T1 — Write the native IBlur and IDefocus nodes (CPU)
+- [ ] ~~M131.P2.T1 — Write the native IBlur and IDefocus nodes (CPU)~~ — cancelled 2026-10-25, moved to E15 - Loops And I-Nodes (M184 - Variable-Size Filter Kit, M186 - Exact IDefocus).
   - files: `Engine/Nodes/Filter/VariableDefocus.h`, `Engine/Nodes/Filter/VariableDefocus.cpp`, `Engine/Nodes/Filter/VariableDefocus.reg.inc`
   - approach:
     - One class, two registrations (`IBlur` with a Gaussian kernel, `IDefocus` with the bokeh kernel). Input 1 is a size map, read through a layer/channel knob.
@@ -107,7 +108,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeVariableDefocus` (T2) passes.
   - size: L
 
-- [ ] M131.P2.T2 — Test IBlur and IDefocus on CPU
+- [ ] ~~M131.P2.T2 — Test IBlur and IDefocus on CPU~~ — cancelled 2026-10-25, moved to E15 - Loops And I-Nodes (M184 - Variable-Size Filter Kit, M186 - Exact IDefocus).
   - files: `Tests/Native/NativeVariableDefocus_Test.cpp`
   - approach:
     - A constant map equals uniform Blur or Defocus at that size, within tolerance.
@@ -117,7 +118,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeVariableDefocus` passes.
   - size: M
 
-- [ ] M131.P2.T3 — IBlur and IDefocus on the GPU
+- [ ] ~~M131.P2.T3 — IBlur and IDefocus on the GPU~~ — cancelled 2026-10-25, moved to E15 - Loops And I-Nodes (M184 - Variable-Size Filter Kit, M186 - Exact IDefocus).
   - files: `Engine/Gpu/Kernels/variabledefocus.slang`, `Engine/Gpu/Kernels/variabledefocus.cmake`, `Engine/Nodes/Filter/VariableDefocus.cpp`, `Tests/Native/NativeVariableDefocusGpu_Test.cpp`
   - approach: implement the same scatter-as-gather over a tile with an apron sized by the map's maximum in the tile. The map is GPU input 1.
   - verify: at the phase build, `ctest -R NativeVariableDefocusGpu` passes on RADV within 1e-4 relative.
@@ -176,7 +177,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 ## Phase 130.4: Documentation
 
 - [ ] M131.P4.T1 — Document the nodes
-  - files: `Engine/Nodes/Filter/docs/{Defocus,IBlur,IDefocus,ZDefocus}.md`
+  - files: `Engine/Nodes/Filter/docs/{Defocus,ZDefocus}.md`
   - approach: one doc file per node (M120 - Native Node Port Kit's scheme), the kernel library described in `Defocus.md`: knobs, the lens formula, the depth conventions, GPU caps and tolerances.
   - verify: reviewed at the gate against the node code.
   - size: S
@@ -187,5 +188,6 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 - 2026-10-13 — **ZDefocus real-world lens mode (user):** the disc size can be set from focal length, f-stop and film back.
 - 2026-10-13 — **Aberrations split out (user):** cat-eye, chromatic aberration and anamorphic go to a follow-up, M133 - ZDefocus Lens Aberrations.
 - 2026-10-13 — **IBlur and IDefocus (user):** filter size is driven by a mask input.
+- 2026-10-25 — **IBlur and IDefocus moved out (user):** to E15 - Loops And I-Nodes, so every I-node shares one Map convention; Phase 130.2 is cancelled. Keep `BokehKernel` engine-free and reusable, since M186 - Exact IDefocus builds on it.
 
-**Verification gate:** the full build and `ctest` pass. Every `Native*Gpu` parity test in this milestone passes on RADV. Under Xvfb, Defocus (disc, 6-blade and image kernels), IBlur, IDefocus and ZDefocus (Manual and Lens modes, plus the focal-plane output) are rendered on a CG fixture with a depth pass. The ZDefocus focal-point overlay is dragged. Screenshots are shared with the user before sign-off. An AppImage built with `package.sh` is handed over for UAT.
+**Verification gate:** the full build and `ctest` pass. Every `Native*Gpu` parity test in this milestone passes on RADV. Under Xvfb, Defocus (disc, 6-blade and image kernels) and ZDefocus (Manual and Lens modes, plus the focal-plane output) are rendered on a CG fixture with a depth pass. The ZDefocus focal-point overlay is dragged. Screenshots are shared with the user before sign-off. An AppImage built with `package.sh` is handed over for UAT.

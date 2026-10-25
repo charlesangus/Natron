@@ -70,19 +70,19 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 
 ## Phase 20.2: Edit nodes
 
-- [ ] M20.P2.T1 — `USDTransform` with viewport gizmo
+- [x] M20.P2.T1 — `USDTransform` with viewport gizmo
   - files: `Engine/Nodes/Scene/USDTransform.cpp`, `Gui/SceneViewport.cpp` (gizmo drawing + drag → knob writeback), CMake source list
   - approach: Solaris Transform LOP semantics on a prim pattern (path or wildcard match). Each matched prim gets the same `xformOp:transform:<nodename>` (numbered if the name is taken), authored as the strongest opinion in the node's layer. Mode knob: Append (default; added after the existing ops) or Replace (`!resetXformStack!` plus the node's op). Pivot knob in local space; nothing is authored to `XformCommonAPI` pivots. Zero matches: node warning, pass-through. Viewport gizmo: translate/rotate/scale handles drawn in the Viewer's 3D view when a `USDTransform` is selected, placed at the first match's local origin plus the pivot. A "centre pivot" button sets the pivot from the matches' bbox centre. Drags write back to knobs (undoable through the existing knob undo stack).
   - verify: unit tests — Append composes over the input's animated xformOps; Replace discards them; a two-prim wildcard authors the op on both; zero matches warns and leaves the stage identical. Manual — a gizmo drag moves the prim and creates one undo entry; centre pivot rotates about the bbox centre.
   - size: L
 
-- [ ] M20.P2.T2 — `USDMerge` and `USDPrune`
+- [x] M20.P2.T2 — `USDMerge` and `USDPrune`
   - files: `Engine/Nodes/Scene/USDMerge.cpp`, `Engine/Nodes/Scene/USDPrune.cpp`, CMake source list
   - approach: `USDMerge` — layer-stack union (Nuke GeoMerge "merge layers" mode; duplicate/flatten modes deferred to a future amendment), multi-input. Later inputs are stronger, as in the Solaris Merge LOP, so input N+1's layers stack above input N's in the strongest-last `layerStack`. A layer handle that arrives more than once is kept only at its strongest position. `USDPrune` — deactivation/visibility opinions by prim pattern.
   - verify: unit tests — the last input wins a conflicting attribute; a diamond graph (one source through two branches into one merge) yields that source's layer once; pruned prims are inactive on the composed stage.
   - size: M
 
-- [ ] M20.P2.T3 — `USDMaterial`
+- [x] M20.P2.T3 — `USDMaterial`
   - files: `Engine/Nodes/Scene/USDMaterial.cpp`, CMake source list
   - approach: authors a `UsdPreviewSurface` material (diffuse/metallic/roughness/emissive knobs; a texture file path knob for each) and binds it to a prim pattern. Colour knobs are in the project working space and written unchanged. A texture path that doesn't resolve is still authored, with a persistent node warning naming it. Image inputs are M53's; MaterialX is out of scope for v1.
   - verify: unit test — material prim + binding present on composed stage; a missing texture authors the path and sets the warning. Manual — the shaded 3D view shows the material.
@@ -130,6 +130,7 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 
 ## Decisions
 
+- 2026-10-25 — **USDMerge keeps a repeated layer at its weakest position (bosley-native-nodes):** the plan said strongest, but in a diamond (Prim → {Transform, X} → Merge) that would put the shared source above the branch layers authored over it and let the source's own ops override USDTransform's; keeping the first (weakest) occurrence preserves branch edits. One gizmo drag is one undo step; the gizmo follows the USDTransform whose panel was opened last.
 - 2026-10-25 — **Create nodes define their prim (bosley-native-nodes):** USDCamera, USDPrim and USDLight take an optional scene input and author their prim on top of it; a node's transform replaces any transform the input has on the same prim. Default prim paths follow the node's script name (e.g. `/USDCamera1`) so two nodes left at their defaults don't write the same prim; done with the Phase 20.2 work. Lens knobs are in mm, converted with the input's metersPerUnit.
 - 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file. USDRender needs the Hydra libraries in Engine's link set.
 - 2026-10-24 — `USDRender` hands pixels to the image graph through GL→Vulkan interop, not a plain CPU readback: user's call, since M19 - USD/Hydra Foundation left Hydra → Vulkan compute to `USDRender`.

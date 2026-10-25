@@ -3906,6 +3906,20 @@ Project::getRFVGroup() const
 }
 
 void
+Project::refreshVariablesAfterTimeChange(bool isPlayback,
+                                         double time)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (!_imp->rfvGroup) {
+        return;
+    }
+    const KnobsVec children = _imp->rfvGroup->getChildren();
+    for (KnobsVec::const_iterator it = children.begin(); it != children.end(); ++it) {
+        (*it)->onTimeChanged(isPlayback, time);
+    }
+}
+
+void
 Project::onUserKnobsChanged()
 {
     RFV::refreshNodeVariableGroups(*this);

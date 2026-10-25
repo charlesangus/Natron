@@ -128,6 +128,25 @@ std::vector<VariableDeclaration> getExistingVariables(const KnobHolder* holder);
 KnobIPtr addExistingVariable(KnobHolder* holder, const std::string& name, std::string* error = nullptr);
 
 /**
+ * @brief Whether addAsVariable() would move the knob into the holder's RFV group. When it would
+ * not, reason says why: the knob is missing or belongs to another holder, the holder has no RFV
+ * group, the knob is not a user knob, holds no value (see isVariableKnobType()) or is already a
+ * variable, its name is not a valid identifier or another knob of the holder has it, or, for the
+ * project, the name is taken on the app object (see isAppAttributeName()).
+ **/
+bool canAddAsVariable(const KnobHolder* holder, const KnobIPtr& knob, std::string* reason = nullptr);
+
+/**
+ * @brief Moves a user knob of the holder, made anywhere on it, into the holder's first RFV group,
+ * so that it becomes a variable under its script name, then calls recreateUserKnobs(). A user page
+ * the move leaves empty is deleted. A project variable is declared as app.<name>. This records
+ * nothing in the undo history.
+ * @returns false with error set, moving nothing, when canAddAsVariable() is false or the group
+ * refuses the knob.
+ **/
+bool addAsVariable(KnobHolder* holder, const KnobIPtr& knob, std::string* error = nullptr);
+
+/**
  * @brief Whether promoteToProject() would copy the knob into the project. When it would not,
  * reason says why: the knob is not a node's variable, or the project already has a parameter
  * with its name, or its name is taken on the app object (see isAppAttributeName()).

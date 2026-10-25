@@ -41,7 +41,6 @@
 #include "Engine/Project.h"
 #include "Engine/PyParameter.h"
 #include "Engine/PythonUndoCommands.h"
-#include "Engine/RFV.h"
 #include "Engine/Settings.h"
 
 #include "Engine/EngineFwd.h"
@@ -51,6 +50,7 @@ NATRON_PYTHON_NAMESPACE_ENTER
 
 App::App(const AppInstancePtr& instance)
     : Group()
+    , UserParamHolder(instance->getProject().get())
     , _instance(instance)
 {
     if ( instance->getProject() ) {
@@ -600,194 +600,6 @@ App::removeProjectLayer(const QString& id)
     std::string error;
 
     return getInternalApp()->getProject()->removeLayer(id.toStdString(), &error);
-}
-
-namespace {
-
-// Raises ValueError and returns null when name cannot become a project variable.
-ProjectPtr
-projectForNewRFV(const AppInstancePtr& app,
-                 const QString& name)
-{
-    const std::string nameStd = name.toStdString();
-    ProjectPtr project = app->getProject();
-    std::string error;
-
-    if (!RFV::isValidVariableName(nameStd)) {
-        error = nameStd + ": a variable name must be a valid Python identifier";
-    } else if (project->getKnobByName(nameStd)) {
-        error = nameStd + ": the project already has a parameter with that name";
-    } else if (RFV::isAppAttributeName(app, nameStd)) {
-        error = nameStd + ": the name is an attribute of the app object";
-    }
-    if (!error.empty()) {
-        PyErr_SetString(PyExc_ValueError, error.c_str());
-
-        return ProjectPtr();
-    }
-
-    return project;
-}
-
-// Raises ValueError, deleting the knob, when the variables group refuses it.
-bool
-addRFVKnob(const AppInstancePtr& app,
-           const ProjectPtr& project,
-           const KnobIPtr& knob)
-{
-    KnobGroupPtr group = project->getRFVGroup();
-
-    if (!knob || !group || !group->addKnob(knob)) {
-        if (knob) {
-            project->deleteKnob(knob.get(), false);
-        }
-        PyErr_SetString(PyExc_ValueError, "The project variables group refused the parameter");
-
-        return false;
-    }
-    project->recreateUserKnobs(false);
-    try {
-        app->declareProjectParamsToPython();
-    } catch (const std::exception& e) {
-        PyErr_SetString(PyExc_RuntimeError, e.what());
-
-        return false;
-    }
-
-    return true;
-}
-
-} // namespace
-
-IntParam*
-App::createRFVIntParam(const QString& name,
-                       const QString& label)
-{
-    ProjectPtr project = projectForNewRFV(getInternalApp(), name);
-    if (!project) {
-        return 0;
-    }
-    KnobIntPtr knob = project->createIntKnob(name.toStdString(), label.toStdString(), 1);
-
-    return addRFVKnob(getInternalApp(), project, knob) ? new IntParam(knob) : 0;
-}
-
-Int2DParam*
-App::createRFVInt2DParam(const QString& name,
-                         const QString& label)
-{
-    ProjectPtr project = projectForNewRFV(getInternalApp(), name);
-    if (!project) {
-        return 0;
-    }
-    KnobIntPtr knob = project->createIntKnob(name.toStdString(), label.toStdString(), 2);
-
-    return addRFVKnob(getInternalApp(), project, knob) ? new Int2DParam(knob) : 0;
-}
-
-Int3DParam*
-App::createRFVInt3DParam(const QString& name,
-                         const QString& label)
-{
-    ProjectPtr project = projectForNewRFV(getInternalApp(), name);
-    if (!project) {
-        return 0;
-    }
-    KnobIntPtr knob = project->createIntKnob(name.toStdString(), label.toStdString(), 3);
-
-    return addRFVKnob(getInternalApp(), project, knob) ? new Int3DParam(knob) : 0;
-}
-
-DoubleParam*
-App::createRFVDoubleParam(const QString& name,
-                          const QString& label)
-{
-    ProjectPtr project = projectForNewRFV(getInternalApp(), name);
-    if (!project) {
-        return 0;
-    }
-    KnobDoublePtr knob = project->createDoubleKnob(name.toStdString(), label.toStdString(), 1);
-
-    return addRFVKnob(getInternalApp(), project, knob) ? new DoubleParam(knob) : 0;
-}
-
-Double2DParam*
-App::createRFVDouble2DParam(const QString& name,
-                            const QString& label)
-{
-    ProjectPtr project = projectForNewRFV(getInternalApp(), name);
-    if (!project) {
-        return 0;
-    }
-    KnobDoublePtr knob = project->createDoubleKnob(name.toStdString(), label.toStdString(), 2);
-
-    return addRFVKnob(getInternalApp(), project, knob) ? new Double2DParam(knob) : 0;
-}
-
-Double3DParam*
-App::createRFVDouble3DParam(const QString& name,
-                            const QString& label)
-{
-    ProjectPtr project = projectForNewRFV(getInternalApp(), name);
-    if (!project) {
-        return 0;
-    }
-    KnobDoublePtr knob = project->createDoubleKnob(name.toStdString(), label.toStdString(), 3);
-
-    return addRFVKnob(getInternalApp(), project, knob) ? new Double3DParam(knob) : 0;
-}
-
-BooleanParam*
-App::createRFVBooleanParam(const QString& name,
-                           const QString& label)
-{
-    ProjectPtr project = projectForNewRFV(getInternalApp(), name);
-    if (!project) {
-        return 0;
-    }
-    KnobBoolPtr knob = project->createBoolKnob(name.toStdString(), label.toStdString());
-
-    return addRFVKnob(getInternalApp(), project, knob) ? new BooleanParam(knob) : 0;
-}
-
-ChoiceParam*
-App::createRFVChoiceParam(const QString& name,
-                          const QString& label)
-{
-    ProjectPtr project = projectForNewRFV(getInternalApp(), name);
-    if (!project) {
-        return 0;
-    }
-    KnobChoicePtr knob = project->createChoiceKnob(name.toStdString(), label.toStdString());
-
-    return addRFVKnob(getInternalApp(), project, knob) ? new ChoiceParam(knob) : 0;
-}
-
-ColorParam*
-App::createRFVColorParam(const QString& name,
-                         const QString& label,
-                         bool useAlpha)
-{
-    ProjectPtr project = projectForNewRFV(getInternalApp(), name);
-    if (!project) {
-        return 0;
-    }
-    KnobColorPtr knob = project->createColorKnob(name.toStdString(), label.toStdString(), useAlpha ? 4 : 3);
-
-    return addRFVKnob(getInternalApp(), project, knob) ? new ColorParam(knob) : 0;
-}
-
-StringParam*
-App::createRFVStringParam(const QString& name,
-                          const QString& label)
-{
-    ProjectPtr project = projectForNewRFV(getInternalApp(), name);
-    if (!project) {
-        return 0;
-    }
-    KnobStringPtr knob = project->createStringKnob(name.toStdString(), label.toStdString());
-
-    return addRFVKnob(getInternalApp(), project, knob) ? new StringParam(knob) : 0;
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

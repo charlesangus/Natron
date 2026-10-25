@@ -28,3 +28,33 @@ The "Existing variable" drop-down at the top of the Global Variables group lists
 Choosing an entry adds a variable to this node with the source's type, dimensions, label, hint and defaults, and the source's current value. The new variable has no animation and no link to the source. A project variable's copy goes in Global Variables, and another node's goes in Variables unless the project declares the same name. Adding it is one undo step.
 
 The drop-down is part of the node, not a parameter: it is not saved, cannot be edited or removed from the parameter manager, and is not a variable.
+
+## From Python
+
+A variable starts as an ordinary user parameter. Create it with any of the usual creators, such as `createDoubleParam`, `createInt2DParam`, `createColorParam` or `createStringParam`, and then pass it to `addRFVKnob`:
+
+```python
+gain = app.Set1.createDoubleParam("gain", "Gain")
+gain.setValue(0.5)
+app.Set1.addRFVKnob(gain)
+
+shot = app.createStringParam("shot", "Shot")
+app.addRFVKnob(shot)
+print(app.shot.getValue())
+```
+
+- On a Set node, the parameter moves into the node's Variables group, or into Global Variables when the project already declares the name.
+- On the app object, the parameter becomes a project variable and is reachable as `app.<name>`.
+- The variable's name is the parameter's script name.
+- The User page the creator put the parameter on is removed once it is empty.
+
+`addRFVKnob` raises `ValueError` and moves nothing in any of these cases:
+
+- the parameter belongs to another node or to the project, or the node has no variables group;
+- the parameter is not a user parameter;
+- it holds no value (a group, page, button or separator);
+- it is already a variable;
+- its name is a Python keyword or another parameter already has it;
+- for a project variable, the name is already an attribute of the app object, such as a method or a top-level node.
+
+A refused parameter stays where its creator put it. A project parameter that is not a variable is not reachable as `app.<name>`.

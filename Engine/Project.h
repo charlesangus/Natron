@@ -502,6 +502,12 @@ public:
     KnobGroupPtr getRFVGroup() const;
 
     /**
+     * @brief Has the variables, the only project knobs that can animate or hold an expression, tell
+     * their interfaces that their value at the new time may differ (see KnobI::onTimeChanged()).
+     **/
+    void refreshVariablesAfterTimeChange(bool isPlayback, double time);
+
+    /**
      * @brief The project's variables may have changed: every ReverseFlowVariableSet node re-sorts
      * its variables by the names the project declares (see RFV::refreshNodeVariableGroups()).
      **/

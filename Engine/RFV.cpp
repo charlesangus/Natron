@@ -309,6 +309,76 @@ addExistingVariable(KnobHolder* holder,
 } // addExistingVariable
 
 bool
+canAddAsVariable(const KnobHolder* holder,
+                 const KnobIPtr& knob,
+                 std::string* reason)
+{
+    std::string error;
+    const Project* project = dynamic_cast<const Project*>(holder);
+    const std::string owner = project ? std::string("the project") : std::string("this node");
+
+    if (!knob) {
+        error = "No parameter was given";
+    } else if (!holder || (knob->getHolder() != holder)) {
+        error = knob->getName() + " is not a parameter of " + owner;
+    } else if (!rfvGroupOf(holder)) {
+        error = "There is no variables group on " + owner;
+    } else if (!knob->isUserKnob() || isPluginControl(knob)) {
+        error = knob->getName() + " is not a user parameter: only a parameter made by a script or the parameter manager can be a variable";
+    } else if (!isVariableKnobType(knob)) {
+        error = knob->getName() + ": a " + knob->typeName() + " parameter holds no value, so it cannot be a variable";
+    } else {
+        const std::string& name = knob->getName();
+        KnobGroup* parent = dynamic_cast<KnobGroup*>(knob->getParentKnob().get());
+        if (parent && parent->isRFVGroup()) {
+            error = name + " is already a variable";
+        } else if (!isValidVariableName(name)) {
+            error = name + ": a variable name must be a valid Python identifier";
+        } else if (holder->getOtherKnobByName(name, knob.get())) {
+            error = name + ": " + owner + " already has another parameter with that name";
+        } else if (project && isAppAttributeName(project->getApp(), name)) {
+            error = name + " is an attribute of the app object, so it cannot be a project variable";
+        }
+    }
+    if (reason) {
+        *reason = error;
+    }
+
+    return error.empty();
+}
+
+bool
+addAsVariable(KnobHolder* holder,
+              const KnobIPtr& knob,
+              std::string* error)
+{
+    if (!canAddAsVariable(holder, knob, error)) {
+        return false;
+    }
+    KnobGroupPtr group = rfvGroupOf(holder);
+    KnobPagePtr formerPage = std::dynamic_pointer_cast<KnobPage>(knob->getParentKnob());
+    if (!group->addKnob(knob)) {
+        if (error) {
+            *error = "The variables group refused " + knob->getName();
+        }
+
+        return false;
+    }
+    if (formerPage && formerPage->isUserKnob() && !formerPage->isDeclaredByPlugin() && formerPage->getChildren().empty()) {
+        holder->deleteKnob(formerPage.get(), true);
+    }
+    holder->recreateUserKnobs(true);
+    if (dynamic_cast<Project*>(holder)) {
+        AppInstancePtr app = holder->getApp();
+        if (app) {
+            app->refreshProjectParamsInPython();
+        }
+    }
+
+    return true;
+}
+
+bool
 isNodeVariable(const KnobIPtr& knob)
 {
     if (!knob || !dynamic_cast<EffectInstance*>(knob->getHolder())) {

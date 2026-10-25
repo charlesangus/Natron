@@ -198,25 +198,25 @@ Deps: M100 - Content Node Hashing.
 
 ## Phase 167.5: Consumers outside the render
 
-- [ ] M167.P5.T1 — Main-thread UI hook driven by hash and frame changes
+- [x] M167.P5.T1 — Main-thread UI hook driven by hash and frame changes
   - files: `Engine/Node.cpp`, `Engine/Node.h`, `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp`, `Engine/Nodes/NativeEffectBase.cpp`
   - approach: Replace `onMetadataRefreshed` with `onCurrentFrameMetadataChanged(md)`, run on the main thread when the node's hash or the timeline frame changes, for nodes with a shown panel, a layer knob or a views menu. It refreshes the channel selectors, the identity state, the produced-layer registry, and the bit-depth/PAR/FPS warnings, which move out of `checkMetadata` (~:6659) and are computed from the current frame's answer. Renders never read anything it sets. `NativeEffectBase::onMetadataRefreshed` (~:472) moves to it.
   - verify: the phase build; `TimeVaryingLayers.TimeChangeRelistsLayerMenus` and `LayerMenusListReadLayersAtCurrentFrame` green; a new case shows a PAR warning appears and clears as the frame moves over a Switch.
   - size: L
 
-- [ ] M167.P5.T2 — Viewer and node graph follow the current frame
+- [x] M167.P5.T2 — Viewer and node graph follow the current frame
   - files: `Gui/ViewerTab30.cpp`, `Gui/ViewerTabPrivate.cpp`, `Gui/ViewerGL.cpp`, `Gui/NodeGraph15.cpp`
   - approach: The format, PAR and fps box (`ViewerTab30.cpp` ~:1274-1344), `ViewerTabPrivate.cpp` ~:249, `ViewerGL.cpp` ~:4567 and the edge PAR/fps mismatch tooltip (`NodeGraph15.cpp` ~:75-88) read `getMetadata(currentFrame, view)`, refreshed on the timeline's `frameChanged`. The channel menu follows P5.T1.
   - verify: the phase build, then an Xvfb check on the phase AppImage: scrubbing over a keyed Switch (RGB HD at f1, RGBA 2K PAR 2 at f2) changes the viewer format, PAR and channel menu; screenshots shared before sign-off. GUI bench if M117 has landed.
   - size: M
 
-- [ ] M167.P5.T3 — Python asks at an explicit time and view
+- [x] M167.P5.T3 — Python asks at an explicit time and view
   - files: `Engine/PyNode.h`, `Engine/PyNode.cpp`, `Engine/typesystem_engine.xml`, `Tests/Native/EffectMetadataPython_Test.cpp`
   - approach: `getOutputFormat`, `getFrameRate`, `getPixelAspectRatio` and `getBitDepth` take `(time, view)`, like `getRegionOfDefinition` (`PyNode.h` ~:401), with no default (clean break).
   - verify: the phase build; a Python test reads different values at f1 and f2 over a keyed Switch, and the no-argument call is gone.
   - size: M
 
-- [ ] M167.P5.T4 — Write applies the agreed policy over a varying range
+- [x] M167.P5.T4 — Write applies the agreed policy over a varying range
   - files: `Engine/Nodes/IO/NativeWrite.cpp`, `Engine/Nodes/IO/NativeWrite.h`, `Engine/OutputEffectInstance.cpp`, `Tests/Native/NativeWriteMetadata_Test.cpp`
   - approach: Implement the user's ruling (see Decisions). `NativeWrite::onMetadataRefreshed` moves to P5.T1's hook, so its views menu follows the frame.
   - verify: the phase build; writing f1-f2 over the keyed Switch gives files whose headers match the ruling; `NativeWrite*` green.
@@ -254,6 +254,7 @@ Deps: M100 - Content Node Hashing.
 
 ## Decisions
 
+- 2026-10-25 — **Phase 5 gate (bosley-native-nodes):** fast build 434/434 on 772f92d7d (after the identity-check message fix), and `Tests/gui/m167_viewer_follows_frame.py` (e934a0c3e) passes with 0 failures; screenshots shared, awaiting approval.
 - 2026-10-25 — **Phase 4 gate passed (PM):** fast 420/420 both legs on 925ce9569; OfxPerFrameMetadata, PerFrameMetadata and OfxClipPreferencesThread clean over 50 repeats, and OfxPerFrameMetadata over 4 parallel x 50. The switched-input case uses RGBPoint: PointMatrix writes alpha by default, and the M65 write-widening rule correctly turns its RGB frame into RGBA.
 - 2026-10-25 — **Phase 4 departures approved (user):** per-frame OpenFX clip-preferences calls run inline on the asking thread, not on a dedicated pool (a pool thread would queue for the read lock behind a waiting writer while the caller holds it, and may need the caller GIL). The ABBA fixed is the clip fetch triggering a refresh under the instance mutex (Node::InputRelatedDataRefreshDeferral); onNodeHashChanged was already ordered. onSyncPrivateDataRequested stays in the main-thread refresh, which per-frame calls never reach. begin/endSequenceRender get no frame answer. Deferred plug-in param writes leave the OFX property out of step with its knob until the queued refresh.
 - 2026-10-24 — **P4 thread model approved (user):** the P1.T1 recommendation as written: thread-local per-frame flag that records OpenFX parameter writes and setOption and posts one main-thread refresh, channel-menu rebuilds skipped off the main thread, a dedicated pool for per-frame calls, preferencesLock taken downstream to upstream, the onNodeHashChanged ABBA fixed first, onSyncPrivateDataRequested main-thread only.

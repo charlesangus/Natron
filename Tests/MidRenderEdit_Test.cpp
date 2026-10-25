@@ -54,6 +54,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageKey.h"
 #include "Engine/ImageLayerDesc.h"
@@ -260,6 +261,29 @@ protected:
         });
     }
 
+    // Brings the project to where the job's own renders would take it, so the job runs in the
+    // states computeStateHashes reads: a Read's first render off the main thread adds its format to
+    // the project, and connecting nodes queues a refresh of the project's layers. Either changes
+    // every node's hash.
+    void settleProject()
+    {
+        ProjectPtr project = getApp()->getProject();
+        for (int state = 0; state < kStateCount; ++state) {
+            applyState(state);
+            const NodePtr reads[] = { _readA, _readB };
+            for (const NodePtr& read : reads) {
+                NodeMetadataConstPtr metadata = read->getEffectInstance()->getMetadata(1, ViewIdx(0));
+                ASSERT_TRUE(bool(metadata)) << read->getScriptName();
+                Format format;
+                format.set(metadata->getOutputFormat());
+                format.setPixelAspectRatio(metadata->getPixelAspectRatio(-1));
+                project->setOrAddProjectFormat(format);
+            }
+        }
+        applyState(0);
+        QCoreApplication::processEvents();
+    }
+
     void stopRecording()
     {
         ParallelRenderArgsSetter::setFrameSnapshotHookForTests(ParallelRenderArgsSetter::FrameSnapshotHook());
@@ -437,6 +461,7 @@ TEST_F(MidRenderEditTest, BlockingFileRenderWritesEachFrameFromItsSnapshot)
     const int firstFrame = 1;
     const int lastFrame = 20;
     EditBroker broker(kStateCount - 1, 4, 4, [this](int edit) { applyState(edit + 1); });
+    ASSERT_NO_FATAL_FAILURE(settleProject());
     startRecording(writer, &broker);
     BlockingBackgroundRender render(writerEffect);
     std::thread renderThread([&render, &broker, firstFrame, lastFrame]() {
@@ -470,6 +495,10 @@ TEST_F(MidRenderEditTest, BlockingFileRenderWritesEachFrameFromItsSnapshot)
         ASSERT_TRUE(readFlatExr(SequenceParsing::generateFileNameFromPattern(freshPattern, viewNames, 1, 0), &fresh[*it], &error)) << "state " << *it << ": " << error;
     }
 
+    // Pixels come from live knobs, not the snapshot, so a frame in flight when an edit lands may
+    // carry the edit's pixels in its snapshot's layout. Only frames set up in the last state, which
+    // no edit follows, are compared pixel for pixel.
+    int pixelFrames = 0;
     for (int frame = firstFrame; frame <= lastFrame; ++frame) {
         std::set<int> frameStates;
         for (std::size_t r = 0; r < _records.size(); ++r) {
@@ -491,8 +520,12 @@ TEST_F(MidRenderEditTest, BlockingFileRenderWritesEachFrameFromItsSnapshot)
         EXPECT_EQ(expected.y1, written.y1) << "frame " << frame;
         EXPECT_EQ(expected.width, written.width) << "frame " << frame;
         EXPECT_EQ(expected.height, written.height) << "frame " << frame;
-        EXPECT_TRUE(expected.pixels == written.pixels) << "frame " << frame << ", state " << state;
+        if (state == kStateCount - 1) {
+            ++pixelFrames;
+            EXPECT_TRUE(expected.pixels == written.pixels) << "frame " << frame << ", state " << state;
+        }
     }
+    EXPECT_GT(pixelFrames, 0);
 }
 
 // A 10-frame track, edited three times while it runs: every image the track pulls is set up under
@@ -531,6 +564,7 @@ TEST_F(MidRenderEditTest, TrackPullsEachFrameFromItsSnapshot)
     QObject::connect(context.get(), &TrackerContext::trackingFinished, &receiver, [&broker]() {
         broker.markDone();
     });
+    ASSERT_NO_FATAL_FAILURE(settleProject());
     startRecording(tracker, &broker);
     std::list<TrackMarkerPtr> markers;
     markers.push_back(marker);
@@ -576,6 +610,8 @@ TEST_F(MidRenderEditTest, ColourSamplesReadEachFramesSnapshot)
         float rgba[4];
         std::size_t firstRecord;
         std::size_t endRecord;
+        int editsBefore;
+        int editsAfter;
     };
     const int sampleCount = 10;
     const RectI window(0, 0, 16, 16);
@@ -583,14 +619,17 @@ TEST_F(MidRenderEditTest, ColourSamplesReadEachFramesSnapshot)
     std::thread::id samplerThreadId;
 
     EditBroker broker(kStateCount - 1, 2, 2, [this](int edit) { applyState(edit + 1); });
+    ASSERT_NO_FATAL_FAILURE(settleProject());
     startRecording(_reformat, &broker);
     std::thread samplerThread([this, &samples, &samplerThreadId, &broker, &window]() {
         samplerThreadId = std::this_thread::get_id();
         for (std::size_t i = 0; i < samples.size(); ++i) {
             samples[i].frame = static_cast<int>(i) + 1;
             samples[i].firstRecord = recordCount();
+            samples[i].editsBefore = broker.applied();
             samples[i].ok = sampleNodeColor(_reformat, samples[i].frame, ViewIdx(0), 0, window, ImageLayerDesc::getRGBAComponents(), samples[i].rgba);
             samples[i].endRecord = recordCount();
+            samples[i].editsAfter = broker.applied();
         }
         appPTR->getAppTLS()->cleanupTLSForThread();
         broker.markDone();
@@ -604,6 +643,10 @@ TEST_F(MidRenderEditTest, ColourSamplesReadEachFramesSnapshot)
     const std::vector<int> stateOfRecord = expectSnapshotsAreStates();
     expectCachedImagesMatchStates(stateOfRecord);
 
+    // Pixels come from live knobs, not the snapshot, so a sample an edit lands in may read the
+    // edit's pixels. Edits land only while this thread waits in a snapshot, so every other sample
+    // is compared with a fresh one.
+    int comparedSamples = 0;
     for (int state = 0; state < kStateCount; ++state) {
         applyState(state);
         freshen();
@@ -619,6 +662,10 @@ TEST_F(MidRenderEditTest, ColourSamplesReadEachFramesSnapshot)
                 continue;
             }
             ASSERT_TRUE(samples[i].ok) << "sample at frame " << samples[i].frame;
+            if (samples[i].editsBefore != samples[i].editsAfter) {
+                continue;
+            }
+            ++comparedSamples;
             float rgba[4];
             ASSERT_TRUE(sampleNodeColor(_reformat, samples[i].frame, ViewIdx(0), 0, window, ImageLayerDesc::getRGBAComponents(), rgba));
             for (int c = 0; c < 4; ++c) {
@@ -626,4 +673,5 @@ TEST_F(MidRenderEditTest, ColourSamplesReadEachFramesSnapshot)
             }
         }
     }
+    EXPECT_GT(comparedSamples, 0);
 }

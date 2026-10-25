@@ -883,8 +883,9 @@ TEST_F(RemoveLayersRenderTest, AMultiplanarEffectOverAColourlessStreamStillProdu
 
 // An upstream RemoveLayers takes alpha out on frame 1 only, being disabled on frame 2, so the
 // stream's colour plane is RGB on frame 1 and RGBA on frame 2. Removing rgb then drops the plane on
-// frame 1 and narrows it to alpha on frame 2. Metadata hold for every frame, so they follow the
-// input's own RGB metadata whichever frame the timeline is on when they are computed.
+// frame 1 and narrows it to alpha on frame 2. A keyed Disable reports its input's metadata at the
+// frames it is disabled, so each frame's metadata follow that frame's own plane; the timeless
+// metadata stay the RGB layout, and none of it depends on where the timeline is parked.
 TEST_F(RemoveLayersRenderTest, MetadataDoNotDependOnTheFrameTheTimelineIsOn)
 {
     createRemoveOnFixture();
@@ -920,14 +921,14 @@ TEST_F(RemoveLayersRenderTest, MetadataDoNotDependOnTheFrameTheTimelineIsOn)
     EXPECT_EQ(nCompsParkedOnFrame1, nCompsParkedOnFrame2);
     EXPECT_EQ(3, nCompsParkedOnFrame2);
 
-    // The Write sizes the colour row from the RGB layout the metadata advertise, so the frame
-    // whose colour plane is alpha alone is written as R, G and B read as zero, with no alpha.
+    // The upstream is disabled on frame 2, so it reports the reader's RGBA there and the Remove
+    // narrows it to alpha: that frame is written with alpha alone in the colour row.
     FlatExrImage image;
     render("frame2_parked_on_1.exr", &image, 2);
     if (HasFatalFailure()) {
         return;
     }
-    EXPECT_EQ(names({ "R", "G", "B", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
-    expectPlane(image, "", 0.f, 0.f, 0.f);
+    EXPECT_EQ(names({ "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
+    expectChannel(image, "A", 1.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
 }

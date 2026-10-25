@@ -1233,7 +1233,10 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
     OutputSchedulerThreadStartArgsPtr args = std::dynamic_pointer_cast<OutputSchedulerThreadStartArgs>(inArgs);
 
     assert(args);
-    _imp->runArgs = args;
+    {
+        QMutexLocker k(&_imp->lastRunArgsMutex);
+        _imp->runArgs = args;
+    }
 
     ThreadStateEnum state = eThreadStateActive;
     int expectedTimeToRenderPreviousIteration = std::numeric_limits<int>::min();
@@ -1935,6 +1938,18 @@ OutputSchedulerThread::notifyRenderFailure(const std::string& errorMessage)
     if (args->isBlocking) {
         waitForAbortToComplete_enforce_blocking();
     }
+}
+
+bool
+OutputSchedulerThread::isRunningBlocking() const
+{
+    OutputSchedulerThreadStartArgsPtr args;
+    {
+        QMutexLocker k(&_imp->lastRunArgsMutex);
+        args = _imp->runArgs.lock();
+    }
+
+    return args && args->isBlocking;
 }
 
 OutputSchedulerThreadStartArgsPtr
@@ -3544,6 +3559,12 @@ bool
 RenderEngine::isDoingSequentialRender() const
 {
     return _imp->scheduler ? _imp->scheduler->isWorking() : false;
+}
+
+bool
+RenderEngine::isDoingBlockingRender() const
+{
+    return _imp->scheduler && _imp->scheduler->isWorking() && _imp->scheduler->isRunningBlocking();
 }
 
 void

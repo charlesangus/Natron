@@ -6025,6 +6025,10 @@ EffectInstance::abortAnyEvaluation(bool keepOldestRender)
         }
     }
     for (std::list<OutputEffectInstance*>::const_iterator it = outputNodes.begin(); it != outputNodes.end(); ++it) {
+        // A blocking render has a caller waiting on it to finish, so an edit must not cut it short.
+        if (keepOldestRender && (*it)->getRenderEngine()->isDoingBlockingRender()) {
+            continue;
+        }
         //Abort and allow playback to restart but do not block, when this function returns any ongoing render may very
         //well not be finished
         if (keepOldestRender) {
@@ -6576,20 +6580,38 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
     return eStatusOK;
 } // EffectInstance::getDefaultMetadataFromInputs
 
-// Copies what an output carries, leaving this node's clips alone.
+// Copies what an output carries, leaving this node's clips alone. With defaults, the answer the
+// node's inputs alone give, a field the node set to something else is its own and stays: an
+// identity at the current knob values (a Grade at defaults, a mix of 0) still writes the layout
+// its channels declare, which must not change with those values.
 static void
 copyOutputMetadata(const NodeMetadata& from,
+                   const NodeMetadata* defaults,
                    NodeMetadata* to)
 {
-    to->setNComps(-1, from.getNComps(-1));
-    to->setComponentsType(-1, from.getComponentsType(-1));
-    to->setBitDepth(-1, from.getBitDepth(-1));
-    to->setPixelAspectRatio(-1, from.getPixelAspectRatio(-1));
-    to->setOutputStorageNComps(from.getOutputStorageNComps());
-    to->setOutputFormat(from.getOutputFormat());
-    to->setOutputFrameRate(from.getOutputFrameRate());
-    to->setOutputFielding(from.getOutputFielding());
-    to->setIsContinuous(from.getIsContinuous());
+    if (!defaults || ((to->getNComps(-1) == defaults->getNComps(-1)) && (to->getComponentsType(-1) == defaults->getComponentsType(-1)))) {
+        to->setNComps(-1, from.getNComps(-1));
+        to->setComponentsType(-1, from.getComponentsType(-1));
+        to->setOutputStorageNComps(from.getOutputStorageNComps());
+    }
+    if (!defaults || (to->getBitDepth(-1) == defaults->getBitDepth(-1))) {
+        to->setBitDepth(-1, from.getBitDepth(-1));
+    }
+    if (!defaults || (to->getPixelAspectRatio(-1) == defaults->getPixelAspectRatio(-1))) {
+        to->setPixelAspectRatio(-1, from.getPixelAspectRatio(-1));
+    }
+    if (!defaults || (to->getOutputFormat() == defaults->getOutputFormat())) {
+        to->setOutputFormat(from.getOutputFormat());
+    }
+    if (!defaults || (to->getOutputFrameRate() == defaults->getOutputFrameRate())) {
+        to->setOutputFrameRate(from.getOutputFrameRate());
+    }
+    if (!defaults || (to->getOutputFielding() == defaults->getOutputFielding())) {
+        to->setOutputFielding(from.getOutputFielding());
+    }
+    if (!defaults || (to->getIsContinuous() == defaults->getIsContinuous())) {
+        to->setIsContinuous(from.getIsContinuous());
+    }
     to->setIsFrameVarying(to->getIsFrameVarying() || from.getIsFrameVarying());
 }
 
@@ -6643,7 +6665,8 @@ NodeMetadataConstPtr
 EffectInstance::applyIdentityRule(U64 hash,
                                   double time,
                                   ViewIdx view,
-                                  const NodeMetadataConstPtr& own)
+                                  const NodeMetadataConstPtr& own,
+                                  const NodeMetadata* defaults)
 {
     // The identity is asked over this node's own format, not over a format read back through
     // getMetadata(), which would recurse into this very derivation.
@@ -6669,7 +6692,7 @@ EffectInstance::applyIdentityRule(U64 hash,
         return own;
     }
     std::shared_ptr<NodeMetadata> metadata = std::make_shared<NodeMetadata>(*own);
-    copyOutputMetadata(*inputMetadata, metadata.get());
+    copyOutputMetadata(*inputMetadata, defaults, metadata.get());
 
     return metadata;
 }
@@ -6685,14 +6708,17 @@ EffectInstance::deriveMetadataAt(U64 hash,
 
     getInputsMetadataAt(time, view, &inputs, &inputsMetadata);
     StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, true, metadata);
-    if ((stat != eStatusFailed) && !getNode()->isNodeDisabled(time)) {
+    // A disabled node passes its input through whole; an enabled one keeps what it sets itself.
+    const bool disabled = getNode()->isNodeDisabled(time);
+    const NodeMetadata defaults = metadata;
+    if ((stat != eStatusFailed) && !disabled) {
         // Asked from inside this node's time-invariant derivation, this answer is still at time.
         const InputsMetadataScope scope(&_imp->tlsData->getOrCreateTLSData()->timeInvariantInputsMetadata, NULL);
         getPreferredMetadataAt(time, view, metadata);
     }
     _imp->clampMetadata(inputs, inputsMetadata, metadata);
 
-    return applyIdentityRule(hash, time, view, std::make_shared<const NodeMetadata>(metadata));
+    return applyIdentityRule(hash, time, view, std::make_shared<const NodeMetadata>(metadata), disabled ? NULL : &defaults);
 }
 
 NodeMetadataConstPtr
@@ -6734,7 +6760,7 @@ EffectInstance::getOpenFXMetadataAt(U64 hash,
                                     double time,
                                     ViewIdx view)
 {
-    return applyIdentityRule(hash, time, view, getOpenFXTimeInvariantMetadata());
+    return applyIdentityRule(hash, time, view, getOpenFXTimeInvariantMetadata(), NULL);
 }
 // End of OpenFX nodes.
 

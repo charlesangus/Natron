@@ -1216,7 +1216,7 @@ private:
 
     NodeMetadataConstPtr deriveTimeInvariantMetadata();
 
-    NodeMetadataConstPtr applyIdentityRule(U64 hash, double time, ViewIdx view, const NodeMetadataConstPtr& own);
+    NodeMetadataConstPtr applyIdentityRule(U64 hash, double time, ViewIdx view, const NodeMetadataConstPtr& own, const NodeMetadata* defaults);
 
     NodeMetadataConstPtr getOpenFXMetadataAt(U64 hash, double time, ViewIdx view);
 

@@ -58,7 +58,10 @@ public:
 
     explicit CurveHostTestEffect(NodePtr n)
         : NativeEffectBase(n)
-        , _ui()
+        // Built here rather than in initializeKnobs(), as RotoPaint does: Node::load() creates the
+        // curve context before initializeKnobs() and ends that bracket with endChanges(), which
+        // already calls knobChanged() and so forwards to the interact.
+        , _ui(RotoCurveInteract::create(this))
         , _redrawRequests(0)
     {
     }
@@ -99,7 +102,6 @@ private:
     virtual void initializeKnobs() OVERRIDE FINAL
     {
         // The node's curve context exists by now (Node::createRotoContextConditionnally()).
-        _ui = RotoCurveInteract::create(this);
         _ui->connectToCurveContext();
         KnobPagePtr page = AppManager::createKnob<KnobPage>(this, std::string("Controls"));
         _ui->createViewerButtonKnobs(page);

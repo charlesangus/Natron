@@ -312,14 +312,17 @@ struct KeyInterpolationChange
     KeyframeTypeEnum oldInterp;
     KeyframeTypeEnum newInterp;
     KeyPtr key;
-
+    // Changing away from a weighted interpolation resets the weights, so undo restores them from here.
+    KeyTangents oldTangents;
 
     KeyInterpolationChange(KeyframeTypeEnum oldType,
                            KeyframeTypeEnum newType,
-                           const KeyPtr & k)
+                           const KeyPtr& k)
         : oldInterp(oldType)
         , newInterp(newType)
         , key(k)
+        , oldTangents { k->key.getLeftDerivative(), k->key.getRightDerivative(),
+                        k->key.getLeftWeight(), k->key.getRightWeight() }
     {
     }
 };

@@ -463,9 +463,9 @@ MoveKeysCommand::move(double dt,
     for (std::map<CurveGuiPtr, std::vector<MoveKeysCommand::KeyToMove> >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
         if (isKnobCurve) {
-            if ( !isKnobCurve->getKnobGui() ) {
-                RotoContextPtr roto = isKnobCurve->getRotoContext();
-                assert(roto);
+            // A knob curve with no GUI and no roto context is a plain knob (as in unit tests).
+            RotoContextPtr roto = isKnobCurve->getKnobGui() ? RotoContextPtr() : isKnobCurve->getRotoContext();
+            if (!isKnobCurve->getKnobGui() && roto) {
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }
@@ -581,9 +581,9 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
     for (std::list<KeyInterpolationChange >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->key->curve.get() );
         if (isKnobCurve) {
-            if ( !isKnobCurve->getKnobGui() ) {
-                RotoContextPtr roto = isKnobCurve->getRotoContext();
-                assert(roto);
+            // A knob curve with no GUI and no roto context is a plain knob (as in unit tests).
+            RotoContextPtr roto = isKnobCurve->getKnobGui() ? RotoContextPtr() : isKnobCurve->getRotoContext();
+            if (!isKnobCurve->getKnobGui() && roto) {
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }
@@ -615,10 +615,18 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
                 int keyframeIndex = it->key->curve->getKeyFrameIndex( it->key->key.getTime() );
                 if (keyframeIndex != -1) {
                     it->key->key = it->key->curve->setKeyFrameInterpolation(interp, keyframeIndex);
+                    if (undo && interpolationHasWeights(it->oldInterp)) {
+                        const KeyTangents& t = it->oldTangents;
+                        it->key->key = it->key->curve->setKeyFrameTangents(t.left, t.right, t.leftWeight, t.rightWeight, keyframeIndex);
+                    }
                 }
                 isParametric->evaluateValueChange(isKnobCurve->getDimension(), it->key->key.getTime(), ViewIdx(0), eValueChangedReasonUserEdited);
             } else {
                 knob->setInterpolationAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0),  isKnobCurve->getDimension(), it->key->key.getTime(), interp, &it->key->key);
+                if (undo && interpolationHasWeights(it->oldInterp)) {
+                    // Only Free and Broken keys carry weights; setTangentsAtTime would turn any other key into one of them.
+                    knob->setTangentsAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), it->oldTangents, &it->key->key);
+                }
             }
         } else {
             ///interpolation for bezier curve is either linear or constant
@@ -638,7 +646,10 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
         (*it)->evaluateChange();
     }
 
-    _widget->refreshSelectedKeysAndUpdate();
+    // Null when a unit test exercises the command without a real curve widget behind it.
+    if (_widget) {
+        _widget->refreshSelectedKeysAndUpdate();
+    }
 } // SetKeysInterpolationCommand::setNewInterpolation
 
 void
@@ -1109,9 +1120,9 @@ TransformKeysCommand::transformKeys(const Transform::Matrix3x3& matrix)
     for (SelectedKeys::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
         if (isKnobCurve) {
-            if ( !isKnobCurve->getKnobGui() ) {
-                RotoContextPtr roto = isKnobCurve->getRotoContext();
-                assert(roto);
+            // A knob curve with no GUI and no roto context is a plain knob (as in unit tests).
+            RotoContextPtr roto = isKnobCurve->getKnobGui() ? RotoContextPtr() : isKnobCurve->getRotoContext();
+            if (!isKnobCurve->getKnobGui() && roto) {
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }

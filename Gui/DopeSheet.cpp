@@ -907,7 +907,9 @@ DopeSheet::setSelectedKeysInterpolation(KeyframeTypeEnum keyType)
          it != selectedKeyframes.end();
          ++it) {
         DopeSheetKeyPtr keyPtr = (*it);
-        DSKeyInterpolationChange change(keyPtr->key.getInterpolation(), keyType, keyPtr);
+        const KeyTangents oldTangents = { keyPtr->key.getLeftDerivative(), keyPtr->key.getRightDerivative(),
+                                          keyPtr->key.getLeftWeight(), keyPtr->key.getRightWeight() };
+        DSKeyInterpolationChange change(keyPtr->key.getInterpolation(), keyType, keyPtr, oldTangents);
 
         changes.push_back(change);
     }

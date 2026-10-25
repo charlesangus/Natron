@@ -1663,6 +1663,8 @@ escapeString(const std::string& str)
 // - https://github.com/jbeder/yaml-cpp/issues/197
 // - https://stackoverflow.com/questions/4738768/printing-double-without-losing-precision
 #define NUM_VALUE(n) QString::number(n, 'g', std::numeric_limits<double>::digits10 + 1)
+// Tangent weights must reload as the same double, which digits10 + 1 digits does not guarantee.
+#define NUM_WEIGHT(n) QString::number(n, 'g', std::numeric_limits<double>::max_digits10)
 #define NUM_TIME(n) QString::number(n, 'g', std::numeric_limits<double>::digits10 + 1)
 
 /* *INDENT-ON* */
@@ -1776,7 +1778,7 @@ exportKnobValues(int indentLevel,
                     // Default weights keep the shorter call, so PyPlugs with untouched handles export as before.
                     QString weights;
                     if ((it3->getLeftWeight() != Interpolation::kDefaultTangentWeight) || (it3->getRightWeight() != Interpolation::kDefaultTangentWeight)) {
-                        weights = QString::fromUtf8(", ") + NUM_VALUE(it3->getLeftWeight()) + QString::fromUtf8(", ") + NUM_VALUE(it3->getRightWeight());
+                        weights = QString::fromUtf8(", ") + NUM_WEIGHT(it3->getLeftWeight()) + QString::fromUtf8(", ") + NUM_WEIGHT(it3->getRightWeight());
                     }
                     WRITE_INDENT(innerIdent);
                     WRITE_STRING(QString::fromUtf8("param.") + QString::fromUtf8(weights.isEmpty() ? "addControlPoint(" : "addControlPointWithWeights(") + NUM_INT(i) + QString::fromUtf8(", ") + NUM_TIME(it3->getTime()) + QString::fromUtf8(", ") + NUM_VALUE(it3->getValue()) + QString::fromUtf8(", ") + NUM_VALUE(it3->getLeftDerivative())

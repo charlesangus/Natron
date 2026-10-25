@@ -57,6 +57,11 @@ struct KeyTangents {
 };
 
 /**
+ * @brief Whether a key of this interpolation keeps its own weights; any other interpolation resets them.
+ **/
+bool interpolationHasWeights(KeyframeTypeEnum interp);
+
+/**
  * @brief A KeyFrame is a lightweight pair <time,value>. These are the values that are used
  * to interpolate a Curve. The _leftDerivative and _rightDerivative can be
  * used by the interpolation method of the curve.

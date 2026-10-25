@@ -215,3 +215,40 @@ TEST(CurveWeightedTangent, AnOuterHandleDragSetsTheSlopeOnly)
     EXPECT_EQ(kThird, k.getLeftWeight());
     EXPECT_EQ(kThird, k.getRightWeight());
 }
+
+TEST(CurveWeightedTangent, UndoingAnInterpolationChangeRestoresTheWeightsAndDerivatives)
+{
+    const KeyframeTypeEnum targets[] = { eKeyframeTypeSmooth, eKeyframeTypeLinear };
+    const KeyFrame originals[] = {
+        KeyFrame(10., 5., 0.7, 0.7, eKeyframeTypeFree, 0.2, 0.8),
+        KeyFrame(10., 5., -1., 2., eKeyframeTypeBroken, 0.2, 0.8),
+    };
+    for (const KeyFrame& original : originals) {
+        for (KeyframeTypeEnum target : targets) {
+            SCOPED_TRACE(::testing::Message() << "from " << original.getInterpolation() << " to " << target);
+            ThreeKeyCurve c;
+            ASSERT_TRUE(c.init(original));
+            const KeyFrame before = c.keyAt(10.);
+            ASSERT_EQ(0.2, before.getLeftWeight());
+
+            std::list<KeyInterpolationChange> changes;
+            changes.push_back(KeyInterpolationChange(before.getInterpolation(), target, c.key));
+            QUndoStack undoStack;
+            undoStack.push(new SetKeysInterpolationCommand(nullptr, changes));
+
+            // Leaving a weighted interpolation drops the weights.
+            EXPECT_EQ(target, c.keyAt(10.).getInterpolation());
+            EXPECT_EQ(kThird, c.keyAt(10.).getLeftWeight());
+            EXPECT_EQ(kThird, c.keyAt(10.).getRightWeight());
+
+            undoStack.undo();
+            EXPECT_TRUE(before == c.keyAt(10.));
+            EXPECT_EQ(0.2, c.keyAt(10.).getLeftWeight());
+            EXPECT_EQ(0.8, c.keyAt(10.).getRightWeight());
+
+            undoStack.redo();
+            EXPECT_EQ(target, c.keyAt(10.).getInterpolation());
+            EXPECT_EQ(kThird, c.keyAt(10.).getLeftWeight());
+        }
+    }
+}

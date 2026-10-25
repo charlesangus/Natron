@@ -161,7 +161,7 @@ KeyFrame::setRightDerivative(double rightDerivative)
     assert( !std::isnan(_rightDerivative) && !std::isinf(_rightDerivative) );
 }
 
-static bool
+bool
 interpolationHasWeights(KeyframeTypeEnum interp)
 {
     return (interp == eKeyframeTypeFree) || (interp == eKeyframeTypeBroken);

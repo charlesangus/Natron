@@ -3909,7 +3909,8 @@ ParametricParam::addControlPointWithWeights(int dimension,
         return eStatusFailed;
     }
     const std::string keyDescription = "the control point of " + param->getName() + " at " + formatNumber(key);
-    if (!checkTangentWeight(leftWeight, "left", keyDescription) || !checkTangentWeight(rightWeight, "right", keyDescription)) {
+    // Every check runs before the knob is touched, so a rejected call leaves the curve unchanged.
+    if (!checkTangentDerivative(leftDerivative, "left", keyDescription) || !checkTangentDerivative(rightDerivative, "right", keyDescription) || !checkTangentWeight(leftWeight, "left", keyDescription) || !checkTangentWeight(rightWeight, "right", keyDescription)) {
         return eStatusFailed;
     }
     KeyTangents tangents;
@@ -4024,7 +4025,8 @@ ParametricParam::setNthControlPointWithWeights(int dimension,
         return eStatusFailed;
     }
     const std::string keyDescription = "control point " + std::to_string(nthCtl) + " of " + param->getName();
-    if (!checkTangentWeight(leftWeight, "left", keyDescription) || !checkTangentWeight(rightWeight, "right", keyDescription)) {
+    // Every check runs before the knob is touched, so a rejected call leaves the curve unchanged.
+    if (!checkTangentDerivative(leftDerivative, "left", keyDescription) || !checkTangentDerivative(rightDerivative, "right", keyDescription) || !checkTangentWeight(leftWeight, "left", keyDescription) || !checkTangentWeight(rightWeight, "right", keyDescription)) {
         return eStatusFailed;
     }
     KeyTangents tangents;

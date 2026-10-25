@@ -2117,7 +2117,7 @@ KnobParametric::addControlPoint(ValueChangedReasonEnum reason,
                                 KeyframeTypeEnum interpolation)
 {
     /// Mt-safe as Curve is MT-safe
-    if ((dimension >= (int)_curves.size()) || std::isnan(key) || // check for NaN
+    if ((dimension < 0) || (dimension >= (int)_curves.size()) || std::isnan(key) || // check for NaN
         std::isinf(key) || std::isnan(value) || // check for NaN
         std::isinf(value)) {
         return eStatusFailed;
@@ -2216,7 +2216,7 @@ KnobParametric::getNthControlPoint(int dimension,
                                    KeyTangents* tangents) const
 {
     /// Mt-safe as Curve is MT-safe
-    if (dimension >= (int)_curves.size()) {
+    if ((dimension < 0) || (dimension >= (int)_curves.size())) {
         return eStatusFailed;
     }
     KeyFrame kf;
@@ -2289,7 +2289,7 @@ KnobParametric::setNthControlPoint(ValueChangedReasonEnum reason,
                                    double rightDerivative)
 {
     /// Mt-safe as Curve is MT-safe
-    if (dimension >= (int)_curves.size()) {
+    if ((dimension < 0) || (dimension >= (int)_curves.size())) {
         return eStatusFailed;
     }
     int newIdx;
@@ -2316,7 +2316,7 @@ KnobParametric::setNthControlPoint(ValueChangedReasonEnum reason,
                                    const KeyTangents& tangents)
 {
     ///Mt-safe as Curve is MT-safe
-    if ( dimension >= (int)_curves.size() ) {
+    if ((dimension < 0) || (dimension >= (int)_curves.size())) {
         return eStatusFailed;
     }
     int newIdx;

@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -33,6 +35,7 @@
 CLANG_DIAG_OFF(deprecated)
 #include <QFile>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QTextStream>
 CLANG_DIAG_ON(deprecated)
@@ -48,11 +51,13 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Project.h"
 #include "Engine/PyNode.h"
 #include "Engine/PyParameter.h"
@@ -1025,6 +1030,50 @@ TEST_F(PyPlugExportTest, AddLayersExportRecreatesItsProjectLayerAndRoundTrips)
     KnobChannelSetPtr layers2 = std::dynamic_pointer_cast<KnobChannelSet>(add2->getKnobByName(kAddLayersParamLayers));
     ASSERT_TRUE(bool(layers2));
     EXPECT_EQ(exportedRows, layers2->getRows());
+
+    project->reset(false, true);
+}
+
+// The weights of a control point are exported with enough digits to reload as the same double.
+TEST_F(PyPlugExportTest, ParametricControlPointWeightsExportWithRoundTripPrecision)
+{
+    ProjectPtr project = getApp()->getProject();
+    project->reset(false, true);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, project);
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(groupNode->getEffectInstance());
+    ASSERT_TRUE(bool(group));
+    CreateNodeArgs lookupArgs(PLUGINID_NATRON_COLORLOOKUP, std::dynamic_pointer_cast<NodeCollection>(group));
+    NodePtr lookup = getApp()->createNode(lookupArgs);
+    ASSERT_TRUE(bool(lookup));
+    KnobParametricPtr table = std::dynamic_pointer_cast<KnobParametric>(lookup->getKnobByName(kColorLookupParamLookupTable));
+    ASSERT_TRUE(bool(table));
+
+    // Neighbouring doubles that 16 significant digits do not tell apart.
+    const double leftWeight = std::nextafter(0.2, 1.);
+    const double rightWeight = std::nextafter(0.8, 0.);
+    ASSERT_EQ(eStatusOK, table->deleteAllControlPoints(eValueChangedReasonNatronInternalEdited, 0));
+    KeyTangents tangents;
+    tangents.left = 1.;
+    tangents.right = 1.;
+    tangents.leftWeight = leftWeight;
+    tangents.rightWeight = rightWeight;
+    ASSERT_EQ(eStatusOK, table->addControlPoint(eValueChangedReasonNatronInternalEdited, 0, 0.5, 0.5, tangents, eKeyframeTypeFree));
+
+    QString output;
+    group->exportGroupToPython(QString::fromUtf8("test.pyplug.weights"), QString::fromUtf8("WeightsGroup"), QString(), QString(), QString::fromUtf8("Other"), 1, output);
+
+    // The call is addControlPointWithWeights(dim, time, value, left, right, leftWeight, rightWeight, interpolation).
+    const QString marker = QString::fromUtf8("addControlPointWithWeights(");
+    const int callStart = output.indexOf(marker);
+    ASSERT_GE(callStart, 0);
+    const QString args = output.mid(callStart + marker.size(), output.indexOf(QLatin1Char(')'), callStart) - callStart - marker.size());
+    const QStringList fields = args.split(QString::fromUtf8(", "));
+    ASSERT_GE(fields.size(), 8) << args.toStdString();
+    EXPECT_EQ(leftWeight, std::strtod(fields[5].toStdString().c_str(), nullptr));
+    EXPECT_EQ(rightWeight, std::strtod(fields[6].toStdString().c_str(), nullptr));
 
     project->reset(false, true);
 }

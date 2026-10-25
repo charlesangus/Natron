@@ -222,6 +222,16 @@ TEST(CurveYaml, WeightedKeysWriteTheirWeightsAfterTheDerivatives)
     expectCurvesBitIdentical(curve, Serialization::decodeCurveYaml(text));
 }
 
+TEST(CurveYaml, WeightsRoundTripBitExactly)
+{
+    // Neighbouring doubles that a 15 or 16 digit rendering would merge.
+    CurveSerialization curve;
+    curve.keyframes.push_back(makeKey(0., 1., 6, 0.5, 0.5, std::nextafter(0.2, 1.), std::nextafter(0.8, 0.)));
+    curve.keyframes.push_back(makeKey(10., 2., 7, 1., -1., std::nextafter(0.01, 1.), std::nextafter(0.99, 0.)));
+    curve.keyframes.push_back(makeKey(20., 3., 7, 1., -1., 0.1 + 0.2, 1. / 7.));
+    expectCurvesBitIdentical(curve, roundTrip(curve));
+}
+
 TEST(CurveYaml, MixedWeightedAndUnweightedKeysSwitchTokens)
 {
     CurveSerialization curve;

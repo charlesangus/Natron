@@ -209,3 +209,49 @@ TEST_F(PyKeyTangentsTest, ParametricControlPointsCarryTheirWeights)
     ASSERT_TRUE(bool(curve));
     EXPECT_EQ(2, curve->getKeyFramesCount());
 }
+
+TEST_F(PyKeyTangentsTest, ParametricControlPointsRejectNonFiniteDerivativesWithoutChangingTheCurve)
+{
+    NodePtr lookup = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORLOOKUP));
+    ASSERT_TRUE(bool(lookup));
+
+    const std::string script = paramScript(getApp()->getAppIDString(), lookup, kColorLookupParamLookupTable) + "OK = NatronEngine.Natron.StatusEnum.eStatusOK\n"
+                                                                                                               "param.deleteAllControlPoints(0)\n"
+                                                                                                               "assert param.addControlPointWithWeights(0, 0., 0., 1., 1., 0.25, 0.6) == OK\n"
+                                                                                                               "before = param.getNthControlPoint(0, 0)\n"
+                                                                                                               "def rejects(call, *args):\n"
+                                                                                                               "    try:\n"
+                                                                                                               "        call(*args)\n"
+                                                                                                               "    except ValueError:\n"
+                                                                                                               "        return True\n"
+                                                                                                               "    return False\n"
+                                                                                                               "nan = float('nan')\n"
+                                                                                                               "inf = float('inf')\n"
+                                                                                                               "assert rejects(param.addControlPointWithWeights, 0, 1., 1., nan, 1., 0.25, 0.6)\n"
+                                                                                                               "assert rejects(param.addControlPointWithWeights, 0, 1., 1., 1., -inf, 0.25, 0.6)\n"
+                                                                                                               "assert rejects(param.setNthControlPointWithWeights, 0, 0, 0., 0., inf, 1., 0.25, 0.6)\n"
+                                                                                                               "assert rejects(param.setNthControlPointWithWeights, 0, 0, 0., 0., 1., nan, 0.25, 0.6)\n"
+                                                                                                               "assert param.getNControlPoints(0) == 1\n"
+                                                                                                               "assert param.getNthControlPoint(0, 0) == before, param.getNthControlPoint(0, 0)\n";
+
+    std::string error, output;
+    ASSERT_TRUE(interpretPythonScript(script, &error, &output)) << error;
+}
+
+TEST_F(PyKeyTangentsTest, ParametricWeightedCallsFailOnANegativeDimension)
+{
+    NodePtr lookup = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORLOOKUP));
+    ASSERT_TRUE(bool(lookup));
+
+    // A bad dimension reports eStatusFailed, as the other control point calls do.
+    const std::string script = paramScript(getApp()->getAppIDString(), lookup, kColorLookupParamLookupTable) + "OK = NatronEngine.Natron.StatusEnum.eStatusOK\n"
+                                                                                                               "param.deleteAllControlPoints(0)\n"
+                                                                                                               "assert param.addControlPointWithWeights(0, 0., 0., 1., 1., 0.25, 0.6) == OK\n"
+                                                                                                               "assert param.addControlPointWithWeights(-1, 1., 1., 1., 1., 0.25, 0.6) != OK\n"
+                                                                                                               "assert param.setNthControlPointWithWeights(-1, 0, 0., 0., 1., 1., 0.25, 0.6) != OK\n"
+                                                                                                               "assert param.getNthControlPoint(-1, 0)[0] != OK\n"
+                                                                                                               "assert param.getNControlPoints(0) == 1\n";
+
+    std::string error, output;
+    ASSERT_TRUE(interpretPythonScript(script, &error, &output)) << error;
+}

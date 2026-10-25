@@ -869,6 +869,15 @@ DSSetSelectedKeysInterpolationCommand::setInterpolation(bool undo)
                                                                      it->_key->key.getTime(),
                                                                      interp,
                                                                      &it->_key->key);
+        // Only Free and Broken keys carry weights; setTangentsAtTime would turn any other key into one of them.
+        if (undo && interpolationHasWeights(it->_oldInterpType)) {
+            knobContext->getKnobGui()->getKnob()->setTangentsAtTime(eCurveChangeReasonDopeSheet,
+                                                                    ViewSpec::all(),
+                                                                    knobContext->getDimension(),
+                                                                    it->_key->key.getTime(),
+                                                                    it->_oldTangents,
+                                                                    &it->_key->key);
+        }
     }
 
     _model->refreshSelectionBboxAndRedrawView();

@@ -375,8 +375,10 @@ TEST_F(TrackerCornerPinTest, DuplicatedKnobsDriveInternalCornerPin)
         KnobIPtr cornerPinKnob = _cornerPin->getKnobByName(link.cornerPinName);
         ASSERT_TRUE(bool(trackerKnob)) << "tracker has no " << link.trackerName;
         ASSERT_TRUE(bool(cornerPinKnob)) << "CornerPin has no " << link.cornerPinName;
+        EXPECT_EQ(trackerKnob, cornerPinKnob->getAliasMaster()) << link.cornerPinName << " is not an alias of the tracker's " << link.trackerName;
         for (int d = 0; d < cornerPinKnob->getDimension(); ++d) {
-            EXPECT_EQ(trackerKnob, cornerPinKnob->getMaster(d).second) << link.cornerPinName << " dim " << d << " is not driven by the tracker's " << link.trackerName;
+            EXPECT_TRUE(cornerPinKnob->isLinkPermanent(d)) << link.cornerPinName << " dim " << d;
+            EXPECT_EQ(trackerKnob->getLinkGroup(d), cornerPinKnob->getLinkGroup(d)) << link.cornerPinName << " dim " << d << " is not driven by the tracker's " << link.trackerName;
         }
     }
 
@@ -408,8 +410,10 @@ TEST_F(TrackerCornerPinTest, DuplicatedKnobsDriveInternalTransform)
         KnobIPtr transformKnob = transform->getKnobByName(name);
         ASSERT_TRUE(bool(trackerKnob)) << "tracker has no " << name;
         ASSERT_TRUE(bool(transformKnob)) << "Transform has no " << name;
+        EXPECT_EQ(trackerKnob, transformKnob->getAliasMaster()) << name << " is not an alias of the tracker's knob";
         for (int d = 0; d < transformKnob->getDimension(); ++d) {
-            EXPECT_EQ(trackerKnob, transformKnob->getMaster(d).second) << name << " dim " << d << " is not driven by the tracker";
+            EXPECT_TRUE(transformKnob->isLinkPermanent(d)) << name << " dim " << d;
+            EXPECT_EQ(trackerKnob->getLinkGroup(d), transformKnob->getLinkGroup(d)) << name << " dim " << d << " is not driven by the tracker";
         }
     }
 }

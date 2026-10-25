@@ -1373,7 +1373,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.sf.openfx.Card3D",
         "net.sf.openfx.AdjustRoDPlugin",
         "net.sf.openfx.SpriteSheet",
-        "net.sf.openfx.LensDistortion",
         "fr.inria.openfx.OIIOResize",
         "net.fxarena.openfx.Reflection",
         "net.fxarena.openfx.Tile",

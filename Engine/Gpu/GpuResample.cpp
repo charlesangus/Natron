@@ -20,14 +20,18 @@ namespace {
     constexpr uint32_t kFlagExactRowX = 8;
     constexpr uint32_t kFlagExactRowY = 16;
 
-    // Mirrors kFilterImpulse and kFilterBox in Kernels/resample.slang.
+    // Mirrors kFilterImpulse, kFilterBox and kFilterMitchell in Kernels/resample.slang.
     constexpr uint32_t kFilterImpulse = 0;
     constexpr uint32_t kFilterBox = 1;
+    constexpr uint32_t kFilterMitchell = 7;
 
-    // Impulse and box run the kernels that take the CPU's double positions bit for bit.
-    bool exactPositions(uint32_t filter)
+    // The filters whose output jumps where a floor of the CPU's double position changes run the
+    // kernels that take those doubles bit for bit: impulse and box, and clamped Mitchell, which
+    // unlike the other clamped filters does not pass through its centre samples, so its clamp
+    // range changes at a tap boundary with the value away from the range's shared end.
+    bool exactPositions(uint32_t filter, bool clamp)
     {
-        return filter == kFilterImpulse || filter == kFilterBox;
+        return filter == kFilterImpulse || filter == kFilterBox || (clamp && filter == kFilterMitchell);
     }
 
     GpuStatus invalid(const char* what)
@@ -202,12 +206,12 @@ namespace {
         for (std::size_t i = 0; i < r.matrices.size(); ++i) {
             const GpuResampleMatrix& m = r.matrices[i];
             uint32_t* w = &words[kBlurHeaderWords + i * kBlurMatrixWords];
-            packMatrix(m.matrix, exactPositions(r.filter), w);
+            packMatrix(m.matrix, exactPositions(r.filter, r.clamp), w);
             w[12] = packStates(m.jacobians);
             splitDouble(m.weight, hi, lo);
             w[13] = floatBits(hi);
             w[14] = floatBits(lo);
-            if (exactPositions(r.filter)) {
+            if (exactPositions(r.filter, r.clamp)) {
                 w[15] = exactRowFlags(m.matrix, r.output) / kFlagExactRowX;
             }
         }
@@ -270,7 +274,7 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     // An invalid source is never read, but the binding still needs a buffer, and so does the
     // matrices' binding when they travel in the push constants.
     const GpuBuffer* src = srcValid ? r.src.buffer : r.dst.buffer;
-    const bool exact = exactPositions(r.filter);
+    const bool exact = exactPositions(r.filter, r.clamp);
     if (!blurred) {
         const GpuResampleMatrix& m = r.matrices[0];
         packMatrix(m.matrix, exact, p.matrix);

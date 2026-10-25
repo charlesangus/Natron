@@ -2,10 +2,11 @@
 // Resampler::interpolate and Resampler::interpolateSuper (supersampling and the box integration),
 // reading the source from a storage buffer. resample_main samples one matrix; resample_blur_main
 // averages several per pixel as Resampler::motionBlurPixel does. Both carry sample positions in two
-// floats, which the bilinear to notch filters are continuous in. Impulse and box pick a source pixel,
-// and box a supersampling state, by floors of the CPU's double positions that two floats round to the
-// other side of on exact scales; their entries, resample_exact_main and resample_blur_exact_main,
-// decide every floor as those doubles do: with two floats where those lie provably clear of the
+// floats, which the bilinear to notch filters are continuous in, except clamped Mitchell. Impulse and
+// box pick a source pixel, and box a supersampling state, by floors of the CPU's double positions that
+// two floats round to the other side of on exact scales, and clamped Mitchell's clamp range jumps
+// where the floor of its taps changes; their entries, resample_exact_main and
+// resample_blur_exact_main, decide every floor as those doubles do: with two floats where those lie provably clear of the
 // decision, and with the doubles computed bit for bit otherwise. The integer double emulation is
 // kept out of the two-float entries because it is many times slower to run and to compile.
 // GpuResampleParams in Engine/Gpu/GpuResample.h mirrors ResampleParams.
@@ -712,16 +713,14 @@ bool cellPixel(int2 cell, out float4 result)
     return true;
 }
 
-// The bilinear to notch filters.
-bool interpolate(uint filter, bool clampOn, FF fx, FF fy, out float4 result)
+// The bilinear to notch filters, at the position (px + 0.5, py + 0.5).
+bool interpolateAt(uint filter, bool clampOn, Pos px, Pos py, out float4 result)
 {
     result = float4(0.0, 0.0, 0.0, 0.0);
     if (!srcValid())
         return false;
     const bool black = blackOutside();
 
-    const Pos px = toPos(ffAddF(fx, -0.5));
-    const Pos py = toPos(ffAddF(fy, -0.5));
     if (filter == kFilterBilinear || filter == kFilterCubic)
     {
         int cx = px.i;
@@ -781,6 +780,11 @@ bool interpolate(uint filter, bool clampOn, FF fx, FF fy, out float4 result)
         return false;
     result = filter4(filter, clampOn, rows[0], rows[1], rows[2], rows[3], dy);
     return true;
+}
+
+bool interpolate(uint filter, bool clampOn, FF fx, FF fy, out float4 result)
+{
+    return interpolateAt(filter, clampOn, toPos(ffAddF(fx, -0.5)), toPos(ffAddF(fy, -0.5)), result);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -932,19 +936,20 @@ int pow3(int e)
 
 ///////////////////////////////////////////////////////////////////////////////
 // Resampler's interpolateSuperT for the bilinear to notch filters and the Jacobian (Jxx Jxy; Jyx Jyy)
-// of state `state`.
+// of state `state`, with the centre sample's fx - 0.5 and fy - 0.5 as px and py.
 
-float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF Jyy, uint states, uint state)
+float4 interpolateSuperAt(uint filter, bool clampOn, FF fx, FF fy, Pos px, Pos py, FF Jxx, FF Jxy, FF Jyx, FF Jyy, uint states,
+                          uint state)
 {
     float4 tmp;
     const uint bits = (states >> (8 * state)) & 0xffu;
     if ((bits & 0x40u) != 0)
     {
-        interpolate(filter, clampOn, fx, fy, tmp);
+        interpolateAt(filter, clampOn, px, py, tmp);
         return tmp;
     }
 
-    const bool inside = interpolate(filter, clampOn, fx, fy, tmp);
+    const bool inside = interpolateAt(filter, clampOn, px, py, tmp);
     if (!inside)
     {
         // A black centre is only kept when the whole back-transformed pixel is outside.
@@ -980,6 +985,12 @@ float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy,
         }
     }
     return tmp / float(nisx * nisy);
+}
+
+float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF Jyy, uint states, uint state)
+{
+    return interpolateSuperAt(filter, clampOn, fx, fy, toPos(ffAddF(fx, -0.5)), toPos(ffAddF(fy, -0.5)), Jxx, Jxy, Jyx, Jyy, states,
+                              state);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1033,10 +1044,38 @@ struct MatrixBits
     uint states;
 };
 
-// Impulse and box at the CPU's double position: the pixel it falls in, or for box with a nonzero
-// Jacobian, Resampler's integration over the back-transformed pixel.
-float4 samplePixelExact(MatrixBits m, int x, int y)
+// What the exact entries' filters other than impulse and box take from the CPU's double position:
+// that position, the floors of its taps as Pos values of fx - 0.5 and fy - 0.5, and whether it
+// overlaps the source in x and in y.
+struct SmoothTaps
 {
+    FF fx;
+    FF fy;
+    Pos px;
+    Pos py;
+    bool xinside;
+    bool yinside;
+};
+
+SmoothTaps noTaps()
+{
+    SmoothTaps t;
+    t.fx = ffMake(0.0, 0.0);
+    t.fy = t.fx;
+    t.px.i = 0;
+    t.px.f = 0.0;
+    t.py = t.px;
+    t.xinside = false;
+    t.yinside = false;
+    return t;
+}
+
+// Impulse and box at the CPU's double position: the pixel it falls in, or for box with a nonzero
+// Jacobian, Resampler's integration over the back-transformed pixel. For the other filters, `taps`
+// at that position.
+float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
+{
+    taps = noTaps();
     float4 r = float4(0.0, 0.0, 0.0, 0.0);
     if (!srcValid())
         return r;
@@ -1046,20 +1085,32 @@ float4 samplePixelExact(MatrixBits m, int x, int y)
     const Dbl dx = dblAdd(dblAdd(dblMulHalfInt(m.h00, kx), dblMulHalfInt(m.h01, ky)), m.h02);
     const Dbl dy = dblAdd(dblAdd(dblMulHalfInt(m.h10, kx), dblMulHalfInt(m.h11, ky)), m.h12);
     const int2 cell = int2(dblFloor(dx), dblFloor(dy));
-    if (rp.filter != kFilterBox)
+    if (rp.filter == kFilterImpulse)
     {
         cellPixel(cell, r);
         return r;
     }
 
     const Dbl half = dblMake(0, 0x3fe00000u);
+    const Dbl bx = dblSub(dx, half);
+    const Dbl by = dblSub(dy, half);
     // x1 <= x + 0.5 && x - 0.5 < x2, and likewise for y.
-    bool xinside = dblFloor(dblAdd(dx, half)) >= rp.srcX1 && dblFloor(dblSub(dx, half)) < rp.srcX2;
-    bool yinside = dblFloor(dblAdd(dy, half)) >= rp.srcY1 && dblFloor(dblSub(dy, half)) < rp.srcY2;
+    bool xinside = dblFloor(dblAdd(dx, half)) >= rp.srcX1 && dblFloor(bx) < rp.srcX2;
+    bool yinside = dblFloor(dblAdd(dy, half)) >= rp.srcY1 && dblFloor(by) < rp.srcY2;
     if (blackOutside() && !(xinside && yinside))
     {
         xinside = false;
         yinside = false;
+    }
+    if (rp.filter != kFilterBox)
+    {
+        taps.fx = dblToFF(dx);
+        taps.fy = dblToFF(dy);
+        taps.px = dblToPos(bx);
+        taps.py = dblToPos(by);
+        taps.xinside = xinside;
+        taps.yinside = yinside;
+        return r;
     }
     const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
     if ((((m.states >> (8 * state)) & 0xffu) & 0x40u) != 0)
@@ -1151,8 +1202,9 @@ bool floorGeAmbiguous(Pos p, float e, int n)
 // doubles'. Away from the source edges a box corner's floor only moves weight between neighbouring
 // pixels by its distance to the integer, so only the floors that switch a pixel in or out of the
 // integration count. `exactRows` holds kFlagExactRowX and kFlagExactRowY shifted to bits 0 and 1.
-bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r)
+bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, out SmoothTaps taps)
 {
+    taps = noTaps();
     r = float4(0.0, 0.0, 0.0, 0.0);
     if (abs(x) >= int(kFastLimit) || abs(y) >= int(kFastLimit))
         return false;
@@ -1176,7 +1228,7 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r)
     const Pos cy = toPos(fy);
     const int2 cell = int2(cx.i, cy.i);
     const bool cellExact = !nearInteger(cx, exPos) && !nearInteger(cy, eyPos);
-    if (rp.filter != kFilterBox)
+    if (rp.filter == kFilterImpulse)
     {
         if (cellExact)
             cellPixel(cell, r);
@@ -1196,6 +1248,18 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r)
     {
         xinside = false;
         yinside = false;
+    }
+    if (rp.filter != kFilterBox)
+    {
+        if (nearInteger(bx, exPos) || nearInteger(by, eyPos))
+            return false;
+        taps.fx = fx;
+        taps.fy = fy;
+        taps.px = bx;
+        taps.py = by;
+        taps.xinside = xinside;
+        taps.yinside = yinside;
+        return true;
     }
     const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
     if ((((mb.states >> (8 * state)) & 0xffu) & 0x40u) != 0)
@@ -1267,16 +1331,24 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r)
     return true;
 }
 
-// samplePixelFast where it decides, else samplePixelExact: one call site of each keeps a single
-// copy of the emulated doubles in the compiled kernel.
+// samplePixelFast where it decides, else samplePixelExact: one call site of each, and of the
+// filter on the taps they decide, keeps a single copy of the emulated doubles and of the filter in
+// the compiled kernel.
 float4 samplePixelDecided(MatrixBits m, uint exactRows, int x, int y)
 {
     if (!srcValid())
         return float4(0.0, 0.0, 0.0, 0.0);
     float4 r;
-    if (samplePixelFast(m, exactRows, x, y, r))
+    SmoothTaps t;
+    if (!samplePixelFast(m, exactRows, x, y, r, t))
+        r = samplePixelExact(m, x, y, t);
+    if (rp.filter == kFilterImpulse || rp.filter == kFilterBox)
         return r;
-    return samplePixelExact(m, x, y);
+    const FF zero = ffMake(0.0, 0.0);
+    const uint state = (t.xinside ? 1u : 0u) | (t.yinside ? 2u : 0u);
+    return interpolateSuperAt(rp.filter, (rp.flags & kFlagClamp) != 0, t.fx, t.fy, t.px, t.py, t.xinside ? dblToFF(m.h00) : zero,
+                              t.xinside ? dblToFF(m.h01) : zero, t.yinside ? dblToFF(m.h10) : zero, t.yinside ? dblToFF(m.h11) : zero,
+                              m.states, state);
 }
 
 void storePixel(uint3 tid, float4 v)

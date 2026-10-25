@@ -180,13 +180,19 @@ Project::Project(const AppInstancePtr& appInstance)
     , _imp( new ProjectPrivate(this) )
 {
     QObject::connect( _imp->autoSaveTimer.get(), SIGNAL(timeout()), this, SLOT(onAutoSaveTimerTriggered()) );
-    _imp->sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    _imp->projectId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
 }
 
-const std::string&
-Project::getSessionId() const
+std::string
+Project::getProjectId() const
 {
-    return _imp->sessionId;
+    return _imp->projectId;
+}
+
+bool
+Project::isProjectId(const std::string& projectId) const
+{
+    return !projectId.empty() && (projectId == _imp->projectId);
 }
 
 // make_shared enabler (because make_shared needs access to the private constructor)
@@ -3156,7 +3162,7 @@ void
 Project::doResetEnd(bool aboutToQuit)
 {
     _imp->runOnProjectCloseCallback();
-    _imp->sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    _imp->projectId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
 
     QString lockFilePath = getLockAbsoluteFilePath();
     QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );

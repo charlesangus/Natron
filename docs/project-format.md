@@ -114,6 +114,7 @@ The graph. Top-level keys, in the order they are written:
 | `format` | Always `natron-project`. |
 | `formatVersion` | Currently `1`. |
 | `savedBy` | `{version: [major, minor, revision], branch, commit, os, bits}`. |
+| `id` | The project's identity, a random UUID made with a new project (File > New or a reset makes a new one). Loading restores it and Save As keeps it, so every save of one project, under any name, carries the same id. A paste uses it to tell whether nodes come from the open project. Omitted when empty; a file without one gets a new id when loaded. |
 | `knobs` | Project knobs, sparse (see below). Omitted when empty. |
 | `formats` | The project's additional formats: a list of `{name, rect: [x1, y1, x2, y2], par}`. Omitted when empty. |
 | `layers` | The layer registry: a map from layer ID to `{label, channelsLabel, channels, origin}`, sorted by ID. Omitted when empty. |
@@ -181,6 +182,7 @@ PyPlug that has a user page and holds its own blur.
 format: natron-project
 formatVersion: 1
 savedBy: {version: [2, 6, 0], branch: "main", commit: "5acedc397", os: "Linux", bits: 64}
+id: "6f1c2d3e-7a8b-4c5d-9e0f-123456789abc"
 knobs:
   frameRange: [1, 240]
   frameRate: 23.976
@@ -360,13 +362,13 @@ a list of windows. A window is `{main?, pos: [x, y], size: [w, h]}` plus one chi
 place pane layout is saved.
 
 **Clipboard** (`Serialization/Yaml/ClipboardYaml.*`): `format: natron-clipboard`, an optional
-`sourceProject` naming the open project the nodes were copied from (a new id each time a project
-is closed, reset or loaded), and `nodes` in the `project.yaml` node schema, so inputs name siblings
-by script name and position, size and colours sit on each node. It travels on the system clipboard
-as `application/vnd.natron.nodes+yaml` next to the same text as `text/plain`. Pasted into the
-project they came from, copies of Linked Nodes, or of knobs linked by Paste Link, join their
-originals' links while an original is still there; otherwise, as in another project, the copies
-are linked only to each other.
+`sourceProject`, the `id` of the project the nodes were copied from (see `project.yaml`), and
+`nodes` in the `project.yaml` node schema, so inputs name siblings by script name and position,
+size and colours sit on each node. It travels on the system clipboard as
+`application/vnd.natron.nodes+yaml` next to the same text as `text/plain`. Pasted into the project
+they came from, even after it was closed and opened again, copies of Linked Nodes, or of knobs
+linked by Paste Link, join their originals' links while an original is still there; otherwise, as
+in another project, the copies are linked only to each other.
 
 ## Versioning
 

@@ -53,6 +53,7 @@ namespace {
 const char* const kExampleProjectYaml = R"yaml(format: natron-project
 formatVersion: 1
 savedBy: {version: [2, 6, 0], branch: "main", commit: "5acedc397", os: "Linux", bits: 64}
+id: "6f1c2d3e-7a8b-4c5d-9e0f-123456789abc"
 knobs:
   frameRange: [1, 240]
   frameRate: 23.976
@@ -202,6 +203,7 @@ exampleProject()
     project.savedByVersion.gitCommit = "5acedc397";
     project.savedByVersion.operatingSystem = "Linux";
     project.savedByVersion.bits = 64;
+    project.projectId = "6f1c2d3e-7a8b-4c5d-9e0f-123456789abc";
     project.creationDate = 0;
 
     project.projectKnobs.push_back(valueKnob("frameRange", "Int", { i(1), i(240) }));
@@ -395,6 +397,7 @@ expectProjectsEqual(const ProjectSerialization& expected,
         EXPECT_EQ(e.origin, layer->origin);
         ++layer;
     }
+    EXPECT_EQ(expected.projectId, actual.projectId);
     EXPECT_EQ(expected.timelineCurrentTime, actual.timelineCurrentTime);
     EXPECT_EQ(0, actual.creationDate);
     expectNodeListsEqual(expected.nodes.nodes, actual.nodes.nodes);

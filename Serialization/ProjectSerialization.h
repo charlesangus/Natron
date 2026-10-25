@@ -73,11 +73,14 @@ struct ProjectSavedByVersionSerialization {
 };
 
 /**
- * @brief The saved state of a project: the build that saved it, its nodes, its knobs, the
+ * @brief The saved state of a project: the build that saved it, its id, its nodes, its knobs, the
  * formats and layers the user added, the timeline position and when it was created.
  **/
 struct ProjectSerialization {
     ProjectSavedByVersionSerialization savedByVersion;
+
+    // The Project::getProjectId() of the saved project, or empty if unknown.
+    std::string projectId;
 
     NodeCollectionSerialization nodes;
 
@@ -93,6 +96,7 @@ struct ProjectSerialization {
 
     ProjectSerialization()
         : savedByVersion()
+        , projectId()
         , nodes()
         , projectKnobs()
         , additionalFormats()

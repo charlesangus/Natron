@@ -487,16 +487,103 @@ TEST_F(LinkedNodeTest, RestoringWithoutJoiningLinksTheRestoredKnobsOnlyToEachOth
 TEST_F(LinkedNodeTest, ResettingTheProjectMakesItAnotherPasteSource)
 {
     ProjectPtr project = getApp()->getProject();
-    const std::string before = project->getSessionId();
+    const std::string before = project->getProjectId();
     EXPECT_FALSE(before.empty());
-    EXPECT_EQ(before, project->getSessionId());
+    EXPECT_EQ(before, project->getProjectId());
+    EXPECT_TRUE(project->isProjectId(before));
+    EXPECT_FALSE(project->isProjectId(std::string()));
 
     original.reset();
     copy.reset();
     third.reset();
     project->reset(false, true);
-    EXPECT_FALSE(project->getSessionId().empty());
-    EXPECT_NE(before, project->getSessionId());
+    EXPECT_FALSE(project->getProjectId().empty());
+    EXPECT_NE(before, project->getProjectId());
+    EXPECT_FALSE(project->isProjectId(before));
+}
+
+TEST_F(LinkedNodeTest, TheProjectIdSurvivesASaveAndReloadUnderAnyName)
+{
+    ProjectPtr project = getApp()->getProject();
+    const std::string id = project->getProjectId();
+    ASSERT_FALSE(id.empty());
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, QString::fromUtf8("first.ntpz"), &savedFilePath));
+    // Save As: the same project under another name keeps its id.
+    ASSERT_TRUE(project->saveProject(dirPath, QString::fromUtf8("second.ntpz"), &savedFilePath));
+    EXPECT_EQ(id, project->getProjectId());
+
+    original.reset();
+    copy.reset();
+    third.reset();
+    project->reset(false, true);
+    EXPECT_NE(id, project->getProjectId());
+    ASSERT_TRUE(project->loadProject(dirPath, QString::fromUtf8("first.ntpz")));
+    EXPECT_EQ(id, project->getProjectId());
+
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, QString::fromUtf8("second.ntpz")));
+    EXPECT_EQ(id, project->getProjectId());
+
+    project->reset(false, true);
+    EXPECT_NE(id, project->getProjectId());
+}
+
+// Copy, close, reopen, paste: the copies join the reopened originals' groups.
+TEST_F(LinkedNodeTest, CopiesPastedAfterTheProjectIsReopenedJoinTheOriginalsGroups)
+{
+    ASSERT_TRUE(copy->linkAllKnobsTo(original));
+    knobOf(original)->setValue(0.25, ViewSpec::all(), 0);
+    const std::string originalName = original->getScriptName();
+    const std::string copyName = copy->getScriptName();
+
+    ProjectPtr project = getApp()->getProject();
+    Serialization::NodeSerialization originalSerialization, copySerialization;
+    original->toSerialization(&originalSerialization, false);
+    copy->toSerialization(&copySerialization, false);
+    const std::string copiedFrom = project->getProjectId();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("reopened.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    original.reset();
+    copy.reset();
+    third.reset();
+    project->reset(false, true);
+    EXPECT_FALSE(project->isProjectId(copiedFrom));
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    ASSERT_TRUE(project->isProjectId(copiedFrom));
+    original = project->getNodeByName(originalName);
+    copy = project->getNodeByName(copyName);
+    ASSERT_TRUE(original && copy);
+
+    NodePtr pastedOriginal = pasteCopy(originalSerialization);
+    NodePtr pastedCopy = pasteCopy(copySerialization);
+    ASSERT_TRUE(pastedOriginal && pastedCopy);
+    NodesList pasted;
+    pasted.push_back(pastedOriginal);
+    pasted.push_back(pastedCopy);
+    KnobHelper::restoreLinkGroups(pasted, project->isProjectId(copiedFrom));
+
+    NodesList linked;
+    original->getLinkedNodes(&linked);
+    EXPECT_TRUE(contains(linked, copy));
+    EXPECT_TRUE(contains(linked, pastedOriginal));
+    EXPECT_TRUE(contains(linked, pastedCopy));
+    EXPECT_DOUBLE_EQ(0.25, knobOf(pastedCopy)->getValue(0));
+    knobOf(pastedCopy)->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.5, knobOf(original)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.5, knobOf(copy)->getValue(0));
+    knobOf(original)->setValue(0.75, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.75, knobOf(pastedOriginal)->getValue(0));
 }
 
 TEST_F(LinkedNodeTest, PasteLinksBetweenTracksSurviveASaveAndReload)

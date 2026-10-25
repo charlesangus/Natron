@@ -329,6 +329,8 @@ Project::toSerialization(Serialization::ProjectSerialization* serialization) con
 #endif
     savedBy.bits = isApplication32Bits() ? 32 : 64;
 
+    serialization->projectId = getProjectId();
+
     nodesToSerialization(&serialization->nodes);
 
     std::list<Format> additionalFormats;
@@ -413,6 +415,11 @@ ProjectPrivate::restoreFromSerialization(const Serialization::ProjectSerializati
                                          const QString& path,
                                          bool* mustSave)
 {
+    // A file without an id keeps the one the reset before loading made.
+    if (!serialization.projectId.empty()) {
+        projectId = serialization.projectId;
+    }
+
     std::list<Format> serializedAdditionalFormats;
     for (std::list<Serialization::FormatSerialization>::const_iterator it = serialization.additionalFormats.begin(); it != serialization.additionalFormats.end(); ++it) {
         serializedAdditionalFormats.push_back(Format(it->x1, it->y1, it->x2, it->y2, it->name, it->pixelAspectRatio));

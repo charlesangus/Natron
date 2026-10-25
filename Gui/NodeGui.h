@@ -590,9 +590,9 @@ public Q_SLOTS:
 
     /**
      * @brief Rebuilds the expression arrows, the knob link lines and the lines between Linked Nodes,
-     * and the expression and Linked Node indicators. Each set of linked nodes, and each expression set
-     * (a node and the nodes reading it by expression), is drawn as the lines nearestMemberLines() picks,
-     * not a line per pair.
+     * and the expression and Linked Node indicators. Each set of Linked Nodes and each knob link group is
+     * drawn as the lines nearestMemberLines() picks, not a line per pair; each node read by expression
+     * gets one arrow from this node.
      **/
     void onKnobsLinksChanged();
 
@@ -804,8 +804,7 @@ private:
     };
 
     enum LinkLineKindEnum {
-        // A directed arrow from a node whose knobs an expression of this node reads, or an undirected
-        // line to a node reading by expression a node this node also reads
+        // A directed arrow from a node whose knobs an expression of this node reads
         eLinkLineKindExpression = 0,
 
         // An undirected dashed line to a node with a knob sharing a link group with a knob of this node
@@ -833,9 +832,6 @@ private:
 
     LinkLines _linkLines;
     bool _linkLinesRefreshPending;
-
-    // The other members of the expression sets this node was in when its lines were last drawn.
-    NodesWList _expressionSetMembers;
     NodeGuiIndicatorPtr _expressionIndicator;
     NodeGuiIndicatorPtr _linkedNodeIndicator;
     QPoint _magnecEnabled; //<enabled in X or/and Y

@@ -49,7 +49,7 @@ public:
     // clipboard: a serialization does not reference its node.
     std::list<NodePtr> sourceNodes;
 
-    // The Project::getSessionId() of the project the nodes were copied from, or empty if unknown.
+    // The Project::getProjectId() of the project the nodes were copied from, or empty if unknown.
     std::string sourceProject;
 
     NodeClipBoard()

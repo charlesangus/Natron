@@ -153,7 +153,7 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
             // In the project they were copied from, the pasted copies of linked knobs join the groups of the
             // knobs they were copied from, or link to each other when those are gone. In another project a
             // node of the same name is another node, so there they link only to each other.
-            const bool sameProject = !clipboard.sourceProject.empty() && (clipboard.sourceProject == _publicInterface->getGui()->getApp()->getProject()->getSessionId());
+            const bool sameProject = _publicInterface->getGui()->getApp()->getProject()->isProjectId(clipboard.sourceProject);
             KnobHelper::restoreLinkGroups(pastedNodes, sameProject);
         }
 

@@ -554,8 +554,8 @@ public:
                 _before[i]->clone(dst.get());
             }
         }
-        KnobBoolPtr srcClipChanged = _srcClipChanged.lock();
-        _srcClipChangedBefore = srcClipChanged && srcClipChanged->getValue();
+        KnobBoolPtr srcClipChangedKnob = _srcClipChanged.lock();
+        _srcClipChangedBefore = srcClipChangedKnob && srcClipChangedKnob->getValue();
     }
 
     virtual void redo() OVERRIDE FINAL

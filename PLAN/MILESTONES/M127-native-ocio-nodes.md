@@ -113,7 +113,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 126.3: GPU
 
-- [ ] M127.P3.T1 — Generate and bind OCIO's Vulkan shader in the base
+- [x] M127.P3.T1 — Generate and bind OCIO's Vulkan shader in the base
   - files: `Engine/Nodes/OCIO/OcioNodeBase.{h,cpp}`, `Engine/OcioVulkanShader.{h,cpp}` (from M107 - GPU Viewer Hand-off, extended only if the node path needs it), `Tests/Native/NativeOcioGpu_Test.cpp` (new)
   - approach:
     - Reuse M107 - GPU Viewer Hand-off's shared helper `Engine/OcioVulkanShader.{h,cpp}` (created by M107.P3.T1). It builds OCIO's `GPU_LANGUAGE_GLSL_VK_4_6` shader, holds LUTs as `GpuTexture`s and dynamic properties in a UBO, and caches LUT textures per processor on `cacheID`. Do not write a second OCIO shader generator.
@@ -122,7 +122,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the GPU parity harness matches the CPU within 1e-4 for ColorSpace (an ACES config), Display, CDL, a `.cube` FileTransform and a Look, on RADV. Changing exposure doesn't trigger a recompile. Runs at the phase build.
   - size: L
 
-- [ ] M127.P3.T2 — Cost seeds and placement for the OCIO nodes
+- [x] M127.P3.T2 — Cost seeds and placement for the OCIO nodes
   - files: `Engine/Nodes/OCIO/{OCIOColorSpace,OCIODisplay,OCIOCDLTransform,OCIOFileTransform,OCIOLookTransform}.costseed.inc` (new), `Tests/GpuPlacement_Test.cpp`
   - approach:
     - Seed GPU and CPU cost rows for the five nodes.

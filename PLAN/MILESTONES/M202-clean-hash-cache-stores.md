@@ -23,4 +23,5 @@ Stop the identity, actions (RoD and others) and image caches storing an entry un
 
 ## Decisions
 
+- 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file. M202 lands before M178, which rebases onto it.
 - 2026-10-25 — **Own milestone after M167 rather than a change-request to it:** this keeps M167's diff bounded (user, at M31 triage).

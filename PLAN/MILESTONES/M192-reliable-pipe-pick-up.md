@@ -26,6 +26,7 @@ Clicking a connected pipe to pick it up fails unless the cursor is perfectly sti
 
 ## Decisions
 
+- 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file.
 - 2026-10-25 — click-vs-drag: standard semantics — mouse released = click, mouse held = drag — with the toolkit's small movement tolerance so jitter during a click is still a click: the user asked for the standard distinction.
 - 2026-10-25 — end-aware-rule: the end nearest the click is carried: the user chose this over a fixed arrowhead-means-output mapping.
 - 2026-10-25 — empty-space-drop: dropping a carried pipe on empty space disconnects, as drag-release does: consistency with the existing behaviour.

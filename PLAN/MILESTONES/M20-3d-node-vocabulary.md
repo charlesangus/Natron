@@ -130,6 +130,7 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 
 ## Decisions
 
+- 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file. USDRender needs the Hydra libraries in Engine's link set.
 - 2026-10-24 — `USDRender` hands pixels to the image graph through GL→Vulkan interop, not a plain CPU readback: user's call, since M19 - USD/Hydra Foundation left Hydra → Vulkan compute to `USDRender`.
 - 2026-10-24 — The interop mirrors M107 - GPU Viewer Hand-off's ladder (ZeroCopy → ZeroCopyHostSync → readback), with a silent fallback: CI, llvmpipe+RADV and GPU-less farm nodes still render, and the output is the same on every rung.
 - 2026-10-24 — Headless `USDRender` uses a dlopened EGL surfaceless context: it needs no X server, works on any driver including llvmpipe, and the shipped Qt has no xcb EGL integration for `QOffscreenSurface`.

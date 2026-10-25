@@ -98,6 +98,7 @@ The per-context render core shared by E13 - RFV and E15 - Loops And I-Nodes, spl
 
 ## Decisions
 
+- 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file. M178 rebases onto M202 when that lands.
 - 2026-10-25 — **Split from M71 - RFV Render Context (user):** the per-context core ships first and alone, so E15 - Loops And I-Nodes does not wait on RFV declarations or Python.
 - 2026-10-25 — **No hard context cap (user):** a per-context entry costs ~1–2 KB and ~10–50 µs of actions, far below an unrolled graph of real nodes (tens to hundreds of KB each plus O(N²) graph hotspots), and the fold chain bounds pixel memory; a warning past 4096 contexts is enough.
 - 2026-10-25 — **Per-context metadata in scope, after M167 (user):** M167 - Per-Frame Node Metadata keys metadata by (hash, time, view), so folding the context key into the hash makes it per-context almost for free.

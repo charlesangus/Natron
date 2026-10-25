@@ -62,6 +62,7 @@ Exact native I-warps (user, 2026-10-24). Slicing a transform and blending the sl
 
 ## Decisions
 
+- 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file. ITransform/ICornerPin are Custom ops; the branch is rebased onto main before STMap/IDistort GPU work.
 - 2026-10-25 — **Interpolate the transform, never blend slices:** slicing a transform ghosts; per-pixel matrices through the coordinate-map resampler are exact.
 - 2026-10-25 — **Output-space Map (user):** one lookup, exact, lines up with the result.
 - 2026-10-25 — **IDistort and STMap get an optional Map input, not new nodes (user).

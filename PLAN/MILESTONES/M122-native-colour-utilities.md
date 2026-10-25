@@ -247,6 +247,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file.
 - 2026-10-13 — Premult and Unpremult stay two separate nodes (user): visible in the graph, the same reasoning as Add/Multiply, and the PyPlugs keep working.
 - 2026-10-13 — One `Colorspace` node replaces the 18 converters (user), with primaries from the project working space and Lab unscaled. Its name sits beside the OCIO family's `OCIOColorSpace`, which converts between config spaces.
 - 2026-10-13 — HSVTool is redesigned with an unbounded value range and scene-linear-safe saturation, clamps off (user).

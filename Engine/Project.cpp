@@ -702,7 +702,7 @@ Project::loadProjectInternal(const QString& path,
         }
     }
 
-    _imp->redeclarePythonAppVariable();
+    getApp()->refreshProjectParamsInPython();
     _imp->runOnProjectLoadCallback();
 
     ///Process all events before flagging that we're no longer loading the project
@@ -3246,7 +3246,7 @@ Project::doResetEnd(bool aboutToQuit)
         applyColorManagementDefaults(false);
 
         endChanges(true);
-        _imp->redeclarePythonAppVariable();
+        getApp()->refreshProjectParamsInPython();
     }
 
     {

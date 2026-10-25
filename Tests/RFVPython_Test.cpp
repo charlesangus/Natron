@@ -36,6 +36,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 
@@ -74,7 +75,7 @@ protected:
         return getApp()->getAppIDString();
     }
 
-    // The plain "app" alias, when the environment defines it, must see the new variable.
+    // The plain "app" alias, when the environment defines it, must see the variable.
     static std::string aliasResolves(const std::string& name)
     {
         return "if 'app' in globals():\n    assert app." + name + ".getScriptName() == '" + name + "'\n";
@@ -193,7 +194,11 @@ TEST_F(RFVPythonTest, AppAttributeFollowsSaveResetAndLoad)
     std::string error;
 
     ASSERT_TRUE(run("gain = " + a + ".createRFVDoubleParam('gain', 'Gain')\n"
-                                    "gain.setValue(0.25)\n",
+                                    "gain.setValue(0.25)\n"
+                                    "assert "
+                        + a + ".gain.getScriptName() == 'gain'\n"
+                              "rfvTestAppBefore = "
+                        + a + "\n",
                     &error))
         << error;
 
@@ -222,4 +227,40 @@ TEST_F(RFVPythonTest, AppAttributeFollowsSaveResetAndLoad)
 
     project->reset(false, true);
     EXPECT_TRUE(run("assert not hasattr(" + a + ", 'gain')\n", &error)) << error;
+
+    // Load and reset keep the app object itself, so attributes declared on it persist.
+    EXPECT_TRUE(run("assert " + a + " is rfvTestAppBefore\n"
+                                    "del rfvTestAppBefore\n",
+                    &error))
+        << error;
+}
+
+TEST_F(RFVPythonTest, NodeAttributeSurvivesALoad)
+{
+    const std::string a = app();
+    std::string error;
+
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    ASSERT_TRUE(bool(dot));
+    const std::string dotName = dot->getScriptName();
+    ASSERT_TRUE(run(a + ".createRFVDoubleParam('gain', 'Gain')\n", &error)) << error;
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("rfv-node-attribute.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+    EXPECT_TRUE(run("assert not hasattr(" + a + ", '" + dotName + "')\n", &error)) << error;
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    ASSERT_TRUE(bool(project->getNodeByName(dotName)));
+    EXPECT_TRUE(run("assert " + a + "." + dotName + ".getScriptName() == '" + dotName + "'\n"
+                                                                                        "assert "
+                        + a + ".gain.getScriptName() == 'gain'\n",
+                    &error))
+        << error;
 }

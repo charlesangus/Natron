@@ -30,7 +30,6 @@
 #include <string>
 
 #include <QCoreApplication>
-#include <QDebug>
 #include <QDir>
 #include <QEvent>
 #include <QMutex>
@@ -1069,35 +1068,14 @@ GuiAppInstance::declareCurrentAppVariable_Python()
     std::stringstream ss;
 
     ss << appIDStr << " = " << NATRON_GUI_PYTHON_MODULE_NAME << ".natron.getGuiInstance(" << getAppID() << ") \n";
-    const KnobsVec& knobs = getProject()->getKnobs();
-    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        const std::string& name = (*it)->getName();
-        if ( NATRON_PYTHON_NAMESPACE::isKeyword(name) ) {
-            throw std::runtime_error(name + " is a Python keyword");
-        }
-        ss << appIDStr << "." << name << " = "  << appIDStr  << ".getProjectParam('" << name << "')\n";
-    }
 
     std::string script = ss.str();
     std::string err;
-    _imp->declareAppAndParamsString = script;
-
-    // Remember whether the plain "app" alias points at the object about to be replaced.
-    const std::string probeScript = "_natron_prev = globals().get('" + appIDStr + "')\n"
-                                                                                  "_natron_alias = _natron_prev is not None and globals().get('app') is _natron_prev\n";
-    NATRON_PYTHON_NAMESPACE::interpretPythonScript(probeScript, &err, 0);
-
     bool ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, 0);
     if (!ok) {
-        NATRON_PYTHON_NAMESPACE::interpretPythonScript("del _natron_prev, _natron_alias\n", &err, 0);
         throw std::runtime_error("GuiAppInstance::declareCurrentAppVariable_Python() failed!");
     }
-
-    const std::string rebindScript = "if _natron_alias:\n    app = " + appIDStr + "\n"
-                                                                                  "del _natron_prev, _natron_alias\n";
-    if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript(rebindScript, &err, 0)) {
-        qDebug() << "Rebinding the app alias failed:" << err.c_str();
-    }
+    _imp->declareAppAndParamsString = script + declareProjectParamsToPython();
 }
 
 void

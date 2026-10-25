@@ -333,16 +333,6 @@ ProjectPrivate::clearRFVVariables()
     }
 }
 
-void
-ProjectPrivate::redeclarePythonAppVariable()
-{
-    try {
-        _publicInterface->getApp()->declareCurrentAppVariable_Python();
-    } catch (const std::exception& e) {
-        qDebug() << "Declaring the app variable failed:" << e.what();
-    }
-}
-
 bool
 ProjectPrivate::findFormat(int index,
                            Format* format) const

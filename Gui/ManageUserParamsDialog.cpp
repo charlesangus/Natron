@@ -27,7 +27,6 @@
 
 #include <stdexcept>
 
-#include <QDebug>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QItemSelectionModel>
@@ -550,12 +549,8 @@ ManageUserParamsDialogPrivate::saveAndRebuildPages()
     rebuildUserPages();
     KnobHolder* holder = panel->getHolder();
     if (dynamic_cast<Project*>(holder)) {
-        // The project's knobs are app.<name> in Python; redeclaring drops deleted ones too.
-        try {
-            holder->getApp()->declareCurrentAppVariable_Python();
-        } catch (const std::exception& e) {
-            qDebug() << "Declaring the app variable failed:" << e.what();
-        }
+        // The project's knobs are app.<name> in Python, which must follow adds, renames and deletes.
+        holder->getApp()->refreshProjectParamsInPython();
     }
     panel->getGui()->getApp()->triggerAutoSave();
 }

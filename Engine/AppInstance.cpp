@@ -31,6 +31,7 @@
 #include <fstream>
 #include <limits>
 #include <list>
+#include <map>
 #include <sstream> // stringstream
 #include <stdexcept>
 
@@ -188,6 +189,9 @@ public:
     std::shared_ptr<UndoRecorderI> undoRecorder;
     int replayingUndo;
 
+    // The project knobs declared as attributes of the app object, by name.
+    std::map<std::string, KnobIWPtr> pythonProjectParams;
+
     AppInstancePrivate(int appID,
                        AppInstance* app)
 
@@ -208,6 +212,7 @@ public:
         , creationContext()
         , undoRecorder()
         , replayingUndo(0)
+        , pythonProjectParams()
     {
     }
 
@@ -2317,23 +2322,79 @@ AppInstance::declareCurrentAppVariable_Python()
     std::stringstream ss;
 
     ss << "app" << _imp->_appID + 1 << " = " << NATRON_ENGINE_PYTHON_MODULE_NAME << ".natron.getInstance(" << _imp->_appID << ") \n";
-    const KnobsVec& knobs = _imp->_currentProject->getKnobs();
-    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        ss << "app" << _imp->_appID + 1 << "." << (*it)->getName() << " = app" << _imp->_appID + 1 << ".getProjectParam('" <<
-        (*it)->getName() << "')\n";
+    if (appPTR->isBackground()) {
+        ss << "app = app1\n";
     }
     std::string script = ss.str();
     std::string err;
     bool ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, 0);
+    assert(ok);
     if (!ok) {
         throw std::runtime_error("AppInstance::declareCurrentAppVariable_Python() failed!");
     }
 
-    if ( appPTR->isBackground() ) {
-        std::string aliasErr;
-        if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript("app = app1\n", &aliasErr, 0)) {
-            qDebug() << "Rebinding the app alias failed:" << aliasErr.c_str();
+    declareProjectParamsToPython();
+}
+
+std::string
+AppInstance::declareProjectParamsToPython()
+{
+#ifdef NATRON_RUN_WITHOUT_PYTHON
+
+    return std::string();
+#endif
+    const std::string appID = getAppIDString();
+    std::map<std::string, KnobIWPtr>& declared = _imp->pythonProjectParams;
+    std::map<std::string, KnobIPtr> current;
+    const KnobsVec& knobs = _imp->_currentProject->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        const std::string& name = (*it)->getName();
+        if (NATRON_PYTHON_NAMESPACE::isKeyword(name)) {
+            throw std::runtime_error(name + " is a Python keyword");
         }
+        current[name] = *it;
+    }
+
+    std::stringstream ss;
+    for (std::map<std::string, KnobIWPtr>::iterator it = declared.begin(); it != declared.end();) {
+        if (current.find(it->first) == current.end()) {
+            ss << "try:\n    del " << appID << "." << it->first << "\nexcept AttributeError:\n    pass\n";
+            declared.erase(it++);
+        } else {
+            ++it;
+        }
+    }
+    for (std::map<std::string, KnobIPtr>::const_iterator it = current.begin(); it != current.end(); ++it) {
+        std::map<std::string, KnobIWPtr>::iterator found = declared.find(it->first);
+        if ((found != declared.end()) && (found->second.lock() == it->second)) {
+            continue;
+        }
+        ss << appID << "." << it->first << " = " << appID << ".getProjectParam('" << it->first << "')\n";
+        declared[it->first] = it->second;
+    }
+
+    std::string script = ss.str();
+    if (script.empty()) {
+        return script;
+    }
+    std::string err;
+    if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, 0)) {
+        throw std::runtime_error("Declaring the project parameters in Python failed: " + err);
+    }
+
+    return script;
+}
+
+void
+AppInstance::refreshProjectParamsInPython()
+{
+    try {
+        const std::string script = declareProjectParamsToPython();
+        if (!script.empty() && !appPTR->isBackground()) {
+            printAutoDeclaredVariable(script);
+        }
+    } catch (const std::exception& e) {
+        qDebug() << e.what();
     }
 }
 

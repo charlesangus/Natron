@@ -647,7 +647,7 @@ addRFVKnob(const AppInstancePtr& app,
     }
     project->recreateUserKnobs(false);
     try {
-        app->declareCurrentAppVariable_Python();
+        app->declareProjectParamsToPython();
     } catch (const std::exception& e) {
         PyErr_SetString(PyExc_RuntimeError, e.what());
 

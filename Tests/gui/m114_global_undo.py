@@ -12,7 +12,7 @@ the way a user makes it: typing into a spin box of the node's panel, dragging th
 graph, deleting keys with Ctrl+A/Backspace in the curve editor and in the dope sheet, and
 connecting the viewer with the "1" key. Ctrl+Z/Ctrl+Shift+Z go through QTest, which sends the
 shortcut-override step that QApplication.sendEvent() skips (see m55_input_pipes.py's
-trigger_undo()), so the application-wide shortcut is what is being tested. Roto shapes are not
+trigger_undo()), so the main window's undo shortcut is what is being tested. Roto shapes are not
 drawn: that needs synthetic pen strokes in the GL viewer.
 """
 import os

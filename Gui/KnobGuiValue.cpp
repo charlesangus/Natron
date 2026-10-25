@@ -1151,7 +1151,7 @@ public:
 
     virtual void undo() OVERRIDE FINAL
     {
-        KnobIPtr knob = lockUndoKnob(_knob);
+        KnobIPtr knob = _knob.lock();
         if (!knob) {
             setObsolete(true);
 
@@ -1170,7 +1170,7 @@ public:
 
     virtual void redo() OVERRIDE FINAL
     {
-        KnobIPtr knob = lockUndoKnob(_knob);
+        KnobIPtr knob = _knob.lock();
         if (!knob) {
             setObsolete(true);
 
@@ -1213,7 +1213,7 @@ private:
         knob->endChanges();
     }
 
-    KnobIWPtr _knob;
+    UndoKnobRef _knob;
     bool _fold;
     KnobIPtr _knobBeforeFold;
 };

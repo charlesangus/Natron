@@ -103,8 +103,8 @@ struct UndoHistoryPrivate;
  * entries. Pushing a command drops every undone entry.
  *
  * A command is merged (QUndoCommand::id()/mergeWith()) only into the newest entry, and only when
- * both have the same owner. Obsolete commands, and commands whose owner has been destroyed, are
- * skipped and dropped instead of being executed.
+ * both have the same owner. Obsolete commands, and commands whose owner or any touched holder
+ * has been destroyed, are skipped and dropped instead of being executed.
  **/
 class UndoHistory
     : public QObject {

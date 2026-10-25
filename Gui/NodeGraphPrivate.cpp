@@ -139,7 +139,7 @@ bool
 NodeGraphPrivate::rearrangeSelectedNodes()
 {
     if ( !_selection.empty() ) {
-        _publicInterface->pushUndoCommand( new RearrangeNodesCommand(_selection) );
+        _publicInterface->pushUndoCommand(new RearrangeNodesCommand(_selection), _selection);
 
         return true;
     }

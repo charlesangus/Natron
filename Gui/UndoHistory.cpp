@@ -136,9 +136,19 @@ struct UndoEntry {
         return hasOwner && !owner.isNull() && (owner.data() == holder);
     }
 
+    // A command cannot be replayed once any holder whose state it changes is gone, owned or not.
     bool isObsolete() const
     {
-        return cmd->isObsolete() || (hasOwner && owner.isNull());
+        if (cmd->isObsolete() || (hasOwner && owner.isNull())) {
+            return true;
+        }
+        for (std::size_t i = 0; i < touched.size(); ++i) {
+            if (touched[i].isNull()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 };
 

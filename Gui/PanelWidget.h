@@ -82,11 +82,10 @@ public:
     void handleUnCaughtKeyUpEvent(QKeyEvent* e);
 
     /**
-     * @brief Records the command in the window's undo history, with no owner unless a scope
-     * is given.
+     * @brief Records the command in the window's undo history. There is deliberately no
+     * overload without a scope: an entry that names nothing it touches would never go obsolete
+     * when those nodes are deleted.
      **/
-    virtual void pushUndoCommand(QUndoCommand* command);
-
     void pushUndoCommand(QUndoCommand* command, const UndoScope& scope);
 
     /*

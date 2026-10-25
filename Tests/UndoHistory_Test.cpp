@@ -26,24 +26,33 @@
 #include "Global/Macros.h"
 
 #include <initializer_list>
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <QString>
+#include <QThreadPool>
 #include <QUndoCommand>
 
 #include <gtest/gtest.h>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/Yaml/PresetYaml.h"
 
 #include "Gui/KnobGuiColor.h"
 #include "Gui/KnobGuiContainerI.h"
+#include "Gui/KnobGuiValue.h"
 #include "Gui/KnobUndoCommand.h"
 
 #include "Gui/UndoHistory.h"
@@ -412,6 +421,34 @@ TEST_F(UndoHistoryTest, EntriesOfADestroyedOwnerAreSkipped)
     EXPECT_EQ(1, history.count());
 }
 
+TEST_F(UndoHistoryTest, OwnerlessEntriesTouchingADestroyedHolderAreSkipped)
+{
+    push("before");
+    push("move", touching(a.get()));
+    take();
+    a.reset();
+
+    EXPECT_EQ(QString::fromUtf8("before"), history.undoText());
+    history.undo();
+    EXPECT_EQ(L({ "-before" }), take());
+    EXPECT_EQ(1, history.count());
+}
+
+TEST_F(UndoHistoryTest, UndoneEntriesTouchingADestroyedHolderAreNotRedone)
+{
+    push("move", touching(a.get()));
+    history.undo();
+    EXPECT_EQ(L({ "+move", "-move" }), take());
+    b.reset();
+    EXPECT_TRUE(history.canRedo());
+    a.reset();
+
+    EXPECT_FALSE(history.canRedo());
+    history.redo();
+    EXPECT_TRUE(take().empty());
+    EXPECT_EQ(0, history.count());
+}
+
 TEST_F(UndoHistoryTest, ClearDeletesEverythingAndSignals)
 {
     int changes = 0;
@@ -588,4 +625,159 @@ TEST(KnobUndoRecording, WhichKnobEditsAreUndoable)
     EXPECT_FALSE(KnobGui::isUndoableEdit(button));
     EXPECT_TRUE(KnobGui::isUndoableEdit(renderingButton));
     EXPECT_FALSE(KnobGui::isUndoableEdit(KnobIPtr()));
+}
+
+namespace {
+const char* const kUserKnob = "userValue";
+
+class NodeKnobUndo
+    : public ::testing::Test {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        _app = appPTR->getTopLevelInstance();
+        ASSERT_TRUE(bool(_app));
+        _app->getProject()->reset(false, true);
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        if (_app) {
+            _app->getProject()->reset(false, true);
+        }
+        QThreadPool::globalInstance()->waitForDone();
+    }
+
+    NodePtr createBlur()
+    {
+        CreateNodeArgs args(PLUGINID_NATRON_BLUR, _app->getProject());
+
+        args.setProperty<int>(kCreateNodeArgsPropPluginVersion, PLUGIN_MAJOR_NATRON_BLUR, 0);
+        args.setProperty<int>(kCreateNodeArgsPropPluginVersion, -1, 1);
+
+        return _app->createNode(args);
+    }
+
+    static KnobDoublePtr addUserDouble(const NodePtr& node,
+                                       const std::string& name,
+                                       double value)
+    {
+        EffectInstancePtr effect = node->getEffectInstance();
+        KnobDoublePtr added = effect->createDoubleKnob(name, name, 1);
+        if (added) {
+            effect->getOrCreateUserPageKnob()->addKnob(added);
+            added->setValue(value);
+        }
+
+        return added;
+    }
+
+    static KnobDoublePtr userKnob(const NodePtr& node)
+    {
+        return std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kUserKnob));
+    }
+
+    static Serialization::NodeSerialization snapshot(const NodePtr& node)
+    {
+        Serialization::NodeSerialization serialization;
+        node->toSerialization(&serialization, false);
+
+        return serialization;
+    }
+
+    // What a preset file holds, read back the way Import presets reads it.
+    static Serialization::NodeSerialization presetFileOf(const NodePtr& node)
+    {
+        std::list<Serialization::NodeSerializationPtr> nodes;
+        nodes.push_back(std::make_shared<Serialization::NodeSerialization>(snapshot(node)));
+        std::list<Serialization::NodeSerializationPtr> decoded = Serialization::decodePresetYaml(Serialization::encodePresetYaml(nodes));
+        EXPECT_EQ((std::size_t)1, decoded.size());
+
+        return decoded.empty() ? Serialization::NodeSerialization() : *decoded.front();
+    }
+
+    AppInstancePtr _app;
+};
+} // anon namespace
+
+// Undoing a reset whose knob was deleted since must neither crash on the missing holder nor
+// leave a dead entry behind.
+TEST_F(NodeKnobUndo, AResetOfADeletedKnobIsDroppedOnUndo)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobDoublePtr knob = addUserDouble(blur, kUserKnob, 5.);
+    ASSERT_TRUE(bool(knob));
+
+    UndoHistory history;
+    history.push(new RestoreDefaultsCommand(false, std::list<KnobIPtr>(1, knob), -1));
+    EXPECT_DOUBLE_EQ(knob->getDefaultValue(0), knob->getValue(0));
+    ASSERT_EQ(1, history.count());
+
+    blur->deleteUserKnobs(std::list<KnobIWPtr>(1, knob));
+    EXPECT_FALSE(bool(userKnob(blur)));
+    history.undo();
+    EXPECT_EQ(0, history.count());
+}
+
+TEST_F(NodeKnobUndo, AResetOfADeletedKnobIsDroppedOnRedo)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobDoublePtr knob = addUserDouble(blur, kUserKnob, 5.);
+    ASSERT_TRUE(bool(knob));
+
+    UndoHistory history;
+    history.push(new RestoreDefaultsCommand(false, std::list<KnobIPtr>(1, knob), -1));
+    history.undo();
+    EXPECT_DOUBLE_EQ(5., knob->getValue(0));
+
+    blur->deleteUserKnobs(std::list<KnobIWPtr>(1, knob));
+    history.redo();
+    EXPECT_EQ(0, history.count());
+}
+
+// Undoing and redoing a preset deletes and recreates the user knobs it adds, the way
+// LoadNodePresetsCommand does; an earlier edit of such a knob must land on the recreated one.
+TEST_F(NodeKnobUndo, AnEditOfAUserKnobSurvivesThePresetRecreatingIt)
+{
+    NodePtr source = createBlur();
+    NodePtr target = createBlur();
+    ASSERT_TRUE(source && target);
+    ASSERT_TRUE(bool(addUserDouble(source, kUserKnob, 6.)));
+    const Serialization::NodeSerialization preset = presetFileOf(source);
+    const Serialization::NodeSerialization before = snapshot(target);
+
+    std::list<KnobIPtr> created;
+    target->applyPresetSerialization(preset, Node::ePresetApplyModePreset, &created);
+    KnobDoublePtr first = userKnob(target);
+    ASSERT_TRUE(bool(first));
+    EXPECT_DOUBLE_EQ(6., first->getValue(0));
+
+    UndoHistory history;
+    HistoryKnobGuiContainer container(&history);
+    KnobGuiPtr knobGui = std::make_shared<KnobGuiDouble>(first, &container);
+    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, 6., 8., 0, false));
+    EXPECT_DOUBLE_EQ(8., first->getValue(0));
+    ASSERT_EQ(1, history.count());
+
+    history.undo();
+    EXPECT_DOUBLE_EQ(6., first->getValue(0));
+
+    // Undo, then redo, the preset.
+    target->deleteUserKnobs(std::list<KnobIWPtr>(created.begin(), created.end()));
+    created.clear();
+    target->applyPresetSerialization(before, Node::ePresetApplyModeSnapshot, NULL);
+    EXPECT_FALSE(bool(userKnob(target)));
+    target->applyPresetSerialization(preset, Node::ePresetApplyModePreset, &created);
+    KnobDoublePtr recreated = userKnob(target);
+    ASSERT_TRUE(bool(recreated));
+    ASSERT_NE(first.get(), recreated.get());
+
+    ASSERT_TRUE(history.canRedo());
+    history.redo();
+    EXPECT_DOUBLE_EQ(8., recreated->getValue(0));
+    EXPECT_EQ(1, history.count());
+    history.undo();
+    EXPECT_DOUBLE_EQ(6., recreated->getValue(0));
 }

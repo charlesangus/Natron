@@ -101,12 +101,6 @@ PanelWidget::enterEventBase()
 }
 
 void
-PanelWidget::pushUndoCommand(QUndoCommand* command)
-{
-    pushUndoCommand(command, UndoScope());
-}
-
-void
 PanelWidget::pushUndoCommand(QUndoCommand* command,
                              const UndoScope& scope)
 {

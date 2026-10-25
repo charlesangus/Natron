@@ -696,6 +696,7 @@ NodeGraph::applyConnectPlan(const std::vector<ConnectPlanConnection>& plan,
 {
     QStringList skipped;
     QUndoCommand* parentCommand = new QUndoCommand(undoText);
+    NodesGuiList touched;
 
     for (std::size_t i = 0; i < plan.size(); ++i) {
         const ConnectPlanConnection& entry = plan[i];
@@ -720,11 +721,14 @@ NodeGraph::applyConnectPlan(const std::vector<ConnectPlanConnection>& plan,
         if (!edge) {
             continue;
         }
+        touched.push_back(entry.dest);
+        touched.push_back(edge->getSource());
+        touched.push_back(entry.source);
         new ConnectCommand(this, edge, edge->getSource(), entry.source, parentCommand);
     }
 
     if (parentCommand->childCount() > 0) {
-        pushUndoCommand(parentCommand);
+        pushUndoCommand(parentCommand, touched);
     } else {
         delete parentCommand;
     }

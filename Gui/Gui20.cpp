@@ -405,6 +405,10 @@ Gui::registerFloatingWindow(FloatingWidget* window)
     if (window && _imp->actionColorTrackball) {
         window->addAction(_imp->actionColorTrackball);
     }
+    if (window && _imp->actionUndo && _imp->actionRedo) {
+        window->addAction(_imp->actionUndo);
+        window->addAction(_imp->actionRedo);
+    }
 }
 
 void
@@ -419,6 +423,10 @@ Gui::unregisterFloatingWindow(FloatingWidget* window)
     k.unlock();
     if (window && _imp->actionColorTrackball) {
         window->removeAction(_imp->actionColorTrackball);
+    }
+    if (window && _imp->actionUndo && _imp->actionRedo) {
+        window->removeAction(_imp->actionUndo);
+        window->removeAction(_imp->actionRedo);
     }
 }
 

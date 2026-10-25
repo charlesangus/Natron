@@ -505,19 +505,23 @@ Gui::createMenuActions()
     _imp->actionSaveAndIncrementVersion = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionSaveAndIncrVersion, kShortcutDescActionSaveAndIncrVersion, this);
     QObject::connect( _imp->actionSaveAndIncrementVersion, SIGNAL(triggered()), this, SLOT(saveAndIncrVersion()) );
 
-    // Application-wide so floating panes reach them too; text fields still consume Ctrl+Z
-    // through ShortcutOverride.
+    // Window shortcuts on this Gui's own windows, like the color trackball action below: with two
+    // projects open, two application shortcuts on Ctrl+Z would be ambiguous and neither would
+    // fire. registerFloatingWindow() adds them to each floating pane so it undoes its own project.
+    // Text fields still consume Ctrl+Z through ShortcutOverride.
     _imp->actionUndo = new QAction(tr("Undo"), this);
     _imp->actionUndo->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Z));
-    _imp->actionUndo->setShortcutContext(Qt::ApplicationShortcut);
+    _imp->actionUndo->setShortcutContext(Qt::WindowShortcut);
     _imp->actionUndo->setEnabled(false);
     QObject::connect(_imp->actionUndo, &QAction::triggered, _imp->undoHistory, [this]() { _imp->undoHistory->undo(); });
 
     _imp->actionRedo = new QAction(tr("Redo"), this);
     _imp->actionRedo->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z));
-    _imp->actionRedo->setShortcutContext(Qt::ApplicationShortcut);
+    _imp->actionRedo->setShortcutContext(Qt::WindowShortcut);
     _imp->actionRedo->setEnabled(false);
     QObject::connect(_imp->actionRedo, &QAction::triggered, _imp->undoHistory, [this]() { _imp->undoHistory->redo(); });
+    addAction(_imp->actionUndo);
+    addAction(_imp->actionRedo);
 
     QObject::connect(_imp->undoHistory, &UndoHistory::changed, this, &Gui::onUndoHistoryChanged);
 

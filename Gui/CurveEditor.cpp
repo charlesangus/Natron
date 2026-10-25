@@ -56,18 +56,19 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 #include "Gui/ActionShortcuts.h"
 #include "Gui/CurveGui.h"
-#include "Gui/NodeGui.h"
-#include "Gui/KnobGui.h"
-#include "Gui/LineEdit.h"
+#include "Gui/DockablePanel.h"
+#include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiMacros.h"
-#include "Gui/Gui.h"
-#include "Gui/DockablePanel.h"
-#include "Gui/GuiAppInstance.h"
+#include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Label.h"
+#include "Gui/LineEdit.h"
+#include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/TabWidget.h"
+#include "Gui/UndoHistory.h"
 
 #include "Gui/GuiFwd.h"
 
@@ -1856,7 +1857,10 @@ CurveEditor::setSelectedCurveExpression(const QString& expression)
             return;
         }
     }
-    pushUndoCommand( new SetExpressionCommand(knob, false, dim, expr) );
+    UndoScope scope;
+    scope.touchKnob(knob);
+    scope.ownByOnlyTouched();
+    pushUndoCommand(new SetExpressionCommand(knob, false, dim, expr), scope);
 }
 
 void

@@ -71,7 +71,7 @@ private:
     void move(double dx, double dy);
 
     bool _firstRedoCalled;
-    NodesGuiList _nodes;
+    std::list<NodeGuiWPtr> _nodes;
     double _dx, _dy;
 };
 
@@ -265,8 +265,7 @@ public:
     virtual bool mergeWith(const QUndoCommand *command);
 
 private:
-
-    NodeGuiPtr _bd;
+    NodeGuiWPtr _bd;
     int _w, _h;
     int _oldW, _oldH;
 };
@@ -311,7 +310,7 @@ public:
 
     struct NodeToRearrange
     {
-        NodeGuiPtr node;
+        NodeGuiWPtr node;
         QPointF oldPos, newPos;
     };
 

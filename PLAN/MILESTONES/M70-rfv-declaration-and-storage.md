@@ -69,20 +69,21 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
 - [ ] M70.P5.T2 — `RFV::promoteToProject` operation
   - files: `Engine/RFV.cpp`, `Engine/RFV.h`, `Tests/RFVSetNode_Test.cpp`
   - approach: copies a variable knob from a Set node's RFV group into the project's RFV group (same type, dimensions, value, animation curves, label and hint). Refuses with a clear error if the project already declares that name. The node's own variable stays, so it keeps overriding the project value.
-  - verify: gtest: promote an animated Double; the project knob's curve and value match, and a second promote of the same name fails.
+  - verify: gtest: promote an animated Double; the project knob's curve and value match, and a second promote of the same name fails. A gtest runs promote, undo and redo: undo removes the project's copy, redo restores it with the same value and animation.
   - size: M
 
 - [ ] M70.P5.T3 — Right-click "Add to project variables" on a Set-node variable
   - files: `Gui/KnobGui.cpp`, `Gui/KnobGui.h`
-  - approach: the knob's context menu gains the item only when the knob is a direct child of a Set node's RFV group (not on the project's own group). Disabled, with a tooltip, when the project already declares the name. Calls `RFV::promoteToProject`.
-  - verify: Xvfb GUI run: right-click a variable on a Set node, choose the item, and see it appear in the project Variables section; screenshot of the menu.
+  - approach: the knob's context menu gains the item only when the knob is a direct child of a Set node's RFV group (not on the project's own group). Disabled, with a tooltip, when the project already declares the name. Calls `RFV::promoteToProject` as one undo step in M114's undo history. The node's own knob is never disabled, read-only or greyed out by a promote; only the menu item disables.
+  - verify: Xvfb GUI run: right-click a variable on a Set node, choose the item, and see it appear in the project Variables section; screenshot of the menu. After the promote the node's knob is still enabled and editable (shown in a screenshot), and Ctrl+Z removes the variable from the project Variables section.
   - size: M
 
 **Verification gate:** ctest passes in full, including the new RFV tests; the Xvfb GUI run adds variables to a Set node and to the project (including the drop-down and the right-click promote) and they survive a save/load; screenshots of both editors are shared with the user before sign-off.
 
 ## Decisions
 
-- 2026-10-25 — **Project variables and M114 undo (bosley-native-nodes):** `app.createRFV*Param` is not recorded in the global undo history, matching M114's rule that project-level creation (addProjectLayer and the like) isn't; value edits to a variable are recorded through M114's per-knob path, and variables created on a Set node through the node API are recorded by M114's node path. A panel rebuild keeps its current user page (`DockablePanel::setPagesOrder` matches by page script name).
+- 2026-10-25 — **Promote is undoable; both copies stay active (user):** "Add to project variables" is one undo step (undo removes the project's copy, redo restores value and animation). After a promote neither copy is disabled, read-only or greyed; the node's copy keeps overriding the project's upstream of that Set node; the copies are not linked; only the menu item disables, with a tooltip. → DECISIONS/2026-10-25-rfv-promote-undo-and-active-copies.md
+- 2026-10-25 — **Project variables and M114 undo (bosley-native-nodes):** (Amended 2026-10-25 by the user: "Add to project variables" is the exception, recorded as one undo step; see DECISIONS/2026-10-25-rfv-promote-undo-and-active-copies.md.) `app.createRFV*Param` is not recorded in the global undo history, matching M114's rule that project-level creation (addProjectLayer and the like) isn't; value edits to a variable are recorded through M114's per-knob path, and variables created on a Set node through the node API are recorded by M114's node path. A panel rebuild keeps its current user page (`DockablePanel::setPagesOrder` matches by page script name).
 - 2026-10-25 — **Project variables from Python (bosley-native-nodes):** dedicated `app.createRFV<Type>Param(name, label)` methods with the UserParamHolder creators' arguments, raising ValueError on an existing, invalid or refused name, and on a name that is already an App attribute (a variable can't hide `render` or `createNode`). Variables are re-declared as `app.<name>` after a load and a reset. Reset deletes the project's variables.
 - 2026-10-25 — **RFV group invariant both ways (bosley-native-nodes):** a flagged group refuses a non-variable child in addKnob/insertKnob, as setAsRFVGroup refuses while one exists; on load a refused child is logged and dropped.
 - 2026-10-25 — **getDeclaredVariables failure mode (bosley-native-nodes):** a bad child is left out with a message, duplicate names reject every holder of the name, and every flagged group in the holder is read.

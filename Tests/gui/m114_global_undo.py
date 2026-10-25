@@ -575,9 +575,8 @@ try:
         for expected in (0.25, 0.5, 1.0):
             gt.require(click_panel_undo(e), "%s's panel undo is enabled and was clicked" % e)
             yield ("sleep", SETTLE_MS)
-            check(abs(mix_value(e) - expected) < 1e-9,
-                  "one click of %s's panel undo brought mix back to %g" % (e, expected),
-                  "mix %r" % (mix_value(e),))
+            gt.check(abs(mix_value(e) - expected) < 1e-9,
+                     "one click of %s's panel undo brought mix back to %g (mix %r)" % (e, expected, mix_value(e)))
 
         faulthandler.cancel_dump_traceback_later()
 

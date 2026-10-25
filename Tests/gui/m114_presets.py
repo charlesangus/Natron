@@ -27,7 +27,9 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 200
 SETTLE_MS = 400
-DIALOG_TRIES = 50
+DIALOG_APPEAR_S = 30.0
+DIALOG_CLOSE_S = 15.0
+DIALOG_TOTAL_S = 60.0
 BLUR = "net.sf.cimg.CImgBlur"
 WRITE = "fr.inria.built-in.Write"
 LABEL = "kept label"
@@ -150,47 +152,82 @@ try:
 
     def through_file_dialog(name, slot, path):
         """Invokes the panel slot, which runs a modal file dialog, and accepts the dialog with
-        path typed in from a timer. Returns whether a dialog was seen."""
-        seen = {"dialog": False, "tries": 0}
+        path typed in from timers. The slot blocks until the dialog closes, so everything that
+        can end the wait is a timer: it gives up on a dialog that never shows, rejects one that
+        will not accept, and rejects any dialog still open at the hard deadline. Returns whether
+        the dialog was seen and accepted."""
+        state = {"seen": False, "accepted": False, "done": False, "accepted_at": None}
+        start = time.monotonic()
+
+        def visible_dialogs():
+            return [d for d in gt.widgets_of("SequenceFileDialog") if d.isVisible()]
 
         def fill():
-            dialogs = [d for d in gt.widgets_of("SequenceFileDialog") if d.isVisible()]
+            if state["done"]:
+                return
+            elapsed = time.monotonic() - start
+            dialogs = visible_dialogs()
             if not dialogs:
-                seen["tries"] += 1
-                if seen["tries"] < DIALOG_TRIES:
-                    QTimer.singleShot(200, fill)
+                if state["seen"]:
+                    state["done"] = True
+                    return
+                if elapsed > DIALOG_APPEAR_S:
+                    report("NOTE no file dialog appeared within %gs" % DIALOG_APPEAR_S)
+                    state["done"] = True
+                    return
+                QTimer.singleShot(200, fill)
                 return
             dialog = dialogs[0]
-            seen["dialog"] = True
-            # The selection edit is created before the filter edit.
-            edits = [w for w in dialog.findChildren(QLineEdit) if gt.class_name(w) == "LineEdit"]
-            if not edits:
-                report("NOTE dialog line edits: %r" % [gt.class_name(w) for w in dialog.findChildren(QLineEdit)])
+            state["seen"] = True
+            if elapsed > DIALOG_TOTAL_S or (state["accepted_at"] is not None
+                                            and time.monotonic() - state["accepted_at"] > DIALOG_CLOSE_S):
+                report("NOTE the file dialog did not close in time; rejecting it")
+                state["accepted"] = False
                 dialog.reject()
+                QTimer.singleShot(200, fill)
                 return
-            edits[0].setText(path)
-            QMetaObject.invokeMethod(dialog, "openSelectedFiles")
+            if state["accepted_at"] is None:
+                dialog.activateWindow()
+                dialog.raise_()
+                # The selection edit is created before the filter edit.
+                edits = [w for w in dialog.findChildren(QLineEdit) if gt.class_name(w) == "LineEdit"]
+                if not edits:
+                    report("NOTE dialog line edits: %r" % [gt.class_name(w) for w in dialog.findChildren(QLineEdit)])
+                    dialog.reject()
+                    QTimer.singleShot(200, fill)
+                    return
+                edits[0].setText(path)
+                state["accepted_at"] = time.monotonic()
+                state["accepted"] = True
+                QMetaObject.invokeMethod(dialog, "openSelectedFiles")
+            QTimer.singleShot(200, fill)
 
         p = panel_of(name)
         if p is None:
             return False
         QTimer.singleShot(300, fill)
         QMetaObject.invokeMethod(p, slot)
+        state["done"] = True
         QApplication.processEvents()
-        return seen["dialog"]
+        return state["seen"] and state["accepted"]
 
     def export_preset(name, file_name):
         path = os.path.join(PRESET_DIR, file_name)
         if os.path.isfile(path):
             os.remove(path)
-        require(through_file_dialog(name, "onExportPresetsActionTriggered", path),
-                "Export as presets on %s opened a file dialog" % name)
-        require(os.path.isfile(path), "the preset %s was written" % file_name)
+        if not check(through_file_dialog(name, "onExportPresetsActionTriggered", path),
+                     "Export as presets on %s opened a file dialog" % name):
+            return None
+        if not check(os.path.isfile(path), "the preset %s was written" % file_name):
+            return None
         return path
 
     def import_preset(name, path):
-        require(through_file_dialog(name, "onImportPresetsActionTriggered", path),
-                "Import presets on %s opened a file dialog" % name)
+        if path is None:
+            check(False, "Import presets on %s skipped: its preset was not exported" % name)
+            return
+        check(through_file_dialog(name, "onImportPresetsActionTriggered", path),
+              "Import presets on %s opened a file dialog" % name)
 
     # ---- state -----------------------------------------------------------------------------
 
@@ -284,6 +321,8 @@ try:
         src, lnk, tgt = source.getScriptName(), link_source.getScriptName(), target.getScriptName()
         yield ("sleep", SETTLE_MS)
         path = export_preset(src, "blur_default.nps")
+        if path is None:
+            return
 
         size = target.getParam("size")
         size.setValueAtTime(5.0, 1, 0)
@@ -338,6 +377,8 @@ try:
         src, tgt = source.getScriptName(), target.getScriptName()
         yield ("sleep", SETTLE_MS)
         path = export_preset(src, "write_default.nps")
+        if path is None:
+            return
         frame_range = target.getParam("frameRange")
         frame_range.setValue((default(tgt, "frameRange") + 1) % frame_range.getNumOptions())
         target_file = str(value(tgt, "filename"))
@@ -374,6 +415,8 @@ try:
         target.refreshUserParamsGUI()
         yield ("sleep", SETTLE_MS)
         path = export_preset(src, "blur_user.nps")
+        if path is None:
+            return
 
         import_preset(tgt, path)
         yield ("sleep", SETTLE_MS)

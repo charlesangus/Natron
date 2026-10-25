@@ -529,7 +529,7 @@ namespace {
             char* end = 0;
             errno = 0;
             const double v = std::strtod(begin, &end);
-            if ((end == begin) || (errno != 0) || !isBlank(end)) {
+            if ((end == begin) || (errno != 0) || !isBlank(end) || !std::isfinite(v)) {
                 error = "Not a number: " + l;
                 return false;
             }
@@ -552,6 +552,22 @@ namespace {
                 return false;
             }
             *value = (int)v;
+            return true;
+        }
+
+        // True when only blank and comment lines remain.
+        bool atEnd()
+        {
+            std::string l;
+            while (std::getline(_in, l)) {
+                while (!l.empty() && (l[l.size() - 1] == '\r')) {
+                    l.erase(l.size() - 1);
+                }
+                if (!isBlank(l.c_str()) && (l[0] != '#')) {
+                    error = "Unexpected data after the last key: " + l;
+                    return false;
+                }
+            }
             return true;
         }
 
@@ -594,7 +610,12 @@ parsePFBarrelFile(const std::string& text, PFBarrelFile* file, std::string* erro
     if (ok && (f.version == 2)) {
         ok = reader.readDouble(&f.originalPixelAspect);
     }
-    ok = ok && reader.readInt(&f.undistortedWidth) && reader.readInt(&f.undistortedHeight) && reader.line(&ln);
+    ok = ok && reader.readInt(&f.undistortedWidth) && reader.readInt(&f.undistortedHeight);
+    if (ok && ((f.originalWidth <= 0) || (f.originalHeight <= 0) || (f.originalPixelAspect <= 0.) || (f.undistortedWidth <= 0) || (f.undistortedHeight <= 0))) {
+        reader.error = "Bad dimensions";
+        ok = false;
+    }
+    ok = ok && reader.line(&ln);
     if (ok) {
         if (ln == "Low Order") {
             f.highOrder = false;
@@ -607,7 +628,11 @@ parsePFBarrelFile(const std::string& text, PFBarrelFile* file, std::string* erro
     }
     int nKeys = 0;
     ok = ok && reader.readDouble(&f.squeeze) && reader.readInt(&nKeys);
-    if (ok && (nKeys < 0)) {
+    if (ok && (f.squeeze <= 0.)) {
+        reader.error = "Bad squeeze";
+        ok = false;
+    }
+    if (ok && (nKeys < 1)) {
         reader.error = "Bad key count";
         ok = false;
     }
@@ -621,6 +646,7 @@ parsePFBarrelFile(const std::string& text, PFBarrelFile* file, std::string* erro
             f.keys.push_back(key);
         }
     }
+    ok = ok && reader.atEnd();
     if (!ok) {
         if (error) {
             *error = reader.error;

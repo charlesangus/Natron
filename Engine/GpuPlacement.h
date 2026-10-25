@@ -55,6 +55,10 @@ struct PlacementInputs {
     // Whether the task's effect reads raw-kind data from an input. Unset: none does.
     std::function<bool(const FrameGraph::Task&)> readsRaw;
 
+    // Whether the task's costs are known. A candidate whose are not never makes a region on its own: it runs on the GPU
+    // only within a region that holds a task whose are. Unset: every task's are.
+    std::function<bool(const FrameGraph::Task&)> isPriced;
+
     // What running a region on the GPU gains over the CPU; it is accepted when positive, else shrunk. The graph it is
     // given has the members of the regions accepted so far on the GPU and every other task on the CPU. Unset: every
     // region is accepted.
@@ -78,7 +82,8 @@ const int kMaxRegionShrinkSteps = 16;
  * once when that keeps the graph with each region contracted to one node acyclic, else the largest one of them that
  * does, else starts a region of its own. The invariant holds after every step, so each region is convex: no path leaves
  * it, through a CPU task or another region, and comes back, which is what lets a region run as one task. Each region is
- * then evaluated with regionGain, in topological order.
+ * then evaluated with regionGain, in topological order. A region, or a part left by shrinking, with no priced member
+ * stays on the CPU unevaluated.
  *
  * A region that gains nothing is shrunk greedily: each step drops the member on its boundary (with a dependency or a
  * consumer outside it, or the root) whose removal leaves the most gain, among those whose removal keeps the
@@ -150,8 +155,8 @@ bool makeGpuTaskPlanes(const FrameGraph::Task& task,
 
 /**
  * @brief The inputs placeGraph() takes in a render: the effects and the image cache are asked, and, while the GPU
- * context is available, GpuCostModel::session() judges the regions at the context's calibrated bandwidth; a task
- * whose plugin has no GPU cost is then not a candidate. Must be called on the thread that built the graph, which has
+ * context is available, GpuCostModel::session() judges the regions at the context's calibrated bandwidth and tells
+ * which tasks are priced. Must be called on the thread that built the graph, which has
  * the frame args of the render installed.
  **/
 PlacementInputs makeRenderPlacementInputs(const FrameRenderContextPtr& context);

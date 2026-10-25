@@ -74,8 +74,6 @@ constexpr unsigned kPanoTools = modelBit(LensModels::eModelPanoTools);
 constexpr unsigned k3DE = kClassic | kAnamorphic6 | kFisheye8 | kStandard | kAnamorphic4;
 constexpr unsigned kAnamorphic = kAnamorphic4 | kAnamorphic6;
 
-// One model knob as openfx-misc's LensDistortion declares it: name, label and hint, dimensions,
-// default, display range (the same on both dimensions), and the models that use it.
 struct ParamDef {
     LensDistortion::ModelParam param;
     const char* name;
@@ -156,7 +154,6 @@ const ParamDef kParamDefs[] = {
 
 static_assert(sizeof(kParamDefs) / sizeof(kParamDefs[0]) == (std::size_t)LensDistortion::eParamCount, "one definition per model knob");
 
-// Where each knob's models are looked up by the knob's index.
 unsigned
 paramModels(int param)
 {
@@ -180,7 +177,6 @@ setSecretAndDisabled(const KnobIPtr& knob,
     knob->setAllDimensionsEnabled(!secret);
 }
 
-// The region of definition of input in canonical coordinates at time, view and scale.
 bool
 inputRegion(const EffectInstancePtr& input,
             double time,
@@ -210,10 +206,10 @@ lensDistortionExtentPolicy()
     return policy;
 }
 
-// Points along the edges of rect, 11 per edge as openfx-misc samples them, mapped by model in
-// direction; the bounding box of those the model maps. False when it maps none. complete is
-// false when some point has no image: a solved direction fails where the Source is pushed past
-// any finite bound, so the box of the remaining points falls short of where the Source lands.
+// Points along the edges of rect, 11 per edge, mapped by model in direction; the bounding box of
+// those the model maps. False when it maps none. complete is false when some point has no image:
+// a solved direction fails where the Source is pushed past any finite bound, so the box of the
+// remaining points falls short of where the Source lands.
 bool
 mappedBoundingBox(const LensModels::Model& model,
                   LensModels::Direction direction,
@@ -298,7 +294,7 @@ LensDistortion::initializeKnobs()
 {
     KnobPagePtr page = createControlsPage();
 
-    // The frame range knob is kept for parity only: the node has no time domain of its own.
+    // The frame range knob has no effect: the node has no time domain of its own.
     _extentKnobs.createKnobs(page);
 
     KnobDoublePtr overscan = createKnob<KnobDouble>(tr("Overscan"));
@@ -357,7 +353,7 @@ LensDistortion::initializeKnobs()
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption(kLensDistortionOutputImage, "Image", tr("The output is the distorted/undistorted Source.").toStdString()));
-        options.push_back(ChoiceOption(kLensDistortionOutputSTMap, "STMap", tr("The output is a distortion/undistortion STMap: red and green hold the normalized position in the Source format each pixel reads, alpha is 1 where the model has a solution and 0 elsewhere. It is recommended to insert a FrameHold node at the Source input so that the STMap is computed only once if the parameters are not animated.").toStdString()));
+        options.push_back(ChoiceOption(kLensDistortionOutputSTMap, "STMap", tr("The output is a distortion/undistortion STMap: red and green hold the normalized position in the Source format each pixel reads, alpha is 1 where the model has a solution inside the Source format and 0 elsewhere, so that STMap, with UV Alpha checked, gives black there as the Image output does. It is recommended to insert a FrameHold node at the Source input so that the STMap is computed only once if the parameters are not animated.").toStdString()));
         outputMode->populateChoices(options);
     }
     outputMode->setDefaultValue(0);
@@ -368,7 +364,6 @@ LensDistortion::initializeKnobs()
 
     for (const ParamDef& def : kParamDefs) {
         if (def.param == eParamPFC3) {
-            // The PFBarrel file comes before its coefficients, as in openfx-misc.
             KnobFilePtr pfFile = createKnob<KnobFile>(tr("File"));
             pfFile->setName(kLensDistortionParamPFFile);
             pfFile->setHintToolTip(tr("The location of the PFBarrel .pfb file to use. Choosing a file sets C3, C5, Center and "
@@ -539,8 +534,8 @@ LensDistortion::loadPFBarrelFile()
     static_cast<KnobI*>(c5.get())->removeAnimation(ViewSpec::all(), 0);
     static_cast<KnobI*>(center.get())->removeAnimation(ViewSpec::all(), 0);
     static_cast<KnobI*>(center.get())->removeAnimation(ViewSpec::all(), 1);
-    // Unlike openfx-misc, which reads the squeeze but leaves the knob alone, and keys every frame
-    // with the first key's values.
+    static_cast<KnobI*>(squeeze.get())->removeAnimation(ViewSpec::all(), 0);
+    // Squeeze is file-global; coefficients and center may be keyed.
     squeeze->setValue(file.squeeze);
     if (file.keys.size() == 1) {
         const LensModels::PFBarrelKey& key = file.keys[0];
@@ -897,7 +892,7 @@ LensDistortion::getRegionOfDefinition(U64 /*hash*/,
     } else if (!hasSourceRoD) {
         rod->clear();
     } else {
-        // Where the edges of the Source land, in lens pixels, as openfx-misc computes it.
+        // Where the edges of the Source land, in lens pixels.
         const LensModels::Model model = buildModel(time, view, geometry);
         const RectD sourceLens(sourceRoD.x1 / par, sourceRoD.y1, sourceRoD.x2 / par, sourceRoD.y2);
         const RectD outputLens(geometry.output.x1, geometry.output.y1, geometry.output.x2, geometry.output.y2);
@@ -1050,7 +1045,9 @@ LensDistortion::renderOp(const RenderActionArgs& args,
         const auto row = [&](const RowIO& io) {
             std::vector<float> out((std::size_t)io.width * io.nComps, 0.f);
             if (stmap && model.valid && !sourceFormat.isNull()) {
-                // (u, v, 0, converged), the first io.nComps of them; a single channel is alpha.
+                // (u, v, 0, valid), the first io.nComps of them; a single channel is alpha. Valid
+                // is where Image output samples the Source, so that STMap, honouring the map's
+                // alpha, renders black where Image output does.
                 const double y = (io.y + 0.5) / scaleY;
                 for (int i = 0; i < io.width; ++i) {
                     LensModels::Sample s;
@@ -1058,11 +1055,14 @@ LensDistortion::renderOp(const RenderActionArgs& args,
                     if (!model.map(inverse, x, y, &s) || !std::isfinite(s.x) || !std::isfinite(s.y)) {
                         continue;
                     }
+                    const double u = (s.x * toSourceX - sourceFormat.x1) / sourceFormat.width();
+                    const double v = (s.y - sourceFormat.y1) / sourceFormat.height();
+                    const bool inside = (u >= 0.) && (u < 1.) && (v >= 0.) && (v < 1.);
                     const float values[4] = {
-                        (float)((s.x * toSourceX - sourceFormat.x1) / sourceFormat.width()),
-                        (float)((s.y - sourceFormat.y1) / sourceFormat.height()),
+                        (float)u,
+                        (float)v,
                         0.f,
-                        1.f,
+                        inside ? 1.f : 0.f,
                     };
                     float* pixel = &out[(std::size_t)i * io.nComps];
                     if (io.nComps == 1) {

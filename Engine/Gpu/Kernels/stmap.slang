@@ -25,6 +25,7 @@ struct WarpUV
     uint comps;
     int u;
     int v;
+    int alpha;
 }
 
 struct Warp
@@ -75,6 +76,7 @@ Warp warpLoad(StructuredBuffer<uint> params)
     w.originY = warpFF(params, 27);
     w.width = warpFF(params, 29);
     w.height = warpFF(params, 31);
+    w.uv.alpha = int(params[33]);
     return w;
 }
 
@@ -174,6 +176,9 @@ float4 warpSample(Warp w, int2 p, bool idistort)
 {
     const float4 zero = float4(0.0, 0.0, 0.0, 0.0);
     if ((w.flags & kWarpSample) == 0)
+        return zero;
+    // Off the UV view, as with no alpha channel at all, every position is valid.
+    if (!idistort && uvInside(w.uv, w.uv.alpha, p.x, p.y) && !(uvAt(w.uv, w.uv.alpha, p.x, p.y) > 0.0))
         return zero;
     const float2 s = idistort ? idistortCoord(w, p.x, p.y) : stmapCoord(w, p.x, p.y);
     float4 J = zero;

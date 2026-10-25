@@ -275,7 +275,6 @@ TEST_F(NativeTransformGpuTest, CostTraitsFollowMotionBlur)
         task.key.view = ViewIdx(0);
         task.key.mipmapLevel = 0;
         EXPECT_FALSE(model.traitsOf(task).motionBlur) << name << " motion blur 0";
-        EXPECT_EQ(GpuCostClass::eSpatial, model.traitsOf(task).costClass) << name;
         EXPECT_EQ(0., model.traitsOf(task).sigma) << name;
         EXPECT_FALSE(model.traitsOf(task).iir) << name;
         ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { 1. }));

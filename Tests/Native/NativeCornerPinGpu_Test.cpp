@@ -294,7 +294,6 @@ TEST_F(NativeCornerPinGpuTest, CostTraitsFollowMotionBlur)
     task.key.mipmapLevel = 0;
     EXPECT_EQ(std::string(PLUGINID_NATRON_CORNERPIN), model.traitsOf(task).pluginId);
     EXPECT_FALSE(model.traitsOf(task).motionBlur);
-    EXPECT_EQ(GpuCostClass::eSpatial, model.traitsOf(task).costClass);
     EXPECT_EQ(0., model.traitsOf(task).sigma);
     EXPECT_TRUE(model.hasGpuCost(model.traitsOf(task)));
     ASSERT_TRUE(setKnobValues(node, kCornerPinNodeParamMotionBlur, { 1. }));

@@ -371,7 +371,7 @@ protected:
         return uv;
     }
 
-    // An STMap reading U and V from R and G of the test map.
+    // An STMap reading U and V from R and G of the test map, UV Alpha off: A is a displacement.
     NodePtr makeSTMap(const NodePtr& source,
                       const NodePtr& uv,
                       const std::string& filter)
@@ -390,6 +390,7 @@ protected:
         EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, filter));
         EXPECT_TRUE(setChannelSelect(node, kSTMapParamChannelU, "rgba.R"));
         EXPECT_TRUE(setChannelSelect(node, kSTMapParamChannelV, "rgba.G"));
+        EXPECT_TRUE(setKnobValues(node, kSTMapParamUVAlpha, { 0. }));
 
         return node;
     }
@@ -514,6 +515,22 @@ TEST_F(NativeWarpGpuTest, STMapFiltersMatchTheCpuFrame)
         NodePtr node = makeSTMap(source, uv, filter);
         ASSERT_TRUE(bool(node));
         expectParity(source, node, toleranceFor(filter), std::string("STMap ") + filter);
+    }
+}
+
+// With UV Alpha on, the test map's A, a displacement of either sign, blacks out the pixels where
+// it is 0 or less.
+TEST_F(NativeWarpGpuTest, STMapUVAlphaMatchesTheCpuFrame)
+{
+    for (const char* filter : kFilters) {
+        resetProject();
+        NodePtr source = makeSource();
+        NodePtr uv = makeUV();
+        ASSERT_TRUE(source && uv);
+        NodePtr node = makeSTMap(source, uv, filter);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValues(node, kSTMapParamUVAlpha, { 1. }));
+        expectParity(source, node, toleranceFor(filter), std::string("STMap UV Alpha ") + filter);
     }
 }
 

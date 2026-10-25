@@ -43,16 +43,6 @@ NATRON_NAMESPACE_ENTER
 struct GpuCalibration;
 
 /**
- * @brief What a plugin without cost rows is assumed to cost like: a point op like Grade, a native effect that is not
- * one like a Blur, anything else has no default.
- **/
-enum class GpuCostClass {
-    eOther,
-    ePointOp,
-    eSpatial,
-};
-
-/**
  * @brief The Blur filter a GPU row was measured with. eAny on a row matches every filter, on a task it is a plugin
  * that is no Blur.
  **/
@@ -69,8 +59,7 @@ enum class GpuBlurFilter {
 /**
  * @brief What the cost of a task depends on besides its size: the plugin, for a blur its sigma in pixels at the
  * level it renders at, its filter and whether that is recursive, for an erode or dilate its size in pixels at the
- * level it renders at, and whether it renders with motion blur, which only rows measured with motion blur price. The
- * cost class and the input count only matter for a plugin without rows of its own.
+ * level it renders at, and whether it renders with motion blur, which only rows measured with motion blur price.
  **/
 struct GpuTaskTraits {
     std::string pluginId;
@@ -79,8 +68,6 @@ struct GpuTaskTraits {
     GpuBlurFilter filter = GpuBlurFilter::eAny;
     int size = 0;
     bool motionBlur = false;
-    GpuCostClass costClass = GpuCostClass::eOther;
-    int inputCount = 1;
 
     GpuTaskTraits() = default;
 
@@ -186,19 +173,22 @@ public:
     static double megapixelsOf(const FrameGraph::Task& task);
 
     /**
-     * @brief CPU wall time on the whole pool. A plugin without a row of its own takes its class default: Grade's row
-     * for a point op, the Blur's sigma 25 row for a spatial effect. 0 for any other.
+     * @brief CPU wall time on the whole pool. 0 without a CPU row.
      **/
     double cpuMs(const GpuTaskTraits& traits, double megapixels) const;
 
     /**
-     * @brief GPU kernel time. A plugin without a row of its own takes its class default: Grade's row scaled by
-     * (inputs + 1) / 2 for a point op, the Blur's sigma 25 row for a spatial effect. Infinite for any other, which is
-     * never worth placing.
+     * @brief GPU kernel time. Infinite without a GPU row.
      **/
     double gpuMs(const GpuTaskTraits& traits, double megapixels) const;
 
     bool hasGpuCost(const GpuTaskTraits& traits) const;
+
+    /**
+     * @brief Whether the plugin has both a CPU and a GPU row, seeded or measured. Without both, any price would be a
+     * guess, so placement neither counts its time nor lets it make a region of its own.
+     **/
+    bool isPriced(const GpuTaskTraits& traits) const;
 
     /**
      * @brief Transfer time of the given bytes, both ways, at the rates set as observeTransfer() corrected them.
@@ -224,7 +214,7 @@ public:
      * is downloaded when a task outside the region on the CPU consumes it, or when it is the root and rootOnDevice,
      * the frame's consumer taking its root in device memory, is false. A region that pipelinesTransfers() exposes
      * only the transfer time beyond its GPU time, unless it keeps the root on the device, which the strip planner
-     * never strips for overlap; any other exposes all of it. Identity members cost nothing.
+     * never strips for overlap; any other exposes all of it. Identity and unpriced members cost nothing.
      **/
     double regionGainMs(const FrameGraph& graph, const FrameGraph::Region& region, bool rootOnDevice) const;
 
@@ -275,7 +265,6 @@ private:
     double transferMsLocked(double uploadBytes, double downloadBytes) const;
     double estimateRegionGainMs(const FrameGraph& graph, const FrameGraph::Region& region, bool freeTransfers, bool rootOnDevice) const;
     double seedThreadMsPerMpxLocked(const CpuRow& row) const;
-    const CpuRow* findCpuRowOrDefaultLocked(const GpuTaskTraits& traits) const;
     bool gpuMsPerMpxLocked(const GpuTaskTraits& traits, double* msPerMpx) const;
     CpuRow* findCpuRowLocked(const GpuTaskTraits& traits);
     const CpuRow* findCpuRowLocked(const GpuTaskTraits& traits) const;

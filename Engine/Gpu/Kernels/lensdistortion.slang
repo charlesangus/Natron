@@ -73,7 +73,7 @@ ResampleSource lensDistortionSource(LensDistortion d)
     return src;
 }
 
-// The output in channel-bit order: (u, v, 0, converged) in STMap mode, whose alpha is a one-channel
+// The output in channel-bit order: (u, v, 0, valid) in STMap mode, whose alpha is a one-channel
 // pixel's, or the Source sampled where the model sends the pixel centre.
 float4 lensDistortionPixel(LensDistortion d, int2 p)
 {
@@ -92,7 +92,10 @@ float4 lensDistortionPixel(LensDistortion d, int2 p)
             return zero;
         const FF u = ffDiv(ffSub(ffMul(s.x, d.toSourceX), d.sourceX1), d.sourceWidth);
         const FF v = ffDiv(ffSub(s.y, d.sourceY1), d.sourceHeight);
-        return float4(ffToFloat(u), ffToFloat(v), 0.0, 1.0);
+        const FF zeroFF = ffMake(0.0, 0.0);
+        const FF oneFF = ffMake(1.0, 0.0);
+        const bool inside = !ffLess(u, zeroFF) && ffLess(u, oneFF) && !ffLess(v, zeroFF) && ffLess(v, oneFF);
+        return float4(ffToFloat(u), ffToFloat(v), 0.0, inside ? 1.0 : 0.0);
     }
     // Source pixel coordinates at the render scale, NaN where the model has no solution, which the
     // sampler reads as black.

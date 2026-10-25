@@ -303,6 +303,15 @@ placeGraph(FrameGraph& graph,
     if (inputs.readsRaw) {
         dropIncompleteRawRuns(graph, inputs.readsRaw, identity, cached, &candidate);
     }
+    std::vector<bool> priced(n, false);
+    for (int t : order) {
+        priced[t] = candidate[t] && (!inputs.isPriced || inputs.isPriced(graph.tasks[t]));
+    }
+    const auto anyPriced = [&](const std::vector<int>& members) {
+        return std::any_of(members.begin(), members.end(), [&](int m) {
+            return priced[m];
+        });
+    };
 
     // Labels are working region ids; a merge empties the regions it absorbs.
     std::vector<int> label(n, -1);
@@ -460,6 +469,13 @@ placeGraph(FrameGraph& graph,
     // have been one through the region. So does splitting a region into parts with no edge between them. Dropping a
     // single member does not, hence the check.
     for (int r : formed) {
+        if (!anyPriced(regionMembers[r])) {
+            for (int m : regionMembers[r]) {
+                label[m] = -1;
+            }
+            regionMembers[r].clear();
+            continue;
+        }
         if (!inputs.regionGain) {
             accept(r);
             continue;
@@ -470,6 +486,13 @@ placeGraph(FrameGraph& graph,
             const int q = queue.front();
             queue.erase(queue.begin());
             const std::vector<int> members = regionMembers[q];
+            if (!anyPriced(members)) {
+                for (int m : members) {
+                    label[m] = -1;
+                }
+                regionMembers[q].clear();
+                continue;
+            }
             if (inputs.regionGain(graph, describeRegion(graph, members, label, q, identity)) > 0.) {
                 accept(q);
                 continue;
@@ -763,14 +786,12 @@ taskReadsRaw(const FrameGraph::Task& task)
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-// Only a task the model has a GPU cost for is a candidate.
 void
 judgeWithCostModel(PlacementInputs* inputs,
                    GpuCostModel* model)
 {
-    const std::function<bool(const FrameGraph::Task&)> effectCanRender = inputs->canRenderOnGpu;
-    inputs->canRenderOnGpu = [model, effectCanRender](const FrameGraph::Task& task) -> bool {
-        return model->hasGpuCost(model->traitsOf(task)) && effectCanRender(task);
+    inputs->isPriced = [model](const FrameGraph::Task& task) -> bool {
+        return model->isPriced(model->traitsOf(task));
     };
 }
 

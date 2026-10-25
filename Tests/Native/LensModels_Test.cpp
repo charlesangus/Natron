@@ -29,6 +29,7 @@
 #include <cmath>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -426,4 +427,122 @@ TEST(LensModels, ParsePFBarrelErrors)
     EXPECT_EQ(error.compare(0, 15, "Not an integer:"), 0) << error;
     EXPECT_FALSE(parsePFBarrelFile("#PFBarrel 2011 v1\n1920\n1080\n1920\n1080\nMedium\n", &f, &error));
     EXPECT_EQ(error.compare(0, 10, "Bad model:"), 0) << error;
+}
+
+// A v2 file with one key whose fields default to a valid file; each case replaces one of them.
+namespace {
+struct PFBarrelFields {
+    std::string originalWidth = "1920";
+    std::string originalHeight = "1080";
+    std::string pixelAspect = "1.0";
+    std::string undistortedWidth = "1920";
+    std::string undistortedHeight = "1080";
+    std::string squeeze = "1.0";
+    std::string keyCount = "1";
+    std::string c3 = "0.01";
+    std::string centerX = "0.5";
+    std::string trailer;
+
+    std::string text() const
+    {
+        return "#PFBarrel 2011 v2\n" + originalWidth + "\n" + originalHeight + "\n" + pixelAspect + "\n" + undistortedWidth + "\n" + undistortedHeight + "\n" + "High Order\n" + squeeze + "\n" + keyCount + "\n" + "1\n" + c3 + "\n0.002\n" + centerX + "\n0.5\n" + trailer;
+    }
+};
+} // namespace
+
+TEST(LensModels, ParsePFBarrelAcceptsTrailingBlankAndCommentLines)
+{
+    PFBarrelFields fields;
+    PFBarrelFile f;
+    std::string error;
+    ASSERT_TRUE(parsePFBarrelFile(fields.text(), &f, &error)) << error;
+    fields.trailer = "\n  \t\n# end\r\n\n";
+    EXPECT_TRUE(parsePFBarrelFile(fields.text(), &f, &error)) << error;
+}
+
+TEST(LensModels, ParsePFBarrelRejectsNonFiniteNumbers)
+{
+    for (const char* bad : { "nan", "NAN", "inf", "-inf", "infinity", "1e999" }) {
+        PFBarrelFields c3;
+        c3.c3 = bad;
+        PFBarrelFields centerX;
+        centerX.centerX = bad;
+        PFBarrelFields squeeze;
+        squeeze.squeeze = bad;
+        PFBarrelFields aspect;
+        aspect.pixelAspect = bad;
+        for (const PFBarrelFields& fields : { c3, centerX, squeeze, aspect }) {
+            PFBarrelFile f;
+            std::string error;
+            EXPECT_FALSE(parsePFBarrelFile(fields.text(), &f, &error)) << bad;
+            EXPECT_EQ(error.compare(0, 13, "Not a number:"), 0) << bad << ": " << error;
+        }
+    }
+}
+
+TEST(LensModels, ParsePFBarrelRejectsNonPositiveDimensions)
+{
+    std::vector<PFBarrelFields> cases;
+    for (const char* bad : { "0", "-1920" }) {
+        PFBarrelFields fields;
+        fields.originalWidth = bad;
+        cases.push_back(fields);
+        fields = PFBarrelFields();
+        fields.originalHeight = bad;
+        cases.push_back(fields);
+        fields = PFBarrelFields();
+        fields.undistortedWidth = bad;
+        cases.push_back(fields);
+        fields = PFBarrelFields();
+        fields.undistortedHeight = bad;
+        cases.push_back(fields);
+    }
+    for (const char* bad : { "0", "-1.0" }) {
+        PFBarrelFields fields;
+        fields.pixelAspect = bad;
+        cases.push_back(fields);
+    }
+    for (const PFBarrelFields& fields : cases) {
+        PFBarrelFile f;
+        std::string error;
+        EXPECT_FALSE(parsePFBarrelFile(fields.text(), &f, &error)) << fields.text();
+        EXPECT_EQ(error, "Bad dimensions") << fields.text();
+    }
+}
+
+TEST(LensModels, ParsePFBarrelRejectsNonPositiveSqueeze)
+{
+    for (const char* bad : { "0", "0.0", "-1.5" }) {
+        PFBarrelFields fields;
+        fields.squeeze = bad;
+        PFBarrelFile f;
+        std::string error;
+        EXPECT_FALSE(parsePFBarrelFile(fields.text(), &f, &error)) << bad;
+        EXPECT_EQ(error, "Bad squeeze") << bad;
+    }
+}
+
+TEST(LensModels, ParsePFBarrelRejectsNoKeys)
+{
+    PFBarrelFile f;
+    std::string error;
+    const std::string text = "#PFBarrel 2011 v1\n1920\n1080\n1920\n1080\nLow Order\n1\n0\n";
+    EXPECT_FALSE(parsePFBarrelFile(text, &f, &error));
+    EXPECT_EQ(error, "Bad key count");
+    PFBarrelFields negative;
+    negative.keyCount = "-1";
+    EXPECT_FALSE(parsePFBarrelFile(negative.text(), &f, &error));
+    EXPECT_EQ(error, "Bad key count");
+}
+
+TEST(LensModels, ParsePFBarrelRejectsTrailingData)
+{
+    for (const char* trailer : { "2\n", "garbage\n", "\n# note\n0.5", " 7\n" }) {
+        PFBarrelFields fields;
+        fields.trailer = trailer;
+        PFBarrelFile f;
+        std::string error;
+        EXPECT_FALSE(parsePFBarrelFile(fields.text(), &f, &error)) << trailer;
+        EXPECT_EQ(error.compare(0, 36, "Unexpected data after the last key: "), 0) << trailer << ": " << error;
+    }
 }

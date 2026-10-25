@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <functional>
@@ -47,6 +48,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/LensDistortion.h"
@@ -277,6 +279,41 @@ protected:
             EXPECT_TRUE(setKnobValues(node, kLensDistortionParamK1, { strongNukeParams().k1 }));
             EXPECT_TRUE(setKnobValues(node, kLensDistortionParamK2, { strongNukeParams().k2 }));
         }
+
+        return node;
+    }
+
+    // A LensDistortion on `input` with the 3DE fisheye of fisheyeCamera() and fisheyeParams(); an empty `filter` keeps
+    // the default one.
+    NodePtr makeFisheye(const NodePtr& input,
+                        const std::string& direction,
+                        const std::string& filter)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_LENSDISTORTION), PLUGIN_MAJOR_NATRON_LENSDISTORTION);
+        EXPECT_TRUE(isNative(node));
+        if (!node) {
+            return node;
+        }
+        if (input) {
+            connectNodes(input, node, kLensDistortionInputSource, true);
+        }
+        EXPECT_TRUE(setKnobValue(node, kLensDistortionParamModel, std::string(kLensDistortionModel3DEFisheye8)));
+        EXPECT_TRUE(setKnobValue(node, kLensDistortionParamDirection, direction));
+        if (!filter.empty()) {
+            EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, filter));
+        }
+        const LensModels::Camera3DE camera = fisheyeCamera();
+        const LensModels::Fisheye8Params params = fisheyeParams();
+        EXPECT_TRUE(setKnobValues(node, kLensDistortionParam3DEFocalLength, { camera.fl_cm }));
+        EXPECT_TRUE(setKnobValues(node, kLensDistortionParam3DEFocusDistance, { camera.fd_cm }));
+        EXPECT_TRUE(setKnobValues(node, kLensDistortionParam3DEFilmbackWidth, { camera.w_fb_cm }));
+        EXPECT_TRUE(setKnobValues(node, kLensDistortionParam3DEFilmbackHeight, { camera.h_fb_cm }));
+        EXPECT_TRUE(setKnobValues(node, kLensDistortionParam3DELensCenterOffsetX, { camera.x_lco_cm }));
+        EXPECT_TRUE(setKnobValues(node, kLensDistortionParam3DELensCenterOffsetY, { camera.y_lco_cm }));
+        EXPECT_TRUE(setKnobValues(node, kLensDistortionParam3DEDistortionDegree2, { params.c2 }));
+        EXPECT_TRUE(setKnobValues(node, kLensDistortionParam3DEQuarticDistortionDegree4, { params.c4 }));
+        EXPECT_TRUE(setKnobValues(node, kLensDistortionParam3DEDegree6, { params.c6 }));
+        EXPECT_TRUE(setKnobValues(node, kLensDistortionParam3DEDegree8, { params.c8 }));
 
         return node;
     }
@@ -514,65 +551,233 @@ TEST_F(NativeLensDistortionTest, LensFrameIsTheFormatNotTheInputRegion)
     EXPECT_GT(checked, (std::size_t)(window.width() * window.height() / 2));
 }
 
-// The STMap output, fed to the native STMap, reproduces the Image output.
-TEST_F(NativeLensDistortionTest, STMapOutputMatchesImageOutput)
+// With enough overscan and Crop To Format off, Distort keeps all of the Source; Undistort on the same reference format,
+// with no overscan, crops back to that format and restores every pixel of it. Black Outside is off on both, so that the
+// filter footprints at the Source edges extend the edge pixels instead of reading black.
+TEST_F(NativeLensDistortionTest, OverscanRoundTripRestoresTheWholeFormat)
 {
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    NodePtr image = makeNuke(source, kLensDistortionDirectionUndistort, "impulse");
-    NodePtr map = makeNuke(source, kLensDistortionDirectionUndistort, "impulse");
-    ASSERT_TRUE(image && map);
-    ASSERT_TRUE(setKnobValue(map, kLensDistortionParamOutputMode, std::string(kLensDistortionOutputSTMap)));
-    NodePtr stmap = createNode(QString::fromUtf8(PLUGINID_NATRON_STMAP), PLUGIN_MAJOR_NATRON_STMAP);
-    ASSERT_TRUE(isNative(stmap));
-    connectNodes(map, stmap, kSTMapInputUV, true);
-    connectNodes(source, stmap, kSTMapInputSource, true);
-    ASSERT_TRUE(setKnobValue(stmap, kResamplerParamFilterType, std::string("impulse")));
+    NodePtr distort = makeNuke(source, kLensDistortionDirectionDistort, "cubic");
+    ASSERT_TRUE(bool(distort));
+    NodePtr undistort = makeNuke(distort, kLensDistortionDirectionUndistort, "cubic");
+    ASSERT_TRUE(bool(undistort));
+    const double overscan = 50.;
+    ASSERT_TRUE(setKnobValues(distort, kLensDistortionParamOverscan, { overscan }));
+    ASSERT_TRUE(setKnobValues(distort, kLensDistortionParamCropToFormat, { 0. }));
+    for (const NodePtr& node : { distort, undistort }) {
+        ASSERT_TRUE(setKnobValue(node, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
+        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+    }
 
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    ASSERT_EQ(RectI(0, 0, kParitySourceWidth, kParitySourceHeight), window);
+    const int padX = (int)std::floor(kParitySourceWidth * overscan / 200. + 0.5);
+    const int padY = (int)std::floor(kParitySourceHeight * overscan / 200. + 0.5);
+    const RectI overscanned(-padX, -padY, kParitySourceWidth + padX, kParitySourceHeight + padY);
+    EXPECT_EQ(overscanned, distort->getEffectInstance()->getOutputFormat());
+    EXPECT_EQ(window, undistort->getEffectInstance()->getOutputFormat());
+
+    // Where the Source edges land in the Distort output: inside the overscan, clear of a cubic footprint.
     const LensModels::Model model = LensModels::makeNuke(kFrame, nukeParams());
     ASSERT_TRUE(model.valid);
-    const RectI window = paritySourceWindow(source, kTime, 0);
-    RenderedPlane fromImage;
-    RenderedPlane fromMap;
-    RenderedPlane uv;
-    ASSERT_TRUE(renderRGBA(image, 0, window, &fromImage));
-    ASSERT_TRUE(renderRGBA(stmap, 0, window, &fromMap));
-    ASSERT_TRUE(renderRGBA(map, 0, window, &uv));
+    for (int i = 0; i <= 64; ++i) {
+        const double t = i / 64.;
+        const double edge[4][2] = {
+            { t * kParitySourceWidth, 0. },
+            { t * kParitySourceWidth, (double)kParitySourceHeight },
+            { 0., t * kParitySourceHeight },
+            { (double)kParitySourceWidth, t * kParitySourceHeight },
+        };
+        for (const auto& p : edge) {
+            LensModels::Sample s;
+            ASSERT_TRUE(model.map(LensModels::eDirectionDistort, p[0], p[1], &s)) << p[0] << ", " << p[1];
+            EXPECT_GT(s.x, overscanned.x1 + 3.);
+            EXPECT_LT(s.x, overscanned.x2 - 3.);
+            EXPECT_GT(s.y, overscanned.y1 + 3.);
+            EXPECT_LT(s.y, overscanned.y2 - 3.);
+        }
+    }
 
-    // Where the model reads inside the Source, both outputs take the same pixel. Elsewhere Image
-    // is black and STMap clamps to the Source edge, which is STMap's own behaviour.
+    RenderedPlane before;
+    RenderedPlane after;
+    ASSERT_TRUE(renderRGBA(source, 0, window, &before));
+    ASSERT_TRUE(renderRGBA(undistort, 0, window, &after));
     std::size_t checked = 0;
-    std::size_t wrong = countMismatches(fromMap, window, 4, [&](int x, int y, float* want) {
-        LensModels::Sample s;
-        int px = 0;
-        int py = 0;
-        if (!model.map(LensModels::eDirectionDistort, x + 0.5, y + 0.5, &s) || !impulsePixel(s.x, s.y, window, &px, &py)) {
-            return false;
-        }
-        std::memcpy(want, pixelAt(fromImage, x, y), 4 * sizeof(float));
+    // R, G and B are smooth; alpha holds hard bands that two cubic passes do not restore.
+    const std::size_t wrong = countMismatches(after, window, 3, [&](int x, int y, float* want) {
+        std::memcpy(want, pixelAt(before, x, y), 4 * sizeof(float));
 
-        return true; }, ParityTolerance::exact(), "Nuke k1 0.1, undistort, STMap through STMap", &checked);
+        return true; }, ParityTolerance::make(2e-2, 0.), "Nuke k1 0.1, overscan distort then undistort, cubic", &checked);
     EXPECT_EQ(0u, wrong);
-    EXPECT_GT(checked, (std::size_t)(window.width() * window.height() / 3));
-
-    // The map itself: u, v normalized to the Source format, blue 0, alpha whether it converged.
-    wrong = countMismatches(uv, window, 4, [&](int x, int y, float* want) {
-        LensModels::Sample s;
-        if (!model.map(LensModels::eDirectionDistort, x + 0.5, y + 0.5, &s)) {
-            std::memset(want, 0, 4 * sizeof(float));
-        } else {
-            want[0] = (float)(s.x / kParitySourceWidth);
-            want[1] = (float)(s.y / kParitySourceHeight);
-            want[2] = 0.f;
-            want[3] = 1.f;
-        }
-
-        return true; }, ParityTolerance::make(1e-6, 0.), "Nuke k1 0.1, undistort, STMap values", &checked);
-    EXPECT_EQ(0u, wrong);
+    EXPECT_EQ((std::size_t)(window.width() * window.height()), checked);
 }
 
-// Where a wide fisheye has no solution, Image is black and STMap's alpha is 0, never NaN.
+namespace {
+
+// Where the STMap output says a pixel reads the Source: inside its format, in the double arithmetic the node uses.
+bool
+mapsInsideSource(const LensModels::Sample& s)
+{
+    const double u = s.x / kParitySourceWidth;
+    const double v = s.y / kParitySourceHeight;
+
+    return (u >= 0.) && (u < 1.) && (v >= 0.) && (v < 1.);
+}
+
+// The pixels an impulse sample at (sx, sy) of `source` may take: the one it falls in, or, within 1e-3 of a pixel edge
+// where float rounding may pick either side, a neighbour. Black for a candidate outside `bounds`.
+std::vector<std::vector<float>>
+impulseCandidates(const RenderedPlane& source,
+                  const RectI& bounds,
+                  double sx,
+                  double sy)
+{
+    std::vector<std::vector<float>> candidates;
+    for (int px : { (int)std::floor(sx - 1e-3), (int)std::floor(sx + 1e-3) }) {
+        for (int py : { (int)std::floor(sy - 1e-3), (int)std::floor(sy + 1e-3) }) {
+            if ((bounds.x1 <= px) && (px < bounds.x2) && (bounds.y1 <= py) && (py < bounds.y2)) {
+                const float* p = pixelAt(source, px, py);
+                candidates.push_back(std::vector<float>(p, p + 4));
+            } else {
+                candidates.push_back(std::vector<float>(4, 0.f));
+            }
+        }
+    }
+
+    return candidates;
+}
+
+bool
+isOneOf(const float* got,
+        const std::vector<std::vector<float>>& candidates)
+{
+    for (const std::vector<float>& c : candidates) {
+        if (std::equal(c.begin(), c.end(), got)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+
+// The STMap output, fed to the native STMap, reproduces the Image output over the whole frame: where the model reads
+// inside the Source, where it reads outside it, and where it has no solution.
+TEST_F(NativeLensDistortionTest, STMapOutputMatchesImageOutput)
+{
+    struct Case {
+        std::string what;
+        std::function<NodePtr(const NodePtr&)> make;
+        LensModels::Model model;
+        // The direction the output reads the Source in: the opposite of the node's.
+        LensModels::Direction reads;
+    };
+    const std::vector<Case> cases = {
+        { "Nuke k1 0.1, undistort",
+          [this](const NodePtr& source) { return makeNuke(source, kLensDistortionDirectionUndistort, "impulse"); },
+          LensModels::makeNuke(kFrame, nukeParams()), LensModels::eDirectionDistort },
+        { "Nuke k1 0.2 k2 0.05, undistort",
+          [this](const NodePtr& source) { return makeStrongNuke(source, kLensDistortionDirectionUndistort, "impulse"); },
+          LensModels::makeNuke(kFrame, strongNukeParams()), LensModels::eDirectionDistort },
+        { "3DE fisheye, distort",
+          [this](const NodePtr& source) { return makeFisheye(source, kLensDistortionDirectionDistort, "impulse"); },
+          LensModels::make3DEFisheye8(kFrame, fisheyeCamera(), fisheyeParams()), LensModels::eDirectionUndistort },
+    };
+
+    std::size_t allFailed = 0;
+    std::size_t allOutside = 0;
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.what);
+        ASSERT_TRUE(c.model.valid);
+        resetProject();
+        NodePtr source = makeSource();
+        ASSERT_TRUE(bool(source));
+        NodePtr image = c.make(source);
+        NodePtr map = c.make(source);
+        ASSERT_TRUE(image && map);
+        ASSERT_TRUE(setKnobValue(map, kLensDistortionParamOutputMode, std::string(kLensDistortionOutputSTMap)));
+        NodePtr stmap = createNode(QString::fromUtf8(PLUGINID_NATRON_STMAP), PLUGIN_MAJOR_NATRON_STMAP);
+        ASSERT_TRUE(isNative(stmap));
+        connectNodes(map, stmap, kSTMapInputUV, true);
+        connectNodes(source, stmap, kSTMapInputSource, true);
+        ASSERT_TRUE(setKnobValue(stmap, kResamplerParamFilterType, std::string("impulse")));
+
+        const RectI window = paritySourceWindow(source, kTime, 0);
+        RenderedPlane before;
+        RenderedPlane fromImage;
+        RenderedPlane fromMap;
+        RenderedPlane uv;
+        ASSERT_TRUE(renderRGBA(source, 0, window, &before));
+        ASSERT_TRUE(renderRGBA(image, 0, window, &fromImage));
+        ASSERT_TRUE(renderRGBA(stmap, 0, window, &fromMap));
+        ASSERT_TRUE(renderRGBA(map, 0, window, &uv));
+
+        // Every pixel: both outputs take the Source pixel the model reads, or black where it reads outside the Source
+        // or has no solution. Only within 1e-3 of a pixel edge may either take a neighbour.
+        std::size_t failed = 0;
+        std::size_t outside = 0;
+        std::size_t inside = 0;
+        std::size_t wrong = 0;
+        std::size_t wrongMap = 0;
+        for (int y = window.y1; y < window.y2; ++y) {
+            for (int x = window.x1; x < window.x2; ++x) {
+                const float* gotImage = pixelAt(fromImage, x, y);
+                const float* gotMap = pixelAt(fromMap, x, y);
+                const float* gotUV = pixelAt(uv, x, y);
+                LensModels::Sample s;
+                float wantUV[4] = { 0.f, 0.f, 0.f, 0.f };
+                std::vector<std::vector<float>> candidates(1, std::vector<float>(4, 0.f));
+                if (!c.model.map(c.reads, x + 0.5, y + 0.5, &s)) {
+                    ++failed;
+                } else {
+                    const bool in = mapsInsideSource(s);
+                    ++(in ? inside : outside);
+                    candidates = impulseCandidates(before, window, s.x, s.y);
+                    wantUV[0] = (float)(s.x / kParitySourceWidth);
+                    wantUV[1] = (float)(s.y / kParitySourceHeight);
+                    wantUV[3] = in ? 1.f : 0.f;
+                }
+                const bool unique = (candidates.size() == 1) || std::all_of(candidates.begin(), candidates.end(), [&](const std::vector<float>& other) {
+                                        return other == candidates.front();
+                                    });
+                const bool ok = isOneOf(gotImage, candidates) && isOneOf(gotMap, candidates) && (!unique || std::equal(gotImage, gotImage + 4, gotMap));
+                if (!ok) {
+                    if (wrong == 0) {
+                        ADD_FAILURE() << "first mismatch at (" << x << ", " << y << "): Image (" << gotImage[0] << ", " << gotImage[1] << ", " << gotImage[2] << ", " << gotImage[3]
+                                      << ") STMap (" << gotMap[0] << ", " << gotMap[1] << ", " << gotMap[2] << ", " << gotMap[3] << ")";
+                    }
+                    ++wrong;
+                }
+                // The map itself: u, v normalized to the Source format, blue 0, alpha whether it reads inside the
+                // Source; all 0 where the model has no solution.
+                bool uvOk = (gotUV[2] == 0.f) && (gotUV[3] == wantUV[3]);
+                for (int k = 0; k < 2; ++k) {
+                    uvOk = uvOk && ParityTolerance::make(1e-6, 0.).accepts(wantUV[k], gotUV[k]);
+                }
+                if (!uvOk) {
+                    if (wrongMap == 0) {
+                        ADD_FAILURE() << "first map mismatch at (" << x << ", " << y << "): (" << gotUV[0] << ", " << gotUV[1] << ", " << gotUV[2] << ", " << gotUV[3]
+                                      << ") expected (" << wantUV[0] << ", " << wantUV[1] << ", " << wantUV[2] << ", " << wantUV[3] << ")";
+                    }
+                    ++wrongMap;
+                }
+            }
+        }
+        EXPECT_EQ(0u, wrong);
+        EXPECT_EQ(0u, wrongMap);
+        EXPECT_GT(inside, (std::size_t)(window.width() * window.height() / 3));
+        allFailed += failed;
+        allOutside += outside;
+    }
+    // The cases cover both kinds of pixel the map marks invalid.
+    EXPECT_GT(allFailed, 0u);
+    EXPECT_GT(allOutside, 0u);
+}
+
+// Where a wide fisheye has no solution, Image is black and the STMap output is all 0, never NaN.
 TEST_F(NativeLensDistortionTest, NonConvergentFisheyeEdgeIsBlack)
 {
     const LensModels::Model model = LensModels::make3DEFisheye8(kFrame, fisheyeCamera(), fisheyeParams());
@@ -586,23 +791,8 @@ TEST_F(NativeLensDistortionTest, NonConvergentFisheyeEdgeIsBlack)
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_LENSDISTORTION), PLUGIN_MAJOR_NATRON_LENSDISTORTION);
-    ASSERT_TRUE(isNative(node));
-    connectNodes(source, node, kLensDistortionInputSource, true);
-    ASSERT_TRUE(setKnobValue(node, kLensDistortionParamModel, std::string(kLensDistortionModel3DEFisheye8)));
-    ASSERT_TRUE(setKnobValue(node, kLensDistortionParamDirection, std::string(kLensDistortionDirectionDistort)));
-    const LensModels::Camera3DE camera = fisheyeCamera();
-    const LensModels::Fisheye8Params params = fisheyeParams();
-    ASSERT_TRUE(setKnobValues(node, kLensDistortionParam3DEFocalLength, { camera.fl_cm }));
-    ASSERT_TRUE(setKnobValues(node, kLensDistortionParam3DEFocusDistance, { camera.fd_cm }));
-    ASSERT_TRUE(setKnobValues(node, kLensDistortionParam3DEFilmbackWidth, { camera.w_fb_cm }));
-    ASSERT_TRUE(setKnobValues(node, kLensDistortionParam3DEFilmbackHeight, { camera.h_fb_cm }));
-    ASSERT_TRUE(setKnobValues(node, kLensDistortionParam3DELensCenterOffsetX, { camera.x_lco_cm }));
-    ASSERT_TRUE(setKnobValues(node, kLensDistortionParam3DELensCenterOffsetY, { camera.y_lco_cm }));
-    ASSERT_TRUE(setKnobValues(node, kLensDistortionParam3DEDistortionDegree2, { params.c2 }));
-    ASSERT_TRUE(setKnobValues(node, kLensDistortionParam3DEQuarticDistortionDegree4, { params.c4 }));
-    ASSERT_TRUE(setKnobValues(node, kLensDistortionParam3DEDegree6, { params.c6 }));
-    ASSERT_TRUE(setKnobValues(node, kLensDistortionParam3DEDegree8, { params.c8 }));
+    NodePtr node = makeFisheye(source, kLensDistortionDirectionDistort, std::string());
+    ASSERT_TRUE(bool(node));
 
     const RectI window = paritySourceWindow(source, kTime, 0);
     for (int mode = 0; mode < 2; ++mode) {
@@ -622,7 +812,7 @@ TEST_F(NativeLensDistortionTest, NonConvergentFisheyeEdgeIsBlack)
                 if (model.map(LensModels::eDirectionUndistort, x + 0.5, y + 0.5, &s)) {
                     ++converged;
                     if (stmap) {
-                        EXPECT_EQ(1.f, got[3]) << "STMap at (" << x << ", " << y << ")";
+                        EXPECT_EQ(mapsInsideSource(s) ? 1.f : 0.f, got[3]) << "STMap at (" << x << ", " << y << ")";
                     }
                     continue;
                 }

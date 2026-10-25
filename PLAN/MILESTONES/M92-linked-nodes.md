@@ -63,12 +63,12 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
 
 ## Phase 92.2: Node graph
 
-- [ ] M92.P2.T1 — Stop right-click Duplicate and Paste from creating clones
+- [x] M92.P2.T1 — Stop right-click Duplicate and Paste from creating clones
   - files: `Gui/NodeGraph35.cpp`
   - approach: In `NodeGraph::showMenu`, the Duplicate (`:500-502`) and Paste (`:508-510`) branches both call `cloneSelectedNodes(scenePos)`. Point them at the duplicate and paste handlers that the keyboard shortcuts already use.
   - verify: In the GUI, right-click Duplicate and right-click Paste produce independent nodes: editing the copy leaves the original unchanged, and the copy is not drawn as linked.
   - size: S
-- [ ] M92.P2.T2 — Replace the Clone/Declone actions with Create Linked Node / Unlink Node
+- [x] M92.P2.T2 — Replace the Clone/Declone actions with Create Linked Node / Unlink Node
   - files: `Gui/ActionShortcuts.h`, `Gui/GuiApplicationManager10.cpp`, `Gui/NodeGraph25.cpp`, `Gui/NodeGraph35.cpp`, `Gui/NodeGraph40.cpp`, `Gui/NodeGraphPrivate10.cpp`, `Gui/NodeGraphUndoRedo.h`, `Gui/NodeGraphUndoRedo.cpp`
   - approach:
     - Rename the shortcut IDs and labels (`kShortcutIDActionGraphClone`/`Declone`, `ActionShortcuts.h:455-459`) to "Create Linked Node" / "Unlink Node", keeping Alt+K and Alt+Shift+K.
@@ -82,7 +82,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
     - Ctrl+Z and Ctrl+Shift+Z undo and redo both actions;
     - `grep -rn -i 'declone\|clone node' Gui/` finds nothing.
   - size: M
-- [ ] M92.P2.T3 — Draw Linked Nodes and knob links in the graph
+- [x] M92.P2.T3 — Draw Linked Nodes and knob links in the graph
   - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/DockablePanel.cpp`
   - approach:
     - Remove the clone visuals: `_clonedColor` / `isDrawnAsClone()` (`NodeGui.cpp:429,1908,1916`), and the clone exception that hides the user-colour border (`:1948`). That exception was accepted as a stopgap in M24 - Node Graph Category Colour's UAT note 9. A Linked Node keeps its category body and its user border.
@@ -98,7 +98,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
     - two ordinary nodes with one Paste-Linked knob show the knob-link line and no glyph.
   - size: M
 
-- [ ] M92.P2.T4 — Separate link and expression lines, with colour and visibility preferences
+- [x] M92.P2.T4 — Separate link and expression lines, with colour and visibility preferences
   - files: `Engine/Node.h`, `Engine/Node.cpp`, `Engine/Settings.h`, `Engine/Settings.cpp`, `Gui/NodeGui.cpp`
   - approach:
     - **Tell the lines apart.** Today `Node::KnobLink` (`Node.h:1193`) has no kind: `nodeLinks` mixes expression dependencies (added through `onKnobSlaved(..., true)` at `Knob.cpp:3016,4312`) with slave links. All of them are drawn in one hard-coded green (`NodeGui.cpp:2889-2892`). Add a kind to each entry, either **expression** or **link** (a P1.T1 link group), and build the graph's knob-link lines from both kinds. Internal `slaveTo` links (Roto, Tracker and so on) draw no lines.
@@ -115,7 +115,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
     - Changing a colour preference repaints immediately.
     - An expression added or removed through the GUI adds or removes its line.
   - size: M
-- [ ] M92.P2.T5 — Hotkey to show or hide all link lines
+- [x] M92.P2.T5 — Hotkey to show or hide all link lines
   - files: `Gui/ActionShortcuts.h`, `Gui/GuiApplicationManager10.cpp`, `Gui/NodeGraph25.cpp`, `Gui/NodeGraph35.cpp`, `Gui/NodeGui.cpp`
   - approach: The existing "Show Expressions Links" shortcut (`kShortcutIDActionGraphShowExpressions`, Shift+E, `ActionShortcuts.h:419-420`, `GuiApplicationManager10.cpp:928`) toggles `NodeGraph::toggleKnobLinksVisible` (`NodeGraph35.cpp:292`), which affects the current session only. Rename it to "Show Link Lines", keeping Shift+E and the right-click menu's checkable entry (`NodeGraph35.cpp:452-456`). Make it a master switch over both kinds: when off, no expression or link lines are drawn; when on, each kind follows its P2.T4 "Show … lines" preference. It stays a per-session toggle, defaulting to on, and does not change the preferences.
   - verify: In the GUI, with both preferences on, Shift+E hides every expression line and link line, including the dashed lines between Linked Nodes, and pressing it again restores them. With "Show expression lines" off, Shift+E toggles only the link lines. The right-click menu entry's check state follows the hotkey. The shortcut appears as "Show Link Lines" in the shortcut editor.
@@ -123,7 +123,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
 
 ## Phase 92.3: Knob links in the GUI
 
-- [ ] M92.P3.T1 — Per-knob link button with unlink, re-link and warning
+- [x] M92.P3.T1 — Per-knob link button with unlink, re-link and warning
   - files: `Gui/KnobGui.h`, `Gui/KnobGui.cpp`, `Gui/KnobGui10.cpp`, `Gui/KnobGui20.cpp`, `Gui/KnobUndoCommand.h`/`.cpp`
   - approach:
     - **The button.** Add a small button at the end of each knob row whose knob is in a non-permanent group, or has a group it can rejoin. It is a blue circle, **filled when linked and empty when unlinked**, with a tooltip naming the linked node(s) and knob(s). This covers Linked Node links and Paste Link links alike.
@@ -140,7 +140,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
     - knobs on an ordinary node show no circle.
     Also take an Xvfb screenshot of a panel with filled and empty circles.
   - size: L
-- [ ] M92.P3.T2 — Make Copy Link → Paste Link and drag-to-link create two-way links
+- [x] M92.P3.T2 — Make Copy Link → Paste Link and drag-to-link create two-way links
   - files: `Gui/KnobGui.cpp`, `Gui/KnobUndoCommand.cpp`, `Gui/KnobUndoCommand.h`, `Gui/KnobWidgetDnD.cpp`
   - approach: Paste Link (`KnobGui.cpp:555,613`; `PasteUndoCommand` with `eKnobClipBoardTypeCopyLink`, `KnobUndoCommand.cpp:207-222`) and drag-and-drop linking (`KnobWidgetDnD.cpp:450`) call P1.T1's `linkTo` instead of `slaveTo`. This keeps today's dimension mapping: all dimensions, or one dimension onto another. The link starts from the source knob's value, so the knob that was pasted onto takes the copied knob's state. Undo unlinks and restores the target's previous state. The pasted knob then shows P3.T1's circle button.
   - verify: In the GUI:
@@ -150,7 +150,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
     - drag-to-link behaves the same as Paste Link;
     - undo restores the target's old value and the link is gone.
   - size: M
-- [ ] M92.P3.T3 — Make group aliases two-way and permanent
+- [x] M92.P3.T3 — Make group aliases two-way and permanent
   - files: `Engine/Knob.cpp`, `Engine/Knob.h`, `Gui/KnobGui.cpp`, `Gui/KnobGui10.cpp`, `Engine/PyParameter.cpp`
   - approach:
     - Re-implement `setKnobAsAliasOfThis` / `getAliasMaster` on P1.T1's `linkAsAlias`. "Create alias on group" (`KnobGui10.cpp:46`, menu at `KnobGui.cpp:797`) and Python `Param.setAsAlias` (`PyParameter.cpp:441`) then give a two-way, permanent link: editing the Group's knob or the inner knob changes both, and neither is greyed out.
@@ -162,12 +162,12 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
     - deleting the Group's user knob leaves the inner knob as an ordinary knob with its value.
     `Tests/KnobLinkGroup_Test.cpp` also gets an alias case: two-way propagation, and unlink refused.
   - size: M
-- [ ] M92.P3.T4 — Delete the unused Link to... dialog
+- [x] M92.P3.T4 — Delete the unused Link to... dialog
   - files: `Gui/LinkToKnobDialog.h`, `Gui/LinkToKnobDialog.cpp`, `Gui/KnobGui20.cpp`, `Gui/KnobGui.h`, the Gui CMake source list
   - approach: Delete `LinkToKnobDialog` and the expression-based `KnobGui::linkTo` / `onLinkToActionTriggered` (`KnobGui20.cpp:283-370`), which no menu action reaches.
   - verify: `grep -rn 'LinkToKnobDialog\|onLinkToActionTriggered' Gui/` finds nothing, and the build is clean.
   - size: S
-- [ ] M92.P3.T5 — Let knobs of different dimension link and copy/paste, per component
+- [x] M92.P3.T5 — Let knobs of different dimension link and copy/paste, per component
   - files: `Gui/KnobGui20.cpp` (the paste/link dimension check at `:245-251`), `Engine/Knob.cpp`, `Tests/KnobLinkGroup_Test.cpp`
   - approach: reported by the user (2026-10-18): linking a float to a size or colour knob is refused, and so is copy/pasting between knobs of different dimension ("must have the same dimension"). Remove both refusals.
     - Link: a folded multi-component knob presents as one value, so a single-value source links to it as one. An unfolded knob links the single source to each component, as P1.T1's group members allow members from different dimensions.

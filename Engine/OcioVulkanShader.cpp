@@ -28,9 +28,13 @@
 #ifdef NATRON_HAVE_GPU
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <exception>
+
+#include "Engine/ContentHasher.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -53,6 +57,56 @@ withoutVersionLines(const std::string& text)
     }
 
     return out;
+}
+
+// The type name of the first uniform block the text declares: the identifier after "uniform"
+// that a '{' follows, which a sampler declaration never has.
+std::string
+uniformBlockNameIn(const std::string& text)
+{
+    std::size_t pos = 0;
+    while ((pos = text.find("uniform", pos)) != std::string::npos) {
+        const bool wordStart = (pos == 0) || !(std::isalnum((unsigned char)text[pos - 1]) || (text[pos - 1] == '_'));
+        std::size_t at = pos + 7;
+        pos = at;
+        if (!wordStart || (at >= text.size()) || !std::isspace((unsigned char)text[at])) {
+            continue;
+        }
+        while ((at < text.size()) && std::isspace((unsigned char)text[at])) {
+            ++at;
+        }
+        const std::size_t nameStart = at;
+        while ((at < text.size()) && (std::isalnum((unsigned char)text[at]) || (text[at] == '_'))) {
+            ++at;
+        }
+        const std::string name = text.substr(nameStart, at - nameStart);
+        while ((at < text.size()) && std::isspace((unsigned char)text[at])) {
+            ++at;
+        }
+        if (!name.empty() && (at < text.size()) && (text[at] == '{')) {
+            return name;
+        }
+    }
+
+    return std::string();
+}
+
+std::string
+textureKey(const gpu::GpuTextureDesc& desc,
+           const std::vector<float>& texels)
+{
+    ContentHasher hasher;
+    hasher.appendU64(desc.dimensions);
+    hasher.appendU64(desc.width);
+    hasher.appendU64(desc.height);
+    hasher.appendU64(desc.depth);
+    hasher.appendU64(desc.channels);
+    hasher.appendU64((desc.filter == gpu::GpuTextureFilter::Linear) ? 1 : 0);
+    hasher.appendBytes(texels.data(), texels.size() * sizeof(float));
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)hasher.finalize());
+
+    return std::string("ocio-lut:") + hex;
 }
 
 gpu::GpuTextureFilter
@@ -83,6 +137,9 @@ OcioVulkanShader::build(const OCIO::ConstGPUProcessorRcPtr& processor,
         shader._cacheID = desc->getCacheID();
         shader._glsl = withoutVersionLines(desc->getShaderText());
         shader._uniformBytes = desc->getUniformBufferSize();
+        if (shader._uniformBytes > 0) {
+            shader._uniformBlockName = uniformBlockNameIn(shader._glsl);
+        }
 
         for (unsigned i = 0; i < desc->getNumTextures(); ++i) {
             const char* name = nullptr;
@@ -103,7 +160,8 @@ OcioVulkanShader::build(const OCIO::ConstGPUProcessorRcPtr& processor,
             t.desc.height = height;
             t.desc.channels = (channel == OCIO::GpuShaderDesc::TEXTURE_RED_CHANNEL) ? 1 : 3;
             t.desc.filter = filterFor(interpolation);
-            t.texels.assign(values, values + std::size_t(width) * height * t.desc.channels);
+            t.texels = std::make_shared<const std::vector<float>>(values, values + std::size_t(width) * height * t.desc.channels);
+            t.cacheKey = textureKey(t.desc, *t.texels);
             shader._textures.push_back(std::move(t));
         }
         for (unsigned i = 0; i < desc->getNum3DTextures(); ++i) {
@@ -121,7 +179,8 @@ OcioVulkanShader::build(const OCIO::ConstGPUProcessorRcPtr& processor,
             t.desc.width = t.desc.height = t.desc.depth = edge;
             t.desc.channels = 3;
             t.desc.filter = filterFor(interpolation);
-            t.texels.assign(values, values + std::size_t(edge) * edge * edge * 3);
+            t.texels = std::make_shared<const std::vector<float>>(values, values + std::size_t(edge) * edge * edge * 3);
+            t.cacheKey = textureKey(t.desc, *t.texels);
             shader._textures.push_back(std::move(t));
         }
         shader._desc = desc;
@@ -211,6 +270,7 @@ OcioVulkanShader::dynamicProperty(OCIO::DynamicPropertyType type) const
 
 OcioVulkanShader::Resources::Resources(gpu::GpuRuntime& runtime)
     : _runtime(runtime)
+    , _createdBefore(runtime.textures().created())
 {
 }
 
@@ -218,27 +278,27 @@ gpu::GpuStatus
 OcioVulkanShader::Resources::acquire(const OcioVulkanShader& shader,
                                      std::shared_ptr<const TextureList>& out)
 {
-    const auto it = _entries.find(shader.cacheID());
-    if (it != _entries.end()) {
-        out = it->second;
-
-        return gpu::GpuStatus();
-    }
-
     auto list = std::make_shared<TextureList>();
     for (const OcioVulkanShader::Texture& t : shader.textures()) {
-        std::unique_ptr<gpu::GpuTexture> texture;
-        const gpu::GpuStatus s = gpu::GpuTexture::create(_runtime.device(), t.desc, t.texels, texture);
+        if (!t.texels) {
+            return gpu::GpuStatus { VK_ERROR_INITIALIZATION_FAILED, "OCIO texture without texels" };
+        }
+        std::shared_ptr<const gpu::GpuTexture> texture;
+        const gpu::GpuStatus s = _runtime.textures().acquire(t.cacheKey, t.desc, *t.texels, texture);
         if (!s) {
             return s;
         }
         list->push_back(std::move(texture));
-        ++_texturesCreated;
     }
     out = list;
-    _entries.emplace(shader.cacheID(), std::move(list));
 
     return gpu::GpuStatus();
+}
+
+std::size_t
+OcioVulkanShader::Resources::texturesCreated() const
+{
+    return _runtime.textures().created() - _createdBefore;
 }
 
 void

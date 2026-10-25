@@ -280,9 +280,18 @@ OCIODisplayOp::row(const Params& params,
 }
 
 GpuOpRef
-OCIODisplayOp::gpu(const Params& /*params*/) const
+OCIODisplayOp::gpu(const Params& params) const
 {
-    return GpuOpRef::none();
+    OcioDisplayAdjust adjust;
+
+    adjust.gain = params.gain;
+    adjust.gamma = params.gamma;
+    adjust.channel = (int)params.channel;
+    for (int c = 0; c < 3; ++c) {
+        adjust.luma[c] = params.luma[c];
+    }
+
+    return ocio.gpu(params.ocio, &adjust);
 }
 
 OCIODisplay::OCIODisplay(NodePtr node)

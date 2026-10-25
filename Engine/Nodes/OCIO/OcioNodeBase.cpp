@@ -25,7 +25,12 @@
 
 #include "OcioNodeBase.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <exception>
+#include <list>
+#include <mutex>
 
 #include "Global/FloatingPointExceptions.h"
 
@@ -37,7 +42,238 @@
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/OcioVulkanShader.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
+
+namespace {
+
+// The name OpenColorIO gives the function the wrapper calls, and so the prefix of its uniform
+// block's name.
+const char* const kOcioFunction = "natronOcioApply";
+
+// Binding 0 is OpenColorIO's uniform block, its LUT samplers follow, then the wrapper's buffers.
+const unsigned kOcioFirstTextureBinding = 1;
+
+// A node keeps the shaders of this many processors, so that a transform animated back and forth
+// between a few values, or a view switched back, needs no new extraction.
+const std::size_t kGpuProgramsKept = 4;
+
+// Mirrors the wrapper's display block (std140).
+struct OcioDisplayBlock {
+    float luma[4];
+    float gain;
+    float invGamma;
+    std::int32_t channel;
+    // 0 leaves RGB, 1 thresholds it at 1 and 2 raises it to invGamma.
+    std::int32_t gammaMode;
+};
+
+const char* const kOcioDisplayBlock = "natronDisplay";
+
+// The GPU shader of one processor.
+struct OcioGpuProgram {
+    // Held, so that the address the program is found by is not reused.
+    OCIO_NAMESPACE::ConstProcessorRcPtr processor;
+    bool display = false;
+    // False when OpenColorIO cannot give a shader, so that it is not asked again.
+    bool ok = false;
+    GpuRuntimeShader shader;
+    // OpenColorIO's uniform block, empty when it has none.
+    std::string uniformBlock;
+    std::vector<std::byte> uniforms;
+    std::vector<GpuShaderTexture> textures;
+};
+
+} // namespace
+
+/**
+ * @brief The GPU shaders of the processors a node rendered last, most recent first, each built once
+ * per processor object: a processor is immutable, and OpenColorIO gives two processors that differ
+ * only in a dynamic property's value the same cache ID, so the object, not its ID, identifies the
+ * uniform values. Equal processors give equal text, which the pipeline cache compiles once.
+ **/
+struct OcioNodeKnobs::GpuPrograms {
+    std::mutex mutex;
+    std::list<std::shared_ptr<const OcioGpuProgram>> recent;
+};
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+
+std::string
+wrapperSource(const std::string& ocioGlsl,
+              unsigned firstFreeBinding,
+              bool callsOcio,
+              bool display)
+{
+    const std::string src = std::to_string(firstFreeBinding);
+    const std::string dst = std::to_string(firstFreeBinding + 1);
+    const std::string disp = std::to_string(firstFreeBinding + 2);
+    std::string text = "#version 460\n"
+                       "layout(local_size_x = 8, local_size_y = 8) in;\n";
+    text += ocioGlsl;
+    text += "\nlayout(std430, set = 0, binding = " + src + ") readonly buffer Src { float src[]; };\n"
+                                                           "layout(std430, set = 0, binding = "
+        + dst + ") writeonly buffer Dst { float dst[]; };\n";
+    if (display) {
+        text += "layout(std140, set = 0, binding = " + disp + ") uniform NatronOcioDisplay { vec4 luma; float gain; float invGamma; int channel; int gammaMode; } " + kOcioDisplayBlock + ";\n";
+    }
+    text += "layout(push_constant) uniform Region { int x1; int y1; uint width; uint height; uint nComps; uint channelMask; } region;\n"
+            "void main() {\n"
+            "    if (gl_GlobalInvocationID.x >= region.width || gl_GlobalInvocationID.y >= region.height) return;\n"
+            "    uint base = (gl_GlobalInvocationID.y * region.width + gl_GlobalInvocationID.x) * region.nComps;\n"
+            "    bool hasAlpha = region.nComps == 4u;\n"
+            "    float alpha = hasAlpha ? src[base + 3u] : 1.0;\n"
+            "    vec4 p = vec4(src[base], src[base + 1u], src[base + 2u], alpha);\n";
+    if (display) {
+        const std::string d = kOcioDisplayBlock;
+        text += "    p.rgb *= " + d + ".gain;\n"
+                                      "    if ("
+            + d + ".channel == 1) { p.rgb = vec3(p.r); }\n"
+                  "    else if ("
+            + d + ".channel == 2) { p.rgb = vec3(p.g); }\n"
+                  "    else if ("
+            + d + ".channel == 3) { p.rgb = vec3(p.b); }\n"
+                  "    else if ("
+            + d + ".channel == 4) { p.rgb = vec3(alpha); }\n"
+                  "    else if ("
+            + d + ".channel == 5) { p.rgb = vec3(" + d + ".luma.r * p.r + " + d + ".luma.g * p.g + " + d + ".luma.b * p.b); }\n";
+    }
+    if (callsOcio) {
+        text += std::string("    p = ") + kOcioFunction + "(p);\n";
+    }
+    if (display) {
+        const std::string d = kOcioDisplayBlock;
+        text += "    if (" + d + ".gammaMode == 1) { p.rgb = vec3(greaterThanEqual(p.rgb, vec3(1.0))); }\n"
+                                 "    else if ("
+            + d + ".gammaMode == 2) { p.rgb = pow(max(p.rgb, vec3(0.0)), vec3(" + d + ".invGamma)); }\n";
+    }
+    text += "    dst[base] = p.r;\n"
+            "    dst[base + 1u] = p.g;\n"
+            "    dst[base + 2u] = p.b;\n"
+            "    if (hasAlpha) { dst[base + 3u] = alpha; }\n"
+            "}\n";
+
+    return text;
+}
+
+std::shared_ptr<const OcioGpuProgram>
+buildProgram(const OCIO_NAMESPACE::ConstProcessorRcPtr& processor,
+             bool display)
+{
+    std::shared_ptr<OcioGpuProgram> program = std::make_shared<OcioGpuProgram>();
+    program->processor = processor;
+    program->display = display;
+    if (!processor) {
+        program->shader.source = wrapperSource(std::string(), kOcioFirstTextureBinding, false, display);
+        program->ok = true;
+
+        return program;
+    }
+    OcioVulkanShader shader;
+    std::string error;
+    try {
+        const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
+        if (!OcioVulkanShader::build(processor->getDefaultGPUProcessor(), kOcioFunction, kOcioFirstTextureBinding, &shader, &error)) {
+            return program;
+        }
+    } catch (const std::exception&) {
+        return program;
+    }
+    if (shader.uniformBytes() > 0) {
+        program->uniformBlock = shader.uniformBlockName();
+        if (program->uniformBlock.empty() || !shader.fillUniforms(program->uniforms)) {
+            return program;
+        }
+    }
+    unsigned firstFree = kOcioFirstTextureBinding;
+    for (const OcioVulkanShader::Texture& t : shader.textures()) {
+        GpuShaderTexture texture;
+        texture.binding = t.sampler;
+        texture.cacheKey = t.cacheKey;
+        texture.dimensions = (int)t.desc.dimensions;
+        texture.width = (int)t.desc.width;
+        texture.height = (int)t.desc.height;
+        texture.depth = (int)t.desc.depth;
+        texture.channels = (int)t.desc.channels;
+        texture.linear = t.desc.filter == gpu::GpuTextureFilter::Linear;
+        texture.texels = t.texels;
+        program->textures.push_back(texture);
+        firstFree = std::max(firstFree, t.binding + 1);
+    }
+    program->shader.source = wrapperSource(shader.glsl(), firstFree, true, display);
+    program->ok = true;
+
+    return program;
+}
+
+} // namespace
+#endif // NATRON_HAVE_GPU
+
+GpuOpRef
+OcioNodeKnobs::gpu(const OcioProcessor& processor,
+                   const OcioDisplayAdjust* display) const
+{
+#ifdef NATRON_HAVE_GPU
+    if (!processor.error.empty() || (!processor.processor && !display)) {
+        return GpuOpRef::none();
+    }
+    std::shared_ptr<const OcioGpuProgram> program;
+    {
+        std::lock_guard<std::mutex> lock(_gpuPrograms->mutex);
+        std::list<std::shared_ptr<const OcioGpuProgram>>& recent = _gpuPrograms->recent;
+        for (std::list<std::shared_ptr<const OcioGpuProgram>>::iterator it = recent.begin(); it != recent.end(); ++it) {
+            if (((*it)->processor == processor.processor) && ((*it)->display == (display != nullptr))) {
+                program = *it;
+                recent.splice(recent.begin(), recent, it);
+                break;
+            }
+        }
+        if (!program) {
+            program = buildProgram(processor.processor, display != nullptr);
+            recent.push_front(program);
+            if (recent.size() > kGpuProgramsKept) {
+                recent.pop_back();
+            }
+        }
+    }
+    if (!program->ok) {
+        return GpuOpRef::none();
+    }
+    GpuShaderInputs inputs;
+    if (!program->uniformBlock.empty()) {
+        GpuShaderUniform uniform;
+        uniform.binding = program->uniformBlock;
+        uniform.data = program->uniforms;
+        inputs.uniforms.push_back(uniform);
+    }
+    if (display) {
+        OcioDisplayBlock block;
+        for (int c = 0; c < 3; ++c) {
+            block.luma[c] = display->luma[c];
+        }
+        block.luma[3] = 0.f;
+        block.gain = display->gain;
+        block.invGamma = (display->gamma > 0.) ? (float)(1. / display->gamma) : 0.f;
+        block.channel = display->channel;
+        block.gammaMode = (display->gamma <= 0.) ? 1 : ((display->gamma != 1.) ? 2 : 0);
+        inputs.addUniform(kOcioDisplayBlock, block);
+    }
+    inputs.textures = program->textures;
+    GpuOpRef ref = GpuOpRef::runtime(program->shader, inputs);
+    ref.acceptedComponents = GpuOpRef::componentsBit(3) | GpuOpRef::componentsBit(4);
+
+    return ref;
+#else
+    (void)processor;
+    (void)display;
+
+    return GpuOpRef::none();
+#endif
+}
 
 OcioNodeKnobs::OcioNodeKnobs()
     : _holder(nullptr)
@@ -45,6 +281,7 @@ OcioNodeKnobs::OcioNodeKnobs()
     , _menuRefreshers()
     , _watched()
     , _watchId(-1)
+    , _gpuPrograms(new GpuPrograms())
 {
 }
 

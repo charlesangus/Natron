@@ -1073,6 +1073,15 @@ lays out itself, `GpuOpRef::runtime(shader, inputs)` for a runtime shader, or
 `GpuOpRef::none()` to stay on the CPU. A block over the recorder's 64 KB, or a
 component count outside `acceptedComponents`, stays on the CPU too.
 
+A runtime shader finds its source and destination by name, not by binding: its
+only storage buffers are the blocks named `Src` and `Dst`
+(`kGpuShaderSourceBuffer`, `kGpuShaderDestinationBuffer`), at any binding of set
+0, so generated code that puts its own uniform block at binding 0, as
+OpenColorIO's does, is wrapped as it is. Every other binding is a uniform block
+or a texture matched by name to `GpuShaderInputs`. A texture with a `cacheKey`
+is kept by the GPU context's `GpuTextureCache`, shared with the viewer, and
+uploaded once rather than for each render.
+
 The kernel is an `IPixelOp` in the style of `Engine/Gpu/Kernels/pixelwrap.slang`:
 `load()` reads the block, `apply(float4, int2)` does the maths on a pixel in
 channel-bit order, and an entry calls `runWrapped<Op>`. The wrapper does the

@@ -63,6 +63,19 @@ struct OcioProcessor {
 };
 
 /**
+ * @brief What OCIODisplay applies around its display processor, as the viewer does: gain on RGB
+ * and the channel view before it, gamma after. On the GPU these are uniforms, so changing one
+ * needs no new shader.
+ **/
+struct OcioDisplayAdjust {
+    float gain = 1.f;
+    double gamma = 1.;
+    // OCIODisplayOp::ChannelEnum: RGB, R, G, B, A, then luminance.
+    int channel = 0;
+    float luma[3] = { 0.2126f, 0.7152f, 0.0722f };
+};
+
+/**
  * @brief The OpenColorIO knobs every native OCIO node shares: one or more spaces, all on one
  * hidden ocioConfigFile and ocioWorkingSpace pair and one Context group, and the processor
  * lookup through the project's ProjectColorManagement.
@@ -185,7 +198,22 @@ public:
     static void applyRow(const OcioProcessor& processor,
                          const RowIO& io);
 
+    /**
+     * @brief The GPU work of a node rendering \p processor: a runtime shader wrapping the GLSL
+     * OpenColorIO generates, applied to RGB with alpha passed through, for 3 and 4 components.
+     * OpenColorIO's uniforms, its dynamic properties among them, are inputs rather than text, and
+     * its LUTs textures the GPU context keeps by content. With \p display, the gain, channel view
+     * and gamma are applied around it from a uniform block, and a null processor runs them alone.
+     * GpuOpRef::none() for a null processor without \p display, or a processor OpenColorIO
+     * cannot turn into a shader. The shader of each processor is built once, so an animated
+     * transform's evaluations reuse it.
+     **/
+    GpuOpRef gpu(const OcioProcessor& processor,
+                 const OcioDisplayAdjust* display = nullptr) const;
+
 private:
+    struct GpuPrograms;
+
     ProjectPtr project() const;
 
     KnobHolder* _holder;
@@ -193,6 +221,7 @@ private:
     std::vector<std::function<void()>> _menuRefreshers;
     std::weak_ptr<ProjectColorManagement> _watched;
     int _watchId;
+    std::unique_ptr<GpuPrograms> _gpuPrograms;
 };
 
 /**
@@ -232,9 +261,9 @@ struct OcioOp {
         OcioNodeKnobs::applyRow(params.ocio, io);
     }
 
-    GpuOpRef gpu(const Params& /*params*/) const
+    GpuOpRef gpu(const Params& params) const
     {
-        return GpuOpRef::none();
+        return ocio.gpu(params.ocio);
     }
 
     OcioNodeKnobs ocio;
@@ -285,6 +314,15 @@ public:
                            ViewIdx view) const WARN_UNUSED_RETURN
     {
         return bakeParams(this->op(), time, view).ocio;
+    }
+
+    /**
+     * @brief The GPU work the node renders with at (time, view).
+     **/
+    GpuOpRef bakeGpuOp(double time,
+                       ViewIdx view) const WARN_UNUSED_RETURN
+    {
+        return this->op().gpu(bakeParams(this->op(), time, view));
     }
 
     /**

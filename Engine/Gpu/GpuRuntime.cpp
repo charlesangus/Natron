@@ -464,6 +464,7 @@ GpuRuntime::build()
     }
     pool_ = std::make_unique<GpuBufferPool>(*device_, options_.pool);
     pipelines_ = std::make_unique<GpuPipelineCache>(*device_, options_.pipelines);
+    textures_ = std::make_unique<GpuTextureCache>(*device_);
     preparer_ = std::make_unique<GpuImportPreparer>(*transfer_);
     if (keepAliveWanted(device_->info())) {
         keepAlive_ = std::make_shared<GpuKeepAlive>(*device_);
@@ -492,6 +493,7 @@ GpuRuntime::teardown()
         VmaTotalStatistics stats {};
         vmaCalculateStatistics(device_->allocator(), &stats);
         leaked_ = stats.total.statistics.allocationCount;
+        GpuDevice::parkForever(std::shared_ptr<GpuTextureCache>(std::move(textures_)));
         GpuDevice::parkForever(std::shared_ptr<GpuPipelineCache>(std::move(pipelines_)));
         GpuDevice::parkForever(std::shared_ptr<GpuBufferPool>(std::move(pool_)));
         GpuDevice::parkForever(std::shared_ptr<GpuKernelRegistry>(std::move(registry_)));
@@ -499,6 +501,7 @@ GpuRuntime::teardown()
         GpuDevice::parkForever(std::shared_ptr<GpuDevice>(std::move(device_)));
         return;
     }
+    textures_.reset();
     pipelines_.reset();
     pool_.reset();
     if (registry_) {
@@ -592,7 +595,7 @@ GpuRuntime::newRecordContext(std::unique_ptr<GpuRecordContext>& out)
     if (isLost()) {
         return lostStatus();
     }
-    return note(GpuRecordContext::create(*registry_, out, pool_.get(), pipelines_.get()));
+    return note(GpuRecordContext::create(*registry_, out, pool_.get(), pipelines_.get(), textures_.get()));
 }
 
 GpuStatus

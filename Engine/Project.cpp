@@ -459,8 +459,9 @@ Project::hasMissingPluginNode() const
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-// The parameter names openfx-io's GenericOCIO gives every plug-in that reads,
-// writes or converts through OpenColorIO (see IOSupport/GenericOCIO.h).
+// The parameter names the native Read and Write take from openfx-io's GenericOCIO
+// (see Engine/Nodes/IO/OcioSpaceKnobs.h). The native OCIO nodes share the config pair
+// and check their own colourspaces.
 const char* const ocioConfigFileKnobName = "ocioConfigFile";
 const char* const ocioWorkingSpaceKnobName = "ocioWorkingSpace";
 const char* const ocioColorSpaceKnobNames[] = { "ocioInputSpace", "ocioOutputSpace" };

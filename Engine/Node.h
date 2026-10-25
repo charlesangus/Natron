@@ -1846,6 +1846,12 @@ public:
 
     QString makeDocumentation(bool genHTML) const;
 
+    /**
+     * @brief Whether the documentation of \p pluginID lists menus built from the project's
+     * OpenColorIO config, so that it must be generated live rather than read from a static page.
+     **/
+    static bool documentationDependsOnOcioConfig(const std::string& pluginID);
+
     void refreshPreviewsAfterProjectLoad();
 
     enum StreamWarningEnum

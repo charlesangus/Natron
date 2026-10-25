@@ -7,6 +7,11 @@
 #   tools/bench/node_profile.sh serial CHAIN node...   release build, GPU off, noRenderThreads=1
 #
 # The GPU tag is gpu<CHAIN>; a CPU run's tag is its mode. Summarise with node_profile_summary.py.
+#
+# NODE_PROFILE_BINARY=<path to a NatronRenderer> (cpu and serial modes only) runs that binary directly on the
+# host under xvfb-run instead of build/release/Renderer/NatronRenderer in the dev container, and leaves
+# OFX_PLUGIN_PATH alone so the plugins next to the binary are used. For an extracted release AppImage:
+#   NODE_PROFILE_BINARY=build/m184-appimage/squashfs-root/bin/NatronRenderer tools/bench/node_profile.sh serial 1 iblur
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 mode=$1
@@ -37,12 +42,25 @@ case "$mode" in
         ;;
 esac
 
+external=${NODE_PROFILE_BINARY:-}
+if [ -n "$external" ] && [ "$mode" = gpu ]; then
+    echo "NODE_PROFILE_BINARY is for cpu and serial modes only" >&2
+    exit 2
+fi
+if [ -n "$external" ]; then external=$(realpath "$external"); fi
+
 for node in "$@"; do
     base="$out/$tag-$node"
     rm -f "$base.jsonl".* "$base.steady.jsonl"
-    "$repo/tools/ci/local/devshell.sh" "${shell[@]}" bash -lc "cd '$repo' && NP_NODE='$node' NP_CHAIN='$chain' NP_WORK=/tmp/np-$tag \
-        NATRON_GPU=$gpu NATRON_RENDER_PROFILE='$base.jsonl' OFX_PLUGIN_PATH='$repo/build/assets/Plugins' \
-        xvfb-run -a $binary $args -b tools/bench/node_profile.py" > "$base.log" 2>&1 || { echo "$node: render failed, see $base.log" >&2; continue; }
+    if [ -n "$external" ]; then
+        (cd "$repo" && env -u LD_LIBRARY_PATH NP_NODE="$node" NP_CHAIN="$chain" NP_WORK=/tmp/np-$tag \
+            NATRON_GPU=$gpu NATRON_RENDER_PROFILE="$base.jsonl" \
+            xvfb-run -a "$external" $args -b tools/bench/node_profile.py) > "$base.log" 2>&1 || { echo "$node: render failed, see $base.log" >&2; continue; }
+    else
+        "$repo/tools/ci/local/devshell.sh" "${shell[@]}" bash -lc "cd '$repo' && NP_NODE='$node' NP_CHAIN='$chain' NP_WORK=/tmp/np-$tag \
+            NATRON_GPU=$gpu NATRON_RENDER_PROFILE='$base.jsonl' OFX_PLUGIN_PATH='$repo/build/assets/Plugins' \
+            xvfb-run -a $binary $args -b tools/bench/node_profile.py" > "$base.log" 2>&1 || { echo "$node: render failed, see $base.log" >&2; continue; }
+    fi
     python3 - "$base" <<'PY'
 import glob, json, sys
 base = sys.argv[1]

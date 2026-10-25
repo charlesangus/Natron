@@ -295,6 +295,558 @@ filterPlane(const float* src,
         filterRow(src, tables.data(), width, height, y, 0, width, rx + row, ry + row, disc, takeMax, dst + row);
     }
 }
+
+namespace {
+    inline bool
+    isNaN(float v)
+    {
+        return (std::bit_cast<uint32_t>(v) & 0x7fffffffu) > 0x7f800000u;
+    }
+
+    // reduce() that skips a NaN first operand: over a run of values, from its first, the first of
+    // the extrema of its values that are not NaN, or a NaN when all are. As the definition's rows
+    // reduced from the top once the top row is not a NaN, and associative, so that a sparse table
+    // over overlapping windows gives the same.
+    inline float
+    reduceSkip(float a,
+               float b,
+               bool takeMax)
+    {
+        return isNaN(a) ? b : reduce(a, b, takeMax);
+    }
+
+    // The radii of window row r of plan into work, rx first then ry.
+    void
+    rowRadii(const TilePlan& plan,
+             int r,
+             std::vector<float>& work,
+             const float** rx,
+             const float** ry)
+    {
+        const std::size_t n = (std::size_t)plan.window.width();
+        if (work.size() < 2 * n) {
+            work.resize(2 * n);
+        }
+        plan.radii(r, work.data(), work.data() + n);
+        *rx = work.data();
+        *ry = work.data() + n;
+    }
+
+    // Whether window column c lies on the plane and has a slot of radius, and which.
+    int
+    slotOf(const TilePlan& plan,
+           int c,
+           int radius)
+    {
+        const auto first = plan.slotRadius.begin() + plan.slotStart[c];
+        const auto last = plan.slotRadius.begin() + plan.slotStart[c + 1];
+        const auto it = std::lower_bound(first, last, radius);
+
+        return (it != last) && (*it == radius) ? (int)(it - plan.slotRadius.begin()) : -1;
+    }
+
+    int
+    clampInt(int v,
+             int lo,
+             int hi)
+    {
+        return std::min(std::max(v, lo), hi);
+    }
+} // anonymous namespace
+
+PixelElements
+pixelElements(float rx,
+              float ry)
+{
+    PixelElements p;
+    const float fx = std::floor(rx);
+    const float fy = std::floor(ry);
+
+    p.tx = rx - fx;
+    p.ty = ry - fy;
+    p.x[0] = (int)fx;
+    p.y[0] = (int)fy;
+    p.x[1] = (p.tx > 0.f) ? p.x[0] + 1 : p.x[0];
+    p.y[1] = (p.ty > 0.f) ? p.y[0] + 1 : p.y[0];
+
+    return p;
+}
+
+float
+blendElements(const PixelElements& p,
+              const float v[4])
+{
+    // As filterRow(): blended in x then in y.
+    const float v00 = v[0];
+    const float v10 = p.has(1) ? v[1] : v00;
+    const float v01 = p.has(2) ? v[2] : v00;
+    const float v11 = p.has(3) ? v[3] : ((p.x[1] != p.x[0]) ? v10 : v01);
+    const float a = blend(v00, v10, p.tx);
+    const float b = blend(v01, v11, p.tx);
+
+    return blend(a, b, p.ty);
+}
+
+int
+TilePlan::bandCount() const
+{
+    const int h = window.height();
+
+    return (h <= 0) ? 0 : (h + bandRows - 1) / bandRows;
+}
+
+int
+TilePlan::batchCount(int band) const
+{
+    const int ra = band * bandRows;
+    const int rb = std::min(window.height(), ra + bandRows);
+    const int rows = (rb - ra) + 2 * haloY;
+
+    return (rb <= ra) ? 0 : (rows + batchRows - 1) / batchRows;
+}
+
+TilePlan
+planTile(const RectI& window,
+         const TileRadiiFn& radii,
+         bool disc,
+         bool takeMax,
+         std::size_t budgetFloats)
+{
+    TilePlan plan;
+    plan.window = window;
+    plan.disc = disc;
+    plan.takeMax = takeMax;
+    plan.radii = radii;
+    const int ww = std::max(0, window.width());
+    const int wh = std::max(0, window.height());
+    if (!ww || !wh) {
+        plan.bandRows = 1;
+        plan.columnBatch.clear();
+
+        return plan;
+    }
+    const std::size_t budget = std::max(budgetFloats, (std::size_t)2);
+
+    // One sweep over the radii: the halo, the elements, the rows the definition reduces, and the
+    // horizontal radii of each column.
+    std::vector<float> rx((std::size_t)ww);
+    std::vector<float> ry((std::size_t)ww);
+    std::vector<std::vector<int>> columnRadii((std::size_t)ww);
+    double foldRowsWork = 0.;
+    double pixelElementsCount = 0.;
+    float maxRx = 0.f;
+    float maxRy = 0.f;
+    for (int r = 0; r < wh; ++r) {
+        radii(r, rx.data(), ry.data());
+        for (int c = 0; c < ww; ++c) {
+            maxRx = std::max(maxRx, rx[c]);
+            maxRy = std::max(maxRy, ry[c]);
+            const PixelElements p = pixelElements(rx[c], ry[c]);
+            std::vector<int>& cr = columnRadii[c];
+            for (int e = 0; e < 4; ++e) {
+                if (!p.has(e)) {
+                    continue;
+                }
+                plan.element[e] = true;
+                foldRowsWork += 2. * p.radiusY(e) + 1.;
+                pixelElementsCount += 1.;
+                const int radius = p.radiusX(e);
+                if (std::find(cr.begin(), cr.end(), radius) == cr.end()) {
+                    cr.push_back(radius);
+                }
+            }
+        }
+    }
+    plan.haloX = (int)std::ceil(maxRx);
+    plan.haloY = (int)std::ceil(maxRy);
+    plan.levels = levelCount(plan.haloX);
+    plan.columnLevels = levelCount(plan.haloY);
+    // The largest plane the tile reads.
+    const int width = ww + 2 * plan.haloX;
+    const int height = wh + 2 * plan.haloY;
+    const double rowTableWork = (double)plan.levels * width;
+
+    // Rows: half the budget for the batch's tables, half for the band's fractional elements.
+    const std::size_t rowFloats = plan.rowTableFloats(width);
+    plan.batchRows = rowFloats ? (int)std::min<std::size_t>((budget / 2) / rowFloats, (std::size_t)height) : height;
+    plan.batchRows = std::max(1, plan.batchRows);
+    const int extra = plan.extraElements();
+    plan.bandRows = extra ? (int)std::min<std::size_t>((budget / 2) / ((std::size_t)extra * ww), (std::size_t)wh) : wh;
+    plan.bandRows = std::max(1, plan.bandRows);
+    double rowsCost = foldRowsWork;
+    for (int b = 0; b < plan.bandCount(); ++b) {
+        const int rows = std::min(wh - b * plan.bandRows, plan.bandRows) + 2 * plan.haloY;
+        rowsCost += (double)rows * rowTableWork;
+    }
+
+    // Columns: whole columns per batch, as many as the budget holds.
+    plan.slotStart.assign((std::size_t)ww + 1, 0);
+    for (int c = 0; c < ww; ++c) {
+        std::vector<int>& cr = columnRadii[c];
+        std::sort(cr.begin(), cr.end());
+        plan.slotStart[c + 1] = plan.slotStart[c] + (int)cr.size();
+    }
+    plan.slotRadius.reserve((std::size_t)plan.slotStart[ww]);
+    for (int c = 0; c < ww; ++c) {
+        plan.slotRadius.insert(plan.slotRadius.end(), columnRadii[c].begin(), columnRadii[c].end());
+        std::vector<int>().swap(columnRadii[c]);
+    }
+    const std::size_t slotFloats = plan.columnFloats(height);
+    const std::size_t maxSlots = budget / slotFloats;
+    plan.columnsFit = !disc && (maxSlots > 0);
+    double columnsCost = 0.;
+    if (plan.columnsFit) {
+        plan.columnBatch.push_back(0);
+        for (int c = 0; c < ww && plan.columnsFit; ++c) {
+            const int slots = plan.slotStart[c + 1] - plan.slotStart[c];
+            if ((std::size_t)slots > maxSlots) {
+                plan.columnsFit = false;
+            } else if ((std::size_t)(plan.slotStart[c + 1] - plan.slotStart[plan.columnBatch.back()]) > maxSlots) {
+                plan.columnBatch.push_back(c);
+            }
+        }
+        plan.columnBatch.push_back(ww);
+    }
+    if (plan.columnsFit) {
+        for (int b = 0; b < plan.columnBatchCount(); ++b) {
+            const int ca = plan.columnBatch[b];
+            const int cb = plan.columnBatch[b + 1];
+            const int slots = plan.slotStart[cb] - plan.slotStart[ca];
+            plan.batchSlots = std::max(plan.batchSlots, slots);
+            // The batch's row tables, over its columns and halo, then its slots' spans and
+            // column tables.
+            columnsCost += (double)height * plan.levels * ((cb - ca) + 2. * plan.haloX);
+            columnsCost += (double)slots * height * (plan.columnLevels + 1.);
+        }
+        columnsCost += 4. * pixelElementsCount;
+    } else {
+        plan.columnBatch.clear();
+        plan.batchSlots = 0;
+    }
+    plan.strategy = (plan.columnsFit && (columnsCost < rowsCost)) ? TileStrategy::Columns : TileStrategy::Rows;
+
+    return plan;
+} // planTile
+
+TilePlane
+tilePlane(const TilePlan& plan,
+          const float* src,
+          int width,
+          int height,
+          int x0,
+          int y0)
+{
+    TilePlane t;
+    const int ww = std::max(0, plan.window.width());
+    const int wh = std::max(0, plan.window.height());
+
+    t.src = src;
+    t.width = width;
+    t.height = height;
+    t.x0 = x0;
+    t.y0 = y0;
+    t.c0 = clampInt(x0 - plan.window.x1, 0, ww);
+    t.c1 = clampInt(x0 + width - plan.window.x1, t.c0, ww);
+    t.r0 = clampInt(y0 - plan.window.y1, 0, wh);
+    t.r1 = clampInt(y0 + height - plan.window.y1, t.r0, wh);
+
+    return t;
+}
+
+void
+bandRange(const TilePlan& plan,
+          const TilePlane& t,
+          int band,
+          int* ra,
+          int* rb)
+{
+    *ra = clampInt(band * plan.bandRows, t.r0, t.r1);
+    *rb = clampInt((band + 1) * plan.bandRows, *ra, t.r1);
+}
+
+void
+batchRange(const TilePlan& plan,
+           const TilePlane& t,
+           int band,
+           int batch,
+           int* first,
+           int* count)
+{
+    // The band's rows, unclipped, reach haloY beyond it; the batch's are the plane's among them.
+    const int ra = band * plan.bandRows;
+    const int a = t.y(plan, ra) - plan.haloY + batch * plan.batchRows;
+    const int bandEnd = t.y(plan, std::min(plan.window.height(), ra + plan.bandRows)) + plan.haloY;
+    const int b = std::min(a + plan.batchRows, bandEnd);
+
+    *first = clampInt(a, 0, t.height);
+    *count = clampInt(b, *first, t.height) - *first;
+}
+
+void
+foldRows(const TilePlan& plan,
+         const TilePlane& t,
+         const float* tables,
+         int first,
+         int count,
+         int r,
+         const TileElements& out,
+         std::vector<float>& work)
+{
+    if ((count <= 0) || (r < t.r0) || (r >= t.r1)) {
+        return;
+    }
+    // The half-widths of the disc's rows; the plan's elements share few sizes along a row.
+    static thread_local HalfWidths halfWidths;
+    const float* rx;
+    const float* ry;
+    rowRadii(plan, r, work, &rx, &ry);
+    const int y = t.y(plan, r);
+    const int last = first + count - 1;
+    const std::size_t rowFloats = plan.rowTableFloats(t.width);
+    const std::size_t width = (std::size_t)t.width;
+
+    for (int c = t.c0; c < t.c1; ++c) {
+        const PixelElements p = pixelElements(rx[c], ry[c]);
+        const int x = t.x(plan, c);
+        for (int e = 0; e < 4; ++e) {
+            if (!p.has(e)) {
+                continue;
+            }
+            const int erx = p.radiusX(e);
+            const int ery = p.radiusY(e);
+            const int y1 = std::max(0, y - ery);
+            const int y2 = std::min(t.height - 1, y + ery);
+            const int lo = std::max(y1, first);
+            const int hi = std::min(y2, last);
+            if (lo > hi) {
+                continue;
+            }
+            const int* widths = plan.disc ? halfWidths.get(erx, ery) : nullptr;
+            float* const acc = out.at(e, c, r);
+            float a = (lo == y1) ? 0.f : *acc;
+            for (int yy = lo; yy <= hi; ++yy) {
+                const int dy = (yy >= y) ? (yy - y) : (y - yy);
+                const int hw = widths ? widths[dy] : erx;
+                const int xa = std::max(0, x - hw);
+                const int xb = std::min(t.width - 1, x + hw);
+                const float q = rowQuery(t.src + (std::size_t)yy * width, tables + (std::size_t)(yy - first) * rowFloats, width, xa, xb, plan.takeMax);
+                a = (yy == y1) ? q : reduce(a, q, plan.takeMax);
+            }
+            *acc = a;
+        }
+    }
+} // foldRows
+
+void
+finishRow(const TilePlan& plan,
+          const TilePlane& t,
+          int r,
+          const TileElements& out,
+          std::vector<float>& work)
+{
+    if ((r < t.r0) || (r >= t.r1)) {
+        return;
+    }
+    const float* rx;
+    const float* ry;
+    rowRadii(plan, r, work, &rx, &ry);
+    for (int c = t.c0; c < t.c1; ++c) {
+        const PixelElements p = pixelElements(rx[c], ry[c]);
+        float v[4] = { 0.f, 0.f, 0.f, 0.f };
+        for (int e = 0; e < 4; ++e) {
+            if (p.has(e)) {
+                v[e] = *out.at(e, c, r);
+            }
+        }
+        *out.at(0, c, r) = blendElements(p, v);
+    }
+}
+
+void
+columnBatchRange(const TilePlan& plan,
+                 const TilePlane& t,
+                 int b,
+                 int* ca,
+                 int* cb)
+{
+    *ca = clampInt(plan.columnBatch[b], t.c0, t.c1);
+    *cb = clampInt(plan.columnBatch[b + 1], *ca, t.c1);
+}
+
+void
+fillSpans(const TilePlan& plan,
+          const TilePlane& t,
+          int ca,
+          int cb,
+          int y,
+          float* columns,
+          std::vector<float>& work)
+{
+    if ((ca >= cb) || (y < 0) || (y >= t.height)) {
+        return;
+    }
+    // The row's table over the batch's columns and their halo only: an entry depends on the
+    // values it covers alone, so the spans are those of the whole row's table.
+    const int xa = std::max(0, t.x(plan, ca) - plan.haloX);
+    const int xb = std::min(t.width, t.x(plan, cb - 1) + plan.haloX + 1);
+    const int width = xb - xa;
+    const std::size_t floats = plan.rowTableFloats(width);
+    if (work.size() < floats) {
+        work.resize(floats);
+    }
+    const float* const row = t.src + (std::size_t)y * t.width + xa;
+    buildRowTable(row, width, plan.levels, plan.takeMax, work.data(), (std::size_t)width);
+    const std::size_t columnFloats = plan.columnFloats(t.height);
+    const int s0 = plan.slotStart[ca];
+    for (int c = ca; c < cb; ++c) {
+        const int x = t.x(plan, c);
+        for (int s = plan.slotStart[c]; s < plan.slotStart[c + 1]; ++s) {
+            const int radius = plan.slotRadius[s];
+            const int x1 = std::max(0, x - radius) - xa;
+            const int x2 = std::min(t.width - 1, x + radius) - xa;
+            columns[(std::size_t)(s - s0) * columnFloats + y] = rowQuery(row, work.data(), (std::size_t)width, x1, x2, plan.takeMax);
+        }
+    }
+}
+
+void
+buildColumn(const TilePlan& plan,
+            const TilePlane& t,
+            float* column)
+{
+    const int height = t.height;
+    const float* prev = column;
+
+    for (int k = 1; k < plan.columnLevels; ++k) {
+        const int half = 1 << (k - 1);
+        const int span = 1 << k;
+        float* const cur = column + (std::size_t)k * height;
+        for (int j = 0; j + span <= height; ++j) {
+            cur[j] = reduceSkip(prev[j], prev[j + half], plan.takeMax);
+        }
+        prev = cur;
+    }
+}
+
+void
+answerRow(const TilePlan& plan,
+          const TilePlane& t,
+          int ca,
+          int cb,
+          int r,
+          const float* columns,
+          const TileElements& out,
+          std::vector<float>& work)
+{
+    if ((ca >= cb) || (r < t.r0) || (r >= t.r1)) {
+        return;
+    }
+    const float* rx;
+    const float* ry;
+    rowRadii(plan, r, work, &rx, &ry);
+    const int y = t.y(plan, r);
+    const int height = t.height;
+    const std::size_t columnFloats = plan.columnFloats(height);
+    const int s0 = plan.slotStart[ca];
+
+    for (int c = ca; c < cb; ++c) {
+        const PixelElements p = pixelElements(rx[c], ry[c]);
+        float v[4] = { 0.f, 0.f, 0.f, 0.f };
+        for (int e = 0; e < 4; ++e) {
+            if (!p.has(e)) {
+                continue;
+            }
+            const float* const column = columns + (std::size_t)(slotOf(plan, c, p.radiusX(e)) - s0) * columnFloats;
+            const int ery = p.radiusY(e);
+            const int a = std::max(0, y - ery);
+            const int b = std::min(height - 1, y + ery);
+            // The definition keeps its top row when that is a NaN, and otherwise skips NaNs.
+            if (isNaN(column[a])) {
+                v[e] = column[a];
+                continue;
+            }
+            const int k = (int)std::bit_width((unsigned)(b - a + 1)) - 1;
+            const float* const level = column + (std::size_t)k * height;
+            v[e] = (k == 0) ? column[a] : reduceSkip(level[a], level[b - (1 << k) + 1], plan.takeMax);
+        }
+        *out.at(0, c, r) = blendElements(p, v);
+    }
+}
+
+void
+filterTile(const TilePlan& plan,
+           const float* src,
+           int width,
+           int height,
+           float* dst)
+{
+    const TilePlane t = tilePlane(plan, src, width, height, 0, 0);
+    std::vector<float> work;
+    TileElements out;
+    out.e[0] = dst;
+    out.stride[0] = (std::size_t)width;
+    out.c0[0] = t.x0 - plan.window.x1;
+    out.r0[0] = t.y0 - plan.window.y1;
+
+    if (plan.strategy == TileStrategy::Columns) {
+        std::vector<float> columns;
+        for (int b = 0; b < plan.columnBatchCount(); ++b) {
+            int ca;
+            int cb;
+            columnBatchRange(plan, t, b, &ca, &cb);
+            if (ca >= cb) {
+                continue;
+            }
+            const int slots = plan.slotStart[cb] - plan.slotStart[ca];
+            columns.resize((std::size_t)slots * plan.columnFloats(height));
+            for (int y = 0; y < height; ++y) {
+                fillSpans(plan, t, ca, cb, y, columns.data(), work);
+            }
+            for (int s = 0; s < slots; ++s) {
+                buildColumn(plan, t, columns.data() + (std::size_t)s * plan.columnFloats(height));
+            }
+            for (int r = t.r0; r < t.r1; ++r) {
+                answerRow(plan, t, ca, cb, r, columns.data(), out, work);
+            }
+        }
+
+        return;
+    }
+    std::vector<float> tables;
+    std::vector<float> extra;
+    for (int band = 0; band < plan.bandCount(); ++band) {
+        int ra;
+        int rb;
+        bandRange(plan, t, band, &ra, &rb);
+        if (ra >= rb) {
+            continue;
+        }
+        const std::size_t area = (std::size_t)(rb - ra) * (std::size_t)(t.c1 - t.c0);
+        extra.resize(area * 3);
+        for (int e = 1; e < 4; ++e) {
+            out.e[e] = extra.data() + (std::size_t)(e - 1) * area;
+            out.stride[e] = (std::size_t)(t.c1 - t.c0);
+            out.c0[e] = t.c0;
+            out.r0[e] = ra;
+        }
+        for (int batch = 0; batch < plan.batchCount(band); ++batch) {
+            int first;
+            int count;
+            batchRange(plan, t, band, batch, &first, &count);
+            const std::size_t rowFloats = plan.rowTableFloats(width);
+            tables.resize(std::max<std::size_t>(1, (std::size_t)count * rowFloats));
+            for (int y = first; y < first + count; ++y) {
+                buildRowTable(src + (std::size_t)y * width, width, plan.levels, plan.takeMax, tables.data() + (std::size_t)(y - first) * rowFloats, (std::size_t)width);
+            }
+            for (int r = ra; r < rb; ++r) {
+                foldRows(plan, t, tables.data(), first, count, r, out, work);
+            }
+        }
+        for (int r = ra; r < rb; ++r) {
+            finishRow(plan, t, r, out, work);
+        }
+    }
+} // filterTile
 } // namespace IErodeDilateKernels
 
 float
@@ -381,119 +933,284 @@ struct IErodeDilateSpec {
 };
 
 /**
- * @brief What the passes of one render share: the Map and the radius functions, the render window
- * the Map covers, and the row tables of every plane. The first pass sizes the tables for the plane
- * job it runs in, as IBlur's state does; they are written whole before they are read, so they
- * start uninitialised.
+ * @brief The floats, per plane, a render's tile buffers may take beside its scratch planes: the
+ * row tables of a batch and the fractional elements of a band (Rows), or a batch's slot columns
+ * (Columns). See IErodeDilateKernels::TileStrategy.
+ **/
+const std::size_t kTileBudgetFloats = (std::size_t)1 << 22;
+
+/**
+ * @brief What the passes of one render share: the tile's plan, and its buffers for every plane.
+ * The first pass sizes the buffers for the plane job it runs in, as IBlur's state does; every
+ * buffer is written before it is read, so they start uninitialised.
  **/
 struct MorphologyState {
     std::shared_ptr<const MapPlane> map;
-    IErodeDilateAxis axisX;
-    IErodeDilateAxis axisY;
-    bool disc = false;
-    bool takeMax = false;
-    RectI roi;
-    int levels = 1;
+    IErodeDilateKernels::TilePlan plan;
 
     std::mutex mutex;
+    // Rows: the batch's row tables; Columns: the batch's slot columns.
     std::unique_ptr<float[]> tables;
-    std::size_t capacity = 0;
+    std::size_t tablesCapacity = 0;
+    // Rows: the band's fractional elements that the plan has, each bandArea() floats per plane.
+    std::unique_ptr<float[]> extra;
+    std::size_t extraCapacity = 0;
 
-    // The tables of one plane: levels - 1 levels of width x height.
     std::size_t planeTables(const PassScratch& scratch) const
     {
-        return (std::size_t)(levels - 1) * (std::size_t)scratch.width * (std::size_t)scratch.height;
+        if (plan.strategy == IErodeDilateKernels::TileStrategy::Columns) {
+            return (std::size_t)plan.batchSlots * plan.columnFloats(scratch.height);
+        }
+
+        return (std::size_t)plan.batchRows * plan.rowTableFloats(scratch.width);
+    }
+
+    // A band's pixels on the plane, per fractional element and plane.
+    std::size_t bandArea(const IErodeDilateKernels::TilePlane& t) const
+    {
+        return (std::size_t)plan.bandRows * (std::size_t)(t.c1 - t.c0);
+    }
+
+    IErodeDilateKernels::TilePlane plane(const PassScratch& scratch,
+                                         int p) const
+    {
+        return IErodeDilateKernels::tilePlane(plan, scratch.plane(0, p), scratch.width, scratch.height, scratch.rect.x1, scratch.rect.y1);
     }
 
     void reserve(const PassScratch& scratch)
     {
         const std::lock_guard<std::mutex> lock(mutex);
-        const std::size_t size = planeTables(scratch) * (std::size_t)scratch.nPlanes;
-        if (capacity < size) {
+        const std::size_t nPlanes = (std::size_t)scratch.nPlanes;
+        const std::size_t size = std::max<std::size_t>(1, planeTables(scratch) * nPlanes);
+        if (tablesCapacity < size) {
             tables.reset(new float[size]);
-            capacity = size;
+            tablesCapacity = size;
         }
+        if (plan.strategy == IErodeDilateKernels::TileStrategy::Rows) {
+            const std::size_t extraSize = std::max<std::size_t>(1, (std::size_t)plan.extraElements() * bandArea(plane(scratch, 0)) * nPlanes);
+            if (extraCapacity < extraSize) {
+                extra.reset(new float[extraSize]);
+                extraCapacity = extraSize;
+            }
+        }
+    }
+
+    // Where plane p's elements of band ra go: element 0 in slot 1, the others in extra.
+    IErodeDilateKernels::TileElements elements(const PassScratch& scratch,
+                                               const IErodeDilateKernels::TilePlane& t,
+                                               int p,
+                                               int ra) const
+    {
+        IErodeDilateKernels::TileElements out;
+        out.e[0] = scratch.plane(1, p);
+        out.stride[0] = (std::size_t)scratch.width;
+        out.c0[0] = t.x0 - plan.window.x1;
+        out.r0[0] = t.y0 - plan.window.y1;
+        const std::size_t area = bandArea(t);
+        const std::size_t count = (std::size_t)plan.extraElements();
+        std::size_t index = 0;
+        for (int e = 1; e < 4; ++e) {
+            if (extra && plan.element[e]) {
+                out.e[e] = extra.get() + ((std::size_t)p * count + index++) * area;
+            }
+            out.stride[e] = (std::size_t)(t.c1 - t.c0);
+            out.c0[e] = t.c0;
+            out.r0[e] = ra;
+        }
+
+        return out;
     }
 };
 
 using MorphologyStatePtr = std::shared_ptr<MorphologyState>;
 
-/// The table of row y of plane p of slot 0.
-std::function<PassRowFn(const PassScratch&)>
-tableWorker(const MorphologyStatePtr& state)
+/// The items of line y of lines that its share of count items covers, *first to *end - 1: the
+/// items spread evenly over the lines, so that the threads, which take the lines in chunks, share
+/// them whatever part of the plane the items lie in.
+void
+lineItems(int y,
+          int lines,
+          int count,
+          int* first,
+          int* end)
 {
-    return [state](const PassScratch& scratch) -> PassRowFn {
-        state->reserve(scratch);
-        float* const tables = state->tables.get();
-        const std::size_t planeTables = state->planeTables(scratch);
-        const std::size_t levelStride = (std::size_t)scratch.width * scratch.height;
-        const int width = scratch.width;
-        const int height = scratch.height;
-        const int levels = state->levels;
-        const bool takeMax = state->takeMax;
-        const PassScratch* source = &scratch;
+    const int64_t n = std::max(0, count);
+    *first = (int)(((int64_t)y * n + lines - 1) / lines);
+    *end = (int)(((int64_t)(y + 1) * n + lines - 1) / lines);
+}
 
-        return [tables, planeTables, levelStride, width, height, levels, takeMax, source](int line) {
+/// A pass over the lines of every plane, each line calling fn(p, item, work) for the items it
+/// covers of the count(t) of plane p.
+using TileItemFn = std::function<void(const MorphologyState& s, const PassScratch& scratch, int p, const IErodeDilateKernels::TilePlane& t, int item, std::vector<float>& work)>;
+using TileCountFn = std::function<int(const MorphologyState& s, const IErodeDilateKernels::TilePlane& t)>;
+
+std::function<PassRowFn(const PassScratch&)>
+tileWorker(const MorphologyStatePtr& state,
+           TileCountFn count,
+           TileItemFn fn)
+{
+    return [state, count, fn](const PassScratch& scratch) -> PassRowFn {
+        state->reserve(scratch);
+        const MorphologyState* s = state.get();
+        const PassScratch* buffers = &scratch;
+        // The scratch of the chunk's lines.
+        std::shared_ptr<std::vector<float>> work = std::make_shared<std::vector<float>>();
+
+        return [s, buffers, count, fn, work](int line) {
+            const int height = buffers->height;
             const int p = line / height;
-            const int y = line % height;
-            const std::size_t row = (std::size_t)y * width;
-            IErodeDilateKernels::buildRowTable(source->plane(0, p) + row, width, levels, takeMax, tables + (std::size_t)p * planeTables + row, levelStride);
+            const IErodeDilateKernels::TilePlane t = s->plane(*buffers, p);
+            int first;
+            int end;
+            lineItems(line % height, height, count(*s, t), &first, &end);
+            for (int item = first; item < end; ++item) {
+                fn(*s, *buffers, p, t, item, *work);
+            }
         };
     };
 }
 
-/// Row y of plane p of slot 1, whole: the filter over the render window, from the Map's radii,
-/// and slot 0's pixels elsewhere, which only the halo holds and nothing reads.
+/// Row y of plane p of slot 1, outside the window: slot 0's pixels, which only the halo holds and
+/// nothing reads.
 std::function<PassRowFn(const PassScratch&)>
-filterWorker(const MorphologyStatePtr& state)
+copyWorker(const MorphologyStatePtr& state)
 {
     return [state](const PassScratch& scratch) -> PassRowFn {
-        state->reserve(scratch);
         const MorphologyState* s = state.get();
-        const float* const tables = state->tables.get();
-        const std::size_t planeTables = state->planeTables(scratch);
-        const int width = scratch.width;
-        const int height = scratch.height;
-        const RectI rect = scratch.rect;
-        const int x1 = std::max(s->roi.x1, rect.x1) - rect.x1;
-        const int x2 = std::max(x1, std::min(s->roi.x2, rect.x2) - rect.x1);
         const PassScratch* buffers = &scratch;
-        // The radii of one row, reused by every line of the chunk.
-        std::shared_ptr<std::vector<float>> radii = std::make_shared<std::vector<float>>(2 * (std::size_t)(x2 - x1));
 
-        return [s, tables, planeTables, width, height, rect, x1, x2, buffers, radii](int line) {
+        return [s, buffers](int line) {
+            const int height = buffers->height;
+            const int width = buffers->width;
             const int p = line / height;
             const int y = line % height;
+            const IErodeDilateKernels::TilePlane t = s->plane(*buffers, p);
             const std::size_t row = (std::size_t)y * width;
-            const float* const src = buffers->plane(0, p);
+            const float* const src = buffers->plane(0, p) + row;
             float* const dst = buffers->plane(1, p) + row;
-            const int yAbs = rect.y1 + y;
-            if ((yAbs < s->roi.y1) || (yAbs >= s->roi.y2) || (x1 == x2)) {
-                std::copy(src + row, src + row + width, dst);
+            const int r = y - t.y(s->plan, 0);
+            if ((r < t.r0) || (r >= t.r1) || (t.c0 == t.c1)) {
+                std::copy(src, src + width, dst);
 
                 return;
             }
-            std::copy(src + row, src + row + x1, dst);
-            std::copy(src + row + x2, src + row + width, dst + x2);
-            float* const rx = radii->data();
-            float* const ry = rx + (x2 - x1);
-            float last = s->map->at(rect.x1 + x1, yAbs);
-            float lastX = s->axisX.at(last);
-            float lastY = s->axisY.at(last);
-            for (int x = x1; x < x2; ++x) {
-                const float m = s->map->at(rect.x1 + x, yAbs);
-                if (m != last) {
-                    last = m;
-                    lastX = s->axisX.at(m);
-                    lastY = s->axisY.at(m);
-                }
-                rx[x - x1] = lastX;
-                ry[x - x1] = lastY;
-            }
-            IErodeDilateKernels::filterRow(src, tables + (std::size_t)p * planeTables, width, height, y, x1, x2, rx, ry, s->disc, s->takeMax, dst + x1);
+            const int x1 = t.x(s->plan, t.c0);
+            const int x2 = t.x(s->plan, t.c1);
+            std::copy(src, src + x1, dst);
+            std::copy(src + x2, src + width, dst + x2);
         };
     };
 }
+
+/// The passes of state's plan, the first carrying the halo of the whole list, and its growth when
+/// grow, and the last writing slot 1 outside the window.
+void
+tilePasses(const MorphologyStatePtr& state,
+           int haloX,
+           int haloY,
+           bool grow,
+           PassList* list)
+{
+    namespace K = IErodeDilateKernels;
+    const K::TilePlan& plan = state->plan;
+    std::vector<Pass> passes;
+    const auto add = [&passes, &state](const TileCountFn& count,
+                                       const TileItemFn& fn,
+                                       std::size_t taps) {
+        Pass pass = Pass::point(true, tileWorker(state, count, fn));
+        pass.tapsPerSample = std::max<std::size_t>(1, taps);
+        passes.push_back(pass);
+    };
+    const std::size_t levels = (std::size_t)plan.levels;
+    const std::size_t foldTaps = 4 * (2 * (std::size_t)plan.haloY + 1);
+
+    if (plan.strategy == K::TileStrategy::Columns) {
+        for (int b = 0; b < plan.columnBatchCount(); ++b) {
+            // The span extrema of every plane row at the batch's slots, then the slots' column
+            // tables, then the batch's pixels.
+            add([](const MorphologyState&, const K::TilePlane& t) { return t.height; },
+                [b](const MorphologyState& s, const PassScratch& scratch, int p, const K::TilePlane& t, int y, std::vector<float>& work) {
+                    int ca;
+                    int cb;
+                    K::columnBatchRange(s.plan, t, b, &ca, &cb);
+                    K::fillSpans(s.plan, t, ca, cb, y, s.tables.get() + (std::size_t)p * s.planeTables(scratch), work);
+                },
+                levels);
+            add([b](const MorphologyState& s, const K::TilePlane& t) {
+                int ca;
+                int cb;
+                K::columnBatchRange(s.plan, t, b, &ca, &cb);
+
+                return s.plan.slotStart[cb] - s.plan.slotStart[ca]; },
+                [](const MorphologyState& s, const PassScratch& scratch, int p, const K::TilePlane& t, int slot, std::vector<float>&) {
+                    K::buildColumn(s.plan, t, s.tables.get() + (std::size_t)p * s.planeTables(scratch) + (std::size_t)slot * s.plan.columnFloats(t.height));
+                },
+                (std::size_t)plan.columnLevels);
+            add([](const MorphologyState&, const K::TilePlane& t) { return t.r1 - t.r0; },
+                [b](const MorphologyState& s, const PassScratch& scratch, int p, const K::TilePlane& t, int i, std::vector<float>& work) {
+                    int ca;
+                    int cb;
+                    K::columnBatchRange(s.plan, t, b, &ca, &cb);
+                    K::answerRow(s.plan, t, ca, cb, t.r0 + i, s.tables.get() + (std::size_t)p * s.planeTables(scratch), s.elements(scratch, t, p, 0), work);
+                },
+                8);
+        }
+    } else {
+        for (int band = 0; band < plan.bandCount(); ++band) {
+            const auto bandRows = [band](const MorphologyState& s, const K::TilePlane& t) {
+                int ra;
+                int rb;
+                K::bandRange(s.plan, t, band, &ra, &rb);
+
+                return rb - ra;
+            };
+            for (int batch = 0; batch < plan.batchCount(band); ++batch) {
+                // The tables of the batch's rows, then the band's pixels folding those rows.
+                add([band, batch](const MorphologyState& s, const K::TilePlane& t) {
+                    int first;
+                    int count;
+                    K::batchRange(s.plan, t, band, batch, &first, &count);
+
+                    return count; },
+                    [band, batch](const MorphologyState& s, const PassScratch& scratch, int p, const K::TilePlane& t, int i, std::vector<float>&) {
+                        int first;
+                        int count;
+                        K::batchRange(s.plan, t, band, batch, &first, &count);
+                        const int y = first + i;
+                        float* const tableRow = s.tables.get() + (std::size_t)p * s.planeTables(scratch) + (std::size_t)i * s.plan.rowTableFloats(t.width);
+                        K::buildRowTable(t.src + (std::size_t)y * t.width, t.width, s.plan.levels, s.plan.takeMax, tableRow, (std::size_t)t.width);
+                    },
+                    levels);
+                add(bandRows, [band, batch](const MorphologyState& s, const PassScratch& scratch, int p, const K::TilePlane& t, int i, std::vector<float>& work) {
+                    int ra;
+                    int rb;
+                    K::bandRange(s.plan, t, band, &ra, &rb);
+                    int first;
+                    int count;
+                    K::batchRange(s.plan, t, band, batch, &first, &count);
+                    K::foldRows(s.plan, t, s.tables.get() + (std::size_t)p * s.planeTables(scratch), first, count, ra + i, s.elements(scratch, t, p, ra), work); }, foldTaps);
+            }
+            add(bandRows, [band](const MorphologyState& s, const PassScratch& scratch, int p, const K::TilePlane& t, int i, std::vector<float>& work) {
+                int ra;
+                int rb;
+                K::bandRange(s.plan, t, band, &ra, &rb);
+                K::finishRow(s.plan, t, ra + i, s.elements(scratch, t, p, ra), work); }, 4);
+        }
+    }
+    Pass copy = Pass::point(true, copyWorker(state));
+    passes.push_back(copy);
+
+    Pass& first = passes.front();
+    first.kind = PassKind::Gather;
+    first.haloX = haloX;
+    first.haloY = haloY;
+    first.growX = grow ? haloX : 0;
+    first.growY = grow ? haloY : 0;
+    for (Pass& pass : passes) {
+        pass.slot = 1;
+        list->passes.push_back(std::move(pass));
+    }
+} // tilePasses
 #ifdef NATRON_HAVE_GPU
 // The largest radius, in pixels, the GPU records: its ellipse arithmetic is in 32-bit integers.
 // A larger element stays on the CPU.
@@ -638,8 +1355,9 @@ recordIErodeDilateGpu(const PassGpuIO& io,
     IErodeDilateGpuConstants k {};
     k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u);
     k.exponent = params.map.exponent;
-    // A disconnected Map reads 1 everywhere, a connected one raw 0 outside its image.
-    k.outside = mapConnected ? params.map.remap(0.f) : 1.f;
+    // A disconnected Map reads 1 everywhere, a connected one 0 outside its image, neither
+    // remapped nor inverted.
+    k.outside = mapConnected ? 0.f : 1.f;
     k.blackRx = axisX.black;
     k.whiteRx = axisX.white;
     k.blackRy = axisY.black;
@@ -886,33 +1604,46 @@ IErodeDilateNode<MODE>::passes(const IErodeDilateParams& params,
     const int haloX = (int)std::ceil(rx);
     const int haloY = (int)std::ceil(ry);
 
-    MorphologyStatePtr state;
-    if (map) {
-        state = std::make_shared<MorphologyState>();
-        state->map = map;
-        state->axisX = axisX;
-        state->axisY = axisY;
-        state->disc = params.disc;
-        state->takeMax = kDilate;
-        state->roi = roi;
-        state->levels = IErodeDilateKernels::levelCount(haloX);
-    }
-
     list.scratchSlots = 2;
     list.resultSlot = 1;
 
-    list.passes.push_back(Pass::point(true, state ? tableWorker(state) : std::function<PassRowFn(const PassScratch&)>()));
+    if (!map) {
+        Pass halo = Pass::gather(haloX, haloY, true, std::function<PassRowFn(const PassScratch&)>());
+        halo.slot = 1;
+        // Up to four elements of two lookups per row.
+        halo.tapsPerSample = 8 * (2 * (std::size_t)haloY + 1);
+        // An erosion never spreads the region of definition.
+        if (!kDilate) {
+            halo.growX = 0;
+            halo.growY = 0;
+        }
+        list.passes.push_back(halo);
 
-    Pass filter = Pass::gather(haloX, haloY, true, state ? filterWorker(state) : std::function<PassRowFn(const PassScratch&)>());
-    filter.slot = 1;
-    // An erosion never spreads the region of definition.
-    if (!kDilate) {
-        filter.growX = 0;
-        filter.growY = 0;
+        return list;
     }
-    // Up to four elements of two lookups per row.
-    filter.tapsPerSample = 8 * (2 * (std::size_t)haloY + 1);
-    list.passes.push_back(filter);
+    MorphologyStatePtr state = std::make_shared<MorphologyState>();
+    state->map = map;
+    const std::shared_ptr<const MapPlane> plane = map;
+    const int x1 = roi.x1;
+    const int y1 = roi.y1;
+    const int width = roi.width();
+    const IErodeDilateKernels::TileRadiiFn radii = [plane, axisX, axisY, x1, y1, width](int r, float* rxRow, float* ryRow) {
+        float last = plane->at(x1, y1 + r);
+        float lastX = axisX.at(last);
+        float lastY = axisY.at(last);
+        for (int c = 0; c < width; ++c) {
+            const float m = plane->at(x1 + c, y1 + r);
+            if (m != last) {
+                last = m;
+                lastX = axisX.at(m);
+                lastY = axisY.at(m);
+            }
+            rxRow[c] = lastX;
+            ryRow[c] = lastY;
+        }
+    };
+    state->plan = IErodeDilateKernels::planTile(roi, radii, params.disc, kDilate, kTileBudgetFloats);
+    tilePasses(state, haloX, haloY, kDilate, &list);
 
     return list;
 } // IErodeDilateNode::passes

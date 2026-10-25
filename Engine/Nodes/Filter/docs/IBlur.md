@@ -15,8 +15,8 @@ node in the I-variant registry (`IBlur.reg.inc`); every knob they share has the 
   `map = shape(pow(clamp(m, 0, 1), 1 / gamma))`, Map Gamma being gamma (default 1, as the Gamma node: above 1 the
   Map brightens) and Map Response the shape, Linear (identity, the default) or Smooth (smoothstep, `3m² - 2m³`).
   Gamma 1 with Linear leaves the clamped value unchanged. The power is `mapGammaPow()` (`MapInput.cpp`), built from
-  basic float operations so the GPU repeats it exactly. Outside the Map's image the raw value is 0, so the invert
-  and remap still apply there. The size at a pixel is `lerp(sizeAtBlack, size, map)` per axis.
+  basic float operations so the GPU repeats it exactly. Outside the Map's image the Map value is 0, neither
+  inverted nor remapped, so a pixel there takes Size At Black. The size at a pixel is `lerp(sizeAtBlack, size, map)` per axis.
 - **No Map.** With the Map disconnected the node blurs at Size everywhere and shows a warning badge.
 - **Exact zero.** Where the size is 0 on both axes the output is the input bit for bit, with no ringing from the
   blurred pixels around it (`Size At Black` defaults to 0, so a black Map leaves its pixels unchanged).
@@ -25,7 +25,10 @@ node in the I-variant registry (`IBlur.reg.inc`); every knob they share has the 
   box from it in O(1), so the cost per pixel does not depend on the size. The radius gives the three boxes the
   variance of Blur's Gaussian of standard deviation size / 2.4, horizontally divided by the pixel aspect ratio as
   Blur does; a fractional radius covers the box's end pixels in part. At a constant size the result is within
-  about 2% RMS of Blur's FIR Gaussian (accepted in the milestone's decisions).
+  about 2% RMS of Blur's FIR Gaussian.
+- **NaN and infinity.** A NaN or an infinite pixel counts as 0 in the summed-area tables, on the CPU and the GPU
+  alike, so a box over it averages the finite pixels with a 0 in its place rather than turning NaN or infinite. A
+  pixel of size 0 keeps its value, NaN or infinite included.
 - **Region.** The region of interest, of the source and of the Map, grows by the three boxes' reach at the larger
   of Size and Size At Black, since the Map is not known when the region is requested. The source reads black
   outside its image, and the region of definition grows by the same reach unless Crop To Format clips it, as

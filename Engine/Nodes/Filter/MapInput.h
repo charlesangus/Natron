@@ -173,8 +173,8 @@ public:
 
     /**
      * @brief The Map values over window. A disconnected Map reads 1 everywhere, so the node runs
-     * at its full size. A connected one reads its raw samples as 0 outside its image, and when
-     * the channel does not resolve, before the remap. Fails on a Map image that is not float.
+     * at its full size. A connected one reads 0 outside its image, and everywhere when the
+     * channel does not resolve, without the remap or invert. Fails on a Map image that is not float.
      * Runs on the calling thread, which must not be a pool thread: it fetches and locks the image.
      **/
     StatusEnum read(EffectInstance* effect,
@@ -188,7 +188,7 @@ public:
 
     /**
      * @brief Fills plane over window with channel of a float image, remapped by params; a null
-     * image, or a pixel outside its bounds, reads raw 0.
+     * image, or a pixel outside its bounds, reads 0, neither remapped nor inverted.
      **/
     static void fill(const Image* image,
                      int channel,

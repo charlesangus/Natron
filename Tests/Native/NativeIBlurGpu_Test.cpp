@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -47,6 +49,7 @@
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -61,7 +64,7 @@ const double kTime = 1.;
 // The window every case renders: the project format, which is the parity source's.
 const RectI kWindow(0, 0, kParitySourceWidth, kParitySourceHeight);
 
-// The milestone's bound. The GPU sums each plane exactly in 64-bit integers and weights the box
+// The CPU/GPU parity bound. The GPU sums each plane exactly in 64-bit integers and weights the box
 // sums in two-float arithmetic, so the output is within a few float roundings of the CPU's double
 // sums; the radii, computed in float, add errors of the order of 1e-7.
 const ParityTolerance kIBlurTolerance = ParityTolerance::make(0., 1e-4);
@@ -269,7 +272,8 @@ TEST_F(NativeIBlurGpuTest, DisconnectedMapMatchesTheCpu)
     expectParity(std::vector<NodePtr>({ iblur }), iblur, kIBlurTolerance, "disconnected Map");
 }
 
-// A Map white over the right half only, outside its image on the left, which reads as black there.
+// A Map white over the right half only, outside its image on the left, which reads as 0 there,
+// inverted or not.
 TEST_F(NativeIBlurGpuTest, MapOutsideItsImageMatchesTheCpu)
 {
     const int half = kParitySourceWidth / 2;
@@ -279,6 +283,53 @@ TEST_F(NativeIBlurGpuTest, MapOutsideItsImageMatchesTheCpu)
     ASSERT_TRUE(bool(source) && bool(map) && bool(iblur));
 
     expectParity(std::vector<NodePtr>({ iblur }), iblur, kIBlurTolerance, "half Map");
+
+    // Inverted, the Map is still 0 beyond its image: Size At Black there, not Size.
+    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamSizeAtBlack, { 3., 2. }));
+    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamInvert, { 1. }));
+    expectParity(std::vector<NodePtr>({ iblur }), iblur, kIBlurTolerance, "half Map, inverted");
+}
+
+// NaN, +Inf and -Inf in the source count as 0 in both summed-area tables, so the CPU and the GPU
+// agree, and the blur is finite throughout. A Constant's color reads clamped to the largest
+// double, which is an infinity as a float; adding +Inf and -Inf gives the NaN.
+TEST_F(NativeIBlurGpuTest, NonFiniteSourceMatchesTheCpu)
+{
+    const double inf = std::numeric_limits<double>::infinity();
+    const RectI rect(10, 8, 22, 18);
+    NodePtr source = makeParitySource();
+    NodePtr positive = makeConstant(rect, { inf, inf, -inf, 0. });
+    NodePtr negative = makeConstant(rect, { -inf, 0., 0., 0. });
+    NodePtr plus1 = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+    NodePtr plus2 = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+    ASSERT_TRUE(bool(source) && bool(positive) && bool(negative) && bool(plus1) && bool(plus2));
+    ASSERT_TRUE(setKnobValue(plus1, kMergeParamOperation, std::string("plus")));
+    ASSERT_TRUE(setKnobValue(plus2, kMergeParamOperation, std::string("plus")));
+    connectNodes(source, plus1, 0, true);
+    connectNodes(positive, plus1, 1, true);
+    connectNodes(plus1, plus2, 0, true);
+    connectNodes(negative, plus2, 1, true);
+    // Red NaN, green +Inf and blue -Inf over the rectangle.
+    NodePtr iblur = makeIBlur(plus2, NodePtr(), 6.);
+    ASSERT_TRUE(bool(iblur));
+
+    const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ iblur }), iblur, kWindow, kTime);
+    if (result.skipped) {
+        return;
+    }
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_EQ(1u, result.gpuTasksPerNode.count(iblur->getScriptName_mt_safe())) << "the region fell back to the CPU";
+    ASSERT_EQ(result.cpu.size(), result.gpu.size());
+    std::size_t nonFinite = 0;
+    for (float v : result.cpu) {
+        if (!std::isfinite(v)) {
+            ++nonFinite;
+        }
+    }
+    EXPECT_EQ(0u, nonFinite);
+    const ImageDiff diff = compareImages(result.cpu, result.gpu, kIBlurTolerance);
+    EXPECT_GT(diff.compared, 0u);
+    EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
 }
 
 // Detail over a large offset, in one region with the Grade before it: a 32-bit float summed-area

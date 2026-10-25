@@ -62,7 +62,8 @@ double boxVariance(double r) WARN_UNUSED_RETURN;
 
 /**
  * @brief Row j + 1 of a table, satRow, from row j of the image, src: the running sums of src
- * along the row, satRow[0] being 0. Only the row sums; accumulateColumn() completes the table.
+ * along the row, satRow[0] being 0, a NaN or an infinity counting as 0. Only the row sums;
+ * accumulateColumn() completes the table.
  **/
 void prefixRow(const float* src,
                int width,

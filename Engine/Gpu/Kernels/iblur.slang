@@ -425,7 +425,7 @@ void iblur_shift(uint3 tid : SV_DispatchThreadID)
 }
 
 // prefixRow() of component comp of the slot at fromOffset, quantised, into row tid.x + 1 of the
-// table; row 0 too for the first row.
+// table; row 0 too for the first row. A NaN or an infinity counts as 0, as prefixRow()'s.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void iblur_rows(uint3 tid : SV_DispatchThreadID)

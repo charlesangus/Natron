@@ -1,4 +1,4 @@
-"""M184 gate: IBlur, IErode and IDilate in the GUI.
+"""GUI check: IBlur, IErode and IDilate in the GUI.
 
 (a) Eye blur: a CheckerBoard through IBlur whose Map is a feathered Roto ellipse. The viewer shows the
     blur strong inside the shape and none outside; the script compares the local contrast of two
@@ -213,7 +213,7 @@ try:
         ok = yield ("until", blur_settled, RENDER_TIMEOUT_S)
         check(ok, "IBlur blurs inside the Roto Map and leaves the outside sharp (outside contrast %.2f)" % sharp[0])
         yield ("sleep", SETTLE_MS)
-        save_viewer("m184-eye-blur.png")
+        save_viewer("variable-filters-eye-blur.png")
 
         # ---- (b) key --------------------------------------------------------------------
         gt.section("erode-dilate")
@@ -255,13 +255,13 @@ try:
         check(ok, "the disc shows in the viewer")
         yield ("sleep", 2500)
         counted("disc")()
-        save_viewer("m184-key-source.png")
+        save_viewer("variable-filters-key-source.png")
         l0, r0 = counts["disc"]
         base_ratio = r0 / float(l0)
         check(abs(l0 - r0) <= 0.05 * (l0 + r0), "the disc is symmetric (left %d, right %d lit)" % (l0, r0))
 
-        for key, node, shot_name, want_less in (("erode", ierode, "m184-ierode.png", True),
-                                                ("dilate", idilate, "m184-idilate.png", False)):
+        for key, node, shot_name, want_less in (("erode", ierode, "variable-filters-ierode.png", True),
+                                                ("dilate", idilate, "variable-filters-idilate.png", False)):
             show(node)
             fit_viewer()
             ok = yield ("until", counted(key), RENDER_TIMEOUT_S)
@@ -289,11 +289,11 @@ try:
         yield ("sleep", SETTLE_MS)
         frame_graph([iblur, ierode, idilate])
         yield ("sleep", SETTLE_MS)
-        save_graph("m184-nodegraph-icons.png")
+        save_graph("variable-filters-nodegraph-icons.png")
         frame_graph([checker, roto, iblur, disc, small, ramp, ierode, idilate])
         yield ("sleep", SETTLE_MS)
-        save_graph("m184-nodegraph-all.png")
-        gt.shot("m184-window.png")
+        save_graph("variable-filters-nodegraph-all.png")
+        gt.shot("variable-filters-window.png")
 
         faulthandler.cancel_dump_traceback_later()
 

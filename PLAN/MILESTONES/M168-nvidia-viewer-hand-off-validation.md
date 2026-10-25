@@ -25,3 +25,8 @@ Deps: M107 - GPU Viewer Hand-off, M91 - NVIDIA GPU Validation. Needs the NVIDIA 
   - size: M
 
 **Verification gate:** P1.T1's `RenderProfile_Test` case passes in a remote `fast --tests` build, and P1.T3's results section in this file shows every listed suite passing on the RTX 3070 Ti in both scheduler modes, `SUMMARY 0 failure(s)` for each UAT config, and the zero-copy result (or the missing piece and its fallback rung).
+
+## Decisions
+
+- 2026-10-25 — Claimed despite file overlap: P1.T1's `Engine/GpuRegionTask.cpp` overlaps an open M101 - Clean-Sheet Merge Node task (P7.T2), and its `Engine/RenderScheduler.*`/`Engine/RenderStats.*` overlap parked M64 - Tiled Rendering tasks. The user accepted the overlap (§8a would otherwise make M168 wait on both); the edits are small additive fields, so whichever lands second rebases.
+- 2026-10-25 — Freshness check passed against main 3c8553ec8 (M107 merged): references hold, line numbers drifted (`importStatsBefore` ~l.379, `importsAtUpload` ~l.421, `GpuRegionTimes` ~l.1286 in `RenderScheduler.cpp`, `formatRegionRecord` in `RenderStats.cpp` ~l.786). The suites live under `Tests/Native/` and `Tests/Gpu/`.

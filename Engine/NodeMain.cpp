@@ -697,12 +697,18 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
     if (_imp->effect) {
         _imp->effect->clearPluginMemoryChunks();
     }
+    // Destroying the knobs takes them out of their link groups, which can dissolve a group.
+    NodesList linkedNodes;
+    collectLinkedNodes(false, false, &linkedNodes);
     EffectInstancePtr effect;
     {
         QMutexLocker k(&_imp->effectTeardownMutex);
         effect.swap(_imp->effect);
     }
     effect.reset();
+    for (NodesList::const_iterator it = linkedNodes.begin(); it != linkedNodes.end(); ++it) {
+        Q_EMIT(*it)->linksChanged();
+    }
 
     ///If inside the group, remove it from the group
     ///the use_count() after the call to removeNode should be 2 and should be the shared_ptr held by the caller and the

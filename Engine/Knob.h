@@ -44,11 +44,12 @@
 
 #include "Global/GlobalDefines.h"
 
-#include "Engine/Variant.h"
 #include "Engine/AppManager.h" // for AppManager::createKnob
-#include "Engine/OverlaySupport.h"
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/KnobLinkGroup.h"
+#include "Engine/OverlaySupport.h"
+#include "Engine/Variant.h"
+#include "Engine/ViewIdx.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -1361,6 +1362,47 @@ public:
     virtual bool setKnobAsAliasOfThis(const KnobIPtr& master, bool doAlias) = 0;
 
     /**
+     * @brief Links a dimension of this knob two-way to a dimension of other: this dimension joins the
+     * link group of other's dimension, or a new one, and takes the group's value, animation and
+     * expression. An edit through any linked member then reaches every other linked member.
+     * A thisDimension of -1 links every dimension the two knobs have in common one-to-one, or every
+     * dimension of this knob to otherDimension when that is not -1.
+     * Returns false if the types are not compatible or nothing was linked.
+     **/
+    virtual bool linkTo(int thisDimension, const KnobIPtr& other, int otherDimension) = 0;
+
+    /**
+     * @brief Like linkTo() on every dimension, with groups that cannot be unlinked.
+     **/
+    virtual bool linkAsAlias(const KnobIPtr& other) = 0;
+
+    /**
+     * @brief Leaves every link group that is not permanent, keeping the current value, animation and
+     * expression. The knob stays known to those groups so that relinkToGroups() can rejoin them.
+     * Returns false if there was nothing to unlink.
+     **/
+    virtual bool unlinkFromGroups() = 0;
+
+    /**
+     * @brief Rejoins the groups left by unlinkFromGroups(), discarding this knob's own state for theirs.
+     **/
+    virtual bool relinkToGroups() = 0;
+
+    virtual bool isLinked(int dimension) const = 0;
+    virtual bool isLinkPermanent(int dimension) const = 0;
+    virtual bool hasRelinkableGroups() const = 0;
+
+    /**
+     * @brief The group the dimension is in, linked or not, or a null pointer.
+     **/
+    virtual KnobLinkGroupPtr getLinkGroup(int dimension) const = 0;
+
+    /**
+     * @brief For each linked dimension of this knob, the other dimensions currently linked to it.
+     **/
+    virtual std::vector<KnobLinkedDimension> getLinkedKnobs() const = 0;
+
+    /**
      * @brief Calls slaveTo with a value changed reason of eValueChangedReasonUserEdited.
      **/
     void onKnobSlavedTo(int dimension, const KnobIPtr& other, int otherDimension);
@@ -1818,6 +1860,15 @@ public:
                                             bool isUserKnob) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual KnobIPtr getAliasMaster() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool setKnobAsAliasOfThis(const KnobIPtr& master, bool doAlias) OVERRIDE FINAL;
+    virtual bool linkTo(int thisDimension, const KnobIPtr& other, int otherDimension) OVERRIDE FINAL;
+    virtual bool linkAsAlias(const KnobIPtr& other) OVERRIDE FINAL;
+    virtual bool unlinkFromGroups() OVERRIDE FINAL;
+    virtual bool relinkToGroups() OVERRIDE FINAL;
+    virtual bool isLinked(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isLinkPermanent(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool hasRelinkableGroups() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual KnobLinkGroupPtr getLinkGroup(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::vector<KnobLinkedDimension> getLinkedKnobs() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual U64 getContentHash() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual U64 getDimensionContentHash(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void invalidateContentHash() OVERRIDE FINAL;
@@ -1886,6 +1937,34 @@ private:
     U64 getOwnDimensionContentHash(int dimension) const;
     U64 getDimensionContentHashRecursive(int dimension, ContentHashPath& path) const;
 
+    void setLinkGroupInternal(int dimension, const KnobLinkGroupPtr& group);
+    bool linkDimensionTo(int dimension, const KnobIPtr& other, int otherDimension);
+    void leaveLinkGroup(int dimension);
+    void leaveAllLinkGroups();
+
+    /**
+     * @brief Detaches every remaining member of a group left with a single live member.
+     **/
+    static void dissolveLinkGroupIfAlone(const KnobLinkGroupPtr& group);
+
+    /**
+     * @brief Makes the given dimension match the group's state through this knob's own setters, with the
+     * given reason. Returns true if anything changed or was queued.
+     **/
+    bool adoptLinkGroupState(const KnobLinkGroupPtr& group, int dimension, double time, ViewSpec view, Natron::ValueChangedReasonEnum reason);
+
+    /**
+     * @brief Makes the keyframes of the given dimension match those of dimension 0 of state, through
+     * deleteValueAtTime(), setKeyFrame() and removeAnimationWithReason(). Returns true if anything changed.
+     **/
+    bool writeLinkCurveFrom(KnobI* state, int dimension, Natron::ValueChangedReasonEnum reason);
+
+    /**
+     * @brief Copies the state of the linked dimensions among dimension (or all of them if -1) to their
+     * groups and to every other linked member, re-evaluating each member that changed.
+     **/
+    void pushStateToLinkGroups(int dimension, double time, ViewSpec view, Natron::ValueChangedReasonEnum reason);
+
     virtual bool slaveToInternal(int dimension, const KnobIPtr &  other, int otherDimension, Natron::ValueChangedReasonEnum reason
                                  , bool ignoreMasterPersistence) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -1953,6 +2032,18 @@ protected:
 
     virtual void copyValuesFromCurve(int /*dim*/) {}
 
+    /**
+     * @brief Copies the value, animation and type-specific data of one dimension of other, but not its
+     * expression. Returns true if anything changed.
+     **/
+    virtual bool copyLinkStateFrom(KnobI* other, int dimension, int otherDimension, bool updateGui) = 0;
+
+    /**
+     * @brief Writes the static value of dimension 0 of state to the given dimension through this knob's
+     * setValue(), converted to this knob's type, so that a write while the holder renders is queued.
+     * Returns true if the value changed or was queued.
+     **/
+    virtual bool writeLinkValueFrom(KnobI* state, int dimension, Natron::ValueChangedReasonEnum reason) = 0;
 
     virtual void handleSignalSlotsForAliasLink(const KnobIPtr& /*alias*/,
                                                bool /*connect*/)
@@ -2384,6 +2475,10 @@ protected:
 private:
 
     virtual void copyValuesFromCurve(int dim) OVERRIDE FINAL;
+
+    virtual bool copyLinkStateFrom(KnobI* other, int dimension, int otherDimension, bool updateGui) OVERRIDE FINAL;
+
+    virtual bool writeLinkValueFrom(KnobI* state, int dimension, Natron::ValueChangedReasonEnum reason) OVERRIDE FINAL;
 
     virtual bool hasDefaultValueChanged(int dimension) const OVERRIDE FINAL;
 

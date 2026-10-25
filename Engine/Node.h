@@ -1237,6 +1237,44 @@ public:
     NodePtr getMasterNode() const;
 
     /**
+     * @brief Makes this node a Linked Node of other, which must be of the same plug-in: each knob declared
+     * by the plug-in or by the user, except buttons, pages, groups and separators, is linked two-way to the
+     * knob of the same name on other. Knobs of other that are already linked keep their groups, which
+     * this node joins. Refused for viewers and multi-instance nodes.
+     **/
+    bool linkAllKnobsTo(const NodePtr& other);
+
+    /**
+     * @brief False for the plug-ins whose nodes cannot be Linked Nodes (viewers).
+     **/
+    static bool canPluginBeLinkedNode(const std::string& pluginID);
+
+    /**
+     * @brief Unlinks every knob of this node from its link groups that are not permanent.
+     **/
+    bool unlinkAllKnobs();
+
+    /**
+     * @brief True if a knob of this node is linked to an active node through linkAllKnobsTo().
+     **/
+    bool isLinkedNode() const;
+
+    /**
+     * @brief The active nodes with a knob linked to a knob of this node through linkAllKnobsTo().
+     **/
+    void getLinkedNodes(NodesList* nodes) const;
+
+    /**
+     * @brief The active nodes with a knob linked to a knob of this node, however the link was made.
+     **/
+    void getKnobLinkedNodes(NodesList* nodes) const;
+
+private:
+    void collectLinkedNodes(bool nodeLinksOnly, bool activeOnly, NodesList* nodes) const;
+    void emitLinksChanged(const NodesList& alsoNotify);
+
+public:
+    /**
      * @brief Attempts to lock an image for render. If it successfully obtained the lock,
      * the thread can continue and render normally. If another thread is currently
      * rendering that image, this function will wait until the image is available for render again.
@@ -2134,6 +2172,10 @@ Q_SIGNALS:
 
     ///Called when a knob is either slaved or unslaved
     void knobsLinksChanged();
+
+    /// Emitted when a knob of this node joins or leaves a link group, or a node it is linked to is
+    /// deactivated, activated or destroyed.
+    void linksChanged();
 
     void knobSlaved();
 

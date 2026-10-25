@@ -58,7 +58,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check line numbers at claim
 
 ## Phase 146.1: Geometry-only curve context
 
-- [ ] M146.P1.T1 — Extract `RotoCurveContext` from `RotoContext`
+- [x] M146.P1.T1 — Extract `RotoCurveContext` from `RotoContext`
   - files: `Engine/RotoCurveContext.{h,cpp}` (new), `Engine/RotoContext.{h,cpp}`, `Engine/RotoContextPrivate.h`, `Engine/CMakeLists.txt`
   - approach:
     - Move the geometry-only parts into the base: item and layer management, `makeBezier`/`makeEllipse`/`makeSquare`, selection, auto-key and ripple-edit, feather link, serialization, the content hash, `evaluateChange` and Python field declaration.
@@ -68,7 +68,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check line numbers at claim
   - verify: the build passes and every existing Roto test (`RotoLayer_Test`, `RotoContentHash_Test`, `RotoFeatherDrag_Test`, `CurveTangentJoin_Test`) passes unchanged at the phase build.
   - size: L
 
-- [ ] M146.P1.T2 — Move per-curve render-node creation and tree refresh behind paint hooks
+- [x] M146.P1.T2 — Move per-curve render-node creation and tree refresh behind paint hooks
   - files: `Engine/RotoCurveContext.cpp`, `Engine/RotoContext.cpp`, `Engine/RotoDrawableItem.cpp`, `Engine/RotoLayer.cpp`, `Engine/RotoSerializationConvert.cpp`
   - approach:
     - Add virtual `onItemCreated(item)` and `onStructureChanged()` hooks to `RotoCurveContext`, both no-ops.
@@ -77,7 +77,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check line numbers at claim
   - verify: the existing Roto tests pass. A new case in `Tests/RotoLayer_Test.cpp` checks that a RotoPaint Bezier still gets its effect node. The geometry case is P3.T3.
   - size: M
 
-- [ ] M146.P1.T3 — Replace the context-creation gate and the generic engine gates with a capability
+- [x] M146.P1.T3 — Replace the context-creation gate and the generic engine gates with a capability
   - files: `Engine/EffectInstance.h`, `Engine/Node.{h,cpp}`, `Engine/NodeOverlay.cpp`, `Engine/ProjectSerializationConvert.cpp`, `Engine/NodeGroup.cpp`
   - approach:
     - Add a virtual `EffectInstance::getCurveContextKind()` returning `{None, Geometry, Paint}`. It defaults to `Paint` for `RotoPaint` and for the `isRotoNode()` OFX ID, and `None` otherwise.
@@ -86,7 +86,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check line numbers at claim
   - verify: the existing Roto tests and `Tests/Serialization/*` pass. A project with a RotoPaint node round-trips byte-identically before and after.
   - size: M
 
-- [ ] M146.P1.T4 — Move the curve editor's gates to the curve context
+- [x] M146.P1.T4 — Move the curve editor's gates to the curve context
   - files: `Gui/CurveEditor.cpp`, `Gui/CurveEditorUndoRedo.cpp`, `Gui/CurveWidget.cpp`
   - approach: replace each scouted `getRotoContext()` check and use with `getCurveContext()`, so a geometry host's curve and control-point animation shows in the curve editor.
   - verify: the build passes. The Xvfb gate check opens a RotoPaint node's curve animation in the curve editor.
@@ -94,7 +94,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check line numbers at claim
 
 ## Phase 146.2: Curve-editing interact
 
-- [ ] M146.P2.T1 — Extract `RotoCurveInteract` and move the undo commands onto it
+- [x] M146.P2.T1 — Extract `RotoCurveInteract` and move the undo commands onto it
   - files: `Engine/RotoCurveInteract.{h,cpp}` (new), `Engine/RotoPaintInteract.{h,cpp}`, `Engine/RotoUndoCommand.{h,cpp}`
   - approach:
     - The base holds the curve tool state (select all/points/curves/feather, add/remove points, remove feather, open-close, smooth, cusp, draw Bezier/BSpline/Ellipse/Rectangle/OpenBezier), the selection, and the built-Bezier state.
@@ -104,7 +104,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check line numbers at claim
   - verify: the build passes and the existing Roto tests pass at the phase build. Behaviour is checked at the gate's Xvfb pass.
   - size: L
 
-- [ ] M146.P2.T2 — Move the generic parts of the overlay entry points into `RotoCurveInteract`
+- [x] M146.P2.T2 — Move the generic parts of the overlay entry points into `RotoCurveInteract`
   - files: `Engine/RotoPaint.cpp`, `Engine/RotoCurveInteract.cpp`, `Engine/RotoPaintInteract.cpp`
   - approach:
     - Move the curve-editing bodies of `drawOverlay`, `onOverlayPenDown/Motion/Up/DoubleClicked`, `onOverlayKey*` and the focus and viewport-selection handlers into `RotoCurveInteract`.
@@ -113,7 +113,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check line numbers at claim
   - verify: the build passes. The gate's Xvfb pass covers RotoPaint Bezier drawing and editing, and a paint stroke.
   - size: L
 
-- [ ] M146.P2.T3 — Reusable curve toolbar builder
+- [x] M146.P2.T3 — Reusable curve toolbar builder
   - files: `Engine/RotoCurveInteract.{h,cpp}`, `Engine/RotoPaint.cpp`
   - approach:
     - Factor the toolbar page and the curve tool-button knob creation out of `RotoPaint::initializeKnobs` into `RotoCurveInteract::createToolbarKnobs(effect, toolSet)`. `toolSet` selects which curve tool groups to create. It returns the page, so the host can append its own tool groups.
@@ -123,7 +123,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check line numbers at claim
 
 ## Phase 146.3: Panel, viewer slot and proof host
 
-- [ ] M146.P3.T1 — `RotoPanel` for any curve host, with a host column hook
+- [x] M146.P3.T1 — `RotoPanel` for any curve host, with a host column hook
   - files: `Gui/RotoPanel.{h,cpp}`, `Gui/NodeSettingsPanel.cpp`, `Gui/DockablePanel.cpp`
   - approach:
     - Create the panel when `getCurveContext()` is non-null.
@@ -132,13 +132,13 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check line numbers at claim
   - verify: the build passes. The gate's Xvfb pass shows the RotoPaint panel unchanged, and the test host's panel without Operator/Color.
   - size: M
 
-- [ ] M146.P3.T2 — One viewer tool slot for every curve host
+- [x] M146.P3.T2 — One viewer tool slot for every curve host
   - files: `Gui/ViewerTabPrivate.cpp`, `Gui/ViewerTab30.cpp`
   - approach: replace the plugin-ID pair in `findActiveNodeContextForPlugin` with "any node whose curve context kind is not None", so opening any curve host's panel takes the tools from the previous one.
   - verify: the gate's Xvfb pass opens a Roto node, then a RotoPaint node, and only the second has active tools.
   - size: M
 
-- [ ] M146.P3.T3 — Test-only geometry curve host and its tests
+- [x] M146.P3.T3 — Test-only geometry curve host and its tests
   - files: `Tests/CurveHost_Test.cpp` (new), `Tests/wmain.cpp`, `Tests/CMakeLists.txt`
   - approach:
     - Register a test-only effect that returns `Geometry`, builds the toolbar with the Bezier and point tools only, and hosts a `RotoCurveInteract`.

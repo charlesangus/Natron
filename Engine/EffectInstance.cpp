@@ -4223,7 +4223,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
         *inputNb = getNode()->getPreferredInput();
         *inputTime = time;
         *inputView = view;
-    } else if (!isResolvingLayersPassThrough() && outputFollowsLayerKnob(time, view) && !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
+    } else if (processesNoChannel(time, view)) {
         // The selection is resolved against the pass-through input, so choosing that input
         // cannot depend on the selection: while it is being chosen only the plug-in answers.
         // An unprocessed output then shows that input, not the preferred one: a Switch whose
@@ -4743,6 +4743,13 @@ EffectInstance::isResolvingLayersPassThrough() const
     return tls && tls->resolvingLayersPassThrough;
 }
 
+bool
+EffectInstance::processesNoChannel(double time,
+                                   ViewIdx view) const
+{
+    return !isResolvingLayersPassThrough() && outputFollowsLayerKnob(time, view) && !getNode()->hasAtLeastOneChannelToProcess(time, view);
+}
+
 void
 EffectInstance::getLayersPassThroughInput(double time,
                                           ViewIdx view,
@@ -5014,9 +5021,11 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         }
     }
 
-    // A node disabled at `time`, or one that outputs its pass-through input unchanged there,
-    // produces no layer of its own and every layer of that input passes through.
-    if (getNode()->isNodeDisabled(time) || presentsOnlyPassThroughLayers(time, view)) {
+    // A node disabled at `time`, one that outputs its pass-through input unchanged there, or one
+    // whose selection processes no channel (an identity of that input, as isIdentity_public()
+    // answers) produces no layer of its own and every layer of that input passes through. A
+    // target layer the input lacks is then not presented, as nothing would write it.
+    if (getNode()->isNodeDisabled(time) || presentsOnlyPassThroughLayers(time, view) || processesNoChannel(time, view)) {
         ViewIdx ptView;
         getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
         *passThroughView = ptView;

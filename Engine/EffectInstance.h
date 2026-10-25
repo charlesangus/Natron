@@ -2351,6 +2351,12 @@ public:
 private:
     bool isResolvingLayersPassThrough() const;
 
+    /**
+     * @brief Whether the output follows the layer knob and its selection processes no channel,
+     * which makes the effect an identity of its pass-through input (see isIdentity_public()).
+     **/
+    bool processesNoChannel(double time, ViewIdx view) const;
+
     void getComponentsNeededDefault(double time, ViewIdx view,
                                     EffectInstance::ComponentsNeededMap* comps,
                                     std::list<ImageLayerDesc>* passThroughLayers,

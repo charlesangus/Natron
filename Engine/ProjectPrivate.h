@@ -192,6 +192,14 @@ public:
     void restoreRFVVariables(const std::list<Serialization::KnobSerialization>& projectSerializedValues);
 
     /**
+     * @brief Restores the expressions and links saved with the project's variables, the way a
+     * node's user knobs get theirs. Called once every node exists, since either may refer to one.
+     * A link whose target is missing is left out with a load warning.
+     **/
+    void restoreRFVVariableLinksAndExpressions(const std::list<Serialization::KnobSerialization>& projectSerializedValues,
+                                               const NodesList& allNodes);
+
+    /**
      * @brief Deletes the project's Reverse-Flow Variables, leaving rfvGroup empty.
      **/
     void clearRFVVariables();

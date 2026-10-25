@@ -693,6 +693,7 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
     AppInstancePtr shownApp = shownNode ? shownNode->getApp() : AppInstancePtr();
     if (_settingsPanel && !_settingsPanel->isClosed() && shownApp && shownApp->getTimeLine()) {
         shownNode->getEffectInstance()->refreshAfterTimeChange(false, shownApp->getTimeLine()->currentFrame());
+        shownNode->getEffectInstance()->onSettingsPanelOpened();
     }
 
     if (hideUnmodified) {

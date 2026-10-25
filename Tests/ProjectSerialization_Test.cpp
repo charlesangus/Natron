@@ -870,3 +870,35 @@ TEST_F(BaseTest, ProjectRFVVariablesSurviveSaveAndLoad)
     }
     EXPECT_DOUBLE_EQ(rampMid, ramp2->getValueAtTime(5., 0));
 }
+
+// A project variable's expression is restored once the nodes are, so it is still there after a
+// save and load.
+TEST_F(BaseTest, ProjectRFVVariableExpressionSurvivesSaveAndLoad)
+{
+    ProjectPtr project = getApp()->getProject();
+    KnobGroupPtr group = project->getRFVGroup();
+    ASSERT_TRUE(group != nullptr);
+
+    KnobDoublePtr doubled = project->createDoubleKnob("rfvDoubled", "Doubled", 1);
+    ASSERT_TRUE(doubled != nullptr);
+    ASSERT_TRUE(group->addKnob(doubled));
+    doubled->setExpression(0, "frame*2", false, false);
+    ASSERT_EQ(std::string("frame*2"), doubled->getExpression(0));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("rfvexpression.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+    EXPECT_FALSE(bool(project->getKnobByName("rfvDoubled")));
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    KnobIPtr doubled2 = project->getKnobByName("rfvDoubled");
+    ASSERT_TRUE(doubled2 != nullptr);
+    EXPECT_TRUE(doubled2->getParentKnob() == project->getRFVGroup());
+    EXPECT_EQ(std::string("frame*2"), doubled2->getExpression(0));
+}

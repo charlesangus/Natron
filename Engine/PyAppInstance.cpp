@@ -618,7 +618,7 @@ projectForNewRFV(const AppInstancePtr& app,
     } else if (project->getKnobByName(nameStd)) {
         error = nameStd + ": the project already has a parameter with that name";
     } else if (RFV::isAppAttributeName(app, nameStd)) {
-        error = nameStd + ": the name is an attribute of the App class";
+        error = nameStd + ": the name is an attribute of the app object";
     }
     if (!error.empty()) {
         PyErr_SetString(PyExc_ValueError, error.c_str());

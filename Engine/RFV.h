@@ -78,8 +78,11 @@ bool isAdmittedInRFVGroup(const KnobGroup& group, const KnobIPtr& knob);
 bool isValidVariableName(const std::string& name);
 
 /**
- * @brief Whether the name is an attribute of the app's Python App class (or its GUI subclass). A
- * project variable is declared as app.<name>, so such a name would hide the attribute.
+ * @brief Whether the name is taken on the app's Python object: an attribute of its App class (or
+ * its GUI subclass), the script name of a top-level node, or any other attribute the object
+ * holds. A project variable is declared as app.<name>, so such a name would hide the attribute.
+ * The name of one of the project's own parameters, which is declared the same way, is only
+ * reported when the App class has it.
  **/
 bool isAppAttributeName(const AppInstancePtr& app, const std::string& name);
 
@@ -127,7 +130,7 @@ KnobIPtr addExistingVariable(KnobHolder* holder, const std::string& name, std::s
 /**
  * @brief Whether promoteToProject() would copy the knob into the project. When it would not,
  * reason says why: the knob is not a node's variable, or the project already has a parameter
- * with its name, or its name is an attribute of the App class.
+ * with its name, or its name is taken on the app object (see isAppAttributeName()).
  **/
 bool canPromoteToProject(const KnobIPtr& knob, std::string* reason = nullptr);
 
@@ -172,6 +175,12 @@ public:
     }
 
 private:
+    /**
+     * @brief The project's copy: the knob redo() made while it is still in the project, otherwise
+     * the child of the project's RFV group that now has its name.
+     **/
+    KnobIPtr findProjectVariable(const Project& project) const;
+
     KnobIWPtr _variable;
     ProjectWPtr _project;
     std::string _name;

@@ -39,6 +39,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
 #include "Engine/Project.h"
+#include "Engine/UndoKnobRef.h"
 
 #include "Serialization/KnobSerialization.h"
 
@@ -96,6 +97,14 @@ bool
 isAppAttributeName(const AppInstancePtr& app,
                    const std::string& name)
 {
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    // A top-level node is app.<script name>, whether or not Python has been told of it yet.
+    if (project && project->getNodeByName(name)) {
+        return true;
+    }
+    // The project's own parameters are app.<name> too; the caller decides about those.
+    const bool isProjectParam = project && project->getKnobByName(name);
+
     bool found = false;
     PythonGILLocker pgl;
     PyObject* mainModule = NATRON_PYTHON_NAMESPACE::getMainModule();
@@ -103,6 +112,9 @@ isAppAttributeName(const AppInstancePtr& app,
 
     if (appObject) {
         found = PyObject_HasAttrString((PyObject*)Py_TYPE(appObject), name.c_str());
+        if (!found && !isProjectParam) {
+            found = PyObject_HasAttrString(appObject, name.c_str());
+        }
         Py_DECREF(appObject);
     } else {
         PyErr_Clear();
@@ -339,7 +351,7 @@ canPromoteToProject(const KnobIPtr& knob,
         } else if (existing) {
             error = "The project already has a parameter named " + name;
         } else if (isAppAttributeName(app, name)) {
-            error = name + " is an attribute of the App class, so it cannot be a project variable";
+            error = name + " is an attribute of the app object, so it cannot be a project variable";
         }
     }
     if (reason) {
@@ -445,8 +457,8 @@ PromoteToProjectCommand::undo()
 {
     _error.clear();
     ProjectPtr project = _project.lock();
-    KnobIPtr copy = _copy.lock();
-    if (!project || !copy || (copy->getHolder() != project.get())) {
+    KnobIPtr copy = project ? findProjectVariable(*project) : KnobIPtr();
+    if (!copy) {
         _error = "The project variable " + _name + " is gone";
 
         return;
@@ -461,6 +473,25 @@ PromoteToProjectCommand::undo()
     if (app) {
         app->refreshProjectParamsInPython();
     }
+}
+
+KnobIPtr
+PromoteToProjectCommand::findProjectVariable(const Project& project) const
+{
+    KnobIPtr copy = lockUndoKnob(_copy);
+    if (copy && (copy->getHolder() == &project)) {
+        return copy;
+    }
+    // Editing the variable in the project's dialog replaces the knob with one of the same name.
+    KnobGroupPtr group = project.getRFVGroup();
+    const KnobsVec children = group ? group->getChildren() : KnobsVec();
+    for (KnobsVec::const_iterator it = children.begin(); it != children.end(); ++it) {
+        if ((*it)->getName() == _name) {
+            return *it;
+        }
+    }
+
+    return KnobIPtr();
 }
 
 KnobIPtr

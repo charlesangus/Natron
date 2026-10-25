@@ -30,6 +30,7 @@
 #include <memory>
 #include <stdexcept>
 
+#include <QCoreApplication>
 #include <QUndoCommand>
 
 #include "Engine/AppManager.h"
@@ -39,6 +40,7 @@
 #include "Engine/RFV.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
+#include "Engine/UndoKnobRef.h"
 #include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 
@@ -874,23 +876,19 @@ private:
     std::shared_ptr<RFV::PromoteToProjectCommand> _command;
 };
 
-} // namespace
-
+// Runs once the right-click menu and the slot that queued it have returned: promoting rebuilds
+// the node's user knobs, and with them the GUI of the knob whose menu asked for it.
 void
-KnobGui::onPromoteToProjectActionTriggered()
+promoteToProjectNow(const KnobIPtr& knob,
+                    Gui* gui)
 {
-    // Promoting moves the variable to its node's Global Variables group, and rebuilding the node's
-    // user knobs then drops the panel's reference to this.
-    KnobGuiPtr self = shared_from_this();
-    KnobIPtr knob = getKnob();
     std::string error;
     if (!RFV::canPromoteToProject(knob, &error)) {
-        Dialogs::errorDialog(tr("Add to project variables").toStdString(), error);
+        Dialogs::errorDialog(KnobGui::tr("Add to project variables").toStdString(), error);
 
         return;
     }
     std::shared_ptr<RFV::PromoteToProjectCommand> command = std::make_shared<RFV::PromoteToProjectCommand>(knob);
-    Gui* gui = _imp->container ? _imp->container->getGui() : 0;
     UndoHistory* history = gui ? gui->getUndoHistory() : 0;
     ProjectPtr project = knob->getHolder()->getApp()->getProject();
     if (history) {
@@ -899,8 +897,24 @@ KnobGui::onPromoteToProjectActionTriggered()
         command->redo();
     }
     if (!command->getProjectVariable()) {
-        Dialogs::errorDialog(tr("Add to project variables").toStdString(), command->getError());
+        Dialogs::errorDialog(KnobGui::tr("Add to project variables").toStdString(), command->getError());
     }
+}
+
+} // namespace
+
+void
+KnobGui::onPromoteToProjectActionTriggered()
+{
+    KnobIWPtr knob = getKnob();
+    Gui* gui = _imp->container ? _imp->container->getGui() : 0;
+    // The window outlives the panels; were it to go first, the queued call would go with it.
+    QObject* context = gui ? static_cast<QObject*>(gui) : QCoreApplication::instance();
+    QMetaObject::invokeMethod(context, [knob, gui]() {
+        KnobIPtr variable = lockUndoKnob(knob);
+        if (variable) {
+            promoteToProjectNow(variable, gui);
+        } }, Qt::QueuedConnection);
 }
 
 KnobIPtr

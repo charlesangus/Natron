@@ -573,6 +573,20 @@ public:
     }
 
     /**
+     * @brief When set, the user changes the selection only by picking an entry in the menu: the
+     * mouse wheel and the arrow keys leave it alone, for a menu whose entries act when picked.
+     **/
+    void setMenuOnlySelection(bool menuOnly)
+    {
+        _menuOnlySelection = menuOnly;
+    }
+
+    bool isMenuOnlySelection() const
+    {
+        return _menuOnlySelection;
+    }
+
+    /**
      * @brief When set, the user picking the entry that is already selected still calls
      * knobChanged, as a user edit. For a menu that stands for state it does not hold itself,
      * such as whether the user chose its value at all.
@@ -631,6 +645,7 @@ private:
     bool _addNewChoice;
     static const std::string _typeNameStr;
     bool _isCascading;
+    bool _menuOnlySelection;
     bool _notifiesOnReselect;
 };
 

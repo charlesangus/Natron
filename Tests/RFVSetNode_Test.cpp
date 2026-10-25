@@ -32,6 +32,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
@@ -50,6 +51,7 @@
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
 #include "Engine/Project.h"
+#include "Engine/PythonUndoCommands.h"
 #include "Engine/RFV.h"
 #include "Engine/RectI.h"
 #include "Engine/UndoCommand.h"
@@ -550,6 +552,13 @@ offers(const KnobChoicePtr& choice,
     return offeredIndex(choice, name) > 0;
 }
 
+// The Set node adds the chosen variable from the event loop, once the selection has returned.
+void
+runQueuedAdds()
+{
+    QCoreApplication::sendPostedEvents();
+}
+
 } // namespace
 
 TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
@@ -601,7 +610,7 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     EXPECT_EQ(std::string(kReverseFlowVariableSetExistingVariablePrompt), choice->getEntry(0).id);
 
     // Opening the panel lists the project's and the other node's variables, project first.
-    effect->refreshAfterTimeChange(false, time);
+    effect->onSettingsPanelOpened();
     const std::vector<std::string> before = offeredNames(choice);
     ASSERT_TRUE(offers(choice, "rfvExistingA"));
     ASSERT_TRUE(offers(choice, "rfvExistingB"));
@@ -611,6 +620,8 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     // Choosing the project's variable adds a matching, unlinked, unanimated variable after the
     // drop-down, since the project declares its name.
     choice->setValue(offeredIndex(choice, "rfvExistingA"));
+    EXPECT_TRUE(setNode->getKnobByName("rfvExistingA") == nullptr);
+    runQueuedAdds();
     EXPECT_EQ(0, choice->getValue());
     KnobDouble* a = dynamic_cast<KnobDouble*>(setNode->getKnobByName("rfvExistingA").get());
     ASSERT_TRUE(a != NULL);
@@ -636,6 +647,7 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     // Choosing the other node's variable adds a String with its value, to the Variables group
     // since the project does not declare its name.
     choice->setValue(offeredIndex(choice, "rfvExistingB"));
+    runQueuedAdds();
     EXPECT_EQ(0, choice->getValue());
     KnobString* b = dynamic_cast<KnobString*>(setNode->getKnobByName("rfvExistingB").get());
     ASSERT_TRUE(b != NULL);
@@ -653,7 +665,7 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     EXPECT_EQ(expectedDeclared, declared);
 
     // Names already on the node are not offered again, even after the panel reopens.
-    effect->refreshAfterTimeChange(false, time);
+    effect->onSettingsPanelOpened();
     EXPECT_FALSE(offers(choice, "rfvExistingA"));
     EXPECT_FALSE(offers(choice, "rfvExistingB"));
     EXPECT_EQ(before.size() - 2, offeredNames(choice).size());
@@ -769,7 +781,7 @@ TEST_F(BaseTest, RFVSetNodeExistingVariableAddUndoesAndRedoesAsOneStep)
     KnobDoublePtr local = effect->createDoubleKnob("rfvUndoLocal", "Undo Local", 1);
     ASSERT_TRUE(group->addKnob(local));
     effect->recreateUserKnobs(false);
-    effect->refreshAfterTimeChange(false, effect->getCurrentTime());
+    effect->onSettingsPanelOpened();
     ASSERT_TRUE(offers(choice, "rfvUndoAdd"));
 
     // Neither the drop-down nor its entries are saved: it is no user knob of the layout.
@@ -779,10 +791,14 @@ TEST_F(BaseTest, RFVSetNodeExistingVariableAddUndoesAndRedoesAsOneStep)
 
     std::shared_ptr<CollectingRecorder> recorder = std::make_shared<CollectingRecorder>();
     getApp()->setUndoRecorder(recorder);
-    {
-        UndoStepGuard step(getApp(), "add existing variable");
-        choice->setValue(offeredIndex(choice, "rfvUndoAdd"));
-    }
+    // The pick itself records nothing; the queued add is a step of its own.
+    choice->setValue(offeredIndex(choice, "rfvUndoAdd"));
+    EXPECT_TRUE(recorder->commands.empty());
+    EXPECT_TRUE(setNode->getKnobByName("rfvUndoAdd") == nullptr);
+    const std::uint64_t serialBefore = recorder->serial;
+    runQueuedAdds();
+    EXPECT_EQ(serialBefore + 1, recorder->serial);
+    EXPECT_EQ(0, recorder->depth);
     ASSERT_FALSE(recorder->commands.empty());
     ASSERT_TRUE(setNode->getKnobByName("rfvUndoAdd") != nullptr);
     EXPECT_TRUE(setNode->getKnobByName("rfvUndoAdd")->getParentKnob() == globalGroup);
@@ -807,7 +823,7 @@ TEST_F(BaseTest, RFVSetNodeExistingVariableAddUndoesAndRedoesAsOneStep)
     EXPECT_TRUE(localAfterUndo->getParentKnob() == group);
     EXPECT_EQ(std::vector<std::string>(1, "rfvUndoLocal"), childNames(group));
     EXPECT_EQ(std::vector<std::string>(1, "rfvUndoLocal"), declaredNames(RFV::getDeclaredVariables(effect.get())));
-    effect->refreshAfterTimeChange(false, effect->getCurrentTime());
+    effect->onSettingsPanelOpened();
     EXPECT_TRUE(offers(choice, "rfvUndoAdd"));
 
     {
@@ -897,4 +913,139 @@ TEST_F(BaseTest, RFVSetNodeVariablesFollowTheProjectsNames)
     EXPECT_EQ(localChildren, childNames(group2));
     EXPECT_EQ(std::vector<std::string>(1, kReverseFlowVariableSetParamExistingVariable), childNames(globalGroup2));
     EXPECT_TRUE(RFV::isNodeVariable(setNode2->getKnobByName("rfvFollowShared")));
+}
+
+// The drop-down lists what the project declares when its panel opens and when its menu opens,
+// not on every frame change, and only a pick from the menu adds a variable.
+TEST_F(BaseTest, RFVSetNodeExistingVariableMenuRefreshesWhenOpened)
+{
+    ProjectPtr project = getApp()->getProject();
+    KnobGroupPtr projectGroup = project->getRFVGroup();
+    ASSERT_TRUE(projectGroup != nullptr);
+
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(setNode));
+    EffectInstancePtr effect = setNode->getEffectInstance();
+    KnobChoicePtr choice = existingVariableOf(setNode);
+    ASSERT_TRUE(choice != nullptr);
+    EXPECT_TRUE(choice->isMenuOnlySelection());
+    effect->onSettingsPanelOpened();
+
+    KnobDoublePtr late = project->createDoubleKnob("rfvMenuLate", "Late", 1);
+    ASSERT_TRUE(projectGroup->addKnob(late));
+    project->recreateUserKnobs(false);
+
+    effect->refreshAfterTimeChange(false, effect->getCurrentTime() + 1.);
+    EXPECT_FALSE(offers(choice, "rfvMenuLate"));
+    effect->refreshChoiceEntries(choice.get());
+    EXPECT_TRUE(offers(choice, "rfvMenuLate"));
+
+    KnobDoublePtr later = project->createDoubleKnob("rfvMenuLater", "Later", 1);
+    ASSERT_TRUE(projectGroup->addKnob(later));
+    project->recreateUserKnobs(false);
+    EXPECT_FALSE(offers(choice, "rfvMenuLater"));
+    effect->onSettingsPanelOpened();
+    EXPECT_TRUE(offers(choice, "rfvMenuLater"));
+}
+
+// Editing a project variable in the project's dialog replaces its knob; undoing the promote that
+// made it must still remove it.
+TEST_F(BaseTest, RFVSetNodeVariablePromoteUndoFindsTheRecreatedProjectVariable)
+{
+    ProjectPtr project = getApp()->getProject();
+    KnobGroupPtr projectGroup = project->getRFVGroup();
+    ASSERT_TRUE(projectGroup != nullptr);
+
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(setNode));
+    EffectInstancePtr effect = setNode->getEffectInstance();
+    KnobGroupPtr group = variablesGroupOf(setNode);
+    ASSERT_TRUE(group != nullptr);
+    KnobDoublePtr variable = effect->createDoubleKnob("rfvRecreated", "Recreated", 1);
+    ASSERT_TRUE(group->addKnob(variable));
+    effect->recreateUserKnobs(false);
+    const std::size_t projectVariableCount = projectGroup->getChildren().size();
+
+    RFV::PromoteToProjectCommand command(variable);
+    command.redo();
+    KnobIPtr promoted = command.getProjectVariable();
+    ASSERT_TRUE(promoted != nullptr) << command.getError();
+
+    // What the dialog does: delete the knob and make a new one of the same name in its place.
+    project->deleteKnob(promoted.get(), true);
+    promoted.reset();
+    KnobDoublePtr edited = project->createDoubleKnob("rfvRecreated", "Recreated, edited", 1);
+    ASSERT_TRUE(projectGroup->addKnob(edited));
+    project->recreateUserKnobs(false);
+    ASSERT_TRUE(project->getKnobByName("rfvRecreated") == edited);
+
+    command.undo();
+    EXPECT_TRUE(command.getError().empty()) << command.getError();
+    EXPECT_TRUE(project->getKnobByName("rfvRecreated") == nullptr);
+    EXPECT_EQ(projectVariableCount, projectGroup->getChildren().size());
+    edited.reset();
+
+    // Redo brings back the variable as undo found it.
+    command.redo();
+    KnobIPtr restored = command.getProjectVariable();
+    ASSERT_TRUE(restored != nullptr) << command.getError();
+    EXPECT_EQ(std::string("Recreated, edited"), restored->getLabel());
+    EXPECT_TRUE(restored->getParentKnob() == projectGroup);
+}
+
+// Redoing a promote makes a new project knob; an edit of the copy recorded after the promote
+// addresses the knob by name, so it still undoes and redoes on the new one.
+TEST_F(BaseTest, RFVSetNodeVariablePromoteRedoKeepsLaterEditsUndoable)
+{
+    ProjectPtr project = getApp()->getProject();
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(setNode));
+    EffectInstancePtr effect = setNode->getEffectInstance();
+    KnobGroupPtr group = variablesGroupOf(setNode);
+    ASSERT_TRUE(group != nullptr);
+    KnobDoublePtr variable = effect->createDoubleKnob("rfvEditedLater", "Edited Later", 1);
+    ASSERT_TRUE(group->addKnob(variable));
+    effect->recreateUserKnobs(false);
+    variable->setValue(2.);
+
+    RFV::PromoteToProjectCommand promote(variable);
+    promote.redo();
+    ASSERT_TRUE(promote.getProjectVariable() != nullptr) << promote.getError();
+
+    std::shared_ptr<CollectingRecorder> recorder = std::make_shared<CollectingRecorder>();
+    getApp()->setUndoRecorder(recorder);
+    {
+        UndoStepGuard step(getApp(), "edit the project variable");
+        KnobIPtr promoted = promote.getProjectVariable();
+        recordPythonKnobEdit(promoted);
+        std::dynamic_pointer_cast<KnobDouble>(promoted)->setValue(5.);
+    }
+    ASSERT_EQ(1u, recorder->commands.size());
+    const UndoCommandPtr edit = recorder->commands.front();
+    getApp()->setUndoRecorder(UndoRecorderPtr());
+
+    {
+        UndoReplayGuard replaying(getApp());
+        edit->undo();
+    }
+    EXPECT_DOUBLE_EQ(2., std::dynamic_pointer_cast<KnobDouble>(project->getKnobByName("rfvEditedLater"))->getValue());
+    promote.undo();
+    ASSERT_TRUE(project->getKnobByName("rfvEditedLater") == nullptr);
+    promote.redo();
+    KnobDoublePtr restored = std::dynamic_pointer_cast<KnobDouble>(promote.getProjectVariable());
+    ASSERT_TRUE(restored != nullptr) << promote.getError();
+    EXPECT_DOUBLE_EQ(2., restored->getValue());
+
+    {
+        UndoReplayGuard replaying(getApp());
+        edit->redo();
+    }
+    EXPECT_DOUBLE_EQ(5., restored->getValue());
+    {
+        UndoReplayGuard replaying(getApp());
+        edit->undo();
+    }
+    EXPECT_DOUBLE_EQ(2., restored->getValue());
+
+    recorder->commands.clear();
 }

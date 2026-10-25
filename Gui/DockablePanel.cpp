@@ -1041,6 +1041,7 @@ DockablePanel::setClosedInternal(bool c)
                     if (timeline) {
                         internalNode->getEffectInstance()->refreshAfterTimeChange( false, timeline->currentFrame() );
                     }
+                    internalNode->getEffectInstance()->onSettingsPanelOpened();
                 }
             }
         }
@@ -1623,7 +1624,10 @@ DockablePanel::onRightClickMenuRequested(const QPoint & pos)
         } else if (ret == removeAnimation) {
             removeAnimationOnAllParameters();
         } else if (ret == userParams) {
-            onManageUserParametersActionTriggered();
+            // The emitter is a row or page of the panel, whose mouse press is still on the stack.
+            // The dialog rebuilds the user pages, which deletes that widget if it is in one, so
+            // it opens once the press has returned.
+            QMetaObject::invokeMethod(this, "onManageUserParametersActionTriggered", Qt::QueuedConnection);
         }
     }
 } // onRightClickMenuRequested

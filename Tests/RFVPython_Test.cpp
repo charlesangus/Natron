@@ -37,6 +37,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 
@@ -186,6 +187,46 @@ TEST_F(RFVPythonTest, RefusesTheNameOfAnAppAttribute)
     ProjectPtr project = getApp()->getProject();
     EXPECT_TRUE(projectVariableNames(project).empty());
     EXPECT_FALSE(bool(project->getKnobByName("createNode")));
+}
+
+// app.<script name> is a top-level node; a project variable of that name would replace it.
+TEST_F(RFVPythonTest, RefusesTheNameOfANodeOrOfAnotherAppAttribute)
+{
+    const std::string a = app();
+    std::string error;
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    ASSERT_TRUE(bool(dot));
+    const std::string dotName = dot->getScriptName();
+    EXPECT_TRUE(RFV::isAppAttributeName(getApp(), dotName));
+    expectValueError("createRFVDoubleParam('" + dotName + "', 'Gain')");
+    EXPECT_FALSE(bool(project->getKnobByName(dotName)));
+    EXPECT_TRUE(run("assert " + a + "." + dotName + ".getScriptName() == '" + dotName + "'\n", &error)) << error;
+
+    // Nor can a Set node's variable of that name be added to the project variables.
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(setNode));
+    EffectInstancePtr effect = setNode->getEffectInstance();
+    KnobGroupPtr group = std::dynamic_pointer_cast<KnobGroup>(setNode->getKnobByName(kReverseFlowVariableSetParamVariables));
+    ASSERT_TRUE(group != nullptr);
+    KnobDoublePtr variable = effect->createDoubleKnob(dotName, "Named after a node", 1);
+    ASSERT_TRUE(group->addKnob(variable));
+    effect->recreateUserKnobs(false);
+    std::string reason;
+    EXPECT_FALSE(RFV::canPromoteToProject(variable, &reason));
+    EXPECT_FALSE(reason.empty());
+    EXPECT_TRUE(RFV::promoteToProject(variable) == nullptr);
+    EXPECT_FALSE(bool(project->getKnobByName(dotName)));
+
+    // An attribute a script set on the app object is taken too.
+    ASSERT_TRUE(run(a + ".rfvScriptAttribute = 1\n", &error)) << error;
+    expectValueError("createRFVDoubleParam('rfvScriptAttribute', 'Taken')");
+
+    // The project's own variable is app.<name> as well, but that name stays its own.
+    ASSERT_TRUE(run(a + ".createRFVDoubleParam('rfvOwnName', 'Own')\n", &error)) << error;
+    EXPECT_FALSE(RFV::isAppAttributeName(getApp(), "rfvOwnName"));
+    EXPECT_FALSE(RFV::isAppAttributeName(getApp(), "rfvUnusedName"));
 }
 
 TEST_F(RFVPythonTest, AppAttributeFollowsSaveResetAndLoad)

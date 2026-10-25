@@ -2672,6 +2672,15 @@ public:
     }
 
     /**
+     * @brief Called on the main thread when the holder's settings panel opens, or is created
+     * open, so that a holder can bring up to date what its panel shows from the rest of the
+     * project.
+     **/
+    virtual void onSettingsPanelOpened()
+    {
+    }
+
+    /**
      * @brief Wipe all knobs GUI and re-create it to synchronize it to the current internal state.
      * This may only be called on the main-thread. This is an expensive operation.
      **/

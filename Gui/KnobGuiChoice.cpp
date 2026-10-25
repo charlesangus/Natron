@@ -237,6 +237,7 @@ KnobGuiChoice::createWidget(QHBoxLayout* layout)
         return;
     }
     _comboBox->setCascading( knob->isCascading() );
+    _comboBox->setMenuOnlySelection(knob->isMenuOnlySelection());
     onEntriesPopulated();
 
     QObject::connect( _comboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(onCurrentIndexChanged(int)) );

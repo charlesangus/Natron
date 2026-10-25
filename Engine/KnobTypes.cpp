@@ -525,6 +525,7 @@ KnobChoice::KnobChoice(KnobHolder* holder,
     , _currentEntry()
     , _addNewChoice(false)
     , _isCascading(false)
+    , _menuOnlySelection(false)
     , _notifiesOnReselect(false)
 {
 }
@@ -538,6 +539,7 @@ KnobChoice::KnobChoice(KnobHolder* holder,
     , _currentEntry()
     , _addNewChoice(false)
     , _isCascading(false)
+    , _menuOnlySelection(false)
     , _notifiesOnReselect(false)
 {
 }

@@ -27,7 +27,10 @@
 
 #include <cassert>
 #include <list>
+#include <map>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <QDebug>
 #include <QTimer>
@@ -248,6 +251,8 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
             }
         }
 
+        restoreRFVVariableLinksAndExpressions(projectSerializedValues, allNodes);
+
         // An expression naming a node restored after its own knob was set aside as invalid; with
         // the whole tree restored, what is still invalid refers to something the file lacks.
         _publicInterface->getApp()->recheckInvalidExpressions();
@@ -321,6 +326,40 @@ ProjectPrivate::restoreRFVVariables(const std::list<Serialization::KnobSerializa
     }
     if (created) {
         _publicInterface->recreateUserKnobs(true);
+    }
+}
+
+void
+ProjectPrivate::restoreRFVVariableLinksAndExpressions(const std::list<Serialization::KnobSerialization>& projectSerializedValues,
+                                                      const NodesList& allNodes)
+{
+    const std::map<std::string, std::string> oldNewScriptNamesMapping;
+    const KnobsVec variables = rfvGroup->getChildren();
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = projectSerializedValues.begin(); it != projectSerializedValues.end(); ++it) {
+        if (!it->isUserKnob) {
+            continue;
+        }
+        const std::string name = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
+        KnobIPtr knob;
+        for (KnobsVec::const_iterator v = variables.begin(); v != variables.end(); ++v) {
+            if ((*v)->getName() == name) {
+                knob = *v;
+                break;
+            }
+        }
+        if (!knob) {
+            // restoreRFVVariables() dropped it with a warning.
+            continue;
+        }
+        knob->storeLinksFromSerialization(*it);
+        knob->restoreExpressionsFromSerialization(*it, oldNewScriptNamesMapping);
+        std::vector<std::string> missingTargets;
+        knob->restoreLinks(allNodes, oldNewScriptNamesMapping, false, &missingTargets);
+        for (std::size_t i = 0; i < missingTargets.size(); ++i) {
+            _publicInterface->addLoadWarning(tr("Project variable %1 \u2192 %2: link target not found; the link was left out")
+                                                 .arg(QString::fromUtf8(name.c_str()))
+                                                 .arg(QString::fromUtf8(missingTargets[i].c_str())));
+        }
     }
 }
 

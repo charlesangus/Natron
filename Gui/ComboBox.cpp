@@ -93,6 +93,7 @@ ComboBox::ComboBox(QWidget* parent)
     , _dirty(false)
     , _altered(false)
     , _cascading(false)
+    , _menuOnlySelection(false)
     , _cascadingIndex(0)
     , _currentIndex(-1)
     , _currentText()
@@ -400,7 +401,7 @@ ComboBox::mouseReleaseEvent(QMouseEvent* e)
 void
 ComboBox::wheelEvent(QWheelEvent *e)
 {
-    if (ignoreWheelEvent) {
+    if (ignoreWheelEvent || _menuOnlySelection) {
         return QFrame::wheelEvent(e);
     }
     if ( !hasFocus() ) {
@@ -428,7 +429,9 @@ ComboBox::keyPressEvent(QKeyEvent* e)
     if ( !hasFocus() ) {
         return;
     } else {
-        if (e->key() == Qt::Key_Up) {
+        if (_menuOnlySelection) {
+            QFrame::keyPressEvent(e);
+        } else if (e->key() == Qt::Key_Up) {
             setCurrentIndex( (activeIndex() - 1 < 0) ? count() - 1 : activeIndex() - 1 );
         } else if (e->key() == Qt::Key_Down) {
             setCurrentIndex( (activeIndex() + 1) % count() );

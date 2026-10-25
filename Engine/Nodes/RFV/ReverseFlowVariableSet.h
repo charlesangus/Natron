@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <string>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
@@ -90,6 +92,13 @@ public:
     bool refreshVariableGroups();
 
 private:
+    /**
+     * @brief Adds the variable chosen in the existing-variable drop-down, as one undo step, and
+     * puts the drop-down back on its prompt. knobChanged() queues it rather than calls it: the
+     * add rebuilds the user knobs' GUI, the drop-down's included.
+     **/
+    void addExistingVariableNow(const std::string& name);
+
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_REVERSEFLOWVARIABLESET,
         .label = "ReverseFlowVariableSet",
@@ -119,10 +128,9 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
-    virtual void refreshExtraStateAfterTimeChanged(bool isPlayback,
-                                                   double time) OVERRIDE FINAL;
-
     virtual void onUserKnobsChanged() OVERRIDE FINAL;
+
+    virtual void onSettingsPanelOpened() OVERRIDE FINAL;
 
     virtual void refreshChoiceEntries(KnobChoice* knob) OVERRIDE FINAL;
 

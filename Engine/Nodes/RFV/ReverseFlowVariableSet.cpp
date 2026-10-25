@@ -38,6 +38,7 @@
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/RFV.h"
+#include "Engine/UndoRecorder.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -76,6 +77,8 @@ ReverseFlowVariableSet::initializeKnobs()
     existing->setEvaluateOnChange(false);
     // The selection itself is not an edit; the variable it adds is recorded instead.
     existing->setCanUndo(false);
+    // Each pick adds a variable, so scrolling or arrowing through the entries must not.
+    existing->setMenuOnlySelection(true);
     existing->populateChoices(std::vector<ChoiceOption>(1, ChoiceOption(kReverseFlowVariableSetExistingVariablePrompt)));
     globalVariables->addKnob(existing);
     _existingVariable = existing;
@@ -162,29 +165,33 @@ ReverseFlowVariableSet::knobChanged(KnobI* k,
         return true;
     }
     const std::string name = existing->getEntry(index).id;
+    // The selection comes from the drop-down's own widget, which adding the variable rebuilds:
+    // the add waits for the event loop, once that widget has returned.
+    QMetaObject::invokeMethod(this, [this, name]() { addExistingVariableNow(name); }, Qt::QueuedConnection);
+
+    return true;
+}
+
+void
+ReverseFlowVariableSet::addExistingVariableNow(const std::string& name)
+{
     std::string error;
     {
+        UndoStepGuard step(getApp(), tr("Add existing variable %1").arg(QString::fromUtf8(name.c_str())).toStdString());
         PythonUserKnobsUndoGuard undo(this);
         RFV::addExistingVariable(this, name, &error);
     }
     if (!error.empty()) {
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(getNode()->getScriptName_mt_safe().c_str()), QDateTime::currentDateTime(), QString::fromUtf8(error.c_str()));
     }
-    // Resetting to the prompt comes back here with index 0.
+    // Resetting to the prompt comes back to knobChanged() with index 0.
     refreshExistingVariables();
-
-    return true;
 }
 
 void
-ReverseFlowVariableSet::refreshExtraStateAfterTimeChanged(bool isPlayback,
-                                                          double time)
+ReverseFlowVariableSet::onSettingsPanelOpened()
 {
-    NativeEffectBase::refreshExtraStateAfterTimeChanged(isPlayback, time);
-    // The panel calls this when it opens; playback would only list the same names again.
-    if (!isPlayback) {
-        refreshExistingVariables();
-    }
+    refreshExistingVariables();
 }
 
 void

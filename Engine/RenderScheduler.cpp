@@ -1317,6 +1317,7 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             times.stagedForgotten = report.stagedForgotten;
             times.memberIntervals = std::move(report.memberIntervals);
             times.ownershipMs = report.ownershipMs;
+            times.calibrationSkipped = report.calibrationSkipped;
             times.uploads = std::move(report.uploads);
             times.downloads = std::move(report.downloads);
             times.fallback = report.cpuFallback;

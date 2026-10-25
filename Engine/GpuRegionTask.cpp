@@ -50,6 +50,7 @@
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
 #include "Engine/GpuCostModel.h"
+#include "Engine/GpuMemberTiming.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/HostImageMemory.h"
@@ -1277,12 +1278,13 @@ private:
         }
     }
 
-    // Keeps, for reportIntervals(), the device interval of each member of segment: stamps[j] to stamps[j + 1] for the
-    // j-th. strip is null for a region run whole, whose members render their whole RoI.
+    // Keeps, for reportIntervals() and the cost model, the device interval of each member of segment: stamps[j] to
+    // stamps[j + 1] for the j-th. strip is null for a region run whole, whose members render their whole RoI.
     void noteMemberStamps(const std::vector<int>& segment,
                           const std::vector<std::uint64_t>& stamps,
                           const GpuStrip* strip,
-                          int stripIndex)
+                          int stripIndex,
+                          bool contended = false)
     {
         for (std::size_t j = 0; (j < segment.size()) && (j + 1 < stamps.size()); ++j) {
             const Member& member = _members[segment[j]];
@@ -1293,6 +1295,7 @@ private:
             entry.begin = stamps[j];
             entry.end = stamps[j + 1];
             entry.pixels = (unsigned long long)rect.width() * (unsigned long long)rect.height();
+            entry.contended = contended;
             _memberStamps.push_back(entry);
         }
     }
@@ -1729,6 +1732,9 @@ private:
         // Ownership transfers it records, which it must run even with no member in it.
         int handoffs = 0;
         bool timed = false;
+
+        // Submitted after an earlier segment's download, which can share the device with its members.
+        bool afterDownload = false;
         std::uint32_t firstQuery = 0;
         bool submitted = false;
         gpu::TimelineValue done;
@@ -1755,6 +1761,7 @@ private:
                 }
             }
         }
+        segment.afterDownload = _downloadReleased;
         segment.firstQuery = (std::uint32_t)(_segments.size() - 1) * ((std::uint32_t)_members.size() + 2);
         beginTimedSegment(*segment.recorder, segment.firstQuery);
         segment.timed = _segmentTimed;
@@ -1776,6 +1783,7 @@ private:
                 continue;
             }
             slot.downloadSegment = (int)_segments.size() - 1;
+            _downloadReleased = true;
             if (slot.handle && (slot.downloadBytes <= (std::size_t)slot.handle.size())) {
                 segment.recorder->releaseToTransfer(_runtime.transfer(), slot.handle.buffer(), 0, slot.downloadBytes);
             }
@@ -1926,7 +1934,7 @@ private:
             for (std::size_t k = 0; k < segment.members.size(); ++k) {
                 _report->memberNs[segment.members[k]] += memberNs[k];
             }
-            noteMemberStamps(segment.members, stamps, nullptr, -1);
+            noteMemberStamps(segment.members, stamps, nullptr, -1, segment.afterDownload);
         } else {
             _report->kernelMs += (double)waitNs * 1e-6;
             _report->submitWaitMs += (double)waitNs * 1e-6;
@@ -2734,56 +2742,6 @@ private:
         return EffectInstance::eRenderRoIRetCodeOk;
     } // pipelineStrips
 
-    typedef std::vector<std::pair<std::uint64_t, std::uint64_t>> Intervals;
-
-    static Intervals unionOf(Intervals intervals)
-    {
-        std::sort(intervals.begin(), intervals.end());
-        Intervals merged;
-        for (const std::pair<std::uint64_t, std::uint64_t>& interval : intervals) {
-            if (!merged.empty() && (interval.first <= merged.back().second)) {
-                merged.back().second = std::max(merged.back().second, interval.second);
-            } else {
-                merged.push_back(interval);
-            }
-        }
-
-        return merged;
-    }
-
-    static std::uint64_t lengthOf(const Intervals& intervals)
-    {
-        std::uint64_t total = 0;
-        for (const std::pair<std::uint64_t, std::uint64_t>& interval : intervals) {
-            total += interval.second - interval.first;
-        }
-
-        return total;
-    }
-
-    // a and b must each be sorted and disjoint, as unionOf returns them.
-    static std::uint64_t overlapOf(const Intervals& a,
-                                   const Intervals& b)
-    {
-        std::uint64_t total = 0;
-        std::size_t i = 0;
-        std::size_t j = 0;
-        while ((i < a.size()) && (j < b.size())) {
-            const std::uint64_t lo = std::max(a[i].first, b[j].first);
-            const std::uint64_t hi = std::min(a[i].second, b[j].second);
-            if (lo < hi) {
-                total += hi - lo;
-            }
-            if (a[i].second < b[j].second) {
-                ++i;
-            } else {
-                ++j;
-            }
-        }
-
-        return total;
-    }
-
     // Without timestamps, the region's wall time stands for its compute, which over-charges its members.
     void notePipelineTimes(const std::vector<GpuStrip>& strips)
     {
@@ -2811,8 +2769,8 @@ private:
             const auto msOf = [nsPerTick](std::uint64_t ticks) {
                 return (double)ticks * nsPerTick * 1e-6;
             };
-            Intervals compute;
-            Intervals transfers;
+            GpuMemberTiming::Intervals compute;
+            GpuMemberTiming::Intervals transfers;
             std::uint64_t uploadTicks = 0;
             std::uint64_t downloadTicks = 0;
             for (std::size_t k = 0; k < nStrips; ++k) {
@@ -2833,14 +2791,15 @@ private:
                     }
                 }
             }
-            const Intervals computeBusy = unionOf(compute);
-            const Intervals transferBusy = unionOf(transfers);
-            const std::uint64_t hidden = overlapOf(transferBusy, computeBusy);
+            const GpuMemberTiming::Intervals computeBusy = GpuMemberTiming::unionOf(compute);
+            const GpuMemberTiming::Intervals transferBusy = GpuMemberTiming::unionOf(transfers);
+            const std::uint64_t hidden = GpuMemberTiming::overlapOf(transferBusy, computeBusy);
+            _transferBusy = transferBusy;
             _report->uploadMs = msOf(uploadTicks);
             _report->downloadMs = msOf(downloadTicks);
-            _report->kernelMs = msOf(lengthOf(computeBusy));
+            _report->kernelMs = msOf(GpuMemberTiming::lengthOf(computeBusy));
             _report->transferHiddenMs = msOf(hidden);
-            _report->transferExposedMs = msOf(lengthOf(transferBusy) - hidden);
+            _report->transferExposedMs = msOf(GpuMemberTiming::lengthOf(transferBusy) - hidden);
             noteTransferTimes(nStrips);
         } else {
             const long long ns = (long long)(msBetween(_pipelineBegin, Clock::now()) * 1e6);
@@ -3037,9 +2996,58 @@ private:
         _report->memberNs.swap(byTask);
     }
 
+    /**
+     * @brief The clean samples of the member intervals the region kept, by task position, with timed marking the
+     * positions that have an interval at all. Pipelined strips drop the intervals that overlap their copies; a region
+     * run whole drops those of the segments submitted after a download; serial strips keep them all.
+     **/
+    std::vector<GpuMemberTiming::MemberSample> calibrationSamples(std::vector<bool>* timed) const
+    {
+        timed->assign(_region.members.size(), false);
+        if (_memberStamps.empty()) {
+            return std::vector<GpuMemberTiming::MemberSample>();
+        }
+        std::uint64_t origin = std::numeric_limits<std::uint64_t>::max();
+        for (const MemberStamps& entry : _memberStamps) {
+            origin = std::min(origin, entry.begin);
+        }
+        if (!_transferBusy.empty()) {
+            origin = std::min(origin, _transferBusy.front().first);
+        }
+        const double nsPerTick = _runtime.transfer().timestampPeriodNs();
+        const auto nsOf = [origin, nsPerTick](std::uint64_t stamp) {
+            return (long long)((double)(stamp - origin) * nsPerTick);
+        };
+        std::vector<GpuMemberInterval> intervals;
+        for (const MemberStamps& entry : _memberStamps) {
+            (*timed)[entry.member] = true;
+            if (entry.contended) {
+                continue;
+            }
+            GpuMemberInterval interval;
+            interval.strip = entry.strip;
+            interval.member = entry.member;
+            interval.beginNs = nsOf(entry.begin);
+            interval.endNs = nsOf(entry.end);
+            interval.pixels = entry.pixels;
+            intervals.push_back(interval);
+        }
+        GpuMemberTiming::Intervals busy;
+        for (const std::pair<std::uint64_t, std::uint64_t>& transfer : _transferBusy) {
+            busy.push_back(std::make_pair((std::uint64_t)nsOf(transfer.first), (std::uint64_t)nsOf(transfer.second)));
+        }
+
+        return GpuMemberTiming::cleanMemberSamples(intervals, busy);
+    }
+
+    // A task the device timed calibrates the model from its clean intervals alone, and not at all without one: time
+    // shared with a copy runs several times slower and would drag the estimate far from the uncontended rate.
     void noteSuccess()
     {
         GpuCostModel& model = GpuCostModel::session();
+        std::vector<bool> timed;
+        const std::vector<GpuMemberTiming::MemberSample> samples = calibrationSamples(&timed);
+        int skipped = 0;
 
         std::vector<long long> taskNs(_region.members.size(), 0);
         std::vector<bool> rendered(_region.members.size(), false);
@@ -3059,7 +3067,19 @@ private:
                 continue;
             }
             const FrameGraph::Task& task = _graph.tasks[_region.members[pos]];
-            if (taskNs[pos] > 0) {
+            if (timed[pos]) {
+                const GpuMemberTiming::MemberSample* sample = nullptr;
+                for (const GpuMemberTiming::MemberSample& entry : samples) {
+                    if (entry.member == (int)pos) {
+                        sample = &entry;
+                    }
+                }
+                if (sample && sample->hasSample()) {
+                    model.observeGpu(model.traitsOf(task), (std::int64_t)sample->cleanNs, sample->cleanMegapixels);
+                } else {
+                    ++skipped;
+                }
+            } else if (taskNs[pos] > 0) {
                 model.observeGpu(task, taskNs[pos]);
             }
             if (_stats) {
@@ -3067,10 +3087,14 @@ private:
             }
         }
         if (_report) {
+            _report->calibrationSkipped = skipped;
             model.observeTransfer((double)_report->uploadBytes, (double)ownDownloadBytes(), _report->uploadMs + _report->downloadMs);
         }
         if (_stats) {
             _stats->noteGpuRegionRun();
+            if (skipped > 0) {
+                _stats->noteGpuCalibrationSkipped(skipped);
+            }
             _stats->notePeakDeviceBytes(_peakDeviceBytes);
             if (_inFlight > 1) {
                 _stats->noteGpuPipelinedRegion(_report ? _report->transferHiddenMs : 0., _report ? _report->transferExposedMs : 0.);
@@ -3208,6 +3232,9 @@ private:
         std::uint64_t begin = 0;
         std::uint64_t end = 0;
         unsigned long long pixels = 0;
+
+        // Known to have shared the device with a transfer without timestamps to tell by how much.
+        bool contended = false;
     };
     struct TransferStamps {
         bool upload = true;
@@ -3217,6 +3244,12 @@ private:
     };
     std::vector<MemberStamps> _memberStamps;
     std::vector<TransferStamps> _transferStamps;
+
+    // Raw timestamps of the time pipelined strips spent copying, merged, which the cost model leaves out of its samples.
+    GpuMemberTiming::Intervals _transferBusy;
+
+    // A region run whole has closed a segment that releases a download, which runs alongside every later segment.
+    bool _downloadReleased = false;
     std::size_t _peakDeviceBytes = 0;
     NodePtr _failedNode;
     std::string _failure;

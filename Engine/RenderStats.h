@@ -200,6 +200,12 @@ public:
                                 double transferExposedMs);
 
     /**
+     * @brief Counts members of a region the device timed that did not calibrate the cost model, because every one of
+     * their intervals shared the device with a transfer.
+     **/
+    void noteGpuCalibrationSkipped(int members);
+
+    /**
      * @brief Raises the high-water mark of bytes resident on the device.
      **/
     void notePeakDeviceBytes(unsigned long long bytes);
@@ -214,6 +220,7 @@ public:
     int getGpuStripHalvings() const;
     int getGpuStripPipelinesSerialized() const;
     int getGpuPipelinedRegions() const;
+    int getGpuCalibrationSkipped() const;
     double getGpuTransferHiddenMs() const;
     double getGpuTransferExposedMs() const;
     std::map<std::string, int> getGpuTasksPerNode() const;
@@ -319,6 +326,7 @@ struct GpuRegionTimes {
     // Written only when nonempty, and nonzero.
     std::vector<GpuMemberInterval> memberIntervals;
     double ownershipMs = 0.;
+    int calibrationSkipped = 0;
     std::vector<GpuTransferRecord> uploads;
     std::vector<GpuTransferRecord> downloads;
 

@@ -2193,6 +2193,120 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
     EXPECT_EQ(3, regionRecords);
 }
 
+// Copies sharing the device with pipelined strips slow their members several times over, so the cost model takes its
+// samples from the intervals no copy overlapped: Grade's calibrated rate after pipelined strips stays near the one
+// serial strips give, whatever the raw member time says. A pipelined run in which every Grade interval overlapped a
+// copy leaves the model alone and says so.
+TEST_F(GpuResidencyTest, PipelinedStripsCalibrateLikeSerial)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (!runtime()->transfer().timestampsSupported()) {
+        std::printf("[  SKIPPED ] the device has no timestamps, so the model calibrates from whole regions' wall time\n");
+
+        return;
+    }
+    if (!canPipeline()) {
+        std::printf("[  SKIPPED ] the device has no push descriptors, so strips never run pipelined\n");
+
+        return;
+    }
+    const int size = 512;
+    NodePtr source = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr blur = makeBlur(60.);
+    NodePtr grade = makeGrade(0.8, 0.02);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && blur && grade && sink);
+    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)size, (double)size }));
+    KnobBool* crop = dynamic_cast<KnobBool*>(blur->getKnobByName(kBlurParamCropToFormat).get());
+    ASSERT_TRUE(crop);
+    crop->setValue(false);
+    connectNodes(source, blur, 0, true);
+    connectNodes(blur, grade, 0, true);
+    connectNodes(grade, sink, 0, true);
+    const RectI window(0, 0, size, size);
+
+    std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
+    _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
+                                     const FrameGraph& graph,
+                                     int region,
+                                     const RenderScheduler::CpuFallbackLease& lease,
+                                     std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                     RenderScheduler::RegionReport* report) {
+        const EffectInstance::RenderRoIRetCode code = runGpuRegion(context, graph, region, lease, rootPlanes, report);
+        *last = *report;
+
+        return code;
+    });
+
+    const char* const modes[] = { "serial strips", "pipelined strips" };
+    double calibratedMsPerMpx[2] = { 0., 0. };
+    double rawMsPerMpx[2] = { 0., 0. };
+    bool sampled[2] = { false, false };
+    int skipped[2] = { 0, 0 };
+    for (int mode = 0; mode < 2; ++mode) {
+        SCOPED_TRACE(modes[mode]);
+        GpuCostModel& model = GpuCostModel::session();
+        model.reset();
+        // As in RegionMembersAreTimedOnTheDevice: a strip of the source carries the Blur's halo, so a range under
+        // 2 MB would leave the region too large to strip.
+        setGpuStripOverridesForTests(2u << 20, 0);
+        setGpuStripPipeliningForTests((mode == 1) ? GpuStripPipelining::On : GpuStripPipelining::Off);
+        *last = RenderScheduler::RegionReport();
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
+        const int blurTask = taskOf(run.graph, blur);
+        const int gradeTask = taskOf(run.graph, grade);
+        ASSERT_TRUE(blurTask >= 0 && gradeTask >= 0);
+        assignRegions(&run.graph, { { blurTask, gradeTask } });
+        const std::vector<int> members = run.graph.regions[0].members;
+        ASSERT_EQ(2u, members.size());
+        const GpuTaskTraits gradeTraits = model.traitsOf(run.graph.tasks[gradeTask]);
+        const double gradeMpx = GpuCostModel::megapixelsOf(run.graph.tasks[gradeTask]);
+        ASSERT_GT(gradeMpx, 0.);
+        const double before = model.gpuMs(gradeTraits, 1.);
+        run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+        const RenderScheduler::RegionReport report = *last;
+        EXPECT_EQ(0, fallbacksOf(run));
+        EXPECT_GT(report.strips, 1);
+        EXPECT_EQ(mode == 1, report.stripsInFlight > 1);
+        ASSERT_EQ(2u, report.memberNs.size());
+        const double after = model.gpuMs(gradeTraits, 1.);
+        ASSERT_TRUE(std::isfinite(after));
+
+        // The region observes Grade once: a seeded rate moves kEmaWeight of the way to the sample, and an unseeded
+        // one takes the sample whole.
+        sampled[mode] = (after != before);
+        calibratedMsPerMpx[mode] = std::isfinite(before) ? before + (after - before) / GpuCostModel::kEmaWeight : after;
+        const long long gradeNs = report.memberNs[(members[0] == blurTask) ? 1 : 0];
+        rawMsPerMpx[mode] = (double)gradeNs * 1e-6 / gradeMpx;
+        skipped[mode] = report.calibrationSkipped;
+        std::printf("[          ] %s: Grade raw %.4f ms/Mpx, calibrated %.4f ms/Mpx%s; %d members skipped, %zu member intervals\n",
+                    modes[mode], rawMsPerMpx[mode], calibratedMsPerMpx[mode], sampled[mode] ? "" : " (no sample)", skipped[mode],
+                    report.memberIntervals.size());
+        expectReleased(run);
+    }
+
+    // Serial strips run no copy alongside their members, so each of them calibrates.
+    EXPECT_EQ(0, skipped[0]);
+    ASSERT_TRUE(sampled[0]);
+    ASSERT_GT(calibratedMsPerMpx[0], 0.);
+    std::printf("[          ] pipelined / serial Grade: raw %.3f, calibrated %.3f\n", rawMsPerMpx[1] / std::max(rawMsPerMpx[0], 1e-12),
+                sampled[1] ? calibratedMsPerMpx[1] / calibratedMsPerMpx[0] : 0.);
+    if (sampled[1]) {
+        const double ratio = calibratedMsPerMpx[1] / calibratedMsPerMpx[0];
+        EXPECT_GE(ratio, 0.67);
+        EXPECT_LE(ratio, 1.5);
+    } else {
+        EXPECT_GT(skipped[1], 0);
+    }
+}
+
 // A lone Grade over a UHD frame fits the device whole, but moves enough bytes, and is seeded with a kernel heavy
 // enough, that pipelined strips hide most of its transfer: with pipelining on it runs as at least three strips, with
 // the pixels of the whole run. Left to decide, it pipelines exactly when uploads and downloads have a queue other than

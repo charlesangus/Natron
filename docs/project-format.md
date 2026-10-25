@@ -138,7 +138,7 @@ holds its default.
 | `knobs` | The node's knobs, a map from knob script name to value. |
 | `inputs` | A map from input label to the script name of a **sibling**, a node in the same map. |
 | `pages` | The order of the knob pages. |
-| `userPages` | User-created knobs, nested as pages, groups and knobs, with their definitions under `user:`. |
+| `userPages` | User-created knobs, nested as pages, groups and knobs, with their definitions under `user:`. A page or group's `group:` map holds its `label` and, when set, `secret`, `tab`, `opened` and `rfv` (the group declares Reverse-Flow Variables). |
 | `roto` | The roto context (layers, beziers, strokes). |
 | `tracker` | The tracker context. |
 | `children` | For a group, a map of its nodes, in this same schema. |

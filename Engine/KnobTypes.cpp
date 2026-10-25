@@ -50,6 +50,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RotoContext.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
@@ -1534,24 +1535,26 @@ KnobString::setAsLabel()
 /******************************KnobGroup**************************************/
 
 KnobGroup::KnobGroup(KnobHolder* holder,
-                     const std::string &label,
+                     const std::string& label,
                      int dimension,
                      bool declaredByPlugin)
     : KnobBoolBase(holder, label, dimension, declaredByPlugin)
     , _isTab(false)
     , _isToolButton(false)
     , _isDialog(false)
+    , _isRFVGroup(false)
 {
 }
 
 KnobGroup::KnobGroup(KnobHolder* holder,
-                     const QString &label,
+                     const QString& label,
                      int dimension,
                      bool declaredByPlugin)
     : KnobBoolBase(holder, label.toStdString(), dimension, declaredByPlugin)
     , _isTab(false)
     , _isToolButton(false)
     , _isDialog(false)
+    , _isRFVGroup(false)
 {
 }
 
@@ -1565,6 +1568,28 @@ bool
 KnobGroup::isTab() const
 {
     return _isTab;
+}
+
+bool
+KnobGroup::setAsRFVGroup(bool rfv)
+{
+    if (rfv) {
+        const std::vector<KnobIPtr> children = getChildren();
+        for (std::size_t i = 0; i < children.size(); ++i) {
+            if (!RFV::isVariableKnobType(children[i])) {
+                return false;
+            }
+        }
+    }
+    _isRFVGroup = rfv;
+
+    return true;
+}
+
+bool
+KnobGroup::isRFVGroup() const
+{
+    return _isRFVGroup;
 }
 
 void
@@ -1610,23 +1635,29 @@ KnobGroup::typeName() const
     return typeNameStatic();
 }
 
-void
+bool
 KnobGroup::addKnob(const KnobIPtr& k)
 {
     if ( !isUserKnob() && k->isUserKnob() ) {
-        return;
+        return false;
     }
 
     for (std::size_t i = 0; i < _children.size(); ++i) {
         if (_children[i].lock() == k) {
-            return;
+            return true;
         }
+    }
+
+    if (_isRFVGroup && !RFV::isVariableKnobType(k)) {
+        return false;
     }
 
     k->resetParent();
 
     _children.push_back(k);
     k->setParentKnob( shared_from_this() );
+
+    return true;
 }
 
 void
@@ -1677,18 +1708,22 @@ KnobGroup::moveOneStepDown(KnobI* k)
     throw std::invalid_argument("Given knob does not belong to this group");
 }
 
-void
+bool
 KnobGroup::insertKnob(int index,
                       const KnobIPtr& k)
 {
     if ( !isUserKnob() && k->isUserKnob() ) {
-        return;
+        return false;
     }
 
     for (std::size_t i = 0; i < _children.size(); ++i) {
         if (_children[i].lock() == k) {
-            return;
+            return true;
         }
+    }
+
+    if (_isRFVGroup && !RFV::isVariableKnobType(k)) {
+        return false;
     }
 
     k->resetParent();
@@ -1701,6 +1736,8 @@ KnobGroup::insertKnob(int index,
         _children.insert(it, k);
     }
     k->setParentKnob( shared_from_this() );
+
+    return true;
 }
 
 std::vector<KnobIPtr>

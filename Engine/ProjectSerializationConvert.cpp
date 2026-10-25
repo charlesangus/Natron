@@ -78,6 +78,7 @@ userKnobLayoutToSerialization(const KnobIPtr& knob,
     if (isGroup) {
         layout->isSetAsTab = isGroup->isTab();
         layout->isOpened = isGroup->getValue();
+        layout->isRFVGroup = isGroup->isRFVGroup();
         children = isGroup->getChildren();
     } else if (isPage) {
         children = isPage->getChildren();

@@ -920,6 +920,7 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
     bool _isTab;
     bool _isToolButton;
     bool _isDialog;
+    bool _isRFVGroup;
 
 public:
 
@@ -941,19 +942,32 @@ public:
               int dimension,
               bool declaredByPlugin);
 
-    void addKnob(const KnobIPtr& k);
+    /**
+     * @brief Adds a child. Returns false, leaving the knob untouched, when the child is refused: a
+     * user knob under a non-user group, or a child that cannot be a variable (see
+     * RFV::isVariableKnobType()) under an RFV group. Returns true when the knob is a child.
+     **/
+    bool addKnob(const KnobIPtr& k);
     void removeKnob(KnobI* k);
 
     bool moveOneStepUp(KnobI* k);
     bool moveOneStepDown(KnobI* k);
 
-    void insertKnob(int index, const KnobIPtr& k);
+    bool insertKnob(int index, const KnobIPtr& k);
 
     std::vector<KnobIPtr> getChildren() const;
 
     void setAsTab();
 
     bool isTab() const;
+
+    /**
+     * @brief Flags the group as a Reverse-Flow Variable group: each of its direct children declares
+     * one variable. Flagging is refused, and false returned, while a child cannot be a variable
+     * (see RFV::isVariableKnobType()).
+     **/
+    bool setAsRFVGroup(bool rfv);
+    bool isRFVGroup() const;
 
     void setAsToolButton(bool b);
     bool getIsToolButton() const;

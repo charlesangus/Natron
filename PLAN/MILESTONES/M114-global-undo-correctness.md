@@ -98,19 +98,19 @@ The milestone also fixes the two preset bugs found in the M93 - Serialization Bo
 
 ## Phase 114.3: Exact preset apply and undo
 
-- [ ] M114.P3.T1 — Add a preset-only apply that resets absent persistent knobs
+- [x] M114.P3.T1 — Add a preset-only apply that resets absent persistent knobs
   - files: `Engine/Node.h`, `Engine/Node.cpp`, `Engine/NodeMain.cpp`, `Tests/NodePresetApply_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: `Node::applyPresetSerialization(const NodeSerialization&, std::list<KnobIPtr>* createdUserKnobs)`. For each persistent, non-page/group/button plugin knob absent from the file and not on the exception list: remove animation, clear expression and links, `resetToDefaultValue`. Then call `fromSerialization`. Report which user knobs `restoreUserKnobs` created. `fromSerialization` itself is unchanged (project load, paste and clone share it).
   - verify: the engine gtest covers: a preset from a default node resets a modified target, including keyframes, an expression and a link; exception knobs are kept; sparse preset files work; applying the target's own full snapshot restores it exactly; the project round-trip test stays green. `tools/ci/remote/build.sh debug --tests`.
   - size: L
 
-- [ ] M114.P3.T2 — Use it in `LoadNodePresetsCommand` for both redo and undo
+- [x] M114.P3.T2 — Use it in `LoadNodePresetsCommand` for both redo and undo
   - files: `Gui/NodeGraphUndoRedo.h`, `Gui/NodeGraphUndoRedo.cpp`, `Gui/NodeGui.cpp`, `Gui/NodeSettingsPanel.cpp`
   - approach: Redo and undo (`Gui/NodeGraphUndoRedo.cpp:1242-1330`) both go through `applyPresetSerialization` (new data, then the `serializeInternal` snapshot), keeping the links restore. Undo deletes the user knobs that redo created. The scope is owner = node, with that node and its multi-instance children touched.
   - verify: the P3.T3 script.
   - size: M
 
-- [ ] M114.P3.T3 — Xvfb preset test
+- [x] M114.P3.T3 — Xvfb preset test
   - files: `Tests/gui/m114_presets.py` (new)
   - approach: Export a preset from a mostly-default Blur. Modify a target Blur: values, a keyframe, an expression and a link to another node. Import the preset, check the defaults, then Ctrl+Z with the mouse over the graph and check that every value, expression and link is back. Redo re-applies it, and the panel buttons do the same. Repeat with a native Write preset and a preset that carries a user knob.
   - verify: `Tests/gui/run-gui-test.sh Tests/gui/m114_presets.py <fast AppImage>` exits 0.
@@ -128,6 +128,7 @@ The milestone also fixes the two preset bugs found in the M93 - Serialization Bo
 
 ## Decisions
 
+- 2026-10-24 — **Phase 3 gate passed (PM):** release 409/409 both legs on 2a08749f5; m114_presets, m114_global_undo and m114_rebuild_undo all 0 failures on the AppImage. Open points carried: links to missing nodes are skipped; open Roto/Tracker panels do not refresh on preset apply; multi-instance children created by a preset are outside its undo scope. GUI bench skipped until M117 lands.
 - 2026-10-24 — **Roto context knobs default to disabled (PM):** the snapshot-undo gtest found that loading roto content flipped the default enabled state of the selection-driven Roto knobs, so a new node and a loaded one serialized differently. Defaults are now off at creation as on load (2a08749f5). Preset mode also keeps a Precomp `projectFilename` (user decision). Follow-up: preset mode applies the preset carried enabled flags for these knobs, which can disagree with the target selection until it changes.
 - 2026-10-24 — **Phase 2 verified (PM):** release build on f389b8f3c is 391/391 on both legs. On that AppImage `m114_global_undo.py` has 0 failures, including the new label-font-size section; `m114_rebuild_undo.py` has 0 failures (setup 6, edits 12, rebuild 3, after-rebuild 4, undo-redo 14). Both script fixes were test-side. PySide invalidates `findChildren` wrappers when their parent panel's wrapper is collected, so the script types while it holds the panel. Window shortcuts only fire once the main window is active again after typing into a panel. Commands left untouched in P2.T2: node graph, MultiInstancePanel, RotoPanel and the engine roto/tracker commands hold nodes or items; NodeGui's command wraps an engine command; the script editor's holds only the editor; restore-defaults and set-expression already address the knob; the colour edit session pushes the knob value command.
 - 2026-10-24 — **Phase 1 verified; non-render knob edits join Phase 2 (PM):** fast build on ea293de30 is 390/390 on both legs, and `m114_global_undo.py` (script 3b06c630f) reports 0 failures against that AppImage. The script needed only test fixes: a viewer for an empty project, activating the window before the graph drag, live curve-editor and dope-sheet widgets, and typing into a visible parameter. Its first typing target was the hidden label font-size box on the Node page, and that edit never reached the history because `KnobGui::pushUndoCommand` (`Gui/KnobGui.cpp` ~:171) discards commands for knobs that do not trigger a render. That predates M114, but it breaks the milestone's goal that every project edit is recorded, so P2.T4 fixes it.

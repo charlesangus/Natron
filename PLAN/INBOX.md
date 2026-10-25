@@ -1,10 +1,5 @@
 ## Pending
 
-### 2026-10-24T20:30:00-04:00 — info
-- refs: none
-
-Found in M167 - Per-Frame Node Metadata: `Node::refreshDirtyHashes` can hand back a hash computed over a still-dirty input. After 886c0baf1 such a node stays dirty, but only the metadata cache checks `getHashValueIfUpToDate` before storing. The identity cache, the actions cache (RoD etc.) and the image cache still store under such a hash during concurrent edits. `NativeEffectBase::getOutputMetadata` (key/value metadata) also has no mark-count or write-gate check, so a hash that goes A→B→A during a derive can leave a stale entry. Not owned by any milestone yet.
-
 ### 2026-10-24T19:40:00-04:00 — info
 - refs: none
 

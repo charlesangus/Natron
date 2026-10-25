@@ -98,4 +98,12 @@ M62.P5.T1 (2026-10-03, massif on a 300-node OFX Grade chain, release build at `a
   - verify: a design note the user approves; once implemented, a gtest that renders three frames with an animated format and gets a different format on each.
   - size: L
 
+## Phase 31.8: Caches stored under a still-dirty hash (from M167 - Per-Frame Node Metadata)
+
+- [ ] M31.P8.T1 — Stop the identity, actions and image caches storing under a hash computed over a dirty input
+  - files: `Engine/Node.cpp` (`refreshDirtyHashes`), the identity, actions (RoD etc.) and image cache store sites, `Engine/Nodes/NativeEffectBase.cpp` (`getOutputMetadata`)
+  - approach: `Node::refreshDirtyHashes` can return a hash computed over a still-dirty input. Since 886c0baf1 such a node stays dirty, but only the metadata cache checks `getHashValueIfUpToDate` before storing. Gate the identity, actions and image cache stores the same way. Give `NativeEffectBase::getOutputMetadata` (key/value metadata) the mark-count or write-gate check, so a hash that goes A→B→A during a derive cannot leave a stale entry.
+  - verify: a test edits an upstream knob concurrently with renders and asserts that no cache holds an entry under a hash whose node was dirty at store time; an A→B→A edit during a metadata derive leaves no stale key/value entry.
+  - size: L
+
 **Verification gate:** every task's verify holds; whole ctest suite green; AppImage packaged and a manual GUI session (playback, render-to-disk with abort, Python `app.render()`) reports no regression.

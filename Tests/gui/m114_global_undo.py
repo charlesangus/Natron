@@ -169,6 +169,35 @@ try:
                 return w
         return None
 
+    def type_into_mix(name, value):
+        """Types value into the node's mix spin box and presses Return, holding the panel wrapper
+        for as long as the box is used: a child wrapper dies with its parent's."""
+        p = panel_of(name)
+        if p is None:
+            return False
+        for w in p.findChildren(QLineEdit):
+            if (gt.class_name(w) == "SpinBox" and w.isEnabled() and w.isVisible()
+                    and "Mix factor" in w.toolTip()):
+                w.setFocus()
+                w.setText(str(value))
+                send_key(w, Qt.Key_Return)
+                return True
+        return False
+
+    def click_panel_undo(name):
+        """Clicks the node's panel undo button if it exists and is enabled, holding the panel
+        wrapper across the click. Returns whether it clicked."""
+        p = panel_of(name)
+        if p is None:
+            return False
+        for b in p.findChildren(QAbstractButton):
+            if "Undo the last change" in b.toolTip():
+                if not b.isEnabled():
+                    return False
+                b.click()
+                return True
+        return False
+
     def mix_value(name):
         return app.getNode(name).getParam("mix").getValue()
 
@@ -539,20 +568,12 @@ try:
         gt.require(ok, "found the mix spin box on %s's panel" % e)
         gt.require(abs(mix_value(e) - 1.0) < 1e-9, "%s's mix starts at 1" % e, "mix %r" % (mix_value(e),))
         for value in (0.5, 0.25, 0.1):
-            box = mix_box(e)
-            gt.require(box is not None, "the mix spin box is still on %s's panel" % e)
-            box.setFocus()
-            box.setText(str(value))
-            send_key(box, Qt.Key_Return)
-            box = None
+            gt.require(type_into_mix(e, value), "typed %g into the mix spin box on %s's panel" % (value, e))
             yield ("sleep", SETTLE_MS)
             gt.require(abs(mix_value(e) - value) < 1e-9, "typing %g set %s's mix" % (value, e),
                        "mix %r" % (mix_value(e),))
         for expected in (0.25, 0.5, 1.0):
-            undo_e = panel_button(e, "Undo")
-            gt.require(undo_e is not None and undo_e.isEnabled(), "%s's panel undo is enabled" % e)
-            undo_e.click()
-            undo_e = None
+            gt.require(click_panel_undo(e), "%s's panel undo is enabled and was clicked" % e)
             yield ("sleep", SETTLE_MS)
             check(abs(mix_value(e) - expected) < 1e-9,
                   "one click of %s's panel undo brought mix back to %g" % (e, expected),

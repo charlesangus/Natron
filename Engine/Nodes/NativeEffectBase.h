@@ -47,6 +47,7 @@
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NodeSpec.h"
+#include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/ViewIdx.h"
 
@@ -582,6 +583,27 @@ protected:
         return AppManager::createKnob<KNOB_TYPE>(this, label, dimension);
     }
 
+    /**
+     * @brief For a scene node's renderScene(): sets *output to upstream with this node's layer on
+     * top. The layer is authored through author only when this node's plug-in, knobs or
+     * appendNodeContentHash() state, the project frame range or rate, or the upstream stack have
+     * changed since the last one; otherwise the same layer is re-emitted. author must read only
+     * those, and author everything from scratch into the empty layer it is handed.
+     **/
+    bool emitSceneLayer(const ScenePayload& upstream,
+                        const SceneLayerMemo::AuthorFunc& author,
+                        ScenePayload* output,
+                        std::string* errorMessage) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Makes the next emitSceneLayer() author a new layer, for a change none of its inputs
+     * see.
+     **/
+    void invalidateSceneLayer();
+
+    // How many layers emitSceneLayer() has authored.
+    U64 getSceneLayerAuthorCount() const WARN_UNUSED_RETURN;
+
 private:
     static ImageMetadata getInputEffectMetadata(const EffectInstancePtr& connected,
                                                 double time,
@@ -596,6 +618,8 @@ private:
     std::map<MetadataKey, ImageMetadata> _metadataCache;
     U64 _metadataGeneration;
     U64 _metadataCacheHash; //< the node hash every entry of _metadataCache was derived under
+
+    SceneLayerMemo _sceneLayerMemo;
 
     typedef std::function<void(const RectI& chunk)> DeepChunkFunc;
 

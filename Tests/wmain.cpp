@@ -24,6 +24,7 @@
 #include "NativeParity.h"
 #include "PassThroughRoDTestEffect.h"
 #include "PerProcessUserDirs.h"
+#include "SceneTestEffect.h"
 #include "TestBuiltInPlugins.h"
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
@@ -122,6 +123,15 @@ registerGraphScalingTestPlugins()
 }
 
 void
+registerSceneTestPlugins()
+{
+    // A scene source and a scene op, so Scene/SceneAction_Test.cpp can pull scenes through the
+    // engine's action before any shipped scene node exists.
+    registerTestBuiltInPlugin<SceneTestSource>();
+    registerTestBuiltInPlugin<SceneTestOp>();
+}
+
+void
 registerRenderSchedulerTestPlugins()
 {
     // Registered to count the render calls of every task, which no shipped plugin exposes.
@@ -195,6 +205,7 @@ GTEST_API_ int main(int argc, char **argv)
     }
     registerDataKindTestPlugins();
     registerDeepRenderTestPlugins();
+    registerSceneTestPlugins();
     registerMultiplanarTestPlugins();
     registerGraphScalingTestPlugins();
     registerRenderSchedulerTestPlugins();

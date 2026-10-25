@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -154,6 +154,13 @@ list(APPEND Tests_SOURCES ${Tests_NATIVE_SOURCES})
 # Same CONFIGURE_DEPENDS auto-pickup for the serialization-boundary tests.
 file(GLOB Tests_SERIALIZATION_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Serialization/*_Test.cpp)
 list(APPEND Tests_SOURCES ${Tests_SERIALIZATION_SOURCES})
+# Same CONFIGURE_DEPENDS auto-pickup for the scene (USD) transport tests.
+file(GLOB Tests_SCENE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Scene/*_Test.cpp)
+# Authors the layers of SceneTestEffect.h's stubs, which wmain.cpp registers.
+list(APPEND Tests_SCENE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Scene/SceneTestAuthoring.cpp)
+list(APPEND Tests_SOURCES ${Tests_SCENE_SOURCES})
+# They include OpenUSD's headers, which need the full Python API (see Engine/CMakeLists.txt).
+set_source_files_properties(${Tests_SCENE_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 add_executable(Tests ${Tests_HEADERS} ${Tests_SOURCES})
 target_link_libraries(Tests
     PRIVATE
@@ -163,6 +170,8 @@ target_link_libraries(Tests
         Python3::Python
         openMVG
         rawspeed::rawspeed
+        # The scene tests inspect payloads through USD directly; NatronEngine links it privately.
+        ${NATRON_USD_ENGINE_LIBRARIES}
 )
 if(NATRON_GPU)
     include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
@@ -190,6 +199,7 @@ target_compile_definitions(Tests
         NATRON_GOLDEN_CONFIG="${NATRON_GOLDEN_CONFIG}"
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         NATRON_TESTS_PYPLUGS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Gui/Resources/PyPlugs"
+        NATRON_TESTS_ENGINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Engine"
         NATRON_TESTS_CIMG_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../build/assets/CImg/CImg.h"
         NATRON_TEST_OFX_PLUGIN_DIR="${NATRON_TEST_OFX_PLUGIN_DIR}"
 )

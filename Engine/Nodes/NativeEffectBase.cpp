@@ -39,12 +39,15 @@
 #include <QThread>
 #include <QThreadPool>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/DeepImage.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/PoolParallelFor.h"
+#include "Engine/Project.h"
 #include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
@@ -180,6 +183,7 @@ NativeEffectBase::NativeEffectBase(NodePtr node)
     , _metadataCache()
     , _metadataGeneration(0)
     , _metadataCacheHash(0)
+    , _sceneLayerMemo()
 {
     // Left unresolved, render-scale support is settled only by the probe in
     // Node::refreshAllInputRelatedData(), which runs when inputs change and needs
@@ -851,6 +855,59 @@ NativeEffectBase::renderDeepReshapingChannels(const DeepRenderActionArgs& args,
     }
 
     return eStatusOK;
+}
+
+bool
+NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
+                                 const SceneLayerMemo::AuthorFunc& author,
+                                 ScenePayload* output,
+                                 std::string* errorMessage)
+{
+    NodePtr node = getNode();
+    AppInstancePtr app = getApp();
+
+    if (!node || !app || !app->getProject()) {
+        if (errorMessage) {
+            *errorMessage = "The node is being destroyed";
+        }
+
+        return false;
+    }
+
+    // The node's content hash would serve, but it also folds in the inputs' hashes, so an edit
+    // upstream would re-author every layer below it instead of only where the stack changed.
+    ContentHasher h;
+    h.appendString(getPluginID());
+    h.appendI64(getMajorVersion());
+    h.appendI64(getMinorVersion());
+    bool hasExpression = false;
+    h.appendU64(node->getKnobsContentDigest(&hasExpression));
+    appendNodeContentHash(h);
+    // Same reason as Node::computeContentHash(): an expression resolves names relative to the
+    // node, so the same expression under another name can author something else.
+    h.appendBool(hasExpression);
+    if (hasExpression) {
+        h.appendString(node->getFullyQualifiedName());
+    }
+
+    SceneLayerMemo::Key key;
+    key.nodeDigest = h.finalize();
+    app->getProject()->getFrameRange(&key.firstFrame, &key.lastFrame);
+    key.framesPerSecond = app->getProject()->getProjectFrameRate();
+
+    return _sceneLayerMemo.produce(key, upstream, getScriptName_mt_safe(), author, output, errorMessage);
+} // NativeEffectBase::emitSceneLayer
+
+void
+NativeEffectBase::invalidateSceneLayer()
+{
+    _sceneLayerMemo.invalidate();
+}
+
+U64
+NativeEffectBase::getSceneLayerAuthorCount() const
+{
+    return _sceneLayerMemo.getAuthorCount();
 }
 
 NATRON_NAMESPACE_EXIT

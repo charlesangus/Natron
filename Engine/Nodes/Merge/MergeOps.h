@@ -67,7 +67,7 @@ namespace MergeOps {
     X(eOut, "out", true, "A(1 - b)")                                                             \
     X(eOver, "over", true, "A + B(1 - a)")                                                       \
     X(eOverlay, "overlay", true, "multiply(A, 2B) if B < 0.5, screen(A, 2B - 1) otherwise")      \
-    X(ePinLight, "pin-light", true, "min(max(B, 2A - 1), 2A)")                                   \
+    X(ePinLight, "pinlight", true, "min(max(B, 2A - 1), 2A)")                                    \
     X(ePlus, "plus", true, "A + B")                                                              \
     X(eReflect, "reflect", true, "A*A / (1 - B), B if B >= 1")                                   \
     X(eSaturation, "saturation", false, "SetLum(SetSat(B, Sat(A)), Lum(B))")                     \

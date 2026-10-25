@@ -6,7 +6,7 @@ module mergeops;
 // alphabetical list in MergeOps.h.
 //
 // The formulas are Nuke's, with the openfx-misc extras (hue, saturation, color, luminosity, freeze,
-// grain-extract, grain-merge, pin-light, reflect). Where a formula clamps, flips sign, divides by
+// grain-extract, grain-merge, pinlight, reflect). Where a formula clamps, flips sign, divides by
 // zero or jumps for values above 1 or below 0, this module uses a continuous unbounded variant, so
 // scene-linear values pass through. The deviations:
 //
@@ -14,12 +14,14 @@ module mergeops;
 // |----------------|--------------------------------------------|----------------------------------------------|
 // | color-burn     | 1 - min(1, (1-B)/A), A if A <= 0           | 1 - (1-B)/A, A if A <= 0 (no clamp)          |
 // | color-dodge    | min(1, B/(1-A)), A if A >= 1               | B/(1-A), A if A >= 1 (no clamp)              |
-// | divide         | A/B, 0 if A < 0 and B < 0                  | A/B, 0 if B == 0                             |
-// | multiply       | AB, A if A < 0 and B < 0                   | AB                                           |
+// | divide         | A/B, 0 if A < 0 and B < 0                  | A/B, 0 if B == 0 (negatives: positive)       |
+// | multiply       | AB, A if A < 0 and B < 0                   | AB (negatives: positive)                     |
 // | screen         | A+B-AB if A or B <= 1, else max(A, B)      | A+B-AB if A and B <= 1, else max(A, B)       |
-// | hard-light     | uses screen                                | uses screen as above                         |
-// | overlay        | uses screen                                | uses screen as above                         |
-// | pin-light      | max(B, 2A-1) if A >= 0.5, else min(B, 2A)  | min(max(B, 2A-1), 2A)                        |
+// | geometric      | 2AB/(A+B)                                  | 2AB/(A+B), 0 if A+B == 0                     |
+// | hard-light     | multiply (negatives jump), screen          | plain multiply, screen as above              |
+// | overlay        | multiply (negatives jump), screen          | plain multiply, screen as above              |
+// | soft-light     | openfx-misc: SVG piecewise                 | Nuke: B(2A+B(1-AB)) if AB < 1, else 2AB      |
+// | pinlight       | max(B, 2A-1) if A >= 0.5, else min(B, 2A)  | min(max(B, 2A-1), 2A)                        |
 // | reflect        | min(1, A²/(1-B)), 1 if B >= 1              | A²/(1-B), B if B >= 1 (no clamp)             |
 // | freeze         | max(0, 1 - sqrt(max(0, 1-A))/B), 0 if B<=0 | 1 - ssqrt(1-A)/B, 0 if B <= 0, ssqrt signed  |
 // | hue, saturation, color, luminosity | unpremultiplied blend, colour clipped to [0, a] | premultiplied form, no clip      |

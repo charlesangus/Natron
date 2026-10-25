@@ -74,11 +74,11 @@ TEST(MergeOps, OperatorNamesAreNukesAndRoundTrip)
                            "disjoint-over", "divide", "exclusion", "from", "geometric", "hard-light", "hypot", "in",
                            "mask", "matte", "max", "min", "minus", "multiply", "out", "over", "overlay", "plus",
                            "screen", "soft-light", "stencil", "under", "xor", "hue", "saturation", "color",
-                           "luminosity", "freeze", "grain-extract", "grain-merge", "pin-light", "reflect" }) {
+                           "luminosity", "freeze", "grain-extract", "grain-merge", "pinlight", "reflect" }) {
         EXPECT_EQ(names.count(n), 1u) << n;
     }
     Operator o = eOver;
-    EXPECT_FALSE(operatorFromName("pinlight", &o));
+    EXPECT_FALSE(operatorFromName("pin-light", &o));
     EXPECT_FALSE(operatorFromName("Over", &o));
     EXPECT_EQ(o, eOver);
 

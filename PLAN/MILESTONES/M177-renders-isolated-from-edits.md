@@ -66,19 +66,19 @@ Filed from M167 - Per-Frame Node Metadata, Phase 3, which inherited M144's "edit
 
 ## Phase 177.2: Foreground renders behind the modal
 
-- [ ] M177.P2.T1 — Extract the foreground modal
+- [x] M177.P2.T1 — Extract the foreground modal
   - files: `Gui/ForegroundTaskDialog.h`, `Gui/ForegroundTaskDialog.cpp` (new), `Gui/RenderDialog.cpp` (:493-733), `Gui/CMakeLists.txt`
   - approach: Move `ForegroundRenderState`, `refreshForegroundRender`, `cancelForegroundRender` and the dialog setup into a class bound to a list of `ProgressTaskInfoPtr` and labels. Keep `Qt::ApplicationModal` with `show()`, not `open()`; keep bar updates off `setValue`; keep deferred error dialogs. `runForegroundRender` uses it.
   - verify: phase build; `Tests/gui/m76_write.py` and `m55_node_graph.py` pass under Xvfb.
   - size: M
 
-- [ ] M177.P2.T2 — One foreground entry point on the app
+- [x] M177.P2.T2 — One foreground entry point on the app
   - files: `Engine/AppInstance.h`, `Engine/AppInstance.cpp`, `Gui/GuiAppInstance.h`, `Gui/GuiAppInstance.cpp`, `Gui/RenderDialog.cpp`
   - approach: Add virtual `AppInstance::renderForeground(works)`. The base renders Blocking; `GuiAppInstance` runs Foreground with a `ForegroundTaskDialog`. `runForegroundRender` becomes that override's body.
   - verify: a gtest calls `renderForeground` on a background app and gets every frame written before it returns.
   - size: M
 
-- [ ] M177.P2.T3 — Route the remaining in-process renders through it
+- [x] M177.P2.T3 — Route the remaining in-process renders through it
   - files: `Engine/Node.cpp` (:6698-6710), `Engine/DiskCacheNode.cpp` (:160-171), `Engine/PyAppInstance.cpp` (:306-320), `Gui/ProgressTaskInfo.cpp` (:296-340, in-process restarts only)
   - approach: Replace each `startWritersRendering(false, …)` with `getApp()->renderForeground(works)`. DiskCache pre-render fills this process's cache, so it renders foreground behind the modal.
   - verify: `Tests/gui/m177_foreground_modal.py` (new, Xvfb). For the Render dialog, `knob.trigger()` on a Write's Render button, and `app.render`: `QApplication.activeModalWidget()` is the dialog while the render runs; a QTest key edit to an open Grade spinbox and a node-graph drag leave the knob and position unchanged; Cancel ends the task as Canceled. An edit while the viewer plays restarts the viewer render. Screenshots shared.
@@ -88,13 +88,13 @@ Filed from M167 - Per-Frame Node Metadata, Phase 3, which inherited M144's "edit
 
 ## Phase 177.3: Background renders from the submission copy
 
-- [ ] M177.P3.T1 — Restart re-renders the submission file
+- [x] M177.P3.T1 — Restart re-renders the submission file
   - files: `Engine/AppInstance.h`, `Engine/AppInstance.cpp` (`RenderQueueItem::savePath` :155, removal :2163-2177, child load :689), `Engine/ProcessHandler.h`, `Engine/ProcessHandler.cpp`, `Gui/ProgressTaskInfo.cpp`
   - approach: The parent owns the `RENDER_SAVE` file until the task leaves the panel. The child no longer deletes it. `restartTask` starts a new `ProcessHandler` on the same file from the last rendered frame instead of calling `startWritersRendering`.
   - verify: a gtest on `AppInstancePrivate` queue bookkeeping: a restarted item carries the original `savePath`, and that file exists until the task is removed.
   - size: M
 
-- [ ] M177.P3.T2 — The frozen-copy test
+- [x] M177.P3.T2 — The frozen-copy test
   - files: `Tests/gui/m177_background_frozen.py` (new)
   - approach: Constant → Write, 10 frames, background render. Change the Constant's colour right after submission. Pause after 3 frames, edit again, restart.
   - verify: every written frame has the colour at submission.
@@ -104,10 +104,16 @@ Filed from M167 - Per-Frame Node Metadata, Phase 3, which inherited M144's "edit
 
 ## Phase 177.4: Tracking behind the modal
 
-- [ ] M177.P4.T1 — Show the modal for every tracking run
+- [x] M177.P4.T1 — Show the modal for every tracking run
   - files: `Gui/GuiAppInstance.cpp` or `Gui/TrackerPanel.cpp`, `Gui/MultiInstancePanel.cpp` (:1766-1767), `Gui/ForegroundTaskDialog.h`, `Gui/ForegroundTaskDialog.cpp`
   - approach: On `TrackerContext::trackingStarted` (`TrackerContext.h:415`) and the TrackerPM scheduler's signal, bind a `ForegroundTaskDialog` to the tracker node's progress task (`progressStart` at `TrackerContext.cpp:1493`) and close it on `trackingFinished`. Cancel reaches the scheduler through `progressUpdate` returning false (:1507). This covers `TrackerNodeInteract.cpp:167-275`, `TrackerNode.cpp:596` and `PyTracker.cpp:153`.
   - verify: `Tests/gui/m177_tracking_modal.py` (new). Track forward over 30 frames: the modal is active; the viewer's track and stop shortcuts sent with QTest do nothing; Cancel stops tracking, and no marker keys exist past the stop frame.
+  - size: M
+
+- [ ] M177.P4.T2 — Keep the modal up through the tracker's solve
+  - files: `Engine/TrackerContext.cpp`, `Engine/TrackerContextPrivate.cpp`, `Gui/GuiAppInstance.cpp`, `Tests/TrackerLayer_Test.cpp`, `Tests/gui/m177_tracking_modal.py`
+  - approach: after `trackingFinished` the scheduler thread still re-slaves the markers' enabled knobs and runs `solveTransformParams()`, which writes the tracker's transform/CornerPin knobs under its own progress task. Hold the tracking modal until that solve has finished (one dialog spanning tracking and solve, without the solver's `progressStart` replacing the tracking task or its `progressEnd` closing the solver's), so no write lands after the dialog closes.
+  - verify: the gtest records the transform knobs at the dialog's release and they don't change afterwards; the GUI script's "no key after stop" check also covers the transform knobs.
   - size: M
 
 **Verification gate:** fast build passes; `m177_tracking_modal.py` passes under Xvfb, screenshots approved by the user.
@@ -132,6 +138,7 @@ Shape depends on the user's answers to the open questions on script writes and b
 
 ## Decisions
 
+- 2026-10-25 — **Cancel keeps the dialog up; the solve is covered next (bosley-native-nodes):** Qt 6 made the old member-pointer disconnect a no-op, so Cancel hid the dialog at once; it now stays ("Stopping...") until the job stops, and Cancel aborts tracking directly. The tracker's post-run transform solve still writes after `trackingFinished`; P4.T2 extends the modal over it. A background render's project save now creates the autosave folder itself, which fixes background renders in sessions without a GUI.
 - 2026-10-25 — **Foreground Cancel ends as Canceled; tracking modal needs no panel (bosley-native-nodes):** a cancelled foreground render is Canceled, not Paused, because restarting it in-process would read the live, edited project; pause and restart stay for background (separate-process) renders, which restart from their submission file. Tracking shows the modal in any GUI session, including tracks started from Python with no panel open. Pausing a background task asks the child to abort over IPC (it exits itself); the child no longer deletes its save file, the parent does when the task leaves the Progress panel.
 - 2026-10-25 — **Viewer restart covered under Xvfb (bosley-native-nodes):** no gtest fixture can drive viewer playback without a UI context, so P1.T1's third case (an edit restarts a viewer render) moves to `m177_foreground_modal.py` in Phase 177.2. PrecompNode's render maps to Foreground.
 - 2026-10-25 — **Elaborated (bosley-native-nodes):** five phases built on the existing foreground modal, the separate-process save at submission and the tracker's cancellable progress task. Isolation means no write reaches a running non-viewer render; knob values are not snapshotted. The colour sampler already runs synchronously on the main thread, so it gets no modal; DiskCache pre-render runs foreground behind the modal. Phase 177.5 waits on the user's answers about script writes and before-frame callbacks.

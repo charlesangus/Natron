@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -55,6 +56,8 @@
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hd/types.h>
 #include <pxr/imaging/hdx/tokens.h>
+#include <pxr/imaging/hgi/texture.h>
+#include <pxr/imaging/hgiGL/texture.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 #include <pxr/usdImaging/usdImagingGL/renderParams.h>
@@ -80,7 +83,96 @@ HydraGLContextFactory gFactory;
 struct EngineEntry {
     std::unique_ptr<UsdImagingGLEngine> engine;
     UsdStageRefPtr stage;
+
+    // What the engine last rendered, which its AOVs hold until it renders again.
+    bool rendered = false;
+    std::uint64_t serial = 0;
+    std::uint64_t sceneHash = 0;
+    UsdTimeCode time;
+    GfMatrix4d view;
+    GfMatrix4d projection;
+    int width = 0;
+    int height = 0;
+
+    // That render's primId plane and the paths of its hashes, decoded on the CPU when first asked for.
+    bool idsDecoded = false;
+    std::vector<float> primId;
+    std::map<std::uint32_t, std::string> primPaths;
 };
+
+// Packs a window of a plane of Storm's AOVs into a buffer, the one conversion every way USDRender
+// hands its pixels over goes through, so they all give the same bits. Depth goes from the window
+// depth back to camera space in double precision, as the inverse projection's third and fourth
+// columns give it; primId is a copy of the plane decoded on the CPU.
+const char* const kPackShader = R"GLSL(#version 450 core
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, binding = 0) writeonly buffer OutPixels { float outPixels[]; };
+layout(std430, binding = 1) readonly buffer Ids { uint ids[]; };
+layout(binding = 0) uniform sampler2D colorAov;
+layout(binding = 1) uniform sampler2D depthAov;
+uniform ivec4 windowRect;
+uniform ivec2 renderSize;
+uniform int plane;
+uniform int nComps;
+uniform dvec4 inverseZ;
+uniform dvec4 inverseW;
+
+void main()
+{
+    const ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+    const int width = windowRect.z - windowRect.x;
+    if ((at.x >= width) || (at.y >= windowRect.w - windowRect.y)) {
+        return;
+    }
+    const ivec2 pixel = windowRect.xy + at;
+    const bool inside = all(greaterThanEqual(pixel, ivec2(0))) && all(lessThan(pixel, renderSize));
+    const uint base = uint(at.y * width + at.x) * uint(nComps);
+    if (plane == 0) {
+        const vec4 rgba = inside ? texelFetch(colorAov, pixel, 0) : vec4(0.0);
+        for (int c = 0; c < nComps; ++c) {
+            const int channel = (nComps == 1) ? 3 : c;
+            outPixels[base + uint(c)] = (channel < 4) ? rgba[channel] : 0.0;
+        }
+    } else if (plane == 1) {
+        float value = uintBitsToFloat(0x7f800000u);
+        if (inside) {
+            const double depth = double(texelFetch(depthAov, pixel, 0).r);
+            if (depth < 1.0LF) {
+                precise dvec4 ndc = dvec4((double(pixel.x) + 0.5LF) / double(renderSize.x) * 2.0LF - 1.0LF,
+                                          (double(pixel.y) + 0.5LF) / double(renderSize.y) * 2.0LF - 1.0LF,
+                                          depth * 2.0LF - 1.0LF,
+                                          1.0LF);
+                precise double z = ndc.x * inverseZ.x + ndc.y * inverseZ.y + ndc.z * inverseZ.z + inverseZ.w;
+                precise double w = ndc.x * inverseW.x + ndc.y * inverseW.y + ndc.z * inverseW.z + inverseW.w;
+                value = float(-z / w);
+            }
+        }
+        for (int c = 0; c < nComps; ++c) {
+            outPixels[base + uint(c)] = value;
+        }
+    } else {
+        const float value = inside ? uintBitsToFloat(ids[uint(pixel.y * renderSize.x + pixel.x)]) : 0.0;
+        for (int c = 0; c < nComps; ++c) {
+            outPixels[base + uint(c)] = value;
+        }
+    }
+}
+)GLSL";
+
+// Drains GL's errors; the first, or GL_NO_ERROR.
+GLenum
+takeGlError()
+{
+    GLenum first = GL_NO_ERROR;
+
+    for (GLenum e = glGetError(); e != GL_NO_ERROR; e = glGetError()) {
+        if (first == GL_NO_ERROR) {
+            first = e;
+        }
+    }
+
+    return first;
+}
 
 // Whether stage has a light of its own; without one, renders get a light at the camera.
 bool
@@ -223,11 +315,54 @@ public:
         }
     }
 
-    bool render(const HydraRender::Request& request,
-                HydraRender::Result* result,
-                std::string* error);
+    // Renders request with its owner's engine, or reuses the engine's last render of the same
+    // request; null with *error set on failure.
+    EngineEntry* renderStorm(const HydraRender::Request& request,
+                             std::string* error);
+
+    // The whole frame's planes of entry's render, as pack() gives them, or converted on the CPU
+    // when the context cannot pack.
+    bool frame(EngineEntry& entry,
+               HydraRender::Result* result,
+               std::string* error);
+
+    bool decodeIds(EngineEntry& entry,
+                   std::string* error);
+
+    bool packAvailable(std::string* error);
+
+    bool pack(EngineEntry& entry,
+              const HydraRender::PlaneWindow& window,
+              GLuint buffer,
+              std::string* error);
+
+    // window of entry's render read back into *pixels.
+    bool readWindow(EngineEntry& entry,
+                    const HydraRender::PlaneWindow& window,
+                    std::vector<float>* pixels,
+                    std::string* error);
+
+    void* getProcAddress(const char* name) const
+    {
+        return _context ? _context->getProcAddress(name) : nullptr;
+    }
+
+    // Makes the context current if it was made; false if it was not or cannot be.
+    bool makeCurrentIfMade()
+    {
+        return _context && _context->makeCurrent();
+    }
 
 private:
+    bool cpuFrame(EngineEntry& entry,
+                  HydraRender::Result* result,
+                  std::string* error);
+
+    // The GL name of Storm's resolved texture of AOV name, or 0 with *error set.
+    GLuint aovTexture(EngineEntry& entry,
+                      const TfToken& name,
+                      std::string* error);
+
     RenderThread() = default;
 
     void run()
@@ -280,6 +415,17 @@ private:
     std::map<const void*, EngineEntry> _engines;
     GLuint _framebuffer = 0;
     GLuint _renderbuffers[2] = { 0, 0 };
+    std::uint64_t _renderSerial = 0;
+    // The pack program: 0 untried, 1 built, -1 failed with _packError.
+    int _packState = 0;
+    std::string _packError;
+    GLuint _packProgram = 0;
+    GLuint _packSampler = 0;
+    GLint _packUniforms[6] = { -1, -1, -1, -1, -1, -1 };
+    // The primId plane of the render of serial _idsSerial, for pack().
+    GLuint _idsBuffer = 0;
+    std::uint64_t _idsSerial = 0;
+    GLuint _readBuffer = 0;
     int _framebufferWidth = 0;
     int _framebufferHeight = 0;
 };
@@ -387,13 +533,12 @@ readInt(const unsigned char* at)
     return value;
 }
 
-bool
-RenderThread::render(const HydraRender::Request& request,
-                     HydraRender::Result* result,
-                     std::string* error)
+EngineEntry*
+RenderThread::renderStorm(const HydraRender::Request& request,
+                          std::string* error)
 {
     if (!ensureContext(error)) {
-        return false;
+        return nullptr;
     }
     const int width = request.width;
     const int height = request.height;
@@ -402,6 +547,7 @@ RenderThread::render(const HydraRender::Request& request,
     EngineEntry& entry = _engines[request.owner];
     if (!entry.engine || (entry.stage != request.stage)) {
         entry.engine.reset();
+        entry.rendered = false;
         entry.stage = request.stage;
         entry.engine.reset(new UsdImagingGLEngine(UsdImagingGLEngine::Parameters()));
         entry.engine->SetEnablePresentation(false);
@@ -409,19 +555,27 @@ RenderThread::render(const HydraRender::Request& request,
             *error = "Storm on " + contextDescription() + " offers no color, depth and primId AOVs.";
             _engines.erase(request.owner);
 
-            return false;
+            return nullptr;
         }
         if (!hasSceneLight(request.stage)) {
             setHeadlight(entry.engine.get());
         }
     }
     UsdImagingGLEngine* engine = entry.engine.get();
+    const GfMatrix4d view = request.frustum.ComputeViewMatrix();
+    const GfMatrix4d projection = request.frustum.ComputeProjectionMatrix();
+    if (entry.rendered && (request.sceneHash != 0) && (entry.sceneHash == request.sceneHash) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height)) {
+        return &entry;
+    }
+    entry.rendered = false;
+    entry.idsDecoded = false;
+    entry.primId.clear();
+    entry.primPaths.clear();
 
     bindFramebuffer(width, height);
     engine->SetRenderBufferSize(GfVec2i(width, height));
     engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
-    const GfMatrix4d projection = request.frustum.ComputeProjectionMatrix();
-    engine->SetCameraState(request.frustum.ComputeViewMatrix(), projection);
+    engine->SetCameraState(view, projection);
 
     UsdImagingGLRenderParams params;
     params.frame = request.time;
@@ -441,6 +595,27 @@ RenderThread::render(const HydraRender::Request& request,
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+    entry.rendered = true;
+    entry.serial = ++_renderSerial;
+    entry.sceneHash = request.sceneHash;
+    entry.time = request.time;
+    entry.view = view;
+    entry.projection = projection;
+    entry.width = width;
+    entry.height = height;
+
+    return &entry;
+} // RenderThread::renderStorm
+
+bool
+RenderThread::cpuFrame(EngineEntry& entry,
+                       HydraRender::Result* result,
+                       std::string* error)
+{
+    UsdImagingGLEngine* engine = entry.engine.get();
+    const int width = entry.width;
+    const int height = entry.height;
+    const GfMatrix4d& projection = entry.projection;
     const std::size_t pixels = (std::size_t)width * (std::size_t)height;
 
     {
@@ -490,6 +665,26 @@ RenderThread::render(const HydraRender::Request& request,
         }
     }
 
+    if (!decodeIds(entry, error)) {
+        return false;
+    }
+    result->primId = entry.primId;
+    result->primPaths = entry.primPaths;
+
+    return true;
+} // RenderThread::cpuFrame
+
+bool
+RenderThread::decodeIds(EngineEntry& entry,
+                        std::string* error)
+{
+    if (entry.idsDecoded) {
+        return true;
+    }
+    UsdImagingGLEngine* engine = entry.engine.get();
+    const int width = entry.width;
+    const int height = entry.height;
+    const std::size_t pixels = (std::size_t)width * (std::size_t)height;
     {
         MappedAov primIds(engine, HdAovTokens->primId, width, height, error);
         if (!primIds.valid()) {
@@ -499,8 +694,8 @@ RenderThread::render(const HydraRender::Request& request,
         if (!instanceIds.valid()) {
             return false;
         }
-        result->primId.assign(pixels, 0.f);
-        result->primPaths.clear();
+        entry.primId.assign(pixels, 0.f);
+        entry.primPaths.clear();
         std::map<std::pair<std::int32_t, std::int32_t>, std::uint32_t> decoded;
         for (std::size_t i = 0; i < pixels; ++i) {
             const std::int32_t prim = readInt(primIds.pixel(i));
@@ -516,18 +711,291 @@ RenderThread::render(const HydraRender::Request& request,
                 SdfPath path;
                 if (engine->DecodeIntersection(key.first, key.second, &path) && !path.IsEmpty()) {
                     hash = HydraRender::primPathHash(path.GetString());
-                    result->primPaths[hash] = path.GetString();
+                    entry.primPaths[hash] = path.GetString();
                 }
                 decoded[key] = hash;
             }
             if (hash) {
-                result->primId[i] = HydraRender::hashToFloat(hash);
+                entry.primId[i] = HydraRender::hashToFloat(hash);
             }
         }
     }
 
+    entry.idsDecoded = true;
+
     return true;
-} // RenderThread::render
+} // RenderThread::decodeIds
+
+bool
+RenderThread::frame(EngineEntry& entry,
+                    HydraRender::Result* result,
+                    std::string* error)
+{
+    std::string packError;
+    if (!packAvailable(&packError)) {
+        return cpuFrame(entry, result, error);
+    }
+    HydraRender::PlaneWindow window;
+    window.x2 = entry.width;
+    window.y2 = entry.height;
+    window.plane = HydraRender::ePlaneColor;
+    window.nComps = 4;
+    if (!readWindow(entry, window, &result->rgba, error)) {
+        return false;
+    }
+    window.nComps = 1;
+    window.plane = HydraRender::ePlaneDepth;
+    if (!readWindow(entry, window, &result->depth, error)) {
+        return false;
+    }
+    window.plane = HydraRender::ePlanePrimId;
+    if (!readWindow(entry, window, &result->primId, error)) {
+        return false;
+    }
+    result->primPaths = entry.primPaths;
+
+    return true;
+}
+
+bool
+RenderThread::packAvailable(std::string* error)
+{
+    if (_packState == 0) {
+        _packState = -1;
+        GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+        glShaderSource(shader, 1, &kPackShader, nullptr);
+        glCompileShader(shader);
+        GLint compiled = GL_FALSE;
+        glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+        GLint linked = GL_FALSE;
+        if (compiled == GL_TRUE) {
+            _packProgram = glCreateProgram();
+            glAttachShader(_packProgram, shader);
+            glLinkProgram(_packProgram);
+            glGetProgramiv(_packProgram, GL_LINK_STATUS, &linked);
+        }
+        if ((compiled != GL_TRUE) || (linked != GL_TRUE)) {
+            char log[1024] = { 0 };
+            if (compiled != GL_TRUE) {
+                glGetShaderInfoLog(shader, sizeof(log) - 1, nullptr, log);
+            } else {
+                glGetProgramInfoLog(_packProgram, sizeof(log) - 1, nullptr, log);
+            }
+            _packError = "USDRender's pack shader does not build on " + contextDescription() + ": " + log;
+            if (_packProgram) {
+                glDeleteProgram(_packProgram);
+                _packProgram = 0;
+            }
+        } else {
+            const char* const names[6] = { "windowRect", "renderSize", "plane", "nComps", "inverseZ", "inverseW" };
+            for (int i = 0; i < 6; ++i) {
+                _packUniforms[i] = glGetUniformLocation(_packProgram, names[i]);
+            }
+            glCreateSamplers(1, &_packSampler);
+            glSamplerParameteri(_packSampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glSamplerParameteri(_packSampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glSamplerParameteri(_packSampler, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+            glGenBuffers(1, &_idsBuffer);
+            glGenBuffers(1, &_readBuffer);
+            _packState = (takeGlError() == GL_NO_ERROR) ? 1 : -1;
+            if (_packState < 0) {
+                _packError = "USDRender's pack shader could not be set up on " + contextDescription() + ".";
+            }
+        }
+        glDeleteShader(shader);
+    }
+    if (_packState < 0) {
+        *error = _packError;
+
+        return false;
+    }
+
+    return true;
+} // RenderThread::packAvailable
+
+GLuint
+RenderThread::aovTexture(EngineEntry& entry,
+                         const TfToken& name,
+                         std::string* error)
+{
+    HdRenderBuffer* buffer = entry.engine->GetAovRenderBuffer(name);
+    if (!buffer) {
+        *error = "Storm rendered no " + name.GetString() + " AOV.";
+
+        return 0;
+    }
+    buffer->Resolve();
+    if (((int)buffer->GetWidth() != entry.width) || ((int)buffer->GetHeight() != entry.height)) {
+        *error = "Storm's " + name.GetString() + " AOV is not the size asked for.";
+
+        return 0;
+    }
+    const VtValue resource = buffer->GetResource(false);
+    HgiTextureHandle texture;
+    if (resource.IsHolding<HgiTextureHandle>()) {
+        texture = resource.UncheckedGet<HgiTextureHandle>();
+    }
+    const HgiGLTexture* glTexture = dynamic_cast<const HgiGLTexture*>(texture.Get());
+    if (!glTexture || !glTexture->GetTextureId()) {
+        *error = "Storm's " + name.GetString() + " AOV is not a GL texture.";
+
+        return 0;
+    }
+
+    return glTexture->GetTextureId();
+}
+
+bool
+RenderThread::pack(EngineEntry& entry,
+                   const HydraRender::PlaneWindow& window,
+                   GLuint buffer,
+                   std::string* error)
+{
+    if (!packAvailable(error)) {
+        return false;
+    }
+    if ((window.x2 <= window.x1) || (window.y2 <= window.y1) || (window.nComps <= 0)) {
+        return true;
+    }
+    (void)takeGlError();
+    GLuint color = 0;
+    GLuint depth = 0;
+    switch (window.plane) {
+    case HydraRender::ePlaneColor:
+        color = aovTexture(entry, HdAovTokens->color, error);
+        if (!color) {
+            return false;
+        }
+        break;
+    case HydraRender::ePlaneDepth:
+        depth = aovTexture(entry, HdAovTokens->depth, error);
+        if (!depth) {
+            return false;
+        }
+        // A depth-stencil texture is read as its depth.
+        glTextureParameteri(depth, GL_DEPTH_STENCIL_TEXTURE_MODE, GL_DEPTH_COMPONENT);
+        (void)takeGlError();
+        break;
+    case HydraRender::ePlanePrimId:
+        if (!decodeIds(entry, error)) {
+            return false;
+        }
+        if (_idsSerial != entry.serial) {
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, _idsBuffer);
+            glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(entry.primId.size() * sizeof(float)), entry.primId.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            _idsSerial = entry.serial;
+        }
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, _idsBuffer);
+        break;
+    }
+    const GfMatrix4d inverse = entry.projection.GetInverse();
+    const double inverseZ[4] = { inverse[0][2], inverse[1][2], inverse[2][2], inverse[3][2] };
+    const double inverseW[4] = { inverse[0][3], inverse[1][3], inverse[2][3], inverse[3][3] };
+
+    glUseProgram(_packProgram);
+    glUniform4i(_packUniforms[0], window.x1, window.y1, window.x2, window.y2);
+    glUniform2i(_packUniforms[1], entry.width, entry.height);
+    glUniform1i(_packUniforms[2], (int)window.plane);
+    glUniform1i(_packUniforms[3], window.nComps);
+    glUniform4dv(_packUniforms[4], 1, inverseZ);
+    glUniform4dv(_packUniforms[5], 1, inverseW);
+    glBindTextureUnit(0, color);
+    glBindTextureUnit(1, depth);
+    glBindSampler(0, _packSampler);
+    glBindSampler(1, _packSampler);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffer);
+    glDispatchCompute((GLuint)((window.x2 - window.x1 + 7) / 8), (GLuint)((window.y2 - window.y1 + 7) / 8), 1);
+    glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0);
+    glBindSampler(0, 0);
+    glBindSampler(1, 0);
+    glBindTextureUnit(0, 0);
+    glBindTextureUnit(1, 0);
+    glUseProgram(0);
+    const GLenum failed = takeGlError();
+    if (failed != GL_NO_ERROR) {
+        char code[16];
+        std::snprintf(code, sizeof(code), "0x%04x", failed);
+        *error = std::string("USDRender's pack shader raised GL error ") + code + ".";
+
+        return false;
+    }
+
+    return true;
+} // RenderThread::pack
+
+bool
+RenderThread::readWindow(EngineEntry& entry,
+                         const HydraRender::PlaneWindow& window,
+                         std::vector<float>* pixels,
+                         std::string* error)
+{
+    const std::size_t count = window.floatCount();
+    pixels->assign(count, 0.f);
+    if (count == 0) {
+        return true;
+    }
+    if (!packAvailable(error)) {
+        return false;
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, _readBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(count * sizeof(float)), nullptr, GL_STREAM_READ);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    if (!pack(entry, window, _readBuffer, error)) {
+        return false;
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, _readBuffer);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)(count * sizeof(float)), pixels->data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    if (takeGlError() != GL_NO_ERROR) {
+        *error = "USDRender could not read its pixels back from GL.";
+
+        return false;
+    }
+
+    return true;
+}
+
+// The render access a withRender() job gets.
+class EntryAccess
+    : public HydraRender::RenderAccess {
+public:
+    EntryAccess(RenderThread& thread,
+                EngineEntry& entry)
+        : _thread(thread)
+        , _entry(entry)
+    {
+    }
+
+    virtual bool pack(const HydraRender::PlaneWindow& window,
+                      unsigned int glBuffer,
+                      std::string* error) OVERRIDE FINAL
+    {
+        return _thread.pack(_entry, window, glBuffer, error);
+    }
+
+    virtual bool primPaths(std::map<std::uint32_t, std::string>* paths,
+                           std::string* error) OVERRIDE FINAL
+    {
+        if (!_thread.decodeIds(_entry, error)) {
+            return false;
+        }
+        *paths = _entry.primPaths;
+
+        return true;
+    }
+
+    virtual void* getProcAddress(const char* name) const OVERRIDE FINAL
+    {
+        return _thread.getProcAddress(name);
+    }
+
+private:
+    RenderThread& _thread;
+    EngineEntry& _entry;
+};
 
 std::uint32_t
 rotateLeft(std::uint32_t x,
@@ -687,11 +1155,118 @@ render(const Request& request,
     RenderThread& thread = RenderThread::instance();
     thread.runAndWait([&]() {
         try {
-            ok = thread.render(request, result, error);
+            EngineEntry* entry = thread.renderStorm(request, error);
+            ok = entry && thread.frame(*entry, result, error);
         } catch (const std::exception& e) {
             *error = std::string("Storm failed: ") + e.what();
             ok = false;
         }
+    });
+
+    return ok;
+}
+
+bool
+withRender(const Request& request,
+           const std::function<bool(RenderAccess& access, std::string* error)>& job,
+           std::string* error)
+{
+    if (!request.stage || (request.width <= 0) || (request.height <= 0)) {
+        *error = "Nothing to render.";
+
+        return false;
+    }
+    bool ok = false;
+    RenderThread& thread = RenderThread::instance();
+    thread.runAndWait([&]() {
+        try {
+            EngineEntry* entry = thread.renderStorm(request, error);
+            if (entry) {
+                EntryAccess access(thread, *entry);
+                ok = job(access, error);
+            }
+        } catch (const std::exception& e) {
+            *error = std::string("Storm failed: ") + e.what();
+            ok = false;
+        }
+    });
+
+    return ok;
+}
+
+bool
+withContext(const std::function<void(const std::function<void*(const char*)>& getProcAddress)>& job,
+            std::string* error)
+{
+    bool ok = false;
+    RenderThread& thread = RenderThread::instance();
+
+    thread.runAndWait([&]() {
+        if (thread.ensureContext(error)) {
+            ok = true;
+            const std::function<void*(const char*)> getProcAddress = [&thread](const char* name) { return thread.getProcAddress(name); };
+            job(getProcAddress);
+        }
+    });
+
+    return ok;
+}
+
+void
+postToContext(std::function<void(const std::function<void*(const char*)>* getProcAddress)> job)
+{
+    RenderThread& thread = RenderThread::instance();
+
+    (void)thread.post([&thread, job]() {
+        const std::function<void*(const char*)> getProcAddress = [&thread](const char* name) { return thread.getProcAddress(name); };
+        job(thread.makeCurrentIfMade() ? &getProcAddress : nullptr);
+    },
+                      false);
+}
+
+bool
+renderWindow(const Request& request,
+             const PlaneWindow& window,
+             std::vector<float>* pixels,
+             std::map<std::uint32_t, std::string>* primPaths,
+             std::string* error)
+{
+    if (!request.stage || (request.width <= 0) || (request.height <= 0)) {
+        *error = "Nothing to render.";
+
+        return false;
+    }
+    bool ok = false;
+    RenderThread& thread = RenderThread::instance();
+    thread.runAndWait([&]() {
+        try {
+            EngineEntry* entry = thread.renderStorm(request, error);
+            if (!entry) {
+                return;
+            }
+            ok = thread.readWindow(*entry, window, pixels, error);
+            if (ok && primPaths && (window.plane == ePlanePrimId)) {
+                ok = thread.decodeIds(*entry, error);
+                *primPaths = entry->primPaths;
+            }
+        } catch (const std::exception& e) {
+            *error = std::string("Storm failed: ") + e.what();
+            ok = false;
+        }
+    });
+
+    return ok;
+}
+
+bool
+packsOnGpu()
+{
+    bool ok = false;
+    RenderThread& thread = RenderThread::instance();
+
+    thread.runAndWait([&]() {
+        std::string error;
+        ok = thread.ensureContext(&error) && thread.packAvailable(&error);
     });
 
     return ok;

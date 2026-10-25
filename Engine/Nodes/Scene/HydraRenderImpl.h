@@ -28,7 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -94,6 +96,10 @@ struct Request {
     PXR_NS::GfFrustum frustum;
     int width = 0;
     int height = 0;
+    // The stack hash of the scene the stage was composed from, or 0. A request of the owner's last
+    // render with the same non-zero hash, time, camera and size reuses that render, so the planes of
+    // a frame asked for one by one cost one Storm render.
+    std::uint64_t sceneHash = 0;
 };
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
@@ -112,6 +118,92 @@ struct Result {
 bool render(const Request& request,
             Result* result,
             std::string* error) WARN_UNUSED_RETURN;
+
+enum PlaneEnum {
+    ePlaneColor = 0,
+    ePlaneDepth,
+    ePlanePrimId
+};
+
+/**
+ * @brief A window of one plane of a render, in the render's pixels ((0, 0) its bottom-left pixel),
+ * which may reach past the render: nComps floats per pixel, row by row from the bottom row. A
+ * colour window of one component holds alpha, of more the components of rgba in order (0 past the
+ * fourth); a pixel past the render holds what one that hit nothing holds.
+ **/
+struct PlaneWindow {
+    PlaneEnum plane = ePlaneColor;
+    int nComps = 4;
+    int x1 = 0;
+    int y1 = 0;
+    int x2 = 0;
+    int y2 = 0;
+
+    std::size_t floatCount() const
+    {
+        return (std::size_t)(x2 - x1) * (std::size_t)(y2 - y1) * (std::size_t)nComps;
+    }
+};
+
+// What a withRender() job can do on the render thread, with the context current.
+class RenderAccess {
+public:
+    virtual ~RenderAccess() { }
+
+    /**
+     * @brief Writes window into the GL buffer glBuffer from its first byte, on the GPU: the GL
+     * commands are issued, not finished. The same pixels give the same bits whatever the window.
+     * False with *error set when the context cannot pack, in which case it never can.
+     **/
+    virtual bool pack(const PlaneWindow& window,
+                      unsigned int glBuffer,
+                      std::string* error)
+        = 0;
+
+    // The paths of the hashes the render's primId plane holds.
+    virtual bool primPaths(std::map<std::uint32_t, std::string>* paths,
+                           std::string* error)
+        = 0;
+
+    // The address of a GL entry point of the context.
+    virtual void* getProcAddress(const char* name) const = 0;
+};
+
+/**
+ * @brief Renders request on the render thread, unless the owner's last render can be reused (see
+ * Request::sceneHash), then runs job there and waits for it. Returns what job returns; false with
+ * *error set if the render failed.
+ **/
+bool withRender(const Request& request,
+                const std::function<bool(RenderAccess& access, std::string* error)>& job,
+                std::string* error) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Runs job on the render thread with the context current and waits for it, passing the
+ * context's GL entry point lookup. False with *error set if there is no context.
+ **/
+bool withContext(const std::function<void(const std::function<void*(const char*)>& getProcAddress)>& job,
+                 std::string* error) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Queues job on the render thread without waiting. getProcAddress is null when the context
+ * could not be made current. Dropped if the thread never started.
+ **/
+void postToContext(std::function<void(const std::function<void*(const char*)>* getProcAddress)> job);
+
+/**
+ * @brief The pixels of window, as RenderAccess::pack() writes them, read back into *pixels, and
+ * the paths of the primId hashes into *primPaths when window is of that plane and primPaths is
+ * not null.
+ **/
+bool renderWindow(const Request& request,
+                  const PlaneWindow& window,
+                  std::vector<float>* pixels,
+                  std::map<std::uint32_t, std::string>* primPaths,
+                  std::string* error) WARN_UNUSED_RETURN;
+
+// Whether the render thread's context packs windows on the GPU, making it if need be.
+bool packsOnGpu();
 
 // Drops owner's engine, on the render thread, without waiting.
 void release(const void* owner);

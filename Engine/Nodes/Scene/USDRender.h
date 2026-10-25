@@ -118,6 +118,16 @@ public:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
+    // On the GPU, a plane is packed from Storm's AOVs on the GL side and handed to the device by the
+    // rung HydraHandoff picks; when that rung is readback the node renders on the CPU.
+    virtual std::optional<OpKind> opKind() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     /**
      * @brief Fills the camera menu with every camera of the input scene at the current frame,
      * keeping the chosen one even when the scene no longer has it. Main thread only; the node
@@ -135,6 +145,17 @@ private:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void scheduleCameraMenuRefresh();
+
+    // What a render at time, view and mipmap level asks Storm for; defined where USD is included.
+    struct RenderSetup;
+
+    // The render of time, view and level as the node's settings and input scene make it. False with
+    // *error set to the message the node shows if it cannot render.
+    bool prepareRender(double time,
+                       ViewIdx view,
+                       unsigned int level,
+                       RenderSetup* setup,
+                       std::string* error);
 
     // The output format in pixels and its pixel aspect ratio, from the format knobs.
     void outputFormat(double time, ViewIdx view, RectI* format, double* par) const;

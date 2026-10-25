@@ -40,7 +40,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Scene/HydraHandoff.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/StageCache.h"
@@ -312,6 +314,83 @@ USDRender::deriveOutputMetadata(double time,
     return metadata;
 }
 
+struct USDRender::RenderSetup {
+    HydraRender::Request request;
+    // The render's pixels in the output image.
+    RectI pixels;
+};
+
+bool
+USDRender::prepareRender(double time,
+                         ViewIdx view,
+                         unsigned int level,
+                         RenderSetup* setup,
+                         std::string* error)
+{
+    auto failWith = [error](const std::string& message) {
+        *error = message;
+
+        return false;
+    };
+
+    RectI format;
+    double par;
+    outputFormat(time, view, &format, &par);
+    setup->pixels = Format(format, par).toCanonicalFormat().toPixelEnclosing(level, par);
+    if (setup->pixels.isNull()) {
+        return failWith(tr("The format is empty.").toStdString());
+    }
+
+    EffectInstancePtr input = getInput(0);
+    if (!input) {
+        return failWith(tr("USDRender needs a scene on its Scene input.").toStdString());
+    }
+    ScenePayload scene;
+    if (input->evaluateScene(EvaluateSceneArgs(time, view), &scene, error) != eRenderRoIRetCodeOk) {
+        if (error->empty()) {
+            *error = tr("The input scene could not be evaluated.").toStdString();
+        }
+
+        return false;
+    }
+    PXR_NS::UsdStageRefPtr stage = scene.isEmpty() ? PXR_NS::UsdStageRefPtr() : StageCache::instance().getStage(scene);
+    if (!stage) {
+        return failWith(tr("The input scene is empty: there is no camera to render through.").toStdString());
+    }
+    AppInstancePtr app = getApp();
+    const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
+    const PXR_NS::UsdTimeCode timeCode(SceneOps::frameToTimeCode(scene, time, fps));
+
+    KnobChoicePtr cameraKnob = _camera.lock();
+    std::string cameraPath = cameraKnob ? cameraKnob->getActiveEntry().id : std::string();
+    if (cameraPath.empty()) {
+        const std::vector<PXR_NS::SdfPath> cameras = HydraRender::cameraPaths(stage);
+        if (cameras.empty()) {
+            return failWith(tr("The input scene has no camera to render through.").toStdString());
+        }
+        cameraPath = cameras.front().GetString();
+    }
+    if (!PXR_NS::SdfPath::IsValidPathString(cameraPath)) {
+        return failWith(tr("No camera at %1 on the input scene.").arg(QString::fromStdString(cameraPath)).toStdString());
+    }
+    KnobChoicePtr fitKnob = _fitMode.lock();
+    const int fitValue = fitKnob ? fitKnob->getValue() : 0;
+    const HydraRender::FitModeEnum fit = (fitValue == (int)HydraRender::eFitModeHorizontal) ? HydraRender::eFitModeHorizontal : (fitValue == (int)HydraRender::eFitModeVertical) ? HydraRender::eFitModeVertical
+                                                                                                                                                                                 : HydraRender::eFitModeFill;
+    setup->request.owner = this;
+    setup->request.stage = stage;
+    setup->request.time = timeCode;
+    setup->request.sceneHash = scene.getStackHash();
+    setup->request.width = setup->pixels.width();
+    setup->request.height = setup->pixels.height();
+    const double aspect = (format.width() * par) / format.height();
+    if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(cameraPath), timeCode, aspect, fit, &setup->request.frustum, error)) {
+        return false;
+    }
+
+    return true;
+} // USDRender::prepareRender
+
 StatusEnum
 USDRender::render(const RenderActionArgs& args)
 {
@@ -321,58 +400,13 @@ USDRender::render(const RenderActionArgs& args)
         return eStatusFailed;
     };
 
-    RectI format;
-    double par;
-    outputFormat(args.time, args.view, &format, &par);
-    const unsigned int level = args.mappedScale.toMipmapLevel();
-    const RectI pixels = Format(format, par).toCanonicalFormat().toPixelEnclosing(level, par);
-    if (pixels.isNull()) {
-        return fail(tr("The format is empty.").toStdString());
-    }
-
-    EffectInstancePtr input = getInput(0);
-    if (!input) {
-        return fail(tr("USDRender needs a scene on its Scene input.").toStdString());
-    }
-    ScenePayload scene;
+    RenderSetup setup;
     std::string error;
-    if (input->evaluateScene(EvaluateSceneArgs(args.time, args.view), &scene, &error) != eRenderRoIRetCodeOk) {
-        return fail(error.empty() ? tr("The input scene could not be evaluated.").toStdString() : error);
-    }
-    PXR_NS::UsdStageRefPtr stage = scene.isEmpty() ? PXR_NS::UsdStageRefPtr() : StageCache::instance().getStage(scene);
-    if (!stage) {
-        return fail(tr("The input scene is empty: there is no camera to render through.").toStdString());
-    }
-    AppInstancePtr app = getApp();
-    const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
-    const PXR_NS::UsdTimeCode timeCode(SceneOps::frameToTimeCode(scene, args.time, fps));
-
-    KnobChoicePtr cameraKnob = _camera.lock();
-    std::string cameraPath = cameraKnob ? cameraKnob->getActiveEntry().id : std::string();
-    if (cameraPath.empty()) {
-        const std::vector<PXR_NS::SdfPath> cameras = HydraRender::cameraPaths(stage);
-        if (cameras.empty()) {
-            return fail(tr("The input scene has no camera to render through.").toStdString());
-        }
-        cameraPath = cameras.front().GetString();
-    }
-    if (!PXR_NS::SdfPath::IsValidPathString(cameraPath)) {
-        return fail(tr("No camera at %1 on the input scene.").arg(QString::fromStdString(cameraPath)).toStdString());
-    }
-    KnobChoicePtr fitKnob = _fitMode.lock();
-    const int fitValue = fitKnob ? fitKnob->getValue() : 0;
-    const HydraRender::FitModeEnum fit = (fitValue == (int)HydraRender::eFitModeHorizontal) ? HydraRender::eFitModeHorizontal : (fitValue == (int)HydraRender::eFitModeVertical) ? HydraRender::eFitModeVertical
-                                                                                                                                                                                 : HydraRender::eFitModeFill;
-    HydraRender::Request request;
-    request.owner = this;
-    request.stage = stage;
-    request.time = timeCode;
-    request.width = pixels.width();
-    request.height = pixels.height();
-    const double aspect = (format.width() * par) / format.height();
-    if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(cameraPath), timeCode, aspect, fit, &request.frustum, &error)) {
+    if (!prepareRender(args.time, args.view, args.mappedScale.toMipmapLevel(), &setup, &error)) {
         return fail(error);
     }
+    const HydraRender::Request& request = setup.request;
+    const RectI& pixels = setup.pixels;
 
     HydraRender::Result result;
     if (!HydraRender::render(request, &result, &error)) {
@@ -441,5 +475,69 @@ USDRender::render(const RenderActionArgs& args)
 
     return eStatusOK;
 } // USDRender::render
+
+std::optional<OpKind>
+USDRender::opKind() const
+{
+    return OpKind::Custom;
+}
+
+bool
+USDRender::readsGpuInput(int /*inputNb*/,
+                         const ImageLayerDesc& /*plane*/,
+                         double /*time*/,
+                         ViewIdx /*view*/) const
+{
+    // The scene is evaluated by renderGpu() itself, not handed over as an image.
+    return false;
+}
+
+bool
+USDRender::canRenderOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    const std::string& layerID = query.plane.getLayerID();
+    if ((query.bitDepth != eImageBitDepthFloat) || (!query.plane.isColorLayer() && (layerID != "depth") && (layerID != "primId"))) {
+        return false;
+    }
+
+    return HydraHandoff::instance().path() != gpu::GlHandoffPath::Readback;
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+StatusEnum
+USDRender::renderGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    // A failure here leaves no message: the frame renders again on the CPU, which reports it.
+    RenderSetup setup;
+    std::string error;
+    if (!prepareRender(args.query.time, args.query.view, args.query.mappedScale.toMipmapLevel(), &setup, &error)) {
+        return eStatusFailed;
+    }
+    const ImageLayerDesc& plane = args.query.plane;
+    HydraRender::PlaneWindow window;
+    window.plane = plane.isColorLayer() ? HydraRender::ePlaneColor : (plane.getLayerID() == "depth") ? HydraRender::ePlaneDepth
+                                                                                                     : HydraRender::ePlanePrimId;
+    window.nComps = args.output.nComps;
+    window.x1 = args.outputRect.x1 - setup.pixels.x1;
+    window.y1 = args.outputRect.y1 - setup.pixels.y1;
+    window.x2 = args.outputRect.x2 - setup.pixels.x1;
+    window.y2 = args.outputRect.y2 - setup.pixels.y1;
+    if (!HydraHandoff::instance().record(setup.request, window, args.context, args.output, args.outputRect, &error)) {
+        return eStatusFailed;
+    }
+
+    return eStatusOK;
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+}
 
 NATRON_NAMESPACE_EXIT

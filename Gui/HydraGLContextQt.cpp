@@ -59,6 +59,11 @@ public:
         return _description;
     }
 
+    virtual void* getProcAddress(const char* name) const OVERRIDE FINAL
+    {
+        return reinterpret_cast<void*>(_context->getProcAddress(name));
+    }
+
     std::string _description;
 
 private:

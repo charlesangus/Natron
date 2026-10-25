@@ -322,4 +322,10 @@ HeadlessGLContext::description() const
     return _imp->description;
 }
 
+void*
+HeadlessGLContext::getProcAddress(const char* name) const
+{
+    return reinterpret_cast<void*>(_imp->getProcAddress(name));
+}
+
 NATRON_NAMESPACE_EXIT

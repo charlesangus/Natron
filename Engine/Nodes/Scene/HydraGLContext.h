@@ -52,6 +52,10 @@ public:
 
     // What the context is, for messages: its GL version and renderer and how it was made.
     virtual std::string description() const = 0;
+
+    // The address of a GL entry point, null if the context has none by that name. Only meaningful
+    // while the context is current.
+    virtual void* getProcAddress(const char* name) const = 0;
 };
 
 /**

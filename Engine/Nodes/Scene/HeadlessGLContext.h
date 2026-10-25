@@ -56,6 +56,7 @@ public:
 
     virtual bool makeCurrent() OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual std::string description() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void* getProcAddress(const char* name) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
     struct Implementation;

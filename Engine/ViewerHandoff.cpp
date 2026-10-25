@@ -79,11 +79,20 @@ overrideRung()
     }
     std::string value(env);
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-    for (ViewerHandoffRung r : { ViewerHandoffRung::ZeroCopy, ViewerHandoffRung::HostSync, ViewerHandoffRung::Readback,
-                                 ViewerHandoffRung::Cpu }) {
-        if (value == toString(r)) {
-            return r;
-        }
+    if (value == toString(ViewerHandoffRung::Cpu)) {
+        return ViewerHandoffRung::Cpu;
+    }
+    const std::optional<gpu::GlHandoffPath> path = gpu::parseOverride(env);
+    if (!path) {
+        return std::nullopt;
+    }
+    switch (*path) {
+    case gpu::GlHandoffPath::ZeroCopy:
+        return ViewerHandoffRung::ZeroCopy;
+    case gpu::GlHandoffPath::ZeroCopyHostSync:
+        return ViewerHandoffRung::HostSync;
+    case gpu::GlHandoffPath::Readback:
+        return ViewerHandoffRung::Readback;
     }
 
     return std::nullopt;
@@ -129,7 +138,7 @@ accept()
 bool
 isLostStatus(const gpu::GpuStatus& s)
 {
-    return s.result == VK_ERROR_DEVICE_LOST;
+    return gpu::isDeviceLost(s);
 }
 
 // What the render thread may share with the GL thread. The process is declared after the token so
@@ -690,27 +699,23 @@ struct ViewerHandoff::Imp {
             return;
         }
 
-        std::string why;
-        std::optional<ViewerHandoffRung> picked;
         const ViewerHandoffRung first = forced ? *forced : ViewerHandoffRung::ZeroCopy;
-        for (int i = (int)first; i <= (int)ViewerHandoffRung::Readback; ++i) {
-            const ViewerHandoffRung r = (ViewerHandoffRung)i;
-            if (!caps.supports(pathOf(r))) {
-                why += std::string(why.empty() ? "" : "; ") + toString(r) + " unavailable: missing " + caps.missing;
-                continue;
-            }
+        const gpu::GlHandoffChoice choice = gpu::chooseHandoffPath(caps, pathOf(first), [&](gpu::GlHandoffPath path) {
             std::unique_ptr<gpu::GlInterop> trial;
-            const gpu::GpuStatus s = createInterop(*dev, r, kProbeCapacity, trial);
-            if (s) {
-                picked = r;
-                break;
-            }
-            if (isLostStatus(s)) {
-                setReason("device lost while building the GL interop");
 
-                return;
-            }
-            why += std::string(why.empty() ? "" : "; ") + toString(r) + " failed: " + s.message;
+            return gpu::GlInterop::create(dev->runtime->device(), loader, kProbeCapacity, path, trial);
+        });
+        if (choice.lost) {
+            setReason("device lost while building the GL interop");
+
+            return;
+        }
+        std::string why = choice.reasons;
+        std::optional<ViewerHandoffRung> picked;
+        if (choice.path) {
+            picked = (*choice.path == gpu::GlHandoffPath::ZeroCopy)      ? ViewerHandoffRung::ZeroCopy
+                : (*choice.path == gpu::GlHandoffPath::ZeroCopyHostSync) ? ViewerHandoffRung::HostSync
+                                                                         : ViewerHandoffRung::Readback;
         }
         if (!picked) {
             buildFailed = true;

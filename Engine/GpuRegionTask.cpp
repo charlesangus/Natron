@@ -244,6 +244,10 @@ struct Slot {
     ImagePtr source;
     std::size_t uploadBytes = 0;
 
+    // The buffer the upload lands in. A region run whole issues its uploads after recording every member, by which
+    // time the slot may have released its handle to the spare list, so the upload keeps its own reference.
+    gpu::GpuBufferHandle uploadTarget;
+
     // For an external input: its task, and what the members read of it.
     int externalTask = -1;
     RectI neededRoI;
@@ -1103,6 +1107,7 @@ private:
                 return false;
             }
             slot.view = viewOf(&slot.handle.buffer(), slot.layout);
+            slot.uploadTarget = slot.handle;
         }
 
         return true;
@@ -1134,7 +1139,7 @@ private:
             options.path = &path;
             gpu::TimelineValue done;
             // upload() only reads the host range.
-            const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), slot.uploadBytes }, slot.handle.buffer(), 0, done, options);
+            const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), slot.uploadBytes }, slot.uploadTarget.buffer(), 0, done, options);
             if (!status) {
                 return failGpu(slot.externalTask, "upload failed", status);
             }
@@ -1660,8 +1665,8 @@ private:
         }
         if (_segments.size() == 1) {
             for (const Slot& slot : _slots) {
-                if (slot.source && slot.handle) {
-                    segment.recorder->acquireFromTransfer(_runtime.transfer(), slot.handle.buffer(), 0, slot.uploadBytes);
+                if (slot.source && slot.uploadTarget) {
+                    segment.recorder->acquireFromTransfer(_runtime.transfer(), slot.uploadTarget.buffer(), 0, slot.uploadBytes);
                     ++segment.handoffs;
                 }
             }
@@ -1855,6 +1860,7 @@ private:
         _uploadAccesses.clear();
         for (Slot& slot : _slots) {
             slot.source.reset();
+            slot.uploadTarget = gpu::GpuBufferHandle();
         }
         if (_report) {
             _report->uploadMs = msBetween(_uploadBegin, Clock::now());
@@ -3007,6 +3013,7 @@ private:
         _spare.clear();
         _recycled.clear();
         for (Slot& slot : _slots) {
+            slot.uploadTarget = gpu::GpuBufferHandle();
             if (slot.downloadImage) {
                 _runtime.wait(slot.downloadDone);
                 slot.downloadDone = gpu::TimelineValue();

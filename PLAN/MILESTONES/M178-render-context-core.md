@@ -40,31 +40,31 @@ The per-context render core shared by E13 - RFV and E15 - Loops And I-Nodes, spl
 
 ## Phase 178.2: Request pass and keys
 
-- [ ] M178.P2.T1 — Carry contexts through the request pass, with fan-out and cross-context edges
+- [x] M178.P2.T1 — Carry contexts through the request pass, with fan-out and cross-context edges
   - files: `Engine/ParallelRenderArgs.h`, `Engine/ParallelRenderArgs.cpp` (`visitRequestPassItem`, `getInputsRoIsFunctor`), `Engine/EffectInstance.h`
   - approach: Request items carry a `RenderContextPtr` (root: empty). Add a virtual `EffectInstance::getInputContexts(inputNb, time, ctx)` returning the list of contexts to request that input under (default: `{ctx}`), and a way for a node to request another node's output under a named target context (for M182 - Loop Feedback's back-edge). Record on each `NodeFrameRequest` its key `ctx.restrictTo(node->getUpstreamContextReadSet()).hash()`. Reject a request whose target equals its own (node, key).
   - verify: gtest with a test-only `ContextFanOutTestEffect` that fans its input into 3 contexts: the request pass holds 3 entries for a reading node and 1 for a non-reading ancestor; a self-targeting request fails with an error.
   - size: L
 
-- [ ] M178.P2.T2 — Key the args map and request map by (node, context key)
+- [x] M178.P2.T2 — Key the args map and request map by (node, context key)
   - files: `Engine/ParallelRenderArgs.h`, `Engine/ParallelRenderArgs.cpp` (`buildArgsMap`, `FrameRequestMap`), `Engine/FrameRenderContext.h`, `Engine/FrameRenderContext.cpp`
   - approach: Introduce `NodeCtxKey {NodePtr, uint64 ctxKey}`. Key 0 entries are shared as today. Keep a thin lookup overload for callers without a context. This replaces M71.P3.T2.
   - verify: gtest on the fan-out graph: the reader appears 3 times in the request map, the context-free ancestor once.
   - size: L
 
-- [ ] M178.P2.T3 — Key scheduler tasks and edges by target context
+- [x] M178.P2.T3 — Key scheduler tasks and edges by target context
   - files: `Engine/RenderScheduler.h`, `Engine/RenderScheduler.cpp`, `Engine/FrameRenderContext.h`
   - approach: Add the context key to `FrameStore::TaskKey`, `SharedOutputKey` and `FrameGraph::Task` identity. Each `TaskEdge` carries the dependency's target context key explicitly, so an edge may cross contexts (fan-out, feedback, fold chain); do not assume edges connect equal keys. This replaces M71.P3.T3, whose "matching context key" rule is wrong for loops.
   - verify: `Tests/FrameGraphBuild_Test.cpp` gains cases: the fan-out graph's task counts, a chain where task k depends on task k−1 under a different key, and context-free nodes shared.
   - size: L
 
-- [ ] M178.P2.T4 — Fold the context key into the render hash
+- [x] M178.P2.T4 — Fold the context key into the render hash
   - files: `Engine/EffectInstance.cpp` (`getRenderHash`), `Engine/ParallelRenderArgs.cpp`, `Engine/ViewerInstance.cpp`
   - approach: Mix the node's context key into `args->nodeHash` / `NodeFrameRequest::nodeHash`; `ImageKey`, `ActionsCache`, `DeepImageKey` and the viewer texture cache take it unchanged. Key 0 leaves the hash unchanged. This replaces M71.P3.T4.
   - verify: with `CountingTestEffect`, a reader under two different keys renders twice and under two equal keys once; a context-free node's hash is bit-identical to before.
   - size: M
 
-- [ ] M178.P2.T5 — Install the context on the executing thread, on both schedulers
+- [x] M178.P2.T5 — Install the context on the executing thread, on both schedulers
   - files: `Engine/RenderScheduler.cpp` (`executeTask`), `Engine/TLSHolderImpl.h` (`createFromFrameContext`), `Engine/EffectInstance.cpp` (legacy path)
   - approach: The task body runs under a `FrameContextScope` that selects the args entry for `(node, ctxKey)`, and exposes the current context through `getParallelRenderArgsTLS`. The legacy path pulls each context's input serially under the same scope. This replaces M71.P3.T5.
   - verify: `renderBothWays` on the fan-out graph is bit-identical across both schedulers and 1 vs N pool threads.

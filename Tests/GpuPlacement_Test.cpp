@@ -1156,8 +1156,17 @@ TEST(GpuCostModel, UnseededChainMakesOneRegion)
     const FrameGraph::Region& region = chain.graph.regions[0];
     EXPECT_EQ(region.members, std::vector<int>({ 3, 2, 1 }));
     EXPECT_EQ(region.externalInputs, std::vector<int>({ 4 }));
-    ASSERT_EQ(region.outputs.size(), 1u);
-    EXPECT_EQ(region.outputs[0].task, 1);
+    ASSERT_EQ(region.outputs.size(), 3u);
+    for (int t : { 3, 2 }) {
+        const FrameGraph::Region::Output* output = findOutput(region, t);
+        ASSERT_TRUE(output) << t;
+        EXPECT_EQ(output->internalConsumers, 1) << t;
+        EXPECT_EQ(output->externalConsumers, 0) << t;
+    }
+    const FrameGraph::Region::Output* last = findOutput(region, 1);
+    ASSERT_TRUE(last);
+    EXPECT_EQ(last->internalConsumers, 0);
+    EXPECT_EQ(last->externalConsumers, 1);
     EXPECT_EQ(chain.graph.tasks[0].device, FrameGraph::Device::Cpu);
     EXPECT_EQ(chain.graph.tasks[4].device, FrameGraph::Device::Cpu);
 }
@@ -1210,8 +1219,17 @@ TEST(GpuCostModel, UnseededOpJoinsTheRegionOfItsGpuNeighbours)
     const FrameGraph::Region& region = fixture.graph.regions[0];
     EXPECT_EQ(region.members, std::vector<int>({ 3, 2, 1 }));
     EXPECT_EQ(region.externalInputs, std::vector<int>({ 4 }));
-    ASSERT_EQ(region.outputs.size(), 1u);
-    EXPECT_EQ(region.outputs[0].task, 1);
+    ASSERT_EQ(region.outputs.size(), 3u);
+    for (int t : { 3, 2 }) {
+        const FrameGraph::Region::Output* output = findOutput(region, t);
+        ASSERT_TRUE(output) << t;
+        EXPECT_EQ(output->internalConsumers, 1) << t;
+        EXPECT_EQ(output->externalConsumers, 0) << t;
+    }
+    const FrameGraph::Region::Output* last = findOutput(region, 1);
+    ASSERT_TRUE(last);
+    EXPECT_EQ(last->internalConsumers, 0);
+    EXPECT_EQ(last->externalConsumers, 1);
     EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Gpu);
 }
 

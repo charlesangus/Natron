@@ -82,6 +82,8 @@
 #include <pxr/usd/usdShade/material.h>
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
+#include <pxr/usd/usdUtils/dependencies.h>
+#include <pxr/usd/usdUtils/flattenLayerStack.h>
 
 #ifdef NATRON_USD_INCLUDES_RESTORE_EMIT
 #undef NATRON_USD_INCLUDES_RESTORE_EMIT

@@ -2386,7 +2386,8 @@ private:
             assert(activeInputToRender);
             NodePtr activeInputNode = activeInputToRender->getNode();
             U64 activeInputToRenderHash = activeInputToRender->getHash();
-            const double par = activeInputToRender->getAspectRatio(-1);
+            // A node that writes its range at once renders no image, so it has no aspect ratio.
+            const double par = output->writesFrameRangeAtOnce() ? 1. : activeInputToRender->getAspectRatio(-1);
             const bool isRenderDueToRenderInteraction = false;
             const bool isSequentialRender = true;
             const DataKindEnum outputKind = activeInputToRender->getOutputDataKind();
@@ -2399,6 +2400,24 @@ private:
                     _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while rendering") : message.toStdString());
 
                     return;
+                }
+                if (output->writesFrameRangeAtOnce()) {
+                    // The render was narrowed to this one frame; the node writes the whole range
+                    // it was asked for here, rather than rendering an output of its own.
+                    int firstFrame = time;
+                    int lastFrame = time;
+                    output->getRunningRenderRequestedRange(&firstFrame, &lastFrame);
+                    if (output->writeFrameRange(firstFrame, lastFrame, viewsToRender[view]) == eStatusFailed) {
+                        QString message;
+                        int type = 0;
+                        activeInputNode->getPersistentMessage(&message, &type, false);
+                        _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while writing") : message.toStdString());
+
+                        return;
+                    }
+                    notifyFrameStatsObserver(time, viewsToRender[view], stats);
+                    _imp->scheduler->notifyFrameRendered(time, viewsToRender[view], viewsToRender, stats, eSchedulingPolicyFFA);
+                    continue;
                 }
                 StatusEnum stat = activeInputToRender->getRegionOfDefinition_public(activeInputToRenderHash, time, scale, viewsToRender[view], &rod, &isProjectFormat);
                 if (stat == eStatusFailed) {

@@ -186,7 +186,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
   - verify: a new `NativeImageEffect_Test` case renders a two-input test kernel with an offset second input. All existing native node tests still pass at the gate.
   - size: M
 
-- [ ] M101.P2.T2 — Add the new Merge node with a single layer and universal alpha
+- [x] M101.P2.T2 — Add the new Merge node with a single layer and universal alpha
   - files: `Engine/Nodes/Merge/NativeMerge.{h,cpp}` (new), `Engine/Nodes/Merge/NativeMerge.reg.inc` (new), `Tests/Native/NativeMergeNode_Test.cpp` (new)
   - approach:
     - A Composite `MergeOp` on `ImageNode<OP>`, with `NodeSpec` ID `Merge` v1 and the Design's inputs (A2..A64 Variadic), `operation` (option names from `MergeOps.h`), bbox, metadata from, frame range from, and the `MaskMix` stage's mask and mix.
@@ -198,7 +198,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
   - verify: `NativeMergeNode_Test` covers over with an offset A, three A inputs, each bbox mode, mask and mix, identity with no A, a non-separable operator, A `spec` over B `rgba`, and output-layer creation. Runs at the gate.
   - size: L
 
-- [ ] M101.P2.T3 — Add the Merge presets as node-menu Python items
+- [x] M101.P2.T3 — Add the Merge presets as node-menu Python items
   - files: the bundled `initGui.py` (new, in the bundled PyPlugs directory `Gui/Resources/PyPlugs/`; check that `tools/release/stage-bundle.sh` and the install rules ship it to `Plugins/PyPlugs`), `Tests/gui/` (new test script)
   - approach:
     - Using M158 - Node Toolbar As Menu's `natron.nodesMenu()`, add `QAction`s under `Merge/` labelled Plus, Matte, Multiply, In, Out, Screen, Max, Min and Difference.
@@ -207,7 +207,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
   - verify: a GUI test under Xvfb triggers each action and checks the node's plug-in ID and `operation`, and checks the tab menu lists `Merge/Plus`.
   - size: M
 
-- [ ] M101.P2.T4 — Wire the new Merge into the inspector list, the M shortcut and the operator sub-label
+- [x] M101.P2.T4 — Wire the new Merge into the inspector list, the M shortcut and the operator sub-label
   - files: `Engine/AppInstance.cpp` (`isEntitledForInspector`, `:1043-1062`), `Gui/GuiApplicationManager.cpp` (`:1102`), `Gui/NodeGui.cpp` (`:449`, `:3533`), `Tests/Native/NativeMergeNode_Test.cpp`
   - approach: `Merge` becomes inspector-entitled in place of the old IDs, M creates `Merge`, and the sub-label icon reads the new node's `operation` choice. Drop the old IDs from these three places in P5.T6, not here.
   - verify: a test checks `Merge` is inspector-entitled. The GUI bench runs at the gate, because `Gui/NodeGui*` is touched.
@@ -364,6 +364,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
 
 ## Decisions
 
+- 2026-10-25 — **Per-plane limits to check at the P3 gate (bosley-native-nodes):** (1) a per-channel B alpha with A on Universal/PerLayer reads A's same-named layer in the alpha plane, not A's broadcast alpha; (2) layers pair by ID but the input request matches channels, so a same-ID layer with different channels on A reads black; (3) every produced plane is requested from every non-mask input on any render of the node, which may fetch planes the rendered plane doesn't need — measure, and narrow to the rendered plane if the host requests them eagerly; (4) the extra layers follow the layer knob's channel mask. All-matching takes A as the union of the connected A inputs; an empty List merges only the output layer.
 - 2026-10-25 — **Layer modes stay per-plane (bosley-native-nodes):** Merge stays non-multiplanar. A "produced planes" hook consulted by `getComponentsNeededDefault` declares the planes All-matching and List modes produce, and each plane renders separately with A and B read in that plane; Per-channel output alpha is one of those planes (B's alpha layer). The GPU path keeps one plane per query, so P4 holds. Rejected: making Merge multiplanar, which breaks the one-layer GPU path. Non-multiplanar Staged nodes now declare their input layers through `EffectInstance::addInputLayersNeeded`.
 - 2026-10-25 — **Phase 101.2 calls (bosley-native-nodes):** identity goes through `route()` (an op can't see which inputs are connected): with no A, operators that keep B under a transparent A pass B through. "Rows outside every A's RoD copy B" is a per-chunk check that A and its alpha are zero, for those operators only. Metadata-from and range-from default to B; editing B's layer moves the output layer to match. Presets live in `Gui/Resources/PyPlugs/initGui.py`. P3.T2 must still turn non-separable operators with a per-channel alpha layer into a render error (2026-10-25 decision); 101.2 uses the first channel's alpha meanwhile.
 - 2026-10-25 — **Install rule (bosley-native-nodes):** `cmake/NatronBundleAssets.cmake` installs PyPlugs to `Plugins/` instead of `Plugins/PyPlugs`, so an install-tree Natron misses `initGui.py`; `stage-bundle.sh` (AppImages) is right. P5 fixes the DESTINATION. Until P5 the tab menu lists both Merge nodes and both Plus presets.

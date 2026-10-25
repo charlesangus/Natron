@@ -69,6 +69,7 @@
 #include <QTextStream>
 #include <QThread>
 #include <QTimer>
+#include <QUuid>
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 
 #include <ofxhXml.h> // OFX::XML::escape
@@ -179,8 +180,14 @@ Project::Project(const AppInstancePtr& appInstance)
     , _imp( new ProjectPrivate(this) )
 {
     QObject::connect( _imp->autoSaveTimer.get(), SIGNAL(timeout()), this, SLOT(onAutoSaveTimerTriggered()) );
+    _imp->sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
 }
 
+const std::string&
+Project::getSessionId() const
+{
+    return _imp->sessionId;
+}
 
 // make_shared enabler (because make_shared needs access to the private constructor)
 // see https://stackoverflow.com/a/20961251/2607517
@@ -3149,6 +3156,7 @@ void
 Project::doResetEnd(bool aboutToQuit)
 {
     _imp->runOnProjectCloseCallback();
+    _imp->sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
 
     QString lockFilePath = getLockAbsoluteFilePath();
     QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );

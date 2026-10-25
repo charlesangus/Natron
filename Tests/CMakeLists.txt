@@ -236,6 +236,7 @@ set(GuiTests_SOURCES
     KnobGuiString_Test.cpp
     KnobUndoHash_Test.cpp
     LayerChannelRow_Test.cpp
+    NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
     NodeGraphPickUp_Test.cpp
     NodeGraphSplice_Test.cpp

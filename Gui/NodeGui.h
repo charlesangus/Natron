@@ -589,10 +589,17 @@ public Q_SLOTS:
     void centerGraphOnIt();
 
     /**
-     * @brief Rebuilds the expression arrows, the knob link lines and the dashed lines between Linked Nodes,
-     * and the expression and Linked Node indicators.
+     * @brief Rebuilds the expression arrows, the knob link lines and the lines between Linked Nodes,
+     * and the expression and Linked Node indicators. Each set of linked nodes, and each expression set
+     * (a node and the nodes reading it by expression), is drawn as the lines nearestMemberLines() picks,
+     * not a line per pair.
      **/
     void onKnobsLinksChanged();
+
+    /**
+     * @brief Rebuilds the lines as onKnobsLinksChanged() does, once, the next time the event loop runs.
+     **/
+    void scheduleLinkLinesRefresh();
 
     void refreshOutputEdgeVisibility();
 
@@ -797,13 +804,14 @@ private:
     };
 
     enum LinkLineKindEnum {
-        // A directed arrow from a node whose knobs an expression of this node reads
+        // A directed arrow from a node whose knobs an expression of this node reads, or an undirected
+        // line to a node reading by expression a node this node also reads
         eLinkLineKindExpression = 0,
 
-        // An undirected line to a node with a knob sharing a link group with a knob of this node
+        // An undirected dashed line to a node with a knob sharing a link group with a knob of this node
         eLinkLineKindKnobLink,
 
-        // An undirected dashed line to a Linked Node of this node
+        // An undirected solid line to a Linked Node of this node
         eLinkLineKindLinkedNodes
     };
 
@@ -824,6 +832,10 @@ private:
     static bool refreshExpressionLineInvalid(LinkLine& line);
 
     LinkLines _linkLines;
+    bool _linkLinesRefreshPending;
+
+    // The other members of the expression sets this node was in when its lines were last drawn.
+    NodesWList _expressionSetMembers;
     NodeGuiIndicatorPtr _expressionIndicator;
     NodeGuiIndicatorPtr _linkedNodeIndicator;
     QPoint _magnecEnabled; //<enabled in X or/and Y

@@ -1957,8 +1957,13 @@ public:
      * and of the nodes inside them, once all of them exist: the dimensions saved with the same group
      * id are linked to each other only, never to a knob that was not saved with them. A group id saved
      * for a single dimension, or for dimensions already in one group together, changes nothing.
+     *
+     * With joinExistingGroups, as for pasted or duplicated copies, the dimensions saved with a group id
+     * instead join the group the knob that id names is still in, when that group has a member on an
+     * active node other than the given ones: copies join the groups of the knobs they were copied
+     * from, and link only to each other when those are gone.
      **/
-    static void restoreLinkGroups(const NodesList& nodes);
+    static void restoreLinkGroups(const NodesList& nodes, bool joinExistingGroups = false);
 
     virtual U64 getContentHash() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual U64 getDimensionContentHash(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;

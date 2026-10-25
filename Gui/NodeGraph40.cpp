@@ -126,6 +126,7 @@ putOnSystemClipboard(const NodeClipBoard& cb)
     try {
         Serialization::ClipboardSerialization serialization;
         serialization.nodes = cb.nodes;
+        serialization.sourceProject = cb.sourceProject;
         text = Serialization::encodeClipboardYaml(serialization);
     } catch (const std::exception& e) {
         Dialogs::errorDialog(NodeGraph::tr("Copy").toStdString(), NodeGraph::tr("The selection cannot be copied: %1").arg(QString::fromUtf8(e.what())).toStdString());
@@ -338,6 +339,7 @@ decodeClipboardNodes(const std::string& text,
     }
     clipboard->nodes = serialization.nodes;
     clipboard->sourceNodes.assign(serialization.nodes.size(), NodePtr());
+    clipboard->sourceProject = serialization.sourceProject;
 
     return true;
 }

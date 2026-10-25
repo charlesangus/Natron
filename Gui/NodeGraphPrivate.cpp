@@ -196,6 +196,7 @@ NodeGraphPrivate::copyNodesInternal(const NodesGuiList& selection,
     ///Clear clipboard
     clipboard.nodes.clear();
     clipboard.sourceNodes.clear();
+    clipboard.sourceProject = _publicInterface->getGui()->getApp()->getProject()->getSessionId();
 
     NodesGuiList nodesToCopy = selection;
     for (NodesGuiList::iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {

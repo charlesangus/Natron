@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -218,6 +219,19 @@ TEST_F(KnobLinkGroupTest, ExpressionSetOnOneEvaluatesOnAll)
     b->clearExpression(0, true);
     EXPECT_TRUE(a->getExpression(0).empty());
     EXPECT_TRUE(c->getExpression(0).empty());
+}
+
+TEST_F(KnobLinkGroupTest, AnInvalidExpressionThrowsItsRuntimeError)
+{
+    try {
+        a->setExpression(0, "1.5 *", false, true);
+        ADD_FAILURE() << "an invalid expression was accepted";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string("std::exception"), std::string(e.what()));
+        EXPECT_FALSE(std::string(e.what()).empty());
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "the error lost its type: " << e.what();
+    }
 }
 
 TEST_F(KnobLinkGroupTest, CrossDimensionLinkPropagatesBothWays)

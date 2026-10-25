@@ -1,5 +1,5 @@
 """A GUI test of Linked Nodes in the node graph: Create Linked Node (Alt+K) and Unlink Node
-(Alt+Shift+K) as undoable steps, the dashed line and the chain-link badge between Linked Nodes, the
+(Alt+Shift+K) as undoable steps, the solid line and the chain-link badge between Linked Nodes, the
 expression arrows, the link and expression line preferences, and the Show Link Lines switch
 (Shift+E). It is driven by Tests/gui/run-gui-test.sh, not ctest.
 
@@ -9,9 +9,13 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
         Tests/gui/run-gui-test.sh Tests/gui/m92_linked_nodes.py <AppImage or build/fast/App/Natron>'
 
 The lines are found among the graph scene's items by their tool tips: "... are Linked Nodes" for
-the dashed lines, "<------->" for the lines of knob links and "(master)" for expression arrows; the
-badge by its "is a Linked Node" tool tip. Line colours, dash patterns and the badge's drawing are
-only checked in the screenshots; m92_badge_1x.png is a crop of the badge at 1:1 graph zoom and
+the solid lines between Linked Nodes, "<------->" for the dashed lines of knob links and "(master)"
+for expression arrows, "both read" for the undirected lines between two nodes reading a third by
+expression; the badge by its "is a Linked Node" tool tip. Each set of linked nodes, and each node with
+the nodes reading it by expression, draws a line from each member to its nearest other member, joined
+into one tree of lines, so four Linked Nodes in a row draw three lines.
+Dash patterns are read from the line items' pens; line colours and the badge's drawing are only
+checked in the screenshots; m92_badge_1x.png is a crop of the badge at 1:1 graph zoom and
 m92_badge_1x_x4.png the same pixels enlarged.
 
 Knob links are checked in node panels: a linked knob's name label (dynamic property "linked", which
@@ -130,7 +134,7 @@ try:
 
     def lines():
         """The visible link lines of the root graph, as a dict kind -> count."""
-        counts = {"nodes": 0, "knob": 0, "expression": 0, "glyph": 0}
+        counts = {"nodes": 0, "knob": 0, "expression": 0, "shared": 0, "glyph": 0}
         graph = root_graph()
         for item in graph.items():
             if not item.isVisible():
@@ -142,9 +146,53 @@ try:
                 counts["knob"] += 1
             elif "(master)" in tip:
                 counts["expression"] += 1
+            elif "both read" in tip:
+                counts["shared"] += 1
             elif "is a Linked Node" in tip:
                 counts["glyph"] += 1
         return counts
+
+    def line_items(kind):
+        """The visible line items of the root graph of one kind of lines(): "nodes", "knob", "expression" or "shared"."""
+        marks = {"nodes": "are Linked Nodes", "knob": "&lt;-------&gt;", "expression": "(master)", "shared": "both read"}
+        found = []
+        for item in root_graph().items():
+            if item.isVisible() and marks[kind] in item.toolTip().replace("&nbsp;", " "):
+                found.append(item)
+        return found
+
+    def pen_styles(kind):
+        """The pen styles of the visible lines of one kind, as a set of names."""
+        styles = set()
+        for item in line_items(kind):
+            styles.add(item.pen().style().name if hasattr(item, "pen") else "no pen")
+        return styles
+
+    def linked_node_pairs():
+        """The pairs of labels joined by a line between Linked Nodes, each pair as a sorted tuple."""
+        pairs = set()
+        for item in line_items("nodes"):
+            m = re.search(r"(\w+) and (\w+) are Linked Nodes", item.toolTip().replace("&nbsp;", " "))
+            if m:
+                pairs.add(tuple(sorted((m.group(1), m.group(2)))))
+        return pairs
+
+    def shared_read_pairs():
+        """The pairs of labels joined by an undirected line between two readers of one node."""
+        pairs = set()
+        for item in line_items("shared"):
+            m = re.search(r"(\w+) and (\w+) both read", item.toolTip().replace("&nbsp;", " "))
+            if m:
+                pairs.add(tuple(sorted((m.group(1), m.group(2)))))
+        return pairs
+
+    def expression_arrow_readers(master_label):
+        """The labels of the nodes an expression arrow to master_label is drawn from."""
+        readers = set()
+        for item in line_items("expression"):
+            for m in re.finditer(r"%s\.\w+ \(master\) -+(?:&gt;|>)(\w+)\." % master_label, item.toolTip().replace("&nbsp;", " ")):
+                readers.add(m.group(1))
+        return readers
 
     def linked(a, b, v):
         """Whether a value set on a reaches b."""
@@ -323,7 +371,7 @@ try:
         b = added[0]
         check(app.getNode(b).getPluginID() == app.getNode(a).getPluginID(), "the Linked Node is a " + BLUR)
         c = lines()
-        check(c["nodes"] == 1, "one dashed line joins the two Linked Nodes (%r)" % c)
+        check(c["nodes"] == 1, "one solid line joins the two Linked Nodes (%r)" % c)
         check(c["glyph"] == 2, "both Linked Nodes show the link glyph (%r)" % c)
 
         gt.section("undo create")
@@ -391,7 +439,7 @@ try:
         app.getNode(l3).setPosition(0, 300)
         yield ("sleep", SETTLE_MS)
         c = lines()
-        check(c["nodes"] == 3, "three Linked Nodes are joined by three dashed lines (%r)" % c)
+        check(c["nodes"] == 2, "three Linked Nodes are joined by two lines, not one per pair (%r)" % c)
         check(linked(l3, l2, 9.0), "an edit of %s reaches %s, both linked from %s" % (l3, l2, a))
         app.getNode(l3).destroy()
         yield ("sleep", SETTLE_MS)
@@ -405,7 +453,7 @@ try:
         yield ("sleep", SETTLE_MS)
         c = lines()
         check(c["expression"] == 1, "the expression draws one arrow (%r)" % c)
-        check(c["nodes"] == 1, "the dashed line is still drawn (%r)" % c)
+        check(c["nodes"] == 1, "the Linked Nodes line is still drawn (%r)" % c)
         frame_all()
         yield ("sleep", SETTLE_MS)
         gt.shot("m92_link_and_expression.png")
@@ -456,6 +504,8 @@ try:
         set_pref("showExpressionLines", True)
 
         yield from knob_link_steps()
+        yield from nearest_member_steps()
+        yield from expression_set_steps()
 
         faulthandler.cancel_dump_traceback_later()
 
@@ -596,6 +646,84 @@ try:
         redo()
         yield ("sleep", SETTLE_MS)
         check(link_state(t) == "linked" and linked(s, t, 16.0), "redoing the paste links them again")
+
+    def nearest_member_steps():
+        gt.section("nearest-member lines and line styles")
+        before = lines()
+        r1 = create(BLUR, 0, 1500).getScriptName()
+        app.getNode(r1).setLabel("Row1")
+        rows = [r1]
+        for i in range(2, 5):
+            n = app.getNode(r1).createLinkedNode()
+            gt.require(n is not None, "createLinkedNode made Row%d" % i)
+            n.setLabel("Row%d" % i)
+            n.setPosition(300 * (i - 1), 1500)
+            rows.append(n.getScriptName())
+        yield ("sleep", SETTLE_MS)
+        c = lines()
+        check(c["nodes"] - before["nodes"] == 3, "four Linked Nodes in a row draw three lines, not six (%r, before %r)" % (c, before))
+        pairs = linked_node_pairs()
+        check({("Row1", "Row2"), ("Row2", "Row3"), ("Row3", "Row4")} <= pairs,
+              "each Linked Node in the row joins its neighbour (%r)" % sorted(pairs))
+        check(pen_styles("nodes") == {"SolidLine"}, "Linked Node lines are solid (%r)" % pen_styles("nodes"))
+        check(pen_styles("knob") == {"DashLine"}, "knob link lines are dashed (%r)" % pen_styles("knob"))
+        check(pen_styles("expression") == {"SolidLine"}, "expression arrows stay solid (%r)" % pen_styles("expression"))
+        frame_all()
+        yield ("sleep", SETTLE_MS)
+        gt.shot("m92_nearest_member_row.png")
+
+        app.getNode(rows[3]).setPosition(-300, 1500)
+        yield ("sleep", SETTLE_MS)
+        c = lines()
+        check(c["nodes"] - before["nodes"] == 3, "moving a node keeps three lines (%r, before %r)" % (c, before))
+        pairs = linked_node_pairs()
+        check(("Row1", "Row4") in pairs and ("Row3", "Row4") not in pairs,
+              "the moved node now joins its new nearest member (%r)" % sorted(pairs))
+        frame_all()
+        yield ("sleep", SETTLE_MS)
+        gt.shot("m92_nearest_member_moved.png")
+
+    def expression_set_steps():
+        gt.section("nearest-member expression lines")
+        before = lines()
+        ctrl = create(BLUR, 0, 2500).getScriptName()
+        app.getNode(ctrl).setLabel("Ctrl")
+        readers = []
+        for i in range(1, 5):
+            n = create(BLUR, 300 * i, 2500).getScriptName()
+            app.getNode(n).setLabel("Reader%d" % i)
+            gt.require(app.getNode(n).getParam(PARAM).setExpression("%s.%s.getValue(0)" % (ctrl, PARAM), False, 0),
+                       "set an expression on Reader%d reading Ctrl" % i)
+            readers.append(n)
+        yield ("sleep", SETTLE_MS)
+        c = lines()
+        check(c["expression"] - before["expression"] == 1 and c["shared"] - before["shared"] == 3,
+              "Ctrl and four readers in a row draw one arrow and three lines between readers, not four arrows (%r, before %r)" % (c, before))
+        check(expression_arrow_readers("Ctrl") == {"Reader1"}, "the arrow to Ctrl comes from its nearest reader (%r)" % expression_arrow_readers("Ctrl"))
+        pairs = shared_read_pairs()
+        check({("Reader1", "Reader2"), ("Reader2", "Reader3"), ("Reader3", "Reader4")} == pairs,
+              "each reader joins its neighbour (%r)" % sorted(pairs))
+        check(pen_styles("shared") == {"SolidLine"}, "the lines between readers are solid (%r)" % pen_styles("shared"))
+        frame_all()
+        yield ("sleep", SETTLE_MS)
+        gt.shot("m92_expression_set_row.png")
+
+        app.getNode(ctrl).setPosition(1500, 2500)
+        yield ("sleep", SETTLE_MS)
+        c = lines()
+        check(c["expression"] - before["expression"] == 1 and c["shared"] - before["shared"] == 3,
+              "moving Ctrl keeps one arrow and three lines (%r, before %r)" % (c, before))
+        check(expression_arrow_readers("Ctrl") == {"Reader4"}, "the arrow to Ctrl now comes from Reader4 (%r)" % expression_arrow_readers("Ctrl"))
+
+        app.getNode(readers[3]).getParam(PARAM).setExpression("", False, 0)
+        yield ("sleep", SETTLE_MS)
+        c = lines()
+        check(c["expression"] - before["expression"] == 1 and c["shared"] - before["shared"] == 2,
+              "a reader dropping its expression leaves one arrow and two lines (%r, before %r)" % (c, before))
+        check(expression_arrow_readers("Ctrl") == {"Reader3"}, "and the arrow to Ctrl moves to Reader3 (%r)" % expression_arrow_readers("Ctrl"))
+        frame_all()
+        yield ("sleep", SETTLE_MS)
+        gt.shot("m92_expression_set_moved.png")
 
     gt.run(steps())
 except Exception:

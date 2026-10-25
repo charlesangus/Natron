@@ -254,6 +254,12 @@ public:
 
     bool isLoadingProjectInternal() const;
 
+    /**
+     * @brief Identifies the project open in this app until it is closed or reset, as when another one
+     * is loaded, so copied nodes can tell whether they are pasted into the project they came from.
+     **/
+    const std::string& getSessionId() const;
+
     QString getProjectFilename() const WARN_UNUSED_RETURN;
 
     QString getLastAutoSaveFilePath() const;

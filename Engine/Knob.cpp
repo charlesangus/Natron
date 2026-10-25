@@ -3337,7 +3337,7 @@ KnobHelper::setExpressionInternal(int dimension,
         exprInvalid = e.what();
         exprCpy = expression;
         if (failIfInvalid) {
-            throw e;
+            throw;
         }
     }
 
@@ -6197,8 +6197,82 @@ KnobHelper::leaveLinkGroups(int dimension)
     }
 }
 
+namespace {
+
+/*
+ * The group the knob dimension a saved link group id names is in, when that group still has a member on
+ * an active node that is not one of the restored nodes: the group of the knob a copy was made from. The
+ * id is "node.knob.dimension" or "node/track.knob.dimension", the node name fully qualified.
+ */
+KnobLinkGroupPtr
+findOriginalLinkGroup(const std::string& id,
+                      const AppInstancePtr& app,
+                      const NodesList& restoredNodes,
+                      KnobHelperPtr* originalKnob)
+{
+    if (!app) {
+        return KnobLinkGroupPtr();
+    }
+    const std::size_t dimensionDot = id.rfind('.');
+    if ((dimensionDot == std::string::npos) || (dimensionDot == 0)) {
+        return KnobLinkGroupPtr();
+    }
+    const std::size_t knobDot = id.rfind('.', dimensionDot - 1);
+    if ((knobDot == std::string::npos) || (knobDot == 0)) {
+        return KnobLinkGroupPtr();
+    }
+    int dimension = -1;
+    try {
+        dimension = std::stoi(id.substr(dimensionDot + 1));
+    } catch (const std::exception&) {
+        return KnobLinkGroupPtr();
+    }
+    const std::string knobName = id.substr(knobDot + 1, dimensionDot - knobDot - 1);
+    const std::string owner = id.substr(0, knobDot);
+    const std::size_t slash = owner.find('/');
+    const std::string nodeName = owner.substr(0, slash);
+
+    NodePtr node = app->getNodeByFullySpecifiedName(nodeName);
+    if (!node || (std::find(restoredNodes.begin(), restoredNodes.end(), node) != restoredNodes.end())) {
+        return KnobLinkGroupPtr();
+    }
+    KnobIPtr knob;
+    if (slash == std::string::npos) {
+        knob = node->getKnobByName(knobName);
+    } else {
+        TrackerContextPtr tracker = node->getTrackerContext();
+        TrackMarkerPtr marker = tracker ? tracker->getMarkerByName(owner.substr(slash + 1)) : TrackMarkerPtr();
+        knob = marker ? marker->getKnobByName(knobName) : KnobIPtr();
+    }
+    KnobHelperPtr helper = std::dynamic_pointer_cast<KnobHelper>(knob);
+    if (!helper || (dimension < 0) || (dimension >= helper->getDimension())) {
+        return KnobLinkGroupPtr();
+    }
+    KnobLinkGroupPtr group = helper->getLinkGroup(dimension);
+    if (!group) {
+        return KnobLinkGroupPtr();
+    }
+
+    // A group whose members are all deleted, or are all being restored, is not one to join.
+    const std::vector<KnobLinkGroup::Member> members = group->getMembers();
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        KnobIPtr member = it->knob.lock();
+        NodePtr memberNode = linkMemberNode(member.get());
+        if (memberNode && memberNode->isActivated() && (std::find(restoredNodes.begin(), restoredNodes.end(), memberNode) == restoredNodes.end())) {
+            *originalKnob = helper;
+
+            return group;
+        }
+    }
+
+    return KnobLinkGroupPtr();
+} // findOriginalLinkGroup
+
+} // anon namespace
+
 void
-KnobHelper::restoreLinkGroups(const NodesList& nodes)
+KnobHelper::restoreLinkGroups(const NodesList& nodes,
+                              bool joinExistingGroups)
 {
     NodesList allNodes;
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
@@ -6251,30 +6325,39 @@ KnobHelper::restoreLinkGroups(const NodesList& nodes)
     NodesList linkedNodes;
     for (std::map<std::string, std::vector<StoredMember>>::const_iterator it = stored.begin(); it != stored.end(); ++it) {
         const std::vector<StoredMember>& members = it->second;
-        if (members.size() < 2) {
+
+        // Copies join the group of the knobs they were copied from while it is still there.
+        KnobHelperPtr anchorKnob;
+        const StoredMember* anchor = 0;
+        KnobLinkGroupPtr group;
+        if (joinExistingGroups) {
+            const AppInstancePtr app = members.front().knob->getHolder() ? members.front().knob->getHolder()->getApp() : AppInstancePtr();
+            group = findOriginalLinkGroup(it->first, app, allNodes, &anchorKnob);
+        }
+        if (!group && (members.size() < 2)) {
             // Its other members were not saved with it (a single copied node, a preset): nothing to link to.
             continue;
         }
-        // A preset or user knobs restored onto knobs that kept their groups leaves those groups alone.
-        const KnobLinkGroupPtr current = members.front().knob->getLinkGroup(members.front().dimension);
-        bool together = (bool)current;
-        for (std::size_t i = 1; together && i < members.size(); ++i) {
-            together = (members[i].knob->getLinkGroup(members[i].dimension) == current);
-        }
-        if (together) {
-            continue;
+        if (!group) {
+            // A preset or user knobs restored onto knobs that kept their groups leaves those groups alone.
+            const KnobLinkGroupPtr current = members.front().knob->getLinkGroup(members.front().dimension);
+            bool together = (bool)current;
+            for (std::size_t i = 1; together && i < members.size(); ++i) {
+                together = (members[i].knob->getLinkGroup(members[i].dimension) == current);
+            }
+            if (together) {
+                continue;
+            }
         }
 
         // A member an alias was restored onto already is in the group that alias forms, which holds the
         // state the alias restored: the other members join that group, whichever was restored first.
         std::size_t anchorIndex = members.size();
-        KnobLinkGroupPtr group;
-        for (std::size_t i = 0; i < members.size(); ++i) {
+        for (std::size_t i = 0; !group && i < members.size(); ++i) {
             KnobLinkGroupPtr g = members[i].knob->getLinkGroup(members[i].dimension);
             if (g && g->isPermanent()) {
                 anchorIndex = i;
                 group = g;
-                break;
             }
         }
         if (!group) {
@@ -6295,12 +6378,15 @@ KnobHelper::restoreLinkGroups(const NodesList& nodes)
             group->getStateKnob()->copyLinkStateFrom(seed.knob.get(), 0, seed.dimension, false);
             group->setExpression(seed.knob->getExpression(seed.dimension), seed.knob->isExpressionUsingRetVariable(seed.dimension));
         }
-        const StoredMember& anchor = members[anchorIndex];
+        if (anchorIndex < members.size()) {
+            anchor = &members[anchorIndex];
+            anchorKnob = anchor->knob;
+        }
 
         std::vector<const StoredMember*> joined;
         for (std::size_t i = 0; i < members.size(); ++i) {
             const StoredMember& m = members[i];
-            if ((i != anchorIndex) && !m.knob->isTypeCompatible(anchor.knob)) {
+            if ((&m != anchor) && !m.knob->isTypeCompatible(anchorKnob)) {
                 continue;
             }
             const KnobLinkGroupPtr memberGroup = m.knob->getLinkGroup(m.dimension);
@@ -6332,7 +6418,7 @@ KnobHelper::restoreLinkGroups(const NodesList& nodes)
             // The members' own changes while they adopt the group's state must not push back to the group.
             KnobLinkGroupSyncLocker locker(group);
             for (std::size_t i = 0; i < joined.size(); ++i) {
-                if (joined[i]->linked && (joined[i] != &anchor)) {
+                if (joined[i]->linked && (joined[i] != anchor)) {
                     ignore_result(joined[i]->knob->adoptLinkGroupState(group, joined[i]->dimension, joined[i]->knob->getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited));
                 }
             }

@@ -90,6 +90,19 @@ protected:
         return std::dynamic_pointer_cast<KnobDouble>(node->getEffectInstance()->getKnobByName(knobName));
     }
 
+    // What a paste does before it restores links: a node made from a copied node's serialization,
+    // with the links that serialization saved kept for KnobHelper::restoreLinkGroups().
+    NodePtr pasteCopy(const Serialization::NodeSerialization& serialization)
+    {
+        NodePtr node = createNode(_generatorPluginID);
+        if (node) {
+            node->fromSerialization(serialization);
+            node->storeKnobsLinks(serialization, std::map<std::string, std::string>());
+        }
+
+        return node;
+    }
+
     NodePtr original, copy, third;
     std::string knobName;
 };
@@ -304,55 +317,186 @@ TEST_F(LinkedNodeTest, LinkGroupsSurviveASaveAndReload)
     EXPECT_DOUBLE_EQ(0.125, knobOf(original)->getValue(0));
 }
 
-TEST_F(LinkedNodeTest, PastedCopiesOfLinkedNodesAreLinkedOnlyToEachOther)
+TEST_F(LinkedNodeTest, PastedCopiesOfLinkedNodesJoinTheOriginalsGroups)
 {
     ASSERT_TRUE(copy->linkAllKnobsTo(original));
     knobOf(original)->setValue(0.25, ViewSpec::all(), 0);
 
-    // What a paste does: the copies are made from the copied nodes' serializations, then their
-    // links are restored together.
     Serialization::NodeSerialization originalSerialization, copySerialization;
     original->toSerialization(&originalSerialization, false);
     copy->toSerialization(&copySerialization, false);
-    NodePtr pastedOriginal = createNode(_generatorPluginID);
-    NodePtr pastedCopy = createNode(_generatorPluginID);
+    NodePtr pastedOriginal = pasteCopy(originalSerialization);
+    NodePtr pastedCopy = pasteCopy(copySerialization);
     ASSERT_TRUE(pastedOriginal && pastedCopy);
-    pastedOriginal->fromSerialization(originalSerialization);
-    pastedCopy->fromSerialization(copySerialization);
-    const std::map<std::string, std::string> noRenames;
-    pastedOriginal->storeKnobsLinks(originalSerialization, noRenames);
-    pastedCopy->storeKnobsLinks(copySerialization, noRenames);
     NodesList pasted;
     pasted.push_back(pastedOriginal);
     pasted.push_back(pastedCopy);
-    KnobHelper::restoreLinkGroups(pasted);
+    KnobHelper::restoreLinkGroups(pasted, true);
+
+    EXPECT_TRUE(pastedOriginal->isLinkedNode());
+    EXPECT_TRUE(pastedCopy->isLinkedNode());
+    NodesList linked;
+    original->getLinkedNodes(&linked);
+    EXPECT_TRUE(contains(linked, copy));
+    EXPECT_TRUE(contains(linked, pastedOriginal));
+    EXPECT_TRUE(contains(linked, pastedCopy));
+    EXPECT_DOUBLE_EQ(0.25, knobOf(pastedCopy)->getValue(0));
+
+    knobOf(pastedCopy)->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.5, knobOf(original)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.5, knobOf(copy)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.5, knobOf(pastedOriginal)->getValue(0));
+
+    knobOf(original)->setValue(0.75, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.75, knobOf(pastedOriginal)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.75, knobOf(pastedCopy)->getValue(0));
+}
+
+TEST_F(LinkedNodeTest, ADuplicatedLinkedNodeJoinsItsGroupAndLeavesItOnUndo)
+{
+    ASSERT_TRUE(copy->linkAllKnobsTo(original));
+    knobOf(original)->setValue(0.25, ViewSpec::all(), 0);
+
+    Serialization::NodeSerialization serialization;
+    copy->toSerialization(&serialization, false);
+    NodePtr duplicate = pasteCopy(serialization);
+    ASSERT_TRUE(duplicate != nullptr);
+    KnobHelper::restoreLinkGroups(NodesList(1, duplicate), true);
+
+    EXPECT_TRUE(duplicate->isLinkedNode());
+    NodesList linked;
+    duplicate->getLinkedNodes(&linked);
+    EXPECT_TRUE(contains(linked, original));
+    EXPECT_TRUE(contains(linked, copy));
+    EXPECT_TRUE(knobOf(duplicate)->isLinked(0));
+    knobOf(duplicate)->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.5, knobOf(original)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.5, knobOf(copy)->getValue(0));
+
+    // What undoing the duplicate does: the copy is deactivated and drops out of the original's links.
+    duplicate->deactivate(NodesList(), true, false, true, false);
+    linked.clear();
+    original->getLinkedNodes(&linked);
+    EXPECT_FALSE(contains(linked, duplicate));
+    EXPECT_TRUE(contains(linked, copy));
+    knobOf(original)->setValue(0.625, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.625, knobOf(copy)->getValue(0));
+
+    // Redo brings it back linked, with the group's current value.
+    duplicate->activate(NodesList(), true, false);
+    linked.clear();
+    original->getLinkedNodes(&linked);
+    EXPECT_TRUE(contains(linked, duplicate));
+    EXPECT_DOUBLE_EQ(0.625, knobOf(duplicate)->getValue(0));
+    knobOf(duplicate)->setValue(0.125, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.125, knobOf(original)->getValue(0));
+}
+
+TEST_F(LinkedNodeTest, ACopyOfAPasteLinkedKnobJoinsItsGroup)
+{
+    ASSERT_TRUE(knobOf(third)->linkTo(-1, knobOf(original), -1));
+    knobOf(original)->setValue(0.25, ViewSpec::all(), 0);
+
+    Serialization::NodeSerialization serialization;
+    third->toSerialization(&serialization, false);
+    NodePtr pasted = pasteCopy(serialization);
+    ASSERT_TRUE(pasted != nullptr);
+    KnobHelper::restoreLinkGroups(NodesList(1, pasted), true);
+
+    EXPECT_TRUE(knobOf(pasted)->isLinked(0));
+    EXPECT_FALSE(pasted->isLinkedNode());
+    EXPECT_FALSE(original->isLinkedNode());
+    EXPECT_DOUBLE_EQ(0.25, knobOf(pasted)->getValue(0));
+
+    knobOf(pasted)->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.5, knobOf(original)->getValue(0));
+    EXPECT_DOUBLE_EQ(0.5, knobOf(third)->getValue(0));
+    knobOf(original)->setValue(0.75, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.75, knobOf(pasted)->getValue(0));
+}
+
+TEST_F(LinkedNodeTest, CopiesPastedWithoutTheirOriginalsAreLinkedToEachOther)
+{
+    ASSERT_TRUE(copy->linkAllKnobsTo(original));
+    knobOf(original)->setValue(0.25, ViewSpec::all(), 0);
+
+    Serialization::NodeSerialization originalSerialization, copySerialization;
+    original->toSerialization(&originalSerialization, false);
+    copy->toSerialization(&copySerialization, false);
+
+    // Another project: the copied nodes are not in it.
+    original.reset();
+    copy.reset();
+    third.reset();
+    getApp()->getProject()->reset(false, true);
+
+    NodePtr pastedOriginal = pasteCopy(originalSerialization);
+    NodePtr pastedCopy = pasteCopy(copySerialization);
+    ASSERT_TRUE(pastedOriginal && pastedCopy);
+    NodesList pasted;
+    pasted.push_back(pastedOriginal);
+    pasted.push_back(pastedCopy);
+    KnobHelper::restoreLinkGroups(pasted, true);
 
     EXPECT_TRUE(pastedOriginal->isLinkedNode());
     EXPECT_TRUE(pastedCopy->isLinkedNode());
     NodesList linked;
     pastedOriginal->getLinkedNodes(&linked);
+    EXPECT_EQ(1u, linked.size());
     EXPECT_TRUE(contains(linked, pastedCopy));
-    EXPECT_FALSE(contains(linked, original));
-    EXPECT_FALSE(contains(linked, copy));
     EXPECT_DOUBLE_EQ(0.25, knobOf(pastedCopy)->getValue(0));
-
     knobOf(pastedCopy)->setValue(0.5, ViewSpec::all(), 0);
     EXPECT_DOUBLE_EQ(0.5, knobOf(pastedOriginal)->getValue(0));
-    EXPECT_DOUBLE_EQ(0.25, knobOf(original)->getValue(0));
-    EXPECT_DOUBLE_EQ(0.25, knobOf(copy)->getValue(0));
 
-    knobOf(original)->setValue(0.75, ViewSpec::all(), 0);
-    EXPECT_DOUBLE_EQ(0.75, knobOf(copy)->getValue(0));
-    EXPECT_DOUBLE_EQ(0.5, knobOf(pastedCopy)->getValue(0));
-
-    // A single pasted copy has nothing to link to.
-    NodePtr single = createNode(_generatorPluginID);
+    // A single copy pasted without its originals has nothing to link to.
+    pastedOriginal.reset();
+    pastedCopy.reset();
+    getApp()->getProject()->reset(false, true);
+    NodePtr single = pasteCopy(copySerialization);
     ASSERT_TRUE(single != nullptr);
-    single->fromSerialization(copySerialization);
-    single->storeKnobsLinks(copySerialization, noRenames);
-    KnobHelper::restoreLinkGroups(NodesList(1, single));
+    KnobHelper::restoreLinkGroups(NodesList(1, single), true);
     EXPECT_FALSE(single->isLinkedNode());
     EXPECT_FALSE(knobOf(single)->isLinked(0));
+}
+
+TEST_F(LinkedNodeTest, RestoringWithoutJoiningLinksTheRestoredKnobsOnlyToEachOther)
+{
+    ASSERT_TRUE(copy->linkAllKnobsTo(original));
+    knobOf(original)->setValue(0.25, ViewSpec::all(), 0);
+
+    Serialization::NodeSerialization originalSerialization, copySerialization;
+    original->toSerialization(&originalSerialization, false);
+    copy->toSerialization(&copySerialization, false);
+    NodePtr restoredOriginal = pasteCopy(originalSerialization);
+    NodePtr restoredCopy = pasteCopy(copySerialization);
+    ASSERT_TRUE(restoredOriginal && restoredCopy);
+    NodesList restored;
+    restored.push_back(restoredOriginal);
+    restored.push_back(restoredCopy);
+    KnobHelper::restoreLinkGroups(restored);
+
+    NodesList linked;
+    restoredOriginal->getLinkedNodes(&linked);
+    EXPECT_TRUE(contains(linked, restoredCopy));
+    EXPECT_FALSE(contains(linked, original));
+    knobOf(restoredCopy)->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.25, knobOf(original)->getValue(0));
+}
+
+// A paste joins the originals' groups only when the clipboard's source project is the open one.
+TEST_F(LinkedNodeTest, ResettingTheProjectMakesItAnotherPasteSource)
+{
+    ProjectPtr project = getApp()->getProject();
+    const std::string before = project->getSessionId();
+    EXPECT_FALSE(before.empty());
+    EXPECT_EQ(before, project->getSessionId());
+
+    original.reset();
+    copy.reset();
+    third.reset();
+    project->reset(false, true);
+    EXPECT_FALSE(project->getSessionId().empty());
+    EXPECT_NE(before, project->getSessionId());
 }
 
 TEST_F(LinkedNodeTest, PasteLinksBetweenTracksSurviveASaveAndReload)

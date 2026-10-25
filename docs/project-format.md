@@ -359,11 +359,14 @@ a list of windows. A window is `{main?, pos: [x, y], size: [w, h]}` plus one chi
 (`{name, tabs, current, anchor?}`) or `panel`. This is the application layout, and the only
 place pane layout is saved.
 
-**Clipboard** (`Serialization/Yaml/ClipboardYaml.*`): `format: natron-clipboard`, and `nodes` in
-the `project.yaml` node schema, so inputs name siblings by script name and position, size and
-colours sit on each node. It travels on the system clipboard as
-`application/vnd.natron.nodes+yaml` next to the same text as `text/plain`. Pasted copies of Linked
-Nodes, or of knobs linked by Paste Link, are linked to each other and not to their originals.
+**Clipboard** (`Serialization/Yaml/ClipboardYaml.*`): `format: natron-clipboard`, an optional
+`sourceProject` naming the open project the nodes were copied from (a new id each time a project
+is closed, reset or loaded), and `nodes` in the `project.yaml` node schema, so inputs name siblings
+by script name and position, size and colours sit on each node. It travels on the system clipboard
+as `application/vnd.natron.nodes+yaml` next to the same text as `text/plain`. Pasted into the
+project they came from, copies of Linked Nodes, or of knobs linked by Paste Link, join their
+originals' links while an original is still there; otherwise, as in another project, the copies
+are linked only to each other.
 
 ## Versioning
 

@@ -1029,7 +1029,7 @@ Settings::initializeKnobsNodeGraphColors()
     _linkLineColor->setName("linkLineColor");
     _linkLineColor->setSimplified(true);
     _linkLineColor->setHintToolTip(tr("The color of the node graph lines between nodes whose parameters are linked, "
-                                      "including the dashed lines between Linked Nodes. Linked parameter names in settings panels take it too."));
+                                      "including the solid lines between Linked Nodes. Linked parameter names in settings panels take it too."));
     _nodegraphColorsTab->addKnob(_linkLineColor);
 
     _expressionLineColor = AppManager::createKnob<KnobColor>(this, tr("Expression lines"), 3);
@@ -1258,8 +1258,8 @@ Settings::initializeKnobsNodeGraph()
 
     _showLinkLines = AppManager::createKnob<KnobBool>(this, tr("Show link lines"));
     _showLinkLines->setName("showLinkLines");
-    _showLinkLines->setHintToolTip(tr("When checked, the node graph draws a line between nodes whose parameters are linked, "
-                                      "and a dashed line between Linked Nodes. The \"Show Link Lines\" action of the node graph "
+    _showLinkLines->setHintToolTip(tr("When checked, the node graph draws a dashed line between nodes whose parameters are linked, "
+                                      "and a solid line between Linked Nodes. The \"Show Link Lines\" action of the node graph "
                                       "can still hide them for the session."));
     _nodegraphTab->addKnob(_showLinkLines);
 

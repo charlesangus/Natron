@@ -128,6 +128,7 @@ public:
     mutable QMutex isLoadingProjectMutex;
     bool isLoadingProject; //< true when the project is loading
     bool isLoadingProjectInternal; //< true when loading the internal project (not gui)
+    std::string sessionId;
     mutable QMutex isSavingProjectMutex;
     bool isSavingProject; //< true when the project is saving
     QThread* savingThread; //< the thread running the save while isSavingProject

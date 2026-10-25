@@ -946,6 +946,10 @@ void
 LinkArrow::setDashed(bool dashed)
 {
     _dashed = dashed;
+    // paint() sets the style itself; the item's pen carries it too so that scripts can read it.
+    QPen itemPen = pen();
+    itemPen.setStyle(dashed ? Qt::DashLine : Qt::SolidLine);
+    setPen(itemPen);
     update();
 }
 

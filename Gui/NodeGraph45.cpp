@@ -676,7 +676,8 @@ NodeGraph::copyNodesAndCreateInGroup(const NodesGuiList& nodes,
             it->second->getNode()->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, true); // may not fail
             copies.push_back(it->second->getNode());
         }
-        KnobHelper::restoreLinkGroups(copies);
+        // The copies keep the links of the nodes they replace.
+        KnobHelper::restoreLinkGroups(copies, true);
     }
 
     getGui()->getApp()->getProject()->forceComputeInputDependentDataOnAllTrees();

@@ -30,6 +30,7 @@
 
 #include <list>
 #include <memory>
+#include <string>
 
 #include "Engine/EngineFwd.h"
 
@@ -48,9 +49,13 @@ public:
     // clipboard: a serialization does not reference its node.
     std::list<NodePtr> sourceNodes;
 
+    // The Project::getSessionId() of the project the nodes were copied from, or empty if unknown.
+    std::string sourceProject;
+
     NodeClipBoard()
         : nodes()
         , sourceNodes()
+        , sourceProject()
     {
     }
 

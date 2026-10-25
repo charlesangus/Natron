@@ -46,6 +46,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QThread>
+#include <QTimer>
 #include <QTransform>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -59,6 +60,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Knob.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
@@ -73,6 +75,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
+#include "Engine/TrackMarker.h"
+#include "Engine/TrackerContext.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewerInstance.h"
 #include "Global/Enums.h"
@@ -95,6 +99,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/LineEdit.h"
 #include "Gui/Menu.h"
 #include "Gui/MultiInstancePanel.h"
+#include "Gui/NearestMemberLines.h"
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphRectItem.h"
@@ -376,6 +381,8 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _wasBeginEditCalled(false)
     , positionMutex()
     , _linkLines()
+    , _linkLinesRefreshPending(false)
+    , _expressionSetMembers()
     , _expressionIndicator()
     , _linkedNodeIndicator()
     , _magnecEnabled()
@@ -640,12 +647,13 @@ NodeGui::restoreStateAfterCreation()
     onPersistentMessageChanged();
     onKnobsLinksChanged();
 
-    // A partner whose GUI was created first could not draw its undirected line to this node yet.
+    // A partner whose GUI was created first could not draw its line to this node yet, and this node can
+    // be nearer to a partner than the one that partner's lines join.
     NodesList partners;
     internalNode->getKnobLinkedNodes(&partners);
     for (NodesList::iterator it = partners.begin(); it != partners.end(); ++it) {
         NodeGuiPtr partnerGui = std::dynamic_pointer_cast<NodeGui>((*it)->getNodeGui());
-        if (partnerGui && (it->get() < internalNode.get())) {
+        if (partnerGui) {
             partnerGui->onKnobsLinksChanged();
         }
     }
@@ -1380,6 +1388,40 @@ NodeGui::refreshAttachedEdgesAndLinks()
     }
     // Knob-link arrows on both ends listen to this signal to re-attach to the node's outline.
     Q_EMIT positionChanged(pos().x(), pos().y());
+
+    // Moving a node can change which member of each of its link and expression sets is nearest to which.
+    if (node) {
+        NodesList partners;
+        node->getKnobLinkedNodes(&partners);
+        for (NodesWList::const_iterator it = _expressionSetMembers.begin(); it != _expressionSetMembers.end(); ++it) {
+            NodePtr member = it->lock();
+            if (member && (std::find(partners.begin(), partners.end(), member) == partners.end())) {
+                partners.push_back(member);
+            }
+        }
+        if (!partners.empty()) {
+            scheduleLinkLinesRefresh();
+            for (NodesList::const_iterator it = partners.begin(); it != partners.end(); ++it) {
+                NodeGuiPtr partnerGui = std::dynamic_pointer_cast<NodeGui>((*it)->getNodeGui());
+                if (partnerGui) {
+                    partnerGui->scheduleLinkLinesRefresh();
+                }
+            }
+        }
+    }
+}
+
+void
+NodeGui::scheduleLinkLinesRefresh()
+{
+    if (_linkLinesRefreshPending) {
+        return;
+    }
+    _linkLinesRefreshPending = true;
+    QTimer::singleShot(0, this, [this]() {
+        _linkLinesRefreshPending = false;
+        onKnobsLinksChanged();
+    });
 }
 
 void
@@ -2910,6 +2952,172 @@ NodeGui::onKnobExpressionChanged(const KnobGui* knob)
     }
 }
 
+namespace {
+
+// A track's knobs count as its tracker's.
+NodePtr
+nodeOfHolder(KnobHolder* holder)
+{
+    if (EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder)) {
+        return isEffect->getNode();
+    } else if (TrackMarker* isMarker = dynamic_cast<TrackMarker*>(holder)) {
+        TrackerContextPtr context = isMarker->getContext();
+
+        return context ? context->getNode() : NodePtr();
+    }
+
+    return NodePtr();
+}
+
+void
+appendUnique(NodesList& nodes,
+             const NodePtr& node)
+{
+    if (node && (std::find(nodes.begin(), nodes.end(), node) == nodes.end())) {
+        nodes.push_back(node);
+    }
+}
+
+// The nodes of the members of a link group that are linked to it.
+NodesList
+linkGroupMemberNodes(const KnobLinkGroup& group)
+{
+    NodesList nodes;
+    const std::vector<KnobLinkGroup::Member> members = group.getMembers();
+
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        if (!it->linked) {
+            continue;
+        }
+        KnobIPtr knob = it->knob.lock();
+        appendUnique(nodes, knob ? nodeOfHolder(knob->getHolder()) : NodePtr());
+    }
+
+    return nodes;
+}
+
+// The other nodes whose knobs read a knob of master by expression.
+NodesList
+expressionReaders(const NodePtr& master)
+{
+    NodesList readers;
+    EffectInstancePtr effect = master->getEffectInstance();
+
+    if (!effect) {
+        return readers;
+    }
+    std::list<KnobHolder*> holders(1, effect.get());
+    std::vector<TrackMarkerPtr> markers;
+    if (TrackerContextPtr context = master->getTrackerContext()) {
+        context->getAllMarkers(&markers);
+    }
+    for (std::size_t i = 0; i < markers.size(); ++i) {
+        holders.push_back(markers[i].get());
+    }
+    for (std::list<KnobHolder*>::const_iterator h = holders.begin(); h != holders.end(); ++h) {
+        const KnobsVec& knobs = (*h)->getKnobs();
+        for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
+            KnobI::ListenerDimsMap listeners;
+            (*k)->getListeners(listeners);
+            for (KnobI::ListenerDimsMap::const_iterator l = listeners.begin(); l != listeners.end(); ++l) {
+                bool readsByExpression = false;
+                for (std::size_t d = 0; d < l->second.size(); ++d) {
+                    readsByExpression |= (l->second[d].isExpr && l->second[d].isListening);
+                }
+                KnobIPtr listener = l->first.lock();
+                NodePtr reader = (readsByExpression && listener) ? nodeOfHolder(listener->getHolder()) : NodePtr();
+                if (reader && (reader != master) && reader->isActivated()) {
+                    appendUnique(readers, reader);
+                }
+            }
+        }
+    }
+
+    return readers;
+}
+
+// The other active nodes a knob of node reads by expression.
+NodesList
+expressionMasters(const NodePtr& node)
+{
+    NodesList masters;
+    std::list<Node::KnobLink> links;
+
+    node->getKnobsLinks(links);
+    for (std::list<Node::KnobLink>::const_iterator it = links.begin(); it != links.end(); ++it) {
+        NodePtr master = it->masterNode.lock();
+        if ((it->kind == Node::eKnobLinkKindExpression) && master && (master != node) && master->isActivated()) {
+            appendUnique(masters, master);
+        }
+    }
+
+    return masters;
+}
+
+/*
+ * The members of set, of which node is one, that node is joined to: the set's active members shown in
+ * node's graph are joined as nearestMemberLines() joins them. The members are ordered by address, so
+ * every node of the set picks the same lines.
+ */
+NodesList
+nearestMemberNeighbours(const NodePtr& node,
+                        const NodesList& set)
+{
+    std::vector<std::pair<NodePtr, NodeGuiPtr>> members;
+    NodesList candidates = set;
+
+    appendUnique(candidates, node);
+    for (NodesList::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
+        if (!*it || !(*it)->isActivated() || ((*it)->getGroup() != node->getGroup())) {
+            continue;
+        }
+        NodeGuiPtr gui = std::dynamic_pointer_cast<NodeGui>((*it)->getNodeGui());
+        if (gui) {
+            members.push_back(std::make_pair(*it, gui));
+        }
+    }
+    std::sort(members.begin(), members.end(), [](const std::pair<NodePtr, NodeGuiPtr>& a, const std::pair<NodePtr, NodeGuiPtr>& b) {
+        return a.first.get() < b.first.get();
+    });
+
+    std::vector<QPointF> centres;
+    centres.reserve(members.size());
+    for (std::size_t i = 0; i < members.size(); ++i) {
+        const NodeGuiPtr& gui = members[i].second;
+        centres.push_back(gui->mapToScene(gui->boundingRect().center()));
+    }
+
+    NodesList neighbours;
+    const std::vector<std::pair<std::size_t, std::size_t>> lines = nearestMemberLines(centres);
+    for (std::vector<std::pair<std::size_t, std::size_t>>::const_iterator it = lines.begin(); it != lines.end(); ++it) {
+        if (members[it->first].first == node) {
+            neighbours.push_back(members[it->second].first);
+        } else if (members[it->second].first == node) {
+            neighbours.push_back(members[it->first].first);
+        }
+    }
+
+    return neighbours;
+}
+
+// The neighbours an undirected line goes to from node: of each pair, the node with the lower address draws it.
+NodesList
+higherNeighbours(const NodePtr& node,
+                 const NodesList& neighbours)
+{
+    NodesList higher;
+
+    for (NodesList::const_iterator it = neighbours.begin(); it != neighbours.end(); ++it) {
+        if (node.get() < it->get()) {
+            higher.push_back(*it);
+        }
+    }
+
+    return higher;
+}
+
+} // anon namespace
+
 void
 NodeGui::onKnobsLinksChanged()
 {
@@ -2922,11 +3130,23 @@ NodeGui::onKnobsLinksChanged()
         return;
     }
 
-    // Lines are few, so they are rebuilt from scratch.
-    for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
-        delete it->arrow;
-    }
-    _linkLines.clear();
+    // The lines are rebuilt; one that joins the same partner as before, as the same kind, keeps its arrow,
+    // so rebuilding as a node moves leaves the lines whose ends stay alone.
+    LinkLines oldLines;
+    oldLines.swap(_linkLines);
+    NodeGuiPtr thisShared;
+    const auto takeArrow = [&oldLines, &thisShared, this](LinkLineKindEnum kind, const NodePtr& partner, const NodeGuiPtr& partnerGui) {
+        for (LinkLines::iterator it = oldLines.begin(); it != oldLines.end(); ++it) {
+            if (it->arrow && (it->kind == kind) && (it->partner.lock() == partner)) {
+                LinkArrow* arrow = it->arrow;
+                it->arrow = 0;
+
+                return arrow;
+            }
+        }
+
+        return new LinkArrow(partnerGui, thisShared, parentItem());
+    };
 
     typedef std::list<Node::KnobLink> InternalLinks;
     InternalLinks links;
@@ -2940,18 +3160,18 @@ NodeGui::onKnobsLinksChanged()
         }
     }
 
+    NodesList expressionSetMembers;
+
     // A deactivated node (deleted, or in the undo history) draws no line; its partners drop theirs
     // to it on the linksChanged its deactivation emits.
     if (node->isActivated()) {
-        NodeGuiPtr thisShared = shared_from_this();
+        thisShared = shared_from_this();
         NodesList linkedNodes;
         node->getLinkedNodes(&linkedNodes);
 
-        for (NodesList::iterator it = linkedNodes.begin(); it != linkedNodes.end(); ++it) {
+        const NodesList linkedNodeLines = higherNeighbours(node, nearestMemberNeighbours(node, linkedNodes));
+        for (NodesList::const_iterator it = linkedNodeLines.begin(); it != linkedNodeLines.end(); ++it) {
             const NodePtr& partner = *it;
-            if ((partner.get() <= node.get()) || (partner->getGroup() != node->getGroup())) {
-                continue;
-            }
             NodeGuiPtr partnerGui = std::dynamic_pointer_cast<NodeGui>(partner->getNodeGui());
             if (!partnerGui) {
                 continue;
@@ -2960,14 +3180,63 @@ NodeGui::onKnobsLinksChanged()
             line.partner = partner;
             line.kind = eLinkLineKindLinkedNodes;
             line.invalid = false;
-            line.arrow = new LinkArrow(partnerGui, thisShared, parentItem());
+            line.arrow = takeArrow(eLinkLineKindLinkedNodes, partner, partnerGui);
             line.arrow->setWidth(2);
             line.arrow->setUndirected(true);
-            line.arrow->setDashed(true);
+            line.arrow->setDashed(false);
             line.arrow->setToolTip(tr("<p>%1 and %2 are Linked Nodes</p>").arg(QString::fromUtf8(node->getLabel().c_str())).arg(QString::fromUtf8(partner->getLabel().c_str())));
             _linkLines.push_back(line);
         }
 
+        /*
+         * Expression lines are drawn per expression set: a node and the nodes reading it by expression.
+         * Of a set's nearest-member lines, one joining a reader to a node it reads is that reader's arrow;
+         * one joining two readers neither of which reads the other is an undirected line, as their
+         * dependency goes through the node they both read.
+         */
+        const NodesList masters = expressionMasters(node);
+        NodesList arrowPartners;
+        std::list<std::pair<NodePtr, NodePtr>> sharedReadLines;
+        std::map<Node*, NodesList> mastersOf;
+        NodesList setOwners = masters;
+        NodesList ownReaders = expressionReaders(node);
+        if (!ownReaders.empty()) {
+            setOwners.push_front(node);
+        }
+        for (NodesList::const_iterator owner = setOwners.begin(); owner != setOwners.end(); ++owner) {
+            NodesList set = (*owner == node) ? ownReaders : expressionReaders(*owner);
+            set.push_back(*owner);
+            for (NodesList::const_iterator it = set.begin(); it != set.end(); ++it) {
+                if (*it != node) {
+                    appendUnique(expressionSetMembers, *it);
+                }
+            }
+            const NodesList neighbours = nearestMemberNeighbours(node, set);
+            for (NodesList::const_iterator it = neighbours.begin(); it != neighbours.end(); ++it) {
+                const NodePtr& partner = *it;
+                if (std::find(masters.begin(), masters.end(), partner) != masters.end()) {
+                    appendUnique(arrowPartners, partner);
+                    continue;
+                }
+                std::map<Node*, NodesList>::iterator partnerMasters = mastersOf.find(partner.get());
+                if (partnerMasters == mastersOf.end()) {
+                    partnerMasters = mastersOf.insert(std::make_pair(partner.get(), expressionMasters(partner))).first;
+                }
+                if (std::find(partnerMasters->second.begin(), partnerMasters->second.end(), node) != partnerMasters->second.end()) {
+                    continue;
+                }
+                bool drawn = (partner.get() < node.get());
+                for (std::list<std::pair<NodePtr, NodePtr>>::const_iterator l = sharedReadLines.begin(); !drawn && l != sharedReadLines.end(); ++l) {
+                    drawn = (l->first == partner);
+                }
+                if (!drawn) {
+                    sharedReadLines.push_back(std::make_pair(partner, *owner));
+                }
+            }
+        }
+
+        // The nodes this node draws a knob-link line to, per link group.
+        std::map<KnobLinkGroup*, NodesList> knobLinkLines;
         for (InternalLinks::iterator it = links.begin(); it != links.end(); ++it) {
             // Knobs slaved by a node's own internals (Roto, Tracker...) draw no line.
             if (it->kind == Node::eKnobLinkKindSlave) {
@@ -2979,11 +3248,25 @@ NodeGui::onKnobsLinksChanged()
             }
             LinkLineKindEnum kind = eLinkLineKindExpression;
             if (it->kind == Node::eKnobLinkKindLinkGroup) {
-                // The partner draws the line, or the dashed line between Linked Nodes already joins the pair.
+                // The partner draws the line, or the pair are Linked Nodes, whose own lines stand for it.
                 if ((partner.get() < node.get()) || (std::find(linkedNodes.begin(), linkedNodes.end(), partner) != linkedNodes.end())) {
                     continue;
                 }
+                KnobIPtr slave = it->slave.lock();
+                KnobLinkGroupPtr group = slave ? slave->getLinkGroup(it->dimension) : KnobLinkGroupPtr();
+                if (!group) {
+                    continue;
+                }
+                std::map<KnobLinkGroup*, NodesList>::iterator lines = knobLinkLines.find(group.get());
+                if (lines == knobLinkLines.end()) {
+                    lines = knobLinkLines.insert(std::make_pair(group.get(), higherNeighbours(node, nearestMemberNeighbours(node, linkGroupMemberNodes(*group))))).first;
+                }
+                if (std::find(lines->second.begin(), lines->second.end(), partner) == lines->second.end()) {
+                    continue;
+                }
                 kind = eLinkLineKindKnobLink;
+            } else if (std::find(arrowPartners.begin(), arrowPartners.end(), partner) == arrowPartners.end()) {
+                continue;
             }
 
             LinkLines::iterator found = _linkLines.end();
@@ -3002,9 +3285,10 @@ NodeGui::onKnobsLinksChanged()
                 line.partner = partner;
                 line.kind = kind;
                 line.invalid = false;
-                line.arrow = new LinkArrow(partnerGui, thisShared, parentItem());
+                line.arrow = takeArrow(kind, partner, partnerGui);
                 line.arrow->setWidth(2);
                 line.arrow->setUndirected(kind == eLinkLineKindKnobLink);
+                line.arrow->setDashed(kind == eLinkLineKindKnobLink);
                 _linkLines.push_back(line);
                 found = _linkLines.end();
                 --found;
@@ -3031,8 +3315,29 @@ NodeGui::onKnobsLinksChanged()
             foundKnob->dimensions.insert(it->dimension);
         }
 
+        for (std::list<std::pair<NodePtr, NodePtr>>::const_iterator it = sharedReadLines.begin(); it != sharedReadLines.end(); ++it) {
+            const NodePtr& partner = it->first;
+            NodeGuiPtr partnerGui = std::dynamic_pointer_cast<NodeGui>(partner->getNodeGui());
+            if (!partnerGui) {
+                continue;
+            }
+            LinkLine line;
+            line.partner = partner;
+            line.kind = eLinkLineKindExpression;
+            line.invalid = false;
+            line.arrow = takeArrow(eLinkLineKindExpression, partner, partnerGui);
+            line.arrow->setWidth(2);
+            line.arrow->setUndirected(true);
+            line.arrow->setDashed(false);
+            line.arrow->setToolTip(tr("<p>%1 and %2 both read %3 by expression</p>")
+                                       .arg(QString::fromUtf8(node->getLabel().c_str()))
+                                       .arg(QString::fromUtf8(partner->getLabel().c_str()))
+                                       .arg(QString::fromUtf8(it->second->getLabel().c_str())));
+            _linkLines.push_back(line);
+        }
+
         for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
-            if (it->kind == eLinkLineKindLinkedNodes) {
+            if ((it->kind == eLinkLineKindLinkedNodes) || it->knobs.empty()) {
                 continue;
             }
             NodePtr partner = it->partner.lock();
@@ -3052,6 +3357,39 @@ NodeGui::onKnobsLinksChanged()
             it->arrow->setToolTip(toolTip);
             if (it->kind == eLinkLineKindExpression) {
                 refreshExpressionLineInvalid(*it);
+            }
+        }
+    }
+
+    for (LinkLines::iterator it = oldLines.begin(); it != oldLines.end(); ++it) {
+        delete it->arrow;
+    }
+
+    // Only the reader's links change when it starts or stops reading a node, so the other members of the
+    // expression sets it joins or leaves are told here. A member refreshed this way finds its own sets
+    // already up to date, so the refreshes stop there.
+    {
+        std::vector<Node*> before, after;
+        NodesList toRefresh = expressionSetMembers;
+        for (NodesWList::const_iterator it = _expressionSetMembers.begin(); it != _expressionSetMembers.end(); ++it) {
+            NodePtr member = it->lock();
+            if (member) {
+                before.push_back(member.get());
+                appendUnique(toRefresh, member);
+            }
+        }
+        for (NodesList::const_iterator it = expressionSetMembers.begin(); it != expressionSetMembers.end(); ++it) {
+            after.push_back(it->get());
+        }
+        std::sort(before.begin(), before.end());
+        std::sort(after.begin(), after.end());
+        _expressionSetMembers.assign(expressionSetMembers.begin(), expressionSetMembers.end());
+        if (before != after) {
+            for (NodesList::const_iterator it = toRefresh.begin(); it != toRefresh.end(); ++it) {
+                NodeGuiPtr memberGui = std::dynamic_pointer_cast<NodeGui>((*it)->getNodeGui());
+                if (memberGui) {
+                    memberGui->scheduleLinkLinesRefresh();
+                }
             }
         }
     }

@@ -15,18 +15,28 @@ using namespace gpu;
 
 namespace {
 
+enum class Category { Unit,
+                      Million,
+                      NearSplitLimit,
+                      BelowTiny,
+                      Unsplittable,
+                      Filler };
+
 struct Operands {
     float a;
     float b;
+    Category category;
     // The split of an operand overflows, so the product error is dropped rather than computed.
     bool unsplittable;
 };
 
 constexpr uint32_t kGroup = 64;
 constexpr float kSplitLimit = 8.0e34f;
+constexpr double kFloatMin = 1.17549435e-38;
 
-// Operand pairs whose float product has a nonzero error: random 24-bit mantissas,
-// at the scales of a curve's coefficients, of a table position, and of the largest splittable value.
+// Operand pairs whose float product has a nonzero error: random 24-bit mantissas, at the scales of
+// a curve's coefficients, of a table position, of the largest splittable value (with partners that
+// keep the product finite) and of products below 1e-30.
 std::vector<Operands>
 makePairs()
 {
@@ -40,22 +50,27 @@ makePairs()
         const float m = 1.0f + float(next() & 0xffffffu) / float(1 << 24);
         return scale * m;
     };
-    const float scales[] = { 1.0f, 1.0e6f, kSplitLimit * 0.5f };
-    for (float scaleA : scales) {
+    auto add = [&](Category category, float scaleA, float scaleB, int count) {
+        for (int i = 0; i < count; ++i) {
+            pairs.push_back({ operand(scaleA) * 0.5f, operand(scaleB) * 0.5f, category, false });
+        }
+    };
+    for (float scaleA : { 1.0f, 1.0e6f }) {
         for (float scaleB : { 1.0f, 1.0e6f, 1.0e-3f }) {
-            if (scaleA * scaleB > 1.0e30f) {
-                continue;
-            }
-            for (int i = 0; i < 40; ++i) {
-                pairs.push_back({ operand(scaleA) * 0.5f, operand(scaleB) * 0.5f, false });
-            }
+            add(scaleA == 1.0f ? Category::Unit : Category::Million, scaleA, scaleB, 40);
         }
     }
+    for (float scaleB : { 1.0e-3f, 1.0f, 1.0e2f }) {
+        add(Category::NearSplitLimit, kSplitLimit * 0.5f, scaleB, 40);
+    }
+    pairs.push_back({ 9.0e-31f, 1.1f, Category::BelowTiny, false });
+    add(Category::BelowTiny, 8.0e-31f, 1.0f, 40);
+    add(Category::BelowTiny, 1.0e-16f, 5.0e-15f, 40);
     for (int i = 0; i < 8; ++i) {
-        pairs.push_back({ operand(1.0e36f), operand(1.0e-3f), true });
+        pairs.push_back({ operand(1.0e36f), operand(1.0e-3f), Category::Unsplittable, true });
     }
     while (pairs.size() % kGroup != 0) {
-        pairs.push_back({ 1.0f, 1.0f, false });
+        pairs.push_back({ 1.0f, 1.0f, Category::Filler, false });
     }
     return pairs;
 }
@@ -104,6 +119,8 @@ GPU_TEST_F(CurveSnapshotPrecisionTest, CurveMulKeepsTheProductError)
     const std::vector<float> out = run(pairs, probe_mul_spirv, probe_mul_spirv_words, probe_mul_group_size,
                                        probe_mul_storage_buffers, probe_mul_push_bytes);
     size_t exactChecked = 0;
+    size_t tested[6] = {};
+    size_t belowTinyExact = 0;
     for (size_t i = 0; i < pairs.size(); ++i) {
         const float a = pairs[i].a;
         const float b = pairs[i].b;
@@ -119,23 +136,37 @@ GPU_TEST_F(CurveSnapshotPrecisionTest, CurveMulKeepsTheProductError)
             EXPECT_EQ(lo, 0.0f) << i;
             continue;
         }
+        ++tested[size_t(pairs[i].category)];
         const double exactError = exact - double(p);
-        EXPECT_EQ(double(err), exactError) << i << ": " << a << " * " << b;
-        if (hi == p) {
-            EXPECT_EQ(double(lo), exactError) << i << ": " << a << " * " << b;
+        // A device that flushes denormals may lose a residual below FLT_MIN, and only that.
+        const bool representable = std::fabs(exactError) >= kFloatMin || exactError == 0.0;
+        if (representable) {
+            EXPECT_EQ(double(err), exactError) << i << ": " << a << " * " << b;
+            if (hi == p) {
+                EXPECT_EQ(double(lo), exactError) << i << ": " << a << " * " << b;
+            }
+            EXPECT_LE(std::fabs((double(hi) + double(lo)) - exact), std::fabs(exact) * std::ldexp(1.0, -44))
+                << i << ": " << a << " * " << b;
+            exactChecked += exactError != 0.0;
+            if (pairs[i].category == Category::BelowTiny && exactError != 0.0) {
+                ++belowTinyExact;
+            }
+        } else {
+            EXPECT_TRUE(double(err) == exactError || err == 0.0f) << i << ": " << a << " * " << b;
         }
-        EXPECT_LE(std::fabs((double(hi) + double(lo)) - exact), std::fabs(exact) * std::ldexp(1.0, -44))
-            << i << ": " << a << " * " << b;
-        exactChecked += exactError != 0.0;
     }
+    for (Category category : { Category::Unit, Category::Million, Category::NearSplitLimit, Category::BelowTiny }) {
+        EXPECT_GT(tested[size_t(category)], 0u) << int(category);
+    }
+    EXPECT_GT(belowTinyExact, 0u);
     EXPECT_GT(exactChecked, pairs.size() / 2);
 }
 
 GPU_TEST_F(CurveSnapshotPrecisionTest, CurveMulDropsAnErrorTooSmallToKeep)
 {
-    std::vector<Operands> pairs = { { 1.0e-39f, 3.0f, false }, { 1.0e-20f, 1.0e-20f, false }, { 0.0f, 5.0f, false } };
+    std::vector<Operands> pairs = { { 1.0e-39f, 3.0f, Category::Filler, false }, { 1.0e-20f, 1.0e-20f, Category::Filler, false }, { 0.0f, 5.0f, Category::Filler, false } };
     while (pairs.size() % kGroup != 0) {
-        pairs.push_back({ 1.0f, 1.0f, false });
+        pairs.push_back({ 1.0f, 1.0f, Category::Filler, false });
     }
     const std::vector<float> out = run(pairs, probe_mul_spirv, probe_mul_spirv_words, probe_mul_group_size,
                                        probe_mul_storage_buffers, probe_mul_push_bytes);

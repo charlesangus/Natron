@@ -59,11 +59,11 @@ void offsetSplit(float a, out float hi, out float lo)
 
 // The error of the float product p of a and b, by Dekker's split: fma() need not round once on
 // every device (lavapipe does not), and a fused error term is then wrong or lost. An operand too
-// large to split gets 0 rather than a NaN beside a finite p, and so does a product under 1e-30,
-// whose error is denormal and which a device may flush on one side of the split but not the other.
+// large to split, or a p that is not finite, gets 0 rather than a NaN beside a finite p. A device
+// that flushes denormals may lose a residual below FLT_MIN, which leaves the error less exact.
 float offsetProductError(float a, float b, float p)
 {
-    if (!(abs(p) >= 1e-30))
+    if (!(isfinite(p) && abs(a) < 8.0e34 && abs(b) < 8.0e34))
         return 0.0;
     float ah;
     float al;

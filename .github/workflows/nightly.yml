@@ -53,11 +53,24 @@ permissions:
   contents: read
 
 jobs:
+  dev-image:
+    name: dev image
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/dev-image.yml
+
   nightly_release:
     name: release-build-and-test
+    needs: dev-image
     runs-on: ubuntu-latest
+    # The dev image relinks Mesa to the system LLVM, so GLX has FBConfigs and
+    # the GL tests can run; the bare ASWF image has none.
     container:
-      image: aswf/ci-vfxall:2027-clang21.1
+      image: ${{ needs.dev-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash -l {0}
@@ -81,10 +94,6 @@ jobs:
         with:
           submodules: recursive
           lfs: false
-
-      # The ASWF base image has no git-lfs; the dev image bakes in the same pin.
-      - name: Install git-lfs
-        run: tools/ci/local/install-git-lfs.sh
 
       # LFS objects come from the cache and download only on a miss. The workspace
       # is not owned by the container's root user, so git needs it marked safe.
@@ -230,9 +239,15 @@ jobs:
 
   nightly_gpu_off:
     name: gpu-off-build-and-test
+    needs: dev-image
     runs-on: ubuntu-latest
+    # The dev image relinks Mesa to the system LLVM, so GLX has FBConfigs and
+    # the GL tests can run; the bare ASWF image has none.
     container:
-      image: aswf/ci-vfxall:2027-clang21.1
+      image: ${{ needs.dev-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash -l {0}
@@ -248,9 +263,6 @@ jobs:
         with:
           submodules: recursive
           lfs: false
-
-      - name: Install git-lfs
-        run: tools/ci/local/install-git-lfs.sh
 
       - name: List LFS objects
         run: |

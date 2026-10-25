@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Filter/Sharpen.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
@@ -419,6 +420,28 @@ TEST_F(NativeGoldenTest, EdgeDetect)
     }));
     v.push_back(filterMaskMix(sobel));
     run(filterSpec("EdgeDetect", PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT), v);
+}
+
+TEST_F(NativeGoldenTest, Sharpen)
+{
+    const Apply soften = [](const GoldenGraph& g) {
+        return choice(g, kSharpenParamMode, kSharpenParamModeSoften) && num(g, kSharpenParamAmount, { 0.7 });
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("soften", soften));
+    v.push_back(variant("laplacian", [](const GoldenGraph& g) {
+        return choice(g, kSharpenParamMode, kSharpenParamModeLaplacian) && num(g, kSharpenParamSize, { 5., 2. }) && num(g, kSharpenParamAmount, { 2. });
+    }));
+    v.push_back(variant("threshold", [](const GoldenGraph& g) {
+        return num(g, kSharpenParamThreshold, { 0.2 }) && num(g, kSharpenParamAmount, { 1.5 });
+    }));
+    v.push_back(variant("gaussian", [](const GoldenGraph& g) {
+        return choice(g, kSharpenParamFilter, kBlurParamFilterGaussian) && num(g, kSharpenParamSize, { 6. });
+    }));
+    v.push_back(variant("box", [](const GoldenGraph& g) { return choice(g, kSharpenParamFilter, kBlurParamFilterBox) && num(g, kSharpenParamSize, { 7., 2. }); }));
+    v.push_back(filterMaskMix(soften));
+    run(filterSpec("Sharpen", PLUGINID_NATRON_SHARPEN, PLUGIN_MAJOR_NATRON_SHARPEN), v);
 }
 
 TEST_F(NativeGoldenTest, Erode)

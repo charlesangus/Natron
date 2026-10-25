@@ -48,7 +48,9 @@ NATRON_NAMESPACE_ENTER
  * @brief An immutable copy of a non-periodic curve, evaluated without the Curve's mutex. Render
  * threads share one kernel and a curve evaluated per pixel would otherwise take that lock for
  * every value. valueAt() repeats Curve::getValueAt() exactly: the same segment selection and
- * extrapolation, Interpolation::interpolate(), and the clamp to the curve's Y range.
+ * extrapolation, Interpolation::interpolate() with the keys' tangent weights, and the clamp to the
+ * curve's Y range. The GPU evaluates Hermite cubics only, so packGpu() refuses a curve with a
+ * weighted segment and that curve is evaluated on the CPU.
  **/
 class CurveSnapshot {
 public:
@@ -94,11 +96,14 @@ public:
         }
         std::vector<KeyFrame>::const_iterator next = std::upper_bound(_keys.begin(), _keys.end(), t, isBefore);
         double tcur, vcur, vcurDerivRight, tnext, vnext, vnextDerivLeft;
+        double vcurWeightRight = Interpolation::kDefaultTangentWeight;
+        double vnextWeightLeft = Interpolation::kDefaultTangentWeight;
         KeyframeTypeEnum interp, interpNext;
         if (next == _keys.begin()) {
             tnext = next->getTime();
             vnext = next->getValue();
             vnextDerivLeft = next->getLeftDerivative();
+            vnextWeightLeft = next->getLeftWeight();
             interpNext = next->getInterpolation();
             tcur = tnext - 1.;
             vcur = vnext;
@@ -109,6 +114,7 @@ public:
             tcur = last.getTime();
             vcur = last.getValue();
             vcurDerivRight = last.getRightDerivative();
+            vcurWeightRight = last.getRightWeight();
             interp = last.getInterpolation();
             tnext = tcur + 1.;
             vnext = vcur;
@@ -119,13 +125,16 @@ public:
             tcur = cur.getTime();
             vcur = cur.getValue();
             vcurDerivRight = cur.getRightDerivative();
+            vcurWeightRight = cur.getRightWeight();
             interp = cur.getInterpolation();
             tnext = next->getTime();
             vnext = next->getValue();
             vnextDerivLeft = next->getLeftDerivative();
+            vnextWeightLeft = next->getLeftWeight();
             interpNext = next->getInterpolation();
         }
-        const double v = Interpolation::interpolate(tcur, vcur, vcurDerivRight, vnextDerivLeft, tnext, vnext, t, interp, interpNext);
+        const double v = Interpolation::interpolate(tcur, vcur, vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft,
+                                                    tnext, vnext, t, interp, interpNext);
         if (v > _yMax) {
             return _yMax;
         } else if (v < _yMin) {
@@ -143,8 +152,9 @@ public:
     // The range of a table sampled from the curve, as curvesnapshot.slang's CurveTableRange.
     static const int kGpuTableRangeWords = 6;
 
-    // Writes kGpuWords words, or returns false when the curve has more keys than they hold or a
-    // segment the shader cannot evaluate within kGpuSegmentErrorBound of the CPU.
+    // Writes kGpuWords words, or returns false when the curve has more keys than they hold, a
+    // weighted segment, or a segment the shader cannot evaluate within kGpuSegmentErrorBound of
+    // the CPU.
     bool packGpu(std::uint32_t* out) const
     {
         if ((int)_keys.size() > kGpuMaxKeys) {
@@ -239,7 +249,7 @@ private:
     // The Hermite cubic valueAt() evaluates between the keys before and after `segment`, as its t
     // origin, the reciprocal of its span and the four coefficients over (t - origin) / span, each
     // a float and its remainder. False when the shader's evaluation could stray further than
-    // kGpuSegmentErrorBound from valueAt().
+    // kGpuSegmentErrorBound from valueAt(), or when the segment is weighted.
     bool packSegment(std::size_t segment,
                      std::uint32_t* out) const
     {
@@ -278,6 +288,10 @@ private:
             } else {
                 const KeyFrame& cur = _keys[segment - 1];
                 const KeyFrame& next = _keys[segment];
+                if (Interpolation::isWeightedSegment(cur.getInterpolation(), next.getInterpolation(),
+                                                     cur.getRightWeight(), next.getLeftWeight())) {
+                    return false;
+                }
                 tcur = cur.getTime();
                 vcur = cur.getValue();
                 vcurDerivRight = cur.getRightDerivative();

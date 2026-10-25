@@ -108,6 +108,7 @@ set(Tests_SOURCES
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
     Serialization/ProjectEquivalence.cpp
+    PyKeyTangents_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
     ReadFormat_Test.cpp
@@ -131,6 +132,7 @@ set(Tests_SOURCES
     TrackerLayer_Test.cpp
     Tracker_Test.cpp
     TypedPassthrough_Test.cpp
+    WeightedInterpolation_Test.cpp
     WriteAllLayers_Test.cpp
     ImageConvert_Test.cpp
     ImageMetadata_Test.cpp
@@ -215,6 +217,7 @@ set(GuiTests_SOURCES
     ColorTrackballTarget_Test.cpp
     ColorWheelWidget_Test.cpp
     CurveTangentJoin_Test.cpp
+    CurveWeightedTangent_Test.cpp
     DisplayLegendColour_Test.cpp
     EdgeNearbyGrab_Test.cpp
     GuiThreadGLBinding_Test.cpp

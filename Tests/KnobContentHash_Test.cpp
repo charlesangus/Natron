@@ -232,3 +232,52 @@ TEST_F(BaseTest, StructuralKnobsAreNotRenderHashed)
     EXPECT_FALSE(separator->isRenderHashed());
     EXPECT_FALSE(button->isRenderHashed());
 }
+
+TEST_F(BaseTest, KnobTangentWeightChangesValueSignalsAndHash)
+{
+    NodePtr node = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr knob = makeDoubleKnob(node, "hashTangents");
+    ASSERT_TRUE(bool(knob));
+
+    knob->setValueAtTime(0, 0., ViewSpec::all(), 0);
+    knob->setValueAtTime(10, 5., ViewSpec::all(), 0);
+    knob->setValueAtTime(20, 0., ViewSpec::all(), 0);
+    const double midpoint = knob->getValueAtTime(15., 0);
+    const U64 before = knob->getContentHash();
+
+    int moved = 0;
+    KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
+    ASSERT_TRUE(bool(handler));
+    QObject::connect(handler.get(), &KnobSignalSlotHandler::derivativeMoved, [&moved](double time, ViewSpec, int dimension) {
+        EXPECT_EQ(10., time);
+        EXPECT_EQ(0, dimension);
+        ++moved;
+    });
+
+    KeyFrame key;
+    ASSERT_TRUE(knob->getCurve(ViewIdx(0), 0)->getKeyFrameWithTime(10., &key));
+    KeyTangents tangents;
+    tangents.left = key.getLeftDerivative();
+    tangents.right = tangents.left;
+    tangents.rightWeight = 0.8;
+    KeyFrame changed;
+    ASSERT_TRUE(knob->setTangentsAtTime(eCurveChangeReasonInternal, ViewSpec::all(), 0, 10., tangents, &changed));
+
+    EXPECT_EQ(1, moved);
+    EXPECT_EQ(eKeyframeTypeFree, changed.getInterpolation());
+    EXPECT_EQ(Interpolation::kDefaultTangentWeight, changed.getLeftWeight());
+    EXPECT_EQ(0.8, changed.getRightWeight());
+    EXPECT_EQ(5., knob->getValueAtTime(10., 0));
+    EXPECT_NE(midpoint, knob->getValueAtTime(15., 0));
+    EXPECT_NE(before, knob->getContentHash());
+
+    tangents.rightWeight = Interpolation::kDefaultTangentWeight;
+    ASSERT_TRUE(knob->setTangentsAtTime(eCurveChangeReasonInternal, ViewSpec::all(), 0, 10., tangents, &changed));
+    EXPECT_EQ(2, moved);
+    EXPECT_EQ(midpoint, knob->getValueAtTime(15., 0));
+
+    tangents.right = tangents.left + 1.;
+    ASSERT_TRUE(knob->setTangentsAtTime(eCurveChangeReasonInternal, ViewSpec::all(), 0, 10., tangents, &changed));
+    EXPECT_EQ(eKeyframeTypeBroken, changed.getInterpolation());
+}

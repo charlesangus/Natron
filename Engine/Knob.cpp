@@ -1519,16 +1519,16 @@ KnobHelper::setInterpolationAtTime(CurveChangeReason reason,
 }
 
 bool
-KnobHelper::moveDerivativesAtTime(CurveChangeReason reason,
-                                  ViewSpec view,
-                                  int dimension,
-                                  double time,
-                                  double left,
-                                  double right)
+KnobHelper::setTangentsAtTime(CurveChangeReason reason,
+                              ViewSpec view,
+                              int dimension,
+                              double time,
+                              const KeyTangents& tangents,
+                              KeyFrame* newKey)
 {
     assert( QThread::currentThread() == qApp->thread() );
     if ( ( dimension > (int)_imp->curves.size() ) || (dimension < 0) ) {
-        throw std::invalid_argument("KnobHelper::setInterpolationAtTime(): Dimension out of range");
+        throw std::invalid_argument("KnobHelper::setTangentsAtTime(): Dimension out of range");
     }
 
     if ( !canAnimate() || !isAnimated(dimension, view) ) {
@@ -1554,14 +1554,23 @@ KnobHelper::moveDerivativesAtTime(CurveChangeReason reason,
         return false;
     }
 
-    curve->setKeyFrameInterpolation(eKeyframeTypeFree, keyIndex);
-    curve->setKeyFrameDerivatives(left, right, keyIndex);
+    KeyFrame current;
+    curve->getKeyFrameWithIndex(keyIndex, &current);
+    const KeyframeTypeEnum interp = ((current.getInterpolation() == eKeyframeTypeBroken) || (tangents.left != tangents.right)) ? eKeyframeTypeBroken : eKeyframeTypeFree;
+
+    // The interpolation goes first: leaving Free or Broken would reset the weights.
+    curve->setKeyFrameInterpolation(interp, keyIndex);
+    KeyFrame k = curve->setKeyFrameTangents(tangents.left, tangents.right, tangents.leftWeight, tangents.rightWeight, keyIndex);
 
     if (!useGuiCurve && hasGui) {
         CurvePtr guiCurve = hasGui->getCurve(view, dimension);
         assert(guiCurve);
-        guiCurve->setKeyFrameInterpolation(eKeyframeTypeFree, keyIndex);
-        guiCurve->setKeyFrameDerivatives(left, right, keyIndex);
+        guiCurve->setKeyFrameInterpolation(interp, keyIndex);
+        guiCurve->setKeyFrameTangents(tangents.left, tangents.right, tangents.leftWeight, tangents.rightWeight, keyIndex);
+    }
+
+    if (newKey) {
+        *newKey = k;
     }
 
     if (!useGuiCurve) {
@@ -1576,74 +1585,7 @@ KnobHelper::moveDerivativesAtTime(CurveChangeReason reason,
     }
 
     return true;
-} // KnobHelper::moveDerivativesAtTime
-
-bool
-KnobHelper::moveDerivativeAtTime(CurveChangeReason reason,
-                                 ViewSpec view,
-                                 int dimension,
-                                 double time,
-                                 double derivative,
-                                 bool isLeft)
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    if ( ( dimension > (int)_imp->curves.size() ) || (dimension < 0) ) {
-        throw std::invalid_argument("KnobHelper::setInterpolationAtTime(): Dimension out of range");
-    }
-
-    if ( !canAnimate() || !isAnimated(dimension, view) ) {
-        return false;
-    }
-
-    CurvePtr curve;
-    bool useGuiCurve = _imp->shouldUseGuiCurve();
-    KnobGuiIPtr hasGui = getKnobGuiPointer();
-    if (!useGuiCurve) {
-        curve = _imp->curves[dimension];
-    } else {
-        assert(hasGui);
-        curve = hasGui->getCurve(view, dimension);
-        setGuiCurveHasChanged(view, dimension, true);
-    }
-    assert(curve);
-
-    int keyIndex = curve->keyFrameIndex(time);
-    if (keyIndex == -1) {
-        return false;
-    }
-
-    curve->setKeyFrameInterpolation(eKeyframeTypeBroken, keyIndex);
-    if (isLeft) {
-        curve->setKeyFrameLeftDerivative(derivative, keyIndex);
-    } else {
-        curve->setKeyFrameRightDerivative(derivative, keyIndex);
-    }
-
-    if (!useGuiCurve && hasGui) {
-        CurvePtr guiCurve = hasGui->getCurve(view, dimension);
-        assert(guiCurve);
-        guiCurve->setKeyFrameInterpolation(eKeyframeTypeBroken, keyIndex);
-        if (isLeft) {
-            guiCurve->setKeyFrameLeftDerivative(derivative, keyIndex);
-        } else {
-            guiCurve->setKeyFrameRightDerivative(derivative, keyIndex);
-        }
-    }
-
-
-    if (!useGuiCurve) {
-        evaluateValueChange(dimension, time, view, eValueChangedReasonNatronInternalEdited);
-    }
-    if (_signalSlotHandler) {
-        _signalSlotHandler->s_redrawGuiCurve(reason, view, dimension);
-    }
-
-    if (_signalSlotHandler) {
-        _signalSlotHandler->s_derivativeMoved(time, view, dimension);
-    }
-
-    return true;
-} // KnobHelper::moveDerivativeAtTime
+} // KnobHelper::setTangentsAtTime
 
 void
 KnobHelper::removeAnimationWithReason(ViewSpec view,

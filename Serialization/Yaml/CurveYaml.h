@@ -37,6 +37,11 @@ namespace Serialization {
  * then its right derivative for a free or broken keyframe and its left derivative for a broken
  * one, e.g. [L, 0, 1, 10, 2, X, 20, 3, 0.5, -0.5].
  *
+ * A free or broken keyframe whose tangent weights are not both the default takes the token FW or
+ * XW instead, and adds its right then its left weight after the derivatives, e.g.
+ * [FW, 0, 1, 0.5, 0.6, 0.2]. Weights outside [kKeyFrameMinTangentWeight,
+ * kKeyFrameMaxTangentWeight], or NaN, are a decode error.
+ *
  * Only free and broken keyframes keep derivatives: every other interpolation derives them from
  * the neighbouring keys, so a decoded curve has zero derivatives there and the loader recomputes
  * them. A free keyframe decodes with its left derivative equal to its right one. Times must
@@ -46,8 +51,8 @@ std::string encodeCurveYaml(const CurveSerialization& curve);
 CurveSerialization decodeCurveYaml(std::string_view text);
 
 /**
- * @brief The curve as the format keeps it: derivatives zeroed where they are derived, and a free
- * keyframe's left derivative set to its right one. Encoding then decoding gives exactly this.
+ * @brief The curve as the format keeps it: derivatives zeroed and weights reset to the default
+ * where they are derived, and a free keyframe's left derivative set to its right one. Encoding then decoding gives exactly this.
  **/
 CurveSerialization canonicalCurveForYaml(const CurveSerialization& curve);
 

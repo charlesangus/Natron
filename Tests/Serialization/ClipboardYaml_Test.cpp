@@ -40,6 +40,8 @@
 
 NATRON_NAMESPACE_USING
 using Serialization::ClipboardSerialization;
+using Serialization::CurveSerialization;
+using Serialization::KeyFrameSerialization;
 using Serialization::KnobSerialization;
 using Serialization::KnobValueSerialization;
 using Serialization::NodeSerialization;
@@ -168,6 +170,48 @@ TEST(ClipboardYaml, AnEditedBlurSizeAndTheBlurToGradeConnectionSurviveTheText)
     EXPECT_EQ("Blur1", grade->inputs.at("Source"));
     ASSERT_EQ(1u, grade->inputs.count("Mask"));
     EXPECT_EQ("Read1", grade->inputs.at("Mask"));
+}
+
+TEST(ClipboardYaml, AWeightedKeyKeepsItsWeights)
+{
+    ClipboardSerialization clipboard = blurIntoGrade();
+    CurveSerialization curve;
+    KeyFrameSerialization weighted;
+    weighted.time = 1.;
+    weighted.value = 0.;
+    weighted.interpolation = 6;
+    weighted.leftDerivative = 0.5;
+    weighted.rightDerivative = 0.5;
+    weighted.leftWeight = 0.2;
+    weighted.rightWeight = 0.75;
+    curve.keyframes.push_back(weighted);
+    KeyFrameSerialization last;
+    last.time = 10.;
+    last.value = 1.;
+    last.interpolation = 1;
+    curve.keyframes.push_back(last);
+    KnobSerialization mix;
+    mix.name = "mix";
+    mix.typeName = "Double";
+    mix.dimension = 1;
+    mix.dimensions.resize(1);
+    mix.dimensions[0].curve = curve;
+    findNode(clipboard, "Grade1")->knobs.push_back(mix);
+
+    const std::string text = Serialization::encodeClipboardYaml(clipboard);
+    EXPECT_NE(std::string::npos, text.find("[FW, 1, 0, 0.5, 0.75, 0.2, L, 10, 1]")) << text;
+
+    YamlWarnings warnings;
+    const ClipboardSerialization decoded = Serialization::decodeClipboardYaml(text, &warnings);
+    EXPECT_TRUE(warnings.empty()) << (warnings.empty() ? std::string() : warnings.front());
+    const NodeSerializationPtr grade = findNode(decoded, "Grade1");
+    ASSERT_NE(nullptr, grade);
+    ASSERT_EQ(1u, grade->knobs.size());
+    KnobSerialization decodedMix = grade->knobs.front();
+    Serialization::completeKnobSerialization(&decodedMix, "Double", 1);
+    ASSERT_EQ(1u, decodedMix.dimensions.size());
+    ASSERT_TRUE(decodedMix.dimensions[0].curve.has_value());
+    expectCurvesBitIdentical(curve, *decodedMix.dimensions[0].curve);
 }
 
 TEST(ClipboardYaml, AGroupKeepsThePositionsOfItsChildren)

@@ -44,6 +44,7 @@
 #include "Tests/NativeParity.h"
 #include "Tests/RenderBothWays.h"
 
+#include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
@@ -682,6 +683,50 @@ TEST_F(NativeColorLookupGpuTest, ACurveTooSteepToRepeatStaysOnTheCpu)
         return;
     }
     EXPECT_FALSE(makesGpuKernel(effect));
+}
+
+// The shader evaluates Hermite cubics only, so a weighted segment keeps the curve on the CPU, and
+// restoring the default weights gives it back to the GPU.
+TEST_F(NativeColorLookupGpuTest, AWeightedCurveStaysOnTheCpu)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORLOOKUP));
+    ASSERT_TRUE(bool(node));
+    StagedImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    LookupSetting setting = { 0, 0, false, false, 0 };
+    applySetting(node, setting);
+    if (HasFatalFailure()) {
+        return;
+    }
+    KnobParametric* table = dynamic_cast<KnobParametric*>(node->getKnobByName(kColorLookupParamLookupTable).get());
+    ASSERT_TRUE(table != NULL);
+    const int curve = ColorLookup::eCurveRed;
+    KeyTangents tangents;
+    tangents.left = 1.;
+    tangents.right = 1.;
+    ASSERT_EQ(eStatusOK, table->addControlPoint(eValueChangedReasonPluginEdited, curve, 0.5, 0.6, tangents, eKeyframeTypeFree));
+    EXPECT_TRUE(makesGpuKernel(effect));
+
+    int n = 0;
+    ASSERT_EQ(eStatusOK, table->getNControlPoints(curve, &n));
+    int index = -1;
+    for (int i = 0; i < n; ++i) {
+        double key = 0.;
+        double value = 0.;
+        ASSERT_EQ(eStatusOK, table->getNthControlPoint(curve, i, &key, &value));
+        if (key == 0.5) {
+            index = i;
+        }
+    }
+    ASSERT_GE(index, 0);
+
+    tangents.rightWeight = 0.7;
+    ASSERT_EQ(eStatusOK, table->setNthControlPoint(eValueChangedReasonPluginEdited, curve, index, 0.5, 0.6, tangents));
+    EXPECT_FALSE(makesGpuKernel(effect));
+
+    tangents.rightWeight = Interpolation::kDefaultTangentWeight;
+    ASSERT_EQ(eStatusOK, table->setNthControlPoint(eValueChangedReasonPluginEdited, curve, index, 0.5, 0.6, tangents));
+    EXPECT_TRUE(makesGpuKernel(effect));
 }
 
 #endif // NATRON_HAVE_GPU

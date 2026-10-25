@@ -30,6 +30,15 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 /**
+ * @brief A tangent weight is its handle's extent in time as a fraction of the neighbouring
+ * segment's span. These mirror Engine's Interpolation constants, which this directory cannot
+ * include; Engine/Curve.cpp checks that they agree.
+ **/
+inline constexpr double kKeyFrameDefaultTangentWeight = 1. / 3.;
+inline constexpr double kKeyFrameMinTangentWeight = 0.01;
+inline constexpr double kKeyFrameMaxTangentWeight = 0.99;
+
+/**
  * @brief Plain-data equivalent of a Curve keyframe. The interpolation is stored
  * as the underlying int value of Engine's KeyframeTypeEnum rather than that enum
  * itself, since Global/Enums.h (where it is defined) pulls in Qt and this
@@ -41,6 +50,8 @@ struct KeyFrameSerialization {
     int interpolation;
     double leftDerivative;
     double rightDerivative;
+    double leftWeight;
+    double rightWeight;
 
     KeyFrameSerialization()
         : time(0.)
@@ -48,6 +59,8 @@ struct KeyFrameSerialization {
         , interpolation(0)
         , leftDerivative(0.)
         , rightDerivative(0.)
+        , leftWeight(kKeyFrameDefaultTangentWeight)
+        , rightWeight(kKeyFrameDefaultTangentWeight)
     {
     }
 

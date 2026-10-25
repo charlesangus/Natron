@@ -117,6 +117,8 @@ makeTracker()
             broken.interpolation = 7;
             broken.leftDerivative = -2.5;
             broken.rightDerivative = 0.125;
+            broken.leftWeight = 0.05;
+            broken.rightWeight = 0.7;
             track.knobs.front().dimensions[0].curve->keyframes[0].time = -0.;
             std::next(track.knobs.begin())->dimensions[0].curve->keyframes[0].time = 0.;
         }

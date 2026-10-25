@@ -312,14 +312,17 @@ struct KeyInterpolationChange
     KeyframeTypeEnum oldInterp;
     KeyframeTypeEnum newInterp;
     KeyPtr key;
-
+    // Changing away from a weighted interpolation resets the weights, so undo restores them from here.
+    KeyTangents oldTangents;
 
     KeyInterpolationChange(KeyframeTypeEnum oldType,
                            KeyframeTypeEnum newType,
-                           const KeyPtr & k)
+                           const KeyPtr& k)
         : oldInterp(oldType)
         , newInterp(newType)
         , key(k)
+        , oldTangents { k->key.getLeftDerivative(), k->key.getRightDerivative(),
+                        k->key.getLeftWeight(), k->key.getRightWeight() }
     {
     }
 };
@@ -363,6 +366,12 @@ public:
         eSelectedTangentRight
     };
 
+    /**
+     * @brief A drag of one handle to (dx, dy) from its key. On a handle that reaches into a
+     * segment the drag sets both the slope and the weight, |dx| as a fraction of the segment;
+     * an unbroken key's other handle takes the same slope and scales its weight by the same
+     * factor. A handle with no segment beyond it sets the slope only.
+     **/
     MoveTangentCommand(CurveWidget* widget,
                        SelectedTangentEnum deriv,
                        const KeyPtr& key,
@@ -400,6 +409,7 @@ private:
     SelectedTangentEnum _deriv;
     KeyframeTypeEnum _oldInterp, _newInterp;
     double _oldLeft, _oldRight, _newLeft, _newRight;
+    double _oldLeftWeight, _oldRightWeight, _newLeftWeight, _newRightWeight;
     bool _setBoth;
     bool _updateOnFirstRedo;
     bool _firstRedoCalled;

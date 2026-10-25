@@ -95,6 +95,8 @@ expectCurvesBitIdentical(const NATRON_NAMESPACE::Serialization::CurveSerializati
         EXPECT_EQ(e.interpolation, a.interpolation);
         EXPECT_SAME_DOUBLE(e.leftDerivative, a.leftDerivative);
         EXPECT_SAME_DOUBLE(e.rightDerivative, a.rightDerivative);
+        EXPECT_SAME_DOUBLE(e.leftWeight, a.leftWeight);
+        EXPECT_SAME_DOUBLE(e.rightWeight, a.rightWeight);
     }
 }
 

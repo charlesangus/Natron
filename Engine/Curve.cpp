@@ -41,6 +41,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+// The project format validates weights against its own copy of these bounds.
+static_assert(Serialization::kKeyFrameDefaultTangentWeight == Interpolation::kDefaultTangentWeight, "tangent weight defaults differ");
+static_assert(Serialization::kKeyFrameMinTangentWeight == Interpolation::kMinTangentWeight, "tangent weight minimums differ");
+static_assert(Serialization::kKeyFrameMaxTangentWeight == Interpolation::kMaxTangentWeight, "tangent weight maximums differ");
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
@@ -79,6 +83,8 @@ KeyFrame::KeyFrame()
     , _value(0.)
     , _leftDerivative(0.)
     , _rightDerivative(0.)
+    , _leftWeight(Interpolation::kDefaultTangentWeight)
+    , _rightWeight(Interpolation::kDefaultTangentWeight)
     , _interpolation(eKeyframeTypeSmooth)
 {
 }
@@ -87,24 +93,32 @@ KeyFrame::KeyFrame(double time,
                    double initialValue,
                    double leftDerivative,
                    double rightDerivative,
-                   KeyframeTypeEnum interpolation)
+                   KeyframeTypeEnum interpolation,
+                   double leftWeight,
+                   double rightWeight)
     : _time(time)
     , _value(initialValue)
     , _leftDerivative(leftDerivative)
     , _rightDerivative(rightDerivative)
+    , _leftWeight(Interpolation::kDefaultTangentWeight)
+    , _rightWeight(Interpolation::kDefaultTangentWeight)
     , _interpolation(interpolation)
 {
     assert( !std::isnan(_time) && !std::isinf(_time) );
     assert( !std::isnan(_value) && !std::isinf(_value) );
     assert( !std::isnan(_leftDerivative) && !std::isinf(_leftDerivative) );
     assert( !std::isnan(_rightDerivative) && !std::isinf(_rightDerivative) );
+    setLeftWeight(leftWeight);
+    setRightWeight(rightWeight);
 }
 
-KeyFrame::KeyFrame(const KeyFrame & other)
+KeyFrame::KeyFrame(const KeyFrame& other)
     : _time(other._time)
     , _value(other._value)
     , _leftDerivative(other._leftDerivative)
     , _rightDerivative(other._rightDerivative)
+    , _leftWeight(other._leftWeight)
+    , _rightWeight(other._rightWeight)
     , _interpolation(other._interpolation)
 {
     assert( !std::isnan(_time) && !std::isinf(_time) );
@@ -120,6 +134,8 @@ KeyFrame::operator=(const KeyFrame & o)
     _value = o._value;
     _leftDerivative = o._leftDerivative;
     _rightDerivative = o._rightDerivative;
+    _leftWeight = o._leftWeight;
+    _rightWeight = o._rightWeight;
     _interpolation = o._interpolation;
     assert( !std::isnan(_time) && !std::isinf(_time) );
     assert( !std::isnan(_value) && !std::isinf(_value) );
@@ -145,6 +161,40 @@ KeyFrame::setRightDerivative(double rightDerivative)
     assert( !std::isnan(_rightDerivative) && !std::isinf(_rightDerivative) );
 }
 
+bool
+interpolationHasWeights(KeyframeTypeEnum interp)
+{
+    return (interp == eKeyframeTypeFree) || (interp == eKeyframeTypeBroken);
+}
+
+double
+KeyFrame::getLeftWeight() const
+{
+    return _leftWeight;
+}
+
+double
+KeyFrame::getRightWeight() const
+{
+    return _rightWeight;
+}
+
+void
+KeyFrame::setLeftWeight(double w)
+{
+    if (interpolationHasWeights(_interpolation)) {
+        _leftWeight = Interpolation::clampTangentWeight(w);
+    }
+}
+
+void
+KeyFrame::setRightWeight(double w)
+{
+    if (interpolationHasWeights(_interpolation)) {
+        _rightWeight = Interpolation::clampTangentWeight(w);
+    }
+}
+
 void
 KeyFrame::setValue(double value)
 {
@@ -163,6 +213,10 @@ void
 KeyFrame::setInterpolation(KeyframeTypeEnum interp)
 {
     _interpolation = interp;
+    if (!interpolationHasWeights(interp)) {
+        _leftWeight = Interpolation::kDefaultTangentWeight;
+        _rightWeight = Interpolation::kDefaultTangentWeight;
+    }
 }
 
 KeyframeTypeEnum
@@ -360,6 +414,8 @@ Curve::toSerialization(Serialization::CurveSerialization* serialization) const
         keyframe.interpolation = (int)it->getInterpolation();
         keyframe.leftDerivative = it->getLeftDerivative();
         keyframe.rightDerivative = it->getRightDerivative();
+        keyframe.leftWeight = it->getLeftWeight();
+        keyframe.rightWeight = it->getRightWeight();
         serialization->keyframes.push_back(keyframe);
     }
 }
@@ -370,7 +426,7 @@ Curve::fromSerialization(const Serialization::CurveSerialization& serialization)
     KeyFrameSet keys;
 
     for (std::vector<Serialization::KeyFrameSerialization>::const_iterator it = serialization.keyframes.begin(); it != serialization.keyframes.end(); ++it) {
-        KeyFrame k(it->time, it->value, it->leftDerivative, it->rightDerivative, (KeyframeTypeEnum)it->interpolation);
+        KeyFrame k(it->time, it->value, it->leftDerivative, it->rightDerivative, (KeyframeTypeEnum)it->interpolation, it->leftWeight, it->rightWeight);
         keys.insert(k);
     }
 
@@ -397,6 +453,8 @@ Curve::appendContentHash(ContentHasher& h) const
         h.appendI64((int)it->getInterpolation());
         h.appendDouble(it->getLeftDerivative());
         h.appendDouble(it->getRightDerivative());
+        h.appendDouble(it->getLeftWeight());
+        h.appendDouble(it->getRightWeight());
     }
 }
 
@@ -841,20 +899,22 @@ Curve::getKeyFrameWithTime(double time,
 /// compute interpolation parameters from keyframes and an iterator
 /// to the next keyframe (the first with time > t)
 static void
-interParams(const KeyFrameSet &keyFrames,
+interParams(const KeyFrameSet& keyFrames,
             bool isPeriodic,
             double xMin,
             double xMax,
-            double *t,
+            double* t,
             KeyFrameSet::const_iterator itup,
-            double *tcur,
-            double *vcur,
-            double *vcurDerivRight,
-            KeyframeTypeEnum *interp,
-            double *tnext,
-            double *vnext,
-            double *vnextDerivLeft,
-            KeyframeTypeEnum *interpNext)
+            double* tcur,
+            double* vcur,
+            double* vcurDerivRight,
+            double* vcurWeightRight,
+            KeyframeTypeEnum* interp,
+            double* tnext,
+            double* vnext,
+            double* vnextDerivLeft,
+            double* vnextWeightLeft,
+            KeyframeTypeEnum* interpNext)
 {
 
     assert(keyFrames.size() >= 1);
@@ -881,20 +941,24 @@ interParams(const KeyFrameSet &keyFrames,
             *tnext = itup->getTime();
             *vnext = itup->getValue();
             *vnextDerivLeft = itup->getLeftDerivative();
+            *vnextWeightLeft = itup->getLeftWeight();
             *interpNext = itup->getInterpolation();
             KeyFrameSet::const_reverse_iterator last =  keyFrames.rbegin();
             *tcur = last->getTime() - period;
             *vcur = last->getValue();
             *vcurDerivRight = last->getRightDerivative();
+            *vcurWeightRight = last->getRightWeight();
             *interp = last->getInterpolation();
         } else {
             *tnext = itup->getTime();
             *vnext = itup->getValue();
             *vnextDerivLeft = itup->getLeftDerivative();
+            *vnextWeightLeft = itup->getLeftWeight();
             *interpNext = itup->getInterpolation();
             *tcur = *tnext - 1.;
             *vcur = *vnext;
             *vcurDerivRight = 0.;
+            *vcurWeightRight = Interpolation::kDefaultTangentWeight;
             *interp = eKeyframeTypeNone;
         }
 
@@ -908,10 +972,12 @@ interParams(const KeyFrameSet &keyFrames,
             *tcur = prev->getTime();
             *vcur = prev->getValue();
             *vcurDerivRight = prev->getRightDerivative();
+            *vcurWeightRight = prev->getRightWeight();
             *interp = prev->getInterpolation();
             *tnext = next->getTime() + period;
             *vnext = next->getValue();
             *vnextDerivLeft = next->getLeftDerivative();
+            *vnextWeightLeft = next->getLeftWeight();
             *interpNext = next->getInterpolation();
         } else {
 
@@ -919,10 +985,12 @@ interParams(const KeyFrameSet &keyFrames,
             *tcur = itlast->getTime();
             *vcur = itlast->getValue();
             *vcurDerivRight = itlast->getRightDerivative();
+            *vcurWeightRight = itlast->getRightWeight();
             *interp = itlast->getInterpolation();
             *tnext = *tcur + 1.;
             *vnext = *vcur;
             *vnextDerivLeft = 0.;
+            *vnextWeightLeft = Interpolation::kDefaultTangentWeight;
             *interpNext = eKeyframeTypeNone;
         }
         
@@ -935,10 +1003,12 @@ interParams(const KeyFrameSet &keyFrames,
         *tcur = itcur->getTime();
         *vcur = itcur->getValue();
         *vcurDerivRight = itcur->getRightDerivative();
+        *vcurWeightRight = itcur->getRightWeight();
         *interp = itcur->getInterpolation();
         *tnext = itup->getTime();
         *vnext = itup->getValue();
         *vnextDerivLeft = itup->getLeftDerivative();
+        *vnextWeightLeft = itup->getLeftWeight();
         *interpNext = itup->getInterpolation();
     }
 }
@@ -975,7 +1045,7 @@ Curve::getValueAt(double t,
         //    return (*_imp->keyFrames.begin()).getValue();
         //}
         double tcur, tnext;
-        double vcurDerivRight, vnextDerivLeft, vcur, vnext;
+        double vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, vcur, vnext;
         KeyframeTypeEnum interp, interpNext;
         KeyFrame k(t, 0.);
         // find the first keyframe with time greater than t
@@ -990,15 +1060,19 @@ Curve::getValueAt(double t,
                     &tcur,
                     &vcur,
                     &vcurDerivRight,
+                    &vcurWeightRight,
                     &interp,
                     &tnext,
                     &vnext,
                     &vnextDerivLeft,
+                    &vnextWeightLeft,
                     &interpNext);
 
         v = Interpolation::interpolate(tcur, vcur,
                                        vcurDerivRight,
                                        vnextDerivLeft,
+                                       vcurWeightRight,
+                                       vnextWeightLeft,
                                        tnext, vnext,
                                        t,
                                        interp,
@@ -1045,7 +1119,7 @@ Curve::getDerivativeAt(double t) const
     //    return (*_imp->keyFrames.begin()).getValue();
     //}
     double tcur, tnext;
-    double vcurDerivRight, vnextDerivLeft, vcur, vnext;
+    double vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, vcur, vnext;
     KeyframeTypeEnum interp, interpNext;
     KeyFrame k(t, 0.);
     // find the first keyframe with time greater than t
@@ -1060,10 +1134,12 @@ Curve::getDerivativeAt(double t) const
                 &tcur,
                 &vcur,
                 &vcurDerivRight,
+                &vcurWeightRight,
                 &interp,
                 &tnext,
                 &vnext,
                 &vnextDerivLeft,
+                &vnextWeightLeft,
                 &interpNext);
 
     double d;
@@ -1073,6 +1149,8 @@ Curve::getDerivativeAt(double t) const
         d = Interpolation::derive_clamp(tcur, vcur,
                                         vcurDerivRight,
                                         vnextDerivLeft,
+                                        vcurWeightRight,
+                                        vnextWeightLeft,
                                         tnext, vnext,
                                         t,
                                         minmax.min, minmax.max,
@@ -1082,6 +1160,8 @@ Curve::getDerivativeAt(double t) const
         d = Interpolation::derive(tcur, vcur,
                                   vcurDerivRight,
                                   vnextDerivLeft,
+                                  vcurWeightRight,
+                                  vnextWeightLeft,
                                   tnext, vnext,
                                   t,
                                   interp,
@@ -1115,7 +1195,7 @@ Curve::getIntegrateFromTo(double t1,
     //    return (*_imp->keyFrames.begin()).getValue();
     //}
     double tcur, tnext;
-    double vcurDerivRight, vnextDerivLeft, vcur, vnext;
+    double vcurDerivRight, vnextDerivLeft, vcurWeightRight, vnextWeightLeft, vcur, vnext;
     KeyframeTypeEnum interp, interpNext;
     KeyFrame k(t1, 0.);
     // find the first keyframe with time strictly greater than t1
@@ -1130,10 +1210,12 @@ Curve::getIntegrateFromTo(double t1,
                 &tcur,
                 &vcur,
                 &vcurDerivRight,
+                &vcurWeightRight,
                 &interp,
                 &tnext,
                 &vnext,
                 &vnextDerivLeft,
+                &vnextWeightLeft,
                 &interpNext);
 
     double sum = 0.;
@@ -1146,6 +1228,8 @@ Curve::getIntegrateFromTo(double t1,
             sum += Interpolation::integrate_clamp(tcur, vcur,
                                                   vcurDerivRight,
                                                   vnextDerivLeft,
+                                                  vcurWeightRight,
+                                                  vnextWeightLeft,
                                                   tnext, vnext,
                                                   t1, itup->getTime(),
                                                   minmax.min, minmax.max,
@@ -1155,6 +1239,8 @@ Curve::getIntegrateFromTo(double t1,
             sum += Interpolation::integrate(tcur, vcur,
                                             vcurDerivRight,
                                             vnextDerivLeft,
+                                            vcurWeightRight,
+                                            vnextWeightLeft,
                                             tnext, vnext,
                                             t1, itup->getTime(),
                                             interp,
@@ -1172,10 +1258,12 @@ Curve::getIntegrateFromTo(double t1,
                     &tcur,
                     &vcur,
                     &vcurDerivRight,
+                    &vcurWeightRight,
                     &interp,
                     &tnext,
                     &vnext,
                     &vnextDerivLeft,
+                    &vnextWeightLeft,
                     &interpNext);
     }
 
@@ -1186,6 +1274,8 @@ Curve::getIntegrateFromTo(double t1,
         sum += Interpolation::integrate_clamp(tcur, vcur,
                                               vcurDerivRight,
                                               vnextDerivLeft,
+                                              vcurWeightRight,
+                                              vnextWeightLeft,
                                               tnext, vnext,
                                               t1, t2,
                                               minmax.min, minmax.max,
@@ -1195,6 +1285,8 @@ Curve::getIntegrateFromTo(double t1,
         sum += Interpolation::integrate(tcur, vcur,
                                         vcurDerivRight,
                                         vnextDerivLeft,
+                                        vcurWeightRight,
+                                        vnextWeightLeft,
                                         tnext, vnext,
                                         t1, t2,
                                         interp,
@@ -1505,37 +1597,31 @@ Curve::setKeyFrameRightDerivative(double value,
 }
 
 KeyFrame
-Curve::setKeyFrameDerivativesInternal(double left, double right, int index, int* newIndex)
+Curve::setKeyFrameTangents(double left,
+                           double right,
+                           double leftWeight,
+                           double rightWeight,
+                           int index,
+                           int* newIndex)
 {
-    KeyFrame ret;
-    {
-        QMutexLocker l(&_imp->_lock);
-        KeyFrameSet::iterator it = atIndex(index);
-        assert( it != _imp->keyFrames.end() );
+    QMutexLocker l(&_imp->_lock);
+    KeyFrameSet::iterator it = atIndex(index);
+    assert(it != _imp->keyFrames.end());
 
-        if ( ( left != it->getLeftDerivative() ) || ( right != it->getRightDerivative() ) ) {
-            KeyFrame newKey(*it);
-            newKey.setLeftDerivative(left);
-            newKey.setRightDerivative(right);
-            it = addKeyFrameNoUpdate(newKey).first;
-            it = evaluateCurveChanged(eCurveChangedReasonDerivativesChanged, it);
-        }
-        if (newIndex) {
-            *newIndex = std::distance(_imp->keyFrames.begin(), it);
-        }
-        ret = *it;
+    KeyFrame newKey(*it);
+    newKey.setLeftDerivative(left);
+    newKey.setRightDerivative(right);
+    newKey.setLeftWeight(leftWeight);
+    newKey.setRightWeight(rightWeight);
+    if (newKey != *it) {
+        it = addKeyFrameNoUpdate(newKey).first;
+        it = evaluateCurveChanged(eCurveChangedReasonDerivativesChanged, it);
     }
-    return ret;
-}
+    if (newIndex) {
+        *newIndex = std::distance(_imp->keyFrames.begin(), it);
+    }
 
-
-KeyFrame
-Curve::setKeyFrameDerivatives(double left,
-                              double right,
-                              int index,
-                              int* newIndex)
-{
-    return setKeyFrameDerivativesInternal(left, right, index, newIndex);
+    return *it;
 }
 
 KeyFrame

@@ -40,6 +40,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Global/Enums.h"
 
+#include "Engine/Curve.h"
 #include "Engine/Transform.h"
 
 #include "Gui/GuiFwd.h"
@@ -326,15 +327,19 @@ struct DSKeyInterpolationChange
 {
     DSKeyInterpolationChange(KeyframeTypeEnum oldInterpType,
                              KeyframeTypeEnum newInterpType,
-                             const DopeSheetKeyPtr & key)
-        : _oldInterpType(oldInterpType),
-        _newInterpType(newInterpType),
-        _key(key)
+                             const DopeSheetKeyPtr& key,
+                             const KeyTangents& oldTangents)
+        : _oldInterpType(oldInterpType)
+        , _newInterpType(newInterpType)
+        , _key(key)
+        , _oldTangents(oldTangents)
     {}
 
     KeyframeTypeEnum _oldInterpType;
     KeyframeTypeEnum _newInterpType;
     DopeSheetKeyPtr _key;
+    // Changing away from a weighted interpolation resets the weights, so undo restores them from here.
+    KeyTangents _oldTangents;
 };
 
 

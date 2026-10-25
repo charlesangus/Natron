@@ -463,9 +463,9 @@ MoveKeysCommand::move(double dt,
     for (std::map<CurveGuiPtr, std::vector<MoveKeysCommand::KeyToMove> >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
         if (isKnobCurve) {
-            if ( !isKnobCurve->getKnobGui() ) {
-                RotoContextPtr roto = isKnobCurve->getRotoContext();
-                assert(roto);
+            // A knob curve with no GUI and no roto context is a plain knob (as in unit tests).
+            RotoContextPtr roto = isKnobCurve->getKnobGui() ? RotoContextPtr() : isKnobCurve->getRotoContext();
+            if (!isKnobCurve->getKnobGui() && roto) {
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }
@@ -581,9 +581,9 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
     for (std::list<KeyInterpolationChange >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->key->curve.get() );
         if (isKnobCurve) {
-            if ( !isKnobCurve->getKnobGui() ) {
-                RotoContextPtr roto = isKnobCurve->getRotoContext();
-                assert(roto);
+            // A knob curve with no GUI and no roto context is a plain knob (as in unit tests).
+            RotoContextPtr roto = isKnobCurve->getKnobGui() ? RotoContextPtr() : isKnobCurve->getRotoContext();
+            if (!isKnobCurve->getKnobGui() && roto) {
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }
@@ -615,10 +615,18 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
                 int keyframeIndex = it->key->curve->getKeyFrameIndex( it->key->key.getTime() );
                 if (keyframeIndex != -1) {
                     it->key->key = it->key->curve->setKeyFrameInterpolation(interp, keyframeIndex);
+                    if (undo && interpolationHasWeights(it->oldInterp)) {
+                        const KeyTangents& t = it->oldTangents;
+                        it->key->key = isKnobCurve->getInternalCurve()->setKeyFrameTangents(t.left, t.right, t.leftWeight, t.rightWeight, keyframeIndex);
+                    }
                 }
                 isParametric->evaluateValueChange(isKnobCurve->getDimension(), it->key->key.getTime(), ViewIdx(0), eValueChangedReasonUserEdited);
             } else {
                 knob->setInterpolationAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0),  isKnobCurve->getDimension(), it->key->key.getTime(), interp, &it->key->key);
+                if (undo && interpolationHasWeights(it->oldInterp)) {
+                    // Only Free and Broken keys carry weights; setTangentsAtTime would turn any other key into one of them.
+                    knob->setTangentsAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), it->oldTangents, &it->key->key);
+                }
             }
         } else {
             ///interpolation for bezier curve is either linear or constant
@@ -638,7 +646,10 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
         (*it)->evaluateChange();
     }
 
-    _widget->refreshSelectedKeysAndUpdate();
+    // Null when a unit test exercises the command without a real curve widget behind it.
+    if (_widget) {
+        _widget->refreshSelectedKeysAndUpdate();
+    }
 } // SetKeysInterpolationCommand::setNewInterpolation
 
 void
@@ -678,6 +689,10 @@ MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
     , _oldInterp(key->key.getInterpolation())
     , _oldLeft(key->key.getLeftDerivative())
     , _oldRight(key->key.getRightDerivative())
+    , _oldLeftWeight(key->key.getLeftWeight())
+    , _oldRightWeight(key->key.getRightWeight())
+    , _newLeftWeight(_oldLeftWeight)
+    , _newRightWeight(_oldRightWeight)
     , _setBoth(false)
     , _updateOnFirstRedo(updateOnFirstRedo)
     , _firstRedoCalled(false)
@@ -747,6 +762,39 @@ MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
         }
         _newInterp = eKeyframeTypeBroken;
     }
+
+    // The handle's time extent is a fraction of the segment it reaches into. A periodic curve's
+    // first and last keys reach into the wrap segment.
+    double leftSpan = 0.;
+    double rightSpan = 0.;
+    {
+        const std::pair<double, double> xRange = internalCurve->getXRange();
+        const double period = xRange.second - xRange.first;
+        const bool wraps = internalCurve->isCurvePeriodic() && (keys.size() > 1) && std::isfinite(period) && (period > 0.);
+        if (prev != keys.end()) {
+            leftSpan = cur->getTime() - prev->getTime();
+        } else if (wraps) {
+            leftSpan = cur->getTime() - (keys.rbegin()->getTime() - period);
+        }
+        if (next != keys.end()) {
+            rightSpan = next->getTime() - cur->getTime();
+        } else if (wraps) {
+            rightSpan = keys.begin()->getTime() + period - cur->getTime();
+        }
+    }
+    const double draggedSpan = isLeft ? leftSpan : rightSpan;
+    if (draggedSpan > 0.) {
+        const double oldWeight = isLeft ? _oldLeftWeight : _oldRightWeight;
+        const double newWeight = Interpolation::clampTangentWeight(std::abs(dx) / draggedSpan);
+        const double otherSpan = isLeft ? rightSpan : leftSpan;
+        double& draggedNew = isLeft ? _newLeftWeight : _newRightWeight;
+        double& otherNew = isLeft ? _newRightWeight : _newLeftWeight;
+        const double otherOld = isLeft ? _oldRightWeight : _oldLeftWeight;
+        draggedNew = newWeight;
+        if (_setBoth && (otherSpan > 0.)) {
+            otherNew = Interpolation::clampTangentWeight(otherOld * newWeight / oldWeight);
+        }
+    }
 }
 
 MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
@@ -761,6 +809,10 @@ MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
     , _oldInterp(key->key.getInterpolation())
     , _oldLeft(key->key.getLeftDerivative())
     , _oldRight(key->key.getRightDerivative())
+    , _oldLeftWeight(key->key.getLeftWeight())
+    , _oldRightWeight(key->key.getRightWeight())
+    , _newLeftWeight(_oldLeftWeight)
+    , _newRightWeight(_oldRightWeight)
     , _setBoth(true)
     , _updateOnFirstRedo(true)
     , _firstRedoCalled(false)
@@ -802,16 +854,13 @@ MoveTangentCommand::setNewDerivatives(bool undo)
         double left = undo ? _oldLeft : _newLeft;
         double right = undo ? _oldRight : _newRight;
         KeyframeTypeEnum interp = undo ? _oldInterp : _newInterp;
+        double leftWeight = undo ? _oldLeftWeight : _newLeftWeight;
+        double rightWeight = undo ? _oldRightWeight : _newRightWeight;
 
         if (!isParametric) {
             attachedKnob->beginChanges();
-            if (_setBoth) {
-                attachedKnob->moveDerivativesAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), _key->key.getTime(), left, right);
-            } else {
-                attachedKnob->moveDerivativeAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), _key->key.getTime(),
-                                                   _deriv == eSelectedTangentLeft ? left : right,
-                                                   _deriv == eSelectedTangentLeft);
-            }
+            const KeyTangents tangents = { left, right, leftWeight, rightWeight };
+            attachedKnob->setTangentsAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), _key->key.getTime(), tangents, NULL);
             attachedKnob->setInterpolationAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), _key->key.getTime(), interp, &_key->key);
             if (_firstRedoCalled || _updateOnFirstRedo) {
                 attachedKnob->endChanges();
@@ -819,11 +868,14 @@ MoveTangentCommand::setNewDerivatives(bool undo)
         } else {
             int keyframeIndexInCurve = _key->curve->getInternalCurve()->keyFrameIndex( _key->key.getTime() );
             _key->key = _key->curve->getInternalCurve()->setKeyFrameInterpolation(interp, keyframeIndexInCurve);
-            _key->key = _key->curve->getInternalCurve()->setKeyFrameDerivatives(left, right, keyframeIndexInCurve);
+            _key->key = _key->curve->getInternalCurve()->setKeyFrameTangents(left, right, leftWeight, rightWeight, keyframeIndexInCurve);
             attachedKnob->evaluateValueChange(isKnobCurve->getDimension(), _key->key.getTime(), ViewIdx(0),  eValueChangedReasonUserEdited);
         }
 
-        _widget->refreshCurveDisplayTangents( _key->curve.get() );
+        // Null when a unit test exercises the command without a real curve widget behind it.
+        if (_widget) {
+            _widget->refreshCurveDisplayTangents(_key->curve.get());
+        }
     }
 }
 
@@ -866,6 +918,8 @@ MoveTangentCommand::mergeWith(const QUndoCommand * command)
         _newInterp = cmd->_newInterp;
         _newLeft = cmd->_newLeft;
         _newRight = cmd->_newRight;
+        _newLeftWeight = cmd->_newLeftWeight;
+        _newRightWeight = cmd->_newRightWeight;
 
         return true;
     } else {
@@ -926,13 +980,14 @@ JoinTangentsCommand::setNewDerivatives(bool undo)
 
         if (!isParametric) {
             attachedKnob->beginChanges();
-            attachedKnob->moveDerivativesAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), left, right);
+            const KeyTangents tangents = { left, right, it->key->key.getLeftWeight(), it->key->key.getRightWeight() };
+            attachedKnob->setTangentsAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), tangents, NULL);
             attachedKnob->setInterpolationAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), interp, &it->key->key);
             attachedKnob->endChanges();
         } else {
             int keyframeIndexInCurve = it->key->curve->getInternalCurve()->keyFrameIndex(it->key->key.getTime());
             it->key->key = it->key->curve->getInternalCurve()->setKeyFrameInterpolation(interp, keyframeIndexInCurve);
-            it->key->key = it->key->curve->getInternalCurve()->setKeyFrameDerivatives(left, right, keyframeIndexInCurve);
+            it->key->key = it->key->curve->getInternalCurve()->setKeyFrameTangents(left, right, it->key->key.getLeftWeight(), it->key->key.getRightWeight(), keyframeIndexInCurve);
             attachedKnob->evaluateValueChange(isKnobCurve->getDimension(), it->key->key.getTime(), ViewIdx(0), eValueChangedReasonUserEdited);
         }
     }
@@ -1065,9 +1120,9 @@ TransformKeysCommand::transformKeys(const Transform::Matrix3x3& matrix)
     for (SelectedKeys::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
         if (isKnobCurve) {
-            if ( !isKnobCurve->getKnobGui() ) {
-                RotoContextPtr roto = isKnobCurve->getRotoContext();
-                assert(roto);
+            // A knob curve with no GUI and no roto context is a plain knob (as in unit tests).
+            RotoContextPtr roto = isKnobCurve->getKnobGui() ? RotoContextPtr() : isKnobCurve->getRotoContext();
+            if (!isKnobCurve->getKnobGui() && roto) {
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }

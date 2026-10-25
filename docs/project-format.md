@@ -281,6 +281,15 @@ The tokens, which map to the interpolation types by position, are `K` constant, 
 - Every keyframe is `time value`. A `F` (free) keyframe adds one number, the derivative, which is
   used for both sides. An `X` (broken) keyframe adds two, the right derivative then the left.
   The other types store no derivatives.
+- A free or broken keyframe also has a weight per tangent: the handle's extent in time, as a
+  fraction of the span of the segment on that side. When either weight differs from the default
+  `1/3`, the keyframe takes the token `FW` or `XW` instead of `F` or `X`, and adds two numbers
+  after its derivatives, the right weight then the left:
+  `[FW, 0, 1, 0.5, 0.75, 0.2, X, 10, 2, 0.1, -0.1]`. A weight must lie in `[0.01, 0.99]`; NaN or
+  a weight outside that range is an error naming the element. Keyframes whose weights are both
+  `1/3` keep the plain tokens, so a curve whose handles were never lengthened is written as
+  before. A reader that does not know `FW`/`XW` refuses the curve rather than misreading it, so
+  the tokens did not raise `formatVersion`.
 - Times must strictly increase and cannot be NaN. A curve that ends in the middle of a keyframe
   is an error naming the missing element.
 

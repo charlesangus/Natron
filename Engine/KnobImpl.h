@@ -1572,9 +1572,7 @@ Knob<T>::setValueAtTime(double time,
         hasChanged = true;
         ret = eValueChangedReturnCodeKeyframeAdded;
     } else {
-        bool modifiedKeyFrame = ( ( existingKey.getValue() != newKey->getValue() ) ||
-                                  ( existingKey.getLeftDerivative() != newKey->getLeftDerivative() ) ||
-                                  ( existingKey.getRightDerivative() != newKey->getRightDerivative() ) );
+        bool modifiedKeyFrame = ((existingKey.getValue() != newKey->getValue()) || (existingKey.getLeftDerivative() != newKey->getLeftDerivative()) || (existingKey.getRightDerivative() != newKey->getRightDerivative()) || (existingKey.getLeftWeight() != newKey->getLeftWeight()) || (existingKey.getRightWeight() != newKey->getRightWeight()));
         if (modifiedKeyFrame) {
             ret = eValueChangedReturnCodeKeyframeModified;
         }
@@ -2922,9 +2920,7 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
                     KeyFrame existingKey;
                     const KeyFrame& key = (*it)->key();
                     bool hasKey = curve->getKeyFrameWithTime( key.getTime(), &existingKey );
-                    if ( !hasKey || ( existingKey.getTime() != key.getTime() ) || ( existingKey.getValue() != key.getValue() ) ||
-                         ( existingKey.getLeftDerivative() != key.getLeftDerivative() ) ||
-                         ( existingKey.getRightDerivative() != key.getRightDerivative() ) ) {
+                    if (!hasKey || (existingKey.getTime() != key.getTime()) || (existingKey.getValue() != key.getValue()) || (existingKey.getLeftDerivative() != key.getLeftDerivative()) || (existingKey.getRightDerivative() != key.getRightDerivative()) || (existingKey.getLeftWeight() != key.getLeftWeight()) || (existingKey.getRightWeight() != key.getRightWeight())) {
                         if (!blockValueChanges) {
                             dimensionChanged.insert( std::make_pair( (*it)->dimension(), (*it)->reason() ) );
                         }

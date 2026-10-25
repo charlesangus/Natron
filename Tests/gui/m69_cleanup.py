@@ -1435,10 +1435,18 @@ try:
                 xmax = min(W / 8.0, (to_w(21, 0).x() - to_w(11, 0.5).x()) / 3.0)
                 return xmax, min(H / 8.0, xmax)
 
+            free_or_broken = (NatronEngine.Natron.KeyframeTypeEnum.eKeyframeTypeFree,
+                              NatronEngine.Natron.KeyframeTypeEnum.eKeyframeTypeBroken)
+
             def right_handle(slope):
                 key = to_w(11, 0.5)
                 xmax, ymax = handle_clamp()
                 pix_slope = slope * sy / sx
+                interp, _left, _right, _lw, right_weight = mix.getKeyTangents(11.0)
+                if interp in free_or_broken:
+                    # A Free or Broken key's handle sits on its Bezier control point.
+                    extent = right_weight * (to_w(21, 0).x() - key.x())
+                    return key + QPointF(extent, -extent * pix_slope)
                 if xmax * abs(pix_slope) < ymax:
                     return key + QPointF(xmax, -xmax * pix_slope)
                 return key + QPointF(ymax / abs(pix_slope), -ymax * (1 if pix_slope > 0 else -1))
@@ -1475,9 +1483,11 @@ try:
 
             xmax, ymax = handle_clamp()
             key_pt = to_w(11, 0.5)
-            max_length = math.hypot(xmax, ymax) + 8.0
             handle = right_handle(right3)
-            far = key_pt + QPointF(3.0 * xmax, -1.5 * xmax)
+            # Twice the default extent at most, so the weight stays inside its clamp and the
+            # handle can follow the cursor exactly.
+            far = key_pt + QPointF(2.0 * xmax, -1.0 * xmax)
+            cursor_length = math.hypot(far.x() - key_pt.x(), far.y() - key_pt.y())
             press(cw, handle, Qt.LeftButton, Qt.ControlModifier)
             for i in range(1, DRAG_STEPS + 1):
                 move(cw, handle + (far - handle) * (i / float(DRAG_STEPS)), Qt.LeftButton, Qt.ControlModifier)
@@ -1502,10 +1512,10 @@ try:
 
             n_held, far_held = handle_extent(held_img)
             n_released, far_released = handle_extent(released_img)
-            report("NOTE tangent handle while held: %d px out to %.1f; after release: %d px out to %.1f; clamp %.1f, cursor %.1f"
-                   % (n_held, far_held, n_released, far_released, max_length, math.hypot(far.x() - key_pt.x(), far.y() - key_pt.y())))
+            report("NOTE tangent handle while held: %d px out to %.1f; after release: %d px out to %.1f; cursor %.1f"
+                   % (n_held, far_held, n_released, far_released, cursor_length))
             check(n_held >= 10, "the dragged tangent handle is drawn while the button is held")
-            check(far_held <= max_length, "a held tangent handle stays within its normal length, not at the cursor")
+            check(abs(far_held - cursor_length) <= 6.0, "a held tangent handle reaches the cursor: the drag sets its length")
             check(n_released >= 10 and abs(far_held - far_released) <= 3.0,
                   "the tangent handle does not change length when the button is released")
         graphs = gt.widgets_of("NodeGraph")

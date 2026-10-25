@@ -50,7 +50,9 @@ makeKey(double time,
         double value,
         int interpolation,
         double left = 0.,
-        double right = 0.)
+        double right = 0.,
+        double leftWeight = Serialization::kKeyFrameDefaultTangentWeight,
+        double rightWeight = Serialization::kKeyFrameDefaultTangentWeight)
 {
     KeyFrameSerialization key;
     key.time = time;
@@ -58,6 +60,8 @@ makeKey(double time,
     key.interpolation = interpolation;
     key.leftDerivative = left;
     key.rightDerivative = right;
+    key.leftWeight = leftWeight;
+    key.rightWeight = rightWeight;
 
     return key;
 }
@@ -204,4 +208,82 @@ TEST(CurveYaml, MalformedInputThrowsDescriptiveErrors)
     expectDecodeError("{a: 1}", "expected a curve");
     expectDecodeError("[L, 1, 2", "the curve is not valid YAML");
     expectDecodeError("[L, 1, inf]", "\"inf\" is neither a number nor an interpolation token");
+}
+
+TEST(CurveYaml, WeightedKeysWriteTheirWeightsAfterTheDerivatives)
+{
+    CurveSerialization curve;
+    curve.keyframes.push_back(makeKey(0., 1., 6, 0.5, 0.5, 0.2, 0.75));
+    curve.keyframes.push_back(makeKey(10., 2., 7, -1.5, 2.5, 0.01, 0.99));
+    curve.keyframes.push_back(makeKey(20., 3., 7, 0.25, -0.25, 1. / 3., 0.125));
+
+    const std::string text = Serialization::encodeCurveYaml(curve);
+    EXPECT_EQ("[FW, 0, 1, 0.5, 0.75, 0.2, XW, 10, 2, 2.5, -1.5, 0.99, 0.01, 20, 3, -0.25, 0.25, 0.125, 0.3333333333333333]\n", text);
+    expectCurvesBitIdentical(curve, Serialization::decodeCurveYaml(text));
+}
+
+TEST(CurveYaml, WeightsRoundTripBitExactly)
+{
+    // Neighbouring doubles that a 15 or 16 digit rendering would merge.
+    CurveSerialization curve;
+    curve.keyframes.push_back(makeKey(0., 1., 6, 0.5, 0.5, std::nextafter(0.2, 1.), std::nextafter(0.8, 0.)));
+    curve.keyframes.push_back(makeKey(10., 2., 7, 1., -1., std::nextafter(0.01, 1.), std::nextafter(0.99, 0.)));
+    curve.keyframes.push_back(makeKey(20., 3., 7, 1., -1., 0.1 + 0.2, 1. / 7.));
+    expectCurvesBitIdentical(curve, roundTrip(curve));
+}
+
+TEST(CurveYaml, MixedWeightedAndUnweightedKeysSwitchTokens)
+{
+    CurveSerialization curve;
+    curve.keyframes.push_back(makeKey(0., 0., 6, 1., 1.));
+    curve.keyframes.push_back(makeKey(5., 1., 6, 2., 2., 0.5, 0.25));
+    curve.keyframes.push_back(makeKey(9., 2., 6, 3., 3.));
+    curve.keyframes.push_back(makeKey(12., 3., 7, 4., 5., 0.6, 1. / 3.));
+    curve.keyframes.push_back(makeKey(15., 4., 7, 6., 7.));
+    curve.keyframes.push_back(makeKey(18., 5., 1));
+
+    const std::string text = Serialization::encodeCurveYaml(curve);
+    EXPECT_EQ("[F, 0, 0, 1, FW, 5, 1, 2, 0.25, 0.5, F, 9, 2, 3, XW, 12, 3, 5, 4, 0.3333333333333333, 0.6, X, 15, 4, 7, 6, L, 18, 5]\n", text);
+    expectCurvesBitIdentical(curve, Serialization::decodeCurveYaml(text));
+}
+
+TEST(CurveYaml, DefaultWeightsWriteTheUnweightedText)
+{
+    // The text a curve with no lengthened handle had before keys carried weights.
+    CurveSerialization curve;
+    curve.keyframes.push_back(makeKey(0., 1., 1));
+    curve.keyframes.push_back(makeKey(24., 2., 6, 0.1, 0.1));
+    curve.keyframes.push_back(makeKey(48., 3., 7, -0.2, 0.2));
+    curve.keyframes.push_back(makeKey(72., 0.5, 2));
+
+    EXPECT_EQ("[L, 0, 1, F, 24, 2, 0.1, X, 48, 3, 0.2, -0.2, S, 72, 0.5]\n", Serialization::encodeCurveYaml(curve));
+}
+
+TEST(CurveYaml, DerivedKeysDropTheirWeights)
+{
+    CurveSerialization curve;
+    curve.keyframes.push_back(makeKey(0., 1., 2, 0., 0., 0.5, 0.5));
+    curve.keyframes.push_back(makeKey(5., 2., 1, 0., 0., 0.75, 0.25));
+
+    const std::string text = Serialization::encodeCurveYaml(curve);
+    EXPECT_EQ("[S, 0, 1, L, 5, 2]\n", text);
+    const CurveSerialization decoded = Serialization::decodeCurveYaml(text);
+    expectCurvesBitIdentical(Serialization::canonicalCurveForYaml(curve), decoded);
+    EXPECT_EQ(Serialization::kKeyFrameDefaultTangentWeight, decoded.keyframes[0].leftWeight);
+    EXPECT_EQ(Serialization::kKeyFrameDefaultTangentWeight, decoded.keyframes[1].rightWeight);
+}
+
+TEST(CurveYaml, MalformedWeightsThrowDescriptiveErrors)
+{
+    expectDecodeError("[FW, 1, 2, 3]", "the curve ends where it expects a right weight");
+    expectDecodeError("[FW, 1, 2, 3, 0.5]", "the curve ends where it expects a left weight");
+    expectDecodeError("[XW, 1, 2, 3, 4]", "the curve ends where it expects a right weight");
+    expectDecodeError("[XW, 1, 2, 3, 4, 0.5]", "the curve ends where it expects a left weight");
+    expectDecodeError("[FW, 1, 2, 3, 0, 0.5]", "curve element 4: a right weight must be between 0.01 and 0.99, found 0");
+    expectDecodeError("[FW, 1, 2, 3, 0.5, 1]", "curve element 5: a left weight must be between 0.01 and 0.99, found 1");
+    expectDecodeError("[XW, 1, 2, 3, 4, .nan, 0.5]", "curve element 5: a right weight must be between 0.01 and 0.99");
+    expectDecodeError("[FW, 1, 2, 3, -0.5, 0.5]", "a right weight must be between");
+    expectDecodeError("[LW, 1, 2]", "\"LW\" is neither a number nor an interpolation token");
+    expectDecodeError("[W, 1, 2]", "\"W\" is neither a number nor an interpolation token");
+    expectDecodeError("[FW, 1, 2, 3, XW, 0.5]", "expected a right weight, found the interpolation token \"XW\"");
 }

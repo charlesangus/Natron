@@ -174,7 +174,7 @@ public:
      **/
     static constexpr float kAlphaEpsilon = 1e-6f;
 
-    static const int kMaxSlices = 50;
+    static constexpr int kMaxSlices = 50;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -36,13 +36,13 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
 
 ## Phase 184.2: IBlur
 
-- [ ] M184.P2.T1 — Write the native IBlur node (CPU)
+- [x] M184.P2.T1 — Write the native IBlur node (CPU)
   - files: `Engine/Nodes/Filter/IBlur.h`, `Engine/Nodes/Filter/IBlur.cpp`, `Engine/Nodes/Filter/IBlur.reg.inc`, `Engine/Nodes/Filter/VariableBlurKernels.{h,cpp}`
   - approach: Per-pixel radius `r = lerp(sizeAtBlack, size, Map)`. Compute a summed-area table per channel per tile (double precision, tile-local origin) and apply a variable-width box three times (iterated boxes approximate a Gaussian of sigma matching the base Blur's `sizeToSigma`), each pass reading the per-pixel radius, so cost is O(1) per pixel at any size. Knobs mirror Blur's (`size` 2-D, channels, crop to format) plus `MapInput`'s.
   - verify: at the phase build, `ctest -R NativeIBlur` (T2) passes.
   - size: L
 
-- [ ] M184.P2.T2 — Test IBlur on CPU
+- [x] M184.P2.T2 — Test IBlur on CPU
   - files: `Tests/Native/NativeIBlur_Test.cpp`
   - approach: Map 0 is bit-identical to the input. Map 1 matches base Blur at the same size within 2% RMS (the box-iterated kernel differs from the FIR Gaussian). A half-black Map leaves the black half untouched beyond 0 px. A constant input stays constant. Record regression fixtures.
   - verify: at the phase build, `ctest -R NativeIBlur` passes.
@@ -90,6 +90,7 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
 
 ## Decisions
 
+- 2026-10-25 — **IBlur GPU through the pass runner (bosley-native-nodes):** the GPU pass runner gains views of extra (Aux) inputs (getGpuInputLayer/getGpuInputRoI cover them), reusable by STMap and the kit, rather than a custom renderOpGpu for IBlur. `Pass::columns` lets a pass run over columns. Golden fixtures are recorded from the phase build tree with NATRON_GOLDEN_RECORD_DIR.
 - 2026-10-25 — **Outside the Map (bosley-native-nodes):** outside the Map image the raw value is 0 (black) and invert/remap still apply, as for any black pixel; an inverted roto Map therefore gives full effect outside its area.
 - 2026-10-25 — **Fragment macro (bosley-native-nodes):** `NATRON_I_VARIANT(BASE_ID, I_ID, {"base","i"}, ...)` takes a variable list of knob pairs; the generated `NativeRegistryAll.inc` defines both macros empty when an includer hasn't. STMap's Map-knob model lives on the M113 branch until it merges.
 - 2026-10-25 — **Separate I-variant registrations plus Make I-Node (user):** base nodes stay lean and keep concatenating; the registry lets M189 - Make I-Node Action convert either way.

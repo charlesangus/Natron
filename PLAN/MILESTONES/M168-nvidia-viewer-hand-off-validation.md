@@ -12,7 +12,7 @@ Deps: M107 - GPU Viewer Hand-off, M91 - NVIDIA GPU Validation. Needs the NVIDIA 
   - verify: a `RenderProfile_Test` case with a nonzero staged count emits the object. The t5 render's profile shows reasons for every staged transfer.
   - size: M
 
-- [ ] M168.P1.T2 — Let the GUI test harness run on an existing host display with that display's GL (was M91.P3.T1)
+- [x] M168.P1.T2 — Let the GUI test harness run on an existing host display with that display's GL (was M91.P3.T1)
   - files: `Tests/gui/run-gui-test.sh`
   - approach: Add a mode, `GUI_TEST_HOST_DISPLAY=:0`, that skips Xvfb, the `/usr/lib64` GL symlink directory and the `mesa`/`LIBGL_ALWAYS_SOFTWARE` exports, running the extracted AppImage on the host against the system's glvnd with `env -u LD_LIBRARY_PATH`. Fail with a clear message when the display can't be opened, or when the GL renderer isn't hardware (that check takes an opt-out). The default Xvfb mode stays byte-identical.
   - verify: `GUI_TEST_HOST_DISPLAY=:0 XAUTHORITY=… Tests/gui/run-gui-test.sh Tests/gui/<existing smoke>.py <fast AppImage>` passes and logs an NVIDIA renderer. The same script still passes under Xvfb in the container. `bash -n` and `shellcheck` pass.

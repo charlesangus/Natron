@@ -285,7 +285,8 @@ private:
 
 /**
  * @brief Whether op names GPU work the device can run: a registry kernel whose parameter block
- * fits the 64 KB the recorder uploads, or a runtime shader gate accepts for node.
+ * fits the 64 KB the recorder uploads, or a runtime shader gate accepts for node. A build
+ * without GPU support accepts nothing.
  **/
 bool canRecordGpuOp(const GpuOpRef& op,
                     StageGpuShaderGate& gate,

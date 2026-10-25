@@ -1033,6 +1033,7 @@ canRecordGpuOp(const GpuOpRef& op,
                StageGpuShaderGate& gate,
                const NodePtr& node)
 {
+#ifdef NATRON_HAVE_GPU
     switch (op.kind) {
     case GpuOpRef::Kind::Kernel:
 
@@ -1045,6 +1046,13 @@ canRecordGpuOp(const GpuOpRef& op,
     }
 
     return false;
+#else
+    Q_UNUSED(op);
+    Q_UNUSED(gate);
+    Q_UNUSED(node);
+
+    return false;
+#endif
 }
 
 StatusEnum

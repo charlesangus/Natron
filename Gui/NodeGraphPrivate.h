@@ -49,8 +49,9 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
-#include "Gui/NodeGraphUndoRedo.h" // NodeGuiPtr
 #include "Gui/GuiFwd.h"
+#include "Gui/NodeGraphPickUp.h"
+#include "Gui/NodeGraphUndoRedo.h" // NodeGuiPtr
 
 #include "Serialization/SerializationFwd.h"
 
@@ -157,6 +158,9 @@ public:
     NodeGraph* _publicInterface;
     NodeCollectionWPtr group;
     QPoint _lastMousePos;
+    // Where the last press landed, in view pixels, so that a release can tell a click with a
+    // little jitter from a drag.
+    QPoint _pressPos;
     QPointF _lastSelectionStartPointScene;
     EventStateEnum _evtState;
     NodeGuiPtr _magnifiedNode;
@@ -201,6 +205,7 @@ public:
     // dangling.
     NodeGuiWPtr _pickedUpArrowDest;
     int _pickedUpArrowInput = -1;
+    PickUpEndEnum _pickedUpArrowEnd = ePickUpEndSource;
 
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     UndoGesture _dragGesture; //< from a press to its release, so one resize drag is one undo step

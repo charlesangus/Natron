@@ -22,6 +22,12 @@
 
 #include "Global/Macros.h"
 
+CLANG_DIAG_OFF(deprecated)
+CLANG_DIAG_OFF(uninitialized)
+#include <QPointF>
+CLANG_DIAG_ON(deprecated)
+CLANG_DIAG_ON(uninitialized)
+
 NATRON_NAMESPACE_ENTER
 
 enum PickUpButtonEnum {
@@ -48,11 +54,32 @@ enum PickUpPressActionEnum {
     ePickUpPressIgnore,
 };
 
+// Which end of a pipe a pick-up carries. The destination end is the arrowhead at the input that
+// the pipe feeds; the source end is the one at the node feeding it.
+enum PickUpEndEnum {
+    ePickUpEndSource,
+    ePickUpEndDestination,
+};
+
+/**
+ * @brief Whether the mouse travelled far enough between press and release for the gesture to be
+ * a drag rather than a click. Both values are in the same units, typically view pixels, and the
+ * distance is reached at the threshold itself, as QApplication::startDragDistance() is meant.
+ **/
+bool isDragDistance(double pressToReleaseDistance, double dragDistance);
+
 /**
  * @brief Whether releasing the mouse on an arrow picks that arrow up: a left click on an input
- * arrow with no movement in between. Output arrows are never picked up.
+ * arrow that travelled less than the drag distance, however many move events came in between.
+ * Output arrows are never picked up: they are the stubs drawn below a node, never connected.
  **/
-bool shouldStartPickUp(PickUpButtonEnum releasedButton, bool movedSincePress, bool isOutputEdge);
+bool shouldStartPickUp(PickUpButtonEnum releasedButton, double pressToReleaseDistance, double dragDistance, bool isOutputEdge);
+
+/**
+ * @brief The end of a pipe that a click picks up: the one nearest the click. A tie, including
+ * any click on a zero-length pipe, picks the source end.
+ **/
+PickUpEndEnum pickedUpEnd(const QPointF& click, const QPointF& destination, const QPointF& source);
 
 /**
  * @brief What a press does while an input arrow is held: a left click on another node connects,

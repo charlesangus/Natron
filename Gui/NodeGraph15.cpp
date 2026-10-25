@@ -148,6 +148,35 @@ NodeGraph::connectInputArrowToNode(Edge* arrow,
     return ok;
 }
 
+// Moves the arrowhead end of a connected pipe: the input it fed is disconnected and the target's
+// preferred input takes the same source, as one undo step.
+bool
+NodeGraph::moveInputArrowDestinationToNode(Edge* arrow,
+                                           const NodeGuiPtr& target)
+{
+    assert(arrow && !arrow->isOutputEdge());
+    NodeGuiPtr source = arrow->getSource();
+    NodeGuiPtr oldDest = arrow->getDest();
+    if (!source || !oldDest || !target) {
+        return false;
+    }
+    int preferredInput = target->getNode()->getPreferredInputForConnection();
+    if (preferredInput == -1) {
+        return false;
+    }
+    Edge* targetInput = target->getInputArrow(preferredInput);
+    if (!targetInput || !handleConnectionError(target, source, preferredInput)) {
+        return false;
+    }
+
+    QUndoCommand* moveCommand = new QUndoCommand(tr("Move pipe"));
+    new ConnectCommand(this, arrow, source, NodeGuiPtr(), moveCommand);
+    new ConnectCommand(this, targetInput, targetInput->getSource(), source, moveCommand);
+    pushUndoCommand(moveCommand, NodesGuiList { oldDest, source, target, targetInput->getSource() });
+
+    return true;
+}
+
 Edge*
 NodeGraph::getPickedUpArrow() const
 {
@@ -162,13 +191,26 @@ NodeGraph::getPickedUpArrow() const
     return dest->getInputArrow(_imp->_pickedUpArrowInput);
 }
 
+// A pipe with no source is a stub whose only loose end is its source end, so that is what it
+// carries whichever end was asked for.
 void
-NodeGraph::pickUpArrow(Edge* arrow)
+NodeGraph::pickUpArrow(Edge* arrow,
+                       PickUpEndEnum end)
 {
     assert(arrow && !arrow->isOutputEdge());
+    arrow->initLine();
     _imp->_pickedUpArrowDest = arrow->getDest();
     _imp->_pickedUpArrowInput = arrow->getInputNumber();
+    _imp->_pickedUpArrowEnd = arrow->hasSource() ? end : ePickUpEndSource;
     dragPickedUpArrowToCursor();
+}
+
+void
+NodeGraph::forgetPickedUpArrow()
+{
+    _imp->_pickedUpArrowDest.reset();
+    _imp->_pickedUpArrowInput = -1;
+    _imp->_pickedUpArrowEnd = ePickUpEndSource;
 }
 
 // _lastMousePos rather than QCursor::pos(): every mouse and wheel handler keeps it current, and it
@@ -181,18 +223,22 @@ NodeGraph::dragPickedUpArrowToCursor()
         return;
     }
     QPointF cursorScene = mapToScene(_imp->_lastMousePos.x(), _imp->_lastMousePos.y());
-    arrow->dragSource(arrow->mapFromScene(cursorScene));
+    if (_imp->_pickedUpArrowEnd == ePickUpEndDestination) {
+        arrow->dragDest(arrow->mapFromScene(cursorScene));
+    } else {
+        arrow->dragSource(arrow->mapFromScene(cursorScene));
+    }
     update();
 }
 
-// The arrow's source is never changed while it is held, only its drawn line, so restoring the
-// line restores the original connection and nothing reaches the undo stack.
+// The arrow's connection is never changed while it is held, whichever end is carried, only its
+// drawn line, so restoring the line restores the original connection and nothing reaches the undo
+// stack.
 void
 NodeGraph::dropPickedUpArrow()
 {
     Edge* arrow = getPickedUpArrow();
-    _imp->_pickedUpArrowDest.reset();
-    _imp->_pickedUpArrowInput = -1;
+    forgetPickedUpArrow();
     if (arrow) {
         arrow->initLine();
         update();
@@ -219,6 +265,8 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
     }
 
     NodeGuiPtr nodeHoldingEdge = arrow->getDest();
+    NodeGuiPtr arrowSource = arrow->getSource();
+    const bool carriesDestination = (_imp->_pickedUpArrowEnd == ePickUpEndDestination) && arrowSource;
     NodeGui* nearbyNode = 0;
     Edge* nearbyEdge = 0;
     PickUpClickTargetEnum target = ePickUpClickTargetOther;
@@ -226,7 +274,10 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
     if (isNearbyNavigator(e->pos(), navigatorScenePos)) {
         target = ePickUpClickTargetNavigator;
     } else if ((hasItemNearbyMouse(e->pos(), &nearbyNode, &nearbyEdge) == eNearbyItemNode) && nearbyNode) {
-        target = (nearbyNode == nodeHoldingEdge.get()) ? ePickUpClickTargetHoldingNode : ePickUpClickTargetNode;
+        // With the arrowhead carried, the pipe hangs from its source: clicking either node it
+        // already joins leaves the connection as it was.
+        const bool isHoldingNode = (nearbyNode == nodeHoldingEdge.get()) || (carriesDestination && (nearbyNode == arrowSource.get()));
+        target = isHoldingNode ? ePickUpClickTargetHoldingNode : ePickUpClickTargetNode;
     }
 
     switch (decidePickUpPress(button, target)) {
@@ -239,8 +290,7 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
 
         return true;
     case ePickUpPressDisconnect: {
-        _imp->_pickedUpArrowDest.reset();
-        _imp->_pickedUpArrowInput = -1;
+        forgetPickedUpArrow();
         if (arrow->getSource()) {
             pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), NodeGuiPtr()),
                             NodesGuiList { arrow->getDest(), arrow->getSource() });
@@ -258,9 +308,13 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
         NodeGuiPtr targetNode = nearbyNode->shared_from_this();
         // Let go of the arrow before connecting: a rejected connection opens a dialog, and the
         // focus loss that causes must not find the arrow still held.
-        _imp->_pickedUpArrowDest.reset();
-        _imp->_pickedUpArrowInput = -1;
-        connectInputArrowToNode(arrow, targetNode);
+        forgetPickedUpArrow();
+        if (carriesDestination) {
+            moveInputArrowDestinationToNode(arrow, targetNode);
+            targetNode->refreshEdges();
+        } else {
+            connectInputArrowToNode(arrow, targetNode);
+        }
         if (nodeHoldingEdge) {
             nodeHoldingEdge->refreshEdges();
         }
@@ -285,8 +339,12 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
 
     _imp->autoScrollTimer.stop();
 
-    bool hasMovedOnce = modCASIsControl(e) || _imp->_hasMovedOnce;
-    if ( (state == eEventStateDraggingArrow) && hasMovedOnce ) {
+    // A pipe press is a drag only once it travels the drag distance, however many move events
+    // came in between and whatever modifiers are held.
+    const double arrowDragDistance = TO_DPIX(QApplication::startDragDistance());
+    const double arrowPressToRelease = (e->pos() - _imp->_pressPos).manhattanLength();
+    const bool arrowDragged = isDragDistance(arrowPressToRelease, arrowDragDistance);
+    if ((state == eEventStateDraggingArrow) && arrowDragged) {
         bool foundSrc = false;
         assert(_imp->_arrowSelected);
         NodeGuiPtr nodeHoldingEdge = _imp->_arrowSelected->isOutputEdge() ?
@@ -334,8 +392,16 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
 
         nodeHoldingEdge->refreshEdges();
         scene()->update();
-    } else if ((state == eEventStateDraggingArrow) && _imp->_arrowSelected && shouldStartPickUp(triggerButtonIsLeft(e) ? ePickUpButtonLeft : ePickUpButtonOther, hasMovedOnce, _imp->_arrowSelected->isOutputEdge())) {
-        pickUpArrow(_imp->_arrowSelected);
+    } else if ((state == eEventStateDraggingArrow) && _imp->_arrowSelected) {
+        Edge* arrow = _imp->_arrowSelected;
+        // Moves short of the drag distance still dragged the drawn line; put it back first.
+        arrow->initLine();
+        PickUpButtonEnum button = triggerButtonIsLeft(e) ? ePickUpButtonLeft : ePickUpButtonOther;
+        if (shouldStartPickUp(button, arrowPressToRelease, arrowDragDistance, arrow->isOutputEdge())) {
+            QPointF pressScene = mapToScene(_imp->_pressPos);
+            PickUpEndEnum end = pickedUpEnd(pressScene, arrow->mapToScene(arrow->line().p1()), arrow->mapToScene(arrow->line().p2()));
+            pickUpArrow(arrow, end);
+        }
     } else if (state == eEventStateDraggingNode) {
         if ( !_imp->_hasMovedOnce ) {
             if ( modCASIsControl(e) ) { // control-click is the same as double-click, see NodeGraph::mouseDoubleClickEvent

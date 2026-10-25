@@ -225,6 +225,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
 
     _imp->_dragGesture.begin();
     _imp->_hasMovedOnce = false;
+    _imp->_pressPos = e->pos();
     _imp->_spliceCancelled = false;
     _imp->_deltaSinceMousePress = QPointF(0, 0);
     if ( buttonDownIsMiddle(e) ) {

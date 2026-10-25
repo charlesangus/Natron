@@ -28,11 +28,32 @@
 NATRON_NAMESPACE_ENTER
 
 bool
+isDragDistance(double pressToReleaseDistance,
+               double dragDistance)
+{
+    return pressToReleaseDistance >= dragDistance;
+}
+
+bool
 shouldStartPickUp(PickUpButtonEnum releasedButton,
-                  bool movedSincePress,
+                  double pressToReleaseDistance,
+                  double dragDistance,
                   bool isOutputEdge)
 {
-    return (releasedButton == ePickUpButtonLeft) && !movedSincePress && !isOutputEdge;
+    return (releasedButton == ePickUpButtonLeft) && !isDragDistance(pressToReleaseDistance, dragDistance) && !isOutputEdge;
+}
+
+PickUpEndEnum
+pickedUpEnd(const QPointF& click,
+            const QPointF& destination,
+            const QPointF& source)
+{
+    const QPointF toDestination = click - destination;
+    const QPointF toSource = click - source;
+    const double destinationDist2 = QPointF::dotProduct(toDestination, toDestination);
+    const double sourceDist2 = QPointF::dotProduct(toSource, toSource);
+
+    return (destinationDist2 < sourceDist2) ? ePickUpEndDestination : ePickUpEndSource;
 }
 
 PickUpPressActionEnum

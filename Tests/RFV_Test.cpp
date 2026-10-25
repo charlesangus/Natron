@@ -282,19 +282,18 @@ TEST_F(BaseTest, RFVDeclaredVariablesRejectsAnInvalidIdentifier)
     EXPECT_EQ(2u, errors.size());
 }
 
-TEST_F(BaseTest, RFVDeclaredVariablesRejectsAChildThatHoldsNoValue)
+TEST_F(BaseTest, RFVDeclaredVariablesSkipsTheChildrenAGroupRefused)
 {
     NodePtr generator = createNode(_generatorPluginID);
     ASSERT_TRUE(bool(generator));
     EffectInstancePtr effect = generator->getEffectInstance();
     ASSERT_TRUE(bool(effect));
 
-    // Flagged while empty, then given children no variable can be.
     KnobGroupPtr group = createRFVGroup(effect);
-    group->addKnob(effect->createDoubleKnob("rfvGain", "Gain", 1));
-    group->addKnob(effect->createButtonKnob("rfvPress", "Press"));
-    group->addKnob(effect->createSeparatorKnob("rfvLine", "Line"));
-    group->addKnob(effect->createGroupKnob("rfvInner", "Inner"));
+    EXPECT_TRUE(group->addKnob(effect->createDoubleKnob("rfvGain", "Gain", 1)));
+    EXPECT_FALSE(group->addKnob(effect->createButtonKnob("rfvPress", "Press")));
+    EXPECT_FALSE(group->addKnob(effect->createSeparatorKnob("rfvLine", "Line")));
+    EXPECT_FALSE(group->addKnob(effect->createGroupKnob("rfvInner", "Inner")));
 
     EXPECT_TRUE(RFV::isVariableKnobType(effect->getKnobByName("rfvGain")));
     EXPECT_FALSE(RFV::isVariableKnobType(effect->getKnobByName("rfvPress")));
@@ -306,5 +305,5 @@ TEST_F(BaseTest, RFVDeclaredVariablesRejectsAChildThatHoldsNoValue)
     std::vector<std::string> errors;
     const std::vector<RFV::VariableDeclaration> declarations = RFV::getDeclaredVariables(effect.get(), &errors);
     EXPECT_EQ(std::vector<std::string>(1, "rfvGain"), declaredNames(declarations));
-    EXPECT_EQ(3u, errors.size());
+    EXPECT_TRUE(errors.empty());
 }

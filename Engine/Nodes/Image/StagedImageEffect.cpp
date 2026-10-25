@@ -572,7 +572,7 @@ StagedImageEffect::getTransform(double time,
         return NativeEffectBase::getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
     }
 
-    return resampleTransform(*this, getSourceInput(), opResample(time, view, renderScale), time, renderScale, draftRender, inputToTransform, transform);
+    return resampleTransform(*this, getSourceInput(), opResample(time, view, renderScale), time, view, renderScale, draftRender, inputToTransform, transform);
 }
 
 FramesNeededMap

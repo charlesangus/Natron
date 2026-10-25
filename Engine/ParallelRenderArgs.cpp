@@ -30,6 +30,7 @@
 #include <iterator>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <tuple>
@@ -1103,6 +1104,100 @@ struct FindDependenciesNode
 
 typedef std::map<NodePtr,FindDependenciesNode> FindDependenciesMap;
 
+namespace {
+std::mutex g_metadataSnapshotHookMutex;
+ParallelRenderArgsSetter::MetadataSnapshotHook g_metadataSnapshotHook;
+ParallelRenderArgsSetter::FrameSnapshotHook g_frameSnapshotHook;
+
+// A snapshot that raced an edit is retaken at most this many times, then kept as it is: a graph
+// edited faster than it can be snapshotted must still render.
+const int kMaxMetadataSnapshotRetries = 3;
+
+// Inputs come before the nodes reading them, so each derivation finds its inputs' answers already
+// cached instead of recursing the depth of the graph on the calling thread's stack. Iterative for
+// the same reason.
+std::vector<NodePtr>
+upstreamFirstOrder(const std::set<NodePtr>& nodes)
+{
+    std::vector<NodePtr> order;
+    std::set<NodePtr> visited;
+    std::vector<std::pair<NodePtr, int>> stack;
+
+    order.reserve(nodes.size());
+    for (std::set<NodePtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (!visited.insert(*it).second) {
+            continue;
+        }
+        stack.push_back(std::make_pair(*it, 0));
+        while (!stack.empty()) {
+            const NodePtr node = stack.back().first;
+            const int nInputs = node->getNInputs();
+            NodePtr next;
+            while (!next && (stack.back().second < nInputs)) {
+                NodePtr input = node->getInput(stack.back().second++);
+                if (input && nodes.count(input) && visited.insert(input).second) {
+                    next = input;
+                }
+            }
+            if (next) {
+                stack.push_back(std::make_pair(next, 0));
+            } else {
+                order.push_back(node);
+                stack.pop_back();
+            }
+        }
+    }
+
+    return order;
+}
+
+// False when some node's answer belongs to another hash than its args', that is when an edit
+// landed between reading the hashes and reading the answers.
+bool
+snapshotMetadata(double time,
+                 ViewIdx view,
+                 const std::vector<NodePtr>& order,
+                 const std::map<NodePtr, ParallelRenderArgsPtr>& args)
+{
+    ParallelRenderArgsSetter::MetadataSnapshotHook hook;
+    {
+        std::lock_guard<std::mutex> lock(g_metadataSnapshotHookMutex);
+        hook = g_metadataSnapshotHook;
+    }
+    bool consistent = true;
+    for (std::vector<NodePtr>::const_iterator it = order.begin(); it != order.end(); ++it) {
+        std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator found = args.find(*it);
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        if ((found == args.end()) || !effect) {
+            continue;
+        }
+        U64 hash = 0;
+        found->second->metadata = effect->getMetadata(time, view, &hash);
+        if (hash != found->second->nodeHash) {
+            consistent = false;
+        }
+        if (hook) {
+            hook(*it);
+        }
+    }
+
+    return consistent;
+}
+} // anon namespace
+
+void
+ParallelRenderArgsSetter::setMetadataSnapshotHookForTests(const MetadataSnapshotHook& hook)
+{
+    std::lock_guard<std::mutex> lock(g_metadataSnapshotHookMutex);
+    g_metadataSnapshotHook = hook;
+}
+
+void
+ParallelRenderArgsSetter::setFrameSnapshotHookForTests(const FrameSnapshotHook& hook)
+{
+    std::lock_guard<std::mutex> lock(g_metadataSnapshotHookMutex);
+    g_frameSnapshotHook = hook;
+}
 
 /**
  * @brief Builds a list with all nodes upstream of the given node (including this node) and all its dependencies through expressions as well (which
@@ -1282,6 +1377,7 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
     };
 
     std::map<const EffectInstance*, bool> frameVaryingMemo;
+    std::set<NodePtr> renderedNodes;
     for (FindDependenciesMap::iterator it = dependenciesMap.begin(); it != dependenciesMap.end(); ++it) {
 
         const NodePtr& node = it->first;
@@ -1312,6 +1408,8 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
         if (setUpstreamArgs && it->second.recursed) {
             nodeArgs->isFrameVaryingOrAnimated = liveInstance->isFrameVaryingOrAnimated_Recursive(&frameVaryingMemo);
             nodeArgs->frameVaryingComputed = true;
+            renderedNodes.insert(node);
+            renderedNodes.insert(rotoPaintNodes.begin(), rotoPaintNodes.end());
         }
         for (NodesList::iterator it2 = rotoPaintNodes.begin(); it2 != rotoPaintNodes.end(); ++it2) {
             U64 nodeHash = (*it2)->getHashValue();
@@ -1339,6 +1437,25 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
                 PluginOpenGLRenderSupport childGlSupport = (*it2)->getCurrentOpenGLRenderSupport();
                 add(*it2, childLiveInstance->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, false, NodesList(), childSafety, childGlSupport, draftMode, stats));
             }
+        }
+    }
+
+    // Only for a frame that renders upstream: the setters giving args to the root alone do not
+    // render it through these args, and a query they make is answered live.
+    if (setUpstreamArgs && !renderedNodes.empty()) {
+        const std::vector<NodePtr> order = upstreamFirstOrder(renderedNodes);
+        for (int retry = 0; !snapshotMetadata(time, view, order, *out) && (retry < kMaxMetadataSnapshotRetries); ++retry) {
+            for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = out->begin(); it != out->end(); ++it) {
+                it->second->nodeHash = it->first->getHashValue();
+            }
+        }
+        FrameSnapshotHook hook;
+        {
+            std::lock_guard<std::mutex> lock(g_metadataSnapshotHookMutex);
+            hook = g_frameSnapshotHook;
+        }
+        if (hook) {
+            hook(treeRoot, time, view, *out);
         }
     }
 

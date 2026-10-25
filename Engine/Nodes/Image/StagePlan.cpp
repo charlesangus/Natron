@@ -493,7 +493,7 @@ stageMaskMissesWindow(const EffectInstance& effect,
     if (mask->getRegionOfDefinition_public(mask->getRenderHash(), time, maskScale, view, &maskRoD, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    const RectI maskPixels = maskRoD.toPixelEnclosing(scale.toMipmapLevel(), mask->getAspectRatio(-1));
+    const RectI maskPixels = maskRoD.toPixelEnclosing(scale.toMipmapLevel(), mask->getRenderMetadata(time, view)->getPixelAspectRatio(-1));
 
     return !roi.intersects(maskPixels);
 }

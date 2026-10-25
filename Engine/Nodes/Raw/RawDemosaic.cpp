@@ -515,7 +515,7 @@ RawDemosaic::refreshMethodKnobsVisibility()
         colorSmoothing->setSecret(false);
         dualThreshold->setSecret(!bayerDual && !xtransDual);
         lmmseRefine->setSecret(bayer != (int)eRawDemosaicBayerLMMSE);
-        captureSupport = !input || (input->getMetadataNComps(-1) == 1);
+        captureSupport = !input || (EffectInstance::getNCompsFromMetadata(*input->getMetadata(getCurrentTime(), ViewIdx(0)), -1) == 1);
     }
     refreshCaptureKnobsVisibility(captureSupport);
 }
@@ -782,7 +782,7 @@ RawDemosaic::resolveSettings(double time,
     if (reader.value(_captureSharpen)) {
         if (s.algorithm == Algorithm::PassThrough) {
             const EffectInstancePtr input = getInput(getSourceInput());
-            s.mono = (s.layout.period() == 0) && input && (input->getMetadataNComps(-1) == 1);
+            s.mono = (s.layout.period() == 0) && input && (EffectInstance::getNCompsFromMetadata(*input->getRenderMetadata(time, view), -1) == 1);
             s.capture = s.mono;
         } else {
             s.capture = (s.algorithm != Algorithm::PhotositeMonochrome) && (s.algorithm != Algorithm::PhotositeColor);
@@ -892,7 +892,7 @@ RawDemosaic::getRegionsOfInterest(double time,
     if (!input || !settings) {
         return;
     }
-    const double par = getAspectRatio(getSourceInput());
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     const bool full = (settings->greenEq == eRawDemosaicGreenEqFull) || (settings->greenEq == eRawDemosaicGreenEqBoth);
     RectI need = full ? settings->sourceRoD : sourceRegionFor(PassExec::toPixelEnclosing(renderWindow, scale, par), time, view);
     if (settings->capture && (settings->captureSettings.radius <= 0.f)) {

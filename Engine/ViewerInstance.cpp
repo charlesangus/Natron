@@ -1220,7 +1220,7 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
     outArgs->params = std::make_shared<UpdateViewerParams>();
 
     // The PAR of the input image
-    outArgs->params->pixelAspectRatio = outArgs->activeInputToRender->getAspectRatio(-1);
+    outArgs->params->pixelAspectRatio = outArgs->activeInputToRender->getMetadata(time, view)->getPixelAspectRatio(-1);
 
     // Is it playback ?
     outArgs->params->isSequential = isSequential;
@@ -1591,7 +1591,7 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
             NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(outArgs->activeInputToRender.get());
             const ImageMetadata metadata = native ? native->getOutputMetadata(time, view) : ImageMetadata();
             outArgs->rawNormalisation = RawDisplay::normalisationOf(metadata);
-            rawLabel = RawDisplay::label(RawDisplay::modeOf(metadata, outArgs->activeInputToRender->getMetadataNComps(-1)));
+            rawLabel = RawDisplay::label(RawDisplay::modeOf(metadata, EffectInstance::getNCompsFromMetadata(*outArgs->activeInputToRender->getMetadata(time, view), -1)));
         }
         std::lock_guard<std::mutex> lock(_rawDisplayLabelMutex);
         if ((textureIndex == 0) || (textureIndex == 1)) {
@@ -1737,7 +1737,9 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     }
     const bool taskGraphMode = appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
 
-    const double par = inArgs.activeInputToRender->getAspectRatio(-1);
+    // Under frame args this is the snapshot the frame's request pass and hashes were taken with.
+    const NodeMetadataConstPtr renderMetadata = inArgs.activeInputToRender->getRenderMetadata(inArgs.params->time, view);
+    const double par = renderMetadata->getPixelAspectRatio(-1);
 
     // We are going to render a non cached frame and not in playback, clear persistent messages
     // (this code comes from https://github.com/NatronGitHub/Natron/commit/b0fcc946380571295b9230e9381218684474ca65)
@@ -1749,8 +1751,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     }
 
     ImageLayerDesc components, pairedComponents;
-    inArgs.activeInputToRender->getMetadataComponents(-1, &components, &pairedComponents);
-    ImageBitDepthEnum imageDepth = inArgs.activeInputToRender->getBitDepth(-1);
+    EffectInstance::getLayersFromMetadata(*renderMetadata, -1, &components, &pairedComponents);
+    ImageBitDepthEnum imageDepth = renderMetadata->getBitDepth(-1);
     std::list<ImageLayerDesc> requestedComponents;
     int alphaChannelIndex = -1;
     if ((inArgs.channels != eDisplayChannelsA) && (inArgs.channels != eDisplayChannelsMatte)) {

@@ -2385,8 +2385,6 @@ private:
             activeInputToRender = output;
             assert(activeInputToRender);
             NodePtr activeInputNode = activeInputToRender->getNode();
-            U64 activeInputToRenderHash = activeInputToRender->getHash();
-            const double par = activeInputToRender->getAspectRatio(-1);
             const bool isRenderDueToRenderInteraction = false;
             const bool isSequentialRender = true;
             const DataKindEnum outputKind = activeInputToRender->getOutputDataKind();
@@ -2400,6 +2398,29 @@ private:
 
                     return;
                 }
+                AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+                if (isAbortableThread) {
+                    isAbortableThread->setAbortInfo(isRenderDueToRenderInteraction, abortInfo, activeInputToRender);
+                }
+
+                ParallelRenderArgsSetter frameRenderArgs(time,
+                                                         viewsToRender[view],
+                                                         isRenderDueToRenderInteraction, // is this render due to user interaction ?
+                                                         isSequentialRender,
+                                                         abortInfo, // abortInfo
+                                                         activeInputNode, // viewer requester
+                                                         0, // texture index
+                                                         output->getApp()->getTimeLine().get(),
+                                                         NodePtr(),
+                                                         false,
+                                                         false,
+                                                         stats);
+
+                // The frame's region, layers and layout all come from the snapshot its args took,
+                // so an edit made while the sequence renders cannot pair one state's region with
+                // another's layout.
+                const U64 activeInputToRenderHash = activeInputToRender->getRenderHash();
+                const NodeMetadataConstPtr renderMetadata = activeInputToRender->getRenderMetadata(time, viewsToRender[view]);
                 StatusEnum stat = activeInputToRender->getRegionOfDefinition_public(activeInputToRenderHash, time, scale, viewsToRender[view], &rod, &isProjectFormat);
                 if (stat == eStatusFailed) {
                     _imp->scheduler->notifyRenderFailure("Error caught while rendering");
@@ -2421,7 +2442,7 @@ private:
                     activeInputToRender->getComponentsNeededAndProduced_public(activeInputToRenderHash, time, viewsToRender[view], &neededComps, &passThroughLayers, &ptTime, &ptView, &processChannels, &processChannelsPerPlane, &ptInput);
 
                     // Retrieve bitdepth only
-                    imageDepth = activeInputToRender->getBitDepth(-1);
+                    imageDepth = renderMetadata->getBitDepth(-1);
                     components.clear();
 
                     EffectInstance::ComponentsNeededMap::iterator foundOutput = neededComps.find(-1);
@@ -2431,25 +2452,7 @@ private:
                         }
                     }
                 }
-                const RectI renderWindow = rod.toPixelEnclosing(scale, par);
-
-                AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
-                if (isAbortableThread) {
-                    isAbortableThread->setAbortInfo(isRenderDueToRenderInteraction, abortInfo, activeInputToRender);
-                }
-
-                ParallelRenderArgsSetter frameRenderArgs(time,
-                                                         viewsToRender[view],
-                                                         isRenderDueToRenderInteraction,  // is this render due to user interaction ?
-                                                         isSequentialRender,
-                                                         abortInfo, //abortInfo
-                                                         activeInputNode, // viewer requester
-                                                         0, //texture index
-                                                         output->getApp()->getTimeLine().get(),
-                                                         NodePtr(),
-                                                         false,
-                                                         false,
-                                                         stats);
+                const RectI renderWindow = rod.toPixelEnclosing(scale, renderMetadata->getPixelAspectRatio(-1));
 
                 std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
                 stat = EffectInstance::computeRequestPass(time, viewsToRender[view], mipmapLevel, rod, activeInputNode, *request);
@@ -2589,22 +2592,8 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
     const BufferedFrame& frame = frames.front();
 
     OutputEffectInstancePtr effect = _effect.lock();
-    U64 hash = effect->getHash();
     bool isProjectFormat;
-    std::list<ImageLayerDesc> components;
-    ImageBitDepthEnum imageDepth = eImageBitDepthNone;
     const DataKindEnum outputKind = effect->getOutputDataKind();
-
-    if ((outputKind == eDataKindImage) || (outputKind == eDataKindRaw)) {
-        ImageLayerDesc metadataLayer, metadataPairedLayer;
-        effect->getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
-        if (metadataLayer.getNumComponents() > 0) {
-            components.push_back(metadataLayer);
-        }
-        imageDepth = effect->getBitDepth(-1);
-    }
-
-    const double par = effect->getAspectRatio(-1);
     const bool isRenderDueToRenderInteraction = false;
     const bool isSequentialRender = true;
 
@@ -2625,11 +2614,23 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
                                                  false,
                                                  false,
                                                  it->stats);
+        // Each buffered frame is written with the layout its own args snapshotted.
+        const NodeMetadataConstPtr renderMetadata = effect->getRenderMetadata(it->time, it->view);
+        std::list<ImageLayerDesc> components;
+        ImageBitDepthEnum imageDepth = eImageBitDepthNone;
+        if ((outputKind == eDataKindImage) || (outputKind == eDataKindRaw)) {
+            ImageLayerDesc metadataLayer, metadataPairedLayer;
+            EffectInstance::getLayersFromMetadata(*renderMetadata, -1, &metadataLayer, &metadataPairedLayer);
+            if (metadataLayer.getNumComponents() > 0) {
+                components.push_back(metadataLayer);
+            }
+            imageDepth = renderMetadata->getBitDepth(-1);
+        }
         RectD rod;
         ///Writers render to scale 1 always
         const RenderScale scale;
-        ignore_result( effect->getRegionOfDefinition_public(hash, it->time, scale, it->view, &rod, &isProjectFormat) );
-        const RectI roi = rod.toPixelEnclosing(0, par);
+        ignore_result(effect->getRegionOfDefinition_public(effect->getRenderHash(), it->time, scale, it->view, &rod, &isProjectFormat));
+        const RectI roi = rod.toPixelEnclosing(0, renderMetadata->getPixelAspectRatio(-1));
 
         RenderingFlagSetter flagIsRendering(effect->getNode());
         try {

@@ -558,10 +558,10 @@ private:
         layout.rod = request ? request->globalData.rod : RectD();
         layout.bounds = bounds;
         layout.mipmapLevel = task.key.mipmapLevel;
-        layout.par = effect ? effect->getAspectRatio(-1) : 1.;
-        layout.fielding = effect ? effect->getFieldingOrder() : eImageFieldingOrderNone;
-
         const ParallelRenderArgsPtr frameArgs = _context->getArgs(task.key.node);
+        const NodeMetadataConstPtr metadata = effect ? effect->getRenderMetadata(frameArgs, task.key.time, task.key.view) : NodeMetadataConstPtr();
+        layout.par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+        layout.fielding = metadata ? metadata->getOutputFielding() : eImageFieldingOrderNone;
         FrameRequestMap::const_iterator nodeRequest = _context->getRequest() ? _context->getRequest()->find(task.key.node) : FrameRequestMap::const_iterator();
         const U64 nodeHash = (_context->getRequest() && (nodeRequest != _context->getRequest()->end()) && nodeRequest->second) ? nodeRequest->second->nodeHash : 0;
         layout.key = ImageKey(task.key.node.get(),

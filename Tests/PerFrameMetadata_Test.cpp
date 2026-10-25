@@ -26,7 +26,9 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <list>
 #include <random>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -34,11 +36,16 @@
 
 #include <gtest/gtest.h>
 
+#include <ofxImageEffect.h>
+
 #include "BaseTest.h"
 #include "NativeMetadataTestEffect.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
+#include "RenderBothWays.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -47,6 +54,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Switch.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
@@ -357,6 +365,90 @@ TEST_F(PerFrameMetadataTest, ConcurrentQueriesCacheOnlyConsistentAnswers)
         }
         for (const NodePtr& node : nodes) {
             node->getEffectInstance()->dropCachedMetadata();
+        }
+    }
+}
+
+// An edit landing while a frame is set up, after an upstream node was snapshotted but before the
+// nodes reading it were, must not leave the frame with answers from two states of the graph.
+TEST_F(PerFrameMetadataTest, FrameSnapshotHashesMatchTheArgs)
+{
+    NodePtr sourceA, sourceB;
+    NodePtr switchNode = createKeyedSwitch(&sourceA, &sourceB);
+    ASSERT_TRUE(bool(switchNode));
+    NodePtr blur = createBlurBelow(switchNode);
+    ASSERT_TRUE(bool(blur));
+    KnobIntPtr nComps = metadataSourceOf(sourceB)->getNCompsKnob();
+
+    int edits = 0;
+    ParallelRenderArgsSetter::setMetadataSnapshotHookForTests([&](const NodePtr& node) {
+        if ((node == sourceB) && (edits == 0)) {
+            ++edits;
+            nComps->setValue(3, ViewSpec::all(), 0);
+        }
+    });
+    std::map<NodePtr, ParallelRenderArgsPtr> args;
+    ParallelRenderArgsSetter::buildArgsMap(2, ViewIdx(0), false, false, AbortableRenderInfo::create(false, 0), blur, 0,
+                                           getApp()->getTimeLine().get(), NodePtr(), false, false, RenderStatsPtr(),
+                                           true, OSGLContextPtr(), &args);
+    ParallelRenderArgsSetter::setMetadataSnapshotHookForTests(ParallelRenderArgsSetter::MetadataSnapshotHook());
+    EXPECT_EQ(1, edits);
+
+    const std::vector<NodePtr> nodes = { sourceA, sourceB, switchNode, blur };
+    for (const NodePtr& node : nodes) {
+        std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator found = args.find(node);
+        ASSERT_TRUE(found != args.end()) << node->getScriptName();
+        ASSERT_TRUE(bool(found->second->metadata)) << node->getScriptName();
+        EXPECT_EQ(node->getHashValue(), found->second->nodeHash) << node->getScriptName();
+        U64 hash = 0;
+        NodeMetadataConstPtr live = node->getEffectInstance()->getMetadata(2, ViewIdx(0), &hash);
+        ASSERT_TRUE(bool(live));
+        EXPECT_EQ(found->second->nodeHash, hash) << node->getScriptName();
+        EXPECT_TRUE(*live == *found->second->metadata) << node->getScriptName();
+    }
+    // Frame 2 routes the edited source.
+    EXPECT_EQ(3, outputNComps(args[blur]->metadata));
+}
+
+// The render reads the frame's own layout: a Switch keyed from an RGB reader at frame 1 to an RGBA
+// reader at frame 2 renders a 3-channel colour plane at frame 1 and a 4-channel one at frame 2,
+// whichever frame renders first.
+TEST_F(PerFrameMetadataTest, KeyedSwitchRendersEachFramesLayout)
+{
+    for (int firstFrame = 1; firstFrame <= 2; ++firstFrame) {
+        SCOPED_TRACE("frame " + std::to_string(firstFrame) + " rendered first");
+        getApp()->getProject()->reset(false, true);
+
+        CreateNodeArgs rgbArgs(_readPluginID.toStdString(), getApp()->getProject());
+        rgbArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgb-only.exr"));
+        NodePtr rgbReader = getApp()->createNode(rgbArgs);
+        CreateNodeArgs rgbaArgs(_readPluginID.toStdString(), getApp()->getProject());
+        rgbaArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
+        NodePtr rgbaReader = getApp()->createNode(rgbaArgs);
+        NodePtr switchNode = createNode(QString::fromUtf8(PLUGINID_NATRON_SWITCH));
+        ASSERT_TRUE(rgbReader && rgbaReader && switchNode);
+        connectNodes(rgbReader, switchNode, 0, true);
+        connectNodes(rgbaReader, switchNode, 1, true);
+        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kSwitchParamWhich));
+        ASSERT_TRUE(bool(which));
+        which->setValueAtTime(1, 0, ViewSpec::all(), 0);
+        which->setValueAtTime(2, 1, ViewSpec::all(), 0);
+
+        for (int i = 0; i < 2; ++i) {
+            const int frame = (i == 0) ? firstFrame : 3 - firstFrame;
+            std::vector<RenderedPlane> planes;
+            std::string error;
+            ASSERT_TRUE(renderNodePlanesInMode(switchNode, frame, ViewIdx(0), 0, RectI(0, 0, 8, 8), std::list<ImageLayerDesc>(),
+                                               eRenderSchedulerModeTaskGraph, true, &planes, &error))
+                << "frame=" << frame << " " << error;
+            const RenderedPlane* color = NULL;
+            for (std::size_t p = 0; p < planes.size(); ++p) {
+                if (planes[p].layer.isColorLayer()) {
+                    color = &planes[p];
+                }
+            }
+            ASSERT_TRUE(color != NULL) << "frame=" << frame;
+            EXPECT_EQ((frame == 1) ? 3u : 4u, color->channels.size()) << "frame=" << frame;
         }
     }
 }

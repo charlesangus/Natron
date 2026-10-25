@@ -375,8 +375,9 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ///Use the hash at this time, and then copy it to the clips in the thread-local storage to use the same value
     ///through all the rendering of this frame.
     U64 nodeHash = frameArgs->nodeHash;
-    const double par = getAspectRatio(-1);
-    const ImageFieldingOrderEnum fieldingOrder = getFieldingOrder();
+    const NodeMetadataConstPtr renderMetadata = getRenderMetadata(frameArgs, args.time, args.view);
+    const double par = renderMetadata->getPixelAspectRatio(-1);
+    const ImageFieldingOrderEnum fieldingOrder = renderMetadata->getOutputFielding();
     const unsigned int mipmapLevel = args.mipmapLevel;
     SupportsEnum supportsRS = supportsRenderScaleMaybe();
     ///This flag is relevant only when the mipmapLevel is different than 0. We use it to determine
@@ -834,9 +835,9 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
      * Get the bitdepth and output components that the plug-in expects to render. The cached image does not necesserarily has the bitdepth
      * that the plug-in expects.
      */
-    ImageBitDepthEnum outputDepth = getBitDepth(-1);
+    ImageBitDepthEnum outputDepth = renderMetadata->getBitDepth(-1);
     ImageLayerDesc outputClipPrefComps, outputClipPrefCompsPaired;
-    getMetadataOutputClipComponents(&outputClipPrefComps, &outputClipPrefCompsPaired);
+    getOutputClipLayersFromMetadata(*renderMetadata, &outputClipPrefComps, &outputClipPrefCompsPaired);
     ImageLayersToRenderPtr layersToRender = std::make_shared<ImageLayersToRender>();
     layersToRender->useOpenGL = useOpenGL;
     layersToRender->processChannelsPerPlane = processChannelsPerPlane;
@@ -1744,7 +1745,7 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
     ///which will lead to asserts down the stream
     if ( self->isReader() && ( QThread::currentThread() != qApp->thread() ) ) {
         Format frmt;
-        RectI formatRect = self->getOutputFormat();
+        RectI formatRect = self->getRenderMetadata(frameArgs, time, view)->getOutputFormat();
         frmt.set(formatRect);
         frmt.setPixelAspectRatio(par);
         self->getApp()->getProject()->setOrAddProjectFormat(frmt);

@@ -708,7 +708,7 @@ EffectInstance::retrieveGetImageDataUponFailure(const double time,
     }
 
     assert(isSupportedRenderScale(supportsRenderScaleMaybe(), scale));
-    const RectI pixelRod = rod.toPixelEnclosing(scale, getAspectRatio(-1));
+    const RectI pixelRod = rod.toPixelEnclosing(scale, getRenderMetadata(time, view)->getPixelAspectRatio(-1));
     try {
         int identityInputNb;
         double identityTime;
@@ -882,7 +882,7 @@ EffectInstance::lookupFrameStore(const EffectInstancePtr& input,
     const FrameViewRequest* request = (inputFrameArgs && inputFrameArgs->request) ? inputFrameArgs->request->getFrameViewRequest(time, view) : 0;
     if (request) {
         // Stored images stop at the region of definition, which a requested RoI may exceed.
-        neededRoI = neededRoI.intersect(request->globalData.rod.toPixelEnclosing(mipmap, input->getAspectRatio(-1)));
+        neededRoI = neededRoI.intersect(request->globalData.rod.toPixelEnclosing(mipmap, input->getRenderMetadata(inputFrameArgs, time, view)->getPixelAspectRatio(-1)));
         if (neededRoI.isNull()) {
             return false;
         }
@@ -1085,6 +1085,7 @@ EffectInstance::getImage(int inputNb,
     bool isAnalysisPass = false;
     RectD thisRod;
     double thisEffectRenderTime = time;
+    ViewIdx thisEffectRenderView = view;
 
     ///Try to find in the input images thread-local storage if we already pre-computed the image
     EffectInstance::InputImagesMap inputImagesThreadLocal;
@@ -1135,6 +1136,7 @@ EffectInstance::getImage(int inputNb,
                 inputsRoI = renderArgs.regionOfInterestResults;
             }
             thisEffectRenderTime = renderArgs.time;
+            thisEffectRenderView = renderArgs.view;
             isIdentity = renderArgs.isIdentity;
             identityInput = renderArgs.identityInput;
             inputImagesThreadLocal = renderArgs.inputImages;
@@ -1251,13 +1253,16 @@ EffectInstance::getImage(int inputNb,
         }
     }
 
-    ///Both the result of getRegionsOfInterest and optionalBounds are in canonical coordinates, we have to convert in both cases
-    ///Convert to pixel coordinates
-    const double par = getAspectRatio(inputNb);
-    ImageBitDepthEnum depth = getBitDepth(inputNb);
+    /// Both the result of getRegionsOfInterest and optionalBounds are in canonical coordinates, we have to convert in both cases
+    /// Convert to pixel coordinates
+    // This node's clip for the input, as it is at the frame this node renders, whatever time the
+    // input is fetched at.
+    const NodeMetadataConstPtr thisMetadata = getRenderMetadata(thisEffectRenderTime, thisEffectRenderView);
+    const double par = thisMetadata->getPixelAspectRatio(inputNb);
+    ImageBitDepthEnum depth = thisMetadata->getBitDepth(inputNb);
     ImageLayerDesc components;
     ImageLayerDesc clipPrefComps, clipPrefMappedComps;
-    getMetadataComponents(inputNb, &clipPrefComps, &clipPrefMappedComps);
+    getLayersFromMetadata(*thisMetadata, inputNb, &clipPrefComps, &clipPrefMappedComps);
 
     if (layer) {
         components = *layer;
@@ -1436,7 +1441,7 @@ EffectInstance::getImage(int inputNb,
         }
         // Textures are always 32-bit float, so the plane uploaded to one is built at that depth.
         const ImageBitDepthEnum zeroDepth = (returnStorage == eStorageModeGLTex) ? eImageBitDepthFloat : depth;
-        inputImg = std::make_shared<Image>(renderedComps, zeroRoD, zeroBounds, renderMappedMipmapLevel, par, zeroDepth, inputEffect->getFieldingOrder(), false, eStorageModeRAM);
+        inputImg = std::make_shared<Image>(renderedComps, zeroRoD, zeroBounds, renderMappedMipmapLevel, par, zeroDepth, inputEffect->getRenderMetadata(time, view)->getOutputFielding(), false, eStorageModeRAM);
         inputImg->fillZero(zeroBounds);
         if (returnStorage == eStorageModeGLTex) {
             inputImg = convertRAMImageToOpenGLTexture(inputImg);
@@ -1529,15 +1534,16 @@ EffectInstance::getImage(int inputNb,
 
 void
 EffectInstance::calcDefaultRegionOfDefinition(U64 /*hash*/,
-                                              double /*time*/,
-                                              const RenderScale & scale,
-                                              ViewIdx /*view*/,
-                                              RectD *rod)
+                                              double time,
+                                              const RenderScale& scale,
+                                              ViewIdx view,
+                                              RectD* rod)
 {
 
     unsigned int mipmapLevel = scale.toMipmapLevel();
-    RectI format = getOutputFormat();
-    double par = getAspectRatio(-1);
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    RectI format = metadata->getOutputFormat();
+    double par = metadata->getPixelAspectRatio(-1);
     *rod = format.toCanonical_noClipping(mipmapLevel, par);
 }
 
@@ -1637,9 +1643,10 @@ EffectInstance::ifInfiniteApplyHeuristic(U64 hash,
     RectD canonicalFormat;
 
     if (x1Infinite || y1Infinite || x2Infinite || y2Infinite) {
-        RectI format = getOutputFormat();
+        const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+        RectI format = metadata->getOutputFormat();
         assert(!format.isNull());
-        double par = getAspectRatio(-1);
+        double par = metadata->getPixelAspectRatio(-1);
         unsigned int mipmapLevel = scale.toMipmapLevel();
         canonicalFormat = format.toCanonical_noClipping(mipmapLevel, par);
     }
@@ -2835,7 +2842,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             // If color layer, request the preferred comp of the identity input
             if (tls->currentRenderArgs.identityInput && it->second.renderMappedImage->getComponents().isColorLayer()) {
                 ImageLayerDesc prefInputComps, prefInputCompsPaired;
-                tls->currentRenderArgs.identityInput->getMetadataComponents(-1, &prefInputComps, &prefInputCompsPaired);
+                getLayersFromMetadata(*tls->currentRenderArgs.identityInput->getRenderMetadata(tls->currentRenderArgs.identityTime, view), -1, &prefInputComps, &prefInputCompsPaired);
                 comps.push_back(prefInputComps);
             } else {
                 comps.push_back( it->second.renderMappedImage->getComponents() );
@@ -4772,7 +4779,7 @@ EffectInstance::getLayersPassThroughInput(double time,
         // Uncached: the identity cache is keyed on (hash, time, view) only, so this whole-image
         // answer must neither be served to a render asking about its own window nor, when taken
         // before an edit the hash does not capture, outlive that edit.
-        identity = isIdentity_public(false, 0, time, RenderScale::identity, getOutputFormat(), view, &identityTime, &identityView, &identityInputNb);
+        identity = isIdentity_public(false, 0, time, RenderScale::identity, getRenderMetadata(time, view)->getOutputFormat(), view, &identityTime, &identityView, &identityInputNb);
     }
 
     if (identity && (identityInputNb >= 0)) {
@@ -4789,12 +4796,12 @@ EffectInstance::getLayersPassThroughInput(double time,
 // declared channel count, or, for Furnace-style effects, a disparity/motion plane with its
 // paired plane, since both must be rendered at once. RGBA until the metadata are set.
 static void
-getMetadataPlanes(const EffectInstance* effect,
+getMetadataPlanes(const NodeMetadata& metadata,
                   int inputNb,
                   std::list<ImageLayerDesc>* planes)
 {
     ImageLayerDesc metadataLayer, metadataPairedLayer;
-    effect->getMetadataComponents(inputNb, &metadataLayer, &metadataPairedLayer);
+    EffectInstance::getLayersFromMetadata(metadata, inputNb, &metadataLayer, &metadataPairedLayer);
     if (metadataLayer.getNumComponents() > 0) {
         planes->push_back(metadataLayer);
     }
@@ -4842,6 +4849,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
                                            int* passThroughInputNb)
 {
     NodePtr node = getNode();
+    const NodeMetadataConstPtr renderMetadata = getRenderMetadata(time, view);
 
     ViewIdx ptView;
     bool routesPassThroughInputOnly = false;
@@ -4884,7 +4892,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
 
     {
         std::list<ImageLayerDesc> metadataPlanes;
-        getMetadataPlanes(this, -1, &metadataPlanes);
+        getMetadataPlanes(*renderMetadata, -1, &metadataPlanes);
 
         std::list<ImageLayerDesc>& outputPlanes = (*comps)[-1];
         outputPlanes.clear();
@@ -4934,7 +4942,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
             inputPlanes = readLayers;
         } else {
             std::list<ImageLayerDesc> metadataPlanes;
-            getMetadataPlanes(this, i, &metadataPlanes);
+            getMetadataPlanes(*renderMetadata, i, &metadataPlanes);
             if (hasLayerKnob) {
                 appendSelectedPlanes(selected, metadataPlanes, &inputPlanes, NULL);
             }
@@ -5087,7 +5095,7 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
     if (producesMetadataLayerImplicitly()) {
         std::list<ImageLayerDesc> metadataLayers;
         ImageLayerDesc metadataLayer, metadataPairedLayer;
-        getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
+        getLayersFromMetadata(*getRenderMetadata(time, view), -1, &metadataLayer, &metadataPairedLayer);
         if (metadataPairedLayer.getNumComponents() > 0) {
             metadataLayers.push_back(metadataPairedLayer);
         }
@@ -5295,7 +5303,7 @@ EffectInstance::resolveInputPlaneForRender(int inputNb,
 {
     ImageLayerDesc metadataLayer, metadataPairedLayer;
 
-    getMetadataComponents(inputNb, &metadataLayer, &metadataPairedLayer);
+    getLayersFromMetadata(*getRenderMetadata(time, view), inputNb, &metadataLayer, &metadataPairedLayer);
 
     return resolveInputPlaneForRender(inputNb, time, view, metadataLayer, layer, maskChannel);
 }
@@ -6585,6 +6593,52 @@ copyOutputMetadata(const NodeMetadata& from,
     to->setIsFrameVarying(to->getIsFrameVarying() || from.getIsFrameVarying());
 }
 
+namespace {
+struct IdentityCheck {
+    const EffectInstance* effect;
+    U64 hash;
+    NodeMetadataConstPtr own;
+};
+
+// The identity checks running on this thread, innermost last. Thread-local rather than in the
+// effect's TLS, which threads spawned meanwhile copy and keep after the check ends.
+thread_local std::vector<IdentityCheck> t_identityChecks;
+
+class IdentityCheckScope {
+public:
+    IdentityCheckScope(const EffectInstance* effect,
+                       U64 hash,
+                       const NodeMetadataConstPtr& own)
+    {
+        IdentityCheck check;
+        check.effect = effect;
+        check.hash = hash;
+        check.own = own;
+        t_identityChecks.push_back(check);
+    }
+
+    ~IdentityCheckScope()
+    {
+        t_identityChecks.pop_back();
+    }
+
+    IdentityCheckScope(const IdentityCheckScope&) = delete;
+    IdentityCheckScope& operator=(const IdentityCheckScope&) = delete;
+};
+
+const IdentityCheck*
+findIdentityCheck(const EffectInstance* effect)
+{
+    for (std::vector<IdentityCheck>::const_reverse_iterator it = t_identityChecks.rbegin(); it != t_identityChecks.rend(); ++it) {
+        if (it->effect == effect) {
+            return &*it;
+        }
+    }
+
+    return 0;
+}
+} // anon namespace
+
 NodeMetadataConstPtr
 EffectInstance::applyIdentityRule(U64 hash,
                                   double time,
@@ -6598,6 +6652,7 @@ EffectInstance::applyIdentityRule(U64 hash,
     int inputNb = -1;
     bool identity = false;
     try {
+        const IdentityCheckScope checking(this, hash, own);
         identity = isIdentity_public(false, hash, time, RenderScale::identity, own->getOutputFormat(), view, &inputTime, &inputView, &inputNb);
     } catch (...) {
         identity = false;
@@ -6687,10 +6742,30 @@ NodeMetadataConstPtr
 EffectInstance::getMetadata(double time,
                             ViewIdx view)
 {
+    U64 hash = 0;
+
+    return getMetadata(time, view, &hash);
+}
+
+NodeMetadataConstPtr
+EffectInstance::getMetadata(double time,
+                            ViewIdx view,
+                            U64* hashOut)
+{
     NodePtr node = getNode();
 
+    *hashOut = 0;
     if (!node) {
         return getRefreshedMetadata();
+    }
+    // The identity check can ask for this node's layers (an OpenFX clip's components, a render's
+    // planes), which read its metadata: that is the answer being checked, whatever the time, since
+    // deriving it again would re-enter the check.
+    const IdentityCheck* checking = findIdentityCheck(this);
+    if (checking) {
+        *hashOut = checking->hash;
+
+        return checking->own;
     }
     // Refresh first so the hash read is the one the derivation sees. An upstream edit only marks
     // this node, so its hash is not recomputed while the derivation runs and can read the same
@@ -6704,6 +6779,7 @@ EffectInstance::getMetadata(double time,
     const U64 writes = KnobContentWrite::snapshot();
     const U64 marks = node->getHashMarkCount();
     const U64 hash = node->getHashValue();
+    *hashOut = hash;
     NodeMetadataConstPtr cached = _imp->actionsCache->getMetadataResult(hash, time, view);
     if (cached) {
         return cached;
@@ -6746,6 +6822,63 @@ EffectInstance::getTimeInvariantMetadata()
     }
 
     return metadata;
+}
+
+NodeMetadataConstPtr
+EffectInstance::getRenderMetadata(const ParallelRenderArgsPtr& frameArgs,
+                                  double time,
+                                  ViewIdx view) const
+{
+    if (frameArgs && frameArgs->metadata && (frameArgs->time == time) && (frameArgs->view == view)) {
+        return frameArgs->metadata;
+    }
+
+    // The snapshot is taken at the frame's own time only; a time this node is pulled at by a time
+    // remap downstream is answered live.
+    return const_cast<EffectInstance*>(this)->getMetadata(time, view);
+}
+
+NodeMetadataConstPtr
+EffectInstance::getRenderMetadata(double time,
+                                  ViewIdx view) const
+{
+    return getRenderMetadata(getParallelRenderArgsTLS(), time, view);
+}
+
+NodeMetadataConstPtr
+EffectInstance::getRenderMetadata() const
+{
+    ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+
+    if (frameArgs) {
+        return getRenderMetadata(frameArgs, frameArgs->time, frameArgs->view);
+    }
+
+    return const_cast<EffectInstance*>(this)->getMetadata(getCurrentTime(), getCurrentView());
+}
+
+void
+EffectInstance::getLayersFromMetadata(const NodeMetadata& metadata,
+                                      int inputNb,
+                                      ImageLayerDesc* layer,
+                                      ImageLayerDesc* pairedLayer)
+{
+    metadataComponentsToLayers(metadataNComps(metadata, inputNb), metadata.getComponentsType(inputNb), layer, pairedLayer);
+}
+
+int
+EffectInstance::getNCompsFromMetadata(const NodeMetadata& metadata,
+                                      int inputNb)
+{
+    return metadataNComps(metadata, inputNb);
+}
+
+void
+EffectInstance::getOutputClipLayersFromMetadata(const NodeMetadata& metadata,
+                                                ImageLayerDesc* layer,
+                                                ImageLayerDesc* pairedLayer)
+{
+    metadataComponentsToLayers(metadata.getNComps(-1), metadata.getComponentsType(-1), layer, pairedLayer);
 }
 
 void

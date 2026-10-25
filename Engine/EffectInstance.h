@@ -1116,6 +1116,41 @@ public:
     NodeMetadataConstPtr getMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
     /**
+     * @brief As getMetadata(), also giving in hash the node hash the answer belongs to, which a
+     * caller that read the hash earlier compares to tell whether the node moved meanwhile.
+     **/
+    NodeMetadataConstPtr getMetadata(double time, ViewIdx view, U64* hash) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The metadata a render reads at time and view. On a thread rendering a frame, that is
+     * the answer snapshotted with the frame's node hashes when time and view are the frame's, so
+     * an edit made since the frame was set up does not reach it; otherwise getMetadata(time,
+     * view). Never null for a node that has one.
+     **/
+    NodeMetadataConstPtr getRenderMetadata(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief As getRenderMetadata(time, view), at the time and view of the frame this thread
+     * renders, or at the current time and view outside a render.
+     **/
+    NodeMetadataConstPtr getRenderMetadata() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief As getRenderMetadata(time, view), reading the snapshot from frameArgs, this node's
+     * args in a frame read without installing them on the calling thread.
+     **/
+    NodeMetadataConstPtr getRenderMetadata(const ParallelRenderArgsPtr& frameArgs, double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief What getMetadataComponents(), getMetadataNComps() and
+     * getMetadataOutputClipComponents() report, read from metadata rather than from the last
+     * refresh.
+     **/
+    static void getLayersFromMetadata(const NodeMetadata& metadata, int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer);
+    static int getNCompsFromMetadata(const NodeMetadata& metadata, int inputNb);
+    static void getOutputClipLayersFromMetadata(const NodeMetadata& metadata, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer);
+
+    /**
      * @brief The metadata one refresh computes, which is the same at every frame: cached per
      * hash for a native node; for an OpenFX node, the answer of its last clip preferences.
      **/

@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
 #include <map>
 #include <set>
@@ -37,6 +38,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -88,6 +90,11 @@ public:
 
     ///The hash of the node at the time we started rendering
     U64 nodeHash;
+
+    /// The node's metadata at time and view, derived under nodeHash when the frame was set up and
+    /// read by the render instead of the live answer (see EffectInstance::getRenderMetadata()).
+    /// Null when the frame was set up without walking upstream.
+    NodeMetadataConstPtr metadata;
 
     ///If set, contains data for all frame/view pair that are going to be computed
     ///for this frame/view pair with the overall RoI to avoid rendering several times with this node.
@@ -349,6 +356,23 @@ public:
                              NodesList* collectedNodes = 0);
 
     void updateNodesRequest(const FrameRequestMap& request);
+
+    /**
+     * @brief Called by buildArgsMap() on the setting-up thread after each node's metadata is
+     * snapshotted, so a test can edit the graph in the middle of a snapshot.
+     **/
+    typedef std::function<void(const NodePtr& node)> MetadataSnapshotHook;
+    static void setMetadataSnapshotHookForTests(const MetadataSnapshotHook& hook);
+
+    /**
+     * @brief Called by buildArgsMap() on the setting-up thread once a frame's snapshot is final and
+     * before the frame renders, so a test can record what the frame renders under and edit the
+     * graph while it renders.
+     **/
+    typedef std::function<void(const NodePtr& treeRoot, double time, ViewIdx view,
+                               const std::map<NodePtr, ParallelRenderArgsPtr>& args)>
+        FrameSnapshotHook;
+    static void setFrameSnapshotHookForTests(const FrameSnapshotHook& hook);
 
     /**
      * @brief The frame args the first constructor installed on this thread, each node mapped to the args

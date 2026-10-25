@@ -374,13 +374,21 @@ Project::toSerialization(Serialization::ProjectSerialization* serialization) con
         KnobGroup* isGroup = dynamic_cast<KnobGroup*>(knobs[i].get());
         KnobPage* isPage = dynamic_cast<KnobPage*>(knobs[i].get());
         KnobButton* isButton = dynamic_cast<KnobButton*>(knobs[i].get());
-        if (std::find(std::begin(savedEachTime), std::end(savedEachTime), knobs[i].get()) != std::end(savedEachTime)) {
+        // The variables are saved below, in their group's order.
+        if (knobs[i]->isUserKnob() || std::find(std::begin(savedEachTime), std::end(savedEachTime), knobs[i].get()) != std::end(savedEachTime)) {
             continue;
         }
         if (knobs[i]->getIsPersistent() && !isGroup && !isPage && !isButton && knobs[i]->hasModificationsForSerialization()) {
             serialization->projectKnobs.push_back(Serialization::KnobSerialization());
             knobs[i]->toSerialization(&serialization->projectKnobs.back());
         }
+    }
+
+    // A variable is saved even at its default, since the file must carry its definition.
+    const KnobsVec variables = _imp->rfvGroup->getChildren();
+    for (std::size_t i = 0; i < variables.size(); ++i) {
+        serialization->projectKnobs.push_back(Serialization::KnobSerialization());
+        variables[i]->toSerialization(&serialization->projectKnobs.back());
     }
 
     serialization->timelineCurrentTime = currentFrame();

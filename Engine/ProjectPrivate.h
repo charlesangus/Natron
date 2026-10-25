@@ -123,6 +123,7 @@ public:
     KnobStringPtr onProjectCloseCB;
     KnobStringPtr onNodeCreated;
     KnobStringPtr onNodeDeleted;
+    KnobGroupPtr rfvGroup;
     TimeLinePtr timeline; // global timeline
     bool autoSetProjectFormat;
     mutable QMutex isLoadingProjectMutex;
@@ -181,6 +182,18 @@ public:
                                    const QString& name,
                                    const QString& path,
                                    bool* mustSave);
+
+    /**
+     * @brief Recreates in rfvGroup, in their saved order, the user knobs among the serialized
+     * project knobs. One whose name a built-in project knob has, or that the group refuses, is
+     * dropped with a load warning.
+     **/
+    void restoreRFVVariables(const std::list<Serialization::KnobSerialization>& projectSerializedValues);
+
+    /**
+     * @brief Deletes the project's Reverse-Flow Variables, leaving rfvGroup empty.
+     **/
+    void clearRFVVariables();
 
     bool findFormat(int index, Format* format) const;
     bool findFormat(const std::string& formatSpec, Format* format) const;

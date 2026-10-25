@@ -114,7 +114,7 @@ The graph. Top-level keys, in the order they are written:
 | `format` | Always `natron-project`. |
 | `formatVersion` | Currently `1`. |
 | `savedBy` | `{version: [major, minor, revision], branch, commit, os, bits}`. |
-| `knobs` | Project knobs, sparse (see below). Omitted when empty. |
+| `knobs` | Project knobs, sparse (see below), then the project's Reverse-Flow Variables in declaration order, each with its definition under `user:`. Omitted when empty. |
 | `formats` | The project's additional formats: a list of `{name, rect: [x1, y1, x2, y2], par}`. Omitted when empty. |
 | `layers` | The layer registry: a map from layer ID to `{label, channelsLabel, channels, origin}`, sorted by ID. Omitted when empty. |
 | `timeline` | `{current: <frame>}`. |

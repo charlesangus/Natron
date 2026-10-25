@@ -2075,6 +2075,17 @@ Project::initializeKnobs()
     _imp->onNodeDeleted->setDefaultValue(onNodeDelete);
     pythonPage->addKnob(_imp->onNodeDeleted);
 
+    // Both are user knobs, because a group that is not refuses the variables, which are user knobs.
+    KnobPagePtr rfvPage = AppManager::createKnob<KnobPage>(this, tr(kProjectParamRFVPageLabel));
+    rfvPage->setName(kProjectParamRFVPage);
+    rfvPage->setAsUserKnob(true);
+
+    _imp->rfvGroup = AppManager::createKnob<KnobGroup>(this, tr(kProjectParamRFVVariablesLabel));
+    _imp->rfvGroup->setName(kProjectParamRFVVariables);
+    _imp->rfvGroup->setAsUserKnob(true);
+    _imp->rfvGroup->setDefaultValue(true);
+    _imp->rfvGroup->setAsRFVGroup(true);
+    rfvPage->addKnob(_imp->rfvGroup);
 
     comments->setAsMultiLine();
     comments->setAnimationEnabled(false);
@@ -3206,6 +3217,7 @@ Project::doResetEnd(bool aboutToQuit)
         getApp()->removeAllKeyframesIndicators();
 
         Q_EMIT projectNameChanged(QString::fromUtf8(NATRON_PROJECT_UNTITLED), false);
+        _imp->clearRFVVariables();
         const KnobsVec & knobs = getKnobs();
 
         beginChanges();
@@ -3875,6 +3887,12 @@ KnobPathPtr
 Project::getEnvVarKnob() const
 {
     return _imp->envVars;
+}
+
+KnobGroupPtr
+Project::getRFVGroup() const
+{
+    return _imp->rfvGroup;
 }
 
 std::string

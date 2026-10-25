@@ -54,6 +54,12 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Serialization/SerializationFwd.h"
 
+// The project settings page and RFV group holding the project's Reverse-Flow Variables, see RFV.h.
+#define kProjectParamRFVPage "rfvPage"
+#define kProjectParamRFVPageLabel "Variables"
+#define kProjectParamRFVVariables "rfvVariables"
+#define kProjectParamRFVVariablesLabel "Variables"
+
 NATRON_NAMESPACE_ENTER
 
 struct ProjectPrivate;
@@ -486,6 +492,12 @@ public:
     double getProjectFrameRate() const;
 
     KnobPathPtr getEnvVarKnob() const;
+
+    /**
+     * @brief The RFV group whose user knobs are the project's Reverse-Flow Variables. They are
+     * saved with their definitions, recreated on load and deleted when the project is reset.
+     **/
+    KnobGroupPtr getRFVGroup() const;
     std::string getOnProjectLoadCB() const;
     std::string getOnProjectSaveCB() const;
     std::string getOnProjectCloseCB() const;

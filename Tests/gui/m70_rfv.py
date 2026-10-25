@@ -14,7 +14,8 @@ Sections:
   - promote: a Set-node variable's right-click menu has "Add to project variables", which copies
     it into the project's RFV group with its value and declares app.<name>; once the project
     declares the name the item is disabled with a tooltip, and a project variable's own menu does
-    not have it;
+    not have it; the node's variable stays enabled and editable, unlinked from the project's copy;
+    Ctrl+Z, with the main window active, takes the variable back out of the project's Variables;
   - delete: deleting the project variable from the dialog drops app.<name> too.
 
 Every modal dialog is driven from QTimer callbacks (see run() in guitest.py): whatever raises it is
@@ -51,6 +52,11 @@ try:
 
     import guitest as gt
     from guitest import check, report, require
+
+    try:
+        from PySide6.QtTest import QTest
+    except ImportError:
+        QTest = None
 
     import faulthandler
     _watchdog_file = open(os.path.join(gt.OUT, "watchdog.txt"), "w")
@@ -292,6 +298,42 @@ try:
             check(False, "the right-click menu call completed: " + str(e))
         return seen
 
+    def edit_menu_action(prefix):
+        """The Edit menu's action whose text starts with prefix, e.g. "undo"."""
+        win = main_gui()
+        if win is None or win.menuBar() is None:
+            return None
+        _held.append(win)
+        for act in win.menuBar().actions():
+            menu = gt.menu_of(act)
+            if menu is not None and act.text().replace("&", "").lower().startswith("edit"):
+                for a in menu.actions():
+                    if a.text().replace("&", "").lower().startswith(prefix):
+                        return a
+        return None
+
+    def activate_main_window():
+        """Raises the main window and waits until it is active: an inactive window drops shortcuts."""
+        win = main_gui()
+        require(win is not None, "found the main window")
+        win.activateWindow()
+        win.raise_()
+        ok = yield ("until", lambda: main_gui() is not None and main_gui().isActiveWindow(), DIALOG_TIMEOUT_S)
+        require(ok, "the main window is active", "synthetic key presses are ignored by an inactive window")
+
+    def press_undo():
+        """Ctrl+Z on the main window, through QTest so that the shortcut map sees it."""
+        win = main_gui()
+        require(win is not None, "found the main window for Ctrl+Z")
+        if QTest is None:
+            report("NOTE PySide6.QtTest is unavailable: triggering the Edit menu's undo instead of Ctrl+Z")
+            a = edit_menu_action("undo")
+            if check(a is not None and a.isEnabled(), "an enabled undo action is in the Edit menu"):
+                a.trigger()
+        else:
+            QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+        QApplication.processEvents()
+
     def open_project_variables():
         QMetaObject.invokeMethod(main_gui(), "setVisibleProjectSettingsPanel")
         ok = yield ("until", lambda: project_panel() is not None, DIALOG_TIMEOUT_S)
@@ -430,6 +472,21 @@ try:
         check(seen["item"] is not None and not seen["item"][0] and bool(seen["item"][1]),
               "once the project declares the name, %r is disabled with a tooltip (got %r)" % (PROMOTE_ITEM, seen["item"]))
 
+        # Both copies stay active: only the menu item is disabled, never the node's variable.
+        yield ("sleep", SETTLE_MS)
+        node_param = app.getNode(node_name).getParam("setGain")
+        check(node_param is not None and node_param.getIsEnabled(0), "the node's setGain is still enabled after the promote")
+        field = knob_field(node_panel(app.getNode(node_name)), "setGain")
+        require(field is not None, "found the field of the node's setGain after the promote")
+        read_only = field.isReadOnly() if hasattr(field, "isReadOnly") else False
+        check(field.isEnabled() and not read_only,
+              "the field of the node's setGain is enabled and editable (enabled %r, read-only %r)" % (field.isEnabled(), read_only))
+        node_param.setValue(2.25)
+        yield ("sleep", SETTLE_MS)
+        check(app.getNode(node_name).getParam("setGain").getValue() == 2.25, "a value set on the node's setGain reads back")
+        check(app.getProjectParam("setGain").getValue() == 1.5, "the project's copy keeps its own value: the copies are not linked")
+        gt.shot("m70-promote-node-variable-editable.png")
+
         QMetaObject.invokeMethod(main_gui(), "setVisibleProjectSettingsPanel")
         ok = yield ("until", lambda: project_panel() is not None, DIALOG_TIMEOUT_S)
         require(ok, "the project settings panel is open for the promote check")
@@ -442,6 +499,30 @@ try:
             seen = right_click_menu(field)
             check(seen["entries"] is not None and PROMOTE_ITEM not in seen["entries"],
                   "a project variable's right-click menu has no %r (entries %r)" % (PROMOTE_ITEM, seen["entries"]))
+
+        gt.section("promote-undo")
+        yield ("sleep", SETTLE_MS)
+        yield from activate_main_window()
+        undo = edit_menu_action("undo")
+        check(undo is not None and undo.isEnabled() and PROMOTE_ITEM.lower() in undo.text().lower(),
+              "the newest undo step is the promote (Edit menu has %r)" % (undo.text() if undo is not None else None))
+        undo = None
+        press_undo()
+        yield ("sleep", SETTLE_MS)
+        check(app.getProjectParam("setGain") is None, "Ctrl+Z removes the promoted variable from the project")
+        node_param = app.getNode(node_name).getParam("setGain")
+        check(node_param is not None and node_param.getIsEnabled(0) and node_param.getValue() == 2.25,
+              "the node's setGain is untouched by the undo")
+        check(editor_probe("hasattr(app, 'setGain')") is False, "the undo drops app.setGain")
+        if project_panel() is None:
+            QMetaObject.invokeMethod(main_gui(), "setVisibleProjectSettingsPanel")
+        ok = yield ("until", lambda: project_panel() is not None, DIALOG_TIMEOUT_S)
+        if check(ok, "the project settings panel is open after the undo"):
+            show_tab(project_panel(), "Variables")
+            yield ("sleep", SETTLE_MS)
+            check(not panel_has_label(project_panel(), "Set gain"), "the project panel's Variables tab no longer shows setGain")
+            check(panel_has_label(project_panel(), "Project gain"), "the project panel's Variables tab still shows projGain")
+            gt.shot("m70-project-panel-promote-undone.png")
 
         gt.section("delete")
         yield from open_project_variables()

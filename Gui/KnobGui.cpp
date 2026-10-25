@@ -27,22 +27,27 @@
 #include "KnobGui.h"
 
 #include <cassert>
+#include <memory>
 #include <stdexcept>
+
+#include <QUndoCommand>
 
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 #include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 
-#include "Gui/KnobGuiPrivate.h"
-#include "Gui/GuiDefines.h"
-#include "Gui/GuiApplicationManager.h"
 #include "Gui/ClickableLabel.h"
-
+#include "Gui/Gui.h"
+#include "Gui/GuiApplicationManager.h"
+#include "Gui/GuiDefines.h"
+#include "Gui/KnobGuiPrivate.h"
+#include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -839,12 +844,59 @@ KnobGui::createAnimationMenu(QMenu* menu,
     }
 } // createAnimationMenu
 
+namespace {
+
+// The history's entry for a promote. A promote that made no copy leaves no entry.
+class PromoteToProjectUndoCommand
+    : public QUndoCommand {
+public:
+    explicit PromoteToProjectUndoCommand(const std::shared_ptr<RFV::PromoteToProjectCommand>& command)
+        : QUndoCommand()
+        , _command(command)
+    {
+        setText(QString::fromUtf8(command->getText().c_str()));
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        _command->undo();
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        _command->redo();
+        if (!_command->getProjectVariable()) {
+            setObsolete(true);
+        }
+    }
+
+private:
+    std::shared_ptr<RFV::PromoteToProjectCommand> _command;
+};
+
+} // namespace
+
 void
 KnobGui::onPromoteToProjectActionTriggered()
 {
+    KnobIPtr knob = getKnob();
     std::string error;
-    if (!RFV::promoteToProject(getKnob(), &error)) {
+    if (!RFV::canPromoteToProject(knob, &error)) {
         Dialogs::errorDialog(tr("Add to project variables").toStdString(), error);
+
+        return;
+    }
+    std::shared_ptr<RFV::PromoteToProjectCommand> command = std::make_shared<RFV::PromoteToProjectCommand>(knob);
+    Gui* gui = _imp->container ? _imp->container->getGui() : 0;
+    UndoHistory* history = gui ? gui->getUndoHistory() : 0;
+    ProjectPtr project = knob->getHolder()->getApp()->getProject();
+    if (history) {
+        history->push(new PromoteToProjectUndoCommand(command), UndoScope(project.get()));
+    } else {
+        command->redo();
+    }
+    if (!command->getProjectVariable()) {
+        Dialogs::errorDialog(tr("Add to project variables").toStdString(), command->getError());
     }
 }
 

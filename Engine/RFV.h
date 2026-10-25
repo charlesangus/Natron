@@ -28,10 +28,13 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/UndoCommand.h"
+#include "Serialization/SerializationFwd.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -89,12 +92,51 @@ bool canPromoteToProject(const KnobIPtr& knob, std::string* reason = nullptr);
 /**
  * @brief Copies a node's variable into the project's RFV group, with the same type, dimensions,
  * label, hint, values and animation, and declares it as app.<name>. The copy is not linked to
- * the node's variable, which stays and goes on overriding the project's. Like any creation of a
- * project variable, it is not recorded in the undo history.
+ * the node's variable, which stays, editable, and goes on overriding the project's. This records
+ * nothing in the undo history: PromoteToProjectCommand is the undoable form.
  * @returns the project's new variable, or null with error set when canPromoteToProject() is false
  * or the project's RFV group refuses the copy.
  **/
 KnobIPtr promoteToProject(const KnobIPtr& knob, std::string* error = nullptr);
+
+/**
+ * @brief promoteToProject() as one undo step. The first redo() promotes the node's variable; undo()
+ * deletes the project's copy and drops app.<name>; a later redo() recreates the copy as undo()
+ * found it, with its definition, values and animation, even once the node's variable is gone.
+ **/
+class PromoteToProjectCommand
+    : public UndoCommand {
+public:
+    explicit PromoteToProjectCommand(const KnobIPtr& variable);
+
+    virtual ~PromoteToProjectCommand();
+
+    virtual void redo() OVERRIDE FINAL;
+
+    virtual void undo() OVERRIDE FINAL;
+
+    /**
+     * @brief The project's copy after a redo(), or null when it failed (see getError()) or after
+     * an undo().
+     **/
+    KnobIPtr getProjectVariable() const;
+
+    /**
+     * @brief Why the last redo() or undo() did nothing, or empty.
+     **/
+    const std::string& getError() const
+    {
+        return _error;
+    }
+
+private:
+    KnobIWPtr _variable;
+    ProjectWPtr _project;
+    std::string _name;
+    KnobIWPtr _copy;
+    std::shared_ptr<Serialization::KnobSerialization> _removed;
+    std::string _error;
+};
 
 } // namespace RFV
 

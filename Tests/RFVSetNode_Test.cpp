@@ -333,3 +333,115 @@ TEST_F(BaseTest, RFVSetNodeVariablePromotesToTheProjectOnce)
     EXPECT_TRUE(RFV::promoteToProject(loose, &error) == nullptr);
     EXPECT_TRUE(project->getKnobByName("rfvLoose") == nullptr);
 }
+
+namespace {
+
+void
+expectRampCurve(const KnobIPtr& knob)
+{
+    KnobDouble* asDouble = dynamic_cast<KnobDouble*>(knob.get());
+    ASSERT_TRUE(asDouble != NULL);
+    ASSERT_EQ(1, asDouble->getDimension());
+    CurvePtr curve = asDouble->getCurve(ViewIdx(0), 0);
+    ASSERT_TRUE(curve != nullptr);
+    ASSERT_EQ(3, curve->getKeyFramesCount());
+    const double times[3] = { 1., 10., 20. };
+    const double values[3] = { 0.5, 2., -1. };
+    for (int i = 0; i < 3; ++i) {
+        KeyFrame key;
+        ASSERT_TRUE(curve->getKeyFrameWithIndex(i, &key));
+        EXPECT_DOUBLE_EQ(times[i], key.getTime());
+        EXPECT_DOUBLE_EQ(values[i], key.getValue());
+    }
+}
+
+void
+expectEditable(const KnobIPtr& knob)
+{
+    ASSERT_TRUE(knob != nullptr);
+    EXPECT_FALSE(knob->getIsSecret());
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        EXPECT_TRUE(knob->isEnabled(i));
+        EXPECT_FALSE(knob->isSlave(i));
+    }
+}
+
+} // namespace
+
+TEST_F(BaseTest, RFVSetNodeVariablePromoteUndoesAndRedoes)
+{
+    ProjectPtr project = getApp()->getProject();
+    KnobGroupPtr projectGroup = project->getRFVGroup();
+    ASSERT_TRUE(projectGroup != nullptr);
+
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(setNode));
+    EffectInstancePtr effect = setNode->getEffectInstance();
+    KnobGroupPtr group = variablesGroupOf(setNode);
+    ASSERT_TRUE(group != nullptr);
+
+    KnobDoublePtr ramp = effect->createDoubleKnob("rfvUndoable", "Undoable Ramp", 1);
+    ASSERT_TRUE(group->addKnob(ramp));
+    effect->recreateUserKnobs(false);
+    ramp->setHintToolTip(std::string("A ramp to promote and take back"));
+    ramp->setValueAtTime(1., 0.5, ViewSpec::all(), 0);
+    ramp->setValueAtTime(10., 2., ViewSpec::all(), 0);
+    ramp->setValueAtTime(20., -1., ViewSpec::all(), 0);
+    const std::size_t projectVariableCount = projectGroup->getChildren().size();
+
+    RFV::PromoteToProjectCommand command(ramp);
+    command.redo();
+    KnobIPtr promoted = command.getProjectVariable();
+    ASSERT_TRUE(promoted != nullptr) << command.getError();
+    EXPECT_TRUE(project->getKnobByName("rfvUndoable") == promoted);
+    EXPECT_EQ(projectVariableCount + 1, projectGroup->getChildren().size());
+    expectRampCurve(promoted);
+
+    // Both copies stay active: the node's variable is neither disabled, hidden nor linked, and
+    // an edit of it leaves the project's copy alone.
+    expectEditable(ramp);
+    expectEditable(promoted);
+    EXPECT_FALSE(RFV::canPromoteToProject(ramp));
+    ramp->setValueAtTime(10., 7., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(7., ramp->getValueAtTime(10., 0));
+    EXPECT_DOUBLE_EQ(2., std::dynamic_pointer_cast<KnobDouble>(promoted)->getValueAtTime(10., 0));
+    ramp->setValueAtTime(10., 2., ViewSpec::all(), 0);
+
+    // Undo removes the project's copy and nothing of the node's.
+    command.undo();
+    EXPECT_TRUE(command.getError().empty()) << command.getError();
+    EXPECT_TRUE(command.getProjectVariable() == nullptr);
+    EXPECT_TRUE(project->getKnobByName("rfvUndoable") == nullptr);
+    EXPECT_EQ(projectVariableCount, projectGroup->getChildren().size());
+    EXPECT_TRUE(setNode->getKnobByName("rfvUndoable") == ramp);
+    EXPECT_TRUE(ramp->getParentKnob() == group);
+    expectEditable(ramp);
+    expectRampCurve(ramp);
+    EXPECT_TRUE(RFV::canPromoteToProject(ramp));
+    promoted.reset();
+
+    // Redo brings the copy back as it was, even with the node's variable changed meanwhile.
+    ramp->setValueAtTime(10., 9., ViewSpec::all(), 0);
+    command.redo();
+    KnobIPtr restored = command.getProjectVariable();
+    ASSERT_TRUE(restored != nullptr) << command.getError();
+    EXPECT_TRUE(restored->getHolder() == project.get());
+    EXPECT_TRUE(restored->getParentKnob() == projectGroup);
+    EXPECT_TRUE(restored->isUserKnob());
+    EXPECT_TRUE(project->getKnobByName("rfvUndoable") == restored);
+    EXPECT_EQ(std::string("Undoable Ramp"), restored->getLabel());
+    EXPECT_EQ(std::string("A ramp to promote and take back"), restored->getHintToolTip());
+    EXPECT_EQ(projectVariableCount + 1, projectGroup->getChildren().size());
+    expectRampCurve(restored);
+    EXPECT_DOUBLE_EQ(9., ramp->getValueAtTime(10., 0));
+    expectEditable(ramp);
+    expectEditable(restored);
+
+    // A second cycle works the same way.
+    command.undo();
+    EXPECT_TRUE(project->getKnobByName("rfvUndoable") == nullptr);
+    restored.reset();
+    command.redo();
+    ASSERT_TRUE(command.getProjectVariable() != nullptr) << command.getError();
+    expectRampCurve(command.getProjectVariable());
+}

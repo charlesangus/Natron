@@ -188,6 +188,39 @@ canPromoteToProject(const KnobIPtr& knob,
     return error.empty();
 }
 
+namespace {
+
+    // Creates the user knob serialization describes in the project's RFV group and declares it as
+    // app.<name>. Expressions and links are not part of the copy.
+    KnobIPtr
+    addProjectVariable(const ProjectPtr& project,
+                       const Serialization::KnobSerialization& serialization,
+                       std::string* error)
+    {
+        KnobGroupPtr group = project->getRFVGroup();
+        KnobIPtr copy = createUserKnobFromSerialization(project.get(), serialization);
+
+        if (!copy || !group || !group->addKnob(copy)) {
+            if (copy) {
+                project->deleteKnob(copy.get(), false);
+            }
+            if (error) {
+                *error = "The project variables group refused " + serialization.name;
+            }
+
+            return KnobIPtr();
+        }
+        project->recreateUserKnobs(true);
+        AppInstancePtr app = project->getApp();
+        if (app) {
+            app->refreshProjectParamsInPython();
+        }
+
+        return copy;
+    }
+
+} // namespace
+
 KnobIPtr
 promoteToProject(const KnobIPtr& knob,
                  std::string* error)
@@ -195,29 +228,84 @@ promoteToProject(const KnobIPtr& knob,
     if (!canPromoteToProject(knob, error)) {
         return KnobIPtr();
     }
-    AppInstancePtr app = knob->getHolder()->getApp();
-    ProjectPtr project = app->getProject();
-    KnobGroupPtr group = project->getRFVGroup();
+    ProjectPtr project = knob->getHolder()->getApp()->getProject();
 
-    // A user knob's serialization carries its definition, values and animation; its expressions
-    // and links are applied by the caller, so the copy has none.
+    // A user knob's serialization carries its definition, values and animation.
     Serialization::KnobSerialization serialization;
     knob->toSerialization(&serialization);
-    KnobIPtr copy = createUserKnobFromSerialization(project.get(), serialization);
-    if (!copy || !group || !group->addKnob(copy)) {
-        if (copy) {
-            project->deleteKnob(copy.get(), false);
-        }
-        if (error) {
-            *error = "The project variables group refused " + knob->getName();
-        }
 
-        return KnobIPtr();
+    return addProjectVariable(project, serialization, error);
+}
+
+PromoteToProjectCommand::PromoteToProjectCommand(const KnobIPtr& variable)
+    : UndoCommand("Add to project variables")
+    , _variable(variable)
+    , _project()
+    , _name(variable ? variable->getName() : std::string())
+    , _copy()
+    , _removed()
+    , _error()
+{
+    AppInstancePtr app = (variable && variable->getHolder()) ? variable->getHolder()->getApp() : AppInstancePtr();
+    if (app) {
+        _project = app->getProject();
     }
-    project->recreateUserKnobs(true);
-    app->refreshProjectParamsInPython();
+}
 
-    return copy;
+PromoteToProjectCommand::~PromoteToProjectCommand()
+{
+}
+
+void
+PromoteToProjectCommand::redo()
+{
+    _error.clear();
+    if (!_removed) {
+        _copy = promoteToProject(_variable.lock(), &_error);
+
+        return;
+    }
+    ProjectPtr project = _project.lock();
+    if (!project) {
+        _error = "The project of " + _name + " is gone";
+
+        return;
+    }
+    if (project->getKnobByName(_name)) {
+        _error = "The project already has a parameter named " + _name;
+
+        return;
+    }
+    _copy = addProjectVariable(project, *_removed, &_error);
+}
+
+void
+PromoteToProjectCommand::undo()
+{
+    _error.clear();
+    ProjectPtr project = _project.lock();
+    KnobIPtr copy = _copy.lock();
+    if (!project || !copy || (copy->getHolder() != project.get())) {
+        _error = "The project variable " + _name + " is gone";
+
+        return;
+    }
+    _removed = std::make_shared<Serialization::KnobSerialization>();
+    copy->toSerialization(_removed.get());
+    project->deleteKnob(copy.get(), true);
+    _copy.reset();
+    copy.reset();
+    project->recreateUserKnobs(true);
+    AppInstancePtr app = project->getApp();
+    if (app) {
+        app->refreshProjectParamsInPython();
+    }
+}
+
+KnobIPtr
+PromoteToProjectCommand::getProjectVariable() const
+{
+    return _copy.lock();
 }
 
 } // namespace RFV

@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Filter/IBlur.h"
+#include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
@@ -114,6 +115,8 @@ gpuCapableIds()
         PLUGINID_NATRON_DISSOLVE,
         PLUGINID_NATRON_EDGEDETECT,
         PLUGINID_NATRON_IBLUR,
+        PLUGINID_NATRON_IERODE,
+        PLUGINID_NATRON_IDILATE,
         PLUGINID_NATRON_SHUFFLE,
         PLUGINID_NATRON_SHUFFLECOPY,
         PLUGINID_NATRON_ADDLAYERS,

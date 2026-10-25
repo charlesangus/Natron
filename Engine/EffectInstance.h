@@ -2560,11 +2560,24 @@ protected:
      * getComponentsNeededDefault() plans from the layer knob, mask and divisor, so that the request
      * pass plans them upstream. Called at the end of getComponentsNeededDefault(), which is all a
      * non-multi-planar effect gets: getComponentsNeededAndProduced() is only called on a
-     * multi-planar one.
+     * multi-planar one. producedPlanes are the planes addProducedPlanes() added to the output.
      **/
     virtual void addInputLayersNeeded(double /*time*/,
                                       ViewIdx /*view*/,
+                                      const std::list<ImageLayerDesc>& /*producedPlanes*/,
                                       EffectInstance::ComponentsNeededMap* /*comps*/)
+    {
+    }
+
+    /**
+     * @brief Adds to planes the planes a non-multi-planar effect renders beside those its layer
+     * knob selects. getComponentsNeededDefault() makes each one an output plane and a plane of
+     * every non-mask input, so that the effect renders it alone, reading it from those inputs,
+     * as it renders a selected plane. None by default.
+     **/
+    virtual void addProducedPlanes(double /*time*/,
+                                   ViewIdx /*view*/,
+                                   std::list<ImageLayerDesc>* /*planes*/)
     {
     }
 

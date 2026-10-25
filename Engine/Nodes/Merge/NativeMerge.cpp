@@ -41,6 +41,7 @@
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -269,6 +270,29 @@ compositeAlpha(NativeMergeOp::AlphaSource source,
     return CompositeAlpha::channel(channelKnob);
 }
 
+// Whether layers holds a layer with layer's ID, any colour layer standing for any other.
+bool
+hasLayerWithID(const std::list<ImageLayerDesc>& layers,
+               const ImageLayerDesc& layer)
+{
+    for (const ImageLayerDesc& other : layers) {
+        if ((other.isColorLayer() && layer.isColorLayer()) || (other.getLayerID() == layer.getLayerID())) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+appendPlane(const ImageLayerDesc& plane,
+            std::list<ImageLayerDesc>* planes)
+{
+    if ((plane.getNumComponents() > 0) && !hasLayerWithID(*planes, plane)) {
+        planes->push_back(plane);
+    }
+}
+
 // Shows a side's universal channel unless it reads a per-channel alpha layer, and its alpha layer
 // only then.
 void
@@ -369,8 +393,49 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
                                    .toStdString());
     bAlphaLayer = createAlphaLayerSelect(holder, page, EffectInstance::tr("B Alpha Layer").toStdString(), kNativeMergeParamBAlphaLayer,
                                          EffectInstance::tr("The layer of B whose channel i is the alpha of merged channel i. None, or "
-                                                            "a layer B lacks, gives an alpha of 0.")
+                                                            "a layer B lacks, gives an alpha of 0. The merged alphas are written to it.")
                                              .toStdString());
+
+    KnobChoicePtr layersKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Layers").toStdString());
+    layersKnob->setName(kNativeMergeParamLayers);
+    layersKnob->setHintToolTip(EffectInstance::tr("What is merged beside the A layer into the output layer. Every other layer "
+                                                  "of B passes through.")
+                                   .toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kNativeMergeLayersSingle, EffectInstance::tr("Single").toStdString(),
+                                       EffectInstance::tr("Only the A layer into the output layer.").toStdString()));
+        options.push_back(ChoiceOption(kNativeMergeLayersAllMatching, EffectInstance::tr("All matching").toStdString(),
+                                       EffectInstance::tr("Also every layer present on B and on an A input, each read and "
+                                                          "written in itself.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption(kNativeMergeLayersList, EffectInstance::tr("List").toStdString(),
+                                       EffectInstance::tr("Also the layers of the Also Merge list, each read and written in "
+                                                          "itself. A layer a side lacks reads as zero there.")
+                                           .toStdString()));
+        layersKnob->populateChoices(options);
+    }
+    layersKnob->setDefaultValue((int)LayersMode::Single);
+    layersKnob->setAnimationEnabled(false);
+    layersKnob->setIsMetadataSlave(true);
+    page->addKnob(layersKnob);
+    layers = layersKnob;
+
+    KnobChannelSetPtr alsoMergeKnob = AppManager::createKnob<KnobChannelSet>(holder, EffectInstance::tr("Also Merge").toStdString());
+    alsoMergeKnob->setName(kNativeMergeParamAlsoMerge);
+    alsoMergeKnob->setHintToolTip(EffectInstance::tr("The layers of B merged, each in itself, beside the output layer in List "
+                                                     "mode.")
+                                      .toStdString());
+    alsoMergeKnob->setWithChannelButtons(false);
+    alsoMergeKnob->setAnimationEnabled(false);
+    alsoMergeKnob->setIsMetadataSlave(true);
+    {
+        std::vector<ChannelSetRow> none(1);
+        none[0].mode = ChannelSetRow::eModeNone;
+        alsoMergeKnob->setDefaultValue(alsoMergeKnob->encodeRows(none));
+    }
+    page->addKnob(alsoMergeKnob);
+    alsoMerge = alsoMergeKnob;
 } // NativeMergeOp::createKnobs
 
 NativeMergeOp::Params
@@ -540,9 +605,22 @@ NativeMerge::initializeKnobs()
         node->declareLayerKnob(op().bAlpha.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
         node->declareLayerKnob(op().aAlphaLayer.lock(), kNativeMergeInputA, LayerKnobSpec::eRoleInputBound);
         node->declareLayerKnob(op().bAlphaLayer.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(op().alsoMerge.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
     }
     refreshSubLabel();
     refreshAlphaKnobs();
+    refreshLayersKnobs();
+}
+
+void
+NativeMerge::refreshLayersKnobs()
+{
+    KnobChoicePtr layers = op().layers.lock();
+    KnobChannelSetPtr alsoMerge = op().alsoMerge.lock();
+
+    if (layers && alsoMerge) {
+        alsoMerge->setSecret(layers->getValue() != (int)NativeMergeOp::LayersMode::List);
+    }
 }
 
 void
@@ -590,6 +668,13 @@ NativeMerge::knobChanged(KnobI* k,
         return true;
     }
 
+    KnobChoicePtr layers = op().layers.lock();
+    if (layers && (k == layers.get())) {
+        refreshLayersKnobs();
+
+        return true;
+    }
+
     // The output defaults to the B layer: a user's choice of B's layer moves the output with it.
     KnobLayerSelectPtr bLayer = op().bLayer.lock();
     if (bLayer && (k == bLayer.get()) && (reason == eValueChangedReasonUserEdited)) {
@@ -609,6 +694,121 @@ NativeMerge::onKnobsLoaded()
 {
     refreshSubLabel();
     refreshAlphaKnobs();
+    refreshLayersKnobs();
+}
+
+bool
+NativeMerge::isOutputPlane(const ImageLayerDesc& plane,
+                           double time,
+                           ViewIdx view) const
+{
+    NodePtr node = getNode();
+    std::vector<ResolvedLayer> selected;
+
+    if (!node || !node->resolveLayerKnob(time, view, &selected) || selected.empty()) {
+        // getComponentsNeededDefault() then outputs the metadata colour plane.
+        return plane.isColorLayer();
+    }
+    for (const ResolvedLayer& layer : selected) {
+        if ((layer.desc.isColorLayer() && plane.isColorLayer()) || (layer.desc == plane)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+NativeMerge::bAlphaPlane(double time,
+                         ViewIdx view,
+                         ImageLayerDesc* layer) const
+{
+    KnobChoicePtr source = op().bAlphaSource.lock();
+    KnobLayerSelectPtr alphaLayer = op().bAlphaLayer.lock();
+
+    if (!source || !alphaLayer || (source->getValue() != (int)NativeMergeOp::AlphaSource::PerChannel)) {
+        return false;
+    }
+    // Listing an input's layers only reads its metadata and layer knobs.
+    NativeMerge* self = const_cast<NativeMerge*>(this);
+    std::list<ImageLayerDesc> present;
+    self->getAvailableLayers(time, view, kNativeMergeInputB, &present);
+    ResolvedLayer resolved;
+    if (!alphaLayer->resolve(present, &resolved) || (resolved.desc.getNumComponents() == 0)) {
+        return false;
+    }
+    *layer = resolved.desc;
+
+    return true;
+}
+
+void
+NativeMerge::addProducedPlanes(double time,
+                               ViewIdx view,
+                               std::list<ImageLayerDesc>* planes)
+{
+    KnobChoicePtr layersKnob = op().layers.lock();
+    const int mode = layersKnob ? layersKnob->getValue() : (int)NativeMergeOp::LayersMode::Single;
+
+    if (mode == (int)NativeMergeOp::LayersMode::AllMatching) {
+        std::list<ImageLayerDesc> aLayers;
+        for (int k = 0; k < kNativeMergeMaxAInputs; ++k) {
+            if (!getInput(aInput(k))) {
+                continue;
+            }
+            std::list<ImageLayerDesc> present;
+            getAvailableLayers(time, view, aInput(k), &present);
+            for (const ImageLayerDesc& layer : present) {
+                appendPlane(layer, &aLayers);
+            }
+        }
+        std::list<ImageLayerDesc> bLayers;
+        if (getInput(kNativeMergeInputB)) {
+            getAvailableLayers(time, view, kNativeMergeInputB, &bLayers);
+        }
+        for (const ImageLayerDesc& layer : bLayers) {
+            if (hasLayerWithID(aLayers, layer)) {
+                appendPlane(layer, planes);
+            }
+        }
+    } else if (mode == (int)NativeMergeOp::LayersMode::List) {
+        KnobChannelSetPtr alsoMergeKnob = op().alsoMerge.lock();
+        NodePtr node = getNode();
+        if (alsoMergeKnob && node) {
+            std::list<ImageLayerDesc> listed;
+            node->listLayersForKnob(alsoMergeKnob, time, view, &listed);
+            for (const ResolvedLayer& layer : alsoMergeKnob->resolve(listed)) {
+                appendPlane(layer.desc, planes);
+            }
+        }
+    }
+
+    ImageLayerDesc alphaLayer;
+    if (bAlphaPlane(time, view, &alphaLayer)) {
+        appendPlane(alphaLayer, planes);
+    }
+}
+
+void
+NativeMerge::adjustInputsForPlane(const ImageLayerDesc& plane,
+                                  double time,
+                                  ViewIdx view,
+                                  CompositeInputs* inputs) const
+{
+    if ((plane.getNumComponents() == 0) || isOutputPlane(plane, time, view)) {
+        return;
+    }
+    ImageLayerDesc alphaLayer;
+    const bool writesAlpha = bAlphaPlane(time, view, &alphaLayer) && (alphaLayer.getLayerID() == plane.getLayerID());
+    KnobChoicePtr aSource = op().aAlphaSource.lock();
+    const bool aPerChannel = aSource && (aSource->getValue() == (int)NativeMergeOp::AlphaSource::PerChannel);
+
+    inputs->base.layerKnob = std::string_view();
+    for (CompositeInput& input : inputs->further) {
+        // Under a per-channel alpha the merged alpha layer is A's alpha layer over B's, each
+        // its own alpha, as the result's alphas merge in step().
+        input.layerKnob = (writesAlpha && aPerChannel) ? std::string_view(kNativeMergeParamAAlphaLayer) : std::string_view();
+    }
 }
 
 Route

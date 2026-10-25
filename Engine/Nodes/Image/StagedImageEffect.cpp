@@ -138,7 +138,7 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
     if (imagePipelineSpec().op != OpKind::Composite) {
         return resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), query);
     }
-    const CompositeInputs inputs = opInputs(query.time, query.view);
+    const CompositeInputs inputs = opInputsForPlane(query.time, query.view, query.plane);
     StagePlan plan = resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), query);
     resolveStageSources(nodeSpec(), inputs, &plan);
     resolveStageSourcesLayers(*self, &plan);
@@ -223,13 +223,26 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
     return true;
 }
 
+CompositeInputs
+StagedImageEffect::opInputsForPlane(double time,
+                                    ViewIdx view,
+                                    const ImageLayerDesc& plane) const
+{
+    CompositeInputs inputs = opInputs(time, view);
+
+    adjustInputsForPlane(plane, time, view, &inputs);
+
+    return inputs;
+}
+
 StagePlan
 StagedImageEffect::resolveSourcesPlan(double time,
-                                      ViewIdx view) const
+                                      ViewIdx view,
+                                      const ImageLayerDesc& plane) const
 {
     StagePlan plan;
 
-    resolveStageSources(nodeSpec(), opInputs(time, view), &plan);
+    resolveStageSources(nodeSpec(), opInputsForPlane(time, view, plane), &plan);
 
     return plan;
 }
@@ -247,21 +260,29 @@ StagedImageEffect::getGpuExtraInputLayers(int inputNb,
     // Resolving only reads knobs and the node's inputs' layers.
     StagedImageEffect* self = const_cast<StagedImageEffect*>(this);
 
-    return stageSourcesGpuLayers(*self, resolveSourcesPlan(time, view), inputNb, plane, time, view, layers);
+    return stageSourcesGpuLayers(*self, resolveSourcesPlan(time, view, plane), inputNb, plane, time, view, layers);
 }
 
 void
 StagedImageEffect::addInputLayersNeeded(double time,
                                         ViewIdx view,
+                                        const std::list<ImageLayerDesc>& producedPlanes,
                                         EffectInstance::ComponentsNeededMap* comps)
 {
     if (imagePipelineSpec().op != OpKind::Composite) {
         return;
     }
-    const StagePlan plan = resolveSourcesPlan(time, view);
+    std::vector<StagePlan> plans;
+    plans.reserve(producedPlanes.size() + 1);
+    plans.push_back(resolveSourcesPlan(time, view, ImageLayerDesc()));
+    for (const ImageLayerDesc& plane : producedPlanes) {
+        plans.push_back(resolveSourcesPlan(time, view, plane));
+    }
     const int nInputs = getNInputs();
-    for (int inputNb = 0; inputNb < nInputs; ++inputNb) {
-        stageSourcesNeededLayers(*this, plan, inputNb, time, view, &(*comps)[inputNb]);
+    for (const StagePlan& plan : plans) {
+        for (int inputNb = 0; inputNb < nInputs; ++inputNb) {
+            stageSourcesNeededLayers(*this, plan, inputNb, time, view, &(*comps)[inputNb]);
+        }
     }
 }
 
@@ -751,7 +772,7 @@ StagedImageEffect::render(const RenderActionArgs& args)
 
         return renderOp(args, resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), args.time, args.view, args.processChannels));
     }
-    const CompositeInputs inputs = opInputs(args.time, args.view);
+    const CompositeInputs inputs = opInputsForPlane(args.time, args.view, args.outputLayers.empty() ? ImageLayerDesc() : args.outputLayers.front().first);
     StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), args.time, args.view, args.processChannels);
     resolveStageSources(nodeSpec(), inputs, &plan);
     std::optional<std::string> error = checksRawStage ? rawStageError(args.time, args.view) : std::nullopt;

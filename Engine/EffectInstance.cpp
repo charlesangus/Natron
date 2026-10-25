@@ -4903,6 +4903,19 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
         }
     }
 
+    std::list<ImageLayerDesc> producedPlanes;
+    {
+        std::list<ImageLayerDesc> declared;
+        addProducedPlanes(time, view, &declared);
+        std::list<ImageLayerDesc>& outputPlanes = (*comps)[-1];
+        for (std::list<ImageLayerDesc>::const_iterator it = declared.begin(); it != declared.end(); ++it) {
+            if ((it->getNumComponents() > 0) && (ImageLayerDesc::findEquivalentLayer(*it, outputPlanes.begin(), outputPlanes.end()) == outputPlanes.end())) {
+                outputPlanes.push_back(*it);
+                producedPlanes.push_back(*it);
+            }
+        }
+    }
+
     processChannels->set();
     ProcessChannelsPerPlaneMap::const_iterator foundColor = processChannelsPerPlane->find(ImageLayerDesc::getRGBAComponents());
     if (foundColor != processChannelsPerPlane->end()) {
@@ -4960,8 +4973,14 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
                 inputPlanes.push_back(divisorLayer);
             }
         }
+
+        for (std::list<ImageLayerDesc>::const_iterator it = producedPlanes.begin(); it != producedPlanes.end(); ++it) {
+            if (ImageLayerDesc::findEquivalentLayer(*it, inputPlanes.begin(), inputPlanes.end()) == inputPlanes.end()) {
+                inputPlanes.push_back(*it);
+            }
+        }
     }
-    addInputLayersNeeded(time, view, comps);
+    addInputLayersNeeded(time, view, producedPlanes, comps);
 } // EffectInstance::getComponentsNeededDefault
 
 void

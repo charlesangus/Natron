@@ -183,10 +183,12 @@ public:
 
     /**
      * @brief For a Composite op, the selected layers and alpha layers its inputs read
-     * (stageSourcesNeededLayers()), so that the request pass plans them upstream.
+     * (stageSourcesNeededLayers()) for its selected plane and for each of producedPlanes, so that
+     * the request pass plans them upstream.
      **/
     virtual void addInputLayersNeeded(double time,
                                       ViewIdx view,
+                                      const std::list<ImageLayerDesc>& producedPlanes,
                                       EffectInstance::ComponentsNeededMap* comps) OVERRIDE;
 
     /**
@@ -364,6 +366,18 @@ protected:
     }
 
     /**
+     * @brief Rewrites a Composite op's inputs for rendering plane, one of the planes
+     * addProducedPlanes() declares; called with an empty plane when none is known. Leaves them
+     * by default.
+     **/
+    virtual void adjustInputsForPlane(const ImageLayerDesc& /*plane*/,
+                                      double /*time*/,
+                                      ViewIdx /*view*/,
+                                      CompositeInputs* /*inputs*/) const
+    {
+    }
+
+    /**
      * @brief A Composite op's error(params) at time and view, which fails the render with that
      * message; nullopt for an op without it or of another kind.
      **/
@@ -461,10 +475,15 @@ private:
     bool postStageError(const std::optional<std::string>& error);
 
     /**
-     * @brief A Composite op's inputs at time and view, as resolveStageSources() pairs them, in an
-     * otherwise empty plan.
+     * @brief opInputs() at time and view as adjustInputsForPlane() rewrites them for plane.
      **/
-    StagePlan resolveSourcesPlan(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+    CompositeInputs opInputsForPlane(double time, ViewIdx view, const ImageLayerDesc& plane) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief A Composite op's inputs at time and view for plane, as resolveStageSources() pairs
+     * them, in an otherwise empty plan.
+     **/
+    StagePlan resolveSourcesPlan(double time, ViewIdx view, const ImageLayerDesc& plane) const WARN_UNUSED_RETURN;
 
     ResampleRegionStages getResampleRegionStages(double time,
                                                  ViewIdx view) const WARN_UNUSED_RETURN;

@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <optional>
 #include <string>
 
@@ -50,6 +51,8 @@
 #define kNativeMergeParamBAlphaSource "bAlphaSource"
 #define kNativeMergeParamAAlphaLayer "aAlphaLayer"
 #define kNativeMergeParamBAlphaLayer "bAlphaLayer"
+#define kNativeMergeParamLayers "layers"
+#define kNativeMergeParamAlsoMerge "alsoMerge"
 
 // Option IDs of the bbox, metadata from and frame range from choices.
 #define kNativeMergeBBoxUnion "union"
@@ -63,6 +66,11 @@
 #define kNativeMergeAlphaUniversal "universal"
 #define kNativeMergeAlphaPerLayer "perLayer"
 #define kNativeMergeAlphaPerChannel "perChannel"
+
+// Option IDs of the layers choice.
+#define kNativeMergeLayersSingle "single"
+#define kNativeMergeLayersAllMatching "allMatching"
+#define kNativeMergeLayersList "list"
 
 // Inputs: B, A, Mask, then A2..A64, Nuke's order.
 #define kNativeMergeInputB 0
@@ -103,6 +111,17 @@ struct NativeMergeOp {
         Universal = 0,
         PerLayer,
         PerChannel
+    };
+
+    /**
+     * @brief What is merged beside the A layer into the output layer. AllMatching also merges
+     * every other layer present on B and on any connected A input, paired by ID; List also merges
+     * the layers alsoMerge selects. Each such layer is read in itself on A and B.
+     **/
+    enum class LayersMode : unsigned char {
+        Single = 0,
+        AllMatching,
+        List
     };
 
     struct Params {
@@ -170,6 +189,8 @@ struct NativeMergeOp {
     KnobChoiceWPtr bAlphaSource;
     KnobLayerSelectWPtr aAlphaLayer;
     KnobLayerSelectWPtr bAlphaLayer;
+    KnobChoiceWPtr layers;
+    KnobChannelSetWPtr alsoMerge;
     KnobStringWPtr subLabel;
 };
 
@@ -213,6 +234,24 @@ public:
     }
 
 protected:
+    /**
+     * @brief The planes the layers mode merges beside the output layer, and B's alpha layer when
+     * B's alpha source is per channel, where the merged alpha layer is written.
+     **/
+    virtual void addProducedPlanes(double time,
+                                   ViewIdx view,
+                                   std::list<ImageLayerDesc>* planes) OVERRIDE FINAL;
+
+    /**
+     * @brief Reads A and B in plane itself when it is a layer the layers mode merges. For B's
+     * per-channel alpha layer, B is read in it and A in its own alpha layer when per channel too.
+     * The output layer keeps the A and B layers.
+     **/
+    virtual void adjustInputsForPlane(const ImageLayerDesc& plane,
+                                      double time,
+                                      ViewIdx view,
+                                      CompositeInputs* inputs) const OVERRIDE FINAL;
+
     virtual void getFrameRange(double* first,
                                double* last) OVERRIDE FINAL;
 
@@ -235,6 +274,19 @@ private:
 
     // Shows each side's universal channel or alpha layer as its alpha source uses them.
     void refreshAlphaKnobs();
+
+    // Shows the also-merge list in List mode only.
+    void refreshLayersKnobs();
+
+    // Whether plane is the output layer the layer knob selects.
+    bool isOutputPlane(const ImageLayerDesc& plane,
+                       double time,
+                       ViewIdx view) const WARN_UNUSED_RETURN;
+
+    // B's alpha layer, when B's alpha source is per channel and that layer resolves on B.
+    bool bAlphaPlane(double time,
+                     ViewIdx view,
+                     ImageLayerDesc* layer) const WARN_UNUSED_RETURN;
 
     // The region of definition of inputNb in *rod, an empty one for a region it fails to give;
     // false when nothing is connected to it.

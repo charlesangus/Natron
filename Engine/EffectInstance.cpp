@@ -5683,10 +5683,11 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
         return false;
     }
 
-    ///If there's a knobChanged Python callback, run it
+    /// If there's a knobChanged Python callback, run it
+    // Undoing or redoing recorded edits replays what the callback did, so it must not run again.
     std::string pythonCB = getNode()->getKnobChangedCallback();
 
-    if ( !pythonCB.empty() ) {
+    if (!pythonCB.empty() && !(getApp() && getApp()->isReplayingUndo())) {
         bool userEdited = reason == eValueChangedReasonNatronGuiEdited ||
                           reason == eValueChangedReasonUserEdited;
         _imp->runChangedParamCallback(k, userEdited, pythonCB);

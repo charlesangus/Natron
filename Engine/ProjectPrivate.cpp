@@ -47,6 +47,7 @@
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Serialization/KnobSerialization.h"
@@ -366,6 +367,7 @@ std::string
 ProjectPrivate::runOnProjectSaveCallback(const std::string& filename,
                                          bool autoSave)
 {
+    UndoSuppressGuard noUndo(_publicInterface->getApp());
     std::string onProjectSave = _publicInterface->getOnProjectSaveCB();
 
     if ( !onProjectSave.empty() ) {
@@ -446,6 +448,7 @@ ProjectPrivate::runOnProjectSaveCallback(const std::string& filename,
 void
 ProjectPrivate::runOnProjectCloseCallback()
 {
+    UndoSuppressGuard noUndo(_publicInterface->getApp());
     std::string onProjectClose = _publicInterface->getOnProjectCloseCB();
 
     if ( !onProjectClose.empty() ) {
@@ -495,6 +498,7 @@ ProjectPrivate::runOnProjectCloseCallback()
 void
 ProjectPrivate::runOnProjectLoadCallback()
 {
+    UndoSuppressGuard noUndo(_publicInterface->getApp());
     std::string cb = _publicInterface->getOnProjectLoadCB();
 
     if ( !cb.empty() ) {

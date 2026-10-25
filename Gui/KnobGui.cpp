@@ -29,10 +29,11 @@
 #include <cassert>
 #include <stdexcept>
 
+#include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
-#include "Engine/EffectInstance.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 
 #include "Gui/KnobGuiPrivate.h"
@@ -185,6 +186,10 @@ KnobGui::pushUndoCommand(QUndoCommand* cmd)
     if (isUndoableEdit(getKnob())) {
         _imp->container->pushUndoCommand(cmd);
     } else {
+        // The edit itself is not undoable, but what its callbacks change in the project is.
+        KnobIPtr knob = getKnob();
+        AppInstancePtr app = (knob && knob->getHolder()) ? knob->getHolder()->getApp() : AppInstancePtr();
+        UndoStepGuard undoStep(app, cmd->text().toStdString());
         cmd->redo();
         delete cmd;
     }

@@ -111,6 +111,8 @@ enum CreateNodeStatusEnum {
     eCreateNodeStatusFailed
 };
 
+class UndoRecorderI;
+
 class AppInstance
     : public QObject
     , public std::enable_shared_from_this<AppInstance>
@@ -386,6 +388,29 @@ public:
     bool isCreatingNodeTree() const;
 
     void setIsCreatingNodeTree(bool b);
+
+    /**
+     * @brief The recorder that adds edits made from Python to the project window's undo history.
+     * The window installs it; applications without one have none and record nothing.
+     **/
+    void setUndoRecorder(const std::shared_ptr<UndoRecorderI>& recorder);
+
+    std::shared_ptr<UndoRecorderI> getUndoRecorder() const;
+
+    /**
+     * @brief The recorder if an edit made now should be recorded, null otherwise: off the main
+     * thread, while the project loads, while a node tree or PyPlug is built, while recording is
+     * suppressed and outside any open step or pushed command.
+     **/
+    std::shared_ptr<UndoRecorderI> getRecordingUndoRecorder() const;
+
+    /**
+     * @brief Set while recorded edits are undone or redone. Python callbacks do not run then,
+     * since the records already hold what the callbacks did.
+     **/
+    void setReplayingUndo(bool replaying);
+
+    bool isReplayingUndo() const;
 
     virtual void appendToScriptEditor(const std::string& str);
     virtual void printAutoDeclaredVariable(const std::string& str);

@@ -44,17 +44,18 @@
 #include <QKeyEvent>
 
 #include "Engine/Settings.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/Utils.h" // convertFromPlainText
 
-#include "Gui/GuiApplicationManager.h"
-#include "Gui/Gui.h"
+#include "Gui/ActionShortcuts.h"
 #include "Gui/Button.h"
+#include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
+#include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
 #include "Gui/GuiMacros.h"
-#include "Gui/SequenceFileDialog.h"
 #include "Gui/ScriptTextEdit.h"
-#include "Gui/ActionShortcuts.h"
-
+#include "Gui/SequenceFileDialog.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -479,8 +480,14 @@ ScriptEditor::onExecScriptClicked()
         script = allText;
     }
     std::string error, output;
+    bool ok;
+    {
+        // Whatever the script changes in the project is undone in one step.
+        UndoStepGuard undoStep(getGui()->getApp(), tr("Script Editor").toStdString());
+        ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(script.toStdString(), &error, &output);
+    }
 
-    if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(script.toStdString(), &error, &output) ) {
+    if (!ok) {
         _imp->outputEdit->append( NATRON_NAMESPACE::convertFromPlainText(QString::fromUtf8( error.c_str() ), NATRON_NAMESPACE::WhiteSpaceNormal) );
     } else {
         QString toAppend(script);

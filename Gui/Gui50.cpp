@@ -71,6 +71,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/ActionShortcuts.h"
@@ -543,10 +544,15 @@ Gui::keyPressEvent(QKeyEvent* e)
                 handleOpenFilesFromUrls( urls, QCursor::pos() );
             } else {
                 std::string error, output;
-                if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(str.toStdString(), &error, &output) ) {
+                bool ok;
+                {
+                    UndoStepGuard undoStep(getApp(), tr("Paste Script").toStdString());
+                    ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(str.toStdString(), &error, &output);
+                }
+                if (!ok) {
                     _imp->_scriptEditor->appendToScriptEditor( QString::fromUtf8( error.c_str() ) );
                     ensureScriptEditorVisible();
-                } else if ( !output.empty() ) {
+                } else if (!output.empty()) {
                     _imp->_scriptEditor->appendToScriptEditor( QString::fromUtf8( output.c_str() ) );
                 }
             }
@@ -996,7 +1002,12 @@ Gui::onUserCommandTriggered()
     if ( found != _imp->pythonCommands.end() ) {
         std::string err;
         std::string output;
-        if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(found->second, &err, &output) ) {
+        bool ok;
+        {
+            UndoStepGuard undoStep(getApp(), aws->text().remove(QLatin1Char('&')).toStdString());
+            ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(found->second, &err, &output);
+        }
+        if (!ok) {
             getApp()->appendToScriptEditor(err);
         } else {
             getApp()->appendToScriptEditor(output);

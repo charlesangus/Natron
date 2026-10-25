@@ -510,6 +510,211 @@ TEST_F(UndoHistoryTest, ClearDuringPushIsDeferred)
     EXPECT_EQ(0, history.count());
 }
 
+TEST_F(UndoHistoryTest, AStepMakesOneEntryOfItsPushesAndRecords)
+{
+    history.openStep(QString::fromUtf8("script"));
+    EXPECT_TRUE(history.isStepOpen());
+    EXPECT_TRUE(history.isCapturing());
+    push("p1", ownedBy(a.get()));
+    history.recordApplied(new LogCommand(&log, "r1"), touching(b.get()));
+    push("p2");
+    history.closeStep();
+    EXPECT_FALSE(history.isStepOpen());
+    EXPECT_FALSE(history.isCapturing());
+
+    // Recorded edits are already made: only the pushes ran.
+    EXPECT_EQ(L({ "+p1", "+p2" }), take());
+    EXPECT_EQ(1, history.count());
+    EXPECT_EQ(QString::fromUtf8("script"), history.undoText());
+
+    history.undo();
+    EXPECT_EQ(L({ "-p2", "-r1", "-p1" }), take());
+    history.redo();
+    EXPECT_EQ(L({ "+p1", "+r1", "+p2" }), take());
+}
+
+TEST_F(UndoHistoryTest, AStepHoldingOneCommandIsThatCommand)
+{
+    history.openStep(QString::fromUtf8("script"));
+    push("p", ownedBy(a.get()));
+    history.closeStep();
+    EXPECT_EQ(1, history.count());
+    EXPECT_EQ(QString::fromUtf8("p"), history.undoText());
+    EXPECT_TRUE(history.canUndo(a.get()));
+}
+
+TEST_F(UndoHistoryTest, AStepTouchesWhatItsPartsTouch)
+{
+    history.openStep(QString::fromUtf8("script"));
+    history.recordApplied(new LogCommand(&log, "r1"), touching(a.get()));
+    history.recordApplied(new LogCommand(&log, "r2"), touching(a.get()));
+    history.closeStep();
+    EXPECT_TRUE(history.canUndo(a.get()));
+    EXPECT_FALSE(history.canUndo(b.get()));
+}
+
+TEST_F(UndoHistoryTest, EmptyAndNestedSteps)
+{
+    history.openStep(QString::fromUtf8("empty"));
+    history.closeStep();
+    EXPECT_EQ(0, history.count());
+
+    history.openStep(QString::fromUtf8("outer"));
+    history.openStep(QString::fromUtf8("inner"));
+    history.recordApplied(new LogCommand(&log, "r1"), UndoScope());
+    history.closeStep();
+    EXPECT_TRUE(history.isStepOpen());
+    history.recordApplied(new LogCommand(&log, "r2"), UndoScope());
+    history.closeStep();
+    EXPECT_EQ(1, history.count());
+    EXPECT_EQ(QString::fromUtf8("outer"), history.undoText());
+    history.undo();
+    EXPECT_EQ(L({ "-r2", "-r1" }), take());
+}
+
+TEST_F(UndoHistoryTest, ARecordOutsideAnyStepOrPushIsDeleted)
+{
+    bool deleted = false;
+    LogCommand* cmd = new LogCommand(&log, "r");
+    cmd->deleted = &deleted;
+    EXPECT_FALSE(history.isCapturing());
+    history.recordApplied(cmd, UndoScope());
+    EXPECT_TRUE(deleted);
+    EXPECT_EQ(0, history.count());
+    EXPECT_TRUE(take().empty());
+}
+
+TEST_F(UndoHistoryTest, ClearDuringAStepEmptiesIt)
+{
+    bool deleted = false;
+    history.openStep(QString::fromUtf8("script"));
+    LogCommand* cmd = new LogCommand(&log, "r");
+    cmd->deleted = &deleted;
+    history.recordApplied(cmd, UndoScope());
+    history.clear();
+    EXPECT_TRUE(deleted);
+    history.closeStep();
+    EXPECT_EQ(0, history.count());
+}
+
+TEST_F(UndoHistoryTest, TheCaptureSerialChangesPerOutermostStep)
+{
+    quint64 before = history.getCaptureSerial();
+    history.openStep(QString());
+    quint64 inStep = history.getCaptureSerial();
+    EXPECT_NE(before, inStep);
+    history.openStep(QString());
+    EXPECT_EQ(inStep, history.getCaptureSerial());
+    history.closeStep();
+    history.closeStep();
+    history.openStep(QString());
+    EXPECT_NE(inStep, history.getCaptureSerial());
+    history.closeStep();
+}
+
+namespace {
+// Stands for a pushed edit whose Python callback makes an edit of its own, which is recorded
+// while the edit executes. Same-id commands merge, and so do their records.
+class CallbackCommand
+    : public QUndoCommand {
+public:
+    CallbackCommand(UndoHistory* history,
+                    Log* log,
+                    const std::string& name,
+                    const std::string& callbackName,
+                    int mergeId = -1)
+        : _history(history)
+        , _log(log)
+        , _name(name)
+        , _callbackName(callbackName)
+        , _mergeId(mergeId)
+    {
+        setText(QString::fromStdString(name));
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        _log->push_back("+" + _name);
+        _history->recordApplied(new LogCommand(_log, _callbackName, _mergeId), UndoScope());
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        _log->push_back("-" + _name);
+    }
+
+    virtual int id() const OVERRIDE FINAL
+    {
+        return _mergeId;
+    }
+
+    virtual bool mergeWith(const QUndoCommand* other) OVERRIDE FINAL
+    {
+        const CallbackCommand* o = dynamic_cast<const CallbackCommand*>(other);
+        if (!o) {
+            return false;
+        }
+        _name += o->_name;
+
+        return true;
+    }
+
+    UndoHistory* _history;
+    Log* _log;
+    std::string _name;
+    std::string _callbackName;
+    int _mergeId;
+};
+} // anon namespace
+
+TEST_F(UndoHistoryTest, ACallbacksRecordsJoinThePushedEdit)
+{
+    Log hook;
+    history.setReplayHook([&hook](bool on) { hook.push_back(on ? "on" : "off"); });
+
+    CallbackCommand* cmd = new CallbackCommand(&history, &log, "edit", "cb");
+    history.push(cmd, ownedBy(a.get()));
+    EXPECT_EQ(L({ "+edit" }), take());
+    EXPECT_EQ(1, history.count());
+    EXPECT_EQ(QString::fromUtf8("edit"), history.undoText());
+    EXPECT_TRUE(history.canUndo(a.get()));
+    EXPECT_EQ(cmd, history.getLastCommand());
+    EXPECT_TRUE(hook.empty());
+
+    history.undo();
+    EXPECT_EQ(L({ "-cb", "-edit" }), take());
+    EXPECT_EQ(L({ "on", "off" }), hook);
+
+    // Replaying records nothing new: the callback's edit is the recorded one.
+    history.redo();
+    EXPECT_EQ(L({ "+edit", "+cb" }), take());
+    EXPECT_EQ(1, history.count());
+    history.undo();
+    EXPECT_EQ(L({ "-cb", "-edit" }), take());
+}
+
+TEST_F(UndoHistoryTest, MergedPushesMergeTheirRecords)
+{
+    history.push(new CallbackCommand(&history, &log, "e", "c", 7));
+    history.push(new CallbackCommand(&history, &log, "e", "c", 7));
+    EXPECT_EQ(1, history.count());
+    take();
+    history.undo();
+    EXPECT_EQ(L({ "-cc", "-ee" }), take());
+}
+
+TEST_F(UndoHistoryTest, APushedEditWithRecordsInsideAStepJoinsTheStep)
+{
+    history.openStep(QString::fromUtf8("script"));
+    history.push(new CallbackCommand(&history, &log, "edit", "cb"));
+    history.recordApplied(new LogCommand(&log, "r"), UndoScope());
+    history.closeStep();
+    EXPECT_EQ(1, history.count());
+    take();
+    history.undo();
+    EXPECT_EQ(L({ "-r", "-cb", "-edit" }), take());
+}
+
 namespace {
 // What a node panel does with a knob GUI's pushes: record them in the window's history.
 class HistoryKnobGuiContainer

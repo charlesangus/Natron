@@ -28,11 +28,13 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <memory>
 #include <vector>
 
 #include <QObject>
 #include <QString>
+#include <QtGlobal>
 
 #include "Engine/EngineFwd.h"
 
@@ -105,6 +107,12 @@ struct UndoHistoryPrivate;
  * A command is merged (QUndoCommand::id()/mergeWith()) only into the newest entry, and only when
  * both have the same owner. Obsolete commands, and commands whose owner or any touched holder
  * has been destroyed, are skipped and dropped instead of being executed.
+ *
+ * Edits that have no command pushed for them, those made from Python, are added with
+ * recordApplied() while a step is open or a pushed command executes. A step makes one entry of
+ * everything pushed and recorded in it; the records made while a pushed command executes (the
+ * edits of the callbacks it fires) join that command's entry. Such an entry undoes its parts
+ * newest first and redoes them in order.
  **/
 class UndoHistory
     : public QObject {
@@ -156,6 +164,41 @@ public:
      * command returns, and the pushed command is deleted with the rest.
      **/
     void clear();
+
+    /**
+     * @brief Opens a step that gathers what is pushed and recorded until the matching closeStep()
+     * into one entry, labelled text unless it ends up holding a single command. A step opened
+     * inside an open step or an executing pushed command adds to it; one opened while an entry is
+     * undone or redone gathers nothing.
+     **/
+    void openStep(const QString& text);
+
+    void closeStep();
+
+    bool isStepOpen() const;
+
+    /**
+     * @brief Whether recordApplied() keeps what it is given: a step is open or a pushed command
+     * executes, and no entry is being undone or redone.
+     **/
+    bool isCapturing() const;
+
+    /**
+     * @brief Changes each time a step or a pushed command opens with nothing open around it.
+     **/
+    quint64 getCaptureSerial() const;
+
+    /**
+     * @brief Adds cmd, whose edit has already been made, to the open step or to the executing
+     * pushed command, taking ownership of it. Deletes it when not capturing.
+     **/
+    void recordApplied(QUndoCommand* cmd, const UndoScope& scope);
+
+    /**
+     * @brief Called with true before and false after an entry that holds recorded edits besides
+     * a pushed command is undone or redone.
+     **/
+    void setReplayHook(const std::function<void(bool)>& hook);
 
 Q_SIGNALS:
 

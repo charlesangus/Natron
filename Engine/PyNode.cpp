@@ -49,6 +49,7 @@
 #include "Engine/PyParameter.h" // checkHolderIsEditable
 #include "Engine/PyRoto.h"
 #include "Engine/PyTracker.h"
+#include "Engine/PythonUndoCommands.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -277,7 +278,7 @@ Effect::isOutputNode()
 void
 Effect::destroy(bool autoReconnect)
 {
-    getInternalNode()->destroyNode(false, autoReconnect);
+    destroyNodeFromPython(getInternalNode(), autoReconnect);
 }
 
 int
@@ -309,6 +310,8 @@ Effect::connectInput(int inputNumber,
                      const Effect* input)
 {
     if ( canConnectInput(inputNumber, input) ) {
+        PythonInputUndoGuard undo(getInternalNode(), inputNumber);
+
         return getInternalNode()->connectInput(input->getInternalNode(), inputNumber);
     } else {
         return false;
@@ -318,6 +321,8 @@ Effect::connectInput(int inputNumber,
 void
 Effect::disconnectInput(int inputNumber)
 {
+    PythonInputUndoGuard undo(getInternalNode(), inputNumber);
+
     getInternalNode()->disconnectInput(inputNumber);
 }
 
@@ -363,6 +368,8 @@ Effect::getScriptName() const
 bool
 Effect::setScriptName(const QString& scriptName)
 {
+    PythonNodeNameUndoGuard undo(getInternalNode());
+
     try {
         getInternalNode()->setScriptName( scriptName.toStdString() );
     } catch (...) {
@@ -381,6 +388,8 @@ Effect::getLabel() const
 void
 Effect::setLabel(const QString& name)
 {
+    PythonNodeNameUndoGuard undo(getInternalNode());
+
     return getInternalNode()->setLabel( name.toStdString() );
 }
 
@@ -551,6 +560,8 @@ void
 Effect::setPosition(double x,
                     double y)
 {
+    PythonNodeLayoutUndoGuard undo(getInternalNode());
+
     getInternalNode()->setPosition(x, y);
 }
 
@@ -565,6 +576,8 @@ void
 Effect::setSize(double w,
                 double h)
 {
+    PythonNodeLayoutUndoGuard undo(getInternalNode());
+
     getInternalNode()->setSize(w, h);
 }
 
@@ -589,12 +602,16 @@ Effect::setColor(double r,
                  double g,
                  double b)
 {
+    PythonNodeLayoutUndoGuard undo(getInternalNode());
+
     getInternalNode()->setColor(r, g, b);
 }
 
 void
 Effect::resetColor()
 {
+    PythonNodeLayoutUndoGuard undo(getInternalNode());
+
     getInternalNode()->resetColor();
 }
 
@@ -635,6 +652,7 @@ UserParamHolder::createIntParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 1);
 
     if (knob) {
@@ -698,6 +716,7 @@ UserParamHolder::createDoubleParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 1);
 
     if (knob) {
@@ -761,6 +780,7 @@ UserParamHolder::createBooleanParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobBoolPtr knob = _holder->createBoolKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -782,6 +802,7 @@ UserParamHolder::createChoiceParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobChoicePtr knob = _holder->createChoiceKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -804,6 +825,7 @@ UserParamHolder::createColorParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobColorPtr knob = _holder->createColorKnob(name.toStdString(), label.toStdString(), useAlpha ? 4 : 3);
 
     if (knob) {
@@ -825,6 +847,7 @@ UserParamHolder::createStringParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobStringPtr knob = _holder->createStringKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -846,6 +869,7 @@ UserParamHolder::createFileParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobFilePtr knob = _holder->createFileKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -867,6 +891,7 @@ UserParamHolder::createOutputFileParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobOutputFilePtr knob = _holder->createOuptutFileKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -888,6 +913,7 @@ UserParamHolder::createPathParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobPathPtr knob = _holder->createPathKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -909,6 +935,7 @@ UserParamHolder::createChannelSetParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobChannelSetPtr knob = _holder->createChannelSetKnob(name.toStdString(), label.toStdString());
 
     if (knob) {
@@ -931,6 +958,7 @@ UserParamHolder::createLayerSelectParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobLayerSelectPtr knob = _holder->createLayerSelectKnob(name.toStdString(), label.toStdString(), withChannelButtons);
 
     if (knob) {
@@ -952,6 +980,7 @@ UserParamHolder::createChannelSelectParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobChannelSelectPtr knob = _holder->createChannelSelectKnob(name.toStdString(), label.toStdString());
 
     if (knob) {
@@ -973,6 +1002,7 @@ UserParamHolder::createButtonParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobButtonPtr knob = _holder->createButtonKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -994,6 +1024,7 @@ UserParamHolder::createSeparatorParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobSeparatorPtr knob = _holder->createSeparatorKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -1015,6 +1046,7 @@ UserParamHolder::createGroupParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobGroupPtr knob = _holder->createGroupKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -1036,6 +1068,7 @@ UserParamHolder::createPageParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     if (!_holder) {
         assert(false);
 
@@ -1057,6 +1090,7 @@ UserParamHolder::createParametricParam(const QString& name,
     if (!checkHolderIsEditable(_holder)) {
         return 0;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     KnobParametricPtr knob = _holder->createParametricKnob(name.toStdString(), label.toStdString(), nbCurves);
 
     if (knob) {
@@ -1077,6 +1111,7 @@ UserParamHolder::removeParam(Param* param)
     if (!checkHolderIsEditable(_holder)) {
         return false;
     }
+    PythonUserKnobsUndoGuard undo(_holder);
     if (!param) {
         return false;
     }
@@ -1358,6 +1393,7 @@ Effect::setPagesOrder(const QStringList& pages)
     if (!getInternalNode() || !checkHolderIsEditable(getInternalNode()->getEffectInstance().get())) {
         return;
     }
+    PythonUserKnobsUndoGuard undo(getInternalNode()->getEffectInstance().get());
 
     std::list<std::string> order;
     for (QStringList::const_iterator it = pages.begin(); it != pages.end(); ++it) {

@@ -110,6 +110,153 @@ UndoScope::holderForKnob(const KnobIPtr& knob)
 
 namespace {
 
+typedef std::function<void(bool)> ReplayHook;
+
+void
+deleteNewestFirst(std::vector<QUndoCommand*>* cmds)
+{
+    for (std::vector<QUndoCommand*>::reverse_iterator it = cmds->rbegin(); it != cmds->rend(); ++it) {
+        delete *it;
+    }
+    cmds->clear();
+}
+
+/*
+ * An entry made of several commands: optionally the pushed command, then what was recorded
+ * while it executed or what a step gathered. Parts are undone newest first, so each one is
+ * undone from the state it left.
+ */
+class CompoundUndoCommand
+    : public QUndoCommand {
+public:
+    CompoundUndoCommand(const ReplayHook* hook,
+                        QUndoCommand* outer,
+                        const std::vector<QUndoCommand*>& children,
+                        const QString& text)
+        : QUndoCommand()
+        , _hook(hook)
+        , _outer(outer)
+        , _children(children)
+    {
+        setText(text);
+        updateObsolete();
+    }
+
+    virtual ~CompoundUndoCommand()
+    {
+        deleteNewestFirst(&_children);
+        delete _outer;
+    }
+
+    QUndoCommand* getOuter() const
+    {
+        return _outer;
+    }
+
+    // Leaves the commands to the caller.
+    void release(QUndoCommand** outer,
+                 std::vector<QUndoCommand*>* children)
+    {
+        *outer = _outer;
+        _outer = 0;
+        children->swap(_children);
+        _children.clear();
+    }
+
+    // Folds cmds in after the outer commands merged: each one merges into a part of the same kind
+    // when that part accepts it, or is appended.
+    void absorb(const std::vector<QUndoCommand*>& cmds)
+    {
+        for (std::size_t i = 0; i < cmds.size(); ++i) {
+            QUndoCommand* cmd = cmds[i];
+            bool merged = false;
+            if (cmd->id() != -1) {
+                for (std::vector<QUndoCommand*>::reverse_iterator it = _children.rbegin(); it != _children.rend(); ++it) {
+                    if (((*it)->id() == cmd->id()) && (*it)->mergeWith(cmd)) {
+                        merged = true;
+                        break;
+                    }
+                }
+            }
+            if (merged) {
+                delete cmd;
+            } else {
+                _children.push_back(cmd);
+            }
+        }
+        updateObsolete();
+    }
+
+    void updateObsolete()
+    {
+        bool obsolete = _outer && _outer->isObsolete();
+        for (std::size_t i = 0; !obsolete && i < _children.size(); ++i) {
+            obsolete = _children[i]->isObsolete();
+        }
+        if (obsolete) {
+            setObsolete(true);
+        }
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        replay(true);
+        for (std::vector<QUndoCommand*>::reverse_iterator it = _children.rbegin(); it != _children.rend(); ++it) {
+            (*it)->undo();
+        }
+        if (_outer) {
+            _outer->undo();
+        }
+        replay(false);
+        updateObsolete();
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        replay(true);
+        if (_outer) {
+            _outer->redo();
+        }
+        for (std::size_t i = 0; i < _children.size(); ++i) {
+            _children[i]->redo();
+        }
+        replay(false);
+        updateObsolete();
+    }
+
+private:
+    void replay(bool on) const
+    {
+        if (_hook && *_hook) {
+            (*_hook)(on);
+        }
+    }
+
+    const ReplayHook* _hook;
+    QUndoCommand* _outer;
+    std::vector<QUndoCommand*> _children;
+};
+
+// What a step, or a pushed command while it executes, has gathered so far.
+struct CaptureFrame {
+    bool isStep;
+    QString text;
+
+    // Steps opened inside this frame, which add to it.
+    int nestedSteps;
+    std::vector<QUndoCommand*> children;
+    std::vector<UndoScope> scopes;
+
+    CaptureFrame()
+        : isStep(false)
+        , text()
+        , nestedSteps(0)
+        , children()
+        , scopes()
+    {
+    }
+};
+
 struct UndoEntry {
     QUndoCommand* cmd;
     bool hasOwner;
@@ -162,8 +309,18 @@ struct UndoHistoryPrivate {
     UndoEntries entries;
     quint64 undoSeq;
     int limit;
+    // Set while a pushed command or an entry executes.
     bool executing;
+
+    // Set while an entry is undone or redone.
+    bool replaying;
     bool clearPending;
+    std::vector<CaptureFrame> frames;
+
+    // Steps opened while replaying, which gather nothing.
+    int ignoredSteps;
+    quint64 captureSerial;
+    ReplayHook replayHook;
 
     UndoHistoryPrivate(UndoHistory* publicInterface)
         : _publicInterface(publicInterface)
@@ -171,8 +328,111 @@ struct UndoHistoryPrivate {
         , undoSeq(0)
         , limit(0)
         , executing(false)
+        , replaying(false)
         , clearPending(false)
+        , frames()
+        , ignoredSteps(0)
+        , captureSerial(0)
+        , replayHook()
     {
+    }
+
+    void openFrame(bool isStep,
+                   const QString& text)
+    {
+        if (frames.empty()) {
+            ++captureSerial;
+        }
+        CaptureFrame frame;
+        frame.isStep = isStep;
+        frame.text = text;
+        frames.push_back(frame);
+    }
+
+    CaptureFrame closeFrame()
+    {
+        CaptureFrame frame = frames.back();
+        frames.pop_back();
+
+        return frame;
+    }
+
+    static UndoScope unionOf(const UndoScope& scope,
+                             const std::vector<UndoScope>& scopes)
+    {
+        UndoScope ret = scope;
+        for (std::size_t i = 0; i < scopes.size(); ++i) {
+            const std::vector<KnobHolder*>& touched = scopes[i].getTouched();
+            for (std::size_t j = 0; j < touched.size(); ++j) {
+                ret.touch(touched[j]);
+            }
+        }
+
+        return ret;
+    }
+
+    // Records cmd as a new done entry, merging it into the newest entry when allowed and possible.
+    void addEntry(QUndoCommand* cmd,
+                  const UndoScope& scope,
+                  bool mayMerge)
+    {
+        dropUndone();
+        dropObsolete();
+
+        KnobHolder* owner = scope.getOwner();
+        CompoundUndoCommand* compound = dynamic_cast<CompoundUndoCommand*>(cmd);
+        QUndoCommand* outer = compound ? compound->getOuter() : cmd;
+        if (mayMerge && !entries.empty() && outer && (outer->id() != -1)) {
+            UndoEntry& last = entries.back();
+            CompoundUndoCommand* lastCompound = dynamic_cast<CompoundUndoCommand*>(last.cmd);
+            QUndoCommand* lastOuter = lastCompound ? lastCompound->getOuter() : last.cmd;
+            bool sameOwner = owner ? last.isOwnedBy(owner) : !last.hasOwner;
+            if (sameOwner && lastOuter && (lastOuter->id() == outer->id()) && lastOuter->mergeWith(outer)) {
+                if (compound) {
+                    QUndoCommand* released = 0;
+                    std::vector<QUndoCommand*> children;
+                    compound->release(&released, &children);
+                    delete compound;
+                    delete released;
+                    if (!lastCompound) {
+                        lastCompound = new CompoundUndoCommand(&replayHook, last.cmd, std::vector<QUndoCommand*>(), last.cmd->text());
+                        last.cmd = lastCompound;
+                    }
+                    lastCompound->absorb(children);
+                } else {
+                    delete cmd;
+                    if (lastCompound) {
+                        lastCompound->updateObsolete();
+                    }
+                }
+                const std::vector<KnobHolder*>& touched = scope.getTouched();
+                for (std::size_t i = 0; i < touched.size(); ++i) {
+                    if (!last.touches(touched[i])) {
+                        last.touched.push_back(QPointer<KnobHolder>(touched[i]));
+                    }
+                }
+                if (last.cmd->isObsolete()) {
+                    eraseAt((int)entries.size() - 1);
+                }
+                Q_EMIT _publicInterface->changed();
+
+                return;
+            }
+        }
+
+        UndoEntry e;
+        e.cmd = cmd;
+        e.hasOwner = (owner != 0);
+        e.owner = owner;
+        const std::vector<KnobHolder*>& touched = scope.getTouched();
+        for (std::size_t i = 0; i < touched.size(); ++i) {
+            e.touched.push_back(QPointer<KnobHolder>(touched[i]));
+        }
+        e.done = true;
+        e.undoSeq = 0;
+        entries.push_back(e);
+        applyLimit();
+        Q_EMIT _publicInterface->changed();
     }
 
     // Newest done entry; with an owner, the newest done entry touching it.
@@ -288,6 +548,11 @@ struct UndoHistoryPrivate {
     void clearNow()
     {
         clearPending = false;
+        // Open frames stay open, emptied: their steps are still to be closed.
+        for (std::vector<CaptureFrame>::reverse_iterator it = frames.rbegin(); it != frames.rend(); ++it) {
+            deleteNewestFirst(&it->children);
+            it->scopes.clear();
+        }
         UndoEntries removed;
         removed.swap(entries);
         deleteEntries(removed);
@@ -299,11 +564,13 @@ struct UndoHistoryPrivate {
     {
         QUndoCommand* cmd = entries[i].cmd;
         executing = true;
+        replaying = true;
         if (isUndo) {
             cmd->undo();
         } else {
             cmd->redo();
         }
+        replaying = false;
         executing = false;
         if (clearPending) {
             clearNow();
@@ -369,60 +636,40 @@ UndoHistory::push(QUndoCommand* cmd,
         return;
     }
 
+    _imp->openFrame(false, QString());
     _imp->executing = true;
     cmd->redo();
     _imp->executing = false;
+    CaptureFrame frame = _imp->closeFrame();
     if (_imp->clearPending) {
+        deleteNewestFirst(&frame.children);
         delete cmd;
         _imp->clearNow();
         Q_EMIT changed();
 
         return;
     }
-    if (cmd->isObsolete()) {
-        delete cmd;
+
+    QUndoCommand* entryCmd = cmd;
+    if (!frame.children.empty()) {
+        entryCmd = new CompoundUndoCommand(&_imp->replayHook, cmd, frame.children, cmd->text());
+    }
+    if (entryCmd->isObsolete()) {
+        delete entryCmd;
         Q_EMIT changed();
 
         return;
     }
 
-    _imp->dropUndone();
-    _imp->dropObsolete();
+    UndoScope entryScope = UndoHistoryPrivate::unionOf(scope, frame.scopes);
+    if (!_imp->frames.empty()) {
+        // Pushed inside a step, which makes the entry.
+        _imp->frames.back().children.push_back(entryCmd);
+        _imp->frames.back().scopes.push_back(entryScope);
 
-    KnobHolder* owner = scope.getOwner();
-    if (!_imp->entries.empty() && (cmd->id() != -1)) {
-        UndoEntry& last = _imp->entries.back();
-        bool sameOwner = owner ? last.isOwnedBy(owner) : !last.hasOwner;
-        if (sameOwner && (last.cmd->id() == cmd->id()) && last.cmd->mergeWith(cmd)) {
-            delete cmd;
-            const std::vector<KnobHolder*>& touched = scope.getTouched();
-            for (std::size_t i = 0; i < touched.size(); ++i) {
-                if (!last.touches(touched[i])) {
-                    last.touched.push_back(QPointer<KnobHolder>(touched[i]));
-                }
-            }
-            if (last.cmd->isObsolete()) {
-                _imp->eraseAt((int)_imp->entries.size() - 1);
-            }
-            Q_EMIT changed();
-
-            return;
-        }
+        return;
     }
-
-    UndoEntry e;
-    e.cmd = cmd;
-    e.hasOwner = (owner != 0);
-    e.owner = owner;
-    const std::vector<KnobHolder*>& touched = scope.getTouched();
-    for (std::size_t i = 0; i < touched.size(); ++i) {
-        e.touched.push_back(QPointer<KnobHolder>(touched[i]));
-    }
-    e.done = true;
-    e.undoSeq = 0;
-    _imp->entries.push_back(e);
-    _imp->applyLimit();
-    Q_EMIT changed();
+    _imp->addEntry(entryCmd, entryScope, true);
 }
 
 bool
@@ -508,8 +755,13 @@ UndoHistory::getLastCommand() const
         return 0;
     }
     const UndoEntry& last = _imp->entries.back();
+    if (!last.done || last.isObsolete()) {
+        return 0;
+    }
+    // Callers compare it with the command they would push next, which is never a compound.
+    const CompoundUndoCommand* compound = dynamic_cast<const CompoundUndoCommand*>(last.cmd);
 
-    return (last.done && !last.isObsolete()) ? last.cmd : 0;
+    return (compound && compound->getOuter()) ? compound->getOuter() : last.cmd;
 }
 
 void
@@ -544,6 +796,115 @@ UndoHistory::clear()
     }
     _imp->clearNow();
     Q_EMIT changed();
+}
+
+void
+UndoHistory::openStep(const QString& text)
+{
+    if (_imp->replaying) {
+        ++_imp->ignoredSteps;
+
+        return;
+    }
+    if (!_imp->frames.empty()) {
+        ++_imp->frames.back().nestedSteps;
+
+        return;
+    }
+    _imp->openFrame(true, text);
+}
+
+void
+UndoHistory::closeStep()
+{
+    // Steps nest strictly, so the innermost open one is the one closing.
+    if (_imp->ignoredSteps > 0) {
+        --_imp->ignoredSteps;
+
+        return;
+    }
+    if (_imp->frames.empty()) {
+        return;
+    }
+    CaptureFrame& top = _imp->frames.back();
+    if (top.nestedSteps > 0) {
+        --top.nestedSteps;
+
+        return;
+    }
+    if (!top.isStep) {
+        return;
+    }
+    CaptureFrame frame = _imp->closeFrame();
+    if (frame.children.empty()) {
+        return;
+    }
+
+    QUndoCommand* entryCmd;
+    UndoScope entryScope;
+    if (frame.children.size() == 1) {
+        // A step holding a single command is that command, owner included.
+        entryCmd = frame.children.front();
+        entryScope = frame.scopes.front();
+    } else {
+        QString text = frame.text.isEmpty() ? frame.children.front()->text() : frame.text;
+        entryCmd = new CompoundUndoCommand(&_imp->replayHook, 0, frame.children, text);
+        entryScope = UndoHistoryPrivate::unionOf(UndoScope(), frame.scopes);
+        entryScope.ownByOnlyTouched();
+    }
+    if (entryCmd->isObsolete()) {
+        delete entryCmd;
+        Q_EMIT changed();
+
+        return;
+    }
+    _imp->addEntry(entryCmd, entryScope, false);
+}
+
+bool
+UndoHistory::isStepOpen() const
+{
+    for (std::size_t i = 0; i < _imp->frames.size(); ++i) {
+        if (_imp->frames[i].isStep) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+UndoHistory::isCapturing() const
+{
+    return !_imp->replaying && !_imp->frames.empty();
+}
+
+quint64
+UndoHistory::getCaptureSerial() const
+{
+    return _imp->captureSerial;
+}
+
+void
+UndoHistory::recordApplied(QUndoCommand* cmd,
+                           const UndoScope& scope)
+{
+    if (!cmd) {
+        return;
+    }
+    if (!isCapturing()) {
+        delete cmd;
+
+        return;
+    }
+    _imp->frames.back().children.push_back(cmd);
+    _imp->frames.back().scopes.push_back(scope);
+}
+
+void
+UndoHistory::setReplayHook(const std::function<void(bool)>& hook)
+{
+    _imp->replayHook = hook;
 }
 
 NATRON_NAMESPACE_EXIT

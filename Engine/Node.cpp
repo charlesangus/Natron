@@ -9117,6 +9117,12 @@ void
 Node::Implementation::runInputChangedCallback(int index,
                                               const std::string& cb)
 {
+    // Undoing or redoing recorded edits replays what the callback did, so it must not run again.
+    AppInstancePtr app = _publicInterface->getApp();
+    if (app && app->isReplayingUndo()) {
+        return;
+    }
+
     std::vector<std::string> args;
     std::string error;
 

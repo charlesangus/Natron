@@ -1245,6 +1245,25 @@ recordPassesGpu(EffectInstance& effect,
     io.haloY = rect.y1 - sourceRoI.y1;
     io.nComps = nComps;
     io.channels = plan.processChannels;
+    // The other inputs as the CPU passes read them through getImage(): over their own region of
+    // definition only.
+    io.inputs.resize(args.inputs.size());
+    for (int i = 0; i < (int)args.inputs.size(); ++i) {
+        const GpuImageView& in = args.inputs[i];
+        EffectInstancePtr other = (i == sourceInput) ? EffectInstancePtr() : effect.getInput(i);
+        if (!other || !in.buffer || (in.nComps <= 0)) {
+            continue;
+        }
+        const RenderScale otherScale = other->supportsRenderScale() ? scale : RenderScale::identity;
+        RectD otherRoD;
+        bool otherIsProjectFormat = false;
+        if (other->getRegionOfDefinition_public(other->getRenderHash(), time, otherScale, view, &otherRoD, &otherIsProjectFormat) == eStatusFailed) {
+            return eStatusFailed;
+        }
+        RectI otherValid;
+        intersectRects(in.bounds, toPixelEnclosing(otherRoD, scale, effect.getAspectRatio(i)), &otherValid);
+        io.inputs[i] = cropGpuView(in, otherValid);
+    }
     if (list.gpu(io) != eStatusOK) {
         return eStatusFailed;
     }

@@ -1,0 +1,7 @@
+slang_add_kernel(iblur_load Kernels/iblur.slang ENTRY iblur_load REGISTRY NatronGpu)
+slang_add_kernel(iblur_radii Kernels/iblur.slang ENTRY iblur_radii REGISTRY NatronGpu)
+slang_add_kernel(iblur_rowmax Kernels/iblur.slang ENTRY iblur_rowmax REGISTRY NatronGpu)
+slang_add_kernel(iblur_shift Kernels/iblur.slang ENTRY iblur_shift REGISTRY NatronGpu)
+slang_add_kernel(iblur_rows Kernels/iblur.slang ENTRY iblur_rows REGISTRY NatronGpu)
+slang_add_kernel(iblur_columns Kernels/iblur.slang ENTRY iblur_columns REGISTRY NatronGpu)
+slang_add_kernel(iblur_box Kernels/iblur.slang ENTRY iblur_box REGISTRY NatronGpu)

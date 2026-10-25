@@ -41,6 +41,17 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+bool
+isAuxInput(const NodeSpec& spec,
+           int inputNb)
+{
+    const NodeSpec::ResolvedInput input = spec.resolveInput(inputNb);
+
+    return input.spec && (input.spec->role == InputRole::Aux);
+}
+} // namespace
+
 StagedImageEffect::StagedImageEffect(NodePtr node)
     : NativeEffectBase(node)
     , _stageKnobs()
@@ -189,6 +200,9 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
     if ((inputNb == source) && (kind == OpKind::Passes)) {
         return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
     }
+    if ((inputNb != source) && (kind == OpKind::Passes) && isAuxInput(*nodeSpec(), inputNb)) {
+        return opPassesInputRoI(inputNb, outputRect, scale);
+    }
     if ((inputNb == source) && (kind == OpKind::Resample) && opResamplesOnGpu()) {
         const double time = getCurrentTime();
         const ViewIdx view = getCurrentView();
@@ -216,6 +230,9 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
     }
     if ((kind != OpKind::Point) && (kind != OpKind::Composite) && (kind != OpKind::Passes) && ((kind != OpKind::Resample) || !opResamplesOnGpu())) {
         return false;
+    }
+    if ((kind == OpKind::Passes) && (inputNb != getSourceInput()) && isAuxInput(*nodeSpec(), inputNb)) {
+        return opPassesInputLayer(inputNb, plane, time, view, layer);
     }
     stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
 

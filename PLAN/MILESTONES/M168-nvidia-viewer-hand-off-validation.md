@@ -18,11 +18,38 @@ Deps: M107 - GPU Viewer Hand-off, M91 - NVIDIA GPU Validation. Needs the NVIDIA 
   - verify: `GUI_TEST_HOST_DISPLAY=:0 XAUTHORITY=… Tests/gui/run-gui-test.sh Tests/gui/<existing smoke>.py <fast AppImage>` passes and logs an NVIDIA renderer. The same script still passes under Xvfb in the container. `bash -n` and `shellcheck` pass.
   - size: M
 
-- [ ] M168.P1.T3 — Run M107's suites and UAT on NVIDIA, on every rung (was M91.P3.T2)
+- [x] M168.P1.T3 — Run M107's suites and UAT on NVIDIA, on every rung (was M91.P3.T2)
   - files: none in code. Output goes to `.local/m168/`, results in this milestone file.
   - approach: One remote `fast --tests` on this milestone's branch (main with M107 merged). In the NVIDIA container (M91.P1.T4's recipe), run `ViewerHandoff_Test`, `ViewerRootOnDevice_Test`, `ViewerGpuProcess_Test`, `OcioVulkanShader_Test` and `GlInterop_Test`, in both scheduler modes. Run `Tests/gui/m107_viewer_handoff.py`: cpu reference first; then `NATRON_VIEWER_HANDOFF=zerocopy` and `hostsync` on `:0` (P1.T2); `readback` under Xvfb; `NATRON_GPU_FAULT=lost@40` on the hardware device. Run `tools/gpu-spike/desktop-handoff-check.sh` on `:0`. Check via `NATRON_RENDER_PROFILE` that root regions report `downloadBytes == 0` on zerocopy and hostsync.
   - verify: all suites pass on the RTX 3070 Ti. Each UAT config shows `SUMMARY 0 failure(s)`. The handoff report says zero-copy was reached on NVIDIA GL, or names what is missing and the logged fallback rung. Viewer-path failures are fixed under M91.P2.T1's rules or filed as follow-ups.
   - size: M
+
+## Results (P1.T3, 2026-10-25, RTX 3070 Ti, driver 580.178.04)
+
+Build: remote `fast --tests` run 40170811890 on f6bab8119, green; `RenderProfileTest` passes in both legs. Suites ran in the NVIDIA container from that run's build tree. Logs: `.local/m168/`.
+
+| suite | legacy | taskgraph |
+|---|---|---|
+| OcioVulkanShader | pass 4/4 | pass 4/4 |
+| ViewerGpuProcess | pass 4/4 | pass 4/4 |
+| ViewerHandoff | pass 8/8 | pass 8/8 |
+| ViewerRootOnDevice | pass 6/6 | pass 6/6 |
+| Gpu.GlInteropTest | pass 17/17 (best zero-copy, missing none) | pass 17/17 |
+
+ViewerHandoff as built pinned Mesa's EGL vendor and so only reached readback on NVIDIA. With the NVIDIA vendor it passes 14/14 (with ViewerRootOnDevice) in both modes and reaches every rung: zerocopy, hostsync, readback, cpu. Fixed in 10d989cab.
+
+| UAT config | display | SUMMARY | PASS | rung |
+|---|---|---|---|---|
+| cpu | Xvfb | 0 failure(s) | 396 | cpu |
+| cpu-host (reference for :0) | :0 | 0 failure(s) | 396 | cpu |
+| zerocopy | :0 | 0 failure(s) | 532 | zerocopy |
+| hostsync | :0 | 0 failure(s) | 532 | hostsync |
+| readback | Xvfb | 0 failure(s) | 532 | readback |
+| `NATRON_GPU_FAULT=lost@40` | :0 | 0 failure(s) | 92 | zerocopy → cpu → zerocopy |
+
+`desktop-handoff-check.sh` on :0: `VERDICT zero-copy reached (xcb, best=zero-copy)`, missing none. **Zero-copy is reached on NVIDIA GL.**
+
+Profile: all 39 root regions report `downloadBytes == 0` on zerocopy, hostsync and readback; the fault run's one 3 MB root download is the first frame after loss on the cpu rung. No staged transfer occurred in any run (every transfer was host-imported), so no `stagedReasons` object was emitted.
 
 **Verification gate:** P1.T1's `RenderProfile_Test` case passes in a remote `fast --tests` build, and P1.T3's results section in this file shows every listed suite passing on the RTX 3070 Ti in both scheduler modes, `SUMMARY 0 failure(s)` for each UAT config, and the zero-copy result (or the missing piece and its fallback rung).
 
@@ -30,3 +57,4 @@ Deps: M107 - GPU Viewer Hand-off, M91 - NVIDIA GPU Validation. Needs the NVIDIA 
 
 - 2026-10-25 — Claimed despite file overlap: P1.T1's `Engine/GpuRegionTask.cpp` overlaps an open M101 - Clean-Sheet Merge Node task (P7.T2), and its `Engine/RenderScheduler.*`/`Engine/RenderStats.*` overlap parked M64 - Tiled Rendering tasks. The user accepted the overlap (§8a would otherwise make M168 wait on both); the edits are small additive fields, so whichever lands second rebases.
 - 2026-10-25 — Freshness check passed against main 3c8553ec8 (M107 merged): references hold, line numbers drifted (`importStatsBefore` ~l.379, `importsAtUpload` ~l.421, `GpuRegionTimes` ~l.1286 in `RenderScheduler.cpp`, `formatRegionRecord` in `RenderStats.cpp` ~l.786). The suites live under `Tests/Native/` and `Tests/Gpu/`.
+- 2026-10-25 — Host-display UAT needs a CPU reference taken on the same display (the :0 desktop is 5120x1440, so Xvfb references don't compare), and the harness pins and waits for the window (9131ba0a9). Host-display runs went through the container because the host has no PySide6.

@@ -5,7 +5,7 @@ frames: the "ForegroundTaskDialog" is the active modal widget, and the viewer's 
 shortcut, sent through the window system with QTest, does nothing. The viewer's stop shortcut
 (Escape) is not sent: while the dialog is up the keyboard is the dialog's, and Escape there is the
 dialog's own Cancel. Cancel stops tracking, and no marker key appears past the frame it stopped at.
-The Tracker is set to Match-Move, so after each run it solves for its transform; the dialog stays
+The Tracker is set to a Match-Move Transform, so after each run it solves for its transform; the dialog stays
 up through that solve, and the Tracker's transform knobs hold the values they had when the dialog
 closed.
 
@@ -150,6 +150,9 @@ try:
         track = context.createTrack()
         require(track is not None, "create a track")
         set_on_corner(track)
+        # The solve keys translate/rotate/scale only for a Transform; the default CornerPin keys
+        # the corner points instead.
+        tracker.getParam("transformType").set("Transform")
         tracker.getParam("motionType").set("Match-Move")
         state.update(checker=checker, transform=transform, tracker=tracker, context=context, track=track, viewer=viewer)
         yield ("sleep", 300)

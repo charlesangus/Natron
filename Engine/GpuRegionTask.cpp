@@ -240,8 +240,9 @@ struct Slot {
     gpu::GpuBufferHandle handle;
     GpuDeviceImagePtr pinned;
 
-    // For an external input in RAM: the float image uploaded from.
+    // For an external input in RAM: the float image uploaded from, and the bytes uploaded of it.
     ImagePtr source;
+    std::size_t uploadBytes = 0;
 
     // For an external input: its task, and what the members read of it.
     int externalTask = -1;
@@ -260,6 +261,9 @@ struct Slot {
     std::size_t downloadBytes = 0;
     gpu::TimelineValue downloadDone;
     ImagePtr downloaded;
+
+    // In a region run whole, the segment releasing it to the transfer queue for its download.
+    int downloadSegment = -1;
 
     // Read by another region or the root after this one, so never reused for another member.
     bool keep = false;
@@ -372,6 +376,9 @@ public:
 private:
     EffectInstance::RenderRoIRetCode runPlanned(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
+        // Until its first submission, the host work of the region would otherwise leave the device idle long enough
+        // for its first copies to run at the slower rate of a device that has idled.
+        _busy = _runtime.holdBusy();
         const Clock::time_point planBegin = Clock::now();
         const std::uint64_t allocationsBefore = _runtime.pool().allocationCount();
         const std::uint64_t importsBefore = _runtime.transfer().hostImportCount();
@@ -390,17 +397,17 @@ private:
         }
         importSources();
         if (strips.empty()) {
-            if (!upload()) {
+            if (!timeTransfersForProfile(1) || !acquireUploadBuffers()) {
                 return failed();
-            }
-            if (isAborted()) {
-                return EffectInstance::eRenderRoIRetCodeAborted;
             }
             const EffectInstance::RenderRoIRetCode recorded = record();
             if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
                 return (recorded == EffectInstance::eRenderRoIRetCodeFailed) ? failed() : recorded;
             }
-            if (!finishDownloads()) {
+            if (isAborted()) {
+                return EffectInstance::eRenderRoIRetCodeAborted;
+            }
+            if (!submitChain() || !finishChain()) {
                 return failed();
             }
         } else {
@@ -1083,15 +1090,28 @@ private:
         return true;
     } // resolveInputs
 
-    bool upload()
+    // Gives each RAM input its device buffer before anything is recorded, so that the members can be recorded against
+    // it and the upload issued only once the whole region is ready to follow it on the device.
+    bool acquireUploadBuffers()
     {
-        if (!timeTransfersForProfile(1)) {
-            return false;
+        for (Slot& slot : _slots) {
+            if (!slot.source) {
+                continue;
+            }
+            slot.uploadBytes = gpuHostTransferBytes(*slot.source);
+            if (!acquireBuffer(std::max(slot.uploadBytes, slot.layout.deviceBytes()), slot.externalTask, &slot.handle)) {
+                return false;
+            }
+            slot.view = viewOf(&slot.handle.buffer(), slot.layout);
         }
-        const Clock::time_point begin = Clock::now();
-        std::vector<gpu::TimelineValue> uploads;
-        std::vector<std::shared_ptr<Image::ReadAccess>> accesses;
 
+        return true;
+    }
+
+    // The first segment takes the uploaded ranges over from the transfer queue, so the uploads need no compute
+    // submission of their own.
+    bool issueUploads()
+    {
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
             if (!slot.source) {
@@ -1099,21 +1119,13 @@ private:
             }
             const ImagePtr& image = slot.source;
             const RectI bounds = image->getBounds();
-            const std::size_t bytes = gpuHostTransferBytes(*image);
-            if (!acquireBuffer(std::max(bytes, slot.layout.deviceBytes()), slot.externalTask, &slot.handle)) {
-                drainUploads(uploads);
-
-                return false;
-            }
             std::shared_ptr<Image::ReadAccess> access = std::make_shared<Image::ReadAccess>(image.get());
             const unsigned char* data = access->pixelAt(bounds.x1, bounds.y1);
             if (!data) {
-                drainUploads(uploads);
-
                 return fail(_graph.tasks[slot.externalTask].key.node, "its image has no pixels");
             }
             gpu::StreamOptions options;
-            options.handoff = gpu::ComputeHandoff::Submit;
+            options.handoff = gpu::ComputeHandoff::Record;
             if (_queries && (_uploadQuery[s] >= 0)) {
                 options.timestampPool = _queries;
                 options.timestampQuery = queryOf(0, _uploadQuery[s]);
@@ -1122,17 +1134,14 @@ private:
             options.path = &path;
             gpu::TimelineValue done;
             // upload() only reads the host range.
-            const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), bytes }, slot.handle.buffer(), 0, done, options);
+            const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), slot.uploadBytes }, slot.handle.buffer(), 0, done, options);
             if (!status) {
-                drainUploads(uploads);
-
                 return failGpu(slot.externalTask, "upload failed", status);
             }
             notePath(path, true);
             noteTransferRecord(true, slot.layout.pixelBytes(), -1, slot.layout.nComps(), path, s);
-            uploads.push_back(done);
-            accesses.push_back(access);
-            slot.view = viewOf(&slot.handle.buffer(), slot.layout);
+            _uploadsDone.push_back(done);
+            _uploadAccesses.push_back(access);
             if (_stats) {
                 _stats->noteUpload(slot.layout.pixelBytes());
             }
@@ -1141,23 +1150,8 @@ private:
             }
         }
 
-        for (const gpu::TimelineValue& done : uploads) {
-            const gpu::GpuStatus status = _runtime.wait(done);
-            if (!status) {
-                drainUploads(uploads);
-
-                return failGpu(-1, "upload failed", status);
-            }
-        }
-        if (_report) {
-            _report->uploadMs = msBetween(begin, Clock::now());
-        }
-        for (Slot& slot : _slots) {
-            slot.source.reset();
-        }
-
         return true;
-    } // upload
+    } // issueUploads
 
     void drainUploads(const std::vector<gpu::TimelineValue>& uploads)
     {
@@ -1187,11 +1181,13 @@ private:
         }
     }
 
-    // Times a segment's device work so submit() can report device time: query 0 is written as it begins, query k + 1
-    // once its k-th member is done, and the query after its last member as it ends. A member's time runs from the
-    // timestamp before it, so it carries the barrier it waits on. A device without timestamps, or a pool that cannot
-    // be made, leaves the segment on its host interval.
-    void beginTimedSegment(gpu::GpuRecordContext& recorder)
+    // Times a segment's device work so that its device time can be reported: query first is written as it begins,
+    // query first + k + 1 once its k-th member is done, and the query after its last member as it ends. A member's
+    // time runs from the timestamp before it, so it carries the barrier it waits on. A device without timestamps, or a
+    // pool that cannot be made, leaves the segment on its host interval. A region run whole keeps all its segments in
+    // flight at once, so the pool holds a range for each segment it can split into.
+    void beginTimedSegment(gpu::GpuRecordContext& recorder,
+                           std::uint32_t first = 0)
     {
         _segmentTimed = false;
         const std::uint32_t count = (std::uint32_t)_members.size() + 2;
@@ -1201,29 +1197,34 @@ private:
             }
             VkQueryPoolCreateInfo info { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
             info.queryType = VK_QUERY_TYPE_TIMESTAMP;
-            info.queryCount = count;
+            info.queryCount = count * ((std::uint32_t)_members.size() + 1);
             if (vkCreateQueryPool(_runtime.device().device(), &info, nullptr, &_segmentQueries) != VK_SUCCESS) {
                 _segmentQueries = VK_NULL_HANDLE;
 
                 return;
             }
+            _segmentQueryCount = info.queryCount;
         }
-        recorder.resetQueries(_segmentQueries, 0, count);
-        recorder.writeTimestamp(_segmentQueries, 0);
+        if (first + count > _segmentQueryCount) {
+            return;
+        }
+        recorder.resetQueries(_segmentQueries, first, count);
+        recorder.writeTimestamp(_segmentQueries, first);
         _segmentTimed = true;
     }
 
     /**
-     * @brief Reads the timestamps of a submitted segment of nMembers members into the device time of each member and
-     * of the whole segment. Returns false, leaving both alone, when one of them cannot be read.
+     * @brief Reads the timestamps of a submitted segment of nMembers members, from query first on, into the device
+     * time of each member and of the whole segment. Returns false, leaving both alone, when one of them cannot be read.
      **/
     bool segmentDeviceNs(std::size_t nMembers,
                          std::vector<long long>* memberNs,
-                         long long* totalNs) const
+                         long long* totalNs,
+                         std::uint32_t first = 0) const
     {
         const std::uint32_t count = (std::uint32_t)nMembers + 2;
         std::vector<std::uint64_t> results((std::size_t)count * 2, 0);
-        const VkResult read = vkGetQueryPoolResults(_runtime.device().device(), _segmentQueries, 0, count, results.size() * sizeof(std::uint64_t), results.data(),
+        const VkResult read = vkGetQueryPoolResults(_runtime.device().device(), _segmentQueries, first, count, results.size() * sizeof(std::uint64_t), results.data(),
                                                     2 * sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
         if (read != VK_SUCCESS) {
             return false;
@@ -1527,23 +1528,21 @@ private:
         }
     }
 
-    bool issueDownloads(int position)
+    // Each download waits on the device for the segment that released its range to the transfer queue.
+    bool issueDownloads()
     {
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
-            if (!slot.download || slot.downloadIssued || (slot.downloadAt > position)) {
+            if (!slot.download || slot.downloadIssued || slot.pinned) {
                 continue;
             }
             slot.downloadIssued = true;
-            if (slot.pinned) {
-                if (!downloadPinned(slot)) {
-                    return false;
-                }
-                continue;
+            const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
+            if ((slot.downloadSegment < 0) || !_segments[(std::size_t)slot.downloadSegment].submitted) {
+                return fail(producerTask, "the image was not rendered on the device");
             }
             awaitPreparedDownloads();
             const Clock::time_point begin = Clock::now();
-            const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
             if (!slot.downloadImage || !slot.downloadAccess) {
                 return fail(producerTask, "cannot allocate the downloaded image");
             }
@@ -1556,7 +1555,8 @@ private:
                 return fail(producerTask, "the downloaded image has no pixels");
             }
             gpu::StreamOptions options;
-            options.handoff = gpu::ComputeHandoff::Submit;
+            options.handoff = gpu::ComputeHandoff::Record;
+            options.waits = std::span<const gpu::TimelineValue>(&_segments[(std::size_t)slot.downloadSegment].done, 1);
             if (_queries && (_downloadQuery[s] >= 0)) {
                 options.timestampPool = _queries;
                 options.timestampQuery = queryOf(0, _downloadQuery[s]);
@@ -1579,7 +1579,7 @@ private:
         }
 
         return true;
-    }
+    } // issueDownloads
 
     // The device image of another region goes through the store, which keeps the RAM copy for its other consumers.
     bool downloadPinned(Slot& slot)
@@ -1631,14 +1631,92 @@ private:
         return true;
     }
 
+    // A segment of a region run whole: its members, recorded in one command buffer and submitted once the whole
+    // region is recorded, behind the uploads or the segment before it.
+    struct Segment {
+        std::unique_ptr<gpu::GpuRecordContext> recorder;
+        std::vector<int> members;
+
+        // Ownership transfers it records, which it must run even with no member in it.
+        int handoffs = 0;
+        bool timed = false;
+        std::uint32_t firstQuery = 0;
+        bool submitted = false;
+        gpu::TimelineValue done;
+    };
+
+    int taskOf(const Segment& segment) const
+    {
+        return segment.members.empty() ? firstMemberTask() : _members[segment.members.front()].task;
+    }
+
+    bool openSegment()
+    {
+        _segments.emplace_back();
+        Segment& segment = _segments.back();
+        const gpu::GpuStatus status = _runtime.newRecordContext(segment.recorder);
+        if (!status) {
+            return failGpu(firstMemberTask(), "cannot record device work", status);
+        }
+        if (_segments.size() == 1) {
+            for (const Slot& slot : _slots) {
+                if (slot.source && slot.handle) {
+                    segment.recorder->acquireFromTransfer(_runtime.transfer(), slot.handle.buffer(), 0, slot.uploadBytes);
+                    ++segment.handoffs;
+                }
+            }
+        }
+        segment.firstQuery = (std::uint32_t)(_segments.size() - 1) * ((std::uint32_t)_members.size() + 2);
+        beginTimedSegment(*segment.recorder, segment.firstQuery);
+        segment.timed = _segmentTimed;
+        _segmentTimed = false;
+
+        return true;
+    }
+
+    // Ends the segment with the release, to the transfer queue, of every image downloadable once the member at
+    // position is done, so the downloads wait for nothing but this segment on the device.
+    void closeSegment(int position)
+    {
+        Segment& segment = _segments.back();
+        if (segment.timed) {
+            segment.recorder->writeTimestamp(_segmentQueries, segment.firstQuery + (std::uint32_t)segment.members.size() + 1);
+        }
+        for (Slot& slot : _slots) {
+            if (!slot.download || slot.pinned || (slot.downloadSegment >= 0) || (slot.downloadAt > position)) {
+                continue;
+            }
+            slot.downloadSegment = (int)_segments.size() - 1;
+            if (slot.handle && (slot.downloadBytes <= (std::size_t)slot.handle.size())) {
+                segment.recorder->releaseToTransfer(_runtime.transfer(), slot.handle.buffer(), 0, slot.downloadBytes);
+            }
+            ++segment.handoffs;
+        }
+    }
+
+    bool downloadDueAt(int position) const
+    {
+        for (const Slot& slot : _slots) {
+            if (slot.download && !slot.pinned && (slot.downloadSegment < 0) && (slot.downloadAt == position)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @brief Records every member of a region run whole, without submitting anything, in segments that each end
+     * where a download can start. The uploads, the segments and the downloads are then submitted back to back, so
+     * that the device never waits on the host between them: a copy issued after the device idled runs much slower.
+     **/
     EffectInstance::RenderRoIRetCode record()
     {
-        std::unique_ptr<gpu::GpuRecordContext> recorder;
-        std::vector<int> segment;
-        Clock::time_point segmentBegin = Clock::now();
-
         if (_report) {
             _report->memberNs.assign(_members.size(), 0);
+        }
+        if (!openSegment()) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
         }
         for (std::size_t i = 0; i < _members.size(); ++i) {
             if (isAborted()) {
@@ -1646,17 +1724,10 @@ private:
             }
             Member& member = _members[i];
             if (!member.identity) {
-                if (!recorder) {
-                    const gpu::GpuStatus status = _runtime.newRecordContext(recorder);
-                    if (!status) {
-                        failGpu(member.task, "cannot record device work", status);
-
-                        return EffectInstance::eRenderRoIRetCodeFailed;
-                    }
-                    segmentBegin = Clock::now();
-                    beginTimedSegment(*recorder);
-                } else if (!segment.empty()) {
-                    recorder->computeBarrier();
+                Segment& segment = _segments.back();
+                gpu::GpuRecordContext& recorder = *segment.recorder;
+                if (!segment.members.empty()) {
+                    recorder.computeBarrier();
                 }
                 const Clock::time_point recordBegin = Clock::now();
                 Slot& out = _slots[member.outSlot];
@@ -1666,7 +1737,7 @@ private:
                 out.view = viewOf(&out.handle.buffer(), out.layout);
 
                 const FrameGraph::Task& task = _graph.tasks[member.task];
-                GpuRenderArgs args(*recorder);
+                GpuRenderArgs args(recorder);
                 args.query = member.query;
                 args.outputRect = task.renderedRoI;
                 if (!setInputs(member, &args)) {
@@ -1687,36 +1758,139 @@ private:
                     _report->recordMs += msBetween(recordBegin, Clock::now());
                 }
                 if (status != eStatusOK) {
-                    failRecording(member.task, *recorder);
+                    failRecording(member.task, recorder);
 
                     return EffectInstance::eRenderRoIRetCodeFailed;
                 }
-                if (_segmentTimed) {
-                    recorder->writeTimestamp(_segmentQueries, (std::uint32_t)segment.size() + 1);
+                if (segment.timed) {
+                    recorder.writeTimestamp(_segmentQueries, segment.firstQuery + (std::uint32_t)segment.members.size() + 1);
                 }
-                segment.push_back((int)i);
+                segment.members.push_back((int)i);
             }
             releaseSlotsReadLastBy((int)i);
 
-            bool downloadHere = false;
-            for (const Slot& slot : _slots) {
-                if (slot.download && !slot.downloadIssued && (slot.downloadAt == (int)i)) {
-                    downloadHere = true;
-                }
-            }
-            if (downloadHere) {
-                if (!submit(&recorder, segment, segmentBegin) || !issueDownloads((int)i)) {
+            if ((i + 1 < _members.size()) && downloadDueAt((int)i)) {
+                closeSegment((int)i);
+                if (!openSegment()) {
                     return EffectInstance::eRenderRoIRetCodeFailed;
                 }
-                segment.clear();
             }
         }
-        if (!submit(&recorder, segment, segmentBegin) || !issueDownloads(std::numeric_limits<int>::max())) {
-            return EffectInstance::eRenderRoIRetCodeFailed;
-        }
+        closeSegment(std::numeric_limits<int>::max());
 
         return EffectInstance::eRenderRoIRetCodeOk;
     } // record
+
+    // The device work of a region run whole, issued with no host wait between its parts.
+    bool submitChain()
+    {
+        if (!_computeTimeline) {
+            const gpu::GpuStatus created = _runtime.note(_runtime.device().createTimelineSemaphore(0, _computeTimeline));
+            if (!created) {
+                _computeTimeline = VK_NULL_HANDLE;
+
+                return failGpu(firstMemberTask(), "cannot create the region's timeline", created);
+            }
+        }
+        _uploadBegin = Clock::now();
+        if (!issueUploads()) {
+            return false;
+        }
+        _busy.release();
+        gpu::TimelineValue previous;
+        for (Segment& segment : _segments) {
+            if (segment.members.empty() && (segment.handoffs == 0)) {
+                continue;
+            }
+            std::vector<gpu::TimelineValue> waits;
+            if (previous) {
+                waits.push_back(previous);
+            } else {
+                waits = _uploadsDone;
+            }
+            segment.done = gpu::TimelineValue { _computeTimeline, ++_computeValue };
+            const gpu::GpuStatus status = _runtime.note(segment.recorder->submit(waits, segment.done));
+            if (!status) {
+                return failGpu(taskOf(segment), "the device work failed", status);
+            }
+            segment.submitted = true;
+            previous = segment.done;
+        }
+
+        return true;
+    } // submitChain
+
+    // The host times each part in turn, so the uploads and downloads keep the exposure the gate judges: what the host
+    // waits for them beyond the compute.
+    void noteSegmentTimes(const Segment& segment,
+                          long long waitNs)
+    {
+        if (!_report || segment.members.empty()) {
+            return;
+        }
+        long long deviceNs = 0;
+        std::vector<long long> memberNs;
+        if (segment.timed && segmentDeviceNs(segment.members.size(), &memberNs, &deviceNs, segment.firstQuery)) {
+            _report->kernelMs += (double)deviceNs * 1e-6;
+            _report->submitWaitMs += (double)std::max(0LL, waitNs - deviceNs) * 1e-6;
+            for (std::size_t k = 0; k < segment.members.size(); ++k) {
+                _report->memberNs[segment.members[k]] += memberNs[k];
+            }
+        } else {
+            _report->kernelMs += (double)waitNs * 1e-6;
+            _report->submitWaitMs += (double)waitNs * 1e-6;
+            chargeByWeight(segment.members, waitNs);
+        }
+    }
+
+    bool finishChain()
+    {
+        for (const gpu::TimelineValue& done : _uploadsDone) {
+            const gpu::GpuStatus status = _runtime.wait(done);
+            if (!status) {
+                return failGpu(-1, "upload failed", status);
+            }
+        }
+        _uploadsDone.clear();
+        _uploadAccesses.clear();
+        for (Slot& slot : _slots) {
+            slot.source.reset();
+        }
+        if (_report) {
+            _report->uploadMs = msBetween(_uploadBegin, Clock::now());
+        }
+        if (!issueDownloads()) {
+            return false;
+        }
+        for (const Segment& segment : _segments) {
+            if (!segment.submitted) {
+                continue;
+            }
+            const Clock::time_point waitBegin = Clock::now();
+            const gpu::GpuStatus status = _runtime.wait(segment.done);
+            if (!status) {
+                return failGpu(taskOf(segment), "the device work failed", status);
+            }
+            noteSegmentTimes(segment, nsBetween(waitBegin, Clock::now()));
+        }
+        // Done on the device, so no other thread acquiring them from the pool can race the work that used them.
+        _segments.clear();
+        _spare.clear();
+        for (const GpuDeviceImagePtr& image : _unpinAfterSubmit) {
+            image->unpin();
+        }
+        _unpinAfterSubmit.clear();
+        for (Slot& slot : _slots) {
+            if (slot.download && slot.pinned && !slot.downloadIssued) {
+                slot.downloadIssued = true;
+                if (!downloadPinned(slot)) {
+                    return false;
+                }
+            }
+        }
+
+        return finishDownloads();
+    } // finishChain
 
     bool finishDownloads()
     {
@@ -1946,6 +2120,7 @@ private:
                      std::vector<gpu::TimelineValue>* pending = nullptr)
     {
         const GpuStrip& strip = strips[index];
+        _busy.release();
         const Clock::time_point begin = Clock::now();
         std::vector<gpu::TimelineValue> uploads;
 
@@ -2817,6 +2992,19 @@ private:
             }
             _inFlightStrips.pop_front();
         }
+        for (const gpu::TimelineValue& done : _uploadsDone) {
+            _runtime.wait(done);
+        }
+        _uploadsDone.clear();
+        _uploadAccesses.clear();
+        for (const Segment& segment : _segments) {
+            if (segment.submitted) {
+                _runtime.wait(segment.done);
+            }
+        }
+        // Their command buffers and the buffers released to _spare are done with only once the device is.
+        _segments.clear();
+        _spare.clear();
         _recycled.clear();
         for (Slot& slot : _slots) {
             if (slot.downloadImage) {
@@ -2861,6 +3049,15 @@ private:
     std::vector<gpu::GpuBufferHandle> _spare;
     std::vector<GpuDeviceImagePtr> _unpinAfterSubmit;
 
+    // A region run whole: its segments, its uploads in flight and the RAM they read, from when it submits them.
+    std::vector<Segment> _segments;
+    std::vector<gpu::TimelineValue> _uploadsDone;
+    std::vector<std::shared_ptr<Image::ReadAccess>> _uploadAccesses;
+    Clock::time_point _uploadBegin;
+
+    // Keeps the device busy from the start of the region until it submits its first copy.
+    gpu::GpuBusyHold _busy;
+
     // The helper thread's job faulting in and importing the download images, until a download or drain() waits for it.
     std::shared_ptr<gpu::GpuImportJob> _prepared;
     // By strip: how many of _prepared's ranges its download waits for.
@@ -2881,6 +3078,7 @@ private:
     // of serial strips.
     VkQueryPool _queries = VK_NULL_HANDLE;
     VkQueryPool _segmentQueries = VK_NULL_HANDLE;
+    std::uint32_t _segmentQueryCount = 0;
     bool _segmentTimed = false;
     std::uint32_t _queriesPerStrip = 0;
 

@@ -30,6 +30,32 @@ enum class GpuRuntimeState {
 };
 
 struct GpuImportPreparer;
+class GpuKeepAlive;
+
+// Keeps the device busy until released or destroyed, or until the time it was taken for has passed.
+class GpuBusyHold {
+public:
+    GpuBusyHold() = default;
+    ~GpuBusyHold() { release(); }
+    GpuBusyHold(GpuBusyHold&& other) noexcept = default;
+    GpuBusyHold& operator=(GpuBusyHold&& other) noexcept
+    {
+        if (this != &other) {
+            release();
+            keepAlive_ = std::move(other.keepAlive_);
+        }
+        return *this;
+    }
+    GpuBusyHold(const GpuBusyHold&) = delete;
+    GpuBusyHold& operator=(const GpuBusyHold&) = delete;
+
+    void release();
+
+private:
+    friend class GpuRuntime;
+
+    std::shared_ptr<GpuKeepAlive> keepAlive_;
+};
 
 // Host ranges the runtime's helper thread faults in and imports, in order, ahead of the transfers that will use them.
 // The ranges must stay allocated until wait() or cancel() returns, and each must stay untouched by the device until a
@@ -128,6 +154,14 @@ public:
     // recreate() skip the ranges of those not finished.
     std::shared_ptr<GpuImportJob> prepareImports(std::vector<HostRange> ranges);
 
+    // Keeps the compute queue busy with small device-local copies while the hold lives, for limitMs at most, so that
+    // a transfer issued after host-side work finds the device busy: on a discrete card, a copy issued after the
+    // device idled for 10 ms or more runs at about half the rate of one issued back to back. Holds taken at once share
+    // one stream of copies. Off on unified-memory devices, where nothing crosses a bus, and with
+    // NATRON_GPU_KEEPALIVE=0; NATRON_GPU_KEEPALIVE=1 turns it on for every device. The copies are not counted
+    // against the fault plan.
+    GpuBusyHold holdBusy(double limitMs = 250.);
+
     // Feeds the outcome of a call made directly on a component into the state machine: a lost result latches
     // Lost, an out-of-memory result calls noteOutOfMemory(requestBytes). Returns `status` unchanged.
     GpuStatus note(const GpuStatus& status, uint64_t requestBytes = 0);
@@ -149,6 +183,7 @@ private:
     GpuRuntime() = default;
 
     GpuStatus build();
+    void stopKeepAlive();
     void teardown();
     GpuStatus lostStatus() const;
 
@@ -170,6 +205,7 @@ private:
     std::unique_ptr<GpuBufferPool> pool_;
     std::unique_ptr<GpuPipelineCache> pipelines_;
     std::unique_ptr<GpuImportPreparer> preparer_;
+    std::shared_ptr<GpuKeepAlive> keepAlive_;
 };
 
 } // namespace gpu

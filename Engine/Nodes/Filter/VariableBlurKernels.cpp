@@ -100,7 +100,11 @@ prefixRow(const float* src,
 
     satRow[0] = 0.;
     for (int x = 0; x < width; ++x) {
-        sum += src[x];
+        // A NaN or an infinity counts as 0, as on the GPU, whose integer sums cannot hold one, so
+        // that it neither spreads over the whole table nor differs between the two.
+        if (std::isfinite(src[x])) {
+            sum += src[x];
+        }
         satRow[x + 1] = sum;
     }
 }

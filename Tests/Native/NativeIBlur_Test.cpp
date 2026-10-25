@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstddef>
 #include <iostream>
+#include <limits>
 #include <list>
 #include <string>
 #include <vector>
@@ -279,6 +280,55 @@ TEST_F(NativeIBlurTest, KernelRadiusZeroIsExact)
     }
 }
 
+// A NaN or an infinity counts as 0 in the summed-area tables, as on the GPU: the plane blurs as if
+// those pixels were 0, and a pixel of radius 0 keeps its value, NaN or infinite included.
+TEST_F(NativeIBlurTest, KernelNonFiniteCountsAsZero)
+{
+    const int width = 23;
+    const int height = 17;
+    const std::size_t size = (std::size_t)width * height;
+    const float inf = std::numeric_limits<float>::infinity();
+    std::vector<float> src(size);
+    std::vector<float> rx(size, 0.f);
+    std::vector<float> ry(size, 0.f);
+    for (std::size_t i = 0; i < size; ++i) {
+        src[i] = (float)std::sin(0.37 * (double)i) * 3.f + 0.1f;
+    }
+    for (int y = 0; y < height; ++y) {
+        for (int x = width / 2; x < width; ++x) {
+            rx[(std::size_t)y * width + x] = 2.6f;
+            ry[(std::size_t)y * width + x] = 1.2f;
+        }
+    }
+    // NaN, +Inf and -Inf where the plane blurs, and each once where it does not.
+    const float specials[] = { std::numeric_limits<float>::quiet_NaN(), inf, -inf };
+    std::vector<float> zeroed(src);
+    for (int k = 0; k < 3; ++k) {
+        for (int x : { width / 2 + 2 + 3 * k, 2 + 3 * k }) {
+            const std::size_t i = (std::size_t)(4 + 4 * k) * width + x;
+            src[i] = specials[k];
+            zeroed[i] = 0.f;
+        }
+    }
+    std::vector<float> dst(size, 0.f);
+    std::vector<float> expected(size, 0.f);
+    VariableBlurKernels::iteratedBox(src.data(), width, height, rx.data(), ry.data(), 3, dst.data());
+    VariableBlurKernels::iteratedBox(zeroed.data(), width, height, rx.data(), ry.data(), 3, expected.data());
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const std::size_t i = (std::size_t)y * width + x;
+            if (rx[i] > 0.f) {
+                EXPECT_TRUE(std::isfinite(dst[i])) << x << "," << y;
+                EXPECT_EQ(expected[i], dst[i]) << x << "," << y;
+            } else if (std::isnan(src[i])) {
+                EXPECT_TRUE(std::isnan(dst[i])) << x << "," << y;
+            } else {
+                EXPECT_EQ(src[i], dst[i]) << x << "," << y;
+            }
+        }
+    }
+}
+
 // A Map of 0 everywhere, with Size At Black 0, gives the input bit for bit.
 TEST_F(NativeIBlurTest, MapZeroIsBitIdentical)
 {
@@ -341,6 +391,37 @@ TEST_F(NativeIBlurTest, HalfBlackMapLeavesBlackHalfUntouched)
     NodePtr map = makeConstant(RectI(half, 0, kParitySourceWidth, kParitySourceHeight), { 1., 1., 1., 1. });
     NodePtr iblur = makeIBlur(source, map, 10.);
     ASSERT_TRUE(bool(source) && bool(map) && bool(iblur));
+
+    RenderedPlane expected, actual;
+    ASSERT_TRUE(renderRGBA(source, kWindow, &expected));
+    ASSERT_TRUE(renderRGBA(iblur, kWindow, &actual));
+    ASSERT_EQ(expected.pixels.size(), actual.pixels.size());
+    std::size_t differingLeft = 0;
+    std::size_t differingRight = 0;
+    for (int y = 0; y < kWindow.height(); ++y) {
+        for (int x = 0; x < kWindow.width(); ++x) {
+            for (std::size_t c = 0; c < 4; ++c) {
+                const std::size_t i = ((std::size_t)y * kWindow.width() + x) * 4 + c;
+                if (expected.pixels[i] != actual.pixels[i]) {
+                    ++((x < half) ? differingLeft : differingRight);
+                }
+            }
+        }
+    }
+    EXPECT_EQ(0u, differingLeft);
+    EXPECT_GT(differingRight, 0u);
+}
+
+// Invert Map does not reach beyond the Map's image: a black Map over the right half, inverted,
+// blurs the right half at Size, and the left half, outside the Map, stays the input bit for bit.
+TEST_F(NativeIBlurTest, InvertedMapIsZeroOutsideItsImage)
+{
+    const int half = kParitySourceWidth / 2;
+    NodePtr source = makeParitySource();
+    NodePtr map = makeConstant(RectI(half, 0, kParitySourceWidth, kParitySourceHeight), { 0., 0., 0., 0. });
+    NodePtr iblur = makeIBlur(source, map, 10.);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(iblur));
+    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamInvert, { 1. }));
 
     RenderedPlane expected, actual;
     ASSERT_TRUE(renderRGBA(source, kWindow, &expected));

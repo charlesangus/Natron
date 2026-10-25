@@ -31,9 +31,11 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <functional>
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
@@ -70,10 +72,13 @@ NATRON_NAMESPACE_ENTER
  * smoothly with the radius; whole radii take the element's extremum exactly. The element is clipped
  * to the plane, as ErodeDilateKernels::filterLine() clamps its window.
  *
- * Each row of a plane has a sparse table: level k holds the extremum of the 2^k values from each
- * position, so that any span of a row is the extremum of two overlapping level entries, and a
- * pixel of radius ry costs O(ry). A plane's tables hold levels 1 to levels - 1, level k of row y
- * at tables + ((k - 1) * height + y) * width; level 0 is the plane itself.
+ * The element's value is defined row by row: each row's span is reduced by the row's sparse table
+ * (level k holds the extremum of the 2^k values from each position, so that any span is the
+ * extremum of two overlapping level entries), and the rows' values are reduced from the top. Every
+ * reduction keeps its first operand unless the second is strictly beyond it, so NaNs and zeros of
+ * either sign give one defined result, which the GPU repeats. filterPlane() computes that
+ * definition directly; filterTile() and the node's passes compute it bit for bit with bounded
+ * memory (TilePlan).
  **/
 namespace IErodeDilateKernels {
 /**
@@ -110,8 +115,9 @@ int ellipseHalfWidth(int rx, int ry, int dy) WARN_UNUSED_RETURN;
 
 /**
  * @brief Pixels x1 to x2 - 1 of row y of the filtered plane into out (indexed from x1), from the
- * plane, its tables and the radii of those pixels (also indexed from x1). The tables cover at
- * least the levels the radii's ceilings need.
+ * plane, its tables (level k of row y at tables + ((k - 1) * height + y) * width) and the radii of
+ * those pixels (also indexed from x1). The tables cover at least the levels the radii's ceilings
+ * need.
  **/
 void filterRow(const float* plane,
                const float* tables,
@@ -128,8 +134,8 @@ void filterRow(const float* plane,
 
 /**
  * @brief The whole filter of one width x height plane, single-threaded, with the per-pixel radii
- * rx and ry (width x height each), from src into dst. The reference the node's threaded passes
- * and the GPU kernels are tested against.
+ * rx and ry (width x height each), from src into dst: the definition, with the tables of every
+ * row of the plane at once, which filterTile() and the GPU kernels are tested against.
  **/
 void filterPlane(const float* src,
                  int width,
@@ -139,6 +145,269 @@ void filterPlane(const float* src,
                  bool disc,
                  bool takeMax,
                  float* dst);
+
+/**
+ * @brief The up to four elements of a pixel of radii (rx, ry): element e has the horizontal radius
+ * x[e & 1] and the vertical one y[e >> 1], the floors at 0 and the ceilings at 1, blended by tx
+ * and ty. Only the elements whose radii differ from element 0's are computed.
+ **/
+struct PixelElements {
+    int x[2] = { 0, 0 };
+    int y[2] = { 0, 0 };
+    float tx = 0.f;
+    float ty = 0.f;
+
+    bool has(int e) const WARN_UNUSED_RETURN
+    {
+        return (!(e & 1) || (x[1] != x[0])) && (!(e & 2) || (y[1] != y[0]));
+    }
+
+    int radiusX(int e) const WARN_UNUSED_RETURN
+    {
+        return x[e & 1];
+    }
+
+    int radiusY(int e) const WARN_UNUSED_RETURN
+    {
+        return y[e >> 1];
+    }
+};
+
+PixelElements pixelElements(float rx, float ry) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The pixel's value from the values of its elements, v[e] read only where p.has(e).
+ **/
+float blendElements(const PixelElements& p, const float v[4]) WARN_UNUSED_RETURN;
+
+/**
+ * @brief How a tile computes its elements; both give filterPlane()'s values bit for bit.
+ *
+ * Rows: the window is split into bands of bandRows rows. For each band, the tables of the plane
+ * rows its elements reach are built batchRows rows at a time, and every pixel of the band reduces
+ * the batch's rows into its elements, in the definition's order, before the next batch; a band's
+ * last batch done, its pixels blend their elements. A pixel costs O(ry) per element, and memory
+ * is O(batchRows x width x log rx) for the tables plus O(bandRows x window width) per fractional
+ * element. Any element shape.
+ *
+ * Columns, for the square only: a slot is a window column and a horizontal radius r that some
+ * element of the column has. The span extremum over [x - r, x + r] of every plane row is written
+ * down the slot's column, and a sparse table down that column, which skips NaNs as the
+ * definition's top-down reduction does, answers each of the column's elements in O(1) whatever its
+ * radius. The window's columns are taken in batches whose slots fit the budget, a batch building
+ * the tables of the plane rows only over its own columns and halo. Memory is O(slots x height x
+ * log ry) per batch.
+ **/
+enum class TileStrategy {
+    Rows,
+    Columns,
+};
+
+/**
+ * @brief Fills rx and ry with the radii of the window.width() pixels of window row r.
+ **/
+using TileRadiiFn = std::function<void(int r, float* rx, float* ry)>;
+
+/**
+ * @brief The plan of one tile: its window, absolute, the radii of its pixels, and how planTile()
+ * split the work so that no buffer exceeds its budget. The plane the tile reads is at most the
+ * window grown by haloX and haloY; it may be smaller, clipped to an image.
+ **/
+struct TilePlan {
+    RectI window;
+    bool disc = false;
+    bool takeMax = false;
+    TileRadiiFn radii;
+    int haloX = 0;
+    int haloY = 0;
+    // Of the row tables, and of the Columns strategy's column tables.
+    int levels = 1;
+    int columnLevels = 1;
+    // The elements any pixel computes; element 0 always.
+    bool element[4] = { true, false, false, false };
+    TileStrategy strategy = TileStrategy::Rows;
+
+    // Rows: band b covers window rows b * bandRows onwards; batch k of a band holds the tables of
+    // its plane rows k * batchRows onwards.
+    int bandRows = 1;
+    int batchRows = 1;
+
+    // Columns: the slots of window column c are slotStart[c] to slotStart[c + 1] - 1, slot s of
+    // horizontal radius slotRadius[s] (increasing within a column); batch b covers window columns
+    // columnBatch[b] to columnBatch[b + 1] - 1.
+    std::vector<int> slotStart;
+    std::vector<int> slotRadius;
+    std::vector<int> columnBatch;
+    // The most slots of any batch.
+    int batchSlots = 0;
+    // Whether the Columns strategy fits the budget at all; when not, its batches are empty.
+    bool columnsFit = false;
+
+    int bandCount() const WARN_UNUSED_RETURN;
+
+    // The batches of band b, Rows.
+    int batchCount(int band) const WARN_UNUSED_RETURN;
+
+    // The batches of the Columns strategy.
+    int columnBatchCount() const WARN_UNUSED_RETURN
+    {
+        return columnBatch.empty() ? 0 : (int)columnBatch.size() - 1;
+    }
+
+    // The floats of the tables of one row of a plane of width, Rows.
+    std::size_t rowTableFloats(int width) const WARN_UNUSED_RETURN
+    {
+        return (std::size_t)(levels - 1) * (std::size_t)width;
+    }
+
+    // The floats of one slot's column on a plane of height, all its levels, Columns.
+    std::size_t columnFloats(int height) const WARN_UNUSED_RETURN
+    {
+        return (std::size_t)columnLevels * (std::size_t)height;
+    }
+
+    // The fractional elements, which Rows accumulates beside the output.
+    int extraElements() const WARN_UNUSED_RETURN
+    {
+        return (int)element[1] + (int)element[2] + (int)element[3];
+    }
+};
+
+/**
+ * @brief The plan of the tile over window, the radii of whose pixels radii gives. budgetFloats
+ * bounds, per plane, the batch's tables (Rows takes half of it for them, half for the band's
+ * fractional elements) or slot columns (Columns). The strategy is the cheaper one by an estimate
+ * of the work; the disc always takes Rows. Both strategies are planned, so that a test may switch
+ * a square plan's strategy when columnsFit.
+ **/
+TilePlan planTile(const RectI& window,
+                  const TileRadiiFn& radii,
+                  bool disc,
+                  bool takeMax,
+                  std::size_t budgetFloats) WARN_UNUSED_RETURN;
+
+/**
+ * @brief One plane of a tile: the source, width x height with its pixel (0, 0) at absolute
+ * (x0, y0), and the window columns c0 to c1 - 1 and rows r0 to r1 - 1 that lie on it, the only
+ * ones computed.
+ **/
+struct TilePlane {
+    const float* src = nullptr;
+    int width = 0;
+    int height = 0;
+    int x0 = 0;
+    int y0 = 0;
+    int c0 = 0;
+    int c1 = 0;
+    int r0 = 0;
+    int r1 = 0;
+
+    // The plane column of window column c, and the plane row of window row r.
+    int x(const TilePlan& plan, int c) const WARN_UNUSED_RETURN
+    {
+        return plan.window.x1 + c - x0;
+    }
+
+    int y(const TilePlan& plan, int r) const WARN_UNUSED_RETURN
+    {
+        return plan.window.y1 + r - y0;
+    }
+};
+
+TilePlane tilePlane(const TilePlan& plan, const float* src, int width, int height, int x0, int y0) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Where the elements of the window's pixels go: element k of window pixel (c, r) at
+ * e[k] + (r - r0[k]) * stride[k] + (c - c0[k]). Element 0 is the output plane, which finishRow()
+ * blends the others into.
+ **/
+struct TileElements {
+    float* e[4] = { nullptr, nullptr, nullptr, nullptr };
+    std::size_t stride[4] = { 0, 0, 0, 0 };
+    int c0[4] = { 0, 0, 0, 0 };
+    int r0[4] = { 0, 0, 0, 0 };
+
+    float* at(int k,
+              int c,
+              int r) const WARN_UNUSED_RETURN
+    {
+        return e[k] + (std::ptrdiff_t)(r - r0[k]) * (std::ptrdiff_t)stride[k] + (c - c0[k]);
+    }
+};
+
+/**
+ * @brief Rows: the window rows of band b on the plane, *ra to *rb - 1 (none when equal).
+ **/
+void bandRange(const TilePlan& plan, const TilePlane& t, int band, int* ra, int* rb);
+
+/**
+ * @brief Rows: the plane rows of batch k of band b, *first to *first + *count - 1, whose tables
+ * go at tables + (y - *first) * plan.rowTableFloats(t.width), level stride t.width.
+ **/
+void batchRange(const TilePlan& plan, const TilePlane& t, int band, int batch, int* first, int* count);
+
+/**
+ * @brief Rows: reduces the batch's rows into the elements of window row r, in the definition's
+ * order; an element's first row writes it. work is scratch of the caller's.
+ **/
+void foldRows(const TilePlan& plan,
+              const TilePlane& t,
+              const float* tables,
+              int first,
+              int count,
+              int r,
+              const TileElements& out,
+              std::vector<float>& work);
+
+/**
+ * @brief Rows: the blended pixels of window row r, over element 0's.
+ **/
+void finishRow(const TilePlan& plan, const TilePlane& t, int r, const TileElements& out, std::vector<float>& work);
+
+/**
+ * @brief Columns: the window columns of batch b on the plane, *ca to *cb - 1, whose slots go at
+ * columns + (s - plan.slotStart[*ca]) * plan.columnFloats(t.height); none when *ca == *cb.
+ **/
+void columnBatchRange(const TilePlan& plan, const TilePlane& t, int b, int* ca, int* cb);
+
+/**
+ * @brief Columns: level 0 of the batch's slots at plane row y, the span extrema of the row.
+ **/
+void fillSpans(const TilePlan& plan,
+               const TilePlane& t,
+               int ca,
+               int cb,
+               int y,
+               float* columns,
+               std::vector<float>& work);
+
+/**
+ * @brief Columns: the levels above 0 of slot s's column, whose level 0 is at column.
+ **/
+void buildColumn(const TilePlan& plan, const TilePlane& t, float* column);
+
+/**
+ * @brief Columns: window row r of the batch's columns, blended, into out.
+ **/
+void answerRow(const TilePlan& plan,
+               const TilePlane& t,
+               int ca,
+               int cb,
+               int r,
+               const float* columns,
+               const TileElements& out,
+               std::vector<float>& work);
+
+/**
+ * @brief The tile of plan, single-threaded, from the width x height plane src whose pixel (0, 0)
+ * is absolute (0, 0), into dst (width x height too), which receives the window's pixels on the
+ * plane: what the node's passes compute, in the same calls.
+ **/
+void filterTile(const TilePlan& plan,
+                const float* src,
+                int width,
+                int height,
+                float* dst);
 } // namespace IErodeDilateKernels
 
 /**

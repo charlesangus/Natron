@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <functional>
 #include <list>
 #include <string>
@@ -323,6 +324,183 @@ TEST(NativeIErodeDilateKernelTest, RadiusZeroIsExactAndRadiusIsMonotonic)
     }
 }
 
+namespace {
+// The same bits, zeros' signs included, or both NaNs: a NaN's sign and payload after the blend's
+// arithmetic depend on how the compiler orders its operands.
+bool
+sameBits(float a,
+         float b)
+{
+    return (std::memcmp(&a, &b, sizeof(float)) == 0) || (std::isnan(a) && std::isnan(b));
+}
+
+// The radii of a window wx x wy, row by row, as a planTile() radii function.
+IErodeDilateKernels::TileRadiiFn
+radiiOf(const std::vector<float>& rx,
+        const std::vector<float>& ry,
+        int wx)
+{
+    return [&rx, &ry, wx](int r, float* rxRow, float* ryRow) {
+        std::copy(rx.begin() + (std::ptrdiff_t)r * wx, rx.begin() + (std::ptrdiff_t)(r + 1) * wx, rxRow);
+        std::copy(ry.begin() + (std::ptrdiff_t)r * wx, ry.begin() + (std::ptrdiff_t)(r + 1) * wx, ryRow);
+    };
+}
+} // namespace
+
+// The bounded-memory tile gives the definition's values bit for bit, by either strategy, whatever
+// its batches, for a window overhanging the plane, with NaNs, infinities and zeros of either sign
+// in the plane and radii varying per pixel.
+TEST(NativeIErodeDilateKernelTest, FilterTileMatchesFilterPlane)
+{
+    namespace K = IErodeDilateKernels;
+    const int width = 37;
+    const int height = 31;
+    const std::size_t size = (std::size_t)width * height;
+    std::vector<float> src = testPlane(width, height);
+    const float specials[] = { NAN, -NAN, INFINITY, -INFINITY, 0.f, -0.f, 0.f, -0.f };
+    for (std::size_t i = 0; i < size; i += 7) {
+        src[(i * 13) % size] = specials[(i / 7) % 8];
+    }
+    // A window overhanging the plane's left, top and right, ending inside it.
+    const RectI window(-3, -2, width + 4, height - 5);
+    const int wx = window.width();
+    const int wy = window.height();
+    for (int variant = 0; variant < 3; ++variant) {
+        std::vector<float> rx((std::size_t)wx * wy);
+        std::vector<float> ry((std::size_t)wx * wy);
+        for (int r = 0; r < wy; ++r) {
+            for (int c = 0; c < wx; ++c) {
+                const std::size_t i = (std::size_t)r * wx + c;
+                switch (variant) {
+                case 0: // Smooth fractional radii.
+                    rx[i] = 0.5f + 0.11f * (float)c;
+                    ry[i] = 4.75f - 0.09f * (float)r;
+                    break;
+                case 1: // Noise, with zeros.
+                    rx[i] = (float)((c * 7 + r * 3) % 9) * 0.75f;
+                    ry[i] = (float)((c * 5 + r * 11) % 7) * 0.5f;
+                    break;
+                default: // Whole radii.
+                    rx[i] = (float)((c / 5) % 4);
+                    ry[i] = (float)((r / 4) % 5);
+                    break;
+                }
+            }
+        }
+        // The definition over the whole plane, with the window's radii where it covers it.
+        std::vector<float> prx(size, 0.f);
+        std::vector<float> pry(size, 0.f);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                const int c = x - window.x1;
+                const int r = y - window.y1;
+                if ((c >= 0) && (c < wx) && (r >= 0) && (r < wy)) {
+                    prx[(std::size_t)y * width + x] = rx[(std::size_t)r * wx + c];
+                    pry[(std::size_t)y * width + x] = ry[(std::size_t)r * wx + c];
+                }
+            }
+        }
+        for (bool takeMax : { false, true }) {
+            for (bool disc : { false, true }) {
+                std::vector<float> expected(size, 0.f);
+                K::filterPlane(src.data(), width, height, prx.data(), pry.data(), disc, takeMax, expected.data());
+                // A budget holding everything, and one splitting the work into many batches.
+                for (std::size_t budget : { (std::size_t)1 << 22, (std::size_t)512 }) {
+                    for (K::TileStrategy strategy : { K::TileStrategy::Rows, K::TileStrategy::Columns }) {
+                        K::TilePlan plan = K::planTile(window, radiiOf(rx, ry, wx), disc, takeMax, budget);
+                        if (strategy == K::TileStrategy::Columns) {
+                            if (disc) {
+                                EXPECT_FALSE(plan.columnsFit);
+                                continue;
+                            }
+                            ASSERT_TRUE(plan.columnsFit) << variant << " budget " << budget;
+                        }
+                        if (budget < 1024) {
+                            // Whole radii have no fractional elements, so one band.
+                            EXPECT_EQ(plan.extraElements() > 0, plan.bandCount() > 1);
+                            EXPECT_GT(plan.batchCount(0), 1);
+                            if (!disc) {
+                                EXPECT_GT(plan.columnBatchCount(), 1);
+                            }
+                        }
+                        plan.strategy = strategy;
+                        std::vector<float> dst(size, 12345.f);
+                        K::filterTile(plan, src.data(), width, height, dst.data());
+                        std::size_t mismatches = 0;
+                        for (int y = 0; y < height; ++y) {
+                            for (int x = 0; x < width; ++x) {
+                                const std::size_t i = (std::size_t)y * width + x;
+                                const bool inside = (x - window.x1 < wx) && (y - window.y1 < wy);
+                                if (inside ? !sameBits(dst[i], expected[i]) : (dst[i] != 12345.f)) {
+                                    ++mismatches;
+                                }
+                            }
+                        }
+                        EXPECT_EQ(0u, mismatches) << "variant " << variant << (disc ? " disc" : " square") << (takeMax ? " max" : " min")
+                                                  << " budget " << budget << ((strategy == K::TileStrategy::Rows) ? " rows" : " columns");
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A radius of about 1000 over a 256 x 256 window completes within the tile budget and matches the
+// definition, brute force, at a sample of pixels: the square by the Columns strategy, with
+// fractional radii, and the disc by Rows.
+TEST(NativeIErodeDilateKernelTest, LargeRadiusTileMatchesBruteForce)
+{
+    namespace K = IErodeDilateKernels;
+    const int side = 256;
+    const int halo = 1000;
+    const int width = side + 2 * halo;
+    const int height = width;
+    const std::size_t budget = (std::size_t)1 << 22;
+    const std::vector<float> src = testPlane(width, height);
+    const RectI window(halo, halo, halo + side, halo + side);
+    for (bool disc : { false, true }) {
+        std::vector<float> rx((std::size_t)side * side);
+        std::vector<float> ry((std::size_t)side * side);
+        for (int r = 0; r < side; ++r) {
+            for (int c = 0; c < side; ++c) {
+                const std::size_t i = (std::size_t)r * side + c;
+                rx[i] = disc ? 1000.f : 998.5f + (float)c / 170.f;
+                ry[i] = disc ? 1000.f : 999.25f + (float)r / 512.f;
+            }
+        }
+        for (bool takeMax : { false, true }) {
+            const K::TilePlan plan = K::planTile(window, radiiOf(rx, ry, side), disc, takeMax, budget);
+            EXPECT_EQ(disc ? K::TileStrategy::Rows : K::TileStrategy::Columns, plan.strategy);
+            if (plan.strategy == K::TileStrategy::Columns) {
+                EXPECT_LE((std::size_t)plan.batchSlots * plan.columnFloats(height), budget);
+            } else {
+                EXPECT_LE((std::size_t)plan.batchRows * plan.rowTableFloats(width), budget / 2);
+                EXPECT_LE((std::size_t)plan.bandRows * side * plan.extraElements(), budget / 2);
+            }
+            std::vector<float> dst((std::size_t)width * height, 0.f);
+            K::filterTile(plan, src.data(), width, height, dst.data());
+            std::size_t mismatches = 0;
+            for (int k = 0; k < 16; ++k) {
+                const int c = (k * 67 + 3) % side;
+                const int r = (k * 41 + 11) % side;
+                const std::size_t i = (std::size_t)r * side + c;
+                const K::PixelElements p = K::pixelElements(rx[i], ry[i]);
+                float v[4] = { 0.f, 0.f, 0.f, 0.f };
+                for (int e = 0; e < 4; ++e) {
+                    if (p.has(e)) {
+                        v[e] = bruteElement(src, width, height, halo + c, halo + r, p.radiusX(e), p.radiusY(e), disc, takeMax);
+                    }
+                }
+                const float expected = K::blendElements(p, v);
+                if (!sameBits(expected, dst[(std::size_t)(halo + r) * width + halo + c])) {
+                    ++mismatches;
+                }
+            }
+            EXPECT_EQ(0u, mismatches) << (disc ? "disc" : "square") << (takeMax ? " max" : " min");
+        }
+    }
+}
+
 class NativeIErodeDilateTest
     : public BaseTest {
 protected:
@@ -455,6 +633,39 @@ TEST_F(NativeIErodeDilateTest, MapZeroIsBitIdentical)
         ASSERT_TRUE(renderRGBA(source, kWindow, &expected));
         ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
         EXPECT_EQ(0u, countDiffering(expected, actual)) << (dilate ? "IDilate" : "IErode");
+    }
+}
+
+// Invert Map does not reach beyond the Map's image: a black Map over the right half, inverted,
+// filters the right half at Size, and the left half, outside the Map, keeps the input bit for bit.
+TEST_F(NativeIErodeDilateTest, InvertedMapIsZeroOutsideItsImage)
+{
+    const int half = kParitySourceWidth / 2;
+    for (bool dilate : { false, true }) {
+        NodePtr source = makeParitySource();
+        NodePtr map = makeConstant(RectI(half, 0, kParitySourceWidth, kParitySourceHeight), { 0., 0., 0., 0. });
+        NodePtr node = makeNode(dilate, source, map, 5., 5.);
+        ASSERT_TRUE(bool(source) && bool(map) && bool(node));
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
+
+        RenderedPlane expected, actual;
+        ASSERT_TRUE(renderRGBA(source, kWindow, &expected));
+        ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
+        ASSERT_EQ(expected.pixels.size(), actual.pixels.size());
+        std::size_t differingLeft = 0;
+        std::size_t differingRight = 0;
+        for (int y = 0; y < kWindow.height(); ++y) {
+            for (int x = 0; x < kWindow.width(); ++x) {
+                for (std::size_t c = 0; c < 4; ++c) {
+                    const std::size_t i = ((std::size_t)y * kWindow.width() + x) * 4 + c;
+                    if (expected.pixels[i] != actual.pixels[i]) {
+                        ++((x < half) ? differingLeft : differingRight);
+                    }
+                }
+            }
+        }
+        EXPECT_EQ(0u, differingLeft) << (dilate ? "IDilate" : "IErode");
+        EXPECT_GT(differingRight, 0u) << (dilate ? "IDilate" : "IErode");
     }
 }
 

@@ -373,18 +373,22 @@ MapInput::fill(const Image* image,
                const RectI& window,
                MapPlane* plane)
 {
-    const float outside = params.remap(0.f);
-    plane->reset(window, outside);
+    // Beyond the Map's image the Map value is 0, neither remapped nor inverted.
+    plane->reset(window, 0.f);
     if (!image || window.isNull() || (channel < 0) || (channel >= (int)image->getComponentsCount())) {
         return;
     }
     const RectI bounds = image->getBounds();
+    const RectI inside = window.intersect(bounds);
+    if (inside.isNull()) {
+        return;
+    }
     const int nComps = (int)image->getComponentsCount();
     Image::ReadAccess access(image);
-    const int width = window.width();
-    for (int y = window.y1; y < window.y2; ++y) {
-        float* row = plane->row(y);
-        PassExec::readChannelRow(image, &access, bounds, nComps, channel, window.x1, y, width, 0.f, row);
+    const int width = inside.width();
+    for (int y = inside.y1; y < inside.y2; ++y) {
+        float* row = plane->row(y) + (inside.x1 - window.x1);
+        PassExec::readChannelRow(image, &access, bounds, nComps, channel, inside.x1, y, width, 0.f, row);
         for (int x = 0; x < width; ++x) {
             row[x] = params.remap(row[x]);
         }

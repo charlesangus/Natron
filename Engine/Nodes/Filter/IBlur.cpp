@@ -416,7 +416,8 @@ recordIBlurGpu(const PassGpuIO& io,
     const OfxPointD rs = context.scale.toOfxPointD();
     const BoxRadii white = radiiAt(params, context, 1.f);
     const BoxRadii black = radiiAt(params, context, 0.f);
-    const BoxRadii outside = radiiAt(params, context, params.map.remap(0.f));
+    // Beyond the Map's image the Map value is 0, neither remapped nor inverted.
+    const BoxRadii outside = black;
     k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u);
     k.exponent = params.map.exponent;
     k.sizeAtBlackX = (float)params.map.sizeAtBlack[0];

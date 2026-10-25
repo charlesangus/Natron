@@ -11,7 +11,7 @@
 # NODE_PROFILE_BINARY=<path to a NatronRenderer> (cpu and serial modes only) runs that binary directly on the
 # host under xvfb-run instead of build/release/Renderer/NatronRenderer in the dev container, and leaves
 # OFX_PLUGIN_PATH alone so the plugins next to the binary are used. For an extracted release AppImage:
-#   NODE_PROFILE_BINARY=build/m184-appimage/squashfs-root/bin/NatronRenderer tools/bench/node_profile.sh serial 1 iblur
+#   NODE_PROFILE_BINARY=build/release-appimage/squashfs-root/bin/NatronRenderer tools/bench/node_profile.sh serial 1 iblur
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 mode=$1

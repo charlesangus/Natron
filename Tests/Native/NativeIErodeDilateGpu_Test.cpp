@@ -271,7 +271,8 @@ TEST_F(NativeIErodeDilateGpuTest, DisconnectedMapMatchesTheCpu)
     }
 }
 
-// A Map white over the right half only, outside its image on the left, which reads as black there.
+// A Map white over the right half only, outside its image on the left, which reads as 0 there,
+// inverted or not.
 TEST_F(NativeIErodeDilateGpuTest, MapOutsideItsImageMatchesTheCpu)
 {
     const int half = kParitySourceWidth / 2;
@@ -283,5 +284,10 @@ TEST_F(NativeIErodeDilateGpuTest, MapOutsideItsImageMatchesTheCpu)
         ASSERT_TRUE(setKnobValue(node, kIErodeDilateParamShape, std::string(kIErodeDilateParamShapeDisc)));
 
         expectParity(std::vector<NodePtr>({ node }), node, dilate ? "IDilate, half Map" : "IErode, half Map");
+
+        // Inverted, the Map is still 0 beyond its image: Size At Black there, not Size.
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 2., 1.5 }));
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
+        expectParity(std::vector<NodePtr>({ node }), node, dilate ? "IDilate, half Map, inverted" : "IErode, half Map, inverted");
     }
 }

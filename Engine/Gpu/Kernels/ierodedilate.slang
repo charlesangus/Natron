@@ -1,9 +1,11 @@
 import mapremap;
 
-// IErode's and IDilate's passes, after the workers of Engine/Nodes/Filter/IErodeDilate.cpp and
-// IErodeDilateKernels there, one component at a time. The work buffer covers the CPU's scratch
-// rect, the domain of domWidth x domHeight pixels from (domX1, domY1): level k of the row tables
-// at k x domWidth x domHeight, level 0 being the component itself.
+// IErode's and IDilate's filter, the definition of IErodeDilateKernels::filterPlane() in
+// Engine/Nodes/Filter/IErodeDilate.cpp, one component at a time: the row tables of the whole
+// domain at once, which the GPU's radius cap of 255 keeps small, where the CPU bounds its memory
+// with batches. The work buffer covers the CPU's scratch rect, the domain of domWidth x domHeight
+// pixels from (domX1, domY1): level k of the row tables at k x domWidth x domHeight, level 0
+// being the component itself.
 //
 // Minima and maxima are exact, and the radii and the blends are the CPU's float operations in the
 // same order, precise so that none contracts, so the result matches the CPU's bit for bit; only
@@ -201,7 +203,7 @@ void ierodedilate_level(uint3 tid : SV_DispatchThreadID)
     workBuf[levelIndex(params.level, tid.x, tid.y)] = reduce(workBuf[levelIndex(params.level - 1u, tid.x, tid.y)], workBuf[levelIndex(params.level - 1u, tid.x + half, tid.y)], takeMax);
 }
 
-// filterWorker() and filterRow(): output pixel tid of component comp, from the Map's radii, the
+// filterRow(): output pixel tid of component comp, from the Map's radii, the
 // four elements of their floors and ceilings blended in x then in y; zero outside the domain.
 [shader("compute")]
 [numthreads(8, 8, 1)]

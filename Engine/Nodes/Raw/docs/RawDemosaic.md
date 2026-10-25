@@ -171,15 +171,17 @@ Markesteijn 1- and 3-pass also run on the GPU, in `Engine/Gpu/Kernels/demosaic_m
 over the same buffer as the CPU (a halo of 12 or 18) and its 122-photosite tiles, numbered as the
 CPU numbers them. VNG's linear pass first interpolates the whole buffer, which keeps the border the
 CPU leaves to it; the tiles then go through one dispatch a stage, a tile per workgroup layer: the
-mirrored fill, the green minima and maxima (one thread a tile, walking it as the CPU's serial scan
-does, since which photosite of a pair reads the hexagon depends on the walk), the four green
+mirrored fill, the green minima and maxima (one thread a tile row, each walking the rows the CPU's
+serial scan walks from that row, since which photosite of a pair reads the hexagon depends on the
+walk; the scan starts each row it enters from the left afresh, and a walk from a row of vertical
+pairs ends on the row below, so the walks write disjoint photosites), the four green
 directions, and for each pass the green recalculation, the solitary greens' red and blue, red for
 blue and blue for red, and the 2x2 greens; then the YPbPr derivatives, the homogeneity maps, and
 the 5x5 sums with the average of the most homogeneous directions, written inside the border. No
 stage reads what the same stage writes, so a photosite per thread gives the CPU's values. A tile
 takes 122 x 122 x (5 x directions + 2) floats: the RGB directions, the green minima and maxima,
 the derivatives and the homogeneity maps, separate where the CPU overlaps them. The RGBA plane
-comes in bands of at most 64 MB and the tiles in batches of at most 64 MB. Below 14 photosites
+comes in bands of at most 64 MB and the tiles in batches of at most 256 MB. Below 14 photosites
 (19 for 3 passes) a buffer falls back, as on the CPU, on VNG's linear interpolation. The
 recalculated green, the 2x2 greens and the fill's means divide by 3 or a count, and the device
 divides within 2.5 ulp, so a pixel whose smoothness comparison or homogeneity count sits on the

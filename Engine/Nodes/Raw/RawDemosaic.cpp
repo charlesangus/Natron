@@ -1431,7 +1431,10 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
             int nLefts = 0;
             maxTiles = std::max(maxTiles, markesteijnTiles(need, nLefts));
         }
-        const std::uint64_t kMaxTileFloats = std::uint64_t(1) << 24;
+        // Each batch costs its kernels' dispatches, so the batch is as large as fits in 256 MB: the
+        // record context offers no device budget to size it by, and 256 MB binds within the
+        // maxStorageBufferRange of the desktop devices the raw chain targets.
+        const std::uint64_t kMaxTileFloats = std::uint64_t(1) << 26;
         mkBatch = (std::uint32_t)std::clamp<std::uint64_t>(kMaxTileFloats / mkTileFloats, 1, (std::uint64_t)maxTiles);
         if (!ctx.scratch(mkBatch * mkTileFloats * sizeof(float), tiles) || !tiles) {
             return eStatusFailed;
@@ -1486,7 +1489,7 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
             mk.tileCount = std::min<std::uint32_t>(mkBatch, (std::uint32_t)(nTiles - first));
             mk.pass = 0;
             const std::uint32_t n = mk.tileCount;
-            if (!mkRun(gpu::GpuKernelId::markesteijn_fill, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_minmax, n, 1, 1) || !mkRun(gpu::GpuKernelId::markesteijn_green, ts, ts, n)) {
+            if (!mkRun(gpu::GpuKernelId::markesteijn_fill, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_minmax, ts, 1, n) || !mkRun(gpu::GpuKernelId::markesteijn_green, ts, ts, n)) {
                 return false;
             }
             for (int pass = 0; pass < mkPasses; ++pass) {

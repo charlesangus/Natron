@@ -295,70 +295,98 @@ void markesteijn_fill(uint3 tid : SV_DispatchThreadID)
     }
 }
 
-// The green minimum and maximum around each pair of red and blue photosites, one thread a tile
-// walking it as the CPU does: which photosite of a pair reads the hexagon depends on where the
-// walk enters the pair, and the walk hops between rows.
+// The green minimum and maximum around each pair of red and blue photosites, walking the tile's
+// rows from `row` as the CPU does until the walk reaches the last column; the row it ends on.
+// Which photosite of a pair reads the hexagon depends on where the walk enters the pair, and the
+// walk hops between rows.
+int minmaxWalk(Tile tile, int sgrow, int row)
+{
+    const float fltMax = asfloat(0x7f7fffffu);
+    float lo = fltMax;
+    float hi = 0.0;
+    int col = tile.left + 3;
+    while (col < tile.mcol - 3)
+    {
+        if (fc(row, col) == 1)
+        {
+            lo = fltMax;
+            hi = 0.0;
+            ++col;
+            continue;
+        }
+        const int i = (row - tile.top) * TS + (col - tile.left);
+        if (hi == 0.0)
+        {
+            int hex[8];
+            hexmap(row, col, hex);
+            for (int c = 0; c < 6; ++c)
+            {
+                const float val = rgb(tile, 0, i + hex[c], 1);
+                if (lo > val)
+                    lo = val;
+                if (hi < val)
+                    hi = val;
+            }
+        }
+        scratch[gminAt(tile, i)] = lo;
+        scratch[gmaxAt(tile, i)] = hi;
+        const int m = cRem3(row - sgrow);
+        if (m == 1)
+        {
+            if (row < tile.mrow - 4)
+            {
+                ++row;
+                --col;
+            }
+        }
+        else if (m == 2)
+        {
+            lo = fltMax;
+            hi = 0.0;
+            col += 2;
+            if (col < tile.mcol - 4 && row > tile.top + 3)
+                --row;
+        }
+        ++col;
+    }
+    return row;
+}
+
+// A thread a tile row, (row, tile) from the tile's top. The CPU's walk starts each row it enters
+// from the left with nothing read, so each walk from a row is independent of the others. A walk
+// from a row of vertical pairs above the last hops down to the lower photosite of every pair and
+// ends there, since the last pair is too near the right edge to hop back up: the next walk starts
+// two rows down, and no two walks write the same photosite.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void markesteijn_minmax(uint3 tid : SV_DispatchThreadID)
+{
+    const Tile tile = tileAt(tid.z);
+    if (!tile.live || tid.x >= uint(TS))
+        return;
+    const int sgrow = solitaryGreen().x;
+    const int start = tile.top + int(tid.x);
+    int row = tile.top + 3;
+    while (row < start)
+        row += (cRem3(row - sgrow) == 1 && row < tile.mrow - 4) ? 2 : 1;
+    if (row != start || row >= tile.mrow - 3)
+        return;
+    minmaxWalk(tile, sgrow, row);
+}
+
+// markesteijn_minmax as the CPU runs it, one thread a tile walking it whole: the reference the
+// tests hold the parallel walks to.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void markesteijn_minmax_serial(uint3 tid : SV_DispatchThreadID)
 {
     const Tile tile = tileAt(tid.x);
     if (!tile.live)
         return;
     const int sgrow = solitaryGreen().x;
-    const float fltMax = asfloat(0x7f7fffffu);
     int row = tile.top + 3;
     while (row < tile.mrow - 3)
-    {
-        float lo = fltMax;
-        float hi = 0.0;
-        int col = tile.left + 3;
-        while (col < tile.mcol - 3)
-        {
-            if (fc(row, col) == 1)
-            {
-                lo = fltMax;
-                hi = 0.0;
-                ++col;
-                continue;
-            }
-            const int i = (row - tile.top) * TS + (col - tile.left);
-            if (hi == 0.0)
-            {
-                int hex[8];
-                hexmap(row, col, hex);
-                for (int c = 0; c < 6; ++c)
-                {
-                    const float val = rgb(tile, 0, i + hex[c], 1);
-                    if (lo > val)
-                        lo = val;
-                    if (hi < val)
-                        hi = val;
-                }
-            }
-            scratch[gminAt(tile, i)] = lo;
-            scratch[gmaxAt(tile, i)] = hi;
-            const int m = cRem3(row - sgrow);
-            if (m == 1)
-            {
-                if (row < tile.mrow - 4)
-                {
-                    ++row;
-                    --col;
-                }
-            }
-            else if (m == 2)
-            {
-                lo = fltMax;
-                hi = 0.0;
-                col += 2;
-                if (col < tile.mcol - 4 && row > tile.top + 3)
-                    --row;
-            }
-            ++col;
-        }
-        ++row;
-    }
+        row = minmaxWalk(tile, sgrow, row) + 1;
 }
 
 // Green of the red and blue photosites in the four directions, clamped to the pair's range.

@@ -25,10 +25,12 @@
 #include "Global/Macros.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -39,6 +41,16 @@
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/Nodes/Raw/RawPrepare.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuBuffer.h"
+#include "Engine/Gpu/GpuKernelRegistry.h"
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/Nodes/Raw/RawGpuParams.h"
+
+#include "raw_test_markesteijn_minmax_serial_spirv.h"
+#endif
 
 NATRON_NAMESPACE_USING
 
@@ -87,6 +99,84 @@ describe(const std::string& what,
 {
     return what + " over " + std::to_string(window.x1) + "," + std::to_string(window.y1) + " " + std::to_string(window.width()) + "x" + std::to_string(window.height());
 }
+#ifdef NATRON_HAVE_GPU
+
+// demosaic_markesteijn.slang's TS.
+const int kMinmaxTile = 122;
+const std::size_t kMinmaxTilePixels = (std::size_t)kMinmaxTile * kMinmaxTile;
+
+gpu::GpuKernelDesc
+serialMinmaxKernelDesc()
+{
+    gpu::GpuKernelDesc d;
+
+    d.spirv = raw_test_markesteijn_minmax_serial_spirv;
+    d.spirvWords = raw_test_markesteijn_minmax_serial_spirv_words;
+    d.entry = raw_test_markesteijn_minmax_serial_entry;
+    d.storageBufferCount = raw_test_markesteijn_minmax_serial_storage_buffers;
+    d.pushConstantBytes = raw_test_markesteijn_minmax_serial_push_bytes;
+    d.groupSize = { raw_test_markesteijn_minmax_serial_group_size[0], raw_test_markesteijn_minmax_serial_group_size[1], raw_test_markesteijn_minmax_serial_group_size[2] };
+
+    return d;
+}
+
+bool
+transferFloats(gpu::GpuRuntime& runtime,
+               gpu::GpuBuffer& buffer,
+               std::size_t firstFloat,
+               float* data,
+               std::size_t floats,
+               bool toDevice)
+{
+    gpu::TimelineValue done;
+    const gpu::HostRange range { data, floats * sizeof(float) };
+    const VkDeviceSize offset = firstFloat * sizeof(float);
+    gpu::GpuStatus s = toDevice ? runtime.upload(range, buffer, offset, done) : runtime.download(buffer, offset, range, done);
+
+    if (s) {
+        s = runtime.wait(done);
+    }
+    EXPECT_TRUE(bool(s)) << s.message;
+
+    return bool(s);
+}
+
+// kXTransPattern from its photosite (originX, originY), packed as RawMarkesteijnGpuPush::pattern.
+void
+xtransPatternWords(int originX,
+                   int originY,
+                   std::uint32_t (&pattern)[3])
+{
+    pattern[0] = pattern[1] = pattern[2] = 0;
+    for (int i = 0; i < 36; ++i) {
+        const char c = kXTransPattern[((i / 6 + originY) % 6) * 6 + (i % 6 + originX) % 6];
+        const std::uint32_t colour = (c == 'R') ? 0u : ((c == 'G') ? 1u : 2u);
+        pattern[i / 16] |= colour << ((i % 16) * 2);
+    }
+}
+
+// Greens with zeros and negatives among them, so that some hexagons have no positive green and
+// the walk reads the next photosite of the pair again.
+float
+hashedGreen(std::size_t tile,
+            std::size_t i)
+{
+    std::uint32_t x = (std::uint32_t)(tile * 2654435761u + i * 40503u + 17u);
+    x ^= x >> 13;
+    x *= 0x5bd1e995u;
+    x ^= x >> 15;
+    switch (x % 4) {
+    case 0:
+        return 0.f;
+    case 1:
+        return -(float)(x % 97) * 0.125f;
+    default:
+        return (float)(x % 4093) * 0.0625f + 0.5f;
+    }
+}
+
+#endif // NATRON_HAVE_GPU
+
 } // namespace
 
 class NativeRawDemosaicXTransGpuTest
@@ -366,6 +456,102 @@ TEST_F(NativeRawDemosaicXTransGpuTest, SmallImagesFallBackOnTheGpuVng)
         const RectI inner(crop.rod.x1 + 3, crop.rod.y1 + 2, crop.rod.x2 - 4, crop.rod.y2 - 5);
         for (const RectI& window : { crop.rod, inner }) {
             expectGpuMatchesCpuWithin(*runtime, demosaic, source, window, kVngMeanBound, kVngMaxBound, outlierBudget(window), describe(crop.name, window));
+        }
+    }
+}
+
+// The green minima and maxima of the parallel walks equal, bit for bit and photosite for photosite,
+// those of the serial walk the CPU makes over the tile, at the 36 positions of the pattern, over
+// edge tiles whose last row and column fall at every position of it, and over a tile of zero
+// greens, for 1 and 3 passes.
+TEST(NativeRawDemosaicXTransGpuMinmax, ParallelWalksMatchTheSerialWalk)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    gpu::GpuRuntime& rt = runtime->runtime();
+    const gpu::GpuKernelId serialKernel = rt.registerKernel(serialMinmaxKernelDesc());
+    const float unwritten = -12345.f;
+
+    for (const int passes : { 1, 3 }) {
+        const int pad = (passes == 1) ? 12 : 17;
+        const int step = kMinmaxTile - 2 * pad;
+        const std::size_t ndir = (passes > 1) ? 8 : 4;
+        const std::size_t tileFloats = kMinmaxTilePixels * (5 * ndir + 2);
+        const std::size_t gminFloat = 3 * ndir * kMinmaxTilePixels;
+        std::vector<std::pair<int, int>> sizes = { { pad + 2, pad + 2 }, { pad + 5, pad + 9 } };
+        for (int d = 1; d <= 6; ++d) {
+            sizes.emplace_back(step + d, step + (d * 5) % 6 + 1);
+        }
+
+        for (const auto& size : sizes) {
+            const int width = size.first;
+            const int height = size.second;
+            const int nLefts = (width + step - 1) / step;
+            const std::size_t nTiles = (std::size_t)((height + step - 1) / step) * nLefts;
+            const std::size_t floats = nTiles * tileFloats;
+            gpu::GpuBuffer* serial = runtime->buffer(0, floats);
+            gpu::GpuBuffer* parallel = runtime->buffer(1, floats);
+            gpu::GpuBuffer* unused = runtime->buffer(2, 4);
+            ASSERT_TRUE(serial && parallel && unused);
+
+            std::vector<float> rgb(3 * kMinmaxTilePixels);
+            for (std::size_t t = 0; t < nTiles; ++t) {
+                const bool zeroGreens = (t + 1 == nTiles) && (nTiles > 1);
+                for (std::size_t i = 0; i < kMinmaxTilePixels; ++i) {
+                    rgb[3 * i] = 0.25f;
+                    rgb[3 * i + 1] = zeroGreens ? 0.f : hashedGreen(t, i);
+                    rgb[3 * i + 2] = 0.75f;
+                }
+                ASSERT_TRUE(transferFloats(rt, *serial, t * tileFloats, rgb.data(), rgb.size(), true));
+                ASSERT_TRUE(transferFloats(rt, *parallel, t * tileFloats, rgb.data(), rgb.size(), true));
+            }
+
+            for (int originY = 0; originY < 6; ++originY) {
+                for (int originX = 0; originX < 6; ++originX) {
+                    const std::string what = std::to_string(passes) + "-pass, " + std::to_string(width) + " x " + std::to_string(height) + " at phase " + std::to_string(originX) + "," + std::to_string(originY);
+                    std::vector<float> planes(2 * kMinmaxTilePixels, unwritten);
+                    for (std::size_t t = 0; t < nTiles; ++t) {
+                        ASSERT_TRUE(transferFloats(rt, *serial, t * tileFloats + gminFloat, planes.data(), planes.size(), true)) << what;
+                        ASSERT_TRUE(transferFloats(rt, *parallel, t * tileFloats + gminFloat, planes.data(), planes.size(), true)) << what;
+                    }
+
+                    RawMarkesteijnGpuPush mk = {};
+                    xtransPatternWords(originX, originY, mk.pattern);
+                    mk.passes = (std::uint32_t)passes;
+                    mk.width = (std::uint32_t)width;
+                    mk.height = (std::uint32_t)height;
+                    mk.firstTile = 0;
+                    mk.nLefts = (std::uint32_t)nLefts;
+                    mk.tileCount = (std::uint32_t)nTiles;
+                    std::unique_ptr<gpu::GpuRecordContext> ctx;
+                    const gpu::GpuStatus created = rt.newRecordContext(ctx);
+                    ASSERT_TRUE(bool(created)) << created.message;
+                    const gpu::GpuStatus ranSerial = ctx->dispatch(serialKernel, { unused, unused, serial, unused }, mk, { (std::uint32_t)nTiles, 1, 1 });
+                    ASSERT_TRUE(bool(ranSerial)) << what << ": " << ranSerial.message;
+                    const gpu::GpuStatus ranParallel = ctx->dispatch(gpu::GpuKernelId::markesteijn_minmax, { unused, unused, parallel, unused }, mk, { (std::uint32_t)kMinmaxTile, 1, (std::uint32_t)nTiles });
+                    ASSERT_TRUE(bool(ranParallel)) << what << ": " << ranParallel.message;
+                    const gpu::GpuStatus submitted = ctx->submitAndWait();
+                    ASSERT_TRUE(bool(submitted)) << what << ": " << submitted.message;
+                    ctx.reset();
+
+                    std::vector<float> fromSerial(planes.size());
+                    std::vector<float> fromParallel(planes.size());
+                    for (std::size_t t = 0; t < nTiles; ++t) {
+                        ASSERT_TRUE(transferFloats(rt, *serial, t * tileFloats + gminFloat, fromSerial.data(), fromSerial.size(), false)) << what;
+                        ASSERT_TRUE(transferFloats(rt, *parallel, t * tileFloats + gminFloat, fromParallel.data(), fromParallel.size(), false)) << what;
+                        std::size_t written = 0;
+                        for (std::size_t i = 0; i < fromSerial.size(); ++i) {
+                            written += (fromSerial[i] != unwritten) ? 1 : 0;
+                            ASSERT_EQ(0, std::memcmp(&fromSerial[i], &fromParallel[i], sizeof(float)))
+                                << what << ", tile " << t << ": " << ((i < kMinmaxTilePixels) ? "minimum" : "maximum") << " at photosite " << (i % kMinmaxTilePixels)
+                                << ", serial " << fromSerial[i] << ", parallel " << fromParallel[i];
+                        }
+                        EXPECT_GT(written, 0u) << what << ", tile " << t;
+                    }
+                }
+            }
         }
     }
 }

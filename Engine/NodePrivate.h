@@ -34,12 +34,14 @@
 #include "Engine/EffectInstance.h"
 
 #include <atomic>
+#include <mutex>
 
 #include <QWaitCondition>
 #include <QReadWriteLock>
 #include <QMutex>
 
 #include "Engine/Hash64.h"
+#include "Engine/RenderContext.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -396,6 +398,10 @@ public:
     U64 hashFlushVisit = 0; //< the flush pass that last reached the node; only read and written under the flush mutex
     U64 hashFlushRootVisit = 0; //< the flush pass that last walked from the node's own mark; same locking
     QMutex hashRecomputeMutex; //< serializes recomputes of this node; no other node's is taken under it
+
+    mutable std::mutex contextReadsMutex; //< protects the two below; no other lock is taken under it
+    mutable U64 contextReadsGeneration = 0; //< the read-sets generation contextReads was computed at
+    mutable RenderContextReadSetConstPtr contextReads;
 
     // The knob part of the content hash, memoized against the effect's knobs content generation.
     // Knobs that read another knob or a file are kept as live entries and hashed on every use.

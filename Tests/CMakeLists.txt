@@ -121,6 +121,7 @@ set(Tests_SOURCES
     RemoveLayersRender_Test.cpp
     RenderBothWays.cpp
     RenderBothWaysSelf_Test.cpp
+    RenderContext_Test.cpp
     RenderProfile_Test.cpp
     RenderRange_Test.cpp
     RenderScheduler_Test.cpp

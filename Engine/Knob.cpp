@@ -65,6 +65,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/StringAnimationManager.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
@@ -540,6 +541,10 @@ struct KnobHelperPrivate
     mutable std::vector<U64> contentDimensionHashes;
     mutable U64 contentHashesGeneration;
     mutable bool contentHashesValid;
+    mutable QMutex contextReadSourcesMutex; // protects contextReadSources
+    std::vector<ContextReadSourcePtr> contextReadSources;
+    // Lets the read-set walk skip the mutex on the many knobs without a source.
+    std::atomic<bool> hasContextReadSources { false };
 
     KnobHelperPrivate(KnobHelper* publicInterface_,
                       KnobHolder* holder_,
@@ -5807,6 +5812,63 @@ void
 KnobHelper::setContentGenerationObserver(const std::shared_ptr<std::atomic<U64>>& generation)
 {
     _imp->contentGenerationObserver = generation;
+}
+
+void
+KnobHelper::addContextReadSource(const ContextReadSourcePtr& source)
+{
+    if (!source) {
+        return;
+    }
+    {
+        QMutexLocker k(&_imp->contextReadSourcesMutex);
+        _imp->contextReadSources.push_back(source);
+        _imp->hasContextReadSources.store(true);
+    }
+    invalidateRenderContextReads();
+}
+
+void
+KnobHelper::removeContextReadSource(const ContextReadSourcePtr& source)
+{
+    {
+        QMutexLocker k(&_imp->contextReadSourcesMutex);
+        std::vector<ContextReadSourcePtr>& sources = _imp->contextReadSources;
+        std::vector<ContextReadSourcePtr>::iterator it = std::find(sources.begin(), sources.end(), source);
+        if (it == sources.end()) {
+            return;
+        }
+        sources.erase(it);
+        _imp->hasContextReadSources.store(!sources.empty());
+    }
+    invalidateRenderContextReads();
+}
+
+bool
+KnobHelper::hasContextReadSources() const
+{
+    return _imp->hasContextReadSources.load();
+}
+
+RenderContextReadSet
+KnobHelper::getContextReadSet() const
+{
+    RenderContextReadSet reads;
+
+    if (!_imp->hasContextReadSources.load()) {
+        return reads;
+    }
+    std::vector<ContextReadSourcePtr> sources;
+    {
+        QMutexLocker k(&_imp->contextReadSourcesMutex);
+        sources = _imp->contextReadSources;
+    }
+    // Outside the mutex: a source may read other knobs to answer.
+    for (const ContextReadSourcePtr& source : sources) {
+        source->appendContextReads(&reads);
+    }
+
+    return reads;
 }
 
 void

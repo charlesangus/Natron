@@ -1406,6 +1406,7 @@ Node::markHashDirtyInternal(bool includeGroupContents,
     // mark is pending, or it would stop at the node and leave the dependents clean.
     const bool alreadyQueued = _imp->hashDirtyQueued.exchange(true);
     _imp->hashDirtyGeneration.fetch_add(1);
+    invalidateRenderContextReads();
     traceHashMark(this, reason, knob);
     if (alreadyQueued && !includeGroupContents) {
         return;
@@ -1432,6 +1433,7 @@ Node::invalidateAllHashes(const char* reason,
                           const KnobI* knob)
 {
     hashEpoch().fetch_add(1);
+    invalidateRenderContextReads();
     traceHashMark(0, reason, knob);
 }
 

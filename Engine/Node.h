@@ -340,6 +340,20 @@ public:
     void onKnobContentChanged(const KnobI* knob);
 
     /**
+     * @brief The render context variables this node's output can depend on: what its own
+     * knobs' read sources and getExtraContextReads() name, and the same for every node it
+     * reads, through inputs and through expressions and links. Memoized until the next
+     * invalidateRenderContextReads(), which every hash mark raises. MT-safe.
+     **/
+    RenderContextReadSetConstPtr getUpstreamContextReadSet() const;
+
+    /**
+     * @brief Context variables the node reads that no knob source reports. Defaults to the
+     * effect's EffectInstance::getExtraContextReads().
+     **/
+    virtual RenderContextReadSet getExtraContextReads() const;
+
+    /**
      * @brief True unless the knobs were last seen without any expression. Cheap.
      **/
     bool mayHaveKnobExpressions() const;
@@ -1953,6 +1967,21 @@ private:
      * @brief The nodes whose stored hashes this node's hashes fold in.
      **/
     void getHashInputs(HashInputs* inputs) const;
+
+    /**
+     * @brief The nodes whose context reads this node's read-set folds in: its inputs, through
+     * group redirections, and the nodes its knobs' expressions and links read.
+     **/
+    void getContextReadSuccessors(std::vector<NodePtr>* successors) const;
+
+    void appendOwnContextReads(RenderContextReadSet* reads) const;
+
+    /**
+     * @brief The memoized read-set if it was computed at generation, else null.
+     **/
+    RenderContextReadSetConstPtr getMemoizedContextReads(U64 generation) const;
+
+    void setMemoizedContextReads(U64 generation, const RenderContextReadSetConstPtr& reads) const;
 
     /**
      * @brief Appends the other nodes whose hashes this node's hash folds through the metadata

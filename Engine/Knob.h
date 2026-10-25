@@ -1466,6 +1466,20 @@ public:
      * invalidate the knob's hash when they change.
      **/
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const = 0;
+
+    /**
+     * @brief Registers something that makes this knob's value depend on render context
+     * variables. Adding or removing a source invalidates every memoized read-set. MT-safe.
+     **/
+    virtual void addContextReadSource(const ContextReadSourcePtr& source) = 0;
+    virtual void removeContextReadSource(const ContextReadSourcePtr& source) = 0;
+    virtual bool hasContextReadSources() const = 0;
+
+    /**
+     * @brief The union of the reads of the sources registered on this knob; empty without any.
+     * MT-safe.
+     **/
+    virtual RenderContextReadSet getContextReadSet() const = 0;
 };
 
 /**
@@ -1872,6 +1886,10 @@ public:
     virtual bool isHashExempt() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isRenderHashed() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const OVERRIDE FINAL;
+    virtual void addContextReadSource(const ContextReadSourcePtr& source) OVERRIDE FINAL;
+    virtual void removeContextReadSource(const ContextReadSourcePtr& source) OVERRIDE FINAL;
+    virtual bool hasContextReadSources() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual RenderContextReadSet getContextReadSet() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief Has every invalidateContentHash() of this knob also move generation, for an owner

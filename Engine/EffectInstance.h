@@ -1739,6 +1739,12 @@ public:
     }
 
     /**
+     * @brief Render context variables this effect reads that no knob source reports. Call
+     * invalidateRenderContextReads() when the answer changes.
+     **/
+    virtual RenderContextReadSet getExtraContextReads() const;
+
+    /**
      * @brief Override to initialize the overlay interact. It is called only on the
      * live instance.
      **/

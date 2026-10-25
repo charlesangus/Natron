@@ -27,6 +27,9 @@
 
 #include <QDebug>
 #include <QThread>
+#include <algorithm>
+#include <set>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -41,6 +44,7 @@
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/Settings.h"
 #include "Engine/ThreadPool.h"
 #include "Engine/TimeLine.h"
@@ -1976,5 +1980,179 @@ InspectorNode::setInputB(int inputNb)
     }
     Q_EMIT refreshOptionalState();
 }
+
+RenderContextReadSet
+EffectInstance::getExtraContextReads() const
+{
+    return RenderContextReadSet();
+}
+
+RenderContextReadSet
+Node::getExtraContextReads() const
+{
+    return _imp->effect ? _imp->effect->getExtraContextReads() : RenderContextReadSet();
+}
+
+void
+Node::getContextReadSuccessors(std::vector<NodePtr>* successors) const
+{
+    if (!_imp->effect) {
+        return;
+    }
+    for (U32 i = 0, n = getInputSlotCount(); i < n; ++i) {
+        NodePtr input = getInput(i);
+        if (input && (input.get() != this)) {
+            successors->push_back(std::move(input));
+        }
+    }
+    std::set<NodePtr> dependencies;
+    _imp->effect->getAllExpressionDependenciesRecursive(dependencies);
+    for (const NodePtr& dependency : dependencies) {
+        if (dependency && (dependency.get() != this)) {
+            successors->push_back(dependency);
+        }
+    }
+}
+
+void
+Node::appendOwnContextReads(RenderContextReadSet* reads) const
+{
+    if (!_imp->effect) {
+        return;
+    }
+    const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
+    for (const KnobIPtr& knob : knobs) {
+        if (knob && knob->hasContextReadSources()) {
+            reads->merge(knob->getContextReadSet());
+        }
+    }
+    reads->merge(getExtraContextReads());
+}
+
+RenderContextReadSetConstPtr
+Node::getMemoizedContextReads(U64 generation) const
+{
+    std::lock_guard<std::mutex> l(_imp->contextReadsMutex);
+
+    if (_imp->contextReadsGeneration != generation) {
+        return RenderContextReadSetConstPtr();
+    }
+
+    return _imp->contextReads;
+}
+
+void
+Node::setMemoizedContextReads(U64 generation,
+                              const RenderContextReadSetConstPtr& reads) const
+{
+    std::lock_guard<std::mutex> l(_imp->contextReadsMutex);
+
+    _imp->contextReadsGeneration = generation;
+    _imp->contextReads = reads;
+}
+
+RenderContextReadSetConstPtr
+Node::getUpstreamContextReadSet() const
+{
+    // Read before anything the walk looks at, so that a change landing during the walk leaves
+    // the memos it stores stale.
+    const U64 generation = getRenderContextReadsGeneration();
+    {
+        RenderContextReadSetConstPtr memo = getMemoizedContextReads(generation);
+        if (memo) {
+            return memo;
+        }
+    }
+
+    static const RenderContextReadSetConstPtr emptyReads = std::make_shared<const RenderContextReadSet>();
+
+    // Tarjan's strongly connected components, iteratively so that a deep graph cannot overflow
+    // the stack. Expressions can make the graph cyclic; the nodes of a cycle read each other, so
+    // they share one read-set. Every node walked gets its memo, so asking each node of a graph
+    // in turn walks the graph once.
+    struct Visit {
+        const Node* node;
+        NodePtr hold;
+        std::vector<NodePtr> successors;
+        std::size_t next;
+        std::size_t index;
+        std::size_t lowlink;
+        bool onStack;
+        RenderContextReadSet reads;
+        RenderContextReadSetConstPtr closure;
+    };
+    std::vector<Visit> visits;
+    std::unordered_map<const Node*, std::size_t> visitOf;
+    std::vector<std::size_t> callStack;
+    std::vector<std::size_t> componentStack;
+
+    auto open = [&](const Node* node,
+                    const NodePtr& hold) {
+        const std::size_t v = visits.size();
+        visits.emplace_back();
+        Visit& visit = visits.back();
+        visit.node = node;
+        visit.hold = hold;
+        visit.next = 0;
+        visit.index = v;
+        visit.lowlink = v;
+        visit.onStack = true;
+        node->appendOwnContextReads(&visit.reads);
+        node->getContextReadSuccessors(&visit.successors);
+        visitOf[node] = v;
+        callStack.push_back(v);
+        componentStack.push_back(v);
+    };
+
+    open(this, NodePtr());
+    while (!callStack.empty()) {
+        const std::size_t v = callStack.back();
+        if (visits[v].next < visits[v].successors.size()) {
+            const NodePtr w = visits[v].successors[visits[v].next++];
+            std::unordered_map<const Node*, std::size_t>::const_iterator found = visitOf.find(w.get());
+            if (found == visitOf.end()) {
+                RenderContextReadSetConstPtr memo = w->getMemoizedContextReads(generation);
+                if (memo) {
+                    visits[v].reads.merge(*memo);
+                } else {
+                    open(w.get(), w);
+                }
+            } else if (visits[found->second].onStack) {
+                visits[v].lowlink = std::min(visits[v].lowlink, visits[found->second].index);
+            } else {
+                visits[v].reads.merge(*visits[found->second].closure);
+            }
+            continue;
+        }
+
+        callStack.pop_back();
+        if (visits[v].lowlink == visits[v].index) {
+            RenderContextReadSet componentReads;
+            std::size_t first = componentStack.size();
+            do {
+                --first;
+                componentReads.merge(visits[componentStack[first]].reads);
+            } while (componentStack[first] != v);
+            const RenderContextReadSetConstPtr closure = componentReads.empty() ? emptyReads : std::make_shared<const RenderContextReadSet>(std::move(componentReads));
+            for (std::size_t i = first; i < componentStack.size(); ++i) {
+                Visit& member = visits[componentStack[i]];
+                member.onStack = false;
+                member.closure = closure;
+                member.reads = RenderContextReadSet();
+                member.node->setMemoizedContextReads(generation, closure);
+            }
+            componentStack.resize(first);
+        }
+        if (!callStack.empty()) {
+            Visit& parent = visits[callStack.back()];
+            parent.lowlink = std::min(parent.lowlink, visits[v].lowlink);
+            if (!visits[v].onStack) {
+                parent.reads.merge(*visits[v].closure);
+            }
+        }
+    }
+
+    return visits[0].closure;
+} // Node::getUpstreamContextReadSet
 
 NATRON_NAMESPACE_EXIT

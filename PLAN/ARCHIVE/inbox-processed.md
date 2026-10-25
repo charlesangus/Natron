@@ -181,3 +181,19 @@ User request: a Python API for undo steps, as context managers — e.g. `with ap
   5. **P2.T1 approach:** the core is FastNoise2-derived (option A: our ported header; option B: vendored FastNoise2+FastSIMD on the CPU with the Slang port for the GPU), per P1.T3. Add the types FastNoise2 lacks: hybrid multifractal, true cellular distance to edge (FastNoise2's F2−F1 only approximates it) and smooth F1. Write them ourselves; copy no Apache-2.0 code. Billow/turbulence is FBm over `Abs`.
   6. **Scope, In:** add a loop-period knob for seamless time loops. A 2D pattern loops through 4D (x, y, r·cos t, r·sin t), with the note that a looping 3D pattern would need 5D and is out. **Scope, Out:** a NoiseTool-encoded FastNoise2 node-tree knob, since the GPU would need a tree interpreter (no milestone; compose with several Noise nodes and a Merge instead). **Edge cases:** 4D cellular checks 81 cells per sample per octave, so the spike times it on the GPU.
   7. **Decisions:** append "2026-10-25 — FastNoise2 is the source (user): MIT and full 4D. The spike decides between porting its kernels to C++/Slang (A) and linking its SIMD library on the CPU with a Slang port (B). A must beat FastNoiseLite on the CPU but need not match FastNoise2's tuned SIMD." Amend the 2026-10-13 FastNoiseLite bullet to note that FastNoise2 is 4D. The 2026-10-13 spike decision is superseded: the Cycles and OpenSimplex2 candidates and their licence choice are dropped.
+
+### 2026-10-25T18:00:00Z — change-request
+- refs: M92
+- From the user's M92 - Linked Nodes UAT. Three changes, each reversing or refining shipped behaviour (the owning PM should add tasks and record decisions):
+  1. **Copy, paste and duplicate make an identical copy, links included.** Reverses M92.P2.T1 and the gate item "Right-click Duplicate and Paste produce independent copies". Keyboard and right-click Duplicate, Copy/Paste and clipboard paste all keep the copy's knob links and Linked Node membership; the copy joins the original's link groups (it is not independent, and the copy is drawn as linked). Supersedes the 2026-10-25 decision that pasted copies link only to each other. Alias (permanent) groups still follow whatever the Group copy already does. Update the gate wording and undo/redo coverage.
+  2. **Each link line points to only the nearest other node.** Today every member draws to every other member, making a web. Per link group (and per expression dependency set), draw one line to the single nearest other member node, by node-centre distance. A fast approximation is fine; exactness is not required. Applies to both link and expression lines, and to the dashed Linked Node lines.
+  3. **Swap the dash styles.** Whole-node links (Linked Nodes) now draw **solid**; single-knob links (Paste Link, drag-to-link, alias) draw **dashed**. Today it is the reverse. Update the Xvfb screenshot expectations in M92.P2.T4 and the gate.
+
+### 2026-10-25T12:00:00Z — info
+- refs: Engine/Knob.cpp setExpressionInternal; found during M92
+`setExpressionInternal` rethrows a caught `const std::exception&` with `throw e;`, slicing a `std::runtime_error` to a plain `std::exception` and dropping its type. Use `throw;`.
+
+### 2026-10-25T06:30:00Z — info
+- refs: M167
+A Switch's per-file key/value metadata (custom header attributes) always comes from its input 0, not the input it routes to at that frame, so a Write over a keyed Switch writes the first source's custom attributes into every file. Found while writing M167 P5.T4 (NativeWriteMetadata EachFileOfASequenceTakesItsOwnFramesFormat checks only size and PAR). Fix belongs in Switch / NativeEffectBase::getOutputMetadata routing; outside M167's files.
+

@@ -184,7 +184,37 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
   - approach:
     - **What is saved.** For each knob dimension in a link group, save a project-unique group id, whether it is currently linked, and the group's node-link and permanent flags. An unlinked knob's own values are saved as usual.
     - **Load and paste.** On load, rebuild the groups after all nodes exist, alongside where `restoreLinks` runs (`Knob.cpp:159-307`). Map node names the same way `findMaster` does for pasted or imported nodes, so that copy-pasting a set of linked nodes links the pasted copies to each other and not to the originals.
-    - **Old fields.** Remove the `MasterNode` field (`NodeSerialization.h:259,295,381`) and the clone restore path (`NodeGroupSerialization.cpp:336-348`), with **no** legacy reader. Also remove the per-knob `MasterNodeName` / `MasterKnobName` / `MasterDimension` fields (`KnobSerialization.cpp:105-135`) and their `restoreLinks` handling, including the alias case where `dimension == -1`, unless an internal `slaveTo` user still needs them to persist. If one does, keep only that use and record why in `## Decisions`.
+    - **Old fields.** Remove the `MasterNode` field (`NodeSerialization.h:259,295,381`) and the clone restore path (`NodeGroupSerialization.cpp:336-348`), with **no** legacy reader. Also remove the per-knob `MasterNodeName` / `MasterKnobName` / `MasterDimension` fields (`KnobSerialization.cpp:105-135`) and their `restoreLinks` handling, including the alias case where `dimension == -1`, unless an internal `slaveTo` user still needs them to persist. If one does, keep only that use and record why in `## Phase 92.5: UAT changes
+
+- [ ] M92.P5.T1 — Copy, paste and duplicate keep links
+  - files: `Gui/NodeGraph*.cpp` (copy/paste/duplicate), `Engine/Node*.cpp`, `Engine/KnobSerializationConvert.cpp`, `Engine/Knob.cpp`, `Tests/LinkedNode_Test.cpp`
+  - approach:
+    - Keyboard and right-click Duplicate, Copy/Paste and clipboard paste make an identical copy: each copied knob joins the original's link groups, and a copy of a Linked Node joins its Linked Node group and is drawn as linked.
+    - Copies pasted together without their originals still link to each other where their originals were linked.
+    - Alias (permanent) groups follow whatever copying the Group already does.
+    - Each paste or duplicate stays one undo step that removes the copy from every group it joined.
+  - verify: tests cover duplicate and paste of a Linked Node and of a paste-linked knob joining the original's group, edits propagating to the original and the copy, undo/redo, and a copy pasted into another project without its originals.
+  - size: L
+
+- [ ] M92.P5.T2 — Each link line points to the nearest other member
+  - files: `Gui/NodeGraph*.cpp`, `Gui/NodeGui.cpp`, `Gui/LinkArrow.cpp` (or where link and expression lines are built)
+  - approach: per link group, and per expression dependency set, draw one line from each member node to the single nearest other member node by node-centre distance, instead of a line to every other member. An approximate nearest neighbour is fine. Applies to knob link lines, expression lines and the Linked Node lines; lines are deduplicated so a mutual nearest pair draws once.
+  - verify: a test or Xvfb check with four linked nodes in a row shows three lines, not six; moving a node re-picks its nearest member.
+  - size: M
+
+- [ ] M92.P5.T3 — Swap the dash styles
+  - files: `Gui/NodeGraph*.cpp`, `Gui/NodeGui.cpp`, `Tests/gui/m92_linked_nodes.py`
+  - approach: whole-node links (Linked Nodes) draw solid; single-knob links (Paste Link, drag-to-link, alias) draw dashed. Expression lines keep their style.
+  - verify: the Xvfb script's screenshots show solid Linked Node lines and dashed knob-link lines; screenshots shared before sign-off.
+  - size: S
+
+- [ ] M92.P5.T4 — Rethrow expression errors without slicing
+  - files: `Engine/Knob.cpp` (`setExpressionInternal`)
+  - approach: replace `throw e;` on the caught `const std::exception&` with `throw;`, so a `std::runtime_error` keeps its type and message.
+  - verify: an existing or new test that catches the runtime_error type from a bad expression passes.
+  - size: S
+
+## Decisions`.
     - **Dead code.** Delete `KnobHolder::slaveAllKnobs` / `unslaveAllKnobs`, the holder's `isSlave` flag, `Node::onAllKnobsSlaved` / `getMasterNode` / `masterNode`, the `allKnobsSlaved` signal, and any caller left over from P2.
   - verify: Extend `LinkedNode_Test.cpp`. Save a project containing three Linked Nodes, with one knob unlinked on one node and given a distinct value, plus one Paste Link between two other nodes, then reload it and check:
     - two-way edits still propagate;
@@ -223,13 +253,14 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
   - Group aliases are two-way and cannot be broken.
   - Each of these actions can be undone and redone.
   - A save and reload keeps every link.
-  - Right-click Duplicate and Paste produce independent copies.
+  - Duplicate, Copy/Paste and clipboard paste produce identical copies that keep their links and Linked Node membership, and each is undoable.
   - Link lines and expression lines use their own preference colours, and each kind can be hidden in preferences.
   - Shift+E ("Show Link Lines") hides and shows both kinds of line.
   - No user-visible "Clone", "Declone" or "Link to..." remains.
 
 ## Decisions
 
+- 2026-10-25 — **Copies keep their links; nearest-member lines; dash styles swapped (user, UAT):** Duplicate, Copy/Paste and clipboard paste make identical copies that join the originals' link groups and Linked Node groups, reversing P2.T1 and superseding the earlier decision that pasted copies link only to each other. Each link group (and expression dependency set) draws one line from each member to its nearest other member, approximate is fine. Linked Node lines are solid and single-knob links dashed.
 - 2026-10-25 — **Restyle approved (user):** blue linked knob names and the vector chain-link node badge are signed off.
 - 2026-10-25 — **Linked knobs show a blue name, not a circle (user):** the per-knob blue circle is replaced by the knob label in blue. The node-graph link badge must read clearly at normal zoom; the small "L" read as a "k".
 - 2026-10-25 — **Per-knob master fields stay (PM):** the Tracker's linked CornerPin/Transform export, track markers and the "Unlink from…" menu still use the per-knob master link, so only the node-level clone code is removed.

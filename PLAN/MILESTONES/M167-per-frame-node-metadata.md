@@ -4,7 +4,13 @@ Make a node's metadata (colour layout and components, bit depth, PAR, fps, forma
 
 The key/value metadata already works per frame: `NativeEffectBase::getOutputMetadata` (`Engine/Nodes/NativeEffectBase.cpp` ~:382-426) caches per (time, view) under the node hash with a leaf lock and a generation check, and Route ops answer with their routed input (`StagedImageEffect.cpp` ~:600-618). This milestone gives `NodeMetadata` the same shape. Each node computes it on request at (time, view), and the actions cache keys it by (hash, time, view). A node that is an identity at a frame reports its input's metadata at the identity time. Native nodes derive it at a time. An OpenFX node answers per frame too: getClipPreferences runs once per distinct input-metadata signature (user decision, 2026-10-24). Renders read the metadata snapshotted with their frame's node hashes. That removes the main-thread-only refresh and M100's stale-data abort. Consumers outside the render (Viewer, Write, node graph, Python) ask at an explicit time. Premult is not a metadata field: M43 - Drop Premult Concept removes it. Prior art: Natron 3 (`origin/master` `Engine/EffectInstanceActions.cpp` ~:1933, `getTimeInvariantMetadata_public`) keys metadata by hash from any thread and keeps its side effects on the main thread.
 
-Filed 2026-10-24 by M110 - Remaining Native GPU Ports, on the user's ruling that node metadata is not the same at every frame (M110's `## Decisions`, 2026-10-24). It absorbs M144 - Render-Thread Metadata Refresh (cancelled 2026-10-24), and carries M144's acceptance in Phases 167.3 and 167.6. M110.P3.T4 fixes the Switch's per-frame layers through the components path, ahead of this milestone.
+Filed 2026-10-24 by M110 - Remaining Native GPU Ports, on the user's ruling that node metadata is not the same at every frame (M110's `- [ ] M167.P6.T5 — A keyed Switch passes the routed input's per-file metadata
+  - files: `Engine/Nodes/` Switch, `Engine/NativeEffectBase.cpp` (`getOutputMetadata` routing), `Tests/NativeWriteMetadata_Test.cpp`
+  - approach: a Switch's custom key/value metadata (file header attributes) comes from the input it routes to at that frame, not always input 0.
+  - verify: a Write over a keyed Switch writes each file's own source attributes; the existing sequence test also checks the custom attributes.
+  - size: M
+
+## Decisions`, 2026-10-24). It absorbs M144 - Render-Thread Metadata Refresh (cancelled 2026-10-24), and carries M144's acceptance in Phases 167.3 and 167.6. M110.P3.T4 fixes the Switch's per-frame layers through the components path, ahead of this milestone.
 
 Deps: M100 - Content Node Hashing.
 

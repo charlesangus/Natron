@@ -378,7 +378,7 @@ The Shuffle family needs two more pieces underneath. First, a multi-plane `GpuQu
   - verify: every listed test passes on RADV, and Decisions lines record the Auto-mode outcome, the numbers and the resample before/after table.
   - size: M
 
-- [ ] M110.P4.T5 — Fast path for the box (and impulse) resample: exact maths only near a decision boundary
+- [x] M110.P4.T5 — Fast path for the box (and impulse) resample: exact maths only near a decision boundary
   - files: the GPU resample kernel that `216e3028f`/`7e777a7d8` changed (find it from those commits), `Tests/Native/NativeTransformGpu_Test.cpp`, `Tests/Native/NativeReformatGpu_Test.cpp` (only if a boundary case needs a new assertion)
   - approach: P4.T3's bench (`.local/m110/p4t3/resample-1a6741d9/table.txt`) shows the exact emulated-double sample positions make box kernels 2.3–5.8× slower than before `216e3028f` (Reformat UHD 0.55 → 2.44 ms, 8K 1.54 → 8.98; Transform 24k 50 → 113), and impulse up to ~1.5×. Cubic is unchanged. Compute the sample position in the two-float path first, and fall back to the exact emulated-double computation only when the result lies within a small, provable bound of a rounding or footprint decision boundary (the tie the exact maths exists to get right). Derive the bound from the two-float error, and state it in a short comment. CPU parity must stay bit-for-bit where the exact path made it so.
   - verify: `NativeTransformGpu_Test` and `NativeReformatGpu_Test` pass on lavapipe (local `fast --tests`) and on RADV with `NATRON_TEST_REQUIRE_GPU=1`; then rerun `.local/m110/p4t3/resample_bench.sh` (cand = new release AppImage, base = `216e3028f^`'s) on one boot, with box and impulse kernel ms within ~15% of the base.

@@ -617,7 +617,7 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
                     it->key->key = it->key->curve->setKeyFrameInterpolation(interp, keyframeIndex);
                     if (undo && interpolationHasWeights(it->oldInterp)) {
                         const KeyTangents& t = it->oldTangents;
-                        it->key->key = it->key->curve->setKeyFrameTangents(t.left, t.right, t.leftWeight, t.rightWeight, keyframeIndex);
+                        it->key->key = isKnobCurve->getInternalCurve()->setKeyFrameTangents(t.left, t.right, t.leftWeight, t.rightWeight, keyframeIndex);
                     }
                 }
                 isParametric->evaluateValueChange(isKnobCurve->getDimension(), it->key->key.getTime(), ViewIdx(0), eValueChangedReasonUserEdited);

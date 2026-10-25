@@ -31,7 +31,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_REVERSEFLOWVARIABLESET "fr.natron.ReverseFlowVariableSet"
+#define PLUGINID_NATRON_REVERSEFLOWVARIABLESET "ReverseFlowVariableSet"
 
 #define kReverseFlowVariableSetParamPage "rfvPage"
 #define kReverseFlowVariableSetParamPageLabel "Variables"

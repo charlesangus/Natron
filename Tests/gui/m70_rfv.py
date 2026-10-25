@@ -34,7 +34,7 @@ DIALOG_TIMEOUT_S = 20.0
 LOAD_TIMEOUT_S = 60.0
 SETTLE_MS = 500
 
-SET_PLUGIN = "fr.natron.ReverseFlowVariableSet"
+SET_PLUGIN = "ReverseFlowVariableSet"
 RFV_GROUP = "rfvVariables"
 RFV_PAGE = "rfvPage"
 TYPE_DOUBLE = 3  # AddKnobDialog::eParamDataTypeFloatingPoint

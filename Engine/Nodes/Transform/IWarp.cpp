@@ -251,7 +251,7 @@ IWarp::addAcceptedComponents(int inputNb,
 void
 IWarp::createMapKnobs(const KnobPagePtr& page)
 {
-    _map.createKnobs(this, page);
+    _map.createKnobs(this, page, kMapWarpKnobHints);
 }
 
 void
@@ -939,25 +939,7 @@ IWarp::resolveGpuMapChannel(double time,
                             ImageLayerDesc* layer,
                             int* channel) const
 {
-    *layer = ImageLayerDesc();
-    *channel = -1;
-    if (!getInput(kIWarpInputMap)) {
-        return true;
-    }
-    ImageLayerDesc resolved;
-    int resolvedChannel = -1;
-    // A channel that does not resolve reads 0 before the remap, which the kernel does without
-    // the Map's pixels.
-    if (!_map.resolveChannel(const_cast<IWarp*>(this), kIWarpInputMap, time, view, &resolved, &resolvedChannel) || (resolvedChannel < 0)) {
-        return true;
-    }
-    if ((resolved.getNumComponents() < 1) || (resolved.getNumComponents() > 4)) {
-        return false;
-    }
-    *layer = resolved;
-    *channel = resolvedChannel;
-
-    return true;
+    return resolveWarpGpuMapChannel(*this, _map, kIWarpInputMap, time, view, layer, channel);
 }
 
 bool

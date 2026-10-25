@@ -33,6 +33,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
@@ -47,6 +48,7 @@
 #define kIDistortInputSource 0
 #define kIDistortInputUV 1
 #define kIDistortInputMask 2
+#define kIDistortInputMap 3
 
 NATRON_NAMESPACE_ENTER
 
@@ -54,6 +56,7 @@ inline constexpr InputSpec kIDistortInputs[] = {
     InputSpec { .label = "Source" },
     InputSpec { .label = "UV", .role = InputRole::Aux, .optional = true },
     InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+    kMapInputSpec,
 };
 
 inline constexpr NodeSpec kIDistortNodeSpec = {
@@ -66,6 +69,8 @@ inline constexpr NodeSpec kIDistortNodeSpec = {
                    "Offsets are in full-resolution pixels, so the result is the same at any render scale.\n"
                    "Filtering widens with the local stretch of the displacement, measured from the differences of UV "
                    "between neighbouring pixels; the impulse filter takes the nearest pixel with no widening.\n"
+                   "The optional Map input scales the displacement per pixel: none where the Map is black, all of it "
+                   "where it is white. It is read at the output pixel.\n"
                    "With the UV input disconnected the Source passes through unchanged.",
     .grouping = PLUGIN_GROUP_TRANSFORM,
     .majorVersion = PLUGIN_MAJOR_NATRON_IDISTORT,
@@ -85,7 +90,9 @@ inline constexpr ImagePipelineSpec kIDistortPipeline = {
  * (x + 0.5 + (u - uOffset) * uScale, y + 0.5 + (v - vOffset) * vScale), u and v being the two
  * channels the U and V selectors pick among the layers of the UV input at that pixel. A channel
  * the UV input does not carry, or a selector set to None, reads zero. Offset and scale are in
- * full-resolution pixels, so the displacement follows the render scale.
+ * full-resolution pixels, so the displacement follows the render scale. With the Map input
+ * connected, the displacement is multiplied by the Map value at (x, y), read through MapInput;
+ * at 0 the pixel samples its own centre whatever the UV holds.
  *
  * Every filter but impulse samples with a footprint given by the Jacobian of the sample point,
  * from central differences of the coordinates over the pixel's neighbours, which are read one
@@ -93,7 +100,7 @@ inline constexpr ImagePipelineSpec kIDistortPipeline = {
  * puts the sample outside the Source: that pixel is black.
  *
  * It is a Custom op with the host mask and mix: the Source is read over its whole region of
- * definition, the UV input over the render window grown by one pixel. With the UV input
+ * definition, the UV and Map inputs over the render window grown by one pixel. With the UV input
  * disconnected, both selectors None, or a zero scale, the node is an identity of the Source.
  **/
 class IDistort
@@ -125,6 +132,14 @@ public:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The Map is read only while it is connected and its channel resolves.
+     **/
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     // The knob values a render reads, at one time and view.
     struct Settings {
@@ -155,8 +170,8 @@ private:
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
     /**
-     * @brief The Source over its whole region of definition and the UV input over the window
-     * grown by one pixel, on top of the default regions.
+     * @brief The Source over its whole region of definition and the UV and Map inputs over the
+     * window grown by one pixel, on top of the default regions.
      **/
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
@@ -165,7 +180,7 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
-    // The layers the U and V selectors resolve to, read from the UV input.
+    // The layers the U and V selectors resolve to, read from the UV input, and the Map's layer.
     virtual bool getInputLayersRead(int inputNb,
                                     double time,
                                     ViewIdx view,
@@ -181,7 +196,7 @@ private:
 
     /**
      * @brief Accepts what the stages accept in float, when U and V resolve to one layer of 1 to 4
-     * channels or to none.
+     * channels or to none, and so does the Map's channel.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -213,6 +228,7 @@ private:
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
     KnobBoolWPtr _blackOutside;
+    MapInput _map;
 };
 
 NATRON_NAMESPACE_EXIT

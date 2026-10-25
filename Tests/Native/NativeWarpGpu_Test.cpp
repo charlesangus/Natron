@@ -54,6 +54,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -671,4 +672,88 @@ TEST_F(NativeWarpGpuTest, DisconnectedUVMatchesTheCpuFrame)
     EXPECT_TRUE(rod.isNull()) << "STMap without UV";
 
     expectParity(source, idistort, ParityTolerance::exact(), "IDistort without UV", false);
+}
+
+// The Map is read only while it is connected, over at least the output grown by a pixel for the
+// Jacobians.
+TEST_F(NativeWarpGpuTest, MapIsReadAroundTheOutput)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr uv = makeUV();
+    ASSERT_TRUE(source && uv);
+    NodePtr stmap = makeSTMap(source, uv, "cubic");
+    NodePtr idistort = makeIDistort(source, uv, "cubic");
+    ASSERT_TRUE(stmap && idistort);
+
+    const ImageLayerDesc rgba = ImageLayerDesc::getRGBAComponents();
+    const RectI rect(10, 20, 31, 47);
+    for (const NodePtr& node : { stmap, idistort }) {
+        const int mapInput = (node == stmap) ? kSTMapInputMap : kIDistortInputMap;
+        StagedImageEffect* effect = effectOf(node);
+        ASSERT_TRUE(effect != NULL);
+        const std::string what = node->getPluginID();
+        EXPECT_FALSE(effect->readsGpuInput(mapInput, rgba, kTime, ViewIdx(0))) << what << ": a disconnected Map";
+
+        NodePtr map = makeSource();
+        ASSERT_TRUE(bool(map));
+        connectNodes(map, node, mapInput, true);
+        EXPECT_TRUE(effect->readsGpuInput(mapInput, rgba, kTime, ViewIdx(0))) << what << ": a connected Map";
+        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+            const RectI mapRoI = effect->getGpuInputRoI(mapInput, rect, scale);
+            EXPECT_TRUE(mapRoI.contains(RectI(rect.x1 - 1, rect.y1 - 1, rect.x2 + 1, rect.y2 + 1))) << what << " mipmap " << mipmapLevel;
+        }
+    }
+}
+
+// A Map that is another parity source, whose alpha bands give exact 0, exact 1 and a ramp, under
+// each of the Map's remapping knobs.
+TEST_F(NativeWarpGpuTest, ConnectedMapMatchesTheCpuFrame)
+{
+    for (const char* filter : { "impulse", "cubic", "parzen" }) {
+        resetProject();
+        NodePtr source = makeSource();
+        NodePtr uv = makeUV();
+        ASSERT_TRUE(source && uv);
+        NodePtr stmap = makeSTMap(source, uv, filter);
+        NodePtr idistort = makeIDistort(source, uv, filter);
+        ASSERT_TRUE(stmap && idistort);
+        connectNodes(makeSource(), stmap, kSTMapInputMap, true);
+        connectNodes(makeSource(), idistort, kIDistortInputMap, true);
+
+        for (const NodePtr& node : { stmap, idistort }) {
+            const std::string what = node->getPluginID() + " Map " + filter;
+            expectParity(source, node, toleranceFor(filter), what);
+
+            ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
+            expectParity(source, node, toleranceFor(filter), what + " inverted");
+
+            ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 0. }));
+            ASSERT_TRUE(setKnobValues(node, kMapInputParamGamma, { 2. }));
+            ASSERT_TRUE(setKnobValue(node, kMapInputParamResponse, std::string(kMapInputParamResponseSmooth)));
+            expectParity(source, node, toleranceFor(filter), what + " gamma 2, smooth");
+
+            ASSERT_TRUE(setKnobValues(node, kMapInputParamGamma, { 1. }));
+            ASSERT_TRUE(setKnobValue(node, kMapInputParamResponse, std::string(kMapInputParamResponseLinear)));
+            ASSERT_TRUE(setChannelSelect(node, kMapInputParamChannel, "rgba.R"));
+            expectParity(source, node, toleranceFor(filter), what + " from R");
+        }
+    }
+}
+
+// The UV Alpha gate applies only where the Map moves the pixel at all.
+TEST_F(NativeWarpGpuTest, MapWithUVAlphaMatchesTheCpuFrame)
+{
+    for (const char* filter : { "impulse", "cubic" }) {
+        resetProject();
+        NodePtr source = makeSource();
+        NodePtr uv = makeUV();
+        ASSERT_TRUE(source && uv);
+        NodePtr stmap = makeSTMap(source, uv, filter);
+        ASSERT_TRUE(bool(stmap));
+        ASSERT_TRUE(setKnobValues(stmap, kSTMapParamUVAlpha, { 1. }));
+        connectNodes(makeSource(), stmap, kSTMapInputMap, true);
+        expectParity(source, stmap, toleranceFor(filter), std::string("STMap Map and UV Alpha ") + filter);
+    }
 }

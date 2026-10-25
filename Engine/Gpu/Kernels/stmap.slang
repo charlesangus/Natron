@@ -1,18 +1,25 @@
 import pixelwrap;
 import coordmap;
 import resamplecore;
+import mapremap;
 
 // STMap::renderOp and IDistort::renderOp per pixel. The wrap's push block carries the Source,
 // which is both the image sampled and the image blended under the mask and mix, the destination
-// and the mask; the parameter block in wrapAux carries the settings and the UV view, whose pixels
-// are in uvBuf. WarpGpuParams in Engine/Nodes/Transform/WarpGpu.h mirrors the block's words.
+// and the mask; the parameter block in wrapAux carries the settings, the UV view, whose pixels
+// are in uvBuf, and the Map view, whose pixels are in mapBuf. WarpGpuParams in
+// Engine/Nodes/Transform/WarpGpu.h mirrors the block's words.
 
 [[vk::binding(4, 0)]] StructuredBuffer<float> uvBuf;
+[[vk::binding(5, 0)]] StructuredBuffer<float> mapBuf;
 
 static const uint kWarpClamp = 1;
 static const uint kWarpBlackOutside = 2;
 static const uint kWarpJacobian = 4;
 static const uint kWarpSample = 8;
+static const uint kWarpMapConnected = 16;
+static const uint kWarpMapRead = 32;
+static const uint kWarpMapInvert = 64;
+static const uint kWarpMapSmooth = 128;
 
 struct WarpUV
 {
@@ -26,6 +33,19 @@ struct WarpUV
     int u;
     int v;
     int alpha;
+}
+
+struct WarpMap
+{
+    uint offset;
+    uint stride;
+    int x1;
+    int y1;
+    int x2;
+    int y2;
+    uint comps;
+    int component;
+    float exponent;
 }
 
 struct Warp
@@ -44,6 +64,7 @@ struct Warp
     FF originY;
     FF width;
     FF height;
+    WarpMap map;
 }
 
 FF warpFF(StructuredBuffer<uint> params, uint index)
@@ -77,6 +98,15 @@ Warp warpLoad(StructuredBuffer<uint> params)
     w.width = warpFF(params, 29);
     w.height = warpFF(params, 31);
     w.uv.alpha = int(params[33]);
+    w.map.offset = params[34];
+    w.map.stride = params[35];
+    w.map.x1 = int(params[36]);
+    w.map.y1 = int(params[37]);
+    w.map.x2 = int(params[38]);
+    w.map.y2 = int(params[39]);
+    w.map.comps = params[40];
+    w.map.component = int(params[41]);
+    w.map.exponent = asfloat(params[42]);
     return w;
 }
 
@@ -93,6 +123,23 @@ float uvAt(WarpUV uv, int component, int x, int y)
     return uvBuf[uv.offset + uint(y - uv.y1) * uv.stride + uint(x - uv.x1) * uv.comps + uint(component)];
 }
 
+bool warpMapped(Warp w)
+{
+    return (w.flags & kWarpMapConnected) != 0;
+}
+
+// The remapped Map value at (x, y), as MapInput::read() and MapInputParams::remap() give it: 1
+// with no Map, the remap of 0 off the Map's pixels.
+float warpMap(Warp w, int x, int y)
+{
+    if (!warpMapped(w))
+        return 1.0;
+    float raw = 0.0;
+    if ((w.flags & kWarpMapRead) != 0 && w.map.component >= 0 && wrapInside(int2(x, y), w.map.x1, w.map.y1, w.map.x2, w.map.y2))
+        raw = mapBuf[w.map.offset + uint(y - w.map.y1) * w.map.stride + uint(x - w.map.x1) * w.map.comps + uint(w.map.component)];
+    return mapRemap(raw, (w.flags & kWarpMapInvert) != 0, (w.flags & kWarpMapSmooth) != 0, w.map.exponent);
+}
+
 // The double-float error terms of an infinite or overflowing operand are inf - inf, so the result
 // would be NaN where the CPU's double expression gives an infinity, which clamp wrapping moves to
 // the edge rather than reading black. Plain float arithmetic keeps the infinity and its sign.
@@ -102,23 +149,48 @@ float finiteOrFloat(FF v, float fallback)
 }
 
 // The source coordinate of pixel (x, y), rounded to float once from the double-float value of the
-// CPU's double expression.
+// CPU's double expression. A Map value m other than 1 moves it from the pixel's centre c to
+// c + (s - c) * m, c itself at 0.
 float2 stmapCoord(Warp w, int x, int y)
 {
     const float mapU = uvAt(w.uv, w.uv.u, x, y);
     const float mapV = uvAt(w.uv, w.uv.v, x, y);
     const FF u = ffMul(ffAdd(ffMake(mapU, 0.0), ffNeg(w.uOffset)), w.uScale);
     const FF v = ffMul(ffAdd(ffMake(mapV, 0.0), ffNeg(w.vOffset)), w.vScale);
+    const float m = warpMap(w, x, y);
+    if (m == 0.0)
+        return float2(float(x) + 0.5, float(y) + 0.5);
+    if (m != 1.0)
+    {
+        const FF cx = ffMake(float(x) + 0.5, 0.0);
+        const FF cy = ffMake(float(y) + 0.5, 0.0);
+        const FF mm = ffMake(m, 0.0);
+        const FF sx = ffAdd(cx, ffMul(ffAdd(ffAdd(w.originX, ffMul(u, w.width)), ffNeg(cx)), mm));
+        const FF sy = ffAdd(cy, ffMul(ffAdd(ffAdd(w.originY, ffMul(v, w.height)), ffNeg(cy)), mm));
+        const float fx = w.originX.hi + (mapU - w.uOffset.hi) * w.uScale.hi * w.width.hi;
+        const float fy = w.originY.hi + (mapV - w.vOffset.hi) * w.vScale.hi * w.height.hi;
+        return float2(finiteOrFloat(sx, cx.hi + (fx - cx.hi) * m), finiteOrFloat(sy, cy.hi + (fy - cy.hi) * m));
+    }
     return float2(finiteOrFloat(ffAdd(w.originX, ffMul(u, w.width)), w.originX.hi + (mapU - w.uOffset.hi) * w.uScale.hi * w.width.hi),
                   finiteOrFloat(ffAdd(w.originY, ffMul(v, w.height)), w.originY.hi + (mapV - w.vOffset.hi) * w.vScale.hi * w.height.hi));
 }
 
+// A Map value m scales the displacement, the pixel's centre itself at 0.
 float2 idistortCoord(Warp w, int x, int y)
 {
     const float mapU = uvAt(w.uv, w.uv.u, x, y);
     const float mapV = uvAt(w.uv, w.uv.v, x, y);
     const FF u = ffMul(ffAdd(ffMake(mapU, 0.0), ffNeg(w.uOffset)), w.uScale);
     const FF v = ffMul(ffAdd(ffMake(mapV, 0.0), ffNeg(w.vOffset)), w.vScale);
+    if (warpMapped(w))
+    {
+        const float m = warpMap(w, x, y);
+        if (m == 0.0)
+            return float2(float(x) + 0.5, float(y) + 0.5);
+        const FF mm = ffMake(m, 0.0);
+        return float2(finiteOrFloat(ffAdd(ffMake(float(x) + 0.5, 0.0), ffMul(u, mm)), float(x) + 0.5 + (mapU - w.uOffset.hi) * w.uScale.hi * m),
+                      finiteOrFloat(ffAdd(ffMake(float(y) + 0.5, 0.0), ffMul(v, mm)), float(y) + 0.5 + (mapV - w.vOffset.hi) * w.vScale.hi * m));
+    }
     return float2(finiteOrFloat(ffAdd(ffMake(float(x) + 0.5, 0.0), u), float(x) + 0.5 + (mapU - w.uOffset.hi) * w.uScale.hi),
                   finiteOrFloat(ffAdd(ffMake(float(y) + 0.5, 0.0), v), float(y) + 0.5 + (mapV - w.vOffset.hi) * w.vScale.hi));
 }
@@ -177,8 +249,9 @@ float4 warpSample(Warp w, int2 p, bool idistort)
     const float4 zero = float4(0.0, 0.0, 0.0, 0.0);
     if ((w.flags & kWarpSample) == 0)
         return zero;
-    // Off the UV view, as with no alpha channel at all, every position is valid.
-    if (!idistort && uvInside(w.uv, w.uv.alpha, p.x, p.y) && !(uvAt(w.uv, w.uv.alpha, p.x, p.y) > 0.0))
+    // Off the UV view, as with no alpha channel at all, every position is valid; where the Map is
+    // 0 the pixel keeps its own, so the gate does not apply.
+    if (!idistort && uvInside(w.uv, w.uv.alpha, p.x, p.y) && !(uvAt(w.uv, w.uv.alpha, p.x, p.y) > 0.0) && warpMap(w, p.x, p.y) > 0.0)
         return zero;
     const float2 s = idistort ? idistortCoord(w, p.x, p.y) : stmapCoord(w, p.x, p.y);
     float4 J = zero;

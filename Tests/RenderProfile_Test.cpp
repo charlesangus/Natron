@@ -379,10 +379,10 @@ TEST(RenderStatsGpuCounters, RegionRecordEmitsStagedReasonsOnlyWhenNonzero)
     times.stagedUnaligned = 3;
     times.stagedForgotten = 1;
     const std::string line = formatRegionRecord(1, 1, tasks, times);
-    EXPECT_NE(line.find("\"importsAtDownload\":0,\"stagedReasons\":{\"disabled\":0,\"unaligned\":3,\"importFailed\":0,\"forgotten\":1},"
-                        "\"fallback\":"),
-              std::string::npos)
-        << line;
+    const std::size_t reasons = line.find("\"importsAtDownload\":0,\"stagedReasons\":{\"disabled\":0,\"unaligned\":3,\"importFailed\":0,\"forgotten\":1}");
+    ASSERT_NE(reasons, std::string::npos) << line;
+    EXPECT_GT(line.find(",\"fallback\":", reasons), reasons) << line;
+    EXPECT_NE(line.find(",\"fallback\":", reasons), std::string::npos) << line;
 }
 
 TEST(RenderStatsGpuCounters, RegionRecordFormatCarriesTheFallbackAndRetries)

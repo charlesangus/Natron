@@ -356,6 +356,23 @@ public:
 
     bool removeProjectLayer(const QString& id);
 
+    /**
+     * @brief Declare a project variable: a user parameter in the project's variables group,
+     * declared as app.<name> once created. Raises ValueError, creating nothing, when the name is
+     * not a valid variable name, is already a project parameter or an attribute of the App
+     * class, or the group refuses the parameter.
+     **/
+    IntParam* createRFVIntParam(const QString& name, const QString& label);
+    Int2DParam* createRFVInt2DParam(const QString& name, const QString& label);
+    Int3DParam* createRFVInt3DParam(const QString& name, const QString& label);
+    DoubleParam* createRFVDoubleParam(const QString& name, const QString& label);
+    Double2DParam* createRFVDouble2DParam(const QString& name, const QString& label);
+    Double3DParam* createRFVDouble3DParam(const QString& name, const QString& label);
+    BooleanParam* createRFVBooleanParam(const QString& name, const QString& label);
+    ChoiceParam* createRFVChoiceParam(const QString& name, const QString& label);
+    ColorParam* createRFVColorParam(const QString& name, const QString& label, bool useAlpha);
+    StringParam* createRFVStringParam(const QString& name, const QString& label);
+
 protected:
 
     void renderInternal(bool forceBlocking, Effect* writeNode, int firstFrame, int lastFrame, int frameStep);

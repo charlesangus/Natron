@@ -195,6 +195,12 @@ public:
      **/
     void clearRFVVariables();
 
+    /**
+     * @brief Declares the app variable again, so app.<name> matches the project's knobs: a
+     * restored variable gains its attribute and a deleted one loses it. Failures are logged.
+     **/
+    void redeclarePythonAppVariable();
+
     bool findFormat(int index, Format* format) const;
     bool findFormat(const std::string& formatSpec, Format* format) const;
     /**

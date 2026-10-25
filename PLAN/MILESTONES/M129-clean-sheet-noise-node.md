@@ -93,7 +93,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 128.1: Library spike
 
-- [ ] M129.P1.T1 — Port FastNoise2's 4D kernels to plain C++ and Slang (option A)
+- [x] M129.P1.T1 — Port FastNoise2's 4D kernels to plain C++ and Slang (option A)
   - files: `tools/spikes/noise/fn2port/` (new: `fn2port4d.h`, `fn2port4d.slang`, `LICENSE`), `tools/spikes/noise/bench.cpp` (new)
   - approach:
     - Port 4D Perlin, SuperSimplex and cellular distance F1 (Euclidean) plus FBm, line for line, into one C-like header and its Slang mirror. Map `float32v`→`float`, `int32v`→`int`, masks→`bool`, `FS::Select`→`select`, `Masked*`→ternaries, and `FMulAdd`→explicit `fma` on both sides.
@@ -103,7 +103,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the harness reports CPU ms/Mpx (single-thread and all cores), GPU ms/Mpx, max abs CPU/GPU difference, and the vectoriser report, and writes EXR samples to `build/spikes/noise/`. It runs at the spike build; spike code is not linked into Natron.
   - size: L
 
-- [ ] M129.P1.T2 — Link FastNoise2 for the CPU, and benchmark A against B and FastNoiseLite (option B)
+- [x] M129.P1.T2 — Link FastNoise2 for the CPU, and benchmark A against B and FastNoiseLite (option B)
   - files: `tools/spikes/noise/fn2lib/` (new: build glue for FastNoise2 plus vendored FastSIMD at pinned revisions), `tools/spikes/noise/bench.cpp`
   - approach:
     - Build FastNoise2 with FastSIMD vendored at pinned revisions (no CPM network fetch), both in strict and in relaxed mode.
@@ -113,7 +113,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the harness reports ms/Mpx (single-thread and all cores) for A, B (strict and relaxed) and FastNoiseLite, plus max abs differences A↔B and B↔GPU.
   - size: L
 
-- [ ] M129.P1.T3 — Compare option A against option B, decide, and checkpoint with the user
+- [x] M129.P1.T3 — Compare option A against option B, decide, and checkpoint with the user
   - files: `PLAN/DESIGN/<date of the spike>-noise-library-spike.md` (new, plan branch, dated the day the spike runs), this milestone file (`## Decisions`)
   - approach:
     - Compare A against B, not libraries. Criteria:
@@ -130,12 +130,13 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - [ ] M129.P2.T1 — Vendor or write the chosen 4D noise core in C++
   - files: `libs/noise/` (new: the chosen core headers, `LICENSE`/`NOTICE`, `README.md` naming the upstream revision), `Engine/Nodes/Generator/NoiseCore.h` (new: the engine-facing API), `Tests/Native/NoiseCore_Test.cpp` (new)
   - approach:
-    - The core is FastNoise2-derived (option A: our ported header; option B: vendored FastNoise2+FastSIMD on the CPU with the Slang port for the GPU), per P1.T3.
+    - The core is our port of FastNoise2's kernels (option A, chosen 2026-10-25; see `PLAN/DESIGN/2026-10-25-noise-library-spike.md`), promoted from `tools/spikes/noise/fn2port/`. No FastNoise2 or FastSIMD code is linked.
+    - Baseline x86-64 must not call `fma` (a libm call there, 30 times slower on cellular): build the inner loops for x86-64-v3 with runtime dispatch to a baseline build without FMA contraction, or keep FMA out of the core; measure the chosen form.
     - Add the types FastNoise2 lacks: hybrid multifractal, true cellular distance to edge (FastNoise2's F2−F1 only approximates it) and smooth F1. Write them ourselves; copy no Apache-2.0 code. Billow/turbulence is FBm over `Abs`.
     - One API with `float noise4(Type, float4 p, const NoiseParams&)` covering gradient, value, cellular (F1, F2, F2−F1, cell value, distance to edge; the metric is a parameter) and white. White is hash(cell, seed) per canonical pixel centre.
     - Integer cell + fractional decomposition for precision.
     - The C-like subset (POD params, no virtuals in the inner loop) so P2.T2 mirrors it line for line.
-    - Third-party notices are updated (`docs/` or the packaging licence list) for FastNoise2 (MIT), and for FastSIMD if option B vendors it.
+    - Third-party notices are updated (`docs/` or the packaging licence list) for FastNoise2 (MIT), from which the kernels are ported.
   - verify: the test covers determinism, seed sensitivity, output range bounds per type, continuity across cell boundaries (gradient/value), and the 4th axis changing the result. It runs at the phase build.
   - size: L
 
@@ -189,6 +190,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-25 — **Option A, the FastNoise2 port (user):** A is level with FastNoise2 strict, 2.5-3 times faster than FastNoiseLite, matches the GPU by construction, and is one implementation; FastNoise2 relaxed's up-to-30% gain costs CPU/GPU agreement (8e-5). Baseline x86-64 must not run the core with `fma` calls. Design note: `PLAN/DESIGN/2026-10-25-noise-library-spike.md`.
 - 2026-10-25 — **Noise spike GPU and CPU timings on the GPU host (bosley-native-nodes):** RX 7900 XTX GPU kernels cost 0.26 ms/Mpx (Perlin fBm), 0.41-0.46 (SuperSimplex fBm) and 0.73-0.96 (cellular F1 fBm), within 4.8e-7 of the CPU. Multithreaded CPU (ms/Mpx): Perlin fBm a_v3 2.4, b_strict 2.4-2.6, b_relaxed 2.0-2.4; SuperSimplex fBm a_v3 5.4, b_strict 4.9, b_relaxed 3.4; cellular F1 fBm a_v3_fma 21, b_strict 25, b_relaxed 17. The port (option A, v3) is level with FastNoise2 strict (option B) and up to about 30% behind relaxed, which differs by up to 8e-5. The x86-64 baseline build with FMA is pathological (cellular fBm 431 ms/Mpx, software fma), so the CPU path needs v3 dispatch or no FMA contraction on baseline. GPU is 10-25 times faster than the multithreaded CPU.
 - 2026-10-25 — **FastNoise2 is the source (user):** MIT and full 4D. The spike decides between porting its kernels to C++/Slang (A) and linking its SIMD library on the CPU with a Slang port (B). A must beat FastNoiseLite on the CPU but need not match FastNoise2's tuned SIMD.
 - 2026-10-13 — **A clean-sheet Noise node in its own milestone (user, native-node port grill):** it has the usual types (fBm, turbulence, Voronoi, cellular and more) and Rand becomes one of them. It was split out of M128 - Native Shape Generators as a larger task.

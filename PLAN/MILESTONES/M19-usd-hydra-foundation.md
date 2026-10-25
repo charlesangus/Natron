@@ -92,7 +92,7 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
   - verify: the recorded result covers all three drivers, with a screenshot of each.
   - size: M
 
-- [ ] M19.P2.T8 — GUI on one GL 4.5 compatibility context
+- [x] M19.P2.T8 — GUI on one GL 4.5 compatibility context
   - files: `Global/gladRel/`, `Global/gladDeb/`, `Global/glad_source.c` (regenerated: `--profile=compatibility --api=gl=4.5`, current extension list), `App/NatronApp_main.cpp` or the GUI app startup (`QSurfaceFormat::setDefaultFormat`), `Gui/GuiApplicationManager*.cpp` (startup version check)
   - approach: after M19.P2.T5 passes, request a 4.5 compatibility context as the global default format before any widget exists, and regenerate glad for 4.5 compat. After the first GL context is current, check the version: below 4.5, the GUI refuses to start with a message naming the version it got. NatronRenderer and ctest skip the check.
   - verify: existing GL ctest cases pass under `build/m63-gui/run-gl-tests.sh`; the GUI under Xvfb starts and draws viewer, overlays and an OFX interact (Transform) as before; forcing a 2.1 context makes the GUI exit with the message while NatronRenderer still renders.

@@ -371,9 +371,24 @@ public Q_SLOTS:
 
     void onSchedulerTrackingStarted(int frameStep);
     void onSchedulerTrackingFinished();
-    void onSchedulerRunEnded();
+    void onSchedulerRunEnded(quint64 runId);
 
     void onSchedulerTrackingProgress(double progress);
+
+public:
+    /**
+     * @brief From the start of a tracking run until it reports trackingJobFinished: the
+     * IsolatedJob refusing writes to what the tracker reads. Null otherwise.
+     **/
+    const IsolatedJob* getRunningTrackingJob() const;
+
+    /**
+     * @brief Starts the IsolatedJob of a new tracking run, in place of any earlier run's, and
+     * returns the run's id. The job ends when the run with that id ends
+     * (onSchedulerRunEnded()) and the solve that follows it has written its result; the end of
+     * an earlier run leaves it running.
+     **/
+    quint64 startTrackingJob();
 
 Q_SIGNALS:
 
@@ -480,6 +495,10 @@ public:
 
     void getRedrawAreasNeeded(int time, std::list<RectD>* canonicalRects) const;
 
+    // The tracking run these arguments start (TrackerContext::startTrackingJob()).
+    quint64 getRunId() const;
+    void setRunId(quint64 runId);
+
 private:
 
     std::unique_ptr<TrackArgsPrivate> _imp;
@@ -522,9 +541,9 @@ public:
         Q_EMIT trackingFinished();
     }
 
-    void emit_runEnded()
+    void emit_runEnded(quint64 runId)
     {
-        Q_EMIT runEnded();
+        Q_EMIT runEnded(runId);
     }
 
 private Q_SLOTS:
@@ -540,7 +559,7 @@ Q_SIGNALS:
 
     // Every run ends with this, after trackingFinished when that is emitted, including runs too
     // short to report progress.
-    void runEnded();
+    void runEnded(quint64 runId);
 
     void trackingProgress(double progress);
 

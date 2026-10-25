@@ -1490,6 +1490,8 @@ TrackerContext::onOverlayFocusLostInternalNodes(double time,
 void
 TrackerContext::onSchedulerTrackingStarted(int frameStep)
 {
+    // What follows the run's start (its track buttons) is part of the run.
+    IsolatedJob::ThreadScope inJob(getRunningTrackingJob());
     getNode()->getApp()->progressStart(getNode(), tr("Tracking...").toStdString(), "");
     Q_EMIT trackingStarted(frameStep);
 }
@@ -1497,20 +1499,29 @@ TrackerContext::onSchedulerTrackingStarted(int frameStep)
 void
 TrackerContext::onSchedulerTrackingFinished()
 {
+    IsolatedJob::ThreadScope inJob(getRunningTrackingJob());
     getNode()->getApp()->progressEnd( getNode() );
     Q_EMIT trackingFinished();
 }
 
 void
-TrackerContext::onSchedulerRunEnded()
+TrackerContext::onSchedulerRunEnded(quint64 runId)
 {
+    // A run started since this one was handed to the scheduler: its own end solves and ends its
+    // job.
+    if (runId != _imp->trackingRunId) {
+        return;
+    }
+    // The solve is part of the run: it ends the run's job when it has written its result.
+    IsolatedJob::ThreadScope inJob(getRunningTrackingJob());
     // Solved here rather than on the tracking thread: the solver delivers its result through a
     // QFutureWatcher, which needs the event loop of the thread it lives in.
-    _imp->solvingAfterTrackingRun = true;
+    _imp->solvingRunId = runId;
     solveTransformParams();
     const bool solveInFlight = _imp->lastSolveRequest.tWatcher || _imp->lastSolveRequest.cpWatcher;
-    if (_imp->solvingAfterTrackingRun && !solveInFlight) {
-        _imp->solvingAfterTrackingRun = false;
+    if ((_imp->solvingRunId == runId) && !solveInFlight) {
+        _imp->solvingRunId = 0;
+        _imp->endTrackingJob(runId);
         Q_EMIT trackingJobFinished();
     }
 }
@@ -1518,9 +1529,27 @@ TrackerContext::onSchedulerRunEnded()
 void
 TrackerContext::onSchedulerTrackingProgress(double progress)
 {
+    IsolatedJob::ThreadScope inJob(getRunningTrackingJob());
     if ( getNode()->getApp() && !getNode()->getApp()->progressUpdate(getNode(), progress) ) {
         _imp->scheduler.abortThreadedTask();
     }
+}
+
+const IsolatedJob*
+TrackerContext::getRunningTrackingJob() const
+{
+    return _imp->runningTrackingJob.load();
+}
+
+quint64
+TrackerContext::startTrackingJob()
+{
+    _imp->endTrackingJob(_imp->trackingRunId);
+    ++_imp->trackingRunId;
+    _imp->trackingJob.reset(new IsolatedJob(getNode(), "track"));
+    _imp->runningTrackingJob.store(_imp->trackingJob.get());
+
+    return _imp->trackingRunId;
 }
 
 //////////////////////// TrackScheduler
@@ -1540,6 +1569,7 @@ struct TrackArgsPrivate
     mutable QMutex autoTrackMutex;
     
     bool autoKeyingOnEnabledParamEnabled;
+    quint64 runId;
 
     TrackArgsPrivate()
         : start(0)
@@ -1553,6 +1583,7 @@ struct TrackArgsPrivate
         , formatWidth(0)
         , formatHeight(0)
         , autoKeyingOnEnabledParamEnabled(false)
+        , runId(0)
     {
     }
 };
@@ -1614,6 +1645,19 @@ TrackArgs::operator=(const TrackArgs& other)
     _imp->formatWidth = other._imp->formatWidth;
     _imp->formatHeight = other._imp->formatHeight;
     _imp->autoKeyingOnEnabledParamEnabled = other._imp->autoKeyingOnEnabledParamEnabled;
+    _imp->runId = other._imp->runId;
+}
+
+quint64
+TrackArgs::getRunId() const
+{
+    return _imp->runId;
+}
+
+void
+TrackArgs::setRunId(quint64 runId)
+{
+    _imp->runId = runId;
 }
 
 bool
@@ -1848,6 +1892,10 @@ TrackScheduler::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
 
     assert(args);
 
+    TrackerContext* isContext = dynamic_cast<TrackerContext*>(_imp->paramsProvider);
+    const IsolatedJob* job = isContext ? isContext->getRunningTrackingJob() : NULL;
+    IsolatedJob::ThreadScope inJob(job);
+
     ThreadStateEnum state = eThreadStateActive;
     TimeLinePtr timeline = args->getTimeLine();
     ViewerInstance* viewer =  args->getViewer();
@@ -1882,7 +1930,6 @@ TrackScheduler::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
     gettimeofday(&lastProgressUpdateTime, 0);
 
     bool allTrackFailed = false;
-    TrackerContext* isContext = dynamic_cast<TrackerContext*>(_imp->paramsProvider);
     {
         ///Use RAII style for setting the isDoingPartialUpdates flag so we're sure it gets removed
         IsTrackingFlagSetter_RAII __istrackingflag__(effect, this, frameStep, reportProgress, viewer, doPartialUpdates);
@@ -1892,8 +1939,9 @@ TrackScheduler::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
             cur = end;
         }
 
+        std::function<bool(const std::size_t&)> track = [&](const std::size_t& i) {
+            IsolatedJob::ThreadScope stepInJob(job);
 
-        std::function<bool (const std::size_t&)> track = [&](const std::size_t &i) {
             return TrackSchedulerPrivate::trackStepFunctor(i, *args, cur);
         };
         while (cur != end) {
@@ -2011,7 +2059,7 @@ TrackScheduler::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
     // The tracker context solves for its transform when this reaches the main thread, queued
     // behind trackingFinished.
     if (isContext) {
-        emit_runEnded();
+        emit_runEnded(args->getRunId());
     }
 
     return state;

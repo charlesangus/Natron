@@ -48,6 +48,7 @@
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -1059,6 +1060,9 @@ Knob<T>::setValue(const T & v,
     if ((reason == eValueChangedReasonPluginEdited) && PluginEditsDeferral::refuse()) {
         return eValueChangedReturnCodeNothingChanged;
     }
+    if (IsolatedJob::refusesValueWrite(this, reason)) {
+        return eValueChangedReturnCodeNothingChanged;
+    }
 
     KnobHelper::ValueChangedReturnCodeEnum ret = eValueChangedReturnCodeNoKeyframeAdded;
     KnobHolder* holder =  getHolder();
@@ -1476,6 +1480,9 @@ Knob<T>::setValueAtTime(double time,
     }
     assert(newKey);
     if ((reason == eValueChangedReasonPluginEdited) && PluginEditsDeferral::refuse()) {
+        return eValueChangedReturnCodeNothingChanged;
+    }
+    if (IsolatedJob::refusesValueWrite(this, reason)) {
         return eValueChangedReturnCodeNothingChanged;
     }
 

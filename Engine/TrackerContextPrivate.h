@@ -30,7 +30,9 @@
 
 #include "TrackerContext.h"
 
+#include <atomic>
 #include <list>
+#include <memory>
 
 // clang-format off
 GCC_DIAG_OFF(unused-function)
@@ -58,6 +60,7 @@ GCC_DIAG_ON(maybe-uninitialized)
 
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/RectD.h"
 #include "Engine/TrackMarker.h"
@@ -445,9 +448,29 @@ public:
 
     SolveRequest lastSolveRequest;
 
-    // Set while the solve that follows a tracking run is in flight; the solve that ends while it
-    // is set ends the run's job.
-    bool solvingAfterTrackingRun = false;
+    // The id of the tracking run whose solve is in flight, 0 when none is: the solve that ends
+    // while it is set ends that run's job.
+    quint64 solvingRunId = 0;
+
+    // The id of the latest tracking run started (TrackerContext::startTrackingJob()), 0 before
+    // the first.
+    quint64 trackingRunId = 0;
+
+    // From the start of tracking run trackingRunId until it reports trackingJobFinished: what the
+    // tracker reads refuses writes from outside the run.
+    std::unique_ptr<IsolatedJob> trackingJob;
+    // trackingJob, for the tracking threads.
+    std::atomic<const IsolatedJob*> runningTrackingJob { nullptr };
+
+    // Ends the job of run runId, if it is the latest run started.
+    void endTrackingJob(quint64 runId)
+    {
+        if (runId != trackingRunId) {
+            return;
+        }
+        runningTrackingJob.store(nullptr);
+        trackingJob.reset();
+    }
 
     TrackerContextPrivate(TrackerContext* publicInterface,
                           const NodePtr &node);

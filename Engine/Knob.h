@@ -386,6 +386,10 @@ struct KnobChange
 
 typedef std::list<KnobChange> KnobChanges;
 
+/**
+ * @brief IsolatedJob::refusesWrite(knob), for code that sees only this header.
+ **/
+bool isWriteRefusedByIsolatedJob(const KnobI* knob);
 
 class KnobI
     : public OverlaySupport
@@ -722,6 +726,9 @@ public:
                        bool hasRetVariable,
                        bool failIfInvalid)
     {
+        if (isWriteRefusedByIsolatedJob(this)) {
+            return;
+        }
         setExpressionInternal(dimension, expression, hasRetVariable, true, failIfInvalid);
     }
 
@@ -2668,10 +2675,22 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     friend class RecursionLevelRAII;
+    friend class IsolatedJob;
     struct KnobHolderPrivate;
     std::unique_ptr<KnobHolderPrivate> _imp;
 
+    // How many running IsolatedJobs read this holder.
+    std::atomic<int> _isolatedJobReaders { 0 };
+
 public:
+    /**
+     * @brief True while a running IsolatedJob reads this holder: content writes to its knobs are
+     * then refused outside that job.
+     **/
+    bool isReadByIsolatedJob() const
+    {
+        return _isolatedJobReaders.load(std::memory_order_acquire) > 0;
+    }
 
     enum MultipleParamsEditEnum
     {

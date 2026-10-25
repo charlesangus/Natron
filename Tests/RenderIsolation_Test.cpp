@@ -42,17 +42,20 @@
 #include <SequenceParsing.h>
 
 #include "BaseTest.h"
+#include "FlatExrReader.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
+#include "Engine/TrackerContext.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -95,9 +98,17 @@ protected:
         connectNodes(_source, _grade, 0, true);
         connectNodes(_grade, _writer, 0, true);
 
+        setPattern(dir);
+    }
+
+    // Points the Write at `dir`.
+    void setPattern(const QTemporaryDir& dir)
+    {
         _pattern = (dir.path() + QString::fromUtf8("/isolation.####.exr")).toStdString();
         _writer->setOutputFilesForWriter(_pattern);
     }
+
+    ::testing::AssertionResult readFrames(std::vector<FlatExrImage>* frames) const;
 
     QString frameFile(int frame) const
     {
@@ -156,9 +167,127 @@ protected:
     std::string _pattern;
 };
 
-// An edit upstream of a Write while it renders leaves the render running: every frame is written and the render
-// ends with success.
-TEST_F(RenderIsolation, EditUpstreamDoesNotAbortWriteRender)
+// Reads every frame of the current pattern, in order. False, with a message, if one is missing or unreadable.
+::testing::AssertionResult
+RenderIsolation::readFrames(std::vector<FlatExrImage>* frames) const
+{
+    frames->clear();
+    for (int frame = kFirstFrame; frame <= kLastFrame; ++frame) {
+        FlatExrImage image;
+        std::string error;
+        if (!readFlatExr(frameFile(frame).toStdString(), &image, &error)) {
+            return ::testing::AssertionFailure() << "frame " << frame << ": " << error;
+        }
+        frames->push_back(image);
+    }
+
+    return ::testing::AssertionSuccess();
+}
+
+// A C++ write to a node upstream of a Write while it renders, from a thread outside the render, is
+// refused without an exception and changes nothing: the render runs to its end, every frame is the
+// one it renders untouched, and once it has finished the same write goes through.
+TEST_F(RenderIsolation, EditUpstreamIsRefusedDuringWriteRender)
+{
+    QTemporaryDir referenceDir;
+    QTemporaryDir tmp;
+    ASSERT_TRUE(referenceDir.isValid());
+    ASSERT_TRUE(tmp.isValid());
+    buildGraph(referenceDir);
+    ASSERT_TRUE(bool(_writer));
+
+    KnobColor* multiply = dynamic_cast<KnobColor*>(_grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    // A gain that changes every pixel, so an edit that got through would show in the frames.
+    multiply->setValue(0.5, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    const double before = multiply->getValue(0);
+
+    bool actionRan = false;
+    ASSERT_EQ(0, renderWithActionAtFrame([]() { }, &actionRan));
+    std::vector<FlatExrImage> reference;
+    ASSERT_TRUE(readFrames(&reference));
+
+    setPattern(tmp);
+    std::atomic<bool> threw { false };
+    std::atomic<int> returnCode { -1 };
+    std::atomic<double> valueAfterWrite { 0. };
+    const std::function<void()> edit = [multiply, &threw, &returnCode, &valueAfterWrite]() {
+        try {
+            returnCode = (int)multiply->setValue(1.5, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+            valueAfterWrite = multiply->getValue(0);
+        } catch (...) {
+            threw = true;
+        }
+    };
+    const int finishedCode = renderWithActionAtFrame(edit, &actionRan);
+
+    ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
+    EXPECT_FALSE(threw.load());
+    EXPECT_EQ((int)KnobHelper::eValueChangedReturnCodeNothingChanged, returnCode.load());
+    EXPECT_DOUBLE_EQ(before, valueAfterWrite.load());
+    EXPECT_DOUBLE_EQ(before, multiply->getValue(0));
+    EXPECT_EQ(0, finishedCode);
+
+    std::vector<FlatExrImage> frames;
+    ASSERT_TRUE(readFrames(&frames));
+    ASSERT_EQ(reference.size(), frames.size());
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        EXPECT_EQ(reference[i].width, frames[i].width) << "frame " << (kFirstFrame + (int)i);
+        EXPECT_EQ(reference[i].height, frames[i].height) << "frame " << (kFirstFrame + (int)i);
+        EXPECT_EQ(reference[i].channels, frames[i].channels) << "frame " << (kFirstFrame + (int)i);
+        EXPECT_TRUE(reference[i].pixels == frames[i].pixels) << "frame " << (kFirstFrame + (int)i) << " differs from the reference";
+    }
+
+    // Once the render has returned, nothing reads the Grade any more.
+    multiply->setValue(1.5, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    EXPECT_DOUBLE_EQ(1.5, multiply->getValue(0));
+}
+
+// Python sees a refused write as a RuntimeError, from a binding that calls the parameter directly
+// (setValue) as from one whose call is custom binding code (setExpression), and the parameter keeps
+// its value and has no expression.
+TEST_F(RenderIsolation, RefusedPythonWriteRaisesRuntimeError)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    buildGraph(tmp);
+    ASSERT_TRUE(bool(_writer));
+
+    KnobColor* multiply = dynamic_cast<KnobColor*>(_grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    const double before = multiply->getValue(0);
+
+    const std::string script = "param = " + getApp()->getAppIDString() + ".getNode(\"" + _grade->getScriptName() + "\").getParam(\"multiply\")\n"
+                                                                                                                   "try:\n"
+                                                                                                                   "    param.setValue(1.5, 0)\n"
+                                                                                                                   "    renderIsolationRefusal = ''\n"
+                                                                                                                   "except RuntimeError as e:\n"
+                                                                                                                   "    renderIsolationRefusal = str(e)\n"
+                                                                                                                   "assert 'multiply while a render reads it' in renderIsolationRefusal, renderIsolationRefusal\n"
+                                                                                                                   "try:\n"
+                                                                                                                   "    param.setExpression('1.5', False, 0)\n"
+                                                                                                                   "    renderIsolationRefusal = ''\n"
+                                                                                                                   "except RuntimeError as e:\n"
+                                                                                                                   "    renderIsolationRefusal = str(e)\n"
+                                                                                                                   "assert 'multiply while a render reads it' in renderIsolationRefusal, renderIsolationRefusal\n";
+    std::atomic<bool> scriptPassed { false };
+    std::string error;
+    const std::function<void()> edit = [&script, &scriptPassed, &error]() {
+        std::string output;
+        scriptPassed = NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output);
+    };
+    bool actionRan = false;
+    const int finishedCode = renderWithActionAtFrame(edit, &actionRan);
+
+    ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
+    EXPECT_TRUE(scriptPassed.load()) << error;
+    EXPECT_DOUBLE_EQ(before, multiply->getValue(0));
+    EXPECT_TRUE(multiply->getExpression(0).empty()) << multiply->getExpression(0);
+    EXPECT_EQ(0, finishedCode);
+}
+
+// A write a render's own before-frame callback makes goes through: the callback is part of the render.
+TEST_F(RenderIsolation, BeforeFrameCallbackWritesUpstream)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -168,18 +297,87 @@ TEST_F(RenderIsolation, EditUpstreamDoesNotAbortWriteRender)
     KnobColor* multiply = dynamic_cast<KnobColor*>(_grade->getKnobByName("multiply").get());
     ASSERT_TRUE(multiply != NULL);
 
+    const std::string define = "renderIsolationCallbackErrors = []\n"
+                               "def renderIsolationBeforeFrame(frame, thisNode, app):\n"
+                               "    try:\n"
+                               "        app.getNode(\""
+        + _grade->getScriptName() + "\").getParam(\"multiply\").setValue(1.25, 0)\n"
+                                    "    except Exception as e:\n"
+                                    "        renderIsolationCallbackErrors.append(str(e))\n";
+    std::string error, output;
+    ASSERT_TRUE(NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(define, &error, &output)) << error;
+    KnobString* beforeFrame = dynamic_cast<KnobString*>(_writer->getKnobByName("beforeFrameRender").get());
+    ASSERT_TRUE(beforeFrame != NULL);
+    beforeFrame->setValue(std::string("renderIsolationBeforeFrame"));
+
     bool actionRan = false;
-    const std::function<void()> edit = [multiply]() {
-        multiply->setValue(1.5, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    EXPECT_EQ(0, renderWithActionAtFrame([]() { }, &actionRan));
+    beforeFrame->setValue(std::string());
+
+    EXPECT_DOUBLE_EQ(1.25, multiply->getValue(0));
+    ASSERT_TRUE(NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript("assert renderIsolationCallbackErrors == [], renderIsolationCallbackErrors\n", &error, &output)) << error;
+}
+
+// A write to a node the render does not read goes through while it runs.
+TEST_F(RenderIsolation, EditOutsideTheRenderGoesThrough)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    buildGraph(tmp);
+    ASSERT_TRUE(bool(_writer));
+
+    NodePtr loose = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    ASSERT_TRUE(bool(loose));
+    KnobColor* looseMultiply = dynamic_cast<KnobColor*>(loose->getKnobByName("multiply").get());
+    ASSERT_TRUE(looseMultiply != NULL);
+
+    std::atomic<int> returnCode { -1 };
+    const std::function<void()> edit = [looseMultiply, &returnCode]() {
+        returnCode = (int)looseMultiply->setValue(1.5, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
     };
+    bool actionRan = false;
     const int finishedCode = renderWithActionAtFrame(edit, &actionRan);
 
     ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
-    EXPECT_DOUBLE_EQ(1.5, multiply->getValue(0));
+    EXPECT_NE((int)KnobHelper::eValueChangedReturnCodeNothingChanged, returnCode.load());
+    EXPECT_DOUBLE_EQ(1.5, looseMultiply->getValue(0));
     EXPECT_EQ(0, finishedCode);
-    for (int frame = kFirstFrame; frame <= kLastFrame; ++frame) {
-        EXPECT_TRUE(QFile::exists(frameFile(frame))) << "frame " << frame << " was not written";
-    }
+}
+
+class TrackingIsolation
+    : public BaseTest {
+};
+
+// The end of a tracking run that reaches the tracker after a later run has started leaves the later
+// run's job running: writes to the tracker are still refused until the later run's own end. The
+// tracker has no tracks, so a run's end solves nothing and ends its job at once, without an event
+// loop.
+TEST_F(TrackingIsolation, StaleRunEndLeavesTheLaterRunsJob)
+{
+    NodePtr tracker = createNode(QString::fromUtf8(PLUGINID_NATRON_TRACKER));
+    ASSERT_TRUE(bool(tracker));
+    TrackerContextPtr context = tracker->getTrackerContext();
+    ASSERT_TRUE(bool(context));
+    KnobDouble* maxError = dynamic_cast<KnobDouble*>(tracker->getKnobByName("maxError").get());
+    ASSERT_TRUE(maxError != NULL);
+    const double before = maxError->getValue(0);
+    const double changed = before + 0.5;
+
+    const quint64 firstRun = context->startTrackingJob();
+    const quint64 laterRun = context->startTrackingJob();
+    ASSERT_NE(firstRun, laterRun);
+    ASSERT_TRUE(context->getRunningTrackingJob() != NULL);
+
+    context->onSchedulerRunEnded(firstRun);
+    EXPECT_TRUE(context->getRunningTrackingJob() != NULL);
+    EXPECT_EQ(KnobHelper::eValueChangedReturnCodeNothingChanged,
+              maxError->setValue(changed, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL));
+    EXPECT_DOUBLE_EQ(before, maxError->getValue(0));
+
+    context->onSchedulerRunEnded(laterRun);
+    EXPECT_TRUE(context->getRunningTrackingJob() == NULL);
+    maxError->setValue(changed, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    EXPECT_DOUBLE_EQ(changed, maxError->getValue(0));
 }
 
 // Deactivating a node upstream of a Write while it renders aborts the render.

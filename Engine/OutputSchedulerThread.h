@@ -316,6 +316,13 @@ public:
 
     void runCallbackWithVariables(const QString& callback);
 
+    /**
+     * @brief While a render that is not a viewer's runs, from startRender() until just before
+     * the engine reports it finished: the IsolatedJob refusing writes to what it reads. Null
+     * otherwise.
+     **/
+    const IsolatedJob* getRunningIsolatedJob() const;
+
 private Q_SLOTS:
 
     void onThreadSpawnsTimerTriggered();

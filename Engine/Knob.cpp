@@ -55,6 +55,7 @@
 #include "Engine/Curve.h"
 #include "Engine/DockablePanelI.h"
 #include "Engine/Hash64.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
@@ -986,6 +987,9 @@ KnobHelper::deleteValuesAtTime(CurveChangeReason curveChangeReason,
                                ViewSpec view,
                                int dimension, bool copyCurveValueAtTimeToInternalValue)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     if ( ( dimension > (int)_imp->curves.size() ) || (dimension < 0) ) {
         throw std::invalid_argument("KnobHelper::deleteValueAtTime(): Dimension out of range");
     }
@@ -1065,6 +1069,9 @@ KnobHelper::deleteValueAtTime(CurveChangeReason curveChangeReason,
                               ViewSpec view,
                               int dimension, bool copyCurveValueAtTimeToInternalValue)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     if ( ( dimension > (int)_imp->curves.size() ) || (dimension < 0) ) {
         throw std::invalid_argument("KnobHelper::deleteValueAtTime(): Dimension out of range");
     }
@@ -1147,6 +1154,9 @@ KnobHelper::moveValuesAtTime(CurveChangeReason reason,
                              double dv,
                              std::vector<KeyFrame>* keyframes)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert(keyframes);
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
@@ -1242,6 +1252,9 @@ KnobHelper::moveValueAtTime(CurveChangeReason reason,
                             double dv,
                             KeyFrame* newKey)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1280,6 +1293,9 @@ KnobHelper::transformValuesAtTime(CurveChangeReason curveChangeReason,
                                   const Transform::Matrix3x3& matrix,
                                   std::vector<KeyFrame>* keyframes)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1396,6 +1412,9 @@ KnobHelper::transformValueAtTime(CurveChangeReason curveChangeReason,
                                  const Transform::Matrix3x3& matrix,
                                  KeyFrame* newKey)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1472,6 +1491,9 @@ KnobHelper::setInterpolationAtTime(CurveChangeReason reason,
                                    KeyframeTypeEnum interpolation,
                                    KeyFrame* newKey)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1592,6 +1614,9 @@ KnobHelper::removeAnimationWithReason(ViewSpec view,
                                       int dimension,
                                       ValueChangedReasonEnum reason)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     assert(0 <= dimension);
     if ( (dimension < 0) || ( (int)_imp->curves.size() <= dimension ) ) {
         throw std::invalid_argument("KnobHelper::removeAnimationWithReason(): Dimension out of range");
@@ -4343,6 +4368,9 @@ KnobHelper::slaveToInternal(int dimension,
                             ValueChangedReasonEnum reason,
                             bool ignoreMasterPersistence)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     KnobContentWrite write;
     assert(other.get() != this);
     assert( 0 <= dimension && dimension < (int)_imp->masters.size() );
@@ -4530,6 +4558,9 @@ KnobHelper::deleteAnimationConditional(double time,
                                        ValueChangedReasonEnum reason,
                                        bool before)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     if (!_imp->curves[dimension]) {
         return;
     }

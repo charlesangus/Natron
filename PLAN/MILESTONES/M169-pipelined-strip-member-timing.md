@@ -30,7 +30,7 @@ Deps: M107 - GPU Viewer Hand-off (its `Engine/GpuRegionTask.cpp` changes) and M9
   - verify: `RegionMembersAreTimedOnTheDevice` (`Tests/GpuResidency_Test.cpp:2060`) checks `memberIntervals` count = strips × non-identity members, that intervals are monotone within each strip, and that the pipelined sum of member time plus `ownershipMs` matches `kernelMs` within 5% — restoring the strict check M91.P2.T5 relaxed (2144-2152). Whole and serial keep their 5% check (2154). Lavapipe CI green.
   - size: M
 
-- [ ] M169.P1.T2 — Gate build for the instrumentation
+- [x] M169.P1.T2 — Gate build for the instrumentation
   - files: none in code
   - approach: one `tools/ci/remote/build.sh fast --tests` on the milestone HEAD. Download `build-tree-fast` using the M91 recipe (`.local/m91/p2/`).
   - verify: lavapipe CI legs green. The `build-tree-fast` artifact is available for P1.T3.

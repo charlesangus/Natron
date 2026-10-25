@@ -116,6 +116,52 @@ The milestone also fixes the two preset bugs found in the M93 - Serialization Bo
   - verify: `Tests/gui/run-gui-test.sh Tests/gui/m114_presets.py <fast AppImage>` exits 0.
   - size: M
 
+## Phase 114.5: Python edits join the history
+
+- [ ] M114.P5.T1 — Engine undo-recorder interface, guards and suppression points
+  - files: `Engine/UndoRecorder.h` (new), `Engine/AppInstance.h`, `Engine/AppInstance.cpp`, `Engine/ProjectPrivate.cpp`, `Engine/OutputSchedulerThread.cpp`, `Engine/CMakeLists.txt`
+  - approach: `UndoRecorderI` (openStep/closeStep nesting, isRecording, record(UndoCommandPtr, touched), suppression depth) plus `UndoStepGuard`/`UndoSuppressGuard`, no-ops without a recorder. `AppInstance::setUndoRecorder/getUndoRecorder` (non-virtual, null in background). isRecording is false off the main thread, while loading the project or creating a node tree, and while suppressed. Suppress in loadPythonScript (`AppInstance.cpp` ~:725), executeCommandLinePythonCommands (~:543), execOnProjectCreatedCallback (~:2301), createNodeFromPythonModule (~:871), the project save/close/load hooks (`ProjectPrivate.cpp` ~:366,447,496) and runCallbackWithVariables (`OutputSchedulerThread.cpp` ~:2002). Open a step in AppInstance::createNode when AddUndoRedo is set, so onNodeCreated (`NodeMain.cpp` ~:217) joins the creation step.
+  - verify: compiles; covered by T6.
+  - size: M
+
+- [ ] M114.P5.T2 — Engine undo commands for Python edits
+  - files: `Engine/PythonUndoCommands.h` (new), `Engine/PythonUndoCommands.cpp` (new), `Engine/CMakeLists.txt`
+  - approach: Engine `UndoCommand`s holding weak nodes and knobs. NodesRemovedCommand: deactivate/activate as `RemoveMultipleNodesCommand` does (`Gui/NodeGraphUndoRedo.cpp` ~:289-470), with autoReconnect, destroying in the destructor once redone. NodeCreatedCommand: the mirror. ConnectInputCommand. RenameNodeCommand: script name plus label. KnobStateCommand: before copy via `createDetachedKnobFromSerialization` (`Engine/Knob.h` ~:3217), after copy taken at step close, applied with clone plus expressions and links. UserKnobsCommand: the holder's user knobs and page order, before and after. NodeLayoutCommand: position, size and colour. Each reports its touched holders.
+  - verify: T6.
+  - size: L
+
+- [ ] M114.P5.T3 — Steps, capture frames and an engine-command adapter in the global history
+  - files: `Gui/UndoHistory.h`, `Gui/UndoHistory.cpp`, `Gui/PythonUndoRecorder.h` (new), `Gui/PythonUndoRecorder.cpp` (new), `Gui/GuiAppInstance.cpp`, `Gui/CMakeLists.txt`, `Tests/UndoHistory_Test.cpp`
+  - approach: Add openStep/closeStep/recordApplied to UndoHistory. An open step absorbs pushes and records, and closes into one entry: the union of touched holders, owned via ownByOnlyTouched, dropped if empty. In push(), the first redo opens a capture frame; captured records become trailing children of a compound entry. Redo runs outer then children; undo runs outer then children in reverse. mergeWith merges the outer and folds children by knob. During compound replay, set an app flag that skips Python callbacks (`EffectInstance.cpp` ~:5689-5692, `NodeInputs.cpp` runInputChangedCallback), since the children reproduce what they did. The recorder wraps engine commands as `NodeUndoRedoCommand` does (`Gui/NodeGui.cpp` ~:4445); GuiAppInstance installs it.
+  - verify: new UndoHistory_Test cases: a step is one entry, an empty step is dropped, nested steps, capture into a push, no capture during replay, merge with children, undo limit counts steps.
+  - size: L
+
+- [ ] M114.P5.T4 — Record from the Python API
+  - files: `Engine/PyNode.cpp`, `Engine/PyAppInstance.cpp`, `Engine/PyNodeGroup.cpp`, `Engine/PyParameter.cpp`
+  - approach: When isRecording: `Effect::destroy` (~:278) pushes NodesRemovedCommand instead of destroyNode; connectInput/disconnectInput, setScriptName/setLabel, setPosition/setSize/setColor, create*Param/removeParam/setPagesOrder record. `App::createNode`/createReader/createWriter (`PyAppInstance.cpp` ~:161+) record NodeCreatedCommand and force AddUndoRedo off. Every mutating Param method (setValue*/set*, deleteValueAtTime, removeAnimation, setExpression, slaveTo/unslave/setAsAlias, parametric curves, restoreDefault) uses an RAII knob guard (first-touch before snapshot per step). Roto/tracker item structure is out.
+  - verify: T6, T7.
+  - size: L
+
+- [ ] M114.P5.T5 — Bracket the GUI Python entry points
+  - files: `Gui/ScriptEditor.cpp`, `Gui/Gui50.cpp`, `Gui/PythonPanels.cpp`, `Gui/KnobGuiButton.cpp`, `Gui/KnobGui.cpp`
+  - approach: UndoStepGuard in onExecScriptClicked (~:460, step text "Script Editor"), onUserCommandTriggered (`Gui50.cpp` ~:984, the menu label), the Python clipboard paste (~:546), DialogParamHolder::onKnobValueChanged (`PythonPanels.cpp` ~:102), the trigger() calls (`KnobGuiButton.cpp` ~:209,212) and the discard branch of `KnobGui::pushUndoCommand` (`KnobGui.cpp` ~:187-190).
+  - verify: T7.
+  - size: S
+
+- [ ] M114.P5.T6 — Engine gtest against a test recorder
+  - files: `Tests/PythonUndo_Test.cpp` (new), `Tests/CMakeLists.txt`
+  - approach: In the style of `Tests/NodePresetApply_Test.cpp`: install a recorder that collects UndoCommandPtrs, run snippets with interpretPythonScript, then undo in reverse. Cover: destroy keeps the Node alive and undo reconnects it; createNode undo/redo; connect, rename, value/keyframe/expression/link restore exactly; a 100-key loop gives one KnobStateCommand; create/removeParam round-trip; nothing is recorded without a step, under suppression, or inside a PyPlug creation; background app: destroy really destroys.
+  - verify: `tools/ci/remote/build.sh debug --tests`.
+  - size: M
+
+- [ ] M114.P5.T7 — Xvfb Python-undo script
+  - files: `Tests/gui/m114_python_undo.py` (new)
+  - approach: Create Blur1 with CreateNodeArgsPropAddUndoRedoCommand=True and type a size in its panel. Run `app.Blur1.destroy()` from the Script Editor (set text, trigger exec). Undo (Edit menu action, since Ctrl+Z in the Script Editor undoes its text): Blur1 is back with its outputs. Undo: the size reverts. Redo twice. Run a Script Editor multi-edit (create, connect, rename, setValue, setExpression, setValueAtTime x3); one undo reverts all of it, one redo restores it. Callback merge: an onParamChanged callback that sets a second knob; a panel edit then one undo reverts both. A button callback is one step.
+  - verify: `Tests/gui/run-gui-test.sh Tests/gui/m114_python_undo.py <AppImage>` exits 0.
+  - size: M
+
+**Verification gate:** `tools/ci/remote/build.sh debug --tests` passes all of ctest, including `PythonUndo_Test` and the extended `UndoHistory_Test`. `m114_python_undo.py`, `m114_global_undo.py`, `m114_rebuild_undo.py` and `m114_presets.py` exit 0 on the AppImage. P4.T1's UAT checklist gains the user's example and a Script Editor multi-edit.
+
 ## Phase 114.4: Gate and UAT
 
 - [ ] M114.P4.T1 — GUI bench, AppImage and UAT checklist
@@ -128,6 +174,7 @@ The milestone also fixes the two preset bugs found in the M93 - Serialization Bo
 
 ## Decisions
 
+- 2026-10-24 — **Phase 114.5 design (consultant, PM):** record at the Python API layer (Engine/Py*.cpp) through an Engine-side UndoRecorderI that GuiAppInstance installs, not at engine entry points that GUI commands and plugins share. A Python delete deactivates the node (destroyed when the entry dies), so later entries on it still resolve. Callbacks are skipped while a compound entry replays, since its recorded children reproduce them. Roto/tracker item structure from Python is not recorded. Edits made from PySide widget handlers in Python panels have no C++ entry point and stay unrecorded unless a Python begin/end-undo-step API is added later.
 - 2026-10-24 — **Python edits join the global history (user):** a Python run (Script Editor, Python panel or button callback, menu or shortcut command, PyPlug creation) is one undo step holding every node creation, deletion, connection, rename and knob value, expression or animation change it makes; callbacks fired by a user edit merge into that edit. Nothing is recorded during project load, project hooks, renders, command-line or background runs. The obsolete-entry checks from the review stay as a backstop. New Phase 114.5, before merge (user).
 - 2026-10-24 — **Phase 3 gate passed (PM):** release 409/409 both legs on 2a08749f5; m114_presets, m114_global_undo and m114_rebuild_undo all 0 failures on the AppImage. Open points carried: links to missing nodes are skipped; open Roto/Tracker panels do not refresh on preset apply; multi-instance children created by a preset are outside its undo scope. GUI bench skipped until M117 lands.
 - 2026-10-24 — **Roto context knobs default to disabled (PM):** the snapshot-undo gtest found that loading roto content flipped the default enabled state of the selection-driven Roto knobs, so a new node and a loaded one serialized differently. Defaults are now off at creation as on load (2a08749f5). Preset mode also keeps a Precomp `projectFilename` (user decision). Follow-up: preset mode applies the preset carried enabled flags for these knobs, which can disagree with the target selection until it changes.

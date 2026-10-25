@@ -16,7 +16,7 @@ Filed from M167 - Per-Frame Node Metadata, Phase 3, which inherited M144's "edit
 - Foreground in-process renders always show the modal: the Render dialog, the Write Render knob triggered from Python, `app.render` from the GUI, and DiskCache pre-render.
 - A restarted (paused) background task re-renders its submission file, not a fresh save.
 - Tracking (track forward/backward/previous/next/range, TrackerPM, `PyTracker` from the GUI) shows the modal; Cancel aborts tracking.
-- Script writes during a foreground render or track, and before-frame callbacks, per Phase 177.5 (pending the user's answer).
+- Script writes during a foreground render or track are refused with an error (Phase 177.5).
 - Tests: gtests for the abort rule and the render modes; Xvfb tests for the modal, tracking and the frozen background copy.
 
 **Out:**
@@ -120,7 +120,7 @@ Filed from M167 - Per-Frame Node Metadata, Phase 3, which inherited M144's "edit
 
 ## Phase 177.5: Writes during a foreground job
 
-Shape depends on the user's answers to the open questions on script writes and before-frame callbacks; the tasks below follow the recommended answers.
+A script's write to a node a running foreground job reads is refused with an error. Before-frame callbacks get no frame-at-a-time ordering.
 
 - [ ] M177.P5.T1 — Refuse writes to nodes a foreground job reads
   - files: `Engine/IsolatedJob.h`, `Engine/IsolatedJob.cpp` (new), `Engine/KnobImpl.h` (entry of `setValue` :1141, `setValueAtTime` :1557), `Engine/Knob.cpp` (expression and slave entry points carrying `KnobContentWrite`), `Engine/OutputSchedulerThread.cpp`, `Engine/TrackerContext.cpp`
@@ -128,16 +128,11 @@ Shape depends on the user's answers to the open questions on script writes and b
   - verify: a gtest edits an upstream knob from a second thread during a Foreground render on a background app and catches the error, with every frame identical to a reference render; a write from the before-frame callback succeeds.
   - size: L
 
-- [ ] M177.P5.T2 — A Write with a before-frame callback renders one frame at a time
-  - files: `Engine/OutputSchedulerThread.cpp`, `Tests/RenderIsolation_Test.cpp`
-  - approach: When `getBeforeFrameRenderCallback()` is non-empty, cap that render's parallel frames at 1, so callback writes land before the next frame's snapshot.
-  - verify: a callback that sets a Constant's value to the frame number gives each file its own frame's value.
-  - size: M
-
 **Verification gate:** all phase builds and a final `tools/ci/remote/build.sh debug --tests` pass in both legs; the three m177 Xvfb tests pass on the release AppImage; `git grep -n "abortAnyEvaluation\|isRenderInSeparatedProcessEnabled" Engine Gui` is empty.
 
 ## Decisions
 
+- 2026-10-25 — **Script writes refused; no frame-at-a-time callbacks (user):** a script's knob write to a node a running foreground render or track reads fails with an error. A Write with a before-frame callback renders like any other: a render can't rely on frames being rendered in sequence (a farm doesn't), so that ordering is not supported.
 - 2026-10-25 — **Cancel keeps the dialog up; the solve is covered next (bosley-native-nodes):** Qt 6 made the old member-pointer disconnect a no-op, so Cancel hid the dialog at once; it now stays ("Stopping...") until the job stops, and Cancel aborts tracking directly. The tracker's post-run transform solve still writes after `trackingFinished`; P4.T2 extends the modal over it. A background render's project save now creates the autosave folder itself, which fixes background renders in sessions without a GUI.
 - 2026-10-25 — **Foreground Cancel ends as Canceled; tracking modal needs no panel (bosley-native-nodes):** a cancelled foreground render is Canceled, not Paused, because restarting it in-process would read the live, edited project; pause and restart stay for background (separate-process) renders, which restart from their submission file. Tracking shows the modal in any GUI session, including tracks started from Python with no panel open. Pausing a background task asks the child to abort over IPC (it exits itself); the child no longer deletes its save file, the parent does when the task leaves the Progress panel.
 - 2026-10-25 — **Viewer restart covered under Xvfb (bosley-native-nodes):** no gtest fixture can drive viewer playback without a UI context, so P1.T1's third case (an edit restarts a viewer render) moves to `m177_foreground_modal.py` in Phase 177.2. PrecompNode's render maps to Foreground.

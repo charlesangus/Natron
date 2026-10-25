@@ -304,7 +304,6 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M177 - Renders Isolated From Edits:** while a foreground render or track is running, only scripts can still reach the graph. Should a script's knob write to a node the job reads be refused with an error (recommended), queued until the job ends, or allowed? And should a Write with a before-frame callback that writes knobs render one frame at a time so each frame sees its own callback's writes (recommended)?
 - **M123 - Native Sharpen And Glow, Bloom design:** the user requires GPU residency (no CPU fallback) if at all possible; candidates are being spiked. Filter default (FIR Gaussian, recommended, or CImg's quasi-Gaussian) still open.
 - **M198 - RenderEngine On Node, M199 - Remove Legacy Scheduler, M200 - Folded Knob Shared Storage, M201 - Trimap Removal:** do not start without the user's go-ahead (user, 2026-10-25, M31 triage). Each stub's `Blocked on:` names what the user is waiting for. M202 - Clean-Hash Cache Stores needs no go-ahead.
 - **M174 - Wayland Support:** blocked until the user approves starting it (user, 2026-10-24). Stub; elaborate on approval.

@@ -199,8 +199,12 @@ TEST_F(NativeIBlurGpuTest, EligibilityFollowsTheBoxSize)
         q.bitDepth = depth;
         EXPECT_FALSE(effect->canRenderOnGpu(q)) << "bit depth " << (int)depth;
     }
-    // A box radius beyond the GPU's cap of 512 pixels stays on the CPU.
-    ASSERT_TRUE(setKnobValues(iblur, kIBlurParamSize, { 3000., 3000. }));
+    // Size tops out at 1000 (a box radius near 240), so the radius is pushed past the GPU's cap of
+    // 512 pixels through Size At Black, which has no maximum: 1000 gives a radius near 240, and
+    // 3000 one near 720 (a standard deviation of size / 2.4, a box radius of about 0.577 of it).
+    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamSizeAtBlack, { 1000., 1000. }));
+    EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "a box radius below the cap";
+    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamSizeAtBlack, { 3000., 3000. }));
     EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << "a box radius beyond the cap";
 }
 

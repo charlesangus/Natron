@@ -215,7 +215,8 @@ try:
     _in_callback = [False]
 
     def m114_param_changed(thisParam, thisNode, thisGroup, app, userEdited):
-        """A user edit flips the crop toggle; the button sets the size and flips the toggle."""
+        """A user edit of the size clears the crop toggle (once per dimension it fires for, so it must be
+        idempotent); the button sets the size and flips the toggle."""
         if _in_callback[0]:
             return
         name = thisParam.getScriptName()
@@ -226,8 +227,7 @@ try:
                 crop = thisNode.getParam(CROP)
                 crop.set(not crop.get())
             elif name == SIZE and userEdited:
-                crop = thisNode.getParam(CROP)
-                crop.set(not crop.get())
+                thisNode.getParam(CROP).set(False)
         finally:
             _in_callback[0] = False
 
@@ -342,12 +342,15 @@ try:
 
         cb_before = snapshot(cb)
         crop_before = app.getNode(cb).getParam(CROP).get()
+        gt.require(show_page(cb, "Controls"), "showed the Controls page of " + cb)
+        yield ("sleep", SETTLE_MS)
         type_into_panel(cb, 6)
         yield ("sleep", SETTLE_MS)
         cb_after = snapshot(cb)
         gt.require(cb_after != cb_before, "typing into %s's panel changed a parameter" % cb)
+        gt.require(crop_before is True, "%s's crop toggle starts enabled" % cb)
         gt.require(app.getNode(cb).getParam(CROP).get() != crop_before,
-                   "the callback flipped %s's crop toggle" % cb)
+                   "the callback cleared %s's crop toggle" % cb)
         trigger("undo")
         yield ("sleep", SETTLE_MS)
         check(snapshot(cb) == cb_before, "one undo reverted the typed value and the callback's edit")

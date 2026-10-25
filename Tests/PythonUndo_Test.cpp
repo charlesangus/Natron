@@ -23,13 +23,17 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QString>
 
 #include "BaseTest.h"
@@ -231,6 +235,21 @@ TEST_F(PythonUndo, WithoutARecorderDestroyDestroys)
 
     ASSERT_TRUE(runStep(nodePy + ".destroy()\n"));
     EXPECT_TRUE(recorder->commands.empty());
+
+    // Without a recorder the destroy is not blocking: while render threads are still winding down it
+    // completes from a queued signal, so the events must run before the node can be expected gone.
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 5000) {
+        NodePtr pending = weak.lock();
+        if (getApp()->getProject()->getNodeByName(name) == nullptr && (!pending || !pending->isActivated())) {
+            break;
+        }
+        pending.reset();
+        QCoreApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
     EXPECT_FALSE(getApp()->getProject()->getNodeByName(name) != nullptr);
     NodePtr still = weak.lock();
     EXPECT_TRUE(!still || !still->isActivated());

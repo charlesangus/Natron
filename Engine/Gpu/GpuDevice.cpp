@@ -694,6 +694,15 @@ GpuDevice::submit(QueueKind kind, std::span<const VkSubmitInfo2> submits, VkFenc
     if (GpuStatus injected = countOperation(); !injected) {
         return injected;
     }
+    return submitUncounted(kind, submits, fence);
+}
+
+GpuStatus
+GpuDevice::submitUncounted(QueueKind kind, std::span<const VkSubmitInfo2> submits, VkFence fence)
+{
+    if (isLost()) {
+        return lostStatus();
+    }
     Queue& q = queueFor(kind);
     std::lock_guard<std::mutex> lock(q.mutex);
     return check(vkQueueSubmit2(q.handle, static_cast<uint32_t>(submits.size()), submits.data(), fence),

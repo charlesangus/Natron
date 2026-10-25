@@ -679,6 +679,12 @@ struct Config {
     int iters = 3;
     std::string csv = "gpu-bench.csv";
     std::string note;
+    bool coldModes = false;
+    bool coldOnly = false;
+    std::string coldCsv;
+    int coldCopies = 8;
+    int coldReps = 3;
+    int coldSettleMs = 500;
 };
 
 std::vector<SizeSpec>
@@ -1010,6 +1016,373 @@ runSize(GpuDevice& dev, Kernels& k, const SizeSpec& s, const Config& cfg, std::o
     return true;
 }
 
+constexpr uint32_t kColdW = 3840;
+constexpr uint32_t kColdH = 2160;
+constexpr uint32_t kColdGaps[] = { 0, 10, 30, 60 };
+
+const char* kColdCsvHeader = "size,mode,gap_ms,direction,copies,reps,moved_mb,first_ms,first_gbps,steady_ms,steady_gbps,"
+                             "steady_min_gbps,steady_max_gbps,first_e2e_ms,steady_e2e_ms,per_copy_gbps,settle_ms,load1,context,note";
+
+double
+memAvailableBytes()
+{
+    double kb = kNaN;
+    if (FILE* f = std::fopen("/proc/meminfo", "r")) {
+        char line[256];
+        while (std::fgets(line, sizeof line, f)) {
+            double v = 0;
+            if (std::sscanf(line, "MemAvailable: %lf kB", &v) == 1) {
+                kb = v;
+                break;
+            }
+        }
+        std::fclose(f);
+    }
+    return kb * 1024.0;
+}
+
+// Keeps the compute queue occupied with device-to-device copies so the GPU never idles for the
+// duration of run(); two submissions stay in flight so the queue is non-empty between fence waits.
+class BusyLoad {
+public:
+    ~BusyLoad()
+    {
+        for (VkFence f : fence_) {
+            if (f) {
+                vkDestroyFence(dev_->device(), f, nullptr);
+            }
+        }
+        if (pool_) {
+            vkDestroyCommandPool(dev_->device(), pool_, nullptr);
+        }
+    }
+
+    bool init(GpuDevice& dev, std::string& err)
+    {
+        dev_ = &dev;
+        constexpr VkDeviceSize kBytes = VkDeviceSize(16) << 20;
+        if (!makeStorage(dev, kBytes, a_, err) || !makeStorage(dev, kBytes, b_, err)) {
+            return false;
+        }
+        VkCommandPoolCreateInfo pci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+        pci.queueFamilyIndex = dev.queueFamily(QueueKind::Compute);
+        if (GpuStatus st = dev.check(vkCreateCommandPool(dev.device(), &pci, nullptr, &pool_), "vkCreateCommandPool"); !st) {
+            err = st.message;
+            return false;
+        }
+        VkCommandBufferAllocateInfo cai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+        cai.commandPool = pool_;
+        cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cai.commandBufferCount = 2;
+        if (vkAllocateCommandBuffers(dev.device(), &cai, cmd_.data()) != VK_SUCCESS) {
+            err = "vkAllocateCommandBuffers failed";
+            return false;
+        }
+        VkFenceCreateInfo fci { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+        for (VkFence& f : fence_) {
+            if (vkCreateFence(dev.device(), &fci, nullptr, &f) != VK_SUCCESS) {
+                err = "vkCreateFence failed";
+                return false;
+            }
+        }
+        const VkBufferCopy r { 0, 0, kBytes };
+        for (VkCommandBuffer cmd : cmd_) {
+            VkCommandBufferBeginInfo bi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+            vkBeginCommandBuffer(cmd, &bi);
+            // The two command buffers in flight share the buffers, so each copy, the first included, waits on the last.
+            VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+            mb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            dep.memoryBarrierCount = 1;
+            dep.pMemoryBarriers = &mb;
+            for (int i = 0; i < 4; ++i) {
+                vkCmdPipelineBarrier2(cmd, &dep);
+                vkCmdCopyBuffer(cmd, a_.buffer, b_.buffer, 1, &r);
+                vkCmdPipelineBarrier2(cmd, &dep);
+                vkCmdCopyBuffer(cmd, b_.buffer, a_.buffer, 1, &r);
+            }
+            vkEndCommandBuffer(cmd);
+        }
+        return true;
+    }
+
+    bool run(double ms)
+    {
+        using clock = std::chrono::steady_clock;
+        const auto end = clock::now() + std::chrono::duration_cast<clock::duration>(std::chrono::duration<double, std::milli>(ms));
+        auto submit = [&](int i) {
+            VkCommandBufferSubmitInfo csi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+            csi.commandBuffer = cmd_[i];
+            VkSubmitInfo2 si { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+            si.commandBufferInfoCount = 1;
+            si.pCommandBufferInfos = &csi;
+            vkResetFences(dev_->device(), 1, &fence_[i]);
+            return bool(dev_->submit(QueueKind::Compute, { &si, 1 }, fence_[i]));
+        };
+        if (!submit(0)) {
+            return false;
+        }
+        if (!submit(1)) {
+            vkWaitForFences(dev_->device(), 1, &fence_[0], VK_TRUE, UINT64_MAX);
+            return false;
+        }
+        int i = 0;
+        bool ok = true;
+        for (;;) {
+            vkWaitForFences(dev_->device(), 1, &fence_[i], VK_TRUE, UINT64_MAX);
+            if (clock::now() >= end || !(ok = submit(i))) {
+                break;
+            }
+            i ^= 1;
+        }
+        vkWaitForFences(dev_->device(), 1, &fence_[i ^ 1], VK_TRUE, UINT64_MAX);
+        return ok;
+    }
+
+private:
+    GpuDevice* dev_ = nullptr;
+    DevBuf a_, b_;
+    VkCommandPool pool_ = VK_NULL_HANDLE;
+    std::array<VkCommandBuffer, 2> cmd_ {};
+    std::array<VkFence, 2> fence_ {};
+};
+
+struct ColdCase {
+    const char* mode;
+    bool fresh;
+    bool busyGap;
+};
+
+struct ColdSample {
+    double upMs = kNaN, downMs = kNaN, wallMs = kNaN;
+    bool viaImport = false;
+};
+
+double
+gbps(size_t bytes, double ms)
+{
+    return std::isnan(ms) || ms <= 0.0 ? kNaN : double(bytes) / (ms * 1e6);
+}
+
+struct ColdRowSpec {
+    const char* direction;
+    std::vector<std::vector<double>> ms;
+};
+
+void
+writeColdRow(std::ofstream& csv, const ColdCase& c, uint32_t gap, const Config& cfg, size_t bytes, const ColdRowSpec& d,
+             const std::vector<std::vector<double>>& wall, const std::string& note)
+{
+    const size_t copies = d.ms.empty() ? 0 : d.ms[0].size();
+    std::vector<double> firsts, steady, firstWall, steadyWall;
+    std::string perCopy;
+    for (size_t i = 0; i < copies; ++i) {
+        std::vector<double> col;
+        for (size_t r = 0; r < d.ms.size(); ++r) {
+            col.push_back(d.ms[r][i]);
+            (i == 0 ? firsts : steady).push_back(d.ms[r][i]);
+            (i == 0 ? firstWall : steadyWall).push_back(wall[r][i]);
+        }
+        perCopy += (i ? ";" : "") + num(gbps(bytes, median(col)));
+    }
+    double lo = kNaN, hi = kNaN;
+    if (!steady.empty()) {
+        lo = gbps(bytes, *std::max_element(steady.begin(), steady.end()));
+        hi = gbps(bytes, *std::min_element(steady.begin(), steady.end()));
+    }
+    std::string context = cfg.note;
+    std::replace(context.begin(), context.end(), ',', ';');
+    std::string n = note;
+    std::replace(n.begin(), n.end(), ',', ';');
+    csv << "uhd," << c.mode << ',' << gap << ',' << d.direction << ',' << copies << ',' << d.ms.size() << ','
+        << num(bytes / 1e6) << ',' << num(median(firsts)) << ',' << num(gbps(bytes, median(firsts))) << ','
+        << num(median(steady)) << ',' << num(gbps(bytes, median(steady))) << ',' << num(lo) << ',' << num(hi) << ','
+        << num(median(firstWall)) << ',' << num(median(steadyWall)) << ',' << perCopy << ',' << cfg.coldSettleMs << ','
+        << num(loadAvg()) << ',' << context << ',' << n << '\n';
+    csv.flush();
+    std::printf("  %-12s gap %2u ms %-4s first %6.2f GB/s (%7.3f ms) | steady %6.2f GB/s (%7.3f ms) | per copy %s\n", c.mode,
+                gap, d.direction, gbps(bytes, median(firsts)), median(firsts), gbps(bytes, median(steady)), median(steady),
+                perCopy.c_str());
+}
+
+bool
+runColdCase(GpuDevice& dev, BusyLoad& busy, const ColdCase& c, uint32_t gap, const Config& cfg, std::ofstream& csv)
+{
+    const size_t bytes = size_t(kColdW) * kColdH * kChannels * sizeof(float);
+    const uint32_t copies = uint32_t(cfg.coldCopies);
+    const uint32_t reps = uint32_t(cfg.coldReps);
+    std::string note;
+
+    GpuTransferOptions o;
+    o.allowHostImport = true;
+    o.cacheHostImports = true;
+    o.copyThreads = 1;
+    o.framesInFlight = 1;
+    o.recordTimestamps = true;
+    std::unique_ptr<GpuTransfer> t;
+    if (GpuStatus st = GpuTransfer::create(dev, o, t); !st || !t->hostImportSupported()) {
+        std::fprintf(stderr, "%s: %s\n", c.mode, st ? "no host import" : st.message.c_str());
+        return false;
+    }
+    if (!t->timestampsSupported()) {
+        std::fprintf(stderr, "%s: no device timestamps\n", c.mode);
+        return false;
+    }
+
+    // One chunk per copy: the UHD frame is far below the size at which RADV corrupts a single copy.
+    const ComputeRecordFn record = [](VkCommandBuffer cmd, const ComputeBinding& b) {
+        const VkBufferCopy r { 0, 0, b.bytes };
+        vkCmdCopyBuffer(cmd, b.input, b.output, 1, &r);
+        return GpuStatus {};
+    };
+
+    struct Pair {
+        HostBuf src, dst;
+    };
+    auto makePair = [&](uint32_t seed) {
+        Pair p { alignedBuf(bytes), alignedBuf(bytes) };
+        if (p.src && p.dst) {
+            fillImage(p.src.get(), bytes, seed);
+        }
+        return p;
+    };
+    auto retire = [&](Pair& p) {
+        t->forgetHostAllocation(p.src.get(), bytes);
+        t->forgetHostAllocation(p.dst.get(), bytes);
+        p = Pair {};
+    };
+    auto copyOnce = [&](const Pair& p, ColdSample& s) {
+        TransferFrame f;
+        f.src = p.src.get();
+        f.dst = p.dst.get();
+        f.bytes = bytes;
+        TransferTimeline tl;
+        if (GpuStatus st = t->process({ &f, 1 }, record, &tl); !st || tl.frames.size() != 1) {
+            std::fprintf(stderr, "%s: process failed: %s\n", c.mode, st.message.c_str());
+            return false;
+        }
+        s.upMs = tl.frames[0].gpuUpload.busyMs;
+        s.downMs = tl.frames[0].gpuDownload.busyMs;
+        s.wallMs = tl.wallMs;
+        s.viaImport = tl.frames[0].uploadPath == TransferPath::HostImport && tl.frames[0].downloadPath == TransferPath::HostImport;
+        return true;
+    };
+
+    Pair warm;
+    if (!c.fresh) {
+        warm = makePair(1);
+        ColdSample ignore;
+        if (!warm.src || !warm.dst || !copyOnce(warm, ignore)) {
+            return false;
+        }
+    }
+
+    ColdRowSpec up { "up", {} }, down { "down", {} };
+    std::vector<std::vector<double>> wall;
+    bool allImport = true;
+    for (uint32_t rep = 0; rep < reps; ++rep) {
+        std::vector<Pair> fresh;
+        if (c.fresh) {
+            for (uint32_t i = 0; i < copies; ++i) {
+                fresh.push_back(makePair(100 + rep * copies + i));
+                if (!fresh.back().src || !fresh.back().dst) {
+                    std::fprintf(stderr, "%s: host allocation failed\n", c.mode);
+                    return false;
+                }
+            }
+        }
+        std::vector<double> u, d, w;
+        for (uint32_t i = 0; i < copies; ++i) {
+            dev.drainQueues();
+            if (i == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(cfg.coldSettleMs));
+            } else if (gap > 0 && c.busyGap) {
+                if (!busy.run(gap)) {
+                    std::fprintf(stderr, "%s: busy load submit failed\n", c.mode);
+                    return false;
+                }
+            } else if (gap > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(gap));
+            }
+            ColdSample s;
+            if (!copyOnce(c.fresh ? fresh[i] : warm, s)) {
+                return false;
+            }
+            allImport = allImport && s.viaImport;
+            u.push_back(s.upMs);
+            d.push_back(s.downMs);
+            w.push_back(s.wallMs);
+        }
+        for (Pair& p : fresh) {
+            retire(p);
+        }
+        up.ms.push_back(u);
+        down.ms.push_back(d);
+        wall.push_back(w);
+    }
+    if (!c.fresh) {
+        retire(warm);
+    }
+    t->releaseHostImports();
+    if (!allImport) {
+        note = "some copies did not use host import";
+    }
+    writeColdRow(csv, c, gap, cfg, bytes, up, wall, note);
+    writeColdRow(csv, c, gap, cfg, bytes, down, wall, note);
+    return true;
+}
+
+// Splits the cold-copy slowdown into GPU idle time and first touch of fresh host pages. Gaps precede
+// copies 2..N; copy 1 always follows the settle idle.
+bool
+runColdModes(GpuDevice& dev, const Config& cfg)
+{
+    const size_t bytes = size_t(kColdW) * kColdH * kChannels * sizeof(float);
+    const double need = 2.0 * double(bytes) * cfg.coldCopies * 1.5;
+    const double avail = memAvailableBytes();
+    if (!std::isnan(avail) && avail < need) {
+        std::fprintf(stderr, "cold modes need about %.1f GB of free host memory for fresh buffers, MemAvailable is %.1f GB; lower --cold-copies\n",
+                     need / 1e9, avail / 1e9);
+        return false;
+    }
+    BusyLoad busy;
+    std::string err;
+    if (!busy.init(dev, err)) {
+        std::fprintf(stderr, "busy load: %s\n", err.c_str());
+        return false;
+    }
+    std::ofstream csv(cfg.coldCsv);
+    csv << kColdCsvHeader << '\n';
+    std::printf("cold modes: UHD RGBA32F, %d copies x %d reps, settle %d ms -> %s\n", cfg.coldCopies, cfg.coldReps,
+                cfg.coldSettleMs, cfg.coldCsv.c_str());
+    const ColdCase idle { "idle-gap", false, false };
+    const ColdCase fresh { "fresh-import", true, false };
+    const ColdCase freshGap { "fresh+gap", true, false };
+    const ColdCase busyGap { "busy-gap", false, true };
+    for (uint32_t g : kColdGaps) {
+        if (!runColdCase(dev, busy, idle, g, cfg, csv)) {
+            return false;
+        }
+    }
+    if (!runColdCase(dev, busy, fresh, 0, cfg, csv)) {
+        return false;
+    }
+    for (uint32_t g : kColdGaps) {
+        if (g && !runColdCase(dev, busy, freshGap, g, cfg, csv)) {
+            return false;
+        }
+    }
+    for (uint32_t g : kColdGaps) {
+        if (!runColdCase(dev, busy, busyGap, g, cfg, csv)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 int
@@ -1028,6 +1401,18 @@ main(int argc, char** argv)
             gStripRows = roundUp(uint32_t(std::atoi(next().c_str())), kRowQuantum);
         } else if (a == "--note") {
             cfg.note = next();
+        } else if (a == "--cold-modes") {
+            cfg.coldModes = true;
+        } else if (a == "--cold-only") {
+            cfg.coldModes = cfg.coldOnly = true;
+        } else if (a == "--cold-csv") {
+            cfg.coldCsv = next();
+        } else if (a == "--cold-copies") {
+            cfg.coldCopies = std::max(2, std::atoi(next().c_str()));
+        } else if (a == "--cold-reps") {
+            cfg.coldReps = std::max(1, std::atoi(next().c_str()));
+        } else if (a == "--cold-settle-ms") {
+            cfg.coldSettleMs = std::max(0, std::atoi(next().c_str()));
         } else if (a == "--sizes") {
             cfg.sizes.clear();
             const std::string v = next();
@@ -1040,7 +1425,8 @@ main(int argc, char** argv)
                 p = q + 1;
             }
         } else {
-            std::fprintf(stderr, "usage: GpuBench [--sizes uhd,8k,16k,24k,24k-single] [--iters N] [--csv path] [--note text]\n");
+            std::fprintf(stderr, "usage: GpuBench [--sizes uhd,8k,16k,24k,24k-single] [--iters N] [--csv path] [--note text]\n"
+                                 "               [--cold-modes | --cold-only] [--cold-csv path] [--cold-copies N] [--cold-reps N] [--cold-settle-ms MS]\n");
             return 2;
         }
     }
@@ -1063,6 +1449,13 @@ main(int argc, char** argv)
                 dev->info().name.c_str(), dev->info().transferSharesComputeQueue, dev->info().externalMemoryHost,
                 cfg.iters, std::thread::hardware_concurrency());
 
+    if (cfg.coldCsv.empty()) {
+        cfg.coldCsv = cfg.csv.size() > 4 && cfg.csv.ends_with(".csv") ? cfg.csv.substr(0, cfg.csv.size() - 4) + "-cold.csv" : cfg.csv + "-cold.csv";
+    }
+    if (cfg.coldOnly) {
+        return runColdModes(*dev, cfg) ? 0 : 1;
+    }
+
     Kernels k;
     if (!makeKernels(*dev, k)) {
         return 1;
@@ -1078,6 +1471,9 @@ main(int argc, char** argv)
         if (!runSize(*dev, k, s, cfg, csv)) {
             return 1;
         }
+    }
+    if (cfg.coldModes && !runColdModes(*dev, cfg)) {
+        return 1;
     }
     return 0;
 }

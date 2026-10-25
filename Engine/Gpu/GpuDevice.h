@@ -158,6 +158,9 @@ public:
     bool isLost() const { return lost_.load(std::memory_order_acquire); }
 
     GpuStatus submit(QueueKind kind, std::span<const VkSubmitInfo2> submits, VkFence fence);
+    // As submit(), without counting an operation: for background work whose submissions must not move the operation
+    // a fault plan fires on.
+    GpuStatus submitUncounted(QueueKind kind, std::span<const VkSubmitInfo2> submits, VkFence fence);
 
     GpuStatus createTimelineSemaphore(uint64_t initialValue, VkSemaphore& out);
     GpuStatus waitSemaphore(VkSemaphore semaphore, uint64_t value, uint64_t timeoutNs);

@@ -1,7 +1,10 @@
 #include "GpuRuntime.h"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <thread>
 
@@ -144,6 +147,265 @@ struct GpuImportPreparer {
     std::thread thread;
 };
 
+// The busy load GpuBench's busy-gap mode measured as keeping copies at their back-to-back rate: two submissions of
+// 16 MiB device-local copies on the compute queue, so that the queue is never empty while the host waits for one.
+class GpuKeepAlive {
+public:
+    explicit GpuKeepAlive(GpuDevice& device)
+        : device_(device)
+    {
+    }
+
+    ~GpuKeepAlive() { stop(); }
+
+    GpuKeepAlive(const GpuKeepAlive&) = delete;
+    GpuKeepAlive& operator=(const GpuKeepAlive&) = delete;
+
+    void hold(double limitMs)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) {
+                return;
+            }
+            ++holders_;
+            const Clock::time_point until
+                = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double, std::milli>(limitMs));
+            deadline_ = std::max(deadline_, until);
+            if (!thread_.joinable()) {
+                thread_ = std::thread([this] { run(); });
+            }
+        }
+        cv_.notify_all();
+    }
+
+    void release()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (holders_ > 0) {
+            --holders_;
+        }
+    }
+
+    void stop()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+private:
+    typedef std::chrono::steady_clock Clock;
+
+    static constexpr VkDeviceSize kBytes = VkDeviceSize(16) << 20;
+    static constexpr int kCopyPairs = 4;
+
+    bool wantedLocked() const { return !stopping_ && (holders_ > 0) && (Clock::now() < deadline_); }
+
+    bool wanted()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return wantedLocked();
+    }
+
+    void run()
+    {
+        if (init()) {
+            for (;;) {
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    cv_.wait(lock, [&] { return stopping_ || wantedLocked(); });
+                    if (stopping_) {
+                        break;
+                    }
+                }
+                if (!keepBusy()) {
+                    break;
+                }
+            }
+        }
+        destroy();
+    }
+
+    bool init()
+    {
+        if (!GpuBuffer::createDeviceLocal(device_, kBytes, kGpuBufferDefaultUsage, a_)
+            || !GpuBuffer::createDeviceLocal(device_, kBytes, kGpuBufferDefaultUsage, b_)) {
+            return false;
+        }
+        const VkDevice vk = device_.device();
+        VkCommandPoolCreateInfo pci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+        pci.queueFamilyIndex = device_.queueFamily(QueueKind::Compute);
+        if (vkCreateCommandPool(vk, &pci, nullptr, &pool_) != VK_SUCCESS) {
+            pool_ = VK_NULL_HANDLE;
+            return false;
+        }
+        VkCommandBufferAllocateInfo cai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+        cai.commandPool = pool_;
+        cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cai.commandBufferCount = (uint32_t)cmd_.size();
+        if (vkAllocateCommandBuffers(vk, &cai, cmd_.data()) != VK_SUCCESS) {
+            return false;
+        }
+        VkFenceCreateInfo fci { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+        for (VkFence& fence : fence_) {
+            if (vkCreateFence(vk, &fci, nullptr, &fence) != VK_SUCCESS) {
+                fence = VK_NULL_HANDLE;
+                return false;
+            }
+        }
+        const VkBufferCopy region { 0, 0, kBytes };
+        for (VkCommandBuffer cmd : cmd_) {
+            VkCommandBufferBeginInfo bi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+            if (vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) {
+                return false;
+            }
+            // Every copy reads what the previous one wrote and overwrites what the one before that read, and the
+            // two command buffers in flight share the buffers, so each copy, the first included, waits on the last.
+            VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+            mb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            dep.memoryBarrierCount = 1;
+            dep.pMemoryBarriers = &mb;
+            for (int i = 0; i < kCopyPairs; ++i) {
+                vkCmdPipelineBarrier2(cmd, &dep);
+                vkCmdCopyBuffer(cmd, a_.buffer(), b_.buffer(), 1, &region);
+                vkCmdPipelineBarrier2(cmd, &dep);
+                vkCmdCopyBuffer(cmd, b_.buffer(), a_.buffer(), 1, &region);
+            }
+            if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool submit(std::size_t i)
+    {
+        if (vkResetFences(device_.device(), 1, &fence_[i]) != VK_SUCCESS) {
+            return false;
+        }
+        VkCommandBufferSubmitInfo ci { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+        ci.commandBuffer = cmd_[i];
+        VkSubmitInfo2 si { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+        si.commandBufferInfoCount = 1;
+        si.pCommandBufferInfos = &ci;
+        if (!device_.submitUncounted(QueueKind::Compute, std::span<const VkSubmitInfo2>(&si, 1), fence_[i])) {
+            return false;
+        }
+        pending_[i] = true;
+        return true;
+    }
+
+    // Returns false when the fence can no longer be waited for, the device being lost.
+    bool await(std::size_t i)
+    {
+        if (!pending_[i]) {
+            return true;
+        }
+        for (;;) {
+            const VkResult r = vkWaitForFences(device_.device(), 1, &fence_[i], VK_TRUE, 100'000'000ull);
+            if (r == VK_TIMEOUT) {
+                continue;
+            }
+            if (r != VK_SUCCESS) {
+                device_.check(r, "vkWaitForFences");
+                abandoned_ = true;
+                return false;
+            }
+            pending_[i] = false;
+            return true;
+        }
+    }
+
+    // Runs until no hold wants it any more, then lets the submissions in flight finish.
+    bool keepBusy()
+    {
+        bool ok = submit(0) && submit(1);
+        std::size_t i = 0;
+        while (ok) {
+            ok = await(i);
+            if (!ok || !wanted()) {
+                break;
+            }
+            ok = submit(i);
+            i ^= 1;
+        }
+        return await(0) && await(1) && ok;
+    }
+
+    void destroy()
+    {
+        const VkDevice vk = device_.device();
+        // A command buffer still pending on a lost device must not be freed.
+        if (!abandoned_) {
+            for (VkFence& fence : fence_) {
+                if (fence) {
+                    vkDestroyFence(vk, fence, nullptr);
+                    fence = VK_NULL_HANDLE;
+                }
+            }
+            if (pool_) {
+                vkDestroyCommandPool(vk, pool_, nullptr);
+                pool_ = VK_NULL_HANDLE;
+            }
+        }
+        a_.reset();
+        b_.reset();
+    }
+
+    GpuDevice& device_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    int holders_ = 0;
+    Clock::time_point deadline_ {};
+    bool stopping_ = false;
+    std::thread thread_;
+
+    GpuBuffer a_;
+    GpuBuffer b_;
+    VkCommandPool pool_ = VK_NULL_HANDLE;
+    std::array<VkCommandBuffer, 2> cmd_ {};
+    std::array<VkFence, 2> fence_ {};
+    std::array<bool, 2> pending_ {};
+    bool abandoned_ = false;
+};
+
+void
+GpuBusyHold::release()
+{
+    if (keepAlive_) {
+        keepAlive_->release();
+        keepAlive_.reset();
+    }
+}
+
+namespace {
+
+    bool
+    keepAliveWanted(const GpuDeviceInfo& info)
+    {
+        if (const char* env = std::getenv("NATRON_GPU_KEEPALIVE")) {
+            if (std::strcmp(env, "0") == 0) {
+                return false;
+            }
+            if (std::strcmp(env, "1") == 0) {
+                return true;
+            }
+        }
+        return !info.unifiedMemory;
+    }
+
+} // namespace
+
 GpuStatus
 GpuRuntime::create(const GpuRuntimeOptions& options, std::unique_ptr<GpuRuntime>& out)
 {
@@ -177,6 +439,7 @@ GpuRuntime::create(const GpuRuntimeOptions& options, std::unique_ptr<GpuRuntime>
 
 GpuRuntime::~GpuRuntime()
 {
+    stopKeepAlive();
     if (device_ && !isLost()) {
         device_->waitIdle();
     }
@@ -202,12 +465,26 @@ GpuRuntime::build()
     pool_ = std::make_unique<GpuBufferPool>(*device_, options_.pool);
     pipelines_ = std::make_unique<GpuPipelineCache>(*device_, options_.pipelines);
     preparer_ = std::make_unique<GpuImportPreparer>(*transfer_);
+    if (keepAliveWanted(device_->info())) {
+        keepAlive_ = std::make_shared<GpuKeepAlive>(*device_);
+    }
     return {};
+}
+
+void
+GpuRuntime::stopKeepAlive()
+{
+    if (keepAlive_) {
+        keepAlive_->stop();
+    }
 }
 
 void
 GpuRuntime::teardown()
 {
+    // Stopped before anything else goes, as its buffers and submissions belong to the device.
+    stopKeepAlive();
+    keepAlive_.reset();
     preparer_.reset();
     pipelines_.reset();
     pool_.reset();
@@ -356,12 +633,24 @@ GpuRuntime::prepareImports(std::vector<HostRange> ranges)
     return job;
 }
 
+GpuBusyHold
+GpuRuntime::holdBusy(double limitMs)
+{
+    GpuBusyHold hold;
+    if (keepAlive_ && !isLost() && (limitMs > 0.)) {
+        keepAlive_->hold(limitMs);
+        hold.keepAlive_ = keepAlive_;
+    }
+    return hold;
+}
+
 GpuStatus
 GpuRuntime::recreate()
 {
     std::lock_guard<std::mutex> lock(mutex_);
     // Stopped first, so that it imports nothing after the imports are released.
     preparer_.reset();
+    stopKeepAlive();
     if (device_ && !isLost()) {
         if (transfer_) {
             transfer_->releaseHostImports();

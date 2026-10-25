@@ -782,6 +782,37 @@ RenderStats::getRenderRoICalls() const
     return _imp->renderRoICalls;
 }
 
+static void
+appendTransferRecords(std::string* line,
+                      const char* name,
+                      const std::vector<GpuTransferRecord>& records,
+                      bool withPinned)
+{
+    char num[512];
+
+    std::snprintf(num, sizeof(num), ",\"%s\":[", name);
+    line->append(num);
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        const GpuTransferRecord& r = records[i];
+        char ms[32];
+        if (r.deviceMs >= 0.) {
+            std::snprintf(ms, sizeof(ms), "%.6f", r.deviceMs);
+        } else {
+            std::snprintf(ms, sizeof(ms), "null");
+        }
+        std::snprintf(num, sizeof(num),
+                      "%s{\"strip\":%d,\"bytes\":%llu,\"deviceMs\":%s,\"queueFamily\":%u,\"queueIndex\":%u,"
+                      "\"comps\":%d,\"format\":\"f32\",\"staged\":%d",
+                      (i > 0) ? "," : "", r.strip, r.bytes, ms, r.queueFamily, r.queueIndex, r.comps, r.staged ? 1 : 0);
+        line->append(num);
+        if (withPinned) {
+            line->append(r.pinned ? ",\"pinned\":1" : ",\"pinned\":0");
+        }
+        line->push_back('}');
+    }
+    line->push_back(']');
+}
+
 std::string
 formatRegionRecord(unsigned long long frameSequence,
                    int regionId,
@@ -823,6 +854,8 @@ formatRegionRecord(unsigned long long frameSequence,
                   times.prepareWaitMs, times.uploadsImported, times.uploadsStaged, times.downloadsImported,
                   times.downloadsStaged, times.importsAtUpload, times.importsAtDownload);
     line.append(num);
+    appendTransferRecords(&line, "uploads", times.uploads, false);
+    appendTransferRecords(&line, "downloads", times.downloads, true);
     line.append(",\"fallback\":\"");
     for (std::size_t i = 0; i < times.fallback.size(); ++i) {
         const char c = times.fallback[i];

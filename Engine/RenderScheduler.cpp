@@ -1264,6 +1264,7 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             frame->context->getStats()->noteConcurrentTasks(rendering);
         }
         RegionReport report;
+        report.recordTransfers = profileSink().isEnabled();
         try {
             retCode = body(frame->context, frame->graph, region, [this](int* cpuBudget) { return leaseCpuFallback(cpuBudget); }, &planes, &report);
         } catch (const std::exception&) {
@@ -1310,6 +1311,8 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             times.downloadsStaged = report.downloadsStaged;
             times.importsAtUpload = report.importsAtUpload;
             times.importsAtDownload = report.importsAtDownload;
+            times.uploads = std::move(report.uploads);
+            times.downloads = std::move(report.downloads);
             times.fallback = report.cpuFallback;
             times.retries = report.retries;
             lines += formatRegionRecord(frame->sequence, region, members, times);

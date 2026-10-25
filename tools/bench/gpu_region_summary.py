@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Splits GPU region time from NATRON_RENDER_PROFILE files into its phases, per region and per node.
 
-    python3 -I tools/bench/gpu_region_summary.py [--skip-frames N] [--import-rate GBPS] PROFILE_PREFIX_OR_FILE...
+    python3 -I tools/bench/gpu_region_summary.py [--skip-frames N] [--import-rate GBPS] [--import-rate-up GBPS] PROFILE_PREFIX_OR_FILE...
     python3 -I tools/bench/gpu_region_summary.py --driver OUT_DIR_OR_DRIVER_JSONL
     python3 -I tools/bench/gpu_region_summary.py --self-test
 
@@ -22,8 +22,9 @@ pairs. The vmstat deltas are system-wide.
 prepareWaitMs is the time the region waited for its transfer destinations to be prepared. The pipelined
 floor is max(0, T - K*(n-1)/n) with T the exposed plus hidden transfer ms, K the kernel ms and n the strips
 (1 when the region ran unstripped): the transfer time left once every strip but one overlaps a kernel.
-With --import-rate GBPS (a measured GpuBench host-import rate in GB/s) T is instead
-(uploadBytes + downloadBytes) / rate, so the floor shows what the transfers would cost at that rate.
+With --import-rate GBPS (a measured GpuBench host-import download rate in GB/s) T is instead
+uploadBytes / up rate + downloadBytes / rate, so the floor shows what the transfers would cost at those
+rates. --import-rate-up GBPS sets the upload rate; without it uploads are priced at --import-rate.
 
 Which fields lie inside wallMs. wallMs runs from the end of planning to the end of the region:
   inside   kernelMs, transferExposedMs, recordMs, acquireMs, submitWaitMs
@@ -40,6 +41,15 @@ A member's kernel time is the wallNs of its task record (device timestamps, the 
 only on devices without them). pred xfer is predictedTransferMs: the transfer time placement's cost
 model predicts for the region's uploadBytes and downloadBytes, to compare with uploadMs + downloadMs.
 It reads n/a when the model knows no bandwidth (the record holds null) or the record has no such field.
+
+The transfers table lists, per region, the copies its record's uploads and downloads arrays hold, one line
+per direction: their count, size (min/median/max, MB), the device rate (bytes over the summed device time of
+the timestamped copies, GB/s), the timestamped share of the bytes, the share of the timestamped device time
+that the last strip's copies spent, how many were staged through the transfer ring instead of imported in
+place, how many downloads were of another region's device image (pinned; the frame store makes those, so they
+are never timestamped), and the queue. deviceMs is null for a copy that was not timestamped (a pinned
+download, or a device without timestamps); the rate and the last-strip share then read n/a. The device time
+is the transfer queue's own: it does not replace transferExposedMs, which the host measures.
 """
 import collections
 import glob
@@ -49,6 +59,7 @@ import re
 import sys
 import tempfile
 
+TRANSFERS = ("uploads", "downloads")
 PHASES = ("kernel", "exposed", "record", "acquire", "submitWait")
 FIELDS = ("wallMs", "planMs", "kernelMs", "transferExposedMs", "transferHiddenMs", "uploadMs", "downloadMs",
           "recordMs", "acquireMs", "submitWaitMs", "prepareWaitMs")
@@ -83,10 +94,11 @@ def other_ms(region):
     return region.get("wallMs", 0.0) - named
 
 
-def pipelined_floor_ms(region, import_rate_gbps=None):
+def pipelined_floor_ms(region, import_rate_gbps=None, import_rate_up_gbps=None):
     strips = max(region.get("strips", 0), 1)
     if import_rate_gbps:
-        transfer = (region.get("uploadBytes", 0) + region.get("downloadBytes", 0)) / (import_rate_gbps * 1e9) * 1e3
+        up_rate = import_rate_up_gbps or import_rate_gbps
+        transfer = (region.get("uploadBytes", 0) / (up_rate * 1e9) + region.get("downloadBytes", 0) / (import_rate_gbps * 1e9)) * 1e3
     else:
         transfer = region.get("transferExposedMs", 0.0) + region.get("transferHiddenMs", 0.0)
     return max(0.0, transfer - region.get("kernelMs", 0.0) * (strips - 1) / strips)
@@ -229,11 +241,33 @@ def build(records, skip_frames, marks=()):
     return rows, len(kept)
 
 
+def transfer_stats(region, key):
+    """The figures of one region's uploads or downloads array, or None when it holds no copy."""
+    copies = region.get(key) or []
+    if not copies:
+        return None
+    sizes = sorted(d["bytes"] for d in copies)
+    timed = [d for d in copies if d.get("deviceMs") is not None]
+    time_ms = sum(d["deviceMs"] for d in timed)
+    timed_bytes = sum(d["bytes"] for d in timed)
+    rate = timed_bytes / (time_ms * 1e6) if time_ms > 0 else None
+    total = sum(sizes)
+    last_share = None
+    strips = [d["strip"] for d in timed if d.get("strip", -1) >= 0]
+    if strips and time_ms > 0:
+        last = max(strips)
+        last_share = sum(d["deviceMs"] for d in timed if d.get("strip") == last) / time_ms
+    return {"count": len(copies), "min": sizes[0], "median": median(sizes), "max": sizes[-1], "rate": rate,
+            "timedShare": timed_bytes / total if total > 0 else 0.0, "lastShare": last_share,
+            "staged": sum(1 for d in copies if d.get("staged")), "pinned": sum(1 for d in copies if d.get("pinned")),
+            "queue": "%d.%d" % (copies[0].get("queueFamily", 0), copies[0].get("queueIndex", 0))}
+
+
 def mean(values):
     return sum(values) / len(values) if values else 0.0
 
 
-def summarise(rows, import_rate_gbps=None):
+def summarise(rows, import_rate_gbps=None, import_rate_up_gbps=None):
     groups = collections.OrderedDict()
     for row in rows:
         groups.setdefault(row["signature"], []).append(row)
@@ -244,7 +278,7 @@ def summarise(rows, import_rate_gbps=None):
         for k in FIELDS:
             entry[k] = mean([g.get(k, 0.0) for g in regs])
         entry["other"] = mean([other_ms(g) for g in regs])
-        entry["floor"] = mean([pipelined_floor_ms(g, import_rate_gbps) for g in regs])
+        entry["floor"] = mean([pipelined_floor_ms(g, import_rate_gbps, import_rate_up_gbps) for g in regs])
         preds = [g["predictedTransferMs"] for g in regs if g.get("predictedTransferMs") is not None]
         entry["predicted"] = mean(preds) if preds else None
         entry["imports"] = mean([g.get("importCount", 0) for g in regs])
@@ -258,6 +292,7 @@ def summarise(rows, import_rate_gbps=None):
             for m in r["members"]:
                 nodes.setdefault(m["node"], []).append(m["kernelMs"])
         entry["nodes"] = [(n, mean(v)) for n, v in nodes.items()]
+        entry["transferStats"] = {key: [st for st in (transfer_stats(g, key) for g in regs) if st] for key in TRANSFERS}
         out.append(entry)
     return out
 
@@ -286,6 +321,26 @@ def format_summary(entries):
         for node, k in e["nodes"]:
             share = 100.0 * k / e["wallMs"] if e["wallMs"] > 0 else 0.0
             lines.append(" | ".join((e["signature"], node, "%.2f" % k, "%.0f%%" % share)))
+    lines.append("")
+    lines.append("Transfers (per region run, mean over runs; rate and last strip need timestamped copies)")
+    lines.append(" | ".join(("region", "dir", "copies", "min MB", "median MB", "max MB", "rate GB/s", "timed bytes",
+                             "last strip share", "staged", "pinned", "queue")))
+    for e in entries:
+        for key in TRANSFERS:
+            stats = e["transferStats"][key]
+            if not stats:
+                continue
+            rates = [st["rate"] for st in stats if st["rate"] is not None]
+            shares = [st["lastShare"] for st in stats if st["lastShare"] is not None]
+            lines.append(" | ".join((e["signature"], key[:-1], "%.1f" % mean([st["count"] for st in stats]),
+                                     "%.2f" % (mean([st["min"] for st in stats]) / 1e6),
+                                     "%.2f" % (mean([st["median"] for st in stats]) / 1e6),
+                                     "%.2f" % (mean([st["max"] for st in stats]) / 1e6),
+                                     ("%.2f" % mean(rates)) if rates else "n/a",
+                                     "%.0f%%" % (100.0 * mean([st["timedShare"] for st in stats])),
+                                     ("%.0f%%" % (100.0 * mean(shares))) if shares else "n/a",
+                                     "%.1f" % mean([st["staged"] for st in stats]),
+                                     "%.1f" % mean([st["pinned"] for st in stats]), stats[0]["queue"])))
     return "\n".join(lines)
 
 
@@ -309,7 +364,7 @@ def format_renders(marks, records):
     return "\n".join(lines)
 
 
-def summarise_run(arg, skip, import_rate_gbps):
+def summarise_run(arg, skip, import_rate_gbps, import_rate_up_gbps=None):
     records = read_records([arg])
     marks = read_marks(arg)
     if skip is None:
@@ -326,7 +381,7 @@ def summarise_run(arg, skip, import_rate_gbps):
     for label, group in groups.items():
         if label != "-":
             out.append("== render label %s ==" % label)
-        out.append(format_summary(summarise(group, import_rate_gbps)))
+        out.append(format_summary(summarise(group, import_rate_gbps, import_rate_up_gbps)))
         out.append("")
     return "\n".join(out), bool(rows)
 
@@ -370,11 +425,40 @@ def self_test():
     assert abs(pair["prepareWaitMs"] - 1.0) < 1e-9 and abs(erode["prepareWaitMs"] - 3.0) < 1e-9
     assert fallback["prepareWaitMs"] == 0.0
 
+    stripped = transfer_stats(rows[2]["region"], "downloads")
+    assert stripped["count"] == 4 and stripped["max"] == 33177600 and stripped["staged"] == 4
+    assert abs(stripped["rate"] - 132710400 / 30e6) < 1e-9, stripped["rate"]
+    assert abs(stripped["lastShare"] - 0.3) < 1e-9, stripped["lastShare"]
+    assert stripped["timedShare"] == 1.0 and stripped["pinned"] == 0
+    stripped_up = transfer_stats(rows[2]["region"], "uploads")
+    assert stripped_up["count"] == 4 and stripped_up["queue"] == "2.0" and stripped_up["staged"] == 0
+    assert abs(stripped_up["rate"] - 132710400 / 24e6) < 1e-9, stripped_up["rate"]
+    assert abs(stripped_up["lastShare"] - 0.25) < 1e-9, stripped_up["lastShare"]
+    whole = transfer_stats(rows[0]["region"], "downloads")
+    assert whole["count"] == 1 and whole["rate"] is None and whole["lastShare"] is None and whole["timedShare"] == 0.0
+    whole_up = transfer_stats(rows[0]["region"], "uploads")
+    assert abs(whole_up["rate"] - 132710400 / 4e6) < 1e-9 and whole_up["timedShare"] == 1.0
+    assert whole_up["lastShare"] is None
+    with_pinned = transfer_stats(rows[1]["region"], "downloads")
+    assert with_pinned["count"] == 2 and with_pinned["pinned"] == 1
+    assert abs(with_pinned["timedShare"] - 0.8) < 1e-9, with_pinned["timedShare"]
+    assert abs(with_pinned["rate"] - 132710400 / 5e6) < 1e-9, with_pinned["rate"]
+    assert sum(d["bytes"] for d in rows[1]["region"]["downloads"]) == rows[1]["region"]["downloadBytes"]
+    assert transfer_stats(rows[3]["region"], "downloads") is None and transfer_stats(rows[3]["region"], "uploads") is None
+    assert len(pair["transferStats"]["downloads"]) == 2 and len(pair["transferStats"]["uploads"]) == 2
+    assert "last strip share" in text and "30%" in text and "timed bytes" in text
+    assert "Grade1+Blur1 | download | 1.5 |" in text and "| 40% |" in text, text
+    assert "Erode1 | upload | 4.0 | 33.18 | 33.18 | 33.18 | 5.53 | 100% | 25% | 0.0 | 0.0 | 2.0" in text, text
+
     assert abs(pipelined_floor_ms(rows[2]["region"]) - 0.0) < 1e-9
     assert abs(pipelined_floor_ms(rows[0]["region"]) - 9.0) < 1e-9
     rate = pipelined_floor_ms(rows[2]["region"], 1.0)
     assert abs(rate - (2 * 132710400 / 1e9 * 1e3 - 80.0 * 3 / 4)) < 1e-6, rate
     assert abs(summarise(rows, 1.0)[1]["floor"] - rate) < 1e-6
+    split = {"uploadBytes": 1e9, "downloadBytes": 1e9, "kernelMs": 0.0, "strips": 1}
+    assert abs(pipelined_floor_ms(split, 16.0, 10.0) - (1e3 / 10.0 + 1e3 / 16.0)) < 1e-9
+    assert abs(pipelined_floor_ms(split, 16.0) - 2e3 / 16.0) < 1e-9
+    assert abs(summarise(rows, 1.0, 1.0)[1]["floor"] - rate) < 1e-6
 
     marks = [{"label": "first", "index": 0, "frame": 2, "frames": 1, "profileFrame": 0, "wall_s": 0.2},
              {"label": "b", "index": 1, "frame": 2, "frames": 1, "profileFrame": 1, "wall_s": 0.15}]
@@ -422,6 +506,7 @@ def main(argv):
         return 0
     skip = None
     rate = None
+    rate_up = None
     paths = []
     i = 0
     while i < len(argv):
@@ -431,6 +516,9 @@ def main(argv):
         elif argv[i] == "--import-rate":
             rate = float(argv[i + 1])
             i += 2
+        elif argv[i] == "--import-rate-up":
+            rate_up = float(argv[i + 1])
+            i += 2
         else:
             paths.append(argv[i])
             i += 1
@@ -439,7 +527,7 @@ def main(argv):
         return 2
     status = 0
     for path in paths:
-        text, any_rows = summarise_run(path, skip, rate)
+        text, any_rows = summarise_run(path, skip, rate, rate_up)
         print(text)
         if not any_rows:
             sys.stderr.write("no region records in %s after skipping\n" % path)

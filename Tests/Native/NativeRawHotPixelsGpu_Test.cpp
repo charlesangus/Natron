@@ -100,7 +100,15 @@ protected:
         NodePtr read = createRead(fixture);
         NodePtr prepare = createAfter(PLUGINID_NATRON_RAWPREPARE, read);
         EXPECT_TRUE(read && prepare);
-        if (!read || !prepare || !renderCpu(prepare, kWindow, clean)) {
+        if (!read || !prepare) {
+            return false;
+        }
+        // Through the cache: a bypassing render clears every cache before and after, and each clear
+        // decodes the whole raw file again to recompute the Read's metadata.
+        std::string error;
+        const bool rendered = renderRawTestPlane(prepare, kWindow, clean, &error, false);
+        EXPECT_TRUE(rendered) << error;
+        if (!rendered) {
             return false;
         }
         NativeEffectBase* prepared = dynamic_cast<NativeEffectBase*>(prepare->getEffectInstance().get());
@@ -109,6 +117,10 @@ protected:
             return false;
         }
         const ImageMetadata metadata = prepared->getOutputMetadata(kTime, ViewIdx(0));
+        // Left in the project, the Read would decode its file again on every cache clear, which
+        // each render of the chain below makes twice.
+        prepare->destroyNode(true, false);
+        read->destroyNode(true, false);
         const int nComps = (int)clean->channels.size();
         std::vector<float> pixels = clean->pixels;
         int index = 0;

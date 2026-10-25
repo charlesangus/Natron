@@ -254,6 +254,7 @@ Deps: M100 - Content Node Hashing.
 
 ## Decisions
 
+- 2026-10-25 — **Small-image overhead accepted (user):** with the snapshot speed-ups, the remaining per-node cost on tiny-image graphs (32x32 per node) is acceptable, since such images are unusual. Larger images are within noise.
 - 2026-10-25 — **Per-node frame caches are a 32-entry LRU (bosley-native-nodes):** the per-frame metadata and pass-through identity caches evict the least recently used frame at 32 entries instead of clearing all at 256, so the heap stops growing on long runs; 32 covers one frame's working set plus about a second of scrubbing. A looped range longer than 32 frames re-derives each frame.
 - 2026-10-25 — **Metadata-time identity is not reused by the render (bosley-native-nodes):** the render's identity check uses its own scale and region and a separate cache that deliberately excludes whole-format answers, and the metadata check runs inside the identity scope with the layer branch, so the questions differ; sharing would need new keys that no lookup hits.
 - 2026-10-25 — **P6.T4 second bench (bosley-native-nodes):** after sharing cached component results, caching the pass-through identity answer and moving the write check after the snapshot (host load ~4): comp N=200 hd −1.5% / +2.3% (within the bar); chain N=500 tiny +8..16%; wide N=500 tiny +19..25% (min/median, per frame and range). The tiny cases measure per-node overhead (~20-40 µs/node/frame from deriving metadata per frame); profiling the remainder before asking the user to accept or continue.

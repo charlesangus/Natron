@@ -230,6 +230,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
 
 ## Decisions
 
+- 2026-10-25 — **Linked knobs show a blue name, not a circle (user):** the per-knob blue circle is replaced by the knob label in blue. The node-graph link badge must read clearly at normal zoom; the small "L" read as a "k".
 - 2026-10-25 — **Per-knob master fields stay (PM):** the Tracker's linked CornerPin/Transform export, track markers and the "Unlink from…" menu still use the per-knob master link, so only the node-level clone code is removed.
 - 2026-10-25 — **Saved link-group ids resolve within one load or paste (PM):** a group id only matches knobs restored in the same batch; pasted copies of linked nodes link only to each other.
 - 2026-10-25 — **Aliases are saved as an alias plus its master link (PM):** two-way links use linkGroup/unlinked/nodeLink per dimension.

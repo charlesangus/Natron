@@ -174,7 +174,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeEdgeExtendGpu` passes on RADV within 1e-4 relative.
   - size: M
 
-- [ ] M123.P3.T3 — Write the native EdgeBlur node (CPU and GPU)
+- [x] M123.P3.T3 — Write the native EdgeBlur node (CPU and GPU)
   - files: `Engine/Nodes/Filter/EdgeBlur.h`, `Engine/Nodes/Filter/EdgeBlur.cpp`, `Engine/Nodes/Filter/EdgeBlur.reg.inc`, `Tests/Native/NativeEdgeBlur_Test.cpp`
   - approach:
     - It has an optional external matte input, replacing the PyPlug's `externalMatte` switch.
@@ -186,7 +186,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
     - The test's GPU parity case, within 1e-4 relative.
   - size: L
 
-- [ ] M123.P3.T4 — Remove the EdgeBlur PyPlug and update its tests
+- [x] M123.P3.T4 — Remove the EdgeBlur PyPlug and update its tests
   - files: `Gui/Resources/PyPlugs/EdgeBlur.py`, `Gui/Resources/PyPlugs/EdgeBlur.png`, `Gui/GuiResources.qrc`, `Tests/PyPlugInstantiate_Test.cpp`
   - approach: delete the PyPlug and its resources, and remove `fr.inria.EdgeBlur` from the PyPlug test lists. The test edits sit next to P2.T5's, so rebase if P2.T5 has landed.
   - verify: at the phase build, `ctest -R PyPlugInstantiate` passes.
@@ -194,7 +194,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 122.4: Retire the OFX versions
 
-- [ ] M123.P4.T1 — Retire CImg Sharpen, Soften, Laplacian, Bloom and EdgeExtend and fix their references
+- [x] M123.P4.T1 — Retire CImg Sharpen, Soften, Laplacian, Bloom and EdgeExtend and fix their references
   - files: `Engine/OfxRetired/<ofx-plugin-id>` (five markers), `Engine/OfxEffectInstance.cpp`, `tools/ci/smoke_test.py`, `Gui/Resources/PyPlugs/PIKColor.py`
   - approach:
     - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for each of the five IDs.
@@ -208,7 +208,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
     - The PIKColor PyPlug instantiates.
   - size: M
 
-- [ ] M123.P4.T2 — Document the nodes
+- [x] M123.P4.T2 — Document the nodes
   - files: `Engine/Nodes/Filter/docs/{Sharpen,Bloom,Glow,EdgeExtend,EdgeBlur}.md`
   - approach: document each node: knobs, maths, GPU path and the parity tolerance, one file per node (M120 - Native Node Port Kit's scheme).
   - verify: each doc names every knob that exists in the node code (reviewed at the gate).

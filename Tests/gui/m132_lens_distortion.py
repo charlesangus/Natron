@@ -166,6 +166,29 @@ try:
         mx, my = int(w * (1.0 - inner) / 2.0), int(h * (1.0 - inner) / 2.0)
         return img.copy(x0 + mx, y0 + my, w - 2 * mx, h - 2 * my)
 
+    def image_rect(img, stride=2):
+        """(x, y, w, h) bounding box of the pixels that differ from the viewer's background, taken from the
+        top-left corner pixel of a full viewer grab; None if the grab is unusable or shows no image."""
+        if img is None or img.width() < 2 or img.height() < 2:
+            return None
+        bg = img.pixelColor(0, 0)
+        xs, ys = [], []
+        for y in range(0, img.height(), stride):
+            for x in range(0, img.width(), stride):
+                c = img.pixelColor(x, y)
+                if abs(c.red() - bg.red()) + abs(c.green() - bg.green()) + abs(c.blue() - bg.blue()) > PIXEL_DIFF_MIN:
+                    xs.append(x)
+                    ys.append(y)
+        if not xs:
+            return None
+        return min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+
+    def central_of(img, rect, inner=0.5):
+        """The central inner fraction, per axis, of rect within img."""
+        x, y, w, h = rect
+        mx, my = int(w * (1.0 - inner) / 2.0), int(h * (1.0 - inner) / 2.0)
+        return img.copy(x + mx, y + my, w - 2 * mx, h - 2 * my)
+
     def changed_pixels(a, b, stride=2):
         """(differing sampled pixels, sampled pixels) between two same-sized viewer grabs; (-1, 0) if unusable."""
         if a is None or b is None or a.size() != b.size():
@@ -261,20 +284,26 @@ try:
               "the first node distorts and the second undistorts")
 
         yield from show(viewer, checker)
-        source = viewer_crop(0.6)
+        source_full = viewer_crop()
+        rect = image_rect(source_full)
+        check(rect is not None, "the source image can be located in the viewer")
+        source = central_of(source_full, rect) if rect is not None else None
         gt.shot("lens-roundtrip-source.png")
 
         yield from show(viewer, distort)
-        distorted = viewer_crop(0.6)
+        distorted = central_of(viewer_crop(), rect) if rect is not None else None
         moved, total = changed_pixels(source, distorted)
         check(moved >= CHANGED_PIXELS_MIN, "the Distort node alone changes the picture (%d of %d sampled pixels)" % (moved, total))
         gt.shot("lens-roundtrip-distorted.png")
 
         yield from show(viewer, undistort)
-        result = viewer_crop(0.6)
+        # Distort pushes the source's outer ring out of frame, so Undistort cannot restore it and its
+        # result has a black border by design. Only the interior of the image is compared: the central
+        # half of the image's on-screen rectangle, not of the viewer widget.
+        result = central_of(viewer_crop(), rect) if rect is not None else None
         diff, total = changed_pixels(source, result)
         check(0 <= diff <= ROUND_TRIP_MAX_FRACTION * total,
-              "Distort then Undistort returns the source (%d of %d sampled central pixels differ, limit %d)" %
+              "Distort then Undistort returns the source (%d of %d sampled interior pixels differ, limit %d)" %
               (diff, total, int(ROUND_TRIP_MAX_FRACTION * total)))
         gt.shot("lens-roundtrip-result.png")
 

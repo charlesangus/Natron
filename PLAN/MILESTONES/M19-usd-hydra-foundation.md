@@ -98,19 +98,19 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
   - verify: existing GL ctest cases pass under `build/m63-gui/run-gl-tests.sh`; the GUI under Xvfb starts and draws viewer, overlays and an OFX interact (Transform) as before; forcing a 2.1 context makes the GUI exit with the message while NatronRenderer still renders.
   - size: L
 
-- [ ] M19.P2.T2 — Storm view inside the Viewer tab
+- [x] M19.P2.T2 — Storm view inside the Viewer tab
   - files: `Gui/SceneViewport.h`/`.cpp` (new `QOpenGLWidget`), `Gui/ViewerTab.h`/`.cpp`, `Gui/ViewerTabPrivate.h`, `Gui/CMakeLists.txt`
   - approach: a `QOpenGLWidget` on the shared global compat context (M19.P2.T8) that renders a composed stage through `UsdImagingGLEngine` (Storm, HgiGL) via the Hydra 2.0 scene-index path, at the time mapped from the viewer's frame. Modes: unshaded / shaded / wireframe. The tumble/pan/dolly camera and grid follow the stage's `upAxis`/`metersPerUnit`. `ViewerTab` holds it beside `ViewerGL` and shows one or the other; M19.P2.T6 decides which. An action failure shows its message in place of the scene.
   - verify: manual — load a USD file via USDRead into a Viewer, see it in shaded/wireframe, scrub the timeline (time-sampled animation plays); a Z-up file tumbles around Z; a broken USDRead shows its error in the view.
   - size: L
 
-- [ ] M19.P2.T6 — Viewer accepts scenes and switches view by input kind
+- [x] M19.P2.T6 — Viewer accepts scenes and switches view by input kind
   - files: `Engine/ViewerInstance.h`/`.cpp`, `Gui/ViewerTab.cpp`, `Tests/` (viewer kind test)
   - approach: the Viewer's inputs accept `eDataKindScene` as they accept deep today (`inputAcceptsDataKindViaAdapter`). When the active input's effective kind is scene, the viewer evaluates it through M19.P1.T4's action and the tab shows the Storm view; otherwise ViewerGL as now. It re-switches when the kind changes (reconnect, input switch, group output change). No manual 2D/3D toggle. Mixed-kind A/B: show A's kind and disable wipe (unconfirmed assumption — revisit if the user objects).
   - verify: unit test — a Viewer accepts a scene source and reports scene as its active kind; GUI test under Xvfb — connecting a USDRead then a 2D Read to the same viewer flips the visible widget each time.
   - size: M
 
-- [ ] M19.P2.T3 — Viewport picking and camera look-through
+- [x] M19.P2.T3 — Viewport picking and camera look-through
   - files: `Gui/SceneViewport.cpp`, `Gui/SceneViewport.h`
   - approach: `UsdImagingGLEngine` pick → prim selection (highlight in viewport); look-through any `UsdGeomCamera` on the stage plus the free tumble/pan/dolly camera. Kept minimal — gizmos arrive with `USDTransform` in M20.
   - verify: manual — clicking a prim highlights it; look-through a camera prim matches usdview's framing for the same file.
@@ -122,7 +122,7 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
   - verify: test green in `build-and-test`; USD link/runtime issues surface here rather than in the GUI.
   - size: M
 
-- [ ] M19.P2.T7 — Automated Storm render test under Xvfb
+- [x] M19.P2.T7 — Automated Storm render test under Xvfb
   - files: `Tests/` (GL test beside the existing strict GL cases), `build/m63-gui/run-gl-tests.sh` if it needs the new case listed, the M19.P2.T4 reference `.usda`
   - approach: under the strict llvmpipe GL runner, render the reference `.usda` through `SceneViewport` into an FBO from a fixed camera, check a few pixel regions against expected coverage (tolerant, not bit-exact), and check that picking at a known pixel returns the expected prim path. Plain `xvfb-run` on the CI image has no GLX (`PLAN/DECISIONS/2026-09-02-no-glx-under-xvfb.md`), so it runs as a strict GL case and skips without GL like its siblings.
   - verify: passes under `build/m63-gui/run-gl-tests.sh` with `NATRON_TEST_REQUIRE_GL=1`; deleting the prim from the asset makes it fail.

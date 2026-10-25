@@ -60,7 +60,7 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
 
 ## Phase 70.5: Moving variables between a Set node and the project
 
-- [ ] M70.P5.T1 — "Existing variable" drop-down on the Set node
+- [x] M70.P5.T1 — "Existing variable" drop-down on the Set node
   - files: `Engine/Nodes/RFV/ReverseFlowVariableSet.cpp`, `Engine/RFV.cpp`, `Engine/RFV.h`
   - approach: a Choice knob outside the RFV group, entry 0 "Add existing variable...". Its entries are every variable name declared on the project or on any other Set node in the project, minus names already on this node, repopulated each time the node's panel refreshes. Choosing a name creates a child in this node's RFV group with the same knob type, dimension count and default as the first declaration found (project first), then resets the drop-down to entry 0. The new knob starts with the source's current value and no animation; it does not stay linked to the source.
   - verify: gtest: project declares `a` (Double) and another Set node declares `b` (String); on a third Set node, choosing `a` then `b` adds two matching children, and a name already present is not offered again.

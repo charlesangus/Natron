@@ -144,5 +144,6 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-25 — **Departures from openfx-misc (bosley-native-nodes):** 3DE and PFBarrel honour a format whose origin isn't (0,0); Fisheye8 drops ldpk's clamps and reports points at or past 90° as invalid (black); the PFBarrel reload bug is fixed (each key keeps its own values); the `.pfb` parser is strict; the inverse is a damped 2x2 Newton with analytic Jacobians (1e-12 relative) instead of a diagonal finite-difference step; PFBarrel is ported. Strong Nuke lenses on anamorphic formats have no distort solution near the corners, which go black; the node doc says so. Phase 3 must settle GPU precision (fp64 or a float tolerance with its own CPU/GPU bound).
 - 2026-10-13 — **Split from M113 - Native Warp Nodes, with every model (user, native-node port grill):** LensDistortion is large enough for its own milestone. It covers Nuke, the 3DE models and PanoTools, plus PFBarrel if cheap. It reuses M113 - Native Warp Nodes's coordinate sampler and gets a GPU kernel per model.
 - 2026-10-13 — **A real Jacobian:** the OFX node's identity Jacobian (`Distortion.cpp:1060`) under-filters strong distortion. The native node computes analytic or finite-difference Jacobians.

@@ -63,8 +63,15 @@ try:
         return gui is not None and any(gt.class_name(g) == "NodeGraph" and g.isVisible()
                                        for g in gui.findChildren(QGraphicsView))
 
+    _held = []
+
     def modal():
-        return QApplication.activeModalWidget()
+        """The active modal widget; its wrapper is kept alive for the run, because PySide marks the
+        wrappers of its children deleted once a temporary wrapper of it is collected."""
+        w = QApplication.activeModalWidget()
+        if w is not None and not any(w is h for h in _held):
+            _held.append(w)
+        return w
 
     def modal_class():
         w = modal()
@@ -230,7 +237,8 @@ try:
         require(ok, "the project settings panel is open")
         require(show_tab(project_panel(), "Variables"), "the project settings panel has a Variables tab")
         yield ("sleep", SETTLE_MS)
-        button = button_in(project_panel(), "Edit variables...")
+        panel = project_panel()
+        button = button_in(panel, "Edit variables...")
         require(button is not None and button.isVisible(), "the Variables tab shows an Edit variables... button")
         button.click()  # the dialog opens from a queued call, after this step
         ok = yield ("until", lambda: modal_class() == "ManageUserParamsDialog", DIALOG_TIMEOUT_S)
@@ -300,7 +308,11 @@ try:
         gt.shot("m70-project-dialog.png")
         yield from close_dialog("ManageUserParamsDialog")
         yield ("sleep", SETTLE_MS)
-        check(panel_has_label(project_panel(), "Project gain"), "the project panel's Variables tab shows the new variable")
+        panel = project_panel()
+        tabs = [t for t in panel.findChildren(QTabWidget) if t.isVisible()]
+        check(any(t.tabText(t.currentIndex()).replace("&", "") == "Variables" for t in tabs),
+              "the project panel stayed on its Variables tab after the dialog closed")
+        check(panel_has_label(panel, "Project gain"), "the project panel's Variables tab shows the new variable")
         gt.shot("m70-project-panel.png")
         app.getProjectParam("projGain").setValue(2.5)
         check(editor_probe("app.projGain.getValue()") == 2.5,

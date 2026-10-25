@@ -217,8 +217,8 @@ set(GuiTests_SOURCES
     ColorTrackballTarget_Test.cpp
     ColorWheelWidget_Test.cpp
     CurveTangentJoin_Test.cpp
-    DisplayLegendColour_Test.cpp
     CurveWeightedTangent_Test.cpp
+    DisplayLegendColour_Test.cpp
     EdgeNearbyGrab_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorWheelWidth_Test.cpp

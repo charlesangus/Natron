@@ -65,8 +65,8 @@ if(NOT NATRON_USD_PYTHON_VERSION VERSION_EQUAL "${Python3_VERSION_MAJOR}.${Pytho
 endif()
 
 # What Engine's scene code (Engine/Nodes/Scene/) links: authoring and composing layers, the stage,
-# and UsdGeom's stage metadata (up axis, meters per unit).
-set(NATRON_USD_ENGINE_LIBRARIES usd sdf usdGeom pcp ar kind plug vt gf tf work trace arch)
+# UsdGeom's stage metadata (up axis, meters per unit), cameras and xforms, and UsdLux's lights.
+set(NATRON_USD_ENGINE_LIBRARIES usd sdf usdGeom usdLux pcp ar kind plug vt gf tf work trace arch)
 
 # What the viewer's scene view (Gui/SceneViewport) links on top: Storm through UsdImagingGLEngine
 # on HgiGL, the camera framing and the GL lights it hands the engine.

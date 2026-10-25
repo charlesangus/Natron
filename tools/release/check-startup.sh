@@ -295,7 +295,7 @@ outside = [plugin.path for plugin in usd_plugins
            if not os.path.realpath(plugin.path).startswith(BUNDLE + os.sep)]
 if outside:
     fail("OpenUSD registered plug-ins from outside the bundle: %s" % ", ".join(sorted(outside)))
-for plugin_name in ("usd", "sdf", "usdGeom", "usdAbc"):
+for plugin_name in ("usd", "sdf", "usdGeom", "usdLux", "usdAbc"):
     if not Plug.Registry().GetPluginWithName(plugin_name):
         fail("OpenUSD has no %s plug-in registered; lib/usd or plugin/usd is missing" % plugin_name)
 for extension in ("usda", "usdc", "abc"):

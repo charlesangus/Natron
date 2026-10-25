@@ -38,9 +38,14 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDLight.h"
+#include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -107,4 +112,62 @@ TEST_F(SceneIntegrationTest, ReferenceSceneThroughTheActionComposesWithItsBounds
         const PXR_NS::GfRange3d range = bboxes.ComputeWorldBound(stage->GetPseudoRoot()).ComputeAlignedRange();
         EXPECT_NEAR(2.5, range.GetMax()[1], 1e-6);
     }
+}
+
+TEST_F(SceneIntegrationTest, CreatedPrimsLayerOverTheReadScene)
+{
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr rig = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+    NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+    ASSERT_TRUE(reader && rig && camera && light);
+    KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
+    ASSERT_TRUE(file != NULL);
+    file->setValue(NATRON_TESTS_FIXTURES_DIR "/scene-reference.usda");
+
+    // A rig xform under the read scene's root, with the camera and a light inside it.
+    const auto setPrimPath = [](const NodePtr& node, const char* path) {
+        KnobString* primPath = dynamic_cast<KnobString*>(node->getKnobByName(kSceneParamPrimPath).get());
+        ASSERT_TRUE(primPath != NULL);
+        primPath->setValue(std::string(path));
+    };
+    setPrimPath(rig, "/World/Rig");
+    setPrimPath(camera, "/World/Rig/Shot");
+    setPrimPath(light, "/World/Rig/Key");
+    KnobDouble* rigTranslate = dynamic_cast<KnobDouble*>(rig->getKnobByName(kSceneParamTranslate).get());
+    KnobDouble* cameraTranslate = dynamic_cast<KnobDouble*>(camera->getKnobByName(kSceneParamTranslate).get());
+    ASSERT_TRUE(rigTranslate && cameraTranslate);
+    rigTranslate->setValue(100., ViewSpec::all(), 0);
+    cameraTranslate->setValue(5., ViewSpec::all(), 2);
+
+    ASSERT_TRUE(rig->connectInput(reader, 0));
+    ASSERT_TRUE(camera->connectInput(rig, 0));
+    ASSERT_TRUE(light->connectInput(camera, 0));
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              light->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+        << error;
+    EXPECT_EQ((std::size_t)4, payload.getNumLayers());
+    // The read scene's metadata passes through the created layers.
+    EXPECT_EQ(SceneMetadata::eUpAxisY, payload.getMetadata().upAxis);
+    EXPECT_EQ(std::string("World"), payload.getMetadata().defaultPrim);
+
+    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(payload);
+    ASSERT_TRUE(bool(stage));
+    const char* const readPrims[] = { "/World", "/World/Box", "/World/Ball", "/World/Cam" };
+    for (const char* path : readPrims) {
+        EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath(path)).IsValid()) << path;
+    }
+    EXPECT_EQ(PXR_NS::TfToken("Cube"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")).GetTypeName());
+    EXPECT_EQ(PXR_NS::TfToken("Xform"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Rig")).GetTypeName());
+    EXPECT_EQ(PXR_NS::TfToken("Camera"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Rig/Shot")).GetTypeName());
+    EXPECT_EQ(PXR_NS::TfToken("DistantLight"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Rig/Key")).GetTypeName());
+
+    // The camera inherits the rig's transform.
+    const PXR_NS::GfMatrix4d toWorld = PXR_NS::UsdGeomXformable(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Rig/Shot")))
+                                           .ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.));
+    EXPECT_NEAR(100., toWorld.ExtractTranslation()[0], 1e-9);
+    EXPECT_NEAR(5., toWorld.ExtractTranslation()[2], 1e-9);
 }

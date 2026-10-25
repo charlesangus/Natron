@@ -37,11 +37,19 @@
 #undef emit
 #endif
 
+#include <pxr/base/gf/camera.h>
+#include <pxr/base/gf/frustum.h>
+#include <pxr/base/gf/vec2f.h>
+#include <pxr/base/gf/vec3d.h>
+#include <pxr/base/gf/vec3f.h>
 #include <pxr/base/plug/plugin.h>
 #include <pxr/base/plug/registry.h>
 #include <pxr/base/tf/errorMark.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/pxr.h>
+#include <pxr/usd/ar/resolver.h>
+#include <pxr/usd/kind/registry.h>
+#include <pxr/usd/sdf/assetPath.h>
 #include <pxr/usd/sdf/attributeSpec.h>
 #include <pxr/usd/sdf/fileFormat.h>
 #include <pxr/usd/sdf/layer.h>
@@ -49,11 +57,21 @@
 #include <pxr/usd/sdf/primSpec.h>
 #include <pxr/usd/sdf/types.h>
 #include <pxr/usd/usd/attribute.h>
+#include <pxr/usd/usd/modelAPI.h>
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
+#include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/metrics.h>
+#include <pxr/usd/usdGeom/scope.h>
 #include <pxr/usd/usdGeom/tokens.h>
+#include <pxr/usd/usdGeom/xform.h>
+#include <pxr/usd/usdGeom/xformable.h>
+#include <pxr/usd/usdLux/distantLight.h>
+#include <pxr/usd/usdLux/domeLight.h>
+#include <pxr/usd/usdLux/lightAPI.h>
+#include <pxr/usd/usdLux/rectLight.h>
+#include <pxr/usd/usdLux/sphereLight.h>
 
 #ifdef NATRON_USD_INCLUDES_RESTORE_EMIT
 #undef NATRON_USD_INCLUDES_RESTORE_EMIT

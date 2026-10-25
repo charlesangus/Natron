@@ -322,7 +322,8 @@ using PassLineFn = std::function<void(float* line, int length, std::ptrdiff_t st
 
 /**
  * @brief Computes one line of a Gather or Point pass: a row of one plane (line = plane x height
- * + row) for a per-plane pass, a row of every plane otherwise.
+ * + row) for a per-plane pass, a row of every plane otherwise. For a pass over columns, a column
+ * instead: line = plane x width + column, or the column of every plane.
  **/
 using PassRowFn = std::function<void(int line)>;
 
@@ -350,6 +351,9 @@ struct Pass {
     // by row; 1 filters each column alone.
     int columnBlock = 1;
     bool perPlane = true;
+    // For Gather and Point, whether the lines are columns rather than rows, for a pass that runs
+    // down the columns, such as the column sums of a summed-area table.
+    bool columns = false;
     // What gpuCostHint() reports for a list holding this pass: sigma as GpuCostHint defines it.
     double sigma = 0.;
     bool recursive = false;

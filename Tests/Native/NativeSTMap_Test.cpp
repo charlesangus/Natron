@@ -692,8 +692,14 @@ TEST_F(NativeSTMapTest, DisconnectedUVIsBlack)
     EffectInstancePtr effect = node->getEffectInstance();
     RectD rod;
     bool isProjectFormat = false;
-    ASSERT_EQ(eStatusOK, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
-    EXPECT_TRUE(rod.isNull());
+    // The public wrapper reports an empty RoD as eStatusFailed, whether computed or cached
+    // (EffectInstance::getRegionOfDefinition_public); renderRoI reads that as "nothing to render".
+    // Asking twice pins both the computed and the cached path.
+    for (int pass = 0; pass < 2; ++pass) {
+        rod = RectD(1., 2., 3., 4.);
+        ASSERT_EQ(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat)) << pass;
+        EXPECT_TRUE(rod.isNull()) << pass;
+    }
 
     // With no UV the output is empty: renderRoI succeeds and hands back no plane, which the helper
     // reports as its "no plane" failure.

@@ -650,7 +650,8 @@ TEST_F(NativeWarpGpuTest, DisconnectedUVMatchesTheCpuFrame)
     RectD rod;
     bool isProjectFormat = false;
     const StatusEnum stat = effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat);
-    EXPECT_TRUE((stat != eStatusOK) || rod.isNull()) << "STMap without UV";
+    EXPECT_EQ(eStatusFailed, stat) << "STMap without UV";
+    EXPECT_TRUE(rod.isNull()) << "STMap without UV";
 
     expectParity(source, idistort, ParityTolerance::exact(), "IDistort without UV", false);
 }

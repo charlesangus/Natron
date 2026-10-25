@@ -42,6 +42,7 @@
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/ColorMatrix.h"
+#include "Engine/Nodes/Color/Colorspace.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Color/Premult.h"
@@ -338,6 +339,25 @@ TEST_F(NativeGoldenTest, Threshold)
     v.push_back(variant("ramp", ramp));
     addPremultAndMaskMix(&v, ramp);
     run(filterSpec("Threshold", PLUGINID_NATRON_THRESHOLD, PLUGIN_MAJOR_NATRON_THRESHOLD), v);
+}
+
+TEST_F(NativeGoldenTest, Colorspace)
+{
+    const auto models = [](int in, int out) {
+        return [in, out](const GoldenGraph& g) { return num(g, kColorspaceParamIn, { (double)in }) && num(g, kColorspaceParamOut, { (double)out }); };
+    };
+    const Apply toLab = models(ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelLab);
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("toHsv", models(ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelHSV)));
+    v.push_back(variant("toHsi", models(ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelHSI)));
+    v.push_back(variant("toLab", toLab));
+    v.push_back(variant("toXyY", models(ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelXyY)));
+    v.push_back(variant("toYCbCr709", models(ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelYCbCr709)));
+    v.push_back(variant("hslToRgb", models(ColorMath::eColorspaceModelHSL, ColorMath::eColorspaceModelRGB)));
+    v.push_back(variant("labToYuv601", models(ColorMath::eColorspaceModelLab, ColorMath::eColorspaceModelYUV601)));
+    addPremultAndMaskMix(&v, toLab);
+    run(filterSpec("Colorspace", PLUGINID_NATRON_COLORSPACE, PLUGIN_MAJOR_NATRON_COLORSPACE), v);
 }
 
 TEST_F(NativeGoldenTest, ColorCorrect)

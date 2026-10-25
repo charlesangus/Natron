@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/ColorMatrix.h"
+#include "Engine/Nodes/Color/Colorspace.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Color/Premult.h"
@@ -123,6 +124,7 @@ gpuCapableIds()
         PLUGINID_NATRON_UNPREMULT,
         PLUGINID_NATRON_COLORMATRIX,
         PLUGINID_NATRON_THRESHOLD,
+        PLUGINID_NATRON_COLORSPACE,
     };
 
     return ids;

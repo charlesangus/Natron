@@ -4,13 +4,13 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
 
 ## Phase 70.1: The RFV group knob
 
-- [ ] M70.P1.T1 — Add an RFV flag to the group knob and serialize it
+- [x] M70.P1.T1 — Add an RFV flag to the group knob and serialize it
   - files: `Engine/KnobTypes.h`, `Engine/KnobTypes.cpp` (KnobGroup), knob serialization under `Engine/` and `Serialization/`
   - approach: `KnobGroup::setAsRFVGroup(bool)` / `isRFVGroup()`, saved and restored with the group like the existing tab flag. Verify the real file names with a grep for `setAsTab` before editing. A group can only be flagged while it has no non-RFV-eligible children.
   - verify: a gtest creates a flagged group on a node, saves and reloads a project, and the flag survives.
   - size: M
 
-- [ ] M70.P1.T2 — Add an RFV declaration accessor with name validation
+- [x] M70.P1.T2 — Add an RFV declaration accessor with name validation
   - files: `Engine/RFV.h`, `Engine/RFV.cpp` (new), `Engine/CMakeLists.txt`
   - approach: `RFV::getDeclaredVariables(KnobHolder*)` returns `(name, KnobIPtr)` for every direct child of the holder's RFV group. A name must be a valid Python identifier and unique within the holder. Children that are groups, pages, buttons or separators are rejected, because only value-holding knobs can be variables. Pure functions; no render state.
   - verify: gtest covers a valid list, a duplicate name, an invalid identifier and a rejected child type.
@@ -79,3 +79,9 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
   - size: M
 
 **Verification gate:** ctest passes in full, including the new RFV tests; the Xvfb GUI run adds variables to a Set node and to the project (including the drop-down and the right-click promote) and they survive a save/load; screenshots of both editors are shared with the user before sign-off.
+
+## Decisions
+
+- 2026-10-25 — **RFV group invariant both ways (bosley-native-nodes):** a flagged group refuses a non-variable child in addKnob/insertKnob, as setAsRFVGroup refuses while one exists; on load a refused child is logged and dropped.
+- 2026-10-25 — **getDeclaredVariables failure mode (bosley-native-nodes):** a bad child is left out with a message, duplicate names reject every holder of the name, and every flagged group in the holder is read.
+- 2026-10-25 — **Freshness (bosley-native-nodes):** the flag saves through the YAML format (`Serialization/Yaml/KnobYaml.cpp`, `ProjectSerializationConvert.cpp`) and restores in `NodeMain.cpp restoreUserKnobsRecursive`; native nodes register through `Engine/Nodes/*.reg.inc`; Engine sources need no CMake line. Later tasks naming `ProjectSerialization.cpp`, `NodeGroup.cpp` restore or `AppManager.cpp` registration read as those.

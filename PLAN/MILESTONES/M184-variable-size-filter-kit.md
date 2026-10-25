@@ -22,13 +22,13 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
 
 ## Phase 184.1: Map convention and registry
 
-- [ ] M184.P1.T1 — Write the shared MapInput helper
+- [x] M184.P1.T1 — Write the shared MapInput helper
   - files: `Engine/Nodes/Filter/MapInput.h`, `Engine/Nodes/Filter/MapInput.cpp` (new), `Tests/Native/MapInput_Test.cpp`
   - approach: Declares the Map input (aux role, optional) and its knobs on a node spec; reads the chosen channel of the chosen layer for a RoI into a float plane, applying invert and the black/white remap and clamping to [0,1], and maps it to a size with `sizeAtBlack` and the node's size; outside the Map's RoD the value is 0. `tileRange(rect)` returns min/max. Model the layer knob on STMap's `kSTMapParamChannelU`.
   - verify: at the phase build, `ctest -R MapInput` passes: remap, invert, clamp, outside-RoD and min/max cases.
   - size: M
 
-- [ ] M184.P1.T2 — Add the I-variant registry
+- [x] M184.P1.T2 — Add the I-variant registry
   - files: `Engine/Nodes/IVariantRegistry.h`, `Engine/Nodes/IVariantRegistry.cpp` (new), `Engine/Nodes/README.md`
   - approach: A static table registered from each I-node's `.reg.inc` (a second macro, `NATRON_I_VARIANT(baseId, iId, knobMap)`), where `knobMap` lists base knob → I knob names; base knobs absent from the map copy by name. Document it in the native node checklist.
   - verify: gtest: lookups both ways, and a missing entry returns none.
@@ -90,6 +90,8 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
 
 ## Decisions
 
+- 2026-10-25 — **Outside the Map (bosley-native-nodes):** outside the Map image the raw value is 0 (black) and invert/remap still apply, as for any black pixel; an inverted roto Map therefore gives full effect outside its area.
+- 2026-10-25 — **Fragment macro (bosley-native-nodes):** `NATRON_I_VARIANT(BASE_ID, I_ID, {"base","i"}, ...)` takes a variable list of knob pairs; the generated `NativeRegistryAll.inc` defines both macros empty when an includer hasn't. STMap's Map-knob model lives on the M113 branch until it merges.
 - 2026-10-25 — **Separate I-variant registrations plus Make I-Node (user):** base nodes stay lean and keep concatenating; the registry lets M189 - Make I-Node Action convert either way.
 - 2026-10-25 — **Input named Map (user).**
 - 2026-10-25 — **Iterated variable box for IBlur (user):** O(1) per pixel at any size; ~2% RMS from Blur at full size is accepted.

@@ -122,7 +122,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the GPU parity harness matches the CPU within 1e-4 for ColorSpace (an ACES config), Display, CDL, a `.cube` FileTransform and a Look, on RADV. Changing exposure doesn't trigger a recompile. Runs at the phase build.
   - size: L
 
-- [x] M127.P3.T2 — Cost seeds and placement for the OCIO nodes
+- [ ] M127.P3.T2 — Cost seeds and placement for the OCIO nodes
   - files: `Engine/Nodes/OCIO/{OCIOColorSpace,OCIODisplay,OCIOCDLTransform,OCIOFileTransform,OCIOLookTransform}.costseed.inc` (new), `Tests/GpuPlacement_Test.cpp`
   - approach:
     - Seed GPU and CPU cost rows for the five nodes.
@@ -157,6 +157,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-25 — **Cost seeds wait on the GPU host (bosley-native-nodes):** the five `*.costseed.inc` files were never written; P3.T2 reopens until the GPU-host batch measures them. Until then the OCIO nodes are unpriced, which under the placement rule still forms a GPU region from two connected OCIO nodes or joins a GPU neighbour's region.
 - 2026-10-25 — **Shared GPU texture cache budget (bosley-native-nodes):** the keyed texture cache shared by the viewer and the OCIO nodes is bounded at 256 MB, evicting least-recently-used textures nothing holds; the viewer's old per-cacheID cache was unbounded.
 - 2026-10-25 — **Config-look exposure is baked (bosley-native-nodes):** OCIO bakes exposure from a config's YAML look into the shader text; only transforms built in code with dynamic properties get uniforms, so editing such a look recompiles.
 - 2026-10-25 — **GPU contract departures (user):** agreed as proposed. (1) The OCIO shader's source and destination buffers are found by reserved name or declared binding, not bindings 0/1, since OCIO puts its uniform block at set 0 binding 0. (2) `GpuShaderTexture` gains an optional cache key; the GPU context keeps device textures by key, shared by the viewer and nodes. (3) CDL slider changes may compile new pipelines; "no recompile" is limited to OCIODisplay's gain, gamma and channel.

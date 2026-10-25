@@ -59,11 +59,11 @@
 #include "Gui/Label.h"
 #include "Gui/NodeGui.h"
 #include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SceneViewport.h"
 #include "Gui/SpinBox.h"
 #include "Gui/ThemedIcon.h"
 #include "Gui/TimeLineGui.h"
 #include "Gui/ViewerGL.h"
-
 
 NATRON_NAMESPACE_ENTER
 
@@ -954,6 +954,18 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( wrapperNode.get(), SIGNAL(inputChanged(int)), this, SLOT(onInputChanged(int)) );
     QObject::connect( wrapperNode.get(), SIGNAL(inputLabelChanged(int,QString)), this, SLOT(onInputNameChanged(int,QString)) );
     QObject::connect( _imp->viewerNode, SIGNAL(clipPreferencesChanged()), this, SLOT(onClipPreferencesChanged()) );
+    QObject::connect(_imp->viewerNode, &ViewerInstance::activeInputDataKindChanged, this, &ViewerTab::onActiveInputDataKindChanged);
+    {
+        // Composes the stage on the render thread that evaluated the scene, so the main thread
+        // only finds it in the cache.
+        ViewerInstance* viewerNode = _imp->viewerNode;
+        QObject::connect(viewerNode, &ViewerInstance::sceneEvaluated, viewerNode, [viewerNode](int textureIndex) {
+            ScenePayload scene;
+            if ( (textureIndex == 0) && viewerNode->getLastEvaluatedScene(0, &scene, NULL) ) {
+                SceneViewportRenderer::prepareStage(scene);
+            } }, Qt::DirectConnection);
+    }
+    QObject::connect(_imp->viewerNode, &ViewerInstance::sceneEvaluated, this, &ViewerTab::onSceneEvaluated, Qt::QueuedConnection);
     QObject::connect( _imp->viewerNode, SIGNAL(availableComponentsChanged()), this, SLOT(onAvailableComponentsChanged()) );
     InspectorNode* isInspector = dynamic_cast<InspectorNode*>( wrapperNode.get() );
     if (isInspector) {
@@ -1047,6 +1059,95 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
             _imp->syncViewerButton->setChecked(true);
         }
     }
+
+    onActiveInputDataKindChanged();
+}
+
+SceneViewport*
+ViewerTab::getSceneViewport() const
+{
+    return _imp->sceneViewport;
+}
+
+bool
+ViewerTab::isShowingScene() const
+{
+    return _imp->sceneViewport && !_imp->sceneViewport->isHidden();
+}
+
+void
+ViewerTab::onActiveInputDataKindChanged()
+{
+    ViewerInstance* node = _imp->viewerNode;
+
+    if (!node) {
+        return;
+    }
+
+    const bool noWipe = node->isWipeDisabledByDataKind();
+    if (noWipe != _imp->wipeDisabledByDataKind) {
+        if (noWipe) {
+            _imp->compositingOperatorBeforeScene = getCompositingOperator();
+            _imp->wipeDisabledByDataKind = true;
+            setCompositingOperator(eViewerCompositingOperatorNone);
+        } else {
+            _imp->wipeDisabledByDataKind = false;
+            const ViewerCompositingOperatorEnum op = _imp->compositingOperatorBeforeScene;
+            _imp->compositingOperatorBeforeScene = eViewerCompositingOperatorNone;
+            if (op != eViewerCompositingOperatorNone) {
+                setCompositingOperator(op);
+            }
+        }
+        _imp->compositingOperator->setEnabled_natron(!noWipe);
+    }
+
+    const bool scene = (node->getActiveInputDataKind() == eDataKindScene);
+    if (scene && !_imp->sceneViewport) {
+        _imp->sceneViewport = new SceneViewport(_imp->viewerSubContainer);
+        _imp->sceneViewport->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        _imp->sceneViewport->hide();
+        const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
+        _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneViewport);
+    }
+    if (!_imp->sceneViewport) {
+        return;
+    }
+    if (scene) {
+        _imp->viewer->hide();
+        _imp->sceneViewport->show();
+        onSceneEvaluated(0);
+    } else {
+        _imp->sceneViewport->hide();
+        // Lets go of the stage it held.
+        _imp->sceneViewport->clearScene();
+        _imp->viewer->show();
+    }
+} // onActiveInputDataKindChanged
+
+void
+ViewerTab::onSceneEvaluated(int textureIndex)
+{
+    // Only A is shown in the scene view.
+    if ((textureIndex != 0) || !_imp->viewerNode || !isShowingScene()) {
+        return;
+    }
+    ScenePayload scene;
+    std::string error;
+    const bool ok = _imp->viewerNode->getLastEvaluatedScene(0, &scene, &error);
+    if (!ok && error.empty()) {
+        // Not evaluated yet: the evaluation the kind change started reports back here.
+        return;
+    }
+    if (!ok) {
+        _imp->sceneViewport->setError(QString::fromStdString(error));
+
+        return;
+    }
+    double fps = 24.;
+    if (getGui() && getGui()->getApp()) {
+        fps = getGui()->getApp()->getProjectFrameRate();
+    }
+    _imp->sceneViewport->setScene(scene, getTimeLine()->currentFrame(), fps);
 }
 
 NATRON_NAMESPACE_EXIT

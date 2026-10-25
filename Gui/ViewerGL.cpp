@@ -1495,7 +1495,9 @@ ViewerGL::isViewerUIVisible() const
     }
     TabWidget* tabWidget = _imp->viewerTab->getParentPane();
     if (!tabWidget) {
-        return isVisible();
+        // The tab's, not this widget's: the tab hides this widget while it shows a scene, which
+        // the viewer must still evaluate.
+        return _imp->viewerTab->isVisible();
     }
 
     if (tabWidget->currentWidget() != _imp->viewerTab) {

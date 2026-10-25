@@ -984,6 +984,11 @@ ViewerTab::onCompositingOperatorIndexChanged(int index)
 void
 ViewerTab::setCompositingOperator(ViewerCompositingOperatorEnum op)
 {
+    if (_imp->wipeDisabledByDataKind && (op != eViewerCompositingOperatorNone)) {
+        // No wipe while an input is a scene; the operator comes back once none is.
+        _imp->compositingOperatorBeforeScene = op;
+        op = eViewerCompositingOperatorNone;
+    }
     int comboIndex;
 
     switch (op) {

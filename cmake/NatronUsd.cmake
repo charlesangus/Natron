@@ -68,7 +68,11 @@ endif()
 # and UsdGeom's stage metadata (up axis, meters per unit).
 set(NATRON_USD_ENGINE_LIBRARIES usd sdf usdGeom pcp ar kind plug vt gf tf work trace arch)
 
-foreach(_natron_usd_target ${NATRON_USD_ENGINE_LIBRARIES})
+# What the viewer's scene view (Gui/SceneViewport) links on top: Storm through UsdImagingGLEngine
+# on HgiGL, the camera framing and the GL lights it hands the engine.
+set(NATRON_USD_GUI_LIBRARIES usdImagingGL usdImaging hdx hd hgi hgiGL glf cameraUtil ${NATRON_USD_ENGINE_LIBRARIES})
+
+foreach(_natron_usd_target ${NATRON_USD_GUI_LIBRARIES})
     if(NOT TARGET ${_natron_usd_target})
         message(FATAL_ERROR "OpenUSD at ${pxr_DIR} does not export the ${_natron_usd_target} library.")
     endif()

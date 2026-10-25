@@ -58,6 +58,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/NodeGui.h"
 #include "Gui/NodeViewerContext.h"
 #include "Gui/RenderStatsDialog.h"
+#include "Gui/SceneViewport.h"
 #include "Gui/SpinBox.h"
 #include "Gui/TabWidget.h"
 #include "Gui/TimeLineGui.h"
@@ -503,6 +504,10 @@ ViewerTab::onTimeLineTimeChanged(SequenceTime time,
 
     // The inputs' layers can differ from one frame to the next.
     refreshLayerAndAlphaChannelComboBoxAtTime(time, true);
+
+    if (isShowingScene()) {
+        _imp->sceneViewport->setFrame(time, app->getProjectFrameRate());
+    }
 
     if ( _imp->timeLineGui->getTimeline() != app->getTimeLine() ) {
         _imp->viewerNode->renderCurrentFrame(true);

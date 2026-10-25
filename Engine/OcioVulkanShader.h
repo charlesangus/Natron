@@ -30,6 +30,7 @@
 
 #ifdef NATRON_HAVE_GPU
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -132,13 +133,13 @@ public:
                                    const TextureList& textures,
                                    std::vector<gpu::GpuBinding>& bindings);
 
-        // Textures the runtime's cache created since this object was constructed; tests use it to
-        // tell a cache hit from an upload.
+        // Textures this object's acquire() calls uploaded because the runtime's cache did not hold
+        // them; tests use it to tell a cache hit from an upload.
         std::size_t texturesCreated() const;
 
     private:
         gpu::GpuRuntime& _runtime;
-        std::size_t _createdBefore;
+        std::atomic<std::size_t> _created;
     };
 
 private:

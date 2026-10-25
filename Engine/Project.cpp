@@ -1624,28 +1624,34 @@ const int kColorManagementKnobCount = 7;
 /*
  * Repopulates the knob and, when its active name is not among the new options, switches it to
  * the first available fallback, recording "label: old -> new" in fallbacks. A name equal to
- * previousDefault was the outgoing config's own default rather than a user choice, so replacing
- * it is not recorded.
+ * previousDefault was the outgoing config's own default rather than a user choice, so it is not
+ * recorded, and with movePreviousDefault it moves to the new config's default even when the new
+ * config also has it.
  */
 void
 repopulateWithFallback(const KnobChoicePtr& knob,
                        const std::vector<ChoiceOption>& options,
                        const std::vector<std::string>& fallbackNames,
                        QStringList* fallbacks,
-                       const std::string& previousDefault = std::string())
+                       const std::string& previousDefault = std::string(),
+                       bool movePreviousDefault = false)
 {
     const std::string old = knob->getActiveEntry().id;
 
     knob->populateChoices(options);
-    if (!old.empty() && knob->isActiveEntryPresentInEntries()) {
+    const bool atPreviousDefault = !old.empty() && (old == previousDefault);
+    if (!old.empty() && !(atPreviousDefault && movePreviousDefault) && knob->isActiveEntryPresentInEntries()) {
         return;
     }
     const std::string target = firstPresent(options, fallbackNames);
     if (target.empty()) {
         return;
     }
+    if (target == old) {
+        return;
+    }
     knob->setValueFromID(target, 0);
-    if (!old.empty() && (old != target) && (old != previousDefault) && fallbacks) {
+    if (!old.empty() && !atPreviousDefault && fallbacks) {
         fallbacks->push_back(QString::fromUtf8("%1: %2 -> %3")
                                  .arg(QString::fromUtf8(knob->getLabel().c_str()))
                                  .arg(QString::fromUtf8(old.c_str()))
@@ -1656,13 +1662,14 @@ repopulateWithFallback(const KnobChoicePtr& knob,
 void
 repopulateViewerViews(ProjectPrivate* imp,
                       QStringList* fallbacks,
-                      const std::string& previousDefault = std::string())
+                      const std::string& previousDefault = std::string(),
+                      bool movePreviousDefault = false)
 {
     const ProjectColorManagement& cm = *imp->colorManagement;
     const std::string display = imp->viewerDisplay->getActiveEntry().id;
     std::vector<std::string> fallbackNames(1, cm.getDefaultView(display));
 
-    repopulateWithFallback(imp->viewerView, namesToOptions(cm.getViews(display)), fallbackNames, fallbacks, previousDefault);
+    repopulateWithFallback(imp->viewerView, namesToOptions(cm.getViews(display)), fallbackNames, fallbacks, previousDefault, movePreviousDefault);
 }
 
 /*
@@ -2109,7 +2116,8 @@ Project::applyColorManagementDefaults(bool asKnobDefaults)
 }
 
 void
-Project::refreshColorManagement(bool warnOnFallback)
+Project::refreshColorManagement(bool warnOnFallback,
+                                bool restoring)
 {
     FlagSetter suppressRefresh(true, &_imp->suppressColorManagementRefresh);
     ProjectColorManagement& cm = *_imp->colorManagement;
@@ -2165,14 +2173,16 @@ Project::refreshColorManagement(bool warnOnFallback)
     }
 
     QStringList fallbacks;
+    // A restored name is the saved project's choice, even when it matches the outgoing config's default.
+    const bool move = !restoring;
     const std::vector<ChoiceOption> spaces = colorSpaceOptions(cm);
-    repopulateWithFallback(_imp->workingSpace, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks, previousDefaults[0]);
-    repopulateWithFallback(_imp->colorSpace8Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks, previousDefaults[1]);
-    repopulateWithFallback(_imp->colorSpace16Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks, previousDefaults[2]);
-    repopulateWithFallback(_imp->colorSpaceLog, spaces, resolveRoles(cm, kLogRoles), &fallbacks, previousDefaults[3]);
-    repopulateWithFallback(_imp->colorSpaceFloat, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks, previousDefaults[4]);
-    repopulateWithFallback(_imp->viewerDisplay, namesToOptions(cm.getDisplays()), std::vector<std::string>(1, cm.getDefaultDisplay()), &fallbacks, previousDefaults[5]);
-    repopulateViewerViews(_imp.get(), &fallbacks, previousDefaults[6]);
+    repopulateWithFallback(_imp->workingSpace, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks, previousDefaults[0], move);
+    repopulateWithFallback(_imp->colorSpace8Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks, previousDefaults[1], move);
+    repopulateWithFallback(_imp->colorSpace16Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks, previousDefaults[2], move);
+    repopulateWithFallback(_imp->colorSpaceLog, spaces, resolveRoles(cm, kLogRoles), &fallbacks, previousDefaults[3], move);
+    repopulateWithFallback(_imp->colorSpaceFloat, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks, previousDefaults[4], move);
+    repopulateWithFallback(_imp->viewerDisplay, namesToOptions(cm.getDisplays()), std::vector<std::string>(1, cm.getDefaultDisplay()), &fallbacks, previousDefaults[5], move);
+    repopulateViewerViews(_imp.get(), &fallbacks, previousDefaults[6], move);
 
     if (warnOnFallback && !fallbacks.isEmpty()) {
         const QString message = tr("The OpenColorIO config \"%1\" does not define some of the project's colorspaces, displays or views. "

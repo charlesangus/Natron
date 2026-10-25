@@ -333,3 +333,34 @@ TEST_F(NativeOCIOFileTransformsTest, ReloadReadsAChangedFile)
     EXPECT_NEAR(0.25, probe[0], 1e-6);
     expectProcessed(pair.native, pair.source, after, "after");
 }
+
+// Reload on one node makes every node reading the same file read it again: the other node gets a new hash and renders
+// the new contents too.
+TEST_F(NativeOCIOFileTransformsTest, ReloadReKeysEveryNodeReadingTheFile)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string path = tmp.path().toStdString() + "/shared.cube";
+    ASSERT_TRUE(writeScaleLut(path, 0.5));
+
+    ParityPair clicked = makePair(PLUGINID_NATRON_OCIOFILETRANSFORM, PLUGIN_MAJOR_NATRON_OCIOFILETRANSFORM);
+    ParityPair other = makePair(PLUGINID_NATRON_OCIOFILETRANSFORM, PLUGIN_MAJOR_NATRON_OCIOFILETRANSFORM);
+    ASSERT_TRUE(clicked.native && other.native);
+    ASSERT_TRUE(setKnobValue(clicked.native, kOcioFileParamFile, path));
+    ASSERT_TRUE(setKnobValue(other.native, kOcioFileParamFile, path));
+    expectProcessed(other.native, other.source, reference(fileTransform(path)), "before");
+    const U64 clickedBefore = clicked.native->getHashValue();
+    const U64 otherBefore = other.native->getHashValue();
+
+    ASSERT_TRUE(writeScaleLut(path, 0.25));
+    ASSERT_TRUE(pressButton(clicked.native, kOcioFileParamReload));
+
+    EXPECT_NE(clickedBefore, clicked.native->getHashValue());
+    EXPECT_NE(otherBefore, other.native->getHashValue());
+    const OCIO_NAMESPACE::ConstCPUProcessorRcPtr after = reference(fileTransform(path));
+    float probe[3] = { 1.f, 1.f, 1.f };
+    after->applyRGB(probe);
+    EXPECT_NEAR(0.25, probe[0], 1e-6);
+    expectProcessed(clicked.native, clicked.source, after, "clicked");
+    expectProcessed(other.native, other.source, after, "other");
+}

@@ -459,6 +459,7 @@ ProjectColorManagement::ProjectColorManagement()
     , _pickingToWorking()
     , _displayCache()
     , _conversionCache()
+    , _transformLru()
     , _transformCache()
     , _workingToXYZValid(false)
     , _workingToXYZMatrix()
@@ -525,6 +526,7 @@ ProjectColorManagement::load(const std::string& source,
         _displayCache.clear();
         _conversionCache.clear();
         _transformCache.clear();
+        _transformLru.clear();
     }
     rebuildPickingProcessors();
     rebuildWorkingColorimetry();
@@ -827,9 +829,11 @@ ProjectColorManagement::getTransformProcessor(const OCIO::ConstTransformRcPtr& t
     OCIO::ConstConfigRcPtr config;
     {
         QMutexLocker k(&_mutex);
-        std::map<std::string, TransformProcessorPtr>::const_iterator it = _transformCache.find(key);
+        std::unordered_map<std::string, TransformLru::iterator>::const_iterator it = _transformCache.find(key);
         if (it != _transformCache.end()) {
-            return it->second;
+            _transformLru.splice(_transformLru.begin(), _transformLru, it->second);
+
+            return it->second->second;
         }
         config = _config;
     }
@@ -863,9 +867,29 @@ ProjectColorManagement::getTransformProcessor(const OCIO::ConstTransformRcPtr& t
     if (_config != config) {
         return shared;
     }
-    std::pair<std::map<std::string, TransformProcessorPtr>::iterator, bool> inserted = _transformCache.insert(std::make_pair(key, shared));
+    // Another thread may have built the same processor meanwhile; every caller then shares the cached one.
+    std::unordered_map<std::string, TransformLru::iterator>::const_iterator it = _transformCache.find(key);
+    if (it != _transformCache.end()) {
+        _transformLru.splice(_transformLru.begin(), _transformLru, it->second);
 
-    return inserted.first->second;
+        return it->second->second;
+    }
+    _transformLru.push_front(std::make_pair(key, shared));
+    _transformCache[key] = _transformLru.begin();
+    while (_transformLru.size() > kTransformCacheCapacity) {
+        _transformCache.erase(_transformLru.back().first);
+        _transformLru.pop_back();
+    }
+
+    return shared;
+}
+
+std::size_t
+ProjectColorManagement::getTransformCacheSize() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _transformLru.size();
 }
 
 void
@@ -880,9 +904,10 @@ ProjectColorManagement::reloadFile(const std::string& path)
         std::const_pointer_cast<OCIO::Config>(_config)->clearProcessorCache();
     }
     // A FileTransform describes itself with its source path.
-    for (std::map<std::string, TransformProcessorPtr>::iterator it = _transformCache.begin(); it != _transformCache.end();) {
+    for (TransformLru::iterator it = _transformLru.begin(); it != _transformLru.end();) {
         if (path.empty() || (it->first.find(path) != std::string::npos)) {
-            it = _transformCache.erase(it);
+            _transformCache.erase(it->first);
+            it = _transformLru.erase(it);
         } else {
             ++it;
         }

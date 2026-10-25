@@ -642,9 +642,11 @@ private:
     /**
      * @brief Loads getRequestedOCIOConfigSource(), repopulates the Color page menus with fallbacks for
      * names the config lacks, re-derives the config knobs' enabled state and fires configChanged.
-     * Enabled is serialized, so this must run after every restore.
+     * Enabled is serialized, so this must run after every restore. A menu still at the outgoing
+     * config's default moves to the new config's default, except when \p restoring, where the
+     * names are the saved project's choices.
      **/
-    void refreshColorManagement(bool warnOnFallback);
+    void refreshColorManagement(bool warnOnFallback, bool restoring = false);
 
     void applyColorManagementDefaults(bool asKnobDefaults);
 

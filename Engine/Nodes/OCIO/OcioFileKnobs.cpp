@@ -172,7 +172,8 @@ OcioFileKnobs::knobChanged(KnobI* k,
 
     if (reload && (k == reload.get())) {
         // OpenColorIO keeps what it read of a file for the whole process, and the project keeps
-        // the processors built from it: both go before the file knob re-keys and re-renders.
+        // the processors built from it: both go before the file knob re-keys and re-renders this
+        // node and every other node whose file knob reads the same file.
         ocio.reloadFile(path());
         if (file) {
             file->reloadFile();

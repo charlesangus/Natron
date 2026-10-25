@@ -97,9 +97,9 @@ public:
     GpuTextureCache& operator=(const GpuTextureCache&) = delete;
 
     // The texture under `key`, created from `desc` and `texels` as GpuTexture::create when the
-    // cache does not hold it.
+    // cache does not hold it. `uploaded`, when given, tells whether this call created it.
     GpuStatus acquire(const std::string& key, const GpuTextureDesc& desc, std::span<const float> texels,
-                      std::shared_ptr<const GpuTexture>& out);
+                      std::shared_ptr<const GpuTexture>& out, bool* uploaded = nullptr);
 
     // Textures created since the cache was, to tell a hit from an upload.
     size_t created() const;

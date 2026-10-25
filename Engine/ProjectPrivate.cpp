@@ -205,7 +205,7 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
 
         // Choice ids that did not match the previous config's entries are still pending and
         // re-match here, so the order in which the Color page knobs restored does not matter.
-        _publicInterface->refreshColorManagement(true);
+        _publicInterface->refreshColorManagement(true, true);
 
         /// 2) restore the timeline
         timeline->seekFrame(currentTime, false, 0, eTimelineChangeReasonOtherSeek);

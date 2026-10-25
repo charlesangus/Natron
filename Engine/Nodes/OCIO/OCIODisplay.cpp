@@ -143,16 +143,75 @@ OCIODisplayOp::chosenView() const
     return knob ? knob->getActiveEntry().id : std::string();
 }
 
+namespace {
+bool
+hasEntry(const KnobChoicePtr& knob,
+         const std::string& id)
+{
+    const std::vector<ChoiceOption> entries = knob->getEntries_mt_safe();
+
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].id == id) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::string
+fromCString(const char* s)
+{
+    return s ? std::string(s) : std::string();
+}
+} // namespace
+
 void
 OCIODisplayOp::refreshDisplayMenus()
 {
     ProjectColorManagementPtr colorManagement = ocio.colorManagement();
+    KnobChoicePtr displayKnob = display.lock();
+    KnobChoicePtr viewKnob = view.lock();
 
-    if (!colorManagement) {
+    if (!colorManagement || !displayKnob || !viewKnob) {
         return;
     }
-    OcioNodeKnobs::populateMenu(display.lock(), colorManagement->getDisplays());
-    OcioNodeKnobs::populateMenu(view.lock(), colorManagement->getViews(chosenDisplay()));
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = colorManagement->getConfig();
+    const OCIO_NAMESPACE::ConstConfigRcPtr previous = menuConfig;
+    menuConfig = config;
+    const bool switched = previous && config && (previous != config);
+    const std::string oldDisplay = chosenDisplay();
+    const std::string oldView = chosenView();
+    std::string oldDefaultDisplay;
+    std::string oldDefaultView;
+    if (switched) {
+        try {
+            oldDefaultDisplay = fromCString(previous->getDefaultDisplay());
+            oldDefaultView = fromCString(previous->getDefaultView(oldDisplay.c_str()));
+        } catch (const std::exception&) {
+        }
+    }
+
+    OcioNodeKnobs::populateMenu(displayKnob, colorManagement->getDisplays());
+    const std::string defaultDisplay = colorManagement->getDefaultDisplay();
+    if (!defaultDisplay.empty() && hasEntry(displayKnob, defaultDisplay)) {
+        displayKnob->setDefaultValueFromIDWithoutApplying(defaultDisplay, 0);
+        if (switched && (oldDisplay != defaultDisplay) && ((oldDisplay == oldDefaultDisplay) || !displayKnob->isActiveEntryPresentInEntries())) {
+            displayKnob->setValueFromID(defaultDisplay, 0);
+        }
+    }
+
+    const std::string chosen = chosenDisplay();
+    OcioNodeKnobs::populateMenu(viewKnob, colorManagement->getViews(chosen));
+    const std::string defaultView = colorManagement->getDefaultView(chosen);
+    if (switched && !defaultView.empty() && (oldView != defaultView) && ((oldView == oldDefaultView) || !viewKnob->isActiveEntryPresentInEntries())) {
+        viewKnob->setValueFromID(defaultView, 0);
+    }
+    // The view's default is the default display's default view, when the menu lists it.
+    const std::string defaultDisplayView = defaultDisplay.empty() ? std::string() : colorManagement->getDefaultView(defaultDisplay);
+    if (!defaultDisplayView.empty() && hasEntry(viewKnob, defaultDisplayView)) {
+        viewKnob->setDefaultValueFromIDWithoutApplying(defaultDisplayView, 0);
+    }
 }
 
 void

@@ -331,9 +331,12 @@ GpuTextureCache::GpuTextureCache(GpuDevice& device, uint64_t budgetBytes)
 
 GpuStatus
 GpuTextureCache::acquire(const std::string& key, const GpuTextureDesc& desc, std::span<const float> texels,
-                         std::shared_ptr<const GpuTexture>& out)
+                         std::shared_ptr<const GpuTexture>& out, bool* uploaded)
 {
     out.reset();
+    if (uploaded) {
+        *uploaded = false;
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     const auto found = entries_.find(key);
     if (found != entries_.end()) {
@@ -353,6 +356,9 @@ GpuTextureCache::acquire(const std::string& key, const GpuTextureDesc& desc, std
     out = entry.texture;
     bytes_ += entry.bytes;
     ++created_;
+    if (uploaded) {
+        *uploaded = true;
+    }
     entries_.emplace(key, std::move(entry));
     trimLocked();
     return {};

@@ -104,7 +104,10 @@ struct OCIODisplayOp {
     GpuOpRef gpu(const Params& params) const;
 
     /**
-     * @brief Fills the display menu, and the view menu with the views of the chosen display.
+     * @brief Fills the display menu, and the view menu with the views of the chosen display, and
+     * makes the config's default display and view the knobs' defaults. When the menus were filled
+     * from another config, a display or view the new config lacks, or one still at the old
+     * config's default, moves to the new config's default without a warning.
      **/
     void refreshDisplayMenus();
 
@@ -123,6 +126,9 @@ struct OCIODisplayOp {
     KnobDoubleWPtr gain;
     KnobDoubleWPtr gamma;
     KnobChoiceWPtr channel;
+
+    // The config the display and view menus were last filled from.
+    OCIO_NAMESPACE::ConstConfigRcPtr menuConfig;
 };
 
 static_assert(PointOp<OCIODisplayOp>);

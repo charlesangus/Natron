@@ -1272,6 +1272,37 @@ TEST(GpuCostModel, OcioColorPipelineFormsOneRegion)
     EXPECT_EQ(fixture.graph.tasks[4].device, FrameGraph::Device::Cpu);
 }
 
+// sink 0 (CPU) <- OCIODisplay 1 <- OCIOColorSpace 2 <- reader 3 (CPU), no Grade. Neither OCIO node has measured rows,
+// but two connected GPU-capable nodes make a region on their own, so the conversion and the display run on the GPU
+// together.
+TEST(GpuCostModel, UnseededOcioPairFormsOneRegion)
+{
+    CostFixture fixture(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
+
+    fixture.traits[1] = GpuTaskTraits("OCIODisplay");
+    fixture.traits[2] = GpuTaskTraits("OCIOColorSpace");
+    EXPECT_FALSE(fixture.model.isPriced(fixture.traits[1]));
+    EXPECT_FALSE(fixture.model.isPriced(fixture.traits[2]));
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    const FrameGraph::Region& region = fixture.graph.regions[0];
+    EXPECT_EQ(region.members, std::vector<int>({ 2, 1 }));
+    EXPECT_EQ(region.externalInputs, std::vector<int>({ 3 }));
+    const FrameGraph::Region::Output* first = findOutput(region, 2);
+    ASSERT_TRUE(first);
+    EXPECT_EQ(first->internalConsumers, 1);
+    EXPECT_EQ(first->externalConsumers, 0);
+    const FrameGraph::Region::Output* last = findOutput(region, 1);
+    ASSERT_TRUE(last);
+    EXPECT_EQ(last->internalConsumers, 0);
+    EXPECT_EQ(last->externalConsumers, 1);
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[3].device, FrameGraph::Device::Cpu);
+}
+
 // X cannot render on the GPU, so it does not join the Grades' region.
 TEST(GpuCostModel, NodeThatCannotRenderOnGpuIsNeverPlaced)
 {

@@ -203,3 +203,77 @@ TEST_F(NativeOCIODisplayTest, ChangingTheDisplayTakesItsDefaultView)
     EXPECT_EQ(views.size(), (std::size_t)viewKnob->getNumEntries());
     EXPECT_TRUE(std::find(views.begin(), views.end(), viewKnob->getActiveEntry().id) != views.end()) << viewKnob->getActiveEntry().id;
 }
+
+namespace {
+// Both configs share their default display; the ACES 1.3 one has none of the ACES 2.0 views and fewer displays.
+const char* const kCG13URI = "ocio://cg-config-v1.0.0_aces-v1.3_ocio-v2.1";
+const char* const kDefaultDisplay = "sRGB - Display";
+const char* const kStudioOnlyDisplay = "Display P3 - Display";
+const char* const kSharedView = "Un-tone-mapped";
+const char* const kCG13DefaultView = "ACES 1.0 - SDR Video";
+
+KnobChoicePtr
+choice(const NodePtr& node,
+       const char* name)
+{
+    return std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(name));
+}
+
+std::string
+activeID(const NodePtr& node,
+         const char* name)
+{
+    KnobChoicePtr knob = choice(node, name);
+
+    return knob ? knob->getActiveEntry().id : std::string("<missing>");
+}
+
+std::string
+defaultID(const NodePtr& node,
+          const char* name)
+{
+    KnobChoicePtr knob = choice(node, name);
+    if (!knob) {
+        return std::string("<missing>");
+    }
+    const std::vector<ChoiceOption> entries = knob->getEntries_mt_safe();
+    const int index = knob->getDefaultValue(0);
+
+    return ((index >= 0) && (index < (int)entries.size())) ? entries[index].id : std::string("<out of range>");
+}
+} // namespace
+
+// A display or view the new config lacks, or one still at the old config's default, moves to the new config's
+// default without an error; a view the user picked that the new config also has stays.
+TEST_F(NativeOCIODisplayTest, SwitchingConfigMovesTheDisplayAndViewToTheNewDefaults)
+{
+    ProjectColorManagementPtr cm = colorManagement();
+    ASSERT_EQ(kDefaultDisplay, cm->getDefaultDisplay());
+    const std::string studioDefaultView = cm->getDefaultView(kDefaultDisplay);
+
+    ParityPair atDefaults = makePair();
+    ParityPair studioOnly = makePair();
+    ParityPair pickedView = makePair();
+    ASSERT_TRUE(atDefaults.native && studioOnly.native && pickedView.native);
+    ASSERT_EQ(studioDefaultView, activeID(atDefaults.native, kOCIODisplayParamView));
+    ASSERT_TRUE(setKnobValue(studioOnly.native, kOCIODisplayParamDisplay, kStudioOnlyDisplay));
+    ASSERT_TRUE(setKnobValue(pickedView.native, kOCIODisplayParamView, kSharedView));
+
+    setConfig(getApp(), kCG13URI);
+    ASSERT_EQ(kDefaultDisplay, cm->getDefaultDisplay());
+    ASSERT_EQ(kCG13DefaultView, cm->getDefaultView(kDefaultDisplay));
+    const std::vector<std::string> displays = cm->getDisplays();
+    ASSERT_TRUE(std::find(displays.begin(), displays.end(), kStudioOnlyDisplay) == displays.end());
+
+    for (const NodePtr& node : { atDefaults.native, studioOnly.native }) {
+        EXPECT_EQ(kDefaultDisplay, activeID(node, kOCIODisplayParamDisplay));
+        EXPECT_EQ(kCG13DefaultView, activeID(node, kOCIODisplayParamView));
+    }
+    EXPECT_EQ(kDefaultDisplay, activeID(pickedView.native, kOCIODisplayParamDisplay));
+    EXPECT_EQ(kSharedView, activeID(pickedView.native, kOCIODisplayParamView));
+    for (const NodePtr& node : { atDefaults.native, studioOnly.native, pickedView.native }) {
+        EXPECT_EQ(kDefaultDisplay, defaultID(node, kOCIODisplayParamDisplay));
+        EXPECT_EQ(kCG13DefaultView, defaultID(node, kOCIODisplayParamView));
+        EXPECT_TRUE(persistentMessage(node).isEmpty()) << persistentMessage(node).toStdString();
+    }
+}

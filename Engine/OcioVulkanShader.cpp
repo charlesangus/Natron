@@ -270,7 +270,7 @@ OcioVulkanShader::dynamicProperty(OCIO::DynamicPropertyType type) const
 
 OcioVulkanShader::Resources::Resources(gpu::GpuRuntime& runtime)
     : _runtime(runtime)
-    , _createdBefore(runtime.textures().created())
+    , _created(0)
 {
 }
 
@@ -284,9 +284,13 @@ OcioVulkanShader::Resources::acquire(const OcioVulkanShader& shader,
             return gpu::GpuStatus { VK_ERROR_INITIALIZATION_FAILED, "OCIO texture without texels" };
         }
         std::shared_ptr<const gpu::GpuTexture> texture;
-        const gpu::GpuStatus s = _runtime.textures().acquire(t.cacheKey, t.desc, *t.texels, texture);
+        bool uploaded = false;
+        const gpu::GpuStatus s = _runtime.textures().acquire(t.cacheKey, t.desc, *t.texels, texture, &uploaded);
         if (!s) {
             return s;
+        }
+        if (uploaded) {
+            ++_created;
         }
         list->push_back(std::move(texture));
     }
@@ -298,7 +302,7 @@ OcioVulkanShader::Resources::acquire(const OcioVulkanShader& shader,
 std::size_t
 OcioVulkanShader::Resources::texturesCreated() const
 {
-    return _runtime.textures().created() - _createdBefore;
+    return _created.load();
 }
 
 void

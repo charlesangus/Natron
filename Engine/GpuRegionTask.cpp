@@ -372,6 +372,7 @@ public:
     EffectInstance::RenderRoIRetCode run(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
         const EffectInstance::RenderRoIRetCode code = runPlanned(rootPlanes);
+        reportIntervals();
         reportTimesByTask();
 
         return code;
@@ -1228,11 +1229,13 @@ private:
 
     /**
      * @brief Reads the timestamps of a submitted segment of nMembers members, from query first on, into the device
-     * time of each member and of the whole segment. Returns false, leaving both alone, when one of them cannot be read.
+     * time of each member and of the whole segment, and into stamps the raw one each member starts from followed by
+     * the last member's. Returns false, leaving them all alone, when one of them cannot be read.
      **/
     bool segmentDeviceNs(std::size_t nMembers,
                          std::vector<long long>* memberNs,
                          long long* totalNs,
+                         std::vector<std::uint64_t>* stamps,
                          std::uint32_t first = 0) const
     {
         const std::uint32_t count = (std::uint32_t)nMembers + 2;
@@ -1253,6 +1256,10 @@ private:
             (*memberNs)[k] = (long long)((double)(results[k * 2 + 2] - results[k * 2]) * nsPerTick);
         }
         *totalNs = (long long)((double)(results[(std::size_t)(count - 1) * 2] - results[0]) * nsPerTick);
+        stamps->assign(nMembers + 1, 0);
+        for (std::size_t k = 0; k <= nMembers; ++k) {
+            (*stamps)[k] = results[k * 2];
+        }
 
         return true;
     }
@@ -1270,15 +1277,77 @@ private:
         }
     }
 
+    // Keeps, for reportIntervals(), the device interval of each member of segment: stamps[j] to stamps[j + 1] for the
+    // j-th. strip is null for a region run whole, whose members render their whole RoI.
+    void noteMemberStamps(const std::vector<int>& segment,
+                          const std::vector<std::uint64_t>& stamps,
+                          const GpuStrip* strip,
+                          int stripIndex)
+    {
+        for (std::size_t j = 0; (j < segment.size()) && (j + 1 < stamps.size()); ++j) {
+            const Member& member = _members[segment[j]];
+            const RectI& rect = strip ? strip->rects[member.outSlot] : _graph.tasks[member.task].renderedRoI;
+            MemberStamps entry;
+            entry.strip = stripIndex;
+            entry.member = _position[member.task];
+            entry.begin = stamps[j];
+            entry.end = stamps[j + 1];
+            entry.pixels = (unsigned long long)rect.width() * (unsigned long long)rect.height();
+            _memberStamps.push_back(entry);
+        }
+    }
+
+    /**
+     * @brief Moves the member and copy timestamps the region kept into the report, in ns from the earliest of them,
+     * so that the profile lines up the members of every strip with the copies around them.
+     **/
+    void reportIntervals()
+    {
+        if (!_report || (_memberStamps.empty() && _transferStamps.empty())) {
+            return;
+        }
+        std::uint64_t origin = std::numeric_limits<std::uint64_t>::max();
+        for (const MemberStamps& entry : _memberStamps) {
+            origin = std::min(origin, entry.begin);
+        }
+        for (const TransferStamps& entry : _transferStamps) {
+            origin = std::min(origin, entry.begin);
+        }
+        const double nsPerTick = _runtime.transfer().timestampPeriodNs();
+        const auto nsOf = [origin, nsPerTick](std::uint64_t stamp) {
+            return (long long)((double)(stamp - origin) * nsPerTick);
+        };
+        _report->memberIntervals.clear();
+        for (const MemberStamps& entry : _memberStamps) {
+            GpuMemberInterval interval;
+            interval.strip = entry.strip;
+            interval.member = entry.member;
+            interval.beginNs = nsOf(entry.begin);
+            interval.endNs = nsOf(entry.end);
+            interval.pixels = entry.pixels;
+            _report->memberIntervals.push_back(interval);
+        }
+        for (const TransferStamps& entry : _transferStamps) {
+            std::vector<GpuTransferRecord>& records = entry.upload ? _report->uploads : _report->downloads;
+            if (entry.record < records.size()) {
+                records[entry.record].beginNs = nsOf(entry.begin);
+                records[entry.record].endNs = nsOf(entry.end);
+            }
+        }
+    }
+
     bool submit(std::unique_ptr<gpu::GpuRecordContext>* recorder,
                 const std::vector<int>& segment,
-                Clock::time_point segmentBegin)
+                Clock::time_point segmentBegin,
+                const GpuStrip& strip,
+                int stripIndex)
     {
         // A segment with no recorder was already submitted, and its time already counted.
         const bool submitted = (bool)*recorder;
         bool measured = false;
         long long deviceNs = 0;
         std::vector<long long> memberNs;
+        std::vector<std::uint64_t> stamps;
         long long waitNs = 0;
         if (submitted) {
             const bool timed = _segmentTimed;
@@ -1295,7 +1364,7 @@ private:
                 return failGpu(segment.empty() ? -1 : _members[segment.front()].task, "the device work failed", status);
             }
             if (timed) {
-                measured = segmentDeviceNs(segment.size(), &memberNs, &deviceNs);
+                measured = segmentDeviceNs(segment.size(), &memberNs, &deviceNs, &stamps);
             }
         }
         if (submitted && _report) {
@@ -1305,6 +1374,7 @@ private:
                 for (std::size_t k = 0; k < segment.size(); ++k) {
                     _report->memberNs[segment[k]] += memberNs[k];
                 }
+                noteMemberStamps(segment, stamps, &strip, stripIndex);
             } else {
                 const long long ns = nsBetween(segmentBegin, Clock::now());
                 _report->kernelMs += (double)ns * 1e-6;
@@ -1445,6 +1515,12 @@ private:
                         continue;
                     }
                     (upload ? _report->uploads : _report->downloads)[(std::size_t)record].deviceMs = (double)(results[q * 2 + 2] - results[q * 2]) * msPerTick;
+                    TransferStamps stamps;
+                    stamps.upload = upload;
+                    stamps.record = (std::size_t)record;
+                    stamps.begin = results[q * 2];
+                    stamps.end = results[q * 2 + 2];
+                    _transferStamps.push_back(stamps);
                 }
             }
         }
@@ -1843,12 +1919,14 @@ private:
         }
         long long deviceNs = 0;
         std::vector<long long> memberNs;
-        if (segment.timed && segmentDeviceNs(segment.members.size(), &memberNs, &deviceNs, segment.firstQuery)) {
+        std::vector<std::uint64_t> stamps;
+        if (segment.timed && segmentDeviceNs(segment.members.size(), &memberNs, &deviceNs, &stamps, segment.firstQuery)) {
             _report->kernelMs += (double)deviceNs * 1e-6;
             _report->submitWaitMs += (double)std::max(0LL, waitNs - deviceNs) * 1e-6;
             for (std::size_t k = 0; k < segment.members.size(); ++k) {
                 _report->memberNs[segment.members[k]] += memberNs[k];
             }
+            noteMemberStamps(segment.members, stamps, nullptr, -1);
         } else {
             _report->kernelMs += (double)waitNs * 1e-6;
             _report->submitWaitMs += (double)waitNs * 1e-6;
@@ -2101,7 +2179,7 @@ private:
             if (!uploadStrip(strips, index, sources)) {
                 return EffectInstance::eRenderRoIRetCodeFailed;
             }
-            const EffectInstance::RenderRoIRetCode recorded = recordStrip(strip);
+            const EffectInstance::RenderRoIRetCode recorded = recordStrip(strip, (int)index);
             if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
                 return recorded;
             }
@@ -2272,7 +2350,8 @@ private:
         return _members.empty() ? -1 : _members.front().task;
     }
 
-    EffectInstance::RenderRoIRetCode recordStrip(const GpuStrip& strip)
+    EffectInstance::RenderRoIRetCode recordStrip(const GpuStrip& strip,
+                                                 int stripIndex)
     {
         std::unique_ptr<gpu::GpuRecordContext> recorder;
         std::vector<int> segment;
@@ -2289,7 +2368,7 @@ private:
         if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
             return recorded;
         }
-        if (!submit(&recorder, segment, segmentBegin)) {
+        if (!submit(&recorder, segment, segmentBegin, strip, stripIndex)) {
             return EffectInstance::eRenderRoIRetCodeFailed;
         }
 
@@ -2435,8 +2514,9 @@ private:
 
     /**
      * @brief Makes the pool that times, per strip, the copy of each slot uploaded or downloaded, and with timeMembers
-     * the strip's compute and each member it records. A region run whole is one strip. A device that cannot time both
-     * its queues, or a query pool that cannot be made, leaves the region untimed rather than failing it.
+     * the strip's compute, the end of its acquires and each member it records. A region run whole is one strip. A
+     * device that cannot time both its queues, or a query pool that cannot be made, leaves the region untimed rather
+     * than failing it.
      **/
     bool createQueries(std::size_t nStrips,
                        bool timeMembers)
@@ -2460,7 +2540,8 @@ private:
         for (const Member& member : _members) {
             recorded += (member.identity || !timeMembers) ? 0 : 1;
         }
-        _memberStamp0 = (std::uint32_t)pairs * 2;
+        _acquiredStamp = (std::uint32_t)pairs * 2;
+        _memberStamp0 = _acquiredStamp + (timeMembers ? 1 : 0);
         _queriesPerStrip = _memberStamp0 + recorded;
         VkQueryPoolCreateInfo info { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
         info.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -2517,6 +2598,9 @@ private:
             if (slot.source && !strip.rects[s].isNull() && slot.handle) {
                 recorder.acquireFromTransfer(transfer, slot.handle.buffer(), 0, rowBytes(slot) * (std::size_t)strip.rects[s].height());
             }
+        }
+        if (_queries) {
+            recorder.writeTimestamp(_queries, (std::uint32_t)(flight->index * _queriesPerStrip) + _acquiredStamp);
         }
         const EffectInstance::RenderRoIRetCode recorded = recordStripMembers(strip, recorder, &_stripSegments[flight->index], _queries,
                                                                              (std::uint32_t)(flight->index * _queriesPerStrip) + _memberStamp0);
@@ -2645,7 +2729,7 @@ private:
         if (!finishStripImages()) {
             return EffectInstance::eRenderRoIRetCodeFailed;
         }
-        notePipelineTimes(strips.size());
+        notePipelineTimes(strips);
 
         return EffectInstance::eRenderRoIRetCodeOk;
     } // pipelineStrips
@@ -2701,11 +2785,12 @@ private:
     }
 
     // Without timestamps, the region's wall time stands for its compute, which over-charges its members.
-    void notePipelineTimes(std::size_t nStrips)
+    void notePipelineTimes(const std::vector<GpuStrip>& strips)
     {
         if (!_report) {
             return;
         }
+        const std::size_t nStrips = strips.size();
         std::vector<long long> stripNs(nStrips, 0);
         std::vector<bool> stripMeasured(nStrips, false);
         if (_queries) {
@@ -2735,7 +2820,7 @@ private:
                 if (pairOf(k, 0, &interval)) {
                     compute.push_back(interval);
                     stripNs[k] = (long long)((double)(interval.second - interval.first) * nsPerTick);
-                    stripMeasured[k] = measureStripMembers(k, results, interval.first, nsPerTick);
+                    stripMeasured[k] = measureStripMembers(strips[k], k, results, interval, nsPerTick);
                 }
                 for (std::size_t s = 0; s < _slots.size(); ++s) {
                     if ((_uploadQuery[s] >= 0) && pairOf(k, _uploadQuery[s], &interval)) {
@@ -2772,31 +2857,37 @@ private:
     } // notePipelineTimes
 
     /**
-     * @brief Charges each member of strip k the device time from the timestamp before it, the strip's first one at
-     * begin, to its own, as results holds them with their availability. Returns false, charging nothing, when one of
-     * them cannot be read.
+     * @brief Charges each member of strip k the device time from the timestamp before it, the one written once the
+     * strip's acquires are done for the first, to its own, as results holds them with their availability, and the
+     * report's ownership time the rest of the strip's interval: its acquires before the first member and its releases
+     * after the last. Returns false, charging nothing, when one of them cannot be read.
      **/
-    bool measureStripMembers(std::size_t k,
+    bool measureStripMembers(const GpuStrip& strip,
+                             std::size_t k,
                              const std::vector<std::uint64_t>& results,
-                             std::uint64_t begin,
+                             std::pair<std::uint64_t, std::uint64_t> interval,
                              double nsPerTick)
     {
         const std::vector<int>& segment = _stripSegments[k];
-        const std::size_t first = k * _queriesPerStrip + _memberStamp0;
-        std::uint64_t previous = begin;
-        for (std::size_t j = 0; j < segment.size(); ++j) {
-            const std::size_t q = first + j;
+        const std::size_t base = k * _queriesPerStrip;
+        std::vector<std::uint64_t> stamps;
+        std::uint64_t previous = interval.first;
+        for (std::size_t j = 0; j <= segment.size(); ++j) {
+            const std::size_t q = base + ((j == 0) ? _acquiredStamp : _memberStamp0 + j - 1);
             if ((results[q * 2 + 1] == 0) || (results[q * 2] < previous)) {
                 return false;
             }
             previous = results[q * 2];
+            stamps.push_back(previous);
         }
-        previous = begin;
+        if (interval.second < previous) {
+            return false;
+        }
         for (std::size_t j = 0; j < segment.size(); ++j) {
-            const std::uint64_t stamp = results[(first + j) * 2];
-            _report->memberNs[segment[j]] += (long long)((double)(stamp - previous) * nsPerTick);
-            previous = stamp;
+            _report->memberNs[segment[j]] += (long long)((double)(stamps[j + 1] - stamps[j]) * nsPerTick);
         }
+        _report->ownershipMs += (double)((stamps.front() - interval.first) + (interval.second - stamps.back())) * nsPerTick * 1e-6;
+        noteMemberStamps(segment, stamps, &strip, (int)k);
 
         return true;
     }
@@ -3097,7 +3188,9 @@ private:
     bool _segmentTimed = false;
     std::uint32_t _queriesPerStrip = 0;
 
-    // The first of a strip's queries its members write, one each in the order they are recorded.
+    // Pipelined, the query a strip writes once its acquires are done, then the first of those its members write, one
+    // each in the order they are recorded.
+    std::uint32_t _acquiredStamp = 0;
     std::uint32_t _memberStamp0 = 0;
     std::vector<int> _uploadQuery;
     std::vector<int> _downloadQuery;
@@ -3106,6 +3199,24 @@ private:
     // empty unless the profile is on and the pool was made.
     std::vector<int> _uploadRecordOf;
     std::vector<int> _downloadRecordOf;
+
+    // Raw timestamps of each member's interval on each strip and of each timed copy, until reportIntervals() puts
+    // them in the report from the earliest one.
+    struct MemberStamps {
+        int strip = -1;
+        int member = 0;
+        std::uint64_t begin = 0;
+        std::uint64_t end = 0;
+        unsigned long long pixels = 0;
+    };
+    struct TransferStamps {
+        bool upload = true;
+        std::size_t record = 0;
+        std::uint64_t begin = 0;
+        std::uint64_t end = 0;
+    };
+    std::vector<MemberStamps> _memberStamps;
+    std::vector<TransferStamps> _transferStamps;
     std::size_t _peakDeviceBytes = 0;
     NodePtr _failedNode;
     std::string _failure;

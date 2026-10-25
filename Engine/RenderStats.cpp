@@ -794,8 +794,10 @@ appendTransferRecords(std::string* line,
     line->append(num);
     for (std::size_t i = 0; i < records.size(); ++i) {
         const GpuTransferRecord& r = records[i];
-        char ms[32];
-        if (r.deviceMs >= 0.) {
+        char ms[96];
+        if ((r.deviceMs >= 0.) && (r.beginNs >= 0) && (r.endNs >= 0)) {
+            std::snprintf(ms, sizeof(ms), "%.6f,\"beginNs\":%lld,\"endNs\":%lld", r.deviceMs, r.beginNs, r.endNs);
+        } else if (r.deviceMs >= 0.) {
             std::snprintf(ms, sizeof(ms), "%.6f", r.deviceMs);
         } else {
             std::snprintf(ms, sizeof(ms), "null");
@@ -859,6 +861,20 @@ formatRegionRecord(unsigned long long frameSequence,
                       ",\"stagedReasons\":{\"disabled\":%llu,\"unaligned\":%llu,\"importFailed\":%llu,\"forgotten\":%llu}",
                       times.stagedDisabled, times.stagedUnaligned, times.stagedImportFailed, times.stagedForgotten);
         line.append(num);
+    }
+    if (times.ownershipMs > 0.) {
+        std::snprintf(num, sizeof(num), ",\"ownershipMs\":%.6f", times.ownershipMs);
+        line.append(num);
+    }
+    if (!times.memberIntervals.empty()) {
+        line.append(",\"memberIntervals\":[");
+        for (std::size_t i = 0; i < times.memberIntervals.size(); ++i) {
+            const GpuMemberInterval& interval = times.memberIntervals[i];
+            std::snprintf(num, sizeof(num), "%s{\"strip\":%d,\"member\":%d,\"beginNs\":%lld,\"endNs\":%lld,\"pixels\":%llu}",
+                          (i > 0) ? "," : "", interval.strip, interval.member, interval.beginNs, interval.endNs, interval.pixels);
+            line.append(num);
+        }
+        line.push_back(']');
     }
     appendTransferRecords(&line, "uploads", times.uploads, false);
     appendTransferRecords(&line, "downloads", times.downloads, true);

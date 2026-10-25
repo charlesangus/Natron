@@ -2135,23 +2135,39 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
         const long long blurNs = report.memberNs[(members[0] == blurTask) ? 0 : 1];
         const long long gradeNs = report.memberNs[(members[0] == blurTask) ? 1 : 0];
         const double sumMs = (double)(blurNs + gradeNs) * 1e-6;
-        std::printf("[          ] %s: Blur %.3f ms, Grade %.3f ms, kernel %.3f ms; plan %.3f, record %.3f, acquire %.3f, submit/wait %.3f ms; "
-                    "%llu pool misses, %llu imports of %llu bytes\n",
-                    modes[mode], (double)blurNs * 1e-6, (double)gradeNs * 1e-6, report.kernelMs, report.planMs, report.recordMs, report.acquireMs,
-                    report.submitWaitMs, report.poolMisses, report.importCount, report.newImportBytes);
+        std::printf("[          ] %s: Blur %.3f ms, Grade %.3f ms, ownership %.3f ms, kernel %.3f ms; plan %.3f, record %.3f, acquire %.3f, "
+                    "submit/wait %.3f ms; %llu pool misses, %llu imports of %llu bytes; %zu member intervals\n",
+                    modes[mode], (double)blurNs * 1e-6, (double)gradeNs * 1e-6, report.ownershipMs, report.kernelMs, report.planMs, report.recordMs,
+                    report.acquireMs, report.submitWaitMs, report.poolMisses, report.importCount, report.newImportBytes, report.memberIntervals.size());
         EXPECT_GT(gradeNs, 0);
         EXPECT_GT(blurNs, gradeNs);
         EXPECT_GT(report.kernelMs, 0.);
         if (mode == 2 && report.stripsInFlight > 1) {
-            // Pipelined strips time the compute-to-transfer queue-ownership release barriers inside the strip
-            // interval, after the last member's stamp. They belong to no member and cost real time on some
-            // drivers, so the members only nest inside the kernel time. The slack is two timestamp ticks of
-            // rounding per strip.
-            const double timestampSlackMs = 2.0 * (double)report.strips * runtime()->transfer().timestampPeriodNs() * 1e-6;
-            EXPECT_LE(sumMs, report.kernelMs + timestampSlackMs);
-            EXPECT_GT(sumMs, 0.5 * report.kernelMs);
+            // Pipelined strips run their queue-ownership barriers inside the strip's timed span, outside every member.
+            EXPECT_NEAR(report.kernelMs, sumMs + report.ownershipMs, report.kernelMs * 0.05);
         } else {
+            EXPECT_EQ(0., report.ownershipMs);
             EXPECT_NEAR(report.kernelMs, sumMs, report.kernelMs * 0.05);
+        }
+        if (runtime()->transfer().timestampsSupported()) {
+            EXPECT_EQ((std::size_t)std::max(1, report.strips) * members.size(), report.memberIntervals.size());
+            std::map<int, long long> stripEnd;
+            long long intervalsNs = 0;
+            for (const GpuMemberInterval& interval : report.memberIntervals) {
+                EXPECT_GE(interval.beginNs, 0);
+                EXPECT_LE(interval.beginNs, interval.endNs);
+                EXPECT_GT(interval.pixels, 0u);
+                const std::map<int, long long>::const_iterator previous = stripEnd.find(interval.strip);
+                if (previous != stripEnd.end()) {
+                    EXPECT_GE(interval.beginNs, previous->second) << "strip " << interval.strip << ", member " << interval.member;
+                }
+                stripEnd[interval.strip] = interval.endNs;
+                intervalsNs += interval.endNs - interval.beginNs;
+            }
+            // Each interval and each member's time round their timestamps to whole ns apart.
+            EXPECT_NEAR(sumMs, (double)intervalsNs * 1e-6, 1e-6 * 2. * (double)(report.memberIntervals.size() + 1));
+        } else {
+            EXPECT_TRUE(report.memberIntervals.empty());
         }
         EXPECT_GT(report.recordMs, 0.);
         EXPECT_GE(report.planMs, 0.);
@@ -2172,6 +2188,7 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
         for (const char* field : fields) {
             EXPECT_NE(std::string::npos, record.find(std::string("\"") + field + "\":")) << field << " in " << record;
         }
+        EXPECT_EQ(runtime()->transfer().timestampsSupported(), record.find("\"memberIntervals\":[{") != std::string::npos) << record;
     }
     EXPECT_EQ(3, regionRecords);
 }

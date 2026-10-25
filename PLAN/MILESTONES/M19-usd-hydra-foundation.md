@@ -54,25 +54,25 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
 
 ## Phase 19.1: Dependency and transport
 
-- [ ] M19.P1.T1 — Pin and build USD in the toolchain and CI
+- [x] M19.P1.T1 — Pin and build USD in the toolchain and CI
   - files: `tools/ci/local/Dockerfile`, CI workflow files (`.github/workflows/`), top-level `CMakeLists.txt` (find-package wiring), `cmake/` (a USD find/check module if needed)
   - approach: USD ≥ 24.11 (boost-free, oneTBB), **monolithic** build (`libusd_ms`), **Python bindings ON**, built against the same Python the image gives Natron; MaterialX off; Alembic file-format plug-in ON. First check whether `aswf/ci-vfxall:2027-clang21.1` already carries a usable USD built against its Python and prefer consuming it; otherwise build it in the Dockerfile at a pinned exact tag — same discipline as `PLAN/DECISIONS/2026-08-29-pin-exact-aswf-tag.md` — aligned with the CY2027 target. CMake fails configure if USD's Python version differs from `Python3_VERSION`.
   - verify: CI builds link against USD; a trivial `UsdStage::Open` smoke test passes in `build-and-test`; `import pxr` succeeds from Natron's embedded Python in a test; local incremental build still works.
   - size: L
 
-- [ ] M19.P1.T2 — `ScenePayload` value type and `SceneOps` seam
+- [x] M19.P1.T2 — `ScenePayload` value type and `SceneOps` seam
   - files: `Engine/ScenePayload.h`, `Engine/Nodes/Scene/ScenePayloadImpl.cpp`, `Engine/Nodes/Scene/SceneOps.h`/`.cpp`
   - approach: immutable value — ordered `layerStack` (strongest last), combined `stackHash` (U64), metadata (up-axis, units, default prim, time codes per second). Pimpl: USD types appear only in `Engine/Nodes/Scene/` internals, never in `Engine/` core headers. `SceneOps` is the thin author-layer/compose/query interface nodes use — deliberately *not* a full abstraction over USD semantics.
   - verify: unit tests — appending a layer changes stackHash; identical stacks hash identically; `Engine/ScenePayload.h` includes no pxr header (grep-enforced in the test).
   - size: M
 
-- [ ] M19.P1.T3 — Per-node layer memoization and the consumer `StageCache`
+- [x] M19.P1.T3 — Per-node layer memoization and the consumer `StageCache`
   - files: `Engine/Nodes/Scene/SceneOps.cpp`, `Engine/Nodes/Scene/StageCache.h`/`.cpp`, `Engine/Nodes/NativeEffectBase.h` (scene-node helpers)
   - approach: each 3D node owns one anonymous `SdfLayer` holding exactly its edits, memoized keyed by (knob hash, upstream stack hash) — unchanged nodes re-emit the same layer handle, so a knob tweak at the end of a 30-node chain re-authors one layer, not thirty. Composition happens only at consumers through a bounded `StageCache` keyed by stackHash, yielding a composed read-only `UsdStage`. Time policy: animated knobs author USD time samples across the project range (re-authored on knob/range change); static knobs author defaults; vertex data is never baked. Layer authoring serialized per node; USD's TBB stays internal to USD.
   - verify: unit tests — layer handle identity across unchanged re-evaluations; StageCache hit on repeated composition; knob change invalidates exactly one node's layer.
   - size: L
 
-- [ ] M19.P1.T4 — Scene evaluation action in the render engine
+- [x] M19.P1.T4 — Scene evaluation action in the render engine
   - files: `Engine/EffectInstance.h`/`.cpp` (scene action args + virtual, beside `DeepRenderActionArgs`/`renderDeep`), the engine dispatch that routes `renderDeep` today, `Engine/Nodes/Scene/SceneOps.cpp`, `Tests/` (new scene-action test)
   - approach: add a `renderScene`-style action that returns a `ScenePayload` for a node, dispatched exactly the way `renderDeep` is — node hash, abort, threading, Dot/NoOp/group pass-through of `eDataKindScene` — so no consumer walks inputs itself. The payload is time-independent: one per layer stack, not per frame; consumers pick the time when they query the composed stage. A node's failure propagates as an action failure carrying its message. Mirror the deep path's structure; no side channel.
   - verify: unit test — a test scene source behind a Dot and a group yields the same payload through the action as directly; abort mid-evaluation returns aborted; a failing source makes the action fail with its message.
@@ -80,7 +80,7 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
 
 ## Phase 19.2: First node and the viewer
 
-- [ ] M19.P2.T1 — `USDRead` node
+- [x] M19.P2.T1 — `USDRead` node
   - files: `Engine/Nodes/Scene/USDRead.cpp`, CMake source list
   - approach: `NativeEffectBase` subclass, scene output kind, implementing M19.P1.T4's action; authors a layer that sublayers/references the chosen file. `.usd`/`.usda`/`.usdc`/`.usdz` natively; `.abc` via USD's Alembic file-format plug-in (M19.P1.T1 builds it). Knobs: file, frame offset, Reload. Reload calls `SdfLayer::Reload` on the file and its sublayers and bumps the hash; the file's mtime is folded into the node hash. Time mapping: timecode = (frame + offset) × stage tcps / project fps. Open failures set a persistent node error with USD's diagnostic and fail the action. Scene RoD reports the stage's world bbox (informational).
   - verify: unit tests — a reference USD file yields a payload whose composed stage has the expected prims; `.abc` loads through the same path; a missing or malformed file fails the action and sets the node error; rewriting the file then Reload changes the payload; a 24-tcps stage in a 25-fps project maps frame 25 to timecode 24.
@@ -116,7 +116,7 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
   - verify: manual — clicking a prim highlights it; look-through a camera prim matches usdview's framing for the same file.
   - size: M
 
-- [ ] M19.P2.T4 — Scene integration smoke test in CI
+- [x] M19.P2.T4 — Scene integration smoke test in CI
   - files: `Tests/`, small reference `.usda` asset (hand-authored, tiny, committed)
   - approach: headless test — USDRead → scene action → composed stage → prim/bbox assertions, plus the M19.P1.T2/T3/T4 hashing, memoization and action tests wired into ctest. Viewport rendering is covered separately by M19.P2.T7.
   - verify: test green in `build-and-test`; USD link/runtime issues surface here rather than in the GUI.
@@ -132,6 +132,8 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
 
 ## Decisions
 
+- 2026-10-25 — **No region of definition for scene nodes yet (bosley-native-nodes):** computing a world bounding box means composing a stage on the main thread; scene nodes report none until an off-main-thread path exists.
+- 2026-10-25 — **Storm context, llvmpipe result (bosley-native-nodes):** requesting a 4.5 compatibility (or 3.3) format from Qt gives a 4.5 core context, where immediate-mode GL draws nothing and Storm floods GL errors; requesting no version (as Natron does today) gives 4.5 compatibility with shared contexts, where both draw. Recommended T8 strategy: request no version and check for 4.5 compatibility at startup. Awaiting the radeonsi and NVIDIA runs of `tools/spikes/storm` before T8, T2, T3 and T7.
 - 2026-10-24 — Storm runs on HgiGL, not HgiVulkan: HgiGL is USD's production-stable Hgi, and HgiVulkan would make M19 depend on M107 - GPU Viewer Hand-off's interop across two VkDevices. Handing Hydra output to Vulkan compute is `USDRender`'s concern in M20 - 3D Node Vocabulary.
 - 2026-10-24 — The whole GUI moves to one GL 4.5+ compatibility context (glad regenerated), instead of a separate 4.5-core widget: compat keeps every immediate-mode path and every OFX overlay interact working, and it removes the risk of mixing profiles in one Qt window. Core profile and QRhi/Vulkan were weighed and rejected as large rewrites with little user-visible gain for 3D.
 - 2026-10-24 — No GL 4.5 compatibility context means the GUI refuses to start: the user chose a hard requirement over a degraded 2D-only fallback.

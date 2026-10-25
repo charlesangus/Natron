@@ -40,6 +40,7 @@
 #include "Engine/Interpolation.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
+#include "Engine/UndoGesture.h"
 #include "Engine/ViewIdx.h"
 
 #include "Gui/CurveEditorUndoRedo.h"
@@ -104,10 +105,15 @@ MoveTangentCommand*
 dragRight(const ThreeKeyCurve& c,
           double handleTimeOffset,
           double handleValueOffset,
-          bool forceBreak = false)
+          bool forceBreak = false,
+          quint64 gestureKey = 0)
 {
-    return new MoveTangentCommand(nullptr, MoveTangentCommand::eSelectedTangentRight, c.key,
-                                  -handleTimeOffset, -handleValueOffset, true, forceBreak);
+    MoveTangentCommand* cmd = new MoveTangentCommand(nullptr, MoveTangentCommand::eSelectedTangentRight, c.key,
+                                                     -handleTimeOffset, -handleValueOffset, true, forceBreak);
+
+    cmd->setGestureKey(gestureKey);
+
+    return cmd;
 }
 
 } // namespace
@@ -188,14 +194,44 @@ TEST(CurveWeightedTangent, ConsecutiveDragStepsUndoInOneStep)
     const KeyFrame before = c.keyAt(10.);
 
     QUndoStack undoStack;
-    undoStack.push(dragRight(c, 4., 1.));
-    undoStack.push(dragRight(c, 6., 2.));
-    undoStack.push(dragRight(c, 7., 3.));
+    UndoGesture gesture;
+    gesture.begin();
+    undoStack.push(dragRight(c, 4., 1., false, gesture.key()));
+    undoStack.push(dragRight(c, 6., 2., false, gesture.key()));
+    undoStack.push(dragRight(c, 7., 3., false, gesture.key()));
+    gesture.end();
     EXPECT_EQ(1, undoStack.count());
 
     KeyFrame k = c.keyAt(10.);
     EXPECT_NEAR(0.7, k.getRightWeight(), 1e-12);
     EXPECT_NEAR(3. / 7., k.getRightDerivative(), 1e-12);
+
+    undoStack.undo();
+    EXPECT_TRUE(before == c.keyAt(10.));
+}
+
+TEST(CurveWeightedTangent, SeparateDragsStaySeparateUndoSteps)
+{
+    ThreeKeyCurve c;
+    ASSERT_TRUE(c.init(KeyFrame(10., 5., 0., 0., eKeyframeTypeFree)));
+    const KeyFrame before = c.keyAt(10.);
+
+    QUndoStack undoStack;
+    UndoGesture first;
+    first.begin();
+    undoStack.push(dragRight(c, 4., 1., false, first.key()));
+    first.end();
+    const KeyFrame afterFirst = c.keyAt(10.);
+
+    UndoGesture second;
+    second.begin();
+    undoStack.push(dragRight(c, 6., 2., false, second.key()));
+    second.end();
+    EXPECT_EQ(2, undoStack.count());
+    EXPECT_FALSE(afterFirst == c.keyAt(10.));
+
+    undoStack.undo();
+    EXPECT_TRUE(afterFirst == c.keyAt(10.));
 
     undoStack.undo();
     EXPECT_TRUE(before == c.keyAt(10.));

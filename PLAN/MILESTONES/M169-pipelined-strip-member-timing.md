@@ -16,18 +16,18 @@ Deps: M107 - GPU Viewer Hand-off (its `Engine/GpuRegionTask.cpp` changes) and M9
 
 **Edge cases:**
 - A node that only ever runs in pipelined regions may have no uncontended interval. It then keeps its seed or serial row; the sample is skipped and counted, never forced in.
-- Devices without timestamps keep the existing `chargeByWeight` path unchanged (`:2183-2188`).
-- Identity members and members with an empty strip rect have no stamp (`:1660-1662`).
+- Devices without timestamps keep the existing `chargeByWeight` path unchanged (`GpuRegionTask.cpp:1261`, used at 2769).
+- Identity members and members with an empty strip rect have no stamp (`GpuRegionTask.cpp:2221-2223`).
 
 **Assumptions:**
-- The semaphore wait already uses `ALL_COMMANDS` (`Engine/Gpu/GpuTransfer.h:55`), so the begin stamp does not include upload queue wait. The suspected causes are the acquire barriers, transfer contention and halo megapixels. P1.T3 confirms which.
+- The semaphore wait already uses `ALL_COMMANDS` (`Engine/Gpu/GpuTransfer.h:55`), so the begin stamp does not include upload queue wait. The suspected causes of Grade's inflation are transfer contention and halo megapixels; barriers touch only member 0 and `kernelMs`. P1.T3 confirms which.
 
 ## Phase 169.1: Instrument and diagnose
 
-- [ ] M169.P1.T1 — Record raw per-strip member intervals and the strip's ownership-barrier stamps in the region report
-  - files: `Engine/GpuRegionTask.cpp`, `Engine/RenderScheduler.h`, `Engine/RenderScheduler.cpp`, `Engine/RenderStats.cpp`, `Tests/GpuResidency_Test.cpp`
-  - approach: In `submitStrip`, add one stamp after the acquires and before the first member (extend the `_queriesPerStrip` layout in `startPipeline` `:1891-1903`). Add `RegionReport::memberIntervals` (strip, member, begin/end ns relative to the region, output rows×width) and `ownershipMs` (acquire plus release intervals). Fill them in `notePipelineTimes`/`measureStripMembers`. In serial `recordStrip`/`submit`, fill them from the segment stamps. Emit them in the profile region record only when profiling is on. Member attribution starts at the new stamp, so `memberNs` stops including the acquires.
-  - verify: `RegionMembersAreTimedOnTheDevice` checks `memberIntervals` count = strips × non-identity members, that intervals are monotone within each strip, and that the pipelined sum of member time plus `ownershipMs` matches `kernelMs` within 5%. That restores the strict check M91.P2.T5 relaxed. Lavapipe CI green.
+- [ ] M169.P1.T1 — Record raw per-strip member intervals, the strip's ownership-barrier time and transfer begin/end in the region report
+  - files: `Engine/GpuRegionTask.cpp`, `Engine/RenderScheduler.h`, `Engine/RenderScheduler.cpp`, `Engine/RenderStats.h`, `Engine/RenderStats.cpp`, `Tests/GpuResidency_Test.cpp`
+  - approach: In `submitStrip` (`GpuRegionTask.cpp:2500-2562`), add one stamp after the acquires (2515-2520) and before the first member (2521); extend the query layout in `createQueries` (`_memberStamp0`/`_queriesPerStrip` 2463-2464). Add `RegionReport::memberIntervals` (strip, member, begin/end ns relative to the region, output rows×width) and `ownershipMs` (pipelined only: acquire plus release intervals; whole and serial segments hold no ownership barrier inside the timed span — acquires precede the begin stamp at 1677/1683, releases follow the end stamp at 1696/1704). Fill intervals in `notePipelineTimes` (2704)/`measureStripMembers` (2779), serial `recordStrip` (2275)/`submit` (~1273), and whole chained segments in `noteSegmentTimes` (~1838) from `segmentDeviceNs` stamps. Pipelined member attribution starts at the new stamp, so `memberNs` stops including the acquires. Do not build new transfer stamps: add region-relative `beginNs`/`endNs` to `GpuTransferRecord` (`RenderStats.h:~250`), fill them in `noteTransferTimes` (1422) and emit them beside `deviceMs` in `appendTransferRecords`. Put the new `RegionReport` fields beside the staged counters (`RenderScheduler.h:~298`), copy them in `RenderScheduler.cpp:1267-1300`, and emit them only when profiling is on / nonempty, following the `stagedReasons` pattern (`RenderStats.cpp:855`).
+  - verify: `RegionMembersAreTimedOnTheDevice` (`Tests/GpuResidency_Test.cpp:2060`) checks `memberIntervals` count = strips × non-identity members, that intervals are monotone within each strip, and that the pipelined sum of member time plus `ownershipMs` matches `kernelMs` within 5% — restoring the strict check M91.P2.T5 relaxed (2144-2152). Whole and serial keep their 5% check (2154). Lavapipe CI green.
   - size: M
 
 - [ ] M169.P1.T2 — Gate build for the instrumentation
@@ -38,28 +38,28 @@ Deps: M107 - GPU Viewer Hand-off (its `Engine/GpuRegionTask.cpp` changes) and M9
 
 - [ ] M169.P1.T3 — Classify the inflation on the RTX 3070 Ti and record the fix decision
   - files: this milestone file (`## Decisions` and a findings section); output in `.local/m169/p1/`
-  - approach: On `bosley-faux`, run `RegionMembersAreTimedOnTheDevice` 5× and render `tools/bench/comps/keying_grade.ntp` with `NATRON_RENDER_PROFILE`. For each member interval, split the inflation over serial into four parts: (a) acquire/release time now in `ownershipMs`; (b) overlap with transfer-busy intervals (compare a member's time in strips with overlap against strips without); (c) halo rows (strip output rows against task RoI rows); (d) the remainder. Record the numbers. Then rewrite or strike P2.T2 and P2.T3 to match: they stay only if transfer contention or halo megapixels is a real share of the gap. If contention stays, put the no-clean-sample policy (skip and count, an occasional serial probe, or correcting contended samples) to the user and record it in `## Decisions`.
+  - approach: Ownership barriers cannot explain Grade's (member 1's) inflation: in pipelined strips they affect only member 0 and `kernelMs`. Since M156's chained submission, whole regions are contended too (downloads overlap later segments), so classify all three modes, with serial strips as the uncontended baseline. On `bosley-faux`, run `RegionMembersAreTimedOnTheDevice` 5× and render `tools/bench/comps/keying_grade.ntp` with `NATRON_RENDER_PROFILE`, plus a control run with `NATRON_GPU_KEEPALIVE=0`. For each member interval split the inflation over serial into: (a) acquire/release time now in `ownershipMs` (member 0 only); (b) overlap with transfer-busy intervals, from the profile's `uploads`/`downloads` begin/end (P1.T1); (c) halo rows (strip output rows against task RoI rows); (d) keep-alive effect; (e) the remainder, e.g. `ALL_COMMANDS` stamp semantics at the `computeBarrier`. Record the numbers. Then rewrite or strike P2.T2 and P2.T3: they stay only if transfer contention or halo megapixels is a real share of the gap. If contention stays, put the no-clean-sample policy (skip and count, an occasional serial probe, or correcting contended samples) and the whole-region-without-transfer-stamps policy (see P2.T3) to the user and record them in `## Decisions`.
   - verify: the findings table accounts for at least 90% of the Grade pipelined-serial gap, or names the unexplained remainder and adds a follow-up task.
   - size: M
 
 ## Phase 169.2: Attribution fix
 
-- [ ] M169.P2.T1 — Split strip ownership-barrier time out of member time in serial and whole segments too
-  - files: `Engine/GpuRegionTask.cpp`, `Tests/GpuResidency_Test.cpp`
-  - approach: In `beginTimedSegment`/`segmentDeviceNs` (`:948-997`), the member-0 interval starts at query 0 and so includes the barrier before it. Mirror P1.T1's post-acquire stamp wherever a segment opens with barriers, so that across all three modes members own only their dispatches and the barriers between them. Barrier time goes to `ownershipMs`.
-  - verify: all three modes of `RegionMembersAreTimedOnTheDevice` pass the 5% equality check, now including `ownershipMs`. Lavapipe CI green.
-  - size: M
+- [ ] M169.P2.T1 — ~~Split strip ownership-barrier time out of member time in serial and whole segments too~~ (struck 2026-10-25: whole and serial segments hold no ownership barrier inside the timed span; see Decisions)
+  - files: none
+  - approach: struck.
+  - verify: none.
+  - size: S
 
 - [ ] M169.P2.T2 — (conditional on P1.T3) Add a pure calibration-sample helper that drops transfer-contended intervals and uses computed megapixels
   - files: `Engine/GpuMemberTiming.h` (new), `Engine/GpuMemberTiming.cpp` (new), `Tests/GpuMemberTiming_Test.cpp` (new), `Tests/CMakeLists.txt` (if the test is not globbed)
-  - approach: Input: per-member intervals with pixel counts, plus the transfer-busy union (`unionOf`/`overlapOf` move here from `GpuRegionTask.cpp:2083-2132` only in P2.T3). Output per member: clean ns, clean megapixels, and how many intervals were skipped. An interval counts as contended when more than X% of it overlaps transfer-busy time. P1.T3 sets X, with 10% as the starting value. No Vulkan.
+  - approach: Input: per-member intervals with pixel counts, plus the transfer-busy union (`unionOf`/`lengthOf`/`overlapOf` move here from `GpuRegionTask.cpp:2655-2701` only in P2.T3; intervals come from the existing pair queries, `queryOf` 2418). Output per member: clean ns, clean megapixels, and how many intervals were skipped. An interval counts as contended when more than X% of it overlaps transfer-busy time. P1.T3 sets X, with 10% as the starting value. No Vulkan.
   - verify: the gtest checks fully clean, fully contended, partially overlapping, halo-row and empty inputs, and that a 4× inflated contended interval does not move the sample. Runs without a GPU.
   - size: M
 
 - [ ] M169.P2.T3 — (conditional on P1.T3) Calibrate GpuCostModel from the helper's samples and add the catching test
   - files: `Engine/GpuRegionTask.cpp`, `Engine/RenderScheduler.h`, `Engine/RenderStats.cpp`, `Tests/GpuResidency_Test.cpp`
-  - approach: `noteSuccess` calls `observeGpu(traits, cleanNs, cleanMpx)` and skips members that have no clean interval. It counts the skipped samples into a `RenderStats` counter and the region record (`calibrationSkipped`). `memberNs` stays the actual device time spent. Move the interval helpers into `GpuMemberTiming`. New test `PipelinedStripsCalibrateLikeSerial`: same Blur→Grade graph; `GpuCostModel::session().reset()`; run serial strips and read `gpuMs(Grade traits, 1.0)`; reset; run pipelined and read again. Expect the ratio to fall in [0.67, 1.5] when a sample was taken, and expect a nonzero `calibrationSkipped` otherwise. Print the raw `memberNs`/Mpx against the calibrated value.
-  - verify: lavapipe CI green. On `bosley-faux` the new test passes 5/5, and its printout shows a raw Grade ratio above 2 alongside a calibrated ratio within bounds. That shows the test exercises the inflation.
+  - approach: `noteSuccess` (`GpuRegionTask.cpp:2949`, call at 2972) calls the existing `observeGpu(traits, cleanNs, cleanMpx)` overload (`GpuCostModel.h:240`) and skips members that have no clean interval, in pipelined and whole chained regions alike. Whole regions have no transfer stamps outside profiling (`timeTransfersForProfile` 1416); follow the policy P1.T3 records (skip as unclassified, or feed only serial and pipelined samples). Do not add a per-region query-pool reset: its host round trip idles the GPU (M156). Count skipped samples into a `RenderStats` counter and the region record (`calibrationSkipped`). `memberNs` stays the actual device time spent. Move the interval helpers into `GpuMemberTiming`. New test `PipelinedStripsCalibrateLikeSerial`: same Blur→Grade graph; `GpuCostModel::session().reset()`; run serial strips and read `gpuMs(Grade traits, 1.0)` (`GpuCostModel.cpp:575`); reset; run pipelined and read again. Expect the ratio in [0.67, 1.5] when a sample was taken, and a nonzero `calibrationSkipped` otherwise. Print the raw `memberNs`/Mpx against the calibrated value.
+  - verify: lavapipe CI green. On `bosley-faux` the new test passes 5/5, and its printout shows a raw Grade ratio above 2 alongside a calibrated ratio within bounds.
   - size: M
 
 ## Phase 169.3: Gate
@@ -73,6 +73,7 @@ Deps: M107 - GPU Viewer Hand-off (its `Engine/GpuRegionTask.cpp` changes) and M9
 ## Decisions
 
 - 2026-10-24 — **The contention fix waits on measurement:** P2.T1 (barrier time out of member time) is evidenced by M91's NVIDIA results and goes ahead. P2.T2 and P2.T3 are rewritten or struck by P1.T3's findings, and the no-clean-sample policy is decided then (user, grill).
+- 2026-10-25 — **Freshness check after M107, M156 and M168 merged** (consultant, against main dc8774f9a): line refs in the intro paragraph predate M156 (`noteSuccess` now `GpuRegionTask.cpp:2949-2984`, `observeGpu` `GpuCostModel.cpp:773-802`, `predictedKernelMs` is now `Member::predictedKernelMs` in `GpuRegionTask.cpp:310/869`, `pipelineStrips` 2601-2651, `RegionMembersAreTimedOnTheDevice` `Tests/GpuResidency_Test.cpp:2060`). P2.T1 struck: in whole regions acquires precede the begin stamp and releases follow the end stamp, and serial strips have no ownership barriers, so only pipelined strips need the split, which P1.T1 does. P1.T1 reuses M156's per-transfer timestamp pairs (adds begin/end to `GpuTransferRecord`) instead of new stamps. P1.T3 and P2.T3 now cover whole chained regions, which M156 made contended. Claimed despite file overlap with M64 - Tiled Rendering, M101 - Clean-Sheet Merge Node and M146 - Roto Hosting For Any Node (user, 2026-10-25).
 - 2026-10-24 — **Deps M107 and M91:** every task but P2.T2 edits `Engine/GpuRegionTask.cpp`, which M107 changes, and the work builds on M91's P2.T2 and P2.T5 (user, grill).
 
 **Verification gate:** remote `fast --tests` CI green on lavapipe. `ctest -L gpu` and the engine ctest (`NATRON_GPU=force`, both schedulers) pass on `bosley-faux` (RTX 3070 Ti) and on the RADV host. The restored 5% `RegionMembersAreTimedOnTheDevice` check passes 5/5 on `bosley-faux`, and so does `PipelinedStripsCalibrateLikeSerial` if P2.T3 survived P1.T3. keying_grade pipelined calibration is within 1.5× of serial.

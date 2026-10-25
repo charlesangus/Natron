@@ -191,8 +191,8 @@ TEST_F(NativeRawDemosaicGpuTest, LinearPassThroughMatchesTheCpu)
     expectGpuMatchesCpu(*runtime, demosaic, prepare, RectI(200, 150, 264, 198), kPassThroughGpuTolerance, "linear pass-through");
 }
 
-// AMaZE, Frequency Domain Chroma, the dual methods, green equilibration and colour smoothing have
-// no GPU path, so a chain using them renders on the CPU. VNG and Markesteijn have one.
+// Frequency Domain Chroma, the dual methods, green equilibration and colour smoothing have no GPU
+// path, so a chain using them renders on the CPU. AMaZE, VNG and Markesteijn have one.
 TEST_F(NativeRawDemosaicGpuTest, MethodsWithoutAGpuPathStayOnTheCpu)
 {
     NodePtr bayer = createRead(bayerFixture());
@@ -207,10 +207,18 @@ TEST_F(NativeRawDemosaicGpuTest, MethodsWithoutAGpuPathStayOnTheCpu)
     const GpuQuery query = queryFor(4);
 
     EXPECT_TRUE(onBayer->canRenderOnGpu(query));
+    for (int method : { (int)eRawDemosaicBayerRCDDual, (int)eRawDemosaicBayerAMaZEDual }) {
+        setChoice(bayerDemosaic, kRawDemosaicParamBayerMethod, method);
+        EXPECT_FALSE(onBayer->canRenderOnGpu(query)) << "method " << method;
+    }
+    for (int method : { (int)eRawDemosaicBayerAMaZE, (int)eRawDemosaicBayerVNG4 }) {
+        setChoice(bayerDemosaic, kRawDemosaicParamBayerMethod, method);
+        EXPECT_TRUE(onBayer->canRenderOnGpu(query)) << "method " << method;
+    }
     setChoice(bayerDemosaic, kRawDemosaicParamBayerMethod, (int)eRawDemosaicBayerAMaZE);
+    setChoice(bayerDemosaic, kRawDemosaicParamGreenEq, (int)eRawDemosaicGreenEqLocal);
     EXPECT_FALSE(onBayer->canRenderOnGpu(query));
-    setChoice(bayerDemosaic, kRawDemosaicParamBayerMethod, (int)eRawDemosaicBayerVNG4);
-    EXPECT_TRUE(onBayer->canRenderOnGpu(query));
+    setChoice(bayerDemosaic, kRawDemosaicParamGreenEq, (int)eRawDemosaicGreenEqNone);
     setChoice(bayerDemosaic, kRawDemosaicParamBayerMethod, (int)eRawDemosaicBayerRCD);
     setChoice(bayerDemosaic, kRawDemosaicParamGreenEq, (int)eRawDemosaicGreenEqLocal);
     EXPECT_FALSE(onBayer->canRenderOnGpu(query));

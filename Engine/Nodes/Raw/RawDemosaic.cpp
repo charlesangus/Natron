@@ -50,6 +50,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/Raw/RawAmazeGpu.h"
 #include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/RectD.h"
 
@@ -1190,7 +1191,9 @@ RawDemosaic::canRenderOpOnGpu(const GpuQuery& query) const
     const bool vng = (settings->algorithm == Algorithm::VNG) && ((settings->layout.period() == 2) || (settings->layout.period() == 6));
     const bool markesteijn = ((settings->algorithm == Algorithm::Markesteijn1) || (settings->algorithm == Algorithm::Markesteijn3)) && (settings->layout.period() == 6);
 
-    return ((settings->algorithm == Algorithm::PPG) || (settings->algorithm == Algorithm::RCD) || vng || markesteijn) && (settings->greenEq == eRawDemosaicGreenEqNone) && (settings->smoothing == 0);
+    const bool amaze = (settings->algorithm == Algorithm::AMaZE) && (settings->layout.period() == 2);
+
+    return ((settings->algorithm == Algorithm::PPG) || (settings->algorithm == Algorithm::RCD) || vng || markesteijn || amaze) && (settings->greenEq == eRawDemosaicGreenEqNone) && (settings->smoothing == 0);
 #else
     Q_UNUSED(query);
 
@@ -1322,6 +1325,7 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
     const bool rcd = (s.algorithm == Algorithm::RCD);
     const bool vng = (s.algorithm == Algorithm::VNG);
     const bool markesteijn = (s.algorithm == Algorithm::Markesteijn1) || (s.algorithm == Algorithm::Markesteijn3);
+    const bool amaze = (s.algorithm == Algorithm::AMaZE);
     base.mode = (s.algorithm == Algorithm::PassThrough) ? kRawDemosaicGpuModePassThrough : (rcd ? kRawDemosaicGpuModeRcd : kRawDemosaicGpuModePpg);
     base.threshold = rcd ? 0.0f : s.edgeThreshold;
     base.scaler = s.processedMaximum;
@@ -1340,6 +1344,30 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
     if (base.mode == kRawDemosaicGpuModePassThrough) {
         bands.push_back(rect);
         needs.push_back(RectI());
+    } else if (amaze) {
+        // A band's buffer starts on AMaZE's 128-row grid counted from the image's top row, so its
+        // tiles are the CPU's whatever the band, and a band ends on that grid so that the next
+        // one does not recompute its tiles. The buffer spans a band's rows plus one block before
+        // and the tile's end after.
+        const RectI& rod = s.sourceRoD;
+        const RectI firstRow = sourceRegionFor(RectI(rect.x1, rect.y1, rect.x2, rect.y1 + 1), query.time, query.view);
+        const std::uint64_t needWidth = (std::uint64_t)std::max(1, firstRow.width());
+        const std::int64_t maxRows = (std::int64_t)(kMaxWorkFloats / (4 * needWidth));
+        const int blocks = (int)std::max<std::int64_t>(1, (maxRows - kAmazeGrid - kAmazeTileEnd) / kAmazeGrid);
+        const auto gridFloor = [](int row) {
+            return row >= 0 ? row / kAmazeGrid : -((kAmazeGrid - 1 - row) / kAmazeGrid);
+        };
+        const int top = rod.y2 - rect.y2;
+        const int bottom = rod.y2 - rect.y1;
+        for (int row = top; row < bottom;) {
+            const int end = std::min(bottom, (gridFloor(row) + blocks) * kAmazeGrid);
+            const RectI band(rect.x1, rod.y2 - end, rect.x2, rod.y2 - row);
+            const RectI need = sourceRegionFor(band, query.time, query.view);
+            bands.push_back(band);
+            needs.push_back(need);
+            workFloats = std::max(workFloats, 4 * (std::uint64_t)std::max(0, need.width()) * (std::uint64_t)std::max(0, need.height()));
+            row = end;
+        }
     } else {
         const RectI firstRow = sourceRegionFor(RectI(rect.x1, rect.y1, rect.x2, rect.y1 + 1), query.time, query.view);
         const std::uint64_t needWidth = (std::uint64_t)std::max(1, firstRow.width());
@@ -1406,6 +1434,19 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
         const std::uint64_t kMaxTileFloats = std::uint64_t(1) << 24;
         mkBatch = (std::uint32_t)std::clamp<std::uint64_t>(kMaxTileFloats / mkTileFloats, 1, (std::uint64_t)maxTiles);
         if (!ctx.scratch(mkBatch * mkTileFloats * sizeof(float), tiles) || !tiles) {
+            return eStatusFailed;
+        }
+    }
+    gpu::GpuBuffer* amazeTiles = nullptr;
+    std::uint32_t amazeBatch = 1;
+    if (amaze) {
+        int maxTiles = 1;
+        for (const RectI& need : needs) {
+            int nLefts = 0;
+            maxTiles = std::max(maxTiles, amazeGpuTiles(need.width(), need.height(), nLefts));
+        }
+        amazeBatch = amazeGpuBatch(maxTiles);
+        if (!ctx.scratch(amazeBatch * kAmazeGpuTileFloats * sizeof(float), amazeTiles) || !amazeTiles) {
             return eStatusFailed;
         }
     }
@@ -1485,6 +1526,33 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
         push.outY = band.y1;
         push.outWidth = (std::uint32_t)band.width();
         push.outHeight = (std::uint32_t)band.height();
+
+        if (amaze) {
+            RawAmazeGpuPush amazePush = {};
+            amazePush.filters = push.filters;
+            amazePush.clipPt = s.processedMinimum;
+            amazePush.width = width;
+            amazePush.height = height;
+            amazePush.srcOffset = base.srcOffset;
+            amazePush.srcStride = base.srcStride;
+            amazePush.srcComps = base.srcComps;
+            if (hasSource) {
+                amazePush.srcCol1 = source.bounds.x1 - need.x1;
+                amazePush.srcCol2 = source.bounds.x2 - need.x1;
+                amazePush.srcRow1 = need.y2 - source.bounds.y2;
+                amazePush.srcRow2 = need.y2 - source.bounds.y1;
+            }
+            amazePush.dstOffset = push.dstOffset;
+            amazePush.dstStride = push.dstStride;
+            amazePush.outCol = band.x1 - need.x1;
+            amazePush.outRow = need.y2 - 1 - band.y1;
+            amazePush.outWidth = push.outWidth;
+            amazePush.outHeight = push.outHeight;
+            if (!recordAmazeGpu(ctx, amazePush, src, work, amazeTiles, amazeBatch, out.buffer)) {
+                return eStatusFailed;
+            }
+            continue;
+        }
 
         if (vng || markesteijn) {
             RawVngGpuPush vngPush = {};

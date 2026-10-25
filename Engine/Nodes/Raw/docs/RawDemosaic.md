@@ -188,11 +188,29 @@ level: mean error at most 1e-4, and at most one pixel a thousand (rounded up) wi
 off by more than 1e-4; alpha exact. A tiled GPU render equals the full-frame one bit for bit, and
 a flat grey mosaic gives a neutral grey at all 36 X-Trans phases.
 
-AMaZE, Frequency Domain Chroma and the dual methods have no GPU path, nor LMMSE (darktable has none either), nor does local equilibration or colour
+AMaZE also runs on the GPU, on Bayer data, in `Engine/Gpu/Kernels/demosaic_amaze.slang` and
+`Engine/Nodes/Raw/RawAmazeGpu.h`, over the CPU's 160-photosite tiles stepping by 128, numbered as the
+CPU numbers them, one dispatch a stage with a tile per workgroup layer. The buffer is the CPU's
+(`sourceRegionFor()`, whose start is on the 128-photosite grid counted from the image's top-left),
+so its tiles are the CPU's. Bands of rows split the render when the RGBA plane (4 floats a
+photosite) would pass 128 MB: a band ends on that grid, so its buffer again starts on it, and
+neighbouring bands share their halo blocks but never move a tile. The tiles go in batches of at most
+64 MB, 15 planes of 160 x 160 floats each. Below 33 photosites it falls back on VNG, as above. AMaZE
+branches on many comparisons of quotients (a colour ratio against arthresh, two variances, the
+Nyquist test, and whether a neighbourhood's hvwt or pmwt is further from 0.5), and the device
+divides within 2.5 ulp, so a photosite on a threshold can take the other branch, which the in-place
+hvwt and pmwt refinements carry to the photosites after it. Bound, relative to the CPU render's mean
+colour level: mean error at most 1e-4, and at most one pixel a thousand (rounded up) with a colour
+channel off by more than 1e-4; alpha exact. A tiled GPU render equals the full-frame one bit for
+bit.
+
+Frequency Domain Chroma and the dual methods have no GPU path, nor LMMSE (darktable has none either), nor does local equilibration or colour
 smoothing; full equilibration measures the whole source per frame, as Inpaint Opposed does. Any of
 them keeps the node, and its raw run, on the CPU. GPU tests:
 `Tests/Native/NativeRawDemosaicGpu_Test.cpp`, PPG and RCD on the Bayer fixture inside the image and
 at its corners, a tiled GPU render against the full-frame one, and the linear pass-through;
+`Tests/Native/NativeRawDemosaicAmazeGpu_Test.cpp`, AMaZE on the CR2 fixture inside the image,
+across the tile grid and at its corners, and tiled against full frame;
 `Tests/Native/NativeRawDemosaicXTransGpu_Test.cpp`, VNG on the RAF and VNG4 on the CR2 fixture
 inside the image and at its corners, tiled against full frame, and AMaZE and Markesteijn 3-pass
 falling back on VNG on small synthetic mosaics, and Markesteijn 1- and 3-pass on the RAF fixture

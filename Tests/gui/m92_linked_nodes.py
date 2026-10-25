@@ -142,6 +142,8 @@ try:
 
     # ---- knob links in panels --------------------------------------------------------------
 
+    keep_alive = []
+
     def panel_of(name):
         """The settings panel of the node with that script name, found by the label in its
         header."""
@@ -149,6 +151,8 @@ try:
         for p in gt.widgets_of("NodeSettingsPanel"):
             for le in p.findChildren(QLineEdit):
                 if gt.class_name(le) == "LineEdit" and le.text() == label:
+                    del keep_alive[:]
+                    keep_alive.append(p)
                     return p
         return None
 
@@ -165,6 +169,7 @@ try:
         """The link circle on the row of the node's first parameter, or None."""
         w = first_spin_box(name)
         while w is not None:
+            keep_alive.append(w)
             found = w.findChildren(QAbstractButton, "knobLinkButton", Qt.FindDirectChildrenOnly)
             if found:
                 return found[0]

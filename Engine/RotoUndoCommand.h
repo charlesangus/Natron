@@ -39,16 +39,19 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/EngineFwd.h"
 #include "Engine/UndoCommand.h"
-
+#include "Engine/UndoGesture.h"
 
 NATRON_NAMESPACE_ENTER
 
 class RotoPaintInteract;
 
+// The commands below that override mergeWith() take the key of the interact's open undo gesture
+// when they are created and merge only with a command of the same gesture, so one drag is one
+// undo step and two drags of the same points are two.
 
 class MoveControlPointsUndoCommand
-    : public UndoCommand
-{
+    : public UndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(MoveControlPointsUndoCommand)
 
 public:
@@ -80,10 +83,9 @@ private:
     std::list<std::pair<BezierCPPtr, BezierCPPtr> > _originalPoints, _selectedPoints, _pointsToDrag;
 };
 
-
 class TransformUndoCommand
-    : public UndoCommand
-{
+    : public UndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(TransformUndoCommand)
 
 public:
@@ -279,10 +281,9 @@ private:
     bool isRemoved;
 };
 
-
 class MoveTangentUndoCommand
-    : public UndoCommand
-{
+    : public UndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(MoveTangentUndoCommand)
 
 public:
@@ -316,10 +317,9 @@ private:
     bool _breakTangents;
 };
 
-
 class MoveFeatherBarUndoCommand
-    : public UndoCommand
-{
+    : public UndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(MoveFeatherBarUndoCommand)
 
 public:
@@ -360,7 +360,6 @@ private:
     // The grabbed bar is first: its direction sets the distance every bar moves by.
     std::list<FeatherBar> _bars;
 };
-
 
 class RemoveFeatherUndoCommand
     : public UndoCommand
@@ -413,10 +412,9 @@ private:
     BezierPtr _curve;
 };
 
-
 class SmoothCuspUndoCommand
-    : public UndoCommand
-{
+    : public UndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(SmoothCuspUndoCommand)
 
 public:
@@ -450,10 +448,9 @@ private:
     std::pair<double, double> _pixelScale;
 };
 
-
 class MakeBezierUndoCommand
-    : public UndoCommand
-{
+    : public UndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(MakeBezierUndoCommand)
 
 public:
@@ -491,10 +488,9 @@ private:
     bool _isOpenBezier;
 };
 
-
 class MakeEllipseUndoCommand
-    : public UndoCommand
-{
+    : public UndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(MakeEllipseUndoCommand)
 
 public:
@@ -529,10 +525,9 @@ private:
     double _time;
 };
 
-
 class MakeRectangleUndoCommand
-    : public UndoCommand
-{
+    : public UndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(MakeRectangleUndoCommand)
 
 public:
@@ -566,7 +561,6 @@ private:
     double _tox, _toy;
     double _time;
 };
-
 
 NATRON_NAMESPACE_EXIT
 

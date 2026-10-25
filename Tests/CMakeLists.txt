@@ -79,6 +79,7 @@ set(Tests_SOURCES
     NodeDestroyWatcher_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
+    RotoUndoGesture_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
     LayerKnobs_Test.cpp

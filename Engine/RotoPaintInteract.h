@@ -34,9 +34,10 @@
 
 #include <ofxNatron.h>
 
-#include "Engine/EngineFwd.h"
-#include "Engine/BezierCP.h"
 #include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
+#include "Engine/EngineFwd.h"
+#include "Engine/UndoGesture.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -536,7 +537,9 @@ public:
     int altDown;
     bool lastTabletDownTriggeredEraser;
     QPointF mouseCenterOnSizeChange;
-
+    // Open from pen down to pen up. The drag commands pushed in between carry its key, so one drag
+    // is one undo step and the next drag, even of the same points, is another.
+    UndoGesture undoGesture;
 
     //////// Toolbar
     KnobPageWPtr toolbarPage;

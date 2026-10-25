@@ -2169,6 +2169,9 @@ RotoPaint::onOverlayPenDown(double time,
                             double timestamp,
                             PenType pen)
 {
+    // Every command this press and the drag after it push is one undo step, closed at pen up.
+    _imp->ui->undoGesture.begin();
+
     NodePtr node = getNode();
 
     std::pair<double, double> pixelScale;
@@ -3053,6 +3056,8 @@ RotoPaint::onOverlayPenUp(double /*time*/,
                           double /*pressure*/,
                           double /*timestamp*/)
 {
+    _imp->ui->undoGesture.end();
+
     RotoContextPtr context = getNode()->getRotoContext();
 
     assert(context);
@@ -3251,6 +3256,12 @@ RotoPaint::onOverlayFocusLost(double /*time*/,
 
     return true;
 } // onOverlayFocusLost
+
+RotoPaintInteractPtr
+RotoPaint::getInteract() const
+{
+    return _imp->ui;
+}
 
 void
 RotoPaint::onRefreshAsked()

@@ -124,6 +124,8 @@ private:
 
     virtual void onUserKnobsChanged() OVERRIDE FINAL;
 
+    virtual void refreshChoiceEntries(KnobChoice* knob) OVERRIDE FINAL;
+
     KnobGroupWPtr _variables;
     KnobGroupWPtr _globalVariables;
     KnobChoiceWPtr _existingVariable;

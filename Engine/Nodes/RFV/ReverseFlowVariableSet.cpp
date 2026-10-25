@@ -187,6 +187,15 @@ ReverseFlowVariableSet::refreshExtraStateAfterTimeChanged(bool isPlayback,
     }
 }
 
+void
+ReverseFlowVariableSet::refreshChoiceEntries(KnobChoice* knob)
+{
+    // Variables come and go on the project and on other nodes while this panel stays open.
+    if (knob && (knob == _existingVariable.lock().get())) {
+        refreshExistingVariables();
+    }
+}
+
 Route
 ReverseFlowVariableSet::route(double time,
                               ViewIdx /*view*/)

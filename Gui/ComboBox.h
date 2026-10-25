@@ -219,6 +219,9 @@ Q_SIGNALS:
 
     void minimumSizeChanged(QSize);
 
+    /// Emitted when a click is about to open the menu, before it is built from the current entries
+    void menuAboutToShow();
+
 protected:
 
     virtual void paintEvent(QPaintEvent* e) OVERRIDE;

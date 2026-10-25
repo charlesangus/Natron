@@ -380,6 +380,7 @@ ComboBox::mousePressEvent(QMouseEvent* e)
 {
     if (buttonDownIsLeft(e) && !_readOnly) {
         _clicked = true;
+        Q_EMIT menuAboutToShow();
         createMenu();
         update();
         QFrame::mousePressEvent(e);

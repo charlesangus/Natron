@@ -2664,6 +2664,14 @@ public:
     }
 
     /**
+     * @brief Called on the main thread when the menu of one of the holder's choice knobs is about
+     * to open, so that a holder whose entries are not kept current can populate them first.
+     **/
+    virtual void refreshChoiceEntries(KnobChoice* /*knob*/)
+    {
+    }
+
+    /**
      * @brief Wipe all knobs GUI and re-create it to synchronize it to the current internal state.
      * This may only be called on the main-thread. This is an expensive operation.
      **/

@@ -1,6 +1,7 @@
 # RawDenoise
 
-Tolerance: none recorded.
+Tolerance: `ParityTolerance::transcendental()` for the GPU against the CPU, exact for the
+pass-through and a threshold of 0.
 
 Port of darktable's raw denoise module (`src/iop/rawdenoise.c`, darktable `release-5.6.2`), and
 of the C path of `dwt_denoise()` (`src/common/dwt.c`). The kernels are
@@ -32,10 +33,29 @@ of the C path of `dwt_denoise()` (`src/common/dwt.c`). The kernels are
   the chunks share. This port extracts in one pass, the result that repair reproduces.
 - It renders at full resolution only.
 
+GPU: Bayer and X-Trans mosaics, the pass-through of data without a CFA and a threshold of 0, in
+`Engine/Gpu/Kernels/rawdenoise.slang`. For each colour, one dispatch extracts the square-rooted
+plane, each of the five bands runs a vertical then a horizontal pass with the CPU's mirrored
+edges, its soft threshold and its order of operations, and one dispatch squares the colour's
+photosites back into the output. The X-Trans extraction is a gather: each photosite takes the
+last value the CPU's sequential fill would have written to it, or keeps what the previous colour
+left in the shared plane, as the CPU's buffer does. Each pass covers the region the CPU reads for
+the window (`sourceRegionFor()`), so tiles still match the full frame bit for bit. The window is
+processed in bands of rows sharing one work buffer of at most 128 MB (plane, vertical pass and
+accumulated details). The pass-through and a threshold of 0 copy the source. The square root is
+the only operation the device does not round exactly. The rest are adds, subtracts, comparisons
+and multiplies by powers of two, kept unfused, and the soft threshold is continuous, so a few ulp
+at the square root stay a few ulp in the output: bound `ParityTolerance::transcendental()`.
+Other CFA periods render on the CPU.
+
 Tests: `Tests/Native/NativeRawDenoise_Test.cpp`, on synthetic Bayer and X-Trans mosaics. Gaussian
 noise of 0.01 on a smooth mosaic with a 0.4 step loses more than 3 dB (about 5 measured), and the
 photosites next to the step stay within 0.06 of it (0.04 measured). Tiles match the full frame,
 per-channel strengths act on their colour only, and linear data passes through with a warning.
+`Tests/Native/NativeRawDenoiseGpu_Test.cpp` checks the GPU against the CPU on the CR2 and RAF
+fixtures at two settings, inside the image, at its corners and over a one-photosite strip, and
+checks that GPU tiles equal the GPU full frame, that a threshold of 0 returns the source, and that
+linear data passes through.
 
 ## darktable controls
 

@@ -464,6 +464,15 @@ bool caCorrect(float* image,
 const int kRawDenoiseBands = 5;
 
 /**
+ * @brief The soft threshold rawDenoiseBayer() and rawDenoiseXTrans() apply to each band of colour
+ * (0 red, 1 green, 2 blue), finest first, from the same threshold and force.
+ **/
+void rawDenoiseChannelNoise(float noise[kRawDenoiseBands],
+                            int color,
+                            float threshold,
+                            const float force[4][kRawDenoiseBands]);
+
+/**
  * @brief darktable's wavelet_denoise(): each of the four colours of the 2x2 Bayer block on its
  * own, square-rooted, decomposed in kRawDenoiseBands à trous bands whose details are soft
  * thresholded, and squared back. force[channel][band] is darktable's curve value per channel

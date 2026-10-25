@@ -322,6 +322,44 @@ struct RawAmazeGpuPush {
 };
 static_assert(sizeof(RawAmazeGpuPush) == 96);
 
+inline constexpr std::uint32_t kRawDenoiseGpuModeBayer = 0;
+inline constexpr std::uint32_t kRawDenoiseGpuModeXTrans = 1;
+inline constexpr std::uint32_t kRawDenoiseGpuModeMosaic = 2;
+inline constexpr std::uint32_t kRawDenoiseGpuModeIdentity = 3;
+
+// Mirrors DenoiseParams in rawdenoise.slang.
+struct RawDenoiseGpuPush {
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t planeWidth;
+    std::uint32_t planeHeight;
+    std::uint32_t planeFloats;
+    std::uint32_t channel;
+    std::uint32_t rowParity;
+    std::uint32_t colParity;
+    std::uint32_t pattern[3];
+    std::uint32_t level;
+    float thold;
+    std::uint32_t last;
+    std::uint32_t mode;
+    std::uint32_t srcOffset;
+    std::uint32_t srcStride;
+    std::uint32_t srcComps;
+    std::int32_t srcCol1;
+    std::int32_t srcRow1;
+    std::int32_t srcCol2;
+    std::int32_t srcRow2;
+    std::uint32_t dstOffset;
+    std::uint32_t dstStride;
+    std::uint32_t dstComps;
+    std::int32_t outCol;
+    std::int32_t outRow;
+    std::uint32_t outWidth;
+    std::uint32_t outHeight;
+    std::uint32_t padding[3];
+};
+static_assert(sizeof(RawDenoiseGpuPush) == 128);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Nodes_Raw_RawGpuParams_h

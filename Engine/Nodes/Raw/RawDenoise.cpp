@@ -40,8 +40,14 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/RectD.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -323,5 +329,240 @@ RawDenoise::renderOp(const RenderActionArgs& args,
 
     return cancel.check() ? eStatusFailed : eStatusOK;
 } // RawDenoise::renderOp
+
+bool
+RawDenoise::canRenderOpOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > 4)) {
+        return false;
+    }
+    // Resolving only reads knobs and the source's metadata and region.
+    const std::optional<Settings> settings = const_cast<RawDenoise*>(this)->resolveSettings(query.time, query.view);
+    if (!settings) {
+        return false;
+    }
+
+    return !settings->passThrough.empty() || (settings->layout.period() == 2) || (settings->layout.period() == 6);
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+bool
+RawDenoise::getOpGpuInputLayer(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view,
+                               ImageLayerDesc* layer) const
+{
+    if (inputNb != getSourceInput()) {
+        stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+        return true;
+    }
+
+    return const_cast<RawDenoise*>(this)->resolveInputPlaneForRender(inputNb, time, view, layer, NULL);
+}
+
+RectI
+RawDenoise::getOpGpuInputRoI(int inputNb,
+                             const RectI& outputRect,
+                             const RenderScale& /*scale*/) const
+{
+    if (inputNb != getSourceInput()) {
+        return outputRect;
+    }
+    const std::optional<Settings> settings = const_cast<RawDenoise*>(this)->resolveSettings(getCurrentTime(), getCurrentView());
+    if (!settings || !settings->passThrough.empty() || !(settings->threshold > 0.f)) {
+        return outputRect;
+    }
+
+    return sourceRegionFor(outputRect, *settings);
+}
+
+StatusEnum
+RawDenoise::renderOpGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuQuery& query = args.query;
+    const RectI& rect = args.outputRect;
+    const GpuImageView& out = args.output;
+    const int nComps = query.nComps;
+    if (!canRenderOpOnGpu(query) || rect.isNull() || !out.buffer || (out.nComps != nComps) || !out.bounds.contains(rect) || ((out.byteOffset % sizeof(float)) != 0)) {
+        return eStatusFailed;
+    }
+    const std::optional<Settings> found = resolveSettings(query.time, query.view);
+    if (!found) {
+        return eStatusFailed;
+    }
+    const Settings& s = *found;
+    const int sourceInput = getSourceInput();
+    const bool hasSource = (sourceInput >= 0) && (sourceInput < (int)args.inputs.size()) && args.inputs[sourceInput].buffer;
+    const GpuImageView source = hasSource ? args.inputs[sourceInput] : GpuImageView();
+    if (hasSource && (((source.byteOffset % sizeof(float)) != 0) || (source.nComps < 1) || (source.nComps > 4))) {
+        return eStatusFailed;
+    }
+    const std::uint64_t srcEnd = source.byteOffset / sizeof(float) + (std::uint64_t)source.bounds.height() * (std::uint64_t)source.rowStrideFloats;
+    const std::uint64_t dstEnd = out.byteOffset / sizeof(float) + (std::uint64_t)out.bounds.height() * (std::uint64_t)out.rowStrideFloats;
+    if ((srcEnd > UINT32_MAX) || (dstEnd > UINT32_MAX)) {
+        return eStatusFailed;
+    }
+    // isOpIdentity() keeps the engine from rendering these; a direct render copies the source.
+    const bool identity = !s.passThrough.empty() || !(s.threshold > 0.f);
+    const bool xtrans = (s.layout.period() == 6);
+
+    RawDenoiseGpuPush base = {};
+    if (hasSource) {
+        base.srcOffset = (std::uint32_t)(source.byteOffset / sizeof(float));
+        base.srcStride = (std::uint32_t)source.rowStrideFloats;
+        base.srcComps = (std::uint32_t)source.nComps;
+    } else {
+        base.srcComps = 1;
+    }
+    base.dstStride = (std::uint32_t)out.rowStrideFloats;
+    base.dstComps = (std::uint32_t)nComps;
+
+    // Bands of the window are denoised one after the other through one work buffer, each over the
+    // source region the CPU would read for it, which a tile's result does not depend on. A band
+    // holds three planes of a colour: the whole region for X-Trans, a quarter of it for Bayer.
+    const std::uint64_t kMaxWorkFloats = std::uint64_t(1) << 25;
+    const std::uint64_t floatsPerPhotosite = xtrans ? 3 : 1;
+    const auto planeFloatsFor = [xtrans](const RectI& need) {
+        const std::uint64_t w = (std::uint64_t)std::max(0, need.width());
+        const std::uint64_t h = (std::uint64_t)std::max(0, need.height());
+
+        return xtrans ? w * h : ((w + 1) / 2) * ((h + 1) / 2);
+    };
+    std::vector<RectI> bands;
+    std::vector<RectI> needs;
+    std::uint64_t workFloats = 4;
+    if (identity) {
+        bands.push_back(rect);
+        needs.push_back(rect);
+    } else {
+        const RectI firstRow = sourceRegionFor(RectI(rect.x1, rect.y1, rect.x2, rect.y1 + 1), s);
+        const std::uint64_t needWidth = (std::uint64_t)std::max(1, firstRow.width());
+        const int overhead = std::max(0, firstRow.height() - 1);
+        const int bandRows = (int)std::max<std::int64_t>(16, (std::int64_t)(kMaxWorkFloats / (floatsPerPhotosite * needWidth)) - overhead);
+        for (int y = rect.y1; y < rect.y2; y += bandRows) {
+            const RectI band(rect.x1, y, rect.x2, std::min(rect.y2, y + bandRows));
+            const RectI need = sourceRegionFor(band, s);
+            bands.push_back(band);
+            needs.push_back(need);
+            workFloats = std::max(workFloats, 3 * planeFloatsFor(need));
+        }
+    }
+    if (workFloats > UINT32_MAX) {
+        return eStatusFailed;
+    }
+
+    gpu::GpuRecordContext& ctx = args.context;
+    gpu::GpuBuffer* work = nullptr;
+    if (!ctx.scratch(workFloats * sizeof(float), work) || !work) {
+        return eStatusFailed;
+    }
+    const gpu::GpuBuffer* src = hasSource ? source.buffer : work;
+    const auto run = [&](gpu::GpuKernelId kernel, const RawDenoiseGpuPush& push, std::uint32_t x, std::uint32_t y) {
+        if (!ctx.dispatch(kernel, { src, work, out.buffer }, push, { std::max<std::uint32_t>(x, 1), std::max<std::uint32_t>(y, 1), 1 })) {
+            return false;
+        }
+        ctx.computeBarrier();
+
+        return true;
+    };
+    const auto denoisePlane = [&](RawDenoiseGpuPush& push, int color) {
+        float noise[RawKernels::kRawDenoiseBands];
+        RawKernels::rawDenoiseChannelNoise(noise, color, s.threshold, s.force);
+        for (int lev = 0; lev < RawKernels::kRawDenoiseBands; ++lev) {
+            push.level = (std::uint32_t)lev;
+            push.thold = noise[lev];
+            push.last = ((lev + 1) == RawKernels::kRawDenoiseBands) ? 1u : 0u;
+            if (!run(gpu::GpuKernelId::rawdenoise_vert, push, push.planeWidth, push.planeHeight) || !run(gpu::GpuKernelId::rawdenoise_horiz, push, push.planeWidth, push.planeHeight)) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+
+    for (std::size_t b = 0; b < bands.size(); ++b) {
+        const RectI& band = bands[b];
+        const RectI& need = needs[b];
+        RawDenoiseGpuPush push = base;
+        const int width = std::max(0, need.width());
+        const int height = std::max(0, need.height());
+        push.width = (std::uint32_t)width;
+        push.height = (std::uint32_t)height;
+        push.planeFloats = (std::uint32_t)planeFloatsFor(need);
+        if (hasSource) {
+            push.srcCol1 = source.bounds.x1 - need.x1;
+            push.srcCol2 = source.bounds.x2 - need.x1;
+            push.srcRow1 = need.y2 - source.bounds.y2;
+            push.srcRow2 = need.y2 - source.bounds.y1;
+        }
+        push.dstOffset = (std::uint32_t)(out.byteOffset / sizeof(float) + (std::uint64_t)(band.y1 - out.bounds.y1) * (std::uint64_t)out.rowStrideFloats + (std::uint64_t)(band.x1 - out.bounds.x1) * (std::uint64_t)nComps);
+        push.outCol = band.x1 - need.x1;
+        push.outRow = need.y2 - 1 - band.y1;
+        push.outWidth = (std::uint32_t)band.width();
+        push.outHeight = (std::uint32_t)band.height();
+
+        if (identity || (width == 0) || (height == 0) || (xtrans && ((width < kXTransMinimumSize) || (height < kXTransMinimumSize)))) {
+            push.mode = identity ? kRawDenoiseGpuModeIdentity : kRawDenoiseGpuModeMosaic;
+            if (!run(gpu::GpuKernelId::rawdenoise_write, push, push.outWidth, push.outHeight)) {
+                return eStatusFailed;
+            }
+            continue;
+        }
+
+        if (xtrans) {
+            std::uint8_t pattern[6][6] = {};
+            RawNodeSupport::xtransAt(s.layout, need, pattern);
+            for (int i = 0; i < 36; ++i) {
+                push.pattern[i / 16] |= (std::uint32_t)(pattern[i / 6][i % 6] & 3) << ((i % 16) * 2);
+            }
+            push.mode = kRawDenoiseGpuModeXTrans;
+            push.planeWidth = push.width;
+            push.planeHeight = push.height;
+            // The colours share one plane, in order: where the extraction writes nothing, a
+            // colour denoises over what the previous one left, as on the CPU.
+            for (int c = 0; c < 3; ++c) {
+                push.channel = (std::uint32_t)c;
+                if (!run(gpu::GpuKernelId::rawdenoise_xtrans_extract, push, push.width, push.height) || !denoisePlane(push, c)
+                    || !run(gpu::GpuKernelId::rawdenoise_write, push, push.outWidth, push.outHeight)) {
+                    return eStatusFailed;
+                }
+            }
+            continue;
+        }
+
+        const std::uint32_t filters = RawNodeSupport::bayerFiltersAt(s.layout, need);
+        push.mode = kRawDenoiseGpuModeBayer;
+        for (int c = 0; c < 4; ++c) {
+            push.channel = (std::uint32_t)c;
+            push.rowParity = (std::uint32_t)(c & 1);
+            push.colParity = (std::uint32_t)(c >> 1);
+            push.planeWidth = (std::uint32_t)((width - (int)push.colParity + 1) / 2);
+            push.planeHeight = (std::uint32_t)((height - (int)push.rowParity + 1) / 2);
+            if ((push.planeWidth == 0) || (push.planeHeight == 0)) {
+                continue;
+            }
+            const int color = RawKernels::fcBayer((std::size_t)(c % 2), (std::size_t)(c / 2), filters);
+            if (!run(gpu::GpuKernelId::rawdenoise_bayer_extract, push, push.planeWidth, push.planeHeight) || !denoisePlane(push, color)
+                || !run(gpu::GpuKernelId::rawdenoise_write, push, push.outWidth, push.outHeight)) {
+                return eStatusFailed;
+            }
+        }
+    }
+
+    return eStatusOK;
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+} // RawDenoise::renderOpGpu
 
 NATRON_NAMESPACE_EXIT

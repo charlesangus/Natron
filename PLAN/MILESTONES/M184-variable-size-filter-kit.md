@@ -56,19 +56,19 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
 
 ## Phase 184.3: IErode and IDilate
 
-- [ ] M184.P3.T1 — Write the native IErode and IDilate nodes (CPU)
+- [x] M184.P3.T1 — Write the native IErode and IDilate nodes (CPU)
   - files: `Engine/Nodes/Filter/IErodeDilate.h`, `Engine/Nodes/Filter/IErodeDilate.cpp`, `Engine/Nodes/Filter/IErode.reg.inc`, `Engine/Nodes/Filter/IDilate.reg.inc`
   - approach: One templated class, two registrations, mirroring `ErodeDilateNode<ErodeDilateMode>`. Per-pixel radius `r = lerp(sizeAtBlack, size, Map)`. Build a per-row sparse table (range min or max) per tile; each output pixel queries one range per row within its radius (square: full width; disc: the row's half-width), so cost is O(r) per pixel. Fractional radii blend between the floor and ceil results for a smooth transition.
   - verify: at the phase build, `ctest -R NativeIErodeDilate` (T2) passes.
   - size: L
 
-- [ ] M184.P3.T2 — Test IErode and IDilate on CPU
+- [x] M184.P3.T2 — Test IErode and IDilate on CPU
   - files: `Tests/Native/NativeIErodeDilate_Test.cpp`
   - approach: Map 0 is identity. Map 1 with the square shape is bit-identical to base Erode/Dilate at the same integer size. The disc shape matches a brute-force disc min/max. A Map ramp gives a monotonic result across the ramp. Record regression fixtures.
   - verify: at the phase build, `ctest -R NativeIErodeDilate` passes.
   - size: M
 
-- [ ] M184.P3.T3 — IErode and IDilate on the GPU
+- [x] M184.P3.T3 — IErode and IDilate on the GPU
   - files: `Engine/Gpu/Kernels/ierodedilate.slang`, `Engine/Gpu/Kernels/ierodedilate.cmake`, `Engine/Nodes/Filter/IErodeDilate.cpp`, `Tests/Native/NativeIErodeDilateGpu_Test.cpp`
   - approach: Sparse-table build in shared memory per tile row band, then the per-pixel range queries.
   - verify: at the phase build, `ctest -R NativeIErodeDilateGpu` passes on lavapipe, bit-exact with the CPU.

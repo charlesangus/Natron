@@ -106,4 +106,12 @@ M62.P5.T1 (2026-10-03, massif on a 300-node OFX Grade chain, release build at `a
   - verify: a test edits an upstream knob concurrently with renders and asserts that no cache holds an entry under a hash whose node was dirty at store time; an A→B→A edit during a metadata derive leaves no stale key/value entry.
   - size: L
 
+## Phase 31.9: Python errors swallowed by StatusEnum bindings (from M96 - Weighted Curve Tangents)
+
+- [ ] M31.P9.T1 — Return early from every StatusEnum binding that can set a Python error
+  - files: the Shiboken typesystem XML for the Engine Python bindings, `Tests/Python/` (or the existing Python binding tests)
+  - approach: Bindings that return `StatusEnum` and can set a Python error from C++ (via `checkIsEditable`/`checkHolderIsEditable`, e.g. on a placeholder node for an uninstalled plug-in), such as `ParametricParam.addControlPoint`/`setNthControlPoint` and other param setters, surface `SystemError: ... returned a result with an exception set`. Sweep them and add the inject-code M96 used for its two weighted calls (`if (PyErr_Occurred()) return {};`).
+  - verify: on a placeholder node, each swept setter raises its intended exception, not `SystemError`.
+  - size: M
+
 **Verification gate:** every task's verify holds; whole ctest suite green; AppImage packaged and a manual GUI session (playback, render-to-disk with abort, Python `app.render()`) reports no regression.

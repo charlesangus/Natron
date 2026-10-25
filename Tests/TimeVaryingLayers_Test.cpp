@@ -726,7 +726,6 @@ TEST_F(TimeVaryingLayersTest, TimeChangeRelistsLayerMenus)
 // RGB with diffuse and specular at frame 1 and the RGBA input at frame 2. Fed into an AddLayers that
 // adds alpha, frame 1 widens the RGB colour plane to RGBA and frame 2 already carries alpha and
 // stays RGBA. Each frame answers from its own state, with the timeline parked on the other frame.
-// A keyed Switch upstream would need the Switch to present per-frame layers.
 TEST_F(TimeVaryingLayersTest, AddLayersWidensEachFramesRoutedColourPlane)
 {
     NodePtr withLayers = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr");
@@ -760,5 +759,62 @@ TEST_F(TimeVaryingLayersTest, AddLayersWidensEachFramesRoutedColourPlane)
         EXPECT_EQ(routedNComps[frame - 1], routed->getNComps(-1)) << "frame " << frame;
         EXPECT_EQ(std::string(kNatronColorLayerID), metadata->getComponentsType(-1)) << "frame " << frame;
         EXPECT_EQ(4, metadata->getNComps(-1)) << "frame " << frame;
+    }
+}
+
+// The same widening behind a Switch that routes the alpha-stripped stream at frame 1 and a plain
+// RGBA file at frame 2. The Switch is an identity at both frames, so its metadata and its present
+// colour layer are those of the input it routes there, not the widest of its inputs, and AddLayers
+// widens RGB at frame 1 and keeps RGBA at frame 2.
+TEST_F(TimeVaryingLayersTest, AddLayersWidensEachFramesSwitchedColourPlane)
+{
+    NodePtr withLayers = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr");
+    NodePtr rgbaOnly = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr");
+    ASSERT_TRUE(withLayers && rgbaOnly);
+
+    NodePtr remove = createNode(QString::fromUtf8(PLUGINID_NATRON_REMOVELAYERS));
+    ASSERT_TRUE(bool(remove));
+    connectNodes(withLayers, remove, 0, true);
+    KnobChannelSetPtr removed = std::dynamic_pointer_cast<KnobChannelSet>(remove->getKnobByName(kRemoveLayersParamChannels));
+    ASSERT_TRUE(bool(removed));
+    removed->setLayer(0, kNatronColorViewAlpha, NULL);
+
+    NodePtr switchNode = createNode(QString::fromUtf8(PLUGINID_NATRON_SWITCH));
+    ASSERT_TRUE(bool(switchNode));
+    connectNodes(remove, switchNode, 0, true);
+    connectNodes(rgbaOnly, switchNode, 1, true);
+    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kSwitchParamWhich));
+    ASSERT_TRUE(bool(which));
+    which->setValueAtTime(1, 0, ViewSpec::all(), 0);
+    which->setValueAtTime(2, 1, ViewSpec::all(), 0);
+
+    NodePtr add = createNode(QString::fromUtf8(PLUGINID_NATRON_ADDLAYERS));
+    ASSERT_TRUE(bool(add));
+    connectNodes(switchNode, add, 0, true);
+    KnobChannelSetPtr added = std::dynamic_pointer_cast<KnobChannelSet>(add->getKnobByName(kAddLayersParamLayers));
+    ASSERT_TRUE(bool(added));
+    added->setLayer(0, kNatronColorViewAlpha, NULL);
+
+    const int routedNComps[2] = { 3, 4 };
+    for (int frame = 1; frame <= 2; ++frame) {
+        getApp()->getTimeLine()->seekFrame(3 - frame, false, NULL, eTimelineChangeReasonOtherSeek);
+        NodeMetadataConstPtr routed = switchNode->getEffectInstance()->getMetadata(frame, ViewIdx(0));
+        NodeMetadataConstPtr metadata = add->getEffectInstance()->getMetadata(frame, ViewIdx(0));
+        ASSERT_TRUE(routed && metadata) << "frame " << frame;
+        // Guards against AddLayers passing because its input was already wrong.
+        EXPECT_EQ(routedNComps[frame - 1], routed->getNComps(-1)) << "frame " << frame;
+        EXPECT_EQ(std::string(kNatronColorLayerID), metadata->getComponentsType(-1)) << "frame " << frame;
+        EXPECT_EQ(4, metadata->getNComps(-1)) << "frame " << frame;
+
+        // The layers path must agree with the metadata on the routed colour layout.
+        std::list<ImageLayerDesc> present;
+        switchNode->getEffectInstance()->getPresentLayers(frame, ViewIdx(0), -1, &present);
+        int presentColorNComps = 0;
+        for (const ImageLayerDesc& layer : present) {
+            if (layer.isColorLayer()) {
+                presentColorNComps = layer.getNumComponents();
+            }
+        }
+        EXPECT_EQ(routedNComps[frame - 1], presentColorNComps) << "frame " << frame << " present=" << layerIDsString(present);
     }
 }

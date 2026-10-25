@@ -54,6 +54,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/ClickableLabel.h"
 #include "Gui/ComboBox.h"
 #include "Gui/CurveWidget.h"
+#include "Gui/GLContextLoss.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
@@ -144,6 +145,10 @@ public:
 
 
     void showMenu(const QPoint & globalPos);
+
+    // Deletes everything initializeGL() created in the widget's context, which must be current, and
+    // zeroes the names so that initializeGL() can rebuild them in the next context.
+    void releaseGLResources();
 
     void drawScale();
 
@@ -422,24 +427,47 @@ Histogram::~Histogram()
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-    makeCurrent();
+    // ~QOpenGLWidget destroys the context once _imp is gone.
+    GLContextLoss::releaseNow(this);
+}
 
+void
+HistogramPrivate::releaseGLResources()
+{
 #ifdef NATRON_HISTOGRAM_USING_OPENGL
-    glDeleteTextures(3, &_imp->histogramTexture[0]);
-    glDeleteTextures(3, &_imp->histogramReductionsTexture[0]);
-    glDeleteTextures(3, &_imp->histogramRenderTexture[0]);
-    glDeleteTextures(3, &_imp->histogramMaximumTexture[0]);
+    glDeleteTextures(3, &histogramTexture[0]);
+    glDeleteTextures(3, &histogramReductionsTexture[0]);
+    glDeleteTextures(3, &histogramRenderTexture[0]);
+    glDeleteTextures(3, &histogramMaximumTexture[0]);
 
-    glDeleteFramebuffers(3, &_imp->fboReductions[0]);
-    glDeleteFramebuffers(1, &_imp->fboMaximum);
-    glDeleteFramebuffers(1, &_imp->fbohistogram);
-    glDeleteFramebuffers(1, &_imp->fboRendering);
+    glDeleteFramebuffers(3, &fboReductions[0]);
+    glDeleteFramebuffers(1, &fboMaximum);
+    glDeleteFramebuffers(1, &fbohistogram);
+    glDeleteFramebuffers(1, &fboRendering);
 
-    glDeleteVertexArrays(1, &_imp->vaoID);
-    glDeleteBuffers(1, &_imp->vboID);
-    glDeleteBuffers(1, &_imp->vboHistogramRendering);
+    glDeleteVertexArrays(1, &vaoID);
+    glDeleteBuffers(1, &vboID);
+    glDeleteBuffers(1, &vboHistogramRendering);
 
+    for (int i = 0; i < 3; ++i) {
+        histogramTexture[i] = 0;
+        histogramReductionsTexture[i] = 0;
+        histogramRenderTexture[i] = 0;
+        histogramMaximumTexture[i] = 0;
+        fboReductions[i] = 0;
+    }
+    fboMaximum = 0;
+    fbohistogram = 0;
+    fboRendering = 0;
+    vaoID = 0;
+    vboID = 0;
+    vboHistogramRendering = 0;
+
+    histogramComputingShader.reset();
+    histogramMaximumShader.reset();
+    histogramRenderingShader.reset();
 #endif
+    textRenderer.releaseCurrentContext();
 }
 
 int
@@ -685,7 +713,9 @@ Histogram::initializeGL()
     }
 
     assert( QOpenGLContext::currentContext() == context() );
-
+    GLContextLoss::watch(this, [this]() {
+        _imp->releaseGLResources();
+    });
 
 #ifdef NATRON_HISTOGRAM_USING_OPENGL
     _imp->histogramComputingShader.reset( new QOpenGLShaderProgram( context() ) );

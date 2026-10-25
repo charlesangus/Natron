@@ -48,7 +48,7 @@ Exact native I-warps (user, 2026-10-24). Slicing a transform and blending the sl
 
 ## Phase 185.2: IDistort and STMap amount
 
-- [ ] M185.P2.T1 — Add an optional Map input to IDistort and STMap
+- [x] M185.P2.T1 — Add an optional Map input to IDistort and STMap
   - files: `Engine/Nodes/Transform/IDistort.{h,cpp}`, `Engine/Nodes/Transform/STMap.{h,cpp}`, `Tests/Native/NativeIDistortAmount_Test.cpp`
   - approach: Append an optional Map input (M184's `MapInput`, after the existing inputs so saved connections keep their indices). When connected, scale the displacement (IDistort) or the offset from identity UV (STMap) by the Map value per pixel, on CPU and GPU (a multiply in the existing coordinate-map build); unconnected, the code path is unchanged.
   - verify: tests: an unconnected Map is bit-identical to before; Map 0 identity, Map 1 equals unmapped, Map 0.5 halves displacement; GPU parity within the existing tolerance.
@@ -62,6 +62,7 @@ Exact native I-warps (user, 2026-10-24). Slicing a transform and blending the sl
 
 ## Decisions
 
+- 2026-10-25 — **Map on IDistort and STMap (bosley-native-nodes):** the Map is optional input 3 after Mask; IDistort samples at c + d·m, STMap at c + (p − c)·m; with no Map both are bit-identical to before. STMap's UV Alpha blacks a pixel only where the Map is above 0, so a pixel the Map holds in place shows the source. Cost seeds for ITransform/ICornerPin and the Map variants wait on measurement (P2.T2 stays open for them).
 - 2026-10-25 — **Interpolation and Map wording (bosley-native-nodes):** skew blends linearly with the Map amount, matching how Transform's own amount knob blends it, rather than in log space; per-pixel matrices come from exact matrices at 256–512 Map values joined by Hermite interpolation (exact at 0, ½ and 1). The Map knobs' tooltips must not speak of sizes on a warp node; fixed with the docs task.
 - 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file. ITransform/ICornerPin are Custom ops; the branch is rebased onto main before STMap/IDistort GPU work.
 - 2026-10-25 — **Interpolate the transform, never blend slices:** slicing a transform ghosts; per-pixel matrices through the coordinate-map resampler are exact.

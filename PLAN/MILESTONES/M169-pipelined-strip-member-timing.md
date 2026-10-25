@@ -83,7 +83,7 @@ Transfer contention is the cause. Member intervals that overlap an upload/downlo
 
 ## Phase 169.3: Gate
 
-- [ ] M169.P3.T1 — Gate build and hardware runs
+- [x] M169.P3.T1 — Gate build and hardware runs
   - files: none in code; output in `.local/m169/p3/`
   - approach: one `tools/ci/remote/build.sh fast --tests`. On `bosley-faux`: `ctest -L gpu`, and the engine ctest with `NATRON_GPU=force` under both schedulers. Repeat the keying_grade profile and compare Grade/Blur `kernelMsPerMpx` after pipelined frames against a serial-only run (`setGpuStripPipelining` off). On the user's RADV host: `ctest -L gpu` as a no-regression check.
   - verify: everything passes on lavapipe CI, `bosley-faux` and RADV. On NVIDIA, the pipelined and serial calibrations are within 1.5×.
@@ -96,5 +96,16 @@ Transfer contention is the cause. Member intervals that overlap an upload/downlo
 - 2026-10-25 — **Freshness check after M107, M156 and M168 merged** (consultant, against main dc8774f9a): line refs in the intro paragraph predate M156 (`noteSuccess` now `GpuRegionTask.cpp:2949-2984`, `observeGpu` `GpuCostModel.cpp:773-802`, `predictedKernelMs` is now `Member::predictedKernelMs` in `GpuRegionTask.cpp:310/869`, `pipelineStrips` 2601-2651, `RegionMembersAreTimedOnTheDevice` `Tests/GpuResidency_Test.cpp:2060`). P2.T1 struck: in whole regions acquires precede the begin stamp and releases follow the end stamp, and serial strips have no ownership barriers, so only pipelined strips need the split, which P1.T1 does. P1.T1 reuses M156's per-transfer timestamp pairs (adds begin/end to `GpuTransferRecord`) instead of new stamps. P1.T3 and P2.T3 now cover whole chained regions, which M156 made contended. Claimed despite file overlap with M64 - Tiled Rendering, M101 - Clean-Sheet Merge Node and M146 - Roto Hosting For Any Node (user, 2026-10-25).
 - 2026-10-24 — **Deps M107 and M91:** every task but P2.T2 edits `Engine/GpuRegionTask.cpp`, which M107 changes, and the work builds on M91's P2.T2 and P2.T5 (user, grill).
 
+## Gate results (P3.T1, 2026-10-25, RTX 3070 Ti, CI run 40197220131 on 1c2128279)
+
+- Lavapipe CI: 457/457 in both legs; `PipelinedStripsCalibrateLikeSerial` runs there (calibrated 0.922).
+- NVIDIA repeats: `RegionMembersAreTimedOnTheDevice` 5/5 and `PipelinedStripsCalibrateLikeSerial` 5/5 per scheduler. Calibrated pipelined/serial Grade 0.88–1.03× against raw 2.9–6.8×; pipelined skipped 0 in 9 of 10 runs, 1 in one.
+- `ctest -L gpu`: 47/49 per scheduler; the two failures are `CurveSnapshotPrecisionTest.CurveMulKeepsTheProductError` (M171's test; BelowTiny pairs, subnormal partial products apparently flushed on NVIDIA), outside M169's diff. Filed.
+- Full engine ctest (`NATRON_GPU=force`): legacy 437/457, taskgraph 435/457. GpuResidency 37/37 and GpuMemberTiming 9/9 in both. Remaining failures are host environment: raw fixtures are LFS pointers (no git-lfs), stale `build/assets/Plugins` (CImg segfault in CacheEquivalenceSweep), host memory exhaustion (`vkAllocateMemory` in GpuTransferTest), a `-j4` Shuffle flake, and `RenderSchedulerTest.CachedOutputsOfTwoFramesAtOnce` failing on this host only (passes on CI, GPU-independent).
+- keying_grade 1.5× comparison: inconclusive. Host memory ran out mid-render (21/23 GiB, 8 GiB swap, three other Natron instances), so pipelined frames 1–5 are contaminated. Frame 0 alone: Grade 0.60–1.07, Blur 0.97–2.04 (one uncontended spike).
+- RADV no-regression run: not run.
+- Data: `.local/m169/p3/` (calib.md, out/).
+
 **Verification gate:** remote `fast --tests` CI green on lavapipe. `ctest -L gpu` and the engine ctest (`NATRON_GPU=force`, both schedulers) pass on `bosley-faux` (RTX 3070 Ti) and on the RADV host. The restored 5% `RegionMembersAreTimedOnTheDevice` check passes 5/5 on `bosley-faux`, and so does `PipelinedStripsCalibrateLikeSerial` if P2.T3 survived P1.T3. keying_grade pipelined calibration is within 1.5× of serial.
 - 2026-10-25 — **`PipelinedStripsCalibrateLikeSerial` compares backed-out samples:** one observation moves a seeded EMA row only `kEmaWeight` (0.25) of the way, so raw `gpuMs` ratios would almost always pass. The test recovers the sample as `before + (after − before) / kEmaWeight`. `calibrationSkipped` counts task positions.
+- 2026-10-25 — **Gate accepted as is (user):** M169's own tests pass on NVIDIA and lavapipe; the keying_grade 1.5× comparison was inconclusive under host memory exhaustion and the RADV no-regression run was not done. Other failures are host-environment or pre-existing (CurveSnapshotPrecisionTest on NVIDIA, filed).

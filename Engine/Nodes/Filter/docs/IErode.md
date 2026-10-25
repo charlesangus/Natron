@@ -11,7 +11,7 @@ The variable-size Erode and Dilate: one template, `IErodeDilateNode<ErodeDilateM
 their base nodes in the I-variant registry; every knob they share has the same name.
 
 - **Map.** As IBlur's ([IBlur.md](IBlur.md)): an aux Map input from `MapInput`, its channel (alpha by default)
-  inverted and remapped by Map Black and Map White to [0, 1], 0 outside the Map's image, the standard Mask and Mix
+  inverted, clamped to [0, 1] and remapped by Map Gamma and Map Response, 0 outside the Map's image, the standard Mask and Mix
   still limiting the result. The radius of an axis at a pixel is `lerp(sizeAtBlack, size, map)`, computed in float
   and clamped between the two, so it is monotonic in the Map. A disconnected Map filters at Size everywhere and
   shows a warning badge.
@@ -36,10 +36,11 @@ their base nodes in the I-variant registry; every knob they share has the same n
 Tests: `Tests/Native/NativeIErodeDilate_Test.cpp`. The row queries, the exact ellipse half-widths and the whole
 filter match brute force; a black Map is bit-identical to the input; a white Map with the square shape matches Erode
 and Dilate at whole sizes with or without a Map; the disc matches a brute-force disc; a Map ramp gives a monotonic
-result; a disconnected Map warns. The goldens (`Golden`: square, disc, Size At Black, a Map remap, and mask and
-mix) are compared bit for bit.
+result; a disconnected Map warns. The goldens (`Golden`: square, disc, Size At Black, a Map remap of gamma 0.5 with
+the Smooth response, and mask and mix) are compared bit for bit.
 
 GPU: `ierodedilate.slang` builds the same tables in global memory per channel, then runs each pixel's queries, and
-holds `ParityTolerance::exact()` against the CPU. A radius over 255 pixels on either axis stays on the CPU, which
+holds `ParityTolerance::exact()` against the CPU; the Map's remap is `mapremap.slang`, the CPU's float operations in
+the same order, gamma included. A radius over 255 pixels on either axis stays on the CPU, which
 keeps the ellipse arithmetic in 32-bit integers, as do byte, short and half images
 (`Tests/Native/NativeIErodeDilateGpu_Test.cpp`).

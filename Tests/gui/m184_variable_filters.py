@@ -49,6 +49,21 @@ try:
                    "has: " + ", ".join(sorted(p.getScriptName() for p in node.getParams())))
         prm.set(*values)
 
+    def check_map_knobs(node):
+        names = [p.getScriptName() for p in node.getParams()]
+        label = node.getLabel()
+        check("sizeAtBlack" in names and "size" in names and names.index("sizeAtBlack") < names.index("size"),
+              "%s shows Size At Black before Size" % label)
+        check("mapResponse" in names and "mapGamma" in names,
+              "%s has Map Response and Map Gamma" % label)
+        check("mapBlack" not in names and "mapWhite" not in names,
+              "%s has no Map Black or Map White" % label)
+        response = node.getParam("mapResponse")
+        gamma = node.getParam("mapGamma")
+        if response is not None and gamma is not None:
+            check(response.getValue() == 0 and abs(gamma.getValue() - 1.0) < 1e-9,
+                  "%s defaults to a Linear response and gamma 1" % label)
+
     def connect(node, input_nb, source):
         return check(node.connectInput(input_nb, source),
                      "connect %s input %d to %s" % (node.getLabel(), input_nb, source.getLabel()))
@@ -176,6 +191,7 @@ try:
         gt.require(feather is not None, "the ellipse has a feather parameter")
         feather.set(160.0)
         iblur = create("IBlur", 150, 250)
+        check_map_knobs(iblur)
         setp(iblur, "size", 60.0, 60.0)
         connect(iblur, 0, checker)
         connect(iblur, 2, roto)
@@ -214,6 +230,8 @@ try:
         setp(ramp, "color1", 1.0, 1.0, 1.0, 1.0)
         ierode = create("IErode", 150, 800)
         idilate = create("IDilate", 400, 800)
+        check_map_knobs(ierode)
+        check_map_knobs(idilate)
         for node in (ierode, idilate):
             setp(node, "size", 80.0, 80.0)
             connect(node, 0, small)

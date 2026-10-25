@@ -69,8 +69,8 @@ constexpr NodeSpec kIBlurNodeSpec = {
     .description = "Blur the input stream by a size that varies per pixel with the Map input.\n"
                    "\n"
                    "Where the Map is white the blur has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
-                   "and in between a size in between. Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, and Map Black and Map White "
-                   "set the Map values that give Size At Black and Size. Outside the Map image, the Map reads black. With no Map connected, the blur has the Size everywhere.\n"
+                   "and in between a size in between. Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma "
+                   "and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. Outside the Map image, the Map reads black. With no Map connected, the blur has the Size everywhere.\n"
                    "\n"
                    "The blur is a box of the pixel's size applied three times, an approximation of the Gaussian of standard deviation size/2.4 that Blur uses "
                    "(within about 2% at a constant size), whose cost does not depend on the size. It is black outside the image, and the Mask and Mix limit the result as usual.",
@@ -266,6 +266,7 @@ const uint32_t kGpuFinal = 1;
 const uint32_t kGpuMapConnected = 1;
 const uint32_t kGpuMapRead = 2;
 const uint32_t kGpuMapInvert = 4;
+const uint32_t kGpuMapSmooth = 8;
 
 // Mirrors IBlurParams in Kernels/iblur.slang, which has no padding between members.
 struct IBlurGpuParams {
@@ -309,8 +310,8 @@ struct IBlurGpuConstants {
     int32_t mapY1;
     int32_t mapX2;
     int32_t mapY2;
-    float black;
-    float white;
+    float exponent;
+    uint32_t remapPad;
     float sizeAtBlackX;
     float sizeAtBlackY;
     float sizeX;
@@ -326,7 +327,7 @@ struct IBlurGpuConstants {
     uint32_t pad;
 };
 static_assert(sizeof(IBlurGpuConstants) == 96);
-static_assert(offsetof(IBlurGpuConstants, black) == 36);
+static_assert(offsetof(IBlurGpuConstants, exponent) == 36);
 static_assert(offsetof(IBlurGpuConstants, blackRx) == 68);
 
 // The float index of pixel (x, y) of image, or false when the image exceeds the kernels' 32-bit
@@ -416,9 +417,8 @@ recordIBlurGpu(const PassGpuIO& io,
     const BoxRadii white = radiiAt(params, context, 1.f);
     const BoxRadii black = radiiAt(params, context, 0.f);
     const BoxRadii outside = radiiAt(params, context, params.map.remap(0.f));
-    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u);
-    k.black = (float)params.map.black;
-    k.white = (float)params.map.white;
+    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u);
+    k.exponent = params.map.exponent;
     k.sizeAtBlackX = (float)params.map.sizeAtBlack[0];
     k.sizeAtBlackY = (float)params.map.sizeAtBlack[1];
     k.sizeX = (float)params.sizeX;
@@ -602,6 +602,8 @@ IBlur::initializeKnobs()
 {
     const KnobPagePtr page = createControlsPage();
 
+    _map.createSizeAtBlackKnob(this, page, 2);
+
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(this, tr("Size"), 2);
     sizeKnob->setName(kIBlurParamSize);
     sizeKnob->setHintToolTip(tr("Size (diameter) of the blur where the Map is white, in pixel units (>=0). The standard deviation of the Gaussian the blur approximates is size/2.4."));
@@ -619,7 +621,7 @@ IBlur::initializeKnobs()
     page->addKnob(sizeKnob);
     _size = sizeKnob;
 
-    _map.createKnobs(this, page, 2);
+    _map.createKnobs(this, page);
 
     KnobBoolPtr cropToFormatKnob = AppManager::createKnob<KnobBool>(this, tr("Crop To Format"));
     cropToFormatKnob->setName(kIBlurParamCropToFormat);

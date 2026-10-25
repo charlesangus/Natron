@@ -1,3 +1,5 @@
+import mapremap;
+
 // IBlur's passes, after the workers of Engine/Nodes/Filter/IBlur.cpp and the box of
 // Engine/Nodes/Filter/VariableBlurKernels.cpp. The work buffer covers the CPU's scratch rect, the
 // domain of domWidth x domHeight pixels from (domX1, domY1): two slots of `channels` floats per
@@ -30,9 +32,9 @@ struct MapConstants
     int mapY1;
     int mapX2;
     int mapY2;
-    // MapInputParams::remap()'s knobs, as the CPU rounds them to float.
-    float black;
-    float white;
+    // MapInputParams::remap()'s exponent, 1 / Map Gamma; kMapSmooth in mapFlags is its smooth.
+    float exponent;
+    uint remapPad;
     // MapInputParams::sizeAt()'s sizes, and the factor taking a size to the standard deviation of
     // the Gaussian: the render scale over 2.4, horizontally over the pixel aspect ratio too.
     float sizeAtBlackX;
@@ -100,6 +102,7 @@ static const uint kFinal = 1;
 static const uint kMapConnected = 1;
 static const uint kMapRead = 2;
 static const uint kMapInvert = 4;
+static const uint kMapSmooth = 8;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Two-float arithmetic: a value is hi + lo with |lo| at most half an ulp of hi.
@@ -221,12 +224,6 @@ bool isFinite(float v)
     return (asuint(v) & 0x7f800000u) != 0x7f800000u;
 }
 
-// By its bits, as a comparison need not see a NaN.
-bool isNan(float v)
-{
-    return !isFinite(v) && (asuint(v) & 0x007fffffu) != 0u;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // Two's complement 64-bit integers as (lo, hi) uints.
 
@@ -333,19 +330,10 @@ void iblur_load(uint3 tid : SV_DispatchThreadID)
         workBuf[dst + c] = asfloat(srcBuf[src + c]);
 }
 
-// MapInputParams::remap(), in float as there.
+// MapInputParams::remap(), by mapremap.slang.
 float remapMap(MapConstants k, float raw)
 {
-    const float v = ((k.mapFlags & kMapInvert) != 0u) ? 1.0 - raw : raw;
-    float m;
-    if (k.white == k.black)
-        m = (v >= k.white) ? 1.0 : 0.0;
-    else
-        m = (v - k.black) / (k.white - k.black);
-    // A NaN sample reads as black.
-    if (isNan(m) || !(m > 0.0))
-        return 0.0;
-    return (m >= 1.0) ? 1.0 : m;
+    return mapRemap(raw, (k.mapFlags & kMapInvert) != 0u, (k.mapFlags & kMapSmooth) != 0u, k.exponent);
 }
 
 // VariableBlurKernels::boxRadius() in float; each loop moves n by one step at most in practice.

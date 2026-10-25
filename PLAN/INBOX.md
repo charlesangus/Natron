@@ -1,5 +1,9 @@
 ## Pending
 
+### 2026-10-25T06:30:00Z — info
+- refs: M167
+A Switch's per-file key/value metadata (custom header attributes) always comes from its input 0, not the input it routes to at that frame, so a Write over a keyed Switch writes the first source's custom attributes into every file. Found while writing M167 P5.T4 (NativeWriteMetadata EachFileOfASequenceTakesItsOwnFramesFormat checks only size and PAR). Fix belongs in Switch / NativeEffectBase::getOutputMetadata routing; outside M167's files.
+
 ### 2026-10-24T23:30:00Z — info
 - refs: none
 User request: a Python API for undo steps, as context managers — e.g. `with app.newUndoStep("label"):` groups everything inside into one undo step (nesting folds into the outer step), and `with app.noUndoStep():` runs edits without recording them. Builds on M114 Phase 114.5 (Python edits recorded through the Engine-side UndoRecorderI with UndoStepGuard/UndoSuppressGuard), which exposes no Python API. It also covers edits made from PySide widget handlers in Python panels, which 114.5 leaves unrecorded because they have no C++ entry point. Decide names, where they live (app vs module-level), behaviour with no recorder (background/command line: no-ops), and exception handling (the step still closes; whether a failed block is rolled back).

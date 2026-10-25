@@ -127,7 +127,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 128.2: Noise core
 
-- [ ] M129.P2.T1 — Vendor or write the chosen 4D noise core in C++
+- [x] M129.P2.T1 — Vendor or write the chosen 4D noise core in C++
   - files: `libs/noise/` (new: the chosen core headers, `LICENSE`/`NOTICE`, `README.md` naming the upstream revision), `Engine/Nodes/Generator/NoiseCore.h` (new: the engine-facing API), `Tests/Native/NoiseCore_Test.cpp` (new)
   - approach:
     - The core is our port of FastNoise2's kernels (option A, chosen 2026-10-25; see `PLAN/DESIGN/2026-10-25-noise-library-spike.md`), promoted from `tools/spikes/noise/fn2port/`. No FastNoise2 or FastSIMD code is linked.
@@ -140,7 +140,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the test covers determinism, seed sensitivity, output range bounds per type, continuity across cell boundaries (gradient/value), and the 4th axis changing the result. It runs at the phase build.
   - size: L
 
-- [ ] M129.P2.T2 — Add fractal combiners and domain warp, and mirror the core in Slang
+- [x] M129.P2.T2 — Add fractal combiners and domain warp, and mirror the core in Slang
   - files: `Engine/Nodes/Generator/NoiseCore.h`, `Engine/Gpu/Kernels/noisecore.slang` (new), `Engine/Gpu/Kernels/noisecore.cmake`, `Tests/Native/NoiseCoreGpu_Test.cpp` (new)
   - approach:
     - Add fBm, turbulence/billow, ridged and hybrid over any base type, with an octave cap, plus domain warp (offset p by a lower-frequency vector noise).

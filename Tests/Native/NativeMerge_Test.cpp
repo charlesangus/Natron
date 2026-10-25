@@ -361,8 +361,8 @@ protected:
         knob->setRows(rows);
     }
 
-    // A over B in a three-channel layer, each channel's alphas broadcast from aAlpha and bAlpha,
-    // packed four floats per pixel (rgba).
+    // A over B in a three-channel layer, each channel's alphas broadcast from the rgba alphas
+    // (packed four floats per pixel); an empty aLayer is a layer A lacks, read as zero.
     static std::vector<float> expectedLayerOver(const std::vector<float>& aLayer,
                                                 const std::vector<float>& aRGBA,
                                                 const std::vector<float>& bLayer,
@@ -371,7 +371,7 @@ protected:
         std::vector<float> want(bLayer.size());
 
         for (std::size_t p = 0; (p + 1) * 3 <= want.size(); ++p) {
-            const float a = aLayer.empty() ? 0.f : aRGBA[p * 4 + 3];
+            const float a = aRGBA[p * 4 + 3];
             const float b = bRGBA[p * 4 + 3];
             const float zero[3] = { 0.f, 0.f, 0.f };
             const float* A = aLayer.empty() ? zero : &aLayer[p * 3];
@@ -940,7 +940,7 @@ TEST_F(NativeMergeNodeTest, PerChannelAlphaWritesTheAlphaLayer)
 }
 
 // Another staged composite node declares no produced planes: its planes are only its layer
-// knob's, whatever layers its inputs carry.
+// knob's, whatever layers its inputs carry. Between its inputs, so it is no pass-through.
 TEST_F(NativeMergeNodeTest, OtherCompositeNodesProduceNoExtraPlanes)
 {
     NodePtr dissolve = createNode(QString::fromUtf8(PLUGINID_NATRON_DISSOLVE), PLUGIN_MAJOR_NATRON_DISSOLVE);
@@ -951,6 +951,9 @@ TEST_F(NativeMergeNodeTest, OtherCompositeNodesProduceNoExtraPlanes)
     setParitySourceExtraLayer(second, true);
     connectNodes(first, dissolve, dissolveSourceInput(0), true);
     connectNodes(second, dissolve, dissolveSourceInput(1), true);
+    KnobDoublePtr which = dissolve->getEffectInstance()->getKnobByNameAndType<KnobDouble>(kDissolveParamWhich);
+    ASSERT_TRUE(bool(which));
+    which->setValue(0.5);
 
     const std::list<ImageLayerDesc> output = neededPlanes(dissolve, -1);
     EXPECT_FALSE(output.empty());

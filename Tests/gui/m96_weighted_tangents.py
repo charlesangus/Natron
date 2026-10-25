@@ -230,10 +230,14 @@ try:
                 return True
         return False
 
-    def select_node_row(editor, label):
-        # The tree wrappers are found again on every call: holding one across a yield crashes.
+    def select_node_row(label):
+        # The editor and tree wrappers are found again on every call: a wrapper held across a yield
+        # is marked deleted, and a child outlives its parent's wrapper only as a dead reference.
+        editors = gt.widgets_of("CurveEditor")
+        if not editors:
+            return False
         found = False
-        for tree in editor.findChildren(QTreeWidget):
+        for tree in editors[0].findChildren(QTreeWidget):
             for i in range(tree.topLevelItemCount()):
                 item = tree.topLevelItem(i)
                 if item.text(0) == label:
@@ -303,13 +307,11 @@ try:
         reset_keys()
         yield ("sleep", SETTLE_MS)
 
-        # The editor wrapper is kept for the whole run so the children found through it stay valid.
         editors = gt.widgets_of("CurveEditor")
         gt.require(editors, "found the curve editor")
-        editor = editors[0]
-        gt.require(make_curve_editor_current(editor), "brought the curve editor's tab to the front")
+        gt.require(make_curve_editor_current(editors[0]), "brought the curve editor's tab to the front")
         yield ("sleep", SETTLE_MS)
-        gt.require(select_node_row(editor, grade_label), "selected the Grade's row in the curve editor")
+        gt.require(select_node_row(grade_label), "selected the Grade's row in the curve editor")
         yield ("sleep", SETTLE_MS)
         cws = [w for w in gt.widgets_of("CurveWidget") if w.isVisible()]
         gt.require(cws, "the curve widget is visible")
@@ -318,8 +320,16 @@ try:
         yield ("sleep", SETTLE_MS)
 
         W, H = float(cw.width()), float(cw.height())
-        y0, y1 = 0.0 - 0.1, 1.0 + 0.1
-        sy = H / (y1 - y0)
+
+        def key_dot_y(g, x):
+            """The logical row of the keyframe dot drawn at column x: the centre of its blue
+            pixels, which a flat curve through the dot does not bias vertically."""
+            ys = [y for _x, y, c in g.pixels((x - 5, 0, x + 5, H))
+                  if c.blue() > 200 and c.red() < 60 and c.green() > 100]
+            return sum(ys) / len(ys) if ys else None
+
+        # The view's vertical scale is measured from the first and last keys' dots (values 0 and
+        # 1) instead of assumed, because the editor's frame-all margin is not the same in x and y.
         pyviewer = app.getViewer(viewer.getScriptName())
         gt.require(pyviewer is not None, "the viewer has a Python handle")
         pyviewer.seek(1)
@@ -334,9 +344,15 @@ try:
         report("NOTE curve widget %dx%d, time line at frame 1: %r, frame 21: %r" % (W, H, xa, xb))
         gt.require(xa is not None and xb is not None and xb > xa, "found the curve widget's time line at frames 1 and 21")
         sx = (xb - xa) / 20.0
+        dots = Grab(cw)
+        row0 = key_dot_y(dots, xa)
+        row1 = key_dot_y(dots, xb)
+        report("NOTE key dots at rows %r (value 0) and %r (value 1)" % (row0, row1))
+        gt.require(row0 is not None and row1 is not None and row0 > row1, "found the first and last keys' dots")
+        sy = row0 - row1
 
         def to_w(t, v):
-            return QPointF(xa + (t - 1) * sx, H - (v - y0) * sy)
+            return QPointF(xa + (t - 1) * sx, row0 - v * sy)
 
         key_pt = to_w(11.0, 0.5)
         span_r = to_w(21.0, 0).x() - key_pt.x()
@@ -365,11 +381,12 @@ try:
             return (max(d) if d else 0.0), len(d)
 
         def check_reach(g, side, tip, label):
-            # The tip is drawn as a 7-pixel point, so the red reaches a little past it.
+            # The tip is a white 7-pixel point drawn over the line's end, so the red stops about a
+            # radius short of the control point.
             reach, n = handle_reach(g, side)
             want = dist(tip, key_pt)
             report("NOTE %s: red reaches %.1f px (%d px drawn), control point at %.1f px" % (label, reach, n, want))
-            return check(n >= 10 and -1.5 <= reach - want <= 6.0, label)
+            return check(n >= 10 and -5.5 <= reach - want <= 1.5, label)
 
         def lands_under(cursor, label):
             got = handles()[1]
@@ -517,7 +534,8 @@ try:
         if "weighted-draw" in selected:
             gt.section("weighted-draw")
             reset_keys()
-            white.setKeyTangents(11.0, 0.05, 0.15, THIRD, 0.85, 0)
+            # The slopes are kept shallow so the heavy handle and the curve stay inside the view.
+            white.setKeyTangents(11.0, 0.05, 0.04, THIRD, 0.85, 0)
             white.setKeyTangents(21.0, 0.0, 0.0, 0.8, 0.8, 0)
             click(cw, QPointF(10, 10))
             yield ("sleep", SETTLE_MS)

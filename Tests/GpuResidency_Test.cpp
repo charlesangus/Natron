@@ -1587,7 +1587,6 @@ TEST_F(GpuResidencyTest, OutOfMemoryAtTheSecondRegionRendersItOnTheCpu)
 }
 
 // The Merge renders on the GPU through its own kernel: a region holding it runs whole on the device, root included.
-// (Before M101 the Merge had no GPU path and this region fell back to the CPU.)
 TEST_F(GpuResidencyTest, MergeJoinsTheRegionAndRendersOnTheGpu)
 {
     if (!gpuOrSkip()) {

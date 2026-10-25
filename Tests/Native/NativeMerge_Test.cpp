@@ -939,6 +939,132 @@ TEST_F(NativeMergeNodeTest, PerChannelAlphaWritesTheAlphaLayer)
     expectClose(want, got, kTolerance, "spec alpha over spec alpha");
 }
 
+// B's per-channel alpha layer is written the alpha the output layer's fold carries, whatever A's
+// alpha source: a universal or per-layer A alpha a, broadcast, merges with each of B's alphas by
+// the operator, so over writes a + b * (1 - a). A is not read in that layer, so whether A carries
+// it changes nothing. The universal channel is rgba.R, so that it differs from rgba's own alpha.
+TEST_F(NativeMergeNodeTest, PerChannelBAlphaLayerTakesTheCarriedAlpha)
+{
+    struct Config {
+        const char* aSource;
+        bool aHasSpec;
+    };
+    const Config configs[] = {
+        { kNativeMergeAlphaUniversal, true },
+        { kNativeMergeAlphaUniversal, false },
+        { kNativeMergeAlphaPerLayer, true },
+        { kNativeMergeAlphaPerLayer, false },
+    };
+    const MergeOps::Operator operators[] = { MergeOps::eOver, MergeOps::ePlus, MergeOps::eMultiply, MergeOps::eXor };
+
+    for (const Config& config : configs) {
+        NodePtr merge = createMerge();
+        NodePtr b = createSource(0, 0);
+        NodePtr a = createSource(10, 6);
+        ASSERT_TRUE(merge && b && a);
+        setParitySourceComponents(b, "rgb");
+        setParitySourceExtraLayer(b, true);
+        setParitySourceExtraLayer(a, config.aHasSpec);
+        connectNodes(b, merge, kNativeMergeInputB, true);
+        connectNodes(a, merge, kNativeMergeInputA, true);
+        setChannelKnob(merge, kNativeMergeParamAAlpha, std::string(kNatronColorViewRGBA) + ".R");
+        ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamAAlphaSource, config.aSource));
+        ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamBAlphaSource, kNativeMergeAlphaPerChannel));
+        setLayerKnob(merge, kNativeMergeParamBAlphaLayer, kParitySourceExtraLayerID);
+        EXPECT_TRUE(hasPlane(neededPlanes(merge, -1), kParitySourceExtraLayerID));
+        const RectI window = paritySourceWindow(b, kTime, 0);
+        ASSERT_FALSE(window.isNull());
+
+        std::vector<float> aRGBA, bSpec;
+        ASSERT_TRUE(renderRGBA(a, window, &aRGBA));
+        ASSERT_TRUE(renderLayer(b, window, paritySourceExtraLayer(), &bSpec));
+        const bool universal = (std::string(config.aSource) == kNativeMergeAlphaUniversal);
+        for (MergeOps::Operator op : operators) {
+            const std::string what = std::string(config.aSource) + (config.aHasSpec ? " A with spec, " : " A without spec, ") + MergeOps::operatorName(op);
+            ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, MergeOps::operatorName(op))) << what;
+            std::vector<float> got;
+            ASSERT_TRUE(renderLayer(merge, window, paritySourceExtraLayer(), &got)) << what;
+
+            std::vector<float> want(bSpec.size());
+            for (std::size_t p = 0; (p + 1) * 3 <= want.size(); ++p) {
+                const float a1 = aRGBA[p * 4 + (universal ? 0 : 3)];
+                const float aAlpha[3] = { a1, a1, a1 };
+                const MergeOps::AlphaSpan aSpan = { aAlpha, 3, 1 };
+                const MergeOps::AlphaSpan bSpan = { &bSpec[p * 3], 3, 1 };
+                MergeOps::mergeRow(op, 3, aAlpha, aSpan, &bSpec[p * 3], bSpan, 1, &want[p * 3]);
+            }
+            expectClose(want, got, kTolerance, what);
+        }
+    }
+}
+
+// An A input lacking A's layer has zero pixels there but keeps its alpha: under over it still
+// attenuates the result so far by (1 - a), as an A input carrying the layer does. Only a
+// disconnected input reads zero alpha too.
+TEST_F(NativeMergeNodeTest, AnAInputLackingTheALayerKeepsItsAlpha)
+{
+    NodePtr merge = createMerge();
+    NodePtr b = createSource(0, 0);
+    NodePtr a = createSource(10, 6);
+    NodePtr a2 = createSource(1, 2);
+    ASSERT_TRUE(merge && b && a && a2);
+    setParitySourceExtraLayer(a, true);
+    connectNodes(b, merge, kNativeMergeInputB, true);
+    connectNodes(a, merge, NativeMerge::aInput(0), true);
+    connectNodes(a2, merge, NativeMerge::aInput(1), true);
+    setLayerKnob(merge, kNativeMergeParamALayer, kParitySourceExtraLayerID);
+    const RectI window = paritySourceWindow(b, kTime, 0);
+    ASSERT_FALSE(window.isNull());
+
+    std::vector<float> bRGBA, aRGBA, aSpec, a2RGBA;
+    ASSERT_TRUE(renderRGBA(b, window, &bRGBA));
+    ASSERT_TRUE(renderRGBA(a, window, &aRGBA));
+    ASSERT_TRUE(renderLayer(a, window, paritySourceExtraLayer(), &aSpec));
+    ASSERT_TRUE(renderRGBA(a2, window, &a2RGBA));
+    bool a2HasAlpha = false;
+    for (std::size_t p = 0; (p + 1) * 4 <= a2RGBA.size(); ++p) {
+        a2HasAlpha = a2HasAlpha || (a2RGBA[p * 4 + 3] != 0.f);
+    }
+    ASSERT_TRUE(a2HasAlpha) << "A2's alpha is zero over the window, which proves nothing";
+
+    for (const char* name : { "over", "xor", "plus" }) {
+        MergeOps::Operator op = MergeOps::eOver;
+        ASSERT_TRUE(MergeOps::operatorFromName(name, &op)) << name;
+        const MergeOps::Operator alphaOp = MergeOps::isSeparable(op) ? op : MergeOps::eOver;
+        ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, name)) << name;
+        std::vector<float> got;
+        ASSERT_TRUE(renderRGBA(merge, window, &got)) << name;
+
+        std::vector<float> want(bRGBA.size());
+        for (std::size_t p = 0; (p + 1) * 4 <= want.size(); ++p) {
+            float result[4];
+            float resultAlpha[4];
+            for (int c = 0; c < 4; ++c) {
+                result[c] = bRGBA[p * 4 + c];
+                resultAlpha[c] = bRGBA[p * 4 + 3];
+            }
+            // A in spec, its fourth channel reading zero, then A2, which lacks spec, as zero.
+            const float aPixel[4] = { aSpec[p * 3], aSpec[p * 3 + 1], aSpec[p * 3 + 2], 0.f };
+            const float zero[4] = { 0.f, 0.f, 0.f, 0.f };
+            const float* pixels[2] = { aPixel, zero };
+            const float alphas[2] = { aRGBA[p * 4 + 3], a2RGBA[p * 4 + 3] };
+            for (int k = 0; k < 2; ++k) {
+                const float aAlpha[4] = { alphas[k], alphas[k], alphas[k], alphas[k] };
+                const MergeOps::AlphaSpan aSpan = { aAlpha, 4, 1 };
+                const MergeOps::AlphaSpan rSpan = { resultAlpha, 4, 1 };
+                float merged[4];
+                float mergedAlpha[4];
+                MergeOps::mergeRow(op, 4, pixels[k], aSpan, result, rSpan, 1, merged);
+                MergeOps::mergeRow(alphaOp, 4, aAlpha, aSpan, resultAlpha, rSpan, 1, mergedAlpha);
+                std::copy(merged, merged + 4, result);
+                std::copy(mergedAlpha, mergedAlpha + 4, resultAlpha);
+            }
+            std::copy(result, result + 4, &want[p * 4]);
+        }
+        expectClose(want, got, kTolerance, name);
+    }
+}
+
 // Another staged composite node declares no produced planes: its planes are only its layer
 // knob's, whatever layers its inputs carry. Dissolve's knob selects every layer by default, so it
 // is narrowed to rgba, and it is between its inputs, so it is no pass-through.

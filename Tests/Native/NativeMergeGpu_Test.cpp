@@ -202,6 +202,72 @@ toleranceOf(MergeOps::Operator op)
         return ParityTolerance::transcendental();
     }
 }
+
+// The node's GPU render of plane over window against its own CPU render. inputNodes holds the
+// source of each input by number, null for none; each arrives in the layer the effect asks for,
+// with the further layers it reads its pixels or alpha from, each rendered over its source's own
+// region so the device reads zero outside it as the CPU does. The mask arrives in rgba when the
+// query has one.
+void
+expectGpuMatchesCpu(GpuParityRuntime& runtime,
+                    const NodePtr& merge,
+                    const std::vector<NodePtr>& inputNodes,
+                    const NodePtr& mask,
+                    const RectI& window,
+                    const ImageLayerDesc& plane,
+                    const ParityTolerance& tolerance,
+                    const std::string& what)
+{
+    StagedImageEffect* effect = effectOf(merge);
+    ASSERT_TRUE(effect != NULL) << what;
+    const GpuQuery query = queryFor(merge, plane);
+    ASSERT_TRUE(effect->canRenderOnGpu(query)) << what;
+
+    RenderedPlane cpu;
+    ASSERT_TRUE(renderPlane(merge, window, plane, &cpu)) << what;
+
+    std::vector<GpuParityImage> inputs(inputNodes.size());
+    std::vector<GpuParityLayerImage> layers;
+    for (int inputNb = 0; inputNb < (int)inputNodes.size(); ++inputNb) {
+        const NodePtr& source = inputNodes[inputNb];
+        if (!source) {
+            continue;
+        }
+        const RectI sourceWindow = paritySourceWindow(source, kTime, 0);
+        ImageLayerDesc inputLayer;
+        ASSERT_TRUE(effect->getGpuInputLayer(inputNb, plane, kTime, ViewIdx(0), &inputLayer)) << what;
+        RenderedPlane rendered;
+        ASSERT_TRUE(renderPlane(source, sourceWindow, inputLayer, &rendered)) << what << ": input " << inputNb << " in " << inputLayer.getLayerID();
+        inputs[inputNb] = imageOf(rendered);
+
+        std::vector<ImageLayerDesc> extra;
+        ASSERT_TRUE(effect->getGpuExtraInputLayers(inputNb, plane, kTime, ViewIdx(0), &extra)) << what;
+        for (const ImageLayerDesc& extraLayer : extra) {
+            RenderedPlane extraRendered;
+            ASSERT_TRUE(renderPlane(source, sourceWindow, extraLayer, &extraRendered)) << what << ": input " << inputNb << " in " << extraLayer.getLayerID();
+            GpuParityLayerImage layer;
+            layer.inputNb = inputNb;
+            layer.layer = extraLayer;
+            layer.image = imageOf(extraRendered);
+            layers.push_back(layer);
+        }
+    }
+    GpuParityImage maskImage;
+    if (query.hasMask) {
+        ASSERT_TRUE(bool(mask)) << what;
+        RenderedPlane rendered;
+        ASSERT_TRUE(renderPlane(mask, paritySourceWindow(mask, kTime, 0), ImageLayerDesc::mapNCompsToColorLayer(4), &rendered)) << what;
+        maskImage = imageOf(rendered);
+    }
+
+    const GpuRunResult run = runRenderGpu(runtime, *effect, query, inputs, query.hasMask ? &maskImage : nullptr, window, GpuViewLayout(), layers);
+    ASSERT_TRUE(run.ok) << what;
+    EXPECT_EQ(0u, run.writtenOutside) << what;
+    ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
+    const ImageDiff diff = compareImages(cpu.pixels, run.pixels, tolerance);
+    EXPECT_EQ(0u, diff.mismatches) << what << ": first at float " << diff.firstMismatchIndex << " gpu " << run.pixels[diff.firstMismatchIndex]
+                                   << " cpu " << cpu.pixels[diff.firstMismatchIndex] << "; worst " << diff.worstAbsolute;
+}
 #endif // NATRON_HAVE_GPU
 
 } // namespace
@@ -321,8 +387,7 @@ TEST_F(NativeMergeGpuTest, MatchesTheCpuRender)
         { "mask", true, 1. },
         { "mask at mix 0.35", true, 0.35 },
     };
-    const NodePtr inputNodes[] = { setup.b, setup.a, NodePtr(), setup.a2 };
-    const int nInputs = 4;
+    const std::vector<NodePtr> inputNodes = { setup.b, setup.a, NodePtr(), setup.a2 };
 
     setLayerKnob(setup.merge, kNativeMergeParamAAlphaLayer, kParitySourceExtraLayerID);
     setLayerKnob(setup.merge, kNativeMergeParamBAlphaLayer, kParitySourceExtraLayerID);
@@ -356,57 +421,83 @@ TEST_F(NativeMergeGpuTest, MatchesTheCpuRender)
 
             for (const ImageLayerDesc& plane : planes) {
                 const std::string what = std::string(config.name) + ", " + MergeOps::operatorName(op) + ", " + masking.name + ", plane " + plane.getLayerID();
-                const GpuQuery query = queryFor(setup.merge, plane);
-                ASSERT_TRUE(effect->canRenderOnGpu(query)) << what;
-
-                RenderedPlane cpu;
-                ASSERT_TRUE(renderPlane(setup.merge, window, plane, &cpu)) << what;
-
-                std::vector<GpuParityImage> inputs(nInputs);
-                std::vector<GpuParityLayerImage> layers;
-                for (int inputNb = 0; inputNb < nInputs; ++inputNb) {
-                    const NodePtr& source = inputNodes[inputNb];
-                    if (!source) {
-                        continue;
-                    }
-                    const RectI sourceWindow = paritySourceWindow(source, kTime, 0);
-                    ImageLayerDesc inputLayer;
-                    ASSERT_TRUE(effect->getGpuInputLayer(inputNb, plane, kTime, ViewIdx(0), &inputLayer)) << what;
-                    RenderedPlane rendered;
-                    ASSERT_TRUE(renderPlane(source, sourceWindow, inputLayer, &rendered)) << what << ": input " << inputNb << " in " << inputLayer.getLayerID();
-                    inputs[inputNb] = imageOf(rendered);
-
-                    std::vector<ImageLayerDesc> extra;
-                    ASSERT_TRUE(effect->getGpuExtraInputLayers(inputNb, plane, kTime, ViewIdx(0), &extra)) << what;
-                    for (const ImageLayerDesc& extraLayer : extra) {
-                        RenderedPlane extraRendered;
-                        ASSERT_TRUE(renderPlane(source, sourceWindow, extraLayer, &extraRendered)) << what << ": input " << inputNb << " in " << extraLayer.getLayerID();
-                        GpuParityLayerImage layer;
-                        layer.inputNb = inputNb;
-                        layer.layer = extraLayer;
-                        layer.image = imageOf(extraRendered);
-                        layers.push_back(layer);
-                    }
+                expectGpuMatchesCpu(*runtime, setup.merge, inputNodes, setup.mask, window, plane, toleranceOf(op), what);
+                if (::testing::Test::HasFatalFailure()) {
+                    return;
                 }
-                GpuParityImage maskImage;
-                if (query.hasMask) {
-                    RenderedPlane rendered;
-                    ASSERT_TRUE(renderPlane(setup.mask, paritySourceWindow(setup.mask, kTime, 0), rgba, &rendered)) << what;
-                    maskImage = imageOf(rendered);
-                }
-
-                const GpuRunResult run = runRenderGpu(*runtime, *effect, query, inputs, query.hasMask ? &maskImage : nullptr, window, GpuViewLayout(), layers);
-                ASSERT_TRUE(run.ok) << what;
-                EXPECT_EQ(0u, run.writtenOutside) << what;
-                ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
-                const ImageDiff diff = compareImages(cpu.pixels, run.pixels, toleranceOf(op));
-                EXPECT_EQ(0u, diff.mismatches) << what << ": first at float " << diff.firstMismatchIndex << " gpu " << run.pixels[diff.firstMismatchIndex]
-                                               << " cpu " << cpu.pixels[diff.firstMismatchIndex] << "; worst " << diff.worstAbsolute;
                 ++nRenders;
             }
         }
     }
     std::printf("merge gpu vs cpu: %d renders\n", nRenders);
+}
+
+// B's per-channel alpha layer under a universal or per-layer A alpha, written the alpha the output
+// layer's fold carries, renders on the GPU as on the CPU, and so does the output layer itself. B is
+// rgb, so that its layer has as many channels as its three-channel alpha layer.
+TEST_F(NativeMergeGpuTest, PerChannelBAlphaLayerMatchesTheCpuRender)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+    NodePtr b = makeSource(0, 0);
+    NodePtr a = makeSource(10, 6);
+    ASSERT_TRUE(merge && b && a);
+    setParitySourceComponents(b, "rgb");
+    connectNodes(b, merge, kNativeMergeInputB, true);
+    connectNodes(a, merge, kNativeMergeInputA, true);
+    KnobChannelSelectPtr aAlpha = merge->getEffectInstance()->getKnobByNameAndType<KnobChannelSelect>(kNativeMergeParamAAlpha);
+    ASSERT_TRUE(bool(aAlpha));
+    aAlpha->set(std::string(kNatronColorViewRGBA) + ".R");
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamBAlphaSource, kNativeMergeAlphaPerChannel));
+    setLayerKnob(merge, kNativeMergeParamBAlphaLayer, kParitySourceExtraLayerID);
+    const RectI window = paritySourceWindow(b, kTime, 0);
+    ASSERT_FALSE(window.isNull());
+    const std::vector<NodePtr> inputNodes = { b, a };
+    const ImageLayerDesc planes[] = { paritySourceExtraLayer(), ImageLayerDesc::mapNCompsToColorLayer(3) };
+
+    for (const char* aSource : { kNativeMergeAlphaUniversal, kNativeMergeAlphaPerLayer }) {
+        ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamAAlphaSource, aSource));
+        for (MergeOps::Operator op : { MergeOps::eOver, MergeOps::ePlus, MergeOps::eMultiply, MergeOps::eXor }) {
+            ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, MergeOps::operatorName(op))) << aSource;
+            for (const ImageLayerDesc& plane : planes) {
+                const std::string what = std::string(aSource) + " A, " + MergeOps::operatorName(op) + ", plane " + plane.getLayerID();
+                expectGpuMatchesCpu(*runtime, merge, inputNodes, NodePtr(), window, plane, toleranceOf(op), what);
+                if (::testing::Test::HasFatalFailure()) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+// Two A inputs read in spec, the second lacking it: its zero pixels still carry its alpha into the
+// fold on the GPU as on the CPU.
+TEST_F(NativeMergeGpuTest, AnAInputLackingTheALayerMatchesTheCpuRender)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    MergeSetup setup = makeSetup();
+    ASSERT_TRUE(setup.merge && setup.a2);
+    setParitySourceExtraLayer(setup.a2, false);
+    setLayerKnob(setup.merge, kNativeMergeParamALayer, kParitySourceExtraLayerID);
+    const RectI window = paritySourceWindow(setup.b, kTime, 0);
+    ASSERT_FALSE(window.isNull());
+    const std::vector<NodePtr> inputNodes = { setup.b, setup.a, NodePtr(), setup.a2 };
+    const ImageLayerDesc rgba = ImageLayerDesc::mapNCompsToColorLayer(4);
+
+    for (MergeOps::Operator op : { MergeOps::eOver, MergeOps::eXor, MergeOps::ePlus, MergeOps::eMultiply }) {
+        ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamOperation, MergeOps::operatorName(op)));
+        const std::string what = std::string(MergeOps::operatorName(op)) + ", A2 lacking spec";
+        expectGpuMatchesCpu(*runtime, setup.merge, inputNodes, setup.mask, window, rgba, toleranceOf(op), what);
+        if (::testing::Test::HasFatalFailure()) {
+            return;
+        }
+    }
 }
 
 // A non-separable operator blends a colour, so the GPU takes it at three and four components only,

@@ -180,10 +180,11 @@ GpuStatus recordWrapStep(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWra
 //
 // With `alphas`, the base's alpha then one per input, the fold carries the result's alpha: `kernel`
 // is built with runCompositeAlphaStep, the result's alpha starts as the base's, and each step reads
-// it from and writes it to two more scratch buffers.
+// it from and writes it to two more scratch buffers. With resultIsAlpha the finish takes the
+// result's alpha in place of the result, which needs `alphas` and at least one input.
 GpuStatus recordWrapFold(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuWrapView& base,
                          std::span<const GpuWrapView> inputs, const GpuBuffer* opParams = nullptr,
-                         std::span<const GpuWrapAlpha> alphas = {});
+                         std::span<const GpuWrapAlpha> alphas = {}, bool resultIsAlpha = false);
 
 // Writes the source over wrap.output into wrap.dst, divided by the divisor where it is usable, as
 // a spatial filter's input. Channel mask, mask and mix are ignored.

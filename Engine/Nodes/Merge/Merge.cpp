@@ -388,7 +388,7 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
                                      .toStdString());
 
     aLayer = createLayerSelect(holder, page, EffectInstance::tr("A Layer").toStdString(), kNativeMergeParamALayer,
-                               EffectInstance::tr("The layer every A input is read in. A layer an input lacks reads as zero.").toStdString());
+                               EffectInstance::tr("The layer every A input is read in. A layer an input lacks reads as zero, the input keeping its alpha.").toStdString());
     aAlphaSource = createAlphaSourceChoice(holder, page, EffectInstance::tr("A Alpha Source").toStdString(), kNativeMergeParamAAlphaSource,
                                            EffectInstance::tr("Where each A input's alpha, a, comes from.").toStdString());
     aAlpha = createAlphaSelect(holder, page, EffectInstance::tr("A Alpha").toStdString(), kNativeMergeParamAAlpha,
@@ -879,16 +879,19 @@ NativeMerge::adjustInputsForPlane(const ImageLayerDesc& plane,
     if ((plane.getNumComponents() == 0) || isOutputPlane(plane, time, view)) {
         return;
     }
+    // B's per-channel alpha layer is written the merged alpha: the fold the output plane runs,
+    // whose carried alpha takes the place of its pixels, so that each side keeps the alpha it
+    // has there.
     ImageLayerDesc alphaLayer;
-    const bool writesAlpha = bAlphaPlane(time, view, &alphaLayer) && (alphaLayer.getLayerID() == plane.getLayerID());
-    KnobChoicePtr aSource = op().aAlphaSource.lock();
-    const bool aPerChannel = aSource && (aSource->getValue() == (int)NativeMergeOp::AlphaSource::PerChannel);
+    if (bAlphaPlane(time, view, &alphaLayer) && (alphaLayer.getLayerID() == plane.getLayerID())) {
+        inputs->resultIsAlpha = true;
 
+        return;
+    }
+    // Any other plane merges in itself on both sides.
     inputs->base.layerKnob = std::string_view();
     for (CompositeInput& input : inputs->further) {
-        // Under a per-channel alpha the merged alpha layer is A's alpha layer over B's, each
-        // its own alpha, as the result's alphas merge in step().
-        input.layerKnob = (writesAlpha && aPerChannel) ? std::string_view(kNativeMergeParamAAlphaLayer) : std::string_view();
+        input.layerKnob = std::string_view();
     }
 }
 

@@ -304,11 +304,16 @@ struct CompositeInput {
  * blendInput is the input the MaskMix and PassThroughUnprocessed stages blend with and copy from,
  * read at the evaluation's time, and the input every composed identity answers; -1 stands for the
  * base input. It need not be one of the folded inputs.
+ *
+ * resultIsAlpha makes the evaluation's result the alpha the fold carries rather than the folded
+ * pixels, as when the plane rendered is the per-channel alpha layer the fold's alphas are read
+ * from. It needs at least one further input and an alpha source; a render without either fails.
  **/
 struct CompositeInputs {
     CompositeInput base;
     std::vector<CompositeInput> further;
     int blendInput = -1;
+    bool resultIsAlpha = false;
 
     void add(int inputNb)
     {

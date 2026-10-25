@@ -390,7 +390,7 @@ makeStageGpuAlpha(const StageSource& source,
                   gpu::GpuWrapAlpha* alpha)
 {
     *alpha = gpu::GpuWrapAlpha();
-    if (!layers.read || !layers.hasAlpha()) {
+    if (!layers.hasAlpha()) {
         return true;
     }
     const GpuImageView* view = findStageGpuView(args, source.inputNb, layers.alphaLayer, layers.alphaChannel);
@@ -475,7 +475,7 @@ recordKernelOp(const StagePlan& plan,
 
     if (!plan.composite.empty()) {
         return gpu::recordWrapFold(ctx, (gpu::GpuKernelId)kernel.kernel, wrap, base, std::span<const gpu::GpuWrapView>(further.data(), further.size()), params,
-                                   std::span<const gpu::GpuWrapAlpha>(alphas.data(), alphas.size()))
+                                   std::span<const gpu::GpuWrapAlpha>(alphas.data(), alphas.size()), plan.compositeResultIsAlpha)
             ? eStatusOK
             : eStatusFailed;
     }
@@ -718,6 +718,7 @@ resolveStageSources(const NodeSpec* spec,
     for (const CompositeInput& input : inputs.further) {
         plan->composite.push_back(resolve(input));
     }
+    plan->compositeResultIsAlpha = inputs.resultIsAlpha;
 } // resolveStageSources
 
 StageSourceLayers
@@ -730,15 +731,16 @@ resolveStageSourceLayers(EffectInstance& effect,
     if (!effect.getInput(source.inputNb)) {
         return layers;
     }
+    // A connected input lacking the layer it reads has zero pixels but still its alpha.
     if (!source.layerKnob.empty()) {
-        if (!resolveStageLayerKnob(effect, source.layerKnob, source.layerInput, time, view, &layers.layer)) {
-            return layers;
-        }
-        layers.mapped = false;
-    } else if (!effect.resolveInputPlaneForRender(source.layerInput, time, view, &layers.layer, NULL)) {
-        return layers;
+        layers.read = resolveStageLayerKnob(effect, source.layerKnob, source.layerInput, time, view, &layers.layer);
+        layers.mapped = !layers.read;
+    } else {
+        layers.read = effect.resolveInputPlaneForRender(source.layerInput, time, view, &layers.layer, NULL);
     }
-    layers.read = true;
+    if (!layers.read) {
+        layers.layer = ImageLayerDesc();
+    }
 
     switch (source.alpha.kind) {
     case CompositeAlpha::Kind::None:
@@ -755,7 +757,7 @@ resolveStageSourceLayers(EffectInstance& effect,
         break;
     }
     case CompositeAlpha::Kind::ReadLayer: {
-        const int channel = stageLayerAlphaChannel(layers.layer);
+        const int channel = layers.read ? stageLayerAlphaChannel(layers.layer) : -1;
         if (channel >= 0) {
             layers.alphaLayer = layers.layer;
             layers.alphaChannel = channel;
@@ -981,6 +983,9 @@ runStagesCpu(EffectInstance& effect,
     // the caller reports (stageSourcesError()).
     const std::size_t nFolded = plan.composite.size();
     const bool foldAlpha = (nFolded > 1) && stageSourcesHaveAlpha(plan);
+    if (plan.compositeResultIsAlpha && !foldAlpha) {
+        return eStatusFailed;
+    }
     std::vector<StageSourceLayers> sourceLayers(nFolded);
     for (std::size_t s = 0; s < nFolded; ++s) {
         sourceLayers[s] = resolveStageSourceLayers(effect, plan.composite[s], args.time, args.view);
@@ -1178,7 +1183,7 @@ runStagesCpu(EffectInstance& effect,
                         io.alpha[0].channelStride = 1;
                     }
                 }
-                resultRow = result;
+                resultRow = plan.compositeResultIsAlpha ? io.dstAlpha : result;
             } else {
                 io.dst = direct ? dstPix : kernelRow.data();
                 row(io);
@@ -1289,6 +1294,9 @@ canRunStageSourcesGpu(const StagePlan& plan,
     if (plan.composite.empty() || (plan.divisorChannel >= 0)) {
         return false;
     }
+    if (plan.compositeResultIsAlpha && ((plan.composite.size() < 2) || !stageSourcesHaveAlpha(plan))) {
+        return false;
+    }
     for (std::size_t s = 0; s < plan.composite.size(); ++s) {
         const StageSource& source = plan.composite[s];
         if (plan.applyMask && (source.inputNb == plan.maskInput)) {
@@ -1301,13 +1309,10 @@ canRunStageSourcesGpu(const StagePlan& plan,
             return false;
         }
         const StageSourceLayers& layers = plan.compositeLayers[s];
-        if (!layers.read) {
-            continue;
-        }
         if (stageSourceLayersError(layers)) {
             return false;
         }
-        if (!layers.mapped) {
+        if (layers.read && !layers.mapped) {
             const StageGpuLayerRead read = stageGpuLayerRead(layers.layer, -1, query.plane);
             if ((read == StageGpuLayerRead::Unreadable) || ((s == 0) && (read == StageGpuLayerRead::Extra) && (layers.layer.getNumComponents() != query.nComps))) {
                 return false;
@@ -1423,11 +1428,8 @@ stageSourcesGpuLayers(EffectInstance& effect,
             continue;
         }
         const StageSourceLayers read = resolveStageSourceLayers(effect, source, time, view);
-        if (!read.read) {
-            continue;
-        }
         // A plane read in the clip layout is plane itself.
-        if (!read.mapped && !appendStageGpuLayer(read.layer, -1, plane, layers)) {
+        if (read.read && !read.mapped && !appendStageGpuLayer(read.layer, -1, plane, layers)) {
             return false;
         }
         if (read.hasAlpha() && !appendStageGpuLayer(read.alphaLayer, read.alphaChannel, plane, layers)) {
@@ -1451,10 +1453,7 @@ stageSourcesNeededLayers(EffectInstance& effect,
             continue;
         }
         const StageSourceLayers read = resolveStageSourceLayers(effect, source, time, view);
-        if (!read.read) {
-            continue;
-        }
-        if (!read.mapped) {
+        if (read.read && !read.mapped) {
             appendStageNeededLayer(read.layer, layers);
         }
         if (read.hasAlpha()) {

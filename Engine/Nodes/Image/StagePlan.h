@@ -76,8 +76,10 @@ struct StageSource {
 };
 
 /**
- * @brief The layers a StageSource reads at one time and view. read is false when the source reads
- * zero: its input is disconnected or its layer resolves to none. mapped is whether layer is read in
+ * @brief The layers a StageSource reads at one time and view. read is false when the source's pixels
+ * read zero: its input is disconnected or its layer resolves to none. Its alpha resolves apart from
+ * its pixels, so an input lacking the layer it reads still has the alpha its source names; only a
+ * disconnected input has neither. mapped is whether layer is read in
  * the input's clip layout (the plane), rather than as it is stored (a selection). alphaChannel is the
  * channel of alphaLayer that is the alpha of every channel, or -1 with a non-empty alphaLayer when
  * that layer is read per channel; alphaLayer is empty when the source has no alpha, or an alpha that
@@ -113,7 +115,7 @@ struct StageSourceLayers {
  * input followed by its further inputs in fold order, and is empty for any other op.
  * compositeLayers, parallel to composite, holds the layers each of them reads once
  * resolveStageSourcesLayers() has filled it, for inputs that read a selected layer or have an alpha
- * source; it is empty otherwise.
+ * source; it is empty otherwise. compositeResultIsAlpha is CompositeInputs::resultIsAlpha.
  **/
 struct StagePlan {
     double time = 0.;
@@ -131,6 +133,7 @@ struct StagePlan {
     int divisorChannel = -1;
     std::vector<StageSource> composite;
     std::vector<StageSourceLayers> compositeLayers;
+    bool compositeResultIsAlpha = false;
 };
 
 /**
@@ -247,7 +250,8 @@ std::optional<std::string> stageSourcesError(EffectInstance& effect,
  * input's row and row folds each further input's row into it, as CompositeOp describes, and that
  * result takes the place of row's output; the source rows only serve the blend and the
  * pass-through. When an input has an alpha source, row is handed the alphas and writes the
- * result's, as CompositeOp describes; a render stageSourcesError() objects to fails.
+ * result's, as CompositeOp describes; a render stageSourcesError() objects to fails. With
+ * plan.compositeResultIsAlpha the result's alpha takes the place of the folded pixels.
  **/
 StatusEnum runStagesCpu(EffectInstance& effect,
                         const StagePlan& plan,

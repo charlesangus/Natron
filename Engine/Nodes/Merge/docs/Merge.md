@@ -170,8 +170,15 @@ The output alpha:
 - With **Universal**, the universal alpha channel is merged with the operator's alpha rule when
   it is part of the output layer.
 - With **Per-layer**, each layer's alpha channel is merged as part of that layer.
-- With **Per-channel**, A's alpha layer is merged with B's, per channel and with the operator's
-  alpha rule, and written to B's alpha layer, which the node then also produces.
+- With **Per-channel** on B, B's alpha layer, which the node then also produces, is written the
+  merged alpha the output layer's fold carries: each channel of B's alpha layer merged with A's
+  alpha for that channel by the operator's alpha rule. A's alpha there is whatever its own source
+  gives: its alpha layer's channel when per channel, else its universal or per-layer alpha
+  broadcast, so Over with a universal A alpha a writes a + b × (1 − a).
+
+An A or B input that is connected but lacks the layer it is read in has zero pixels there, yet
+keeps the alpha its source gives: with several A inputs, one lacking **A Layer** still attenuates
+the result under Over by its alpha. Only a disconnected input reads zero pixels and zero alpha.
 
 ## Other knobs
 

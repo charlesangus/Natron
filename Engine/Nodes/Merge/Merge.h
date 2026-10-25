@@ -262,9 +262,9 @@ protected:
                                    std::list<ImageLayerDesc>* planes) OVERRIDE FINAL;
 
     /**
-     * @brief Reads A and B in plane itself when it is a layer the layers mode merges. For B's
-     * per-channel alpha layer, B is read in it and A in its own alpha layer when per channel too.
-     * The output layer keeps the A and B layers.
+     * @brief Reads A and B in plane itself when it is a layer the layers mode merges. B's
+     * per-channel alpha layer is the output layer's fold, A and B in their layers with their
+     * alphas, written its carried alpha. The output layer keeps the A and B layers.
      **/
     virtual void adjustInputsForPlane(const ImageLayerDesc& plane,
                                       double time,

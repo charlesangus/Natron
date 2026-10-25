@@ -436,7 +436,8 @@ recordWrapStep(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrapStep& ste
 
 GpuStatus
 recordWrapFold(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuWrapView& base,
-               std::span<const GpuWrapView> inputs, const GpuBuffer* opParams, std::span<const GpuWrapAlpha> alphas)
+               std::span<const GpuWrapView> inputs, const GpuBuffer* opParams, std::span<const GpuWrapAlpha> alphas,
+               bool resultIsAlpha)
 {
     if (wrap.divisorChannel >= 0) {
         return invalid("a fold divides none of its inputs");
@@ -444,6 +445,9 @@ recordWrapFold(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, c
     const bool carriesAlpha = !alphas.empty();
     if (carriesAlpha && alphas.size() != inputs.size() + 1) {
         return invalid("a fold carrying alpha has one alpha per input and the base's");
+    }
+    if (resultIsAlpha && (!carriesAlpha || inputs.empty())) {
+        return invalid("a fold whose result is its alpha carries one and has an input");
     }
     GpuWrapParams p;
     if (GpuStatus s = wrapParams(wrap, p); !s) {
@@ -516,7 +520,8 @@ recordWrapFold(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, c
         }
         ctx.computeBarrier();
     }
-    return recordWrapFinish(ctx, wrap, scratch[(inputs.size() - 1) & 1]);
+    const std::size_t last = (inputs.size() - 1) & 1;
+    return recordWrapFinish(ctx, wrap, resultIsAlpha ? alphaScratch[last] : scratch[last]);
 }
 
 GpuStatus

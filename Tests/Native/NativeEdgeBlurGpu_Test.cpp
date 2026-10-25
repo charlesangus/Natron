@@ -271,6 +271,7 @@ TEST_F(NativeEdgeBlurGpuTest, ExternalMatteMatchesTheCpu)
 
     NodePtr matte = makeParitySource();
     ASSERT_TRUE(bool(matte));
+    disconnectNodes(box, node, true);
     connectNodes(matte, node, kEdgeBlurInputMatte, true);
     expectParity(std::vector<NodePtr>({ node }), node, "parity source Matte");
 }

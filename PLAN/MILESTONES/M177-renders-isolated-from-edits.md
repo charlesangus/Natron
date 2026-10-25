@@ -81,7 +81,7 @@ Filed from M167 - Per-Frame Node Metadata, Phase 3, which inherited M144's "edit
 - [ ] M177.P2.T3 — Route the remaining in-process renders through it
   - files: `Engine/Node.cpp` (:6698-6710), `Engine/DiskCacheNode.cpp` (:160-171), `Engine/PyAppInstance.cpp` (:306-320), `Gui/ProgressTaskInfo.cpp` (:296-340, in-process restarts only)
   - approach: Replace each `startWritersRendering(false, …)` with `getApp()->renderForeground(works)`. DiskCache pre-render fills this process's cache, so it renders foreground behind the modal.
-  - verify: `Tests/gui/m177_foreground_modal.py` (new, Xvfb). For the Render dialog, `knob.trigger()` on a Write's Render button, and `app.render`: `QApplication.activeModalWidget()` is the dialog while the render runs; a QTest key edit to an open Grade spinbox and a node-graph drag leave the knob and position unchanged; Cancel ends the task as Canceled. Screenshots shared.
+  - verify: `Tests/gui/m177_foreground_modal.py` (new, Xvfb). For the Render dialog, `knob.trigger()` on a Write's Render button, and `app.render`: `QApplication.activeModalWidget()` is the dialog while the render runs; a QTest key edit to an open Grade spinbox and a node-graph drag leave the knob and position unchanged; Cancel ends the task as Canceled. An edit while the viewer plays restarts the viewer render. Screenshots shared.
   - size: M
 
 **Verification gate:** fast build passes; `m177_foreground_modal.py` passes on the phase AppImage, screenshots approved by the user.
@@ -132,5 +132,6 @@ Shape depends on the user's answers to the open questions on script writes and b
 
 ## Decisions
 
+- 2026-10-25 — **Viewer restart covered under Xvfb (bosley-native-nodes):** no gtest fixture can drive viewer playback without a UI context, so P1.T1's third case (an edit restarts a viewer render) moves to `m177_foreground_modal.py` in Phase 177.2. PrecompNode's render maps to Foreground.
 - 2026-10-25 — **Elaborated (bosley-native-nodes):** five phases built on the existing foreground modal, the separate-process save at submission and the tracker's cancellable progress task. Isolation means no write reaches a running non-viewer render; knob values are not snapshotted. The colour sampler already runs synchronously on the main thread, so it gets no modal; DiskCache pre-render runs foreground behind the modal. Phase 177.5 waits on the user's answers about script writes and before-frame callbacks.
 - 2026-10-24 — **Created at the user's request (user):** foreground renders block the UI; background renders work from a frozen copy captured at submission; tracker and colour sampler block the UI like a foreground render; only the viewer restarts on a knob change. Kept out of M167 at the user's request.

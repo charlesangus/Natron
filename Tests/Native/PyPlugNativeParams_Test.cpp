@@ -90,16 +90,7 @@ retiredIds()
         PLUGINID_NATRON_ADD,
         PLUGINID_NATRON_MULTIPLY,
         PLUGINID_NATRON_GAMMA,
-        PLUGINID_NATRON_MERGE,
-        PLUGINID_NATRON_MERGE_PREFIX "Plus",
-        PLUGINID_NATRON_MERGE_PREFIX "Matte",
-        PLUGINID_NATRON_MERGE_PREFIX "Multiply",
-        PLUGINID_NATRON_MERGE_PREFIX "In",
-        PLUGINID_NATRON_MERGE_PREFIX "Out",
-        PLUGINID_NATRON_MERGE_PREFIX "Screen",
-        PLUGINID_NATRON_MERGE_PREFIX "Max",
-        PLUGINID_NATRON_MERGE_PREFIX "Min",
-        PLUGINID_NATRON_MERGE_PREFIX "Difference",
+        PLUGINID_NATRON_NATIVE_MERGE,
         PLUGINID_NATRON_DISSOLVE,
         PLUGINID_NATRON_CONSTANT,
         PLUGINID_NATRON_SOLID,
@@ -134,11 +125,6 @@ const AllowedName kAllowedNames[] = {
     { "NatronOfxParamProcess", true,
       "Per-channel process toggles that the plug-in declared for the host's channel selector; "
       "the native node's channel set replaces them." },
-    { "aChannelsChanged", false,
-      "Merge's flag recording that the user edited the A-alpha toggle of input A, so that an operation "
-      "change stops resetting it. The native Merge never resets the toggles automatically." },
-    { "bChannelsChanged", false,
-      "Merge's flag recording that the user edited the A-alpha toggle of input B; see aChannelsChanged." },
 };
 
 bool

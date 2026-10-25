@@ -3,7 +3,7 @@ import compositestep;
 import compositealpha;
 import mergeops;
 
-// Merge's step (NativeMergeOp in Engine/Nodes/Merge/NativeMerge.cpp): the next A input, of alpha
+// Merge's step (NativeMergeOp in Engine/Nodes/Merge/Merge.cpp): the next A input, of alpha
 // inputAlpha, merged over the result so far with one of mergeops' operators. Every input of a Merge
 // has an alpha source, so the step carries the result's alpha (compositealpha.slang), which merges
 // with the operator as a channel does, or with over for a non-separable operator, whose blend has

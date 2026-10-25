@@ -78,7 +78,7 @@ namespace {
 const char* const kConstantPluginID = "net.sf.openfx.ConstantPlugin";
 // Grade renders through ofxsProcessing's ImageProcessor, which slices the window over the multithread suite.
 const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
-const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
+const char* const kMergePluginID = "Merge";
 
 const double kTime = 1.;
 const int kSize = 128;

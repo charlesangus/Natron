@@ -51,6 +51,7 @@
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
 #include "Engine/Interpolation.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
@@ -62,8 +63,6 @@
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
-#define kMergeOFXParamOperation "operation"
-#define kMergeOFXParamInvertMask "maskInvert"
 #define kBlurCImgParamSize "size"
 #define kTimeOffsetParamOffset "timeOffset"
 #define kFrameHoldParamFirstFrame "firstFrame"
@@ -259,14 +258,14 @@ RotoDrawableItem::createNodes(bool connectNodes)
     fixedNamePrefix = baseFixedName;
     fixedNamePrefix.append( QString::fromUtf8("Merge") );
 
-    CreateNodeArgs args( PLUGINID_OFX_MERGE, NodeCollectionPtr() );
+    CreateNodeArgs args(PLUGINID_NATRON_NATIVE_MERGE, NodeCollectionPtr());
     args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
     args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
     args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, fixedNamePrefix.toStdString());
 
     _imp->mergeNode = app->createNode(args);
     if (!_imp->mergeNode) {
-        throw std::runtime_error("Rotopaint requires the plug-in " PLUGINID_OFX_MERGE " in order to work");
+        throw std::runtime_error("Rotopaint requires the plug-in " PLUGINID_NATRON_NATIVE_MERGE " in order to work");
     }
     assert(_imp->mergeNode);
 
@@ -299,7 +298,7 @@ RotoDrawableItem::createNodes(bool connectNodes)
         }
     }
 
-    KnobIPtr mergeOperatorKnob = _imp->mergeNode->getKnobByName(kMergeOFXParamOperation);
+    KnobIPtr mergeOperatorKnob = _imp->mergeNode->getKnobByName(kNativeMergeParamOperation);
     assert(mergeOperatorKnob);
     KnobChoice* mergeOp = dynamic_cast<KnobChoice*>( mergeOperatorKnob.get() );
     assert(mergeOp);
@@ -518,7 +517,7 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
     }
 
     if (knob == compKnob) {
-        KnobIPtr mergeOperatorKnob = _imp->mergeNode->getKnobByName(kMergeOFXParamOperation);
+        KnobIPtr mergeOperatorKnob = _imp->mergeNode->getKnobByName(kNativeMergeParamOperation);
         KnobChoice* mergeOp = dynamic_cast<KnobChoice*>( mergeOperatorKnob.get() );
         if (mergeOp) {
             mergeOp->setValueFromID(compKnob->getEntry( compKnob->getValue() ).id, 0);
@@ -531,7 +530,7 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
     }
 #ifdef NATRON_ROTO_INVERTIBLE
     else if (knob == invertKnob) {
-        KnobIPtr mergeMaskInvertKnob = _imp->mergeNode->getKnobByName(kMergeOFXParamInvertMask);
+        KnobIPtr mergeMaskInvertKnob = _imp->mergeNode->getKnobByName(kOfxMaskInvertParamName);
         KnobBool* mergeMaskInv = dynamic_cast<KnobBool*>( mergeMaskInvertKnob.get() );
         if (mergeMaskInv) {
             mergeMaskInv->setValue( invertKnob->getValue() );
@@ -966,7 +965,7 @@ RotoDrawableItem::restoreSavedKnobs(const std::list<Serialization::KnobSerializa
     }
 
     KnobChoicePtr compKnob = getOperatorKnob();
-    KnobIPtr mergeOperatorKnob = _imp->mergeNode->getKnobByName(kMergeOFXParamOperation);
+    KnobIPtr mergeOperatorKnob = _imp->mergeNode->getKnobByName(kNativeMergeParamOperation);
     KnobChoice* mergeOp = dynamic_cast<KnobChoice*>( mergeOperatorKnob.get() );
     if (mergeOp) {
         mergeOp->setValueFromID(compKnob->getEntry( compKnob->getValue() ).id, 0);

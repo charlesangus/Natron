@@ -10,7 +10,7 @@ m = NatronGui.natron.nodesMenu()
 # Held at module level: PySide invalidates the submenu's wrapper once this one is collected.
 sub = [a for a in m.actions() if a.text() == "Merge"][0]
 act = QAction("M161 Merge Plus", m)
-act.triggered.connect(lambda: NatronGui.natron.getGuiInstance(0).createNode("net.sf.openfx.MergePlugin"))
+act.triggered.connect(lambda: NatronGui.natron.getGuiInstance(0).createNode("Merge"))
 sub.menu().addAction(act)
 
 # Natron's sys.stderr catcher has no flush(), so the marker goes to the descriptor itself.

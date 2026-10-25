@@ -54,7 +54,6 @@
 #include "Engine/Transform.h"
 #include "Engine/ViewerInstance.h"
 
-#define kMergeOFXParamOperation "operation"
 #define kBlurCImgParamSize "size"
 #define kTimeOffsetParamOffset "timeOffset"
 #define kFrameHoldParamFirstFrame "firstFrame"

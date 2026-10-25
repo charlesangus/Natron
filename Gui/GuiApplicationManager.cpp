@@ -60,7 +60,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h" // PLUGINID_OFX_*
 #include "Engine/Node.h"
-#include "Engine/Nodes/Merge/NativeMerge.h" // PLUGINID_NATRON_NATIVE_MERGE
+#include "Engine/Nodes/Merge/Merge.h" // PLUGINID_NATRON_NATIVE_MERGE
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/Settings.h"

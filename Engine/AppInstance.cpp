@@ -77,7 +77,6 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
-#include "Engine/Nodes/Merge/NativeMerge.h"
 #include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
@@ -1127,14 +1126,9 @@ isEntitledForInspector(Plugin* plugin,
     if ((plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_DISSOLVE)) || (plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_SWITCH))) {
         return true;
     }
-    // The Merge node, whose A inputs unfold one after another as the OpenFX Merge's did.
+    // The Merge node, whose A inputs unfold one after another.
     if (plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE)) {
         return true;
-    }
-    for (int preset = eMergePresetMerge; preset <= eMergePresetDifference; ++preset) {
-        if (plugin->getPluginID() == QString::fromUtf8(MergeNode::presetPluginID((MergePresetEnum)preset).c_str())) {
-            return true;
-        }
     }
 
     if (!ofxDesc) {

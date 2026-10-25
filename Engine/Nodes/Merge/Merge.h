@@ -29,191 +29,240 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <optional>
 #include <string>
-#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
-#include "Engine/Nodes/Merge/MergeOperators.h"
+#include "Engine/Nodes/Merge/MergeOps.h"
 
-#define PLUGINID_NATRON_MERGE "net.sf.openfx.MergePlugin"
-#define PLUGINID_NATRON_MERGE_PREFIX "net.sf.openfx.Merge"
-#define PLUGIN_MAJOR_NATRON_MERGE 3
+#define PLUGINID_NATRON_NATIVE_MERGE "Merge"
+#define PLUGIN_MAJOR_NATRON_NATIVE_MERGE 1
 
-#define kMergeParamOperation "operation"
-#define kMergeParamBBox "bbox"
-#define kMergeParamAlphaMasking "screenAlpha"
-#define kMergeParamAChannels "AChannels"
-#define kMergeParamBChannels "BChannels"
-#define kMergeParamOutputChannels "OutputChannels"
+#define kNativeMergeParamOperation "operation"
+#define kNativeMergeParamBBox "bbox"
+#define kNativeMergeParamMetadataFrom "metadataFrom"
+#define kNativeMergeParamRangeFrom "rangeFrom"
+#define kNativeMergeParamALayer "aLayer"
+#define kNativeMergeParamBLayer "bLayer"
+#define kNativeMergeParamAAlpha "aAlpha"
+#define kNativeMergeParamBAlpha "bAlpha"
+#define kNativeMergeParamAAlphaSource "aAlphaSource"
+#define kNativeMergeParamBAlphaSource "bAlphaSource"
+#define kNativeMergeParamAAlphaLayer "aAlphaLayer"
+#define kNativeMergeParamBAlphaLayer "bAlphaLayer"
+#define kNativeMergeParamLayers "layers"
+#define kNativeMergeParamAlsoMerge "alsoMerge"
 
-#define kMergeBBoxUnion "union"
-#define kMergeBBoxIntersection "intersection"
-#define kMergeBBoxA "a"
-#define kMergeBBoxB "b"
+// Option IDs of the bbox, metadata from and frame range from choices.
+#define kNativeMergeBBoxUnion "union"
+#define kNativeMergeBBoxIntersection "intersection"
+#define kNativeMergeBBoxA "A"
+#define kNativeMergeBBoxB "B"
+#define kNativeMergeFromA "A"
+#define kNativeMergeFromB "B"
 
-// Input indices, in the OpenFX clip order that scripts connect by: B, A, Mask, then A2..A64.
-#define kMergeInputB 0
-#define kMergeInputA 1
-#define kMergeInputMask 2
-#define kMergeMaxAInputs 64
+// Option IDs of the A and B alpha source choices.
+#define kNativeMergeAlphaUniversal "universal"
+#define kNativeMergeAlphaPerLayer "perLayer"
+#define kNativeMergeAlphaPerChannel "perChannel"
+
+// Option IDs of the layers choice.
+#define kNativeMergeLayersSingle "single"
+#define kNativeMergeLayersAllMatching "allMatching"
+#define kNativeMergeLayersList "list"
+
+// Inputs: B, A, Mask, then A2..A64, Nuke's order.
+#define kNativeMergeInputB 0
+#define kNativeMergeInputA 1
+#define kNativeMergeInputMask 2
+#define kNativeMergeMaxAInputs 64
 
 NATRON_NAMESPACE_ENTER
 
-/**
- * @brief Which ID a MergeNode is registered under: the Merge node itself or one of its presets,
- * which differ only in ID, label, menu and default operation.
- **/
-enum MergePresetEnum {
-    eMergePresetMerge,
-    eMergePresetPlus,
-    eMergePresetMatte,
-    eMergePresetMultiply,
-    eMergePresetIn,
-    eMergePresetOut,
-    eMergePresetScreen,
-    eMergePresetMax,
-    eMergePresetMin,
-    eMergePresetDifference
-};
-
-inline constexpr InputSpec kMergeInputs[] = {
+inline constexpr InputSpec kNativeMergeInputs[] = {
     InputSpec { .label = "B", .optional = true },
     InputSpec { .label = "A", .optional = true },
     InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
-    InputSpec { .label = "A", .role = InputRole::Variadic, .optional = true, .count = kMergeMaxAInputs - 1, .firstNumber = 2 },
-};
-
-inline constexpr ImagePipelineSpec kMergePipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
-    .layers = LayerPolicy::color(true, true, true, true),
-    .op = OpKind::Custom,
+    InputSpec { .label = "A", .role = InputRole::Variadic, .optional = true, .count = kNativeMergeMaxAInputs - 1, .firstNumber = 2 },
 };
 
 /**
- * @brief The NodeSpec of a preset, without its description: the description lists every
- * operator, which MergeOperators only knows at run time.
+ * @brief The input number of A input k (0..63): A is input 1, A2 onwards follow the Mask input.
  **/
-constexpr NodeSpec
-mergeNodeSpec(MergePresetEnum preset)
+constexpr int
+nativeMergeAInput(int k)
 {
-    NodeSpec spec;
-
-    switch (preset) {
-    case eMergePresetMerge:
-        spec.id = PLUGINID_NATRON_MERGE;
-        spec.label = "Merge";
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergePlugin.png";
-        break;
-    case eMergePresetPlus:
-        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Plus";
-        spec.label = "Plus";
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergePlus.png";
-        break;
-    case eMergePresetMatte:
-        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Matte";
-        spec.label = "Matte";
-        break;
-    case eMergePresetMultiply:
-        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Multiply";
-        spec.label = "Multiply";
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMultiply.png";
-        break;
-    case eMergePresetIn:
-        spec.id = PLUGINID_NATRON_MERGE_PREFIX "In";
-        spec.label = "In";
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeIn.png";
-        break;
-    case eMergePresetOut:
-        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Out";
-        spec.label = "Out";
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeOut.png";
-        break;
-    case eMergePresetScreen:
-        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Screen";
-        spec.label = "Screen";
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeScreen.png";
-        break;
-    case eMergePresetMax:
-        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Max";
-        spec.label = "Max";
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMax.png";
-        break;
-    case eMergePresetMin:
-        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Min";
-        spec.label = "Min";
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMin.png";
-        break;
-    case eMergePresetDifference:
-        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Difference";
-        spec.label = "Absminus";
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeDifference.png";
-        break;
-    }
-    spec.grouping = (preset == eMergePresetMerge) ? PLUGIN_GROUP_MERGE : PLUGIN_GROUP_MERGE "/Merges";
-    spec.majorVersion = PLUGIN_MAJOR_NATRON_MERGE;
-    spec.minorVersion = 0;
-    spec.inputs = kMergeInputs;
-
-    return spec;
+    return (k == 0) ? kNativeMergeInputA : k + kNativeMergeInputMask;
 }
 
 /**
- * @brief Pixel-by-pixel merge of one or more A inputs over B, with the operators, input handling,
- * region of definition and identity rules of openfx-misc's Merge 2.0, registered under its IDs
- * one major above.
- *
- * Input A is merged over B (over black and transparent when B is absent), then each later A
- * input over the running result. The A and B channel toggles zero the channels they turn off,
- * Output channels left off keep B, and the result is then mixed with B by mask x mix. With no A
- * input, an operator that leaves B unchanged over a transparent A copies B; any other operator
- * still runs once with a transparent A.
- *
- * The class is not named Merge because Engine/MergingEnum.h already declares a namespace of that
- * name in the Natron namespace.
- *
- * It is a Custom op: the blend against B reads its mask, inversion and mix from the StagePlan,
- * and the channels it does not process are written by its own render, from the input the host
- * would copy them from.
+ * @brief Merge: A over B with one of MergeOps' operators, then A2 over the result, and so on. A
+ * and B are each read in their own layer with an alpha from their own source, and the result goes
+ * to the target layer. Every other layer of B passes through.
  **/
-class MergeNode
-    : public StagedImageEffect {
+struct NativeMergeOp {
+    /**
+     * @brief Where one side's alpha comes from. Universal is one channel for every merged channel;
+     * PerLayer is the read layer's own A or alpha channel, else the universal channel; PerChannel
+     * is an alpha layer whose channel i is the alpha of merged channel i.
+     **/
+    enum class AlphaSource : unsigned char {
+        Universal = 0,
+        PerLayer,
+        PerChannel
+    };
+
+    /**
+     * @brief What is merged beside the A layer into the output layer. AllMatching also merges
+     * every other layer present on B and on any connected A input, paired by ID; List also merges
+     * the layers alsoMerge selects. Each such layer is read in itself on A and B.
+     **/
+    enum class LayersMode : unsigned char {
+        Single = 0,
+        AllMatching,
+        List
+    };
+
+    struct Params {
+        MergeOps::Operator op;
+        // Whether a transparent A (A and its alpha all zero) leaves B unchanged under op.
+        bool identityForTransparentA;
+        AlphaSource aAlpha;
+        AlphaSource bAlpha;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_NATIVE_MERGE,
+        .label = "Merge",
+        .description = "Composites the A inputs over B with a choice of operator.",
+        .grouping = PLUGIN_GROUP_MERGE,
+        .majorVersion = PLUGIN_MAJOR_NATRON_NATIVE_MERGE,
+        .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Merge.png",
+        .inputs = kNativeMergeInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::targetSelect(),
+        .op = OpKind::Composite,
+    };
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
+
+    Params bake(const KnobReader& reader) const;
+
+    bool isIdentity(const Params& params) const;
+
+    Route route(const Params& params,
+                const RouteContext& context) const;
+
+    CompositeInputs inputs(const Params& params,
+                           const RouteContext& context) const;
+
+    void step(const Params& params,
+              const RowIO& io) const;
+
+    /**
+     * @brief The render error for a non-separable operator given a per-channel alpha layer on
+     * either side: it blends whole colours, so no one channel's alpha is its alpha.
+     **/
+    std::optional<std::string> error(const Params& params) const;
+
+    /**
+     * @brief The merge kernel (Kernels/merge.slang) with the operator. A non-separable operator
+     * blends a colour, so it runs on the GPU for three or four components only.
+     **/
+    GpuOpRef gpu(const Params& params) const;
+
+    /**
+     * @brief Whether op merging a transparent A (A = 0, a = 0) over any B gives B exactly, so a
+     * missing A, or a stretch of row with nothing in A, leaves B unchanged.
+     **/
+    static bool isIdentityForTransparentA(MergeOps::Operator op);
+
+    KnobChoiceWPtr operation;
+    KnobChoiceWPtr bbox;
+    KnobChoiceWPtr metadataFrom;
+    KnobChoiceWPtr rangeFrom;
+    KnobLayerSelectWPtr aLayer;
+    KnobLayerSelectWPtr bLayer;
+    KnobChannelSelectWPtr aAlpha;
+    KnobChannelSelectWPtr bAlpha;
+    KnobChoiceWPtr aAlphaSource;
+    KnobChoiceWPtr bAlphaSource;
+    KnobLayerSelectWPtr aAlphaLayer;
+    KnobLayerSelectWPtr bAlphaLayer;
+    KnobChoiceWPtr layers;
+    KnobChannelSetWPtr alsoMerge;
+    KnobStringWPtr subLabel;
+};
+
+static_assert(FailingCompositeOp<NativeMergeOp>);
+static_assert(GpuCompositeOp<NativeMergeOp>);
+
+/**
+ * @brief The Merge node. Named apart from the Merge namespace of MergingEnum.h.
+ **/
+class NativeMerge
+    : public ImageNode<NativeMergeOp> {
 public:
-    MergeNode(NodePtr node,
-              MergePresetEnum preset);
+    static EffectInstance* BuildEffect(NodePtr node)
+    {
+        return new NativeMerge(node);
+    }
 
-    virtual ~MergeNode();
+    explicit NativeMerge(NodePtr node);
 
-    static std::string presetPluginID(MergePresetEnum preset);
-    static MergeOperators::Operation presetOperation(MergePresetEnum preset);
+    virtual ~NativeMerge();
 
-    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual std::string getInputHint(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
-
-    /**
-     * @brief The input index of the i-th A input (0 for A, 1 for A2, ...), or -1 past the last.
-     **/
-    static int aInputIndex(int i) WARN_UNUSED_RETURN;
+    virtual StatusEnum getRegionOfDefinition(U64 hash,
+                                             double time,
+                                             const RenderScale& scale,
+                                             ViewIdx view,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief `source`, or a private copy of it when it is one of `outputs`. The render holds every
-     * output for writing while it reads its sources, and the image lock cannot be taken for
-     * reading by the thread that holds it for writing.
+     * @brief The op's route(), except that a B identity needs B read in the layer the node
+     * writes: with another layer the result is B's selected layer copied over, which renders.
      **/
-    static ImagePtr sourceDetachedFromOutputs(const ImagePtr& source,
-                                              const std::vector<ImagePtr>& outputs) WARN_UNUSED_RETURN;
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The input number of A input k (0..63).
+     **/
+    static int aInput(int k)
+    {
+        return nativeMergeAInput(k);
+    }
 
 protected:
     /**
-     * @brief The metadata of the first connected A input (A, then A2, ...), or of B when no A is
-     * connected. The Mask never contributes.
+     * @brief The planes the layers mode merges beside the output layer, and B's alpha layer when
+     * B's alpha source is per channel, where the merged alpha layer is written.
      **/
-    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void addProducedPlanes(double time,
+                                   ViewIdx view,
+                                   std::list<ImageLayerDesc>* planes) OVERRIDE FINAL;
+
+    /**
+     * @brief Reads A and B in plane itself when it is a layer the layers mode merges. For B's
+     * per-channel alpha layer, B is read in it and A in its own alpha layer when per channel too.
+     * The output layer keeps the A and B layers.
+     **/
+    virtual void adjustInputsForPlane(const ImageLayerDesc& plane,
+                                      double time,
+                                      ViewIdx view,
+                                      CompositeInputs* inputs) const OVERRIDE FINAL;
+
+    virtual void getFrameRange(double* first,
+                               double* last) OVERRIDE FINAL;
+
+    virtual ImageMetadata deriveOutputMetadata(double time,
+                                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -226,58 +275,37 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    // Shows the operator's name next to the node's label.
+    void refreshSubLabel();
 
-    virtual StatusEnum getRegionOfDefinition(U64 hash,
-                                             double time,
-                                             const RenderScale& scale,
-                                             ViewIdx view,
-                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    // Shows each side's universal channel or alpha layer as its alpha source uses them.
+    void refreshAlphaKnobs();
 
-    /**
-     * @brief Whether the merge leaves B unchanged over roi: every output channel is off, or no
-     * output channel drops B's and either a non-inverted mask misses roi or the operator leaves
-     * B unchanged where A is absent and no A input, clipped to such a mask, meets roi.
-     **/
-    virtual bool isOpIdentity(double time,
-                              const RenderScale& scale,
-                              const RectI& roi,
-                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    // Shows the also-merge list in List mode only.
+    void refreshLayersKnobs();
 
-    virtual StatusEnum renderOp(const RenderActionArgs& args,
-                                const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    // Whether plane is the output layer the layer knob selects.
+    bool isOutputPlane(const ImageLayerDesc& plane,
+                       double time,
+                       ViewIdx view) const WARN_UNUSED_RETURN;
 
-    MergeOperators::Operation getOperation(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+    // B's alpha layer, when B's alpha source is per channel and that layer resolves on B.
+    bool bAlphaPlane(double time,
+                     ViewIdx view,
+                     ImageLayerDesc* layer) const WARN_UNUSED_RETURN;
 
-    // Shows the operator next to the node's label and enables "Alpha masking" where it applies.
-    void refreshOperationDependents(double time);
+    // The region of definition of inputNb in *rod, an empty one for a region it fails to give;
+    // false when nothing is connected to it.
+    bool getInputRoD(int inputNb,
+                     double time,
+                     const RenderScale& scale,
+                     ViewIdx view,
+                     RectD* rod) const;
 
-    // The region of definition of input inputNb, when it is connected and has one.
-    bool getInputRoD(int inputNb, double time, const RenderScale& scale, ViewIdx view, RectD* rod) const WARN_UNUSED_RETURN;
-
-    const MergePresetEnum _preset;
-    KnobStringWPtr _subLabel;
-    KnobChoiceWPtr _operation;
-    KnobChoiceWPtr _bbox;
-    KnobBoolWPtr _alphaMasking;
-    KnobBoolWPtr _aChannels[4];
-    KnobBoolWPtr _bChannels[4];
-    KnobBoolWPtr _outputChannels[4];
-};
-
-/**
- * @brief The factory the built-in plug-in registry needs for each ID: it builds an effect
- * through a static function that takes no preset argument. kNodeSpec is the preset's spec
- * without its description.
- **/
-template <MergePresetEnum PRESET>
-struct MergePreset {
-    static constexpr NodeSpec kNodeSpec = mergeNodeSpec(PRESET);
-
-    static EffectInstance* BuildEffect(NodePtr node)
-    {
-        return new MergeNode(node, PRESET);
-    }
+    // The connected input "from" (A or B) names, falling back to the other side; -1 for none.
+    int fromInput(const KnobChoiceWPtr& from,
+                  double time,
+                  ViewIdx view) const WARN_UNUSED_RETURN;
 };
 
 NATRON_NAMESPACE_EXIT

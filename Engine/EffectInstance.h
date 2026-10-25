@@ -49,7 +49,6 @@
 #include "Serialization/SerializationFwd.h"
 
 // Various useful plugin IDs, @see EffectInstance::getPluginID()
-#define PLUGINID_OFX_MERGE        "net.sf.openfx.MergePlugin"
 #define PLUGINID_OFX_TRACKERPM    "net.sf.openfx.TrackerPM"
 #define PLUGINID_OFX_DOTEXAMPLE   "net.sf.openfx.dotexample"
 #define PLUGINID_OFX_RADIAL       "net.sf.openfx.Radial"

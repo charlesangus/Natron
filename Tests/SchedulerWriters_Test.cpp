@@ -59,6 +59,7 @@
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
@@ -190,7 +191,7 @@ protected:
     NodePtr createMerge(const NodePtr& b,
                         const NodePtr& a)
     {
-        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_OFX_MERGE));
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
         EXPECT_TRUE(bool(merge));
         if (!merge) {
             return merge;

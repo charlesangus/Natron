@@ -1646,8 +1646,7 @@ AppManager::registerNativePlugin()
 {
     EffectInstancePtr node(PLUGIN::BuildEffect(NodePtr()));
     // Through the built effect rather than PLUGIN: not every node exposes its spec as a static
-    // member (Keyer's lives in its .cpp, MissingPluginNode builds its own), and a templated
-    // registration such as MergePreset is not itself the effect class.
+    // member (Keyer's lives in its .cpp, MissingPluginNode builds its own).
     const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(node.get());
     if (!native) {
         throw std::logic_error("A native node registration fragment names " + node->getPluginID() + ", which is not a NativeEffectBase");

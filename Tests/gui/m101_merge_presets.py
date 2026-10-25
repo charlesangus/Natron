@@ -14,8 +14,8 @@ Sections:
     operation as the natronMergePreset property;
   - trigger: triggering each preset creates one Merge node (plug-in ID "Merge") in the root graph
     with its operation set, and the node's sub-label shows that operation;
-  - tab menu: the tab menu lists Plus under [Merge], and choosing it creates a Merge whose
-    operation is plus.
+  - tab menu: the tab menu lists one Merge and one Plus, the old node and its presets being gone,
+    lists Plus under [Merge], and choosing it creates a Merge whose operation is plus.
 
 Shots: m101-tab-menu-plus.png.
 """
@@ -154,9 +154,13 @@ try:
         popup, line_edit, view = yield from open_tab_menu(main_graph)
         if not check(popup is not None, "tab menu: opens over the root graph"):
             return
+        merges = [e for e in listed(line_edit, view, "Merge") if row_name(e) == "Merge" and "[Merge]" in e]
+        check(len(merges) == 1, "tab menu: lists one Merge, the old node's entry gone (got %r)" % merges)
         entries = listed(line_edit, view, "Plus")
         row = next((r for r, e in enumerate(entries) if row_name(e) == "Plus" and "[Merge]" in e), -1)
         check(row >= 0, "tab menu: lists Plus under [Merge] (got %r)" % entries)
+        pluses = [e for e in entries if row_name(e) == "Plus" and "[Merge]" in e]
+        check(len(pluses) == 1, "tab menu: lists one Plus, the old Plus preset gone (got %r)" % pluses)
         if row < 0:
             QTest.keyClick(popup, Qt.Key_Escape)
             QApplication.processEvents()

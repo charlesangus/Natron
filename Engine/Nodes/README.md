@@ -369,8 +369,8 @@ under "Flat image nodes", and `Grade` is the example to read.
    naming the class and its header relative to the fragment. A template
    registered under several IDs gets one fragment per ID, each naming its
    full instantiation and named after the node it registers
-   (`Merge/MergePlus.reg.inc` holds
-   `NATRON_NATIVE_NODE(MergePreset<eMergePresetPlus>, "Merge.h")`). The
+   (`Color/Add.reg.inc` holds
+   `NATRON_NATIVE_NODE(ColorMathNode<eColorMathOperationAdd>, "ColorMathNode.h")`). The
    class is a macro argument, so an instantiation whose arguments contain a
    comma is named through an alias (`Solid` in `Generator/Constant.h`).
    CMake globs the fragments into the generated `NativeRegistryAll.inc`, which
@@ -1192,9 +1192,7 @@ is how a parity test renders both side by side. The ID and major live in
 node exposes `static EffectInstance* BuildEffect(NodePtr)`, and icons are in
 `Gui/Resources/Images/NativeNodes/<pluginID>.png`.
 
-Siblings are one op under several IDs, each with its own `NodeSpec`: the Merge
-presets (`Plus`, `Matte`, `Multiply`, `In`, `Out`, `Screen`, `Max`, `Min`,
-`Difference`) are `MergeNode` with a default `operation`; `Solid` is a
+Siblings are one op under several IDs, each with its own `NodeSpec`: `Solid` is a
 `ConstantNode` over `ConstantOp` with its own spec; `TransformMasked` is
 `TransformImageNode<true>`, the `TransformOp` node with a mask input; `Add`,
 `Multiply` and `Gamma` are `ColorMathNode<KIND>`; `Erode` and `Dilate` are

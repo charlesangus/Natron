@@ -88,14 +88,14 @@ TEST_F(BaseTest, MergeMetadataComesFromA)
 {
     NodePtr sourceA = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr sourceB = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
 
     ASSERT_TRUE(sourceA && sourceB && merge);
 
     setTag(sourceA, 7);
     setTag(sourceB, 9);
-    connectNodes(sourceB, merge, kMergeInputB, true);
-    connectNodes(sourceA, merge, kMergeInputA, true);
+    connectNodes(sourceB, merge, kNativeMergeInputB, true);
+    connectNodes(sourceA, merge, kNativeMergeInputA, true);
 
     NativeEffectBase* mergeEffect = nativeEffectOf(merge);
     NativeEffectBase* aEffect = nativeEffectOf(sourceA);
@@ -112,12 +112,12 @@ TEST_F(BaseTest, MergeMetadataComesFromA)
 TEST_F(BaseTest, MergeMetadataFallsBackToBWithoutA)
 {
     NodePtr sourceB = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
 
     ASSERT_TRUE(sourceB && merge);
 
     setTag(sourceB, 9);
-    connectNodes(sourceB, merge, kMergeInputB, true);
+    connectNodes(sourceB, merge, kNativeMergeInputB, true);
 
     NativeEffectBase* mergeEffect = nativeEffectOf(merge);
 
@@ -129,13 +129,13 @@ TEST_F(BaseTest, MergeMetadataFollowsAWhenItChanges)
 {
     NodePtr sourceA = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr sourceB = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
 
     ASSERT_TRUE(sourceA && sourceB && merge);
 
     setTag(sourceB, 9);
-    connectNodes(sourceB, merge, kMergeInputB, true);
-    connectNodes(sourceA, merge, kMergeInputA, true);
+    connectNodes(sourceB, merge, kNativeMergeInputB, true);
+    connectNodes(sourceA, merge, kNativeMergeInputA, true);
 
     NativeEffectBase* mergeEffect = nativeEffectOf(merge);
 
@@ -150,11 +150,11 @@ TEST_F(BaseTest, MergeMetadataFollowsAWhenItChanges)
 TEST_F(BaseTest, MergeMetadataIsCachedPerFrame)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
 
     ASSERT_TRUE(source && merge);
 
-    connectNodes(source, merge, kMergeInputA, true);
+    connectNodes(source, merge, kNativeMergeInputA, true);
 
     NativeEffectBase* mergeEffect = nativeEffectOf(merge);
     MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());

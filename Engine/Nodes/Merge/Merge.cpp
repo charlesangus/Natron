@@ -26,692 +26,850 @@
 #include "Merge.h"
 
 #include <algorithm>
-#include <atomic>
-#include <bitset>
 #include <cstddef>
-#include <functional>
-#include <memory>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <string_view>
 #include <vector>
+
+#include <QString>
 
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Format.h"
-#include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/NodeMetadata.h"
-#include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
-#include "Engine/RectI.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// How many rows render() runs between two abort checks.
-const int kAbortCheckRows = 16;
+// Option indices of the bbox choice.
+enum BBoxEnum {
+    eBBoxUnion = 0,
+    eBBoxIntersection,
+    eBBoxA,
+    eBBoxB
+};
 
-const char* const kChannelSuffixes[4] = { "R", "G", "B", "A" };
+// Option indices of the metadata from and frame range from choices.
+enum FromEnum {
+    eFromA = 0,
+    eFromB
+};
 
-// The index in an nComps-channel pixel of the channel on colour bit `bit`, or -1.
-int
-channelIndexForBit(int nComps,
-                   int bit)
-{
-    if (nComps == 1) {
-        return (bit == 3) ? 0 : -1;
-    }
+// Pixels a step merges at a time, so that the gathered alphas fit on the stack.
+const int kStepChunk = 256;
 
-    return (bit < nComps) ? bit : -1;
-}
+#ifdef NATRON_HAVE_GPU
+// The parameter block of StepMerge in merge.slang. Operator indices are mergeops' MERGE_*, the
+// order of MergeOps::Operator.
+struct NativeMergeGpuParams {
+    std::uint32_t op;
+    std::uint32_t identityForTransparentA;
+};
 
-// The bits processed in a dstNComps-channel image holding `plane`. A one-channel plane rendered
-// into a wider image sits where EffectInstance's copy back reads it: alpha for a colour plane,
-// channel 0 otherwise.
-std::bitset<4>
-processedBitsForImage(const ImageLayerDesc& plane,
-                      int dstNComps,
-                      const std::bitset<4>& planeBits)
-{
-    if ((plane.getNumComponents() != 1) || (dstNComps == 1)) {
-        return planeBits;
-    }
-    std::bitset<4> bits;
-    bits[plane.isColorLayer() ? 3 : 0] = planeBits[3];
+static_assert(sizeof(NativeMergeGpuParams) == 8, "must match StepMerge in merge.slang");
+static_assert(MergeOps::eOperatorCount == 39, "must match MERGE_OPERATOR_COUNT in mergeops.slang");
+#endif
 
-    return bits;
-}
-
-// The rectangle helpers of openfx-misc's ofxsCoords.h, whose empty-rectangle and touching-edge
-// conventions the region of definition and identity rules depend on.
-template <typename Rect>
-bool
-rectIsEmpty(const Rect& r)
-{
-    return (r.x2 <= r.x1) || (r.y2 <= r.y1);
-}
-
-template <typename Rect>
+// The alphas of pixels x0..x0+width-1 of a row, nComps per pixel in the row's layout, zero for a
+// row without any.
 void
-rectBoundingBox(const Rect& a,
-                const Rect& b,
-                Rect* bbox)
+gatherAlpha(const RowIO::Alpha& alpha,
+            int x0,
+            int width,
+            int nComps,
+            float* out)
 {
-    if (rectIsEmpty(a)) {
-        *bbox = b;
+    if (!alpha.data) {
+        std::fill(out, out + std::size_t(width) * nComps, 0.f);
 
         return;
     }
-    if (rectIsEmpty(b)) {
-        *bbox = a;
-
-        return;
+    for (int i = 0; i < width; ++i) {
+        for (int c = 0; c < nComps; ++c) {
+            out[i * nComps + c] = alpha.at(x0 + i, c);
+        }
     }
-    bbox->x1 = (std::min)(a.x1, b.x1);
-    bbox->x2 = (std::max)(bbox->x1, (std::max)(a.x2, b.x2));
-    bbox->y1 = (std::min)(a.y1, b.y1);
-    bbox->y2 = (std::max)(bbox->y1, (std::max)(a.y2, b.y2));
 }
 
-template <typename Rect>
 bool
-rectIntersection(const Rect& r1,
-                 const Rect& r2,
-                 Rect* intersection)
+allZero(const float* values,
+        std::size_t count)
 {
-    if (rectIsEmpty(r1) || rectIsEmpty(r2) || (r1.x1 > r2.x2) || (r2.x1 > r1.x2) || (r1.y1 > r2.y2) || (r2.y1 > r1.y2)) {
-        if (intersection) {
-            intersection->x1 = 0;
-            intersection->x2 = 0;
-            intersection->y1 = 0;
-            intersection->y2 = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        if (values[i] != 0.f) {
+            return false;
         }
-
-        return false;
-    }
-    if (intersection) {
-        const Rect a = r1;
-        const Rect b = r2;
-        intersection->x1 = (std::max)(a.x1, b.x1);
-        intersection->x2 = (std::max)(intersection->x1, (std::min)(a.x2, b.x2));
-        intersection->y1 = (std::max)(a.y1, b.y1);
-        intersection->y2 = (std::max)(intersection->y1, (std::min)(a.y2, b.y2));
     }
 
     return true;
 }
 
-RectI
-toPixelEnclosing(const RectD& rod,
-                 const RenderScale& scale,
-                 double par)
+// The bounding box of a and b, where an empty rectangle adds nothing.
+RectD
+boundingBox(const RectD& a,
+            const RectD& b)
 {
-    if (rectIsEmpty(rod)) {
-        return RectI();
+    if (a.isNull()) {
+        return b;
     }
+    if (b.isNull()) {
+        return a;
+    }
+    RectD box = a;
+    box.merge(b);
 
-    return rod.toPixelEnclosing(scale.toMipmapLevel(), par);
+    return box;
 }
 
-// One value per pixel of `channel` of row y, zero wherever the image has no pixel.
-void
-readChannelRow(const Image* image,
-               const Image::ReadAccess* access,
-               const RectI& bounds,
-               int channel,
-               int x0,
-               int y,
-               int width,
-               float* row,
-               unsigned char* present)
+// The layer ID a layer select names, its empty value standing for rgba.
+std::string
+selectedLayerID(const KnobLayerSelectPtr& knob)
 {
-    std::fill(row, row + width, 0.f);
-    std::fill(present, present + width, (unsigned char)0);
-    if (!image) {
-        return;
-    }
-    if ((y < bounds.y1) || (y >= bounds.y2)) {
-        return;
-    }
-    const int xStart = (std::max)(x0, bounds.x1);
-    const int xEnd = (std::min)(x0 + width, bounds.x2);
-    if (xStart >= xEnd) {
-        return;
-    }
-    const int nComps = (int)image->getComponentsCount();
-    const float* pix = (const float*)access->pixelAt(xStart, y);
-    for (int x = xStart; x < xEnd; ++x, pix += nComps) {
-        row[x - x0] = pix[channel];
-        present[x - x0] = 1;
-    }
+    const std::string layerID = knob ? knob->getLayer() : std::string();
+
+    return layerID.empty() ? std::string(kNatronColorViewRGBA) : layerID;
 }
 
-// Image::getBounds() takes the image's lock, which a band thread must never ask for: behind a
-// writer waiting on an image this render holds for reading, it blocks forever. The bounds are
-// read once on the calling thread instead.
-struct MergeSource {
-    ImagePtr image;
-    std::shared_ptr<Image::ReadAccess> access;
-    RectI bounds;
-};
-
-// Row y of `source` over [x0, x0 + width), nComps floats per pixel: a pointer into the image
-// itself when it has the whole row in that layout and `keep` keeps every channel, and otherwise
-// a copy in `row` that is zero in the channels `keep` (indexed by pixel channel) turns off and
-// wherever the image has no pixel. An image in another layout is mapped channel by colour bit, a
-// channel it lacks reading as zero. *present is null when the image has every pixel of the row,
-// and otherwise points at presentRow, which flags the pixels it has.
-const float*
-fetchRow(const MergeSource& source,
-         int x0,
-         int y,
-         int width,
-         int nComps,
-         const std::bitset<4>& keep,
-         float* row,
-         unsigned char* presentRow,
-         const unsigned char** present)
-{
-    const std::size_t rowSize = (std::size_t)width * nComps;
-    int xStart = x0;
-    int xEnd = x0;
-    if (source.image && (y >= source.bounds.y1) && (y < source.bounds.y2)) {
-        xStart = (std::max)(x0, source.bounds.x1);
-        xEnd = (std::min)(x0 + width, source.bounds.x2);
-    }
-    if (xStart >= xEnd) {
-        std::fill(row, row + rowSize, 0.f);
-        std::fill(presentRow, presentRow + width, (unsigned char)0);
-        *present = presentRow;
-
-        return row;
-    }
-    const bool wholeRow = (xStart == x0) && (xEnd == x0 + width);
-    if (wholeRow) {
-        *present = 0;
-    } else {
-        std::fill(presentRow, presentRow + width, (unsigned char)0);
-        std::fill(presentRow + (xStart - x0), presentRow + (xEnd - x0), (unsigned char)1);
-        *present = presentRow;
-    }
-    const int srcNComps = (int)source.image->getComponentsCount();
-    bool keepAll = true;
-    int srcIndex[4] = { -1, -1, -1, -1 };
-    for (int c = 0; c < nComps; ++c) {
-        keepAll = keepAll && keep[c];
-        if (keep[c]) {
-            srcIndex[c] = channelIndexForBit(srcNComps, pixelKernelChannelBit(nComps, c));
-        }
-    }
-    const float* srcPix = (const float*)source.access->pixelAt(xStart, y);
-    if (wholeRow && keepAll && (srcNComps == nComps)) {
-        return srcPix;
-    }
-    std::fill(row, row + (std::size_t)(xStart - x0) * nComps, 0.f);
-    std::fill(row + (std::size_t)(xEnd - x0) * nComps, row + rowSize, 0.f);
-    float* dstPix = row + (std::size_t)(xStart - x0) * nComps;
-    if (keepAll && (srcNComps == nComps)) {
-        std::copy(srcPix, srcPix + (std::size_t)(xEnd - xStart) * nComps, dstPix);
-
-        return row;
-    }
-    for (int x = xStart; x < xEnd; ++x, srcPix += srcNComps, dstPix += nComps) {
-        for (int c = 0; c < nComps; ++c) {
-            dstPix[c] = (srcIndex[c] >= 0) ? srcPix[srcIndex[c]] : 0.f;
-        }
-    }
-
-    return row;
-}
-
-struct MergePlaneJob {
-    ImagePtr dst;
-    std::shared_ptr<Image::WriteAccess> dstAccess;
-    std::bitset<4> channels;
-    MergeSource b;
-    std::vector<MergeSource> as;
-    // The image the channels left unprocessed are copied from, the way the host copies them
-    // from the preferred input for an effect that does not: -1 none, 0 B, i + 1 the i-th A.
-    int passSource;
-
-    MergePlaneJob()
-        : dst()
-        , dstAccess()
-        , channels()
-        , b()
-        , as()
-        , passSource(-1)
-    {
-    }
-};
-
-struct MergeRowBand {
-    std::size_t job;
-    int y1;
-    int y2;
-
-    MergeRowBand(std::size_t jobIndex,
-                 int firstRow,
-                 int endRow)
-        : job(jobIndex)
-        , y1(firstRow)
-        , y2(endRow)
-    {
-    }
-};
-
-bool
-isFloatImage(const ImagePtr& image)
-{
-    return !image || (image->getBitDepth() == eImageBitDepthFloat);
-}
-
-bool
-readBool(const KnobBoolWPtr& weak,
-         double time,
-         ViewIdx view,
-         bool defaultValue)
-{
-    KnobBoolPtr knob = weak.lock();
-
-    return knob ? knob->getValueAtTime(time, 0, view) : defaultValue;
-}
-
-KnobBoolPtr
-addChannelToggle(KnobHolder* holder,
+KnobChoicePtr
+createFromChoice(KnobHolder* holder,
                  const KnobPagePtr& page,
-                 const std::string& prefix,
-                 int channel,
+                 const std::string& label,
+                 const std::string& name,
                  const std::string& hint)
 {
-    KnobBoolPtr knob = AppManager::createKnob<KnobBool>(holder, std::string(kChannelSuffixes[channel]));
+    KnobChoicePtr from = AppManager::createKnob<KnobChoice>(holder, label);
 
-    knob->setName(prefix + kChannelSuffixes[channel]);
-    knob->setHintToolTip(hint);
-    knob->setDefaultValue(true);
-    if (channel < 3) {
-        knob->setAddNewLine(false);
-        knob->setSpacingBetweenItems(1);
-    }
-    page->addKnob(knob);
+    from->setName(name);
+    from->setHintToolTip(hint);
+    std::vector<ChoiceOption> options;
+    options.push_back(ChoiceOption(kNativeMergeFromA, "A", EffectInstance::tr("Input A.").toStdString()));
+    options.push_back(ChoiceOption(kNativeMergeFromB, "B", EffectInstance::tr("Input B.").toStdString()));
+    from->populateChoices(options);
+    from->setDefaultValue((int)eFromB);
+    from->setAnimationEnabled(false);
+    from->setIsMetadataSlave(true);
+    page->addKnob(from);
 
-    return knob;
+    return from;
 }
 
-// The divider OpenFX hosts draw under a knob whose layout hint asks for one, with the name the
-// OpenFX host gives it.
-void
-addSeparatorAfter(KnobHolder* holder,
+KnobLayerSelectPtr
+createLayerSelect(KnobHolder* holder,
                   const KnobPagePtr& page,
-                  const std::string& knobName)
+                  const std::string& label,
+                  const std::string& name,
+                  const std::string& hint)
 {
-    KnobSeparatorPtr separator = AppManager::createKnob<KnobSeparator>(holder, std::string());
+    KnobLayerSelectPtr layer = AppManager::createKnob<KnobLayerSelect>(holder, label, 1, false);
 
-    separator->setName(knobName + "_separator");
-    page->addKnob(separator);
+    layer->setName(name);
+    layer->setHintToolTip(hint);
+    layer->setWithChannelButtons(false);
+    layer->setAllowNone(false);
+    layer->setAnimationEnabled(false);
+    layer->setIsMetadataSlave(true);
+    layer->setDefaultValue(layer->encode(kNatronColorViewRGBA, std::vector<std::string>()));
+    page->addKnob(layer);
+
+    return layer;
 }
 
-KnobStringPtr
-addRowLabel(KnobHolder* holder,
-            const KnobPagePtr& page,
-            const std::string& name,
-            const std::string& text,
-            const std::string& hint)
+KnobChannelSelectPtr
+createAlphaSelect(KnobHolder* holder,
+                  const KnobPagePtr& page,
+                  const std::string& label,
+                  const std::string& name,
+                  const std::string& hint)
 {
-    KnobStringPtr knob = AppManager::createKnob<KnobString>(holder, std::string());
+    KnobChannelSelectPtr alpha = AppManager::createKnob<KnobChannelSelect>(holder, label, 1, false);
 
-    knob->setName(name);
-    knob->setHintToolTip(hint);
-    knob->setDefaultValue(text);
-    knob->setAsLabel();
-    knob->setAddNewLine(false);
-    knob->setSpacingBetweenItems(1);
-    page->addKnob(knob);
+    alpha->setName(name);
+    alpha->setHintToolTip(hint);
+    alpha->setAnimationEnabled(false);
+    alpha->setDefaultValue(alpha->encode(std::string(kNatronColorViewRGBA) + ".A"));
+    page->addKnob(alpha);
 
-    return knob;
+    return alpha;
 }
 
-// Static: the preset specs view it for as long as the program runs.
-const std::string&
-mergeDescription()
+KnobChoicePtr
+createAlphaSourceChoice(KnobHolder* holder,
+                        const KnobPagePtr& page,
+                        const std::string& label,
+                        const std::string& name,
+                        const std::string& hint)
 {
-    static const std::string description = []() {
-        std::string help = "Pixel-by-pixel merge operation between two or more inputs.\n"
-                           "Input A is first merged with B (or with a black and transparent background if B is not connected), "
-                           "then A2, if connected, is merged with the intermediary result, then A3, etc.\n\n"
-                           "Note that if an input with only RGB components is connected to A or B, its alpha channel "
-                           "is considered to be opaque (one) by default, thus the output will be completely opaque if "
-                           "the checkbox for channel A of input B is checked.\n\n"
-                           "Operators:\n";
-        for (int op = 0; op < MergeOperators::eOperationCount; ++op) {
-            help += std::string("\n- ") + MergeOperators::operationId((MergeOperators::Operation)op) + ": " + MergeOperators::operationHint((MergeOperators::Operation)op);
+    KnobChoicePtr source = AppManager::createKnob<KnobChoice>(holder, label);
+
+    source->setName(name);
+    source->setHintToolTip(hint);
+    std::vector<ChoiceOption> options;
+    options.push_back(ChoiceOption(kNativeMergeAlphaUniversal, EffectInstance::tr("Universal").toStdString(),
+                                   EffectInstance::tr("One channel is the alpha of every merged channel.").toStdString()));
+    options.push_back(ChoiceOption(kNativeMergeAlphaPerLayer, EffectInstance::tr("Per-layer").toStdString(),
+                                   EffectInstance::tr("The merged layer's own channel named A or alpha, in any case, is its alpha; "
+                                                      "a layer without one takes the universal channel.")
+                                       .toStdString()));
+    options.push_back(ChoiceOption(kNativeMergeAlphaPerChannel, EffectInstance::tr("Per-channel").toStdString(),
+                                   EffectInstance::tr("An alpha layer's channel i is the alpha of merged channel i. It must have as "
+                                                      "many channels as the merged layer.")
+                                       .toStdString()));
+    source->populateChoices(options);
+    source->setDefaultValue((int)NativeMergeOp::AlphaSource::Universal);
+    source->setAnimationEnabled(false);
+    source->setIsMetadataSlave(true);
+    page->addKnob(source);
+
+    return source;
+}
+
+KnobLayerSelectPtr
+createAlphaLayerSelect(KnobHolder* holder,
+                       const KnobPagePtr& page,
+                       const std::string& label,
+                       const std::string& name,
+                       const std::string& hint)
+{
+    KnobLayerSelectPtr layer = AppManager::createKnob<KnobLayerSelect>(holder, label, 1, false);
+
+    layer->setName(name);
+    layer->setHintToolTip(hint);
+    layer->setWithChannelButtons(false);
+    layer->setAllowNone(true);
+    layer->setAnimationEnabled(false);
+    layer->setIsMetadataSlave(true);
+    page->addKnob(layer);
+
+    return layer;
+}
+
+NativeMergeOp::AlphaSource
+alphaSourceValue(const KnobReader& reader,
+                 const KnobChoiceWPtr& knob)
+{
+    const int value = reader.value(knob);
+
+    return ((value >= 0) && (value <= (int)NativeMergeOp::AlphaSource::PerChannel)) ? (NativeMergeOp::AlphaSource)value : NativeMergeOp::AlphaSource::Universal;
+}
+
+// The framework's alpha source for one side, from its universal channel and alpha layer knobs.
+CompositeAlpha
+compositeAlpha(NativeMergeOp::AlphaSource source,
+               std::string_view channelKnob,
+               std::string_view layerKnob)
+{
+    switch (source) {
+    case NativeMergeOp::AlphaSource::PerLayer:
+
+        return CompositeAlpha::readLayer(channelKnob);
+    case NativeMergeOp::AlphaSource::PerChannel:
+
+        return CompositeAlpha::layer(layerKnob);
+    case NativeMergeOp::AlphaSource::Universal:
+        break;
+    }
+
+    return CompositeAlpha::channel(channelKnob);
+}
+
+// Whether layers holds a layer with layer's ID, any colour layer standing for any other.
+bool
+hasLayerWithID(const std::list<ImageLayerDesc>& layers,
+               const ImageLayerDesc& layer)
+{
+    for (const ImageLayerDesc& other : layers) {
+        if ((other.isColorLayer() && layer.isColorLayer()) || (other.getLayerID() == layer.getLayerID())) {
+            return true;
         }
+    }
 
-        return help;
-    }();
-
-    return description;
+    return false;
 }
 
-template <MergePresetEnum PRESET>
-NodeSpec
-describedNodeSpec()
+void
+appendPlane(const ImageLayerDesc& plane,
+            std::list<ImageLayerDesc>* planes)
 {
-    NodeSpec spec = *staticNodeSpec<MergePreset<PRESET>::kNodeSpec>();
+    if ((plane.getNumComponents() > 0) && !hasLayerWithID(*planes, plane)) {
+        planes->push_back(plane);
+    }
+}
 
-    spec.description = mergeDescription();
+// Shows a side's universal channel unless it reads a per-channel alpha layer, and its alpha layer
+// only then.
+void
+refreshSideAlphaKnobs(const KnobChoiceWPtr& source,
+                      const KnobChannelSelectWPtr& channel,
+                      const KnobLayerSelectWPtr& layer)
+{
+    KnobChoicePtr sourceKnob = source.lock();
+    KnobChannelSelectPtr channelKnob = channel.lock();
+    KnobLayerSelectPtr layerKnob = layer.lock();
 
-    return spec;
+    if (!sourceKnob || !channelKnob || !layerKnob) {
+        return;
+    }
+    const bool perChannel = (sourceKnob->getValue() == (int)NativeMergeOp::AlphaSource::PerChannel);
+    channelKnob->setSecret(perChannel);
+    layerKnob->setSecret(!perChannel);
 }
 } // anonymous namespace
 
-MergeNode::MergeNode(NodePtr node,
-                     MergePresetEnum preset)
-    : StagedImageEffect(node)
-    , _preset(preset)
-{
-}
-
-MergeNode::~MergeNode()
-{
-}
-
-const NodeSpec*
-MergeNode::nodeSpec() const
-{
-    static const NodeSpec specs[] = {
-        describedNodeSpec<eMergePresetMerge>(),
-        describedNodeSpec<eMergePresetPlus>(),
-        describedNodeSpec<eMergePresetMatte>(),
-        describedNodeSpec<eMergePresetMultiply>(),
-        describedNodeSpec<eMergePresetIn>(),
-        describedNodeSpec<eMergePresetOut>(),
-        describedNodeSpec<eMergePresetScreen>(),
-        describedNodeSpec<eMergePresetMax>(),
-        describedNodeSpec<eMergePresetMin>(),
-        describedNodeSpec<eMergePresetDifference>(),
-    };
-    static_assert(sizeof(specs) / sizeof(specs[0]) == eMergePresetDifference + 1, "specs is indexed by MergePresetEnum");
-
-    return &specs[_preset];
-}
-
-const ImagePipelineSpec&
-MergeNode::imagePipelineSpec() const
-{
-    return staticImagePipelineSpec<kMergePipeline, MergePreset<eMergePresetMerge>::kNodeSpec>();
-}
-
-std::string
-MergeNode::presetPluginID(MergePresetEnum preset)
-{
-    return std::string(mergeNodeSpec(preset).id);
-}
-
-MergeOperators::Operation
-MergeNode::presetOperation(MergePresetEnum preset)
-{
-    switch (preset) {
-    case eMergePresetMerge:
-        return MergeOperators::eOver;
-    case eMergePresetPlus:
-        return MergeOperators::ePlus;
-    case eMergePresetMatte:
-        return MergeOperators::eMatte;
-    case eMergePresetMultiply:
-        return MergeOperators::eMultiply;
-    case eMergePresetIn:
-        return MergeOperators::eIn;
-    case eMergePresetOut:
-        return MergeOperators::eOut;
-    case eMergePresetScreen:
-        return MergeOperators::eScreen;
-    case eMergePresetMax:
-        return MergeOperators::eMax;
-    case eMergePresetMin:
-        return MergeOperators::eMin;
-    case eMergePresetDifference:
-        return MergeOperators::eDifference;
-    }
-
-    return MergeOperators::eOver;
-}
-
-int
-MergeNode::aInputIndex(int i)
-{
-    if (i == 0) {
-        return kMergeInputA;
-    }
-    if ((i < 0) || (i >= kMergeMaxAInputs)) {
-        return -1;
-    }
-
-    return kMergeInputMask + i;
-}
-
-ImagePtr
-MergeNode::sourceDetachedFromOutputs(const ImagePtr& source,
-                                     const std::vector<ImagePtr>& outputs)
-{
-    if (!source || (std::find(outputs.begin(), outputs.end(), source) == outputs.end())) {
-        return source;
-    }
-    const RectI bounds = source->getBounds();
-    ImagePtr copy = std::make_shared<Image>(source->getComponents(), source->getRoD(), bounds, source->getMipmapLevel(), source->getPixelAspectRatio(),
-                                            source->getBitDepth(), source->getFieldingOrder(), false /*useBitmap*/, eStorageModeRAM);
-    copy->pasteFrom(*source, bounds, false /*copyBitmap*/);
-
-    return copy;
-}
-
-std::string
-MergeNode::getInputHint(int inputNb) const
-{
-    if (inputNb == kMergeInputB) {
-        return tr("The main input. This input is passed through when the merge node is disabled.").toStdString();
-    } else if (inputNb == kMergeInputA) {
-        return tr("The image sequence to merge with input B.").toStdString();
-    }
-
-    return EffectInstance::getInputHint(inputNb);
-}
-
 void
-MergeNode::addAcceptedComponents(int inputNb,
-                                 std::list<ImageLayerDesc>* comps)
+NativeMergeOp::createKnobs(KnobHolder* holder,
+                           const KnobPagePtr& page)
 {
-    if (isInputMask(inputNb)) {
-        comps->push_back(ImageLayerDesc::getAlphaComponents());
-
-        return;
-    }
-    comps->push_back(ImageLayerDesc::getRGBAComponents());
-    comps->push_back(ImageLayerDesc::getRGBComponents());
-    comps->push_back(ImageLayerDesc::getXYComponents());
-    comps->push_back(ImageLayerDesc::getAlphaComponents());
-}
-
-void
-MergeNode::initializeKnobs()
-{
-    KnobPagePtr page = createControlsPage();
-    const MergeOperators::Operation defaultOperation = presetOperation(_preset);
-
     // Node.cpp shows this knob's value in parentheses next to the node's label, and NodeGui
     // draws the operator icon from it.
-    KnobStringPtr subLabel = createKnob<KnobString>(std::string(kNatronOfxParamStringSublabelName));
-    subLabel->setName(kNatronOfxParamStringSublabelName);
-    subLabel->setSecretByDefault(true);
-    subLabel->setDefaultAllDimensionsEnabled(false);
-    subLabel->setIsPersistent(false);
-    subLabel->setEvaluateOnChange(false);
-    subLabel->setAnimationEnabled(false);
-    subLabel->setDefaultValue(std::string(MergeOperators::operationId(defaultOperation)));
-    page->addKnob(subLabel);
-    _subLabel = subLabel;
+    KnobStringPtr subLabelKnob = AppManager::createKnob<KnobString>(holder, std::string(kNatronOfxParamStringSublabelName));
+    subLabelKnob->setName(kNatronOfxParamStringSublabelName);
+    subLabelKnob->setSecretByDefault(true);
+    subLabelKnob->setDefaultAllDimensionsEnabled(false);
+    subLabelKnob->setIsPersistent(false);
+    subLabelKnob->setEvaluateOnChange(false);
+    subLabelKnob->setAnimationEnabled(false);
+    subLabelKnob->setDefaultValue(std::string(MergeOps::operatorName(MergeOps::eOver)));
+    page->addKnob(subLabelKnob);
+    subLabel = subLabelKnob;
 
-    KnobChoicePtr operation = createKnob<KnobChoice>(tr("Operation"));
-    operation->setName(kMergeParamOperation);
-    operation->setHintToolTip(tr("The operation used to merge the input A and B images.\n"
-                                 "The operator formula is applied to each component: A and B represent the input component "
-                                 "(Red, Green, Blue, or Alpha) of each input, and a and b represent the alpha channel of each input.\n"
-                                 "If Alpha masking is checked, the output alpha is computed using a different formula (a+b - a*b).\n"
-                                 "Alpha masking is always enabled for HSL modes (hue, saturation, color, luminosity)."));
+    KnobChoicePtr operationKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Operation").toStdString());
+    operationKnob->setName(kNativeMergeParamOperation);
+    operationKnob->setHintToolTip(EffectInstance::tr("The operator merging each A input over the result so far, starting "
+                                                     "from B. A and B are the channel values, a and b their alphas.")
+                                      .toStdString());
     {
         std::vector<ChoiceOption> options;
-        for (int op = 0; op < MergeOperators::eOperationCount; ++op) {
-            const MergeOperators::Operation o = (MergeOperators::Operation)op;
-            options.push_back(ChoiceOption(MergeOperators::operationId(o), MergeOperators::operationId(o), MergeOperators::operationHint(o)));
+        for (int op = 0; op < MergeOps::eOperatorCount; ++op) {
+            const MergeOps::Operator o = (MergeOps::Operator)op;
+            options.push_back(ChoiceOption(MergeOps::operatorName(o), MergeOps::operatorName(o), MergeOps::operatorHint(o)));
         }
-        operation->populateChoices(options);
+        operationKnob->populateChoices(options);
     }
-    operation->setDefaultValue((int)defaultOperation);
-    operation->setAddNewLine(false);
-    operation->setSpacingBetweenItems(1);
-    page->addKnob(operation);
-    _operation = operation;
+    operationKnob->setDefaultValue((int)MergeOps::eOver);
+    page->addKnob(operationKnob);
+    operation = operationKnob;
 
-    KnobChoicePtr bbox = createKnob<KnobChoice>(tr("Bounding Box"));
-    bbox->setName(kMergeParamBBox);
-    bbox->setHintToolTip(tr("What to use to produce the output image's bounding box."));
+    KnobChoicePtr bboxKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Set BBox To").toStdString());
+    bboxKnob->setName(kNativeMergeParamBBox);
+    bboxKnob->setHintToolTip(EffectInstance::tr("The output's region of definition.").toStdString());
     {
         std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kMergeBBoxUnion, tr("Union").toStdString(), tr("Union of all connected inputs.").toStdString()));
-        options.push_back(ChoiceOption(kMergeBBoxIntersection, tr("Intersection").toStdString(), tr("Intersection of all connected inputs.").toStdString()));
-        options.push_back(ChoiceOption(kMergeBBoxA, tr("A").toStdString(), tr("Bounding box of input A.").toStdString()));
-        options.push_back(ChoiceOption(kMergeBBoxB, tr("B").toStdString(), tr("Bounding box of input B.").toStdString()));
-        bbox->populateChoices(options);
+        options.push_back(ChoiceOption(kNativeMergeBBoxUnion, EffectInstance::tr("union").toStdString(), EffectInstance::tr("The union of B and every connected A input.").toStdString()));
+        options.push_back(ChoiceOption(kNativeMergeBBoxIntersection, EffectInstance::tr("intersection").toStdString(), EffectInstance::tr("The intersection of B and every connected A input.").toStdString()));
+        options.push_back(ChoiceOption(kNativeMergeBBoxA, "A", EffectInstance::tr("The union of every connected A input.").toStdString()));
+        options.push_back(ChoiceOption(kNativeMergeBBoxB, "B", EffectInstance::tr("Input B's.").toStdString()));
+        bboxKnob->populateChoices(options);
     }
-    bbox->setDefaultValue(0);
-    page->addKnob(bbox);
-    _bbox = bbox;
+    bboxKnob->setDefaultValue((int)eBBoxUnion);
+    page->addKnob(bboxKnob);
+    bbox = bboxKnob;
 
-    KnobBoolPtr alphaMasking = createKnob<KnobBool>(tr("Alpha masking"));
-    alphaMasking->setName(kMergeParamAlphaMasking);
-    alphaMasking->setHintToolTip(tr("When enabled, the input images are unchanged where the other image has 0 alpha, and "
-                                    "the output alpha is set to a+b - a*b. When disabled the alpha channel is processed as "
-                                    "any other channel. Option is disabled for operations where it does not apply or makes no difference."));
-    alphaMasking->setDefaultValue(false);
-    page->addKnob(alphaMasking);
-    _alphaMasking = alphaMasking;
-    addSeparatorAfter(this, page, kMergeParamAlphaMasking);
+    metadataFrom = createFromChoice(holder, page, EffectInstance::tr("Metadata From").toStdString(), kNativeMergeParamMetadataFrom,
+                                    EffectInstance::tr("The input whose metadata the output carries: A is input A, not A2 onwards. "
+                                                       "When it is not connected, the other one's.")
+                                        .toStdString());
+    rangeFrom = createFromChoice(holder, page, EffectInstance::tr("Range From").toStdString(), kNativeMergeParamRangeFrom,
+                                 EffectInstance::tr("The input whose frame range the output has: A is input A, not A2 onwards. "
+                                                    "When it is not connected, the other one's.")
+                                     .toStdString());
 
-    const std::string channelNames[4] = { "red", "green", "blue", "alpha" };
+    aLayer = createLayerSelect(holder, page, EffectInstance::tr("A Layer").toStdString(), kNativeMergeParamALayer,
+                               EffectInstance::tr("The layer every A input is read in. A layer an input lacks reads as zero.").toStdString());
+    aAlphaSource = createAlphaSourceChoice(holder, page, EffectInstance::tr("A Alpha Source").toStdString(), kNativeMergeParamAAlphaSource,
+                                           EffectInstance::tr("Where each A input's alpha, a, comes from.").toStdString());
+    aAlpha = createAlphaSelect(holder, page, EffectInstance::tr("A Alpha").toStdString(), kNativeMergeParamAAlpha,
+                               EffectInstance::tr("The channel of each A input that is its alpha, a, for every merged channel, "
+                                                  "and for a layer without its own alpha under Per-layer. None gives an alpha of 0.")
+                                   .toStdString());
+    aAlphaLayer = createAlphaLayerSelect(holder, page, EffectInstance::tr("A Alpha Layer").toStdString(), kNativeMergeParamAAlphaLayer,
+                                         EffectInstance::tr("The layer of each A input whose channel i is the alpha of merged channel i. "
+                                                            "None, or a layer an input lacks, gives an alpha of 0.")
+                                             .toStdString());
+    bLayer = createLayerSelect(holder, page, EffectInstance::tr("B Layer").toStdString(), kNativeMergeParamBLayer,
+                               EffectInstance::tr("The layer B is read in. Choosing it also sets the output layer.").toStdString());
+    bAlphaSource = createAlphaSourceChoice(holder, page, EffectInstance::tr("B Alpha Source").toStdString(), kNativeMergeParamBAlphaSource,
+                                           EffectInstance::tr("Where B's alpha, b, comes from.").toStdString());
+    bAlpha = createAlphaSelect(holder, page, EffectInstance::tr("B Alpha").toStdString(), kNativeMergeParamBAlpha,
+                               EffectInstance::tr("The channel of B that is its alpha, b, for every merged channel, and for a "
+                                                  "layer without its own alpha under Per-layer. None gives an alpha of 0.")
+                                   .toStdString());
+    bAlphaLayer = createAlphaLayerSelect(holder, page, EffectInstance::tr("B Alpha Layer").toStdString(), kNativeMergeParamBAlphaLayer,
+                                         EffectInstance::tr("The layer of B whose channel i is the alpha of merged channel i. None, or "
+                                                            "a layer B lacks, gives an alpha of 0. The merged alphas are written to it.")
+                                             .toStdString());
 
-    addRowLabel(this, page, kMergeParamAChannels, tr("A Channels").toStdString(), tr("Channels to use from A input(s) (other channels are set to zero).").toStdString());
-    for (int c = 0; c < 4; ++c) {
-        _aChannels[c] = addChannelToggle(this, page, kMergeParamAChannels, c, tr("Use %1 channel from A input(s).").arg(QString::fromUtf8(channelNames[c].c_str())).toStdString());
+    KnobChoicePtr layersKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Layers").toStdString());
+    layersKnob->setName(kNativeMergeParamLayers);
+    layersKnob->setHintToolTip(EffectInstance::tr("What is merged beside the A layer into the output layer. Every other layer "
+                                                  "of B passes through.")
+                                   .toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kNativeMergeLayersSingle, EffectInstance::tr("Single").toStdString(),
+                                       EffectInstance::tr("Only the A layer into the output layer.").toStdString()));
+        options.push_back(ChoiceOption(kNativeMergeLayersAllMatching, EffectInstance::tr("All matching").toStdString(),
+                                       EffectInstance::tr("Also every layer present on B and on an A input, each read and "
+                                                          "written in itself.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption(kNativeMergeLayersList, EffectInstance::tr("List").toStdString(),
+                                       EffectInstance::tr("Also the layers of the Also Merge list, each read and written in "
+                                                          "itself. A layer a side lacks reads as zero there.")
+                                           .toStdString()));
+        layersKnob->populateChoices(options);
     }
-    addRowLabel(this, page, kMergeParamBChannels, tr("B Channels").toStdString(), tr("Channels to use from B input (other channels are set to zero).").toStdString());
-    for (int c = 0; c < 4; ++c) {
-        _bChannels[c] = addChannelToggle(this, page, kMergeParamBChannels, c, tr("Use %1 channel from B input.").arg(QString::fromUtf8(channelNames[c].c_str())).toStdString());
+    layersKnob->setDefaultValue((int)LayersMode::Single);
+    layersKnob->setAnimationEnabled(false);
+    layersKnob->setIsMetadataSlave(true);
+    page->addKnob(layersKnob);
+    layers = layersKnob;
+
+    KnobChannelSetPtr alsoMergeKnob = AppManager::createKnob<KnobChannelSet>(holder, EffectInstance::tr("Also Merge").toStdString());
+    alsoMergeKnob->setName(kNativeMergeParamAlsoMerge);
+    alsoMergeKnob->setHintToolTip(EffectInstance::tr("The layers of B merged, each in itself, beside the output layer in List "
+                                                     "mode.")
+                                      .toStdString());
+    alsoMergeKnob->setWithChannelButtons(false);
+    alsoMergeKnob->setAnimationEnabled(false);
+    alsoMergeKnob->setIsMetadataSlave(true);
+    {
+        std::vector<ChannelSetRow> none(1);
+        none[0].mode = ChannelSetRow::eModeNone;
+        alsoMergeKnob->setDefaultValue(alsoMergeKnob->encodeRows(none));
     }
-    addRowLabel(this, page, kMergeParamOutputChannels, tr("Output").toStdString(), tr("Channels from result to write to output (other channels are taken from B input).").toStdString());
-    for (int c = 0; c < 4; ++c) {
-        _outputChannels[c] = addChannelToggle(this, page, kMergeParamOutputChannels, c, tr("Write %1 channel to output.").arg(QString::fromUtf8(channelNames[c].c_str())).toStdString());
-    }
-    addSeparatorAfter(this, page, std::string(kMergeParamOutputChannels) + kChannelSuffixes[3]);
+    page->addKnob(alsoMergeKnob);
+    alsoMerge = alsoMergeKnob;
+} // NativeMergeOp::createKnobs
 
-    addStageKnobs(page);
-
-    refreshOperationDependents(0.);
-} // MergeNode::initializeKnobs
-
-MergeOperators::Operation
-MergeNode::getOperation(double time,
-                        ViewIdx view) const
+NativeMergeOp::Params
+NativeMergeOp::bake(const KnobReader& reader) const
 {
-    KnobChoicePtr operation = _operation.lock();
-    const int value = operation ? operation->getValueAtTime(time, 0, view) : (int)presetOperation(_preset);
+    Params params;
+    const int value = reader.value(operation);
 
-    if ((value < 0) || (value >= MergeOperators::eOperationCount)) {
-        return presetOperation(_preset);
-    }
+    params.op = ((value >= 0) && (value < (int)MergeOps::eOperatorCount)) ? (MergeOps::Operator)value : MergeOps::eOver;
+    params.identityForTransparentA = isIdentityForTransparentA(params.op);
+    params.aAlpha = alphaSourceValue(reader, aAlphaSource);
+    params.bAlpha = alphaSourceValue(reader, bAlphaSource);
 
-    return (MergeOperators::Operation)value;
+    return params;
 }
 
-void
-MergeNode::refreshOperationDependents(double time)
+std::optional<std::string>
+NativeMergeOp::error(const Params& params) const
 {
-    const MergeOperators::Operation op = getOperation(time, ViewIdx(0));
-    KnobBoolPtr alphaMasking = _alphaMasking.lock();
-
-    if (alphaMasking) {
-        alphaMasking->setAllDimensionsEnabled(MergeOperators::isMaskable(op));
+    if (MergeOps::isSeparable(params.op) || ((params.aAlpha != AlphaSource::PerChannel) && (params.bAlpha != AlphaSource::PerChannel))) {
+        return std::nullopt;
     }
-    KnobStringPtr subLabel = _subLabel.lock();
-    if (subLabel) {
-        subLabel->setValue(std::string(MergeOperators::operationId(op)));
+
+    return EffectInstance::tr("The %1 operator blends whole colours, so it cannot take a per-channel alpha layer. Choose a "
+                              "universal or per-layer alpha source.")
+        .arg(QString::fromUtf8(MergeOps::operatorName(params.op)))
+        .toStdString();
+}
+
+GpuOpRef
+NativeMergeOp::gpu(const Params& params) const
+{
+#ifdef NATRON_HAVE_GPU
+    NativeMergeGpuParams block = {};
+    block.op = (std::uint32_t)params.op;
+    block.identityForTransparentA = params.identityForTransparentA ? 1u : 0u;
+    GpuOpRef ref = GpuOpRef::compiled((int)gpu::GpuKernelId::merge, block);
+    if (!MergeOps::isSeparable(params.op)) {
+        ref.acceptedComponents = GpuOpRef::componentsBit(3) | GpuOpRef::componentsBit(4);
+    }
+
+    return ref;
+#else
+    Q_UNUSED(params);
+
+    return GpuOpRef::none();
+#endif
+}
+
+bool
+NativeMergeOp::isIdentityForTransparentA(MergeOps::Operator op)
+{
+    // With A = 0 and a = 0 each of these reduces to B for every B and b (see mergeops.slang).
+    // conjoint-over and disjoint-over do not where b <= 0 or b > 1, and the non-separable
+    // operators are left out rather than relied on through their colour maths.
+    switch (op) {
+    case MergeOps::eATop:
+    case MergeOps::eColorDodge:
+    case MergeOps::eExclusion:
+    case MergeOps::eFrom:
+    case MergeOps::eMatte:
+    case MergeOps::eOver:
+    case MergeOps::ePlus:
+    case MergeOps::eScreen:
+    case MergeOps::eStencil:
+    case MergeOps::eUnder:
+    case MergeOps::eXor:
+
+        return true;
+    default:
+
+        return false;
     }
 }
 
 bool
-MergeNode::knobChanged(KnobI* k,
-                       ValueChangedReasonEnum /*reason*/,
-                       ViewSpec /*view*/,
-                       double time,
-                       bool /*originatedFromMainThread*/)
+NativeMergeOp::isIdentity(const Params& /*params*/) const
 {
-    KnobChoicePtr operation = _operation.lock();
+    // Whether an A input is connected is not in the Params: route() answers that identity.
+    return false;
+}
 
-    if (!operation || (k != operation.get())) {
+Route
+NativeMergeOp::route(const Params& params,
+                     const RouteContext& context) const
+{
+    if (!params.identityForTransparentA) {
+        return Route::none();
+    }
+    for (int k = 0; k < kNativeMergeMaxAInputs; ++k) {
+        if (context.isConnected(nativeMergeAInput(k))) {
+            return Route::none();
+        }
+    }
+
+    return context.isConnected(kNativeMergeInputB) ? Route::input(kNativeMergeInputB, context.time()) : Route::black();
+}
+
+CompositeInputs
+NativeMergeOp::inputs(const Params& params,
+                      const RouteContext& context) const
+{
+    CompositeInputs folded;
+    const CompositeAlpha aAlphaOf = compositeAlpha(params.aAlpha, kNativeMergeParamAAlpha, kNativeMergeParamAAlphaLayer);
+
+    folded.base = CompositeInput { kNativeMergeInputB, kNativeMergeParamBLayer, compositeAlpha(params.bAlpha, kNativeMergeParamBAlpha, kNativeMergeParamBAlphaLayer) };
+    for (int k = 0; k < kNativeMergeMaxAInputs; ++k) {
+        const int inputNb = nativeMergeAInput(k);
+        if (context.isConnected(inputNb)) {
+            folded.add(CompositeInput { inputNb, kNativeMergeParamALayer, aAlphaOf });
+        }
+    }
+    // With no A connected, an operator that is not an identity then (route() answers the others)
+    // merges a transparent A: input A, which reads zero.
+    if (folded.further.empty()) {
+        folded.add(CompositeInput { kNativeMergeInputA, kNativeMergeParamALayer, aAlphaOf });
+    }
+
+    return folded;
+}
+
+void
+NativeMergeOp::step(const Params& params,
+                    const RowIO& io) const
+{
+    const int nComps = io.nComps;
+    const MergeOps::RowFunction merge = MergeOps::rowFunction(params.op, nComps);
+
+    if (!merge) {
+        return;
+    }
+    // The result's alpha follows the operator, as a separable operator merges channels; a
+    // non-separable one has no meaning on alphas alone, which then merge "over", as its fourth
+    // channel does.
+    const MergeOps::RowFunction mergeAlpha = io.dstAlpha ? MergeOps::rowFunction(MergeOps::isSeparable(params.op) ? params.op : MergeOps::eOver, nComps) : 0;
+
+    // The alphas in the row's layout, per channel, whatever their source's layout.
+    float aAlphas[kStepChunk * 4];
+    float bAlphas[kStepChunk * 4];
+    for (int x = 0; x < io.width; x += kStepChunk) {
+        const int width = std::min(kStepChunk, io.width - x);
+        const std::size_t count = std::size_t(width) * nComps;
+        const float* A = io.src[1] + std::size_t(x) * nComps;
+        const float* B = io.src[0] + std::size_t(x) * nComps;
+        float* dst = io.dst + std::size_t(x) * nComps;
+        float* dstAlpha = io.dstAlpha ? io.dstAlpha + std::size_t(x) * nComps : 0;
+        gatherAlpha(io.alpha[1], x, width, nComps, aAlphas);
+        gatherAlpha(io.alpha[0], x, width, nComps, bAlphas);
+
+        // A stretch with nothing in A, such as one outside its region of definition, keeps B
+        // without an operator call when a transparent A leaves B unchanged.
+        if (params.identityForTransparentA && allZero(A, count) && allZero(aAlphas, count)) {
+            std::memcpy(dst, B, count * sizeof(float));
+            if (dstAlpha) {
+                std::memcpy(dstAlpha, bAlphas, count * sizeof(float));
+            }
+            continue;
+        }
+        const MergeOps::AlphaSpan aSpan = { aAlphas, nComps, 1 };
+        const MergeOps::AlphaSpan bSpan = { bAlphas, nComps, 1 };
+        merge(A, aSpan, B, bSpan, width, dst);
+        if (mergeAlpha && dstAlpha) {
+            mergeAlpha(aAlphas, aSpan, bAlphas, bSpan, width, dstAlpha);
+        }
+    }
+} // NativeMergeOp::step
+
+NativeMerge::NativeMerge(NodePtr node)
+    : ImageNode<NativeMergeOp>(node)
+{
+}
+
+NativeMerge::~NativeMerge()
+{
+}
+
+void
+NativeMerge::initializeKnobs()
+{
+    ImageNode<NativeMergeOp>::initializeKnobs();
+
+    NodePtr node = getNode();
+    if (node) {
+        node->declareLayerKnob(op().aLayer.lock(), kNativeMergeInputA, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(op().aAlpha.lock(), kNativeMergeInputA, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(op().bLayer.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(op().bAlpha.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(op().aAlphaLayer.lock(), kNativeMergeInputA, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(op().bAlphaLayer.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(op().alsoMerge.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
+    }
+    refreshSubLabel();
+    refreshAlphaKnobs();
+    refreshLayersKnobs();
+}
+
+void
+NativeMerge::refreshLayersKnobs()
+{
+    KnobChoicePtr layers = op().layers.lock();
+    KnobChannelSetPtr alsoMerge = op().alsoMerge.lock();
+
+    if (layers && alsoMerge) {
+        alsoMerge->setSecret(layers->getValue() != (int)NativeMergeOp::LayersMode::List);
+    }
+}
+
+void
+NativeMerge::refreshAlphaKnobs()
+{
+    refreshSideAlphaKnobs(op().aAlphaSource, op().aAlpha, op().aAlphaLayer);
+    refreshSideAlphaKnobs(op().bAlphaSource, op().bAlpha, op().bAlphaLayer);
+}
+
+void
+NativeMerge::refreshSubLabel()
+{
+    KnobChoicePtr operation = op().operation.lock();
+    KnobStringPtr subLabel = op().subLabel.lock();
+
+    if (!operation || !subLabel) {
+        return;
+    }
+    const int value = operation->getValue();
+    if ((value >= 0) && (value < (int)MergeOps::eOperatorCount)) {
+        subLabel->setValue(std::string(MergeOps::operatorName((MergeOps::Operator)value)));
+    }
+}
+
+bool
+NativeMerge::knobChanged(KnobI* k,
+                         ValueChangedReasonEnum reason,
+                         ViewSpec /*view*/,
+                         double /*time*/,
+                         bool /*originatedFromMainThread*/)
+{
+    KnobChoicePtr operation = op().operation.lock();
+
+    if (operation && (k == operation.get())) {
+        refreshSubLabel();
+
+        return true;
+    }
+
+    KnobChoicePtr aAlphaSource = op().aAlphaSource.lock();
+    KnobChoicePtr bAlphaSource = op().bAlphaSource.lock();
+    if ((aAlphaSource && (k == aAlphaSource.get())) || (bAlphaSource && (k == bAlphaSource.get()))) {
+        refreshAlphaKnobs();
+
+        return true;
+    }
+
+    KnobChoicePtr layers = op().layers.lock();
+    if (layers && (k == layers.get())) {
+        refreshLayersKnobs();
+
+        return true;
+    }
+
+    // The output defaults to the B layer: a user's choice of B's layer moves the output with it.
+    KnobLayerSelectPtr bLayer = op().bLayer.lock();
+    if (bLayer && (k == bLayer.get()) && (reason == eValueChangedReasonUserEdited)) {
+        KnobLayerSelectPtr target = getKnobByNameAndType<KnobLayerSelect>(kNodeParamLayerSelect);
+        if (target) {
+            target->setLayer(selectedLayerID(bLayer));
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+void
+NativeMerge::onKnobsLoaded()
+{
+    refreshSubLabel();
+    refreshAlphaKnobs();
+    refreshLayersKnobs();
+}
+
+bool
+NativeMerge::isOutputPlane(const ImageLayerDesc& plane,
+                           double time,
+                           ViewIdx view) const
+{
+    NodePtr node = getNode();
+    std::vector<ResolvedLayer> selected;
+
+    if (!node || !node->resolveLayerKnob(time, view, &selected) || selected.empty()) {
+        // getComponentsNeededDefault() then outputs the metadata colour plane.
+        return plane.isColorLayer();
+    }
+    for (const ResolvedLayer& layer : selected) {
+        if ((layer.desc.isColorLayer() && plane.isColorLayer()) || (layer.desc == plane)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+NativeMerge::bAlphaPlane(double time,
+                         ViewIdx view,
+                         ImageLayerDesc* layer) const
+{
+    KnobChoicePtr source = op().bAlphaSource.lock();
+    KnobLayerSelectPtr alphaLayer = op().bAlphaLayer.lock();
+
+    if (!source || !alphaLayer || (source->getValue() != (int)NativeMergeOp::AlphaSource::PerChannel)) {
         return false;
     }
-    refreshOperationDependents(time);
+    // Listing an input's layers only reads its metadata and layer knobs.
+    NativeMerge* self = const_cast<NativeMerge*>(this);
+    std::list<ImageLayerDesc> present;
+    self->getAvailableLayers(time, view, kNativeMergeInputB, &present);
+    ResolvedLayer resolved;
+    if (!alphaLayer->resolve(present, &resolved) || (resolved.desc.getNumComponents() == 0)) {
+        return false;
+    }
+    *layer = resolved.desc;
 
     return true;
 }
 
 void
-MergeNode::onKnobsLoaded()
+NativeMerge::addProducedPlanes(double time,
+                               ViewIdx view,
+                               std::list<ImageLayerDesc>* planes)
 {
-    refreshOperationDependents(getCurrentTime());
-}
+    KnobChoicePtr layersKnob = op().layers.lock();
+    const int mode = layersKnob ? layersKnob->getValue() : (int)NativeMergeOp::LayersMode::Single;
 
-ImageMetadata
-MergeNode::deriveOutputMetadata(double time,
-                                ViewIdx view)
-{
-    for (int i = 0; i < kMergeMaxAInputs; ++i) {
-        const int inputNb = aInputIndex(i);
-        if (getInput(inputNb)) {
-            return getInputMetadata(inputNb, time, view);
+    if (mode == (int)NativeMergeOp::LayersMode::AllMatching) {
+        std::list<ImageLayerDesc> aLayers;
+        for (int k = 0; k < kNativeMergeMaxAInputs; ++k) {
+            if (!getInput(aInput(k))) {
+                continue;
+            }
+            std::list<ImageLayerDesc> present;
+            getAvailableLayers(time, view, aInput(k), &present);
+            for (const ImageLayerDesc& layer : present) {
+                appendPlane(layer, &aLayers);
+            }
+        }
+        std::list<ImageLayerDesc> bLayers;
+        if (getInput(kNativeMergeInputB)) {
+            getAvailableLayers(time, view, kNativeMergeInputB, &bLayers);
+        }
+        for (const ImageLayerDesc& layer : bLayers) {
+            if (hasLayerWithID(aLayers, layer)) {
+                appendPlane(layer, planes);
+            }
+        }
+    } else if (mode == (int)NativeMergeOp::LayersMode::List) {
+        KnobChannelSetPtr alsoMergeKnob = op().alsoMerge.lock();
+        NodePtr node = getNode();
+        if (alsoMergeKnob && node) {
+            std::list<ImageLayerDesc> listed;
+            node->listLayersForKnob(alsoMergeKnob, time, view, &listed);
+            for (const ResolvedLayer& layer : alsoMergeKnob->resolve(listed)) {
+                appendPlane(layer.desc, planes);
+            }
         }
     }
 
-    return getInputMetadata(kMergeInputB, time, view);
+    ImageLayerDesc alphaLayer;
+    if (bAlphaPlane(time, view, &alphaLayer)) {
+        appendPlane(alphaLayer, planes);
+    }
 }
 
-StatusEnum
-MergeNode::getPreferredMetadata(NodeMetadata& metadata)
+void
+NativeMerge::adjustInputsForPlane(const ImageLayerDesc& plane,
+                                  double time,
+                                  ViewIdx view,
+                                  CompositeInputs* inputs) const
 {
-    // The output always has an alpha channel: an RGB B is transparent outside A, so A and B in
-    // RGB still give RGBA. The inputs are read in the output's layout.
-    int nComps = metadata.getNComps(-1);
-
-    if (nComps == 3) {
-        nComps = 4;
+    if ((plane.getNumComponents() == 0) || isOutputPlane(plane, time, view)) {
+        return;
     }
-    metadata.setNComps(-1, nComps);
-    for (int i = 0; i < getNInputs(); ++i) {
-        if (!isInputMask(i)) {
-            metadata.setNComps(i, nComps);
-        }
+    ImageLayerDesc alphaLayer;
+    const bool writesAlpha = bAlphaPlane(time, view, &alphaLayer) && (alphaLayer.getLayerID() == plane.getLayerID());
+    KnobChoicePtr aSource = op().aAlphaSource.lock();
+    const bool aPerChannel = aSource && (aSource->getValue() == (int)NativeMergeOp::AlphaSource::PerChannel);
+
+    inputs->base.layerKnob = std::string_view();
+    for (CompositeInput& input : inputs->further) {
+        // Under a per-channel alpha the merged alpha layer is A's alpha layer over B's, each
+        // its own alpha, as the result's alphas merge in step().
+        input.layerKnob = (writesAlpha && aPerChannel) ? std::string_view(kNativeMergeParamAAlphaLayer) : std::string_view();
+    }
+}
+
+Route
+NativeMerge::route(double time,
+                   ViewIdx view)
+{
+    const Route answer = ImageNode<NativeMergeOp>::route(time, view);
+
+    if (answer.kind != Route::Kind::Input) {
+        return answer;
+    }
+    KnobLayerSelectPtr target = getKnobByNameAndType<KnobLayerSelect>(kNodeParamLayerSelect);
+    if (selectedLayerID(op().bLayer.lock()) != selectedLayerID(target)) {
+        return Route::none();
     }
 
-    return eStatusOK;
+    return answer;
 }
 
 bool
-MergeNode::getInputRoD(int inputNb,
-                       double time,
-                       const RenderScale& scale,
-                       ViewIdx view,
-                       RectD* rod) const
+NativeMerge::getInputRoD(int inputNb,
+                         double time,
+                         const RenderScale& scale,
+                         ViewIdx view,
+                         RectD* rod) const
 {
     EffectInstancePtr input = getInput(inputNb);
 
@@ -729,45 +887,42 @@ MergeNode::getInputRoD(int inputNb,
 }
 
 StatusEnum
-MergeNode::getRegionOfDefinition(U64 /*hash*/,
-                                 double time,
-                                 const RenderScale& scale,
-                                 ViewIdx view,
-                                 RectD* rod)
+NativeMerge::getRegionOfDefinition(U64 /*hash*/,
+                                   double time,
+                                   const RenderScale& scale,
+                                   ViewIdx view,
+                                   RectD* rod)
 {
     bool found = false;
+    const Route answer = route(time, view);
 
-    if (getMixValue(time, view) == 0.) {
-        found = getInputRoD(kMergeInputB, time, scale, view, rod);
+    if ((answer.kind == Route::Kind::Input) || (getMixValue(time, view) == 0.)) {
+        found = getInputRoD(kNativeMergeInputB, time, scale, view, rod);
     } else {
-        KnobChoicePtr bboxKnob = _bbox.lock();
-        const int bbox = bboxKnob ? bboxKnob->getValueAtTime(time, 0, view) : 0;
-        if ((bbox == 0) || (bbox == 1)) {
-            std::vector<RectD> rods;
-            RectD inputRoD;
-            if (getInputRoD(kMergeInputB, time, scale, view, &inputRoD)) {
-                rods.push_back(inputRoD);
-            }
-            for (int i = 0; i < kMergeMaxAInputs; ++i) {
-                if (getInputRoD(aInputIndex(i), time, scale, view, &inputRoD)) {
-                    rods.push_back(inputRoD);
-                }
-            }
-            if (!rods.empty()) {
-                found = true;
-                *rod = rods[0];
-                for (std::size_t i = 1; i < rods.size(); ++i) {
-                    if (bbox == 0) {
-                        rectBoundingBox(*rod, rods[i], rod);
-                    } else {
-                        rectIntersection(*rod, rods[i], rod);
-                    }
-                }
-            }
-        } else if (bbox == 2) {
-            found = getInputRoD(kMergeInputA, time, scale, view, rod);
+        KnobChoicePtr bboxKnob = op().bbox.lock();
+        const int bbox = bboxKnob ? bboxKnob->getValueAtTime(time, 0, view) : (int)eBBoxUnion;
+        RectD inputRoD;
+        if (bbox == eBBoxB) {
+            found = getInputRoD(kNativeMergeInputB, time, scale, view, rod);
         } else {
-            found = getInputRoD(kMergeInputB, time, scale, view, rod);
+            const bool withB = (bbox != eBBoxA);
+            if (withB && getInputRoD(kNativeMergeInputB, time, scale, view, &inputRoD)) {
+                *rod = inputRoD;
+                found = true;
+            }
+            for (int k = 0; k < kNativeMergeMaxAInputs; ++k) {
+                if (!getInputRoD(aInput(k), time, scale, view, &inputRoD)) {
+                    continue;
+                }
+                if (!found) {
+                    *rod = inputRoD;
+                } else if (bbox == eBBoxIntersection) {
+                    *rod = rod->intersect(inputRoD);
+                } else {
+                    *rod = boundingBox(*rod, inputRoD);
+                }
+                found = true;
+            }
         }
     }
 
@@ -781,358 +936,51 @@ MergeNode::getRegionOfDefinition(U64 /*hash*/,
     }
 
     return eStatusOK;
-} // MergeNode::getRegionOfDefinition
+} // NativeMerge::getRegionOfDefinition
 
-bool
-MergeNode::isOpIdentity(double time,
-                        const RenderScale& scale,
-                        const RectI& roi,
-                        ViewIdx view)
+int
+NativeMerge::fromInput(const KnobChoiceWPtr& from,
+                       double time,
+                       ViewIdx view) const
 {
-    bool outputChannels[4];
-    bool bChannels[4];
-    for (int c = 0; c < 4; ++c) {
-        outputChannels[c] = readBool(_outputChannels[c], time, view, true);
-        bChannels[c] = readBool(_bChannels[c], time, view, true);
-    }
-    if (!outputChannels[0] && !outputChannels[1] && !outputChannels[2] && !outputChannels[3]) {
-        return true;
-    }
-    for (int c = 0; c < 4; ++c) {
-        if (outputChannels[c] && !bChannels[c]) {
-            return false;
-        }
+    KnobChoicePtr knob = from.lock();
+    const int value = knob ? knob->getValueAtTime(time, 0, view) : (int)eFromB;
+    const int preferred = (value == eFromA) ? kNativeMergeInputA : kNativeMergeInputB;
+    const int other = (value == eFromA) ? kNativeMergeInputB : kNativeMergeInputA;
+
+    if (getInput(preferred)) {
+        return preferred;
     }
 
-    // The mask's region clips the A inputs below. A mask that misses the window is answered here
-    // as well as by the stages, which ask only after this and count a touching edge as a miss.
-    RectI maskPixels;
-    bool maskPixelsValid = false;
-    if (isMaskApplied() && !getMaskInvertValue(time, view)) {
-        RectD maskRoD;
-        if (getInputRoD(kMergeInputMask, time, scale, view, &maskRoD)) {
-            maskPixelsValid = true;
-            maskPixels = toPixelEnclosing(maskRoD, scale, getAspectRatio(kMergeInputMask));
-            if (!rectIntersection<RectI>(roi, maskPixels, 0)) {
-                return true;
-            }
-        }
-    }
+    return getInput(other) ? other : -1;
+}
 
-    if (!MergeOperators::isIdentityForBOnly(getOperation(time, view))) {
-        // Most operators change B where A is absent: multiply, for one, gives black there.
-        return false;
-    }
-
-    // The effect only reaches where an A input, clipped to the mask, meets the window.
-    for (int i = 0; i < kMergeMaxAInputs; ++i) {
-        const int a = aInputIndex(i);
-        RectD aRoD;
-        if (!getInputRoD(a, time, scale, view, &aRoD) || rectIsEmpty(aRoD)) {
-            continue;
-        }
-        RectI aPixels = toPixelEnclosing(aRoD, scale, getAspectRatio(a));
-        bool aPixelsValid = true;
-        if (maskPixelsValid) {
-            aPixelsValid = rectIntersection<RectI>(aPixels, maskPixels, &aPixels);
-        }
-        if (aPixelsValid && rectIntersection<RectI>(roi, aPixels, 0)) {
-            return false;
-        }
-    }
-
-    return true;
-} // MergeNode::isOpIdentity
-
-StatusEnum
-MergeNode::renderOp(const RenderActionArgs& args,
-                    const StagePlan& plan)
+ImageMetadata
+NativeMerge::deriveOutputMetadata(double time,
+                                  ViewIdx view)
 {
-    const double time = args.time;
-    const ViewIdx view = args.view;
-    const MergeOperators::Operation op = getOperation(time, view);
-    KnobBoolPtr alphaMaskingKnob = _alphaMasking.lock();
-    const bool alphaMasking = alphaMaskingKnob ? alphaMaskingKnob->getValueAtTime(time, 0, view) : false;
-    const float mix = (float)plan.mix;
-    const bool maskInvert = plan.maskInvert;
-    std::bitset<4> aChannels;
-    std::bitset<4> bChannels;
-    std::bitset<4> outputChannels;
-    for (int c = 0; c < 4; ++c) {
-        aChannels[c] = readBool(_aChannels[c], time, view, true);
-        bChannels[c] = readBool(_bChannels[c], time, view, true);
-        outputChannels[c] = readBool(_outputChannels[c], time, view, true);
+    const int inputNb = fromInput(op().metadataFrom, time, view);
+
+    if (inputNb >= 0) {
+        return getInputMetadata(inputNb, time, view);
     }
 
-    NodePtr node = getNode();
-    const int preferredInput = node ? node->getPreferredInput() : -1;
+    return ImageNode<NativeMergeOp>::deriveOutputMetadata(time, view);
+}
 
-    // Every image is fetched before any is locked: fetching renders upstream, which may write
-    // into a cached image this render would otherwise already hold a read lock on.
-    const bool doMask = plan.applyMask;
-    ImagePtr mask;
-    const int maskChannel = plan.maskChannel;
-    if (doMask) {
-        if (maskChannel >= 0) {
-            ImageLayerDesc maskLayer = plan.maskLayer;
-            RectI maskRoI;
-            mask = getImage(plan.maskInput, time, args.mappedScale, view, NULL, &maskLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &maskRoI);
-        }
-        if (mask && (maskChannel >= (int)mask->getComponentsCount())) {
-            mask.reset();
-        }
+void
+NativeMerge::getFrameRange(double* first,
+                           double* last)
+{
+    const int inputNb = fromInput(op().rangeFrom, getCurrentTime(), ViewIdx(0));
+    EffectInstancePtr input = (inputNb >= 0) ? getInput(inputNb) : EffectInstancePtr();
+
+    if (input) {
+        input->getFrameRange_public(input->getRenderHash(), first, last);
+
+        return;
     }
-    if (!isFloatImage(mask)) {
-        return eStatusFailed;
-    }
-
-    std::vector<MergePlaneJob> jobs;
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        MergePlaneJob job;
-        job.dst = it->second;
-        if (!job.dst) {
-            continue;
-        }
-        const int nComps = (int)job.dst->getComponentsCount();
-        if ((nComps < 1) || (nComps > 4) || !isFloatImage(job.dst)) {
-            return eStatusFailed;
-        }
-        job.channels = processedBitsForImage(it->first, nComps, args.processChannels);
-
-        ImageLayerDesc layer;
-        RectI inputRoI;
-        if (getInput(kMergeInputB) && resolveInputPlaneForRender(kMergeInputB, time, view, &layer, NULL)) {
-            // Mapped to the clip's components, which is the layout the output plane is rendered in.
-            job.b.image = getImage(kMergeInputB, time, args.mappedScale, view, NULL, &layer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
-        }
-        if (preferredInput == kMergeInputB) {
-            job.passSource = 0;
-        }
-        for (int i = 0; i < kMergeMaxAInputs; ++i) {
-            const int a = aInputIndex(i);
-            if (!getInput(a) || !resolveInputPlaneForRender(a, time, view, &layer, NULL)) {
-                continue;
-            }
-            MergeSource source;
-            source.image = getImage(a, time, args.mappedScale, view, NULL, &layer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
-            // OpenFX Merge only merges the A images it was given: a missing one does not take
-            // the place of the first.
-            if (!source.image) {
-                continue;
-            }
-            if (!isFloatImage(source.image)) {
-                return eStatusFailed;
-            }
-            if (a == preferredInput) {
-                job.passSource = (int)job.as.size() + 1;
-            }
-            job.as.push_back(source);
-        }
-        if (!isFloatImage(job.b.image)) {
-            return eStatusFailed;
-        }
-        jobs.push_back(job);
-    }
-
-    const RectI& roi = args.roi;
-    const int width = roi.width();
-    if (jobs.empty() || (width <= 0) || (roi.height() <= 0)) {
-        return eStatusOK;
-    }
-
-    // Every output is locked for writing below, for the whole render, so no source may be one
-    // of them.
-    std::vector<ImagePtr> outputs;
-    for (std::size_t j = 0; j < jobs.size(); ++j) {
-        outputs.push_back(jobs[j].dst);
-    }
-    mask = sourceDetachedFromOutputs(mask, outputs);
-    for (std::size_t j = 0; j < jobs.size(); ++j) {
-        jobs[j].b.image = sourceDetachedFromOutputs(jobs[j].b.image, outputs);
-        for (std::size_t i = 0; i < jobs[j].as.size(); ++i) {
-            jobs[j].as[i].image = sourceDetachedFromOutputs(jobs[j].as[i].image, outputs);
-        }
-    }
-
-    std::shared_ptr<Image::ReadAccess> maskAccess;
-    RectI maskBounds;
-    if (mask) {
-        maskBounds = mask->getBounds();
-        maskAccess = std::make_shared<Image::ReadAccess>(mask.get());
-    }
-
-    // Images are locked here, on the calling thread, for the whole render; the band threads only
-    // compute pixel addresses through these accesses.
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    std::vector<RectI> bandRects;
-    makeStageRowBands(roi, nThreads, &bandRects);
-    std::vector<MergeRowBand> bands;
-    for (std::size_t j = 0; j < jobs.size(); ++j) {
-        MergePlaneJob& job = jobs[j];
-        job.dstAccess = std::make_shared<Image::WriteAccess>(job.dst.get());
-        if (job.b.image) {
-            job.b.bounds = job.b.image->getBounds();
-            job.b.access = std::make_shared<Image::ReadAccess>(job.b.image.get());
-        }
-        for (std::size_t i = 0; i < job.as.size(); ++i) {
-            job.as[i].bounds = job.as[i].image->getBounds();
-            job.as[i].access = std::make_shared<Image::ReadAccess>(job.as[i].image.get());
-        }
-        for (std::size_t b = 0; b < bandRects.size(); ++b) {
-            bands.push_back(MergeRowBand(j, bandRects[b].y1, bandRects[b].y2));
-        }
-    }
-
-    const bool identityForBOnly = MergeOperators::isIdentityForBOnly(op);
-    RenderCancellation cancel(this);
-
-    const std::function<void(int)> renderBand = [&](int bandIndex) {
-        const MergeRowBand& band = bands[bandIndex];
-        const MergePlaneJob& job = jobs[band.job];
-        const int nComps = (int)job.dst->getComponentsCount();
-        const std::size_t rowSize = (std::size_t)width * nComps;
-        int channelBit[4];
-        std::bitset<4> keepAll;
-        std::bitset<4> aKeep;
-        std::bitset<4> bKeep;
-        bool allOutputs = true;
-        bool allProcessed = true;
-        for (int c = 0; c < nComps; ++c) {
-            channelBit[c] = pixelKernelChannelBit(nComps, c);
-            keepAll[c] = true;
-            aKeep[c] = aChannels[channelBit[c]];
-            bKeep[c] = bChannels[channelBit[c]];
-            allOutputs = allOutputs && outputChannels[channelBit[c]];
-            allProcessed = allProcessed && job.channels[channelBit[c]];
-        }
-        const bool bKeepsAll = (bKeep == keepAll);
-        const float aOpaqueAlpha = aChannels[3] ? 1.f : 0.f;
-        const float bOpaqueAlpha = bChannels[3] ? 1.f : 0.f;
-        const MergeOperators::RowFunction mergeRow = MergeOperators::mergeRowFunction(op, nComps);
-        const MergeOperators::RowFunction mergeOverRow = MergeOperators::mergeOverRowFunction(op, nComps);
-        const bool mixesWithB = doMask || (mix != 1.f) || !allOutputs;
-        // The result goes straight into the output row when every channel of it is processed.
-        const bool writesDst = allProcessed;
-        std::vector<float> bRow(rowSize);
-        std::vector<unsigned char> bPresentRow(width);
-        std::vector<float> bKept(bKeepsAll ? 0 : rowSize);
-        std::vector<float> aRow(rowSize);
-        std::vector<unsigned char> aPresentRow(width);
-        std::vector<float> passRow(rowSize);
-        std::vector<unsigned char> passPresentRow(width);
-        std::vector<float> maskRow(doMask ? width : 0);
-        std::vector<unsigned char> maskPresent(doMask ? width : 0);
-        std::vector<float> result(writesDst ? 0 : rowSize);
-        std::vector<float> noARow(job.as.empty() ? rowSize : 0, 0.f);
-        std::vector<unsigned char> noAPresent(job.as.empty() ? width : 0, (unsigned char)0);
-
-        for (int y = band.y1; y < band.y2; ++y) {
-            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
-                return;
-            }
-
-            float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
-            if (!dstPix) {
-                continue;
-            }
-            float* const result0 = writesDst ? dstPix : &result[0];
-
-            const unsigned char* bPresent = 0;
-            const float* const bPixels = fetchRow(job.b, roi.x1, y, width, nComps, keepAll, &bRow[0], &bPresentRow[0], &bPresent);
-
-            if (job.as.empty() && identityForBOnly) {
-                for (int x = 0; x < width; ++x) {
-                    const float* bPix = bPixels + (std::size_t)x * nComps;
-                    float* out = result0 + (std::size_t)x * nComps;
-                    const bool hasB = !bPresent || bPresent[x];
-                    for (int c = 0; c < nComps; ++c) {
-                        out[c] = (outputChannels[channelBit[c]] && hasB) ? bPix[c] : 0.f;
-                    }
-                }
-            } else {
-                MergeOperators::RowSide bSide = { bPixels, bPresent, bOpaqueAlpha };
-                if (!bKeepsAll) {
-                    for (std::size_t i = 0; i < rowSize; ++i) {
-                        bKept[i] = bKeep[i % nComps] ? bPixels[i] : 0.f;
-                    }
-                    bSide.pixels = &bKept[0];
-                }
-
-                // The first A image over B. Without one, a transparent A still goes through the
-                // operator once.
-                MergeOperators::RowSide aSide = { noARow.data(), noAPresent.data(), aOpaqueAlpha };
-                if (!job.as.empty()) {
-                    aSide.pixels = fetchRow(job.as[0], roi.x1, y, width, nComps, aKeep, &aRow[0], &aPresentRow[0], &aSide.present);
-                }
-                mergeRow(alphaMasking, aSide, bSide, width, result0);
-
-                // Each later A image over the running result, whose alpha is b.
-                const MergeOperators::RowSide running = { result0, 0, 1.f };
-                for (std::size_t i = 1; i < job.as.size(); ++i) {
-                    aSide.pixels = fetchRow(job.as[i], roi.x1, y, width, nComps, aKeep, &aRow[0], &aPresentRow[0], &aSide.present);
-                    mergeOverRow(alphaMasking, aSide, running, width, result0);
-                }
-
-                if (mixesWithB) {
-                    if (doMask) {
-                        readChannelRow(mask.get(), maskAccess.get(), maskBounds, maskChannel, roi.x1, y, width, &maskRow[0], &maskPresent[0]);
-                    }
-                    for (int x = 0; x < width; ++x) {
-                        float* out = result0 + (std::size_t)x * nComps;
-                        const float* bPix = bPixels + (std::size_t)x * nComps;
-                        const bool hasB = !bPresent || bPresent[x];
-                        float maskScale = 1.f;
-                        if (doMask) {
-                            if (!maskPresent[x]) {
-                                maskScale = maskInvert ? 1.f : 0.f;
-                            } else {
-                                maskScale = maskInvert ? (1.f - maskRow[x]) : maskRow[x];
-                            }
-                        }
-                        const float alpha = maskScale * mix;
-                        if (alpha == 0.f) {
-                            for (int c = 0; c < nComps; ++c) {
-                                out[c] = hasB ? bPix[c] : 0.f;
-                            }
-                        } else if (alpha != 1.f) {
-                            for (int c = 0; c < nComps; ++c) {
-                                out[c] = hasB ? (out[c] * alpha + (1.f - alpha) * bPix[c]) : (out[c] * alpha);
-                            }
-                        }
-                        for (int c = 0; c < nComps; ++c) {
-                            if (!outputChannels[channelBit[c]]) {
-                                out[c] = hasB ? bPix[c] : 0.f;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (writesDst) {
-                continue;
-            }
-            const float* pass = 0;
-            if (job.passSource == 0) {
-                pass = bPixels;
-            } else if (job.passSource > 0) {
-                const unsigned char* passPresent = 0;
-                pass = fetchRow(job.as[job.passSource - 1], roi.x1, y, width, nComps, keepAll, &passRow[0], &passPresentRow[0], &passPresent);
-            }
-            for (int x = 0; x < width; ++x, dstPix += nComps) {
-                const float* out = result0 + (std::size_t)x * nComps;
-                for (int c = 0; c < nComps; ++c) {
-                    if (job.channels[channelBit[c]]) {
-                        dstPix[c] = out[c];
-                    } else {
-                        dstPix[c] = pass ? pass[(std::size_t)x * nComps + c] : 0.f;
-                    }
-                }
-            }
-        }
-    };
-    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
-
-    return eStatusOK;
-} // MergeNode::renderOp
+    ImageNode<NativeMergeOp>::getFrameRange(first, last);
+}
 
 NATRON_NAMESPACE_EXIT

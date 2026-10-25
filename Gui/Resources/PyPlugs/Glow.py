@@ -40,6 +40,9 @@ def paramChanged(thisParam, thisNode, thisGroup, app, userEdited):
     for name in ("PostGrade", "Bloom"):
         channels = thisNode.getNode(name).getParam("channels")
         channels.setLayer("rgba" if withAlpha else "rgb")
+    for name in ("Merge1", "Merge2"):
+        layer = thisNode.getNode(name).getParam("layer")
+        layer.setChannels(["R", "G", "B", "A"] if withAlpha else ["R", "G", "B"])
     clampAlpha = thisNode.getNode("ClampAlpha").getParam("channels")
     if withAlpha:
         clampAlpha.setLayer("alpha")
@@ -513,7 +516,7 @@ def createInstance(app,group):
     # End of node "Input1"
 
     # Start of node "Merge1"
-    lastNode = app.createNode("net.sf.openfx.MergePlugin", 1, group)
+    lastNode = app.createNode("Merge", 1, group)
     lastNode.setScriptName("Merge1")
     lastNode.setLabel("Merge1")
     lastNode.setPosition(1423, 1316)
@@ -531,19 +534,14 @@ def createInstance(app,group):
         param.set("plus")
         del param
 
-    param = lastNode.getParam("AChannelsA")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("aChannelsChanged")
-    if param is not None:
-        param.setValue(True)
-        del param
-
     param = lastNode.getParam("userTextArea")
     if param is not None:
         param.setValue("<Natron>(plus)</Natron>")
+        del param
+
+    param = lastNode.getParam("layer")
+    if param is not None:
+        param.setChannels(["R", "G", "B"])
         del param
 
     del lastNode
@@ -572,7 +570,7 @@ def createInstance(app,group):
     # End of node "AddInput"
 
     # Start of node "RoD"
-    lastNode = app.createNode("net.sf.openfx.MergePlugin", 1, group)
+    lastNode = app.createNode("Merge", 1, group)
     lastNode.setScriptName("RoD")
     lastNode.setLabel("RoD")
     lastNode.setPosition(1141, 794)
@@ -806,7 +804,7 @@ def createInstance(app,group):
     # End of node "RotateOutPrev"
 
     # Start of node "RoD_2_2"
-    lastNode = app.createNode("net.sf.openfx.MergePlugin", 1, group)
+    lastNode = app.createNode("Merge", 1, group)
     lastNode.setScriptName("RoD_2_2")
     lastNode.setLabel("RoD_2_2")
     lastNode.setPosition(1441, -541)
@@ -833,7 +831,7 @@ def createInstance(app,group):
     # End of node "RoD_2_2"
 
     # Start of node "RoD_2"
-    lastNode = app.createNode("net.sf.openfx.MergePlugin", 1, group)
+    lastNode = app.createNode("Merge", 1, group)
     lastNode.setScriptName("RoD_2")
     lastNode.setLabel("RoD_2")
     lastNode.setPosition(1622, 1728)
@@ -924,7 +922,7 @@ def createInstance(app,group):
     # End of node "Tolerance"
 
     # Start of node "Merge3"
-    lastNode = app.createNode("net.sf.openfx.MergePlugin", 1, group)
+    lastNode = app.createNode("Merge", 1, group)
     lastNode.setScriptName("Merge3")
     lastNode.setLabel("Merge3")
     lastNode.setPosition(1440, -118)
@@ -942,31 +940,21 @@ def createInstance(app,group):
         param.set("multiply")
         del param
 
-    param = lastNode.getParam("AChannelsA")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("OutputChannelsA")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("aChannelsChanged")
-    if param is not None:
-        param.setValue(True)
-        del param
-
     param = lastNode.getParam("userTextArea")
     if param is not None:
         param.setValue("<Natron>(multiply)</Natron>")
+        del param
+
+    param = lastNode.getParam("layer")
+    if param is not None:
+        param.setChannels(["R", "G", "B"])
         del param
 
     del lastNode
     # End of node "Merge3"
 
     # Start of node "Merge4"
-    lastNode = app.createNode("net.sf.openfx.MergePlugin", 1, group)
+    lastNode = app.createNode("Merge", 1, group)
     lastNode.setScriptName("Merge4")
     lastNode.setLabel("Merge4")
     lastNode.setPosition(1132, -125)
@@ -1112,7 +1100,7 @@ def createInstance(app,group):
     # End of node "Dot3"
 
     # Start of node "Merge5"
-    lastNode = app.createNode("net.sf.openfx.MergePlugin", 1, group)
+    lastNode = app.createNode("Merge", 1, group)
     lastNode.setScriptName("Merge5")
     lastNode.setLabel("Merge5")
     lastNode.setPosition(1292, -119)
@@ -1255,7 +1243,7 @@ def createInstance(app,group):
     # End of node "Bloom"
 
     # Start of node "Merge6"
-    lastNode = app.createNode("net.sf.openfx.MergePlugin", 1, group)
+    lastNode = app.createNode("Merge", 1, group)
     lastNode.setScriptName("Merge6")
     lastNode.setLabel("Merge6")
     lastNode.setPosition(1141, 351)
@@ -1273,19 +1261,14 @@ def createInstance(app,group):
         param.set("plus")
         del param
 
-    param = lastNode.getParam("BChannelsA")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("bChannelsChanged")
-    if param is not None:
-        param.setValue(True)
-        del param
-
     param = lastNode.getParam("userTextArea")
     if param is not None:
         param.setValue("<Natron>(plus)</Natron>")
+        del param
+
+    param = lastNode.getParam("layer")
+    if param is not None:
+        param.setChannels(["R", "G", "B"])
         del param
 
     del lastNode
@@ -1316,7 +1299,7 @@ def createInstance(app,group):
     # End of node "Dot16"
 
     # Start of node "Merge2"
-    lastNode = app.createNode("net.sf.openfx.MergePlugin", 1, group)
+    lastNode = app.createNode("Merge", 1, group)
     lastNode.setScriptName("Merge2")
     lastNode.setLabel("Merge2")
     lastNode.setPosition(1272, 1317)
@@ -1334,19 +1317,14 @@ def createInstance(app,group):
         param.set("screen")
         del param
 
-    param = lastNode.getParam("AChannelsA")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("aChannelsChanged")
-    if param is not None:
-        param.setValue(True)
-        del param
-
     param = lastNode.getParam("userTextArea")
     if param is not None:
         param.setValue("<Natron>(screen)</Natron>")
+        del param
+
+    param = lastNode.getParam("layer")
+    if param is not None:
+        param.setChannels(["R", "G", "B"])
         del param
 
     del lastNode
@@ -1492,8 +1470,8 @@ def createInstance(app,group):
     groupShuffle1.connectInput(0, groupHSVTool1)
     groupHSVTool1.connectInput(0, groupDot3)
     groupBloom.connectInput(0, groupDot14)
-    groupMerge6.connectInput(0, groupDot16)
-    groupMerge6.connectInput(1, groupBloom)
+    groupMerge6.connectInput(0, groupBloom)
+    groupMerge6.connectInput(1, groupDot16)
     groupDot14.connectInput(0, groupDot16)
     groupDot16.connectInput(0, groupDot22)
     groupMerge2.connectInput(0, groupDot2)
@@ -1507,9 +1485,6 @@ def createInstance(app,group):
     groupDot6.connectInput(0, groupRotateOut)
     groupClampAlpha.connectInput(0, groupGlowOnly)
 
-    param = groupMerge1.getParam("AChannelsA")
-    param.setExpression("thisGroup.alpha.get()", False, 0)
-    del param
     param = groupAddInput.getParam("which")
     param.setExpression("thisGroup.addInput.get()", False, 0)
     del param
@@ -1581,9 +1556,6 @@ def createInstance(app,group):
     del param
     param = groupBloom.getParam("expandRoD")
     param.setExpression("thisGroup.expRoD.get()", False, 0)
-    del param
-    param = groupMerge2.getParam("AChannelsA")
-    param.setExpression("thisGroup.alpha.get()", False, 0)
     del param
     param = groupscreenSwitch.getParam("which")
     param.setExpression("thisGroup.screen.get()", False, 0)

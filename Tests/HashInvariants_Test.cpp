@@ -204,7 +204,7 @@ protected:
 
     NodePtr createMerge()
     {
-        return createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+        return createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
     }
 
     ProjectPtr project() const
@@ -448,14 +448,14 @@ TEST_F(HashInvariantsTest, InputSwapChangesHashAndSwappingBackRestoresIt)
     NodePtr merge = createMerge();
     ASSERT_TRUE(constant && blurredConstant && blur && merge);
     connectNodes(blurredConstant, blur, 0, true);
-    connectNodes(constant, merge, kMergeInputB, true);
-    connectNodes(blur, merge, kMergeInputA, true);
+    connectNodes(constant, merge, kNativeMergeInputB, true);
+    connectNodes(blur, merge, kNativeMergeInputA, true);
     ASSERT_NE(constant->getHashValue(), blur->getHashValue());
 
     const U64 straight = merge->getHashValue();
     merge->switchInput0And1();
-    ASSERT_EQ(blur, merge->getInput(kMergeInputB));
-    ASSERT_EQ(constant, merge->getInput(kMergeInputA));
+    ASSERT_EQ(blur, merge->getInput(kNativeMergeInputB));
+    ASSERT_EQ(constant, merge->getInput(kNativeMergeInputA));
     const U64 swapped = merge->getHashValue();
     EXPECT_NE(straight, swapped);
 

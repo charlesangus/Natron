@@ -57,6 +57,7 @@
 #include "Engine/Interpolation.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
@@ -66,9 +67,6 @@
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
-
-#define kMergeOFXParamOperation "operation"
-#define kMergeOFXParamInvertMask "maskInvert"
 
 #define kBlurCImgParamSize "size"
 #define kTimeOffsetParamOffset "timeOffset"
@@ -4648,8 +4646,7 @@ RotoContext::getOrCreateGlobalMergeNode(int *availableInputIndex)
     fixedNamePrefix.append( QString::fromUtf8("globalMerge") );
     fixedNamePrefix.append( QLatin1Char('_') );
 
-
-    CreateNodeArgs args( PLUGINID_OFX_MERGE,  NodeCollectionPtr() );
+    CreateNodeArgs args(PLUGINID_NATRON_NATIVE_MERGE, NodeCollectionPtr());
     args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
     args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
     args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, fixedNamePrefix.toStdString());
@@ -4710,10 +4707,10 @@ RotoContext::refreshRotoPaintTree()
 
         if (globalMerge) {
             {
-                KnobIPtr mergeOperatorKnob = globalMerge->getKnobByName(kMergeOFXParamOperation);
+                KnobIPtr mergeOperatorKnob = globalMerge->getKnobByName(kNativeMergeParamOperation);
                 KnobChoice* mergeOp = dynamic_cast<KnobChoice*>( mergeOperatorKnob.get() );
                 if (mergeOp) {
-                    mergeOp->setValue(blendingOperator);
+                    mergeOp->setValueFromID(Merge::getOperatorString((MergingFunctionEnum)blendingOperator), 0);
                 }
             }
 

@@ -55,8 +55,8 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Merge/MergeOps.h"
-#include "Engine/Nodes/Merge/NativeMerge.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 

@@ -105,7 +105,7 @@ struct GpuOffsetParams {
     uint32_t validY2;
     uint32_t nComps;
     uint32_t flags;
-    // Where the row weights start in the weight buffer, in floats.
+    // Where the row entries start in the weight buffer, in floats.
     uint32_t rowWeights;
 };
 static_assert(sizeof(GpuOffsetParams) == 52);
@@ -114,11 +114,11 @@ static_assert(sizeof(GpuOffsetParams) == 52);
 // lies outside src.bounds. Every channel is copied bit for bit. A source without a buffer, or with
 // empty bounds, renders zeros.
 //
-// With matte weights, one per column and one per row of `output` from its origin, the pixel is
-// then weighed by w = column * row as runResampleCpu() weighs it: written 0 where w is 0, left
-// where w is 1 or more, and otherwise multiplied by w. The weights travel as two floats each, so
-// that multiply matches the CPU's double one to within a float rounding, and the zero and one
-// cases match it exactly.
+// With a matte, one weight and one black flag per column and per row of `output` from its
+// origin, the pixel is then weighed as runResampleCpu() weighs it: written 0 where its column or
+// row is black, otherwise left where w = column * row is 1 or more and multiplied by w, 0
+// included, elsewhere. The weights travel as two floats each, so that multiply matches the CPU's
+// double one to within a float rounding, and the black and one cases match it exactly.
 struct GpuOffset {
     GpuBlurImage src;
     GpuBlurImage dst;
@@ -127,9 +127,11 @@ struct GpuOffset {
     uint32_t channels = 0;
     int32_t dx = 0;
     int32_t dy = 0;
-    // Both empty, or as many as output's columns and rows.
+    // All empty, or as many as output's columns and rows; a nonzero black flag blackens.
     std::vector<double> columnWeights;
     std::vector<double> rowWeights;
+    std::vector<unsigned char> blackColumns;
+    std::vector<unsigned char> blackRows;
 };
 
 GpuStatus recordOffset(GpuRecordContext& ctx, const GpuOffset& offset);

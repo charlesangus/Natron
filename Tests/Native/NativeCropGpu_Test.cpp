@@ -575,8 +575,8 @@ TEST_F(NativeCropGpuTest, CropMatchesTheCpuRender)
     }
 }
 
-// A NaN or infinite source pixel on the border or on a zero-weight edge comes out 0 on both
-// sides, and a NaN one the crop keeps stays NaN.
+// A NaN or infinite source pixel on the black border comes out 0 on both sides, one on a
+// zero-weight soft edge is multiplied by 0 into NaN, and a NaN one the crop keeps stays NaN.
 TEST_F(NativeCropGpuTest, NaNSourceOnTheBorderIsWrittenZero)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -614,7 +614,8 @@ TEST_F(NativeCropGpuTest, NaNSourceOnTheBorderIsWrittenZero)
                 }
             } else {
                 for (int y = 9; y < 38; ++y) {
-                    EXPECT_EQ(0.f, at(10, y, 0)) << c.name << " zero-weight column, row " << y;
+                    EXPECT_TRUE(std::isnan(at(10, y, 0))) << c.name << " zero-weight column, row " << y;
+                    EXPECT_TRUE(std::isnan(at(10, y, 3))) << c.name << " zero-weight column alpha, row " << y;
                 }
                 EXPECT_TRUE(std::isnan(at(25, 20, 0))) << c.name;
             }

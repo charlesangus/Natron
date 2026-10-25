@@ -72,21 +72,25 @@ struct PixelOffset {
 };
 
 /**
- * @brief A separable weight over the output pixels of an offset-form render at the render scale:
- * pixel (x, y) weighs w = column(x) * row(y), in double. A pixel weighing 0 is written 0, never
- * multiplied, so a NaN or infinite source pixel there becomes 0; one weighing 1 or more keeps its
- * value; any other has each channel multiplied by w in double and rounded to float. An unset
- * function weighs 1 everywhere, and a matte with neither set weighs nothing. The executors sample
- * both over the render window on the thread running the action or recording, never from band
- * threads.
+ * @brief A separable weight over the output pixels of an offset-form render at the render scale.
+ * Pixel (x, y) is black when blackColumn(x) or blackRow(y) is true: it is written 0, never
+ * multiplied, so a NaN or infinite source pixel there becomes 0. Otherwise it weighs
+ * w = column(x) * row(y), in double: one weighing 1 or more keeps its value, and any other,
+ * 0 included, has each channel multiplied by w in double and rounded to float, so that a NaN or
+ * infinite source pixel weighing 0 becomes NaN and a negative one -0. An unset weight function
+ * weighs 1 everywhere, an unset black function blackens nothing, and a matte with none set
+ * weighs nothing. The executors sample them over the render window on the thread running the
+ * action or recording, never from band threads.
  **/
 struct ResampleMatte {
     std::function<double(int x)> column;
     std::function<double(int y)> row;
+    std::function<bool(int x)> blackColumn;
+    std::function<bool(int y)> blackRow;
 
     bool isSet() const
     {
-        return bool(column) || bool(row);
+        return bool(column) || bool(row) || bool(blackColumn) || bool(blackRow);
     }
 };
 

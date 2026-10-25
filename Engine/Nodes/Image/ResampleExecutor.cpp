@@ -163,38 +163,54 @@ readSourceImageRow(const Resampler::SourceImage& src,
     std::copy(pix, pix + (std::size_t)(xEnd - xStart) * nComps, row + (std::size_t)(xStart - x0) * nComps);
 }
 
-// The weights of one axis of a matte over [first, first + count), 1 where the function is unset.
+// One axis of a matte sampled over [first, first + count): weights is 1 where the weight function
+// is unset, and black is nonzero where the black function says so, nowhere when it is unset.
+struct MatteAxis {
+    std::vector<double> weights;
+    std::vector<unsigned char> black;
+};
+
 void
 sampleMatteAxis(const std::function<double(int)>& weight,
+                const std::function<bool(int)>& black,
                 int first,
                 int count,
-                std::vector<double>* weights)
+                MatteAxis* axis)
 {
-    weights->assign((std::size_t)count, 1.);
-    if (!weight) {
-        return;
-    }
+    axis->weights.assign((std::size_t)count, 1.);
+    axis->black.assign((std::size_t)count, 0);
     for (int i = 0; i < count; ++i) {
-        (*weights)[(std::size_t)i] = weight(first + i);
+        if (weight) {
+            axis->weights[(std::size_t)i] = weight(first + i);
+        }
+        if (black) {
+            axis->black[(std::size_t)i] = black(first + i) ? 1 : 0;
+        }
     }
 }
 
-// Weighs width pixels of nComps floats by column[i] * rowWeight, as ResampleMatte describes.
+// Weighs width pixels of nComps floats by columns at rowWeight, as ResampleMatte describes.
 void
-applyMatteRow(const double* column,
+applyMatteRow(const MatteAxis& columns,
               double rowWeight,
+              bool rowBlack,
               int width,
               int nComps,
               float* row)
 {
+    if (rowBlack) {
+        std::fill(row, row + (std::size_t)width * nComps, 0.f);
+
+        return;
+    }
     float* pix = row;
 
     for (int i = 0; i < width; ++i, pix += nComps) {
-        const double w = column[i] * rowWeight;
-        if (w == 0) {
+        if (columns.black[(std::size_t)i]) {
             std::fill(pix, pix + nComps, 0.f);
             continue;
         }
+        const double w = columns.weights[(std::size_t)i] * rowWeight;
         if (w >= 1) {
             continue;
         }
@@ -486,11 +502,11 @@ runResampleCpu(EffectInstance& effect,
     const double dstPar = effect.getAspectRatio(-1);
     const PixelOffset offset = request.offset;
     const bool matted = !matrix && request.matte.isSet();
-    std::vector<double> matteColumns;
-    std::vector<double> matteRows;
+    MatteAxis matteColumns;
+    MatteAxis matteRows;
     if (matted) {
-        sampleMatteAxis(request.matte.column, roi.x1, width, &matteColumns);
-        sampleMatteAxis(request.matte.row, roi.y1, roi.height(), &matteRows);
+        sampleMatteAxis(request.matte.column, request.matte.blackColumn, roi.x1, width, &matteColumns);
+        sampleMatteAxis(request.matte.row, request.matte.blackRow, roi.y1, roi.height(), &matteRows);
     }
 
     // Images are locked, their bounds read and the matrices built here, on the calling thread;
@@ -578,7 +594,8 @@ runResampleCpu(EffectInstance& effect,
                 readSourceImageRow(plane.source, plane.readable, roi.x1 - offset.x, y - offset.y, width, outRow);
             }
             if (matted && plane.src) {
-                applyMatteRow(matteColumns.data(), matteRows[(std::size_t)(y - roi.y1)], width, nComps, outRow);
+                const std::size_t r = (std::size_t)(y - roi.y1);
+                applyMatteRow(matteColumns, matteRows.weights[r], matteRows.black[r] != 0, width, nComps, outRow);
             }
             if (direct) {
                 continue;
@@ -947,8 +964,14 @@ recordResampleGpu(EffectInstance& effect,
         shift.dy = request.offset.y;
         // runResampleCpu() weighs only a plane whose source it fetched.
         if (request.matte.isSet() && source.buffer) {
-            sampleMatteAxis(request.matte.column, rect.x1, rect.width(), &shift.columnWeights);
-            sampleMatteAxis(request.matte.row, rect.y1, rect.height(), &shift.rowWeights);
+            MatteAxis columns;
+            MatteAxis rows;
+            sampleMatteAxis(request.matte.column, request.matte.blackColumn, rect.x1, rect.width(), &columns);
+            sampleMatteAxis(request.matte.row, request.matte.blackRow, rect.y1, rect.height(), &rows);
+            shift.columnWeights = std::move(columns.weights);
+            shift.blackColumns = std::move(columns.black);
+            shift.rowWeights = std::move(rows.weights);
+            shift.blackRows = std::move(rows.black);
         }
         if (!gpu::recordOffset(ctx, shift)) {
             return eStatusFailed;

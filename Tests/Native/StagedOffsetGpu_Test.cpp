@@ -220,6 +220,26 @@ testRowWeight(int y)
     }
 }
 
+// Every seventh column and every ninth row is black, crossing columns and rows of every weight.
+bool
+testBlackColumn(int x)
+{
+    return positiveModulo(x, 7) == 3;
+}
+
+bool
+testBlackRow(int y)
+{
+    return positiveModulo(y, 9) == 4;
+}
+
+bool
+testBlack(int x,
+          int y)
+{
+    return testBlackColumn(x) || testBlackRow(y);
+}
+
 struct MattedOffsetGpuTestOp
     : OffsetGpuTestOp {
     static constexpr NodeSpec kNodeSpec = {
@@ -236,6 +256,8 @@ struct MattedOffsetGpuTestOp
 
         m.column = testColumnWeight;
         m.row = testRowWeight;
+        m.blackColumn = testBlackColumn;
+        m.blackRow = testBlackRow;
 
         return m;
     }
@@ -746,8 +768,9 @@ TEST_F(StagedOffsetGpuTest, SourceSmallerThanTheWindowReadsZero)
 
 // The matted node at several offsets and both mipmap levels, against the CPU render, with NaN and
 // infinite pixels written into the GPU source where the CPU render has the parity source's. A
-// pixel weighing 0 must be +0 exactly and one weighing 1 or more the source's bits; the others
-// are held to resampling(), and a NaN or infinity weighed by a partial weight stays one.
+// black pixel must be +0 exactly, one weighing 0 the source's bits times 0 (NaN for a NaN or
+// infinity) and one weighing 1 or more the source's bits; the others are held to resampling(),
+// and a NaN or infinity weighed by a partial weight stays one.
 TEST_F(StagedOffsetGpuTest, MatteMatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -783,7 +806,7 @@ TEST_F(StagedOffsetGpuTest, MatteMatchesTheCpuRender)
                 GpuParityImage image;
                 ASSERT_TRUE(sourceImage(source, mipmapLevel, effect->getGpuInputRoI(0, roi, scale), &image)) << what;
                 std::vector<float> expected = cpu.pixels;
-                std::size_t poisoned[3] = { 0, 0, 0 };
+                std::size_t poisoned[4] = { 0, 0, 0, 0 };
                 for (int y = roi.y1; y < roi.y2; ++y) {
                     for (int x = roi.x1; x < roi.x2; ++x) {
                         const int sx = x - dx;
@@ -796,18 +819,19 @@ TEST_F(StagedOffsetGpuTest, MatteMatchesTheCpuRender)
                         src[1] = inf;
                         const double w = testColumnWeight(x) * testRowWeight(y);
                         float* out = &expected[((std::size_t)(y - roi.y1) * roi.width() + (x - roi.x1)) * 4];
-                        if (w == 0) {
+                        if (testBlack(x, y)) {
                             ++poisoned[0];
                             continue;
                         }
-                        ++poisoned[(w >= 1) ? 2 : 1];
+                        ++poisoned[(w == 0) ? 1 : (w >= 1) ? 3 : 2];
                         out[0] = nan;
                         out[1] = (w >= 1) ? inf : (float)(inf * w);
                     }
                 }
-                EXPECT_GT(poisoned[0], 0u) << what << ": no NaN source pixel weighs 0";
-                EXPECT_GT(poisoned[1], 0u) << what << ": no NaN source pixel has a partial weight";
-                EXPECT_GT(poisoned[2], 0u) << what << ": no NaN source pixel weighs 1 or more";
+                EXPECT_GT(poisoned[0], 0u) << what << ": no NaN source pixel is black";
+                EXPECT_GT(poisoned[1], 0u) << what << ": no NaN source pixel weighs 0";
+                EXPECT_GT(poisoned[2], 0u) << what << ": no NaN source pixel has a partial weight";
+                EXPECT_GT(poisoned[3], 0u) << what << ": no NaN source pixel weighs 1 or more";
 
                 const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, roi, outputLayout());
                 ASSERT_TRUE(run.ok) << what;
@@ -819,22 +843,25 @@ TEST_F(StagedOffsetGpuTest, MatteMatchesTheCpuRender)
                                                << run.pixels[diff.firstMismatchIndex] << " expected " << expected[diff.firstMismatchIndex];
 
                 std::size_t inexact = 0;
+                std::size_t blacks = 0;
                 std::size_t zeros = 0;
                 std::size_t partials = 0;
                 for (int y = roi.y1; y < roi.y2; ++y) {
                     for (int x = roi.x1; x < roi.x2; ++x) {
                         const double w = testColumnWeight(x) * testRowWeight(y);
+                        const bool black = testBlack(x, y);
                         const std::size_t at = ((std::size_t)(y - roi.y1) * roi.width() + (x - roi.x1)) * 4;
-                        if ((w != 0) && (w < 1)) {
+                        if (!black && (w != 0) && (w < 1)) {
                             ++partials;
                             continue;
                         }
-                        zeros += (w == 0) ? 1 : 0;
+                        blacks += black ? 1 : 0;
+                        zeros += (!black && (w == 0)) ? 1 : 0;
                         for (int ch = 0; ch < 4; ++ch) {
                             const float g = run.pixels[at + ch];
                             const float e = expected[at + ch];
                             const bool same = (std::isnan(g) && std::isnan(e)) || ((g == e) && (std::signbit(g) == std::signbit(e)));
-                            if (!same || ((w == 0) && ((g != 0.f) || std::signbit(g)))) {
+                            if (!same || (black && ((g != 0.f) || std::signbit(g)))) {
                                 if (inexact == 0) {
                                     ADD_FAILURE() << what << ": pixel (" << x << "," << y << ") channel " << ch << " weighing " << w << " gpu " << g << " expected " << e;
                                 }
@@ -843,7 +870,8 @@ TEST_F(StagedOffsetGpuTest, MatteMatchesTheCpuRender)
                         }
                     }
                 }
-                EXPECT_EQ(0u, inexact) << what << ": floats weighing 0 or at least 1 that are not exact";
+                EXPECT_EQ(0u, inexact) << what << ": black floats or floats weighing 0 or at least 1 that are not exact";
+                EXPECT_GT(blacks, 0u) << what;
                 EXPECT_GT(zeros, 0u) << what;
                 EXPECT_GT(partials, 0u) << what;
                 if (HasFatalFailure()) {

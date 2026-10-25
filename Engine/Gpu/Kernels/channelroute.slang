@@ -1,11 +1,6 @@
-// One pass of a ChannelRoute: the destination components a source feeds, copied from their source
-// channels, or the route's constants. Pixels travel as their bits, so a copy is exact whatever it
-// holds. ChannelRouteGpuParams in Engine/Nodes/Channel/ChannelCopy.cpp mirrors ChannelRouteParams.
-
-// The destination's offset addresses the output origin. Threads inside [validX1, validX2) x
-// [validY1, validY2) read the source, whose offset addresses the pixel thread (validX1, validY1)
-// reads; the others read zero. selectC is, for destination component C, the source channel it
-// copies, kSkip to leave the component to another pass, or kConstant to write constantC.
+// ChannelRouteGpuParams in Engine/Nodes/Channel/ChannelCopy.cpp mirrors ChannelRouteParams, and
+// its kRouteSkip and kRouteConstant mirror kSkip and kConstant. Pixels travel as their bits, so
+// that a copy is exact whatever it holds.
 struct ChannelRouteParams
 {
     uint width;

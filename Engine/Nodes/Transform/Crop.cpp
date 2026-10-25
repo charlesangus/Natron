@@ -194,30 +194,39 @@ CropOp::matte(const Params& params,
     const PixelOffset shift = offset(params, context);
 
     // The weight of one axis, from the distance d of the pixel centre inside the crop rectangle.
-    const auto weight = [blackOutside, softness](bool border, double d) -> double {
-        if (border || (blackOutside && (d <= 0))) {
-            return 0.;
-        }
+    const auto weight = [softness](double d) -> double {
         if ((softness == 0) || (d >= softness)) {
             return 1.;
         }
 
         return rampSmooth(d / softness);
     };
-
-    ResampleMatte matte;
-    matte.column = [weight, blackOutside, scale, dstPar, cropFull, fullPixel, tx = shift.x](int x) {
-        const bool border = blackOutside && ((x == (fullPixel.x1 + tx)) || (x == (fullPixel.x2 - 1 + tx)));
+    const auto columnDistance = [scale, dstPar, cropFull, tx = shift.x](int x) {
         const double canonicalX = ((x - tx) + 0.5) * dstPar / scale;
 
-        return weight(border, std::min(canonicalX - cropFull.x1, cropFull.x2 - canonicalX));
+        return std::min(canonicalX - cropFull.x1, cropFull.x2 - canonicalX);
     };
-    matte.row = [weight, blackOutside, scale, cropFull, fullPixel, ty = shift.y](int y) {
-        const bool border = blackOutside && ((y == (fullPixel.y1 + ty)) || (y == (fullPixel.y2 - 1 + ty)));
+    const auto rowDistance = [scale, cropFull, ty = shift.y](int y) {
         const double canonicalY = ((y - ty) + 0.5) / scale;
 
-        return weight(border, std::min(canonicalY - cropFull.y1, cropFull.y2 - canonicalY));
+        return std::min(canonicalY - cropFull.y1, cropFull.y2 - canonicalY);
     };
+
+    ResampleMatte matte;
+    matte.column = [weight, columnDistance](int x) {
+        return weight(columnDistance(x));
+    };
+    matte.row = [weight, rowDistance](int y) {
+        return weight(rowDistance(y));
+    };
+    if (blackOutside) {
+        matte.blackColumn = [columnDistance, fullPixel, tx = shift.x](int x) {
+            return (x == (fullPixel.x1 + tx)) || (x == (fullPixel.x2 - 1 + tx)) || (columnDistance(x) <= 0);
+        };
+        matte.blackRow = [rowDistance, fullPixel, ty = shift.y](int y) {
+            return (y == (fullPixel.y1 + ty)) || (y == (fullPixel.y2 - 1 + ty)) || (rowDistance(y) <= 0);
+        };
+    }
 
     return matte;
 } // CropOp::matte

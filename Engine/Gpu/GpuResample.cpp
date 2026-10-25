@@ -333,8 +333,9 @@ recordOffset(GpuRecordContext& ctx, const GpuOffset& o)
         }
     }
 
-    const bool matted = !o.columnWeights.empty() || !o.rowWeights.empty();
-    if (matted && (o.columnWeights.size() != p.width || o.rowWeights.size() != p.height)) {
+    const bool matted = !o.columnWeights.empty() || !o.rowWeights.empty() || !o.blackColumns.empty() || !o.blackRows.empty();
+    if (matted
+        && (o.columnWeights.size() != p.width || o.rowWeights.size() != p.height || o.blackColumns.size() != p.width || o.blackRows.size() != p.height)) {
         return { VK_ERROR_INITIALIZATION_FAILED, "recordOffset: the matte does not cover the destination window" };
     }
 
@@ -343,23 +344,26 @@ recordOffset(GpuRecordContext& ctx, const GpuOffset& o)
     const GpuBuffer* src = srcValid ? o.src.buffer : o.dst.buffer;
     const GpuBuffer* weights = o.dst.buffer;
     if (matted) {
-        std::vector<float> pairs;
-        pairs.reserve(2 * (o.columnWeights.size() + o.rowWeights.size()));
-        for (const std::vector<double>* axis : { &o.columnWeights, &o.rowWeights }) {
-            for (double w : *axis) {
+        std::vector<float> entries;
+        entries.reserve(3 * (o.columnWeights.size() + o.rowWeights.size()));
+        const auto push = [&entries](const std::vector<double>& axis, const std::vector<unsigned char>& black) {
+            for (std::size_t i = 0; i < axis.size(); ++i) {
                 float hi, lo;
-                splitDouble(w, hi, lo);
-                pairs.push_back(hi);
-                pairs.push_back(lo);
+                splitDouble(axis[i], hi, lo);
+                entries.push_back(hi);
+                entries.push_back(lo);
+                entries.push_back(black[i] ? 1.f : 0.f);
             }
-        }
+        };
+        push(o.columnWeights, o.blackColumns);
+        push(o.rowWeights, o.blackRows);
         GpuBuffer* table = nullptr;
-        if (GpuStatus s = uploadWords(ctx, std::as_bytes(std::span<const float>(pairs)), table); !s) {
+        if (GpuStatus s = uploadWords(ctx, std::as_bytes(std::span<const float>(entries)), table); !s) {
             return s;
         }
         weights = table;
         p.flags = kOffsetFlagMatte;
-        p.rowWeights = 2 * p.width;
+        p.rowWeights = 3 * p.width;
     }
     return ctx.dispatch(GpuKernelId::offset, { src, o.dst.buffer, weights }, p, { p.width, p.height, 1 });
 }

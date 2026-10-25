@@ -6,8 +6,8 @@
 
 // The destination's offset addresses the output origin. Threads inside [validX1, validX2) x
 // [validY1, validY2) read the source, whose offset addresses the pixel thread (validX1, validY1)
-// reads; the others write zero. With kOffsetFlagMatte, offsetWeights holds a (hi, lo) pair per
-// output column from the origin, then from rowWeights one per output row.
+// reads; the others write zero. With kOffsetFlagMatte, offsetWeights holds a (hi, lo, black)
+// triple per output column from the origin, then from rowWeights one per output row.
 struct OffsetParams
 {
     uint width;
@@ -91,9 +91,11 @@ void offset_main(uint3 tid : SV_DispatchThreadID)
     }
     if ((offsetParams.flags & kOffsetFlagMatte) != 0)
     {
-        const Weight w = weightProduct(weightAt(2 * tid.x), weightAt(offsetParams.rowWeights + 2 * tid.y));
+        const uint column = 3 * tid.x;
+        const uint row = offsetParams.rowWeights + 3 * tid.y;
+        const Weight w = weightProduct(weightAt(column), weightAt(row));
         // Written rather than multiplied, so that a NaN or infinite pixel becomes 0 as on the CPU.
-        if (w.hi == 0.0)
+        if (offsetWeights[column + 2] != 0.0 || offsetWeights[row + 2] != 0.0)
         {
             for (uint c = 0; c < n && c < 4; ++c)
                 pixel[c] = 0u;

@@ -135,7 +135,11 @@ struct NativeMergeOp {
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_NATIVE_MERGE,
         .label = "Merge",
-        .description = "Composites the A inputs over B with a choice of operator.",
+        .description = "Composites A over B with one of Nuke's operators, then A2 over the result, and so on. "
+                       "A and B are each read in a chosen layer with an alpha that is one channel, each layer's "
+                       "own alpha or a per-channel alpha layer; the A layer alone, every layer A and B share, or "
+                       "a list of layers is merged, and every other layer of B passes through. The operators are "
+                       "made HDR-safe where Nuke's clamp or jump outside 0 to 1.",
         .grouping = PLUGIN_GROUP_MERGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_NATIVE_MERGE,
         .minorVersion = 0,

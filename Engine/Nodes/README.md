@@ -984,7 +984,7 @@ fails with an error naming both; or the read layer's own `A`/`alpha` channel, fa
 a channel select. When any folded input has one, `step()` gets `io.alpha[0]` (the result's)
 and `io.alpha[1]` (the input's) as strided spans, an input without one reading zero, and writes
 the new result's alpha to `io.dstAlpha`; the base's alpha source gives the first result's. An op
-reading several inputs at once is not supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage. A Composite op runs on the GPU if it has `gpu(params)` returning a `GpuOpRef` (`GpuCompositeOp`); Dissolve does. Its kernel is built with `runCompositeStep` (`compositestep.slang`), or with `runCompositeAlphaStep` (`compositealpha.slang`) when its inputs have alpha sources, the fold then carrying the result's alpha between dispatches as the CPU does. A selected layer other than the rendered plane is handed over beside it (`getGpuExtraInputLayers()`), and the node asks for it upstream (`addInputLayersNeeded()`); a base read in a layer whose channel count differs from the plane's stays on the CPU.
+reading several inputs at once is not supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage. A Composite op runs on the GPU if it has `gpu(params)` returning a `GpuOpRef` (`GpuCompositeOp`); Dissolve and Merge do. Its kernel is built with `runCompositeStep` (`compositestep.slang`), or with `runCompositeAlphaStep` (`compositealpha.slang`) when its inputs have alpha sources, the fold then carrying the result's alpha between dispatches as the CPU does. A selected layer other than the rendered plane is handed over beside it (`getGpuExtraInputLayers()`), and the node asks for it upstream (`addInputLayersNeeded()`); a base read in a layer whose channel count differs from the plane's stays on the CPU.
 
 **Custom** is the way out, and the cost of it is that the node owns its pixels.
 A Custom node derives from `StagedImageEffect` directly, returns
@@ -992,9 +992,9 @@ A Custom node derives from `StagedImageEffect` directly, returns
 from `imagePipelineSpec()` (with `.op = OpKind::Custom`), and implements
 `isOpIdentity(time, scale, roi, view)` and `renderOp(args, plan)`. It still gets
 the layer knob, the stage knobs and the composed identities, and reads the mask,
-mix and divisor from the `StagePlan` instead of its own knobs. Merge, Keyer and
-ChromaKeyer are Custom nodes; Merge until M101 - Clean-Sheet Merge Node, the
-keyers until M95 - Knob Cleanup And Keyer Redesign. A Custom node is on the CPU
+mix and divisor from the `StagePlan` instead of its own knobs. Keyer and
+ChromaKeyer are Custom nodes, as are the Raw nodes; Merge is a Composite op. A
+Custom node is on the CPU
 unless it opts into the GPU by overriding three virtuals:
 `canRenderOpOnGpu(query)` (the answer may depend only on the query, the
 node's settings and its source metadata), `renderOpGpu(args)` to record its dispatches over
@@ -1163,9 +1163,8 @@ suite does. Each node parallelises its own render, within the thread budget
   between the full frame and a 1x1 window, about 1% of the input's range;
   `NativeSpatialFilterWindow_Test.cpp` holds them to 2e-2. The box family is a
   running sum in double whose rounding to float measured identical.
-- Resample ops and the Custom nodes with their own `renderOp()` (`Merge`,
-  `Keyer`, `ChromaKeyer`) and the generators split row bands the same way as
-  point ops.
+- Resample ops and the Custom nodes with their own `renderOp()` (`Keyer`,
+  `ChromaKeyer`) and the generators split row bands the same way as point ops.
 
 Read an image's bounds with `Image::getBounds()` on the calling thread, before
 the bands start, and hand the rectangle to the band. `getBounds()` takes the
@@ -1235,9 +1234,9 @@ NaNs matches, as do equal infinities.
 
 | Class | `ParityTolerance` | Bound | Used for |
 |---|---|---|---|
-| Exact | `exact()` | 0 | generators, Position, Clamp, Invert, Erode/Dilate, Merge Porter-Duff operators, Crop without softness |
-| Arithmetic | `arithmetic()` | 1e-6 relative | Add, Multiply, Dissolve |
-| Transcendental | `transcendental()` | 1e-5 relative | `pow`, trig, LUTs, HSL: Grade, Gamma, ColorCorrect, Saturation, Keyer, ChromaKeyer, ColorLookup, Merge blend modes |
+| Exact | `exact()` | 0 | generators, Position, Clamp, Invert, Erode/Dilate, Merge's multiply-and-add Porter-Duff operators on the GPU, Crop without softness |
+| Arithmetic | `arithmetic()` | 1e-6 relative | Add, Multiply, Dissolve, Merge's conjoint-over and disjoint-over on the GPU |
+| Transcendental | `transcendental()` | 1e-5 relative | `pow`, trig, LUTs, HSL: Grade, Gamma, ColorCorrect, Saturation, Keyer, ChromaKeyer, ColorLookup, Merge blend modes on the GPU |
 | Resampling | `resampling()` | 1e-5 absolute | Transform, Reformat, Crop softness |
 | IIR | `iir()` | 1e-4 absolute | Blur, EdgeDetect, Transform motion blur |
 

@@ -4312,15 +4312,7 @@ EffectInstance::hasComponentsNeededInCache(U64 hash,
                                            double time,
                                            ViewIdx view) const
 {
-    ComponentsNeededMap comps;
-    std::bitset<4> processChannels;
-    ProcessChannelsPerPlaneMap processChannelsPerPlane;
-    std::list<ImageLayerDesc> passThroughLayers;
-    int passThroughInputNb = -1;
-    ViewIdx passThroughView;
-    double passThroughTime = 0.;
-
-    return _imp->actionsCache->getComponentsNeededResults(hash, time, view, &comps, &processChannels, &processChannelsPerPlane, &passThroughLayers, &passThroughInputNb, &passThroughView, &passThroughTime);
+    return (bool)_imp->actionsCache->getComponentsNeededResults(hash, time, view);
 }
 
 StatusEnum
@@ -4785,12 +4777,36 @@ EffectInstance::getLayersPassThroughInput(double time,
     ViewIdx identityView = view;
     int identityInputNb = -1;
     bool identity = false;
-    {
-        const TLSFlagSetter resolving(&tls->resolvingLayersPassThrough);
-        // Uncached: the identity cache is keyed on (hash, time, view) only, so this whole-image
-        // answer must neither be served to a render asking about its own window nor, when taken
-        // before an edit the hash does not capture, outlive that edit.
-        identity = isIdentity_public(false, 0, time, RenderScale::identity, getRenderMetadata(time, view)->getOutputFormat(), view, &identityTime, &identityView, &identityInputNb);
+    // Its own slot, not the render-window identity cache: this answer is for the whole image and
+    // skips the layer selection, so a render asking about its own window must not be served it.
+    // It reads this effect's metadata, so it is stored under the metadata it read and kept only
+    // where that metadata is final: not inside this effect's own identity rule, which hands out
+    // the metadata being checked, nor inside its time-invariant derivation, which hands out
+    // partial answers. Stored as getMetadata() stores, so an edit the hash does not yet reflect,
+    // or a same-hash drop, leaves nothing behind; a render whose frame hash is not the node's
+    // current one reads a snapshot this key does not name.
+    NodePtr node = getNode();
+    const U64 writes = KnobContentWrite::snapshot();
+    const U64 marks = node->getHashMarkCount();
+    const U64 generation = _imp->actionsCache->getMetadataGeneration();
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    U64 hash = 0;
+    bool cacheable = !isCheckingIdentityForMetadata(this) && !tls->timeInvariantInProgress && !tls->timeInvariantInputsMetadata && node->getHashValueIfUpToDate(&hash) && (getRenderHash() == hash);
+    if (!cacheable || !_imp->actionsCache->getPassThroughIdentityResult(hash, time, view, metadata, &identity, &identityInputNb, &identityView, &identityTime)) {
+        {
+            const TLSFlagSetter resolving(&tls->resolvingLayersPassThrough);
+            identity = isIdentity_public(false, 0, time, RenderScale::identity, metadata->getOutputFormat(), view, &identityTime, &identityView, &identityInputNb);
+        }
+        U64 hashAfter = 0;
+        if (cacheable && (node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == hash) && KnobContentWrite::isSettled(writes)) {
+            PassThroughIdentityResults results;
+            results.metadata = metadata;
+            results.identity = identity;
+            results.inputIdentityNb = identityInputNb;
+            results.inputIdentityTime = identityTime;
+            results.inputView = identityView;
+            _imp->actionsCache->setPassThroughIdentityResult(hash, time, view, results, generation);
+        }
     }
 
     if (identity && (identityInputNb >= 0)) {
@@ -4983,33 +4999,16 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
 } // EffectInstance::getComponentsNeededDefault
 
 void
-EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
-                                                      double time,
-                                                      ViewIdx view,
-                                                      EffectInstance::ComponentsNeededMap* comps,
-                                                      std::list<ImageLayerDesc>* passThroughLayers,
-                                                      double* passThroughTime,
-                                                      int* passThroughView,
-                                                      std::bitset<4>* processChannels,
-                                                      ProcessChannelsPerPlaneMap* processChannelsPerPlane,
-                                                      int* passThroughInputNb)
-
+EffectInstance::computeComponentsNeededAndProduced(double time,
+                                                   ViewIdx view,
+                                                   EffectInstance::ComponentsNeededMap* comps,
+                                                   std::list<ImageLayerDesc>* passThroughLayers,
+                                                   double* passThroughTime,
+                                                   int* passThroughView,
+                                                   std::bitset<4>* processChannels,
+                                                   ProcessChannelsPerPlaneMap* processChannelsPerPlane,
+                                                   int* passThroughInputNb)
 {
-    RECURSIVE_ACTION();
-
-    // Computed while this effect's own isIdentity() is choosing its pass-through input, the
-    // result used the preferred-input fallback and must not outlive that query.
-    const bool cacheResults = !isResolvingLayersPassThrough();
-
-    {
-        ViewIdx ptView;
-        bool foundInCache = _imp->actionsCache->getComponentsNeededResults(hash, time, view, comps, processChannels, processChannelsPerPlane, passThroughLayers, passThroughInputNb, &ptView, passThroughTime);
-        if (foundInCache) {
-            *passThroughView = ptView;
-            return;
-        }
-    }
-
     // A node disabled at `time`, or one that outputs its pass-through input unchanged there,
     // produces no layer of its own and every layer of that input passes through.
     if (getNode()->isNodeDisabled(time) || presentsOnlyPassThroughLayers(time, view)) {
@@ -5031,9 +5030,6 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         processChannels->set();
         processChannelsPerPlane->clear();
 
-        if (cacheResults) {
-            _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ptView, *passThroughTime);
-        }
         return;
     }
 
@@ -5076,17 +5072,11 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         processChannels->set();
         processChannelsPerPlane->clear();
 
-        if (cacheResults) {
-            _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ptView, *passThroughTime);
-        }
         return;
     }
 
     if ( !isMultiPlanar() ) {
         getComponentsNeededDefault(time, view, comps, passThroughLayers, passThroughTime, passThroughView, processChannels, processChannelsPerPlane, passThroughInputNb);
-        if (cacheResults) {
-            _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
-        }
         return;
     }
 
@@ -5138,11 +5128,79 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
 
     processChannels->set();
     processChannelsPerPlane->clear();
+} // EffectInstance::computeComponentsNeededAndProduced
 
-    if (cacheResults) {
-        _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
+// The produced and pass-through layers merged into presentLayers, the Color layer first.
+static void
+appendPresentLayers(const EffectInstance::ComponentsNeededResults& results,
+                    std::list<ImageLayerDesc>* presentLayers)
+{
+    std::list<ImageLayerDesc> layers = results.passThroughLayers;
+    EffectInstance::ComponentsNeededMap::const_iterator foundOutput = results.neededComps.find(-1);
+    if (foundOutput != results.neededComps.end()) {
+        mergeLayersList(foundOutput->second, &layers);
+    }
+    for (std::list<ImageLayerDesc>::iterator it = layers.begin(); it != layers.end(); ++it) {
+        if (it->isColorLayer()) {
+            presentLayers->push_front(*it);
+            layers.erase(it);
+            break;
+        }
+    }
+    mergeLayersList(layers, presentLayers);
+}
+
+EffectInstance::ComponentsNeededResultsPtr
+EffectInstance::getComponentsNeededAndProducedShared(U64 hash,
+                                                     double time,
+                                                     ViewIdx view)
+{
+    RECURSIVE_ACTION();
+
+    ComponentsNeededResultsPtr cached = _imp->actionsCache->getComponentsNeededResults(hash, time, view);
+    if (cached) {
+        return cached;
     }
 
+    std::shared_ptr<ComponentsNeededResults> results = std::make_shared<ComponentsNeededResults>();
+    int passThroughView = 0;
+    computeComponentsNeededAndProduced(time, view, &results->neededComps, &results->passThroughLayers, &results->passThroughTime, &passThroughView,
+                                       &results->processChannels, &results->processChannelsPerPlane, &results->passThroughInputNb);
+    results->passThroughView = ViewIdx(passThroughView);
+
+    // Kept apart, so a getPresentLayers() on a hit builds nothing.
+    appendPresentLayers(*results, &results->presentLayers);
+
+    // Computed while this effect's own isIdentity() is choosing its pass-through input, the
+    // result used the preferred-input fallback and must not outlive that query.
+    if (!isResolvingLayersPassThrough()) {
+        _imp->actionsCache->setComponentsNeededResults(hash, time, view, results);
+    }
+
+    return results;
+}
+
+void
+EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
+                                                      double time,
+                                                      ViewIdx view,
+                                                      EffectInstance::ComponentsNeededMap* comps,
+                                                      std::list<ImageLayerDesc>* passThroughLayers,
+                                                      double* passThroughTime,
+                                                      int* passThroughView,
+                                                      std::bitset<4>* processChannels,
+                                                      ProcessChannelsPerPlaneMap* processChannelsPerPlane,
+                                                      int* passThroughInputNb)
+{
+    ComponentsNeededResultsPtr results = getComponentsNeededAndProducedShared(hash, time, view);
+
+    *comps = results->neededComps;
+    *passThroughLayers = results->passThroughLayers;
+    *passThroughTime = results->passThroughTime;
+    *passThroughView = results->passThroughView;
+    *processChannels = results->processChannels;
+    *processChannelsPerPlane = results->processChannelsPerPlane;
+    *passThroughInputNb = results->passThroughInputNb;
 } // EffectInstance::getComponentsNeededAndProduced_public
 
 std::bitset<4>
@@ -5151,17 +5209,10 @@ EffectInstance::getProcessChannelsForPlane(U64 hash,
                                            ViewIdx view,
                                            const ImageLayerDesc& plane)
 {
-    ComponentsNeededMap comps;
-    std::list<ImageLayerDesc> passThroughLayers;
-    double passThroughTime = 0.;
-    int passThroughView = 0;
-    std::bitset<4> processChannels;
-    ProcessChannelsPerPlaneMap processChannelsPerPlane;
-    int passThroughInputNb = -1;
-    getComponentsNeededAndProduced_public(hash, time, view, &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
+    ComponentsNeededResultsPtr results = getComponentsNeededAndProducedShared(hash, time, view);
 
-    ProcessChannelsPerPlaneMap::const_iterator found = processChannelsPerPlane.find(plane);
-    if (found != processChannelsPerPlane.end()) {
+    ProcessChannelsPerPlaneMap::const_iterator found = results->processChannelsPerPlane.find(plane);
+    if (found != results->processChannelsPerPlane.end()) {
         return found->second;
     }
 
@@ -5171,10 +5222,9 @@ EffectInstance::getProcessChannelsForPlane(U64 hash,
     return all;
 }
 
-void
-EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* presentLayers)
+EffectInstance::ComponentsNeededResultsPtr
+EffectInstance::getPresentLayersResults(double time, ViewIdx view, int inputNb)
 {
-
     EffectInstancePtr effect;
     if (inputNb >= 0) {
         effect = getInput(inputNb);
@@ -5182,39 +5232,37 @@ EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::li
         effect = shared_from_this();
     }
     if (!effect) {
+        return ComponentsNeededResultsPtr();
+    }
+
+    // Key this query on the queried effect's own hash: it caches into that effect's ActionsCache, and a foreign
+    // (caller's) hash would pollute or stale-serve that cache independently of the effect's own invalidation.
+    return effect->getComponentsNeededAndProducedShared(effect->getRenderHash(), time, view);
+}
+
+std::shared_ptr<const std::list<ImageLayerDesc>>
+EffectInstance::getPresentLayersShared(double time, ViewIdx view, int inputNb)
+{
+    ComponentsNeededResultsPtr results = getPresentLayersResults(time, view, inputNb);
+    if (!results) {
+        return std::shared_ptr<const std::list<ImageLayerDesc>>();
+    }
+
+    return std::shared_ptr<const std::list<ImageLayerDesc>>(results, &results->presentLayers);
+}
+
+void
+EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* presentLayers)
+{
+    ComponentsNeededResultsPtr results = getPresentLayersResults(time, view, inputNb);
+    if (!results) {
         return;
     }
-
-    std::list<ImageLayerDesc> passThroughLayers;
-    {
-
-
-        EffectInstance::ComponentsNeededMap comps;
-        double passThroughTime = 0.;
-        int passThroughView = 0;
-        int passThroughInputNb = -1; // prevent infinite recursion, because getComponentsNeededAndProduced_public() may call getPresentLayers()
-        std::bitset<4> processChannels;
-        EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
-        // Key this query on the queried effect's own hash: it caches into that effect's ActionsCache, and a foreign
-        // (caller's) hash would pollute or stale-serve that cache independently of the effect's own invalidation.
-        effect->getComponentsNeededAndProduced_public(effect->getRenderHash(), time, view, &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
-
-        // Merge pass-through layers produced + pass-through available layers and make it as the pass-through layers for this node
-        // if they are not produced by this node
-        std::list<ImageLayerDesc>& outputLayers = (comps)[-1];
-        mergeLayersList(outputLayers, &passThroughLayers);
+    if (presentLayers->empty()) {
+        *presentLayers = results->presentLayers;
+    } else {
+        appendPresentLayers(*results, presentLayers);
     }
-
-    // Ensure the color layer is always the first one available in the list
-    for (std::list<ImageLayerDesc>::iterator it = passThroughLayers.begin(); it != passThroughLayers.end(); ++it) {
-        if (it->isColorLayer()) {
-            presentLayers->push_front(*it);
-            passThroughLayers.erase(it);
-            break;
-        }
-    }
-
-    mergeLayersList(passThroughLayers, presentLayers);
 } // getPresentLayers
 
 void

@@ -49,6 +49,7 @@
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -286,6 +287,67 @@ TEST_F(PerFrameMetadataTest, SecondQueryIsServedFromTheCache)
     EXPECT_EQ(first.get(), second.get());
     EXPECT_TRUE(bool(sourceSecond));
     EXPECT_EQ(derivations, effectA->nodeMetadataDerivationCount());
+}
+
+// At a frame nothing asked about before the counts are taken, so the first pass derives it.
+TEST_F(PerFrameMetadataTest, RepeatedQueriesAtOneFrameEvaluateEachNodeOnce)
+{
+    const double time = 7.;
+    NodePtr source = createSource(4);
+    ASSERT_TRUE(bool(source));
+    NodePtr filter = createNode(QString::fromUtf8(kTestPluginIDMetadataFilter));
+    ASSERT_TRUE(bool(filter));
+    connectNodes(source, filter, 0, true);
+    NodePtr blur = createBlurBelow(filter);
+    ASSERT_TRUE(bool(blur));
+    NodePtr blur2 = createBlurBelow(blur);
+    ASSERT_TRUE(bool(blur2));
+    MetadataSourceTestEffect* sourceEffect = metadataSourceOf(source);
+    ASSERT_TRUE(sourceEffect != NULL);
+    MetadataFilterTestEffect* filterEffect = dynamic_cast<MetadataFilterTestEffect*>(filter->getEffectInstance().get());
+    ASSERT_TRUE(filterEffect != NULL);
+
+    const int derivationsBefore = sourceEffect->nodeMetadataDerivationCount();
+    const int identityBefore = sourceEffect->identityEvaluationCount();
+    const int filterIdentityBefore = filterEffect->identityEvaluationCount();
+    int filterIdentityAfterFirstPass = filterIdentityBefore;
+    const NodePtr nodes[] = { source, filter, blur, blur2 };
+    std::map<const EffectInstance*, EffectInstance::ComponentsNeededResultsPtr> firstResults;
+    std::map<const EffectInstance*, std::shared_ptr<const std::list<ImageLayerDesc>>> firstPresent;
+    for (int pass = 0; pass < 5; ++pass) {
+        for (const NodePtr& node : nodes) {
+            EffectInstancePtr effect = node->getEffectInstance();
+            ASSERT_TRUE(bool(effect->getMetadata(time, ViewIdx(0))));
+            EffectInstance::ComponentsNeededResultsPtr results = effect->getComponentsNeededAndProducedShared(node->getHashValue(), time, ViewIdx(0));
+            std::shared_ptr<const std::list<ImageLayerDesc>> present = effect->getPresentLayersShared(time, ViewIdx(0), -1);
+            ASSERT_TRUE(results && present);
+            std::vector<ResolvedLayer> selected;
+            (void)node->resolveLayerKnob(time, ViewIdx(0), &selected);
+            (void)node->hasAtLeastOneChannelToProcess(time, ViewIdx(0));
+            int passThroughInputNb = -1;
+            double passThroughTime = 0.;
+            ViewIdx passThroughView(0);
+            effect->getLayersPassThroughInput(time, ViewIdx(0), &passThroughInputNb, &passThroughTime, &passThroughView);
+            if (pass == 0) {
+                firstResults[effect.get()] = results;
+                firstPresent[effect.get()] = present;
+            } else {
+                // A hit hands out the stored answer rather than a copy of it.
+                EXPECT_EQ(firstResults[effect.get()].get(), results.get());
+                EXPECT_EQ(firstPresent[effect.get()].get(), present.get());
+            }
+        }
+        if (pass == 0) {
+            filterIdentityAfterFirstPass = filterEffect->identityEvaluationCount();
+        }
+    }
+
+    EXPECT_EQ(derivationsBefore + 1, sourceEffect->nodeMetadataDerivationCount());
+    EXPECT_EQ(identityBefore + 1, sourceEffect->identityEvaluationCount());
+    // One for the identity rule its metadata went through, one for the choice of the input its
+    // layers pass through from; the repeated choices are served from the cache.
+    EXPECT_EQ(filterIdentityBefore + 2, filterIdentityAfterFirstPass);
+    EXPECT_EQ(filterIdentityAfterFirstPass, filterEffect->identityEvaluationCount());
 }
 
 // Readers on many threads race a knob toggled on the main thread. Each hash stands for one state,

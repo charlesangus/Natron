@@ -2390,14 +2390,6 @@ private:
             const DataKindEnum outputKind = activeInputToRender->getOutputDataKind();
 
             for (std::size_t view = 0; view < viewsToRender.size(); ++view) {
-                if (output->checkFrameToWrite(time, viewsToRender[view]) == eStatusFailed) {
-                    QString message;
-                    int type = 0;
-                    activeInputNode->getPersistentMessage(&message, &type, false);
-                    _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while rendering") : message.toStdString());
-
-                    return;
-                }
                 AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
                 if (isAbortableThread) {
                     isAbortableThread->setAbortInfo(isRenderDueToRenderInteraction, abortInfo, activeInputToRender);
@@ -2415,6 +2407,17 @@ private:
                                                          false,
                                                          false,
                                                          stats);
+
+                // After the frame's snapshot is taken, so the check reads it rather than deriving
+                // the graph's metadata on its own.
+                if (output->checkFrameToWrite(time, viewsToRender[view]) == eStatusFailed) {
+                    QString message;
+                    int type = 0;
+                    activeInputNode->getPersistentMessage(&message, &type, false);
+                    _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while rendering") : message.toStdString());
+
+                    return;
+                }
 
                 // The frame's region, layers and layout all come from the snapshot its args took,
                 // so an edit made while the sequence renders cannot pair one state's region with

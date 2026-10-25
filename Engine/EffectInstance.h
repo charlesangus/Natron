@@ -156,6 +156,33 @@ public:
     // the input's Color plane look up the same entry.
     typedef std::map<ImageLayerDesc, std::bitset<4>> ProcessChannelsPerPlaneMap;
 
+    // A getComponentsNeededAndProduced_public() answer. The actions cache hands the stored
+    // instance to every hit, so a hit costs no copy.
+    struct ComponentsNeededResults {
+        ComponentsNeededMap neededComps;
+        std::bitset<4> processChannels;
+        ProcessChannelsPerPlaneMap processChannelsPerPlane;
+        std::list<ImageLayerDesc> passThroughLayers;
+        int passThroughInputNb;
+        double passThroughTime;
+        ViewIdx passThroughView;
+        // getPresentLayers()'s answer for this effect, Color first.
+        std::list<ImageLayerDesc> presentLayers;
+
+        ComponentsNeededResults()
+            : neededComps()
+            , processChannels()
+            , processChannelsPerPlane()
+            , passThroughLayers()
+            , passThroughInputNb(-1)
+            , passThroughTime(0.)
+            , passThroughView(0)
+            , presentLayers()
+        {
+        }
+    };
+    typedef std::shared_ptr<const ComponentsNeededResults> ComponentsNeededResultsPtr;
+
     struct RenderRoIArgs
     {
         // Developer note: the fields were reordered to optimize packing.
@@ -2433,8 +2460,18 @@ public:
      **/
     std::bitset<4> getProcessChannelsForPlane(U64 hash, double time, ViewIdx view, const ImageLayerDesc& plane);
 
+    /**
+     * @brief getComponentsNeededAndProduced_public()'s answer as the cached, immutable instance.
+     **/
+    ComponentsNeededResultsPtr getComponentsNeededAndProducedShared(U64 hash, double time, ViewIdx view);
+
     // Produced union pass-through layers only: what the stream actually carries.
     void getPresentLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* presentLayers);
+
+    /**
+     * @brief getPresentLayers() into an empty list, shared with the cache; null with no such input.
+     **/
+    std::shared_ptr<const std::list<ImageLayerDesc>> getPresentLayersShared(double time, ViewIdx view, int inputNb);
 
     // getPresentLayers() plus, for inputNb == -1 only, every layer registered at the project level.
     void getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers);
@@ -2455,6 +2492,17 @@ public:
 
 private:
     bool isResolvingLayersPassThrough() const;
+
+    ComponentsNeededResultsPtr getPresentLayersResults(double time, ViewIdx view, int inputNb);
+
+    void computeComponentsNeededAndProduced(double time, ViewIdx view,
+                                            EffectInstance::ComponentsNeededMap* comps,
+                                            std::list<ImageLayerDesc>* passThroughLayers,
+                                            double* passThroughTime,
+                                            int* passThroughView,
+                                            std::bitset<4>* processChannels,
+                                            ProcessChannelsPerPlaneMap* processChannelsPerPlane,
+                                            int* passThroughInput);
 
     void getComponentsNeededDefault(double time, ViewIdx view,
                                     EffectInstance::ComponentsNeededMap* comps,

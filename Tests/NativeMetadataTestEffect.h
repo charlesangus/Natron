@@ -38,6 +38,7 @@
 #include "Engine/ViewIdx.h"
 
 #define kTestPluginIDMetadataSource "test.natron.built-in.MetadataSource"
+#define kTestPluginIDMetadataFilter "test.natron.built-in.MetadataFilter"
 
 NATRON_NAMESPACE_ENTER
 
@@ -61,6 +62,7 @@ public:
         , _par()
         , _format()
         , _nodeMetadataDerivations(0)
+        , _identityEvaluations(0)
     {
     }
 
@@ -103,6 +105,11 @@ public:
         return _nodeMetadataDerivations.load();
     }
 
+    int identityEvaluationCount() const
+    {
+        return _identityEvaluations.load();
+    }
+
     KnobIntPtr getNCompsKnob() const
     {
         return _nComps.lock();
@@ -137,6 +144,19 @@ public:
     }
 
 protected:
+    virtual bool isIdentity(double time,
+                            const RenderScale& scale,
+                            const RectI& roi,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        ++_identityEvaluations;
+
+        return NativeEffectBase::isIdentity(time, scale, roi, view, inputTime, inputView, inputNb);
+    }
+
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx /*view*/,
                                               NodeMetadata& metadata) OVERRIDE FINAL
@@ -226,6 +246,67 @@ private:
     KnobDoubleWPtr _par;
     KnobIntWPtr _format;
     std::atomic<int> _nodeMetadataDerivations;
+    std::atomic<int> _identityEvaluations;
+};
+
+// A one-input filter that counts its identity evaluations, so a test can tell a cached
+// pass-through choice from a recomputed one.
+class MetadataFilterTestEffect
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new MetadataFilterTestEffect(n);
+    }
+
+    explicit MetadataFilterTestEffect(NodePtr n)
+        : NativeEffectBase(n)
+        , _identityEvaluations(0)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    int identityEvaluationCount() const
+    {
+        return _identityEvaluations.load();
+    }
+
+protected:
+    virtual bool isIdentity(double time,
+                            const RenderScale& scale,
+                            const RectI& roi,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        ++_identityEvaluations;
+
+        return NativeEffectBase::isIdentity(time, scale, roi, view, inputTime, inputView, inputNb);
+    }
+
+private:
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDMetadataFilter,
+        .label = "Test Metadata Filter",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    std::atomic<int> _identityEvaluations;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -54,6 +54,7 @@ ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
     , _framesNeededCache()
     , _componentsNeededCache()
     , _metadataCache()
+    , _passThroughIdentityCache()
     , _timeInvariantMetadata()
 {
 }
@@ -180,16 +181,16 @@ ActionsCache::setIdentityResult(U64 hash,
     v.inputView = inputView;
 }
 
-bool
-ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4>* processChannels,
-                                         EffectInstance::ProcessChannelsPerPlaneMap* processChannelsPerPlane,
-                                         std::list<ImageLayerDesc>* passThroughLayers, int* passThroughInputNb, ViewIdx* passThroughView, double* passThroughTime)
+EffectInstance::ComponentsNeededResultsPtr
+ActionsCache::getComponentsNeededResults(U64 hash,
+                                         double time,
+                                         ViewIdx view)
 {
     QMutexLocker l(&_cacheMutex);
     const ActionsCacheInstance* cache = findActionCache(hash);
 
     if (!cache) {
-        return false;
+        return EffectInstance::ComponentsNeededResultsPtr();
     }
     ActionKey key;
     key.time = time;
@@ -197,25 +198,15 @@ ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, Ef
     key.mipmapLevel = 0;
 
     ComponentsNeededCacheMap::const_iterator found = cache->_componentsNeededCache.find(key);
-    if (found == cache->_componentsNeededCache.end()) {
-        return false;
-    }
-    *passThroughInputNb = found->second.passThroughInputNb;
-    *passThroughTime = found->second.passThroughTime;
-    *passThroughView = found->second.passThroughView;
-    *neededComps = found->second.neededComps;
-    *processChannels = found->second.processChannels;
-    *processChannelsPerPlane = found->second.processChannelsPerPlane;
-    *passThroughLayers = found->second.passThroughLayers;
 
-    return true;
+    return found == cache->_componentsNeededCache.end() ? EffectInstance::ComponentsNeededResultsPtr() : found->second;
 }
 
 void
-ActionsCache::setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededMap& neededComps,
-                                         std::bitset<4> processChannels,
-                                         const EffectInstance::ProcessChannelsPerPlaneMap& processChannelsPerPlane,
-                                         const std::list<ImageLayerDesc>& passThroughLayers, int passThroughInputNb, ViewIdx passThroughView, double passThroughTime)
+ActionsCache::setComponentsNeededResults(U64 hash,
+                                         double time,
+                                         ViewIdx view,
+                                         const EffectInstance::ComponentsNeededResultsPtr& results)
 {
     QMutexLocker l(&_cacheMutex);
     ActionsCacheInstance & cache = getOrCreateActionCache(hash);
@@ -225,14 +216,7 @@ ActionsCache::setComponentsNeededResults(U64 hash, double time, ViewIdx view, co
     key.view = view;
     key.mipmapLevel = 0;
 
-    ComponentsNeededResults & v = cache._componentsNeededCache[key];
-    v.neededComps = neededComps;
-    v.passThroughTime = passThroughTime;
-    v.passThroughView = passThroughView;
-    v.passThroughInputNb = passThroughInputNb;
-    v.processChannels = processChannels;
-    v.processChannelsPerPlane = processChannelsPerPlane;
-    v.passThroughLayers = passThroughLayers;
+    cache._componentsNeededCache[key] = results;
 }
 
 void
@@ -412,6 +396,66 @@ ActionsCache::setMetadataResult(U64 hash,
     cache._metadataCache[key] = metadata;
 }
 
+bool
+ActionsCache::getPassThroughIdentityResult(U64 hash,
+                                           double time,
+                                           ViewIdx view,
+                                           const NodeMetadataConstPtr& metadata,
+                                           bool* identity,
+                                           int* inputNbIdentity,
+                                           ViewIdx* inputView,
+                                           double* identityTime)
+{
+    QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
+
+    if (!cache || !metadata) {
+        return false;
+    }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
+
+    PassThroughIdentityCacheMap::const_iterator found = cache->_passThroughIdentityCache.find(key);
+    if ((found == cache->_passThroughIdentityCache.end()) || !found->second.metadata) {
+        return false;
+    }
+    if ((found->second.metadata != metadata) && (*found->second.metadata != *metadata)) {
+        return false;
+    }
+    *identity = found->second.identity;
+    *inputNbIdentity = found->second.inputIdentityNb;
+    *identityTime = found->second.inputIdentityTime;
+    *inputView = found->second.inputView;
+
+    return true;
+}
+
+void
+ActionsCache::setPassThroughIdentityResult(U64 hash,
+                                           double time,
+                                           ViewIdx view,
+                                           const PassThroughIdentityResults& results,
+                                           U64 generation)
+{
+    QMutexLocker l(&_cacheMutex);
+
+    if (generation != _metadataGeneration) {
+        return;
+    }
+    ActionsCacheInstance& cache = getOrCreateActionCache(hash);
+    if (cache._passThroughIdentityCache.size() >= kMaxCachedMetadataFrames) {
+        cache._passThroughIdentityCache.clear();
+    }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
+
+    cache._passThroughIdentityCache[key] = results;
+}
+
 NodeMetadataConstPtr
 ActionsCache::getTimeInvariantMetadataResult(U64 hash)
 {
@@ -458,6 +502,7 @@ ActionsCache::clearMetadataResults()
     ++_metadataGeneration;
     for (InstancesList::iterator it = _instances.begin(); it != _instances.end(); ++it) {
         it->_metadataCache.clear();
+        it->_passThroughIdentityCache.clear();
         it->_timeInvariantMetadata.reset();
     }
 }

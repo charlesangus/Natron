@@ -6934,6 +6934,33 @@ findAliasSlaveOnOtherNode(const KnobIPtr& master,
     return KnobIPtr();
 }
 
+// The layers an image stream on inputNb carries. Every image stream carries a Color plane, so an
+// unconnected input still lists it.
+static std::shared_ptr<const std::list<ImageLayerDesc>>
+getInputStreamLayers(const EffectInstancePtr& effect,
+                     int inputNb,
+                     double time,
+                     ViewIdx view)
+{
+    std::shared_ptr<const std::list<ImageLayerDesc>> present;
+    if (effect && (inputNb >= 0)) {
+        present = effect->getPresentLayersShared(time, view, inputNb);
+    }
+    if (present) {
+        for (std::list<ImageLayerDesc>::const_iterator it = present->begin(); it != present->end(); ++it) {
+            if (it->isColorLayer()) {
+                return present;
+            }
+        }
+    }
+    std::shared_ptr<std::list<ImageLayerDesc>> layers = std::make_shared<std::list<ImageLayerDesc>>(1, ImageLayerDesc::getRGBAComponents());
+    if (present) {
+        layers->insert(layers->end(), present->begin(), present->end());
+    }
+
+    return layers;
+}
+
 static void
 appendInputStreamLayers(const EffectInstancePtr& effect,
                         int inputNb,
@@ -6941,23 +6968,8 @@ appendInputStreamLayers(const EffectInstancePtr& effect,
                         ViewIdx view,
                         std::list<ImageLayerDesc>* layers)
 {
-    std::list<ImageLayerDesc> present;
-    if (effect && (inputNb >= 0)) {
-        effect->getPresentLayers(time, view, inputNb, &present);
-    }
-
-    // Every image stream carries a Color plane, so an unconnected input still lists it.
-    bool hasColor = false;
-    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
-        if (it->isColorLayer()) {
-            hasColor = true;
-            break;
-        }
-    }
-    if (!hasColor) {
-        layers->push_back(ImageLayerDesc::getRGBAComponents());
-    }
-    layers->insert(layers->end(), present.begin(), present.end());
+    std::shared_ptr<const std::list<ImageLayerDesc>> present = getInputStreamLayers(effect, inputNb, time, view);
+    layers->insert(layers->end(), present->begin(), present->end());
 }
 
 void
@@ -7098,6 +7110,23 @@ Node::resolveLayerKnob(double time,
         return false;
     }
 
+    std::map<const KnobI*, LayerKnobSource>::const_iterator found = _imp->layerKnobSources.find(layerKnob.get());
+    if ((found != _imp->layerKnobSources.end()) && (found->second.role != LayerKnobSpec::eRoleTarget)) {
+        int inputNb = found->second.inputNb;
+        double inputTime = time;
+        ViewIdx inputView = view;
+        if (inputNb == LayerKnobSource::kPreferredInput) {
+            if (_imp->effect) {
+                _imp->effect->getLayersPassThroughInput(time, view, &inputNb, &inputTime, &inputView);
+            } else {
+                inputNb = -1;
+            }
+        }
+        resolveAgainstPresentLayers(channelSet, layerSelect, *getInputStreamLayers(_imp->effect, inputNb, inputTime, inputView), selected);
+
+        return true;
+    }
+
     std::list<ImageLayerDesc> present;
     listLayersForKnob(layerKnob, time, view, &present);
     resolveAgainstPresentLayers(channelSet, layerSelect, present, selected);
@@ -7122,14 +7151,14 @@ Node::resolveLayerKnob(double time,
         return false;
     }
 
-    std::list<ImageLayerDesc> present;
     std::map<const KnobI*, LayerKnobSource>::const_iterator found = _imp->layerKnobSources.find(layerKnob.get());
     if ((found != _imp->layerKnobSources.end()) && (found->second.role != LayerKnobSpec::eRoleTarget) && (found->second.inputNb == LayerKnobSource::kPreferredInput)) {
-        appendInputStreamLayers(_imp->effect, passThroughInputNb, passThroughTime, passThroughView, &present);
+        resolveAgainstPresentLayers(channelSet, layerSelect, *getInputStreamLayers(_imp->effect, passThroughInputNb, passThroughTime, passThroughView), selected);
     } else {
+        std::list<ImageLayerDesc> present;
         listLayersForKnob(layerKnob, time, view, &present);
+        resolveAgainstPresentLayers(channelSet, layerSelect, present, selected);
     }
-    resolveAgainstPresentLayers(channelSet, layerSelect, present, selected);
 
     return true;
 }

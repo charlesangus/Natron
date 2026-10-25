@@ -66,15 +66,14 @@ struct IdentityResults
     ViewIdx inputView;
 };
 
-struct ComponentsNeededResults
-{
-    EffectInstance::ComponentsNeededMap neededComps;
-    std::bitset<4> processChannels;
-    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
-    std::list<ImageLayerDesc> passThroughLayers;
-    int passThroughInputNb;
-    double passThroughTime;
-    ViewIdx passThroughView;
+// getLayersPassThroughInput()'s identity answer: whole image, layer selection skipped. metadata
+// is the effect's own the check read, whose format is the window checked.
+struct PassThroughIdentityResults {
+    NodeMetadataConstPtr metadata;
+    bool identity;
+    int inputIdentityNb;
+    double inputIdentityTime;
+    ViewIdx inputView;
 };
 
 struct CompareActionsCacheKeys
@@ -105,7 +104,8 @@ struct CompareActionsCacheKeys
 typedef std::map<ActionKey, IdentityResults, CompareActionsCacheKeys> IdentityCacheMap;
 typedef std::map<ActionKey, RectD, CompareActionsCacheKeys> RoDCacheMap;
 typedef std::map<ActionKey, FramesNeededMap, CompareActionsCacheKeys> FramesNeededCacheMap;
-typedef std::map<ActionKey, ComponentsNeededResults, CompareActionsCacheKeys> ComponentsNeededCacheMap;
+typedef std::map<ActionKey, EffectInstance::ComponentsNeededResultsPtr, CompareActionsCacheKeys> ComponentsNeededCacheMap;
+typedef std::map<ActionKey, PassThroughIdentityResults, CompareActionsCacheKeys> PassThroughIdentityCacheMap;
 typedef std::map<ActionKey, NodeMetadataConstPtr, CompareActionsCacheKeys> MetadataCacheMap;
 
 /**
@@ -142,13 +142,9 @@ public:
 
     void setIdentityResult(U64 hash, double time, ViewIdx view, int inputNbIdentity, ViewIdx inputView, double identityTime);
 
-    bool getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4>* processChannels,
-                                    EffectInstance::ProcessChannelsPerPlaneMap* processChannelsPerPlane,
-                                    std::list<ImageLayerDesc>* passThroughLayers, int* passThroughInputNb, ViewIdx* passThroughView, double* passThroughTime);
+    EffectInstance::ComponentsNeededResultsPtr getComponentsNeededResults(U64 hash, double time, ViewIdx view);
 
-    void setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededMap& neededComps, std::bitset<4> processChannels,
-                                    const EffectInstance::ProcessChannelsPerPlaneMap& processChannelsPerPlane,
-                                    const std::list<ImageLayerDesc>& passThroughLayers, int passThroughInputNb, ViewIdx passThroughView, double passThroughTime);
+    void setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededResultsPtr& results);
 
     void clearComponentsNeededResults();
 
@@ -175,6 +171,18 @@ public:
      * generation, which getMetadataGeneration() returned before the metadata was derived.
      **/
     void setMetadataResult(U64 hash, double time, ViewIdx view, const NodeMetadataConstPtr& metadata, U64 generation);
+
+    /**
+     * @brief The pass-through identity answer stored under (hash, time, view) for metadata equal
+     * to the one given. Kept apart from the render-window identity results, and dropped with the
+     * metadata.
+     **/
+    bool getPassThroughIdentityResult(U64 hash, double time, ViewIdx view, const NodeMetadataConstPtr& metadata, bool* identity, int* inputNbIdentity, ViewIdx* inputView, double* identityTime);
+
+    /**
+     * @brief As setMetadataResult().
+     **/
+    void setPassThroughIdentityResult(U64 hash, double time, ViewIdx view, const PassThroughIdentityResults& results, U64 generation);
 
     NodeMetadataConstPtr getTimeInvariantMetadataResult(U64 hash);
 
@@ -204,6 +212,7 @@ private:
         FramesNeededCacheMap _framesNeededCache;
         ComponentsNeededCacheMap _componentsNeededCache;
         MetadataCacheMap _metadataCache;
+        PassThroughIdentityCacheMap _passThroughIdentityCache;
         NodeMetadataConstPtr _timeInvariantMetadata;
 
         ActionsCacheInstance();

@@ -1,5 +1,9 @@
 ## Pending
 
+### 2026-10-25T16:00:00Z — change-request
+- refs: M70.P5.T2, M70.P5.T3
+- From the user, via /cat-discuss, for M70 - RFV Declaration And Storage (see `DECISIONS/2026-10-25-rfv-promote-undo-and-active-copies.md`). (1) **Promote must be undoable.** "Add to project variables" becomes one undo step through M114's undo history: undo removes the project's copy, and redo restores it with the same value and animation. Amend this milestone's 2026-10-25 "Project variables and M114 undo" decision to make promote an exception to it; `app.createRFV*Param` is still not recorded. Add to T2's verify: a gtest runs promote, undo and redo. Add to T3's verify: an Xvfb check that Ctrl+Z after the right-click removes the variable from the project Variables section. (2) **Both copies stay active.** After a promote, the Set node's variable must not be disabled, read-only or greyed out, and both copies stay editable. The node's copy keeps overriding the project's upstream of that Set node. Only the menu item disables, with its tooltip. Add to T3's Xvfb verify a check that the node's knob is still enabled and editable after the promote, and include it in the screenshot. Code to change is already on milestone/m70 (03e610296 and the commits after it).
+
 ### 2026-10-25T12:00:00Z — info
 - refs: Engine/Knob.cpp setExpressionInternal; found during M92
 `setExpressionInternal` rethrows a caught `const std::exception&` with `throw e;`, slicing a `std::runtime_error` to a plain `std::exception` and dropping its type. Use `throw;`.

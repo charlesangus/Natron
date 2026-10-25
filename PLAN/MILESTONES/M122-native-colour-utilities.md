@@ -93,7 +93,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 121.1: Premult, Unpremult, ColorMatrix, Threshold
 
-- [ ] M122.P1.T1 — Native Premult and Unpremult
+- [x] M122.P1.T1 — Native Premult and Unpremult
   - files: `Engine/Nodes/Color/Premult.h`, `Engine/Nodes/Color/Premult.cpp`, `Engine/Nodes/Color/Premult.reg.inc`, `Tests/Native/NativePremult_Test.cpp`
   - approach:
     - Two classes sharing one kernel: multiply or divide the selected channels (default RGB) by an alpha-channel picker (any layer's channel, default A).
@@ -103,7 +103,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, the test covers known pixels, the epsilon pass-through, the metadata premult flag on output, and an alternate alpha channel.
   - size: M
 
-- [ ] M122.P1.T2 — Native ColorMatrix and Threshold
+- [x] M122.P1.T2 — Native ColorMatrix and Threshold
   - files: `Engine/Nodes/Color/ColorMatrix.h`, `Engine/Nodes/Color/ColorMatrix.cpp`, `Engine/Nodes/Color/Threshold.h`, `Engine/Nodes/Color/Threshold.cpp`, `Tests/Native/NativeColorMatrixThreshold_Test.cpp`
   - approach:
     - ColorMatrix: a 4×4 matrix knob set (rows R, G, B, A over r, g, b, a), identity by default, with clamps present but off. It is identity at the identity matrix.
@@ -112,7 +112,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, the test covers matrix maths with HDR values, identity detection, Threshold's boundary at softness 0, and the ramp.
   - size: M
 
-- [ ] M122.P1.T3 — GPU kernels for Premult, Unpremult, ColorMatrix and Threshold
+- [x] M122.P1.T3 — GPU kernels for Premult, Unpremult, ColorMatrix and Threshold
   - files: `Engine/Gpu/Kernels/colourutil.slang`, `Engine/Gpu/Kernels/colourutil.cmake`, `Engine/Nodes/Color/{Premult,ColorMatrix,Threshold}.costseed.inc`, `Tests/Native/NativeColourUtilGpu_Test.cpp`
   - approach:
     - One Slang file with four `IPixelOp`s on `runWrapped<>`.
@@ -247,6 +247,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-25 — **Premult nodes (bosley-native-nodes):** Premult and Unpremult pick their alpha from any layer through a new `Stage::Divisor` pipeline stage (None makes the node an identity); a divisor from another layer renders on the CPU. The host carries no premultiplication state in metadata, so there is no output premult flag to set or test. Where the divisor has no pixel, the native nodes read 1 (OFX read 0). Threshold at softness 0 maps a value equal to the level to 1, per the plan.
 - 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file.
 - 2026-10-13 — Premult and Unpremult stay two separate nodes (user): visible in the graph, the same reasoning as Add/Multiply, and the PyPlugs keep working.
 - 2026-10-13 — One `Colorspace` node replaces the 18 converters (user), with primaries from the project working space and Lab unscaled. Its name sits beside the OCIO family's `OCIOColorSpace`, which converts between config spaces.

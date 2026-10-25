@@ -692,22 +692,19 @@ TEST_F(NativeSTMapTest, DisconnectedUVIsBlack)
     EffectInstancePtr effect = node->getEffectInstance();
     RectD rod;
     bool isProjectFormat = false;
-    const StatusEnum stat = effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat);
-    EXPECT_TRUE((stat != eStatusOK) || rod.isNull());
+    ASSERT_EQ(eStatusOK, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+    EXPECT_TRUE(rod.isNull());
 
-    // Whatever is rendered over the Source's window is black.
+    // With no UV the output is empty: renderRoI succeeds and hands back no plane, which the helper
+    // reports as its "no plane" failure.
     const RectI window = paritySourceWindow(source, kTime, 0);
     std::list<ImageLayerDesc> layers;
     layers.push_back(ImageLayerDesc::getRGBAComponents());
     std::vector<RenderedPlane> planes;
     std::string error;
-    if (renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error)) {
-        for (std::size_t i = 0; i < planes.size(); ++i) {
-            for (std::size_t j = 0; j < planes[i].pixels.size(); ++j) {
-                ASSERT_EQ(0.f, planes[i].pixels[j]) << "value " << j;
-            }
-        }
-    }
+    EXPECT_FALSE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error));
+    EXPECT_EQ(std::string("the render produced no plane"), error);
+    EXPECT_TRUE(planes.empty());
 }
 
 TEST_F(NativeSTMapTest, FormatFrom)

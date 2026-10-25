@@ -244,7 +244,7 @@ regionParams(const ResampleRequest& request,
     params.blackOutside = settings.blackOutside;
     params.isIdentity = settings.transformIsIdentity;
     params.doMasking = stages.doMasking;
-    params.mix = stages.doMasking ? stages.mix : 1.;
+    params.mix = stages.mix;
 
     return params;
 }
@@ -679,7 +679,7 @@ resampleRegionOfDefinition(EffectInstance& effect,
     rod->x2 = srcRoD.x2 + dx;
     rod->y1 = srcRoD.y1 + dy;
     rod->y2 = srcRoD.y2 + dy;
-    if (stages.doMasking) {
+    if (stages.doMasking || (stages.mix != 1.)) {
         rod->merge(srcRoD);
     }
 

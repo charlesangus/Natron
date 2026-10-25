@@ -37,6 +37,7 @@
 #include "Engine/Node.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
+#include "Engine/UndoCommand.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -680,37 +681,137 @@ CornerPinNode::setFromToInput(double time,
     endChanges();
 }
 
-void
-CornerPinNode::copyPoints(bool fromToTo,
-                          bool withAnimation,
-                          double time)
-{
-    const CornerPinOp& o = op();
+// The destination points of a copy button and srcClipChanged, kept as detached knobs so undo
+// restores their values, expressions and curves.
+class CornerPinNode::CopyPointsCommand
+    : public UndoCommand {
+public:
+    CopyPointsCommand(const CornerPinNode& node,
+                      bool fromToTo,
+                      bool withAnimation,
+                      double time,
+                      bool markEdited)
+        : UndoCommand(fromToTo ? "Copy From to To" : "Copy To to From")
+        , _withAnimation(withAnimation)
+        , _time(time)
+        , _markEdited(markEdited)
+        , _srcClipChanged(node._srcClipChanged)
+        , _srcClipChangedBefore(false)
+    {
+        const CornerPinOp& o = node.op();
 
-    beginChanges();
-    for (int i = 0; i < 4; ++i) {
-        KnobDoublePtr src = (fromToTo ? o.from[i] : o.to[i]).lock();
-        KnobDoublePtr dst = (fromToTo ? o.to[i] : o.from[i]).lock();
-        if (!src || !dst) {
-            continue;
+        for (int i = 0; i < 4; ++i) {
+            _src[i] = fromToTo ? o.from[i] : o.to[i];
+            _dst[i] = fromToTo ? o.to[i] : o.from[i];
+            KnobDoublePtr dst = _dst[i].lock();
+            if (dst) {
+                _before[i] = std::make_shared<KnobDouble>((KnobHolder*)NULL, std::string(), dst->getDimension(), false);
+                _before[i]->populate();
+                _before[i]->clone(dst.get());
+            }
         }
-        if (withAnimation) {
-            dst->cloneAndUpdateGui(src.get());
-            dst->evaluateValueChange(0, time, ViewSpec::all(), eValueChangedReasonPluginEdited);
-        } else {
-            dst->setValues(src->getValueAtTime(time, 0), src->getValueAtTime(time, 1), ViewSpec::all(), eValueChangedReasonPluginEdited);
+        KnobBoolPtr srcClipChanged = _srcClipChanged.lock();
+        _srcClipChangedBefore = srcClipChanged && srcClipChanged->getValue();
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        KnobHolder* holder = this->holder();
+
+        if (holder) {
+            holder->beginChanges();
+        }
+        for (int i = 0; i < 4; ++i) {
+            KnobDoublePtr src = _src[i].lock();
+            KnobDoublePtr dst = _dst[i].lock();
+            if (!src || !dst) {
+                continue;
+            }
+            if (_withAnimation) {
+                dst->cloneAndUpdateGui(src.get());
+                dst->evaluateValueChange(0, _time, ViewSpec::all(), eValueChangedReasonPluginEdited);
+            } else {
+                dst->setValues(src->getValueAtTime(_time, 0), src->getValueAtTime(_time, 1), ViewSpec::all(), eValueChangedReasonPluginEdited);
+            }
+        }
+        KnobBoolPtr srcClipChanged = _srcClipChanged.lock();
+        if (_markEdited && srcClipChanged && !srcClipChanged->getValue()) {
+            srcClipChanged->setValue(true);
+        }
+        if (holder) {
+            holder->endChanges();
         }
     }
-    endChanges();
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        KnobHolder* holder = this->holder();
+
+        if (holder) {
+            holder->beginChanges();
+        }
+        for (int i = 0; i < 4; ++i) {
+            KnobDoublePtr dst = _dst[i].lock();
+            if (!dst || !_before[i]) {
+                continue;
+            }
+            dst->cloneAndUpdateGui(_before[i].get());
+            dst->evaluateValueChange(0, _time, ViewSpec::all(), eValueChangedReasonPluginEdited);
+        }
+        // Restoring the points marks them edited; srcClipChanged goes back last.
+        KnobBoolPtr srcClipChanged = _srcClipChanged.lock();
+        if (srcClipChanged) {
+            srcClipChanged->setValue(_srcClipChangedBefore);
+        }
+        if (holder) {
+            holder->endChanges();
+        }
+    }
+
+private:
+    KnobHolder* holder() const
+    {
+        for (int i = 0; i < 4; ++i) {
+            KnobDoublePtr dst = _dst[i].lock();
+            if (dst) {
+                return dst->getHolder();
+            }
+        }
+
+        return NULL;
+    }
+
+    bool _withAnimation;
+    double _time;
+    bool _markEdited;
+    KnobDoubleWPtr _src[4];
+    KnobDoubleWPtr _dst[4];
+    KnobDoublePtr _before[4];
+    KnobBoolWPtr _srcClipChanged;
+    bool _srcClipChangedBefore;
+};
+
+UndoCommandPtr
+CornerPinNode::makeCopyPointsCommand(bool fromToTo,
+                                     bool withAnimation,
+                                     double time,
+                                     bool markEdited)
+{
+    return std::make_shared<CopyPointsCommand>(*this, fromToTo, withAnimation, time, markEdited);
+}
+
+bool
+CornerPinNode::isPointsEdit(ValueChangedReasonEnum reason)
+{
+    return (reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonPluginEdited) || (reason == eValueChangedReasonNatronGuiEdited) || (reason == eValueChangedReasonNatronInternalEdited);
 }
 
 void
 CornerPinNode::markPointsEdited(ValueChangedReasonEnum reason)
 {
     KnobBoolPtr srcClipChanged = _srcClipChanged.lock();
-    const bool edited = (reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonPluginEdited) || (reason == eValueChangedReasonNatronGuiEdited) || (reason == eValueChangedReasonNatronInternalEdited);
 
-    if (edited && srcClipChanged && !srcClipChanged->getValue()) {
+    if (isPointsEdit(reason) && srcClipChanged && !srcClipChanged->getValue()) {
         srcClipChanged->setValue(true);
     }
 }
@@ -733,8 +834,7 @@ CornerPinNode::knobChanged(KnobI* k,
     if ((k == o.copyFrom.lock().get()) || (k == o.copyFromSingle.lock().get()) || (k == o.copyTo.lock().get()) || (k == o.copyToSingle.lock().get())) {
         const bool fromToTo = (k == o.copyFrom.lock().get()) || (k == o.copyFromSingle.lock().get());
         const bool withAnimation = (k == o.copyFrom.lock().get()) || (k == o.copyTo.lock().get());
-        copyPoints(fromToTo, withAnimation, time);
-        markPointsEdited(reason);
+        pushUndoCommand(makeCopyPointsCommand(fromToTo, withAnimation, time, isPointsEdit(reason)));
 
         return true;
     }

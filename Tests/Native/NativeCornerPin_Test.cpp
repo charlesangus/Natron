@@ -54,6 +54,7 @@
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
 #include "Engine/Settings.h"
+#include "Engine/UndoCommand.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -524,6 +525,51 @@ TEST_F(NativeCornerPinTest, CopyButtons)
     EXPECT_EQ(31., from2->getValue(1));
 }
 
+// A copy with animation is one undoable step: undo brings back the "to" curves, values and
+// srcClipChanged as they were, redo copies again.
+TEST_F(NativeCornerPinTest, CopyButtonUndoRestoresTheDestination)
+{
+    resetProject();
+    NodePtr node = makeNode(kCornerPinID, kCornerPinMajor, makeSource());
+    CornerPinNode* effect = cornerPin(node);
+    ASSERT_TRUE(effect != NULL);
+    KnobDouble* from1 = dynamic_cast<KnobDouble*>(node->getKnobByName(kCornerPinNodeParamFrom1).get());
+    KnobDouble* to1 = dynamic_cast<KnobDouble*>(node->getKnobByName(kCornerPinNodeParamTo1).get());
+    KnobDouble* to2 = dynamic_cast<KnobDouble*>(node->getKnobByName(kCornerPinNodeParamTo2).get());
+    KnobDouble* from2 = dynamic_cast<KnobDouble*>(node->getKnobByName(kCornerPinNodeParamFrom2).get());
+    KnobBool* srcClipChanged = dynamic_cast<KnobBool*>(node->getKnobByName(kCornerPinNodeParamSrcClipChanged).get());
+    ASSERT_TRUE(from1 && to1 && to2 && from2 && srcClipChanged);
+    from1->setValueAtTime(0., 1., ViewSpec::all(), 0);
+    from1->setValueAtTime(2., 9., ViewSpec::all(), 0);
+    to1->setValueAtTime(0., 3., ViewSpec::all(), 0);
+    to1->setValueAtTime(2., 7., ViewSpec::all(), 0);
+    to1->setValueAtTime(4., 11., ViewSpec::all(), 0);
+    ASSERT_TRUE(setPoints(node, kCornerPinNodeParamTo2, 30., 31.));
+    srcClipChanged->setValue(false);
+
+    UndoCommandPtr command = effect->makeCopyPointsCommand(true, true, kTime, true);
+    ASSERT_NE(nullptr, command.get());
+    command->redo();
+    EXPECT_EQ(2, to1->getKeyFramesCount(ViewSpec(0), 0));
+    EXPECT_EQ(5., to1->getValueAtTime(1., 0));
+    EXPECT_EQ(from2->getValue(0), to2->getValue(0));
+    EXPECT_EQ(from2->getValue(1), to2->getValue(1));
+    EXPECT_TRUE(srcClipChanged->getValue());
+
+    command->undo();
+    EXPECT_EQ(3, to1->getKeyFramesCount(ViewSpec(0), 0));
+    EXPECT_EQ(3., to1->getValueAtTime(0., 0));
+    EXPECT_EQ(7., to1->getValueAtTime(2., 0));
+    EXPECT_EQ(11., to1->getValueAtTime(4., 0));
+    EXPECT_EQ(30., to2->getValue(0));
+    EXPECT_EQ(31., to2->getValue(1));
+    EXPECT_FALSE(srcClipChanged->getValue());
+
+    command->redo();
+    EXPECT_EQ(2, to1->getKeyFramesCount(ViewSpec(0), 0));
+    EXPECT_EQ(5., to1->getValueAtTime(1., 0));
+}
+
 TEST_F(NativeCornerPinTest, KnobsReachTheMatrix)
 {
     resetProject();
@@ -665,6 +711,46 @@ TEST_F(NativeCornerPinTest, MaskAndMixStopItOfferingItsMatrix)
 
     ASSERT_TRUE(setKnobValues(pin, kOfxMixParamName, { 0.5 }));
     expectBothSchedulerModesAgree(pin);
+}
+
+// Without a mask, a mix below 1 blends in the source under the pixel, so the region of definition
+// keeps the source's even when the pin moves the image off it.
+TEST_F(NativeCornerPinTest, MixWithoutAMaskKeepsTheSourceRegion)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr pin = makeNode(kCornerPinID, kCornerPinMajor, source);
+    ASSERT_TRUE(bool(pin));
+    for (int i = 1; i < 4; ++i) {
+        ASSERT_TRUE(setKnobValues(pin, kEnableNames[i], { 0. }));
+    }
+    ASSERT_TRUE(setPoints(pin, kCornerPinNodeParamFrom1, 0., 0.));
+    ASSERT_TRUE(setPoints(pin, kCornerPinNodeParamTo1, 200., 0.));
+    ASSERT_TRUE(setKnobValues(pin, kOfxMixParamName, { 0.5 }));
+
+    bool isProjectFormat = false;
+    EffectInstancePtr sourceEffect = source->getEffectInstance();
+    RectD srcRoD;
+    ASSERT_NE(eStatusFailed, sourceEffect->getRegionOfDefinition_public(sourceEffect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &srcRoD, &isProjectFormat));
+    EffectInstancePtr effect = pin->getEffectInstance();
+    RectD rod;
+    ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+    EXPECT_LE(rod.x1, srcRoD.x1);
+    EXPECT_LE(rod.y1, srcRoD.y1);
+    EXPECT_GE(rod.x2, srcRoD.x2);
+    EXPECT_GE(rod.y2, srcRoD.y2);
+    EXPECT_GE(rod.x2, 200. + srcRoD.x2);
+
+    const RectI window(0, 0, 64, 48);
+    RenderedPlane plane;
+    ASSERT_TRUE(renderRGBA(pin, window, &plane));
+    const int points[3][2] = { { 1, 1 }, { 20, 30 }, { 62, 46 } };
+    for (const auto& p : points) {
+        const float* pixel = &plane.pixels[((std::size_t)(p[1] - window.y1) * window.width() + (p[0] - window.x1)) * 4];
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_NEAR(0.5 * paritySourceColorValue(c, p[0], p[1], kTime), pixel[c], 1e-6) << "pixel (" << p[0] << ", " << p[1] << "), channel " << c;
+        }
+    }
 }
 
 // A one-point pin whose "to" moves over the shutter blurs like a Transform with the same motion.

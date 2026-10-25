@@ -224,6 +224,14 @@ public:
      **/
     void setFromToInput(double time, bool alsoTo);
 
+    /**
+     * @brief One undoable step copying "from" onto "to" (fromToTo) or "to" onto "from": the
+     * values, expressions and curves of each point with withAnimation, else its value at time.
+     * Undo restores the destination points and srcClipChanged as they were when it was made.
+     * markEdited sets srcClipChanged, as an edit of the points does.
+     **/
+    UndoCommandPtr makeCopyPointsCommand(bool fromToTo, bool withAnimation, double time, bool markEdited);
+
 protected:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
@@ -242,7 +250,9 @@ private:
 
     void updateClampEnabled(double time, ViewSpec view);
 
-    void copyPoints(bool fromToTo, bool withAnimation, double time);
+    class CopyPointsCommand;
+
+    static bool isPointsEdit(ValueChangedReasonEnum reason);
 
     void markPointsEdited(ValueChangedReasonEnum reason);
 

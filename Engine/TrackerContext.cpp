@@ -875,7 +875,13 @@ TrackerContext::exportTrackDataFromExportOptions()
             KnobDoublePtr matrixKnob = std::dynamic_pointer_cast<KnobDouble>(createdNode->getKnobByName(kCornerPinNodeParamExtraMatrix));
             KnobDoublePtr trackerMatrix = _imp->cornerPinMatrix.lock();
             if (matrixKnob && trackerMatrix) {
-                matrixKnob->cloneAndUpdateGui(trackerMatrix.get());
+                if (!linked) {
+                    matrixKnob->cloneAndUpdateGui(trackerMatrix.get());
+                } else {
+                    for (int d = 0; d < matrixKnob->getDimension(); ++d) {
+                        dynamic_cast<KnobI*>(matrixKnob.get())->slaveTo(d, trackerMatrix, d);
+                    }
+                }
             }
         }
         break;

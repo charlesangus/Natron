@@ -645,7 +645,7 @@ void expandRoI(const RectD& roi, double par, double sx, double sy, FilterEnum fi
  * @brief The knob state the region actions depend on. invert is the node's invert knob;
  * isIdentity what the node's own identity test says at that time (it stops the RoD from
  * growing, so an identity node keeps its source's RoD); doMasking whether a mask is connected
- * and applied; mix is only read when doMasking.
+ * and applied; mix the node's mix, read with or without a mask.
  **/
 struct RegionParams {
     bool invert;
@@ -672,7 +672,9 @@ struct RegionParams {
  * @brief The output RoD from the source RoD, as the OFX Transform3x3 computes it: infinite in,
  * infinite out; empty in, empty out; mix 0 under a mask gives srcRoD; otherwise the forward
  * transformRegion() of srcRoD, expanded by expandRoD() unless identity, and unioned with
- * srcRoD when masking. dstPar is the output's PAR, (sx, sy) the render scale.
+ * srcRoD when masking or mixing (mix != 1), whose output blends in the source under the pixel.
+ * Unlike the OFX Transform3x3, a mix without a mask also unions. dstPar is the output's PAR,
+ * (sx, sy) the render scale.
  **/
 void getRegionOfDefinition(const CanonicalTransformFn& fn,
                            const RectD& srcRoD,

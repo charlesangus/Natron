@@ -1874,7 +1874,7 @@ getRegionOfDefinition(const CanonicalTransformFn& fn,
     if (!params.isIdentity) {
         expandRoD(dstPar, sx, sy, params.blackOutside, rod);
     }
-    if (params.doMasking) {
+    if (params.doMasking || (params.mix != 1.)) {
         rectBoundingBox(*rod, srcRoD, rod);
     }
 }
@@ -1891,15 +1891,13 @@ getRegionOfInterest(const CanonicalTransformFn& fn,
                     const RegionParams& params,
                     RectD* srcRoI)
 {
-    const double mix = params.doMasking ? params.mix : 1.;
-
-    if (params.doMasking && (mix == 0.)) {
+    if (params.doMasking && (params.mix == 0.)) {
         *srcRoI = roi;
         return;
     }
 
     transformRegion(fn, roi, time, params.invert, params.blur, params.isIdentity, srcRoI);
-    expandRoI(roi, srcPar, sx, sy, params.filter, params.doMasking, mix, srcRoI);
+    expandRoI(roi, srcPar, sx, sy, params.filter, params.doMasking, params.mix, srcRoI);
 
     if (rectIsInfinite(*srcRoI)) {
         // An RoI cannot be infinite: fall back to what the source and the project can show.

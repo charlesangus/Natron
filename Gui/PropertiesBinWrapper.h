@@ -30,6 +30,7 @@
 #include "Global/QtCompat.h"
 
 #include <QEnterEvent>
+#include <QPointer>
 
 #include "Gui/PanelWidget.h"
 #include "Gui/GuiFwd.h"

@@ -38,13 +38,15 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QMargins>
+#include <QResizeEvent>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Gui/ColorEditSlider.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/Label.h"
-#include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SpinBox.h"
 
 NATRON_NAMESPACE_ENTER
@@ -240,6 +242,8 @@ struct ColorAdjustPanelPrivate {
 
     ColorAdjustPanel* q;
 
+    int captionWidth;
+
     KnobColorValue value;
     int nDims;
     ColorKnobRoleEnum role;
@@ -249,11 +253,16 @@ struct ColorAdjustPanelPrivate {
     double rememberedHue;
 
     QWidget* editArea;
+    QWidget* linesArea;
+    QWidget* rightColumnWidget;
+    QVBoxLayout* rightColumn;
     QGridLayout* linesLayout;
+    double wheelFraction;
+    bool editable;
     ColorWheelWidget* wheel;
     Label* captions[kLineCount];
     SpinBox* spinBoxes[kLineCount];
-    ScaleSliderQWidget* sliders[kLineCount];
+    ColorEditSlider* customSliders[kLineCount];
 
     SourceEnum source;
     int activeSlider;
@@ -267,6 +276,7 @@ struct ColorAdjustPanelPrivate {
 
     explicit ColorAdjustPanelPrivate(ColorAdjustPanel* publicInterface)
         : q(publicInterface)
+        , captionWidth(0)
         , value(neutralGainValue())
         , nDims(4)
         , role(eColorKnobRoleGain)
@@ -275,7 +285,12 @@ struct ColorAdjustPanelPrivate {
         , rates()
         , rememberedHue(0.0)
         , editArea(nullptr)
+        , linesArea(nullptr)
+        , rightColumnWidget(nullptr)
+        , rightColumn(nullptr)
         , linesLayout(nullptr)
+        , wheelFraction(1. / 3.)
+        , editable(true)
         , wheel(nullptr)
         , source(eSourceNone)
         , activeSlider(-1)
@@ -290,11 +305,21 @@ struct ColorAdjustPanelPrivate {
         for (int i = 0; i < kLineCount; ++i) {
             captions[i] = nullptr;
             spinBoxes[i] = nullptr;
-            sliders[i] = nullptr;
+            customSliders[i] = nullptr;
         }
     }
 
+    bool lineVisible(int i) const
+    {
+        return (kLineKinds[i] == eColorSliderKindValue) || (nDims != 1);
+    }
+
     void buildEditArea();
+    void connectEditArea();
+    void updateWheelSize();
+    int linesMinimumWidth(int trackWidth) const;
+    int shortestTrackWidth() const;
+    int minimumPanelWidth() const;
 
     int sliderIndex(const QObject* s) const;
     int spinBoxIndex(const QObject* s) const;
@@ -303,6 +328,7 @@ struct ColorAdjustPanelPrivate {
     double lineValue(ColorSliderKindEnum kind) const;
     QGradientStops lineGradient(ColorSliderKindEnum kind) const;
     ColorEdit lineEdit(ColorSliderKindEnum kind, double target, const KnobColorValue& from, bool* replaces) const;
+    ColorEdit lineNudge(ColorSliderKindEnum kind, double delta) const;
     void updateRememberedHue();
     void applyRanges();
     void applyDimensions();
@@ -322,67 +348,148 @@ void
 ColorAdjustPanelPrivate::buildEditArea()
 {
     editArea = new QWidget(q);
-
-    QHBoxLayout* layout = new QHBoxLayout(editArea);
-
-    // No horizontal margin: the right inset alone decides where the sliders end, so they line
-    // up with the knob's own sliders above.
-    layout->setContentsMargins(0, (int)TO_DPIY(2.), 0, (int)TO_DPIY(2.));
-    layout->setSpacing((int)TO_DPIX(8.));
-
-    wheel = new ColorWheelWidget(editArea);
-    layout->addWidget(wheel, 0, Qt::AlignTop);
-
-    linesLayout = new QGridLayout();
-    linesLayout->setContentsMargins(0, 0, 0, 0);
-    linesLayout->setHorizontalSpacing((int)TO_DPIX(4.));
-    linesLayout->setVerticalSpacing((int)TO_DPIY(1.));
-    linesLayout->setColumnStretch(2, 1);
+    for (int i = 0; i < kLineCount; ++i) {
+        captions[i] = nullptr;
+        spinBoxes[i] = nullptr;
+        customSliders[i] = nullptr;
+    }
 
     // Sized from the widest caption, so none of them clip at the app's actual font and DPI.
     QFontMetrics captionMetrics(QApplication::font());
-    int captionWidth = 0;
 
+    captionWidth = 0;
     for (int i = 0; i < kLineCount; ++i) {
         captionWidth = std::max(captionWidth, captionMetrics.horizontalAdvance(lineTitle(kLineKinds[i])));
     }
     captionWidth += (int)TO_DPIX(4.);
 
+    QHBoxLayout* areaLayout = new QHBoxLayout(editArea);
+
+    areaLayout->setContentsMargins(0, (int)TO_DPIY(2.), 0, (int)TO_DPIY(2.));
+    areaLayout->setSpacing((int)TO_DPIX(8.));
+
+    wheel = new ColorWheelWidget(editArea);
+    areaLayout->addWidget(wheel, 0, Qt::AlignTop);
+
+    rightColumnWidget = new QWidget(editArea);
+    rightColumn = new QVBoxLayout(rightColumnWidget);
+    rightColumn->setContentsMargins(0, 0, 0, 0);
+    rightColumn->setSpacing((int)TO_DPIY(1.));
+
+    linesArea = new QWidget(rightColumnWidget);
+    linesLayout = new QGridLayout(linesArea);
+    linesLayout->setContentsMargins(0, 0, 0, 0);
+    linesLayout->setHorizontalSpacing((int)TO_DPIX(4.));
+    linesLayout->setVerticalSpacing((int)TO_DPIY(1.));
+    linesLayout->setColumnStretch(2, 1);
+
     for (int i = 0; i < kLineCount; ++i) {
         ColorSliderKindEnum kind = kLineKinds[i];
-        SliderRange range = sliderMapping(kind, role, rates);
         QString objectSuffix = lineTitle(kind);
 
-        Label* caption = new Label(lineTitle(kind), editArea);
+        Label* caption = new Label(lineTitle(kind), linesArea);
 
         caption->setFixedWidth(captionWidth);
         linesLayout->addWidget(caption, i, 0);
 
-        SpinBox* box = new SpinBox(editArea, SpinBox::eSpinBoxTypeDouble);
+        SpinBox* box = new SpinBox(linesArea, SpinBox::eSpinBoxTypeDouble);
 
         box->setObjectName(QString::fromUtf8("ColorAdjustSpinBox") + objectSuffix);
         linesLayout->addWidget(box, i, 1);
 
-        ScaleSliderQWidget* slider = new ScaleSliderQWidget(range.rangeMin, range.rangeMax, range.rangeMin, false,
-                                                            ScaleSliderQWidget::eDataTypeDouble, nullptr, eScaleTypeLinear, editArea);
+        ColorEditSlider* slider = new ColorEditSlider(kind, linesArea);
 
-        slider->setObjectName(QString::fromUtf8("ColorAdjustSlider") + objectSuffix);
-        slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        slider->setObjectName(QString::fromUtf8("ColorAdjustCustomSlider") + objectSuffix);
         linesLayout->addWidget(slider, i, 2);
+        customSliders[i] = slider;
 
         captions[i] = caption;
         spinBoxes[i] = box;
-        sliders[i] = slider;
     }
     linesLayout->setRowStretch(kLineCount, 1);
-    layout->addLayout(linesLayout, 1);
+    rightColumn->addWidget(linesArea);
+    rightColumn->addStretch(1);
+    areaLayout->addWidget(rightColumnWidget, 1);
+}
+
+void
+ColorAdjustPanelPrivate::connectEditArea()
+{
+    QObject::connect(wheel, &ColorWheelWidget::gestureStarted, q, &ColorAdjustPanel::onWheelGestureStarted);
+    QObject::connect(wheel, &ColorWheelWidget::gestureMoved, q, &ColorAdjustPanel::onWheelGestureMoved);
+    QObject::connect(wheel, &ColorWheelWidget::gestureFinished, q, &ColorAdjustPanel::onWheelGestureFinished);
+    for (int i = 0; i < kLineCount; ++i) {
+        ColorEditSlider* c = customSliders[i];
+
+        QObject::connect(c, &ColorEditSlider::gestureStarted, q, &ColorAdjustPanel::onCustomSliderGestureStarted);
+        QObject::connect(c, &ColorEditSlider::gestureMoved, q, &ColorAdjustPanel::onCustomSliderGestureMoved);
+        QObject::connect(c, &ColorEditSlider::gestureFinished, q, &ColorAdjustPanel::onCustomSliderGestureFinished);
+        QObject::connect(c, &ColorEditSlider::resetRequested, q, &ColorAdjustPanel::onSliderResetRequested);
+        QObject::connect(spinBoxes[i], &SpinBox::valueChanged, q, &ColorAdjustPanel::onSpinBoxValueChanged);
+    }
+}
+
+int
+ColorAdjustPanelPrivate::linesMinimumWidth(int trackWidth) const
+{
+    int fieldWidth = 0;
+
+    for (int i = 0; i < kLineCount; ++i) {
+        fieldWidth = std::max(fieldWidth, spinBoxes[i]->minimumWidth());
+    }
+
+    return captionWidth + fieldWidth + 2 * linesLayout->horizontalSpacing() + trackWidth;
+}
+
+int
+ColorAdjustPanelPrivate::shortestTrackWidth() const
+{
+    int trackWidth = 0;
+
+    for (int i = 0; i < kLineCount; ++i) {
+        trackWidth = std::max(trackWidth, customSliders[i]->minimumSizeHint().width());
+    }
+
+    return trackWidth;
+}
+
+// The narrowest the panel can be without the wheel dropping below the lines' height or the
+// lines below their minimum. It does not depend on the wheel's current size, which follows the
+// panel's width.
+int
+ColorAdjustPanelPrivate::minimumPanelWidth() const
+{
+    QHBoxLayout* areaLayout = qobject_cast<QHBoxLayout*>(editArea->layout());
+    const int spacing = areaLayout ? areaLayout->spacing() : 0;
+    const int columnHeight = linesArea->sizeHint().height();
+
+    return std::max(columnHeight, 1) + spacing + linesMinimumWidth(shortestTrackWidth());
+}
+
+// The wheel takes its share of the width, but never less than the lines' height. It also never
+// takes so much that the lines lose their caption, field and shortest track: a minimum width
+// that grew with the panel's own width would hold the panel wider than its parent gives it. When
+// the lines' height and their minimum width do not both fit, minimumSizeHint() reports the width
+// that does, so the parent scrolls rather than squeezing the lines.
+void
+ColorAdjustPanelPrivate::updateWheelSize()
+{
+    QHBoxLayout* areaLayout = qobject_cast<QHBoxLayout*>(editArea->layout());
+    const int width = q->contentsRect().width();
+    const int spacing = areaLayout ? areaLayout->spacing() : 0;
+    const int columnHeight = linesArea->sizeHint().height();
+    int diameter = (int)std::floor(width * wheelFraction + 0.5);
+
+    diameter = std::min(diameter, width - spacing - linesMinimumWidth(shortestTrackWidth()));
+    diameter = std::max(diameter, std::max(columnHeight, 1));
+    wheel->setFixedSize(diameter, diameter);
 }
 
 int
 ColorAdjustPanelPrivate::sliderIndex(const QObject* s) const
 {
     for (int i = 0; i < kLineCount; ++i) {
-        if (sliders[i] == s) {
+        if (customSliders[i] == s) {
             return i;
         }
     }
@@ -563,6 +670,28 @@ ColorAdjustPanelPrivate::lineEdit(ColorSliderKindEnum kind,
     return makeEdit(eColorAxisValue, target, 0.0, true);
 }
 
+// A ColorEditSlider's off-marker drag reports increments in the line's unit, which are the
+// relative form of the same axis, so they accumulate in step() like the wheel's own moves.
+ColorEdit
+ColorAdjustPanelPrivate::lineNudge(ColorSliderKindEnum kind,
+                                   double delta) const
+{
+    switch (kind) {
+    case eColorSliderKindHue:
+        return makeEdit(eColorAxisHue, delta, 0.0, false);
+    case eColorSliderKindSat:
+        return makeEdit(eColorAxisSat, delta, 0.0, false);
+    case eColorSliderKindValue:
+        return makeEdit(eColorAxisValue, delta, 0.0, false);
+    case eColorSliderKindTemp:
+        return makeEdit(eColorAxisTempTint, delta, 0.0, false);
+    case eColorSliderKindTint:
+        return makeEdit(eColorAxisTempTint, 0.0, delta, false);
+    }
+
+    return makeEdit(eColorAxisValue, delta, 0.0, false);
+}
+
 void
 ColorAdjustPanelPrivate::updateRememberedHue()
 {
@@ -579,10 +708,11 @@ ColorAdjustPanelPrivate::applyRanges()
     for (int i = 0; i < kLineCount; ++i) {
         ColorSliderKindEnum kind = kLineKinds[i];
         SliderRange range = sliderMapping(kind, role, rates);
-        QString tip = QObject::tr("%1, in %2. Ctrl drags 10x slower, Shift 4x faster, Ctrl+Shift 100x slower; Alt+click resets.")
+        QString tip = QObject::tr("%1, in %2. Drag the marker to set it, drag elsewhere to nudge: Ctrl 10x slower, Shift 4x faster, Ctrl+Shift 100x slower; double-click resets.")
                           .arg(lineTitle(kind), QString::fromStdString(range.unit));
 
-        sliders[i]->setMinimumAndMaximum(range.rangeMin, range.rangeMax);
+        customSliders[i]->setRole(role);
+        customSliders[i]->setRates(rates);
         spinBoxes[i]->decimals(lineDecimals(kind, role));
         spinBoxes[i]->setIncrement(lineIncrement(kind, range));
 
@@ -596,7 +726,7 @@ ColorAdjustPanelPrivate::applyRanges()
         if (kind == eColorSliderKindSat) {
             spinBoxes[i]->setMinimum(0.0);
         }
-        sliders[i]->setToolTip(tip);
+        customSliders[i]->setToolTip(tip);
         spinBoxes[i]->setToolTip(tip);
         captions[i]->setToolTip(tip);
     }
@@ -609,11 +739,11 @@ ColorAdjustPanelPrivate::applyDimensions()
 
     wheel->setVisible(!single);
     for (int i = 0; i < kLineCount; ++i) {
-        bool visible = (kLineKinds[i] == eColorSliderKindValue) || !single;
+        bool visible = lineVisible(i);
 
         captions[i]->setVisible(visible);
         spinBoxes[i]->setVisible(visible);
-        sliders[i]->setVisible(visible);
+        customSliders[i]->setVisible(visible);
     }
 }
 
@@ -647,7 +777,7 @@ void
 ColorAdjustPanelPrivate::refreshGradients()
 {
     for (int i = 0; i < kLineCount; ++i) {
-        sliders[i]->setTrackGradient(lineGradient(kLineKinds[i]));
+        customSliders[i]->setGradientStops(lineGradient(kLineKinds[i]));
     }
 }
 
@@ -661,7 +791,7 @@ ColorAdjustPanelPrivate::refreshLines(bool skipFocused)
         // The dragged slider keeps its own geared position: re-seeking it to the value derived
         // back from the knob would fight the drag wherever the edit cannot reach its target.
         if (i != activeSlider) {
-            sliders[i]->seekScalePosition(v);
+            customSliders[i]->setValue(v);
         }
         if (!(skipFocused && spinBoxes[i]->hasFocus())) {
             spinBoxes[i]->setValue(roundToDecimals(v, lineDecimals(kind, role)));
@@ -792,18 +922,7 @@ ColorAdjustPanel::ColorAdjustPanel(QWidget* parent)
     layout->setContentsMargins(0, 0, 0, 0);
     _imp->buildEditArea();
     layout->addWidget(_imp->editArea);
-
-    QObject::connect(_imp->wheel, &ColorWheelWidget::gestureStarted, this, &ColorAdjustPanel::onWheelGestureStarted);
-    QObject::connect(_imp->wheel, &ColorWheelWidget::gestureMoved, this, &ColorAdjustPanel::onWheelGestureMoved);
-    QObject::connect(_imp->wheel, &ColorWheelWidget::gestureFinished, this, &ColorAdjustPanel::onWheelGestureFinished);
-    for (int i = 0; i < kLineCount; ++i) {
-        ScaleSliderQWidget* s = _imp->sliders[i];
-
-        QObject::connect(s, &ScaleSliderQWidget::positionChanged, this, &ColorAdjustPanel::onSliderPositionChanged);
-        QObject::connect(s, &ScaleSliderQWidget::editingFinished, this, &ColorAdjustPanel::onSliderEditingFinished);
-        QObject::connect(s, &ScaleSliderQWidget::resetToDefaultRequested, this, &ColorAdjustPanel::onSliderResetRequested);
-        QObject::connect(_imp->spinBoxes[i], &SpinBox::valueChanged, this, &ColorAdjustPanel::onSpinBoxValueChanged);
-    }
+    _imp->connectEditArea();
 
     _imp->wheel->setBasis(_imp->basis);
     _imp->wheel->setRole(_imp->role);
@@ -811,6 +930,7 @@ ColorAdjustPanel::ColorAdjustPanel(QWidget* parent)
     _imp->applyDimensions();
     _imp->updateRememberedHue();
     _imp->refreshAll(false);
+    _imp->updateWheelSize();
 }
 
 ColorAdjustPanel::~ColorAdjustPanel()
@@ -837,6 +957,7 @@ ColorAdjustPanel::setKnobValue(const KnobColorValue& value,
     _imp->role = role;
     _imp->wheel->setRole(role);
     _imp->applyRanges();
+    _imp->updateWheelSize();
     setKnobValue(value);
 }
 
@@ -860,6 +981,7 @@ ColorAdjustPanel::setRole(ColorKnobRoleEnum role)
     _imp->role = role;
     _imp->wheel->setRole(role);
     _imp->applyRanges();
+    _imp->updateWheelSize();
     if (!isEditing()) {
         _imp->updateRememberedHue();
         _imp->refreshAll(true);
@@ -885,10 +1007,51 @@ ColorAdjustPanel::setDisplayConverter(const DisplayConverter& converter)
     _imp->refreshGradients();
 }
 
-void
-ColorAdjustPanel::setRightInset(int pixels)
+QSize
+ColorAdjustPanel::minimumSizeHint() const
 {
-    _imp->linesLayout->setContentsMargins(0, 0, std::max(0, pixels), 0);
+    const QSize hint = QWidget::minimumSizeHint();
+    const QMargins m = contentsMargins();
+
+    return QSize(_imp->minimumPanelWidth() + m.left() + m.right(), hint.height());
+}
+
+void
+ColorAdjustPanel::resizeEvent(QResizeEvent* e)
+{
+    QWidget::resizeEvent(e);
+    _imp->updateWheelSize();
+}
+
+void
+ColorAdjustPanel::setEditable(bool editable)
+{
+    _imp->editable = editable;
+    _imp->wheel->setEnabled(editable);
+    _imp->linesArea->setEnabled(editable);
+}
+
+bool
+ColorAdjustPanel::isEditable() const
+{
+    return _imp->editable;
+}
+
+void
+ColorAdjustPanel::setWheelFraction(double fraction)
+{
+    fraction = std::min(std::max(fraction, 0.), 1.);
+    if (fraction == _imp->wheelFraction) {
+        return;
+    }
+    _imp->wheelFraction = fraction;
+    _imp->updateWheelSize();
+}
+
+double
+ColorAdjustPanel::getWheelFraction() const
+{
+    return _imp->wheelFraction;
 }
 
 const KnobColorValue&
@@ -939,12 +1102,12 @@ ColorAdjustPanel::getWheel() const
     return _imp->wheel;
 }
 
-ScaleSliderQWidget*
-ColorAdjustPanel::getSlider(ColorSliderKindEnum kind) const
+ColorEditSlider*
+ColorAdjustPanel::getCustomSlider(ColorSliderKindEnum kind) const
 {
     for (int i = 0; i < kLineCount; ++i) {
         if (kLineKinds[i] == kind) {
-            return _imp->sliders[i];
+            return _imp->customSliders[i];
         }
     }
 
@@ -989,27 +1152,34 @@ ColorAdjustPanel::onWheelGestureFinished(bool /*moved*/)
 }
 
 void
-ColorAdjustPanel::onSliderPositionChanged(double value)
+ColorAdjustPanel::onCustomSliderGestureStarted()
 {
     int index = _imp->sliderIndex(sender());
 
     if (index < 0) {
         return;
     }
-    if ((_imp->source != ColorAdjustPanelPrivate::eSourceSlider) || (_imp->activeSlider != index)) {
-        _imp->beginGesture(ColorAdjustPanelPrivate::eSourceSlider);
-        _imp->activeSlider = index;
-    }
-
-    ColorSliderKindEnum kind = kLineKinds[index];
-    bool replaces = false;
-    ColorEdit edit = _imp->lineEdit(kind, value, _imp->segmentBase, &replaces);
-
-    _imp->step(edit, replaces, tr("%1 slider").arg(lineUndoName(kind)));
+    _imp->beginGesture(ColorAdjustPanelPrivate::eSourceSlider);
+    _imp->activeSlider = index;
 }
 
 void
-ColorAdjustPanel::onSliderEditingFinished(bool /*hasMovedOnce*/)
+ColorAdjustPanel::onCustomSliderGestureMoved(double value,
+                                             QString axisLabel)
+{
+    int index = _imp->sliderIndex(sender());
+
+    if ((_imp->source != ColorAdjustPanelPrivate::eSourceSlider) || (index < 0) || (index != _imp->activeSlider)) {
+        return;
+    }
+
+    ColorSliderKindEnum kind = kLineKinds[index];
+
+    _imp->step(_imp->lineNudge(kind, value), false, axisLabel);
+}
+
+void
+ColorAdjustPanel::onCustomSliderGestureFinished(bool /*moved*/)
 {
     int index = _imp->sliderIndex(sender());
 

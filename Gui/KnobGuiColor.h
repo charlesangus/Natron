@@ -34,11 +34,13 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QMargins>
 #include <QObject>
 #include <QPointF>
 #include <QPointer>
 #include <QStyledItemDelegate>
 #include <QTextEdit>
+#include <QTimer>
 #include <QToolButton>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -65,23 +67,6 @@ NATRON_NAMESPACE_ENTER
 
 class KnobGuiColor;
 class ColorKnobEditSession;
-
-/**
- * @brief Inserts hud into columnLayout right after afterWidget (the knob's channel-lines
- * widget, when it has one), reparenting hud there; with no afterWidget it goes right after
- * the column's first item, the knob's own row. Detaches hud from wherever it was first, so
- * calling this on an already-attached hud moves it instead of leaving two copies behind.
- *
- * A free function, rather than only a KnobGuiColor member, so the placement rule can be
- * exercised against a stand-in column layout in a test, without a real knob or panel behind it.
- **/
-void attachColorGlobalModeHud(QVBoxLayout* columnLayout, QWidget* afterWidget, QWidget* hud);
-
-/**
- * @brief Removes hud from the layout holding it, if any, hides it and clears its parent so a
- * later attachColorGlobalModeHud() starts clean.
- **/
-void detachColorGlobalModeHud(QWidget* hud);
 
 class ColorPickerLabel
     : public Label
@@ -169,7 +154,22 @@ public:
     bool isAdjustPanelExpanded() const;
     void setAdjustPanelExpanded(bool expanded);
 
+    /**
+     * @brief The sunken block drawn behind the knob's row and its open panel, in the page's
+     * grid; null or hidden while the panel is closed, unless global mode is engaged on the
+     * knob, when it surrounds the row alone. While engaged its outline takes the
+     * selection colour.
+     **/
+    QWidget* getOpenBackdrop() const;
+
+    bool isGlobalModeHighlighted() const;
+
     ColorKnobEditSession* getEditSession();
+
+    /**
+     * @brief The working to display conversion the knob's adjustment panel draws with.
+     **/
+    ColorAdjustPanel::DisplayConverter getDisplayConverter() const;
 
     /**
      * @brief Records this knob as the last one touched on its panel, for the global trackball
@@ -204,19 +204,6 @@ public:
      **/
     QWidget* getGlobalModeColumnWidget() const;
 
-    /**
-     * @brief Moves hud into this knob's below-row column, right after the channel lines and
-     * before the adjust panel, wrapped in the same update guard as setAdjustPanelExpanded() so
-     * the insertion settles without a paint at a stale geometry.
-     **/
-    void attachGlobalModeHud(QWidget* hud);
-
-    /**
-     * @brief Takes hud back out of this knob's below-row column and hides it, under the same
-     * update guard as attachGlobalModeHud().
-     **/
-    void detachGlobalModeHud(QWidget* hud);
-
 public Q_SLOTS:
 
     /**
@@ -244,6 +231,8 @@ public Q_SLOTS:
     void onProjectColorConfigChanged();
 
     void refreshAdjustPanelState();
+
+    void refreshWheelFraction();
 
 Q_SIGNALS:
 
@@ -287,6 +276,9 @@ private:
     void refreshAdjustPanelColorManagement();
     bool isAdjustPanelEditable() const;
     void refreshAdjustPanelToolTip(bool expanded);
+    void refreshOpenBackdrop();
+    void setOpenBlockTagged(bool tagged);
+    void reserveOpenBlockSidePadding();
 
     void updateLabel(double r, double g, double b, double a);
 
@@ -310,6 +302,20 @@ private:
     std::unique_ptr<ColorKnobEditSession> _editSession;
     std::weak_ptr<ProjectColorManagement> _configCallbackOwner;
     int _configCallbackId;
+    // A page grid cell inside the sunken block, with the contents margins it has outside the
+    // block and the ones that pad it inside.
+    struct OpenBlockCell {
+        QPointer<QWidget> widget;
+        QMargins restMargins;
+        QMargins blockMargins;
+    };
+
+    QPointer<QWidget> _openBackdrop;
+    std::vector<OpenBlockCell> _openBlockWidgets;
+    // The label and field cells that keep the block's side padding at all times.
+    QPointer<QWidget> _paddedLabelCell;
+    QPointer<QWidget> _paddedFieldCell;
+    bool _globalModeHighlighted;
 };
 
 NATRON_NAMESPACE_EXIT

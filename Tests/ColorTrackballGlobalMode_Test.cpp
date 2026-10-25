@@ -27,8 +27,13 @@
 
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include <QCursor>
+#include <QGuiApplication>
+#include <QWidget>
 
 #include <gtest/gtest.h>
 
@@ -388,4 +393,211 @@ TEST(ColorTrackballGlobalModeStroke, LongPowerValueStrokeParksAtTheGammaCap)
         previous = r.value.rgb[0];
     }
     EXPECT_NEAR(kPowerGammaMax, previous, 1e-9);
+}
+
+namespace {
+int
+overrideCursorDepth()
+{
+    // Pops everything to count it, then puts the same shapes back in the same order.
+    std::vector<Qt::CursorShape> shapes;
+
+    while (QGuiApplication::overrideCursor()) {
+        shapes.push_back(QGuiApplication::overrideCursor()->shape());
+        QGuiApplication::restoreOverrideCursor();
+    }
+    for (std::size_t i = shapes.size(); i > 0; --i) {
+        QGuiApplication::setOverrideCursor(QCursor(shapes[i - 1]));
+    }
+
+    return (int)shapes.size();
+}
+
+const Settings::ColorTrackballFeedbackEnum kCrosshairReveal = Settings::eColorTrackballFeedbackCrosshairReveal;
+const Settings::ColorTrackballFeedbackEnum kWidgetCursor = Settings::eColorTrackballFeedbackWidgetCursor;
+
+Qt::CursorShape
+topCursor()
+{
+    return QGuiApplication::overrideCursor() ? QGuiApplication::overrideCursor()->shape() : Qt::ArrowCursor;
+}
+
+// What the controller asks of its cursors with the switch's feedback at one moment.
+void
+syncCursors(ColorGlobalModeCursors& cursors,
+            const ColorGlobalModeFeedbackSwitch& sw,
+            bool engaged,
+            bool strokeActive)
+{
+    ColorGlobalModeFeedbackState state = colorGlobalModeFeedbackState(sw.getFeedback(), engaged, strokeActive);
+
+    cursors.sync(state.crosshair, state.blankCursor);
+}
+
+} // namespace
+
+TEST(ColorTrackballGlobalModeFeedback, OnlyCrosshairRevealShowsTheCrosshair)
+{
+    EXPECT_TRUE(colorGlobalModeFeedbackShowsCrosshair(kCrosshairReveal));
+    EXPECT_FALSE(colorGlobalModeFeedbackShowsCrosshair(kWidgetCursor));
+}
+
+TEST(ColorTrackballGlobalModeFeedback, DefaultIsThePreferencesDefault)
+{
+    ColorGlobalModeFeedbackSwitch sw;
+
+    EXPECT_EQ(kCrosshairReveal, sw.getFeedback());
+}
+
+TEST(ColorTrackballGlobalModeFeedback, AChangeOutsideAStrokeAppliesAtOnce)
+{
+    ColorGlobalModeFeedbackSwitch sw;
+
+    EXPECT_TRUE(sw.offer(kWidgetCursor, false));
+    EXPECT_EQ(kWidgetCursor, sw.getFeedback());
+    EXPECT_FALSE(sw.offer(kWidgetCursor, false));
+    EXPECT_FALSE(sw.strokeEnded());
+    EXPECT_TRUE(sw.offer(kCrosshairReveal, false));
+    EXPECT_EQ(kCrosshairReveal, sw.getFeedback());
+}
+
+TEST(ColorTrackballGlobalModeFeedback, AChangeMidStrokeWaitsForTheStrokeToEnd)
+{
+    ColorGlobalModeFeedbackSwitch sw;
+
+    EXPECT_FALSE(sw.offer(kWidgetCursor, true));
+    EXPECT_EQ(kCrosshairReveal, sw.getFeedback());
+    EXPECT_TRUE(sw.strokeEnded());
+    EXPECT_EQ(kWidgetCursor, sw.getFeedback());
+    EXPECT_FALSE(sw.strokeEnded());
+
+    // A value set and then reverted within one stroke leaves nothing to apply at its end.
+    EXPECT_FALSE(sw.offer(kCrosshairReveal, true));
+    EXPECT_FALSE(sw.offer(kWidgetCursor, true));
+    EXPECT_FALSE(sw.strokeEnded());
+    EXPECT_EQ(kWidgetCursor, sw.getFeedback());
+}
+
+TEST(ColorTrackballGlobalModeFeedback, AFlipMidStrokeShowsAfterReleaseAndExitLeavesNoCursor)
+{
+    const int baseline = overrideCursorDepth();
+
+    {
+        ColorGlobalModeFeedbackSwitch sw;
+        ColorGlobalModeCursors cursors;
+
+        // Engage with Crosshair + reveal, press, then flip the preference mid-stroke.
+        syncCursors(cursors, sw, true, false);
+        EXPECT_EQ(Qt::CrossCursor, topCursor());
+        syncCursors(cursors, sw, true, true);
+        EXPECT_FALSE(sw.offer(kWidgetCursor, true));
+        syncCursors(cursors, sw, true, true);
+        EXPECT_EQ(baseline + 2, overrideCursorDepth());
+        EXPECT_EQ(Qt::BlankCursor, topCursor());
+        EXPECT_TRUE(colorGlobalModeFeedbackState(sw.getFeedback(), true, true).crosshair);
+
+        // Release: the widget cursor takes over, with no crosshair under it.
+        EXPECT_TRUE(sw.strokeEnded());
+        syncCursors(cursors, sw, true, false);
+        EXPECT_EQ(baseline + 1, overrideCursorDepth());
+        EXPECT_EQ(Qt::BlankCursor, topCursor());
+        EXPECT_TRUE(colorGlobalModeFeedbackState(sw.getFeedback(), true, false).graphicFollowsPointer);
+
+        // And back the same way.
+        syncCursors(cursors, sw, true, true);
+        EXPECT_FALSE(sw.offer(kCrosshairReveal, true));
+        EXPECT_FALSE(colorGlobalModeFeedbackState(sw.getFeedback(), true, true).crosshair);
+        EXPECT_TRUE(sw.strokeEnded());
+        syncCursors(cursors, sw, true, false);
+        EXPECT_EQ(baseline + 1, overrideCursorDepth());
+        EXPECT_EQ(Qt::CrossCursor, topCursor());
+
+        // Exit.
+        syncCursors(cursors, sw, false, false);
+        EXPECT_EQ(baseline, overrideCursorDepth());
+
+        // Exit mid-stroke with each value.
+        for (Settings::ColorTrackballFeedbackEnum f : { kCrosshairReveal, kWidgetCursor }) {
+            sw.offer(f, false);
+            syncCursors(cursors, sw, true, false);
+            syncCursors(cursors, sw, true, true);
+            syncCursors(cursors, sw, false, false);
+            EXPECT_EQ(baseline, overrideCursorDepth());
+        }
+    }
+    EXPECT_EQ(baseline, overrideCursorDepth());
+}
+
+TEST(ColorTrackballGlobalModeFeedback, CrosshairIsPushedOnceAndRestoredOnce)
+{
+    const int baseline = overrideCursorDepth();
+
+    {
+        ColorGlobalModeOverrideCursor crosshair(Qt::CrossCursor);
+
+        EXPECT_FALSE(crosshair.isHeld());
+        crosshair.setHeld(true);
+        ASSERT_TRUE(QGuiApplication::overrideCursor() != nullptr);
+        EXPECT_EQ(Qt::CrossCursor, QGuiApplication::overrideCursor()->shape());
+        EXPECT_EQ(baseline + 1, overrideCursorDepth());
+
+        // Engage while engaged, then exit followed by a leave for a modal widget.
+        crosshair.setHeld(true);
+        EXPECT_EQ(baseline + 1, overrideCursorDepth());
+        crosshair.setHeld(false);
+        crosshair.setHeld(false);
+        EXPECT_EQ(baseline, overrideCursorDepth());
+
+        // A second engage/exit cycle.
+        crosshair.setHeld(true);
+        EXPECT_EQ(Qt::CrossCursor, QGuiApplication::overrideCursor()->shape());
+        crosshair.setHeld(false);
+        EXPECT_EQ(baseline, overrideCursorDepth());
+
+        // Destroyed while held, as when the Gui goes away mid-session.
+        crosshair.setHeld(true);
+    }
+    EXPECT_EQ(baseline, overrideCursorDepth());
+}
+
+TEST(ColorTrackballGlobalModeRightClick, ReleaseAndContextMenuAreEatenOnce)
+{
+    ColorGlobalModeRightClickTail tail;
+
+    EXPECT_FALSE(tail.isArmed());
+    EXPECT_FALSE(tail.consume(QEvent::ContextMenu, Qt::NoButton));
+    tail.arm();
+    EXPECT_TRUE(tail.isArmed());
+    EXPECT_FALSE(tail.consume(QEvent::MouseMove, Qt::NoButton));
+    EXPECT_FALSE(tail.consume(QEvent::MouseButtonRelease, Qt::LeftButton));
+    EXPECT_TRUE(tail.consume(QEvent::MouseButtonRelease, Qt::RightButton));
+    EXPECT_TRUE(tail.isArmed());
+    EXPECT_FALSE(tail.consume(QEvent::MouseButtonRelease, Qt::RightButton));
+    EXPECT_TRUE(tail.consume(QEvent::ContextMenu, Qt::NoButton));
+    EXPECT_FALSE(tail.isArmed());
+    EXPECT_FALSE(tail.consume(QEvent::ContextMenu, Qt::NoButton));
+}
+
+TEST(ColorTrackballGlobalModeRightClick, MenuMayComeBeforeTheRelease)
+{
+    ColorGlobalModeRightClickTail tail;
+
+    tail.arm();
+    EXPECT_TRUE(tail.consume(QEvent::ContextMenu, Qt::NoButton));
+    EXPECT_TRUE(tail.consume(QEvent::MouseButtonRelease, Qt::RightButton));
+    EXPECT_FALSE(tail.isArmed());
+}
+
+TEST(ColorTrackballGlobalModeRightClick, AnUnrelatedPressOrKeyEndsTheWait)
+{
+    ColorGlobalModeRightClickTail tail;
+
+    tail.arm();
+    EXPECT_FALSE(tail.consume(QEvent::MouseButtonPress, Qt::LeftButton));
+    EXPECT_FALSE(tail.isArmed());
+    EXPECT_FALSE(tail.consume(QEvent::ContextMenu, Qt::NoButton));
+
+    tail.arm();
+    EXPECT_FALSE(tail.consume(QEvent::KeyPress, Qt::NoButton));
+    EXPECT_FALSE(tail.isArmed());
 }

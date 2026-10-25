@@ -51,12 +51,16 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/AppManager.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 
+#include "Gui/ColorAdjustPanel.h"
 #include "Gui/ColorKnobEditSession.h"
 #include "Gui/ColorTrackballHud.h"
+#include "Gui/ColorTrackballReveal.h"
+#include "Gui/ColorWheelWidget.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/FloatingWidget.h"
 #include "Gui/Gui.h"
@@ -100,12 +104,6 @@ neutralValue()
 }
 
 } // namespace
-
-const char*
-colorTrackballTargetPropertyName()
-{
-    return "_natronColorTrackballTarget";
-}
 
 ColorGlobalModeKeyAction
 classifyColorGlobalModeKey(int key,
@@ -233,6 +231,139 @@ takeColorGlobalModeWheelNotches(int* accumulator,
     return notches;
 }
 
+bool
+colorGlobalModeFeedbackShowsCrosshair(Settings::ColorTrackballFeedbackEnum feedback)
+{
+    return feedback == Settings::eColorTrackballFeedbackCrosshairReveal;
+}
+
+bool
+colorGlobalModeFeedbackGraphicIsCursor(Settings::ColorTrackballFeedbackEnum feedback)
+{
+    return feedback == Settings::eColorTrackballFeedbackWidgetCursor;
+}
+
+bool
+colorGlobalModeReturnPointer(const QPoint& target)
+{
+    QCursor::setPos(target);
+
+    return (QCursor::pos() - target).manhattanLength() <= 1;
+}
+
+ColorGlobalModeFeedbackState
+colorGlobalModeFeedbackState(Settings::ColorTrackballFeedbackEnum feedback,
+                             bool engaged,
+                             bool strokeActive)
+{
+    ColorGlobalModeFeedbackState state;
+
+    if (!engaged) {
+        return state;
+    }
+    state.crosshair = colorGlobalModeFeedbackShowsCrosshair(feedback);
+    if (colorGlobalModeFeedbackGraphicIsCursor(feedback)) {
+        state.graphicShown = true;
+        state.graphicFollowsPointer = !strokeActive;
+    } else {
+        state.graphicShown = strokeActive;
+    }
+    state.blankCursor = state.graphicShown;
+    state.hudBlockFollowsPointer = !state.graphicShown;
+
+    return state;
+}
+
+ColorGlobalModeFeedbackSwitch::ColorGlobalModeFeedbackSwitch()
+    : _feedback(Settings::eColorTrackballFeedbackCrosshairReveal)
+    , _pending(false)
+    , _pendingFeedback(Settings::eColorTrackballFeedbackCrosshairReveal)
+{
+}
+
+bool
+ColorGlobalModeFeedbackSwitch::offer(Settings::ColorTrackballFeedbackEnum latest,
+                                     bool strokeActive)
+{
+    _pending = true;
+    _pendingFeedback = latest;
+    if (strokeActive) {
+        return false;
+    }
+
+    return strokeEnded();
+}
+
+bool
+ColorGlobalModeFeedbackSwitch::strokeEnded()
+{
+    if (!_pending) {
+        return false;
+    }
+    _pending = false;
+
+    const bool changed = (_pendingFeedback != _feedback);
+
+    _feedback = _pendingFeedback;
+
+    return changed;
+}
+
+ColorGlobalModeOverrideCursor::ColorGlobalModeOverrideCursor(Qt::CursorShape shape)
+    : _shape(shape)
+    , _held(false)
+{
+}
+
+ColorGlobalModeOverrideCursor::~ColorGlobalModeOverrideCursor()
+{
+    setHeld(false);
+}
+
+void
+ColorGlobalModeOverrideCursor::setHeld(bool held)
+{
+    if (held == _held) {
+        return;
+    }
+    // Without an application there is no stack left to restore.
+    if (!qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+        _held = false;
+
+        return;
+    }
+    _held = held;
+    if (held) {
+        QGuiApplication::setOverrideCursor(QCursor(_shape));
+    } else {
+        QGuiApplication::restoreOverrideCursor();
+    }
+}
+
+ColorGlobalModeCursors::ColorGlobalModeCursors()
+    : _crosshair(Qt::CrossCursor)
+    , _blank(Qt::BlankCursor)
+{
+}
+
+ColorGlobalModeCursors::~ColorGlobalModeCursors()
+{
+    sync(false, false);
+}
+
+void
+ColorGlobalModeCursors::sync(bool crosshair,
+                             bool blank)
+{
+    // Popping always takes the top entry, so the blank cursor comes off before the crosshair
+    // under it changes, and goes back on afterwards.
+    if ((crosshair != _crosshair.isHeld()) && _blank.isHeld()) {
+        _blank.setHeld(false);
+    }
+    _crosshair.setHeld(crosshair);
+    _blank.setHeld(blank);
+}
+
 ColorGlobalModeStroke::ColorGlobalModeStroke()
     : _start(neutralValue())
     , _startHue(0.0)
@@ -335,24 +466,24 @@ isOnAnyScreen(const QPoint& p)
 }
 } // namespace
 
-// Created with no parent: it is homeless until a target attaches it into its own below-row
-// column, and is reparented and moved there whenever the target changes.
-ColorTrackballHud*
-ColorTrackballGlobalMode::ensureHud()
+// Created with no parent, as a window of its own that follows the cursor; deleted with the controller.
+ColorTrackballHudBlock*
+ColorTrackballGlobalMode::ensureHudBlock()
 {
-    if (!_hud) {
-        _hud = new ColorTrackballHud();
-        _hud->hide();
+    if (!_hudBlock) {
+        _hudBlock = new ColorTrackballHudBlock(nullptr, colorTrackballFollowCursorWindowFlags());
+        _hudBlock->setObjectName(QString::fromUtf8("ColorTrackballHudWindow"));
+        _hudBlock->hide();
     }
 
-    return _hud.data();
+    return _hudBlock.data();
 }
 
 void
 ColorTrackballGlobalMode::showChrome()
 {
-    // The HUD's own visibility follows attachGlobalModeHud()/detachGlobalModeHud() on the
-    // target, called from setTarget() and exit(); only the window border is done here.
+    // The HUD's own visibility follows applyFeedback() and exit(); only the window border is
+    // done here.
     if (!_gui) {
         return;
     }
@@ -376,76 +507,37 @@ ColorTrackballGlobalMode::hideChrome()
     _highlightFrames.clear();
 }
 
-void
-ColorTrackballGlobalMode::refreshTargetPosition()
+ColorTrackballHudState
+ColorTrackballGlobalMode::hudState() const
 {
-    getTargetPosition(&_targetPosition, &_targetCount);
-}
-
-// Everything the HUD shows beyond what the controller's own getters already carry: the node
-// and knob labels, and the mode's own chroma readout, read off the live value through the
-// target's own role and basis so the HUD never has to know either.
-void
-ColorTrackballGlobalMode::updateHud()
-{
-    if (!_hud || !_engaged) {
-        return;
-    }
-
     ColorTrackballHudState state;
     KnobGuiColor* target = getTarget();
+    KnobIPtr knob = target ? target->getKnob() : KnobIPtr();
 
-    if (target) {
-        DockablePanel* panel = dynamic_cast<DockablePanel*>(target->getContainer());
-        NodeSettingsPanel* nodePanel = dynamic_cast<NodeSettingsPanel*>(panel);
-        NodeGuiPtr nodeGui = nodePanel ? nodePanel->getNode() : NodeGuiPtr();
-        NodePtr node = nodeGui ? nodeGui->getNode() : NodePtr();
-        KnobIPtr knob = target->getKnob();
-
-        state.nodeLabel = node ? QString::fromUtf8(node->getLabel().c_str()) : QString();
-        state.knobLabel = knob ? QString::fromUtf8(knob->getLabel().c_str()) : QString();
-        // Mid-stroke only the value moves; the knob list scan waits for the stroke to end.
-        if (!_strokeActive) {
-            refreshTargetPosition();
-        }
-        state.knobIndex = _targetPosition;
-        state.knobCount = _targetCount;
-        state.value = getLiveValue();
-
-        const ColorKnobRoleEnum role = _strokeActive ? _strokeRole : target->getColorRole();
-        const LumaBasis basis = _strokeActive ? _strokeBasis : target->getEditBasis();
-
-        state.role = role;
-        state.luma = luma(basis, state.value.rgb);
-        switch (_mode) {
-        case eColorGlobalModeC:
-        case eColorGlobalModeS: {
-            const PlanePoint p = toPlane(role, basis, state.value);
-
-            state.chromaValid = p.valid;
-            state.hueDegrees = planeHue(p);
-            state.saturation = planeSaturation(p);
-            break;
-        }
-        case eColorGlobalModeT: {
-            const TempTintResult tt = toTempTint(role, basis, state.value);
-
-            state.chromaValid = tt.valid;
-            state.temp = tt.temp;
-            state.tint = tt.tint;
-            break;
-        }
-        case eColorGlobalModeV:
-            break;
-        }
-    }
-
+    state.knobLabel = knob ? QString::fromUtf8(knob->getLabel().c_str()) : QString();
     state.mode = _mode;
     state.gear = _gear;
     state.endOfListMessage = _endOfListMessage;
 
-    _hud->setState(state);
-} // ColorTrackballGlobalMode::updateHud
+    return state;
+}
+
+void
+ColorTrackballGlobalMode::updateHud()
+{
+    if (!_engaged) {
+        return;
+    }
+
+    const ColorTrackballHudState state = hudState();
+
+    if (_hudBlock) {
+        _hudBlock->setState(state);
+    }
+    if (_reveal) {
+        _reveal->setHudState(state);
+    }
+}
 
 ColorTrackballGlobalMode*
 ColorTrackballGlobalMode::instanceFor(Gui* gui)
@@ -478,6 +570,38 @@ ColorTrackballGlobalMode::instanceFor(Gui* gui)
     return controller;
 }
 
+bool
+ColorGlobalModeRightClickTail::consume(QEvent::Type type,
+                                       Qt::MouseButton button)
+{
+    switch (type) {
+    case QEvent::MouseButtonRelease:
+        if (_release && (button == Qt::RightButton)) {
+            _release = false;
+
+            return true;
+        }
+        break;
+    case QEvent::ContextMenu:
+        if (_menu) {
+            _menu = false;
+
+            return true;
+        }
+        break;
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::KeyPress:
+        _release = false;
+        _menu = false;
+        break;
+    default:
+        break;
+    }
+
+    return false;
+}
+
 ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
     : QObject(0)
     , _gui(gui)
@@ -504,12 +628,19 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
     , _grabbed()
     , _wheelAccumulator(0)
     , _swallowedKeys()
+    , _rightClickTail()
     , _passThrough()
-    , _hud()
+    , _feedback()
+    , _cursors()
+    , _pointerPos()
+    , _strokeStartPos()
+    , _hudBlock()
+    , _reveal()
+    , _revealFollowing(false)
+    , _revealKnob(0)
+    , _revealRole(eColorKnobRoleGain)
     , _highlightFrames()
     , _endOfListMessage()
-    , _targetPosition(0)
-    , _targetCount(0)
 {
     // Driven by the signals rather than called from each place that emits them, so every
     // emitter keeps the HUD and the highlight frames current without knowing about them.
@@ -522,7 +653,17 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
     });
     QObject::connect(this, &ColorTrackballGlobalMode::stateChanged, this, [this]() {
         updateHud();
+        syncReveal();
     });
+    SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
+
+    if (settings) {
+        QObject::connect(settings.get(), &Settings::settingChanged, this, [this](KnobI*) {
+            if (offerFeedbackSetting()) {
+                applyFeedback();
+            }
+        });
+    }
     QObject::connect(this, &ColorTrackballGlobalMode::knobListEndReached, this, [this](int direction) {
         _endOfListMessage = (direction < 0) ? tr("First colour knob.") : tr("Last colour knob.");
         updateHud();
@@ -535,14 +676,15 @@ ColorTrackballGlobalMode::~ColorTrackballGlobalMode()
     // filter is removed, nothing is pushed or repainted.
     QCoreApplication* app = QCoreApplication::instance();
 
-    if (_engaged && app) {
+    if ((_engaged || _rightClickTail.isArmed()) && app) {
         app->removeEventFilter(this);
     }
     for (std::size_t i = 0; i < _targetConnections.size(); ++i) {
         QObject::disconnect(_targetConnections[i]);
     }
     hideChrome();
-    delete _hud.data();
+    delete _hudBlock.data();
+    delete _reveal.data();
 }
 
 KnobGuiColor*
@@ -693,15 +835,8 @@ ColorTrackballGlobalMode::onTargetGone()
 void
 ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
 {
-    // Taken off the outgoing target before clearTarget() lets go of it; the touched knob
-    // itself is left exactly as the switch leaves it, open and unfolded, with nothing restored.
-    KnobGuiColor* previousTarget = getTarget();
-    ColorTrackballHud* hud = ensureHud();
-
-    if (previousTarget && hud) {
-        previousTarget->detachGlobalModeHud(hud);
-    }
-
+    // The outgoing knob is left exactly as the switch leaves it, open and unfolded, with
+    // nothing restored.
     clearTarget();
     // A successful switch reaches a real knob, so whatever end-of-list message the previous
     // step may have left standing no longer describes the HUD's new target.
@@ -744,9 +879,6 @@ ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
     // or closes it back up, so working across several knobs in one session leaves every one of
     // them open afterwards instead of needing to be reopened.
     target->setAdjustPanelExpanded(true);
-    if (hud) {
-        target->attachGlobalModeHud(hud);
-    }
     target->touchColorKnob();
     revealTarget();
 }
@@ -810,9 +942,15 @@ ColorTrackballGlobalMode::engage(const KnobGuiColorPtr& target)
     }
 
     endStroke();
+    if (!_engaged) {
+        offerFeedbackSetting();
+    }
     setTarget(target);
     if (!_engaged) {
+        setMode(eColorGlobalModeC);
         _engaged = true;
+        _pointerPos = QCursor::pos();
+        applyFeedback();
         _heldButtons = Qt::NoButton;
         _wheelAccumulator = 0;
         _swallowedKeys.clear();
@@ -840,12 +978,10 @@ ColorTrackballGlobalMode::exit()
     _heldButtons = Qt::NoButton;
     _engaged = false;
 
-    // The touched knob is left open and unfolded, exactly as the user left it; only the HUD
-    // itself comes back out.
-    KnobGuiColor* target = getTarget();
-
-    if (target && _hud) {
-        target->detachGlobalModeHud(_hud.data());
+    // The touched knob is left open and unfolded, exactly as the user left it; only the hints
+    // go away.
+    if (_hudBlock) {
+        _hudBlock->hide();
     }
 
     QCoreApplication* app = QCoreApplication::instance();
@@ -854,6 +990,7 @@ ColorTrackballGlobalMode::exit()
         app->removeEventFilter(this);
     }
     clearTarget();
+    applyFeedback();
     Q_EMIT engagedChanged(false);
     Q_EMIT stateChanged();
 }
@@ -1048,6 +1185,9 @@ ColorTrackballGlobalMode::endStroke()
     if (target) {
         target->getEditSession()->end(_strokeValue, tr("Global %1").arg(colorGlobalModeKeyName(_strokeMode)));
     }
+    if (_feedback.strokeEnded()) {
+        applyFeedback();
+    }
     Q_EMIT stateChanged();
 }
 
@@ -1062,6 +1202,118 @@ ColorTrackballGlobalMode::endStrokeWithoutRelease()
     _heldButtons = Qt::NoButton;
     endStroke();
     releaseStrokeGrab();
+}
+
+// Offers the feedback preference to the switch. True when the feedback in effect changed.
+bool
+ColorTrackballGlobalMode::offerFeedbackSetting()
+{
+    SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
+
+    if (!settings) {
+        return false;
+    }
+
+    return _feedback.offer(settings->getColorTrackballFeedback(), _strokeActive);
+}
+
+// Brings the cursor, the graphic and the hints in line with the feedback in effect; every
+// path in and out of the mode ends here, which is what keeps the override cursor stack
+// balanced.
+void
+ColorTrackballGlobalMode::applyFeedback()
+{
+    syncReveal();
+}
+
+// Created with no parent, as a window of its own; deleted with the controller.
+ColorTrackballReveal*
+ColorTrackballGlobalMode::ensureReveal()
+{
+    if (!_reveal) {
+        _reveal = new ColorTrackballReveal();
+        _reveal->hide();
+    }
+
+    return _reveal.data();
+}
+
+// Brings the override cursors and the mode graphic in line with the feedback, the engaged and
+// stroke state, the mode and the live value. Runs on every stateChanged and from
+// applyFeedback(), so the stroke's start and end and every exit path pass through it.
+void
+ColorTrackballGlobalMode::syncReveal()
+{
+    const ColorGlobalModeFeedbackState state = colorGlobalModeFeedbackState(_feedback.getFeedback(), _engaged, _strokeActive);
+    KnobGuiColor* target = getTarget();
+
+    _cursors.sync(state.crosshair, state.blankCursor);
+    syncHudBlock(state);
+    if (!state.graphicShown || !target) {
+        if (_reveal) {
+            _reveal->hide();
+        }
+        _revealFollowing = false;
+        if (!_engaged) {
+            // The next engage re-reads the knob, in case its colour management changed.
+            _revealKnob = 0;
+        }
+
+        return;
+    }
+
+    ColorTrackballReveal* reveal = ensureReveal();
+    const ColorKnobRoleEnum role = target->getColorRole();
+
+    if ((_revealKnob != target) || (_revealRole != role)) {
+        reveal->setKnob(role, target->getEditBasis(), target->getDisplayConverter(), _rates.wheelRim);
+        _revealKnob = target;
+        _revealRole = role;
+    }
+    reveal->setMode(_strokeActive ? _strokeMode : _mode);
+    reveal->setHudState(hudState());
+    if (_strokeActive) {
+        reveal->setStroke(_stroke.getStart(), _strokeValue, _stroke.getTotalDx(), _stroke.getTotalDy(), _rates);
+    } else {
+        const KnobColorValue value = target->getCurrentColorValue();
+
+        reveal->setStroke(value, value, 0.0, 0.0, _rates);
+    }
+
+    // Placed on the press point when a stroke brings it up, and on the pointer whenever it
+    // starts following; frozen in between.
+    const bool wasShown = reveal->isVisible();
+
+    if (!wasShown || (state.graphicFollowsPointer && !_revealFollowing)) {
+        reveal->centreOn(_pointerPos);
+    }
+    _revealFollowing = state.graphicFollowsPointer;
+    if (!wasShown) {
+        reveal->show();
+        reveal->raise();
+    }
+}
+
+// The hint block's own window, by the pointer while engaged with no graphic up.
+void
+ColorTrackballGlobalMode::syncHudBlock(const ColorGlobalModeFeedbackState& state)
+{
+    if (!state.hudBlockFollowsPointer) {
+        if (_hudBlock) {
+            _hudBlock->hide();
+        }
+
+        return;
+    }
+
+    ColorTrackballHudBlock* block = ensureHudBlock();
+
+    block->setState(hudState());
+    block->followCursorTo(QCursor::pos());
+    if (!block->isVisible()) {
+        block->show();
+        block->raise();
+    }
 }
 
 bool
@@ -1097,11 +1349,23 @@ ColorTrackballGlobalMode::handleMousePress(QObject* watched,
 {
     const bool first = (_heldButtons == Qt::NoButton);
 
+    if (first && (e->button() == Qt::RightButton)) {
+        _rightClickTail.arm();
+        exit();
+        // exit() removed the filter; it stays until the click's release and menu request are eaten.
+        if (QCoreApplication* app = QCoreApplication::instance()) {
+            app->installEventFilter(this);
+        }
+
+        return true;
+    }
     _heldButtons |= e->button();
     if (!first) {
         return true;
     }
     _lastPos = eventGlobalPosition(watched, e);
+    _pointerPos = _lastPos.toPoint();
+    _strokeStartPos = _pointerPos;
     _warpPending = false;
     setGear(gear(e->modifiers().testFlag(Qt::ControlModifier), e->modifiers().testFlag(Qt::ShiftModifier)));
     grabForStroke();
@@ -1114,6 +1378,22 @@ bool
 ColorTrackballGlobalMode::handleMouseMove(QObject* watched,
                                           QMouseEvent* e)
 {
+    const QPoint pos = eventGlobalPosition(watched, e).toPoint();
+
+    if (_warpPending && (_heldButtons == Qt::NoButton) && e->spontaneous()) {
+        // Moves queued before the release's warp back still carry the drag's end.
+        if (((pos - _warpTarget).manhattanLength() > 2) && (++_warpSkips < kMaxWarpSkips)) {
+            return true;
+        }
+        _warpPending = false;
+    }
+    _pointerPos = pos;
+    if (_hudBlock && _hudBlock->isVisible()) {
+        _hudBlock->followCursorTo(_pointerPos);
+    }
+    if (_reveal && _revealFollowing && _reveal->isVisible()) {
+        _reveal->centreOn(_pointerPos);
+    }
     if (_heldButtons == Qt::NoButton) {
         // Buttons held since before the mode was engaged belong to a drag some widget started;
         // it must still see the rest of it, or it is left stuck mid-drag.
@@ -1138,8 +1418,25 @@ ColorTrackballGlobalMode::handleMouseRelease(QMouseEvent* e)
     }
     _heldButtons &= ~e->button();
     if (_heldButtons == Qt::NoButton) {
+        const bool stroked = _strokeActive;
+
         endStroke();
         releaseStrokeGrab();
+        // The pointer goes back to where the stroke began, so the next stroke starts on the
+        // graphic it just used. Where the platform refuses (Wayland) it stays where it is.
+        if (stroked && (QCursor::pos() != _strokeStartPos) && colorGlobalModeReturnPointer(_strokeStartPos)) {
+            _pointerPos = _strokeStartPos;
+            _lastPos = QPointF(_strokeStartPos);
+            _warpPending = true;
+            _warpTarget = _strokeStartPos;
+            _warpSkips = 0;
+            if (_reveal && _revealFollowing && _reveal->isVisible()) {
+                _reveal->centreOn(_pointerPos);
+            }
+            if (_hudBlock && _hudBlock->isVisible()) {
+                _hudBlock->followCursorTo(_pointerPos);
+            }
+        }
     }
 
     return true;
@@ -1285,6 +1582,20 @@ ColorTrackballGlobalMode::eventFilter(QObject* watched,
                                       QEvent* event)
 {
     if (!_engaged) {
+        if (_rightClickTail.isArmed()) {
+            const Qt::MouseButton button = (event->type() == QEvent::MouseButtonRelease) ? static_cast<QMouseEvent*>(event)->button() : Qt::NoButton;
+            const bool eaten = _rightClickTail.consume(event->type(), button);
+
+            if (!_rightClickTail.isArmed()) {
+                if (QCoreApplication* app = QCoreApplication::instance()) {
+                    app->removeEventFilter(this);
+                }
+            }
+            if (eaten) {
+                return true;
+            }
+        }
+
         return QObject::eventFilter(watched, event);
     }
 

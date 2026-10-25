@@ -825,6 +825,8 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
 
         ret->setEnabledSlot();
 
+        QWidget* fullWidthRow = 0;
+
         // Must add the row to the layout before calling setSecret()
         if (makeNewLine) {
             int rowIndex;
@@ -835,7 +837,12 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
                 if ( children.empty() ) {
                     rowIndex = parentGui->getActualIndexInLayout();
                 } else {
-                    rowIndex = children.back().lock()->getActualIndexInLayout();
+                    KnobGuiPtr previous = children.back().lock();
+
+                    rowIndex = previous->getActualIndexInLayout();
+                    if (previous->getFullWidthRowWidget()) {
+                        ++rowIndex;
+                    }
                 }
                 ++rowIndex;
             } else {
@@ -874,6 +881,11 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
                 }
             }
 
+            fullWidthRow = ret->getFullWidthRowWidget();
+            if (fullWidthRow) {
+                layout->addWidget(fullWidthRow, rowIndex + 1, 0, 1, 2);
+            }
+
             workAroundGridLayoutBug(layout);
         } // makeNewLine
 
@@ -886,6 +898,9 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
 
         ///increment the row count
         ++page->currentRow;
+        if (fullWidthRow) {
+            ++page->currentRow;
+        }
 
         if (parentIsGroup && parentGui) {
             parentGui->addKnob(ret);

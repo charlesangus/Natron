@@ -42,13 +42,16 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ColorWheelWidget.h"
 #include "Gui/GuiFwd.h"
 
+class QResizeEvent;
+
 NATRON_NAMESPACE_ENTER
 
+class ColorEditSlider;
 struct ColorAdjustPanelPrivate;
 
 /**
  * @brief The colour knob's adjustment panel: the trackball wheel beside one line each for Hue,
- * Sat, Value, Temp and Tint, every line a caption, a SpinBox and a ScaleSliderQWidget. It
+ * Sat, Value, Temp and Tint, every line a caption, a SpinBox and a ColorEditSlider. It
  * knows nothing about knobs: the owner feeds it a value, a dimension count, a role and a basis,
  * and turns valuesEdited into knob changes and undo steps.
  *
@@ -60,7 +63,8 @@ struct ColorAdjustPanelPrivate;
  * the wheel re-centres on the new value at End.
  *
  * A slider reports absolute targets in its line's unit (degrees, plane distance, stops or Y,
- * mired, tint or the Offset axes); a spinbox commit is a one-shot absolute edit.
+ * mired, tint or the Offset axes), except an off-marker drag, which nudges by increments in
+ * that unit; a spinbox commit is a one-shot absolute edit.
  **/
 class ColorAdjustPanel
     : public QWidget {
@@ -101,12 +105,6 @@ public:
      **/
     void setDisplayConverter(const DisplayConverter& converter);
 
-    /**
-     * @brief Leaves this many pixels free right of the sliders, so they end at the same x as
-     * the knob's own sliders, which stop short of the row's buttons.
-     **/
-    void setRightInset(int pixels);
-
     const KnobColorValue& getValue() const;
     int getDimensions() const;
     ColorKnobRoleEnum getRole() const;
@@ -120,28 +118,54 @@ public:
     bool isEditing() const;
 
     /**
-     * @brief Everything that edits: the wheel and every line. The owner disables it while the
-     * knob cannot take the panel's edits.
+     * @brief The widget holding the wheel and every line.
      **/
     QWidget* getEditArea() const;
-    ColorWheelWidget* getWheel() const;
 
-    ScaleSliderQWidget* getSlider(ColorSliderKindEnum kind) const;
+    /**
+     * @brief Enables the wheel and the panel's lines. The owner turns it off while the knob
+     * cannot take the panel's edits.
+     **/
+    void setEditable(bool editable);
+    bool isEditable() const;
+
+    /**
+     * @brief The share of the panel's width the wheel takes, flush left; the lines take the
+     * rest. The wheel is never shorter than the column of lines beside it. Defaults to 1/3.
+     **/
+    void setWheelFraction(double fraction);
+    double getWheelFraction() const;
+
+    ColorWheelWidget* getWheel() const;
+    ColorEditSlider* getCustomSlider(ColorSliderKindEnum kind) const;
     SpinBox* getSpinBox(ColorSliderKindEnum kind) const;
+
+    /**
+     * @brief The width at which the wheel is still as tall as the lines and the lines still have
+     * their minimum width, whatever width the panel has now.
+     **/
+    virtual QSize minimumSizeHint() const OVERRIDE;
 
 Q_SIGNALS:
     void valuesEdited(KnobColorValue value, ColorAdjustPanel::GesturePhaseEnum phase, QString undoLabel);
+
+protected:
+    virtual void resizeEvent(QResizeEvent* e) OVERRIDE;
 
 private Q_SLOTS:
     void onWheelGestureStarted();
     void onWheelGestureMoved(ColorEdit edit, QString axisLabel);
     void onWheelGestureFinished(bool moved);
-    void onSliderPositionChanged(double value);
-    void onSliderEditingFinished(bool hasMovedOnce);
     void onSliderResetRequested();
+    void onCustomSliderGestureStarted();
+    void onCustomSliderGestureMoved(double value, QString axisLabel);
+    void onCustomSliderGestureFinished(bool moved);
     void onSpinBoxValueChanged(double value);
 
 private:
+    // It wires the edit area to the slots above.
+    friend struct ColorAdjustPanelPrivate;
+
     std::unique_ptr<ColorAdjustPanelPrivate> _imp;
 };
 

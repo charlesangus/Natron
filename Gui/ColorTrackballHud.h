@@ -30,8 +30,14 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QColor>
+#include <QPoint>
 #include <QPointer>
+#include <QRect>
+#include <QRegion>
+#include <QSize>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -39,7 +45,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/ColorWheelMath.h"
 
 class QEvent;
-class QLabel;
 class QPaintEvent;
 
 NATRON_NAMESPACE_ENTER
@@ -50,69 +55,116 @@ NATRON_NAMESPACE_ENTER
 QString colorGlobalModeKeyName(ColorGlobalModeEnum mode);
 
 /**
- * @brief Everything one moment of the global trackball mode HUD needs to show, gathered by the
- * controller so the widget itself needs no reference to the knob, the node, or the basis the
- * readouts were computed from.
+ * @brief The flags of the trackball's windows that follow or sit by the pointer: a frameless
+ * tool window on top of everything that never takes focus or input.
+ **/
+Qt::WindowFlags colorTrackballFollowCursorWindowFlags();
+
+/**
+ * @brief What the global trackball mode's hint block shows, gathered by the controller so the
+ * widget needs no reference to the knob or the node.
  **/
 struct ColorTrackballHudState {
-    QString nodeLabel;
     QString knobLabel;
-    int knobIndex = 0;
-    int knobCount = 0;
     ColorGlobalModeEnum mode = eColorGlobalModeC;
-    /// Offset's temp and tint are plane-axis offsets, not mired and Duv, and read in their units.
-    ColorKnobRoleEnum role = eColorKnobRoleGain;
-    KnobColorValue value {};
-    double luma = 0.0;
     double gear = 1.0;
-    /// False when the mode's own chroma readout (hue/sat for C, temp/tint for T) could not be
-    /// computed, e.g. a frozen ratio role; V has no chroma readout and is always true.
-    bool chromaValid = true;
-    double hueDegrees = 0.0;
-    double saturation = 0.0;
-    double temp = 0.0;
-    double tint = 0.0;
     /// "First colour knob." / "Last colour knob.", or empty.
     QString endOfListMessage;
 };
 
 /**
- * @brief The global trackball mode's own readout, inserted into the target knob's own column
- * in the properties bin, under its channel lines, so it scrolls with the knob: the node and
- * knob (n/N), the mode
- * and what its x and y axes do, the live values (hue/saturation, temp/tint or just the value,
- * depending on the mode), Y, A, the gear, the key legend (C, S, T, V, Esc/Enter, Ctrl+up/down)
- * with the active mode key lit, and an end-of-list message once a knob switch hits either end
- * of the panel's colour knobs.
- *
- * The widget knows nothing about the controller, the knob, or the Gui it lives in: setState()
- * is the only way data reaches it, which is what lets it be exercised in isolation.
+ * @brief Which of the block's gear hints gear() gives for what is held: 0 for Ctrl, 1 for
+ * Shift, 2 for Ctrl+Shift, -1 for none.
  **/
-class ColorTrackballHud
+int colorTrackballHudLitGear(double gear);
+
+/**
+ * @brief Where a window of hudSize following the pointer at cursor goes: offset below and to
+ * the right of it, or on the other side of it on any axis where that would leave screen, and in
+ * any case kept on screen. An empty screen leaves just the offset applied.
+ **/
+QPoint colorTrackballHudFollowPosition(const QPoint& cursor, const QSize& hudSize, const QRect& screen, const QPoint& offset);
+
+/**
+ * @brief Fill and edge of the trackball's pills and hint block. Opaque, since nothing paints
+ * behind a frameless window without a compositor.
+ **/
+QColor colorTrackballHudFill();
+QColor colorTrackballHudEdge();
+
+/**
+ * @brief A window mask covering a rounded rect, and the hint block's corner radius.
+ **/
+QRegion colorTrackballRoundedRegion(const QRect& rect, double radius);
+double colorTrackballHudBlockRadius();
+
+/**
+ * @brief One direction label outside the trackball reveal's ring, such as "+Hue": a small
+ * dark rounded pill sized to its text.
+ **/
+class ColorTrackballPill
     : public QWidget {
-    GCC_DIAG_SUGGEST_OVERRIDE_OFF
-    Q_OBJECT
-    GCC_DIAG_SUGGEST_OVERRIDE_ON
-
 public:
-    explicit ColorTrackballHud(QWidget* parent = 0);
+    explicit ColorTrackballPill(QWidget* parent = nullptr);
+    virtual ~ColorTrackballPill() OVERRIDE;
 
-    virtual ~ColorTrackballHud() OVERRIDE;
+    void setText(const QString& text);
+    QString text() const { return _text; }
 
-    void setState(const ColorTrackballHudState& state);
+    virtual QSize sizeHint() const OVERRIDE FINAL;
+
+protected:
+    virtual void paintEvent(QPaintEvent* e) OVERRIDE FINAL;
 
 private:
-    static QString modeAxesDescription(ColorGlobalModeEnum mode);
-    static void setLegendLit(QLabel* label, bool lit);
+    QString _text;
+};
 
-    QLabel* _targetLabel;
-    QLabel* _modeLabel;
-    QLabel* _valuesLabel;
-    QLabel* _legendC;
-    QLabel* _legendS;
-    QLabel* _legendT;
-    QLabel* _legendV;
-    QLabel* _endOfListLabel;
+/**
+ * @brief The global trackball mode's hint block: the knob's name, the C, S, T and V keys with
+ * the active one filled in the selection colour, the gear hints with the held one lit, the
+ * accept and knob-switch keys, a line on how C works in C, and the end-of-list message when
+ * set. It sits under the reveal's disc, or, in a window of its own made with
+ * colorTrackballFollowCursorWindowFlags(), by the pointer while no disc is shown.
+ *
+ * setState() is the only way data reaches it, which is what lets it be exercised in isolation.
+ **/
+class ColorTrackballHudBlock
+    : public QWidget {
+public:
+    explicit ColorTrackballHudBlock(QWidget* parent = nullptr, Qt::WindowFlags flags = Qt::WindowFlags());
+    virtual ~ColorTrackballHudBlock() OVERRIDE;
+
+    void setState(const ColorTrackballHudState& state);
+    const ColorTrackballHudState& getState() const { return _state; }
+
+    /**
+     * @brief The block's lines of text top to bottom, the key caps as "C S T V".
+     **/
+    QStringList lines() const;
+
+    /**
+     * @brief The lit mode key and gear hint (see colorTrackballHudLitGear).
+     **/
+    ColorGlobalModeEnum litKey() const { return _state.mode; }
+    int litGear() const;
+
+    /**
+     * @brief As a window of its own, places it by the pointer at globalCursor, by
+     * colorTrackballHudFollowPosition() on the screen holding it, and again by the same pointer
+     * whenever a new state resizes it.
+     **/
+    void followCursorTo(const QPoint& globalCursor);
+
+    virtual QSize sizeHint() const OVERRIDE FINAL;
+
+protected:
+    virtual void paintEvent(QPaintEvent* e) OVERRIDE FINAL;
+
+private:
+    ColorTrackballHudState _state;
+    QPoint _cursor;
+    bool _followsCursor;
 };
 
 /**

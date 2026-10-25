@@ -56,6 +56,18 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
+    enum ColorTrackballFeedbackEnum {
+        eColorTrackballFeedbackCrosshairReveal = 0,
+        eColorTrackballFeedbackWidgetCursor
+    };
+
+    enum ColorTrackballWheelWidthEnum {
+        eColorTrackballWheelWidthHalf = 0,
+        eColorTrackballWheelWidthThird,
+        eColorTrackballWheelWidthQuarter,
+        eColorTrackballWheelWidthFifth
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -245,6 +257,15 @@ public:
 #endif
 
     bool useCursorPositionIncrements() const;
+
+    ColorTrackballFeedbackEnum getColorTrackballFeedback() const;
+
+    ColorTrackballWheelWidthEnum getColorTrackballWheelWidth() const;
+
+    /**
+     * @brief The share of the adjust panel's width the colour wheel takes: 1/2, 1/3, 1/4 or 1/5.
+     **/
+    double getColorTrackballWheelFraction() const;
 
     bool isAutoProjectFormatEnabled() const;
 
@@ -498,6 +519,8 @@ private:
     KnobBoolPtr _renderOnEditingFinished;
     KnobIntPtr _maxPanelsOpened;
     KnobBoolPtr _useCursorPositionIncrements;
+    KnobChoicePtr _colorTrackballFeedback;
+    KnobChoicePtr _colorTrackballWheelWidth;
     KnobFilePtr _defaultLayoutFile;
 #ifdef Q_OS_WIN
     KnobBoolPtr _enableConsoleWindow;

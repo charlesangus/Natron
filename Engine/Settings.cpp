@@ -639,6 +639,47 @@ Settings::initializeKnobsUserInterface()
                                                      "Shift (x10) or Control (/10) while incrementing.") );
     _uiPage->addKnob(_useCursorPositionIncrements);
 
+    _colorTrackballFeedback = AppManager::createKnob<KnobChoice>(this, tr("Color trackball feedback"));
+    _colorTrackballFeedback->setName("colorTrackballFeedback");
+    {
+        std::vector<ChoiceOption> entries;
+        assert(entries.size() == (int)eColorTrackballFeedbackCrosshairReveal);
+        entries.push_back(ChoiceOption("crosshairReveal",
+                                       tr("Crosshair + reveal").toStdString(),
+                                       tr("Show a crosshair cursor with a following HUD, and reveal the mode's graphic at the press point.").toStdString()));
+        assert(entries.size() == (int)eColorTrackballFeedbackWidgetCursor);
+        entries.push_back(ChoiceOption("widgetCursor",
+                                       tr("Widget cursor").toStdString(),
+                                       tr("Replace the cursor with the mode's widget, which follows the pointer and freezes on press.").toStdString()));
+        _colorTrackballFeedback->populateChoices(entries);
+    }
+    _colorTrackballFeedback->setHintToolTip(tr("How the color trackball shows what a drag will do. \n"
+                                               "Crosshair + reveal shows a crosshair cursor with a following HUD and reveals the "
+                                               "mode's graphic at the press point. \n"
+                                               "Widget cursor replaces the cursor with the mode's widget, which follows the pointer "
+                                               "and freezes on press."));
+    _uiPage->addKnob(_colorTrackballFeedback);
+
+    _colorTrackballWheelWidth = AppManager::createKnob<KnobChoice>(this, tr("Color trackball wheel width"));
+    _colorTrackballWheelWidth->setName("colorTrackballWheelWidth");
+    {
+        std::vector<ChoiceOption> entries;
+        assert(entries.size() == (int)eColorTrackballWheelWidthHalf);
+        entries.push_back(ChoiceOption("half", "1/2", tr("The wheel takes half of the panel's width.").toStdString()));
+        assert(entries.size() == (int)eColorTrackballWheelWidthThird);
+        entries.push_back(ChoiceOption("third", "1/3", tr("The wheel takes a third of the panel's width.").toStdString()));
+        assert(entries.size() == (int)eColorTrackballWheelWidthQuarter);
+        entries.push_back(ChoiceOption("quarter", "1/4", tr("The wheel takes a quarter of the panel's width.").toStdString()));
+        assert(entries.size() == (int)eColorTrackballWheelWidthFifth);
+        entries.push_back(ChoiceOption("fifth", "1/5", tr("The wheel takes a fifth of the panel's width.").toStdString()));
+        _colorTrackballWheelWidth->populateChoices(entries);
+    }
+    _colorTrackballWheelWidth->setHintToolTip(tr("Width of the colour wheel in a colour knob's adjustment panel, as a "
+                                                 "fraction of the panel's width. \n"
+                                                 "The wheel sits at the left and the sliders take the rest of the width. "
+                                                 "The wheel is never shorter than the column of sliders beside it."));
+    _uiPage->addKnob(_colorTrackballWheelWidth);
+
     _defaultLayoutFile = AppManager::createKnob<KnobFile>( this, tr("Default layout file") );
     _defaultLayoutFile->setName("defaultLayout");
     _defaultLayoutFile->setHintToolTip( tr("When set, %1 uses the given layout file "
@@ -1550,6 +1591,8 @@ Settings::setDefaultValues()
     _renderOnEditingFinished->setDefaultValue(false);
     _maxPanelsOpened->setDefaultValue(10, 0);
     _useCursorPositionIncrements->setDefaultValue(true);
+    _colorTrackballFeedback->setDefaultValue((int)eColorTrackballFeedbackCrosshairReveal);
+    _colorTrackballWheelWidth->setDefaultValue((int)eColorTrackballWheelWidthThird);
     //_defaultLayoutFile
 #ifdef Q_OS_WIN
     _enableConsoleWindow->setDefaultValue(false);
@@ -3225,6 +3268,34 @@ bool
 Settings::useCursorPositionIncrements() const
 {
     return _useCursorPositionIncrements->getValue();
+}
+
+Settings::ColorTrackballFeedbackEnum
+Settings::getColorTrackballFeedback() const
+{
+    return (ColorTrackballFeedbackEnum)_colorTrackballFeedback->getValue();
+}
+
+Settings::ColorTrackballWheelWidthEnum
+Settings::getColorTrackballWheelWidth() const
+{
+    return (ColorTrackballWheelWidthEnum)_colorTrackballWheelWidth->getValue();
+}
+
+double
+Settings::getColorTrackballWheelFraction() const
+{
+    switch (getColorTrackballWheelWidth()) {
+    case eColorTrackballWheelWidthHalf:
+        return 1. / 2.;
+    case eColorTrackballWheelWidthQuarter:
+        return 1. / 4.;
+    case eColorTrackballWheelWidthFifth:
+        return 1. / 5.;
+    case eColorTrackballWheelWidthThird:
+    default:
+        return 1. / 3.;
+    }
 }
 
 bool

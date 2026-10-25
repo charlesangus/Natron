@@ -47,9 +47,12 @@
 
 #include <gtest/gtest.h>
 
+#include "Engine/AppManager.h"
 #include "Engine/ColorWheelMath.h"
 
+#include "Gui/ColorAdjustPanel.h"
 #include "Gui/ColorWheelWidget.h"
+#include "Gui/DisplayLegendColour.h"
 
 NATRON_NAMESPACE_USING
 
@@ -363,6 +366,45 @@ TEST(ColorWheelWidget, OffsetNeutralCentrePixelIsAchromatic)
 
     ASSERT_FALSE(disc.isNull());
     expectAchromatic(disc.pixel(disc.width() / 2, disc.height() / 2));
+}
+
+// The ring is a perceptual legend: every hue at the legend's lightness for that hue and at
+// nearly the same chroma, whatever the working space and display.
+TEST(ColorWheelWidget, RingHuesShareALightnessAndChroma)
+{
+    const double Ro = 80.0;
+    const double Ri = 68.0;
+    const double mid = 0.5 * (Ro + Ri);
+    const DisplayLegendConverter converters[2] = {
+        DisplayLegendConverter(), [](float* rgb, int count) {
+            for (int i = 0; i < 3 * count; ++i) {
+                rgb[i] = (float)srgbEncode(rgb[i]);
+            }
+        }
+    };
+
+    for (const DisplayLegendConverter& converter : converters) {
+        QImage ring = renderColorWheelRing(acescg(), Ro, Ri, 1.0, converter);
+        double minL = 1.0;
+        double maxL = 0.0;
+
+        ASSERT_FALSE(ring.isNull());
+        for (int k = 0; k < 24; ++k) {
+            const double angle = (k * 15.0 + 7.0) * kPi / 180.0;
+            const QColor c = QColor::fromRgba(ring.pixel((int)std::lround(Ro + mid * std::cos(angle)), (int)std::lround(Ro - mid * std::sin(angle))));
+            const double rgb[3] = { srgbDecode(c.redF()), srgbDecode(c.greenF()), srgbDecode(c.blueF()) };
+            const OkLab lab = linearSrgbToOkLab(rgb);
+            const double C = std::hypot(lab.a, lab.b);
+
+            EXPECT_EQ(255, c.alpha()) << k;
+            EXPECT_NEAR(displayLegendHueLightness(std::atan2(lab.b, lab.a)), lab.L, 0.02) << k;
+            EXPECT_GT(C, 0.11) << k;
+            EXPECT_LT(C, 0.155) << k;
+            minL = std::min(minL, lab.L);
+            maxL = std::max(maxL, lab.L);
+        }
+        EXPECT_LT(maxL - minL, 0.13);
+    }
 }
 
 TEST(ColorWheelWidget, OffDiscWhiteMarkerCaretPointsAtWhite)
@@ -981,4 +1023,99 @@ TEST(ColorWheelWidget, EscapeEndsDragWithoutCancel)
     releaseAt(wheel, c + QPointF(20.0, 0.0));
     EXPECT_EQ(1u, rec.edits.size());
     EXPECT_EQ(1, rec.finished);
+}
+
+TEST(ColorWheelWidget, IsSquareBetweenItsFloorAndCap)
+{
+    ColorWheelWidget wheel;
+
+    EXPECT_EQ((int)TO_DPIX(160.), ColorWheelWidget::minimumDiameter());
+    EXPECT_EQ((int)TO_DPIX(320.), ColorWheelWidget::maximumDiameter());
+    EXPECT_TRUE(wheel.hasHeightForWidth());
+    EXPECT_TRUE(wheel.sizePolicy().hasHeightForWidth());
+    EXPECT_EQ(250, wheel.heightForWidth(250));
+    EXPECT_EQ(QSize(ColorWheelWidget::minimumDiameter(), ColorWheelWidget::minimumDiameter()), wheel.minimumSizeHint());
+
+    wheel.setPreferredDiameter(10000);
+    EXPECT_EQ(ColorWheelWidget::maximumDiameter(), wheel.getPreferredDiameter());
+    EXPECT_EQ(QSize(ColorWheelWidget::maximumDiameter(), ColorWheelWidget::maximumDiameter()), wheel.sizeHint());
+    wheel.setPreferredDiameter(10);
+    EXPECT_EQ(ColorWheelWidget::minimumDiameter(), wheel.getPreferredDiameter());
+}
+
+TEST(ColorWheelWidget, DiscFollowsTheShortSideAndStaysCentred)
+{
+    ColorWheelWidget square;
+
+    setUpWheel(square, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.2);
+    QApplication::processEvents();
+
+    // The gap between the widget's edge and the outer ring, whatever the DPI.
+    double margin = kWidgetSize / 2.0 - square.getRingOuterRadius();
+
+    ASSERT_GE(margin, 0.0);
+
+    ColorWheelWidget wide;
+
+    setUpWheel(wide, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.2);
+    wide.resize(300, 220);
+    QApplication::processEvents();
+    ASSERT_EQ(QSize(300, 220), wide.size());
+
+    EXPECT_NEAR(220 / 2.0 - margin, wide.getRingOuterRadius(), 1.0);
+    EXPECT_NEAR(150.0, wide.getDiscCentre().x(), 1.0);
+    EXPECT_NEAR(110.0, wide.getDiscCentre().y(), 1.0);
+
+    // The disc image is rendered at the new size on the next read, not left at the old one.
+    QImage disc = wide.getDiscImage();
+
+    EXPECT_NEAR(2.0 * wide.getDiscRadius() * disc.devicePixelRatio(), disc.width(), 2.0);
+}
+
+TEST(ColorWheelWidget, RingWidthScalesWithTheWheel)
+{
+    const int sides[4] = { 120, 160, 240, 320 };
+    double ratio = 0.0;
+
+    for (int i = 0; i < 4; ++i) {
+        ColorWheelWidget wheel;
+
+        setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.2);
+        wheel.resize(sides[i], sides[i]);
+        QApplication::processEvents();
+        ASSERT_EQ(QSize(sides[i], sides[i]), wheel.size());
+
+        const double outer = wheel.getRingOuterRadius();
+        const double width = outer - wheel.getRingInnerRadius();
+
+        ASSERT_GT(outer, 0.0);
+        if (i == 0) {
+            ratio = width / outer;
+            EXPECT_GT(width, 0.0);
+            continue;
+        }
+        EXPECT_NEAR(ratio * outer, width, 1.0) << "side " << sides[i];
+    }
+
+    // The ring at the largest size is visibly wider than at the smallest.
+    ColorWheelWidget small, large;
+
+    setUpWheel(small, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.2);
+    setUpWheel(large, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.2);
+    small.resize(120, 120);
+    large.resize(320, 320);
+    QApplication::processEvents();
+    EXPECT_GT(large.getRingOuterRadius() - large.getRingInnerRadius(), 1.5 * (small.getRingOuterRadius() - small.getRingInnerRadius()));
+
+    // A press near the ring's inner edge on the large wheel lands on the ring, not the disc.
+    GestureRecorder rec(large);
+    const QPointF c = large.getDiscCentre();
+    const double r = large.getRingInnerRadius() + 2.0;
+
+    ASSERT_GT(r, large.getDiscRadius());
+    pressAt(large, c + QPointF(0.0, -r));
+    ASSERT_EQ(1u, rec.edits.size());
+    EXPECT_EQ(eColorAxisHue, rec.edits[0].axis);
+    EXPECT_TRUE(rec.edits[0].absolute);
+    releaseAt(large, c + QPointF(0.0, -r));
 }

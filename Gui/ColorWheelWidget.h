@@ -56,6 +56,50 @@ class QWheelEvent;
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief The hue ring ColorWheelWidget draws around its disc, shared with every other disc that
+ * wears the same ring. For a widget of size size, the ring's outer edge sits a small margin in
+ * from the shorter side's half, the ring's width is a fixed fraction of that outer radius (never
+ * below a small legibility floor), and the disc starts a small gap inside it; all three are
+ * DPI-scaled widget pixels.
+ **/
+double colorWheelRingOuterRadius(const QSize& size);
+double colorWheelRingInnerRadius(const QSize& size);
+double colorWheelDiscRadius(const QSize& size);
+
+/**
+ * @brief The ring's hues, one entry per degree of plane hue (0 = +x, counter-clockwise): rgb
+ * holds the working-space colour a quarter of the way from mid grey to the gamut edge, which
+ * only gives the hue its direction, and limit the gamut edge's plane radius itself. Not
+ * display-converted.
+ **/
+struct ColorWheelHueTable {
+    std::vector<float> rgb;
+    std::vector<double> limit;
+};
+
+constexpr int kColorWheelHueTableSize = 360;
+
+ColorWheelHueTable buildColorWheelHueTable(const LumaBasis& basis);
+
+/**
+ * @brief The table entry nearest to degrees, any angle accepted.
+ **/
+int colorWheelHueIndex(double degrees);
+
+/**
+ * @brief The anti-aliased ring between innerRadius and outerRadius (widget pixels), rendered at
+ * dpr into a square image 2 * outerRadius wide whose centre is the ring's. Each hue is the
+ * table's direction as converter displays it (see displayLegendHues), drawn at the legend's
+ * lightness and chroma (DisplayLegendColour.h).
+ **/
+QImage renderColorWheelRing(const LumaBasis& basis, double outerRadius, double innerRadius, double dpr, const std::function<void(float* rgb, int count)>& converter);
+
+/**
+ * @brief The dark hairlines at the disc's edge and both edges of the ring.
+ **/
+void drawColorWheelRingOutlines(QPainter& p, const QPointF& centre, double discRadius, double innerRadius, double outerRadius);
+
+/**
  * @brief The trackball colour wheel: a disc of the chroma plane re-centred on the knob's current
  * plane point (the anchor), an absolute hue ring about white around it, the gamut triangle, the
  * Planckian locus (ratio roles) or linear temp/tint axes (Offset), the neutral white marker and
@@ -104,6 +148,7 @@ public:
      * @brief An empty converter means identity.
      **/
     void setDisplayConverter(const DisplayConverter& converter);
+    const DisplayConverter& getDisplayConverter() const;
 
     /**
      * @brief Moves the puck to dq away from the anchor, keeping the frame fixed; past the rim the
@@ -162,8 +207,33 @@ public:
     ColorAxisEnum getActiveLock() const;
     bool isDragging() const;
 
+    /**
+     * @brief The wheel is square: its floor and its cap (both DPI-scaled) bound the preferred
+     * diameter the owner sets, and the disc is centred in whatever rect it ends up with.
+     * maximumDiameter() is the default cap; an instance can be given its own with
+     * setMaximumDiameter().
+     **/
+    static int minimumDiameter();
+    static int maximumDiameter();
+
+    /**
+     * @brief This wheel's cap, never below minimumDiameter(). The preferred diameter is
+     * re-clamped to it.
+     **/
+    void setMaximumDiameter(int pixels);
+    int getMaximumDiameter() const;
+
+    /**
+     * @brief The width the owner can spare, clamped to [minimumDiameter, getMaximumDiameter];
+     * it becomes the sizeHint. The disc images re-render on the next paint at the new size.
+     **/
+    void setPreferredDiameter(int pixels);
+    int getPreferredDiameter() const;
+
     virtual QSize sizeHint() const OVERRIDE;
     virtual QSize minimumSizeHint() const OVERRIDE;
+    virtual bool hasHeightForWidth() const OVERRIDE;
+    virtual int heightForWidth(int width) const OVERRIDE;
 
 Q_SIGNALS:
     void gestureStarted();
@@ -226,7 +296,6 @@ private:
     double devicePixelRatioForCache() const;
     void convertToDisplay(std::vector<float>& rgb) const;
     bool discColour(const PlanePoint& q, double rgb[3]) const;
-    void buildHueTable(std::vector<float>& table) const;
     const QImage& discImage() const;
     const QImage& ringImage() const;
     QColor activeColour() const;
@@ -252,6 +321,8 @@ private:
     bool _hasDragOffset;
     unsigned _basisGeneration;
     unsigned _converterGeneration;
+    int _preferredDiameter;
+    int _maxDiameter;
 
     HitZoneEnum _dragZone;
     QPointF _lastDragPos;

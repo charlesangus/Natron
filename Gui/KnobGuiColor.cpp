@@ -42,6 +42,8 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QLayout>
 #include <QMetaObject>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPalette>
 #include <QScrollArea>
 #include <QStyle>
 #include <QToolTip>
@@ -75,6 +77,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
+#include "Gui/GuiDensity.h"
 #include "Gui/GuiMacros.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Label.h"
@@ -84,6 +87,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/SpinBox.h"
 #include "Gui/SpinBoxValidator.h"
 #include "Gui/TabGroup.h"
+#include "Gui/ThemedIcon.h"
 
 #include <ofxNatron.h>
 
@@ -91,42 +95,6 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// The panel's sliders end where the row's own slider does: everything right of that slider
-// has a fixed width. QBoxLayout puts its spacing only between widget items; spacer items
-// contribute just their own width.
-int
-widthRightOfLastSlider(QHBoxLayout* containerLayout)
-{
-    int sliderIndex = -1;
-
-    for (int i = 0; i < containerLayout->count(); ++i) {
-        QLayoutItem* item = containerLayout->itemAt(i);
-
-        if (item && qobject_cast<ScaleSliderQWidget*>(item->widget())) {
-            sliderIndex = i;
-        }
-    }
-    if (sliderIndex < 0) {
-        return 0;
-    }
-
-    int inset = 0;
-
-    for (int i = sliderIndex + 1; i < containerLayout->count(); ++i) {
-        QLayoutItem* item = containerLayout->itemAt(i);
-
-        if (!item) {
-            continue;
-        }
-        if (item->widget()) {
-            inset += containerLayout->spacing();
-        }
-        inset += item->sizeHint().width();
-    }
-
-    return inset;
-}
-
 ColorAdjustPanel::DisplayConverter
 makeDisplayConverter(const ProjectColorManagementPtr& colorManagement)
 {
@@ -225,44 +193,132 @@ touchTagFor(KnobGuiColor* knobGui)
 {
     return QVariant::fromValue(QPointer<KnobGuiColor>(knobGui));
 }
+
+const char*
+openBlockPropertyName()
+{
+    return "_natronColorAdjustOpen";
+}
+
+// The open state's icon is the closed state's, flipped, so the pair always matches. Both
+// check states get it: a themed glyph's On state is tinted with the selection colour.
+QIcon
+verticallyMirroredIcon(const QIcon& source,
+                       const QSize& size,
+                       qreal devicePixelRatio)
+{
+    QIcon mirrored;
+    const QIcon::Mode modes[] = { QIcon::Normal, QIcon::Disabled, QIcon::Active };
+
+    for (QIcon::Mode mode : modes) {
+        const QPixmap pix = source.pixmap(size, devicePixelRatio, mode, QIcon::Off);
+        QPixmap flipped = QPixmap::fromImage(pix.toImage().mirrored(false, true));
+
+        flipped.setDevicePixelRatio(pix.devicePixelRatio());
+        mirrored.addPixmap(flipped, mode, QIcon::Off);
+        mirrored.addPixmap(flipped, mode, QIcon::On);
+    }
+
+    return mirrored;
+}
+
+void
+repolishTree(QWidget* root)
+{
+    QList<QWidget*> widgets = root->findChildren<QWidget*>();
+
+    widgets.prepend(root);
+    for (QWidget* w : widgets) {
+        w->style()->unpolish(w);
+        w->style()->polish(w);
+        w->update();
+    }
+}
+
+QColor
+mixColors(const QColor& a,
+          const QColor& b,
+          double t)
+{
+    return QColor::fromRgbF(a.redF() + (b.redF() - a.redF()) * t,
+                            a.greenF() + (b.greenF() - a.greenF()) * t,
+                            a.blueF() + (b.blueF() - a.blueF()) * t);
+}
+
+// Spans the page grid's cells for the knob's row and its panel, under them. The widgets in
+// those cells turn their stylesheet background transparent while it shows (mainstyle.qss,
+// _natronColorAdjustOpen), so this fill also covers the grid's spacing between them. The
+// colours come from the application palette, which Gui::loadStyleSheet() fills from the theme:
+// Mid is the panel background, Dark the sunken colour, Light the raised one. The frame stops
+// short of the cells' bottom by the bottom gap, which keeps the row gap every other row ends
+// with between the block and the knob below it.
+class AdjustPanelBackdrop
+    : public QWidget {
+public:
+    explicit AdjustPanelBackdrop(QWidget* parent)
+        : QWidget(parent)
+        , _highlighted(false)
+        , _bottomGap(0)
+    {
+        setObjectName(QString::fromUtf8("ColorAdjustOpenBackdrop"));
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFocusPolicy(Qt::NoFocus);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    }
+
+    void setHighlighted(bool highlighted)
+    {
+        if (_highlighted != highlighted) {
+            _highlighted = highlighted;
+            // Read by the GUI evidence scripts, which cannot reach this class.
+            setProperty("colorGlobalModeHighlighted", highlighted);
+            update();
+        }
+    }
+
+    void setBottomGap(int gap)
+    {
+        if (_bottomGap != gap) {
+            _bottomGap = gap;
+            update();
+        }
+    }
+
+protected:
+    virtual void paintEvent(QPaintEvent* /*e*/) OVERRIDE
+    {
+        const QPalette palette = QApplication::palette();
+        const QColor base = palette.color(QPalette::Mid);
+        const QColor sunken = palette.color(QPalette::Dark);
+        QColor shadowEdge = sunken.darker(140);
+        QColor lightEdge = palette.color(QPalette::Light);
+
+        if (_highlighted) {
+            // Only the outline marks the engaged knob, in the selection colour the stylesheet
+            // uses; the fill stays the plain block's so the colours being edited keep their
+            // surroundings.
+            shadowEdge = ThemedIcon::themeSelectionColor();
+            lightEdge = shadowEdge;
+        }
+
+        const QRect r = rect().adjusted(0, 0, 0, -_bottomGap);
+        QPainter p(this);
+
+        p.fillRect(r, mixColors(base, sunken, 0.5));
+        p.setPen(shadowEdge);
+        p.drawLine(r.topLeft(), r.topRight());
+        p.drawLine(r.topLeft(), r.bottomLeft());
+        p.setPen(lightEdge);
+        p.drawLine(r.bottomLeft(), r.bottomRight());
+        p.drawLine(r.topRight(), r.bottomRight());
+    }
+
+private:
+    bool _highlighted;
+    int _bottomGap;
+};
+
 } // namespace
-
-void
-detachColorGlobalModeHud(QWidget* hud)
-{
-    if (!hud) {
-        return;
-    }
-    hud->hide();
-
-    QWidget* parent = hud->parentWidget();
-    QVBoxLayout* layout = parent ? qobject_cast<QVBoxLayout*>(parent->layout()) : 0;
-
-    if (layout) {
-        layout->removeWidget(hud);
-    }
-    hud->setParent(0);
-}
-
-void
-attachColorGlobalModeHud(QVBoxLayout* columnLayout,
-                         QWidget* afterWidget,
-                         QWidget* hud)
-{
-    if (!columnLayout || !hud) {
-        return;
-    }
-    detachColorGlobalModeHud(hud);
-
-    // With no channel-lines widget to anchor on, index 1 still lands right after the row,
-    // the column's first and only other item at that point.
-    const int afterIndex = afterWidget ? columnLayout->indexOf(afterWidget) : -1;
-    const int index = (afterIndex >= 0) ? (afterIndex + 1) : 1;
-
-    hud->setParent(columnLayout->parentWidget());
-    columnLayout->insertWidget(index, hud);
-    hud->show();
-}
 
 ColorPickerLabel::ColorPickerLabel(KnobGuiColor* knob,
                                    QWidget* parent)
@@ -420,6 +476,11 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _editSession()
     , _configCallbackOwner()
     , _configCallbackId(-1)
+    , _openBackdrop()
+    , _openBlockWidgets()
+    , _paddedLabelCell()
+    , _paddedFieldCell()
+    , _globalModeHighlighted(false)
 {
     KnobColorPtr k = _knob.lock();
     assert(k);
@@ -444,6 +505,9 @@ KnobGuiColor::~KnobGuiColor()
     if (colorManagement && (_configCallbackId >= 0)) {
         colorManagement->removeConfigChangedCallback(_configCallbackId);
     }
+    if (_openBackdrop) {
+        _openBackdrop->deleteLater();
+    }
 }
 
 bool
@@ -467,9 +531,16 @@ KnobGuiColor::isAdjustPanelExpanded() const
 void
 KnobGuiColor::setAdjustPanelExpanded(bool expanded)
 {
-    if (_adjustPanel && _colorSelectorButton) {
-        _colorSelectorButton->setChecked(expanded);
+    if (!_adjustPanel || !_colorSelectorButton) {
+        return;
     }
+    _colorSelectorButton->setChecked(expanded);
+}
+
+QWidget*
+KnobGuiColor::getOpenBackdrop() const
+{
+    return _openBackdrop.data();
 }
 
 ColorKnobEditSession*
@@ -480,6 +551,12 @@ KnobGuiColor::getEditSession()
     }
 
     return _editSession.get();
+}
+
+ColorAdjustPanel::DisplayConverter
+KnobGuiColor::getDisplayConverter() const
+{
+    return makeDisplayConverter(getColorManagement());
 }
 
 void
@@ -539,35 +616,6 @@ KnobGuiColor::getGlobalModeColumnWidget() const
 }
 
 void
-KnobGuiColor::attachGlobalModeHud(QWidget* hud)
-{
-    QVBoxLayout* columnLayout = getBelowRowColumnLayout();
-
-    if (!columnLayout || !hud) {
-        return;
-    }
-
-    QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
-    UpdatesHeldOff held(topWidget);
-
-    attachColorGlobalModeHud(columnLayout, getDimensionLinesWidget(), hud);
-    activateLayoutsUpToInclusive(columnLayout->parentWidget(), topWidget);
-}
-
-void
-KnobGuiColor::detachGlobalModeHud(QWidget* hud)
-{
-    QVBoxLayout* columnLayout = getBelowRowColumnLayout();
-    QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
-    UpdatesHeldOff held(topWidget);
-
-    detachColorGlobalModeHud(hud);
-    if (columnLayout) {
-        activateLayoutsUpToInclusive(columnLayout->parentWidget(), topWidget);
-    }
-}
-
-void
 KnobGuiColor::engageGlobalMode()
 {
     Gui* gui = getGui();
@@ -585,14 +633,19 @@ KnobGuiColor::setGlobalModeHighlighted(bool highlighted)
     if (_globalModeButton) {
         _globalModeButton->setChecked(highlighted);
     }
-    if (!_rowContainer) {
+    if (_globalModeHighlighted == highlighted) {
         return;
     }
-    _rowContainer->setProperty(colorTrackballTargetPropertyName(), highlighted);
-    // Qt only re-evaluates property selectors on polish.
-    _rowContainer->style()->unpolish(_rowContainer.data());
-    _rowContainer->style()->polish(_rowContainer.data());
-    _rowContainer->update();
+    _globalModeHighlighted = highlighted;
+    if (_adjustPanel) {
+        refreshOpenBackdrop();
+    }
+}
+
+bool
+KnobGuiColor::isGlobalModeHighlighted() const
+{
+    return _globalModeHighlighted;
 }
 
 ProjectColorManagementPtr
@@ -629,6 +682,12 @@ KnobGuiColor::createBelowRowWidget(QWidget* parent)
                                ColorKnobEditSession::basisFor(colorManagement));
     _adjustPanel->setDisplayConverter(makeDisplayConverter(colorManagement));
     QObject::connect(_adjustPanel.data(), &ColorAdjustPanel::valuesEdited, this, &KnobGuiColor::onAdjustPanelValuesEdited);
+    refreshWheelFraction();
+    if (SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr()) {
+        QObject::connect(settings.get(), &Settings::settingChanged, this, [this](KnobI*) {
+            refreshWheelFraction();
+        });
+    }
 
     if (colorManagement) {
         QPointer<KnobGuiColor> self(this);
@@ -697,7 +756,17 @@ KnobGuiColor::refreshAdjustPanelState()
     bool editable = isAdjustPanelEditable();
 
     _adjustPanel->setEnabled(knob->isEnabled(0));
-    _adjustPanel->getEditArea()->setEnabled(editable);
+    _adjustPanel->setEditable(editable);
+}
+
+void
+KnobGuiColor::refreshWheelFraction()
+{
+    SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
+
+    if (_adjustPanel && settings) {
+        _adjustPanel->setWheelFraction(settings->getColorTrackballWheelFraction());
+    }
 }
 
 void
@@ -710,31 +779,173 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
     QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
     QWidget* columnWidget = _adjustPanel->parentWidget();
 
-    // Everything below is one update: the panel's visibility, the channel lines' fold state,
-    // and the layout settling they both need. See activateLayoutsUpToInclusive() for why.
-    UpdatesHeldOff held(topWidget);
+    {
+        // Everything in here is one update: the panel's visibility, the channel lines' fold
+        // state, and the layout settling they both need. See activateLayoutsUpToInclusive().
+        UpdatesHeldOff held(topWidget);
 
-    if (expanded) {
-        KnobColorPtr knob = _knob.lock();
+        if (expanded) {
+            KnobColorPtr knob = _knob.lock();
 
-        if (knob && !_adjustPanel->isEditing()) {
-            _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob));
+            if (knob && !_adjustPanel->isEditing()) {
+                _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob));
+            }
+            setDimensionsFolded(false);
+            _adjustPanel->setVisible(true);
+        } else {
+            _adjustPanel->setVisible(false);
         }
-        setDimensionsFolded(false);
-        _adjustPanel->setVisible(true);
-    } else {
-        _adjustPanel->setVisible(false);
-    }
+        refreshOpenBackdrop();
 
-    if (columnWidget) {
-        activateLayoutsUpToInclusive(columnWidget, topWidget);
+        if (columnWidget) {
+            activateLayoutsUpToInclusive(columnWidget, topWidget);
+        }
+        // Shown at its settled width, the panel sizes its wheel from that width, which can
+        // change the panel's height.
+        if (expanded) {
+            activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
+        }
     }
     refreshAdjustPanelToolTip(expanded);
+} // KnobGuiColor::onAdjustPanelToggled
+
+void
+KnobGuiColor::setOpenBlockTagged(bool tagged)
+{
+    for (const OpenBlockCell& cell : _openBlockWidgets) {
+        if (cell.widget) {
+            cell.widget->setProperty(openBlockPropertyName(), tagged);
+            cell.widget->setContentsMargins(tagged ? cell.blockMargins : cell.restMargins);
+            // Qt re-evaluates property selectors, the descendant ones included, only on polish.
+            repolishTree(cell.widget.data());
+        }
+    }
+    if (!tagged) {
+        _openBlockWidgets.clear();
+    }
+}
+
+void
+KnobGuiColor::refreshOpenBackdrop()
+{
+    QWidget* fullWidthRow = getFullWidthRowWidget();
+    QWidget* page = fullWidthRow ? fullWidthRow->parentWidget() : 0;
+    QGridLayout* grid = page ? qobject_cast<QGridLayout*>(page->layout()) : 0;
+    QWidget* field = _rowContainer.data();
+
+    while (field && page && (field->parentWidget() != page)) {
+        field = field->parentWidget();
+    }
+
+    const int fieldIndex = (grid && field) ? grid->indexOf(field) : -1;
+    const int fullIndex = grid ? grid->indexOf(fullWidthRow) : -1;
+    const bool open = isAdjustPanelExpanded() && !_adjustPanel->isHidden() && fullWidthRow && !fullWidthRow->isHidden() && (fieldIndex >= 0) && (fullIndex >= 0);
+    // Engaged with the panel closed, the block still marks the knob, around its row alone.
+    const bool rowOnly = !open && _globalModeHighlighted && (fieldIndex >= 0) && !field->isHidden() && _colorSelectorButton && !_colorSelectorButton->isHidden();
+
+    setOpenBlockTagged(false);
+    if (_openBackdrop) {
+        if (QLayout* l = _openBackdrop->parentWidget() ? _openBackdrop->parentWidget()->layout() : 0) {
+            l->removeWidget(_openBackdrop.data());
+        }
+        _openBackdrop->hide();
+    }
+    if (!open && !rowOnly) {
+        return;
+    }
+
+    int firstRow, lastRow, rowSpan, column, columnSpan;
+    grid->getItemPosition(fieldIndex, &firstRow, &column, &rowSpan, &columnSpan);
+    lastRow = firstRow + rowSpan - 1;
+    if (open) {
+        grid->getItemPosition(fullIndex, &lastRow, &column, &rowSpan, &columnSpan);
+        lastRow += rowSpan - 1;
+    }
+
+    // The cells along the block's edges are padded so their contents sit inside the frame by the
+    // margin a settings panel keeps inside its own edge. The row above already ends with the row
+    // gap; the block ends with one too, outside its frame, taken from the cells' own bottom gap
+    // when they have one. The label and field cells keep their side padding at all times
+    // (reserveOpenBlockSidePadding()), so only the full-width row gains any here.
+    const int padX = TO_DPIX(NATRON_DENSITY_PANEL_MARGIN);
+    const int padY = TO_DPIY(NATRON_DENSITY_PANEL_MARGIN);
+    const int rowGap = TO_DPIY(NATRON_DENSITY_ROW_GAP);
+    const int lastColumn = std::max(1, grid->columnCount()) - 1;
+
+    // Rows are found afresh each time: knobs created later can shift the page's grid.
+    for (int i = 0; i < grid->count(); ++i) {
+        int row, col, rs, cs;
+        grid->getItemPosition(i, &row, &col, &rs, &cs);
+        QWidget* w = grid->itemAt(i)->widget();
+        if (!w || (row < firstRow) || (row + rs - 1 > lastRow)) {
+            continue;
+        }
+        OpenBlockCell cell;
+        cell.widget = w;
+        cell.restMargins = w->contentsMargins();
+        QMargins pad;
+        if (row == firstRow) {
+            pad.setTop(padY);
+        }
+        if (row + rs - 1 == lastRow) {
+            const int ownGap = w->layout() ? w->layout()->contentsMargins().bottom() : 0;
+            pad.setBottom(padY + std::max(0, rowGap - ownGap));
+        }
+        if ((col == 0) && (w != _paddedLabelCell.data())) {
+            pad.setLeft(padX);
+        }
+        if ((col + cs - 1 >= lastColumn) && (w != _paddedFieldCell.data())) {
+            pad.setRight(padX);
+        }
+        cell.blockMargins = cell.restMargins + pad;
+        _openBlockWidgets.push_back(cell);
+    }
+
+    if (!_openBackdrop || (_openBackdrop->parentWidget() != page)) {
+        if (_openBackdrop) {
+            _openBackdrop->deleteLater();
+        }
+        _openBackdrop = new AdjustPanelBackdrop(page);
+        QObject::connect(fullWidthRow, &QObject::destroyed, _openBackdrop.data(), &QObject::deleteLater);
+    }
+    AdjustPanelBackdrop* backdrop = static_cast<AdjustPanelBackdrop*>(_openBackdrop.data());
+    backdrop->setHighlighted(_globalModeHighlighted);
+    backdrop->setBottomGap(rowGap);
+    grid->addWidget(_openBackdrop.data(), firstRow, 0, lastRow - firstRow + 1, std::max(1, grid->columnCount()));
+    _openBackdrop->lower();
+    _openBackdrop->show();
+    setOpenBlockTagged(true);
+} // KnobGuiColor::refreshOpenBackdrop
+
+// The block's side padding is kept by the label's left and the field's right whether or not the
+// block shows: padding them only while it shows would narrow the field and move the row's
+// buttons, the open toggle among them, out from under the cursor that clicked it.
+void
+KnobGuiColor::reserveOpenBlockSidePadding()
+{
+    const int padX = TO_DPIX(NATRON_DENSITY_PANEL_MARGIN);
+    QWidget* label = getLabelContainer();
+    QWidget* field = getFieldContainer();
+
+    if (label && (label != _paddedLabelCell.data())) {
+        label->setContentsMargins(label->contentsMargins() + QMargins(padX, 0, 0, 0));
+        _paddedLabelCell = label;
+    }
+    if (field && (field != _paddedFieldCell.data())) {
+        field->setContentsMargins(field->contentsMargins() + QMargins(0, 0, padX, 0));
+        _paddedFieldCell = field;
+    }
 }
 
 void
 KnobGuiColor::refreshAdjustPanelToolTip(bool expanded)
 {
+    QIcon icon;
+    appPTR->getIcon(NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN, NATRON_MEDIUM_BUTTON_ICON_SIZE, &icon);
+    if (expanded) {
+        icon = verticallyMirroredIcon(icon, _colorSelectorButton->iconSize(), _colorSelectorButton->devicePixelRatio());
+    }
+    _colorSelectorButton->setIcon(icon);
     _colorSelectorButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(expanded ? tr("Hide the colour adjustment panel.") : tr("Show the colour adjustment panel: a trackball wheel with hue, saturation, value, temperature and tint sliders."),
                                                                             NATRON_NAMESPACE::WhiteSpaceNormal));
 }
@@ -905,7 +1116,10 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         _globalModeButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Engage the global trackball mode (Ctrl+E) on this knob: press C (hue+saturation trackball), S (hue on x, saturation on y), T (temperature/tint) or V (value) to pick what a click-drag anywhere adjusts, until Esc or Enter accepts, or the shortcut is pressed again."), NATRON_NAMESPACE::WhiteSpaceNormal));
         QObject::connect(_globalModeButton, &QToolButton::clicked, this, &KnobGuiColor::engageGlobalMode);
         containerLayout->addWidget(_globalModeButton);
-        _adjustPanel->setRightInset(widthRightOfLastSlider(containerLayout));
+
+        // The panel has a row of its own, from the label column to the row's last button.
+        setBelowRowWidgetFullWidth(true);
+        reserveOpenBlockSidePadding();
 
         return;
     }
@@ -1040,6 +1254,7 @@ KnobGuiColor::_hide()
     }
     if (_adjustPanel) {
         _adjustPanel->hide();
+        refreshOpenBackdrop();
     }
 }
 
@@ -1056,6 +1271,9 @@ KnobGuiColor::_show()
     }
     if (isAdjustPanelExpanded()) {
         _adjustPanel->show();
+        refreshOpenBackdrop();
+    } else if (_globalModeHighlighted && _adjustPanel) {
+        refreshOpenBackdrop();
     }
 }
 

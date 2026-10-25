@@ -780,4 +780,10 @@ KnobGui::getFieldContainer() const
     return _imp->field;
 }
 
+QWidget*
+KnobGui::getLabelContainer() const
+{
+    return _imp->labelContainer;
+}
+
 NATRON_NAMESPACE_EXIT

@@ -92,6 +92,7 @@ set(Tests_SOURCES
     Gpu/RawRegionGpu_Test.cpp
     NodeCategory_Test.cpp
     TabMenuSettings_Test.cpp
+    SettingsColorTrackball_Test.cpp
     NodeColorSampler_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
@@ -204,15 +205,20 @@ set(GuiTests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
     ColorAdjustPanel_Test.cpp
+    ColorEditSlider_Test.cpp
     ColorKnobUndoMerge_Test.cpp
+    ColorModeDiscWidget_Test.cpp
     ColorPickerLabel_Test.cpp
     ColorTrackballGlobalMode_Test.cpp
     ColorTrackballHud_Test.cpp
+    ColorTrackballReveal_Test.cpp
     ColorTrackballTarget_Test.cpp
     ColorWheelWidget_Test.cpp
     CurveTangentJoin_Test.cpp
+    DisplayLegendColour_Test.cpp
     EdgeNearbyGrab_Test.cpp
     GuiThreadGLBinding_Test.cpp
+    KnobGuiColorWheelWidth_Test.cpp
     KnobGuiString_Test.cpp
     KnobUndoHash_Test.cpp
     LayerChannelRow_Test.cpp

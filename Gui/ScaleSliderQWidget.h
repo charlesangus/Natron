@@ -114,7 +114,6 @@ public Q_SLOTS:
 private:
     void seekInternal(double v);
 
-
     void centerOn(double left, double right);
 
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL;

@@ -47,6 +47,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/ColorWheelMath.h"
+#include "Engine/Settings.h"
 
 #include "Gui/ColorTrackballTarget.h"
 #include "Gui/GuiFwd.h"
@@ -58,14 +59,10 @@ class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
 
-class ColorTrackballHud;
+class ColorTrackballHudBlock;
+struct ColorTrackballHudState;
+class ColorTrackballReveal;
 class WindowHighlightFrame;
-
-/**
- * @brief The bool dynamic property set on the global-mode target's row container while the
- * mode is engaged on it, for the application stylesheet to highlight the row by.
- **/
-const char* colorTrackballTargetPropertyName();
 
 /**
  * @brief What a key press does while the global trackball mode is engaged. Everything that is
@@ -126,6 +123,119 @@ int stepColorKnobIndex(const std::vector<ColorKnobInfo>& knobs, int current, int
 int takeColorGlobalModeWheelNotches(int* accumulator, int angleDelta);
 
 /**
+ * @brief Whether global mode swaps the pointer for a crosshair from engage to exit.
+ **/
+bool colorGlobalModeFeedbackShowsCrosshair(Settings::ColorTrackballFeedbackEnum feedback);
+
+/**
+ * @brief Whether the mode graphic stands in for the pointer from engage to exit, rather than
+ * coming up at the press point for the stroke's length.
+ **/
+bool colorGlobalModeFeedbackGraphicIsCursor(Settings::ColorTrackballFeedbackEnum feedback);
+
+/**
+ * @brief What global mode shows for a feedback at one moment. The crosshair stays pushed under
+ * a blank cursor, which hides it while the mode graphic is the feedback; the graphic either
+ * follows the pointer or stays where it was put.
+ **/
+struct ColorGlobalModeFeedbackState {
+    bool crosshair = false;
+    bool blankCursor = false;
+    bool graphicShown = false;
+    bool graphicFollowsPointer = false;
+    /// The hint block has a window of its own by the pointer while engaged with no graphic up;
+    /// with one up it sits under the graphic's disc.
+    bool hudBlockFollowsPointer = false;
+};
+
+/**
+ * @brief Moves the pointer to target, as a released stroke does to return it to where the
+ * stroke began. False where the platform leaves it where it was (Wayland).
+ **/
+bool colorGlobalModeReturnPointer(const QPoint& target);
+
+ColorGlobalModeFeedbackState colorGlobalModeFeedbackState(Settings::ColorTrackballFeedbackEnum feedback, bool engaged, bool strokeActive);
+
+/**
+ * @brief The feedback global mode works with. A change arriving mid-stroke is held until the
+ * stroke ends, so one stroke never changes how it is shown halfway through.
+ **/
+class ColorGlobalModeFeedbackSwitch {
+public:
+    ColorGlobalModeFeedbackSwitch();
+
+    /**
+     * @brief Takes latest: at once outside a stroke, at strokeEnded() during one. True when the
+     * value in effect changed.
+     **/
+    bool offer(Settings::ColorTrackballFeedbackEnum latest, bool strokeActive);
+
+    /**
+     * @brief Puts a held change into effect. True when the value in effect changed.
+     **/
+    bool strokeEnded();
+
+    Settings::ColorTrackballFeedbackEnum getFeedback() const
+    {
+        return _feedback;
+    }
+
+private:
+    Settings::ColorTrackballFeedbackEnum _feedback;
+    bool _pending;
+    Settings::ColorTrackballFeedbackEnum _pendingFeedback;
+};
+
+/**
+ * @brief One entry on QApplication's override cursor stack, pushed the first time it is held
+ * and popped the first time it is let go, so any number of exit paths asking to let go restore
+ * the cursor exactly once. Let go on destruction.
+ **/
+class ColorGlobalModeOverrideCursor {
+public:
+    explicit ColorGlobalModeOverrideCursor(Qt::CursorShape shape);
+    ~ColorGlobalModeOverrideCursor();
+
+    void setHeld(bool held);
+
+    bool isHeld() const
+    {
+        return _held;
+    }
+
+private:
+    Qt::CursorShape _shape;
+    bool _held;
+};
+
+/**
+ * @brief Global mode's two override cursors, the crosshair and the blank one above it, kept in
+ * that order on QApplication's stack whatever order they are asked for in. Both are let go on
+ * destruction.
+ **/
+class ColorGlobalModeCursors {
+public:
+    ColorGlobalModeCursors();
+    ~ColorGlobalModeCursors();
+
+    void sync(bool crosshair, bool blank);
+
+    bool isCrosshairHeld() const
+    {
+        return _crosshair.isHeld();
+    }
+
+    bool isBlankHeld() const
+    {
+        return _blank.isHeld();
+    }
+
+private:
+    ColorGlobalModeOverrideCursor _crosshair;
+    ColorGlobalModeOverrideCursor _blank;
+};
+
+/**
  * @brief One click-drag stroke's accumulated pointer travel, applied to the value the stroke
  * started from rather than step by step, so a long stroke made of many small moves lands
  * exactly where one big move would and a drag back returns to the start. Each move's pixels
@@ -177,6 +287,42 @@ private:
 };
 
 /**
+ * @brief What is left of a right click after it has exited the mode: its release and the
+ * context-menu request, which Qt raises on the press or the release depending on the platform
+ * and which would otherwise open a menu under the pointer. Each is eaten once; a press or key
+ * press that is not part of the click ends the wait.
+ **/
+class ColorGlobalModeRightClickTail {
+public:
+    ColorGlobalModeRightClickTail()
+        : _release(false)
+        , _menu(false)
+    {
+    }
+
+    void arm()
+    {
+        _release = true;
+        _menu = true;
+    }
+
+    bool isArmed() const
+    {
+        return _release || _menu;
+    }
+
+    /**
+     * @brief True when the event belongs to the click and must be eaten.
+     **/
+    bool consume(QEvent::Type type,
+                 Qt::MouseButton button);
+
+private:
+    bool _release;
+    bool _menu;
+};
+
+/**
  * @brief The global trackball mode: once engaged on a colour knob, a click-drag anywhere in
  * the application's windows adjusts that knob (C = a trackball translate of hue and
  * saturation together, S = hue on x and saturation on y, T = temperature and tint, V = value),
@@ -205,8 +351,10 @@ public:
     }
 
     /**
-     * @brief Engages on target, or moves an engaged mode onto it. False, leaving the mode as
-     * it was, when target is null or has no adjustment panel (simplified and viewer knobs).
+     * @brief Engages on target, or moves an engaged mode onto it. A fresh engage starts in
+     * mode C whatever mode the previous invocation left; moving an already-engaged mode onto
+     * another knob keeps the current mode. False, leaving the mode as it was, when target is
+     * null or has no adjustment panel (simplified and viewer knobs).
      **/
     bool engage(const KnobGuiColorPtr& target);
 
@@ -229,6 +377,10 @@ public:
      **/
     void getTargetPosition(int* n, int* count) const;
 
+    /**
+     * @brief The current mode. Reset to C by every fresh engage(), so it does not carry over
+     * between invocations or nodes; only retargeting an engaged mode keeps it.
+     **/
     ColorGlobalModeEnum getMode() const
     {
         return _mode;
@@ -302,11 +454,14 @@ private:
     QString strokeLabel() const;
     void setGear(double gearFactor);
 
-    ColorTrackballHud* ensureHud();
+    ColorTrackballHudBlock* ensureHudBlock();
+    ColorTrackballReveal* ensureReveal();
+    void syncReveal();
+    void syncHudBlock(const ColorGlobalModeFeedbackState& state);
     void showChrome();
     void hideChrome();
+    ColorTrackballHudState hudState() const;
     void updateHud();
-    void refreshTargetPosition();
 
     void beginStroke();
     void moveStroke(const QPointF& globalPos, Qt::KeyboardModifiers modifiers, bool spontaneous);
@@ -326,6 +481,8 @@ private:
     bool handleKeyPress(QKeyEvent* e);
     bool handleKeyRelease(QKeyEvent* e);
     void undoOnTargetPanel(bool redo);
+    bool offerFeedbackSetting();
+    void applyFeedback();
 
     Gui* _gui;
     bool _engaged;
@@ -354,13 +511,21 @@ private:
 
     int _wheelAccumulator;
     std::set<int> _swallowedKeys;
+    ColorGlobalModeRightClickTail _rightClickTail;
     QList<QKeySequence> _passThrough;
 
-    QPointer<ColorTrackballHud> _hud;
+    ColorGlobalModeFeedbackSwitch _feedback;
+    ColorGlobalModeCursors _cursors;
+    QPoint _pointerPos;
+    QPoint _strokeStartPos;
+
+    QPointer<ColorTrackballHudBlock> _hudBlock;
+    QPointer<ColorTrackballReveal> _reveal;
+    bool _revealFollowing;
+    const void* _revealKnob;
+    ColorKnobRoleEnum _revealRole;
     std::vector<QPointer<WindowHighlightFrame>> _highlightFrames;
     QString _endOfListMessage;
-    int _targetPosition;
-    int _targetCount;
 };
 
 NATRON_NAMESPACE_EXIT

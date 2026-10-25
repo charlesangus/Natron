@@ -37,7 +37,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
-#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Channel/ChannelCopy.h"
 
 #define PLUGINID_NATRON_REMOVELAYERS "fr.natron.RemoveLayers"
 
@@ -63,9 +63,11 @@ inline constexpr InputSpec kRemoveLayersInputs[] = {
  *
  * Rows resolve against the input's present layers at the render's (time, view); a row naming
  * a layer the input lacks selects nothing and posts no error.
+ *
+ * Both the CPU and the GPU render a plane from the route channelRoute() describes.
  **/
 class RemoveLayers
-    : public NativeEffectBase {
+    : public ChannelRouteEffect {
 public:
     enum OperationEnum {
         eOperationRemove = 0,
@@ -135,6 +137,16 @@ public:
      **/
     ColorOutcome computeColorOutcome(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief A colour plane takes each kept bit from the input's colour plane and 0 on every other
+     * bit; another plane copies the input's layer of the same ID channel by channel, or is all 0
+     * when the input lacks it. The input is read at its stored depth and converted. Only a narrowed
+     * colour plane is rendered: the other layers pass through or are hidden. Never false. cpuOnly
+     * is set when the input read is not float, at its fetched or its stored depth, since the GPU
+     * reads float only and the CPU's conversion is this node's.
+     **/
+    virtual bool channelRoute(double time, ViewIdx view, const ImageLayerDesc& plane, ChannelRoute* route) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_REMOVELAYERS,
         .label = "RemoveLayers",
@@ -181,8 +193,6 @@ private:
 
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief Input 0's present layers at (time, view), and the rows resolved against them.

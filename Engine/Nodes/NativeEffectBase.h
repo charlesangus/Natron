@@ -324,6 +324,34 @@ public:
     }
 
     /**
+     * @brief The layers beyond getGpuInputLayer()'s that renderGpu() also reads input inputNb in
+     * when this node renders plane at time and view, appended to layers. False when the GPU path
+     * cannot read them, which keeps the node on the CPU. The default asks for none.
+     **/
+    virtual bool getGpuExtraInputLayers(int /*inputNb*/,
+                                        const ImageLayerDesc& /*plane*/,
+                                        double /*time*/,
+                                        ViewIdx /*view*/,
+                                        std::vector<ImageLayerDesc>* /*layers*/) const WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    /**
+     * @brief Whether renderGpu() reads input inputNb at all when this node renders plane at time
+     * and view. The region engine hands an unread input over in no layer, so a plane made of
+     * constants never asks its input for a layer the input does not carry. The default reads
+     * every input.
+     **/
+    virtual bool readsGpuInput(int /*inputNb*/,
+                               const ImageLayerDesc& /*plane*/,
+                               double /*time*/,
+                               ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    /**
      * @brief Records the dispatches that fill args.output over args.outputRect. Only called
      * when canRenderOnGpu() accepted args.query; the default fails.
      **/

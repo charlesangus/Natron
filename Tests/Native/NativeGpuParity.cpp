@@ -259,11 +259,16 @@ runRenderGpuOn(GpuParityRuntime& runtime,
                const std::vector<GpuParityImage>& inputs,
                const GpuParityImage* mask,
                const RectI& outputRect,
-               const GpuViewLayout& layout)
+               const GpuViewLayout& layout,
+               const std::vector<GpuParityLayerImage>& layers)
 {
     GpuRunResult result;
 
-    EXPECT_TRUE(effect.canRenderOnGpu(query));
+    GpuQuery planeQuery = query;
+    if (planeQuery.plane == ImageLayerDesc()) {
+        planeQuery.plane = (planeQuery.nComps == 1) ? ImageLayerDesc::getAlphaComponents() : ImageLayerDesc::getRGBAComponents();
+    }
+    EXPECT_TRUE(effect.canRenderOnGpu(planeQuery));
     std::size_t nInputs = inputs.size();
     int maskInput = -1;
     if (mask) {
@@ -294,6 +299,14 @@ runRenderGpuOn(GpuParityRuntime& runtime,
             return result;
         }
     }
+    std::vector<GpuLayerInput> layerInputs(layers.size());
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        layerInputs[i].inputNb = layers[i].inputNb;
+        layerInputs[i].layer = layers[i].layer;
+        if (!uploadInput(runtime, kOutputSlot + 1 + (int)i, layers[i].image, &layerInputs[i].view)) {
+            return result;
+        }
+    }
     gpu::GpuBuffer* dstBuffer = runtime.buffer(kOutputSlot, dst.size());
     if (!dstBuffer || !transfer(runtime.runtime(), *dstBuffer, dst, true)) {
         return result;
@@ -305,9 +318,10 @@ runRenderGpuOn(GpuParityRuntime& runtime,
         return result;
     }
     GpuRenderArgs args(*context);
-    args.query = query;
+    args.query = planeQuery;
     args.outputRect = outputRect;
     args.inputs = views;
+    args.layerInputs = layerInputs;
     args.output.buffer = dstBuffer;
     args.output.byteOffset = (uint64_t)layout.padFloats * sizeof(float);
     args.output.bounds = outBounds;
@@ -348,14 +362,25 @@ runRenderGpuOn(GpuParityRuntime& runtime,
 
 GpuRunResult
 runRenderGpu(GpuParityRuntime& runtime,
-             StagedImageEffect& effect,
+             NativeEffectBase& effect,
              const GpuQuery& query,
              const std::vector<GpuParityImage>& inputs,
              const GpuParityImage* mask,
              const RectI& outputRect,
-             const GpuViewLayout& layout)
+             const GpuViewLayout& layout,
+             const std::vector<GpuParityLayerImage>& layers)
 {
-    return runRenderGpuOn(runtime, effect, mask ? effect.getMaskInput() : -1, query, inputs, mask, outputRect, layout);
+    int maskInput = -1;
+    if (mask) {
+        const StagedImageEffect* staged = dynamic_cast<const StagedImageEffect*>(&effect);
+        EXPECT_TRUE(staged != nullptr) << "only a StagedImageEffect has a mask input";
+        if (!staged) {
+            return GpuRunResult();
+        }
+        maskInput = staged->getMaskInput();
+    }
+
+    return runRenderGpuOn(runtime, effect, maskInput, query, inputs, mask, outputRect, layout, layers);
 }
 
 #endif // NATRON_HAVE_GPU
@@ -535,16 +560,9 @@ placeOnGpu(FrameRun* run,
     const FrameRenderContextPtr context = run->context;
     PlacementInputs inputs;
     inputs.canRenderOnGpu = [gpuNodes, context](const FrameGraph::Task& task) {
-        if (!gpuNodes.count(task.key.node.get())) {
-            return false;
-        }
-        GpuQuery query;
-        if (!makeGpuQueryForTask(task, *context, &query)) {
-            return false;
-        }
-        const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(task.key.node->getEffectInstance().get());
+        std::vector<GpuTaskPlane> planes;
 
-        return native && native->canRenderOnGpu(query);
+        return gpuNodes.count(task.key.node.get()) && makeGpuTaskPlanes(task, *context, &planes);
     };
     inputs.readsRaw = taskReadsRaw;
     placeGraph(run->graph, inputs);

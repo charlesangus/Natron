@@ -25,9 +25,8 @@
 
 #include "RemoveLayers.h"
 
+#include <cstddef>
 #include <list>
-#include <map>
-#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -48,7 +47,7 @@
 NATRON_NAMESPACE_ENTER
 
 RemoveLayers::RemoveLayers(NodePtr node)
-    : NativeEffectBase(node)
+    : ChannelRouteEffect(node)
     , _operation()
     , _channels()
     , _subLabel()
@@ -306,79 +305,56 @@ RemoveLayers::route(double time,
     return Route::input(0, time);
 }
 
-StatusEnum
-RemoveLayers::render(const RenderActionArgs& args)
+bool
+RemoveLayers::channelRoute(double time,
+                           ViewIdx view,
+                           const ImageLayerDesc& plane,
+                           ChannelRoute* route)
 {
+    *route = ChannelRoute();
+
     std::list<ImageLayerDesc> present;
     std::vector<ResolvedLayer> resolved;
-
-    resolveSelection(args.time, args.view, &present, &resolved);
+    resolveSelection(time, view, &present, &resolved);
     const ColorOutcome outcome = colorOutcomeFor(present, resolved);
 
-    struct PlaneCopy {
-        ImagePtr source;
-        std::vector<int> srcChannels;
-    };
-
-    // Every input plane is fetched before any image is locked: fetching renders upstream, which
-    // may write into a cached image this render would otherwise already hold a read lock on.
-    std::vector<PlaneCopy> copies;
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        const ImageLayerDesc& plane = it->first;
-        PlaneCopy copy;
-        copy.srcChannels.assign((std::size_t)plane.getNumComponents(), -1);
-
-        ImageLayerDesc sourceDesc;
-        if (plane.isColorLayer()) {
-            sourceDesc = outcome.inputStorage;
-        } else {
-            for (std::list<ImageLayerDesc>::const_iterator p = present.begin(); p != present.end(); ++p) {
-                if (p->getLayerID() == plane.getLayerID()) {
-                    sourceDesc = *p;
-                    break;
-                }
+    ImageLayerDesc sourceDesc;
+    if (plane.isColorLayer()) {
+        sourceDesc = outcome.inputStorage;
+    } else {
+        for (std::list<ImageLayerDesc>::const_iterator p = present.begin(); p != present.end(); ++p) {
+            if (p->getLayerID() == plane.getLayerID()) {
+                sourceDesc = *p;
+                break;
             }
         }
-        if (sourceDesc.getNumComponents() > 0) {
-            RectI inputRoI;
-            copy.source = getImage(0, args.time, args.mappedScale, args.view, NULL, &sourceDesc, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
-        }
+    }
 
-        if (copy.source && plane.isColorLayer()) {
-            copy.srcChannels = ChannelCopy::mapColorChannels(plane, *copy.source, outcome.keptBits);
-        } else if (copy.source) {
-            const int nAvailable = (int)copy.source->getComponentsCount();
-            for (int c = 0; (c < plane.getNumComponents()) && (c < nAvailable); ++c) {
-                copy.srcChannels[c] = c;
+    const int nPlaneComps = plane.getNumComponents();
+    route->components.assign((std::size_t)nPlaneComps, ChannelRouteComponent::zero());
+    if (sourceDesc.getNumComponents() == 0) {
+        return true;
+    }
+
+    route->sources.push_back(ChannelRouteSource(0, sourceDesc, ChannelRouteSource::eNonFloatConverts));
+    if (plane.isColorLayer()) {
+        for (int c = 0; (c < nPlaneComps) && (c < 4); ++c) {
+            const int bit = ResolvedLayer::channelBit(plane, c);
+            if (outcome.keptBits[bit]) {
+                route->components[c] = ChannelRouteComponent::colorBit(0, bit);
             }
         }
-        copies.push_back(copy);
-    }
-
-    std::map<const Image*, Image::ReadAccessPtr> readAccesses;
-    for (std::vector<PlaneCopy>::const_iterator it = copies.begin(); it != copies.end(); ++it) {
-        if (it->source && (readAccesses.find(it->source.get()) == readAccesses.end())) {
-            readAccesses[it->source.get()] = std::make_shared<Image::ReadAccess>(it->source.get());
+    } else {
+        for (int c = 0; c < nPlaneComps; ++c) {
+            route->components[c] = ChannelRouteComponent::channel(0, c);
         }
     }
 
-    std::vector<PlaneCopy>::const_iterator copy = copies.begin();
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it, ++copy) {
-        const ImagePtr& outImage = it->second;
-        if (!outImage) {
-            continue;
-        }
+    EffectInstancePtr input = getInput(0);
+    route->cpuOnly = input && ((getBitDepth(0) != eImageBitDepthFloat) || (input->getBitDepth(-1) != eImageBitDepthFloat));
 
-        const Image::ReadAccess* src = copy->source ? readAccesses[copy->source.get()].get() : NULL;
-        const ImageBitDepthEnum srcDepth = copy->source ? copy->source->getBitDepth() : outImage->getBitDepth();
-        const StatusEnum stat = ChannelCopy::copyChannels(src, srcDepth, outImage.get(), args.roi, copy->srcChannels, *this);
-        if ((stat != eStatusOK) || aborted()) {
-            return stat;
-        }
-    }
-
-    return eStatusOK;
-} // RemoveLayers::render
+    return true;
+} // RemoveLayers::channelRoute
 
 std::string
 RemoveLayers::buildSubLabel()

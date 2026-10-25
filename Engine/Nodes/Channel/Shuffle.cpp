@@ -26,9 +26,11 @@
 #include "Shuffle.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <list>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <ofxNatron.h>
@@ -101,7 +103,7 @@ configureLayerSelect(const KnobLayerSelectPtr& knob,
 } // namespace
 
 Shuffle::Shuffle(NodePtr node)
-    : NativeEffectBase(node)
+    : ChannelRouteEffect(node)
     , _in1()
     , _in2()
     , _out1()
@@ -776,19 +778,6 @@ Shuffle::getFrameRange(double* first,
 
 namespace {
 
-struct ChannelFill {
-    ImagePtr image;
-    int channel;
-    float constant;
-
-    ChannelFill()
-        : image()
-        , channel(0)
-        , constant(0.f)
-    {
-    }
-};
-
 std::string
 planeChannelName(const ImageLayerDesc& layer,
                  int index)
@@ -797,221 +786,136 @@ planeChannelName(const ImageLayerDesc& layer,
 
     return ((index >= 0) && (index < (int)channels.size())) ? channels[index] : std::string();
 }
-
-// Finds the channel on colour bit in a colour plane of any layout, so an RGB plane has no A
-// and an alpha plane's only channel is A.
-bool
-findColorChannelInPlane(const ImagePtr& image,
-                        int bit,
-                        ChannelFill* fill)
-{
-    if (!image || (bit < 0)) {
-        return false;
-    }
-    const int nChannels = image->getComponents().getNumComponents();
-    const int nComps = (int)image->getComponentsCount();
-    for (int i = 0; (i < nChannels) && (i < nComps) && (i < 4); ++i) {
-        if (colorBitOfIndex(nChannels, i) == bit) {
-            fill->image = image;
-            fill->channel = i;
-
-            return true;
-        }
-    }
-
-    return false;
-}
-
-bool
-findChannelInPlane(const ImagePtr& image,
-                   const std::string& channelName,
-                   ChannelFill* fill)
-{
-    if (!image || channelName.empty()) {
-        return false;
-    }
-    const std::vector<std::string>& channels = image->getComponents().getChannels();
-    const int nComps = (int)image->getComponentsCount();
-    for (int i = 0; (i < (int)channels.size()) && (i < nComps); ++i) {
-        if (channels[i] == channelName) {
-            fill->image = image;
-            fill->channel = i;
-
-            return true;
-        }
-    }
-
-    return false;
-}
 } // namespace
 
-ImagePtr
-Shuffle::fetchInputPlane(const RenderActionArgs& args,
-                         int inputNb,
-                         const std::string& layerID,
-                         std::vector<FetchedPlane>* fetched)
+bool
+Shuffle::channelRoute(double time,
+                      ViewIdx view,
+                      const ImageLayerDesc& plane,
+                      ChannelRoute* route)
 {
-    for (std::vector<FetchedPlane>::const_iterator it = fetched->begin(); it != fetched->end(); ++it) {
-        if ((it->inputNb == inputNb) && (it->layerID == layerID)) {
-            return it->image;
-        }
-    }
+    *route = ChannelRoute();
 
-    FetchedPlane plane;
-    plane.inputNb = inputNb;
-    plane.layerID = layerID;
-    if (getInput(inputNb)) {
-        std::list<ImageLayerDesc> present;
-        getPresentLayers(args.time, args.view, inputNb, &present);
-        ImageLayerDesc desc;
-        if (findLayer(present, layerID, &desc)) {
-            RectI inputRoI;
-            plane.image = getImage(inputNb, args.time, args.mappedScale, args.view, NULL, &desc, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
-            if (plane.image && (plane.image->getBitDepth() != eImageBitDepthFloat)) {
-                plane.image.reset();
+    const std::string outputLayers[2] = { getOutputLayer(1), getOutputLayer(2) };
+    std::map<int, std::list<ImageLayerDesc>> presentByInput;
+
+    // The plane of layerID that inputNb carries at (time, view), as the CPU fetches it.
+    const auto findInputPlane = [&](int inputNb,
+                                    const std::string& layerID,
+                                    ImageLayerDesc* desc) {
+        if (!getInput(inputNb)) {
+            return false;
+        }
+        std::map<int, std::list<ImageLayerDesc>>::iterator present = presentByInput.find(inputNb);
+        if (present == presentByInput.end()) {
+            present = presentByInput.insert(std::make_pair(inputNb, std::list<ImageLayerDesc>())).first;
+            getPresentLayers(time, view, inputNb, &present->second);
+        }
+
+        return findLayer(present->second, layerID, desc);
+    };
+
+    const auto sourceIndex = [&](int inputNb,
+                                 const ImageLayerDesc& layer) {
+        for (std::size_t i = 0; i < route->sources.size(); ++i) {
+            const ChannelRouteSource& source = route->sources[i];
+            if ((source.inputNb == inputNb) && (source.layer == layer) && (source.layer.getChannels() == layer.getChannels())) {
+                return (int)i;
             }
         }
-    }
-    fetched->push_back(plane);
+        route->sources.push_back(ChannelRouteSource(inputNb, layer, ChannelRouteSource::eNonFloatReadsZero));
 
-    return plane.image;
-}
+        return (int)route->sources.size() - 1;
+    };
 
-StatusEnum
-Shuffle::render(const RenderActionArgs& args)
-{
-    const std::string outputLayers[2] = { getOutputLayer(1), getOutputLayer(2) };
-    std::vector<FetchedPlane> fetched;
+    // Colour views alias the one colour plane, which is fetched whatever view reads it.
+    const auto colorComponent = [&](int inputNb,
+                                    int bit) {
+        ImageLayerDesc desc;
+        if ((bit < 0) || !findInputPlane(inputNb, kNatronColorLayerID, &desc)) {
+            return ChannelRouteComponent::zero();
+        }
 
-    const auto fillFromSource = [&](const ShuffleSource& src,
-                                    ChannelFill* fill) {
+        return ChannelRouteComponent::colorBit(sourceIndex(inputNb, desc), bit);
+    };
+
+    const auto sourceComponent = [&](const ShuffleSource& src) {
         if (src.kind == ShuffleSource::eOne) {
-            fill->constant = 1.f;
-
-            return;
+            return ChannelRouteComponent::one();
         }
         if ((src.kind != ShuffleSource::eInput) || ((src.slot != 1) && (src.slot != 2))) {
-            return;
+            return ChannelRouteComponent::zero();
         }
         const std::string slotLayer = getSlotLayer(src.slot);
         if (slotLayer.empty()) {
-            return;
+            return ChannelRouteComponent::zero();
         }
         const int inputNb = getSlotInput(src.slot);
         if (ImageLayerDesc::isColorViewID(slotLayer)) {
-            findColorChannelInPlane(fetchInputPlane(args, inputNb, kNatronColorLayerID, &fetched), ImageLayerDesc::colorViewChannelBit(slotLayer, src.index), fill);
+            return colorComponent(inputNb, ImageLayerDesc::colorViewChannelBit(slotLayer, src.index));
+        }
+        ImageLayerDesc desc;
+        if (!findInputPlane(inputNb, slotLayer, &desc)) {
+            return ChannelRouteComponent::zero();
+        }
+        // Looked up by name, so a layer listing a channel name twice reads its first channel of
+        // that name.
+        const std::string channelName = planeChannelName(desc, src.index);
+        const std::vector<std::string>& channels = desc.getChannels();
+        const std::vector<std::string>::const_iterator found = channelName.empty() ? channels.end() : std::find(channels.begin(), channels.end(), channelName);
+        if (found == channels.end()) {
+            return ChannelRouteComponent::zero();
+        }
 
-            return;
-        }
-        ImagePtr slotImage = fetchInputPlane(args, inputNb, slotLayer, &fetched);
-        if (slotImage) {
-            findChannelInPlane(slotImage, planeChannelName(slotImage->getComponents(), src.index), fill);
-        }
+        return ChannelRouteComponent::channel(sourceIndex(inputNb, desc), (int)(found - channels.begin()));
     };
 
-    // Every input plane is fetched before any image is locked: fetching renders upstream, which
-    // may write into a cached image this render would otherwise already hold a read lock on.
-    std::vector<std::vector<ChannelFill>> fills;
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        const ImageLayerDesc& plane = it->first;
-        const int nPlaneComps = plane.getNumComponents();
-        std::vector<ChannelFill> planeFills((std::size_t)nPlaneComps);
-
-        if (plane.isColorLayer()) {
-            // The output views share this one plane by bit: a bit a view covers takes that
-            // view's source, every other bit is the main input's.
-            for (int c = 0; (c < nPlaneComps) && (c < 4); ++c) {
-                const int bit = colorBitOfIndex(nPlaneComps, c);
-                int outSlot = 0;
-                int outIndex = -1;
-                for (int slot = 1; slot <= 2; ++slot) {
-                    if (ImageLayerDesc::isColorViewID(outputLayers[slot - 1])) {
-                        outIndex = ImageLayerDesc::colorViewChannelIndex(outputLayers[slot - 1], bit);
-                        if (outIndex >= 0) {
-                            outSlot = slot;
-                            break;
-                        }
-                    }
-                }
-                if (outSlot) {
-                    fillFromSource(getEffectiveSource(outSlot, outIndex, args.time, args.view), &planeFills[c]);
-                } else {
-                    findColorChannelInPlane(fetchInputPlane(args, (int)eInputMain, kNatronColorLayerID, &fetched), bit, &planeFills[c]);
-                }
-            }
-        } else {
+    const int nPlaneComps = plane.getNumComponents();
+    route->components.assign((std::size_t)nPlaneComps, ChannelRouteComponent::zero());
+    if (plane.isColorLayer()) {
+        // The output views share this one plane by bit: a bit a view covers takes that view's
+        // source, every other bit is the main input's.
+        for (int c = 0; (c < nPlaneComps) && (c < 4); ++c) {
+            const int bit = colorBitOfIndex(nPlaneComps, c);
             int outSlot = 0;
+            int outIndex = -1;
             for (int slot = 1; slot <= 2; ++slot) {
-                if (!outputLayers[slot - 1].empty() && (outputLayers[slot - 1] == plane.getLayerID())) {
-                    outSlot = slot;
-                    break;
-                }
-            }
-            for (int c = 0; outSlot && (c < nPlaneComps); ++c) {
-                fillFromSource(getEffectiveSource(outSlot, c, args.time, args.view), &planeFills[c]);
-            }
-        }
-        fills.push_back(planeFills);
-    }
-
-    std::map<const Image*, Image::ReadAccessPtr> readAccesses;
-    for (std::vector<FetchedPlane>::const_iterator it = fetched.begin(); it != fetched.end(); ++it) {
-        if (it->image && (readAccesses.find(it->image.get()) == readAccesses.end())) {
-            readAccesses[it->image.get()] = std::make_shared<Image::ReadAccess>(it->image.get());
-        }
-    }
-
-    std::vector<std::vector<ChannelFill>>::const_iterator planeFills = fills.begin();
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it, ++planeFills) {
-        const ImagePtr& outImage = it->second;
-        if (!outImage) {
-            continue;
-        }
-        if (outImage->getBitDepth() != eImageBitDepthFloat) {
-            return eStatusFailed;
-        }
-
-        // The image can be wider than the plane (a plane with no same-sized supported layout);
-        // the host reads channel c of the plane back from channel c of the image.
-        const int dstComps = (int)outImage->getComponentsCount();
-        const int planeComps = std::min(dstComps, (int)planeFills->size());
-        std::vector<const Image::ReadAccess*> sources((std::size_t)planeComps, nullptr);
-        for (int c = 0; c < planeComps; ++c) {
-            const ChannelFill& fill = (*planeFills)[c];
-            if (fill.image) {
-                sources[c] = readAccesses[fill.image.get()].get();
-            }
-        }
-
-        Image::WriteAccess dst(outImage.get());
-        for (int y = args.roi.y1; y < args.roi.y2; ++y) {
-            if (aborted()) {
-                return eStatusOK;
-            }
-            for (int x = args.roi.x1; x < args.roi.x2; ++x) {
-                float* out = (float*)dst.pixelAt(x, y);
-                if (!out) {
-                    continue;
-                }
-                for (int c = 0; c < dstComps; ++c) {
-                    float value = 0.f;
-                    if (c < planeComps) {
-                        const ChannelFill& fill = (*planeFills)[c];
-                        if (sources[c]) {
-                            const float* in = (const float*)sources[c]->pixelAt(x, y);
-                            value = in ? in[fill.channel] : 0.f;
-                        } else {
-                            value = fill.constant;
-                        }
+                if (ImageLayerDesc::isColorViewID(outputLayers[slot - 1])) {
+                    outIndex = ImageLayerDesc::colorViewChannelIndex(outputLayers[slot - 1], bit);
+                    if (outIndex >= 0) {
+                        outSlot = slot;
+                        break;
                     }
-                    out[c] = value;
                 }
             }
+            route->components[c] = outSlot ? sourceComponent(getEffectiveSource(outSlot, outIndex, time, view)) : colorComponent((int)eInputMain, bit);
+        }
+    } else {
+        int outSlot = 0;
+        for (int slot = 1; slot <= 2; ++slot) {
+            if (!outputLayers[slot - 1].empty() && (outputLayers[slot - 1] == plane.getLayerID())) {
+                outSlot = slot;
+                break;
+            }
+        }
+        for (int c = 0; outSlot && (c < nPlaneComps); ++c) {
+            route->components[c] = sourceComponent(getEffectiveSource(outSlot, c, time, view));
         }
     }
 
-    return eStatusOK;
-} // Shuffle::render
+    // A channel the engine's pre-render check fails on keeps the GPU off, so that the CPU reports
+    // it. Region slots are float, so a source the CPU reads as 0 for not being float would reach
+    // the GPU converted.
+    route->cpuOnly = !checkExtraChannelsPresent(time, view, NULL);
+    for (const ChannelRouteSource& source : route->sources) {
+        EffectInstancePtr input = getInput(source.inputNb);
+        if (input && ((getBitDepth(source.inputNb) != eImageBitDepthFloat) || (input->getBitDepth(-1) != eImageBitDepthFloat))) {
+            route->cpuOnly = true;
+        }
+    }
+
+    return true;
+} // Shuffle::channelRoute
 
 bool
 Shuffle::checkExtraChannelsPresent(double time,

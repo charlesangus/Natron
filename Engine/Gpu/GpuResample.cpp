@@ -3,8 +3,10 @@
 #include "GpuRecord.h"
 
 #include <algorithm>
+#include <bit>
 #include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <string>
 
@@ -15,6 +17,22 @@ namespace {
     constexpr uint32_t kFlagClamp = 1;
     constexpr uint32_t kFlagBlackOutside = 2;
     constexpr uint32_t kFlagSrcValid = 4;
+    constexpr uint32_t kFlagExactRowX = 8;
+    constexpr uint32_t kFlagExactRowY = 16;
+
+    // Mirrors kFilterImpulse, kFilterBox and kFilterMitchell in Kernels/resample.slang.
+    constexpr uint32_t kFilterImpulse = 0;
+    constexpr uint32_t kFilterBox = 1;
+    constexpr uint32_t kFilterMitchell = 7;
+
+    // The filters whose output jumps where a floor of the CPU's double position changes run the
+    // kernels that take those doubles bit for bit: impulse and box, and clamped Mitchell, which
+    // unlike the other clamped filters does not pass through its centre samples, so its clamp
+    // range changes at a tap boundary with the value away from the range's shared end.
+    bool exactPositions(uint32_t filter, bool clamp)
+    {
+        return filter == kFilterImpulse || filter == kFilterBox || (clamp && filter == kFilterMitchell);
+    }
 
     GpuStatus invalid(const char* what)
     {
@@ -59,6 +77,70 @@ namespace {
         return u;
     }
 
+    void doubleBits(double v, uint32_t* words)
+    {
+        uint64_t u;
+        std::memcpy(&u, &v, sizeof(u));
+        words[0] = static_cast<uint32_t>(u);
+        words[1] = static_cast<uint32_t>(u >> 32);
+    }
+
+    // The twelve matrix words the kernel for `exact` reads, as GpuResampleParams::matrix lays them out.
+    void packMatrix(const std::array<double, 6>& matrix, bool exact, uint32_t* words)
+    {
+        for (int k = 0; k < 6; ++k) {
+            if (exact) {
+                doubleBits(matrix[k], &words[2 * k]);
+            } else {
+                float hi, lo;
+                splitDouble(matrix[k], hi, lo);
+                words[k] = floatBits(hi);
+                words[6 + k] = floatBits(lo);
+            }
+        }
+    }
+
+    // The exponent of v's lowest set bit, for v nonzero and finite.
+    int lowestBit(double v)
+    {
+        int e = 0;
+        const double m = std::frexp(std::fabs(v), &e);
+        return e - 53 + std::countr_zero(static_cast<uint64_t>(std::ldexp(m, 53)));
+    }
+
+    // Whether h0 (x + 0.5) + h1 (y + 0.5) + h2, and it plus or minus a half, is exact in floats at
+    // every pixel of `output`: every term and partial sum is then a multiple of 2^q below 2^(q + 24).
+    // The exact kernels' two-float positions are then the CPU's doubles, so a position on an
+    // integer, which an exact scale puts every pixel on, needs no emulated doubles.
+    bool rowExactInFloats(double h0, double h1, double h2, const GpuBlurRect& output)
+    {
+        for (double h : { h0, h1, h2 }) {
+            if (!(std::fabs(h) < 0x1p100) || static_cast<double>(static_cast<float>(h)) != h) {
+                return false;
+            }
+        }
+        int q = -1;
+        if (h0 != 0.) {
+            q = std::min(q, lowestBit(h0) - 1);
+        }
+        if (h1 != 0.) {
+            q = std::min(q, lowestBit(h1) - 1);
+        }
+        if (h2 != 0.) {
+            q = std::min(q, lowestBit(h2));
+        }
+        const double px = std::max(std::fabs(output.x1 + 0.5), std::fabs(output.x2 - 0.5));
+        const double py = std::max(std::fabs(output.y1 + 0.5), std::fabs(output.y2 - 0.5));
+        // A bit to spare for the rounding of the bound itself.
+        return std::fabs(h0) * px + std::fabs(h1) * py + std::fabs(h2) + 0.5 < std::ldexp(1., q + 23);
+    }
+
+    uint32_t exactRowFlags(const std::array<double, 6>& m, const GpuBlurRect& output)
+    {
+        return (rowExactInFloats(m[0], m[1], m[2], output) ? kFlagExactRowX : 0u)
+            | (rowExactInFloats(m[3], m[4], m[5], output) ? kFlagExactRowY : 0u);
+    }
+
     uint32_t packStates(const std::array<GpuResampleJacobian, 4>& jacobians)
     {
         uint32_t states = 0;
@@ -91,6 +173,23 @@ namespace {
         return {};
     }
 
+    // Mirrors kOffsetFlagMatte in Kernels/offset.slang.
+    constexpr uint32_t kOffsetFlagMatte = 1;
+
+    GpuStatus uploadWords(GpuRecordContext& ctx, std::span<const std::byte> bytes, GpuBuffer*& out)
+    {
+        if (GpuStatus s = ctx.scratch(bytes.size(), out); !s) {
+            return s;
+        }
+        for (std::size_t offset = 0; offset < bytes.size(); offset += kUpdateChunkBytes) {
+            const std::size_t n = std::min(kUpdateChunkBytes, bytes.size() - offset);
+            if (GpuStatus s = ctx.updateBuffer(*out, offset, bytes.subspan(offset, n)); !s) {
+                return s;
+            }
+        }
+        return {};
+    }
+
     GpuStatus uploadBlurMatrices(GpuRecordContext& ctx, const GpuResample& r, GpuBuffer*& out)
     {
         const GpuResampleBlur& b = r.blur;
@@ -107,27 +206,16 @@ namespace {
         for (std::size_t i = 0; i < r.matrices.size(); ++i) {
             const GpuResampleMatrix& m = r.matrices[i];
             uint32_t* w = &words[kBlurHeaderWords + i * kBlurMatrixWords];
-            for (int k = 0; k < 6; ++k) {
-                splitDouble(m.matrix[k], hi, lo);
-                w[k] = floatBits(hi);
-                w[6 + k] = floatBits(lo);
-            }
+            packMatrix(m.matrix, exactPositions(r.filter, r.clamp), w);
             w[12] = packStates(m.jacobians);
             splitDouble(m.weight, hi, lo);
             w[13] = floatBits(hi);
             w[14] = floatBits(lo);
-        }
-        const std::span<const std::byte> bytes = std::as_bytes(std::span<const uint32_t>(words));
-        if (GpuStatus s = ctx.scratch(bytes.size(), out); !s) {
-            return s;
-        }
-        for (std::size_t offset = 0; offset < bytes.size(); offset += kUpdateChunkBytes) {
-            const std::size_t n = std::min(kUpdateChunkBytes, bytes.size() - offset);
-            if (GpuStatus s = ctx.updateBuffer(*out, offset, bytes.subspan(offset, n)); !s) {
-                return s;
+            if (exactPositions(r.filter, r.clamp)) {
+                w[15] = exactRowFlags(m.matrix, r.output) / kFlagExactRowX;
             }
         }
-        return {};
+        return uploadWords(ctx, std::as_bytes(std::span<const uint32_t>(words)), out);
     }
 
 } // namespace
@@ -186,20 +274,98 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     // An invalid source is never read, but the binding still needs a buffer, and so does the
     // matrices' binding when they travel in the push constants.
     const GpuBuffer* src = srcValid ? r.src.buffer : r.dst.buffer;
+    const bool exact = exactPositions(r.filter, r.clamp);
     if (!blurred) {
         const GpuResampleMatrix& m = r.matrices[0];
-        for (int k = 0; k < 6; ++k) {
-            splitDouble(m.matrix[k], p.hHi[k], p.hLo[k]);
-        }
+        packMatrix(m.matrix, exact, p.matrix);
         p.states = packStates(m.jacobians);
-        return ctx.dispatch(GpuKernelId::resample, { src, r.dst.buffer, r.dst.buffer }, p, { p.width, p.height, 1 });
+        if (exact) {
+            p.flags |= exactRowFlags(m.matrix, r.output);
+        }
+        return ctx.dispatch(exact ? GpuKernelId::resample_exact : GpuKernelId::resample, { src, r.dst.buffer, r.dst.buffer }, p,
+                            { p.width, p.height, 1 });
     }
 
     GpuBuffer* matrices = nullptr;
     if (GpuStatus s = uploadBlurMatrices(ctx, r, matrices); !s) {
         return s;
     }
-    return ctx.dispatch(GpuKernelId::resample_blur, { src, r.dst.buffer, matrices }, p, { p.width, p.height, 1 });
+    return ctx.dispatch(exact ? GpuKernelId::resample_blur_exact : GpuKernelId::resample_blur, { src, r.dst.buffer, matrices }, p,
+                        { p.width, p.height, 1 });
+}
+
+GpuStatus
+recordOffset(GpuRecordContext& ctx, const GpuOffset& o)
+{
+    if (o.channels == 0 || o.channels > kGpuResampleMaxChannels) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, "recordOffset: unsupported channel count" };
+    }
+    if (!o.dst.buffer || o.output.empty() || !contains(o.dst.bounds, o.output)) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "recordOffset: invalid destination window" };
+    }
+
+    GpuOffsetParams p {};
+    p.width = uint32_t(o.output.x2 - o.output.x1);
+    p.height = uint32_t(o.output.y2 - o.output.y1);
+    p.dstStride = o.dst.strideFloats;
+    p.nComps = o.channels;
+    if (!floatIndex(o.dst, o.output.x1, o.output.y1, o.channels, p.dstOffset)) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "recordOffset: destination exceeds 32-bit indexing" };
+    }
+
+    bool srcValid = o.src.buffer && !o.src.bounds.empty();
+    if (srcValid) {
+        const int64_t sx0 = int64_t(o.output.x1) - o.dx;
+        const int64_t sy0 = int64_t(o.output.y1) - o.dy;
+        const auto threads = [](int64_t v, uint32_t n) { return uint32_t(std::clamp<int64_t>(v, 0, int64_t(n))); };
+        p.validX1 = threads(int64_t(o.src.bounds.x1) - sx0, p.width);
+        p.validX2 = threads(int64_t(o.src.bounds.x2) - sx0, p.width);
+        p.validY1 = threads(int64_t(o.src.bounds.y1) - sy0, p.height);
+        p.validY2 = threads(int64_t(o.src.bounds.y2) - sy0, p.height);
+        srcValid = p.validX1 < p.validX2 && p.validY1 < p.validY2;
+        if (srcValid) {
+            p.srcStride = o.src.strideFloats;
+            if (!floatIndex(o.src, int32_t(sx0 + p.validX1), int32_t(sy0 + p.validY1), o.channels, p.srcOffset)) {
+                return { VK_ERROR_INITIALIZATION_FAILED, "recordOffset: source exceeds 32-bit indexing" };
+            }
+        } else {
+            p.validX1 = p.validX2 = p.validY1 = p.validY2 = 0;
+        }
+    }
+
+    const bool matted = !o.columnWeights.empty() || !o.rowWeights.empty() || !o.blackColumns.empty() || !o.blackRows.empty();
+    if (matted
+        && (o.columnWeights.size() != p.width || o.rowWeights.size() != p.height || o.blackColumns.size() != p.width || o.blackRows.size() != p.height)) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "recordOffset: the matte does not cover the destination window" };
+    }
+
+    // An invalid source is never read, but the binding still needs a buffer, and so does the
+    // weights' binding without a matte.
+    const GpuBuffer* src = srcValid ? o.src.buffer : o.dst.buffer;
+    const GpuBuffer* weights = o.dst.buffer;
+    if (matted) {
+        std::vector<float> entries;
+        entries.reserve(3 * (o.columnWeights.size() + o.rowWeights.size()));
+        const auto push = [&entries](const std::vector<double>& axis, const std::vector<unsigned char>& black) {
+            for (std::size_t i = 0; i < axis.size(); ++i) {
+                float hi, lo;
+                splitDouble(axis[i], hi, lo);
+                entries.push_back(hi);
+                entries.push_back(lo);
+                entries.push_back(black[i] ? 1.f : 0.f);
+            }
+        };
+        push(o.columnWeights, o.blackColumns);
+        push(o.rowWeights, o.blackRows);
+        GpuBuffer* table = nullptr;
+        if (GpuStatus s = uploadWords(ctx, std::as_bytes(std::span<const float>(entries)), table); !s) {
+            return s;
+        }
+        weights = table;
+        p.flags = kOffsetFlagMatte;
+        p.rowWeights = 3 * p.width;
+    }
+    return ctx.dispatch(GpuKernelId::offset, { src, o.dst.buffer, weights }, p, { p.width, p.height, 1 });
 }
 
 } // namespace gpu

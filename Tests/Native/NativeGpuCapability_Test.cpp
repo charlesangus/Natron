@@ -37,6 +37,9 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/AddLayers.h"
+#include "Engine/Nodes/Channel/RemoveLayers.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
@@ -45,15 +48,20 @@
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
+#include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/Nodes/Transform/Crop.h"
+#include "Engine/Nodes/Transform/Position.h"
+#include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
@@ -83,10 +91,19 @@ gpuCapableIds()
         PLUGINID_NATRON_DILATE,
         PLUGINID_NATRON_TRANSFORM,
         PLUGINID_NATRON_TRANSFORMMASKED,
+        PLUGINID_NATRON_REFORMAT,
+        PLUGINID_NATRON_POSITION,
+        PLUGINID_NATRON_CROP,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_RAWINPUTCOLOR,
         PLUGINID_NATRON_RAWCOLORCALIBRATION,
+        PLUGINID_NATRON_DISSOLVE,
+        PLUGINID_NATRON_EDGEDETECT,
+        PLUGINID_NATRON_SHUFFLE,
+        PLUGINID_NATRON_SHUFFLECOPY,
+        PLUGINID_NATRON_ADDLAYERS,
+        PLUGINID_NATRON_REMOVELAYERS,
     };
 
     return ids;

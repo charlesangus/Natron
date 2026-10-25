@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cassert>
 #include <iterator>
+#include <list>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -53,29 +54,162 @@
 
 NATRON_NAMESPACE_ENTER
 
-static void
-mergeRequestedComponents(FrameRequestMap& requests,
-                         FrameViewRequest* target,
-                         const std::list<ImageLayerDesc>& comps)
+namespace {
+
+/**
+ * @brief Layers asked of one frame/view at the mipmap level its consumer reads it at.
+ **/
+struct PlanesRequest {
+    NodePtr node;
+    double time = 0.;
+    ViewIdx view;
+    unsigned int mipmapLevel = 0;
+    std::list<ImageLayerDesc> comps;
+};
+
+/**
+ * @brief Queues on pending the layers of added that the effect of request passes through rather than produces, asked
+ * of its pass-through input at the pass-through time and view and at request's mipmap level, where renderRoI() fetches
+ * them, so its task renders the layer and the fetch finds it in the frame store.
+ * A target that needs nothing from that input has no edge to it, yet renderRoI() still pulls the layer from it, so the
+ * edge is added here when the input's frame/view was walked over the target's whole RoI: the pull becomes planned.
+ * Only a requested layer that resolves to a pass-through adds one, so a graph that passes nothing through is unchanged.
+ **/
+void
+queuePassThroughPlanes(FrameRequestMap& requests,
+                       const PlanesRequest& request,
+                       FrameViewRequest* target,
+                       const std::list<ImageLayerDesc>& added,
+                       std::vector<PlanesRequest>* pending)
 {
-    // An identity frame/view renders nothing itself, so whatever is requested from it is requested from its alias
-    // target. Targets already hold everything their identity source held, so the walk stops once nothing is new.
-    while (target) {
-        bool added = false;
-        for (std::list<ImageLayerDesc>::const_iterator it = comps.begin(); it != comps.end(); ++it) {
-            if (std::find(target->componentsRequested.begin(), target->componentsRequested.end(), *it) == target->componentsRequested.end()) {
-                target->componentsRequested.push_back(*it);
-                added = true;
-            }
+    const EffectInstancePtr effect = request.node->getEffectInstance();
+    FrameRequestMap::const_iterator nodeRequest = requests.find(request.node);
+    if (!effect || (nodeRequest == requests.end()) || !nodeRequest->second) {
+        return;
+    }
+    EffectInstance::ComponentsNeededMap neededComps;
+    std::list<ImageLayerDesc> passThroughLayers;
+    double passThroughTime = 0.;
+    int passThroughView = 0;
+    std::bitset<4> processChannels;
+    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    int passThroughInput = -1;
+    effect->getComponentsNeededAndProduced_public(nodeRequest->second->nodeHash, request.time, request.view, &neededComps, &passThroughLayers, &passThroughTime,
+                                                  &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInput);
+    // renderRoI() returns no plane at all from an effect that declares no output layers.
+    const EffectInstance::ComponentsNeededMap::const_iterator produced = neededComps.find(-1);
+    const EffectInstancePtr input = (passThroughInput >= 0) ? effect->getInput(passThroughInput) : EffectInstancePtr();
+    if ((produced == neededComps.end()) || passThroughLayers.empty() || !input) {
+        return;
+    }
+
+    PlanesRequest passed;
+    passed.node = input->getNode();
+    passed.time = passThroughTime;
+    passed.view = ViewIdx(passThroughView);
+    passed.mipmapLevel = request.mipmapLevel;
+    for (const ImageLayerDesc& layer : added) {
+        if (ImageLayerDesc::findEquivalentLayer(layer, produced->second.begin(), produced->second.end()) != produced->second.end()) {
+            continue;
         }
-        if (!added || !target->globalData.isIdentity || target->dependencies.empty()) {
+        const std::list<ImageLayerDesc>::const_iterator found = ImageLayerDesc::findEquivalentLayer(layer, passThroughLayers.cbegin(), passThroughLayers.cend());
+        if (found != passThroughLayers.cend()) {
+            passed.comps.push_back(*found);
+        }
+    }
+    if (passed.comps.empty()) {
+        return;
+    }
+
+    bool walked = false;
+    for (const FrameViewRequest::TaskEdge& edge : target->dependencies) {
+        if ((edge.inputNb == passThroughInput) && (edge.time == passed.time) && (edge.view == passed.view) && (edge.node.lock() == passed.node)) {
+            // An edge at another level is a task the fetch does not read, and a second task at this level would
+            // render the input twice, so the pull stays as it was.
+            if (edge.mipmapLevel != passed.mipmapLevel) {
+                return;
+            }
+            walked = true;
+            break;
+        }
+    }
+    if (!walked) {
+        FrameViewRequest* inputRequest = requests.findFrameViewRequest(passed.node, passed.time, passed.view);
+        if (!inputRequest || inputRequest->finalData.finalRoi.isNull() || !inputRequest->finalData.finalRoi.contains(target->finalData.finalRoi)) {
             return;
         }
-        const FrameViewRequest::TaskEdge& alias = target->dependencies.front();
-        NodePtr aliasNode = alias.node.lock();
-        target = aliasNode ? requests.findFrameViewRequest(aliasNode, alias.time, alias.view) : 0;
+        // Every dependency must stay numbered before its consumer.
+        if ((inputRequest->dfsPostOrder == -1) || (target->dfsPostOrder == -1) || (inputRequest->dfsPostOrder >= target->dfsPostOrder)) {
+            return;
+        }
+        FrameViewRequest::TaskEdge edge;
+        edge.node = passed.node;
+        edge.time = passed.time;
+        edge.view = passed.view;
+        edge.mipmapLevel = passed.mipmapLevel;
+        edge.inputNb = passThroughInput;
+        target->dependencies.push_back(edge);
+        ++inputRequest->consumers;
     }
-}
+
+    pending->push_back(std::move(passed));
+} // queuePassThroughPlanes
+
+} // namespace
+
+static void
+mergeRequestedComponents(FrameRequestMap& requests,
+                         const NodePtr& node,
+                         double time,
+                         ViewIdx view,
+                         unsigned int mipmapLevel,
+                         const std::list<ImageLayerDesc>& comps)
+{
+    std::vector<PlanesRequest> pending(1);
+    pending.front().node = node;
+    pending.front().time = time;
+    pending.front().view = view;
+    pending.front().mipmapLevel = mipmapLevel;
+    pending.front().comps = comps;
+
+    // Targets already hold everything their identity source or pass-through consumer held, so a walk stops once
+    // nothing is new.
+    while (!pending.empty()) {
+        const PlanesRequest request = std::move(pending.back());
+        pending.pop_back();
+        FrameViewRequest* target = request.node ? requests.findFrameViewRequest(request.node, request.time, request.view) : 0;
+        if (!target) {
+            continue;
+        }
+        std::list<ImageLayerDesc> added;
+        for (const ImageLayerDesc& layer : request.comps) {
+            if (std::find(target->componentsRequested.begin(), target->componentsRequested.end(), layer) == target->componentsRequested.end()) {
+                target->componentsRequested.push_back(layer);
+                added.push_back(layer);
+            }
+        }
+        if (added.empty()) {
+            continue;
+        }
+        if (target->globalData.isIdentity) {
+            if (target->dependencies.empty()) {
+                continue;
+            }
+            // An identity frame/view renders nothing itself, so whatever is requested from it is requested from its
+            // alias target.
+            const FrameViewRequest::TaskEdge& alias = target->dependencies.front();
+            PlanesRequest aliased;
+            aliased.node = alias.node.lock();
+            aliased.time = alias.time;
+            aliased.view = alias.view;
+            aliased.mipmapLevel = alias.mipmapLevel;
+            aliased.comps = request.comps;
+            pending.push_back(std::move(aliased));
+            continue;
+        }
+        queuePassThroughPlanes(requests, request, target, added, &pending);
+    }
+} // mergeRequestedComponents
 
 static void
 addTaskEdge(FrameRequestMap& requests,
@@ -112,7 +246,7 @@ addTaskEdge(FrameRequestMap& requests,
         ++input->consumers;
     }
 
-    mergeRequestedComponents(requests, input, comps);
+    mergeRequestedComponents(requests, inputNode, inputTime, inputView, mipmapLevel, comps);
 }
 
 static void
@@ -820,7 +954,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
             addTaskEdge(requests, item.consumer, item.node, item.time, item.view, item.mipmapLevel, item.inputNb, *item.comps);
             break;
         case RequestPassItem::eKindInputComponents:
-            mergeRequestedComponents(requests, requests.findFrameViewRequest(item.node, item.time, item.view), *item.comps);
+            mergeRequestedComponents(requests, item.node, item.time, item.view, item.mipmapLevel, *item.comps);
             break;
         case RequestPassItem::eKindIdentityEdge: {
             // The alias carries what consumers had requested from the identity frame/view before its target was walked.

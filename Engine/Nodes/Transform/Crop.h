@@ -38,7 +38,7 @@
 #include "Engine/ViewIdx.h"
 
 #define PLUGINID_NATRON_CROP "net.sf.openfx.CropPlugin"
-#define PLUGIN_MAJOR_NATRON_CROP 2
+#define PLUGIN_MAJOR_NATRON_CROP 3
 
 #define kCropParamSoftness "softness"
 #define kCropParamReformat "reformat"
@@ -88,6 +88,8 @@ struct CropOp {
 
     static constexpr bool kClipsSourceToRoI = true;
 
+    static constexpr bool kResamplesOnGpu = true;
+
     Params bake(const KnobReader& reader) const;
 
     /**
@@ -104,10 +106,14 @@ struct CropOp {
                        const PassContext& context) const;
 
     /**
-     * @brief The black border and the softness fade, or an empty matte when neither applies.
+     * @brief The black border and the softness fade, or an unset matte when neither applies. Each
+     * axis weighs 0 on the border pixels and, with blackOutside, outside the rectangle; else 1 at
+     * least softness inside it, and the smoothstep of the distance over softness nearer the edge.
+     * The fade is the product of the two axes' smoothsteps, and every black pixel lies on a black
+     * row or column, which makes the matte separable.
      **/
-    ResampleRowMatte rowMatte(const Params& params,
-                              const PassContext& context) const;
+    ResampleMatte matte(const Params& params,
+                        const PassContext& context) const;
 
     const Crop* crop = nullptr;
     KnobDoubleWPtr softness;
@@ -115,7 +121,7 @@ struct CropOp {
     KnobBoolWPtr blackOutside;
 };
 
-static_assert(ResampleOp<CropOp> && !MatrixResampleOp<CropOp>);
+static_assert(GpuOffsetResampleOp<CropOp> && !MatrixResampleOp<CropOp>);
 
 /**
  * @brief Crop: keeps the pixels inside a rectangle, optionally fading them to black at its edges
@@ -125,8 +131,10 @@ static_assert(ResampleOp<CropOp> && !MatrixResampleOp<CropOp>);
  * (Format, Size, Project or Default, with Size as the initial extent), shown with the host
  * rectangle overlay while it is editable. Knob names, defaults, region of definition, clip
  * preferences and per-pixel arithmetic are the openfx-misc CropPlugin's, except that reformat
- * there sets the output format for the Format and Project extents only; it registers under that
- * plug-in's ID one major above.
+ * there sets the output format for the Format and Project extents only, and that a pixel whose
+ * fade weight is exactly 0 (its centre on the rectangle's edge, without blackOutside) is written
+ * 0 rather than multiplied, so a NaN or infinite source pixel there becomes 0. It registers under
+ * that plug-in's ID two majors above.
  *
  * Every channel of every requested plane is cropped; the unprocessed-channel copy stays with
  * the host. The regions of definition and of interest are the node's own, not the offset form's:

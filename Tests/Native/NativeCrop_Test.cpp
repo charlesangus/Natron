@@ -25,8 +25,10 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <list>
 #include <string>
 #include <vector>
@@ -49,6 +51,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Crop.h"
@@ -284,6 +287,46 @@ TEST_F(NativeCropTest, ReadsBlackOutsideTheSource)
         }
     }
     EXPECT_GT(outside, 0);
+}
+
+// Without black outside, a pixel centre exactly on a soft edge weighs 0 and is multiplied by it
+// rather than written 0, so a negative source becomes -0 and an infinite one NaN.
+TEST_F(NativeCropTest, ZeroSoftEdgeWeightMultipliesTheSource)
+{
+    resetProject();
+    const double inf = std::numeric_limits<double>::infinity();
+    NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr crop = createNode(QString::fromUtf8(kCropID), kNativeCropMajor);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(isNative(crop));
+    ASSERT_TRUE(setKnobValues(source, kConstantParamColor, { -1., inf, 0.5, 1. }));
+    connectNodes(source, crop, 0, true);
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 10.5, 8.5 }));
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { 40., 30. }));
+    ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 6. }));
+    ASSERT_TRUE(setKnobValues(crop, kCropParamBlackOutside, { 0. }));
+
+    const RectI window = regionOfDefinition(crop, kTime).toPixelEnclosing(0, 1.);
+    ASSERT_TRUE(window.contains(10, 20));
+    ASSERT_TRUE(window.contains(25, 20));
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(crop, kTime, ViewIdx(0), 0, window, layers, &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+    ASSERT_EQ(4u, planes[0].channels.size());
+    const auto at = [&](int x, int y, int c) { return planes[0].pixels[((std::size_t)(y - window.y1) * window.width() + (x - window.x1)) * 4 + c]; };
+
+    EXPECT_EQ(-1.f, at(25, 20, 0));
+    EXPECT_TRUE(std::isinf(at(25, 20, 1)));
+    for (int y = 9; y < 38; ++y) {
+        EXPECT_EQ(0.f, at(10, y, 0)) << "row " << y;
+        EXPECT_TRUE(std::signbit(at(10, y, 0))) << "row " << y;
+        EXPECT_TRUE(std::isnan(at(10, y, 1))) << "row " << y;
+        EXPECT_EQ(0.f, at(10, y, 2)) << "row " << y;
+        EXPECT_FALSE(std::signbit(at(10, y, 2))) << "row " << y;
+    }
 }
 
 TEST_F(NativeCropTest, ReformatOnFormatSetsTheOutputFormat)

@@ -109,9 +109,10 @@ struct GeometryCase {
 };
 
 // Translation alone, magnification, two minifications (supersampling levels 1 and 2), a rotation,
-// a rotation while minifying, and a skew. The scales are translated off the pixel grid: about the
-// centre alone they put some sample positions exactly on a pixel edge, where the impulse filter's
-// tap is decided by the last bit of the CPU's double position, which two floats cannot reproduce.
+// a rotation while minifying, and a skew, with the scales translated off the pixel grid. Then
+// near-ties: a scale of 1 + 2^-50 whose inverse two floats round to 1, putting the positions within
+// a few double ulps of integers in x and of half-integers in y, where the impulse tap and the box
+// filter's edge decisions follow the last bits of the CPU's doubles.
 const GeometryCase kGeometries[] = {
     { "translate", 3.25, -2.5, 0., 1., 1., 0., 0., false },
     { "scale-up", 0.2713, 0.1371, 0., 1.7, 1.4, 0., 0., false },
@@ -120,6 +121,7 @@ const GeometryCase kGeometries[] = {
     { "rotate30", 0., 0., 30., 1., 1., 0., 0., false },
     { "rotate30-scale05", 0., 0., 30., 0.5, 0.5, 0., 0., false },
     { "skew-yx", 3.25, -2.5, 0., 1., 1., 0.3, -0.2, true },
+    { "near-ties", 0.5, 0., 0., 1. + 0x1p-50, 1. + 0x1p-50, 0., 0., false },
 };
 
 } // namespace

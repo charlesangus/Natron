@@ -28,8 +28,10 @@ struct GpuResampleParams {
     uint32_t filter;
     uint32_t flags;
     uint32_t states;
-    float hHi[6];
-    float hLo[6];
+    // The matrix's six doubles: for the exact kernels (impulse, box and clamped Mitchell) each as
+    // its low then its high 32 bits, for the others the six high floats' bits and then the six low
+    // floats'.
+    uint32_t matrix[12];
 };
 static_assert(sizeof(GpuResampleParams) == 112);
 
@@ -86,5 +88,52 @@ struct GpuResample {
 };
 
 GpuStatus recordResample(GpuRecordContext& ctx, const GpuResample& resample);
+
+// Mirrors OffsetParams in Kernels/offset.slang. The valid rect is in thread coordinates, the
+// source's offset addressing the pixel its first thread reads, so the kernel does no signed
+// arithmetic that a large offset could overflow.
+struct GpuOffsetParams {
+    uint32_t width;
+    uint32_t height;
+    uint32_t dstOffset;
+    uint32_t dstStride;
+    uint32_t srcOffset;
+    uint32_t srcStride;
+    uint32_t validX1;
+    uint32_t validY1;
+    uint32_t validX2;
+    uint32_t validY2;
+    uint32_t nComps;
+    uint32_t flags;
+    // Where the row entries start in the weight buffer, in floats.
+    uint32_t rowWeights;
+};
+static_assert(sizeof(GpuOffsetParams) == 52);
+
+// A whole-pixel translation over `output`: dst(x, y) = src(x - dx, y - dy), zero where that pixel
+// lies outside src.bounds. Every channel is copied bit for bit. A source without a buffer, or with
+// empty bounds, renders zeros.
+//
+// With a matte, one weight and one black flag per column and per row of `output` from its
+// origin, the pixel is then weighed as runResampleCpu() weighs it: written 0 where its column or
+// row is black, otherwise left where w = column * row is 1 or more and multiplied by w, 0
+// included, elsewhere. The weights travel as two floats each, so that multiply matches the CPU's
+// double one to within a float rounding, and the black and one cases match it exactly.
+struct GpuOffset {
+    GpuBlurImage src;
+    GpuBlurImage dst;
+    // Within dst.bounds.
+    GpuBlurRect output;
+    uint32_t channels = 0;
+    int32_t dx = 0;
+    int32_t dy = 0;
+    // All empty, or as many as output's columns and rows; a nonzero black flag blackens.
+    std::vector<double> columnWeights;
+    std::vector<double> rowWeights;
+    std::vector<unsigned char> blackColumns;
+    std::vector<unsigned char> blackRows;
+};
+
+GpuStatus recordOffset(GpuRecordContext& ctx, const GpuOffset& offset);
 
 } // namespace gpu

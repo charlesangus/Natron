@@ -38,8 +38,22 @@
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+#ifdef NATRON_HAVE_GPU
+// The parameter block of StepDissolve in dissolve.slang.
+struct DissolveGpuParams {
+    float blend;
+};
+
+static_assert(sizeof(DissolveGpuParams) == 4, "must match StepDissolve in dissolve.slang");
+#endif
+} // anonymous namespace
 
 void
 DissolveOp::createKnobs(KnobHolder* holder,
@@ -126,6 +140,21 @@ DissolveOp::step(const Params& params,
             }
         }
     }
+}
+
+GpuOpRef
+DissolveOp::gpu(const Params& params) const
+{
+#ifdef NATRON_HAVE_GPU
+    DissolveGpuParams block = {};
+    block.blend = params.blend;
+
+    return GpuOpRef::compiled((int)gpu::GpuKernelId::dissolve, block);
+#else
+    Q_UNUSED(params);
+
+    return GpuOpRef::none();
+#endif
 }
 
 Dissolve::Dissolve(NodePtr node)

@@ -288,6 +288,12 @@ protected:
     virtual ImageMetadata deriveOutputMetadata(double time,
                                                ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Whether route() chooses an input at time and view, whatever the op kind.
+     **/
+    virtual bool presentsOnlyPassThroughLayers(double time,
+                                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool isIdentity(double time,
                             const RenderScale& scale,
                             const RectI& roi,
@@ -663,9 +669,9 @@ private:
                 request.form = ResampleRequest::Form::Offset;
                 request.offset = _op.offset(params, context);
                 if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
-                                  { o.rowMatte(p, c) } -> std::same_as<ResampleRowMatte>;
+                                  { o.matte(p, c) } -> std::same_as<ResampleMatte>;
                               }) {
-                    request.rowMatte = _op.rowMatte(params, context);
+                    request.matte = _op.matte(params, context);
                 }
                 if constexpr (requires { requires OP::kClipsSourceToRoI; }) {
                     request.clipSourceToRoI = true;

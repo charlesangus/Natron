@@ -30,6 +30,10 @@
 #include <cmath>
 #include <cstring>
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuBlur.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 namespace BlurKernels {
@@ -752,6 +756,37 @@ LineFilter::applyFIRGaussianColumns(float* data,
         }
     }
 }
+
+#ifdef NATRON_HAVE_GPU
+gpu::GpuLineFilter
+toGpuLineFilter(const LineFilter& filter)
+{
+    gpu::GpuLineFilter f;
+
+    switch (filter.kind()) {
+    case LineFilter::eKindDeriche:
+        f.kind = gpu::GpuLineFilterKind::deriche;
+        filter.dericheCoefficients(f.deriche.data());
+        break;
+    case LineFilter::eKindVanVliet:
+        f.kind = gpu::GpuLineFilterKind::vanVliet;
+        filter.vanVlietCoefficients(f.vanVliet.data(), f.triggs.data());
+        break;
+    case LineFilter::eKindBox:
+        f.kind = gpu::GpuLineFilterKind::box;
+        f.boxSize = filter.boxSize();
+        f.iterations = filter.boxIterations();
+        break;
+    case LineFilter::eKindIdentity:
+    case LineFilter::eKindFIRGaussian:
+        return f;
+    }
+    f.order = filter.order();
+    f.neumann = filter.neumann();
+
+    return f;
+}
+#endif
 
 void
 deriche(float* data,

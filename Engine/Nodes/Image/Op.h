@@ -323,10 +323,10 @@ concept GpuCompositeOp = CompositeOp<OP> && requires(const OP& op, const typenam
  * with it whether the node offers its matrix.
  *
  * The offset form has offset(), the whole-pixel translation at the context's scale; it neither
- * offers a matrix nor accepts one. It may also have rowMatte(params, context), returning the
- * ResampleRowMatte that weights each shifted row (an empty one weights nothing), and
+ * offers a matrix nor accepts one. It may also have matte(params, context), returning the
+ * separable ResampleMatte that weighs each shifted pixel (an unset one weighs nothing), and
  * `static constexpr bool kClipsSourceToRoI = true` to read the source as zero outside the region
- * of interest it was fetched for. Neither runs on the GPU, which never takes the offset form.
+ * of interest it was fetched for. Either form may run on the GPU (GpuResampleOp), matte included.
  **/
 template <typename OP>
 concept MatrixResampleMembers = requires(const OP& op, const typename OP::Params& params, const PassContext& context, double amount, bool invert, TransformMath::Mat3* matrix) {
@@ -347,17 +347,27 @@ concept ResampleOp = BakesParams<OP> && std::copyable<typename OP::Params> && (M
 template <typename OP>
 concept MatrixResampleOp = ResampleOp<OP> && MatrixResampleMembers<OP>;
 
+template <typename OP>
+concept OffsetResampleOp = ResampleOp<OP> && OffsetResampleMembers<OP>;
+
 /**
- * @brief A Resample op of the matrix form that also runs on the GPU, which it opts into with
- * `static constexpr bool kResamplesOnGpu = true`. The GPU then renders it whenever its sampling
- * matrices are affine and no transform is concatenated into its source, motion and directional
- * blur included; every other Resample op stays on the CPU.
+ * @brief A Resample op of either form that also runs on the GPU, which it opts into with
+ * `static constexpr bool kResamplesOnGpu = true`; every other Resample op stays on the CPU. The
+ * GPU renders the matrix form (GpuMatrixResampleOp) whenever its sampling matrices are affine and
+ * no transform is concatenated into its source, motion and directional blur included, and the
+ * offset form (GpuOffsetResampleOp) always.
  *
  * Any Resample op may also have costHint(params, context), returning
  * std::optional<GpuCostHint>, to describe its cost to the GPU cost model.
  **/
 template <typename OP>
-concept GpuResampleOp = MatrixResampleOp<OP> && requires { requires OP::kResamplesOnGpu; };
+concept GpuResampleOp = ResampleOp<OP> && requires { requires OP::kResamplesOnGpu; };
+
+template <typename OP>
+concept GpuMatrixResampleOp = GpuResampleOp<OP> && MatrixResampleOp<OP>;
+
+template <typename OP>
+concept GpuOffsetResampleOp = GpuResampleOp<OP> && OffsetResampleOp<OP>;
 
 /**
  * @brief Whether OP satisfies the concept of op kind KIND. Only Point, Composite, Passes, Route

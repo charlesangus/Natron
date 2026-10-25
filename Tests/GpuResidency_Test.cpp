@@ -1094,9 +1094,11 @@ TEST_F(GpuResidencyTest, MaskRenderedInTheRegionIsNeverDownloaded)
     expectMatchesCpu(grade, run);
 }
 
-// The Grade feeding the source also feeds the mask from its extra layer, so that member is asked for two planes and
-// the region, which keeps one plane per member on the device, cannot read both of them from it.
-TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu)
+// The Grade feeding the source also feeds the mask from its extra layer, so it is asked for two planes: it renders the
+// colour plane and passes the extra layer through from the source. The request asks the source for that layer on the
+// producer's behalf, so the pass-through plane is an identity member on the source's upload of it, and the mask is
+// read there in the region as the CPU reads it from the source's image.
+TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneIsReadThroughItsPassThrough)
 {
     if (!gpuOrSkip()) {
         return;
@@ -1117,21 +1119,31 @@ TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu)
     const int producerTask = taskOf(run.graph, producer);
     const int gradeTask = taskOf(run.graph, grade);
     ASSERT_TRUE(producerTask >= 0 && gradeTask >= 0);
+    std::vector<std::string> expectedLayers = { kNatronColorLayerID, kParitySourceExtraLayerID };
+    std::sort(expectedLayers.begin(), expectedLayers.end());
     std::vector<std::string> producerLayers;
     for (const ImageLayerDesc& layer : run.graph.tasks[producerTask].components) {
         producerLayers.push_back(layer.getLayerID());
     }
     std::sort(producerLayers.begin(), producerLayers.end());
-    std::vector<std::string> expectedLayers = { kNatronColorLayerID, kParitySourceExtraLayerID };
-    std::sort(expectedLayers.begin(), expectedLayers.end());
     EXPECT_EQ(expectedLayers, producerLayers) << "the producer renders the source's plane and the mask's layer";
+    const int sourceTask = taskOf(run.graph, source);
+    ASSERT_TRUE(sourceTask >= 0);
+    std::vector<std::string> sourceLayers;
+    for (const ImageLayerDesc& layer : run.graph.tasks[sourceTask].components) {
+        sourceLayers.push_back(layer.getLayerID());
+    }
+    std::sort(sourceLayers.begin(), sourceLayers.end());
+    EXPECT_EQ(expectedLayers, sourceLayers) << "the source is asked for the layer the producer passes through";
     assignRegions(&run.graph, { { producerTask, gradeTask } });
 
     ASSERT_TRUE(render(&run));
-    EXPECT_EQ(1, fallbacksOf(run));
-    EXPECT_EQ(1, fallbacksOf(run, "GPU refused"));
-    EXPECT_EQ(0, run.stats->getGpuRegionsRun());
-    EXPECT_EQ(1, renderRoICallsOf(run, grade));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, producer));
+    EXPECT_EQ(1, gpuRunsOf(run, grade));
+    EXPECT_EQ(0, renderRoICallsOf(run, grade)) << "the Grade rendered on the CPU";
+    EXPECT_EQ(2, run.stats->getUploadCount()) << "the source's colour plane and its extra layer, once each";
     expectReleased(run);
     expectMatchesCpu(grade, run);
 }
@@ -1250,7 +1262,7 @@ TEST_F(GpuResidencyTest, OutOfMemoryAtTheSecondRegionRendersItOnTheCpu)
     expectMatchesCpu(chain.sink, run);
 }
 
-// The EdgeDetect has no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
+// The Merge has no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
 TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
 {
     if (!gpuOrSkip()) {
@@ -1258,18 +1270,19 @@ TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
     }
     NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
     NodePtr grade = makeGrade(1.25, 0.05);
-    NodePtr edge = makeNode(PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT);
-    ASSERT_TRUE(source && grade && edge);
+    NodePtr merge = makeNode(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE);
+    ASSERT_TRUE(source && grade && merge);
     connectNodes(source, grade, 0, true);
-    connectNodes(grade, edge, 0, true);
+    connectNodes(grade, merge, 0, true);
+    connectNodes(grade, merge, 1, true);
 
     FrameRun run;
     std::string error;
-    ASSERT_TRUE(prepareFrame(edge, &run, &error)) << error;
+    ASSERT_TRUE(prepareFrame(merge, &run, &error)) << error;
     const int gradeTask = taskOf(run.graph, grade);
-    const int edgeTask = taskOf(run.graph, edge);
-    ASSERT_TRUE(gradeTask >= 0 && edgeTask >= 0);
-    assignRegions(&run.graph, { { gradeTask, edgeTask } });
+    const int mergeTask = taskOf(run.graph, merge);
+    ASSERT_TRUE(gradeTask >= 0 && mergeTask >= 0);
+    assignRegions(&run.graph, { { gradeTask, mergeTask } });
 
     ASSERT_TRUE(render(&run));
     EXPECT_EQ(1, fallbacksOf(run));
@@ -1277,9 +1290,9 @@ TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
     EXPECT_EQ(0, run.stats->getGpuRegionRetries());
     EXPECT_EQ(0, run.stats->getGpuRegionsRun());
     EXPECT_EQ(1, renderRoICallsOf(run, grade));
-    EXPECT_EQ(1, renderRoICallsOf(run, edge));
+    EXPECT_EQ(1, renderRoICallsOf(run, merge));
     expectReleased(run);
-    expectMatchesCpu(edge, run);
+    expectMatchesCpu(merge, run);
 }
 
 // The device is lost in the middle of the second region: the frame renders again, all on the CPU, and the next render

@@ -37,7 +37,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
-#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Channel/ChannelCopy.h"
 
 #define PLUGINID_NATRON_ADDLAYERS "fr.natron.AddLayers"
 
@@ -61,9 +61,11 @@ inline constexpr InputSpec kAddLayersInputs[] = {
  *
  * Non-colour layers are resolved per frame against the input's present layers at the render's
  * (time, view).
+ *
+ * Both the CPU and the GPU render a plane from the route channelRoute() describes.
  **/
 class AddLayers
-    : public NativeEffectBase {
+    : public ChannelRouteEffect {
 public:
     struct Outcome {
         /**
@@ -131,6 +133,14 @@ public:
      **/
     Outcome computeOutcome(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief A colour plane takes each of the input's colour bits from the input's colour plane,
+     * read at its stored depth and converted, and 0 on every other bit; any other plane is all 0.
+     * Never false. cpuOnly is set when the input read is not float, at its fetched or its stored
+     * depth, since the GPU reads float only and the CPU's conversion is this node's.
+     **/
+    virtual bool channelRoute(double time, ViewIdx view, const ImageLayerDesc& plane, ChannelRoute* route) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_ADDLAYERS,
         .label = "AddLayers",
@@ -181,8 +191,6 @@ private:
 
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     Outcome outcomeFor(const std::list<ImageLayerDesc>& registryPlanes, const std::list<ImageLayerDesc>& present) const WARN_UNUSED_RETURN;
 

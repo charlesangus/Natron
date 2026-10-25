@@ -105,10 +105,13 @@ struct DissolveOp {
     void step(const Params& params,
               const RowIO& io) const;
 
+    GpuOpRef gpu(const Params& params) const;
+
     KnobDoubleWPtr which;
 };
 
 static_assert(CompositeOp<DissolveOp>);
+static_assert(GpuCompositeOp<DissolveOp>);
 
 class Dissolve
     : public ImageNode<DissolveOp> {

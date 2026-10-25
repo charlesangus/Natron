@@ -96,6 +96,8 @@ inline constexpr InputSpec kReformatInputs[] = {
 struct ReformatOp {
     using Params = ReformatParams;
 
+    static constexpr bool kResamplesOnGpu = true;
+
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_REFORMAT,
         .label = "Reformat",
@@ -131,7 +133,9 @@ struct ReformatOp {
 
     /**
      * @brief Reformat::getInverseTransformCanonical() at the Params' time and view, with the
-     * source's pixel aspect ratio. Called on the action's thread only, as it reads the node.
+     * source's pixel aspect ratio. It reads the node and its upstream (formats, region of
+     * definition, knobs) through accessors that render threads already use, so the GPU placement
+     * and record threads may call it too.
      **/
     bool transform(const Params& params,
                    const PassContext& context,
@@ -145,6 +149,12 @@ struct ReformatOp {
      **/
     bool canConcatenate() const;
 
+    /**
+     * @brief The cost model's hint: no spread and no motion blur.
+     **/
+    std::optional<GpuCostHint> costHint(const Params& params,
+                                        const PassContext& context) const;
+
     const Reformat* reformat = nullptr;
     KnobBoolWPtr center;
     KnobBoolWPtr flip;
@@ -157,7 +167,7 @@ struct ReformatOp {
     KnobBoolWPtr blackOutside;
 };
 
-static_assert(MatrixResampleOp<ReformatOp>);
+static_assert(GpuResampleOp<ReformatOp>);
 
 /**
  * @brief Reformat: resamples the source so that its format (or its region of definition, with

@@ -1235,6 +1235,15 @@ public:
         return false;
     }
 
+    // True when, at (time, view), this effect's output is its layers pass-through input unchanged,
+    // as for a node switching between its inputs: it then presents exactly that input's layers at
+    // the input's time, colour layout included, rather than the layout its metadata declares for
+    // every frame.
+    virtual bool presentsOnlyPassThroughLayers(double /*time*/, ViewIdx /*view*/)
+    {
+        return false;
+    }
+
     enum PassThroughEnum {
         ePassThroughBlockNonRenderedLayers,
         ePassThroughPassThroughNonRenderedLayers,

@@ -201,6 +201,13 @@ ReformatOp::canConcatenate() const
     return knob && knob->getValue();
 }
 
+std::optional<GpuCostHint>
+ReformatOp::costHint(const Params& /*params*/,
+                     const PassContext& /*context*/) const
+{
+    return GpuCostHint();
+}
+
 Reformat::Reformat(NodePtr node)
     : ImageNode<ReformatOp>(node)
 {

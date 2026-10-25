@@ -193,7 +193,7 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
         const double time = getCurrentTime();
         const ViewIdx view = getCurrentView();
 
-        return resampleGpuSourceRoI(*this, source, opResample(time, view, scale), getResampleRegionStages(time, view), time, view, outputRect, scale);
+        return resampleGpuSourceRoI(*this, source, time, view, outputRect, scale);
     }
     if (kind == OpKind::Custom) {
         return getOpGpuInputRoI(inputNb, outputRect, scale);
@@ -236,7 +236,7 @@ StagedImageEffect::renderGpu(const GpuRenderArgs& args)
             return eStatusFailed;
         }
 
-        return recordResampleGpu(*this, resolveGpuPlan(query), args, opResample(query.time, query.view, query.mappedScale), getResampleRegionStages(query.time, query.view));
+        return recordResampleGpu(*this, resolveGpuPlan(query), args, opResample(query.time, query.view, query.mappedScale));
     }
     if (kind == OpKind::Custom) {
         return renderOpGpu(args);
@@ -614,6 +614,13 @@ StagedImageEffect::deriveOutputMetadata(double time,
     }
 
     return NativeEffectBase::deriveOutputMetadata(time, view);
+}
+
+bool
+StagedImageEffect::presentsOnlyPassThroughLayers(double time,
+                                                 ViewIdx view)
+{
+    return route(time, view).kind == Route::Kind::Input;
 }
 
 bool

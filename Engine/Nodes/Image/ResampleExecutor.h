@@ -72,19 +72,35 @@ struct PixelOffset {
 };
 
 /**
- * @brief Weights one shifted row of an offset-form render in place: row holds width pixels of
- * nComps floats, the output pixels [x1, x1 + width) of output row y, as read from the source.
- * Called from band threads, concurrently for different rows, so it reads only what it captured.
+ * @brief A separable weight over the output pixels of an offset-form render at the render scale.
+ * Pixel (x, y) is black when blackColumn(x) or blackRow(y) is true: it is written 0, never
+ * multiplied, so a NaN or infinite source pixel there becomes 0. Otherwise it weighs
+ * w = column(x) * row(y), in double: one weighing 1 or more keeps its value, and any other,
+ * 0 included, has each channel multiplied by w in double and rounded to float, so that a NaN or
+ * infinite source pixel weighing 0 becomes NaN and a negative one -0. An unset weight function
+ * weighs 1 everywhere, an unset black function blackens nothing, and a matte with none set
+ * weighs nothing. The executors sample them over the render window on the thread running the
+ * action or recording, never from band threads.
  **/
-typedef std::function<void(int y, int x1, int width, int nComps, float* row)> ResampleRowMatte;
+struct ResampleMatte {
+    std::function<double(int x)> column;
+    std::function<double(int y)> row;
+    std::function<bool(int x)> blackColumn;
+    std::function<bool(int y)> blackRow;
+
+    bool isSet() const
+    {
+        return bool(column) || bool(row) || bool(blackColumn) || bool(blackRow);
+    }
+};
 
 /**
  * @brief What a Resample op resolves to for one action at one time, view and scale.
  *
  * Matrix: transform is the op's canonical matrix as Resampler::CanonicalTransformFn describes it,
  * reading the op's Params at whatever time it is asked for, and settings says how to sample
- * through it. Offset: the source is shifted by offset whole pixels; then, when set, rowMatte
- * weights each shifted row of a plane whose source was fetched, and with clipSourceToRoI the
+ * through it. Offset: the source is shifted by offset whole pixels; then, when set, matte
+ * weights each shifted pixel of a plane whose source was fetched, and with clipSourceToRoI the
  * source reads zero outside the region of interest it was fetched for, as an OpenFX host shows
  * it. None: the node has no Resample op.
  *
@@ -102,7 +118,7 @@ struct ResampleRequest {
     ResampleSettings settings;
     Resampler::CanonicalTransformFn transform;
     PixelOffset offset;
-    ResampleRowMatte rowMatte;
+    ResampleMatte matte;
     bool clipSourceToRoI = false;
 };
 
@@ -125,7 +141,7 @@ struct ResampleRegionStages {
  * whole image in the output plane's layout. Each output row is the source resampled through the
  * request's matrices (Resampler::buildSamplingTransforms() then resampleRow(), with the impulse
  * filter for a draft render) or the source shifted by the request's offset, weighted by its
- * rowMatte and clipped to its region of interest as the request asks. That row is blended
+ * matte and clipped to its region of interest as the request asks. That row is blended
  * with the reference row by mask x mix, and with PassThroughUnprocessed the unprocessed channels
  * are copied from it, exactly as runStagesCpu() does. The reference row is the source under the
  * output pixel, or, when the host concatenated a transform and a stage reads the reference, the
@@ -188,11 +204,13 @@ StatusEnum resampleTransform(EffectInstance& effect,
                              Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
 
 /**
- * @brief Whether recordResampleGpu() can render request through plan for query: a matrix-form
- * request, a plan the GPU stages run (canRunStagesGpu()), no transform concatenated into the
- * source, and sampling matrices at the query's time, view and scale that are all affine and no
- * more than the kernel takes. Motion and directional blur are accepted. Depends only on the
- * query and the node's settings, so placement and recording agree.
+ * @brief Whether recordResampleGpu() can render request through plan for query: a plan the GPU
+ * stages run (canRunStagesGpu()) for no more components than the kernels take, then, for the
+ * matrix form, no transform concatenated into the source, and sampling matrices at the query's
+ * time, view and scale that are all affine and no more than the kernel takes (motion and
+ * directional blur are accepted). The offset form, matte included, always qualifies: the host
+ * never concatenates into its source. Depends only on the query and the node's settings, so
+ * placement and recording agree.
  **/
 bool canRecordResampleGpu(const EffectInstance& effect,
                           const StagePlan& plan,
@@ -201,14 +219,13 @@ bool canRecordResampleGpu(const EffectInstance& effect,
 
 /**
  * @brief The pixels of the source, input sourceInput, that recordResampleGpu() reads to produce
- * outputRect at time, view and scale: the source's entry of resampleRegionsOfInterest() over
- * outputRect, enclosed in pixels. outputRect itself without a connected source or for an empty
- * outputRect.
+ * outputRect at time, view and scale: the source's entry of the node's own regions of interest
+ * (EffectInstance::getRegionsOfInterest_public()) over outputRect, enclosed in the source's own
+ * pixels, so that a node overriding them is read as the CPU reads it. outputRect itself without a
+ * connected source, for an empty outputRect, or when the node names no region for the source.
  **/
 RectI resampleGpuSourceRoI(const EffectInstance& effect,
                            int sourceInput,
-                           const ResampleRequest& request,
-                           const ResampleRegionStages& stages,
                            double time,
                            ViewIdx view,
                            const RectI& outputRect,
@@ -216,17 +233,19 @@ RectI resampleGpuSourceRoI(const EffectInstance& effect,
 
 /**
  * @brief Records request over args.outputRect of args.output through plan, as runResampleCpu()
- * renders it: the source, clipped to its region of definition and to resampleGpuSourceRoI(), is
- * resampled through the request's matrices (averaged for a blur) with the impulse filter for a
- * draft render. With a mask, a mix other than 1 or unprocessed channels, the result goes through
- * recordStagesGpuFinish() against that same clipped source. stages are the node's region stages,
- * as for resampleGpuSourceRoI(). Fails for a request canRecordResampleGpu() refuses.
+ * renders it. The source is clipped to its region of definition and, for the matrix form, to
+ * resampleGpuSourceRoI(); with clipSourceToRoI, the offset form clips it to that same region of
+ * interest enclosed at the source clip's pixel aspect ratio, the region getImage() reports. The matrix form resamples it through the request's
+ * matrices (averaged for a blur) with the impulse filter for a draft render; the offset form
+ * shifts it by the request's offset, zero outside it, and weighs it by the request's matte as
+ * runResampleCpu() does, the weights sampled over outputRect. With a mask, a mix other than 1 or
+ * unprocessed channels, the result goes through recordStagesGpuFinish() against that same
+ * clipped source, unshifted. Fails for a request canRecordResampleGpu() refuses.
  **/
 StatusEnum recordResampleGpu(EffectInstance& effect,
                              const StagePlan& plan,
                              const GpuRenderArgs& args,
-                             const ResampleRequest& request,
-                             const ResampleRegionStages& stages) WARN_UNUSED_RETURN;
+                             const ResampleRequest& request) WARN_UNUSED_RETURN;
 
 NATRON_NAMESPACE_EXIT
 

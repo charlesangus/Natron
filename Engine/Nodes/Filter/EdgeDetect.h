@@ -137,7 +137,8 @@ inline constexpr InputSpec kEdgeDetectInputs[] = {
  * pixel to the gradient filter's halo, which the OpenFX plug-in omits, so a tile renders what a
  * full-frame render shows there. As in Blur, the passes run over one buffer covering the window
  * plus that halo, clipped to the output's region of definition, each over whole rows or whole
- * columns, giving the same pixels at any thread count. It runs on the CPU only.
+ * columns, giving the same pixels at any thread count. The GPU records the same passes over the
+ * same buffer, unless the erosion radius exceeds the device kernel's limit.
  **/
 struct EdgeDetectOp {
     using Params = EdgeDetectParams;
@@ -184,8 +185,8 @@ struct EdgeDetectOp {
 
     /**
      * @brief The passes of one render: the gradient components, their normalisation and channel
-     * combination, then the erosion and the non-maxima suppression when asked for. The CPU runs
-     * them; no GPU recorder is given.
+     * combination, then the erosion and the non-maxima suppression when asked for, with their GPU
+     * recorder.
      **/
     PassList passes(const Params& params,
                     const PassContext& context) const;

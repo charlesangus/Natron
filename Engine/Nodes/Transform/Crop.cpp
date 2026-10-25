@@ -175,15 +175,15 @@ CropOp::offset(const Params& params,
     return shift;
 }
 
-ResampleRowMatte
-CropOp::rowMatte(const Params& params,
-                 const PassContext& context) const
+ResampleMatte
+CropOp::matte(const Params& params,
+              const PassContext& context) const
 {
     const bool blackOutside = params.blackOutside;
     const double softness = params.softness;
 
     if (!crop || (!blackOutside && (softness == 0))) {
-        return ResampleRowMatte();
+        return ResampleMatte();
     }
     const double scale = context.scale.toOfxPointD().x;
     const double dstPar = crop->getAspectRatio(-1);
@@ -192,50 +192,44 @@ CropOp::rowMatte(const Params& params,
     crop->getCropRectangle(params.time, params.view, context.scale, false, false, false, false, &cropFull, &par);
     const RectI fullPixel = toPixelNearest(cropFull, scale, par);
     const PixelOffset shift = offset(params, context);
-    const int tx = shift.x;
-    const int ty = shift.y;
 
-    return [blackOutside, softness, scale, dstPar, cropFull, fullPixel, tx, ty](int y, int x1, int width, int nComps, float* row) {
-        const bool yBlack = blackOutside && ((y == (fullPixel.y1 + ty)) || (y == (fullPixel.y2 - 1 + ty)));
-        if (yBlack) {
-            std::fill(row, row + (std::size_t)width * nComps, 0.f);
-
-            return;
+    // The weight of one axis, from the distance d of the pixel centre inside the crop rectangle.
+    const auto weight = [softness](double d) -> double {
+        if ((softness == 0) || (d >= softness)) {
+            return 1.;
         }
 
-        const int srcY = y - ty;
-        const double canonicalY = (srcY + 0.5) / scale;
-        const double dy = std::min(canonicalY - cropFull.y1, cropFull.y2 - canonicalY);
-
-        float* pix = row;
-        for (int i = 0; i < width; ++i, pix += nComps) {
-            const int x = x1 + i;
-            const bool xBlack = blackOutside && ((x == (fullPixel.x1 + tx)) || (x == (fullPixel.x2 - 1 + tx)));
-            if (xBlack) {
-                std::fill(pix, pix + nComps, 0.f);
-                continue;
-            }
-            const double canonicalX = ((x - tx) + 0.5) * dstPar / scale;
-            const double dx = std::min(canonicalX - cropFull.x1, cropFull.x2 - canonicalX);
-            if (blackOutside && ((dx <= 0) || (dy <= 0))) {
-                std::fill(pix, pix + nComps, 0.f);
-                continue;
-            }
-            if ((softness == 0) || ((dx >= softness) && (dy >= softness))) {
-                continue;
-            }
-            const double wx = (dx >= softness) ? 1. : rampSmooth(dx / softness);
-            const double wy = (dy >= softness) ? 1. : rampSmooth(dy / softness);
-            const double t = wx * wy;
-            if (t >= 1) {
-                continue;
-            }
-            for (int c = 0; c < nComps; ++c) {
-                pix[c] = (float)(pix[c] * t);
-            }
-        }
+        return rampSmooth(d / softness);
     };
-} // CropOp::rowMatte
+    const auto columnDistance = [scale, dstPar, cropFull, tx = shift.x](int x) {
+        const double canonicalX = ((x - tx) + 0.5) * dstPar / scale;
+
+        return std::min(canonicalX - cropFull.x1, cropFull.x2 - canonicalX);
+    };
+    const auto rowDistance = [scale, cropFull, ty = shift.y](int y) {
+        const double canonicalY = ((y - ty) + 0.5) / scale;
+
+        return std::min(canonicalY - cropFull.y1, cropFull.y2 - canonicalY);
+    };
+
+    ResampleMatte matte;
+    matte.column = [weight, columnDistance](int x) {
+        return weight(columnDistance(x));
+    };
+    matte.row = [weight, rowDistance](int y) {
+        return weight(rowDistance(y));
+    };
+    if (blackOutside) {
+        matte.blackColumn = [columnDistance, fullPixel, tx = shift.x](int x) {
+            return (x == (fullPixel.x1 + tx)) || (x == (fullPixel.x2 - 1 + tx)) || (columnDistance(x) <= 0);
+        };
+        matte.blackRow = [rowDistance, fullPixel, ty = shift.y](int y) {
+            return (y == (fullPixel.y1 + ty)) || (y == (fullPixel.y2 - 1 + ty)) || (rowDistance(y) <= 0);
+        };
+    }
+
+    return matte;
+} // CropOp::matte
 
 Crop::Crop(NodePtr node)
     : ImageNode<CropOp>(node)

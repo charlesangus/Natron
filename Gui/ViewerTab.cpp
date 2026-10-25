@@ -576,7 +576,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
         _imp->viewer->resetWipeControls();
     }
 
-    _imp->viewerSubContainerLayout->addWidget(_imp->viewer);
+    _imp->viewerSubContainerLayout->addWidget(_imp->viewer, 1);
     for (int i = 0; i < 2; ++i) {
         _imp->viewerSubContainerLayout->addWidget(_imp->infoWidget[i]);
         if (i == 1) {
@@ -587,7 +587,11 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->viewerLayout->addWidget(_imp->viewerSubContainer);
 
-    _imp->mainLayout->addWidget(_imp->viewerContainer);
+    // The viewer area takes all the spare height, whichever of the image view and the
+    // scene view is shown, so the settings rows and the player keep their own height.
+    _imp->viewerSubContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    _imp->viewerContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    _imp->mainLayout->addWidget(_imp->viewerContainer, 1);
     /*=============================================*/
 
     /*=============================================*/
@@ -1107,7 +1111,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         _imp->sceneViewport->hide();
         const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
-        _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneViewport);
+        _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneViewport, 1);
     }
     if (!_imp->sceneViewport) {
         return;

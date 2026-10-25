@@ -68,6 +68,8 @@ try:
         require(ok, "the image viewer is up")
         yield ("sleep", SETTLE_MS)
         check(showing_image(), "a 2D input shows the image viewer (%s)" % describe())
+        image_heights = [w.height() for w in visible("ViewerGL")]
+        image_height = image_heights[0] if image_heights else 0
 
         for n in range(2):
             require(connect(usd), "connect the Viewer to the USDRead")
@@ -78,6 +80,11 @@ try:
             error = views[0].property("natronSceneError") if views else None
             check(ok, "pass %d: the scene view shows the scene, no error (%r)" % (n + 1, error))
             yield ("sleep", SETTLE_MS)
+            scene_heights = [w.height() for w in visible("SceneViewport")]
+            scene_height = scene_heights[0] if scene_heights else 0
+            check(image_height > 0 and scene_height >= 0.8 * image_height,
+                  "pass %d: the scene view fills the slot of the image viewer (height %d, image viewer %d)"
+                  % (n + 1, scene_height, image_height))
             shot("scene-%d.png" % (n + 1))
 
             require(connect(reader), "connect the Viewer back to the Read")

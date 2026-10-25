@@ -110,7 +110,7 @@ Filed from M167 - Per-Frame Node Metadata, Phase 3, which inherited M144's "edit
   - verify: `Tests/gui/m177_tracking_modal.py` (new). Track forward over 30 frames: the modal is active; the viewer's track and stop shortcuts sent with QTest do nothing; Cancel stops tracking, and no marker keys exist past the stop frame.
   - size: M
 
-- [ ] M177.P4.T2 — Keep the modal up through the tracker's solve
+- [x] M177.P4.T2 — Keep the modal up through the tracker's solve
   - files: `Engine/TrackerContext.cpp`, `Engine/TrackerContextPrivate.cpp`, `Gui/GuiAppInstance.cpp`, `Tests/TrackerLayer_Test.cpp`, `Tests/gui/m177_tracking_modal.py`
   - approach: after `trackingFinished` the scheduler thread still re-slaves the markers' enabled knobs and runs `solveTransformParams()`, which writes the tracker's transform/CornerPin knobs under its own progress task. Hold the tracking modal until that solve has finished (one dialog spanning tracking and solve, without the solver's `progressStart` replacing the tracking task or its `progressEnd` closing the solver's), so no write lands after the dialog closes.
   - verify: the gtest records the transform knobs at the dialog's release and they don't change afterwards; the GUI script's "no key after stop" check also covers the transform knobs.

@@ -414,10 +414,12 @@ channelNames(unsigned processed)
 } // namespace
 
 // The CPU render of the node over its region of definition against renderGpu() fed with the
-// noisy parity source over getGpuInputRoI(), over that region and over a tile inside it, which is
-// compared with the same pixels of the full-frame CPU render. The source sits off the format's
-// origin so the buffer's edges fall inside the blurred extent and the nearest-pixel boundary is
-// exercised on both sides.
+// noisy parity source over getGpuInputRoI(), over that region and over a tile inside it. A tile of
+// a finite filter is compared with the same pixels of the full-frame CPU render. The recursive
+// filters run over the tile grown by Blur's halo, which cuts their infinite response, so a tile of
+// theirs differs from the full frame near its edges on the CPU as well: it is compared with a CPU
+// render of the same tile. The source sits off the format's origin so the buffer's edges fall
+// inside the blurred extent and the nearest-pixel boundary is exercised on both sides.
 TEST_F(NativeSharpenGpuTest, MatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -489,7 +491,13 @@ TEST_F(NativeSharpenGpuTest, MatchesTheCpuRender)
             EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
             ++nRenders;
 
-            const std::vector<float> want = pickChannels(cpu.pixels, rod, roi, channels);
+            const bool recursive = (c.filter == (int)BlurKernels::eFilterQuasiGaussian) || (c.filter == (int)BlurKernels::eFilterGaussian);
+            RenderedPlane cpuTile;
+            if (recursive && (roi != rod)) {
+                ASSERT_TRUE(renderRGBA(node, roi, &cpuTile)) << what;
+                ASSERT_EQ(roi, cpuTile.window) << what;
+            }
+            const std::vector<float> want = (recursive && (roi != rod)) ? pickChannels(cpuTile.pixels, roi, roi, channels) : pickChannels(cpu.pixels, rod, roi, channels);
             ASSERT_EQ(want.size(), run.pixels.size()) << what;
             const ImageDiff diff = compareImages(want, run.pixels, tolerance);
             nCompared += diff.compared;

@@ -1055,6 +1055,9 @@ Knob<T>::setValue(const T & v,
     if ( (dimension < 0) || ( dimension >= (int)_values.size() ) ) {
         return eValueChangedReturnCodeNothingChanged;
     }
+    if ((reason == eValueChangedReasonPluginEdited) && PluginEditsDeferral::refuse()) {
+        return eValueChangedReturnCodeNothingChanged;
+    }
 
     KnobHelper::ValueChangedReturnCodeEnum ret = eValueChangedReturnCodeNoKeyframeAdded;
     KnobHolder* holder =  getHolder();
@@ -1464,6 +1467,9 @@ Knob<T>::setValueAtTime(double time,
         return eValueChangedReturnCodeNothingChanged;
     }
     assert(newKey);
+    if ((reason == eValueChangedReasonPluginEdited) && PluginEditsDeferral::refuse()) {
+        return eValueChangedReturnCodeNothingChanged;
+    }
 
     if ( !canAnimate() || !isAnimationEnabled() ) {
         qDebug() << "WARNING: Attempting to call setValueAtTime on " << getName().c_str() << " which does not have animation enabled.";

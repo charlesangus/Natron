@@ -29,6 +29,7 @@
 #include <algorithm> // min, max
 #include <bitset>
 #include <cassert>
+#include <cmath>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -6046,6 +6047,9 @@ EffectInstance::getCurrentTime() const
     if (!tls) {
         return app->getTimeLine()->currentFrame();
     }
+    if (!tls->actionTimeView.empty()) {
+        return tls->actionTimeView.back().first;
+    }
     if (tls->currentRenderArgs.validArgs) {
         return tls->currentRenderArgs.time;
     }
@@ -6066,6 +6070,9 @@ EffectInstance::getCurrentView() const
     if (!tls) {
         return ViewIdx(0);
     }
+    if (!tls->actionTimeView.empty()) {
+        return tls->actionTimeView.back().second;
+    }
     if (tls->currentRenderArgs.validArgs) {
         return tls->currentRenderArgs.view;
     }
@@ -6074,6 +6081,19 @@ EffectInstance::getCurrentView() const
     }
 
     return ViewIdx(0);
+}
+
+EffectInstance::ActionTimeViewScope::ActionTimeViewScope(EffectInstance* effect,
+                                                         double time,
+                                                         ViewIdx view)
+    : _tls(effect->_imp->tlsData->getOrCreateTLSData())
+{
+    _tls->actionTimeView.push_back(std::make_pair(time, view));
+}
+
+EffectInstance::ActionTimeViewScope::~ActionTimeViewScope()
+{
+    _tls->actionTimeView.pop_back();
 }
 
 SequenceTime
@@ -6218,9 +6238,10 @@ EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
     // varies with time is resolved as enabled: downstream metadata then stay the same on every
     // frame, and are those of the frames where this node actually renders.
     if (!getNode()->isNodeDisabledAtAllTimes()) {
-        // call syncPrivateData if necessary
-        bool mustSyncPrivateData;
-        {
+        // call syncPrivateData if necessary. Only the main thread's refresh does: the plug-in may
+        // set parameters in it, and the per-frame answers asked from other threads never come here.
+        bool mustSyncPrivateData = false;
+        if (QThread::currentThread() == qApp->thread()) {
             QMutexLocker l(&_imp->mustSyncPrivateDataMutex);
             mustSyncPrivateData = _imp->mustSyncPrivateData;
             _imp->mustSyncPrivateData = false;
@@ -6230,7 +6251,6 @@ EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
             // syncPrivateData() could also be a virtual member of EffectInstance
             OfxEffectInstance* effect = dynamic_cast<OfxEffectInstance*>(this);
             if (effect) {
-                assert( QThread::currentThread() == qApp->thread() );
                 effect->onSyncPrivateDataRequested(); //syncPrivateData_other_thread();
             }
         }
@@ -6742,13 +6762,96 @@ EffectInstance::deriveTimeInvariantMetadata()
     return std::make_shared<const NodeMetadata>(metadata);
 }
 
-// OpenFX nodes. Their clip preferences run on the main thread only and act on the clips, so
-// their own answer is the one the last refresh gave, the same at every frame; only an identity
-// makes it vary, by passing an input through.
+// OpenFX nodes. Their time-invariant answer is the one the last refresh gave. At a frame, an
+// identity passes an input through and runs no plug-in action for it; otherwise the plug-in's
+// clip preferences answer for what its inputs give there.
 NodeMetadataConstPtr
 EffectInstance::getOpenFXTimeInvariantMetadata()
 {
     return getRefreshedMetadata();
+}
+
+namespace {
+// A frame range wider than this is sampled at its ends only: its frames are not all read at once,
+// and reading each one's metadata would cost more than the render it serves.
+const int kMaxFramesMergedPerRange = 1000;
+
+// Widens widened to metadata's colour components and depth where those are wider. Everything
+// else stays as read at the frame being answered.
+void
+widenOutputMetadata(const NodeMetadata& metadata,
+                    NodeMetadata* widened)
+{
+    if ((metadata.getComponentsType(-1) == kNatronColorLayerID) && (widened->getComponentsType(-1) == kNatronColorLayerID)) {
+        const int nComps = metadataNComps(metadata, -1);
+        if (nComps > metadataNComps(*widened, -1)) {
+            widened->setNComps(-1, std::max(widened->getNComps(-1), metadata.getNComps(-1)));
+            widened->setOutputStorageNComps((nComps > widened->getNComps(-1)) ? nComps : 0);
+        }
+    }
+    if (getSizeOfForBitDepth(metadata.getBitDepth(-1)) > getSizeOfForBitDepth(widened->getBitDepth(-1))) {
+        widened->setBitDepth(-1, metadata.getBitDepth(-1));
+    }
+}
+} // anon namespace
+
+void
+EffectInstance::getInputsMetadataOverFramesNeeded(U64 hash,
+                                                  double time,
+                                                  ViewIdx view,
+                                                  std::vector<EffectInstancePtr>* inputs,
+                                                  std::vector<NodeMetadataConstPtr>* inputsMetadata)
+{
+    getInputsMetadataAt(time, view, inputs, inputsMetadata);
+
+    FramesNeededMap framesNeeded;
+    try {
+        framesNeeded = getFramesNeeded_public(hash, time, view, 0);
+    } catch (...) {
+        return;
+    }
+    for (FramesNeededMap::const_iterator it = framesNeeded.begin(); it != framesNeeded.end(); ++it) {
+        const int inputNb = it->first;
+        if ((inputNb < 0) || (inputNb >= (int)inputs->size()) || !(*inputsMetadata)[inputNb]) {
+            continue;
+        }
+        const EffectInstancePtr& input = (*inputs)[inputNb];
+        std::shared_ptr<NodeMetadata> widened;
+        for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
+            for (std::vector<RangeD>::const_iterator range = viewIt->second.begin(); range != viewIt->second.end(); ++range) {
+                const double first = std::ceil(range->min);
+                const double last = std::floor(range->max);
+                if (last < first) {
+                    continue;
+                }
+                const bool sampled = (last - first) > kMaxFramesMergedPerRange;
+                for (double frame = first; frame <= last; frame = (sampled && (frame < last)) ? last : frame + 1.) {
+                    if ((frame == time) && (viewIt->first == view)) {
+                        continue;
+                    }
+                    NodeMetadataConstPtr metadata = input->getMetadata(frame, viewIt->first);
+                    if (!metadata) {
+                        continue;
+                    }
+                    if (!widened) {
+                        widened = std::make_shared<NodeMetadata>(*(*inputsMetadata)[inputNb]);
+                    }
+                    widenOutputMetadata(*metadata, widened.get());
+                }
+            }
+        }
+        if (widened && (*widened != *(*inputsMetadata)[inputNb])) {
+            (*inputsMetadata)[inputNb] = widened;
+        }
+    }
+}
+
+void
+EffectInstance::clampMetadataForInputs(const std::vector<EffectInstancePtr>& inputs,
+                                       const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                                       NodeMetadata& metadata)
+{
+    _imp->clampMetadata(inputs, inputsMetadata, metadata);
 }
 
 NodeMetadataConstPtr
@@ -6756,7 +6859,27 @@ EffectInstance::getOpenFXMetadataAt(U64 hash,
                                     double time,
                                     ViewIdx view)
 {
-    return applyIdentityRule(hash, time, view, getOpenFXTimeInvariantMetadata(), NULL);
+    const NodeMetadataConstPtr timeInvariant = getOpenFXTimeInvariantMetadata();
+    if (!timeInvariant) {
+        return timeInvariant;
+    }
+    // A pass-through comes back as a new answer; asking the plug-in there would describe an image
+    // it never makes.
+    NodeMetadataConstPtr passedThrough = applyIdentityRule(hash, time, view, timeInvariant, NULL);
+    if (passedThrough != timeInvariant) {
+        return passedThrough;
+    }
+
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+    getInputsMetadataOverFramesNeeded(hash, time, view, &inputs, &inputsMetadata);
+    NodeMetadata defaults;
+    if (getDefaultMetadataFromInputs(inputs, inputsMetadata, true, defaults) == eStatusFailed) {
+        return timeInvariant;
+    }
+    NodeMetadataConstPtr own = getPreferredMetadataForInputs(hash, time, view, inputs, inputsMetadata, defaults);
+
+    return own ? own : timeInvariant;
 }
 // End of OpenFX nodes.
 

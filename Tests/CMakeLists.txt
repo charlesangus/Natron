@@ -144,6 +144,7 @@ set(Tests_SOURCES
     NativeMetadataPolicy_Test.cpp
     PerFrameMetadata_Test.cpp
     OfxClipPreferencesThread_Test.cpp
+    OfxPerFrameMetadata_Test.cpp
     OfxMetadataBridge_Test.cpp
     OfxRetired_Test.cpp
     OfxTestPlugin_Test.cpp

@@ -1726,6 +1726,23 @@ public:
     void refreshInputRelatedDataIfStale();
 
     /**
+     * @brief While one lives on the calling thread, refreshInputRelatedDataIfStale() does nothing
+     * there. Held by a caller that may sit under a lock a refresh takes in the other order: an
+     * OpenFX clip fetching its input's metadata runs under the host's metadata mutex, while a
+     * refresh takes an effect's clip preferences lock for writing, which a render holds for
+     * reading while it waits on that same metadata mutex.
+     **/
+    class InputRelatedDataRefreshDeferral {
+    public:
+        InputRelatedDataRefreshDeferral();
+        ~InputRelatedDataRefreshDeferral();
+
+    private:
+        InputRelatedDataRefreshDeferral(const InputRelatedDataRefreshDeferral&);
+        InputRelatedDataRefreshDeferral& operator=(const InputRelatedDataRefreshDeferral&);
+    };
+
+    /**
      * @brief What a render of this node refreshes before it reads metadata and layers:
      * refreshInputRelatedDataIfStale() on every node upstream of it, the paint trees of RotoPaint
      * nodes and the nodes inside groups included, and through a viewer only the inputs it shows. Each node is looked at, not

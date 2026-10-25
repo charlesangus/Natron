@@ -1109,9 +1109,10 @@ public:
      * time, view). A node that is an identity there reports, for its output, the metadata of the
      * input it passes through at the identity time and view. Otherwise it is
      * getDefaultMetadataAt(), then getPreferredMetadataAt() unless the node is disabled at time,
-     * clamped to what the node supports. An OpenFX node answers getTimeInvariantMetadata() when
-     * it is not an identity. Callable from any thread, holding no lock: it reads the node's hash,
-     * which may recompute dirty hashes.
+     * clamped to what the node supports. An OpenFX node that is not an identity answers its clip
+     * preferences for its inputs' metadata widened over the frames it reads there (see
+     * getPreferredMetadataForInputs()). Callable from any thread, holding no lock: it reads the
+     * node's hash, which may recompute dirty hashes.
      **/
     NodeMetadataConstPtr getMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
@@ -1192,6 +1193,41 @@ protected:
      * at that time and view.
      **/
     StatusEnum getDefaultMetadataAt(double time, ViewIdx view, NodeMetadata& metadata);
+
+    /**
+     * @brief An OpenFX node's own metadata at time and view, where it is not an identity, for
+     * inputs whose metadata are inputsMetadata: each input's answer at time, widened over every
+     * frame of it the node reads there. defaults is what the inputs give. Null means the node
+     * has no answer of its own there, and the one its last refresh gave stands. Called from any
+     * thread, holding no lock.
+     **/
+    virtual NodeMetadataConstPtr getPreferredMetadataForInputs(U64 /*hash*/,
+                                                               double /*time*/,
+                                                               ViewIdx /*view*/,
+                                                               const std::vector<EffectInstancePtr>& /*inputs*/,
+                                                               const std::vector<NodeMetadataConstPtr>& /*inputsMetadata*/,
+                                                               const NodeMetadata& /*defaults*/)
+    {
+        return NodeMetadataConstPtr();
+    }
+
+    /**
+     * @brief Restricts metadata to the components and depths this node supports, as every
+     * derivation does before it answers.
+     **/
+    void clampMetadataForInputs(const std::vector<EffectInstancePtr>& inputs,
+                                const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                                NodeMetadata& metadata);
+
+    /**
+     * @brief Each input's metadata at time and view, widened to the most colour components and
+     * the deepest depth it has over the frames getFramesNeeded_public() reads from it there.
+     **/
+    void getInputsMetadataOverFramesNeeded(U64 hash,
+                                           double time,
+                                           ViewIdx view,
+                                           std::vector<EffectInstancePtr>* inputs,
+                                           std::vector<NodeMetadataConstPtr>* inputsMetadata);
 
 private:
 
@@ -2586,6 +2622,9 @@ public:
         // that derivation started from, which getInputMetadataAt() then returns.
         const std::vector<NodeMetadataConstPtr>* timeInvariantInputsMetadata;
 
+        // The time and view an ActionTimeViewScope set, innermost last.
+        std::list<std::pair<double, ViewIdx>> actionTimeView;
+
         EffectTLSData()
             : beginEndRenderCount(0)
             , actionRecursionLevel(0)
@@ -2597,11 +2636,29 @@ public:
             , userLayerStrings()
             , resolvingLayersPassThrough(false)
             , timeInvariantInputsMetadata(NULL)
+            , actionTimeView()
         {
         }
     };
 
     typedef std::shared_ptr<EffectTLSData> EffectTLSDataPtr;
+
+    /**
+     * @brief While one lives, getCurrentTime() and getCurrentView() answer time and view on the
+     * calling thread, ahead of the frame it renders: for an action run at another frame than that
+     * one, whose plug-in reads its parameters at the current time.
+     **/
+    class ActionTimeViewScope {
+    public:
+        ActionTimeViewScope(EffectInstance* effect, double time, ViewIdx view);
+        ~ActionTimeViewScope();
+
+    private:
+        ActionTimeViewScope(const ActionTimeViewScope&);
+        ActionTimeViewScope& operator=(const ActionTimeViewScope&);
+
+        EffectTLSDataPtr _tls;
+    };
 
 protected:
 

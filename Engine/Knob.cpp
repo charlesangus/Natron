@@ -5733,6 +5733,33 @@ KnobContentWrite::isSettled(U64 snapshot)
     return ((snapshot & kContentWritesInFlightMask) == 0) && (contentWriteState().load() == snapshot);
 }
 
+namespace {
+thread_local PluginEditsDeferral* tPluginEditsDeferral = NULL;
+}
+
+PluginEditsDeferral::PluginEditsDeferral()
+    : _previous(tPluginEditsDeferral)
+    , _refused(0)
+{
+    tPluginEditsDeferral = this;
+}
+
+PluginEditsDeferral::~PluginEditsDeferral()
+{
+    tPluginEditsDeferral = _previous;
+}
+
+bool
+PluginEditsDeferral::refuse()
+{
+    if (!tPluginEditsDeferral) {
+        return false;
+    }
+    ++tPluginEditsDeferral->_refused;
+
+    return true;
+}
+
 void
 KnobHelper::invalidateContentHash()
 {

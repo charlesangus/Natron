@@ -206,6 +206,8 @@ public:
     ~InputRelatedDataRefreshScope() { --inputRelatedDataRefreshDepth; }
 };
 
+thread_local int inputRelatedDataRefreshDeferralDepth = 0;
+
 bool
 isSkippedByHashInputs(const Node& node)
 {
@@ -8331,13 +8333,23 @@ Node::isInputRelatedDataStale() const
     return _imp->inputRelatedDataStale.load();
 }
 
+Node::InputRelatedDataRefreshDeferral::InputRelatedDataRefreshDeferral()
+{
+    ++inputRelatedDataRefreshDeferralDepth;
+}
+
+Node::InputRelatedDataRefreshDeferral::~InputRelatedDataRefreshDeferral()
+{
+    --inputRelatedDataRefreshDeferralDepth;
+}
+
 void
 Node::refreshInputRelatedDataIfStale()
 {
     if (!_imp->inputRelatedDataStale.load() || (QThread::currentThread() != qApp->thread())) {
         return;
     }
-    if ((hashComputeDepth > 0) || (inputRelatedDataRefreshDepth > 0)) {
+    if ((hashComputeDepth > 0) || (inputRelatedDataRefreshDepth > 0) || (inputRelatedDataRefreshDeferralDepth > 0)) {
         return;
     }
     if (!_imp->effect || !isNodeCreated() || !isActivated()) {

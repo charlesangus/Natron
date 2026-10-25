@@ -170,6 +170,115 @@ OfxClipInstance::getIsMask() const
     return _imp->mask;
 }
 
+namespace {
+// The OpenFX components of the clip numbered inputNb, as the effect's metadata give them.
+std::string
+ofxComponentsFromMetadata(const NodeMetadata& metadata,
+                          int inputNb)
+{
+    const std::string componentsType = metadata.getComponentsType(inputNb);
+
+    if (componentsType == kNatronDisparityComponentsLabel) {
+        return kFnOfxImageComponentStereoDisparity;
+    } else if (componentsType == kNatronMotionComponentsLabel) {
+        return kFnOfxImageComponentMotionVectors;
+    }
+
+    return ImageLayerDesc::mapLayerToOFXComponentsTypeString(ImageLayerDesc::mapNCompsToColorLayer(metadata.getNComps(inputNb)));
+}
+} // anon namespace
+
+OfxClipsFrameAnswer::Clip::Clip()
+    : components()
+    , pixelDepth()
+    , aspectRatio(1.)
+    , hasSource(false)
+    , unmappedComponents()
+    , unmappedPixelDepth()
+    , format()
+    , frameRate(24.)
+    , fieldOrder()
+    , continuousSamples(false)
+{
+    format.x1 = format.y1 = format.x2 = format.y2 = 0;
+}
+
+OfxClipsFrameAnswerPtr
+OfxClipsFrameAnswer::create(const NodeMetadata& metadata,
+                            const std::vector<NodeMetadataConstPtr>& inputsMetadata)
+{
+    std::shared_ptr<OfxClipsFrameAnswer> answer = std::make_shared<OfxClipsFrameAnswer>();
+    const int nInputs = (int)inputsMetadata.size();
+
+    answer->clips.resize(nInputs + 1);
+    for (int i = -1; i < nInputs; ++i) {
+        Clip& clip = answer->clips[i + 1];
+        clip.components = ofxComponentsFromMetadata(metadata, i);
+        clip.pixelDepth = OfxClipInstance::natronsDepthToOfxDepth(metadata.getBitDepth(i));
+        clip.aspectRatio = metadata.getPixelAspectRatio(i);
+
+        const NodeMetadata* source = (i == -1) ? &metadata : inputsMetadata[i].get();
+        if (!source) {
+            continue;
+        }
+        clip.hasSource = true;
+        ImageLayerDesc layer, pairedLayer;
+        if (i == -1) {
+            EffectInstance::getOutputClipLayersFromMetadata(*source, &layer, &pairedLayer);
+        } else {
+            EffectInstance::getLayersFromMetadata(*source, -1, &layer, &pairedLayer);
+        }
+        if (layer.getNumComponents() == 0) {
+            layer = ImageLayerDesc::getRGBAComponents();
+        }
+        clip.unmappedComponents = ImageLayerDesc::mapLayerToOFXComponentsTypeString(layer);
+        const ImageBitDepthEnum depth = source->getBitDepth(-1);
+        if ((depth == eImageBitDepthByte) || (depth == eImageBitDepthShort) || (depth == eImageBitDepthHalf) || (depth == eImageBitDepthFloat)) {
+            clip.unmappedPixelDepth = OfxClipInstance::natronsDepthToOfxDepth(depth);
+        }
+        const RectI& format = source->getOutputFormat();
+        clip.format.x1 = format.x1;
+        clip.format.y1 = format.y1;
+        clip.format.x2 = format.x2;
+        clip.format.y2 = format.y2;
+        clip.frameRate = source->getOutputFrameRate();
+        clip.fieldOrder = OfxClipInstance::natronsFieldingToOfxFielding(source->getOutputFielding());
+        clip.continuousSamples = source->getIsContinuous();
+    }
+
+    return answer;
+}
+
+const OfxClipsFrameAnswer::Clip*
+OfxClipsFrameAnswer::getClip(int inputNb) const
+{
+    if ((inputNb < -1) || ((inputNb + 1) >= (int)clips.size())) {
+        return NULL;
+    }
+
+    return &clips[inputNb + 1];
+}
+
+const OfxClipsFrameAnswer::Clip*
+OfxClipInstance::getFrameAnswerClip(bool needSource) const
+{
+    ClipDataTLSPtr tls = _imp->tlsData->getTLSData();
+
+    if (!tls || tls->frameAnswers.empty() || !tls->frameAnswers.back()) {
+        return NULL;
+    }
+    // The paint input of a roto node is the node itself, which no answer describes.
+    if (getName() == CLIP_OFX_ROTO) {
+        return NULL;
+    }
+    const OfxClipsFrameAnswer::Clip* clip = tls->frameAnswers.back()->getClip(getInputNb());
+    if (!clip || (needSource && !clip->hasSource)) {
+        return NULL;
+    }
+
+    return clip;
+}
+
 const std::string &
 OfxClipInstance::getUnmappedBitDepth() const
 {
@@ -178,6 +287,10 @@ OfxClipInstance::getUnmappedBitDepth() const
     static const std::string halfStr(kOfxBitDepthHalf);
     static const std::string floatStr(kOfxBitDepthFloat);
     static const std::string noneStr(kOfxBitDepthNone);
+    const OfxClipsFrameAnswer::Clip* frameClip = getFrameAnswerClip(true);
+    if (frameClip && !frameClip->unmappedPixelDepth.empty()) {
+        return frameClip->unmappedPixelDepth;
+    }
     EffectInstancePtr inputNode = getAssociatedNode();
 
     if (inputNode) {
@@ -225,6 +338,10 @@ OfxClipInstance::getUnmappedBitDepth() const
 const std::string &
 OfxClipInstance::getUnmappedComponents() const
 {
+    const OfxClipsFrameAnswer::Clip* frameClip = getFrameAnswerClip(true);
+    if (frameClip) {
+        return frameClip->unmappedComponents;
+    }
 
     EffectInstancePtr effect = getAssociatedNode();
 
@@ -361,7 +478,17 @@ OfxClipInstance::getComponents() const
        The property returned by the clip might differ from the one held on the image if the associated effect
        is identity or if the effect is multi-planar
      */
-    return _components;
+    const OfxClipsFrameAnswer::Clip* frameClip = getFrameAnswerClip(false);
+
+    return frameClip ? frameClip->components : _components;
+}
+
+const std::string&
+OfxClipInstance::getPixelDepth() const
+{
+    const OfxClipsFrameAnswer::Clip* frameClip = getFrameAnswerClip(false);
+
+    return frameClip ? frameClip->pixelDepth : OFX::Host::ImageEffect::ClipInstance::getPixelDepth();
 }
 
 // overridden from OFX::Host::ImageEffect::ClipInstance
@@ -375,7 +502,9 @@ OfxClipInstance::getAspectRatio() const
        The property returned by the clip might differ from the one held on the image if the associated effect
        is identity
      */
-    return _imp->aspectRatio;
+    const OfxClipsFrameAnswer::Clip* frameClip = getFrameAnswerClip(false);
+
+    return frameClip ? frameClip->aspectRatio : _imp->aspectRatio;
 }
 
 void
@@ -388,6 +517,10 @@ OfxClipInstance::setAspectRatio(double par)
 OfxRectI
 OfxClipInstance::getFormat() const
 {
+    const OfxClipsFrameAnswer::Clip* frameClip = getFrameAnswerClip(true);
+    if (frameClip) {
+        return frameClip->format;
+    }
     EffectInstancePtr effect = getEffectHolder();
 
     RectI nRect;
@@ -418,6 +551,10 @@ OfxClipInstance::getFrameRate() const
        The frame rate property cannot be held onto images, hence return the "actual" frame rate,
        taking into account the node from which the image came from wrt the identity state
      */
+    const OfxClipsFrameAnswer::Clip* frameClip = getFrameAnswerClip(true);
+    if (frameClip) {
+        return frameClip->frameRate;
+    }
     EffectInstancePtr effect = getEffectHolder();
 
     if ( isOutput() || (getName() == CLIP_OFX_ROTO) ) {
@@ -466,6 +603,10 @@ OfxClipInstance::getFrameRange(double &startFrame,
 const std::string &
 OfxClipInstance::getFieldOrder() const
 {
+    const OfxClipsFrameAnswer::Clip* frameClip = getFrameAnswerClip(true);
+    if (frameClip) {
+        return frameClip->fieldOrder;
+    }
     EffectInstancePtr effect = getEffectHolder();
 
     if (!effect) {
@@ -523,6 +664,10 @@ OfxClipInstance::getConnected() const
 double
 OfxClipInstance::getUnmappedFrameRate() const
 {
+    const OfxClipsFrameAnswer::Clip* frameClip = getFrameAnswerClip(true);
+    if (frameClip) {
+        return frameClip->frameRate;
+    }
     EffectInstancePtr inputNode = getAssociatedNode();
 
     if (inputNode) {
@@ -561,6 +706,10 @@ OfxClipInstance::getUnmappedFrameRange(double &unmappedStartFrame,
 bool
 OfxClipInstance::getContinuousSamples() const
 {
+    const OfxClipsFrameAnswer::Clip* frameClip = getFrameAnswerClip(true);
+    if (frameClip) {
+        return frameClip->continuousSamples;
+    }
     EffectInstancePtr effect = getEffectHolder();
 
     if (!effect) {
@@ -1597,6 +1746,23 @@ OfxClipInstance::pushComponentsPresentTimeView(double time,
 }
 
 void
+OfxClipInstance::pushFrameAnswer(const OfxClipsFrameAnswerPtr& answer)
+{
+    _imp->tlsData->getOrCreateTLSData()->frameAnswers.push_back(answer);
+}
+
+void
+OfxClipInstance::popFrameAnswer()
+{
+    ClipDataTLSPtr tls = _imp->tlsData->getTLSData();
+
+    assert(tls && !tls->frameAnswers.empty());
+    if (tls && !tls->frameAnswers.empty()) {
+        tls->frameAnswers.pop_back();
+    }
+}
+
+void
 OfxClipInstance::popComponentsPresentTimeView()
 {
     ClipDataTLSPtr tls = _imp->tlsData->getTLSData();
@@ -1830,9 +1996,9 @@ OfxClipInstance::getCurrentMetadata(OFX::Host::ImageEffect::ClipInstance* clip,
     OfxClipInstance* natronClip = dynamic_cast<OfxClipInstance*>(clip);
     OfxEffectInstancePtr effect = natronClip ? natronClip->_imp->nodeInstance.lock() : OfxEffectInstancePtr();
     if (effect) {
-        // A refresh invalidates the clip caches: run from inside the fetch below, it would leave
-        // the fetched set uncached and drop the caches of the effect's other clips.
-        effect->refreshInputRelatedDataIfStale();
+        // No refresh here: a reader that must see an edit refreshes before it starts, and one
+        // run from inside a fetch would take the clip preferences lock under the host's metadata
+        // mutex, the reverse of the order a render takes them in.
         effect->dropStaleClipMetadata();
     }
 
@@ -1843,6 +2009,9 @@ void
 OfxClipInstance::fetchMetadata(OfxTime time,
                                OFX::Host::Property::Set& metadata)
 {
+    // Every get metadata action runs under here, holding the host's metadata mutex of this
+    // effect and of each one downstream of it: nothing reached from it may refresh.
+    Node::InputRelatedDataRefreshDeferral noRefresh;
     OFX::Host::ImageEffect::ClipInstance* upstreamOutput = NULL;
     EffectInstancePtr inputNode;
 

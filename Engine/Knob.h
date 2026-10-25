@@ -1491,6 +1491,31 @@ private:
     bool _open;
 };
 
+/**
+ * @brief While one lives on the calling thread, a plug-in's own edits there are refused rather
+ * than applied: knob values and keys it sets, and the options and properties it changes on its
+ * parameters. Held around a plug-in action that may run on any thread at any frame, which must
+ * leave the parameters as the main thread sees them; the refusals are counted so the holder can
+ * have the main thread redo the action and apply them.
+ **/
+class PluginEditsDeferral {
+public:
+    PluginEditsDeferral();
+    ~PluginEditsDeferral();
+
+    /// True, and the refusal counted, if a deferral lives on the calling thread.
+    static bool refuse();
+
+    bool hasRefused() const { return _refused > 0; }
+
+private:
+    PluginEditsDeferral(const PluginEditsDeferral&);
+    PluginEditsDeferral& operator=(const PluginEditsDeferral&);
+
+    PluginEditsDeferral* _previous;
+    int _refused;
+};
+
 ///Skins the API of KnobI by implementing most of the functions in a non templated manner.
 struct KnobHelperPrivate;
 class KnobHelper

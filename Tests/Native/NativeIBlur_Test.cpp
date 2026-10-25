@@ -398,6 +398,8 @@ TEST_F(NativeIBlurTest, DisconnectedMapWarns)
     NodePtr map = makeParitySource();
     ASSERT_TRUE(bool(map));
     connectNodes(map, iblur, kIBlurInputMap, true);
+    // getPersistentMessage appends to its out parameter.
+    message.clear();
     iblur->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }

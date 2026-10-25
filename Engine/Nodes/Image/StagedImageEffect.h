@@ -366,6 +366,15 @@ protected:
         return false;
     }
 
+    /**
+     * @brief False for a Passes op that has no GPU path, which then stays on the CPU even when its
+     * pass list is empty.
+     **/
+    virtual bool opPassesOnGpu() const WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     virtual bool opCanConcatenate() const WARN_UNUSED_RETURN
     {
         return false;

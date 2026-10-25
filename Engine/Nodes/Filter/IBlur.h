@@ -157,6 +157,12 @@ private:
                               ViewIdx view,
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // No GPU path yet.
+    virtual bool opPassesOnGpu() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
     // Posts the warning while the Map is disconnected, and takes back its own once connected.
     void refreshMapWarning();
 

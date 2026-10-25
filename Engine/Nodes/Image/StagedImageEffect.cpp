@@ -158,7 +158,7 @@ StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
     const OpKind kind = imagePipelineSpec().op;
 
     if (kind == OpKind::Passes) {
-        return canRecordPassesGpu(resolveGpuPlan(query), query, opPasses(query.time, query.view, query.mappedScale));
+        return opPassesOnGpu() && canRecordPassesGpu(resolveGpuPlan(query), query, opPasses(query.time, query.view, query.mappedScale));
     }
     if (kind == OpKind::Resample) {
         return opResamplesOnGpu() && canRecordResampleGpu(*this, resolveGpuPlan(query), query, opResample(query.time, query.view, query.mappedScale));

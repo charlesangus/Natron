@@ -52,7 +52,8 @@ set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTI
 # Native node registration fragments (see Engine/Nodes/NativeRegistry.h), aggregated into
 # NativeRegistryAll.inc. Sorted so the registration order does not depend on the filesystem.
 # Each fragment is a configure dependency because the header it names is copied into the
-# aggregate.
+# aggregate. Fragments may also hold NATRON_I_VARIANT lines (Engine/Nodes/IVariantRegistry.h);
+# the aggregate defines either macro its includer leaves undefined as empty.
 file(GLOB_RECURSE NatronEngineNodes_REGISTRATIONS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/*.reg.inc)
 list(SORT NatronEngineNodes_REGISTRATIONS)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${NatronEngineNodes_REGISTRATIONS})
@@ -87,7 +88,23 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/NativeRegistryAll.inc.tmp
     "#ifdef NATRON_NATIVE_REGISTRY_HEADERS\n"
     "${nativeRegistryHeaders}"
     "#else\n"
+    "#ifndef NATRON_NATIVE_NODE\n"
+    "#define NATRON_NATIVE_NODE(...)\n"
+    "#define NATRON_NATIVE_REGISTRY_DEFAULT_NODE\n"
+    "#endif\n"
+    "#ifndef NATRON_I_VARIANT\n"
+    "#define NATRON_I_VARIANT(...)\n"
+    "#define NATRON_NATIVE_REGISTRY_DEFAULT_I_VARIANT\n"
+    "#endif\n"
     "${nativeRegistryNodes}"
+    "#ifdef NATRON_NATIVE_REGISTRY_DEFAULT_NODE\n"
+    "#undef NATRON_NATIVE_NODE\n"
+    "#undef NATRON_NATIVE_REGISTRY_DEFAULT_NODE\n"
+    "#endif\n"
+    "#ifdef NATRON_NATIVE_REGISTRY_DEFAULT_I_VARIANT\n"
+    "#undef NATRON_I_VARIANT\n"
+    "#undef NATRON_NATIVE_REGISTRY_DEFAULT_I_VARIANT\n"
+    "#endif\n"
     "#endif\n")
 configure_file(${CMAKE_CURRENT_BINARY_DIR}/NativeRegistryAll.inc.tmp ${CMAKE_CURRENT_BINARY_DIR}/NativeRegistryAll.inc COPYONLY)
 

@@ -382,6 +382,21 @@ under "Flat image nodes", and `Grade` is the example to read.
    the node once (with a null `NodePtr`) purely to read that metadata back off
    it and register a `Plugin*` -- it is not a live node instance.
 
+   An I-node -- a variable-size variant of a base node, whose Map input scales
+   the effect per pixel -- adds a second line to its fragment pairing it with
+   its base node:
+
+   ```cpp
+   NATRON_I_VARIANT(PLUGINID_NATRON_BLUR, PLUGINID_NATRON_IBLUR, { kBlurParamSize, "size" })
+   ```
+
+   The base ID, the I-node's ID, then any number of `{ baseKnob, iKnob }`
+   pairs for knobs whose names differ; every other knob converts to the knob of
+   the same name. `IVariantRegistry::builtin()` (`IVariantRegistry.h`) collects
+   these lines, and the Make I-Node action reads it to convert a node either
+   way. The I-node's Map input and knobs come from `MapInput`
+   (`Filter/MapInput.h`).
+
 5. **Test it**: see "Testing" below.
 
 ### Adding a native node: checklist
@@ -393,7 +408,8 @@ Files a port adds, per node (`<Dir>` is the node's directory under
       above. One per registered ID; a template argument list containing a comma
       goes through an alias. Icon, `deprecated` and `internal` are `NodeSpec`
       fields (`Engine/Nodes/NodeSpec.h`), not part of the fragment. CMake builds
-      `NativeRegistryAll.inc` from `Nodes/*.reg.inc`.
+      `NativeRegistryAll.inc` from `Nodes/*.reg.inc`. An I-node's fragment also
+      holds its `NATRON_I_VARIANT` line, see step 4.
 - [ ] `Engine/Nodes/<Dir>/<Node>.costseed.inc`: GPU cost model seed rows, built
       from `NATRON_GPU_COST_SEED_CPU_ROW`, `_CPU_MOTION_BLUR_ROW`, `_CPU_SIGMA_ROW`
       and `_GPU_ROW`. CMake aggregates them into `GpuCostSeedsAll.inc`. Regenerate

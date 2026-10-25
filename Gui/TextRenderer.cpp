@@ -25,7 +25,11 @@
 
 #include "TextRenderer.h"
 
+#include <list>
+#include <map>
+#include <memory>
 #include <stdexcept>
+#include <utility>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -38,8 +42,11 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Global/GLIncludes.h" //!<must be included before QGlWidget because of gl.h and glew.h
 
-#include <QPainter>
+#include <QOpenGLContext>
 #include <QOpenGLWidget>
+#include <QPainter>
+
+#include "Gui/GLContextLoss.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -67,9 +74,10 @@ struct TextRendererPrivate
 
     void newTransparentTexture();
 
-    CharBitmap * createCharacter(QChar c);
+    // Deletes the atlases; the context they were created in must be current.
+    void deleteTextures();
 
-    void clearUsedTextures();
+    CharBitmap* createCharacter(QChar c);
 
     void clearBitmapCache();
 
@@ -90,6 +98,12 @@ struct TextRendererPrivate
 typedef std::shared_ptr<TextRendererPrivate> TextRendererPrivatePtr;
 typedef std::map<QFont, TextRendererPrivatePtr> FontRenderers;
 
+// Texture names belong to the context that created them, so each context gets its own atlases.
+struct ContextRenderers {
+    FontRenderers fonts;
+    QMetaObject::Connection contextConnection;
+};
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 
@@ -101,14 +115,14 @@ TextRendererPrivate::TextRendererPrivate(const QFont &font)
 {
 }
 
+// Never deletes GL names: whether their context is current here is unknown.
 TextRendererPrivate::~TextRendererPrivate()
 {
-    clearUsedTextures();
     clearBitmapCache();
 }
 
 void
-TextRendererPrivate::clearUsedTextures()
+TextRendererPrivate::deleteTextures()
 {
     for (std::list<GLuint>::iterator it = _usedTextures.begin(); it != _usedTextures.end(); ++it) {
         //https://www.opengl.org/sdk/docs/man2/xhtml/glIsTexture.xml
@@ -117,6 +131,10 @@ TextRendererPrivate::clearUsedTextures()
         //        assert(glIsTexture(texture));
         glDeleteTextures( 1, &(*it) );
     }
+    _usedTextures.clear();
+    clearBitmapCache();
+    _xOffset = 0;
+    _yOffset = 0;
 }
 
 void
@@ -240,12 +258,92 @@ TextRendererPrivate::createCharacter(QChar c)
 struct TextRenderer::Implementation
 {
     Implementation()
-        : renderers()
+        : contexts()
     {
     }
 
-    FontRenderers renderers;
+    ~Implementation();
+
+    FontRenderers& fontsOfCurrentContext();
+
+    void releaseContext(QOpenGLContext* context);
+
+    void onContextDestroyed(QOpenGLContext* context);
+
+    std::map<QOpenGLContext*, ContextRenderers> contexts;
 };
+
+// Atlases of a context that is not current are dropped without glDeleteTextures: deleting them
+// here would delete whatever the current context has under the same names. A context that is still
+// alive frees them when it dies.
+TextRenderer::Implementation::~Implementation()
+{
+    QOpenGLContext* current = QOpenGLContext::currentContext();
+
+    for (std::map<QOpenGLContext*, ContextRenderers>::iterator it = contexts.begin(); it != contexts.end(); ++it) {
+        QObject::disconnect(it->second.contextConnection);
+        if (it->first == current) {
+            for (FontRenderers::iterator f = it->second.fonts.begin(); f != it->second.fonts.end(); ++f) {
+                f->second->deleteTextures();
+            }
+        }
+    }
+}
+
+FontRenderers&
+TextRenderer::Implementation::fontsOfCurrentContext()
+{
+    QOpenGLContext* context = QOpenGLContext::currentContext();
+    std::map<QOpenGLContext*, ContextRenderers>::iterator found = contexts.find(context);
+
+    if (found != contexts.end()) {
+        return found->second.fonts;
+    }
+    ContextRenderers& entry = contexts[context];
+    // A renderer shared by several widgets (HostOverlay draws in every viewer showing its node) has
+    // to clean up after each of their contexts, not only the one its owner releases. The connection
+    // has no receiver, so it is direct and runs while the context still exists.
+    entry.contextConnection = QObject::connect(context, &QOpenGLContext::aboutToBeDestroyed, [this, context]() {
+        onContextDestroyed(context);
+    });
+
+    return entry.fonts;
+}
+
+void
+TextRenderer::Implementation::releaseContext(QOpenGLContext* context)
+{
+    std::map<QOpenGLContext*, ContextRenderers>::iterator found = contexts.find(context);
+
+    if (found == contexts.end()) {
+        return;
+    }
+    QObject::disconnect(found->second.contextConnection);
+    for (FontRenderers::iterator f = found->second.fonts.begin(); f != found->second.fonts.end(); ++f) {
+        f->second->deleteTextures();
+    }
+    contexts.erase(found);
+}
+
+void
+TextRenderer::Implementation::onContextDestroyed(QOpenGLContext* context)
+{
+    std::map<QOpenGLContext*, ContextRenderers>::iterator found = contexts.find(context);
+
+    if (found == contexts.end()) {
+        return;
+    }
+    ContextRenderers entry = std::move(found->second);
+    contexts.erase(found);
+    QObject::disconnect(entry.contextConnection);
+    // If the context cannot be made current its names are dropped; they die with it unless another
+    // context shares them.
+    GLContextLoss::runWithContextCurrent(context, [&entry]() {
+        for (FontRenderers::iterator f = entry.fonts.begin(); f != entry.fonts.end(); ++f) {
+            f->second->deleteTextures();
+        }
+    });
+}
 
 TextRenderer::TextRenderer()
     : _imp(new Implementation)
@@ -254,6 +352,29 @@ TextRenderer::TextRenderer()
 
 TextRenderer::~TextRenderer()
 {
+}
+
+void
+TextRenderer::releaseCurrentContext()
+{
+    if (QOpenGLContext* context = QOpenGLContext::currentContext()) {
+        _imp->releaseContext(context);
+    }
+}
+
+std::list<unsigned int>
+TextRenderer::textureNamesOfCurrentContext() const
+{
+    std::list<unsigned int> names;
+    std::map<QOpenGLContext*, ContextRenderers>::const_iterator found = _imp->contexts.find(QOpenGLContext::currentContext());
+
+    if (found != _imp->contexts.end()) {
+        for (FontRenderers::const_iterator f = found->second.fonts.begin(); f != found->second.fonts.end(); ++f) {
+            names.insert(names.end(), f->second->_usedTextures.begin(), f->second->_usedTextures.end());
+        }
+    }
+
+    return names;
 }
 
 void
@@ -266,14 +387,18 @@ TextRenderer::renderText(float x,
                          const QFont &font,
                          int flags) const
 {
+    if (!QOpenGLContext::currentContext()) {
+        return;
+    }
     glCheckError();
+    FontRenderers& renderers = _imp->fontsOfCurrentContext();
     TextRendererPrivatePtr p;
-    FontRenderers::iterator it = _imp->renderers.find(font);
-    if ( it != _imp->renderers.end() ) {
+    FontRenderers::iterator it = renderers.find(font);
+    if (it != renderers.end()) {
         p = it->second;
     } else {
         p = TextRendererPrivatePtr( new TextRendererPrivate(font) );
-        _imp->renderers[font] = p;
+        renderers[font] = p;
     }
     assert(p);
 

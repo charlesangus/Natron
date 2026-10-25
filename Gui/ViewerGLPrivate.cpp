@@ -47,6 +47,7 @@
 #include "Engine/Texture.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Gui/GLContextLoss.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h" // appFont
 #include "Gui/Menu.h"
@@ -212,13 +213,8 @@ ViewerGL::Implementation::~Implementation()
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-    // Without a context the GL objects were never created or were released with the last one.
-    if (QOpenGLContext* context = _this->context()) {
-        // ~QOpenGLWidget destroys the context once this object is gone.
-        QObject::disconnect(context, &QOpenGLContext::aboutToBeDestroyed, _this, nullptr);
-        _this->makeCurrent();
-        releaseViewerGLResources(*this);
-    }
+    // ~QOpenGLWidget destroys the context once this object is gone.
+    GLContextLoss::releaseNow(_this);
 }
 
 //static const GLfloat renderingTextureCoordinates[32] = {
@@ -480,9 +476,7 @@ ViewerGL::Implementation::initializeGL()
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     _this->makeCurrent();
-    // QOpenGLWidget keeps the dying context usable by makeCurrent() while it emits this.
-    QObject::connect(_this->context(), &QOpenGLContext::aboutToBeDestroyed, _this, [this]() {
-        _this->makeCurrent();
+    GLContextLoss::watch(_this, [this]() {
         releaseViewerGLResources(*this);
     });
     initAndCheckGlExtensions();

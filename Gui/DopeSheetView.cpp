@@ -60,6 +60,7 @@
 #include "Gui/DopeSheetEditor.h"
 #include "Gui/DopeSheetEditorUndoRedo.h"
 #include "Gui/DopeSheetHierarchyView.h"
+#include "Gui/GLContextLoss.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
@@ -170,6 +171,10 @@ public:
 
     DopeSheetViewPrivate(DopeSheetView *qq);
     ~DopeSheetViewPrivate();
+
+    // Deletes the keyframe textures and glyph atlases of the widget's context, which must be current.
+    // The zeroed names and ratio make the next paint rebuild them in whatever context it runs in.
+    void releaseGLResources();
 
     /* functions */
 
@@ -352,7 +357,17 @@ DopeSheetViewPrivate::DopeSheetViewPrivate(DopeSheetView* qq)
 
 DopeSheetViewPrivate::~DopeSheetViewPrivate()
 {
+}
+
+void
+DopeSheetViewPrivate::releaseGLResources()
+{
     glDeleteTextures(KF_TEXTURES_COUNT, kfTexturesIDs);
+    for (int i = 0; i < KF_TEXTURES_COUNT; ++i) {
+        kfTexturesIDs[i] = 0;
+    }
+    kfTexturesScreenPixelRatio = 0;
+    textRenderer.releaseCurrentContext();
 }
 
 /*
@@ -801,6 +816,7 @@ DopeSheetViewPrivate::generateKeyframeTextures()
     // device pixel and stays sharp on a high-DPI screen.
     const int texSize = std::max(1, (int)std::lround(KF_PIXMAP_SIZE * dpr));
 
+    // releaseGLResources() zeroes the names when a context dies, so any left here are this context's.
     glDeleteTextures(KF_TEXTURES_COUNT, kfTexturesIDs);
     glGenTextures(KF_TEXTURES_COUNT, kfTexturesIDs);
     kfTexturesScreenPixelRatio = dpr;
@@ -2621,6 +2637,8 @@ DopeSheetView::DopeSheetView(DopeSheet *model,
  */
 DopeSheetView::~DopeSheetView()
 {
+    // ~QOpenGLWidget destroys the context once _imp is gone.
+    GLContextLoss::releaseNow(this);
 }
 
 void
@@ -3221,6 +3239,9 @@ DopeSheetView::initializeGL()
         return;
     }
 
+    GLContextLoss::watch(this, [this]() {
+        _imp->releaseGLResources();
+    });
     _imp->generateKeyframeTextures();
 }
 

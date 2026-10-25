@@ -35,10 +35,11 @@
 
 #include <QWindow>
 
-#include "Gui/KnobGui.h"
+#include "Gui/GLContextLoss.h"
 #include "Gui/Gui.h"
-#include "Gui/QtEnumConvert.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/KnobGui.h"
+#include "Gui/QtEnumConvert.h"
 
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/Knob.h"
@@ -96,6 +97,7 @@ CustomParamInteract::CustomParamInteract(const KnobGuiPtr& knob,
 
 CustomParamInteract::~CustomParamInteract()
 {
+    GLContextLoss::releaseNow(this);
 }
 
 void
@@ -141,6 +143,11 @@ CustomParamInteract::initializeGL()
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     appPTR->initializeOpenGLFunctionsOnce();
+    // The plugin's own GL objects are out of the host's reach; only the binding saved from the old
+    // context is dropped, so it is never restored into the new one.
+    GLContextLoss::watch(this, [this]() {
+        _imp->savedTexture = 0;
+    });
 }
 
 void

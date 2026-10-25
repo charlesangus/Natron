@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <list>
+
 #include "Gui/GuiFwd.h"
 
 
@@ -49,6 +51,15 @@ public:
                     const QColor &color,
                     const QFont &font,
                     int flags = 0) const; //!< see http://doc.qt.io/qt-4.8/qpainter.html#drawText-10
+
+    /**
+     * @brief Deletes the glyph atlases of the current context, which a widget calls before its context
+     * is destroyed. Text drawn afterwards in another context builds new atlases there.
+     **/
+    void releaseCurrentContext();
+
+    /// The atlas texture names this renderer holds for the current context, for inspection in tests.
+    std::list<unsigned int> textureNamesOfCurrentContext() const;
 
 private:
     struct Implementation;

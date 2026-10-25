@@ -58,3 +58,10 @@ if(NOT "GuiThreadGLBinding" IN_LIST NATRON_GTEST_SUITE_TESTS)
                         "update the suite name or it would silently lose its properties.")
 endif()
 set_tests_properties(GuiThreadGLBinding PROPERTIES ENVIRONMENT "NATRON_DIAG_GL_FORCE_PROBE_CONTEXT=1;NATRON_TEST_REQUIRE_GL=1")
+
+# The TextRenderer suite checks glyph atlases with glIsTexture in several GLX contexts.
+if(NOT "TextRenderer" IN_LIST NATRON_GTEST_SUITE_TESTS)
+    message(FATAL_ERROR "SuiteProperties.cmake: 'TextRenderer' is not a registered test; "
+                        "update the suite name or it would silently lose its properties.")
+endif()
+set_tests_properties(TextRenderer PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_GL=1")

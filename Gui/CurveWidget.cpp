@@ -53,6 +53,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/CurveEditor.h"
 #include "Gui/CurveWidgetDialogs.h"
 #include "Gui/CurveWidgetPrivate.h"
+#include "Gui/GLContextLoss.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
@@ -166,7 +167,8 @@ CurveWidget::~CurveWidget()
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-    makeCurrent();
+    // ~QOpenGLWidget destroys the context once _imp is gone.
+    GLContextLoss::releaseNow(this);
 }
 
 bool
@@ -181,6 +183,10 @@ CurveWidget::initializeGL()
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     appPTR->initializeOpenGLFunctionsOnce();
+    // Text is the only GL state this widget creates.
+    GLContextLoss::watch(this, [this]() {
+        _imp->textRenderer.releaseCurrentContext();
+    });
 }
 
 void

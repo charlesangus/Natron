@@ -52,6 +52,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/CurveEditor.h"
 #include "Gui/CurveWidget.h"
 #include "Gui/DopeSheetEditor.h"
+#include "Gui/GLContextLoss.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
@@ -250,6 +251,8 @@ TimeLineGui::TimeLineGui(ViewerInstance* viewer,
 
 TimeLineGui::~TimeLineGui()
 {
+    // ~QOpenGLWidget destroys the context once _imp is gone.
+    GLContextLoss::releaseNow(this);
 }
 
 void
@@ -289,6 +292,10 @@ void
 TimeLineGui::initializeGL()
 {
     appPTR->initializeOpenGLFunctionsOnce();
+    // Text is the only GL state this widget creates.
+    GLContextLoss::watch(this, [this]() {
+        _imp->textRenderer.releaseCurrentContext();
+    });
 }
 
 void

@@ -232,6 +232,7 @@ set(GuiTests_SOURCES
     ScaleSliderQWidget_Test.cpp
     ShuffleMatrix_Test.cpp
     TabMenuBridge_Test.cpp
+    TextRenderer_Test.cpp
     ThemedIcon_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp

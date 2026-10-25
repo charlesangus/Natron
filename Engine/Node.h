@@ -1232,7 +1232,7 @@ public:
 public:
     void onAllKnobsSlaved(bool isSlave, KnobHolder* master);
 
-    void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master, int dimension, bool isSlave);
+    void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master, int dimension, bool isSlave, bool isExpression);
 
     NodePtr getMasterNode() const;
 
@@ -1250,9 +1250,16 @@ public:
     static bool canPluginBeLinkedNode(const std::string& pluginID);
 
     /**
-     * @brief Unlinks every knob of this node from its link groups that are not permanent.
+     * @brief Unlinks every knob of this node from its link groups that are not permanent. If unlinkedKnobs is
+     * given, the knobs that were unlinked are appended to it, for relinkKnobs() to undo.
      **/
-    bool unlinkAllKnobs();
+    bool unlinkAllKnobs(KnobsVec* unlinkedKnobs = 0);
+
+    /**
+     * @brief Makes each of the given knobs of this node rejoin the link groups it left, discarding its own
+     * value, animation and expression for theirs.
+     **/
+    bool relinkKnobs(const KnobsVec& knobs);
 
     /**
      * @brief True if a knob of this node is linked to an active node through linkAllKnobsTo().
@@ -1381,6 +1388,17 @@ public:
      **/
     void clearLastRenderedImage();
 
+    enum KnobLinkKindEnum {
+        // A dimension of slave reads master in its expression.
+        eKnobLinkKindExpression = 0,
+
+        // A dimension of slave is slaved one-way to master by slaveTo(), which only a node's own internals do.
+        eKnobLinkKindSlave,
+
+        // A dimension of slave shares a link group with a dimension of master.
+        eKnobLinkKindLinkGroup
+    };
+
     struct KnobLink
     {
         ///The knob being slaved
@@ -1392,8 +1410,14 @@ public:
 
         ///The dimension being slaved, -1 if irrelevant
         int dimension;
+
+        KnobLinkKindEnum kind;
     };
 
+    /**
+     * @brief The expression and slaveTo() links of this node's knobs, followed by a link of kind
+     * eKnobLinkKindLinkGroup for each dimension of a knob of this node linked to a knob of an active node.
+     **/
     void getKnobsLinks(std::list<KnobLink> & links) const;
 
     /*Initialises inputs*/

@@ -241,6 +241,20 @@ public:
      **/
     bool getEdgeKindColor(DataKindEnum kind, float* r, float* g, float* b) const;
 
+    /**
+     * @brief The colour of the node graph lines between knobs that share a link group, the dashed lines
+     * between Linked Nodes included.
+     **/
+    void getLinkLineColor(float* r, float* g, float* b) const;
+
+    /**
+     * @brief The colour of the node graph lines from a node to the nodes its expressions read.
+     **/
+    void getExpressionLineColor(float* r, float* g, float* b) const;
+
+    bool isLinkLinesVisible() const;
+    bool isExpressionLinesVisible() const;
+
     bool getRenderOnEditingFinishedOnly() const;
     void setRenderOnEditingFinishedOnly(bool render);
 
@@ -583,6 +597,8 @@ private:
     KnobIntPtr _maxUndoSteps;
     KnobIntPtr _disconnectedArrowLength;
     KnobBoolPtr _useInputAForMergeAutoConnect;
+    KnobBoolPtr _showLinkLines;
+    KnobBoolPtr _showExpressionLines;
     KnobBoolPtr _usePluginIconsInNodeGraph;
     KnobBoolPtr _useAntiAliasing;
     KnobSeparatorPtr _tabMenuSeparator;
@@ -684,6 +700,8 @@ private:
     KnobColorPtr _edgeDeepColor;
     KnobColorPtr _edgeSceneColor;
     KnobColorPtr _edgeRawColor;
+    KnobColorPtr _linkLineColor;
+    KnobColorPtr _expressionLineColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
     bool _settingsExisted;

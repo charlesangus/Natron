@@ -3622,7 +3622,7 @@ KnobHelper::clearExpression(int dimension,
             }
 
             if ( getHolder() ) {
-                getHolder()->onKnobSlaved(thisShared, otherKnob, dimension, false );
+                getHolder()->onKnobSlaved(thisShared, otherKnob, dimension, false, true);
             }
 
 
@@ -5015,7 +5015,7 @@ KnobHelper::addListener(const bool isExpression,
     if (listenerIsHelper->_signalSlotHandler && _signalSlotHandler) {
         //Notify the holder one of its knob is now slaved
         if ( listenerIsHelper->getHolder() ) {
-            listenerIsHelper->getHolder()->onKnobSlaved(listener, thisShared, listenerDimension, true );
+            listenerIsHelper->getHolder()->onKnobSlaved(listener, thisShared, listenerDimension, true, isExpression);
         }
     }
 

@@ -1793,7 +1793,7 @@ Knob<T>::unSlaveInternal(int dimension,
         }
     }
     if (getHolder() && _signalSlotHandler) {
-        getHolder()->onKnobSlaved( shared_from_this(), master.second, dimension, false );
+        getHolder()->onKnobSlaved(shared_from_this(), master.second, dimension, false, false);
     }
     if (masterHelper) {
         masterHelper->removeListener(this, dimension);

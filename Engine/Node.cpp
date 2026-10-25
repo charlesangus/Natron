@@ -5902,7 +5902,8 @@ void
 Node::onKnobSlaved(const KnobIPtr& slave,
                    const KnobIPtr& master,
                    int dimension,
-                   bool isSlave)
+                   bool isSlave,
+                   bool isExpression)
 {
     ///ignore the call if the node is a clone
     {
@@ -5927,40 +5928,30 @@ Node::onKnobSlaved(const KnobIPtr& slave,
         parentNode = isEffect->getNode();
     }
 
+    const KnobLinkKindEnum kind = isExpression ? eKnobLinkKindExpression : eKnobLinkKindSlave;
     bool changed = false;
     {
         QMutexLocker l(&_imp->masterNodeMutex);
         KnobLinkList::iterator found = _imp->nodeLinks.end();
         for (KnobLinkList::iterator it = _imp->nodeLinks.begin(); it != _imp->nodeLinks.end(); ++it) {
-            if (it->masterNode.lock() == parentNode) {
+            if ((it->kind == kind) && (it->dimension == dimension) && (it->slave.lock() == slave) && (it->master.lock() == master)) {
                 found = it;
                 break;
             }
         }
 
-        if ( found == _imp->nodeLinks.end() ) {
-            if (!isSlave) {
-                ///We want to unslave from the given node but the link didn't existed, just return
-                return;
-            } else {
-                ///Add a new link
-                KnobLink link;
-                link.masterNode = parentNode;
-                link.slave = slave;
-                link.master = master;
-                link.dimension = dimension;
-                _imp->nodeLinks.push_back(link);
-                changed = true;
-            }
-        } else if ( found != _imp->nodeLinks.end() ) {
-            if (isSlave) {
-                ///We want to slave to the given node but it already has a link on another parameter, just return
-                return;
-            } else {
-                ///Remove the given link
-                _imp->nodeLinks.erase(found);
-                changed = true;
-            }
+        if (isSlave && (found == _imp->nodeLinks.end())) {
+            KnobLink link;
+            link.masterNode = parentNode;
+            link.slave = slave;
+            link.master = master;
+            link.dimension = dimension;
+            link.kind = kind;
+            _imp->nodeLinks.push_back(link);
+            changed = true;
+        } else if (!isSlave && (found != _imp->nodeLinks.end())) {
+            _imp->nodeLinks.erase(found);
+            changed = true;
         }
     }
     if (changed) {
@@ -5971,9 +5962,39 @@ Node::onKnobSlaved(const KnobIPtr& slave,
 void
 Node::getKnobsLinks(std::list<Node::KnobLink> & links) const
 {
-    QMutexLocker l(&_imp->masterNodeMutex);
+    {
+        QMutexLocker l(&_imp->masterNodeMutex);
 
-    links = _imp->nodeLinks;
+        links = _imp->nodeLinks;
+    }
+
+    EffectInstancePtr effect = _imp->effect;
+    if (!effect) {
+        return;
+    }
+    const KnobsVec& knobs = effect->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        std::vector<KnobLinkedDimension> linked = (*it)->getLinkedKnobs();
+        for (std::vector<KnobLinkedDimension>::const_iterator l = linked.begin(); l != linked.end(); ++l) {
+            NodePtr node;
+            KnobHolder* holder = l->knob->getHolder();
+            if (EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder)) {
+                node = isEffect->getNode();
+            } else if (TrackMarker* isMarker = dynamic_cast<TrackMarker*>(holder)) {
+                node = isMarker->getContext()->getNode();
+            }
+            if (!node || !node->isActivated()) {
+                continue;
+            }
+            KnobLink link;
+            link.slave = *it;
+            link.master = l->knob;
+            link.masterNode = node;
+            link.dimension = l->dimension;
+            link.kind = eKnobLinkKindLinkGroup;
+            links.push_back(link);
+        }
+    }
 }
 
 void
@@ -6062,7 +6083,7 @@ Node::linkAllKnobsTo(const NodePtr& other)
 }
 
 bool
-Node::unlinkAllKnobs()
+Node::unlinkAllKnobs(KnobsVec* unlinkedKnobs)
 {
     assert(QThread::currentThread() == qApp->thread());
     if (!_imp->effect) {
@@ -6077,6 +6098,9 @@ Node::unlinkAllKnobs()
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         if ((*it)->unlinkFromGroups()) {
             unlinked = true;
+            if (unlinkedKnobs) {
+                unlinkedKnobs->push_back(*it);
+            }
         }
     }
 
@@ -6085,6 +6109,30 @@ Node::unlinkAllKnobs()
     }
 
     return unlinked;
+}
+
+bool
+Node::relinkKnobs(const KnobsVec& knobs)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (!_imp->effect) {
+        return false;
+    }
+
+    bool relinked = false;
+    _imp->effect->beginChanges();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if ((*it)->getHolder() == _imp->effect.get() && (*it)->relinkToGroups()) {
+            relinked = true;
+        }
+    }
+    _imp->effect->endChanges();
+
+    if (relinked) {
+        emitLinksChanged(NodesList());
+    }
+
+    return relinked;
 }
 
 bool

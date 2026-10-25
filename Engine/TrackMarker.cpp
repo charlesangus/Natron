@@ -1233,12 +1233,13 @@ void
 TrackMarker::onKnobSlaved(const KnobIPtr& slave,
                           const KnobIPtr& master,
                           int dimension,
-                          bool isSlave)
+                          bool isSlave,
+                          bool isExpression)
 {
     EffectInstancePtr effect = getContext()->getNode()->getEffectInstance();
 
     if (effect) {
-        effect->onKnobSlaved(slave, master, dimension, isSlave);
+        effect->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
     }
 }
 

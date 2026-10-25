@@ -346,8 +346,11 @@ public:
 
     TrackerPanel* getTrackerPanel() const;
 
-
-    void setKnobLinksVisible(bool visible);
+    /**
+     * @brief Applies the link and expression line colours and visibility: a kind of line is shown when
+     * the graph's "Show Link Lines" switch is on and that kind's preference is on.
+     **/
+    void refreshLinkLinesAppearance();
 
     /**
      * @brief Serialize this node. If this is a multi-instance node, every instance will
@@ -570,8 +573,10 @@ public Q_SLOTS:
 
     void centerGraphOnIt();
 
-    void onAllKnobsSlaved(bool b);
-
+    /**
+     * @brief Rebuilds the expression arrows, the knob link lines and the dashed lines between Linked Nodes,
+     * and the expression and Linked Node indicators.
+     **/
     void onKnobsLinksChanged();
 
     void refreshOutputEdgeVisibility();
@@ -673,8 +678,6 @@ private:
      **/
     bool colorIsBody() const;
 
-    bool isDrawnAsClone() const;
-
     QColor getDrawnBodyColor() const;
 
     bool isUserColorBorderShown() const;
@@ -753,14 +756,9 @@ private:
     QColor _currentColor; //< accessed by the serialization thread
     bool _hasUserColor;
     QColor _userColor;
-    QColor _clonedColor;
     bool _nameItemHasUserFontColor; //< the label has a font colour the user picked, which wins over body contrast
     bool _wasBeginEditCalled;
     mutable QMutex positionMutex;
-
-    ///This is the garphical red line displayed when the node is a clone
-    LinkArrow* _slaveMasterLink;
-    NodeGuiWPtr _masterNodeGui;
 
     ///For each knob that has a link to another parameter, display an arrow
     struct LinkedKnob
@@ -783,15 +781,36 @@ private:
         }
     };
 
-    struct LinkedDim
-    {
-        std::list<LinkedKnob> knobs;
-        LinkArrow* arrow;
+    enum LinkLineKindEnum {
+        // A directed arrow from a node whose knobs an expression of this node reads
+        eLinkLineKindExpression = 0,
+
+        // An undirected line to a node with a knob sharing a link group with a knob of this node
+        eLinkLineKindKnobLink,
+
+        // An undirected dashed line to a Linked Node of this node
+        eLinkLineKindLinkedNodes
     };
 
-    typedef std::map<NodeWPtr, LinkedDim, std::owner_less<NodeWPtr>> KnobGuiLinks;
-    KnobGuiLinks _knobsLinks;
+    // Undirected lines are drawn by the node of the pair with the lower address, so each pair gets one line.
+    struct LinkLine {
+        NodeWPtr partner;
+        LinkLineKindEnum kind;
+        std::list<LinkedKnob> knobs;
+        LinkArrow* arrow;
+
+        // An expression arrow whose expressions are all invalid is hidden
+        bool invalid;
+    };
+
+    typedef std::list<LinkLine> LinkLines;
+
+    // Recounts the invalid expressions of an expression line's knobs and returns whether all are invalid.
+    static bool refreshExpressionLineInvalid(LinkLine& line);
+
+    LinkLines _linkLines;
     NodeGuiIndicatorPtr _expressionIndicator;
+    NodeGuiIndicatorPtr _linkedNodeIndicator;
     QPoint _magnecEnabled; //<enabled in X or/and Y
     QPointF _magnecDistance; //for x and for  y
     QPoint _updateDistanceSinceLastMagnec; //for x and for y

@@ -3156,14 +3156,15 @@ protected:
     }
 
 public:
-
     /**
-     * @brief Same as onAllKnobsSlaved but called when only 1 knob is slaved
+     * @brief Same as onAllKnobsSlaved but called when only 1 knob is slaved, or when a dimension of slave
+     * starts or stops reading master in its expression (isExpression).
      **/
     virtual void onKnobSlaved(const KnobIPtr& /*slave*/,
                               const KnobIPtr& /*master*/,
                               int /*dimension*/,
-                              bool /*isSlave*/)
+                              bool /*isSlave*/,
+                              bool /*isExpression*/)
     {
     }
 

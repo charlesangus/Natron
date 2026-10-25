@@ -650,7 +650,7 @@ NodeGraph::copyNodesAndCreateInGroup(const NodesGuiList& nodes,
         std::list<Serialization::NodeSerializationPtr>::const_iterator itOther = clipboard.nodes.begin();
         std::list<NodePtr>::const_iterator itSource = clipboard.sourceNodes.begin();
         for (; itOther != clipboard.nodes.end(); ++itOther, ++itSource) {
-            NodeGuiPtr node = _imp->pasteNode(*itOther, *itSource, QPointF(0, 0), group, std::string(), false, &oldNewScriptNamesMapping);
+            NodeGuiPtr node = _imp->pasteNode(*itOther, *itSource, QPointF(0, 0), group, std::string(), 0, &oldNewScriptNamesMapping);
             assert(node);
             if (node) {
                 oldNewScriptNamesMapping[(*itOther)->scriptName] = node->getNode()->getScriptName();

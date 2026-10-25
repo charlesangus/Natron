@@ -347,14 +347,12 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _currentColor()
     , _hasUserColor(false)
     , _userColor()
-    , _clonedColor()
     , _nameItemHasUserFontColor(false)
     , _wasBeginEditCalled(false)
     , positionMutex()
-    , _slaveMasterLink(NULL)
-    , _masterNodeGui()
-    , _knobsLinks()
+    , _linkLines()
     , _expressionIndicator()
+    , _linkedNodeIndicator()
     , _magnecEnabled()
     , _magnecDistance()
     , _updateDistanceSinceLastMagnec()
@@ -398,9 +396,9 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(deactivated(bool)), this, SLOT(deactivate(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(activated(bool)), this, SLOT(activate(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(inputChanged(int)), this, SLOT(connectEdge(int)) );
-    QObject::connect( internalNode.get(), SIGNAL(persistentMessageChanged()), this, SLOT(onPersistentMessageChanged()) );
-    QObject::connect( internalNode.get(), SIGNAL(allKnobsSlaved(bool)), this, SLOT(onAllKnobsSlaved(bool)) );
+    QObject::connect(internalNode.get(), SIGNAL(persistentMessageChanged()), this, SLOT(onPersistentMessageChanged()));
     QObject::connect( internalNode.get(), SIGNAL(knobsLinksChanged()), this, SLOT(onKnobsLinksChanged()) );
+    QObject::connect(internalNode.get(), SIGNAL(linksChanged()), this, SLOT(onKnobsLinksChanged()));
     QObject::connect( internalNode.get(), SIGNAL(outputsChanged()), this, SLOT(refreshOutputEdgeVisibility()) );
     QObject::connect( internalNode.get(), SIGNAL(previewKnobToggled()), this, SLOT(onPreviewKnobToggled()) );
     QObject::connect( internalNode.get(), SIGNAL(disabledKnobToggled(bool)), this, SLOT(onDisabledKnobToggled(bool)) );
@@ -463,10 +461,6 @@ NodeGui::initialize(NodeGraph* dag,
         getInitialSize(&w, &h);
         resize(w, h);
     }
-
-
-    _clonedColor.setRgb(200, 70, 100);
-
 
     ///Make the output edge
     EffectInstancePtr iseffect = internalNode->getEffectInstance();
@@ -620,6 +614,16 @@ NodeGui::restoreStateAfterCreation()
     internalNode->refreshIdentityState();
     onPersistentMessageChanged();
     onKnobsLinksChanged();
+
+    // A partner whose GUI was created first could not draw its undirected line to this node yet.
+    NodesList partners;
+    internalNode->getKnobLinkedNodes(&partners);
+    for (NodesList::iterator it = partners.begin(); it != partners.end(); ++it) {
+        NodeGuiPtr partnerGui = std::dynamic_pointer_cast<NodeGui>((*it)->getNodeGui());
+        if (partnerGui && (it->get() < internalNode.get())) {
+            partnerGui->onKnobsLinksChanged();
+        }
+    }
 }
 
 void
@@ -916,6 +920,18 @@ NodeGui::createGui()
 
     _availableViewsIndicator.reset( new NodeGuiIndicator(getDagGui(), depth + 2, QString::fromUtf8("V"), bbox.topLeft(), ellipseDiam, ellipseDiam, exprGrad, QColor(255, 255, 255), this) );
     _availableViewsIndicator->setActive(false);
+
+    // Shown whatever the line preferences, so a Linked Node stays recognisable when its partners are
+    // off-screen or in another group.
+    QGradientStops linkGrad;
+    linkGrad.push_back(qMakePair(0., QColor(Qt::white)));
+    linkGrad.push_back(qMakePair(0.3, QColor(70, 140, 255)));
+    linkGrad.push_back(qMakePair(1., QColor(30, 60, 120)));
+    _linkedNodeIndicator.reset(new NodeGuiIndicator(getDagGui(), depth + 2, QString::fromUtf8("L"), bbox.bottomLeft(), ellipseDiam, ellipseDiam, linkGrad, QColor(255, 255, 255), this));
+    _linkedNodeIndicator->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("This node is a Linked Node: its parameters are linked to those of "
+                                                                               "one or more nodes of the same kind. Use Unlink Node to make it independent."),
+                                                                            NATRON_NAMESPACE::WhiteSpaceNormal));
+    _linkedNodeIndicator->setActive(false);
 
     onAvailableViewsChanged();
 
@@ -1236,7 +1252,7 @@ NodeGui::resize(int width,
     }
     const QPointF topLeft = mapFromParent( pos() );
     const QPointF bottomRight(topLeft.x() + width, topLeft.y() + height);
-    //const QPointF bottomLeft = topLeft + QPointF(0, height);
+    const QPointF bottomLeft = topLeft + QPointF(0, height);
     const QPointF topRight = topLeft + QPointF(width, 0);
 
     QRectF bbox(topLeft.x(), topLeft.y(), width, height);
@@ -1285,6 +1301,9 @@ NodeGui::resize(int width,
     }
     if (_availableViewsIndicator) {
         _availableViewsIndicator->refreshPosition(topLeft);
+    }
+    if (_linkedNodeIndicator) {
+        _linkedNodeIndicator->refreshPosition(bottomLeft);
     }
     if (_passThroughIndicator) {
         _passThroughIndicator->refreshPosition(bottomRight);
@@ -1595,11 +1614,8 @@ NodeGui::refreshEdgesDataKindPen(bool force)
 void
 NodeGui::refreshKnobLinks()
 {
-    for (KnobGuiLinks::iterator it = _knobsLinks.begin(); it != _knobsLinks.end(); ++it) {
-        it->second.arrow->refreshPosition();
-    }
-    if (_slaveMasterLink) {
-        _slaveMasterLink->refreshPosition();
+    for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
+        it->arrow->refreshPosition();
     }
 }
 
@@ -2054,18 +2070,9 @@ NodeGui::colorIsBody() const
     return dynamic_cast<const BackdropGui*>(this) != NULL;
 }
 
-bool
-NodeGui::isDrawnAsClone() const
-{
-    return !_masterNodeGui.expired();
-}
-
 QColor
 NodeGui::getDrawnBodyColor() const
 {
-    if (isDrawnAsClone()) {
-        return _clonedColor;
-    }
     QMutexLocker k(&_currentColorMutex);
 
     return (_hasUserColor && drawsUserColorAsBody()) ? _userColor : _currentColor;
@@ -2095,10 +2102,6 @@ bool
 NodeGui::isUserColorBorderShown() const
 {
     if (!_userColorBorder || drawsUserColorAsBody()) {
-        return false;
-    }
-    // A clone is drawn entirely in the clone colour, so the user colour is hidden while it is one.
-    if (isDrawnAsClone()) {
         return false;
     }
     QMutexLocker k(&_currentColorMutex);
@@ -2343,16 +2346,7 @@ NodeGui::showGui()
         }
     }
 
-    if (_slaveMasterLink) {
-        if ( !node->getMasterNode() ) {
-            onAllKnobsSlaved(false);
-        } else {
-            _slaveMasterLink->show();
-        }
-    }
-    for (KnobGuiLinks::iterator it = _knobsLinks.begin(); it != _knobsLinks.end(); ++it) {
-        it->second.arrow->show();
-    }
+    refreshLinkLinesAppearance();
 } // NodeGui::showGui
 
 void
@@ -2409,11 +2403,8 @@ NodeGui::hideGui()
         _outputEdge->setActive(false);
     }
 
-    if (_slaveMasterLink) {
-        _slaveMasterLink->hide();
-    }
-    for (KnobGuiLinks::iterator it = _knobsLinks.begin(); it != _knobsLinks.end(); ++it) {
-        it->second.arrow->hide();
+    for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
+        it->arrow->hide();
     }
     NodePtr node = getNode();
     ViewerInstance* isViewer = node ? node->isEffectViewer() : NULL;
@@ -2798,52 +2789,6 @@ NodeGui::centerGraphOnIt()
     _graph->centerOnItem(this);
 }
 
-void
-NodeGui::onAllKnobsSlaved(bool b)
-{
-    NodePtr node = getNode();
-    assert(node);
-    if (!node) {
-        return;
-    }
-
-    if (b) {
-        NodePtr masterNode = node->getMasterNode();
-        assert(masterNode);
-        NodeGuiIPtr masterNodeGui_i = masterNode->getNodeGui();
-        assert(masterNodeGui_i);
-        NodeGuiPtr masterNodeGui = std::dynamic_pointer_cast<NodeGui>(masterNodeGui_i);
-        _masterNodeGui = masterNodeGui;
-        assert(!_slaveMasterLink);
-
-        if ( masterNode->getGroup() == node->getGroup() ) {
-            _slaveMasterLink = new LinkArrow( masterNodeGui, shared_from_this(), parentItem() );
-            _slaveMasterLink->setColor( QColor(200, 100, 100) );
-            _slaveMasterLink->setArrowHeadColor( QColor(243, 137, 20) );
-            _slaveMasterLink->setWidth(3);
-        }
-        if ( !node->isNodeDisabled() ) {
-            if ( !isSelected() ) {
-                applyBrush(getDrawnBodyColor());
-            }
-        }
-    } else {
-        if (_slaveMasterLink) {
-            delete _slaveMasterLink;
-            _slaveMasterLink = 0;
-        }
-        _masterNodeGui.reset();
-        if ( !node->isNodeDisabled() ) {
-            if ( !isSelected() ) {
-                applyBrush(getDrawnBodyColor());
-            }
-        }
-    }
-    refreshUserColorBorder();
-    refreshNameItemTextColor();
-    update();
-}
-
 static QString
 makeLinkString(Node* masterNode,
                KnobI* master,
@@ -2871,37 +2816,70 @@ makeLinkString(Node* masterNode,
     return tt;
 }
 
+static QString
+makeKnobLinkString(Node* node,
+                   KnobI* knob,
+                   Node* otherNode,
+                   KnobI* otherKnob)
+{
+    QString tt = QString::fromUtf8("<p>");
+
+    tt.append(QString::fromUtf8(node->getLabel().c_str()));
+    tt.append(QLatin1Char('.'));
+    tt.append(QString::fromUtf8(knob->getName().c_str()));
+    tt.append(QString::fromUtf8(" &lt;-------&gt; "));
+    tt.append(QString::fromUtf8(otherNode->getLabel().c_str()));
+    tt.append(QLatin1Char('.'));
+    tt.append(QString::fromUtf8(otherKnob->getName().c_str()));
+    tt.append(QString::fromUtf8("</p>"));
+
+    return tt;
+}
+
+bool
+NodeGui::refreshExpressionLineInvalid(LinkLine& line)
+{
+    int totalLinks = 0;
+    int totalInvalid = 0;
+
+    for (std::list<LinkedKnob>::iterator it = line.knobs.begin(); it != line.knobs.end(); ++it) {
+        KnobIPtr slave = it->slave.lock();
+        int invalid = 0;
+        if (slave) {
+            for (std::set<int>::const_iterator d = it->dimensions.begin(); d != it->dimensions.end(); ++d) {
+                if (!slave->getExpression(*d).empty() && !slave->isExpressionValid(*d, 0)) {
+                    ++invalid;
+                }
+            }
+        }
+        totalLinks += it->dimensions.size();
+        totalInvalid += invalid;
+        it->linkInValid = invalid;
+    }
+    line.invalid = (totalLinks > 0) && (totalInvalid >= totalLinks);
+
+    return line.invalid;
+}
+
 void
 NodeGui::onKnobExpressionChanged(const KnobGui* knob)
 {
     KnobIPtr internalKnob = knob->getKnob();
 
-    for (KnobGuiLinks::iterator it = _knobsLinks.begin(); it != _knobsLinks.end(); ++it) {
-        int totalLinks = 0;
-        int totalInvalid = 0;
+    for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
+        if (it->kind != eLinkLineKindExpression) {
+            continue;
+        }
         bool isCurrentLink = false;
-
-        for (std::list<LinkedKnob>::iterator it2 = it->second.knobs.begin(); it2 != it->second.knobs.end(); ++it2) {
-            KnobIPtr slave = it2->slave.lock();
-            if (slave == internalKnob) {
+        for (std::list<LinkedKnob>::iterator it2 = it->knobs.begin(); it2 != it->knobs.end(); ++it2) {
+            if (it2->slave.lock() == internalKnob) {
                 isCurrentLink = true;
+                break;
             }
-            int ndims = slave->getDimension();
-            int invalid = 0;
-            for (int i = 0; i < ndims; ++i) {
-                if ( !slave->getExpression(i).empty() && !slave->isExpressionValid(i, 0) ) {
-                    ++invalid;
-                }
-            }
-            totalLinks += it2->dimensions.size();
-            totalInvalid += invalid;
-
-            it2->linkInValid = invalid;
         }
         if (isCurrentLink) {
-            if (totalLinks > 0) {
-                it->second.arrow->setVisible(totalLinks > totalInvalid);
-            }
+            refreshExpressionLineInvalid(*it);
+            refreshLinkLinesAppearance();
             break;
         }
     }
@@ -2919,97 +2897,149 @@ NodeGui::onKnobsLinksChanged()
         return;
     }
 
+    // Lines are few, so they are rebuilt from scratch.
+    for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
+        delete it->arrow;
+    }
+    _linkLines.clear();
+
     typedef std::list<Node::KnobLink> InternalLinks;
     InternalLinks links;
     node->getKnobsLinks(links);
 
-    ///1st pass: remove the no longer needed links
-    KnobGuiLinks newLinks;
-    for (KnobGuiLinks::iterator it = _knobsLinks.begin(); it != _knobsLinks.end(); ++it) {
-        bool found = false;
-        for (InternalLinks::iterator it2 = links.begin(); it2 != links.end(); ++it2) {
-            if ( it2->masterNode.lock() == it->first.lock() ) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            delete it->second.arrow;
-        } else {
-            newLinks.insert(*it);
+    bool hasExpression = false;
+    for (InternalLinks::iterator it = links.begin(); it != links.end(); ++it) {
+        if (it->kind == Node::eKnobLinkKindExpression) {
+            hasExpression = true;
+            break;
         }
     }
-    _knobsLinks = newLinks;
 
-    ///2nd pass: create the new links
+    // A deactivated node (deleted, or in the undo history) draws no line; its partners drop theirs
+    // to it on the linksChanged its deactivation emits.
+    if (node->isActivated()) {
+        NodeGuiPtr thisShared = shared_from_this();
+        NodesList linkedNodes;
+        node->getLinkedNodes(&linkedNodes);
 
-    NodeGuiPtr thisShared = shared_from_this();
+        for (NodesList::iterator it = linkedNodes.begin(); it != linkedNodes.end(); ++it) {
+            const NodePtr& partner = *it;
+            if ((partner.get() <= node.get()) || (partner->getGroup() != node->getGroup())) {
+                continue;
+            }
+            NodeGuiPtr partnerGui = std::dynamic_pointer_cast<NodeGui>(partner->getNodeGui());
+            if (!partnerGui) {
+                continue;
+            }
+            LinkLine line;
+            line.partner = partner;
+            line.kind = eLinkLineKindLinkedNodes;
+            line.invalid = false;
+            line.arrow = new LinkArrow(partnerGui, thisShared, parentItem());
+            line.arrow->setWidth(2);
+            line.arrow->setUndirected(true);
+            line.arrow->setDashed(true);
+            line.arrow->setToolTip(tr("<p>%1 and %2 are Linked Nodes</p>").arg(QString::fromUtf8(node->getLabel().c_str())).arg(QString::fromUtf8(partner->getLabel().c_str())));
+            _linkLines.push_back(line);
+        }
 
-    for (InternalLinks::iterator it = links.begin(); it != links.end(); ++it) {
-        NodePtr masterNode = it->masterNode.lock();
-        KnobGuiLinks::iterator foundGuiLink = masterNode ? _knobsLinks.find(it->masterNode) : _knobsLinks.end();
-        if ( foundGuiLink != _knobsLinks.end() ) {
-            //We already have a link to the master node
-            std::list<LinkedKnob>::iterator found = foundGuiLink->second.knobs.end();
+        for (InternalLinks::iterator it = links.begin(); it != links.end(); ++it) {
+            // Knobs slaved by a node's own internals (Roto, Tracker...) draw no line.
+            if (it->kind == Node::eKnobLinkKindSlave) {
+                continue;
+            }
+            NodePtr partner = it->masterNode.lock();
+            if (!partner || (partner == node) || (partner->getGroup() != node->getGroup())) {
+                continue;
+            }
+            LinkLineKindEnum kind = eLinkLineKindExpression;
+            if (it->kind == Node::eKnobLinkKindLinkGroup) {
+                // The partner draws the line, or the dashed line between Linked Nodes already joins the pair.
+                if ((partner.get() < node.get()) || (std::find(linkedNodes.begin(), linkedNodes.end(), partner) != linkedNodes.end())) {
+                    continue;
+                }
+                kind = eLinkLineKindKnobLink;
+            }
 
-            for (std::list<LinkedKnob>::iterator it2 = foundGuiLink->second.knobs.begin(); it2 != foundGuiLink->second.knobs.end(); ++it2) {
-                if ( ( it2->slave.lock() == it->slave.lock() ) && ( it2->master.lock() == it->master.lock() ) ) {
+            LinkLines::iterator found = _linkLines.end();
+            for (LinkLines::iterator it2 = _linkLines.begin(); it2 != _linkLines.end(); ++it2) {
+                if ((it2->kind == kind) && (it2->partner.lock() == partner)) {
                     found = it2;
                     break;
                 }
             }
-            if ( found == foundGuiLink->second.knobs.end() ) {
-                ///There's no link for this knob, add info to the tooltip of the link arrow
-                LinkedKnob k;
-                k.slave = it->slave;
-                k.master = it->master;
-                k.dimensions.insert(it->dimension);
-                k.linkInValid = 0;
-                foundGuiLink->second.knobs.push_back(k);
-                QString fullToolTip;
-                for (std::list<LinkedKnob>::iterator it2 = foundGuiLink->second.knobs.begin(); it2 != foundGuiLink->second.knobs.end(); ++it2) {
-                    QString tt = makeLinkString( masterNode.get(), it2->master.lock().get(), node.get(), it2->slave.lock().get() );
-                    fullToolTip.append(tt);
+            if (found == _linkLines.end()) {
+                NodeGuiPtr partnerGui = std::dynamic_pointer_cast<NodeGui>(partner->getNodeGui());
+                if (!partnerGui) {
+                    continue;
                 }
-            } else {
-                found->dimensions.insert(it->dimension);
+                LinkLine line;
+                line.partner = partner;
+                line.kind = kind;
+                line.invalid = false;
+                line.arrow = new LinkArrow(partnerGui, thisShared, parentItem());
+                line.arrow->setWidth(2);
+                line.arrow->setUndirected(kind == eLinkLineKindKnobLink);
+                _linkLines.push_back(line);
+                found = _linkLines.end();
+                --found;
             }
-        } else {
-            ///There's no link to the master node yet
-            if ( masterNode && (masterNode->getNodeGui().get() != this) && ( masterNode->getGroup() == node->getGroup() ) ) {
-                NodeGuiIPtr master_i = masterNode->getNodeGui();
-                NodeGuiPtr master = std::dynamic_pointer_cast<NodeGui>(master_i);
-                assert(master);
 
-                LinkArrow* arrow = new LinkArrow( master, thisShared, parentItem() );
-                arrow->setWidth(2);
-                arrow->setColor( QColor(143, 201, 103) );
-                arrow->setArrowHeadColor( QColor(200, 255, 200) );
-
-                QString tt = makeLinkString( masterNode.get(), it->master.lock().get(), node.get(), it->slave.lock().get() );
-                arrow->setToolTip(tt);
-                if ( !getDagGui()->areKnobLinksVisible() ) {
-                    arrow->setVisible(false);
+            KnobIPtr slave = it->slave.lock();
+            KnobIPtr master = it->master.lock();
+            std::list<LinkedKnob>::iterator foundKnob = found->knobs.end();
+            for (std::list<LinkedKnob>::iterator it2 = found->knobs.begin(); it2 != found->knobs.end(); ++it2) {
+                if ((it2->slave.lock() == slave) && (it2->master.lock() == master)) {
+                    foundKnob = it2;
+                    break;
                 }
-                LinkedDim& guilink = _knobsLinks[it->masterNode];
-                guilink.arrow = arrow;
+            }
+            if (foundKnob == found->knobs.end()) {
                 LinkedKnob k;
-                k.slave = it->slave;
-                k.master = it->master;
-                k.dimensions.insert(it->dimension);
+                k.slave = slave;
+                k.master = master;
                 k.linkInValid = 0;
-                guilink.knobs.push_back(k);
+                found->knobs.push_back(k);
+                foundKnob = found->knobs.end();
+                --foundKnob;
+            }
+            foundKnob->dimensions.insert(it->dimension);
+        }
+
+        for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
+            if (it->kind == eLinkLineKindLinkedNodes) {
+                continue;
+            }
+            NodePtr partner = it->partner.lock();
+            QString toolTip;
+            for (std::list<LinkedKnob>::iterator it2 = it->knobs.begin(); it2 != it->knobs.end(); ++it2) {
+                KnobIPtr slave = it2->slave.lock();
+                KnobIPtr master = it2->master.lock();
+                if (!partner || !slave || !master) {
+                    continue;
+                }
+                if (it->kind == eLinkLineKindExpression) {
+                    toolTip.append(makeLinkString(partner.get(), master.get(), node.get(), slave.get()));
+                } else {
+                    toolTip.append(makeKnobLinkString(node.get(), slave.get(), partner.get(), master.get()));
+                }
+            }
+            it->arrow->setToolTip(toolTip);
+            if (it->kind == eLinkLineKindExpression) {
+                refreshExpressionLineInvalid(*it);
             }
         }
     }
 
-    if (links.size() > 0) {
-        if ( !_expressionIndicator->isActive() ) {
-            _expressionIndicator->setActive(true);
-        }
-    } else {
-        if ( _expressionIndicator->isActive() ) {
-            _expressionIndicator->setActive(false);
+    refreshLinkLinesAppearance();
+
+    if (_expressionIndicator->isActive() != hasExpression) {
+        _expressionIndicator->setActive(hasExpression);
+    }
+    if (_linkedNodeIndicator) {
+        const bool isLinkedNode = node->isLinkedNode();
+        if (_linkedNodeIndicator->isActive() != isLinkedNode) {
+            _linkedNodeIndicator->setActive(isLinkedNode);
         }
     }
 } // onKnobsLinksChanged
@@ -3092,6 +3122,11 @@ NodeGui::destroyGui()
             }
         }
     }
+
+    for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
+        delete it->arrow;
+    }
+    _linkLines.clear();
 
     //Delete edges
     for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
@@ -3899,10 +3934,29 @@ NodeGui::setParentMultiInstance(const NodeGuiPtr & node)
 }
 
 void
-NodeGui::setKnobLinksVisible(bool visible)
+NodeGui::refreshLinkLinesAppearance()
 {
-    for (KnobGuiLinks::iterator it = _knobsLinks.begin(); it != _knobsLinks.end(); ++it) {
-        it->second.arrow->setVisible(visible);
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    float r, g, b;
+    QColor linkColor, expressionColor;
+
+    settings->getLinkLineColor(&r, &g, &b);
+    linkColor.setRgbF(r, g, b);
+    settings->getExpressionLineColor(&r, &g, &b);
+    expressionColor.setRgbF(r, g, b);
+
+    // The graph's switch is a session-wide master over both per-kind preferences.
+    const bool graphShowsLines = _graph && _graph->areKnobLinksVisible();
+    const bool showLinkLines = graphShowsLines && settings->isLinkLinesVisible();
+    const bool showExpressionLines = graphShowsLines && settings->isExpressionLinesVisible();
+
+    for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
+        const bool isExpression = (it->kind == eLinkLineKindExpression);
+        const QColor& color = isExpression ? expressionColor : linkColor;
+        it->arrow->setColor(color);
+        it->arrow->setArrowHeadColor(color.lighter(150));
+        it->arrow->setVisible((isExpression ? showExpressionLines : showLinkLines) && !it->invalid);
+        it->arrow->update();
     }
 }
 

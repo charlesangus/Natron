@@ -17,7 +17,9 @@ repeats the nearest pixel outside the image, so the region of definition is the 
 is clamped: negative and over-range values go through. Mask, mix and "(Un)premult by" are the
 host's stages.
 
-Sharpen replaces the OFX CImg Sharpen, Soften and Laplacian plug-ins as one node.
+Sharpen replaces the OFX CImg Sharpen, Soften and Laplacian plug-ins as one node. Their IDs
+(`net.sf.cimg.CImgSharpen`, `net.sf.cimg.CImgSoften`, `net.sf.cimg.CImgLaplacian`) are retired
+(`Engine/OfxRetired/`): a project naming one gets the missing-plug-in node.
 
 Tolerance:
 

@@ -19,6 +19,9 @@ Outside the image the blurs repeat the nearest pixel, so the region of definitio
 Nothing is clamped: negative and over-range values go through. Mask, mix and "(Un)premult by" are
 the host's stages. Glow uses the same bloom on its thresholded highlights.
 
+Bloom replaces the OFX CImg Bloom, whose ID, `net.sf.cimg.CImgBloom`, is retired
+(`Engine/OfxRetired/`): a project naming it gets the missing-plug-in node.
+
 Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |

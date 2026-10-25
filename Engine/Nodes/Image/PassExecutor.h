@@ -538,6 +538,17 @@ StatusEnum runPassesCpu(EffectInstance& effect,
                         const PassList& list) WARN_UNUSED_RETURN;
 
 /**
+ * @brief Runs the passes of list in order over scratch, each over whole lines split between
+ * threads, as runPassesCpu() runs them after filling slot 0: for an op that runs another node's
+ * passes on a buffer of its own. The caller sizes every slot and fills slot 0; the list must be
+ * runnable (isRunnablePassList()). Stops between passes once cancel is set.
+ **/
+void runPassListOnScratch(const PassList& list,
+                          const PassScratch& scratch,
+                          int nThreads,
+                          RenderCancellation& cancel);
+
+/**
  * @brief Whether recordPassesGpu() can run list for query through plan: canRunStagesGpu(), at
  * most 4 channels, a runnable list and, unless it is empty, a GPU recorder.
  **/

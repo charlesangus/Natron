@@ -225,7 +225,7 @@ TEST_F(PyPlugExportTest, ExportedAddProjectLayerCallRepopulatesRegistryOnLoad)
 }
 
 // A user-created KnobChannelSet param aliased to an inner node's built-in "channels" knob
-// (the EdgeBlur.py "Blur1channels" pattern) needs both its creation and its current rows in
+// (a group exposing an inner Blur's channels as its own "Blur1channels") needs both its creation and its current rows in
 // the exported script, since the generic alias-link exporter only wires an alias to a param
 // that the script already created under the same name. The round trip below proves the
 // reconstructed alias still forwards the master's rows to the aliased node's knob after reload.

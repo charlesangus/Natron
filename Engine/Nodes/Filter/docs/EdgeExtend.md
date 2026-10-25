@@ -19,7 +19,9 @@ fewer processed it passes the input through, as the OFX CImg EdgeExtend does. Ma
 the host's stages; the node does its own premultiplication. Nothing is clamped.
 
 EdgeExtend replaces the OFX CImg EdgeExtend, whose default IIR filter it does not offer: that
-filter's tails spread colour indefinitely, and its documentation recommends FIR.
+filter's tails spread colour indefinitely, and its documentation recommends FIR. Its ID,
+`eu.cimg.EdgeExtend`, is retired (`Engine/OfxRetired/`): a project naming it gets the missing-plug-in
+node.
 
 Tolerance:
 

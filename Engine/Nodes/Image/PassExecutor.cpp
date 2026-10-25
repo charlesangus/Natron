@@ -945,6 +945,20 @@ isRunnablePassList(const PassList& list)
     return true;
 }
 
+void
+runPassListOnScratch(const PassList& list,
+                     const PassScratch& scratch,
+                     int nThreads,
+                     RenderCancellation& cancel)
+{
+    for (const Pass& pass : list.passes) {
+        if (cancel.check()) {
+            return;
+        }
+        runPass(pass, scratch, nThreads, cancel);
+    }
+}
+
 StatusEnum
 runPassesCpu(EffectInstance& effect,
              const StagePlan& plan,
@@ -1097,8 +1111,9 @@ runPassesCpu(EffectInstance& effect,
     //                  writes every element of both, and combineWorker() reads only after that;
     //   slot 3:        suppressionWorker() writes every pixel of every plane, border included;
     // IBlur's, whose box passes alternate between slots 0 and 1, each writing every pixel of
-    // every plane of the slot the next one reads; and IErode's and IDilate's, whose filterWorker()
-    // writes every pixel of every plane of slot 1, copying slot 0 outside the render window.
+    // every plane of the slot the next one reads; IErode's and IDilate's, whose filterWorker()
+    // writes every pixel of every plane of slot 1, copying slot 0 outside the render window; and
+    // EdgeBlur's, whose first pass copies slot 0 over every element of slot 1.
     HostScratchFloats sourceStorage;
     std::vector<HostScratchFloats> extraStorage(list.scratchSlots - 1);
     // Playback overlaps two frames, and pooling both sets would keep both resident.

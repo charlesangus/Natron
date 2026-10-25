@@ -258,6 +258,20 @@ future core work has solid ground to build on.
 | M200 | Folded Knob Shared Storage | todo | - |  | E14 | [M200-folded-knob-shared-storage.md](PLAN/MILESTONES/M200-folded-knob-shared-storage.md) |
 | M201 | Trimap Removal | todo | M199 |  | E14 | [M201-trimap-removal.md](PLAN/MILESTONES/M201-trimap-removal.md) |
 | M202 | Clean-Hash Cache Stores | todo | M167 |  | E14 | [M202-clean-hash-cache-stores.md](PLAN/MILESTONES/M202-clean-hash-cache-stores.md) |
+| M203 | ONNX Inference Backend | todo | - |  | E16 | [M203-onnx-inference-backend.md](PLAN/MILESTONES/M203-onnx-inference-backend.md) |
+| M204 | AI Model Manager | todo | M203 |  | E16 | [M204-ai-model-manager.md](PLAN/MILESTONES/M204-ai-model-manager.md) |
+| M205 | Object Mask To Roto | todo | M203, M204, M146 |  | E16 | [M205-object-mask-to-roto.md](PLAN/MILESTONES/M205-object-mask-to-roto.md) |
+| M206 | Neural Raw Denoise | todo | M203, M204 |  | E16 | [M206-neural-raw-denoise.md](PLAN/MILESTONES/M206-neural-raw-denoise.md) |
+| M207 | Neural Denoise | todo | M203, M204 |  | E16 | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |
+| M208 | Neural Upscale | todo | M203, M204, M207 |  | E16 | [M208-neural-upscale.md](PLAN/MILESTONES/M208-neural-upscale.md) |
+| M209 | Edge-Aware Filter Library | todo | - |  | E17 | [M209-edge-aware-filter-library.md](PLAN/MILESTONES/M209-edge-aware-filter-library.md) |
+| M210 | Profiled Denoise | todo | M209 |  | E17 | [M210-profiled-denoise.md](PLAN/MILESTONES/M210-profiled-denoise.md) |
+| M211 | Wavelet Retouch | todo | M209, M146 |  | E17 | [M211-wavelet-retouch.md](PLAN/MILESTONES/M211-wavelet-retouch.md) |
+| M212 | Tone Equalizer | todo | M209 |  | E17 | [M212-tone-equalizer.md](PLAN/MILESTONES/M212-tone-equalizer.md) |
+| M213 | Contrast And Texture | todo | M209 |  | E17 | [M213-contrast-and-texture.md](PLAN/MILESTONES/M213-contrast-and-texture.md) |
+| M214 | Colour Balance RGB | todo | - |  | E17 | [M214-colour-balance-rgb.md](PLAN/MILESTONES/M214-colour-balance-rgb.md) |
+| M215 | Colour Equalizer | todo | M209, M214 |  | E17 | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
+| M216 | Auto-Straighten | todo | - |  | E17 | [M216-auto-straighten.md](PLAN/MILESTONES/M216-auto-straighten.md) |
 
 # Epics
 
@@ -278,6 +292,8 @@ future core work has solid ground to build on.
 | E13 | RFV | Add Reverse-flow Variable feature - arbitrary data that travels up the graph, like frame context. |
 | E14 | Architecture | Solidify architecture, considering correctness, performance, robustness, etc. |
 | E15 | Loops And I-Nodes | Let a Map drive any effect per pixel, through exact native I-nodes and a Houdini-style loop block over any subgraph. |
+| E16 | AI Tools | Bring darktable's ONNX-based AI tools in as scene-linear-safe nodes and a Roto object-select tool, on an on-demand model manager. |
+| E17 | darktable Image Tools | Port darktable's scene-referred image modules as native nodes on a shared edge-aware filter library. |
 
 # Open questions
 

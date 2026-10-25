@@ -72,55 +72,55 @@ Deps: M100 - Content Node Hashing.
 
 ## Phase 167.2: Native derivations at a time
 
-- [ ] M167.P2.T1 — Route ops: Black and no-input answers at a time
+- [x] M167.P2.T1 — Route ops: Black and no-input answers at a time
   - files: `Engine/Nodes/Image/StagedImageEffect.h`, `Engine/Nodes/Image/StagedImageEffect.cpp`, `Tests/Native/NativeSwitch_Test.cpp`, `Tests/Native/NativeDissolve_Test.cpp`
   - approach: Override `getPreferredMetadataAt` for Route ops. For `Route::Kind::Black`, answer RGBA float at the project format; Input is covered by the identity rule. Tests: a Switch keyed between two Constants with different format and PAR gives each at its frame; a Switch past its connected inputs and an empty Switch give RGBA at the project format; a fractional Dissolve keeps the default derivation.
   - verify: the phase build; `NativeSwitch` and `NativeDissolve` green.
   - size: M
 
-- [ ] M167.P2.T2 — AddLayers and the ChannelCopy colour-storage helper at a time
+- [x] M167.P2.T2 — AddLayers and the ChannelCopy colour-storage helper at a time
   - files: `Engine/Nodes/Channel/AddLayers.h`, `Engine/Nodes/Channel/AddLayers.cpp`, `Engine/Nodes/Channel/ChannelCopy.h`, `Engine/Nodes/Channel/ChannelCopy.cpp`, `Tests/TimeVaryingLayers_Test.cpp`
   - approach: `ChannelCopy::metadataColorStorage(effect, inputNb, time, view)` reads `input->getMetadata(time, view)`. AddLayers moves to `getPreferredMetadataAt`, and `listRegistryPlanes` is called at the given time instead of 0 (`AddLayers.cpp` ~:207-224). Delete the "must not depend on the current frame" comment. Every other timeless metadata read in these files moves to the explicit time.
   - verify: the phase build; a new `TimeVaryingLayers` case shows a Switch (rgb+spec at f1, rgba at f2) feeding AddLayers reports RGB widened per AddLayers' rule at f1 and RGBA at f2.
   - size: M
 
-- [ ] M167.P2.T3 — Crop and Reformat at a time
+- [x] M167.P2.T3 — Crop and Reformat at a time
   - files: `Engine/Nodes/Transform/Crop.h`, `Engine/Nodes/Transform/Crop.cpp`, `Engine/Nodes/Transform/Reformat.h`, `Engine/Nodes/Transform/Reformat.cpp`, `Tests/Native/NativeReformat_Test.cpp`, `Tests/Native/NativeCrop_Test.cpp`
   - approach: Replace `getCurrentTime()` and the timeless `getValue()` calls in both overrides with the given (time, view). Move these files' other timeless metadata reads too.
   - verify: the phase build; with an animated Reformat box and Crop rectangle, the format at f1 and f2 matches the knob at each frame whatever the timeline frame is.
   - size: M
 
-- [ ] M167.P2.T4 — DeepCrop and DeepRead at a time
+- [x] M167.P2.T4 — DeepCrop and DeepRead at a time
   - files: `Engine/Nodes/Deep/DeepCrop.h`, `Engine/Nodes/Deep/DeepCrop.cpp`, `Engine/Nodes/Deep/DeepRead.h`, `Engine/Nodes/Deep/DeepRead.cpp`, `Tests/DeepReadWrite_Test.cpp`
   - approach: DeepRead reads `getFilenameAtTime(time)` (~:158); DeepCrop reads `getBBoxCanonical(time)` (~:193). Delete DeepRead's comment about being consulted only once (~:76).
   - verify: the phase build; a deep sequence whose frames differ in size (written by the test into a temp dir) reports each frame's format.
   - size: M
 
-- [ ] M167.P2.T5 — NativeRead and NativeWrite read-back at a time
+- [x] M167.P2.T5 — NativeRead and NativeWrite read-back at a time
   - files: `Engine/Nodes/IO/NativeRead.h`, `Engine/Nodes/IO/NativeRead.cpp`, `Engine/Nodes/IO/NativeWrite.h`, `Engine/Nodes/IO/NativeWrite.cpp`, `Tests/Native/NativeReadMetadata_Test.cpp`
   - approach: NativeRead uses `targetAtTime(time)` (~:1052), with the missing-frame rule from Edge cases, and that frame's header format, PAR and nComps for the view's colour part rather than view 0. NativeWrite uses `readBackFrame(time, view)` (~:1141), and `selectedFormat`'s Input type uses `input->getMetadata(time, view)` (~:1814-1817). Confirm headers are cached. Leave `onMetadataRefreshed` to P5.T4.
   - verify: the phase build; an EXR sequence the test writes, RGB 1920x1080 at frame 1 and RGBA 2048x858 PAR 2 at frame 2, reports each frame's values. `NativeWriteReadBack` green.
   - size: L
 
-- [ ] M167.P2.T6 — NativeGenerator and RemoveLayers at a time
+- [x] M167.P2.T6 — NativeGenerator and RemoveLayers at a time
   - files: `Engine/Nodes/Image/NativeGenerator.h`, `Engine/Nodes/Image/NativeGenerator.cpp`, `Engine/Nodes/Channel/RemoveLayers.h`, `Engine/Nodes/Channel/RemoveLayers.cpp`, `Tests/Native/NativeConstant_Test.cpp`
   - approach: The generator's extent knobs are read with `getValueAtTime(time, …, view)` (~:161-185). RemoveLayers reads its input's metadata at the time.
   - verify: the phase build; a Constant with an animated format extent reports each frame's format.
   - size: M
 
-- [ ] M167.P2.T7 — Move Merge, Keyer and ChromaKeyer to `getPreferredMetadataAt`
+- [x] M167.P2.T7 — Move Merge, Keyer and ChromaKeyer to `getPreferredMetadataAt`
   - files: `Engine/Nodes/Merge/Merge.h`, `Engine/Nodes/Merge/Merge.cpp`, `Engine/Nodes/Keyer/Keyer.h`, `Engine/Nodes/Keyer/Keyer.cpp`, `Engine/Nodes/Keyer/ChromaKeyer.h`, `Engine/Nodes/Keyer/ChromaKeyer.cpp`
   - approach: mechanical rename only. Each override takes `(double /*time*/, ViewIdx /*view*/, NodeMetadata&)` and its body is unchanged.
   - verify: the phase build compiles; `Native.*Merge|Keyer` green.
   - size: S
 
-- [ ] M167.P2.T8 — Move DeepReformat, DeepToImage, RawDemosaic and RawToImage to `getPreferredMetadataAt`
+- [x] M167.P2.T8 — Move DeepReformat, DeepToImage, RawDemosaic and RawToImage to `getPreferredMetadataAt`
   - files: `Engine/Nodes/Deep/DeepReformat.h`, `Engine/Nodes/Deep/DeepReformat.cpp`, `Engine/Nodes/Deep/DeepToImage.h`, `Engine/Nodes/Deep/DeepToImage.cpp`, `Engine/Nodes/Raw/RawDemosaic.h`, `Engine/Nodes/Raw/RawDemosaic.cpp`, `Engine/Nodes/Raw/RawToImage.h`, `Engine/Nodes/Raw/RawToImage.cpp`
   - approach: mechanical rename as in T7; bodies unchanged.
   - verify: the phase build compiles; the Deep and Raw suites green.
   - size: S
 
-- [ ] M167.P2.T9 — Move RotoPaint and the test effects to `getPreferredMetadataAt`
+- [x] M167.P2.T9 — Move RotoPaint and the test effects to `getPreferredMetadataAt`
   - files: `Engine/RotoPaint.h`, `Engine/RotoPaint.cpp`, `Tests/NativeParity.h`, `Tests/NativeParity.cpp`, `Tests/Native/RawTestSource.h`, `Tests/Native/RawKindFramework_Test.cpp`
   - approach: mechanical rename as in T7. Afterwards `git grep -n "getPreferredMetadata(NodeMetadata"` lists only the default in `EffectInstance` and `OfxEffectInstance`.
   - verify: the phase build compiles; the grep holds.
@@ -254,6 +254,7 @@ Deps: M100 - Content Node Hashing.
 
 ## Decisions
 
+- 2026-10-24 — **Phase 2 gate passed (PM):** fast 404/404 both legs on 886c0baf1; `PerFrameMetadataTest.*:OfxClipPreferencesThread*` clean over 300 repeats, and `ConcurrentQueriesCacheOnlyConsistentAnswers` clean over 4 parallel x 200. The only `getCurrentTime` left near `getPreferredMetadataAt` is the base-class current-time wrapper, not an override derivation.
 - 2026-10-24 — **Cache race, third cause (PM, from gdb on the HEAD test binary):** 200-repeat runs still failed `ConcurrentQueriesCacheOnlyConsistentAnswers` after the write gate (7b170e390). Root cause: `Node::refreshDirtyHashes`'s last retry (`recomputeHashIfDirty(false)`) hashed over a still-dirty input's old hash and marked the node clean. The mark flush stops at dirty inputs, so a downstream node could hold a clean, stale hash before any derive began, and no during-derive check catches that. Fix 886c0baf1: hashing over a dirty input leaves the node dirty, and metadata is cached only under `getHashValueIfUpToDate`. Left as follow-ups (inbox): the identity, actions/RoD and image caches also accept a not-up-to-date hash; `NativeEffectBase::getOutputMetadata` has no mark-count or write check, so it can cache under an A→B→A hash.
 - 2026-10-24 — **P1.T1 inventory and the P4 thread-model recommendation (PM, from the spike in 70a03eb30; needs user approval before P4):**
   - **`refreshAllInputRelatedData` (Node.cpp ~:7961, main thread) writes:** the stale flags; `draftModeUsed` and `supportsRenderScaleMaybe` (from RoD calls at the timeline frame); `_imp->metadata`; then `onMetadataRefreshed`, which pushes clip preferences, components, depth and PAR to OpenFX clips and clears their caches. It also writes the channel selectors (`layerListRefreshed`), the project layer registry (`registerProducedLayers`, main-thread only), and the identity state (`refreshIdentityState`, with its signals and mask selector). Render threads read the metadata and the clip values; the GUI reads the selectors and identity state.

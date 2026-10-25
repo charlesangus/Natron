@@ -260,6 +260,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
 
 ## Decisions
 
+- 2026-10-25 — **Expression lines are direct edges; paste joins after reopen (user):** an expression group is a node plus everything that reads it by expression, but expression links are 1:1 directed edges, so expression lines don't use the nearest-member link design: each reader draws one arrow straight to the node it reads. Nearest-member drawing stays for the many-to-many link groups and Linked Nodes. Copy/paste must keep joining the originals' link groups after the project is closed and reopened, so the paste source identity persists with the project rather than the session.
 - 2026-10-25 — **Copies keep their links; nearest-member lines; dash styles swapped (user, UAT):** Duplicate, Copy/Paste and clipboard paste make identical copies that join the originals' link groups and Linked Node groups, reversing P2.T1 and superseding the earlier decision that pasted copies link only to each other. Each link group (and expression dependency set) draws one line from each member to its nearest other member, approximate is fine. Linked Node lines are solid and single-knob links dashed.
 - 2026-10-25 — **Restyle approved (user):** blue linked knob names and the vector chain-link node badge are signed off.
 - 2026-10-25 — **Linked knobs show a blue name, not a circle (user):** the per-knob blue circle is replaced by the knob label in blue. The node-graph link badge must read clearly at normal zoom; the small "L" read as a "k".

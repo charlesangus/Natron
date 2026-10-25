@@ -211,18 +211,24 @@ lensDistortionExtentPolicy()
 }
 
 // Points along the edges of rect, 11 per edge as openfx-misc samples them, mapped by model in
-// direction; the bounding box of those the model maps. False when it maps none.
+// direction; the bounding box of those the model maps. False when it maps none. complete is
+// false when some point has no image: a solved direction fails where the Source is pushed past
+// any finite bound, so the box of the remaining points falls short of where the Source lands.
 bool
 mappedBoundingBox(const LensModels::Model& model,
                   LensModels::Direction direction,
                   const RectD& rect,
-                  RectD* box)
+                  RectD* box,
+                  bool* complete)
 {
     const int steps = 10;
     bool any = false;
+    *complete = true;
     const auto add = [&](double x, double y) {
         LensModels::Sample s;
         if (!model.map(direction, x, y, &s) || !std::isfinite(s.x) || !std::isfinite(s.y)) {
+            *complete = false;
+
             return;
         }
         if (!any) {
@@ -894,9 +900,14 @@ LensDistortion::getRegionOfDefinition(U64 /*hash*/,
         // Where the edges of the Source land, in lens pixels, as openfx-misc computes it.
         const LensModels::Model model = buildModel(time, view, geometry);
         const RectD sourceLens(sourceRoD.x1 / par, sourceRoD.y1, sourceRoD.x2 / par, sourceRoD.y2);
+        const RectD outputLens(geometry.output.x1, geometry.output.y1, geometry.output.x2, geometry.output.y2);
         RectD box;
-        if (!mappedBoundingBox(model, settings.direction, sourceLens, &box)) {
-            box = RectD(geometry.output.x1, geometry.output.y1, geometry.output.x2, geometry.output.y2);
+        bool complete = true;
+        if (!mappedBoundingBox(model, settings.direction, sourceLens, &box, &complete)) {
+            box = outputLens;
+        } else if (!complete) {
+            // Part of the Source edge has no image, so the Source reaches past the output format.
+            box.merge(outputLens);
         }
         const double margin = (settings.blackOutside ? 1. : 0.) + 2.;
         *rod = RectD((box.x1 - margin) * par, box.y1 - margin, (box.x2 + margin) * par, box.y2 + margin);

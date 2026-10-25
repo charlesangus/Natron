@@ -83,6 +83,19 @@ nukeParams()
     return p;
 }
 
+// Nuke k1 = 0.2, k2 = 0.05: undistort shrinks the frame edges inwards and has no preimage for
+// them, so Distort pushes the Source edges past the frame and its distort direction fails there.
+LensModels::NukeParams
+strongNukeParams()
+{
+    LensModels::NukeParams p = nukeParams();
+
+    p.k1 = 0.2;
+    p.k2 = 0.05;
+
+    return p;
+}
+
 // A wide fisheye with no distort-direction solution towards the corners of the 64x48 frame.
 LensModels::Camera3DE
 fisheyeCamera()
@@ -253,6 +266,20 @@ protected:
 
         return node;
     }
+
+    // A LensDistortion on `input` with the Nuke model of strongNukeParams().
+    NodePtr makeStrongNuke(const NodePtr& input,
+                           const std::string& direction,
+                           const std::string& filter)
+    {
+        NodePtr node = makeNuke(input, direction, filter);
+        if (node) {
+            EXPECT_TRUE(setKnobValues(node, kLensDistortionParamK1, { strongNukeParams().k1 }));
+            EXPECT_TRUE(setKnobValues(node, kLensDistortionParamK2, { strongNukeParams().k2 }));
+        }
+
+        return node;
+    }
 };
 
 TEST_F(NativeLensDistortionTest, RegisteredIdentity)
@@ -384,6 +411,107 @@ TEST_F(NativeLensDistortionTest, DistortThenUndistortRestoresTheSource)
         return true; }, ParityTolerance::make(2e-2, 0.), "Nuke k1 0.1, distort then undistort, cubic", &checked);
     EXPECT_EQ(0u, wrong);
     EXPECT_GT(checked, (std::size_t)(window.width() * window.height() / 3));
+}
+
+// With coefficients whose distort direction has no solution at the frame edges, Distort still
+// covers the whole frame, and Undistort chained after it restores the Source in the interior.
+TEST_F(NativeLensDistortionTest, StrongDistortThenUndistortRestoresTheSource)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr distort = makeStrongNuke(source, kLensDistortionDirectionDistort, "impulse");
+    ASSERT_TRUE(bool(distort));
+    NodePtr undistort = makeStrongNuke(distort, kLensDistortionDirectionUndistort, "cubic");
+    ASSERT_TRUE(bool(undistort));
+
+    const LensModels::Model model = LensModels::makeNuke(kFrame, strongNukeParams());
+    ASSERT_TRUE(model.valid);
+    {
+        // The middle of the left frame edge has no distorted position.
+        LensModels::Sample s;
+        ASSERT_FALSE(model.map(LensModels::eDirectionDistort, 0., kParitySourceHeight / 2., &s));
+    }
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    RenderedPlane before;
+    RenderedPlane distorted;
+    ASSERT_TRUE(renderRGBA(source, 0, window, &before));
+    ASSERT_TRUE(renderRGBA(distort, 0, window, &distorted));
+    std::size_t checked = 0;
+    std::size_t wrong = countMismatches(distorted, window, 4, [&](int x, int y, float* want) {
+        LensModels::Sample s;
+        int px = 0;
+        int py = 0;
+        if (!model.map(LensModels::eDirectionUndistort, x + 0.5, y + 0.5, &s) || !impulsePixel(s.x, s.y, window, &px, &py)) {
+            return false;
+        }
+        std::memcpy(want, pixelAt(before, px, py), 4 * sizeof(float));
+
+        return true; }, ParityTolerance::exact(), "Nuke k1 0.2 k2 0.05, distort, impulse", &checked);
+    EXPECT_EQ(0u, wrong);
+    EXPECT_GT(checked, (std::size_t)(window.width() * window.height() / 2));
+
+    RenderedPlane after;
+    ASSERT_TRUE(setKnobValue(distort, kResamplerParamFilterType, std::string("cubic")));
+    ASSERT_TRUE(renderRGBA(undistort, 0, window, &after));
+    // R, G and B are smooth; alpha holds hard bands that two cubic passes do not restore.
+    wrong = countMismatches(after, window, 3, [&](int x, int y, float* want) {
+        LensModels::Sample s;
+        if (!model.map(LensModels::eDirectionDistort, x + 0.5, y + 0.5, &s)) {
+            return false;
+        }
+        const double margin = 4.;
+        if ((s.x < window.x1 + margin) || (s.x > window.x2 - margin) || (s.y < window.y1 + margin) || (s.y > window.y2 - margin)) {
+            return false;
+        }
+        if ((x < window.x1 + 3) || (x >= window.x2 - 3) || (y < window.y1 + 3) || (y >= window.y2 - 3)) {
+            return false;
+        }
+        std::memcpy(want, pixelAt(before, x, y), 4 * sizeof(float));
+
+        return true; }, ParityTolerance::make(2e-2, 0.), "Nuke k1 0.2 k2 0.05, distort then undistort, cubic", &checked);
+    EXPECT_EQ(0u, wrong);
+    EXPECT_GT(checked, (std::size_t)(window.width() * window.height() / 3));
+}
+
+// Undistort shrinks the picture inside the format; a Distort after it still builds its lens on
+// the format, not on that smaller region, so the pair restores the Source.
+TEST_F(NativeLensDistortionTest, LensFrameIsTheFormatNotTheInputRegion)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr undistort = makeStrongNuke(source, kLensDistortionDirectionUndistort, "cubic");
+    ASSERT_TRUE(bool(undistort));
+    NodePtr distort = makeStrongNuke(undistort, kLensDistortionDirectionDistort, "cubic");
+    ASSERT_TRUE(bool(distort));
+
+    const LensModels::Model model = LensModels::makeNuke(kFrame, strongNukeParams());
+    ASSERT_TRUE(model.valid);
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    RenderedPlane before;
+    RenderedPlane undistorted;
+    RenderedPlane after;
+    ASSERT_TRUE(renderRGBA(source, 0, window, &before));
+    ASSERT_TRUE(renderRGBA(undistort, 0, window, &undistorted));
+    ASSERT_TRUE(renderRGBA(distort, 0, window, &after));
+
+    // The Undistort output is black at the middle of the left and right format edges.
+    for (int c = 0; c < 4; ++c) {
+        EXPECT_EQ(0.f, pixelAt(undistorted, window.x1, (window.y1 + window.y2) / 2)[c]) << "channel " << c;
+        EXPECT_EQ(0.f, pixelAt(undistorted, window.x2 - 1, (window.y1 + window.y2) / 2)[c]) << "channel " << c;
+    }
+
+    std::size_t checked = 0;
+    const std::size_t wrong = countMismatches(after, window, 3, [&](int x, int y, float* want) {
+        if ((x < window.x1 + 6) || (x >= window.x2 - 6) || (y < window.y1 + 6) || (y >= window.y2 - 6)) {
+            return false;
+        }
+        std::memcpy(want, pixelAt(before, x, y), 4 * sizeof(float));
+
+        return true; }, ParityTolerance::make(2e-2, 0.), "Nuke k1 0.2 k2 0.05, undistort then distort, cubic", &checked);
+    EXPECT_EQ(0u, wrong);
+    EXPECT_GT(checked, (std::size_t)(window.width() * window.height() / 2));
 }
 
 // The STMap output, fed to the native STMap, reproduces the Image output.

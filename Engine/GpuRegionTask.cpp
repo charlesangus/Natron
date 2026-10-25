@@ -2773,6 +2773,7 @@ private:
             GpuMemberTiming::Intervals transfers;
             std::uint64_t uploadTicks = 0;
             std::uint64_t downloadTicks = 0;
+            std::vector<bool> copyUnread(nStrips, false);
             for (std::size_t k = 0; k < nStrips; ++k) {
                 std::pair<std::uint64_t, std::uint64_t> interval;
                 if (pairOf(k, 0, &interval)) {
@@ -2781,16 +2782,25 @@ private:
                     stripMeasured[k] = measureStripMembers(strips[k], k, results, interval, nsPerTick);
                 }
                 for (std::size_t s = 0; s < _slots.size(); ++s) {
-                    if ((_uploadQuery[s] >= 0) && pairOf(k, _uploadQuery[s], &interval)) {
-                        transfers.push_back(interval);
-                        uploadTicks += interval.second - interval.first;
+                    if ((_uploadQuery[s] >= 0) && _slots[s].source && !strips[k].rects[s].isNull()) {
+                        if (pairOf(k, _uploadQuery[s], &interval)) {
+                            transfers.push_back(interval);
+                            uploadTicks += interval.second - interval.first;
+                        } else {
+                            copyUnread[k] = true;
+                        }
                     }
-                    if ((_downloadQuery[s] >= 0) && pairOf(k, _downloadQuery[s], &interval)) {
-                        transfers.push_back(interval);
-                        downloadTicks += interval.second - interval.first;
+                    if ((_downloadQuery[s] >= 0) && (interiorRange(strips[k], s).second != 0)) {
+                        if (pairOf(k, _downloadQuery[s], &interval)) {
+                            transfers.push_back(interval);
+                            downloadTicks += interval.second - interval.first;
+                        } else {
+                            copyUnread[k] = true;
+                        }
                     }
                 }
             }
+            markContendedNear(copyUnread);
             const GpuMemberTiming::Intervals computeBusy = GpuMemberTiming::unionOf(compute);
             const GpuMemberTiming::Intervals transferBusy = GpuMemberTiming::unionOf(transfers);
             const std::uint64_t hidden = GpuMemberTiming::overlapOf(transferBusy, computeBusy);
@@ -2814,6 +2824,25 @@ private:
             }
         }
     } // notePipelineTimes
+
+    /**
+     * @brief Marks contended the member intervals of every strip that can have been in flight alongside a strip whose
+     * copy could not be timed: that copy ran at some unknown time beside them.
+     **/
+    void markContendedNear(const std::vector<bool>& copyUnread)
+    {
+        const int reach = std::max(0, _inFlight - 1);
+        for (MemberStamps& entry : _memberStamps) {
+            if (entry.strip < 0) {
+                continue;
+            }
+            const int first = std::max(0, entry.strip - reach);
+            const int last = std::min((int)copyUnread.size() - 1, entry.strip + reach);
+            for (int k = first; k <= last; ++k) {
+                entry.contended = entry.contended || copyUnread[(std::size_t)k];
+            }
+        }
+    }
 
     /**
      * @brief Charges each member of strip k the device time from the timestamp before it, the one written once the
@@ -2997,15 +3026,20 @@ private:
     }
 
     /**
-     * @brief The clean samples of the member intervals the region kept, by task position, with timed marking the
-     * positions that have an interval at all. Pipelined strips drop the intervals that overlap their copies; a region
-     * run whole drops those of the segments submitted after a download; serial strips keep them all.
+     * @brief The clean samples of the member intervals the region kept, indexed by task position, with timed marking
+     * the positions that have an interval at all. Pipelined strips drop the intervals that overlap their copies; a
+     * region run whole drops those of the segments submitted after a download; serial strips keep them all.
      **/
     std::vector<GpuMemberTiming::MemberSample> calibrationSamples(std::vector<bool>* timed) const
     {
         timed->assign(_region.members.size(), false);
+        std::vector<GpuMemberTiming::MemberSample> byPosition(_region.members.size());
         if (_memberStamps.empty()) {
-            return std::vector<GpuMemberTiming::MemberSample>();
+            return byPosition;
+        }
+        std::vector<int> planes(_region.members.size(), 0);
+        for (const Member& member : _members) {
+            planes[_position[member.task]] += member.identity ? 0 : 1;
         }
         std::uint64_t origin = std::numeric_limits<std::uint64_t>::max();
         for (const MemberStamps& entry : _memberStamps) {
@@ -3037,11 +3071,15 @@ private:
             busy.push_back(std::make_pair((std::uint64_t)nsOf(transfer.first), (std::uint64_t)nsOf(transfer.second)));
         }
 
-        return GpuMemberTiming::cleanMemberSamples(intervals, busy);
+        for (const GpuMemberTiming::MemberSample& sample : GpuMemberTiming::cleanMemberSamples(intervals, busy, planes)) {
+            byPosition[(std::size_t)sample.member] = sample;
+        }
+
+        return byPosition;
     }
 
-    // A task the device timed calibrates the model from its clean intervals alone, and not at all without one: time
-    // shared with a copy runs several times slower and would drag the estimate far from the uncontended rate.
+    // A task the device timed calibrates the model from its clean intervals alone, and a priced one not at all without
+    // one: time shared with a copy runs several times slower and would drag the estimate far from the uncontended rate.
     void noteSuccess()
     {
         GpuCostModel& model = GpuCostModel::session();
@@ -3068,16 +3106,16 @@ private:
             }
             const FrameGraph::Task& task = _graph.tasks[_region.members[pos]];
             if (timed[pos]) {
-                const GpuMemberTiming::MemberSample* sample = nullptr;
-                for (const GpuMemberTiming::MemberSample& entry : samples) {
-                    if (entry.member == (int)pos) {
-                        sample = &entry;
-                    }
-                }
-                if (sample && sample->hasSample()) {
-                    model.observeGpu(model.traitsOf(task), (std::int64_t)sample->cleanNs, sample->cleanMegapixels);
+                const GpuTaskTraits traits = model.traitsOf(task);
+                if (samples[pos].hasSample()) {
+                    model.observeGpu(traits, (std::int64_t)samples[pos].cleanNs, samples[pos].cleanMegapixels);
                 } else {
                     ++skipped;
+                    // Unpriced, a node whose intervals are always contended would stay unpriced; its contended time
+                    // overestimates it, which errs on the safe side.
+                    if (!model.hasGpuCost(traits) && (taskNs[pos] > 0)) {
+                        model.observeGpu(task, taskNs[pos]);
+                    }
                 }
             } else if (taskNs[pos] > 0) {
                 model.observeGpu(task, taskNs[pos]);

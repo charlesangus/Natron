@@ -808,10 +808,8 @@ appendTransferRecords(std::string* line,
     line->append(num);
     for (std::size_t i = 0; i < records.size(); ++i) {
         const GpuTransferRecord& r = records[i];
-        char ms[96];
-        if ((r.deviceMs >= 0.) && (r.beginNs >= 0) && (r.endNs >= 0)) {
-            std::snprintf(ms, sizeof(ms), "%.6f,\"beginNs\":%lld,\"endNs\":%lld", r.deviceMs, r.beginNs, r.endNs);
-        } else if (r.deviceMs >= 0.) {
+        char ms[32];
+        if (r.deviceMs >= 0.) {
             std::snprintf(ms, sizeof(ms), "%.6f", r.deviceMs);
         } else {
             std::snprintf(ms, sizeof(ms), "null");
@@ -821,6 +819,10 @@ appendTransferRecords(std::string* line,
                       "\"comps\":%d,\"format\":\"f32\",\"staged\":%d",
                       (i > 0) ? "," : "", r.strip, r.bytes, ms, r.queueFamily, r.queueIndex, r.comps, r.staged ? 1 : 0);
         line->append(num);
+        if ((r.deviceMs >= 0.) && (r.beginNs >= 0) && (r.endNs >= 0)) {
+            std::snprintf(num, sizeof(num), ",\"beginNs\":%lld,\"endNs\":%lld", r.beginNs, r.endNs);
+            line->append(num);
+        }
         if (withPinned) {
             line->append(r.pinned ? ",\"pinned\":1" : ",\"pinned\":0");
         }

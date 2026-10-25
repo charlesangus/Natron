@@ -85,6 +85,7 @@ overlapOf(const Intervals& a,
 std::vector<MemberSample>
 cleanMemberSamples(const std::vector<GpuMemberInterval>& intervals,
                    const Intervals& transferBusy,
+                   const std::vector<int>& planes,
                    double contendedFraction)
 {
     const Intervals busy = unionOf(transferBusy);
@@ -103,7 +104,9 @@ cleanMemberSamples(const std::vector<GpuMemberInterval>& intervals,
             ++sample.contendedCount;
         } else {
             sample.cleanNs += length;
-            sample.cleanMegapixels += (double)interval.pixels / 1e6;
+            const bool counted = (interval.member >= 0) && ((std::size_t)interval.member < planes.size()) && (planes[(std::size_t)interval.member] > 0);
+            const int nPlanes = counted ? planes[(std::size_t)interval.member] : 1;
+            sample.cleanMegapixels += (double)interval.pixels / 1e6 / nPlanes;
             ++sample.cleanCount;
         }
     }

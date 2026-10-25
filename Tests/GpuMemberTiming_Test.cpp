@@ -140,6 +140,30 @@ TEST(GpuMemberTiming, MegapixelsComeFromTheIntervalPixels)
     EXPECT_DOUBLE_EQ(0.108, out[0].cleanMegapixels);
 }
 
+TEST(GpuMemberTiming, PlanesOfOneTaskCountItsAreaOnce)
+{
+    // Member 0 renders two planes of 1 Mpx, 1000 ns each; member 1 renders one plane of 1 Mpx in 1000 ns.
+    std::vector<GpuMemberInterval> in;
+    in.push_back(interval(0, 0, 1000, 1000000));
+    in.push_back(interval(0, 1000, 2000, 1000000));
+    in.push_back(interval(1, 2000, 3000, 1000000));
+    std::vector<int> planes;
+    planes.push_back(2);
+    planes.push_back(1);
+    const std::vector<MemberSample> out = cleanMemberSamples(in, Intervals(), planes);
+    ASSERT_EQ(2u, out.size());
+    EXPECT_DOUBLE_EQ(1., out[0].cleanMegapixels);
+    EXPECT_DOUBLE_EQ(2000. / out[0].cleanMegapixels, 2. * ((double)out[1].cleanNs / out[1].cleanMegapixels));
+
+    // With one of its planes contended the task's rate stays the same.
+    const std::vector<MemberSample> half = cleanMemberSamples(in, busy(1000, 2000), planes);
+    ASSERT_EQ(1, half[0].cleanCount);
+    EXPECT_DOUBLE_EQ((double)out[0].cleanNs / out[0].cleanMegapixels, (double)half[0].cleanNs / half[0].cleanMegapixels);
+
+    // Without plane counts each interval counts all its pixels.
+    EXPECT_DOUBLE_EQ(2., cleanMemberSamples(in, Intervals())[0].cleanMegapixels);
+}
+
 TEST(GpuMemberTiming, EmptyInputs)
 {
     EXPECT_TRUE(cleanMemberSamples(std::vector<GpuMemberInterval>(), busy(0, 100)).empty());

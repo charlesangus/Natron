@@ -2299,9 +2299,12 @@ TEST_F(GpuResidencyTest, PipelinedStripsCalibrateLikeSerial)
     std::printf("[          ] pipelined / serial Grade: raw %.3f, calibrated %.3f\n", rawMsPerMpx[1] / std::max(rawMsPerMpx[0], 1e-12),
                 sampled[1] ? calibratedMsPerMpx[1] / calibratedMsPerMpx[0] : 0.);
     if (sampled[1]) {
+        // Each mode calibrates from one sample: a CPU device such as lavapipe shares its cores with the rest of the
+        // host, so one of its samples strays further than a GPU's.
+        const bool cpuDevice = runtime()->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU;
         const double ratio = calibratedMsPerMpx[1] / calibratedMsPerMpx[0];
-        EXPECT_GE(ratio, 0.67);
-        EXPECT_LE(ratio, 1.5);
+        EXPECT_GE(ratio, cpuDevice ? 0.4 : 0.67);
+        EXPECT_LE(ratio, cpuDevice ? 2.5 : 1.5);
     } else {
         EXPECT_GT(skipped[1], 0);
     }

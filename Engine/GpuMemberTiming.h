@@ -45,7 +45,7 @@ NATRON_NAMESPACE_ENTER
  **/
 namespace GpuMemberTiming {
 
-// Half-open [begin, end) intervals in nanoseconds.
+// Half-open [begin, end) intervals, all in one timebase.
 typedef std::vector<std::pair<std::uint64_t, std::uint64_t>> Intervals;
 
 // An interval is contended when more than this fraction of its length overlaps the transfer-busy intervals.
@@ -75,16 +75,20 @@ struct MemberSample {
     int cleanCount = 0;
     int contendedCount = 0;
 
-    // A member without a clean interval has no sample to calibrate from.
     bool hasSample() const { return cleanCount > 0; }
 };
 
 /**
  * @brief Splits each member's intervals into clean and contended against transferBusy and sums the clean ones. One
  * sample per member that has an interval, ordered by member index. Intervals with a nonpositive length are ignored.
+ *
+ * planes[m], where given and positive, is how many planes member m renders, each in an interval of its own over the
+ * same pixels. Each such interval counts that fraction of its pixels, so that the clean megapixels count the task's
+ * area once and the sample is the task's rate with all its planes, as the cost model prices a task.
  **/
 std::vector<MemberSample> cleanMemberSamples(const std::vector<GpuMemberInterval>& intervals,
                                              const Intervals& transferBusy,
+                                             const std::vector<int>& planes = std::vector<int>(),
                                              double contendedFraction = kDefaultContendedFraction);
 
 } // namespace GpuMemberTiming

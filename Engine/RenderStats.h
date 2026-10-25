@@ -200,8 +200,7 @@ public:
                                 double transferExposedMs);
 
     /**
-     * @brief Counts members of a region the device timed that did not calibrate the cost model, because every one of
-     * their intervals shared the device with a transfer.
+     * @brief Counts members of a region the device timed that had no clean interval to calibrate the cost model from.
      **/
     void noteGpuCalibrationSkipped(int members);
 
@@ -323,7 +322,7 @@ struct GpuRegionTimes {
     unsigned long long stagedImportFailed = 0;
     unsigned long long stagedForgotten = 0;
 
-    // Written only when nonempty, and nonzero.
+    // Written only when nonempty: memberIntervals. Only when nonzero: ownershipMs and calibrationSkipped.
     std::vector<GpuMemberInterval> memberIntervals;
     double ownershipMs = 0.;
     int calibrationSkipped = 0;

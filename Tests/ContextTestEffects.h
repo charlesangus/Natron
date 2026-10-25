@@ -28,8 +28,13 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <list>
+#include <map>
+#include <mutex>
+#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "CountingTestEffect.h"
@@ -48,6 +53,7 @@
 #define kTestPluginIDContextReader "test.natron.built-in.ContextReader"
 #define kTestPluginIDContextFanOut "test.natron.built-in.ContextFanOut"
 #define kTestPluginIDContextChain "test.natron.built-in.ContextChain"
+#define kTestPluginIDContextFormat "test.natron.built-in.ContextFormat"
 
 NATRON_NAMESPACE_ENTER
 
@@ -71,6 +77,81 @@ contextTestValue(const RenderContextPtr& context)
 
     return asDouble ? *asDouble : 0.;
 }
+
+/**
+ * @brief The value of the named variable in context, 0 when unset.
+ **/
+inline double
+contextTestValue(const RenderContextPtr& context,
+                 const std::string& name)
+{
+    const RenderContextValue* value = context ? context->find(RenderContextName::plain(name)) : 0;
+    const double* asDouble = value ? std::get_if<double>(value) : 0;
+
+    return asDouble ? *asDouble : 0.;
+}
+
+/**
+ * @brief The names in a comma-separated list, empty ones skipped.
+ **/
+inline std::vector<std::string>
+contextTestNames(const std::string& list)
+{
+    std::vector<std::string> names;
+    std::stringstream ss(list);
+    std::string name;
+    while (std::getline(ss, name, ',')) {
+        if (!name.empty()) {
+            names.push_back(name);
+        }
+    }
+
+    return names;
+}
+
+/**
+ * @brief The region of definition calls of the context test effects, by node and by the value of
+ * the test variable in the context the call ran under.
+ **/
+class ContextTestRegistry {
+public:
+    static void noteRegionOfDefinition(const Node* node,
+                                       double value)
+    {
+        std::lock_guard<std::mutex> k(mutex());
+        ++regions()[std::make_pair(node, value)];
+    }
+
+    static int regionsOfDefinition(const Node* node,
+                                   double value)
+    {
+        std::lock_guard<std::mutex> k(mutex());
+        std::map<std::pair<const Node*, double>, int>::const_iterator found = regions().find(std::make_pair(node, value));
+
+        return found == regions().end() ? 0 : found->second;
+    }
+
+    static void reset()
+    {
+        std::lock_guard<std::mutex> k(mutex());
+        regions().clear();
+    }
+
+private:
+    static std::mutex& mutex()
+    {
+        static std::mutex m;
+
+        return m;
+    }
+
+    static std::map<std::pair<const Node*, double>, int>& regions()
+    {
+        static std::map<std::pair<const Node*, double>, int> r;
+
+        return r;
+    }
+};
 
 /**
  * @brief A tiled RGBA float effect of kCountingTestSize square whose render fills its output with
@@ -106,6 +187,7 @@ public:
                                              ViewIdx /*view*/,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
+        ContextTestRegistry::noteRegionOfDefinition(getNode().get(), contextTestValue(getCurrentRenderContext()));
         rod->x1 = 0.;
         rod->y1 = 0.;
         rod->x2 = kCountingTestSize;
@@ -230,7 +312,9 @@ public:
     virtual RenderContextReadSet getExtraContextReads() const OVERRIDE FINAL
     {
         RenderContextReadSet reads;
-        reads.add(contextTestVariable());
+        for (const std::string& name : variables()) {
+            reads.add(RenderContextName::plain(name));
+        }
 
         return reads;
     }
@@ -245,13 +329,32 @@ private:
         value->setDefaultValue(1.);
         page->addKnob(value);
         _value = value;
+
+        KnobStringPtr variables = createKnob<KnobString>(std::string("Variables"));
+        variables->setName("variables");
+        variables->setAnimationEnabled(false);
+        variables->setDefaultValue(contextTestVariable().name);
+        page->addKnob(variables);
+        _variables = variables;
+    }
+
+    // The variables read, comma-separated in the variables knob.
+    std::vector<std::string> variables() const
+    {
+        KnobStringPtr variablesKnob = _variables.lock();
+
+        return contextTestNames(variablesKnob ? variablesKnob->getValue() : contextTestVariable().name);
     }
 
     virtual double value(const RenderContextPtr& context) const OVERRIDE FINAL
     {
         KnobDoublePtr valueKnob = _value.lock();
+        double sum = valueKnob ? valueKnob->getValue() : 0.;
+        for (const std::string& name : variables()) {
+            sum += contextTestValue(context, name);
+        }
 
-        return contextTestValue(context) + (valueKnob ? valueKnob->getValue() : 0.);
+        return sum;
     }
 
     static constexpr InputSpec kInputs[] = {
@@ -270,6 +373,7 @@ private:
     }
 
     KnobDoubleWPtr _value;
+    KnobStringWPtr _variables;
 };
 
 /**
@@ -312,9 +416,11 @@ protected:
         const int count = countKnob ? countKnob->getValue() : 0;
         const int first = firstKnob ? firstKnob->getValue() : 0;
         const bool equal = equalKnob && equalKnob->getValue();
+        KnobStringPtr variableKnob = _variable.lock();
+        const RenderContextName variable = variableKnob ? RenderContextName::plain(variableKnob->getValue()) : contextTestVariable();
         std::vector<RenderContextPtr> contexts;
         for (int i = 0; i < count; ++i) {
-            contexts.push_back(RenderContext::Builder(context).set(contextTestVariable(), RenderContextValue(double(equal ? first : first + i))).build());
+            contexts.push_back(RenderContext::Builder(context).set(variable, RenderContextValue(double(equal ? first : first + i))).build());
         }
 
         return contexts;
@@ -344,6 +450,13 @@ private:
         equal->setDefaultValue(false);
         page->addKnob(equal);
         _equal = equal;
+
+        KnobStringPtr variable = createKnob<KnobString>(std::string("Variable"));
+        variable->setName("variable");
+        variable->setAnimationEnabled(false);
+        variable->setDefaultValue(contextTestVariable().name);
+        page->addKnob(variable);
+        _variable = variable;
     }
 
     virtual double value(const RenderContextPtr& /*context*/) const OVERRIDE FINAL
@@ -369,6 +482,7 @@ private:
     KnobIntWPtr _count;
     KnobIntWPtr _first;
     KnobBoolWPtr _equal;
+    KnobStringWPtr _variable;
 };
 
 /**
@@ -451,6 +565,93 @@ private:
     }
 
     KnobBoolWPtr _selfTarget;
+};
+
+/**
+ * @brief Reads the test variable v, when its reads knob is set, into its output format, which is
+ * 32 + v wide, and counts its metadata derivations.
+ **/
+class ContextFormatTestEffect
+    : public ContextTestEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new ContextFormatTestEffect(n);
+    }
+
+    explicit ContextFormatTestEffect(NodePtr n)
+        : ContextTestEffectBase(n)
+        , _derivations(0)
+    {
+    }
+
+    virtual RenderContextReadSet getExtraContextReads() const OVERRIDE FINAL
+    {
+        RenderContextReadSet reads;
+        KnobBoolPtr readsKnob = _reads.lock();
+        if (!readsKnob || readsKnob->getValue()) {
+            reads.add(contextTestVariable());
+        }
+
+        return reads;
+    }
+
+    // How often getPreferredMetadataAt() ran.
+    int derivations() const
+    {
+        return _derivations.load();
+    }
+
+    // The output width under a context where the test variable is v.
+    static int formatWidth(double v)
+    {
+        return kCountingTestSize + (int)v;
+    }
+
+private:
+    virtual StatusEnum getPreferredMetadataAt(double /*time*/,
+                                              ViewIdx /*view*/,
+                                              NodeMetadata& metadata) OVERRIDE FINAL
+    {
+        ++_derivations;
+        metadata.setOutputFormat(RectI(0, 0, formatWidth(contextTestValue(getCurrentRenderContext())), kCountingTestSize));
+
+        return eStatusOK;
+    }
+
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+        KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
+        KnobBoolPtr readsKnob = createKnob<KnobBool>(std::string("Reads"));
+        readsKnob->setName("reads");
+        readsKnob->setAnimationEnabled(false);
+        readsKnob->setDefaultValue(true);
+        page->addKnob(readsKnob);
+        _reads = readsKnob;
+    }
+
+    virtual double value(const RenderContextPtr& context) const OVERRIDE FINAL
+    {
+        return contextTestValue(context);
+    }
+
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDContextFormat,
+        .label = "Test Context Format",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    KnobBoolWPtr _reads;
+    std::atomic<int> _derivations;
 };
 
 NATRON_NAMESPACE_EXIT

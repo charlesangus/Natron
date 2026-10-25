@@ -37,6 +37,8 @@
 #include <vector>
 
 #include <QCoreApplication>
+#include <QDateTime>
+#include <QStringList>
 #include <QThread>
 
 #include "Engine/AbortableRenderInfo.h"
@@ -705,11 +707,61 @@ makeConsumerItem(RequestPassItem::KindEnum kind,
     return item;
 }
 
+/**
+ * @brief The frame args the pass runs nodeRequest's actions under: a copy of the node's own args
+ * carrying the entry's context and hash, made on the first visit of the entry. Null when the node
+ * has no frame args.
+ **/
+ParallelRenderArgsPtr
+passContextArgs(const EffectInstancePtr& effect,
+                const NodeCtxKey& key,
+                const NodeFrameRequest& nodeRequest,
+                ContextFrameArgsMap* passArgs)
+{
+    ContextFrameArgsMap::iterator found = passArgs->find(key);
+
+    if (found != passArgs->end()) {
+        return found->second;
+    }
+    const ParallelRenderArgsPtr base = effect->getParallelRenderArgsTLS();
+    if (!base) {
+        return ParallelRenderArgsPtr();
+    }
+    ParallelRenderArgsPtr args = std::make_shared<ParallelRenderArgs>(*base);
+    args->context = nodeRequest.context;
+    args->contextKey = nodeRequest.contextKey;
+    args->nodeHash = nodeRequest.nodeHash;
+    args->request.reset();
+    args->metadata.reset();
+    passArgs->insert(std::make_pair(key, args));
+
+    return args;
+}
+
+/**
+ * @brief Records node as pulling an input under contexts of its own.
+ **/
+void
+noteContextFanOut(FrameRequestMap& requests,
+                  const NodePtr& node,
+                  bool underEmptyContext)
+{
+    for (std::pair<NodePtr, bool>& fanOut : requests.contextFanOuts) {
+        if (fanOut.first == node) {
+            fanOut.second = fanOut.second || underEmptyContext;
+
+            return;
+        }
+    }
+    requests.contextFanOuts.push_back(std::make_pair(node, underEmptyContext));
+}
+
 StatusEnum
 visitRequestPassItem(bool useTransforms,
                      const RequestPassItem& item,
                      FrameRequestMap& requests,
                      WarmedRoDSet* warmed,
+                     ContextFrameArgsMap* passArgs,
                      std::vector<RequestPassItem>* stack)
 {
     const NodePtr& node = item.node;
@@ -748,12 +800,28 @@ visitRequestPassItem(bool useTransforms,
         if ((item.contextKey != 0) && !requests.contextArgs) {
             requests.contextArgs = std::make_shared<ContextFrameArgsMap>();
         }
+        if (item.contextKey != 0) {
+            // The node's actions run under each of its contexts this frame: room for the results of
+            // each, so they do not evict one another before the frame is done.
+            int& reserved = requests.reservedActionsCacheStates[node.get()];
+            if (reserved < kContextCountWarningThreshold) {
+                ++reserved;
+                tmp->actionsCacheReservation = effect->reserveActionsCacheState();
+            }
+        }
 
         std::pair<FrameRequestMap::iterator, bool> ret = requests.insert(std::make_pair(nodeKey, tmp));
         assert(ret.second);
         nodeRequest = ret.first->second;
     }
     assert(nodeRequest);
+
+    // Under a nonzero context key, the node's actions (metadata, identity, RoD, frames and regions
+    // needed) answer for the context it is visited under, as its render will.
+    ContextFrameArgsScope contextScope;
+    if (item.contextKey != 0) {
+        contextScope.install(effect, passContextArgs(effect, nodeKey, *nodeRequest, passArgs));
+    }
 
     ///Okay now we concentrate on this particular frame/view pair
 
@@ -781,6 +849,15 @@ visitRequestPassItem(bool useTransforms,
 
         fvRequest = &nodeRequest->frames[frameView];
 
+        if (item.contextKey != 0) {
+            // The snapshot the frame args of this entry carry, as the node's own args carry the
+            // empty context's.
+            U64 metadataHash = 0;
+            NodeMetadataConstPtr metadata = effect->getMetadata(time, view, &metadataHash);
+            if (metadataHash == nodeRequest->nodeHash) {
+                fvRequest->globalData.metadata = metadata;
+            }
+        }
 
         ///Check identity
         fvRequest->globalData.identityInputNb = -1;
@@ -917,7 +994,9 @@ visitRequestPassItem(bool useTransforms,
         int inputNb = it->first.second;
 
         inputContexts.clear();
-        if (!effect->getInputContexts(inputNb, time, view, item.context, &inputContexts)) {
+        if (effect->getInputContexts(inputNb, time, view, item.context, &inputContexts)) {
+            noteContextFanOut(requests, node, item.contextKey == 0);
+        } else {
             inputContexts.push_back(item.context);
         }
 
@@ -1013,6 +1092,9 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     // run on pool threads with default-sized stacks.
     std::vector<RequestPassItem> stack;
     WarmedRoDSet warmed;
+    // The frame args the pass runs each entry under a nonzero context key under. Kept apart from
+    // the frame's, which are made from the finished entries.
+    ContextFrameArgsMap passArgs;
 
     // The root renders under the empty context.
     stack.push_back(makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
@@ -1023,7 +1105,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
         switch (item.kind) {
         case RequestPassItem::eKindVisit:
-            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &stack) == eStatusFailed) {
+            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &passArgs, &stack) == eStatusFailed) {
                 return eStatusFailed;
             }
             break;
@@ -1052,6 +1134,65 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     return eStatusOK;
 } // EffectInstance::getInputsRoIsFunctor
 
+namespace {
+
+/**
+ * @brief Past kContextCountWarningThreshold contexts in request, posts a warning naming the
+ * nodes fanning them out on the outermost one and logs it once per render; at or below it, takes
+ * the warning back from them.
+ **/
+void
+reportContextCount(const NodePtr& treeRoot,
+                   const FrameRequestMap& request)
+{
+    if (request.contextFanOuts.empty()) {
+        return;
+    }
+    // The contexts of the frame are those of the node rendering under the most: the entries of
+    // a node nested fan-outs feed multiply, while their keys, restricted per node, differ between
+    // nodes for one context.
+    std::map<const Node*, int> entriesPerNode;
+    int contextCount = 0;
+    for (FrameRequestMap::const_iterator it = request.begin(); it != request.end(); ++it) {
+        if (it->first.ctxKey != 0) {
+            contextCount = std::max(contextCount, ++entriesPerNode[it->first.node.get()]);
+        }
+    }
+    if (contextCount <= kContextCountWarningThreshold) {
+        for (const std::pair<NodePtr, bool>& fanOut : request.contextFanOuts) {
+            fanOut.first->clearContextCountWarning();
+        }
+
+        return;
+    }
+    NodePtr outermost = request.contextFanOuts.front().first;
+    QStringList names;
+    for (const std::pair<NodePtr, bool>& fanOut : request.contextFanOuts) {
+        names.push_back(QString::fromUtf8(fanOut.first->getFullyQualifiedName().c_str()));
+    }
+    for (const std::pair<NodePtr, bool>& fanOut : request.contextFanOuts) {
+        if (fanOut.second) {
+            outermost = fanOut.first;
+            break;
+        }
+    }
+    const QString message = EffectInstance::tr("A frame renders under %1 contexts, more than the %2 expected; they are fanned out by %3.")
+                                .arg(contextCount)
+                                .arg(kContextCountWarningThreshold)
+                                .arg(names.join(QString::fromUtf8(", ")));
+    U64 renderSequence = 0;
+    const EffectInstancePtr rootEffect = treeRoot ? treeRoot->getEffectInstance() : EffectInstancePtr();
+    const ParallelRenderArgsPtr rootArgs = rootEffect ? rootEffect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const AbortableRenderInfoPtr abortInfo = rootArgs ? rootArgs->abortInfo.lock() : AbortableRenderInfoPtr();
+    if (abortInfo) {
+        renderSequence = abortInfo->getRenderSequence();
+    }
+    if (outermost->setContextCountWarning(message, renderSequence)) {
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(outermost->getLabel_mt_safe().c_str()), QDateTime::currentDateTime(), message);
+    }
+}
+} // namespace
+
 StatusEnum
 EffectInstance::computeRequestPass(double time,
                                    ViewIdx view,
@@ -1074,6 +1215,7 @@ EffectInstance::computeRequestPass(double time,
     if (stat == eStatusFailed) {
         return stat;
     }
+    reportContextCount(treeRoot, request);
 
     //For all frame/view pair and for each node, compute the final roi as being the bounding box of all successive requests
     /*for (FrameRequestMap::iterator it = request.begin(); it != request.end(); ++it) {
@@ -1180,6 +1322,9 @@ FrameRequestMap::installContextArgs(const std::function<ParallelRenderArgsPtr(co
         args->contextKey = it->second->contextKey;
         args->request = it->second;
         args->nodeHash = it->second->nodeHash;
+        // The snapshot the pass took under this entry's context, never the node's own.
+        const FrameViewRequest* frameView = it->second->findFrameViewRequest(base->time, base->view);
+        args->metadata = frameView ? frameView->globalData.metadata : NodeMetadataConstPtr();
     }
 }
 
@@ -1336,6 +1481,8 @@ InputContextArgs::InputContextArgs(const EffectInstance* consumer,
     _args->contextKey = _contextKey;
     _args->nodeHash = mixRenderContextKey(base->request ? base->request->nodeHash : base->nodeHash, _contextKey);
     _args->request.reset();
+    // The input's own snapshot is the empty context's: under this one, its metadata is read live.
+    _args->metadata.reset();
 }
 
 void

@@ -541,6 +541,20 @@ public:
     void refreshDataKindConflictMessage();
 
     /**
+     * @brief Posts message as a persistent warning for a render whose request pass reached more
+     * contexts than a frame should. renderSequence is the AbortableRenderInfo::getRenderSequence()
+     * of the render, 0 outside one. Returns whether the render should log it: true the first time
+     * a render posts it, so one render logs it once whatever number of frames it renders.
+     **/
+    bool setContextCountWarning(const QString& message, U64 renderSequence);
+
+    /**
+     * @brief Takes back the warning setContextCountWarning() posted, if it is still the
+     * node's persistent message; any other message is left alone.
+     **/
+    void clearContextCountWarning();
+
+    /**
      * @brief Returns true if the given input supports the given components. If inputNb equals -1
      * then this function will check whether the effect can produce the given components.
      **/

@@ -68,6 +68,7 @@
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/PluginMemory.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
@@ -467,6 +468,65 @@ EffectInstance::getHash() const
     NodePtr n = _node.lock();
 
     return n->getHashValue();
+}
+
+namespace {
+
+// The contexts the getMetadata() derivations running on this thread derive under, innermost last.
+// A derivation reads its inputs' metadata, which must be derived under the same context.
+thread_local std::vector<RenderContextPtr> t_metadataDerivationContexts;
+
+class MetadataDerivationContextScope {
+public:
+    MetadataDerivationContextScope(bool active,
+                                   const RenderContextPtr& context)
+        : _active(active)
+    {
+        if (_active) {
+            t_metadataDerivationContexts.push_back(context);
+        }
+    }
+
+    ~MetadataDerivationContextScope()
+    {
+        if (_active) {
+            t_metadataDerivationContexts.pop_back();
+        }
+    }
+
+    MetadataDerivationContextScope(const MetadataDerivationContextScope&) = delete;
+    MetadataDerivationContextScope& operator=(const MetadataDerivationContextScope&) = delete;
+
+private:
+    bool _active;
+};
+} // anonymous namespace
+
+RenderContextPtr
+EffectInstance::getCurrentRenderContext() const
+{
+    if (!renderContextsInUse()) {
+        return RenderContextPtr();
+    }
+    if (!t_metadataDerivationContexts.empty()) {
+        return t_metadataDerivationContexts.back();
+    }
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+    if (!tls || tls->frameArgs.empty()) {
+        return RenderContextPtr();
+    }
+
+    return tls->frameArgs.back()->context;
+}
+
+std::shared_ptr<void>
+EffectInstance::reserveActionsCacheState()
+{
+    ActionsCachePtr cache = _imp->actionsCache;
+
+    cache->reserveState();
+
+    return std::shared_ptr<void>(nullptr, [cache](void*) { cache->releaseState(); });
 }
 
 U64
@@ -6992,18 +7052,32 @@ EffectInstance::getMetadata(double time,
     // see a value the hash and marks do not yet reflect: the write snapshot, read before both,
     // catches that. A hash read under contention can be folded over a dirty input and stand for a
     // state the graph has left; such a node stays dirty, so only an up-to-date hash keys an entry.
+    // Under a context, the answer is keyed by the node hash with the key of the context restricted to
+    // what the node's output reads folded in, as the node's render hash is, so each context
+    // derives and keeps its own; the inputs read during the derivation see the same context.
+    const bool contexts = renderContextsInUse();
+    RenderContextPtr context;
+    U64 contextKey = 0;
+    if (contexts) {
+        contextKey = restrictContextToNode(getCurrentRenderContext(), node, &context);
+    }
     const U64 writes = KnobContentWrite::snapshot();
     const U64 marks = node->getHashMarkCount();
-    const U64 hash = node->getHashValue();
+    const U64 nodeHash = node->getHashValue();
+    const U64 hash = mixRenderContextKey(nodeHash, contextKey);
     *hashOut = hash;
     NodeMetadataConstPtr cached = _imp->actionsCache->getMetadataResult(hash, time, view);
     if (cached) {
         return cached;
     }
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
-    NodeMetadataConstPtr metadata = isOpenFX() ? getOpenFXMetadataAt(hash, time, view) : deriveMetadataAt(hash, time, view);
+    NodeMetadataConstPtr metadata;
+    {
+        MetadataDerivationContextScope derivingUnder(contexts, context);
+        metadata = isOpenFX() ? getOpenFXMetadataAt(hash, time, view) : deriveMetadataAt(hash, time, view);
+    }
     U64 hashAfter = 0;
-    if ((node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == hash) && KnobContentWrite::isSettled(writes)) {
+    if ((node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == nodeHash) && KnobContentWrite::isSettled(writes)) {
         _imp->actionsCache->setMetadataResult(hash, time, view, metadata, generation);
     }
 
@@ -7037,6 +7111,8 @@ EffectInstance::getTimeInvariantMetadata()
     }
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     NodeMetadataConstPtr metadata;
+    // Keyed by the node hash alone, so derived under the empty context whatever this thread renders under.
+    MetadataDerivationContextScope derivingUnder(renderContextsInUse(), RenderContextPtr());
     if (openFX) {
         // The parameters the plug-in sets in its clip preferences come back to
         // refreshMetadataSideEffects(), which waits for this derivation to end.

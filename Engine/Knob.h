@@ -34,6 +34,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <QReadWriteLock>
@@ -1892,6 +1893,14 @@ public:
     virtual RenderContextReadSet getContextReadSet() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
+     * @brief For a knob with a context read source, the key its expression results are kept under on
+     * the calling thread: the hash of the context the holder is queried under (see
+     * EffectInstance::getCurrentRenderContext()) restricted to the knob's read-set, 0 for the empty
+     * one, and returns true. Returns false for a knob without one, whose results are kept by time.
+     **/
+    bool getExpressionContextKey(U64* key) const;
+
+    /**
      * @brief Has every invalidateContentHash() of this knob also move generation, for an owner
      * that is not its holder (a roto item) and memoizes over the knob's content hash. Set before
      * the knob is shared.
@@ -2132,7 +2141,9 @@ public:
      */
     typedef std::map<double, T> FrameValueMap;
     typedef std::vector<FrameValueMap> ExprResults;
-
+    // The results of a knob whose value reads context variables, by (time, view, context key).
+    typedef std::map<std::tuple<double, int, U64>, T> ContextValueMap;
+    typedef std::vector<ContextValueMap> ExprContextResults;
 
     /**
      * @brief Make a knob for the given KnobHolder with the given label (the label displayed on
@@ -2435,6 +2446,14 @@ public:
         map = _exprRes[dim];
     }
 
+    void getExpressionContextResults(int dim,
+                                     ContextValueMap& map)
+    {
+        QMutexLocker k(&_valueMutex);
+
+        map = _exprCtxRes[dim];
+    }
+
     T getValueFromMasterAt(double time, ViewSpec view, int dimension, KnobI* master);
     T getValueFromMaster(ViewSpec view, int dimension, KnobI* master, bool clamp);
 
@@ -2487,6 +2506,7 @@ private:
         QMutexLocker k(&_valueMutex);
 
         _exprRes[dimension].clear();
+        _exprCtxRes[dimension].clear();
         ++_exprResGenerations[dimension];
     }
 
@@ -2588,7 +2608,8 @@ private:
     };
     std::vector<DefaultValue> _defaultValues;
     mutable ExprResults _exprRes;
-    // By dimension, moved by every clear of _exprRes: a result computed while a clear landed may
+    mutable ExprContextResults _exprCtxRes;
+    // By dimension, moved by every clear of _exprRes and _exprCtxRes: a result computed while a clear landed may
     // predate what the clear was for, and is then not stored.
     mutable std::vector<U64> _exprResGenerations;
 

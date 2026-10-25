@@ -244,6 +244,8 @@ public:
         , persistentMessageRenderSequence(0)
         , channelSelectorResolvedSequence(0)
         , dataKindConflictMessage()
+        , contextCountWarningMessage()
+        , contextCountWarningSequence(0)
         , guiPointer()
         , layoutMutex()
         , posX(0.)
@@ -514,6 +516,11 @@ public:
     // can tell a stale diagnostic of its own from an unrelated message that has since replaced it.
     // Guarded by persistentMessageMutex.
     QString dataKindConflictMessage;
+
+    // The text Node::setContextCountWarning() last posted into persistentMessage, empty when it
+    // took it back, and the render sequence it was logged for. Guarded by persistentMessageMutex.
+    QString contextCountWarningMessage;
+    U64 contextCountWarningSequence;
     NodeGuiIWPtr guiPointer;
 
     // Node-graph layout, kept here so a headless session and a save off the main thread see it.

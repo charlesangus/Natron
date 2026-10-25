@@ -163,6 +163,12 @@ typedef std::shared_ptr<ContextReadSource> ContextReadSourcePtr;
  * Memoized read-sets are only valid for the generation read before computing them. MT-safe.
  **/
 U64 getRenderContextReadsGeneration();
+
+/**
+ * @brief Whether a non-empty context was ever built in this process. Until one is, every node
+ * renders under the empty context, so callers may skip looking up the one they render under.
+ **/
+bool renderContextsInUse();
 void invalidateRenderContextReads();
 
 class RenderContext;

@@ -238,6 +238,10 @@ struct FrameViewRequestGlobalData
     int identityInputNb;
     ViewIdx identityView;
     double inputIdentityTime;
+
+    /// For an entry under a nonzero context key, the node's metadata at this frame/view under that
+    /// context, read with the entry's hash; null otherwise, or when the node moved meanwhile.
+    NodeMetadataConstPtr metadata;
 };
 
 struct FrameViewRequestFinalData
@@ -330,6 +334,9 @@ public:
     RenderContextPtr context;
     U64 contextKey = 0;
 
+    /// Under a nonzero context key, the extra action-cache state the node keeps for this entry.
+    std::shared_ptr<void> actionsCacheReservation;
+
     bool getFrameViewCanonicalRoI(double time, ViewIdx view, RectD* roi) const;
 
     const FrameViewRequest* getFrameViewRequest(double time, ViewIdx view) const;
@@ -364,7 +371,22 @@ public:
 
     /// Null until the pass reaches a node under a nonzero context key.
     ContextFrameArgsMapPtr contextArgs;
+
+    /// The nodes that pulled an input under contexts of their own (see
+    /// EffectInstance::getInputContexts()), in the order the pass reached them, each with whether
+    /// it was reached under the empty context, which makes it an outermost one.
+    std::vector<std::pair<NodePtr, bool>> contextFanOuts;
+
+    /// By node, the action-cache states reserved for its entries under nonzero context keys. Each
+    /// entry holds its reservation until it is destroyed with the frame.
+    std::map<const Node*, int> reservedActionsCacheStates;
 };
+
+/**
+ * @brief The count of contexts a node may render under in one frame before a warning names the
+ * nodes fanning them out, and the most action-cache states a node keeps for them.
+ **/
+const int kContextCountWarningThreshold = 4096;
 
 /**
  * @brief Makes the effect's input pulls on this thread, for its lifetime, request the inputs under

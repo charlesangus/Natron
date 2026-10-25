@@ -2493,6 +2493,53 @@ Node::refreshDataKindConflictMessage()
     }
 } // refreshDataKindConflictMessage
 
+bool
+Node::setContextCountWarning(const QString& message,
+                             U64 renderSequence)
+{
+    bool log;
+    bool post;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        const bool posted = !_imp->contextCountWarningMessage.isEmpty();
+        // Outside a render there is no render to log it once for: it is logged when first posted.
+        log = (renderSequence == 0) ? !posted : (renderSequence != _imp->contextCountWarningSequence);
+        post = (_imp->persistentMessage != message);
+        _imp->contextCountWarningMessage = message;
+        if (log) {
+            _imp->contextCountWarningSequence = renderSequence;
+        }
+    }
+    if (post) {
+        setPersistentMessage(eMessageTypeWarning, message.toStdString());
+    }
+
+    return log;
+}
+
+void
+Node::clearContextCountWarning()
+{
+    QString previous;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        if (_imp->contextCountWarningMessage.isEmpty()) {
+            return;
+        }
+        previous = _imp->contextCountWarningMessage;
+        _imp->contextCountWarningMessage.clear();
+        _imp->contextCountWarningSequence = 0;
+    }
+
+    // As refreshDataKindConflictMessage(): only the exact text posted here is ours to take back.
+    QString current;
+    int type;
+    getPersistentMessage(&current, &type, false);
+    if (current == previous) {
+        clearPersistentMessage(false);
+    }
+}
+
 void
 Node::fromSerialization(const Serialization::NodeSerialization& serialization,
                         bool updateKnobGui)

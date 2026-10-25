@@ -382,6 +382,20 @@ public:
     U64 getRenderHash() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The context the calling thread queries this effect under: while a getMetadata()
+     * derivation runs on this thread, the context it derives under; otherwise the one the frame
+     * args this thread renders the effect with carry. Null for the empty context.
+     **/
+    RenderContextPtr getCurrentRenderContext() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Keeps one more hash state of this effect's action results than the fixed count for as
+     * long as the returned token lives, so that a render querying the effect under many contexts
+     * keeps the results of each until it is done.
+     **/
+    std::shared_ptr<void> reserveActionsCacheState() WARN_UNUSED_RETURN;
+
+    /**
      * @brief Appends render-affecting state the effect keeps outside its knobs. Called under no
      * node lock, from any thread; whoever changes that state must follow it with
      * Node::markHashDirty().

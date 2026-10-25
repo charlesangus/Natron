@@ -122,6 +122,7 @@ set(Tests_SOURCES
     RenderBothWays.cpp
     RenderBothWaysSelf_Test.cpp
     RenderContext_Test.cpp
+    RenderContextMetadata_Test.cpp
     RenderContextRequest_Test.cpp
     RenderProfile_Test.cpp
     RenderRange_Test.cpp

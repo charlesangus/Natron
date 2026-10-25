@@ -5871,6 +5871,23 @@ KnobHelper::getContextReadSet() const
     return reads;
 }
 
+bool
+KnobHelper::getExpressionContextKey(U64* key) const
+{
+    *key = 0;
+    if (!_imp->hasContextReadSources.load()) {
+        return false;
+    }
+    const EffectInstance* effect = dynamic_cast<const EffectInstance*>(getHolder());
+    const RenderContextPtr context = effect ? effect->getCurrentRenderContext() : RenderContextPtr();
+    if (context && !context->isEmpty()) {
+        const RenderContextPtr kept = context->restrictTo(getContextReadSet());
+        *key = kept ? kept->hash() : 0;
+    }
+
+    return true;
+}
+
 void
 KnobHelper::getContentHashDependencies(bool* hasExpression,
                                        bool* readsOutsideKnob) const

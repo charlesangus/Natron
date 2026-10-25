@@ -79,7 +79,7 @@ ActionsCache::getOrCreateActionCache(U64 newHash)
 
         return *found->second;
     }
-    if (!_instances.empty() && (_instances.size() >= _maxInstances)) {
+    if (!_instances.empty() && (_instances.size() >= _maxInstances + _reservedInstances)) {
         _instancesByHash.erase(_instances.front()._hash);
         _instances.pop_front();
     }
@@ -95,8 +95,31 @@ ActionsCache::ActionsCache(int maxAvailableHashes)
     , _instances()
     , _instancesByHash()
     , _maxInstances((std::size_t)maxAvailableHashes)
+    , _reservedInstances(0)
     , _metadataGeneration(0)
 {
+}
+
+void
+ActionsCache::reserveState()
+{
+    QMutexLocker l(&_cacheMutex);
+
+    ++_reservedInstances;
+}
+
+void
+ActionsCache::releaseState()
+{
+    QMutexLocker l(&_cacheMutex);
+
+    if (_reservedInstances > 0) {
+        --_reservedInstances;
+    }
+    while (!_instances.empty() && (_instances.size() > _maxInstances + _reservedInstances)) {
+        _instancesByHash.erase(_instances.front()._hash);
+        _instances.pop_front();
+    }
 }
 
 void

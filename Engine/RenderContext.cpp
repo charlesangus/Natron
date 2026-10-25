@@ -45,6 +45,8 @@ renderContextReadsGeneration()
     return generation;
 }
 
+std::atomic<bool> g_nonEmptyContextBuilt(false);
+
 U64
 doubleBits(double value)
 {
@@ -219,6 +221,12 @@ RenderContextReadSet::contains(const RenderContextName& name) const
     return _readsAll || std::binary_search(_names.begin(), _names.end(), name);
 }
 
+bool
+renderContextsInUse()
+{
+    return g_nonEmptyContextBuilt.load(std::memory_order_relaxed);
+}
+
 U64
 getRenderContextReadsGeneration()
 {
@@ -275,6 +283,7 @@ RenderContext::RenderContext(std::vector<Entry>&& sortedEntries)
     if (_entries.empty()) {
         return;
     }
+    g_nonEmptyContextBuilt.store(true, std::memory_order_relaxed);
     ContentHasher h;
     h.appendU64(_entries.size());
     ValueHasher valueHasher = { &h };

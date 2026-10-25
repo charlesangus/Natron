@@ -132,6 +132,7 @@ registerRenderSchedulerTestPlugins()
     registerTestBuiltInPlugin<ContextReaderTestEffect>();
     registerTestBuiltInPlugin<ContextFanOutTestEffect>();
     registerTestBuiltInPlugin<ContextChainTestEffect>();
+    registerTestBuiltInPlugin<ContextFormatTestEffect>();
 }
 
 void

@@ -167,7 +167,7 @@ future core work has solid ground to build on.
 | M70 | RFV Declaration And Storage | doing |  | bosley-native-nodes | E13 | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
 | M71 | RFV Render Context | todo | M70, M178 |  | E13 | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | todo |  |  | E13 | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
-| M92 | Linked Nodes | blocked | M24 | bosley-native-nodes | E10 | [M92-linked-nodes.md](PLAN/MILESTONES/M92-linked-nodes.md) |
+| M92 | Linked Nodes | doing | M24 | bosley-native-nodes | E10 | [M92-linked-nodes.md](PLAN/MILESTONES/M92-linked-nodes.md) |
 | M95 | Knob Cleanup And Keyer Redesign | todo | M69, M76, M137 |  | E3 | [M95-knob-cleanup-and-keyer-redesign.md](PLAN/MILESTONES/M95-knob-cleanup-and-keyer-redesign.md) |
 | M96 | Weighted Curve Tangents | done | M93, M16 | bosley-native-nodes | E7 | [M96-weighted-curve-tangents.md](PLAN/MILESTONES/M96-weighted-curve-tangents.md) |
 | M97 | ~~Value-Based Node Hashing~~ | cancelled |  |  | E7 | [M97-value-based-node-hashing.md](PLAN/MILESTONES/M97-value-based-node-hashing.md) |
@@ -231,7 +231,7 @@ future core work has solid ground to build on.
 | M173 | Global Mode For Value Knobs | todo | M119 |  | E10 | [M173-global-mode-for-value-knobs.md](PLAN/MILESTONES/M173-global-mode-for-value-knobs.md) |
 | M174 | Wayland Support | blocked | - |  | E1 | [M174-wayland-support.md](PLAN/MILESTONES/M174-wayland-support.md) |
 | M175 | Build Script Jobs And Test Legs | todo | - |  | E2 | [M175-build-script-jobs-and-test-legs.md](PLAN/MILESTONES/M175-build-script-jobs-and-test-legs.md) |
-| M176 | Splice-Vertical Regression | doing | - | bosley-native-nodes | E10 | [M176-splice-vertical-regression.md](PLAN/MILESTONES/M176-splice-vertical-regression.md) |
+| M176 | Splice-Vertical Regression | todo | - | | E10 | [M176-splice-vertical-regression.md](PLAN/MILESTONES/M176-splice-vertical-regression.md) |
 | M178 | Render Context Core | todo | M167 |  | E13 | [M178-render-context-core.md](PLAN/MILESTONES/M178-render-context-core.md) |
 | M179 | Render Graph Continuation | todo | M178 |  | E6 | [M179-render-graph-continuation.md](PLAN/MILESTONES/M179-render-graph-continuation.md) |
 | M180 | Loop Block Core | todo | M178 |  | E15 | [M180-loop-block-core.md](PLAN/MILESTONES/M180-loop-block-core.md) |
@@ -297,7 +297,6 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M92 - Linked Nodes:** P1.T1's shared value store doesn't fit the knob code (mixed-type links, per-knob deferred writes and caches, ~170 storage accesses in files M114 changes). Proposed: the group holds the master state and members keep synced copies through their own setters (one hook in `evaluateValueChangeInternal`), each member running a shared expression in its own context. Needs the user's approval, as it revises the 2026-10-10 "shared value store" decision.
 - **M198 - RenderEngine On Node, M199 - Remove Legacy Scheduler, M200 - Folded Knob Shared Storage, M201 - Trimap Removal:** do not start without the user's go-ahead (user, 2026-10-25, M31 triage). Each stub's `Blocked on:` names what the user is waiting for. M202 - Clean-Hash Cache Stores needs no go-ahead.
 - **M174 - Wayland Support:** blocked until the user approves starting it (user, 2026-10-24). Stub; elaborate on approval.
 

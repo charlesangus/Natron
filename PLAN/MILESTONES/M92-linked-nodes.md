@@ -230,6 +230,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
 
 ## Decisions
 
+- 2026-10-25 — **Group master state with synced member copies (user):** replaces the 2026-10-10 shared value store. The link group holds the current value, keys and expression; each member keeps a copy, written through its own setters (type conversion, deferred writes, caches and GUI keep working), from one hook in `KnobHelper::evaluateValueChangeInternal` with a guard against echoes. Links stay symmetric with no master. A shared expression runs in each member's own context, as for an expression copied between nodes.
 - 2026-10-10 — **Added (user):** clones are replaced by symmetric Linked Nodes:
   - Edits on any member propagate to every member still linked, siblings included.
   - Each knob can be unlinked, and later re-linked with a warning that its local values are discarded.

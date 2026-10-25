@@ -7145,7 +7145,7 @@ EffectInstance::refreshCurrentFrameMetadata(double time,
 void
 EffectInstance::refreshMetadataSideEffects()
 {
-    assert( QThread::currentThread() == qApp->thread() );
+    assert(QThread::currentThread() == qApp->thread());
 
     // The clip preferences this refresh runs may set parameters, whose changes come back here.
     if (_imp->runningClipPreferences) {

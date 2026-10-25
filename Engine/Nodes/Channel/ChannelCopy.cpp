@@ -34,8 +34,8 @@
 #include <utility>
 
 #include "Engine/EffectInstance.h"
-#include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/RectI.h"
 
 #ifdef NATRON_HAVE_GPU

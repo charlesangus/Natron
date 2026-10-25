@@ -1630,7 +1630,7 @@ Curve::setKeyFrameTangents(double left,
     {
         QMutexLocker l(&_imp->_lock);
         KeyFrameSet::iterator it = atIndex(index);
-        assert( it != _imp->keyFrames.end() );
+        assert(it != _imp->keyFrames.end());
 
         KeyFrame newKey(*it);
         newKey.setLeftDerivative(left);

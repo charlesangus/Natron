@@ -379,7 +379,11 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
     /// Create auto-save dir if it does not exists
     QDir dir = Project::autoSavesDir();
     dir.mkpath( QString::fromUtf8(".") );
-
+    if (getAppID() == 0) {
+        // Render saves of renders that never started or never loaded them, left by a Natron that
+        // quit or crashed.
+        Project::removeStaleRenderSaves();
+    }
 
     if (getAppID() == 0) {
         QString missingOpenGLError;
@@ -473,11 +477,7 @@ GuiAppInstance::findAndTryLoadUntitledAutoSave()
     QStringList foundAutosaves;
     for (int i = 0; i < entries.size(); ++i) {
         const QString & entry = entries.at(i);
-        QString searchStr( QLatin1Char('.') );
-        searchStr.append( QString::fromUtf8(NATRON_PROJECT_FILE_EXT) );
-        searchStr.append( QString::fromUtf8(".autosave") );
-        int suffixPos = entry.indexOf(searchStr);
-        if ( (suffixPos == -1) || entry.contains( QString::fromUtf8("RENDER_SAVE") ) ) {
+        if (Project::autoSaveProjectNameLength(entry) == -1) {
             continue;
         }
 

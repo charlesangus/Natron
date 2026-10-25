@@ -245,6 +245,8 @@ public:
     QToolButton* _toolButtonMenuOpened;
     QMutex aboutToCloseMutex;
     bool _aboutToClose;
+    // A window close refused while the project was saving, to ask for again once it is done.
+    bool closeAfterSave;
     bool leftToolBarDisplayedOnHoverOnly;
     ScriptEditor* _scriptEditor;
     TabWidget* _lastEnteredTabWidget;

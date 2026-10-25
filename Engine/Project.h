@@ -164,8 +164,62 @@ public:
      **/
     bool saveProject(const QString & path, const QString & name, QString* newFilePath);
 
-
+    /**
+     * @brief Saves the project. A periodic auto-save that finds another save running is skipped.
+     * Any other save (by the user, a script, before closing or for a render process) that finds
+     * a save running in another thread waits for it and then runs, so it is never dropped; on the
+     * main thread the wait keeps processing events, except user input, so the running save may
+     * still use the main thread or the Python lock. The caller must not hold the Python lock.
+     * Returns false when the save failed or was skipped.
+     **/
     bool saveProject_imp(const QString & path, const QString & name, bool autoSave, bool updateProjectProperties, QString* newFilePath = 0);
+
+    /**
+     * @brief True while a saveProject_imp() call on the main thread is waiting for another save
+     * or saving. Its wait processes events, so whatever would close or reset the project from an
+     * event must refuse while this is true; mainThreadSavesEnded() tells when it may retry.
+     * Main thread only.
+     **/
+    bool isSavingOnMainThread() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief True when this thread is running a save, and so is inside an event loop that save
+     * spun if it is asking for another one.
+     **/
+    bool isSavingOnCurrentThread() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Saves the project to a new file in autoSavesDir() for a render process to load,
+     * named after this process, this app instance and a per-process counter so that no other
+     * render or instance writes the same file. The render process removes it once loaded, and
+     * the app removes it when the render ends or is taken off the queue; removeStaleRenderSaves()
+     * removes those whose Natron process is gone.
+     **/
+    bool saveForRenderProcess(QString* filePath);
+
+    /**
+     * @brief Returns a file name for saveForRenderProcess() that no earlier call in this process
+     * returned.
+     **/
+    static QString makeRenderSaveFileName(int appID) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief True when filePath names a file saveForRenderProcess() wrote.
+     **/
+    static bool isRenderSaveFile(const QString& filePath) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Removes from autoSavesDir() the render saves, and anything left beside them, that
+     * neither this process nor another running process may still hand to a render process:
+     * those older than renderSaveGraceSeconds() whose owning process is not running.
+     **/
+    static void removeStaleRenderSaves();
+
+    /**
+     * @brief How long a render save is kept whatever its owner looks like from here: a process
+     * in another pid namespace sharing the folder may look gone while it still runs.
+     **/
+    static qint64 renderSaveGraceSeconds() WARN_UNUSED_RETURN;
 
     /**
      * @brief Same as saveProject except that it will save the project in a temporary file
@@ -183,6 +237,13 @@ public:
      * @brief Returns the path to where the auto save files are stored on disk.
      **/
     static QString autoSavesDir() WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Returns the length of the project file name the auto-save file fileName was made
+     * for (name.ntpz in name.ntpz.autosave or name.ntpz.autosave.<digits>), or -1 when fileName
+     * is not an auto-save: a render save, or the temporary file an auto-save is being written to.
+     **/
+    static int autoSaveProjectNameLength(const QString& fileName) WARN_UNUSED_RETURN;
 
     bool findAutoSaveForProject(const OpenTarget& target, QString* autoSaveFileName);
 
@@ -534,6 +595,14 @@ Q_SIGNALS:
     void autoPreviewChanged(bool);
 
     void projectNameChanged(QString name, bool modified);
+
+    // Emitted from the saving thread whenever saveProject_imp() ends, so that a save waiting on
+    // the main thread can stop waiting.
+    void saveFinished();
+
+    // Emitted on the main thread once no saveProject_imp() call there is waiting or saving, so
+    // that a close refused during the save can be asked for again.
+    void mainThreadSavesEnded();
 
     void knobsInitialized();
 

@@ -25,12 +25,15 @@
 
 #include "Global/Macros.h"
 
+#include <barrier>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -39,18 +42,34 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileDevice>
+#include <QFileInfo>
+#include <QRegularExpression>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTemporaryFile>
+#include <QThread>
+#include <QTimer>
 
+#include "BaseTest.h"
+
+#include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
+#include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
+#include "Engine/TLSHolder.h"
 
 #include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/Bundle/ZipStore.h"
@@ -61,6 +80,7 @@
 #include "Serialization/Yaml/YamlScalars.h"
 
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 using Serialization::BundleManifest;
 using Serialization::ProjectBundleError;
 using Serialization::ProjectBundleReader;
@@ -735,6 +755,357 @@ TEST(ProjectBundle, BackupRotationLeavesTheTargetInPlaceUntilTheNewFileIsCommitt
     EXPECT_EQ(after, readFileBytes(path.toStdString()));
     EXPECT_FALSE(QFile::exists(backup1));
     EXPECT_FALSE(QFile::exists(backup2));
+}
+
+TEST(ProjectBundle, SavesStartedTogetherNeverShareATemporaryFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    constexpr int kSavers = 32;
+    constexpr int kRounds = 10;
+    const QString shared = dir.filePath(QString::fromUtf8("shared.ntpz"));
+
+    std::vector<ProjectBundleWriter> writers(kSavers);
+    QStringList expectedFiles;
+    expectedFiles << QString::fromUtf8("shared.ntpz");
+    for (int i = 0; i < kSavers; ++i) {
+        ProjectSerialization project = makeProject();
+        project.timelineCurrentTime = 100 + i;
+        writers[i].setProject(project);
+        writers[i].setManifest(makeManifest("2026-10-22T10:00:00Z"));
+        expectedFiles << QString::fromUtf8("project%1.ntpz").arg(i);
+    }
+    expectedFiles.sort();
+
+    for (int round = 0; round < kRounds; ++round) {
+        // Released together, the savers start within the same millisecond, which is what made a
+        // clock-derived temporary name collide.
+        std::barrier start(kSavers);
+        std::vector<std::string> failures(kSavers);
+        std::vector<std::thread> savers;
+        for (int i = 0; i < kSavers; ++i) {
+            savers.emplace_back([&, i]() {
+                const QString own = dir.filePath(QString::fromUtf8("project%1.ntpz").arg(i));
+                const auto write = [&writers, i](Serialization::ZipOutput& output) { writers[i].write(output); };
+                start.arrive_and_wait();
+                try {
+                    Project::writeProjectFileAtomically(own, write);
+                    Project::writeProjectFileAtomically(shared, write);
+                } catch (const std::exception& e) {
+                    failures[i] = e.what();
+                }
+            });
+        }
+        for (std::thread& saver : savers) {
+            saver.join();
+        }
+
+        for (int i = 0; i < kSavers; ++i) {
+            EXPECT_TRUE(failures[i].empty()) << "round " << round << ", saver " << i << ": " << failures[i];
+            const QString own = dir.filePath(QString::fromUtf8("project%1.ntpz").arg(i));
+            EXPECT_EQ(100 + i, ProjectBundleReader(own.toStdString()).readProject().timelineCurrentTime) << "round " << round;
+        }
+        // The last commit wins the shared target, and it is always one saver's complete project.
+        const int sharedTime = ProjectBundleReader(shared.toStdString()).readProject().timelineCurrentTime;
+        EXPECT_TRUE(sharedTime >= 100 && sharedTime < 100 + kSavers) << "round " << round << ": " << sharedTime;
+
+        QDir listing(dir.path());
+        EXPECT_EQ(expectedFiles, listing.entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot, QDir::Name)) << "round " << round;
+    }
+}
+
+TEST(ProjectBundle, AnUnwritableDirectoryFailsTheSaveAndKeepsTheTarget)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = dir.filePath(QString::fromUtf8("project.ntpz"));
+    const ProjectBundleWriter previous = makeWriter("2026-10-22T10:00:00Z");
+    Project::writeProjectFileAtomically(path, [&previous](Serialization::ZipOutput& output) {
+        previous.write(output);
+    });
+    const std::vector<std::byte> before = readFileBytes(path.toStdString());
+    ASSERT_FALSE(before.empty());
+
+    const QFileDevice::Permissions writable = QFile::permissions(dir.path());
+    ASSERT_TRUE(QFile::setPermissions(dir.path(), QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+    QFile probe(dir.filePath(QString::fromUtf8("probe")));
+    const bool permissionsApply = !probe.open(QIODevice::WriteOnly);
+    probe.close();
+    if (permissionsApply) {
+        ProjectSerialization changed = makeProject();
+        changed.timelineCurrentTime = 99;
+        ProjectBundleWriter next;
+        next.setProject(changed);
+        bool replaced = false;
+        EXPECT_THROW(Project::writeProjectFileAtomically(path, [&next](Serialization::ZipOutput& output) { next.write(output); }, [&path, &replaced]() {
+            replaced = true;
+            Project::rotateBackups(path, 1); }), std::runtime_error);
+        EXPECT_FALSE(replaced);
+    } else {
+        // Root ignores directory permissions, so there is nothing to check here.
+        std::cerr << "Skipping: the directory stays writable for this user." << std::endl;
+        QFile::remove(probe.fileName());
+    }
+    ASSERT_TRUE(QFile::setPermissions(dir.path(), writable));
+
+    EXPECT_EQ(before, readFileBytes(path.toStdString()));
+    QDir listing(dir.path());
+    EXPECT_EQ(QStringList() << QString::fromUtf8("project.ntpz"), listing.entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot));
+}
+
+TEST(ProjectBundle, AnAutoSaveBeingWrittenIsNotTakenForAnAutoSave)
+{
+    EXPECT_EQ(9, Project::autoSaveProjectNameLength(QString::fromUtf8("Shot.ntpz.autosave")));
+    EXPECT_EQ(9, Project::autoSaveProjectNameLength(QString::fromUtf8("Shot.ntpz.autosave.1234567890")));
+    EXPECT_EQ(-1, Project::autoSaveProjectNameLength(QString::fromUtf8("Shot.ntpz.autosave.1234567890.aB3dE9")));
+    EXPECT_EQ(-1, Project::autoSaveProjectNameLength(QString::fromUtf8("Shot.ntpz.autosave.aB3dE9")));
+    EXPECT_EQ(-1, Project::autoSaveProjectNameLength(QString::fromUtf8("RENDER_SAVE.ntpz.autosave")));
+    EXPECT_EQ(-1, Project::autoSaveProjectNameLength(QString::fromUtf8("Shot.ntpz")));
+
+    // Where the file system has no unnamed temporary files, QSaveFile writes the auto-save
+    // under a QTemporaryFile named from the target plus ".XXXXXX". QTemporaryFile::fileName()
+    // gives the file that name even where unnamed files exist, so the file is really there.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString autoSave = dir.filePath(QString::fromUtf8("Shot.ntpz.autosave.1234567890"));
+    QTemporaryFile beingWritten(autoSave);
+    ASSERT_TRUE(beingWritten.open());
+    const QString beingWrittenName = QFileInfo(beingWritten.fileName()).fileName();
+    EXPECT_TRUE(beingWrittenName.startsWith(QFileInfo(autoSave).fileName() + QLatin1Char('.'))) << beingWrittenName.toStdString();
+    EXPECT_EQ(QStringList(beingWrittenName), QDir(dir.path()).entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot));
+    EXPECT_EQ(-1, Project::autoSaveProjectNameLength(beingWrittenName)) << beingWrittenName.toStdString();
+    EXPECT_EQ(9, Project::autoSaveProjectNameLength(QFileInfo(autoSave).fileName()));
+}
+
+TEST(ProjectBundle, BackupRotationKeepsTwelveVersionsInOrder)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = dir.filePath(QString::fromUtf8("project.ntpz"));
+    constexpr int kSaves = 12;
+
+    // Past nine backups, an alphabetical order puts .~10~ before .~2~ and the rotation renames
+    // backups over each other.
+    for (int save = 0; save < kSaves; ++save) {
+        ProjectSerialization project = makeProject();
+        project.timelineCurrentTime = save;
+        ProjectBundleWriter writer;
+        writer.setProject(project);
+        Project::writeProjectFileAtomically(path, [&writer](Serialization::ZipOutput& output) { writer.write(output); }, [&path]() { Project::rotateBackups(path, 32); });
+    }
+
+    EXPECT_EQ(kSaves - 1, ProjectBundleReader(path.toStdString()).readProject().timelineCurrentTime);
+    for (int backup = 1; backup < kSaves; ++backup) {
+        const QString backupPath = path + QString::fromUtf8(".~%1~").arg(backup);
+        ASSERT_TRUE(QFile::exists(backupPath)) << backupPath.toStdString();
+        EXPECT_EQ(kSaves - 1 - backup, ProjectBundleReader(backupPath.toStdString()).readProject().timelineCurrentTime) << backupPath.toStdString();
+    }
+    EXPECT_FALSE(QFile::exists(path + QString::fromUtf8(".~%1~").arg(kSaves)));
+    EXPECT_EQ(kSaves, QDir(dir.path()).entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot).size());
+}
+
+namespace {
+
+const int kHeldSaveGuardSeconds = 30;
+
+class ProjectSaveTest
+    : public BaseTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        getApp()->getProject()->reset(false, true);
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        getApp()->getProject()->reset(false, true);
+        BaseTest::TearDown();
+    }
+};
+
+} // anonymous namespace
+
+TEST_F(ProjectSaveTest, TwoRenderSavesGetTheirOwnFiles)
+{
+    ASSERT_TRUE(QDir().mkpath(Project::autoSavesDir()));
+    ProjectPtr project = getApp()->getProject();
+
+    QString first, second;
+    ASSERT_TRUE(project->saveForRenderProcess(&first));
+    ASSERT_TRUE(project->saveForRenderProcess(&second));
+
+    EXPECT_NE(first, second);
+    for (const QString& renderSave : { first, second }) {
+        EXPECT_TRUE(QFile::exists(renderSave)) << renderSave.toStdString();
+        EXPECT_TRUE(Project::isRenderSaveFile(renderSave)) << renderSave.toStdString();
+        // An auto-save scan must never offer a render save as a project to restore.
+        EXPECT_EQ(-1, Project::autoSaveProjectNameLength(QFileInfo(renderSave).fileName())) << renderSave.toStdString();
+        QFile::remove(renderSave);
+    }
+    EXPECT_FALSE(Project::isRenderSaveFile(QDir::temp().filePath(QFileInfo(first).fileName())));
+}
+
+TEST_F(ProjectSaveTest, RenderSaveNamesCarryTheProcessAndItsToken)
+{
+    const int appID = getApp()->getAppID();
+    const QRegularExpression pattern(QString::fromUtf8("^RENDER_SAVE_(\\d+)_([0-9a-f]{8})_(\\d+)_(\\d+)\\.ntpz$"));
+    const QString firstName = Project::makeRenderSaveFileName(appID);
+    const QString secondName = Project::makeRenderSaveFileName(appID);
+    const QRegularExpressionMatch first = pattern.match(firstName);
+    const QRegularExpressionMatch second = pattern.match(secondName);
+    ASSERT_TRUE(first.hasMatch()) << firstName.toStdString();
+    ASSERT_TRUE(second.hasMatch()) << secondName.toStdString();
+
+    EXPECT_EQ(QCoreApplication::applicationPid(), first.captured(1).toLongLong());
+    EXPECT_EQ(appID, first.captured(3).toInt());
+    // Drawn once per process, so a sweep can tell this process's files from another's with the
+    // same process id.
+    EXPECT_EQ(first.captured(2), second.captured(2));
+    EXPECT_NE(first.captured(4), second.captured(4));
+}
+
+TEST_F(ProjectSaveTest, OnlyRenderSavesNoRunningProcessMayStillNeedAreSwept)
+{
+    ASSERT_TRUE(QDir().mkpath(Project::autoSavesDir()));
+    const QDir savesDir(Project::autoSavesDir());
+    const QRegularExpressionMatch own = QRegularExpression(QString::fromUtf8("^RENDER_SAVE_\\d+_([0-9a-f]{8})_")).match(Project::makeRenderSaveFileName(getApp()->getAppID()));
+    ASSERT_TRUE(own.hasMatch());
+    const QString ownToken = own.captured(1);
+    const QString otherToken = QString::fromUtf8((ownToken == QString::fromUtf8("deadbeef")) ? "feedface" : "deadbeef");
+    const QString ownPid = QString::number(QCoreApplication::applicationPid());
+    // Above any Linux pid_max, so no process has it.
+    const QString deadPid = QString::fromUtf8("999999999");
+    const QDateTime old = QDateTime::currentDateTimeUtc().addSecs(-2 * Project::renderSaveGraceSeconds());
+    const QDateTime young = QDateTime::currentDateTimeUtc();
+
+    struct Case {
+        QString name;
+        QDateTime modified;
+        bool kept;
+    };
+    const std::vector<Case> cases = {
+        { QString::fromUtf8("RENDER_SAVE_%1_%2_7_1.ntpz").arg(deadPid, otherToken), old, false },
+        { QString::fromUtf8("RENDER_SAVE_%1_%2_7_1.ntpz.lock").arg(deadPid, otherToken), old, false },
+        { QString::fromUtf8("RENDER_SAVE_%1_%2_7_2.ntpz").arg(deadPid, otherToken), young, true },
+        { QString::fromUtf8("RENDER_SAVE_%1_%2_7_3.ntpz").arg(ownPid, ownToken), old, true },
+        { QString::fromUtf8("RENDER_SAVE_%1_%2_7_4.ntpz").arg(ownPid, otherToken), old, true },
+        { QString::fromUtf8("RENDER_SAVE_sweep_test.ntpz"), old, false },
+    };
+    for (const Case& c : cases) {
+        QFile file(savesDir.filePath(c.name));
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly)) << c.name.toStdString();
+        ASSERT_TRUE(file.setFileTime(c.modified, QFileDevice::FileModificationTime)) << c.name.toStdString();
+    }
+
+    Project::removeStaleRenderSaves();
+
+    for (const Case& c : cases) {
+        EXPECT_EQ(c.kept, QFile::exists(savesDir.filePath(c.name))) << c.name.toStdString();
+        QFile::remove(savesDir.filePath(c.name));
+    }
+}
+
+TEST_F(ProjectSaveTest, LoadingARenderSaveTakesNoLock)
+{
+    ASSERT_TRUE(QDir().mkpath(Project::autoSavesDir()));
+    ProjectPtr project = getApp()->getProject();
+    QString renderSave;
+    ASSERT_TRUE(project->saveForRenderProcess(&renderSave));
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString copy = dir.filePath(QString::fromUtf8("copy.ntpz"));
+    ASSERT_TRUE(QFile::copy(renderSave, copy));
+
+    // The same file anywhere else is a project like any other, and takes the lock.
+    ASSERT_TRUE(project->loadProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("copy.ntpz")));
+    EXPECT_TRUE(QFile::exists(copy + QString::fromUtf8(".lock")));
+    project->reset(false, true);
+
+    const QFileInfo renderSaveInfo(renderSave);
+    ASSERT_TRUE(project->loadProject(renderSaveInfo.absolutePath() + QLatin1Char('/'), renderSaveInfo.fileName()));
+    EXPECT_FALSE(QFile::exists(renderSave + QString::fromUtf8(".lock")));
+    project->reset(false, true);
+    QFile::remove(renderSave + QString::fromUtf8(".lock"));
+    QFile::remove(renderSave);
+}
+
+TEST_F(ProjectSaveTest, ASaveAskedForDuringAnAutoSaveRunsAfterIt)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString startedPath = dir.filePath(QString::fromUtf8("started"));
+    const QString goPath = dir.filePath(QString::fromUtf8("go"));
+    const QString logPath = dir.filePath(QString::fromUtf8("log"));
+    ProjectPtr project = getApp()->getProject();
+
+    // The save callback holds the auto-save open until the main thread lets it go, and logs the
+    // order in which the two saves reach it.
+    const std::string define = "import os, time\n"
+                               "def holdAutoSave(filename, app, autoSave):\n"
+                               "    log = open('"
+        + logPath.toStdString() + "', 'a')\n"
+                                  "    if autoSave:\n"
+                                  "        open('"
+        + startedPath.toStdString() + "', 'w').close()\n"
+                                      "        deadline = time.monotonic() + "
+        + std::to_string(kHeldSaveGuardSeconds) + "\n"
+                                                  "        while not os.path.exists('"
+        + goPath.toStdString() + "') and time.monotonic() < deadline:\n"
+                                 "            time.sleep(0.005)\n"
+                                 "        log.write('auto-save released\\n' if os.path.exists('"
+        + goPath.toStdString() + "') else 'auto-save timed out\\n')\n"
+                                 "    else:\n"
+                                 "        log.write('save\\n')\n"
+                                 "    log.close()\n"
+                                 "    return filename\n";
+    std::string error, output;
+    ASSERT_TRUE(interpretPythonScript(define, &error, &output)) << error;
+    KnobString* onSave = dynamic_cast<KnobString*>(project->getKnobByName("beforeProjectSave").get());
+    ASSERT_TRUE(onSave);
+    onSave->setValue(std::string("holdAutoSave"));
+
+    bool autoSaved = false;
+    std::thread autoSaver([&project, &dir, &autoSaved]() {
+        autoSaved = project->saveProject_imp(dir.path(), QString::fromUtf8("held.ntpz"), true, false);
+        appPTR->getAppTLS()->cleanupTLSForThread();
+    });
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(kHeldSaveGuardSeconds);
+    while (!QFile::exists(startedPath) && std::chrono::steady_clock::now() < deadline) {
+        QThread::msleep(1);
+    }
+    const bool autoSaveStarted = QFile::exists(startedPath);
+
+    // Only fires if the main thread keeps running its events while the save waits.
+    bool savingDuringWait = false;
+    bool resetDuringWait = true;
+    QTimer::singleShot(100, [goPath, &project, &savingDuringWait, &resetDuringWait, this]() {
+        savingDuringWait = project->isSavingOnMainThread();
+        // A script run from the wait must not reset the project under the save.
+        resetDuringWait = getApp()->resetProject();
+        QFile go(goPath);
+        go.open(QIODevice::WriteOnly);
+    });
+    int savesEndedSignals = 0;
+    const QMetaObject::Connection savesEnded = QObject::connect(project.get(), &Project::mainThreadSavesEnded, [&savesEndedSignals]() { ++savesEndedSignals; });
+    QString savedPath;
+    const bool saved = project->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("manual.ntpz"), &savedPath);
+    QObject::disconnect(savesEnded);
+    autoSaver.join();
+    onSave->setValue(std::string());
+
+    ASSERT_TRUE(autoSaveStarted);
+    EXPECT_TRUE(autoSaved);
+    EXPECT_TRUE(saved);
+    EXPECT_TRUE(savingDuringWait);
+    EXPECT_FALSE(resetDuringWait);
+    EXPECT_FALSE(project->isSavingOnMainThread());
+    EXPECT_EQ(1, savesEndedSignals);
+    EXPECT_TRUE(QFile::exists(dir.filePath(QString::fromUtf8("held.ntpz.autosave"))));
+    EXPECT_TRUE(QFile::exists(dir.filePath(QString::fromUtf8("manual.ntpz"))));
+    QFile log(logPath);
+    ASSERT_TRUE(log.open(QIODevice::ReadOnly));
+    EXPECT_EQ(std::string("auto-save released\nsave\n"), QString::fromUtf8(log.readAll()).toStdString());
 }
 
 TEST(ProjectBundle, TheMembersMayBeAtTheTopOrInAnyOneFolder)

@@ -239,6 +239,7 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , _toolButtonMenuOpened(NULL)
     , aboutToCloseMutex()
     , _aboutToClose(false)
+    , closeAfterSave(false)
     , leftToolBarDisplayedOnHoverOnly(false)
     , _scriptEditor(0)
     , _lastEnteredTabWidget(0)

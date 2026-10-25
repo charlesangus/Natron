@@ -179,7 +179,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
 
 ## Phase 92.4: Persistence, scripting and removal
 
-- [ ] M92.P4.T1 — Save and load link groups, and remove the clone code
+- [x] M92.P4.T1 — Save and load link groups, and remove the clone code
   - files: `Engine/NodeSerialization.h`, `Engine/NodeSerialization.cpp`, `Engine/KnobSerialization.h`, `Engine/KnobSerialization.cpp`, `Engine/NodeGroupSerialization.cpp`, `Engine/Knob.h`/`.cpp`, `Engine/Node.h`/`.cpp`, `Tests/LinkedNode_Test.cpp`
   - approach:
     - **What is saved.** For each knob dimension in a link group, save a project-unique group id, whether it is currently linked, and the group's node-link and permanent flags. An unlinked knob's own values are saved as usual.
@@ -193,7 +193,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
     - copy-pasting two linked nodes gives a pair linked only to each other.
     Also: `grep -rn 'slaveAllKnobs\|getMasterNode\|_masterNodeName' Engine Gui` finds nothing, and the full ctest is green.
   - size: L
-- [ ] M92.P4.T2 — Python API and PyPlug export for two-way links
+- [x] M92.P4.T2 — Python API and PyPlug export for two-way links
   - files: `Engine/PyNode.h`/`.cpp`, `Engine/PyParameter.h`/`.cpp`, `Engine/NodeGroup.cpp`, `Gui/Resources/PyPlugs/EdgeBlur.py`, the Shiboken typesystem and generated binding sources per the repo's existing regeneration process, `Documentation/` Python reference pages for those classes
   - approach:
     - **Node functions.** Add `Effect.createLinkedNode()` (returns the new Linked Node), `Effect.unlinkAllParams()`, `Effect.isLinkedNode()` and `Effect.getLinkedNodes()`.

@@ -125,12 +125,14 @@ void glow_resample(uint3 tid : SV_DispatchThreadID)
         return;
     const float x = float(params.dstX1 + int(tid.x)) + 0.5;
     const float y = float(params.dstY1 + int(tid.y)) + 0.5;
-    const float u = (params.m00 * x + params.m01 * y) - (float(params.srcX1) + 0.5);
-    const float v = (params.m10 * x + params.m11 * y) - (float(params.srcY1) + 0.5);
+    // The weights and the pixels read come from the absolute position alone, never from where
+    // the source starts, so any window over the same pixels gives the same sample.
+    const float u = (params.m00 * x + params.m01 * y) - 0.5;
+    const float v = (params.m10 * x + params.m11 * y) - 0.5;
     const float fx = floor(u);
     const float fy = floor(v);
-    const int x0 = int(fx);
-    const int y0 = int(fy);
+    const int x0 = int(fx) - params.srcX1;
+    const int y0 = int(fy) - params.srcY1;
     const float wx = u - fx;
     const float wy = v - fy;
     const uint o = (tid.y * params.dstWidth + tid.x) * params.channels;

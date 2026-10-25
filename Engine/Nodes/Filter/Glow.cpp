@@ -339,18 +339,27 @@ imageReach(const Frame& frame,
     *reachY = (int)std::ceil(std::fabs((double)frame.toImage[2]) * x + std::fabs((double)frame.toImage[3]) * y);
 }
 
-/// The bilinear sample of plane (width x height) at (u, v), sample i centred at i; zero outside.
+/**
+ * @brief The bilinear sample at position (px, py) of plane, width x height pixels from pixel
+ * (x1, y1), pixel (x, y) centred at (x + 0.5, y + 0.5); zero outside. The weights and the pixels
+ * read come from the absolute position alone, so any window over the same pixels gives the same
+ * sample bit for bit.
+ **/
 inline float
 bilinear(const float* plane,
+         int x1,
+         int y1,
          int width,
          int height,
-         float u,
-         float v)
+         float px,
+         float py)
 {
+    const float u = px - 0.5f;
+    const float v = py - 0.5f;
     const float fx = std::floor(u);
     const float fy = std::floor(v);
-    const int x0 = (int)fx;
-    const int y0 = (int)fy;
+    const int x0 = (int)fx - x1;
+    const int y0 = (int)fy - y1;
     const float wx = u - fx;
     const float wy = v - fy;
     const auto at = [&](int x, int y) -> float {
@@ -622,13 +631,11 @@ appendRotatedPasses(const BloomKernels::PlanPtr& plan,
             const float* src = image.plane(kSlotMap, p);
             float* dst = frame.plane(0, p) + (std::size_t)row * frame.width;
             const float y = (float)(frame.rect.y1 + row) + 0.5f;
-            const float ox = (float)image.rect.x1 + 0.5f;
-            const float oy = (float)image.rect.y1 + 0.5f;
             for (int i = 0; i < frame.width; ++i) {
                 const float x = (float)(frame.rect.x1 + i) + 0.5f;
                 const float sx = f.toImage[0] * x + f.toImage[1] * y;
                 const float sy = f.toImage[2] * x + f.toImage[3] * y;
-                dst[i] = bilinear(src, image.width, image.height, sx - ox, sy - oy);
+                dst[i] = bilinear(src, image.rect.x1, image.rect.y1, image.width, image.height, sx, sy);
             }
         };
     }));
@@ -651,13 +658,11 @@ appendRotatedPasses(const BloomKernels::PlanPtr& plan,
             const float* acc = frame.plane(1, p);
             float* dst = image.plane(kSlotGlow, p) + (std::size_t)r * image.width;
             const float y = (float)(image.rect.y1 + r) + 0.5f;
-            const float ox = (float)frame.rect.x1 + 0.5f;
-            const float oy = (float)frame.rect.y1 + 0.5f;
             for (int i = 0; i < image.width; ++i) {
                 const float x = (float)(image.rect.x1 + i) + 0.5f;
                 const float fx = f.toFrame[0] * x + f.toFrame[1] * y;
                 const float fy = f.toFrame[2] * x + f.toFrame[3] * y;
-                dst[i] = bilinear(acc, frame.width, frame.height, fx - ox, fy - oy);
+                dst[i] = bilinear(acc, frame.rect.x1, frame.rect.y1, frame.width, frame.height, fx, fy);
             }
         };
     }));

@@ -13,8 +13,6 @@ nodes:
     knobs:
       lifeTimeFrame: {value: 0, secret: true}
       cloneCenter: [{value: 0, enabled: false}, {value: 0, enabled: false}]
-      resetCloneCenter: {enabled: false}
-      resetCloneTransform: {enabled: false}
       cloneFilter: {value: {value: 3, enabled: false}, option: "Keys"}
       translate: [0, 0]
       rotate: 0
@@ -24,7 +22,10 @@ nodes:
       skewy: 0
       skewOrder: "XY"
       center: [0, 0]
+      resetTransformCenter: ~
+      RotoTransformInteractive: true
       extraMatrix: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+      resetTransform: ~
     pages: ["General", "Shape", "Stroke", "Clone", "Transform", "Toolbar", "Node", "Info"]
     roto:
       autoKeying: true

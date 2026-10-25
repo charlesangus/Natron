@@ -253,6 +253,8 @@ future core work has solid ground to build on.
 | M193 | Pipe Hint Highlight Colour | todo | M176 |  | E10 | [M193-pipe-hint-highlight-colour.md](PLAN/MILESTONES/M193-pipe-hint-highlight-colour.md) |
 | M194 | Kiss Connections | todo | M192, M193 |  | E10 | [M194-kiss-connections.md](PLAN/MILESTONES/M194-kiss-connections.md) |
 | M195 | Shake And Cut Disconnect | todo | M194 |  | E10 | [M195-shake-and-cut-disconnect.md](PLAN/MILESTONES/M195-shake-and-cut-disconnect.md) |
+| M196 | Copy-Compute Contention | todo | M156 |  | E5 | [M196-copy-compute-contention.md](PLAN/MILESTONES/M196-copy-compute-contention.md) |
+| M197 | Python Undo Step API | todo | M114 |  | E7 | [M197-python-undo-step-api.md](PLAN/MILESTONES/M197-python-undo-step-api.md) |
 
 # Epics
 

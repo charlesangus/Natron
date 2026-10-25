@@ -75,6 +75,24 @@ toRawLayoutGpu(const RawLayout& layout)
     return g;
 }
 
+/**
+ * @brief A RawLayoutGpu at origin (0, 0) of the period x period colours, colours[row * period +
+ * col] being that of photosite (col, row). A colour may be any 8-bit value, as VNG4's colour 3.
+ **/
+inline RawLayoutGpu
+toRawLayoutGpu(int period,
+               const std::uint8_t* colours)
+{
+    RawLayoutGpu g = {};
+
+    g.period = period;
+    for (int i = 0; i < period * period; ++i) {
+        g.cells[i >> 2] |= (std::uint32_t)colours[i] << ((i & 3) * 8);
+    }
+
+    return g;
+}
+
 // Mirrors PrepareOp in rawprepare.slang.
 struct RawPrepareGpuParams {
     RawLayoutGpu layout;
@@ -206,6 +224,37 @@ struct RawDemosaicGpuPush {
     std::uint32_t outHeight;
 };
 static_assert(sizeof(RawDemosaicGpuPush) == 96);
+
+/**
+ * @brief The push constants of every kernel of demosaic_vng.slang, which mirrors it as VngParams.
+ * The kernels work over a top-down buffer of width x height photosites whose pattern, as the
+ * buffer sees it from its top-left photosite, is layout, VNG4's second green being colour 3.
+ * Buffer rows [srcRow1, srcRow2) and columns [srcCol1, srcCol2) are the source's pixels: the
+ * source stores its rows bottom-up from srcOffset, so photosite (col, row) is at srcOffset +
+ * (srcRow2 - 1 - row) * srcStride + (col - srcCol1) * srcComps. Every other photosite reads
+ * zero. The destination holds the outWidth x outHeight RGBA pixels from buffer column outCol,
+ * its first row of dstStride floats being buffer row outRow and each next one the row above.
+ **/
+struct RawVngGpuPush {
+    RawLayoutGpu layout;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t srcOffset;
+    std::uint32_t srcStride;
+    std::uint32_t srcComps;
+    std::int32_t srcCol1;
+    std::int32_t srcRow1;
+    std::int32_t srcCol2;
+    std::int32_t srcRow2;
+    std::uint32_t dstOffset;
+    std::uint32_t dstStride;
+    std::int32_t outCol;
+    std::int32_t outRow;
+    std::uint32_t outWidth;
+    std::uint32_t outHeight;
+    std::uint32_t padding;
+};
+static_assert(sizeof(RawVngGpuPush) == 128);
 
 NATRON_NAMESPACE_EXIT
 

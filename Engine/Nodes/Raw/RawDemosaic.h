@@ -203,8 +203,8 @@ private:
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief PPG and RCD, without green equilibration or colour smoothing, and the pass-through of
-     * data without a CFA. AMaZE, VNG, Markesteijn, Frequency Domain Chroma and the dual methods have no GPU path yet. Full green
+     * @brief PPG, RCD and VNG, without green equilibration or colour smoothing, and the pass-through of
+     * data without a CFA. AMaZE, Markesteijn, Frequency Domain Chroma and the dual methods have no GPU path yet. Full green
      * equilibration measures the whole source once per frame, which a region's strips cannot
      * share, and local equilibration and colour smoothing are not ported, so any of them keeps the
      * node on the CPU. LMMSE has no GPU path, as in darktable.

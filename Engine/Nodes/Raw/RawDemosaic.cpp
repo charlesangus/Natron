@@ -1187,7 +1187,9 @@ RawDemosaic::canRenderOpOnGpu(const GpuQuery& query) const
         return false;
     }
 
-    return ((settings->algorithm == Algorithm::PPG) || (settings->algorithm == Algorithm::RCD)) && (settings->greenEq == eRawDemosaicGreenEqNone) && (settings->smoothing == 0);
+    const bool vng = (settings->algorithm == Algorithm::VNG) && ((settings->layout.period() == 2) || (settings->layout.period() == 6));
+
+    return ((settings->algorithm == Algorithm::PPG) || (settings->algorithm == Algorithm::RCD) || vng) && (settings->greenEq == eRawDemosaicGreenEqNone) && (settings->smoothing == 0);
 #else
     Q_UNUSED(query);
 
@@ -1223,6 +1225,40 @@ RawDemosaic::getOpGpuInputRoI(int inputNb,
 
     return const_cast<RawDemosaic*>(this)->sourceRegionFor(outputRect, getCurrentTime(), getCurrentView());
 }
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+// The pattern RawKernels::vng() runs with over a buffer of rect, from its top-left photosite: the
+// X-Trans one, or VNG4's, the Bayer one with the green on the buffer's even rows as colour 3.
+RawLayoutGpu
+vngLayoutGpu(const RawLayout& layout,
+             const RectI& rect)
+{
+    std::uint8_t colours[36] = {};
+
+    if (layout.period() == 6) {
+        std::uint8_t xtrans[6][6] = {};
+        RawNodeSupport::xtransAt(layout, rect, xtrans);
+        for (int row = 0; row < 6; ++row) {
+            for (int col = 0; col < 6; ++col) {
+                colours[row * 6 + col] = xtrans[row][col];
+            }
+        }
+
+        return toRawLayoutGpu(6, colours);
+    }
+    const std::uint32_t filters = RawNodeSupport::bayerFiltersAt(layout, rect);
+    const std::uint32_t filters4 = filters | (((filters & 3) == 1) ? 0x03030303u : 0x0c0c0c0cu);
+    for (int row = 0; row < 2; ++row) {
+        for (int col = 0; col < 2; ++col) {
+            colours[row * 2 + col] = (std::uint8_t)RawKernels::fcBayer((std::size_t)row, (std::size_t)col, filters4);
+        }
+    }
+
+    return toRawLayoutGpu(2, colours);
+}
+} // namespace
+#endif // NATRON_HAVE_GPU
 
 StatusEnum
 RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
@@ -1265,6 +1301,7 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
     }
     base.dstStride = (std::uint32_t)out.rowStrideFloats;
     const bool rcd = (s.algorithm == Algorithm::RCD);
+    const bool vng = (s.algorithm == Algorithm::VNG);
     base.mode = (s.algorithm == Algorithm::PassThrough) ? kRawDemosaicGpuModePassThrough : (rcd ? kRawDemosaicGpuModeRcd : kRawDemosaicGpuModePpg);
     base.threshold = rcd ? 0.0f : s.edgeThreshold;
     base.scaler = s.processedMaximum;
@@ -1273,7 +1310,9 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
 
     // Bands of the window are demosaiced one after the other through one work buffer, each over
     // the source region the CPU would read for it, which a tile's result does not depend on.
+    // PPG and RCD need under 16 floats a photosite, VNG its two RGBA planes.
     const std::uint64_t kMaxWorkFloats = std::uint64_t(1) << 25;
+    const std::uint64_t floatsPerPhotosite = vng ? 8 : 16;
     std::vector<RectI> bands;
     std::vector<RectI> needs;
     std::uint64_t workFloats = 4;
@@ -1284,7 +1323,7 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
         const RectI firstRow = sourceRegionFor(RectI(rect.x1, rect.y1, rect.x2, rect.y1 + 1), query.time, query.view);
         const std::uint64_t needWidth = (std::uint64_t)std::max(1, firstRow.width());
         const int overhead = std::max(0, firstRow.height() - 1);
-        const int bandRows = (int)std::max<std::int64_t>(16, (std::int64_t)(kMaxWorkFloats / (16 * needWidth)) - overhead);
+        const int bandRows = (int)std::max<std::int64_t>(16, (std::int64_t)(kMaxWorkFloats / (floatsPerPhotosite * needWidth)) - overhead);
         for (int y = rect.y1; y < rect.y2; y += bandRows) {
             const RectI band(rect.x1, y, rect.x2, std::min(rect.y2, y + bandRows));
             const RectI need = sourceRegionFor(band, query.time, query.view);
@@ -1293,7 +1332,7 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
             const std::uint64_t w = (std::uint64_t)std::max(0, need.width());
             const std::uint64_t h = (std::uint64_t)std::max(0, need.height());
             const std::uint64_t stride = (w + 1) & ~std::uint64_t(1);
-            workFloats = std::max(workFloats, 9 * w * h + (13 * stride * h) / 2);
+            workFloats = std::max(workFloats, vng ? 8 * w * h : 9 * w * h + (13 * stride * h) / 2);
         }
     }
     if (workFloats > UINT32_MAX) {
@@ -1309,7 +1348,7 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
     const auto groups = [](std::uint32_t n) {
         return std::max<std::uint32_t>(n, 1);
     };
-    const auto run = [&](gpu::GpuKernelId kernel, const RawDemosaicGpuPush& push, std::uint32_t x, std::uint32_t y) {
+    const auto run = [&](gpu::GpuKernelId kernel, const auto& push, std::uint32_t x, std::uint32_t y) {
         if (!ctx.dispatch(kernel, { src, work, out.buffer }, push, { groups(x), groups(y), 1 })) {
             return false;
         }
@@ -1335,6 +1374,37 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
         push.outY = band.y1;
         push.outWidth = (std::uint32_t)band.width();
         push.outHeight = (std::uint32_t)band.height();
+
+        if (vng) {
+            RawVngGpuPush vngPush = {};
+            vngPush.width = width;
+            vngPush.height = height;
+            vngPush.srcOffset = base.srcOffset;
+            vngPush.srcStride = base.srcStride;
+            vngPush.srcComps = base.srcComps;
+            if (hasSource) {
+                vngPush.srcCol1 = source.bounds.x1 - need.x1;
+                vngPush.srcCol2 = source.bounds.x2 - need.x1;
+                vngPush.srcRow1 = need.y2 - source.bounds.y2;
+                vngPush.srcRow2 = need.y2 - source.bounds.y1;
+            }
+            vngPush.dstOffset = push.dstOffset;
+            vngPush.dstStride = push.dstStride;
+            vngPush.outCol = band.x1 - need.x1;
+            vngPush.outRow = need.y2 - 1 - band.y1;
+            vngPush.outWidth = push.outWidth;
+            vngPush.outHeight = push.outHeight;
+            if ((width > 0) && (height > 0)) {
+                vngPush.layout = vngLayoutGpu(s.layout, need);
+                if (!run(gpu::GpuKernelId::vng_linear, vngPush, width, height) || !run(gpu::GpuKernelId::vng_gradient, vngPush, width, height)) {
+                    return eStatusFailed;
+                }
+            }
+            if (!run(gpu::GpuKernelId::vng_write, vngPush, vngPush.outWidth, vngPush.outHeight)) {
+                return eStatusFailed;
+            }
+            continue;
+        }
 
         if ((base.mode != kRawDemosaicGpuModePassThrough) && (width > 0) && (height > 0)) {
             if ((push.threshold > 0.0f) && !run(gpu::GpuKernelId::demosaic_median, push, width, height)) {

@@ -153,11 +153,28 @@ column ranges and its half-width plane indexing, so it gives the values the CPU 
 a band's result does not depend on the band, as a tile's does not. The passes read global memory;
 none uses workgroup-shared tiles. The device divides within 2.5 ulp: bound
 `ParityTolerance::transcendental()` for PPG and RCD, `ParityTolerance::exact()` for the
-pass-through. AMaZE, VNG, Markesteijn, Frequency Domain Chroma and the dual methods have no GPU path, nor LMMSE (darktable has none either), nor does local equilibration or colour
+pass-through.
+
+VNG, VNG4 on Bayer data and VNG on X-Trans data, also runs on the GPU, in
+`Engine/Gpu/Kernels/demosaic_vng.slang`, as three dispatches over the same buffer the CPU runs
+over (`sourceRegionFor()`, a halo of 6): the linear interpolation, the gradient pass, and the
+output, which mixes VNG4's two greens. The work buffer holds the two RGBA planes, 8 floats a
+photosite, in bands of at most 128 MB. This covers the images below 33 photosites, and 19 for
+Markesteijn 3-pass, where AMaZE and Markesteijn fall back on VNG. The gradient pass compares each
+gradient with a threshold over values the linear pass divided, and the device divides within 2.5
+ulp, so a pixel whose gradient sits on the threshold can take another set of directions. Bound,
+relative to the CPU render's mean colour level: mean error at most 1e-4, and at most one pixel a
+thousand (rounded up) with a colour channel off by more than 1e-4; alpha exact. A tiled GPU
+render equals the full-frame one bit for bit.
+
+AMaZE, Markesteijn, Frequency Domain Chroma and the dual methods have no GPU path, nor LMMSE (darktable has none either), nor does local equilibration or colour
 smoothing; full equilibration measures the whole source per frame, as Inpaint Opposed does. Any of
 them keeps the node, and its raw run, on the CPU. GPU tests:
 `Tests/Native/NativeRawDemosaicGpu_Test.cpp`, PPG and RCD on the Bayer fixture inside the image and
-at its corners, a tiled GPU render against the full-frame one, and the linear pass-through.
+at its corners, a tiled GPU render against the full-frame one, and the linear pass-through;
+`Tests/Native/NativeRawDemosaicXTransGpu_Test.cpp`, VNG on the RAF and VNG4 on the CR2 fixture
+inside the image and at its corners, tiled against full frame, and AMaZE and Markesteijn 3-pass
+falling back on VNG on small synthetic mosaics.
 
 ## darktable controls
 

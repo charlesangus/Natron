@@ -191,8 +191,8 @@ TEST_F(NativeRawDemosaicGpuTest, LinearPassThroughMatchesTheCpu)
     expectGpuMatchesCpu(*runtime, demosaic, prepare, RectI(200, 150, 264, 198), kPassThroughGpuTolerance, "linear pass-through");
 }
 
-// AMaZE, VNG4, Markesteijn, green equilibration and colour smoothing have no GPU path, so a chain
-// using them renders on the CPU.
+// AMaZE, Markesteijn, green equilibration and colour smoothing have no GPU path, so a chain using
+// them renders on the CPU. VNG has one.
 TEST_F(NativeRawDemosaicGpuTest, MethodsWithoutAGpuPathStayOnTheCpu)
 {
     NodePtr bayer = createRead(bayerFixture());
@@ -207,10 +207,10 @@ TEST_F(NativeRawDemosaicGpuTest, MethodsWithoutAGpuPathStayOnTheCpu)
     const GpuQuery query = queryFor(4);
 
     EXPECT_TRUE(onBayer->canRenderOnGpu(query));
-    for (int method : { (int)eRawDemosaicBayerAMaZE, (int)eRawDemosaicBayerVNG4 }) {
-        setChoice(bayerDemosaic, kRawDemosaicParamBayerMethod, method);
-        EXPECT_FALSE(onBayer->canRenderOnGpu(query)) << "method " << method;
-    }
+    setChoice(bayerDemosaic, kRawDemosaicParamBayerMethod, (int)eRawDemosaicBayerAMaZE);
+    EXPECT_FALSE(onBayer->canRenderOnGpu(query));
+    setChoice(bayerDemosaic, kRawDemosaicParamBayerMethod, (int)eRawDemosaicBayerVNG4);
+    EXPECT_TRUE(onBayer->canRenderOnGpu(query));
     setChoice(bayerDemosaic, kRawDemosaicParamBayerMethod, (int)eRawDemosaicBayerRCD);
     setChoice(bayerDemosaic, kRawDemosaicParamGreenEq, (int)eRawDemosaicGreenEqLocal);
     EXPECT_FALSE(onBayer->canRenderOnGpu(query));
@@ -220,10 +220,12 @@ TEST_F(NativeRawDemosaicGpuTest, MethodsWithoutAGpuPathStayOnTheCpu)
     bayerDemosaic->getEffectInstance()->getKnobByNameAndType<KnobInt>(kRawDemosaicParamColorSmoothing)->setValue(1);
     EXPECT_FALSE(onBayer->canRenderOnGpu(query));
 
-    for (int method : { (int)eRawDemosaicXTransMarkesteijn1, (int)eRawDemosaicXTransMarkesteijn3, (int)eRawDemosaicXTransVNG }) {
+    for (int method : { (int)eRawDemosaicXTransMarkesteijn1, (int)eRawDemosaicXTransMarkesteijn3 }) {
         setChoice(xtransDemosaic, kRawDemosaicParamXTransMethod, method);
         EXPECT_FALSE(onXTrans->canRenderOnGpu(query)) << "method " << method;
     }
+    setChoice(xtransDemosaic, kRawDemosaicParamXTransMethod, (int)eRawDemosaicXTransVNG);
+    EXPECT_TRUE(onXTrans->canRenderOnGpu(query));
 }
 
 #endif // NATRON_HAVE_GPU

@@ -22,7 +22,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
 
 ## Phase 92.1: Engine link groups
 
-- [ ] M92.P1.T1 — Add shared-state knob link groups with per-knob unlink, re-link and permanent groups
+- [x] M92.P1.T1 — Add shared-state knob link groups with per-knob unlink, re-link and permanent groups
   - files: new `Engine/KnobLinkGroup.h`, `Engine/KnobLinkGroup.cpp`, `Engine/Knob.h`, `Engine/Knob.cpp`, `Engine/KnobImpl.h` (+ the Engine source list in CMake), new `Tests/KnobLinkGroup_Test.cpp`
   - approach: Implement the link group from **Design**. In `Knob<T>` (`KnobImpl.h`, e.g. `getValue` at `:716`), make the value, curve and expression accessors of a linked dimension use the group's storage instead of the knob's own. This mirrors how a slaved dimension reads its master today, but symmetrically, and writes from any member go to the group. On a change, notify every member so its holder re-evaluates and its GUI refreshes. Add this API to `KnobI`:
     - `linkTo(int thisDim, KnobIPtr other, int otherDim)` joins the other member's group, or creates one if it has none. `thisDim = -1` links all matching dimensions one-to-one.
@@ -43,7 +43,7 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
     - a two-member group dissolves when one member is destroyed;
     - linking incompatible types is refused.
   - size: L
-- [ ] M92.P1.T2 — Node-level Linked Node API replacing the clone master/slave path
+- [x] M92.P1.T2 — Node-level Linked Node API replacing the clone master/slave path
   - files: `Engine/Node.h`, `Engine/Node.cpp`, `Engine/Knob.h`, `Engine/Knob.cpp`, new `Tests/LinkedNode_Test.cpp`
   - approach: Add these to `Node`:
     - `linkAllKnobsTo(NodePtr other)` links the knob set from **Design** via P1.T1's `linkTo`, and marks the groups as node-link groups.

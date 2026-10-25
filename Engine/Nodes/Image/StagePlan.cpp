@@ -816,6 +816,43 @@ stageSourceLayersError(const StageSourceLayers& layers)
         .arg(layers.layer.getNumComponents())
         .toStdString();
 }
+
+// One row of a Composite input, x0 onwards, in the nComps-channel layout plane is rendered in. A
+// one-channel layer other than the colour one rendered wider sits in the row's first channel,
+// where processedBitsForImage() guards it and the host reads it back from; readSourceRow() would
+// put the input's one channel in the alpha slot, the colour layer's place for it.
+void
+readStageSourceRow(const ImageLayerDesc& plane,
+                   const SourceImage& source,
+                   int x0,
+                   int y,
+                   int width,
+                   int nComps,
+                   float* row)
+{
+    if (!source.image || (source.nComps != 1) || (nComps == 1) || (plane.getNumComponents() != 1) || plane.isColorLayer()) {
+        PassExec::readSourceRow(source.image.get(), source.access.get(), source.bounds, source.nComps, x0, y, width, nComps, row);
+
+        return;
+    }
+    std::fill(row, row + (std::size_t)width * nComps, 0.f);
+    if ((y < source.bounds.y1) || (y >= source.bounds.y2)) {
+        return;
+    }
+    const int xStart = std::max(x0, source.bounds.x1);
+    const int xEnd = std::min(x0 + width, source.bounds.x2);
+    if (xStart >= xEnd) {
+        return;
+    }
+    const float* srcPix = (const float*)source.access->pixelAt(xStart, y);
+    if (!srcPix) {
+        return;
+    }
+    float* dstPix = row + (std::size_t)(xStart - x0) * nComps;
+    for (int x = xStart; x < xEnd; ++x, ++srcPix, dstPix += nComps) {
+        dstPix[0] = *srcPix;
+    }
+}
 } // anonymous namespace
 
 std::optional<std::string>
@@ -902,7 +939,9 @@ runStagesCpu(EffectInstance& effect,
     const int divisorChannel = plan.divisorChannel;
 
     std::vector<PassExec::PlaneJob> jobs;
+    std::vector<ImageLayerDesc> jobPlanes;
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+        jobPlanes.push_back(it->first);
         PassExec::PlaneJob job;
         job.dst = it->second;
         if (!job.dst) {
@@ -1045,7 +1084,7 @@ runStagesCpu(EffectInstance& effect,
                 span.data = zeroAlphaRow.data();
                 span.pixelStride = 1;
             } else if (sourceLayers[s].alphaPerChannel()) {
-                PassExec::readSourceRow(alpha.image.get(), alpha.access.get(), alpha.bounds, alpha.nComps, roi.x1, y, width, nComps, buffer);
+                readStageSourceRow(jobPlanes[band.job], alpha, roi.x1, y, width, nComps, buffer);
                 span.data = buffer;
                 span.pixelStride = nComps;
                 span.channelStride = 1;
@@ -1109,7 +1148,7 @@ runStagesCpu(EffectInstance& effect,
                 if (!baseIsSource) {
                     const SourceImage& base = folded[0];
                     float* baseRow = (direct && (nFolded == 1)) ? dstPix : foldRows[0].data();
-                    PassExec::readSourceRow(base.image.get(), base.access.get(), base.bounds, base.nComps, roi.x1, y, width, nComps, baseRow);
+                    readStageSourceRow(jobPlanes[band.job], base, roi.x1, y, width, nComps, baseRow);
                     result = baseRow;
                 }
                 // Steps write only to the fold rows or the output, never to the source row the
@@ -1120,7 +1159,7 @@ runStagesCpu(EffectInstance& effect,
                 }
                 for (std::size_t s = 1; s < nFolded; ++s) {
                     const SourceImage& input = folded[s];
-                    PassExec::readSourceRow(input.image.get(), input.access.get(), input.bounds, input.nComps, roi.x1, y, width, nComps, &inputRow[0]);
+                    readStageSourceRow(jobPlanes[band.job], input, roi.x1, y, width, nComps, &inputRow[0]);
                     float* stepRow = (direct && ((s + 1) == nFolded)) ? dstPix : foldRows[next].data();
                     io.src[0] = result;
                     io.src[1] = &inputRow[0];

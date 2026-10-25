@@ -221,8 +221,9 @@ edits or drops keys overrides `deriveOutputMetadata()`, usually starting from
   unconnected clip: every standard key describes the source, so a value made up
   from the clip or the timeline would misdescribe it.
 
-Framework policies: `Merge` takes the metadata of its A input (then A2.., then
-B if no A is connected), never B's; the generators (`GeneratorNode`) output only
+Framework policies: `Merge` takes the metadata of its B input by default (its
+Metadata From choice picks A or B; the other input's when that one is not
+connected, and A means input A, not A2 onwards); the generators (`GeneratorNode`) output only
 `ofx/framerate` and `ofx/pixelaspect` (they have no source, and `ofx/frame` is the
 frame number within the source, so it is omitted); transforms and filters
 keep the default.

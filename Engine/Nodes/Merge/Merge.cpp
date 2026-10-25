@@ -736,6 +736,20 @@ NativeMerge::followContainerLayer(const NodePtr& node,
     }
     const std::string readLayer = layerID.empty() ? std::string(kNatronColorViewRGBA) : layerID;
     const NativeMergeOp& mergeOp = merge->op();
+    // The container is the one reference to its layer: none of this Merge's layer knobs
+    // counts as a separate user of it.
+    const KnobIPtr declared[] = {
+        mergeOp.aLayer.lock(),
+        mergeOp.aAlpha.lock(),
+        mergeOp.aAlphaLayer.lock(),
+        mergeOp.bLayer.lock(),
+        mergeOp.bAlpha.lock(),
+        mergeOp.bAlphaLayer.lock(),
+        mergeOp.alsoMerge.lock(),
+    };
+    for (const KnobIPtr& knob : declared) {
+        node->setLayerKnobDrivenByContainer(knob);
+    }
     for (const KnobLayerSelectWPtr& side : { mergeOp.aLayer, mergeOp.bLayer }) {
         KnobLayerSelectPtr knob = side.lock();
         if (knob && (knob->getLayer() != readLayer)) {

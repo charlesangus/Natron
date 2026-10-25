@@ -7125,6 +7125,19 @@ Node::setLayerKnobInput(const KnobIPtr& knob,
 }
 
 void
+Node::setLayerKnobDrivenByContainer(const KnobIPtr& knob)
+{
+    if (!knob) {
+        return;
+    }
+    std::map<const KnobI*, LayerKnobSource>::iterator found = _imp->layerKnobSources.find(knob.get());
+    if (found == _imp->layerKnobSources.end()) {
+        return;
+    }
+    found->second.drivenByContainer = true;
+}
+
+void
 Node::registerProducedLayers()
 {
     assert(QThread::currentThread() == qApp->thread());

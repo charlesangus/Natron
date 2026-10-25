@@ -1823,6 +1823,14 @@ public:
     void setLayerKnobInput(const KnobIPtr& knob, int inputNb);
 
     /**
+     * @brief Marks an already-declared layer/channel knob as following a container node's
+     * layer selection (as retargetLayerKnob() does for the layer knob), so
+     * getReferencedLayerIDs() does not count it as a separate reference to the registry.
+     * No-op on a knob never declared.
+     **/
+    void setLayerKnobDrivenByContainer(const KnobIPtr& knob);
+
+    /**
      * @brief Registers every non-Color layer this node produces (per
      * getComponentsNeededAndProduced_public()'s output entry) with the project-level
      * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData().

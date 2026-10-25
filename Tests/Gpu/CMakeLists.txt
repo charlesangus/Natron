@@ -19,12 +19,15 @@ slang_add_kernel(compositestep_halveadd ${NATRON_GPU_KERNEL_DIR}/compositestep.s
 slang_add_kernel(fill kernels/fill.slang ENTRY fill_main)
 slang_add_kernel(smoke kernels/smoke.slang ENTRY smoke)
 slang_add_kernel(test_smoke kernels/smoke.slang ENTRY smoke CPP)
+slang_add_kernel(probe_mul kernels/curvesnapshot_probe.slang ENTRY probe_mul)
+slang_add_kernel(probe_fused kernels/curvesnapshot_probe.slang ENTRY probe_fused)
 
 set(GpuTests_SOURCES
     ../google-test/src/gtest-all.cc
     ../google-test/src/gtest_main.cc
     BlurCpu_Test.cpp
     BlurGpu_Test.cpp
+    CurveSnapshotPrecision_Test.cpp
     GpuBuffer_Test.cpp
     GpuBufferPool_Test.cpp
     GpuDevice_Test.cpp
@@ -55,6 +58,8 @@ target_link_libraries(GpuTests
         NatronGpu
         fill
         smoke
+        probe_mul
+        probe_fused
         test_blur
         pixelwrap_identity
         pixelwrap_scale

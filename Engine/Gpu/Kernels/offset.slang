@@ -47,10 +47,38 @@ Weight weightAt(uint index)
     return w;
 }
 
+// Veltkamp's split: hi carries the top 12 bits of the significand, so products of halves are
+// exact. The split is not finite once |a| passes about 8.3e34, where a * 4097 overflows.
+void offsetSplit(float a, out float hi, out float lo)
+{
+    precise float t = a * 4097.0;
+    precise float h = t - (t - a);
+    hi = h;
+    lo = a - h;
+}
+
+// The error of the float product p of a and b, by Dekker's split: fma() need not round once on
+// every device (lavapipe does not), and a fused error term is then wrong or lost. An operand too
+// large to split, or a p that is not finite, gets 0 rather than a NaN beside a finite p. A device
+// that flushes denormals may lose a residual below FLT_MIN, which leaves the error less exact.
+float offsetProductError(float a, float b, float p)
+{
+    if (!(isfinite(p) && abs(a) < 8.0e34 && abs(b) < 8.0e34))
+        return 0.0;
+    float ah;
+    float al;
+    float bh;
+    float bl;
+    offsetSplit(a, ah, al);
+    offsetSplit(b, bh, bl);
+    precise float e = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
+    return isfinite(e) ? e : 0.0;
+}
+
 Weight weightProduct(Weight a, Weight b)
 {
     precise float p = a.hi * b.hi;
-    precise float e = fma(a.hi, b.hi, -p);
+    precise float e = offsetProductError(a.hi, b.hi, p);
     precise float lo = e + (a.hi * b.lo + a.lo * b.hi);
     precise float s = p + lo;
     Weight w;
@@ -66,7 +94,7 @@ float weigh(float v, Weight w)
     precise float p = v * w.hi;
     if (isinf(p) || isnan(p) || p == 0.0)
         return p;
-    precise float e = fma(v, w.hi, -p);
+    precise float e = offsetProductError(v, w.hi, p);
     precise float lo = e + v * w.lo;
     return p + lo;
 }

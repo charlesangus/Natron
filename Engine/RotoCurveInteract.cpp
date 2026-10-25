@@ -38,6 +38,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/OverlaySupport.h"
+#include "Engine/PluginActionShortcut.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
@@ -911,6 +912,344 @@ RotoCurveInteract::createToolbarKnobs(int toolSet)
 
     return toolbar;
 } // RotoCurveInteract::createToolbarKnobs
+
+void
+RotoCurveInteract::createViewerButtonKnobs(const KnobPagePtr& page)
+{
+    KnobButtonPtr autoKeyingEnabled = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamAutoKeyingEnabledLabel));
+    autoKeyingEnabled->setName(kRotoUIParamAutoKeyingEnabled);
+    autoKeyingEnabled->setHintToolTip(tr(kRotoUIParamAutoKeyingEnabledHint));
+    autoKeyingEnabled->setEvaluateOnChange(false);
+    autoKeyingEnabled->setCheckable(true);
+    autoKeyingEnabled->setDefaultValue(true);
+    autoKeyingEnabled->setSecretByDefault(true);
+    autoKeyingEnabled->setInViewerContextCanHaveShortcut(true);
+    autoKeyingEnabled->setIconLabel(NATRON_ICONS_PATH "lucide/timer.svg");
+    page->addKnob(autoKeyingEnabled);
+    autoKeyingEnabledButton = autoKeyingEnabled;
+
+    KnobButtonPtr featherLinkEnabled = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamFeatherLinkEnabledLabel));
+    featherLinkEnabled->setName(kRotoUIParamFeatherLinkEnabled);
+    featherLinkEnabled->setCheckable(true);
+    featherLinkEnabled->setEvaluateOnChange(false);
+    featherLinkEnabled->setDefaultValue(true);
+    featherLinkEnabled->setSecretByDefault(true);
+    featherLinkEnabled->setInViewerContextCanHaveShortcut(true);
+    featherLinkEnabled->setHintToolTip(tr(kRotoUIParamFeatherLinkEnabledHint));
+    featherLinkEnabled->setIconLabel(NATRON_ICONS_PATH "lucide/link.svg");
+    page->addKnob(featherLinkEnabled);
+    featherLinkEnabledButton = featherLinkEnabled;
+
+    KnobButtonPtr displayFeatherEnabled = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamDisplayFeatherLabel));
+    displayFeatherEnabled->setName(kRotoUIParamDisplayFeather);
+    displayFeatherEnabled->setHintToolTip(tr(kRotoUIParamDisplayFeatherHint));
+    displayFeatherEnabled->setEvaluateOnChange(false);
+    displayFeatherEnabled->setCheckable(true);
+    displayFeatherEnabled->setDefaultValue(true);
+    displayFeatherEnabled->setSecretByDefault(true);
+    displayFeatherEnabled->setInViewerContextCanHaveShortcut(true);
+    _host->addOverlaySlaveParam(displayFeatherEnabled);
+    displayFeatherEnabled->setIconLabel(NATRON_ICONS_PATH "lucide/feather.svg");
+    page->addKnob(displayFeatherEnabled);
+    displayFeatherEnabledButton = displayFeatherEnabled;
+
+    KnobButtonPtr stickySelection = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamStickySelectionEnabledLabel));
+    stickySelection->setName(kRotoUIParamStickySelectionEnabled);
+    stickySelection->setHintToolTip(tr(kRotoUIParamStickySelectionEnabledHint));
+    stickySelection->setEvaluateOnChange(false);
+    stickySelection->setCheckable(true);
+    stickySelection->setDefaultValue(false);
+    stickySelection->setSecretByDefault(true);
+    stickySelection->setInViewerContextCanHaveShortcut(true);
+    stickySelection->setIconLabel(NATRON_ICONS_PATH "lucide/pin.svg");
+    page->addKnob(stickySelection);
+    stickySelectionEnabledButton = stickySelection;
+
+    KnobButtonPtr bboxClickAnywhere = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamStickyBboxLabel));
+    bboxClickAnywhere->setName(kRotoUIParamStickyBbox);
+    bboxClickAnywhere->setHintToolTip(tr(kRotoUIParamStickyBboxHint));
+    bboxClickAnywhere->setEvaluateOnChange(false);
+    bboxClickAnywhere->setCheckable(true);
+    bboxClickAnywhere->setDefaultValue(false);
+    bboxClickAnywhere->setSecretByDefault(true);
+    bboxClickAnywhere->setInViewerContextCanHaveShortcut(true);
+    bboxClickAnywhere->setIconLabel(NATRON_ICONS_PATH "lucide/square-mouse-pointer.svg");
+    page->addKnob(bboxClickAnywhere);
+    bboxClickAnywhereButton = bboxClickAnywhere;
+
+    KnobButtonPtr rippleEditEnabled = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRippleEditLabel));
+    rippleEditEnabled->setName(kRotoUIParamRippleEdit);
+    rippleEditEnabled->setHintToolTip(tr(kRotoUIParamRippleEditLabelHint));
+    rippleEditEnabled->setEvaluateOnChange(false);
+    rippleEditEnabled->setCheckable(true);
+    rippleEditEnabled->setDefaultValue(false);
+    rippleEditEnabled->setSecretByDefault(true);
+    rippleEditEnabled->setInViewerContextCanHaveShortcut(true);
+    rippleEditEnabled->setIconLabel(NATRON_ICONS_PATH "lucide/waves-horizontal.svg");
+    page->addKnob(rippleEditEnabled);
+    rippleEditEnabledButton = rippleEditEnabled;
+
+    KnobButtonPtr addKeyframe = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamAddKeyFrameLabel));
+    addKeyframe->setName(kRotoUIParamAddKeyFrame);
+    addKeyframe->setEvaluateOnChange(false);
+    addKeyframe->setHintToolTip(tr(kRotoUIParamAddKeyFrameHint));
+    addKeyframe->setSecretByDefault(true);
+    addKeyframe->setInViewerContextCanHaveShortcut(true);
+    addKeyframe->setIconLabel(NATRON_ICONS_PATH "lucide/diamond-plus.svg");
+    page->addKnob(addKeyframe);
+    addKeyframeButton = addKeyframe;
+
+    KnobButtonPtr removeKeyframe = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRemoveKeyframeLabel));
+    removeKeyframe->setName(kRotoUIParamRemoveKeyframe);
+    removeKeyframe->setHintToolTip(tr(kRotoUIParamRemoveKeyframeHint));
+    removeKeyframe->setEvaluateOnChange(false);
+    removeKeyframe->setSecretByDefault(true);
+    removeKeyframe->setInViewerContextCanHaveShortcut(true);
+    removeKeyframe->setIconLabel(NATRON_ICONS_PATH "lucide/diamond-minus.svg");
+    page->addKnob(removeKeyframe);
+    removeKeyframeButton = removeKeyframe;
+
+    KnobButtonPtr showTransform = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamShowTransformLabel));
+    showTransform->setName(kRotoUIParamShowTransform);
+    showTransform->setHintToolTip(tr(kRotoUIParamShowTransformHint));
+    showTransform->setEvaluateOnChange(false);
+    showTransform->setSecretByDefault(true);
+    showTransform->setCheckable(true);
+    showTransform->setDefaultValue(true);
+    showTransform->setInViewerContextCanHaveShortcut(true);
+    showTransform->setInViewerContextNewLineActivated(true);
+    showTransform->setIconLabel(NATRON_ICONS_PATH "lucide/move.svg");
+    page->addKnob(showTransform);
+    _host->addOverlaySlaveParam(showTransform);
+    showTransformHandle = showTransform;
+
+    _host->addKnobToViewerUI(autoKeyingEnabled);
+    _host->addKnobToViewerUI(featherLinkEnabled);
+    _host->addKnobToViewerUI(displayFeatherEnabled);
+    _host->addKnobToViewerUI(stickySelection);
+    _host->addKnobToViewerUI(bboxClickAnywhere);
+    _host->addKnobToViewerUI(rippleEditEnabled);
+    _host->addKnobToViewerUI(addKeyframe);
+    _host->addKnobToViewerUI(removeKeyframe);
+    _host->addKnobToViewerUI(showTransform);
+} // RotoCurveInteract::createViewerButtonKnobs
+
+void
+RotoCurveInteract::createRightClickMenuKnobs(const KnobPagePtr& page)
+{
+    KnobChoicePtr rightClickMenu = AppManager::createKnob<KnobChoice>(_host, std::string(kRotoUIParamRightClickMenu));
+    rightClickMenu->setSecretByDefault(true);
+    rightClickMenu->setEvaluateOnChange(false);
+    page->addKnob(rightClickMenu);
+    rightClickMenuKnob = rightClickMenu;
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionRemoveItemsLabel));
+        action->setName(kRotoUIParamRightClickMenuActionRemoveItems);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        removeItemsMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionCuspItemsLabel));
+        action->setName(kRotoUIParamRightClickMenuActionCuspItems);
+        action->setEvaluateOnChange(false);
+        action->setSecretByDefault(true);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        cuspItemMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionSmoothItemsLabel));
+        action->setName(kRotoUIParamRightClickMenuActionSmoothItems);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        smoothItemMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionRemoveItemsFeatherLabel));
+        action->setName(kRotoUIParamRightClickMenuActionRemoveItemsFeather);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        removeItemFeatherMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionNudgeBottomLabel));
+        action->setName(kRotoUIParamRightClickMenuActionNudgeBottom);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        nudgeBottomMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionNudgeLeftLabel));
+        action->setName(kRotoUIParamRightClickMenuActionNudgeLeft);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        nudgeLeftMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionNudgeTopLabel));
+        action->setName(kRotoUIParamRightClickMenuActionNudgeTop);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        nudgeTopMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionNudgeRightLabel));
+        action->setName(kRotoUIParamRightClickMenuActionNudgeRight);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        nudgeRightMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionSelectAllLabel));
+        action->setName(kRotoUIParamRightClickMenuActionSelectAll);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        page->addKnob(action);
+        selectAllMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionOpenCloseLabel));
+        action->setName(kRotoUIParamRightClickMenuActionOpenClose);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        openCloseMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionLockShapesLabel));
+        action->setName(kRotoUIParamRightClickMenuActionLockShapes);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        lockShapeMenuAction = action;
+    }
+} // RotoCurveInteract::createRightClickMenuKnobs
+
+void
+RotoCurveInteract::connectToCurveContext()
+{
+    RotoCurveContextPtr ctx = getCurveContext();
+    assert(ctx);
+    std::weak_ptr<RotoCurveInteract> weakThis = shared_from_this();
+
+    QObject::connect(ctx.get(), &RotoCurveContext::refreshViewerOverlays, _host, [weakThis]() {
+        if (RotoCurveInteractPtr ui = weakThis.lock()) {
+            ui->redrawOverlays();
+        }
+    });
+    QObject::connect(ctx.get(), &RotoCurveContext::selectionChanged, _host, [weakThis](int reason) {
+        if (RotoCurveInteractPtr ui = weakThis.lock()) {
+            ui->onCurveSelectionChanged(reason);
+        }
+    });
+    QObject::connect(ctx.get(), &RotoCurveContext::itemLockedChanged, _host, [weakThis](int reason) {
+        if (RotoCurveInteractPtr ui = weakThis.lock()) {
+            ui->onCurveLockedChanged(reason);
+        }
+    });
+}
+
+void
+RotoCurveInteract::onCurveSelectionChanged(int reason)
+{
+    if ((RotoItem::SelectionReasonEnum)reason != RotoItem::eSelectionReasonOverlayInteract) {
+        selectedItems = getCurveContext()->getSelectedCurves();
+        redrawOverlays();
+    }
+}
+
+void
+RotoCurveInteract::onCurveLockedChanged(int reason)
+{
+    RotoItemPtr item = getCurveContext()->getLastItemLocked();
+
+    if (item && ((RotoItem::SelectionReasonEnum)reason != RotoItem::eSelectionReasonOverlayInteract)) {
+        bool changed = false;
+        onCurveLockedChangedRecursive(item, &changed);
+        if (changed) {
+            redrawOverlays();
+        }
+    }
+}
+
+void
+RotoCurveInteract::refreshAfterTimeChanged(double /*time*/)
+{
+    computeSelectedCpsBBOX();
+}
+
+void
+RotoCurveInteract::getViewerButtonShortcuts(std::list<PluginActionShortcut>* shortcuts)
+{
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamAutoKeyingEnabled, kRotoUIParamAutoKeyingEnabledLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamFeatherLinkEnabled, kRotoUIParamFeatherLinkEnabledLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamDisplayFeather, kRotoUIParamDisplayFeatherLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamStickySelectionEnabled, kRotoUIParamStickySelectionEnabledLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamStickyBbox, kRotoUIParamStickyBboxLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRippleEdit, kRotoUIParamRippleEditLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamAddKeyFrame, kRotoUIParamAddKeyFrameLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRemoveKeyframe, kRotoUIParamRemoveKeyframeLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamShowTransform, kRotoUIParamShowTransformLabel, Key_T));
+}
+
+void
+RotoCurveInteract::getToolbarShortcuts(int toolSet,
+                                       std::list<PluginActionShortcut>* shortcuts)
+{
+    if (toolSet & eRotoCurveToolSetSelection) {
+        shortcuts->push_back(PluginActionShortcut(kRotoUIParamSelectionToolButton, kRotoUIParamSelectionToolButtonLabel, Key_Q));
+    }
+    if (toolSet & eRotoCurveToolSetPointsEdition) {
+        shortcuts->push_back(PluginActionShortcut(kRotoUIParamEditPointsToolButton, kRotoUIParamEditPointsToolButtonLabel, Key_D));
+    }
+    if (toolSet & eRotoCurveToolSetShapesDrawing) {
+        shortcuts->push_back(PluginActionShortcut(kRotoUIParamBezierEditionToolButton, kRotoUIParamBezierEditionToolButtonLabel, Key_V));
+    }
+}
+
+void
+RotoCurveInteract::getRightClickMenuShortcuts(std::list<PluginActionShortcut>* shortcuts)
+{
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionRemoveItems, kRotoUIParamRightClickMenuActionRemoveItemsLabel, Key_BackSpace));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionCuspItems, kRotoUIParamRightClickMenuActionCuspItemsLabel, Key_Z, eKeyboardModifierShift));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionSmoothItems, kRotoUIParamRightClickMenuActionSmoothItemsLabel, Key_Z));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionRemoveItemsFeather, kRotoUIParamRightClickMenuActionRemoveItemsFeatherLabel, Key_E, eKeyboardModifierShift));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionNudgeLeft, kRotoUIParamRightClickMenuActionNudgeLeftLabel, Key_4, eKeyboardModifierKeypad));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionNudgeBottom, kRotoUIParamRightClickMenuActionNudgeBottomLabel, Key_2, eKeyboardModifierKeypad));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionNudgeTop, kRotoUIParamRightClickMenuActionNudgeTopLabel, Key_8, eKeyboardModifierKeypad));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionNudgeRight, kRotoUIParamRightClickMenuActionNudgeRightLabel, Key_6, eKeyboardModifierKeypad));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionSelectAll, kRotoUIParamRightClickMenuActionSelectAllLabel, Key_A, eKeyboardModifierControl));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionOpenClose, kRotoUIParamRightClickMenuActionOpenCloseLabel, Key_Return));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionLockShapes, kRotoUIParamRightClickMenuActionLockShapesLabel, Key_L, eKeyboardModifierShift));
+}
 
 bool
 RotoCurveInteract::onKnobChanged(KnobI* k,

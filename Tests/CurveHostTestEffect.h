@@ -28,8 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <list>
+#include <string>
+
 #include <QPointF>
 
+#include "Engine/AppManager.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -55,6 +59,7 @@ public:
     explicit CurveHostTestEffect(NodePtr n)
         : NativeEffectBase(n)
         , _ui()
+        , _redrawRequests(0)
     {
     }
 
@@ -66,6 +71,17 @@ public:
     const RotoCurveInteractPtr& getInteract() const
     {
         return _ui;
+    }
+
+    virtual void redrawOverlayInteract() OVERRIDE FINAL
+    {
+        ++_redrawRequests;
+        NativeEffectBase::redrawOverlayInteract();
+    }
+
+    int getRedrawRequests() const
+    {
+        return _redrawRequests;
     }
 
 private:
@@ -84,7 +100,25 @@ private:
     {
         // The node's curve context exists by now (Node::createRotoContextConditionnally()).
         _ui = RotoCurveInteract::create(this);
+        _ui->connectToCurveContext();
+        KnobPagePtr page = AppManager::createKnob<KnobPage>(this, std::string("Controls"));
+        _ui->createViewerButtonKnobs(page);
         _ui->createToolbarKnobs(eRotoCurveToolSetAll);
+        _ui->createRightClickMenuKnobs(page);
+    }
+
+    virtual void getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts) OVERRIDE FINAL
+    {
+        RotoCurveInteract::getViewerButtonShortcuts(shortcuts);
+        RotoCurveInteract::getToolbarShortcuts(eRotoCurveToolSetAll, shortcuts);
+        RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
+    }
+
+    virtual void refreshExtraStateAfterTimeChanged(bool isPlayback,
+                                                   double time) OVERRIDE FINAL
+    {
+        NativeEffectBase::refreshExtraStateAfterTimeChanged(isPlayback, time);
+        _ui->refreshAfterTimeChanged(time);
     }
 
     virtual void onKnobsLoaded() OVERRIDE FINAL
@@ -198,6 +232,7 @@ private:
     }
 
     RotoCurveInteractPtr _ui;
+    int _redrawRequests;
 };
 
 NATRON_NAMESPACE_EXIT

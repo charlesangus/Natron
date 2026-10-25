@@ -207,7 +207,14 @@ void
 RotoPaintInteract::onToolSelected(const KnobButtonPtr& actionButton,
                                   RotoToolEnum tool)
 {
-    bool isPaintRole = (selectedRole == eRotoRolePaintBrush) || (selectedRole == eRotoRoleCloneBrush) || (selectedRole == eRotoRoleMergeBrush) || (selectedRole == eRotoRoleEffectBrush);
+    // The tool's role is the group it sits in. selectedRole can still be the previous role here:
+    // while a project loads, setCurrentTool() switches the role group without onKnobChanged()
+    // running, so a non-paint tool would otherwise get a paint tool's compositing operator.
+    RotoRoleEnum toolRole = selectedRole;
+    if (KnobGroupPtr toolGroup = std::dynamic_pointer_cast<KnobGroup>(actionButton->getParentKnob())) {
+        getRoleForGroup(toolGroup, &toolRole);
+    }
+    bool isPaintRole = (toolRole == eRotoRolePaintBrush) || (toolRole == eRotoRoleCloneBrush) || (toolRole == eRotoRoleMergeBrush) || (toolRole == eRotoRoleEffectBrush);
     if (!isPaintRole) {
         return;
     }
@@ -217,7 +224,7 @@ RotoPaintInteract::onToolSelected(const KnobButtonPtr& actionButton,
     };
     for (const KnobIWPtr& knob : cloneKnobs) {
         if (KnobIPtr k = knob.lock()) {
-            k->setInViewerContextSecret(selectedRole != eRotoRoleCloneBrush);
+            k->setInViewerContextSecret(toolRole != eRotoRoleCloneBrush);
         }
     }
     if (KnobDoublePtr effect = effectSpinBox.lock()) {
@@ -263,6 +270,17 @@ void
 RotoPaintInteract::onBreakMultiStrokeTriggered()
 {
     makeStroke( true, RotoPoint() );
+}
+
+void
+RotoPaintInteract::refreshAfterTimeChanged(double time)
+{
+    if (time != strokeBeingPaintedTimelineFrame) {
+        if ((selectedTool == eRotoToolBlur) || (selectedTool == eRotoToolBurn) || (selectedTool == eRotoToolDodge) || (selectedTool == eRotoToolClone) || (selectedTool == eRotoToolEraserBrush) || (selectedTool == eRotoToolSolidBrush) || (selectedTool == eRotoToolReveal) || (selectedTool == eRotoToolSmear) || (selectedTool == eRotoToolSharpen)) {
+            onBreakMultiStrokeTriggered();
+        }
+    }
+    RotoCurveInteract::refreshAfterTimeChanged(time);
 }
 
 static bool

@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cstdlib>
+#include <sstream>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -54,7 +55,10 @@ NATRON_NAMESPACE_USING
 // The project.yaml a project with a RotoPaint node saves is compared with a committed reference,
 // so a change to how the roto contexts are built, saved or loaded shows up as a text diff. To
 // record the reference, run this test with NATRON_GOLDEN_RECORD_DIR set to
-// Tests/fixtures/roto-roundtrip and commit rotopaint.yaml.
+// Tests/fixtures/roto-roundtrip and commit rotopaint.yaml. The build that saved the project and
+// the temporary directory it was saved in differ from run to run, so normalizedYaml() drops the
+// savedBy line and replaces the project path with a placeholder before anything is compared or
+// recorded.
 
 namespace {
 
@@ -90,6 +94,39 @@ writeFile(const std::string& path,
     const QByteArray bytes = QString::fromStdString(text).toUtf8();
 
     return file.write(bytes) == bytes.size();
+}
+
+const char* const kProjectPathPlaceholder = "@TMP@";
+
+std::string
+normalizedYaml(const std::string& yaml)
+{
+    const std::string projectPathStart = "<Name>Project</Name><Value>";
+    const std::string projectPathEnd = "</Value>";
+    std::istringstream in(yaml);
+    std::string out;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.compare(0, 8, "savedBy:") == 0) {
+            continue;
+        }
+        if (line.find("projectPaths:") != std::string::npos) {
+            const std::size_t start = line.find(projectPathStart);
+            if (start != std::string::npos) {
+                const std::size_t valueStart = start + projectPathStart.size();
+                const std::size_t valueEnd = line.find(projectPathEnd, valueStart);
+                if (valueEnd != std::string::npos) {
+                    line.replace(valueStart, valueEnd - valueStart, kProjectPathPlaceholder);
+                }
+            }
+        }
+        out += line;
+        if (!in.eof()) {
+            out += '\n';
+        }
+    }
+
+    return out;
 }
 
 } // anonymous namespace
@@ -151,7 +188,7 @@ protected:
         std::string yaml;
         EXPECT_TRUE(saveProjectBundle(getApp()->getProject(), tmp, QString::fromUtf8(fileName), &yaml));
 
-        return yaml;
+        return normalizedYaml(yaml);
     }
 
     bool reload(const QTemporaryDir& tmp,
@@ -184,7 +221,7 @@ TEST_F(RotoPaintReferenceTest, SavedProjectMatchesTheReference)
     std::string reference;
     ASSERT_TRUE(readFile(referencePath(), &reference)) << "no reference " << referencePath()
                                                        << ". Record it with NATRON_GOLDEN_RECORD_DIR=" << NATRON_TESTS_FIXTURES_DIR << "/roto-roundtrip and commit the file.";
-    EXPECT_EQ(reference, yaml);
+    EXPECT_EQ(normalizedYaml(reference), yaml);
 }
 
 TEST_F(RotoPaintReferenceTest, LoadThenSaveIsStable)

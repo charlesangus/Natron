@@ -49,6 +49,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+struct PluginActionShortcut;
+
 #define kControlPointMidSize 3
 #define kBezierSelectionTolerance 8
 #define kControlPointSelectionTolerance 8
@@ -448,6 +450,38 @@ public:
      * tool groups to the returned page and picks the default tool.
      **/
     KnobPagePtr createToolbarKnobs(int toolSet);
+
+    /**
+     * @brief Creates the curve viewer buttons (auto-keying, feather link, feather display, sticky
+     * selection, bbox click anywhere, ripple edit, add/remove keyframe, show transform) on page and
+     * adds them to the viewer UI. The viewer shows its knobs in the order they were added, so a
+     * host calls this before adding its own viewer knobs.
+     **/
+    void createViewerButtonKnobs(const KnobPagePtr& page);
+
+    /**
+     * @brief Creates the right-click menu choice and its actions on page.
+     **/
+    void createRightClickMenuKnobs(const KnobPagePtr& page);
+
+    /**
+     * @brief Keeps the selection and lock state in step with the curve context and redraws the
+     * host's overlay when they, or the context's overlays, change.
+     **/
+    void connectToCurveContext();
+
+    void onCurveSelectionChanged(int reason);
+
+    void onCurveLockedChanged(int reason);
+
+    // The host's refreshExtraStateAfterTimeChanged() forwards to this.
+    virtual void refreshAfterTimeChanged(double time);
+
+    // The shortcuts of the knobs createViewerButtonKnobs(), createToolbarKnobs() and
+    // createRightClickMenuKnobs() create, for the host's getPluginShortcuts().
+    static void getViewerButtonShortcuts(std::list<PluginActionShortcut>* shortcuts);
+    static void getToolbarShortcuts(int toolSet, std::list<PluginActionShortcut>* shortcuts);
+    static void getRightClickMenuShortcuts(std::list<PluginActionShortcut>* shortcuts);
 
     /**
      * @brief Handles a change of one of the toolbar, viewer-button or right-click menu knobs.

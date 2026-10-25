@@ -48,7 +48,9 @@
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
+#include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoItem.h"
+#include "Engine/RotoPaintInteract.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -154,6 +156,70 @@ TEST_F(CurveHostTest, TheBezierHasFeatherPoints)
     for (std::list<BezierCPPtr>::const_iterator it = feather.begin(); it != feather.end(); ++it) {
         EXPECT_TRUE((*it)->isFeatherPoint());
     }
+}
+
+TEST_F(CurveHostTest, TheHostHasTheCurveViewerAndMenuKnobs)
+{
+    NodePtr host = createNode(QString::fromUtf8(kTestPluginIDCurveHost));
+    ASSERT_TRUE(bool(host));
+    EffectInstancePtr effect = host->getEffectInstance();
+
+    const char* viewerButtons[] = {
+        kRotoUIParamAutoKeyingEnabled,
+        kRotoUIParamFeatherLinkEnabled,
+        kRotoUIParamDisplayFeather,
+        kRotoUIParamStickySelectionEnabled,
+        kRotoUIParamStickyBbox,
+        kRotoUIParamRippleEdit,
+        kRotoUIParamAddKeyFrame,
+        kRotoUIParamRemoveKeyframe,
+        kRotoUIParamShowTransform,
+    };
+    for (std::size_t i = 0; i < sizeof(viewerButtons) / sizeof(viewerButtons[0]); ++i) {
+        KnobIPtr knob = effect->getKnobByName(viewerButtons[i]);
+        ASSERT_TRUE(bool(knob)) << viewerButtons[i];
+        EXPECT_TRUE(effect->isInViewerUIKnob(knob)) << viewerButtons[i];
+    }
+
+    const char* menuKnobs[] = {
+        kRotoUIParamRightClickMenu,
+        kRotoUIParamRightClickMenuActionRemoveItems,
+        kRotoUIParamRightClickMenuActionCuspItems,
+        kRotoUIParamRightClickMenuActionSmoothItems,
+        kRotoUIParamRightClickMenuActionRemoveItemsFeather,
+        kRotoUIParamRightClickMenuActionNudgeBottom,
+        kRotoUIParamRightClickMenuActionNudgeLeft,
+        kRotoUIParamRightClickMenuActionNudgeTop,
+        kRotoUIParamRightClickMenuActionNudgeRight,
+        kRotoUIParamRightClickMenuActionSelectAll,
+        kRotoUIParamRightClickMenuActionOpenClose,
+        kRotoUIParamRightClickMenuActionLockShapes,
+    };
+    for (std::size_t i = 0; i < sizeof(menuKnobs) / sizeof(menuKnobs[0]); ++i) {
+        EXPECT_TRUE(bool(effect->getKnobByName(menuKnobs[i]))) << menuKnobs[i];
+    }
+
+    EXPECT_FALSE(bool(effect->getKnobByName(kRotoUIParamMultiStrokeEnabled)));
+    EXPECT_FALSE(bool(effect->getKnobByName(kRotoUIParamBlendingOp)));
+}
+
+TEST_F(CurveHostTest, ASelectionChangeRedrawsTheOverlay)
+{
+    NodePtr host = createNode(QString::fromUtf8(kTestPluginIDCurveHost));
+    ASSERT_TRUE(bool(host));
+    CurveHostTestEffect* effect = dynamic_cast<CurveHostTestEffect*>(host->getEffectInstance().get());
+    ASSERT_TRUE(effect);
+    RotoCurveContextPtr ctx = host->getCurveContext();
+    BezierPtr bezier = makeQuad(ctx);
+    ASSERT_TRUE(bool(bezier));
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+
+    const int redrawsBefore = effect->getRedrawRequests();
+    ctx->select(bezier, RotoItem::eSelectionReasonSettingsPanel);
+
+    EXPECT_GT(effect->getRedrawRequests(), redrawsBefore);
+    const SelectedItems& selected = effect->getInteract()->selectedItems;
+    EXPECT_NE(selected.end(), std::find(selected.begin(), selected.end(), bezier));
 }
 
 TEST_F(CurveHostTest, SaveAndLoadRoundTripsTheCurves)

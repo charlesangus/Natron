@@ -308,6 +308,8 @@ public:
 
     void onBreakMultiStrokeTriggered();
 
+    virtual void refreshAfterTimeChanged(double time) OVERRIDE FINAL;
+
     virtual void removeCurve(const RotoDrawableItemPtr& curve) OVERRIDE FINAL;
 
 private:

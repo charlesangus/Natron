@@ -75,8 +75,11 @@
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Filter/Blur.h"
@@ -397,6 +400,33 @@ protected:
         }
 
         return grade;
+    }
+
+    // A Shuffle that reads input in its colour plane and its extra layer, the extra layer's green written to red. Null
+    // when a knob is missing.
+    NodePtr makeTwoLayerShuffle(const NodePtr& input)
+    {
+        NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+        if (!shuffle) {
+            return NodePtr();
+        }
+        connectNodes(input, shuffle, Shuffle::eInputMain, true);
+        const char* knobs[] = { kShuffleParamIn1, kShuffleParamIn2, kShuffleParamOut1, kShuffleParamOut2 };
+        const std::string layers[] = { kNatronColorViewRGBA, kParitySourceExtraLayerID, kNatronColorViewRGBA, std::string() };
+        for (int i = 0; i < 4; ++i) {
+            KnobLayerSelectPtr knob = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(knobs[i]));
+            if (!knob) {
+                return NodePtr();
+            }
+            knob->setLayer(layers[i]);
+        }
+        KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
+        if (!mapping) {
+            return NodePtr();
+        }
+        mapping->setSource(1, 0, ShuffleSource::makeInput(2, 1));
+
+        return shuffle;
     }
 
     NodePtr makeBlur(double size)
@@ -1255,6 +1285,87 @@ TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneIsReadThroughIts
     EXPECT_EQ(2, run.stats->getUploadCount()) << "the source's colour plane and its extra layer, once each";
     expectReleased(run);
     expectMatchesCpu(grade, run);
+}
+
+// The Shuffle reads its CPU-rendered input in two layers: the region uploads each once, as its own buffer.
+TEST_F(GpuResidencyTest, ExternalInputReadInTwoLayersIsUploadedOncePerLayer)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+    ASSERT_NE(nullptr, source);
+    setParitySourceComponents(source, "rgba");
+    setParitySourceExtraLayer(source, true);
+    NodePtr shuffle = makeTwoLayerShuffle(source);
+    ASSERT_NE(nullptr, shuffle);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(shuffle, &run, &error)) << error;
+    placeOnGpu(&run, { shuffle });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(1u, run.graph.regions[0].members.size());
+    ASSERT_EQ(1u, run.graph.regions[0].externalInputs.size());
+    const int sourceTask = taskOf(run.graph, source);
+    ASSERT_TRUE(sourceTask >= 0);
+    const unsigned long long area = (unsigned long long)run.graph.tasks[sourceTask].renderedRoI.area();
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, shuffle));
+    EXPECT_EQ(0, renderRoICallsOf(run, shuffle)) << "the Shuffle rendered on the CPU";
+    EXPECT_EQ(2, run.stats->getUploadCount()) << "the source's colour plane and its extra layer, once each";
+    EXPECT_GT(run.stats->getUploadBytes(), area * 4 * sizeof(float)) << "the extra layer was not uploaded";
+    EXPECT_LE(run.stats->getUploadBytes(), area * (4 + 3) * sizeof(float)) << "a layer was uploaded more than once";
+    EXPECT_EQ(1, run.stats->getDownloadCount());
+    expectReleased(run);
+    expectMatchesCpu(shuffle, run);
+}
+
+// The Shuffle reads a Grade of the same region in two layers: the Grade's colour plane where it was rendered and the
+// extra layer it passes through, neither downloaded.
+TEST_F(GpuResidencyTest, ResidentInputReadInTwoLayersStaysInTheRegion)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+    NodePtr producer = makeGrade(0.5, 0.25);
+    ASSERT_TRUE(source && producer);
+    setParitySourceComponents(source, "rgba");
+    setParitySourceExtraLayer(source, true);
+    connectNodes(source, producer, 0, true);
+    NodePtr shuffle = makeTwoLayerShuffle(producer);
+    ASSERT_NE(nullptr, shuffle);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(shuffle, &run, &error)) << error;
+    const int producerTask = taskOf(run.graph, producer);
+    const int shuffleTask = taskOf(run.graph, shuffle);
+    ASSERT_TRUE(producerTask >= 0 && shuffleTask >= 0);
+    std::vector<std::string> expectedLayers = { kNatronColorLayerID, kParitySourceExtraLayerID };
+    std::sort(expectedLayers.begin(), expectedLayers.end());
+    std::vector<std::string> producerLayers;
+    for (const ImageLayerDesc& layer : run.graph.tasks[producerTask].components) {
+        producerLayers.push_back(layer.getLayerID());
+    }
+    std::sort(producerLayers.begin(), producerLayers.end());
+    EXPECT_EQ(expectedLayers, producerLayers) << "the Grade is asked for both layers the Shuffle reads";
+    assignRegions(&run.graph, { { producerTask, shuffleTask } });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, producer));
+    EXPECT_EQ(1, gpuRunsOf(run, shuffle));
+    EXPECT_EQ(0, renderRoICallsOf(run, shuffle)) << "the Shuffle rendered on the CPU";
+    EXPECT_EQ(2, run.stats->getUploadCount()) << "the source's colour plane and its extra layer, once each";
+    EXPECT_EQ(1, run.stats->getDownloadCount()) << "only the root is downloaded";
+    expectReleased(run);
+    expectMatchesCpu(shuffle, run);
 }
 
 // The Grade's source and its mask are the same member of the region, which the request records as one edge: both

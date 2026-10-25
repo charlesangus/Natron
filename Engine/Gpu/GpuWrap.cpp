@@ -259,6 +259,78 @@ wrapStepParams(const GpuWrapStep& step, GpuWrapParams& out)
     return {};
 }
 
+namespace {
+
+    // Packs `alpha` at word `at` of `out`.
+    GpuStatus packAlpha(const GpuWrapAlpha& alpha, const char* name, GpuWrapAlphaGeometry& out, uint32_t at)
+    {
+        for (uint32_t i = 0; i < kGpuWrapAlphaViewWords; ++i) {
+            out[at + i] = 0;
+        }
+        if (alpha.view.bounds.empty() || alpha.view.nComps == 0) {
+            return {};
+        }
+        if (GpuStatus s = checkGeometry(alpha.view, name); !s) {
+            return s;
+        }
+        if (alpha.channel >= 0 && static_cast<uint32_t>(alpha.channel) >= alpha.view.nComps) {
+            return invalid(std::string(name) + " channel is not one of its view's");
+        }
+        out[at] = static_cast<uint32_t>(alpha.view.offsetFloats);
+        out[at + 1] = alpha.view.strideFloats;
+        out[at + 2] = static_cast<uint32_t>(alpha.view.bounds.x1);
+        out[at + 3] = static_cast<uint32_t>(alpha.view.bounds.y1);
+        out[at + 4] = static_cast<uint32_t>(alpha.view.bounds.x2);
+        out[at + 5] = static_cast<uint32_t>(alpha.view.bounds.y2);
+        out[at + 6] = alpha.view.nComps;
+        out[at + 7] = alpha.channel >= 0 ? static_cast<uint32_t>(alpha.channel) : kGpuWrapAlphaPerChannel;
+        return {};
+    }
+
+    // The buffer of `alpha`, or a stand-in when it reads zero.
+    GpuStatus alphaBuffer(GpuRecordContext& ctx, const GpuWrapAlpha& alpha, const char* name, const GpuBuffer*& unused,
+                          const GpuBuffer*& out)
+    {
+        if (alpha.view.bounds.empty() || alpha.view.nComps == 0) {
+            if (GpuStatus s = standIn(ctx, unused); !s) {
+                return s;
+            }
+            out = unused;
+            return {};
+        }
+        if (GpuStatus s = checkBuffer(alpha.view, name); !s) {
+            return s;
+        }
+        out = alpha.view.buffer;
+        return {};
+    }
+
+} // namespace
+
+GpuStatus
+wrapStepAlphaGeometry(const GpuWrapStep& step, GpuWrapAlphaGeometry& out)
+{
+    if (!step.alpha) {
+        return invalid("the step carries no alpha");
+    }
+    if (GpuStatus s = packAlpha(step.resultAlpha, "result alpha", out, 0); !s) {
+        return s;
+    }
+    if (GpuStatus s = packAlpha(step.inputAlpha, "input alpha", out, kGpuWrapAlphaViewWords); !s) {
+        return s;
+    }
+    uint32_t offset = 0;
+    uint32_t stride = 0;
+    if (!step.output.empty()) {
+        if (GpuStatus s = outputWindow(step.dstAlpha, step.output, step.nComps, "destination alpha", offset, stride); !s) {
+            return s;
+        }
+    }
+    out[2 * kGpuWrapAlphaViewWords] = offset;
+    out[2 * kGpuWrapAlphaViewWords + 1] = stride;
+    return {};
+}
+
 GpuStatus
 recordWrapped(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuBuffer* opParams)
 {
@@ -332,15 +404,46 @@ recordWrapStep(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrapStep& ste
         }
         input = unused;
     }
-    return ctx.dispatch(kernel, { b[0], b[1], b[2], b[3], input }, p, { p.width, p.height, 1 });
+    if (!step.alpha) {
+        return ctx.dispatch(kernel, { b[0], b[1], b[2], b[3], input }, p, { p.width, p.height, 1 });
+    }
+
+    GpuWrapAlphaGeometry geometry;
+    if (GpuStatus s = wrapStepAlphaGeometry(step, geometry); !s) {
+        return s;
+    }
+    const GpuBuffer* resultAlpha = nullptr;
+    const GpuBuffer* inputAlpha = nullptr;
+    if (GpuStatus s = alphaBuffer(ctx, step.resultAlpha, "result alpha", unused, resultAlpha); !s) {
+        return s;
+    }
+    if (GpuStatus s = alphaBuffer(ctx, step.inputAlpha, "input alpha", unused, inputAlpha); !s) {
+        return s;
+    }
+    if (GpuStatus s = checkBuffer(step.dstAlpha, "destination alpha"); !s) {
+        return s;
+    }
+    GpuBuffer* geometryBuffer = nullptr;
+    if (GpuStatus s = ctx.scratch(sizeof(geometry), geometryBuffer); !s) {
+        return s;
+    }
+    if (GpuStatus s = ctx.updateBuffer(*geometryBuffer, 0, std::as_bytes(std::span<const uint32_t>(geometry))); !s) {
+        return s;
+    }
+    return ctx.dispatch(kernel, { b[0], b[1], b[2], b[3], input, geometryBuffer, resultAlpha, inputAlpha, step.dstAlpha.buffer },
+                        p, { p.width, p.height, 1 });
 }
 
 GpuStatus
 recordWrapFold(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuWrapView& base,
-               std::span<const GpuWrapView> inputs, const GpuBuffer* opParams)
+               std::span<const GpuWrapView> inputs, const GpuBuffer* opParams, std::span<const GpuWrapAlpha> alphas)
 {
     if (wrap.divisorChannel >= 0) {
         return invalid("a fold divides none of its inputs");
+    }
+    const bool carriesAlpha = !alphas.empty();
+    if (carriesAlpha && alphas.size() != inputs.size() + 1) {
+        return invalid("a fold carrying alpha has one alpha per input and the base's");
     }
     GpuWrapParams p;
     if (GpuStatus s = wrapParams(wrap, p); !s) {
@@ -369,6 +472,17 @@ recordWrapFold(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, c
         }
         scratch[i] = GpuWrapView { buffer, 0, wrap.output, p.width * n, n };
     }
+    // The result's alpha, in the result's layout, beside each scratch result.
+    GpuWrapView alphaScratch[2];
+    if (carriesAlpha && !inputs.empty()) {
+        for (int i = 0; i < nScratch; ++i) {
+            GpuBuffer* buffer = nullptr;
+            if (GpuStatus s = ctx.scratch(bytes, buffer); !s) {
+                return s;
+            }
+            alphaScratch[i] = GpuWrapView { buffer, 0, wrap.output, p.width * n, n };
+        }
+    }
 
     if (inputs.empty()) {
         GpuWrap copy;
@@ -391,6 +505,12 @@ recordWrapFold(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, c
         step.result = (k == 0) ? base : scratch[(k - 1) & 1];
         step.input = inputs[k];
         step.dst = scratch[k & 1];
+        if (carriesAlpha) {
+            step.alpha = true;
+            step.resultAlpha = (k == 0) ? alphas[0] : GpuWrapAlpha { alphaScratch[(k - 1) & 1], -1 };
+            step.inputAlpha = alphas[k + 1];
+            step.dstAlpha = alphaScratch[k & 1];
+        }
         if (GpuStatus s = recordWrapStep(ctx, kernel, step, opParams); !s) {
             return s;
         }

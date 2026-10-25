@@ -172,6 +172,27 @@ public:
                                   ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
+     * @brief For a Composite op, the layers beyond plane its inputs read input inputNb in on the
+     * GPU (stageSourcesGpuLayers()): selected layers and alpha layers. None for every other op.
+     **/
+    virtual bool getGpuExtraInputLayers(int inputNb,
+                                        const ImageLayerDesc& plane,
+                                        double time,
+                                        ViewIdx view,
+                                        std::vector<ImageLayerDesc>* layers) const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The default layers, plus, for a Composite op, the selected layers and alpha layers its
+     * inputs read (stageSourcesNeededLayers()), so that the request pass plans them upstream.
+     **/
+    virtual void getComponentsNeededAndProduced(double time,
+                                                ViewIdx view,
+                                                EffectInstance::ComponentsNeededMap* comps,
+                                                double* passThroughTime,
+                                                int* passThroughView,
+                                                int* passThroughInputNb) OVERRIDE;
+
+    /**
      * @brief Records a Point or Composite op's gpu() description through the StagePlan of
      * args.query with recordStagesGpu(), a Passes op's passes with recordPassesGpu(), or a Resample op's request
      * with recordResampleGpu(), or a Custom op's dispatches with renderOpGpu(). Only called when
@@ -426,13 +447,25 @@ private:
      **/
     std::optional<std::string> rawStageError(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Posts error as the node's persistent error and returns false, or with no error
+     * withdraws the one this last posted, if the node still shows it, and returns true.
+     **/
+    bool postStageError(const std::optional<std::string>& error);
+
+    /**
+     * @brief A Composite op's inputs at time and view, as resolveStageSources() pairs them, in an
+     * otherwise empty plan.
+     **/
+    StagePlan resolveSourcesPlan(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
     ResampleRegionStages getResampleRegionStages(double time,
                                                  ViewIdx view) const WARN_UNUSED_RETURN;
 
     StageKnobs _stageKnobs;
     mutable StageGpuShaderGate _gpuShaderGate;
-    std::mutex _rawStageErrorMutex;
-    std::string _postedRawStageError;
+    std::mutex _stageErrorMutex;
+    std::string _postedStageError;
 };
 
 /**

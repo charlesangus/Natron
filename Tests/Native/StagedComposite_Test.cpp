@@ -45,6 +45,8 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
@@ -63,6 +65,13 @@
 #define kStagedParamFoldCount "foldCount"
 #define kStagedParamBlendInput "blendInput"
 #define kStagedParamBypass "bypass"
+#define kStagedAlphaFoldOpPluginID "test.natron.built-in.StagedAlphaFoldOp"
+#define kStagedParamAlphaMode "alphaMode"
+#define kStagedParamFoldA2 "foldA2"
+#define kStagedParamALayer "aLayer"
+#define kStagedParamAAlpha "aAlpha"
+#define kStagedParamAAlphaLayer "aAlphaLayer"
+#define kStagedParamBAlpha "bAlpha"
 
 NATRON_NAMESPACE_ENTER
 
@@ -256,8 +265,138 @@ static_assert(PointOp<TestRoutedPointOp>);
 static_assert(RoutesOp<TestRoutedPointOp>);
 static_assert(!CompositeOp<TestRoutedPointOp>);
 
+// How TestAlphaFoldOp's A input gets its alpha, in the order of the alphaMode knob.
+enum class TestAlphaMode {
+    Channel,
+    Layer,
+    ReadLayer
+};
+
+constexpr InputSpec kAlphaFoldInputs[] = {
+    InputSpec { .label = "B" },
+    InputSpec { .label = "A", .optional = true },
+    InputSpec { .label = "A2", .optional = true },
+};
+
+/**
+ * @brief A Composite op folding A, read in the layer aLayer selects, over B, and then, with foldA2,
+ * A2 over that result in its own plane, each step the Porter-Duff xor of the input and the result
+ * through their alphas, per channel, so that both alphas and the result's carried to the next step
+ * show in the result. B's and A2's alphas are the channel bAlpha and aAlpha select, broadcast; A's
+ * is given by alphaMode: aAlpha's channel, the layer aAlphaLayer selects read per channel, or aLayer's
+ * own alpha channel falling back to aAlpha's.
+ **/
+struct TestAlphaFoldOp {
+    struct Params {
+        TestAlphaMode mode;
+        bool foldA2;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kStagedAlphaFoldOpPluginID,
+        .label = "Test Staged Alpha Fold Op",
+        .grouping = "Other/Test",
+        .inputs = kAlphaFoldInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, true),
+        .op = OpKind::Composite,
+    };
+
+    KnobIntWPtr mode;
+    KnobBoolWPtr foldA2;
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page)
+    {
+        KnobIntPtr alphaMode = AppManager::createKnob<KnobInt>(holder, std::string("Alpha Mode"));
+        alphaMode->setName(kStagedParamAlphaMode);
+        alphaMode->setDefaultValue((int)TestAlphaMode::Channel);
+        page->addKnob(alphaMode);
+        mode = alphaMode;
+
+        KnobBoolPtr a2 = AppManager::createKnob<KnobBool>(holder, std::string("Fold A2"));
+        a2->setName(kStagedParamFoldA2);
+        a2->setDefaultValue(false);
+        page->addKnob(a2);
+        foldA2 = a2;
+
+        KnobLayerSelectPtr aLayer = AppManager::createKnob<KnobLayerSelect>(holder, std::string("A Layer"), 1, false);
+        aLayer->setName(kStagedParamALayer);
+        page->addKnob(aLayer);
+
+        KnobLayerSelectPtr aAlphaLayer = AppManager::createKnob<KnobLayerSelect>(holder, std::string("A Alpha Layer"), 1, false);
+        aAlphaLayer->setName(kStagedParamAAlphaLayer);
+        page->addKnob(aAlphaLayer);
+
+        KnobChannelSelectPtr aAlpha = AppManager::createKnob<KnobChannelSelect>(holder, std::string("A Alpha"), 1, false);
+        aAlpha->setName(kStagedParamAAlpha);
+        page->addKnob(aAlpha);
+
+        KnobChannelSelectPtr bAlpha = AppManager::createKnob<KnobChannelSelect>(holder, std::string("B Alpha"), 1, false);
+        bAlpha->setName(kStagedParamBAlpha);
+        page->addKnob(bAlpha);
+    }
+
+    Params bake(const KnobReader& reader) const
+    {
+        return Params { (TestAlphaMode)reader.valueOr(mode, (int)TestAlphaMode::Channel), reader.valueOr(foldA2, false) };
+    }
+
+    bool isIdentity(const Params& /*params*/) const
+    {
+        return false;
+    }
+
+    CompositeInputs inputs(const Params& params,
+                           const RouteContext& /*context*/) const
+    {
+        CompositeInputs folded;
+
+        folded.base = CompositeInput { 0, {}, CompositeAlpha::channel(kStagedParamBAlpha) };
+        CompositeAlpha aAlpha = CompositeAlpha::channel(kStagedParamAAlpha);
+        if (params.mode == TestAlphaMode::Layer) {
+            aAlpha = CompositeAlpha::layer(kStagedParamAAlphaLayer);
+        } else if (params.mode == TestAlphaMode::ReadLayer) {
+            aAlpha = CompositeAlpha::readLayer(kStagedParamAAlpha);
+        }
+        folded.add(CompositeInput { 1, kStagedParamALayer, aAlpha });
+        if (params.foldA2) {
+            folded.add(CompositeInput { 2, {}, CompositeAlpha::channel(kStagedParamAAlpha) });
+        }
+
+        return folded;
+    }
+
+    void step(const Params& /*params*/,
+              const RowIO& io) const
+    {
+        const int nComps = io.nComps;
+        const float* result = io.src[0];
+        const float* input = io.src[1];
+        float* dst = io.dst;
+        float* dstAlpha = io.dstAlpha;
+
+        for (int x = 0; x < io.width; ++x, result += nComps, input += nComps, dst += nComps, dstAlpha += nComps) {
+            for (int c = 0; (c < nComps) && (c < 4); ++c) {
+                if (io.channels[pixelKernelChannelBit(nComps, c)]) {
+                    const float resultAlpha = io.alpha[0].at(x, c);
+                    const float inputAlpha = io.alpha[1].at(x, c);
+                    dst[c] = input[c] * (1.f - resultAlpha) + result[c] * (1.f - inputAlpha);
+                    dstAlpha[c] = inputAlpha * (1.f - resultAlpha) + resultAlpha * (1.f - inputAlpha);
+                }
+            }
+        }
+    }
+};
+
+static_assert(CompositeOp<TestAlphaFoldOp>);
+
 typedef ImageNode<TestFoldOp> StagedFoldOp;
 typedef ImageNode<TestRoutedPointOp> StagedRoutedPointOp;
+typedef ImageNode<TestAlphaFoldOp> StagedAlphaFoldOp;
 
 template <typename NODE>
 void
@@ -292,6 +431,7 @@ registerCompositeOpsOnce()
     std::call_once(once, []() {
         registerNode<StagedFoldOp>();
         registerNode<StagedRoutedPointOp>();
+        registerNode<StagedAlphaFoldOp>();
     });
 }
 
@@ -439,6 +579,143 @@ protected:
         EXPECT_TRUE(identity) << what;
         EXPECT_EQ((blendInput >= 0) ? blendInput : foldInput(0), inputNb) << what;
     }
+
+    // The pixels of node's layer over window at full scale, as many floats per pixel as the layer
+    // has channels, zero outside its region of definition.
+    static bool renderLayer(const NodePtr& node,
+                            const RectI& window,
+                            const ImageLayerDesc& layer,
+                            std::vector<float>* pixels)
+    {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        const bool rendered = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, layer), &planes, &error);
+        EXPECT_TRUE(rendered) << error;
+        if (!rendered || (planes.size() != 1) || (planes[0].channels.size() != (std::size_t)layer.getNumComponents())) {
+            return false;
+        }
+        *pixels = planes[0].pixels;
+
+        return true;
+    }
+
+    static void setLayerKnob(const NodePtr& node,
+                             const std::string& name,
+                             const std::string& layerID)
+    {
+        KnobLayerSelectPtr knob = node->getEffectInstance()->getKnobByNameAndType<KnobLayerSelect>(name);
+        ASSERT_TRUE(bool(knob)) << name;
+        knob->setLayer(layerID);
+    }
+
+    static void setChannelKnob(const NodePtr& node,
+                               const std::string& name,
+                               const std::string& channel)
+    {
+        KnobChannelSelectPtr knob = node->getEffectInstance()->getKnobByNameAndType<KnobChannelSelect>(name);
+        ASSERT_TRUE(bool(knob)) << name;
+        knob->set(channel);
+    }
+
+    struct AlphaFold {
+        NodePtr op;
+        NodePtr b;
+        NodePtr a;
+        NodePtr a2;
+        RectI window;
+    };
+
+    // TestAlphaFoldOp with B at the origin, A, which also carries the spec layer, offset so that it
+    // reads zero over part of the window, and A2 offset elsewhere. B's alpha is rgba.A.
+    void createAlphaFold(AlphaFold* fold)
+    {
+        fold->op = createNode(QString::fromUtf8(kStagedAlphaFoldOpPluginID));
+        ASSERT_TRUE(bool(fold->op));
+        fold->b = createSource(0, 0);
+        fold->a = createSource(10, 6);
+        fold->a2 = createSource(1, 2);
+        ASSERT_TRUE(fold->b && fold->a && fold->a2);
+        setParitySourceExtraLayer(fold->a, true);
+        connectNodes(fold->b, fold->op, 0, true);
+        connectNodes(fold->a, fold->op, 1, true);
+        connectNodes(fold->a2, fold->op, 2, true);
+        setChannelKnob(fold->op, kStagedParamBAlpha, std::string(kNatronColorViewRGBA) + ".A");
+        fold->window = paritySourceWindow(fold->b, kTime, 0);
+        ASSERT_FALSE(fold->window.isNull());
+    }
+
+    // Renders fold's op with A read in aLayerID (rgba or spec), A's alpha as mode gives it from
+    // aAlphaChannel (an rgba channel name) or aAlphaLayerID, and with or without A2, and checks it
+    // against the xor fold computed by hand.
+    void expectAlphaFold(const AlphaFold& fold,
+                         TestAlphaMode mode,
+                         const std::string& aLayerID,
+                         const std::string& aAlphaChannel,
+                         const std::string& aAlphaLayerID,
+                         bool foldA2)
+    {
+        const std::string what = "alpha mode " + std::to_string((int)mode) + ", A in " + aLayerID + ", alpha " + aAlphaChannel + "/" + aAlphaLayerID + (foldA2 ? ", with A2" : "");
+        ASSERT_TRUE(setKnobValues(fold.op, kStagedParamAlphaMode, { (double)mode })) << what;
+        ASSERT_TRUE(setKnobValues(fold.op, kStagedParamFoldA2, { foldA2 ? 1. : 0. })) << what;
+        setLayerKnob(fold.op, kStagedParamALayer, aLayerID);
+        setLayerKnob(fold.op, kStagedParamAAlphaLayer, aAlphaLayerID);
+        setChannelKnob(fold.op, kStagedParamAAlpha, std::string(kNatronColorViewRGBA) + "." + aAlphaChannel);
+        const int aAlphaIndex = (aAlphaChannel == "A") ? 3 : (aAlphaChannel == "B") ? 2
+            : (aAlphaChannel == "G")                                                ? 1
+                                                                                    : 0;
+
+        std::vector<float> b, a, aSpec, a2, got;
+        ASSERT_TRUE(renderRGBA(fold.b, fold.window, &b)) << what;
+        ASSERT_TRUE(renderRGBA(fold.a, fold.window, &a)) << what;
+        ASSERT_TRUE(renderLayer(fold.a, fold.window, paritySourceExtraLayer(), &aSpec)) << what;
+        ASSERT_TRUE(renderRGBA(fold.a2, fold.window, &a2)) << what;
+        ASSERT_TRUE(renderRGBA(fold.op, fold.window, &got)) << what;
+
+        const bool aInSpec = (aLayerID == kParitySourceExtraLayerID);
+        std::vector<float> want(b.size());
+        bool alphaVaries = false;
+        for (std::size_t p = 0; (p + 1) * 4 <= want.size(); ++p) {
+            float result[4];
+            float resultAlpha[4];
+            float input[4];
+            float inputAlpha[4];
+            for (int c = 0; c < 4; ++c) {
+                result[c] = b[p * 4 + c];
+                resultAlpha[c] = b[p * 4 + 3];
+                // A three-channel layer is read as RGB, its alpha reading zero.
+                input[c] = aInSpec ? ((c < 3) ? aSpec[p * 3 + c] : 0.f) : a[p * 4 + c];
+                switch (mode) {
+                case TestAlphaMode::Channel:
+                    inputAlpha[c] = a[p * 4 + aAlphaIndex];
+                    break;
+                case TestAlphaMode::Layer:
+                    inputAlpha[c] = (c < 3) ? aSpec[p * 3 + c] : 0.f;
+                    break;
+                case TestAlphaMode::ReadLayer:
+                    inputAlpha[c] = aInSpec ? a[p * 4 + aAlphaIndex] : a[p * 4 + 3];
+                    break;
+                }
+            }
+            alphaVaries = alphaVaries || (inputAlpha[0] != inputAlpha[2]) || (resultAlpha[0] != inputAlpha[0]);
+            for (int c = 0; c < 4; ++c) {
+                const float v = input[c] * (1.f - resultAlpha[c]) + result[c] * (1.f - inputAlpha[c]);
+                resultAlpha[c] = inputAlpha[c] * (1.f - resultAlpha[c]) + resultAlpha[c] * (1.f - inputAlpha[c]);
+                result[c] = v;
+            }
+            if (foldA2) {
+                for (int c = 0; c < 4; ++c) {
+                    const float inputA2 = a2[p * 4 + c];
+                    const float alphaA2 = a2[p * 4 + aAlphaIndex];
+                    result[c] = inputA2 * (1.f - resultAlpha[c]) + result[c] * (1.f - alphaA2);
+                }
+            }
+            for (int c = 0; c < 4; ++c) {
+                want[p * 4 + c] = result[c];
+            }
+        }
+        EXPECT_TRUE(alphaVaries) << what;
+        expectSame(want, got, what);
+    }
 };
 
 // The base alone: the result is the base row, blended with itself.
@@ -508,4 +785,64 @@ TEST_F(StagedCompositeTest, PointOpRouteAnswersIdentity)
     EXPECT_EQ(0, inputNb);
     ASSERT_TRUE(renderRGBA(op, window, &got));
     expectSame(sourcePixels, got, "bypassed");
+}
+
+// A folded over B in a layer the op selects, spec, with a universal alpha from rgba.A, alone and
+// followed by A2, which then reads the result's alpha the first step wrote.
+TEST_F(StagedCompositeTest, AlphaFoldReadsASelectedLayerWithAUniversalAlpha)
+{
+    AlphaFold fold;
+    createAlphaFold(&fold);
+    ASSERT_TRUE(bool(fold.op));
+    expectAlphaFold(fold, TestAlphaMode::Channel, kParitySourceExtraLayerID, "A", kParitySourceExtraLayerID, false);
+    expectAlphaFold(fold, TestAlphaMode::Channel, kParitySourceExtraLayerID, "A", kParitySourceExtraLayerID, true);
+    expectAlphaFold(fold, TestAlphaMode::Channel, kNatronColorViewRGBA, "R", kParitySourceExtraLayerID, true);
+}
+
+// A's alpha is a layer read per channel: spec's channel i is the alpha of A's channel i.
+TEST_F(StagedCompositeTest, AlphaFoldReadsAPerChannelAlphaLayer)
+{
+    AlphaFold fold;
+    createAlphaFold(&fold);
+    ASSERT_TRUE(bool(fold.op));
+    expectAlphaFold(fold, TestAlphaMode::Layer, kParitySourceExtraLayerID, "A", kParitySourceExtraLayerID, false);
+    expectAlphaFold(fold, TestAlphaMode::Layer, kParitySourceExtraLayerID, "A", kParitySourceExtraLayerID, true);
+}
+
+// A's alpha is its read layer's own alpha channel, and the universal channel for a layer without
+// one.
+TEST_F(StagedCompositeTest, AlphaFoldReadsTheReadLayersOwnAlpha)
+{
+    AlphaFold fold;
+    createAlphaFold(&fold);
+    ASSERT_TRUE(bool(fold.op));
+    expectAlphaFold(fold, TestAlphaMode::ReadLayer, kNatronColorViewRGBA, "R", kParitySourceExtraLayerID, true);
+    expectAlphaFold(fold, TestAlphaMode::ReadLayer, kParitySourceExtraLayerID, "R", kParitySourceExtraLayerID, true);
+}
+
+// A per-channel alpha layer with another channel count than the layer it is the alpha of fails the
+// render with an error naming both; the error is withdrawn once they match.
+TEST_F(StagedCompositeTest, AlphaLayerChannelCountMismatchIsARenderError)
+{
+    AlphaFold fold;
+    createAlphaFold(&fold);
+    ASSERT_TRUE(bool(fold.op));
+    ASSERT_TRUE(setKnobValues(fold.op, kStagedParamAlphaMode, { (double)TestAlphaMode::Layer }));
+    setLayerKnob(fold.op, kStagedParamALayer, kNatronColorViewRGBA);
+    setLayerKnob(fold.op, kStagedParamAAlphaLayer, kParitySourceExtraLayerID);
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    EXPECT_FALSE(renderNodePlanesDirect(fold.op, kTime, ViewIdx(0), 0, fold.window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error));
+    QString message;
+    int type = 0;
+    fold.op->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.contains(QString::fromUtf8(kParitySourceExtraLayerID))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8(kNatronColorViewRGBA), Qt::CaseInsensitive)) << message.toStdString();
+
+    setLayerKnob(fold.op, kStagedParamALayer, kParitySourceExtraLayerID);
+    std::vector<float> got;
+    EXPECT_TRUE(renderRGBA(fold.op, fold.window, &got));
+    fold.op->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }

@@ -29,7 +29,9 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <list>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -63,12 +65,40 @@ struct StageKnobs {
  * @brief One input of a Composite op as a render reads it: inputNb at the render's time, in the
  * layer of layerInput, which is inputNb itself unless its InputLayer pairs it with another input: the plane
  * being rendered as that input resolves it when layerKnob is empty, else the layer the
- * KnobLayerSelect named layerKnob selects among the layers layerInput carries.
+ * KnobLayerSelect named layerKnob selects among the layers layerInput carries. alpha is its alpha
+ * source, read from inputNb.
  **/
 struct StageSource {
     int inputNb = -1;
     int layerInput = -1;
     std::string_view layerKnob = {};
+    CompositeAlpha alpha = {};
+};
+
+/**
+ * @brief The layers a StageSource reads at one time and view. read is false when the source reads
+ * zero: its input is disconnected or its layer resolves to none. mapped is whether layer is read in
+ * the input's clip layout (the plane), rather than as it is stored (a selection). alphaChannel is the
+ * channel of alphaLayer that is the alpha of every channel, or -1 with a non-empty alphaLayer when
+ * that layer is read per channel; alphaLayer is empty when the source has no alpha, or an alpha that
+ * reads zero.
+ **/
+struct StageSourceLayers {
+    bool read = false;
+    ImageLayerDesc layer;
+    bool mapped = true;
+    ImageLayerDesc alphaLayer;
+    int alphaChannel = -1;
+
+    bool hasAlpha() const
+    {
+        return alphaLayer.getNumComponents() > 0;
+    }
+
+    bool alphaPerChannel() const
+    {
+        return hasAlpha() && (alphaChannel < 0);
+    }
 };
 
 /**
@@ -81,6 +111,9 @@ struct StageSource {
  * none, in which case the mask reads zero everywhere. divisorChannel is the channel of
  * divisorLayer "(Un)premult by" divides by, -1 for none. composite holds a Composite op's base
  * input followed by its further inputs in fold order, and is empty for any other op.
+ * compositeLayers, parallel to composite, holds the layers each of them reads once
+ * resolveStageSourcesLayers() has filled it, for inputs that read a selected layer or have an alpha
+ * source; it is empty otherwise.
  **/
 struct StagePlan {
     double time = 0.;
@@ -97,6 +130,7 @@ struct StagePlan {
     ImageLayerDesc divisorLayer;
     int divisorChannel = -1;
     std::vector<StageSource> composite;
+    std::vector<StageSourceLayers> compositeLayers;
 };
 
 /**
@@ -169,6 +203,36 @@ void resolveStageSources(const NodeSpec* spec,
                          StagePlan* plan);
 
 /**
+ * @brief The layers source reads in a render of effect at time and view.
+ **/
+StageSourceLayers resolveStageSourceLayers(EffectInstance& effect,
+                                           const StageSource& source,
+                                           double time,
+                                           ViewIdx view) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Fills plan's compositeLayers with the layers each of its Composite inputs reads in a render
+ * of effect at plan's time and view, when one of them reads a selected layer or has an alpha source.
+ **/
+void resolveStageSourcesLayers(EffectInstance& effect,
+                               StagePlan* plan);
+
+/**
+ * @brief Whether any of plan's Composite inputs has an alpha source, so that the fold carries the
+ * result's alpha.
+ **/
+bool stageSourcesHaveAlpha(const StagePlan& plan) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The render error plan's Composite inputs raise at time and view, or nullopt: a layer read
+ * per channel as another layer's alpha with a different number of channels from it.
+ **/
+std::optional<std::string> stageSourcesError(EffectInstance& effect,
+                                             const StagePlan& plan,
+                                             double time,
+                                             ViewIdx view) WARN_UNUSED_RETURN;
+
+/**
  * @brief Renders args through plan with row, the op's per-row function, on the CPU.
  *
  * Every image is fetched first, then locked on this thread for the whole render; the window
@@ -182,7 +246,8 @@ void resolveStageSources(const NodeSpec* spec,
  * With a non-empty plan.composite, row is a Composite op's step: the result starts as the base
  * input's row and row folds each further input's row into it, as CompositeOp describes, and that
  * result takes the place of row's output; the source rows only serve the blend and the
- * pass-through.
+ * pass-through. When an input has an alpha source, row is handed the alphas and writes the
+ * result's, as CompositeOp describes; a render stageSourcesError() objects to fails.
  **/
 StatusEnum runStagesCpu(EffectInstance& effect,
                         const StagePlan& plan,
@@ -236,10 +301,12 @@ bool canRunStagesGpu(const StagePlan& plan,
                      const GpuQuery& query) WARN_UNUSED_RETURN;
 
 /**
- * @brief Whether the GPU executor can fold plan's Composite inputs for query: a base input, no
- * divisor, and every input read in the query's plane. The region engine hands
- * an input over once, in one layer, so no folded input can be the input the MaskMix stage reads
- * its mask from.
+ * @brief Whether the GPU executor can fold plan's Composite inputs for query: a base input and no
+ * divisor. An input that reads a selected layer or has an alpha source needs plan's
+ * compositeLayers, no stageSourcesError(), and its layers readable beside the query's plane
+ * (stageGpuLayerRead()); a selected base layer must have the plane's channel count, since the fold
+ * starts from it. The region engine hands the mask input over in its mask layer alone, so no folded
+ * input can be the input the MaskMix stage reads its mask from.
  **/
 bool canRunStageSourcesGpu(const StagePlan& plan,
                            const GpuQuery& query) WARN_UNUSED_RETURN;
@@ -264,6 +331,48 @@ void stageGpuInputLayer(const EffectInstance& effect,
                         double time,
                         ViewIdx view,
                         ImageLayerDesc* layer);
+
+/**
+ * @brief Where the GPU executor finds a layer a Composite input reads, whole or only its channel
+ * `channel` when that is not -1, from an input handed over in plane: in the input's own view
+ * (Plane), in a layer handed over beside it (Extra, see getGpuExtraInputLayers()), or nowhere
+ * (Unreadable): the request pass plans one colour layout per input, so a colour layer in another
+ * colour layout than plane is only read through plane's view, and only one channel of it.
+ **/
+enum class StageGpuLayerRead {
+    Plane,
+    Extra,
+    Unreadable
+};
+
+StageGpuLayerRead stageGpuLayerRead(const ImageLayerDesc& layer,
+                                    int channel,
+                                    const ImageLayerDesc& plane) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Appends to layers the layers beyond plane that the GPU executor reads input inputNb of
+ * effect in for plan's Composite inputs at time and view: a selected layer and an alpha layer
+ * each, unless plane's view holds it. False when one of them is Unreadable.
+ **/
+bool stageSourcesGpuLayers(EffectInstance& effect,
+                           const StagePlan& plan,
+                           int inputNb,
+                           const ImageLayerDesc& plane,
+                           double time,
+                           ViewIdx view,
+                           std::vector<ImageLayerDesc>* layers) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Appends to layers, the layers the request pass plans for input inputNb of effect, the
+ * selected layers and alpha layers plan's Composite inputs read it in at time and view, each
+ * unless an equivalent layer is listed already.
+ **/
+void stageSourcesNeededLayers(EffectInstance& effect,
+                              const StagePlan& plan,
+                              int inputNb,
+                              double time,
+                              ViewIdx view,
+                              std::list<ImageLayerDesc>* layers);
 
 /**
  * @brief The runtime shaders one node's device cannot run. Each is reported once in the node's
@@ -304,6 +413,9 @@ bool canRecordGpuOp(const GpuOpRef& op,
  * built with runCompositeStep: it is dispatched once per further input, each dispatch folding one
  * input into the result so far, alternating between two scratch buffers, and recordStagesGpuFinish()
  * then blends the result against plan.sourceInput. With no further input the result is the base.
+ * An input reads the layer plan.compositeLayers names for it from args.layerInputs where it is not
+ * the plane. When an input has an alpha source (stageSourcesHaveAlpha()) the entry is built with
+ * runCompositeAlphaStep instead, and the fold carries the result's alpha as runStagesCpu() does.
  **/
 StatusEnum recordStagesGpu(const StagePlan& plan,
                            const GpuRenderArgs& args,

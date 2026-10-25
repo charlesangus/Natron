@@ -95,11 +95,23 @@ struct GpuWrap {
     int32_t skipChannel = -1;
 };
 
+// An alpha a Composite step reads, in the output's channels by channel bit: component `channel` of
+// `view` for every channel or, with channel -1, `view` read per channel as a step's input is read.
+// It reads zero outside the view's bounds, which may be empty.
+struct GpuWrapAlpha {
+    GpuWrapView view;
+    int32_t channel = -1;
+};
+
 // One step of a Composite op's fold over `output`: `result`, the result so far, combined with
 // `input` into `dst`. Both read zero outside their bounds, which may be empty. `result` has nComps
 // channels; `input` has 1 to 4 and is read in the output's channels by channel bit. The step's
 // GpuWrapParams describe `result` as the source and `input` in the mask fields, maskComps being its
 // channel count, with no mask flag.
+//
+// With `alpha`, the step also reads resultAlpha, the result's alpha, and inputAlpha, the input's,
+// and writes the new result's alpha to dstAlpha, which has nComps channels and must contain output;
+// its kernel is built with runCompositeAlphaStep (Kernels/compositealpha.slang).
 struct GpuWrapStep {
     GpuWrapView result;
     GpuWrapView input;
@@ -109,11 +121,28 @@ struct GpuWrapStep {
     // 1 to 4.
     uint32_t nComps = 0;
     uint32_t channelMask = 0xF;
+    bool alpha = false;
+    GpuWrapAlpha resultAlpha;
+    GpuWrapAlpha inputAlpha;
+    GpuWrapView dstAlpha;
 };
 
 // Bindings of every kernel built on compositestep.slang: those of pixelwrap.slang, with the mask
 // binding unused, then the step's input.
 inline constexpr uint32_t kGpuWrapStepBindings = kGpuWrapBindings + 1;
+
+// Bindings of every kernel built on compositealpha.slang: those of compositestep.slang, then the
+// alpha geometry, the result's alpha, the input's alpha and the destination alpha.
+inline constexpr uint32_t kGpuWrapAlphaStepBindings = kGpuWrapStepBindings + 4;
+
+// The alpha geometry block of compositealpha.slang, in words: per alpha view, the result's then the
+// input's, its offset, row stride, x1, y1, x2, y2, channel count (0 reads zero) and channel
+// (kGpuWrapAlphaPerChannel to read it per channel), then the destination alpha's offset and row
+// stride from the output's origin.
+inline constexpr uint32_t kGpuWrapAlphaViewWords = 8;
+inline constexpr uint32_t kGpuWrapAlphaGeometryWords = 2 * kGpuWrapAlphaViewWords + 2;
+inline constexpr uint32_t kGpuWrapAlphaPerChannel = 0xFFFFFFFFu;
+using GpuWrapAlphaGeometry = std::array<uint32_t, kGpuWrapAlphaGeometryWords>;
 
 // Validates the geometry of `wrap` and packs it for a dispatch over its output; buffers are only
 // checked when recording. `filtered`, wrap_finish's input, must contain the output and have
@@ -123,6 +152,9 @@ GpuStatus wrapParams(const GpuWrap& wrap, GpuWrapParams& out, const GpuWrapView*
 // Validates the geometry of `step` and packs it for a dispatch over its output, as GpuWrapStep
 // describes.
 GpuStatus wrapStepParams(const GpuWrapStep& step, GpuWrapParams& out);
+
+// Validates the alphas of `step`, which must have `alpha`, and packs their geometry.
+GpuStatus wrapStepAlphaGeometry(const GpuWrapStep& step, GpuWrapAlphaGeometry& out);
 
 // Records `kernel`, a point op entry built with runWrapped, reading its parameters from `opParams`.
 // Without opParams the binding gets a scratch buffer.
@@ -134,8 +166,8 @@ GpuStatus recordWrapped(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap
 GpuStatus recordWrappedInputs(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap,
                               const GpuBuffer* opParams, std::span<const GpuWrapView> inputs);
 
-// Records one dispatch of `kernel`, a Composite step entry built with runCompositeStep, reading its
-// parameters from `opParams`.
+// Records one dispatch of `kernel`, a Composite step entry built with runCompositeStep, or with
+// runCompositeAlphaStep when step.alpha is set, reading its parameters from `opParams`.
 GpuStatus recordWrapStep(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrapStep& step,
                          const GpuBuffer* opParams = nullptr);
 
@@ -145,8 +177,13 @@ GpuStatus recordWrapStep(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWra
 // wrap.src, the blend input, by mask x mix and passes unprocessed channels through from it. With no
 // input the result is `base`. `base` has wrap.nComps channels and every view reads zero outside its
 // bounds. No input is divided, so wrap.divisorChannel must be -1.
+//
+// With `alphas`, the base's alpha then one per input, the fold carries the result's alpha: `kernel`
+// is built with runCompositeAlphaStep, the result's alpha starts as the base's, and each step reads
+// it from and writes it to two more scratch buffers.
 GpuStatus recordWrapFold(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuWrapView& base,
-                         std::span<const GpuWrapView> inputs, const GpuBuffer* opParams = nullptr);
+                         std::span<const GpuWrapView> inputs, const GpuBuffer* opParams = nullptr,
+                         std::span<const GpuWrapAlpha> alphas = {});
 
 // Writes the source over wrap.output into wrap.dst, divided by the divisor where it is usable, as
 // a spatial filter's input. Channel mask, mask and mix are ignored.

@@ -65,14 +65,37 @@ pixelKernelChannelBit(int nComps,
  *
  * dst receives the result: the row function must write every channel whose bit is set in `channels`
  * and may leave the others untouched.
+ *
+ * alpha[i] is src[i]'s alpha, for a Composite op's step whose inputs have alpha sources (see
+ * CompositeOp), with dstAlpha receiving the result's alpha in dst's layout; both are null
+ * otherwise.
  **/
 struct RowIO {
+    /**
+     * @brief The alpha of a row's channels: that of channel c of pixel i (from x0) is
+     * data[i * pixelStride + c * channelStride]. A channelStride of 0 gives every channel of a
+     * pixel the same alpha; data is null for a row with none.
+     **/
+    struct Alpha {
+        const float* data = nullptr;
+        int pixelStride = 0;
+        int channelStride = 0;
+
+        float at(int i,
+                 int c) const
+        {
+            return data[i * pixelStride + c * channelStride];
+        }
+    };
+
     const float* src[kPixelKernelMaxInputs];
+    Alpha alpha[kPixelKernelMaxInputs];
     int nSrc;
     const float* mask;
     const float* divisor;
     int divisorSkipChannel;
     float* dst;
+    float* dstAlpha;
     int x0;
     int y;
     int width;
@@ -85,6 +108,7 @@ struct RowIO {
         , divisor(0)
         , divisorSkipChannel(-1)
         , dst(0)
+        , dstAlpha(0)
         , x0(0)
         , y(0)
         , width(0)

@@ -974,9 +974,16 @@ the base input by default). Every input is read at the evaluation's time. The re
 as the base input's row and `step()` combines it with each further input's row
 in turn: `io.src[0]` is the result so far, `io.src[1]` the next input's row, and
 `step()` writes the processed channels to `io.dst`. Mask and mix apply once, to
-the final result. An input is read in the layer its `InputSpec::layer` names and
-reads zero wherever it has no pixel. An op reading several inputs at once is not
-supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage. A Composite op runs on the GPU if it has `gpu(params)` returning a `GpuOpRef` (`GpuCompositeOp`); Dissolve does.
+the final result. An input is read in the layer its `InputSpec::layer` names, or the one
+the `KnobLayerSelect` its `CompositeInput::layerKnob` names selects, and reads zero wherever
+it has no pixel. A `CompositeInput` may also carry an alpha source (`CompositeAlpha`): one
+channel a `KnobChannelSelect` selects, broadcast to every channel; a layer a `KnobLayerSelect`
+selects, read per channel, which must have as many channels as the read layer or the render
+fails with an error naming both; or the read layer's own `A`/`alpha` channel, falling back to
+a channel select. When any folded input has one, `step()` gets `io.alpha[0]` (the result's)
+and `io.alpha[1]` (the input's) as strided spans, an input without one reading zero, and writes
+the new result's alpha to `io.dstAlpha`; the base's alpha source gives the first result's. An op
+reading several inputs at once is not supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage. A Composite op runs on the GPU if it has `gpu(params)` returning a `GpuOpRef` (`GpuCompositeOp`); Dissolve does. Its kernel is built with `runCompositeStep` (`compositestep.slang`), or with `runCompositeAlphaStep` (`compositealpha.slang`) when its inputs have alpha sources, the fold then carrying the result's alpha between dispatches as the CPU does. A selected layer other than the rendered plane is handed over beside it (`getGpuExtraInputLayers()`), and the node asks for it upstream (`getComponentsNeededAndProduced()`); a base read in a layer whose channel count differs from the plane's stays on the CPU.
 
 **Custom** is the way out, and the cost of it is that the node owns its pixels.
 A Custom node derives from `StagedImageEffect` directly, returns

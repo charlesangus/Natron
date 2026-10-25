@@ -123,19 +123,19 @@ struct SourceImage {
     }
 };
 
-// The layer a source whose InputLayer selects one is read in: the layer its KnobLayerSelect
-// resolves to among those layerInput carries at time. False when the knob is missing
-// or resolves to no layer, in which case the source reads zero.
+// The layer the KnobLayerSelect named knobName selects among those input carries at time. False
+// when the knob is missing or resolves to no layer, in which case what it selects reads zero.
 bool
-resolveStageSourceLayer(EffectInstance& effect,
-                        const StageSource& source,
-                        double time,
-                        ViewIdx view,
-                        ImageLayerDesc* layer)
+resolveStageLayerKnob(EffectInstance& effect,
+                      std::string_view knobName,
+                      int input,
+                      double time,
+                      ViewIdx view,
+                      ImageLayerDesc* layer)
 {
-    KnobLayerSelectPtr knob = effect.getKnobByNameAndType<KnobLayerSelect>(std::string(source.layerKnob));
+    KnobLayerSelectPtr knob = effect.getKnobByNameAndType<KnobLayerSelect>(std::string(knobName));
     std::list<ImageLayerDesc> present;
-    effect.getAvailableLayers(time, view, source.layerInput, &present);
+    effect.getAvailableLayers(time, view, input, &present);
     ResolvedLayer resolved;
     if (!knob || !knob->resolve(present, &resolved) || (resolved.desc.getNumComponents() == 0)) {
         return false;
@@ -145,28 +145,74 @@ resolveStageSourceLayer(EffectInstance& effect,
     return true;
 }
 
+// The channel the KnobChannelSelect named knobName selects among the layers input carries at time,
+// as layers' broadcast alpha. Left without alpha when the knob is missing or selects none.
+void
+resolveStageAlphaChannel(EffectInstance& effect,
+                         std::string_view knobName,
+                         int input,
+                         double time,
+                         ViewIdx view,
+                         StageSourceLayers* layers)
+{
+    KnobChannelSelectPtr knob = effect.getKnobByNameAndType<KnobChannelSelect>(std::string(knobName));
+    std::list<ImageLayerDesc> present;
+    effect.getAvailableLayers(time, view, input, &present);
+    ImageLayerDesc layer;
+    int channel = -1;
+    if (knob && knob->resolve(present, &layer, &channel) && (channel >= 0) && (layer.getNumComponents() > 0)) {
+        layers->alphaLayer = layer;
+        layers->alphaChannel = channel;
+    }
+}
+
+// The index of layer's channel named "A" or "alpha", in any case, or -1.
+int
+stageLayerAlphaChannel(const ImageLayerDesc& layer)
+{
+    const std::vector<std::string>& channels = layer.getChannels();
+    for (std::size_t c = 0; c < channels.size(); ++c) {
+        const QString name = QString::fromUtf8(channels[c].c_str());
+        if ((name.compare(QString::fromUtf8("A"), Qt::CaseInsensitive) == 0) || (name.compare(QString::fromUtf8("alpha"), Qt::CaseInsensitive) == 0)) {
+            return (int)c;
+        }
+    }
+
+    return -1;
+}
+
 ImagePtr
 fetchStageSource(EffectInstance& effect,
                  const StageSource& source,
+                 const StageSourceLayers& layers,
                  const EffectInstance::RenderActionArgs& args)
 {
-    if (!effect.getInput(source.inputNb)) {
+    if (!layers.read) {
         return ImagePtr();
     }
     RectI roi;
-    ImageLayerDesc layer;
-    bool mapToClipPrefs = true;
-    if (!source.layerKnob.empty()) {
-        if (!resolveStageSourceLayer(effect, source, args.time, args.view, &layer)) {
-            return ImagePtr();
-        }
-        // A selected layer is read as it is stored, not in the clip's colour layout.
-        mapToClipPrefs = false;
-    } else if (!effect.resolveInputPlaneForRender(source.layerInput, args.time, args.view, &layer, NULL)) {
+    // A selected layer is read as it is stored, not in the clip's colour layout.
+    return effect.getImage(source.inputNb, args.time, args.mappedScale, args.view, NULL, &layers.layer, layers.mapped, false /*dontUpscale*/, eStorageModeRAM, NULL, &roi);
+}
+
+// The image a source's alpha is read from, as stored; null when it has none or its channel lies
+// outside the image, in which case the alpha reads zero.
+ImagePtr
+fetchStageSourceAlpha(EffectInstance& effect,
+                      const StageSource& source,
+                      const StageSourceLayers& layers,
+                      const EffectInstance::RenderActionArgs& args)
+{
+    if (!layers.hasAlpha()) {
         return ImagePtr();
     }
+    RectI roi;
+    ImagePtr image = effect.getImage(source.inputNb, args.time, args.mappedScale, args.view, NULL, &layers.alphaLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &roi);
+    if (image && (layers.alphaChannel >= (int)image->getComponentsCount())) {
+        image.reset();
+    }
 
-    return effect.getImage(source.inputNb, args.time, args.mappedScale, args.view, NULL, &layer, mapToClipPrefs, false /*dontUpscale*/, eStorageModeRAM, NULL, &roi);
+    return image;
 }
 
 // GpuRecordContext::updateBuffer() writes at most this much.
@@ -265,16 +311,52 @@ makeStageGpuWrap(const StagePlan& plan,
     return true;
 } // makeStageGpuWrap
 
-// A Composite input as args hands it over; one not handed over reads zero, as runStagesCpu()
-// reads it.
+// The view args hands input inputNb over in for layer, read whole or only its channel `channel`
+// when that is not -1: the input's own for the plane, else the layer input naming it. Null when
+// args hands none over.
+const GpuImageView*
+findStageGpuView(const GpuRenderArgs& args,
+                 int inputNb,
+                 const ImageLayerDesc& layer,
+                 int channel)
+{
+    const GpuImageView* view = nullptr;
+
+    if (stageGpuLayerRead(layer, channel, args.query.plane) == StageGpuLayerRead::Plane) {
+        if ((inputNb >= 0) && (inputNb < (int)args.inputs.size())) {
+            view = &args.inputs[inputNb];
+        }
+    } else {
+        for (const GpuLayerInput& layerInput : args.layerInputs) {
+            if ((layerInput.inputNb == inputNb) && (layerInput.layer == layer)) {
+                view = &layerInput.view;
+                break;
+            }
+        }
+    }
+
+    return (view && view->buffer) ? view : nullptr;
+}
+
+// A Composite input as args hands it over, in the layer `layers` names for it when given; one not
+// handed over reads zero, as runStagesCpu() reads it.
 bool
 makeStageGpuInput(const StageSource& source,
+                  const StageSourceLayers* layers,
                   const GpuRenderArgs& args,
                   gpu::GpuWrapView* view)
 {
     *view = gpu::GpuWrapView();
     view->nComps = (uint32_t)args.query.nComps;
     const int inputNb = source.inputNb;
+    if (layers && !layers->mapped) {
+        const GpuImageView* layerView = layers->read ? findStageGpuView(args, inputNb, layers->layer, -1) : nullptr;
+
+        return !layerView || toWrapView(*layerView, view);
+    }
+    if (layers && !layers->read) {
+        return true;
+    }
     if ((inputNb < 0) || (inputNb >= (int)args.inputs.size()) || !args.inputs[inputNb].buffer) {
         return true;
     }
@@ -299,6 +381,41 @@ uploadKernelParams(gpu::GpuRecordContext& ctx,
     return ctx.scratch(block.size(), *params) && *params && ctx.updateBuffer(**params, 0, std::span<const std::byte>(block.data(), block.size()));
 }
 
+// A Composite input's alpha as args hands it over; one with no alpha, or not handed over, reads
+// zero, as runStagesCpu() reads it.
+bool
+makeStageGpuAlpha(const StageSource& source,
+                  const StageSourceLayers& layers,
+                  const GpuRenderArgs& args,
+                  gpu::GpuWrapAlpha* alpha)
+{
+    *alpha = gpu::GpuWrapAlpha();
+    if (!layers.read || !layers.hasAlpha()) {
+        return true;
+    }
+    const GpuImageView* view = findStageGpuView(args, source.inputNb, layers.alphaLayer, layers.alphaChannel);
+    if (!view) {
+        return true;
+    }
+    if (!toWrapView(*view, &alpha->view)) {
+        return false;
+    }
+    if (layers.alphaPerChannel()) {
+        alpha->channel = -1;
+
+        return true;
+    }
+    // The plane's view may hold a colour alpha in another colour layout.
+    const int component = stageGpuMaskViewComponent(layers.alphaLayer, layers.alphaChannel, view->nComps);
+    if ((component < 0) || (component >= view->nComps)) {
+        alpha->view = gpu::GpuWrapView();
+    } else {
+        alpha->channel = component;
+    }
+
+    return true;
+}
+
 StatusEnum
 recordKernelOp(const StagePlan& plan,
                const GpuRenderArgs& args,
@@ -319,14 +436,33 @@ recordKernelOp(const StagePlan& plan,
 
     gpu::GpuWrapView base;
     std::vector<gpu::GpuWrapView> further;
+    std::vector<gpu::GpuWrapAlpha> alphas;
     if (!plan.composite.empty()) {
-        if (!makeStageGpuInput(plan.composite[0], args, &base)) {
+        const bool hasLayers = plan.compositeLayers.size() == plan.composite.size();
+        if (!hasLayers && !plan.compositeLayers.empty()) {
+            return eStatusFailed;
+        }
+        const auto layersOf = [&](std::size_t k) {
+            return hasLayers ? &plan.compositeLayers[k] : nullptr;
+        };
+        if (!makeStageGpuInput(plan.composite[0], layersOf(0), args, &base)) {
             return eStatusFailed;
         }
         further.resize(plan.composite.size() - 1);
         for (std::size_t k = 1; k < plan.composite.size(); ++k) {
-            if (!makeStageGpuInput(plan.composite[k], args, &further[k - 1])) {
+            if (!makeStageGpuInput(plan.composite[k], layersOf(k), args, &further[k - 1])) {
                 return eStatusFailed;
+            }
+        }
+        if (stageSourcesHaveAlpha(plan)) {
+            if (!hasLayers) {
+                return eStatusFailed;
+            }
+            alphas.resize(plan.composite.size());
+            for (std::size_t k = 0; k < plan.composite.size(); ++k) {
+                if (!makeStageGpuAlpha(plan.composite[k], plan.compositeLayers[k], args, &alphas[k])) {
+                    return eStatusFailed;
+                }
             }
         }
     }
@@ -338,7 +474,10 @@ recordKernelOp(const StagePlan& plan,
     }
 
     if (!plan.composite.empty()) {
-        return gpu::recordWrapFold(ctx, (gpu::GpuKernelId)kernel.kernel, wrap, base, std::span<const gpu::GpuWrapView>(further.data(), further.size()), params) ? eStatusOK : eStatusFailed;
+        return gpu::recordWrapFold(ctx, (gpu::GpuKernelId)kernel.kernel, wrap, base, std::span<const gpu::GpuWrapView>(further.data(), further.size()), params,
+                                   std::span<const gpu::GpuWrapAlpha>(alphas.data(), alphas.size()))
+            ? eStatusOK
+            : eStatusFailed;
     }
 
     return gpu::recordWrapped(ctx, (gpu::GpuKernelId)kernel.kernel, wrap, params) ? eStatusOK : eStatusFailed;
@@ -563,6 +702,12 @@ resolveStageSources(const NodeSpec* spec,
         if (layerSpec && (layerSpec->layer.kind == InputLayer::Kind::Select)) {
             source.layerKnob = layerSpec->layer.knob;
         }
+        // A read layer the op names replaces whatever the spec resolves to.
+        if (!input.layerKnob.empty()) {
+            source.layerInput = source.inputNb;
+            source.layerKnob = input.layerKnob;
+        }
+        source.alpha = input.alpha;
 
         return source;
     };
@@ -574,6 +719,123 @@ resolveStageSources(const NodeSpec* spec,
         plan->composite.push_back(resolve(input));
     }
 } // resolveStageSources
+
+StageSourceLayers
+resolveStageSourceLayers(EffectInstance& effect,
+                         const StageSource& source,
+                         double time,
+                         ViewIdx view)
+{
+    StageSourceLayers layers;
+    if (!effect.getInput(source.inputNb)) {
+        return layers;
+    }
+    if (!source.layerKnob.empty()) {
+        if (!resolveStageLayerKnob(effect, source.layerKnob, source.layerInput, time, view, &layers.layer)) {
+            return layers;
+        }
+        layers.mapped = false;
+    } else if (!effect.resolveInputPlaneForRender(source.layerInput, time, view, &layers.layer, NULL)) {
+        return layers;
+    }
+    layers.read = true;
+
+    switch (source.alpha.kind) {
+    case CompositeAlpha::Kind::None:
+        break;
+    case CompositeAlpha::Kind::Channel:
+        resolveStageAlphaChannel(effect, source.alpha.knob, source.inputNb, time, view, &layers);
+        break;
+    case CompositeAlpha::Kind::Layer: {
+        ImageLayerDesc alphaLayer;
+        if (resolveStageLayerKnob(effect, source.alpha.knob, source.inputNb, time, view, &alphaLayer)) {
+            layers.alphaLayer = alphaLayer;
+            layers.alphaChannel = -1;
+        }
+        break;
+    }
+    case CompositeAlpha::Kind::ReadLayer: {
+        const int channel = stageLayerAlphaChannel(layers.layer);
+        if (channel >= 0) {
+            layers.alphaLayer = layers.layer;
+            layers.alphaChannel = channel;
+        } else {
+            resolveStageAlphaChannel(effect, source.alpha.knob, source.inputNb, time, view, &layers);
+        }
+        break;
+    }
+    }
+
+    return layers;
+} // resolveStageSourceLayers
+
+bool
+stageSourcesHaveAlpha(const StagePlan& plan)
+{
+    for (const StageSource& source : plan.composite) {
+        if (source.alpha.kind != CompositeAlpha::Kind::None) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+resolveStageSourcesLayers(EffectInstance& effect,
+                          StagePlan* plan)
+{
+    plan->compositeLayers.clear();
+    bool needed = false;
+    for (const StageSource& source : plan->composite) {
+        needed = needed || !source.layerKnob.empty() || (source.alpha.kind != CompositeAlpha::Kind::None);
+    }
+    if (!needed) {
+        return;
+    }
+    plan->compositeLayers.reserve(plan->composite.size());
+    for (const StageSource& source : plan->composite) {
+        plan->compositeLayers.push_back(resolveStageSourceLayers(effect, source, plan->time, plan->view));
+    }
+}
+
+namespace {
+// The error a source whose alpha layer is read per channel raises when it has not as many
+// channels as the layer it is the alpha of, or nullopt.
+std::optional<std::string>
+stageSourceLayersError(const StageSourceLayers& layers)
+{
+    if (!layers.read || !layers.alphaPerChannel() || (layers.alphaLayer.getNumComponents() == layers.layer.getNumComponents())) {
+        return std::nullopt;
+    }
+
+    return QCoreApplication::translate("StagePlan", "The alpha layer %1 has %2 channels, but the layer %3 it is the alpha of has %4.")
+        .arg(QString::fromUtf8(layers.alphaLayer.getUserFacingLabel().c_str()))
+        .arg(layers.alphaLayer.getNumComponents())
+        .arg(QString::fromUtf8(layers.layer.getUserFacingLabel().c_str()))
+        .arg(layers.layer.getNumComponents())
+        .toStdString();
+}
+} // anonymous namespace
+
+std::optional<std::string>
+stageSourcesError(EffectInstance& effect,
+                  const StagePlan& plan,
+                  double time,
+                  ViewIdx view)
+{
+    for (const StageSource& source : plan.composite) {
+        if (source.alpha.kind != CompositeAlpha::Kind::Layer) {
+            continue;
+        }
+        const std::optional<std::string> error = stageSourceLayersError(resolveStageSourceLayers(effect, source, time, view));
+        if (error) {
+            return error;
+        }
+    }
+
+    return std::nullopt;
+}
 
 void
 makeStageRowBands(const RectI& roi,
@@ -675,17 +937,34 @@ runStagesCpu(EffectInstance& effect,
         return eStatusFailed;
     }
 
-    // A Composite op's inputs, per output plane, base first.
+    // A Composite op's inputs, per output plane, base first, and their alphas when the fold
+    // carries one. A per-channel alpha layer that does not match its layer fails the render, which
+    // the caller reports (stageSourcesError()).
     const std::size_t nFolded = plan.composite.size();
+    const bool foldAlpha = (nFolded > 1) && stageSourcesHaveAlpha(plan);
+    std::vector<StageSourceLayers> sourceLayers(nFolded);
+    for (std::size_t s = 0; s < nFolded; ++s) {
+        sourceLayers[s] = resolveStageSourceLayers(effect, plan.composite[s], args.time, args.view);
+        if (stageSourceLayersError(sourceLayers[s])) {
+            return eStatusFailed;
+        }
+    }
     std::vector<std::vector<SourceImage>> jobSources(nFolded > 0 ? jobs.size() : 0, std::vector<SourceImage>(nFolded));
+    std::vector<std::vector<SourceImage>> jobAlphas(foldAlpha ? jobs.size() : 0, std::vector<SourceImage>(nFolded));
     for (std::size_t j = 0; j < jobSources.size(); ++j) {
         if (!jobs[j].dst) {
             continue;
         }
         for (std::size_t s = 0; s < nFolded; ++s) {
-            jobSources[j][s].image = fetchStageSource(effect, plan.composite[s], args);
+            jobSources[j][s].image = fetchStageSource(effect, plan.composite[s], sourceLayers[s], args);
             if (!PassExec::isFloatImage(jobSources[j][s].image)) {
                 return eStatusFailed;
+            }
+            if (foldAlpha) {
+                jobAlphas[j][s].image = fetchStageSourceAlpha(effect, plan.composite[s], sourceLayers[s], args);
+                if (!PassExec::isFloatImage(jobAlphas[j][s].image)) {
+                    return eStatusFailed;
+                }
             }
         }
     }
@@ -713,6 +992,11 @@ runStagesCpu(EffectInstance& effect,
         if (nFolded > 0) {
             for (SourceImage& source : jobSources[j]) {
                 source.lock();
+            }
+        }
+        if (foldAlpha) {
+            for (SourceImage& alpha : jobAlphas[j]) {
+                alpha.lock();
             }
         }
         for (std::size_t b = 0; b < bandRects.size(); ++b) {
@@ -744,6 +1028,35 @@ runStagesCpu(EffectInstance& effect,
             foldRows[1].resize(nFolded > 1 ? rowSize : 0);
             inputRow.resize(nFolded > 1 ? rowSize : 0);
         }
+        // With alphas, the base's and the input's are read into a row each, nComps floats per pixel
+        // at most, the result's alternates between two rows, and a source without one reads zero.
+        std::vector<float> baseAlphaRow(foldAlpha ? rowSize : 0);
+        std::vector<float> inputAlphaRow(foldAlpha ? rowSize : 0);
+        std::vector<float> alphaRows[2];
+        std::vector<float> zeroAlphaRow(foldAlpha ? width : 0, 0.f);
+        if (foldAlpha) {
+            alphaRows[0].resize(rowSize);
+            alphaRows[1].resize(rowSize);
+        }
+        const auto readAlpha = [&](std::size_t s, int y, float* buffer) {
+            const SourceImage& alpha = jobAlphas[band.job][s];
+            RowIO::Alpha span;
+            if (!alpha.image) {
+                span.data = zeroAlphaRow.data();
+                span.pixelStride = 1;
+            } else if (sourceLayers[s].alphaPerChannel()) {
+                PassExec::readSourceRow(alpha.image.get(), alpha.access.get(), alpha.bounds, alpha.nComps, roi.x1, y, width, nComps, buffer);
+                span.data = buffer;
+                span.pixelStride = nComps;
+                span.channelStride = 1;
+            } else {
+                PassExec::readChannelRow(alpha.image.get(), alpha.access.get(), alpha.bounds, alpha.nComps, sourceLayers[s].alphaChannel, roi.x1, y, width, 0.f, buffer);
+                span.data = buffer;
+                span.pixelStride = 1;
+            }
+
+            return span;
+        };
         const float* resultRow = kernelRow.data();
 
         RowIO io;
@@ -802,6 +1115,9 @@ runStagesCpu(EffectInstance& effect,
                 // Steps write only to the fold rows or the output, never to the source row the
                 // finish still blends with.
                 int next = 1;
+                if (foldAlpha) {
+                    io.alpha[0] = readAlpha(0, y, baseAlphaRow.data());
+                }
                 for (std::size_t s = 1; s < nFolded; ++s) {
                     const SourceImage& input = folded[s];
                     PassExec::readSourceRow(input.image.get(), input.access.get(), input.bounds, input.nComps, roi.x1, y, width, nComps, &inputRow[0]);
@@ -810,9 +1126,18 @@ runStagesCpu(EffectInstance& effect,
                     io.src[1] = &inputRow[0];
                     io.nSrc = 2;
                     io.dst = stepRow;
+                    if (foldAlpha) {
+                        io.alpha[1] = readAlpha(s, y, inputAlphaRow.data());
+                        io.dstAlpha = alphaRows[s & 1].data();
+                    }
                     row(io);
                     result = stepRow;
                     next = 1 - next;
+                    if (foldAlpha) {
+                        io.alpha[0].data = io.dstAlpha;
+                        io.alpha[0].pixelStride = nComps;
+                        io.alpha[0].channelStride = 1;
+                    }
                 }
                 resultRow = result;
             } else {
@@ -925,11 +1250,31 @@ canRunStageSourcesGpu(const StagePlan& plan,
     if (plan.composite.empty() || (plan.divisorChannel >= 0)) {
         return false;
     }
-    for (const StageSource& source : plan.composite) {
-        if (!source.layerKnob.empty()) {
+    for (std::size_t s = 0; s < plan.composite.size(); ++s) {
+        const StageSource& source = plan.composite[s];
+        if (plan.applyMask && (source.inputNb == plan.maskInput)) {
             return false;
         }
-        if (plan.applyMask && (source.inputNb == plan.maskInput)) {
+        if (source.layerKnob.empty() && (source.alpha.kind == CompositeAlpha::Kind::None)) {
+            continue;
+        }
+        if (plan.compositeLayers.size() != plan.composite.size()) {
+            return false;
+        }
+        const StageSourceLayers& layers = plan.compositeLayers[s];
+        if (!layers.read) {
+            continue;
+        }
+        if (stageSourceLayersError(layers)) {
+            return false;
+        }
+        if (!layers.mapped) {
+            const StageGpuLayerRead read = stageGpuLayerRead(layers.layer, -1, query.plane);
+            if ((read == StageGpuLayerRead::Unreadable) || ((s == 0) && (read == StageGpuLayerRead::Extra) && (layers.layer.getNumComponents() != query.nComps))) {
+                return false;
+            }
+        }
+        if (layers.hasAlpha() && (stageGpuLayerRead(layers.alphaLayer, layers.alphaChannel, query.plane) == StageGpuLayerRead::Unreadable)) {
             return false;
         }
     }
@@ -973,6 +1318,109 @@ stageGpuInputLayer(const EffectInstance& effect,
     EffectInstance& self = const_cast<EffectInstance&>(effect);
     if (self.resolveInputPlaneForRender(inputNb, time, view, &maskLayer, &maskChannel)) {
         *layer = maskLayer;
+    }
+}
+
+StageGpuLayerRead
+stageGpuLayerRead(const ImageLayerDesc& layer,
+                  int channel,
+                  const ImageLayerDesc& plane)
+{
+    if (layer == plane) {
+        return StageGpuLayerRead::Plane;
+    }
+    if (!layer.isColorLayer() || !plane.isColorLayer()) {
+        return StageGpuLayerRead::Extra;
+    }
+    if ((channel >= 0) && (stageGpuMaskViewComponent(layer, channel, plane.getNumComponents()) >= 0)) {
+        return StageGpuLayerRead::Plane;
+    }
+
+    return StageGpuLayerRead::Unreadable;
+}
+
+namespace {
+// Appends layer to layers unless it is there; false when the GPU executor cannot read it.
+bool
+appendStageGpuLayer(const ImageLayerDesc& layer,
+                    int channel,
+                    const ImageLayerDesc& plane,
+                    std::vector<ImageLayerDesc>* layers)
+{
+    const StageGpuLayerRead read = stageGpuLayerRead(layer, channel, plane);
+
+    if (read == StageGpuLayerRead::Unreadable) {
+        return false;
+    }
+    if ((read == StageGpuLayerRead::Extra) && (std::find(layers->begin(), layers->end(), layer) == layers->end())) {
+        layers->push_back(layer);
+    }
+
+    return true;
+}
+
+// Appends layer to layers unless an equivalent layer is there, as the request pass plans layers.
+void
+appendStageNeededLayer(const ImageLayerDesc& layer,
+                       std::list<ImageLayerDesc>* layers)
+{
+    if ((layer.getNumComponents() > 0) && (ImageLayerDesc::findEquivalentLayer(layer, layers->begin(), layers->end()) == layers->end())) {
+        layers->push_back(layer);
+    }
+}
+} // anonymous namespace
+
+bool
+stageSourcesGpuLayers(EffectInstance& effect,
+                      const StagePlan& plan,
+                      int inputNb,
+                      const ImageLayerDesc& plane,
+                      double time,
+                      ViewIdx view,
+                      std::vector<ImageLayerDesc>* layers)
+{
+    for (const StageSource& source : plan.composite) {
+        if ((source.inputNb != inputNb) || (source.layerKnob.empty() && (source.alpha.kind == CompositeAlpha::Kind::None))) {
+            continue;
+        }
+        const StageSourceLayers read = resolveStageSourceLayers(effect, source, time, view);
+        if (!read.read) {
+            continue;
+        }
+        // A plane read in the clip layout is plane itself.
+        if (!read.mapped && !appendStageGpuLayer(read.layer, -1, plane, layers)) {
+            return false;
+        }
+        if (read.hasAlpha() && !appendStageGpuLayer(read.alphaLayer, read.alphaChannel, plane, layers)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void
+stageSourcesNeededLayers(EffectInstance& effect,
+                         const StagePlan& plan,
+                         int inputNb,
+                         double time,
+                         ViewIdx view,
+                         std::list<ImageLayerDesc>* layers)
+{
+    for (const StageSource& source : plan.composite) {
+        if ((source.inputNb != inputNb) || (source.layerKnob.empty() && (source.alpha.kind == CompositeAlpha::Kind::None))) {
+            continue;
+        }
+        const StageSourceLayers read = resolveStageSourceLayers(effect, source, time, view);
+        if (!read.read) {
+            continue;
+        }
+        if (!read.mapped) {
+            appendStageNeededLayer(read.layer, layers);
+        }
+        if (read.hasAlpha()) {
+            appendStageNeededLayer(read.alphaLayer, layers);
+        }
     }
 }
 

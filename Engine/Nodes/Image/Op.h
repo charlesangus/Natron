@@ -240,11 +240,58 @@ concept RoutesOp = requires(const OP& op, const typename OP::Params& params, con
 };
 
 /**
+ * @brief Where a Composite input's alpha comes from, read from the same input as its pixels.
+ *
+ * None gives the input no alpha of its own. Channel is the channel a KnobChannelSelect named knob
+ * selects among the input's layers, the same for every channel (broadcast). Layer is the layer a
+ * KnobLayerSelect named knob selects, whose channel i is the alpha of channel i of the input's
+ * read layer (per channel); the two must have as many channels. ReadLayer is the read layer's own
+ * channel named "A" or "alpha", in any case, broadcast, falling back to Channel through knob when
+ * the read layer has none. A knob that is missing or resolves to nothing reads an alpha of zero.
+ **/
+struct CompositeAlpha {
+    enum class Kind : unsigned char {
+        None,
+        Channel,
+        Layer,
+        ReadLayer
+    };
+
+    Kind kind = Kind::None;
+    std::string_view knob = {};
+
+    static constexpr CompositeAlpha none()
+    {
+        return CompositeAlpha {};
+    }
+
+    static constexpr CompositeAlpha channel(std::string_view knobName)
+    {
+        return CompositeAlpha { Kind::Channel, knobName };
+    }
+
+    static constexpr CompositeAlpha layer(std::string_view knobName)
+    {
+        return CompositeAlpha { Kind::Layer, knobName };
+    }
+
+    static constexpr CompositeAlpha readLayer(std::string_view fallbackChannelKnob)
+    {
+        return CompositeAlpha { Kind::ReadLayer, fallbackChannelKnob };
+    }
+};
+
+/**
  * @brief One input a Composite op reads in an evaluation. Every input is read at the evaluation's
  * time: frames needed and the GPU fold only ever ask for that time.
+ *
+ * layerKnob, when set, names the KnobLayerSelect choosing the layer the input is read in among its
+ * own layers, in place of what its InputSpec::layer resolves to. alpha is the input's alpha source.
  **/
 struct CompositeInput {
     int inputNb = -1;
+    std::string_view layerKnob = {};
+    CompositeAlpha alpha = {};
 };
 
 /**
@@ -266,6 +313,29 @@ struct CompositeInputs {
         further.push_back(CompositeInput { inputNb });
     }
 
+    void add(const CompositeInput& input)
+    {
+        further.push_back(input);
+    }
+
+    /**
+     * @brief Whether any folded input has an alpha source, in which case step() is handed and
+     * writes alphas as RowIO describes.
+     **/
+    bool hasAlpha() const
+    {
+        if (base.alpha.kind != CompositeAlpha::Kind::None) {
+            return true;
+        }
+        for (const CompositeInput& input : further) {
+            if (input.alpha.kind != CompositeAlpha::Kind::None) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     int blend() const
     {
         return (blendInput >= 0) ? blendInput : base.inputNb;
@@ -284,8 +354,15 @@ struct CompositeInputs {
  * step() is pure on its RowIO, as a Point op's row() is. io.src[0] is the result so far and
  * io.src[1] the next input's row, io.nComps floats per pixel each, and step() writes the processed
  * channels (io.channels) of the new result to io.dst; the other channels of a result are never
- * read back as output. An input is read in the layer its InputSpec::layer names, and reads zero
- * wherever it has no pixel. No row is divided: a Composite op has no Premult stage, since no one
+ * read back as output. An input is read in the layer its CompositeInput::layerKnob or else its
+ * InputSpec::layer names, and reads zero wherever it has no pixel.
+ *
+ * When any folded input has an alpha source (CompositeInputs::hasAlpha()), io.alpha[0] is the
+ * result's alpha and io.alpha[1] the next input's, and step() writes the new result's alpha of
+ * every processed channel to io.dstAlpha, io.nComps floats per pixel, which the next step reads
+ * as io.alpha[0]. The base input's alpha source gives the first result's alpha, and an input
+ * without one has an alpha of zero. Otherwise both alphas and io.dstAlpha are null. No row is
+ * divided: a Composite op has no Premult stage, since no one
  * input's divisor applies to the others. Mask and mix apply once, to the final result.
  **/
 template <typename OP>
@@ -297,8 +374,10 @@ concept CompositeOp = BakesParams<OP> && std::copyable<typename OP::Params> && r
 
 /**
  * @brief A Composite op that runs on the GPU: gpu(params) names a registry kernel whose entry is
- * built with runCompositeStep (Kernels/compositestep.slang), and its parameter block. The kernel
- * is dispatched once per further input. A Composite op without it stays on the CPU.
+ * built with runCompositeStep (Kernels/compositestep.slang), or with runCompositeAlphaStep
+ * (Kernels/compositealpha.slang) when inputs() gives an input an alpha source, and its parameter
+ * block. The kernel is dispatched once per further input. A Composite op without it stays on the
+ * CPU.
  **/
 template <typename OP>
 concept GpuCompositeOp = CompositeOp<OP> && requires(const OP& op, const typename OP::Params& params) {

@@ -52,6 +52,7 @@
 #include <ofxNatron.h>
 
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 
@@ -169,7 +170,7 @@ protected:
         std::string error;
         std::string output;
 
-        return NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output);
+        return interpretPythonScript(script, &error, &output);
     }
 
     // Modifies every kind of state a preset apply must clear: keyframes, an expression, a link

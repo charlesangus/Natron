@@ -202,7 +202,7 @@ TEST_F(TextRenderer, DestroyedContextReleasesOnlyItsOwnAtlases)
     expectTextures(renderer.textureNamesOfCurrentContext(), true, "of the surviving context drawn again");
 
     std::unique_ptr<QOpenGLContext> third = createContext();
-    ASSERT_TRUE(third);
+    ASSERT_TRUE(third != nullptr);
     ASSERT_TRUE(makeCurrent(third.get()));
     EXPECT_TRUE(renderer.textureNamesOfCurrentContext().empty()) << "a new context sees another context's atlases";
     drawText(renderer);
@@ -221,7 +221,7 @@ TEST_F(TextRenderer, ReleaseCurrentContextDeletesItsAtlases)
         return;
     }
     std::unique_ptr<QOpenGLContext> context = createContext();
-    ASSERT_TRUE(context);
+    ASSERT_TRUE(context != nullptr);
     NATRON_NAMESPACE::TextRenderer renderer;
 
     ASSERT_TRUE(makeCurrent(context.get()));

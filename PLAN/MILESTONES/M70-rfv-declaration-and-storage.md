@@ -46,13 +46,13 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
 
 ## Phase 70.4: GUI
 
-- [ ] M70.P4.T1 — Restrict the user-parameter dialog around RFV groups
+- [x] M70.P4.T1 — Restrict the user-parameter dialog around RFV groups
   - files: `Gui/ManageUserParamsDialog.cpp`, `Gui/ManageUserParamsDialog.h`
   - approach: on a node that has an RFV group, show the group as a pinned, undeletable entry, and allow adding value-knob children to it. The "Group" type on the add dialog never produces an RFV group, so only the Set node and the project carry one. A node with no RFV group cannot gain one.
   - verify: Xvfb GUI run (recipe in `build/deeprepro/run-gui.sh`): open a Set node, add a Double and a String variable, reload the project, and both are present. Take a screenshot of the dialog.
   - size: M
 
-- [ ] M70.P4.T2 — Project settings variables editor
+- [x] M70.P4.T2 — Project settings variables editor
   - files: `Gui/ProjectGui.cpp`, `Gui/ProjectGui.h`, `Gui/ManageUserParamsDialog.cpp`
   - approach: a "Variables" section on the project settings panel that shows the RFV group's knobs, plus an "Edit variables..." button that opens `ManageUserParamsDialog` scoped to the project's RFV group.
   - verify: Xvfb GUI run: add a project variable from the panel, save and reload; screenshot of the panel.

@@ -2325,15 +2325,15 @@ AppInstance::declareCurrentAppVariable_Python()
     std::string script = ss.str();
     std::string err;
     bool ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, 0);
-    assert(ok);
     if (!ok) {
         throw std::runtime_error("AppInstance::declareCurrentAppVariable_Python() failed!");
     }
 
     if ( appPTR->isBackground() ) {
-        std::string err;
-        ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript("app = app1\n", &err, 0);
-        assert(ok);
+        std::string aliasErr;
+        if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript("app = app1\n", &aliasErr, 0)) {
+            qDebug() << "Rebinding the app alias failed:" << aliasErr.c_str();
+        }
     }
 }
 

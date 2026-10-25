@@ -74,6 +74,12 @@ protected:
         return getApp()->getAppIDString();
     }
 
+    // The plain "app" alias, when the environment defines it, must see the new variable.
+    static std::string aliasResolves(const std::string& name)
+    {
+        return "if 'app' in globals():\n    assert app." + name + ".getScriptName() == '" + name + "'\n";
+    }
+
     void expectValueError(const std::string& call)
     {
         std::string error;
@@ -191,6 +197,8 @@ TEST_F(RFVPythonTest, AppAttributeFollowsSaveResetAndLoad)
                     &error))
         << error;
 
+    EXPECT_TRUE(run(aliasResolves("gain"), &error)) << error;
+
     ProjectPtr project = getApp()->getProject();
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -205,6 +213,7 @@ TEST_F(RFVPythonTest, AppAttributeFollowsSaveResetAndLoad)
 
     ASSERT_TRUE(project->loadProject(dirPath, fileName));
     ASSERT_TRUE(bool(project->getKnobByName("gain")));
+    EXPECT_TRUE(run(aliasResolves("gain"), &error)) << error;
     EXPECT_TRUE(run("assert " + a + ".gain.getScriptName() == 'gain'\n"
                                     "assert "
                         + a + ".gain.getValue() == 0.25\n",

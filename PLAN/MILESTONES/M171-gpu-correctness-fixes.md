@@ -37,7 +37,7 @@ This milestone fixes two GPU problems found by later milestones. First, in a `-D
 
 ## Phase 171.2: curvesnapshot fma precision
 
-- [ ] M171.P2.T1 — Replace the fused product-error terms in curvesnapshot.slang and offset.slang with Dekker's split, and add a lavapipe probe test
+- [x] M171.P2.T1 — Replace the fused product-error terms in curvesnapshot.slang and offset.slang with Dekker's split, and add a lavapipe probe test
   - files: `Engine/Gpu/Kernels/curvesnapshot.slang`, `Engine/Gpu/Kernels/offset.slang`, `Tests/Gpu/kernels/curvesnapshot_probe.slang` (new), `Tests/Gpu/CurveSnapshotPrecision_Test.cpp` (new), `Tests/Gpu/CMakeLists.txt`
   - approach:
     - Add scalar `curveSplit` and `curveProductError(a, b, p)` to `curvesnapshot.slang`, copied from `rawcolorcalibration.slang:100-113`: `ffSplit` plus `e = ((ah*bh - p) + ah*bl + al*bh) + al*bl`, all under `precise`. `blur_lines.slang:134-150` has the same pattern in float4. Add the non-finite-split guard from Edge cases.
@@ -48,7 +48,7 @@ This milestone fixes two GPU problems found by later milestones. First, in a `-D
   - verify: PR CI passes `CurveSnapshotPrecision*` on lavapipe, canary included. `NativeColorLookupGpuTest`, the ColorCorrect GPU parity suite, and the Crop, Position and StagedOffset GPU tests still pass at their current tolerances.
   - size: M
 
-- [ ] M171.P2.T2 — Lint Engine/Gpu/Kernels for fused-fma error terms
+- [x] M171.P2.T2 — Lint Engine/Gpu/Kernels for fused-fma error terms
   - files: `tools/ci/check_kernel_fma.sh` (new), `.github/workflows/checks.yml`
   - approach:
     - Write a shell check modelled on `tools/ci/check_serialization_layering.sh`. It fails on any `fma(<x>, <y>, -<z>)` in `Engine/Gpu/Kernels/*.slang`, and points at `rawcolorcalibration.slang:100` for the Dekker pattern.
@@ -67,3 +67,4 @@ This milestone fixes two GPU problems found by later milestones. First, in a `-D
 - 2026-10-25 — **Codex review round (PR #100): 3 findings, all fixed in `7b30c6b3f`.** (1, major) The `|p| < 1e-30` cutoff dropped real normal residuals (9e-31f × 1.1f). It is removed: only a non-finite `p` or a split that would overflow gives 0, with regression pairs below 1e-30. (2) The near-split-limit pairs were all filtered out. They now run, and each category asserts at least one tested pair. (3) The lint missed `fma (`, a newline before `(` and a parenthesised `(-p)`. Fixed, with `--self-test` covering 11 fixtures. Threads replied to. PR CI (lavapipe) will exercise the probe.
 - 2026-10-25 — **Gate line "GPU-off" passes** (remote `fast --tests --no-appimage --cmake-arg -DNATRON_GPU=OFF` of `f53c09658`, run 40170757696): 379/379 in both scheduler legs, including `StagedImageEffectGpuTest.HostAcceptsAPointOpOnlyWithAKernel`, which run 39770415588 had failed. Later commits touch only GPU kernels, tests built with GPU on, CI scripts and workflows, none of which a GPU-off build compiles.
 - 2026-10-25 — **Nightly GPU-off job verified, with a gate deviation (PM).** Run 40173787928 on `a5a2a97aa` builds with `NATRON_GPU:BOOL=OFF` (CMakeCache printed), and ctest passes 377/379. The 2 failures, `GuiThreadGLBinding` and `TextRenderer`, are the same release-build failures that main's own Nightly `release-build-and-test` has had since `9ab236449`. They are unrelated to GPU-off, came from M161/M172, and are reported in the inbox. The first dispatch (40170808335) had failed on `build/release` not existing, because `--cmake-arg` builds go to a hashed dir; `a5a2a97aa` links it as `remote-build.yml` does. The gate's "GPU-off job green" is read as "GPU-off build and ctest work, and only main's known release failures remain". The job goes green with no M171 change once those two tests are fixed on main.
+- 2026-10-25 — **Merged as `325c87422` (PR #100).** PR CI on `b167b67d4` over main `2b90bbec3` passes: debug build, both legs, format, and lint-ci with the new fma lint. `CurveSnapshotPrecisionTest` (`CurveMulKeepsTheProductError`, `CurveMulDropsAnErrorTooSmallToKeep`, `FusedErrorTermCanary`) passes in both legs. GPU-off passed 379/379 (run 40170757696), and Nightly's GPU-off job passed 377/379, failing only main's known release tests. The lane worktree is removed.

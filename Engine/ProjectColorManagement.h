@@ -95,6 +95,13 @@ public:
     };
 
     typedef std::shared_ptr<const DisplayProcessor> DisplayProcessorPtr;
+
+    struct TransformProcessor {
+        OCIO_NAMESPACE::ConstProcessorRcPtr processor;
+        OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu;
+    };
+
+    typedef std::shared_ptr<const TransformProcessor> TransformProcessorPtr;
     typedef std::function<void()> ConfigChangedCallback;
 
     ProjectColorManagement();
@@ -143,6 +150,18 @@ public:
                                                                   const std::string& dst,
                                                                   const std::vector<std::pair<std::string, std::string>>& context = std::vector<std::pair<std::string, std::string>>()) const;
 
+    /**
+     * @brief The processor of \p transform in the loaded config, with \p context's variables set
+     * on the config's current context, in order. A processor is cached per description of the
+     * transform and set of variables until a config loads, so a transform whose result depends
+     * on more than its description (a file whose contents changed) needs
+     * OCIO_NAMESPACE::ClearAllCaches() and a config load to be read again. Returns null and fills
+     * \p error on failure.
+     **/
+    TransformProcessorPtr getTransformProcessor(const OCIO_NAMESPACE::ConstTransformRcPtr& transform,
+                                                const std::vector<std::pair<std::string, std::string>>& context,
+                                                std::string* error = 0) const;
+
     void setWorkingSpace(const std::string& name);
 
     /**
@@ -190,6 +209,7 @@ private:
     OCIO_NAMESPACE::ConstCPUProcessorRcPtr _pickingToWorking;
     mutable std::map<std::string, DisplayProcessorPtr> _displayCache;
     mutable std::map<std::string, OCIO_NAMESPACE::ConstCPUProcessorRcPtr> _conversionCache;
+    mutable std::map<std::string, TransformProcessorPtr> _transformCache;
     bool _workingToXYZValid;
     double _workingToXYZMatrix[9];
     double _workingLuma[3];

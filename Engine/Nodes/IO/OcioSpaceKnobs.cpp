@@ -83,34 +83,7 @@ OcioSpaceKnobs::create(KnobHolder* holder,
     page->addKnob(workingSpace);
     _workingSpace = workingSpace;
 
-    KnobStringPtr space = AppManager::createKnob<KnobString>(holder, description.label);
-    space->setName(description.prefix);
-    space->setHintToolTip(description.spaceHint);
-    space->setAnimationEnabled(false);
-    space->setSecret(true);
-    page->addKnob(space);
-    _space = space;
-
-    KnobChoicePtr menu = AppManager::createKnob<KnobChoice>(holder, description.label);
-    menu->setName(description.prefix + "Index");
-    menu->setHintToolTip(description.menuHint);
-    menu->setAnimationEnabled(false);
-    menu->setCascading(true);
-    menu->setNotifiesOnReselect(true);
-    menu->setIsPersistent(false);
-    // Only the space string it sets decides the render.
-    menu->setEvaluateOnChange(false);
-    page->addKnob(menu);
-    _menu = menu;
-
-    KnobBoolPtr spaceSet = AppManager::createKnob<KnobBool>(holder, description.setLabel);
-    spaceSet->setName(description.prefix + "Set");
-    spaceSet->setDefaultValue(false);
-    spaceSet->setAnimationEnabled(false);
-    spaceSet->setEvaluateOnChange(false);
-    spaceSet->setSecret(true);
-    page->addKnob(spaceSet);
-    _spaceSet = spaceSet;
+    createSpaceKnobs(holder, page, description, -1);
 
     const QString contextHint = tr("OCIO Contexts allow you to apply specific LUTs or grades to different shots.\n"
                                    "Here you can specify the context name (key) and its corresponding value.\n"
@@ -137,6 +110,84 @@ OcioSpaceKnobs::create(KnobHolder* holder,
         context->addKnob(value);
         _contextValues[i] = value;
     }
+
+    refreshMenu();
+}
+
+void
+OcioSpaceKnobs::createSpaceKnobs(KnobHolder* holder,
+                                 const KnobPagePtr& page,
+                                 const Description& description,
+                                 int index)
+{
+    const auto add = [&page, &index](const KnobIPtr& knob) {
+        if (index < 0) {
+            page->addKnob(knob);
+        } else {
+            page->insertKnob(index++, knob);
+        }
+    };
+
+    KnobStringPtr space = AppManager::createKnob<KnobString>(holder, description.label);
+    space->setName(description.prefix);
+    space->setHintToolTip(description.spaceHint);
+    space->setAnimationEnabled(false);
+    space->setSecret(true);
+    add(space);
+    _space = space;
+
+    KnobChoicePtr menu = AppManager::createKnob<KnobChoice>(holder, description.label);
+    menu->setName(description.prefix + "Index");
+    menu->setHintToolTip(description.menuHint);
+    menu->setAnimationEnabled(false);
+    menu->setCascading(true);
+    menu->setNotifiesOnReselect(true);
+    menu->setIsPersistent(false);
+    // Only the space string it sets decides the render.
+    menu->setEvaluateOnChange(false);
+    add(menu);
+    _menu = menu;
+
+    KnobBoolPtr spaceSet = AppManager::createKnob<KnobBool>(holder, description.setLabel);
+    spaceSet->setName(description.prefix + "Set");
+    spaceSet->setDefaultValue(false);
+    spaceSet->setAnimationEnabled(false);
+    spaceSet->setEvaluateOnChange(false);
+    spaceSet->setSecret(true);
+    add(spaceSet);
+    _spaceSet = spaceSet;
+}
+
+void
+OcioSpaceKnobs::createSharing(const OcioSpaceKnobs& first,
+                              KnobHolder* holder,
+                              const KnobPagePtr& page,
+                              const Description& description,
+                              const AutomaticSpace& automaticSpace,
+                              const ChoiceMade& choiceMade)
+{
+    _holder = holder;
+    _automaticSpace = automaticSpace;
+    _choiceMade = choiceMade;
+    _configFile = first._configFile;
+    _workingSpace = first._workingSpace;
+    _context = first._context;
+    for (int i = 0; i < 4; ++i) {
+        _contextKeys[i] = first._contextKeys[i];
+        _contextValues[i] = first._contextValues[i];
+    }
+
+    int index = -1;
+    if (KnobGroupPtr context = _context.lock()) {
+        const std::vector<KnobIPtr> children = page->getChildren();
+        for (std::size_t i = 0; i < children.size(); ++i) {
+            if (children[i] == context) {
+                index = (int)i;
+                break;
+            }
+        }
+    }
+    createSpaceKnobs(holder, page, description, index);
 
     refreshMenu();
 }

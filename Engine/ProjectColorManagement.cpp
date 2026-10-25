@@ -30,7 +30,9 @@
 #include <chrono>
 #include <cmath>
 #include <exception>
+#include <limits>
 #include <mutex>
+#include <sstream>
 #include <thread>
 #include <utility>
 
@@ -457,6 +459,7 @@ ProjectColorManagement::ProjectColorManagement()
     , _pickingToWorking()
     , _displayCache()
     , _conversionCache()
+    , _transformCache()
     , _workingToXYZValid(false)
     , _workingToXYZMatrix()
     , _workingLuma()
@@ -521,6 +524,7 @@ ProjectColorManagement::load(const std::string& source,
         _directory = directory;
         _displayCache.clear();
         _conversionCache.clear();
+        _transformCache.clear();
     }
     rebuildPickingProcessors();
     rebuildWorkingColorimetry();
@@ -797,6 +801,71 @@ ProjectColorManagement::getConversionProcessor(const std::string& src,
     }
 
     return cpu;
+}
+
+ProjectColorManagement::TransformProcessorPtr
+ProjectColorManagement::getTransformProcessor(const OCIO::ConstTransformRcPtr& transform,
+                                              const std::vector<std::pair<std::string, std::string>>& context,
+                                              std::string* error) const
+{
+    if (!transform) {
+        if (error) {
+            *error = "No OpenColorIO transform";
+        }
+
+        return TransformProcessorPtr();
+    }
+    // Values print at full precision, so that transforms that differ in any digit differ here.
+    std::ostringstream description;
+    description.precision(std::numeric_limits<double>::max_digits10);
+    description << *transform;
+    // The unit separator cannot appear in a variable a user types.
+    std::string key = description.str();
+    for (std::size_t i = 0; i < context.size(); ++i) {
+        key += '\x1f' + context[i].first + '\x1f' + context[i].second;
+    }
+    OCIO::ConstConfigRcPtr config;
+    {
+        QMutexLocker k(&_mutex);
+        std::map<std::string, TransformProcessorPtr>::const_iterator it = _transformCache.find(key);
+        if (it != _transformCache.end()) {
+            return it->second;
+        }
+        config = _config;
+    }
+    if (!config) {
+        if (error) {
+            *error = "No OpenColorIO config is loaded";
+        }
+
+        return TransformProcessorPtr();
+    }
+
+    std::shared_ptr<TransformProcessor> result = std::make_shared<TransformProcessor>();
+    try {
+        const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
+        OCIO::ContextRcPtr editable = config->getCurrentContext()->createEditableCopy();
+        for (std::size_t i = 0; i < context.size(); ++i) {
+            editable->setStringVar(context[i].first.c_str(), context[i].second.c_str());
+        }
+        result->processor = config->getProcessor(editable, transform, OCIO::TRANSFORM_DIR_FORWARD);
+        result->cpu = result->processor->getOptimizedCPUProcessor(OCIO::BIT_DEPTH_F32, OCIO::BIT_DEPTH_F32, OCIO::OPTIMIZATION_DEFAULT);
+    } catch (const std::exception& e) {
+        if (error) {
+            *error = e.what();
+        }
+
+        return TransformProcessorPtr();
+    }
+
+    TransformProcessorPtr shared = result;
+    QMutexLocker k(&_mutex);
+    if (_config != config) {
+        return shared;
+    }
+    std::pair<std::map<std::string, TransformProcessorPtr>::iterator, bool> inserted = _transformCache.insert(std::make_pair(key, shared));
+
+    return inserted.first->second;
 }
 
 void

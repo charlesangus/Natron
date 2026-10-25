@@ -2730,19 +2730,8 @@ public:
     template <typename TYPE>
     std::shared_ptr<TYPE> getKnobByNameAndType(const std::string & name) const
     {
-        const KnobsVec& knobs = getKnobs();
-
-        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-            if ( (*it)->getName() == name ) {
-                std::shared_ptr<TYPE> isType = std::dynamic_pointer_cast<TYPE>(*it);
-                if (isType) {
-                    return isType;
-                }
-                break;
-            }
-        }
-
-        return std::shared_ptr<TYPE>();
+        // getKnobByName() locks the knob list, so this may be called from any thread.
+        return std::dynamic_pointer_cast<TYPE>(getKnobByName(name));
     }
 
     const std::vector<KnobIPtr> & getKnobs() const WARN_UNUSED_RETURN;

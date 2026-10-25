@@ -7481,7 +7481,8 @@ Node::areKeyframesVisibleOnTimeline() const
 bool
 Node::hasAnimatedKnob() const
 {
-    const KnobsVec & knobs = getKnobs();
+    // Metadata derivation asks this from render threads, so the knob list is copied under its lock.
+    const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
     bool hasAnimation = false;
 
     for (U32 i = 0; i < knobs.size(); ++i) {

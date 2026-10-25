@@ -40,6 +40,7 @@
 #include <QTemporaryDir>
 
 #include <ofxImageEffect.h>
+#include <ofxMetadata.h>
 
 #include "BaseTest.h"
 #include "RenderBothWays.h"
@@ -53,6 +54,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/RectI.h"
@@ -557,4 +559,48 @@ TEST_F(NativeReadViewsTest, AReadCreatedWithItsFileGetsTheViewsAndTheColourDefau
     ASSERT_GE(right, 0) << "the project was not given the file's right view";
     expectLayer(node, left, ImageLayerDesc::getRGBAComponents(), eLeft, eColour);
     expectLayer(node, right, ImageLayerDesc::getRGBAComponents(), eRight, eColour);
+}
+
+// A name with a view variable is a file per view: each project view reads, describes and lists
+// the layers of its own file, never the first view's.
+TEST_F(NativeReadViewsTest, AViewVariableReadsEachViewsOwnFile)
+{
+    QTemporaryDir dir(temporaryTemplate());
+    ASSERT_TRUE(dir.isValid());
+
+    getApp()->getProject()->createProjectViews(std::vector<std::string>(1, "Right"));
+    const std::vector<std::string> views = getApp()->getProject()->getProjectViewNames();
+    ASSERT_EQ(2u, views.size());
+
+    std::vector<std::string> paths;
+    for (int v = 0; v < 2; ++v) {
+        FilePart colour;
+        colour.name = "rgba";
+        colour.channels = channelsOf((FileView)v, eColour, "", "");
+        std::vector<FilePart> parts(1, colour);
+        // Only the second view's file has a diffuse layer.
+        if (v == 1) {
+            FilePart diffuse;
+            diffuse.name = "diffuse";
+            diffuse.channels = channelsOf((FileView)v, eDiffuse, "", "");
+            parts.push_back(diffuse);
+        }
+        const std::string name = "per-view_" + views[v] + ".exr";
+        paths.push_back(pathIn(dir, name.c_str()));
+        ASSERT_TRUE(writeParts(paths.back(), parts, std::vector<std::string>()));
+    }
+
+    NodePtr node = createRead(pathIn(dir, "per-view_%V.exr"));
+    ASSERT_TRUE(bool(node));
+    NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+
+    for (int v = 0; v < 2; ++v) {
+        SCOPED_TRACE(views[v]);
+        expectLayer(node, v, ImageLayerDesc::getRGBAComponents(), (FileView)v, eColour);
+        const std::optional<std::string> path = effect->getOutputMetadata(1., ViewIdx(v)).getString(kOfxMetadataKeyFilePath);
+        ASSERT_TRUE(path.has_value());
+        EXPECT_EQ(paths[v], *path);
+        EXPECT_EQ(std::vector<std::string>(v == 1 ? 1 : 0, "diffuse"), layerIDs(producedLayers(node, v)));
+    }
 }

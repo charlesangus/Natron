@@ -31,7 +31,9 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <mutex>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "Global/GlobalDefines.h"
@@ -95,6 +97,12 @@ public:
     /// read by the render instead of the live answer (see EffectInstance::getRenderMetadata()).
     /// Null when the frame was set up without walking upstream.
     NodeMetadataConstPtr metadata;
+
+    /// The node's answers under nodeHash at the other times and views the frame read it at, kept
+    /// from the first read so every later one in the frame agrees (see
+    /// EffectInstance::getRenderMetadata()). Shared by the threads rendering the frame.
+    std::mutex retainedMetadataMutex;
+    std::map<std::pair<double, int>, NodeMetadataConstPtr> retainedMetadata;
 
     ///If set, contains data for all frame/view pair that are going to be computed
     ///for this frame/view pair with the overall RoI to avoid rendering several times with this node.

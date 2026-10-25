@@ -193,6 +193,15 @@ private:
 typedef ActionsLRU<PassThroughIdentityResults> PassThroughIdentityCacheLRU;
 typedef ActionsLRU<NodeMetadataConstPtr> MetadataCacheLRU;
 
+// The answers a node gives over every frame of a range in one view, one per distinct colour
+// components and depth, which is all a reader widening its input over the range looks at.
+struct RangeMetadataSummary {
+    ViewIdx view;
+    double min;
+    double max;
+    std::vector<NodeMetadataConstPtr> answers;
+};
+
 /**
  * @brief This class stores all results of the following actions:
    - getRegionOfDefinition (stored per node hash, mapped across time + scale)
@@ -273,6 +282,18 @@ public:
 
     void setTimeInvariantMetadataResult(U64 hash, const NodeMetadataConstPtr& metadata, U64 generation);
 
+    /**
+     * @brief The answers stored under hash for every frame of [min, max] in view, distinct in
+     * colour components and depth. False when none are stored.
+     **/
+    bool getRangeMetadataSummary(U64 hash, ViewIdx view, double min, double max, std::vector<NodeMetadataConstPtr>* answers);
+
+    /**
+     * @brief As setMetadataResult(). The summaries of one hash are capped to a fixed count, the
+     * least recently used replaced first.
+     **/
+    void setRangeMetadataSummary(U64 hash, const RangeMetadataSummary& summary, U64 generation);
+
     U64 getMetadataGeneration() const;
 
     /**
@@ -299,6 +320,7 @@ private:
         MetadataCacheLRU _metadataCache;
         PassThroughIdentityCacheLRU _passThroughIdentityCache;
         NodeMetadataConstPtr _timeInvariantMetadata;
+        std::list<RangeMetadataSummary> _rangeSummaries; //< most recently used first
 
         ActionsCacheInstance();
     };
@@ -447,25 +469,26 @@ public:
         EffectTLSDataPtr tlsData;
 
 public:
-        ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
-                         const RectD & rod,
-                         const RectI & renderWindow,
-                         double time,
-                         ViewIdx view,
-                         bool isIdentity,
-                         double identityTime,
-                         const EffectInstancePtr& identityInput,
-                         const ComponentsNeededMapPtr& compsNeeded,
-                         const EffectInstance::InputImagesMap& inputImages,
-                         const RoIMap & roiMap,
-                         int firstFrame,
-                         int lastFrame,
-                         bool isDoingOpenGLRender);
+    ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
+                     const RectD& rod,
+                     const RectI& renderWindow,
+                     double time,
+                     ViewIdx view,
+                     bool isIdentity,
+                     double identityTime,
+                     ViewIdx identityView,
+                     const EffectInstancePtr& identityInput,
+                     const ComponentsNeededMapPtr& compsNeeded,
+                     const EffectInstance::InputImagesMap& inputImages,
+                     const RoIMap& roiMap,
+                     int firstFrame,
+                     int lastFrame,
+                     bool isDoingOpenGLRender);
 
-        ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
-                         const EffectTLSDataPtr& otherThreadData);
+    ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
+                     const EffectTLSDataPtr& otherThreadData);
 
-        ~ScopedRenderArgs();
+    ~ScopedRenderArgs();
     };
 
     void addInputImageTempPointer(int inputNb, const ImagePtr & img);

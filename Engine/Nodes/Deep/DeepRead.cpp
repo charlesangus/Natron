@@ -77,7 +77,8 @@ DeepRead::initializeKnobs()
 }
 
 std::string
-DeepRead::getFilenameAtTime(double time) const
+DeepRead::getFilenameAt(double time,
+                        ViewIdx view) const
 {
     KnobFilePtr filename = _filename.lock();
 
@@ -85,17 +86,17 @@ DeepRead::getFilenameAtTime(double time) const
         return std::string();
     }
 
-    return filename->getFileName((int)std::floor(time + 0.5), ViewIdx(0));
+    return filename->getFileName((int)std::floor(time + 0.5), view);
 }
 
 StatusEnum
 DeepRead::getRegionOfDefinition(U64 /*hash*/,
                                 double time,
                                 const RenderScale& /*scale*/,
-                                ViewIdx /*view*/,
+                                ViewIdx view,
                                 RectD* rod)
 {
-    const std::string filename = getFilenameAtTime(time);
+    const std::string filename = getFilenameAt(time, view);
 
     if (filename.empty()) {
         setPersistentMessage(eMessageTypeError, tr("No deep file to read.").toStdString());
@@ -150,11 +151,11 @@ isFrameSequencePattern(const std::string& pattern)
 
 StatusEnum
 DeepRead::getPreferredMetadataAt(double time,
-                                 ViewIdx /*view*/,
+                                 ViewIdx view,
                                  NodeMetadata& metadata)
 {
-    // Each frame of a sequence is its own file, with its own display window.
-    const std::string filename = getFilenameAtTime(time);
+    // Each frame and view of a sequence is its own file, with its own display window.
+    const std::string filename = getFilenameAt(time, view);
 
     if (filename.empty()) {
         return eStatusFailed;
@@ -187,12 +188,12 @@ DeepRead::getPreferredMetadataAt(double time,
 
 void
 DeepRead::getDeepLayers(double time,
-                        ViewIdx /*view*/,
+                        ViewIdx view,
                         std::list<ImageLayerDesc>* layers)
 {
     layers->clear();
 
-    const std::string filename = getFilenameAtTime(time);
+    const std::string filename = getFilenameAt(time, view);
     if (filename.empty()) {
         return;
     }
@@ -230,7 +231,7 @@ DeepRead::purgeCaches()
 StatusEnum
 DeepRead::renderDeep(const DeepRenderActionArgs& args)
 {
-    const std::string filename = getFilenameAtTime(args.time);
+    const std::string filename = getFilenameAt(args.time, args.view);
 
     if (filename.empty()) {
         setPersistentMessage(eMessageTypeError, tr("No deep file to read.").toStdString());

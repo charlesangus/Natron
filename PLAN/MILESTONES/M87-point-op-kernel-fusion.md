@@ -24,3 +24,7 @@ Point-op runs inside GPU regions on the three M82 comps (UHD, Auto; a run is a c
 - A point-op dispatch costs ~0.5 ms at UHD (M85 cost seeds), so fusion saves ~3.5 ms of 340–880 ms frames.
 - Exposed transfer is 59–84% of region time in these comps, and it is M109 - GPU Region Engine Hardening's to fix.
 - **On this evidence fusion would not measurably help the M82 comps.** It stays low priority until a comp with long point-op chains turns up.
+
+## Decisions
+
+- 2026-10-25 — **Cancelled (user).** The gpu PM claimed it for a free lane, then found that its own evidence section answers its blocker negatively: 17 of 23 point-op runs in the M82 comps are single ops, and fusing the rest saves ~3.5 ms of 340–880 ms frames. The user chose to cancel rather than park it. If a comp with long point-op chains turns up, a new milestone can reuse this file's design.

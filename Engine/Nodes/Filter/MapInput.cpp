@@ -293,7 +293,8 @@ MapInput::bake(const KnobReader& reader) const
     params.invert = reader.value(_invert);
     params.smooth = (reader.value(_response) == 1);
     params.exponent = (float)(1. / std::max(0.01, reader.value(_gamma)));
-    for (int d = 0; d < 2; ++d) {
+    // A node without Size At Black, such as a variable warp, keeps the default.
+    for (int d = 0; (d < 2) && (_sizeDimensions > 0); ++d) {
         params.sizeAtBlack[d] = reader.value(_sizeAtBlack, std::min(d, _sizeDimensions - 1));
     }
 

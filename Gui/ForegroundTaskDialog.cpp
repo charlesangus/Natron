@@ -54,7 +54,9 @@ public:
     explicit ForegroundProgressDialog(QWidget* parent)
         : QProgressDialog(parent)
     {
-        QObject::disconnect(this, &QProgressDialog::canceled, this, &QProgressDialog::cancel);
+        // QProgressDialog::cancel() hides the dialog. Qt makes this connection by signature, so a
+        // member-pointer disconnect would not match it and Cancel would hide the dialog at once.
+        QObject::disconnect(this, SIGNAL(canceled()), this, SLOT(cancel()));
     }
 
     virtual void reject() OVERRIDE FINAL
@@ -81,6 +83,7 @@ ForegroundTaskDialog::ForegroundTaskDialog()
     , _held(false)
     , _userCanceled(false)
     , _closed(false)
+    , _onCancel()
 {
 }
 
@@ -223,7 +226,10 @@ ForegroundTaskDialog::refresh()
         return;
     }
     const Entry& entry = _entries[current];
-    QString text = _texts.taskFormat.arg(entry.label).arg((int)current + 1).arg((int)n);
+    // One pass, so a label holding "%2" is left as it is.
+    QString text = _texts.taskFormat.contains(QLatin1String("%3"))
+        ? _texts.taskFormat.arg(entry.label, QString::number((int)current + 1), QString::number((int)n))
+        : _texts.taskFormat.arg(entry.label);
     int frame = entry.task ? entry.task->getLastRenderedFrame() : -1;
     if (frame != -1) {
         text += QLatin1Char('\n');
@@ -257,7 +263,17 @@ ForegroundTaskDialog::cancel()
             toCancel[i]->cancelTask(false, 1);
         }
     }
+    if (_onCancel) {
+        std::function<void()> onCancel = _onCancel;
+        onCancel();
+    }
     refresh();
+}
+
+void
+ForegroundTaskDialog::setOnCancel(const std::function<void()>& onCancel)
+{
+    _onCancel = onCancel;
 }
 
 void

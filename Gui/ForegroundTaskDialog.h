@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -67,7 +68,8 @@ public:
     struct Texts {
         // The window title, such as "Rendering".
         QString title;
-        // The current task's line: %1 is its label, %2 its index from 1 and %3 the task count.
+        // The current task's line: %1 is its label and, when the format has them, %2 its index
+        // from 1 and %3 the task count.
         QString taskFormat;
         // One line of the error dialog per failed task: %1 is its label.
         QString failureFormat;
@@ -92,6 +94,12 @@ public:
      * @brief Lets the dialog close once its tasks have ended; closes it now if they have.
      **/
     void release();
+
+    /**
+     * @brief Calls `onCancel` when the user cancels, after the tasks have been cancelled, for a
+     * job that stops faster when told directly than through its progress task.
+     **/
+    void setOnCancel(const std::function<void()>& onCancel);
 
     /**
      * @brief Whether the dialog has closed.
@@ -125,6 +133,7 @@ private:
     bool _held;
     bool _userCanceled;
     bool _closed;
+    std::function<void()> _onCancel;
 };
 
 NATRON_NAMESPACE_EXIT

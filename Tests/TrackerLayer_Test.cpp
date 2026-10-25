@@ -155,6 +155,65 @@ TEST_F(TrackerLayerTest, ColorPlaneTracksToGolden)
     expectGoldenTrack();
 }
 
+// Code that unblocks the interface on trackingFinished relies on the tracker having written every
+// key of the run by then, including after a cancel.
+TEST_F(TrackerLayerTest, CanceledRunWritesNoKeyAfterTrackingFinished)
+{
+    createTrackerOverFixture("tracker-patch.####.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    // Past the fixture's last frame the reader holds it, so every frame tracks and the run is
+    // long enough to cancel partway.
+    const int farEnd = 2000;
+    KnobDoublePtr center = _marker->getCenterKnob();
+    bool started = false;
+    bool finished = false;
+    int keysAtFinish = -1;
+    double lastKeyAtFinish = -1.;
+    QObject receiver;
+    QObject::connect(_context.get(), &TrackerContext::trackingStarted, &receiver, [this, &started](int) {
+        started = true;
+        _context->abortTracking();
+    });
+    QObject::connect(_context.get(), &TrackerContext::trackingFinished, &receiver, [&]() {
+        finished = true;
+        keysAtFinish = center->getKeyFramesCount(ViewSpec(0), 0);
+        if (!center->getLastKeyFrameTime(ViewSpec(0), 0, &lastKeyAtFinish)) {
+            lastKeyAtFinish = -1.;
+        }
+    });
+
+    std::list<TrackMarkerPtr> markers;
+    markers.push_back(_marker);
+    _context->trackMarkers(markers, kStartFrame, farEnd, 1, NULL);
+
+    for (int i = 0; i < 3000 && !finished; ++i) {
+        QCoreApplication::processEvents();
+        QThread::msleep(10);
+    }
+    ASSERT_TRUE(started) << "tracking never reported that it started";
+    ASSERT_TRUE(finished) << "tracking did not finish in time";
+    for (int i = 0; i < 500 && _context->isCurrentlyTracking(); ++i) {
+        QThread::msleep(10);
+    }
+    ASSERT_FALSE(_context->isCurrentlyTracking());
+    for (int i = 0; i < 30; ++i) {
+        QCoreApplication::processEvents();
+        QThread::msleep(10);
+    }
+
+    EXPECT_GT(keysAtFinish, 0);
+    EXPECT_LT(lastKeyAtFinish, (double)farEnd - 1) << "the cancel did not stop the run";
+    double lastKey = -1.;
+    if (!center->getLastKeyFrameTime(ViewSpec(0), 0, &lastKey)) {
+        lastKey = -1.;
+    }
+    EXPECT_EQ(keysAtFinish, center->getKeyFramesCount(ViewSpec(0), 0)) << "keys were written after trackingFinished";
+    EXPECT_EQ(lastKeyAtFinish, lastKey) << "keys were written after trackingFinished";
+}
+
 namespace {
 
 // The tracker's knobs that drive its internal CornerPin: the tracker-side name, and the name of

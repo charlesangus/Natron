@@ -955,7 +955,8 @@ GuiAppInstance::followTrackingInModal(const NodePtr& node)
     // Python, with no panel ever opened, is blocked the same way.
     std::shared_ptr<TrackingModal> modal = std::make_shared<TrackingModal>();
     NodeWPtr weakNode = node;
-    QObject::connect(context.get(), &TrackerContext::trackingStarted, this, [this, modal, weakNode](int /*step*/) {
+    TrackerContextWPtr weakContext = context;
+    QObject::connect(context.get(), &TrackerContext::trackingStarted, this, [this, modal, weakNode, weakContext](int /*step*/) {
         modal->release();
         NodePtr n = weakNode.lock();
         Gui* gui = getGui();
@@ -977,8 +978,19 @@ GuiAppInstance::followTrackingInModal(const NodePtr& node)
         tasks[0].label = QString::fromUtf8(n->getLabel().c_str());
         tasks[0].task = task;
         // Held until the tracker reports it has stopped: Cancel ends the progress task at once,
-        // while the tracking thread may still be writing keyframes.
+        // while the tracking thread may still be writing keyframes. The tracker emits
+        // trackingFinished once its frame loop has written its last key.
         modal->dialog = ForegroundTaskDialog::show(gui, texts, tasks, true);
+        if (modal->dialog) {
+            // Otherwise the tracker only learns of the cancel from its next progress report,
+            // which it throttles, and tracks more frames meanwhile.
+            modal->dialog->setOnCancel([weakContext]() {
+                TrackerContextPtr c = weakContext.lock();
+                if (c) {
+                    c->abortTracking();
+                }
+            });
+        }
     });
     QObject::connect(context.get(), &TrackerContext::trackingFinished, this, [modal]() {
         modal->release();

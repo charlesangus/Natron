@@ -176,19 +176,19 @@ Deps: M100 - Content Node Hashing.
 
 ## Phase 167.4: OpenFX boundary: per-frame answers
 
-- [ ] M167.P4.T1 — Per-signature OpenFX clip preferences under a per-instance mutex
+- [x] M167.P4.T1 — Per-signature OpenFX clip preferences under a per-instance mutex
   - files: `Engine/OfxEffectInstance.cpp`, `Engine/OfxEffectInstance.h`, `Engine/EffectInstance.cpp`, `Engine/EffectInstancePrivate.h`
   - approach: For an OpenFX node, `getMetadata(time, view)` is the identity rule's answer on pass-through frames; otherwise it builds the input signature — each input's `getMetadata` merged (widest components, deepest depth; PAR and fps from frame t) over every frame `getFramesNeeded` asks for at (time, view) — and looks up a cache keyed by (hash, signature, view), adding time only when the node has animated or expression knobs. On a miss, run `getClipPreferences_safe` under a new per-instance mutex (not the preferences write lock, which renders hold for reading), with the input clips answering the signature through per-thread clip storage, and capture the result without writing instance members. Parameter writes and channel-menu rebuilds off the main thread are blocked or deferred per P1.T1. `onSyncPrivateDataRequested` moves to the knob-change path on the main thread (`EffectInstance.cpp` ~:6155-6170).
   - verify: the phase build; `OfxTestPlugin` and `Metadata_Test` green.
   - size: L
 
-- [ ] M167.P4.T2 — OpenFX clip properties answer from the render thread's frame
+- [x] M167.P4.T2 — OpenFX clip properties answer from the render thread's frame
   - files: `Engine/OfxClipInstance.cpp`, `Engine/OfxClipInstance.h`, `Engine/OfxImageEffectInstance.cpp`, `Engine/OfxImageEffectInstance.h`
   - approach: Store the frame's clip-preferences answer in the per-thread clip storage (`OfxClipInstance.h` ~:268-292) for the render and for any action called on a render thread. The clip getters (~14 in `OfxClipInstance.cpp`, ~:185, 241, 259, 358-434, 475, 530, 570) read it there; the instance-wide answer is only a fallback for actions on the main thread with no frame (computed at the current frame). Fetched frames are converted to the frame's merged layout (~:852-862). Drop `refreshInputRelatedDataIfStale` from `getCurrentMetadata` (~:1835), keeping `dropStaleClipMetadata`.
   - verify: the phase build; `OfxMetadataBridge` and every OpenFX test green.
   - size: L
 
-- [ ] M167.P4.T3 — OpenFX tests across the boundary
+- [x] M167.P4.T3 — OpenFX tests across the boundary
   - files: `Tests/OfxPerFrameMetadata_Test.cpp` (new), `Tests/CMakeLists.txt`, `Tests/OfxTestPlugins/natronTest/TraitTestPlugins.cpp`
   - approach: Add a clip-preferences call counter to a natronTest plugin. Cases: an OpenFX node below a per-frame Switch (RGB at f1, RGBA at f2) sees RGB at f1 and RGBA at f2, rendered in parallel on 16 threads, and getClipPreferences runs once per distinct signature across 100 frames; a temporal OpenFX plugin (TimeBlur-like test plugin asking for f1 and f2) at f1 gets the merged RGBA layout and both fetched frames in it; a native node below an OpenFX FrameWindow identity gets the held frame's metadata with no getClipPreferences call on identity frames; querying from 16 threads while the main thread edits does not deadlock (30 s guard).
   - verify: the phase build; `OfxPerFrameMetadata` passes `--repeat until-fail:50`.
@@ -254,6 +254,7 @@ Deps: M100 - Content Node Hashing.
 
 ## Decisions
 
+- 2026-10-25 — **Phase 4 gate passed (PM):** fast 420/420 both legs on 925ce9569; OfxPerFrameMetadata, PerFrameMetadata and OfxClipPreferencesThread clean over 50 repeats, and OfxPerFrameMetadata over 4 parallel x 50. The switched-input case uses RGBPoint: PointMatrix writes alpha by default, and the M65 write-widening rule correctly turns its RGB frame into RGBA.
 - 2026-10-25 — **Phase 4 departures approved (user):** per-frame OpenFX clip-preferences calls run inline on the asking thread, not on a dedicated pool (a pool thread would queue for the read lock behind a waiting writer while the caller holds it, and may need the caller GIL). The ABBA fixed is the clip fetch triggering a refresh under the instance mutex (Node::InputRelatedDataRefreshDeferral); onNodeHashChanged was already ordered. onSyncPrivateDataRequested stays in the main-thread refresh, which per-frame calls never reach. begin/endSequenceRender get no frame answer. Deferred plug-in param writes leave the OFX property out of step with its knob until the queued refresh.
 - 2026-10-24 — **P4 thread model approved (user):** the P1.T1 recommendation as written: thread-local per-frame flag that records OpenFX parameter writes and setOption and posts one main-thread refresh, channel-menu rebuilds skipped off the main thread, a dedicated pool for per-frame calls, preferencesLock taken downstream to upstream, the onNodeHashChanged ABBA fixed first, onSyncPrivateDataRequested main-thread only.
 - 2026-10-24 — **Phase 3 gate passed (PM):** fast 416/416 both legs on 53610aaef. Fixes during the gate: the identity rule keeps the fields a node sets itself (a Grade at defaults or a staged effect at mix 0 keeps its RGBA widening), and the keyed-Disable RemoveLayers frame expects its input layout per the per-frame rule. Known gap: the viewer reads its aspect ratio live before its frame args exist.

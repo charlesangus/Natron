@@ -306,9 +306,7 @@ RectI
 intersectPixels(const RectI& a,
                 const RectI& b)
 {
-    const RectI r(std::max(a.x1, b.x1), std::max(a.y1, b.y1), std::min(a.x2, b.x2), std::min(a.y2, b.y2));
-
-    return r.isNull() ? RectI() : r;
+    return a.intersect(b);
 }
 
 // Resampler's isAffine: the CPU samples such a matrix without the perspective division, and the

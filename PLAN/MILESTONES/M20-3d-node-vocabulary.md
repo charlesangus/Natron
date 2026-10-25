@@ -90,13 +90,13 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 
 ## Phase 20.3: Consumers
 
-- [ ] M20.P3.T1 — `USDRender` node: scene + camera → Image (readback path)
+- [x] M20.P3.T1 — `USDRender` node: scene + camera → Image (readback path)
   - files: `Engine/Nodes/Scene/USDRender.cpp`, `Engine/Nodes/Scene/HydraRenderImpl.cpp` (AOV/engine plumbing), `Engine/LayerRegistry.cpp` (the `primId` layer), CMake source list
   - approach: scene input + camera-path knob (dropdown of every `UsdGeomCamera` on the composed stage, defaulting to the first; a path that doesn't resolve is a node error naming it) → renders through Storm (the only delegate in v1, no delegate knob) into Natron Image layers: `rgba` (treated as the project working space, no transform), `depth.Z` (linear camera-space distance in scene units, +inf on misses), `primId.id` (32-bit hash of the prim path, bit-cast to float the way Cryptomatte does; 0 on misses; hash → path map in frame metadata). Format knob defaults to the project format; a fit-mode knob (fill / horizontal / vertical) conforms the aperture with `CameraUtilConformWindow`. **Output kind: image**, so its result flows through the normal `renderRoI` path, image cache included. In the GUI it renders on a context shared with the global 4.5 compatibility context (M19.P2.T8). This task delivers the readback rung (GL read into a CPU Image); M20.P3.T5 adds the headless context and M20.P3.T4 the zero-copy rungs.
   - verify: in the GUI, the reference scene renders, and `depth.Z` grows with distance; a prim's `primId.id` value maps to its path through the metadata; a bogus camera path errors with the path; a 2:1 format with a 3:2 aperture conforms per fit mode.
   - size: L
 
-- [ ] M20.P3.T5 — Headless `USDRender` on an EGL surfaceless context
+- [x] M20.P3.T5 — Headless `USDRender` on an EGL surfaceless context
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/HeadlessGLContext.h`/`.cpp` (new), CMake source list
   - approach: when no GUI context exists (NatronRenderer, ctest), dlopen EGL and create a surfaceless (`EGL_MESA_platform_surfaceless` / device platform) 4.5 compatibility context on whatever driver the host has, llvmpipe included, with no X server. Below 4.5, or with no EGL, the render fails with a clear error naming what it got; 2D-only pipelines are unaffected. One context per render thread, or one serialized context — whichever Storm requires; record the choice in `## Decisions`.
   - verify: NatronRenderer renders a `USDRender` comp to PNG with `DISPLAY` unset, inside natron-dev (llvmpipe); with EGL hidden (`LD_LIBRARY_PATH` pointing at an empty stub), the node fails with the error and a 2D Write in the same project still renders.
@@ -108,13 +108,13 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
   - verify: unit test — forcing each rung (env or test hook) yields byte-identical AOVs; `NATRON_GPU=off` and an injected device loss fall back to readback with no error dialog or log spam. Manual on AMD and NVIDIA — the report shows the zero-copy rung reached and no root download for a `USDRender → GPU node → Viewer` chain.
   - size: L
 
-- [ ] M20.P3.T2 — `USDWrite`
+- [x] M20.P3.T2 — `USDWrite`
   - files: `Engine/Nodes/Scene/USDWrite.cpp`, CMake source list
   - approach: an output node like Write. The Render button, the render queue and `NatronRenderer -w` trigger it, and it writes one `.usd`/`.usda`/`.usdc` file once per render whatever the frame range. A frame-range knob (default: project range) clips the exported time samples. Layered mode follows the Solaris USD ROP's "Flatten Implicit Layers": every Natron-authored anonymous layer is flattened into the output file, and external file layers (USDRead's) stay sublayers/references. A path-mode knob writes asset paths relative to the output (default) or absolute; a path that can't be made relative is written absolute. Flattened mode bakes the whole stack, externals included, into one layer. An existing output is overwritten.
   - verify: round-trip test — a node-built scene → USDWrite → USDRead composes an identical prim tree (diff via `UsdStage::ExportToString`), in both modes; layered output references the original external file through a relative path, and through an absolute one in absolute mode; the frame-range knob clips the time samples; `NatronRenderer -w` writes the file once for a 10-frame range.
   - size: M
 
-- [ ] M20.P3.T3 — Scene vocabulary integration test in CI
+- [x] M20.P3.T3 — Scene vocabulary integration test in CI
   - files: `tests/`, reference `.usda` assets
   - approach: headless graph — USDRead → USDTransform → USDMerge(+ USDPrim/USDLight/USDMaterial branch) → USDPrune → USDWrite — asserting on the exported composition (prims, xforms, bindings, deactivations). USDRender is covered by M20.P3.T6, plus the hardware check at the gate.
   - verify: test green in `build-and-test`; each node's authored opinions visible in the exported layer stack.

@@ -72,6 +72,9 @@ NODES = {
     "blur_gauss100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 1}, False),
     "blur_box100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 2}, False),
     "blur": ("net.sf.cimg.CImgBlur", {"size": (12.0, 12.0)}, False),
+    "iblur": ("IBlur", {"size": (60.0, 60.0)}, False),
+    "ierode": ("IErode", {"size": (6.0, 6.0)}, False),
+    "idilate": ("IDilate", {"size": (6.0, 6.0)}, False),
     "dissolve": ("net.sf.openfx.DissolvePlugin", {"which": 0.5}, False),
     "crop": ("net.sf.openfx.CropPlugin",
              {"bottomLeft": (200.0, 150.0), "size": (3400.0, 1900.0), "softness": 20.0}, False),
@@ -85,6 +88,10 @@ NODES = {
 
 # Nodes whose input 1 is fed a second source.
 TWO_INPUTS = ("dissolve",)
+
+# Nodes whose Map input (the number given) is fed a ramp whose alpha, the Map's default channel,
+# runs from 0 to 1 across the frame, so the size varies from Size At Black to Size.
+MAP_INPUTS = {"iblur": 2, "ierode": 2, "idilate": 2}
 
 
 def configure(name, index):
@@ -127,6 +134,13 @@ def main():
             param(other, "point1").set(0.0, 2160.0)
             param(other, "color0").set(0.8, 0.1, 0.2, 1.0)
             param(other, "color1").set(0.1, 0.7, 0.9, 1.0)
+        size_map = None
+        if NODE in MAP_INPUTS:
+            size_map = make("net.sf.openfx.Ramp", "np_map")
+            param(size_map, "point0").set(0.0, 0.0)
+            param(size_map, "point1").set(3840.0, 0.0)
+            param(size_map, "color0").set(0.0, 0.0, 0.0, 0.0)
+            param(size_map, "color1").set(1.0, 1.0, 1.0, 1.0)
         last = source
         count = CHAIN
         for i in range(count):
@@ -134,6 +148,8 @@ def main():
             node.connectInput(0, last)
             if other is not None:
                 node.connectInput(1, other)
+            if size_map is not None:
+                node.connectInput(MAP_INPUTS[NODE], size_map)
             last = node
     os.makedirs(WORK, exist_ok=True)
     path = os.path.join(WORK, "np_%s_####.exr" % NODE)

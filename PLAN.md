@@ -121,7 +121,7 @@ future core work has solid ground to build on.
 | M101 | Clean-Sheet Merge Node | doing | M84, M137, M158 | bosley-native-nodes | E3 | [M101-clean-sheet-merge-node.md](PLAN/MILESTONES/M101-clean-sheet-merge-node.md) |
 | M111 | Native Node Identity Cleanup | todo | M76, M101, M120 |  | E3 | [M111-native-node-identity-cleanup.md](PLAN/MILESTONES/M111-native-node-identity-cleanup.md) |
 | M112 | Native Node Behaviour Fixes | done | - | bosley-native-nodes | E3 | [M112-native-node-behaviour-fixes.md](PLAN/MILESTONES/M112-native-node-behaviour-fixes.md) |
-| M81 | Raw GPU Kernels | doing | M80, M85 | gpu | E5 | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
+| M81 | Raw GPU Kernels | done | M80, M85 | gpu | E5 | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
 | M85 | Native GPU Kernels | done | M84 | gpu | E5 | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
 | M107 | GPU Viewer Hand-off | done | M85 | gpu | E5 | [M107-gpu-viewer-hand-off.md](PLAN/MILESTONES/M107-gpu-viewer-hand-off.md) |
 | M108 | Retire Engine GL Host Path | done | M85 | gpu | E5 | [M108-retire-engine-gl-host-path.md](PLAN/MILESTONES/M108-retire-engine-gl-host-path.md) |

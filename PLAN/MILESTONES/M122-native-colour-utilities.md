@@ -184,7 +184,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 121.4: Despill
 
-- [ ] M122.P4.T1 — Clean-sheet Despill, CPU
+- [x] M122.P4.T1 — Clean-sheet Despill, CPU
   - files: `Engine/Nodes/Keyer/Despill.h`, `Engine/Nodes/Keyer/Despill.cpp`, `Engine/Nodes/Keyer/Despill.reg.inc`, `Tests/Native/NativeDespill_Test.cpp`
   - approach:
     - Screen colour picker (any colour, default pure green) defines the spill axis: its dominant channel against the other two.
@@ -205,7 +205,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
     - HDR values staying unclipped.
   - size: L
 
-- [ ] M122.P4.T2 — Despill GPU kernel and bench comp
+- [x] M122.P4.T2 — Despill GPU kernel and bench comp
   - files: `Engine/Gpu/Kernels/despill.slang`, `Engine/Gpu/Kernels/despill.cmake`, `Engine/Nodes/Keyer/Despill.cpp`, `Tests/Native/NativeDespillGpu_Test.cpp`, `tools/bench/comps/build_comps.py`
   - approach:
     - An `IPixelOp` with the hue-frame rotation matrix precomputed on the host.
@@ -216,7 +216,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 121.5: Posterize
 
-- [ ] M122.P5.T1 — Native Posterize with dither, CPU and GPU
+- [x] M122.P5.T1 — Native Posterize with dither, CPU and GPU
   - files: `Engine/Nodes/Color/Posterize.h`, `Engine/Nodes/Color/Posterize.cpp`, `Engine/Gpu/Kernels/posterize.slang`, `Tests/Native/NativePosterize_Test.cpp`, `Tests/Native/NativePosterizeGpu_Test.cpp`
   - approach:
     - `levels` (default 16) over `rangeMin..rangeMax` (default 0..1). Values outside step on at the same spacing.

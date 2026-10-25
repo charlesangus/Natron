@@ -82,7 +82,7 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
   - verify: `ctest -R NativePluginList` and the registry gtest pass with the three entries.
   - size: S
 
-- [ ] M184.P4.T2 — Icons and docs
+- [x] M184.P4.T2 — Icons and docs
   - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Filter/docs/{IBlur,IErode,IDilate}.md`
   - approach: Each doc states the Map convention, the algorithm and the `Tolerance:` line.
   - verify: docs reviewed at the gate against the node code.
@@ -90,6 +90,7 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
 
 ## Decisions
 
+- 2026-10-25 — **Gate status (bosley-native-nodes):** release 453/453; `m184_variable_filters.py` 0 failures; eye-blur, IErode/IDilate and icon screenshots shared, awaiting approval. Cost seeds are held back: the CPU profiles ran at load 9-16 on 4 cores (IBlur 835, IErode 1261, IDilate 1459 ms/Mpx serial — likely inflated) and the other nodes' profile inputs no longer exist on this host, so the regenerate command can't be reproduced. Re-measure on a quiet host, and the GPU rows and RADV parity need the GPU host.
 - 2026-10-25 — **IErode/IDilate calls (bosley-native-nodes):** one template drives both (plain IDs `IErode`, `IDilate`); sizes are 0 or more, so M189's converter turns a negative base size into the opposite node and can't convert a base with one axis positive and one negative. GPU tables live in global memory per channel, not shared-memory tiles; radii over 255 px stay on the CPU (keeps the integer ellipse maths in 32 bits). White Map + square matches ErodeDilate bit for bit except a base-node quirk on lines of length halfWidth+2 and the sign of zero. Radii are not divided by pixel aspect, as in the base node.
 - 2026-10-25 — **IBlur GPU precision and cap (bosley-native-nodes):** the GPU summed-area table sums each plane exactly in 64-bit integers after a power-of-two scale, so it meets 1e-4 relative without fp64; halos over 512 px stay on the CPU (reachable through Size At Black, since Size stops at 1000). Native IDs are plain (`IBlur`). Fast build 436/436.
 - 2026-10-25 — **IBlur GPU through the pass runner (bosley-native-nodes):** the GPU pass runner gains views of extra (Aux) inputs (getGpuInputLayer/getGpuInputRoI cover them), reusable by STMap and the kit, rather than a custom renderOpGpu for IBlur. `Pass::columns` lets a pass run over columns. Golden fixtures are recorded from the phase build tree with NATRON_GOLDEN_RECORD_DIR.

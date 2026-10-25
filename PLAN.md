@@ -272,6 +272,11 @@ future core work has solid ground to build on.
 | M214 | Colour Balance RGB | todo | - |  | E17 | [M214-colour-balance-rgb.md](PLAN/MILESTONES/M214-colour-balance-rgb.md) |
 | M215 | Colour Equalizer | todo | M209, M214 |  | E17 | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
 | M216 | Auto-Straighten | todo | - |  | E17 | [M216-auto-straighten.md](PLAN/MILESTONES/M216-auto-straighten.md) |
+| M217 | VectorGenerator Node | todo | M124 |  | E18 | [M217-vectorgenerator-node.md](PLAN/MILESTONES/M217-vectorgenerator-node.md) |
+| M218 | VectorGenerator GPU | todo | M217, M124 |  | E18 | [M218-vectorgenerator-gpu.md](PLAN/MILESTONES/M218-vectorgenerator-gpu.md) |
+| M219 | Curves Follow Vectors | todo | M217, M146 |  | E18 | [M219-curves-follow-vectors.md](PLAN/MILESTONES/M219-curves-follow-vectors.md) |
+| M220 | SplineWarp Follow Vectors | todo | M219, M148 |  | E18 | [M220-splinewarp-follow-vectors.md](PLAN/MILESTONES/M220-splinewarp-follow-vectors.md) |
+| M221 | Neural Optical Flow | todo | M217, M203, M204 |  | E16 | [M221-neural-optical-flow.md](PLAN/MILESTONES/M221-neural-optical-flow.md) |
 
 # Epics
 
@@ -294,6 +299,7 @@ future core work has solid ground to build on.
 | E15 | Loops And I-Nodes | Let a Map drive any effect per pixel, through exact native I-nodes and a Houdini-style loop block over any subgraph. |
 | E16 | AI Tools | Bring darktable's ONNX-based AI tools in as scene-linear-safe nodes and a Roto object-select tool, on an on-demand model manager. |
 | E17 | darktable Image Tools | Port darktable's scene-referred image modules as native nodes on a shared edge-aware filter library. |
+| E18 | Motion Vectors | Generate dense motion vectors natively and move Roto, paint and SplineWarp curves along them. |
 
 # Open questions
 

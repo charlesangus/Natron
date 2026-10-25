@@ -31,7 +31,12 @@
 #include <cmath>
 #include <cstring> // for std::memcpy
 #include <limits>
+#include <list>
+#include <memory>
+#include <mutex>
+#include <set>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -41,6 +46,7 @@ CLANG_DIAG_OFF(deprecated)
 #include <QMutex>
 #include <QThread>
 #include <QThreadPool>
+#include <QTimer>
 #include <QWaitCondition>
 #include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
 #include <QtGlobal>
@@ -50,6 +56,9 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/AppManager.h"
 #include "Engine/Cache.h"
 #include "Engine/GpuPlacement.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 #include "Engine/Image.h"
 #include "Engine/Log.h"
 #include "Engine/Lut.h"
@@ -62,6 +71,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
@@ -227,6 +237,9 @@ ViewerInstance::~ViewerInstance()
     //    QMutexLocker locker(&_imp->updateViewerMutex);
     //    assert(!_imp->updateViewerRunning);
     //}
+#ifdef NATRON_HAVE_GPU
+    _imp->cacheFillGate->close();
+#endif
     if (_imp->uiContext) {
         _imp->uiContext->removeGUI();
     }
@@ -306,6 +319,10 @@ ViewerInstance::invalidateUiContext()
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     _imp->uiContext = NULL;
+#ifdef NATRON_HAVE_GPU
+    _imp->stagedFrames[0].reset();
+    _imp->stagedFrames[1].reset();
+#endif
 }
 
 int
@@ -349,6 +366,9 @@ void
 ViewerInstance::executeDisconnectTextureRequestOnMainThread(int index,bool clearRoD)
 {
     assert( QThread::currentThread() == qApp->thread() );
+#ifdef NATRON_HAVE_GPU
+    _imp->discardStagedFrame(index);
+#endif
     if (_imp->uiContext) {
         _imp->uiContext->disconnectInputTexture(index, clearRoD);
     }
@@ -481,6 +501,158 @@ ViewerInstance::isFrameEligibleForScheduler(const SchedulerEligibility& eligibil
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
+std::mutex gSchedulerResultHookMutex;
+ViewerInstance::SchedulerResultHook gSchedulerResultHook;
+
+ViewerInstance::SchedulerResultHook
+schedulerResultHook()
+{
+    std::lock_guard<std::mutex> k(gSchedulerResultHookMutex);
+
+    return gSchedulerResultHook;
+}
+
+#ifdef NATRON_HAVE_GPU
+// The GPU viewer process neither measures the frame for auto-contrast nor reads a matte from a second plane, and a
+// root rendered for only part of the texture would drop the tiles found in the cache.
+bool
+viewerFrameCanTakeDeviceRoot(const ViewerArgs& inArgs,
+                             const std::list<ImageLayerDesc>& components,
+                             OpenGLViewerI* uiContext)
+{
+    if (!uiContext || (uiContext->handoffRung() == ViewerHandoffRung::Cpu)) {
+        return false;
+    }
+    if (inArgs.autoContrast) {
+        return false;
+    }
+    if ((inArgs.channels == eDisplayChannelsMatte) && (components.size() > 1)) {
+        return false;
+    }
+
+    return !inArgs.isDoingPartialUpdates && (inArgs.params->nbCachedTile == 0);
+}
+
+/**
+ * Pins the device roots of frames waiting to be shown. Left evictable, they are the oldest buffers in the pool's LRU
+ * while playback renders ahead, so VRAM pressure evicts the next frame to show first and it takes the CPU viewer
+ * process. Pins take at most half the pool budget, which leaves the other half to the renders running ahead; a root
+ * that does not fit waits, oldest first, for a pin to be released, and stays evictable meanwhile.
+ **/
+class DeviceRootHolds {
+public:
+    static DeviceRootHolds& instance()
+    {
+        // Never destroyed, since a frame may still be released while the process exits.
+        static DeviceRootHolds* holds = new DeviceRootHolds;
+
+        return *holds;
+    }
+
+    // Released when the returned token is.
+    std::shared_ptr<void> hold(const GpuDeviceImagePtr& root)
+    {
+        if (!root) {
+            return std::shared_ptr<void>();
+        }
+        std::shared_ptr<Entry> entry = std::make_shared<Entry>();
+        entry->root = root;
+        entry->bytes = root->bytes();
+        std::vector<std::shared_ptr<Entry>> visited;
+        {
+            std::lock_guard<std::mutex> k(_mutex);
+            _waiting.push_back(entry);
+            promoteLocked(&visited);
+        }
+
+        return entry;
+    }
+
+private:
+    struct Entry {
+        GpuDeviceImagePtr root;
+        std::size_t bytes = 0;
+        bool pinned = false;
+
+        ~Entry() { DeviceRootHolds::instance().release(*this); }
+    };
+
+    static std::size_t limitOf(const GpuDeviceImage& root)
+    {
+        gpu::GpuRuntime* runtime = root.runtime();
+        if (!runtime || runtime->isLost()) {
+            return 0;
+        }
+
+        return static_cast<std::size_t>(runtime->pool().budget() / 2);
+    }
+
+    void release(Entry& entry)
+    {
+        std::vector<std::shared_ptr<Entry>> visited;
+        std::lock_guard<std::mutex> k(_mutex);
+        if (entry.pinned) {
+            entry.root->unpin();
+            entry.pinned = false;
+            _heldBytes -= entry.bytes;
+        }
+        promoteLocked(&visited);
+    }
+
+    // The entries it locks are dropped by the caller after the mutex, since the last reference to one may be among
+    // them and its destructor takes the mutex.
+    void promoteLocked(std::vector<std::shared_ptr<Entry>>* visited)
+    {
+        for (std::list<std::weak_ptr<Entry>>::iterator it = _waiting.begin(); it != _waiting.end();) {
+            std::shared_ptr<Entry> entry = it->lock();
+            if (!entry) {
+                it = _waiting.erase(it);
+                continue;
+            }
+            visited->push_back(entry);
+            const std::size_t limit = limitOf(*entry->root);
+            if ((entry->bytes == 0) || (entry->bytes > limit)) {
+                it = _waiting.erase(it);
+                continue;
+            }
+            if (_heldBytes + entry->bytes > limit) {
+                return;
+            }
+            // Null once the root was evicted or downloaded, and then there is nothing left to keep on the device.
+            if (entry->root->pin()) {
+                entry->pinned = true;
+                _heldBytes += entry->bytes;
+            }
+            it = _waiting.erase(it);
+        }
+    }
+
+    std::mutex _mutex;
+    std::size_t _heldBytes = 0;
+    std::list<std::weak_ptr<Entry>> _waiting;
+};
+
+// Counts a frame the hand-off refused, logging each reason the first time it is given in the session.
+void
+noteHandoffRefusal(const RenderStatsPtr& stats,
+                   const std::string& reason)
+{
+    if (stats) {
+        stats->incLegacyFallbacks("viewer handoff: " + reason);
+    }
+    static std::mutex mutex;
+    static std::set<std::string> logged;
+    {
+        std::lock_guard<std::mutex> k(mutex);
+        if (!logged.insert(reason).second) {
+            return;
+        }
+    }
+    qInfo().noquote() << QString::fromLatin1("Viewer hand-off refused a frame, drawn by the CPU viewer process instead: %1")
+                             .arg(QString::fromStdString(reason));
+}
+#endif
+
 // Submits the viewer input's render of one frame to the RenderScheduler, or returns null and counts why it falls
 // back to renderRoI. The root task renders exactly what renderRoI would: the viewer's RoI and displayed layers.
 FrameFuturePtr
@@ -492,7 +664,9 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
                                    const RectI& roi,
                                    const std::list<ImageLayerDesc>& components,
                                    ImageBitDepthEnum bitdepth,
-                                   const RenderStatsPtr& stats)
+                                   const RenderStatsPtr& stats,
+                                   OpenGLViewerI* uiContext,
+                                   FrameRenderContextPtr* contextOut)
 {
     const NodePtr inputNode = inArgs.activeInputToRender->getNode();
     ViewerInstance::SchedulerEligibility eligibility;
@@ -514,6 +688,11 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
     if (ViewerInstance::isFrameEligibleForScheduler(eligibility, &reason)) {
         FrameRenderContextPtr context = FrameRenderContext::createFromSetter(*setter, inArgs.params->abortInfo, stats, inArgs.params->time, view);
         context->setRequest(request);
+#ifdef NATRON_HAVE_GPU
+        context->setWantsRootOnDevice(viewerFrameCanTakeDeviceRoot(inArgs, components, uiContext));
+#else
+        Q_UNUSED(uiContext);
+#endif
         FrameGraph graph = RenderScheduler::buildGraph(context, inputNode, inArgs.params->time, view, inArgs.params->mipmapLevel);
         if (graph.tasks.empty()) {
             reason = "request does not reach the viewer input";
@@ -523,6 +702,9 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
             root.components = components;
             root.bitdepth = bitdepth;
             placeRenderGraph(graph, context);
+            if (contextOut) {
+                *contextOut = context;
+            }
 
             return appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Interactive);
         }
@@ -535,6 +717,14 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+void
+ViewerInstance::setSchedulerResultHookForTests(const SchedulerResultHook& hook)
+{
+    std::lock_guard<std::mutex> k(gSchedulerResultHookMutex);
+
+    gSchedulerResultHook = hook;
+}
 
 ViewerInstance::ViewerRenderRetCode
 ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
@@ -1650,6 +1840,10 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     for (std::size_t rectIndex = 0; rectIndex < splitRoi.size(); ++rectIndex) {
         //AlphaImage will only be set when displaying the Matte overlay
         ImagePtr alphaImage, colorImage;
+#ifdef NATRON_HAVE_GPU
+        GpuDeviceImagePtr deviceColor;
+#endif
+        bool hasDeviceColor = false;
 
         // If an exception occurs here it is probably fatal, since
         // it comes from Natron itself. All exceptions from plugins are already caught
@@ -1697,12 +1891,45 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                 }
             } else {
                 FrameFuturePtr future;
+                FrameRenderContextPtr frameContext;
                 if (taskGraphMode) {
-                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats);
+                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, &frameContext);
                 }
                 if (future) {
                     retCode = future->wait();
                     layers = future->getRootPlanes();
+                    if (const SchedulerResultHook hook = schedulerResultHook()) {
+                        hook(frameContext, &layers);
+                    }
+#ifdef NATRON_HAVE_GPU
+                    if (frameContext) {
+                        std::map<ImageLayerDesc, GpuDeviceImagePtr> devicePlanes = frameContext->takeRootDevicePlanes();
+                        if (frameContext->wantsRootOnDevice() && (retCode == EffectInstance::eRenderRoIRetCodeOk) && !devicePlanes.empty()) {
+                            std::map<ImageLayerDesc, GpuDeviceImagePtr>::const_iterator found = devicePlanes.find(requestedComponents.front());
+                            if ((found == devicePlanes.end()) && (devicePlanes.size() == 1)) {
+                                found = devicePlanes.begin();
+                            }
+                            if ((found != devicePlanes.end()) && found->second) {
+                                const ViewerHandoffFormat format = (inArgs.params->depth == eImageBitDepthFloat) ? ViewerHandoffFormat::Rgba32F : ViewerHandoffFormat::Bgra8;
+                                // Compiled here so that the main thread drawing the root never has to.
+                                const ViewerHandoffResult prepared = _imp->uiContext->prepareHandoff(inArgs.params->displayProcessor, format);
+                                if (prepared) {
+                                    deviceColor = found->second;
+                                    hasDeviceColor = true;
+                                    layers.clear();
+                                } else {
+                                    noteHandoffRefusal(stats, prepared.reason);
+                                    if (layers.empty()) {
+                                        ImagePtr downloaded = found->second->downloadToRam();
+                                        if (downloaded) {
+                                            layers[found->first] = downloaded;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+#endif
                 } else {
                     std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs;
                     renderArgs.reset(new EffectInstance::RenderRoIArgs(inArgs.params->time,
@@ -1748,7 +1975,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                 assert(colorImage);
                 inArgs.params->colorImage = colorImage;
             }
-            if (!colorImage) {
+            if (!colorImage && !hasDeviceColor) {
                 if (retCode == EffectInstance::eRenderRoIRetCodeFailed) {
                     return eViewerRenderRetCodeFail;
                 } else if (retCode == EffectInstance::eRenderRoIRetCodeOk) {
@@ -1786,6 +2013,67 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             inArgs.params->colorImage = colorImage;
             alphaImage = (inArgs.channels == eDisplayChannelsMatte) ? colorImage : ImagePtr();
         }
+#ifdef NATRON_HAVE_GPU
+        if (deviceColor) {
+            if (((inArgs.channels == eDisplayChannelsA) || (inArgs.channels == eDisplayChannelsMatte)) && ((alphaChannelIndex < 0) || (alphaChannelIndex >= deviceColor->nComps()))) {
+                return eViewerRenderRetCodeBlack;
+            }
+            // The CPU path finds no matte image when the only plane rendered is not the colour layer, and shows black.
+            if ((inArgs.channels == eDisplayChannelsMatte) && (inArgs.params->alphaLayer != inArgs.params->layer)) {
+                return eViewerRenderRetCodeBlack;
+            }
+            // The tiles keep describing the texture the root is drawn into, without any RAM buffer.
+            const UpdateViewerParamsPtr& updateParams = inArgs.params;
+            updateParams->deviceColor = deviceColor;
+            updateParams->deviceRootHold = DeviceRootHolds::instance().hold(deviceColor);
+            updateParams->deviceProcess.rect = updateParams->roi;
+            updateParams->deviceProcess.channels = inArgs.channels;
+            updateParams->deviceProcess.alphaChannelIndex = alphaChannelIndex;
+            updateParams->deviceProcess.matteOverlay = (inArgs.channels == eDisplayChannelsMatte);
+            updateParams->deviceProcess.gain = updateParams->gain;
+            updateParams->deviceProcess.offset = updateParams->offset;
+            updateParams->deviceProcess.gamma = updateParams->gamma;
+            updateParams->deviceProcess.displayProcessor = updateParams->displayProcessor;
+            updateParams->deviceStats = stats;
+            updateParams->deviceCacheTiles.clear();
+            if (useTextureCache) {
+                const std::string inputToRenderName = inArgs.activeInputToRender->getNode()->getScriptName_mt_safe();
+                for (std::list<UpdateViewerParams::CachedTile>::const_iterator it = updateParams->tiles.begin(); it != updateParams->tiles.end(); ++it) {
+                    UpdateViewerParams::DeviceCacheTile cacheTile;
+                    cacheTile.key = FrameKey(getNode().get(),
+                                             inArgs.params->time,
+                                             viewerHash,
+                                             inArgs.params->gain,
+                                             inArgs.params->gamma,
+                                             inArgs.params->displayProcessor ? inArgs.params->displayProcessor->cacheHash : 0,
+                                             (int)inArgs.params->depth,
+                                             inArgs.channels,
+                                             inArgs.params->view,
+                                             it->rect,
+                                             inArgs.params->mipmapLevel,
+                                             inputToRenderName,
+                                             inArgs.params->layer,
+                                             inArgs.params->alphaLayer.getLayerID() + inArgs.params->alphaChannelName,
+                                             inArgs.params->depth == eImageBitDepthFloat,
+                                             inArgs.draftModeEnabled);
+                    cacheTile.rectRounded = it->rectRounded;
+                    updateParams->deviceCacheTiles.push_back(cacheTile);
+                }
+            }
+            updateParams->colorImage.reset();
+            updateParams->mustFreeRamBuffer = false;
+            for (std::list<UpdateViewerParams::CachedTile>::iterator it = updateParams->tiles.begin(); it != updateParams->tiles.end(); ++it) {
+                assert(!it->ramBuffer && !it->cachedData);
+                it->ramBuffer = 0;
+                it->bytesCount = 0;
+            }
+            {
+                QMutexLocker k(&_imp->lastRenderParamsMutex);
+                _imp->lastRenderParams[updateParams->textureIndex].reset();
+            }
+            continue;
+        }
+#endif
 
         const bool viewerRenderRoiOnly = !useTextureCache;
 
@@ -2181,6 +2469,30 @@ renderFunctor(const RectI& roi,
         // texture is stored as sRGB/Rec709 compressed 8-bit RGBA
         scaleToTexture8bits(roi, args, viewer, tile, (U32*)tile.ramBuffer);
     }
+}
+
+void
+viewerProcessRectOnCpu(const ImageConstPtr& input,
+                       const ImageConstPtr& matte,
+                       DisplayChannelsEnum channels,
+                       ImageBitDepthEnum depth,
+                       double gain,
+                       double gamma,
+                       double offset,
+                       const ProjectColorManagement::DisplayProcessorPtr& displayProcessor,
+                       int alphaChannelIndex,
+                       const RectI& rect,
+                       void* output)
+{
+    if (rect.isNull() || !input || !output) {
+        return;
+    }
+    const RenderViewerArgs args(input, matte, channels, depth, gain, gamma, offset, displayProcessor, alphaChannelIndex, true, 0);
+    UpdateViewerParams::CachedTile tile;
+    tile.rect = TextureRect(rect.x1, rect.y1, rect.x2, rect.y2, 1, 1.);
+    tile.rectRounded = rect;
+    tile.ramBuffer = (unsigned char*)output;
+    renderFunctor(rect, args, NULL, tile);
 }
 
 inline
@@ -2929,15 +3241,335 @@ scaleToTexture32bits(const RectI& roi,
     }
 } // scaleToTexture32bits
 
+#ifdef NATRON_HAVE_GPU
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// A device frame that is never read back is not worth waiting for, which also bounds how long a lost device keeps the
+// poll alive.
+const int kMaxCacheReadbackPolls = 200;
+const int kCacheReadbackPollMs = 25;
+const std::size_t kMaxPendingCacheFills = 4;
+
+// Runs the CPU viewer process of the device root of params into the display texture, for a frame whose hand-off was
+// refused, and returns the RAM copy of the root.
+ImagePtr
+drawDeviceRootOnCpu(OpenGLViewerI* uiContext,
+                    const UpdateViewerParams& params,
+                    const TextureRect& texRect,
+                    TexturePtr* texture)
+{
+    ImagePtr downloaded = params.deviceColor->downloadToRam();
+    if (!downloaded) {
+        return ImagePtr();
+    }
+    const RectI& rect = params.roi;
+    const std::size_t pixelBytes = (params.depth == eImageBitDepthFloat) ? 4 * sizeof(float) : sizeof(U32);
+    const std::size_t rowBytes = rect.width() * pixelBytes;
+    std::vector<unsigned char> buffer(rowBytes * rect.height(), 0);
+    const ViewerHandoffParams& process = params.deviceProcess;
+    const ImageConstPtr matte = process.matteOverlay ? ImageConstPtr(downloaded) : ImageConstPtr();
+    // viewerProcessRectOnCpu() reads a rect whose bottom-left corner is off the image as all empty, so only the part
+    // the root covers is processed.
+    const RectI drawn = rect.intersect(downloaded->getBounds());
+    if (!drawn.isNull()) {
+        const bool whole = (drawn == rect);
+        const std::size_t drawnRowBytes = drawn.width() * pixelBytes;
+        std::vector<unsigned char> part(whole ? 0 : drawnRowBytes * drawn.height());
+        unsigned char* const out = whole ? &buffer[0] : &part[0];
+        // The 8-bit dither diffuses its error along each row from a random start of its own, so splitting the rect into
+        // bands of whole rows leaves the output as one call makes it.
+        const int maxThreads = std::max(1, QThreadPool::globalInstance()->maxThreadCount());
+        const int bandCount = std::min(drawn.height(), 4 * maxThreads);
+        const int rowsPerBand = (drawn.height() + bandCount - 1) / bandCount;
+        parallelForOnGlobalPool(bandCount, maxThreads, [&](int i) {
+            RectI band = drawn;
+            band.y1 = drawn.y1 + i * rowsPerBand;
+            band.y2 = std::min(drawn.y2, band.y1 + rowsPerBand);
+            if (band.y1 >= band.y2) {
+                return;
+            }
+            viewerProcessRectOnCpu(downloaded, matte, process.channels, params.depth, process.gain, process.gamma, process.offset,
+                                   process.displayProcessor, process.alphaChannelIndex, band,
+                                   out + std::size_t(band.y1 - drawn.y1) * drawnRowBytes);
+        });
+        if (!whole) {
+            for (int y = drawn.y1; y < drawn.y2; ++y) {
+                std::memcpy(&buffer[(y - rect.y1) * rowBytes + (drawn.x1 - rect.x1) * pixelBytes],
+                            &part[(y - drawn.y1) * drawnRowBytes],
+                            drawnRowBytes);
+            }
+        }
+    }
+    uiContext->transferBufferFromRAMtoGPU(&buffer[0], buffer.size(), params.roi, params.roiNotRoundedToTileSize, texRect,
+                                          params.textureIndex, false, true, texture);
+
+    return downloaded;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+#endif // NATRON_HAVE_GPU
+
+#ifdef NATRON_HAVE_GPU
+void
+ViewerInstance::ViewerInstancePrivate::insertCacheTiles(const PendingCacheFill& fill,
+                                                        const ViewerHandoffReadback& readback)
+{
+    const std::size_t pixelBytes = (std::size_t)fill.bytesPerPixel;
+    const std::size_t frameRowBytes = (std::size_t)readback.frame.width * pixelBytes;
+    if ((readback.frame.width != (unsigned)fill.roi.width()) || (readback.frame.height != (unsigned)fill.roi.height()) || !readback.data || (readback.size != frameRowBytes * readback.frame.height)) {
+        return;
+    }
+    const RectI tileBounds(0, 0, fill.tileSize, fill.tileSize);
+    const std::size_t tileRowBytes = (std::size_t)fill.tileSize * pixelBytes;
+    struct TileCopy {
+        FrameEntryPtr entry;
+        unsigned char* dst;
+        const unsigned char* src;
+    };
+    std::vector<TileCopy> copies;
+    copies.reserve(fill.tiles.size());
+    // Every new entry stays locked until its copy is done, so no reader sees a tile half filled.
+    FrameEntryLocker entryLocker(this);
+    for (std::vector<UpdateViewerParams::DeviceCacheTile>::const_iterator it = fill.tiles.begin(); it != fill.tiles.end(); ++it) {
+        const RectI& r = it->rectRounded;
+        if ((r.width() != fill.tileSize) || (r.height() != fill.tileSize) || !fill.roi.contains(r)) {
+            continue;
+        }
+        FrameParamsPtr frameParams(new FrameParams(fill.bounds, it->key.getBitDepth(), tileBounds, ImagePtr()));
+        FrameEntryPtr entry;
+        // A tile that is in the cache already is complete, and another thread may be filling it.
+        if (appPTR->getTextureOrCreate(it->key, frameParams, &entryLocker, &entry) || !entry) {
+            continue;
+        }
+        entry->allocateMemory();
+        unsigned char* dst = entry->data();
+        if (!dst) {
+            continue;
+        }
+        const std::size_t xBytes = (std::size_t)(r.x1 - fill.roi.x1) * pixelBytes;
+        copies.push_back(TileCopy { entry, dst, readback.data + (std::size_t)(r.y1 - fill.roi.y1) * frameRowBytes + xBytes });
+    }
+    const int tileSize = fill.tileSize;
+    parallelForOnGlobalPool((int)copies.size(), QThreadPool::globalInstance()->maxThreadCount(), [&](int i) {
+        const TileCopy& c = copies[i];
+        for (int row = 0; row < tileSize; ++row) {
+            std::memcpy(c.dst + (std::size_t)row * tileRowBytes, c.src + (std::size_t)row * frameRowBytes, tileRowBytes);
+        }
+    });
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::pollCacheReadbacks()
+{
+    if (pendingCacheFills.empty()) {
+        return;
+    }
+    if (!uiContext) {
+        pendingCacheFills.clear();
+
+        return;
+    }
+    const std::shared_ptr<CacheFillGate> gate = cacheFillGate;
+    uiContext->consumeCompletedHandoffReadbacks([this, &gate](std::uint64_t token) -> ViewerHandoffReadbackFn {
+        for (std::list<PendingCacheFill>::iterator it = pendingCacheFills.begin(); it != pendingCacheFills.end(); ++it) {
+            if (it->token != token) {
+                continue;
+            }
+            std::shared_ptr<const PendingCacheFill> fill = std::make_shared<const PendingCacheFill>(std::move(*it));
+            pendingCacheFills.erase(it);
+
+            return [this, gate, fill](const ViewerHandoffReadback& rb) {
+                gate->runIfOpen([&]() { insertCacheTiles(*fill, rb); });
+            };
+        }
+
+        return ViewerHandoffReadbackFn();
+    });
+    for (std::list<PendingCacheFill>::iterator it = pendingCacheFills.begin(); it != pendingCacheFills.end();) {
+        if (++it->polls > kMaxCacheReadbackPolls) {
+            it = pendingCacheFills.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::scheduleCachePoll()
+{
+    if (cachePollScheduled || pendingCacheFills.empty()) {
+        return;
+    }
+    cachePollScheduled = true;
+    QTimer::singleShot(kCacheReadbackPollMs, this, [this]() {
+        cachePollScheduled = false;
+        if (!uiContext) {
+            pendingCacheFills.clear();
+
+            return;
+        }
+        uiContext->makeOpenGLcontextCurrent();
+        pollCacheReadbacks();
+        scheduleCachePoll();
+    });
+}
+#endif // NATRON_HAVE_GPU
+
+#ifdef NATRON_HAVE_GPU
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// Short, since a staged frame is shown only when the next one arrives or this poll finds it finished.
+const int kStagedFramePollMs = 1;
+
+TextureRect
+deviceTextureRect(const UpdateViewerParams& params)
+{
+    const UpdateViewerParams::CachedTile& firstTile = params.tiles.front();
+    TextureRect texRect;
+    texRect.par = firstTile.rect.par;
+    texRect.closestPo2 = firstTile.rect.closestPo2;
+    texRect.set(params.roi);
+
+    return texRect;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+std::uint64_t
+ViewerInstance::ViewerInstancePrivate::assignReadbackToken(UpdateViewerParams& params)
+{
+    const bool wantsCacheFill = !params.deviceCacheTiles.empty() && (params.tileSize > 0);
+    params.deviceProcess.readbackToken = wantsCacheFill ? nextReadbackToken++ : 0;
+
+    return params.deviceProcess.readbackToken;
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::addCacheFill(const UpdateViewerParams& params)
+{
+    PendingCacheFill fill;
+    fill.token = params.deviceProcess.readbackToken;
+    fill.tiles = params.deviceCacheTiles;
+    fill.roi = params.roi;
+    fill.bounds = params.rod.toPixelEnclosing(params.mipmapLevel, params.pixelAspectRatio);
+    fill.tileSize = params.tileSize;
+    fill.bytesPerPixel = (params.depth == eImageBitDepthFloat) ? 16 : 4;
+    pendingCacheFills.push_back(fill);
+    while (pendingCacheFills.size() > kMaxPendingCacheFills) {
+        pendingCacheFills.pop_front();
+    }
+    scheduleCachePoll();
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::presentDeviceFrame(const UpdateViewerParamsPtr& params,
+                                                          TexturePtr* texture,
+                                                          ImagePtr* deviceDownload)
+{
+    const TextureRect texRect = deviceTextureRect(*params);
+    const bool wantsCacheFill = assignReadbackToken(*params) != 0;
+    const ViewerHandoffResult presented = uiContext->transferDeviceImageToGPU(params->deviceColor, texRect, params->roiNotRoundedToTileSize,
+                                                                              params->textureIndex, params->deviceProcess, texture);
+    // present() pins the root for as long as the device reads it, and a pinned root cannot be downloaded, neither by
+    // the CPU fallback below nor by the picker reading the frame on screen.
+    params->deviceRootHold.reset();
+    if (presented && wantsCacheFill) {
+        addCacheFill(*params);
+    }
+    if (!presented) {
+        noteHandoffRefusal(params->deviceStats, presented.reason);
+        *deviceDownload = drawDeviceRootOnCpu(uiContext, *params, texRect, texture);
+    }
+}
+
+bool
+ViewerInstance::ViewerInstancePrivate::stageDeviceFrame(const UpdateViewerParamsPtr& params)
+{
+    StagedDeviceFrame staged;
+    staged.params = params;
+    staged.texRect = deviceTextureRect(*params);
+    const bool wantsCacheFill = assignReadbackToken(*params) != 0;
+    if (!uiContext->stageDeviceImage(params->deviceColor, staged.texRect, params->textureIndex, params->deviceProcess, &staged.id)) {
+        return false;
+    }
+    params->deviceRootHold.reset();
+    if (wantsCacheFill) {
+        addCacheFill(*params);
+    }
+    stagedFrames[params->textureIndex] = staged;
+
+    return true;
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::showStagedFrame(const StagedDeviceFrame& staged)
+{
+    const UpdateViewerParamsPtr& params = staged.params;
+    TexturePtr texture;
+    ImagePtr deviceDownload;
+    const ViewerHandoffResult presented = uiContext->transferStagedDeviceImageToGPU(staged.id, params->deviceColor, staged.texRect,
+                                                                                    params->roiNotRoundedToTileSize, params->textureIndex, &texture);
+    if (!presented) {
+        noteHandoffRefusal(params->deviceStats, presented.reason);
+        deviceDownload = drawDeviceRootOnCpu(uiContext, *params, staged.texRect, &texture);
+    }
+    showFrame(params, texture, deviceDownload, true);
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::discardStagedFrame(int textureIndex)
+{
+    std::optional<StagedDeviceFrame> staged;
+    staged.swap(stagedFrames[textureIndex]);
+    if (staged && uiContext) {
+        uiContext->discardStagedDeviceImage(textureIndex, staged->id);
+    }
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::scheduleStagedFlush()
+{
+    if (stagedFlushScheduled || (!stagedFrames[0] && !stagedFrames[1])) {
+        return;
+    }
+    stagedFlushScheduled = true;
+    QTimer::singleShot(kStagedFramePollMs, Qt::PreciseTimer, this, [this]() {
+        stagedFlushScheduled = false;
+        if (!uiContext) {
+            stagedFrames[0].reset();
+            stagedFrames[1].reset();
+
+            return;
+        }
+        uiContext->makeOpenGLcontextCurrent();
+        bool shown = false;
+        for (int i = 0; i < 2; ++i) {
+            if (!stagedFrames[i] || uiContext->isStagedDeviceImageComputing(i, stagedFrames[i]->id)) {
+                continue;
+            }
+            std::optional<StagedDeviceFrame> staged;
+            staged.swap(stagedFrames[i]);
+            showStagedFrame(*staged);
+            shown = true;
+        }
+        if (shown) {
+            uiContext->redraw();
+        }
+        scheduleStagedFlush();
+    });
+}
+#endif // NATRON_HAVE_GPU
+
 void
 ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
-    // QMutexLocker locker(&updateViewerMutex);
-    // if (updateViewerRunning) {
     uiContext->makeOpenGLcontextCurrent();
+#ifdef NATRON_HAVE_GPU
+    pollCacheReadbacks();
+#endif
     if (params->tiles.empty()) {
         return;
     }
@@ -2950,71 +3582,106 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
     }
     checkAndUpdateDisplayAge(params->textureIndex, age);
 
-    {
+    assert((params->isPartialRect && params->tiles.size() == 1) || !params->isPartialRect);
 
-        assert( (params->isPartialRect && params->tiles.size() == 1) || !params->isPartialRect );
-
-        TexturePtr texture;
-        bool isFirstTile = true;
-        for (std::list<UpdateViewerParams::CachedTile>::iterator it = params->tiles.begin(); it != params->tiles.end(); ++it) {
-            if (!it->ramBuffer) {
-                continue;
-            }
-
-            // For cached tiles, some tiles might not have the standard tile, (i.e: the last tile column/row).
-            // Since the internal buffer is rounded to the tile size anyway we want the glTexSubImage2D call to ensure
-            // that we upload the full internal buffer
-            TextureRect texRect;
-            texRect.par = it->rect.par;
-            texRect.closestPo2 = it->rect.closestPo2;
-            texRect.set(it->rectRounded);
-    
-            assert(params->roi.contains(texRect));
-            uiContext->transferBufferFromRAMtoGPU(it->ramBuffer, it->bytesCount, params->roi, params->roiNotRoundedToTileSize, texRect, params->textureIndex, params->isPartialRect, isFirstTile, &texture);
-            isFirstTile = false;
+    TexturePtr texture;
+    ImagePtr deviceDownload;
+    bool deviceFrame = false;
+#ifdef NATRON_HAVE_GPU
+    std::optional<StagedDeviceFrame> previous;
+    previous.swap(stagedFrames[params->textureIndex]);
+    // In playback the readback rung shows the frame before this one while the device computes this one, rather than
+    // blocking the main thread on it; a frame of a single render is shown at once, as nothing follows it to wait for.
+    if (params->deviceColor && params->isSequential && (uiContext->handoffRung() == ViewerHandoffRung::Readback) && stageDeviceFrame(params)) {
+        if (previous) {
+            showStagedFrame(*previous);
         }
+        scheduleStagedFlush();
 
-
-        NodePtr rotoPaintNode;
-        RotoStrokeItemPtr curStroke;
-        bool isDrawing = false;
-        instance->getApp()->getActiveRotoDrawingStroke(&rotoPaintNode, &curStroke, &isDrawing);
-
-        const UpdateViewerParams::CachedTile& firstTile = params->tiles.front();
-        ImagePtr originalImage;
-        originalImage = params->colorImage;
-        DeepImagePtr deepImage = params->deepImage;
-        if (firstTile.cachedData && !originalImage) {
-            originalImage = firstTile.cachedData->getInternalImage();
-            deepImage = firstTile.cachedData->getInternalDeepImage();
-        }
-        ImageBitDepthEnum depth;
-        if (originalImage) {
-            depth = originalImage->getBitDepth();
+        return;
+    }
+    if (previous) {
+        // Playback must not skip a frame and a partial rect draws over the frame before it, while any other frame
+        // replaces the staged one entirely.
+        if (params->isSequential || params->isPartialRect) {
+            showStagedFrame(*previous);
         } else {
-            assert(firstTile.cachedData);
-            if (firstTile.cachedData) {
-                depth = (ImageBitDepthEnum)firstTile.cachedData->getKey().getBitDepth();
-            } else {
-                depth = eImageBitDepthByte;
-            }
+            uiContext->discardStagedDeviceImage(params->textureIndex, previous->id);
+        }
+    }
+    if (params->deviceColor) {
+        assert(!params->isPartialRect);
+        deviceFrame = true;
+        presentDeviceFrame(params, &texture, &deviceDownload);
+    }
+#endif
+    showFrame(params, texture, deviceDownload, deviceFrame);
+} // ViewerInstance::ViewerInstancePrivate::updateViewer
+
+void
+ViewerInstance::ViewerInstancePrivate::showFrame(const UpdateViewerParamsPtr& params,
+                                                 TexturePtr texture,
+                                                 const ImagePtr& deviceDownload,
+                                                 bool deviceFrame)
+{
+    bool isFirstTile = true;
+    for (std::list<UpdateViewerParams::CachedTile>::iterator it = params->tiles.begin(); it != params->tiles.end(); ++it) {
+        if (!it->ramBuffer) {
+            continue;
         }
 
-        uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod, params->pixelAspectRatio, depth, params->mipmapLevel, params->gain, params->gamma, params->offset, params->recenterViewport, params->viewportCenter, params->isPartialRect);
-        if (!params->isPartialRect && originalImage) {
-            uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);
-        }
+        // For cached tiles, some tiles might not have the standard tile, (i.e: the last tile column/row).
+        // Since the internal buffer is rounded to the tile size anyway we want the glTexSubImage2D call to ensure
+        // that we upload the full internal buffer
+        TextureRect texRect;
+        texRect.par = it->rect.par;
+        texRect.closestPo2 = it->rect.closestPo2;
+        texRect.set(it->rectRounded);
 
-        if (!isDrawing) {
-            uiContext->updateColorPicker(params->textureIndex);
+        assert(params->roi.contains(texRect));
+        uiContext->transferBufferFromRAMtoGPU(it->ramBuffer, it->bytesCount, params->roi, params->roiNotRoundedToTileSize, texRect, params->textureIndex, params->isPartialRect, isFirstTile, &texture);
+        isFirstTile = false;
+    }
+
+    NodePtr rotoPaintNode;
+    RotoStrokeItemPtr curStroke;
+    bool isDrawing = false;
+    instance->getApp()->getActiveRotoDrawingStroke(&rotoPaintNode, &curStroke, &isDrawing);
+
+    const UpdateViewerParams::CachedTile& firstTile = params->tiles.front();
+    ImagePtr originalImage;
+    originalImage = params->colorImage;
+    DeepImagePtr deepImage = params->deepImage;
+    if (firstTile.cachedData && !originalImage) {
+        originalImage = firstTile.cachedData->getInternalImage();
+        deepImage = firstTile.cachedData->getInternalDeepImage();
+    }
+    if (!originalImage) {
+        originalImage = deviceDownload;
+    }
+    ImageBitDepthEnum depth;
+    if (originalImage) {
+        depth = originalImage->getBitDepth();
+    } else if (deviceFrame) {
+        depth = eImageBitDepthFloat;
+    } else {
+        assert(firstTile.cachedData);
+        if (firstTile.cachedData) {
+            depth = (ImageBitDepthEnum)firstTile.cachedData->getKey().getBitDepth();
+        } else {
+            depth = eImageBitDepthByte;
         }
     }
 
-    //
-    //        updateViewerRunning = false;
-    //    }
-    //    updateViewerCond.wakeOne();
-} // ViewerInstance::ViewerInstancePrivate::updateViewer
+    uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod, params->pixelAspectRatio, depth, params->mipmapLevel, params->gain, params->gamma, params->offset, params->recenterViewport, params->viewportCenter, params->isPartialRect);
+    if (!params->isPartialRect && (originalImage || deviceFrame)) {
+        uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);
+    }
+
+    if (!isDrawing) {
+        uiContext->updateColorPicker(params->textureIndex);
+    }
+}
 
 bool
 ViewerInstance::isInputOptional(int n) const
@@ -3205,6 +3872,14 @@ ViewerInstance::setActiveLayer(const ImageLayerDesc& layer,
     if ( doRender && changed && !getApp()->getProject()->isLoadingProject() ) {
         renderCurrentFrame(true);
     }
+}
+
+ImageLayerDesc
+ViewerInstance::getActiveLayer() const
+{
+    QMutexLocker l(&_imp->viewerParamsMutex);
+
+    return _imp->viewerParamsLayer;
 }
 
 void

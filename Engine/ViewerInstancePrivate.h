@@ -30,12 +30,17 @@
 
 #include "ViewerInstance.h"
 
+#include <algorithm> // min, max
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <functional>
+#include <list>
 #include <map>
+#include <memory>
+#include <optional>
 #include <set>
 #include <vector>
-#include <cmath>
-#include <cassert>
-#include <algorithm> // min, max
 
 #include <QMutex>
 #include <QWaitCondition>
@@ -52,6 +57,7 @@
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/Settings.h"
 #include "Engine/TextureRect.h"
+#include "Engine/UpdateViewerParams.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -158,6 +164,106 @@ public:
         }
     }
     // clang-format on
+
+#ifdef NATRON_HAVE_GPU
+    // Lets the cache fills running on the pool finish before the viewer they fill for is destroyed, and keeps those
+    // that have not started from starting after it is.
+    class CacheFillGate {
+    public:
+        void runIfOpen(const std::function<void()>& work)
+        {
+            {
+                QMutexLocker k(&_mutex);
+                if (_closed) {
+                    return;
+                }
+                ++_active;
+            }
+            struct Leave {
+                CacheFillGate* gate;
+
+                ~Leave()
+                {
+                    QMutexLocker k(&gate->_mutex);
+                    if (--gate->_active == 0) {
+                        gate->_idle.wakeAll();
+                    }
+                }
+            } leave { this };
+            work();
+        }
+
+        void close()
+        {
+            QMutexLocker k(&_mutex);
+            _closed = true;
+            while (_active > 0) {
+                _idle.wait(&_mutex);
+            }
+        }
+
+    private:
+        QMutex _mutex;
+        QWaitCondition _idle;
+        int _active = 0;
+        bool _closed = false;
+    };
+
+    // A device frame whose display buffer is being copied to host memory, to become cache tiles.
+    struct PendingCacheFill {
+        std::uint64_t token = 0;
+        std::vector<UpdateViewerParams::DeviceCacheTile> tiles;
+        RectI roi;
+        RectI bounds;
+        int tileSize = 0;
+        int bytesPerPixel = 4;
+        int polls = 0;
+    };
+
+    // Starts writing the tiles of every readback that has completed into the viewer cache on the pool and drops the
+    // ones that never will. Main thread, with the GL context current.
+    void pollCacheReadbacks();
+
+    void scheduleCachePoll();
+
+    // Any thread: allocates the tiles of fill in the cache and copies them from the readback.
+    void insertCacheTiles(const PendingCacheFill& fill,
+                          const ViewerHandoffReadback& readback);
+
+    // A playback frame whose viewer process the device runs while the main thread shows the frame before it.
+    struct StagedDeviceFrame {
+        UpdateViewerParamsPtr params;
+        TextureRect texRect;
+        std::uint64_t id = 0;
+    };
+
+    // Sets the cache-fill readback token of params, 0 when it wants none, and returns it.
+    std::uint64_t assignReadbackToken(UpdateViewerParams& params);
+
+    void addCacheFill(const UpdateViewerParams& params);
+
+    // Uploads the device root of params into its texture now, or draws it on the CPU if the hand-off refuses it.
+    void presentDeviceFrame(const UpdateViewerParamsPtr& params,
+                            TexturePtr* texture,
+                            ImagePtr* deviceDownload);
+
+    // Starts the viewer process of the device root of params and keeps the frame in stagedFrames; false, with nothing
+    // staged, if the hand-off refuses.
+    bool stageDeviceFrame(const UpdateViewerParamsPtr& params);
+
+    void showStagedFrame(const StagedDeviceFrame& staged);
+
+    void discardStagedFrame(int textureIndex);
+
+    // Shows each staged frame once the device has finished it, for the frame that no other follows.
+    void scheduleStagedFlush();
+#endif
+
+    // Everything updateViewer() does once the texture holds the frame of params, or before the tiles of a CPU frame.
+    void showFrame(const UpdateViewerParamsPtr& params,
+                   TexturePtr texture,
+                   const ImagePtr& deviceDownload,
+                   bool deviceFrame);
 
     void redrawViewer()
     {
@@ -398,6 +504,16 @@ public:
     // it superseded. Protected by renderAgeMutex.
     std::weak_ptr<AbortableRenderInfo> lastRequest[2];
     bool lastRequestSequential[2];
+
+#ifdef NATRON_HAVE_GPU
+    // Only accessed from MT
+    std::list<PendingCacheFill> pendingCacheFills;
+    std::shared_ptr<CacheFillGate> cacheFillGate = std::make_shared<CacheFillGate>();
+    std::uint64_t nextReadbackToken = 1;
+    bool cachePollScheduled = false;
+    std::optional<StagedDeviceFrame> stagedFrames[2];
+    bool stagedFlushScheduled = false;
+#endif
 };
 
 NATRON_NAMESPACE_EXIT

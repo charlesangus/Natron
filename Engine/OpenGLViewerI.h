@@ -30,12 +30,15 @@
 
 #include <limits>
 #include <list>
+#include <vector>
 
 #include "Engine/OverlaySupport.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Texture.h"
-
+#ifdef NATRON_HAVE_GPU
+#include "Engine/ViewerHandoff.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -237,6 +240,110 @@ public:
      * @brief Returns for a string the estimated pixel size it would take on the widget
      **/
     virtual int getStringWidthForCurrentFont(const std::string& string) const OVERRIDE = 0;
+
+#ifdef NATRON_HAVE_GPU
+    /**
+     * @brief How a device root would reach this viewer's textures; Cpu when it cannot. Safe from any thread.
+     **/
+    virtual ViewerHandoffRung handoffRung() const
+    {
+        return ViewerHandoffRung::Cpu;
+    }
+
+    /**
+     * @brief Compiles the GPU viewer process of processor for format, so that drawing a device root on the main
+     * thread does not have to. Safe from any thread. A refusal means the frame must take the CPU path.
+     **/
+    virtual ViewerHandoffResult prepareHandoff(const ProjectColorManagement::DisplayProcessorPtr& /*processor*/,
+                                               ViewerHandoffFormat /*format*/)
+    {
+        ViewerHandoffResult refused;
+        refused.reason = "rung cpu";
+
+        return refused;
+    }
+
+    /**
+     * @brief Runs the GPU viewer process of root into the display texture of textureIndex, sized to roiRounded,
+     * instead of transferBufferFromRAMtoGPU(); endTransferBufferFromRAMToGPU() then gets a null image and keeps root
+     * for the colour picker. A refusal leaves nothing to keep, and the frame must take the CPU path.
+     **/
+    virtual ViewerHandoffResult transferDeviceImageToGPU(const GpuDeviceImagePtr& /*root*/,
+                                                         const TextureRect& /*roiRounded*/,
+                                                         const RectI& /*roi*/,
+                                                         int /*textureIndex*/,
+                                                         const ViewerHandoffParams& /*params*/,
+                                                         TexturePtr* /*texture*/)
+    {
+        ViewerHandoffResult refused;
+        refused.reason = "rung cpu";
+
+        return refused;
+    }
+
+    /**
+     * @brief Runs the GPU viewer process of root for the display texture of textureIndex, sized to roiRounded, as
+     * transferDeviceImageToGPU() does, but leaves the result on the device for transferStagedDeviceImageToGPU(), so
+     * that the main thread need not wait for it. *staged receives its id. A refusal leaves nothing staged, and the
+     * frame may still go through transferDeviceImageToGPU().
+     **/
+    virtual ViewerHandoffResult stageDeviceImage(const GpuDeviceImagePtr& /*root*/,
+                                                 const TextureRect& /*roiRounded*/,
+                                                 int /*textureIndex*/,
+                                                 const ViewerHandoffParams& /*params*/,
+                                                 std::uint64_t* /*staged*/)
+    {
+        ViewerHandoffResult refused;
+        refused.reason = "rung cpu";
+
+        return refused;
+    }
+
+    /**
+     * @brief Whether the device is still computing a staged frame; false once it can be transferred without waiting,
+     * or was lost.
+     **/
+    virtual bool isStagedDeviceImageComputing(int /*textureIndex*/,
+                                              std::uint64_t /*staged*/)
+    {
+        return false;
+    }
+
+    /**
+     * @brief Moves a staged frame into the display texture of textureIndex, as transferDeviceImageToGPU() would have,
+     * waiting for the device if it has not finished. A refusal leaves the root unpinned, and the frame must take the
+     * CPU path.
+     **/
+    virtual ViewerHandoffResult transferStagedDeviceImageToGPU(std::uint64_t /*staged*/,
+                                                               const GpuDeviceImagePtr& /*root*/,
+                                                               const TextureRect& /*roiRounded*/,
+                                                               const RectI& /*roi*/,
+                                                               int /*textureIndex*/,
+                                                               TexturePtr* /*texture*/)
+    {
+        ViewerHandoffResult refused;
+        refused.reason = "rung cpu";
+
+        return refused;
+    }
+
+    /**
+     * @brief Drops a staged frame that will not be shown.
+     **/
+    virtual void discardStagedDeviceImage(int /*textureIndex*/,
+                                          std::uint64_t /*staged*/)
+    {
+    }
+
+    /**
+     * @brief Passes \p claim the token of each host copy of a display buffer that transferDeviceImageToGPU() was
+     * asked for through ViewerHandoffParams::readbackToken and the device has finished since the last call, and runs
+     * the work it returns on the global thread pool, as ViewerHandoff::consumeCompletedReadbacks() does.
+     **/
+    virtual void consumeCompletedHandoffReadbacks(const ViewerHandoffClaimFn& /*claim*/)
+    {
+    }
+#endif
 };
 
 NATRON_NAMESPACE_EXIT

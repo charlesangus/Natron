@@ -221,11 +221,12 @@ public:
     /**
      * @brief CPU time the region saves, less its GPU time, the transfer time it exposes and kAcceptMarginMs: it is
      * worth running on the GPU when positive. An external input is uploaded unless its task is on the GPU; an output
-     * is downloaded when it is the root or a task outside the region on the CPU consumes it. A region that
-     * pipelinesTransfers() exposes only the transfer time beyond its GPU time; any other exposes all of it. Identity
-     * members cost nothing.
+     * is downloaded when a task outside the region on the CPU consumes it, or when it is the root and rootOnDevice,
+     * the frame's consumer taking its root in device memory, is false. A region that pipelinesTransfers() exposes
+     * only the transfer time beyond its GPU time, unless it keeps the root on the device, which the strip planner
+     * never strips for overlap; any other exposes all of it. Identity members cost nothing.
      **/
-    double regionGainMs(const FrameGraph& graph, const FrameGraph::Region& region) const;
+    double regionGainMs(const FrameGraph& graph, const FrameGraph::Region& region, bool rootOnDevice) const;
 
     /**
      * @brief regionGainMs() with every transfer free: the most the region can gain at any transfer rates, so that it
@@ -272,7 +273,7 @@ private:
 
     int threadCountLocked() const;
     double transferMsLocked(double uploadBytes, double downloadBytes) const;
-    double estimateRegionGainMs(const FrameGraph& graph, const FrameGraph::Region& region, bool freeTransfers) const;
+    double estimateRegionGainMs(const FrameGraph& graph, const FrameGraph::Region& region, bool freeTransfers, bool rootOnDevice) const;
     double seedThreadMsPerMpxLocked(const CpuRow& row) const;
     const CpuRow* findCpuRowOrDefaultLocked(const GpuTaskTraits& traits) const;
     bool gpuMsPerMpxLocked(const GpuTaskTraits& traits, double* msPerMpx) const;

@@ -42,6 +42,9 @@
 
 #include "Engine/DeviceImage.h"
 #include "Engine/EngineFwd.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/GpuContext.h"
+#endif
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectI.h"
@@ -298,6 +301,26 @@ public:
         return _store;
     }
 
+#ifdef NATRON_HAVE_GPU
+    /**
+     * @brief Whether the consumer of the frame can take its root planes in device memory. Thread safe.
+     **/
+    void setWantsRootOnDevice(bool wants);
+
+    bool wantsRootOnDevice() const;
+
+    /**
+     * @brief Hands the root planes to the consumer in device memory, replacing any set before. They are kept apart
+     * from the store, which is cleared before the frame's future finishes. Thread safe.
+     **/
+    void setRootDevicePlanes(std::map<ImageLayerDesc, GpuDeviceImagePtr> planes);
+
+    /**
+     * @brief Returns the planes setRootDevicePlanes() set and leaves none. Thread safe.
+     **/
+    std::map<ImageLayerDesc, GpuDeviceImagePtr> takeRootDevicePlanes();
+#endif
+
 private:
     void indexArgs();
 
@@ -312,6 +335,11 @@ private:
     double _time;
     ViewIdx _view;
     mutable FrameStore _store;
+#ifdef NATRON_HAVE_GPU
+    std::atomic<bool> _wantsRootOnDevice;
+    std::mutex _rootDeviceMutex;
+    std::map<ImageLayerDesc, GpuDeviceImagePtr> _rootDevicePlanes;
+#endif
 };
 
 NATRON_NAMESPACE_EXIT

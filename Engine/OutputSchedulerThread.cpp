@@ -3838,9 +3838,15 @@ public:
                 UpdateViewerParams* isParams = dynamic_cast<UpdateViewerParams*>( it->get() );
                 assert(isParams);
                 assert( !isParams->tiles.empty() );
+#ifdef NATRON_HAVE_GPU
+                const bool deviceFrame = bool(isParams->deviceColor);
+#else
+                const bool deviceFrame = false;
+#endif
                 for (std::list<UpdateViewerParams::CachedTile>::iterator it2 = isParams->tiles.begin(); it2 != isParams->tiles.end(); ++it2) {
-                    assert(it2->ramBuffer);
+                    assert(deviceFrame || it2->ramBuffer);
                 }
+                Q_UNUSED(deviceFrame);
             }
 #endif
             _args->scheduler->notifyFrameProduced(ret, _args->stats, _args->request->age);

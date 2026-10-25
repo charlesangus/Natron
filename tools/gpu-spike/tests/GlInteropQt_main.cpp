@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QGuiApplication>
 #include <QImage>
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
@@ -7,6 +8,7 @@
 #include <QSurfaceFormat>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -24,6 +26,7 @@ namespace {
 
 constexpr int kW = 256;
 constexpr int kH = 192;
+constexpr GlFrame kFrame { kW, kH, GlPixelFormat::Rgba32F };
 
 uint8_t
 patternByte(int x, int y, int c)
@@ -40,6 +43,51 @@ fnv1a(const void* data, size_t n)
         h = (h ^ p[i]) * 1099511628211ull;
     }
     return h;
+}
+
+std::string
+uuidHex(const std::array<uint8_t, 16>& u)
+{
+    char buf[33];
+    for (size_t i = 0; i < u.size(); ++i) {
+        std::snprintf(buf + 2 * i, 3, "%02x", u[i]);
+    }
+    return buf;
+}
+
+const char*
+profileName(QSurfaceFormat::OpenGLContextProfile p)
+{
+    switch (p) {
+    case QSurfaceFormat::CoreProfile:
+        return "core";
+    case QSurfaceFormat::CompatibilityProfile:
+        return "compatibility";
+    default:
+        return "none (driver default)";
+    }
+}
+
+void
+printCaps(const GlInteropCaps& c, const QSurfaceFormat& f)
+{
+    const auto yn = [](bool b) { return b ? "yes" : "no"; };
+    std::printf("qt platform: %s\n", QGuiApplication::platformName().toUtf8().constData());
+    std::printf("gl context: %d.%d %s profile\n", f.majorVersion(), f.minorVersion(), profileName(f.profile()));
+    std::printf("gl vendor: %s\ngl renderer: %s\ngl version: %s\n", c.glVendor.c_str(), c.glRenderer.c_str(),
+                c.glVersion.c_str());
+    std::printf("vk: external memory fd %s, external semaphore fd %s, buffer exportable %s, semaphore exportable %s\n",
+                yn(c.vkExternalMemoryFd), yn(c.vkExternalSemaphoreFd), yn(c.vkBufferExportable),
+                yn(c.vkSemaphoreExportable));
+    std::printf("gl: memory object %s, memory object fd %s, semaphore %s, semaphore fd %s\n", yn(c.glMemoryObject),
+                yn(c.glMemoryObjectFd), yn(c.glSemaphore), yn(c.glSemaphoreFd));
+    std::printf("uuid: vk device %s driver %s\n      gl device %s driver %s\n      match %s\n",
+                uuidHex(c.vkDeviceUuid).c_str(), uuidHex(c.vkDriverUuid).c_str(), uuidHex(c.glDeviceUuid).c_str(),
+                uuidHex(c.glDriverUuid).c_str(), yn(c.uuidMatch));
+    for (GlHandoffPath p : { GlHandoffPath::ZeroCopy, GlHandoffPath::ZeroCopyHostSync, GlHandoffPath::Readback }) {
+        std::printf("path %s: %s\n", toString(p), c.supports(p) ? "available" : "unavailable");
+    }
+    std::printf("best: %s\nmissing: %s\n", toString(c.best), c.missing.empty() ? "(none)" : c.missing.c_str());
 }
 
 class InteropWidget : public QOpenGLWidget, protected QOpenGLExtraFunctions {
@@ -89,10 +137,8 @@ protected:
         }
         renderer = "vk " + dev_->info().name + " / gl " + caps.glRenderer + " (" + caps.glVersion + ")";
         pathName = toString(caps.best);
-        if (!caps.missing.empty()) {
-            std::printf("zero-copy blockers: %s\n", caps.missing.c_str());
-        }
-        if (s = GlInterop::create(*dev_, loader, kW, kH, caps.best, interop_); !s) {
+        printCaps(caps, format());
+        if (s = GlInterop::create(*dev_, loader, kFrame.bytes(), caps.best, interop_); !s) {
             error = "create: " + s.message;
             return;
         }
@@ -111,7 +157,7 @@ protected:
         glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
 
         VkBufferCreateInfo bci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        bci.size = interop_->size();
+        bci.size = kFrame.bytes();
         bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         VmaAllocationCreateInfo aci {};
         aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
@@ -129,9 +175,9 @@ protected:
                 }
             }
         }
-        std::memcpy(ai.pMappedData, expected_.data(), interop_->size());
+        std::memcpy(ai.pMappedData, expected_.data(), kFrame.bytes());
         vmaFlushAllocation(dev_->allocator(), stagingAlloc_, 0, VK_WHOLE_SIZE);
-        expectedTextureSum = fnv1a(expected_.data(), interop_->size());
+        expectedTextureSum = fnv1a(expected_.data(), kFrame.bytes());
     }
 
     void paintGL() override
@@ -142,19 +188,22 @@ protected:
             return;
         }
         if (!uploaded_) {
-            const VkDeviceSize size = interop_->size();
-            GpuStatus s = interop_->produce([&](VkCommandBuffer cb) {
-                VkBufferCopy region { 0, 0, size };
-                vkCmdCopyBuffer(cb, staging_, interop_->buffer(), 1, &region);
-                return GpuStatus {};
-            });
+            int slot = -1;
+            GpuStatus s = interop_->produce(
+                kFrame,
+                [&](VkCommandBuffer cb, VkBuffer dst) {
+                    VkBufferCopy region { 0, 0, kFrame.bytes() };
+                    vkCmdCopyBuffer(cb, staging_, dst, 1, &region);
+                    return GpuStatus {};
+                },
+                {}, &slot);
             if (s) {
-                s = interop_->waitProduced();
+                s = interop_->waitProduced(slot);
             }
             QElapsedTimer t;
             t.start();
             if (s) {
-                s = interop_->upload(tex_);
+                s = interop_->upload(slot, tex_, 0, 0);
             }
             glFinish();
             handoffMs = double(t.nsecsElapsed()) / 1e6;
@@ -194,11 +243,8 @@ private:
 int
 main(int argc, char** argv)
 {
-    QSurfaceFormat fmt;
-    fmt.setRenderableType(QSurfaceFormat::OpenGL);
-    fmt.setProfile(QSurfaceFormat::CompatibilityProfile);
-    fmt.setVersion(2, 1);
-    QSurfaceFormat::setDefaultFormat(fmt);
+    // The viewer sets no format of its own, so it gets Qt's default, which on Mesa is a
+    // compatibility context; requesting a core profile here would test something it never runs.
     QApplication app(argc, argv);
 
     InteropWidget w;
@@ -244,5 +290,7 @@ main(int argc, char** argv)
     std::printf("render  checksum %016llx expected %016llx %s (max diff %d)\n", (unsigned long long)renderSum,
                 (unsigned long long)expectedRenderSum, renderSum == expectedRenderSum ? "MATCH" : "MISMATCH",
                 maxDiff);
+    std::printf("RESULT best=%s checksum=%016llx %s\n", w.pathName.c_str(), (unsigned long long)w.textureSum,
+                (w.textureExact && renderSum == expectedRenderSum) ? "PASS" : "FAIL");
     return (w.textureExact && renderSum == expectedRenderSum) ? 0 : 1;
 }

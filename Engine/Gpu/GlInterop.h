@@ -1,11 +1,13 @@
 #pragma once
 
 #include "GpuDevice.h"
+#include "GpuTransfer.h"
 
 #include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 
 namespace gpu {
@@ -18,7 +20,7 @@ enum class GlHandoffPath {
     ZeroCopy,
     // Exported memory without semaphores: the CPU waits on a Vulkan fence and on glFinish.
     ZeroCopyHostSync,
-    // Device buffer copied to host memory, then uploaded through an ordinary GL PBO.
+    // Device buffer copied to host memory, which glTexSubImage2D reads in place.
     Readback,
 };
 
@@ -50,16 +52,39 @@ struct GlInteropCaps {
     bool supports(GlHandoffPath path) const;
 };
 
-// Hands a width x height RGBA32F image produced by Vulkan into GL texture level 0.
-// All GL-touching calls, including destruction, need the creating GL context current.
+enum class GlPixelFormat {
+    // Tightly packed RGBA float32, uploaded as GL_RGBA / GL_FLOAT.
+    Rgba32F,
+    // One byte each of B, G, R, A in memory order, uploaded as GL_BGRA / GL_UNSIGNED_INT_8_8_8_8_REV.
+    Bgra8,
+};
+
+uint32_t bytesPerPixel(GlPixelFormat format);
+
+struct GlFrame {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    GlPixelFormat format = GlPixelFormat::Rgba32F;
+
+    VkDeviceSize bytes() const { return VkDeviceSize(width) * height * bytesPerPixel(format); }
+};
+
+// Records the producer's writes of one frame into `dst`, tightly packed rows from offset 0.
+using GlRecordFn = std::function<GpuStatus(VkCommandBuffer cb, VkBuffer dst)>;
+
+// Hands images produced by Vulkan into GL textures through kSlots buffers, so Vulkan can fill one
+// while GL still reads the other. All GL-touching calls, including destruction, need the creating
+// GL context current.
 class GlInterop {
 public:
+    static constexpr int kSlots = 2;
+
     static GpuStatus probe(GpuDevice& device, const GlProcLoader& loader, GlInteropCaps& out);
 
+    // Every slot holds up to capacityBytes; a frame of any size and format that fits may use it.
     static GpuStatus create(GpuDevice& device,
                             const GlProcLoader& loader,
-                            uint32_t width,
-                            uint32_t height,
+                            VkDeviceSize capacityBytes,
                             GlHandoffPath path,
                             std::unique_ptr<GlInterop>& out);
 
@@ -68,64 +93,88 @@ public:
     GlInterop& operator=(const GlInterop&) = delete;
 
     GlHandoffPath path() const { return path_; }
-    uint32_t width() const { return width_; }
-    uint32_t height() const { return height_; }
+    VkDeviceSize capacity() const { return capacity_; }
 
-    // Tightly packed RGBA32F rows; the producer writes it from the compute queue.
-    VkBuffer buffer() const { return buffer_; }
-    VkDeviceSize size() const { return size_; }
-    unsigned int glBuffer() const { return glBuffer_; }
+    VkBuffer buffer(int slot) const { return slots_[slot].buffer; }
+    // The frame last produced into `slot`.
+    const GlFrame& frame(int slot) const { return slots_[slot].frame; }
 
-    // Submits the caller's writes to buffer() on the compute queue, after GL's previous read.
-    // A failed status from `record` is returned without submitting anything.
-    GpuStatus produce(const std::function<GpuStatus(VkCommandBuffer)>& record);
+    // Picks a slot no upload() is pending on, preferring the one GL did not read last, and submits
+    // `record` on the compute queue after GL's previous read of that slot and after every value in
+    // `waits`. With hostCopy the frame is also copied to host memory on every path, as the Readback path always
+    // does. Stores the chosen slot in *slot. A frame larger than capacity() fails with
+    // VK_ERROR_OUT_OF_POOL_MEMORY, and a failed status from `record` is returned, both without
+    // submitting anything.
+    GpuStatus produce(const GlFrame& frame,
+                      const GlRecordFn& record,
+                      std::span<const TimelineValue> waits,
+                      int* slot,
+                      bool hostCopy = false);
 
-    // Blocks the CPU until the last produce() has finished on the GPU.
-    GpuStatus waitProduced(uint64_t timeoutNs = UINT64_MAX);
+    // The slot the next produce() will use, or -1 while every slot awaits upload().
+    int nextSlot() const;
 
-    // Consumes the last produce() into an RGBA32F GL_TEXTURE_2D of at least width x height.
-    GpuStatus upload(unsigned int texture);
+    // Points *data at the host copy that the last produce(hostCopy = true) into `slot` left, in the slot's mapped
+    // memory, and *size at its length, without waiting: VK_TIMEOUT while the GPU is still writing it. The next
+    // produce() into the slot overwrites it and destruction unmaps it, so the view is valid only until either.
+    GpuStatus hostCopyView(int slot, const unsigned char** data, VkDeviceSize* size);
+
+    // Blocks the CPU until the last produce() into `slot` has finished on the GPU.
+    GpuStatus waitProduced(int slot, uint64_t timeoutNs = UINT64_MAX);
+
+    // Consumes the pending produce() of `slot` into the frame-sized rectangle at (x, y) of level 0
+    // of a GL_TEXTURE_2D whose internal format accepts the frame's pixel format.
+    GpuStatus upload(int slot, unsigned int texture, int x, int y);
+
+    // Consumes the pending produce() of `slot` without uploading it, so the slot can be produced into again.
+    GpuStatus discard(int slot);
 
 private:
     struct Gl;
 
+    struct Slot {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VmaAllocation allocation = nullptr;
+        VkBuffer readback = VK_NULL_HANDLE;
+        VmaAllocation readbackAllocation = nullptr;
+        void* readbackMapped = nullptr;
+
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        VkSemaphore vkReady = VK_NULL_HANDLE;
+        VkSemaphore glDone = VK_NULL_HANDLE;
+
+        unsigned int glMemory = 0;
+        unsigned int glBuffer = 0;
+        unsigned int glReady = 0;
+        unsigned int glDoneGl = 0;
+
+        GlFrame frame;
+        bool inFlight = false;
+        bool hostCopyValid = false;
+        bool pendingUpload = false;
+        bool glSignaled = false;
+        bool releasedToGl = false;
+    };
+
     GlInterop() = default;
 
     GpuStatus initVulkan(bool exportable, bool semaphores);
-    GpuStatus initGl(bool semaphores);
+    GpuStatus ensureReadback(Slot& slot);
+    GpuStatus initVulkanSlot(Slot& slot, bool exportable, bool semaphores);
+    GpuStatus initGlSlot(Slot& slot, bool semaphores);
     GpuStatus glError(const char* what);
 
     GpuDevice* device_ = nullptr;
     std::unique_ptr<Gl> gl_;
     GlHandoffPath path_ = GlHandoffPath::Readback;
-    uint32_t width_ = 0;
-    uint32_t height_ = 0;
-    VkDeviceSize size_ = 0;
+    VkDeviceSize capacity_ = 0;
 
     VkExportMemoryAllocateInfo exportInfo_ { VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO };
     VmaPool pool_ = nullptr;
-    VkBuffer buffer_ = VK_NULL_HANDLE;
-    VmaAllocation allocation_ = nullptr;
-    VkBuffer readback_ = VK_NULL_HANDLE;
-    VmaAllocation readbackAllocation_ = nullptr;
-    void* readbackMapped_ = nullptr;
-
     VkCommandPool cmdPool_ = VK_NULL_HANDLE;
-    VkCommandBuffer cmd_ = VK_NULL_HANDLE;
-    VkFence fence_ = VK_NULL_HANDLE;
-    VkSemaphore vkReady_ = VK_NULL_HANDLE;
-    VkSemaphore glDone_ = VK_NULL_HANDLE;
-
-    unsigned int glMemory_ = 0;
-    unsigned int glBuffer_ = 0;
-    unsigned int glReady_ = 0;
-    unsigned int glDoneGl_ = 0;
-
-    bool submitted_ = false;
-    bool fenceWaited_ = true;
-    bool pendingUpload_ = false;
-    bool glSignaled_ = false;
-    bool releasedToGl_ = false;
+    std::array<Slot, kSlots> slots_ {};
+    int lastUploaded_ = -1;
 };
 
 } // namespace gpu

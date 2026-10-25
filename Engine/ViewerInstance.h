@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -145,6 +146,16 @@ public:
      * and reason is not null, *reason names the first cause.
      **/
     static bool isFrameEligibleForScheduler(const SchedulerEligibility& eligibility, const char** reason);
+
+    typedef std::function<void(const FrameRenderContextPtr& context, std::map<ImageLayerDesc, ImagePtr>* rootPlanes)>
+        SchedulerResultHook;
+
+    /**
+     * @brief Runs hook on the render thread each time a frame the viewer submitted to the RenderScheduler has
+     * finished, before the viewer reads what it rendered, so that a test can stand in for the scheduler's result. An
+     * empty hook removes it.
+     **/
+    static void setSchedulerResultHookForTests(const SchedulerResultHook& hook);
 
 private:
     /**
@@ -288,6 +299,8 @@ public:
     void setDisplayChannels(DisplayChannelsEnum channels, bool bothInputs);
 
     void setActiveLayer(const ImageLayerDesc& layer, bool doRender);
+
+    ImageLayerDesc getActiveLayer() const;
 
     void setAlphaChannel(const ImageLayerDesc& layer, const std::string& channelName, bool doRender);
 
@@ -520,6 +533,25 @@ void applyViewerDisplayTransform(const ProjectColorManagement::DisplayProcessor&
                                  double offset,
                                  double gamma,
                                  ViewerDisplayOutputEnum output = eViewerDisplayOutputExact);
+
+/**
+ * @brief The CPU viewer process of the texture rectangle \p rect of \p input, written to \p output
+ * packed from its row rect.y1: one ARGB U32 per pixel when \p depth is not float, else four floats.
+ * The matte overlay is drawn when \p matte is set and \p alphaChannelIndex >= 0. The pixels of
+ * \p input must cover \p rect, unless the bottom-left corner of \p rect is outside them, which makes
+ * the whole rect read as no pixel at all.
+ **/
+void viewerProcessRectOnCpu(const ImageConstPtr& input,
+                            const ImageConstPtr& matte,
+                            DisplayChannelsEnum channels,
+                            ImageBitDepthEnum depth,
+                            double gain,
+                            double gamma,
+                            double offset,
+                            const ProjectColorManagement::DisplayProcessorPtr& displayProcessor,
+                            int alphaChannelIndex,
+                            const RectI& rect,
+                            void* output);
 
 NATRON_NAMESPACE_EXIT
 

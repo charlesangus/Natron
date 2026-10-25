@@ -28,13 +28,20 @@
 
 #include "Global/Macros.h"
 
-#include <string>
-#include <list>
 #include <cstddef>
+#include <list>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "Global/Enums.h"
 
 #include "Engine/BufferableObject.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/FrameKey.h"
+#include "Engine/GpuContext.h"
+#include "Engine/ViewerHandoff.h"
+#endif
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -65,6 +72,15 @@ public:
             : rect(), rectRounded(), cachedData(), isCached(false), ramBuffer(0), bytesCount(0) {}
     };
 
+#ifdef NATRON_HAVE_GPU
+    // A tile of a device frame to be written to the viewer cache from the display buffer: the key it is
+    // looked up under and where its tileSize x tileSize buffer sits in the texture.
+    struct DeviceCacheTile {
+        FrameKey key;
+        RectI rectRounded;
+    };
+#endif
+
     UpdateViewerParams()
         : mustFreeRamBuffer(false)
         , textureIndex(0)
@@ -84,6 +100,13 @@ public:
         , nbCachedTile(0)
         , colorImage()
         , deepImage()
+#ifdef NATRON_HAVE_GPU
+        , deviceColor()
+        , deviceProcess()
+        , deviceStats()
+        , deviceCacheTiles()
+        , deviceRootHold()
+#endif
         , rod()
         , pixelAspectRatio(1.)
         , abortInfo()
@@ -136,6 +159,24 @@ public:
 
     // The deep image colorImage was flattened from; NULL unless the input is a deep stream
     DeepImagePtr deepImage;
+
+#ifdef NATRON_HAVE_GPU
+    // The colour plane in device memory, for the viewer process to run on the GPU; the tiles then hold no RAM buffer
+    // and colorImage is null.
+    GpuDeviceImagePtr deviceColor;
+
+    // The viewer process deviceColor goes through, with rect in the pixel coordinates of roi.
+    ViewerHandoffParams deviceProcess;
+
+    // Counts the frames whose hand-off is refused on the main thread.
+    RenderStatsPtr deviceStats;
+
+    // Set when the frame may enter the viewer cache; empty otherwise.
+    std::vector<DeviceCacheTile> deviceCacheTiles;
+
+    // Keeps deviceColor on the device, out of reach of the pool's eviction, until the frame is shown or dropped.
+    std::shared_ptr<void> deviceRootHold;
+#endif
 
     // The RoD of the src image
     RectD rod;

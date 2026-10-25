@@ -188,6 +188,31 @@ public:
                                                const Point& viewportCenter,
                                                bool isPartialRect) OVERRIDE FINAL;
     virtual void setLastRenderedDeepImage(int textureIndex, unsigned int mipmapLevel, const DeepImagePtr& deepImage) OVERRIDE FINAL;
+#ifdef NATRON_HAVE_GPU
+    virtual ViewerHandoffRung handoffRung() const OVERRIDE FINAL;
+    virtual ViewerHandoffResult prepareHandoff(const ProjectColorManagement::DisplayProcessorPtr& processor,
+                                               ViewerHandoffFormat format) OVERRIDE FINAL;
+    virtual ViewerHandoffResult transferDeviceImageToGPU(const GpuDeviceImagePtr& root,
+                                                         const TextureRect& roiRounded,
+                                                         const RectI& roi,
+                                                         int textureIndex,
+                                                         const ViewerHandoffParams& params,
+                                                         TexturePtr* texture) OVERRIDE FINAL;
+    virtual ViewerHandoffResult stageDeviceImage(const GpuDeviceImagePtr& root,
+                                                 const TextureRect& roiRounded,
+                                                 int textureIndex,
+                                                 const ViewerHandoffParams& params,
+                                                 std::uint64_t* staged) OVERRIDE FINAL;
+    virtual bool isStagedDeviceImageComputing(int textureIndex, std::uint64_t staged) OVERRIDE FINAL;
+    virtual ViewerHandoffResult transferStagedDeviceImageToGPU(std::uint64_t staged,
+                                                               const GpuDeviceImagePtr& root,
+                                                               const TextureRect& roiRounded,
+                                                               const RectI& roi,
+                                                               int textureIndex,
+                                                               TexturePtr* texture) OVERRIDE FINAL;
+    virtual void discardStagedDeviceImage(int textureIndex, std::uint64_t staged) OVERRIDE FINAL;
+    virtual void consumeCompletedHandoffReadbacks(const ViewerHandoffClaimFn& claim) OVERRIDE FINAL;
+#endif
     virtual void clearLastRenderedImage() OVERRIDE FINAL;
     virtual void disconnectInputTexture(int textureIndex, bool clearRoD) OVERRIDE FINAL;
 
@@ -532,6 +557,22 @@ private:
     virtual void resizeGL(int width, int height) OVERRIDE FINAL;
 
 private:
+#ifdef NATRON_HAVE_GPU
+    // Sizes the display texture of textureIndex to roiRounded and runs upload into it, keeping root for the colour
+    // picker once upload succeeds.
+    ViewerHandoffResult transferHandoffFrame(const GpuDeviceImagePtr& root,
+                                             const TextureRect& roiRounded,
+                                             const RectI& roi,
+                                             int textureIndex,
+                                             const std::function<ViewerHandoffResult(unsigned int glTexture, const ViewerHandoffFrame& frame)>& upload,
+                                             TexturePtr* texture);
+
+    ViewerHandoffFrame handoffFrameFor(const TextureRect& roiRounded) const;
+
+    // Starts compiling the viewer process of the current depth and display transform, and builds the hand-off rings
+    // at the largest frame the viewport can show, so that the first frame pays for neither.
+    void prepareHandoffAhead();
+#endif
 
     void setParametricParamsPickerColor(const OfxRGBAColourD& color, bool setColor, bool hasColor);
 
@@ -661,13 +702,31 @@ private:
     NodePtr getViewedNodeInput(int textureIndex, double time) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief Mean colour of the viewed node's input over canonicalRect, at least one pixel wide
-     * and high, read at the time, view, scale and layer displayed, the image last rendered in
-     * textureIndex, was rendered with, and converted to pixels with the input's own pixel aspect
-     * ratio. Channels displayed lacks are filled as getColorAt() fills them.
+     * @brief The node displayed in textureIndex at time: the viewer's active input, resolved past disabled nodes.
      **/
-    bool getInputColorAtCanonicalRect(int textureIndex, const ImagePtr& displayed, const RectD& canonicalRect,
-                                      float* r, float* g, float* b, float* a) WARN_UNUSED_RETURN;
+    NodePtr getViewedNode(int textureIndex, double time) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Renders the image the frame on screen in textureIndex was made from, when that frame came from the
+     * viewer cache without it, so that the getters of the last rendered image never return an earlier frame's.
+     **/
+    void renderLastImageOnDemand(int textureIndex) const;
+
+    /**
+     * @brief The scale and layer the frame on screen in textureIndex was rendered at, without rendering the image
+     * it was made from. False when nothing is displayed.
+     **/
+    bool getDisplayedLevelAndLayer(int textureIndex, unsigned int mipmapLevel, unsigned int* displayedLevel,
+                                   ImageLayerDesc* layer) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Mean colour of the viewed node's input over canonicalRect, at least one pixel wide
+     * and high, read at the time, view, mipmapLevel and layer the frame displayed in textureIndex
+     * was rendered with, and converted to pixels with the input's own pixel aspect ratio. Channels
+     * the layer lacks are filled as getColorAt() fills them.
+     **/
+    bool getInputColorAtCanonicalRect(int textureIndex, unsigned int mipmapLevel, const ImageLayerDesc& layer,
+                                      const RectD& canonicalRect, float* r, float* g, float* b, float* a) WARN_UNUSED_RETURN;
 
     /**
      * @brief getColorAt() and getColorAtRect() read from the viewed node's input unless pickOutput

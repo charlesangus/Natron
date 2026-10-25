@@ -1641,6 +1641,14 @@ public:
     void setCurrentViewportForOverlays_public(OverlaySupport* viewport);
     OverlaySupport* getCurrentViewportForOverlays() const;
 
+    /**
+     * @brief True while the viewer draws this effect's overlay without sending it pen, key or focus
+     * events, because another node owns the viewer tool slot. The overlay should then leave out
+     * feedback for the tool in use, such as a brush cursor.
+     **/
+    void setDrawingPassiveOverlay(bool passive);
+    bool isDrawingPassiveOverlay() const;
+
 protected:
 
     virtual void setCurrentViewportForOverlays(OverlaySupport* /*viewport*/)

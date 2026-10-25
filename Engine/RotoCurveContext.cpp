@@ -83,6 +83,45 @@ RotoCurveContext::onItemCreated(const RotoDrawableItemPtr& item,
     item->observeKnobChanges();
 }
 
+RotoLayerPtr
+RotoCurveContext::makeLayerCopy(const RotoLayerPtr& source)
+{
+    // clone() needs the layer owned by a shared_ptr, so it runs after construction.
+    RotoLayerPtr copy(new RotoLayer(shared_from_this(), source->getScriptName(), RotoLayerPtr()));
+    copy->clone(source.get());
+
+    return copy;
+}
+
+RotoDrawableItemPtr
+RotoCurveContext::makeDrawableCopy(const RotoDrawableItemPtr& source,
+                                   const std::string& name)
+{
+    RotoCurveContextPtr this_shared = shared_from_this();
+    RotoDrawableItemPtr copy;
+    BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(source);
+    RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(source);
+
+    if (isBezier) {
+        copy.reset(new Bezier(this_shared, name, isBezier->getParentLayer(), false));
+        onItemCreated(copy, true);
+    } else if (isStroke) {
+        copy.reset(new RotoStrokeItem(isStroke->getBrushType(), this_shared, name, RotoLayerPtr()));
+        onItemCreated(copy, true);
+        if (isStroke->getParentLayer()) {
+            isStroke->getParentLayer()->insertItem(copy, 0);
+        }
+    } else {
+        return copy;
+    }
+    copy->clone(source.get());
+    // clone() overwrites the script name.
+    copy->setScriptName(name);
+    copy->setLabel(name);
+
+    return copy;
+}
+
 void
 RotoCurveContext::onStructureChanged()
 {

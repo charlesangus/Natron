@@ -1,4 +1,4 @@
-"""M146: a RotoPaint node's curve animation shows in the curve editor.
+"""A RotoPaint node's curve animation shows in the curve editor.
 
 Creates a RotoPaint node with a Bezier whose opacity is keyed at two frames, opens the curve
 editor, and checks that the node's row holds the shape's animation as a tree item, that the item

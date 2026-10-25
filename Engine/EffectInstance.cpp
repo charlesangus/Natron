@@ -3713,6 +3713,21 @@ EffectInstance::getCurrentViewportForOverlays() const
 }
 
 void
+EffectInstance::setDrawingPassiveOverlay(bool passive)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    _imp->drawingPassiveOverlay = passive;
+}
+
+bool
+EffectInstance::isDrawingPassiveOverlay() const
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    return _imp->drawingPassiveOverlay;
+}
+
+void
 EffectInstance::setDoingInteractAction(bool doing)
 {
     _imp->setDuringInteractAction(doing);

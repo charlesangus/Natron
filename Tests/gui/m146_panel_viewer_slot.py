@@ -1,4 +1,4 @@
-"""M146: the curve list panel of a paint curve host is unchanged, and curve hosts share one viewer
+"""The curve list panel of a paint curve host is unchanged, and curve hosts share one viewer
 tool slot.
 
 Opens a Roto node's settings panel, then a RotoPaint node's with the Roto panel still open. Checks

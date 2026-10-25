@@ -242,8 +242,14 @@ struct ViewerTabPrivate
 
     std::list<PluginViewerContext>::iterator findActiveNodeContextForSlot(const std::string& slot);
 
-    // Returns true if this node has a viewer context but it is not active
+    // Returns true if this node has a viewer context but it is not active. Pen, key and focus
+    // events only go to nodes for which this is false.
     bool hasInactiveNodeViewerContext(const NodePtr& node);
+
+    // Whether the viewer leaves out this node's overlay. A curve host whose slot another curve
+    // host owns is still drawn, passively, so its curves stay visible; other nodes are hidden
+    // while another node of their slot owns it.
+    bool isOverlayHiddenByViewerSlot(const NodePtr& node);
 };
 
 NATRON_NAMESPACE_EXIT

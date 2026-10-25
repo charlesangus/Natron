@@ -67,7 +67,8 @@ public:
               const std::string& name,
               const RotoLayerPtr& parent);
 
-    explicit RotoLayer(const RotoLayer & other);
+    RotoLayer(const RotoLayer& other) = delete;
+    RotoLayer& operator=(const RotoLayer& other) = delete;
 
     virtual ~RotoLayer();
 

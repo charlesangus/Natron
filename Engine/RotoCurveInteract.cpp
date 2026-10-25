@@ -2647,7 +2647,9 @@ RotoCurveInteract::drawOverlay(double time)
             glCheckError();
         } // for (std::list<RotoDrawableItemPtr>::const_iterator it = drawables.begin(); it != drawables.end(); ++it) {
 
-        drawPaintToolOverlay(screenPixelRatio, viewportSize);
+        if (!_host->isDrawingPassiveOverlay()) {
+            drawPaintToolOverlay(screenPixelRatio, viewportSize);
+        }
     } // GLProtectAttrib a(GL_HINT_BIT | GL_ENABLE_BIT | GL_LINE_BIT | GL_COLOR_BUFFER_BIT | GL_POINT_BIT | GL_CURRENT_BIT);
 
     if (showCpsBbox) {

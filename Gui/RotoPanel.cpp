@@ -2876,37 +2876,12 @@ PasteItemUndoCommand::PasteItemUndoCommand(RotoPanel* roto,
             RotoLayerPtr srcLayer = std::dynamic_pointer_cast<RotoLayer>(it->rotoItem);
             RotoStrokeItemPtr srcStroke = std::dynamic_pointer_cast<RotoStrokeItem>(it->rotoItem);
             if (srcBezier) {
-                std::string name = getItemCopyName(roto, it->rotoItem);
-                BezierPtr copy( new Bezier(srcBezier->getContext(), name,
-                                                           srcBezier->getParentLayer(), false) );
-                copy->clone( srcBezier.get() );
-                copy->createNodes();
-                //clone overwrites the script name, don't forget to set it back
-                copy->setScriptName(name);
-                copy->setLabel(name);
-                it->itemCopy = copy;
+                it->itemCopy = srcBezier->getContext()->makeDrawableCopy(srcBezier, getItemCopyName(roto, it->rotoItem));
             } else if (srcStroke) {
-                std::string name = getItemCopyName(roto, it->rotoItem);
-                RotoStrokeItemPtr copy( new RotoStrokeItem( srcStroke->getBrushType(),
-                                                                            srcStroke->getContext(),
-                                                                            name,
-                                                                            RotoLayerPtr() ) );
-                copy->createNodes();
-                if ( srcStroke->getParentLayer() ) {
-                    srcStroke->getParentLayer()->insertItem(copy, 0);
-                }
-                copy->clone( srcStroke.get() );
-                copy->createNodes();
-                //clone overwrites the script name, don't forget to set it back
-                copy->setScriptName(name);
-                copy->setLabel(name);
-                it->itemCopy = copy;
+                it->itemCopy = srcStroke->getContext()->makeDrawableCopy(srcStroke, getItemCopyName(roto, it->rotoItem));
             } else {
                 assert(srcLayer);
-                RotoLayerPtr copy( new RotoLayer( srcLayer->getContext(),
-                                                                  "",
-                                                                  RotoLayerPtr() ) );
-                copy->clone( srcLayer.get() );
+                RotoLayerPtr copy = srcLayer->getContext()->makeLayerCopy(srcLayer);
                 setItemCopyNameRecursive( roto, copy );
                 it->itemCopy = copy;
             }
@@ -2946,11 +2921,11 @@ PasteItemUndoCommand::redo()
         RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>( _targetItem.get() );
         if (isBezier) {
             BezierPtr oldBezier( new Bezier(isBezier->getContext(), isBezier->getScriptName(), isBezier->getParentLayer(), false) );
-            oldBezier->createNodes();
+            oldBezier->getContext()->onItemCreated(oldBezier, true);
             _oldTargetItem = oldBezier;
         } else if (isStroke) {
             RotoStrokeItemPtr oldStroke( new RotoStrokeItem( isStroke->getBrushType(), isStroke->getContext(), isStroke->getScriptName(), RotoLayerPtr() ) );
-            oldStroke->createNodes();
+            oldStroke->getContext()->onItemCreated(oldStroke, true);
             _oldTargetItem = oldStroke;
             if ( isStroke->getParentLayer() ) {
                 //isStroke->getParentLayer()->insertItem(_oldTargetItem, 0);
@@ -2996,29 +2971,12 @@ DuplicateItemUndoCommand::DuplicateItemUndoCommand(RotoPanel* roto,
     RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>( _item.item);
     RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>( _item.item);
     if (isBezier) {
-        std::string name = getItemCopyName(roto, isBezier);
-        BezierPtr bezierCopy( new Bezier(isBezier->getContext(), name, isBezier->getParentLayer(), false) );
-        bezierCopy->createNodes();
-        _item.duplicatedItem = bezierCopy;
-        _item.duplicatedItem->clone( isBezier.get() );
-        //clone has overwritten the name
-        _item.duplicatedItem->setScriptName(name);
-        _item.duplicatedItem->setLabel(name);
+        _item.duplicatedItem = isBezier->getContext()->makeDrawableCopy(isBezier, getItemCopyName(roto, isBezier));
     } else if (isStroke) {
-        std::string name = getItemCopyName(roto, isStroke);
-        RotoStrokeItemPtr strokeCopy( new RotoStrokeItem( isStroke->getBrushType(), isStroke->getContext(), name, RotoLayerPtr() ) );
-        strokeCopy->createNodes();
-        _item.duplicatedItem = strokeCopy;
-        if ( isStroke->getParentLayer() ) {
-            isStroke->getParentLayer()->insertItem(_item.duplicatedItem, 0);
-        }
-        _item.duplicatedItem->clone( isStroke.get() );
-        //clone has overwritten the name
-        _item.duplicatedItem->setScriptName(name);
-        _item.duplicatedItem->setLabel(name);
+        _item.duplicatedItem = isStroke->getContext()->makeDrawableCopy(isStroke, getItemCopyName(roto, isStroke));
     } else {
         assert(isLayer);
-        _item.duplicatedItem.reset( new RotoLayer(*isLayer) );
+        _item.duplicatedItem = isLayer->getContext()->makeLayerCopy(isLayer);
         setItemCopyNameRecursive( roto, _item.duplicatedItem );
     }
 }

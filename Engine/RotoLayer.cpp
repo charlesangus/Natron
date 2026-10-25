@@ -95,13 +95,6 @@ RotoLayer::RotoLayer(const RotoCurveContextPtr& context,
 {
 }
 
-RotoLayer::RotoLayer(const RotoLayer & other)
-    : RotoItem( other.getContext(), other.getScriptName(), other.getParentLayer() )
-    , _imp( new RotoLayerPrivate() )
-{
-    clone(&other);
-}
-
 RotoLayer::~RotoLayer()
 {
 }
@@ -143,7 +136,9 @@ RotoLayer::clone(const RotoItem* other)
         } else {
             assert(isLayer);
             if (isLayer) {
-                RotoLayerPtr copy( new RotoLayer(*isLayer) );
+                // clone() needs the copy owned by a shared_ptr, so it runs after construction.
+                RotoLayerPtr copy(new RotoLayer(getContext(), isLayer->getScriptName(), RotoLayerPtr()));
+                copy->clone(isLayer.get());
                 copy->setParentLayer(this_shared);
                 copies.push_back(copy);
                 layers.push_back(copy);

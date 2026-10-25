@@ -435,13 +435,20 @@ ViewerTabPrivate::getLayerViewsAvailabelAtTime(double time,
     }
 }
 
+static bool
+isCurveHost(const NodePtr& node)
+{
+    EffectInstancePtr effect = node->getEffectInstance();
+
+    return effect && (effect->getCurveContextKind() != EffectInstance::eCurveContextKindNone);
+}
+
 std::string
 ViewerTabPrivate::getViewerSlot(const NodePtr& node)
 {
     // Curve hosts (Roto, RotoPaint, and any node editing curves) are different plug-ins but we
     // don't want two of them at the same time in the viewer. The key can't clash with a plug-in ID.
-    EffectInstancePtr effect = node->getEffectInstance();
-    if (effect && (effect->getCurveContextKind() != EffectInstance::eCurveContextKindNone)) {
+    if (isCurveHost(node)) {
         return std::string("<curve host>");
     }
 
@@ -474,6 +481,12 @@ ViewerTabPrivate::hasInactiveNodeViewerContext(const NodePtr& node)
     }
 
     return n->getNode() != node;
+}
+
+bool
+ViewerTabPrivate::isOverlayHiddenByViewerSlot(const NodePtr& node)
+{
+    return !isCurveHost(node) && hasInactiveNodeViewerContext(node);
 }
 
 NATRON_NAMESPACE_EXIT

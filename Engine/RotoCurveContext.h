@@ -151,6 +151,20 @@ public:
     virtual void onItemCreated(const RotoDrawableItemPtr& item, bool connectNodes);
 
     /**
+     * @brief Copies a Bezier or stroke of this context under the given name, through onItemCreated(),
+     * for the curve panel's paste and duplicate. A Bezier copy is not inserted in any layer; a stroke
+     * copy is inserted at the top of the source's layer.
+     **/
+    RotoDrawableItemPtr makeDrawableCopy(const RotoDrawableItemPtr& source, const std::string& name);
+
+    /**
+     * @brief Copies a layer of this context, with all its children, for the curve panel's paste
+     * and duplicate. The children's drawables are made through onItemCreated(). The copy keeps the
+     * source's names, which the caller makes unique, and is not inserted in any layer.
+     **/
+    RotoLayerPtr makeLayerCopy(const RotoLayerPtr& source);
+
+    /**
      * @brief Called whenever an item is inserted, removed or moved in the hierarchy, or when
      * its compositing changes. The paint context rebuilds its render tree here.
      **/

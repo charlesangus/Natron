@@ -50,6 +50,7 @@
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoItem.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/RotoPaintInteract.h"
 #include "Engine/ViewIdx.h"
 
@@ -123,6 +124,89 @@ TEST_F(CurveHostTest, MakeBezierCreatesNoInternalNodes)
     EXPECT_FALSE(bool(bezier->getEffectNode()));
     EXPECT_FALSE(bool(bezier->getMergeNode()));
     EXPECT_EQ(4, bezier->getControlPointsCount());
+}
+
+// The curve panel's paste and duplicate copy drawables with makeDrawableCopy() and layers with
+// RotoLayer::clone().
+TEST_F(CurveHostTest, CopyingTheHostsCurvesCreatesNoInternalNodes)
+{
+    NodePtr host = createNode(QString::fromUtf8(kTestPluginIDCurveHost));
+    ASSERT_TRUE(bool(host));
+    RotoCurveContextPtr ctx = host->getCurveContext();
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr bezier = makeQuad(ctx);
+    ASSERT_TRUE(bool(bezier));
+    ASSERT_FALSE(ctx->getLayers().empty());
+    RotoLayerPtr baseLayer = ctx->getLayers().front();
+
+    const std::size_t nodesBefore = countNodes();
+    BezierPtr copy = std::dynamic_pointer_cast<Bezier>(ctx->makeDrawableCopy(bezier, "QuadCopy"));
+    ASSERT_TRUE(bool(copy));
+    EXPECT_EQ(std::string("QuadCopy"), copy->getScriptName());
+    EXPECT_EQ(4, copy->getControlPointsCount());
+    EXPECT_FALSE(bool(copy->getEffectNode()));
+    EXPECT_FALSE(bool(copy->getMergeNode()));
+
+    RotoLayerPtr layerCopy(new RotoLayer(ctx, "LayerCopy", RotoLayerPtr()));
+    layerCopy->clone(baseLayer.get());
+    const std::list<RotoItemPtr> copiedItems = layerCopy->getItems_mt_safe();
+    ASSERT_FALSE(copiedItems.empty());
+    for (std::list<RotoItemPtr>::const_iterator it = copiedItems.begin(); it != copiedItems.end(); ++it) {
+        RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
+        ASSERT_TRUE(bool(drawable));
+        EXPECT_FALSE(bool(drawable->getEffectNode()));
+        EXPECT_FALSE(bool(drawable->getMergeNode()));
+    }
+
+    EXPECT_EQ(nodesBefore, countNodes());
+
+    // Duplicating a non-empty layer, as the curve panel does.
+    RotoLayerPtr duplicate;
+    ASSERT_NO_THROW(duplicate = ctx->makeLayerCopy(baseLayer));
+    ASSERT_TRUE(bool(duplicate));
+    EXPECT_EQ(baseLayer->getItems_mt_safe().size(), duplicate->getItems_mt_safe().size());
+    EXPECT_EQ(nodesBefore, countNodes());
+}
+
+TEST_F(CurveHostTest, CopyingRotoPaintCurvesStillCreatesTheirNodes)
+{
+    NodePtr paintNode = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(paintNode));
+    RotoContextPtr paint = paintNode->getRotoContext();
+    ASSERT_TRUE(bool(paint));
+    BezierPtr square = paint->makeSquare(0., 100., 100., 1.);
+    ASSERT_TRUE(bool(square));
+    ASSERT_FALSE(paint->getLayers().empty());
+
+    RotoDrawableItemPtr copy = paint->makeDrawableCopy(square, "SquareCopy");
+    ASSERT_TRUE(bool(copy));
+    EXPECT_TRUE(bool(copy->getEffectNode()));
+    EXPECT_TRUE(bool(copy->getMergeNode()));
+    EXPECT_NE(square->getEffectNode(), copy->getEffectNode());
+
+    RotoLayerPtr layerCopy(new RotoLayer(paint, "LayerCopy", RotoLayerPtr()));
+    layerCopy->clone(paint->getLayers().front().get());
+    const std::list<RotoItemPtr> copiedItems = layerCopy->getItems_mt_safe();
+    ASSERT_FALSE(copiedItems.empty());
+    for (std::list<RotoItemPtr>::const_iterator it = copiedItems.begin(); it != copiedItems.end(); ++it) {
+        RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
+        ASSERT_TRUE(bool(drawable));
+        EXPECT_TRUE(bool(drawable->getEffectNode()));
+        EXPECT_TRUE(bool(drawable->getMergeNode()));
+    }
+
+    // Duplicating a non-empty layer, as the curve panel does.
+    RotoLayerPtr duplicate;
+    ASSERT_NO_THROW(duplicate = paint->makeLayerCopy(paint->getLayers().front()));
+    ASSERT_TRUE(bool(duplicate));
+    const std::list<RotoItemPtr> duplicatedItems = duplicate->getItems_mt_safe();
+    ASSERT_FALSE(duplicatedItems.empty());
+    for (std::list<RotoItemPtr>::const_iterator it = duplicatedItems.begin(); it != duplicatedItems.end(); ++it) {
+        RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
+        ASSERT_TRUE(bool(drawable));
+        EXPECT_TRUE(bool(drawable->getEffectNode()));
+        EXPECT_TRUE(bool(drawable->getMergeNode()));
+    }
 }
 
 TEST_F(CurveHostTest, MovingAControlPointChangesTheContentHash)

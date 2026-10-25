@@ -295,7 +295,16 @@ jobs:
         run: tools/ci/local/fetch-assets.sh
 
       - name: Build (release, GPU off)
+        id: build
         run: tools/ci/local/build.sh release --no-ccache-stats --cmake-arg -DNATRON_GPU=OFF
+
+      # build.sh puts a --cmake-arg build in build/release-<hash>, but test.sh and
+      # the steps below look in build/release; a relative link makes the real
+      # tree answer to that name.
+      - name: Link build tree
+        env:
+          BUILD_DIR: ${{ steps.build.outputs.build_dir }}
+        run: ln -sfn "$(basename "$BUILD_DIR")" build/release
 
       - name: Show NATRON_GPU cache entry
         run: grep '^NATRON_GPU' build/release/CMakeCache.txt

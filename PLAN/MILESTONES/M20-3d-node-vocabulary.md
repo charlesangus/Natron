@@ -56,13 +56,13 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 
 ## Phase 20.1: Create nodes
 
-- [ ] M20.P1.T1 — `USDCamera` and `USDPrim`
+- [x] M20.P1.T1 — `USDCamera` and `USDPrim`
   - files: `Engine/Nodes/Scene/USDCamera.cpp`, `Engine/Nodes/Scene/USDPrim.cpp`, CMake source list
   - approach: `USDCamera` authors a `UsdGeomCamera` prim (focal length, aperture, clipping, transform — animated knobs as time samples per M19's time policy). Defaults 50 mm focal, 36×24 mm aperture, clipping 0.1–10000, written in USD's camera units (tenths of a scene unit), and not linked to the project format. `USDPrim` authors empty xforms / simple prims for layout scaffolding. Both take an optional scene input (append to stack) or act as scene sources. Colour-free.
   - verify: unit tests — composed stage contains the camera with knob-matching attributes (aperture/focal in USD units); 3D-view look-through of a `USDCamera` matches its knob values.
   - size: M
 
-- [ ] M20.P1.T2 — `USDLight`
+- [x] M20.P1.T2 — `USDLight`
   - files: `Engine/Nodes/Scene/USDLight.cpp`, CMake source list
   - approach: one node, type knob selecting the UsdLux prim (distant, sphere, rect, dome; dome takes a texture path). Intensity/exposure/color knobs map to UsdLux attributes directly — no native light model. Colour values are in the project working space and are written unchanged. A dome texture path that doesn't resolve is still authored, with a persistent node warning naming it.
   - verify: unit test — each type authors the right UsdLux prim; a missing dome texture authors the path and sets the warning; a lit sphere renders visibly differently per light type in `USDRender` (M20.P3.T1) once it lands.
@@ -130,6 +130,7 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 
 ## Decisions
 
+- 2026-10-25 — **Create nodes define their prim (bosley-native-nodes):** USDCamera, USDPrim and USDLight take an optional scene input and author their prim on top of it; a node's transform replaces any transform the input has on the same prim. Default prim paths follow the node's script name (e.g. `/USDCamera1`) so two nodes left at their defaults don't write the same prim; done with the Phase 20.2 work. Lens knobs are in mm, converted with the input's metersPerUnit.
 - 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file. USDRender needs the Hydra libraries in Engine's link set.
 - 2026-10-24 — `USDRender` hands pixels to the image graph through GL→Vulkan interop, not a plain CPU readback: user's call, since M19 - USD/Hydra Foundation left Hydra → Vulkan compute to `USDRender`.
 - 2026-10-24 — The interop mirrors M107 - GPU Viewer Hand-off's ladder (ZeroCopy → ZeroCopyHostSync → readback), with a silent fallback: CI, llvmpipe+RADV and GPU-less farm nodes still render, and the output is the same on every rung.

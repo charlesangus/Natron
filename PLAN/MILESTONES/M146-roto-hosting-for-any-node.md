@@ -164,6 +164,9 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check line numbers at claim
 
 ## Decisions
 
+- 2026-10-25 — **Panel hook columns are text only (bosley-native-nodes):** Engine can't create widgets; text covers M148's Role and Linked-to columns. The hook lives in `Engine/RotoCurvePanelHook.h`, so M148's panel hook can live with its effect. T1's Xvfb check on the test host moves to M147/M148 with a shipped geometry host (the test host exists only in the Tests binary).
+- 2026-10-25 — **Geometry hosts get the full Roto UI (bosley-native-nodes):** the Roto viewer buttons, right-click menu knobs, change slots and `refreshExtraStateAfterTimeChanged` move out of RotoPaint into the curve interact/context, so a non-paint host is complete — added to this milestone rather than deferred to M147.
+- 2026-10-25 — **RotoPaint load→save isn't idempotent on main (bosley-native-nodes):** a reloaded RotoPaint loses the clone reset buttons' disabled state and gains `resetTransformCenter`, `RotoTransformInteractive`, `resetTransform` and `blendingModeButton` entries. Fixed here, since M146 owns RotoContext knob creation; the reference test normalises the savedBy commit and the projectPaths temp dir.
 - 2026-10-20 — **Split base class, not a mode flag (user, grill):** a geometry-only `RotoCurveContext` and `RotoCurveInteract`, with Roto/RotoPaint layered on top, so the compiler enforces the paint boundary instead of an if-branch on every paint path.
 - 2026-10-20 — **One viewer slot for all curve hosts (user, grill):** two interacts never compete for pen events on overlapping curves.
 - 2026-10-20 — **Prove it with a test-only host (user, grill):** hosting bugs surface here, not in M147 - SplineWarp Node Core.

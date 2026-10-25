@@ -41,12 +41,10 @@ future core work has solid ground to build on.
   `NatronGitHub/Natron`, and the ASWF `aswf-docker` image catalog, as of
   2026-08-29. Re-check specific line numbers, PR states, and image tags
   before executing — all three will have moved.
-- **M31 (architectural cleanup) is authored but deferred** (2026-09-15): a
-  parking place for structural debts that feature work exposes — first entry
-  is moving the `RenderEngine` from the `OutputEffectInstance` base class to
-  `Node` by composition, surfaced by M18.P3.T8a. Do not start it without an
-  explicit user go-ahead; add tasks to it as they surface instead of folding
-  refactors into feature milestones.
+- **Structural debts get their own E14 stub** (2026-10-25): when feature work
+  exposes a refactor that would widen its diff past scope, file it as a new
+  E14 - Architecture stub instead of folding it in. M31 - Architectural Cleanup,
+  the old parking place, was triaged and cancelled.
 
 - **Build mode (local vs remote).** Before building, a PM reads this host's
   `.local/build-mode` with `tools/ci/remote/build.sh --mode`. A missing file means
@@ -138,7 +136,7 @@ future core work has solid ground to build on.
 | M116 | GPU Region Overlay | todo | M81, M85, M86, M87, M91, M107, M108, M109, M110, M162 |  | E5 | [M116-gpu-region-overlay.md](PLAN/MILESTONES/M116-gpu-region-overlay.md) |
 | M27 | Real Debug Build | done | - | | E2 | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | done | M75 | bosley-native-nodes | E3 | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
-| M31 | Architectural Cleanup | todo | M75, M76 |  | E14 | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
+| M31 | ~~Architectural Cleanup~~ | cancelled | M75, M76 |  | E14 | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
 | M69 | Minor Cleanup | done | M44, M55 | amber-falcon | E10 | [M69-minor-cleanup.md](PLAN/MILESTONES/M69-minor-cleanup.md) |
 | M24 | Node Graph Category Colour | done | - |  | E10 | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 | M44 | Trackball Colour Editing | done | - |  | E10 | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
@@ -255,6 +253,11 @@ future core work has solid ground to build on.
 | M195 | Shake And Cut Disconnect | todo | M194 |  | E10 | [M195-shake-and-cut-disconnect.md](PLAN/MILESTONES/M195-shake-and-cut-disconnect.md) |
 | M196 | Copy-Compute Contention | todo | M156 |  | E5 | [M196-copy-compute-contention.md](PLAN/MILESTONES/M196-copy-compute-contention.md) |
 | M197 | Python Undo Step API | todo | M114 |  | E7 | [M197-python-undo-step-api.md](PLAN/MILESTONES/M197-python-undo-step-api.md) |
+| M198 | RenderEngine On Node | todo | M177 |  | E14 | [M198-renderengine-on-node.md](PLAN/MILESTONES/M198-renderengine-on-node.md) |
+| M199 | Remove Legacy Scheduler | todo | - |  | E14 | [M199-remove-legacy-scheduler.md](PLAN/MILESTONES/M199-remove-legacy-scheduler.md) |
+| M200 | Folded Knob Shared Storage | todo | - |  | E14 | [M200-folded-knob-shared-storage.md](PLAN/MILESTONES/M200-folded-knob-shared-storage.md) |
+| M201 | Trimap Removal | todo | M199 |  | E14 | [M201-trimap-removal.md](PLAN/MILESTONES/M201-trimap-removal.md) |
+| M202 | Clean-Hash Cache Stores | todo | M167 |  | E14 | [M202-clean-hash-cache-stores.md](PLAN/MILESTONES/M202-clean-hash-cache-stores.md) |
 
 # Epics
 
@@ -278,6 +281,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **M198 - RenderEngine On Node, M199 - Remove Legacy Scheduler, M200 - Folded Knob Shared Storage, M201 - Trimap Removal:** do not start without the user's go-ahead (user, 2026-10-25, M31 triage). Each stub's `Blocked on:` names what the user is waiting for. M202 - Clean-Hash Cache Stores needs no go-ahead.
 - **M174 - Wayland Support:** blocked until the user approves starting it (user, 2026-10-24). Stub; elaborate on approval.
 
 

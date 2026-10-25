@@ -77,6 +77,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Merge/NativeMerge.h"
 #include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
@@ -1124,6 +1125,10 @@ isEntitledForInspector(Plugin* plugin,
     // so that their inputs show and connect as they did, and the native Switch, whose 64 numbered
     // inputs the rule would make one too.
     if ((plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_DISSOLVE)) || (plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_SWITCH))) {
+        return true;
+    }
+    // The Merge node, whose A inputs unfold one after another as the OpenFX Merge's did.
+    if (plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE)) {
         return true;
     }
     for (int preset = eMergePresetMerge; preset <= eMergePresetDifference; ++preset) {

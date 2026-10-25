@@ -68,6 +68,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiGLRequirements.h"
+#include "Gui/HydraGLContextQt.h"
 #include "Gui/KnobGuiFactory.h"
 #include "Gui/SplashScreen.h"
 #include "Gui/TabMenuBridge.h"
@@ -335,6 +336,8 @@ GuiApplicationManager::checkGLContextRequirements()
 {
     const GuiGLRequirements::Verdict verdict = GuiGLRequirements::judge(GuiGLRequirements::probe());
     if (verdict.accepted) {
+        HydraGLContextQt::install();
+
         return true;
     }
     _imp->glContextRefused = true;

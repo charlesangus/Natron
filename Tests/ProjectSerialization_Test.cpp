@@ -368,7 +368,7 @@ TEST_F(BaseTest, RoundTripsLayerRegistry)
 
     {
         std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
-        EXPECT_EQ((std::size_t)9, snapshot->size()); // rgba, rgb, alpha, xy, DisparityLeft, DisparityRight, Backward, Forward + depth
+        EXPECT_EQ((std::size_t)10, snapshot->size()); // rgba, rgb, alpha, xy, DisparityLeft, DisparityRight, Backward, Forward + depth, primId
         ImageLayerDesc unused;
         EXPECT_FALSE(project->findLayer("diffuse", &unused));
         EXPECT_FALSE(project->findLayer("specular", &unused));

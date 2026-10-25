@@ -69,7 +69,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 126.1: OCIO node base
 
-- [ ] M127.P1.T1 — Shared OCIO node base with space knobs, processor and config refresh
+- [x] M127.P1.T1 — Shared OCIO node base with space knobs, processor and config refresh
   - files: `Engine/Nodes/OCIO/OcioNodeBase.{h,cpp}` (new), `Engine/Nodes/IO/OcioSpaceKnobs.{h,cpp}`, `Engine/Project.cpp`, `Tests/Native/NativeOcioBase_Test.cpp` (new)
   - approach:
     - A `NativeImageEffect` subclass whose RGB-only kernel calls an `OCIO::CPUProcessor` per row through `IoColorSpace::convertRow`.
@@ -81,7 +81,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 126.2: Nodes on the CPU
 
-- [ ] M127.P2.T1 — Native OCIOColorSpace with the LogConvert role preset
+- [x] M127.P2.T1 — Native OCIOColorSpace with the LogConvert role preset
   - files: `Engine/Nodes/OCIO/OCIOColorSpace.{h,cpp}` (new), `Engine/Nodes/OCIO/OCIOColorSpace.reg.inc` (new), `Tests/Native/NativeOCIOColorSpace_Test.cpp` (new)
   - approach:
     - Input and output space, plus Context.
@@ -89,7 +89,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: tests check pixels against a direct OCIO processor for two spaces and for both log presets. Runs at the phase build.
   - size: M
 
-- [ ] M127.P2.T2 — Native OCIODisplay
+- [x] M127.P2.T2 — Native OCIODisplay
   - files: `Engine/Nodes/OCIO/OCIODisplay.{h,cpp}` (new), `Engine/Nodes/OCIO/OCIODisplay.reg.inc`, `Tests/Native/NativeOCIODisplay_Test.cpp` (new)
   - approach:
     - Input space, display, view, gain, gamma and the channel view (RGB, R, G, B, A, luminance via `getWorkingLuma`).
@@ -97,7 +97,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: tests check pixels against OCIO for the default display and view, with gain and gamma applied. Runs at the phase build.
   - size: M
 
-- [ ] M127.P2.T3 — Native OCIOCDLTransform and OCIOFileTransform
+- [x] M127.P2.T3 — Native OCIOCDLTransform and OCIOFileTransform
   - files: `Engine/Nodes/OCIO/OCIOCDLTransform.{h,cpp}` (new), `Engine/Nodes/OCIO/OCIOFileTransform.{h,cpp}` (new), `Engine/Nodes/OCIO/{OCIOCDLTransform,OCIOFileTransform}.reg.inc`, `Tests/Native/NativeOCIOFileTransforms_Test.cpp` (new)
   - approach:
     - CDL takes inline slope, offset, power and saturation, plus direction. Optionally it reads from a `.cc`/`.ccc`/`.cdl` file with a CCC-id menu, and an export button writes a `.cc`.
@@ -105,7 +105,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: tests check a CDL against OCIO's `CDLTransform` and a `.cube` file transform against OCIO. A missing file gives an error and passes the input through. Runs at the phase build.
   - size: M
 
-- [ ] M127.P2.T4 — Native OCIOLookTransform
+- [x] M127.P2.T4 — Native OCIOLookTransform
   - files: `Engine/Nodes/OCIO/OCIOLookTransform.{h,cpp}` (new), `Engine/Nodes/OCIO/OCIOLookTransform.reg.inc`, `Tests/Native/NativeOCIOLookTransform_Test.cpp` (new)
   - approach: input and output space, a look menu from `getLooks` with an append/combination string, direction, and Context, built on `LookTransform`.
   - verify: tests check pixels against OCIO for a look from the test config, forward and inverse. Runs at the phase build.
@@ -132,7 +132,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 126.4: References and retirement
 
-- [ ] M127.P4.T1 — Update the documentation hooks for the native OCIO nodes
+- [x] M127.P4.T1 — Update the documentation hooks for the native OCIO nodes
   - files: `Engine/NodeDocumentation.cpp`, `Gui/DocumentationManager.cpp`, `Engine/Nodes/OCIO/docs/{OCIOColorSpace,OCIODisplay,OCIOCDLTransform,OCIOFileTransform,OCIOLookTransform}.md` (new, per M120 - Native Node Port Kit)
   - approach:
     - Point the hidden-knob and `.rst` mapping (`NodeDocumentation.cpp:48-61, 163-170, 229-231`; `DocumentationManager.cpp:161-164, 179, 65`) at the native IDs, and drop the `fr.inria.openfx.OCIO` prefix check.
@@ -140,7 +140,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, each OCIO node's documentation page renders in the GUI. Check under Xvfb.
   - size: M
 
-- [ ] M127.P4.T2 — Retire the openfx-io OCIO plug-ins and repoint tests
+- [x] M127.P4.T2 — Retire the openfx-io OCIO plug-ins and repoint tests
   - files: `Engine/OfxRetired/<ofx-plugin-id>` (six new markers), `Tests/ProjectOCIO_Test.cpp`, `Tests/ProjectOCIOPlugins_Test.cpp`, `Tests/GLScheduler_Test.cpp`, `tools/ci/local/fetch-assets.sh` (comments at `:120-121`)
   - approach:
     - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for each of the six `fr.inria.openfx.OCIO*` IDs.

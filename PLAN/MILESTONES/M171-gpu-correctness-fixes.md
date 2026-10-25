@@ -49,4 +49,12 @@ This milestone fixes two GPU problems found by later milestones. First, in a `-D
   - verify: The script exits 0 on a tree with P2.T1 applied, and exits non-zero when run against `origin/main`'s `curvesnapshot.slang`. Lint-ci passes, and shellcheck is clean.
   - size: M
 
+## Phase 171.3: RAW colour calibration tolerance on RADV
+
+- [ ] M171.P3.T1 — Give the RAW colour calibration GPU parity test a ulp bound
+  - files: `Tests/Native/RawGpuTestSupport.h`, the RAW colour calibration GPU test
+  - approach: `NativeRawColorCalibrationGpuTest.EveryAdaptationVersionClipAndGamutMatchesTheCpu` (M80 - Native RAW Support) expects 0 mismatches (`RawGpuTestSupport.h:202`). On a real RX 7900 XTX (`NATRON_TEST_REQUIRE_GPU=1`) one float of 256 differs by ~1.3–1.6e-6 in several adaptation/clip/gamut cases; lavapipe passes. Replace the exact compare with a ulp- or relative-tolerance bound like the other GPU parity suites, and state it in the RAW node doc's `Tolerance:` line. Found during M110 - Remaining Native GPU Ports' RADV run.
+  - verify: the test passes on lavapipe in remote CI and on RADV with `NATRON_TEST_REQUIRE_GPU=1`.
+  - size: M
+
 **Verification gate:** `tools/ci/remote/build.sh fast --tests --no-appimage` and `tools/ci/remote/build.sh fast --tests --no-appimage --cmake-arg -DNATRON_GPU=OFF` both pass all suites, with `StagedImageEffectGpuTest` green in both and `CurveSnapshotPrecision*` (canary included) green on lavapipe. `checks.yml` lint-ci passes with the new fma lint, and a dispatched Nightly run shows the GPU-off job green.

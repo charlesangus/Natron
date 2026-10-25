@@ -61,6 +61,10 @@ StageCache::instance()
 PXR_NS::UsdStageRefPtr
 StageCache::getStage(const ScenePayload& payload)
 {
+    if (payload.isEmpty()) {
+        return PXR_NS::UsdStageRefPtr();
+    }
+
     const U64 stackHash = payload.getStackHash();
 
     {

@@ -358,6 +358,25 @@ while IFS= read -r staged_py_binary; do
     stage_elf "$staged_py_binary"
 done < <(find "$PY_DEST" -type f -name "*.so" 2>/dev/null)
 
+# A pxr extension module (pxr/UsdAbc/_usdAbc.so) links the plug-in library of the same
+# name (plugin/usd/usdAbc.so), which no lib/ RUNPATH reaches. Add plugin/usd to the
+# RUNPATH of every staged Python module that needs a library staged there.
+while IFS= read -r staged_py_binary; do
+    is_elf "$staged_py_binary" || continue
+    needs_usd_plugin=0
+    while IFS= read -r needed; do
+        if [[ -n "$needed" && -f "$STAGE_DIR/plugin/usd/$needed" ]]; then
+            needs_usd_plugin=1
+            break
+        fi
+    done < <(patchelf --print-needed "$staged_py_binary" 2>/dev/null)
+    if [[ "$needs_usd_plugin" == 1 ]]; then
+        usd_plugin_dir="$(cd "$(dirname "$staged_py_binary")" && pwd)"
+        usd_plugin_rpath="$(patchelf --print-rpath "$staged_py_binary"):\$ORIGIN/$(relative_up "$usd_plugin_dir" "$STAGE_DIR")plugin/usd"
+        patchelf --set-rpath "$usd_plugin_rpath" "$staged_py_binary"
+    fi
+done < <(find "$PY_DEST" -type f -name "*.so" 2>/dev/null)
+
 echo "==> Staging bundle-relative resources"
 
 # AppManager::loadInternal() points FONTCONFIG_PATH at <bin>/../Resources/etc/

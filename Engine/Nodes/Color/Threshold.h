@@ -67,6 +67,7 @@ struct ThresholdOp {
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_THRESHOLD,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Threshold.png",
         .inputs = kThresholdInputs,
     };
     static constexpr ImagePipelineSpec kPipeline = {

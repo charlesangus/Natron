@@ -15,11 +15,15 @@ Sections:
     it into the project's RFV group with its value and declares app.<name>; once the project
     declares the name the item is disabled with a tooltip, and a project variable's own menu does
     not have it; the node's variable stays enabled and editable, unlinked from the project's copy;
-    Ctrl+Z, with the main window active, takes the variable back out of the project's Variables;
-  - existing: on a third Set node's panel, the "Global Variables" tab holds a group of its own with
-    an "Existing variable" drop-down listing the project's and other Set nodes' variables; choosing
-    projGain adds it to the node's Variables group with the project's value, resets the drop-down
-    to its prompt and stops offering the name; Ctrl+Z takes it back off and keeps the drop-down;
+    the node's Variables tab shows its Variables and Global Variables groups, and the promote
+    moves the variable from the first to the second; Ctrl+Z, with the main window active, takes
+    the variable back out of the project's Variables and moves the node's back to its Variables
+    group;
+  - existing: on a third Set node's Variables tab, the Global Variables group starts with an
+    "Existing variable" drop-down listing the project's and other Set nodes' variables; choosing
+    projGain adds it to the node's Global Variables group, since the project declares the name,
+    with the project's value, resets the drop-down to its prompt and stops offering the name;
+    Ctrl+Z takes it back off and keeps the drop-down in its group;
   - delete: deleting the project variable from the dialog drops app.<name> too.
 
 Every modal dialog is driven from QTimer callbacks (see run() in guitest.py): whatever raises it is
@@ -46,7 +50,7 @@ SETTLE_MS = 500
 SET_PLUGIN = "ReverseFlowVariableSet"
 RFV_GROUP = "rfvVariables"
 RFV_PAGE = "rfvPage"
-GLOBAL_TAB = "Global Variables"
+GLOBAL_LABEL = "Global Variables"
 GLOBAL_GROUP = "rfvGlobalVariables"
 EXISTING_CHOICE = "rfvExistingVariable"
 EXISTING_PROMPT = "Add existing variable..."
@@ -228,6 +232,11 @@ try:
 
     def panel_has_label(panel, text):
         return any(w.isVisible() and w.text().startswith(text) for w in panel.findChildren(QLabel))
+
+    # A group's title may be drawn by its fold button rather than by a label.
+    def panel_has_text(panel, text):
+        return panel_has_label(panel, text) or any(
+            w.isVisible() and w.text().replace("&", "").startswith(text) for w in panel.findChildren(QAbstractButton))
 
     def run_in_script_editor(script):
         """Runs script in the Script Editor the way its Execute button does."""
@@ -519,6 +528,11 @@ try:
         yield from open_node_panel(node_name)
         show_tab(node_panel(app.getNode(node_name)), "Variables")
         yield ("sleep", SETTLE_MS)
+        check(panel_has_text(node_panel(app.getNode(node_name)), GLOBAL_LABEL),
+              "the Set node's Variables tab shows the %s group" % GLOBAL_LABEL)
+        check(parent_name(app.getNode(node_name).getParam("setGain")) == RFV_GROUP,
+              "before the promote, setGain is in the node's Variables group")
+        gt.shot("m70-promote-groups-before.png")
         field = knob_field(node_panel(app.getNode(node_name)), "setGain")
         require(field is not None, "found the field of the Set node's variable setGain")
         seen = right_click_menu(field, "m70-promote-menu.png", PROMOTE_ITEM)
@@ -529,6 +543,14 @@ try:
         check(promoted is not None and parent_name(promoted) == RFV_GROUP and promoted.getValue() == 1.5,
               "the variable is now a project variable with the node's value")
         check(app.getNode(node_name).getParam("setGain") is not None, "the Set node keeps its own variable")
+        check(parent_name(app.getNode(node_name).getParam("setGain")) == GLOBAL_GROUP,
+              "the promote moves the node's setGain to its Global Variables group (parent %r)"
+              % parent_name(app.getNode(node_name).getParam("setGain")))
+        show_tab(node_panel(app.getNode(node_name)), "Variables")
+        yield ("sleep", SETTLE_MS)
+        check(panel_has_label(node_panel(app.getNode(node_name)), "Set gain"),
+              "the Set node's Variables tab still shows setGain after the promote")
+        gt.shot("m70-promote-groups-after.png")
         check(editor_probe("app.setGain.getValue()") == 1.5, "app.setGain resolves in the Script Editor after the promote")
 
         field = knob_field(node_panel(app.getNode(node_name)), "setGain")
@@ -579,6 +601,13 @@ try:
         check(node_param is not None and node_param.getIsEnabled(0) and node_param.getValue() == 2.25,
               "the node's setGain is untouched by the undo")
         check(editor_probe("hasattr(app, 'setGain')") is False, "the undo drops app.setGain")
+        check(parent_name(app.getNode(node_name).getParam("setGain")) == RFV_GROUP,
+              "the undo moves the node's setGain back to its Variables group (parent %r)"
+              % parent_name(app.getNode(node_name).getParam("setGain")))
+        if node_panel(app.getNode(node_name)) is not None:
+            show_tab(node_panel(app.getNode(node_name)), "Variables")
+            yield ("sleep", SETTLE_MS)
+            gt.shot("m70-promote-groups-undone.png")
         if project_panel() is None:
             QMetaObject.invokeMethod(main_gui(), "setVisibleProjectSettingsPanel")
         ok = yield ("until", lambda: project_panel() is not None, DIALOG_TIMEOUT_S)
@@ -602,8 +631,10 @@ try:
         check(app.getNode(third_name).getParam(EXISTING_CHOICE) is not None, "the Set node has the existing-variable drop-down")
         check(parent_name(app.getNode(third_name).getParam(EXISTING_CHOICE)) == GLOBAL_GROUP,
               "the drop-down is in the %s group, not the node's variables group" % GLOBAL_GROUP)
-        require(show_tab(node_panel(app.getNode(third_name)), GLOBAL_TAB), "the Set node's panel has a %s tab" % GLOBAL_TAB)
+        require(show_tab(node_panel(app.getNode(third_name)), "Variables"), "the Set node's panel has a Variables tab")
         yield ("sleep", SETTLE_MS)
+        check(panel_has_text(node_panel(app.getNode(third_name)), GLOBAL_LABEL),
+              "the drop-down's %s group is on the Variables tab" % GLOBAL_LABEL)
         combo = existing_combo(node_panel(app.getNode(third_name)))
         require(combo is not None, "found the existing-variable drop-down on the panel")
         items = combo_items(combo)
@@ -615,8 +646,8 @@ try:
         check(picked, "chose projGain from the drop-down's menu")
         yield ("sleep", SETTLE_MS)
         added = app.getNode(third_name).getParam("projGain")
-        check(added is not None and parent_name(added) == RFV_GROUP,
-              "choosing projGain adds a variable to the node's variables group (parent %r)" % parent_name(added))
+        check(added is not None and parent_name(added) == GLOBAL_GROUP,
+              "choosing projGain adds a variable to the node's Global Variables group (parent %r)" % parent_name(added))
         check(added is not None and isinstance(added, NatronEngine.DoubleParam) and added.getValue() == app.getProjectParam("projGain").getValue(),
               "the added variable is a Double starting from the project's value")
         added = None
@@ -630,10 +661,7 @@ try:
         yield ("sleep", SETTLE_MS)
         check(panel_has_label(node_panel(app.getNode(third_name)), "Project gain"),
               "the Set node's Variables tab shows the added variable")
-        gt.shot("m70-existing-added-variables.png")
-        show_tab(node_panel(app.getNode(third_name)), GLOBAL_TAB)
-        yield ("sleep", SETTLE_MS)
-        gt.shot("m70-existing-added-global.png")
+        gt.shot("m70-existing-added.png")
 
         gt.section("existing-undo")
         yield from activate_main_window()
@@ -641,6 +669,8 @@ try:
         yield ("sleep", SETTLE_MS)
         check(app.getNode(third_name).getParam("projGain") is None, "Ctrl+Z takes the added variable back off the node")
         check(app.getNode(third_name).getParam(EXISTING_CHOICE) is not None, "the drop-down survives the undo")
+        check(parent_name(app.getNode(third_name).getParam(EXISTING_CHOICE)) == GLOBAL_GROUP,
+              "the drop-down stays in the %s group after the undo" % GLOBAL_GROUP)
         check(app.getProjectParam("projGain") is not None, "the project's variable is untouched by the undo")
 
         gt.section("delete")

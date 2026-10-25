@@ -1576,7 +1576,7 @@ KnobGroup::setAsRFVGroup(bool rfv)
     if (rfv) {
         const std::vector<KnobIPtr> children = getChildren();
         for (std::size_t i = 0; i < children.size(); ++i) {
-            if (!RFV::isVariableKnobType(children[i])) {
+            if (!RFV::isAdmittedInRFVGroup(*this, children[i])) {
                 return false;
             }
         }
@@ -1648,7 +1648,7 @@ KnobGroup::addKnob(const KnobIPtr& k)
         }
     }
 
-    if (_isRFVGroup && !RFV::isVariableKnobType(k)) {
+    if (_isRFVGroup && !RFV::isAdmittedInRFVGroup(*this, k)) {
         return false;
     }
 
@@ -1722,7 +1722,7 @@ KnobGroup::insertKnob(int index,
         }
     }
 
-    if (_isRFVGroup && !RFV::isVariableKnobType(k)) {
+    if (_isRFVGroup && !RFV::isAdmittedInRFVGroup(*this, k)) {
         return false;
     }
 

@@ -58,6 +58,20 @@ struct VariableDeclaration {
 bool isVariableKnobType(const KnobIPtr& knob);
 
 /**
+ * @brief Whether the knob is one of its plug-in's own controls rather than a parameter a user,
+ * a script or a saved project made: declared by the plug-in and not a user knob. Such a knob in
+ * an RFV group, like the Set node's existing-variable drop-down, is not a variable.
+ **/
+bool isPluginControl(const KnobIPtr& knob);
+
+/**
+ * @brief Whether the RFV group admits the knob as a child: a plug-in control of the group's own
+ * holder when the group too is declared by the plug-in, or any other knob that can be a variable
+ * (see isVariableKnobType()).
+ **/
+bool isAdmittedInRFVGroup(const KnobGroup& group, const KnobIPtr& knob);
+
+/**
  * @brief Whether the name is a valid Python identifier: ASCII letters, digits and underscores,
  * not starting with a digit, and not a Python keyword.
  **/
@@ -70,17 +84,26 @@ bool isValidVariableName(const std::string& name);
 bool isAppAttributeName(const AppInstancePtr& app, const std::string& name);
 
 /**
- * @brief The variables the holder declares, in the order of its RFV groups' children. A child
- * whose type cannot be a variable, whose name is not a valid identifier, or whose name another
- * knob of the holder also has, is left out and described in errors.
+ * @brief The variables the holder declares, in the order of its RFV groups and of their children.
+ * A plug-in control is skipped. A child whose type cannot be a variable, whose name is not a
+ * valid identifier, or whose name another knob of the holder also has, is left out and described
+ * in errors.
  **/
 std::vector<VariableDeclaration> getDeclaredVariables(const KnobHolder* holder, std::vector<std::string>* errors = nullptr);
 
 /**
  * @brief Whether the knob is a variable of a node: a direct child of an RFV group of an effect,
- * such as a ReverseFlowVariableSet node, rather than of the project's.
+ * such as a ReverseFlowVariableSet node, rather than of the project's, and not a plug-in control.
  **/
 bool isNodeVariable(const KnobIPtr& knob);
+
+/**
+ * @brief Has every ReverseFlowVariableSet node of the project sort its variables between its
+ * Variables and Global Variables groups by the names the project now declares (see
+ * ReverseFlowVariableSet::refreshVariableGroups()), and rebuilds the user knobs of those whose
+ * variables moved.
+ **/
+void refreshNodeVariableGroups(const Project& project);
 
 /**
  * @brief The variables the holder could take over from elsewhere in its project: the project's,
@@ -90,10 +113,12 @@ bool isNodeVariable(const KnobIPtr& knob);
 std::vector<VariableDeclaration> getExistingVariables(const KnobHolder* holder);
 
 /**
- * @brief Adds to the holder's RFV group a variable named after one getExistingVariables() lists,
- * with the type, dimensions, label, hint and defaults of that declaration. It starts with the
- * declaration's value at the current time, without animation, and is not linked to it. This
- * records nothing in the undo history.
+ * @brief Adds to the holder's first RFV group a variable named after one getExistingVariables()
+ * lists, with the type, dimensions, label, hint and defaults of that declaration, then calls
+ * recreateUserKnobs(), which has a ReverseFlowVariableSet node move it to its Global Variables
+ * group when the project declares the name. It starts with the declaration's value at the
+ * current time, without animation, and is not linked to it. This records nothing in the undo
+ * history.
  * @returns the new variable, or null with error set when the name is not listed, the holder has
  * no RFV group, or the group refuses the knob.
  **/

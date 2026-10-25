@@ -6127,6 +6127,7 @@ void
 KnobHolder::recreateUserKnobs(bool keepCurPageIndex)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    onUserKnobsChanged();
     if (_imp->settingsPanel) {
         _imp->settingsPanel->recreateUserKnobs(keepCurPageIndex);
         EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);

@@ -295,6 +295,7 @@ Node::restoreUserKnobs(const Serialization::NodeSerialization& serialization)
         }
     }
     setPagesOrder(serialization.pagesOrder);
+    _imp->effect->onUserKnobsChanged();
 }
 
 namespace {

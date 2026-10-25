@@ -944,8 +944,8 @@ public:
 
     /**
      * @brief Adds a child. Returns false, leaving the knob untouched, when the child is refused: a
-     * user knob under a non-user group, or a child that cannot be a variable (see
-     * RFV::isVariableKnobType()) under an RFV group. Returns true when the knob is a child.
+     * user knob under a non-user group, or a child an RFV group does not admit (see
+     * RFV::isAdmittedInRFVGroup()). Returns true when the knob is a child.
      **/
     bool addKnob(const KnobIPtr& k);
     void removeKnob(KnobI* k);
@@ -963,8 +963,8 @@ public:
 
     /**
      * @brief Flags the group as a Reverse-Flow Variable group: each of its direct children declares
-     * one variable. Flagging is refused, and false returned, while a child cannot be a variable
-     * (see RFV::isVariableKnobType()).
+     * one variable, except a plug-in control. Flagging is refused, and false returned, while the
+     * group would not admit a child (see RFV::isAdmittedInRFVGroup()).
      **/
     bool setAsRFVGroup(bool rfv);
     bool isRFVGroup() const;

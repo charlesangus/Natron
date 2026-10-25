@@ -285,10 +285,14 @@ createTextForKnob(const KnobIPtr& knob)
     return text;
 }
 
-// An RFV group, and the page holding one, can be neither deleted, edited nor moved.
+// An RFV group, the page holding one, and a plug-in's own control placed in one can be neither
+// deleted, edited nor moved.
 static bool
 isPinnedKnob(const KnobIPtr& knob)
 {
+    if (RFV::isPluginControl(knob)) {
+        return true;
+    }
     KnobGroup* isGroup = dynamic_cast<KnobGroup*>(knob.get());
     if (isGroup) {
         if (isGroup->isRFVGroup()) {
@@ -356,7 +360,8 @@ ManageUserParamsDialogPrivate::initializeKnobs(const KnobsVec& knobs,
 void
 ManageUserParamsDialogPrivate::rebuildUserPages()
 {
-    panel->recreateUserKnobs(true);
+    // Through the holder, which also lets it rearrange its user knobs first.
+    panel->getHolder()->recreateUserKnobs(true);
 }
 
 bool

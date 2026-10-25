@@ -879,6 +879,9 @@ private:
 void
 KnobGui::onPromoteToProjectActionTriggered()
 {
+    // Promoting moves the variable to its node's Global Variables group, and rebuilding the node's
+    // user knobs then drops the panel's reference to this.
+    KnobGuiPtr self = shared_from_this();
     KnobIPtr knob = getKnob();
     std::string error;
     if (!RFV::canPromoteToProject(knob, &error)) {

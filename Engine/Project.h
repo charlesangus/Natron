@@ -500,6 +500,12 @@ public:
      * saved with their definitions, recreated on load and deleted when the project is reset.
      **/
     KnobGroupPtr getRFVGroup() const;
+
+    /**
+     * @brief The project's variables may have changed: every ReverseFlowVariableSet node re-sorts
+     * its variables by the names the project declares (see RFV::refreshNodeVariableGroups()).
+     **/
+    virtual void onUserKnobsChanged() OVERRIDE FINAL;
     std::string getOnProjectLoadCB() const;
     std::string getOnProjectSaveCB() const;
     std::string getOnProjectCloseCB() const;

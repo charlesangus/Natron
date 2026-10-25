@@ -100,6 +100,7 @@
 #include "Engine/Node.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectPrivate.h"
+#include "Engine/RFV.h"
 #include "Engine/RectDSerialization.h"
 #include "Engine/RectISerialization.h"
 #include "Engine/RotoLayer.h"
@@ -3902,6 +3903,12 @@ KnobGroupPtr
 Project::getRFVGroup() const
 {
     return _imp->rfvGroup;
+}
+
+void
+Project::onUserKnobsChanged()
+{
+    RFV::refreshNodeVariableGroups(*this);
 }
 
 std::string

@@ -23,7 +23,10 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <algorithm>
+#include <cstdint>
 #include <list>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -49,7 +52,11 @@
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/RectI.h"
+#include "Engine/UndoCommand.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_USING
 
@@ -59,6 +66,30 @@ KnobGroupPtr
 variablesGroupOf(const NodePtr& node)
 {
     return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kReverseFlowVariableSetParamVariables));
+}
+
+KnobGroupPtr
+globalVariablesGroupOf(const NodePtr& node)
+{
+    return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kReverseFlowVariableSetParamGlobalVariables));
+}
+
+KnobChoicePtr
+existingVariableOf(const NodePtr& node)
+{
+    return std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kReverseFlowVariableSetParamExistingVariable));
+}
+
+std::vector<std::string>
+childNames(const KnobGroupPtr& group)
+{
+    std::vector<std::string> names;
+    const KnobsVec children = group->getChildren();
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        names.push_back(children[i]->getName());
+    }
+
+    return names;
 }
 
 std::vector<std::string>
@@ -92,6 +123,28 @@ TEST_F(BaseTest, RFVSetNodeIsRegisteredWithAnEmptyRFVGroup)
     EXPECT_TRUE(group->isUserKnob());
     EXPECT_TRUE(group->getParentKnob() == page);
     EXPECT_TRUE(group->getChildren().empty());
+
+    // The Global Variables group follows it on the same page and starts with the drop-down only.
+    KnobGroupPtr globalGroup = globalVariablesGroupOf(node);
+    ASSERT_TRUE(globalGroup != nullptr);
+    EXPECT_TRUE(globalGroup->isRFVGroup());
+    EXPECT_TRUE(globalGroup->isUserKnob());
+    EXPECT_TRUE(globalGroup->getParentKnob() == page);
+    const KnobsVec pageChildren = page->getChildren();
+    const KnobsVec::const_iterator groupAt = std::find(pageChildren.begin(), pageChildren.end(), KnobIPtr(group));
+    const KnobsVec::const_iterator globalGroupAt = std::find(pageChildren.begin(), pageChildren.end(), KnobIPtr(globalGroup));
+    ASSERT_TRUE(groupAt != pageChildren.end());
+    ASSERT_TRUE(globalGroupAt != pageChildren.end());
+    EXPECT_LT(groupAt - pageChildren.begin(), globalGroupAt - pageChildren.begin());
+    EXPECT_EQ(std::vector<std::string>(1, kReverseFlowVariableSetParamExistingVariable), childNames(globalGroup));
+
+    // The drop-down is the node's own control, not a variable.
+    KnobChoicePtr choice = existingVariableOf(node);
+    ASSERT_TRUE(choice != nullptr);
+    EXPECT_FALSE(choice->isUserKnob());
+    EXPECT_TRUE(choice->isDeclaredByPlugin());
+    EXPECT_FALSE(choice->getIsPersistent());
+    EXPECT_FALSE(RFV::isNodeVariable(choice));
 
     EXPECT_TRUE(RFV::getDeclaredVariables(node->getEffectInstance().get()).empty());
 
@@ -290,6 +343,15 @@ TEST_F(BaseTest, RFVSetNodeVariablePromotesToTheProjectOnce)
     EXPECT_EQ(std::string("Promoted Ramp"), promoted->getLabel());
     EXPECT_EQ(std::string("A ramp to share"), promoted->getHintToolTip());
 
+    // The node's variable now shares its name with the project's, so it moved to Global Variables
+    // and is still a variable of the node.
+    KnobGroupPtr globalGroup = globalVariablesGroupOf(setNode);
+    ASSERT_TRUE(globalGroup != nullptr);
+    EXPECT_TRUE(ramp->getParentKnob() == globalGroup);
+    EXPECT_TRUE(group->getChildren().empty());
+    EXPECT_TRUE(RFV::isNodeVariable(ramp));
+    EXPECT_EQ(std::vector<std::string>(1, "rfvPromoted"), declaredNames(RFV::getDeclaredVariables(effect.get())));
+
     // A project variable is not a node's, so it cannot be promoted in turn.
     EXPECT_FALSE(RFV::isNodeVariable(promoted));
     EXPECT_FALSE(RFV::canPromoteToProject(promoted));
@@ -396,6 +458,9 @@ TEST_F(BaseTest, RFVSetNodeVariablePromoteUndoesAndRedoes)
     EXPECT_TRUE(project->getKnobByName("rfvUndoable") == promoted);
     EXPECT_EQ(projectVariableCount + 1, projectGroup->getChildren().size());
     expectRampCurve(promoted);
+    KnobGroupPtr globalGroup = globalVariablesGroupOf(setNode);
+    ASSERT_TRUE(globalGroup != nullptr);
+    EXPECT_TRUE(ramp->getParentKnob() == globalGroup);
 
     // Both copies stay active: the node's variable is neither disabled, hidden nor linked, and
     // an edit of it leaves the project's copy alone.
@@ -428,6 +493,7 @@ TEST_F(BaseTest, RFVSetNodeVariablePromoteUndoesAndRedoes)
     EXPECT_TRUE(restored->getHolder() == project.get());
     EXPECT_TRUE(restored->getParentKnob() == projectGroup);
     EXPECT_TRUE(restored->isUserKnob());
+    EXPECT_TRUE(ramp->getParentKnob() == globalGroup);
     EXPECT_TRUE(project->getKnobByName("rfvUndoable") == restored);
     EXPECT_EQ(std::string("Undoable Ramp"), restored->getLabel());
     EXPECT_EQ(std::string("A ramp to promote and take back"), restored->getHintToolTip());
@@ -440,10 +506,13 @@ TEST_F(BaseTest, RFVSetNodeVariablePromoteUndoesAndRedoes)
     // A second cycle works the same way.
     command.undo();
     EXPECT_TRUE(project->getKnobByName("rfvUndoable") == nullptr);
+    EXPECT_TRUE(ramp->getParentKnob() == group);
     restored.reset();
     command.redo();
     ASSERT_TRUE(command.getProjectVariable() != nullptr) << command.getError();
     expectRampCurve(command.getProjectVariable());
+    EXPECT_TRUE(ramp->getParentKnob() == globalGroup);
+    EXPECT_EQ(std::string(kReverseFlowVariableSetParamExistingVariable), childNames(globalGroup).front());
 }
 
 namespace {
@@ -519,12 +588,13 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     KnobGroupPtr group = variablesGroupOf(setNode);
     ASSERT_TRUE(group != nullptr);
 
-    // The drop-down sits in a group of its own, apart from the node's variables.
-    KnobGroupPtr globalGroup = std::dynamic_pointer_cast<KnobGroup>(setNode->getKnobByName(kReverseFlowVariableSetParamGlobalVariables));
+    // The drop-down heads the Global Variables group, on the same page as the Variables group.
+    KnobGroupPtr globalGroup = globalVariablesGroupOf(setNode);
     ASSERT_TRUE(globalGroup != nullptr);
-    EXPECT_FALSE(globalGroup->isRFVGroup());
-    EXPECT_FALSE(globalGroup->isUserKnob());
-    KnobChoicePtr choice = std::dynamic_pointer_cast<KnobChoice>(setNode->getKnobByName(kReverseFlowVariableSetParamExistingVariable));
+    EXPECT_TRUE(globalGroup->isRFVGroup());
+    EXPECT_TRUE(globalGroup->isUserKnob());
+    EXPECT_TRUE(globalGroup->getParentKnob() == group->getParentKnob());
+    KnobChoicePtr choice = existingVariableOf(setNode);
     ASSERT_TRUE(choice != nullptr);
     EXPECT_TRUE(choice->getParentKnob() == globalGroup);
     EXPECT_FALSE(choice->getIsPersistent());
@@ -538,12 +608,16 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     EXPECT_LT(offeredIndex(choice, "rfvExistingA"), offeredIndex(choice, "rfvExistingB"));
     EXPECT_EQ(0, choice->getValue());
 
-    // Choosing the project's variable adds a matching, unlinked, unanimated child.
+    // Choosing the project's variable adds a matching, unlinked, unanimated variable after the
+    // drop-down, since the project declares its name.
     choice->setValue(offeredIndex(choice, "rfvExistingA"));
     EXPECT_EQ(0, choice->getValue());
     KnobDouble* a = dynamic_cast<KnobDouble*>(setNode->getKnobByName("rfvExistingA").get());
     ASSERT_TRUE(a != NULL);
-    EXPECT_TRUE(a->getParentKnob() == group);
+    EXPECT_TRUE(a->getParentKnob() == globalGroup);
+    const std::vector<std::string> globalChildren = { kReverseFlowVariableSetParamExistingVariable, "rfvExistingA" };
+    EXPECT_EQ(globalChildren, childNames(globalGroup));
+    EXPECT_TRUE(RFV::isNodeVariable(setNode->getKnobByName("rfvExistingA")));
     EXPECT_TRUE(a->isUserKnob());
     ASSERT_EQ(2, a->getDimension());
     EXPECT_EQ(std::string("Existing A"), a->getLabel());
@@ -559,12 +633,14 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     EXPECT_FALSE(offers(choice, "rfvExistingA"));
     EXPECT_TRUE(offers(choice, "rfvExistingB"));
 
-    // Choosing the other node's variable adds a String with its value.
+    // Choosing the other node's variable adds a String with its value, to the Variables group
+    // since the project does not declare its name.
     choice->setValue(offeredIndex(choice, "rfvExistingB"));
     EXPECT_EQ(0, choice->getValue());
     KnobString* b = dynamic_cast<KnobString*>(setNode->getKnobByName("rfvExistingB").get());
     ASSERT_TRUE(b != NULL);
     EXPECT_TRUE(b->getParentKnob() == group);
+    EXPECT_EQ(globalChildren, childNames(globalGroup));
     ASSERT_EQ(1, b->getDimension());
     EXPECT_EQ(std::string("default shot"), b->getDefaultValue(0));
     EXPECT_EQ(std::string("sh020"), b->getValue());
@@ -572,7 +648,8 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     EXPECT_FALSE(b->isSlave(0));
 
     const std::vector<std::string> declared = declaredNames(RFV::getDeclaredVariables(effect.get()));
-    const std::vector<std::string> expectedDeclared = { "rfvExistingA", "rfvExistingB" };
+    // The Variables group's come first.
+    const std::vector<std::string> expectedDeclared = { "rfvExistingB", "rfvExistingA" };
     EXPECT_EQ(expectedDeclared, declared);
 
     // Names already on the node are not offered again, even after the panel reopens.
@@ -590,4 +667,229 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     otherB->setValue(std::string("sh030"));
     EXPECT_DOUBLE_EQ(currentA1, a->getValue(1));
     EXPECT_EQ(std::string("sh020"), b->getValue());
+}
+
+namespace {
+
+// Keeps what is recorded, the way the window's history would within one step.
+class CollectingRecorder
+    : public UndoRecorderI {
+public:
+    CollectingRecorder()
+        : UndoRecorderI()
+        , depth(0)
+        , serial(0)
+        , commands()
+    {
+    }
+
+    virtual void openStep(const std::string& /*text*/) OVERRIDE FINAL
+    {
+        if (depth++ == 0) {
+            ++serial;
+        }
+    }
+
+    virtual void closeStep() OVERRIDE FINAL
+    {
+        if (depth > 0) {
+            --depth;
+        }
+    }
+
+    virtual bool isCapturing() const OVERRIDE FINAL
+    {
+        return depth > 0;
+    }
+
+    virtual std::uint64_t getCaptureSerial() const OVERRIDE FINAL
+    {
+        return serial;
+    }
+
+    virtual void record(const UndoCommandPtr& command,
+                        const UndoTouched& /*touched*/) OVERRIDE FINAL
+    {
+        commands.push_back(command);
+    }
+
+    int depth;
+    std::uint64_t serial;
+    std::vector<UndoCommandPtr> commands;
+};
+
+bool
+layoutNames(const Serialization::GroupKnobSerialization& layout,
+            const std::string& name)
+{
+    for (std::list<Serialization::GroupKnobChildSerialization>::const_iterator it = layout.children.begin(); it != layout.children.end(); ++it) {
+        if (it->isGroup ? (it->group.name == name) || layoutNames(it->group, name) : (it->knob.name == name)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+userPagesName(const NodePtr& node,
+              const std::string& name)
+{
+    Serialization::NodeSerialization serialization;
+    node->toSerialization(&serialization);
+    for (std::list<Serialization::GroupKnobSerialization>::const_iterator it = serialization.userPages.begin(); it != serialization.userPages.end(); ++it) {
+        if ((it->name == name) || layoutNames(*it, name)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+
+// Undoing the add rebuilds the node's user knobs from the saved layout; the drop-down, which the
+// layout leaves out, must come through it untouched.
+TEST_F(BaseTest, RFVSetNodeExistingVariableAddUndoesAndRedoesAsOneStep)
+{
+    ProjectPtr project = getApp()->getProject();
+    KnobGroupPtr projectGroup = project->getRFVGroup();
+    ASSERT_TRUE(projectGroup != nullptr);
+    KnobDoublePtr projectVariable = project->createDoubleKnob("rfvUndoAdd", "Undo Add", 1);
+    ASSERT_TRUE(projectGroup->addKnob(projectVariable));
+    project->recreateUserKnobs(false);
+
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(setNode));
+    EffectInstancePtr effect = setNode->getEffectInstance();
+    KnobGroupPtr group = variablesGroupOf(setNode);
+    KnobGroupPtr globalGroup = globalVariablesGroupOf(setNode);
+    KnobChoicePtr choice = existingVariableOf(setNode);
+    ASSERT_TRUE(group && globalGroup && choice);
+    KnobDoublePtr local = effect->createDoubleKnob("rfvUndoLocal", "Undo Local", 1);
+    ASSERT_TRUE(group->addKnob(local));
+    effect->recreateUserKnobs(false);
+    effect->refreshAfterTimeChange(false, effect->getCurrentTime());
+    ASSERT_TRUE(offers(choice, "rfvUndoAdd"));
+
+    // Neither the drop-down nor its entries are saved: it is no user knob of the layout.
+    EXPECT_TRUE(userPagesName(setNode, kReverseFlowVariableSetParamGlobalVariables));
+    EXPECT_TRUE(userPagesName(setNode, "rfvUndoLocal"));
+    EXPECT_FALSE(userPagesName(setNode, kReverseFlowVariableSetParamExistingVariable));
+
+    std::shared_ptr<CollectingRecorder> recorder = std::make_shared<CollectingRecorder>();
+    getApp()->setUndoRecorder(recorder);
+    {
+        UndoStepGuard step(getApp(), "add existing variable");
+        choice->setValue(offeredIndex(choice, "rfvUndoAdd"));
+    }
+    ASSERT_FALSE(recorder->commands.empty());
+    ASSERT_TRUE(setNode->getKnobByName("rfvUndoAdd") != nullptr);
+    EXPECT_TRUE(setNode->getKnobByName("rfvUndoAdd")->getParentKnob() == globalGroup);
+
+    {
+        UndoReplayGuard replaying(getApp());
+        for (std::vector<UndoCommandPtr>::reverse_iterator it = recorder->commands.rbegin(); it != recorder->commands.rend(); ++it) {
+            (*it)->undo();
+        }
+    }
+    EXPECT_TRUE(setNode->getKnobByName("rfvUndoAdd") == nullptr);
+    // The same groups and drop-down, not copies, and the drop-down still heads its group.
+    EXPECT_TRUE(variablesGroupOf(setNode) == group);
+    EXPECT_TRUE(globalVariablesGroupOf(setNode) == globalGroup);
+    EXPECT_TRUE(existingVariableOf(setNode) == choice);
+    EXPECT_TRUE(choice->getParentKnob() == globalGroup);
+    EXPECT_EQ(std::vector<std::string>(1, kReverseFlowVariableSetParamExistingVariable), childNames(globalGroup));
+    EXPECT_FALSE(setNode->getKnobByName(std::string(kReverseFlowVariableSetParamExistingVariable) + "2"));
+    EXPECT_TRUE(local->getParentKnob() == group);
+    EXPECT_EQ(std::vector<std::string>(1, "rfvUndoLocal"), declaredNames(RFV::getDeclaredVariables(effect.get())));
+    effect->refreshAfterTimeChange(false, effect->getCurrentTime());
+    EXPECT_TRUE(offers(choice, "rfvUndoAdd"));
+
+    {
+        UndoReplayGuard replaying(getApp());
+        for (std::vector<UndoCommandPtr>::iterator it = recorder->commands.begin(); it != recorder->commands.end(); ++it) {
+            (*it)->redo();
+        }
+    }
+    ASSERT_TRUE(setNode->getKnobByName("rfvUndoAdd") != nullptr);
+    const std::vector<std::string> globalChildren = { kReverseFlowVariableSetParamExistingVariable, "rfvUndoAdd" };
+    EXPECT_EQ(globalChildren, childNames(globalGroup));
+    EXPECT_TRUE(existingVariableOf(setNode) == choice);
+
+    // Records of the node must go before the project is reset.
+    recorder->commands.clear();
+    getApp()->setUndoRecorder(UndoRecorderPtr());
+}
+
+TEST_F(BaseTest, RFVSetNodeVariablesFollowTheProjectsNames)
+{
+    ProjectPtr project = getApp()->getProject();
+    KnobGroupPtr projectGroup = project->getRFVGroup();
+    ASSERT_TRUE(projectGroup != nullptr);
+
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(setNode));
+    EffectInstancePtr effect = setNode->getEffectInstance();
+    KnobGroupPtr group = variablesGroupOf(setNode);
+    KnobGroupPtr globalGroup = globalVariablesGroupOf(setNode);
+    ASSERT_TRUE(group && globalGroup);
+    KnobDoublePtr shared = effect->createDoubleKnob("rfvFollowShared", "Shared", 1);
+    KnobDoublePtr local = effect->createDoubleKnob("rfvFollowLocal", "Local", 1);
+    ASSERT_TRUE(group->addKnob(shared));
+    ASSERT_TRUE(group->addKnob(local));
+    effect->recreateUserKnobs(false);
+    EXPECT_TRUE(shared->getParentKnob() == group);
+
+    // The project gains a variable of the same name.
+    KnobDoublePtr projectShared = project->createDoubleKnob("rfvFollowShared", "Project Shared", 1);
+    ASSERT_TRUE(projectGroup->addKnob(projectShared));
+    project->recreateUserKnobs(false);
+    EXPECT_TRUE(shared->getParentKnob() == globalGroup);
+    EXPECT_TRUE(local->getParentKnob() == group);
+    const std::vector<std::string> both = { "rfvFollowLocal", "rfvFollowShared" };
+    EXPECT_EQ(both, declaredNames(RFV::getDeclaredVariables(effect.get())));
+
+    // A save and load keeps the grouping.
+    const std::string setNodeName = setNode->getScriptName();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("rfv-set-node-groups.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    shared.reset();
+    local.reset();
+    group.reset();
+    globalGroup.reset();
+    effect.reset();
+    setNode.reset();
+    projectShared.reset();
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr setNode2 = project->getNodeByName(setNodeName);
+    ASSERT_TRUE(bool(setNode2));
+    EffectInstancePtr effect2 = setNode2->getEffectInstance();
+    KnobGroupPtr group2 = variablesGroupOf(setNode2);
+    KnobGroupPtr globalGroup2 = globalVariablesGroupOf(setNode2);
+    ASSERT_TRUE(group2 && globalGroup2);
+    EXPECT_EQ(std::vector<std::string>(1, "rfvFollowLocal"), childNames(group2));
+    const std::vector<std::string> globalChildren = { kReverseFlowVariableSetParamExistingVariable, "rfvFollowShared" };
+    EXPECT_EQ(globalChildren, childNames(globalGroup2));
+    EXPECT_TRUE(existingVariableOf(setNode2)->getParentKnob() == globalGroup2);
+    EXPECT_FALSE(setNode2->getKnobByName(std::string(kReverseFlowVariableSetParamGlobalVariables) + "2"));
+    EXPECT_FALSE(setNode2->getKnobByName(std::string(kReverseFlowVariableSetParamExistingVariable) + "2"));
+    EXPECT_EQ(both, declaredNames(RFV::getDeclaredVariables(effect2.get())));
+
+    // The project loses the variable: the node's moves back and stays a variable.
+    KnobIPtr loadedProjectShared = project->getKnobByName("rfvFollowShared");
+    ASSERT_TRUE(loadedProjectShared != nullptr);
+    project->deleteKnob(loadedProjectShared.get(), true);
+    loadedProjectShared.reset();
+    project->recreateUserKnobs(false);
+    const std::vector<std::string> localChildren = { "rfvFollowLocal", "rfvFollowShared" };
+    EXPECT_EQ(localChildren, childNames(group2));
+    EXPECT_EQ(std::vector<std::string>(1, kReverseFlowVariableSetParamExistingVariable), childNames(globalGroup2));
+    EXPECT_TRUE(RFV::isNodeVariable(setNode2->getKnobByName("rfvFollowShared")));
 }

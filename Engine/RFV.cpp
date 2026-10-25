@@ -37,6 +37,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
 #include "Engine/Project.h"
 
 #include "Serialization/KnobSerialization.h"
@@ -54,6 +55,23 @@ isVariableKnobType(const KnobIPtr& knob)
     KnobI* k = knob.get();
 
     return !dynamic_cast<KnobGroup*>(k) && !dynamic_cast<KnobPage*>(k) && !dynamic_cast<KnobButton*>(k) && !dynamic_cast<KnobSeparator*>(k);
+}
+
+bool
+isPluginControl(const KnobIPtr& knob)
+{
+    return knob && knob->isDeclaredByPlugin() && !knob->isUserKnob();
+}
+
+bool
+isAdmittedInRFVGroup(const KnobGroup& group,
+                     const KnobIPtr& knob)
+{
+    if (isPluginControl(knob)) {
+        return group.isDeclaredByPlugin() && (group.getHolder() == knob->getHolder());
+    }
+
+    return isVariableKnobType(knob);
 }
 
 bool
@@ -127,6 +145,9 @@ getDeclaredVariables(const KnobHolder* holder,
         const std::vector<KnobIPtr> children = group->getChildren();
         for (std::size_t c = 0; c < children.size(); ++c) {
             const KnobIPtr& child = children[c];
+            if (isPluginControl(child)) {
+                continue;
+            }
             const std::string& name = child->getName();
             std::string error;
             if (!isVariableKnobType(child)) {
@@ -283,7 +304,21 @@ isNodeVariable(const KnobIPtr& knob)
     }
     KnobGroup* parent = dynamic_cast<KnobGroup*>(knob->getParentKnob().get());
 
-    return parent && parent->isRFVGroup();
+    return parent && parent->isRFVGroup() && !isPluginControl(knob);
+}
+
+void
+refreshNodeVariableGroups(const Project& project)
+{
+    NodesList nodes;
+    project.getNodes_recursive(nodes, false);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        ReverseFlowVariableSet* setNode = dynamic_cast<ReverseFlowVariableSet*>(effect.get());
+        if (setNode && setNode->refreshVariableGroups()) {
+            setNode->recreateUserKnobs(true);
+        }
+    }
 }
 
 bool

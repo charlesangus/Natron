@@ -25,14 +25,17 @@
 
 #include "ReverseFlowVariableSet.h"
 
+#include <set>
 #include <string>
 #include <vector>
 
 #include <QtCore/QDateTime>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/RFV.h"
 
@@ -41,8 +44,9 @@ NATRON_NAMESPACE_ENTER
 void
 ReverseFlowVariableSet::initializeKnobs()
 {
-    // Both are user knobs: a page or group that is not refuses user-knob children, and only user
-    // pages are saved with their children's layout.
+    // The page and groups are user knobs: a page or group that is not refuses user-knob children,
+    // and only user pages are saved with their children's layout. Being declared by the plug-in,
+    // they survive undoing a change to the user knobs, and so does the drop-down inside.
     KnobPagePtr page = createKnob<KnobPage>(tr(kReverseFlowVariableSetParamPageLabel));
     page->setName(kReverseFlowVariableSetParamPage);
     page->setAsUserKnob(true);
@@ -53,17 +57,17 @@ ReverseFlowVariableSet::initializeKnobs()
     variables->setDefaultValue(true);
     variables->setAsRFVGroup(true);
     page->addKnob(variables);
-
-    // Not user knobs: undoing a change to the user knobs rebuilds the user pages, and the
-    // drop-down that makes such a change must outlive it.
-    KnobPagePtr globalPage = createKnob<KnobPage>(tr(kReverseFlowVariableSetParamGlobalPageLabel));
-    globalPage->setName(kReverseFlowVariableSetParamGlobalPage);
+    _variables = variables;
 
     KnobGroupPtr globalVariables = createKnob<KnobGroup>(tr(kReverseFlowVariableSetParamGlobalVariablesLabel));
     globalVariables->setName(kReverseFlowVariableSetParamGlobalVariables);
+    globalVariables->setAsUserKnob(true);
     globalVariables->setDefaultValue(true);
-    globalPage->addKnob(globalVariables);
+    globalVariables->setAsRFVGroup(true);
+    page->addKnob(globalVariables);
+    _globalVariables = globalVariables;
 
+    // Not a user knob, so neither saved in the page layout nor taken for a variable.
     KnobChoicePtr existing = createKnob<KnobChoice>(tr(kReverseFlowVariableSetParamExistingVariableLabel));
     existing->setName(kReverseFlowVariableSetParamExistingVariable);
     existing->setHintToolTip(tr(kReverseFlowVariableSetParamExistingVariableHint));
@@ -75,6 +79,45 @@ ReverseFlowVariableSet::initializeKnobs()
     existing->populateChoices(std::vector<ChoiceOption>(1, ChoiceOption(kReverseFlowVariableSetExistingVariablePrompt)));
     globalVariables->addKnob(existing);
     _existingVariable = existing;
+}
+
+bool
+ReverseFlowVariableSet::refreshVariableGroups()
+{
+    KnobGroupPtr variables = _variables.lock();
+    KnobGroupPtr globalVariables = _globalVariables.lock();
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!variables || !globalVariables || !project) {
+        return false;
+    }
+    std::set<std::string> projectNames;
+    const std::vector<RFV::VariableDeclaration> declared = RFV::getDeclaredVariables(project.get());
+    for (std::size_t i = 0; i < declared.size(); ++i) {
+        projectNames.insert(declared[i].name);
+    }
+
+    bool moved = false;
+    const KnobsVec local = variables->getChildren();
+    for (KnobsVec::const_iterator it = local.begin(); it != local.end(); ++it) {
+        if (!RFV::isPluginControl(*it) && projectNames.count((*it)->getName())) {
+            moved = globalVariables->addKnob(*it) || moved;
+        }
+    }
+    const KnobsVec global = globalVariables->getChildren();
+    for (KnobsVec::const_iterator it = global.begin(); it != global.end(); ++it) {
+        if (!RFV::isPluginControl(*it) && !projectNames.count((*it)->getName())) {
+            moved = variables->addKnob(*it) || moved;
+        }
+    }
+
+    return moved;
+}
+
+void
+ReverseFlowVariableSet::onUserKnobsChanged()
+{
+    refreshVariableGroups();
 }
 
 void

@@ -89,6 +89,11 @@ userKnobLayoutToSerialization(const KnobIPtr& knob,
         if (isPage && (children[i]->getParentKnob().get() != isPage)) {
             continue;
         }
+        // A plug-in's own knob placed on a user page is saved, if at all, with the plug-in's
+        // knobs; in the layout it would come back as a user knob.
+        if (!children[i]->isUserKnob()) {
+            continue;
+        }
         layout->children.push_back(Serialization::GroupKnobChildSerialization());
         Serialization::GroupKnobChildSerialization& child = layout->children.back();
         KnobGroupPtr isChildGroup = std::dynamic_pointer_cast<KnobGroup>(children[i]);

@@ -38,7 +38,7 @@
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
 
-#define PLUGINID_NATRON_USDREAD "fr.natron.USDRead"
+#define PLUGINID_NATRON_USDREAD "USDRead"
 
 #define kUSDReadParamFile "filename"
 #define kUSDReadParamFrameOffset "frameOffset"

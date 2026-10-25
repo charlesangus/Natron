@@ -178,9 +178,11 @@ public:
     {
     }
 
+    // The Disable knob is one of the default knobs only a settings panel creates, and the
+    // disabled pass-through test needs it: without it setNodeDisabled() does nothing.
     virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
     {
-        return false;
+        return true;
     }
 
     U64 getLayerAuthorCount() const

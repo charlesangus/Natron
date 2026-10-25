@@ -59,6 +59,15 @@ struct SceneLayerEdit {
  **/
 namespace SceneOps {
 /**
+ * @brief Whether OpenUSD found the plugInfo.json files of the libraries Natron links, which USD
+ * looks for in usd/ beside libusd_plug.so. Without them USD's first lookup of a type they declare
+ * (the usda file format, behind every anonymous layer) is a fatal error that aborts the process,
+ * so every scene entry point checks this before calling into USD. Returns false with
+ * *errorMessage set when any is missing. Checked once per process.
+ **/
+bool checkUsdRuntime(std::string* errorMessage);
+
+/**
  * @brief An empty anonymous layer for one node's edits. The tag only shows up in the layer's
  * identifier, for debugging.
  **/

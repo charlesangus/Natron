@@ -173,6 +173,7 @@ target_link_libraries(Tests
         # The scene tests inspect payloads through USD directly; NatronEngine links it privately.
         ${NATRON_USD_ENGINE_LIBRARIES}
 )
+natron_link_embedded_python(Tests)
 if(NATRON_GPU)
     include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
     include(${CMAKE_SOURCE_DIR}/cmake/SlangKernels.cmake)
@@ -265,6 +266,7 @@ target_link_libraries(GuiTests
         Qt::Widgets
         Python3::Python
 )
+natron_link_embedded_python(GuiTests)
 target_compile_definitions(GuiTests
     PRIVATE
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"

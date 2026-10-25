@@ -34,6 +34,33 @@
 NATRON_NAMESPACE_ENTER
 
 namespace SceneOps {
+bool
+checkUsdRuntime(std::string* errorMessage)
+{
+    static const std::string missing = []() {
+        std::string names;
+        PXR_NS::PlugRegistry& registry = PXR_NS::PlugRegistry::GetInstance();
+        for (const char* name : { "ar", "sdf", "usd", "usdGeom" }) {
+            if (!registry.GetPluginWithName(name)) {
+                names += names.empty() ? name : (std::string(", ") + name);
+            }
+        }
+
+        return names;
+    }();
+
+    if (missing.empty()) {
+        return true;
+    }
+    if (errorMessage) {
+        static const char* const hint = ". The plugInfo.json files belong in the usd directory beside the OpenUSD libraries; "
+                                        "run with TF_DEBUG=PLUG_INFO_SEARCH to see where OpenUSD looked.";
+        *errorMessage = "OpenUSD is not usable: it found no plug-in registration for " + missing + hint;
+    }
+
+    return false;
+}
+
 PXR_NS::SdfLayerRefPtr
 createNodeLayer(const std::string& tag)
 {
@@ -119,6 +146,10 @@ readLayerMetadata(const PXR_NS::SdfLayerRefPtr& layer,
 PXR_NS::UsdStageRefPtr
 compose(const ScenePayload& payload)
 {
+    if (!checkUsdRuntime(nullptr)) {
+        return PXR_NS::UsdStageRefPtr();
+    }
+
     PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-root");
 
     if (!root) {
@@ -193,6 +224,10 @@ SceneLayerMemo::produce(const Key& key,
     h.appendDouble(key.lastFrame);
     h.appendDouble(key.framesPerSecond);
     const U64 layerHash = h.finalize();
+
+    if (!SceneOps::checkUsdRuntime(errorMessage)) {
+        return false;
+    }
 
     // Held while authoring: two threads evaluating the same node author one layer, not two.
     std::lock_guard<std::mutex> lock(_imp->mutex);

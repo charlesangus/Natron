@@ -185,7 +185,7 @@ USDRead::purgeCaches()
         std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
         fileLayer = _imp->fileLayer;
     }
-    if (!fileLayer && filename) {
+    if (!fileLayer && filename && SceneOps::checkUsdRuntime(nullptr)) {
         // Another node may have the file open even though this one never read it.
         const std::string path = filename->getSingleFilePath();
         if (!path.empty()) {

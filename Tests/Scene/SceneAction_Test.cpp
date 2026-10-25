@@ -222,6 +222,7 @@ TEST_F(SceneActionTest, DisabledOpPassesItsInputThrough)
     ASSERT_TRUE(source && op);
     ASSERT_TRUE(op->connectInput(source, 0));
     op->setNodeDisabled(true);
+    ASSERT_TRUE(op->isNodeDisabled());
 
     ScenePayload sourceScene, opScene;
     std::string error;

@@ -247,6 +247,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-25 — **Phase 121.3 departures (bosley-native-nodes):** HSVTool ports all 8 OFX alpha outputs (the plan listed 5) and HueCorrect keeps clampBlack/clampWhite (default off), because a port means every control. HueKeyer's saturation defaults (0.1/0.3/1/1) leave greys unkeyed. GPU parity uses the transcendental tolerance (1e-5) for HSVTool and HueKeyer, since GPU division error is scaled by chroma and ramp slopes, and one table step for HueCorrect. `net.sf.openfx.HueCorrect1` (OFX's deprecated nine-curve v1) is retired with the others.
 - 2026-10-25 — **Premult nodes (bosley-native-nodes):** Premult and Unpremult pick their alpha from any layer through a new `Stage::Divisor` pipeline stage (None makes the node an identity); a divisor from another layer renders on the CPU. The host carries no premultiplication state in metadata, so there is no output premult flag to set or test. Where the divisor has no pixel, the native nodes read 1 (OFX read 0). Threshold at softness 0 maps a value equal to the level to 1, per the plan.
 - 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file.
 - 2026-10-13 — Premult and Unpremult stay two separate nodes (user): visible in the graph, the same reasoning as Add/Multiply, and the PyPlugs keep working.

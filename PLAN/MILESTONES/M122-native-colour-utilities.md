@@ -228,7 +228,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 121.6: Retire and update users
 
-- [ ] M122.P6.T1 — Move PyPlugs to native Premult, Unpremult and HSVTool
+- [x] M122.P6.T1 — Move PyPlugs to native Premult, Unpremult and HSVTool
   - files: `Gui/Resources/PyPlugs/DropShadow.py`, `Gui/Resources/PyPlugs/PIKColor.py`, `Gui/Resources/PyPlugs/LightWrap.py`, `Gui/Resources/PyPlugs/Fill.py`, `Gui/Resources/PyPlugs/Glow.py`
   - approach:
     - Swap `net.sf.openfx.Premult`/`Unpremult` (major 2) and `HSVToolPlugin` (major 1) for the native IDs at major 1, and map any knob names the scripts set to the new names.
@@ -236,7 +236,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, `PyPlugInstantiate_Test` and `PyPlugNativeParams_Test` pass, and the PyPlugs render on a test plate without errors.
   - size: M
 
-- [ ] M122.P6.T2 — Retired markers and per-node docs
+- [x] M122.P6.T2 — Retired markers and per-node docs
   - files: `Engine/OfxRetired/<ofx-plugin-id>` (one per retired ID), `Engine/Nodes/Color/docs/{Premult,ColorMatrix,Threshold,Colorspace,HSVTool,HueCorrect,Posterize}.md`, `Engine/Nodes/Keyer/docs/{HueKeyer,Despill}.md`, `Engine/GpuCostSeeds/ofx/<retired-id>.inc` (deleted, one per retired ID), `Engine/OfxEffectInstance.cpp`
   - approach:
     - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for every retired ID from `## Scope` In.
@@ -266,3 +266,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - Xvfb screenshots of each new node's panel, including HueCorrect's curves and the HueKeyer trapezoids, are shared before sign-off.
 - The AppImage is built with `package.sh` for UAT.
 - No retired OFX ID loads.
+Shipped: phase 6 at 0c1fe3168 (release gate green, run 40239056993).

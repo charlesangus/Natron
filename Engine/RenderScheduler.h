@@ -294,7 +294,7 @@ public:
         unsigned long long importsAtUpload = 0;
         unsigned long long importsAtDownload = 0;
 
-        // Transfers of the region that fell back to staging, by reason.
+        // Deltas of the runtime-wide transfer counts, so regions running concurrently can share them.
         unsigned long long stagedDisabled = 0;
         unsigned long long stagedUnaligned = 0;
         unsigned long long stagedImportFailed = 0;

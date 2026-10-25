@@ -8,6 +8,8 @@ Steps run as a generator on the Qt event loop (see run()), so Natron keeps rende
     yield ("sleep", ms)
     ok = yield ("until", predicate, timeout_seconds)
 """
+import ctypes
+import ctypes.util
 import os
 import time
 import traceback
@@ -162,29 +164,27 @@ def shot(name):
 
 
 HOST_DISPLAY = bool(os.environ.get("GUI_TEST_HOST_DISPLAY"))
-HOST_WINDOW_SIZE = (1600, 1000)
+HOST_WINDOW_SIZE = tuple(int(n) for n in os.environ.get("GUI_TEST_SCREEN_SIZE", "1600x1000").split("x"))
 HOST_ON_SCREEN_TIMEOUT_S = 60.0
 _host_window = []
 
 
 def pin_host_window():
-    """On a shared desktop, keeps the main window above other windows, on the primary screen's top
-    left and at the Xvfb screen's size. Screen grabs read the root window, so anything covering the
-    viewer, or the viewer sitting on another monitor, would be grabbed instead of it.
+    """On a shared desktop, pins the main window above others at the primary screen's top left:
+    screen grabs read the root window, so a covering window or another monitor would be grabbed
+    instead of the viewer.
 
-    Returns True the first time, when the caller must wait for host_window_on_screen(). A window
-    manager drops a stacking request for a window it has not mapped yet, and another window can be
-    raised over ours later, so the request is repeated on every step."""
+    Returns True the first time, when the caller must wait for host_window_on_screen(). The
+    keep-above request is repeated on every step: the window manager drops it for a window it has
+    not mapped yet, and other windows get raised over ours later."""
     if not HOST_DISPLAY:
         return False
     if _host_window:
         w = _host_window[0]
     else:
-        found = [w for w in QApplication.topLevelWidgets()
-                 if class_name(w) == "Gui" and w.isVisible() and w.windowHandle() is not None and w.windowHandle().isExposed()]
-        if not found:
+        w = _find_main_window()
+        if w is None:
             return False
-        w = found[0]
         w.showNormal()
         area = QGuiApplication.primaryScreen().availableGeometry()
         w.setGeometry(area.x(), area.y(), min(HOST_WINDOW_SIZE[0], area.width()), min(HOST_WINDOW_SIZE[1], area.height()))
@@ -199,12 +199,17 @@ def pin_host_window():
     return True
 
 
+def _find_main_window():
+    for w in QApplication.topLevelWidgets():
+        if class_name(w) == "Gui" and w.isVisible() and w.windowHandle() is not None and w.windowHandle().isExposed():
+            return w
+    return None
+
+
 def host_window_on_screen():
-    """Whether the screen shows the main window's panes, painted, where Qt places them: in the area
-    below the menu bar and beside the left toolbar, the window's own rendering must have content and
-    a root-window grab must match it on nearly every sampled pixel. A compositor can take seconds to
-    show a newly mapped window, the window manager moves it asynchronously, and on some desktops the
-    panes stay unpainted on screen for a while after the menu bar is drawn."""
+    """Whether a root-window grab shows the main window's panes painted. A compositor can take
+    seconds to show a newly mapped window, and the panes can stay unpainted after the menu bar is
+    drawn."""
     from PySide6.QtCore import QRect
     from PySide6.QtGui import QImage
     QApplication.processEvents()
@@ -225,15 +230,27 @@ def host_window_on_screen():
     return same >= 0.9 * len(samples)
 
 
-def _ask_window_manager_keep_above(window_id):
-    """Sends the EWMH _NET_WM_STATE_ABOVE request for window_id. Qt's WindowStaysOnTopHint would
-    recreate the native window, and the viewer's GL context with it."""
-    import ctypes
-    import ctypes.util
+class _ClientMessage(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
+                ("display", ctypes.c_void_p), ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
+                ("format", ctypes.c_int), ("data", ctypes.c_long * 5), ("pad", ctypes.c_long * 12)]
+
+
+_x11 = []
+_x11_error = []
+_x11_display = []
+
+
+def _load_x11():
+    if _x11:
+        return _x11[0]
+    if _x11_error:
+        return None
     try:
         x11 = ctypes.CDLL(ctypes.util.find_library("X11") or "libX11.so.6")
     except OSError as e:
-        return "no libX11 (%s)" % e
+        _x11_error.append("no libX11 (%s)" % e)
+        return None
     x11.XOpenDisplay.restype = ctypes.c_void_p
     x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
     x11.XDefaultRootWindow.restype = ctypes.c_ulong
@@ -242,17 +259,23 @@ def _ask_window_manager_keep_above(window_id):
     x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
     x11.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p]
     x11.XFlush.argtypes = [ctypes.c_void_p]
-    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    _x11.append(x11)
+    return x11
 
-    class ClientMessage(ctypes.Structure):
-        _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
-                    ("display", ctypes.c_void_p), ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
-                    ("format", ctypes.c_int), ("data", ctypes.c_long * 5), ("pad", ctypes.c_long * 12)]
 
-    dpy = x11.XOpenDisplay(None)
-    if not dpy:
-        return "cannot open the display"
-    ev = ClientMessage()
+def _ask_window_manager_keep_above(window_id):
+    """Sends the EWMH _NET_WM_STATE_ABOVE request for window_id. Qt's WindowStaysOnTopHint would
+    recreate the native window, and the viewer's GL context with it."""
+    x11 = _load_x11()
+    if x11 is None:
+        return _x11_error[0]
+    if not _x11_display:
+        dpy = x11.XOpenDisplay(None)
+        if not dpy:
+            return "cannot open the display"
+        _x11_display.append(dpy)
+    dpy = _x11_display[0]
+    ev = _ClientMessage()
     ev.type = 33
     ev.send_event = 1
     ev.display = dpy
@@ -265,13 +288,20 @@ def _ask_window_manager_keep_above(window_id):
     substructure_notify_and_redirect = (1 << 19) | (1 << 20)
     sent = x11.XSendEvent(dpy, x11.XDefaultRootWindow(dpy), 0, substructure_notify_and_redirect, ctypes.byref(ev))
     x11.XFlush(dpy)
-    x11.XCloseDisplay(dpy)
     return "requested" if sent else "XSendEvent failed"
 
 
 def run(gen):
     """Drives gen on the Qt event loop and calls finish() when it ends or raises."""
+    window_deadline = time.time() + HOST_ON_SCREEN_TIMEOUT_S
+
     def advance(value):
+        if HOST_DISPLAY and not _host_window and _find_main_window() is None:
+            if time.time() > window_deadline:
+                check(False, "host display: the main window is exposed within %ds" % HOST_ON_SCREEN_TIMEOUT_S)
+            else:
+                QTimer.singleShot(200, lambda: advance(value))
+                return
         if pin_host_window():
             started = time.time()
             deadline = started + HOST_ON_SCREEN_TIMEOUT_S

@@ -154,10 +154,8 @@ public:
 
     bool init()
     {
-        // The dev image's /usr/local glvnd lists only the NVIDIA EGL vendor, whose library exists
-        // only in an NVIDIA container. The system directory holds Mesa everywhere, plus the
-        // NVIDIA vendor file the container toolkit mounts there, so glvnd tries NVIDIA first on
-        // NVIDIA hosts and Mesa alone elsewhere.
+        // The dev image's /usr/local glvnd lists only NVIDIA, absent outside NVIDIA containers; the system
+        // directory holds Mesa plus the NVIDIA vendor file the container toolkit mounts there.
         if (!std::getenv("__EGL_VENDOR_LIBRARY_FILENAMES") && !std::getenv("__EGL_VENDOR_LIBRARY_DIRS") && (::access("/usr/share/glvnd/egl_vendor.d", F_OK) == 0) && (::access("/usr/local/share/glvnd/egl_vendor.d", F_OK) == 0)) {
             ::setenv("__EGL_VENDOR_LIBRARY_DIRS", "/usr/share/glvnd/egl_vendor.d", 1);
         }

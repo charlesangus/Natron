@@ -39,6 +39,7 @@ NATRON="${2:-$ROOT/build/release/App/Natron}"
 TIMEOUT="${GUI_TEST_TIMEOUT:-300}"
 DISPLAY_NUM="${GUI_TEST_DISPLAY:-79}"
 OUT="${NATRON_GUI_TEST_OUT:-$ROOT/build/gui-test-out}"
+SCREEN_SIZE=1600x1000
 
 if [ ! -f "$SCRIPT" ]; then
     echo "no such script: $1" >&2
@@ -119,20 +120,28 @@ fi
 
 HOST_DISPLAY="${GUI_TEST_HOST_DISPLAY:-}"
 if [ -n "$HOST_DISPLAY" ]; then
+    # The library path Natron gets in host mode, which the GL probe must see too.
+    if [ "$APPIMAGE" -eq 1 ]; then
+        HOST_LD_ENV=(-u LD_LIBRARY_PATH)
+    else
+        HOST_LD_ENV=(LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64)
+    fi
     if command -v xset > /dev/null 2>&1; then
         display_ok() { env -u LD_LIBRARY_PATH xset -display "$HOST_DISPLAY" q > /dev/null 2>&1; }
     elif command -v xdpyinfo > /dev/null 2>&1; then
         display_ok() { env -u LD_LIBRARY_PATH xdpyinfo -display "$HOST_DISPLAY" > /dev/null 2>&1; }
+    elif command -v glxinfo > /dev/null 2>&1; then
+        display_ok() { env -u LD_LIBRARY_PATH glxinfo -display "$HOST_DISPLAY" -B > /dev/null 2>&1; }
     else
-        display_ok() { [ -n "$HOST_DISPLAY" ]; }
-        echo "neither xset nor xdpyinfo found; not probing display $HOST_DISPLAY" >&2
+        echo "none of xset, xdpyinfo or glxinfo found; cannot probe display $HOST_DISPLAY" >&2
+        exit 2
     fi
     if ! display_ok; then
         echo "cannot open host display $HOST_DISPLAY (check DISPLAY value and XAUTHORITY)" >&2
         exit 2
     fi
     if command -v glxinfo > /dev/null 2>&1; then
-        GL_RENDERER="$(DISPLAY="$HOST_DISPLAY" env -u LD_LIBRARY_PATH glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p')"
+        GL_RENDERER="$(DISPLAY="$HOST_DISPLAY" env "${HOST_LD_ENV[@]}" glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p')"
         if [ -z "$GL_RENDERER" ]; then
             echo "glxinfo reported no GL renderer on $HOST_DISPLAY" >&2
             exit 2
@@ -162,7 +171,7 @@ else
         echo "display :$DISPLAY_NUM is already in use (set GUI_TEST_DISPLAY or stop the old Xvfb)" >&2
         exit 2
     fi
-    LD_LIBRARY_PATH=/usr/lib64 Xvfb ":$DISPLAY_NUM" -screen 0 1600x1000x24 +extension GLX > /dev/null 2>&1 &
+    LD_LIBRARY_PATH=/usr/lib64 Xvfb ":$DISPLAY_NUM" -screen 0 "${SCREEN_SIZE}x24" +extension GLX > /dev/null 2>&1 &
     XPID=$!
     # /tmp/.X11-unix is root-owned in the container, so Xvfb listens on an abstract socket only and
     # no socket file ever appears; ask the server itself whether it is up.
@@ -181,7 +190,6 @@ else
         echo "Xvfb failed to start on :$DISPLAY_NUM" >&2
         exit 2
     fi
-
 fi
 
 cd "$ROOT" || exit 2
@@ -204,10 +212,12 @@ else
 fi
 if [ -n "$HOST_DISPLAY" ]; then
     export DISPLAY="$HOST_DISPLAY"
+    unset WAYLAND_DISPLAY
+    export QT_QPA_PLATFORM=xcb
 else
     export DISPLAY=":$DISPLAY_NUM" LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa
 fi
-export NATRON_GUI_TEST_ROOT="$ROOT" NATRON_GUI_TEST_OUT="$OUT"
+export NATRON_GUI_TEST_ROOT="$ROOT" NATRON_GUI_TEST_OUT="$OUT" GUI_TEST_SCREEN_SIZE="$SCREEN_SIZE"
 
 # A script that needs startup scripts (init.py, initGui.py) keeps them in <script>.natronpath/
 # beside it: they must be on the search path before Natron starts, long before the script runs.

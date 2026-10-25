@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,9 @@
 #include "RawGpuTestSupport.h"
 
 #include "Engine/KnobTypes.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 #include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/Nodes/Raw/RawDenoise.h"
 #include "Engine/Nodes/Raw/RawHighlights.h"
@@ -64,12 +68,37 @@ const double kBayerChainMaxBound = 5e-3;
 
 const RectI kWindow(200, 150, 264, 198);
 
+// Large enough that Markesteijn's and AMaZE's tiles take several batches under kBatchingRange.
+const RectI kLargeWindow(100, 100, 400, 400);
+
+// The region's images and work buffers fit, while the tile scratch holds two Markesteijn 3-pass
+// tiles and four AMaZE tiles, where the device's range holds every tile of kLargeWindow at once.
+const std::uint64_t kBatchingRange = std::uint64_t(8) << 20;
+
 // One pixel a thousand, rounded up.
 int
-outlierBudget(const RectI& window)
+outlierBudget(std::size_t nPixels)
 {
-    return (int)(((std::int64_t)window.width() * window.height() + 999) / 1000);
+    return (int)((nPixels + 999) / 1000);
 }
+
+#ifdef NATRON_HAVE_GPU
+class StorageRangeCap {
+public:
+    explicit StorageRangeCap(std::uint64_t bytes)
+    {
+        gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(bytes);
+    }
+
+    ~StorageRangeCap()
+    {
+        gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(0);
+    }
+
+    StorageRangeCap(const StorageRangeCap&) = delete;
+    StorageRangeCap& operator=(const StorageRangeCap&) = delete;
+};
+#endif
 } // namespace
 
 class NativeRawChainGpuExtendedTest
@@ -160,8 +189,79 @@ protected:
         EXPECT_EQ(0u, nonFinite) << what << ": colour floats finite on one side only";
         EXPECT_EQ(0u, alphaMismatches) << what << ": alpha differs";
         EXPECT_LE(meanError / level, kChainMeanBound) << what;
-        EXPECT_LE(outliers, outlierBudget(kWindow)) << what;
+        EXPECT_LE(outliers, outlierBudget(nPixels)) << what;
     }
+
+    static int gpuTasks(const EndToEndResult& result,
+                        const NodePtr& node)
+    {
+        const std::map<std::string, int>::const_iterator found = result.gpuTasksPerNode.find(node->getScriptName_mt_safe());
+
+        return (found == result.gpuTasksPerNode.end()) ? 0 : found->second;
+    }
+
+#ifdef NATRON_HAVE_GPU
+    // Under a storage buffer range that splits the demosaic's tiles into more batches, the chain
+    // still renders on the GPU, bit for bit as under the device's range, and within the
+    // demosaic's bound of the CPU.
+    void expectBatchedChain(const Chain& c,
+                            double maxBound,
+                            const std::string& what)
+    {
+        ASSERT_TRUE(c.read && c.prepare && c.hotPixels && c.denoise && c.temperature && c.highlights && c.demosaic && c.inputColor) << what;
+
+        const EndToEndResult whole = renderEndToEnd(c.develop(), c.inputColor, kLargeWindow, kTime);
+        if (whole.skipped) {
+            return;
+        }
+        ASSERT_TRUE(whole.ok) << what << ": " << whole.error;
+        ASSERT_GT(gpuTasks(whole, c.demosaic), 0) << what << ": the demosaic fell back to the CPU";
+        EndToEndResult batched;
+        {
+            StorageRangeCap cap(kBatchingRange);
+            batched = renderEndToEnd(c.develop(), c.inputColor, kLargeWindow, kTime);
+        }
+        ASSERT_TRUE(batched.ok) << what << ": " << batched.error;
+        ASSERT_GT(gpuTasks(batched, c.demosaic), 0) << what << ": the demosaic fell back to the CPU under the capped range";
+        ASSERT_EQ(whole.gpu.size(), batched.gpu.size()) << what;
+        const ImageDiff diff = compareImages(whole.gpu, batched.gpu, ParityTolerance::exact());
+        EXPECT_EQ(0u, diff.mismatches) << what << ": first at float " << diff.firstMismatchIndex << " (one batch " << whole.gpu[diff.firstMismatchIndex] << ", batched "
+                                       << batched.gpu[diff.firstMismatchIndex] << ")";
+        expectWithinDemosaicBound(batched, maxBound, what + ", batched");
+    }
+
+    // A demosaic whose single tile is over the storage buffer range renders on the CPU, the
+    // whole region with it, while one just large enough for the tile keeps it on the GPU.
+    void expectTileOverRangeFallsBack(const Chain& c,
+                                      std::uint64_t tileFits,
+                                      std::uint64_t tileOver,
+                                      const std::string& what)
+    {
+        ASSERT_TRUE(c.read && c.prepare && c.hotPixels && c.denoise && c.temperature && c.highlights && c.demosaic && c.inputColor) << what;
+
+        EndToEndResult fits;
+        {
+            StorageRangeCap cap(tileFits);
+            fits = renderEndToEnd(c.develop(), c.inputColor, kWindow, kTime);
+        }
+        if (fits.skipped) {
+            return;
+        }
+        ASSERT_TRUE(fits.ok) << what << ": " << fits.error;
+        EXPECT_GT(gpuTasks(fits, c.demosaic), 0) << what << ": the demosaic fell back to the CPU with room for a tile";
+
+        EndToEndResult over;
+        {
+            StorageRangeCap cap(tileOver);
+            over = renderEndToEnd(c.develop(), c.inputColor, kWindow, kTime);
+        }
+        ASSERT_TRUE(over.ok) << what << ": " << over.error;
+        EXPECT_EQ(0, gpuTasks(over, c.demosaic)) << what << ": the demosaic rendered on the GPU over the range";
+        ASSERT_EQ(over.cpu.size(), over.gpu.size()) << what;
+        const ImageDiff diff = compareImages(over.cpu, over.gpu, ParityTolerance::exact());
+        EXPECT_EQ(0u, diff.mismatches) << what << ": first at float " << diff.firstMismatchIndex;
+    }
+#endif // NATRON_HAVE_GPU
 
     void expectResidentChain(const Chain& c,
                              double maxBound,
@@ -202,6 +302,24 @@ TEST_F(NativeRawChainGpuExtendedTest, BayerChainWithAmazeIsOneResidentRegion)
     const Chain c = createChain(bayerFixture(), kRawDemosaicParamBayerMethod, (int)eRawDemosaicBayerAMaZE);
 
     expectResidentChain(c, kBayerChainMaxBound, "CR2 AMaZE");
+}
+
+// Markesteijn 3-pass and AMaZE in more batches of tiles than the device's range needs.
+TEST_F(NativeRawChainGpuExtendedTest, ASmallStorageRangeBatchesTheTilesWithTheSameResult)
+{
+    expectBatchedChain(createChain(xtransFixture(), kRawDemosaicParamXTransMethod, (int)eRawDemosaicXTransMarkesteijn3), kChainMaxBound, "RAF Markesteijn 3-pass");
+    getApp()->getProject()->reset(false, true);
+    expectBatchedChain(createChain(bayerFixture(), kRawDemosaicParamBayerMethod, (int)eRawDemosaicBayerAMaZE), kBayerChainMaxBound, "CR2 AMaZE");
+}
+
+// A Markesteijn 3-pass tile takes 2.5 MB of scratch and an AMaZE tile 1.5 MB, so once the pool's
+// rounding is allowed for, a 2 MB range holds no Markesteijn tile and a 1.5 MB one no AMaZE tile.
+TEST_F(NativeRawChainGpuExtendedTest, ATileOverTheStorageRangeFallsBackToTheCpu)
+{
+    expectTileOverRangeFallsBack(createChain(xtransFixture(), kRawDemosaicParamXTransMethod, (int)eRawDemosaicXTransMarkesteijn3), std::uint64_t(4) << 20, std::uint64_t(2) << 20,
+                                 "RAF Markesteijn 3-pass");
+    getApp()->getProject()->reset(false, true);
+    expectTileOverRangeFallsBack(createChain(bayerFixture(), kRawDemosaicParamBayerMethod, (int)eRawDemosaicBayerAMaZE), std::uint64_t(2) << 20, std::uint64_t(3) << 19, "CR2 AMaZE");
 }
 
 #endif // NATRON_HAVE_GPU

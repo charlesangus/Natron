@@ -1335,8 +1335,11 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
     // Bands of the window are demosaiced one after the other through one work buffer, each over
     // the source region the CPU would read for it, which a tile's result does not depend on.
     // PPG and RCD need under 16 floats a photosite, VNG its two RGBA planes. Markesteijn's one
-    // RGBA plane is held to half the budget, its batches of tiles taking the other half.
-    const std::uint64_t kMaxWorkFloats = std::uint64_t(1) << 25;
+    // RGBA plane is held to half the budget, its batches of tiles taking the other half. No
+    // scratch is over what the device binds.
+    gpu::GpuRecordContext& ctx = args.context;
+    const std::uint64_t maxScratchFloats = ctx.maxScratchBytes() / sizeof(float);
+    const std::uint64_t maxWorkFloats = std::min<std::uint64_t>(std::uint64_t(1) << 25, maxScratchFloats);
     const std::uint64_t floatsPerPhotosite = (vng || markesteijn) ? 8 : 16;
     std::vector<RectI> bands;
     std::vector<RectI> needs;
@@ -1352,7 +1355,7 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
         const RectI& rod = s.sourceRoD;
         const RectI firstRow = sourceRegionFor(RectI(rect.x1, rect.y1, rect.x2, rect.y1 + 1), query.time, query.view);
         const std::uint64_t needWidth = (std::uint64_t)std::max(1, firstRow.width());
-        const std::int64_t maxRows = (std::int64_t)(kMaxWorkFloats / (4 * needWidth));
+        const std::int64_t maxRows = (std::int64_t)(maxWorkFloats / (4 * needWidth));
         const int blocks = (int)std::max<std::int64_t>(1, (maxRows - kAmazeGrid - kAmazeTileEnd) / kAmazeGrid);
         const auto gridFloor = [](int row) {
             return row >= 0 ? row / kAmazeGrid : -((kAmazeGrid - 1 - row) / kAmazeGrid);
@@ -1372,7 +1375,7 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
         const RectI firstRow = sourceRegionFor(RectI(rect.x1, rect.y1, rect.x2, rect.y1 + 1), query.time, query.view);
         const std::uint64_t needWidth = (std::uint64_t)std::max(1, firstRow.width());
         const int overhead = std::max(0, firstRow.height() - 1);
-        const int bandRows = (int)std::max<std::int64_t>(16, (std::int64_t)(kMaxWorkFloats / (floatsPerPhotosite * needWidth)) - overhead);
+        const int bandRows = (int)std::max<std::int64_t>(16, (std::int64_t)(maxWorkFloats / (floatsPerPhotosite * needWidth)) - overhead);
         for (int y = rect.y1; y < rect.y2; y += bandRows) {
             const RectI band(rect.x1, y, rect.x2, std::min(rect.y2, y + bandRows));
             const RectI need = sourceRegionFor(band, query.time, query.view);
@@ -1384,11 +1387,10 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
             workFloats = std::max(workFloats, vng ? 8 * w * h : (markesteijn ? 4 * w * h : 9 * w * h + (13 * stride * h) / 2));
         }
     }
-    if (workFloats > UINT32_MAX) {
+    if ((workFloats > UINT32_MAX) || (workFloats > maxScratchFloats)) {
         return eStatusFailed;
     }
 
-    gpu::GpuRecordContext& ctx = args.context;
     gpu::GpuBuffer* work = nullptr;
     if (!ctx.scratch(workFloats * sizeof(float), work) || !work) {
         return eStatusFailed;
@@ -1431,11 +1433,13 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
             int nLefts = 0;
             maxTiles = std::max(maxTiles, markesteijnTiles(need, nLefts));
         }
-        // Each batch costs its kernels' dispatches, so the batch is as large as fits in 256 MB: the
-        // record context offers no device budget to size it by, and 256 MB binds within the
-        // maxStorageBufferRange of the desktop devices the raw chain targets.
-        const std::uint64_t kMaxTileFloats = std::uint64_t(1) << 26;
-        mkBatch = (std::uint32_t)std::clamp<std::uint64_t>(kMaxTileFloats / mkTileFloats, 1, (std::uint64_t)maxTiles);
+        // Each batch costs its kernels' dispatches, so the batch is as large as fits in 256 MB and
+        // the storage buffer range: the record context offers no device budget to size it by.
+        const std::uint64_t maxTileFloats = std::min<std::uint64_t>(std::uint64_t(1) << 26, maxScratchFloats);
+        if (mkTileFloats > maxTileFloats) {
+            return eStatusFailed;
+        }
+        mkBatch = (std::uint32_t)std::min<std::uint64_t>(maxTileFloats / mkTileFloats, (std::uint64_t)maxTiles);
         if (!ctx.scratch(mkBatch * mkTileFloats * sizeof(float), tiles) || !tiles) {
             return eStatusFailed;
         }
@@ -1448,8 +1452,8 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
             int nLefts = 0;
             maxTiles = std::max(maxTiles, amazeGpuTiles(need.width(), need.height(), nLefts));
         }
-        amazeBatch = amazeGpuBatch(maxTiles);
-        if (!ctx.scratch(amazeBatch * kAmazeGpuTileFloats * sizeof(float), amazeTiles) || !amazeTiles) {
+        amazeBatch = amazeGpuBatch(maxTiles, ctx.maxScratchBytes());
+        if ((amazeBatch == 0) || !ctx.scratch(amazeBatch * kAmazeGpuTileFloats * sizeof(float), amazeTiles) || !amazeTiles) {
             return eStatusFailed;
         }
     }

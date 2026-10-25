@@ -433,7 +433,6 @@ void markesteijn_green(uint3 tid : SV_DispatchThreadID)
         scratch[rgbAt(tile, c ^ flip, i, 1)] = clamps(color[c], lo, hi);
 }
 
-// The second pass's copy of the first four directions into the last four.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void markesteijn_copy(uint3 tid : SV_DispatchThreadID)
@@ -451,7 +450,6 @@ void markesteijn_copy(uint3 tid : SV_DispatchThreadID)
     }
 }
 
-// The directions a pass works on: the first four in the first pass, the last four after.
 uint passBase()
 {
     return pc.pass > 0u ? 4u : 0u;

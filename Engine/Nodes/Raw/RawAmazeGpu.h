@@ -66,13 +66,17 @@ amazeGpuTiles(int width,
 }
 
 // The tiles a batch holds, for a scratch of batch * kAmazeGpuTileFloats floats of at most 64 MB
-// that needs no more than maxTiles.
+// and maxScratchBytes that needs no more than maxTiles; 0 when not even one tile fits.
 inline std::uint32_t
-amazeGpuBatch(int maxTiles)
+amazeGpuBatch(int maxTiles,
+              std::uint64_t maxScratchBytes = UINT64_MAX)
 {
-    const std::uint64_t kMaxScratchFloats = std::uint64_t(1) << 24;
+    const std::uint64_t maxScratchFloats = std::min<std::uint64_t>(std::uint64_t(1) << 24, maxScratchBytes / sizeof(float));
+    if (maxScratchFloats < kAmazeGpuTileFloats) {
+        return 0;
+    }
 
-    return (std::uint32_t)std::clamp<std::uint64_t>(kMaxScratchFloats / kAmazeGpuTileFloats, 1, (std::uint64_t)std::max(1, maxTiles));
+    return (std::uint32_t)std::min<std::uint64_t>(maxScratchFloats / kAmazeGpuTileFloats, (std::uint64_t)std::max(1, maxTiles));
 }
 
 /**

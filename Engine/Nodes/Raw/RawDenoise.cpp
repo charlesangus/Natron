@@ -427,8 +427,11 @@ RawDenoise::renderOpGpu(const GpuRenderArgs& args)
 
     // Bands of the window are denoised one after the other through one work buffer, each over the
     // source region the CPU would read for it, which a tile's result does not depend on. A band
-    // holds three planes of a colour: the whole region for X-Trans, a quarter of it for Bayer.
-    const std::uint64_t kMaxWorkFloats = std::uint64_t(1) << 25;
+    // holds three planes of a colour: the whole region for X-Trans, a quarter of it for Bayer. No
+    // band is over what the device binds.
+    gpu::GpuRecordContext& ctx = args.context;
+    const std::uint64_t maxScratchFloats = ctx.maxScratchBytes() / sizeof(float);
+    const std::uint64_t maxWorkFloats = std::min<std::uint64_t>(std::uint64_t(1) << 25, maxScratchFloats);
     const std::uint64_t floatsPerPhotosite = xtrans ? 3 : 1;
     const auto planeFloatsFor = [xtrans](const RectI& need) {
         const std::uint64_t w = (std::uint64_t)std::max(0, need.width());
@@ -446,7 +449,7 @@ RawDenoise::renderOpGpu(const GpuRenderArgs& args)
         const RectI firstRow = sourceRegionFor(RectI(rect.x1, rect.y1, rect.x2, rect.y1 + 1), s);
         const std::uint64_t needWidth = (std::uint64_t)std::max(1, firstRow.width());
         const int overhead = std::max(0, firstRow.height() - 1);
-        const int bandRows = (int)std::max<std::int64_t>(16, (std::int64_t)(kMaxWorkFloats / (floatsPerPhotosite * needWidth)) - overhead);
+        const int bandRows = (int)std::max<std::int64_t>(16, (std::int64_t)(maxWorkFloats / (floatsPerPhotosite * needWidth)) - overhead);
         for (int y = rect.y1; y < rect.y2; y += bandRows) {
             const RectI band(rect.x1, y, rect.x2, std::min(rect.y2, y + bandRows));
             const RectI need = sourceRegionFor(band, s);
@@ -455,11 +458,10 @@ RawDenoise::renderOpGpu(const GpuRenderArgs& args)
             workFloats = std::max(workFloats, 3 * planeFloatsFor(need));
         }
     }
-    if (workFloats > UINT32_MAX) {
+    if ((workFloats > UINT32_MAX) || (workFloats > maxScratchFloats)) {
         return eStatusFailed;
     }
 
-    gpu::GpuRecordContext& ctx = args.context;
     gpu::GpuBuffer* work = nullptr;
     if (!ctx.scratch(workFloats * sizeof(float), work) || !work) {
         return eStatusFailed;

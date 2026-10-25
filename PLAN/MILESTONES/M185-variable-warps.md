@@ -22,25 +22,25 @@ Exact native I-warps (user, 2026-10-24). Slicing a transform and blending the sl
 
 ## Phase 185.1: ITransform and ICornerPin
 
-- [ ] M185.P1.T1 — Write per-pixel transform interpolation
+- [x] M185.P1.T1 — Write per-pixel transform interpolation
   - files: `Engine/Nodes/Image/TransformMath.h`, `Engine/Nodes/Image/TransformInterp.{h,cpp}` (new), `Tests/Native/TransformInterp_Test.cpp`
   - approach: Engine-free functions: interpolate Transform's parameters (translate linear; rotate linear in angle; scale and skew in log space; center fixed) to a matrix at m, and corner positions to a homography at m; plus the inverse-map Jacobian including the dm/dx term.
   - verify: at the phase build, `ctest -R TransformInterp` passes: m=0 identity, m=1 equals the base matrix, Jacobians match finite differences.
   - size: M
 
-- [ ] M185.P1.T2 — Write ITransform and ICornerPin (CPU)
+- [x] M185.P1.T2 — Write ITransform and ICornerPin (CPU)
   - files: `Engine/Nodes/Transform/ITransform.{h,cpp}`, `ITransform.reg.inc`, `Engine/Nodes/Transform/ICornerPin.{h,cpp}`, `ICornerPin.reg.inc`
   - approach: Reuse Transform's and CornerPin's knobs (shared knob builders, `CornerPinKnobs.h`), add `MapInput`. Build a coordinate map per tile from the Map and T1's functions, then resample through the coordinate-map resampler with the chosen filter. Register `NATRON_I_VARIANT` entries.
   - verify: at the phase build, `ctest -R NativeIWarp` (T3) passes.
   - size: L
 
-- [ ] M185.P1.T3 — Test ITransform and ICornerPin
+- [x] M185.P1.T3 — Test ITransform and ICornerPin
   - files: `Tests/Native/NativeIWarp_Test.cpp`
   - approach: Map 0 is identity; Map 1 matches base Transform/CornerPin within the filter's tolerance; a constant Map 0.5 matches the base node at half parameters; a Map ramp shows no ghosting (single edge, measured by edge count on a line chart). Record regression fixtures.
   - verify: at the phase build, `ctest -R NativeIWarp` passes.
   - size: M
 
-- [ ] M185.P1.T4 — ITransform and ICornerPin on the GPU
+- [x] M185.P1.T4 — ITransform and ICornerPin on the GPU
   - files: `Engine/Gpu/Kernels/iwarp.slang`, `Engine/Gpu/Kernels/iwarp.cmake`, `Engine/Nodes/Transform/ITransform.cpp`, `Engine/Nodes/Transform/ICornerPin.cpp`, `Tests/Native/NativeIWarpGpu_Test.cpp`
   - approach: A kernel that builds the coordinate map from the Map and pushes it into `coordmap.slang`'s resampler.
   - verify: at the phase build, `ctest -R NativeIWarpGpu` passes on lavapipe within the resampler's existing tolerance.

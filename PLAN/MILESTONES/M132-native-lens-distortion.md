@@ -111,7 +111,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 131.3: GPU
 
-- [ ] M132.P3.T1 — Mirror the lens models in Slang
+- [x] M132.P3.T1 — Mirror the lens models in Slang
   - files: `Engine/Gpu/Kernels/lensmodels.slang` (new), `Engine/Gpu/Kernels/lensmodels.cmake`, `Tests/Native/LensModelsGpu_Test.cpp` (new)
   - approach:
     - Line-for-line Slang ports of P1's models and the Newton inverse, using the same iteration cap and tolerance.
@@ -119,7 +119,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: per-model parity of coordinates and Jacobians, CPU against GPU, tolerance 1e-5 relative. It runs at the phase build on RADV.
   - size: L
 
-- [ ] M132.P3.T2 — Render LensDistortion on the GPU
+- [x] M132.P3.T2 — Render LensDistortion on the GPU
   - files: `Engine/Gpu/Kernels/lensdistortion.slang` (new), `Engine/Nodes/Transform/LensDistortion.cpp`, `Engine/Gpu/Kernels/lensdistortion.cmake`, `Tests/Native/NativeLensDistortionGpu_Test.cpp` (new)
   - approach:
     - A compute entry: lens model → source coordinate and Jacobian → `coordmap.slang` sample, wrapped by `pixelwrap.slang`. STMap mode writes the coordinates.
@@ -130,7 +130,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 131.4: Retire the OFX LensDistortion
 
-- [ ] M132.P4.T1 — Retire the OFX LensDistortion
+- [x] M132.P4.T1 — Retire the OFX LensDistortion
   - files: `Engine/OfxRetired/net.sf.openfx.LensDistortion`, `Engine/OfxEffectInstance.cpp` (`:1279-1287` entry), `Tests/DefaultChannelSet_Test.cpp`
   - approach: add the `Engine/OfxRetired/net.sf.openfx.LensDistortion` marker, drop its `defaultProcessesAllLayers` entry, and move or remove test cases that name it.
   - verify: a test asserts the OFX ID no longer loads and `LensDistortion` does. The full ctest passes at the gate.

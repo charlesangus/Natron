@@ -44,19 +44,22 @@ NATRON_NAMESPACE_ENTER
 float
 MapInputParams::remap(float raw) const
 {
-    const double v = invert ? 1. - raw : raw;
-    double m;
-    if (white == black) {
-        m = (v >= white) ? 1. : 0.;
+    // Float precision throughout, so a sample equal to the black or white knob maps to exactly 0 or 1.
+    const float v = invert ? 1.f - raw : raw;
+    const float blackF = (float)black;
+    const float whiteF = (float)white;
+    float m;
+    if (whiteF == blackF) {
+        m = (v >= whiteF) ? 1.f : 0.f;
     } else {
-        m = (v - black) / (white - black);
+        m = (v - blackF) / (whiteF - blackF);
     }
     // A NaN sample reads as black.
-    if (!(m > 0.)) {
+    if (!(m > 0.f)) {
         return 0.f;
     }
 
-    return (m >= 1.) ? 1.f : (float)m;
+    return (m >= 1.f) ? 1.f : m;
 }
 
 double

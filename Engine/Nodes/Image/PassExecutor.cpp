@@ -718,8 +718,10 @@ runRowPass(const Pass& pass,
            int nThreads,
            RenderCancellation& cancel)
 {
-    const int nLines = pass.perPlane ? scratch.nPlanes * scratch.height : scratch.height;
-    const std::size_t pixelsPerLine = (std::size_t)scratch.width * (pass.perPlane ? 1 : scratch.nPlanes);
+    const int lines = pass.columns ? scratch.width : scratch.height;
+    const int length = pass.columns ? scratch.height : scratch.width;
+    const int nLines = pass.perPlane ? scratch.nPlanes * lines : lines;
+    const std::size_t pixelsPerLine = (std::size_t)length * (pass.perPlane ? 1 : scratch.nPlanes);
     const std::function<void(int, int)> rows = [&](int first, int end) {
         const PassRowFn fn = pass.rowWorker(scratch);
         for (int line = first; line < end; ++line) {
@@ -1055,10 +1057,12 @@ runPassesCpu(EffectInstance& effect,
     // Slot 0 is written whole by fillBuffer(): the window, the halo and the boundary alike.
     // The other slots are each written whole by the first pass that touches them, before any pass
     // reads them; a pass that does not write every element must not be added without clearing the
-    // rest here. See the EdgeDetect pass list, the only one with more than one slot:
+    // rest here. See the pass lists with more than one slot, EdgeDetect's:
     //   slots 1 and 2: copyWorker() copies slot 0 over every row of every plane, or stencilWorker()
     //                  writes every element of both, and combineWorker() reads only after that;
-    //   slot 3:        suppressionWorker() writes every pixel of every plane, border included.
+    //   slot 3:        suppressionWorker() writes every pixel of every plane, border included;
+    // and IBlur's, whose box passes alternate between slots 0 and 1, each writing every pixel of
+    // every plane of the slot the next one reads.
     HostScratchFloats sourceStorage;
     std::vector<HostScratchFloats> extraStorage(list.scratchSlots - 1);
     // Playback overlaps two frames, and pooling both sets would keep both resident.

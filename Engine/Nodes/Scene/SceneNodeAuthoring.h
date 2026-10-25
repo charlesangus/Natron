@@ -118,6 +118,41 @@ bool authorTransform(const SceneTransformKnobs& knobs,
                      const PXR_NS::UsdGeomXformable& xformable,
                      const SceneLayerEdit& edit,
                      std::string* errorMessage);
+/**
+ * @brief Whether name matches glob, in which * stands for any run of characters (none included)
+ * and ? for any one character.
+ **/
+bool matchesGlob(const std::string& name,
+                 const std::string& glob);
+
+/**
+ * @brief The prims of stage a prim pattern names. The pattern is a whitespace-separated list of
+ * absolute prim paths whose names may hold the wildcards of matchesGlob(), so a last name of *
+ * names every child of the prim before it. Only active, defined, non-abstract prims match. *paths holds them
+ * in the order the pattern names them, each once. Returns false with *errorMessage set when an
+ * entry is not an absolute path; an empty pattern names no prim.
+ **/
+bool matchPrims(const PXR_NS::UsdStageRefPtr& stage,
+                const std::string& pattern,
+                std::vector<PXR_NS::SdfPath>* paths,
+                std::string* errorMessage);
+
+/**
+ * @brief The transform that scales by scale, turns by rotate (degrees, in the rotate order) and
+ * moves by translate, about pivot: in column-vector notation T(translate) T(pivot) R S
+ * T(-pivot). Returned as a Gf matrix, which multiplies row vectors, so it is the transpose of
+ * that product.
+ **/
+PXR_NS::GfMatrix4d composeTransformMatrix(const PXR_NS::GfVec3d& translate,
+                                          const PXR_NS::GfVec3d& rotate,
+                                          const PXR_NS::GfVec3d& scale,
+                                          const PXR_NS::GfVec3d& pivot,
+                                          SceneRotateOrderEnum rotateOrder);
+
+// The rotation part of composeTransformMatrix(), as a Gf (row-vector) matrix.
+PXR_NS::GfMatrix4d composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
+                                         SceneRotateOrderEnum rotateOrder);
+
 } // namespace SceneNodeAuthoring
 
 NATRON_NAMESPACE_EXIT

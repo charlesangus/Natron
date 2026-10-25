@@ -86,6 +86,21 @@ KnobStringPtr createScenePrimPathKnob(KnobHolder* holder,
                                       const std::string& defaultPath,
                                       const QString& toolTip);
 
+/**
+ * @brief The prim path a node authors by default: "/" followed by its script name, so each
+ * node's prim is distinct and named after it (/USDCamera1). fallbackName stands in for a node
+ * that has no script name yet.
+ **/
+std::string getSceneNodeDefaultPrimPath(const EffectInstance* effect,
+                                        const std::string& fallbackName);
+
+/**
+ * @brief Points knob's default at newDefaultPath after the node is renamed, and its value too
+ * when the value is still the old default; a path the user typed stays.
+ **/
+void followSceneNodeRename(const KnobStringPtr& knob,
+                           const std::string& newDefaultPath);
+
 // Hides and disables knob, or shows and enables it.
 void setSceneKnobSecret(const KnobIPtr& knob,
                         bool secret);

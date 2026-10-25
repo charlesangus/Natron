@@ -132,6 +132,33 @@ createScenePrimPathKnob(KnobHolder* holder,
     return knob;
 }
 
+std::string
+getSceneNodeDefaultPrimPath(const EffectInstance* effect,
+                            const std::string& fallbackName)
+{
+    const std::string scriptName = effect ? effect->getScriptName_mt_safe() : std::string();
+
+    return "/" + (scriptName.empty() ? fallbackName : scriptName);
+}
+
+void
+followSceneNodeRename(const KnobStringPtr& knob,
+                      const std::string& newDefaultPath)
+{
+    if (!knob) {
+        return;
+    }
+    const std::string oldDefault = knob->getDefaultValue(0);
+    if (oldDefault == newDefaultPath) {
+        return;
+    }
+    if (knob->getValue() == oldDefault) {
+        knob->setDefaultValue(newDefaultPath);
+    } else {
+        knob->setDefaultValueWithoutApplying(newDefaultPath);
+    }
+}
+
 namespace SceneNodeAuthoring {
 double
 getTimeCodesPerSecond(const SceneLayerEdit& edit)
@@ -283,6 +310,165 @@ authorTransform(const SceneTransformKnobs& knobs,
 
     return true;
 } // authorTransform
+
+bool
+matchesGlob(const std::string& name,
+            const std::string& glob)
+{
+    // Greedy with backtracking to the last star: linear for patterns with one star, and never
+    // worse than quadratic.
+    std::size_t n = 0;
+    std::size_t g = 0;
+    std::size_t starG = std::string::npos;
+    std::size_t starN = 0;
+
+    while (n < name.size()) {
+        if ((g < glob.size()) && ((glob[g] == '?') || (glob[g] == name[n]))) {
+            ++n;
+            ++g;
+        } else if ((g < glob.size()) && (glob[g] == '*')) {
+            starG = g++;
+            starN = n;
+        } else if (starG != std::string::npos) {
+            g = starG + 1;
+            n = ++starN;
+        } else {
+            return false;
+        }
+    }
+    while ((g < glob.size()) && (glob[g] == '*')) {
+        ++g;
+    }
+
+    return g == glob.size();
+}
+
+namespace {
+    bool
+    isMatchablePrim(const PXR_NS::UsdPrim& prim)
+    {
+        return prim && prim.IsActive() && prim.IsDefined() && !prim.IsAbstract();
+    }
+
+    void
+    collectMatches(const PXR_NS::UsdPrim& parent,
+                   const std::vector<std::string>& names,
+                   std::size_t depth,
+                   std::vector<PXR_NS::SdfPath>* paths)
+    {
+        if (depth == names.size()) {
+            if (isMatchablePrim(parent) && (std::find(paths->begin(), paths->end(), parent.GetPath()) == paths->end())) {
+                paths->push_back(parent.GetPath());
+            }
+
+            return;
+        }
+        const std::string& name = names[depth];
+        if (name.find_first_of("*?") == std::string::npos) {
+            const PXR_NS::UsdPrim child = parent.GetChild(PXR_NS::TfToken(name));
+            if (isMatchablePrim(child)) {
+                collectMatches(child, names, depth + 1, paths);
+            }
+
+            return;
+        }
+        for (const PXR_NS::UsdPrim& child : parent.GetChildren()) {
+            if (isMatchablePrim(child) && matchesGlob(child.GetName().GetString(), name)) {
+                collectMatches(child, names, depth + 1, paths);
+            }
+        }
+    }
+} // anonymous namespace
+
+bool
+matchPrims(const PXR_NS::UsdStageRefPtr& stage,
+           const std::string& pattern,
+           std::vector<PXR_NS::SdfPath>* paths,
+           std::string* errorMessage)
+{
+    paths->clear();
+    std::vector<std::vector<std::string>> entries;
+    std::size_t pos = 0;
+    while (pos < pattern.size()) {
+        const std::size_t begin = pattern.find_first_not_of(" \t\r\n", pos);
+        if (begin == std::string::npos) {
+            break;
+        }
+        std::size_t end = pattern.find_first_of(" \t\r\n", begin);
+        if (end == std::string::npos) {
+            end = pattern.size();
+        }
+        const std::string entry = pattern.substr(begin, end - begin);
+        pos = end;
+        if ((entry.size() < 2) || (entry[0] != '/')) {
+            *errorMessage = EffectInstance::tr("\"%1\" is not an absolute prim path such as /World/Geo or /World/*.").arg(QString::fromStdString(entry)).toStdString();
+
+            return false;
+        }
+        std::vector<std::string> names;
+        std::size_t namePos = 1;
+        while (namePos <= entry.size()) {
+            std::size_t slash = entry.find('/', namePos);
+            if (slash == std::string::npos) {
+                slash = entry.size();
+            }
+            if (slash == namePos) {
+                *errorMessage = EffectInstance::tr("\"%1\" has an empty prim name.").arg(QString::fromStdString(entry)).toStdString();
+
+                return false;
+            }
+            names.push_back(entry.substr(namePos, slash - namePos));
+            namePos = slash + 1;
+        }
+        entries.push_back(names);
+    }
+    if (!stage) {
+        return true;
+    }
+    for (const std::vector<std::string>& names : entries) {
+        collectMatches(stage->GetPseudoRoot(), names, 0, paths);
+    }
+
+    return true;
+} // matchPrims
+
+PXR_NS::GfMatrix4d
+composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
+                      SceneRotateOrderEnum rotateOrder)
+{
+    static const char* const kOrders[] = { "XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX" };
+    const int order = ((int)rotateOrder >= 0 && (int)rotateOrder < 6) ? (int)rotateOrder : 0;
+    // With row vectors the leftmost factor applies first, as the order's first axis does.
+    PXR_NS::GfMatrix4d rotation(1.);
+    for (int i = 0; i < 3; ++i) {
+        const int axis = kOrders[order][i] - 'X';
+        PXR_NS::GfVec3d direction(0.);
+        direction[axis] = 1.;
+        PXR_NS::GfMatrix4d factor(1.);
+        factor.SetRotate(PXR_NS::GfRotation(direction, rotate[axis]));
+        rotation = rotation * factor;
+    }
+
+    return rotation;
+}
+
+PXR_NS::GfMatrix4d
+composeTransformMatrix(const PXR_NS::GfVec3d& translate,
+                       const PXR_NS::GfVec3d& rotate,
+                       const PXR_NS::GfVec3d& scale,
+                       const PXR_NS::GfVec3d& pivot,
+                       SceneRotateOrderEnum rotateOrder)
+{
+    PXR_NS::GfMatrix4d toPivot(1.);
+    toPivot.SetTranslate(-pivot);
+    PXR_NS::GfMatrix4d scaling(1.);
+    scaling.SetScale(scale);
+    PXR_NS::GfMatrix4d fromPivot(1.);
+    fromPivot.SetTranslate(pivot + translate);
+
+    return toPivot * scaling * composeRotationMatrix(rotate, rotateOrder) * fromPivot;
+}
+
 } // namespace SceneNodeAuthoring
 
 NATRON_NAMESPACE_EXIT

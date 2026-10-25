@@ -39,6 +39,9 @@
 
 #include <pxr/base/gf/camera.h>
 #include <pxr/base/gf/frustum.h>
+#include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/range3d.h>
+#include <pxr/base/gf/rotation.h>
 #include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
@@ -62,16 +65,23 @@
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/camera.h>
+#include <pxr/usd/usdGeom/imageable.h>
 #include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/scope.h>
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/xform.h>
+#include <pxr/usd/usdGeom/xformCache.h>
+#include <pxr/usd/usdGeom/xformOp.h>
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/usd/usdLux/distantLight.h>
 #include <pxr/usd/usdLux/domeLight.h>
 #include <pxr/usd/usdLux/lightAPI.h>
 #include <pxr/usd/usdLux/rectLight.h>
 #include <pxr/usd/usdLux/sphereLight.h>
+#include <pxr/usd/usdShade/connectableAPI.h>
+#include <pxr/usd/usdShade/material.h>
+#include <pxr/usd/usdShade/materialBindingAPI.h>
+#include <pxr/usd/usdShade/shader.h>
 
 #ifdef NATRON_USD_INCLUDES_RESTORE_EMIT
 #undef NATRON_USD_INCLUDES_RESTORE_EMIT

@@ -68,6 +68,13 @@ getChoiceKnob(const NodePtr& node,
     return dynamic_cast<KnobChoice*>(node->getKnobByName(name).get());
 }
 
+// The prim path a node authors by default: "/" and its script name.
+PXR_NS::SdfPath
+getNodePath(const NodePtr& node)
+{
+    return PXR_NS::SdfPath("/" + node->getScriptName_mt_safe());
+}
+
 float
 getFloat(const PXR_NS::UsdAttribute& attribute,
          PXR_NS::UsdTimeCode time = PXR_NS::UsdTimeCode::Default())
@@ -117,7 +124,7 @@ TEST_F(USDCameraTest, DefaultsAuthorAFiftyMillimetreCameraInTenthsOfASceneUnit)
 
     PXR_NS::UsdStageRefPtr stage = composeNode(camera);
     ASSERT_TRUE(bool(stage));
-    PXR_NS::UsdGeomCamera usdCamera(stage->GetPrimAtPath(PXR_NS::SdfPath("/Camera")));
+    PXR_NS::UsdGeomCamera usdCamera(stage->GetPrimAtPath(getNodePath(camera)));
     ASSERT_TRUE(bool(usdCamera));
     EXPECT_EQ(PXR_NS::TfToken("Camera"), usdCamera.GetPrim().GetTypeName());
 
@@ -161,7 +168,7 @@ TEST_F(USDCameraTest, LensKnobsAreConvertedToTheInputScenesUnits)
     ASSERT_TRUE(bool(stage));
     EXPECT_DOUBLE_EQ(1., PXR_NS::UsdGeomGetStageMetersPerUnit(stage));
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World")).IsValid());
-    PXR_NS::UsdGeomCamera usdCamera(stage->GetPrimAtPath(PXR_NS::SdfPath("/Camera")));
+    PXR_NS::UsdGeomCamera usdCamera(stage->GetPrimAtPath(getNodePath(camera)));
     ASSERT_TRUE(bool(usdCamera));
     // In a metre scene a tenth of a scene unit is 100 mm.
     EXPECT_FLOAT_EQ(0.5f, getFloat(usdCamera.GetFocalLengthAttr()));
@@ -188,7 +195,7 @@ TEST_F(USDCameraTest, AnimatedKnobsAuthorATimeSampleAtEveryProjectFrame)
 
     PXR_NS::UsdStageRefPtr stage = composeNode(camera);
     ASSERT_TRUE(bool(stage));
-    PXR_NS::UsdGeomCamera usdCamera(stage->GetPrimAtPath(PXR_NS::SdfPath("/Camera")));
+    PXR_NS::UsdGeomCamera usdCamera(stage->GetPrimAtPath(getNodePath(camera)));
     ASSERT_TRUE(bool(usdCamera));
     const PXR_NS::UsdAttribute attribute = usdCamera.GetFocalLengthAttr();
     EXPECT_EQ((std::size_t)(std::floor(last) - std::ceil(first) + 1.), attribute.GetNumTimeSamples());
@@ -220,7 +227,7 @@ TEST_F(USDCameraTest, TheComposedCameraMatchesTheKnobs)
 
     PXR_NS::UsdStageRefPtr stage = composeNode(camera);
     ASSERT_TRUE(bool(stage));
-    PXR_NS::UsdGeomCamera usdCamera(stage->GetPrimAtPath(PXR_NS::SdfPath("/Camera")));
+    PXR_NS::UsdGeomCamera usdCamera(stage->GetPrimAtPath(getNodePath(camera)));
     ASSERT_TRUE(bool(usdCamera));
 
     // What a look-through reads: the GfCamera at a time.
@@ -285,7 +292,7 @@ TEST_F(USDCameraTest, PrimAuthorsAnXformWithItsTransformAndKind)
 
     PXR_NS::UsdStageRefPtr stage = composeNode(prim);
     ASSERT_TRUE(bool(stage));
-    const PXR_NS::UsdPrim usdPrim = stage->GetPrimAtPath(PXR_NS::SdfPath("/World"));
+    const PXR_NS::UsdPrim usdPrim = stage->GetPrimAtPath(getNodePath(prim));
     ASSERT_TRUE(usdPrim.IsValid());
     EXPECT_EQ(PXR_NS::TfToken("Xform"), usdPrim.GetTypeName());
     PXR_NS::TfToken kindToken;
@@ -311,10 +318,41 @@ TEST_F(USDCameraTest, PrimAuthorsAScopeWithoutATransform)
 
     PXR_NS::UsdStageRefPtr stage = composeNode(prim);
     ASSERT_TRUE(bool(stage));
-    const PXR_NS::UsdPrim usdPrim = stage->GetPrimAtPath(PXR_NS::SdfPath("/World"));
+    const PXR_NS::UsdPrim usdPrim = stage->GetPrimAtPath(getNodePath(prim));
     ASSERT_TRUE(usdPrim.IsValid());
     EXPECT_EQ(PXR_NS::TfToken("Scope"), usdPrim.GetTypeName());
     EXPECT_FALSE(usdPrim.GetAttribute(PXR_NS::UsdGeomTokens->xformOpOrder).HasAuthoredValue());
     PXR_NS::TfToken kindToken;
     EXPECT_FALSE(PXR_NS::UsdModelAPI(usdPrim).GetKind(&kindToken) && !kindToken.IsEmpty());
+}
+
+TEST_F(USDCameraTest, ThePrimPathFollowsTheNodeNameUntilEdited)
+{
+    NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+    ASSERT_TRUE(bool(camera));
+    KnobString* primPath = dynamic_cast<KnobString*>(camera->getKnobByName(kSceneParamPrimPath).get());
+    ASSERT_TRUE(primPath != NULL);
+    EXPECT_EQ("/" + camera->getScriptName_mt_safe(), primPath->getValue());
+    EXPECT_EQ(0u, primPath->getValue().find("/USDCamera"));
+
+    // A path still at its default follows a rename, and the stage follows the path.
+    camera->setScriptName("Hero");
+    EXPECT_EQ(std::string("/Hero"), primPath->getValue());
+    EXPECT_EQ(std::string("/Hero"), primPath->getDefaultValue(0));
+    PXR_NS::UsdStageRefPtr stage = composeNode(camera);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(bool(PXR_NS::UsdGeomCamera(stage->GetPrimAtPath(PXR_NS::SdfPath("/Hero")))));
+
+    // An edited path stays; only the default moves.
+    primPath->setValue(std::string("/Shot/Cam"));
+    camera->setScriptName("Hero2");
+    EXPECT_EQ(std::string("/Shot/Cam"), primPath->getValue());
+    EXPECT_EQ(std::string("/Hero2"), primPath->getDefaultValue(0));
+
+    // Each node of a kind gets its own default prim.
+    NodePtr prim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr otherPrim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    ASSERT_TRUE(prim && otherPrim);
+    EXPECT_NE(getNodePath(prim), getNodePath(otherPrim));
+    EXPECT_EQ(getNodePath(prim).GetString(), dynamic_cast<KnobString*>(prim->getKnobByName(kSceneParamPrimPath).get())->getValue());
 }

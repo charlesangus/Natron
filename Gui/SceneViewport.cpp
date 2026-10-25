@@ -37,9 +37,14 @@
 #include <QtCore/QDebug>
 
 #include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/USDTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/UndoGesture.h"
 
 // See UsdIncludes.h: oneTBB, which these include too, declares members named emit().
 #ifdef emit
@@ -72,7 +77,10 @@
 #endif
 
 #include "Gui/GLContextLoss.h"
+#include "Gui/KnobGui.h"
+#include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
+#include "Gui/SceneGizmo.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -213,6 +221,14 @@ struct SceneViewportRenderer::Implementation {
     std::unique_ptr<UsdImagingGLEngine> engine;
     // The stage the engine was populated with: an engine shows one stage for its whole life.
     UsdStageRefPtr engineStage;
+
+    // The transform handles, if any, and the drag of one under way.
+    bool hasHandles = false;
+    TransformHandles handles;
+    int highlightedHandle = SceneGizmo::kNoHandle;
+    int dragHandle = SceneGizmo::kNoHandle;
+    SceneGizmo::Frame dragFrame;
+    GfVec2d dragPressPixel;
 
     Implementation()
     {
@@ -363,6 +379,104 @@ struct SceneViewportRenderer::Implementation {
         engine->SetPresentationOutput(HgiTokens->OpenGL, VtValue(uint32_t(fbo)));
         setHeadlight();
     }
+
+    SceneGizmo::View makeView(int width,
+                              int height) const
+    {
+        const GfFrustum frustum = computeFrustum(width, height);
+
+        return SceneGizmo::View(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
+    }
+
+    // Where the handles sit at the shown time. False if they are not drawn.
+    bool computeHandleFrame(SceneGizmo::Frame* frame) const
+    {
+        if (!hasHandles || !stage || !SdfPath::IsValidPathString(handles.primPath)) {
+            return false;
+        }
+        const SdfPath path(handles.primPath);
+        if (!path.IsAbsolutePath() || !path.IsPrimPath()) {
+            return false;
+        }
+        GfMatrix4d space;
+        if (!SceneGizmo::computeOpSpace(stage->GetPrimAtPath(path), handles.opName, timeCode, &space)) {
+            return false;
+        }
+        *frame = SceneGizmo::computeFrame(space,
+                                          GfVec3d(handles.translate[0], handles.translate[1], handles.translate[2]),
+                                          GfVec3d(handles.rotate[0], handles.rotate[1], handles.rotate[2]),
+                                          GfVec3d(handles.pivot[0], handles.pivot[1], handles.pivot[2]),
+                                          (SceneRotateOrderEnum)handles.rotateOrder);
+
+        return true;
+    }
+
+    // The handles in X red, Y green and Z blue, the highlighted or dragged one yellow, drawn over
+    // everything.
+    void drawTransformHandles(const GfFrustum& frustum,
+                              int width,
+                              int height) const
+    {
+        SceneGizmo::Frame frame;
+
+        if (!computeHandleFrame(&frame)) {
+            return;
+        }
+        const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
+        const double length = SceneGizmo::getHandleLength(view, frame);
+        if (!(length > 0.) || !std::isfinite(length)) {
+            return;
+        }
+        const int active = (dragHandle != SceneGizmo::kNoHandle) ? dragHandle : highlightedHandle;
+
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeProjectionMatrix().GetArray());
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeViewMatrix().GetArray());
+
+        glDisable(GL_LIGHTING);
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glEnable(GL_LINE_SMOOTH);
+
+        static const float axisColours[3][3] = { { 0.9f, 0.25f, 0.25f }, { 0.3f, 0.8f, 0.3f }, { 0.3f, 0.45f, 0.95f } };
+        std::vector<SceneGizmo::HandleShape> shapes = SceneGizmo::buildHandles(frame, length);
+        // Rings under arrows under boxes, as hitTest() favours the boxes.
+        std::stable_sort(shapes.begin(), shapes.end(), [](const SceneGizmo::HandleShape& a, const SceneGizmo::HandleShape& b) {
+            static const int layer[3] = { 1, 0, 2 }; // translate, rotate, scale
+            return layer[SceneGizmo::getHandleKind(a.handle)] < layer[SceneGizmo::getHandleKind(b.handle)];
+        });
+        for (const SceneGizmo::HandleShape& shape : shapes) {
+            const float* colour = axisColours[SceneGizmo::getHandleAxis(shape.handle)];
+            if (shape.handle == active) {
+                glColor4f(1.f, 0.85f, 0.1f, 1.f);
+            } else {
+                glColor4f(colour[0], colour[1], colour[2], 1.f);
+            }
+            const SceneGizmo::HandleKindEnum kind = SceneGizmo::getHandleKind(shape.handle);
+            if (kind == SceneGizmo::eHandleKindScale) {
+                glBegin(GL_QUADS);
+            } else {
+                glLineWidth((kind == SceneGizmo::eHandleKindTranslate) ? 3.f : 2.f);
+                glBegin(shape.closed ? GL_LINE_LOOP : GL_LINE_STRIP);
+            }
+            for (const GfVec3d& p : shape.points) {
+                glVertex3d(p[0], p[1], p[2]);
+            }
+            glEnd();
+        }
+        glLineWidth(1.f);
+
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+    } // drawTransformHandles
 
     // A grid on the ground plane through the origin, with lines a power of ten metres apart, about
     // a tenth to half the camera's distance, and the two ground axes coloured. Depth-tested against
@@ -661,6 +775,118 @@ SceneViewportRenderer::getSelectedPrim() const
     return _imp->selected;
 }
 
+void
+SceneViewportRenderer::setTransformHandles(const TransformHandles& handles)
+{
+    _imp->hasHandles = true;
+    _imp->handles = handles;
+}
+
+void
+SceneViewportRenderer::clearTransformHandles()
+{
+    _imp->hasHandles = false;
+    _imp->highlightedHandle = SceneGizmo::kNoHandle;
+    _imp->dragHandle = SceneGizmo::kNoHandle;
+}
+
+bool
+SceneViewportRenderer::hasTransformHandles() const
+{
+    SceneGizmo::Frame frame;
+
+    return _imp->computeHandleFrame(&frame);
+}
+
+int
+SceneViewportRenderer::hitTestTransformHandles(double x,
+                                               double y,
+                                               int width,
+                                               int height) const
+{
+    SceneGizmo::Frame frame;
+
+    if ((width <= 0) || (height <= 0) || !_imp->computeHandleFrame(&frame)) {
+        return SceneGizmo::kNoHandle;
+    }
+    const SceneGizmo::View view = _imp->makeView(width, height);
+
+    return SceneGizmo::hitTest(view, SceneGizmo::buildHandles(frame, SceneGizmo::getHandleLength(view, frame)), GfVec2d(x, y));
+}
+
+void
+SceneViewportRenderer::setHighlightedTransformHandle(int handle)
+{
+    _imp->highlightedHandle = handle;
+}
+
+int
+SceneViewportRenderer::getHighlightedTransformHandle() const
+{
+    return _imp->highlightedHandle;
+}
+
+bool
+SceneViewportRenderer::getTransformHandlePixel(int handle,
+                                               int width,
+                                               int height,
+                                               double* x,
+                                               double* y) const
+{
+    SceneGizmo::Frame frame;
+
+    if ((width <= 0) || (height <= 0) || !_imp->computeHandleFrame(&frame)) {
+        return false;
+    }
+    GfVec2d pixel;
+    if (!SceneGizmo::getHandlePixel(_imp->makeView(width, height), frame, handle, &pixel)) {
+        return false;
+    }
+    *x = pixel[0];
+    *y = pixel[1];
+
+    return true;
+}
+
+bool
+SceneViewportRenderer::beginTransformDrag(int handle,
+                                          double x,
+                                          double y,
+                                          int /*width*/,
+                                          int /*height*/)
+{
+    SceneGizmo::Frame frame;
+
+    if ((handle < 0) || (handle >= SceneGizmo::kNumHandles) || !_imp->computeHandleFrame(&frame)) {
+        return false;
+    }
+    _imp->dragHandle = handle;
+    _imp->dragFrame = frame;
+    _imp->dragPressPixel = GfVec2d(x, y);
+
+    return true;
+}
+
+bool
+SceneViewportRenderer::getTransformDragChange(double x,
+                                              double y,
+                                              int width,
+                                              int height,
+                                              double* change) const
+{
+    if ((_imp->dragHandle == SceneGizmo::kNoHandle) || (width <= 0) || (height <= 0)) {
+        return false;
+    }
+
+    return SceneGizmo::computeDragChange(_imp->makeView(width, height), _imp->dragFrame, _imp->dragHandle, _imp->dragPressPixel, GfVec2d(x, y), change);
+}
+
+void
+SceneViewportRenderer::endTransformDrag()
+{
+    _imp->dragHandle = SceneGizmo::kNoHandle;
+}
+
 bool
 SceneViewportRenderer::render(unsigned int fbo,
                               int width,
@@ -693,7 +919,7 @@ SceneViewportRenderer::render(unsigned int fbo,
         converged = _imp->engine->IsConverged();
     }
 
-    if (_imp->showGrid) {
+    if (_imp->showGrid || _imp->hasHandles) {
         // Storm leaves its own program, vertex array and framebuffer bound.
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
@@ -701,7 +927,10 @@ SceneViewportRenderer::render(unsigned int fbo,
         glBindVertexArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glDisable(GL_FRAMEBUFFER_SRGB);
-        _imp->drawGrid(frustum);
+        if (_imp->showGrid) {
+            _imp->drawGrid(frustum);
+        }
+        _imp->drawTransformHandles(frustum, width, height);
     }
 
     return converged;
@@ -763,6 +992,36 @@ struct SceneViewport::Implementation {
     QPoint pressPos;
     QPoint lastPos;
     bool dragging = false;
+
+    // The project frame shown.
+    double frame = 0.;
+
+    std::function<NodePtr()> transformNodeProvider;
+    // The drag of a transform handle under way: its knob, the handle, the value the knob had at
+    // the press, and the gesture that folds the drag's edits into one undo step.
+    KnobDoubleWPtr handleKnob;
+    int handle = SceneGizmo::kNoHandle;
+    double handlePressValue = 0.;
+    UndoGesture handleGesture;
+
+    USDTransform* getTransformNode(NodePtr* node) const
+    {
+        *node = transformNodeProvider ? transformNodeProvider() : NodePtr();
+        if (!*node) {
+            return nullptr;
+        }
+
+        return dynamic_cast<USDTransform*>((*node)->getEffectInstance().get());
+    }
+
+    // The device pixel of a widget position.
+    static GfVec2d toPixel(const QWidget* widget,
+                           const QPoint& pos)
+    {
+        const qreal dpr = widget->devicePixelRatio();
+
+        return GfVec2d((pos.x() + 0.5) * dpr, (pos.y() + 0.5) * dpr);
+    }
 };
 
 SceneViewport::SceneViewport(QWidget* parent)
@@ -770,7 +1029,8 @@ SceneViewport::SceneViewport(QWidget* parent)
     , _imp(new Implementation)
 {
     setFocusPolicy(Qt::ClickFocus);
-    setMouseTracking(false);
+    // Hovering highlights the transform handle under the pointer.
+    setMouseTracking(true);
     setObjectName(QString::fromUtf8("SceneViewport"));
 }
 
@@ -786,6 +1046,7 @@ SceneViewport::setScene(const ScenePayload& payload,
 {
     std::string error;
 
+    _imp->frame = frame;
     if (_imp->renderer.setScene(payload, frame, framesPerSecond, &error)) {
         _imp->error.clear();
     } else {
@@ -799,6 +1060,7 @@ void
 SceneViewport::setFrame(double frame,
                         double framesPerSecond)
 {
+    _imp->frame = frame;
     _imp->renderer.setFrame(frame, framesPerSecond);
     update();
 }
@@ -905,6 +1167,47 @@ SceneViewport::getSelectedPrim() const
 }
 
 void
+SceneViewport::setTransformNodeProvider(const std::function<NodePtr()>& provider)
+{
+    _imp->transformNodeProvider = provider;
+    update();
+}
+
+void
+SceneViewport::refreshTransformHandles()
+{
+    NodePtr node;
+    USDTransform* effect = _imp->getTransformNode(&node);
+    std::string primPath, opName;
+
+    if (!effect || !effect->getHandleTarget(&primPath, &opName)) {
+        _imp->renderer.clearTransformHandles();
+
+        return;
+    }
+    const SceneTransformKnobs& knobs = effect->getTransformKnobs();
+    KnobDoublePtr translate = knobs.translate.lock();
+    KnobDoublePtr rotate = knobs.rotate.lock();
+    KnobChoicePtr rotateOrder = knobs.rotateOrder.lock();
+    KnobDoublePtr pivot = effect->getPivotKnob();
+    if (!translate || !rotate || !rotateOrder || !pivot) {
+        _imp->renderer.clearTransformHandles();
+
+        return;
+    }
+    SceneViewportRenderer::TransformHandles handles;
+    handles.primPath = primPath;
+    handles.opName = opName;
+    for (int d = 0; d < 3; ++d) {
+        handles.translate[d] = translate->getValueAtTime(_imp->frame, d);
+        handles.rotate[d] = rotate->getValueAtTime(_imp->frame, d);
+        handles.pivot[d] = pivot->getValueAtTime(_imp->frame, d);
+    }
+    handles.rotateOrder = rotateOrder->getValue();
+    _imp->renderer.setTransformHandles(handles);
+} // SceneViewport::refreshTransformHandles
+
+void
 SceneViewport::initializeGL()
 {
     _imp->glInitialized = true;
@@ -926,6 +1229,7 @@ SceneViewport::paintGL()
     const qreal dpr = devicePixelRatio();
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
+    refreshTransformHandles();
     const bool converged = _imp->renderer.render(defaultFramebufferObject(), w, h);
 
     QPainter painter(this);
@@ -968,6 +1272,11 @@ SceneViewport::paintGL()
 void
 SceneViewport::mousePressEvent(QMouseEvent* e)
 {
+    if ((e->button() == Qt::LeftButton) && (e->modifiers() == Qt::NoModifier) && beginHandleDrag(e->position().toPoint())) {
+        e->accept();
+
+        return;
+    }
     _imp->button = e->button();
     _imp->pressPos = e->position().toPoint();
     _imp->lastPos = _imp->pressPos;
@@ -984,7 +1293,14 @@ SceneViewport::mouseMoveEvent(QMouseEvent* e)
 {
     const QPoint pos = e->position().toPoint();
 
+    if (_imp->handle != SceneGizmo::kNoHandle) {
+        dragHandle(pos);
+        e->accept();
+
+        return;
+    }
     if (_imp->button == Qt::NoButton) {
+        highlightHandleAt(pos);
         QOpenGLWidget::mouseMoveEvent(e);
 
         return;
@@ -1011,6 +1327,12 @@ SceneViewport::mouseMoveEvent(QMouseEvent* e)
 void
 SceneViewport::mouseReleaseEvent(QMouseEvent* e)
 {
+    if (_imp->handle != SceneGizmo::kNoHandle) {
+        endHandleDrag();
+        e->accept();
+
+        return;
+    }
     const bool click = (_imp->button == Qt::LeftButton) && !_imp->dragging && (e->button() == Qt::LeftButton);
 
     _imp->button = Qt::NoButton;
@@ -1019,6 +1341,97 @@ SceneViewport::mouseReleaseEvent(QMouseEvent* e)
         pickPrimAt(e->position().toPoint());
     }
     e->accept();
+}
+
+bool
+SceneViewport::beginHandleDrag(const QPoint& pos)
+{
+    refreshTransformHandles();
+    const qreal dpr = devicePixelRatio();
+    const int w = int(width() * dpr);
+    const int h = int(height() * dpr);
+    const GfVec2d pixel = Implementation::toPixel(this, pos);
+    const int handle = _imp->renderer.hitTestTransformHandles(pixel[0], pixel[1], w, h);
+    if (handle == SceneGizmo::kNoHandle) {
+        return false;
+    }
+    NodePtr node;
+    USDTransform* effect = _imp->getTransformNode(&node);
+    if (!effect) {
+        return false;
+    }
+    const SceneTransformKnobs& knobs = effect->getTransformKnobs();
+    KnobDoublePtr knob;
+    switch (SceneGizmo::getHandleKind(handle)) {
+    case SceneGizmo::eHandleKindTranslate:
+        knob = knobs.translate.lock();
+        break;
+    case SceneGizmo::eHandleKindRotate:
+        knob = knobs.rotate.lock();
+        break;
+    case SceneGizmo::eHandleKindScale:
+        knob = knobs.scale.lock();
+        break;
+    }
+    if (!knob || !_imp->renderer.beginTransformDrag(handle, pixel[0], pixel[1], w, h)) {
+        return false;
+    }
+    _imp->handle = handle;
+    _imp->handleKnob = knob;
+    _imp->handlePressValue = knob->getValueAtTime(_imp->frame, SceneGizmo::getHandleAxis(handle));
+    _imp->handleGesture.begin();
+    update();
+
+    return true;
+} // SceneViewport::beginHandleDrag
+
+void
+SceneViewport::dragHandle(const QPoint& pos)
+{
+    KnobDoublePtr knob = _imp->handleKnob.lock();
+    const qreal dpr = devicePixelRatio();
+    const GfVec2d pixel = Implementation::toPixel(this, pos);
+    double change = 0.;
+
+    if (!knob || !_imp->renderer.getTransformDragChange(pixel[0], pixel[1], int(width() * dpr), int(height() * dpr), &change)) {
+        return;
+    }
+    const int axis = SceneGizmo::getHandleAxis(_imp->handle);
+    const double value = (SceneGizmo::getHandleKind(_imp->handle) == SceneGizmo::eHandleKindScale) ? _imp->handlePressValue * change : _imp->handlePressValue + change;
+    // Through the knob's GUI, as a slider drag is: the edits of one drag fold into one undo step,
+    // and a later drag is a step of its own.
+    KnobGuiPtr knobGui = std::dynamic_pointer_cast<KnobGui>(knob->getKnobGuiPointer());
+    if (knobGui) {
+        KnobUndoCommand<double>* command = new KnobUndoCommand<double>(knobGui, knob->getValueAtTime(_imp->frame, axis), value, axis, true);
+        command->setGestureKey(_imp->handleGesture.key());
+        knobGui->pushUndoCommand(command);
+    } else {
+        knob->setValue(value, ViewSpec::all(), axis, eValueChangedReasonUserEdited);
+    }
+    update();
+}
+
+void
+SceneViewport::endHandleDrag()
+{
+    _imp->renderer.endTransformDrag();
+    _imp->handle = SceneGizmo::kNoHandle;
+    _imp->handleKnob.reset();
+    _imp->handleGesture.end();
+    update();
+}
+
+void
+SceneViewport::highlightHandleAt(const QPoint& pos)
+{
+    const qreal dpr = devicePixelRatio();
+    const GfVec2d pixel = Implementation::toPixel(this, pos);
+    const int handle = _imp->renderer.hitTestTransformHandles(pixel[0], pixel[1], int(width() * dpr), int(height() * dpr));
+
+    if (handle != _imp->renderer.getHighlightedTransformHandle()) {
+        _imp->renderer.setHighlightedTransformHandle(handle);
+        update();
+    }
 }
 
 void

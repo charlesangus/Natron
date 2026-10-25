@@ -40,6 +40,7 @@
 
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Scene/USDTransform.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
 #include "Engine/Project.h"
 #include "Engine/Utils.h" // convertFromPlainText
@@ -58,6 +59,7 @@
 #include "Gui/InfoViewerWidget.h"
 #include "Gui/Label.h"
 #include "Gui/NodeGui.h"
+#include "Gui/NodeSettingsPanel.h"
 #include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/SpinBox.h"
@@ -1112,6 +1114,24 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->hide();
         const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
         _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneViewport, 1);
+        // Handles are drawn for the USDTransform whose settings panel was opened last.
+        _imp->sceneViewport->setTransformNodeProvider([this]() -> NodePtr {
+            Gui* gui = getGui();
+            if (!gui) {
+                return NodePtr();
+            }
+            const std::list<DockablePanel*> panels = gui->getVisiblePanels_mt_safe();
+            for (DockablePanel* dockable : panels) {
+                NodeSettingsPanel* panel = dynamic_cast<NodeSettingsPanel*>(dockable);
+                NodeGuiPtr nodeGui = panel ? panel->getNode() : NodeGuiPtr();
+                NodePtr panelNode = nodeGui ? nodeGui->getNode() : NodePtr();
+                if (panelNode && panelNode->isActivated() && (panelNode->getPluginID() == PLUGINID_NATRON_USDTRANSFORM)) {
+                    return panelNode;
+                }
+            }
+
+            return NodePtr();
+        });
     }
     if (!_imp->sceneViewport) {
         return;

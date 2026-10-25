@@ -40,7 +40,7 @@ checkUsdRuntime(std::string* errorMessage)
     static const std::string missing = []() {
         std::string names;
         PXR_NS::PlugRegistry& registry = PXR_NS::PlugRegistry::GetInstance();
-        for (const char* name : { "ar", "sdf", "usd", "usdGeom", "usdLux" }) {
+        for (const char* name : { "ar", "sdf", "sdr", "usd", "usdGeom", "usdLux", "usdShade" }) {
             if (!registry.GetPluginWithName(name)) {
                 names += names.empty() ? name : (std::string(", ") + name);
             }

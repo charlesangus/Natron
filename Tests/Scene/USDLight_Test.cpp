@@ -59,7 +59,8 @@ protected:
         BaseTest::TearDown();
     }
 
-    // The light prim at /Light of the node's composed stage; invalid after a failed check.
+    // The light prim at the node's default path, "/" and its script name, of its composed stage;
+    // invalid after a failed check.
     static PXR_NS::UsdPrim composeLight(const NodePtr& node,
                                         PXR_NS::UsdStageRefPtr* stage)
     {
@@ -76,7 +77,7 @@ protected:
             return PXR_NS::UsdPrim();
         }
 
-        return (*stage)->GetPrimAtPath(PXR_NS::SdfPath("/Light"));
+        return (*stage)->GetPrimAtPath(PXR_NS::SdfPath("/" + node->getScriptName_mt_safe()));
     }
 
     static void setTexture(const NodePtr& light,

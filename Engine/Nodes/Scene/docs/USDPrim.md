@@ -1,6 +1,6 @@
 # USDPrim
 
-Authors one prim for layout at Prim Path (default `/World`): an `Xform` with a
+Authors one prim for layout at Prim Path (default `/` and the node's name, such as `/USDPrim1`, following renames until the path is edited): an `Xform` with a
 transform, or a `Scope` that only groups. With a scene input the prim is layered
 over the input's scene; without one the node is a scene source. The node does not
 touch colour.

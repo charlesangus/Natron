@@ -91,6 +91,7 @@ private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
+    virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
 
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,

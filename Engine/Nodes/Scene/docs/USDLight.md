@@ -1,6 +1,6 @@
 # USDLight
 
-Authors a UsdLux light at Prim Path (default `/Light`). Type picks the prim:
+Authors a UsdLux light at Prim Path (default `/` and the node's name, such as `/USDLight1`, following renames until the path is edited). Type picks the prim:
 `DistantLight` (Angle), `SphereLight` (Radius), `RectLight` (Width, Height) or
 `DomeLight` (Texture File). With a scene input the light is layered over the
 input's scene; without one the node is a scene source.

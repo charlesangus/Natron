@@ -81,11 +81,17 @@ USDCamera::nodeSpec() const
 }
 
 void
+USDCamera::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
+{
+    followSceneNodeRename(_primPath.lock(), getSceneNodeDefaultPrimPath(this, "Camera"));
+}
+
+void
 USDCamera::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    _primPath = createScenePrimPathKnob(this, page, "/Camera", tr("The path of the camera prim the node authors."));
+    _primPath = createScenePrimPathKnob(this, page, getSceneNodeDefaultPrimPath(this, "Camera"), tr("The path of the camera prim the node authors."));
     _transform.create(this, page);
 
     KnobChoicePtr projection = createKnob<KnobChoice>(tr("Projection"));

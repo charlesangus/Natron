@@ -83,11 +83,17 @@ USDLight::nodeSpec() const
 }
 
 void
+USDLight::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
+{
+    followSceneNodeRename(_primPath.lock(), getSceneNodeDefaultPrimPath(this, "Light"));
+}
+
+void
 USDLight::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    _primPath = createScenePrimPathKnob(this, page, "/Light", tr("The path of the light prim the node authors."));
+    _primPath = createScenePrimPathKnob(this, page, getSceneNodeDefaultPrimPath(this, "Light"), tr("The path of the light prim the node authors."));
 
     KnobChoicePtr lightType = createKnob<KnobChoice>(tr("Type"));
     lightType->setName(kUSDLightParamType);

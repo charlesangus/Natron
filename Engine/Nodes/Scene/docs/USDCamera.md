@@ -1,6 +1,6 @@
 # USDCamera
 
-Authors a `UsdGeomCamera` at Prim Path (default `/Camera`). With a scene input the
+Authors a `UsdGeomCamera` at Prim Path (default `/` and the node's name, such as `/USDCamera1`, following renames until the path is edited). With a scene input the
 camera is layered over the input's scene; without one the node is a scene source.
 The node does not touch colour.
 

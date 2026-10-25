@@ -62,11 +62,17 @@ USDPrim::nodeSpec() const
 }
 
 void
+USDPrim::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
+{
+    followSceneNodeRename(_primPath.lock(), getSceneNodeDefaultPrimPath(this, "World"));
+}
+
+void
 USDPrim::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    _primPath = createScenePrimPathKnob(this, page, "/World", tr("The path of the prim the node authors."));
+    _primPath = createScenePrimPathKnob(this, page, getSceneNodeDefaultPrimPath(this, "World"), tr("The path of the prim the node authors."));
 
     KnobChoicePtr primType = createKnob<KnobChoice>(tr("Type"));
     primType->setName(kUSDPrimParamType);

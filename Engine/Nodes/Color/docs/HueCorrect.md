@@ -11,6 +11,13 @@ control, under the same names and defaults, except where listed below
 (`Tests/Native/NativeHueCorrect_Test.cpp`). The ten periodic curves keep their names, order,
 ranges and default points.
 
+- **Maths.** Each curve is read at the source's hue. In order: hue rotates by half of
+  (hue curve - 1) turns, keeping the largest channel and the chroma; each `*_sup` curve `k`
+  moves its channel above the smaller of the other two, `m`, to `m + k·(c - m)`; above the
+  sat_thrsh saturation `t`, each channel is scaled by `(t + (s - t)·gain) / s`, with gain the
+  channel's curve times lum (and by the gain itself when `t` is 0); the sat curve blends with
+  the luminance, `l + sat·(c - l)`; Mix Luminance scales towards the input luminance by
+  `1 + mix·(lIn / lOut - 1)`; then Clamp Black and Clamp White.
 - **Scene-linear.** Saturation is the chroma over the largest of R, G and B, 0 when that is not
   positive, and nothing is clamped unless Clamp Black or Clamp White is on, so HDR values are
   scaled rather than clipped. A hue shift keeps the largest channel and the chroma, so a colour

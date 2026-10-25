@@ -7,6 +7,8 @@ Tolerance:
 | Premult | arithmetic | `ParityTolerance::arithmetic()` | a plain product, so normally exact |
 | Unpremult | arithmetic | `ParityTolerance::arithmetic()` | a divisor at or below FLT_EPSILON leaves the value as it is |
 
+- **Maths.** Premult: `v·d`. Unpremult: `v / d` where `d` is usable (above FLT_EPSILON),
+  else `v`. `d` is the "(Un)premult by" channel and `v` each processed channel.
 - **Divisor.** The "Premult by" / "Unpremult by" selector picks any layer's channel of the
   source, alpha by default. Picking None makes the node an identity.
 - **Outside the divisor.** Where the divisor's image has no pixel the divisor reads 1, so the

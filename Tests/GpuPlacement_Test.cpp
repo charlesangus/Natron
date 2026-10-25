@@ -959,7 +959,7 @@ TEST(GpuCostModel, SeededCostsArePinned)
     const char* const erode = "net.sf.cimg.CImgErode";
     const char* const dilate = "net.sf.cimg.CImgDilate";
     const char* const transform = "net.sf.openfx.TransformPlugin";
-    const char* const despill = "net.sf.openfx.Despill";
+    const char* const radial = "net.sf.openfx.Radial";
     const double beyond = 2e9;
 
     const std::vector<std::pair<GpuTaskTraits, double>> gpu = {
@@ -993,7 +993,7 @@ TEST(GpuCostModel, SeededCostsArePinned)
     for (std::size_t i = 0; i < gpu.size(); ++i) {
         EXPECT_DOUBLE_EQ(model.gpuMs(gpu[i].first, 1.), gpu[i].second) << i;
     }
-    EXPECT_FALSE(model.hasGpuCost(seedTraits(despill)));
+    EXPECT_FALSE(model.hasGpuCost(seedTraits(radial)));
 
     const std::vector<std::pair<GpuTaskTraits, double>> cpu = {
         { seedTraits(kGradeId), 11.48 },
@@ -1006,7 +1006,7 @@ TEST(GpuCostModel, SeededCostsArePinned)
         { seedTraits(dilate), 50.1112 },
         { seedTraits(transform), 26.126 },
         { seedTraits(transform, 0., false, GpuBlurFilter::eAny, 0, true), 996.1061 },
-        { seedTraits(despill), 9.0678 },
+        { seedTraits(radial), 8.7415 },
     };
     for (std::size_t i = 0; i < cpu.size(); ++i) {
         EXPECT_DOUBLE_EQ(model.cpuMs(cpu[i].first, 1.), cpu[i].second) << i;

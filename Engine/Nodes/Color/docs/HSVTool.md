@@ -10,6 +10,13 @@ The node replaces OpenFX's HSVTool (`net.sf.openfx.HSVToolPlugin`) with every co
 the same names and defaults, except where listed below
 (`Tests/Native/NativeHSVTool_Test.cpp`).
 
+- **Maths.** From the source's hue `h` (turns), `s = (max - min) / max` and `v = max`, each
+  range gives a coefficient: 1 inside it, a linear ramp over its rolloff, 0 beyond. Their
+  minimum `c` scales the adjustments: `h += c·(hueRotation + hueRotationGain·(h - hueMean))`,
+  `s += c·(saturationAdjustment + saturationAdjustmentGain·(s - sMid))`, floored at 0, and
+  `v += c·(brightnessAdjustment + brightnessAdjustmentGain·(v - vMid))`, with the means and
+  mids taken from the ranges. The colour is rebuilt with chroma `v·s`. Output Alpha writes one
+  coefficient or the minimum of a set of them.
 - **Scene-linear.** Saturation is the chroma over the largest of R, G and B, 0 when that is not
   positive, and neither saturation nor brightness is clamped, so HDR and negative values are
   selected and adjusted. A colour whose largest channel is not positive keeps its chroma when

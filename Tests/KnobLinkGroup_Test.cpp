@@ -363,6 +363,71 @@ TEST_F(KnobLinkGroupTest, MemberOnARenderingHolderGetsChangesThroughItsQueue)
     EXPECT_EQ(2, a->getKeyFramesCount(ViewIdx(0), 0));
 }
 
+TEST_F(KnobLinkGroupTest, ApplyingQueuedLinkWritesDoesNotPushThemBack)
+{
+    std::shared_ptr<RenderBusyHolder> holder = std::make_shared<RenderBusyHolder>(getApp());
+    // The double member comes first, so its queue is applied before the integer member's.
+    KnobDoublePtr busyDouble = AppManager::createKnob<KnobDouble>(holder.get(), std::string("linkBusyDouble"), 1, false);
+    KnobIntPtr busyInt = AppManager::createKnob<KnobInt>(holder.get(), std::string("linkBusyInt"), 1, false);
+    ASSERT_TRUE(busyDouble && busyInt);
+    std::shared_ptr<CurveOnlyKnobGui> doubleGui = std::make_shared<CurveOnlyKnobGui>(busyDouble);
+    std::shared_ptr<CurveOnlyKnobGui> intGui = std::make_shared<CurveOnlyKnobGui>(busyInt);
+    busyDouble->setKnobGuiPointer(doubleGui);
+    busyInt->setKnobGuiPointer(intGui);
+    ASSERT_TRUE(busyDouble->linkTo(-1, a, -1));
+    ASSERT_TRUE(busyInt->linkTo(-1, a, -1));
+    KnobLinkGroupPtr group = a->getLinkGroup(0);
+    ASSERT_NE(nullptr, group);
+
+    holder->busy = true;
+    a->setValueAtTime(10, 2.4, ViewSpec::all(), 0);
+    ASSERT_EQ(1, doubleGui->getCurve(ViewIdx(0), 0)->getKeyFramesCount());
+    ASSERT_EQ(1, intGui->getCurve(ViewIdx(0), 0)->getKeyFramesCount());
+    KeyFrame stateKey;
+    ASSERT_TRUE(group->getStateKnob()->getCurve(ViewIdx(0), 0, true)->getKeyFrameWithTime(10, &stateKey));
+    EXPECT_DOUBLE_EQ(2.4, stateKey.getValue());
+
+    holder->busy = false;
+    holder->dequeueValuesSet();
+    // Pushed back, the integer member's rounded key would replace the group's.
+    ASSERT_TRUE(group->getStateKnob()->getCurve(ViewIdx(0), 0, true)->getKeyFrameWithTime(10, &stateKey));
+    EXPECT_DOUBLE_EQ(2.4, stateKey.getValue());
+    EXPECT_DOUBLE_EQ(2.4, a->getValueAtTime(10, 0));
+    ASSERT_EQ(1, busyDouble->getCurve(ViewIdx(0), 0, true)->getKeyFramesCount());
+    EXPECT_DOUBLE_EQ(2.4, busyDouble->getValueAtTime(10, 0));
+    ASSERT_EQ(1, busyInt->getCurve(ViewIdx(0), 0, true)->getKeyFramesCount());
+    EXPECT_EQ(2, busyInt->getValueAtTime(10, 0));
+}
+
+TEST_F(KnobLinkGroupTest, EditDuringRenderAfterALinkWriteIsPushedWhenApplied)
+{
+    std::shared_ptr<RenderBusyHolder> holder = std::make_shared<RenderBusyHolder>(getApp());
+    KnobDoublePtr member = AppManager::createKnob<KnobDouble>(holder.get(), std::string("linkBusyEdited"), 1, false);
+    ASSERT_NE(nullptr, member);
+    std::shared_ptr<CurveOnlyKnobGui> gui = std::make_shared<CurveOnlyKnobGui>(member);
+    member->setKnobGuiPointer(gui);
+    ASSERT_TRUE(member->linkTo(-1, a, -1));
+    a->setValueAtTime(10, 1., ViewSpec::all(), 0);
+    a->setValueAtTime(20, 2., ViewSpec::all(), 0);
+    ASSERT_EQ(2, member->getCurve(ViewIdx(0), 0, true)->getKeyFramesCount());
+
+    holder->busy = true;
+    a->setValueAtTime(30, 3., ViewSpec::all(), 0);
+    ASSERT_EQ(3, gui->getCurve(ViewIdx(0), 0)->getKeyFramesCount());
+    KnobIPtr memberKnob = member;
+    memberKnob->deleteValueAtTime(eCurveChangeReasonInternal, 20, ViewSpec::all(), 0, false);
+    EXPECT_EQ(2, gui->getCurve(ViewIdx(0), 0)->getKeyFramesCount());
+    EXPECT_EQ(3, a->getKeyFramesCount(ViewIdx(0), 0));
+
+    holder->busy = false;
+    holder->dequeueValuesSet();
+    EXPECT_EQ(2, member->getCurve(ViewIdx(0), 0, true)->getKeyFramesCount());
+    EXPECT_EQ(2, a->getKeyFramesCount(ViewIdx(0), 0));
+    KeyFrame k;
+    EXPECT_FALSE(a->getCurve(ViewIdx(0), 0, true)->getKeyFrameWithTime(20, &k));
+    EXPECT_TRUE(a->getCurve(ViewIdx(0), 0, true)->getKeyFrameWithTime(30, &k));
+}
+
 TEST_F(KnobLinkGroupTest, MembersOfAnotherTypeGetConvertedValues)
 {
     KnobIntPtr i = AppManager::createKnob<KnobInt>(nodeB->getEffectInstance().get(), std::string("linkInt"), 1, false);

@@ -509,6 +509,11 @@ struct KnobHelperPrivate
     /// Set to true if gui curves were modified by the user instead of the real internal curves.
     /// If true then when finished rendering, the knob should clone the guiCurves into the internal curves.
     std::vector<bool> mustCloneGuiCurves;
+    /// Whether anything but a link group write changed the GUI curve: only such a change is pushed back
+    /// to the link groups when the GUI curve is copied to the internal one.
+    std::vector<bool> guiCurveChangedOutsideLink;
+    /// The thread writing a link group's curve to this knob, if one is.
+    QThread* linkCurveWriter;
     std::vector<bool> mustCloneInternalCurves;
 
     ///Used by deQueueValuesSet to know whether we should clear expressions results or not
@@ -600,6 +605,8 @@ struct KnobHelperPrivate
         , hasDimensionsFoldState(false)
         , mustCloneGuiCurvesMutex()
         , mustCloneGuiCurves()
+        , guiCurveChangedOutsideLink()
+        , linkCurveWriter(NULL)
         , mustCloneInternalCurves()
         , mustClearExprResults()
         , ofxParamHandle(0)
@@ -628,6 +635,7 @@ struct KnobHelperPrivate
         }
 
         mustCloneGuiCurves.resize(dimension);
+        guiCurveChangedOutsideLink.resize(dimension);
         mustCloneInternalCurves.resize(dimension);
         mustClearExprResults.resize(dimension);
         expressions.resize(dimension);
@@ -635,6 +643,7 @@ struct KnobHelperPrivate
         for (int i = 0; i < dimension_; ++i) {
             defaultEnabled[i] = enabled[i] = true;
             mustCloneGuiCurves[i] = false;
+            guiCurveChangedOutsideLink[i] = false;
             mustCloneInternalCurves[i] = false;
             mustClearExprResults[i] = false;
             hasModifications[i] = false;
@@ -1719,7 +1728,10 @@ KnobHelper::cloneGuiCurvesIfNeeded(std::map<int, ValueChangedReasonEnum>& modifi
 
             _imp->mustCloneGuiCurves[i] = false;
 
-            modifiedDimensions.insert( std::make_pair(i, eValueChangedReasonUserEdited) );
+            // A curve only link groups wrote already matches their state, so it is not pushed back.
+            const ValueChangedReasonEnum reason = _imp->guiCurveChangedOutsideLink[i] ? eValueChangedReasonUserEdited : eValueChangedReasonSlaveRefresh;
+            _imp->guiCurveChangedOutsideLink[i] = false;
+            modifiedDimensions.insert(std::make_pair(i, reason));
         }
     }
     if (hasChanged && _imp->holder) {
@@ -1777,6 +1789,11 @@ KnobHelper::setGuiCurveHasChanged(ViewSpec /*view*/,
     assert( dimension < (int)_imp->mustCloneGuiCurves.size() );
     QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
     _imp->mustCloneGuiCurves[dimension] = changed;
+    if (!changed) {
+        _imp->guiCurveChangedOutsideLink[dimension] = false;
+    } else if (_imp->linkCurveWriter != QThread::currentThread()) {
+        _imp->guiCurveChangedOutsideLink[dimension] = true;
+    }
 }
 
 bool
@@ -5674,6 +5691,30 @@ KnobHelper::leaveAllLinkGroups()
     }
 }
 
+/**
+ * @brief Marks the curve setters this thread calls on a knob as link group writes while in scope.
+ **/
+class LinkCurveWriteMarker {
+public:
+    explicit LinkCurveWriteMarker(KnobHelperPrivate* imp)
+        : _imp(imp)
+    {
+        QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
+        _previous = _imp->linkCurveWriter;
+        _imp->linkCurveWriter = QThread::currentThread();
+    }
+
+    ~LinkCurveWriteMarker()
+    {
+        QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
+        _imp->linkCurveWriter = _previous;
+    }
+
+private:
+    KnobHelperPrivate* _imp;
+    QThread* _previous;
+};
+
 bool
 KnobHelper::writeLinkCurveFrom(KnobI* state,
                                int dimension,
@@ -5686,6 +5727,7 @@ KnobHelper::writeLinkCurveFrom(KnobI* state,
         // Nothing renders with a knob that has no holder, and the key setters need one.
         return cloneCurvesAndCheckIfChanged(state, true, dimension, 0);
     }
+    LinkCurveWriteMarker marker(_imp.get());
     // While the holder renders, the curve setters write the GUI curve, which the render does not read,
     // and dequeueValuesSet() copies it to the internal curve afterwards: compare against that curve.
     CurvePtr thisCurve = _imp->shouldUseGuiCurve() ? getGuiCurve(ViewIdx(0), dimension) : getCurve(ViewIdx(0), dimension, true);

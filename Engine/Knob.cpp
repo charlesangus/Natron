@@ -31,6 +31,7 @@
 #include <atomic>
 #include <cassert>
 #include <cctype> // isspace
+#include <cmath> // floor
 #include <cstddef>
 #include <random>
 #include <set>
@@ -733,6 +734,17 @@ KnobHelper::getExpressionRecursionLevel() const
 void
 KnobHelper::deleteKnob()
 {
+    // An alias of this knob, or the knob this one is an alias of, becomes an ordinary knob that keeps its value.
+    KnobIPtr thisShared = shared_from_this();
+    KnobsVec aliases = getAliasesOfThis();
+    for (KnobsVec::const_iterator it = aliases.begin(); it != aliases.end(); ++it) {
+        (*it)->setKnobAsAliasOfThis(thisShared, false);
+    }
+    KnobIPtr aliasMaster = getAliasMaster();
+    if (aliasMaster) {
+        setKnobAsAliasOfThis(aliasMaster, false);
+    }
+
     // Before the expressions are cleared below, or the clearing would reach the linked knobs.
     leaveAllLinkGroups();
 
@@ -5658,6 +5670,27 @@ KnobHelper::dissolveLinkGroupIfAlone(const KnobLinkGroupPtr& group)
             helper->_imp->linkGroups[it->dimension].reset();
         }
     }
+    notifyLinkMembers(members);
+}
+
+void
+KnobHelper::notifyLinkGroupMembers(const KnobLinkGroupPtr& group)
+{
+    if (group) {
+        notifyLinkMembers(group->getMembers());
+    }
+}
+
+void
+KnobHelper::notifyLinkMembers(const std::vector<KnobLinkGroup::Member>& members)
+{
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        KnobIPtr knob = it->knob.lock();
+        KnobSignalSlotHandlerPtr handler = knob ? knob->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+        if (handler) {
+            handler->s_linkChanged();
+        }
+    }
 }
 
 void
@@ -5676,6 +5709,8 @@ KnobHelper::leaveLinkGroup(int dimension)
     }
     group->removeMember(this, dimension);
     dissolveLinkGroupIfAlone(group);
+    // This knob may be in its destructor: the caller notifies it if it must.
+    notifyLinkGroupMembers(group);
 }
 
 void
@@ -5941,6 +5976,7 @@ KnobHelper::linkDimensionTo(int dimension,
         KnobLinkGroupSyncLocker locker(group);
         ignore_result(adoptLinkGroupState(group, dimension, getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited));
     }
+    notifyLinkGroupMembers(group);
 
     return true;
 } // KnobHelper::linkDimensionTo
@@ -5976,6 +6012,7 @@ KnobHelper::linkAsAlias(const KnobIPtr& other)
         KnobLinkGroupPtr group = getLinkGroup(i);
         if (group && group->isMemberLinked(this, i)) {
             group->setPermanent(true);
+            notifyLinkGroupMembers(group);
         }
     }
 
@@ -5991,6 +6028,7 @@ KnobHelper::unlinkFromGroups()
         KnobLinkGroupPtr group = getLinkGroup(i);
         if (group && !group->isPermanent() && group->isMemberLinked(this, i)) {
             group->setMemberLinked(this, i, false);
+            notifyLinkGroupMembers(group);
             ret = true;
         }
     }
@@ -6014,10 +6052,162 @@ KnobHelper::relinkToGroups()
             KnobLinkGroupSyncLocker locker(group);
             ignore_result(adoptLinkGroupState(group, i, getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited));
         }
+        notifyLinkGroupMembers(group);
     }
 
     return ret;
 }
+
+void
+KnobHelper::leaveLinkGroups(int dimension)
+{
+    bool left = false;
+
+    for (int i = 0; i < getDimension(); ++i) {
+        if (((dimension == -1) || (i == dimension)) && getLinkGroup(i)) {
+            leaveLinkGroup(i);
+            left = true;
+        }
+    }
+    if (left && _signalSlotHandler) {
+        _signalSlotHandler->s_linkChanged();
+    }
+}
+
+KnobsVec
+KnobHelper::getAliasesOfThis() const
+{
+    KnobsVec ret;
+
+    for (int i = 0; i < getDimension(); ++i) {
+        KnobLinkGroupPtr group = getLinkGroup(i);
+        if (!group || !group->isPermanent()) {
+            continue;
+        }
+        std::vector<KnobLinkGroup::Member> members = group->getMembers();
+        for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+            KnobIPtr knob = it->knob.lock();
+            if (knob && (knob.get() != this) && (knob->getAliasMaster().get() == this) && (std::find(ret.begin(), ret.end(), knob) == ret.end())) {
+                ret.push_back(knob);
+            }
+        }
+    }
+
+    return ret;
+}
+
+int
+KnobI::getPasteSourceDimension(int dimension,
+                               int targetDimension,
+                               int fromDimension,
+                               int fromDimensionCount)
+{
+    if (fromDimension != -1) {
+        return fromDimension;
+    }
+    if (fromDimensionCount == 1) {
+        return 0;
+    }
+    if (dimension < fromDimensionCount) {
+        return dimension;
+    }
+
+    return (targetDimension == -1) ? -1 : 0;
+}
+
+bool
+KnobI::isAliasKnob(const KnobI* knob)
+{
+    if (!knob) {
+        return false;
+    }
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if (knob->isLinkPermanent(i)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+KnobHelper::pasteFrom(const KnobIPtr& other,
+                      KnobClipBoardType type,
+                      int fromDimension,
+                      int targetDimension)
+{
+    if (!other || !KnobI::areTypesCompatibleForSlave(other.get(), this)) {
+        return false;
+    }
+    if ((type == eKnobClipBoardTypeCopyLink) && isAliasKnob(other.get())) {
+        return false;
+    }
+    if ((type == eKnobClipBoardTypeCopyAnim) && !isAnimationEnabled()) {
+        return false;
+    }
+    if ((fromDimension < -1) || (fromDimension >= other->getDimension()) || (targetDimension < -1) || (targetDimension >= getDimension())) {
+        return false;
+    }
+
+    KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(this);
+    KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(this);
+    KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(this);
+    KnobStringBase* isString = dynamic_cast<KnobStringBase*>(this);
+    KnobIntBase* isFromInt = dynamic_cast<KnobIntBase*>(other.get());
+    KnobBoolBase* isFromBool = dynamic_cast<KnobBoolBase*>(other.get());
+    KnobDoubleBase* isFromDouble = dynamic_cast<KnobDoubleBase*>(other.get());
+    KnobStringBase* isFromString = dynamic_cast<KnobStringBase*>(other.get());
+
+    bool ret = false;
+    beginChanges();
+    for (int i = 0; i < getDimension(); ++i) {
+        if ((targetDimension != -1) && (i != targetDimension)) {
+            continue;
+        }
+        const int src = getPasteSourceDimension(i, targetDimension, fromDimension, other->getDimension());
+        if (src == -1) {
+            continue;
+        }
+        switch (type) {
+        case eKnobClipBoardTypeCopyAnim: {
+            CurvePtr fromCurve = other->getCurve(ViewIdx(0), src);
+            if (fromCurve) {
+                cloneCurve(ViewIdx(0), i, *fromCurve);
+                ret = true;
+            }
+            break;
+        }
+        case eKnobClipBoardTypeCopyValue: {
+            if (isInt && isFromInt) {
+                isInt->setValue(isFromInt->getValue(src), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else if (isInt && isFromDouble) {
+                isInt->setValue((int)std::floor(isFromDouble->getValue(src) + 0.5), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else if (isDouble && isFromDouble) {
+                isDouble->setValue(isFromDouble->getValue(src), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else if (isDouble && isFromInt) {
+                isDouble->setValue((double)isFromInt->getValue(src), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else if (isBool && isFromBool) {
+                isBool->setValue(isFromBool->getValue(src), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else if (isString && isFromString) {
+                isString->setValue(isFromString->getValue(src), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else {
+                break;
+            }
+            ret = true;
+            break;
+        }
+        case eKnobClipBoardTypeCopyLink: {
+            if (!isLinkPermanent(i) && linkTo(i, other, src)) {
+                ret = true;
+            }
+            break;
+        }
+        } // switch
+    }
+    endChanges();
+
+    return ret;
+} // KnobHelper::pasteFrom
 
 bool
 KnobHelper::setKnobAsAliasOfThis(const KnobIPtr& master,
@@ -6035,33 +6225,47 @@ KnobHelper::setKnobAsAliasOfThis(const KnobIPtr& master,
     if (doAlias) {
         master->onKnobAboutToAlias( shared_from_this() );
     }
+    // Set first, so that getAliasesOfThis() finds this knob when the link notifies its members.
+    {
+        QWriteLocker k(&_imp->mastersMutex);
+        if (doAlias) {
+            _imp->slaveForAlias = master;
+        } else {
+            _imp->slaveForAlias.reset();
+        }
+    }
     beginChanges();
     for (int i = 0; i < getDimension(); ++i) {
         if ( isSlave(i) ) {
             unSlave(i, false);
         }
-        if (doAlias) {
-            //master->clone(this, i);
-            bool ok = slaveToInternal(i, master, i, eValueChangedReasonNatronInternalEdited, false);
-            assert(ok);
-            Q_UNUSED(ok);
+    }
+    bool ok = true;
+    if (doAlias) {
+        ok = linkAsAlias(master);
+    } else {
+        for (int i = 0; i < getDimension(); ++i) {
+            KnobLinkGroupPtr group = getLinkGroup(i);
+            if (group && group->isPermanent() && group->hasMember(master.get(), i)) {
+                leaveLinkGroups(i);
+            }
         }
     }
-    for (int i = 0; i < getDimension(); ++i) {
-        master->setDimensionName( i, getDimensionName(i) );
+    if (ok) {
+        for (int i = 0; i < getDimension(); ++i) {
+            master->setDimensionName(i, getDimensionName(i));
+        }
+        handleSignalSlotsForAliasLink(master, doAlias);
     }
-    handleSignalSlotsForAliasLink(master, doAlias);
 
     endChanges();
 
-    QWriteLocker k(&_imp->mastersMutex);
-    if (doAlias) {
-        _imp->slaveForAlias = master;
-    } else {
+    if (!ok) {
+        QWriteLocker k(&_imp->mastersMutex);
         _imp->slaveForAlias.reset();
     }
 
-    return true;
+    return ok;
 }
 
 KnobIPtr

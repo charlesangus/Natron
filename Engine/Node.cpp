@@ -7065,13 +7065,9 @@ findAliasSlaveOnOtherNode(const KnobIPtr& master,
                           const Node* self,
                           NodePtr* slaveNode)
 {
-    KnobI::ListenerDimsMap listeners;
-    master->getListeners(listeners);
-    for (KnobI::ListenerDimsMap::const_iterator it = listeners.begin(); it != listeners.end(); ++it) {
-        KnobIPtr listener = it->first.lock();
-        if (!listener || (listener->getAliasMaster() != master)) {
-            continue;
-        }
+    KnobsVec aliases = master->getAliasesOfThis();
+    for (KnobsVec::const_iterator it = aliases.begin(); it != aliases.end(); ++it) {
+        const KnobIPtr& listener = *it;
         EffectInstance* effect = dynamic_cast<EffectInstance*>(listener->getHolder());
         NodePtr node = effect ? effect->getNode() : NodePtr();
         if (node && (node.get() != self)) {

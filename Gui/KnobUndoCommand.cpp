@@ -26,6 +26,7 @@
 #include "KnobUndoCommand.h"
 
 #include <QDebug>
+#include <algorithm> // find
 #include <sstream> // stringstream
 #include <stdexcept>
 
@@ -33,6 +34,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/TimeLine.h"
@@ -42,8 +44,65 @@
 
 
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief Adds to nodes the nodes of the knobs sharing a link group with knob, linked or not.
+ **/
+static void
+getLinkGroupNodes(const KnobIPtr& knob,
+                  NodesList* nodes)
+{
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        KnobLinkGroupPtr group = knob->getLinkGroup(i);
+        if (!group) {
+            continue;
+        }
+        std::vector<KnobLinkGroup::Member> members = group->getMembers();
+        for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+            KnobIPtr member = it->knob.lock();
+            EffectInstance* effect = member ? dynamic_cast<EffectInstance*>(member->getHolder()) : 0;
+            NodePtr node = effect ? effect->getNode() : NodePtr();
+            if (node && (std::find(nodes->begin(), nodes->end(), node) == nodes->end())) {
+                nodes->push_back(node);
+            }
+        }
+    }
+}
+
+/**
+ * @brief Knob link changes do not emit Node::linksChanged(): emits it on the knob's node, the nodes
+ * it now shares a group with, and alsoNotify, so that their link lines are redrawn.
+ **/
+static void
+emitKnobLinksChanged(const KnobIPtr& knob,
+                     const NodesList& alsoNotify)
+{
+    NodesList nodes = alsoNotify;
+
+    getLinkGroupNodes(knob, &nodes);
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+    if (node) {
+        node->emitLinksChanged(nodes);
+    } else {
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            (*it)->emitLinksChanged(NodesList());
+        }
+    }
+}
+
 struct PasteUndoCommandPrivate
 {
+    // A dimension of the target that was linked before a link paste, and a member of its group that undo
+    // links it back to.
+    struct PreviousLink {
+        int dimension;
+        bool nodeLink;
+        UndoKnobRef partner;
+        int partnerDimension;
+        bool partnerNodeLink;
+    };
+
     UndoKnobRef knob;
     KnobClipBoardType type;
     int fromDimension;
@@ -51,8 +110,13 @@ struct PasteUndoCommandPrivate
     // A copy of the target knob as it was before the paste, which undo copies back from.
     KnobIPtr originalKnob;
     KnobIPtr fromKnob;
-    // The knob a link paste slaves to, which must still exist when the link is redone.
+    // The knob a link paste links to, which must still exist when the link is redone.
     UndoKnobRef linkSource;
+    // The dimensions of the target a link paste links, found before the paste.
+    std::vector<int> linkDimensions;
+    std::vector<PreviousLink> previousLinks;
+    // The nodes the target shared a link group with before the paste, whose link lines a paste changes.
+    NodesList previousLinkNodes;
 
     PasteUndoCommandPrivate()
         : knob()
@@ -60,6 +124,9 @@ struct PasteUndoCommandPrivate
         , fromDimension(-1)
         , targetDimension(-1)
         , originalKnob()
+        , linkDimensions()
+        , previousLinks()
+        , previousLinkNodes()
     {
     }
 };
@@ -72,7 +139,9 @@ PasteUndoCommand::PasteUndoCommand(const KnobGuiPtr& knob,
     : QUndoCommand(0)
     , _imp( new PasteUndoCommandPrivate() )
 {
-    _imp->knob = UndoKnobRef(knob->getKnob());
+    assert(knob);
+    KnobIPtr internalKnob = knob->getKnob();
+    _imp->knob = UndoKnobRef(internalKnob);
     _imp->type = type;
     _imp->fromDimension = fromDimension;
     _imp->targetDimension = targetDimension;
@@ -81,13 +150,41 @@ PasteUndoCommand::PasteUndoCommand(const KnobGuiPtr& knob,
 
     {
         Serialization::KnobSerialization originalSerialization;
-        knob->getKnob()->toSerialization(&originalSerialization);
+        internalKnob->toSerialization(&originalSerialization);
         _imp->originalKnob = createDetachedKnobFromSerialization(originalSerialization);
     }
     assert(_imp->originalKnob);
 
-    assert(knob);
-    assert(_imp->targetDimension >= -1 && _imp->targetDimension < knob->getKnob()->getDimension());
+    if (type == eKnobClipBoardTypeCopyLink) {
+        getLinkGroupNodes(internalKnob, &_imp->previousLinkNodes);
+        for (int i = 0; i < internalKnob->getDimension(); ++i) {
+            if (!isLinkPasteTarget(i)) {
+                continue;
+            }
+            _imp->linkDimensions.push_back(i);
+            if (!internalKnob->isLinked(i)) {
+                continue;
+            }
+            KnobLinkGroupPtr group = internalKnob->getLinkGroup(i);
+            std::vector<KnobLinkGroup::Member> members = group->getMembers();
+            for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+                KnobIPtr partner = it->knob.lock();
+                if (!partner || !it->linked || ((partner == internalKnob) && (it->dimension == i))) {
+                    continue;
+                }
+                PasteUndoCommandPrivate::PreviousLink link;
+                link.dimension = i;
+                link.nodeLink = group->isMemberNodeLink(internalKnob.get(), i);
+                link.partner = UndoKnobRef(partner);
+                link.partnerDimension = it->dimension;
+                link.partnerNodeLink = it->nodeLink;
+                _imp->previousLinks.push_back(link);
+                break;
+            }
+        }
+    }
+
+    assert(_imp->targetDimension >= -1 && _imp->targetDimension < internalKnob->getDimension());
     assert( _imp->fromDimension >= -1 && _imp->fromDimension < _imp->fromKnob->getDimension() );
     QString text;
     switch (type) {
@@ -101,28 +198,28 @@ PasteUndoCommand::PasteUndoCommand(const KnobGuiPtr& knob,
         text = tr("Paste Link to %1");
         break;
     }
-    setText( text.arg( QString::fromUtf8( knob->getKnob()->getLabel().c_str() ) ) );
+    setText(text.arg(QString::fromUtf8(internalKnob->getLabel().c_str())));
 }
 
 PasteUndoCommand::~PasteUndoCommand()
 {
 }
 
+bool
+PasteUndoCommand::isLinkPasteTarget(int dimension) const
+{
+    KnobIPtr internalKnob = _imp->knob.lock();
+
+    if (!internalKnob || ((_imp->targetDimension != -1) && (dimension != _imp->targetDimension))) {
+        return false;
+    }
+
+    // KnobI::pasteFrom() links nothing to a permanent (alias) dimension, nor to one the source has no component for.
+    return !internalKnob->isLinkPermanent(dimension) && (KnobI::getPasteSourceDimension(dimension, _imp->targetDimension, _imp->fromDimension, _imp->fromKnob->getDimension()) != -1);
+}
+
 void
 PasteUndoCommand::undo()
-{
-    copyFrom(_imp->originalKnob, false);
-} // undo
-
-void
-PasteUndoCommand::redo()
-{
-    copyFrom(_imp->fromKnob, true);
-} // undo
-
-void
-PasteUndoCommand::copyFrom(const KnobIPtr& serializedKnob,
-                           bool isRedo)
 {
     KnobIPtr internalKnob = _imp->knob.lock();
 
@@ -131,90 +228,131 @@ PasteUndoCommand::copyFrom(const KnobIPtr& serializedKnob,
 
         return;
     }
-    KnobIPtr linkSource;
-    if ((_imp->type == eKnobClipBoardTypeCopyLink) && isRedo) {
-        linkSource = _imp->linkSource.lock();
-        if (!linkSource) {
-            setObsolete(true);
 
-            return;
-        }
+    if (_imp->type != eKnobClipBoardTypeCopyLink) {
+        // The copy has the target's dimensions, so this copies each pasted dimension back.
+        ignore_result(internalKnob->pasteFrom(_imp->originalKnob, _imp->type, _imp->targetDimension, _imp->targetDimension));
+
+        return;
     }
 
-    switch (_imp->type) {
-    case eKnobClipBoardTypeCopyAnim: {
-        internalKnob->beginChanges();
-        for (int i = 0; i < internalKnob->getDimension(); ++i) {
-            if ( ( _imp->targetDimension == -1) || ( i == _imp->targetDimension) ) {
-                CurvePtr fromCurve;
-                if ( ( i == _imp->targetDimension) && ( _imp->fromDimension != -1) ) {
-                    fromCurve = serializedKnob->getCurve(ViewIdx(0), _imp->fromDimension);
-                } else {
-                    fromCurve = serializedKnob->getCurve(ViewIdx(0), i);
-                }
-                if (!fromCurve) {
-                    continue;
-                }
-                internalKnob->cloneCurve(ViewIdx(0), i, *fromCurve);
-            }
-        }
-        internalKnob->endChanges();
-        break;
+    NodesList linkNodes;
+    getLinkGroupNodes(internalKnob, &linkNodes);
+    internalKnob->beginChanges();
+    for (std::vector<int>::const_iterator it = _imp->linkDimensions.begin(); it != _imp->linkDimensions.end(); ++it) {
+        internalKnob->leaveLinkGroups(*it);
+        internalKnob->cloneAndUpdateGui(_imp->originalKnob.get(), *it, *it);
     }
-    case eKnobClipBoardTypeCopyValue: {
-        KnobIntBase* isInt = dynamic_cast<KnobIntBase*>( internalKnob.get() );
-        KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>( internalKnob.get() );
-        KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>( internalKnob.get() );
-        KnobStringBase* isString = dynamic_cast<KnobStringBase*>( internalKnob.get() );
-
-        KnobIntBase* isFromInt = dynamic_cast<KnobIntBase*>( serializedKnob.get() );
-        KnobBoolBase* isFromBool = dynamic_cast<KnobBoolBase*>( serializedKnob.get() );
-        KnobDoubleBase* isFromDouble = dynamic_cast<KnobDoubleBase*>( serializedKnob.get() );
-        KnobStringBase* isFromString = dynamic_cast<KnobStringBase*>( serializedKnob.get() );
-
-        internalKnob->beginChanges();
-        for (int i = 0; i < internalKnob->getDimension(); ++i) {
-            if ( ( _imp->targetDimension == -1) || ( i == _imp->targetDimension) ) {
-                if (isInt && isFromInt) {
-                    int f = (i == _imp->targetDimension && _imp->fromDimension != -1) ? isFromInt->getValue(_imp->fromDimension) : isFromInt->getValue(i);
-                    isInt->setValue(f, ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
-                } else if (isBool && isFromBool) {
-                    bool f = (i == _imp->targetDimension && _imp->fromDimension != -1) ? isFromBool->getValue(_imp->fromDimension) : isFromBool->getValue(i);
-                    isBool->setValue(f, ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
-                } else if (isDouble && isFromDouble) {
-                    double f = (i == _imp->targetDimension && _imp->fromDimension != -1) ? isFromDouble->getValue(_imp->fromDimension) : isFromDouble->getValue(i);
-                    isDouble->setValue(f, ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
-                } else if (isString && isFromString) {
-                    std::string f = (i == _imp->targetDimension && _imp->fromDimension != -1) ? isFromString->getValue(_imp->fromDimension) : isFromString->getValue(i);
-                    isString->setValue(f, ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
-                }
-            }
+    // A dimension that was linked rejoins a group with the member it was linked to, which still holds the shared state.
+    for (std::vector<PasteUndoCommandPrivate::PreviousLink>::const_iterator it = _imp->previousLinks.begin(); it != _imp->previousLinks.end(); ++it) {
+        KnobIPtr partner = it->partner.lock();
+        if (!partner || !internalKnob->linkTo(it->dimension, partner, it->partnerDimension)) {
+            continue;
         }
-        internalKnob->endChanges();
-        break;
-    }
-    case eKnobClipBoardTypeCopyLink: {
-        //bool useExpression = !KnobI::areTypesCompatibleForSlave(internalKnob.get(), serializedKnob.get());
-
-        internalKnob->beginChanges();
-        for (int i = 0; i < internalKnob->getDimension(); ++i) {
-            if ( ( _imp->targetDimension == -1) || ( i == _imp->targetDimension) ) {
-                if (isRedo) {
-                    if (_imp->fromDimension != -1) {
-                        internalKnob->slaveTo(i, linkSource, _imp->fromDimension);
-                    } else {
-                        internalKnob->slaveTo(i, linkSource, i);
-                    }
-                } else {
-                    internalKnob->unSlave(i, false);
-                }
-            }
+        KnobLinkGroupPtr group = internalKnob->getLinkGroup(it->dimension);
+        if (group) {
+            group->setMemberNodeLink(internalKnob.get(), it->dimension, it->nodeLink);
+            group->setMemberNodeLink(partner.get(), it->partnerDimension, it->partnerNodeLink);
         }
-        internalKnob->endChanges();
-        break;
     }
-    } // switch
+    internalKnob->endChanges();
+    emitKnobLinksChanged(internalKnob, linkNodes);
+} // undo
+
+void
+PasteUndoCommand::redo()
+{
+    KnobIPtr internalKnob = _imp->knob.lock();
+
+    if (!internalKnob) {
+        setObsolete(true);
+
+        return;
+    }
+
+    if (_imp->type != eKnobClipBoardTypeCopyLink) {
+        ignore_result(internalKnob->pasteFrom(_imp->fromKnob, _imp->type, _imp->fromDimension, _imp->targetDimension));
+
+        return;
+    }
+
+    KnobIPtr linkSource = _imp->linkSource.lock();
+    if (!linkSource) {
+        setObsolete(true);
+
+        return;
+    }
+    ignore_result(internalKnob->pasteFrom(linkSource, _imp->type, _imp->fromDimension, _imp->targetDimension));
+    emitKnobLinksChanged(internalKnob, _imp->previousLinkNodes);
 } // redo
+
+KnobLinkUndoCommand::KnobLinkUndoCommand(const KnobIPtr& knob,
+                                         bool relink)
+    : QUndoCommand()
+    , _knob(knob)
+    , _relink(relink)
+    , _localState()
+    , _relinkedDimensions()
+{
+    assert(knob);
+    if (relink) {
+        Serialization::KnobSerialization serialization;
+        knob->toSerialization(&serialization);
+        _localState = createDetachedKnobFromSerialization(serialization);
+        for (int i = 0; i < knob->getDimension(); ++i) {
+            KnobLinkGroupPtr group = knob->getLinkGroup(i);
+            if (group && !group->isMemberLinked(knob.get(), i)) {
+                _relinkedDimensions.push_back(i);
+            }
+        }
+    }
+    QString label = QString::fromUtf8(knob->getLabel().c_str());
+    setText(relink ? tr("Re-link %1").arg(label) : tr("Unlink %1").arg(label));
+}
+
+KnobLinkUndoCommand::~KnobLinkUndoCommand()
+{
+}
+
+void
+KnobLinkUndoCommand::undo()
+{
+    setLinked(!_relink);
+}
+
+void
+KnobLinkUndoCommand::redo()
+{
+    setLinked(_relink);
+}
+
+void
+KnobLinkUndoCommand::setLinked(bool linked)
+{
+    KnobIPtr knob = _knob.lock();
+
+    if (!knob) {
+        setObsolete(true);
+
+        return;
+    }
+    knob->beginChanges();
+    if (linked) {
+        ignore_result(knob->relinkToGroups());
+    } else {
+        ignore_result(knob->unlinkFromGroups());
+        if (_relink && _localState) {
+            // Undoing a re-link: the knob takes back the state the re-link discarded.
+            for (std::vector<int>::const_iterator it = _relinkedDimensions.begin(); it != _relinkedDimensions.end(); ++it) {
+                knob->cloneAndUpdateGui(_localState.get(), *it, *it);
+            }
+        }
+    }
+    knob->endChanges();
+
+    // The knob is still a member of the groups it unlinked from, so their nodes are found either way.
+    emitKnobLinksChanged(knob, NodesList());
+}
 
 MultipleKnobEditsUndoCommand::MultipleKnobEditsUndoCommand(const KnobGuiPtr& knob,
                                                            ValueChangedReasonEnum reason,

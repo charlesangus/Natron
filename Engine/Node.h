@@ -1276,9 +1276,14 @@ public:
      **/
     void getKnobLinkedNodes(NodesList* nodes) const;
 
+    /**
+     * @brief Emits linksChanged() on this node, on every node it shares a link group with and on the
+     * nodes in alsoNotify, such as the ones it shared a group with before a change.
+     **/
+    void emitLinksChanged(const NodesList& alsoNotify);
+
 private:
     void collectLinkedNodes(bool nodeLinksOnly, bool activeOnly, NodesList* nodes) const;
-    void emitLinksChanged(const NodesList& alsoNotify);
 
 public:
     /**

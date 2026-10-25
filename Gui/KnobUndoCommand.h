@@ -455,9 +455,38 @@ public:
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
 
-    void copyFrom(const KnobIPtr& fromKnob, bool isRedo);
+private:
+    // Whether a link paste links the given dimension of the target.
+    bool isLinkPasteTarget(int dimension) const;
 };
 
+/**
+ * @brief Unlinks a knob from its link groups, the knob keeping its current state, or re-links it to
+ * them, discarding its own state for theirs. Undoing a re-link gives the knob back its own state.
+ **/
+class KnobLinkUndoCommand
+    : public QUndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(KnobLinkUndoCommand)
+
+public:
+    KnobLinkUndoCommand(const KnobIPtr& knob,
+                        bool relink);
+
+    virtual ~KnobLinkUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+private:
+    void setLinked(bool linked);
+
+    UndoKnobRef _knob;
+    bool _relink;
+
+    // For a re-link: a copy of the knob before it, and the dimensions it re-links, whose state undo restores.
+    KnobIPtr _localState;
+    std::vector<int> _relinkedDimensions;
+};
 
 class RestoreDefaultsCommand
     : public QUndoCommand

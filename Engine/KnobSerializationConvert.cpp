@@ -425,7 +425,8 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
     serialization->typeName = typeName();
     serialization->dimension = dimension;
     serialization->secret = getIsSecret();
-    serialization->masterIsAlias = bool(getAliasMaster());
+    const KnobIPtr aliasMaster = getAliasMaster();
+    serialization->masterIsAlias = bool(aliasMaster);
     serialization->dimensions.resize(dimension);
 
     bool hasExpressionOrLink = false;
@@ -459,8 +460,9 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
             dimensionData.defaultValue = Serialization::KnobValueSerialization(std::in_place_type<std::string>, isStringBase->getDefaultValue(i));
         }
 
-        std::pair<int, KnobIPtr> master = getMaster(i);
-        if (isSlave(i)) {
+        // An alias is a link group member, not a slave: its master is saved the way a slave's is.
+        std::pair<int, KnobIPtr> master = aliasMaster ? std::make_pair(i, aliasMaster) : getMaster(i);
+        if (aliasMaster || isSlave(i)) {
             Serialization::KnobMasterSerialization masterData;
             if (master.second && !isMastersPersistenceIgnored()) {
                 fillMasterSerialization(master, &masterData);

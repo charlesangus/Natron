@@ -288,6 +288,28 @@ TEST_F(KnobLinkGroupTest, AliasLinksAreTwoWayAndCannotBeUnlinked)
     EXPECT_TRUE(b->isLinked(0));
 }
 
+TEST_F(KnobLinkGroupTest, PasteLinkFromAnAliasKnobIsRefused)
+{
+    KnobDoublePtr c = makeDoubleKnob(nodeB, "linkTarget", 1);
+    ASSERT_NE(nullptr, c);
+    a->setValue(3.);
+    c->setValue(9.);
+    ASSERT_TRUE(b->linkAsAlias(a));
+    EXPECT_TRUE(KnobI::isAliasKnob(a.get()));
+    EXPECT_TRUE(KnobI::isAliasKnob(b.get()));
+    EXPECT_FALSE(KnobI::isAliasKnob(c.get()));
+
+    EXPECT_FALSE(c->pasteFrom(a, eKnobClipBoardTypeCopyLink, -1, -1));
+    EXPECT_FALSE(c->pasteFrom(b, eKnobClipBoardTypeCopyLink, -1, -1));
+    EXPECT_FALSE(c->isLinked(0));
+    EXPECT_DOUBLE_EQ(9., c->getValue(0));
+
+    a->setValue(5.);
+    EXPECT_DOUBLE_EQ(9., c->getValue(0));
+    c->setValue(1.);
+    EXPECT_DOUBLE_EQ(5., a->getValue(0));
+}
+
 TEST_F(KnobLinkGroupTest, DestroyingOneOfThreeLeavesTheOthersLinked)
 {
     linkThree();
@@ -465,4 +487,120 @@ TEST_F(KnobLinkGroupTest, CloningFromAKnobWithoutCurveKeepsTheGuiCurve)
     flag->cloneAndUpdateGui(press.get());
     EXPECT_EQ(1, flag->getCurve(ViewIdx(0), 0, true)->getKeyFramesCount());
     EXPECT_EQ(1, gui->getCurve(ViewIdx(0), 0)->getKeyFramesCount());
+}
+
+TEST_F(KnobLinkGroupTest, GroupAliasIsTwoWayPermanentAndEndsWithTheGroupKnob)
+{
+    // a plays the Group's user knob and b the inner knob made an alias of it.
+    a->setValue(3.);
+    b->setValue(1.);
+    ASSERT_TRUE(b->setKnobAsAliasOfThis(a, true));
+    EXPECT_EQ(KnobIPtr(a), b->getAliasMaster());
+    ASSERT_EQ(1u, a->getAliasesOfThis().size());
+    EXPECT_EQ(KnobIPtr(b), a->getAliasesOfThis()[0]);
+    EXPECT_TRUE(b->isLinkPermanent(0));
+    EXPECT_DOUBLE_EQ(3., b->getValue(0));
+
+    b->setValue(4.);
+    EXPECT_DOUBLE_EQ(4., a->getValue(0));
+    a->setValue(5.);
+    EXPECT_DOUBLE_EQ(5., b->getValue(0));
+
+    EXPECT_FALSE(b->unlinkFromGroups());
+    EXPECT_FALSE(a->unlinkFromGroups());
+    EXPECT_TRUE(b->isLinked(0));
+
+    nodeA->getEffectInstance()->deleteKnob(a.get(), false);
+    a.reset();
+    EXPECT_EQ(nullptr, b->getAliasMaster());
+    EXPECT_FALSE(b->isLinked(0));
+    EXPECT_EQ(nullptr, b->getLinkGroup(0));
+    EXPECT_DOUBLE_EQ(5., b->getValue(0));
+    b->setValue(6.);
+    EXPECT_DOUBLE_EQ(6., b->getValue(0));
+}
+
+TEST_F(KnobLinkGroupTest, SingleValueLinksToEveryComponentOfAFoldedKnob)
+{
+    KnobDoublePtr size = makeDoubleKnob(nodeB, "linkSize", 2);
+    ASSERT_NE(nullptr, size);
+    a->setValue(4.);
+    size->setValue(1., ViewSpec::all(), 0);
+    size->setValue(2., ViewSpec::all(), 1);
+
+    // A folded knob pastes on all dimensions.
+    ASSERT_TRUE(size->pasteFrom(a, eKnobClipBoardTypeCopyLink, -1, -1));
+    EXPECT_DOUBLE_EQ(4., size->getValue(0));
+    EXPECT_DOUBLE_EQ(4., size->getValue(1));
+
+    a->setValue(6.);
+    EXPECT_DOUBLE_EQ(6., size->getValue(0));
+    EXPECT_DOUBLE_EQ(6., size->getValue(1));
+
+    // Unfolded, each component is still linked to the source on its own.
+    EXPECT_TRUE(size->isLinked(0));
+    EXPECT_TRUE(size->isLinked(1));
+    size->setValue(7., ViewSpec::all(), 1);
+    EXPECT_DOUBLE_EQ(7., a->getValue(0));
+    EXPECT_DOUBLE_EQ(7., size->getValue(0));
+
+    ASSERT_TRUE(size->unlinkFromGroups());
+    EXPECT_DOUBLE_EQ(7., size->getValue(0));
+    EXPECT_DOUBLE_EQ(7., size->getValue(1));
+    a->setValue(8.);
+    EXPECT_DOUBLE_EQ(7., size->getValue(0));
+    EXPECT_DOUBLE_EQ(7., size->getValue(1));
+}
+
+TEST_F(KnobLinkGroupTest, PasteSingleValueOntoOneComponent)
+{
+    KnobDoublePtr v3 = makeDoubleKnob(nodeB, "linkV3", 3);
+    ASSERT_NE(nullptr, v3);
+    a->setValue(5.);
+    for (int i = 0; i < 3; ++i) {
+        v3->setValue(i + 1., ViewSpec::all(), i);
+    }
+    ASSERT_TRUE(v3->pasteFrom(a, eKnobClipBoardTypeCopyValue, -1, 1));
+    EXPECT_DOUBLE_EQ(1., v3->getValue(0));
+    EXPECT_DOUBLE_EQ(5., v3->getValue(1));
+    EXPECT_DOUBLE_EQ(3., v3->getValue(2));
+}
+
+TEST_F(KnobLinkGroupTest, PasteSingleValueOntoAllComponents)
+{
+    KnobDoublePtr v3 = makeDoubleKnob(nodeB, "linkV3", 3);
+    ASSERT_NE(nullptr, v3);
+    a->setValue(5.);
+    ASSERT_TRUE(v3->pasteFrom(a, eKnobClipBoardTypeCopyValue, -1, -1));
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_DOUBLE_EQ(5., v3->getValue(i));
+    }
+}
+
+TEST_F(KnobLinkGroupTest, PasteMultiValueOntoSingleValuePastesTheFirstComponent)
+{
+    KnobDoublePtr v3 = makeDoubleKnob(nodeA, "linkV3", 3);
+    ASSERT_NE(nullptr, v3);
+    for (int i = 0; i < 3; ++i) {
+        v3->setValue(i + 2., ViewSpec::all(), i);
+    }
+    b->setValue(0.);
+    ASSERT_TRUE(b->pasteFrom(v3, eKnobClipBoardTypeCopyValue, -1, -1));
+    EXPECT_DOUBLE_EQ(2., b->getValue(0));
+}
+
+TEST_F(KnobLinkGroupTest, PasteBetweenDifferentCountsPastesTheSharedComponents)
+{
+    KnobDoublePtr v2 = makeDoubleKnob(nodeA, "linkV2", 2);
+    KnobDoublePtr v3 = makeDoubleKnob(nodeB, "linkV3", 3);
+    ASSERT_TRUE(v2 && v3);
+    v2->setValue(10., ViewSpec::all(), 0);
+    v2->setValue(20., ViewSpec::all(), 1);
+    for (int i = 0; i < 3; ++i) {
+        v3->setValue(i + 1., ViewSpec::all(), i);
+    }
+    ASSERT_TRUE(v3->pasteFrom(v2, eKnobClipBoardTypeCopyValue, -1, -1));
+    EXPECT_DOUBLE_EQ(10., v3->getValue(0));
+    EXPECT_DOUBLE_EQ(20., v3->getValue(1));
+    EXPECT_DOUBLE_EQ(3., v3->getValue(2));
 }

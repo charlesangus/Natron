@@ -363,13 +363,32 @@ public:
 
     virtual bool getAllDimensionsVisible() const OVERRIDE { return true; }
 
+    /**
+     * @brief Whether the knob shows a link circle: it is in a link group that is not an alias link
+     * and has another member on an active node, linked or not.
+     **/
+    bool hasLinkButton() const;
+
     void setWarningValue(KnobWarningEnum warn, const QString& value);
 
 public Q_SLOTS:
 
-    void onRemoveAliasLinkActionTriggered();
-
     void onUnlinkActionTriggered();
+
+    /**
+     * @brief The link circle: unlinks the knob from its link groups when it is linked, and asks to
+     * re-link it otherwise. Both are undoable.
+     **/
+    void onLinkButtonClicked();
+
+    void onUnlinkFromGroupsActionTriggered();
+
+    void onRelinkToGroupsActionTriggered();
+
+    /**
+     * @brief Called when the knob's link groups change, or the node's links do: refreshes the link circle.
+     **/
+    void onLinkStateChanged();
 
     void onRedrawGuiCurve(int reason, ViewSpec view, int dimension);
 
@@ -437,9 +456,6 @@ public Q_SLOTS:
     void onCopyLinksActionTriggered();
 
     void onPasteActionTriggered();
-
-    void onLinkToActionTriggered();
-    void linkTo(int dimension);
 
     void onResetDefaultValuesActionTriggered();
 

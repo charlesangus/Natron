@@ -271,6 +271,11 @@ public:
         Q_EMIT dimensionNameChanged(dimension);
     }
 
+    void s_linkChanged()
+    {
+        Q_EMIT linkChanged();
+    }
+
 public Q_SLOTS:
 
     /**
@@ -371,6 +376,10 @@ Q_SIGNALS:
     void inViewerContextLabelChanged();
 
     void dimensionNameChanged(int dimension);
+
+    /// Emitted when a dimension of the knob joins or leaves a link group, is unlinked or re-linked,
+    /// or when another member of one of its link groups does.
+    void linkChanged();
 };
 
 struct KnobChange
@@ -1359,7 +1368,17 @@ public:
      * @brief If a knob was created using createDuplicateOnHolder(effect,true), this function will return true
      **/
     virtual KnobIPtr getAliasMaster() const = 0;
+
+    /**
+     * @brief Makes this knob an alias of master, a permanent two-way link on every dimension (see
+     * linkAsAlias()), or with doAlias false ends that alias, each knob keeping its current state.
+     **/
     virtual bool setKnobAsAliasOfThis(const KnobIPtr& master, bool doAlias) = 0;
+
+    /**
+     * @brief The knobs whose alias master is this knob.
+     **/
+    virtual KnobsVec getAliasesOfThis() const = 0;
 
     /**
      * @brief Links a dimension of this knob two-way to a dimension of other: this dimension joins the
@@ -1387,6 +1406,37 @@ public:
      * @brief Rejoins the groups left by unlinkFromGroups(), discarding this knob's own state for theirs.
      **/
     virtual bool relinkToGroups() = 0;
+
+    /**
+     * @brief Leaves the link group of the dimension, or of every dimension for -1, permanent groups
+     * included, without remembering it: the knob keeps its current state and cannot rejoin the group.
+     **/
+    virtual void leaveLinkGroups(int dimension) = 0;
+
+    /**
+     * @brief Pastes what Copy Value, Copy Animation or Copy Link put on the clipboard from other.
+     * fromDimension is the dimension that was copied, or -1 for all of them, and targetDimension the
+     * dimension of this knob pasted onto, or -1 for all of them. Each target dimension takes the
+     * source dimension given by getPasteSourceDimension(). A link paste links each of them two-way to
+     * its source dimension, starting from the source's state, and skips dimensions in a permanent group.
+     * Returns false if the types are not compatible or nothing was pasted.
+     **/
+    virtual bool pasteFrom(const KnobIPtr& other, Natron::KnobClipBoardType type, int fromDimension, int targetDimension) = 0;
+
+    /**
+     * @brief The dimension of the copied knob, which has fromDimensionCount dimensions, that a paste
+     * gives to dimension of the target, or -1 if that dimension is left as it is: one copied
+     * dimension, or a knob with a single one, fills every target dimension; otherwise each target
+     * dimension takes the same one, and a single target dimension the source has not takes the first.
+     **/
+    static int getPasteSourceDimension(int dimension, int targetDimension, int fromDimension, int fromDimensionCount);
+
+    /**
+     * @brief Whether knob is an alias or has aliases, i.e. any of its dimensions is in a permanent link group.
+     * Pasting a link from such a knob is refused: the target would join the permanent group and
+     * could never be unlinked.
+     **/
+    static bool isAliasKnob(const KnobI* knob);
 
     virtual bool isLinked(int dimension) const = 0;
     virtual bool isLinkPermanent(int dimension) const = 0;
@@ -1864,6 +1914,9 @@ public:
     virtual bool linkAsAlias(const KnobIPtr& other) OVERRIDE FINAL;
     virtual bool unlinkFromGroups() OVERRIDE FINAL;
     virtual bool relinkToGroups() OVERRIDE FINAL;
+    virtual void leaveLinkGroups(int dimension) OVERRIDE FINAL;
+    virtual bool pasteFrom(const KnobIPtr& other, Natron::KnobClipBoardType type, int fromDimension, int targetDimension) OVERRIDE FINAL;
+    virtual KnobsVec getAliasesOfThis() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isLinked(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isLinkPermanent(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool hasRelinkableGroups() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -1946,6 +1999,12 @@ private:
      * @brief Detaches every remaining member of a group left with a single live member.
      **/
     static void dissolveLinkGroupIfAlone(const KnobLinkGroupPtr& group);
+
+    /**
+     * @brief Emits linkChanged() for every live member of the group.
+     **/
+    static void notifyLinkGroupMembers(const KnobLinkGroupPtr& group);
+    static void notifyLinkMembers(const std::vector<KnobLinkGroup::Member>& members);
 
     /**
      * @brief Makes the given dimension match the group's state through this knob's own setters, with the

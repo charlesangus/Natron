@@ -1975,13 +1975,9 @@ exportUserKnob(int indentLevel,
     KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(knob.get());
     KnobIPtr aliasedParam;
     {
-        KnobI::ListenerDimsMap listeners;
-        knob->getListeners(listeners);
-        if ( !listeners.empty() ) {
-            KnobIPtr listener = listeners.begin()->first.lock();
-            if ( listener && (listener->getAliasMaster() == knob) ) {
-                aliasedParam = listener;
-            }
+        KnobsVec aliases = knob->getAliasesOfThis();
+        if (!aliases.empty()) {
+            aliasedParam = aliases.front();
         }
     }
 

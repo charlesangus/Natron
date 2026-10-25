@@ -144,6 +144,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-25 — **Unseeded GPU-capable nodes form regions together (user):** clarifies the placement rule: two or more connected GPU-capable nodes become a GPU region even when none has a cost seed; a lone unseeded node with CPU neighbours stays on the CPU; an unseeded node next to GPU-placed nodes joins their region. User control over placement is follow-up M222.
 - 2026-10-25 — **Gate screenshots approved (user).**
 - 2026-10-25 — **Unseeded GPU-capable nodes join GPU regions (user):** a node with no measured cost seed runs on the CPU when it would stand alone, and on the GPU when it would sit inside a GPU region. It never starts a region on its own. This is a placement-layer rule for all unseeded nodes.
 - 2026-10-25 — **GPU precision: double-float, not fp64 (bosley-native-nodes):** GpuDevice doesn't enable shaderFloat64 and SPIR-V has no fp64 transcendentals, so the GPU models carry each double as a hi/lo float pair (as M113's stmap/resamplecore do), with the CPU's Newton settings unchanged and the fisheye rewritten without trig on the GPU. Measured on the host: worst 5e-12 relative on positions, solve success identical to the CPU at every test point; the model parity bound is 1e-9 relative. LensDistortion stays on the CPU in production until a measured cost seed exists (CPU profiles + an RX 7900 XTX kernel time).

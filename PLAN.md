@@ -277,6 +277,7 @@ future core work has solid ground to build on.
 | M219 | Curves Follow Vectors | todo | M217, M146 |  | E18 | [M219-curves-follow-vectors.md](PLAN/MILESTONES/M219-curves-follow-vectors.md) |
 | M220 | SplineWarp Follow Vectors | todo | M219, M148 |  | E18 | [M220-splinewarp-follow-vectors.md](PLAN/MILESTONES/M220-splinewarp-follow-vectors.md) |
 | M221 | Neural Optical Flow | todo | M217, M203, M204 |  | E16 | [M221-neural-optical-flow.md](PLAN/MILESTONES/M221-neural-optical-flow.md) |
+| M222 | User Control Of GPU Placement | todo | M132 |  | E5 | [M222-user-control-of-gpu-placement.md](PLAN/MILESTONES/M222-user-control-of-gpu-placement.md) |
 
 # Epics
 

@@ -249,10 +249,11 @@ ProgressTaskInfo::cancelTask(bool calledFromRenderEngine,
     if (_imp->timeRemainingItem) {
         _imp->timeRemainingItem->setText( tr("N/A") );
     }
+    const bool pauses = _imp->canBePaused && !_imp->foreground;
     if (_imp->statusItem) {
         if (!calledFromRenderEngine) {
             _imp->statusItem->setTextColor( QColor(243, 147, 0) );
-            if (_imp->canBePaused) {
+            if (pauses) {
                 _imp->statusItem->setText( tr("Paused") );
                 _imp->status = eProgressTaskStatusPaused;
                 updateTaskBarState(retCode == 1 ? TaskBar::PausedProgress : TaskBar::NoProgress);
@@ -334,9 +335,16 @@ ProgressTaskInfo::restartTask()
         _imp->status = eProgressTaskStatusQueued;
         _imp->statusItem->setText( tr("Queued") );
         _imp->refreshButtons();
-        std::list<AppInstance::RenderWork> works;
-        works.push_back(w);
-        node->getApp()->startWritersRendering(eRenderModeForeground, works);
+        if (_imp->process) {
+            // The restart renders the project as it was submitted, not as it is now.
+            if (!node->getApp()->restartBackgroundRender(w, _imp->process->getProjectPath())) {
+                cancelTask(true, 1);
+            }
+        } else {
+            std::list<AppInstance::RenderWork> works;
+            works.push_back(w);
+            node->getApp()->renderForeground(works);
+        }
     }
 }
 
@@ -350,12 +358,15 @@ ProgressTaskInfo::onRenderEngineFrameComputed(int frame,
     if (!r && !process) {
         return;
     }
+    // A paused render process may still report after its restart replaced it.
+    if (process && (process != _imp->process.get())) {
+        return;
+    }
     OutputEffectInstance* output = r ? r->getOutput().get() : process->getWriter();
     if (!output) {
         return;
     }
     updateProgress(frame, progress);
-    Q_EMIT progressChanged(_imp->progressPercent / 100.);
 }
 
 void
@@ -365,6 +376,9 @@ ProgressTaskInfo::onRenderEngineStopped(int retCode)
     ProcessHandler* process = qobject_cast<ProcessHandler*>( sender() );
 
     if (!r && !process) {
+        return;
+    }
+    if (process && (process != _imp->process.get())) {
         return;
     }
     OutputEffectInstance* output = r ? r->getOutput().get() : process->getWriter();
@@ -634,6 +648,7 @@ ProgressTaskInfo::updateProgressBar(double totalProgress,
     }
 
     updateTaskBarProgress(_imp->status, _imp->progressPercent);
+    Q_EMIT progressChanged(totalProgress);
 }
 
 void

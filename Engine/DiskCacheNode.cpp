@@ -167,7 +167,7 @@ DiskCacheNode::knobChanged(KnobI* k,
         w.useRenderStats = false;
         std::list<AppInstance::RenderWork> works;
         works.push_back(w);
-        getApp()->startWritersRendering(eRenderModeForeground, works);
+        getApp()->renderForeground(works);
     } else {
         ret = false;
     }

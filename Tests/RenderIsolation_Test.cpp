@@ -51,6 +51,7 @@
 #include "Engine/Node.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
@@ -199,4 +200,74 @@ TEST_F(RenderIsolation, DeactivatingUpstreamAbortsWriteRender)
     ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
     EXPECT_FALSE(grade->isActivated());
     EXPECT_EQ(1, finishedCode);
+}
+
+// A foreground render returns only once every frame is written, as the modal dialog in the GUI
+// relies on: nothing can edit the graph while the render reads it.
+TEST_F(RenderIsolation, ForegroundRenderWritesEveryFrameBeforeReturning)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    buildGraph(tmp);
+    ASSERT_TRUE(bool(_writer));
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(_writer->getEffectInstance().get());
+    ASSERT_TRUE(writerEffect != NULL);
+
+    std::list<AppInstance::RenderWork> works;
+    works.push_back(AppInstance::RenderWork(writerEffect, kFirstFrame, kLastFrame, 1, false));
+    getApp()->renderForeground(works);
+
+    EXPECT_FALSE(getApp()->isRenderActiveOrQueued(writerEffect));
+    for (int frame = kFirstFrame; frame <= kLastFrame; ++frame) {
+        EXPECT_TRUE(QFile::exists(frameFile(frame))) << "frame " << frame << " was not written";
+    }
+}
+
+// Restarting a background render reuses the project file saved when it was submitted, which outlives
+// the render process and goes only once released.
+TEST_F(RenderIsolation, BackgroundRestartReusesSubmittedProjectFile)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    buildGraph(tmp);
+    ASSERT_TRUE(bool(_writer));
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(_writer->getEffectInstance().get());
+    ASSERT_TRUE(writerEffect != NULL);
+
+    QString savePath;
+    ASSERT_TRUE(getApp()->getProject()->saveForRenderProcess(&savePath));
+    ASSERT_TRUE(QFile::exists(savePath));
+
+    // Without this the restart would launch the test executable as a render process.
+    ProcessHandler::setLaunchDisabledForTesting(true);
+    const bool restarted = getApp()->restartBackgroundRender(AppInstance::RenderWork(writerEffect, kFirstFrame, kLastFrame, 1, false), savePath);
+    ProcessHandlerPtr process = getApp()->getRenderProcess(writerEffect);
+    ProcessHandler::setLaunchDisabledForTesting(false);
+
+    ASSERT_TRUE(restarted);
+    ASSERT_TRUE(bool(process));
+    EXPECT_EQ(savePath, process->getProjectPath());
+    EXPECT_TRUE(getApp()->isRenderActiveOrQueued(writerEffect));
+
+    Q_EMIT process->processFinished(0);
+    EXPECT_FALSE(getApp()->isRenderActiveOrQueued(writerEffect));
+    EXPECT_TRUE(QFile::exists(savePath)) << "the file must survive the process, so the task can restart again";
+
+    getApp()->releaseRenderSaveFile(savePath);
+    EXPECT_FALSE(QFile::exists(savePath));
+}
+
+// A restart from a project file that is gone fails instead of rendering the live project.
+TEST_F(RenderIsolation, BackgroundRestartWithoutProjectFileFails)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    buildGraph(tmp);
+    ASSERT_TRUE(bool(_writer));
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(_writer->getEffectInstance().get());
+    ASSERT_TRUE(writerEffect != NULL);
+
+    const QString missing = tmp.path() + QString::fromUtf8("/missing.ntp");
+    EXPECT_FALSE(getApp()->restartBackgroundRender(AppInstance::RenderWork(writerEffect, kFirstFrame, kLastFrame, 1, false), missing));
+    EXPECT_FALSE(getApp()->isRenderActiveOrQueued(writerEffect));
 }

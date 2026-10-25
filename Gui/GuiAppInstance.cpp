@@ -25,9 +25,12 @@
 
 #include "GuiAppInstance.h"
 
+#include <exception>
+#include <memory>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -37,6 +40,7 @@
 #include <QTimer>
 #include <QWindow>
 
+#include "Engine/AppManager.h"
 #include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/DiskCacheNode.h"
@@ -45,12 +49,14 @@
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/OutputEffectInstance.h"
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
 #include "Engine/StartupGLDiag.h"
+#include "Engine/TrackerContext.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -60,6 +66,7 @@
 #include "Serialization/NodeSerialization.h"
 
 #include "Gui/BackdropGui.h"
+#include "Gui/ForegroundTaskDialog.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGuiFile.h"
@@ -563,6 +570,8 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
     NodeGuiPtr nodegui = _imp->_gui->createNodeGUI(node, args);
     assert(nodegui);
 
+    followTrackingInModal(node);
+
     if (parentMultiInstance && nodegui) {
         nodegui->hideGui();
 
@@ -912,6 +921,128 @@ GuiAppInstance::notifyRenderRestarted( OutputEffectInstance* writer,
 {
     _imp->_gui->onRenderRestarted(writer, process);
 }
+
+namespace {
+// The modal shown while one tracker node tracks. Releasing it on destruction lets the dialog
+// close should the tracker go away mid-run.
+struct TrackingModal {
+    ForegroundTaskDialogPtr dialog;
+
+    void release()
+    {
+        if (dialog) {
+            ForegroundTaskDialogPtr d = dialog;
+            dialog.reset();
+            d->release();
+        }
+    }
+
+    ~TrackingModal()
+    {
+        release();
+    }
+};
+} // anonymous namespace
+
+void
+GuiAppInstance::followTrackingInModal(const NodePtr& node)
+{
+    TrackerContextPtr context = node ? node->getTrackerContext() : TrackerContextPtr();
+    if (!context) {
+        return;
+    }
+    // Hooked here rather than in the tracker's settings panel so that tracking started from
+    // Python, with no panel ever opened, is blocked the same way.
+    std::shared_ptr<TrackingModal> modal = std::make_shared<TrackingModal>();
+    NodeWPtr weakNode = node;
+    QObject::connect(context.get(), &TrackerContext::trackingStarted, this, [this, modal, weakNode](int /*step*/) {
+        modal->release();
+        NodePtr n = weakNode.lock();
+        Gui* gui = getGui();
+        ProgressPanel* panel = gui ? gui->getProgressPanel() : 0;
+        if (!n || !panel) {
+            return;
+        }
+        // The tracker starts its progress task before it reports that tracking started.
+        ProgressTaskInfoPtr task = panel->getTaskForNode(n);
+        if (!task) {
+            return;
+        }
+        ForegroundTaskDialog::Texts texts;
+        texts.title = tr("Tracking");
+        texts.taskFormat = tr("Tracking %1");
+        texts.failureFormat = tr("Tracking %1 failed.");
+        texts.failureTitle = tr("Tracking");
+        std::vector<ForegroundTaskDialog::TaskDesc> tasks(1);
+        tasks[0].label = QString::fromUtf8(n->getLabel().c_str());
+        tasks[0].task = task;
+        // Held until the tracker reports it has stopped: Cancel ends the progress task at once,
+        // while the tracking thread may still be writing keyframes.
+        modal->dialog = ForegroundTaskDialog::show(gui, texts, tasks, true);
+    });
+    QObject::connect(context.get(), &TrackerContext::trackingFinished, this, [modal]() {
+        modal->release();
+    });
+} // GuiAppInstance::followTrackingInModal
+
+void
+GuiAppInstance::renderForeground(const std::list<RenderWork>& writers)
+{
+    Gui* gui = _imp->_gui;
+    ProgressPanel* panel = gui ? gui->getProgressPanel() : 0;
+
+    // A writer that fails validation or is disabled gets no new task, so its node may still carry
+    // a task from an earlier render; remembering those tells a stale task from a new one. A
+    // restart reuses its task, so for it only the render's presence in the queue tells.
+    std::vector<ProgressTaskInfoPtr> previousTasks;
+    for (std::list<RenderWork>::const_iterator it = writers.begin(); it != writers.end(); ++it) {
+        NodePtr node = it->writer ? it->writer->getNode() : NodePtr();
+        previousTasks.push_back((panel && node && !it->isRestart) ? panel->getTaskForNode(node) : ProgressTaskInfoPtr());
+    }
+
+    // A writer that started before another threw is still rendering, so it is followed below.
+    // The error is shown only once those tasks are marked foreground and followed by the
+    // progress dialog, since the error dialog's event loop can run their signals and timers.
+    std::string startError;
+    try {
+        startWritersRendering(eRenderModeForeground, writers);
+    } catch (const std::exception& e) {
+        startError = e.what();
+    }
+
+    std::vector<ForegroundTaskDialog::TaskDesc> tasks;
+    if (panel) {
+        std::size_t index = 0;
+        for (std::list<RenderWork>::const_iterator it = writers.begin(); it != writers.end(); ++it, ++index) {
+            NodePtr node = it->writer ? it->writer->getNode() : NodePtr();
+            if (!node || !isRenderActiveOrQueued(it->writer)) {
+                continue;
+            }
+            ProgressTaskInfoPtr task = panel->getTaskForNode(node);
+            if (!task || (task == previousTasks[index])) {
+                continue;
+            }
+            ForegroundTaskDialog::TaskDesc desc;
+            desc.label = QString::fromUtf8(node->getLabel_mt_safe().c_str());
+            desc.task = task;
+            tasks.push_back(desc);
+        }
+    }
+
+    if (!startError.empty()) {
+        const std::string title = tr("Render").toStdString();
+        QTimer::singleShot(0, this, [title, startError]() {
+            Dialogs::errorDialog(title, startError);
+        });
+    }
+
+    ForegroundTaskDialog::Texts texts;
+    texts.title = tr("Rendering");
+    texts.taskFormat = tr("Rendering %1 (%2 of %3)");
+    texts.failureFormat = tr("Rendering %1 failed.");
+    texts.failureTitle = tr("Render");
+    ForegroundTaskDialog::show(gui, texts, tasks);
+} // GuiAppInstance::renderForeground
 
 void
 GuiAppInstance::setUndoRedoStackLimit(int limit)

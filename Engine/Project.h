@@ -191,9 +191,9 @@ public:
     /**
      * @brief Saves the project to a new file in autoSavesDir() for a render process to load,
      * named after this process, this app instance and a per-process counter so that no other
-     * render or instance writes the same file. The render process removes it once loaded, and
-     * the app removes it when the render ends or is taken off the queue; removeStaleRenderSaves()
-     * removes those whose Natron process is gone.
+     * render or instance writes the same file. The app removes it once no task can restart the
+     * render from it, or when it quits; removeStaleRenderSaves() removes those whose Natron
+     * process is gone.
      **/
     bool saveForRenderProcess(QString* filePath);
 

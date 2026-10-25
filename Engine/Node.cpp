@@ -6706,7 +6706,7 @@ Node::onEffectKnobValueChanged(KnobI* what,
             w.useRenderStats = getApp()->isRenderStatsActionChecked();
             std::list<AppInstance::RenderWork> works;
             works.push_back(w);
-            getApp()->startWritersRendering(eRenderModeForeground, works);
+            getApp()->renderForeground(works);
         }
     } else if ( ( what == _imp->disableNodeKnob.lock().get() ) && !_imp->isMultiInstance && !_imp->multiInstanceParent.lock() ) {
         Q_EMIT disabledKnobToggled( _imp->disableNodeKnob.lock()->getValue() );

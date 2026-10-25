@@ -178,6 +178,8 @@ public:
     int _creatingTree;
     mutable QMutex renderQueueMutex;
     std::list<RenderQueueItem> renderQueue, activeRenders;
+    // Files saved for render processes that a task may still restart from, guarded by renderQueueMutex.
+    QStringList renderSaveFiles;
     mutable QMutex invalidExprKnobsMutex;
     std::list<KnobIWPtr> invalidExprKnobs;
 
@@ -202,6 +204,7 @@ public:
         , renderQueueMutex()
         , renderQueue()
         , activeRenders()
+        , renderSaveFiles()
         , invalidExprKnobsMutex()
         , invalidExprKnobs()
         , projectBeingLoaded()
@@ -226,6 +229,10 @@ public:
     void getSequenceNameFromWriter(const OutputEffectInstance* writer, QString* sequenceName);
 
     void startRenderingFullSequence(bool blocking, const RenderQueueItem& writerWork);
+
+    void makeRenderProcess(RenderQueueItem* item);
+
+    void startOrQueueRenders(bool blocking, std::list<RenderQueueItem> items);
 };
 
 AppInstance::AppInstance(int appID)
@@ -682,12 +689,10 @@ AppInstance::loadInternal(const CLArgs& cl,
         } else {
             // Anything else is a bundle, a folder or a project.yaml; the loader explains what it
             // refuses.
+            // A file saved for this render process stays: the app that saved it may restart the
+            // render from it, and deletes it itself.
             if (!_imp->_currentProject->loadProject(info.path(), info.fileName())) {
                 throw std::invalid_argument(tr("Project file loading failed.").toStdString());
-            }
-            // The file was written for this process alone and is read in full by now.
-            if ((appPTR->getAppType() == AppManager::eAppTypeBackgroundAutoRunLaunchedFromGui) && Project::isRenderSaveFile(info.absoluteFilePath())) {
-                QFile::remove(info.absoluteFilePath());
             }
         }
 
@@ -1982,15 +1987,18 @@ AppInstance::startWritersRendering(RenderModeEnum mode,
         _imp->getSequenceNameFromWriter(it->writer, &item.sequenceName);
 
         if (renderInSeparateProcess) {
-            // One file per render process: each process removes its file once loaded, and a
-            // queued render may start long after the others.
+            // One file per render, kept until its task can no longer restart: a queued or
+            // restarted render may start long after the others, from the project as it is now.
             if (!getProject()->saveForRenderProcess(&item.savePath)) {
                 appPTR->writeToErrorLog_mt_safe(tr("Render"), QDateTime::currentDateTime(),
                                                 tr("%1 was not rendered: the project could not be saved for the render process.").arg(item.sequenceName));
                 continue;
             }
-            item.process = std::make_shared<ProcessHandler>(item.savePath, item.work.writer, item.work.firstFrame, item.work.lastFrame, item.work.frameStep);
-            QObject::connect( item.process.get(), SIGNAL(processFinished(int)), this, SLOT(onBackgroundRenderProcessFinished()) );
+            {
+                QMutexLocker k(&_imp->renderQueueMutex);
+                _imp->renderSaveFiles.push_back(item.savePath);
+            }
+            _imp->makeRenderProcess(&item);
         } else {
             QObject::connect(item.work.writer->getRenderEngine().get(), SIGNAL(renderFinished(int)), this, SLOT(onQueuedRenderFinished(int)), Qt::UniqueConnection);
             // renderFinished() is emitted from the OutputSchedulerThread, not this app's thread, and in
@@ -2008,7 +2016,21 @@ AppInstance::startWritersRendering(RenderModeEnum mode,
         }
         itemsToQueue.push_back(item);
     }
-    if ( itemsToQueue.empty() ) {
+    _imp->startOrQueueRenders(blocking, itemsToQueue);
+} // AppInstance::startWritersRendering
+
+void
+AppInstancePrivate::makeRenderProcess(RenderQueueItem* item)
+{
+    item->process = std::make_shared<ProcessHandler>(item->savePath, item->work.writer, item->work.firstFrame, item->work.lastFrame, item->work.frameStep);
+    QObject::connect(item->process.get(), SIGNAL(processFinished(int)), _publicInterface, SLOT(onBackgroundRenderProcessFinished()));
+}
+
+void
+AppInstancePrivate::startOrQueueRenders(bool blocking,
+                                        std::list<RenderQueueItem> items)
+{
+    if (items.empty()) {
         return;
     }
 
@@ -2017,36 +2039,126 @@ AppInstance::startWritersRendering(RenderModeEnum mode,
         // Each item's thread only waits for its render, so it must not hold one of the global pool's threads, which
         // the Task graph scheduler runs the frames' work on: with a pool of one, that render would never start.
         QThreadPool waitingPool;
-        waitingPool.setMaxThreadCount(std::max(1, (int)itemsToQueue.size()));
-        QtConcurrent::blockingMap(&waitingPool, itemsToQueue, [&](RenderQueueItem item) {
-            _imp->startRenderingFullSequence(true, item);
+        waitingPool.setMaxThreadCount(std::max(1, (int)items.size()));
+        QtConcurrent::blockingMap(&waitingPool, items, [&](RenderQueueItem item) {
+            startRenderingFullSequence(true, item);
             appPTR->getAppTLS()->cleanupTLSForThread();
         });
     } else {
         bool isQueuingEnabled = appPTR->getCurrentSettings()->isRenderQueuingEnabled();
         if (isQueuingEnabled) {
-            QMutexLocker k(&_imp->renderQueueMutex);
-            if ( !_imp->activeRenders.empty() ) {
-                _imp->renderQueue.insert( _imp->renderQueue.end(), itemsToQueue.begin(), itemsToQueue.end() );
+            QMutexLocker k(&renderQueueMutex);
+            if (!activeRenders.empty()) {
+                renderQueue.insert(renderQueue.end(), items.begin(), items.end());
 
                 return;
             } else {
-                std::list<RenderQueueItem>::const_iterator it = itemsToQueue.begin();
+                std::list<RenderQueueItem>::const_iterator it = items.begin();
                 const RenderQueueItem& firstWork = *it;
                 ++it;
-                for (; it != itemsToQueue.end(); ++it) {
-                    _imp->renderQueue.push_back(*it);
+                for (; it != items.end(); ++it) {
+                    renderQueue.push_back(*it);
                 }
                 k.unlock();
-                _imp->startRenderingFullSequence(false, firstWork);
+                startRenderingFullSequence(false, firstWork);
             }
         } else {
-            for (std::list<RenderQueueItem>::const_iterator it = itemsToQueue.begin(); it != itemsToQueue.end(); ++it) {
-                _imp->startRenderingFullSequence(false, *it);
+            for (std::list<RenderQueueItem>::const_iterator it = items.begin(); it != items.end(); ++it) {
+                startRenderingFullSequence(false, *it);
             }
         }
     }
-} // AppInstance::startWritersRendering
+} // AppInstancePrivate::startOrQueueRenders
+
+bool
+AppInstance::restartBackgroundRender(const RenderWork& work,
+                                     const QString& savePath)
+{
+    if (!work.writer || savePath.isEmpty() || !QFile::exists(savePath)) {
+        return false;
+    }
+    RenderQueueItem item;
+    item.work = work;
+    item.work.isRestart = true;
+    if (!_imp->validateRenderOptions(item.work, &item.work.firstFrame, &item.work.lastFrame, &item.work.frameStep)) {
+        return false;
+    }
+    _imp->getSequenceNameFromWriter(work.writer, &item.sequenceName);
+    item.savePath = savePath;
+    {
+        QMutexLocker k(&_imp->renderQueueMutex);
+        if (!_imp->renderSaveFiles.contains(savePath)) {
+            _imp->renderSaveFiles.push_back(savePath);
+        }
+    }
+    _imp->makeRenderProcess(&item);
+    notifyRenderRestarted(item.work.writer, item.process);
+
+    std::list<RenderQueueItem> items;
+    items.push_back(item);
+    _imp->startOrQueueRenders(false, items);
+
+    return true;
+}
+
+void
+AppInstance::releaseRenderSaveFile(const QString& savePath)
+{
+    if (savePath.isEmpty()) {
+        return;
+    }
+    {
+        QMutexLocker k(&_imp->renderQueueMutex);
+        if (!_imp->renderSaveFiles.removeOne(savePath)) {
+            return;
+        }
+    }
+    QFile::remove(savePath);
+}
+
+bool
+AppInstance::isRenderActiveOrQueued(const OutputEffectInstance* writer) const
+{
+    QMutexLocker k(&_imp->renderQueueMutex);
+
+    for (const RenderQueueItem& item : _imp->activeRenders) {
+        if (item.work.writer == writer) {
+            return true;
+        }
+    }
+    for (const RenderQueueItem& item : _imp->renderQueue) {
+        if (item.work.writer == writer) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+ProcessHandlerPtr
+AppInstance::getRenderProcess(const OutputEffectInstance* writer) const
+{
+    QMutexLocker k(&_imp->renderQueueMutex);
+
+    for (const RenderQueueItem& item : _imp->activeRenders) {
+        if ((item.work.writer == writer) && item.process) {
+            return item.process;
+        }
+    }
+    for (const RenderQueueItem& item : _imp->renderQueue) {
+        if ((item.work.writer == writer) && item.process) {
+            return item.process;
+        }
+    }
+
+    return ProcessHandlerPtr();
+}
+
+void
+AppInstance::renderForeground(const std::list<RenderWork>& writers)
+{
+    startWritersRendering(eRenderModeBlocking, writers);
+}
 
 void
 AppInstancePrivate::getSequenceNameFromWriter(const OutputEffectInstance* writer,
@@ -2147,7 +2259,7 @@ AppInstance::onQueuedRenderFinished(int /*retCode*/)
     if (!effect) {
         return;
     }
-    startNextQueuedRender( effect.get() );
+    startNextQueuedRender(effect.get(), 0);
 }
 
 void
@@ -2161,54 +2273,45 @@ AppInstance::onRenderFinishedForExitStatus(int retCode)
 void
 AppInstance::removeRenderFromQueue(OutputEffectInstance* writer)
 {
-    QString savePath;
-    {
-        QMutexLocker k(&_imp->renderQueueMutex);
+    QMutexLocker k(&_imp->renderQueueMutex);
 
-        for (std::list<RenderQueueItem>::iterator it = _imp->renderQueue.begin(); it != _imp->renderQueue.end(); ++it) {
-            if (it->work.writer == writer) {
-                savePath = it->savePath;
-                _imp->renderQueue.erase(it);
-                break;
-            }
+    for (std::list<RenderQueueItem>::iterator it = _imp->renderQueue.begin(); it != _imp->renderQueue.end(); ++it) {
+        if (it->work.writer == writer) {
+            _imp->renderQueue.erase(it);
+            break;
         }
-    }
-    // No render process will load it now.
-    if (!savePath.isEmpty()) {
-        QFile::remove(savePath);
     }
 }
 
 void
-AppInstance::startNextQueuedRender(OutputEffectInstance* finishedWriter)
+AppInstance::startNextQueuedRender(OutputEffectInstance* finishedWriter,
+                                   const ProcessHandler* finishedProcess)
 {
     RenderQueueItem nextWork;
 
     // Do not make the process die under the mutex otherwise we may deadlock
     ProcessHandlerPtr processDying;
-    QString finishedSavePath;
     bool hasNextWork = false;
     {
         QMutexLocker k(&_imp->renderQueueMutex);
+        // Matched on the process too: a paused render process may end after its restart began,
+        // and must neither end the restart nor start the next render early.
+        bool finishedActive = false;
         for (std::list<RenderQueueItem>::iterator it = _imp->activeRenders.begin(); it != _imp->activeRenders.end(); ++it) {
-            if (it->work.writer == finishedWriter) {
+            if ((it->work.writer == finishedWriter) && (it->process.get() == finishedProcess)) {
                 processDying = it->process;
-                finishedSavePath = it->savePath;
                 _imp->activeRenders.erase(it);
+                finishedActive = true;
                 break;
             }
         }
-        if ( !_imp->renderQueue.empty() ) {
+        if (finishedActive && !_imp->renderQueue.empty()) {
             nextWork = _imp->renderQueue.front();
             _imp->renderQueue.pop_front();
             hasNextWork = true;
         }
     }
     processDying.reset();
-    // A render process that ended before loading its file, by crashing or being aborted, left it.
-    if (!finishedSavePath.isEmpty()) {
-        QFile::remove(finishedSavePath);
-    }
 
     if (hasNextWork) {
         _imp->startRenderingFullSequence(false, nextWork);
@@ -2225,7 +2328,7 @@ AppInstance::onBackgroundRenderProcessFinished()
         effect = proc->getWriter();
     }
     if (effect) {
-        startNextQueuedRender(effect);
+        startNextQueuedRender(effect, proc);
     }
 }
 
@@ -2272,23 +2375,16 @@ AppInstance::aboutToQuit()
     ///deleting nodes might reference the project.
     _imp->_currentProject->reset(true /*aboutToQuit*/, /*blocking*/true);
 
-    // Queued renders never start now, and a running render process dies with this app, possibly
-    // before loading its file.
+    // Queued renders never start now, no task can restart, and a running render process dies
+    // with this app, possibly before loading its file.
     QStringList savePaths;
     {
         QMutexLocker k(&_imp->renderQueueMutex);
-        for (const RenderQueueItem& item : _imp->renderQueue) {
-            savePaths.push_back(item.savePath);
-        }
-        for (const RenderQueueItem& item : _imp->activeRenders) {
-            savePaths.push_back(item.savePath);
-        }
+        savePaths.swap(_imp->renderSaveFiles);
         _imp->renderQueue.clear();
     }
     for (const QString& savePath : savePaths) {
-        if (!savePath.isEmpty()) {
-            QFile::remove(savePath);
-        }
+        QFile::remove(savePath);
     }
 }
 

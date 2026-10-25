@@ -26,12 +26,15 @@
 #include <list>
 #include <set>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
 #include <QObject>
 #include <QThread>
+#include <QTimer>
 
 #include "BaseTest.h"
 
@@ -106,7 +109,7 @@ protected:
     {
         bool finished = false;
         QObject receiver;
-        QObject::connect(_context.get(), &TrackerContext::trackingFinished, &receiver, [&finished]() {
+        QObject::connect(_context.get(), &TrackerContext::trackingJobFinished, &receiver, [&finished]() {
             finished = true;
         });
 
@@ -155,8 +158,8 @@ TEST_F(TrackerLayerTest, ColorPlaneTracksToGolden)
     expectGoldenTrack();
 }
 
-// Code that unblocks the interface on trackingFinished relies on the tracker having written every
-// key of the run by then, including after a cancel.
+// Listeners of trackingFinished rely on the tracker having written every key of the run by then,
+// including after a cancel.
 TEST_F(TrackerLayerTest, CanceledRunWritesNoKeyAfterTrackingFinished)
 {
     createTrackerOverFixture("tracker-patch.####.exr");
@@ -212,6 +215,104 @@ TEST_F(TrackerLayerTest, CanceledRunWritesNoKeyAfterTrackingFinished)
     }
     EXPECT_EQ(keysAtFinish, center->getKeyFramesCount(ViewSpec(0), 0)) << "keys were written after trackingFinished";
     EXPECT_EQ(lastKeyAtFinish, lastKey) << "keys were written after trackingFinished";
+}
+
+namespace {
+
+// Every key time and value of each dimension of a knob, to tell whether anything wrote to it.
+std::vector<std::pair<double, double>>
+keysOf(const KnobDoublePtr& knob)
+{
+    std::vector<std::pair<double, double>> ret;
+    for (int d = 0; d < knob->getDimension(); ++d) {
+        CurvePtr curve = knob->getCurve(ViewSpec(0), d);
+        if (curve) {
+            for (const KeyFrame& k : curve->getKeyFrames_mt_safe()) {
+                ret.push_back(std::make_pair(k.getTime(), k.getValue()));
+            }
+        }
+        ret.push_back(std::make_pair(-1., knob->getValue(d)));
+    }
+
+    return ret;
+}
+
+} // namespace
+
+// The foreground dialog over a tracking run closes on trackingJobFinished, so the transform solve
+// that follows the run, cancelled or not, must have written its last value by then.
+TEST_F(TrackerLayerTest, TransformSolveEndsBeforeTrackingJobFinished)
+{
+    createTrackerOverFixture("tracker-patch.####.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+    // Automatic solving off, so that setting the motion type starts no solve of its own.
+    KnobBoolPtr autoSolve = std::dynamic_pointer_cast<KnobBool>(_tracker->getKnobByName("autoComputeransform"));
+    KnobChoicePtr motionType = std::dynamic_pointer_cast<KnobChoice>(_tracker->getKnobByName("motionType"));
+    KnobChoicePtr transformType = std::dynamic_pointer_cast<KnobChoice>(_tracker->getKnobByName("transformType"));
+    ASSERT_TRUE(autoSolve && motionType && transformType);
+    autoSolve->setValue(false);
+    // Transform, Match-Move.
+    transformType->setValue(0);
+    motionType->setValue(2);
+
+    const char* const solvedNames[] = { "translate", "rotate", "scale", "center" };
+    std::vector<KnobDoublePtr> solved;
+    for (const char* name : solvedNames) {
+        KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(_tracker->getKnobByName(name));
+        ASSERT_TRUE(bool(knob)) << name;
+        solved.push_back(knob);
+    }
+    KnobDoublePtr translate = solved[0];
+
+    const int farEnd = 2000;
+    bool finished = false;
+    bool jobFinished = false;
+    bool jobFinishedBeforeFinished = false;
+    int translateKeysAtJobEnd = -1;
+    std::vector<std::vector<std::pair<double, double>>> atJobEnd;
+    QObject receiver;
+    // Cancelled after a few frames, so the solve runs after a cancel over the keys written so far.
+    QObject::connect(_context.get(), &TrackerContext::trackingStarted, &receiver, [this](int) {
+        QTimer::singleShot(100, _context.get(), [this]() {
+            _context->abortTracking();
+        });
+    });
+    QObject::connect(_context.get(), &TrackerContext::trackingFinished, &receiver, [&]() {
+        finished = true;
+    });
+    QObject::connect(_context.get(), &TrackerContext::trackingJobFinished, &receiver, [&]() {
+        jobFinishedBeforeFinished = !finished;
+        jobFinished = true;
+        translateKeysAtJobEnd = translate->getKeyFramesCount(ViewSpec(0), 0);
+        for (const KnobDoublePtr& knob : solved) {
+            atJobEnd.push_back(keysOf(knob));
+        }
+    });
+
+    std::list<TrackMarkerPtr> markers;
+    markers.push_back(_marker);
+    _context->trackMarkers(markers, kStartFrame, farEnd, 1, NULL);
+
+    for (int i = 0; i < 3000 && !jobFinished; ++i) {
+        QCoreApplication::processEvents();
+        QThread::msleep(10);
+    }
+    ASSERT_TRUE(jobFinished) << "the tracking job did not finish in time";
+    EXPECT_TRUE(finished);
+    EXPECT_FALSE(jobFinishedBeforeFinished) << "trackingJobFinished came before trackingFinished";
+    EXPECT_GT(translateKeysAtJobEnd, 0) << "the solve had not written the translation when the job finished";
+
+    for (int i = 0; i < 100; ++i) {
+        QCoreApplication::processEvents();
+        QThread::msleep(10);
+    }
+    EXPECT_FALSE(_context->isCurrentlyTracking());
+    ASSERT_EQ(solved.size(), atJobEnd.size());
+    for (std::size_t i = 0; i < solved.size(); ++i) {
+        EXPECT_EQ(atJobEnd[i], keysOf(solved[i])) << solvedNames[i] << " was written after trackingJobFinished";
+    }
 }
 
 namespace {

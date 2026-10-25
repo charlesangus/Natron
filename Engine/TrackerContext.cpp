@@ -1502,6 +1502,20 @@ TrackerContext::onSchedulerTrackingFinished()
 }
 
 void
+TrackerContext::onSchedulerRunEnded()
+{
+    // Solved here rather than on the tracking thread: the solver delivers its result through a
+    // QFutureWatcher, which needs the event loop of the thread it lives in.
+    _imp->solvingAfterTrackingRun = true;
+    solveTransformParams();
+    const bool solveInFlight = _imp->lastSolveRequest.tWatcher || _imp->lastSolveRequest.cpWatcher;
+    if (_imp->solvingAfterTrackingRun && !solveInFlight) {
+        _imp->solvingAfterTrackingRun = false;
+        Q_EMIT trackingJobFinished();
+    }
+}
+
+void
 TrackerContext::onSchedulerTrackingProgress(double progress)
 {
     if ( getNode()->getApp() && !getNode()->getApp()->progressUpdate(getNode(), progress) ) {
@@ -1868,6 +1882,7 @@ TrackScheduler::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
     gettimeofday(&lastProgressUpdateTime, 0);
 
     bool allTrackFailed = false;
+    TrackerContext* isContext = dynamic_cast<TrackerContext*>(_imp->paramsProvider);
     {
         ///Use RAII style for setting the isDoingPartialUpdates flag so we're sure it gets removed
         IsTrackingFlagSetter_RAII __istrackingflag__(effect, this, frameStep, reportProgress, viewer, doPartialUpdates);
@@ -1962,40 +1977,41 @@ TrackScheduler::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
                 break;
             }
         } // while (cur != end) {
+
+        // Inside the flag's scope so that trackingFinished follows the markers' last writes.
+        KnobBoolPtr contextEnabledKnob;
+        if (isContext) {
+            contextEnabledKnob = isContext->getEnabledKnob();
+        }
+        // Re-slave the knobs to the gui
+        if (contextEnabledKnob) {
+            for (std::size_t i = 0; i < tracks.size(); ++i) {
+                // unslave the enabled knob, since it is slaved to the gui but we may modify it
+                KnobBoolPtr enabledKnob = tracks[i]->natronMarker->getEnabledKnob();
+
+                tracks[i]->natronMarker->notifyTrackingEnded();
+                contextEnabledKnob->blockListenersNotification();
+                contextEnabledKnob->cloneAndUpdateGui(enabledKnob.get());
+                contextEnabledKnob->unblockListenersNotification();
+                enabledKnob->slaveTo(0, contextEnabledKnob, 0);
+            }
+            contextEnabledKnob->setDirty(tracks.size() > 1);
+        }
     } // IsTrackingFlagSetter_RAII
-    TrackerContext* isContext = dynamic_cast<TrackerContext*>(_imp->paramsProvider);
-    if (isContext) {
-        isContext->solveTransformParams();
-    }
 
     appPTR->getAppTLS()->cleanupTLSForThread();
-
-
-    KnobBoolPtr contextEnabledKnob;
-    if (isContext) {
-        contextEnabledKnob = isContext->getEnabledKnob();
-    }
-    // Re-slave the knobs to the gui
-    if (contextEnabledKnob) {
-        for (std::size_t i = 0; i < tracks.size(); ++i) {
-            // unslave the enabled knob, since it is slaved to the gui but we may modify it
-            KnobBoolPtr enabledKnob = tracks[i]->natronMarker->getEnabledKnob();
-
-            tracks[i]->natronMarker->notifyTrackingEnded();
-            contextEnabledKnob->blockListenersNotification();
-            contextEnabledKnob->cloneAndUpdateGui( enabledKnob.get() );
-            contextEnabledKnob->unblockListenersNotification();
-            enabledKnob->slaveTo(0, contextEnabledKnob, 0);
-        }
-        contextEnabledKnob->setDirty(tracks.size() > 1);
-    }
-
 
     //Now that tracking is done update viewer once to refresh the whole visible portion
 
     if ( _imp->paramsProvider && _imp->paramsProvider->getUpdateViewer() ) {
         //Refresh all viewers to the current frame
         timeline->seekFrame(lastValidFrame, true, 0, eTimelineChangeReasonOtherSeek);
+    }
+
+    // The tracker context solves for its transform when this reaches the main thread, queued
+    // behind trackingFinished.
+    if (isContext) {
+        emit_runEnded();
     }
 
     return state;

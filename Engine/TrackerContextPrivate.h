@@ -445,6 +445,9 @@ public:
 
     SolveRequest lastSolveRequest;
 
+    // Set while the solve that follows a tracking run is in flight; the solve that ends while it
+    // is set ends the run's job.
+    bool solvingAfterTrackingRun = false;
 
     TrackerContextPrivate(TrackerContext* publicInterface,
                           const NodePtr &node);

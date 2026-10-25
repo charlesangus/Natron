@@ -125,6 +125,7 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
     //needs to be blocking, otherwise the progressUpdate() call could be made before startProgress
     QObject::connect( &scheduler, SIGNAL(trackingStarted(int)), _publicInterface, SLOT(onSchedulerTrackingStarted(int)) );
     QObject::connect( &scheduler, SIGNAL(trackingFinished()), _publicInterface, SLOT(onSchedulerTrackingFinished()) );
+    QObject::connect(&scheduler, SIGNAL(runEnded()), _publicInterface, SLOT(onSchedulerRunEnded()));
     QObject::connect( &scheduler, SIGNAL(trackingProgress(double)), _publicInterface, SLOT(onSchedulerTrackingProgress(double)) );
     TrackerNodePtr isTrackerNode = std::dynamic_pointer_cast<TrackerNode>(effect);
     QString fixedNamePrefix = QString::fromUtf8( node->getScriptName_mt_safe().c_str() );
@@ -1123,11 +1124,13 @@ TrackerContext::trackMarkers(const std::list<TrackMarkerPtr>& markers,
 {
     if ( markers.empty() ) {
         Q_EMIT trackingFinished();
+        Q_EMIT trackingJobFinished();
         return;
     }
 
     if (!getNode()->getInput(0)) {
         Q_EMIT trackingFinished();
+        Q_EMIT trackingJobFinished();
         return;
     }
 
@@ -2656,6 +2659,10 @@ TrackerContextPrivate::endSolve()
     NodePtr n = node.lock();
     n->getApp()->progressEnd(n);
     n->getEffectInstance()->endChanges();
+    if (solvingAfterTrackingRun) {
+        solvingAfterTrackingRun = false;
+        Q_EMIT _publicInterface->trackingJobFinished();
+    }
 }
 
 bool

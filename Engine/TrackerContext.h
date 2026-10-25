@@ -371,6 +371,7 @@ public Q_SLOTS:
 
     void onSchedulerTrackingStarted(int frameStep);
     void onSchedulerTrackingFinished();
+    void onSchedulerRunEnded();
 
     void onSchedulerTrackingProgress(double progress);
 
@@ -413,7 +414,14 @@ Q_SIGNALS:
     void searchTopRightKnobValueChanged(TrackMarkerPtr marker, int, int);
 
     void trackingStarted(int);
+
+    // The frame loop of a tracking run has stopped and written its last marker key. The transform
+    // solve that follows each run may still be writing the tracker's transform and CornerPin knobs.
     void trackingFinished();
+
+    // Emitted on the main thread once a tracking run and the transform solve that follows it have
+    // both ended: nothing the run started writes to the tracker afterwards.
+    void trackingJobFinished();
 
     void onNodeInputChanged(int inputNb);
 
@@ -514,6 +522,11 @@ public:
         Q_EMIT trackingFinished();
     }
 
+    void emit_runEnded()
+    {
+        Q_EMIT runEnded();
+    }
+
 private Q_SLOTS:
 
     void doRenderCurrentFrameForViewer(ViewerInstance* viewer);
@@ -524,6 +537,10 @@ Q_SIGNALS:
     void trackingStarted(int step);
 
     void trackingFinished();
+
+    // Every run ends with this, after trackingFinished when that is emitted, including runs too
+    // short to report progress.
+    void runEnded();
 
     void trackingProgress(double progress);
 

@@ -977,9 +977,10 @@ GuiAppInstance::followTrackingInModal(const NodePtr& node)
         std::vector<ForegroundTaskDialog::TaskDesc> tasks(1);
         tasks[0].label = QString::fromUtf8(n->getLabel().c_str());
         tasks[0].task = task;
-        // Held until the tracker reports it has stopped: Cancel ends the progress task at once,
-        // while the tracking thread may still be writing keyframes. The tracker emits
-        // trackingFinished once its frame loop has written its last key.
+        // Held until the tracker reports that the whole job has stopped: Cancel ends the progress
+        // task at once, while the tracking thread may still be writing keyframes, and after the
+        // frame loop the tracker solves for its transform under a progress task of its own.
+        // trackingJobFinished comes once that solve has written its last value.
         modal->dialog = ForegroundTaskDialog::show(gui, texts, tasks, true);
         if (modal->dialog) {
             // Otherwise the tracker only learns of the cancel from its next progress report,
@@ -992,7 +993,7 @@ GuiAppInstance::followTrackingInModal(const NodePtr& node)
             });
         }
     });
-    QObject::connect(context.get(), &TrackerContext::trackingFinished, this, [modal]() {
+    QObject::connect(context.get(), &TrackerContext::trackingJobFinished, this, [modal]() {
         modal->release();
     });
 } // GuiAppInstance::followTrackingInModal

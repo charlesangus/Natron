@@ -5,6 +5,9 @@ frames: the "ForegroundTaskDialog" is the active modal widget, and the viewer's 
 shortcut, sent through the window system with QTest, does nothing. The viewer's stop shortcut
 (Escape) is not sent: while the dialog is up the keyboard is the dialog's, and Escape there is the
 dialog's own Cancel. Cancel stops tracking, and no marker key appears past the frame it stopped at.
+The Tracker is set to Match-Move, so after each run it solves for its transform; the dialog stays
+up through that solve, and the Tracker's transform knobs hold the values they had when the dialog
+closed.
 
 Before that, a second Tracker is tracked through the Python API with no settings panel open, and
 the same modal comes up and cancels. Creating a built-in Tracker always opens its panel (NodeGui
@@ -31,6 +34,7 @@ FIRST = 1
 LAST = 60
 DIALOG_NAME = "ForegroundTaskDialog"
 TRACKER_ID = "fr.inria.built-in.Tracker"
+TRANSFORM_KNOBS = ("translate", "rotate", "scale", "center")
 
 try:
     from PySide6.QtCore import QItemSelectionModel, QMetaObject, Qt
@@ -103,6 +107,21 @@ try:
         times = key_times(track)
         return times[-1] if times else None
 
+    def transform_state(tracker):
+        """Every key time and value of the Tracker's solved transform knobs, and their values."""
+        out = []
+        for name in TRANSFORM_KNOBS:
+            param = tracker.getParam(name)
+            for d in range(param.getNumDimensions()):
+                keys = []
+                for i in range(param.getNumKeys(d)):
+                    t = param.getKeyTime(i, d)
+                    if isinstance(t, (tuple, list)):
+                        t = t[1] if t[0] else None
+                    keys.append((t, param.getValueAtTime(t, d) if t is not None else None))
+                out.append((name, d, tuple(keys), param.getValue(d)))
+        return out
+
     def build_graph():
         gt.section("setup")
         # V tracks to the end of the project range, so it ends where the Python calls do.
@@ -131,6 +150,7 @@ try:
         track = context.createTrack()
         require(track is not None, "create a track")
         set_on_corner(track)
+        tracker.getParam("motionType").set("Match-Move")
         state.update(checker=checker, transform=transform, tracker=tracker, context=context, track=track, viewer=viewer)
         yield ("sleep", 300)
 
@@ -227,6 +247,7 @@ try:
         at_cancel = last_key()
         closed = yield ("until", lambda: task_dialog() is None, POLL_TIMEOUT_S)
         check(closed, "the dialog closed once tracking stopped")
+        transform_at_close = transform_state(state["tracker"])
         stopped_at = last_key()
         report("NOTE last key at Cancel %r, once stopped %r" % (at_cancel, stopped_at))
         check(stopped_at is not None and stopped_at < LAST, "Cancel stopped tracking before frame %d (%r)" % (LAST, stopped_at))
@@ -234,6 +255,11 @@ try:
               "at most the frame in flight was tracked after Cancel (%r -> %r)" % (at_cancel, stopped_at))
         yield ("sleep", 2000)
         check(last_key() == stopped_at, "no marker key appeared past the stop frame (%r -> %r)" % (stopped_at, last_key()))
+        translate_keys = [k for name, _d, k, _v in transform_at_close if name == "translate"]
+        check(any(translate_keys), "the transform solve had keyed the translation when the dialog closed (%r)" % (translate_keys,))
+        transform_now = transform_state(state["tracker"])
+        check(transform_now == transform_at_close,
+              "the Tracker's transform knobs did not change after the dialog closed (%r -> %r)" % (transform_at_close, transform_now))
         check(QApplication.activeModalWidget() is None, "no modal widget is left")
         gt.shot("m177-track-stopped.png")
 

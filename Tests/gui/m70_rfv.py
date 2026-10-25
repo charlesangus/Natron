@@ -24,6 +24,11 @@ Sections:
     projGain adds it to the node's Global Variables group, since the project declares the name,
     with the project's value, resets the drop-down to its prompt and stops offering the name;
     Ctrl+Z takes it back off and keeps the drop-down in its group;
+  - right-click manage: a real right mouse press on a knob row of the Set node's panel opens the
+    panel's menu inside the row's press handler; "Manage user parameters..." opens the dialog, a
+    3-dimension Double added to the RFV group and an Int added outside it (no selection) go through
+    the dialog's Add flow, and a real mouse click on Close leaves Natron running with both knobs on
+    the node and its panel;
   - delete: deleting the project variable from the dialog drops app.<name> too.
 
 Every modal dialog is driven from QTimer callbacks (see run() in guitest.py): whatever raises it is
@@ -54,12 +59,14 @@ GLOBAL_LABEL = "Global Variables"
 GLOBAL_GROUP = "rfvGlobalVariables"
 EXISTING_CHOICE = "rfvExistingVariable"
 EXISTING_PROMPT = "Add existing variable..."
+TYPE_INT = 0     # AddKnobDialog::eParamDataTypeInteger
+TYPE_DOUBLE_3D = 5  # AddKnobDialog::eParamDataTypeFloatingPoint3D
 TYPE_DOUBLE = 3  # AddKnobDialog::eParamDataTypeFloatingPoint
 TYPE_TEXT = 11   # AddKnobDialog::eParamDataTypeTextInput
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QMetaObject, Q_ARG, Qt, QTimer
+    from PySide6.QtCore import QMetaObject, Q_ARG, QPoint, Qt, QTimer
     from PySide6.QtWidgets import QAbstractButton, QApplication, QGraphicsView, QLabel, QLineEdit, QPlainTextEdit, QTabWidget, QTreeWidget, QWidget
 
     import guitest as gt
@@ -421,6 +428,112 @@ try:
         ok = yield ("until", lambda: modal_class() == "ManageUserParamsDialog", DIALOG_TIMEOUT_S)
         require(ok, "Edit variables... opened the variables dialog", "modal is %r" % modal_class())
 
+    MANAGE_ITEM = "Manage user parameters..."
+
+    def real_click_later(dialog_class, *texts):
+        """Like click_later, but with a real left mouse press and release on the button."""
+        def fn():
+            dialog = modal()
+            b = button_in(dialog, *texts) if dialog is not None and gt.class_name(dialog) == dialog_class else None
+            if b is None:
+                check(False, "%s is the modal dialog with a %r button to click (modal is %r)" % (dialog_class, texts, modal_class()))
+                return
+            QTest.mouseClick(b, Qt.LeftButton)
+        later(fn)
+
+    def row_container(panel, label_text):
+        """The right-clickable row or page widget holding the visible label that starts with label_text."""
+        _held.append(panel)
+        for w in panel.findChildren(QLabel):
+            try:
+                if not (w.isVisible() and w.text().startswith(label_text)):
+                    continue
+                p = w.parentWidget()
+                while p is not None and gt.class_name(p) != "RightClickableWidget":
+                    p = p.parentWidget()
+                if p is not None:
+                    _held.append(p)
+                    return p
+            except RuntimeError:
+                continue
+        return None
+
+    def bare_point(row):
+        """A point of row that no child widget covers. The panel only opens its menu when the
+        widget under the cursor is the row itself."""
+        for fy in (0.5, 0.25, 0.75, 0.1, 0.9):
+            for x in range(row.width() - 3, 2, -4):
+                pt = QPoint(x, int(row.height() * fy))
+                if QApplication.widgetAt(row.mapToGlobal(pt)) is row:
+                    return pt
+        return None
+
+    def press_manage_from_menu(row):
+        """Right-clicks row with a real mouse press, so the panel's menu runs inside the press
+        handler, and chooses the manage-parameters item with the keyboard. The click returns once
+        the menu has closed; the dialog opens from a queued call afterwards."""
+        seen = {"entries": None, "chosen": False, "failed": False}
+        pt = bare_point(row)
+        if pt is None:
+            check(False, "a point on the row not covered by a child widget (row %s)" % row.size())
+            seen["failed"] = True
+            return seen
+
+        def inspect():
+            popup = QApplication.activePopupWidget()
+            if popup is None:
+                check(False, "the panel's right-click menu is open")
+                seen["failed"] = True
+                return
+            _held.append(popup)
+            seen["entries"] = [a.text() for a in popup.actions() if a.text()]
+            gt.shot("m70-panel-menu.png")
+            action = next((a for a in popup.actions() if a.text() == MANAGE_ITEM), None)
+            if action is None or not action.isEnabled():
+                popup.close()
+                return
+            seen["chosen"] = True
+            popup.setActiveAction(action)
+            QTest.keyClick(popup, Qt.Key_Return)
+
+        def press():
+            try:
+                QTest.mouseClick(row, Qt.RightButton, Qt.NoModifier, pt)
+            except RuntimeError as e:
+                check(False, "the right click completed: " + str(e))
+
+        QTimer.singleShot(800, inspect)
+        later(press)  # the press may not return until the dialog it opens is closed
+        return seen
+
+    def manage_from_right_click(node_name, label_text):
+        """Opens the manage dialog on node_name's panel from a real right click on the row labelled label_text."""
+        yield from open_node_panel(node_name)
+        require(show_tab(node_panel(app.getNode(node_name)), "Variables"), "the panel has a Variables tab")
+        yield ("sleep", SETTLE_MS)
+        row = row_container(node_panel(app.getNode(node_name)), label_text)
+        require(row is not None, "found the right-clickable row of %r on the panel" % label_text)
+        seen = press_manage_from_menu(row)
+        row = None
+        ok = yield ("until", lambda: seen["entries"] is not None or seen["failed"], DIALOG_TIMEOUT_S)
+        require(ok and not seen["failed"], "the panel's right-click menu opened")
+        check(MANAGE_ITEM in seen["entries"],
+              "the panel's menu has %r (entries %r)" % (MANAGE_ITEM, seen["entries"]))
+        require(seen["chosen"], "chose %r from the menu" % MANAGE_ITEM)
+        ok = yield ("until", lambda: modal_class() == "ManageUserParamsDialog", DIALOG_TIMEOUT_S)
+        require(ok, "the manage dialog opened", "modal is %r" % modal_class())
+
+    def close_with_mouse(dialog_class):
+        real_click_later(dialog_class, "Close")
+        ok = yield ("until", lambda: modal() is None, DIALOG_TIMEOUT_S)
+        require(ok, "a mouse click on Close closed the " + dialog_class, "modal is %r" % modal_class())
+
+    def clear_selection():
+        tree = modal().findChildren(QTreeWidget)[0]
+        tree.clearSelection()
+        tree.setCurrentItem(None)
+        QApplication.processEvents()
+
     def steps():
         ok = yield ("until", graph_up, STARTUP_TIMEOUT_S)
         require(ok, "the main window and its node graph are up")
@@ -672,6 +785,54 @@ try:
         check(parent_name(app.getNode(third_name).getParam(EXISTING_CHOICE)) == GLOBAL_GROUP,
               "the drop-down stays in the %s group after the undo" % GLOBAL_GROUP)
         check(app.getProjectParam("projGain") is not None, "the project's variable is untouched by the undo")
+
+        gt.section("right-click manage")
+        if QTest is None:
+            report("NOTE PySide6.QtTest is unavailable: skipping the real right-click and Close click checks")
+        else:
+            yield from activate_main_window()
+            # Inside the RFV group: the user's report. The press that opened the menu is still on
+            # the stack of the row it hit while the dialog rebuilds the user pages.
+            yield from manage_from_right_click(node_name, "Set gain")
+            require(select(RFV_GROUP), "the dialog lists the RFV group " + RFV_GROUP)
+            yield from add_param("ManageUserParamsDialog", "gainVec", "Gain vec", TYPE_DOUBLE_3D)
+            gt.shot("m70-right-click-manage-added.png")
+            yield from close_with_mouse("ManageUserParamsDialog")
+            yield ("sleep", SETTLE_MS)
+            check(main_gui() is not None and graph_up(), "Natron is still running after Close")
+            vec = app.getNode(node_name).getParam("gainVec")
+            check(vec is not None and vec.getNumDimensions() == 3, "the 3-dimension gainVec exists on the node")
+            check(vec is not None and parent_name(vec) == RFV_GROUP, "gainVec is in the RFV group (parent %r)" % parent_name(vec))
+            vec = None
+            show_tab(node_panel(app.getNode(node_name)), "Variables")
+            yield ("sleep", SETTLE_MS)
+            check(node_panel(app.getNode(node_name)) is not None and panel_has_label(node_panel(app.getNode(node_name)), "Gain vec"),
+                  "the panel shows gainVec")
+            gt.shot("m70-right-click-manage-closed.png")
+
+            # Outside the group: a plain user page.
+            yield from manage_from_right_click(node_name, "Gain vec")
+            clear_selection()
+            yield from add_param("ManageUserParamsDialog", "plainCount", "Plain count", TYPE_INT)
+            yield from close_with_mouse("ManageUserParamsDialog")
+            yield ("sleep", SETTLE_MS)
+            check(main_gui() is not None and graph_up(), "Natron is still running after Close with a plain user knob")
+            plain = app.getNode(node_name).getParam("plainCount")
+            check(plain is not None and isinstance(plain, NatronEngine.IntParam), "the Int plainCount exists on the node")
+            check(plain is not None and parent_name(plain) != RFV_GROUP,
+                  "plainCount is outside the RFV group (parent %r)" % parent_name(plain))
+            plain = None
+            panel = node_panel(app.getNode(node_name))
+            if panel is not None:
+                for tabs in panel.findChildren(QTabWidget):
+                    for i in range(tabs.count()):
+                        if tabs.tabText(i).replace("&", "") == "User":
+                            tabs.setCurrentIndex(i)
+                QApplication.processEvents()
+            yield ("sleep", SETTLE_MS)
+            check(node_panel(app.getNode(node_name)) is not None and panel_has_label(node_panel(app.getNode(node_name)), "Plain count"),
+                  "the panel shows plainCount")
+            gt.shot("m70-right-click-manage-plain.png")
 
         gt.section("delete")
         yield from open_project_variables()

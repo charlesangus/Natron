@@ -16,6 +16,10 @@ Sections:
     declares the name the item is disabled with a tooltip, and a project variable's own menu does
     not have it; the node's variable stays enabled and editable, unlinked from the project's copy;
     Ctrl+Z, with the main window active, takes the variable back out of the project's Variables;
+  - existing: on a third Set node's panel, the "Global Variables" tab holds a group of its own with
+    an "Existing variable" drop-down listing the project's and other Set nodes' variables; choosing
+    projGain adds it to the node's Variables group with the project's value, resets the drop-down
+    to its prompt and stops offering the name; Ctrl+Z takes it back off and keeps the drop-down;
   - delete: deleting the project variable from the dialog drops app.<name> too.
 
 Every modal dialog is driven from QTimer callbacks (see run() in guitest.py): whatever raises it is
@@ -42,6 +46,10 @@ SETTLE_MS = 500
 SET_PLUGIN = "ReverseFlowVariableSet"
 RFV_GROUP = "rfvVariables"
 RFV_PAGE = "rfvPage"
+GLOBAL_TAB = "Global Variables"
+GLOBAL_GROUP = "rfvGlobalVariables"
+EXISTING_CHOICE = "rfvExistingVariable"
+EXISTING_PROMPT = "Add existing variable..."
 TYPE_DOUBLE = 3  # AddKnobDialog::eParamDataTypeFloatingPoint
 TYPE_TEXT = 11   # AddKnobDialog::eParamDataTypeTextInput
 
@@ -334,6 +342,63 @@ try:
             QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
         QApplication.processEvents()
 
+    def combo_items(combo):
+        """The entries of a Natron ComboBox, which PySide sees only as a QFrame."""
+        items = combo.property("natronItems")
+        return list(items) if items is not None else []
+
+    def existing_combo(panel):
+        """The ComboBox of the existing-variable drop-down on panel, found by its prompt entry."""
+        if panel is None:
+            return None
+        _held.append(panel)
+        for w in panel.findChildren(QWidget):
+            try:
+                if gt.class_name(w) == "ComboBox" and w.isVisible() and EXISTING_PROMPT in combo_items(w):
+                    _held.append(w)
+                    return w
+            except (RuntimeError, AttributeError):
+                continue
+        return None
+
+    def pick_from_combo(combo, text, shot_name=None):
+        """Opens combo's menu with a click and chooses the entry text in the popup, the way a user
+        does. Returns whether the entry was there."""
+        seen = {"picked": False}
+
+        def inspect():
+            popup = QApplication.activePopupWidget()
+            if popup is None:
+                check(False, "the drop-down's menu is open")
+                return
+            _held.append(popup)
+            if shot_name:
+                gt.shot(shot_name)
+            action = next((a for a in popup.actions() if a.text() == text), None)
+            if action is None:
+                popup.close()
+                return
+            seen["picked"] = True
+            popup.setActiveAction(action)
+            if QTest is not None:
+                QTest.keyClick(popup, Qt.Key_Return)
+            else:
+                report("NOTE PySide6.QtTest is unavailable: triggering the drop-down's action directly")
+                action.trigger()
+                popup.close()
+
+        QTimer.singleShot(800, inspect)
+        try:
+            # the menu runs a nested loop; the choice may rebuild the panel's user pages
+            if QTest is not None:
+                QTest.mouseClick(combo, Qt.LeftButton)
+            else:
+                QMetaObject.invokeMethod(combo, "setCurrentIndex", Q_ARG(int, combo_items(combo).index(text)))
+                seen["picked"] = True
+        except (RuntimeError, ValueError) as e:
+            check(False, "the drop-down call completed: " + str(e))
+        return seen["picked"]
+
     def open_project_variables():
         QMetaObject.invokeMethod(main_gui(), "setVisibleProjectSettingsPanel")
         ok = yield ("until", lambda: project_panel() is not None, DIALOG_TIMEOUT_S)
@@ -523,6 +588,60 @@ try:
             check(not panel_has_label(project_panel(), "Set gain"), "the project panel's Variables tab no longer shows setGain")
             check(panel_has_label(project_panel(), "Project gain"), "the project panel's Variables tab still shows projGain")
             gt.shot("m70-project-panel-promote-undone.png")
+
+        gt.section("existing")
+        props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
+        third = app.createNode(SET_PLUGIN, -1, None, props)
+        require(third is not None, "created a third ReverseFlowVariableSet node")
+        third_name = third.getScriptName()
+        third = None
+        ok = yield ("until", lambda: node_panel(app.getNode(third_name)) is not None, DIALOG_TIMEOUT_S)
+        require(ok, "the third Set node's panel is open")
+        # Opening the panel lists the variables; reopening it here lists those declared since.
+        yield from open_node_panel(third_name)
+        check(app.getNode(third_name).getParam(EXISTING_CHOICE) is not None, "the Set node has the existing-variable drop-down")
+        check(parent_name(app.getNode(third_name).getParam(EXISTING_CHOICE)) == GLOBAL_GROUP,
+              "the drop-down is in the %s group, not the node's variables group" % GLOBAL_GROUP)
+        require(show_tab(node_panel(app.getNode(third_name)), GLOBAL_TAB), "the Set node's panel has a %s tab" % GLOBAL_TAB)
+        yield ("sleep", SETTLE_MS)
+        combo = existing_combo(node_panel(app.getNode(third_name)))
+        require(combo is not None, "found the existing-variable drop-down on the panel")
+        items = combo_items(combo)
+        check(len(items) > 0 and items[0] == EXISTING_PROMPT, "the drop-down's first entry is %r (got %r)" % (EXISTING_PROMPT, items[:1]))
+        check("projGain" in items and "setGain" in items,
+              "the drop-down offers the project's and the other Set node's variables (got %r)" % items)
+        picked = pick_from_combo(combo, "projGain", "m70-existing-menu.png")
+        combo = None
+        check(picked, "chose projGain from the drop-down's menu")
+        yield ("sleep", SETTLE_MS)
+        added = app.getNode(third_name).getParam("projGain")
+        check(added is not None and parent_name(added) == RFV_GROUP,
+              "choosing projGain adds a variable to the node's variables group (parent %r)" % parent_name(added))
+        check(added is not None and isinstance(added, NatronEngine.DoubleParam) and added.getValue() == app.getProjectParam("projGain").getValue(),
+              "the added variable is a Double starting from the project's value")
+        added = None
+        combo = existing_combo(node_panel(app.getNode(third_name)))
+        if check(combo is not None, "found the drop-down again after adding"):
+            current = combo.property("natronCurrentText")
+            check(current == EXISTING_PROMPT, "the drop-down is back on its prompt (shows %r)" % current)
+            check("projGain" not in combo_items(combo), "projGain is no longer offered (got %r)" % combo_items(combo))
+        combo = None
+        show_tab(node_panel(app.getNode(third_name)), "Variables")
+        yield ("sleep", SETTLE_MS)
+        check(panel_has_label(node_panel(app.getNode(third_name)), "Project gain"),
+              "the Set node's Variables tab shows the added variable")
+        gt.shot("m70-existing-added-variables.png")
+        show_tab(node_panel(app.getNode(third_name)), GLOBAL_TAB)
+        yield ("sleep", SETTLE_MS)
+        gt.shot("m70-existing-added-global.png")
+
+        gt.section("existing-undo")
+        yield from activate_main_window()
+        press_undo()
+        yield ("sleep", SETTLE_MS)
+        check(app.getNode(third_name).getParam("projGain") is None, "Ctrl+Z takes the added variable back off the node")
+        check(app.getNode(third_name).getParam(EXISTING_CHOICE) is not None, "the drop-down survives the undo")
+        check(app.getProjectParam("projGain") is not None, "the project's variable is untouched by the undo")
 
         gt.section("delete")
         yield from open_project_variables()

@@ -25,7 +25,16 @@
 
 #include "ReverseFlowVariableSet.h"
 
+#include <string>
+#include <vector>
+
+#include <QtCore/QDateTime>
+
+#include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/PythonUndoCommands.h"
+#include "Engine/RFV.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -44,6 +53,95 @@ ReverseFlowVariableSet::initializeKnobs()
     variables->setDefaultValue(true);
     variables->setAsRFVGroup(true);
     page->addKnob(variables);
+
+    // Not user knobs: undoing a change to the user knobs rebuilds the user pages, and the
+    // drop-down that makes such a change must outlive it.
+    KnobPagePtr globalPage = createKnob<KnobPage>(tr(kReverseFlowVariableSetParamGlobalPageLabel));
+    globalPage->setName(kReverseFlowVariableSetParamGlobalPage);
+
+    KnobGroupPtr globalVariables = createKnob<KnobGroup>(tr(kReverseFlowVariableSetParamGlobalVariablesLabel));
+    globalVariables->setName(kReverseFlowVariableSetParamGlobalVariables);
+    globalVariables->setDefaultValue(true);
+    globalPage->addKnob(globalVariables);
+
+    KnobChoicePtr existing = createKnob<KnobChoice>(tr(kReverseFlowVariableSetParamExistingVariableLabel));
+    existing->setName(kReverseFlowVariableSetParamExistingVariable);
+    existing->setHintToolTip(tr(kReverseFlowVariableSetParamExistingVariableHint));
+    existing->setAnimationEnabled(false);
+    existing->setIsPersistent(false);
+    existing->setEvaluateOnChange(false);
+    // The selection itself is not an edit; the variable it adds is recorded instead.
+    existing->setCanUndo(false);
+    existing->populateChoices(std::vector<ChoiceOption>(1, ChoiceOption(kReverseFlowVariableSetExistingVariablePrompt)));
+    globalVariables->addKnob(existing);
+    _existingVariable = existing;
+}
+
+void
+ReverseFlowVariableSet::refreshExistingVariables()
+{
+    KnobChoicePtr existing = _existingVariable.lock();
+    if (!existing) {
+        return;
+    }
+    const std::vector<RFV::VariableDeclaration> variables = RFV::getExistingVariables(this);
+    std::vector<ChoiceOption> entries(1, ChoiceOption(kReverseFlowVariableSetExistingVariablePrompt));
+    for (std::size_t i = 0; i < variables.size(); ++i) {
+        ChoiceOption entry(variables[i].name);
+        KnobHolder* holder = variables[i].knob->getHolder();
+        EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
+        if (effect) {
+            entry.tooltip = tr("Declared on %1").arg(QString::fromUtf8(effect->getNode()->getFullyQualifiedName().c_str())).toStdString();
+        } else {
+            entry.tooltip = tr("Declared on the project").toStdString();
+        }
+        entries.push_back(entry);
+    }
+    existing->populateChoices(entries);
+    if (existing->getValue() != 0) {
+        existing->setValue(0);
+    }
+}
+
+bool
+ReverseFlowVariableSet::knobChanged(KnobI* k,
+                                    ValueChangedReasonEnum /*reason*/,
+                                    ViewSpec /*view*/,
+                                    double /*time*/,
+                                    bool /*originatedFromMainThread*/)
+{
+    KnobChoicePtr existing = _existingVariable.lock();
+    if (!existing || (k != existing.get())) {
+        return false;
+    }
+    const int index = existing->getValue();
+    if (index <= 0) {
+        return true;
+    }
+    const std::string name = existing->getEntry(index).id;
+    std::string error;
+    {
+        PythonUserKnobsUndoGuard undo(this);
+        RFV::addExistingVariable(this, name, &error);
+    }
+    if (!error.empty()) {
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(getNode()->getScriptName_mt_safe().c_str()), QDateTime::currentDateTime(), QString::fromUtf8(error.c_str()));
+    }
+    // Resetting to the prompt comes back here with index 0.
+    refreshExistingVariables();
+
+    return true;
+}
+
+void
+ReverseFlowVariableSet::refreshExtraStateAfterTimeChanged(bool isPlayback,
+                                                          double time)
+{
+    NativeEffectBase::refreshExtraStateAfterTimeChanged(isPlayback, time);
+    // The panel calls this when it opens; playback would only list the same names again.
+    if (!isPlayback) {
+        refreshExistingVariables();
+    }
 }
 
 Route

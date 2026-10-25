@@ -25,7 +25,9 @@
 
 #include "RFV.h"
 
+#include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -34,6 +36,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Project.h"
 
 #include "Serialization/KnobSerialization.h"
@@ -148,6 +151,129 @@ getDeclaredVariables(const KnobHolder* holder,
 
     return declarations;
 } // getDeclaredVariables
+
+std::vector<VariableDeclaration>
+getExistingVariables(const KnobHolder* holder)
+{
+    std::vector<VariableDeclaration> existing;
+    AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project) {
+        return existing;
+    }
+
+    std::vector<VariableDeclaration> candidates = getDeclaredVariables(project.get());
+    NodesList nodes;
+    project->getNodes_recursive(nodes, true);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        if (!effect || (effect.get() == holder)) {
+            continue;
+        }
+        const std::vector<VariableDeclaration> declared = getDeclaredVariables(effect.get());
+        candidates.insert(candidates.end(), declared.begin(), declared.end());
+    }
+
+    std::set<std::string> seen;
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        const std::string& name = candidates[i].name;
+        if (!seen.insert(name).second || holder->getKnobByName(name)) {
+            continue;
+        }
+        existing.push_back(candidates[i]);
+    }
+
+    return existing;
+} // getExistingVariables
+
+namespace {
+
+    template <typename T>
+    bool
+    setCurrentValueOf(const KnobIPtr& source,
+                      const KnobIPtr& target)
+    {
+        Knob<T>* from = dynamic_cast<Knob<T>*>(source.get());
+        Knob<T>* to = dynamic_cast<Knob<T>*>(target.get());
+        if (!from || !to) {
+            return false;
+        }
+        const double time = source->getCurrentTime();
+        const int dimensions = std::min(from->getDimension(), to->getDimension());
+        for (int i = 0; i < dimensions; ++i) {
+            const T value = from->getValueAtTime(time, i);
+            to->removeAnimation(ViewSpec::all(), i);
+            to->setValue(value, ViewSpec::all(), i, true);
+        }
+
+        return true;
+    }
+
+    KnobGroupPtr
+    rfvGroupOf(const KnobHolder* holder)
+    {
+        const std::vector<KnobIPtr> knobs = holder->getKnobs_mt_safe();
+        for (std::size_t i = 0; i < knobs.size(); ++i) {
+            KnobGroupPtr group = std::dynamic_pointer_cast<KnobGroup>(knobs[i]);
+            if (group && group->isRFVGroup()) {
+                return group;
+            }
+        }
+
+        return KnobGroupPtr();
+    }
+
+} // namespace
+
+KnobIPtr
+addExistingVariable(KnobHolder* holder,
+                    const std::string& name,
+                    std::string* error)
+{
+    std::string why;
+    KnobIPtr source;
+    const std::vector<VariableDeclaration> existing = getExistingVariables(holder);
+    for (std::size_t i = 0; i < existing.size(); ++i) {
+        if (existing[i].name == name) {
+            source = existing[i].knob;
+            break;
+        }
+    }
+    KnobGroupPtr group = holder ? rfvGroupOf(holder) : KnobGroupPtr();
+    KnobIPtr knob;
+    if (!source) {
+        why = "No other variable named " + name + " can be added here";
+    } else if (!group) {
+        why = "There is no variables group to add " + name + " to";
+    } else {
+        // A user knob's serialization carries its definition and defaults; the value is set below.
+        Serialization::KnobSerialization serialization;
+        source->toSerialization(&serialization);
+        knob = createUserKnobFromSerialization(holder, serialization);
+        if (!knob) {
+            why = "A " + source->typeName() + " parameter cannot be copied";
+        } else if (!group->addKnob(knob)) {
+            holder->deleteKnob(knob.get(), false);
+            knob.reset();
+            why = "The variables group refused " + name;
+        }
+    }
+    if (error) {
+        *error = why;
+    }
+    if (!knob) {
+        return KnobIPtr();
+    }
+
+    knob->beginChanges();
+    if (!setCurrentValueOf<double>(source, knob) && !setCurrentValueOf<int>(source, knob) && !setCurrentValueOf<bool>(source, knob)) {
+        setCurrentValueOf<std::string>(source, knob);
+    }
+    knob->endChanges();
+    holder->recreateUserKnobs(true);
+
+    return knob;
+} // addExistingVariable
 
 bool
 isNodeVariable(const KnobIPtr& knob)

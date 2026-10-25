@@ -83,6 +83,23 @@ std::vector<VariableDeclaration> getDeclaredVariables(const KnobHolder* holder, 
 bool isNodeVariable(const KnobIPtr& knob);
 
 /**
+ * @brief The variables the holder could take over from elsewhere in its project: the project's,
+ * then those of every other node with an RFV group. A name declared more than once is listed
+ * once, with its first declaration, and a name the holder already has a knob for is left out.
+ **/
+std::vector<VariableDeclaration> getExistingVariables(const KnobHolder* holder);
+
+/**
+ * @brief Adds to the holder's RFV group a variable named after one getExistingVariables() lists,
+ * with the type, dimensions, label, hint and defaults of that declaration. It starts with the
+ * declaration's value at the current time, without animation, and is not linked to it. This
+ * records nothing in the undo history.
+ * @returns the new variable, or null with error set when the name is not listed, the holder has
+ * no RFV group, or the group refuses the knob.
+ **/
+KnobIPtr addExistingVariable(KnobHolder* holder, const std::string& name, std::string* error = nullptr);
+
+/**
  * @brief Whether promoteToProject() would copy the knob into the project. When it would not,
  * reason says why: the knob is not a node's variable, or the project already has a parameter
  * with its name, or its name is an attribute of the App class.

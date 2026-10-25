@@ -445,3 +445,149 @@ TEST_F(BaseTest, RFVSetNodeVariablePromoteUndoesAndRedoes)
     ASSERT_TRUE(command.getProjectVariable() != nullptr) << command.getError();
     expectRampCurve(command.getProjectVariable());
 }
+
+namespace {
+
+std::vector<std::string>
+offeredNames(const KnobChoicePtr& choice)
+{
+    std::vector<std::string> names;
+    const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
+    for (std::size_t i = 1; i < entries.size(); ++i) {
+        names.push_back(entries[i].id);
+    }
+
+    return names;
+}
+
+int
+offeredIndex(const KnobChoicePtr& choice,
+             const std::string& name)
+{
+    const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
+    for (std::size_t i = 1; i < entries.size(); ++i) {
+        if (entries[i].id == name) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
+bool
+offers(const KnobChoicePtr& choice,
+       const std::string& name)
+{
+    return offeredIndex(choice, name) > 0;
+}
+
+} // namespace
+
+TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
+{
+    ProjectPtr project = getApp()->getProject();
+    KnobGroupPtr projectGroup = project->getRFVGroup();
+    ASSERT_TRUE(projectGroup != nullptr);
+
+    // The project declares a two-dimensional Double, animated so that its current value differs
+    // from both its default and its keyframes.
+    KnobDoublePtr projectA = project->createDoubleKnob("rfvExistingA", "Existing A", 2);
+    ASSERT_TRUE(projectGroup->addKnob(projectA));
+    project->recreateUserKnobs(false);
+    projectA->setDefaultValue(0.25, 0);
+    projectA->setDefaultValue(-0.5, 1);
+    projectA->setValueAtTime(0., 1., ViewSpec::all(), 0);
+    projectA->setValueAtTime(10., 3., ViewSpec::all(), 0);
+    projectA->setValue(4., ViewSpec::all(), 1, true);
+    const double time = projectA->getCurrentTime();
+    const double currentA0 = projectA->getValueAtTime(time, 0);
+    const double currentA1 = projectA->getValueAtTime(time, 1);
+
+    // Another Set node declares a String.
+    NodePtr otherNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(otherNode));
+    EffectInstancePtr otherEffect = otherNode->getEffectInstance();
+    KnobStringPtr otherB = otherEffect->createStringKnob("rfvExistingB", "Existing B");
+    ASSERT_TRUE(variablesGroupOf(otherNode)->addKnob(otherB));
+    otherEffect->recreateUserKnobs(false);
+    otherB->setDefaultValue(std::string("default shot"));
+    otherB->setValue(std::string("sh020"));
+
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(setNode));
+    EffectInstancePtr effect = setNode->getEffectInstance();
+    KnobGroupPtr group = variablesGroupOf(setNode);
+    ASSERT_TRUE(group != nullptr);
+
+    // The drop-down sits in a group of its own, apart from the node's variables.
+    KnobGroupPtr globalGroup = std::dynamic_pointer_cast<KnobGroup>(setNode->getKnobByName(kReverseFlowVariableSetParamGlobalVariables));
+    ASSERT_TRUE(globalGroup != nullptr);
+    EXPECT_FALSE(globalGroup->isRFVGroup());
+    EXPECT_FALSE(globalGroup->isUserKnob());
+    KnobChoicePtr choice = std::dynamic_pointer_cast<KnobChoice>(setNode->getKnobByName(kReverseFlowVariableSetParamExistingVariable));
+    ASSERT_TRUE(choice != nullptr);
+    EXPECT_TRUE(choice->getParentKnob() == globalGroup);
+    EXPECT_FALSE(choice->getIsPersistent());
+    EXPECT_EQ(std::string(kReverseFlowVariableSetExistingVariablePrompt), choice->getEntry(0).id);
+
+    // Opening the panel lists the project's and the other node's variables, project first.
+    effect->refreshAfterTimeChange(false, time);
+    const std::vector<std::string> before = offeredNames(choice);
+    ASSERT_TRUE(offers(choice, "rfvExistingA"));
+    ASSERT_TRUE(offers(choice, "rfvExistingB"));
+    EXPECT_LT(offeredIndex(choice, "rfvExistingA"), offeredIndex(choice, "rfvExistingB"));
+    EXPECT_EQ(0, choice->getValue());
+
+    // Choosing the project's variable adds a matching, unlinked, unanimated child.
+    choice->setValue(offeredIndex(choice, "rfvExistingA"));
+    EXPECT_EQ(0, choice->getValue());
+    KnobDouble* a = dynamic_cast<KnobDouble*>(setNode->getKnobByName("rfvExistingA").get());
+    ASSERT_TRUE(a != NULL);
+    EXPECT_TRUE(a->getParentKnob() == group);
+    EXPECT_TRUE(a->isUserKnob());
+    ASSERT_EQ(2, a->getDimension());
+    EXPECT_EQ(std::string("Existing A"), a->getLabel());
+    EXPECT_DOUBLE_EQ(0.25, a->getDefaultValue(0));
+    EXPECT_DOUBLE_EQ(-0.5, a->getDefaultValue(1));
+    EXPECT_DOUBLE_EQ(currentA0, a->getValue(0));
+    EXPECT_DOUBLE_EQ(currentA1, a->getValue(1));
+    for (int i = 0; i < 2; ++i) {
+        EXPECT_FALSE(a->isAnimated(i)) << i;
+        EXPECT_FALSE(a->isSlave(i)) << i;
+        EXPECT_TRUE(a->getExpression(i).empty()) << i;
+    }
+    EXPECT_FALSE(offers(choice, "rfvExistingA"));
+    EXPECT_TRUE(offers(choice, "rfvExistingB"));
+
+    // Choosing the other node's variable adds a String with its value.
+    choice->setValue(offeredIndex(choice, "rfvExistingB"));
+    EXPECT_EQ(0, choice->getValue());
+    KnobString* b = dynamic_cast<KnobString*>(setNode->getKnobByName("rfvExistingB").get());
+    ASSERT_TRUE(b != NULL);
+    EXPECT_TRUE(b->getParentKnob() == group);
+    ASSERT_EQ(1, b->getDimension());
+    EXPECT_EQ(std::string("default shot"), b->getDefaultValue(0));
+    EXPECT_EQ(std::string("sh020"), b->getValue());
+    EXPECT_FALSE(b->isAnimated(0));
+    EXPECT_FALSE(b->isSlave(0));
+
+    const std::vector<std::string> declared = declaredNames(RFV::getDeclaredVariables(effect.get()));
+    const std::vector<std::string> expectedDeclared = { "rfvExistingA", "rfvExistingB" };
+    EXPECT_EQ(expectedDeclared, declared);
+
+    // Names already on the node are not offered again, even after the panel reopens.
+    effect->refreshAfterTimeChange(false, time);
+    EXPECT_FALSE(offers(choice, "rfvExistingA"));
+    EXPECT_FALSE(offers(choice, "rfvExistingB"));
+    EXPECT_EQ(before.size() - 2, offeredNames(choice).size());
+    std::string error;
+    EXPECT_TRUE(RFV::addExistingVariable(effect.get(), "rfvExistingA", &error) == nullptr);
+    EXPECT_FALSE(error.empty());
+    EXPECT_EQ(expectedDeclared, declaredNames(RFV::getDeclaredVariables(effect.get())));
+
+    // The copies are not linked to their sources.
+    projectA->setValue(9., ViewSpec::all(), 1, true);
+    otherB->setValue(std::string("sh030"));
+    EXPECT_DOUBLE_EQ(currentA1, a->getValue(1));
+    EXPECT_EQ(std::string("sh020"), b->getValue());
+}

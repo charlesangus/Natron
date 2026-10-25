@@ -37,6 +37,16 @@
 #define kReverseFlowVariableSetParamPageLabel "Variables"
 #define kReverseFlowVariableSetParamVariables "rfvVariables"
 #define kReverseFlowVariableSetParamVariablesLabel "Variables"
+#define kReverseFlowVariableSetParamGlobalPage "rfvGlobalPage"
+#define kReverseFlowVariableSetParamGlobalPageLabel "Global Variables"
+#define kReverseFlowVariableSetParamGlobalVariables "rfvGlobalVariables"
+#define kReverseFlowVariableSetParamGlobalVariablesLabel "Global Variables"
+#define kReverseFlowVariableSetParamExistingVariable "rfvExistingVariable"
+#define kReverseFlowVariableSetParamExistingVariableLabel "Existing variable"
+#define kReverseFlowVariableSetParamExistingVariableHint "Adds to this node's Variables group a variable declared on the project or on another "                      \
+                                                         "ReverseFlowVariableSet node, with the same type, dimensions and default, starting from its current value. " \
+                                                         "The new variable is not linked to the one it was taken from."
+#define kReverseFlowVariableSetExistingVariablePrompt "Add existing variable..."
 
 NATRON_NAMESPACE_ENTER
 
@@ -59,8 +69,15 @@ public:
 
     explicit ReverseFlowVariableSet(NodePtr node)
         : NativeEffectBase(node)
+        , _existingVariable()
     {
     }
+
+    /**
+     * @brief Lists in the existing-variable drop-down, after its prompt, the variables
+     * RFV::getExistingVariables() finds for this node.
+     **/
+    void refreshExistingVariables();
 
 private:
     static constexpr NodeSpec kNodeSpec = {
@@ -85,6 +102,17 @@ private:
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
+
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
+    virtual void refreshExtraStateAfterTimeChanged(bool isPlayback,
+                                                   double time) OVERRIDE FINAL;
+
+    KnobChoiceWPtr _existingVariable;
 };
 
 NATRON_NAMESPACE_EXIT

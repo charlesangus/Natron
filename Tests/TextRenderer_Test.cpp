@@ -25,11 +25,13 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <list>
 #include <memory>
+#include <optional>
 
 #include <gtest/gtest.h>
 
@@ -107,17 +109,23 @@ protected:
         _surface.reset();
     }
 
+    bool initContext(QOpenGLContext& context)
+    {
+        context.setFormat(_surface->format());
+        if (!context.create()) {
+            ADD_FAILURE() << "creating a QOpenGLContext failed";
+
+            return false;
+        }
+
+        return true;
+    }
+
     std::unique_ptr<QOpenGLContext> createContext()
     {
         std::unique_ptr<QOpenGLContext> context(new QOpenGLContext);
-        context->setFormat(_surface->format());
-        if (!context->create()) {
-            ADD_FAILURE() << "creating a QOpenGLContext failed";
 
-            return nullptr;
-        }
-
-        return context;
+        return initContext(*context) ? std::move(context) : nullptr;
     }
 
     bool makeCurrent(QOpenGLContext* context)
@@ -179,15 +187,19 @@ TEST_F(TextRenderer, DestroyedContextReleasesOnlyItsOwnAtlases)
         return;
     }
     std::unique_ptr<QOpenGLContext> survivor = createContext();
-    std::unique_ptr<QOpenGLContext> dying = createContext();
-    ASSERT_TRUE(survivor && dying);
+    // Held in an optional so the replacement context is built in the dying one's storage and has its address.
+    std::optional<QOpenGLContext> dying;
+    dying.emplace();
+    ASSERT_TRUE(survivor != nullptr);
+    ASSERT_TRUE(initContext(*dying));
+    QOpenGLContext* const dyingAddress = &*dying;
     NATRON_NAMESPACE::TextRenderer renderer;
 
     ASSERT_TRUE(makeCurrent(survivor.get()));
     drawText(renderer);
     const std::list<unsigned int> survivorNames = renderer.textureNamesOfCurrentContext();
     ASSERT_FALSE(survivorNames.empty());
-    ASSERT_TRUE(makeCurrent(dying.get()));
+    ASSERT_TRUE(makeCurrent(&*dying));
     drawText(renderer);
     ASSERT_FALSE(renderer.textureNamesOfCurrentContext().empty());
 
@@ -201,17 +213,20 @@ TEST_F(TextRenderer, DestroyedContextReleasesOnlyItsOwnAtlases)
     drawText(renderer);
     expectTextures(renderer.textureNamesOfCurrentContext(), true, "of the surviving context drawn again");
 
-    std::unique_ptr<QOpenGLContext> third = createContext();
-    ASSERT_TRUE(third != nullptr);
-    ASSERT_TRUE(makeCurrent(third.get()));
+    // The renderer keys its atlases by context pointer, so a context that reuses a dead one's address
+    // must not be handed the dead one's atlases.
+    dying.emplace();
+    ASSERT_EQ(dyingAddress, &*dying);
+    ASSERT_TRUE(initContext(*dying));
+    ASSERT_TRUE(makeCurrent(&*dying));
     EXPECT_TRUE(renderer.textureNamesOfCurrentContext().empty()) << "a new context sees another context's atlases";
     drawText(renderer);
     const std::list<unsigned int> thirdNames = renderer.textureNamesOfCurrentContext();
     ASSERT_FALSE(thirdNames.empty());
-    expectTextures(thirdNames, true, "drawn in a context created after one died");
+    expectTextures(thirdNames, true, "drawn in a context that reused a dead one's address");
 
-    third->doneCurrent();
-    third.reset();
+    dying->doneCurrent();
+    dying.reset();
     EXPECT_EQ(nullptr, QOpenGLContext::currentContext()) << "releasing the dead context's atlases left a context current";
 }
 
@@ -239,7 +254,7 @@ TEST_F(TextRenderer, ReleaseCurrentContextDeletesItsAtlases)
     expectTextures(rebuilt, true, "rebuilt after releaseCurrentContext");
 }
 
-TEST_F(TextRenderer, DestructorNeverDeletesInAContextThatDoesNotOwnTheNames)
+TEST_F(TextRenderer, DestructorDeletesEachContextsAtlasesWithThatContextCurrent)
 {
     if (_skip) {
         return;
@@ -249,7 +264,7 @@ TEST_F(TextRenderer, DestructorNeverDeletesInAContextThatDoesNotOwnTheNames)
     ASSERT_TRUE(owner && other);
     std::list<unsigned int> ownerNames;
     std::list<unsigned int> otherNames;
-    GLuint bystander = 0;
+    std::list<GLuint> bystanders;
     {
         NATRON_NAMESPACE::TextRenderer renderer;
         ASSERT_TRUE(makeCurrent(owner.get()));
@@ -257,21 +272,41 @@ TEST_F(TextRenderer, DestructorNeverDeletesInAContextThatDoesNotOwnTheNames)
         ownerNames = renderer.textureNamesOfCurrentContext();
         ASSERT_FALSE(ownerNames.empty());
 
+        // Unshared contexts hand out the same small names, so the other context is given textures of
+        // its own under exactly the owner's atlas names before the renderer draws there. A destructor
+        // that deleted the owner's names in the wrong context would delete these.
         ASSERT_TRUE(makeCurrent(other.get()));
+        std::list<GLuint> generated;
+        for (unsigned int name : ownerNames) {
+            GLuint got = 0;
+            for (int attempt = 0; attempt < 100000 && got != name; ++attempt) {
+                glGenTextures(1, &got);
+                generated.push_back(got);
+            }
+            ASSERT_EQ(name, got) << "could not obtain the owner's atlas name in the other context";
+            bystanders.push_back(got);
+        }
+        for (GLuint name : generated) {
+            glBindTexture(GL_TEXTURE_2D, name);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+        for (GLuint name : bystanders) {
+            ASSERT_TRUE(glIsTexture(name) == GL_TRUE);
+        }
+
         drawText(renderer);
         otherNames = renderer.textureNamesOfCurrentContext();
         ASSERT_FALSE(otherNames.empty());
-
-        // Unshared contexts hand out the same small names, so a texture of the other context's own
-        // is likely to carry one of the owner's atlas names.
-        glGenTextures(1, &bystander);
-        glBindTexture(GL_TEXTURE_2D, bystander);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        ASSERT_TRUE(glIsTexture(bystander) == GL_TRUE);
+        for (unsigned int name : otherNames) {
+            EXPECT_TRUE(std::find(bystanders.begin(), bystanders.end(), name) == bystanders.end())
+                << "the renderer's atlas in the other context reuses a bystander's name";
+        }
     }
-    EXPECT_TRUE(glIsTexture(bystander) == GL_TRUE) << "the renderer deleted the owner's names in another context";
-    expectTextures(otherNames, false, "of the context current when the renderer was destroyed");
+    EXPECT_EQ(other.get(), QOpenGLContext::currentContext()) << "destroying the renderer left another context current";
+    expectTextures(std::list<unsigned int>(bystanders.begin(), bystanders.end()), true,
+                   "of the other context under the owner's names after the renderer was destroyed");
+    expectTextures(otherNames, false, "of the other context after the renderer was destroyed");
 
     ASSERT_TRUE(makeCurrent(owner.get()));
-    expectTextures(ownerNames, true, "of a context that was not current when the renderer was destroyed");
+    expectTextures(ownerNames, false, "of a context that was not current when the renderer was destroyed");
 }

@@ -273,20 +273,21 @@ struct TextRenderer::Implementation
     std::map<QOpenGLContext*, ContextRenderers> contexts;
 };
 
-// Atlases of a context that is not current are dropped without glDeleteTextures: deleting them
-// here would delete whatever the current context has under the same names. A context that is still
-// alive frees them when it dies.
+// Every live context's atlases are deleted with that context current: a renderer shared by several
+// viewers (HostOverlay) is destroyed with no particular context current, and leaving the atlases to
+// their contexts would pile them up as nodes are created and deleted. Deleting a context's names in
+// any other context would delete whatever that one has under the same names, so a context that
+// cannot be made current has its names dropped; they die with it unless another context shares them.
 TextRenderer::Implementation::~Implementation()
 {
-    QOpenGLContext* current = QOpenGLContext::currentContext();
-
     for (std::map<QOpenGLContext*, ContextRenderers>::iterator it = contexts.begin(); it != contexts.end(); ++it) {
         QObject::disconnect(it->second.contextConnection);
-        if (it->first == current) {
-            for (FontRenderers::iterator f = it->second.fonts.begin(); f != it->second.fonts.end(); ++f) {
+        FontRenderers& fonts = it->second.fonts;
+        GLContextLoss::runWithContextCurrent(it->first, [&fonts]() {
+            for (FontRenderers::iterator f = fonts.begin(); f != fonts.end(); ++f) {
                 f->second->deleteTextures();
             }
-        }
+        });
     }
 }
 

@@ -592,9 +592,9 @@ RawTemperature::onInputChanged(int /*inputNo*/)
 }
 
 void
-RawTemperature::onMetadataRefreshed(const NodeMetadata& metadata)
+RawTemperature::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
 {
-    ImageNode<RawTemperatureOp>::onMetadataRefreshed(metadata);
+    ImageNode<RawTemperatureOp>::onCurrentFrameMetadataChanged(metadata);
     refreshPresets();
     refreshSpotDefaults();
 }

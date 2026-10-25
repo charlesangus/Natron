@@ -469,9 +469,9 @@ NativeEffectBase::onNodeHashChanged(U64 hash)
 }
 
 void
-NativeEffectBase::onMetadataRefreshed(const NodeMetadata& metadata)
+NativeEffectBase::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
 {
-    OutputEffectInstance::onMetadataRefreshed(metadata);
+    OutputEffectInstance::onCurrentFrameMetadataChanged(metadata);
 
     // Project-level changes (format, frame rate) reach a node here. They move the node's hash too,
     // through the project digest, so a revision move would only keep a restored state from

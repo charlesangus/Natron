@@ -7215,7 +7215,12 @@ EffectInstance::refreshMetadata_internal()
         node->getHashValue();
     }
     getPreferredMetadata_public(metadata);
-    _imp->checkMetadata(metadata);
+    {
+        std::vector<EffectInstancePtr> inputs;
+        std::vector<NodeMetadataConstPtr> inputsMetadata;
+        getInputsRefreshedMetadata(&inputs, &inputsMetadata);
+        _imp->clampMetadata(inputs, inputsMetadata, metadata);
+    }
 
     bool ret = setMetadataInternal(metadata);
     onMetadataRefreshed(metadata);
@@ -7228,8 +7233,33 @@ EffectInstance::refreshMetadata_internal()
         // at every frame.
         _imp->actionsCache->clearMetadataResults();
     }
+    AppInstancePtr app = getApp();
+    if (app) {
+        refreshCurrentFrameMetadata(app->getTimeLine()->currentFrame(), true);
+    }
 
     return ret;
+}
+
+void
+EffectInstance::refreshCurrentFrameMetadata(double time,
+                                            bool force)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (!getNode()) {
+        return;
+    }
+    NodeMetadataConstPtr metadata = getMetadata(time, ViewIdx(0));
+    if (!metadata) {
+        return;
+    }
+    _imp->refreshStreamWarnings(time, ViewIdx(0), *metadata);
+    // The hook's work (menus, panel state) runs only when what it reads moved.
+    const bool changed = force || !_imp->currentFrameMetadata || (*_imp->currentFrameMetadata != *metadata);
+    _imp->currentFrameMetadata = metadata;
+    if (changed) {
+        onCurrentFrameMetadataChanged(*metadata);
+    }
 }
 
 bool
@@ -7367,12 +7397,10 @@ EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePt
     }
 } // EffectInstance::Implementation::clampMetadata
 
-/**
- * @brief The purpose of this function is to check that the meta data returned by the plug-ins are valid and to
- * check for warnings
- **/
 void
-EffectInstance::Implementation::checkMetadata(NodeMetadata& md)
+EffectInstance::Implementation::refreshStreamWarnings(double time,
+                                                      ViewIdx view,
+                                                      const NodeMetadata& md)
 {
     NodePtr node = _publicInterface->getNode();
 
@@ -7381,20 +7409,12 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata& md)
     }
     std::vector<EffectInstancePtr> inputs;
     std::vector<NodeMetadataConstPtr> inputsMetadata;
-    _publicInterface->getInputsRefreshedMetadata(&inputs, &inputsMetadata);
+    _publicInterface->getInputsMetadataAt(time, view, &inputs, &inputsMetadata);
     int nInputs = (int)inputs.size();
 
     const bool supportsMultipleClipPARs = _publicInterface->supportsMultipleClipPARs();
     const bool supportsMultipleClipFPSs = _publicInterface->supportsMultipleClipFPSs();
     const double outputPAR = md.getPixelAspectRatio(-1);
-    std::vector<bool> parDiffers(nInputs, false);
-    bool mustWarnPAR = false;
-    for (int i = 0; i < nInputs; ++i) {
-        parDiffers[i] = !supportsMultipleClipPARs && (md.getPixelAspectRatio(i) != outputPAR);
-        mustWarnPAR |= parDiffers[i];
-    }
-
-    clampMetadata(inputs, inputsMetadata, md);
 
     /// Set a warning on the node if the bitdepth conversion from one of the input clip to the output clip is lossy
     QString bitDepthWarning = tr("This nodes converts higher bit depths images from its inputs to work. As "
@@ -7405,16 +7425,18 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata& md)
     bool outputFrameRateSet = false;
     double outputFrameRate = md.getOutputFrameRate();
     bool mustWarnFPS = false;
+    bool mustWarnPAR = false;
 
     int nbConnectedInputs = 0;
     for (int i = 0; i < nInputs; ++i) {
-        if (!inputs[i]) {
+        if (!inputs[i] || !inputsMetadata[i]) {
             continue;
         }
 
         ++nbConnectedInputs;
 
-        const double fps = inputs[i]->getFrameRate();
+        const NodeMetadata& inputMd = *inputsMetadata[i];
+        const double fps = inputMd.getOutputFrameRate();
 
         if (!supportsMultipleClipFPSs) {
             if (!outputFrameRateSet) {
@@ -7426,7 +7448,10 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata& md)
             }
         }
 
-        ImageBitDepthEnum inputOutputDepth = inputs[i]->getBitDepth(-1);
+        // The clip PAR is already clamped to the output's here, so the input's own tells.
+        mustWarnPAR |= !supportsMultipleClipPARs && (inputMd.getPixelAspectRatio(-1) != outputPAR);
+
+        ImageBitDepthEnum inputOutputDepth = inputMd.getBitDepth(-1);
 
         //If the bit-depth conversion will be lossy, warn the user
         if ( Image::isBitDepthConversionLossy( inputOutputDepth, md.getBitDepth(i) ) ) {
@@ -7437,13 +7462,6 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata& md)
             bitDepthWarning.append( QString::fromUtf8(" (") + QString::fromUtf8( Image::getDepthString( md.getBitDepth(i) ).c_str() ) + QChar::fromLatin1(')') );
             bitDepthWarning.append( QChar::fromLatin1('\n') );
             setBitDepthWarning = true;
-        }
-
-        if (parDiffers[i]) {
-            qDebug() << node->getScriptName_mt_safe().c_str() << ": The input " << inputs[i]->getNode()->getScriptName_mt_safe().c_str()
-                     << ") has a pixel aspect ratio (" << md.getPixelAspectRatio(i)
-                     << ") different than the output clip (" << outputPAR << ") but it doesn't support multiple clips PAR. "
-                     << "This should have been handled earlier before connecting the nodes, @see Node::canConnectInput.";
         }
     }
 
@@ -7474,7 +7492,7 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata& md)
 
 
     node->setStreamWarnings(warnings);
-} // EffectInstance::Implementation::checkMetadata
+} // EffectInstance::Implementation::refreshStreamWarnings
 
 void
 EffectInstance::refreshExtraStateAfterTimeChanged(bool isPlayback,
@@ -7486,6 +7504,8 @@ EffectInstance::refreshExtraStateAfterTimeChanged(bool isPlayback,
     node->refreshIdentityState();
     // Layer menus list what the inputs carry at the current frame, which can change with it.
     node->relistLayerKnobs();
+    node->registerProducedLayers();
+    refreshCurrentFrameMetadata(time, false);
 }
 
 void

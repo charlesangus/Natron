@@ -1055,6 +1055,15 @@ public:
      **/
     void refreshInputRelatedDataIfStale() const;
 
+    /**
+     * @brief Refreshes what the GUI shows of this node's metadata at time, the timeline's current
+     * frame: the bit-depth, pixel aspect ratio and frame rate warnings, then
+     * onCurrentFrameMetadataChanged() when that frame's answer differs from the last one shown,
+     * or always with force, which a change of the node's hash or inputs sets. No render reads
+     * what this sets. Main thread only.
+     **/
+    void refreshCurrentFrameMetadata(double time, bool force);
+
     virtual void onChannelsSelectorRefreshed() {}
 
     /**
@@ -1080,7 +1089,18 @@ protected:
 
     bool setMetadataInternal(const NodeMetadata& metadata);
 
+    /**
+     * @brief Called after a refresh of the time-invariant metadata, which an OpenFX node pushes to
+     * its clips as the answer of actions with no frame of their own.
+     **/
     virtual void onMetadataRefreshed(const NodeMetadata& /*metadata*/) {}
+
+    /**
+     * @brief The main-thread side effects of the metadata at the timeline's current frame:
+     * menus, panel state and the like. Called by refreshCurrentFrameMetadata(); renders never
+     * read what an override sets.
+     **/
+    virtual void onCurrentFrameMetadataChanged(const NodeMetadata& /*metadata*/) { }
 
     friend class ClipPreferencesRunning_RAII;
     void setClipPreferencesRunning(bool running);

@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <list>
+#include <map>
 #include <random>
 #include <string>
 #include <thread>
@@ -53,9 +54,11 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -450,5 +453,35 @@ TEST_F(PerFrameMetadataTest, KeyedSwitchRendersEachFramesLayout)
             ASSERT_TRUE(color != NULL) << "frame=" << frame;
             EXPECT_EQ((frame == 1) ? 3u : 4u, color->channels.size()) << "frame=" << frame;
         }
+    }
+}
+
+// The node graph's pixel aspect ratio warning follows the timeline: a Merge fed a PAR 1 source and
+// a Switch keyed from a PAR 1 source at frame 1 to a PAR 2 one at frame 2 warns at frame 2 only,
+// whichever way the frame moves.
+TEST_F(PerFrameMetadataTest, PixelAspectRatioWarningFollowsTheFrame)
+{
+    NodePtr sourceA, sourceB;
+    NodePtr switchNode = createKeyedSwitch(&sourceA, &sourceB);
+    NodePtr other = createSource(4);
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    ASSERT_TRUE(switchNode && other && merge);
+    connectNodes(other, merge, kMergeInputB, true);
+    connectNodes(switchNode, merge, kMergeInputA, true);
+    // Set once connected: inputs whose ratios differ are refused a connection.
+    KnobDoublePtr par = metadataSourceOf(sourceB)->getParKnob();
+    ASSERT_TRUE(bool(par));
+    par->setValue(2., ViewSpec::all(), 0);
+    NodeMetadataConstPtr routed = switchNode->getEffectInstance()->getMetadata(2, ViewIdx(0));
+    ASSERT_TRUE(bool(routed));
+    ASSERT_EQ(2., routed->getPixelAspectRatio(-1));
+
+    const int frames[] = { 1, 2, 1, 2 };
+    for (int frame : frames) {
+        getApp()->getTimeLine()->seekFrame(frame, false, NULL, eTimelineChangeReasonOtherSeek);
+        merge->getEffectInstance()->refreshAfterTimeChange(false, frame);
+        std::map<Node::StreamWarningEnum, QString> warnings;
+        merge->getStreamWarnings(&warnings);
+        EXPECT_EQ(frame == 2, !warnings[Node::eStreamWarningPixelAspectRatio].isEmpty()) << "frame=" << frame;
     }
 }

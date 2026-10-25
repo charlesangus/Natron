@@ -246,7 +246,7 @@ private:
                                               ViewIdx view,
                                               NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+    virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
 
     virtual FramesNeededMap getFramesNeeded(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

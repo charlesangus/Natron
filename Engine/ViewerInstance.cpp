@@ -1200,9 +1200,12 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
         outArgs->mipmapLevelWithDraft = std::max(outArgs->mipmapLevelWithoutDraft, autoProxyLevel);
     }
 
-
-    // The hash of the node to render, we store it and make sure we never call getHash() again for the render of this frame
-    outArgs->activeInputHash = outArgs->activeInputToRender->getHash();
+    // The hash of the node to render, we store it and make sure we never call getHash() again for the render of this frame.
+    // It is the hash the metadata read here belong to, so the PAR placing the tiles looked up
+    // under it describes that same state.
+    U64 activeInputHash = 0;
+    const NodeMetadataConstPtr activeInputMetadata = outArgs->activeInputToRender->getMetadata(time, view, &activeInputHash);
+    outArgs->activeInputHash = activeInputHash ? activeInputHash : outArgs->activeInputToRender->getHash();
 
     // Initialize the flag
     outArgs->mustComputeRoDAndLookupCache = true;
@@ -1220,7 +1223,7 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
     outArgs->params = std::make_shared<UpdateViewerParams>();
 
     // The PAR of the input image
-    outArgs->params->pixelAspectRatio = outArgs->activeInputToRender->getMetadata(time, view)->getPixelAspectRatio(-1);
+    outArgs->params->pixelAspectRatio = activeInputMetadata->getPixelAspectRatio(-1);
 
     // Is it playback ?
     outArgs->params->isSequential = isSequential;
@@ -4115,7 +4118,7 @@ ViewerInstance::onInputChanged(int /*inputNb*/)
 }
 
 void
-ViewerInstance::onMetadataRefreshed(const NodeMetadata& /*metadata*/)
+ViewerInstance::onCurrentFrameMetadataChanged(const NodeMetadata& /*metadata*/)
 {
     Q_EMIT clipPreferencesChanged();
 }

@@ -436,7 +436,7 @@ protected:
     }
 
     virtual void onNodeHashChanged(U64 hash) OVERRIDE;
-    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE;
+    virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE;
 
     /**
      * @brief For a node with a nodeSpec(), the answer of route(); otherwise not an identity,

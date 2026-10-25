@@ -1176,9 +1176,9 @@ NativeWrite::getPreferredMetadataAt(double time,
 }
 
 void
-NativeWrite::onMetadataRefreshed(const NodeMetadata& metadata)
+NativeWrite::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
 {
-    NativeEffectBase::onMetadataRefreshed(metadata);
+    NativeEffectBase::onCurrentFrameMetadataChanged(metadata);
     refreshViewsMenu();
 }
 

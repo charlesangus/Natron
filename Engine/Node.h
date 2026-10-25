@@ -1863,7 +1863,8 @@ public:
     /**
      * @brief Registers every non-Color layer this node produces (per
      * getComponentsNeededAndProduced_public()'s output entry) with the project-level
-     * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData().
+     * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData() and when
+     * the timeline moves to another frame.
      **/
     void registerProducedLayers();
 

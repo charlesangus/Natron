@@ -637,9 +637,9 @@ RawDemosaic::onInputChanged(int /*inputNo*/)
 }
 
 void
-RawDemosaic::onMetadataRefreshed(const NodeMetadata& metadata)
+RawDemosaic::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
 {
-    StagedImageEffect::onMetadataRefreshed(metadata);
+    StagedImageEffect::onCurrentFrameMetadataChanged(metadata);
     refreshMethodKnobsVisibility();
 }
 

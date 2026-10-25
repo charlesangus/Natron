@@ -175,7 +175,7 @@ private:
 
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
 
-    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+    virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
 
     // darktable's gui_changed() for the source's sensor, read from its CFA: only that sensor's
     // method list and the knobs its method uses show. With no source, or one without a CFA, both

@@ -279,6 +279,8 @@ public:
     mutable QMutex metadataMutex;
     NodeMetadata metadata;
     bool runningClipPreferences; //only used on main thread
+    // The current frame's metadata last given to onCurrentFrameMetadataChanged(). Main thread only.
+    NodeMetadataConstPtr currentFrameMetadata;
 
     // set during interact actions on main-thread
     OverlaySupport* overlaysViewport;
@@ -464,11 +466,15 @@ public:
                         const AbortableRenderInfoPtr& abortInfo,
                         const EffectInstancePtr& treeRoot)  WARN_UNUSED_RETURN;
 
-    void checkMetadata(NodeMetadata &metadata);
+    /**
+     * @brief Sets the node's bit-depth, pixel aspect ratio and frame rate warnings from md, the
+     * node's metadata at time and view, and its inputs' metadata there.
+     **/
+    void refreshStreamWarnings(double time, ViewIdx view, const NodeMetadata& md);
 
     /**
-     * @brief The validation half of checkMetadata(), with no warning set: clamps the depths and
-     * components to what the node supports and widens the colour layout to what the node writes.
+     * @brief Clamps the depths and components to what the node supports and widens the colour
+     * layout to what the node writes.
      * inputsMetadata holds the output metadata of each input, null where none is connected.
      **/
     void clampMetadata(const std::vector<EffectInstancePtr>& inputs,

@@ -50,6 +50,7 @@
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
+#include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OutputEffectInstance.h"
@@ -87,6 +88,21 @@ writeSourceExr(const std::string& path)
     spec.attribute("Exif:Make", "NatronCam");
     spec.attribute("FramesPerSecond", OIIO::TypeRational, rate);
     spec.attribute("smpte:TimeCode", OIIO::TypeTimeCode, timecode);
+
+    return writeImage(path, spec);
+}
+
+// A plain 4-channel EXR of the given size and pixel aspect ratio.
+bool
+writeSizedExr(const std::string& path,
+              int width,
+              int height,
+              float par)
+{
+    OIIO::ImageSpec spec(width, height, 4, OIIO::TypeDesc::FLOAT);
+
+    spec.attribute("compression", "none");
+    spec.attribute("PixelAspectRatio", par);
 
     return writeImage(path, spec);
 }
@@ -168,7 +184,12 @@ protected:
 
         connectNodes(_read, _dot, 0, true);
         connectNodes(_dot, _write, 0, true);
+        configureWrite(output);
+    }
 
+    // The Write writes `output` in its input's format, with no colour conversion.
+    void configureWrite(const std::string& output)
+    {
         // The file is compared with what went in, so no colour conversion may sit between them.
         KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(_write->getKnobByName("ocioOutputSpace").get());
         KnobBool* outputSpaceSet = dynamic_cast<KnobBool*>(_write->getKnobByName("ocioOutputSpaceSet").get());
@@ -201,12 +222,35 @@ protected:
 
     void renderFrame()
     {
+        renderFrames(1, 1);
+    }
+
+    void renderFrames(int first,
+                      int last)
+    {
         OutputEffectInstance* effect = dynamic_cast<OutputEffectInstance*>(_write->getEffectInstance().get());
 
         ASSERT_TRUE(effect != NULL);
         std::list<AppInstance::RenderWork> works;
-        works.push_back(AppInstance::RenderWork(effect, 1, 1, 1, false));
+        works.push_back(AppInstance::RenderWork(effect, first, last, 1, false));
         getApp()->startWritersRendering(false, works);
+    }
+
+    NodePtr createRead(const std::string& source)
+    {
+        NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_READ), PLUGIN_MAJOR_NATRON_READ);
+        EXPECT_TRUE(bool(read));
+        if (!read) {
+            return read;
+        }
+        KnobFile* knob = dynamic_cast<KnobFile*>(read->getKnobByName(kOfxImageEffectFileParamName).get());
+        EXPECT_TRUE(knob != NULL);
+        if (knob) {
+            knob->setValue(source);
+            read->getEffectInstance()->refreshMetadata_public(false);
+        }
+
+        return read;
     }
 
     // The metadata a native Read gives the file at `path`.
@@ -419,4 +463,38 @@ TEST(OiioWriteMetadata, TimecodeAndEdgecodeAreRebuiltFromTheirStrings)
     EXPECT_EQ(5, parts[4]);
     EXPECT_EQ(4, parts[5]);
     EXPECT_EQ(64, parts[6]);
+}
+
+TEST_F(NativeWriteMetadataTest, EachFileOfASequenceTakesItsOwnFramesFormat)
+{
+    for (int frame = 1; frame <= 2; ++frame) {
+        ASSERT_TRUE(writeSizedExr(pathOf("narrow.000" + std::to_string(frame) + ".exr"), 8, 6, 1.f));
+        ASSERT_TRUE(writeSizedExr(pathOf("wide.000" + std::to_string(frame) + ".exr"), 16, 12, 2.f));
+    }
+    NodePtr narrow = createRead(pathOf("narrow.####.exr"));
+    NodePtr wide = createRead(pathOf("wide.####.exr"));
+    NodePtr switchNode = createNode(QString::fromUtf8(PLUGINID_NATRON_SWITCH));
+    _write = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
+    ASSERT_TRUE(narrow && wide && switchNode && _write);
+    connectNodes(narrow, switchNode, 0, true);
+    connectNodes(wide, switchNode, 1, true);
+    connectNodes(switchNode, _write, 0, true);
+    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kSwitchParamWhich));
+    ASSERT_TRUE(bool(which));
+    which->setValueAtTime(1, 0, ViewSpec::all(), 0);
+    which->setValueAtTime(2, 1, ViewSpec::all(), 0);
+    configureWrite(pathOf("out.####.exr"));
+
+    renderFrames(1, 2);
+
+    const std::optional<OIIO::ImageSpec> first = specOf(pathOf("out.0001.exr"));
+    const std::optional<OIIO::ImageSpec> second = specOf(pathOf("out.0002.exr"));
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(8, first->full_width);
+    EXPECT_EQ(6, first->full_height);
+    EXPECT_FLOAT_EQ(1.f, first->get_float_attribute("PixelAspectRatio", 1.f));
+    EXPECT_EQ(16, second->full_width);
+    EXPECT_EQ(12, second->full_height);
+    EXPECT_FLOAT_EQ(2.f, second->get_float_attribute("PixelAspectRatio", 1.f));
 }

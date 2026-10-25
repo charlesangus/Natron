@@ -141,6 +141,33 @@ struct RawColorCalibrationGpuParams {
 };
 static_assert(sizeof(RawColorCalibrationGpuParams) == 304);
 
+/**
+ * @brief The push constants of both kernels of rawhotpixels.slang, which mirrors it as
+ * HotPixelsParams. domX1 to domY2 are the CPU's buffer, the photosites the passes run over.
+ * rectX1 to rectY2 are, for the fill, the source pixels that exist (empty when there are none)
+ * with offset and stride the float index of the first and the row length, and for the detection
+ * the rect written with the same two members for the result.
+ **/
+struct RawHotPixelsGpuParams {
+    RawLayoutGpu layout;
+    float threshold;
+    float multiplier;
+    std::uint32_t minNeighbours;
+    std::uint32_t channels;
+    std::int32_t domX1;
+    std::int32_t domY1;
+    std::int32_t domX2;
+    std::int32_t domY2;
+    std::int32_t rectX1;
+    std::int32_t rectY1;
+    std::int32_t rectX2;
+    std::int32_t rectY2;
+    std::uint32_t offset;
+    std::uint32_t stride;
+    std::uint32_t padding[2];
+};
+static_assert(sizeof(RawHotPixelsGpuParams) == 128);
+
 inline constexpr std::uint32_t kRawDemosaicGpuModePpg = 0;
 inline constexpr std::uint32_t kRawDemosaicGpuModeRcd = 1;
 inline constexpr std::uint32_t kRawDemosaicGpuModePassThrough = 2;

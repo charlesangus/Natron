@@ -823,7 +823,8 @@ TEST_F(StagedOffsetGpuTest, MatteMatchesTheCpuRender)
                             ++poisoned[0];
                             continue;
                         }
-                        ++poisoned[(w == 0) ? 1 : (w >= 1) ? 3 : 2];
+                        ++poisoned[(w == 0) ? 1 : (w >= 1) ? 3
+                                                           : 2];
                         out[0] = nan;
                         out[1] = (w >= 1) ? inf : (float)(inf * w);
                     }

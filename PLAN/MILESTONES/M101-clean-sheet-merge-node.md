@@ -56,7 +56,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
 - **Presets:** Plus, Matte, Multiply, In, Out, Screen, Max, Min and Difference are **Python items in the node menu** (M158 - Node Toolbar As Menu). Each one creates `Merge` and sets `operation`, and the tab menu lists them because they are menu items. They are not plug-ins.
 - **Operators:**
   - All of Nuke's operators, **with Nuke's option names** (`color-dodge`, `conjoint-over`, `hard-light`…): atop, average, color-burn, color-dodge, conjoint-over, copy, difference, disjoint-over, divide, exclusion, from, geometric, hard-light, hypot, in, mask, matte, max, min, minus, multiply, out, over, overlay, plus, screen, soft-light, stencil, under and xor.
-  - Plus the openfx-misc extras under their current names: hue, saturation, color, luminosity, freeze, grain-extract, grain-merge, pin-light and reflect.
+  - Plus the openfx-misc extras under their current names: hue, saturation, color, luminosity, freeze, grain-extract, grain-merge, pinlight and reflect.
   - **Maths are Nuke's formulas, made HDR-safe** (user). Where a Nuke formula clamps, flips sign, divides by zero or jumps for values above 1 or below 0, the new node uses a continuous unbounded variant. Every such deviation is listed in the Slang module's header and the node doc, and recorded under `## Decisions`. There is no legacy toggle.
 - **Operator source, Grade's pattern:**
   - `Engine/Gpu/Kernels/mergeops.slang` is canonical.
@@ -125,7 +125,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
 
 ## Phase 101.1: Operator maths
 
-- [ ] M101.P1.T1 — Write the canonical Slang operator module
+- [x] M101.P1.T1 — Write the canonical Slang operator module
   - files: `Engine/Gpu/Kernels/mergeops.slang` (new), `Tests/Gpu/CMakeLists.txt` (a `CPP` oracle target), `Tests/Gpu/MergeOpsOracle_Test.cpp` (new)
   - approach:
     - Implement every operator in the Design list as pure functions of premultiplied `(A, a, B, b)` per channel, plus `float4` forms for the four non-separable ones (hue, saturation, color, luminosity).
@@ -135,7 +135,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
   - verify: `MergeOpsOracle_Test` checks golden values per operator, through the CPP-compiled module, at in-range, above-1, negative and zero-alpha inputs. The values are checked against Nuke's formula, or against the documented deviation where one applies. Runs at the milestone gate.
   - size: L
 
-- [ ] M101.P1.T2 — Write the C++ CPU operators and test them against the Slang oracle
+- [x] M101.P1.T2 — Write the C++ CPU operators and test them against the Slang oracle
   - files: `Engine/Nodes/Merge/MergeOps.{h,cpp}` (new), `Tests/Native/MergeOps_Test.cpp` (new), `Tests/Gpu/MergeOpsOracle_Test.cpp`
   - approach:
     - The same operators as row functions over `nComps`-interleaved floats, with a per-channel alpha span, stride 0 for a broadcast alpha and 1 for a per-channel layer.
@@ -364,6 +364,10 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
 
 ## Decisions
 
+- 2026-10-25 — **`pinlight`, not `pin-light` (bosley-native-nodes):** the openfx-misc extras keep their current names, and openfx-misc calls it `pinlight`.
+- 2026-10-25 — **Plain AB and A/B (bosley-native-nodes):** multiply and divide drop Nuke's two-negatives jump; two negatives give a positive, the continuous HDR-safe variant. Geometric is 0 when A+B is 0; hard-light and overlay use the plain multiply and the new screen; soft-light is Nuke's formula. All listed in `mergeops.slang`'s deviation table; Phase 101.6 mirrors it into the node doc.
+- 2026-10-25 — **Non-separable operators with a per-channel alpha layer (bosley-native-nodes):** hue, saturation, color and luminosity with a per-channel alpha layer are a render error naming the operator, rather than picking one channel's alpha (P3.T2).
+- 2026-10-25 — **Freshness (bosley-native-nodes):** the GPU test binary doesn't link the Engine, so `MergeOps.cpp` (Macros.h only) compiles into it; the oracle entry is its own `mergeops_oracle.slang` with no registry fragment. P4.T1's GPU entry goes in `merge.slang` + `merge.cmake` importing `mergeops`. The README "Parity tolerances" section is at ~:1221. The formulas were checked against openfx-misc and Foundry search snippets; Foundry's pages couldn't be fetched from the sandbox.
 - 2026-10-22 — **Extend the Composite framework for alpha and layer sources** (user, M101 grill): `CompositeInput` reads only one layer per input, so cross-layer Universal and Per-channel alpha had no path. A per-input read layer and alpha source, on CPU and GPU, is the principled fix, and other nodes can reuse it. It is Phase 101.7, inside this milestone (user).
 - 2026-10-22 — **The GPU fold also reads `Select`-layer inputs** (user): Single mode with A's layer ≠ B's would otherwise fall back to CPU and break the region. It uses the same multi-layer hand-over as alpha.
 - 2026-10-22 — **One GPU dispatch per further A input** (user): the framework's fold. Comps rarely have more than 2–3 A inputs. Batching is left to M87 - Point-Op Kernel Fusion.

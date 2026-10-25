@@ -130,37 +130,37 @@ Deps: M100 - Content Node Hashing.
 
 ## Phase 167.3: Renders read their frame's metadata (M144)
 
-- [ ] M167.P3.T1 — Snapshot each node's metadata with its hash when a frame is set up
+- [x] M167.P3.T1 — Snapshot each node's metadata with its hash when a frame is set up
   - files: `Engine/ParallelRenderArgs.h`, `Engine/ParallelRenderArgs.cpp`, `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp`
   - approach: In `buildArgsMap`, after the hashes are read, store `getMetadata(time, view)` in each node's `ParallelRenderArgs`, upstream nodes first, keyed to `nodeHash`. Add `EffectInstance::getRenderMetadata()`, returning the frame args' snapshot on a render thread and otherwise `getMetadata(getCurrentTime(), view)`. A derivation reports the hash it ran under; if that differs from the frame's, re-read hashes and redo the snapshot, at most 3 times, then keep the latest.
   - verify: the phase build; a gtest that sets up a frame with a test hook moving a knob mid-snapshot gets a snapshot whose hashes all match the args.
   - size: L
 
-- [ ] M167.P3.T2 — Engine render internals read the snapshot
+- [x] M167.P3.T2 — Engine render internals read the snapshot
   - files: `Engine/EffectInstance.cpp`, `Engine/EffectInstanceRenderRoI.cpp`, `Engine/EffectInstanceRenderDeep.cpp`
   - approach: Move the render-time reads to `getRenderMetadata()`: `EffectInstance.cpp` ~:711, 885, 1256-1260, 1539-1642, 2838, 5082, 5290; `EffectInstanceRenderRoI.cpp` ~:378, 837; and the deep path. Starts after T1.
   - verify: the phase build; `SchedulerEquivalence` and `CacheEquivalence` green in both legs; a render of a Switch at f1 and f2 produces RGB and RGBA images.
   - size: L
 
-- [ ] M167.P3.T3 — Native executors and the scheduler read the snapshot
+- [x] M167.P3.T3 — Native executors and the scheduler read the snapshot
   - files: `Engine/Nodes/Image/ResampleExecutor.cpp`, `Engine/Nodes/Image/PassExecutor.cpp`, `Engine/Nodes/Image/StagePlan.cpp`, `Engine/GpuRegionTask.cpp`, `Engine/RenderScheduler.cpp`
   - approach: Move each timeless read to `getRenderMetadata()`: ResampleExecutor (~9 reads), GpuRegionTask ~:517, RenderScheduler ~:430 and 569-571, where the memory estimate now sizes from the frame's layout rather than the widest.
   - verify: the phase build; the GPU legs green on lavapipe.
   - size: M
 
-- [ ] M167.P3.T4 — Node-level render reads in the filter, merge and deep families
+- [x] M167.P3.T4 — Node-level render reads in the filter, merge and deep families
   - files: `Engine/Nodes/Filter/Blur.cpp`, `Engine/Nodes/Filter/EdgeDetect.cpp`, `Engine/Nodes/Merge/Merge.cpp`, `Engine/Nodes/Deep/DeepRecolor.cpp`, `Engine/Nodes/Channel/ChannelCopy.cpp`
   - approach: Move each remaining timeless metadata read to `getRenderMetadata()`, or to `getMetadata(time, view)` where the action already has a time.
   - verify: the phase build green.
   - size: M
 
-- [ ] M167.P3.T5 — Node-level render reads in the Raw family
+- [x] M167.P3.T5 — Node-level render reads in the Raw family
   - files: `Engine/Nodes/Raw/RawDemosaic.cpp`, `Engine/Nodes/Raw/RawTemperature.cpp`, `Engine/Nodes/Raw/RawNodeSupport.cpp`, `Engine/Nodes/Raw/RawDisplay.cpp`, `Engine/Nodes/Raw/RawColorCalibrationSpot.cpp`, `Engine/Nodes/Raw/RawColorCalibrationCheckerNode.cpp`
   - approach: as in T4.
   - verify: the phase build; the Raw suites green.
   - size: M
 
-- [ ] M167.P3.T6 — File-render, viewer, tracker and colour-sampler paths read the snapshot
+- [x] M167.P3.T6 — File-render, viewer, tracker and colour-sampler paths read the snapshot
   - files: `Engine/OutputSchedulerThread.cpp`, `Engine/ViewerInstance.cpp`, `Engine/NodeColorSampler.cpp`, `Engine/TrackerFrameAccessor.cpp`, `Engine/TrackMarker.cpp`
   - approach: Move the reads at `OutputSchedulerThread.cpp` ~:2386 and 2597-2604, `ViewerInstance.cpp` ~:1033 and 1550, `NodeColorSampler.cpp` ~:119, `TrackerFrameAccessor.cpp` ~:309, `TrackMarker.cpp` ~:1167. Confirm the tracker and sampler renders carry frame args; otherwise read `getMetadata` at their frame under the hash they captured.
   - verify: the phase build; `Tracker`, `NodeColorSampler` and `ViewerScheduler` green.
@@ -254,6 +254,7 @@ Deps: M100 - Content Node Hashing.
 
 ## Decisions
 
+- 2026-10-24 — **Phase 3 gate passed (PM):** fast 416/416 both legs on 53610aaef. Fixes during the gate: the identity rule keeps the fields a node sets itself (a Grade at defaults or a staged effect at mix 0 keeps its RGBA widening), and the keyed-Disable RemoveLayers frame expects its input layout per the per-frame rule. Known gap: the viewer reads its aspect ratio live before its frame args exist.
 - 2026-10-24 — **No render but the viewer sees mid-render edits (user):** a foreground Write render blocks the UI behind a modal; a background render works from a frozen copy captured at submission; tracking and the colour sampler block the UI like a foreground render; only viewer renders restart on a knob change. That work is M177 - Renders Isolated From Edits, not M167. Consequences here: revert the abortAnyEvaluation changes from Phase 3 (no blocking-render exemption, no viewer-only rule), and drop Tests/MidRenderEdit_Test.cpp; M144 acceptance for file, tracker and sampler renders under edits moves to M177. M167 keeps the per-frame snapshot those renders read (P3.T6) and its hash-match test.
 - 2026-10-24 — **Phase 2 gate passed (PM):** fast 404/404 both legs on 886c0baf1; `PerFrameMetadataTest.*:OfxClipPreferencesThread*` clean over 300 repeats, and `ConcurrentQueriesCacheOnlyConsistentAnswers` clean over 4 parallel x 200. The only `getCurrentTime` left near `getPreferredMetadataAt` is the base-class current-time wrapper, not an override derivation.
 - 2026-10-24 — **Cache race, third cause (PM, from gdb on the HEAD test binary):** 200-repeat runs still failed `ConcurrentQueriesCacheOnlyConsistentAnswers` after the write gate (7b170e390). Root cause: `Node::refreshDirtyHashes`'s last retry (`recomputeHashIfDirty(false)`) hashed over a still-dirty input's old hash and marked the node clean. The mark flush stops at dirty inputs, so a downstream node could hold a clean, stale hash before any derive began, and no during-derive check catches that. Fix 886c0baf1: hashing over a dirty input leaves the node dirty, and metadata is cached only under `getHashValueIfUpToDate`. Left as follow-ups (inbox): the identity, actions/RoD and image caches also accept a not-up-to-date hash; `NativeEffectBase::getOutputMetadata` has no mark-count or write check, so it can cache under an A→B→A hash.

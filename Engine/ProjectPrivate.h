@@ -123,6 +123,7 @@ public:
     KnobStringPtr onProjectCloseCB;
     KnobStringPtr onNodeCreated;
     KnobStringPtr onNodeDeleted;
+    KnobButtonPtr rfvEditKnob;
     KnobGroupPtr rfvGroup;
     TimeLinePtr timeline; // global timeline
     bool autoSetProjectFormat;

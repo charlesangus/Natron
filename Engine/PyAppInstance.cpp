@@ -604,36 +604,6 @@ App::removeProjectLayer(const QString& id)
 
 namespace {
 
-// A variable named like an App attribute would hide it once declared as app.<name>.
-bool
-isAppClassAttribute(const AppInstancePtr& app,
-                    const std::string& name)
-{
-    bool found = false;
-    PyObject* mainModule = NATRON_PYTHON_NAMESPACE::getMainModule();
-    PyObject* appObject = mainModule ? PyObject_GetAttrString(mainModule, app->getAppIDString().c_str()) : 0;
-
-    if (appObject) {
-        found = PyObject_HasAttrString((PyObject*)Py_TYPE(appObject), name.c_str());
-        Py_DECREF(appObject);
-    } else {
-        PyErr_Clear();
-    }
-    if (!found) {
-        PyObject* module = PyImport_ImportModule(NATRON_ENGINE_PYTHON_MODULE_NAME);
-        PyObject* appClass = module ? PyObject_GetAttrString(module, "App") : 0;
-        if (appClass) {
-            found = PyObject_HasAttrString(appClass, name.c_str());
-            Py_DECREF(appClass);
-        } else {
-            PyErr_Clear();
-        }
-        Py_XDECREF(module);
-    }
-
-    return found;
-}
-
 // Raises ValueError and returns null when name cannot become a project variable.
 ProjectPtr
 projectForNewRFV(const AppInstancePtr& app,
@@ -647,7 +617,7 @@ projectForNewRFV(const AppInstancePtr& app,
         error = nameStd + ": a variable name must be a valid Python identifier";
     } else if (project->getKnobByName(nameStd)) {
         error = nameStd + ": the project already has a parameter with that name";
-    } else if (isAppClassAttribute(app, nameStd)) {
+    } else if (RFV::isAppAttributeName(app, nameStd)) {
         error = nameStd + ": the name is an attribute of the App class";
     }
     if (!error.empty()) {

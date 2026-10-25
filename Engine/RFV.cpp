@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
@@ -64,6 +65,35 @@ isValidVariableName(const std::string& name)
     }
 
     return true;
+}
+
+bool
+isAppAttributeName(const AppInstancePtr& app,
+                   const std::string& name)
+{
+    bool found = false;
+    PyObject* mainModule = NATRON_PYTHON_NAMESPACE::getMainModule();
+    PyObject* appObject = (app && mainModule) ? PyObject_GetAttrString(mainModule, app->getAppIDString().c_str()) : 0;
+
+    if (appObject) {
+        found = PyObject_HasAttrString((PyObject*)Py_TYPE(appObject), name.c_str());
+        Py_DECREF(appObject);
+    } else {
+        PyErr_Clear();
+    }
+    if (!found) {
+        PyObject* module = PyImport_ImportModule(NATRON_ENGINE_PYTHON_MODULE_NAME);
+        PyObject* appClass = module ? PyObject_GetAttrString(module, "App") : 0;
+        if (appClass) {
+            found = PyObject_HasAttrString(appClass, name.c_str());
+            Py_DECREF(appClass);
+        } else {
+            PyErr_Clear();
+        }
+        Py_XDECREF(module);
+    }
+
+    return found;
 }
 
 std::vector<VariableDeclaration>

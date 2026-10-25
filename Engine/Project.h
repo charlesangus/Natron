@@ -59,6 +59,8 @@ CLANG_DIAG_ON(uninitialized)
 #define kProjectParamRFVPageLabel "Variables"
 #define kProjectParamRFVVariables "rfvVariables"
 #define kProjectParamRFVVariablesLabel "Variables"
+#define kProjectParamRFVEdit "editVariables"
+#define kProjectParamRFVEditLabel "Edit variables..."
 
 NATRON_NAMESPACE_ENTER
 
@@ -599,6 +601,9 @@ public Q_SLOTS:
 Q_SIGNALS:
 
     void mustCreateFormat();
+
+    // The user pressed the variables page's edit button.
+    void mustEditVariables();
 
     void formatChanged(Format);
 

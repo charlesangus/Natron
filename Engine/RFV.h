@@ -61,6 +61,12 @@ bool isVariableKnobType(const KnobIPtr& knob);
 bool isValidVariableName(const std::string& name);
 
 /**
+ * @brief Whether the name is an attribute of the app's Python App class (or its GUI subclass). A
+ * project variable is declared as app.<name>, so such a name would hide the attribute.
+ **/
+bool isAppAttributeName(const AppInstancePtr& app, const std::string& name);
+
+/**
  * @brief The variables the holder declares, in the order of its RFV groups' children. A child
  * whose type cannot be a variable, whose name is not a valid identifier, or whose name another
  * knob of the holder also has, is left out and described in errors.

@@ -2081,6 +2081,11 @@ Project::initializeKnobs()
     rfvPage->setName(kProjectParamRFVPage);
     rfvPage->setAsUserKnob(true);
 
+    _imp->rfvEditKnob = AppManager::createKnob<KnobButton>(this, tr(kProjectParamRFVEditLabel));
+    _imp->rfvEditKnob->setName(kProjectParamRFVEdit);
+    _imp->rfvEditKnob->setHintToolTip(tr("Add, edit, reorder or delete the project's variables."));
+    rfvPage->addKnob(_imp->rfvEditKnob);
+
     _imp->rfvGroup = AppManager::createKnob<KnobGroup>(this, tr(kProjectParamRFVVariablesLabel));
     _imp->rfvGroup->setName(kProjectParamRFVVariables);
     _imp->rfvGroup->setAsUserKnob(true);
@@ -2822,19 +2827,21 @@ Project::onKnobValueChanged(KnobI* knob,
         }
     } else if ( knob == _imp->addFormatKnob.get() ) {
         Q_EMIT mustCreateFormat();
-    } else if ( knob == _imp->previewMode.get() ) {
+    } else if ((knob == _imp->rfvEditKnob.get()) && (reason == eValueChangedReasonUserEdited)) {
+        Q_EMIT mustEditVariables();
+    } else if (knob == _imp->previewMode.get()) {
         Q_EMIT autoPreviewChanged( _imp->previewMode->getValue() );
         shouldAutoSave = true;
-    }  else if ( knob == _imp->frameRate.get() ) {
+    } else if (knob == _imp->frameRate.get()) {
         forceComputeInputDependentDataOnAllTrees();
         shouldAutoSave = true;
-    } else if ( knob == _imp->frameRange.get() ) {
+    } else if (knob == _imp->frameRange.get()) {
         int first = _imp->frameRange->getValue(0);
         int last = _imp->frameRange->getValue(1);
         rehashNodesUsingFrameRange();
         Q_EMIT frameRangeChanged(first, last);
         shouldAutoSave = true;
-    } else if ( knob == _imp->gpuSupport.get() ) {
+    } else if (knob == _imp->gpuSupport.get()) {
 
         refreshOpenGLRenderingFlagOnNodes();
         shouldAutoSave = true;

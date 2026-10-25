@@ -69,7 +69,7 @@ Transfer contention is the cause. Member intervals that overlap an upload/downlo
   - verify: none.
   - size: S
 
-- [ ] M169.P2.T2 — Add a pure calibration-sample helper that drops transfer-contended intervals and uses computed megapixels
+- [x] M169.P2.T2 — Add a pure calibration-sample helper that drops transfer-contended intervals and uses computed megapixels
   - files: `Engine/GpuMemberTiming.h` (new), `Engine/GpuMemberTiming.cpp` (new), `Tests/GpuMemberTiming_Test.cpp` (new), `Tests/CMakeLists.txt` (if the test is not globbed)
   - approach: Input: per-member intervals with pixel counts, plus the transfer-busy union (`unionOf`/`lengthOf`/`overlapOf` move here from `GpuRegionTask.cpp:2655-2701` only in P2.T3; intervals come from the existing pair queries, `queryOf` 2418). Output per member: clean ns, clean megapixels, and how many intervals were skipped. An interval counts as contended when more than X% of it overlaps transfer-busy time. X = 10% (P1.T3: overlap is almost always 0 or >50%; any X in 5–25% classifies the same). Pinned downloads are not timestamped (`createQueries` skips `pinned` slots), so their contention is invisible to the helper; name that in the header. No Vulkan.
   - verify: the gtest checks fully clean, fully contended, partially overlapping, halo-row and empty inputs, and that a 4× inflated contended interval does not move the sample. Runs without a GPU.

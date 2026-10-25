@@ -95,7 +95,7 @@ NODES = {
     "hsvtool": ("HSVTool", {"hueRotation": 30.0, "saturationAdjustment": 0.1, "brightnessAdjustment": 0.05}, False),
     "huecorrect": ("HueCorrect", {}, False),
     "huekeyer": ("HueKeyer", {}, False),
-    "despill": ("Despill", {"screenColor": (0.1, 0.9, 0.1), "strength": 1.0}, False),
+    "despill": ("Despill", {"screenColor": (0.1, 0.9, 0.1, 1.0), "strength": 1.0}, False),
     "threshold": ("Threshold", {"level": (0.5, 0.5, 0.5, 0.5), "softness": (0.1, 0.1, 0.1, 0.1)}, False),
     "posterize": ("Posterize", {"levels": 6}, False),
     "constant": ("net.sf.openfx.ConstantPlugin", {}, True),

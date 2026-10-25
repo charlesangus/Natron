@@ -486,13 +486,15 @@ try:
                 seen["failed"] = True
                 return
             _held.append(popup)
-            seen["entries"] = [a.text() for a in popup.actions() if a.text()]
-            gt.shot("m70-panel-menu.png")
+            entries = [a.text() for a in popup.actions() if a.text()]
+            gt.shot("m70-panel-menu.png")  # may spin the event loop, so publish the result only after choosing
             action = next((a for a in popup.actions() if a.text() == MANAGE_ITEM), None)
             if action is None or not action.isEnabled():
+                seen["entries"] = entries
                 popup.close()
                 return
             seen["chosen"] = True
+            seen["entries"] = entries
             popup.setActiveAction(action)
             QTest.keyClick(popup, Qt.Key_Return)
 

@@ -203,6 +203,21 @@ KnobGui::isLinkedToPartners() const
 }
 
 /**
+ * @brief True if every dimension has partners and they are all the same knobs.
+ **/
+static bool
+sameLinkPartnerNames(const std::vector<std::vector<KnobLinkGroup::Member>>& partners)
+{
+    for (std::size_t i = 0; i < partners.size(); ++i) {
+        if (partners[i].empty() || (joinLinkMemberNames(partners[i], false) != joinLinkMemberNames(partners[0], false))) {
+            return false;
+        }
+    }
+
+    return !partners.empty();
+}
+
+/**
  * @brief The tool tip lines about the knob's link groups, as HTML, or an empty string when it has no
  * link partner. A knob linked in some dimensions only gets one line per dimension.
  **/
@@ -238,7 +253,7 @@ getLinkToolTip(const KnobIPtr& knob)
             all.insert(all.end(), partners[i].begin(), partners[i].end());
         }
         ret = KnobGui::tr("Linked to %1.").arg(joinLinkMemberNames(all, false));
-    } else if ((nUnlinked == nDims) && (nDims == 1)) {
+    } else if ((nUnlinked == nDims) && sameLinkPartnerNames(partners)) {
         ret = KnobGui::tr("Unlinked from %1.").arg(joinLinkMemberNames(partners[0], false));
     } else {
         ret = (nLinked > 0) ? KnobGui::tr("Partially linked:") : KnobGui::tr("Unlinked:");

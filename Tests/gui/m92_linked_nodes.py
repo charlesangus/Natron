@@ -564,7 +564,8 @@ try:
         gt.require(panel_of(s) is not None and panel_of(t) is not None, "the panels of %s and %s are open" % (s, t))
         set_value(s, 3.0)
         set_value(t, 1.0)
-        nodes_before = lines()["nodes"]
+        lines_before = lines()
+        nodes_before = lines_before["nodes"]
         knob_menu(s, "Copy Link")
         yield ("sleep", SETTLE_MS)
         knob_menu(t, "Paste Link")
@@ -574,7 +575,7 @@ try:
         check(link_state(t) == "linked" and link_state(s) == "linked",
               "both knobs show a linked name (%r, %r)" % (link_state(t), link_state(s)))
         c = lines()
-        check(c["knob"] >= 1 and c["nodes"] == nodes_before, "the paste draws a knob link line, not a Linked Nodes line (%r)" % c)
+        check(c["knob"] == lines_before["knob"] + 1 and c["nodes"] == nodes_before, "the paste draws a knob link line, not a Linked Nodes line (%r)" % c)
         frame_all()
         yield ("sleep", SETTLE_MS)
         gt.shot("m92_paste_link.png")
@@ -591,7 +592,7 @@ try:
               "and the link and its colour are gone (%r, %r)" % (link_state(t), link_state(s)))
         check(not linked(s, t, 15.0), "the knobs edit on their own again")
         c = lines()
-        check(c["knob"] == 0, "the knob link line is gone (%r)" % c)
+        check(c["knob"] == lines_before["knob"], "the knob link line is gone (%r, before %r)" % (c, lines_before))
         redo()
         yield ("sleep", SETTLE_MS)
         check(link_state(t) == "linked" and linked(s, t, 16.0), "redoing the paste links them again")

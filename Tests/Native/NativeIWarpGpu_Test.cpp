@@ -66,7 +66,7 @@ const double kTime = 1.;
 const RectI kWindow(0, 0, kParitySourceWidth, kParitySourceHeight);
 
 // The resampler's own CPU and GPU bound: the GPU evaluates the matrix curve and the sample point
-// in float where the CPU evaluates the curve in double.
+// in two floats where the CPU uses doubles, and both round the point to float.
 const ParityTolerance kWarpTolerance = ParityTolerance::resampling();
 
 GpuQuery

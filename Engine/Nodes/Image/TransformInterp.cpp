@@ -234,6 +234,9 @@ MatrixCurve::pack(std::vector<float>* out) const
             out->push_back((float)_h[k].m[i]);
         }
         for (int i = 0; i < 9; ++i) {
+            out->push_back((float)(_h[k].m[i] - (double)(float)_h[k].m[i]));
+        }
+        for (int i = 0; i < 9; ++i) {
             out->push_back((float)_d[k].m[i]);
         }
     }

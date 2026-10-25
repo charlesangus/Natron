@@ -20,9 +20,10 @@ static const uint kIWarpMapRead = 32;
 static const uint kIWarpMapInvert = 64;
 static const uint kIWarpMapSmooth = 128;
 
-// The words before the curve, and the floats of one knot: its matrix then its derivative in m.
+// The words before the curve, and the floats of one knot: its matrix's high floats, its matrix's
+// low floats, then its derivative in m.
 static const uint kIWarpHeaderWords = 12;
-static const uint kIWarpKnotFloats = 18;
+static const uint kIWarpKnotFloats = 27;
 
 struct IWarp
 {
@@ -69,55 +70,83 @@ float iwarpMap(IWarp w, int x, int y)
     return mapRemap(raw, (w.flags & kIWarpMapInvert) != 0, (w.flags & kIWarpMapSmooth) != 0, w.exponent);
 }
 
-float iwarpKnot(uint knot, uint i)
+// Knot k's matrix entry i as two floats, the high float of the CPU's double then the rest.
+FF iwarpKnotH(uint knot, uint i)
 {
-    return asfloat(wrapAux[kIWarpHeaderWords + knot * kIWarpKnotFloats + i]);
+    const uint base = kIWarpHeaderWords + knot * kIWarpKnotFloats;
+    return ffMake(asfloat(wrapAux[base + i]), asfloat(wrapAux[base + 9 + i]));
 }
 
-// MatrixCurve::evaluate(): the matrix H and its derivative dH in m, cubic Hermite between knots.
-void iwarpCurve(IWarp w, float m, out float H[9], out float dH[9])
+// Knot k's derivative entry i, which only weighs in at a segment's width or a Map slope.
+float iwarpKnotD(uint knot, uint i)
+{
+    return asfloat(wrapAux[kIWarpHeaderWords + knot * kIWarpKnotFloats + 18 + i]);
+}
+
+// MatrixCurve::evaluate(): the matrix H and its derivative dH in m, cubic Hermite between knots,
+// in two floats as the CPU's are doubles.
+void iwarpCurve(IWarp w, float m, out FF H[9], out FF dH[9])
 {
     const int segments = int(w.segments);
     if (!(m > 0.0))
         m = 0.0;
     else if (m > 1.0)
         m = 1.0;
-    const float u = m * float(segments);
-    int k = int(floor(u));
+    const float n = float(segments);
+    const FF u = ffMulF(ffMake(m, 0.0), n);
+    int k = int(floor(u.hi));
+    if (float(k) == u.hi && u.lo < 0.0)
+        k -= 1;
     if (k >= segments)
         k = segments - 1;
-    const float t = u - float(k);
-    const float width = 1.0 / float(segments);
-    const float t2 = t * t;
-    const float t3 = t2 * t;
-    const float h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
-    const float h10 = t3 - 2.0 * t2 + t;
-    const float h01 = -2.0 * t3 + 3.0 * t2;
-    const float h11 = t3 - t2;
-    const float g00 = 6.0 * t2 - 6.0 * t;
-    const float g10 = 3.0 * t2 - 4.0 * t + 1.0;
-    const float g01 = -6.0 * t2 + 6.0 * t;
-    const float g11 = 3.0 * t2 - 2.0 * t;
+    if (k < 0)
+        k = 0;
+    const FF t = ffAddF(u, -float(k));
     const uint k0 = uint(k);
     const uint k1 = uint(k + 1);
+    const bool atStart = t.hi == 0.0 && t.lo == 0.0;
+    const bool atEnd = t.hi == 1.0 && t.lo == 0.0;
+    if (atStart || atEnd)
+    {
+        const uint knot = atStart ? k0 : k1;
+        [unroll]
+        for (uint i = 0; i < 9; ++i)
+        {
+            H[i] = iwarpKnotH(knot, i);
+            dH[i] = ffMake(iwarpKnotD(knot, i), 0.0);
+        }
+        return;
+    }
+    const FF t2 = ffMul(t, t);
+    const FF t3 = ffMul(t2, t);
+    const FF h00 = ffAddF(ffAdd(ffMulF(t3, 2.0), ffMulF(t2, -3.0)), 1.0);
+    const FF h10 = ffAdd(ffAdd(t3, ffMulF(t2, -2.0)), t);
+    const FF h01 = ffAdd(ffMulF(t3, -2.0), ffMulF(t2, 3.0));
+    const FF h11 = ffAdd(t3, ffNeg(t2));
+    // The basis derivatives in t; d/dm = d/dt * segments.
+    const FF g00 = ffAdd(ffMulF(t2, 6.0), ffMulF(t, -6.0));
+    const FF g10 = ffAddF(ffAdd(ffMulF(t2, 3.0), ffMulF(t, -4.0)), 1.0);
+    const FF g01 = ffAdd(ffMulF(t2, -6.0), ffMulF(t, 6.0));
+    const FF g11 = ffAdd(ffMulF(t2, 3.0), ffMulF(t, -2.0));
+    // h10 and h11 times the segment's width.
+    const FF w10 = ffDivF(h10, n);
+    const FF w11 = ffDivF(h11, n);
     [unroll]
     for (uint i = 0; i < 9; ++i)
     {
-        const float a = iwarpKnot(k0, i);
-        const float b = iwarpKnot(k1, i);
-        const float da = iwarpKnot(k0, 9 + i);
-        const float db = iwarpKnot(k1, 9 + i);
-        if (t == 0.0)
-        {
-            H[i] = a;
-            dH[i] = da;
-        }
-        else
-        {
-            H[i] = h00 * a + h10 * width * da + h01 * b + h11 * width * db;
-            dH[i] = (g00 * a + g01 * b) * float(segments) + g10 * da + g11 * db;
-        }
+        const FF a = iwarpKnotH(k0, i);
+        const FF b = iwarpKnotH(k1, i);
+        const float da = iwarpKnotD(k0, i);
+        const float db = iwarpKnotD(k1, i);
+        H[i] = ffAdd(ffAdd(ffMul(h00, a), ffMulF(w10, da)), ffAdd(ffMul(h01, b), ffMulF(w11, db)));
+        dH[i] = ffAdd(ffMulF(ffAdd(ffMul(g00, a), ffMul(g01, b)), n), ffAdd(ffMulF(g10, da), ffMulF(g11, db)));
     }
+}
+
+// (u v - p q) / d, a term of the projective Jacobian.
+FF iwarpCross(FF u, FF v, FF p, FF q, FF d)
+{
+    return ffDiv(ffAdd(ffMul(u, v), ffNeg(ffMul(p, q))), d);
 }
 
 // The sample in channel-bit order, a one-channel pixel being alpha.
@@ -128,43 +157,53 @@ float4 iwarpSample(IWarp w, int2 p)
         return zero;
     const bool jacobian = (w.flags & kIWarpJacobian) != 0;
     const float m = iwarpMap(w, p.x, p.y);
-    float dmdx = 0.0;
-    float dmdy = 0.0;
+    const FF none = ffMake(0.0, 0.0);
+    // The central differences of the Map, exact as the CPU's doubles are.
+    FF dmdx = none;
+    FF dmdy = none;
     if (jacobian)
     {
-        dmdx = 0.5 * (iwarpMap(w, p.x + 1, p.y) - iwarpMap(w, p.x - 1, p.y));
-        dmdy = 0.5 * (iwarpMap(w, p.x, p.y + 1) - iwarpMap(w, p.x, p.y - 1));
+        dmdx = ffHalf(ffTwoSum(iwarpMap(w, p.x + 1, p.y), -iwarpMap(w, p.x - 1, p.y)));
+        dmdy = ffHalf(ffTwoSum(iwarpMap(w, p.x, p.y + 1), -iwarpMap(w, p.x, p.y - 1)));
     }
-    float H[9];
-    float dH[9];
+    FF H[9];
+    FF dH[9];
     iwarpCurve(w, m, H, dH);
 
-    // TransformInterp::sourceSample().
+    // TransformInterp::sourceSample() in two floats, rounded to the floats that
+    // Resampler::resampleRowFromCoords() takes as the CPU rounds its doubles.
     const float px = float(p.x) + 0.5;
     const float py = float(p.y) + 0.5;
-    const float ax = H[0] * px + H[1] * py + H[2];
-    const float ay = H[3] * px + H[4] * py + H[5];
-    const float z = H[6] * px + H[7] * py + H[8];
-    if (!(z > 0.0))
+    const FF ax = ffAdd(ffAdd(ffMulF(H[0], px), ffMulF(H[1], py)), H[2]);
+    const FF ay = ffAdd(ffAdd(ffMulF(H[3], px), ffMulF(H[4], py)), H[5]);
+    const FF z = ffAdd(ffAdd(ffMulF(H[6], px), ffMulF(H[7], py)), H[8]);
+    if (!ffLess(none, z))
         return zero;
-    const float sx = ax / z;
-    const float sy = ay / z;
+    const float sx = ffDiv(ax, z).hi;
+    const float sy = ffDiv(ay, z).hi;
     if (!isFiniteF(sx) || !isFiniteF(sy))
         return zero;
     float4 J = zero;
     if (jacobian)
     {
-        const float z2 = z * z;
-        J = float4((H[0] * z - ax * H[6]) / z2, (H[1] * z - ax * H[7]) / z2, (H[3] * z - ay * H[6]) / z2, (H[4] * z - ay * H[7]) / z2);
-        if (dmdx != 0.0 || dmdy != 0.0)
+        const FF z2 = ffMul(z, z);
+        FF Jxx = iwarpCross(H[0], z, ax, H[6], z2);
+        FF Jxy = iwarpCross(H[1], z, ax, H[7], z2);
+        FF Jyx = iwarpCross(H[3], z, ay, H[6], z2);
+        FF Jyy = iwarpCross(H[4], z, ay, H[7], z2);
+        if (dmdx.hi != 0.0 || dmdy.hi != 0.0)
         {
-            const float dax = dH[0] * px + dH[1] * py + dH[2];
-            const float day = dH[3] * px + dH[4] * py + dH[5];
-            const float dz = dH[6] * px + dH[7] * py + dH[8];
-            const float dxdm = (dax * z - ax * dz) / z2;
-            const float dydm = (day * z - ay * dz) / z2;
-            J += float4(dxdm * dmdx, dxdm * dmdy, dydm * dmdx, dydm * dmdy);
+            const FF dax = ffAdd(ffAdd(ffMulF(dH[0], px), ffMulF(dH[1], py)), dH[2]);
+            const FF day = ffAdd(ffAdd(ffMulF(dH[3], px), ffMulF(dH[4], py)), dH[5]);
+            const FF dz = ffAdd(ffAdd(ffMulF(dH[6], px), ffMulF(dH[7], py)), dH[8]);
+            const FF dxdm = iwarpCross(dax, z, ax, dz, z2);
+            const FF dydm = iwarpCross(day, z, ay, dz, z2);
+            Jxx = ffAdd(Jxx, ffMul(dxdm, dmdx));
+            Jxy = ffAdd(Jxy, ffMul(dxdm, dmdy));
+            Jyx = ffAdd(Jyx, ffMul(dydm, dmdx));
+            Jyy = ffAdd(Jyy, ffMul(dydm, dmdy));
         }
+        J = float4(Jxx.hi, Jxy.hi, Jyx.hi, Jyy.hi);
     }
 
     ResampleSource src;

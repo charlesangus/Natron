@@ -67,8 +67,12 @@ const int kDefaultSegments = 256;
 /// The most segments a curve takes, which bounds the GPU parameter block.
 const int kMaxSegments = 512;
 
-/// The floats one knot packs into: its matrix, then its derivative, each row major.
-const int kFloatsPerKnot = 18;
+/**
+ * @brief The floats one knot packs into: its matrix as the high floats of its doubles, then the
+ * rest of each double as a float, then its derivative, each row major. The GPU carries the
+ * matrix in two floats so that its sample positions round to the CPU's.
+ **/
+const int kFloatsPerKnot = 27;
 
 /**
  * @brief The canonical matrix of a Transform's knobs at Map value m:
@@ -137,8 +141,9 @@ public:
     bool operator==(const MatrixCurve& other) const;
 
     /**
-     * @brief Appends kFloatsPerKnot floats per knot to out, knot 0 first: the matrix then its
-     * derivative, each row major.
+     * @brief Appends kFloatsPerKnot floats per knot to out, knot 0 first: the matrix's high
+     * floats, its low floats (each double less its high float), then the derivative, each row
+     * major.
      **/
     void pack(std::vector<float>* out) const;
 

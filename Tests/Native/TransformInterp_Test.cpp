@@ -361,7 +361,9 @@ TEST(TransformInterpTest, ConstantCurvesAndPacking)
     std::vector<float> packed;
     busy.pack(&packed);
     ASSERT_EQ((std::size_t)9 * TransformInterp::kFloatsPerKnot, packed.size());
-    EXPECT_EQ((float)busy.knot(8).m[2], packed[8 * TransformInterp::kFloatsPerKnot + 2]);
+    const double h = busy.knot(8).m[2];
+    EXPECT_EQ((float)h, packed[8 * TransformInterp::kFloatsPerKnot + 2]);
+    EXPECT_EQ((float)(h - (double)(float)h), packed[8 * TransformInterp::kFloatsPerKnot + 9 + 2]);
 }
 
 TEST(TransformInterpTest, FailingFunctionLeavesTheCurveInvalid)

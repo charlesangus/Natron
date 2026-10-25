@@ -27,10 +27,20 @@
 
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QString>
+
+#include "BaseTest.h"
+
+#include "Engine/Node.h"
+#include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Filter/IBlur.h"
+#include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/IVariantRegistry.h"
 
 NATRON_NAMESPACE_USING
@@ -96,5 +106,45 @@ TEST(IVariantRegistry, BuiltinIdsAreUnique)
     }
     for (const std::string& iId : iIds) {
         EXPECT_EQ(0u, bases.count(iId)) << iId << " is both a base and an I-variant";
+    }
+}
+
+TEST(IVariantRegistry, BuiltinPairsTheVariableSizeFilters)
+{
+    const std::pair<std::string, std::string> pairs[] = {
+        { PLUGINID_NATRON_BLUR, PLUGINID_NATRON_IBLUR },
+        { PLUGINID_NATRON_ERODE, PLUGINID_NATRON_IERODE },
+        { PLUGINID_NATRON_DILATE, PLUGINID_NATRON_IDILATE },
+    };
+    const IVariantRegistry& registry = IVariantRegistry::builtin();
+
+    for (const std::pair<std::string, std::string>& pair : pairs) {
+        const IVariant* variant = registry.forBase(pair.first);
+        ASSERT_NE(nullptr, variant) << pair.first << " has no I-variant";
+        EXPECT_EQ(pair.second, variant->iId);
+        EXPECT_EQ(variant, registry.forIVariant(pair.second));
+    }
+}
+
+class IVariantRegistryNodeTest
+    : public BaseTest {
+};
+
+// Every knob the registry pairs exists on its node, and each base node's size knob converts to a
+// knob of its I-variant.
+TEST_F(IVariantRegistryNodeTest, BuiltinKnobsExistOnBothNodes)
+{
+    for (const IVariant& variant : IVariantRegistry::builtin().variants()) {
+        NodePtr base = createNode(QString::fromUtf8(variant.baseId.c_str()));
+        NodePtr iNode = createNode(QString::fromUtf8(variant.iId.c_str()));
+        ASSERT_NE(nullptr, base) << variant.baseId;
+        ASSERT_NE(nullptr, iNode) << variant.iId;
+
+        for (const IVariantKnobPair& pair : variant.knobMap) {
+            EXPECT_NE(nullptr, base->getKnobByName(pair.baseKnob)) << variant.baseId << " has no knob " << pair.baseKnob;
+            EXPECT_NE(nullptr, iNode->getKnobByName(pair.iKnob)) << variant.iId << " has no knob " << pair.iKnob;
+        }
+        ASSERT_NE(nullptr, base->getKnobByName("size")) << variant.baseId;
+        EXPECT_NE(nullptr, iNode->getKnobByName(variant.iKnobFor("size"))) << variant.iId << " has no knob for the base's size";
     }
 }

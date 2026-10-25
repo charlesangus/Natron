@@ -148,6 +148,10 @@ def first_look(node):
             return option
     raise RuntimeError("the OCIO config has no looks")
 
+# Nodes whose Map input (the number given) is fed a ramp whose alpha, the Map's default channel,
+# runs from 0 to 1 across the frame, so the size varies from Size At Black to Size.
+MAP_INPUTS = {"iblur": 2, "ierode": 2, "idilate": 2}
+
 
 def configure(name, index):
     plugin_id, values, generator = NODES[name]

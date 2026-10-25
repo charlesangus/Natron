@@ -76,6 +76,7 @@ constexpr NodeSpec kIBlurNodeSpec = {
                    "(within about 2% at a constant size), whose cost does not depend on the size. It is black outside the image, and the Mask and Mix limit the result as usual.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_IBLUR,
+    .icon = NATRON_IMAGES_PATH "NativeNodes/IBlur.png",
     .inputs = kIBlurInputs,
 };
 

@@ -387,12 +387,12 @@ under "Flat image nodes", and `Grade` is the example to read.
    its base node:
 
    ```cpp
-   NATRON_I_VARIANT(PLUGINID_NATRON_BLUR, PLUGINID_NATRON_IBLUR, { kBlurParamSize, "size" })
+   NATRON_I_VARIANT(PLUGINID_NATRON_BLUR, PLUGINID_NATRON_IBLUR)
    ```
 
    The base ID, the I-node's ID, then any number of `{ baseKnob, iKnob }`
-   pairs for knobs whose names differ; every other knob converts to the knob of
-   the same name. `IVariantRegistry::builtin()` (`IVariantRegistry.h`) collects
+   pairs for knobs whose names differ (`Filter/IBlur.reg.inc` needs none);
+   every other knob converts to the knob of the same name. `IVariantRegistry::builtin()` (`IVariantRegistry.h`) collects
    these lines, and the Make I-Node action reads it to convert a node either
    way. The I-node's Map input and knobs come from `MapInput`
    (`Filter/MapInput.h`).

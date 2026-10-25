@@ -369,6 +369,7 @@ struct IErodeDilateSpec {
                                  "the rectangle gives Erode's result. The Mask and Mix limit the result as usual.",
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = kDilate ? PLUGIN_MAJOR_NATRON_IDILATE : PLUGIN_MAJOR_NATRON_IERODE,
+        .icon = kDilate ? NATRON_IMAGES_PATH "NativeNodes/IDilate.png" : NATRON_IMAGES_PATH "NativeNodes/IErode.png",
         .inputs = kIErodeDilateInputs,
     };
 

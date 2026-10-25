@@ -140,17 +140,6 @@ queryFor(const NodePtr& op)
     for (int i = 0; i < 4; ++i) {
         q.processChannels[i] = channels[i];
     }
-    KnobChannelSelectPtr unPremultBy = op->getUnPremultBySelector();
-    if (unPremultBy && !unPremultBy->isNone() && effect->getInput(0)) {
-        std::list<ImageLayerDesc> available;
-        effect->getAvailableLayers(kTime, ViewIdx(0), 0, &available);
-        ImageLayerDesc divisorLayer;
-        const int divisorChannel = op->getUnPremultChannel(available, &divisorLayer);
-        if (divisorLayer.getNumComponents() > 0) {
-            q.unPremultChannel = divisorChannel;
-            q.unPremultInPlane = (divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, divisorLayer, divisorChannel) >= 0);
-        }
-    }
 
     return q;
 }
@@ -276,7 +265,7 @@ TEST_F(NativeColorspaceGpuTest, KernelMatchesTheCpuForEveryPair)
 }
 
 // The wrapped render against the node's own render over the parity sources: a plain render, a
-// mask, an inverted mask, mix 0.5 and a divide by alpha.
+// mask, an inverted mask and mix 0.5.
 TEST_F(NativeColorspaceGpuTest, MatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -288,15 +277,13 @@ TEST_F(NativeColorspaceGpuTest, MatchesTheCpuRender)
         bool masked;
         bool inverted;
         double mix;
-        bool divide;
     };
     const Case cases[] = {
-        { "plain", false, false, 1., false },
-        { "mask", true, false, 1., false },
-        { "inverted mask", true, true, 1., false },
-        { "mix 0.5", false, false, 0.5, false },
-        { "divide by A", false, false, 1., true },
-        { "masked, mix 0.5, divide by A", true, false, 0.5, true },
+        { "plain", false, false, 1. },
+        { "mask", true, false, 1. },
+        { "inverted mask", true, true, 1. },
+        { "mix 0.5", false, false, 0.5 },
+        { "masked, mix 0.5", true, false, 0.5 },
     };
     const int pairs[][2] = {
         { ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelLab },
@@ -323,8 +310,6 @@ TEST_F(NativeColorspaceGpuTest, MatchesTheCpuRender)
     maskChannel->set("rgba.A");
     StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(op->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL);
-    KnobChannelSelect* unPremultBy = dynamic_cast<KnobChannelSelect*>(op->getKnobByName(kUnPremultByKnobName).get());
-    ASSERT_TRUE(unPremultBy != NULL);
 
     const RectI window = paritySourceWindow(source, kTime, 0);
     RenderedPlane sourcePlane;
@@ -339,11 +324,6 @@ TEST_F(NativeColorspaceGpuTest, MatchesTheCpuRender)
             ASSERT_TRUE(setKnobValues(op, "enableMask_Mask", std::vector<double>(1, c.masked ? 1. : 0.)));
             ASSERT_TRUE(setKnobValues(op, kOfxMaskInvertParamName, std::vector<double>(1, c.inverted ? 1. : 0.)));
             ASSERT_TRUE(setKnobValues(op, kOfxMixParamName, std::vector<double>(1, c.mix)));
-            if (c.divide) {
-                unPremultBy->set("rgba.A");
-            } else {
-                unPremultBy->setNone();
-            }
             const GpuQuery query = queryFor(op);
             ASSERT_TRUE(effect->canRenderOnGpu(query)) << c.name;
 

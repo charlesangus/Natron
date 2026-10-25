@@ -77,7 +77,7 @@ struct ColorspaceOp {
         .inputs = kColorspaceInputs,
     };
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
         .layers = LayerPolicy::color(true, true, true, false),
         .op = OpKind::Point,
     };

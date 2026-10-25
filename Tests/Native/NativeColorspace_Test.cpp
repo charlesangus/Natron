@@ -460,6 +460,46 @@ TEST_F(NativeColorspaceTest, RendersTheConversion)
     }
 }
 
+// A pixel whose alpha is between 0 and 1 is converted from its RGB exactly as stored, with no
+// division by alpha and no multiplication afterwards, and keeps its alpha. The node has no
+// "(Un)premult by" knob.
+TEST_F(NativeColorspaceTest, ConvertsPartiallyTransparentPixelsAsTheyAre)
+{
+    NodePtr source = makeSource();
+    NodePtr node = makeNode(source);
+    ASSERT_TRUE(bool(source) && bool(node));
+    EXPECT_TRUE(node->getKnobByName(kUnPremultByKnobName) == NULL);
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    const ColorMath::ColorspaceColorimetry cm = workingColorimetry(node);
+
+    ASSERT_TRUE(setKnobValues(node, kColorspaceParamIn, std::vector<double>(1, ColorMath::eColorspaceModelRGB)));
+    ASSERT_TRUE(setKnobValues(node, kColorspaceParamOut, std::vector<double>(1, ColorMath::eColorspaceModelLab)));
+    RenderedPlane plane;
+    ASSERT_TRUE(renderRgba(node, window, &plane));
+    ASSERT_EQ(4u, plane.channels.size());
+    int translucent = 0;
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const float alpha = paritySourceColorValue(3, x, y, kTime);
+            if ((alpha <= 0.1f) || (alpha >= 0.9f)) {
+                continue;
+            }
+            ++translucent;
+            float v[3];
+            for (int c = 0; c < 3; ++c) {
+                v[c] = paritySourceColorValue(c, x, y, kTime);
+            }
+            convert(cm, ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelLab, v);
+            const float* got = &plane.pixels[((std::size_t)(y - window.y1) * window.width() + (x - window.x1)) * 4];
+            for (int c = 0; c < 3; ++c) {
+                ASSERT_TRUE(ParityTolerance::arithmetic().accepts(v[c], got[c])) << "at " << x << "," << y << " alpha " << alpha << " c=" << c << ": want " << v[c] << ", got " << got[c];
+            }
+            ASSERT_EQ(alpha, got[3]) << x << "," << y;
+        }
+    }
+    EXPECT_GT(translucent, 0);
+}
+
 TEST_F(NativeColorspaceTest, IdentityWhenInIsOut)
 {
     NodePtr source = makeSource();
@@ -498,9 +538,6 @@ TEST_F(NativeColorspaceTest, BothSchedulerModesAgreeWithNoUnplannedPull)
     KnobChannelSelect* maskChannel = dynamic_cast<KnobChannelSelect*>(node->getKnobByName("maskChannel_Mask").get());
     ASSERT_TRUE(maskChannel != NULL);
     maskChannel->set("rgba.A");
-    KnobChannelSelect* unPremultBy = dynamic_cast<KnobChannelSelect*>(node->getKnobByName(kUnPremultByKnobName).get());
-    ASSERT_TRUE(unPremultBy != NULL);
-    unPremultBy->set("rgba.A");
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, std::vector<double>(1, 0.75)));
     ASSERT_TRUE(setKnobValues(node, kColorspaceParamIn, std::vector<double>(1, ColorMath::eColorspaceModelRGB)));
     ASSERT_TRUE(setKnobValues(node, kColorspaceParamOut, std::vector<double>(1, ColorMath::eColorspaceModelLab)));

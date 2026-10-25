@@ -22,9 +22,11 @@ XYZToxyY and xyYToXYZ plug-ins with one In and one Out choice.
 - **No transfer function.** The Y'CbCr, YPbPr and YUV models apply the luma coefficients to
   the linear RGB as given. Apply an OETF first when encoded values are wanted.
 - **Hue in turns.** HSV, HSL and HSI hue runs from 0 to 1.
-- **Premultiplication on both sides.** "(Un)premult by" divides the input before the
-  conversion and multiplies the output after it. The OpenFX plug-ins unpremultiplied only an
-  RGB input and premultiplied only an RGB output, and defaulted to off, as this does.
+- **Works on the values as they are.** The node does not unpremultiply or premultiply: the
+  RGB it receives is converted as stored and alpha is left unchanged, and there is no
+  "(Un)premult by" control. To convert unpremultiplied colour, put the node between an
+  Unpremult and a Premult. The OpenFX plug-ins unpremultiplied an RGB input and premultiplied
+  an RGB output when asked to.
 - **Defaults to RGB to RGB,** an identity.
 - **No YUV for Rec. 2020,** as before: analog YUV has no Rec. 2020 definition.
 

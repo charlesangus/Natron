@@ -399,7 +399,9 @@ TEST_F(NativeGoldenTest, Colorspace)
     v.push_back(variant("toYCbCr709", models(ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelYCbCr709)));
     v.push_back(variant("hslToRgb", models(ColorMath::eColorspaceModelHSL, ColorMath::eColorspaceModelRGB)));
     v.push_back(variant("labToYuv601", models(ColorMath::eColorspaceModelLab, ColorMath::eColorspaceModelYUV601)));
-    addPremultAndMaskMix(&v, toLab);
+    v.push_back(maskVariant("maskmix", [toLab](const GoldenGraph& g) {
+        return toLab(g) && num(g, kOfxMixParamName, { 0.6 });
+    }));
     run(filterSpec("Colorspace", PLUGINID_NATRON_COLORSPACE, PLUGIN_MAJOR_NATRON_COLORSPACE), v);
 }
 

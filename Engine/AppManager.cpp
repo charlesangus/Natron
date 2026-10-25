@@ -361,6 +361,10 @@ AppManager::loadFromArgs(const CLArgs& cl)
     assert(_imp->nArgs <= (int)_imp->commandLineArgsUtf8.size());
     _imp->commandLineArgsUtf8.resize(_imp->nArgs); // Qt may have reduced the numlber of args
 
+    if (!checkGLContextRequirements()) {
+        return false;
+    }
+
 #ifdef QT_CUSTOM_THREADPOOL
     // Set the global thread pool (pointed is owned and deleted by QThreadPool at exit)
     QThreadPool::setGlobalInstance(new ThreadPool);

@@ -239,6 +239,7 @@ set(GuiTests_SOURCES
     CurveWeightedTangent_Test.cpp
     DisplayLegendColour_Test.cpp
     EdgeNearbyGrab_Test.cpp
+    GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorWheelWidth_Test.cpp
     KnobGuiString_Test.cpp

@@ -382,4 +382,18 @@ RenderContext::operator==(const RenderContext& other) const
     return true;
 }
 
+U64
+mixRenderContextKey(U64 hash,
+                    U64 contextKey)
+{
+    if (contextKey == 0) {
+        return hash;
+    }
+    ContentHasher h;
+    h.appendU64(hash);
+    h.appendU64(contextKey);
+
+    return h.finalize();
+}
+
 NATRON_NAMESPACE_EXIT

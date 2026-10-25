@@ -14,6 +14,7 @@
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/ViewerInstance.h"
 
+#include "ContextTestEffects.h"
 #include "CountingTestEffect.h"
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
@@ -127,6 +128,10 @@ registerRenderSchedulerTestPlugins()
     // Registered to count the render calls of every task, which no shipped plugin exposes.
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
+    // Registered to request inputs under render contexts and read them, which no shipped plugin does yet.
+    registerTestBuiltInPlugin<ContextReaderTestEffect>();
+    registerTestBuiltInPlugin<ContextFanOutTestEffect>();
+    registerTestBuiltInPlugin<ContextChainTestEffect>();
 }
 
 void

@@ -48,6 +48,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/OSGLContext.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/Settings.h"
@@ -65,6 +66,7 @@ struct PlanesRequest {
     double time = 0.;
     ViewIdx view;
     unsigned int mipmapLevel = 0;
+    U64 contextKey = 0;
     std::list<ImageLayerDesc> comps;
 };
 
@@ -84,7 +86,7 @@ queuePassThroughPlanes(FrameRequestMap& requests,
                        std::vector<PlanesRequest>* pending)
 {
     const EffectInstancePtr effect = request.node->getEffectInstance();
-    FrameRequestMap::const_iterator nodeRequest = requests.find(request.node);
+    FrameRequestMap::const_iterator nodeRequest = requests.find(NodeCtxKey(request.node, request.contextKey));
     if (!effect || (nodeRequest == requests.end()) || !nodeRequest->second) {
         return;
     }
@@ -109,6 +111,7 @@ queuePassThroughPlanes(FrameRequestMap& requests,
     passed.time = passThroughTime;
     passed.view = ViewIdx(passThroughView);
     passed.mipmapLevel = request.mipmapLevel;
+    passed.contextKey = restrictContextToNode(nodeRequest->second->context, passed.node, 0);
     for (const ImageLayerDesc& layer : added) {
         if (ImageLayerDesc::findEquivalentLayer(layer, produced->second.begin(), produced->second.end()) != produced->second.end()) {
             continue;
@@ -124,7 +127,7 @@ queuePassThroughPlanes(FrameRequestMap& requests,
 
     bool walked = false;
     for (const FrameViewRequest::TaskEdge& edge : target->dependencies) {
-        if ((edge.inputNb == passThroughInput) && (edge.time == passed.time) && (edge.view == passed.view) && (edge.node.lock() == passed.node)) {
+        if ((edge.inputNb == passThroughInput) && (edge.time == passed.time) && (edge.view == passed.view) && (edge.contextKey == passed.contextKey) && (edge.node.lock() == passed.node)) {
             // An edge at another level is a task the fetch does not read, and a second task at this level would
             // render the input twice, so the pull stays as it was.
             if (edge.mipmapLevel != passed.mipmapLevel) {
@@ -135,7 +138,7 @@ queuePassThroughPlanes(FrameRequestMap& requests,
         }
     }
     if (!walked) {
-        FrameViewRequest* inputRequest = requests.findFrameViewRequest(passed.node, passed.time, passed.view);
+        FrameViewRequest* inputRequest = requests.findFrameViewRequest(NodeCtxKey(passed.node, passed.contextKey), passed.time, passed.view);
         if (!inputRequest || inputRequest->finalData.finalRoi.isNull() || !inputRequest->finalData.finalRoi.contains(target->finalData.finalRoi)) {
             return;
         }
@@ -149,6 +152,7 @@ queuePassThroughPlanes(FrameRequestMap& requests,
         edge.view = passed.view;
         edge.mipmapLevel = passed.mipmapLevel;
         edge.inputNb = passThroughInput;
+        edge.contextKey = passed.contextKey;
         target->dependencies.push_back(edge);
         ++inputRequest->consumers;
     }
@@ -161,6 +165,7 @@ queuePassThroughPlanes(FrameRequestMap& requests,
 static void
 mergeRequestedComponents(FrameRequestMap& requests,
                          const NodePtr& node,
+                         U64 contextKey,
                          double time,
                          ViewIdx view,
                          unsigned int mipmapLevel,
@@ -168,6 +173,7 @@ mergeRequestedComponents(FrameRequestMap& requests,
 {
     std::vector<PlanesRequest> pending(1);
     pending.front().node = node;
+    pending.front().contextKey = contextKey;
     pending.front().time = time;
     pending.front().view = view;
     pending.front().mipmapLevel = mipmapLevel;
@@ -178,7 +184,7 @@ mergeRequestedComponents(FrameRequestMap& requests,
     while (!pending.empty()) {
         const PlanesRequest request = std::move(pending.back());
         pending.pop_back();
-        FrameViewRequest* target = request.node ? requests.findFrameViewRequest(request.node, request.time, request.view) : 0;
+        FrameViewRequest* target = request.node ? requests.findFrameViewRequest(NodeCtxKey(request.node, request.contextKey), request.time, request.view) : 0;
         if (!target) {
             continue;
         }
@@ -204,6 +210,7 @@ mergeRequestedComponents(FrameRequestMap& requests,
             aliased.time = alias.time;
             aliased.view = alias.view;
             aliased.mipmapLevel = alias.mipmapLevel;
+            aliased.contextKey = alias.contextKey;
             aliased.comps = request.comps;
             pending.push_back(std::move(aliased));
             continue;
@@ -216,13 +223,14 @@ static void
 addTaskEdge(FrameRequestMap& requests,
             FrameViewRequest* consumer,
             const NodePtr& inputNode,
+            U64 inputContextKey,
             double inputTime,
             ViewIdx inputView,
             unsigned int mipmapLevel,
             int inputNb,
             const std::list<ImageLayerDesc>& comps)
 {
-    FrameViewRequest* input = requests.findFrameViewRequest(inputNode, inputTime, inputView);
+    FrameViewRequest* input = requests.findFrameViewRequest(NodeCtxKey(inputNode, inputContextKey), inputTime, inputView);
 
     if (!consumer || !input) {
         return;
@@ -231,7 +239,7 @@ addTaskEdge(FrameRequestMap& requests,
     // A consumer whose RoI grows is walked again and makes the same calls, which must not count twice.
     bool alreadyThere = false;
     for (std::vector<FrameViewRequest::TaskEdge>::const_iterator it = consumer->dependencies.begin(); it != consumer->dependencies.end(); ++it) {
-        if ((it->time == inputTime) && (it->view == inputView) && (it->mipmapLevel == mipmapLevel) && (it->inputNb == inputNb) && (it->node.lock() == inputNode)) {
+        if ((it->time == inputTime) && (it->view == inputView) && (it->mipmapLevel == mipmapLevel) && (it->inputNb == inputNb) && (it->contextKey == inputContextKey) && (it->node.lock() == inputNode)) {
             alreadyThere = true;
             break;
         }
@@ -243,11 +251,12 @@ addTaskEdge(FrameRequestMap& requests,
         edge.view = inputView;
         edge.mipmapLevel = mipmapLevel;
         edge.inputNb = inputNb;
+        edge.contextKey = inputContextKey;
         consumer->dependencies.push_back(edge);
         ++input->consumers;
     }
 
-    mergeRequestedComponents(requests, inputNode, inputTime, inputView, mipmapLevel, comps);
+    mergeRequestedComponents(requests, inputNode, inputContextKey, inputTime, inputView, mipmapLevel, comps);
 }
 
 static void
@@ -351,10 +360,25 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
     PreRenderFrames framesToRender;
     collectPreRenderFrames(node, framesNeeded, reroutesMap, time, view, false /*includeRotoPaintTree*/, &framesToRender);
 
+    const ParallelRenderArgsPtr effectArgs = effect->getParallelRenderArgsTLS();
+    const RenderContextPtr effectContext = effectArgs ? effectArgs->context : RenderContextPtr();
+
     for (PreRenderFrames::const_iterator it = framesToRender.begin(); it != framesToRender.end(); ++it) {
         const EffectInstancePtr& inputEffect = it->first.first;
 
         int inputNb = it->first.second;
+
+        // An input requested under several contexts is pulled by the render action, once per context
+        // under an InputContextScope; one requested under a single other context is pre-rendered under it.
+        std::vector<RenderContextPtr> inputContexts;
+        std::unique_ptr<InputContextScope> inputContextScope;
+        if (effect->getInputContexts(inputNb, time, view, effectContext, &inputContexts)) {
+            if (inputContexts.size() != 1) {
+                continue;
+            }
+            inputContextScope.reset(new InputContextScope(effect.get(), inputContexts.front()));
+        }
+        InputContextArgs inputContext(effect.get(), inputEffect);
 
         ImageList* inputImagesList = 0;
         {
@@ -369,7 +393,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
         ///What region are we interested in for this input effect ? (This is in Canonical coords)
         RectD roi;
         bool roiIsInRequestPass = false;
-        ParallelRenderArgsPtr frameArgs = inputEffect->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr frameArgs = inputContext.args() ? inputContext.args() : inputEffect->getParallelRenderArgsTLS();
         if (frameArgs && frameArgs->request) {
             roiIsInRequestPass = true;
         }
@@ -465,7 +489,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                                                                                    time /*callerRenderTime*/));
 
                                 EffectInstance::RenderRoIRetCode ret;
-                                ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs); //< requested bitdepth
+                                ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs, effect.get(), &inputContext); //< requested bitdepth
                                 if (ret != EffectInstance::eRenderRoIRetCodeOk) {
                                     return ret;
                                 }
@@ -521,10 +545,18 @@ struct RequestPassItem {
     FrameViewRequest* consumer = 0;
     int inputNb = -1;
     std::shared_ptr<const std::list<ImageLayerDesc>> comps;
+
+    // The context node is visited under, restricted to what its output can read, and its hash.
+    RenderContextPtr context;
+    U64 contextKey = 0;
 };
 
+/**
+ * @brief A visit of node under context, which it restricts to what node's output can read.
+ **/
 RequestPassItem
 makeVisitItem(const NodePtr& node,
+              const RenderContextPtr& context,
               double time,
               ViewIdx view,
               unsigned int mipmapLevel,
@@ -538,6 +570,7 @@ makeVisitItem(const NodePtr& node,
     item.view = view;
     item.mipmapLevel = mipmapLevel;
     item.roi = roi;
+    item.contextKey = restrictContextToNode(context, node, &item.context);
 
     return item;
 }
@@ -652,6 +685,7 @@ RequestPassItem
 makeConsumerItem(RequestPassItem::KindEnum kind,
                  FrameViewRequest* consumer,
                  const NodePtr& inputNode,
+                 U64 inputContextKey,
                  double inputTime,
                  ViewIdx inputView,
                  unsigned int mipmapLevel,
@@ -662,6 +696,7 @@ makeConsumerItem(RequestPassItem::KindEnum kind,
     item.kind = kind;
     item.consumer = consumer;
     item.node = inputNode;
+    item.contextKey = inputContextKey;
     item.time = inputTime;
     item.view = inputView;
     item.mipmapLevel = mipmapLevel;
@@ -698,7 +733,8 @@ visitRequestPassItem(bool useTransforms,
            effect->supportsRenderScaleMaybe() == EffectInstance::eSupportsYes);
     bool supportsRs = effect->supportsRenderScale();
     unsigned int mappedLevel = supportsRs ? originalMipmapLevel : 0;
-    FrameRequestMap::iterator foundNode = requests.find(node);
+    const NodeCtxKey nodeKey(node, item.contextKey);
+    FrameRequestMap::iterator foundNode = requests.find(nodeKey);
     if ( foundNode != requests.end() ) {
         nodeRequest = foundNode->second;
     } else {
@@ -706,9 +742,14 @@ visitRequestPassItem(bool useTransforms,
 
         NodeFrameRequestPtr tmp = std::make_shared<NodeFrameRequest>();
         tmp->mappedScale = RenderScale::fromMipmapLevel(mappedLevel);
-        tmp->nodeHash = effect->getRenderHash();
+        tmp->context = item.context;
+        tmp->contextKey = item.contextKey;
+        tmp->nodeHash = mixRenderContextKey(effect->getRenderHash(), item.contextKey);
+        if ((item.contextKey != 0) && !requests.contextArgs) {
+            requests.contextArgs = std::make_shared<ContextFrameArgsMap>();
+        }
 
-        std::pair<FrameRequestMap::iterator, bool> ret = requests.insert( std::make_pair(node, tmp) );
+        std::pair<FrameRequestMap::iterator, bool> ret = requests.insert(std::make_pair(nodeKey, tmp));
         assert(ret.second);
         nodeRequest = ret.first->second;
     }
@@ -806,8 +847,8 @@ visitRequestPassItem(bool useTransforms,
         // be safe in release mode otherwise we hit an infinite recursion
         if ((fvRequest->globalData.inputIdentityTime != time) || (viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant)) {
             ViewIdx inputView = (view != 0 && viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant) ? ViewIdx(0) : view;
-            stack->push_back(makeConsumerItem(RequestPassItem::eKindIdentityEdge, fvRequest, node, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, -2));
-            stack->push_back(makeVisitItem(node, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, canonicalRenderWindow));
+            stack->push_back(makeConsumerItem(RequestPassItem::eKindIdentityEdge, fvRequest, node, item.contextKey, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, -2));
+            stack->push_back(makeVisitItem(node, item.context, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, canonicalRenderWindow));
 
             return eStatusOK;
         }
@@ -818,8 +859,9 @@ visitRequestPassItem(bool useTransforms,
         EffectInstancePtr inputEffectIdentity = effect->getInput(fvRequest->globalData.identityInputNb);
         if (inputEffectIdentity) {
             NodePtr inputIdentityNode = inputEffectIdentity->getNode();
-            stack->push_back(makeConsumerItem(RequestPassItem::eKindIdentityEdge, fvRequest, inputIdentityNode, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, fvRequest->globalData.identityInputNb));
-            stack->push_back(makeVisitItem(inputIdentityNode, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, canonicalRenderWindow));
+            const RequestPassItem visit = makeVisitItem(inputIdentityNode, item.context, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, canonicalRenderWindow);
+            stack->push_back(makeConsumerItem(RequestPassItem::eKindIdentityEdge, fvRequest, inputIdentityNode, visit.contextKey, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, fvRequest->globalData.identityInputNb));
+            stack->push_back(visit);
 
             return eStatusOK;
         }
@@ -866,12 +908,18 @@ visitRequestPassItem(bool useTransforms,
     collectPreRenderFrames(node, fvRequest->globalData.frameViewsNeeded, fvRequest->globalData.transforms, time, view, true /*includeRotoPaintTree*/, &framesToRender);
 
     std::vector<RequestPassItem> inputItems;
+    std::vector<RenderContextPtr> inputContexts;
     for (PreRenderFrames::const_iterator it = framesToRender.begin(); it != framesToRender.end(); ++it) {
         const EffectInstancePtr& inputEffect = it->first.first;
         NodePtr inputNode = inputEffect->getNode();
         assert(inputNode);
 
         int inputNb = it->first.second;
+
+        inputContexts.clear();
+        if (!effect->getInputContexts(inputNb, time, view, item.context, &inputContexts)) {
+            inputContexts.push_back(item.context);
+        }
 
         RoIMap::const_iterator foundInputRoI = fvPerRequestData.inputsRoi.find(inputEffect);
         // An infinite RoI is fine: it is intersected with the source RoD, and composed Transforms often produce one.
@@ -895,16 +943,20 @@ visitRequestPassItem(bool useTransforms,
                     for (double f = viewIt->second[range].min; f <= viewIt->second[range].max; f += 1.) {
                         // Frames past the pre-fetch cap are still walked: getImage pulls them during the
                         // render and their renderRoI uses this request data.
-                        inputItems.push_back(makeVisitItem(inputNode, f, viewIt->first, upstreamMipmapLevel, roi));
-                        if (compsNeeded) {
-                            const bool preFetched = nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING;
-                            RequestPassItem consumerItem = makeConsumerItem(preFetched ? RequestPassItem::eKindInputEdge : RequestPassItem::eKindInputComponents,
-                                                                            fvRequest, inputNode, f, viewIt->first, upstreamMipmapLevel, inputNb);
-                            consumerItem.comps = compsNeeded;
-                            inputItems.push_back(consumerItem);
-                            if (preFetched) {
-                                ++nbFramesPreFetched;
+                        const bool preFetched = nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING;
+                        for (const RenderContextPtr& inputContext : inputContexts) {
+                            const RequestPassItem visit = makeVisitItem(inputNode, inputContext, f, viewIt->first, upstreamMipmapLevel, roi);
+                            const U64 inputContextKey = visit.contextKey;
+                            inputItems.push_back(visit);
+                            if (compsNeeded) {
+                                RequestPassItem consumerItem = makeConsumerItem(preFetched ? RequestPassItem::eKindInputEdge : RequestPassItem::eKindInputComponents,
+                                                                                fvRequest, inputNode, inputContextKey, f, viewIt->first, upstreamMipmapLevel, inputNb);
+                                consumerItem.comps = compsNeeded;
+                                inputItems.push_back(consumerItem);
                             }
+                        }
+                        if (compsNeeded && preFetched) {
+                            ++nbFramesPreFetched;
                         }
                     }
                 }
@@ -912,7 +964,32 @@ visitRequestPassItem(bool useTransforms,
         }
     }
 
-    stack->push_back(makeConsumerItem(RequestPassItem::eKindFinish, fvRequest, NodePtr(), time, view, originalMipmapLevel, -1));
+    // Nodes the effect renders under a context it names, such as its own output under another one.
+    std::vector<EffectInstance::ContextNodeRequest> contextRequests;
+    effect->getContextNodeRequests(time, view, item.context, canonicalRenderWindow, &contextRequests);
+    for (const EffectInstance::ContextNodeRequest& contextRequest : contextRequests) {
+        if (!contextRequest.node || !contextRequest.node->getEffectInstance() || contextRequest.roi.isNull()) {
+            continue;
+        }
+        const RequestPassItem visit = makeVisitItem(contextRequest.node, contextRequest.context, contextRequest.time, contextRequest.view, upstreamMipmapLevel, contextRequest.roi);
+        if ((contextRequest.node == node) && (visit.contextKey == item.contextKey)) {
+            // The node would wait on its own output.
+            effect->setPersistentMessage(eMessageTypeError, EffectInstance::tr("%1 requests its own output under the context it renders under.").arg(QString::fromUtf8(node->getScriptName_mt_safe().c_str())).toStdString());
+
+            return eStatusFailed;
+        }
+        std::list<ImageLayerDesc> comps = contextRequest.comps;
+        if (comps.empty()) {
+            comps.push_back(ImageLayerDesc::getRGBAComponents());
+        }
+        inputItems.push_back(visit);
+        RequestPassItem consumerItem = makeConsumerItem(RequestPassItem::eKindInputEdge, fvRequest, contextRequest.node, visit.contextKey, contextRequest.time, contextRequest.view, upstreamMipmapLevel,
+                                                        FrameViewRequest::TaskEdge::kContextRequestInputNb);
+        consumerItem.comps = std::make_shared<std::list<ImageLayerDesc>>(std::move(comps));
+        inputItems.push_back(consumerItem);
+    }
+
+    stack->push_back(makeConsumerItem(RequestPassItem::eKindFinish, fvRequest, NodePtr(), item.contextKey, time, view, originalMipmapLevel, -1));
     // Reversed so the first input frame is walked first and each edge item pops right after its visit's whole subtree.
     stack->insert(stack->end(), std::make_move_iterator(inputItems.rbegin()), std::make_move_iterator(inputItems.rend()));
 
@@ -937,7 +1014,8 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     std::vector<RequestPassItem> stack;
     WarmedRoDSet warmed;
 
-    stack.push_back(makeVisitItem(node, time, view, originalMipmapLevel, canonicalRenderWindow));
+    // The root renders under the empty context.
+    stack.push_back(makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
 
     while (!stack.empty()) {
         const RequestPassItem item = std::move(stack.back());
@@ -950,15 +1028,15 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
             }
             break;
         case RequestPassItem::eKindInputEdge:
-            addTaskEdge(requests, item.consumer, item.node, item.time, item.view, item.mipmapLevel, item.inputNb, *item.comps);
+            addTaskEdge(requests, item.consumer, item.node, item.contextKey, item.time, item.view, item.mipmapLevel, item.inputNb, *item.comps);
             break;
         case RequestPassItem::eKindInputComponents:
-            mergeRequestedComponents(requests, item.node, item.time, item.view, item.mipmapLevel, *item.comps);
+            mergeRequestedComponents(requests, item.node, item.contextKey, item.time, item.view, item.mipmapLevel, *item.comps);
             break;
         case RequestPassItem::eKindIdentityEdge: {
             // The alias carries what consumers had requested from the identity frame/view before its target was walked.
             const std::list<ImageLayerDesc> comps = item.consumer->componentsRequested;
-            addTaskEdge(requests, item.consumer, item.node, item.time, item.view, item.mipmapLevel, item.inputNb, comps);
+            addTaskEdge(requests, item.consumer, item.node, item.contextKey, item.time, item.view, item.mipmapLevel, item.inputNb, comps);
             assignDfsPostOrder(requests, item.consumer);
             break;
         }
@@ -1048,7 +1126,7 @@ NodeFrameRequest::findFrameViewRequest(double time,
 }
 
 FrameViewRequest*
-FrameRequestMap::findFrameViewRequest(const NodePtr& node,
+FrameRequestMap::findFrameViewRequest(const NodeCtxKey& node,
                                       double time,
                                       ViewIdx view)
 {
@@ -1062,7 +1140,7 @@ FrameRequestMap::findFrameViewRequest(const NodePtr& node,
 }
 
 const FrameViewRequest*
-FrameRequestMap::findFrameViewRequest(const NodePtr& node,
+FrameRequestMap::findFrameViewRequest(const NodeCtxKey& node,
                                       double time,
                                       ViewIdx view) const
 {
@@ -1073,6 +1151,200 @@ FrameRequestMap::findFrameViewRequest(const NodePtr& node,
     }
 
     return found->second->findFrameViewRequest(time, view);
+}
+
+void
+FrameRequestMap::installContextArgs(const std::function<ParallelRenderArgsPtr(const NodePtr&)>& baseArgsOf) const
+{
+    if (!contextArgs) {
+        return;
+    }
+    for (const_iterator it = begin(); it != end(); ++it) {
+        if (!it->second || !it->first.node) {
+            continue;
+        }
+        const ParallelRenderArgsPtr base = baseArgsOf(it->first.node);
+        if (!base) {
+            continue;
+        }
+        base->contextArgs = contextArgs;
+        if (it->first.ctxKey == 0) {
+            continue;
+        }
+        ParallelRenderArgsPtr& args = (*contextArgs)[it->first];
+        if (args) {
+            continue;
+        }
+        args = std::make_shared<ParallelRenderArgs>(*base);
+        args->context = it->second->context;
+        args->contextKey = it->second->contextKey;
+        args->request = it->second;
+        args->nodeHash = it->second->nodeHash;
+    }
+}
+
+ParallelRenderArgsPtr
+FrameRequestMap::getContextArgs(const NodeCtxKey& key) const
+{
+    if (!contextArgs || (key.ctxKey == 0)) {
+        return ParallelRenderArgsPtr();
+    }
+    ContextFrameArgsMap::const_iterator found = contextArgs->find(key);
+
+    return (found == contextArgs->end()) ? ParallelRenderArgsPtr() : found->second;
+}
+
+U64
+restrictContextToNode(const RenderContextPtr& context,
+                      const NodePtr& node,
+                      RenderContextPtr* restricted)
+{
+    if (restricted) {
+        restricted->reset();
+    }
+    if (!context || context->isEmpty() || !node) {
+        return 0;
+    }
+    const RenderContextReadSetConstPtr reads = node->getUpstreamContextReadSet();
+    if (!reads) {
+        return 0;
+    }
+    const RenderContextPtr kept = context->restrictTo(*reads);
+    if (!kept || kept->isEmpty()) {
+        return 0;
+    }
+    if (restricted) {
+        *restricted = kept;
+    }
+
+    return kept->hash();
+}
+
+namespace {
+
+typedef std::vector<std::pair<const EffectInstance*, RenderContextPtr>> InputContextScopeStack;
+
+InputContextScopeStack&
+inputContextScopes()
+{
+    thread_local InputContextScopeStack scopes;
+
+    return scopes;
+}
+
+} // namespace
+
+InputContextScope::InputContextScope(const EffectInstance* consumer,
+                                     const RenderContextPtr& context)
+{
+    inputContextScopes().push_back(std::make_pair(consumer, context));
+}
+
+InputContextScope::~InputContextScope()
+{
+    InputContextScopeStack& scopes = inputContextScopes();
+
+    assert(!scopes.empty());
+    if (!scopes.empty()) {
+        scopes.pop_back();
+    }
+}
+
+bool
+InputContextScope::current(const EffectInstance* consumer,
+                           RenderContextPtr* context)
+{
+    const InputContextScopeStack& scopes = inputContextScopes();
+
+    for (InputContextScopeStack::const_reverse_iterator it = scopes.rbegin(); it != scopes.rend(); ++it) {
+        if (it->first == consumer) {
+            *context = it->second;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+ContextFrameArgsScope::ContextFrameArgsScope(const EffectInstancePtr& effect,
+                                             const ParallelRenderArgsPtr& args)
+{
+    install(effect, args);
+}
+
+ContextFrameArgsScope::~ContextFrameArgsScope()
+{
+    if (_effect) {
+        _effect->popParallelRenderArgsTLS();
+    }
+}
+
+void
+ContextFrameArgsScope::install(const EffectInstancePtr& effect,
+                               const ParallelRenderArgsPtr& args)
+{
+    if (_effect || !effect || !args) {
+        return;
+    }
+    effect->setParallelRenderArgsTLS(args);
+    _effect = effect;
+}
+
+InputContextArgs::InputContextArgs(const EffectInstance* consumer,
+                                   const EffectInstancePtr& input)
+    : _input(input)
+{
+    if (!consumer || !input) {
+        return;
+    }
+    RenderContextPtr context;
+    const bool scoped = InputContextScope::current(consumer, &context);
+    const ParallelRenderArgsPtr consumerArgs = consumer->getParallelRenderArgsTLS();
+    if (!scoped) {
+        if (!consumerArgs || !consumerArgs->context) {
+            return;
+        }
+        context = consumerArgs->context;
+    }
+    const NodePtr inputNode = input->getNode();
+    RenderContextPtr restricted;
+    _contextKey = restrictContextToNode(context, inputNode, &restricted);
+    if (_contextKey == 0) {
+        return;
+    }
+    const std::shared_ptr<const ContextFrameArgsMap> planned = consumerArgs ? consumerArgs->contextArgs.lock() : std::shared_ptr<const ContextFrameArgsMap>();
+    if (planned) {
+        ContextFrameArgsMap::const_iterator found = planned->find(NodeCtxKey(inputNode, _contextKey));
+        if ((found != planned->end()) && found->second) {
+            _args = found->second;
+
+            return;
+        }
+    }
+    // The request pass did not plan this pull: it renders under a copy of the input's own args with
+    // no request.
+    const ParallelRenderArgsPtr base = input->getParallelRenderArgsTLS();
+    if (!base) {
+        // Outside a frame render there are no args to give a context to.
+        _contextKey = 0;
+
+        return;
+    }
+    _args = std::make_shared<ParallelRenderArgs>(*base);
+    _args->context = restricted;
+    _args->contextKey = _contextKey;
+    _args->nodeHash = mixRenderContextKey(base->request ? base->request->nodeHash : base->nodeHash, _contextKey);
+    _args->request.reset();
+}
+
+void
+InputContextArgs::install()
+{
+    if (_args && !_installed) {
+        _scope.install(_input, _args);
+        _installed = true;
+    }
 }
 
 bool
@@ -1432,6 +1704,12 @@ ParallelRenderArgsSetter::updateNodesRequest(const FrameRequestMap& request)
             }
         }
     }
+
+    request.installContextArgs([](const NodePtr& node) {
+        const EffectInstancePtr effect = node->getEffectInstance();
+
+        return effect ? effect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    });
 }
 
 ParallelRenderArgsSetter::ParallelRenderArgsSetter(const std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr>>& args)

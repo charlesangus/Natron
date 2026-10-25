@@ -63,6 +63,9 @@ public:
         ViewIdx view;
         unsigned int mipmapLevel;
 
+        // The context key the node renders under (see NodeCtxKey).
+        U64 contextKey = 0;
+
         bool operator==(const TaskKey& other) const;
     };
 
@@ -265,6 +268,12 @@ public:
     }
 
     ParallelRenderArgsPtr getArgs(const NodePtr& node) const;
+
+    /**
+     * @brief The frame args of node under key.ctxKey: getArgs() for key 0, otherwise those the
+     * request pass planned, or null.
+     **/
+    ParallelRenderArgsPtr getArgs(const NodeCtxKey& key) const;
 
     /**
      * @brief The frame args of the effect owning holder, or null if this frame does not reach it.

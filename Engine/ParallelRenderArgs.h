@@ -31,6 +31,7 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <vector>
 
@@ -69,6 +70,47 @@ typedef std::shared_ptr<InputMatrixMap> InputMatrixMapPtr;
 class NodeFrameRequest;
 
 /**
+ * @brief A node and the key of the context it renders under: the hash of the context restricted to
+ * what the node's output can read (Node::getUpstreamContextReadSet()). Key 0, the empty context, is
+ * the node's one entry when nothing upstream of it reads a context variable. Converts from a bare
+ * node with key 0, for callers without a context.
+ **/
+struct NodeCtxKey {
+    NodePtr node;
+    U64 ctxKey = 0;
+
+    NodeCtxKey() = default;
+
+    NodeCtxKey(const NodePtr& node_,
+               U64 ctxKey_ = 0)
+        : node(node_)
+        , ctxKey(ctxKey_)
+    {
+    }
+
+    bool operator<(const NodeCtxKey& other) const
+    {
+        if (node != other.node) {
+            return node < other.node;
+        }
+
+        return ctxKey < other.ctxKey;
+    }
+
+    bool operator==(const NodeCtxKey& other) const
+    {
+        return (node == other.node) && (ctxKey == other.ctxKey);
+    }
+};
+
+/**
+ * @brief The frame args of each (node, nonzero context key) a request pass reached, each a copy of
+ * the node's own frame args carrying that context, its request and its hash.
+ **/
+typedef std::map<NodeCtxKey, ParallelRenderArgsPtr> ContextFrameArgsMap;
+typedef std::shared_ptr<ContextFrameArgsMap> ContextFrameArgsMapPtr;
+
+/**
  * @brief Thread-local arguments given to render a frame by the tree.
  * This is different than the RenderArgs because it is not local to a
  * renderRoI call but to the rendering of a whole frame.
@@ -95,6 +137,15 @@ public:
     /// read by the render instead of the live answer (see EffectInstance::getRenderMetadata()).
     /// Null when the frame was set up without walking upstream.
     NodeMetadataConstPtr metadata;
+
+    /// The context the node renders under, restricted to what its output can read; null for the
+    /// empty context. contextKey is its hash, already folded into nodeHash.
+    RenderContextPtr context;
+    U64 contextKey = 0;
+
+    /// The frame args of the nodes rendering under a nonzero context key this frame, set when the
+    /// request pass reached any, so that an input pulled under a context finds its own.
+    std::weak_ptr<const ContextFrameArgsMap> contextArgs;
 
     ///If set, contains data for all frame/view pair that are going to be computed
     ///for this frame/view pair with the overall RoI to avoid rendering several times with this node.
@@ -211,7 +262,13 @@ struct FrameViewRequest
         double time;
         ViewIdx view;
         unsigned int mipmapLevel;
+
+        /// inputNb of an edge to a node requested under a named context rather than read as an input.
+        static const int kContextRequestInputNb = -3;
         int inputNb;
+
+        /// The dependency's own context key, which need not be its consumer's.
+        U64 contextKey = 0;
     };
 
     ///All different requests led by different branches in the tree
@@ -268,6 +325,11 @@ public:
     U64 nodeHash;
     RenderScale mappedScale;
 
+    /// The context the node renders under for this entry, restricted to what its output can read
+    /// (null for the empty context), and its hash, folded into nodeHash.
+    RenderContextPtr context;
+    U64 contextKey = 0;
+
     bool getFrameViewCanonicalRoI(double time, ViewIdx view, RectD* roi) const;
 
     const FrameViewRequest* getFrameViewRequest(double time, ViewIdx view) const;
@@ -275,15 +337,117 @@ public:
     FrameViewRequest* findFrameViewRequest(double time, ViewIdx view);
 };
 
+/**
+ * @brief The request pass's entries, one per node and context key. A bare node looks up key 0.
+ **/
 class FrameRequestMap
-    : public std::map<NodePtr, NodeFrameRequestPtr> {
+    : public std::map<NodeCtxKey, NodeFrameRequestPtr> {
 public:
-    FrameViewRequest* findFrameViewRequest(const NodePtr& node, double time, ViewIdx view);
+    FrameViewRequest* findFrameViewRequest(const NodeCtxKey& node, double time, ViewIdx view);
 
-    const FrameViewRequest* findFrameViewRequest(const NodePtr& node, double time, ViewIdx view) const;
+    const FrameViewRequest* findFrameViewRequest(const NodeCtxKey& node, double time, ViewIdx view) const;
+
+    /**
+     * @brief Creates the frame args of each entry with a nonzero context key that has none yet, from
+     * the node's own args as baseArgsOf returns them, and points every args baseArgsOf returns for an
+     * entry at them. Does nothing when no entry has a nonzero key. Not MT-safe: call it while setting
+     * the frame up.
+     **/
+    void installContextArgs(const std::function<ParallelRenderArgsPtr(const NodePtr&)>& baseArgsOf) const;
+
+    /**
+     * @brief The frame args the request pass planned for node under contextKey, or null.
+     **/
+    ParallelRenderArgsPtr getContextArgs(const NodeCtxKey& key) const;
 
     int nextDfsPostOrder = 0;
+
+    /// Null until the pass reaches a node under a nonzero context key.
+    ContextFrameArgsMapPtr contextArgs;
 };
+
+/**
+ * @brief Makes the effect's input pulls on this thread, for its lifetime, request the inputs under
+ * context instead of the context the effect renders under. An effect that fans an input out into
+ * several contexts (see EffectInstance::getInputContexts()) pulls each one with getImage() under
+ * one of these. Scopes nest; only pulls made by consumer on the constructing thread see it.
+ **/
+class InputContextScope {
+public:
+    InputContextScope(const EffectInstance* consumer,
+                      const RenderContextPtr& context);
+    ~InputContextScope();
+
+    InputContextScope(const InputContextScope&) = delete;
+    InputContextScope& operator=(const InputContextScope&) = delete;
+
+    /**
+     * @brief Whether a scope for consumer is open on this thread, and if so its context.
+     **/
+    static bool current(const EffectInstance* consumer,
+                        RenderContextPtr* context);
+};
+
+/**
+ * @brief Pushes args on effect's frame args for its lifetime when args is not null, so the effect
+ * renders under args' context; pops them on destruction.
+ **/
+class ContextFrameArgsScope {
+public:
+    ContextFrameArgsScope() = default;
+    ContextFrameArgsScope(const EffectInstancePtr& effect,
+                          const ParallelRenderArgsPtr& args);
+    ~ContextFrameArgsScope();
+
+    ContextFrameArgsScope(const ContextFrameArgsScope&) = delete;
+    ContextFrameArgsScope& operator=(const ContextFrameArgsScope&) = delete;
+
+    void install(const EffectInstancePtr& effect,
+                 const ParallelRenderArgsPtr& args);
+
+private:
+    EffectInstancePtr _effect;
+};
+
+/**
+ * @brief The context key input renders under when consumer pulls it, and the frame args for it:
+ * the context consumer pulls under (an InputContextScope, else the one it renders under) restricted
+ * to what the input's output can read. Key 0 and null args when that is empty, the input's own args
+ * then applying unchanged. install() pushes the args on the input for the object's lifetime.
+ **/
+class InputContextArgs {
+public:
+    InputContextArgs(const EffectInstance* consumer,
+                     const EffectInstancePtr& input);
+
+    U64 contextKey() const
+    {
+        return _contextKey;
+    }
+
+    const ParallelRenderArgsPtr& args() const
+    {
+        return _args;
+    }
+
+    void install();
+
+private:
+    EffectInstancePtr _input;
+    ParallelRenderArgsPtr _args;
+    U64 _contextKey = 0;
+    ContextFrameArgsScope _scope;
+    bool _installed = false;
+};
+
+/**
+ * @brief context restricted to what node's output can read, written to restricted when given
+ * (null when empty), and its hash: the node's context key under context. Returns 0 without
+ * computing node's read-set when context is null or empty.
+ **/
+U64 restrictContextToNode(const RenderContextPtr& context,
+                          const NodePtr& node,
+                          RenderContextPtr* restricted);
 
 /**
  * @brief Per-render context is captured up front into thread-local storage

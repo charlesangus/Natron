@@ -428,6 +428,17 @@ EffectInstance::invalidateParallelRenderArgsTLS()
     tls->frameArgs.pop_back();
 }
 
+void
+EffectInstance::popParallelRenderArgsTLS()
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    assert(tls && !tls->frameArgs.empty());
+    if (tls && !tls->frameArgs.empty()) {
+        tls->frameArgs.pop_back();
+    }
+}
+
 ParallelRenderArgsPtr
 EffectInstance::getParallelRenderArgsTLS() const
 {
@@ -864,7 +875,8 @@ EffectInstance::lookupFrameStore(const EffectInstancePtr& input,
                                  unsigned mipmap,
                                  const std::list<ImageLayerDesc>& comps,
                                  const RectI& pixelRoI,
-                                 std::list<ImagePtr>* out)
+                                 std::list<ImagePtr>* out,
+                                 const InputContextArgs* inputContext)
 {
     const FrameRenderContext* context = AppTLS::currentFrameContext();
     if (!context || !input || comps.empty() || pixelRoI.isNull()) {
@@ -875,12 +887,13 @@ EffectInstance::lookupFrameStore(const EffectInstancePtr& input,
     key.time = time;
     key.view = view;
     key.mipmapLevel = mipmap;
+    key.contextKey = inputContext ? inputContext->contextKey() : 0;
     if (!key.node) {
         return false;
     }
     RectI neededRoI = pixelRoI;
     // Read from the frame rather than the input's TLS, which would install the input's args on this thread.
-    ParallelRenderArgsPtr inputFrameArgs = context->getArgsForHolder(input->getTLSHolder());
+    ParallelRenderArgsPtr inputFrameArgs = (inputContext && inputContext->args()) ? inputContext->args() : context->getArgsForHolder(input->getTLSHolder());
     const FrameViewRequest* request = (inputFrameArgs && inputFrameArgs->request) ? inputFrameArgs->request->getFrameViewRequest(time, view) : 0;
     if (request) {
         // Stored images stop at the region of definition, which a requested RoI may exceed.
@@ -911,10 +924,17 @@ EffectInstance::RenderRoIRetCode
 EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
                                            int inputNb,
                                            RenderRoIArgs* args,
-                                           std::map<ImageLayerDesc, ImagePtr>* layers)
+                                           std::map<ImageLayerDesc, ImagePtr>* layers,
+                                           const EffectInstance* consumer,
+                                           InputContextArgs* inputContext)
 {
+    std::unique_ptr<InputContextArgs> ownInputContext;
+    if (!inputContext) {
+        ownInputContext.reset(new InputContextArgs(consumer, input));
+        inputContext = ownInputContext.get();
+    }
     std::list<ImagePtr> stored;
-    const bool fromStore = lookupFrameStore(input, args->time, args->view, args->mipmapLevel, args->components, args->roi, &stored);
+    const bool fromStore = lookupFrameStore(input, args->time, args->view, args->mipmapLevel, args->components, args->roi, &stored, inputContext);
     if (fromStore) {
         noteFrameStoreHit();
     } else if (!args->roi.isNull() && !isRotoPaintTreePull(input)) {
@@ -932,6 +952,7 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
         ImageList& seeded = args->inputImagesList[inputNb];
         seeded.insert(seeded.end(), stored.begin(), stored.end());
     }
+    inputContext->install();
 
     return input->renderRoI(*args, layers);
 }
@@ -1005,6 +1026,10 @@ EffectInstance::getImage(int inputNb,
     if (!inputEffect) {
         inputEffect = getInput(inputNb);
     }
+
+    // The input renders under the context this effect pulls it under, for the whole fetch.
+    InputContextArgs inputContext(this, inputEffect);
+    inputContext.install();
 
     ///Is this input a mask or not
     bool isMask = isInputMask(inputNb);
@@ -1379,7 +1404,7 @@ EffectInstance::getImage(int inputNb,
     requestedComps.push_back(renderedComps);
     std::map<ImageLayerDesc, ImagePtr> inputImages;
     std::list<ImagePtr> storedImages;
-    const bool fromStore = lookupFrameStore(inputEffect, time, view, renderMappedMipmapLevel, requestedComps, pixelRoI, &storedImages);
+    const bool fromStore = lookupFrameStore(inputEffect, time, view, renderMappedMipmapLevel, requestedComps, pixelRoI, &storedImages, &inputContext);
     if (fromStore) {
         // The pre-render of this render already counted the store images it handed over.
         bool handedOverByPreRender = false;
@@ -2879,7 +2904,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         } else {
             EffectInstance::RenderRoIRetCode renderOk;
             // renderRoI() finds store images needing a conversion by key, whatever input number they are filed under.
-            renderOk = EffectInstance::renderInputOrTakeFromStore(tls->currentRenderArgs.identityInput, -1, renderArgs.get(), &identityLayers);
+            renderOk = EffectInstance::renderInputOrTakeFromStore(tls->currentRenderArgs.identityInput, -1, renderArgs.get(), &identityLayers, _publicInterface);
             if (renderOk == eRenderRoIRetCodeAborted) {
                 return eRenderingFunctorRetAborted;
             } else if (renderOk == eRenderRoIRetCodeFailed) {

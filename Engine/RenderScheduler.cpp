@@ -534,7 +534,7 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
         const int index = toExpand.back();
         toExpand.pop_back();
         const FrameStore::TaskKey key = graph.tasks[index].key;
-        const FrameViewRequest* fvRequest = request.findFrameViewRequest(key.node, key.time, key.view);
+        const FrameViewRequest* fvRequest = request.findFrameViewRequest(NodeCtxKey(key.node, key.contextKey), key.time, key.view);
         if (!fvRequest) {
             continue;
         }
@@ -548,6 +548,8 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
             inputKey.time = it->time;
             inputKey.view = it->view;
             inputKey.mipmapLevel = it->mipmapLevel;
+            // The edge names its dependency's context, which may differ from this task's.
+            inputKey.contextKey = it->contextKey;
             const int inputIndex = taskFor(inputKey);
             graph.tasks[index].dependencies.push_back(inputIndex);
             graph.tasks[inputIndex].consumerTasks.push_back(index);
@@ -559,8 +561,9 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
         task.consumers = (int)task.consumerTasks.size();
 
         EffectInstancePtr effect = task.key.node->getEffectInstance();
-        FrameRequestMap::const_iterator nodeRequest = request.find(task.key.node);
-        const FrameViewRequest* fvRequest = request.findFrameViewRequest(task.key.node, task.key.time, task.key.view);
+        const NodeCtxKey nodeKey(task.key.node, task.key.contextKey);
+        FrameRequestMap::const_iterator nodeRequest = request.find(nodeKey);
+        const FrameViewRequest* fvRequest = request.findFrameViewRequest(nodeKey, task.key.time, task.key.view);
         if (!effect || (nodeRequest == request.end()) || !nodeRequest->second || !fvRequest) {
             continue;
         }
@@ -568,7 +571,7 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
         task.dfsPostOrder = fvRequest->dfsPostOrder;
         task.isIdentity = fvRequest->globalData.isIdentity;
         // The frame's own layout, not the widest over the sequence, sizes the memory estimate.
-        const NodeMetadataConstPtr metadata = effect->getRenderMetadata(context->getArgs(task.key.node), task.key.time, task.key.view);
+        const NodeMetadataConstPtr metadata = effect->getRenderMetadata(context->getArgs(nodeKey), task.key.time, task.key.view);
         task.bitdepth = metadata->getBitDepth(-1);
 
         const double par = metadata->getPixelAspectRatio(-1);
@@ -1143,6 +1146,9 @@ RenderScheduler::renderTaskOnCpu(const FrameGraph& graph,
                                        callerEffect.get(),
                                        storage,
                                        caller.key.time);
+    // A task under a context renders under the frame args the request pass planned for it.
+    const FrameRenderContext* frameContext = AppTLS::currentFrameContext();
+    ContextFrameArgsScope contextArgs(effect, (task.key.contextKey && frameContext) ? frameContext->getArgs(NodeCtxKey(task.key.node, task.key.contextKey)) : ParallelRenderArgsPtr());
     try {
         return effect->renderRoI(args, planes);
     } catch (const std::exception&) {

@@ -38,7 +38,7 @@ NATRON_NAMESPACE_ENTER
 bool
 FrameStore::TaskKey::operator==(const TaskKey& other) const
 {
-    return node == other.node && time == other.time && view == other.view && mipmapLevel == other.mipmapLevel;
+    return node == other.node && time == other.time && view == other.view && mipmapLevel == other.mipmapLevel && contextKey == other.contextKey;
 }
 
 std::size_t
@@ -51,6 +51,9 @@ FrameStore::TaskKeyHash::operator()(const TaskKey& key) const
     h ^= std::hash<double>()(time) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     h ^= std::hash<int>()(key.view.value()) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     h ^= std::hash<unsigned int>()(key.mipmapLevel) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    if (key.contextKey != 0) {
+        h ^= std::hash<U64>()(key.contextKey) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    }
 
     return h;
 }
@@ -535,6 +538,9 @@ FrameRenderContext::setRequest(const std::shared_ptr<FrameRequestMap>& request)
             it->second->request = found->second;
         }
     }
+    request->installContextArgs([this](const NodePtr& node) {
+        return getArgs(node);
+    });
 }
 
 ParallelRenderArgsPtr
@@ -543,6 +549,16 @@ FrameRenderContext::getArgs(const NodePtr& node) const
     std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator found = _argsMap.find(node);
 
     return found == _argsMap.end() ? ParallelRenderArgsPtr() : found->second;
+}
+
+ParallelRenderArgsPtr
+FrameRenderContext::getArgs(const NodeCtxKey& key) const
+{
+    if (key.ctxKey == 0) {
+        return getArgs(key.node);
+    }
+
+    return _request ? _request->getContextArgs(key) : ParallelRenderArgsPtr();
 }
 
 ParallelRenderArgsPtr

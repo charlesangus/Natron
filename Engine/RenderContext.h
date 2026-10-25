@@ -253,6 +253,13 @@ private:
     U64 _hash;
 };
 
+/**
+ * @brief hash with a context key folded in. Context key 0 returns hash unchanged, so a node that
+ * renders under no context keeps the hash it has without contexts.
+ **/
+U64 mixRenderContextKey(U64 hash,
+                        U64 contextKey);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // NATRON_ENGINE_RENDERCONTEXT_H

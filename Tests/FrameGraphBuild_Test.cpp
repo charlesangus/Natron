@@ -44,6 +44,8 @@
 #include <QtCore/QThreadPool>
 
 #include "BaseTest.h"
+#include "ContextTestEffects.h"
+#include "CountingTestEffect.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "PassThroughRoDTestEffect.h"
 
@@ -52,6 +54,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
@@ -61,7 +64,9 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RenderScale.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
@@ -278,7 +283,7 @@ protected:
         for (FrameRequestMap::const_iterator it = request.begin(); it != request.end(); ++it) {
             for (NodeFrameViewRequestData::const_iterator fv = it->second->frames.begin(); fv != it->second->frames.end(); ++fv) {
                 const FrameViewRequest& consumer = fv->second;
-                EXPECT_GE(consumer.dfsPostOrder, 0) << it->first->getScriptName();
+                EXPECT_GE(consumer.dfsPostOrder, 0) << it->first.node->getScriptName();
                 for (std::vector<FrameViewRequest::TaskEdge>::const_iterator dep = consumer.dependencies.begin(); dep != consumer.dependencies.end(); ++dep) {
                     NodePtr target = dep->node.lock();
                     ASSERT_TRUE(bool(target));
@@ -286,10 +291,10 @@ protected:
                     ++summary->count;
                     EXPECT_EQ(0u, dep->mipmapLevel);
 
-                    const FrameViewRequest* targetRequest = request.findFrameViewRequest(target, dep->time, dep->view);
+                    const FrameViewRequest* targetRequest = request.findFrameViewRequest(NodeCtxKey(target, dep->contextKey), dep->time, dep->view);
                     ASSERT_TRUE(targetRequest != NULL) << target->getScriptName() << " at " << dep->time;
                     ++inDegree[targetRequest];
-                    EXPECT_LT(targetRequest->dfsPostOrder, consumer.dfsPostOrder) << it->first->getScriptName() << " -> " << target->getScriptName();
+                    EXPECT_LT(targetRequest->dfsPostOrder, consumer.dfsPostOrder) << it->first.node->getScriptName() << " -> " << target->getScriptName();
                     EXPECT_FALSE(targetRequest->componentsRequested.empty()) << target->getScriptName();
                 }
             }
@@ -299,7 +304,7 @@ protected:
             for (NodeFrameViewRequestData::const_iterator fv = it->second->frames.begin(); fv != it->second->frames.end(); ++fv) {
                 std::map<const FrameViewRequest*, int>::const_iterator found = inDegree.find(&fv->second);
                 const int expected = (found == inDegree.end()) ? 0 : found->second;
-                EXPECT_EQ(expected, fv->second.consumers) << it->first->getScriptName() << " at " << fv->first.time;
+                EXPECT_EQ(expected, fv->second.consumers) << it->first.node->getScriptName() << " at " << fv->first.time;
             }
         }
     }
@@ -316,7 +321,80 @@ protected:
         ASSERT_NO_FATAL_FAILURE(collectEdges(*request, summary));
         EXPECT_TRUE(summary->targets == *calls) << describeDifference(summary->targets, *calls);
     }
+
+    /**
+     * @brief Runs the request pass on root and builds the scheduler's tasks from it, without rendering.
+     **/
+    bool buildTaskGraph(const NodePtr& root,
+                        std::shared_ptr<FrameRequestMap>* request,
+                        FrameGraph* graph)
+    {
+        const double time = 1.;
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+        RenderStatsPtr stats = std::make_shared<RenderStats>(false);
+        ParallelRenderArgsSetter frameRenderArgs(time,
+                                                 ViewIdx(0),
+                                                 false /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 root,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 stats);
+        const RectD canonicalWindow(0., 0., kCountingTestSize, kCountingTestSize);
+        *request = std::make_shared<FrameRequestMap>();
+        if (EffectInstance::computeRequestPass(time, ViewIdx(0), 0 /*mipmapLevel*/, canonicalWindow, root, **request) == eStatusFailed) {
+            return false;
+        }
+        frameRenderArgs.updateNodesRequest(**request);
+        FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameRenderArgs, abortInfo, stats, time, ViewIdx(0));
+        context->setRequest(*request);
+        *graph = RenderScheduler::buildGraph(context, root, time, ViewIdx(0), 0 /*mipmapLevel*/);
+
+        return !graph->tasks.empty();
+    }
+
+    NodePtr createContextNode(const char* pluginID)
+    {
+        return createNode(QString::fromUtf8(pluginID));
+    }
+
+    NodePtr createFanOut(int count,
+                         int first)
+    {
+        NodePtr node = createContextNode(kTestPluginIDContextFanOut);
+        KnobInt* countKnob = node ? dynamic_cast<KnobInt*>(node->getKnobByName("count").get()) : 0;
+        KnobInt* firstKnob = node ? dynamic_cast<KnobInt*>(node->getKnobByName("first").get()) : 0;
+        if (!countKnob || !firstKnob) {
+            return NodePtr();
+        }
+        countKnob->setValue(count);
+        firstKnob->setValue(first);
+
+        return node;
+    }
 };
+
+namespace {
+
+std::vector<int>
+tasksOf(const FrameGraph& graph,
+        const NodePtr& node)
+{
+    std::vector<int> tasks;
+    for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
+        if (graph.tasks[i].key.node == node) {
+            tasks.push_back((int)i);
+        }
+    }
+
+    return tasks;
+}
+
+} // namespace
 
 TEST_F(FrameGraphBuild, ChainOfFiftyWalksEachNodeOnce)
 {
@@ -760,4 +838,99 @@ TEST_F(FrameGraphBuild, ExpressionDependencyIsNotAnEdge)
     EXPECT_TRUE(summary.targets.count(makeKey(constant, 1., ViewIdx(0))));
     EXPECT_TRUE(request.find(otherGrade) == request.end());
     EXPECT_TRUE(request.find(otherConstant) == request.end());
+}
+
+// A fan-out into three contexts makes three tasks of the reading node, each under its own key, and
+// one task of the context-free node above it, shared by all three.
+TEST_F(FrameGraphBuild, FanOutMakesOneTaskPerContext)
+{
+    NodePtr ancestor = createContextNode(kTestPluginIDCounting);
+    NodePtr reader = createContextNode(kTestPluginIDContextReader);
+    NodePtr fanOut = createFanOut(3, 0);
+    ASSERT_TRUE(ancestor && reader && fanOut);
+    ASSERT_TRUE(reader->connectInput(ancestor, 0));
+    ASSERT_TRUE(fanOut->connectInput(reader, 0));
+
+    std::shared_ptr<FrameRequestMap> request;
+    FrameGraph graph;
+    ASSERT_TRUE(buildTaskGraph(fanOut, &request, &graph));
+    EXPECT_EQ(5u, graph.tasks.size());
+
+    const std::vector<int> fanOutTasks = tasksOf(graph, fanOut);
+    const std::vector<int> readerTasks = tasksOf(graph, reader);
+    const std::vector<int> ancestorTasks = tasksOf(graph, ancestor);
+    ASSERT_EQ(1u, fanOutTasks.size());
+    ASSERT_EQ(3u, readerTasks.size());
+    ASSERT_EQ(1u, ancestorTasks.size());
+
+    const FrameGraph::Task& fanOutTask = graph.tasks[fanOutTasks.front()];
+    const FrameGraph::Task& ancestorTask = graph.tasks[ancestorTasks.front()];
+    EXPECT_EQ(0u, fanOutTask.key.contextKey);
+    EXPECT_EQ(0u, ancestorTask.key.contextKey);
+    EXPECT_EQ(3, ancestorTask.consumers);
+
+    std::set<U64> keys;
+    std::set<U64> hashes;
+    for (int index : readerTasks) {
+        const FrameGraph::Task& task = graph.tasks[index];
+        EXPECT_NE(0u, task.key.contextKey);
+        keys.insert(task.key.contextKey);
+        hashes.insert(task.nodeHash);
+        EXPECT_TRUE(std::find(fanOutTask.dependencies.begin(), fanOutTask.dependencies.end(), index) != fanOutTask.dependencies.end());
+        ASSERT_EQ(1u, task.dependencies.size());
+        EXPECT_EQ(ancestorTasks.front(), task.dependencies.front());
+    }
+    EXPECT_EQ(3u, keys.size());
+    EXPECT_EQ(3u, hashes.size());
+    EXPECT_FALSE(graph.tasks[readerTasks[0]].key == graph.tasks[readerTasks[1]].key);
+}
+
+// A node requesting its own output under the previous value of the variable makes a chain of tasks
+// of the same node, task k depending on task k - 1 under a different key, all sharing the
+// context-free node above them.
+TEST_F(FrameGraphBuild, ContextChainCrossesKeys)
+{
+    NodePtr ancestor = createContextNode(kTestPluginIDCounting);
+    NodePtr chain = createContextNode(kTestPluginIDContextChain);
+    NodePtr fanOut = createFanOut(1, 3);
+    ASSERT_TRUE(ancestor && chain && fanOut);
+    ASSERT_TRUE(chain->connectInput(ancestor, 0));
+    ASSERT_TRUE(fanOut->connectInput(chain, 0));
+
+    std::shared_ptr<FrameRequestMap> request;
+    FrameGraph graph;
+    ASSERT_TRUE(buildTaskGraph(fanOut, &request, &graph));
+
+    const std::vector<int> chainTasks = tasksOf(graph, chain);
+    const std::vector<int> ancestorTasks = tasksOf(graph, ancestor);
+    ASSERT_EQ(4u, chainTasks.size());
+    ASSERT_EQ(1u, ancestorTasks.size());
+    EXPECT_EQ(6u, graph.tasks.size());
+    EXPECT_EQ(4, graph.tasks[ancestorTasks.front()].consumers);
+
+    // The task of each value of the variable.
+    std::map<double, int> byValue;
+    for (int index : chainTasks) {
+        const FrameGraph::Task& task = graph.tasks[index];
+        FrameRequestMap::const_iterator entry = request->find(NodeCtxKey(chain, task.key.contextKey));
+        ASSERT_TRUE(entry != request->end());
+        ASSERT_TRUE(bool(entry->second->context));
+        byValue[contextTestValue(entry->second->context)] = index;
+    }
+    ASSERT_EQ((std::size_t)4, byValue.size());
+    for (int k = 0; k <= 3; ++k) {
+        ASSERT_TRUE(byValue.count(k)) << k;
+        const FrameGraph::Task& task = graph.tasks[byValue[k]];
+        const std::vector<int>& deps = task.dependencies;
+        EXPECT_TRUE(std::find(deps.begin(), deps.end(), ancestorTasks.front()) != deps.end()) << k;
+        if (k > 0) {
+            const int previous = byValue[k - 1];
+            EXPECT_TRUE(std::find(deps.begin(), deps.end(), previous) != deps.end()) << k;
+            EXPECT_NE(task.key.contextKey, graph.tasks[previous].key.contextKey) << k;
+            EXPECT_TRUE(task.key.node == graph.tasks[previous].key.node);
+            EXPECT_EQ(2u, deps.size()) << k;
+        } else {
+            EXPECT_EQ(1u, deps.size());
+        }
+    }
 }

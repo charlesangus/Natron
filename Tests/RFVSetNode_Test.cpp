@@ -375,7 +375,7 @@ TEST_F(BaseTest, RFVSetNodeVariablePromotesToTheProjectOnce)
 
     // The node keeps its own variable, and the copy is not linked to it.
     EXPECT_TRUE(setNode->getKnobByName("rfvPromoted") == ramp);
-    EXPECT_TRUE(ramp->getParentKnob() == group);
+    EXPECT_TRUE(ramp->getParentKnob() == globalGroup);
     ramp->setValueAtTime(10., 7., ViewSpec::all(), 0);
     EXPECT_DOUBLE_EQ(2., promotedDouble->getValueAtTime(10., 0));
 
@@ -801,7 +801,11 @@ TEST_F(BaseTest, RFVSetNodeExistingVariableAddUndoesAndRedoesAsOneStep)
     EXPECT_TRUE(choice->getParentKnob() == globalGroup);
     EXPECT_EQ(std::vector<std::string>(1, kReverseFlowVariableSetParamExistingVariable), childNames(globalGroup));
     EXPECT_FALSE(setNode->getKnobByName(std::string(kReverseFlowVariableSetParamExistingVariable) + "2"));
-    EXPECT_TRUE(local->getParentKnob() == group);
+    // The rebuild replaced the node's own variable with a new knob of the same name.
+    KnobIPtr localAfterUndo = setNode->getKnobByName("rfvUndoLocal");
+    ASSERT_TRUE(localAfterUndo != nullptr);
+    EXPECT_TRUE(localAfterUndo->getParentKnob() == group);
+    EXPECT_EQ(std::vector<std::string>(1, "rfvUndoLocal"), childNames(group));
     EXPECT_EQ(std::vector<std::string>(1, "rfvUndoLocal"), declaredNames(RFV::getDeclaredVariables(effect.get())));
     effect->refreshAfterTimeChange(false, effect->getCurrentTime());
     EXPECT_TRUE(offers(choice, "rfvUndoAdd"));
@@ -815,6 +819,7 @@ TEST_F(BaseTest, RFVSetNodeExistingVariableAddUndoesAndRedoesAsOneStep)
     ASSERT_TRUE(setNode->getKnobByName("rfvUndoAdd") != nullptr);
     const std::vector<std::string> globalChildren = { kReverseFlowVariableSetParamExistingVariable, "rfvUndoAdd" };
     EXPECT_EQ(globalChildren, childNames(globalGroup));
+    EXPECT_EQ(std::vector<std::string>(1, "rfvUndoLocal"), childNames(group));
     EXPECT_TRUE(existingVariableOf(setNode) == choice);
 
     // Records of the node must go before the project is reset.

@@ -48,7 +48,7 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
   - verify: at the phase build, `ctest -R NativeIBlur` passes.
   - size: M
 
-- [ ] M184.P2.T3 — IBlur on the GPU
+- [x] M184.P2.T3 — IBlur on the GPU
   - files: `Engine/Gpu/Kernels/iblur.slang`, `Engine/Gpu/Kernels/iblur.cmake`, `Engine/Nodes/Filter/IBlur.cpp`, `Tests/Native/NativeIBlurGpu_Test.cpp`
   - approach: Prefix-scan SATs per tile (two passes), then the three variable-box passes; refuse above a size cap and fall back to CPU.
   - verify: at the phase build, `ctest -R NativeIBlurGpu` passes on lavapipe within 1e-4 relative.
@@ -90,6 +90,7 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
 
 ## Decisions
 
+- 2026-10-25 — **IBlur GPU precision and cap (bosley-native-nodes):** the GPU summed-area table sums each plane exactly in 64-bit integers after a power-of-two scale, so it meets 1e-4 relative without fp64; halos over 512 px stay on the CPU (reachable through Size At Black, since Size stops at 1000). Native IDs are plain (`IBlur`). Fast build 436/436.
 - 2026-10-25 — **IBlur GPU through the pass runner (bosley-native-nodes):** the GPU pass runner gains views of extra (Aux) inputs (getGpuInputLayer/getGpuInputRoI cover them), reusable by STMap and the kit, rather than a custom renderOpGpu for IBlur. `Pass::columns` lets a pass run over columns. Golden fixtures are recorded from the phase build tree with NATRON_GOLDEN_RECORD_DIR.
 - 2026-10-25 — **Outside the Map (bosley-native-nodes):** outside the Map image the raw value is 0 (black) and invert/remap still apply, as for any black pixel; an inverted roto Map therefore gives full effect outside its area.
 - 2026-10-25 — **Fragment macro (bosley-native-nodes):** `NATRON_I_VARIANT(BASE_ID, I_ID, {"base","i"}, ...)` takes a variable list of knob pairs; the generated `NativeRegistryAll.inc` defines both macros empty when an includer hasn't. STMap's Map-knob model lives on the M113 branch until it merges.

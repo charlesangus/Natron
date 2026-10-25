@@ -317,8 +317,9 @@ channelsOfPlane(int nComps)
 }
 
 // Every combination of the premultiplications on RGBA at the default size and slices, each also
-// rendered as a tile; one slice, many slices, a size whose blurs are the identity and a large
-// one; one, two and three components and an RGB subset on RGBA, all passed through.
+// rendered as a tile; one slice, many slices, sizes of zero and below a pixel whose blurs are all
+// the identity, sizes below a pixel that blur with some of their slices or with a single one, and
+// a large one; one, two and three components and an RGB subset on RGBA, all passed through.
 std::vector<ParityCase>
 parityCases()
 {
@@ -332,6 +333,10 @@ parityCases()
     cases.push_back(ParityCase { 6., 1, true, true, 4, 0xFu, false });
     cases.push_back(ParityCase { 20., 12, true, true, 4, 0xFu, true });
     cases.push_back(ParityCase { 0.1, 5, true, true, 4, 0xFu, false });
+    cases.push_back(ParityCase { 0., 5, true, true, 4, 0xFu, false });
+    cases.push_back(ParityCase { 0.1, 5, false, true, 4, 0xFu, false });
+    cases.push_back(ParityCase { 0.5, 5, true, true, 4, 0xFu, false });
+    cases.push_back(ParityCase { 0.3, 1, true, true, 4, 0xFu, false });
     cases.push_back(ParityCase { 40., 3, false, true, 4, 0xFu, false });
     for (int nComps = 1; nComps <= 3; ++nComps) {
         cases.push_back(ParityCase { 10., 5, true, true, nComps, channelsOfPlane(nComps), false });

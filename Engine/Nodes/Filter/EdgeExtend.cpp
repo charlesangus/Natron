@@ -479,20 +479,24 @@ edgeExtendGpuRecorder(const std::shared_ptr<const EdgeExtendGpuPlan>& plan)
 
 /// The passes of one extension at pixel sizes s. Each slice's blur reads its radius beyond what
 /// it writes, so the halo is the sum of the slices' radii; the nearest-pixel boundary spreads
-/// nothing, so the region of definition is the source's.
+/// nothing, so the region of definition is the source's. Without an active slice the node is an
+/// identity, so neither path premultiplies or unpremultiplies: the round trip would zero the colour
+/// where the alpha is at most the epsilon, which the pass-through keeps.
 PassList
 edgeExtendPasses(const EdgeExtendParams& params,
                  const PixelSizes& s)
 {
     const std::vector<Slice> slices = activeSlices(params, s);
     const bool neumann = true;
+    const bool premultiply = params.premultiplyInput && !slices.empty();
+    const bool unpremultiply = params.unpremultiplyOutput && !slices.empty();
 
     PassList list;
     list.boundary = PassExec::Boundary::Nearest;
     list.scratchSlots = 3;
     list.resultSlot = kSlotResult;
 
-    list.passes.push_back(Pass::point(false, prepareWorker(params.premultiplyInput)));
+    list.passes.push_back(Pass::point(false, prepareWorker(premultiply)));
     for (const Slice& slice : slices) {
         const LineFilterPtr filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(slice.sigmaX, 0, neumann));
         const LineFilterPtr filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(slice.sigmaY, 0, neumann));
@@ -510,14 +514,14 @@ edgeExtendPasses(const EdgeExtendParams& params,
         list.passes.push_back(atSlot(passY, kSlotBlur));
         list.passes.push_back(Pass::point(false, overWorker()));
     }
-    if (params.unpremultiplyOutput) {
+    if (unpremultiply) {
         list.passes.push_back(Pass::point(false, unpremultiplyWorker()));
     }
 
 #ifdef NATRON_HAVE_GPU
     std::shared_ptr<EdgeExtendGpuPlan> plan = std::make_shared<EdgeExtendGpuPlan>();
-    plan->premultiply = params.premultiplyInput;
-    plan->unpremultiply = params.unpremultiplyOutput;
+    plan->premultiply = premultiply;
+    plan->unpremultiply = unpremultiply;
     bool fits = true;
     for (const Slice& slice : slices) {
         EdgeExtendGpuPlan::GpuSlice g;

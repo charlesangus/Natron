@@ -1,5 +1,5 @@
 """A GUI test of Linked Nodes in the node graph: Create Linked Node (Alt+K) and Unlink Node
-(Alt+Shift+K) as undoable steps, the dashed line and the "L" glyph between Linked Nodes, the
+(Alt+Shift+K) as undoable steps, the dashed line and the chain-link badge between Linked Nodes, the
 expression arrows, the link and expression line preferences, and the Show Link Lines switch
 (Shift+E). It is driven by Tests/gui/run-gui-test.sh, not ctest.
 
@@ -10,14 +10,16 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
 
 The lines are found among the graph scene's items by their tool tips: "... are Linked Nodes" for
 the dashed lines, "<------->" for the lines of knob links and "(master)" for expression arrows; the
-glyph by its "is a Linked Node" tool tip. Line colours and dash patterns are only checked in the
-screenshots.
+badge by its "is a Linked Node" tool tip. Line colours, dash patterns and the badge's drawing are
+only checked in the screenshots; m92_badge_1x.png is a crop of the badge at 1:1 graph zoom and
+m92_badge_1x_x4.png the same pixels enlarged.
 
-Knob links are checked in node panels: the link circle at the end of a linked knob's
-row (object name "knobLinkButton", dynamic property "linked"), its click to unlink and to re-link
-through the confirmation dialog, the Unlink / Re-link items, and Copy Link / Paste Link through
-the knob's right-click menu, each step undone and redone.
+Knob links are checked in node panels: a linked knob's name label (dynamic property "linked", which
+the stylesheet draws in the link colour) and its tool tip, a knob linked in one dimension only, the
+Unlink / Re-link items of the knob's right-click menu (Re-link through the confirmation dialog), and
+Copy Link / Paste Link, each step undone and redone.
 """
+import re
 import os
 import sys
 import time
@@ -94,6 +96,34 @@ try:
         QMetaObject.invokeMethod(root_graph(), "centerOnAllNodes")
         QApplication.processEvents()
 
+    def badge_crop(name):
+        """Saves the Linked Node badge of the node at 1:1 graph zoom, cropped, and enlarged four times
+        without smoothing."""
+        graph = root_graph()
+        node_pos = app.getNode(name).getPosition()
+        badges = []
+        for item in graph.items():
+            if item.isVisible() and "is a Linked Node" in item.toolTip().replace("&nbsp;", " "):
+                badges.append(item)
+        if not check(len(badges) > 0, "found a Linked Node badge to crop"):
+            return
+        # The badge nearest the node's top-left corner sits on that node's bottom-left corner.
+        badge = min(badges, key=lambda it: abs(it.sceneBoundingRect().center().x() - node_pos[0])
+                    + abs(it.sceneBoundingRect().center().y() - node_pos[1]))
+        graph.resetTransform()
+        graph.centerOn(badge.sceneBoundingRect().center())
+        QApplication.processEvents()
+        check(abs(graph.transform().m11() - 1.0) < 1e-9, "the graph is at 1:1 zoom for the badge crop")
+        r = graph.mapFromScene(badge.sceneBoundingRect()).boundingRect().adjusted(-40, -30, 40, 30)
+        pix = graph.viewport().grab(r)
+        path = os.path.join(gt.OUT, "m92_badge_1x.png")
+        if pix.save(path):
+            report("SHOT " + path)
+        big = pix.scaled(pix.width() * 4, pix.height() * 4, Qt.IgnoreAspectRatio, Qt.FastTransformation)
+        path = os.path.join(gt.OUT, "m92_badge_1x_x4.png")
+        if big.save(path):
+            report("SHOT " + path)
+
     def select_only(name):
         app.selectNode(app.getNode(name), True)
         QApplication.processEvents()
@@ -165,29 +195,37 @@ try:
                  if gt.class_name(w) == "SpinBox" and w.isVisible() and w.objectName() == "dim-0"]
         return boxes[0] if boxes else None
 
-    def link_button(name):
-        """The link circle on the row of the node's first parameter, or None."""
-        w = first_spin_box(name)
-        while w is not None:
-            keep_alive.append(w)
-            found = w.findChildren(QAbstractButton, "knobLinkButton", Qt.FindDirectChildrenOnly)
-            if found:
-                return found[0]
-            w = w.parentWidget()
+    def name_label(name, param=PARAM):
+        """The name label of the node's parameter in its open panel, or None."""
+        p = panel_of(name)
+        if p is None:
+            return None
+        text = app.getNode(name).getParam(param).getLabel()
+        for w in p.findChildren(QWidget):
+            if gt.class_name(w) == "ClickableLabel" and w.isVisible() \
+                    and re.sub("<[^>]*>", "", w.text()).strip() == text:
+                keep_alive.append(w)
+                return w
         return None
 
-    def circle(name):
-        """'filled', 'empty' or None, for the link circle of the node's first parameter."""
-        b = link_button(name)
-        if b is None or not b.isVisible():
+    def link_state(name, param=PARAM):
+        """'linked' when the parameter's name label is in the link colour, 'plain' otherwise, None
+        without a label."""
+        w = name_label(name, param)
+        if w is None:
             return None
-        return "filled" if b.property("linked") else "empty"
+        return "linked" if w.property("linked") else "plain"
 
-    def circles_in_panel(name):
+    def linked_labels_in_panel(name):
         p = panel_of(name)
         if p is None:
             return 0
-        return len([b for b in p.findChildren(QAbstractButton, "knobLinkButton") if b.isVisible()])
+        return len([w for w in p.findChildren(QWidget)
+                    if gt.class_name(w) == "ClickableLabel" and w.isVisible() and w.property("linked")])
+
+    def label_tip(name, param=PARAM):
+        w = name_label(name, param)
+        return w.toolTip().replace("&nbsp;", " ") if w is not None else ""
 
     def answer_dialog_later(text):
         """Clicks the button whose text is text in the next modal dialog, from inside its event loop."""
@@ -311,6 +349,8 @@ try:
         frame_all()
         yield ("sleep", SETTLE_MS)
         gt.shot("m92_linked_pair.png")
+        badge_crop(a)
+        yield ("sleep", SETTLE_MS)
 
         gt.section("unlink node")
         select_only(b)
@@ -420,13 +460,14 @@ try:
         faulthandler.cancel_dump_traceback_later()
 
     def knob_link_steps():
-        gt.section("link circles on a Linked Node pair")
+        gt.section("linked knob names on a Linked Node pair")
         gt.close_all_panels()
         p = create(BLUR, 0, 600, panel=True).getScriptName()
         app.getNode(p).setLabel("PanelOriginal")
         yield ("sleep", SETTLE_MS)
         gt.require(panel_of(p) is not None, "the panel of %s is open" % p)
-        check(circle(p) is None and circles_in_panel(p) == 0, "an ordinary node's panel shows no link circle")
+        check(link_state(p) == "plain" and linked_labels_in_panel(p) == 0,
+              "an ordinary node's panel shows no linked name (%r)" % link_state(p))
         before = script_names()
         select_only(p)
         graph_key(Qt.Key_K, Qt.AltModifier)
@@ -436,21 +477,51 @@ try:
         q = added[0]
         app.getNode(q).setPosition(300, 600)
         yield ("sleep", SETTLE_MS)
-        check(circle(p) == "filled", "the linked knob shows a filled circle (%r)" % circle(p))
+        check(link_state(p) == "linked", "the linked knob's name is in the link colour (%r)" % link_state(p))
+        check(linked_labels_in_panel(p) > 1, "every linked knob of the Linked Node shows a linked name (%d)"
+              % linked_labels_in_panel(p))
         box = first_spin_box(p)
         check(box is not None and box.isEnabled(), "the linked knob is not greyed out")
         check(linked(p, q, 4.0) and linked(q, p, 6.0), "the pair edits both ways")
         texts = menu_texts(p)
         check("Unlink" in texts and "Re-link (discards local values)" not in texts,
               "a linked knob's menu offers Unlink only (%r)" % [t for t in texts if "link" in t.lower()])
-        b = link_button(p)
-        check(b is not None and "%s." % q in b.toolTip(), "the circle's tooltip names %s" % q)
-        gt.shot("m92_knob_linked_panel.png")
+        tip = label_tip(p)
+        check("Linked to" in tip and "%s." % q in tip, "the name's tool tip says it is linked to %s (%r)" % (q, tip))
 
-        gt.section("circle unlinks")
-        link_button(p).click()
+        gt.section("partially linked knob")
+        u = create(BLUR, 0, 750, panel=True).getScriptName()
+        app.getNode(u).setLabel("PartSource")
+        v = create(BLUR, 300, 750, panel=True).getScriptName()
+        app.getNode(v).setLabel("PartTarget")
         yield ("sleep", SETTLE_MS)
-        check(circle(p) == "empty", "clicking the circle empties it (%r)" % circle(p))
+        gt.require(app.getNode(v).getParam(PARAM).linkTo(app.getNode(u).getParam(PARAM), 0, 0),
+                   "link only the first dimension of %s.%s to %s" % (v, PARAM, u))
+        yield ("sleep", SETTLE_MS)
+        check(link_state(v) == "linked" and link_state(u) == "linked",
+              "a knob linked in one dimension shows a linked name on both nodes (%r, %r)" % (link_state(v), link_state(u)))
+        tip = label_tip(v)
+        check("Partially linked" in tip and "is linked to" in tip and "is not linked" in tip,
+              "its tool tip says which dimension is linked (%r)" % tip)
+        app.getNode(u).getParam(PARAM).setValue(21.0, 0)
+        app.getNode(u).getParam(PARAM).setValue(22.0, 1)
+        app.getNode(v).getParam(PARAM).setValue(5.0, 1)
+        QApplication.processEvents()
+        pv = app.getNode(v).getParam(PARAM)
+        check(pv.getValue(0) == 21.0 and pv.getValue(1) == 5.0, "only the linked dimension follows (%r, %r)"
+              % (pv.getValue(0), pv.getValue(1)))
+        app.getNode(v).getParam(PARAM).setExpression("frame", False, 1)
+        yield ("sleep", SETTLE_MS)
+        check(link_state(v) == "linked", "an expression on the unlinked dimension leaves the name linked (%r)" % link_state(v))
+        gt.shot("m92_knob_linked_panel.png")
+        app.getNode(v).getParam(PARAM).setExpression("", False, 1)
+
+        gt.section("unlink from the menu")
+        knob_menu(p, "Unlink")
+        yield ("sleep", SETTLE_MS)
+        check(link_state(p) == "plain", "unlinking clears the link colour (%r)" % link_state(p))
+        tip = label_tip(p)
+        check("Unlinked from" in tip, "the tool tip says what it was unlinked from (%r)" % tip)
         set_value(q, 2.0)
         check(not linked(p, q, 9.0) and value(q) == 2.0, "the unlinked knob edits on its own")
         check(not linked(q, p, 1.0), "and the other knob no longer reaches it")
@@ -460,28 +531,28 @@ try:
         gt.shot("m92_knob_unlinked_panel.png")
         undo()
         yield ("sleep", SETTLE_MS)
-        check(circle(p) == "filled", "undoing the unlink fills the circle again (%r)" % circle(p))
+        check(link_state(p) == "linked", "undoing the unlink brings the link colour back (%r)" % link_state(p))
         redo()
         yield ("sleep", SETTLE_MS)
-        check(circle(p) == "empty", "redoing it empties it (%r)" % circle(p))
+        check(link_state(p) == "plain", "redoing it clears it (%r)" % link_state(p))
 
-        gt.section("circle re-links after the warning")
+        gt.section("re-link from the menu after the warning")
         set_value(p, 5.0)
         set_value(q, 8.0)
         answer_dialog_later("Cancel")
-        link_button(p).click()
+        knob_menu(p, "Re-link (discards local values)")
         yield ("sleep", SETTLE_MS)
-        check(circle(p) == "empty" and value(p) == 5.0, "cancelling the warning leaves the knob unlinked")
+        check(link_state(p) == "plain" and value(p) == 5.0, "cancelling the warning leaves the knob unlinked")
         answer_dialog_later("OK")
-        link_button(p).click()
+        knob_menu(p, "Re-link (discards local values)")
         yield ("sleep", SETTLE_MS)
-        check(circle(p) == "filled" and value(p) == 8.0, "accepting it re-links and takes the linked value (%r)" % value(p))
+        check(link_state(p) == "linked" and value(p) == 8.0, "accepting it re-links and takes the linked value (%r)" % value(p))
         undo()
         yield ("sleep", SETTLE_MS)
-        check(circle(p) == "empty" and value(p) == 5.0, "undoing the re-link restores the local value (%r)" % value(p))
+        check(link_state(p) == "plain" and value(p) == 5.0, "undoing the re-link restores the local value (%r)" % value(p))
         redo()
         yield ("sleep", SETTLE_MS)
-        check(circle(p) == "filled" and value(p) == 8.0, "redoing it re-links (%r)" % value(p))
+        check(link_state(p) == "linked" and value(p) == 8.0, "redoing it re-links (%r)" % value(p))
 
         gt.section("paste link")
         gt.close_all_panels()
@@ -500,28 +571,30 @@ try:
         yield ("sleep", SETTLE_MS)
         check(value(t) == 3.0, "the pasted knob takes the copied knob's value (%r)" % value(t))
         check(linked(s, t, 12.0) and linked(t, s, 13.0), "Paste Link links both ways")
-        check(circle(t) == "filled" and circle(s) == "filled", "both knobs show a filled circle (%r, %r)" % (circle(t), circle(s)))
+        check(link_state(t) == "linked" and link_state(s) == "linked",
+              "both knobs show a linked name (%r, %r)" % (link_state(t), link_state(s)))
         c = lines()
         check(c["knob"] >= 1 and c["nodes"] == nodes_before, "the paste draws a knob link line, not a Linked Nodes line (%r)" % c)
         frame_all()
         yield ("sleep", SETTLE_MS)
         gt.shot("m92_paste_link.png")
-        link_button(t).click()
+        knob_menu(t, "Unlink")
         yield ("sleep", SETTLE_MS)
-        check(circle(t) == "empty" and not linked(s, t, 14.0), "the pasted knob's circle unlinks it")
+        check(link_state(t) == "plain" and not linked(s, t, 14.0), "Unlink unlinks the pasted knob")
         undo()
         yield ("sleep", SETTLE_MS)
-        check(circle(t) == "filled", "undo re-links it (%r)" % circle(t))
+        check(link_state(t) == "linked", "undo re-links it (%r)" % link_state(t))
         undo()
         yield ("sleep", SETTLE_MS)
         check(value(t) == 1.0, "undoing the paste restores the target's value (%r)" % value(t))
-        check(circle(t) is None and circle(s) is None, "and the link and its circles are gone (%r, %r)" % (circle(t), circle(s)))
+        check(link_state(t) == "plain" and link_state(s) == "plain",
+              "and the link and its colour are gone (%r, %r)" % (link_state(t), link_state(s)))
         check(not linked(s, t, 15.0), "the knobs edit on their own again")
         c = lines()
         check(c["knob"] == 0, "the knob link line is gone (%r)" % c)
         redo()
         yield ("sleep", SETTLE_MS)
-        check(circle(t) == "filled" and linked(s, t, 16.0), "redoing the paste links them again")
+        check(link_state(t) == "linked" and linked(s, t, 16.0), "redoing the paste links them again")
 
     gt.run(steps())
 except Exception:

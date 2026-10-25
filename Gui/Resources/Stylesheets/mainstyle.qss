@@ -2,6 +2,7 @@
 /*%1 = selection-color  %2 = medium background  %3 = soft background %4 = strong background %5 = text colour*/
 /*%6 = interpolated value color %7 = keyframe value color %8 = disabled editable text (black) %9 = expression value color*/
 /*%10 = altered text colour, %11 = mouse over selection color, %12 = disabled text colour (also the disabled icon colour)*/
+/*%13 = link colour (the node graph's link lines), for the names of linked parameters*/
 /*You have to fill the arguments with  stylesheet-representable colours.*/
 
 QWidget {
@@ -284,6 +285,14 @@ ClickableLabel[readOnly="true"][dirty="true"],
 Natron--ClickableLabel[readOnly="true"][dirty="true"] {
     background-color: black;
     color: %12;
+}
+
+/*A parameter in a link group with at least one dimension linked: its name takes the link colour,
+  over the unmodified dimming. Fields keep their animation and expression colours, and a disabled
+  parameter stays grey.*/
+ClickableLabel[linked="true"][readOnly="false"]:enabled,
+Natron--ClickableLabel[linked="true"][readOnly="false"]:enabled {
+    color: %13;
 }
 
 TabWidget,

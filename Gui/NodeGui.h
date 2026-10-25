@@ -36,8 +36,10 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QRectF>
+#include <QColor>
 #include <QMutex>
+#include <QPainterPath>
+#include <QRectF>
 #include <QSize>
 GCC_ONLY_DIAG_OFF(class-memaccess)
 #include <QVector>
@@ -73,6 +75,19 @@ public:
                      int height,
                      const QGradientStops & gradient,
                      const QColor & textColor,
+                     QGraphicsItem* parent);
+
+    /**
+     * @brief A badge of the given diameter filled with fill, showing icon stroked in iconColor. The icon
+     * is a vector path centred on (0,0) that fits in the badge: it scales with the graph and stays crisp
+     * at any zoom and device pixel ratio.
+     **/
+    NodeGuiIndicator(int depth,
+                     const QPainterPath& icon,
+                     const QPointF& center,
+                     double diameter,
+                     const QColor& fill,
+                     const QColor& iconColor,
                      QGraphicsItem* parent);
 
     ~NodeGuiIndicator();

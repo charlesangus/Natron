@@ -364,10 +364,16 @@ public:
     virtual bool getAllDimensionsVisible() const OVERRIDE { return true; }
 
     /**
-     * @brief Whether the knob shows a link circle: it is in a link group that is not an alias link
-     * and has another member on an active node, linked or not.
+     * @brief Whether the knob is in a link group that is not an alias link and has another member on an
+     * active node, linked or not: its menu then offers Unlink or Re-link.
      **/
-    bool hasLinkButton() const;
+    bool hasLinkPartners() const;
+
+    /**
+     * @brief Whether a dimension of the knob is linked to another member of a link group that is not an
+     * alias link: its name then takes the link colour.
+     **/
+    bool isLinkedToPartners() const;
 
     void setWarningValue(KnobWarningEnum warn, const QString& value);
 
@@ -375,18 +381,13 @@ public Q_SLOTS:
 
     void onUnlinkActionTriggered();
 
-    /**
-     * @brief The link circle: unlinks the knob from its link groups when it is linked, and asks to
-     * re-link it otherwise. Both are undoable.
-     **/
-    void onLinkButtonClicked();
-
     void onUnlinkFromGroupsActionTriggered();
 
     void onRelinkToGroupsActionTriggered();
 
     /**
-     * @brief Called when the knob's link groups change, or the node's links do: refreshes the link circle.
+     * @brief Called when the knob's link groups change, or the node's links do: refreshes the link colour
+     * of the knob's name and its tool tip.
      **/
     void onLinkStateChanged();
 

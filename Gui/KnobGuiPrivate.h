@@ -123,9 +123,6 @@ struct KnobGuiPrivate
     // True if this KnobGui is used in the viewer
     bool isInViewerUIKnob;
 
-    // The circle at the end of the row of a knob in a link group, filled when the knob is linked.
-    QPointer<Button> linkButton;
-
     KnobGuiPrivate(KnobGuiContainerI* container);
 
     void removeFromKnobsOnSameLineVector(const std::shared_ptr<KnobI>& knob);

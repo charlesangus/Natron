@@ -38,12 +38,15 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QDebug>
 #include <QFile>
 #include <QFontMetrics>
+#include <QGraphicsPathItem>
 #include <QGridLayout>
 #include <QLayout>
+#include <QPainterPath>
 #include <QTextBlockFormat>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QThread>
+#include <QTransform>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -122,7 +125,7 @@ CLANG_DIAG_ON(uninitialized)
 #define NATRON_MAGNETIC_GRID_RELEASE_DISTANCE 30
 
 #define NATRON_ELLIPSE_WARN_DIAMETER 10
-#define NATRON_LINK_BADGE_DIAMETER 16
+#define NATRON_LINK_BADGE_DIAMETER 18
 
 #define NATRON_PLUGIN_ICON_SIZE 20
 #define PLUGIN_ICON_OFFSET 2
@@ -141,6 +144,28 @@ using std::make_pair;
 
 static const qreal kDisabledCrossPenWidth = 2.;
 static const qreal kMissingPluginOutlineWidth = 2.;
+
+/**
+ * @brief Two interlocking chain links on the badge's diagonal, centred on (0,0), sized for a badge of
+ * the given diameter and meant to be stroked.
+ **/
+static QPainterPath
+makeChainLinkIcon(double diameter)
+{
+    const double rad = diameter / 2.;
+    const double length = 1.0 * rad;
+    const double width = 0.52 * rad;
+    const double offset = 0.30 * rad;
+    QPainterPath link;
+    link.addRoundedRect(QRectF(-length / 2., -width / 2., length, width), width / 2., width / 2.);
+    QPainterPath icon;
+    icon.addPath(link.translated(-offset, 0.));
+    icon.addPath(link.translated(offset, 0.));
+    QTransform rotation;
+    rotation.rotate(-45.);
+
+    return rotation.map(icon);
+}
 
 static QColor
 persistentErrorColor()
@@ -923,13 +948,11 @@ NodeGui::createGui()
 
     // Shown whatever the line preferences, so a Linked Node stays recognisable when its partners are
     // off-screen or in another group.
-    // Larger than the 10 px warning badges so the letter stays legible at the corner.
+    // A vector chain link rather than a letter: small text is hinted and scaled with the graph and
+    // smears at the corner, while a path is rasterised at the view's zoom and device pixel ratio.
     const double linkDiam = TO_DPIX(NATRON_LINK_BADGE_DIAMETER);
-    QGradientStops linkGrad;
-    linkGrad.push_back(qMakePair(0., QColor(Qt::white)));
-    linkGrad.push_back(qMakePair(0.3, QColor(70, 140, 255)));
-    linkGrad.push_back(qMakePair(1., QColor(30, 60, 120)));
-    _linkedNodeIndicator.reset(new NodeGuiIndicator(getDagGui(), depth + 2, QString::fromUtf8("L"), bbox.bottomLeft(), linkDiam, linkDiam, linkGrad, QColor(255, 255, 255), this));
+    _linkedNodeIndicator.reset(new NodeGuiIndicator(depth + 2, makeChainLinkIcon(linkDiam), bbox.bottomLeft(), linkDiam,
+                                                    QColor(40, 95, 205), QColor(255, 255, 255), this));
     _linkedNodeIndicator->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("This node is a Linked Node: its parameters are linked to those of "
                                                                                "one or more nodes of the same kind. Use Unlink Node to make it independent."),
                                                                             NATRON_NAMESPACE::WhiteSpaceNormal));
@@ -3267,19 +3290,51 @@ struct NodeGuiIndicatorPrivate
 {
     QGraphicsEllipseItem* ellipse;
     QGraphicsSimpleTextItem* textItem;
+    QGraphicsPathItem* iconItem;
     QGradientStops gradStops;
 
-    NodeGuiIndicatorPrivate(NodeGraph* graph,
-                            int depth,
-                            const QString & text,
-                            const QPointF & topLeft,
-                            int width,
-                            int height,
-                            const QGradientStops & gradient,
-                            const QColor & textColor,
+    NodeGuiIndicatorPrivate(int depth,
+                            const QPainterPath& icon,
+                            const QPointF& center,
+                            double diameter,
+                            const QColor& fill,
+                            const QColor& iconColor,
                             QGraphicsItem* parent)
         : ellipse(NULL)
         , textItem(NULL)
+        , iconItem(NULL)
+        , gradStops()
+    {
+        // A flat fill with a dark rim: a gradient with a light centre washes out a white glyph.
+        const double rad = diameter / 2.;
+        ellipse = new QGraphicsEllipseItem(parent);
+        ellipse->setRect(QRectF(center.x() - rad, center.y() - rad, diameter, diameter));
+        ellipse->setBrush(fill);
+        ellipse->setPen(QPen(fill.darker(250), std::max(1., diameter / 16.)));
+        ellipse->setZValue(depth);
+
+        iconItem = new QGraphicsPathItem(icon, parent);
+        QPen iconPen(iconColor, std::max(1.25, diameter / 11.));
+        iconPen.setCapStyle(Qt::RoundCap);
+        iconPen.setJoinStyle(Qt::RoundJoin);
+        iconItem->setPen(iconPen);
+        iconItem->setBrush(Qt::NoBrush);
+        iconItem->setPos(center);
+        iconItem->setZValue(depth);
+    }
+
+    NodeGuiIndicatorPrivate(NodeGraph* graph,
+                            int depth,
+                            const QString& text,
+                            const QPointF& topLeft,
+                            int width,
+                            int height,
+                            const QGradientStops& gradient,
+                            const QColor& textColor,
+                            QGraphicsItem* parent)
+        : ellipse(NULL)
+        , textItem(NULL)
+        , iconItem(NULL)
         , gradStops(gradient)
     {
         ellipse = new QGraphicsEllipseItem(parent);
@@ -3326,6 +3381,17 @@ NodeGuiIndicator::NodeGuiIndicator(NodeGraph* graph,
 {
 }
 
+NodeGuiIndicator::NodeGuiIndicator(int depth,
+                                   const QPainterPath& icon,
+                                   const QPointF& center,
+                                   double diameter,
+                                   const QColor& fill,
+                                   const QColor& iconColor,
+                                   QGraphicsItem* parent)
+    : _imp(new NodeGuiIndicatorPrivate(depth, icon, center, diameter, fill, iconColor, parent))
+{
+}
+
 NodeGuiIndicator::~NodeGuiIndicator()
 {
 }
@@ -3340,9 +3406,15 @@ void
 NodeGuiIndicator::setActive(bool active)
 {
     _imp->ellipse->setActive(active);
-    _imp->textItem->setActive(active);
     _imp->ellipse->setVisible(active);
-    _imp->textItem->setVisible(active);
+    if (_imp->textItem) {
+        _imp->textItem->setActive(active);
+        _imp->textItem->setVisible(active);
+    }
+    if (_imp->iconItem) {
+        _imp->iconItem->setActive(active);
+        _imp->iconItem->setVisible(active);
+    }
 }
 
 bool
@@ -3355,6 +3427,13 @@ void
 NodeGuiIndicator::refreshPosition(const QPointF & center)
 {
     QRectF r = _imp->ellipse->rect();
+    if (_imp->iconItem) {
+        const double rad = r.width() / 2.;
+        _imp->ellipse->setRect(QRectF(center.x() - rad, center.y() - rad, r.width(), r.height()));
+        _imp->iconItem->setPos(center);
+
+        return;
+    }
     int ellipseRad = r.width() / 2;
     QPoint ellipsePos(center.x() - ellipseRad, center.y() - ellipseRad);
     QRectF ellipseRect( ellipsePos.x(), ellipsePos.y(), r.width(), r.height() );

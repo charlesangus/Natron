@@ -36,7 +36,6 @@
 #include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 
-#include "Gui/Button.h"
 #include "Gui/ClickableLabel.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
@@ -101,7 +100,7 @@ KnobGui::initialize()
         QObject::connect( handler, SIGNAL(viewerContextSecretChanged()), this, SLOT(onViewerContextSecretChanged()) );
         QObject::connect(handler, SIGNAL(linkChanged()), this, SLOT(onLinkStateChanged()));
     }
-    // A linked node being deactivated or reactivated changes whether the link circle shows.
+    // A linked node being deactivated or reactivated changes whether the knob reads as linked.
     EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
     NodePtr node = effect ? effect->getNode() : NodePtr();
     if (node && !_imp->isInViewerUIKnob) {
@@ -150,10 +149,6 @@ KnobGui::removeGui()
             _imp->descriptionLabel->deleteLater();
             _imp->descriptionLabel = 0;
         }
-    }
-    if (_imp->linkButton) {
-        _imp->linkButton->deleteLater();
-        _imp->linkButton = 0;
     }
     removeSpecificGui();
     _imp->guiRemoved = true;
@@ -270,17 +265,8 @@ KnobGui::createGUI(QWidget* fieldContainer,
         updateToolTip();
     }
 
-    // The link circle ends the knob's widgets; onLinkStateChanged() shows it only for knobs in a link group.
+    // A linked knob's name takes the link colour, and its tool tip says what it is linked to.
     if (!_imp->isInViewerUIKnob) {
-        const int buttonSize = TO_DPIX(NATRON_SMALL_BUTTON_SIZE);
-        _imp->linkButton = new Button(fieldContainer);
-        _imp->linkButton->setFixedSize(buttonSize, buttonSize);
-        _imp->linkButton->setIconSize(QSize(buttonSize, buttonSize));
-        _imp->linkButton->setFlat(true);
-        _imp->linkButton->setFocusPolicy(Qt::NoFocus);
-        _imp->linkButton->setObjectName(QString::fromUtf8("knobLinkButton"));
-        QObject::connect(_imp->linkButton, SIGNAL(clicked(bool)), this, SLOT(onLinkButtonClicked()));
-        layout->addWidget(_imp->linkButton);
         onLinkStateChanged();
     }
 
@@ -786,7 +772,7 @@ KnobGui::createAnimationMenu(QMenu* menu,
     }
 
     // Link groups: the knob unlinks or re-links as a whole. Alias links are permanent and offer neither.
-    if (isAppKnob && hasLinkButton()) {
+    if (isAppKnob && hasLinkPartners()) {
         menu->addSeparator();
         bool isLinked = false;
         for (int i = 0; i < knob->getDimension(); ++i) {

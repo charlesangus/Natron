@@ -1029,7 +1029,7 @@ Settings::initializeKnobsNodeGraphColors()
     _linkLineColor->setName("linkLineColor");
     _linkLineColor->setSimplified(true);
     _linkLineColor->setHintToolTip(tr("The color of the node graph lines between nodes whose parameters are linked, "
-                                      "including the dashed lines between Linked Nodes."));
+                                      "including the dashed lines between Linked Nodes. Linked parameter names in settings panels take it too."));
     _nodegraphColorsTab->addKnob(_linkLineColor);
 
     _expressionLineColor = AppManager::createKnob<KnobColor>(this, tr("Expression lines"), 3);
@@ -1864,7 +1864,7 @@ Settings::setDefaultValues()
     _edgeRawColor->setDefaultValue(204. / 255., 0); // Okabe-Ito reddish purple
     _edgeRawColor->setDefaultValue(121. / 255., 1);
     _edgeRawColor->setDefaultValue(167. / 255., 2);
-    _linkLineColor->setDefaultValue(70. / 255., 0); // the blue of the knob link buttons
+    _linkLineColor->setDefaultValue(70. / 255., 0); // also the colour of linked parameter names
     _linkLineColor->setDefaultValue(140. / 255., 1);
     _linkLineColor->setDefaultValue(255. / 255., 2);
     _expressionLineColor->setDefaultValue(143. / 255., 0);
@@ -2383,7 +2383,7 @@ Settings::onKnobValueChanged(KnobI* k,
         appPTR->onViewerTileCacheSizeChanged();
     } else if (k == _autoProxyWhenScrubbingTimeline.get()) {
         _autoProxyLevel->setSecret( !_autoProxyWhenScrubbingTimeline->getValue() );
-    } else if (!_restoringSettings && ((k == _sunkenColor.get()) || (k == _baseColor.get()) || (k == _raisedColor.get()) || (k == _selectionColor.get()) || (k == _textColor.get()) || (k == _altTextColor.get()) || (k == _timelinePlayheadColor.get()) || (k == _timelineBoundsColor.get()) || (k == _timelineBGColor.get()) || (k == _interpolatedColor.get()) || (k == _keyframeColor.get()) || (k == _trackerKeyframeColor.get()) || (k == _cachedFrameColor.get()) || (k == _diskCachedFrameColor.get()) || (k == _curveEditorBGColor.get()) || (k == _gridColor.get()) || (k == _curveEditorScaleColor.get()) || (k == _dopeSheetEditorBackgroundColor.get()) || (k == _dopeSheetEditorRootSectionBackgroundColor.get()) || (k == _dopeSheetEditorKnobSectionBackgroundColor.get()) || (k == _dopeSheetEditorScaleColor.get()) || (k == _dopeSheetEditorGridColor.get()) || (k == _keywordColor.get()) || (k == _operatorColor.get()) || (k == _curLineColor.get()) || (k == _braceColor.get()) || (k == _defClassColor.get()) || (k == _stringsColor.get()) || (k == _commentsColor.get()) || (k == _selfColor.get()) || (k == _sliderColor.get()) || (k == _numbersColor.get()))) {
+    } else if (!_restoringSettings && ((k == _sunkenColor.get()) || (k == _baseColor.get()) || (k == _raisedColor.get()) || (k == _selectionColor.get()) || (k == _textColor.get()) || (k == _altTextColor.get()) || (k == _linkLineColor.get()) || (k == _timelinePlayheadColor.get()) || (k == _timelineBoundsColor.get()) || (k == _timelineBGColor.get()) || (k == _interpolatedColor.get()) || (k == _keyframeColor.get()) || (k == _trackerKeyframeColor.get()) || (k == _cachedFrameColor.get()) || (k == _diskCachedFrameColor.get()) || (k == _curveEditorBGColor.get()) || (k == _gridColor.get()) || (k == _curveEditorScaleColor.get()) || (k == _dopeSheetEditorBackgroundColor.get()) || (k == _dopeSheetEditorRootSectionBackgroundColor.get()) || (k == _dopeSheetEditorKnobSectionBackgroundColor.get()) || (k == _dopeSheetEditorScaleColor.get()) || (k == _dopeSheetEditorGridColor.get()) || (k == _keywordColor.get()) || (k == _operatorColor.get()) || (k == _curLineColor.get()) || (k == _braceColor.get()) || (k == _defClassColor.get()) || (k == _stringsColor.get()) || (k == _commentsColor.get()) || (k == _selfColor.get()) || (k == _sliderColor.get()) || (k == _numbersColor.get()))) {
         appPTR->reloadStylesheets();
     } else if (k == _qssFile.get()) {
         appPTR->reloadStylesheets();

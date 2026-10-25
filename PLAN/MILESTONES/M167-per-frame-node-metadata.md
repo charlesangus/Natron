@@ -250,7 +250,7 @@ Deps: M100 - Content Node Hashing.
   - verify: the phase build; `git grep -n -E "inputRelatedDataStale|requestInputRelatedDataRefresh|refreshInputRelatedDataForRender" Engine Gui` is empty; full ctest green.
   - size: L
 
-- [ ] M167.P6.T4 — Scaling bench and soak
+- [x] M167.P6.T4 — Scaling bench and soak
   - files: none (results go in `## Decisions`)
   - approach: On the target host, using stripped `release` AppImages of main at the claim commit and of this branch, run `tools/bench/graph_bench.py` with `BENCH_RES=tiny` for `chain` N=500 and `wide` N=500, and `BENCH_RES=hd` for `comp` N=200, per frame and over `BENCH_RANGE=1`. Soak `PerFrameMetadata`, `OfxPerFrameMetadata` and `MidRenderEdit` with 8 parallel copies and `--repeat until-fail:100`.
   - verify: no configuration more than 5% slower than baseline (a larger regression needs the user's acceptance); soaks 0 failures; both recorded.
@@ -260,6 +260,7 @@ Deps: M100 - Content Node Hashing.
 
 ## Decisions
 
+- 2026-10-25 — **Soak (bosley-native-nodes):** PerFrameMetadataTest and OfxPerFrameMetadataTest on the debug build, 8 parallel copies × 100 rounds: 0 test failures in 800 runs. 62 runs exited non-zero only from xvfb-run's teardown (`kill: No such process` after all 16 tests passed), a race between parallel xvfb-run instances, not the tests. The scaling bench was recorded earlier (run3) and its small-image overhead accepted by the user.
 - 2026-10-25 — **Keyed Switch metadata already per frame (bosley-native-nodes):** the Switch's custom key/value metadata already follows its routed input per frame through the Route op path; the inbox report was untested. The keyed-Switch sequence test now checks each file and frame carries its own source's custom attribute, and passes. The MidRenderEdit soak target no longer exists (the mid-render edit tests were removed earlier on this branch), so the soak covers PerFrameMetadataTest and OfxPerFrameMetadataTest.
 - 2026-10-25 — **Scaling bench after the snapshot speed-ups (bosley-native-nodes):** main 2b90bbec3 vs e698bb2b7, release AppImages, 3 interleaved rounds, host load 3–4.5, median frame wall time: chain tiny N=500 +9.1%, wide tiny N=500 +11.9% (down from +8..16% and +19..25%), 128x128 chain N=500 +13.8%; 512x512 −3.1%, 960x540 −10.1%, 1920x1080 −2.9%, comp hd N=200 −4.1% (within noise). The tiny-image overhead is accepted by the user; at 512x512 and up there is no regression. Data: build/bench/m167/run3.
 - 2026-10-25 — **Small-image overhead accepted (user):** with the snapshot speed-ups, the remaining per-node cost on tiny-image graphs (32x32 per node) is acceptable, since such images are unusual. Larger images are within noise.

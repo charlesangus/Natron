@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Splits GPU region time from NATRON_RENDER_PROFILE files into its phases, per region and per node.
 
-    python3 -I tools/bench/gpu_region_summary.py [--skip-frames N] [--import-rate GBPS] PROFILE_PREFIX_OR_FILE...
+    python3 -I tools/bench/gpu_region_summary.py [--skip-frames N] [--import-rate GBPS] [--import-rate-up GBPS] PROFILE_PREFIX_OR_FILE...
     python3 -I tools/bench/gpu_region_summary.py --driver OUT_DIR_OR_DRIVER_JSONL
     python3 -I tools/bench/gpu_region_summary.py --self-test
 
@@ -22,8 +22,9 @@ pairs. The vmstat deltas are system-wide.
 prepareWaitMs is the time the region waited for its transfer destinations to be prepared. The pipelined
 floor is max(0, T - K*(n-1)/n) with T the exposed plus hidden transfer ms, K the kernel ms and n the strips
 (1 when the region ran unstripped): the transfer time left once every strip but one overlaps a kernel.
-With --import-rate GBPS (a measured GpuBench host-import rate in GB/s) T is instead
-(uploadBytes + downloadBytes) / rate, so the floor shows what the transfers would cost at that rate.
+With --import-rate GBPS (a measured GpuBench host-import download rate in GB/s) T is instead
+uploadBytes / up rate + downloadBytes / rate, so the floor shows what the transfers would cost at those
+rates. --import-rate-up GBPS sets the upload rate; without it uploads are priced at --import-rate.
 
 Which fields lie inside wallMs. wallMs runs from the end of planning to the end of the region:
   inside   kernelMs, transferExposedMs, recordMs, acquireMs, submitWaitMs
@@ -93,10 +94,11 @@ def other_ms(region):
     return region.get("wallMs", 0.0) - named
 
 
-def pipelined_floor_ms(region, import_rate_gbps=None):
+def pipelined_floor_ms(region, import_rate_gbps=None, import_rate_up_gbps=None):
     strips = max(region.get("strips", 0), 1)
     if import_rate_gbps:
-        transfer = (region.get("uploadBytes", 0) + region.get("downloadBytes", 0)) / (import_rate_gbps * 1e9) * 1e3
+        up_rate = import_rate_up_gbps or import_rate_gbps
+        transfer = (region.get("uploadBytes", 0) / (up_rate * 1e9) + region.get("downloadBytes", 0) / (import_rate_gbps * 1e9)) * 1e3
     else:
         transfer = region.get("transferExposedMs", 0.0) + region.get("transferHiddenMs", 0.0)
     return max(0.0, transfer - region.get("kernelMs", 0.0) * (strips - 1) / strips)
@@ -265,7 +267,7 @@ def mean(values):
     return sum(values) / len(values) if values else 0.0
 
 
-def summarise(rows, import_rate_gbps=None):
+def summarise(rows, import_rate_gbps=None, import_rate_up_gbps=None):
     groups = collections.OrderedDict()
     for row in rows:
         groups.setdefault(row["signature"], []).append(row)
@@ -276,7 +278,7 @@ def summarise(rows, import_rate_gbps=None):
         for k in FIELDS:
             entry[k] = mean([g.get(k, 0.0) for g in regs])
         entry["other"] = mean([other_ms(g) for g in regs])
-        entry["floor"] = mean([pipelined_floor_ms(g, import_rate_gbps) for g in regs])
+        entry["floor"] = mean([pipelined_floor_ms(g, import_rate_gbps, import_rate_up_gbps) for g in regs])
         preds = [g["predictedTransferMs"] for g in regs if g.get("predictedTransferMs") is not None]
         entry["predicted"] = mean(preds) if preds else None
         entry["imports"] = mean([g.get("importCount", 0) for g in regs])
@@ -362,7 +364,7 @@ def format_renders(marks, records):
     return "\n".join(lines)
 
 
-def summarise_run(arg, skip, import_rate_gbps):
+def summarise_run(arg, skip, import_rate_gbps, import_rate_up_gbps=None):
     records = read_records([arg])
     marks = read_marks(arg)
     if skip is None:
@@ -379,7 +381,7 @@ def summarise_run(arg, skip, import_rate_gbps):
     for label, group in groups.items():
         if label != "-":
             out.append("== render label %s ==" % label)
-        out.append(format_summary(summarise(group, import_rate_gbps)))
+        out.append(format_summary(summarise(group, import_rate_gbps, import_rate_up_gbps)))
         out.append("")
     return "\n".join(out), bool(rows)
 
@@ -453,6 +455,10 @@ def self_test():
     rate = pipelined_floor_ms(rows[2]["region"], 1.0)
     assert abs(rate - (2 * 132710400 / 1e9 * 1e3 - 80.0 * 3 / 4)) < 1e-6, rate
     assert abs(summarise(rows, 1.0)[1]["floor"] - rate) < 1e-6
+    split = {"uploadBytes": 1e9, "downloadBytes": 1e9, "kernelMs": 0.0, "strips": 1}
+    assert abs(pipelined_floor_ms(split, 16.0, 10.0) - (1e3 / 10.0 + 1e3 / 16.0)) < 1e-9
+    assert abs(pipelined_floor_ms(split, 16.0) - 2e3 / 16.0) < 1e-9
+    assert abs(summarise(rows, 1.0, 1.0)[1]["floor"] - rate) < 1e-6
 
     marks = [{"label": "first", "index": 0, "frame": 2, "frames": 1, "profileFrame": 0, "wall_s": 0.2},
              {"label": "b", "index": 1, "frame": 2, "frames": 1, "profileFrame": 1, "wall_s": 0.15}]
@@ -500,6 +506,7 @@ def main(argv):
         return 0
     skip = None
     rate = None
+    rate_up = None
     paths = []
     i = 0
     while i < len(argv):
@@ -509,6 +516,9 @@ def main(argv):
         elif argv[i] == "--import-rate":
             rate = float(argv[i + 1])
             i += 2
+        elif argv[i] == "--import-rate-up":
+            rate_up = float(argv[i + 1])
+            i += 2
         else:
             paths.append(argv[i])
             i += 1
@@ -517,7 +527,7 @@ def main(argv):
         return 2
     status = 0
     for path in paths:
-        text, any_rows = summarise_run(path, skip, rate)
+        text, any_rows = summarise_run(path, skip, rate, rate_up)
         print(text)
         if not any_rows:
             sys.stderr.write("no region records in %s after skipping\n" % path)

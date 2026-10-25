@@ -252,9 +252,11 @@ try:
     def knob_field(panel, script_name):
         """The first-dimension field of the knob named script_name on panel: the widget the knob's
         right-click menu is attached to, whose tooltip starts with the knob's script name."""
+        _held.append(panel)
         for w in panel.findChildren(QWidget):
             try:
                 if w.objectName() == "dim-0" and w.isVisible() and script_name in w.toolTip():
+                    _held.append(w)
                     return w
             except RuntimeError:
                 continue
@@ -267,6 +269,8 @@ try:
 
         def inspect():
             popup = QApplication.activePopupWidget()
+            if popup is not None:
+                _held.append(popup)
             if popup is None:
                 check(False, "the right-click menu is open")
                 return
@@ -281,7 +285,11 @@ try:
             popup.close()
 
         QTimer.singleShot(800, inspect)
-        field.customContextMenuRequested.emit(field.rect().center())
+        try:
+            # the menu runs a nested loop; a triggered item may rebuild the panel and delete field
+            field.customContextMenuRequested.emit(field.rect().center())
+        except RuntimeError as e:
+            check(False, "the right-click menu call completed: " + str(e))
         return seen
 
     def open_project_variables():

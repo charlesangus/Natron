@@ -213,7 +213,7 @@ future core work has solid ground to build on.
 | M153 | Distortion Concatenation | todo | M147, M113 |  | E14 | [M153-distortion-concatenation.md](PLAN/MILESTONES/M153-distortion-concatenation.md) |
 | M154 | Fresh Buffer Page Zeroing | done | M109 | gpu | E5 | [M154-fresh-buffer-page-zeroing.md](PLAN/MILESTONES/M154-fresh-buffer-page-zeroing.md) |
 | M155 | Per-Suite Test Processes | done | - | bosley-native-nodes | E2 | [M155-per-suite-test-processes.md](PLAN/MILESTONES/M155-per-suite-test-processes.md) |
-| M156 | GPU Download Throughput In Comps | doing | M109 | gpu | E5 | [M156-gpu-download-throughput-in-comps.md](PLAN/MILESTONES/M156-gpu-download-throughput-in-comps.md) |
+| M156 | GPU Download Throughput In Comps | done | M109 | gpu | E5 | [M156-gpu-download-throughput-in-comps.md](PLAN/MILESTONES/M156-gpu-download-throughput-in-comps.md) |
 | M157 | Relicense To GPLv3 Or Later | todo | - |  | E2 | [M157-relicense-to-gplv3-or-later.md](PLAN/MILESTONES/M157-relicense-to-gplv3-or-later.md) |
 | M158 | Node Toolbar As Menu | done | - | bosley-native-nodes | E10 | [M158-node-toolbar-as-menu.md](PLAN/MILESTONES/M158-node-toolbar-as-menu.md) |
 | M161 | Startup Compositor Crash | done | - | bosley-native-nodes | E10 | [M161-startup-compositor-crash.md](PLAN/MILESTONES/M161-startup-compositor-crash.md) |

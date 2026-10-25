@@ -1312,6 +1312,12 @@ public:
                       std::vector<std::string>* missingTargets = NULL);
 
     /**
+     * @brief Whether a one-way link to master is one a file holds: only those are saved, and only
+     * those are made again by restoreLinks().
+     **/
+    static bool isSavedOneWayLinkMaster(const KnobIPtr& master);
+
+    /**
      * @brief Stores the links serialization saved, for restoreLinks() to resolve once every node exists.
      **/
     void storeLinksFromSerialization(const Serialization::KnobSerialization& serialization);

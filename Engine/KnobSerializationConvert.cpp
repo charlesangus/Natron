@@ -503,11 +503,16 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
             dimensionData.defaultValue = Serialization::KnobValueSerialization(std::in_place_type<std::string>, isStringBase->getDefaultValue(i));
         }
 
-        // An alias is a link group member, not a slave: its master is saved the way a slave's is.
+        // An alias is a link group member, not a slave: its master is saved the way a slave's is. A
+        // one-way link is saved only when it is one loading makes again; any other is made again by
+        // whatever made it.
         std::pair<int, KnobIPtr> master = aliasMaster ? std::make_pair(i, aliasMaster) : getMaster(i);
-        if (aliasMaster || isSlave(i)) {
+        const bool persistenceIgnored = isMastersPersistenceIgnored();
+        const bool savesMaster = master.second && !persistenceIgnored && (aliasMaster || isSavedOneWayLinkMaster(master.second));
+        const bool writesMaster = aliasMaster || (isSlave(i) && (savesMaster || persistenceIgnored));
+        if (writesMaster) {
             Serialization::KnobMasterSerialization masterData;
-            if (master.second && !isMastersPersistenceIgnored()) {
+            if (savesMaster) {
                 fillMasterSerialization(master, &masterData);
             }
             dimensionData.master = masterData;
@@ -531,7 +536,7 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
         dimensionData.expression = getExpression(i);
         dimensionData.expressionHasReturnVariable = isExpressionUsingRetVariable(i);
 
-        if (!dimensionData.expression.empty() || master.second) {
+        if (!dimensionData.expression.empty() || (writesMaster && master.second)) {
             hasExpressionOrLink = true;
         }
     }

@@ -41,6 +41,7 @@
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
@@ -100,6 +101,31 @@ linkTargetText(const KnobIPtr& master,
     }
 
     return holderName + "." + master->getName() + "." + std::to_string(masterDimension);
+}
+
+// The other members of a knob dimension's link group, in name order, and whether the dimension is linked.
+std::string
+linkGroupText(const KnobLinkGroup& group,
+              const KnobI* knob,
+              int dimension)
+{
+    std::set<std::string> others;
+    const std::vector<KnobLinkGroup::Member> members = group.getMembers();
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        KnobIPtr member = it->knob.lock();
+        if (member && ((member.get() != knob) || (it->dimension != dimension))) {
+            others.insert(linkTargetText(member, it->dimension));
+        }
+    }
+    std::string text;
+    for (std::set<std::string>::const_iterator it = others.begin(); it != others.end(); ++it) {
+        text += (text.empty() ? std::string() : std::string(", ")) + *it;
+    }
+    if (!group.isMemberLinked(knob, dimension)) {
+        text += " (unlinked)";
+    }
+
+    return text;
 }
 
 template <typename T>
@@ -197,6 +223,11 @@ public:
             const std::pair<int, KnobIPtr> master = knob->getMaster(d);
             if (master.second) {
                 add(key + " link", linkTargetText(master.second, master.first));
+            }
+
+            const KnobLinkGroupPtr group = knob->getLinkGroup(d);
+            if (group) {
+                add(key + " link group", linkGroupText(*group, knob.get(), d));
             }
 
             if (KnobParametric* isParametric = dynamic_cast<KnobParametric*>(knob.get())) {

@@ -311,8 +311,8 @@ findMaster(const KnobIPtr & knob,
  * its node (the Tracker's internal nodes, which are not saved), kept by its own holder's serialization
  * (Roto items, tracks), never saved (MultiInstance), or a user link, which is a link group.
  */
-static bool
-isRestorableOneWayLinkMaster(const KnobIPtr& master)
+bool
+KnobI::isSavedOneWayLinkMaster(const KnobIPtr& master)
 {
     EffectInstance* effect = dynamic_cast<EffectInstance*>(master->getHolder());
     NodePtr node = effect ? effect->getNode() : NodePtr();
@@ -353,7 +353,7 @@ KnobI::restoreLinks(const NodesList& allNodes,
             }
        } else if (l->dimension == -1) {
             setKnobAsAliasOfThis(linkedKnob, true);
-       } else if (isRestorableOneWayLinkMaster(linkedKnob)) {
+       } else if (isSavedOneWayLinkMaster(linkedKnob)) {
            assert(l->slaveDimension >= 0);
            slaveTo(l->slaveDimension, linkedKnob, l->dimension);
        } else {

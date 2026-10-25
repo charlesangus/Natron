@@ -29,8 +29,10 @@
 #include <cassert>
 #include <stdexcept>
 
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/RFV.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 #include "Engine/UndoRecorder.h"
@@ -823,7 +825,28 @@ KnobGui::createAnimationMenu(QMenu* menu,
         QObject::connect( createMasterOnGroup, SIGNAL(triggered()), this, SLOT(onCreateAliasOnGroupActionTriggered()) );
         menu->addAction(createMasterOnGroup);
     }
+    if (isAppKnob && RFV::isNodeVariable(knob)) {
+        menu->addSeparator();
+        QAction* promoteAction = new QAction(tr("Add to project variables"), menu);
+        std::string reason;
+        if (!RFV::canPromoteToProject(knob, &reason)) {
+            promoteAction->setEnabled(false);
+            promoteAction->setToolTip(QString::fromUtf8(reason.c_str()));
+            menu->setToolTipsVisible(true);
+        }
+        QObject::connect(promoteAction, SIGNAL(triggered()), this, SLOT(onPromoteToProjectActionTriggered()));
+        menu->addAction(promoteAction);
+    }
 } // createAnimationMenu
+
+void
+KnobGui::onPromoteToProjectActionTriggered()
+{
+    std::string error;
+    if (!RFV::promoteToProject(getKnob(), &error)) {
+        Dialogs::errorDialog(tr("Add to project variables").toStdString(), error);
+    }
+}
 
 KnobIPtr
 KnobGui::createDuplicateOnNode(EffectInstance* effect,

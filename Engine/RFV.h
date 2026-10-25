@@ -73,6 +73,29 @@ bool isAppAttributeName(const AppInstancePtr& app, const std::string& name);
  **/
 std::vector<VariableDeclaration> getDeclaredVariables(const KnobHolder* holder, std::vector<std::string>* errors = nullptr);
 
+/**
+ * @brief Whether the knob is a variable of a node: a direct child of an RFV group of an effect,
+ * such as a ReverseFlowVariableSet node, rather than of the project's.
+ **/
+bool isNodeVariable(const KnobIPtr& knob);
+
+/**
+ * @brief Whether promoteToProject() would copy the knob into the project. When it would not,
+ * reason says why: the knob is not a node's variable, or the project already has a parameter
+ * with its name, or its name is an attribute of the App class.
+ **/
+bool canPromoteToProject(const KnobIPtr& knob, std::string* reason = nullptr);
+
+/**
+ * @brief Copies a node's variable into the project's RFV group, with the same type, dimensions,
+ * label, hint, values and animation, and declares it as app.<name>. The copy is not linked to
+ * the node's variable, which stays and goes on overriding the project's. Like any creation of a
+ * project variable, it is not recorded in the undo history.
+ * @returns the project's new variable, or null with error set when canPromoteToProject() is false
+ * or the project's RFV group refuses the copy.
+ **/
+KnobIPtr promoteToProject(const KnobIPtr& knob, std::string* error = nullptr);
+
 } // namespace RFV
 
 NATRON_NAMESPACE_EXIT

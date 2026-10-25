@@ -255,3 +255,81 @@ TEST_F(BaseTest, RFVSetNodeVariablesSurviveSaveAndLoad)
     }
     EXPECT_DOUBLE_EQ(rampMid, ramp2->getValueAtTime(5., 0));
 }
+
+TEST_F(BaseTest, RFVSetNodeVariablePromotesToTheProjectOnce)
+{
+    ProjectPtr project = getApp()->getProject();
+    KnobGroupPtr projectGroup = project->getRFVGroup();
+    ASSERT_TRUE(projectGroup != nullptr);
+
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(setNode));
+    EffectInstancePtr effect = setNode->getEffectInstance();
+    KnobGroupPtr group = variablesGroupOf(setNode);
+    ASSERT_TRUE(group != nullptr);
+
+    KnobDoublePtr ramp = effect->createDoubleKnob("rfvPromoted", "Promoted Ramp", 1);
+    ASSERT_TRUE(group->addKnob(ramp));
+    effect->recreateUserKnobs(false);
+    ramp->setHintToolTip(std::string("A ramp to share"));
+    ramp->setValueAtTime(1., 0.5, ViewSpec::all(), 0);
+    ramp->setValueAtTime(10., 2., ViewSpec::all(), 0);
+    ramp->setValueAtTime(20., -1., ViewSpec::all(), 0);
+
+    EXPECT_TRUE(RFV::isNodeVariable(ramp));
+    std::string reason;
+    EXPECT_TRUE(RFV::canPromoteToProject(ramp, &reason)) << reason;
+
+    std::string error;
+    KnobIPtr promoted = RFV::promoteToProject(ramp, &error);
+    ASSERT_TRUE(promoted != nullptr) << error;
+    EXPECT_TRUE(promoted->getHolder() == project.get());
+    EXPECT_TRUE(promoted->getParentKnob() == projectGroup);
+    EXPECT_TRUE(promoted->isUserKnob());
+    EXPECT_TRUE(project->getKnobByName("rfvPromoted") == promoted);
+    EXPECT_EQ(std::string("Promoted Ramp"), promoted->getLabel());
+    EXPECT_EQ(std::string("A ramp to share"), promoted->getHintToolTip());
+
+    // A project variable is not a node's, so it cannot be promoted in turn.
+    EXPECT_FALSE(RFV::isNodeVariable(promoted));
+    EXPECT_FALSE(RFV::canPromoteToProject(promoted));
+
+    KnobDouble* promotedDouble = dynamic_cast<KnobDouble*>(promoted.get());
+    ASSERT_TRUE(promotedDouble != NULL);
+    ASSERT_EQ(1, promotedDouble->getDimension());
+    CurvePtr curve = promotedDouble->getCurve(ViewIdx(0), 0);
+    ASSERT_TRUE(curve != nullptr);
+    ASSERT_EQ(3, curve->getKeyFramesCount());
+    const double times[3] = { 1., 10., 20. };
+    const double values[3] = { 0.5, 2., -1. };
+    for (int i = 0; i < 3; ++i) {
+        KeyFrame key;
+        ASSERT_TRUE(curve->getKeyFrameWithIndex(i, &key));
+        EXPECT_DOUBLE_EQ(times[i], key.getTime());
+        EXPECT_DOUBLE_EQ(values[i], key.getValue());
+    }
+    EXPECT_DOUBLE_EQ(ramp->getValueAtTime(5., 0), promotedDouble->getValueAtTime(5., 0));
+    EXPECT_DOUBLE_EQ(ramp->getValueAtTime(15., 0), promotedDouble->getValueAtTime(15., 0));
+
+    // The node keeps its own variable, and the copy is not linked to it.
+    EXPECT_TRUE(setNode->getKnobByName("rfvPromoted") == ramp);
+    EXPECT_TRUE(ramp->getParentKnob() == group);
+    ramp->setValueAtTime(10., 7., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(2., promotedDouble->getValueAtTime(10., 0));
+
+    // The project now declares the name, so a second promote is refused and adds nothing.
+    const std::size_t projectVariableCount = projectGroup->getChildren().size();
+    error.clear();
+    EXPECT_FALSE(RFV::canPromoteToProject(ramp, &reason));
+    EXPECT_FALSE(reason.empty());
+    EXPECT_TRUE(RFV::promoteToProject(ramp, &error) == nullptr);
+    EXPECT_FALSE(error.empty());
+    EXPECT_EQ(projectVariableCount, projectGroup->getChildren().size());
+    EXPECT_TRUE(project->getKnobByName("rfvPromoted") == promoted);
+
+    // A knob of the node outside its variables group is not a variable.
+    KnobDoublePtr loose = effect->createDoubleKnob("rfvLoose", "Loose", 1);
+    EXPECT_FALSE(RFV::isNodeVariable(loose));
+    EXPECT_TRUE(RFV::promoteToProject(loose, &error) == nullptr);
+    EXPECT_TRUE(project->getKnobByName("rfvLoose") == nullptr);
+}

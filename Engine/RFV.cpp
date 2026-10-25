@@ -31,8 +31,12 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Project.h"
+
+#include "Serialization/KnobSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -143,6 +147,77 @@ getDeclaredVariables(const KnobHolder* holder,
 
     return declarations;
 } // getDeclaredVariables
+
+bool
+isNodeVariable(const KnobIPtr& knob)
+{
+    if (!knob || !dynamic_cast<EffectInstance*>(knob->getHolder())) {
+        return false;
+    }
+    KnobGroup* parent = dynamic_cast<KnobGroup*>(knob->getParentKnob().get());
+
+    return parent && parent->isRFVGroup();
+}
+
+bool
+canPromoteToProject(const KnobIPtr& knob,
+                    std::string* reason)
+{
+    std::string error;
+    AppInstancePtr app = (knob && knob->getHolder()) ? knob->getHolder()->getApp() : AppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+
+    if (!isNodeVariable(knob) || !isVariableKnobType(knob) || !isValidVariableName(knob->getName()) || !project) {
+        error = "Only a variable of a node's Variables group can be added to the project variables";
+    } else {
+        const std::string& name = knob->getName();
+        KnobIPtr existing = project->getKnobByName(name);
+        if (existing && (existing->getParentKnob() == project->getRFVGroup())) {
+            error = "The project already declares a variable named " + name;
+        } else if (existing) {
+            error = "The project already has a parameter named " + name;
+        } else if (isAppAttributeName(app, name)) {
+            error = name + " is an attribute of the App class, so it cannot be a project variable";
+        }
+    }
+    if (reason) {
+        *reason = error;
+    }
+
+    return error.empty();
+}
+
+KnobIPtr
+promoteToProject(const KnobIPtr& knob,
+                 std::string* error)
+{
+    if (!canPromoteToProject(knob, error)) {
+        return KnobIPtr();
+    }
+    AppInstancePtr app = knob->getHolder()->getApp();
+    ProjectPtr project = app->getProject();
+    KnobGroupPtr group = project->getRFVGroup();
+
+    // A user knob's serialization carries its definition, values and animation; its expressions
+    // and links are applied by the caller, so the copy has none.
+    Serialization::KnobSerialization serialization;
+    knob->toSerialization(&serialization);
+    KnobIPtr copy = createUserKnobFromSerialization(project.get(), serialization);
+    if (!copy || !group || !group->addKnob(copy)) {
+        if (copy) {
+            project->deleteKnob(copy.get(), false);
+        }
+        if (error) {
+            *error = "The project variables group refused " + knob->getName();
+        }
+
+        return KnobIPtr();
+    }
+    project->recreateUserKnobs(true);
+    app->refreshProjectParamsInPython();
+
+    return copy;
+}
 
 } // namespace RFV
 

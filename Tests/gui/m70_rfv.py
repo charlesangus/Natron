@@ -11,6 +11,10 @@ Sections:
     attribute is refused;
   - reload: after a save, a reset (which drops app.<name>) and a load, both nodes' variables and
     the project variable are back with their values, and app.<name> resolves again;
+  - promote: a Set-node variable's right-click menu has "Add to project variables", which copies
+    it into the project's RFV group with its value and declares app.<name>; once the project
+    declares the name the item is disabled with a tooltip, and a project variable's own menu does
+    not have it;
   - delete: deleting the project variable from the dialog drops app.<name> too.
 
 Every modal dialog is driven from QTimer callbacks (see run() in guitest.py): whatever raises it is
@@ -231,6 +235,55 @@ try:
         probe = getattr(builtins, "m70_probe", None)
         return probe[0] if probe is not None else None
 
+    PROMOTE_ITEM = "Add to project variables"
+
+    def graph_view():
+        views = [v for v in gt.widgets_of("NodeGraph") if v.isVisible()]
+        return views[0] if views else None
+
+    def open_node_panel(node_name):
+        view = graph_view()
+        require(view is not None, "the node graph is on screen")
+        app.selectNode(app.getNode(node_name), True)
+        QMetaObject.invokeMethod(view, "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: node_panel(app.getNode(node_name)) is not None, DIALOG_TIMEOUT_S)
+        require(ok, "the settings panel of %s is open" % node_name)
+
+    def knob_field(panel, script_name):
+        """The first-dimension field of the knob named script_name on panel: the widget the knob's
+        right-click menu is attached to, whose tooltip starts with the knob's script name."""
+        for w in panel.findChildren(QWidget):
+            try:
+                if w.objectName() == "dim-0" and w.isVisible() and script_name in w.toolTip():
+                    return w
+            except RuntimeError:
+                continue
+        return None
+
+    def right_click_menu(field, shot_name=None, trigger=None):
+        """Opens field's right-click menu the way a right click does and returns
+        {"entries": [...], "item": (enabled, tooltip) or None}; triggers the item named trigger."""
+        seen = {"entries": None, "item": None}
+
+        def inspect():
+            popup = QApplication.activePopupWidget()
+            if popup is None:
+                check(False, "the right-click menu is open")
+                return
+            seen["entries"] = [a.text() for a in popup.actions() if a.text()]
+            action = next((a for a in popup.actions() if a.text() == PROMOTE_ITEM), None)
+            if action is not None:
+                seen["item"] = (action.isEnabled(), action.toolTip())
+            if shot_name:
+                gt.shot(shot_name)
+            if trigger and action is not None and action.text() == trigger and action.isEnabled():
+                action.trigger()
+            popup.close()
+
+        QTimer.singleShot(800, inspect)
+        field.customContextMenuRequested.emit(field.rect().center())
+        return seen
+
     def open_project_variables():
         QMetaObject.invokeMethod(main_gui(), "setVisibleProjectSettingsPanel")
         ok = yield ("until", lambda: project_panel() is not None, DIALOG_TIMEOUT_S)
@@ -346,6 +399,41 @@ try:
             yield ("sleep", SETTLE_MS)
             check(panel_has_label(project_panel(), "Project gain"), "the project panel shows the loaded variable")
             gt.shot("m70-project-panel-reloaded.png")
+
+        gt.section("promote")
+        yield from open_node_panel(node_name)
+        show_tab(node_panel(app.getNode(node_name)), "Variables")
+        yield ("sleep", SETTLE_MS)
+        field = knob_field(node_panel(app.getNode(node_name)), "setGain")
+        require(field is not None, "found the field of the Set node's variable setGain")
+        seen = right_click_menu(field, "m70-promote-menu.png", PROMOTE_ITEM)
+        check(seen["item"] is not None and seen["item"][0],
+              "a Set-node variable's right-click menu has %r, enabled (entries %r)" % (PROMOTE_ITEM, seen["entries"]))
+        yield ("sleep", SETTLE_MS)
+        promoted = app.getProjectParam("setGain")
+        check(promoted is not None and parent_name(promoted) == RFV_GROUP and promoted.getValue() == 1.5,
+              "the variable is now a project variable with the node's value")
+        check(app.getNode(node_name).getParam("setGain") is not None, "the Set node keeps its own variable")
+        check(editor_probe("app.setGain.getValue()") == 1.5, "app.setGain resolves in the Script Editor after the promote")
+
+        field = knob_field(node_panel(app.getNode(node_name)), "setGain")
+        require(field is not None, "found the field of setGain again")
+        seen = right_click_menu(field, "m70-promote-menu-disabled.png")
+        check(seen["item"] is not None and not seen["item"][0] and bool(seen["item"][1]),
+              "once the project declares the name, %r is disabled with a tooltip (got %r)" % (PROMOTE_ITEM, seen["item"]))
+
+        QMetaObject.invokeMethod(main_gui(), "setVisibleProjectSettingsPanel")
+        ok = yield ("until", lambda: project_panel() is not None, DIALOG_TIMEOUT_S)
+        require(ok, "the project settings panel is open for the promote check")
+        show_tab(project_panel(), "Variables")
+        yield ("sleep", SETTLE_MS)
+        check(panel_has_label(project_panel(), "Set gain"), "the project panel's Variables tab shows the promoted variable")
+        gt.shot("m70-project-panel-promoted.png")
+        field = knob_field(project_panel(), "setGain")
+        if check(field is not None, "found the field of the project variable setGain"):
+            seen = right_click_menu(field)
+            check(seen["entries"] is not None and PROMOTE_ITEM not in seen["entries"],
+                  "a project variable's right-click menu has no %r (entries %r)" % (PROMOTE_ITEM, seen["entries"]))
 
         gt.section("delete")
         yield from open_project_variables()

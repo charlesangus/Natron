@@ -69,12 +69,30 @@ try:
                     continue
         return None
 
+    def knob_widget(panel, script_name, widget_class):
+        """The visible widget_class widget of the knob script_name on panel, found by the knob's
+        script name in its tooltip. A panel shows its header before its knob widgets, so callers
+        wait for this rather than look once."""
+        if panel is None:
+            return None
+        tag = "<b>%s</b>" % script_name
+        for w in panel.findChildren(QWidget):
+            try:
+                if gt.class_name(w) == widget_class and w.isVisible() and tag in w.toolTip():
+                    return w
+            except RuntimeError:
+                continue
+        return None
+
     def progress_button(tooltip_start):
-        """The enabled Progress panel task button whose tooltip starts with tooltip_start."""
+        """The enabled Progress panel task button whose tooltip starts with tooltip_start. Button has
+        no Q_OBJECT, so it reports its base class, QPushButton. The panel's wrapper is kept: the
+        button's wrapper is marked deleted once it is collected."""
         for panel in gt.widgets_of("ProgressPanel"):
+            state.setdefault("progress_panels", {})[id(panel)] = panel
             for w in panel.findChildren(QWidget):
                 try:
-                    if gt.class_name(w) == "Button" and w.isEnabled() and tooltip_start in w.toolTip():
+                    if gt.class_name(w) in ("Button", "QPushButton") and w.isEnabled() and tooltip_start in w.toolTip():
                         return w
                 except RuntimeError:
                     continue
@@ -142,9 +160,10 @@ try:
         ok = yield ("until", lambda: panel_of(write) is not None, POLL_TIMEOUT_S)
         require(ok, "open the Write's settings panel")
         panel = panel_of(write)
-        buttons = [w for w in gt.widgets_of("Button") + gt.widgets_of("QPushButton")
-                   if w.isVisible() and w.text() == "Render" and panel.isAncestorOf(w)]
-        require(bool(buttons), "found the Write panel's Render button")
+        state["write_panel"] = panel
+        found = yield ("until", lambda: knob_widget(panel, "startRender", "QPushButton") is not None, POLL_TIMEOUT_S)
+        require(found, "found the Write panel's Render button")
+        buttons = [knob_widget(panel, "startRender", "QPushButton")]
         seen = {}
         driver = drive_render_dialog(seen)
         buttons[0].click()

@@ -92,22 +92,33 @@ try:
         ok = yield ("until", lambda: panel_of(node) is not None, POLL_TIMEOUT_S)
         require(ok, "open %s's settings panel" % node.getLabel())
 
-    def row_spinbox(panel, label_text):
-        """The first SpinBox on the panel row whose label starts with label_text."""
-        labels = [l for l in panel.findChildren(QLabel) if l.isVisible() and l.text().strip().startswith(label_text)]
-        if not labels:
+    def knob_widget(panel, script_name, widget_class):
+        """The visible widget_class widget of the knob script_name on panel, found by the knob's
+        script name in its tooltip. A panel shows its header before its knob widgets, so callers
+        wait for this rather than look once."""
+        if panel is None:
             return None
-        y = labels[0].mapTo(panel, labels[0].rect().center()).y()
-        boxes = [w for w in gt.widgets_of("SpinBox")
-                 if w.isVisible() and panel.isAncestorOf(w) and abs(w.mapTo(panel, w.rect().center()).y() - y) < 12]
-        boxes.sort(key=lambda w: w.mapTo(panel, w.rect().topLeft()).x())
-        return boxes[0] if boxes else None
+        tag = "<b>%s</b>" % script_name
+        for w in panel.findChildren(QWidget):
+            try:
+                if gt.class_name(w) == widget_class and w.isVisible() and tag in w.toolTip():
+                    return w
+            except RuntimeError:
+                continue
+        return None
+
+    def window_handle(widget):
+        """widget's top-level QWindow. The top-level widget's wrapper is kept in state: the
+        handle's wrapper is its child and is marked deleted once that wrapper is collected."""
+        top = widget.window()
+        state.setdefault("top_levels", {})[id(top)] = top
+        return top.windowHandle()
 
     def window_key_edit(spinbox, key):
         """Selects the spinbox's text, then types key and Return into its window."""
         spinbox.setFocus(Qt.OtherFocusReason)
         spinbox.selectAll()
-        window = spinbox.window().windowHandle()
+        window = window_handle(spinbox)
         QTest.keyClick(window, key)
         QTest.keyClick(window, Qt.Key_Return)
         QApplication.processEvents()
@@ -120,7 +131,7 @@ try:
         view.centerOn(centre)
         QApplication.processEvents()
         viewport = view.viewport()
-        return viewport.mapTo(viewport.window(), view.mapFromScene(centre)), viewport.window().windowHandle()
+        return viewport.mapTo(viewport.window(), view.mapFromScene(centre)), window_handle(viewport)
 
     def window_drag(node, dx, dy):
         start, window = node_centre_in_window(node)
@@ -201,12 +212,23 @@ try:
     def control_section():
         """With no dialog up, the same window-system input edits the Grade and moves a node."""
         gt.section("control")
+        # In an inactive window QGraphicsItem::isActive() is false and a press misses every node,
+        # so with no window manager to activate it the main window is activated here.
+        mains = [w for w in QApplication.topLevelWidgets() if gt.class_name(w) == "Gui" and w.isVisible()]
+        require(len(mains) == 1, "found the main window")
+        main = mains[0]
+        state["main_window"] = main
+        main.activateWindow()
+        main.raise_()
+        ok = yield ("until", main.isActiveWindow, 10.0)
+        require(ok, "the main window is active")
         grade = state["grade"]
         yield from open_panel(grade)
         panel = panel_of(grade)
         state["grade_panel"] = panel
-        spin = row_spinbox(panel, "Mix")
-        require(spin is not None, "found the Grade's Mix spinbox")
+        found = yield ("until", lambda: knob_widget(panel, "mix", "SpinBox") is not None, POLL_TIMEOUT_S)
+        require(found, "found the Grade's Mix spinbox")
+        spin = knob_widget(panel, "mix", "SpinBox")
         mix = grade.getParam("mix")
         window_key_edit(spin, Qt.Key_0)
         ok = yield ("until", lambda: abs(mix.getValue() - 0.0) < 1e-6, 5.0)
@@ -225,11 +247,12 @@ try:
         gt.section("render via " + tag)
         write = make_writer(tag, 400 + 100 * len([k for k in state if k.startswith("write_")]))
         yield ("sleep", 300)
-        start(write)
+        yield from start(write)
         up = yield ("until", task_dialog, POLL_TIMEOUT_S)
         if not check(up, "the foreground task dialog is up"):
             return
         check(dialog_is_active_modal(), "it is the active modal widget")
+        check(task_dialog().windowModality() == Qt.ApplicationModal, "it is application modal")
         first = yield ("until", lambda: len(frames_written(tag)) >= 1, POLL_TIMEOUT_S)
         check(first, "the render is writing frames")
 
@@ -241,7 +264,9 @@ try:
             QMetaObject.invokeMethod(node_graph_view(), "showSelectedNodeSettingsPanel")
             yield ("until", lambda: panel_of(grade) is not None, 5.0)
         panel = panel_of(grade)
-        spin = row_spinbox(panel, "Mix") if panel is not None else None
+        state["grade_panel"] = panel
+        yield ("until", lambda: knob_widget(panel, "mix", "SpinBox") is not None, 5.0)
+        spin = knob_widget(panel, "mix", "SpinBox")
         gt.shot("m177-fg-%s-modal.png" % tag)
         mix = grade.getParam("mix")
         if check(spin is not None, "found the Grade's Mix spinbox under the dialog"):
@@ -272,12 +297,15 @@ try:
         gt.close_all_panels()
         app.selectNode(write, True)
         QMetaObject.invokeMethod(node_graph_view(), "showSelectedNodeSettingsPanel")
-        QApplication.processEvents()
-        panel = panel_of(write)
-        buttons = [w for w in gt.widgets_of("Button") + gt.widgets_of("QPushButton")
-                   if w.isVisible() and w.text() == "Render" and panel is not None and panel.isAncestorOf(w)]
-        if not check(bool(buttons), "found the Write panel's Render button"):
+        opened = yield ("until", lambda: panel_of(write) is not None, POLL_TIMEOUT_S)
+        if not check(opened, "open %s's settings panel" % write.getLabel()):
             return
+        panel = panel_of(write)
+        state["write_panel"] = panel
+        found = yield ("until", lambda: knob_widget(panel, "startRender", "QPushButton") is not None, POLL_TIMEOUT_S)
+        if not check(found, "found the Write panel's Render button"):
+            return
+        buttons = [knob_widget(panel, "startRender", "QPushButton")]
         seen = {}
         driver = drive_render_dialog(seen)
         buttons[0].click()
@@ -286,9 +314,11 @@ try:
 
     def via_trigger(write):
         write.getParam("startRender").trigger()
+        yield ("sleep", 0)
 
     def via_app_render(write):
         app.render(write, 1, FRAMES)
+        yield ("sleep", 0)
 
     def viewer_restart_section():
         gt.section("viewer restart")

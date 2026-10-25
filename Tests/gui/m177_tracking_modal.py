@@ -1,15 +1,18 @@
 """Tracking blocks the interface like a foreground render. A CheckerBoard moved by a Transform feeds
-a Tracker with one track; the Transform's translation is an expression that sleeps, so each frame
-takes long enough to act on. The track is tracked forward over 30 frames: the "ForegroundTaskDialog"
-is the active modal widget, and the viewer's track-forward (V) and stop (Escape) shortcuts, sent
-through the window system with QTest, do nothing. Cancel stops tracking, and no marker key appears
-past the frame it stopped at.
+a Tracker with one track; the Transform's translation is an expression that sleeps off the main
+thread, so each tracked frame takes long enough to act on. The track is tracked forward over 60
+frames: the "ForegroundTaskDialog" is the active modal widget, and the viewer's track-forward (V)
+shortcut, sent through the window system with QTest, does nothing. The viewer's stop shortcut
+(Escape) is not sent: while the dialog is up the keyboard is the dialog's, and Escape there is the
+dialog's own Cancel. Cancel stops tracking, and no marker key appears past the frame it stopped at.
 
-Before that, a second Tracker whose settings panel is never opened is tracked through the Python
-API, and the same modal comes up and cancels.
+Before that, a second Tracker is tracked through the Python API with no settings panel open, and
+the same modal comes up and cancels. Creating a built-in Tracker always opens its panel (NodeGui
+creates it so the Tracker's viewer interface exists), so the panel is closed before tracking.
 
-The tracking starts from the V shortcut, sent the same way with no dialog up, which shows that
-input reaches the viewer; Python starts it if the shortcut does not.
+The tracking starts from the V shortcut, sent the same way with no dialog up and the track selected
+in the Tracker's panel (V tracks the selected tracks), which shows that input reaches the viewer;
+Python starts it if the shortcut does not.
 
 Screenshots: m177-track-panelless-modal.png, m177-track-modal.png (the dialog over the main window
 while tracking) and m177-track-stopped.png.
@@ -25,14 +28,14 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 POLL_TIMEOUT_S = 30.0
 STARTUP_TIMEOUT_S = 60.0
 FIRST = 1
-LAST = 30
+LAST = 60
 DIALOG_NAME = "ForegroundTaskDialog"
 TRACKER_ID = "fr.inria.built-in.Tracker"
 
 try:
-    from PySide6.QtCore import QMetaObject, Qt
+    from PySide6.QtCore import QItemSelectionModel, QMetaObject, Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -73,11 +76,19 @@ try:
         """key through the viewer's window to the viewer, as a key press from a person arrives."""
         viewer = viewer_widget()
         viewer.setFocus(Qt.OtherFocusReason)
-        QTest.keyClick(viewer.window().windowHandle(), key)
+        top = viewer.window()
+        state["top_level"] = top
+        QTest.keyClick(top.windowHandle(), key)
         QApplication.processEvents()
 
-    def key_times():
-        param = state["track"].getParam("centerPoint")
+    def set_on_corner(track):
+        """Puts track on a corner of the CheckerBoard's 64 pixel squares: a pattern inside one
+        square is flat, and tracking it fails at the first frame."""
+        track.getParam("centerPoint").setValue(15 * 64, 0)
+        track.getParam("centerPoint").setValue(9 * 64, 1)
+
+    def key_times(track=None):
+        param = (track or state["track"]).getParam("centerPoint")
         times = []
         for i in range(param.getNumKeys(0)):
             value = param.getKeyTime(i, 0)
@@ -88,13 +99,14 @@ try:
                 times.append(value)
         return sorted(times)
 
-    def last_key():
-        times = key_times()
+    def last_key(track=None):
+        times = key_times(track)
         return times[-1] if times else None
 
     def build_graph():
         gt.section("setup")
-        app.getProjectParam("frameRange").set(FIRST, LAST + 10)
+        # V tracks to the end of the project range, so it ends where the Python calls do.
+        app.getProjectParam("frameRange").set(FIRST, LAST)
         checker = app.createNode("net.sf.openfx.CheckerBoardPlugin")
         require(checker is not None, "create a CheckerBoard", gt.plugin_problem("net.sf.openfx.CheckerBoardPlugin"))
         checker.setPosition(200, 100)
@@ -103,7 +115,10 @@ try:
         transform.setPosition(200, 200)
         transform.connectInput(0, checker)
         translate = transform.getParam("translate")
-        translate.setExpression("__import__('time').sleep(0.2) or frame * 2", False, 0)
+        # Only off the main thread: the viewer reads the translation while it redraws during
+        # tracking, and a sleep there would stall the event loop this script runs on.
+        translate.setExpression("(__import__('threading').current_thread() is not __import__('threading').main_thread()"
+                                " and __import__('time').sleep(0.2)) or frame * 2", False, 0)
         tracker = app.createNode(TRACKER_ID)
         require(tracker is not None, "create a Tracker", gt.plugin_problem(TRACKER_ID))
         tracker.setPosition(200, 300)
@@ -115,15 +130,13 @@ try:
         require(context is not None, "the Tracker has a tracker context")
         track = context.createTrack()
         require(track is not None, "create a track")
-        track.getParam("centerPoint").setValue(960 + 20, 0)
-        track.getParam("centerPoint").setValue(540 + 20, 1)
+        set_on_corner(track)
         state.update(checker=checker, transform=transform, tracker=tracker, context=context, track=track, viewer=viewer)
         yield ("sleep", 300)
 
     def panelless_section():
-        """A second Tracker whose settings panel is never opened, tracked through the Python API."""
+        """A second Tracker tracked through the Python API with its settings panel closed."""
         gt.section("tracking from Python with no panel")
-        gt.close_all_panels()
         tracker = app.createNode(TRACKER_ID)
         require(tracker is not None, "create a second Tracker", gt.plugin_problem(TRACKER_ID))
         tracker.setPosition(400, 300)
@@ -132,8 +145,9 @@ try:
         require(context is not None, "the second Tracker has a tracker context")
         track = context.createTrack()
         require(track is not None, "create a track on the second Tracker")
-        track.getParam("centerPoint").setValue(960 + 20, 0)
-        track.getParam("centerPoint").setValue(540 + 20, 1)
+        set_on_corner(track)
+        yield ("sleep", 300)
+        gt.close_all_panels()
         yield ("sleep", 300)
         check(panel_of(tracker) is None, "the second Tracker has no settings panel open")
         check(not [w for w in gt.widgets_of("TrackerPanel") if w.isVisible()], "no Tracker panel is showing")
@@ -145,6 +159,8 @@ try:
             yield ("sleep", 2000)
             return
         check(QApplication.activeModalWidget() is task_dialog(), "it is the active modal widget")
+        ok = yield ("until", lambda: (last_key(track) or FIRST) >= FIRST + 2, POLL_TIMEOUT_S)
+        check(ok, "the panel-less Tracker is writing keys (%r)" % key_times(track))
         gt.shot("m177-track-panelless-modal.png")
         dialog = task_dialog()
         buttons = [b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel"]
@@ -152,6 +168,8 @@ try:
             buttons[0].click()
         closed = yield ("until", lambda: task_dialog() is None, POLL_TIMEOUT_S)
         check(closed, "the dialog closed once the panel-less tracking stopped")
+        stopped_at = last_key(track)
+        check(stopped_at is not None and stopped_at < LAST, "Cancel stopped the panel-less tracking before frame %d (%r)" % (LAST, stopped_at))
         check(QApplication.activeModalWidget() is None, "no modal widget is left")
         check(panel_of(tracker) is None, "tracking did not open the second Tracker's panel")
         yield ("sleep", 500)
@@ -164,6 +182,17 @@ try:
         QMetaObject.invokeMethod(node_graph_view(), "showSelectedNodeSettingsPanel")
         ok = yield ("until", lambda: panel_of(tracker) is not None, POLL_TIMEOUT_S)
         require(ok, "open the Tracker's settings panel")
+        panel = panel_of(tracker)
+        state["tracker_panel"] = panel
+        tables = [w for w in panel.findChildren(QWidget) if gt.class_name(w) == "TableView" and w.isVisible()]
+        require(len(tables) == 1, "found the Tracker panel's track table (%d)" % len(tables))
+        table = tables[0]
+        state["track_table"] = table
+        model = table.model()
+        table.selectionModel().select(model.index(0, 0), QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        QApplication.processEvents()
+        names = [t.getScriptName() for t in state["context"].getSelectedTracks()]
+        check(names == [state["track"].getScriptName()], "selecting the table row selects the track (%r)" % names)
         app.getViewer("Viewer1").seek(FIRST)
         yield ("sleep", 1500)
 
@@ -175,18 +204,20 @@ try:
             report("NOTE starting the track from Python instead")
             state["context"].startTracking([state["track"]], FIRST, LAST, True)
             up = yield ("until", task_dialog, POLL_TIMEOUT_S)
+        if not up:
+            report("NOTE keys %r; viewer frame %r; modal %r" % (key_times(), app.getViewer("Viewer1").getCurrentFrame(), QApplication.activeModalWidget()))
+            gt.shot("m177-track-nodialog.png")
         require(up, "the foreground task dialog is up while tracking")
         check(QApplication.activeModalWidget() is task_dialog(), "it is the active modal widget")
         ok = yield ("until", lambda: (last_key() or FIRST) >= FIRST + 3, POLL_TIMEOUT_S)
         check(ok, "tracking is writing keys (%r)" % key_times())
         gt.shot("m177-track-modal.png")
 
-        # Stop, then track forward again: both must be blocked by the dialog.
-        viewer_key(Qt.Key_Escape)
+        # Tracking forward again must be blocked by the dialog: it would restart the run.
         viewer_key(Qt.Key_V)
         before = last_key()
         progressed = yield ("until", lambda: (last_key() or FIRST) > (before or FIRST) + 1, POLL_TIMEOUT_S)
-        check(progressed, "tracking went on after the stop key (%r -> %r)" % (before, last_key()))
+        check(progressed, "tracking went on after the key (%r -> %r)" % (before, last_key()))
         check(task_dialog() is not None, "the dialog is still up after the keys")
 
         dialog = task_dialog()

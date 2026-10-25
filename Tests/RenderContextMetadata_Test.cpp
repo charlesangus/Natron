@@ -156,6 +156,9 @@ TEST_F(RenderContextMetadata, MetadataIsDerivedPerContext)
     ContextFormatTestEffect* ancestorEffect = dynamic_cast<ContextFormatTestEffect*>(ancestor->getEffectInstance().get());
     ASSERT_TRUE(ancestorEffect != NULL);
     ancestor->getEffectInstance()->dropCachedMetadataDownstream();
+    // The render-args setup reads each node's time-invariant answer, which runs the same derivation
+    // under the empty context; it is taken here so the count below sees the per-frame one alone.
+    ASSERT_TRUE(ancestor->getEffectInstance()->getTimeInvariantMetadata() != NULL);
     const int derivationsBefore = ancestorEffect->derivations();
 
     FrameRequestMap request;

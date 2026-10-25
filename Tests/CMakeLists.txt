@@ -91,6 +91,7 @@ set(Tests_SOURCES
     Native/NativeGolden.cpp
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp
+    Gpu/RawAmazeGpu_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp

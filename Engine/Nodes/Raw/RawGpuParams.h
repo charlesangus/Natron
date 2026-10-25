@@ -290,6 +290,38 @@ struct RawMarkesteijnGpuPush {
 };
 static_assert(sizeof(RawMarkesteijnGpuPush) == 112);
 
+/**
+ * @brief The push constants of every kernel of demosaic_amaze.slang, which mirrors it as
+ * AmazeParams. The buffer, source and output are as RawVngGpuPush's. filters is the buffer's Bayer
+ * pattern from its top-left photosite, as RawKernels::amaze() takes it, and clipPt its clip
+ * point. A dispatch works on tileCount of the buffer's tiles from firstTile, numbered as
+ * RawKernels::amaze() numbers them over nLefts columns of tiles.
+ **/
+struct RawAmazeGpuPush {
+    std::uint32_t filters;
+    float clipPt;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t srcOffset;
+    std::uint32_t srcStride;
+    std::uint32_t srcComps;
+    std::int32_t srcCol1;
+    std::int32_t srcRow1;
+    std::int32_t srcCol2;
+    std::int32_t srcRow2;
+    std::uint32_t firstTile;
+    std::uint32_t nLefts;
+    std::uint32_t tileCount;
+    std::uint32_t dstOffset;
+    std::uint32_t dstStride;
+    std::int32_t outCol;
+    std::int32_t outRow;
+    std::uint32_t outWidth;
+    std::uint32_t outHeight;
+    std::uint32_t padding[4];
+};
+static_assert(sizeof(RawAmazeGpuPush) == 96);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Nodes_Raw_RawGpuParams_h

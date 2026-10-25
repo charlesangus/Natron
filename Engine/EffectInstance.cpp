@@ -33,6 +33,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <unordered_set>
@@ -6724,23 +6725,28 @@ EffectInstance::deriveMetadataAt(U64 hash,
                                  double time,
                                  ViewIdx view)
 {
-    NodeMetadata metadata;
+    // Built in the object handed out, so the answer is not copied once derived.
+    std::shared_ptr<NodeMetadata> metadata = std::make_shared<NodeMetadata>();
     std::vector<EffectInstancePtr> inputs;
     std::vector<NodeMetadataConstPtr> inputsMetadata;
 
     getInputsMetadataAt(time, view, &inputs, &inputsMetadata);
-    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, metadata);
-    // A disabled node passes its input through whole; an enabled one keeps what it sets itself.
+    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, *metadata);
+    // A disabled node passes its input through whole; an enabled one keeps what it sets itself,
+    // told apart from the defaults, which only it needs.
     const bool disabled = getNode()->isNodeDisabled(time);
-    const NodeMetadata defaults = metadata;
+    std::optional<NodeMetadata> defaults;
+    if (!disabled) {
+        defaults.emplace(*metadata);
+    }
     if ((stat != eStatusFailed) && !disabled) {
         // Asked from inside this node's time-invariant derivation, this answer is still at time.
         const InputsMetadataScope scope(&_imp->tlsData->getOrCreateTLSData()->timeInvariantInputsMetadata, NULL);
-        getPreferredMetadataAt(time, view, metadata);
+        getPreferredMetadataAt(time, view, *metadata);
     }
-    _imp->clampMetadata(inputs, inputsMetadata, metadata);
+    _imp->clampMetadata(inputs, inputsMetadata, *metadata);
 
-    return applyIdentityRule(hash, time, view, std::make_shared<const NodeMetadata>(metadata), disabled ? NULL : &defaults);
+    return applyIdentityRule(hash, time, view, metadata, defaults ? &*defaults : NULL);
 }
 
 NodeMetadataConstPtr

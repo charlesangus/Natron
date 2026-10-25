@@ -6124,20 +6124,19 @@ ImageLayerDesc
 Node::findClosestSupportedComponents(int inputNb,
                                      const ImageLayerDesc& comp) const
 {
-    std::list<ImageLayerDesc> comps;
-    {
-        QMutexLocker l(&_imp->inputsMutex);
+    // Searched in place: this runs for every input of every node each frame, and the lists are
+    // only replaced, under the same lock, when the inputs are initialized.
+    const bool multiPlanar = _imp->effect->isMultiPlanar();
+    QMutexLocker l(&_imp->inputsMutex);
 
-        if (inputNb >= 0) {
-            assert( inputNb < (int)_imp->inputsComponents.size() );
-            comps = _imp->inputsComponents[inputNb];
-        } else {
-            assert(inputNb == -1);
-            comps = _imp->outputComponents;
-        }
+    if (inputNb >= 0) {
+        assert(inputNb < (int)_imp->inputsComponents.size());
+
+        return findClosestInList(comp, _imp->inputsComponents[inputNb], multiPlanar);
     }
+    assert(inputNb == -1);
 
-    return findClosestInList( comp, comps, _imp->effect->isMultiPlanar() );
+    return findClosestInList(comp, _imp->outputComponents, multiPlanar);
 }
 
 int

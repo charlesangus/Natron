@@ -40,9 +40,11 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 const int kActionsCacheMinStates = 64;
-// Bounds the memory held for a node scrubbed across a long sequence; the entries are cheap to
-// rebuild.
-const std::size_t kMaxCachedMetadataFrames = 256;
+// The frames whose metadata one hash state of a node keeps, least recently used replaced first.
+// Enough for a frame's working set (the frame, a temporal kernel's neighbours, identity-time
+// redirects) and for scrubbing back and forth over about a second of footage; forward playback
+// asks each frame once, so more entries would only hold memory on every node of a large graph.
+const std::size_t kMaxCachedMetadataFrames = 32;
 } // anonymous namespace
 
 ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
@@ -355,7 +357,7 @@ ActionsCache::getMetadataResult(U64 hash,
                                 ViewIdx view)
 {
     QMutexLocker l(&_cacheMutex);
-    const ActionsCacheInstance* cache = findActionCache(hash);
+    ActionsCacheInstance* cache = findActionCache(hash);
 
     if (!cache) {
         return NodeMetadataConstPtr();
@@ -365,9 +367,9 @@ ActionsCache::getMetadataResult(U64 hash,
     key.view = view;
     key.mipmapLevel = 0;
 
-    MetadataCacheMap::const_iterator found = cache->_metadataCache.find(key);
+    const NodeMetadataConstPtr* found = cache->_metadataCache.find(key);
 
-    return found == cache->_metadataCache.end() ? NodeMetadataConstPtr() : found->second;
+    return found ? *found : NodeMetadataConstPtr();
 }
 
 void
@@ -385,15 +387,12 @@ ActionsCache::setMetadataResult(U64 hash,
         return;
     }
     ActionsCacheInstance& cache = getOrCreateActionCache(hash);
-    if (cache._metadataCache.size() >= kMaxCachedMetadataFrames) {
-        cache._metadataCache.clear();
-    }
     ActionKey key;
     key.time = time;
     key.view = view;
     key.mipmapLevel = 0;
 
-    cache._metadataCache[key] = metadata;
+    cache._metadataCache.insert(key, metadata, kMaxCachedMetadataFrames);
 }
 
 bool
@@ -407,7 +406,7 @@ ActionsCache::getPassThroughIdentityResult(U64 hash,
                                            double* identityTime)
 {
     QMutexLocker l(&_cacheMutex);
-    const ActionsCacheInstance* cache = findActionCache(hash);
+    ActionsCacheInstance* cache = findActionCache(hash);
 
     if (!cache || !metadata) {
         return false;
@@ -417,17 +416,17 @@ ActionsCache::getPassThroughIdentityResult(U64 hash,
     key.view = view;
     key.mipmapLevel = 0;
 
-    PassThroughIdentityCacheMap::const_iterator found = cache->_passThroughIdentityCache.find(key);
-    if ((found == cache->_passThroughIdentityCache.end()) || !found->second.metadata) {
+    const PassThroughIdentityResults* found = cache->_passThroughIdentityCache.find(key);
+    if (!found || !found->metadata) {
         return false;
     }
-    if ((found->second.metadata != metadata) && (*found->second.metadata != *metadata)) {
+    if ((found->metadata != metadata) && (*found->metadata != *metadata)) {
         return false;
     }
-    *identity = found->second.identity;
-    *inputNbIdentity = found->second.inputIdentityNb;
-    *identityTime = found->second.inputIdentityTime;
-    *inputView = found->second.inputView;
+    *identity = found->identity;
+    *inputNbIdentity = found->inputIdentityNb;
+    *identityTime = found->inputIdentityTime;
+    *inputView = found->inputView;
 
     return true;
 }
@@ -445,15 +444,12 @@ ActionsCache::setPassThroughIdentityResult(U64 hash,
         return;
     }
     ActionsCacheInstance& cache = getOrCreateActionCache(hash);
-    if (cache._passThroughIdentityCache.size() >= kMaxCachedMetadataFrames) {
-        cache._passThroughIdentityCache.clear();
-    }
     ActionKey key;
     key.time = time;
     key.view = view;
     key.mipmapLevel = 0;
 
-    cache._passThroughIdentityCache[key] = results;
+    cache._passThroughIdentityCache.insert(key, results, kMaxCachedMetadataFrames);
 }
 
 NodeMetadataConstPtr

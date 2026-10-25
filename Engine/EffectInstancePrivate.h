@@ -105,8 +105,93 @@ typedef std::map<ActionKey, IdentityResults, CompareActionsCacheKeys> IdentityCa
 typedef std::map<ActionKey, RectD, CompareActionsCacheKeys> RoDCacheMap;
 typedef std::map<ActionKey, FramesNeededMap, CompareActionsCacheKeys> FramesNeededCacheMap;
 typedef std::map<ActionKey, EffectInstance::ComponentsNeededResultsPtr, CompareActionsCacheKeys> ComponentsNeededCacheMap;
-typedef std::map<ActionKey, PassThroughIdentityResults, CompareActionsCacheKeys> PassThroughIdentityCacheMap;
-typedef std::map<ActionKey, NodeMetadataConstPtr, CompareActionsCacheKeys> MetadataCacheMap;
+/**
+ * @brief At most a fixed count of results keyed by ActionKey, the least recently used replaced
+ * first. Flat: at a few dozen entries a scan is as quick as a tree, and a full set replaces an
+ * entry in place rather than allocating for it. Not thread-safe; ActionsCache locks around it.
+ **/
+template <typename Value>
+class ActionsLRU {
+public:
+    ActionsLRU()
+        : _entries()
+        , _clock(0)
+    {
+    }
+
+    // Marks the entry found as the most recently used.
+    Value* find(const ActionKey& key)
+    {
+        for (typename std::vector<Entry>::iterator it = _entries.begin(); it != _entries.end(); ++it) {
+            if ((it->key.time == key.time) && (it->key.view == key.view) && (it->key.mipmapLevel == key.mipmapLevel)) {
+                it->lastUse = ++_clock;
+
+                return &it->value;
+            }
+        }
+
+        return 0;
+    }
+
+    void insert(const ActionKey& key,
+                const Value& value,
+                std::size_t capacity)
+    {
+        Value* found = find(key);
+        if (found) {
+            *found = value;
+
+            return;
+        }
+        if (_entries.size() < capacity) {
+            if (_entries.empty()) {
+                _entries.reserve(capacity);
+            }
+            Entry entry;
+            entry.key = key;
+            entry.value = value;
+            entry.lastUse = ++_clock;
+            _entries.push_back(entry);
+
+            return;
+        }
+        if (_entries.empty()) {
+            return;
+        }
+        typename std::vector<Entry>::iterator oldest = _entries.begin();
+        for (typename std::vector<Entry>::iterator it = _entries.begin(); it != _entries.end(); ++it) {
+            if (it->lastUse < oldest->lastUse) {
+                oldest = it;
+            }
+        }
+        oldest->key = key;
+        oldest->value = value;
+        oldest->lastUse = ++_clock;
+    }
+
+    void clear()
+    {
+        _entries.clear();
+    }
+
+    std::size_t size() const
+    {
+        return _entries.size();
+    }
+
+private:
+    struct Entry {
+        ActionKey key;
+        Value value;
+        U64 lastUse;
+    };
+
+    std::vector<Entry> _entries;
+    U64 _clock;
+};
+
+typedef ActionsLRU<PassThroughIdentityResults> PassThroughIdentityCacheLRU;
+typedef ActionsLRU<NodeMetadataConstPtr> MetadataCacheLRU;
 
 /**
  * @brief This class stores all results of the following actions:
@@ -162,7 +247,7 @@ public:
 
     /**
      * @brief The node metadata stored under (hash, time, view), or null. The results of one hash
-     * are capped to a fixed count of frames.
+     * are capped to a fixed count of frames, the least recently used replaced first.
      **/
     NodeMetadataConstPtr getMetadataResult(U64 hash, double time, ViewIdx view);
 
@@ -211,8 +296,8 @@ private:
         RoDCacheMap _rodCache;
         FramesNeededCacheMap _framesNeededCache;
         ComponentsNeededCacheMap _componentsNeededCache;
-        MetadataCacheMap _metadataCache;
-        PassThroughIdentityCacheMap _passThroughIdentityCache;
+        MetadataCacheLRU _metadataCache;
+        PassThroughIdentityCacheLRU _passThroughIdentityCache;
         NodeMetadataConstPtr _timeInvariantMetadata;
 
         ActionsCacheInstance();

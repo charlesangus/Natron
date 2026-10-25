@@ -289,6 +289,36 @@ TEST_F(PerFrameMetadataTest, SecondQueryIsServedFromTheCache)
     EXPECT_EQ(derivations, effectA->nodeMetadataDerivationCount());
 }
 
+// The frames a node keeps are bounded, and the one asked about most recently stays: a frame
+// read between every new one is never derived again, while the oldest is, with the same answer.
+TEST_F(PerFrameMetadataTest, CachedFramesEvictTheLeastRecentlyUsed)
+{
+    NodePtr source = createSource(3);
+    ASSERT_TRUE(bool(source));
+    MetadataSourceTestEffect* effect = metadataSourceOf(source);
+    ASSERT_TRUE(effect != NULL);
+    EffectInstancePtr instance = source->getEffectInstance();
+
+    NodeMetadataConstPtr held = instance->getMetadata(1, ViewIdx(0));
+    NodeMetadataConstPtr oldest = instance->getMetadata(2, ViewIdx(0));
+    ASSERT_TRUE(held && oldest);
+    const int derivations = effect->nodeMetadataDerivationCount();
+
+    const int nFrames = 300;
+    for (int frame = 3; frame < 3 + nFrames; ++frame) {
+        ASSERT_TRUE(bool(instance->getMetadata(frame, ViewIdx(0))));
+        EXPECT_EQ(held.get(), instance->getMetadata(1, ViewIdx(0)).get()) << "frame=" << frame;
+    }
+    EXPECT_EQ(derivations + nFrames, effect->nodeMetadataDerivationCount());
+
+    NodeMetadataConstPtr rederived = instance->getMetadata(2, ViewIdx(0));
+    ASSERT_TRUE(bool(rederived));
+    EXPECT_EQ(derivations + nFrames + 1, effect->nodeMetadataDerivationCount());
+    EXPECT_TRUE(*rederived == *oldest);
+    EXPECT_EQ(3, outputNComps(rederived));
+    EXPECT_EQ(held.get(), instance->getMetadata(1, ViewIdx(0)).get());
+}
+
 // At a frame nothing asked about before the counts are taken, so the first pass derives it.
 TEST_F(PerFrameMetadataTest, RepeatedQueriesAtOneFrameEvaluateEachNodeOnce)
 {

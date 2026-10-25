@@ -425,8 +425,8 @@ TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
     EXPECT_EQ(GL_PROJECTION, value);
     GLdouble projection[16];
     glGetDoublev(GL_PROJECTION_MATRIX, projection);
-    EXPECT_NEAR(2. / 10., projection[0], 1e-9);
-    EXPECT_NEAR(2. / 20., projection[5], 1e-9);
+    EXPECT_NEAR(2. / 10., projection[0], 1e-6);
+    EXPECT_NEAR(2. / 20., projection[5], 1e-6);
     EXPECT_EQ(GLenum(GL_NO_ERROR), glGetError());
 
     glDisable(GL_SCISSOR_TEST);

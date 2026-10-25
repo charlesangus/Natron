@@ -51,6 +51,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/LayerRegistry.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
@@ -221,14 +222,19 @@ TEST_F(RotoLayerTest, RotoPaintWritesOneChannelOfDiffuseInsideTheShape)
     // the registry, whether or not its own inputs carry that plane.
     NodePtr bottomMerge = roto->getRotoContext()->getRotoPaintBottomMergeNode();
     ASSERT_TRUE(bool(bottomMerge));
-    KnobChannelSetPtr mergeChannels = std::dynamic_pointer_cast<KnobChannelSet>(bottomMerge->getLayerKnob());
-    ASSERT_TRUE(bool(mergeChannels));
-    EXPECT_TRUE(bottomMerge->isTargetLayerKnob(mergeChannels));
-    std::vector<ChannelSetRow> rows = mergeChannels->getRows();
-    ASSERT_EQ(1u, rows.size());
-    EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
-    EXPECT_EQ(std::string("diffuse"), rows[0].layerOrPattern);
-    EXPECT_TRUE(rows[0].channels.empty());
+    // The merge writes the whole layer, read in it on A and B; RotoPaint copies the channels
+    // it does not write back from its input.
+    KnobLayerSelectPtr mergeOutput = std::dynamic_pointer_cast<KnobLayerSelect>(bottomMerge->getLayerKnob());
+    ASSERT_TRUE(bool(mergeOutput));
+    EXPECT_TRUE(bottomMerge->isTargetLayerKnob(mergeOutput));
+    EXPECT_EQ(std::string("diffuse"), mergeOutput->getLayer());
+    EXPECT_TRUE(mergeOutput->getChannels().empty());
+    KnobLayerSelectPtr mergeA = std::dynamic_pointer_cast<KnobLayerSelect>(bottomMerge->getKnobByName(kNativeMergeParamALayer));
+    KnobLayerSelectPtr mergeB = std::dynamic_pointer_cast<KnobLayerSelect>(bottomMerge->getKnobByName(kNativeMergeParamBLayer));
+    ASSERT_TRUE(bool(mergeA));
+    ASSERT_TRUE(bool(mergeB));
+    EXPECT_EQ(std::string("diffuse"), mergeA->getLayer());
+    EXPECT_EQ(std::string("diffuse"), mergeB->getLayer());
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());

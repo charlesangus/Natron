@@ -4746,6 +4746,7 @@ RotoContext::retargetRotoPaintTree()
     getRotoPaintTreeNodes(&nodes);
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         (*it)->retargetLayerKnob(layerID);
+        NativeMerge::followContainerLayer(*it, layerID);
     }
 }
 

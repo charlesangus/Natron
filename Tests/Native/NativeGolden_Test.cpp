@@ -247,7 +247,7 @@ addMergeCases(std::vector<GoldenVariant>* variants,
     variants->push_back(variant("bboxintersection", [operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation) && choice(g, kNativeMergeParamBBox, kNativeMergeBBoxIntersection); }));
     variants->push_back(variant("outputrgb", [operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation) && mergeOutputRgb(g); }));
     variants->push_back(variant("noalpha", [operation](const GoldenGraph& g) {
-        return choice(g, kNativeMergeParamOperation, operation) && num(g, kNativeMergeParamAAlpha, { 0. }) && num(g, kNativeMergeParamBAlpha, { 0. });
+        return choice(g, kNativeMergeParamOperation, operation) && setGoldenChannelSelect(g.node, kNativeMergeParamAAlpha, std::string()) && setGoldenChannelSelect(g.node, kNativeMergeParamBAlpha, std::string());
     }));
     variants->push_back(maskVariant("maskmix", [operation](const GoldenGraph& g) {
         return choice(g, kNativeMergeParamOperation, operation) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });

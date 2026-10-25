@@ -333,11 +333,14 @@ TEST_F(NativeMergeGpuTest, MatchesTheCpuRender)
     for (const Config& config : configs) {
         setLayerKnob(setup.merge, kNativeMergeParamALayer, config.aInSpec ? kParitySourceExtraLayerID : kNatronColorViewRGBA);
         setLayerKnob(setup.merge, kNativeMergeParamBLayer, config.bInSpec ? kParitySourceExtraLayerID : kNatronColorViewRGBA);
+        // The output follows B's layer, as choosing B's layer in the panel moves it: B, the
+        // result the A inputs fold into, is read in the layout of the plane it is written to.
+        setLayerKnob(setup.merge, kNodeParamLayerSelect, config.bInSpec ? kParitySourceExtraLayerID : kNatronColorViewRGBA);
         ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamAAlphaSource, config.aAlpha)) << config.name;
         ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamBAlphaSource, config.bAlpha)) << config.name;
         ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamLayers, config.layers)) << config.name;
-        std::vector<ImageLayerDesc> planes(1, rgba);
-        if (config.rendersSpec) {
+        std::vector<ImageLayerDesc> planes(1, config.bInSpec ? spec : rgba);
+        if (config.rendersSpec && !config.bInSpec) {
             planes.push_back(spec);
         }
 
@@ -408,33 +411,38 @@ TEST_F(NativeMergeGpuTest, MatchesTheCpuRender)
 
 // A non-separable operator blends a colour, so the GPU takes it at three and four components only,
 // and never with a per-channel alpha, which is a render error; a separable one takes every count.
+// The node has no input, so the query's channel count is all that decides: with inputs, B is read
+// in the layout of the plane rendered, whose channel count the query carries.
 TEST_F(NativeMergeGpuTest, NonSeparableOperatorsNeedAColour)
 {
-    MergeSetup setup = makeSetup();
-    StagedImageEffect* effect = effectOf(setup.merge);
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+    ASSERT_TRUE(bool(merge));
+    StagedImageEffect* effect = effectOf(merge);
     ASSERT_TRUE(effect != NULL);
 
     for (const char* name : { "over", "multiply", "hue", "luminosity" }) {
-        ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamOperation, name));
+        ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, name));
         MergeOps::Operator op = MergeOps::eOver;
         ASSERT_TRUE(MergeOps::operatorFromName(name, &op)) << name;
         for (int nComps = 1; nComps <= 4; ++nComps) {
             GpuQuery query;
             query.time = kTime;
+            query.plane = ImageLayerDesc::mapNCompsToColorLayer(nComps);
             query.nComps = nComps;
             EXPECT_EQ(MergeOps::isSeparable(op) || (nComps >= 3), effect->canRenderOnGpu(query)) << name << " at " << nComps << " components";
         }
     }
 
-    setLayerKnob(setup.merge, kNativeMergeParamALayer, kParitySourceExtraLayerID);
-    setLayerKnob(setup.merge, kNativeMergeParamAAlphaLayer, kParitySourceExtraLayerID);
-    ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamAAlphaSource, kNativeMergeAlphaPerChannel));
+    setLayerKnob(merge, kNativeMergeParamALayer, kParitySourceExtraLayerID);
+    setLayerKnob(merge, kNativeMergeParamAAlphaLayer, kParitySourceExtraLayerID);
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamAAlphaSource, kNativeMergeAlphaPerChannel));
     GpuQuery query;
     query.time = kTime;
+    query.plane = ImageLayerDesc::mapNCompsToColorLayer(4);
     query.nComps = 4;
-    ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamOperation, "hue"));
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, "hue"));
     EXPECT_FALSE(effect->canRenderOnGpu(query)) << "hue with a per-channel alpha";
-    ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamOperation, "over"));
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, "over"));
     EXPECT_TRUE(effect->canRenderOnGpu(query)) << "over with a per-channel alpha";
 }
 

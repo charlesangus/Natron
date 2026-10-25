@@ -239,6 +239,15 @@ public:
         return nativeMergeAInput(k);
     }
 
+    /**
+     * @brief Points a Merge of a container's internal tree (RotoPaint's) at layerID, the layer
+     * Node::retargetLayerKnob() makes it write: A and B are read in that layer, and each side's
+     * alpha is the layer's own A or alpha channel, or 0 when it has none. Does nothing to another
+     * node.
+     **/
+    static void followContainerLayer(const NodePtr& node,
+                                     const std::string& layerID);
+
 protected:
     /**
      * @brief The planes the layers mode merges beside the output layer, and B's alpha layer when

@@ -726,6 +726,37 @@ NativeMerge::knobChanged(KnobI* k,
 }
 
 void
+NativeMerge::followContainerLayer(const NodePtr& node,
+                                  const std::string& layerID)
+{
+    NativeMerge* merge = node ? dynamic_cast<NativeMerge*>(node->getEffectInstance().get()) : 0;
+
+    if (!merge) {
+        return;
+    }
+    const std::string readLayer = layerID.empty() ? std::string(kNatronColorViewRGBA) : layerID;
+    const NativeMergeOp& mergeOp = merge->op();
+    for (const KnobLayerSelectWPtr& side : { mergeOp.aLayer, mergeOp.bLayer }) {
+        KnobLayerSelectPtr knob = side.lock();
+        if (knob && (knob->getLayer() != readLayer)) {
+            knob->setLayer(readLayer);
+        }
+    }
+    for (const KnobChoiceWPtr& side : { mergeOp.aAlphaSource, mergeOp.bAlphaSource }) {
+        KnobChoicePtr knob = side.lock();
+        if (knob && (knob->getValue() != (int)NativeMergeOp::AlphaSource::PerLayer)) {
+            knob->setValue((int)NativeMergeOp::AlphaSource::PerLayer);
+        }
+    }
+    for (const KnobChannelSelectWPtr& side : { mergeOp.aAlpha, mergeOp.bAlpha }) {
+        KnobChannelSelectPtr knob = side.lock();
+        if (knob && !knob->isNone()) {
+            knob->setNone();
+        }
+    }
+}
+
+void
 NativeMerge::onKnobsLoaded()
 {
     refreshSubLabel();

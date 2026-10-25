@@ -940,7 +940,8 @@ TEST_F(NativeMergeNodeTest, PerChannelAlphaWritesTheAlphaLayer)
 }
 
 // Another staged composite node declares no produced planes: its planes are only its layer
-// knob's, whatever layers its inputs carry. Between its inputs, so it is no pass-through.
+// knob's, whatever layers its inputs carry. Dissolve's knob selects every layer by default, so it
+// is narrowed to rgba, and it is between its inputs, so it is no pass-through.
 TEST_F(NativeMergeNodeTest, OtherCompositeNodesProduceNoExtraPlanes)
 {
     NodePtr dissolve = createNode(QString::fromUtf8(PLUGINID_NATRON_DISSOLVE), PLUGIN_MAJOR_NATRON_DISSOLVE);
@@ -954,6 +955,12 @@ TEST_F(NativeMergeNodeTest, OtherCompositeNodesProduceNoExtraPlanes)
     KnobDoublePtr which = dissolve->getEffectInstance()->getKnobByNameAndType<KnobDouble>(kDissolveParamWhich);
     ASSERT_TRUE(bool(which));
     which->setValue(0.5);
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(dissolve->getLayerKnob());
+    ASSERT_TRUE(bool(channels));
+    std::vector<ChannelSetRow> rows(1);
+    rows[0].mode = ChannelSetRow::eModeLayer;
+    rows[0].layerOrPattern = kNatronColorViewRGBA;
+    channels->setRows(rows);
 
     const std::list<ImageLayerDesc> output = neededPlanes(dissolve, -1);
     EXPECT_FALSE(output.empty());

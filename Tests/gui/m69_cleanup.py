@@ -1,11 +1,11 @@
 """Interaction checks and screenshots for the minor-cleanup changes: no crash when a node dies with
 its panel's undo stack active, easier-to-grab input stubs, pick-up connection mode and the
 disconnect on a click away from a node, pipe pick-up that tolerates jitter under the drag distance
-and carries the end of the pipe nearest the click, Y/Shift+Y and U/Shift+U connection shortcuts,
-paste-onto-a-node and paste when the graph holds only the click focus, the pane menu from
-anywhere in the tab header, scene-referred viewer picking with input/output modifiers, the
-multi-point roto feather drag and broken tangent, curve-editor tangent break, join and handle
-length, a folded knob's single curve and its edits, and an expanded knob staying expanded until
+and carries the end of the pipe nearest the click, output stubs picked up to start a connection,
+Y/Shift+Y and U/Shift+U connection shortcuts, paste-onto-a-node and paste when the graph holds
+only the click focus, the pane menu from anywhere in the tab header, scene-referred viewer picking
+with input/output modifiers, the multi-point roto feather drag and broken tangent, curve-editor
+tangent break, join and handle length, a folded knob's single curve and its edits, and an expanded knob staying expanded until
 it is folded by hand, with the fold state kept through a save and reload.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
@@ -1011,6 +1011,53 @@ try:
         QApplication.processEvents()
         check(same(input_of(ep_dst, 0), ep_src), "ctrl click on a pipe: Escape keeps the connection")
         check(undo_text() == undo_then, "ctrl click on a pipe: no undo entry was added (%r)" % (undo_text()[0],))
+
+        # The output stub below a node that feeds nothing is picked up by a click too, carrying
+        # its loose end: a click on another node feeds that node's preferred input from it.
+        def ep_on_output_stub(node):
+            """A scene point on the output stub, a little below the node's bottom edge."""
+            x, y, w, h = box(node)
+            return (x + w / 2.0, y + h + 6.0)
+
+        ep_reset()
+        undo_then = undo_text()
+        ep_jitter_click(ep_on_output_stub(ep_other_src))
+        QApplication.processEvents()
+        check(ep_held("output stub click"), "output stub click: the stub's loose end is held at the cursor")
+        graph_shot("pipe-pickup-04-output-stub-held")
+        click(vp, aim(centre(ep_other_dst)))
+        yield ("sleep", SETTLE_MS)
+        check(same(input_of(ep_other_dst, 0), ep_other_src), "output stub click: the other Blur is now fed by the CheckerBoard")
+        check(same(input_of(ep_dst, 0), ep_src), "output stub click: the original Blur is untouched")
+        graph_shot("pipe-pickup-05-output-stub-connected")
+        trigger("undo")
+        yield ("sleep", 150)
+        check(input_of(ep_other_dst, 0) is None, "output stub click: one undo disconnects the other Blur again")
+        check(undo_text() == undo_then, "output stub click: the connection is one undo step (%r)" % (undo_text()[0],))
+
+        def ep_output_cancel_run(label, cancel):
+            ep_reset()
+            undo_then = undo_text()
+            click(vp, to_vp(graph, ep_on_output_stub(ep_other_src)))
+            check(ep_held(label), "%s: the stub's loose end is held at the cursor" % label)
+            popups.arm()
+            cancel()
+            popups.disarm()
+            QApplication.processEvents()
+            check(not popups.seen, "%s: no menu opened (%d seen)" % (label, len(popups.seen)))
+            check(input_of(ep_other_dst, 0) is None, "%s: nothing was connected" % label)
+            click(vp, aim(centre(ep_other_dst)))
+            QApplication.processEvents()
+            check(input_of(ep_other_dst, 0) is None, "%s: nothing is held any more (a click on the other Blur connects nothing)" % label)
+            check(same(input_of(ep_dst, 0), ep_src), "%s: the original Blur is untouched" % label)
+            check(undo_text() == undo_then, "%s: no undo entry was added (%r)" % (label, undo_text()[0]))
+
+        ep_output_cancel_run("output stub escape", lambda: graph_key(Qt.Key_Escape))
+        yield ("sleep", 100)
+        ep_output_cancel_run("output stub empty drop", lambda: click(vp, aim(ep_empty())))
+        yield ("sleep", 100)
+        ep_output_cancel_run("output stub click on its own node", lambda: click(vp, aim(centre(ep_other_src))))
+        yield ("sleep", 100)
 
         app.clearSelection()
         destroy_nodes([ep_other_src, ep_other_dst, ep_dst, ep_src])

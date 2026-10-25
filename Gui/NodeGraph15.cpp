@@ -177,39 +177,77 @@ NodeGraph::moveInputArrowDestinationToNode(Edge* arrow,
     return true;
 }
 
+// Connects the node owning an output stub to the target's preferred input, as one undo step.
+bool
+NodeGraph::connectOutputArrowToNode(Edge* arrow,
+                                    const NodeGuiPtr& target)
+{
+    assert(arrow && arrow->isOutputEdge());
+    NodeGuiPtr source = arrow->getSource();
+    if (!source || !target || (target == source)) {
+        return false;
+    }
+    int preferredInput = target->getNode()->getPreferredInputForConnection();
+    if (preferredInput == -1) {
+        return false;
+    }
+    Edge* targetInput = target->getInputArrow(preferredInput);
+    if (!targetInput || !handleConnectionError(target, source, preferredInput)) {
+        return false;
+    }
+    pushUndoCommand(new ConnectCommand(this, targetInput, targetInput->getSource(), source),
+                    NodesGuiList { target, targetInput->getSource(), source });
+
+    return true;
+}
+
+bool
+NodeGraph::hasPickedUpArrow() const
+{
+    return _imp->_pickedUpArrowIsOutput || (_imp->_pickedUpArrowInput >= 0);
+}
+
+// An output stub is only drawn while its node feeds nothing, so once the node gains an output the
+// stub is no longer held.
 Edge*
 NodeGraph::getPickedUpArrow() const
 {
-    if (_imp->_pickedUpArrowInput < 0) {
+    if (!hasPickedUpArrow()) {
         return 0;
     }
-    NodeGuiPtr dest = _imp->_pickedUpArrowDest.lock();
-    if (!dest || !dest->getNode() || !dest->getNode()->isActivated()) {
+    NodeGuiPtr node = _imp->_pickedUpArrowNode.lock();
+    if (!node || !node->getNode() || !node->getNode()->isActivated()) {
         return 0;
+    }
+    if (_imp->_pickedUpArrowIsOutput) {
+        Edge* stub = node->getOutputArrow();
+
+        return (stub && stub->isVisible()) ? stub : 0;
     }
 
-    return dest->getInputArrow(_imp->_pickedUpArrowInput);
+    return node->getInputArrow(_imp->_pickedUpArrowInput);
 }
 
-// A pipe with no source is a stub whose only loose end is its source end, so that is what it
-// carries whichever end was asked for.
 void
 NodeGraph::pickUpArrow(Edge* arrow,
                        PickUpEndEnum end)
 {
-    assert(arrow && !arrow->isOutputEdge());
+    assert(arrow);
     arrow->initLine();
-    _imp->_pickedUpArrowDest = arrow->getDest();
-    _imp->_pickedUpArrowInput = arrow->getInputNumber();
-    _imp->_pickedUpArrowEnd = arrow->hasSource() ? end : ePickUpEndSource;
+    const bool isOutput = arrow->isOutputEdge();
+    _imp->_pickedUpArrowNode = isOutput ? arrow->getSource() : arrow->getDest();
+    _imp->_pickedUpArrowInput = isOutput ? -1 : arrow->getInputNumber();
+    _imp->_pickedUpArrowIsOutput = isOutput;
+    _imp->_pickedUpArrowEnd = carriedPickUpEnd(end, isOutput, arrow->hasSource());
     dragPickedUpArrowToCursor();
 }
 
 void
 NodeGraph::forgetPickedUpArrow()
 {
-    _imp->_pickedUpArrowDest.reset();
+    _imp->_pickedUpArrowNode.reset();
     _imp->_pickedUpArrowInput = -1;
+    _imp->_pickedUpArrowIsOutput = false;
     _imp->_pickedUpArrowEnd = ePickUpEndSource;
 }
 
@@ -264,7 +302,8 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
         button = ePickUpButtonMiddle;
     }
 
-    NodeGuiPtr nodeHoldingEdge = arrow->getDest();
+    const bool carriesOutputStub = arrow->isOutputEdge();
+    NodeGuiPtr nodeHoldingEdge = carriesOutputStub ? arrow->getSource() : arrow->getDest();
     NodeGuiPtr arrowSource = arrow->getSource();
     const bool carriesDestination = (_imp->_pickedUpArrowEnd == ePickUpEndDestination) && arrowSource;
     NodeGui* nearbyNode = 0;
@@ -280,7 +319,7 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
         target = isHoldingNode ? ePickUpClickTargetHoldingNode : ePickUpClickTargetNode;
     }
 
-    switch (decidePickUpPress(button, target)) {
+    switch (decidePickUpPress(button, target, carriesOutputStub)) {
     case ePickUpPressPassThrough:
         return false;
     case ePickUpPressIgnore:
@@ -291,7 +330,7 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
         return true;
     case ePickUpPressDisconnect: {
         forgetPickedUpArrow();
-        if (arrow->getSource()) {
+        if (!carriesOutputStub && arrow->getSource()) {
             pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), NodeGuiPtr()),
                             NodesGuiList { arrow->getDest(), arrow->getSource() });
         }
@@ -309,7 +348,10 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
         // Let go of the arrow before connecting: a rejected connection opens a dialog, and the
         // focus loss that causes must not find the arrow still held.
         forgetPickedUpArrow();
-        if (carriesDestination) {
+        if (carriesOutputStub) {
+            connectOutputArrowToNode(arrow, targetNode);
+            targetNode->refreshEdges();
+        } else if (carriesDestination) {
             moveInputArrowDestinationToNode(arrow, targetNode);
             targetNode->refreshEdges();
         } else {
@@ -362,27 +404,13 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
                 if ( !_imp->_arrowSelected->isOutputEdge() ) {
                     foundSrc = connectInputArrowToNode(_imp->_arrowSelected, targetNode);
                 } else {
-                    // Find the input edge of the node we just released the mouse over,
-                    // and use that edge to connect to the source of the selected edge.
-                    int preferredInput = targetNode->getNode()->getPreferredInputForConnection();
-                    if (preferredInput != -1) {
-                        bool ok = handleConnectionError(targetNode, nodeHoldingEdge, preferredInput);
-                        if (ok) {
-                            Edge* foundInput = targetNode->getInputArrow(preferredInput);
-                            assert(foundInput);
-                            foundSrc = true;
-                            pushUndoCommand(new ConnectCommand(this, foundInput,
-                                                               foundInput->getSource(), _imp->_arrowSelected->getSource()),
-                                            NodesGuiList { targetNode, foundInput->getSource(), _imp->_arrowSelected->getSource() });
-                        }
-                    }
+                    foundSrc = connectOutputArrowToNode(_imp->_arrowSelected, targetNode);
                 }
             }
         }
 
-        // If we disconnected the input edge, use the undo/redo stack.
-        // Output edges can never be really connected, they're just there
-        // So the user understands some nodes can have output
+        // A dragged input that found no new source is disconnected through the undo stack. An
+        // output stub feeds nothing, so a drag of one that found no input leaves nothing to undo.
         if ( !foundSrc && !_imp->_arrowSelected->isOutputEdge() && _imp->_arrowSelected->getSource() ) {
             pushUndoCommand(new ConnectCommand(this, _imp->_arrowSelected, _imp->_arrowSelected->getSource(),
                                                NodeGuiPtr()),
@@ -397,7 +425,7 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
         // Moves short of the drag distance still dragged the drawn line; put it back first.
         arrow->initLine();
         PickUpButtonEnum button = triggerButtonIsLeft(e) ? ePickUpButtonLeft : ePickUpButtonOther;
-        if (shouldStartPickUp(button, arrowPressToRelease, arrowDragDistance, arrow->isOutputEdge())) {
+        if (shouldStartPickUp(button, arrowPressToRelease, arrowDragDistance)) {
             QPointF pressScene = mapToScene(_imp->_pressPos);
             PickUpEndEnum end = pickedUpEnd(pressScene, arrow->mapToScene(arrow->line().p1()), arrow->mapToScene(arrow->line().p2()));
             pickUpArrow(arrow, end);

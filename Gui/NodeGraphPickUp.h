@@ -37,8 +37,8 @@ enum PickUpButtonEnum {
     ePickUpButtonOther,
 };
 
-// What a press lands on while an input arrow is held. Empty space, a pipe and a backdrop are
-// all ePickUpClickTargetOther: none of them can feed the input.
+// What a press lands on while an arrow is held. Empty space, a pipe and a backdrop are
+// all ePickUpClickTargetOther: none of them can take part in a connection.
 enum PickUpClickTargetEnum {
     ePickUpClickTargetOther,
     ePickUpClickTargetNode,
@@ -69,11 +69,11 @@ enum PickUpEndEnum {
 bool isDragDistance(double pressToReleaseDistance, double dragDistance);
 
 /**
- * @brief Whether releasing the mouse on an arrow picks that arrow up: a left click on an input
- * arrow that travelled less than the drag distance, however many move events came in between.
- * Output arrows are never picked up: they are the stubs drawn below a node, never connected.
+ * @brief Whether releasing the mouse on an arrow picks that arrow up: a left click that travelled
+ * less than the drag distance, however many move events came in between. Input arrows and the
+ * output stubs drawn below nodes are both picked up this way.
  **/
-bool shouldStartPickUp(PickUpButtonEnum releasedButton, double pressToReleaseDistance, double dragDistance, bool isOutputEdge);
+bool shouldStartPickUp(PickUpButtonEnum releasedButton, double pressToReleaseDistance, double dragDistance);
 
 /**
  * @brief The end of a pipe that a click picks up: the one nearest the click. A tie, including
@@ -82,12 +82,19 @@ bool shouldStartPickUp(PickUpButtonEnum releasedButton, double pressToReleaseDis
 PickUpEndEnum pickedUpEnd(const QPointF& click, const QPointF& destination, const QPointF& source);
 
 /**
- * @brief What a press does while an input arrow is held: a left click on another node connects,
- * a left click on anything that is not a node disconnects the input, a left click on its own
- * node or a right click cancels, the middle button
- * and the navigator keep panning, and other button combinations are swallowed.
+ * @brief The end a picked-up arrow actually carries, given the end nearest the click. An output
+ * stub always carries its loose destination end, since it is a connection still to be made from
+ * its node; an input arrow with no source carries its loose source end.
  **/
-PickUpPressActionEnum decidePickUpPress(PickUpButtonEnum button, PickUpClickTargetEnum target);
+PickUpEndEnum carriedPickUpEnd(PickUpEndEnum nearestEnd, bool isOutputEdge, bool hasSource);
+
+/**
+ * @brief What a press does while an arrow is held: a left click on another node connects, a left
+ * click on anything that is not a node disconnects a held input but cancels a held output stub,
+ * which has nothing to disconnect, a left click on the holding node or a right click cancels, the
+ * middle button and the navigator keep panning, and other button combinations are swallowed.
+ **/
+PickUpPressActionEnum decidePickUpPress(PickUpButtonEnum button, PickUpClickTargetEnum target, bool carriesOutputStub);
 
 NATRON_NAMESPACE_EXIT
 

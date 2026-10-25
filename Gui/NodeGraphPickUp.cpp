@@ -37,10 +37,9 @@ isDragDistance(double pressToReleaseDistance,
 bool
 shouldStartPickUp(PickUpButtonEnum releasedButton,
                   double pressToReleaseDistance,
-                  double dragDistance,
-                  bool isOutputEdge)
+                  double dragDistance)
 {
-    return (releasedButton == ePickUpButtonLeft) && !isDragDistance(pressToReleaseDistance, dragDistance) && !isOutputEdge;
+    return (releasedButton == ePickUpButtonLeft) && !isDragDistance(pressToReleaseDistance, dragDistance);
 }
 
 PickUpEndEnum
@@ -56,9 +55,22 @@ pickedUpEnd(const QPointF& click,
     return (destinationDist2 < sourceDist2) ? ePickUpEndDestination : ePickUpEndSource;
 }
 
+PickUpEndEnum
+carriedPickUpEnd(PickUpEndEnum nearestEnd,
+                 bool isOutputEdge,
+                 bool hasSource)
+{
+    if (isOutputEdge) {
+        return ePickUpEndDestination;
+    }
+
+    return hasSource ? nearestEnd : ePickUpEndSource;
+}
+
 PickUpPressActionEnum
 decidePickUpPress(PickUpButtonEnum button,
-                  PickUpClickTargetEnum target)
+                  PickUpClickTargetEnum target,
+                  bool carriesOutputStub)
 {
     switch (button) {
     case ePickUpButtonLeft:
@@ -68,7 +80,7 @@ decidePickUpPress(PickUpButtonEnum button,
         case ePickUpClickTargetNavigator:
             return ePickUpPressPassThrough;
         case ePickUpClickTargetOther:
-            return ePickUpPressDisconnect;
+            return carriesOutputStub ? ePickUpPressCancel : ePickUpPressDisconnect;
         case ePickUpClickTargetHoldingNode:
         default:
             return ePickUpPressCancel;

@@ -249,7 +249,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         return;
     }
 
-    if ((_imp->_pickedUpArrowInput >= 0) && handlePickUpPress(e)) {
+    if (hasPickedUpArrow() && handlePickUpPress(e)) {
         _imp->_evtState = eEventStateNone;
 
         return;

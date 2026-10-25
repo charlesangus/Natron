@@ -280,7 +280,11 @@ private:
 
     bool moveInputArrowDestinationToNode(Edge* arrow, const NodeGuiPtr& target);
 
+    bool connectOutputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
+
     void applyConnectPlan(const std::vector<ConnectPlanConnection>& plan, const QString& undoText);
+
+    bool hasPickedUpArrow() const;
 
     Edge* getPickedUpArrow() const;
 

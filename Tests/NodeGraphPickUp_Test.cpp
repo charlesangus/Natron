@@ -37,13 +37,13 @@ const double kDragDistance = 10.;
 
 TEST(NodeGraphPickUp, StillLeftClickOnAnInputPicksItUp)
 {
-    EXPECT_TRUE(shouldStartPickUp(ePickUpButtonLeft, 0., kDragDistance, false));
+    EXPECT_TRUE(shouldStartPickUp(ePickUpButtonLeft, 0., kDragDistance));
 }
 
 TEST(NodeGraphPickUp, JitteredClickStillPicksUp)
 {
-    EXPECT_TRUE(shouldStartPickUp(ePickUpButtonLeft, 2., kDragDistance, false));
-    EXPECT_TRUE(shouldStartPickUp(ePickUpButtonLeft, kDragDistance - 0.5, kDragDistance, false));
+    EXPECT_TRUE(shouldStartPickUp(ePickUpButtonLeft, 2., kDragDistance));
+    EXPECT_TRUE(shouldStartPickUp(ePickUpButtonLeft, kDragDistance - 0.5, kDragDistance));
 }
 
 TEST(NodeGraphPickUp, MovingTheDragDistanceIsADrag)
@@ -55,24 +55,37 @@ TEST(NodeGraphPickUp, MovingTheDragDistanceIsADrag)
 
 TEST(NodeGraphPickUp, ClickJustOverTheDragDistanceDoesNotPickUp)
 {
-    EXPECT_FALSE(shouldStartPickUp(ePickUpButtonLeft, kDragDistance + 0.5, kDragDistance, false));
+    EXPECT_FALSE(shouldStartPickUp(ePickUpButtonLeft, kDragDistance + 0.5, kDragDistance));
 }
 
 TEST(NodeGraphPickUp, DragDoesNotPickUp)
 {
-    EXPECT_FALSE(shouldStartPickUp(ePickUpButtonLeft, 100., kDragDistance, false));
+    EXPECT_FALSE(shouldStartPickUp(ePickUpButtonLeft, 100., kDragDistance));
 }
 
-TEST(NodeGraphPickUp, OutputArrowIsNeverPickedUp)
+TEST(NodeGraphPickUp, OutputStubCarriesItsLooseEnd)
 {
-    EXPECT_FALSE(shouldStartPickUp(ePickUpButtonLeft, 0., kDragDistance, true));
+    EXPECT_EQ(ePickUpEndDestination, carriedPickUpEnd(ePickUpEndSource, true, true));
+    EXPECT_EQ(ePickUpEndDestination, carriedPickUpEnd(ePickUpEndDestination, true, true));
+}
+
+TEST(NodeGraphPickUp, UnconnectedInputCarriesItsSource)
+{
+    EXPECT_EQ(ePickUpEndSource, carriedPickUpEnd(ePickUpEndDestination, false, false));
+    EXPECT_EQ(ePickUpEndSource, carriedPickUpEnd(ePickUpEndSource, false, false));
+}
+
+TEST(NodeGraphPickUp, ConnectedInputCarriesTheNearestEnd)
+{
+    EXPECT_EQ(ePickUpEndDestination, carriedPickUpEnd(ePickUpEndDestination, false, true));
+    EXPECT_EQ(ePickUpEndSource, carriedPickUpEnd(ePickUpEndSource, false, true));
 }
 
 TEST(NodeGraphPickUp, OnlyTheLeftButtonPicksUp)
 {
-    EXPECT_FALSE(shouldStartPickUp(ePickUpButtonRight, 0., kDragDistance, false));
-    EXPECT_FALSE(shouldStartPickUp(ePickUpButtonMiddle, 0., kDragDistance, false));
-    EXPECT_FALSE(shouldStartPickUp(ePickUpButtonOther, 0., kDragDistance, false));
+    EXPECT_FALSE(shouldStartPickUp(ePickUpButtonRight, 0., kDragDistance));
+    EXPECT_FALSE(shouldStartPickUp(ePickUpButtonMiddle, 0., kDragDistance));
+    EXPECT_FALSE(shouldStartPickUp(ePickUpButtonOther, 0., kDragDistance));
 }
 
 TEST(NodeGraphPickUp, ClickNearTheArrowheadCarriesTheDestination)
@@ -105,36 +118,58 @@ TEST(NodeGraphPickUp, ZeroLengthPipeCarriesTheSource)
 
 TEST(NodeGraphPickUp, LeftClickOnAnotherNodeConnects)
 {
-    EXPECT_EQ(ePickUpPressConnect, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetNode));
+    EXPECT_EQ(ePickUpPressConnect, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetNode, false));
 }
 
 TEST(NodeGraphPickUp, LeftClickOnNonNodeDisconnects)
 {
-    EXPECT_EQ(ePickUpPressDisconnect, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetOther));
+    EXPECT_EQ(ePickUpPressDisconnect, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetOther, false));
 }
 
 TEST(NodeGraphPickUp, LeftClickOnTheHoldingNodeCancels)
 {
-    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetHoldingNode));
+    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetHoldingNode, false));
 }
 
 TEST(NodeGraphPickUp, RightClickCancelsWherever)
 {
-    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonRight, ePickUpClickTargetOther));
-    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonRight, ePickUpClickTargetNode));
-    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonRight, ePickUpClickTargetHoldingNode));
-    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonRight, ePickUpClickTargetNavigator));
+    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonRight, ePickUpClickTargetOther, false));
+    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonRight, ePickUpClickTargetNode, false));
+    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonRight, ePickUpClickTargetHoldingNode, false));
+    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonRight, ePickUpClickTargetNavigator, false));
 }
 
 TEST(NodeGraphPickUp, PanningKeepsTheArrowHeld)
 {
-    EXPECT_EQ(ePickUpPressPassThrough, decidePickUpPress(ePickUpButtonMiddle, ePickUpClickTargetOther));
-    EXPECT_EQ(ePickUpPressPassThrough, decidePickUpPress(ePickUpButtonMiddle, ePickUpClickTargetNode));
-    EXPECT_EQ(ePickUpPressPassThrough, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetNavigator));
+    EXPECT_EQ(ePickUpPressPassThrough, decidePickUpPress(ePickUpButtonMiddle, ePickUpClickTargetOther, false));
+    EXPECT_EQ(ePickUpPressPassThrough, decidePickUpPress(ePickUpButtonMiddle, ePickUpClickTargetNode, false));
+    EXPECT_EQ(ePickUpPressPassThrough, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetNavigator, false));
 }
 
 TEST(NodeGraphPickUp, OtherButtonCombinationsAreIgnored)
 {
-    EXPECT_EQ(ePickUpPressIgnore, decidePickUpPress(ePickUpButtonOther, ePickUpClickTargetNode));
-    EXPECT_EQ(ePickUpPressIgnore, decidePickUpPress(ePickUpButtonOther, ePickUpClickTargetOther));
+    EXPECT_EQ(ePickUpPressIgnore, decidePickUpPress(ePickUpButtonOther, ePickUpClickTargetNode, false));
+    EXPECT_EQ(ePickUpPressIgnore, decidePickUpPress(ePickUpButtonOther, ePickUpClickTargetOther, false));
+}
+
+TEST(NodeGraphPickUp, HeldOutputStubConnectsOnAnotherNode)
+{
+    EXPECT_EQ(ePickUpPressConnect, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetNode, true));
+}
+
+TEST(NodeGraphPickUp, HeldOutputStubCancelsOffANode)
+{
+    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetOther, true));
+}
+
+TEST(NodeGraphPickUp, HeldOutputStubCancelsOnItsOwnNode)
+{
+    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetHoldingNode, true));
+    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonRight, ePickUpClickTargetNode, true));
+}
+
+TEST(NodeGraphPickUp, HeldOutputStubKeepsPanning)
+{
+    EXPECT_EQ(ePickUpPressPassThrough, decidePickUpPress(ePickUpButtonMiddle, ePickUpClickTargetOther, true));
+    EXPECT_EQ(ePickUpPressPassThrough, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetNavigator, true));
 }

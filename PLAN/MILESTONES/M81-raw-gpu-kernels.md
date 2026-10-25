@@ -24,7 +24,7 @@ Gives the M80 - Native RAW Support nodes their remaining GPU paths: hot pixels, 
 
 ## Phase 81.1: Hot pixels
 
-- [ ] M81.P1.T1 — Record RawHotPixels' pass on the GPU
+- [x] M81.P1.T1 — Record RawHotPixels' pass on the GPU
   - files: new `Engine/Gpu/Kernels/rawhotpixels.slang`, `rawhotpixels.cmake`, `Engine/Nodes/Raw/RawHotPixels.cpp`, `Engine/Nodes/Raw/RawGpuParams.h`, new `Tests/Native/NativeRawHotPixelsGpu_Test.cpp`, `Engine/Nodes/Raw/docs/RawHotPixels.md`, `Tests/Native/NativeGpuCapability_Test.cpp` (only if the source-less node answers true)
   - approach: This is the first raw Passes op on the GPU.
     - Set `list.gpu` in `RawHotPixelsOp::passes` (`RawHotPixels.cpp:250-264`), with a `PassGpuRecorder` (`PassExecutor.h:377-411`), as `edgeDetectGpuRecorder` does (`EdgeDetect.cpp:732-900,1054`).
@@ -36,7 +36,7 @@ Gives the M80 - Native RAW Support nodes their remaining GPU paths: hot pixels, 
 
 ## Phase 81.2: VNG and Markesteijn
 
-- [ ] M81.P2.T1 — VNG kernels (Bayer VNG4 and X-Trans) and an outlier-budget parity helper
+- [x] M81.P2.T1 — VNG kernels (Bayer VNG4 and X-Trans) and an outlier-budget parity helper
   - files: new `Engine/Gpu/Kernels/demosaic_vng.slang`, `demosaic_vng.cmake`, `Engine/Nodes/Raw/RawDemosaic.cpp`, `Engine/Nodes/Raw/RawGpuParams.h`, `Tests/Native/RawGpuTestSupport.h`, new `Tests/Native/NativeRawDemosaicXTransGpu_Test.cpp`
   - approach:
     - Port `RawKernels::vng()` and `vngLinearInterpolate()` (`RawKernels.h:170-197`). Check them against darktable's `demosaic_vng.cl` at `DARKTABLE_REF` if present.
@@ -46,7 +46,7 @@ Gives the M80 - Native RAW Support nodes their remaining GPU paths: hot pixels, 
   - verify: VNG on CR2 and RAF, and on a sub-33 crop that falls back to VNG, within the stated mean/max/outlier bound; tiled GPU = full-frame GPU.
   - size: L
 
-- [ ] M81.P2.T2 — Markesteijn 1- and 3-pass kernels (after T1)
+- [x] M81.P2.T2 — Markesteijn 1- and 3-pass kernels (after T1)
   - files: new `Engine/Gpu/Kernels/demosaic_markesteijn.slang`, `demosaic_markesteijn.cmake`, `Engine/Nodes/Raw/RawDemosaic.cpp`, `Engine/Nodes/Raw/RawGpuParams.h`, `Tests/Native/NativeRawDemosaicXTransGpu_Test.cpp`, `docs/RawDemosaic.md`
   - approach:
     - Port `RawKernels::markesteijn()` (`RawDemosaicMarkesteijn.cpp`; tile 122, halos 12/18).
@@ -57,7 +57,7 @@ Gives the M80 - Native RAW Support nodes their remaining GPU paths: hot pixels, 
 
 ## Phase 81.3: AMaZE
 
-- [ ] M81.P3.T1 — AMaZE Slang module from scratch, with kernel-level parity
+- [x] M81.P3.T1 — AMaZE Slang module from scratch, with kernel-level parity
   - files: new `Engine/Gpu/Kernels/demosaic_amaze.slang`, `demosaic_amaze.cmake`, `Engine/Nodes/Raw/RawGpuParams.h`, new `Tests/Gpu/RawAmazeGpu_Test.cpp`
   - approach:
     - darktable has no OpenCL version, so translate `RawKernels::amaze()` (`RawDemosaicAmaze.cpp`, 1169 lines) stage by stage.
@@ -66,7 +66,7 @@ Gives the M80 - Native RAW Support nodes their remaining GPU paths: hot pixels, 
   - verify: the test dispatches the entries on a synthetic Bayer mosaic and a CR2 crop and compares them with `RawKernels::amaze()` under a stated mean/max/outlier bound.
   - size: L
 
-- [ ] M81.P3.T2 — Wire AMaZE into RawDemosaic's GPU path
+- [x] M81.P3.T2 — Wire AMaZE into RawDemosaic's GPU path
   - files: `Engine/Nodes/Raw/RawDemosaic.cpp`, new `Tests/Native/NativeRawDemosaicAmazeGpu_Test.cpp`, `docs/RawDemosaic.md`
   - approach: Allow AMaZE in `canRenderOpOnGpu`. `getOpGpuInputRoI` already returns the tile-aligned span. Band on the 128 grid, so a band's result equals the CPU tile's.
   - verify: CR2 inside and at corners, tiled = full; `MethodsWithoutAGpuPathStayOnTheCpu` updated to the remaining methods.
@@ -74,7 +74,7 @@ Gives the M80 - Native RAW Support nodes their remaining GPU paths: hot pixels, 
 
 ## Phase 81.4: Raw denoise
 
-- [ ] M81.P4.T1 — RawDenoise wavelet kernels, Bayer and X-Trans
+- [x] M81.P4.T1 — RawDenoise wavelet kernels, Bayer and X-Trans
   - files: new `Engine/Gpu/Kernels/rawdenoise.slang`, `rawdenoise.cmake`, `Engine/Nodes/Raw/RawDenoise.cpp`, `Engine/Nodes/Raw/RawGpuParams.h`, new `Tests/Native/NativeRawDenoiseGpu_Test.cpp`, `docs/RawDenoise.md`
   - approach: This fits the GPU: there is no whole-frame statistic, just 5 levels of separable hat passes with soft thresholds (`RawDenoiseKernel.cpp:101-203`).
     - Kernels: sqrt plane extraction; `dwtDenoiseVert`/`Horiz` per level, with the CPU's mirrored edges; the X-Trans row repair; write-back.
@@ -85,13 +85,13 @@ Gives the M80 - Native RAW Support nodes their remaining GPU paths: hot pixels, 
 
 ## Phase 81.5: Chain and bench
 
-- [ ] M81.P5.T1 — Resident-chain test for the new paths
+- [x] M81.P5.T1 — Resident-chain test for the new paths
   - files: new `Tests/Native/NativeRawChainGpuExtended_Test.cpp`
   - approach: Like `DevelopChainIsOneResidentRegion` (`NativeRawChainGpu_Test.cpp:142-160`), run `renderEndToEnd()` on two chains: RAF Prepare→HotPixels→Denoise→Temperature→Highlights (Clip)→Markesteijn→InputColor, and the same with AMaZE on CR2.
   - verify: every node `ranInRegion`, one upload, and the end-to-end result within the loosest stated bound.
   - size: M
 
-- [ ] M81.P5.T2 — GPU on/off bench of Markesteijn and AMaZE on the GPU host
+- [x] M81.P5.T2 — GPU on/off bench of Markesteijn and AMaZE on the GPU host
   - files: new `tools/bench/raw_gpu_bench.sh`, `tools/bench/README.md`, `docs/RawDemosaic.md`
   - approach:
     - Interleave `NATRON_GPU=off` and `auto` as `gpu_region_bench.sh` does.
@@ -102,7 +102,7 @@ Gives the M80 - Native RAW Support nodes their remaining GPU paths: hot pixels, 
   - verify: results.jsonl shows the first-frame GPU speed-up for Markesteijn-1/3 and AMaZE, with the numbers in the doc and the milestone Decisions.
   - size: M
 
-- [ ] M81.P5.T3 — Parallelise Markesteijn's minmax, exactly (inserted after P5.T2's bench)
+- [x] M81.P5.T3 — Parallelise Markesteijn's minmax, exactly (inserted after P5.T2's bench)
   - files: `Engine/Gpu/Kernels/demosaic_markesteijn.slang`, `Engine/Nodes/Raw/RawDemosaic.cpp`, `Tests/Native/NativeRawDemosaicXTransGpu_Test.cpp`
   - approach: P5.T2 shows that `markesteijn_minmax` takes ~70–85% of the GPU demosaic time (≈12.6 ms per batch, 54 or 129 batches). Each batch runs 1–51 threads, each walking a 122² tile serially (`demosaic_markesteijn.slang:305-361`). The walk's writes are a pure function of position (`lo`/`hi` reset at each outer-row start at :313, rows r and r+1 only, hops at :341-357 depending only on geometry, data only through `hi == 0` at :326), and walk order decides which write wins. Run one thread per (tile, start row): each thread first simulates the start-row sequence with no memory reads, skips rows that aren't start rows, and doesn't write row r+1 when r+1 is itself a start row. Then raise the batch cap (`RawDemosaic.cpp:1434`) as far as the device budget allows, so fewer batches run.
   - verify: an exhaustive comparison test of the parallel minmax against the serial walk, bit-identical, over all 36 phases, edge `mrow`/`mcol` values and tiles with all-zero greens, plus the existing Markesteijn tests on RADV. Re-bench: Markesteijn-1 and -3 GPU first frame both faster than the CPU's.
@@ -126,3 +126,4 @@ Gives the M80 - Native RAW Support nodes their remaining GPU paths: hot pixels, 
 - 2026-10-25 — **Markesteijn diagnosis** (consultant, from `.local/m81/bench-1a6741d9/` profiles). Demosaic is ~98% of region kernel time on X-Trans: GPU 906 ms against CPU 433 ms for 1-pass, and 1852 against 721 ms for 3-pass. The fit `t = batches·12.6 ms + 225 ms` matches both cases, so the serial per-tile `minmax` dominates. RawDenoise is 48× faster on the GPU (14 against 690 ms) and RawHotPixels takes 3 ms. Markesteijn-1 only comes out ahead because of RawDenoise. **M81.P5.T3 is inserted** (the exact parallel `minmax` and a larger batch cap). Also found: `gpu_region_summary.py` crashes on the bench'"'"'s marks files (`KeyError: 'profileFrame'`, :127), so it gets a small fix in P5.T3'"'"'s re-bench or follows separately.
 - 2026-10-25 — **RADV on `aac5433d6` (P5.T3 included): 443/444.** `NativeRawDemosaicXTransGpuMinmax.ParallelWalksMatchTheSerialWalk` passes (bit-identical over 36 phases × 1/3 passes × 8 sizes), as do the denoise suite and `XTransChainWithMarkesteijnIsOneResidentRegion` (4 of 3072 outliers, mean 9.8e-6). `BayerChainWithAmazeIsOneResidentRegion` fails at 607 of 3072 pixels over 1e-4 relative (mean 3.05e-5), against a budget of 4. Every per-node test passes alone, so compounding (denoise sqrt differences flipping AMaZE thresholds) is the leading hypothesis. Being diagnosed.
 - 2026-10-25 — **CR2 AMaZE chain outliers are compounding, not a defect** (diagnosis on RADV). Without denoise, the max error is 5.8e-7. Prepare→Denoise→AMaZE alone reproduces the outliers, and RCD in place of AMaZE gives a max of 9.2e-6. **Deciding check, on the CPU only:** a ±1-ulp nudge to the denoised input moves 29% of CPU AMaZE pixels by > 1e-4 (worst 8.7e-3), against 11 pixels on the prepared input, so denoise leaves AMaZE's direction and Nyquist tests near their thresholds. The outliers follow image content, not the 128-photosite tile edges. **Change (`b017f08f4`):** `kBayerChainMaxBound = 5e-3` for the Bayer chain only. The mean stays 1e-4 and the outlier budget 1‰. Measured max is 1.08e-3 (1.7e-3 in the worst nudged run), with 0 pixels over 5e-3 in the window. The X-Trans chain keeps 1e-4. 6/6 related tests pass on RADV. The bound was measured on one GPU and driver.
+- 2026-10-25 — **P5.T3 re-bench** (release AppImage of `b017f08f4`-era HEAD with the parallel `minmax`, boot `1a6741d9`, 3 rounds, cold first frame; `.local/m81/bench2-1a6741d9/`). Off → auto: RAF Markesteijn-1 1618 → 570 ms (**2.84×**, was 1.11×), RAF Markesteijn-3 1892 → 618 ms (**3.06×**, was 0.79×), CR2 AMaZE 1045 → 515 ms (2.03×). Each case is one region, with 18/18 runs clean. The gate's measured speed-up is met for Markesteijn and AMaZE. All tasks are checked off: RADV passed on `aac5433d6`, and on `b017f08f4` for the chain bound. Rebased onto main `325c87422` as `f0afa72d5`; `git-clang-format` is clean. Next: the PR goes ready, then the Codex review.

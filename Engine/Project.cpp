@@ -1391,6 +1391,11 @@ Project::isRenderSaveFile(const QString& filePath)
 bool
 Project::saveForRenderProcess(QString* filePath)
 {
+    // Only a GUI session creates the directory at startup; a session without one has none yet.
+    if (!QDir().mkpath(autoSavesDir())) {
+        return false;
+    }
+
     return saveProject_imp(QString(), makeRenderSaveFileName(getApp()->getAppID()), true, false, filePath);
 }
 

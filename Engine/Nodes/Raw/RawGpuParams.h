@@ -256,6 +256,40 @@ struct RawVngGpuPush {
 };
 static_assert(sizeof(RawVngGpuPush) == 128);
 
+/**
+ * @brief The push constants of every kernel of demosaic_markesteijn.slang, which mirrors it as
+ * MarkesteijnParams. The buffer, source and output are as RawVngGpuPush's. pattern holds the
+ * buffer's 6x6 X-Trans colours from its top-left photosite, 2 bits each, photosite row * 6 + col
+ * in bits (i % 16) * 2 of word i / 16. A dispatch works on tileCount of the buffer's tiles from
+ * firstTile, numbered as RawKernels::markesteijn() numbers them over nLefts columns of tiles;
+ * pass is the pass the per-pass kernels work on.
+ **/
+struct RawMarkesteijnGpuPush {
+    std::uint32_t pattern[3];
+    std::uint32_t passes;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t srcOffset;
+    std::uint32_t srcStride;
+    std::uint32_t srcComps;
+    std::int32_t srcCol1;
+    std::int32_t srcRow1;
+    std::int32_t srcCol2;
+    std::int32_t srcRow2;
+    std::uint32_t firstTile;
+    std::uint32_t nLefts;
+    std::uint32_t tileCount;
+    std::uint32_t pass;
+    std::uint32_t dstOffset;
+    std::uint32_t dstStride;
+    std::int32_t outCol;
+    std::int32_t outRow;
+    std::uint32_t outWidth;
+    std::uint32_t outHeight;
+    std::uint32_t padding[5];
+};
+static_assert(sizeof(RawMarkesteijnGpuPush) == 112);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Nodes_Raw_RawGpuParams_h

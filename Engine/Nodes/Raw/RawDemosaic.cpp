@@ -1188,8 +1188,9 @@ RawDemosaic::canRenderOpOnGpu(const GpuQuery& query) const
     }
 
     const bool vng = (settings->algorithm == Algorithm::VNG) && ((settings->layout.period() == 2) || (settings->layout.period() == 6));
+    const bool markesteijn = ((settings->algorithm == Algorithm::Markesteijn1) || (settings->algorithm == Algorithm::Markesteijn3)) && (settings->layout.period() == 6);
 
-    return ((settings->algorithm == Algorithm::PPG) || (settings->algorithm == Algorithm::RCD) || vng) && (settings->greenEq == eRawDemosaicGreenEqNone) && (settings->smoothing == 0);
+    return ((settings->algorithm == Algorithm::PPG) || (settings->algorithm == Algorithm::RCD) || vng || markesteijn) && (settings->greenEq == eRawDemosaicGreenEqNone) && (settings->smoothing == 0);
 #else
     Q_UNUSED(query);
 
@@ -1257,6 +1258,24 @@ vngLayoutGpu(const RawLayout& layout,
 
     return toRawLayoutGpu(2, colours);
 }
+
+// The X-Trans pattern of a buffer of rect from its top-left photosite, as
+// RawMarkesteijnGpuPush::pattern packs it.
+void
+markesteijnPatternGpu(const RawLayout& layout,
+                      const RectI& rect,
+                      std::uint32_t (&pattern)[3])
+{
+    std::uint8_t xtrans[6][6] = {};
+    RawNodeSupport::xtransAt(layout, rect, xtrans);
+    pattern[0] = pattern[1] = pattern[2] = 0;
+    for (int i = 0; i < 36; ++i) {
+        pattern[i / 16] |= (std::uint32_t)(xtrans[i / 6][i % 6] & 3) << ((i % 16) * 2);
+    }
+}
+
+// RawKernels::markesteijn()'s tile size, as demosaic_markesteijn.slang's TS.
+const int kMarkesteijnTile = 122;
 } // namespace
 #endif // NATRON_HAVE_GPU
 
@@ -1302,6 +1321,7 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
     base.dstStride = (std::uint32_t)out.rowStrideFloats;
     const bool rcd = (s.algorithm == Algorithm::RCD);
     const bool vng = (s.algorithm == Algorithm::VNG);
+    const bool markesteijn = (s.algorithm == Algorithm::Markesteijn1) || (s.algorithm == Algorithm::Markesteijn3);
     base.mode = (s.algorithm == Algorithm::PassThrough) ? kRawDemosaicGpuModePassThrough : (rcd ? kRawDemosaicGpuModeRcd : kRawDemosaicGpuModePpg);
     base.threshold = rcd ? 0.0f : s.edgeThreshold;
     base.scaler = s.processedMaximum;
@@ -1310,9 +1330,10 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
 
     // Bands of the window are demosaiced one after the other through one work buffer, each over
     // the source region the CPU would read for it, which a tile's result does not depend on.
-    // PPG and RCD need under 16 floats a photosite, VNG its two RGBA planes.
+    // PPG and RCD need under 16 floats a photosite, VNG its two RGBA planes. Markesteijn's one
+    // RGBA plane is held to half the budget, its batches of tiles taking the other half.
     const std::uint64_t kMaxWorkFloats = std::uint64_t(1) << 25;
-    const std::uint64_t floatsPerPhotosite = vng ? 8 : 16;
+    const std::uint64_t floatsPerPhotosite = (vng || markesteijn) ? 8 : 16;
     std::vector<RectI> bands;
     std::vector<RectI> needs;
     std::uint64_t workFloats = 4;
@@ -1332,7 +1353,7 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
             const std::uint64_t w = (std::uint64_t)std::max(0, need.width());
             const std::uint64_t h = (std::uint64_t)std::max(0, need.height());
             const std::uint64_t stride = (w + 1) & ~std::uint64_t(1);
-            workFloats = std::max(workFloats, vng ? 8 * w * h : 9 * w * h + (13 * stride * h) / 2);
+            workFloats = std::max(workFloats, vng ? 8 * w * h : (markesteijn ? 4 * w * h : 9 * w * h + (13 * stride * h) / 2));
         }
     }
     if (workFloats > UINT32_MAX) {
@@ -1357,6 +1378,96 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
         return true;
     };
 
+    // RawKernels::markesteijn()'s tiles of a band's buffer, in batches through one scratch buffer
+    // after vng_linear has interpolated the whole buffer, whose border Markesteijn leaves to it.
+    const int mkPasses = (s.algorithm == Algorithm::Markesteijn1) ? 1 : 3;
+    const int mkPad = (mkPasses == 1) ? 12 : 17;
+    const int mkStep = kMarkesteijnTile - 2 * mkPad;
+    const std::uint64_t mkTileFloats = (std::uint64_t)kMarkesteijnTile * kMarkesteijnTile * (5 * (mkPasses > 1 ? 8 : 4) + 2);
+    const auto markesteijnTiles = [&](const RectI& need, int& nLefts) {
+        const int w = std::max(0, need.width());
+        const int h = std::max(0, need.height());
+        nLefts = 0;
+        if ((w < mkPad + 2) || (h < mkPad + 2)) {
+            return 0;
+        }
+        nLefts = (w + mkStep - 1) / mkStep;
+
+        return ((h + mkStep - 1) / mkStep) * nLefts;
+    };
+    gpu::GpuBuffer* tiles = nullptr;
+    std::uint32_t mkBatch = 1;
+    if (markesteijn) {
+        int maxTiles = 1;
+        for (const RectI& need : needs) {
+            int nLefts = 0;
+            maxTiles = std::max(maxTiles, markesteijnTiles(need, nLefts));
+        }
+        const std::uint64_t kMaxTileFloats = std::uint64_t(1) << 24;
+        mkBatch = (std::uint32_t)std::clamp<std::uint64_t>(kMaxTileFloats / mkTileFloats, 1, (std::uint64_t)maxTiles);
+        if (!ctx.scratch(mkBatch * mkTileFloats * sizeof(float), tiles) || !tiles) {
+            return eStatusFailed;
+        }
+    }
+    const auto renderMarkesteijnGpu = [&](const RawVngGpuPush& vngPush, const RectI& need) {
+        RawMarkesteijnGpuPush mk = {};
+        markesteijnPatternGpu(s.layout, need, mk.pattern);
+        mk.passes = (std::uint32_t)mkPasses;
+        mk.width = vngPush.width;
+        mk.height = vngPush.height;
+        mk.srcOffset = vngPush.srcOffset;
+        mk.srcStride = vngPush.srcStride;
+        mk.srcComps = vngPush.srcComps;
+        mk.srcCol1 = vngPush.srcCol1;
+        mk.srcRow1 = vngPush.srcRow1;
+        mk.srcCol2 = vngPush.srcCol2;
+        mk.srcRow2 = vngPush.srcRow2;
+        mk.dstOffset = vngPush.dstOffset;
+        mk.dstStride = vngPush.dstStride;
+        mk.outCol = vngPush.outCol;
+        mk.outRow = vngPush.outRow;
+        mk.outWidth = vngPush.outWidth;
+        mk.outHeight = vngPush.outHeight;
+        int nLefts = 0;
+        const int nTiles = markesteijnTiles(need, nLefts);
+        mk.nLefts = (std::uint32_t)std::max(1, nLefts);
+        const auto mkRun = [&](gpu::GpuKernelId kernel, std::uint32_t x, std::uint32_t y, std::uint32_t z) {
+            if (!ctx.dispatch(kernel, { src, work, tiles, out.buffer }, mk, { groups(x), groups(y), groups(z) })) {
+                return false;
+            }
+            ctx.computeBarrier();
+
+            return true;
+        };
+        const std::uint32_t ts = (std::uint32_t)kMarkesteijnTile;
+        for (int first = 0; first < nTiles; first += (int)mkBatch) {
+            mk.firstTile = (std::uint32_t)first;
+            mk.tileCount = std::min<std::uint32_t>(mkBatch, (std::uint32_t)(nTiles - first));
+            mk.pass = 0;
+            const std::uint32_t n = mk.tileCount;
+            if (!mkRun(gpu::GpuKernelId::markesteijn_fill, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_minmax, n, 1, 1) || !mkRun(gpu::GpuKernelId::markesteijn_green, ts, ts, n)) {
+                return false;
+            }
+            for (int pass = 0; pass < mkPasses; ++pass) {
+                mk.pass = (std::uint32_t)pass;
+                if ((pass == 1) && !mkRun(gpu::GpuKernelId::markesteijn_copy, ts, ts, n)) {
+                    return false;
+                }
+                if ((pass > 0) && !mkRun(gpu::GpuKernelId::markesteijn_recalc, ts, ts, n)) {
+                    return false;
+                }
+                if (!mkRun(gpu::GpuKernelId::markesteijn_solitary, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_rb, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_twoxtwo, ts, ts, n)) {
+                    return false;
+                }
+            }
+            if (!mkRun(gpu::GpuKernelId::markesteijn_derivatives, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_homo, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_final, ts, ts, n)) {
+                return false;
+            }
+        }
+
+        return mkRun(gpu::GpuKernelId::markesteijn_write, mk.outWidth, mk.outHeight, 1);
+    };
+
     for (std::size_t b = 0; b < bands.size(); ++b) {
         const RectI& band = bands[b];
         const RectI& need = needs[b];
@@ -1375,7 +1486,7 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
         push.outWidth = (std::uint32_t)band.width();
         push.outHeight = (std::uint32_t)band.height();
 
-        if (vng) {
+        if (vng || markesteijn) {
             RawVngGpuPush vngPush = {};
             vngPush.width = width;
             vngPush.height = height;
@@ -1394,6 +1505,18 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
             vngPush.outRow = need.y2 - 1 - band.y1;
             vngPush.outWidth = push.outWidth;
             vngPush.outHeight = push.outHeight;
+            if (markesteijn) {
+                if ((width > 0) && (height > 0)) {
+                    vngPush.layout = vngLayoutGpu(s.layout, need);
+                    if (!run(gpu::GpuKernelId::vng_linear, vngPush, width, height)) {
+                        return eStatusFailed;
+                    }
+                }
+                if (!renderMarkesteijnGpu(vngPush, need)) {
+                    return eStatusFailed;
+                }
+                continue;
+            }
             if ((width > 0) && (height > 0)) {
                 vngPush.layout = vngLayoutGpu(s.layout, need);
                 if (!run(gpu::GpuKernelId::vng_linear, vngPush, width, height) || !run(gpu::GpuKernelId::vng_gradient, vngPush, width, height)) {

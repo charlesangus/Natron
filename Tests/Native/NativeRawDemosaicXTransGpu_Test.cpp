@@ -49,9 +49,15 @@ namespace {
 const double kVngMeanBound = 1e-4;
 const double kVngMaxBound = 1e-4;
 
+// Markesteijn compares green smoothness and counts homogeneous neighbours over values divided by
+// 3 or by a count, which Vulkan rounds within 2.5 ulp: a pixel on a threshold can average other
+// directions.
+const double kMarkesteijnMeanBound = 1e-4;
+const double kMarkesteijnMaxBound = 1e-4;
+
 // One pixel a thousand, rounded up.
 int
-vngOutlierBudget(const RectI& window)
+outlierBudget(const RectI& window)
 {
     return (int)(((std::int64_t)window.width() * window.height() + 999) / 1000);
 }
@@ -104,14 +110,15 @@ protected:
         return settings ? RectI(0, 0, settings->kept.width(), settings->kept.height()) : RectI();
     }
 
-    // A RawTestSource of the scene seen through pattern at (originX, originY) over rod, and a
-    // RawDemosaic after it.
+    // A RawTestSource of the scene seen through pattern at (originX, originY) over rod, a flat
+    // grey of flatGrey instead when it is not negative, and a RawDemosaic after it.
     bool createMosaic(const RectI& rod,
                       const std::string& pattern,
                       int originX,
                       int originY,
                       NodePtr* source,
-                      NodePtr* demosaic)
+                      NodePtr* demosaic,
+                      float flatGrey = -1.f)
     {
         const ImageMetadata metadata = rawTestMetadata(pattern, originX, originY, eRawStagePrepared);
         const std::optional<RawLayout> layout = RawLayout::fromMetadata(metadata);
@@ -125,7 +132,10 @@ protected:
             return false;
         }
         const RawLayout cfa = *layout;
-        dynamic_cast<RawTestSource*>((*source)->getEffectInstance().get())->setRaw(rod, 1, [cfa](int x, int y, int) {
+        dynamic_cast<RawTestSource*>((*source)->getEffectInstance().get())->setRaw(rod, 1, [cfa, flatGrey](int x, int y, int) {
+            if (flatGrey >= 0.f) {
+                return flatGrey;
+            }
             float rgb[3];
             texturedScene(x, y, rgb);
 
@@ -133,6 +143,33 @@ protected:
         *demosaic = createAfter(PLUGINID_NATRON_RAWDEMOSAIC, *source);
 
         return bool(*demosaic);
+    }
+
+    // The GPU render of window, RGBA from its bottom row.
+    bool renderGpu(GpuParityRuntime& runtime,
+                   const NodePtr& demosaic,
+                   const NodePtr& source,
+                   const RectI& window,
+                   std::vector<float>* pixels)
+    {
+        StagedImageEffect* effect = stagedOf(demosaic);
+        EXPECT_TRUE(effect != NULL);
+        if (!effect) {
+            return false;
+        }
+        const GpuQuery query = queryFor(4);
+        RenderedPlane input;
+        EXPECT_TRUE(renderCpu(source, effect->getGpuInputRoI(0, window, RenderScale::identity), &input));
+        EXPECT_TRUE(effect->canRenderOnGpu(query));
+        const std::vector<GpuParityImage> inputs(1, imageOf(input));
+        GpuRunResult result = runRenderGpu(runtime, *effect, query, inputs, nullptr, window);
+        EXPECT_TRUE(result.ok);
+        if (!result.ok) {
+            return false;
+        }
+        *pixels = std::move(result.pixels);
+
+        return true;
     }
 
     // The GPU render of window in four tiles is the window rendered whole, bit for bit.
@@ -215,9 +252,84 @@ TEST_F(NativeRawDemosaicXTransGpuTest, VngMatchesTheCpuOnBothFixtures)
             RectI(301, 211, 302, 250),
         };
         for (const RectI& window : windows) {
-            expectGpuMatchesCpuWithin(*runtime, demosaic, prepare, window, kVngMeanBound, kVngMaxBound, vngOutlierBudget(window), describe(fixture.name, window));
+            expectGpuMatchesCpuWithin(*runtime, demosaic, prepare, window, kVngMeanBound, kVngMaxBound, outlierBudget(window), describe(fixture.name, window));
         }
         expectTiledEqualsWhole(*runtime, demosaic, prepare, RectI(150, 120, 246, 200), fixture.name);
+    }
+}
+
+// Markesteijn 1- and 3-pass on the RAF fixture: inside the image, at two corners, where the
+// buffer the tiles cover ends at the image's edge and the mirrored fill and VNG's border take
+// over, and over a single column.
+TEST_F(NativeRawDemosaicXTransGpuTest, MarkesteijnMatchesTheCpuOnTheRaf)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const struct {
+        const char* name;
+        int method;
+    } methods[] = {
+        { "Markesteijn 1-pass", (int)eRawDemosaicXTransMarkesteijn1 },
+        { "Markesteijn 3-pass", (int)eRawDemosaicXTransMarkesteijn3 },
+    };
+
+    for (const auto& method : methods) {
+        NodePtr read = createRead(xtransFixture());
+        NodePtr prepare = createAfter(PLUGINID_NATRON_RAWPREPARE, read);
+        NodePtr demosaic = createAfter(PLUGINID_NATRON_RAWDEMOSAIC, prepare);
+        ASSERT_TRUE(read && prepare && demosaic) << method.name;
+        setChoice(demosaic, kRawDemosaicParamXTransMethod, method.method);
+        ASSERT_FALSE(HasFatalFailure());
+        const RectI rod = preparedRoD(prepare);
+        ASSERT_GT(rod.width(), 400) << method.name;
+        ASSERT_GT(rod.height(), 400) << method.name;
+        const RectI windows[] = {
+            RectI(200, 150, 264, 198),
+            RectI(0, 0, 40, 36),
+            RectI(rod.x2 - 41, rod.y2 - 37, rod.x2, rod.y2),
+            RectI(301, 211, 302, 250),
+        };
+        for (const RectI& window : windows) {
+            expectGpuMatchesCpuWithin(*runtime, demosaic, prepare, window, kMarkesteijnMeanBound, kMarkesteijnMaxBound, outlierBudget(window), describe(method.name, window));
+        }
+        expectTiledEqualsWhole(*runtime, demosaic, prepare, RectI(150, 120, 246, 200), method.name);
+    }
+}
+
+// A flat grey mosaic demosaics to the same grey at each of the 36 positions of the X-Trans
+// pattern, border included, on the GPU as on the CPU.
+TEST_F(NativeRawDemosaicXTransGpuTest, MarkesteijnKeepsAFlatGreyNeutralAtEveryPhase)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const float grey = 0.35f;
+    const RectI rod(0, 0, 61, 53);
+    for (const int method : { (int)eRawDemosaicXTransMarkesteijn1, (int)eRawDemosaicXTransMarkesteijn3 }) {
+        for (int originY = 0; originY < 6; ++originY) {
+            for (int originX = 0; originX < 6; ++originX) {
+                const std::string what = std::string(method == (int)eRawDemosaicXTransMarkesteijn1 ? "1-pass" : "3-pass") + " at phase " + std::to_string(originX) + "," + std::to_string(originY);
+                NodePtr source;
+                NodePtr demosaic;
+                ASSERT_TRUE(createMosaic(rod, kXTransPattern, originX, originY, &source, &demosaic, grey)) << what;
+                setChoice(demosaic, kRawDemosaicParamXTransMethod, method);
+                ASSERT_FALSE(HasFatalFailure());
+                std::vector<float> pixels;
+                ASSERT_TRUE(renderGpu(*runtime, demosaic, source, rod, &pixels)) << what;
+                ASSERT_EQ((std::size_t)rod.width() * rod.height() * 4, pixels.size()) << what;
+                std::size_t off = 0;
+                for (std::size_t p = 0; p < pixels.size(); p += 4) {
+                    for (int c = 0; c < 3; ++c) {
+                        off += (std::fabs(pixels[p + c] - grey) <= 1e-6f) ? 0 : 1;
+                    }
+                }
+                EXPECT_EQ(0u, off) << what;
+                expectGpuMatchesCpuWithin(*runtime, demosaic, source, rod, kMarkesteijnMeanBound, kMarkesteijnMaxBound, outlierBudget(rod), what);
+            }
+        }
     }
 }
 
@@ -253,7 +365,7 @@ TEST_F(NativeRawDemosaicXTransGpuTest, SmallImagesFallBackOnTheGpuVng)
         ASSERT_FALSE(HasFatalFailure());
         const RectI inner(crop.rod.x1 + 3, crop.rod.y1 + 2, crop.rod.x2 - 4, crop.rod.y2 - 5);
         for (const RectI& window : { crop.rod, inner }) {
-            expectGpuMatchesCpuWithin(*runtime, demosaic, source, window, kVngMeanBound, kVngMaxBound, vngOutlierBudget(window), describe(crop.name, window));
+            expectGpuMatchesCpuWithin(*runtime, demosaic, source, window, kVngMeanBound, kVngMaxBound, outlierBudget(window), describe(crop.name, window));
         }
     }
 }

@@ -369,13 +369,15 @@ RawDenoise::getOpGpuInputLayer(int inputNb,
 
 RectI
 RawDenoise::getOpGpuInputRoI(int inputNb,
+                             double time,
+                             ViewIdx view,
                              const RectI& outputRect,
                              const RenderScale& /*scale*/) const
 {
     if (inputNb != getSourceInput()) {
         return outputRect;
     }
-    const std::optional<Settings> settings = const_cast<RawDenoise*>(this)->resolveSettings(getCurrentTime(), getCurrentView());
+    const std::optional<Settings> settings = const_cast<RawDenoise*>(this)->resolveSettings(time, view);
     if (!settings || !settings->passThrough.empty() || !(settings->threshold > 0.f)) {
         return outputRect;
     }

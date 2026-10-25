@@ -235,7 +235,7 @@ TEST_F(NativeRawHotPixelsGpuTest, TilesMatchTheFullFrame)
         std::vector<float> full;
         for (const RectI& window : kTiles) {
             RenderedPlane input;
-            ASSERT_TRUE(renderCpu(source, effect->getGpuInputRoI(0, window, RenderScale::identity), &input));
+            ASSERT_TRUE(renderCpu(source, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), window, RenderScale::identity), &input));
             const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, imageOf(input)), nullptr, window);
             ASSERT_TRUE(run.ok) << fixture.camera;
             if (window == kWindow) {

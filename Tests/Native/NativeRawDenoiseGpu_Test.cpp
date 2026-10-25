@@ -171,7 +171,7 @@ TEST_F(NativeRawDenoiseGpuTest, TiledGpuRenderEqualsTheFullFrameGpuRender)
             RectI(splitX, splitY, full.x2, full.y2),
         };
         RenderedPlane input;
-        ASSERT_TRUE(renderCpu(c.prepare, effect->getGpuInputRoI(0, full, RenderScale::identity), &input));
+        ASSERT_TRUE(renderCpu(c.prepare, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), full, RenderScale::identity), &input));
         const int nComps = (int)input.channels.size();
         const GpuQuery query = queryFor(nComps);
         const std::vector<GpuParityImage> inputs(1, imageOf(input));

@@ -1214,7 +1214,7 @@ stageGpuInputView(EffectInstance& effect,
     if (input->getRegionOfDefinition_public(input->getRenderHash(), args.query.time, inputScale, args.query.view, &rod, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    const RectI crop = in.bounds.intersect(rod.toPixelEnclosing(scale, effect.getAspectRatio(inputNb)));
+    const RectI crop = in.bounds.intersect(rod.toPixelEnclosing(scale, effect.getRenderMetadata(args.query.time, args.query.view)->getPixelAspectRatio(inputNb)));
     if (crop.isNull()) {
         return true;
     }

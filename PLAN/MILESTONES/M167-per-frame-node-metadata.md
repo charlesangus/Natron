@@ -226,19 +226,19 @@ Deps: M100 - Content Node Hashing.
 
 ## Phase 167.6: Delete the refresh machinery, measure and soak
 
-- [ ] M167.P6.T1 — Remove the timeless metadata state and getters
+- [x] M167.P6.T1 — Remove the timeless metadata state and getters
   - files: `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp`, `Engine/EffectInstancePrivate.h`, `Engine/Nodes/NativeEffectBase.h`, `Engine/Nodes/NativeEffectBase.cpp`
   - approach: Delete `_imp->metadata`, `metadataMutex`, `setDefaultMetadata`, `setMetadataInternal`, `refreshMetadata_public/_internal`, the old `getPreferredMetadata(NodeMetadata&)` virtual and the timeless getters (`getOutputFormat()`, `getAspectRatio(int)`, `getFrameRate()`, `getBitDepth(int)`, `getMetadataComponents`, `getMetadataNComps`, `getFieldingOrder`, `isFrameVarying`, `canRenderContinuously`). Any leftover caller fails to compile and gets the time it needs.
   - verify: the phase build; `git grep -n -E "refreshMetadata_|_imp->metadata\b|getPreferredMetadata\(NodeMetadata" Engine Gui Tests` is empty.
   - size: L
 
-- [ ] M167.P6.T2 — Remove the stale-data abort and the render-start refresh
+- [x] M167.P6.T2 — Remove the stale-data abort and the render-start refresh
   - files: `Engine/ParallelRenderArgs.cpp`, `Engine/ViewerInstance.cpp`, `Engine/OutputSchedulerThread.cpp`, `Engine/OutputSchedulerThread.h`, `Engine/AppInstance.cpp`
   - approach: Delete the stale scan and viewer abort (`ParallelRenderArgs.cpp` ~:1099-1139, `_abortedForStaleInputData`), `ViewerInstance.cpp` ~:596 and 1456, `RenderEngine::refreshInputRelatedDataForRender` (`OutputSchedulerThread.cpp` ~:3201-3287) and its call at `AppInstance.cpp` ~:1906.
   - verify: the phase build; `ViewerScheduler` and `MidRenderEdit` green.
   - size: M
 
-- [ ] M167.P6.T3 — Shrink the Node refresh to the UI hook
+- [x] M167.P6.T3 — Shrink the Node refresh to the UI hook
   - files: `Engine/Node.cpp`, `Engine/Node.h`, `Engine/NodePrivate.h`, `Gui/NodeGui.cpp`
   - approach: Starts after T2. Delete `inputRelatedDataStale`, `requestInputRelatedDataRefresh` and `refreshInputRelatedDataForRender`. Reduce `refreshAllInputRelatedData` and the `markDownstream…`/`refreshShownInputRelatedData` walks to firing P5.T1's hook (`Node.cpp` ~:7939-8355). `NodeGui.cpp` ~:607 and 674 call the hook.
   - verify: the phase build; `git grep -n -E "inputRelatedDataStale|requestInputRelatedDataRefresh|refreshInputRelatedDataForRender" Engine Gui` is empty; full ctest green.

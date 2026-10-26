@@ -314,9 +314,9 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                 return eRenderRoIRetCodeOk;
             }
             if (identityInputNb == -2) {
-                // The effect is an identity of itself at another time. Guard against the
-                // degenerate answer that would recurse forever.
-                if (identityTime == args.time) {
+                // The effect is an identity of itself at another time or view: either differing
+                // is a valid hop, both equal would recurse forever.
+                if ((identityTime == args.time) && (identityView == args.view)) {
                     return eRenderRoIRetCodeFailed;
                 }
                 RenderDeepRoIArgs selfArgs(args);

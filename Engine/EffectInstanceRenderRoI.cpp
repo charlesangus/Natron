@@ -142,33 +142,44 @@ optimizeRectsToRender(EffectInstance* self,
                 r.isIdentity = true;
 
                 // Walk along the identity branch until we find the non identity input, or NULL in we case we will
-                // just render black and transparent. Each hop is taken under the context the node it
-                // leaves requests that input under, so a node on the way setting context variables
-                // over its input is walked through with its variables applied, as the main identity
-                // path pulls it.
+                // just render black and transparent. Each node on the way is asked at the time and view
+                // the previous hop pulls it at, so a node shifting time or view before another
+                // pass-through is followed to the doubly shifted source. Each hop is taken under the
+                // context the node it leaves requests that input under, so a node on the way setting
+                // context variables over its input is walked through with its variables applied, as
+                // the main identity path pulls it.
                 RenderContextPtr walkContext = consumerContext;
                 bool walkContextSet = false;
                 applyIdentityHopContext(self, identityInputNb, time, view, &walkContext, &walkContextSet);
+                double hopTime = identityInputTime;
+                ViewIdx hopView = inputIdentityView;
                 EffectInstancePtr identityInput = self->getInput(identityInputNb);
                 if (identityInput) {
                     for (;; ) {
+                        double nextTime = hopTime;
+                        ViewIdx nextView = hopView;
+                        int nextInputNb = -1;
                         {
                             ActionContextScope acting(walkContextSet, walkContext);
-                            identity = identityInput->isIdentity_public(false, 0, time, renderMappedScale, splits[i], view, &identityInputTime, &inputIdentityView, &identityInputNb);
+                            identity = identityInput->isIdentity_public(false, 0, hopTime, renderMappedScale, splits[i], hopView, &nextTime, &nextView, &nextInputNb);
                         }
-                        if ( !identity || (identityInputNb == -2) ) {
+                        // A node identity of itself at another time or view is left for its own
+                        // renderRoI to resolve, at the time and view it is pulled at.
+                        if (!identity || (nextInputNb == -2)) {
                             break;
                         }
-                        EffectInstancePtr subIdentityInput = identityInput->getInput(identityInputNb);
+                        EffectInstancePtr subIdentityInput = identityInput->getInput(nextInputNb);
                         if (subIdentityInput == identityInput) {
                             break;
                         }
                         if (subIdentityInput) {
                             ActionContextScope acting(walkContextSet, walkContext);
-                            applyIdentityHopContext(identityInput.get(), identityInputNb, time, view, &walkContext, &walkContextSet);
+                            applyIdentityHopContext(identityInput.get(), nextInputNb, hopTime, hopView, &walkContext, &walkContextSet);
                         }
 
                         identityInput = subIdentityInput;
+                        hopTime = nextTime;
+                        hopView = nextView;
                         if (!subIdentityInput) {
                             break;
                         }
@@ -177,8 +188,8 @@ optimizeRectsToRender(EffectInstance* self,
                 r.identityInput = identityInput;
                 r.identityContext = walkContext;
                 r.identityContextSet = walkContextSet;
-                r.identityTime = identityInputTime;
-                r.identityView = inputIdentityView;
+                r.identityTime = hopTime;
+                r.identityView = hopView;
                 r.rect = splits[i];
                 finalRectsToRender->push_back(r);
             } else {
@@ -599,20 +610,15 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             if (inputNbIdentity == -1) {
                 return eRenderRoIRetCodeOk;
             } else if (inputNbIdentity == -2) {
-                // there was at least one crash if you set the first frame to a negative value
-                assert(inputTimeIdentity != args.time || viewInvariance == eViewInvarianceAllViewsInvariant);
+                // This special value of -2 indicates that the plugin is identity of itself at another
+                // time or view: either differing is a valid hop, both equal would recurse forever.
+                const ViewIdx selfIdentityView = (viewInvariance == eViewInvarianceAllViewsInvariant) ? ViewIdx(0) : inputIdentityView;
+                assert(inputTimeIdentity != args.time || selfIdentityView != args.view);
 
-                // be safe in release mode otherwise we hit an infinite recursion
-                if ( (inputTimeIdentity != args.time) || (viewInvariance == eViewInvarianceAllViewsInvariant) ) {
-                    ///This special value of -2 indicates that the plugin is identity of itself at another time
+                if ((inputTimeIdentity != args.time) || (selfIdentityView != args.view)) {
                     std::unique_ptr<RenderRoIArgs> argCpy ( new RenderRoIArgs(args) );
                     argCpy->time = inputTimeIdentity;
-
-                    if (viewInvariance == eViewInvarianceAllViewsInvariant) {
-                        argCpy->view = ViewIdx(0);
-                    } else {
-                        argCpy->view = inputIdentityView;
-                    }
+                    argCpy->view = selfIdentityView;
 
                     argCpy->preComputedRoD.clear(); //< clear as the RoD of the identity input might not be the same (reproducible with Blur)
 

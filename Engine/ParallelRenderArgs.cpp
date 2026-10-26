@@ -947,10 +947,11 @@ visitRequestPassItem(bool useTransforms,
     }
 
     if (fvRequest->globalData.identityInputNb == -2) {
-        assert(fvRequest->globalData.inputIdentityTime != time || viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant);
-        // be safe in release mode otherwise we hit an infinite recursion
-        if ((fvRequest->globalData.inputIdentityTime != time) || (viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant)) {
-            ViewIdx inputView = (view != 0 && viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant) ? ViewIdx(0) : view;
+        // The node is an identity of itself at another time or view, pulled where renderRoI pulls
+        // it: either differing is a valid hop, both equal would recurse forever.
+        const ViewIdx inputView = (viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant) ? ViewIdx(0) : fvRequest->globalData.identityView;
+        assert(fvRequest->globalData.inputIdentityTime != time || inputView != view);
+        if ((fvRequest->globalData.inputIdentityTime != time) || (inputView != view)) {
             fvRequest->walking = true;
             stack->push_back(makeConsumerItem(RequestPassItem::eKindIdentityEdge, fvRequest, node, item.contextKey, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, -2));
             stack->push_back(makeVisitItem(node, item.context, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, canonicalRenderWindow));

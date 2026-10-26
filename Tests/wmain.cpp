@@ -18,6 +18,7 @@
 #include "CountingTestEffect.h"
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
+#include "IdentityHopTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
 #include "Native/GlHostWrapTestEffect.h"
@@ -141,6 +142,19 @@ registerRenderSchedulerTestPlugins()
 }
 
 void
+registerIdentityHopTestPlugins()
+{
+    // Registered so IdentityHop_Test.cpp can chain identities that shift time and view and read
+    // back the time and view the source was pulled at, which no shipped node reports.
+    registerTestBuiltInPlugin<FrameValueTestEffect>();
+    registerTestBuiltInPlugin<ViewSelfIdentityTestEffect>();
+    registerTestBuiltInPlugin<TimeShiftIdentityTestEffect>();
+    registerTestBuiltInPlugin<DeepFrameValueTestEffect>();
+    registerTestBuiltInPlugin<DeepViewSelfIdentityTestEffect>();
+    registerTestBuiltInPlugin<DeepTimeShiftIdentityTestEffect>();
+}
+
+void
 registerFrameGraphBuildTestPlugins()
 {
     // Registered so FrameGraphBuild_Test.cpp can build a chain thousands of nodes deep whose RoD queries recurse
@@ -210,6 +224,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerMultiplanarTestPlugins();
     registerGraphScalingTestPlugins();
     registerRenderSchedulerTestPlugins();
+    registerIdentityHopTestPlugins();
     registerFrameGraphBuildTestPlugins();
     registerNativeParityTestPlugins();
     registerNativeMetadataTestPlugins();

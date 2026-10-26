@@ -105,3 +105,5 @@ The per-context render core shared by E13 - RFV and E15 - Loops And I-Nodes, spl
 - 2026-10-25 — **Per-context metadata in scope, after M167 (user):** M167 - Per-Frame Node Metadata keys metadata by (hash, time, view), so folding the context key into the hash makes it per-context almost for free.
 
 **Verification gate:** the full build and ctest pass, including the new context tests and the existing `SchedulerEquivalence`, `FrameGraphBuild` and `GraphScalingTLS` suites unchanged. `tools/bench` shows no regression on graphs with no contexts (key 0 path). `git clang-format` against the merge base is clean.
+
+2026-10-26 — Re-bench after the review fixes (1f67e7526, 3cf5fd9f1) vs M167, context-free graphs, 20 frames, 2 alternating runs: no case flagged at 1.5x; frame time x0.82–x1.11, graph build x0.79–x1.01 across chain 10/100/1000, wide 100/1000, comp 100 (host was loaded, so small ratios are noise).

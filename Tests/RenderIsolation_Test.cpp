@@ -509,6 +509,50 @@ TEST_F(RenderIsolation, ProjectParamWriteIsRefusedDuringWriteRender)
     EXPECT_DOUBLE_EQ(changed, frameRate->getValue(0));
 }
 
+// The project knobs a save rewrites are not read by renders: they take writes while a render reads
+// the project, whereas a knob a render does read, the frame rate, is still refused.
+TEST_F(RenderIsolation, ProjectSaveBookkeepingIsNotRefusedDuringWriteRender)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    buildGraph(tmp);
+    ASSERT_TRUE(bool(_writer));
+
+    const char* const bookkeeping[] = { "lastSaveDate", "lastAuthor", "softwareVersion", "projectName" };
+    const std::size_t nBookkeeping = sizeof(bookkeeping) / sizeof(bookkeeping[0]);
+    std::vector<KnobString*> knobs;
+    for (std::size_t i = 0; i < nBookkeeping; ++i) {
+        KnobString* knob = dynamic_cast<KnobString*>(getApp()->getProject()->getKnobByName(bookkeeping[i]).get());
+        ASSERT_TRUE(knob != NULL) << bookkeeping[i];
+        EXPECT_FALSE(knob->isReadByRenders()) << bookkeeping[i];
+        knobs.push_back(knob);
+    }
+    KnobDouble* frameRate = dynamic_cast<KnobDouble*>(getApp()->getProject()->getKnobByName("frameRate").get());
+    ASSERT_TRUE(frameRate != NULL);
+    EXPECT_TRUE(frameRate->isReadByRenders());
+    const double rateBefore = frameRate->getValue(0);
+
+    std::vector<int> codes(nBookkeeping, -1);
+    std::atomic<int> rateCode { -1 };
+    const std::function<void()> edit = [&]() {
+        for (std::size_t i = 0; i < nBookkeeping; ++i) {
+            codes[i] = (int)knobs[i]->setValue(std::string("saved"), ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+        }
+        rateCode = (int)frameRate->setValue(rateBefore + 1., ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    };
+    bool actionRan = false;
+    const int finishedCode = renderWithActionAtFrame(edit, eActionThreadOwn, &actionRan);
+
+    ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
+    for (std::size_t i = 0; i < nBookkeeping; ++i) {
+        EXPECT_NE((int)KnobHelper::eValueChangedReturnCodeNothingChanged, codes[i]) << bookkeeping[i];
+        EXPECT_EQ(std::string("saved"), knobs[i]->getValue(0)) << bookkeeping[i];
+    }
+    EXPECT_EQ((int)KnobHelper::eValueChangedReturnCodeNothingChanged, rateCode.load());
+    EXPECT_DOUBLE_EQ(rateBefore, frameRate->getValue(0));
+    EXPECT_EQ(0, finishedCode);
+}
+
 // A parameter of the rendered graph that reads another node's metadata makes the render read that
 // node and everything upstream of it, though neither is connected to the Write: a write upstream of
 // the metadata source is refused while the render runs.

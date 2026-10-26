@@ -469,6 +469,7 @@ struct KnobHelperPrivate
     QMutex evaluateOnChangeMutex;
     bool evaluateOnChange; //< if true, a value change will never trigger an evaluation
     bool IsPersistent; //will it be serialized?
+    bool ReadByRenders; // can a render read its value?
     std::string tooltipHint;
     bool hintIsMarkdown;
     bool isAnimationEnabled;
@@ -574,6 +575,7 @@ struct KnobHelperPrivate
         , evaluateOnChangeMutex()
         , evaluateOnChange(true)
         , IsPersistent(true)
+        , ReadByRenders(true)
         , tooltipHint()
         , hintIsMarkdown(false)
         , isAnimationEnabled(true)
@@ -4025,6 +4027,18 @@ bool
 KnobHelper::getIsPersistent() const
 {
     return _imp->IsPersistent;
+}
+
+bool
+KnobHelper::isReadByRenders() const
+{
+    return _imp->ReadByRenders;
+}
+
+void
+KnobHelper::setReadByRenders(bool b)
+{
+    _imp->ReadByRenders = b;
 }
 
 void

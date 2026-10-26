@@ -213,6 +213,10 @@ IsolatedJob::refusal(const KnobHolder& holder,
                      const KnobI* knob,
                      const char* what)
 {
+    // Only reached once a job reads the holder, so the knob check stays off the common path.
+    if (knob && !knob->isReadByRenders()) {
+        return std::string();
+    }
     const IsolatedJob* own = tCurrentJob;
     std::string kind;
     {

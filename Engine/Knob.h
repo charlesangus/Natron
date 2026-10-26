@@ -1114,6 +1114,14 @@ public:
     virtual void setIsPersistent(bool b) = 0;
 
     /**
+     * @brief Whether a render can read this knob's value. A knob that is not read by renders keeps
+     * accepting writes while a render or track reads its holder (the project's save bookkeeping,
+     * for instance). True by default; set when the knob is created, never changed afterwards.
+     **/
+    virtual bool isReadByRenders() const = 0;
+    virtual void setReadByRenders(bool b) = 0;
+
+    /**
      * @brief If set to false, the knob will not be able to use undo/redo actions.
      * By default this is set to true.
      **/
@@ -1817,6 +1825,8 @@ public:
     virtual bool getEvaluateOnChange() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getIsPersistent() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setIsPersistent(bool b) OVERRIDE FINAL;
+    virtual bool isReadByRenders() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void setReadByRenders(bool b) OVERRIDE FINAL;
     virtual void setCanUndo(bool val) OVERRIDE FINAL;
     virtual bool getCanUndo() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setIsMetadataSlave(bool slave) OVERRIDE FINAL;

@@ -1,0 +1,1 @@
+slang_add_kernel(mapremap_test Kernels/mapremap_test.slang ENTRY mapremap_test_main REGISTRY NatronGpu)

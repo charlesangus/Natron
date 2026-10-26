@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cfenv>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -178,6 +180,38 @@ GPU_TEST_F(GpuKernelRegistryTest, CreatesEachPipelineOnceAcrossThreadsAndAgainAf
     for (GpuKernelId id : ids) {
         EXPECT_EQ(registry->creationCount(id), 2u) << "kernel " << static_cast<uint32_t>(id);
     }
+}
+
+// Render threads in debug builds trap these floating-point exceptions, and kernels are created on
+// them. Creating every kernel on such a thread dies of SIGFPE if the driver's compiler raises one
+// through GpuKernel::create; the kernel being created is printed first, so the log names it.
+GPU_TEST_F(GpuKernelRegistryTest, CreatesEveryPipelineWithFloatTrapsOn)
+{
+    const int traps = FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW;
+    int failures = 0;
+    int trapsAfter = 0;
+    std::vector<GpuKernelId> ids;
+    for (uint32_t i = 0; i < static_cast<uint32_t>(GpuKernelId::Count); ++i) {
+        ids.push_back(static_cast<GpuKernelId>(i));
+    }
+    ids.push_back(fillId);
+    std::thread creator([&] {
+        feenableexcept(traps);
+        for (GpuKernelId id : ids) {
+            const GpuKernelDesc* d = registry->desc(id);
+            std::cerr << "[CreatesEveryPipelineWithFloatTrapsOn] creating " << (d && d->entry ? d->entry : "?") << std::endl;
+            GpuKernel* k = nullptr;
+            if (!registry->get(id, k).ok() || !k) {
+                ++failures;
+            }
+        }
+        trapsAfter = fegetexcept();
+        fedisableexcept(traps);
+    });
+    creator.join();
+    EXPECT_EQ(failures, 0);
+    // Creation leaves the thread's traps as it found them.
+    EXPECT_EQ(trapsAfter & traps, traps);
 }
 
 GPU_TEST_F(GpuKernelRegistryTest, FillThroughRecordContextUint)

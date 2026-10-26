@@ -7,6 +7,8 @@
 #   tools/bench/node_profile.sh serial CHAIN node...   release build, GPU off, noRenderThreads=1
 #
 # The GPU tag is gpu<CHAIN>; a CPU run's tag is its mode. Summarise with node_profile_summary.py.
+# A gpu run needs CHAIN 2 or more (see node_profile.py), and fails when any profiled node rendered on the CPU,
+# since its profile would then hold CPU times under a GPU tag.
 #
 # NODE_PROFILE_BINARY=<path to a NatronRenderer> (cpu and serial modes only) runs that binary directly on the
 # host under xvfb-run instead of build/release/Renderer/NatronRenderer in the dev container, and leaves
@@ -49,21 +51,22 @@ if [ -n "$external" ] && [ "$mode" = gpu ]; then
 fi
 if [ -n "$external" ]; then external=$(realpath "$external"); fi
 
+status=0
 for node in "$@"; do
     base="$out/$tag-$node"
     rm -f "$base.jsonl".* "$base.steady.jsonl"
     if [ -n "$external" ]; then
         (cd "$repo" && env -u LD_LIBRARY_PATH NP_NODE="$node" NP_CHAIN="$chain" NP_WORK=/tmp/np-$tag \
             NATRON_GPU=$gpu NATRON_RENDER_PROFILE="$base.jsonl" \
-            xvfb-run -a "$external" $args -b tools/bench/node_profile.py) > "$base.log" 2>&1 || { echo "$node: render failed, see $base.log" >&2; continue; }
+            xvfb-run -a "$external" $args -b tools/bench/node_profile.py) > "$base.log" 2>&1 || { echo "$node: render failed, see $base.log" >&2; status=1; continue; }
     else
         "$repo/tools/ci/local/devshell.sh" "${shell[@]}" bash -lc "cd '$repo' && NP_NODE='$node' NP_CHAIN='$chain' NP_WORK=/tmp/np-$tag \
             NATRON_GPU=$gpu NATRON_RENDER_PROFILE='$base.jsonl' OFX_PLUGIN_PATH='$repo/build/assets/Plugins' \
-            xvfb-run -a $binary $args -b tools/bench/node_profile.py" > "$base.log" 2>&1 || { echo "$node: render failed, see $base.log" >&2; continue; }
+            xvfb-run -a $binary $args -b tools/bench/node_profile.py" > "$base.log" 2>&1 || { echo "$node: render failed, see $base.log" >&2; status=1; continue; }
     fi
-    python3 - "$base" <<'PY'
+    python3 - "$base" "$mode" "$node" <<'PY' || status=1
 import glob, json, sys
-base = sys.argv[1]
+base, mode, node = sys.argv[1:4]
 src = glob.glob(base + ".jsonl.*")[0]
 with open(src) as f:
     recs = [json.loads(line) for line in f if line.strip()]
@@ -79,7 +82,17 @@ for frame in sorted(time_of):
 keep = set(keep[1:])
 with open(base + ".steady.jsonl", "w") as out:
     out.writelines(json.dumps(r, separators=(",", ":")) + "\n" for r in recs if r["frame"] in keep)
+if mode == "gpu":
+    prefix = "np_%s_" % node
+    tasks = [r for r in recs if r["frame"] in keep and r.get("node", "").startswith(prefix)]
+    on_cpu = sorted({r["node"] for r in tasks if r.get("device") != "gpu"})
+    regions = [r for r in recs if r["frame"] in keep and r.get("kind") == "region"]
+    if not tasks or on_cpu or not regions:
+        print("%s: NOT PROFILED ON THE GPU: %d task(s), on the CPU: %s, %d region record(s)"
+              % (node, len(tasks), " ".join(on_cpu) or "none", len(regions)), file=sys.stderr)
+        sys.exit(1)
 PY
     rm -f "$base.jsonl".*
     echo "$node: $base.steady.jsonl"
 done
+exit $status

@@ -8,9 +8,8 @@ import mapremap;
 // being the component itself.
 //
 // Minima and maxima are exact, and the radii and the blends are the CPU's float operations in the
-// same order, precise so that none contracts, so the result matches the CPU's bit for bit; only
-// the Map's gamma divides, where a device that does not round its division correctly may differ
-// from the CPU by an ulp of the Map value.
+// same order, precise so that none contracts, so the result matches the CPU's bit for bit. The
+// Map's gamma divides, and mapremap.slang rounds that division itself, since the device need not.
 //
 // MorphParams and MorphConstants mirror IErodeDilateGpuParams and IErodeDilateGpuConstants in
 // Engine/Nodes/Filter/IErodeDilate.cpp.

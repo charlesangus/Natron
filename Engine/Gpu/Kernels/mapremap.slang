@@ -1,12 +1,53 @@
 // MapInputParams::remap() and mapGammaPow() of Engine/Nodes/Filter/MapInput.cpp, for the kernels
 // of the variable-size filters. Every operation is the CPU's float operation in the same order,
-// with its coefficients by their bits, precise so that none contracts, so the Map value matches
-// the CPU's bit for bit on a device whose division rounds correctly.
+// with its coefficients by their bits, precise so that none contracts, and the one division is
+// rounded correctly in integer arithmetic, so the Map value matches the CPU's bit for bit.
 
 // By its bits, as a comparison need not see a NaN.
 bool mapRemapIsNan(float v)
 {
     return (asuint(v) & 0x7fffffffu) > 0x7f800000u;
+}
+
+// a / b rounded to nearest even, as the CPU's float division is. Vulkan lets a float division be
+// off by 2.5 ulp, and RADV divides by multiplying with a reciprocal, so the quotient is formed from
+// the significands by shift and subtract instead. For a and b normal or zero, b nonzero, and a
+// nonzero quotient that is normal, which mapGammaPow's (f - 1) / (f + 1) is: |f - 1| is 0 or at
+// least 2^-24, and f + 1 is in [1.7, 2.5].
+float mapDivide(float a, float b)
+{
+    if (a == 0.0)
+        return asfloat((asuint(a) ^ asuint(b)) & 0x80000000u);
+    const uint ab = asuint(a);
+    const uint bb = asuint(b);
+    const uint signBit = (ab ^ bb) & 0x80000000u;
+    int e = int((ab >> 23) & 0xffu) - int((bb >> 23) & 0xffu);
+    uint ma = (ab & 0x007fffffu) | 0x00800000u;
+    const uint mb = (bb & 0x007fffffu) | 0x00800000u;
+    // ma / mb in [1, 2), so that the quotient's first bit is its leading one.
+    if (ma < mb) {
+        ma <<= 1;
+        e -= 1;
+    }
+    // 24 quotient bits; the remainder stays below 2 mb < 2^25.
+    uint q = 0u;
+    uint r = ma;
+    for (int i = 0; i < 24; ++i) {
+        q <<= 1;
+        if (r >= mb) {
+            r -= mb;
+            q |= 1u;
+        }
+        r <<= 1;
+    }
+    // r is twice the remainder: above mb rounds up, equal to it is a tie that rounds to even.
+    if (r > mb || (r == mb && (q & 1u) != 0u))
+        q += 1u;
+    if (q == 0x01000000u) {
+        q >>= 1;
+        e += 1;
+    }
+    return asfloat(signBit | (uint(e + 127) << 23) | (q & 0x007fffffu));
 }
 
 // mapGammaPow(): m^e for m in (0, 1) and e > 0.
@@ -26,7 +67,7 @@ float mapGammaPow(float m, float e)
     }
     precise float num = f - 1.0;
     precise float den = f + 1.0;
-    precise float s = num / den;
+    const float s = mapDivide(num, den);
     precise float s2 = s * s;
     // log2(f) = s * (c1 + c3 s^2 + c5 s^4 + c7 s^6 + c9 s^8).
     precise float p = asfloat(0x3ea4258au);

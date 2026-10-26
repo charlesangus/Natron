@@ -201,3 +201,5 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`: node layers stay im
 Phase 19.3 (long-lived scene) T1–T5 done at 39dc63851; release gate green; scene_viewer_flip and scene_viewer_live_edit pass under Xvfb (engine count stays 1). T6 bench script written; numbers pending a run.
 
 2026-10-26 — T6 numbers (Xvfb, llvmpipe, 100k-cube .usdc, 20 edits, 2 runs): a USDTransform edit at the head of a 30-op chain shows in 485–491 ms median (p90 ≤ 513 ms) with one engine kept; a USDRead frameOffset edit takes 15.4–16.2 s, about one open, because any sublayer offset change makes USD resync the whole stage (probed: SetSubLayerOffset and the wrapper swap both resync). The old design paid about one open (~15 s) on every edit; its bench numbers were poll artifacts. The closure-walk cache (02468e797) took the offset edit from 37 s to ~16 s.
+
+Shipped 2026-10-26: UAT approved (NVIDIA checked by the user; AMD assumed good unless reported). PR #117 squash-merged to main as a3c965ada; M20's PR retargeted to main.

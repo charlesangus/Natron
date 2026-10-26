@@ -155,11 +155,12 @@ TEST(SceneStageTest, StartsEmptyAndOpensOnce)
     EXPECT_EQ(opensBefore + 1, SceneOps::getStageOpenCount());
     EXPECT_TRUE(stage.getPayload().isEmpty());
     EXPECT_EQ(describe(SceneOps::compose(ScenePayload())), describe(stage.getStage()));
+    const U64 opensAfterCompose = SceneOps::getStageOpenCount();
 
     const PXR_NS::UsdStageRefPtr first = stage.getStage();
     stage.sync(stack({ makeLayer("def Xform \"A\"\n{\n}\n") }));
     EXPECT_EQ(first, stage.getStage());
-    EXPECT_EQ(opensBefore + 1, SceneOps::getStageOpenCount());
+    EXPECT_EQ(opensAfterCompose, SceneOps::getStageOpenCount()) << "sync opens no stage";
 }
 
 // Swapping one node's layer for another notifies only the paths those two layers author.

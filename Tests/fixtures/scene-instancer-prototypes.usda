@@ -1,0 +1,44 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+)
+
+class Xform "Protos"
+{
+    def Cube "Cube"
+    {
+    }
+
+    over Xform "Over"
+    {
+        def Sphere "Ball"
+        {
+        }
+    }
+}
+
+def Xform "World"
+{
+    def Cube "Plain"
+    {
+    }
+
+    def Sphere "GuideBall"
+    {
+        uniform token purpose = "guide"
+    }
+
+    def PointInstancer "Instancer"
+    {
+        rel prototypes = [</Protos/Cube>, </Protos/Over>]
+        int[] protoIndices = [0, 1]
+        point3f[] positions = [(0, 0, 0), (2, 0, 0)]
+    }
+
+    def Camera "Cam"
+    {
+        double3 xformOp:translate = (1, 1, 10)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

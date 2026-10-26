@@ -67,6 +67,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-reference.usda";
+const char* const kInstancerFixture = NATRON_TESTS_FIXTURES_DIR "/scene-instancer-prototypes.usda";
 const int kWidth = 200;
 const int kHeight = 100;
 
@@ -339,7 +340,7 @@ protected:
     }
 
     // USDRead of the fixture into a USDRender at kWidth x kHeight.
-    NodePtr createRender()
+    NodePtr createRender(const char* fixture = kFixture)
     {
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
         NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
@@ -356,7 +357,7 @@ protected:
 
             return NodePtr();
         }
-        file->setValue(std::string(kFixture));
+        file->setValue(std::string(fixture));
         size->setValue(kWidth, ViewSpec::all(), 0);
         size->setValue(kHeight, ViewSpec::all(), 1);
         par->setValue(1.);
@@ -404,6 +405,27 @@ TEST_F(USDRenderNodeTest, MetadataMapsEveryPrimIdToItsPath)
         ASSERT_TRUE(value.has_value()) << key;
         EXPECT_EQ(path, *value);
     }
+}
+
+TEST_F(USDRenderNodeTest, MetadataNamesInstancerPrototypesAndSkipsGuides)
+{
+    NodePtr node = createRender(kInstancerFixture);
+    ASSERT_TRUE(node != nullptr);
+    NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect);
+    const ImageMetadata metadata = effect->getOutputMetadata(1., ViewIdx(0));
+    auto lookup = [&metadata](const char* path) {
+        char key[32];
+        std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash(path));
+
+        return metadata.getString(key);
+    };
+    for (const char* path : { "/Protos/Cube", "/Protos/Over/Ball", "/World/Plain" }) {
+        const std::optional<std::string> value = lookup(path);
+        ASSERT_TRUE(value.has_value()) << path;
+        EXPECT_EQ(path, *value);
+    }
+    EXPECT_FALSE(lookup("/World/GuideBall").has_value());
 }
 
 TEST_F(USDRenderNodeTest, RendersEveryPlaneThroughTheNode)

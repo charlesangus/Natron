@@ -304,11 +304,20 @@ USDRender::deriveOutputMetadata(double time,
     if (!stage) {
         return metadata;
     }
-    for (const PXR_NS::UsdPrim& prim : stage->Traverse(PXR_NS::UsdTraverseInstanceProxies())) {
-        if (prim.IsA<PXR_NS::UsdGeomGprim>()) {
-            const std::string path = prim.GetPath().GetString();
-            metadata.setString(primIdKey(HydraRender::primPathHash(path)), path);
+    // Point instancer prototypes are commonly authored as class or over prims, which the default traversal skips but Storm draws
+    // through the instancer, so every prim is visited. The render draws the default and proxy purposes only (HydraRender leaves
+    // showGuides and showRender off), so guide- and render-purpose prims get no entry.
+    const PXR_NS::UsdPrimRange all(stage->GetPseudoRoot(), PXR_NS::UsdTraverseInstanceProxies(PXR_NS::UsdPrimAllPrimsPredicate));
+    for (const PXR_NS::UsdPrim& prim : all) {
+        if (!prim.IsA<PXR_NS::UsdGeomGprim>()) {
+            continue;
         }
+        const PXR_NS::TfToken purpose = PXR_NS::UsdGeomImageable(prim).ComputePurpose();
+        if ((purpose != PXR_NS::UsdGeomTokens->default_) && (purpose != PXR_NS::UsdGeomTokens->proxy)) {
+            continue;
+        }
+        const std::string path = prim.GetPath().GetString();
+        metadata.setString(primIdKey(HydraRender::primPathHash(path)), path);
     }
 
     return metadata;

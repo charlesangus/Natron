@@ -45,9 +45,11 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/IO/ReadTimeDomain.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Metadata/OfxMetadataBridge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -55,6 +57,8 @@
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Project.h"
+#include "Engine/RectI.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
@@ -227,7 +231,7 @@ protected:
         KnobFile* knob = dynamic_cast<KnobFile*>(node->getKnobByName(kOfxImageEffectFileParamName).get());
         ASSERT_TRUE(knob != NULL);
         knob->setValue(file);
-        node->getEffectInstance()->refreshMetadata_public(false);
+        node->getEffectInstance()->dropCachedMetadata();
     }
 
     // What the GUI does when the user types into an int knob.
@@ -339,6 +343,52 @@ TEST_F(NativeReadMetadataTest, FrameKeysFollowTheTimeOffsetAndTheFilename)
     EXPECT_EQ(std::optional<std::string>(framePath(dir, "b", 2)), metadata.getString("ofx/filepath"));
 }
 
+// Each frame of a sequence whose files differ in size, PAR and channels reports its own file's
+// values, whichever frame the timeline is on. A missing frame reports the file the missing-frame
+// mode renders: the held frame's, or the sequence's first when it renders black.
+TEST_F(NativeReadMetadataTest, EachFrameReportsItsOwnFilesFormat)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    OIIO::ImageSpec rgb(1920, 1080, 3, OIIO::TypeDesc::HALF);
+    OIIO::ImageSpec anamorphic(2048, 858, 4, OIIO::TypeDesc::HALF);
+    anamorphic.attribute("PixelAspectRatio", 2.0f);
+    ASSERT_TRUE(writeImage(framePath(dir, "sizes", 1), rgb));
+    ASSERT_TRUE(writeImage(framePath(dir, "sizes", 2), anamorphic));
+    ASSERT_TRUE(writeImage(framePath(dir, "sizes", 4), rgb));
+    NodePtr read = createRead(patternPath(dir, "sizes"));
+    ASSERT_TRUE(bool(read));
+    EffectInstancePtr effect = read->getEffectInstance();
+
+    const SequenceTime timelineFrames[2] = { 2, 1 };
+    for (int t = 0; t < 2; ++t) {
+        getApp()->getTimeLine()->seekFrame(timelineFrames[t], false, NULL, eTimelineChangeReasonOtherSeek);
+        NodeMetadataConstPtr first = effect->getMetadata(1, ViewIdx(0));
+        NodeMetadataConstPtr second = effect->getMetadata(2, ViewIdx(0));
+        ASSERT_TRUE(first && second);
+        EXPECT_EQ(RectI(0, 0, 1920, 1080), first->getOutputFormat()) << "timeline at " << timelineFrames[t];
+        EXPECT_DOUBLE_EQ(1., first->getPixelAspectRatio(-1)) << "timeline at " << timelineFrames[t];
+        EXPECT_EQ(3, first->getNComps(-1)) << "timeline at " << timelineFrames[t];
+        EXPECT_EQ(RectI(0, 0, 2048, 858), second->getOutputFormat()) << "timeline at " << timelineFrames[t];
+        EXPECT_DOUBLE_EQ(2., second->getPixelAspectRatio(-1)) << "timeline at " << timelineFrames[t];
+        EXPECT_EQ(4, second->getNComps(-1)) << "timeline at " << timelineFrames[t];
+    }
+
+    KnobChoice* onMissing = dynamic_cast<KnobChoice*>(read->getKnobByName("onMissingFrame").get());
+    ASSERT_TRUE(onMissing != NULL);
+    onMissing->setValue((int)ReadTimeDomain::eMissingPrevious);
+    NodeMetadataConstPtr held = effect->getMetadata(3, ViewIdx(0));
+    ASSERT_TRUE(bool(held));
+    EXPECT_EQ(RectI(0, 0, 2048, 858), held->getOutputFormat());
+    EXPECT_DOUBLE_EQ(2., held->getPixelAspectRatio(-1));
+
+    onMissing->setValue((int)ReadTimeDomain::eMissingBlack);
+    NodeMetadataConstPtr black = effect->getMetadata(3, ViewIdx(0));
+    ASSERT_TRUE(bool(black));
+    EXPECT_EQ(RectI(0, 0, 1920, 1080), black->getOutputFormat());
+    EXPECT_DOUBLE_EQ(1., black->getPixelAspectRatio(-1));
+}
+
 TEST_F(NativeReadMetadataTest, AFrameThatLoadsBlackHasNoFileKeys)
 {
     QTemporaryDir dir;
@@ -395,8 +445,8 @@ TEST_F(NativeReadMetadataTest, AFileFrameRateIsPlainMetadataAndNotTheOutputRate)
 
     EXPECT_FALSE(metadata.contains("ofx/framerate"));
     EXPECT_EQ(std::optional<double>(24000. / 1001.), metadata.getDouble("exr/FramesPerSecond"));
-    EXPECT_DOUBLE_EQ(empty->getEffectInstance()->getFrameRate(), read->getEffectInstance()->getFrameRate());
-    EXPECT_NE(24000. / 1001., read->getEffectInstance()->getFrameRate());
+    EXPECT_DOUBLE_EQ(empty->getEffectInstance()->getTimeInvariantMetadata()->getOutputFrameRate(), read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFrameRate());
+    EXPECT_NE(24000. / 1001., read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFrameRate());
 }
 
 TEST_F(NativeReadMetadataTest, KeysReachANativeNodePastADot)

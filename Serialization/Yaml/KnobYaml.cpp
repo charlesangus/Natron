@@ -901,6 +901,11 @@ namespace YamlDetail {
                 em << YAML::Value;
                 emitBool(em, true);
             }
+            if (group.isRFVGroup) {
+                emitKey(em, "rfv");
+                em << YAML::Value;
+                emitBool(em, true);
+            }
             em << YAML::EndMap;
             if (!group.children.empty()) {
                 emitKey(em, "children");
@@ -957,6 +962,9 @@ namespace YamlDetail {
             }
             if (YAML::Node opened = definition.get("opened")) {
                 group.isOpened = readBool(opened, context + ".group.opened");
+            }
+            if (YAML::Node rfv = definition.get("rfv")) {
+                group.isRFVGroup = readBool(rfv, context + ".group.rfv");
             }
             definition.finish();
             if (YAML::Node children = reader.get("children")) {

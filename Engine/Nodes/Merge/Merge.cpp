@@ -687,7 +687,9 @@ MergeNode::deriveOutputMetadata(double time,
 }
 
 StatusEnum
-MergeNode::getPreferredMetadata(NodeMetadata& metadata)
+MergeNode::getPreferredMetadataAt(double /*time*/,
+                                  ViewIdx /*view*/,
+                                  NodeMetadata& metadata)
 {
     // The output always has an alpha channel: an RGB B is transparent outside A, so A and B in
     // RGB still give RGBA. The inputs are read in the output's layout.
@@ -812,7 +814,7 @@ MergeNode::isOpIdentity(double time,
         RectD maskRoD;
         if (getInputRoD(kMergeInputMask, time, scale, view, &maskRoD)) {
             maskPixelsValid = true;
-            maskPixels = toPixelEnclosing(maskRoD, scale, getAspectRatio(kMergeInputMask));
+            maskPixels = toPixelEnclosing(maskRoD, scale, getRenderMetadata(time, view)->getPixelAspectRatio(kMergeInputMask));
             if (!rectIntersection<RectI>(roi, maskPixels, 0)) {
                 return true;
             }
@@ -831,7 +833,7 @@ MergeNode::isOpIdentity(double time,
         if (!getInputRoD(a, time, scale, view, &aRoD) || rectIsEmpty(aRoD)) {
             continue;
         }
-        RectI aPixels = toPixelEnclosing(aRoD, scale, getAspectRatio(a));
+        RectI aPixels = toPixelEnclosing(aRoD, scale, getRenderMetadata(time, view)->getPixelAspectRatio(a));
         bool aPixelsValid = true;
         if (maskPixelsValid) {
             aPixelsValid = rectIntersection<RectI>(aPixels, maskPixels, &aPixels);

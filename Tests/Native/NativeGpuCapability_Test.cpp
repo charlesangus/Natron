@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Generator/Noise.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
@@ -89,6 +90,7 @@ gpuCapableIds()
         PLUGINID_NATRON_CONSTANT,
         PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_CHECKERBOARD,
+        PLUGINID_NATRON_NOISE,
         PLUGINID_NATRON_SATURATION,
         PLUGINID_NATRON_ADD,
         PLUGINID_NATRON_MULTIPLY,
@@ -166,5 +168,5 @@ TEST_F(NativeGpuCapabilityTest, DefaultsDeclineAndPassTheRegionThrough)
     ASSERT_TRUE(effect != nullptr);
 
     const RectI roi(10, 20, 110, 220);
-    EXPECT_EQ(roi, effect->getGpuInputRoI(0, roi, RenderScale()));
+    EXPECT_EQ(roi, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale()));
 }

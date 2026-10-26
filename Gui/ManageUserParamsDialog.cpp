@@ -28,16 +28,19 @@
 #include <stdexcept>
 
 #include <QHBoxLayout>
-#include <QVBoxLayout>
-#include <QTreeWidget>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
+#include <QTreeWidget>
+#include <QVBoxLayout>
 
+#include "Engine/AppInstance.h"
 #include "Engine/Knob.h" // KnobI
 #include "Engine/KnobTypes.h" // KnobPage
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h" // NodePtr
+#include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/Utils.h" // convertFromPlainText
 
 #include "Gui/AddKnobDialog.h"
@@ -85,6 +88,7 @@ public:
 struct ManageUserParamsDialogPrivate
 {
     DockablePanel* panel;
+    KnobGroupPtr rfvScope;
     QHBoxLayout* mainLayout;
     UserParamsDialogTreeWidget* tree;
     std::list<TreeItem> items;
@@ -98,9 +102,10 @@ struct ManageUserParamsDialogPrivate
     Button* downButton;
     Button* closeButton;
 
-
-    ManageUserParamsDialogPrivate(DockablePanel* panel)
+    ManageUserParamsDialogPrivate(DockablePanel* panel,
+                                  const KnobGroupPtr& rfvScope)
         : panel(panel)
+        , rfvScope(rfvScope)
         , mainLayout(0)
         , tree(0)
         , items()
@@ -124,6 +129,9 @@ struct ManageUserParamsDialogPrivate
 
     void saveAndRebuildPages();
 
+    // The RFV group a new or edited knob must stay in: the scope, or the RFV group holding knob.
+    KnobGroupPtr getRFVGroupFor(const KnobIPtr& knob) const;
+
     std::list<TreeItem>::const_iterator findItemForTreeItem(const QTreeWidgetItem* item) const
     {
         for (std::list<TreeItem>::const_iterator it = items.begin(); it != items.end(); ++it) {
@@ -137,16 +145,19 @@ struct ManageUserParamsDialogPrivate
 };
 
 ManageUserParamsDialog::ManageUserParamsDialog(DockablePanel* panel,
-                                               QWidget* parent)
+                                               QWidget* parent,
+                                               const KnobGroupPtr& rfvScope)
     : QDialog(parent)
-    , _imp( new ManageUserParamsDialogPrivate(panel) )
+    , _imp(new ManageUserParamsDialogPrivate(panel, rfvScope))
 {
     EffectInstance* effect = dynamic_cast<EffectInstance*>( panel->getHolder() );
-    QString title = QString::fromUtf8("User Parameters");
+    QString title = rfvScope ? QString::fromUtf8("Variables") : QString::fromUtf8("User Parameters");
 
     if (effect) {
         title += QString::fromUtf8(" for ");
         title += QString::fromUtf8( effect->getScriptName().c_str() );
+    } else if (dynamic_cast<Project*>(panel->getHolder())) {
+        title = QString::fromUtf8("Project ") + title;
     }
     setWindowTitle(title);
     _imp->mainLayout = new QHBoxLayout(this);
@@ -165,7 +176,21 @@ ManageUserParamsDialog::ManageUserParamsDialog(DockablePanel* panel,
     QObject::connect( _imp->tree, SIGNAL(itemSelectionChanged()), this, SLOT(onSelectionChanged()) );
     QObject::connect( _imp->tree, SIGNAL(itemDoubleClicked(QTreeWidgetItem*,int)), this, SLOT(onItemDoubleClicked(QTreeWidgetItem*,int)) );
     std::list<KnobI*> markedKnobs;
-    const KnobsVec& knobs = panel->getHolder()->getKnobs();
+    if (rfvScope) {
+        TreeItem groupItem;
+        groupItem.item = new QTreeWidgetItem(_imp->tree);
+        groupItem.scriptName = QString::fromUtf8(rfvScope->getName().c_str());
+        groupItem.item->setText(0, groupItem.scriptName);
+        groupItem.knob = rfvScope;
+        groupItem.item->setExpanded(true);
+        _imp->items.push_back(groupItem);
+        markedKnobs.push_back(rfvScope.get());
+        _imp->initializeKnobs(rfvScope->getChildren(), groupItem.item, markedKnobs);
+    }
+    KnobsVec knobs;
+    if (!rfvScope) {
+        knobs = panel->getHolder()->getKnobs();
+    }
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         KnobPage* page = dynamic_cast<KnobPage*>( it->get() );
         if (page) {
@@ -199,6 +224,8 @@ ManageUserParamsDialog::ManageUserParamsDialog(DockablePanel* panel,
     _imp->pickButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Add a new parameter that is directly copied from/linked to another parameter"), NATRON_NAMESPACE::WhiteSpaceNormal) );
     QObject::connect( _imp->pickButton, SIGNAL(clicked(bool)), this, SLOT(onPickClicked()) );
     _imp->buttonsLayout->addWidget(_imp->pickButton);
+    // Picking duplicates onto a node, and a scoped dialog adds variables only.
+    _imp->pickButton->setVisible(effect && !rfvScope);
 
     _imp->editButton = new Button(tr("Edit..."), _imp->buttonsContainer);
     _imp->editButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Edit the selected parameter"), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -255,6 +282,50 @@ createTextForKnob(const KnobIPtr& knob)
     return text;
 }
 
+// An RFV group, the page holding one, and a plug-in's own control placed in one can be neither
+// deleted, edited nor moved.
+static bool
+isPinnedKnob(const KnobIPtr& knob)
+{
+    if (RFV::isPluginControl(knob)) {
+        return true;
+    }
+    KnobGroup* isGroup = dynamic_cast<KnobGroup*>(knob.get());
+    if (isGroup) {
+        if (isGroup->isRFVGroup()) {
+            return true;
+        }
+    } else if (!dynamic_cast<KnobPage*>(knob.get())) {
+        return false;
+    }
+    KnobsVec children = isGroup ? isGroup->getChildren() : dynamic_cast<KnobPage*>(knob.get())->getChildren();
+    for (KnobsVec::const_iterator it = children.begin(); it != children.end(); ++it) {
+        if (isPinnedKnob(*it)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+KnobGroupPtr
+ManageUserParamsDialogPrivate::getRFVGroupFor(const KnobIPtr& knob) const
+{
+    if (rfvScope) {
+        return rfvScope;
+    }
+    KnobGroupPtr isGroup = std::dynamic_pointer_cast<KnobGroup>(knob);
+    if (isGroup && isGroup->isRFVGroup()) {
+        return isGroup;
+    }
+    KnobGroupPtr parentGroup = knob ? std::dynamic_pointer_cast<KnobGroup>(knob->getParentKnob()) : KnobGroupPtr();
+    if (parentGroup && parentGroup->isRFVGroup()) {
+        return parentGroup;
+    }
+
+    return KnobGroupPtr();
+}
+
 void
 ManageUserParamsDialogPrivate::initializeKnobs(const KnobsVec& knobs,
                                                QTreeWidgetItem* parent,
@@ -286,7 +357,8 @@ ManageUserParamsDialogPrivate::initializeKnobs(const KnobsVec& knobs,
 void
 ManageUserParamsDialogPrivate::rebuildUserPages()
 {
-    panel->recreateUserKnobs(true);
+    // Through the holder, which also lets it rearrange its user knobs first.
+    panel->getHolder()->recreateUserKnobs(true);
 }
 
 bool
@@ -319,6 +391,11 @@ ManageUserParamsDialog::onPickClicked()
         if (!ensureHasUserPage()) {
             return;
         }
+        if (group && group->isRFVGroup() && !RFV::isVariableKnobType(selectedKnob->getKnob())) {
+            Dialogs::errorDialog(tr("Pick").toStdString(), tr("This parameter cannot be a variable, so it cannot go in the group %1.").arg(QString::fromUtf8(group->getName().c_str())).toStdString());
+
+            return;
+        }
         NodeSettingsPanel* nodePanel = dynamic_cast<NodeSettingsPanel*>(_imp->panel);
         assert(nodePanel);
         if (!nodePanel) {
@@ -348,6 +425,17 @@ ManageUserParamsDialog::onPickClicked()
 void
 ManageUserParamsDialog::onAddClicked()
 {
+    if (_imp->rfvScope) {
+        KnobPagePtr scopePage = _imp->rfvScope->getTopLevelPage();
+        AddKnobDialog dialog(_imp->panel, KnobIPtr(), scopePage ? scopePage->getName() : std::string(), _imp->rfvScope->getName(), this);
+        dialog.setRFVScope(_imp->rfvScope);
+        if (dialog.exec()) {
+            _imp->createItemForKnob(dialog.getKnob());
+            _imp->saveAndRebuildPages();
+        }
+
+        return;
+    }
     if (!ensureHasUserPage()) {
         AddKnobDialog dialog(_imp->panel, KnobIPtr(), std::string(), std::string(), this);
         dialog.setVisibleType(false);
@@ -361,11 +449,14 @@ ManageUserParamsDialog::onAddClicked()
 
     }
     std::string selectedPageName, selectedGroupName;
+    KnobGroupPtr rfvGroup;
 
     QList<QTreeWidgetItem*> selection = _imp->tree->selectedItems();
     if ( !selection.isEmpty() ) {
         std::list<TreeItem>::const_iterator item = _imp->findItemForTreeItem( selection.front() );
         if ( item != _imp->items.end() ) {
+            // Adding next to a variable, or on its group, adds a variable.
+            rfvGroup = _imp->getRFVGroupFor(item->knob);
             KnobPage* isPage = dynamic_cast<KnobPage*>( item->knob.get() );
             if (isPage) {
                 selectedPageName = isPage->getName();
@@ -383,6 +474,9 @@ ManageUserParamsDialog::onAddClicked()
     }
 
     AddKnobDialog dialog(_imp->panel, KnobIPtr(), selectedPageName, selectedGroupName, this);
+    if (rfvGroup) {
+        dialog.setRFVScope(rfvGroup);
+    }
     if ( dialog.exec() ) {
         KnobIPtr knob = dialog.getKnob();
         _imp->createItemForKnob(knob);
@@ -455,6 +549,11 @@ void
 ManageUserParamsDialogPrivate::saveAndRebuildPages()
 {
     rebuildUserPages();
+    KnobHolder* holder = panel->getHolder();
+    if (dynamic_cast<Project*>(holder)) {
+        // The project's knobs are app.<name> in Python, which must follow adds, renames and deletes.
+        holder->getApp()->refreshProjectParamsInPython();
+    }
     panel->getGui()->getApp()->triggerAutoSave();
 }
 
@@ -498,6 +597,10 @@ ManageUserParamsDialog::onEditClickedInternal(const QList<QTreeWidgetItem*> &sel
                 if (it->item == selection[i]) {
                     KnobIPtr oldParentKnob = it->knob->getParentKnob();
                     AddKnobDialog dialog(_imp->panel, it->knob, std::string(), std::string(), this);
+                    KnobGroupPtr rfvGroup = _imp->getRFVGroupFor(it->knob);
+                    if (rfvGroup) {
+                        dialog.setRFVScope(rfvGroup);
+                    }
                     if ( dialog.exec() ) {
                         int indexIndParent = -1;
                         QTreeWidgetItem* parent = it->item->parent();
@@ -717,10 +820,16 @@ ManageUserParamsDialog::onSelectionChanged()
     QList<QTreeWidgetItem*> selection = _imp->tree->selectedItems();
     bool canEdit = true;
     bool canDelete = true;
+    bool canMove = true;
     if ( !selection.isEmpty() ) {
         QTreeWidgetItem* item = selection[0];
         for (std::list<TreeItem>::iterator it = _imp->items.begin(); it != _imp->items.end(); ++it) {
             if (it->item == item) {
+                if (isPinnedKnob(it->knob)) {
+                    canEdit = false;
+                    canDelete = false;
+                    canMove = false;
+                }
                 KnobPage* isPage = dynamic_cast<KnobPage*>( it->knob.get() );
                 KnobGroup* isGroup = dynamic_cast<KnobGroup*>( it->knob.get() );
                 if (isPage) {
@@ -738,8 +847,8 @@ ManageUserParamsDialog::onSelectionChanged()
 
     _imp->removeButton->setEnabled(selection.size() == 1 && canDelete);
     _imp->editButton->setEnabled(selection.size() == 1 && canEdit);
-    _imp->upButton->setEnabled(selection.size() == 1);
-    _imp->downButton->setEnabled(selection.size() == 1);
+    _imp->upButton->setEnabled(selection.size() == 1 && canMove);
+    _imp->downButton->setEnabled(selection.size() == 1 && canMove);
 }
 
 NATRON_NAMESPACE_EXIT

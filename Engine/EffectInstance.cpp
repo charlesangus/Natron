@@ -26,15 +26,17 @@
 #include "EffectInstance.h"
 #include "EffectInstancePrivate.h"
 
-#include <map>
-#include <sstream> // stringstream
 #include <algorithm> // min, max
-#include <fstream>
 #include <bitset>
 #include <cassert>
+#include <cmath>
+#include <fstream>
 #include <limits>
-#include <stdexcept>
+#include <map>
+#include <optional>
 #include <sstream> // stringstream
+#include <stdexcept>
+#include <unordered_set>
 
 #include <QReadWriteLock>
 #include <QCoreApplication>
@@ -708,7 +710,7 @@ EffectInstance::retrieveGetImageDataUponFailure(const double time,
     }
 
     assert(isSupportedRenderScale(supportsRenderScaleMaybe(), scale));
-    const RectI pixelRod = rod.toPixelEnclosing(scale, getAspectRatio(-1));
+    const RectI pixelRod = rod.toPixelEnclosing(scale, getRenderMetadata(time, view)->getPixelAspectRatio(-1));
     try {
         int identityInputNb;
         double identityTime;
@@ -882,7 +884,7 @@ EffectInstance::lookupFrameStore(const EffectInstancePtr& input,
     const FrameViewRequest* request = (inputFrameArgs && inputFrameArgs->request) ? inputFrameArgs->request->getFrameViewRequest(time, view) : 0;
     if (request) {
         // Stored images stop at the region of definition, which a requested RoI may exceed.
-        neededRoI = neededRoI.intersect(request->globalData.rod.toPixelEnclosing(mipmap, input->getAspectRatio(-1)));
+        neededRoI = neededRoI.intersect(request->globalData.rod.toPixelEnclosing(mipmap, input->getRenderMetadata(inputFrameArgs, time, view)->getPixelAspectRatio(-1)));
         if (neededRoI.isNull()) {
             return false;
         }
@@ -1085,6 +1087,7 @@ EffectInstance::getImage(int inputNb,
     bool isAnalysisPass = false;
     RectD thisRod;
     double thisEffectRenderTime = time;
+    ViewIdx thisEffectRenderView = view;
 
     ///Try to find in the input images thread-local storage if we already pre-computed the image
     EffectInstance::InputImagesMap inputImagesThreadLocal;
@@ -1135,6 +1138,7 @@ EffectInstance::getImage(int inputNb,
                 inputsRoI = renderArgs.regionOfInterestResults;
             }
             thisEffectRenderTime = renderArgs.time;
+            thisEffectRenderView = renderArgs.view;
             isIdentity = renderArgs.isIdentity;
             identityInput = renderArgs.identityInput;
             inputImagesThreadLocal = renderArgs.inputImages;
@@ -1251,13 +1255,16 @@ EffectInstance::getImage(int inputNb,
         }
     }
 
-    ///Both the result of getRegionsOfInterest and optionalBounds are in canonical coordinates, we have to convert in both cases
-    ///Convert to pixel coordinates
-    const double par = getAspectRatio(inputNb);
-    ImageBitDepthEnum depth = getBitDepth(inputNb);
+    /// Both the result of getRegionsOfInterest and optionalBounds are in canonical coordinates, we have to convert in both cases
+    /// Convert to pixel coordinates
+    // This node's clip for the input, as it is at the frame this node renders, whatever time the
+    // input is fetched at.
+    const NodeMetadataConstPtr thisMetadata = getRenderMetadata(thisEffectRenderTime, thisEffectRenderView);
+    const double par = thisMetadata->getPixelAspectRatio(inputNb);
+    ImageBitDepthEnum depth = thisMetadata->getBitDepth(inputNb);
     ImageLayerDesc components;
     ImageLayerDesc clipPrefComps, clipPrefMappedComps;
-    getMetadataComponents(inputNb, &clipPrefComps, &clipPrefMappedComps);
+    getLayersFromMetadata(*thisMetadata, inputNb, &clipPrefComps, &clipPrefMappedComps);
 
     if (layer) {
         components = *layer;
@@ -1436,7 +1443,7 @@ EffectInstance::getImage(int inputNb,
         }
         // Textures are always 32-bit float, so the plane uploaded to one is built at that depth.
         const ImageBitDepthEnum zeroDepth = (returnStorage == eStorageModeGLTex) ? eImageBitDepthFloat : depth;
-        inputImg = std::make_shared<Image>(renderedComps, zeroRoD, zeroBounds, renderMappedMipmapLevel, par, zeroDepth, inputEffect->getFieldingOrder(), false, eStorageModeRAM);
+        inputImg = std::make_shared<Image>(renderedComps, zeroRoD, zeroBounds, renderMappedMipmapLevel, par, zeroDepth, inputEffect->getRenderMetadata(time, view)->getOutputFielding(), false, eStorageModeRAM);
         inputImg->fillZero(zeroBounds);
         if (returnStorage == eStorageModeGLTex) {
             inputImg = convertRAMImageToOpenGLTexture(inputImg);
@@ -1529,15 +1536,16 @@ EffectInstance::getImage(int inputNb,
 
 void
 EffectInstance::calcDefaultRegionOfDefinition(U64 /*hash*/,
-                                              double /*time*/,
-                                              const RenderScale & scale,
-                                              ViewIdx /*view*/,
-                                              RectD *rod)
+                                              double time,
+                                              const RenderScale& scale,
+                                              ViewIdx view,
+                                              RectD* rod)
 {
 
     unsigned int mipmapLevel = scale.toMipmapLevel();
-    RectI format = getOutputFormat();
-    double par = getAspectRatio(-1);
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    RectI format = metadata->getOutputFormat();
+    double par = metadata->getPixelAspectRatio(-1);
     *rod = format.toCanonical_noClipping(mipmapLevel, par);
 }
 
@@ -1637,9 +1645,10 @@ EffectInstance::ifInfiniteApplyHeuristic(U64 hash,
     RectD canonicalFormat;
 
     if (x1Infinite || y1Infinite || x2Infinite || y2Infinite) {
-        RectI format = getOutputFormat();
+        const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+        RectI format = metadata->getOutputFormat();
         assert(!format.isNull());
-        double par = getAspectRatio(-1);
+        double par = metadata->getPixelAspectRatio(-1);
         unsigned int mipmapLevel = scale.toMipmapLevel();
         canonicalFormat = format.toCanonical_noClipping(mipmapLevel, par);
     }
@@ -2554,6 +2563,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 view,
                                                 rectToRender.isIdentity,
                                                 rectToRender.identityTime,
+                                                rectToRender.identityView,
                                                 rectToRender.identityInput,
                                                 compsNeeded,
                                                 rectToRender.imgs,
@@ -2835,7 +2845,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             // If color layer, request the preferred comp of the identity input
             if (tls->currentRenderArgs.identityInput && it->second.renderMappedImage->getComponents().isColorLayer()) {
                 ImageLayerDesc prefInputComps, prefInputCompsPaired;
-                tls->currentRenderArgs.identityInput->getMetadataComponents(-1, &prefInputComps, &prefInputCompsPaired);
+                getLayersFromMetadata(*tls->currentRenderArgs.identityInput->getRenderMetadata(tls->currentRenderArgs.identityTime, tls->currentRenderArgs.identityView), -1, &prefInputComps, &prefInputCompsPaired);
                 comps.push_back(prefInputComps);
             } else {
                 comps.push_back( it->second.renderMappedImage->getComponents() );
@@ -2847,7 +2857,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs(new EffectInstance::RenderRoIArgs(tls->currentRenderArgs.identityTime,
                                                                                                     actionArgs.originalScale,
                                                                                                     mipmapLevel,
-                                                                                                    view,
+                                                                                                    tls->currentRenderArgs.identityView,
                                                                                                     false,
                                                                                                     downscaledRectToRender,
                                                                                                     RectD(),
@@ -3479,7 +3489,7 @@ EffectInstance::evaluate(bool isSignificant,
     NodePtr node = getNode();
 
     if ( refreshMetadatas && node->isNodeCreated() ) {
-        refreshMetadata_public(true);
+        refreshMetadataSideEffects();
     }
 
     /*
@@ -3518,10 +3528,20 @@ EffectInstance::message(MessageTypeEnum type,
     return node ? node->message(type, content) : false;
 }
 
+namespace {
+bool isCheckingIdentityForMetadata(const EffectInstance* effect);
+}
+
 void
 EffectInstance::setPersistentMessage(MessageTypeEnum type,
                                      const std::string & content)
 {
+    // The identity rule asks a metadata question at every current-frame refresh, not a render's:
+    // a plug-in error posted from it would overwrite the host's own report, which nothing then
+    // clears. A render asking the same identity still posts it.
+    if (isCheckingIdentityForMetadata(this)) {
+        return;
+    }
     NodePtr node = getNode();
     assert(node);
     if (node) {
@@ -4288,15 +4308,7 @@ EffectInstance::hasComponentsNeededInCache(U64 hash,
                                            double time,
                                            ViewIdx view) const
 {
-    ComponentsNeededMap comps;
-    std::bitset<4> processChannels;
-    ProcessChannelsPerPlaneMap processChannelsPerPlane;
-    std::list<ImageLayerDesc> passThroughLayers;
-    int passThroughInputNb = -1;
-    ViewIdx passThroughView;
-    double passThroughTime = 0.;
-
-    return _imp->actionsCache->getComponentsNeededResults(hash, time, view, &comps, &processChannels, &processChannelsPerPlane, &passThroughLayers, &passThroughInputNb, &passThroughView, &passThroughTime);
+    return (bool)_imp->actionsCache->getComponentsNeededResults(hash, time, view);
 }
 
 StatusEnum
@@ -4761,12 +4773,36 @@ EffectInstance::getLayersPassThroughInput(double time,
     ViewIdx identityView = view;
     int identityInputNb = -1;
     bool identity = false;
-    {
-        const TLSFlagSetter resolving(&tls->resolvingLayersPassThrough);
-        // Uncached: the identity cache is keyed on (hash, time, view) only, so this whole-image
-        // answer must neither be served to a render asking about its own window nor, when taken
-        // before an edit the hash does not capture, outlive that edit.
-        identity = isIdentity_public(false, 0, time, RenderScale::identity, getOutputFormat(), view, &identityTime, &identityView, &identityInputNb);
+    // Its own slot, not the render-window identity cache: this answer is for the whole image and
+    // skips the layer selection, so a render asking about its own window must not be served it.
+    // It reads this effect's metadata, so it is stored under the metadata it read and kept only
+    // where that metadata is final: not inside this effect's own identity rule, which hands out
+    // the metadata being checked, nor inside its time-invariant derivation, which hands out
+    // partial answers. Stored as getMetadata() stores, so an edit the hash does not yet reflect,
+    // or a same-hash drop, leaves nothing behind; a render whose frame hash is not the node's
+    // current one reads a snapshot this key does not name.
+    NodePtr node = getNode();
+    const U64 writes = KnobContentWrite::snapshot();
+    const U64 marks = node->getHashMarkCount();
+    const U64 generation = _imp->actionsCache->getMetadataGeneration();
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    U64 hash = 0;
+    bool cacheable = !isCheckingIdentityForMetadata(this) && !tls->timeInvariantInProgress && !tls->timeInvariantInputsMetadata && node->getHashValueIfUpToDate(&hash) && (getRenderHash() == hash);
+    if (!cacheable || !_imp->actionsCache->getPassThroughIdentityResult(hash, time, view, metadata, &identity, &identityInputNb, &identityView, &identityTime)) {
+        {
+            const TLSFlagSetter resolving(&tls->resolvingLayersPassThrough);
+            identity = isIdentity_public(false, 0, time, RenderScale::identity, metadata->getOutputFormat(), view, &identityTime, &identityView, &identityInputNb);
+        }
+        U64 hashAfter = 0;
+        if (cacheable && (node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == hash) && KnobContentWrite::isSettled(writes)) {
+            PassThroughIdentityResults results;
+            results.metadata = metadata;
+            results.identity = identity;
+            results.inputIdentityNb = identityInputNb;
+            results.inputIdentityTime = identityTime;
+            results.inputView = identityView;
+            _imp->actionsCache->setPassThroughIdentityResult(hash, time, view, results, generation);
+        }
     }
 
     if (identity && (identityInputNb >= 0)) {
@@ -4783,12 +4819,12 @@ EffectInstance::getLayersPassThroughInput(double time,
 // declared channel count, or, for Furnace-style effects, a disparity/motion plane with its
 // paired plane, since both must be rendered at once. RGBA until the metadata are set.
 static void
-getMetadataPlanes(const EffectInstance* effect,
+getMetadataPlanes(const NodeMetadata& metadata,
                   int inputNb,
                   std::list<ImageLayerDesc>* planes)
 {
     ImageLayerDesc metadataLayer, metadataPairedLayer;
-    effect->getMetadataComponents(inputNb, &metadataLayer, &metadataPairedLayer);
+    EffectInstance::getLayersFromMetadata(metadata, inputNb, &metadataLayer, &metadataPairedLayer);
     if (metadataLayer.getNumComponents() > 0) {
         planes->push_back(metadataLayer);
     }
@@ -4836,6 +4872,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
                                            int* passThroughInputNb)
 {
     NodePtr node = getNode();
+    const NodeMetadataConstPtr renderMetadata = getRenderMetadata(time, view);
 
     ViewIdx ptView;
     bool routesPassThroughInputOnly = false;
@@ -4878,7 +4915,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
 
     {
         std::list<ImageLayerDesc> metadataPlanes;
-        getMetadataPlanes(this, -1, &metadataPlanes);
+        getMetadataPlanes(*renderMetadata, -1, &metadataPlanes);
 
         std::list<ImageLayerDesc>& outputPlanes = (*comps)[-1];
         outputPlanes.clear();
@@ -4928,7 +4965,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
             inputPlanes = readLayers;
         } else {
             std::list<ImageLayerDesc> metadataPlanes;
-            getMetadataPlanes(this, i, &metadataPlanes);
+            getMetadataPlanes(*renderMetadata, i, &metadataPlanes);
             if (hasLayerKnob) {
                 appendSelectedPlanes(selected, metadataPlanes, &inputPlanes, NULL);
             }
@@ -4958,36 +4995,16 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
 } // EffectInstance::getComponentsNeededDefault
 
 void
-EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
-                                                      double time,
-                                                      ViewIdx view,
-                                                      EffectInstance::ComponentsNeededMap* comps,
-                                                      std::list<ImageLayerDesc>* passThroughLayers,
-                                                      double* passThroughTime,
-                                                      int* passThroughView,
-                                                      std::bitset<4>* processChannels,
-                                                      ProcessChannelsPerPlaneMap* processChannelsPerPlane,
-                                                      int* passThroughInputNb)
-
+EffectInstance::computeComponentsNeededAndProduced(double time,
+                                                   ViewIdx view,
+                                                   EffectInstance::ComponentsNeededMap* comps,
+                                                   std::list<ImageLayerDesc>* passThroughLayers,
+                                                   double* passThroughTime,
+                                                   int* passThroughView,
+                                                   std::bitset<4>* processChannels,
+                                                   ProcessChannelsPerPlaneMap* processChannelsPerPlane,
+                                                   int* passThroughInputNb)
 {
-    // The layers follow the metadata, and a refresh that changes it drops the results cached here.
-    refreshInputRelatedDataIfStale();
-
-    RECURSIVE_ACTION();
-
-    // Computed while this effect's own isIdentity() is choosing its pass-through input, the
-    // result used the preferred-input fallback and must not outlive that query.
-    const bool cacheResults = !isResolvingLayersPassThrough();
-
-    {
-        ViewIdx ptView;
-        bool foundInCache = _imp->actionsCache->getComponentsNeededResults(hash, time, view, comps, processChannels, processChannelsPerPlane, passThroughLayers, passThroughInputNb, &ptView, passThroughTime);
-        if (foundInCache) {
-            *passThroughView = ptView;
-            return;
-        }
-    }
-
     // A node disabled at `time`, or one that outputs its pass-through input unchanged there,
     // produces no layer of its own and every layer of that input passes through.
     if (getNode()->isNodeDisabled(time) || presentsOnlyPassThroughLayers(time, view)) {
@@ -5009,9 +5026,6 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         processChannels->set();
         processChannelsPerPlane->clear();
 
-        if (cacheResults) {
-            _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ptView, *passThroughTime);
-        }
         return;
     }
 
@@ -5054,17 +5068,11 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         processChannels->set();
         processChannelsPerPlane->clear();
 
-        if (cacheResults) {
-            _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ptView, *passThroughTime);
-        }
         return;
     }
 
     if ( !isMultiPlanar() ) {
         getComponentsNeededDefault(time, view, comps, passThroughLayers, passThroughTime, passThroughView, processChannels, processChannelsPerPlane, passThroughInputNb);
-        if (cacheResults) {
-            _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
-        }
         return;
     }
 
@@ -5081,7 +5089,7 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
     if (producesMetadataLayerImplicitly()) {
         std::list<ImageLayerDesc> metadataLayers;
         ImageLayerDesc metadataLayer, metadataPairedLayer;
-        getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
+        getLayersFromMetadata(*getRenderMetadata(time, view), -1, &metadataLayer, &metadataPairedLayer);
         if (metadataPairedLayer.getNumComponents() > 0) {
             metadataLayers.push_back(metadataPairedLayer);
         }
@@ -5116,11 +5124,79 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
 
     processChannels->set();
     processChannelsPerPlane->clear();
+} // EffectInstance::computeComponentsNeededAndProduced
 
-    if (cacheResults) {
-        _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
+// The produced and pass-through layers merged into presentLayers, the Color layer first.
+static void
+appendPresentLayers(const EffectInstance::ComponentsNeededResults& results,
+                    std::list<ImageLayerDesc>* presentLayers)
+{
+    std::list<ImageLayerDesc> layers = results.passThroughLayers;
+    EffectInstance::ComponentsNeededMap::const_iterator foundOutput = results.neededComps.find(-1);
+    if (foundOutput != results.neededComps.end()) {
+        mergeLayersList(foundOutput->second, &layers);
+    }
+    for (std::list<ImageLayerDesc>::iterator it = layers.begin(); it != layers.end(); ++it) {
+        if (it->isColorLayer()) {
+            presentLayers->push_front(*it);
+            layers.erase(it);
+            break;
+        }
+    }
+    mergeLayersList(layers, presentLayers);
+}
+
+EffectInstance::ComponentsNeededResultsPtr
+EffectInstance::getComponentsNeededAndProducedShared(U64 hash,
+                                                     double time,
+                                                     ViewIdx view)
+{
+    RECURSIVE_ACTION();
+
+    ComponentsNeededResultsPtr cached = _imp->actionsCache->getComponentsNeededResults(hash, time, view);
+    if (cached) {
+        return cached;
     }
 
+    std::shared_ptr<ComponentsNeededResults> results = std::make_shared<ComponentsNeededResults>();
+    int passThroughView = 0;
+    computeComponentsNeededAndProduced(time, view, &results->neededComps, &results->passThroughLayers, &results->passThroughTime, &passThroughView,
+                                       &results->processChannels, &results->processChannelsPerPlane, &results->passThroughInputNb);
+    results->passThroughView = ViewIdx(passThroughView);
+
+    // Kept apart, so a getPresentLayers() on a hit builds nothing.
+    appendPresentLayers(*results, &results->presentLayers);
+
+    // Computed while this effect's own isIdentity() is choosing its pass-through input, the
+    // result used the preferred-input fallback and must not outlive that query.
+    if (!isResolvingLayersPassThrough()) {
+        _imp->actionsCache->setComponentsNeededResults(hash, time, view, results);
+    }
+
+    return results;
+}
+
+void
+EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
+                                                      double time,
+                                                      ViewIdx view,
+                                                      EffectInstance::ComponentsNeededMap* comps,
+                                                      std::list<ImageLayerDesc>* passThroughLayers,
+                                                      double* passThroughTime,
+                                                      int* passThroughView,
+                                                      std::bitset<4>* processChannels,
+                                                      ProcessChannelsPerPlaneMap* processChannelsPerPlane,
+                                                      int* passThroughInputNb)
+{
+    ComponentsNeededResultsPtr results = getComponentsNeededAndProducedShared(hash, time, view);
+
+    *comps = results->neededComps;
+    *passThroughLayers = results->passThroughLayers;
+    *passThroughTime = results->passThroughTime;
+    *passThroughView = results->passThroughView;
+    *processChannels = results->processChannels;
+    *processChannelsPerPlane = results->processChannelsPerPlane;
+    *passThroughInputNb = results->passThroughInputNb;
 } // EffectInstance::getComponentsNeededAndProduced_public
 
 std::bitset<4>
@@ -5129,17 +5205,10 @@ EffectInstance::getProcessChannelsForPlane(U64 hash,
                                            ViewIdx view,
                                            const ImageLayerDesc& plane)
 {
-    ComponentsNeededMap comps;
-    std::list<ImageLayerDesc> passThroughLayers;
-    double passThroughTime = 0.;
-    int passThroughView = 0;
-    std::bitset<4> processChannels;
-    ProcessChannelsPerPlaneMap processChannelsPerPlane;
-    int passThroughInputNb = -1;
-    getComponentsNeededAndProduced_public(hash, time, view, &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
+    ComponentsNeededResultsPtr results = getComponentsNeededAndProducedShared(hash, time, view);
 
-    ProcessChannelsPerPlaneMap::const_iterator found = processChannelsPerPlane.find(plane);
-    if (found != processChannelsPerPlane.end()) {
+    ProcessChannelsPerPlaneMap::const_iterator found = results->processChannelsPerPlane.find(plane);
+    if (found != results->processChannelsPerPlane.end()) {
         return found->second;
     }
 
@@ -5149,10 +5218,9 @@ EffectInstance::getProcessChannelsForPlane(U64 hash,
     return all;
 }
 
-void
-EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* presentLayers)
+EffectInstance::ComponentsNeededResultsPtr
+EffectInstance::getPresentLayersResults(double time, ViewIdx view, int inputNb)
 {
-
     EffectInstancePtr effect;
     if (inputNb >= 0) {
         effect = getInput(inputNb);
@@ -5160,39 +5228,37 @@ EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::li
         effect = shared_from_this();
     }
     if (!effect) {
+        return ComponentsNeededResultsPtr();
+    }
+
+    // Key this query on the queried effect's own hash: it caches into that effect's ActionsCache, and a foreign
+    // (caller's) hash would pollute or stale-serve that cache independently of the effect's own invalidation.
+    return effect->getComponentsNeededAndProducedShared(effect->getRenderHash(), time, view);
+}
+
+std::shared_ptr<const std::list<ImageLayerDesc>>
+EffectInstance::getPresentLayersShared(double time, ViewIdx view, int inputNb)
+{
+    ComponentsNeededResultsPtr results = getPresentLayersResults(time, view, inputNb);
+    if (!results) {
+        return std::shared_ptr<const std::list<ImageLayerDesc>>();
+    }
+
+    return std::shared_ptr<const std::list<ImageLayerDesc>>(results, &results->presentLayers);
+}
+
+void
+EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* presentLayers)
+{
+    ComponentsNeededResultsPtr results = getPresentLayersResults(time, view, inputNb);
+    if (!results) {
         return;
     }
-
-    std::list<ImageLayerDesc> passThroughLayers;
-    {
-
-
-        EffectInstance::ComponentsNeededMap comps;
-        double passThroughTime = 0.;
-        int passThroughView = 0;
-        int passThroughInputNb = -1; // prevent infinite recursion, because getComponentsNeededAndProduced_public() may call getPresentLayers()
-        std::bitset<4> processChannels;
-        EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
-        // Key this query on the queried effect's own hash: it caches into that effect's ActionsCache, and a foreign
-        // (caller's) hash would pollute or stale-serve that cache independently of the effect's own invalidation.
-        effect->getComponentsNeededAndProduced_public(effect->getRenderHash(), time, view, &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
-
-        // Merge pass-through layers produced + pass-through available layers and make it as the pass-through layers for this node
-        // if they are not produced by this node
-        std::list<ImageLayerDesc>& outputLayers = (comps)[-1];
-        mergeLayersList(outputLayers, &passThroughLayers);
+    if (presentLayers->empty()) {
+        *presentLayers = results->presentLayers;
+    } else {
+        appendPresentLayers(*results, presentLayers);
     }
-
-    // Ensure the color layer is always the first one available in the list
-    for (std::list<ImageLayerDesc>::iterator it = passThroughLayers.begin(); it != passThroughLayers.end(); ++it) {
-        if (it->isColorLayer()) {
-            presentLayers->push_front(*it);
-            passThroughLayers.erase(it);
-            break;
-        }
-    }
-
-    mergeLayersList(passThroughLayers, presentLayers);
 } // getPresentLayers
 
 void
@@ -5289,7 +5355,7 @@ EffectInstance::resolveInputPlaneForRender(int inputNb,
 {
     ImageLayerDesc metadataLayer, metadataPairedLayer;
 
-    getMetadataComponents(inputNb, &metadataLayer, &metadataPairedLayer);
+    getLayersFromMetadata(*getRenderMetadata(time, view), inputNb, &metadataLayer, &metadataPairedLayer);
 
     return resolveInputPlaneForRender(inputNb, time, view, metadataLayer, layer, maskChannel);
 }
@@ -5598,7 +5664,7 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
     // While creating a PyPlug, never handle changes, but call syncPrivateData before any other action,
     // fixes https://github.com/MrKepzie/Natron/issues/1637
     if (getApp()->isCreatingPythonGroup() && kh && kh->isDeclaredByPlugin() && !wasFormatKnobCaught) {
-        // must sync private data in EffectInstance::getPreferredMetadata_public()
+        // synced before the next time-invariant clip preferences (see deriveTimeInvariantMetadata())
         QMutexLocker l(&_imp->mustSyncPrivateDataMutex);
         _imp->mustSyncPrivateData = true;
     } else if (kh && kh->isDeclaredByPlugin() && !wasFormatKnobCaught) {
@@ -5948,6 +6014,7 @@ EffectInstance::onNodeHashChanged(U64 hash)
     // to an earlier state is served the ones it had then. Reloading a file changed on disk re-keys
     // the node through its stamp; Reload also drops the node's results, for changes the stamp misses.
     _imp->actionsCache->useHash(hash);
+    _imp->actionsCache->moveMetadataGeneration();
 
     NodePtr node = _node.lock();
     if (node) {
@@ -6031,6 +6098,9 @@ EffectInstance::getCurrentTime() const
     if (!tls) {
         return app->getTimeLine()->currentFrame();
     }
+    if (!tls->actionTimeView.empty()) {
+        return tls->actionTimeView.back().first;
+    }
     if (tls->currentRenderArgs.validArgs) {
         return tls->currentRenderArgs.time;
     }
@@ -6051,6 +6121,9 @@ EffectInstance::getCurrentView() const
     if (!tls) {
         return ViewIdx(0);
     }
+    if (!tls->actionTimeView.empty()) {
+        return tls->actionTimeView.back().second;
+    }
     if (tls->currentRenderArgs.validArgs) {
         return tls->currentRenderArgs.view;
     }
@@ -6059,6 +6132,19 @@ EffectInstance::getCurrentView() const
     }
 
     return ViewIdx(0);
+}
+
+EffectInstance::ActionTimeViewScope::ActionTimeViewScope(EffectInstance* effect,
+                                                         double time,
+                                                         ViewIdx view)
+    : _tls(effect->_imp->tlsData->getOrCreateTLSData())
+{
+    _tls->actionTimeView.push_back(std::make_pair(time, view));
+}
+
+EffectInstance::ActionTimeViewScope::~ActionTimeViewScope()
+{
+    _tls->actionTimeView.pop_back();
 }
 
 SequenceTime
@@ -6106,7 +6192,7 @@ isFrameVaryingOrAnimated_impl(const EffectInstance* node,
     }
     // Inserted as false before recursing so a node reached again while its inputs are still being walked does not loop.
     std::map<const EffectInstance*, bool>::iterator slot = memo.insert(std::make_pair(node, false)).first;
-    bool ret = node->isFrameVarying() || node->getHasAnimation() || node->getNode()->getRotoContext();
+    bool ret = const_cast<EffectInstance*>(node)->getTimeInvariantMetadata()->getIsFrameVarying() || node->getHasAnimation() || node->getNode()->getRotoContext();
     if (!ret) {
         int maxInputs = node->getNInputs();
         for (int i = 0; i < maxInputs; ++i) {
@@ -6144,38 +6230,102 @@ EffectInstance::isPaintingOverItselfEnabled() const
     return isDuringPaintStrokeCreationThreadLocal();
 }
 
-StatusEnum
-EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
+namespace {
+// Points getInputMetadataAt() at the inputs' answers a derivation started from, or at nothing,
+// for as long as that derivation runs on this thread.
+class InputsMetadataScope {
+public:
+    InputsMetadataScope(const std::vector<NodeMetadataConstPtr>** slot,
+                        const std::vector<NodeMetadataConstPtr>* inputsMetadata)
+        : _slot(slot)
+        , _previous(*slot)
+    {
+        *_slot = inputsMetadata;
+    }
+
+    ~InputsMetadataScope()
+    {
+        *_slot = _previous;
+    }
+
+    InputsMetadataScope(const InputsMetadataScope&) = delete;
+    InputsMetadataScope& operator=(const InputsMetadataScope&) = delete;
+
+private:
+    const std::vector<NodeMetadataConstPtr>** _slot;
+    const std::vector<NodeMetadataConstPtr>* _previous;
+};
+
+// What getTimeInvariantMetadata() answers on this thread while it derives that very answer: a
+// clip of the plug-in whose preferences run asks for it, and reads what the inputs give.
+class TimeInvariantInProgressScope {
+public:
+    TimeInvariantInProgressScope(NodeMetadataConstPtr* slot,
+                                 const NodeMetadataConstPtr& inProgress)
+        : _slot(slot)
+        , _previous(*slot)
+    {
+        *_slot = inProgress;
+    }
+
+    ~TimeInvariantInProgressScope()
+    {
+        *_slot = _previous;
+    }
+
+    TimeInvariantInProgressScope(const TimeInvariantInProgressScope&) = delete;
+    TimeInvariantInProgressScope& operator=(const TimeInvariantInProgressScope&) = delete;
+
+private:
+    NodeMetadataConstPtr* _slot;
+    NodeMetadataConstPtr _previous;
+};
+} // anon namespace
+
+NodeMetadataConstPtr
+EffectInstance::getInputMetadataAt(int inputNb,
+                                   double time,
+                                   ViewIdx view) const
 {
-    StatusEnum stat = getDefaultMetadata(metadata);
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+    if (tls && tls->timeInvariantInputsMetadata) {
+        const std::vector<NodeMetadataConstPtr>& inputsMetadata = *tls->timeInvariantInputsMetadata;
 
-    if (stat == eStatusFailed) {
-        return stat;
+        return ((inputNb >= 0) && (inputNb < (int)inputsMetadata.size())) ? inputsMetadata[inputNb] : NodeMetadataConstPtr();
     }
-    // Metadata are time-invariant and not refreshed when the time changes, so a Disable that
-    // varies with time is resolved as enabled: downstream metadata then stay the same on every
-    // frame, and are those of the frames where this node actually renders.
-    if (!getNode()->isNodeDisabledAtAllTimes()) {
-        // call syncPrivateData if necessary
-        bool mustSyncPrivateData;
-        {
-            QMutexLocker l(&_imp->mustSyncPrivateDataMutex);
-            mustSyncPrivateData = _imp->mustSyncPrivateData;
-            _imp->mustSyncPrivateData = false;
-        }
-        if (mustSyncPrivateData) {
-            // for now, only OfxEffectInstance has syncPrivateData capabilities, but
-            // syncPrivateData() could also be a virtual member of EffectInstance
-            OfxEffectInstance* effect = dynamic_cast<OfxEffectInstance*>(this);
-            if (effect) {
-                assert( QThread::currentThread() == qApp->thread() );
-                effect->onSyncPrivateDataRequested(); //syncPrivateData_other_thread();
-            }
-        }
-        return getPreferredMetadata(metadata);
-    }
-    return stat;
+    EffectInstancePtr input = getInput(inputNb);
 
+    return input ? input->getMetadata(time, view) : NodeMetadataConstPtr();
+}
+
+static void
+metadataComponentsToLayers(int nComps,
+                           const std::string& componentsType,
+                           ImageLayerDesc* layer,
+                           ImageLayerDesc* pairedLayer)
+{
+    if (componentsType == kNatronColorLayerID) {
+        *layer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
+    } else if (componentsType == kNatronDisparityComponentsLabel) {
+        *layer = ImageLayerDesc::getDisparityLeftComponents();
+        *pairedLayer = ImageLayerDesc::getDisparityRightComponents();
+    } else if (componentsType == kNatronMotionComponentsLabel) {
+        *layer = ImageLayerDesc::getBackwardMotionComponents();
+        *pairedLayer = ImageLayerDesc::getForwardMotionComponents();
+    } else {
+        *layer = ImageLayerDesc::getNoneComponents();
+    }
+}
+
+static int
+metadataNComps(const NodeMetadata& metadata,
+               int inputNb)
+{
+    if ((inputNb == -1) && (metadata.getOutputStorageNComps() > 0) && (metadata.getComponentsType(-1) == kNatronColorLayerID)) {
+        return metadata.getOutputStorageNComps();
+    }
+
+    return metadata.getNComps(inputNb);
 }
 
 // The colour channels the streams on the non-mask inputs carry, read from each input's own
@@ -6184,6 +6334,7 @@ EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
 static bool
 getInputsColorStorageBits(const EffectInstance* self,
                           const std::vector<EffectInstancePtr>& inputs,
+                          const std::vector<NodeMetadataConstPtr>& inputsMetadata,
                           std::bitset<4>* bits)
 {
     NodePtr node = self->getNode();
@@ -6191,11 +6342,11 @@ getInputsColorStorageBits(const EffectInstance* self,
 
     bits->reset();
     for (std::size_t i = 0; i < inputs.size(); ++i) {
-        if (!inputs[i] || self->isInputMask(i) || (node && node->isInputOnlyAlpha(i))) {
+        if (!inputs[i] || !inputsMetadata[i] || self->isInputMask(i) || (node && node->isInputOnlyAlpha(i))) {
             continue;
         }
         ImageLayerDesc layer, pairedLayer;
-        inputs[i]->getMetadataComponents(-1, &layer, &pairedLayer);
+        metadataComponentsToLayers(metadataNComps(*inputsMetadata[i], -1), inputsMetadata[i]->getComponentsType(-1), &layer, &pairedLayer);
         if (!layer.isColorLayer() || (layer.getNumComponents() == 0)) {
             continue;
         }
@@ -6209,13 +6360,13 @@ getInputsColorStorageBits(const EffectInstance* self,
 static int
 getUnmappedComponentsForInput(EffectInstance* self,
                               int inputNb,
-                              const std::vector<EffectInstancePtr>& inputs,
+                              const std::vector<NodeMetadataConstPtr>& inputsMetadata,
                               int firstNonOptionalConnectedInputComps)
 {
     int rawComps;
 
-    if (inputs[inputNb]) {
-        rawComps = inputs[inputNb]->getMetadataNComps(-1);
+    if (inputsMetadata[inputNb]) {
+        rawComps = metadataNComps(*inputsMetadata[inputNb], -1);
     } else {
         ///The node is not connected but optional, return the closest supported components
         ///of the first connected non optional input.
@@ -6237,8 +6388,41 @@ getUnmappedComponentsForInput(EffectInstance* self,
     return rawComps;
 }
 
+void
+EffectInstance::getInputsMetadataAt(double time,
+                                    ViewIdx view,
+                                    std::vector<EffectInstancePtr>* inputs,
+                                    std::vector<NodeMetadataConstPtr>* inputsMetadata)
+{
+    const int nInputs = getNInputs();
+
+    inputs->assign(nInputs, EffectInstancePtr());
+    inputsMetadata->assign(nInputs, NodeMetadataConstPtr());
+    for (int i = 0; i < nInputs; ++i) {
+        (*inputs)[i] = getInput(i);
+        if ((*inputs)[i]) {
+            (*inputsMetadata)[i] = (*inputs)[i]->getMetadata(time, view);
+        }
+    }
+}
+
 StatusEnum
-EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
+EffectInstance::getDefaultMetadataAt(double time,
+                                     ViewIdx view,
+                                     NodeMetadata& metadata)
+{
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+
+    getInputsMetadataAt(time, view, &inputs, &inputsMetadata);
+
+    return getDefaultMetadataFromInputs(inputs, inputsMetadata, metadata);
+}
+
+StatusEnum
+EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr>& inputs,
+                                             const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                                             NodeMetadata& metadata)
 {
     NodePtr node = getNode();
 
@@ -6247,7 +6431,7 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
     }
 
     const bool multiBitDepth = supportsMultipleClipDepths();
-    int nInputs = getNInputs();
+    int nInputs = (int)inputs.size();
     metadata.clearAndResize(nInputs);
 
     // OK find the deepest chromatic component on our input clips and the one with the
@@ -6258,35 +6442,33 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
 
     //Default to the project frame rate
     double frameRate = getApp()->getProjectFrameRate();
-    std::vector<EffectInstancePtr> inputs(nInputs);
 
     // Find the components of the first non optional connected input
     // They will be used for disconnected input
     int firstNonOptionalConnectedInputComps = 0;
     for (std::size_t i = 0; i < inputs.size(); ++i) {
-        inputs[i] = getInput(i);
-        if ( !firstNonOptionalConnectedInputComps && inputs[i] && !isInputOptional(i) ) {
-            firstNonOptionalConnectedInputComps = inputs[i]->getMetadataNComps(-1);
+        if (!firstNonOptionalConnectedInputComps && inputsMetadata[i] && !isInputOptional(i)) {
+            firstNonOptionalConnectedInputComps = metadataNComps(*inputsMetadata[i], -1);
         }
     }
 
     double inputPar = 1.;
     bool inputParSet = false;
     for (int i = 0; i < nInputs; ++i) {
-        const EffectInstancePtr& input = inputs[i];
+        const NodeMetadataConstPtr& input = inputsMetadata[i];
         if (input) {
-            frameRate = std::max( frameRate, input->getFrameRate() );
+            frameRate = std::max(frameRate, input->getOutputFrameRate());
         }
 
 
         if (input) {
             if (!inputParSet) {
-                inputPar = input->getAspectRatio(-1);
+                inputPar = input->getPixelAspectRatio(-1);
                 inputParSet = true;
             }
         }
 
-        int rawComp = getUnmappedComponentsForInput(this, i, inputs, firstNonOptionalConnectedInputComps);
+        int rawComp = getUnmappedComponentsForInput(this, i, inputsMetadata, firstNonOptionalConnectedInputComps);
         ImageBitDepthEnum rawDepth = input ? input->getBitDepth(-1) : eImageBitDepthFloat;
 
         if (input) {
@@ -6333,12 +6515,7 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
 
     // now add the input gubbins to the per inputs metadata
     for (int i = -1; i < (int)inputs.size(); ++i) {
-        EffectInstance* effect = 0;
-        if (i >= 0) {
-            effect = inputs[i].get();
-        } else {
-            effect = this;
-        }
+        const NodeMetadata* inputMetadata = (i >= 0) ? inputsMetadata[i].get() : 0;
 
         double par;
         if (!multipleClipsPAR) {
@@ -6346,8 +6523,11 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
         } else {
             if (inputParSet) {
                 par = inputPar;
+            } else if (i >= 0) {
+                par = inputMetadata ? inputMetadata->getPixelAspectRatio(-1) : projectPAR;
             } else {
-                par = effect ? effect->getAspectRatio(-1) : projectPAR;
+                // This node's own answer is the one being derived.
+                par = projectPAR;
             }
         }
         metadata.setPixelAspectRatio(i, par);
@@ -6355,13 +6535,13 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
         bool isOptional = i >= 0 && isInputOptional(i);
         if (i >= 0) {
             if (isOptional) {
-                if (!firstOptionalInputFormatSet && effect) {
-                    firstOptionalInputFormat = effect->getOutputFormat();
+                if (!firstOptionalInputFormatSet && inputMetadata) {
+                    firstOptionalInputFormat = inputMetadata->getOutputFormat();
                     firstOptionalInputFormatSet = true;
                 }
             } else {
-                if (!firstNonOptionalInputFormatSet && effect) {
-                    firstNonOptionalInputFormat = effect->getOutputFormat();
+                if (!firstNonOptionalInputFormatSet && inputMetadata) {
+                    firstNonOptionalInputFormat = inputMetadata->getOutputFormat();
                     firstNonOptionalInputFormatSet = true;
                 }
             }
@@ -6374,7 +6554,7 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
             int remappedComps = mostComponents;
             remappedComps = findClosestSupportedComponents(i, ImageLayerDesc::mapNCompsToColorLayer(remappedComps)).getNumComponents();
             std::bitset<4> inputsStorageBits;
-            if ((i == -1) && !isWriter() && node->getLayerKnob() && getInputsColorStorageBits(this, inputs, &inputsStorageBits)) {
+            if ((i == -1) && !isWriter() && node->getLayerKnob() && getInputsColorStorageBits(this, inputs, inputsMetadata, &inputsStorageBits)) {
                 // Offered unclamped, so checkMetadata() can tell a plug-in that picked its output
                 // layout from one that kept the stream's, whose output it may then narrow.
                 remappedComps = ImageLayerDesc::narrowestColorStorageCovering(inputsStorageBits).getNumComponents();
@@ -6385,8 +6565,8 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
             metadata.setBitDepth(i, depth);
         } else {
 
-            int rawComps = getUnmappedComponentsForInput(this, i, inputs, firstNonOptionalConnectedInputComps);
-            ImageBitDepthEnum rawDepth = effect ? effect->getBitDepth(-1) : eImageBitDepthFloat;
+            int rawComps = getUnmappedComponentsForInput(this, i, inputsMetadata, firstNonOptionalConnectedInputComps);
+            ImageBitDepthEnum rawDepth = inputMetadata ? inputMetadata->getBitDepth(-1) : eImageBitDepthFloat;
 
             ImageBitDepthEnum depth = multiBitDepth ? node->getClosestSupportedBitDepth(rawDepth) : deepestBitDepth;
             metadata.setBitDepth(i, depth);
@@ -6410,264 +6590,747 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
     metadata.setOutputFormat(outputFormat);
 
     return eStatusOK;
-} // EffectInstance::getDefaultMetadata
+} // EffectInstance::getDefaultMetadataFromInputs
 
-RectI
-EffectInstance::getOutputFormat() const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-    return _imp->metadata.getOutputFormat();
-}
-
+// Copies what an output carries, leaving this node's clips alone. With defaults, the answer the
+// node's inputs alone give, a field the node set to something else is its own and stays: an
+// identity at the current knob values (a Grade at defaults, a mix of 0) still writes the layout
+// its channels declare, which must not change with those values.
 static void
-metadataComponentsToLayers(int nComps,
-                           const std::string& componentsType,
-                           ImageLayerDesc* layer,
-                           ImageLayerDesc* pairedLayer)
+copyOutputMetadata(const NodeMetadata& from,
+                   const NodeMetadata* defaults,
+                   NodeMetadata* to)
 {
-    if (componentsType == kNatronColorLayerID) {
-        *layer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
-    } else if (componentsType == kNatronDisparityComponentsLabel) {
-        *layer = ImageLayerDesc::getDisparityLeftComponents();
-        *pairedLayer = ImageLayerDesc::getDisparityRightComponents();
-    } else if (componentsType == kNatronMotionComponentsLabel) {
-        *layer = ImageLayerDesc::getBackwardMotionComponents();
-        *pairedLayer = ImageLayerDesc::getForwardMotionComponents();
-    } else {
-        *layer = ImageLayerDesc::getNoneComponents();
+    if (!defaults || ((to->getNComps(-1) == defaults->getNComps(-1)) && (to->getComponentsType(-1) == defaults->getComponentsType(-1)))) {
+        to->setNComps(-1, from.getNComps(-1));
+        to->setComponentsType(-1, from.getComponentsType(-1));
+        to->setOutputStorageNComps(from.getOutputStorageNComps());
     }
+    if (!defaults || (to->getBitDepth(-1) == defaults->getBitDepth(-1))) {
+        to->setBitDepth(-1, from.getBitDepth(-1));
+    }
+    if (!defaults || (to->getPixelAspectRatio(-1) == defaults->getPixelAspectRatio(-1))) {
+        to->setPixelAspectRatio(-1, from.getPixelAspectRatio(-1));
+    }
+    if (!defaults || (to->getOutputFormat() == defaults->getOutputFormat())) {
+        to->setOutputFormat(from.getOutputFormat());
+    }
+    if (!defaults || (to->getOutputFrameRate() == defaults->getOutputFrameRate())) {
+        to->setOutputFrameRate(from.getOutputFrameRate());
+    }
+    if (!defaults || (to->getOutputFielding() == defaults->getOutputFielding())) {
+        to->setOutputFielding(from.getOutputFielding());
+    }
+    if (!defaults || (to->getIsContinuous() == defaults->getIsContinuous())) {
+        to->setIsContinuous(from.getIsContinuous());
+    }
+    to->setIsFrameVarying(to->getIsFrameVarying() || from.getIsFrameVarying());
 }
 
-static int
-metadataNComps(const NodeMetadata& metadata,
-               int inputNb)
-{
-    if ((inputNb == -1) && (metadata.getOutputStorageNComps() > 0) && (metadata.getComponentsType(-1) == kNatronColorLayerID)) {
-        return metadata.getOutputStorageNComps();
-    }
+namespace {
+struct IdentityCheck {
+    const EffectInstance* effect;
+    U64 hash;
+    NodeMetadataConstPtr own;
+};
 
-    return metadata.getNComps(inputNb);
-}
+// The identity checks running on this thread, innermost last. Thread-local rather than in the
+// effect's TLS, which threads spawned meanwhile copy and keep after the check ends.
+thread_local std::vector<IdentityCheck> t_identityChecks;
 
-void
-EffectInstance::getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const
-{
-    refreshInputRelatedDataIfStale();
-    int nComps;
-    std::string componentsType;
+class IdentityCheckScope {
+public:
+    IdentityCheckScope(const EffectInstance* effect,
+                       U64 hash,
+                       const NodeMetadataConstPtr& own)
     {
-        QMutexLocker k(&_imp->metadataMutex);
-        nComps = metadataNComps(_imp->metadata, inputNb);
-        componentsType = _imp->metadata.getComponentsType(inputNb);
+        IdentityCheck check;
+        check.effect = effect;
+        check.hash = hash;
+        check.own = own;
+        t_identityChecks.push_back(check);
     }
-    metadataComponentsToLayers(nComps, componentsType, layer, pairedLayer);
-}
 
-void
-EffectInstance::getMetadataOutputClipComponents(ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const
-{
-    refreshInputRelatedDataIfStale();
-    int nComps;
-    std::string componentsType;
+    ~IdentityCheckScope()
     {
-        QMutexLocker k(&_imp->metadataMutex);
-        nComps = _imp->metadata.getNComps(-1);
-        componentsType = _imp->metadata.getComponentsType(-1);
+        t_identityChecks.pop_back();
     }
-    metadataComponentsToLayers(nComps, componentsType, layer, pairedLayer);
-}
 
-int
-EffectInstance::getMetadataNComps(int inputNb) const
+    IdentityCheckScope(const IdentityCheckScope&) = delete;
+    IdentityCheckScope& operator=(const IdentityCheckScope&) = delete;
+};
+
+const IdentityCheck*
+findIdentityCheck(const EffectInstance* effect)
 {
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-    return metadataNComps(_imp->metadata, inputNb);
-}
-
-ImageBitDepthEnum
-EffectInstance::getBitDepth(int inputNb) const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getBitDepth(inputNb);
-}
-
-double
-EffectInstance::getFrameRate() const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getOutputFrameRate();
-}
-
-double
-EffectInstance::getAspectRatio(int inputNb) const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getPixelAspectRatio(inputNb);
-}
-
-bool
-EffectInstance::isFrameVarying() const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getIsFrameVarying();
-}
-
-bool
-EffectInstance::canRenderContinuously() const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getIsContinuous();
-}
-
-/**
- * @brief Returns the field ordering of images produced by this plug-in
- **/
-ImageFieldingOrderEnum
-EffectInstance::getFieldingOrder() const
-{
-    refreshInputRelatedDataIfStale();
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getOutputFielding();
-}
-
-void
-EffectInstance::refreshInputRelatedDataIfStale() const
-{
-    // Checked before the node is locked: the getters calling this are hot on render threads, which
-    // never refresh.
-    if (QThread::currentThread() != qApp->thread()) {
-        return;
-    }
-    NodePtr node = _node.lock();
-
-    if (node) {
-        node->refreshInputRelatedDataIfStale();
-    }
-}
-
-void
-EffectInstance::setDefaultMetadata()
-{
-    NodeMetadata metadata;
-    StatusEnum stat = getDefaultMetadata(metadata);
-
-    if (stat == eStatusFailed) {
-        return;
-    }
-    {
-        QMutexLocker k(&_imp->metadataMutex);
-        _imp->metadata = metadata;
-    }
-    onMetadataRefreshed(metadata);
-}
-
-bool
-EffectInstance::setMetadataInternal(const NodeMetadata& metadata)
-{
-    bool ret;
-    {
-        QMutexLocker k(&_imp->metadataMutex);
-        ret = metadata != _imp->metadata;
-        if (ret) {
-            _imp->metadata = metadata;
+    for (std::vector<IdentityCheck>::const_reverse_iterator it = t_identityChecks.rbegin(); it != t_identityChecks.rend(); ++it) {
+        if (it->effect == effect) {
+            return &*it;
         }
     }
-    return ret;
+
+    return 0;
 }
 
 bool
-EffectInstance::refreshMetadata_internal()
+isCheckingIdentityForMetadata(const EffectInstance* effect)
+{
+    return findIdentityCheck(effect) != 0;
+}
+} // anon namespace
+
+NodeMetadataConstPtr
+EffectInstance::applyIdentityRule(U64 hash,
+                                  double time,
+                                  ViewIdx view,
+                                  const NodeMetadataConstPtr& own,
+                                  const NodeMetadata* defaults)
+{
+    // The identity is asked over this node's own format, not over a format read back through
+    // getMetadata(), which would recurse into this very derivation.
+    double inputTime = time;
+    ViewIdx inputView = view;
+    int inputNb = -1;
+    bool identity = false;
+    try {
+        const IdentityCheckScope checking(this, hash, own);
+        identity = isIdentity_public(false, hash, time, RenderScale::identity, own->getOutputFormat(), view, &inputTime, &inputView, &inputNb);
+    } catch (...) {
+        identity = false;
+    }
+    if (!identity || (inputNb < 0)) {
+        return own;
+    }
+    EffectInstancePtr input = getInput(inputNb);
+    if (!input) {
+        return own;
+    }
+    NodeMetadataConstPtr inputMetadata = input->getMetadata(inputTime, inputView);
+    if (!inputMetadata) {
+        return own;
+    }
+    std::shared_ptr<NodeMetadata> metadata = std::make_shared<NodeMetadata>(*own);
+    copyOutputMetadata(*inputMetadata, defaults, metadata.get());
+
+    return metadata;
+}
+
+NodeMetadataConstPtr
+EffectInstance::deriveMetadataAt(U64 hash,
+                                 double time,
+                                 ViewIdx view)
+{
+    // Built in the object handed out, so the answer is not copied once derived.
+    std::shared_ptr<NodeMetadata> metadata = std::make_shared<NodeMetadata>();
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+
+    getInputsMetadataAt(time, view, &inputs, &inputsMetadata);
+    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, *metadata);
+    // A disabled node passes its input through whole; an enabled one keeps what it sets itself,
+    // told apart from the defaults, which only it needs.
+    const bool disabled = getNode()->isNodeDisabled(time);
+    std::optional<NodeMetadata> defaults;
+    if (!disabled) {
+        defaults.emplace(*metadata);
+    }
+    if ((stat != eStatusFailed) && !disabled) {
+        // Asked from inside this node's time-invariant derivation, this answer is still at time.
+        const InputsMetadataScope scope(&_imp->tlsData->getOrCreateTLSData()->timeInvariantInputsMetadata, NULL);
+        getPreferredMetadataAt(time, view, *metadata);
+    }
+    _imp->clampMetadata(inputs, inputsMetadata, *metadata);
+
+    return applyIdentityRule(hash, time, view, metadata, defaults ? &*defaults : NULL);
+}
+
+NodeMetadataConstPtr
+EffectInstance::deriveTimeInvariantMetadata()
 {
     NodeMetadata metadata;
+    const int nInputs = getNInputs();
+    std::vector<EffectInstancePtr> inputs(nInputs);
+    std::vector<NodeMetadataConstPtr> inputsMetadata(nInputs);
 
-    // Recomputing a dirty hash drops the metadata the plug-in cached for the state it replaced.
-    NodePtr node = _node.lock();
-    if (node) {
-        node->getHashValue();
-    }
-    getPreferredMetadata_public(metadata);
-    _imp->checkMetadata(metadata);
-
-    bool ret = setMetadataInternal(metadata);
-    onMetadataRefreshed(metadata);
-    if (ret) {
-        // Produced planes follow the metadata (a reader reports the file's color component
-        // count only once the file is loaded) while the hash does not, so entries keyed on
-        // the current hash would otherwise survive this refresh stale.
-        _imp->actionsCache->clearComponentsNeededResults();
-    }
-
-    return ret;
-}
-
-bool
-EffectInstance::refreshMetadata_public(bool recurse)
-{
-    assert( QThread::currentThread() == qApp->thread() );
-
-    if (recurse) {
-        if (_imp->runningClipPreferences) {
-            return false;
+    for (int i = 0; i < nInputs; ++i) {
+        inputs[i] = getInput(i);
+        if (inputs[i]) {
+            inputsMetadata[i] = inputs[i]->getTimeInvariantMetadata();
         }
-        NodePtr node = getNode();
-        bool ret;
-        {
-            ClipPreferencesRunning_RAII runningflag_(this);
-            ret = refreshMetadata_public(false);
-            node->refreshIdentityState();
-
-            if (!node->duringInputChangedAction()) {
-                /// The channels selector refreshing is already taken care of in the inputChanged action
-                node->refreshChannelSelectors();
+    }
+    StatusEnum stat = getDefaultMetadataFromInputs(inputs, inputsMetadata, metadata);
+    const TimeInvariantInProgressScope inProgress(&_imp->tlsData->getOrCreateTLSData()->timeInvariantInProgress, std::make_shared<const NodeMetadata>(metadata));
+    // A Disable that varies with time is resolved as enabled: this answer is then the one of the
+    // frames where the node actually renders.
+    if ((stat != eStatusFailed) && !getNode()->isNodeDisabledAtAllTimes()) {
+        // Native nodes answer at a time only; the timeless answer is theirs at the frame the knobs
+        // read by default. Their inputs are read as the defaults above read them, not at that frame.
+        const InputsMetadataScope scope(&_imp->tlsData->getOrCreateTLSData()->timeInvariantInputsMetadata, &inputsMetadata);
+        if (isOpenFX()) {
+            // Only the main thread gets here: the plug-in may set parameters in its private data sync.
+            bool mustSyncPrivateData = false;
+            {
+                QMutexLocker l(&_imp->mustSyncPrivateDataMutex);
+                mustSyncPrivateData = _imp->mustSyncPrivateData;
+                _imp->mustSyncPrivateData = false;
             }
+            OfxEffectInstance* effect = mustSyncPrivateData ? dynamic_cast<OfxEffectInstance*>(this) : NULL;
+            if (effect) {
+                effect->onSyncPrivateDataRequested();
+            }
+            getTimeInvariantClipPreferences(metadata);
+        } else {
+            getPreferredMetadataAt(getCurrentTime(), getCurrentView(), metadata);
         }
-        node->markDownstreamInputRelatedDataStale();
+    }
+    _imp->clampMetadata(inputs, inputsMetadata, metadata);
 
-        return ret;
-    } else {
-        bool ret = refreshMetadata_internal();
-        if (ret) {
-            NodePtr node = getNode();
-            NodesList children;
-            node->getChildrenMultiInstance(&children);
-            if ( !children.empty() ) {
-                for (NodesList::iterator it = children.begin(); it != children.end(); ++it) {
-                    (*it)->getEffectInstance()->refreshMetadata_internal();
+    return std::make_shared<const NodeMetadata>(metadata);
+}
+
+bool
+EffectInstance::mayDeriveOpenFXTimeInvariantMetadata() const
+{
+    NodePtr node = getNode();
+
+    return node && node->canRunMainThreadMetadataRefresh();
+}
+
+// OpenFX nodes. At a frame, an identity passes an input through and runs no plug-in action for it;
+// otherwise the plug-in's clip preferences answer for what its inputs give there.
+NodeMetadataConstPtr
+EffectInstance::getOpenFXMetadataForInputsAt(U64 hash,
+                                             double time,
+                                             ViewIdx view,
+                                             const NodeMetadataConstPtr& fallback)
+{
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+    getInputsMetadataOverFramesNeeded(hash, time, view, &inputs, &inputsMetadata);
+    NodeMetadata defaults;
+    if (getDefaultMetadataFromInputs(inputs, inputsMetadata, defaults) == eStatusFailed) {
+        return fallback ? fallback : std::make_shared<const NodeMetadata>(defaults);
+    }
+    NodeMetadataConstPtr own = getPreferredMetadataForInputs(hash, time, view, inputs, inputsMetadata, defaults);
+    if (own) {
+        return own;
+    }
+    if (fallback) {
+        return fallback;
+    }
+    clampMetadataForInputs(inputs, inputsMetadata, defaults);
+
+    return std::make_shared<const NodeMetadata>(defaults);
+}
+
+namespace {
+// How often getMetadata() derives an answer again whose derivation raced an edit, before giving
+// up telling which hash it belongs to.
+const int kMaxMetadataDerivationAttempts = 3;
+
+// Calls f with each time a reader asking for [min, max] can be given: every frame from min on, at
+// min's fraction, then max itself. An integral range gives the frames a render pre-fetches, and a
+// range of one time, whole or not, that time.
+template <typename F>
+void
+forEachTimeInRange(double min,
+                   double max,
+                   F f)
+{
+    double t = min;
+    for (; t <= max; t += 1.) {
+        f(t);
+    }
+    if (t - 1. != max) {
+        f(max);
+    }
+}
+
+// Whether a and b widen a reader's output alike.
+bool
+widensAlike(const NodeMetadata& a,
+            const NodeMetadata& b)
+{
+    return (a.getComponentsType(-1) == b.getComponentsType(-1)) && (a.getNComps(-1) == b.getNComps(-1)) && (metadataNComps(a, -1) == metadataNComps(b, -1)) && (a.getBitDepth(-1) == b.getBitDepth(-1));
+}
+
+// Widens widened to metadata's colour components and depth where those are wider. Everything
+// else stays as read at the frame being answered.
+void
+widenOutputMetadata(const NodeMetadata& metadata,
+                    NodeMetadata* widened)
+{
+    if ((metadata.getComponentsType(-1) == kNatronColorLayerID) && (widened->getComponentsType(-1) == kNatronColorLayerID)) {
+        const int nComps = metadataNComps(metadata, -1);
+        if (nComps > metadataNComps(*widened, -1)) {
+            widened->setNComps(-1, std::max(widened->getNComps(-1), metadata.getNComps(-1)));
+            widened->setOutputStorageNComps((nComps > widened->getNComps(-1)) ? nComps : 0);
+        }
+    }
+    if (getSizeOfForBitDepth(metadata.getBitDepth(-1)) > getSizeOfForBitDepth(widened->getBitDepth(-1))) {
+        widened->setBitDepth(-1, metadata.getBitDepth(-1));
+    }
+}
+} // anon namespace
+
+void
+EffectInstance::getInputsMetadataOverFramesNeeded(U64 hash,
+                                                  double time,
+                                                  ViewIdx view,
+                                                  std::vector<EffectInstancePtr>* inputs,
+                                                  std::vector<NodeMetadataConstPtr>* inputsMetadata)
+{
+    getInputsMetadataAt(time, view, inputs, inputsMetadata);
+
+    FramesNeededMap framesNeeded;
+    try {
+        framesNeeded = getFramesNeeded_public(hash, time, view, 0);
+    } catch (...) {
+        return;
+    }
+    // Widening the input's answer at time and view by itself changes nothing, so a range is
+    // widened over all its times, whatever time it is read for, and its answers are kept with
+    // the input's hash for the next reader of the same range.
+    for (FramesNeededMap::const_iterator it = framesNeeded.begin(); it != framesNeeded.end(); ++it) {
+        const int inputNb = it->first;
+        if ((inputNb < 0) || (inputNb >= (int)inputs->size()) || !(*inputsMetadata)[inputNb]) {
+            continue;
+        }
+        const EffectInstancePtr& input = (*inputs)[inputNb];
+        std::shared_ptr<NodeMetadata> widened;
+        std::vector<NodeMetadataConstPtr> answers;
+        for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
+            for (std::vector<RangeD>::const_iterator range = viewIt->second.begin(); range != viewIt->second.end(); ++range) {
+                if (range->max < range->min) {
+                    continue;
+                }
+                answers.clear();
+                if (range->max - range->min < 1.) {
+                    forEachTimeInRange(range->min, range->max, [&](double t) {
+                        if ((t != time) || (viewIt->first != view)) {
+                            answers.push_back(input->getMetadata(t, viewIt->first));
+                        }
+                    });
+                } else {
+                    input->getMetadataOverRange(viewIt->first, range->min, range->max, &answers);
+                }
+                for (std::vector<NodeMetadataConstPtr>::const_iterator answer = answers.begin(); answer != answers.end(); ++answer) {
+                    if (!*answer) {
+                        continue;
+                    }
+                    if (!widened) {
+                        widened = std::make_shared<NodeMetadata>(*(*inputsMetadata)[inputNb]);
+                    }
+                    widenOutputMetadata(**answer, widened.get());
                 }
             }
         }
-
-        return ret;
+        if (widened && (*widened != *(*inputsMetadata)[inputNb])) {
+            (*inputsMetadata)[inputNb] = widened;
+        }
     }
 }
 
-/**
- * @brief The purpose of this function is to check that the meta data returned by the plug-ins are valid and to
- * check for warnings
- **/
 void
-EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
+EffectInstance::getMetadataOverRange(ViewIdx view,
+                                     double min,
+                                     double max,
+                                     std::vector<NodeMetadataConstPtr>* answers)
+{
+    NodePtr node = getNode();
+
+    if (!node) {
+        return;
+    }
+    const U64 generation = _imp->actionsCache->getMetadataGeneration();
+    const U64 hash = node->getHashValue();
+    if (_imp->actionsCache->getRangeMetadataSummary(hash, view, min, max, answers)) {
+        return;
+    }
+    RangeMetadataSummary summary;
+    summary.view = view;
+    summary.min = min;
+    summary.max = max;
+    // Kept only if every time's answer belongs to the hash it is kept under.
+    bool belongs = true;
+    forEachTimeInRange(min, max, [&](double t) {
+        U64 answerHash = 0;
+        NodeMetadataConstPtr answer = getMetadata(t, view, &answerHash);
+        belongs = belongs && (answerHash == hash);
+        if (!answer) {
+            return;
+        }
+        for (std::vector<NodeMetadataConstPtr>::const_iterator kept = summary.answers.begin(); kept != summary.answers.end(); ++kept) {
+            if (widensAlike(**kept, *answer)) {
+                return;
+            }
+        }
+        summary.answers.push_back(answer);
+    });
+    if (belongs) {
+        _imp->actionsCache->setRangeMetadataSummary(hash, summary, generation);
+    }
+    *answers = summary.answers;
+}
+
+void
+EffectInstance::clampMetadataForInputs(const std::vector<EffectInstancePtr>& inputs,
+                                       const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                                       NodeMetadata& metadata)
+{
+    _imp->clampMetadata(inputs, inputsMetadata, metadata);
+}
+
+NodeMetadataConstPtr
+EffectInstance::getOpenFXMetadataAt(U64 hash,
+                                    double time,
+                                    ViewIdx view)
+{
+    const NodeMetadataConstPtr timeInvariant = getTimeInvariantMetadata();
+    if (!timeInvariant) {
+        return timeInvariant;
+    }
+    // A pass-through comes back as a new answer; asking the plug-in there would describe an image
+    // it never makes.
+    NodeMetadataConstPtr passedThrough = applyIdentityRule(hash, time, view, timeInvariant, NULL);
+    if (passedThrough != timeInvariant) {
+        return passedThrough;
+    }
+
+    return getOpenFXMetadataForInputsAt(hash, time, view, timeInvariant);
+}
+// End of OpenFX nodes.
+
+NodeMetadataConstPtr
+EffectInstance::getMetadata(double time,
+                            ViewIdx view)
+{
+    U64 hash = 0;
+    bool validated = false;
+
+    // Live: an answer raced by an edit is as good as the next one, so it is not derived again.
+    return getMetadataAttempt(time, view, &hash, &validated);
+}
+
+NodeMetadataConstPtr
+EffectInstance::getMetadata(double time,
+                            ViewIdx view,
+                            U64* hashOut)
+{
+    NodeMetadataConstPtr metadata;
+
+    for (int attempt = 0; attempt < kMaxMetadataDerivationAttempts; ++attempt) {
+        bool validated = false;
+        metadata = getMetadataAttempt(time, view, hashOut, &validated);
+        if (validated) {
+            return metadata;
+        }
+    }
+    // The hash read before the last attempt need not be the state it saw.
+    *hashOut = 0;
+
+    return metadata;
+}
+
+NodeMetadataConstPtr
+EffectInstance::getMetadataAttempt(double time,
+                                   ViewIdx view,
+                                   U64* hashOut,
+                                   bool* validated)
+{
+    NodePtr node = getNode();
+
+    *hashOut = 0;
+    *validated = true;
+    if (!node) {
+        return std::make_shared<const NodeMetadata>();
+    }
+    // The identity check can ask for this node's layers (an OpenFX clip's components, a render's
+    // planes), which read its metadata: that is the answer being checked, whatever the time, since
+    // deriving it again would re-enter the check. The derivation running the check validates it.
+    const IdentityCheck* checking = findIdentityCheck(this);
+    if (checking) {
+        *hashOut = checking->hash;
+
+        return checking->own;
+    }
+    // An upstream edit only marks this node, so its hash is not recomputed while the derivation runs and can read the same
+    // again after an input changed and changed back meanwhile, with the derivation having seen
+    // the other state: the mark count, read before the hash, catches that. The generation catches
+    // a drop under the same hash. A knob stores its value before it marks, so a derive can also
+    // see a value the hash and marks do not yet reflect: the write snapshot, read before both,
+    // catches that. A hash read under contention can be folded over a dirty input and stand for a
+    // state the graph has left; such a node stays dirty, so only an up-to-date hash keys an entry.
+    const U64 writes = KnobContentWrite::snapshot();
+    const U64 marks = node->getHashMarkCount();
+    const U64 hash = node->getHashValue();
+    *hashOut = hash;
+    NodeMetadataConstPtr cached = _imp->actionsCache->getMetadataResult(hash, time, view);
+    if (cached) {
+        return cached;
+    }
+    const U64 generation = _imp->actionsCache->getMetadataGeneration();
+    NodeMetadataConstPtr metadata = isOpenFX() ? getOpenFXMetadataAt(hash, time, view) : deriveMetadataAt(hash, time, view);
+    U64 hashAfter = 0;
+    *validated = (node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == hash) && KnobContentWrite::isSettled(writes) && (_imp->actionsCache->getMetadataGeneration() == generation);
+    if (*validated) {
+        _imp->actionsCache->setMetadataResult(hash, time, view, metadata, generation);
+    }
+
+    return metadata;
+}
+
+NodeMetadataConstPtr
+EffectInstance::getTimeInvariantMetadata()
+{
+    NodePtr node = getNode();
+
+    if (!node) {
+        return std::make_shared<const NodeMetadata>();
+    }
+    // Asked again from inside its own derivation (see TimeInvariantInProgressScope).
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+    if (tls && tls->timeInvariantInProgress) {
+        return tls->timeInvariantInProgress;
+    }
+    // As getMetadata().
+    const U64 writes = KnobContentWrite::snapshot();
+    const U64 marks = node->getHashMarkCount();
+    const U64 hash = node->getHashValue();
+    NodeMetadataConstPtr cached = _imp->actionsCache->getTimeInvariantMetadataResult(hash);
+    if (cached) {
+        return cached;
+    }
+    const bool openFX = isOpenFX();
+    if (openFX && !mayDeriveOpenFXTimeInvariantMetadata()) {
+        return getOpenFXMetadataForInputsAt(hash, getCurrentTime(), getCurrentView(), NodeMetadataConstPtr());
+    }
+    const U64 generation = _imp->actionsCache->getMetadataGeneration();
+    NodeMetadataConstPtr metadata;
+    if (openFX) {
+        // The parameters the plug-in sets in its clip preferences come back to
+        // refreshMetadataSideEffects(), which waits for this derivation to end.
+        ClipPreferencesRunning_RAII runningflag_(this);
+        metadata = deriveTimeInvariantMetadata();
+        onTimeInvariantMetadataDerived(*metadata);
+    } else {
+        metadata = deriveTimeInvariantMetadata();
+    }
+    U64 hashAfter = 0;
+    if ((node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == hash) && KnobContentWrite::isSettled(writes)) {
+        _imp->actionsCache->setTimeInvariantMetadataResult(hash, metadata, generation);
+    }
+
+    return metadata;
+}
+
+NodeMetadataConstPtr
+EffectInstance::findRenderMetadata(const ParallelRenderArgsPtr& frameArgs,
+                                   double time,
+                                   ViewIdx view) const
+{
+    if (!frameArgs || !frameArgs->metadata) {
+        return NodeMetadataConstPtr();
+    }
+    if ((frameArgs->time == time) && (frameArgs->view == view)) {
+        return frameArgs->metadata;
+    }
+    const std::pair<double, int> key(time, (int)view);
+    {
+        std::lock_guard<std::mutex> l(frameArgs->retainedMetadataMutex);
+        std::map<std::pair<double, int>, NodeMetadataConstPtr>::const_iterator found = frameArgs->retainedMetadata.find(key);
+        if (found != frameArgs->retainedMetadata.end()) {
+            return found->second;
+        }
+    }
+    NodeMetadataConstPtr cached = _imp->actionsCache->getMetadataResult(frameArgs->nodeHash, time, view);
+    if (!cached) {
+        return cached;
+    }
+    // Kept for the frame, so a later read finds the same answer once the cache moved on.
+    std::lock_guard<std::mutex> l(frameArgs->retainedMetadataMutex);
+
+    return frameArgs->retainedMetadata.insert(std::make_pair(key, cached)).first->second;
+}
+
+NodeMetadataConstPtr
+EffectInstance::getRenderMetadata(const ParallelRenderArgsPtr& frameArgs,
+                                  double time,
+                                  ViewIdx view) const
+{
+    NodeMetadataConstPtr found = findRenderMetadata(frameArgs, time, view);
+    if (found) {
+        return found;
+    }
+    if (!frameArgs || !frameArgs->metadata) {
+        return const_cast<EffectInstance*>(this)->getMetadata(time, view);
+    }
+    // A time or view other than the frame's (a time remap or a view switch downstream) is derived
+    // when first read: only the times and views the frame reaches cost anything, which a snapshot
+    // of every frame and view requested could not promise on a deep or wide graph.
+    U64 hash = 0;
+    NodeMetadataConstPtr metadata = const_cast<EffectInstance*>(this)->getMetadata(time, view, &hash);
+    // As in a frame's snapshot, an answer no derivation could tell the hash of (a knob written
+    // anywhere while deriving) is the frame's while the node is still at its hash.
+    U64 current = 0;
+    NodePtr node = getNode();
+    if ((hash == frameArgs->nodeHash) || ((hash == 0) && node && node->getHashValueIfUpToDate(&current) && (current == frameArgs->nodeHash))) {
+        const std::pair<double, int> key(time, (int)view);
+        std::lock_guard<std::mutex> l(frameArgs->retainedMetadataMutex);
+
+        return frameArgs->retainedMetadata.insert(std::make_pair(key, metadata)).first->second;
+    }
+    // The node moved since the frame was set up: the edit that moved it aborts the frame, which
+    // must not render meanwhile with an answer of the new state. A render that cannot be aborted
+    // goes on with it, as with any edit.
+    AbortableRenderInfoPtr abortInfo = frameArgs->abortInfo.lock();
+    if (abortInfo && abortInfo->canAbort()) {
+        abortInfo->setAborted();
+    }
+
+    return metadata;
+}
+
+NodeMetadataConstPtr
+EffectInstance::getRenderMetadata(double time,
+                                  ViewIdx view) const
+{
+    return getRenderMetadata(getParallelRenderArgsTLS(), time, view);
+}
+
+NodeMetadataConstPtr
+EffectInstance::getRenderMetadata() const
+{
+    ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+
+    if (frameArgs) {
+        return getRenderMetadata(frameArgs, frameArgs->time, frameArgs->view);
+    }
+
+    return const_cast<EffectInstance*>(this)->getMetadata(getCurrentTime(), getCurrentView());
+}
+
+void
+EffectInstance::getLayersFromMetadata(const NodeMetadata& metadata,
+                                      int inputNb,
+                                      ImageLayerDesc* layer,
+                                      ImageLayerDesc* pairedLayer)
+{
+    metadataComponentsToLayers(metadataNComps(metadata, inputNb), metadata.getComponentsType(inputNb), layer, pairedLayer);
+}
+
+int
+EffectInstance::getNCompsFromMetadata(const NodeMetadata& metadata,
+                                      int inputNb)
+{
+    return metadataNComps(metadata, inputNb);
+}
+
+void
+EffectInstance::getOutputClipLayersFromMetadata(const NodeMetadata& metadata,
+                                                ImageLayerDesc* layer,
+                                                ImageLayerDesc* pairedLayer)
+{
+    metadataComponentsToLayers(metadata.getNComps(-1), metadata.getComponentsType(-1), layer, pairedLayer);
+}
+
+void
+EffectInstance::dropCachedMetadata()
+{
+    _imp->actionsCache->clearMetadataResults();
+    // Produced planes follow the metadata (a reader reports the file's colour component count only
+    // once the file is loaded), so they are as stale.
+    _imp->actionsCache->clearComponentsNeededResults();
+}
+
+void
+EffectInstance::dropCachedMetadataDownstream()
+{
+    dropCachedMetadata();
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    std::unordered_set<const Node*> visited;
+    std::vector<NodePtr> toVisit;
+    visited.insert(node.get());
+    node->appendOutputsWithGroupRedirection(&toVisit);
+    while (!toVisit.empty()) {
+        NodePtr output = std::move(toVisit.back());
+        toVisit.pop_back();
+        if (!output || !visited.insert(output.get()).second) {
+            continue;
+        }
+        EffectInstancePtr effect = output->getEffectInstance();
+        if (effect) {
+            effect->dropCachedMetadata();
+        }
+        output->appendOutputsWithGroupRedirection(&toVisit);
+    }
+}
+
+void
+EffectInstance::refreshCurrentFrameMetadata(double time,
+                                            bool force)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (!getNode()) {
+        return;
+    }
+    NodeMetadataConstPtr metadata = getMetadata(time, ViewIdx(0));
+    if (!metadata) {
+        return;
+    }
+    _imp->refreshStreamWarnings(time, ViewIdx(0), *metadata);
+    // The hook's work (menus, panel state) runs only when what it reads moved.
+    const bool changed = force || !_imp->currentFrameMetadata || (*_imp->currentFrameMetadata != *metadata);
+    _imp->currentFrameMetadata = metadata;
+    if (changed) {
+        onCurrentFrameMetadataChanged(*metadata);
+    }
+}
+
+void
+EffectInstance::refreshMetadataSideEffects()
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    // The clip preferences this refresh runs may set parameters, whose changes come back here.
+    if (_imp->runningClipPreferences) {
+        return;
+    }
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    {
+        ClipPreferencesRunning_RAII runningflag_(this);
+        // An OpenFX node derives (and pushes to its clips) the answer for its new state here.
+        getTimeInvariantMetadata();
+        AppInstancePtr app = getApp();
+        if (app) {
+            refreshCurrentFrameMetadata(app->getTimeLine()->currentFrame(), true);
+        }
+        node->refreshIdentityState();
+        if (!node->duringInputChangedAction()) {
+            // The inputChanged action refreshes the channel selectors itself.
+            node->refreshChannelSelectors();
+        }
+    }
+    node->refreshShownDownstreamInputRelatedData();
+}
+
+void
+EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePtr>& inputs,
+                                              const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                                              NodeMetadata& md)
 {
     NodePtr node = _publicInterface->getNode();
 
     if (!node) {
         return;
     }
-    //Make sure it is valid
-    int nInputs = node->getNInputs();
+    int nInputs = (int)inputs.size();
 
     const bool outputKeptInputsStorage = (md.getComponentsType(-1) == kNatronColorLayerID) && (md.getOutputStorageNComps() > 0) && (md.getNComps(-1) == md.getOutputStorageNComps());
     md.setOutputStorageNComps(0);
@@ -6680,114 +7343,19 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
         }
     }
 
-
-    ///Set a warning on the node if the bitdepth conversion from one of the input clip to the output clip is lossy
-    QString bitDepthWarning = tr("This nodes converts higher bit depths images from its inputs to work. As "
-                                 "a result of this process, the quality of the images is degraded. The following conversions are done:");
-    bitDepthWarning.append( QChar::fromLatin1('\n') );
-    bool setBitDepthWarning = false;
     const bool supportsMultipleClipDepths = _publicInterface->supportsMultipleClipDepths();
     const bool supportsMultipleClipPARs = _publicInterface->supportsMultipleClipPARs();
-    const bool supportsMultipleClipFPSs = _publicInterface->supportsMultipleClipFPSs();
-    std::vector<EffectInstancePtr> inputs(nInputs);
+    const ImageBitDepthEnum outputDepth = md.getBitDepth(-1);
+    const double outputPAR = md.getPixelAspectRatio(-1);
     for (int i = 0; i < nInputs; ++i) {
-        inputs[i] = _publicInterface->getInput(i);
-    }
-
-
-    ImageBitDepthEnum outputDepth = md.getBitDepth(-1);
-    double outputPAR = md.getPixelAspectRatio(-1);
-    bool outputFrameRateSet = false;
-    double outputFrameRate = md.getOutputFrameRate();
-    bool mustWarnFPS = false;
-    bool mustWarnPAR = false;
-
-    int nbConnectedInputs = 0;
-    for (int i = 0; i < nInputs; ++i) {
-        //Check that the bitdepths are all the same if the plug-in doesn't support multiple depths
-        if ( !supportsMultipleClipDepths && (md.getBitDepth(i) != outputDepth) ) {
+        // Check that the bitdepths are all the same if the plug-in doesn't support multiple depths
+        if (!supportsMultipleClipDepths && (md.getBitDepth(i) != outputDepth)) {
             md.setBitDepth(i, outputDepth);
         }
-
-        const double pixelAspect = md.getPixelAspectRatio(i);
-
-        if (!supportsMultipleClipPARs) {
-            if (pixelAspect != outputPAR) {
-                mustWarnPAR = true;
-                md.setPixelAspectRatio(i, outputPAR);
-            }
-        }
-
-        if (!inputs[i]) {
-            continue;
-        }
-
-        ++nbConnectedInputs;
-
-        const double fps = inputs[i]->getFrameRate();
-
-
-
-        if (!supportsMultipleClipFPSs) {
-            if (!outputFrameRateSet) {
-                outputFrameRate = fps;
-                outputFrameRateSet = true;
-            } else if (std::abs(outputFrameRate - fps) > 0.01) {
-                // We have several inputs with different frame rates
-                mustWarnFPS = true;
-            }
-        }
-
-
-        ImageBitDepthEnum inputOutputDepth = inputs[i]->getBitDepth(-1);
-
-        //If the bit-depth conversion will be lossy, warn the user
-        if ( Image::isBitDepthConversionLossy( inputOutputDepth, md.getBitDepth(i) ) ) {
-            bitDepthWarning.append( QString::fromUtf8( inputs[i]->getNode()->getLabel_mt_safe().c_str() ) );
-            bitDepthWarning.append( QString::fromUtf8(" (") + QString::fromUtf8( Image::getDepthString(inputOutputDepth).c_str() ) + QChar::fromLatin1(')') );
-            bitDepthWarning.append( QString::fromUtf8(" ----> ") );
-            bitDepthWarning.append( QString::fromUtf8( node->getLabel_mt_safe().c_str() ) );
-            bitDepthWarning.append( QString::fromUtf8(" (") + QString::fromUtf8( Image::getDepthString( md.getBitDepth(i) ).c_str() ) + QChar::fromLatin1(')') );
-            bitDepthWarning.append( QChar::fromLatin1('\n') );
-            setBitDepthWarning = true;
-        }
-
-
-        if ( !supportsMultipleClipPARs && (pixelAspect != outputPAR) ) {
-            qDebug() << node->getScriptName_mt_safe().c_str() << ": The input " << inputs[i]->getNode()->getScriptName_mt_safe().c_str()
-                     << ") has a pixel aspect ratio (" << md.getPixelAspectRatio(i)
-                     << ") different than the output clip (" << outputPAR << ") but it doesn't support multiple clips PAR. "
-                     << "This should have been handled earlier before connecting the nodes, @see Node::canConnectInput.";
+        if (!supportsMultipleClipPARs && (md.getPixelAspectRatio(i) != outputPAR)) {
+            md.setPixelAspectRatio(i, outputPAR);
         }
     }
-
-    std::map<Node::StreamWarningEnum, QString> warnings;
-    if (setBitDepthWarning) {
-        warnings[Node::eStreamWarningBitdepth] = bitDepthWarning;
-    } else {
-        warnings[Node::eStreamWarningBitdepth] = QString();
-    }
-
-    if (mustWarnFPS && nbConnectedInputs > 1) {
-        QString fpsWarning = tr("One or multiple inputs have a frame rate different of the output. "
-                                "It is not handled correctly by this node. To remove this warning make sure all inputs have "
-                                "the same frame-rate, either by adjusting project settings or the upstream Read node.");
-        warnings[Node::eStreamWarningFrameRate] = fpsWarning;
-    } else {
-        warnings[Node::eStreamWarningFrameRate] = QString();
-    }
-
-    if (mustWarnPAR && nbConnectedInputs > 1) {
-        QString parWarnings = tr("One or multiple input have a pixel aspect ratio different of the output. It is not "
-                                 "handled correctly by this node and may yield unwanted results. Please adjust the "
-                                 "pixel aspect ratios of the inputs so that they match by using a Reformat node.");
-        warnings[Node::eStreamWarningPixelAspectRatio] = parWarnings;
-    } else {
-        warnings[Node::eStreamWarningPixelAspectRatio] = QString();
-    }
-
-
-    node->setStreamWarnings(warnings);
 
     // An effect that explicitly writes a colour channel its stream lacks (e.g. a Grade on rgba over
     // RGB) widens its output and every colour input to RGBA together: the plane has to hold that
@@ -6801,7 +7369,7 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
         // bits below, hiding a colour channel the real upstream stream never had. Read the
         // connected inputs' own unclamped metadata instead, so the check sees the true storage.
         std::bitset<4> storageBits;
-        const bool hasInputStorage = getInputsColorStorageBits(_publicInterface, inputs, &storageBits);
+        const bool hasInputStorage = getInputsColorStorageBits(_publicInterface, inputs, inputsMetadata, &storageBits);
         if (!hasInputStorage) {
             storageBits = ImageLayerDesc::colorStorageBits(ImageLayerDesc::mapNCompsToColorLayer(md.getNComps(-1)));
         }
@@ -6841,7 +7409,104 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
             }
         }
     }
-} //refreshMetadataProxy
+} // EffectInstance::Implementation::clampMetadata
+
+void
+EffectInstance::Implementation::refreshStreamWarnings(double time,
+                                                      ViewIdx view,
+                                                      const NodeMetadata& md)
+{
+    NodePtr node = _publicInterface->getNode();
+
+    if (!node) {
+        return;
+    }
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+    _publicInterface->getInputsMetadataAt(time, view, &inputs, &inputsMetadata);
+    int nInputs = (int)inputs.size();
+
+    const bool supportsMultipleClipPARs = _publicInterface->supportsMultipleClipPARs();
+    const bool supportsMultipleClipFPSs = _publicInterface->supportsMultipleClipFPSs();
+    const double outputPAR = md.getPixelAspectRatio(-1);
+
+    /// Set a warning on the node if the bitdepth conversion from one of the input clip to the output clip is lossy
+    QString bitDepthWarning = tr("This nodes converts higher bit depths images from its inputs to work. As "
+                                 "a result of this process, the quality of the images is degraded. The following conversions are done:");
+    bitDepthWarning.append(QChar::fromLatin1('\n'));
+    bool setBitDepthWarning = false;
+
+    bool outputFrameRateSet = false;
+    double outputFrameRate = md.getOutputFrameRate();
+    bool mustWarnFPS = false;
+    bool mustWarnPAR = false;
+
+    int nbConnectedInputs = 0;
+    for (int i = 0; i < nInputs; ++i) {
+        if (!inputs[i] || !inputsMetadata[i]) {
+            continue;
+        }
+
+        ++nbConnectedInputs;
+
+        const NodeMetadata& inputMd = *inputsMetadata[i];
+        const double fps = inputMd.getOutputFrameRate();
+
+        if (!supportsMultipleClipFPSs) {
+            if (!outputFrameRateSet) {
+                outputFrameRate = fps;
+                outputFrameRateSet = true;
+            } else if (std::abs(outputFrameRate - fps) > 0.01) {
+                // We have several inputs with different frame rates
+                mustWarnFPS = true;
+            }
+        }
+
+        // The clip PAR is already clamped to the output's here, so the input's own tells.
+        mustWarnPAR |= !supportsMultipleClipPARs && (inputMd.getPixelAspectRatio(-1) != outputPAR);
+
+        ImageBitDepthEnum inputOutputDepth = inputMd.getBitDepth(-1);
+
+        //If the bit-depth conversion will be lossy, warn the user
+        if ( Image::isBitDepthConversionLossy( inputOutputDepth, md.getBitDepth(i) ) ) {
+            bitDepthWarning.append( QString::fromUtf8( inputs[i]->getNode()->getLabel_mt_safe().c_str() ) );
+            bitDepthWarning.append( QString::fromUtf8(" (") + QString::fromUtf8( Image::getDepthString(inputOutputDepth).c_str() ) + QChar::fromLatin1(')') );
+            bitDepthWarning.append( QString::fromUtf8(" ----> ") );
+            bitDepthWarning.append( QString::fromUtf8( node->getLabel_mt_safe().c_str() ) );
+            bitDepthWarning.append( QString::fromUtf8(" (") + QString::fromUtf8( Image::getDepthString( md.getBitDepth(i) ).c_str() ) + QChar::fromLatin1(')') );
+            bitDepthWarning.append( QChar::fromLatin1('\n') );
+            setBitDepthWarning = true;
+        }
+    }
+
+    std::map<Node::StreamWarningEnum, QString> warnings;
+    if (setBitDepthWarning) {
+        warnings[Node::eStreamWarningBitdepth] = bitDepthWarning;
+    } else {
+        warnings[Node::eStreamWarningBitdepth] = QString();
+    }
+
+    if (mustWarnFPS && nbConnectedInputs > 1) {
+        QString fpsWarning = tr("One or multiple inputs have a frame rate different of the output. "
+                                "It is not handled correctly by this node. To remove this warning make sure all inputs have "
+                                "the same frame-rate, either by adjusting project settings or the upstream Read node.");
+        warnings[Node::eStreamWarningFrameRate] = fpsWarning;
+    } else {
+        warnings[Node::eStreamWarningFrameRate] = QString();
+    }
+
+    if (mustWarnPAR && nbConnectedInputs > 1) {
+        QString parWarnings = tr("One or multiple input have a pixel aspect ratio different of the output. It is not "
+                                 "handled correctly by this node and may yield unwanted results. Please adjust the "
+                                 "pixel aspect ratios of the inputs so that they match by using a Reformat node.");
+        warnings[Node::eStreamWarningPixelAspectRatio] = parWarnings;
+    } else {
+        warnings[Node::eStreamWarningPixelAspectRatio] = QString();
+    }
+
+
+    node->setStreamWarnings(warnings);
+} // EffectInstance::Implementation::refreshStreamWarnings
 
 void
 EffectInstance::refreshExtraStateAfterTimeChanged(bool isPlayback,
@@ -6853,6 +7518,8 @@ EffectInstance::refreshExtraStateAfterTimeChanged(bool isPlayback,
     node->refreshIdentityState();
     // Layer menus list what the inputs carry at the current frame, which can change with it.
     node->relistLayerKnobs();
+    node->registerProducedLayers();
+    refreshCurrentFrameMetadata(time, false);
 }
 
 void
@@ -6902,11 +7569,14 @@ EffectInstance::getRecursionLevel() const
     return tls->actionRecursionLevel;
 }
 
-void
+bool
 EffectInstance::setClipPreferencesRunning(bool running)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    const bool previous = _imp->runningClipPreferences;
     _imp->runningClipPreferences = running;
+
+    return previous;
 }
 
 NATRON_NAMESPACE_EXIT

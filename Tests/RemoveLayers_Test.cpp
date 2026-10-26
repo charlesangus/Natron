@@ -254,7 +254,7 @@ TEST_F(RemoveLayersTest, RemovingAlphaNarrowsColorToRGB)
     channels->setLayer(0, kNatronColorViewAlpha, NULL);
     EXPECT_EQ(ids({ "Color(3)", "diffuse", "specular" }), present(remove));
     EXPECT_FALSE(isIdentityOfSource(remove));
-    EXPECT_EQ(3, remove->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(3, EffectInstance::getNCompsFromMetadata(*remove->getEffectInstance()->getTimeInvariantMetadata(), -1));
 }
 
 TEST_F(RemoveLayersTest, RemovingRgbNarrowsColorToAlpha)
@@ -267,7 +267,7 @@ TEST_F(RemoveLayersTest, RemovingRgbNarrowsColorToAlpha)
 
     channels->setLayer(0, kNatronColorViewRGB, NULL);
     EXPECT_EQ(ids({ "Color(1)", "diffuse", "specular" }), present(remove));
-    EXPECT_EQ(1, remove->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*remove->getEffectInstance()->getTimeInvariantMetadata(), -1));
 }
 
 TEST_F(RemoveLayersTest, RemovingRgbaDropsTheColorPlane)
@@ -372,7 +372,7 @@ TEST_F(RemoveLayersTest, RemovingAlphaFromAnRGBInputIsAnIdentity)
     channels->setLayer(0, kNatronColorViewAlpha, NULL);
     EXPECT_TRUE(isIdentityOfSource(remove));
     EXPECT_EQ(ids({ "Color(3)" }), present(remove));
-    EXPECT_EQ(3, remove->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(3, EffectInstance::getNCompsFromMetadata(*remove->getEffectInstance()->getTimeInvariantMetadata(), -1));
 }
 
 // A colourless stream still lists the colour views downstream: they read zero there.
@@ -513,7 +513,7 @@ TEST_F(RemoveLayersTest, KeepSelectionSurvivesSaveResetLoad)
     EXPECT_EQ((int)RemoveLayers::eOperationKeep, operation2->getValue());
     EXPECT_EQ(savedRows, channels2->getRows());
     EXPECT_EQ(ids({ "Color(1)", "specular" }), present(remove2));
-    EXPECT_EQ(1, remove2->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*remove2->getEffectInstance()->getTimeInvariantMetadata(), -1));
 }
 
 TEST_F(RemoveLayersTest, SetChannelsRaisesValueErrorFromPython)

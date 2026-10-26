@@ -483,6 +483,39 @@ TEST(ProjectYaml, BackdropSizeAndColoursRoundTrip)
     EXPECT_EQ(text, Serialization::encodeProjectYaml(decoded, blobs));
 }
 
+TEST(ProjectYaml, RFVGroupFlagRoundTrips)
+{
+    NodeSerializationPtr setNode = makeNode("Set1", "fr.inria.built-in.Dot", 1, 0);
+    Serialization::GroupKnobSerialization page;
+    page.name = "Variables";
+    page.label = "Variables";
+    Serialization::GroupKnobChildSerialization variables;
+    variables.isGroup = true;
+    variables.group.name = "variables";
+    variables.group.label = "Variables";
+    variables.group.isRFVGroup = true;
+    Serialization::GroupKnobChildSerialization gain;
+    gain.knob = valueKnob("gain", "Double", { d(0.25) });
+    gain.knob.isUserKnob = true;
+    gain.knob.label = "Gain";
+    gain.knob.isPersistent = true;
+    variables.group.children.push_back(gain);
+    page.children.push_back(variables);
+    setNode->userPages.push_back(page);
+    ProjectSerialization project;
+    project.nodes.nodes = { setNode };
+
+    Serialization::MemoryBlobStore blobs;
+    const std::string text = Serialization::encodeProjectYaml(project, blobs);
+    EXPECT_NE(std::string::npos, text.find("group: {label: \"Variables\", rfv: true}")) << text;
+
+    YamlWarnings warnings;
+    const ProjectSerialization decoded = Serialization::decodeProjectYaml(text, blobs, &warnings);
+    EXPECT_TRUE(warnings.empty());
+    expectProjectsEqual(project, decoded);
+    EXPECT_EQ(text, Serialization::encodeProjectYaml(decoded, blobs));
+}
+
 TEST(ProjectYaml, NodeWithoutLayoutWritesNoLayoutKeys)
 {
     ProjectSerialization project;

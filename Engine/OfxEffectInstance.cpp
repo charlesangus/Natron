@@ -141,6 +141,48 @@ private:
     OfxImageEffectInstance* effect;
 };
 
+// Has every clip answer from the frame's answer while it lives, if there is one.
+class ClipsFrameAnswerSetter {
+public:
+    ClipsFrameAnswerSetter(OfxImageEffectInstance* effect,
+                           const OfxClipsFrameAnswerPtr& answer)
+        : effect(answer ? effect : NULL)
+    {
+        if (!this->effect) {
+            return;
+        }
+        const std::map<std::string, OFX::Host::ImageEffect::ClipInstance*>& clips = effect->getClips();
+
+        for (std::map<std::string, OFX::Host::ImageEffect::ClipInstance*>::const_iterator it = clips.begin(); it != clips.end(); ++it) {
+            OfxClipInstance* clip = dynamic_cast<OfxClipInstance*>(it->second);
+            if (clip) {
+                clip->pushFrameAnswer(answer);
+            }
+        }
+    }
+
+    ~ClipsFrameAnswerSetter()
+    {
+        if (!effect) {
+            return;
+        }
+        const std::map<std::string, OFX::Host::ImageEffect::ClipInstance*>& clips = effect->getClips();
+
+        for (std::map<std::string, OFX::Host::ImageEffect::ClipInstance*>::const_iterator it = clips.begin(); it != clips.end(); ++it) {
+            OfxClipInstance* clip = dynamic_cast<OfxClipInstance*>(it->second);
+            if (clip) {
+                clip->popFrameAnswer();
+            }
+        }
+    }
+
+private:
+    ClipsFrameAnswerSetter(const ClipsFrameAnswerSetter&);
+    ClipsFrameAnswerSetter& operator=(const ClipsFrameAnswerSetter&);
+
+    OfxImageEffectInstance* effect;
+};
+
 // The render scheduler asks an output for its planes before it sets up the frame's thread
 // storage, so without this the plug-in's clip queries would list the layers at the timeline's
 // frame/view rather than at the frame/view being rendered, and that answer is cached under the latter.
@@ -308,6 +350,31 @@ struct OfxEffectInstancePrivate
     // A leaf: held only around the compare and ClipInstance::invalidateMetadata(), which takes
     // nothing but the clips' own leaf locks.
     std::mutex clipMetadataHashMutex;
+
+    // One clip preferences answer at a frame, for what its key describes. The key's time counts
+    // only when the plug-in's parameters vary with time.
+    struct FrameAnswer {
+        U64 hash;
+        ViewIdx view;
+        bool keyedOnTime;
+        double time;
+        std::vector<NodeMetadataConstPtr> inputsMetadata;
+        NodeMetadata defaults;
+        NodeMetadataConstPtr metadata;
+        OfxClipsFrameAnswerPtr clipsAnswer;
+    };
+
+    // Newest first. Guarded by frameAnswersMutex, a leaf.
+    std::list<FrameAnswer> frameAnswers;
+    std::mutex frameAnswersMutex;
+
+    // Serialises the per-frame clip preferences calls, which the plug-in expects one at a time.
+    // Taken after preferencesLock and, like it, from downstream to upstream only: the call answers
+    // its input clips from the frame answer, so it reaches no input but through a fetch.
+    std::mutex clipPreferencesMutex;
+
+    std::atomic<U64> perFrameClipPreferencesCalls { 0 };
+    std::atomic<bool> deferredEditsRefreshRequested { false };
 
     OfxEffectInstancePrivate()
         : effect()
@@ -570,8 +637,13 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
 
             getNode()->setValuesFromSerialization(args);
 
-            ///Set default metadata since the OpenFX plug-in may fetch images in its constructor
-            setDefaultMetadata();
+            // The plug-in may fetch images in its constructor: its clips get the defaults its
+            // inputs give until its own clip preferences run.
+            {
+                NodeMetadata defaults;
+                getDefaultMetadataAt(getCurrentTime(), getCurrentView(), defaults);
+                onTimeInvariantMetadataDerived(defaults);
+            }
 
             {
                 ///Take the preferences lock so that it cannot be modified throughout the action.
@@ -1868,7 +1940,7 @@ OfxEffectInstance::mapContextToString(ContextEnum ctx)
 }
 
 void
-OfxEffectInstance::onMetadataRefreshed(const NodeMetadata& metadata)
+OfxEffectInstance::onTimeInvariantMetadataDerived(const NodeMetadata& metadata)
 {
     //////////////// Actually push to the clips the preferences and set the flags on the effect, protected by a write lock.
 
@@ -1989,8 +2061,44 @@ OfxEffectInstance::dropStaleClipMetadata()
 #endif
 }
 
+namespace {
+// The instance whose clipPreferencesMutex this thread holds, innermost; a clip preferences call
+// nested in another on the same instance does not take it again.
+thread_local const OfxEffectInstance* tClipPreferencesOwner = NULL;
+}
+
+class OfxEffectInstance::ClipPreferencesSerialiser {
+public:
+    explicit ClipPreferencesSerialiser(const OfxEffectInstance* effect)
+        : _effect(effect)
+        , _previous(tClipPreferencesOwner)
+        , _locked(tClipPreferencesOwner != effect)
+    {
+        if (_locked) {
+            _effect->_imp->clipPreferencesMutex.lock();
+        }
+        tClipPreferencesOwner = effect;
+    }
+
+    ~ClipPreferencesSerialiser()
+    {
+        tClipPreferencesOwner = _previous;
+        if (_locked) {
+            _effect->_imp->clipPreferencesMutex.unlock();
+        }
+    }
+
+private:
+    ClipPreferencesSerialiser(const ClipPreferencesSerialiser&);
+    ClipPreferencesSerialiser& operator=(const ClipPreferencesSerialiser&);
+
+    const OfxEffectInstance* _effect;
+    const OfxEffectInstance* _previous;
+    bool _locked;
+};
+
 StatusEnum
-OfxEffectInstance::getPreferredMetadata(NodeMetadata& metadata)
+OfxEffectInstance::getTimeInvariantClipPreferences(NodeMetadata& metadata)
 {
     if (!_imp->created || !_imp->effect) {
         return eStatusFailed;
@@ -2013,7 +2121,10 @@ OfxEffectInstance::getPreferredMetadata(NodeMetadata& metadata)
         SET_CAN_SET_VALUE(true);
 
         ///First push the "default" meta-datas to the clips so that they get proper values
-        onMetadataRefreshed(metadata);
+        onTimeInvariantMetadataDerived(metadata);
+
+        // Not alongside a per-frame call, unless nested in one this thread runs.
+        ClipPreferencesSerialiser serial(this);
 
         ///It has been overridden and no data is actually set on the clip, everything will be set into the
         ///metadata object
@@ -2021,6 +2132,214 @@ OfxEffectInstance::getPreferredMetadata(NodeMetadata& metadata)
     }
 
     return stat;
+}
+
+StatusEnum
+OfxEffectInstance::getClipPreferencesOnAnyThreadForTest(NodeMetadata& metadata)
+{
+    if (!_imp->created || !_imp->effect) {
+        return eStatusFailed;
+    }
+    assert(_imp->context != eContextNone);
+
+    RECURSIVE_ACTION();
+    SET_CAN_SET_VALUE(false);
+    QWriteLocker l(&_imp->preferencesLock);
+
+    return _imp->effect->getClipPreferences_safe(metadata);
+}
+
+U64
+OfxEffectInstance::getPerFrameClipPreferencesCallCountForTest() const
+{
+    return _imp->perFrameClipPreferencesCalls.load();
+}
+
+namespace {
+// Enough for a sequence of distinct signatures, or of frames for a plug-in keyed on time, that one
+// render pulls at once; an evicted answer is made again on the next miss.
+const std::size_t kMaxFrameAnswers = 256;
+
+bool
+sameInputsMetadata(const std::vector<NodeMetadataConstPtr>& a,
+                   const std::vector<NodeMetadataConstPtr>& b)
+{
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if ((a[i] != b[i]) && (!a[i] || !b[i] || (*a[i] != *b[i]))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+} // anon namespace
+
+bool
+OfxEffectInstance::clipPreferencesVaryWithTime() const
+{
+    NodePtr node = getNode();
+
+    if (!node) {
+        return false;
+    }
+    if (node->hasAnimatedKnob()) {
+        return true;
+    }
+    const KnobsVec knobs = getKnobs_mt_safe();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (!*it) {
+            continue;
+        }
+        for (int i = 0; i < (*it)->getDimension(); ++i) {
+            if (!(*it)->getExpression(i).empty()) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+void
+OfxEffectInstance::requestDeferredEditsRefresh()
+{
+    if (!qApp || _imp->deferredEditsRefreshRequested.exchange(true)) {
+        return;
+    }
+    NodeWPtr weakNode = getNode();
+    QMetaObject::invokeMethod(qApp, [weakNode]() {
+        NodePtr node = weakNode.lock();
+        OfxEffectInstance* effect = node ? dynamic_cast<OfxEffectInstance*>( node->getEffectInstance().get() ) : NULL;
+        if (!effect) {
+            return;
+        }
+        effect->_imp->deferredEditsRefreshRequested.store(false);
+        // Runs the clip preferences on the main thread, where the plug-in's edits apply.
+        effect->dropCachedMetadataDownstream();
+        effect->refreshMetadataSideEffects(); }, Qt::QueuedConnection);
+}
+
+NodeMetadataConstPtr
+OfxEffectInstance::getPreferredMetadataForInputs(U64 hash,
+                                                 double time,
+                                                 ViewIdx view,
+                                                 const std::vector<EffectInstancePtr>& inputs,
+                                                 const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                                                 const NodeMetadata& defaults)
+{
+    if (!_imp->created || !_imp->effect) {
+        return NodeMetadataConstPtr();
+    }
+    const bool keyedOnTime = clipPreferencesVaryWithTime();
+    const auto findAnswer = [&]() -> NodeMetadataConstPtr {
+        std::lock_guard<std::mutex> l(_imp->frameAnswersMutex);
+        for (std::list<OfxEffectInstancePrivate::FrameAnswer>::const_iterator it = _imp->frameAnswers.begin(); it != _imp->frameAnswers.end(); ++it) {
+            if ((it->hash == hash) && (it->view == view) && (it->keyedOnTime == keyedOnTime) && (!keyedOnTime || (it->time == time)) && (it->defaults == defaults) && sameInputsMetadata(it->inputsMetadata, inputsMetadata)) {
+                return it->metadata;
+            }
+        }
+
+        return NodeMetadataConstPtr();
+    };
+
+    NodeMetadataConstPtr found = findAnswer();
+    if (found) {
+        return found;
+    }
+
+    // Read, as the other actions take it: the main thread's refresh writes the clips under it.
+    // A render thread already holding it for reading takes it again without waiting.
+    QReadLocker preferences(&_imp->preferencesLock);
+    ClipPreferencesSerialiser serial(this);
+    found = findAnswer();
+    if (found) {
+        return found;
+    }
+
+    NodeMetadata metadata = defaults;
+    StatusEnum stat;
+    bool editsRefused = false;
+    {
+        RECURSIVE_ACTION();
+        SET_CAN_SET_VALUE(false);
+        // The answer is one frame's: the plug-in's edits are the main thread's to make, at the
+        // refresh they are deferred to.
+        PluginEditsDeferral deferral;
+        ActionTimeViewScope timeView(this, time, view);
+        ClipsThreadStorageSetter clipSetter(effectInstance(), view, 0);
+        ClipsComponentsPresentTimeViewSetter presentSetter(effectInstance(), time, view);
+        ClipsFrameAnswerSetter answerSetter(effectInstance(), OfxClipsFrameAnswer::create(defaults, inputsMetadata));
+        try {
+            stat = _imp->effect->getClipPreferences_safe(metadata);
+        } catch (...) {
+            stat = eStatusFailed;
+        }
+        ++_imp->perFrameClipPreferencesCalls;
+        editsRefused = deferral.hasRefused();
+    }
+    if (editsRefused) {
+        requestDeferredEditsRefresh();
+    }
+    if (stat == eStatusFailed) {
+        metadata = defaults;
+    }
+    clampMetadataForInputs(inputs, inputsMetadata, metadata);
+
+    OfxEffectInstancePrivate::FrameAnswer answer;
+    answer.hash = hash;
+    answer.view = view;
+    answer.keyedOnTime = keyedOnTime;
+    answer.time = time;
+    answer.inputsMetadata = inputsMetadata;
+    answer.defaults = defaults;
+    answer.metadata = std::make_shared<const NodeMetadata>(metadata);
+    answer.clipsAnswer = OfxClipsFrameAnswer::create(metadata, inputsMetadata);
+    {
+        std::lock_guard<std::mutex> l(_imp->frameAnswersMutex);
+        _imp->frameAnswers.push_front(answer);
+        if (_imp->frameAnswers.size() > kMaxFrameAnswers) {
+            _imp->frameAnswers.pop_back();
+        }
+    }
+
+    return answer.metadata;
+} // OfxEffectInstance::getPreferredMetadataForInputs
+
+OfxClipsFrameAnswerPtr
+OfxEffectInstance::findFrameAnswer(double time,
+                                   ViewIdx view,
+                                   bool mayDerive)
+{
+    NodeMetadataConstPtr metadata;
+    if (mayDerive) {
+        metadata = getRenderMetadata(time, view);
+    } else {
+        metadata = findRenderMetadata(getParallelRenderArgsTLS(), time, view);
+    }
+    if (!metadata) {
+        return OfxClipsFrameAnswerPtr();
+    }
+    {
+        std::lock_guard<std::mutex> l(_imp->frameAnswersMutex);
+        for (std::list<OfxEffectInstancePrivate::FrameAnswer>::const_iterator it = _imp->frameAnswers.begin(); it != _imp->frameAnswers.end(); ++it) {
+            if (it->metadata == metadata) {
+                return it->clipsAnswer;
+            }
+        }
+    }
+    if (!mayDerive || (metadata == getTimeInvariantMetadata())) {
+        return OfxClipsFrameAnswerPtr();
+    }
+    // An answer evicted since, or one an identity passed through: the clips still answer for
+    // the frame, from its inputs as they are read there.
+    std::vector<EffectInstancePtr> inputs;
+    std::vector<NodeMetadataConstPtr> inputsMetadata;
+    getInputsMetadataOverFramesNeeded(getRenderHash(), time, view, &inputs, &inputsMetadata);
+
+    return OfxClipsFrameAnswer::create(*metadata, inputsMetadata);
 }
 
 StatusEnum
@@ -2056,6 +2375,7 @@ OfxEffectInstance::getRegionOfDefinition(U64 /*hash*/,
         ClipsThreadStorageSetter clipSetter(effectInstance(),
                                             view,
                                             mipmapLevel);
+        ClipsFrameAnswerSetter answerSetter(effectInstance(), findFrameAnswer(time, view, false));
 
         assert(_imp->effect);
         if (getRecursionLevel() > 1) {
@@ -2250,6 +2570,7 @@ OfxEffectInstance::getRegionsOfInterest(double time,
         ClipsThreadStorageSetter clipSetter(effectInstance(),
                                             view,
                                             mipmapLevel);
+        ClipsFrameAnswerSetter answerSetter(effectInstance(), findFrameAnswer(time, view, false));
         OfxRectD roi;
         rectToOfxRectD(renderWindow, &roi);
 
@@ -2484,6 +2805,7 @@ OfxEffectInstance::isIdentity(double time,
         ClipsThreadStorageSetter clipSetter(effectInstance(),
                                             view,
                                             mipmapLevel);
+        ClipsFrameAnswerSetter answerSetter(effectInstance(), findFrameAnswer(time, view, false));
         OfxRectI ofxRoI;
         ofxRoI.x1 = renderWindow.left();
         ofxRoI.x2 = renderWindow.right();
@@ -2720,6 +3042,8 @@ OfxEffectInstance::render(const RenderActionArgs& args)
                                              args.originalScale.toMipmapLevel(),
                                              firstLayer.first,
                                              args.inputImages);
+        // The clips describe the frame rendered, which may differ from the instance-wide answer.
+        ClipsFrameAnswerSetter answerSetter(effectInstance(), findFrameAnswer(args.time, args.view, true));
         OfxGLContextEffectData* isOfxGLData = dynamic_cast<OfxGLContextEffectData*>( args.glContextData.get() );
         void* oglData = isOfxGLData ? isOfxGLData->getDataHandle() : 0;
 
@@ -3502,6 +3826,7 @@ OfxEffectInstance::getComponentsNeededAndProduced(double time,
         ClipsThreadStorageSetter clipSetter(effectInstance(),
                                             view,
                                             0);
+        ClipsFrameAnswerSetter answerSetter(effectInstance(), findFrameAnswer(time, view, false));
         ClipsComponentsPresentTimeViewSetter presentTimeViewSetter(effectInstance(), time, view);
         OFX::Host::ImageEffect::ComponentsMap compMap;
         OFX::Host::ImageEffect::ClipInstance* ptClip = 0;
@@ -3527,7 +3852,7 @@ OfxEffectInstance::getComponentsNeededAndProduced(double time,
 
                         ImageLayerDesc layer;
                         if ((*it2) == kFnOfxImagePlaneColour) {
-                            layer = ImageLayerDesc::mapNCompsToColorLayer(getMetadataNComps(index));
+                            layer = ImageLayerDesc::mapNCompsToColorLayer(getNCompsFromMetadata(*getMetadata(time, view), index));
                         } else {
                             layer = ImageLayerDesc::mapOFXPlaneStringToLayer(*it2);
                         }
@@ -3629,6 +3954,7 @@ OfxEffectInstance::getTransform(double time,
         ClipsThreadStorageSetter clipSetter( effectInstance(),
                                              view,
                                              renderScale.toMipmapLevel() );
+        ClipsFrameAnswerSetter answerSetter(effectInstance(), findFrameAnswer(time, view, false));
 
         try {
             stat = effectInstance()->getTransformAction( (OfxTime)time, field, renderScale.toOfxPointD(), draftRender, view, clipName, tmpTransform );

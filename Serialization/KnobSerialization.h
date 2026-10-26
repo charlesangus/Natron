@@ -296,6 +296,8 @@ struct GroupKnobSerialization {
     // Only meaningful for groups.
     bool isSetAsTab;
     bool isOpened;
+    // Whether the group declares Reverse-Flow Variables, see KnobGroup::setAsRFVGroup().
+    bool isRFVGroup;
 
     std::list<GroupKnobChildSerialization> children;
 
@@ -326,6 +328,7 @@ inline GroupKnobSerialization::GroupKnobSerialization()
     , secret(false)
     , isSetAsTab(false)
     , isOpened(false)
+    , isRFVGroup(false)
     , children()
 {
 }

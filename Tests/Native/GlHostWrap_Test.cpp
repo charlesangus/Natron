@@ -192,7 +192,7 @@ renderFrame(const NodePtr& node,
                                              false /*isAnalysis*/,
                                              false /*draftMode*/,
                                              stats);
-    const RectD canonicalWindow = window.toCanonical_noClipping(0, node->getEffectInstance()->getAspectRatio(-1));
+    const RectD canonicalWindow = window.toCanonical_noClipping(0, node->getEffectInstance()->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
     std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
     if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), 0, canonicalWindow, node, *request) == eStatusFailed) {
         result.error = "request pass failed";

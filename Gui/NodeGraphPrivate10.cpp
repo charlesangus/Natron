@@ -161,7 +161,7 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
             ///Only compute datas if we're pasting more than 1 node
             _publicInterface->getGui()->getApp()->getProject()->forceComputeInputDependentDataOnAllTrees();
         } else if (newNodesList.size() == 1) {
-            newNodesList.front()->getNode()->getEffectInstance()->refreshMetadata_public(true);
+            newNodesList.front()->getNode()->getEffectInstance()->refreshMetadataSideEffects();
         }
 
         // Now that meta-datas are refreshed, compute preview

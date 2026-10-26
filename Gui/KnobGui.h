@@ -493,6 +493,9 @@ public Q_SLOTS:
 
     void onCreateAliasOnGroupActionTriggered();
 
+    // Copies the knob, a variable of a node, into the project's variables.
+    void onPromoteToProjectActionTriggered();
+
 Q_SIGNALS:
 
     void knobUndoneChange();

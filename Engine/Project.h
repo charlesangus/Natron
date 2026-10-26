@@ -54,6 +54,14 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Serialization/SerializationFwd.h"
 
+// The project settings page and RFV group holding the project's Reverse-Flow Variables, see RFV.h.
+#define kProjectParamRFVPage "rfvPage"
+#define kProjectParamRFVPageLabel "Variables"
+#define kProjectParamRFVVariables "rfvVariables"
+#define kProjectParamRFVVariablesLabel "Variables"
+#define kProjectParamRFVEdit "editVariables"
+#define kProjectParamRFVEditLabel "Edit variables..."
+
 NATRON_NAMESPACE_ENTER
 
 struct ProjectPrivate;
@@ -500,6 +508,24 @@ public:
     double getProjectFrameRate() const;
 
     KnobPathPtr getEnvVarKnob() const;
+
+    /**
+     * @brief The RFV group whose user knobs are the project's Reverse-Flow Variables. They are
+     * saved with their definitions, recreated on load and deleted when the project is reset.
+     **/
+    KnobGroupPtr getRFVGroup() const;
+
+    /**
+     * @brief Has the variables, the only project knobs that can animate or hold an expression, tell
+     * their interfaces that their value at the new time may differ (see KnobI::onTimeChanged()).
+     **/
+    void refreshVariablesAfterTimeChange(bool isPlayback, double time);
+
+    /**
+     * @brief The project's variables may have changed: every ReverseFlowVariableSet node re-sorts
+     * its variables by the names the project declares (see RFV::refreshNodeVariableGroups()).
+     **/
+    virtual void onUserKnobsChanged() OVERRIDE FINAL;
     std::string getOnProjectLoadCB() const;
     std::string getOnProjectSaveCB() const;
     std::string getOnProjectCloseCB() const;
@@ -601,6 +627,9 @@ public Q_SLOTS:
 Q_SIGNALS:
 
     void mustCreateFormat();
+
+    // The user pressed the variables page's edit button.
+    void mustEditVariables();
 
     void formatChanged(Format);
 

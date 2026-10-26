@@ -904,7 +904,7 @@ TEST_F(ShuffleRenderTest, ShuffleCopyBBoxChoosesTheRegionOfTwoConnectedInputs)
         EXPECT_TRUE(rod == cases[i].expected) << cases[i].id << ": " << rectString(rod) << " != " << rectString(cases[i].expected);
     }
 
-    EXPECT_TRUE(_shuffle->getEffectInstance()->getOutputFormat() == mainInput->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(_shuffle->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat() == mainInput->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     disconnectNodes(constant, _shuffle, true);
     for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {

@@ -1167,7 +1167,7 @@ TrackMarker::getMarkerImageRoI(int time) const
     if (!input) {
         return RectI();
     }
-    return roiCanonical.toPixelEnclosing(mipmapLevel, input ? input->getEffectInstance()->getAspectRatio(-1) : 1.);
+    return roiCanonical.toPixelEnclosing(mipmapLevel, input->getEffectInstance()->getMetadata(time, ViewIdx(0))->getPixelAspectRatio(-1));
 }
 
 std::pair<ImagePtr, RectI>
@@ -1356,7 +1356,7 @@ TrackMarkerPM::trackMarker(bool forward,
                 NodePtr trackerInput = trackerNode->getInput(0);
                 if (trackerInput) {
                     ImageLayerDesc comps, paireComps;
-                    trackerInput->getEffectInstance()->getMetadataComponents(-1, &comps, &paireComps);
+                    EffectInstance::getLayersFromMetadata(*trackerInput->getEffectInstance()->getMetadata(frame, ViewIdx(0)), -1, &comps, &paireComps);
                     areaPixels *= comps.getNumComponents();
                 }
 

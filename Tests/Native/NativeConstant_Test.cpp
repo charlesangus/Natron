@@ -51,13 +51,16 @@
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
+#include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -433,4 +436,34 @@ TEST_F(NativeConstantTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT, "Constant");
     expectNativeIdentity(PLUGINID_NATRON_SOLID, PLUGIN_MAJOR_NATRON_CONSTANT, "Solid");
+}
+
+// A Size extent that reformats, with its rectangle keyed to two sizes, is each frame's format,
+// whichever frame the timeline is on.
+TEST_F(NativeConstantTest, AnAnimatedFormatExtentIsEachFramesFormat)
+{
+    resetProject();
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), kNativeConstantMajor);
+    ASSERT_TRUE(isNative(node));
+    ASSERT_TRUE(setChoiceAsUser(node, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(node, kNativeGeneratorParamReformat, { 1. }));
+    ASSERT_TRUE(setKnobValues(node, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    KnobDouble* size = dynamic_cast<KnobDouble*>(node->getKnobByName(kNativeGeneratorParamSize).get());
+    ASSERT_TRUE(size != NULL);
+    size->setValueAtTime(1, 64., ViewSpec::all(), 0);
+    size->setValueAtTime(1, 48., ViewSpec::all(), 1);
+    size->setValueAtTime(2, 100., ViewSpec::all(), 0);
+    size->setValueAtTime(2, 30., ViewSpec::all(), 1);
+    ASSERT_TRUE(size->isAnimated(0) && size->isAnimated(1));
+
+    const SequenceTime timelineFrames[2] = { 2, 1 };
+    for (int t = 0; t < 2; ++t) {
+        getApp()->getTimeLine()->seekFrame(timelineFrames[t], false, NULL, eTimelineChangeReasonOtherSeek);
+        NodeMetadataConstPtr first = node->getEffectInstance()->getMetadata(1, ViewIdx(0));
+        NodeMetadataConstPtr second = node->getEffectInstance()->getMetadata(2, ViewIdx(0));
+        ASSERT_TRUE(first && second);
+        EXPECT_EQ(RectI(0, 0, 64, 48), first->getOutputFormat()) << "timeline at " << timelineFrames[t];
+        EXPECT_EQ(RectI(0, 0, 100, 30), second->getOutputFormat()) << "timeline at " << timelineFrames[t];
+        EXPECT_DOUBLE_EQ(1., second->getPixelAspectRatio(-1)) << "timeline at " << timelineFrames[t];
+    }
 }

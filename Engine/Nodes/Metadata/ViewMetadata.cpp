@@ -265,9 +265,9 @@ ViewMetadata::onNodeHashChanged(U64 hash)
 }
 
 void
-ViewMetadata::onMetadataRefreshed(const NodeMetadata& metadata)
+ViewMetadata::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
 {
-    NativeEffectBase::onMetadataRefreshed(metadata);
+    NativeEffectBase::onCurrentFrameMetadataChanged(metadata);
     scheduleRefresh();
 }
 

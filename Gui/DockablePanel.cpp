@@ -516,14 +516,25 @@ DockablePanel::setPagesOrder(const std::list<KnobPageGuiPtr>& orderedPages,
 {
     _imp->_tabWidget->clear();
 
+    // A rebuilt page is a new KnobPageGui, so the page to restore is matched by its script name.
+    std::string curPageName;
+    if (restorePageIndex && curPage) {
+        KnobPagePtr curKnob = curPage->pageKnob.lock();
+        if (curKnob) {
+            curPageName = curKnob->getName();
+        }
+    }
 
     int index = 0;
     int i = 0;
     for (std::list<KnobPageGuiPtr>::const_iterator it = orderedPages.begin(); it != orderedPages.end(); ++it, ++i) {
         QString tabName = QString::fromUtf8( (*it)->pageKnob.lock()->getLabel().c_str() );
         _imp->_tabWidget->addTab( (*it)->tab, tabName );
-        if ( restorePageIndex && (*it == curPage) ) {
-            index = i;
+        if (restorePageIndex && curPage) {
+            KnobPagePtr pageKnob = (*it)->pageKnob.lock();
+            if ((*it == curPage) || (pageKnob && !curPageName.empty() && (pageKnob->getName() == curPageName))) {
+                index = i;
+            }
         }
     }
 
@@ -1030,6 +1041,7 @@ DockablePanel::setClosedInternal(bool c)
                     if (timeline) {
                         internalNode->getEffectInstance()->refreshAfterTimeChange( false, timeline->currentFrame() );
                     }
+                    internalNode->getEffectInstance()->onSettingsPanelOpened();
                 }
             }
         }
@@ -1611,7 +1623,10 @@ DockablePanel::onRightClickMenuRequested(const QPoint & pos)
         } else if (ret == removeAnimation) {
             removeAnimationOnAllParameters();
         } else if (ret == userParams) {
-            onManageUserParametersActionTriggered();
+            // The emitter is a row or page of the panel, whose mouse press is still on the stack.
+            // The dialog rebuilds the user pages, which deletes that widget if it is in one, so
+            // it opens once the press has returned.
+            QMetaObject::invokeMethod(this, "onManageUserParametersActionTriggered", Qt::QueuedConnection);
         }
     }
 } // onRightClickMenuRequested

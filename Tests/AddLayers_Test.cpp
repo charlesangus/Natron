@@ -305,7 +305,7 @@ TEST_F(AddLayersTest, AddingRgbaToAnRGBInputWidensColorToRGBA)
     layers->setLayer(0, kNatronColorViewRGBA, NULL);
     EXPECT_EQ(ids({ "Color(4)" }), produced(add));
     EXPECT_EQ(ids({ "Color(4)" }), present(add));
-    EXPECT_EQ(4, add->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*add->getEffectInstance()->getTimeInvariantMetadata(), -1));
     EXPECT_FALSE(isIdentityOfSource(add));
 }
 
@@ -321,7 +321,7 @@ TEST_F(AddLayersTest, AddingRgbToAnRGBInputIsAnIdentity)
     EXPECT_TRUE(isIdentityOfSource(add));
     EXPECT_TRUE(produced(add).empty());
     EXPECT_EQ(ids({ "Color(3)" }), present(add));
-    EXPECT_EQ(3, add->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(3, EffectInstance::getNCompsFromMetadata(*add->getEffectInstance()->getTimeInvariantMetadata(), -1));
 }
 
 TEST_F(AddLayersTest, AddingRgbToAnAlphaInputWidensColorToRGBA)
@@ -335,7 +335,7 @@ TEST_F(AddLayersTest, AddingRgbToAnAlphaInputWidensColorToRGBA)
     layers->setLayer(0, kNatronColorViewRGB, NULL);
     EXPECT_EQ(ids({ "Color(4)" }), produced(add));
     EXPECT_EQ(ids({ "Color(4)" }), present(add));
-    EXPECT_EQ(4, add->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*add->getEffectInstance()->getTimeInvariantMetadata(), -1));
 }
 
 TEST_F(AddLayersTest, UnconnectedPresentsOnlyWhatItAdds)
@@ -351,7 +351,7 @@ TEST_F(AddLayersTest, UnconnectedPresentsOnlyWhatItAdds)
 
     layers->setLayer(0, kNatronColorViewAlpha, NULL);
     EXPECT_EQ(ids({ "Color(1)" }), present(add));
-    EXPECT_EQ(1, add->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*add->getEffectInstance()->getTimeInvariantMetadata(), -1));
 }
 
 TEST_F(AddLayersTest, RemovingALayerItNamesIsRefused)
@@ -449,7 +449,7 @@ TEST_F(AddLayersTest, SelectionSurvivesSaveResetLoad)
 
     EXPECT_EQ(savedRows, layers2->getRows());
     EXPECT_EQ(ids({ "Color(4)", "mask" }), present(add2));
-    EXPECT_EQ(4, add2->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*add2->getEffectInstance()->getTimeInvariantMetadata(), -1));
 }
 
 TEST_F(AddLayersTest, SetChannelsRaisesValueErrorFromPython)

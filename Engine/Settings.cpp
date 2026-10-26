@@ -2305,9 +2305,9 @@ Settings::getDefaultOCIOConfigSourceForNewProjects() const
 }
 
 void
-Settings::onKnobContentChanged(const KnobI* /*knob*/)
+Settings::onKnobContentChanged(const KnobI* knob)
 {
-    Node::invalidateAllHashes();
+    Node::invalidateAllHashes("a Settings knob changed", knob);
 }
 
 bool

@@ -40,6 +40,8 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/Utils.h" // convertFromPlainText
 
 #include "Gui/ActionShortcuts.h"
@@ -126,6 +128,8 @@ struct AddKnobDialogPrivate
     ComboBox* parentPage;
     std::list<KnobGroup*> userGroups;
     std::list<KnobPagePtr> userPages; //< all user pages except the "User" one
+    // When set, the parameter is created in this RFV group, see AddKnobDialog::setRFVScope().
+    KnobGroupPtr rfvScope;
 
     AddKnobDialogPrivate(DockablePanel* panel)
         : knob()
@@ -1550,11 +1554,16 @@ AddKnobDialogPrivate::createKnobFromSelection(int index,
     KnobGroup* selectedGrp = getSelectedGroup();
     if (selectedGrp) {
         if (optionalGroupIndex != -1) {
-            selectedGrp->insertKnob(optionalGroupIndex, knob);
+            addedInGrp = selectedGrp->insertKnob(optionalGroupIndex, knob);
         } else {
-            selectedGrp->addKnob(knob);
+            addedInGrp = selectedGrp->addKnob(knob);
         }
-        addedInGrp = true;
+        if (!addedInGrp) {
+            // Only an RFV group refuses a child; onOkClicked() checks the type before this.
+            panel->getHolder()->deleteKnob(knob.get(), false);
+            knob.reset();
+            throw std::invalid_argument(AddKnobDialog::tr("The group %1 refused the parameter.").arg(QString::fromUtf8(selectedGrp->getName().c_str())).toStdString());
+        }
     }
 
 
@@ -1574,11 +1583,10 @@ AddKnobDialogPrivate::createKnobFromSelection(int index,
         }
     }
 
-
+    // The project's knobs are declared as app.<name> once the manage dialog rebuilds the pages.
     KnobHolder* holder = panel->getHolder();
     assert(holder);
     EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
-    assert(isEffect);
     if (isEffect) {
         isEffect->getNode()->declarePythonFields();
     }
@@ -1587,6 +1595,9 @@ AddKnobDialogPrivate::createKnobFromSelection(int index,
 KnobGroup*
 AddKnobDialogPrivate::getSelectedGroup() const
 {
+    if (rfvScope) {
+        return rfvScope.get();
+    }
     if ( parentGroup && parentGroup->isVisible() ) {
         std::string selectedItem = parentGroup->getCurrentIndexText().toStdString();
         if (selectedItem != "-") {
@@ -1604,6 +1615,9 @@ AddKnobDialogPrivate::getSelectedGroup() const
 KnobPagePtr
 AddKnobDialogPrivate::getSelectedPage() const
 {
+    if (rfvScope) {
+        return rfvScope->getTopLevelPage();
+    }
     if ( parentPage && parentPage->isVisible() ) {
         std::string selectedItem = parentPage->getCurrentIndexText().toStdString();
         for (std::list<KnobPagePtr>::const_iterator it = userPages.begin(); it != userPages.end(); ++it) {
@@ -1659,6 +1673,27 @@ AddKnobDialog::onOkClicked()
                               .toStdString() );
 
         return;
+    }
+
+    {
+        KnobGroup* targetGroup = _imp->getSelectedGroup();
+        if (targetGroup && targetGroup->isRFVGroup()) {
+            const ParamDataTypeEnum newType = _imp->knob ? getChoiceIndexFromKnobType(_imp->knob.get()) : (ParamDataTypeEnum)_imp->typeChoice->activeIndex();
+            KnobHolder* holder = _imp->panel->getHolder();
+            QString error;
+            if ((newType == eParamDataTypeGroup) || (newType == eParamDataTypePage) || (newType == eParamDataTypeButton) || (newType == eParamDataTypeSeparator)) {
+                error = tr("A %1 parameter cannot be a variable.").arg(tr(dataTypeString(newType)));
+            } else if (!RFV::isValidVariableName(stdName)) {
+                error = tr("A variable name must be a valid Python identifier: letters, digits and underscores, not starting with a digit, and not a Python keyword.");
+            } else if (dynamic_cast<Project*>(holder) && RFV::isAppAttributeName(holder->getApp(), stdName)) {
+                error = tr("%1 is an attribute of the app object, so a project variable cannot have that name.").arg(name);
+            }
+            if (!error.isEmpty()) {
+                Dialogs::errorDialog(tr("Error").toStdString(), error.toStdString());
+
+                return;
+            }
+        }
     }
 
     EffectInstance* effect = 0;
@@ -1985,6 +2020,24 @@ AddKnobDialog::setType(ParamDataTypeEnum type)
     _imp->typeChoice->setCurrentIndex((int)type);
 }
 
+void
+AddKnobDialog::setRFVScope(const KnobGroupPtr& group)
+{
+    _imp->rfvScope = group;
+    if (!_imp->knob) {
+        const ParamDataTypeEnum refused[] = {
+            eParamDataTypeGroup, eParamDataTypePage, eParamDataTypeButton, eParamDataTypeSeparator
+        };
+        for (std::size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); ++i) {
+            _imp->typeChoice->disableItem((int)refused[i]);
+            if (_imp->typeChoice->activeIndex() == (int)refused[i]) {
+                _imp->typeChoice->setCurrentIndex((int)eParamDataTypeFloatingPoint);
+            }
+        }
+    }
+    _imp->setVisibleParent(false);
+    _imp->setVisiblePage(false);
+}
 
 void
 AddKnobDialogPrivate::setVisibleMenuItems(bool visible)
@@ -2098,8 +2151,8 @@ AddKnobDialogPrivate::setVisibleParent(bool visible)
 {
     if ( !userGroups.empty() ) {
         assert(parentGroup);
-        parentGroup->setVisible(visible);
-        parentGroupLabel->setVisible(visible);
+        parentGroup->setVisible(visible && !rfvScope);
+        parentGroupLabel->setVisible(visible && !rfvScope);
     }
 }
 
@@ -2107,8 +2160,8 @@ void
 AddKnobDialogPrivate::setVisiblePage(bool visible)
 {
     if (parentPage) {
-        parentPage->setVisible(visible);
-        parentPageLabel->setVisible(visible);
+        parentPage->setVisible(visible && !rfvScope);
+        parentPageLabel->setVisible(visible && !rfvScope);
     }
 }
 

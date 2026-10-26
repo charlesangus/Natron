@@ -82,4 +82,6 @@ layer each via `SceneOps`, memoized per M19.P1.T3, registered in
 **Verification gate:** CI green including M52.P3.T4; `USDEditPrim` over a camera prim exports exactly the touched attributes and nothing else; `USDVariant` switches a variant visible in the Viewer's 3D view on real hardware; every M20 pattern knob is a `PrimSelector` and M20-era projects still load; pre-existing ctest suite green.
 
 ## Decisions
+
+- 2026-10-25 — **Long-lived USD scene (bosley-native-nodes, from the review in `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`):** selectPrims and USDVariant read their upstream through M19 - USD/Hydra Foundation's query-stage pool, not StageCache. USDReference must not reference only the strongest anonymous layer (that drops the weaker ones): reference a stack layer that sublayers the whole input, and handle it in USDWrite.
 - 2026-10-03 — **USD Python coexistence spike (user decision):** after M52's gate, run a time-boxed spike testing whether pxr Python bindings can load into Natron's Shiboken6/PySide6 interpreter (M19 builds USD with Python OFF). A Solaris-style Python-over-the-stage node depends on the outcome; `USDSetAttribute` (P3.T3) stays the no-Python substitute meanwhile. Add the spike as a trailing task when M52 is promoted.

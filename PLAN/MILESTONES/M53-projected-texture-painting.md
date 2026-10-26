@@ -72,3 +72,7 @@ texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
   - size: S
 
 **Verification gate:** CI green including M53.P3.T2; on real hardware the `PaintThroughCamera` round trip works end to end with occlusion; `USDWrite` exports a portable USD + textures that `usdview` displays with the painted texture; packaging still builds with the `Ar`/`Hio` plugin discoverable; pre-existing ctest suite green.
+
+## Decisions
+
+- 2026-10-25 — **Long-lived USD scene (bosley-native-nodes, from the review in `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`):** Drop "the viewport re-composes on stack hash": the viewer keeps one long-lived stage, and a `?v=` texture path change is a plain property/asset-path invalidation. Check that the `natron://` resolver never renders synchronously from inside Hydra on the GUI thread (deadlock risk).

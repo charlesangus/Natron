@@ -157,3 +157,7 @@ choice arises.
   - size: S
 
 **Verification gate:** CI green including M54.P5.T1; on real hardware a geometry chain displays in the Viewer's 3D view, point picking and `GeoEdit` drag work with undo, and the result renders through `GeoToUSD` → `USDRender` to an image; `GeoWrangle` runs a script that edits points; geometry cache respects its own budget; pre-existing ctest suite green; `Engine/GeoDetail.h` and `Engine/` core stay pxr-free.
+
+## Decisions
+
+- 2026-10-25 — **Long-lived USD scene (bosley-native-nodes, from the review in `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`):** The scratch stage "keyed by detail hash" would rebuild per frame: use a viewer-private geometry layer edited in place instead, so value-only changes become dirty points. GeoToUSD layer keys follow M19's per-node read keys. Geometry keys on time only when something upstream varies with time (user).

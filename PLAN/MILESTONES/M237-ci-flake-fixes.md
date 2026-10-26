@@ -16,4 +16,10 @@ Priority (user, 2026-10-26). Two tests fail PR CI on unrelated branches and bloc
   - verify: passes in repeated runs under load (e.g. ctest --repeat until-fail:20 with a parallel load), and still fails on a deliberately broken calibration in a scratch run.
   - size: M
 
+- [ ] M237.P1.T3 — `RenderIsolation` hang in the legacy scheduler
+  - files: `Tests/RenderIsolation*`, the render code the hang points to
+  - approach: on PR #118 (run 40382716700, 2026-10-26) RenderIsolation hit the 300 s timeout in the legacy-scheduler leg, where it normally takes ~1–3 s; the retry passed. A hang, not slowness: find the deadlock (run it repeatedly under load with a short timeout and grab thread stacks with eu-stack), and fix the cause, not the test.
+  - verify: `ctest -R RenderIsolation --repeat until-fail:200` in both scheduler modes under parallel load passes.
+  - size: L
+
 **Verification gate:** release and debug gates green; both tests stable across repeated runs.

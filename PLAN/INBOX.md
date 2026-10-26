@@ -1,9 +1,5 @@
 ## Pending
 
-### 2026-10-26T17:00:00Z — change-request
-- refs: none
-- From bosley-native-nodes (PR CI). `Comps/CacheEquivalenceBenchCompTest` runs 372–434 s inside the debug ctest legs against a 450 s timeout (M177's PR CI: 386 s and 434 s; M92's legacy leg timed out at 450 s, then passed alone in 190 s). It flakes under load on every branch. Shrink the comp or its frame count so it runs well under the timeout, keeping what it proves.
-
 ### 2026-10-26T16:00:00Z — change-request
 - refs: none
 - From M185 - Variable Warps UAT (bosley-native-nodes, user). New milestone suggested ("Cache Invalidation Audit"): the user saw STMap keep rendering as if its old Map were still connected after the Map input was disconnected; not reproducible later. Thoroughly audit cache invalidation for holes: input connect/disconnect (including optional inputs such as Map/Mask), node hash and render-hash composition, the ActionsCache, the image and viewer texture caches, GPU residency and region caches, the timeline cached-frames line, expression and link invalidation, and per-frame metadata retention. Related: M178 - Render Context Core's UAT found the timeline line ignoring invalidation and OFX binary stamps changing per AppImage mount. Deliver a written map of every cache and what invalidates it, stress tests (random edit/connect/disconnect sequences compared against a cache-off render), and fixes.

@@ -1,0 +1,19 @@
+# M237 - CI Flake Fixes
+
+Priority (user, 2026-10-26). Two tests fail PR CI on unrelated branches and block merges.
+
+## Phase 237.1: Fixes
+
+- [ ] M237.P1.T1 — `Comps/CacheEquivalenceBenchCompTest` well under its timeout
+  - files: the test (`Tests/Native/CacheEquivalence_Test.cpp` or the Comps suite), its comp fixture
+  - approach: in the debug ctest legs it takes 372–434 s against a 450 s timeout and times out under load (190 s alone). Shrink the comp, its resolution or its frame count so it runs in a small fraction of the timeout, keeping what it proves (cache on and off render the same).
+  - verify: the test's run time in the debug PR CI legs; it still fails if the cache returns a wrong result (a deliberately broken key in a scratch run, not committed).
+  - size: M
+
+- [ ] M237.P1.T2 — `GpuResidencyTest.PipelinedStripsCalibrateLikeSerial` robust to load
+  - files: `Tests/GpuResidency_Test.cpp`
+  - approach: it compares timings and fails under CI load. Make the check robust (repeat and take the median or minimum, compare with a tolerance justified by measured spread, or assert the structural property it means rather than wall time), keeping it able to catch a real calibration regression.
+  - verify: passes in repeated runs under load (e.g. ctest --repeat until-fail:20 with a parallel load), and still fails on a deliberately broken calibration in a scratch run.
+  - size: M
+
+**Verification gate:** release and debug gates green; both tests stable across repeated runs.

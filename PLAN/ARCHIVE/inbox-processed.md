@@ -212,3 +212,8 @@ A Switch's per-file key/value metadata (custom header attributes) always comes f
 - From M71 - RFV Render Context (bosley-native-nodes). Pre-existing: a knob's cached expression result (`_exprRes`) for an expression that reads no render context is keyed by time only, not view, so an expression whose value depends on the view (e.g. reads `view` or a per-view knob) returns the first view's cached value for every view in a multiview render. Key the cache by (time, view), or by view only when the expression reads the view; add a two-view test.
 - processed 2026-10-26 by bosley-native-nodes: fixed in M71 - RFV Render Context (expressions evaluate at the requested view; caches keyed by time and view).
 
+### 2026-10-26T17:00:00Z — change-request
+- refs: none
+- From bosley-native-nodes (PR CI). `Comps/CacheEquivalenceBenchCompTest` runs 372–434 s inside the debug ctest legs against a 450 s timeout (M177's PR CI: 386 s and 434 s; M92's legacy leg timed out at 450 s, then passed alone in 190 s). It flakes under load on every branch. Shrink the comp or its frame count so it runs well under the timeout, keeping what it proves.
+- processed 2026-10-26 by bosley-native-nodes: became M237 - CI Flake Fixes.
+

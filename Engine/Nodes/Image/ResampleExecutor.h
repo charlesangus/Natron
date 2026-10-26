@@ -190,7 +190,7 @@ void resampleRegionsOfInterest(EffectInstance& effect,
 
 /**
  * @brief The pixel matrix a matrix-form Resample op hands the host for concatenation, from source
- * pixels to output pixels at renderScale, and the source input it applies to. A default reply for
+ * pixels to output pixels at renderScale and the pixel aspect ratios of time and view, and the source input it applies to. A default reply for
  * the offset form, for a matrix that does not exist or is singular, and, outside a draft render,
  * for a render that blurs over time or along the transform. Fails without a connected source.
  **/
@@ -198,6 +198,7 @@ StatusEnum resampleTransform(EffectInstance& effect,
                              int sourceInput,
                              const ResampleRequest& request,
                              double time,
+                             ViewIdx view,
                              const RenderScale& renderScale,
                              bool draftRender,
                              EffectInstancePtr* inputToTransform,

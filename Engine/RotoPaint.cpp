@@ -1300,7 +1300,9 @@ RotoPaint::refreshExtraStateAfterTimeChanged(bool isPlayback,
 }
 
 StatusEnum
-RotoPaint::getPreferredMetadata(NodeMetadata& metadata)
+RotoPaint::getPreferredMetadataAt(double /*time*/,
+                                  ViewIdx /*view*/,
+                                  NodeMetadata& metadata)
 {
     metadata.setNComps( -1, 4 );
     metadata.setComponentsType(-1, kNatronColorLayerID);
@@ -1389,7 +1391,7 @@ RotoPaint::isIdentity(double time,
         bool isProjectFormat;
         StatusEnum s = maskInput->getRegionOfDefinition_public(maskInput->getRenderHash(), time, scale, view, &maskRod, &isProjectFormat);
         Q_UNUSED(s);
-        const RectI maskPixelRod = maskRod.toPixelEnclosing(scale, getAspectRatio(ROTOPAINT_MASK_INPUT_INDEX));
+        const RectI maskPixelRod = maskRod.toPixelEnclosing(scale, getRenderMetadata(time, view)->getPixelAspectRatio(ROTOPAINT_MASK_INPUT_INDEX));
         if ( !maskPixelRod.intersects(roi) ) {
             *inputTime = time;
             *inputNb = 0;
@@ -1414,7 +1416,7 @@ RotoPaint::render(const RenderActionArgs& args)
 {
     RotoContextPtr roto = getNode()->getRotoContext();
     std::list<RotoDrawableItemPtr> items = roto->getCurvesByRenderOrder(false /*onlyActiveItems*/);
-    ImageBitDepthEnum bgDepth = getBitDepth(0);
+    ImageBitDepthEnum bgDepth = getRenderMetadata(args.time, args.view)->getBitDepth(0);
     std::list<ImageLayerDesc> neededComps;
 
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();

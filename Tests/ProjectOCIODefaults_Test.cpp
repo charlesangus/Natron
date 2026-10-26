@@ -99,7 +99,7 @@ changeReaderFile(const NodePtr& reader,
 
     ASSERT_TRUE(bool(knob));
     knob->setValue(file);
-    reader->getEffectInstance()->refreshMetadata_public(false);
+    reader->getEffectInstance()->dropCachedMetadata();
 }
 
 NodePtr

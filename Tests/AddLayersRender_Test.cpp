@@ -46,6 +46,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Channel/RemoveLayers.h"
 #include "Engine/OutputEffectInstance.h"
@@ -390,8 +391,8 @@ TEST_F(AddLayersRenderTest, RegisteringTheNamedLayerBetweenRendersProducesIt)
 
 // A RemoveLayers takes alpha out on frame 1 only, being disabled on frame 2, so the stream's
 // colour plane is RGB on frame 1 and RGBA on frame 2. Adding alpha then widens the plane on frame
-// 1 and leaves it alone on frame 2. Metadata hold for every frame, so they must come out the same
-// whichever frame the timeline is on when they are computed.
+// 1 and leaves it alone on frame 2. Each frame's metadata must come out the same whichever frame
+// the timeline is on when they are computed.
 TEST_F(AddLayersRenderTest, MetadataDoNotDependOnTheFrameTheTimelineIsOn)
 {
     NodePtr reader = createReader("flat-three-layers.exr");
@@ -419,15 +420,15 @@ TEST_F(AddLayersRenderTest, MetadataDoNotDependOnTheFrameTheTimelineIsOn)
     ASSERT_TRUE(add->computeOutcome(1., ViewIdx(0)).widensColor);
     ASSERT_FALSE(add->computeOutcome(2., ViewIdx(0)).widensColor);
 
-    add->refreshMetadata_public(true);
-    const int nCompsParkedOnFrame2 = add->getMetadataNComps(-1);
-
-    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
-    add->refreshMetadata_public(true);
-    const int nCompsParkedOnFrame1 = add->getMetadataNComps(-1);
-
-    EXPECT_EQ(nCompsParkedOnFrame1, nCompsParkedOnFrame2);
-    EXPECT_EQ(4, nCompsParkedOnFrame2);
+    for (int parkedOn = 2; parkedOn >= 1; --parkedOn) {
+        getApp()->getTimeLine()->seekFrame(parkedOn, false, NULL, eTimelineChangeReasonOtherSeek);
+        add->dropCachedMetadata();
+        for (int frame = 1; frame <= 2; ++frame) {
+            NodeMetadataConstPtr metadata = add->getMetadata(frame, ViewIdx(0));
+            ASSERT_TRUE(bool(metadata)) << "frame " << frame << ", parked on " << parkedOn;
+            EXPECT_EQ(4, metadata->getNComps(-1)) << "frame " << frame << ", parked on " << parkedOn;
+        }
+    }
 
     getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
     FlatExrImage image;

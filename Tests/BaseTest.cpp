@@ -211,7 +211,7 @@ BaseTest::readInWorkingSpace(const NodePtr& reader)
     // Marked as chosen by hand: otherwise a reload or a new file re-guesses the space from the
     // file and the pixels the tests compare get converted after all.
     inputSpaceSet->setValue(true);
-    reader->getEffectInstance()->refreshMetadata_public(false);
+    reader->getEffectInstance()->dropCachedMetadata();
 }
 
 void

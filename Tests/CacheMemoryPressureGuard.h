@@ -48,15 +48,19 @@ public:
         : _knob(appPTR->getCurrentSettings()->getKnobByNameAndType<KnobInt>("unreachableRAMPercent"))
         , _previousValue(0)
     {
+        // Only a real change is written: every Settings knob write moves the hash mark count all
+        // nodes share, which tests measuring a node's marks across a render would otherwise see.
         if (_knob) {
             _previousValue = _knob->getValue();
-            _knob->setValue(0);
+            if (_previousValue != 0) {
+                _knob->setValue(0);
+            }
         }
     }
 
     ~DisableUnreachableRAMPurging()
     {
-        if (_knob) {
+        if (_knob && (_knob->getValue() != _previousValue)) {
             _knob->setValue(_previousValue);
         }
     }

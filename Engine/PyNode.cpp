@@ -44,12 +44,14 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/Project.h"
 #include "Engine/PyParameter.h" // checkHolderIsEditable
 #include "Engine/PyRoto.h"
 #include "Engine/PyTracker.h"
 #include "Engine/PythonUndoCommands.h"
+#include "Engine/RFV.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -656,7 +658,7 @@ UserParamHolder::createIntParam(const QString& name,
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 1);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -677,7 +679,7 @@ UserParamHolder::createInt2DParam(const QString& name,
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 2);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -698,7 +700,7 @@ UserParamHolder::createInt3DParam(const QString& name,
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 3);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -720,7 +722,7 @@ UserParamHolder::createDoubleParam(const QString& name,
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 1);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -741,7 +743,7 @@ UserParamHolder::createDouble2DParam(const QString& name,
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 2);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -762,7 +764,7 @@ UserParamHolder::createDouble3DParam(const QString& name,
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 3);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -784,7 +786,7 @@ UserParamHolder::createBooleanParam(const QString& name,
     KnobBoolPtr knob = _holder->createBoolKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -806,7 +808,7 @@ UserParamHolder::createChoiceParam(const QString& name,
     KnobChoicePtr knob = _holder->createChoiceKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -829,7 +831,7 @@ UserParamHolder::createColorParam(const QString& name,
     KnobColorPtr knob = _holder->createColorKnob(name.toStdString(), label.toStdString(), useAlpha ? 4 : 3);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -851,7 +853,7 @@ UserParamHolder::createStringParam(const QString& name,
     KnobStringPtr knob = _holder->createStringKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -873,7 +875,7 @@ UserParamHolder::createFileParam(const QString& name,
     KnobFilePtr knob = _holder->createFileKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -895,7 +897,7 @@ UserParamHolder::createOutputFileParam(const QString& name,
     KnobOutputFilePtr knob = _holder->createOuptutFileKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -917,7 +919,7 @@ UserParamHolder::createPathParam(const QString& name,
     KnobPathPtr knob = _holder->createPathKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -939,7 +941,7 @@ UserParamHolder::createChannelSetParam(const QString& name,
     KnobChannelSetPtr knob = _holder->createChannelSetKnob(name.toStdString(), label.toStdString());
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -962,7 +964,7 @@ UserParamHolder::createLayerSelectParam(const QString& name,
     KnobLayerSelectPtr knob = _holder->createLayerSelectKnob(name.toStdString(), label.toStdString(), withChannelButtons);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -984,7 +986,7 @@ UserParamHolder::createChannelSelectParam(const QString& name,
     KnobChannelSelectPtr knob = _holder->createChannelSelectKnob(name.toStdString(), label.toStdString());
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1006,7 +1008,7 @@ UserParamHolder::createButtonParam(const QString& name,
     KnobButtonPtr knob = _holder->createButtonKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1028,7 +1030,7 @@ UserParamHolder::createSeparatorParam(const QString& name,
     KnobSeparatorPtr knob = _holder->createSeparatorKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1050,7 +1052,7 @@ UserParamHolder::createGroupParam(const QString& name,
     KnobGroupPtr knob = _holder->createGroupKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1094,7 +1096,7 @@ UserParamHolder::createParametricParam(const QString& name,
     KnobParametricPtr knob = _holder->createParametricKnob(name.toStdString(), label.toStdString(), nbCurves);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1125,6 +1127,25 @@ UserParamHolder::removeParam(Param* param)
     _holder->deleteKnob(param->getInternalKnob().get(), true);
 
     return true;
+}
+
+void
+UserParamHolder::addRFVKnob(Param* param)
+{
+    if (!checkHolderIsEditable(_holder)) {
+        return;
+    }
+    KnobIPtr knob = param ? param->getInternalKnob() : KnobIPtr();
+    std::string error;
+    if (!RFV::canAddAsVariable(_holder, knob, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+
+        return;
+    }
+    PythonUserKnobsUndoGuard undo(_holder);
+    if (!RFV::addAsVariable(_holder, knob, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+    }
 }
 
 PageParam*
@@ -1225,28 +1246,44 @@ Effect::getAvailableLayers(int inputNb) const
     return ret;
 }
 
-RectI
-Effect::getOutputFormat() const
+namespace {
+NodeMetadataConstPtr
+getEffectMetadataAt(const NodePtr& node,
+                    double time,
+                    int view)
 {
-    NodePtr node = getInternalNode();
+    if (!node || !node->getEffectInstance()) {
+        return NodeMetadataConstPtr();
+    }
 
-    if (!node) {
+    return node->getEffectInstance()->getMetadata(time, ViewIdx(view));
+}
+} // namespace
+
+RectI
+Effect::getOutputFormat(double time,
+                        int view) const
+{
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
+
+    if (!metadata) {
         return RectI();
     }
 
-    return node->getEffectInstance()->getOutputFormat();
+    return metadata->getOutputFormat();
 }
 
 double
-Effect::getFrameRate() const
+Effect::getFrameRate(double time,
+                     int view) const
 {
-    NodePtr node = getInternalNode();
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
 
-    if (!node) {
+    if (!metadata) {
         return 24.;
     }
 
-    return node->getEffectInstance()->getFrameRate();
+    return metadata->getOutputFrameRate();
 }
 
 namespace {
@@ -1364,27 +1401,29 @@ Effect::addMetadataAsDependencyOf(int fromExprDimension,
 }
 
 double
-Effect::getPixelAspectRatio() const
+Effect::getPixelAspectRatio(double time,
+                            int view) const
 {
-    NodePtr node = getInternalNode();
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
 
-    if (!node) {
+    if (!metadata) {
         return 1.;
     }
 
-    return node->getEffectInstance()->getAspectRatio(-1);
+    return metadata->getPixelAspectRatio(-1);
 }
 
 ImageBitDepthEnum
-Effect::getBitDepth() const
+Effect::getBitDepth(double time,
+                    int view) const
 {
-    NodePtr node = getInternalNode();
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
 
-    if (!node) {
+    if (!metadata) {
         return eImageBitDepthFloat;
     }
 
-    return node->getEffectInstance()->getBitDepth(-1);
+    return metadata->getBitDepth(-1);
 }
 
 void

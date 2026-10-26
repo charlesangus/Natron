@@ -780,9 +780,9 @@ RawInputColor::onInputChanged(int /*inputNo*/)
 }
 
 void
-RawInputColor::onMetadataRefreshed(const NodeMetadata& metadata)
+RawInputColor::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
 {
-    ImageNode<RawInputColorOp>::onMetadataRefreshed(metadata);
+    ImageNode<RawInputColorOp>::onCurrentFrameMetadataChanged(metadata);
     showSourceProfile();
     refreshProfileWarning();
 }

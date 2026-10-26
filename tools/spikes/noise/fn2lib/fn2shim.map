@@ -1,0 +1,4 @@
+{
+  global: fn2spike_*;
+  local: *;
+};

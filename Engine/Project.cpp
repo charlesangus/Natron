@@ -100,6 +100,7 @@
 #include "Engine/Node.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectPrivate.h"
+#include "Engine/RFV.h"
 #include "Engine/RectDSerialization.h"
 #include "Engine/RectISerialization.h"
 #include "Engine/RotoLayer.h"
@@ -703,6 +704,7 @@ Project::loadProjectInternal(const QString& path,
         }
     }
 
+    getApp()->refreshProjectParamsInPython();
     _imp->runOnProjectLoadCallback();
 
     ///Process all events before flagging that we're no longer loading the project
@@ -1757,7 +1759,7 @@ Project::initializeKnobs()
 
         _imp->builtinFormats.push_back(f);
         ++_imp->formatsGeneration;
-        Node::invalidateAllHashes();
+        Node::invalidateAllHashes("project formats changed");
     }
     _imp->formatKnob->setAddNewLine(false);
 
@@ -2088,6 +2090,22 @@ Project::initializeKnobs()
     _imp->onNodeDeleted->setDefaultValue(onNodeDelete);
     pythonPage->addKnob(_imp->onNodeDeleted);
 
+    // Both are user knobs, because a group that is not refuses the variables, which are user knobs.
+    KnobPagePtr rfvPage = AppManager::createKnob<KnobPage>(this, tr(kProjectParamRFVPageLabel));
+    rfvPage->setName(kProjectParamRFVPage);
+    rfvPage->setAsUserKnob(true);
+
+    _imp->rfvEditKnob = AppManager::createKnob<KnobButton>(this, tr(kProjectParamRFVEditLabel));
+    _imp->rfvEditKnob->setName(kProjectParamRFVEdit);
+    _imp->rfvEditKnob->setHintToolTip(tr("Add, edit, reorder or delete the project's variables."));
+    rfvPage->addKnob(_imp->rfvEditKnob);
+
+    _imp->rfvGroup = AppManager::createKnob<KnobGroup>(this, tr(kProjectParamRFVVariablesLabel));
+    _imp->rfvGroup->setName(kProjectParamRFVVariables);
+    _imp->rfvGroup->setAsUserKnob(true);
+    _imp->rfvGroup->setDefaultValue(true);
+    _imp->rfvGroup->setAsRFVGroup(true);
+    rfvPage->addKnob(_imp->rfvGroup);
 
     comments->setAsMultiLine();
     comments->setAnimationEnabled(false);
@@ -2211,7 +2229,7 @@ Project::refreshColorManagement(bool warnOnFallback,
     cm.setWorkingSpace(getWorkingColorSpace());
     // The digest folds in the loaded config's source, which no project knob holds when the
     // environment overrides it.
-    Node::invalidateAllHashes();
+    Node::invalidateAllHashes("OCIO config loaded");
     pushOCIOConfigToNodes();
     cm.notifyConfigChanged();
 
@@ -2410,7 +2428,7 @@ Project::tryAddProjectFormat(const Format & f, bool* existed)
     QString formatStr = ProjectPrivate::generateStringFromFormat(f);
     _imp->additionalFormats.push_back(f);
     ++_imp->formatsGeneration;
-    Node::invalidateAllHashes();
+    Node::invalidateAllHashes("project formats changed");
     if ( !f.getName().empty() ) {
         _imp->formatKnob->appendChoice( ChoiceOption(f.getName(), formatStr.toStdString(), "") );
     } else {
@@ -2508,7 +2526,7 @@ Project::addLayer(const ImageLayerDesc& desc, LayerRegistryEntry::OriginEnum ori
 {
     LayerRegistry::AddResultEnum ret = _imp->layers->add(desc, origin, error);
     if (ret == LayerRegistry::eAddResultAdded || ret == LayerRegistry::eAddResultGrown) {
-        Node::invalidateAllHashes();
+        Node::invalidateAllHashes("a layer was added or grown");
         if (!isLoadingProject()) {
             notifyLayersChanged();
         }
@@ -2541,7 +2559,7 @@ Project::removeLayer(const std::string& id, std::string* error)
 
     bool ok = _imp->layers->remove(id, error);
     if (ok) {
-        Node::invalidateAllHashes();
+        Node::invalidateAllHashes("a layer was removed");
         if (!isLoadingProject()) {
             notifyLayersChanged();
         }
@@ -2839,19 +2857,21 @@ Project::onKnobValueChanged(KnobI* knob,
         }
     } else if ( knob == _imp->addFormatKnob.get() ) {
         Q_EMIT mustCreateFormat();
-    } else if ( knob == _imp->previewMode.get() ) {
+    } else if ((knob == _imp->rfvEditKnob.get()) && (reason == eValueChangedReasonUserEdited)) {
+        Q_EMIT mustEditVariables();
+    } else if (knob == _imp->previewMode.get()) {
         Q_EMIT autoPreviewChanged( _imp->previewMode->getValue() );
         shouldAutoSave = true;
-    }  else if ( knob == _imp->frameRate.get() ) {
+    } else if (knob == _imp->frameRate.get()) {
         forceComputeInputDependentDataOnAllTrees();
         shouldAutoSave = true;
-    } else if ( knob == _imp->frameRange.get() ) {
+    } else if (knob == _imp->frameRange.get()) {
         int first = _imp->frameRange->getValue(0);
         int last = _imp->frameRange->getValue(1);
         rehashNodesUsingFrameRange();
         Q_EMIT frameRangeChanged(first, last);
         shouldAutoSave = true;
-    } else if ( knob == _imp->gpuSupport.get() ) {
+    } else if (knob == _imp->gpuSupport.get()) {
 
         refreshOpenGLRenderingFlagOnNodes();
         shouldAutoSave = true;
@@ -2904,9 +2924,9 @@ Project::refreshOpenGLRenderingFlagOnNodes()
 }
 
 void
-Project::onKnobContentChanged(const KnobI* /*knob*/)
+Project::onKnobContentChanged(const KnobI* knob)
 {
-    Node::invalidateAllHashes();
+    Node::invalidateAllHashes("a project knob changed", knob);
 }
 
 bool
@@ -3215,7 +3235,7 @@ Project::doResetEnd(bool aboutToQuit)
             _imp->autoSaveTimer->stop();
             _imp->additionalFormats.clear();
             ++_imp->formatsGeneration;
-            Node::invalidateAllHashes();
+            Node::invalidateAllHashes("project formats changed");
             _imp->layers.reset(new LayerRegistry());
         }
         {
@@ -3235,6 +3255,7 @@ Project::doResetEnd(bool aboutToQuit)
         getApp()->removeAllKeyframesIndicators();
 
         Q_EMIT projectNameChanged(QString::fromUtf8(NATRON_PROJECT_UNTITLED), false);
+        _imp->clearRFVVariables();
         const KnobsVec & knobs = getKnobs();
 
         beginChanges();
@@ -3255,6 +3276,7 @@ Project::doResetEnd(bool aboutToQuit)
         applyColorManagementDefaults(false);
 
         endChanges(true);
+        getApp()->refreshProjectParamsInPython();
     }
 
     {
@@ -3904,6 +3926,32 @@ KnobPathPtr
 Project::getEnvVarKnob() const
 {
     return _imp->envVars;
+}
+
+KnobGroupPtr
+Project::getRFVGroup() const
+{
+    return _imp->rfvGroup;
+}
+
+void
+Project::refreshVariablesAfterTimeChange(bool isPlayback,
+                                         double time)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (!_imp->rfvGroup) {
+        return;
+    }
+    const KnobsVec children = _imp->rfvGroup->getChildren();
+    for (KnobsVec::const_iterator it = children.begin(); it != children.end(); ++it) {
+        (*it)->onTimeChanged(isPlayback, time);
+    }
+}
+
+void
+Project::onUserKnobsChanged()
+{
+    RFV::refreshNodeVariableGroups(*this);
 }
 
 std::string

@@ -268,7 +268,6 @@ TEST_F(BlockingRenderIdleTest, AQueuedSequenceDoesNotLetABlockingRenderReturnBef
     ASSERT_TRUE(interpretPythonScript(define, &error, &output)) << error;
     beforeRender->setValue(std::string("queuedSequenceBeforeRender"));
     afterRender->setValue(std::string("queuedSequenceAfterRender"));
-    _writer->refreshInputRelatedDataForRender();
 
     BlockingBackgroundRender first(effect);
     BlockingBackgroundRender second(effect);

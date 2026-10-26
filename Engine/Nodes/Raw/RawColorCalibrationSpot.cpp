@@ -502,7 +502,7 @@ RawColorCalibration::refreshSpotDefaults()
     if (!bottomLeft || !size || !input) {
         return;
     }
-    const RectI format = input->getOutputFormat();
+    const RectI format = input->getMetadata(getCurrentTime(), ViewIdx(0))->getOutputFormat();
     if (format.isNull()) {
         return;
     }

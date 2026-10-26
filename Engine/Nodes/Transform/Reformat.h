@@ -235,6 +235,18 @@ public:
     ReformatTypeEnum getReformatType() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The type at (time, view), for what is derived at a frame: the choice can be keyed.
+     **/
+    ReformatTypeEnum getReformatType(double time,
+                                     ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The PAR of the source's output at (time, view), or 1 without a source.
+     **/
+    double getSourcePixelAspectRatio(double time,
+                                     ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
      * @brief The output pixel aspect ratio, the rectangle (in pixels at render scale 1, not
      * rounded) the input format is mapped to, and, when format is not null, the output format
      * in pixels, as the openfx-misc ReformatPlugin::getOutputFormat() computes them. srcPar is
@@ -258,7 +270,9 @@ public:
                                       TransformMath::Mat3* matrix) const WARN_UNUSED_RETURN;
 
 protected:
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,

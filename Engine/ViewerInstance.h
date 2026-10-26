@@ -353,7 +353,7 @@ public:
 
     void getTimelineBounds(int* first, int* last) const;
 
-    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+    virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
     virtual void onChannelsSelectorRefreshed() OVERRIDE FINAL;
 
     bool isViewerUIVisible() const;

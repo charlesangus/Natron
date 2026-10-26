@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
+
 #include "Engine/ImageLayerDesc.h"
 #include "Global/GlobalDefines.h"
 
@@ -107,6 +109,8 @@ private:
 
     std::unique_ptr<NodeMetadataPrivate> _imp;
 };
+
+typedef std::shared_ptr<const NodeMetadata> NodeMetadataConstPtr;
 
 NATRON_NAMESPACE_EXIT
 

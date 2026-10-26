@@ -752,6 +752,11 @@ Edge::dragDest(const QPointF & dst)
     prepareGeometryChange();
     _imp->arrowHead.clear();
     _imp->arrowHead << line().p1() << arrowP1 << arrowP2;
+
+    if (_imp->label) {
+        QPointF pos(((dst.x() + line().p2().x()) / 2.) - 5, ((dst.y() + line().p2().y()) / 2.) - 5);
+        _imp->label->setPos(pos);
+    }
 }
 
 void

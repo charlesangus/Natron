@@ -249,7 +249,7 @@ protected:
         }
         const GpuQuery query = queryFor(4);
         RenderedPlane input;
-        EXPECT_TRUE(renderCpu(source, effect->getGpuInputRoI(0, window, RenderScale::identity), &input));
+        EXPECT_TRUE(renderCpu(source, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), window, RenderScale::identity), &input));
         EXPECT_TRUE(effect->canRenderOnGpu(query));
         const std::vector<GpuParityImage> inputs(1, imageOf(input));
         GpuRunResult result = runRenderGpu(runtime, *effect, query, inputs, nullptr, window);
@@ -281,7 +281,7 @@ protected:
         };
         const GpuQuery query = queryFor(4);
         RenderedPlane input;
-        ASSERT_TRUE(renderCpu(source, effect->getGpuInputRoI(0, full, RenderScale::identity), &input)) << what;
+        ASSERT_TRUE(renderCpu(source, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), full, RenderScale::identity), &input)) << what;
         const std::vector<GpuParityImage> inputs(1, imageOf(input));
         ASSERT_TRUE(effect->canRenderOnGpu(query)) << what;
         const GpuRunResult whole = runRenderGpu(runtime, *effect, query, inputs, nullptr, full);

@@ -65,7 +65,7 @@ expectSquareFormat(const NodePtr& read,
                    int size)
 {
     EffectInstancePtr effect = read->getEffectInstance();
-    const RectI format = effect->getOutputFormat();
+    const RectI format = effect->getTimeInvariantMetadata()->getOutputFormat();
     EXPECT_EQ(RectI(0, 0, size, size), format) << read->getScriptName() << " output format is " << format.x1 << ' ' << format.y1 << ' ' << format.x2 << ' ' << format.y2;
 
     RectD rod;
@@ -120,7 +120,7 @@ protected:
         ASSERT_TRUE(writerEffect != NULL);
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
         ASSERT_TRUE(QFile::exists(QString::fromStdString(path))) << "frame was not rendered: " << path;
     }
 

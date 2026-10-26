@@ -99,7 +99,7 @@ changeReaderFile(const NodePtr& reader,
 
     ASSERT_TRUE(bool(knob));
     knob->setValue(file);
-    reader->getEffectInstance()->refreshMetadata_public(false);
+    reader->getEffectInstance()->dropCachedMetadata();
 }
 
 NodePtr
@@ -655,7 +655,7 @@ TEST_F(ProjectOCIODefaultsTest, ProbeOfMidGrayWrittenToAnEightBitPngEncodesToCod
     QFile::remove(QString::fromStdString(path));
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
-    appPTR->getTopLevelInstance()->startWritersRendering(false, works);
+    appPTR->getTopLevelInstance()->startWritersRendering(eRenderModeBlocking, works);
     ASSERT_TRUE(QFile::exists(QString::fromStdString(path))) << "frame was not rendered: " << path;
 
     DecodedPng png;

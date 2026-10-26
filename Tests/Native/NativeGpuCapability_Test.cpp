@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Generator/Noise.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
@@ -63,6 +64,7 @@
 #include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/IDistort.h"
+#include "Engine/Nodes/Transform/LensDistortion.h"
 #include "Engine/Nodes/Transform/Mirror.h"
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
@@ -88,6 +90,7 @@ gpuCapableIds()
         PLUGINID_NATRON_CONSTANT,
         PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_CHECKERBOARD,
+        PLUGINID_NATRON_NOISE,
         PLUGINID_NATRON_SATURATION,
         PLUGINID_NATRON_ADD,
         PLUGINID_NATRON_MULTIPLY,
@@ -103,6 +106,7 @@ gpuCapableIds()
         PLUGINID_NATRON_MIRROR,
         PLUGINID_NATRON_STMAP,
         PLUGINID_NATRON_IDISTORT,
+        PLUGINID_NATRON_LENSDISTORTION,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_RAWINPUTCOLOR,
@@ -164,5 +168,5 @@ TEST_F(NativeGpuCapabilityTest, DefaultsDeclineAndPassTheRegionThrough)
     ASSERT_TRUE(effect != nullptr);
 
     const RectI roi(10, 20, 110, 220);
-    EXPECT_EQ(roi, effect->getGpuInputRoI(0, roi, RenderScale()));
+    EXPECT_EQ(roi, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale()));
 }

@@ -125,6 +125,8 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
     //needs to be blocking, otherwise the progressUpdate() call could be made before startProgress
     QObject::connect( &scheduler, SIGNAL(trackingStarted(int)), _publicInterface, SLOT(onSchedulerTrackingStarted(int)) );
     QObject::connect( &scheduler, SIGNAL(trackingFinished()), _publicInterface, SLOT(onSchedulerTrackingFinished()) );
+    QObject::connect(&scheduler, &TrackScheduler::runEnded, _publicInterface, &TrackerContext::onSchedulerRunEnded);
+    QObject::connect(&scheduler, &TrackScheduler::runDropped, _publicInterface, &TrackerContext::onSchedulerRunDropped);
     QObject::connect( &scheduler, SIGNAL(trackingProgress(double)), _publicInterface, SLOT(onSchedulerTrackingProgress(double)) );
     TrackerNodePtr isTrackerNode = std::dynamic_pointer_cast<TrackerNode>(effect);
     QString fixedNamePrefix = QString::fromUtf8( node->getScriptName_mt_safe().c_str() );
@@ -1123,11 +1125,13 @@ TrackerContext::trackMarkers(const std::list<TrackMarkerPtr>& markers,
 {
     if ( markers.empty() ) {
         Q_EMIT trackingFinished();
+        Q_EMIT trackingJobFinished();
         return;
     }
 
     if (!getNode()->getInput(0)) {
         Q_EMIT trackingFinished();
+        Q_EMIT trackingJobFinished();
         return;
     }
 
@@ -1291,7 +1295,14 @@ TrackerContext::trackMarkers(const std::list<TrackMarkerPtr>& markers,
        Launch tracking in the scheduler thread.
      */
     TrackArgsPtr args( new TrackArgs(start, end, frameStep, getNode()->getApp()->getTimeLine(), viewer, trackContext, accessor, trackAndOptions, formatWidth, formatHeight, autoKeyingOnEnabledParamEnabled) );
-    _imp->scheduler.track(args);
+    const quint64 runId = startTrackingJob();
+    args->setRunId(runId);
+    // A scheduler that is quitting refuses the run, which then never ends on its own.
+    if (!_imp->scheduler.track(args)) {
+        _imp->endTrackingJob(runId);
+        Q_EMIT trackingFinished();
+        Q_EMIT trackingJobFinished();
+    }
 } // TrackerContext::trackMarkers
 
 void
@@ -2600,6 +2611,8 @@ void
 TrackerContextPrivate::onCornerPinSolverWatcherFinished()
 {
     assert(lastSolveRequest.cpWatcher);
+    // The solve that follows a tracking run writes its result as part of the run.
+    IsolatedJob::ThreadScope inJob(runningTrackingJob.load());
     computeCornerParamsFromTracksEnd( lastSolveRequest.refTime, lastSolveRequest.maxFittingError, lastSolveRequest.cpWatcher->future().results() );
 }
 
@@ -2607,6 +2620,8 @@ void
 TrackerContextPrivate::onTransformSolverWatcherFinished()
 {
     assert(lastSolveRequest.tWatcher);
+    // The solve that follows a tracking run writes its result as part of the run.
+    IsolatedJob::ThreadScope inJob(runningTrackingJob.load());
     computeTransformParamsFromTracksEnd( lastSolveRequest.refTime, lastSolveRequest.maxFittingError, lastSolveRequest.tWatcher->future().results() );
 }
 
@@ -2656,6 +2671,15 @@ TrackerContextPrivate::endSolve()
     NodePtr n = node.lock();
     n->getApp()->progressEnd(n);
     n->getEffectInstance()->endChanges();
+    if (solvingRunId != 0) {
+        const quint64 runId = solvingRunId;
+        solvingRunId = 0;
+        // A run started since the one this solve follows holds its own job until its own solve.
+        if (runId == trackingRunId) {
+            endTrackingJob(runId);
+            Q_EMIT _publicInterface->trackingJobFinished();
+        }
+    }
 }
 
 bool

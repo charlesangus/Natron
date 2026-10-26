@@ -150,7 +150,7 @@ protected:
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(getWriter(writer), std::numeric_limits<int>::min(), std::numeric_limits<int>::max(),
                                                 std::numeric_limits<int>::min(), false));
-        getApp()->startWritersRendering(true, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
     }
 
     static PXR_NS::UsdStageRefPtr composeOutput(const NodePtr& node)
@@ -724,7 +724,7 @@ TEST_F(SceneIntegrationTest, USDWriteRendersOncePerCommandLineRender)
     EXPECT_EQ(1, works.front().firstFrame);
     EXPECT_EQ(10, works.front().lastFrame);
 
-    getApp()->startWritersRendering(true, works);
+    getApp()->startWritersRendering(eRenderModeBlocking, works);
     EXPECT_EQ((U64)1, getWriter(writer)->getWriteCount());
     EXPECT_TRUE(QFile::exists(overridden));
     EXPECT_FALSE(QFile::exists(original));

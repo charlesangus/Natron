@@ -17,13 +17,13 @@ namespace {
 
 GpuStatus
 GpuRecordContext::create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out, GpuBufferPool* pool,
-                         GpuPipelineCache* pipelines)
+                         GpuPipelineCache* pipelines, GpuTextureCache* textures)
 {
     GpuDevice& device = registry.device();
     if (device.isLost()) {
         return { VK_ERROR_DEVICE_LOST, "GpuRecordContext::create: device lost" };
     }
-    std::unique_ptr<GpuRecordContext> ctx(new GpuRecordContext(registry, pool, pipelines));
+    std::unique_ptr<GpuRecordContext> ctx(new GpuRecordContext(registry, pool, pipelines, textures));
     registry.recordingBegan();
     // From here the destructor balances recordingBegan(), including on the error paths.
     if (GpuStatus s = registry.commandPoolForThisThread(ctx->pool_); !s) {
@@ -156,6 +156,29 @@ GpuRecordContext::texture(const GpuTextureDesc& desc, std::span<const float> tex
     }
     textures_.push_back(std::move(created));
     out = textures_.back().get();
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::cachedTexture(const std::string& key, const GpuTextureDesc& desc, std::span<const float> texels,
+                                const GpuTexture*& out)
+{
+    out = nullptr;
+    if (!textureCache_) {
+        return texture(desc, texels, out);
+    }
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::cachedTexture: context already submitted" };
+    }
+    std::shared_ptr<const GpuTexture> held;
+    if (GpuStatus s = textureCache_->acquire(key, desc, texels, held); !s) {
+        if (s.result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            outOfMemory_ = true;
+        }
+        return s;
+    }
+    cachedTextures_.push_back(held);
+    out = held.get();
     return {};
 }
 
@@ -503,6 +526,7 @@ GpuRecordContext::parkInFlightWork()
         std::vector<GpuBufferHandle> held;
         std::deque<GpuUniformBuffer> uniforms;
         std::vector<std::unique_ptr<GpuTexture>> textures;
+        std::vector<std::shared_ptr<const GpuTexture>> cachedTextures;
         std::vector<std::shared_ptr<GpuKernel>> kernels;
         std::vector<std::shared_ptr<void>> objects;
     };
@@ -510,6 +534,7 @@ GpuRecordContext::parkInFlightWork()
     parked->held = std::move(held_);
     parked->uniforms = std::move(uniforms_);
     parked->textures = std::move(textures_);
+    parked->cachedTextures = std::move(cachedTextures_);
     parked->kernels = std::move(kernels_);
     parked->objects = std::move(heldObjects_);
     GpuDevice::parkForever(std::move(parked));

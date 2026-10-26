@@ -57,6 +57,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/ViewIdx.h"
 
 #include "Serialization/Bundle/ProjectBundle.h"
@@ -764,4 +765,140 @@ TEST_F(DimensionsFoldStateProjectTest, ExpandedKnobAtItsDefaultIsSavedAndLoadsEx
     ASSERT_TRUE(bool(reloaded));
     EXPECT_TRUE(reloaded->hasDimensionsFoldState());
     EXPECT_TRUE(reloaded->getDimensionsUnfoldedInGui());
+}
+
+// The project's variables are user knobs of its RFV group: the file carries their definitions,
+// a reset deletes them, and loading recreates them in their saved order.
+TEST_F(BaseTest, ProjectRFVVariablesSurviveSaveAndLoad)
+{
+    ProjectPtr project = getApp()->getProject();
+    KnobGroupPtr group = project->getRFVGroup();
+    ASSERT_TRUE(group != nullptr);
+    EXPECT_TRUE(group->isRFVGroup());
+    EXPECT_TRUE(group->isUserKnob());
+    EXPECT_TRUE(group->getChildren().empty());
+    EXPECT_TRUE(project->getKnobByName(kProjectParamRFVVariables) == group);
+
+    KnobDoublePtr gain = project->createDoubleKnob("rfvGain", "Gain", 1);
+    KnobStringPtr shot = project->createStringKnob("rfvShot", "Shot");
+    KnobDoublePtr ramp = project->createDoubleKnob("rfvRamp", "Ramp", 1);
+    ASSERT_TRUE(gain && shot && ramp);
+    ASSERT_TRUE(group->addKnob(gain));
+    ASSERT_TRUE(group->addKnob(shot));
+    ASSERT_TRUE(group->addKnob(ramp));
+
+    gain->setValue(0.25);
+    // The string stays at its default: the variable must still be saved.
+    ramp->setValueAtTime(1., 0.5, ViewSpec::all(), 0);
+    ramp->setValueAtTime(10., 2., ViewSpec::all(), 0);
+    ramp->setValueAtTime(20., -1., ViewSpec::all(), 0);
+    const double rampMid = ramp->getValueAtTime(5., 0);
+
+    std::vector<std::string> savedNames;
+    {
+        const std::vector<RFV::VariableDeclaration> declarations = RFV::getDeclaredVariables(project.get());
+        for (std::size_t i = 0; i < declarations.size(); ++i) {
+            savedNames.push_back(declarations[i].name);
+        }
+    }
+    const std::vector<std::string> expectedNames = { "rfvGain", "rfvShot", "rfvRamp" };
+    ASSERT_EQ(expectedNames, savedNames);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("project-rfv.ntpz");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    // The variables are written last, with their definitions, in the group's order.
+    {
+        const Serialization::ProjectSerialization saved = readSavedProject(savedFilePath);
+        std::vector<std::string> savedUserKnobs;
+        for (const Serialization::KnobSerialization& knob : saved.projectKnobs) {
+            if (knob.isUserKnob) {
+                savedUserKnobs.push_back(knob.name);
+            }
+        }
+        EXPECT_EQ(expectedNames, savedUserKnobs);
+    }
+
+    project->reset(false, true);
+    EXPECT_TRUE(group->getChildren().empty());
+    EXPECT_FALSE(project->getKnobByName("rfvGain"));
+    EXPECT_FALSE(project->getKnobByName("rfvShot"));
+    EXPECT_FALSE(project->getKnobByName("rfvRamp"));
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    // The group is the one the project creates, not a copy next to it.
+    KnobGroupPtr group2 = project->getRFVGroup();
+    EXPECT_TRUE(group2 == group);
+    EXPECT_FALSE(project->getKnobByName(std::string(kProjectParamRFVVariables) + "2"));
+
+    const std::vector<RFV::VariableDeclaration> declarations = RFV::getDeclaredVariables(project.get());
+    std::vector<std::string> loadedNames;
+    for (std::size_t i = 0; i < declarations.size(); ++i) {
+        loadedNames.push_back(declarations[i].name);
+        EXPECT_TRUE(declarations[i].knob->isUserKnob()) << declarations[i].name;
+        EXPECT_TRUE(declarations[i].knob->getParentKnob() == group2) << declarations[i].name;
+    }
+    EXPECT_EQ(savedNames, loadedNames);
+
+    KnobDouble* gain2 = dynamic_cast<KnobDouble*>(project->getKnobByName("rfvGain").get());
+    ASSERT_TRUE(gain2 != NULL);
+    EXPECT_DOUBLE_EQ(0.25, gain2->getValue());
+
+    KnobString* shot2 = dynamic_cast<KnobString*>(project->getKnobByName("rfvShot").get());
+    ASSERT_TRUE(shot2 != NULL);
+    EXPECT_EQ(std::string(), shot2->getValue());
+
+    KnobDouble* ramp2 = dynamic_cast<KnobDouble*>(project->getKnobByName("rfvRamp").get());
+    ASSERT_TRUE(ramp2 != NULL);
+    CurvePtr curve = ramp2->getCurve(ViewIdx(0), 0);
+    ASSERT_TRUE(curve != nullptr);
+    ASSERT_EQ(3, curve->getKeyFramesCount());
+    const double times[3] = { 1., 10., 20. };
+    const double values[3] = { 0.5, 2., -1. };
+    for (int i = 0; i < 3; ++i) {
+        KeyFrame key;
+        ASSERT_TRUE(curve->getKeyFrameWithIndex(i, &key));
+        EXPECT_DOUBLE_EQ(times[i], key.getTime());
+        EXPECT_DOUBLE_EQ(values[i], key.getValue());
+    }
+    EXPECT_DOUBLE_EQ(rampMid, ramp2->getValueAtTime(5., 0));
+}
+
+// A project variable's expression is restored once the nodes are, so it is still there after a
+// save and load.
+TEST_F(BaseTest, ProjectRFVVariableExpressionSurvivesSaveAndLoad)
+{
+    ProjectPtr project = getApp()->getProject();
+    KnobGroupPtr group = project->getRFVGroup();
+    ASSERT_TRUE(group != nullptr);
+
+    KnobDoublePtr doubled = project->createDoubleKnob("rfvDoubled", "Doubled", 1);
+    ASSERT_TRUE(doubled != nullptr);
+    ASSERT_TRUE(group->addKnob(doubled));
+    doubled->setExpression(0, "frame*2", false, false);
+    ASSERT_EQ(std::string("frame*2"), doubled->getExpression(0));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("rfvexpression.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+    EXPECT_FALSE(bool(project->getKnobByName("rfvDoubled")));
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    KnobIPtr doubled2 = project->getKnobByName("rfvDoubled");
+    ASSERT_TRUE(doubled2 != nullptr);
+    EXPECT_TRUE(doubled2->getParentKnob() == project->getRFVGroup());
+    EXPECT_EQ(std::string("frame*2"), doubled2->getExpression(0));
 }

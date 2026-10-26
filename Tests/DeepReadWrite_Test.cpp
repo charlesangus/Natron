@@ -57,6 +57,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Deep/DeepFromImage.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepRecolor.h"
@@ -447,7 +448,7 @@ protected:
 
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, first, last, 1, false));
-        getApp()->startWritersRendering(true, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
 
         QObject::disconnect(connection);
 
@@ -507,9 +508,9 @@ TEST_F(DeepReadWriteTest, OutputFormatIsTheFilesDisplayWindowNotTheProjectDefaul
     NodePtr read = createDeepRead(fixturePath("deep-scanline.exr"));
 
     ASSERT_TRUE(read != NULL);
-    read->getEffectInstance()->refreshMetadata_public(false);
+    read->getEffectInstance()->dropCachedMetadata();
 
-    EXPECT_TRUE(fullFrame() == read->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(fullFrame() == read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 }
 
 // Reproduces the real-world bug report: with no explicit refresh call, setting the filename
@@ -521,13 +522,13 @@ TEST_F(DeepReadWriteTest, OutputFormatRefreshesWhenTheFileKnobChangesWithNoExpli
 
     ASSERT_TRUE(read != NULL);
 
-    const RectI projectDefaultFormat = read->getEffectInstance()->getOutputFormat();
+    const RectI projectDefaultFormat = read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
 
     KnobFile* knob = dynamic_cast<KnobFile*>(read->getKnobByName("filename").get());
     ASSERT_TRUE(knob != NULL);
     knob->setValue(fixturePath("deep-scanline.exr").toStdString());
 
-    EXPECT_TRUE(fullFrame() == read->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(fullFrame() == read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
     EXPECT_FALSE(fullFrame() == projectDefaultFormat);
 }
 
@@ -888,7 +889,7 @@ TEST_F(DeepReadWriteTest, CLIWriterArgOverridesTheFileKnobAndRendersThroughGetWr
     ASSERT_TRUE(knob != NULL);
     EXPECT_EQ(overrideFilename.toStdString(), knob->getValue());
 
-    getApp()->startWritersRendering(true, works);
+    getApp()->startWritersRendering(eRenderModeBlocking, works);
     EXPECT_TRUE(QFile::exists(overrideFilename));
     EXPECT_FALSE(QFile::exists(originalFilename));
 }
@@ -926,8 +927,36 @@ TEST_F(DeepReadWriteTest, ASequenceIsFrameVaryingAndAStillIsNot)
     NodePtr still = createDeepRead(fixturePath("deep-layers.exr"));
     ASSERT_TRUE(sequence && still);
 
-    EXPECT_TRUE(sequence->getEffectInstance()->isFrameVarying());
-    EXPECT_FALSE(still->getEffectInstance()->isFrameVarying());
+    EXPECT_TRUE(sequence->getEffectInstance()->getTimeInvariantMetadata()->getIsFrameVarying());
+    EXPECT_FALSE(still->getEffectInstance()->getTimeInvariantMetadata()->getIsFrameVarying());
+}
+
+// Each frame of a sequence reports the display window of its own file, whichever frame the
+// timeline is on.
+TEST_F(DeepReadWriteTest, EachFrameOfASequenceReportsItsOwnFormat)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const std::string pattern = (tmp.path() + QString::fromUtf8("/deep-sizes.####.exr")).toStdString();
+    const QString frame1 = QString::fromUtf8(sequenceFrameFile(pattern, 1).c_str());
+    const QString frame2 = QString::fromUtf8(sequenceFrameFile(pattern, 2).c_str());
+    ASSERT_TRUE(QFile::copy(fixturePath("deep-scanline.exr"), frame1));
+    QString output;
+    ASSERT_EQ(0, runOiiotool(QStringList() << fixturePath("deep-scanline.exr") << QString::fromUtf8("--fullsize") << QString::fromUtf8("10x8") << QString::fromUtf8("-o") << frame2, &output)) << output.toStdString();
+
+    NodePtr read = createDeepRead(QString::fromUtf8(pattern.c_str()));
+    ASSERT_TRUE(bool(read));
+
+    const SequenceTime timelineFrames[2] = { 2, 1 };
+    for (int t = 0; t < 2; ++t) {
+        getApp()->getTimeLine()->seekFrame(timelineFrames[t], false, NULL, eTimelineChangeReasonOtherSeek);
+        NodeMetadataConstPtr first = read->getEffectInstance()->getMetadata(1, ViewIdx(0));
+        NodeMetadataConstPtr second = read->getEffectInstance()->getMetadata(2, ViewIdx(0));
+        ASSERT_TRUE(first && second);
+        EXPECT_EQ(fullFrame(), first->getOutputFormat()) << "timeline at " << timelineFrames[t];
+        EXPECT_EQ(RectI(0, 0, 10, 8), second->getOutputFormat()) << "timeline at " << timelineFrames[t];
+    }
 }
 
 TEST_F(DeepReadWriteTest, EachFrameOfASequenceRendersItsOwnFileThroughTheCache)

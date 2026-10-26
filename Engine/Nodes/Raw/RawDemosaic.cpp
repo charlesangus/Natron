@@ -515,7 +515,7 @@ RawDemosaic::refreshMethodKnobsVisibility()
         colorSmoothing->setSecret(false);
         dualThreshold->setSecret(!bayerDual && !xtransDual);
         lmmseRefine->setSecret(bayer != (int)eRawDemosaicBayerLMMSE);
-        captureSupport = !input || (input->getMetadataNComps(-1) == 1);
+        captureSupport = !input || (EffectInstance::getNCompsFromMetadata(*input->getMetadata(getCurrentTime(), ViewIdx(0)), -1) == 1);
     }
     refreshCaptureKnobsVisibility(captureSupport);
 }
@@ -637,9 +637,9 @@ RawDemosaic::onInputChanged(int /*inputNo*/)
 }
 
 void
-RawDemosaic::onMetadataRefreshed(const NodeMetadata& metadata)
+RawDemosaic::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
 {
-    StagedImageEffect::onMetadataRefreshed(metadata);
+    StagedImageEffect::onCurrentFrameMetadataChanged(metadata);
     refreshMethodKnobsVisibility();
 }
 
@@ -782,7 +782,7 @@ RawDemosaic::resolveSettings(double time,
     if (reader.value(_captureSharpen)) {
         if (s.algorithm == Algorithm::PassThrough) {
             const EffectInstancePtr input = getInput(getSourceInput());
-            s.mono = (s.layout.period() == 0) && input && (input->getMetadataNComps(-1) == 1);
+            s.mono = (s.layout.period() == 0) && input && (EffectInstance::getNCompsFromMetadata(*input->getRenderMetadata(time, view), -1) == 1);
             s.capture = s.mono;
         } else {
             s.capture = (s.algorithm != Algorithm::PhotositeMonochrome) && (s.algorithm != Algorithm::PhotositeColor);
@@ -892,7 +892,7 @@ RawDemosaic::getRegionsOfInterest(double time,
     if (!input || !settings) {
         return;
     }
-    const double par = getAspectRatio(getSourceInput());
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     const bool full = (settings->greenEq == eRawDemosaicGreenEqFull) || (settings->greenEq == eRawDemosaicGreenEqBoth);
     RectI need = full ? settings->sourceRoD : sourceRegionFor(PassExec::toPixelEnclosing(renderWindow, scale, par), time, view);
     if (settings->capture && (settings->captureSettings.radius <= 0.f)) {
@@ -907,7 +907,9 @@ RawDemosaic::getRegionsOfInterest(double time,
 }
 
 StatusEnum
-RawDemosaic::getPreferredMetadata(NodeMetadata& metadata)
+RawDemosaic::getPreferredMetadataAt(double /*time*/,
+                                    ViewIdx /*view*/,
+                                    NodeMetadata& metadata)
 {
     metadata.setNComps(-1, 4);
 
@@ -1220,6 +1222,8 @@ RawDemosaic::getOpGpuInputLayer(int inputNb,
 
 RectI
 RawDemosaic::getOpGpuInputRoI(int inputNb,
+                              double time,
+                              ViewIdx view,
                               const RectI& outputRect,
                               const RenderScale& /*scale*/) const
 {
@@ -1227,7 +1231,7 @@ RawDemosaic::getOpGpuInputRoI(int inputNb,
         return outputRect;
     }
 
-    return const_cast<RawDemosaic*>(this)->sourceRegionFor(outputRect, getCurrentTime(), getCurrentView());
+    return const_cast<RawDemosaic*>(this)->sourceRegionFor(outputRect, time, view);
 }
 
 #ifdef NATRON_HAVE_GPU

@@ -162,7 +162,9 @@ private:
         _bad = bad;
     }
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN
+    virtual StatusEnum getPreferredMetadataAt(double /*time*/,
+                                              ViewIdx /*view*/,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         metadata.setNComps(-1, 4);
         metadata.setBitDepth(-1, eImageBitDepthFloat);
@@ -495,6 +497,7 @@ TEST_F(NativeSTMapTest, KnobsAndInputs)
         kSTMapParamWrapU,
         kSTMapParamWrapV,
         kSTMapParamFormatFrom,
+        kSTMapParamUVAlpha,
         kResamplerParamFilterType,
         kResamplerParamFilterClamp,
         kResamplerParamFilterBlackOutside,
@@ -552,6 +555,37 @@ TEST_F(NativeSTMapTest, ColourLayerByDefault)
         *sy = y;
 
         return true; }, ParityTolerance::exact(), "flipped map in RGBA");
+}
+
+// UV Alpha changes nothing for a map whose alpha is 1 everywhere, nor for a layer without alpha.
+TEST_F(NativeSTMapTest, UVAlphaLeavesOpaqueAndAlphalessMapsUnchanged)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr uv = makeUV();
+    ASSERT_TRUE(source && uv);
+    NodePtr node = makeSTMap(source, uv, "cubic");
+    ASSERT_TRUE(bool(node));
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    const char* const layers[][2] = { { "rgba.R", "rgba.G" }, { "uvmap.U", "uvmap.V" } };
+    for (const auto& layer : layers) {
+        ASSERT_TRUE(setChannelSelect(node, kSTMapParamChannelU, layer[0]));
+        ASSERT_TRUE(setChannelSelect(node, kSTMapParamChannelV, layer[1]));
+        RenderedPlane on;
+        RenderedPlane off;
+        ASSERT_TRUE(setKnobValues(node, kSTMapParamUVAlpha, { 1. }));
+        ASSERT_TRUE(renderRGBA(node, 0, window, &on)) << layer[0];
+        ASSERT_TRUE(setKnobValues(node, kSTMapParamUVAlpha, { 0. }));
+        ASSERT_TRUE(renderRGBA(node, 0, window, &off)) << layer[0];
+        ASSERT_EQ(on.pixels.size(), off.pixels.size()) << layer[0];
+        std::size_t differing = 0;
+        for (std::size_t i = 0; i < on.pixels.size(); ++i) {
+            if (std::memcmp(&on.pixels[i], &off.pixels[i], sizeof(float)) != 0) {
+                ++differing;
+            }
+        }
+        EXPECT_EQ(0u, differing) << layer[0];
+    }
 }
 
 TEST_F(NativeSTMapTest, WrapModes)

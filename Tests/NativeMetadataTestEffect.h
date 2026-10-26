@@ -29,14 +29,17 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <functional>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ViewIdx.h"
 
 #define kTestPluginIDMetadataSource "test.natron.built-in.MetadataSource"
+#define kTestPluginIDMetadataFilter "test.natron.built-in.MetadataFilter"
 
 NATRON_NAMESPACE_ENTER
 
@@ -55,12 +58,26 @@ public:
         , _tag()
         , _derivations(0)
         , _extra()
+        , _nComps()
+        , _bitDepth()
+        , _par()
+        , _format()
+        , _nodeMetadataDerivations(0)
+        , _identityEvaluations(0)
+        , _deriveHook()
     {
     }
 
     virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
     {
         return false;
+    }
+
+    // Called inside each getPreferredMetadataAt(), so a test can edit or purge while a derivation
+    // runs. Set from the thread that asks for metadata.
+    void setDeriveHook(const std::function<void()>& hook)
+    {
+        _deriveHook = hook;
     }
 
     virtual ImageMetadata deriveOutputMetadata(double time,
@@ -91,6 +108,37 @@ public:
         return _derivations.load();
     }
 
+    // How often the node metadata were derived at a frame, through getPreferredMetadataAt().
+    int nodeMetadataDerivationCount() const
+    {
+        return _nodeMetadataDerivations.load();
+    }
+
+    int identityEvaluationCount() const
+    {
+        return _identityEvaluations.load();
+    }
+
+    KnobIntPtr getNCompsKnob() const
+    {
+        return _nComps.lock();
+    }
+
+    KnobIntPtr getBitDepthKnob() const
+    {
+        return _bitDepth.lock();
+    }
+
+    KnobDoublePtr getParKnob() const
+    {
+        return _par.lock();
+    }
+
+    KnobIntPtr getFormatKnob() const
+    {
+        return _format.lock();
+    }
+
     // Unlike a knob change, leaves the caches of the nodes downstream in place, so a test can
     // tell whether one of them answered from its own cache.
     void dropOwnMetadataCache()
@@ -104,7 +152,55 @@ public:
         invalidateOutputMetadata();
     }
 
+protected:
+    virtual bool isIdentity(double time,
+                            const RenderScale& scale,
+                            const RectI& roi,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        ++_identityEvaluations;
+
+        return NativeEffectBase::isIdentity(time, scale, roi, view, inputTime, inputView, inputNb);
+    }
+
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx /*view*/,
+                                              NodeMetadata& metadata) OVERRIDE FINAL
+    {
+        ++_nodeMetadataDerivations;
+        applyNodeMetadata(time, metadata);
+        if (_deriveHook) {
+            _deriveHook();
+        }
+
+        return eStatusOK;
+    }
+
 private:
+    void applyNodeMetadata(double time,
+                           NodeMetadata& metadata)
+    {
+        KnobIntPtr nComps = _nComps.lock();
+        KnobIntPtr bitDepth = _bitDepth.lock();
+        KnobDoublePtr par = _par.lock();
+        KnobIntPtr format = _format.lock();
+        if (!nComps || !bitDepth || !par || !format) {
+            return;
+        }
+        metadata.setNComps(-1, nComps->getValueAtTime(time));
+        metadata.setComponentsType(-1, kNatronColorLayerID);
+        metadata.setBitDepth(-1, static_cast<ImageBitDepthEnum>(bitDepth->getValueAtTime(time)));
+        metadata.setPixelAspectRatio(-1, par->getValueAtTime(time));
+        const int width = format->getValueAtTime(time, 0);
+        const int height = format->getValueAtTime(time, 1);
+        if ((width > 0) && (height > 0)) {
+            metadata.setOutputFormat(RectI(0, 0, width, height));
+        }
+    }
+
     static constexpr NodeSpec kNodeSpec = {
         .id = kTestPluginIDMetadataSource,
         .label = "Test Metadata Source",
@@ -126,11 +222,104 @@ private:
         tag->setDefaultValue(1);
         page->addKnob(tag);
         _tag = tag;
+
+        KnobIntPtr nComps = createKnob<KnobInt>(std::string("Components"));
+        nComps->setName("nComps");
+        nComps->setDefaultValue(4);
+        page->addKnob(nComps);
+        _nComps = nComps;
+
+        KnobIntPtr bitDepth = createKnob<KnobInt>(std::string("Bit Depth"));
+        bitDepth->setName("bitDepth");
+        bitDepth->setDefaultValue(static_cast<int>(eImageBitDepthFloat));
+        page->addKnob(bitDepth);
+        _bitDepth = bitDepth;
+
+        KnobDoublePtr par = createKnob<KnobDouble>(std::string("Pixel Aspect Ratio"));
+        par->setName("par");
+        par->setDefaultValue(1.);
+        page->addKnob(par);
+        _par = par;
+
+        // Width and height; 0 keeps the default format.
+        KnobIntPtr format = createKnob<KnobInt>(std::string("Format"), 2);
+        format->setName("format");
+        format->setDefaultValue(0, 0);
+        format->setDefaultValue(0, 1);
+        page->addKnob(format);
+        _format = format;
     }
 
     KnobIntWPtr _tag;
     std::atomic<int> _derivations;
     ImageMetadata _extra;
+    KnobIntWPtr _nComps;
+    KnobIntWPtr _bitDepth;
+    KnobDoubleWPtr _par;
+    KnobIntWPtr _format;
+    std::atomic<int> _nodeMetadataDerivations;
+    std::atomic<int> _identityEvaluations;
+    std::function<void()> _deriveHook;
+};
+
+// A one-input filter that counts its identity evaluations, so a test can tell a cached
+// pass-through choice from a recomputed one.
+class MetadataFilterTestEffect
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new MetadataFilterTestEffect(n);
+    }
+
+    explicit MetadataFilterTestEffect(NodePtr n)
+        : NativeEffectBase(n)
+        , _identityEvaluations(0)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    int identityEvaluationCount() const
+    {
+        return _identityEvaluations.load();
+    }
+
+protected:
+    virtual bool isIdentity(double time,
+                            const RenderScale& scale,
+                            const RectI& roi,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        ++_identityEvaluations;
+
+        return NativeEffectBase::isIdentity(time, scale, roi, view, inputTime, inputView, inputNb);
+    }
+
+private:
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDMetadataFilter,
+        .label = "Test Metadata Filter",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    std::atomic<int> _identityEvaluations;
 };
 
 NATRON_NAMESPACE_EXIT

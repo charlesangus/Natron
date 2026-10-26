@@ -156,7 +156,9 @@ private:
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -181,6 +183,7 @@ private:
         std::string pattern;
         bool singleImage;
         std::string singlePath;
+        bool namePerView;
         std::set<int> frames;
         std::vector<std::string> paths;
 
@@ -188,6 +191,7 @@ private:
             : pattern()
             , singleImage(true)
             , singlePath()
+            , namePerView(false)
             , frames()
             , paths()
         {
@@ -216,14 +220,16 @@ private:
     std::shared_ptr<const FrameListing> frameListing(bool proxy = false) const;
     void invalidateFrameListing();
     ReadTimeDomain::Settings settingsAt(double time) const;
-    Target targetAtTime(double time, bool proxy = false) const;
-    std::string representativePath(bool proxy = false) const;
+    static std::string pathOf(const FrameListing& listing, const KnobFilePtr& filename, int frame, ViewIdx view);
+    Target targetAtTime(double time, ViewIdx view, bool proxy = false) const;
+    std::string representativePath(ViewIdx view, bool proxy = false) const;
     void refreshTimeKnobState();
     void refreshProxyScale();
     void refreshProxyKnobState();
     bool proxyKnobChanged(KnobI* k,
                           ValueChangedReasonEnum reason);
     bool proxySourceAt(double time,
+                       ViewIdx view,
                        unsigned int level,
                        Target* source,
                        unsigned int* fileLevel) const;

@@ -176,8 +176,6 @@ public:
 
     bool getUseStdOFXPluginsLocation() const;
 
-    bool isRenderInSeparatedProcessEnabled() const;
-
     bool isRenderQueuingEnabled() const;
 
     void setRenderQueuingEnabled(bool enabled);
@@ -482,7 +480,6 @@ private:
     KnobBoolPtr _useThreadPool;
     KnobIntPtr _nThreadsPerEffect;
     KnobChoicePtr _renderSchedulerMode;
-    KnobBoolPtr _renderInSeparateProcess;
     KnobBoolPtr _queueRenders;
 
     // General/Rendering

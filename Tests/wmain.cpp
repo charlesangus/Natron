@@ -153,6 +153,7 @@ registerNativeMetadataTestPlugins()
     // Registered so NativeMetadata_Test.cpp can inject metadata at the head of a native chain,
     // which no shipped node does.
     registerTestBuiltInPlugin<MetadataSourceTestEffect>();
+    registerTestBuiltInPlugin<MetadataFilterTestEffect>();
 }
 
 void

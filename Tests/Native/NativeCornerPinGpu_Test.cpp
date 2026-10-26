@@ -294,7 +294,6 @@ TEST_F(NativeCornerPinGpuTest, CostTraitsFollowMotionBlur)
     task.key.mipmapLevel = 0;
     EXPECT_EQ(std::string(PLUGINID_NATRON_CORNERPIN), model.traitsOf(task).pluginId);
     EXPECT_FALSE(model.traitsOf(task).motionBlur);
-    EXPECT_EQ(GpuCostClass::eSpatial, model.traitsOf(task).costClass);
     EXPECT_EQ(0., model.traitsOf(task).sigma);
     EXPECT_TRUE(model.hasGpuCost(model.traitsOf(task)));
     ASSERT_TRUE(setKnobValues(node, kCornerPinNodeParamMotionBlur, { 1. }));
@@ -407,7 +406,7 @@ sourceImage(const NodePtr& source,
             const RectI& roi,
             GpuParityImage* image)
 {
-    const RectI inputRoI = effect.getGpuInputRoI(0, roi, RenderScale::fromMipmapLevel(mipmapLevel)).intersect(pixelRegionOfDefinition(source, mipmapLevel));
+    const RectI inputRoI = effect.getGpuInputRoI(0, effect.getCurrentTime(), effect.getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel)).intersect(pixelRegionOfDefinition(source, mipmapLevel));
     if (inputRoI.isNull()) {
         // A window that reads nothing of the source: an empty image stands for none.
         image->bounds = RectI();

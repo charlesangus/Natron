@@ -175,7 +175,7 @@ protected:
         }
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
 
         const bool rendered = QFile::exists(QString::fromStdString(path));
         QFile::remove(QString::fromStdString(path));

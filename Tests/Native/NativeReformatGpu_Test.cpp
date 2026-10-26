@@ -200,7 +200,7 @@ TEST_F(NativeReformatGpuTest, InputRegionIsTheCpuRegionOfInterest)
             effect->getRegionsOfInterest_public(kTime, scale, window, window, ViewIdx(0), &rois);
             RoIMap::const_iterator found = rois.find(source->getEffectInstance());
             ASSERT_TRUE(found != rois.end()) << c.name << " mipmap " << mipmapLevel;
-            EXPECT_EQ(found->second.toPixelEnclosing(scale, 1.), effect->getGpuInputRoI(0, rect, scale)) << c.name << " mipmap " << mipmapLevel;
+            EXPECT_EQ(found->second.toPixelEnclosing(scale, 1.), effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), rect, scale)) << c.name << " mipmap " << mipmapLevel;
         }
     }
 }
@@ -297,7 +297,7 @@ sourceImage(const NodePtr& source,
             const RectI& roi,
             GpuParityImage* image)
 {
-    const RectI inputRoI = effect.getGpuInputRoI(0, roi, RenderScale::fromMipmapLevel(mipmapLevel));
+    const RectI inputRoI = effect.getGpuInputRoI(0, effect.getCurrentTime(), effect.getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel));
     RenderedPlane in;
     if (!renderColor(source, mipmapLevel, inputRoI, &in)) {
         return false;

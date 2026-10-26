@@ -237,7 +237,7 @@ renderWriterBlocking(OutputEffectInstance* writerEffect,
 
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false));
-    writerEffect->getApp()->startWritersRendering(true, works);
+    writerEffect->getApp()->startWritersRendering(eRenderModeBlocking, works);
 
     QObject::disconnect(connection);
 
@@ -377,7 +377,7 @@ renderDirect(const NodePtr& node,
                                              false /*draftMode*/,
                                              stats);
     EffectInstancePtr effect = node->getEffectInstance();
-    const RectD canonicalWindow = roi.toCanonical_noClipping(mipmapLevel, effect->getAspectRatio(-1));
+    const RectD canonicalWindow = roi.toCanonical_noClipping(mipmapLevel, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
 
     std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
     if (EffectInstance::computeRequestPass(time, view, mipmapLevel, canonicalWindow, node, *request) == eStatusFailed) {

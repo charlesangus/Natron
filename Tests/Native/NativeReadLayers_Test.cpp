@@ -450,13 +450,13 @@ TEST_F(NativeReadLayersTest, TheColourPlaneComesFromTheColourPartWhereverItIs)
     ASSERT_TRUE(bool(node));
     NativeRead* read = dynamic_cast<NativeRead*>(node->getEffectInstance().get());
     ASSERT_TRUE(read != NULL);
-    read->refreshMetadata_public(false);
+    read->dropCachedMetadata();
 
     EXPECT_EQ(std::vector<std::string>({ "diffuse" }), layerIDs(producedLayers(node)));
     expectPlaneMatchesOiio(node, path, ImageLayerDesc::getRGBAComponents(), { FileChannel { 1, "R" }, FileChannel { 1, "G" }, FileChannel { 1, "B" }, FileChannel { 1, "A" } });
 
-    EXPECT_EQ(4, read->getMetadataNComps(-1));
-    EXPECT_TRUE(RectI(0, 0, 24, 20) == read->getOutputFormat());
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*read->getTimeInvariantMetadata(), -1));
+    EXPECT_TRUE(RectI(0, 0, 24, 20) == read->getTimeInvariantMetadata()->getOutputFormat());
     RectD rod;
     ASSERT_EQ(eStatusOK, read->getRegionOfDefinition(0, 1., RenderScale(), ViewIdx(0), &rod));
     EXPECT_EQ(0., rod.x1);
@@ -477,8 +477,8 @@ TEST_F(NativeReadLayersTest, AMultiPartFileWithoutAColourPartHasABlackColourPlan
 
     NodePtr node = createRead(path);
     ASSERT_TRUE(bool(node));
-    node->getEffectInstance()->refreshMetadata_public(false);
-    EXPECT_EQ(4, node->getEffectInstance()->getMetadataNComps(-1));
+    node->getEffectInstance()->dropCachedMetadata();
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*node->getEffectInstance()->getTimeInvariantMetadata(), -1));
 
     std::vector<RenderedPlane> planes;
     std::string error;

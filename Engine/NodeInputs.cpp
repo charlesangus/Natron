@@ -34,9 +34,11 @@
 #include "Engine/AppInstance.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
@@ -743,20 +745,35 @@ Node::canConnectInput(const NodePtr& input,
     {
         ///Check for invalid pixel aspect ratio if the node doesn't support multiple clip PARs
 
-        double inputPAR = input->getEffectInstance()->getAspectRatio(-1);
-        double inputFPS = input->getEffectInstance()->getFrameRate();
-        QMutexLocker l(&_imp->inputsMutex);
+        // These only warn, so they judge the frame the user is looking at; the stream warnings
+        // cover the other frames.
+        const double time = getApp()->getTimeLine()->currentFrame();
+        const NodeMetadataConstPtr inputMetadata = input->getEffectInstance()->getMetadata(time, ViewIdx(0));
+        if (inputMetadata) {
+            const double inputPAR = inputMetadata->getPixelAspectRatio(-1);
+            const double inputFPS = inputMetadata->getOutputFrameRate();
+            InputsV inputs;
+            {
+                QMutexLocker l(&_imp->inputsMutex);
+                inputs = _imp->guiInputs;
+            }
 
-        for (InputsV::const_iterator it = _imp->guiInputs.begin(); it != _imp->guiInputs.end(); ++it) {
-            NodePtr node = it->lock();
-            if (node) {
+            for (InputsV::const_iterator it = inputs.begin(); it != inputs.end(); ++it) {
+                NodePtr node = it->lock();
+                if (!node) {
+                    continue;
+                }
+                const NodeMetadataConstPtr nodeMetadata = node->getEffectInstance()->getMetadata(time, ViewIdx(0));
+                if (!nodeMetadata) {
+                    continue;
+                }
                 if ( !_imp->effect->supportsMultipleClipPARs() ) {
-                    if (node->getEffectInstance()->getAspectRatio(-1) != inputPAR) {
+                    if (nodeMetadata->getPixelAspectRatio(-1) != inputPAR) {
                         return eCanConnectInput_differentPars;
                     }
                 }
 
-                if (std::abs(node->getEffectInstance()->getFrameRate() - inputFPS) > 0.01) {
+                if (std::abs(nodeMetadata->getOutputFrameRate() - inputFPS) > 0.01) {
                     return eCanConnectInput_differentFPS;
                 }
             }
@@ -802,8 +819,11 @@ Node::connectInput(const NodePtr & input,
         }
     }
 
+    if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
+        return false;
+    }
     bool useGuiInputs = isNodeRendering();
-    _imp->effect->abortAnyEvaluation();
+    _imp->effect->abortViewerRendersForEdit();
 
     {
         ///Check for invalid index
@@ -947,9 +967,11 @@ Node::replaceInput(const NodePtr& input,
                    int inputNumber)
 {
 
-
+    if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
+        return false;
+    }
     bool useGuiInputs = isNodeRendering();
-    _imp->effect->abortAnyEvaluation();
+    _imp->effect->abortViewerRendersForEdit();
     return replaceInputInternal(input, inputNumber, useGuiInputs);
 } // Node::replaceInput
 
@@ -996,8 +1018,11 @@ Node::switchInput0And1()
         }
     }
 
+    if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
+        return;
+    }
     bool useGuiInputs = isNodeRendering();
-    _imp->effect->abortAnyEvaluation();
+    _imp->effect->abortViewerRendersForEdit();
 
     {
         QMutexLocker l(&_imp->inputsMutex);
@@ -1097,7 +1122,10 @@ Node::disconnectInput(int inputNumber)
         destroyed = _imp->isBeingDestroyed;
     }
     if (!destroyed) {
-        _imp->effect->abortAnyEvaluation();
+        if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
+            return -1;
+        }
+        _imp->effect->abortViewerRendersForEdit();
     }
 
     {
@@ -1224,9 +1252,11 @@ Node::disconnectInputInternal(Node* input, bool useGuiValues)
 int
 Node::disconnectInput(Node* input)
 {
-
+    if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
+        return -1;
+    }
     bool useGuiValues = isNodeRendering();
-    _imp->effect->abortAnyEvaluation();
+    _imp->effect->abortViewerRendersForEdit();
     return disconnectInputInternal(input, useGuiValues);
 } // Node::disconnectInput
 

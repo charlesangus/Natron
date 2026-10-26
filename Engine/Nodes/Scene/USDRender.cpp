@@ -230,7 +230,9 @@ USDRender::outputFormat(double time,
 }
 
 StatusEnum
-USDRender::getPreferredMetadata(NodeMetadata& metadata)
+USDRender::getPreferredMetadataAt(double time,
+                                  ViewIdx view,
+                                  NodeMetadata& metadata)
 {
     metadata.setBitDepth(-1, eImageBitDepthFloat);
     metadata.setComponentsType(-1, kNatronColorLayerID);
@@ -238,7 +240,7 @@ USDRender::getPreferredMetadata(NodeMetadata& metadata)
     metadata.setIsFrameVarying(true);
     RectI format;
     double par;
-    outputFormat(getCurrentTime(), ViewIdx(0), &format, &par);
+    outputFormat(time, view, &format, &par);
     metadata.setOutputFormat(format);
     metadata.setPixelAspectRatio(-1, par);
 

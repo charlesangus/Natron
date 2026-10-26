@@ -181,6 +181,8 @@ private:
                                     ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual RectI getOpGpuInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

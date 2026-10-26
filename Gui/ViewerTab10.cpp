@@ -502,8 +502,9 @@ ViewerTab::onTimeLineTimeChanged(SequenceTime time,
         _imp->currentFrameBox->setValue(time);
     }
 
-    // The inputs' layers can differ from one frame to the next.
+    // The inputs' layers, format, PAR and frame rate can differ from one frame to the next.
     refreshLayerAndAlphaChannelComboBoxAtTime(time, true);
+    onClipPreferencesChanged();
 
     if (isShowingScene()) {
         _imp->sceneViewport->setFrame(time, app->getProjectFrameRate());

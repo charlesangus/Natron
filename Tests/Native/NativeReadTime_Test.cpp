@@ -150,7 +150,7 @@ protected:
         KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(node->getKnobByName("ocioInputSpace").get());
         ASSERT_TRUE(inputSpace != NULL);
         inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-        node->getEffectInstance()->refreshMetadata_public(false);
+        node->getEffectInstance()->dropCachedMetadata();
     }
 
     template <typename K>
@@ -277,7 +277,7 @@ TEST_F(NativeReadTimeTest, SettingTheFilenameFillsTheOriginalRangeAndTheTimeDoma
     frameRangeOf(node, &first, &last);
     EXPECT_EQ(1., first);
     EXPECT_EQ(4., last);
-    EXPECT_TRUE(node->getEffectInstance()->isFrameVarying());
+    EXPECT_TRUE(node->getEffectInstance()->getTimeInvariantMetadata()->getIsFrameVarying());
 }
 
 TEST_F(NativeReadTimeTest, EachFrameRendersItsOwnFile)
@@ -669,12 +669,12 @@ TEST_F(NativeReadTimeTest, ClearingTheCachesRefreshesTheFormatOfARewrittenFile)
     const std::string path = framePath(dir, "still", 1);
     ASSERT_TRUE(writeConstantFrame(path, 0.5f));
     NodePtr node = createRead(path);
-    ASSERT_TRUE(RectI(0, 0, kSize, kSize) == node->getEffectInstance()->getOutputFormat());
+    ASSERT_TRUE(RectI(0, 0, kSize, kSize) == node->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     ASSERT_TRUE(writeConstantFrame(path, 0.5f, 8, 6));
     getApp()->clearOpenFXPluginsCaches();
 
-    EXPECT_TRUE(RectI(0, 0, 8, 6) == node->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, 8, 6) == node->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 }
 
 TEST_F(NativeReadTimeTest, APatternMatchingOneFileKeepsItsFrameNumber)

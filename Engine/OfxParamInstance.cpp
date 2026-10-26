@@ -228,6 +228,9 @@ deleteKey(const KnobIPtr& knob,
           int startDim = -1,
           int endDim = -1)
 {
+    if (PluginEditsDeferral::refuse()) {
+        return kOfxStatOK;
+    }
     if (startDim == -1) {
         startDim = 0;
     }
@@ -248,6 +251,9 @@ deleteAllKeys(const KnobIPtr& knob,
               int startDim = -1,
               int endDim = -1)
 {
+    if (PluginEditsDeferral::refuse()) {
+        return kOfxStatOK;
+    }
     if (startDim == -1) {
         startDim = 0;
     }
@@ -272,6 +278,9 @@ copyFrom(const KnobIPtr & from,
          int startDim = -1,
          int endDim = -1)
 {
+    if (PluginEditsDeferral::refuse()) {
+        return kOfxStatOK;
+    }
     ///copy only if type is the same
     if ( from->typeName() == to->typeName() ) {
         to->beginChanges();
@@ -4805,6 +4814,9 @@ OfxParametricInstance::setNthControlPoint(int curveIndex,
                                           double value,
                                           bool /*addAnimationKey*/)
 {
+    if (PluginEditsDeferral::refuse()) {
+        return kOfxStatOK;
+    }
     KnobParametricPtr knob = _knob.lock();
     if (!knob) {
         return kOfxStatFailed;
@@ -4826,6 +4838,9 @@ OfxParametricInstance::addControlPoint(int curveIndex,
                                        double value,
                                        bool /* addAnimationKey*/)
 {
+    if (PluginEditsDeferral::refuse()) {
+        return kOfxStatOK;
+    }
     if ( std::isnan(time) || // check for NaN
          std::isinf(time) ||
          std::isnan(key) || // check for NaN
@@ -4866,6 +4881,9 @@ OfxStatus
 OfxParametricInstance::deleteControlPoint(int curveIndex,
                                           int nthCtl)
 {
+    if (PluginEditsDeferral::refuse()) {
+        return kOfxStatOK;
+    }
     KnobParametricPtr knob = _knob.lock();
     if (!knob) {
         return kOfxStatFailed;
@@ -4882,6 +4900,9 @@ OfxParametricInstance::deleteControlPoint(int curveIndex,
 OfxStatus
 OfxParametricInstance::deleteAllControlPoints(int curveIndex)
 {
+    if (PluginEditsDeferral::refuse()) {
+        return kOfxStatOK;
+    }
     KnobParametricPtr knob = _knob.lock();
     if (!knob) {
         return kOfxStatFailed;

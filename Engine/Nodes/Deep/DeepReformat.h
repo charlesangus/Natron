@@ -124,13 +124,15 @@ private:
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     bool getTargetSize(int* width, int* height) const WARN_UNUSED_RETURN;
 
-    void getTranslation(int* dx, int* dy) const;
+    void getTranslation(double time, ViewIdx view, int* dx, int* dy) const;
 
     KnobIntWPtr _formatSize;
     KnobBoolWPtr _useCustomSize;

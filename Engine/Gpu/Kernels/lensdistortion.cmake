@@ -1,0 +1,1 @@
+slang_add_kernel(lensdistortion Kernels/lensdistortion.slang ENTRY lensdistortion_main REGISTRY NatronGpu)

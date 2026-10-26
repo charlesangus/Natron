@@ -467,7 +467,7 @@ Blur::clipRegionOfDefinition(double time,
     RectI format;
     EffectInstancePtr formatSource = source ? source->getNearestNonIdentity(time) : EffectInstancePtr();
     if (formatSource) {
-        format = formatSource->getOutputFormat();
+        format = formatSource->getRenderMetadata(time, view)->getOutputFormat();
     } else {
         Format projectFormat;
         getApp()->getProject()->getProjectDefaultFormat(&projectFormat);

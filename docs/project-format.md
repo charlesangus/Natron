@@ -114,7 +114,7 @@ The graph. Top-level keys, in the order they are written:
 | `format` | Always `natron-project`. |
 | `formatVersion` | Currently `1`. |
 | `savedBy` | `{version: [major, minor, revision], branch, commit, os, bits}`. |
-| `knobs` | Project knobs, sparse (see below). Omitted when empty. |
+| `knobs` | Project knobs, sparse (see below), then the project's Reverse-Flow Variables in declaration order, each with its definition under `user:`. Omitted when empty. |
 | `formats` | The project's additional formats: a list of `{name, rect: [x1, y1, x2, y2], par}`. Omitted when empty. |
 | `layers` | The layer registry: a map from layer ID to `{label, channelsLabel, channels, origin}`, sorted by ID. Omitted when empty. |
 | `timeline` | `{current: <frame>}`. |
@@ -138,7 +138,7 @@ holds its default.
 | `knobs` | The node's knobs, a map from knob script name to value. |
 | `inputs` | A map from input label to the script name of a **sibling**, a node in the same map. |
 | `pages` | The order of the knob pages. |
-| `userPages` | User-created knobs, nested as pages, groups and knobs, with their definitions under `user:`. |
+| `userPages` | User-created knobs, nested as pages, groups and knobs, with their definitions under `user:`. A page or group's `group:` map holds its `label` and, when set, `secret`, `tab`, `opened` and `rfv` (the group declares Reverse-Flow Variables). |
 | `roto` | The roto context (layers, beziers, strokes). |
 | `tracker` | The tracker context. |
 | `children` | For a group, a map of its nodes, in this same schema. |

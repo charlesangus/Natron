@@ -312,7 +312,7 @@ protected:
         if (inputSpace) {
             inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
         }
-        node->getEffectInstance()->refreshMetadata_public(false);
+        node->getEffectInstance()->dropCachedMetadata();
 
         return node;
     }
@@ -364,7 +364,7 @@ protected:
         ASSERT_TRUE(effect != NULL);
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(effect, 1, 1, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
     }
 
     // Reads `path` through the native Read and checks that each view's colour and diffuse planes hold that view's pixels.

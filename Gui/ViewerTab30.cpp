@@ -41,11 +41,13 @@
 #include <QCheckBox>
 #include <QToolBar>
 
-#include "Engine/Settings.h"
-#include "Engine/Node.h"
 #include "Engine/Format.h"
-#include "Engine/Project.h"
+#include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/Project.h"
+#include "Engine/Settings.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/Button.h"
@@ -1274,17 +1276,15 @@ ViewerTab::refreshFPSBoxFromClipPreferences()
     int activeInputs[2];
 
     _imp->viewerNode->getActiveInputs(activeInputs[0], activeInputs[1]);
-    EffectInstancePtr input0 = activeInputs[0] != -1 ? _imp->viewerNode->getInput(activeInputs[0]) : EffectInstancePtr();
-    if (input0) {
-        _imp->fpsBox->setValue( input0->getFrameRate() );
-    } else {
-        EffectInstancePtr input1 = activeInputs[1] != -1 ? _imp->viewerNode->getInput(activeInputs[1]) : EffectInstancePtr();
-        if (input1) {
-            _imp->fpsBox->setValue( input1->getFrameRate() );
-        } else {
-            _imp->fpsBox->setValue( getGui()->getApp()->getProjectFrameRate() );
-        }
+    EffectInstancePtr input = activeInputs[0] != -1 ? _imp->viewerNode->getInput(activeInputs[0]) : EffectInstancePtr();
+    if (!input && activeInputs[1] != -1) {
+        input = _imp->viewerNode->getInput(activeInputs[1]);
     }
+    NodeMetadataConstPtr metadata;
+    if (input) {
+        metadata = input->getMetadata(getTimeLine()->currentFrame(), getCurrentView());
+    }
+    _imp->fpsBox->setValue(metadata ? metadata->getOutputFrameRate() : getGui()->getApp()->getProjectFrameRate());
     onSpinboxFpsChangedInternal( _imp->fpsBox->value() );
 }
 
@@ -1335,6 +1335,9 @@ ViewerTab::onClipPreferencesChanged()
     getGui()->getApp()->getProject()->getProjectDefaultFormat(&format);
     RectD canonicalFormat = format.toCanonicalFormat();
 
+    // The inputs' format and PAR can change from one frame to the next: show the current frame's.
+    const double time = getTimeLine()->currentFrame();
+    const ViewIdx view = getCurrentView();
     int activeInputs[2];
     _imp->viewerNode->getActiveInputs(activeInputs[0], activeInputs[1]);
     for (int i = 0; i < 2; ++i) {
@@ -1342,17 +1345,19 @@ ViewerTab::onClipPreferencesChanged()
         if (activeInputs[i] != -1) {
             input = _imp->viewerNode->getInput(activeInputs[i]);
         }
-        if (!input) {
+        NodeMetadataConstPtr metadata;
+        if (input) {
+            metadata = input->getMetadata(time, view);
+        }
+        if (!metadata) {
             setInfoBarAndViewerResolution(format, canonicalFormat, format.getPixelAspectRatio(), i);
         } else {
-            RectI inputFormat = input->getOutputFormat();
-            double inputPar = input->getAspectRatio(-1);
+            RectI inputFormat = metadata->getOutputFormat();
+            double inputPar = metadata->getPixelAspectRatio(-1);
             RectD inputCanonicalFormat = inputFormat.toCanonical_noClipping(0, inputPar);
 
             setInfoBarAndViewerResolution(inputFormat, inputCanonicalFormat, inputPar, i);
-
         }
-
     }
 
 }

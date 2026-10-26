@@ -191,18 +191,15 @@ protected:
         return true;
     }
 
-    // After an edit above the split that moved the output format to formatAfter: the edit left
-    // the nodes below it stale, a render of the viewed branch refreshed that branch only, and the
-    // unviewed branch is refreshed, and rehashed, once its tail is read.
+    // After an edit above the split that moved the output format to formatAfter: the edit rehashed
+    // no node below it, a render of the viewed branch rehashed that branch only, and the unviewed
+    // branch is rehashed, and answers the new format, once its tail is read.
     void expectOnlyTheReadBranchRefreshes(const SplitGraph& g,
                                           U64 viewedTailBefore,
                                           U64 unviewedBefore,
                                           U64 unviewedTailBefore,
                                           const RectI& formatAfter)
     {
-        EXPECT_TRUE(g.viewedTail->isInputRelatedDataStale());
-        EXPECT_TRUE(g.unviewed->isInputRelatedDataStale());
-        EXPECT_TRUE(g.unviewedTail->isInputRelatedDataStale());
         EXPECT_EQ(unviewedBefore, g.unviewed->getStoredContentHash()) << "the edit rehashed a node downstream of it";
         EXPECT_EQ(unviewedTailBefore, g.unviewedTail->getStoredContentHash()) << "the edit rehashed a node downstream of it";
 
@@ -213,23 +210,17 @@ protected:
         // every node in the project.
         ASSERT_TRUE(renderNodePlanesDirect(g.viewedTail, 1., ViewIdx(0), 0, RectI(0, 0, 8, 8), layers, &planes, &error, false)) << error;
 
-        EXPECT_FALSE(g.viewed->isInputRelatedDataStale()) << "the render did not refresh what it rendered";
-        EXPECT_FALSE(g.viewedTail->isInputRelatedDataStale()) << "the render did not refresh what it rendered";
         EXPECT_NE(viewedTailBefore, g.viewedTail->getStoredContentHash()) << "the render did not rehash what it rendered";
-        EXPECT_EQ(formatAfter, g.viewedTail->getEffectInstance()->getOutputFormat());
+        EXPECT_EQ(formatAfter, g.viewedTail->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
         std::list<ImageLayerDesc> present;
         g.viewedTail->getEffectInstance()->getPresentLayers(1., ViewIdx(0), -1, &present);
         EXPECT_TRUE(std::find(present.begin(), present.end(), ImageLayerDesc::getRGBAComponents()) != present.end());
 
-        EXPECT_TRUE(g.unviewed->isInputRelatedDataStale()) << "rendering one branch refreshed the other";
-        EXPECT_TRUE(g.unviewedTail->isInputRelatedDataStale()) << "rendering one branch refreshed the other";
         EXPECT_EQ(unviewedBefore, g.unviewed->getStoredContentHash()) << "rendering one branch rehashed the other";
         EXPECT_EQ(unviewedTailBefore, g.unviewedTail->getStoredContentHash()) << "rendering one branch rehashed the other";
 
-        EXPECT_EQ(formatAfter, g.unviewedTail->getEffectInstance()->getOutputFormat());
-        EXPECT_FALSE(g.unviewed->isInputRelatedDataStale());
-        EXPECT_FALSE(g.unviewedTail->isInputRelatedDataStale());
-        EXPECT_NE(unviewedBefore, g.unviewed->getStoredContentHash()) << "reading the tail did not refresh its stale input";
+        EXPECT_EQ(formatAfter, g.unviewedTail->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
+        EXPECT_NE(unviewedBefore, g.unviewed->getStoredContentHash()) << "reading the tail did not rehash its dirty input";
     }
 
     NodePtr createBlur()
@@ -354,9 +345,9 @@ TEST_F(LazyHashTest, AClipPreferenceEditRefreshesOnlyTheBranchThatIsRead)
 {
     SplitGraph g;
     ASSERT_TRUE(buildSplit(createSizedConstant(32., 24.), &g));
-    const RectI formatBefore = g.constant->getEffectInstance()->getOutputFormat();
-    ASSERT_EQ(formatBefore, g.viewedTail->getEffectInstance()->getOutputFormat());
-    ASSERT_EQ(formatBefore, g.unviewedTail->getEffectInstance()->getOutputFormat());
+    const RectI formatBefore = g.constant->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
+    ASSERT_EQ(formatBefore, g.viewedTail->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
+    ASSERT_EQ(formatBefore, g.unviewedTail->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
     const U64 viewedTailBefore = g.viewedTail->getHashValue();
     const U64 unviewedBefore = g.unviewed->getHashValue();
     const U64 unviewedTailBefore = g.unviewedTail->getHashValue();
@@ -364,7 +355,7 @@ TEST_F(LazyHashTest, AClipPreferenceEditRefreshesOnlyTheBranchThatIsRead)
     KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(g.constant->getKnobByName(kNativeGeneratorParamSize));
     ASSERT_TRUE(size && size->getIsMetadataSlave());
     size->setValue(48., ViewSpec::all(), 0);
-    const RectI formatAfter = g.constant->getEffectInstance()->getOutputFormat();
+    const RectI formatAfter = g.constant->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
     ASSERT_NE(formatBefore, formatAfter);
 
     expectOnlyTheReadBranchRefreshes(g, viewedTailBefore, unviewedBefore, unviewedTailBefore, formatAfter);
@@ -376,14 +367,14 @@ TEST_F(LazyHashTest, AReconnectionAboveASplitRefreshesOnlyTheBranchThatIsRead)
     ASSERT_TRUE(buildSplit(createSizedConstant(32., 24.), &g));
     NodePtr replacement = createSizedConstant(40., 30.);
     ASSERT_TRUE(bool(replacement));
-    const RectI formatAfter = replacement->getEffectInstance()->getOutputFormat();
-    ASSERT_NE(g.constant->getEffectInstance()->getOutputFormat(), formatAfter);
+    const RectI formatAfter = replacement->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
+    ASSERT_NE(g.constant->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat(), formatAfter);
     const U64 viewedTailBefore = g.viewedTail->getHashValue();
     const U64 unviewedBefore = g.unviewed->getHashValue();
     const U64 unviewedTailBefore = g.unviewedTail->getHashValue();
 
     ASSERT_TRUE(g.source->replaceInput(replacement, 0));
-    EXPECT_EQ(formatAfter, g.source->getEffectInstance()->getOutputFormat());
+    EXPECT_EQ(formatAfter, g.source->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     expectOnlyTheReadBranchRefreshes(g, viewedTailBefore, unviewedBefore, unviewedTailBefore, formatAfter);
 }

@@ -265,7 +265,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     }
 
     const U64 nodeHash = frameArgs->nodeHash;
-    const double par = getAspectRatio(-1);
+    const double par = getRenderMetadata(frameArgs, args.time, args.view)->getPixelAspectRatio(-1);
 
     ////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// Get the RoD /////////////////////////////////////////////////
@@ -419,7 +419,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
             inputCanonicalRoI = foundInputRoI->second;
         }
 
-        const RectI inputRoI = inputCanonicalRoI.toPixelEnclosing(args.mipmapLevel, input->getAspectRatio(-1));
+        const RectI inputRoI = inputCanonicalRoI.toPixelEnclosing(args.mipmapLevel, input->getRenderMetadata(args.time, args.view)->getPixelAspectRatio(-1));
         if (inputRoI.isNull()) {
             continue;
         }
@@ -610,7 +610,8 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
     }
 
     const U64 nodeHash = frameArgs->nodeHash;
-    const double par = getAspectRatio(-1);
+    const NodeMetadataConstPtr renderMetadata = getRenderMetadata(frameArgs, args.time, args.view);
+    const double par = renderMetadata->getPixelAspectRatio(-1);
 
     struct FlattenedLayer {
         ImageLayerDesc storage;
@@ -754,7 +755,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
                                                   false /*isRoDProjectFormat*/,
                                                   layer.storage,
                                                   eImageBitDepthFloat,
-                                                  getFieldingOrder());
+                                                  renderMetadata->getOutputFielding());
         ImagePtr image;
         const bool foundInCache = appPTR->getImageOrCreate(key, params, &image);
         if (!image) {

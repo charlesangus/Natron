@@ -205,15 +205,16 @@ AddLayers::getComponentsNeededAndProduced(double time,
 }
 
 StatusEnum
-AddLayers::getPreferredMetadata(NodeMetadata& metadata)
+AddLayers::getPreferredMetadataAt(double time,
+                                  ViewIdx view,
+                                  NodeMetadata& metadata)
 {
-    // From the input's metadata layout rather than its layers at some frame: metadata must not
-    // depend on the current frame, and colour rows resolve against the colour layout alone. The
-    // registry does not vary with time.
+    // From the input's metadata layout at time rather than its present layers: colour rows
+    // resolve against the colour layout alone.
     std::list<ImageLayerDesc> registryPlanes;
-    listRegistryPlanes(0., ViewIdx(0), &registryPlanes);
+    listRegistryPlanes(time, view, &registryPlanes);
     std::list<ImageLayerDesc> metadataLayers;
-    const ImageLayerDesc storage = ChannelCopy::metadataColorStorage(*this, 0);
+    const ImageLayerDesc storage = ChannelCopy::metadataColorStorage(*this, 0, time, view);
     if (storage.getNumComponents() > 0) {
         metadataLayers.push_back(storage);
     }
@@ -277,7 +278,7 @@ AddLayers::channelRoute(double time,
     }
 
     EffectInstancePtr input = getInput(0);
-    route->cpuOnly = input && ((getBitDepth(0) != eImageBitDepthFloat) || (input->getBitDepth(-1) != eImageBitDepthFloat));
+    route->cpuOnly = input && ((getRenderMetadata(time, view)->getBitDepth(0) != eImageBitDepthFloat) || (input->getRenderMetadata(time, view)->getBitDepth(-1) != eImageBitDepthFloat));
 
     return true;
 } // AddLayers::channelRoute
@@ -367,7 +368,7 @@ AddLayers::refreshForRegistryChange()
     }
 
     node->markHashDirty();
-    refreshMetadata_public(true);
+    refreshMetadataSideEffects();
 }
 
 void

@@ -407,12 +407,6 @@ Settings::initializeKnobsThreading()
                                             "The NATRON_RENDER_SCHEDULER environment variable (legacy or taskgraph) takes precedence over this setting."));
     _threadingPage->addKnob(_renderSchedulerMode);
 
-    _renderInSeparateProcess = AppManager::createKnob<KnobBool>( this, tr("Render in a separate process") );
-    _renderInSeparateProcess->setName("renderNewProcess");
-    _renderInSeparateProcess->setHintToolTip( tr("If true, %1 will render frames to disk in "
-                                                 "a separate process so that if the main application crashes, the render goes on.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
-    _threadingPage->addKnob(_renderInSeparateProcess);
-
     _queueRenders = AppManager::createKnob<KnobBool>( this, tr("Append new renders to queue") );
     _queueRenders->setHintToolTip( tr("When checked, renders will be queued in the Progress Panel and will start only when all "
                                       "other prior tasks are done.") );
@@ -1559,7 +1553,6 @@ Settings::setDefaultValues()
     _useThreadPool->setDefaultValue(true);
     _nThreadsPerEffect->setDefaultValue(0);
     _renderSchedulerMode->setDefaultValue((int)eRenderSchedulerModeTaskGraph);
-    _renderInSeparateProcess->setDefaultValue(false, 0);
     _queueRenders->setDefaultValue(false);
 
     // General/Rendering
@@ -2269,9 +2262,9 @@ Settings::getDefaultOCIOConfigSourceForNewProjects() const
 }
 
 void
-Settings::onKnobContentChanged(const KnobI* /*knob*/)
+Settings::onKnobContentChanged(const KnobI* knob)
 {
-    Node::invalidateAllHashes();
+    Node::invalidateAllHashes("a Settings knob changed", knob);
 }
 
 bool
@@ -2853,12 +2846,6 @@ Settings::restoreDefault()
     }
     setCachingLabels();
     endChanges();
-}
-
-bool
-Settings::isRenderInSeparatedProcessEnabled() const
-{
-    return _renderInSeparateProcess->getValue();
 }
 
 int

@@ -125,8 +125,10 @@ try:
 
         ok = yield ("until", lambda: all_strips_shown(panel_of(node)), POLL_TIMEOUT_S)
         check(ok, "the panel shows a trapezoid strip for each of %s" % ", ".join(RANGE_KNOBS))
+        # The panel wrapper is held while its strips are used: child wrappers die with it.
+        panel = panel_of(node)
         for k in RANGE_KNOBS:
-            strip = strip_of(panel_of(node), k)
+            strip = strip_of(panel, k)
             if strip is not None:
                 check(strip.width() > 100 and strip.height() > 10, "the %s strip has a usable size (%dx%d)" % (k, strip.width(), strip.height()))
 

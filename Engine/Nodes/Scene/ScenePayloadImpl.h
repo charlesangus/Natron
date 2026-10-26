@@ -30,15 +30,29 @@
 
 #include <cstddef>
 #include <memory>
+#include <vector>
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief What a layer composes from outside the stack it sits in: anonymous layers its references
+ * name by identifier, and the stacks those sublayer. An anonymous layer lives only while something
+ * holds it, and a reference to a dead one composes an empty prim without any error, so the entry
+ * holding the referencing layer holds these too.
+ **/
+struct SceneLayerDependencies {
+    std::vector<PXR_NS::SdfLayerRefPtr> layers;
+    std::vector<ScenePayload> stacks;
+};
+
 struct SceneLayerEntry {
     PXR_NS::SdfLayerRefPtr layer;
     U64 hash = 0;
+    // Null for a layer that composes nothing outside its stack.
+    std::shared_ptr<const SceneLayerDependencies> dependencies;
 };
 
 /**

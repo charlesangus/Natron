@@ -61,11 +61,13 @@
 #include <pxr/usd/sdf/layerUtils.h>
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/sdf/primSpec.h>
+#include <pxr/usd/sdf/reference.h>
 #include <pxr/usd/sdf/types.h>
 #include <pxr/usd/usd/attribute.h>
 #include <pxr/usd/usd/modelAPI.h>
 #include <pxr/usd/usd/notice.h>
 #include <pxr/usd/usd/prim.h>
+#include <pxr/usd/usd/primFlags.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/camera.h>

@@ -32,9 +32,39 @@
 
 #include "Engine/ContentHasher.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+// One input of a re-parenting node, as last grafted.
+struct GraftSlot {
+    ScenePayload input;
+    // The input's root prim names, in the composed stage's order.
+    std::vector<std::string> rootNames;
+    // Sublayers input's stack; created once the input has roots.
+    PXR_NS::SdfLayerRefPtr wrapper;
+    std::string destinationPath;
+    // The name each root is grafted under, index for index with rootNames.
+    std::vector<std::string> childNames;
+    // Null layer for an input without roots.
+    SceneLayerEntry graft;
+};
+} // anonymous namespace
+
+struct SceneGraftMemo::State {
+    std::mutex mutex;
+    std::string structurePath;
+    std::string structureDestinationType;
+    std::string structureAncestorType;
+    SceneLayerEntry structure;
+    SceneLayerMemo overrides;
+    // The inputs of the last successful reparentRoots(), in input order.
+    std::vector<GraftSlot> slots;
+    ScenePayload output;
+    U64 graftLayerAuthorCount = 0;
+};
 
 namespace SceneOps {
 bool
@@ -75,14 +105,28 @@ appendLayer(const ScenePayload& base,
             const PXR_NS::SdfLayerRefPtr& layer,
             U64 layerHash)
 {
+    SceneLayerEntry entry;
+
+    entry.layer = layer;
+    entry.hash = layerHash;
+
+    return appendEntry(base, entry);
+}
+
+ScenePayload
+appendEntry(const ScenePayload& base,
+            const SceneLayerEntry& entry)
+{
+    const PXR_NS::SdfLayerRefPtr& layer = entry.layer;
+    const U64 layerHash = entry.hash;
+
     if (!layer) {
         return base;
     }
 
     std::shared_ptr<ScenePayloadImpl> imp = std::make_shared<ScenePayloadImpl>();
     imp->base = base.getImpl();
-    imp->top.layer = layer;
-    imp->top.hash = layerHash;
+    imp->top = entry;
     imp->numLayers = base.getNumLayers() + 1;
 
     ContentHasher h;
@@ -335,6 +379,385 @@ frameToTimeCode(const ScenePayload& payload,
     return frame * payload.getMetadata().timeCodesPerSecond / framesPerSecond;
 }
 
+namespace {
+    // The defined, non-abstract root prims of input's composed stage. Pure overs define nothing to
+    // graft, and classes stay where the input's inherits expect them.
+    bool
+    readRootNames(const ScenePayload& input,
+                  std::vector<std::string>* names,
+                  std::string* errorMessage)
+    {
+        if (input.isEmpty()) {
+            return true;
+        }
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(input, errorMessage);
+        if (!lease.isValid()) {
+            return false;
+        }
+        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+        for (const PXR_NS::UsdPrim& root : stage->GetPseudoRoot().GetFilteredChildren(PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract)) {
+            names->push_back(root.GetName().GetString());
+        }
+
+        return true;
+    }
+
+    // Copies onto layer the stage metadata input's layers author, each field from the strongest
+    // layer authoring it. Fields no layer authors stay unauthored, so a layer stack composing layer
+    // falls back for them as it would for input's own layers: an unauthored timeCodesPerSecond
+    // takes the composing stack's rate, and an unauthored upAxis does not override a stronger one
+    // merged in later.
+    void
+    carryAuthoredMetadata(const ScenePayload& input,
+                          const PXR_NS::SdfLayerRefPtr& layer)
+    {
+        const PXR_NS::SdfPath& root = PXR_NS::SdfPath::AbsoluteRootPath();
+        bool hasUpAxis = false;
+        bool hasMetersPerUnit = false;
+        bool hasTimeCodesPerSecond = false;
+        const std::vector<SceneLayerEntry> layers = getLayers(input);
+
+        for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
+            const PXR_NS::SdfLayerRefPtr& source = it->layer;
+            PXR_NS::VtValue value;
+            if (!hasUpAxis && source->HasField(root, PXR_NS::UsdGeomTokens->upAxis, &value)) {
+                layer->SetField(root, PXR_NS::UsdGeomTokens->upAxis, value);
+                hasUpAxis = true;
+            }
+            if (!hasMetersPerUnit && source->HasField(root, PXR_NS::UsdGeomTokens->metersPerUnit, &value)) {
+                layer->SetField(root, PXR_NS::UsdGeomTokens->metersPerUnit, value);
+                hasMetersPerUnit = true;
+            }
+            if (!hasTimeCodesPerSecond && source->HasTimeCodesPerSecond()) {
+                layer->SetTimeCodesPerSecond(source->GetTimeCodesPerSecond());
+                hasTimeCodesPerSecond = true;
+            }
+        }
+    }
+
+    // The root layer of the layer stack a graft layer references: it sublayers input's stack,
+    // strongest first, as a stage composing input on its own would.
+    PXR_NS::SdfLayerRefPtr
+    createWrapper(const ScenePayload& input,
+                  const std::string& tag)
+    {
+        PXR_NS::SdfLayerRefPtr wrapper = PXR_NS::SdfLayer::CreateAnonymous(tag + "-wrapper");
+
+        if (!wrapper) {
+            return wrapper;
+        }
+        wrapper->SetSubLayerPaths(getSubLayerPaths(input));
+        carryAuthoredMetadata(input, wrapper);
+        wrapper->SetPermissionToEdit(false);
+
+        return wrapper;
+    }
+
+    PXR_NS::SdfLayerRefPtr
+    authorStructureLayer(const PXR_NS::SdfPath& destination,
+                         const std::string& destinationType,
+                         const std::string& ancestorType,
+                         const std::string& tag)
+    {
+        PXR_NS::SdfLayerRefPtr layer = createNodeLayer(tag + "-structure");
+
+        if (!layer) {
+            return layer;
+        }
+        for (const PXR_NS::SdfPath& prefix : destination.GetPrefixes()) {
+            const PXR_NS::SdfPrimSpecHandle spec = PXR_NS::SdfCreatePrimInLayer(layer, prefix);
+            if (!spec) {
+                return PXR_NS::SdfLayerRefPtr();
+            }
+            spec->SetSpecifier(PXR_NS::SdfSpecifierDef);
+            spec->SetTypeName((prefix == destination) ? destinationType : ancestorType);
+        }
+        layer->SetPermissionToEdit(false);
+
+        return layer;
+    }
+
+    // Defines destination/<child name> for each of slot's roots, referencing the root in slot's
+    // wrapper. Everything above the children is an "over": the structure layer defines it, and an
+    // over sent or withdrawn with this layer changes no prim's definition, so swapping this layer
+    // resyncs only the grafted roots.
+    PXR_NS::SdfLayerRefPtr
+    authorGraftLayer(const GraftSlot& slot,
+                     const PXR_NS::SdfPath& destination,
+                     const std::string& tag)
+    {
+        PXR_NS::SdfLayerRefPtr layer = createNodeLayer(tag + "-graft");
+
+        if (!layer) {
+            return layer;
+        }
+        // Graft layers sit in the consumer's stack, which scales each one's time samples by its
+        // timeCodesPerSecond against the stage's; carrying the input's keeps the wrapper's samples
+        // at the rate they were authored for.
+        carryAuthoredMetadata(slot.input, layer);
+        const std::string& wrapperIdentifier = slot.wrapper->GetIdentifier();
+        for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
+            const PXR_NS::SdfPrimSpecHandle child = PXR_NS::SdfCreatePrimInLayer(layer, destination.AppendChild(PXR_NS::TfToken(slot.childNames[i])));
+            if (!child) {
+                return PXR_NS::SdfLayerRefPtr();
+            }
+            child->SetSpecifier(PXR_NS::SdfSpecifierDef);
+            child->GetReferenceList().Prepend(PXR_NS::SdfReference(wrapperIdentifier, PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(slot.rootNames[i]))));
+        }
+        layer->SetPermissionToEdit(false);
+
+        return layer;
+    }
+
+    // Whether layer authors nothing but "over" prim specs.
+    bool
+    authorsOnlyOvers(const PXR_NS::SdfLayerRefPtr& layer)
+    {
+        bool onlyOvers = true;
+
+        layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&layer, &onlyOvers](const PXR_NS::SdfPath& path) {
+            if (onlyOvers && path.IsPrimPath()) {
+                const PXR_NS::SdfPrimSpecHandle spec = layer->GetPrimAtPath(path);
+                onlyOvers = !spec || (spec->GetSpecifier() == PXR_NS::SdfSpecifierOver);
+            }
+        });
+
+        return onlyOvers;
+    }
+
+    const GraftSlot*
+    findSlot(const std::vector<GraftSlot>& slots,
+             const ScenePayload& input,
+             const std::string* destinationPath,
+             const std::vector<std::string>* childNames)
+    {
+        for (const GraftSlot& slot : slots) {
+            if (!slot.input.isSameStack(input)) {
+                continue;
+            }
+            if (destinationPath && ((slot.destinationPath != *destinationPath) || !slot.graft.layer)) {
+                continue;
+            }
+            if (childNames && (slot.childNames != *childNames)) {
+                continue;
+            }
+
+            return &slot;
+        }
+
+        return NULL;
+    }
+} // anonymous namespace
+
+bool
+reparentRoots(const SceneReparentArgs& args,
+              SceneGraftMemo* memo,
+              ScenePayload* output,
+              std::vector<SceneRootGraft>* grafts,
+              std::string* errorMessage)
+{
+    if (!memo || !output) {
+        return false;
+    }
+    if (!checkUsdRuntime(errorMessage)) {
+        return false;
+    }
+    if (!PXR_NS::SdfPath::IsValidPathString(args.destinationPath)) {
+        if (errorMessage) {
+            *errorMessage = "\"" + args.destinationPath + "\" is not a valid prim path.";
+        }
+
+        return false;
+    }
+    const PXR_NS::SdfPath destination(args.destinationPath);
+    if (!destination.IsAbsolutePath() || !destination.IsPrimPath()) {
+        if (errorMessage) {
+            *errorMessage = "\"" + args.destinationPath + "\" is not an absolute prim path.";
+        }
+
+        return false;
+    }
+
+    // Reading the inputs' stages and layers: no layer reload may run meanwhile. Taken before the
+    // memo's mutex, so a thread waiting on the mutex holds no write off.
+    SceneWriteBarrier::ReadScope read;
+    SceneGraftMemo::State& state = memo->getState();
+    std::lock_guard<std::mutex> lock(state.mutex);
+
+    // An input seen last time keeps its root names and wrapper: the same stack composes the same.
+    std::vector<GraftSlot> slots(args.inputs.size());
+    for (std::size_t i = 0; i < args.inputs.size(); ++i) {
+        GraftSlot& slot = slots[i];
+        slot.input = args.inputs[i];
+        slot.destinationPath = args.destinationPath;
+        if (const GraftSlot* previous = findSlot(state.slots, slot.input, NULL, NULL)) {
+            slot.rootNames = previous->rootNames;
+            slot.wrapper = previous->wrapper;
+        } else if (!readRootNames(slot.input, &slot.rootNames, errorMessage)) {
+            return false;
+        }
+        if (destination.IsRootPrimPath()) {
+            for (const std::string& root : slot.rootNames) {
+                if (root == destination.GetName()) {
+                    if (errorMessage) {
+                        *errorMessage = "Input " + std::to_string(i + 1) + " has a root prim at " + args.destinationPath + ", the path its roots are grafted under: it would be grafted inside itself.";
+                    }
+
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Names in input order: with autoRename, a root whose name an earlier input took gets the
+    // first "_<n>" suffix free of every name taken so far and of its own input's root names.
+    std::set<std::string> taken;
+    for (GraftSlot& slot : slots) {
+        const std::set<std::string> own(slot.rootNames.begin(), slot.rootNames.end());
+        for (const std::string& root : slot.rootNames) {
+            std::string name = root;
+            if (args.autoRename && taken.count(name)) {
+                for (U64 n = 1;; ++n) {
+                    const std::string candidate = root + "_" + std::to_string(n);
+                    if (!taken.count(candidate) && !own.count(candidate)) {
+                        name = candidate;
+                        break;
+                    }
+                }
+            }
+            slot.childNames.push_back(name);
+            taken.insert(name);
+        }
+    }
+
+    SceneLayerEntry structure = state.structure;
+    const bool structureChanged = !structure.layer || (state.structurePath != args.destinationPath) || (state.structureDestinationType != args.destinationType) || (state.structureAncestorType != args.ancestorType);
+    if (structureChanged) {
+        structure = SceneLayerEntry();
+        structure.layer = authorStructureLayer(destination, args.destinationType, args.ancestorType, args.layerTag);
+        if (!structure.layer) {
+            if (errorMessage) {
+                *errorMessage = "Could not author the prim " + args.destinationPath + ".";
+            }
+
+            return false;
+        }
+        ContentHasher h;
+        h.appendString("structure");
+        h.appendString(args.destinationPath);
+        h.appendString(args.destinationType);
+        h.appendString(args.ancestorType);
+        structure.hash = h.finalize();
+    }
+
+    U64 graftLayersAuthored = 0;
+    for (GraftSlot& slot : slots) {
+        if (slot.rootNames.empty()) {
+            continue;
+        }
+        if (const GraftSlot* previous = findSlot(state.slots, slot.input, &slot.destinationPath, &slot.childNames)) {
+            slot.graft = previous->graft;
+            continue;
+        }
+        if (!slot.wrapper) {
+            slot.wrapper = createWrapper(slot.input, args.layerTag);
+        }
+        PXR_NS::SdfLayerRefPtr layer = slot.wrapper ? authorGraftLayer(slot, destination, args.layerTag) : PXR_NS::SdfLayerRefPtr();
+        if (!layer) {
+            if (errorMessage) {
+                *errorMessage = "Could not author the grafts under " + args.destinationPath + ".";
+            }
+
+            return false;
+        }
+        ++graftLayersAuthored;
+
+        std::shared_ptr<SceneLayerDependencies> dependencies = std::make_shared<SceneLayerDependencies>();
+        dependencies->layers.push_back(slot.wrapper);
+        dependencies->stacks.push_back(slot.input);
+
+        ContentHasher h;
+        h.appendString("graft");
+        h.appendU64(slot.input.getStackHash());
+        h.appendString(slot.destinationPath);
+        for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
+            h.appendString(slot.rootNames[i]);
+            h.appendString(slot.childNames[i]);
+        }
+        slot.graft.layer = layer;
+        slot.graft.hash = h.finalize();
+        slot.graft.dependencies = dependencies;
+    }
+
+    // Last, as the overrides memo commits what it authors: everything that can fail before it has.
+    SceneLayerEntry overrides;
+    if (args.authorOverrides) {
+        SceneLayerMemo::Key key = args.overridesKey;
+        key.upstreamRead = SceneLayerMemo::Key::eUpstreamReadNothing;
+        const SceneLayerMemo::AuthorFunc& author = args.authorOverrides;
+        const SceneLayerMemo::AuthorFunc checkedAuthor = [&author, &args](const SceneLayerEdit& edit,
+                                                                          std::string* authorError) {
+            if (!author(edit, authorError)) {
+                return false;
+            }
+            // A def or class here would make every swap of this layer resync the whole graft.
+            if (!authorsOnlyOvers(edit.layer)) {
+                if (authorError) {
+                    *authorError = "The overrides of " + args.destinationPath + " may only author \"over\" prims.";
+                }
+
+                return false;
+            }
+
+            return true;
+        };
+        ScenePayload produced;
+        if (!state.overrides.produce(key, ScenePayload(), args.layerTag + "-overrides", checkedAuthor, &produced, errorMessage)) {
+            return false;
+        }
+        overrides = produced.getImpl()->top;
+    }
+
+    // A payload of its own: the inputs are reached only through the graft layers' references.
+    ScenePayload result = appendEntry(ScenePayload(), structure);
+    if (overrides.layer) {
+        result = appendEntry(result, overrides);
+    }
+    for (const GraftSlot& slot : slots) {
+        if (slot.graft.layer) {
+            result = appendEntry(result, slot.graft);
+        }
+    }
+    if (result.isSameStack(state.output)) {
+        result = state.output;
+    }
+
+    state.structurePath = args.destinationPath;
+    state.structureDestinationType = args.destinationType;
+    state.structureAncestorType = args.ancestorType;
+    state.structure = structure;
+    state.slots.swap(slots);
+    state.output = result;
+    state.graftLayerAuthorCount += graftLayersAuthored;
+
+    if (grafts) {
+        grafts->clear();
+        for (std::size_t i = 0; i < state.slots.size(); ++i) {
+            const GraftSlot& slot = state.slots[i];
+            for (std::size_t j = 0; j < slot.rootNames.size(); ++j) {
+                SceneRootGraft graft;
+                graft.inputIndex = i;
+                graft.sourcePath = "/" + slot.rootNames[j];
+                graft.graftedPath = destination.AppendChild(PXR_NS::TfToken(slot.childNames[j])).GetString();
+                grafts->push_back(graft);
+            }
+        }
+    }
+    *output = result;
+
+    return true;
+} // reparentRoots
+
 } // namespace SceneOps
 
 struct SceneLayerMemo::Implementation {
@@ -398,7 +821,7 @@ SceneLayerMemo::produce(const Key& key,
         // the memoized layer goes on top of the stack actually handed in.
         const ScenePayload memoizedBase(_imp->output.getImpl()->base);
         if (!memoizedBase.isSameStack(upstream)) {
-            _imp->output = SceneOps::appendLayer(upstream, _imp->output.getImpl()->top.layer, layerHash);
+            _imp->output = SceneOps::appendEntry(upstream, _imp->output.getImpl()->top);
         }
         *output = _imp->output;
 
@@ -456,6 +879,41 @@ SceneLayerMemo::getAuthorCount() const
     std::lock_guard<std::mutex> lock(_imp->mutex);
 
     return _imp->authorCount;
+}
+
+SceneGraftMemo::SceneGraftMemo()
+    : _state(new State)
+{
+}
+
+SceneGraftMemo::~SceneGraftMemo()
+{
+}
+
+void
+SceneGraftMemo::invalidate()
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    _state->structure = SceneLayerEntry();
+    _state->structurePath.clear();
+    _state->overrides.invalidate();
+    _state->slots.clear();
+    _state->output = ScenePayload();
+}
+
+U64
+SceneGraftMemo::getGraftLayerAuthorCount() const
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    return _state->graftLayerAuthorCount;
+}
+
+SceneGraftMemo::State&
+SceneGraftMemo::getState()
+{
+    return *_state;
 }
 
 NATRON_NAMESPACE_EXIT

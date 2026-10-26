@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
@@ -51,6 +52,41 @@ struct SceneLayerEdit {
     double firstFrame = 0.;
     double lastFrame = 0.;
     double framesPerSecond = 24.;
+};
+
+/**
+ * @brief What SceneOps::reparentRoots grafts, and where. Every root prim of every input is
+ * re-parented under destinationPath, inputs weakest first: where two inputs graft a root under the
+ * same name, they compose with the later input stronger, as in USDMerge, unless autoRename gives
+ * the later one the first free "_<n>" suffix.
+ **/
+struct SceneReparentArgs {
+    std::vector<ScenePayload> inputs;
+    // An absolute prim path, such as /Transform1 or /set/props/Transform1.
+    std::string destinationPath;
+    // The schema type names the destination and its missing ancestors are defined with (Xform,
+    // Scope). Empty defines them typeless.
+    std::string destinationType;
+    std::string ancestorType;
+    bool autoRename = false;
+    // Optional: authors the destination's own opinions, such as its transform, into a layer of its
+    // own, memoized on overridesKey. It may only author "over" specs, so an edit of it changes
+    // properties without resyncing the grafted subtree. Handed no upstream: the key cannot see it.
+    SceneLayerMemo::AuthorFunc authorOverrides;
+    SceneLayerMemo::Key overridesKey;
+    // Names the authored layers, for debugging.
+    std::string layerTag;
+};
+
+/**
+ * @brief Where one input root prim landed. The seam for code that follows a graft, such as
+ * re-targeting relationships that point from one root into another, which a reference alone
+ * cannot carry.
+ **/
+struct SceneRootGraft {
+    std::size_t inputIndex = 0;
+    std::string sourcePath;
+    std::string graftedPath;
 };
 
 /**
@@ -82,6 +118,40 @@ PXR_NS::SdfLayerRefPtr createNodeLayer(const std::string& tag);
 ScenePayload appendLayer(const ScenePayload& base,
                          const PXR_NS::SdfLayerRefPtr& layer,
                          U64 layerHash);
+
+/**
+ * @brief appendLayer() for an entry taken from another payload, keeping what it depends on alive
+ * in the stack it returns too. Code that restacks layers goes through here, so a graft layer
+ * never loses the wrapper it references.
+ **/
+ScenePayload appendEntry(const ScenePayload& base,
+                         const SceneLayerEntry& entry);
+
+/**
+ * @brief Grafts every input's root prims under args.destinationPath, the layers authored and
+ * memoized in memo. Sets *output to a payload of its own, not stacked on any input: the structure
+ * layer defining the destination and its ancestors, the overrides layer when args has an author
+ * for it, then one graft layer per input with root prims, in input order. A graft layer defines
+ * <destination>/<name> for each root of its input, each internally referencing that root in an
+ * anonymous wrapper layer that sublayers the input's stack and carries its metadata. The payload
+ * holds the wrappers and input stacks itself, so it composes for as long as it is held, past the
+ * memo's next authoring and past the memo itself.
+ *
+ * Root prims are the defined, non-abstract children of the input's composed pseudo-root, read
+ * through SceneQueryPool. An input with none, an empty one included, contributes no layer. Graft
+ * layers carry their input's timeCodesPerSecond, upAxis and metersPerUnit, so its time samples
+ * keep their timing and the result's metadata follows the strongest input, as a merge's does; a
+ * default prim is not carried, as the input's roots are no longer roots.
+ *
+ * When grafts is given, it receives where each input root landed. Returns false with
+ * *errorMessage set, keeping memo's layers, when the destination is not an absolute prim path, an
+ * input root is the destination itself, or authoring fails.
+ **/
+bool reparentRoots(const SceneReparentArgs& args,
+                   SceneGraftMemo* memo,
+                   ScenePayload* output,
+                   std::vector<SceneRootGraft>* grafts,
+                   std::string* errorMessage);
 
 /**
  * @brief The payload's layers, weakest first.

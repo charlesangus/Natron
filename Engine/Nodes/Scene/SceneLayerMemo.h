@@ -113,6 +113,36 @@ private:
     std::unique_ptr<Implementation> _imp;
 };
 
+/**
+ * @brief The layers a re-parenting node owns, memoized one by one so that an edit re-authors only
+ * the layers it touches: the structure layer (the destination prim and its ancestors), the
+ * overrides layer (the destination's own opinions, its transform), and one wrapper plus one graft
+ * layer per input. An unchanged input keeps its graft layer, so a stage synced to the result
+ * recomposes only the roots of the input that changed. SceneOps::reparentRoots fills and reads it.
+ *
+ * Free of pxr types so NativeEffectBase can hold one; implemented in SceneOps.cpp. MT-safe:
+ * reparenting is serialized per memo.
+ **/
+class SceneGraftMemo {
+public:
+    SceneGraftMemo();
+
+    ~SceneGraftMemo();
+
+    // Forgets every memoized layer, so the next reparentRoots() authors them all again.
+    void invalidate();
+
+    // How many graft layers reparentRoots() has authored with this memo.
+    U64 getGraftLayerAuthorCount() const;
+
+    // SceneOps' view of the memoized layers; defined in SceneOps.cpp.
+    struct State;
+    State& getState();
+
+private:
+    std::unique_ptr<State> _state;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Nodes_Scene_SceneLayerMemo_h

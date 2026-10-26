@@ -212,6 +212,7 @@ KnobDouble::KnobDouble(KnobHolder* holder,
     , _rangeWidgetSourceColour()
     , _rangeWidgetModel()
     , _rangeWidgetEnable()
+    , _rangeWidgetSmooth()
     , _valueIsNormalized(dimension, eValueIsNormalizedNone)
     , _defaultValuesAreNormalized(false)
     , _hasHostOverlayHandle(false)
@@ -239,6 +240,7 @@ KnobDouble::KnobDouble(KnobHolder* holder,
     , _rangeWidgetSourceColour()
     , _rangeWidgetModel()
     , _rangeWidgetEnable()
+    , _rangeWidgetSmooth()
     , _valueIsNormalized(dimension, eValueIsNormalizedNone)
     , _defaultValuesAreNormalized(false)
     , _hasHostOverlayHandle(false)
@@ -329,17 +331,28 @@ KnobDouble::setMatrixVisibleExtent(int rows,
 void
 KnobDouble::sanitizeRangeOffsets(double* offsets)
 {
-    offsets[1] = (std::max)(0., offsets[1]);
-    offsets[2] = (std::max)(0., offsets[2]);
-    offsets[0] = (std::max)(offsets[0], offsets[1]);
-    offsets[3] = (std::max)(offsets[3], offsets[2]);
+    for (int i = 0; i < 4; ++i) {
+        offsets[i] = (std::max)(0., offsets[i]);
+    }
+}
+
+void
+KnobDouble::rangeOffsetsOf(const double* values,
+                           double* offsets)
+{
+    offsets[0] = values[eRangeWidgetDimensionOuterLow];
+    offsets[1] = values[eRangeWidgetDimensionInnerLow];
+    offsets[2] = values[eRangeWidgetDimensionInnerHigh];
+    offsets[3] = values[eRangeWidgetDimensionOuterHigh];
+    sanitizeRangeOffsets(offsets);
 }
 
 void
 KnobDouble::setRangeWidget(RangeWidgetRoleEnum role,
                            const KnobColorPtr& sourceColourKnob,
                            const KnobChoicePtr& modelKnob,
-                           const KnobBoolPtr& enableKnob)
+                           const KnobBoolPtr& enableKnob,
+                           const KnobBoolPtr& smoothKnob)
 {
     if ((role == eRangeWidgetRoleNone) || (getDimension() != (int)eRangeWidgetDimensionCount)) {
         return;
@@ -348,6 +361,7 @@ KnobDouble::setRangeWidget(RangeWidgetRoleEnum role,
     _rangeWidgetSourceColour = sourceColourKnob;
     _rangeWidgetModel = modelKnob;
     _rangeWidgetEnable = enableKnob;
+    _rangeWidgetSmooth = smoothKnob;
     // A slider would drive every dimension at once, collapsing the trapezoid.
     disableSlider();
 }

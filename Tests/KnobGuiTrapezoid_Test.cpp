@@ -70,17 +70,17 @@ identity(float* /*rgb*/,
 {
 }
 
-// The centre, then the outer low, inner low, inner high and outer high offsets.
+// The knob's values in dimension order: outer low, inner low, centre, inner high, outer high.
 void
 setUp(TrapezoidStrip& strip,
-      double centre,
       double outerLow,
       double innerLow,
+      double centre,
       double innerHigh,
       double outerHigh,
       ColorMath::KeyModelEnum model = ColorMath::eKeyModelHSV)
 {
-    const double values[kDims] = { centre, outerLow, innerLow, innerHigh, outerHigh };
+    const double values[kDims] = { outerLow, innerLow, centre, innerHigh, outerHigh };
     double toXYZ[9];
     ColorMath::workingToXYZ(0, toXYZ);
     const float source[3] = { 0.6f, 0.8f, 0.5f };
@@ -124,14 +124,14 @@ drag(TrapezoidStrip& strip,
 
 void
 expectValues(const TrapezoidStrip& strip,
-             double centre,
              double outerLow,
              double innerLow,
+             double centre,
              double innerHigh,
              double outerHigh,
              double tolerance = 1e-9)
 {
-    const double want[kDims] = { centre, outerLow, innerLow, innerHigh, outerHigh };
+    const double want[kDims] = { outerLow, innerLow, centre, innerHigh, outerHigh };
     double v[kDims];
 
     strip.getValues(v);
@@ -168,28 +168,59 @@ outputDirectory()
 }
 } // namespace
 
-// Hue shows one turn centred on the centre, saturation 0 to 1 (0.4 for OkLCh chroma) and luma
-// 0 to the larger of 1 and the outer high point.
+// Hue shows one turn centred on the centre; saturation and luma show 0 to 1 in every model,
+// widened by a margin of 5% of the span on a side where a point lies outside.
 TEST(KnobGuiTrapezoid, DefaultDomains)
 {
     TrapezoidStrip hue(KnobDouble::eRangeWidgetRoleHue);
-    setUp(hue, 0.3, 0.1, 0.05, 0.05, 0.1);
+    setUp(hue, 0.05, 0.05, 0.3, 0.05, 0.05);
     expectDomain(hue, -0.2, 0.8);
 
     TrapezoidStrip sat(KnobDouble::eRangeWidgetRoleSaturation);
-    setUp(sat, 0.5, 0.4, 0.2, 0.2, 0.9);
+    setUp(sat, 0.2, 0.2, 0.5, 0.2, 0.2);
     expectDomain(sat, 0., 1.);
     EXPECT_NEAR(4., sat.valueToX(0.), 1e-9);
     EXPECT_NEAR(4. + kSpan, sat.valueToX(1.), 1e-9);
     EXPECT_NEAR(0.25, sat.xToValue(4. + kSpan * 0.25), 1e-9);
-    setUp(sat, 0.05, 0.04, 0.02, 0.02, 0.1, ColorMath::eKeyModelOkLCh);
-    expectDomain(sat, 0., 0.4);
+    setUp(sat, 0.02, 0.02, 0.05, 0.02, 0.08, ColorMath::eKeyModelOkLCh);
+    expectDomain(sat, 0., 1.);
+    // The outer high point at 1.4.
+    setUp(sat, 0.2, 0.2, 0.5, 0.2, 0.7);
+    expectDomain(sat, 0., 1.47);
 
     TrapezoidStrip luma(KnobDouble::eRangeWidgetRoleLuma);
-    setUp(luma, 0.2, 0.1, 0.05, 0.05, 0.3);
+    setUp(luma, 0.05, 0.05, 0.2, 0.05, 0.25);
     expectDomain(luma, 0., 1.);
-    setUp(luma, 0.5, 0.5, 0.45, 0.5, 1.5);
-    expectDomain(luma, 0., 2.);
+    // The default luma range reaches 2.
+    setUp(luma, 0.05, 0.45, 0.5, 0.5, 1.);
+    expectDomain(luma, 0., 2.1);
+    // The outer low point at -0.2.
+    setUp(luma, 0.3, 0.1, 0.2, 0.1, 0.1);
+    expectDomain(luma, -0.26, 1.);
+}
+
+// The outer points lie beyond the inner ones by their own offsets.
+TEST(KnobGuiTrapezoid, OuterOffsetsFromTheInnerEdges)
+{
+    TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleSaturation);
+
+    setUp(strip, 0.04, 0.14, 0.2, 0.2, 0.);
+    double p[4];
+    double centre = -1.;
+    strip.getPositions(p, &centre);
+    EXPECT_NEAR(0.2, centre, 1e-9);
+    EXPECT_NEAR(0.02, p[0], 1e-9);
+    EXPECT_NEAR(0.06, p[1], 1e-9);
+    EXPECT_NEAR(0.4, p[2], 1e-9);
+    EXPECT_NEAR(0.4, p[3], 1e-9);
+
+    // Offsets below 0 are drawn as 0.
+    setUp(strip, -0.1, 0.1, 0.5, -0.2, 0.1);
+    strip.getPositions(p);
+    EXPECT_NEAR(0.4, p[0], 1e-9);
+    EXPECT_NEAR(0.4, p[1], 1e-9);
+    EXPECT_NEAR(0.5, p[2], 1e-9);
+    EXPECT_NEAR(0.6, p[3], 1e-9);
 }
 
 // A hue range across red is drawn unsplit around its centre.
@@ -197,7 +228,7 @@ TEST(KnobGuiTrapezoid, HuePositionsAroundTheCentre)
 {
     TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleHue);
 
-    setUp(strip, 0., 0.1, 0.05, 0.05, 0.1);
+    setUp(strip, 0.05, 0.05, 0., 0.05, 0.05);
     expectDomain(strip, -0.5, 0.5);
     double p[4];
     double centre = -1.;
@@ -210,9 +241,9 @@ TEST(KnobGuiTrapezoid, HuePositionsAroundTheCentre)
     EXPECT_NEAR(4. + kSpan * 0.5, strip.valueToX(centre), 1e-9);
 
     // An offset past a turn is drawn as a turn, as it keys.
-    setUp(strip, 0.5, 3., 0.05, 0.05, 0.1);
+    setUp(strip, 3., 0.05, 0.5, 0.05, 0.05);
     strip.getPositions(p);
-    EXPECT_NEAR(-0.5, p[0], 1e-9);
+    EXPECT_NEAR(-0.55, p[0], 1e-9);
 }
 
 TEST(KnobGuiTrapezoid, PressFindsHandlesAndThePlateau)
@@ -220,7 +251,7 @@ TEST(KnobGuiTrapezoid, PressFindsHandlesAndThePlateau)
     TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleLuma);
 
     // 0.1, 0.3, 0.6, 0.8.
-    setUp(strip, 0.45, 0.35, 0.15, 0.15, 0.35);
+    setUp(strip, 0.2, 0.15, 0.45, 0.15, 0.2);
     EXPECT_EQ(TrapezoidStrip::ePartOuterLow, strip.partAt(strip.valueToX(0.1) + 2.));
     EXPECT_EQ(TrapezoidStrip::ePartInnerLow, strip.partAt(strip.valueToX(0.3)));
     EXPECT_EQ(TrapezoidStrip::ePartInnerHigh, strip.partAt(strip.valueToX(0.6) - 3.));
@@ -229,17 +260,21 @@ TEST(KnobGuiTrapezoid, PressFindsHandlesAndThePlateau)
     EXPECT_EQ(TrapezoidStrip::ePartNone, strip.partAt(strip.valueToX(0.95)));
 }
 
-// A handle drag writes its own offset only, reports start, moves and end, and stops at its
-// neighbour or, for an inner handle, at the centre.
-TEST(KnobGuiTrapezoid, HandleDragIsClampedBetweenNeighboursAndTheCentre)
+// A handle drag writes its own offset only, an inner point carrying its outer one with it,
+// reports start, moves and end, and stops at the centre (inner) or at its inner point (outer).
+TEST(KnobGuiTrapezoid, HandleDragIsClampedAndCarriesTheOuterPoint)
 {
     TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleLuma);
     Recorder recorder;
 
-    setUp(strip, 0.45, 0.35, 0.15, 0.15, 0.35);
+    setUp(strip, 0.2, 0.15, 0.45, 0.15, 0.2);
     strip.setEditCallback(recorder.callback());
     drag(strip, strip.valueToX(0.3), { 10., 10. });
-    expectValues(strip, 0.45, 0.35, 0.05, 0.15, 0.35);
+    expectValues(strip, 0.2, 0.05, 0.45, 0.15, 0.2);
+    double p[4];
+    strip.getPositions(p);
+    EXPECT_NEAR(0.2, p[0], 1e-9);
+    EXPECT_NEAR(0.4, p[1], 1e-9);
     ASSERT_EQ(4u, recorder.phases.size());
     EXPECT_EQ(TrapezoidStrip::eGesturePhaseStart, recorder.phases[0]);
     EXPECT_EQ(TrapezoidStrip::eGesturePhaseMove, recorder.phases[1]);
@@ -250,17 +285,20 @@ TEST(KnobGuiTrapezoid, HandleDragIsClampedBetweenNeighboursAndTheCentre)
 
     // Far past the centre, the inner low point stops there.
     drag(strip, strip.valueToX(0.4), { 150. });
-    expectValues(strip, 0.45, 0.35, 0., 0.15, 0.35);
-    // The inner high point stops at the centre coming down.
+    expectValues(strip, 0.2, 0., 0.45, 0.15, 0.2);
+    // The inner high point stops at the centre coming down: 0.25, 0.45, 0.45, 0.65.
     drag(strip, strip.valueToX(0.6) + 2., { -150. });
-    expectValues(strip, 0.45, 0.35, 0., 0., 0.35);
+    expectValues(strip, 0.2, 0., 0.45, 0., 0.2);
     // The outer high point stops at the inner high one.
-    drag(strip, strip.valueToX(0.8), { -150. });
-    expectValues(strip, 0.45, 0.35, 0., 0., 0.);
+    drag(strip, strip.valueToX(0.65), { -150. });
+    expectValues(strip, 0.2, 0., 0.45, 0., 0.);
+    // The outer low point moves out alone.
+    drag(strip, strip.valueToX(0.25), { -20. });
+    expectValues(strip, 0.3, 0., 0.45, 0., 0.);
 
     // A click with no move edits nothing.
     recorder.phases.clear();
-    drag(strip, strip.valueToX(0.1), {});
+    drag(strip, strip.valueToX(0.15), {});
     EXPECT_TRUE(recorder.phases.empty());
 }
 
@@ -268,23 +306,26 @@ TEST(KnobGuiTrapezoid, PlateauDragMovesTheCentre)
 {
     TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleSaturation);
 
-    setUp(strip, 0.45, 0.35, 0.15, 0.15, 0.35);
+    setUp(strip, 0.2, 0.15, 0.45, 0.15, 0.2);
     drag(strip, strip.valueToX(0.4), { -20. });
-    expectValues(strip, 0.35, 0.35, 0.15, 0.15, 0.35);
+    expectValues(strip, 0.2, 0.15, 0.35, 0.15, 0.2);
 }
 
-TEST(KnobGuiTrapezoid, ShiftDragMovesTheOuterPartner)
+TEST(KnobGuiTrapezoid, ShiftDragLeavesTheOuterPointInPlace)
 {
     TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleLuma);
 
-    setUp(strip, 0.45, 0.35, 0.15, 0.15, 0.35);
+    // 0.1, 0.3, 0.6, 0.8.
+    setUp(strip, 0.2, 0.15, 0.45, 0.15, 0.2);
     drag(strip, strip.valueToX(0.6), { 20. }, Qt::ShiftModifier);
-    expectValues(strip, 0.45, 0.35, 0.15, 0.25, 0.45);
+    expectValues(strip, 0.2, 0.15, 0.45, 0.25, 0.1);
     drag(strip, strip.valueToX(0.3), { -20. }, Qt::ShiftModifier);
-    expectValues(strip, 0.45, 0.45, 0.25, 0.25, 0.45);
-    // The pair stops when the inner point meets the centre.
-    drag(strip, strip.valueToX(0.2), { 150. }, Qt::ShiftModifier);
-    expectValues(strip, 0.45, 0.2, 0., 0.25, 0.45);
+    expectValues(strip, 0.1, 0.25, 0.45, 0.25, 0.1);
+    // The inner point stops at its outer one, and at the centre.
+    drag(strip, strip.valueToX(0.2), { -150. }, Qt::ShiftModifier);
+    expectValues(strip, 0., 0.35, 0.45, 0.25, 0.1);
+    drag(strip, strip.valueToX(0.7), { -150. }, Qt::ShiftModifier);
+    expectValues(strip, 0., 0.35, 0.45, 0., 0.35);
 }
 
 // Coincident handles: a move to the left takes the lowest, to the right the highest.
@@ -293,43 +334,44 @@ TEST(KnobGuiTrapezoid, CoincidentHandlesFollowTheDragDirection)
     TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleLuma);
 
     // 0.1, 0.4, 0.4, 0.8.
-    setUp(strip, 0.4, 0.3, 0., 0., 0.4);
+    setUp(strip, 0.3, 0., 0.4, 0., 0.4);
     drag(strip, strip.valueToX(0.4), { 20. });
-    expectValues(strip, 0.4, 0.3, 0., 0.1, 0.4);
+    expectValues(strip, 0.3, 0., 0.4, 0.1, 0.4);
 
-    setUp(strip, 0.4, 0.3, 0., 0., 0.4);
+    setUp(strip, 0.3, 0., 0.4, 0., 0.4);
     drag(strip, strip.valueToX(0.4), { -20. });
-    expectValues(strip, 0.4, 0.3, 0.1, 0., 0.4);
+    expectValues(strip, 0.3, 0.1, 0.4, 0., 0.4);
 
     // All four at the centre.
-    setUp(strip, 0.5, 0., 0., 0., 0.);
+    setUp(strip, 0., 0., 0.5, 0., 0.);
     drag(strip, strip.valueToX(0.5), { -20. });
-    expectValues(strip, 0.5, 0.1, 0., 0., 0.);
-    setUp(strip, 0.5, 0., 0., 0., 0.);
+    expectValues(strip, 0.1, 0., 0.5, 0., 0.);
+    setUp(strip, 0., 0., 0.5, 0., 0.);
     drag(strip, strip.valueToX(0.5), { 20. });
-    expectValues(strip, 0.5, 0., 0., 0., 0.1);
+    expectValues(strip, 0., 0., 0.5, 0., 0.1);
 }
 
-// The hue centre is written wrapped, and the outer points stay within a turn of it.
+// The hue centre is written wrapped, and each offset stays within a turn.
 TEST(KnobGuiTrapezoid, HueDragWrapsAndStaysWithinATurn)
 {
     TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleHue);
 
-    setUp(strip, 0.9, 0.1, 0.05, 0.05, 0.1);
+    setUp(strip, 0.05, 0.05, 0.9, 0.05, 0.05);
     // One turn is 200 pixels: the plateau moves 0.15 turn up, across red.
     drag(strip, strip.valueToX(0.9), { 30. });
-    expectValues(strip, 0.05, 0.1, 0.05, 0.05, 0.1);
+    expectValues(strip, 0.05, 0.05, 0.05, 0.05, 0.05);
 
-    setUp(strip, 0.35, 0.15, 0.05, 0.05, 0.15);
-    // The outer points are dragged far out, and stop a turn from the centre.
+    // 0.2, 0.3, 0.4, 0.5.
+    setUp(strip, 0.1, 0.05, 0.35, 0.05, 0.1);
+    // The outer points are dragged far out, and stop a turn from their inner points.
     drag(strip, strip.valueToX(0.2), { -100., -100., -100. });
     drag(strip, strip.valueToX(0.5), { 100., 100., 100. });
-    expectValues(strip, 0.35, 1., 0.05, 0.05, 1.);
+    expectValues(strip, 1., 0.05, 0.35, 0.05, 1.);
     double p[4];
     double centre;
     strip.getPositions(p, &centre);
-    EXPECT_NEAR(1., centre - p[0], 1e-9);
-    EXPECT_NEAR(1., p[3] - centre, 1e-9);
+    EXPECT_NEAR(1.05, centre - p[0], 1e-9);
+    EXPECT_NEAR(1.05, p[3] - centre, 1e-9);
 }
 
 // The wheel zooms around the cursor, a middle or Alt drag pans, and resetZoom() restores the
@@ -339,7 +381,7 @@ TEST(KnobGuiTrapezoid, ZoomAndPan)
     TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleLuma);
     Recorder recorder;
 
-    setUp(strip, 0.45, 0.35, 0.15, 0.15, 0.35);
+    setUp(strip, 0.2, 0.15, 0.45, 0.15, 0.2);
     strip.setEditCallback(recorder.callback());
     EXPECT_FALSE(strip.isZoomed());
     const double x = strip.valueToX(0.3);
@@ -371,14 +413,21 @@ TEST(KnobGuiTrapezoid, ZoomAndPan)
     strip.resetZoom();
     drag(strip, strip.valueToX(0.45), { -40. }, Qt::AltModifier);
     expectDomain(strip, 0.2, 1.2);
-    expectValues(strip, 0.45, 0.35, 0.15, 0.15, 0.35);
+    expectValues(strip, 0.2, 0.15, 0.45, 0.15, 0.2);
     EXPECT_TRUE(recorder.phases.empty());
 
+    // Reset Zoom takes in a point outside 0 to 1.
+    setUp(strip, 0.05, 0.45, 0.5, 0.5, 1.);
+    strip.zoomAround(strip.valueToX(0.5), 0.25);
+    strip.resetZoom();
+    expectDomain(strip, 0., 2.1);
+
     // Zoomed in, a handle drag moves the value by the zoomed scale.
+    setUp(strip, 0.2, 0.15, 0.45, 0.15, 0.2);
     strip.resetZoom();
     strip.zoomAround(strip.valueToX(0.3), 0.5);
     drag(strip, strip.valueToX(0.3), { 20. });
-    expectValues(strip, 0.45, 0.35, 0.1, 0.15, 0.35);
+    expectValues(strip, 0.2, 0.1, 0.45, 0.15, 0.2);
 }
 
 // The trapezoid's base is open: just above it the fill reads as it does mid-shape.
@@ -387,7 +436,7 @@ TEST(KnobGuiTrapezoid, NoLineAlongTheBase)
     TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleLuma);
 
     // 0.1, 0.3, 0.6, 0.8; the source tick is at 0.5 and the centre notch at the top.
-    setUp(strip, 0.45, 0.35, 0.15, 0.15, 0.35);
+    setUp(strip, 0.2, 0.15, 0.45, 0.15, 0.2);
     const QImage image = strip.grab().toImage();
     ASSERT_EQ(kWidth, image.width());
     ASSERT_EQ(kHeight, image.height());
@@ -400,6 +449,45 @@ TEST(KnobGuiTrapezoid, NoLineAlongTheBase)
     EXPECT_NEAR(mid.blue(), nearBase.blue(), 2);
 }
 
+// Smooth draws the falloffs as smoothsteps: a quarter of the way along the rising edge the curve
+// is at 0.15625 of the height, not 0.25, so the outline crosses that column lower down.
+TEST(KnobGuiTrapezoid, SmoothCurvesTheFalloffs)
+{
+    TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleLuma);
+
+    // 0.1, 0.3, 0.6, 0.8.
+    setUp(strip, 0.2, 0.15, 0.45, 0.15, 0.2);
+    // Tall enough that the curves part by several pixels.
+    strip.resize(kWidth, 120);
+    EXPECT_FALSE(strip.isSmooth());
+    const QImage linear = strip.grab().toImage();
+    strip.setSmooth(true);
+    EXPECT_TRUE(strip.isSmooth());
+    const QImage smooth = strip.grab().toImage();
+    ASSERT_EQ(linear.size(), smooth.size());
+
+    // The topmost row of a column where the white outline is drawn.
+    auto outlineRow = [](const QImage& image, int x) {
+        for (int y = 0; y < image.height(); ++y) {
+            const QColor c = image.pixelColor(x, y);
+            if ((c.red() > 200) && (c.green() > 200) && (c.blue() > 200)) {
+                return y;
+            }
+        }
+
+        return -1;
+    };
+    const int x = (int)std::floor(strip.valueToX(0.15));
+    const int linearRow = outlineRow(linear, x);
+    const int smoothRow = outlineRow(smooth, x);
+    ASSERT_GE(linearRow, 0);
+    ASSERT_GE(smoothRow, 0);
+    EXPECT_GT(smoothRow, linearRow);
+    // The plateau is drawn alike.
+    const int plateauX = (int)std::floor(strip.valueToX(0.4));
+    EXPECT_EQ(outlineRow(linear, plateauX), outlineRow(smooth, plateauX));
+}
+
 TEST(KnobGuiTrapezoid, WritesGrabPngs)
 {
     struct Case {
@@ -408,17 +496,20 @@ TEST(KnobGuiTrapezoid, WritesGrabPngs)
         ColorMath::KeyModelEnum model;
         double values[kDims];
         double zoom;
+        bool smooth;
     };
     const Case cases[] = {
-        { "HueHSV", KnobDouble::eRangeWidgetRoleHue, ColorMath::eKeyModelHSV, { 0., 0.15, 0.05, 0.05, 0.15 }, 1. },
-        { "SatHSL", KnobDouble::eRangeWidgetRoleSaturation, ColorMath::eKeyModelHSL, { 0.5, 0.4, 0.2, 0.2, 0.4 }, 1. },
-        { "LumaOkLCh", KnobDouble::eRangeWidgetRoleLuma, ColorMath::eKeyModelOkLCh, { 0.6, 0.4, 0.2, 0.2, 0.8 }, 1. },
-        { "HueOkLCh", KnobDouble::eRangeWidgetRoleHue, ColorMath::eKeyModelOkLCh, { 0.4, 0.1, 0.05, 0.05, 0.1 }, 1. },
-        { "HueOkLChZoomedOut", KnobDouble::eRangeWidgetRoleHue, ColorMath::eKeyModelOkLCh, { 0.4, 0.1, 0.05, 0.05, 0.1 }, 3. },
+        { "HueHSV", KnobDouble::eRangeWidgetRoleHue, ColorMath::eKeyModelHSV, { 0.1, 0.05, 0., 0.05, 0.1 }, 1., false },
+        { "SatHSL", KnobDouble::eRangeWidgetRoleSaturation, ColorMath::eKeyModelHSL, { 0.2, 0.2, 0.5, 0.2, 0.2 }, 1., false },
+        { "LumaOkLCh", KnobDouble::eRangeWidgetRoleLuma, ColorMath::eKeyModelOkLCh, { 0.2, 0.2, 0.6, 0.2, 0.6 }, 1., false },
+        { "LumaOkLChSmooth", KnobDouble::eRangeWidgetRoleLuma, ColorMath::eKeyModelOkLCh, { 0.2, 0.2, 0.6, 0.2, 0.6 }, 1., true },
+        { "HueOkLCh", KnobDouble::eRangeWidgetRoleHue, ColorMath::eKeyModelOkLCh, { 0.05, 0.05, 0.4, 0.05, 0.05 }, 1., false },
+        { "HueOkLChZoomedOut", KnobDouble::eRangeWidgetRoleHue, ColorMath::eKeyModelOkLCh, { 0.05, 0.05, 0.4, 0.05, 0.05 }, 3., false },
     };
     for (const Case& c : cases) {
         TrapezoidStrip strip(c.role);
         setUp(strip, c.values[0], c.values[1], c.values[2], c.values[3], c.values[4], c.model);
+        strip.setSmooth(c.smooth);
         if (c.zoom != 1.) {
             strip.zoomAround(kWidth * 0.5, c.zoom);
         }

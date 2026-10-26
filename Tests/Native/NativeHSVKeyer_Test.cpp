@@ -43,6 +43,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/HueCurves.h"
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -54,6 +55,11 @@ namespace {
 
 const double kTime = 1.;
 const float kTolerance = 1e-6f;
+// The offset dimensions: outer low, inner low, inner high, outer high.
+const int kOffsetDims[4] = {
+    KnobDouble::eRangeWidgetDimensionOuterLow, KnobDouble::eRangeWidgetDimensionInnerLow,
+    KnobDouble::eRangeWidgetDimensionInnerHigh, KnobDouble::eRangeWidgetDimensionOuterHigh
+};
 
 // The RGB of hue h (turns), saturation s and brightness v.
 void
@@ -135,24 +141,30 @@ protected:
         return knob ? knob->getValueAtTime(kTime, dim) : 0.;
     }
 
-    // A range's centre, then its outer low, inner low, inner high and outer high offsets.
+    // A range in dimension order: outer low, inner low, centre, inner high, outer high.
     void setRange(const NodePtr& node,
                   const char* name,
-                  double centre,
                   double outerLow,
                   double innerLow,
+                  double centre,
                   double innerHigh,
                   double outerHigh)
     {
-        ASSERT_TRUE(setKnobValues(node, name, { centre, outerLow, innerLow, innerHigh, outerHigh }));
+        ASSERT_TRUE(setKnobValues(node, name, { outerLow, innerLow, centre, innerHigh, outerHigh }));
+    }
+
+    double centreOf(const NodePtr& node,
+                    const char* name)
+    {
+        return rangeValue(node, name, KnobDouble::eRangeWidgetDimensionCentre);
     }
 
     // Every component in range, so one term can be tested alone.
     void openAll(const NodePtr& node)
     {
-        setRange(node, kHSVKeyerParamHueRange, 0.5, 0.5, 0.5, 0.5, 0.5);
-        setRange(node, kHSVKeyerParamSaturationRange, 0., 10., 10., 10., 10.);
-        setRange(node, kHSVKeyerParamLumaRange, 0., 10., 10., 10., 10.);
+        setRange(node, kHSVKeyerParamHueRange, 0., 0.5, 0.5, 0.5, 0.);
+        setRange(node, kHSVKeyerParamSaturationRange, 0., 10., 0., 10., 0.);
+        setRange(node, kHSVKeyerParamLumaRange, 0., 10., 0., 10., 0.);
     }
 
     // keyOf() reads HSV components.
@@ -180,19 +192,21 @@ TEST_F(NativeHSVKeyerTest, ControlsAndDefaults)
         const char* name;
         KnobDouble::RangeWidgetRoleEnum role;
         const char* enable;
+        const char* smooth;
+        const char* smoothLabel;
         double values[KnobDouble::eRangeWidgetDimensionCount];
     };
     const Range ranges[] = {
-        { kHSVKeyerParamHueRange, KnobDouble::eRangeWidgetRoleHue, kHSVKeyerParamUseHue, { 0.4, 0.085, 0.035, 0.035, 0.085 } },
-        { kHSVKeyerParamSaturationRange, KnobDouble::eRangeWidgetRoleSaturation, kHSVKeyerParamUseSaturation, { 0.2, 0.18, 0.14, 0.2, 0.2 } },
-        { kHSVKeyerParamLumaRange, KnobDouble::eRangeWidgetRoleLuma, kHSVKeyerParamUseLuma, { 0.5, 0.5, 0.45, 0.5, 1.5 } },
+        { kHSVKeyerParamHueRange, KnobDouble::eRangeWidgetRoleHue, kHSVKeyerParamUseHue, kHSVKeyerParamHueSmooth, "Hue Smooth", { 0.05, 0.035, 0.4, 0.035, 0.05 } },
+        { kHSVKeyerParamSaturationRange, KnobDouble::eRangeWidgetRoleSaturation, kHSVKeyerParamUseSaturation, kHSVKeyerParamSaturationSmooth, "Saturation Smooth", { 0.04, 0.14, 0.2, 0.2, 0. } },
+        { kHSVKeyerParamLumaRange, KnobDouble::eRangeWidgetRoleLuma, kHSVKeyerParamUseLuma, kHSVKeyerParamLumaSmooth, "Luma Smooth", { 0.05, 0.45, 0.5, 0.5, 1. } },
     };
-    const char* const dimensionNames[] = { "Centre", "Outer Low", "Inner Low", "Inner High", "Outer High" };
+    const char* const dimensionNames[] = { "Outer Low", "Inner Low", "Centre", "Inner High", "Outer High" };
     KnobColorPtr source = std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(kHSVKeyerParamSourceColor));
     KnobChoicePtr model = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kHSVKeyerParamColorModel));
     ASSERT_TRUE(bool(source) && bool(model));
     EXPECT_EQ(3, source->getDimension());
-    EXPECT_EQ((int)ColorMath::eKeyModelOkLCh, model->getValue());
+    EXPECT_EQ((int)ColorMath::eKeyModelHSV, model->getValue());
     EXPECT_EQ(3, (int)model->getEntries_mt_safe().size());
     for (const Range& r : ranges) {
         KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(r.name));
@@ -203,6 +217,13 @@ TEST_F(NativeHSVKeyerTest, ControlsAndDefaults)
         EXPECT_EQ(source, knob->getRangeWidgetSourceColour()) << r.name;
         EXPECT_EQ(model, knob->getRangeWidgetModel()) << r.name;
         EXPECT_EQ(node->getKnobByName(r.enable), knob->getRangeWidgetEnable()) << r.name;
+        KnobBoolPtr smooth = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(r.smooth));
+        ASSERT_TRUE(bool(smooth)) << r.smooth;
+        EXPECT_EQ(smooth, knob->getRangeWidgetSmooth()) << r.name;
+        EXPECT_FALSE(smooth->getValue()) << r.smooth;
+        EXPECT_FALSE(smooth->isAnimationEnabled()) << r.smooth;
+        EXPECT_TRUE(smooth->getIsPersistent()) << r.smooth;
+        EXPECT_EQ(std::string(r.smoothLabel), smooth->getLabel()) << r.smooth;
         for (int i = 0; i < KnobDouble::eRangeWidgetDimensionCount; ++i) {
             EXPECT_DOUBLE_EQ(r.values[i], knob->getValue(i)) << r.name << " " << i;
             EXPECT_EQ(std::string(dimensionNames[i]), knob->getDimensionName(i)) << r.name << " " << i;
@@ -221,6 +242,18 @@ TEST_F(NativeHSVKeyerTest, ControlsAndDefaults)
     ASSERT_TRUE(bool(output));
     EXPECT_EQ((int)HSVKeyerOp::eOutputModeAlpha, output->getValue());
     EXPECT_TRUE(bool(std::dynamic_pointer_cast<KnobButton>(node->getKnobByName(kHSVKeyerParamRecentre))));
+
+    HSVKeyer* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    const HSVKeyerOp::Params params = effect->bakeHSVKeyer(kTime, ViewIdx(0));
+    EXPECT_EQ(ColorMath::eKeyModelHSV, params.model);
+    EXPECT_FALSE(params.smoothHue || params.smoothSat || params.smoothLuma);
+    // Outer high 0 is a hard edge at 0.4.
+    EXPECT_FLOAT_EQ(0.02f, params.sat[0]);
+    EXPECT_FLOAT_EQ(0.06f, params.sat[1]);
+    EXPECT_FLOAT_EQ(0.4f, params.sat[2]);
+    EXPECT_FLOAT_EQ(0.4f, params.sat[3]);
+    EXPECT_FLOAT_EQ(2.f, params.luma[3]);
 }
 
 // The Use toggles come before the ranges they switch, so the panel shows them above.
@@ -249,7 +282,7 @@ TEST_F(NativeHSVKeyerTest, TogglesPrecedeRanges)
     }
 }
 
-// Offsets below 0 count as 0 and an outer offset below its inner one counts as equal to it.
+// Offsets below 0 count as 0; the others are kept, an outer one smaller than its inner one too.
 TEST_F(NativeHSVKeyerTest, SanitizedOffsets)
 {
     double o[4] = { 0.1, -0.2, 0.3, 0.2 };
@@ -257,19 +290,27 @@ TEST_F(NativeHSVKeyerTest, SanitizedOffsets)
     EXPECT_DOUBLE_EQ(0.1, o[0]);
     EXPECT_DOUBLE_EQ(0., o[1]);
     EXPECT_DOUBLE_EQ(0.3, o[2]);
-    EXPECT_DOUBLE_EQ(0.3, o[3]);
+    EXPECT_DOUBLE_EQ(0.2, o[3]);
     double p[4] = { -1., -1., -1., -1. };
     KnobDouble::sanitizeRangeOffsets(p);
     for (int i = 0; i < 4; ++i) {
         EXPECT_DOUBLE_EQ(0., p[i]) << i;
     }
 
-    // The knob keys with the same reading: inner high 0.5 past outer high 0.1 is a hard edge.
+    const double values[KnobDouble::eRangeWidgetDimensionCount] = { -0.1, 0.2, 9., 0.3, 0.4 };
+    double offsets[4];
+    KnobDouble::rangeOffsetsOf(values, offsets);
+    EXPECT_DOUBLE_EQ(0., offsets[0]);
+    EXPECT_DOUBLE_EQ(0.2, offsets[1]);
+    EXPECT_DOUBLE_EQ(0.3, offsets[2]);
+    EXPECT_DOUBLE_EQ(0.4, offsets[3]);
+
+    // The knob keys with the same reading: outer offsets of -0.2 and 0 are hard edges.
     NodePtr node = makeNode(NodePtr());
     ASSERT_TRUE(bool(node));
     useHsv(node);
     openAll(node);
-    setRange(node, kHSVKeyerParamLumaRange, 1.5, 0.2, 0.5, 0.5, 0.1);
+    setRange(node, kHSVKeyerParamLumaRange, -0.2, 0.5, 1.5, 0.5, 0.);
     HSVKeyer* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
     const HSVKeyerOp::Params params = effect->bakeHSVKeyer(kTime, ViewIdx(0));
@@ -290,7 +331,7 @@ TEST_F(NativeHSVKeyerTest, TrapezoidEdges)
     useHsv(node);
     openAll(node);
     // 0.2, 0.3, 0.4, 0.6.
-    setRange(node, kHSVKeyerParamHueRange, 0.35, 0.15, 0.05, 0.05, 0.25);
+    setRange(node, kHSVKeyerParamHueRange, 0.1, 0.05, 0.35, 0.05, 0.2);
 
     EXPECT_EQ(0.f, keyOf(node, 0.1f, 1.f));
     // The edges themselves are a rounding away from either side.
@@ -303,7 +344,7 @@ TEST_F(NativeHSVKeyerTest, TrapezoidEdges)
 
     // The saturation trapezoid alone.
     openAll(node);
-    setRange(node, kHSVKeyerParamSaturationRange, 0.5, 0.3, 0.1, 0.1, 0.3);
+    setRange(node, kHSVKeyerParamSaturationRange, 0.2, 0.1, 0.5, 0.1, 0.2);
     EXPECT_EQ(0.f, keyOf(node, 0.5f, 0.1f));
     EXPECT_NEAR(0.5f, keyOf(node, 0.5f, 0.3f), kTolerance);
     EXPECT_EQ(1.f, keyOf(node, 0.5f, 0.5f));
@@ -312,14 +353,14 @@ TEST_F(NativeHSVKeyerTest, TrapezoidEdges)
 
     // The luma (value) trapezoid alone, past 1 for HDR.
     openAll(node);
-    setRange(node, kHSVKeyerParamLumaRange, 1.5, 1., 0.5, 0.5, 2.5);
+    setRange(node, kHSVKeyerParamLumaRange, 0.5, 0.5, 1.5, 0.5, 2.);
     EXPECT_EQ(0.f, keyOf(node, 0.5f, 0.5f, 0.4f));
     EXPECT_NEAR(0.5f, keyOf(node, 0.5f, 0.5f, 0.75f), kTolerance);
     EXPECT_EQ(1.f, keyOf(node, 0.5f, 0.5f, 1.5f));
     EXPECT_NEAR(0.5f, keyOf(node, 0.5f, 0.5f, 3.f), kTolerance);
 
     // The centre need not be mid-plateau: 0.5, 1, 2, 4 around a centre of 1.
-    setRange(node, kHSVKeyerParamLumaRange, 1., 0.5, 0., 1., 3.);
+    setRange(node, kHSVKeyerParamLumaRange, 0.5, 0., 1., 1., 2.);
     EXPECT_EQ(1.f, keyOf(node, 0.5f, 0.5f, 1.f));
     EXPECT_NEAR(0.5f, keyOf(node, 0.5f, 0.5f, 0.75f), kTolerance);
     EXPECT_NEAR(0.5f, keyOf(node, 0.5f, 0.5f, 3.f), kTolerance);
@@ -334,7 +375,7 @@ TEST_F(NativeHSVKeyerTest, HueWrapsAcrossRed)
     // Around red: 0.9, 0.95, 0.05, 0.1.
     const double centres[] = { 0., 1., -2., 3. };
     for (double centre : centres) {
-        setRange(node, kHSVKeyerParamHueRange, centre, 0.1, 0.05, 0.05, 0.1);
+        setRange(node, kHSVKeyerParamHueRange, 0.05, 0.05, centre, 0.05, 0.05);
         EXPECT_EQ(1.f, keyOf(node, 0.f, 1.f)) << centre;
         EXPECT_EQ(1.f, keyOf(node, 0.97f, 1.f)) << centre;
         EXPECT_EQ(1.f, keyOf(node, 0.03f, 1.f)) << centre;
@@ -344,7 +385,7 @@ TEST_F(NativeHSVKeyerTest, HueWrapsAcrossRed)
     }
 }
 
-// The bake wraps the hue centre and measures the ramps from the outer low point, each offset
+// The bake wraps the hue centre and measures the trapezoid from the outer low point, each offset
 // counting up to a turn.
 TEST_F(NativeHSVKeyerTest, HueBakeAroundTheCentre)
 {
@@ -355,7 +396,7 @@ TEST_F(NativeHSVKeyerTest, HueBakeAroundTheCentre)
     HSVKeyer* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
-    setRange(node, kHSVKeyerParamHueRange, 1.05, 0.1, 0.05, 0.02, 0.2);
+    setRange(node, kHSVKeyerParamHueRange, 0.05, 0.05, 1.05, 0.02, 0.18);
     HSVKeyerOp::Params params = effect->bakeHSVKeyer(kTime, ViewIdx(0));
     EXPECT_NEAR(0.95, params.hueLow, 1e-6);
     EXPECT_NEAR(0.05, params.hueRise, 1e-6);
@@ -363,21 +404,111 @@ TEST_F(NativeHSVKeyerTest, HueBakeAroundTheCentre)
     EXPECT_NEAR(0.3, params.hueFall, 1e-6);
 
     // Offsets past a turn count as one: every hue keys.
-    setRange(node, kHSVKeyerParamHueRange, 0.5, 3., 2., 2., 3.);
+    setRange(node, kHSVKeyerParamHueRange, 3., 2., 0.5, 2., 3.);
     params = effect->bakeHSVKeyer(kTime, ViewIdx(0));
     EXPECT_NEAR(0.5, params.hueLow, 1e-6);
-    EXPECT_NEAR(0., params.hueRise, 1e-6);
-    EXPECT_NEAR(2., params.hueFull, 1e-6);
-    EXPECT_NEAR(2., params.hueFall, 1e-6);
+    EXPECT_NEAR(1., params.hueRise, 1e-6);
+    EXPECT_NEAR(3., params.hueFull, 1e-6);
+    EXPECT_NEAR(4., params.hueFall, 1e-6);
     const float hues[] = { 0.f, 0.25f, 0.5f, 0.75f, 0.99f };
     for (float h : hues) {
         EXPECT_EQ(1.f, keyOf(node, h, 1.f)) << h;
     }
 
     // An outer offset of a whole turn ramps over every hue the plateau leaves.
-    setRange(node, kHSVKeyerParamHueRange, 0.5, 1., 0., 0., 0.);
+    setRange(node, kHSVKeyerParamHueRange, 1., 0., 0.5, 0., 0.);
     EXPECT_NEAR(0.5f, keyOf(node, 0.f, 1.f), 1e-5f);
     EXPECT_NEAR(0.75f, keyOf(node, 0.25f, 1.f), 1e-5f);
+}
+
+// The outer points lie beyond the inner ones by their own offsets; an outer offset of 0 cuts hard.
+TEST_F(NativeHSVKeyerTest, OuterOffsetsFromTheInnerEdges)
+{
+    NodePtr node = makeNode(NodePtr());
+    ASSERT_TRUE(bool(node));
+    useHsv(node);
+    openAll(node);
+    HSVKeyer* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+
+    // 0.3, 0.4, 0.6, 0.9.
+    setRange(node, kHSVKeyerParamSaturationRange, 0.1, 0.1, 0.5, 0.1, 0.3);
+    HSVKeyerOp::Params params = effect->bakeHSVKeyer(kTime, ViewIdx(0));
+    EXPECT_FLOAT_EQ(0.3f, params.sat[0]);
+    EXPECT_FLOAT_EQ(0.4f, params.sat[1]);
+    EXPECT_FLOAT_EQ(0.6f, params.sat[2]);
+    EXPECT_FLOAT_EQ(0.9f, params.sat[3]);
+    EXPECT_NEAR(0.5f, keyOf(node, 0.5f, 0.35f), 4 * kTolerance);
+    EXPECT_NEAR(0.5f, keyOf(node, 0.5f, 0.75f), 4 * kTolerance);
+
+    // Hard cuts at 0.3 and 0.7.
+    openAll(node);
+    setRange(node, kHSVKeyerParamLumaRange, 0., 0.2, 0.5, 0.2, 0.);
+    EXPECT_EQ(0.f, keyOf(node, 0.5f, 0.5f, 0.29f));
+    EXPECT_EQ(1.f, keyOf(node, 0.5f, 0.5f, 0.31f));
+    EXPECT_EQ(1.f, keyOf(node, 0.5f, 0.5f, 0.69f));
+    EXPECT_EQ(0.f, keyOf(node, 0.5f, 0.5f, 0.71f));
+
+    // Hue too: 0.3 and 0.4.
+    openAll(node);
+    setRange(node, kHSVKeyerParamHueRange, 0., 0.05, 0.35, 0.05, 0.);
+    params = effect->bakeHSVKeyer(kTime, ViewIdx(0));
+    EXPECT_NEAR(0.3, params.hueLow, 1e-6);
+    EXPECT_NEAR(0., params.hueRise, 1e-6);
+    EXPECT_NEAR(0.1, params.hueFull, 1e-6);
+    EXPECT_NEAR(0.1, params.hueFall, 1e-6);
+    EXPECT_EQ(0.f, keyOf(node, 0.29f, 1.f));
+    EXPECT_EQ(1.f, keyOf(node, 0.31f, 1.f));
+    EXPECT_EQ(1.f, keyOf(node, 0.39f, 1.f));
+    EXPECT_EQ(0.f, keyOf(node, 0.41f, 1.f));
+}
+
+// A range's smooth toggle eases its falloffs with 3t^2 - 2t^3: a quarter of the way along a falloff
+// keys 0.15625 instead of 0.25. The plateau and outside are unchanged.
+TEST_F(NativeHSVKeyerTest, SmoothFalloffs)
+{
+    NodePtr node = makeNode(NodePtr());
+    ASSERT_TRUE(bool(node));
+    useHsv(node);
+    openAll(node);
+    HSVKeyer* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    EXPECT_FLOAT_EQ(0.15625f, HueCurves::smoothStep(0.25f));
+    EXPECT_EQ(0.f, HueCurves::smoothStep(0.f));
+    EXPECT_EQ(1.f, HueCurves::smoothStep(1.f));
+    EXPECT_FLOAT_EQ(0.5f, HueCurves::smoothStep(0.5f));
+
+    // Luma 0, 0.4, 0.6, 1.
+    setRange(node, kHSVKeyerParamLumaRange, 0.4, 0.1, 0.5, 0.1, 0.4);
+    EXPECT_NEAR(0.25f, keyOf(node, 0.5f, 0.5f, 0.1f), kTolerance);
+    EXPECT_NEAR(0.25f, keyOf(node, 0.5f, 0.5f, 0.9f), kTolerance);
+    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamLumaSmooth, { 1. }));
+    EXPECT_TRUE(effect->bakeHSVKeyer(kTime, ViewIdx(0)).smoothLuma);
+    EXPECT_NEAR(0.15625f, keyOf(node, 0.5f, 0.5f, 0.1f), kTolerance);
+    EXPECT_NEAR(0.15625f, keyOf(node, 0.5f, 0.5f, 0.9f), kTolerance);
+    EXPECT_EQ(1.f, keyOf(node, 0.5f, 0.5f, 0.5f));
+    EXPECT_EQ(0.f, keyOf(node, 0.5f, 0.5f, 1.1f));
+    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamLumaSmooth, { 0. }));
+
+    // Saturation 0, 0.2, 0.4, 0.6.
+    openAll(node);
+    setRange(node, kHSVKeyerParamSaturationRange, 0.2, 0.1, 0.3, 0.1, 0.2);
+    EXPECT_NEAR(0.25f, keyOf(node, 0.5f, 0.05f), 4 * kTolerance);
+    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSaturationSmooth, { 1. }));
+    EXPECT_NEAR(0.15625f, keyOf(node, 0.5f, 0.05f), 4 * kTolerance);
+    EXPECT_NEAR(0.15625f, keyOf(node, 0.5f, 0.55f), 4 * kTolerance);
+    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSaturationSmooth, { 0. }));
+
+    // Hue 0.9, 0.95, 0.05, 0.25 across red.
+    openAll(node);
+    setRange(node, kHSVKeyerParamHueRange, 0.05, 0.05, 0., 0.05, 0.2);
+    EXPECT_NEAR(0.25f, keyOf(node, 0.9125f, 1.f), 1e-5f);
+    EXPECT_NEAR(0.25f, keyOf(node, 0.2f, 1.f), 1e-5f);
+    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamHueSmooth, { 1. }));
+    EXPECT_NEAR(0.15625f, keyOf(node, 0.9125f, 1.f), 1e-5f);
+    EXPECT_NEAR(0.15625f, keyOf(node, 0.2f, 1.f), 1e-5f);
+    EXPECT_EQ(1.f, keyOf(node, 0.f, 1.f));
+    EXPECT_EQ(0.f, keyOf(node, 0.5f, 1.f));
 }
 
 // The hue term fades with chroma, so greys never match a hue range even one covering the circle.
@@ -426,9 +557,9 @@ TEST_F(NativeHSVKeyerTest, KeyIsTheProductOfEnabledTermsAndInverts)
     ASSERT_TRUE(bool(node));
     useHsv(node);
     openAll(node);
-    setRange(node, kHSVKeyerParamHueRange, 0.35, 0.15, 0.05, 0.05, 0.25);
-    setRange(node, kHSVKeyerParamSaturationRange, 0.5, 0.3, 0.1, 0.1, 0.3);
-    setRange(node, kHSVKeyerParamLumaRange, 0.5, 0.3, 0.1, 0.1, 0.3);
+    setRange(node, kHSVKeyerParamHueRange, 0.1, 0.05, 0.35, 0.05, 0.2);
+    setRange(node, kHSVKeyerParamSaturationRange, 0.2, 0.1, 0.5, 0.1, 0.2);
+    setRange(node, kHSVKeyerParamLumaRange, 0.2, 0.1, 0.5, 0.1, 0.2);
 
     // Half up each ramp.
     EXPECT_NEAR(0.125f, keyOf(node, 0.25f, 0.3f, 0.3f), 4 * kTolerance);
@@ -456,11 +587,11 @@ TEST_F(NativeHSVKeyerTest, HslComponents)
     // (0.75, 0.25, 0.25): L = 0.5, S = 0.5 / 1 = 0.5; (0.9, 0.7, 0.7): L = 0.8, S = 0.2 / 0.4 = 0.5.
     const float lower[3] = { 0.75f, 0.25f, 0.25f };
     const float upper[3] = { 0.9f, 0.7f, 0.7f };
-    setRange(node, kHSVKeyerParamSaturationRange, 0.6, 0.2, 0., 0., 0.2);
+    setRange(node, kHSVKeyerParamSaturationRange, 0.2, 0., 0.6, 0., 0.2);
     EXPECT_NEAR(0.5f, keyOfRgb(node, lower), 1e-5f);
     EXPECT_NEAR(0.5f, keyOfRgb(node, upper), 1e-5f);
-    setRange(node, kHSVKeyerParamSaturationRange, 0., 10., 10., 10., 10.);
-    setRange(node, kHSVKeyerParamLumaRange, 0.6, 0.2, 0., 0., 0.2);
+    setRange(node, kHSVKeyerParamSaturationRange, 0., 10., 0., 10., 0.);
+    setRange(node, kHSVKeyerParamLumaRange, 0.2, 0., 0.6, 0., 0.2);
     EXPECT_NEAR(0.5f, keyOfRgb(node, lower), 1e-5f);
     EXPECT_NEAR(0.f, keyOfRgb(node, upper), 1e-5f);
 }
@@ -504,24 +635,25 @@ TEST_F(NativeHSVKeyerTest, SourceColourRecentresKeepingOffsets)
     NodePtr node = makeNode(NodePtr());
     ASSERT_TRUE(bool(node));
     useHsv(node);
-    const double hueOffsets[4] = { 0.085, 0.035, 0.035, 0.085 };
-    const double satOffsets[4] = { 0.3, 0.1, 0.1, 0.2 };
-    const double lumaOffsets[4] = { 0.2, 0.1, 0.1, 0.3 };
-    setRange(node, kHSVKeyerParamHueRange, 0.335, hueOffsets[0], hueOffsets[1], hueOffsets[2], hueOffsets[3]);
-    setRange(node, kHSVKeyerParamSaturationRange, 0.4, satOffsets[0], satOffsets[1], satOffsets[2], satOffsets[3]);
-    setRange(node, kHSVKeyerParamLumaRange, 0.2, lumaOffsets[0], lumaOffsets[1], lumaOffsets[2], lumaOffsets[3]);
+    // Outer low, inner low, inner high, outer high.
+    const double hueOffsets[4] = { 0.05, 0.035, 0.035, 0.05 };
+    const double satOffsets[4] = { 0.2, 0.1, 0.1, 0.1 };
+    const double lumaOffsets[4] = { 0.1, 0.1, 0.1, 0.2 };
+    setRange(node, kHSVKeyerParamHueRange, hueOffsets[0], hueOffsets[1], 0.335, hueOffsets[2], hueOffsets[3]);
+    setRange(node, kHSVKeyerParamSaturationRange, satOffsets[0], satOffsets[1], 0.4, satOffsets[2], satOffsets[3]);
+    setRange(node, kHSVKeyerParamLumaRange, lumaOffsets[0], lumaOffsets[1], 0.2, lumaOffsets[2], lumaOffsets[3]);
     auto expectOffsets = [&](const char* name, const double* offsets) {
         for (int i = 0; i < 4; ++i) {
-            EXPECT_DOUBLE_EQ(offsets[i], rangeValue(node, name, KnobDouble::eRangeWidgetDimensionOuterLow + i)) << name << " " << i;
+            EXPECT_DOUBLE_EQ(offsets[i], rangeValue(node, name, kOffsetDims[i])) << name << " " << i;
         }
     };
     float rgb[3];
     hsv(0.6f, 0.8f, 0.5f, rgb);
     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSourceColor, { rgb[0], rgb[1], rgb[2] }));
 
-    EXPECT_NEAR(0.6, rangeValue(node, kHSVKeyerParamHueRange, 0), 1e-5);
-    EXPECT_NEAR(0.8, rangeValue(node, kHSVKeyerParamSaturationRange, 0), 1e-5);
-    EXPECT_NEAR(0.5, rangeValue(node, kHSVKeyerParamLumaRange, 0), 1e-5);
+    EXPECT_NEAR(0.6, centreOf(node, kHSVKeyerParamHueRange), 1e-5);
+    EXPECT_NEAR(0.8, centreOf(node, kHSVKeyerParamSaturationRange), 1e-5);
+    EXPECT_NEAR(0.5, centreOf(node, kHSVKeyerParamLumaRange), 1e-5);
     expectOffsets(kHSVKeyerParamHueRange, hueOffsets);
     expectOffsets(kHSVKeyerParamSaturationRange, satOffsets);
     expectOffsets(kHSVKeyerParamLumaRange, lumaOffsets);
@@ -531,18 +663,18 @@ TEST_F(NativeHSVKeyerTest, SourceColourRecentresKeepingOffsets)
     // A centre near red keeps its offsets, so the range crosses red.
     hsv(0.01f, 0.8f, 0.5f, rgb);
     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSourceColor, { rgb[0], rgb[1], rgb[2] }));
-    EXPECT_NEAR(0.01, rangeValue(node, kHSVKeyerParamHueRange, 0), 1e-5);
+    EXPECT_NEAR(0.01, centreOf(node, kHSVKeyerParamHueRange), 1e-5);
     expectOffsets(kHSVKeyerParamHueRange, hueOffsets);
     EXPECT_EQ(1.f, keyOfRgb(node, rgb));
     hsv(0.98f, 0.8f, 0.5f, rgb);
     EXPECT_EQ(1.f, keyOfRgb(node, rgb));
 
     // A grey has no hue: the hue centre stays, the others still move.
-    const double before = rangeValue(node, kHSVKeyerParamHueRange, 0);
+    const double before = centreOf(node, kHSVKeyerParamHueRange);
     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSourceColor, { 0.25, 0.25, 0.25 }));
-    EXPECT_DOUBLE_EQ(before, rangeValue(node, kHSVKeyerParamHueRange, 0));
-    EXPECT_NEAR(0., rangeValue(node, kHSVKeyerParamSaturationRange, 0), 1e-5);
-    EXPECT_NEAR(0.25, rangeValue(node, kHSVKeyerParamLumaRange, 0), 1e-5);
+    EXPECT_DOUBLE_EQ(before, centreOf(node, kHSVKeyerParamHueRange));
+    EXPECT_NEAR(0., centreOf(node, kHSVKeyerParamSaturationRange), 1e-5);
+    EXPECT_NEAR(0.25, centreOf(node, kHSVKeyerParamLumaRange), 1e-5);
     expectOffsets(kHSVKeyerParamSaturationRange, satOffsets);
     expectOffsets(kHSVKeyerParamLumaRange, lumaOffsets);
 }
@@ -556,24 +688,24 @@ TEST_F(NativeHSVKeyerTest, ModelChangeAndRecentreButtonRecentre)
     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSourceColor, { 0.9, 0.7, 0.7 }));
     ASSERT_TRUE(setKnobValue(node, kHSVKeyerParamColorModel, "hsl"));
     // HSL: S = 0.5, L = 0.8.
-    EXPECT_NEAR(0.5, rangeValue(node, kHSVKeyerParamSaturationRange, 0), 1e-5);
-    EXPECT_NEAR(0.8, rangeValue(node, kHSVKeyerParamLumaRange, 0), 1e-5);
+    EXPECT_NEAR(0.5, centreOf(node, kHSVKeyerParamSaturationRange), 1e-5);
+    EXPECT_NEAR(0.8, centreOf(node, kHSVKeyerParamLumaRange), 1e-5);
     const float src[3] = { 0.9f, 0.7f, 0.7f };
     EXPECT_EQ(1.f, keyOfRgb(node, src));
 
     ASSERT_TRUE(setKnobValue(node, kHSVKeyerParamColorModel, "oklch"));
     EXPECT_EQ(1.f, keyOfRgb(node, src));
 
-    setRange(node, kHSVKeyerParamLumaRange, 3.15, 0.15, 0.05, 0.05, 0.15);
+    setRange(node, kHSVKeyerParamLumaRange, 0.1, 0.05, 3.15, 0.05, 0.1);
     EXPECT_EQ(0.f, keyOfRgb(node, src));
     HSVKeyer* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
     effect->recentreOnSource(kTime);
-    const double offsets[4] = { 0.15, 0.05, 0.05, 0.15 };
+    const double offsets[4] = { 0.1, 0.05, 0.05, 0.1 };
     for (int i = 0; i < 4; ++i) {
-        EXPECT_DOUBLE_EQ(offsets[i], rangeValue(node, kHSVKeyerParamLumaRange, KnobDouble::eRangeWidgetDimensionOuterLow + i)) << i;
+        EXPECT_DOUBLE_EQ(offsets[i], rangeValue(node, kHSVKeyerParamLumaRange, kOffsetDims[i])) << i;
     }
-    EXPECT_LT(rangeValue(node, kHSVKeyerParamLumaRange, 0), 1.);
+    EXPECT_LT(centreOf(node, kHSVKeyerParamLumaRange), 1.);
     EXPECT_EQ(1.f, keyOfRgb(node, src));
 }
 
@@ -586,9 +718,14 @@ TEST_F(NativeHSVKeyerTest, RenderOutputModes)
         NodePtr node = makeNode(source);
         ASSERT_TRUE(bool(source) && bool(node));
         ASSERT_TRUE(setKnobValue(node, kHSVKeyerParamOutputMode, modes[mode]));
-        setRange(node, kHSVKeyerParamHueRange, 0.4, 0.3, 0.1, 0.1, 0.3);
-        setRange(node, kHSVKeyerParamSaturationRange, 0.6, 0.6, 0.4, 0.4, 1.4);
-        setRange(node, kHSVKeyerParamLumaRange, 0.5, 1.5, 0.5, 0.5, 1.5);
+        setRange(node, kHSVKeyerParamHueRange, 0.2, 0.1, 0.4, 0.1, 0.2);
+        setRange(node, kHSVKeyerParamSaturationRange, 0.2, 0.4, 0.6, 0.4, 1.);
+        setRange(node, kHSVKeyerParamLumaRange, 1., 0.5, 0.5, 0.5, 1.);
+        // The matte renders with smoothed falloffs.
+        if (mode == 2) {
+            ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamHueSmooth, { 1. }));
+            ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSaturationSmooth, { 1. }));
+        }
 
         const RectI window = paritySourceWindow(source, kTime, 0);
         std::list<ImageLayerDesc> layers(1, ImageLayerDesc::mapNCompsToColorLayer(4));

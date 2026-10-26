@@ -1,9 +1,12 @@
-"""The native HSVKeyer panel draws its three ranges (a centre and four offsets each) as trapezoid
-strips above their spinboxes, each with Recentre and Reset Zoom buttons, below the Use toggles.
-Setting the source colour sets each range's centre to the colour's component and keeps its offsets;
-switching the model does the same in the new model. A range's row greys out while its Use toggle is
-off, and the strips grow with the panel. Screenshots go to $NATRON_GUI_TEST_OUT as
-hsvkeyer_oklch.png, hsvkeyer_hsv.png, hsvkeyer_hue_off.png and hsvkeyer_wide.png.
+"""The native HSVKeyer panel draws its three ranges (outer low, inner low, centre, inner high and
+outer high fields, in that order) as trapezoid strips above their spinboxes, each with Smooth,
+Recentre and Reset Zoom buttons, below the Use toggles. The model defaults to HSV. The S button
+toggles the range's smooth knob and the strip redraws its falloffs as curves. Reset Zoom shows 0 to
+1 for saturation and luma, zooming out to take in a point outside. Setting the source colour sets
+each range's centre to the colour's component and keeps its offsets; switching the model does the
+same in the new model. A range's row, S button included, greys out while its Use toggle is off, and
+the strips grow with the panel. Screenshots go to $NATRON_GUI_TEST_OUT as hsvkeyer_hsv.png (the
+defaults), hsvkeyer_oklch.png, hsvkeyer_smooth.png, hsvkeyer_hue_off.png and hsvkeyer_wide.png.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m122_hsvkeyer.py
 """
@@ -18,14 +21,21 @@ PLUGIN_ID = "HSVKeyer"
 RANGE_KNOBS = ("hueRange", "saturationRange", "lumaRange")
 TOGGLE_LABELS = ("Use Hue", "Use Saturation", "Use Luma")
 STRIP_PREFIX = "TrapezoidStrip_"
-BUTTON_PREFIXES = ("TrapezoidRecentre_", "TrapezoidResetZoom_")
+SMOOTH_KNOBS = ("hueSmooth", "saturationSmooth", "lumaSmooth")
+SMOOTH_PREFIX = "TrapezoidSmooth_"
+RECENTRE_PREFIX = "TrapezoidRecentre_"
+RESET_ZOOM_PREFIX = "TrapezoidResetZoom_"
+BUTTON_PREFIXES = (SMOOTH_PREFIX, RECENTRE_PREFIX, RESET_ZOOM_PREFIX)
+DIMENSION_NAMES = ("Outer Low", "Inner Low", "Centre", "Inner High", "Outer High")
+CENTRE_DIM = 2
+OFFSET_DIMS = (0, 1, 3, 4)
 # Orange: hue 30 degrees in HSV and HSL, full saturation, V 1 and L 0.5.
 SOURCE = (1.0, 0.5, 0.0)
 SOURCE_HUE = 30.0 / 360.0
 
 try:
-    from PySide6.QtCore import QMetaObject, QRect, Qt
-    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtCore import QMetaObject, QPoint, QPointF, QRect, Qt
+    from PySide6.QtGui import QGuiApplication, QWheelEvent
     from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QScrollArea, QSplitter, QWidget
 
     import guitest as gt
@@ -110,10 +120,34 @@ try:
             report("NOTE could not save screenshot " + path)
 
     def centre(param):
-        return param.getValue(0)
+        return param.getValue(CENTRE_DIM)
 
     def offsets(param):
-        return [param.getValue(i) for i in range(1, 5)]
+        return [param.getValue(i) for i in OFFSET_DIMS]
+
+    def set_range(param, values):
+        for i, v in enumerate(values):
+            param.setValue(v, i)
+
+    def dimension_rows(panel):
+        """The dimension labels' texts, left to right, for each row of them, top to bottom."""
+        rows = {}
+        for w in panel.findChildren(QLabel):
+            if w.isVisible() and w.text().strip() in DIMENSION_NAMES:
+                pos = w.mapToGlobal(w.rect().topLeft())
+                rows.setdefault(pos.y() // 4, []).append((pos.x(), w.text().strip()))
+        return [[t for _, t in sorted(row)] for _, row in sorted(rows.items())]
+
+    def domain(strip):
+        strip.update()
+        strip.repaint()
+        return strip.property("domainLow"), strip.property("domainHigh")
+
+    def zoom_in(strip):
+        pos = QPointF(strip.width() * 0.5, strip.height() * 0.5)
+        glob = QPointF(strip.mapToGlobal(pos.toPoint()))
+        QApplication.sendEvent(strip, QWheelEvent(pos, glob, QPoint(0, 0), QPoint(0, 480), Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False))
+        QApplication.processEvents()
 
     def near(a, b, tol=1e-4):
         return abs(a - b) < tol
@@ -145,8 +179,11 @@ try:
         sat = node.getParam("saturationRange")
         luma = node.getParam("lumaRange")
         use_hue = node.getParam("useHue")
-        require(None not in (source, model, hue, sat, luma, use_hue), "HSVKeyer has its source, model, range and toggle knobs")
-        check(model.getValue() == 2, "the model defaults to OkLCh")
+        smooth = [node.getParam(k) for k in SMOOTH_KNOBS]
+        require(None not in (source, model, hue, sat, luma, use_hue) and None not in smooth, "HSVKeyer has its source, model, range, toggle and smooth knobs")
+        check(model.getValue() == 0, "the model defaults to HSV")
+        check(near(centre(hue), 0.4) and near(hue.getValue(0), 0.05) and near(hue.getValue(4), 0.05), "the hue range's fields are outer low, inner low, centre, inner high, outer high")
+        check(not any(k.getValue() for k in smooth), "the smooth knobs default off")
 
         ok = yield ("until", lambda: all_strips_shown(panel_of(node)), POLL_TIMEOUT_S)
         check(ok, "the panel shows a trapezoid strip for each of %s" % ", ".join(RANGE_KNOBS))
@@ -156,8 +193,16 @@ try:
             strip = strip_of(panel, k)
             if strip is not None:
                 check(strip.width() > 100 and strip.height() > 10, "the %s strip has a usable size (%dx%d)" % (k, strip.width(), strip.height()))
-            for prefix in BUTTON_PREFIXES:
-                check(button_of(panel, prefix, k) is not None, "the %s row has its %s button" % (k, prefix.rstrip("_")))
+            buttons = [button_of(panel, prefix, k) for prefix in BUTTON_PREFIXES]
+            for prefix, button in zip(BUTTON_PREFIXES, buttons):
+                check(button is not None, "the %s row has its %s button" % (k, prefix.rstrip("_")))
+            if None not in buttons:
+                xs = [b.mapToGlobal(b.rect().topLeft()).x() for b in buttons]
+                check(xs == sorted(xs), "the %s row's buttons run Smooth, Recentre, Reset Zoom (x %s)" % (k, xs))
+                check(buttons[0].isCheckable() and not buttons[0].isChecked(), "the %s S button is checkable and starts unchecked" % k)
+
+        rows = dimension_rows(panel)
+        check(len(rows) == 3 and all(r == list(DIMENSION_NAMES) for r in rows), "each range's fields run %s (got %s)" % (", ".join(DIMENSION_NAMES), rows))
 
         strip_tops = [top_of(strip_of(panel, k)) for k in RANGE_KNOBS if strip_of(panel, k) is not None]
         for text in TOGGLE_LABELS:
@@ -166,10 +211,8 @@ try:
             if label is not None and strip_tops:
                 check(top_of(label) < min(strip_tops), "%s sits above the range strips (y %d < %d)" % (text, top_of(label), min(strip_tops)))
 
-        screen_crop("hsvkeyer_oklch", panel_of(node))
+        screen_crop("hsvkeyer_hsv", panel_of(node))
 
-        model.setValue(0)
-        yield ("sleep", 300)
         hue_offsets = offsets(hue)
         sat_offsets = offsets(sat)
         luma_offsets = offsets(luma)
@@ -181,7 +224,6 @@ try:
         check(near(centre(luma), 1.0), "HSV: the value centre is 1 (got %.4f)" % centre(luma))
         check(offsets(hue) == hue_offsets, "recentring keeps the hue offsets")
         check(offsets(sat) == sat_offsets and offsets(luma) == luma_offsets, "recentring keeps the saturation and luma offsets")
-        screen_crop("hsvkeyer_hsv", panel_of(node))
 
         model.setValue(1)
         yield ("sleep", 300)
@@ -193,6 +235,66 @@ try:
         yield ("sleep", 300)
         check(0.0 < centre(luma) < 1.0, "OkLCh: the lightness centre is inside 0..1 (got %.4f)" % centre(luma))
         check(0.0 < centre(sat) < 0.4, "OkLCh: the chroma centre is inside 0..0.4 (got %.4f)" % centre(sat))
+        screen_crop("hsvkeyer_oklch", panel_of(node))
+
+        # Reset Zoom: 0 to 1 with every point inside, wider with one outside.
+        set_range(sat, (0.1, 0.1, 0.5, 0.1, 0.1))
+        set_range(luma, (0.1, 0.1, 0.5, 0.1, 0.1))
+        yield ("sleep", 300)
+        panel = panel_of(node)
+        for k in ("saturationRange", "lumaRange"):
+            strip = strip_of(panel, k)
+            reset = button_of(panel, RESET_ZOOM_PREFIX, k)
+            if strip is None or reset is None:
+                check(False, "the %s strip and its Reset Zoom button are on screen" % k)
+                continue
+            check(domain(strip) == (0.0, 1.0), "%s: the initial view is 0..1 (got %s)" % (k, domain(strip)))
+            zoom_in(strip)
+            low, high = domain(strip)
+            check(high - low < 0.9, "%s: the wheel zooms in (%.3f..%.3f)" % (k, low, high))
+            reset.click()
+            QApplication.processEvents()
+            low, high = domain(strip)
+            check(near(low, 0.0) and near(high, 1.0), "%s: Reset Zoom shows 0..1 (got %.3f..%.3f)" % (k, low, high))
+        set_range(luma, (0.1, 0.1, 0.5, 0.1, 0.9))
+        yield ("sleep", 300)
+        panel = panel_of(node)
+        strip = strip_of(panel, "lumaRange")
+        reset = button_of(panel, RESET_ZOOM_PREFIX, "lumaRange")
+        if strip is not None and reset is not None:
+            zoom_in(strip)
+            reset.click()
+            QApplication.processEvents()
+            low, high = domain(strip)
+            check(near(low, 0.0) and 1.5 < high < 1.7, "luma: Reset Zoom takes in the outer high point at 1.5 with a margin (got %.3f..%.3f)" % (low, high))
+
+        # The S button toggles the smooth knob, and the strip redraws.
+        strip = strip_of(panel, "hueRange")
+        button = button_of(panel, SMOOTH_PREFIX, "hueRange")
+        if strip is not None and button is not None:
+            before_image = strip.grab().toImage()
+            button.click()
+            yield ("sleep", 300)
+            panel = panel_of(node)
+            strip = strip_of(panel, "hueRange")
+            button = button_of(panel, SMOOTH_PREFIX, "hueRange")
+            check(smooth[0].getValue(), "clicking the hue S button turns hueSmooth on")
+            check(button.isChecked(), "the hue S button shows checked")
+            check(strip.grab().toImage() != before_image, "the hue strip redraws with smoothed falloffs")
+            button.click()
+            yield ("sleep", 300)
+            check(not smooth[0].getValue(), "a second click turns hueSmooth off")
+        else:
+            check(False, "the hue strip and its S button are on screen")
+        for k in smooth:
+            k.setValue(True)
+        yield ("sleep", 300)
+        panel = panel_of(node)
+        check(all(button_of(panel, SMOOTH_PREFIX, k).isChecked() for k in RANGE_KNOBS), "the S buttons follow their knobs")
+        screen_crop("hsvkeyer_smooth", panel_of(node))
+        for k in smooth:
+            k.setValue(False)
+        yield ("sleep", 300)
 
         panel = panel_of(node)
         before = [hue.getValue(i) for i in range(5)]
@@ -205,7 +307,8 @@ try:
         check(hue_strip is not None, "the hue strip stays on screen with the hue term off")
         if hue_strip is not None:
             check(not hue_strip.isEnabled(), "the hue row greys out with the hue term off")
-            check(not button_of(panel, BUTTON_PREFIXES[0], "hueRange").isEnabled(), "the hue row's Recentre button greys out too")
+            check(not button_of(panel, RECENTRE_PREFIX, "hueRange").isEnabled(), "the hue row's Recentre button greys out too")
+            check(not button_of(panel, SMOOTH_PREFIX, "hueRange").isEnabled(), "the hue row's S button greys out too")
         check(strip_of(panel, "saturationRange").isEnabled(), "the saturation row stays enabled")
         screen_crop("hsvkeyer_hue_off", panel_of(node))
         use_hue.setValue(True)

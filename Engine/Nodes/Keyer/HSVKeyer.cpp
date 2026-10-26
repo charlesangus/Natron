@@ -63,6 +63,9 @@ const uint32_t kGpuFlagInvert = 1u;
 const uint32_t kGpuFlagUseHue = 2u;
 const uint32_t kGpuFlagUseSat = 4u;
 const uint32_t kGpuFlagUseLuma = 8u;
+const uint32_t kGpuFlagSmoothHue = 256u;
+const uint32_t kGpuFlagSmoothSat = 512u;
+const uint32_t kGpuFlagSmoothLuma = 1024u;
 const uint32_t kGpuModelShift = 4u;
 const uint32_t kGpuOutputShift = 6u;
 #endif
@@ -77,7 +80,7 @@ addRange(KnobHolder* holder,
 {
     KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, label, KnobDouble::eRangeWidgetDimensionCount);
     const char* const dimensionNames[KnobDouble::eRangeWidgetDimensionCount] = {
-        "Centre", "Outer Low", "Inner Low", "Inner High", "Outer High"
+        "Outer Low", "Inner Low", "Centre", "Inner High", "Outer High"
     };
 
     knob->setName(name);
@@ -96,16 +99,20 @@ addRange(KnobHolder* holder,
     return knob;
 }
 
-// A range knob's offsets at time, as they key (KnobDouble::sanitizeRangeOffsets()).
-void
-rangeOffsets(const KnobReader& reader,
-             const KnobDoubleWPtr& knob,
-             double* offsets)
+// A range knob's centre at time and its offsets as they key (KnobDouble::rangeOffsetsOf()).
+double
+rangeAt(const KnobReader& reader,
+        const KnobDoubleWPtr& knob,
+        double* offsets)
 {
-    for (int i = 0; i < 4; ++i) {
-        offsets[i] = reader.value(knob, KnobDouble::eRangeWidgetDimensionOuterLow + i);
+    double values[KnobDouble::eRangeWidgetDimensionCount];
+
+    for (int i = 0; i < KnobDouble::eRangeWidgetDimensionCount; ++i) {
+        values[i] = reader.value(knob, i);
     }
-    KnobDouble::sanitizeRangeOffsets(offsets);
+    KnobDouble::rangeOffsetsOf(values, offsets);
+
+    return values[KnobDouble::eRangeWidgetDimensionCentre];
 }
 
 // The outer low, inner low, inner high and outer high points of a linear range.
@@ -114,14 +121,15 @@ linearPoints(const KnobReader& reader,
              const KnobDoubleWPtr& knob,
              float* points)
 {
-    const double centre = reader.value(knob, KnobDouble::eRangeWidgetDimensionCentre);
     double o[4];
+    const double centre = rangeAt(reader, knob, o);
+    const double innerLow = centre - o[1];
+    const double innerHigh = centre + o[2];
 
-    rangeOffsets(reader, knob, o);
-    points[0] = (float)(centre - o[0]);
-    points[1] = (float)(centre - o[1]);
-    points[2] = (float)(centre + o[2]);
-    points[3] = (float)(centre + o[3]);
+    points[0] = (float)(innerLow - o[0]);
+    points[1] = (float)innerLow;
+    points[2] = (float)innerHigh;
+    points[3] = (float)(innerHigh + o[3]);
 }
 
 KnobBoolPtr
@@ -216,7 +224,7 @@ HSVKeyerOp::createKnobs(KnobHolder* knobHolder,
         options.push_back(ChoiceOption("hsl", "HSL", EffectInstance::tr("Hue, saturation and lightness, the mean of the largest and smallest of R, G and B.").toStdString()));
         options.push_back(ChoiceOption("oklch", "OkLCh", EffectInstance::tr("OkLab's hue, chroma (about 0 to 0.4) and lightness, from the working space adapted to D65: perceptually even steps.").toStdString()));
         knob->populateChoices(options);
-        knob->setDefaultValue((int)ColorMath::eKeyModelOkLCh);
+        knob->setDefaultValue((int)ColorMath::eKeyModelHSV);
         knob->setAnimationEnabled(false);
         knob->setAddNewLine(false);
         page->addKnob(knob);
@@ -237,12 +245,12 @@ HSVKeyerOp::createKnobs(KnobHolder* knobHolder,
                      EffectInstance::tr("Key by the saturation range.").toStdString(), true, false);
     useLuma = addBool(knobHolder, page, kHSVKeyerParamUseLuma, EffectInstance::tr("Use Luma").toStdString(),
                       EffectInstance::tr("Key by the luma range.").toStdString(), true, true);
-    // Centre, outer low, inner low, inner high, outer high. The defaults suit OkLCh, the default
-    // model, around the default source colour's green.
-    const double hueDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.4, 0.085, 0.035, 0.035, 0.085 };
-    const double satDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.2, 0.18, 0.14, 0.2, 0.2 };
-    const double lumaDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.5, 0.5, 0.45, 0.5, 1.5 };
-    const std::string offsetsHint = EffectInstance::tr("The key rises from 0 at the centre minus the outer low offset to 1 at the centre minus the inner low offset, stays 1 to the centre plus the inner high offset and falls to 0 at the centre plus the outer high offset. Offsets are never below 0, and an outer offset below its inner one counts as equal to it.").toStdString();
+    // Outer low, inner low, centre, inner high, outer high, around the default source colour's
+    // green.
+    const double hueDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.05, 0.035, 0.4, 0.035, 0.05 };
+    const double satDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.04, 0.14, 0.2, 0.2, 0. };
+    const double lumaDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.05, 0.45, 0.5, 0.5, 1. };
+    const std::string offsetsHint = EffectInstance::tr("The key is 1 from the centre minus the inner low offset to the centre plus the inner high offset, and falls to 0 over the outer low offset below that and over the outer high offset above it, so an outer offset of 0 is a hard edge. Offsets below 0 count as 0.").toStdString();
     KnobDoublePtr hue = addRange(knobHolder, page, kHSVKeyerParamHueRange, EffectInstance::tr("Hue Range").toStdString(),
                                  EffectInstance::tr("The hue range, in turns from red at 0, wrapping around its centre, so it may cross red. Each offset counts up to a whole turn. Hue counts for less as the chroma nears 0.").toStdString() + "\n" + offsetsHint,
                                  hueDefaults);
@@ -254,12 +262,27 @@ HSVKeyerOp::createKnobs(KnobHolder* knobHolder,
                                   lumaDefaults);
     KnobColorPtr src = sourceColor.lock();
     KnobChoicePtr model = colorModel.lock();
-    hue->setRangeWidget(KnobDouble::eRangeWidgetRoleHue, src, model, useHue.lock());
-    sat->setRangeWidget(KnobDouble::eRangeWidgetRoleSaturation, src, model, useSat.lock());
-    luma->setRangeWidget(KnobDouble::eRangeWidgetRoleLuma, src, model, useLuma.lock());
+    // The smooth toggles are shown as buttons on their range rows.
+    const std::string smoothHint = EffectInstance::tr("Ease the range's falloffs with a smoothstep, 3t^2 - 2t^3, instead of a straight ramp.").toStdString();
+    KnobBoolPtr smooth[3];
+    const char* const smoothNames[3] = { kHSVKeyerParamHueSmooth, kHSVKeyerParamSaturationSmooth, kHSVKeyerParamLumaSmooth };
+    const std::string smoothLabels[3] = {
+        EffectInstance::tr("Hue Smooth").toStdString(), EffectInstance::tr("Saturation Smooth").toStdString(), EffectInstance::tr("Luma Smooth").toStdString()
+    };
+    for (int i = 0; i < 3; ++i) {
+        smooth[i] = addBool(knobHolder, page, smoothNames[i], smoothLabels[i], smoothHint, false, true);
+        smooth[i]->setAnimationEnabled(false);
+        smooth[i]->setSecret(true);
+    }
+    hue->setRangeWidget(KnobDouble::eRangeWidgetRoleHue, src, model, useHue.lock(), smooth[0]);
+    sat->setRangeWidget(KnobDouble::eRangeWidgetRoleSaturation, src, model, useSat.lock(), smooth[1]);
+    luma->setRangeWidget(KnobDouble::eRangeWidgetRoleLuma, src, model, useLuma.lock(), smooth[2]);
     hueRange = hue;
     satRange = sat;
     lumaRange = luma;
+    hueSmooth = smooth[0];
+    satSmooth = smooth[1];
+    lumaSmooth = smooth[2];
     invert = addBool(knobHolder, page, kHSVKeyerParamInvert, EffectInstance::tr("Invert").toStdString(),
                      EffectInstance::tr("Output one minus the key.").toStdString(), false, true);
     {
@@ -289,19 +312,22 @@ HSVKeyerOp::bake(const KnobReader& reader) const
     p.useSat = reader.value(useSat);
     p.useLuma = reader.value(useLuma);
     p.invert = reader.value(invert);
+    p.smoothHue = reader.value(hueSmooth);
+    p.smoothSat = reader.value(satSmooth);
+    p.smoothLuma = reader.value(lumaSmooth);
 
-    // Each hue offset counts up to a whole turn, so the trapezoid spans at most two turns, which
+    // Each hue offset counts up to a whole turn, so the trapezoid spans at most four turns, which
     // HueCurves::hueTrapezoid() and the kernel overlap in full.
-    const double hueCentre = reader.value(hueRange, KnobDouble::eRangeWidgetDimensionCentre);
     double h[4];
+    const double hueCentre = rangeAt(reader, hueRange, h);
     for (int i = 0; i < 4; ++i) {
-        h[i] = (std::min)(1., reader.value(hueRange, KnobDouble::eRangeWidgetDimensionOuterLow + i));
+        h[i] = (std::min)(1., h[i]);
     }
-    KnobDouble::sanitizeRangeOffsets(h);
-    p.hueLow = (float)wrapUnit(hueCentre - h[0]);
-    p.hueRise = (float)(h[0] - h[1]);
-    p.hueFull = (float)(h[0] + h[2]);
-    p.hueFall = (float)(h[0] + h[3]);
+    const double hueFull = h[0] + h[1] + h[2];
+    p.hueLow = (float)wrapUnit(hueCentre - h[1] - h[0]);
+    p.hueRise = (float)h[0];
+    p.hueFull = (float)hueFull;
+    p.hueFall = (float)(hueFull + h[3]);
 
     linearPoints(reader, satRange, p.sat);
     linearPoints(reader, lumaRange, p.luma);
@@ -331,16 +357,25 @@ HSVKeyerOp::key(const Params& params,
     ColorMath::keyModelComponents(params.model, params.basis, rgb, comps, &hueWeight);
     float k = 1.f;
     if (params.useHue) {
-        const float hk = HueCurves::hueTrapezoid(comps[0], params.hueLow, params.hueRise, params.hueFull, params.hueFall);
+        float hk = HueCurves::hueTrapezoid(comps[0], params.hueLow, params.hueRise, params.hueFull, params.hueFall);
+        if (params.smoothHue) {
+            hk = HueCurves::smoothStep(hk);
+        }
         const float weighted = hk * hueWeight;
         k = k * weighted;
     }
     if (params.useSat) {
-        const float sk = HueCurves::trapezoid(comps[1], params.sat[0], params.sat[1], params.sat[2], params.sat[3]);
+        float sk = HueCurves::trapezoid(comps[1], params.sat[0], params.sat[1], params.sat[2], params.sat[3]);
+        if (params.smoothSat) {
+            sk = HueCurves::smoothStep(sk);
+        }
         k = k * sk;
     }
     if (params.useLuma) {
-        const float lk = HueCurves::trapezoid(comps[2], params.luma[0], params.luma[1], params.luma[2], params.luma[3]);
+        float lk = HueCurves::trapezoid(comps[2], params.luma[0], params.luma[1], params.luma[2], params.luma[3]);
+        if (params.smoothLuma) {
+            lk = HueCurves::smoothStep(lk);
+        }
         k = k * lk;
     }
 
@@ -405,6 +440,9 @@ HSVKeyerOp::gpu(const Params& params) const
         | (params.useHue ? kGpuFlagUseHue : 0u)
         | (params.useSat ? kGpuFlagUseSat : 0u)
         | (params.useLuma ? kGpuFlagUseLuma : 0u)
+        | (params.smoothHue ? kGpuFlagSmoothHue : 0u)
+        | (params.smoothSat ? kGpuFlagSmoothSat : 0u)
+        | (params.smoothLuma ? kGpuFlagSmoothLuma : 0u)
         | ((uint32_t)params.model << kGpuModelShift)
         | ((uint32_t)params.output << kGpuOutputShift);
     p.hue[0] = params.hueLow;

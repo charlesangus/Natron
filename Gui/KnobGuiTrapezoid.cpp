@@ -72,6 +72,8 @@ const double kMaxSpan = 1e3;
 const double kWheelDeltaPerDoubling = 480.;
 // The most copies of a hue trapezoid drawn a turn apart when zoomed out.
 const int kMaxHueCopies = 256;
+// The share of the default domain's span added beyond a point that widens it.
+const double kFitMargin = 0.05;
 
 double
 wrapUnit(double x)
@@ -81,20 +83,31 @@ wrapUnit(double x)
     return (w >= 1.) ? 0. : w;
 }
 
-// The four offsets of values (centre first) as they key, a hue offset counting up to a turn as
+// The four offsets of values as they key, a hue offset counting up to a turn as
 // HSVKeyerOp::bake() reads it.
 void
 keyedOffsets(const double* values,
              bool hue,
              double* offsets)
 {
-    for (int i = 0; i < 4; ++i) {
-        offsets[i] = values[KnobDouble::eRangeWidgetDimensionOuterLow + i];
-        if (hue) {
+    KnobDouble::rangeOffsetsOf(values, offsets);
+    if (hue) {
+        for (int i = 0; i < 4; ++i) {
             offsets[i] = (std::min)(1., offsets[i]);
         }
     }
-    KnobDouble::sanitizeRangeOffsets(offsets);
+}
+
+// The outer low, inner low, inner high and outer high points around centre c.
+void
+pointsAround(double c,
+             const double* offsets,
+             double* points)
+{
+    points[1] = c - offsets[1];
+    points[0] = points[1] - offsets[0];
+    points[2] = c + offsets[2];
+    points[3] = points[2] + offsets[3];
 }
 
 // The gradients' fixed components: a hue strip shows hues at a lively saturation and a middling
@@ -154,6 +167,7 @@ TrapezoidStrip::TrapezoidStrip(KnobDouble::RangeWidgetRoleEnum role,
     , _model(ColorMath::eKeyModelHSV)
     , _basis()
     , _hueWeight(0.f)
+    , _smooth(false)
     , _toDisplay()
     , _onEdit()
     , _zoomed(false)
@@ -223,6 +237,15 @@ TrapezoidStrip::setContext(ColorMath::KeyModelEnum model,
 }
 
 void
+TrapezoidStrip::setSmooth(bool smooth)
+{
+    if (_smooth != smooth) {
+        _smooth = smooth;
+        update();
+    }
+}
+
+void
 TrapezoidStrip::setDisplayConverter(const DisplayConverter& converter)
 {
     _toDisplay = converter;
@@ -247,16 +270,22 @@ TrapezoidStrip::getDefaultDomain(double* low,
         *high = centre + 0.5;
         break;
     case KnobDouble::eRangeWidgetRoleSaturation:
-        // OkLCh chroma rarely passes 0.4.
-        *low = 0.;
-        *high = (_model == ColorMath::eKeyModelOkLCh) ? 0.4 : 1.;
-        break;
     case KnobDouble::eRangeWidgetRoleLuma:
     default: {
-        double o[4];
+        double o[4], p[4];
         keyedOffsets(_values, false, o);
-        *low = 0.;
-        *high = (std::max)(1., centre + o[3]);
+        pointsAround(centre, o, p);
+        const bool widenLow = p[0] < 0.;
+        const bool widenHigh = p[3] > 1.;
+        *low = widenLow ? p[0] : 0.;
+        *high = widenHigh ? p[3] : 1.;
+        const double margin = kFitMargin * (*high - *low);
+        if (widenLow) {
+            *low -= margin;
+        }
+        if (widenHigh) {
+            *high += margin;
+        }
         break;
     }
     }
@@ -297,10 +326,7 @@ TrapezoidStrip::positionsOf(const double* values,
         getDomain(&low, &high);
         c += std::floor((low + high) * 0.5 - c + 0.5);
     }
-    positions[0] = c - o[0];
-    positions[1] = c - o[1];
-    positions[2] = c + o[2];
-    positions[3] = c + o[3];
+    pointsAround(c, o, positions);
     if (centre) {
         *centre = c;
     }
@@ -449,6 +475,12 @@ TrapezoidStrip::paintEvent(QPaintEvent* /*e*/)
         painter.setOpacity(0.5);
     }
     const int w = (std::max)(1, width());
+    {
+        double low, high;
+        getDomain(&low, &high);
+        setProperty("domainLow", low);
+        setProperty("domainHigh", high);
+    }
     const QRectF band(kHandleRadius, 1., (std::max)(1., width() - 2. * kHandleRadius), (std::max)(1., height() - 2.));
 
     // The gradient, one column per pixel.
@@ -497,17 +529,24 @@ TrapezoidStrip::paintEvent(QPaintEvent* /*e*/)
             QPointF(valueToX(p[0] + turn), bottom), QPointF(valueToX(p[1] + turn), top),
             QPointF(valueToX(p[2] + turn), top), QPointF(valueToX(p[3] + turn), bottom)
         };
-        QPolygonF shape;
         QPainterPath outline(corners[0]);
-        for (int i = 0; i < 4; ++i) {
-            shape << corners[i];
-            if (i > 0) {
-                outline.lineTo(corners[i]);
+        for (int i = 1; i < 4; ++i) {
+            const QPointF& a = corners[i - 1];
+            const QPointF& b = corners[i];
+            if (_smooth && (i != 2)) {
+                // A cubic with its controls a third and two thirds along x, level with its ends,
+                // is x linear and y 3t^2 - 2t^3 in t: the smoothstep exactly.
+                const double dx = (b.x() - a.x()) / 3.;
+                outline.cubicTo(QPointF(a.x() + dx, a.y()), QPointF(b.x() - dx, b.y()), b);
+            } else {
+                outline.lineTo(b);
             }
         }
+        QPainterPath shape(outline);
+        shape.closeSubpath();
         painter.setPen(Qt::NoPen);
         painter.setBrush(QColor(255, 255, 255, 50));
-        painter.drawPolygon(shape);
+        painter.drawPath(shape);
         painter.setBrush(Qt::NoBrush);
         painter.setPen(QPen(QColor(0, 0, 0, 160), 3.));
         painter.drawPath(outline);
@@ -614,32 +653,66 @@ TrapezoidStrip::applyDrag(double x)
     const double* s = _dragStart;
     const double c = _dragCentre;
     const bool hue = isHue();
-    // A hue offset counts up to a turn.
-    const double lowest = hue ? (c - 1.) : -HUGE_VAL;
-    const double highest = hue ? (c + 1.) : HUGE_VAL;
     double v[KnobDouble::eRangeWidgetDimensionCount];
 
     for (int i = 0; i < KnobDouble::eRangeWidgetDimensionCount; ++i) {
         v[i] = _dragValues[i];
     }
-    if (_dragPart == ePartPlateau) {
+    const bool onHandle = (_dragPart >= ePartOuterLow) && (_dragPart <= ePartOuterHigh);
+    // The dragged handle's point.
+    const double q = onHandle ? (s[(int)_dragPart] + dv) : 0.;
+    switch (_dragPart) {
+    case ePartPlateau: {
         const double moved = _dragValues[KnobDouble::eRangeWidgetDimensionCentre] + dv;
         v[KnobDouble::eRangeWidgetDimensionCentre] = hue ? wrapUnit(moved) : moved;
-    } else if (_dragShift && (_dragPart == ePartInnerLow)) {
-        const double d = (std::max)(lowest - s[0], (std::min)(dv, c - s[1]));
-        v[KnobDouble::eRangeWidgetDimensionOuterLow] = c - (s[0] + d);
-        v[KnobDouble::eRangeWidgetDimensionInnerLow] = c - (s[1] + d);
-    } else if (_dragShift && (_dragPart == ePartInnerHigh)) {
-        const double d = (std::min)(highest - s[3], (std::max)(dv, c - s[2]));
-        v[KnobDouble::eRangeWidgetDimensionInnerHigh] = (s[2] + d) - c;
-        v[KnobDouble::eRangeWidgetDimensionOuterHigh] = (s[3] + d) - c;
-    } else {
-        const int i = (int)_dragPart;
-        // Each point stays between its neighbours, the inner ones on their side of the centre.
-        const double lo[4] = { lowest, s[0], c, s[2] };
-        const double hi[4] = { s[1], c, s[3], highest };
-        const double q = (std::min)(hi[i], (std::max)(lo[i], s[i] + dv));
-        v[KnobDouble::eRangeWidgetDimensionOuterLow + i] = (i < 2) ? (c - q) : (q - c);
+        break;
+    }
+    case ePartOuterLow: {
+        const double lo = hue ? (s[1] - 1.) : -HUGE_VAL;
+        v[KnobDouble::eRangeWidgetDimensionOuterLow] = s[1] - (std::min)(s[1], (std::max)(lo, q));
+        break;
+    }
+    case ePartOuterHigh: {
+        const double hi = hue ? (s[2] + 1.) : HUGE_VAL;
+        v[KnobDouble::eRangeWidgetDimensionOuterHigh] = (std::min)(hi, (std::max)(s[2], q)) - s[2];
+        break;
+    }
+    case ePartInnerLow: {
+        double lo = hue ? (c - 1.) : -HUGE_VAL;
+        double hi = c;
+        if (_dragShift) {
+            // The outer point stays, within a turn for hue.
+            lo = (std::max)(lo, s[0]);
+            if (hue) {
+                hi = (std::min)(hi, s[0] + 1.);
+            }
+        }
+        const double inner = (std::min)(hi, (std::max)(lo, q));
+        v[KnobDouble::eRangeWidgetDimensionInnerLow] = c - inner;
+        if (_dragShift) {
+            v[KnobDouble::eRangeWidgetDimensionOuterLow] = inner - s[0];
+        }
+        break;
+    }
+    case ePartInnerHigh: {
+        double lo = c;
+        double hi = hue ? (c + 1.) : HUGE_VAL;
+        if (_dragShift) {
+            hi = (std::min)(hi, s[3]);
+            if (hue) {
+                lo = (std::max)(lo, s[3] - 1.);
+            }
+        }
+        const double inner = (std::min)(hi, (std::max)(lo, q));
+        v[KnobDouble::eRangeWidgetDimensionInnerHigh] = inner - c;
+        if (_dragShift) {
+            v[KnobDouble::eRangeWidgetDimensionOuterHigh] = s[3] - inner;
+        }
+        break;
+    }
+    case ePartNone:
+    default:
+        break;
     }
     for (int i = 0; i < KnobDouble::eRangeWidgetDimensionCount; ++i) {
         _values[i] = v[i];
@@ -748,6 +821,7 @@ KnobGuiTrapezoid::KnobGuiTrapezoid(KnobIPtr knob,
     , _rangeKnob(std::dynamic_pointer_cast<KnobDouble>(knob))
     , _stripRow()
     , _strip()
+    , _smoothButton()
     , _gesture()
 {
 }
@@ -794,32 +868,55 @@ KnobGuiTrapezoid::createBelowRowWidget(QWidget* parent)
 
     const QSize buttonSize(TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE));
     const QSize iconSize(TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE));
+    enum RowButtonEnum {
+        eRowButtonSmooth = 0,
+        eRowButtonRecentre,
+        eRowButtonResetZoom,
+        eRowButtonCount
+    };
     struct ButtonSpec {
         const char* prefix;
         const char* icon;
         QString tip;
     };
-    const ButtonSpec specs[2] = {
+    const ButtonSpec specs[eRowButtonCount] = {
+        { "TrapezoidSmooth_", NATRON_ICONS_PATH "natron/smooth-s.svg", tr("Smooth: ease the falloffs between the outer and inner points with a smoothstep instead of a straight ramp.") },
         { "TrapezoidRecentre_", NATRON_ICONS_PATH "lucide/crosshair.svg", tr("Recentre: set the centre to the source colour's component, keeping the offsets.") },
-        { "TrapezoidResetZoom_", NATRON_ICONS_PATH "lucide/scan.svg", tr("Reset Zoom: show the default range. The mouse wheel zooms the strip and a middle or Alt drag pans it.") },
+        { "TrapezoidResetZoom_", NATRON_ICONS_PATH "lucide/scan.svg", tr("Reset Zoom: show the default range, 0 to 1 for saturation and luma, or a little more when a point lies outside it. The mouse wheel zooms the strip and a middle or Alt drag pans it.") },
     };
-    for (int b = 0; b < 2; ++b) {
+    const KnobBoolPtr smooth = knob->getRangeWidgetSmooth();
+    for (int b = 0; b < eRowButtonCount; ++b) {
+        if ((b == eRowButtonSmooth) && !smooth) {
+            continue;
+        }
         Button* button = new Button(ThemedIcon::icon(QString::fromUtf8(specs[b].icon), iconSize.width()), QString(), row);
         button->setObjectName(QString::fromUtf8(specs[b].prefix) + name);
         button->setFixedSize(buttonSize);
         button->setIconSize(iconSize);
         button->setFocusPolicy(Qt::NoFocus);
         button->setToolTip(NATRON_NAMESPACE::convertFromPlainText(specs[b].tip, NATRON_NAMESPACE::WhiteSpaceNormal));
-        if (b == 0) {
+        switch (b) {
+        case eRowButtonSmooth:
+            button->setCheckable(true);
+            // clicked, not toggled, so setting the check from the knob writes nothing back.
+            QObject::connect(button, &QAbstractButton::clicked, this, [this](bool checked) {
+                setSmooth(checked);
+            });
+            _smoothButton = button;
+            break;
+        case eRowButtonRecentre:
             QObject::connect(button, &QAbstractButton::clicked, this, [this]() {
                 recentre();
             });
-        } else {
+            break;
+        case eRowButtonResetZoom:
+        default:
             QObject::connect(button, &QAbstractButton::clicked, this, [this]() {
                 if (_strip) {
                     _strip->resetZoom();
                 }
             });
+            break;
         }
         rowLayout->addWidget(button);
     }
@@ -843,7 +940,14 @@ KnobGuiTrapezoid::createBelowRowWidget(QWidget* parent)
             refreshEnabledLook();
         });
     }
+    KnobSignalSlotHandlerPtr smoothHandler = smooth ? smooth->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+    if (smoothHandler) {
+        QObject::connect(smoothHandler.get(), &KnobSignalSlotHandler::valueChanged, this, [this](ViewSpec, int, int) {
+            refreshSmooth();
+        });
+    }
     refreshContext();
+    refreshSmooth();
 
     return row;
 } // KnobGuiTrapezoid::createBelowRowWidget
@@ -971,6 +1075,44 @@ KnobGuiTrapezoid::refreshEnabledLook()
     if (label) {
         label->setEnabled(on);
     }
+}
+
+void
+KnobGuiTrapezoid::refreshSmooth()
+{
+    KnobDoublePtr knob = _rangeKnob.lock();
+    KnobBoolPtr smooth = knob ? knob->getRangeWidgetSmooth() : KnobBoolPtr();
+    const bool on = smooth && smooth->getValue();
+
+    if (_smoothButton) {
+        _smoothButton->setChecked(on);
+    }
+    if (_strip) {
+        _strip->setSmooth(on);
+    }
+}
+
+void
+KnobGuiTrapezoid::setSmooth(bool smooth)
+{
+    KnobDoublePtr knob = _rangeKnob.lock();
+    KnobBoolPtr smoothKnob = knob ? knob->getRangeWidgetSmooth() : KnobBoolPtr();
+
+    if (!smoothKnob || (smoothKnob->getValue() == smooth)) {
+        refreshSmooth();
+
+        return;
+    }
+    // The undo command needs the knob's own GUI, which a hidden knob may lack.
+    KnobGuiPtr smoothGui = KnobGui::getLiveGui(smoothKnob);
+    if (smoothGui) {
+        KnobUndoCommand<bool>* command = new KnobUndoCommand<bool>(smoothGui, smoothKnob->getValue(), smooth, 0, true);
+        command->setMergeable(false);
+        pushUndoCommand(command);
+    } else {
+        ignore_result(smoothKnob->setValue(smooth, ViewSpec::all(), 0, eValueChangedReasonUserEdited));
+    }
+    refreshSmooth();
 }
 
 void

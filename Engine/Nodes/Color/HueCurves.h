@@ -208,6 +208,17 @@ trapezoid(float x,
     return 0.f;
 }
 
+// 3t^2 - 2t^3, a falloff t of a trapezoid eased at both ends; 0 and 1 map to themselves.
+inline float
+smoothStep(float t)
+{
+    const float t2 = t * t;
+    const float tt = t + t;
+    const float u = 3.f - tt;
+
+    return t2 * u;
+}
+
 /**
  * @brief The trapezoid of hue h whose points are low, then low + rise, low + full and
  * low + fall going up the hue circle, rise <= full <= fall. A trapezoid wider than the circle

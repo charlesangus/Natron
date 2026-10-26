@@ -458,13 +458,16 @@ TEST_F(NativeGoldenTest, HSVKeyer)
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
     v.push_back(variant("acrossRed", [](const GoldenGraph& g) {
-        return choice(g, kHSVKeyerParamColorModel, "hsv") && num(g, kHSVKeyerParamHueRange, { 0., 0.15, 0.05, 0.05, 0.15 }) && num(g, kHSVKeyerParamSaturationRange, { 0.65, 0.65, 0.35, 0.35, 0.35 });
+        return choice(g, kHSVKeyerParamColorModel, "hsv") && num(g, kHSVKeyerParamHueRange, { 0.1, 0.05, 0., 0.05, 0.1 }) && num(g, kHSVKeyerParamSaturationRange, { 0.3, 0.35, 0.65, 0.35, 0. });
     }));
     v.push_back(variant("hsl", [](const GoldenGraph& g) {
-        return choice(g, kHSVKeyerParamColorModel, "hsl") && num(g, kHSVKeyerParamHueRange, { 0.34, 0.14, 0.06, 0.06, 0.16 }) && num(g, kHSVKeyerParamLumaRange, { 0.5, 0.4, 0.2, 0.2, 0.4 });
+        return choice(g, kHSVKeyerParamColorModel, "hsl") && num(g, kHSVKeyerParamHueRange, { 0.08, 0.06, 0.34, 0.06, 0.1 }) && num(g, kHSVKeyerParamLumaRange, { 0.2, 0.2, 0.5, 0.2, 0.2 });
     }));
     v.push_back(variant("oklch", [](const GoldenGraph& g) {
-        return choice(g, kHSVKeyerParamColorModel, "oklch") && num(g, kHSVKeyerParamHueRange, { 0.4, 0.1, 0.04, 0.04, 0.1 }) && num(g, kHSVKeyerParamSaturationRange, { 0.23, 0.21, 0.17, 0.17, 0.27 }) && num(g, kHSVKeyerParamLumaRange, { 0.65, 0.45, 0.25, 0.25, 0.55 });
+        return choice(g, kHSVKeyerParamColorModel, "oklch") && num(g, kHSVKeyerParamHueRange, { 0.06, 0.04, 0.4, 0.04, 0.06 }) && num(g, kHSVKeyerParamSaturationRange, { 0.04, 0.17, 0.23, 0.17, 0.1 }) && num(g, kHSVKeyerParamLumaRange, { 0.2, 0.25, 0.65, 0.25, 0.3 });
+    }));
+    v.push_back(variant("smooth", [](const GoldenGraph& g) {
+        return num(g, kHSVKeyerParamHueSmooth, { 1. }) && num(g, kHSVKeyerParamSaturationSmooth, { 1. }) && num(g, kHSVKeyerParamLumaSmooth, { 1. });
     }));
     v.push_back(variant("premultipliedHueOnly", [](const GoldenGraph& g) {
         return num(g, kHSVKeyerParamUseSaturation, { 0. }) && num(g, kHSVKeyerParamUseLuma, { 0. }) && choice(g, kHSVKeyerParamOutputMode, "premultiplied");
@@ -472,7 +475,7 @@ TEST_F(NativeGoldenTest, HSVKeyer)
     v.push_back(variant("matteInvert", [](const GoldenGraph& g) {
         return num(g, kHSVKeyerParamInvert, { 1. }) && choice(g, kHSVKeyerParamOutputMode, "matte");
     }));
-    v.push_back(filterMaskMix([](const GoldenGraph& g) { return num(g, kHSVKeyerParamHueRange, { 0.35, 0.25, 0.1, 0.1, 0.25 }); }));
+    v.push_back(filterMaskMix([](const GoldenGraph& g) { return num(g, kHSVKeyerParamHueRange, { 0.15, 0.1, 0.35, 0.1, 0.15 }); }));
     run(filterSpec("HSVKeyer", PLUGINID_NATRON_HSVKEYER, PLUGIN_MAJOR_NATRON_HSVKEYER), v);
 }
 

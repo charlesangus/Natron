@@ -406,24 +406,33 @@ public:
     };
 
     /**
-     * @brief The dimensions of a range-widget knob: the centre, then the four offsets from it,
-     * the low ones below it and the high ones above. The plateau is centre - inner low to
-     * centre + inner high and the feet are centre - outer low and centre + outer high.
+     * @brief The dimensions of a range-widget knob: four offsets around the centre, the low ones
+     * below it and the high ones above. The plateau is centre - inner low to centre + inner high;
+     * each outer offset is measured from its inner edge, so the feet are
+     * centre - inner low - outer low and centre + inner high + outer high, and an outer offset
+     * of 0 is a hard edge.
      **/
     enum RangeWidgetDimensionEnum {
-        eRangeWidgetDimensionCentre = 0,
-        eRangeWidgetDimensionOuterLow,
+        eRangeWidgetDimensionOuterLow = 0,
         eRangeWidgetDimensionInnerLow,
+        eRangeWidgetDimensionCentre,
         eRangeWidgetDimensionInnerHigh,
         eRangeWidgetDimensionOuterHigh,
         eRangeWidgetDimensionCount
     };
 
     /**
-     * @brief The four offsets of a range as they key: none below 0, and each outer one at least
-     * its inner one. offsets holds outer low, inner low, inner high and outer high.
+     * @brief The four offsets of a range as they key: none below 0. offsets holds outer low,
+     * inner low, inner high and outer high.
      **/
     static void sanitizeRangeOffsets(double* offsets);
+
+    /**
+     * @brief The four offsets of values, a range knob's eRangeWidgetDimensionCount values, in the
+     * order sanitizeRangeOffsets() takes, sanitized.
+     **/
+    static void rangeOffsetsOf(const double* values,
+                               double* offsets);
 
     /**
      * @brief Shows the knob as a trapezoid over a colour strip, the dimensions being those of
@@ -431,14 +440,16 @@ public:
      * role's component in the colour model that modelKnob's index selects
      * (ColorMath::KeyModelEnum), its saturation strip tinted with sourceColourKnob's hue, and
      * redraws when either changes. A hue range is in turns and wraps around its centre. While
-     * enableKnob is off the whole row is greyed out. Does nothing unless the knob has
-     * eRangeWidgetDimensionCount dimensions and role is not eRangeWidgetRoleNone. Call before the
-     * knob's GUI is created.
+     * enableKnob is off the whole row is greyed out. smoothKnob, when given, is shown as a toggle
+     * on the row, and while it is on the strip draws the falloffs as smoothsteps. Does nothing
+     * unless the knob has eRangeWidgetDimensionCount dimensions and role is not
+     * eRangeWidgetRoleNone. Call before the knob's GUI is created.
      **/
     void setRangeWidget(RangeWidgetRoleEnum role,
                         const KnobColorPtr& sourceColourKnob,
                         const KnobChoicePtr& modelKnob,
-                        const KnobBoolPtr& enableKnob);
+                        const KnobBoolPtr& enableKnob,
+                        const KnobBoolPtr& smoothKnob = KnobBoolPtr());
 
     bool isRangeWidget() const
     {
@@ -463,6 +474,11 @@ public:
     KnobBoolPtr getRangeWidgetEnable() const
     {
         return _rangeWidgetEnable.lock();
+    }
+
+    KnobBoolPtr getRangeWidgetSmooth() const
+    {
+        return _rangeWidgetSmooth.lock();
     }
 
 Q_SIGNALS:
@@ -500,6 +516,7 @@ private:
     KnobColorWPtr _rangeWidgetSourceColour;
     KnobChoiceWPtr _rangeWidgetModel;
     KnobBoolWPtr _rangeWidgetEnable;
+    KnobBoolWPtr _rangeWidgetSmooth;
 
     /// to support ofx deprecated normalizd params:
     /// the first and second dimensions of the double param( hence a pair ) have a normalized state.

@@ -30,6 +30,7 @@
 
 #include <functional>
 
+#include <QAbstractButton>
 #include <QPointer>
 #include <QWidget>
 
@@ -43,25 +44,26 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The drawn range of a trapezoid knob holding a centre and four offsets
- * (KnobDouble::RangeWidgetDimensionEnum): the trapezoid over a gradient of its component, with
- * no line along its base, a handle per point, a mark at the centre and a tick at the source
- * colour's component. It has no Q_OBJECT, so it needs no moc: edits are reported through a
- * callback.
+ * @brief The drawn range of a trapezoid knob holding a centre and four offsets, the outer ones
+ * measured from the inner edges (KnobDouble::RangeWidgetDimensionEnum): the trapezoid over a
+ * gradient of its component, with no line along its base, a handle per point, a mark at the
+ * centre and a tick at the source colour's component. While smooth, the falloffs are drawn as
+ * smoothsteps. It has no Q_OBJECT, so it needs no moc: edits are reported through a callback.
  *
- * Points are drawn as the offsets key (KnobDouble::sanitizeRangeOffsets()). Hue is in turns and
- * its points lie around the centre, so a range across red is never split. Until it is zoomed or
- * panned the strip shows its default domain: one turn centred on the centre for hue, 0 to 1 for
- * saturation (0 to 0.4 for OkLCh chroma) and 0 to max(1, centre + outer high) for luma. The
+ * Points are drawn as the offsets key (KnobDouble::rangeOffsetsOf()). Hue is in turns and its
+ * points lie around the centre, so a range across red is never split. Until it is zoomed or
+ * panned the strip shows its default domain: one turn centred on the centre for hue, and 0 to 1
+ * for saturation and luma, widened with a small margin to take in any point outside it. The
  * mouse wheel zooms around the cursor, a middle or Alt drag pans, and resetZoom() goes back to
  * the default domain. The domain is held during a drag, so the handle under the cursor never
- * slides away.
+ * slides away. The drawn domain is published as the dynamic properties "domainLow" and
+ * "domainHigh" for GUI tests.
  *
- * Dragging a handle moves its point, clamped between its neighbours, an inner point never
- * crossing the centre (for hue, an outer point also stays within a turn of the centre). Dragging
- * the plateau moves the centre. Shift-dragging an inner handle moves its outer partner by the
- * same amount. Where handles coincide the first move picks one: leftwards the lowest, rightwards
- * the highest.
+ * Dragging an outer handle changes its offset, the point staying on the outside of its inner
+ * one. Dragging an inner handle changes its offset, never crossing the centre, and its outer
+ * point moves with it; shift-dragging an inner handle leaves its outer point in place, the inner
+ * point stopping at it. A hue offset counts up to a turn. Dragging the plateau moves the centre.
+ * Where handles coincide the first move picks one: leftwards the lowest, rightwards the highest.
  **/
 class TrapezoidStrip
     : public QWidget {
@@ -72,7 +74,7 @@ public:
         eGesturePhaseEnd
     };
 
-    // Called with the knob's values, centre first, after each edit of a gesture.
+    // Called with the knob's values, in dimension order, after each edit of a gesture.
     typedef std::function<void(const double* values, GesturePhaseEnum phase)> EditCallback;
     // Converts count working-space RGB triples in place to display-referred values in 0 to 1.
     typedef std::function<void(float* rgb, int count)> DisplayConverter;
@@ -97,9 +99,17 @@ public:
         return _role;
     }
 
-    // KnobDouble::eRangeWidgetDimensionCount values, centre first.
+    // KnobDouble::eRangeWidgetDimensionCount values, in dimension order.
     void setValues(const double* values);
     void getValues(double* values) const;
+
+    // Draws the falloffs as smoothsteps.
+    void setSmooth(bool smooth);
+
+    bool isSmooth() const
+    {
+        return _smooth;
+    }
 
     /**
      * @brief The model the gradient is drawn in, and the source colour's components in it, the
@@ -184,6 +194,7 @@ private:
     ColorMath::OkLabBasis _basis;
     float _source[3];
     float _hueWeight;
+    bool _smooth;
     DisplayConverter _toDisplay;
     EditCallback _onEdit;
 
@@ -213,11 +224,12 @@ private:
 };
 
 /**
- * @brief The GUI of a KnobDouble with a range-widget hint: a TrapezoidStrip with Recentre and
- * Reset Zoom buttons, above the spinboxes, each labelled above its field. Strip edits go through
- * KnobUndoCommand, one undo step per drag; Recentre sets the centre to the source colour's
- * component in one undo step, keeping the offsets. The strip repaints when the source colour or
- * the model changes, and the row greys out while the hint's enable knob is off.
+ * @brief The GUI of a KnobDouble with a range-widget hint: a TrapezoidStrip with Smooth (when the
+ * hint has a smooth knob), Recentre and Reset Zoom buttons, above the spinboxes, each labelled
+ * above its field. Strip edits go through KnobUndoCommand, one undo step per drag; Recentre sets
+ * the centre to the source colour's component in one undo step, keeping the offsets; Smooth
+ * toggles the smooth knob in one undo step. The strip repaints when the source colour, the model
+ * or the smooth knob changes, and the row greys out while the hint's enable knob is off.
  **/
 class KnobGuiTrapezoid
     : public KnobGuiDouble {
@@ -256,12 +268,15 @@ private:
                           float* hueWeight) const;
     void refreshContext();
     void refreshEnabledLook();
+    void refreshSmooth();
+    void setSmooth(bool smooth);
     void onStripEdited(const double* values,
                        TrapezoidStrip::GesturePhaseEnum phase);
 
     KnobDoubleWPtr _rangeKnob;
     QPointer<QWidget> _stripRow;
     QPointer<TrapezoidStrip> _strip;
+    QPointer<QAbstractButton> _smoothButton;
     UndoGesture _gesture;
 };
 

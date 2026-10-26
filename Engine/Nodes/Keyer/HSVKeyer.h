@@ -47,6 +47,9 @@
 #define kHSVKeyerParamUseHue "useHue"
 #define kHSVKeyerParamUseSaturation "useSaturation"
 #define kHSVKeyerParamUseLuma "useLuma"
+#define kHSVKeyerParamHueSmooth "hueSmooth"
+#define kHSVKeyerParamSaturationSmooth "saturationSmooth"
+#define kHSVKeyerParamLumaSmooth "lumaSmooth"
 #define kHSVKeyerParamInvert "invert"
 #define kHSVKeyerParamOutputMode "outputMode"
 
@@ -60,8 +63,9 @@ inline constexpr InputSpec kHSVKeyerInputs[] = {
 /**
  * @brief Keys by hue, saturation and luma in HSV, HSL or OkLCh: the key is the product of a
  * trapezoid over each enabled component, 1 when none is, inverted on request. Each range knob
- * holds a centre and four offsets from it (KnobDouble::RangeWidgetDimensionEnum). The hue
- * trapezoid is in turns and wraps around its centre, and its value is weighted by
+ * holds a centre and four offsets (KnobDouble::RangeWidgetDimensionEnum), the outer ones measured
+ * from the inner edges; a range's smooth toggle eases its falloffs with HueCurves::smoothStep().
+ * The hue trapezoid is in turns and wraps around its centre, and its value is weighted by
  * ColorMath::keyHueFade() of the chroma, so a grey never matches a hue range. Alpha is the key;
  * RGB passes, is multiplied by the key or is replaced by it, as the output mode says. The output
  * is RGBA whatever the source.
@@ -80,12 +84,15 @@ struct HSVKeyerOp {
      * outer low, inner low, inner high and outer high points, in order.
      **/
     struct Params {
-        ColorMath::KeyModelEnum model = ColorMath::eKeyModelOkLCh;
+        ColorMath::KeyModelEnum model = ColorMath::eKeyModelHSV;
         OutputModeEnum output = eOutputModeAlpha;
         bool useHue = true;
         bool useSat = true;
         bool useLuma = true;
         bool invert = false;
+        bool smoothHue = false;
+        bool smoothSat = false;
+        bool smoothLuma = false;
         float hueLow = 0.f;
         float hueRise = 0.f;
         float hueFull = 0.f;
@@ -100,10 +107,11 @@ struct HSVKeyerOp {
         .label = "HSVKeyer",
         .description = "Compute a key from the hue, saturation and luma of the source.\n"
                        "\n"
-                       "Each component has a range: a centre and four offsets from it. The key rises from 0 at the "
-                       "centre minus the outer low offset to 1 at the centre minus the inner low offset, stays 1 up "
-                       "to the centre plus the inner high offset and falls to 0 at the centre plus the outer high "
-                       "offset. The key is the product of the trapezoids of the enabled components. The hue is in "
+                       "Each component has a range: a centre and four offsets. The key is 1 from the centre minus "
+                       "the inner low offset to the centre plus the inner high offset, and falls to 0 over the outer "
+                       "low offset below that plateau and over the outer high offset above it, linearly or, with the "
+                       "range's smooth toggle on, as a smoothstep. An outer offset of 0 is a hard edge. The key is "
+                       "the product of the trapezoids of the enabled components. The hue is in "
                        "turns from red at 0 and its trapezoid wraps around its centre; hue counts for less as the "
                        "chroma nears 0, so greys never match a hue range.\n"
                        "\n"
@@ -146,6 +154,9 @@ struct HSVKeyerOp {
     KnobBoolWPtr useHue;
     KnobBoolWPtr useSat;
     KnobBoolWPtr useLuma;
+    KnobBoolWPtr hueSmooth;
+    KnobBoolWPtr satSmooth;
+    KnobBoolWPtr lumaSmooth;
     KnobBoolWPtr invert;
     KnobChoiceWPtr outputMode;
 };

@@ -510,7 +510,8 @@ TEST_F(NativeHueGpuTest, HueCorrectMatchesTheCpuRender)
 }
 
 // Every model and output mode, with a hue trapezoid within the circle and one across red, with
-// and without invert; the sat and luma ranges reach past 0 and 1 so negative and HDR samples key.
+// and without invert, and each range's smooth toggle on and off; the sat and luma ranges reach past
+// 0 and 1 so negative and HDR samples key.
 TEST_F(NativeHueGpuTest, HSVKeyerKernelMatchesTheCpu)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -524,8 +525,8 @@ TEST_F(NativeHueGpuTest, HSVKeyerKernelMatchesTheCpu)
 
     const char* const models[] = { "hsv", "hsl", "oklch" };
     const char* const outputs[] = { "alpha", "premultiplied", "matte" };
-    // Centre, outer low, inner low, inner high, outer high; the second crosses red.
-    const double hues[][5] = { { 0.335, 0.085, 0.035, 0.035, 0.085 }, { 0., 0.15, 0.05, 0.05, 0.2 } };
+    // Outer low, inner low, centre, inner high, outer high; the second crosses red.
+    const double hues[][5] = { { 0.05, 0.035, 0.335, 0.035, 0.05 }, { 0.1, 0.05, 0., 0.05, 0.15 } };
     const std::vector<Layout> layouts = { { 4, 0xF }, { 4, 0x8 } };
     int nCase = 0;
     for (const char* model : models) {
@@ -533,15 +534,19 @@ TEST_F(NativeHueGpuTest, HSVKeyerKernelMatchesTheCpu)
         ASSERT_TRUE(setKnobValue(node, kHSVKeyerParamColorModel, model));
         for (const char* output : outputs) {
             ASSERT_TRUE(setKnobValue(node, kHSVKeyerParamOutputMode, output));
-            for (const double* hue : hues) {
+            for (int h = 0; h < 2; ++h) {
+                const double* hue = hues[h];
                 for (int invert = 0; invert < 2; ++invert) {
                     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamHueRange, { hue[0], hue[1], hue[2], hue[3], hue[4] }));
-                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSaturationRange, { 0.45, invert ? 0.55 : 0.44, 0.35, 0.35, 1.05 }));
-                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamLumaRange, { 0.5, 0.7, 0.4, 0.4, 1.5 }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSaturationRange, { invert ? 0.2 : 0.09, 0.35, 0.45, 0.35, 0.7 }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamLumaRange, { 0.3, 0.4, 0.5, 0.4, 1.1 }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamHueSmooth, { (double)invert }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSaturationSmooth, { (double)h }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamLumaSmooth, { (double)(invert == 0) }));
                     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamUseLuma, { (double)(invert == 0) }));
                     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamInvert, { (double)invert }));
                     const HSVKeyerOp::Params params = effect->bakeHSVKeyer(kTime, ViewIdx(0));
-                    const std::string label = std::string("HSVKeyer ") + model + " " + output + " hues " + std::to_string(hue[0]) + " invert " + std::to_string(invert);
+                    const std::string label = std::string("HSVKeyer ") + model + " " + output + " hues " + std::to_string(hue[2]) + " invert " + std::to_string(invert);
                     expectKernelMatches(*runtime, *effect, layouts, [effect, &params](const RowIO& io) { effect->hsvKeyerRow(params, io); }, pointTolerance(), label, &nCase);
                 }
             }
@@ -563,9 +568,14 @@ TEST_F(NativeHueGpuTest, HSVKeyerMatchesTheCpuRender)
         ASSERT_TRUE(bool(source) && bool(mask) && bool(op));
         ASSERT_TRUE(setKnobValue(op, kHSVKeyerParamColorModel, model));
         ASSERT_TRUE(setKnobValue(op, kHSVKeyerParamOutputMode, "premultiplied"));
-        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamHueRange, { 0.4, 0.3, 0.1, 0.1, 0.3 }));
-        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamSaturationRange, { 0.525, 0.525, 0.475, 0.475, 0.975 }));
-        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamLumaRange, { 0.5, 1., 0.5, 0.5, 1.5 }));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamHueRange, { 0.2, 0.1, 0.4, 0.1, 0.2 }));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamSaturationRange, { 0.05, 0.475, 0.525, 0.475, 0.5 }));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamLumaRange, { 0.5, 0.5, 0.5, 0.5, 1. }));
+        // The HSL and OkLCh renders ease every falloff.
+        const double smooth = (std::string(model) == "hsv") ? 0. : 1.;
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamHueSmooth, { smooth }));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamSaturationSmooth, { smooth }));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamLumaSmooth, { smooth }));
         wire(source, mask, op);
         SCOPED_TRACE(model);
         expectRenderMatches(*runtime, source, mask, op, pointTolerance());

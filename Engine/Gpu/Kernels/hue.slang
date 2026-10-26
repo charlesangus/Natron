@@ -516,7 +516,8 @@ void huecorrect_wrapped(uint3 tid : SV_DispatchThreadID)
 
 // ---------------------------------------------------------------------------------------------
 // HSVKeyer. Parameter block, in words: flags (1: invert, 2/4/8: use hue/saturation/luma, bits 4-5:
-// the model, 0 HSV, 1 HSL, 2 OkLCh, bits 6-7: the output, 0 alpha, 1 premultiplied, 2 matte), the
+// the model, 0 HSV, 1 HSL, 2 OkLCh, bits 6-7: the output, 0 alpha, 1 premultiplied, 2 matte,
+// 256/512/1024: smoothstep falloffs on hue/saturation/luma), the
 // hue trapezoid's low, rise, full and fall, the saturation and luma trapezoids' four points, then
 // the working RGB to OkLab LMS matrix, row-major. Mirrors HSVKeyerOp::key and
 // ColorMath::keyModelComponents statement by statement.
@@ -525,6 +526,9 @@ static const uint kHkInvert = 1;
 static const uint kHkUseHue = 2;
 static const uint kHkUseSat = 4;
 static const uint kHkUseLuma = 8;
+static const uint kHkSmoothHue = 256;
+static const uint kHkSmoothSat = 512;
+static const uint kHkSmoothLuma = 1024;
 static const uint kHkModelShift = 4;
 static const uint kHkOutputShift = 6;
 static const uint kHkModelHsl = 1;
@@ -637,6 +641,16 @@ float hueKeyFade(float c, float edge)
     return o;
 }
 
+// HueCurves::smoothStep.
+float hueSmoothStep(float t)
+{
+    precise float t2 = t * t;
+    precise float tt = t + t;
+    precise float u = 3.0 - tt;
+    precise float o = t2 * u;
+    return o;
+}
+
 // m (row-major) times v, rounding as ColorMath::colorspaceMul3 does.
 float3 hueMul3(float m[9], float3 v)
 {
@@ -721,18 +735,24 @@ struct HSVKeyerOp : IPixelOp
         precise float k = 1.0;
         if ((flags & kHkUseHue) != 0)
         {
-            const float hk = hueCircleTrapezoid(comps.x, hue.x, hue.y, hue.z, hue.w);
+            float hk = hueCircleTrapezoid(comps.x, hue.x, hue.y, hue.z, hue.w);
+            if ((flags & kHkSmoothHue) != 0)
+                hk = hueSmoothStep(hk);
             precise float weighted = hk * weight;
             k = k * weighted;
         }
         if ((flags & kHkUseSat) != 0)
         {
-            const float sk = hueTrapezoid4(comps.y, sat.x, sat.y, sat.z, sat.w);
+            float sk = hueTrapezoid4(comps.y, sat.x, sat.y, sat.z, sat.w);
+            if ((flags & kHkSmoothSat) != 0)
+                sk = hueSmoothStep(sk);
             k = k * sk;
         }
         if ((flags & kHkUseLuma) != 0)
         {
-            const float lk = hueTrapezoid4(comps.z, luma.x, luma.y, luma.z, luma.w);
+            float lk = hueTrapezoid4(comps.z, luma.x, luma.y, luma.z, luma.w);
+            if ((flags & kHkSmoothLuma) != 0)
+                lk = hueSmoothStep(lk);
             k = k * lk;
         }
         if ((flags & kHkInvert) != 0)

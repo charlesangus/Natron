@@ -166,3 +166,5 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - 2026-10-19 — **Reuse M107 - GPU Viewer Hand-off's `Engine/OcioVulkanShader` helper** (gpu PM, via inbox): the viewer and the nodes then share one OCIO shader generator and LUT cache. M107 joins Deps.
 
 2026-10-26: UAT approved (user). Merges with main merged in and PR CI re-run.
+
+Shipped 2026-10-26: UAT approved; PR #108 squash-merged to main.

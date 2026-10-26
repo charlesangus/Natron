@@ -65,6 +65,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Histogram.h"
 #include "Gui/Label.h"
 #include "Gui/LineEdit.h"
+#include "Gui/ManageUserParamsDialog.h"
 #include "Gui/MultiInstancePanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
@@ -109,6 +110,8 @@ ProjectGui::create(ProjectPtr projectInternal,
 
     QObject::connect( projectInternal.get(), SIGNAL(mustCreateFormat()), this, SLOT(createNewFormat()) );
     QObject::connect( projectInternal.get(), SIGNAL(knobsInitialized()), this, SLOT(initializeKnobsGui()) );
+    // Queued: the dialog rebuilds the page holding the button that emitted the signal.
+    QObject::connect(projectInternal.get(), SIGNAL(mustEditVariables()), this, SLOT(editVariables()), Qt::QueuedConnection);
 
     _panel = new DockablePanel(_gui,
                                projectInternal.get(),
@@ -133,6 +136,19 @@ void
 ProjectGui::setVisible(bool visible)
 {
     _panel->setClosed(!visible);
+}
+
+void
+ProjectGui::editVariables()
+{
+    ProjectPtr project = _project.lock();
+    KnobGroupPtr group = project ? project->getRFVGroup() : KnobGroupPtr();
+
+    if (!group || !_panel) {
+        return;
+    }
+    ManageUserParamsDialog dialog(_panel, _panel, group);
+    ignore_result(dialog.exec());
 }
 
 void

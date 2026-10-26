@@ -573,6 +573,20 @@ public:
     }
 
     /**
+     * @brief When set, the user changes the selection only by picking an entry in the menu: the
+     * mouse wheel and the arrow keys leave it alone, for a menu whose entries act when picked.
+     **/
+    void setMenuOnlySelection(bool menuOnly)
+    {
+        _menuOnlySelection = menuOnly;
+    }
+
+    bool isMenuOnlySelection() const
+    {
+        return _menuOnlySelection;
+    }
+
+    /**
      * @brief When set, the user picking the entry that is already selected still calls
      * knobChanged, as a user edit. For a menu that stands for state it does not hold itself,
      * such as whether the user chose its value at all.
@@ -631,6 +645,7 @@ private:
     bool _addNewChoice;
     static const std::string _typeNameStr;
     bool _isCascading;
+    bool _menuOnlySelection;
     bool _notifiesOnReselect;
 };
 
@@ -920,6 +935,7 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
     bool _isTab;
     bool _isToolButton;
     bool _isDialog;
+    bool _isRFVGroup;
 
 public:
 
@@ -941,19 +957,32 @@ public:
               int dimension,
               bool declaredByPlugin);
 
-    void addKnob(const KnobIPtr& k);
+    /**
+     * @brief Adds a child. Returns false, leaving the knob untouched, when the child is refused: a
+     * user knob under a non-user group, or a child an RFV group does not admit (see
+     * RFV::isAdmittedInRFVGroup()). Returns true when the knob is a child.
+     **/
+    bool addKnob(const KnobIPtr& k);
     void removeKnob(KnobI* k);
 
     bool moveOneStepUp(KnobI* k);
     bool moveOneStepDown(KnobI* k);
 
-    void insertKnob(int index, const KnobIPtr& k);
+    bool insertKnob(int index, const KnobIPtr& k);
 
     std::vector<KnobIPtr> getChildren() const;
 
     void setAsTab();
 
     bool isTab() const;
+
+    /**
+     * @brief Flags the group as a Reverse-Flow Variable group: each of its direct children declares
+     * one variable, except a plug-in control. Flagging is refused, and false returned, while the
+     * group would not admit a child (see RFV::isAdmittedInRFVGroup()).
+     **/
+    bool setAsRFVGroup(bool rfv);
+    bool isRFVGroup() const;
 
     void setAsToolButton(bool b);
     bool getIsToolButton() const;

@@ -432,6 +432,19 @@ public:
 
     virtual void declareCurrentAppVariable_Python();
 
+    /**
+     * @brief Makes app.<name> match the project's knobs on the existing app object, keeping
+     * every other attribute, such as the nodes': declares the knobs not declared yet and deletes
+     * the attributes of knobs that no longer exist. Returns the script it ran; throws
+     * std::runtime_error when a knob name is a Python keyword or the script fails.
+     **/
+    std::string declareProjectParamsToPython();
+
+    /**
+     * @brief declareProjectParamsToPython(), printing the script it ran and logging failures.
+     **/
+    void refreshProjectParamsInPython();
+
     void execOnProjectCreatedCallback();
 
     virtual void createLoadProjectSplashScreen(const QString& /*projectFile*/) {}

@@ -254,10 +254,9 @@ public:
     }
 };
 
-
 class App
-    : public Group
-{
+    : public Group,
+      public UserParamHolder {
     Q_DECLARE_TR_FUNCTIONS(App)
 
 private:

@@ -590,7 +590,10 @@ struct PythonUserKnobs {
         std::list<KnobIWPtr> userKnobs;
         const KnobsVec& knobs = node.getKnobs();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-            if ((*it)->isUserKnob()) {
+            // The plug-in's own user pages and groups stay, and with them the plug-in's knobs
+            // placed in them, which deleting a page or group would take along; the restore below
+            // finds them by name and refills them.
+            if ((*it)->isUserKnob() && !(*it)->isDeclaredByPlugin()) {
                 userKnobs.push_back(*it);
             }
         }

@@ -6206,6 +6206,7 @@ void
 KnobHolder::recreateUserKnobs(bool keepCurPageIndex)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    onUserKnobsChanged();
     if (_imp->settingsPanel) {
         _imp->settingsPanel->recreateUserKnobs(keepCurPageIndex);
         EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
@@ -6415,7 +6416,7 @@ KnobHolder::getUserPageKnob() const
     {
         QMutexLocker k(&_imp->knobsMutex);
         for (KnobsVec::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-            if (!(*it)->isUserKnob()) {
+            if (!(*it)->isUserKnob() || (*it)->isDeclaredByPlugin()) {
                 continue;
             }
             KnobPagePtr isPage = std::dynamic_pointer_cast<KnobPage>(*it);

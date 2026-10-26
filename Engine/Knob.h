@@ -2819,8 +2819,17 @@ public:
     void updateHasAnimation();
 
     //////////////////////////////////////////////////////////////////////////////////////////
-    std::shared_ptr<KnobPage> getOrCreateUserPageKnob();
+    /**
+     * @brief The first user page that scripts and the parameter manager made, which is where the
+     * Python creators put a new parameter. A user page the plug-in declares, such as one holding a
+     * variables group, is not it.
+     **/
     std::shared_ptr<KnobPage> getUserPageKnob() const;
+
+    /**
+     * @brief getUserPageKnob(), creating the "User" page when there is none.
+     **/
+    std::shared_ptr<KnobPage> getOrCreateUserPageKnob();
 
     /**
      * @brief These functions below are dynamic in a sense that they can be called at any time (on the main-thread)

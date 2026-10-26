@@ -6337,7 +6337,7 @@ KnobHolder::getUserPageKnob() const
     {
         QMutexLocker k(&_imp->knobsMutex);
         for (KnobsVec::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-            if (!(*it)->isUserKnob()) {
+            if (!(*it)->isUserKnob() || (*it)->isDeclaredByPlugin()) {
                 continue;
             }
             KnobPagePtr isPage = std::dynamic_pointer_cast<KnobPage>(*it);

@@ -73,7 +73,6 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/FileDownloader.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/KnobFile.h"
-#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
@@ -84,6 +83,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/UndoRecorder.h"
@@ -2351,11 +2351,8 @@ AppInstance::declareProjectParamsToPython()
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         // A parameter a script made on the project is app.<name> only once it is a variable, whose
         // name has been checked against the app's attributes.
-        if (!(*it)->isDeclaredByPlugin()) {
-            KnobGroup* parent = dynamic_cast<KnobGroup*>((*it)->getParentKnob().get());
-            if (!parent || !parent->isRFVGroup()) {
-                continue;
-            }
+        if (!RFV::isDeclaredOnApp(**it)) {
+            continue;
         }
         const std::string& name = (*it)->getName();
         if (NATRON_PYTHON_NAMESPACE::isKeyword(name)) {

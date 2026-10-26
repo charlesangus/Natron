@@ -81,10 +81,17 @@ bool isValidVariableName(const std::string& name);
  * @brief Whether the name is taken on the app's Python object: an attribute of its App class (or
  * its GUI subclass), the script name of a top-level node, or any other attribute the object
  * holds. A project variable is declared as app.<name>, so such a name would hide the attribute.
- * The name of one of the project's own parameters, which is declared the same way, is only
- * reported when the App class has it.
+ * The name of a project parameter declared as app.<name> (see isDeclaredOnApp()) is only reported
+ * when the App class has it.
  **/
 bool isAppAttributeName(const AppInstancePtr& app, const std::string& name);
+
+/**
+ * @brief Whether a knob of the project is declared on the app's Python object as app.<name>: a
+ * knob the project itself declares, or a project variable. A parameter a script made on the
+ * project with the ordinary creators is not, until it is added as a variable.
+ **/
+bool isDeclaredOnApp(const KnobI& knob);
 
 /**
  * @brief The variables the holder declares, in the order of its RFV groups and of their children.

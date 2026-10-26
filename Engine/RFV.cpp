@@ -102,8 +102,10 @@ isAppAttributeName(const AppInstancePtr& app,
     if (project && project->getNodeByName(name)) {
         return true;
     }
-    // The project's own parameters are app.<name> too; the caller decides about those.
-    const bool isProjectParam = project && project->getKnobByName(name);
+    // A project parameter declared as app.<name> holds that name itself; the caller decides about
+    // those. Any other attribute of that name was set by a script.
+    KnobIPtr projectKnob = project ? project->getKnobByName(name) : KnobIPtr();
+    const bool isProjectParam = projectKnob && isDeclaredOnApp(*projectKnob);
 
     bool found = false;
     PythonGILLocker pgl;
@@ -132,6 +134,17 @@ isAppAttributeName(const AppInstancePtr& app,
     }
 
     return found;
+}
+
+bool
+isDeclaredOnApp(const KnobI& knob)
+{
+    if (knob.isDeclaredByPlugin()) {
+        return true;
+    }
+    KnobGroup* parent = dynamic_cast<KnobGroup*>(knob.getParentKnob().get());
+
+    return parent && parent->isRFVGroup();
 }
 
 std::vector<VariableDeclaration>

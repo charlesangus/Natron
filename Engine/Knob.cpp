@@ -5873,9 +5873,65 @@ KnobHelper::getContextReadSet() const
 
 namespace {
 
-// Set while this thread asks a node for its upstream read-set on behalf of an expression: a
-// source answering it may read knobs whose expressions would ask again.
+// Set while this thread gathers what an expression reads: a source answering it may read knobs
+// whose expressions would ask again.
 thread_local bool t_expressionReadSetQuery = false;
+
+/**
+ * @brief What the value of knob reads of the render context: the reads of its own sources and of
+ * every knob its expressions and links read, transitively, and the upstream read-sets of the nodes
+ * whose metadata those expressions read.
+ **/
+RenderContextReadSet
+expressionContextReads(const KnobI* knob)
+{
+    RenderContextReadSet reads;
+    std::set<const KnobI*> seenKnobs;
+    std::set<const Node*> seenNodes;
+    std::vector<const KnobI*> pending(1, knob);
+    // Keeps the knobs reached through weak references alive while they are walked.
+    std::vector<KnobIPtr> held;
+
+    while (!pending.empty()) {
+        const KnobI* current = pending.back();
+        pending.pop_back();
+        if (!current || !seenKnobs.insert(current).second) {
+            continue;
+        }
+        if (current->hasContextReadSources()) {
+            reads.merge(current->getContextReadSet());
+        }
+        for (int i = 0, n = current->getDimension(); i < n; ++i) {
+            std::list<std::pair<KnobIWPtr, int>> dependencies;
+            if (current->getExpressionDependencies(i, dependencies)) {
+                for (const std::pair<KnobIWPtr, int>& dependency : dependencies) {
+                    KnobIPtr dependencyKnob = dependency.first.lock();
+                    if (dependencyKnob) {
+                        pending.push_back(dependencyKnob.get());
+                        held.push_back(std::move(dependencyKnob));
+                    }
+                }
+            }
+            std::pair<int, KnobIPtr> master = current->getMaster(i);
+            if (master.second) {
+                pending.push_back(master.second.get());
+                held.push_back(std::move(master.second));
+            }
+        }
+        std::list<NodePtr> metadataSources;
+        current->getMetadataDependencies(-1, &metadataSources);
+        for (const NodePtr& source : metadataSources) {
+            if (source && seenNodes.insert(source.get()).second) {
+                const RenderContextReadSetConstPtr sourceReads = source->getUpstreamContextReadSet();
+                if (sourceReads) {
+                    reads.merge(*sourceReads);
+                }
+            }
+        }
+    }
+
+    return reads;
+}
 } // anonymous namespace
 
 bool
@@ -5886,26 +5942,25 @@ KnobHelper::getExpressionContextKey(U64* key) const
     if (!ownSources && !renderContextsInUse()) {
         return false;
     }
-    const EffectInstance* effect = dynamic_cast<const EffectInstance*>(getHolder());
-    // An expression reads, besides the knob's own sources, whatever the knobs and metadata it
-    // depends on read: the holder node's upstream read-set covers those (with its other knobs and
-    // inputs, which only makes the results kept under finer keys than needed).
-    RenderContextReadSetConstPtr reads;
-    if (effect && renderContextsInUse() && !t_expressionReadSetQuery) {
-        const NodePtr node = effect->getNode();
-        if (node) {
-            t_expressionReadSetQuery = true;
-            reads = node->getUpstreamContextReadSet();
-            t_expressionReadSetQuery = false;
+    // Nested in a gathering, only the knob's own sources count.
+    RenderContextReadSet reads;
+    if (t_expressionReadSetQuery) {
+        if (!ownSources) {
+            return false;
         }
+        reads = getContextReadSet();
+    } else {
+        t_expressionReadSetQuery = true;
+        reads = expressionContextReads(this);
+        t_expressionReadSetQuery = false;
     }
-    const bool upstreamReads = reads && !reads->empty();
-    if (!ownSources && !upstreamReads) {
+    if (!ownSources && reads.empty()) {
         return false;
     }
+    const EffectInstance* effect = dynamic_cast<const EffectInstance*>(getHolder());
     const RenderContextPtr context = effect ? effect->getCurrentRenderContext() : RenderContextPtr();
     if (context && !context->isEmpty()) {
-        const RenderContextPtr kept = upstreamReads ? context->restrictTo(*reads) : context->restrictTo(getContextReadSet());
+        const RenderContextPtr kept = context->restrictTo(reads);
         *key = kept ? kept->hash() : 0;
     }
 

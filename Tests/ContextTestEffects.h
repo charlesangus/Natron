@@ -197,7 +197,7 @@ public:
     {
     }
 
-    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    virtual bool getMakeSettingsPanel() const OVERRIDE
     {
         return false;
     }
@@ -446,6 +446,18 @@ public:
     explicit ContextFanOutTestEffect(NodePtr n)
         : ContextTestEffectBase(n)
     {
+    }
+
+    // The settings panel carries the disable knob, so the fan-out can be disabled.
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    // No channel selector: the fan-out renders every channel, as without the settings panel.
+    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return LayerKnobSpec();
     }
 
     virtual bool getInputContexts(int inputNb,

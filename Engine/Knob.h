@@ -1893,13 +1893,14 @@ public:
     virtual RenderContextReadSet getContextReadSet() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief For a knob with a context read source or whose holder node's upstream read-set (see
-     * Node::getUpstreamContextReadSet(), which covers the knobs, nodes and metadata expressions
-     * depend on) is not empty, the key its expression results are kept under on the calling
-     * thread: the hash of the context the holder is queried under (see
-     * EffectInstance::getCurrentRenderContext()) restricted to that read-set, else to the knob's
-     * own, 0 for the empty one, and returns true. Returns false for any other knob, whose results
-     * are kept by time.
+     * @brief For a knob whose value reads the render context, the key its expression results are
+     * kept under on the calling thread, and returns true. The value reads what the knob's own
+     * read sources name and, transitively, what the knobs its expressions and links read name,
+     * and the upstream read-sets (see Node::getUpstreamContextReadSet()) of the nodes whose
+     * metadata those expressions read. The key is the hash of the context the holder is queried
+     * under (see EffectInstance::getCurrentRenderContext()) restricted to those reads, 0 for the
+     * empty one. Returns false for a knob reading none, whose results are kept by time whatever
+     * else its holder node reads.
      **/
     bool getExpressionContextKey(U64* key) const;
 

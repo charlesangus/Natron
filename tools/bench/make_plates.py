@@ -73,8 +73,8 @@ def image(index):
     for f in range(1, FRAMES + 1):
         color.setValueAtTime(0.1 + 0.02 * f + 0.05 * index, f, 0)
     noise = make("Noise")
-    set_choice(noise, "type", "White")
-    param(noise, "noiseSize").set(1)
+    set_choice(noise, "type", "white")
+    param(noise, "noiseSize").set(1, 1)
     param(noise, "reseedPerFrame").set(True)
     param(noise, "decorrelate").set(True)
     param(noise, "seed").set(1000 * index)

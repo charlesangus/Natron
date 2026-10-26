@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <bitset>
 #include <cmath>
+#include <cstddef>
 #include <list>
 #include <memory>
 #include <string>
@@ -129,6 +130,7 @@ enum class Match {
     Exact, // bit for bit
     Near, // within kNoiseGpuTolerance
     NearUpToTies, // within kNoiseGpuTolerance except at pixels where two feature points tie
+    FiniteOnly, // finite on both, where the knobs magnify ulp differences beyond any tolerance
 };
 
 struct Case {
@@ -203,7 +205,65 @@ cases()
                             { kNoiseParamOffset, { 0.05 } } },
                     Match::Near });
 
+    // Knob values far outside any useful range, clamped to what the core evaluates.
+    const double huge = 1e300;
+    out.push_back({ "huge lacunarity and gain",
+                    Knobs { { kNoiseParamFractal, { (double)NoiseCore::kNoiseFractalFBm } },
+                            { kNoiseParamOctaves, { 16. } },
+                            { kNoiseParamLacunarity, { huge } },
+                            { kNoiseParamGain, { -huge } },
+                            { kNoiseParamWeightedStrength, { huge } } },
+                    Match::Near });
+    for (int fractal : { NoiseCore::kNoiseFractalRidged, NoiseCore::kNoiseFractalHybrid }) {
+        out.push_back({ "fractal " + std::to_string(fractal) + " stopping at the bounds",
+                        Knobs { { kNoiseParamType, { (double)NoiseCore::kNoiseTypeValue } },
+                                { kNoiseParamFractal, { (double)fractal } },
+                                { kNoiseParamOctaves, { 16. } },
+                                { kNoiseParamLacunarity, { 1e6 } },
+                                { kNoiseParamGain, { 1e8 } } },
+                        Match::Near });
+    }
+    out.push_back({ "huge warp frequency, transform and loop far along evolution",
+                    Knobs { { kNoiseParamType, { (double)NoiseCore::kNoiseTypeSimplex } },
+                            { kNoiseParamWarpType, { (double)NoiseCore::kNoiseWarpPerlin } },
+                            { kNoiseParamWarpAmount, { 0.75 } },
+                            { kNoiseParamWarpFrequency, { huge } },
+                            { kNoiseParamScale, { 1e-300, huge } },
+                            { kNoiseParamRotate, { huge } },
+                            { kNoiseParamTranslate, { huge, -huge } },
+                            { kNoiseParamLoopPeriod, { 3. } },
+                            { kNoiseParamEvolution, { -1e15 - 0.375 } } },
+                    Match::Near });
+    out.push_back({ "huge smoothness",
+                    Knobs { { kNoiseParamType, { (double)NoiseCore::kNoiseTypeCellular } },
+                            { kNoiseParamFractal, { (double)NoiseCore::kNoiseFractalNone } },
+                            { kNoiseParamOutput, { (double)NoiseCore::kNoiseCellularSmoothF1 } },
+                            { kNoiseParamSmoothness, { huge } } },
+                    Match::NearUpToTies });
+    // A displacement of 1e9 cells, or a colour mapping of 1e15, turns the warp field's or the
+    // noise's last-ulp differences into whole cells or large values.
+    out.push_back({ "huge warp amount and colour mapping",
+                    Knobs { { kNoiseParamType, { (double)NoiseCore::kNoiseTypePerlin } },
+                            { kNoiseParamWarpType, { (double)NoiseCore::kNoiseWarpSimplex } },
+                            { kNoiseParamWarpAmount, { -huge } },
+                            { kNoiseParamAmplitude, { huge } },
+                            { kNoiseParamOffset, { huge } },
+                            { kNoiseParamColor0, { -huge, huge, -huge, huge } },
+                            { kNoiseParamColor1, { huge, -huge, huge, -huge } } },
+                    Match::FiniteOnly });
+
     return out;
+}
+
+std::size_t
+countNonFinite(const std::vector<float>& pixels)
+{
+    std::size_t n = 0;
+    for (float v : pixels) {
+        n += std::isfinite(v) ? 0 : 1;
+    }
+
+    return n;
 }
 
 bool
@@ -270,6 +330,11 @@ TEST_F(NativeNoiseGpuTest, MatchesTheCpuRender)
             ASSERT_TRUE(run.ok) << c.name << ", mipmap " << level;
             EXPECT_EQ(0u, run.writtenOutside) << c.name;
             ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << c.name;
+            EXPECT_EQ(0u, countNonFinite(cpu.pixels)) << c.name << ", mipmap " << level << ", CPU";
+            EXPECT_EQ(0u, countNonFinite(run.pixels)) << c.name << ", mipmap " << level << ", GPU";
+            if (c.match == Match::FiniteOnly) {
+                continue;
+            }
 
             const ParityTolerance tolerance = (c.match == Match::Exact) ? ParityTolerance::exact() : kNoiseGpuTolerance;
             if (c.match != Match::NearUpToTies) {

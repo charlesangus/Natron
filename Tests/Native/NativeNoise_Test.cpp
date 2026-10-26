@@ -32,6 +32,7 @@
 #include <functional>
 #include <list>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -145,6 +146,18 @@ maxAbsDifference(const RenderedPlane& a,
     }
 
     return worst;
+}
+
+// How many floats of the plane are infinite or NaN.
+int
+countNonFinite(const RenderedPlane& plane)
+{
+    int n = 0;
+    for (float v : plane.pixels) {
+        n += std::isfinite(v) ? 0 : 1;
+    }
+
+    return n;
 }
 
 RectI
@@ -566,6 +579,117 @@ TEST_F(NativeNoiseTest, PixelsAreTheCoreNoiseThroughTheColourMapping)
                                                                      << at(plane, s[0], s[1], c);
             const float t = 0.5f * (1.f + 0.6f * n) + 0.1f;
             EXPECT_NEAR(c0[c] + (c1[c] - c0[c]) * t, rgba[c], 1e-6f);
+        }
+    }
+}
+
+// Knob values far outside any useful range are clamped to what the core can evaluate, so every
+// pixel stays finite.
+TEST_F(NativeNoiseTest, ExtremeKnobValuesGiveFiniteOutput)
+{
+    typedef std::vector<std::pair<std::string, std::vector<double>>> Knobs;
+    const double huge = 1e300;
+    const std::vector<std::pair<std::string, Knobs>> cases = {
+        { "huge lacunarity", Knobs { { kNoiseParamLacunarity, { huge } } } },
+        { "huge negative lacunarity", Knobs { { kNoiseParamLacunarity, { -huge } } } },
+        { "huge gain", Knobs { { kNoiseParamGain, { huge } } } },
+        { "huge negative gain", Knobs { { kNoiseParamGain, { -huge } } } },
+        { "huge gain, ridged", Knobs { { kNoiseParamGain, { huge } }, { kNoiseParamFractal, { (double)NoiseCore::kNoiseFractalRidged } } } },
+        { "huge gain, hybrid", Knobs { { kNoiseParamGain, { huge } }, { kNoiseParamFractal, { (double)NoiseCore::kNoiseFractalHybrid } } } },
+        { "huge lacunarity and gain, turbulence",
+          Knobs { { kNoiseParamLacunarity, { huge } }, { kNoiseParamGain, { huge } }, { kNoiseParamFractal, { (double)NoiseCore::kNoiseFractalBillow } } } },
+        { "huge weighted strength", Knobs { { kNoiseParamWeightedStrength, { huge } }, { kNoiseParamGain, { 3. } } } },
+        { "huge negative weighted strength", Knobs { { kNoiseParamWeightedStrength, { -huge } }, { kNoiseParamGain, { 3. } } } },
+        { "huge warp amount", Knobs { { kNoiseParamWarpType, { (double)NoiseCore::kNoiseWarpPerlin } }, { kNoiseParamWarpAmount, { huge } } } },
+        { "huge warp frequency", Knobs { { kNoiseParamWarpType, { (double)NoiseCore::kNoiseWarpSimplex } }, { kNoiseParamWarpFrequency, { -huge } } } },
+        { "huge smoothness",
+          Knobs { { kNoiseParamType, { (double)NoiseCore::kNoiseTypeCellular } },
+                  { kNoiseParamOutput, { (double)NoiseCore::kNoiseCellularSmoothF1 } },
+                  { kNoiseParamSmoothness, { huge } } } },
+        { "tiny scale", Knobs { { kNoiseParamScale, { 1e-300, -1e-300 } } } },
+        { "huge scale", Knobs { { kNoiseParamScale, { huge, huge } } } },
+        { "huge translate, rotate and center",
+          Knobs { { kNoiseParamTranslate, { huge, -huge } }, { kNoiseParamRotate, { huge } }, { kNoiseParamCenter, { -huge, huge } } } },
+        { "huge evolution and z offset", Knobs { { kNoiseParamEvolution, { huge } }, { kNoiseParamZOffset, { -huge } } } },
+        { "huge loop period", Knobs { { kNoiseParamEvolution, { 2.5 } }, { kNoiseParamLoopPeriod, { huge } } } },
+        { "huge colour mapping",
+          Knobs { { kNoiseParamAmplitude, { huge } },
+                  { kNoiseParamOffset, { -huge } },
+                  { kNoiseParamColor0, { -huge, huge, -huge, huge } },
+                  { kNoiseParamColor1, { huge, -huge, huge, -huge } } } },
+    };
+
+    for (const auto& c : cases) {
+        resetProject();
+        NodePtr node = makeNoise(NoiseCore::kNoiseTypePerlin);
+        ASSERT_TRUE(bool(node)) << c.first;
+        ASSERT_TRUE(setKnobValues(node, kNoiseParamFractal, { (double)NoiseCore::kNoiseFractalFBm })) << c.first;
+        ASSERT_TRUE(setKnobValues(node, kNoiseParamOctaves, { (double)NoiseCore::kNoiseMaxOctaves })) << c.first;
+        for (const auto& k : c.second) {
+            ASSERT_TRUE(setKnobValues(node, k.first, k.second)) << c.first;
+        }
+        RenderedPlane plane;
+        ASSERT_TRUE(renderRgba(node, frame(), &plane)) << c.first;
+        EXPECT_EQ(0, countNonFinite(plane)) << c.first;
+    }
+}
+
+// A fractal adds no octave past the core's frequency or amplitude bound: with a lacunarity of 1e6
+// the fifth octave would be at 1e24, past 1e20, and with a gain of 1e8 its amplitude would be
+// 1e32, past 1e30, so 16 octaves render exactly 4, which differ from 3.
+TEST_F(NativeNoiseTest, FractalsStopAtTheFrequencyAndAmplitudeBounds)
+{
+    for (const auto& knob : { std::make_pair(std::string(kNoiseParamLacunarity), 1e6), std::make_pair(std::string(kNoiseParamGain), 1e8) }) {
+        resetProject();
+        NodePtr node = makeNoise(NoiseCore::kNoiseTypeValue);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValues(node, kNoiseParamFractal, { (double)NoiseCore::kNoiseFractalFBm }));
+        ASSERT_TRUE(setKnobValues(node, knob.first, { knob.second }));
+
+        ASSERT_TRUE(setKnobValues(node, kNoiseParamOctaves, { (double)NoiseCore::kNoiseMaxOctaves }));
+        RenderedPlane all;
+        ASSERT_TRUE(renderRgba(node, frame(), &all));
+        EXPECT_EQ(0, countNonFinite(all)) << knob.first;
+        ASSERT_TRUE(setKnobValues(node, kNoiseParamOctaves, { 4. }));
+        RenderedPlane four;
+        ASSERT_TRUE(renderRgba(node, frame(), &four));
+        ASSERT_TRUE(setKnobValues(node, kNoiseParamOctaves, { 3. }));
+        RenderedPlane three;
+        ASSERT_TRUE(renderRgba(node, frame(), &three));
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_EQ(0, countDifferent(all, four, c)) << knob.first << ", channel " << c;
+        }
+        EXPECT_GT(countDifferent(four, three, 0), kWidth * kHeight / 2) << knob.first;
+    }
+}
+
+// The loop's phase is evolution modulo the period, taken exactly: far along evolution, in either
+// direction, one period apart and the reduced phase itself render the same pixels bit for bit.
+TEST_F(NativeNoiseTest, LoopRepeatsExactlyFarAlongEvolution)
+{
+    resetProject();
+    NodePtr node = makeNoise(NoiseCore::kNoiseTypeSimplex);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kNoiseParamLoopPeriod, { 3. }));
+
+    // 1e15 is 1 modulo 3, so 1e15 + 0.375 reduces to 1.375 and -(1e15 + 0.375) to 1.625. Both
+    // are exact in a double, as is each value plus or minus 3.
+    const double far = 1e15 + 0.375;
+    const std::vector<std::pair<double, std::vector<double>>> cases = {
+        { 1.375, { far, far + 3., far - 3. } },
+        { 1.625, { -far, -far + 3., -far - 3. } },
+    };
+    for (const auto& c : cases) {
+        ASSERT_TRUE(setKnobValues(node, kNoiseParamEvolution, { c.first }));
+        RenderedPlane reduced;
+        ASSERT_TRUE(renderRgba(node, frame(), &reduced));
+        for (double e : c.second) {
+            ASSERT_TRUE(setKnobValues(node, kNoiseParamEvolution, { e }));
+            RenderedPlane plane;
+            ASSERT_TRUE(renderRgba(node, frame(), &plane));
+            for (int ch = 0; ch < 4; ++ch) {
+                EXPECT_EQ(0, countDifferent(reduced, plane, ch)) << "evolution " << e << ", channel " << ch;
+            }
         }
     }
 }

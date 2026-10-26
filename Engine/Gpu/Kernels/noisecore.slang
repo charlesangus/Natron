@@ -985,6 +985,10 @@ static const int kNoiseWarpSimplex = 2;
 
 static const int kNoiseMaxOctaves = 16;
 
+// See NoiseCore.h.
+static const float kNoiseMaxFrequency = 1e20f;
+static const float kNoiseMaxAmplitude = 1e30f;
+
 static const uint kNoiseWarpSeed = 0x9E3779B9u;
 
 // NoiseCore::NoiseParams, field for field (56 bytes).
@@ -1091,6 +1095,9 @@ float noise4(NoiseParams prm,
         boundAmp *= gainBound;
         seed += 1u;
         frequency *= prm.lacunarity;
+        if (!(vabs(frequency) <= kNoiseMaxFrequency) || !(boundAmp <= kNoiseMaxAmplitude) || !(vabs(amp) <= kNoiseMaxAmplitude)) {
+            break;
+        }
     }
 
     float v = sum / bound;

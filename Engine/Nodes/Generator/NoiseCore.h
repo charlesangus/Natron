@@ -78,6 +78,12 @@ constexpr int kNoiseWarpSimplex = 2;
 
 constexpr int kNoiseMaxOctaves = 16;
 
+// The fractals add no octave whose frequency or amplitude would exceed these: a split coordinate
+// scaled by up to kNoiseMaxFrequency keeps every product of axisScale finite, and up to 16
+// octaves of amplitude at most kNoiseMaxAmplitude sum to a finite value.
+constexpr float kNoiseMaxFrequency = 1e20f;
+constexpr float kNoiseMaxAmplitude = 1e30f;
+
 constexpr uint kNoiseWarpSeed = 0x9E3779B9u;
 
 // Everything that shapes the noise but the sample point. Plain scalars, so the struct can be
@@ -185,7 +191,9 @@ noiseWarp(NoiseParams prm,
 //   w_0 = 1 and w_k+1 = min(1, 2 w_k s_k), so octaves only add detail where the lower ones are
 //   high; mapped back from [0, 1].
 // Each sum is divided by the sum of |gain|^k, the most it can reach for a weighted strength in
-// [0, 1], and clamped to [-1, 1].
+// [0, 1], and clamped to [-1, 1]. The sum stops early, at the same octave on the CPU and the GPU,
+// once the next octave's frequency would pass kNoiseMaxFrequency or its amplitude
+// kNoiseMaxAmplitude (a NaN in either stops it too).
 inline float
 noise4(NoiseParams prm,
        NoiseCoord p)
@@ -230,6 +238,9 @@ noise4(NoiseParams prm,
         boundAmp *= gainBound;
         seed += 1u;
         frequency *= prm.lacunarity;
+        if (!(noise4d::vabs(frequency) <= kNoiseMaxFrequency) || !(boundAmp <= kNoiseMaxAmplitude) || !(noise4d::vabs(amp) <= kNoiseMaxAmplitude)) {
+            break;
+        }
     }
 
     float v = sum / bound;

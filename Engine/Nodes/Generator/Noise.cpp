@@ -52,6 +52,18 @@ const double kPi = 3.14159265358979323846;
 // double, and the noise wraps every 2^32 cells anyway.
 const double kNoiseSplitLimit = 1e15;
 
+// The largest warp displacement, in noise cells: the core moves a split coordinate by less than
+// 2^31 cells.
+const double kNoiseMaxWarpAmount = 1e9;
+
+// The widest smooth minimum, in noise cells: far beyond the distances between feature points,
+// and small enough that its square stays finite.
+const double kNoiseMaxSmoothness = 1e6;
+
+// The largest magnitude of Amplitude, Offset and the colours: the colour mapping's products stay
+// finite in float.
+const double kNoiseMaxColorValue = 1e15;
+
 std::string
 trStd(const char* text)
 {
@@ -63,6 +75,19 @@ finiteOr(double v,
          double fallback)
 {
     return std::isfinite(v) ? v : fallback;
+}
+
+// v (fallback when not finite) clamped to [lo, hi], as a float. lo, hi and fallback are within
+// the float range, so the result is finite.
+float
+boundedFloat(double v,
+             double fallback,
+             double lo,
+             double hi)
+{
+    const float f = (float)(std::max)(lo, (std::min)(hi, finiteOr(v, fallback)));
+
+    return std::isfinite(f) ? f : (float)fallback;
 }
 
 // v as a cell (modulo 2^32, two's complement, as the core wraps its cells) and a fraction in
@@ -235,7 +260,8 @@ readColor(const KnobReader& reader,
           float out[4])
 {
     for (int i = 0; i < 4; ++i) {
-        out[i] = (float)reader.valueOr(knob, i < 3 ? fallbackValue : 1., i);
+        const double fallback = i < 3 ? fallbackValue : 1.;
+        out[i] = boundedFloat(reader.valueOr(knob, fallback, i), fallback, -kNoiseMaxColorValue, kNoiseMaxColorValue);
     }
 }
 } // anonymous namespace
@@ -368,7 +394,7 @@ NoiseOp::createKnobs(KnobHolder* holder,
     gain = addDoubleKnob(holder, page, kNoiseParamGain, "Gain",
                          "Amplitude ratio between one octave and the next.", 1, 0.5, -DBL_MAX, DBL_MAX, 0., 1.);
     weightedStrength = addDoubleKnob(holder, page, kNoiseParamWeightedStrength, "Weighted Strength",
-                                     "fBm, Turbulence and Ridged: how much a low value of one octave damps the next.", 1, 0., -DBL_MAX, DBL_MAX, 0., 1.);
+                                     "fBm, Turbulence and Ridged: how much a low value of one octave damps the next, from 0 to 1.", 1, 0., 0., 1., 0., 1.);
 
     metric = addChoiceKnob(holder, page, kNoiseParamMetric, "Metric", "Cellular only: the distance between a point and a feature point.", kMetrics, NoiseCore::kNoiseMetricEuclidean);
     output = addChoiceKnob(holder, page, kNoiseParamOutput, "Output", "Cellular only: what the noise value is made of.", kOutputs, NoiseCore::kNoiseCellularF1);
@@ -436,16 +462,16 @@ NoiseOp::bake(const KnobReader& reader) const
     }
     noise.fractal = clampChoice(reader.valueOr(fractal, NoiseCore::kNoiseFractalFBm), NoiseCore::kNoiseFractalHybrid);
     noise.octaves = (std::max)(1, (std::min)(NoiseCore::kNoiseMaxOctaves, (int)reader.valueOr(octaves, 4)));
-    noise.lacunarity = (float)finiteOr(reader.valueOr(lacunarity, 2.), 2.);
-    noise.gain = (float)finiteOr(reader.valueOr(gain, 0.5), 0.5);
-    noise.weightedStrength = (float)finiteOr(reader.valueOr(weightedStrength, 0.), 0.);
+    noise.lacunarity = boundedFloat(reader.valueOr(lacunarity, 2.), 2., -NoiseCore::kNoiseMaxFrequency, NoiseCore::kNoiseMaxFrequency);
+    noise.gain = boundedFloat(reader.valueOr(gain, 0.5), 0.5, -NoiseCore::kNoiseMaxAmplitude, NoiseCore::kNoiseMaxAmplitude);
+    noise.weightedStrength = boundedFloat(reader.valueOr(weightedStrength, 0.), 0., 0., 1.);
     noise.cellularMetric = clampChoice(reader.valueOr(metric, NoiseCore::kNoiseMetricEuclidean), NoiseCore::kNoiseMetricChebyshev);
     noise.cellularOutput = clampChoice(reader.valueOr(output, NoiseCore::kNoiseCellularF1), NoiseCore::kNoiseCellularSmoothF1);
-    noise.jitter = (float)(std::max)(0., (std::min)(1., finiteOr(reader.valueOr(jitter, 1.), 1.)));
-    noise.smoothness = (float)(std::max)(0., finiteOr(reader.valueOr(smoothness, 0.1), 0.1));
+    noise.jitter = boundedFloat(reader.valueOr(jitter, 1.), 1., 0., 1.);
+    noise.smoothness = boundedFloat(reader.valueOr(smoothness, 0.1), 0.1, 0., kNoiseMaxSmoothness);
     noise.warpType = clampChoice(reader.valueOr(warpType, NoiseCore::kNoiseWarpNone), NoiseCore::kNoiseWarpSimplex);
-    noise.warpAmount = (float)finiteOr(reader.valueOr(warpAmount, 0.5), 0.);
-    noise.warpFrequency = (float)finiteOr(reader.valueOr(warpFrequency, 1.), 1.);
+    noise.warpAmount = boundedFloat(reader.valueOr(warpAmount, 0.5), 0., -kNoiseMaxWarpAmount, kNoiseMaxWarpAmount);
+    noise.warpFrequency = boundedFloat(reader.valueOr(warpFrequency, 1.), 1., -NoiseCore::kNoiseMaxFrequency, NoiseCore::kNoiseMaxFrequency);
 
     params.sizeX = reader.valueOr(size, 100., 0);
     params.sizeY = reader.valueOr(size, 100., 1);
@@ -462,8 +488,8 @@ NoiseOp::bake(const KnobReader& reader) const
     params.par = generator ? generator->getPixelAspectRatio() : 1.;
     readColor(reader, color0, 0., params.color0);
     readColor(reader, color1, 1., params.color1);
-    params.amplitude = (float)reader.valueOr(amplitude, 1.);
-    params.offset = (float)reader.valueOr(offset, 0.);
+    params.amplitude = boundedFloat(reader.valueOr(amplitude, 1.), 1., -kNoiseMaxColorValue, kNoiseMaxColorValue);
+    params.offset = boundedFloat(reader.valueOr(offset, 0.), 0., -kNoiseMaxColorValue, kNoiseMaxColorValue);
     params.decorrelate = reader.valueOr(decorrelate, false);
 
     return params;
@@ -509,10 +535,11 @@ NoiseOp::pixelParams(const Params& params,
     // Pixel x covers canonical [x, x + 1) par / renderScaleX, pixel y [y, y + 1) / renderScaleY.
     const double pixelX = finiteOr(params.par / renderScaleX, 1.);
     const double pixelY = finiteOr(1. / renderScaleY, 1.);
-    p.mxx = (float)finiteOr(a00 * pixelX, 0.);
-    p.mxy = (float)finiteOr(a01 * pixelY, 0.);
-    p.myx = (float)finiteOr(a10 * pixelX, 0.);
-    p.myy = (float)finiteOr(a11 * pixelY, 0.);
+    // A coefficient is a frequency of the split pixel coordinate, so it is bounded like one.
+    p.mxx = boundedFloat(a00 * pixelX, 0., -NoiseCore::kNoiseMaxFrequency, NoiseCore::kNoiseMaxFrequency);
+    p.mxy = boundedFloat(a01 * pixelY, 0., -NoiseCore::kNoiseMaxFrequency, NoiseCore::kNoiseMaxFrequency);
+    p.myx = boundedFloat(a10 * pixelX, 0., -NoiseCore::kNoiseMaxFrequency, NoiseCore::kNoiseMaxFrequency);
+    p.myy = boundedFloat(a11 * pixelY, 0., -NoiseCore::kNoiseMaxFrequency, NoiseCore::kNoiseMaxFrequency);
     splitAxis(bx, &p.bxCell, &p.bxFraction);
     splitAxis(by, &p.byCell, &p.byFraction);
 
@@ -521,9 +548,18 @@ NoiseOp::pixelParams(const Params& params,
     const double period = finiteOr(params.loopPeriod, 0.);
     if (period > 0.) {
         // A circle of circumference period, so evolution moves through noise space at the same
-        // speed as without the loop.
+        // speed as without the loop. The phase is evolution modulo period, which fmod gives
+        // exactly, so evolution and evolution + period land on the same point however large
+        // evolution is.
+        double phase = std::fmod(w, period);
+        if (phase < 0.) {
+            phase += period;
+        }
+        if (phase >= period) {
+            phase = 0.;
+        }
         const double radius = period / (2. * kPi);
-        const double turn = 2. * kPi * (w / period);
+        const double turn = 2. * kPi * (phase / period);
         z = z + radius * std::cos(turn);
         w = radius * std::sin(turn);
     }

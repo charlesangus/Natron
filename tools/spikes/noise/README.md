@@ -98,3 +98,28 @@ and `gpu`, plus the `gpu` and `b_strict` differences against `a_base`, for the f
   - FastNoise2's cellular also takes the square root of its second distance. That does not
     change F1.
 - **`fnl`:** 3D noise with its own gradients, so it is a timing floor only.
+
+## Results and decision
+
+Measured on the GPU host (RX 7900 XTX through RADV, an AVX-512 CPU), in ms per megapixel at
+origins 0 and 1e5, which agree:
+
+| Noise | `gpu` | `a_v3`, 1 thread | `a_v3`, all cores | `b_strict`, all cores | `b_relaxed`, all cores | `fnl`, 1 thread |
+|---|---|---|---|---|---|---|
+| Perlin FBm | 0.26 | 19.5 | 2.4 | 2.4-2.6 | 2.0-2.4 | 54-56 |
+| SuperSimplex FBm | 0.41-0.46 | 43 | 5.4 | 4.9 | 3.4 | 75-77 |
+| Cellular F1 FBm | 0.73-0.96 | 162 (`a_v3_fma`) | 21 | 25 | 17 | 214 |
+
+- **Speed:** the port is 2.5 to 3 times faster than FastNoiseLite and level with FastNoise2
+  strict. FastNoise2 relaxed is up to about 30% faster than the port.
+- **Agreement:** the port is within 4.8e-7 of the GPU, and the unfused port is bit-equal to the
+  unfused GPU kernel on most types. FastNoise2 strict is within 4.2e-7 of the port, but
+  FastNoise2 relaxed differs by up to 8e-5.
+- **Baseline `fma`:** the port built for baseline x86-64 with explicit `fma` is pathological
+  (cellular FBm at 5749 ms/Mpx on one thread), because `fma` is a libm call there.
+
+**Decision (user):** the port (`fn2port/`, option A) becomes Natron's noise core. It matches the
+GPU by construction, is one implementation mirrored line for line in C++ and Slang, and needs no
+vendored FastSIMD or runtime SIMD dispatch. The core keeps FMA out entirely, so the CPU and the
+GPU agree on every x86-64 machine. Cellular distance to edge is exact for Euclidean; for Manhattan
+and Chebyshev it is approximated by (F2 - F1) / 2, which the user accepted.

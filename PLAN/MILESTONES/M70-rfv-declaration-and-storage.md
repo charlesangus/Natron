@@ -112,3 +112,5 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
 - 2026-10-25 — **RFV group invariant both ways (bosley-native-nodes):** a flagged group refuses a non-variable child in addKnob/insertKnob, as setAsRFVGroup refuses while one exists; on load a refused child is logged and dropped.
 - 2026-10-25 — **getDeclaredVariables failure mode (bosley-native-nodes):** a bad child is left out with a message, duplicate names reject every holder of the name, and every flagged group in the holder is read.
 - 2026-10-25 — **Freshness (bosley-native-nodes):** the flag saves through the YAML format (`Serialization/Yaml/KnobYaml.cpp`, `ProjectSerializationConvert.cpp`) and restores in `NodeMain.cpp restoreUserKnobsRecursive`; native nodes register through `Engine/Nodes/*.reg.inc`; Engine sources need no CMake line. Later tasks naming `ProjectSerialization.cpp`, `NodeGroup.cpp` restore or `AppManager.cpp` registration read as those.
+
+Shipped 2026-10-26: UAT approved; PR #107 squash-merged to main as 600c151dc.

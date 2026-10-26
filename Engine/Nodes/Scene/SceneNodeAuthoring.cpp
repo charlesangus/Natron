@@ -515,6 +515,37 @@ composeTransformMatrix(const PXR_NS::GfVec3d& translate,
     return toPivot * scaling * composeRotationMatrix(rotate, rotateOrder) * fromPivot;
 }
 
+bool
+isTransformAnimated(const SceneTransformKnobs& knobs,
+                    const KnobDoublePtr& pivot)
+{
+    return isAnimated(knobs.translate.lock()) || isAnimated(knobs.rotate.lock()) || isAnimated(knobs.scale.lock())
+        || isAnimated(knobs.uniformScale.lock()) || isAnimated(pivot);
+}
+
+PXR_NS::GfMatrix4d
+getTransformMatrixAt(const SceneTransformKnobs& knobs,
+                     const KnobDoublePtr& pivot,
+                     double frame)
+{
+    KnobDoublePtr translate = knobs.translate.lock();
+    KnobDoublePtr rotate = knobs.rotate.lock();
+    KnobDoublePtr scale = knobs.scale.lock();
+    KnobDoublePtr uniformScale = knobs.uniformScale.lock();
+    KnobChoicePtr rotateOrder = knobs.rotateOrder.lock();
+
+    if (!translate || !rotate || !scale || !uniformScale || !rotateOrder || !pivot) {
+        return PXR_NS::GfMatrix4d(1.);
+    }
+    const double uniform = uniformScale->getValueAtTime(frame, 0);
+
+    return composeTransformMatrix(PXR_NS::GfVec3d(translate->getValueAtTime(frame, 0), translate->getValueAtTime(frame, 1), translate->getValueAtTime(frame, 2)),
+                                  PXR_NS::GfVec3d(rotate->getValueAtTime(frame, 0), rotate->getValueAtTime(frame, 1), rotate->getValueAtTime(frame, 2)),
+                                  PXR_NS::GfVec3d(scale->getValueAtTime(frame, 0) * uniform, scale->getValueAtTime(frame, 1) * uniform, scale->getValueAtTime(frame, 2) * uniform),
+                                  PXR_NS::GfVec3d(pivot->getValueAtTime(frame, 0), pivot->getValueAtTime(frame, 1), pivot->getValueAtTime(frame, 2)),
+                                  (SceneRotateOrderEnum)rotateOrder->getValue());
+}
+
 } // namespace SceneNodeAuthoring
 
 NATRON_NAMESPACE_EXIT

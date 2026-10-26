@@ -59,11 +59,11 @@
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
-#include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDTransform.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
 #include "Tests/Native/NativeGolden.h"
@@ -308,7 +308,7 @@ protected:
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
         NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTRANSFORM));
         NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
-        NodePtr rig = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+        NodePtr rig = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
         NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
@@ -342,9 +342,9 @@ protected:
 
         ok = ok && setString(rig, kSceneParamPrimPath, "/World/Rig");
         ok = ok && setTriple(rig, kSceneParamTranslate, 1., 1., 0.);
-        ok = ok && setString(camera, kSceneParamPrimPath, kRenderCamera);
+        ok = ok && setString(camera, kSceneParamPrimPath, "/RenderCam");
         ok = ok && setTriple(camera, kSceneParamTranslate, 0., 0., 12.);
-        ok = ok && setString(light, kSceneParamPrimPath, "/World/Rig/Key");
+        ok = ok && setString(light, kSceneParamPrimPath, "/Key");
 
         ok = ok && setString(prune, kUSDPruneParamPrimPattern, "/World/Cam");
         if (!ok) {
@@ -353,10 +353,10 @@ protected:
 
         connectNodes(reader, transform, 0, true);
         connectNodes(transform, material, 0, true);
-        connectNodes(rig, camera, 0, true);
         connectNodes(camera, light, 0, true);
+        connectNodes(light, rig, 0, true);
         connectNodes(material, merge, 0, true);
-        connectNodes(light, merge, 1, true);
+        connectNodes(rig, merge, 1, true);
         connectNodes(merge, prune, 0, true);
         connectNodes(prune, render, 0, true);
 

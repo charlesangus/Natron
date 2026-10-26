@@ -619,6 +619,15 @@ protected:
                         std::string* errorMessage) WARN_UNUSED_RETURN;
 
     /**
+     * @brief The key emitSceneLayer() memoizes this node's layer on, for a node that memoizes
+     * layers of its own on the same terms. Returns false with *errorMessage set while the node is
+     * being destroyed.
+     **/
+    bool getSceneLayerKey(const SceneLayerReads& reads,
+                          SceneLayerMemo::Key* key,
+                          std::string* errorMessage) WARN_UNUSED_RETURN;
+
+    /**
      * @brief Makes the next emitSceneLayer() author a new layer, for a change none of its inputs
      * see.
      **/

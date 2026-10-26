@@ -44,8 +44,8 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
-#include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/Nodes/Scene/USDTransform.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -118,19 +118,19 @@ protected:
 
     /**
      * @brief /World (an Xform moved by 100 along X) holding /World/A, scaled by 2 and moved along
-     * X by keyframes from 0 at frame 1 to 10 at frame 11, and /World/B, moved by 3 along Y; and a
-     * USDTransform reading them.
+     * X by keyframes from 0 at frame 1 to 10 at frame 11, and /World/B, moved by 3 along Y, each
+     * grafted under /World from a node of its own; and a USDTransform reading them.
      **/
     void buildGraph()
     {
-        _world = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
-        _a = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
-        _b = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+        _world = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+        _a = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+        _b = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
         _transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTRANSFORM));
         ASSERT_TRUE(_world && _a && _b && _transform);
         setString(_world, kSceneParamPrimPath, "/World");
-        setString(_a, kSceneParamPrimPath, "/World/A");
-        setString(_b, kSceneParamPrimPath, "/World/B");
+        setString(_a, kSceneParamPrimPath, "/A");
+        setString(_b, kSceneParamPrimPath, "/B");
         getDoubleKnob(_world, kSceneParamTranslate)->setValue(100., ViewSpec::all(), 0);
         KnobDouble* aTranslate = getDoubleKnob(_a, kSceneParamTranslate);
         ASSERT_TRUE(aTranslate != NULL);
@@ -138,9 +138,9 @@ protected:
         aTranslate->setValueAtTime(11., 10., ViewSpec::all(), 0);
         getDoubleKnob(_a, kSceneParamUniformScale)->setValue(2.);
         getDoubleKnob(_b, kSceneParamTranslate)->setValue(3., ViewSpec::all(), 1);
-        ASSERT_TRUE(_a->connectInput(_world, 0));
-        ASSERT_TRUE(_b->connectInput(_a, 0));
-        ASSERT_TRUE(_transform->connectInput(_b, 0));
+        ASSERT_TRUE(_world->connectInput(_a, 0));
+        ASSERT_TRUE(_world->connectInput(_b, 1));
+        ASSERT_TRUE(_transform->connectInput(_world, 0));
         _aTranslate = aTranslate;
     }
 
@@ -172,12 +172,12 @@ TEST_F(USDTransformTest, AppendComposesOverTheAnimatedInputOps)
     ASSERT_TRUE(bool(stage));
     EXPECT_FALSE(_transform->hasPersistentMessage());
 
-    // The node's op goes after the input's ops, which keep their time samples.
+    // The node's op goes after the input's op, which keeps its time samples.
     const PXR_NS::VtTokenArray order = getOpOrder(stage, "/World/A");
-    ASSERT_EQ((std::size_t)4, order.size());
-    EXPECT_EQ(PXR_NS::TfToken("xformOp:translate"), order[0]);
-    EXPECT_EQ(PXR_NS::TfToken(opName()), order[3]);
-    EXPECT_LT((std::size_t)1, stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A")).GetAttribute(PXR_NS::TfToken("xformOp:translate")).GetNumTimeSamples());
+    ASSERT_EQ((std::size_t)2, order.size());
+    EXPECT_EQ(PXR_NS::TfToken("xformOp:transform"), order[0]);
+    EXPECT_EQ(PXR_NS::TfToken(opName()), order[1]);
+    EXPECT_LT((std::size_t)1, stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A")).GetAttribute(PXR_NS::TfToken("xformOp:transform")).GetNumTimeSamples());
 
     // It acts in A's local space, under A's scale of 2 and A's animated move, under /World.
     for (double frame : { 1., 6., 11. }) {
@@ -188,7 +188,7 @@ TEST_F(USDTransformTest, AppendComposesOverTheAnimatedInputOps)
         EXPECT_NEAR(0., t[2], 1e-6);
     }
     // B is not matched.
-    EXPECT_EQ((std::size_t)3, getOpOrder(stage, "/World/B").size());
+    EXPECT_EQ((std::size_t)1, getOpOrder(stage, "/World/B").size());
 }
 
 TEST_F(USDTransformTest, ReplaceDiscardsTheInputOpsAndTheParentTransform)
@@ -248,7 +248,7 @@ TEST_F(USDTransformTest, ZeroMatchesWarnAndPassTheSceneThrough)
     setString(_transform, kUSDTransformParamPrimPattern, "/Nowhere/*");
     getDoubleKnob(_transform, kSceneParamTranslate)->setValue(5., ViewSpec::all(), 0);
 
-    const ScenePayload input = evaluate(_b);
+    const ScenePayload input = evaluate(_world);
     const ScenePayload output = evaluate(_transform);
     EXPECT_TRUE(output.isSameStack(input));
     EXPECT_EQ(input.getStackHash(), output.getStackHash());

@@ -47,9 +47,9 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
-#include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDTransform.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -123,12 +123,12 @@ protected:
         return payload;
     }
 
-    // A USDPrim authoring path, moved by translate, over input (if any).
+    // A USDXformPrim at path, moved by translate, with the roots of inputs grafted under it.
     NodePtr prim(const char* path,
                  const PXR_NS::GfVec3d& translate,
-                 const NodePtr& input = NodePtr())
+                 const std::vector<NodePtr>& inputs = std::vector<NodePtr>())
     {
-        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
 
         EXPECT_TRUE(bool(node));
         if (!node) {
@@ -138,8 +138,8 @@ protected:
         for (int d = 0; d < 3; ++d) {
             getDoubleKnob(node, kSceneParamTranslate)->setValue(translate[d], ViewSpec::all(), d);
         }
-        if (input) {
-            EXPECT_TRUE(node->connectInput(input, 0));
+        for (std::size_t i = 0; i < inputs.size(); ++i) {
+            EXPECT_TRUE(node->connectInput(inputs[i], (int)i)) << i;
         }
 
         return node;
@@ -251,32 +251,43 @@ TEST_F(USDMergePruneTest, ADiamondYieldsTheSharedSourceLayerOnce)
 {
     NodePtr source = prim("/World", PXR_NS::GfVec3d(100., 0., 0.));
     ASSERT_TRUE(bool(source));
-    // One branch moves /World, the other adds a child.
-    NodePtr lift = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTRANSFORM));
-    ASSERT_TRUE(bool(lift));
-    setString(lift, kUSDTransformParamPrimPattern, "/World");
-    getDoubleKnob(lift, kSceneParamTranslate)->setValue(5., ViewSpec::all(), 1);
-    ASSERT_TRUE(lift->connectInput(source, 0));
-    NodePtr child = prim("/World/Child", PXR_NS::GfVec3d(0., 0., 1.), source);
-    NodePtr node = merge({ lift, child });
+    // Each branch moves /World along its own axis.
+    auto move = [this, &source](int dimension, double offset) {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTRANSFORM));
+        EXPECT_TRUE(bool(node));
+        if (node) {
+            setString(node, kUSDTransformParamPrimPattern, "/World");
+            getDoubleKnob(node, kSceneParamTranslate)->setValue(offset, ViewSpec::all(), dimension);
+            EXPECT_TRUE(node->connectInput(source, 0));
+        }
+
+        return node;
+    };
+    NodePtr lift = move(1, 5.);
+    NodePtr push = move(2, 1.);
+    ASSERT_TRUE(lift && push);
+    NodePtr node = merge({ lift, push });
 
     const ScenePayload sourceScene = evaluate(source);
     const ScenePayload output = evaluate(node);
-    ASSERT_EQ(1u, sourceScene.getNumLayers());
+    const std::vector<PXR_NS::SdfLayer*> sourceLayers = layersOf(sourceScene);
+    const std::size_t shared = sourceLayers.size();
+    ASSERT_LT(0u, shared);
     const std::vector<PXR_NS::SdfLayer*> layers = layersOf(output);
-    ASSERT_EQ(3u, layers.size());
-    EXPECT_EQ(1, std::count(layers.begin(), layers.end(), layersOf(sourceScene).front()));
-    EXPECT_EQ(layersOf(evaluate(lift)).back(), layers[1]);
-    EXPECT_EQ(layersOf(evaluate(child)).back(), layers[2]);
+    ASSERT_EQ(shared + 2, layers.size());
+    for (PXR_NS::SdfLayer* layer : sourceLayers) {
+        EXPECT_EQ(1, std::count(layers.begin(), layers.end(), layer));
+    }
+    EXPECT_EQ(layersOf(evaluate(lift)).back(), layers[shared]);
+    EXPECT_EQ(layersOf(evaluate(push)).back(), layers[shared + 1]);
 
-    // The source stays under what each branch authored over it: the move survives the union.
+    // The source stays under what each branch authored over it: both moves survive the union.
     PXR_NS::UsdStageRefPtr stage = SceneOps::compose(output);
     ASSERT_TRUE(bool(stage));
-    EXPECT_EQ(PXR_NS::GfVec3d(100., 5., 0.), worldTranslation(stage, "/World"));
-    EXPECT_EQ(PXR_NS::GfVec3d(100., 5., 1.), worldTranslation(stage, "/World/Child"));
+    EXPECT_EQ(PXR_NS::GfVec3d(100., 5., 1.), worldTranslation(stage, "/World"));
 
     // The same layers give the same stack.
-    EXPECT_EQ(output.getStackHash(), evaluate(merge({ lift, child })).getStackHash());
+    EXPECT_EQ(output.getStackHash(), evaluate(merge({ lift, push })).getStackHash());
 }
 
 TEST_F(USDMergePruneTest, OneInputPassesThroughAndNoneIsEmpty)
@@ -297,12 +308,12 @@ TEST_F(USDMergePruneTest, OneInputPassesThroughAndNoneIsEmpty)
 
 TEST_F(USDMergePruneTest, PrunedPrimsAreInactiveOnTheComposedStage)
 {
-    NodePtr world = prim("/World", PXR_NS::GfVec3d(0.));
-    NodePtr a = prim("/World/A", PXR_NS::GfVec3d(0.), world);
-    NodePtr aChild = prim("/World/A/Leaf", PXR_NS::GfVec3d(0.), a);
-    NodePtr b = prim("/World/B", PXR_NS::GfVec3d(0.), aChild);
-    ASSERT_TRUE(bool(b));
-    NodePtr node = prune(b, "/World/A", "deactivate");
+    NodePtr leaf = prim("/Leaf", PXR_NS::GfVec3d(0.));
+    NodePtr a = prim("/A", PXR_NS::GfVec3d(0.), { leaf });
+    NodePtr b = prim("/B", PXR_NS::GfVec3d(0.));
+    NodePtr world = prim("/World", PXR_NS::GfVec3d(0.), { a, b });
+    ASSERT_TRUE(bool(world));
+    NodePtr node = prune(world, "/World/A", "deactivate");
 
     PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(node));
     ASSERT_TRUE(bool(stage));
@@ -315,7 +326,7 @@ TEST_F(USDMergePruneTest, PrunedPrimsAreInactiveOnTheComposedStage)
     }
     EXPECT_EQ(std::vector<std::string>({ "/World", "/World/B" }), traversed);
     // The input is not edited.
-    PXR_NS::UsdStageRefPtr input = SceneOps::compose(evaluate(b));
+    PXR_NS::UsdStageRefPtr input = SceneOps::compose(evaluate(world));
     EXPECT_TRUE(input->GetPrimAtPath(PXR_NS::SdfPath("/World/A")).IsActive());
 
     // Wildcards name several prims.
@@ -329,11 +340,11 @@ TEST_F(USDMergePruneTest, PrunedPrimsAreInactiveOnTheComposedStage)
 
 TEST_F(USDMergePruneTest, HiddenPrimsStayOnTheStageInvisible)
 {
-    NodePtr world = prim("/World", PXR_NS::GfVec3d(0.));
-    NodePtr a = prim("/World/A", PXR_NS::GfVec3d(0.), world);
-    NodePtr leaf = prim("/World/A/Leaf", PXR_NS::GfVec3d(0.), a);
-    ASSERT_TRUE(bool(leaf));
-    NodePtr node = prune(leaf, "/World/A", "hide");
+    NodePtr leaf = prim("/Leaf", PXR_NS::GfVec3d(0.));
+    NodePtr a = prim("/A", PXR_NS::GfVec3d(0.), { leaf });
+    NodePtr world = prim("/World", PXR_NS::GfVec3d(0.), { a });
+    ASSERT_TRUE(bool(world));
+    NodePtr node = prune(world, "/World/A", "hide");
 
     PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(node));
     ASSERT_TRUE(bool(stage));

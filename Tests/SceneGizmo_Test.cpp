@@ -51,8 +51,8 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
-#include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/Nodes/Scene/USDTransform.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -412,7 +412,7 @@ protected:
         _app = appPTR->getTopLevelInstance();
         ASSERT_TRUE(bool(_app));
         _app->getProject()->reset(false, true);
-        _prim = create(PLUGINID_NATRON_USDPRIM);
+        _prim = create(PLUGINID_NATRON_USDXFORMPRIM);
         _transform = create(PLUGINID_NATRON_USDTRANSFORM);
         ASSERT_TRUE(_prim && _transform);
         KnobString* primPath = dynamic_cast<KnobString*>(_prim->getKnobByName(kSceneParamPrimPath).get());

@@ -59,11 +59,11 @@
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
-#include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDTransform.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -235,39 +235,45 @@ TEST_F(SceneIntegrationTest, ReferenceSceneThroughTheActionComposesWithItsBounds
 TEST_F(SceneIntegrationTest, CreatedPrimsLayerOverTheReadScene)
 {
     NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
-    NodePtr rig = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr rig = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
     NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
-    ASSERT_TRUE(reader && rig && camera && light);
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(reader && rig && camera && light && merge);
     KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
     ASSERT_TRUE(file != NULL);
     file->setValue(NATRON_TESTS_FIXTURES_DIR "/scene-reference.usda");
 
-    // A rig xform under the read scene's root, with the camera and a light inside it.
+    // A rig xform under the read scene's root, the camera and a light grafted inside it.
     const auto setPrimPath = [](const NodePtr& node, const char* path) {
         KnobString* primPath = dynamic_cast<KnobString*>(node->getKnobByName(kSceneParamPrimPath).get());
         ASSERT_TRUE(primPath != NULL);
         primPath->setValue(std::string(path));
     };
     setPrimPath(rig, "/World/Rig");
-    setPrimPath(camera, "/World/Rig/Shot");
-    setPrimPath(light, "/World/Rig/Key");
+    setPrimPath(camera, "/Shot");
+    setPrimPath(light, "/Key");
     KnobDouble* rigTranslate = dynamic_cast<KnobDouble*>(rig->getKnobByName(kSceneParamTranslate).get());
     KnobDouble* cameraTranslate = dynamic_cast<KnobDouble*>(camera->getKnobByName(kSceneParamTranslate).get());
     ASSERT_TRUE(rigTranslate && cameraTranslate);
     rigTranslate->setValue(100., ViewSpec::all(), 0);
     cameraTranslate->setValue(5., ViewSpec::all(), 2);
 
-    ASSERT_TRUE(rig->connectInput(reader, 0));
-    ASSERT_TRUE(camera->connectInput(rig, 0));
     ASSERT_TRUE(light->connectInput(camera, 0));
+    ASSERT_TRUE(rig->connectInput(light, 0));
+    ASSERT_TRUE(merge->connectInput(reader, 0));
+    ASSERT_TRUE(merge->connectInput(rig, 1));
 
-    ScenePayload payload;
+    const auto evaluate = [](const NodePtr& node, ScenePayload* payload, std::string* error) {
+        return node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), payload, error);
+    };
+    ScenePayload readPayload, rigPayload, payload;
     std::string error;
-    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
-              light->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
-        << error;
-    EXPECT_EQ((std::size_t)4, payload.getNumLayers());
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &readPayload, &error)) << error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(rig, &rigPayload, &error)) << error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(merge, &payload, &error)) << error;
+    // The created layers go over the read scene's, which share none of them.
+    EXPECT_EQ(readPayload.getNumLayers() + rigPayload.getNumLayers(), payload.getNumLayers());
     // The read scene's metadata passes through the created layers.
     EXPECT_EQ(SceneMetadata::eUpAxisY, payload.getMetadata().upAxis);
     EXPECT_EQ(std::string("World"), payload.getMetadata().defaultPrim);
@@ -301,9 +307,10 @@ TEST_F(SceneIntegrationTest, USDWriteRoundTripsTheSceneInBothModes)
     ASSERT_TRUE(tmp.isValid());
 
     NodePtr reader = createReader(kReferenceScene, 3.);
-    NodePtr rig = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr rig = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
     NodePtr prune = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRUNE));
-    ASSERT_TRUE(reader && rig && prune);
+    ASSERT_TRUE(reader && rig && merge && prune);
     KnobString* rigPath = getKnob<KnobString>(rig, kSceneParamPrimPath);
     KnobDouble* rigTranslate = getKnob<KnobDouble>(rig, kSceneParamTranslate);
     KnobString* prunePattern = getKnob<KnobString>(prune, kUSDPruneParamPrimPattern);
@@ -311,8 +318,9 @@ TEST_F(SceneIntegrationTest, USDWriteRoundTripsTheSceneInBothModes)
     rigPath->setValue(std::string("/World/Rig"));
     rigTranslate->setValue(100., ViewSpec::all(), 0);
     prunePattern->setValue(std::string("/World/Cam"));
-    ASSERT_TRUE(rig->connectInput(reader, 0));
-    ASSERT_TRUE(prune->connectInput(rig, 0));
+    ASSERT_TRUE(merge->connectInput(reader, 0));
+    ASSERT_TRUE(merge->connectInput(rig, 1));
+    ASSERT_TRUE(prune->connectInput(merge, 0));
 
     const std::string original = exportStage(composeOutput(prune));
     ASSERT_FALSE(original.empty());
@@ -410,7 +418,7 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredKeepsTheStackOrderAndAnchorsRelative
 
     // Nodes author the box at x = 5 and a textured material bound to it; the file read above them
     // moves the box to y = 7.
-    NodePtr box = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr box = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
     NodePtr reader = createReader(overPath.toStdString());
     NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
@@ -520,13 +528,14 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredRemovesStaleSidecars)
     }
 
     // Strongest first: b.usda, other, a.usda, box. Each run of node layers below a file is a sidecar.
-    NodePtr box = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr box = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     NodePtr readerA = createReader(aPath.toStdString());
     NodePtr mergeA = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
-    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+    NodePtr mergeOther = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
     NodePtr readerB = createReader(bPath.toStdString());
     NodePtr mergeB = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
-    ASSERT_TRUE(box && readerA && mergeA && other && readerB && mergeB);
+    ASSERT_TRUE(box && readerA && mergeA && other && mergeOther && readerB && mergeB);
     KnobString* boxPath = getKnob<KnobString>(box, kSceneParamPrimPath);
     KnobDouble* translate = getKnob<KnobDouble>(box, kSceneParamTranslate);
     KnobString* otherPath = getKnob<KnobString>(other, kSceneParamPrimPath);
@@ -536,8 +545,9 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredRemovesStaleSidecars)
     otherPath->setValue(std::string("/World/Other"));
     ASSERT_TRUE(mergeA->connectInput(box, 0));
     ASSERT_TRUE(mergeA->connectInput(readerA, 1));
-    ASSERT_TRUE(other->connectInput(mergeA, 0));
-    ASSERT_TRUE(mergeB->connectInput(other, 0));
+    ASSERT_TRUE(mergeOther->connectInput(mergeA, 0));
+    ASSERT_TRUE(mergeOther->connectInput(other, 1));
+    ASSERT_TRUE(mergeB->connectInput(mergeOther, 0));
     ASSERT_TRUE(mergeB->connectInput(readerB, 1));
 
     const QString path = outDir + QString::fromUtf8("/scene.usda");
@@ -551,7 +561,7 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredRemovesStaleSidecars)
 
     // Without b.usda, the strongest layer is other's, which becomes the written file itself: one
     // sidecar is left, for box below a.usda.
-    NodePtr shorter = createWriter(other, path, USDWrite::eExportModeLayered, USDWrite::ePathModeRelative, 1, 1);
+    NodePtr shorter = createWriter(mergeOther, path, USDWrite::eExportModeLayered, USDWrite::ePathModeRelative, 1, 1);
     ASSERT_TRUE(shorter && getWriter(shorter));
     ASSERT_EQ(eStatusOK, getWriter(shorter)->writeFrameRange(1, 1, ViewIdx(0)));
     expected = unrelated;
@@ -604,10 +614,10 @@ TEST_F(SceneIntegrationTest, USDWriteFlattenedRemovesStaleSidecarsWithAWarning)
     }
 
     // Strongest first: scene_layer9.usda, other, a.usda, box: two runs of node layers, two sidecars.
-    NodePtr box = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr box = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     NodePtr readerA = createReader(aPath.toStdString());
     NodePtr mergeA = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
-    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     NodePtr readerB = createReader(bPath.toStdString());
     NodePtr mergeB = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
     ASSERT_TRUE(box && readerA && mergeA && other && readerB && mergeB);
@@ -618,9 +628,9 @@ TEST_F(SceneIntegrationTest, USDWriteFlattenedRemovesStaleSidecarsWithAWarning)
     otherPath->setValue(std::string("/World/Other"));
     ASSERT_TRUE(mergeA->connectInput(box, 0));
     ASSERT_TRUE(mergeA->connectInput(readerA, 1));
-    ASSERT_TRUE(other->connectInput(mergeA, 0));
-    ASSERT_TRUE(mergeB->connectInput(other, 0));
-    ASSERT_TRUE(mergeB->connectInput(readerB, 1));
+    ASSERT_TRUE(mergeB->connectInput(mergeA, 0));
+    ASSERT_TRUE(mergeB->connectInput(other, 1));
+    ASSERT_TRUE(mergeB->connectInput(readerB, 2));
 
     const QString path = outDir + QString::fromUtf8("/scene.usda");
     NodePtr layered = createWriter(mergeB, path, USDWrite::eExportModeLayered, USDWrite::ePathModeRelative, 1, 1);
@@ -738,7 +748,7 @@ TEST_F(SceneIntegrationTest, USDWriteRendersOncePerCommandLineRender)
 //
 //   USDRead -> USDTransform ----------------------------\
 //                                                        USDMerge -> USDPrune -> USDWrite
-//   USDPrim -> USDLight -> USDMaterial -----------------/
+//   USDLight -> USDXformPrim -> USDMaterial ------------/
 //
 // Every node's opinions reach the written file: Layered mode flattens what the nodes authored
 // into it and keeps the read file as its sublayer.
@@ -749,7 +759,7 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
 
     NodePtr reader = createReader(kReferenceScene);
     NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTRANSFORM));
-    NodePtr props = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr props = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
     NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
     NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
@@ -770,11 +780,11 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     // The box lifted by 5.
     setString(transform, kUSDTransformParamPrimPattern, "/World/Box");
     setTranslate(transform, 1, 5.);
-    // A props xform at x = 7 holding a light, and a red textured material bound to it: USDMaterial
-    // binds what its own input holds.
+    // A props xform at x = 7 with a light grafted inside it, and a red textured material bound to
+    // it: USDMaterial binds what its own input holds.
     setString(props, kSceneParamPrimPath, "/World/Props");
     setTranslate(props, 0, 7.);
-    setString(light, kSceneParamPrimPath, "/World/Props/Key");
+    setString(light, kSceneParamPrimPath, "/Key");
     setString(material, kSceneParamPrimPath, "/World/Looks/Red");
     setString(material, kUSDMaterialParamPrimPattern, "/World/Props");
     KnobColor* diffuse = getKnob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
@@ -789,8 +799,8 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     setString(prune, kUSDPruneParamPrimPattern, "/World/Cam");
 
     ASSERT_TRUE(transform->connectInput(reader, 0));
-    ASSERT_TRUE(light->connectInput(props, 0));
-    ASSERT_TRUE(material->connectInput(light, 0));
+    ASSERT_TRUE(props->connectInput(light, 0));
+    ASSERT_TRUE(material->connectInput(props, 0));
     ASSERT_TRUE(merge->connectInput(transform, 0));
     ASSERT_TRUE(merge->connectInput(material, 1));
     ASSERT_TRUE(prune->connectInput(merge, 0));
@@ -818,7 +828,7 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     PXR_NS::SdfAttributeSpecHandle textureFile = layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Looks/Red/diffuseColorTexture.inputs:file"));
     ASSERT_TRUE(textureFile);
     EXPECT_EQ(std::string("../textures/red.png"), textureFile->GetDefaultValue().Get<PXR_NS::SdfAssetPath>().GetAssetPath());
-    // USDPrim and USDLight: their prims defined.
+    // USDXformPrim and USDLight: their prims defined.
     PXR_NS::SdfPrimSpecHandle propsSpec = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Props"));
     PXR_NS::SdfPrimSpecHandle keySpec = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Props/Key"));
     ASSERT_TRUE(propsSpec && keySpec);

@@ -47,8 +47,8 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
-#include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/Nodes/Scene/USDRead.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -60,13 +60,6 @@ getDoubleKnob(const NodePtr& node,
               const char* name)
 {
     return dynamic_cast<KnobDouble*>(node->getKnobByName(name).get());
-}
-
-KnobChoice*
-getChoiceKnob(const NodePtr& node,
-              const char* name)
-{
-    return dynamic_cast<KnobChoice*>(node->getKnobByName(name).get());
 }
 
 // The prim path a node authors by default: "/" and its script name.
@@ -279,54 +272,6 @@ TEST_F(USDCameraTest, ARelativePrimPathFailsWithANodeError)
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Rig/Camera")).IsValid());
 }
 
-TEST_F(USDCameraTest, PrimAuthorsAnXformWithItsTransformAndKind)
-{
-    NodePtr prim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
-    ASSERT_TRUE(bool(prim));
-    KnobDouble* translate = getDoubleKnob(prim, kSceneParamTranslate);
-    KnobDouble* uniformScale = getDoubleKnob(prim, kSceneParamUniformScale);
-    KnobChoice* kind = getChoiceKnob(prim, kUSDPrimParamKind);
-    ASSERT_TRUE(translate && uniformScale && kind);
-    translate->setValue(5., ViewSpec::all(), 1);
-    uniformScale->setValue(2.);
-    kind->setValueFromID("component", 0);
-
-    PXR_NS::UsdStageRefPtr stage = composeNode(prim);
-    ASSERT_TRUE(bool(stage));
-    const PXR_NS::UsdPrim usdPrim = stage->GetPrimAtPath(getNodePath(prim));
-    ASSERT_TRUE(usdPrim.IsValid());
-    EXPECT_EQ(PXR_NS::TfToken("Xform"), usdPrim.GetTypeName());
-    PXR_NS::TfToken kindToken;
-    ASSERT_TRUE(PXR_NS::UsdModelAPI(usdPrim).GetKind(&kindToken));
-    EXPECT_EQ(PXR_NS::KindTokens->component, kindToken);
-
-    const PXR_NS::GfMatrix4d transform = PXR_NS::UsdGeomXformable(usdPrim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode::Default());
-    EXPECT_NEAR(5., transform.ExtractTranslation()[1], 1e-9);
-    EXPECT_NEAR(2., transform.TransformDir(PXR_NS::GfVec3d(1., 0., 0.)).GetLength(), 1e-6);
-}
-
-TEST_F(USDCameraTest, PrimAuthorsAScopeWithoutATransform)
-{
-    NodePtr prim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
-    ASSERT_TRUE(bool(prim));
-    KnobChoice* primType = getChoiceKnob(prim, kUSDPrimParamType);
-    KnobDouble* translate = getDoubleKnob(prim, kSceneParamTranslate);
-    ASSERT_TRUE(primType && translate);
-    translate->setValue(5., ViewSpec::all(), 0);
-    primType->setValueFromID("Scope", 0);
-    // A Scope has no transform to edit.
-    EXPECT_TRUE(translate->getIsSecret());
-
-    PXR_NS::UsdStageRefPtr stage = composeNode(prim);
-    ASSERT_TRUE(bool(stage));
-    const PXR_NS::UsdPrim usdPrim = stage->GetPrimAtPath(getNodePath(prim));
-    ASSERT_TRUE(usdPrim.IsValid());
-    EXPECT_EQ(PXR_NS::TfToken("Scope"), usdPrim.GetTypeName());
-    EXPECT_FALSE(usdPrim.GetAttribute(PXR_NS::UsdGeomTokens->xformOpOrder).HasAuthoredValue());
-    PXR_NS::TfToken kindToken;
-    EXPECT_FALSE(PXR_NS::UsdModelAPI(usdPrim).GetKind(&kindToken) && !kindToken.IsEmpty());
-}
-
 TEST_F(USDCameraTest, ThePrimPathFollowsTheNodeNameUntilEdited)
 {
     NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
@@ -351,8 +296,8 @@ TEST_F(USDCameraTest, ThePrimPathFollowsTheNodeNameUntilEdited)
     EXPECT_EQ(std::string("/Hero2"), primPath->getDefaultValue(0));
 
     // Each node of a kind gets its own default prim.
-    NodePtr prim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
-    NodePtr otherPrim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr prim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+    NodePtr otherPrim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     ASSERT_TRUE(prim && otherPrim);
     EXPECT_NE(getNodePath(prim), getNodePath(otherPrim));
     EXPECT_EQ(getNodePath(prim).GetString(), dynamic_cast<KnobString*>(prim->getKnobByName(kSceneParamPrimPath).get())->getValue());

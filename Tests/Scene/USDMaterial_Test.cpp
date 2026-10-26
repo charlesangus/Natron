@@ -46,7 +46,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
-#include "Engine/Nodes/Scene/USDPrim.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -105,17 +105,17 @@ protected:
     // /World holding /World/A and /World/B, and a material after them.
     void buildGraph()
     {
-        NodePtr world = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
-        NodePtr a = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
-        NodePtr b = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+        NodePtr world = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+        NodePtr a = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+        NodePtr b = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
         _material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
         ASSERT_TRUE(world && a && b && _material);
         setString(world, kSceneParamPrimPath, "/World");
-        setString(a, kSceneParamPrimPath, "/World/A");
-        setString(b, kSceneParamPrimPath, "/World/B");
-        ASSERT_TRUE(a->connectInput(world, 0));
-        ASSERT_TRUE(b->connectInput(a, 0));
-        ASSERT_TRUE(_material->connectInput(b, 0));
+        setString(a, kSceneParamPrimPath, "/A");
+        setString(b, kSceneParamPrimPath, "/B");
+        ASSERT_TRUE(world->connectInput(a, 0));
+        ASSERT_TRUE(world->connectInput(b, 1));
+        ASSERT_TRUE(_material->connectInput(world, 0));
     }
 
     std::string materialPath() const

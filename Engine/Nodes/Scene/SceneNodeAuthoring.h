@@ -167,6 +167,18 @@ PXR_NS::GfMatrix4d composeTransformMatrix(const PXR_NS::GfVec3d& translate,
                                           const PXR_NS::GfVec3d& pivot,
                                           SceneRotateOrderEnum rotateOrder);
 
+// Whether any of knobs, or pivot, is animated.
+bool isTransformAnimated(const SceneTransformKnobs& knobs,
+                         const KnobDoublePtr& pivot);
+
+/**
+ * @brief composeTransformMatrix() of the knobs' values at frame, scale multiplied by uniform
+ * scale, about pivot. The identity when a knob is gone.
+ **/
+PXR_NS::GfMatrix4d getTransformMatrixAt(const SceneTransformKnobs& knobs,
+                                        const KnobDoublePtr& pivot,
+                                        double frame);
+
 // The axis (0 for X, 1 for Y, 2 for Z) rotateOrder turns about at position (0 first, 2 last).
 int getRotateOrderAxis(SceneRotateOrderEnum rotateOrder, int position);
 

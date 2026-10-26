@@ -462,28 +462,15 @@ USDTransform::renderScene(const SceneRenderActionArgs& args,
 
             return false;
         }
-        KnobDoublePtr translate = _transform.translate.lock();
-        KnobDoublePtr rotate = _transform.rotate.lock();
-        KnobDoublePtr scale = _transform.scale.lock();
-        KnobDoublePtr uniformScale = _transform.uniformScale.lock();
-        KnobChoicePtr rotateOrder = _transform.rotateOrder.lock();
         KnobDoublePtr pivot = _pivot.lock();
-        if (!translate || !rotate || !scale || !uniformScale || !rotateOrder || !pivot) {
+        if (!pivot) {
             *error = tr("The node is being destroyed").toStdString();
 
             return false;
         }
-        using SceneNodeAuthoring::isAnimated;
-        const bool animated = isAnimated(translate) || isAnimated(rotate) || isAnimated(scale) || isAnimated(uniformScale) || isAnimated(pivot);
-        const SceneRotateOrderEnum order = (SceneRotateOrderEnum)rotateOrder->getValue();
-        auto matrixAt = [&](double frame) {
-            const double uniform = uniformScale->getValueAtTime(frame, 0);
-
-            return SceneNodeAuthoring::composeTransformMatrix(PXR_NS::GfVec3d(translate->getValueAtTime(frame, 0), translate->getValueAtTime(frame, 1), translate->getValueAtTime(frame, 2)),
-                                                              PXR_NS::GfVec3d(rotate->getValueAtTime(frame, 0), rotate->getValueAtTime(frame, 1), rotate->getValueAtTime(frame, 2)),
-                                                              PXR_NS::GfVec3d(scale->getValueAtTime(frame, 0) * uniform, scale->getValueAtTime(frame, 1) * uniform, scale->getValueAtTime(frame, 2) * uniform),
-                                                              PXR_NS::GfVec3d(pivot->getValueAtTime(frame, 0), pivot->getValueAtTime(frame, 1), pivot->getValueAtTime(frame, 2)),
-                                                              order);
+        const bool animated = SceneNodeAuthoring::isTransformAnimated(_transform, pivot);
+        auto matrixAt = [this, &pivot](double frame) {
+            return SceneNodeAuthoring::getTransformMatrixAt(_transform, pivot, frame);
         };
 
         for (std::size_t i = 0; i < matches.size(); ++i) {

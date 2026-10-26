@@ -736,6 +736,22 @@ STMap::renderOp(const RenderActionArgs& args,
                         }
                     }
                 }
+                if (mapped) {
+                    // Where the Map is 0 the output is the Source pixel itself, never resampled
+                    // through the wrap, which would move positions outside the Source format.
+                    for (int i = 0; i < io.width; ++i) {
+                        if (mapPlane.at(io.x0 + i, io.y) != 0.f) {
+                            continue;
+                        }
+                        float* dst = &out[(std::size_t)i * io.nComps];
+                        const float* pix = source.pixel(io.x0 + i, io.y);
+                        if (pix) {
+                            std::copy(pix, pix + io.nComps, dst);
+                        } else {
+                            std::fill(dst, dst + io.nComps, 0.f);
+                        }
+                    }
+                }
             }
             for (int c = 0; c < io.nComps; ++c) {
                 if (!io.channels[pixelKernelChannelBit(io.nComps, c)]) {

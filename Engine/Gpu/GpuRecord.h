@@ -13,6 +13,7 @@
 #include <initializer_list>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <vector>
@@ -29,9 +30,10 @@ class GpuPipelineCache;
 class GpuRecordContext {
 public:
     // Without a pool the context cannot hand out scratch buffers; without a pipeline cache it cannot
-    // hand out runtime shaders.
+    // hand out runtime shaders; without a texture cache cachedTexture() uploads its own copy.
     static GpuStatus create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
-                            GpuBufferPool* pool = nullptr, GpuPipelineCache* pipelines = nullptr);
+                            GpuBufferPool* pool = nullptr, GpuPipelineCache* pipelines = nullptr,
+                            GpuTextureCache* textures = nullptr);
     ~GpuRecordContext();
     GpuRecordContext(const GpuRecordContext&) = delete;
     GpuRecordContext& operator=(const GpuRecordContext&) = delete;
@@ -75,6 +77,11 @@ public:
     // A sampled texture of `texels`, as GpuTexture::create, held until the context is destroyed. The upload
     // completes before the call returns.
     GpuStatus texture(const GpuTextureDesc& desc, std::span<const float> texels, const GpuTexture*& out);
+
+    // The texture the runtime's texture cache keeps under `key`, as GpuTextureCache::acquire, held until
+    // the context is destroyed. Without a texture cache it is a texture() of its own.
+    GpuStatus cachedTexture(const std::string& key, const GpuTextureDesc& desc, std::span<const float> texels,
+                            const GpuTexture*& out);
 
     // Orders earlier dispatches' storage writes before later dispatches' storage reads and writes.
     void computeBarrier();
@@ -128,19 +135,23 @@ private:
     void parkInFlightWork();
     GpuStatus checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const;
 
-    GpuRecordContext(GpuKernelRegistry& registry, GpuBufferPool* pool, GpuPipelineCache* pipelines)
+    GpuRecordContext(GpuKernelRegistry& registry, GpuBufferPool* pool, GpuPipelineCache* pipelines,
+                     GpuTextureCache* textures)
         : registry_(registry)
         , bufferPool_(pool)
         , pipelines_(pipelines)
+        , textureCache_(textures)
     {
     }
 
     GpuKernelRegistry& registry_;
     GpuBufferPool* bufferPool_;
     GpuPipelineCache* pipelines_;
+    GpuTextureCache* textureCache_;
     std::vector<GpuBufferHandle> held_;
     std::deque<GpuUniformBuffer> uniforms_;
     std::vector<std::unique_ptr<GpuTexture>> textures_;
+    std::vector<std::shared_ptr<const GpuTexture>> cachedTextures_;
     std::vector<std::shared_ptr<GpuKernel>> kernels_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;

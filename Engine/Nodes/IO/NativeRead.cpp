@@ -394,7 +394,7 @@ NativeRead::refreshAvailableViews(bool silent)
     }
     // A single view needs no project view of its own, so only a file of several lists them.
     std::string value;
-    const std::string path = isRawFile() ? std::string() : representativePath();
+    const std::string path = isRawFile() ? std::string() : representativePath(ViewIdx(0));
     if (!path.empty()) {
         std::string error;
         const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
@@ -547,6 +547,9 @@ NativeRead::frameListing(bool proxy) const
     std::shared_ptr<FrameListing> listing = std::make_shared<FrameListing>();
     listing->pattern = pattern;
     if (!pattern.empty()) {
+        // A name with a view variable differs between the first two views even in a project of
+        // one view, where the second's expands to nothing or stays as written.
+        listing->namePerView = filename->getFileName(0, ViewIdx(0)) != filename->getFileName(0, ViewIdx(1));
         std::map<int, std::map<int, std::string>> sequence;
         FileSystemModel::filesListFromPattern(pattern, &sequence);
         // SequenceParsing files the matches of a pattern without a frame number under frame -1, and
@@ -669,8 +672,24 @@ NativeRead::settingsAt(double time) const
     return settings;
 }
 
+std::string
+NativeRead::pathOf(const FrameListing& listing,
+                   const KnobFilePtr& filename,
+                   int frame,
+                   ViewIdx view)
+{
+    // A name with a view variable is generated for the view: SequenceParsing files the views it
+    // finds on disk by its own guess of their index, not the project's.
+    if (listing.singleImage && !listing.singlePath.empty() && !listing.namePerView) {
+        return listing.singlePath;
+    }
+
+    return filename->getFileName(frame, view);
+}
+
 NativeRead::Target
 NativeRead::targetAtTime(double time,
+                         ViewIdx view,
                          bool proxy) const
 {
     Target target;
@@ -704,14 +723,15 @@ NativeRead::targetAtTime(double time,
     target.message = result.message;
     target.frame = result.frame;
     if (result.kind == ReadTimeDomain::Result::eFile) {
-        target.path = (listing->singleImage && !listing->singlePath.empty()) ? listing->singlePath : filename->getFileName(result.frame, ViewIdx(0));
+        target.path = pathOf(*listing, filename, result.frame, view);
     }
 
     return target;
 }
 
 std::string
-NativeRead::representativePath(bool proxy) const
+NativeRead::representativePath(ViewIdx view,
+                               bool proxy) const
 {
     KnobFilePtr filename = proxy ? _proxy.lock() : _filename.lock();
 
@@ -720,10 +740,10 @@ NativeRead::representativePath(bool proxy) const
     }
     const std::shared_ptr<const FrameListing> listing = frameListing(proxy);
     if (!listing->singleImage) {
-        return filename->getFileName(*listing->frames.begin(), ViewIdx(0));
+        return filename->getFileName(*listing->frames.begin(), view);
     }
 
-    return listing->singlePath.empty() ? filename->getFileName(0, ViewIdx(0)) : listing->singlePath;
+    return pathOf(*listing, filename, 0, view);
 }
 
 namespace {
@@ -771,8 +791,8 @@ NativeRead::refreshProxyScale()
 
     double x = 1.;
     double y = 1.;
-    const std::string proxyPath = representativePath(true);
-    const std::string fullPath = representativePath(false);
+    const std::string proxyPath = representativePath(ViewIdx(0), true);
+    const std::string fullPath = representativePath(ViewIdx(0), false);
     if (!proxyPath.empty() && !fullPath.empty()) {
         std::string error;
         const std::shared_ptr<const OiioReadSupport::Header> fullHeader = OiioReadSupport::readHeader(fullPath, &error);
@@ -825,6 +845,7 @@ NativeRead::proxyKnobChanged(KnobI* k,
 
 bool
 NativeRead::proxySourceAt(double time,
+                          ViewIdx view,
                           unsigned int level,
                           Target* source,
                           unsigned int* fileLevel) const
@@ -841,7 +862,7 @@ NativeRead::proxySourceAt(double time,
     if (level < thresholdLevel || level < proxyLevel) {
         return false;
     }
-    const Target proxyTarget = targetAtTime(time, true);
+    const Target proxyTarget = targetAtTime(time, view, true);
     if (proxyTarget.kind != ReadTimeDomain::Result::eFile) {
         return false;
     }
@@ -871,7 +892,7 @@ NativeRead::getFrameRange(double* first,
 std::optional<std::string>
 NativeRead::automaticInputSpace() const
 {
-    const std::string path = representativePath();
+    const std::string path = representativePath(ViewIdx(0));
 
     // A Read without a file converts nothing, and nor does one of a camera raw file: its data is
     // sensor values, not colours, until the raw nodes develop it.
@@ -1040,7 +1061,9 @@ NativeRead::knobChanged(KnobI* k,
 }
 
 StatusEnum
-NativeRead::getPreferredMetadata(NodeMetadata& metadata)
+NativeRead::getPreferredMetadataAt(double time,
+                                   ViewIdx view,
+                                   NodeMetadata& metadata)
 {
     metadata.setBitDepth(-1, eImageBitDepthFloat);
     metadata.setComponentsType(-1, kNatronColorLayerID);
@@ -1048,9 +1071,10 @@ NativeRead::getPreferredMetadata(NodeMetadata& metadata)
 
     metadata.setIsFrameVarying(true);
 
-    // The format is one per node, so a frame that loads nothing still reports the sequence's.
-    const Target target = targetAtTime(getCurrentTime());
-    const std::string path = target.kind == ReadTimeDomain::Result::eFile ? target.path : representativePath();
+    // The frame's own file, or the held one when the missing-frame mode holds. A frame that renders
+    // black or an error has no file, so it reports the sequence's representative frame.
+    const Target target = targetAtTime(time, view);
+    const std::string path = target.kind == ReadTimeDomain::Result::eFile ? target.path : representativePath(view);
     if (path.empty()) {
         return eStatusOK;
     }
@@ -1069,9 +1093,8 @@ NativeRead::getPreferredMetadata(NodeMetadata& metadata)
     if (!header || header->subimages.empty()) {
         return eStatusOK;
     }
-    // The format is one per node, so it is the main view's.
     OiioReadSupport::PartChannels colour;
-    const bool hasColour = colourPartOf(*header, projectViewName(ViewIdx(0)), &colour);
+    const bool hasColour = colourPartOf(*header, projectViewName(view), &colour);
     const OIIO::ImageSpec& spec = header->subimages[hasColour ? (std::size_t)colour.subimage : 0];
 
     // OpenFX formats must start at (0, 0), so a positive display-window origin only widens the
@@ -1090,11 +1113,12 @@ NativeRead::deriveOutputMetadata(double time,
 {
     ImageMetadata metadata;
 
-    metadata.setDouble(kOfxMetadataKeyPixelAspect, getAspectRatio(-1));
+    NodeMetadataConstPtr own = getMetadata(time, view);
+    metadata.setDouble(kOfxMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
 
     // A frame that loads black or an error has no file to describe, and a key whose value is
     // unknown is left out rather than published empty.
-    const Target target = targetAtTime(time);
+    const Target target = targetAtTime(time, view);
     if (target.kind != ReadTimeDomain::Result::eFile) {
         return metadata;
     }
@@ -1134,14 +1158,14 @@ NativeRead::getRegionOfDefinition(U64 /*hash*/,
                                   ViewIdx view,
                                   RectD* rod)
 {
-    const Target target = targetAtTime(time);
+    const Target target = targetAtTime(time, view);
 
     if (target.kind == ReadTimeDomain::Result::eError) {
         setPersistentMessage(eMessageTypeError, target.message);
 
         return eStatusFailed;
     }
-    const std::string path = target.kind == ReadTimeDomain::Result::eFile ? target.path : representativePath();
+    const std::string path = target.kind == ReadTimeDomain::Result::eFile ? target.path : representativePath(view);
 
     if (path.empty()) {
         // The base implementation leaves the RoD null for a node without inputs, and a null RoD
@@ -1206,8 +1230,8 @@ NativeRead::getComponentsNeededAndProduced(double time,
 
     // A frame that loads nothing still lists the sequence's layers, so that the layers a graph
     // can select do not come and go with the frame.
-    const Target target = targetAtTime(time);
-    const std::string path = target.kind == ReadTimeDomain::Result::eFile ? target.path : representativePath();
+    const Target target = targetAtTime(time, view);
+    const std::string path = target.kind == ReadTimeDomain::Result::eFile ? target.path : representativePath(view);
     // A camera raw file has no layers besides its sensor data.
     if (path.empty() || RawExtensions::isRawPath(path)) {
         return;
@@ -1316,7 +1340,7 @@ zeroRows(Image::WriteAccess& access,
 StatusEnum
 NativeRead::render(const RenderActionArgs& args)
 {
-    const Target target = targetAtTime(args.time);
+    const Target target = targetAtTime(args.time, args.view);
 
     if (target.kind == ReadTimeDomain::Result::eError) {
         setPersistentMessage(eMessageTypeError, target.message);
@@ -1326,7 +1350,7 @@ NativeRead::render(const RenderActionArgs& args)
     Target source = target;
     unsigned int fileLevel = 0;
     if (target.kind == ReadTimeDomain::Result::eFile) {
-        proxySourceAt(args.time, args.mappedScale.toMipmapLevel(), &source, &fileLevel);
+        proxySourceAt(args.time, args.view, args.mappedScale.toMipmapLevel(), &source, &fileLevel);
     }
     const std::string path = source.path;
 

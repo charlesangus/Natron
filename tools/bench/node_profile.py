@@ -13,10 +13,9 @@
 #   NP_OCIO_CONFIG  path of a config.ocio the project uses (as its Custom config) before any node is
 #              created. Unset, the project keeps its default, the built-in ACES studio config
 #              (ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5), which the ocio_* nodes below are
-#              written for. Only branches with the OCIO nodes (m127) have the project knobs.
+#              written for. Only builds with the OCIO nodes have the project knobs.
 #
-# This copy adds nodes of other branches (lensdistortion: m132, merge/merge_plus: m101, ocio_*:
-# m127). A key whose plugin the running binary lacks fails at creation, so select only keys it has.
+# A key whose plugin the running binary lacks fails at creation, so select only keys it has.
 
 import os
 
@@ -101,6 +100,8 @@ NODES = {
     "constant": ("net.sf.openfx.ConstantPlugin", {}, True),
     "solid": ("net.sf.openfx.Solid", {}, True),
     "checkerboard": ("net.sf.openfx.CheckerBoardPlugin", {}, True),
+    "noise": ("Noise", {"type": "simplex", "fractal": "fbm", "octaves": 6, "lacunarity": 2.0, "gain": 0.5,
+                        "noiseSize": (64.0, 64.0), "warpType": "perlin", "warpAmount": 0.5}, True),
     "lensdistortion": ("LensDistortion", {"model": "Nuke", "k1": 0.1, "k2": 0.02, "direction": "Distort"}, False),
     "merge": ("Merge", {"operation": "over"}, False),
     "merge_plus": ("Merge", {"operation": "plus"}, False),
@@ -184,7 +185,7 @@ def configure(name, index):
         # Alternating the target size keeps every copy in a chain resampling.
         param(node, "boxSize").set(*((1920, 1080) if index % 2 == 0 else (3840, 2160)))
     if generator:
-        color = "color0" if plugin_id.endswith("CheckerBoardPlugin") else "color"
+        color = "color0" if plugin_id.endswith("CheckerBoardPlugin") or plugin_id == "Noise" else "color"
         animate(param(node, color), (0.1, 0.2, 0.3, 1.0), (0.01, 0.0, 0.0, 0.0))
     return node
 

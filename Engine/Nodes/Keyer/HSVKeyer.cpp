@@ -353,7 +353,7 @@ HSVKeyerOp::row(const Params& params,
 {
     const int nComps = io.nComps;
 
-    // getPreferredMetadata() makes the output RGBA; anything else has no alpha for the key.
+    // getPreferredMetadataAt() makes the output RGBA; anything else has no alpha for the key.
     if (nComps != 4) {
         std::copy(io.src[0], io.src[0] + io.width * nComps, io.dst);
 
@@ -552,8 +552,12 @@ HSVKeyer::addAcceptedComponents(int inputNb,
 }
 
 StatusEnum
-HSVKeyer::getPreferredMetadata(NodeMetadata& metadata)
+HSVKeyer::getPreferredMetadataAt(double time,
+                                 ViewIdx view,
+                                 NodeMetadata& metadata)
 {
+    Q_UNUSED(time);
+    Q_UNUSED(view);
     metadata.setNComps(-1, 4);
 
     return eStatusOK;

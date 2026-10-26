@@ -907,9 +907,10 @@ Shuffle::channelRoute(double time,
     // it. Region slots are float, so a source the CPU reads as 0 for not being float would reach
     // the GPU converted.
     route->cpuOnly = !checkExtraChannelsPresent(time, view, NULL);
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
     for (const ChannelRouteSource& source : route->sources) {
         EffectInstancePtr input = getInput(source.inputNb);
-        if (input && ((getBitDepth(source.inputNb) != eImageBitDepthFloat) || (input->getBitDepth(-1) != eImageBitDepthFloat))) {
+        if (input && ((metadata->getBitDepth(source.inputNb) != eImageBitDepthFloat) || (input->getRenderMetadata(time, view)->getBitDepth(-1) != eImageBitDepthFloat))) {
             route->cpuOnly = true;
         }
     }

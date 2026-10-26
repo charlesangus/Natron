@@ -607,19 +607,24 @@ LensDistortion::paramValue(ModelParam param,
 void
 LensDistortion::getGeometry(double time,
                             ViewIdx view,
+                            bool derivingMetadata,
                             Geometry* geometry)
 {
     *geometry = Geometry();
 
     EffectInstancePtr source = getInput(kLensDistortionInputSource);
     KnobBoolPtr useRoDKnob = _useRoD.lock();
-    const bool useRoD = useRoDKnob && useRoDKnob->getValue();
+    const bool useRoD = useRoDKnob && useRoDKnob->getValueAtTime(time, 0, view);
+    NodeMetadataConstPtr sourceMetadata;
     if (source) {
-        geometry->sourcePar = source->getAspectRatio(-1);
+        sourceMetadata = derivingMetadata ? getInputMetadataAt(kLensDistortionInputSource, time, view) : source->getRenderMetadata(time, view);
+    }
+    if (sourceMetadata) {
+        geometry->sourcePar = sourceMetadata->getPixelAspectRatio(-1);
         if (geometry->sourcePar <= 0.) {
             geometry->sourcePar = 1.;
         }
-        const RectI format = source->getOutputFormat();
+        const RectI format = sourceMetadata->getOutputFormat();
         RectD rod;
         if (!useRoD && !format.isNull()) {
             geometry->sourceFormat = RectD(format.x1, format.y1, format.x2, format.y2);
@@ -636,7 +641,7 @@ LensDistortion::getGeometry(double time,
     case ExtentKnobs::eExtentFormat: {
         KnobIntPtr formatSize = _extentKnobs.getFormatSizeKnob();
         KnobDoublePtr formatPar = _extentKnobs.getFormatParKnob();
-        par = formatPar ? formatPar->getValue() : 1.;
+        par = formatPar ? formatPar->getValueAtTime(time, 0, view) : 1.;
         geometry->reference = RectD(0., 0., formatSize ? formatSize->getValue(0) : 0, formatSize ? formatSize->getValue(1) : 0);
         inPixels = true;
         break;
@@ -679,7 +684,7 @@ LensDistortion::getGeometry(double time,
     }
 
     KnobDoublePtr overscanKnob = _overscan.lock();
-    const double overscan = overscanKnob ? std::max(0., overscanKnob->getValue()) : 0.;
+    const double overscan = overscanKnob ? std::max(0., overscanKnob->getValueAtTime(time, 0, view)) : 0.;
     const RectD& reference = geometry->reference;
     const int padX = (int)std::floor(reference.width() * overscan / 200. + 0.5);
     const int padY = (int)std::floor(reference.height() * overscan / 200. + 0.5);
@@ -843,17 +848,19 @@ LensDistortion::route(double time,
 }
 
 StatusEnum
-LensDistortion::getPreferredMetadata(NodeMetadata& metadata)
+LensDistortion::getPreferredMetadataAt(double time,
+                                       ViewIdx view,
+                                       NodeMetadata& metadata)
 {
     Geometry geometry;
-    getGeometry(getCurrentTime(), ViewIdx(0), &geometry);
+    getGeometry(time, view, true, &geometry);
     if (!geometry.output.isNull()) {
         metadata.setOutputFormat(geometry.output);
     }
     metadata.setPixelAspectRatio(-1, geometry.par);
 
     KnobChoicePtr outputMode = _outputMode.lock();
-    if (outputMode && (outputMode->getValue() == 1)) {
+    if (outputMode && (outputMode->getValueAtTime(time, 0, view) == 1)) {
         metadata.setNComps(-1, 4);
     } else if (getInput(kLensDistortionInputSource)) {
         metadata.setNComps(-1, metadata.getNComps(kLensDistortionInputSource));
@@ -877,7 +884,7 @@ LensDistortion::getRegionOfDefinition(U64 /*hash*/,
     }
 
     Geometry geometry;
-    getGeometry(time, view, &geometry);
+    getGeometry(time, view, false, &geometry);
     Settings settings;
     readSettings(time, view, &settings);
     const double par = geometry.par;
@@ -988,7 +995,7 @@ LensDistortion::renderOp(const RenderActionArgs& args,
     const bool jacobians = (settings.filter != Resampler::eFilterImpulse);
 
     Geometry geometry;
-    getGeometry(args.time, args.view, &geometry);
+    getGeometry(args.time, args.view, false, &geometry);
     // Built here, on the calling thread; the band threads only read it.
     const LensModels::Model model = buildModel(args.time, args.view, geometry);
     // Each output pixel reads the Source where the opposite direction sends it.
@@ -1189,19 +1196,21 @@ LensDistortion::getOpGpuInputLayer(int inputNb,
 
 RectI
 LensDistortion::getOpGpuInputRoI(int inputNb,
+                                 double time,
+                                 ViewIdx view,
                                  const RectI& outputRect,
                                  const RenderScale& scale) const
 {
     if (inputNb == kLensDistortionInputSource) {
         Settings settings;
-        readSettings(getCurrentTime(), getCurrentView(), &settings);
+        readSettings(time, view, &settings);
         // As getRegionsOfInterest: the whole Source when it is sampled, the window for the blend.
         if (!settings.stmap) {
-            return warpGpuInputRoI(*this, inputNb, kLensDistortionInputSource, -1, outputRect, scale);
+            return warpGpuInputRoI(*this, inputNb, kLensDistortionInputSource, -1, time, view, outputRect, scale);
         }
     }
 
-    return StagedImageEffect::getOpGpuInputRoI(inputNb, outputRect, scale);
+    return StagedImageEffect::getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
 }
 
 StatusEnum
@@ -1218,7 +1227,7 @@ LensDistortion::renderOpGpu(const GpuRenderArgs& args)
         settings.filter = Resampler::eFilterImpulse;
     }
     Geometry geometry;
-    getGeometry(query.time, query.view, &geometry);
+    getGeometry(query.time, query.view, false, &geometry);
     const LensModels::Model model = buildModel(query.time, query.view, geometry);
 
     LensDistortionGpuParams params;

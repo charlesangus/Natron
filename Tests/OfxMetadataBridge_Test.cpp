@@ -328,7 +328,7 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeGeneratorKeysReachTheOfxInputClipWithout
     ASSERT_TRUE(received->fetchProperty(kOfxMetadataKeyFrameRate) != NULL);
     EXPECT_EQ(getApp()->getProjectFrameRate(), received->getDoubleProperty(kOfxMetadataKeyFrameRate));
     ASSERT_TRUE(received->fetchProperty(kOfxMetadataKeyPixelAspect) != NULL);
-    EXPECT_EQ(generatorEffect->getAspectRatio(-1), received->getDoubleProperty(kOfxMetadataKeyPixelAspect));
+    EXPECT_EQ(generatorEffect->getTimeInvariantMetadata()->getPixelAspectRatio(-1), received->getDoubleProperty(kOfxMetadataKeyPixelAspect));
 
     EXPECT_EQ(OfxMetadataBridge::fromOfxPropertySet(*received.get()), generatorEffect->getOutputMetadata(time, ViewIdx(0)));
 }
@@ -394,7 +394,7 @@ TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachAnOfxNodeThroughNativeNodes)
 
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(fixtureEffect, firstFrame, lastFrame, 1, false));
-    getApp()->startWritersRendering(false, works);
+    getApp()->startWritersRendering(eRenderModeBlocking, works);
 
     const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
     const std::string frameTwoPath = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, lastFrame, 0);

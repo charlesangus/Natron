@@ -129,7 +129,9 @@ DeepReformat::getTargetSize(int* width,
 }
 
 void
-DeepReformat::getTranslation(int* dx,
+DeepReformat::getTranslation(double time,
+                             ViewIdx view,
+                             int* dx,
                              int* dy) const
 {
     *dx = 0;
@@ -147,7 +149,7 @@ DeepReformat::getTranslation(int* dx,
         return;
     }
 
-    const RectI inputFormat = input->getOutputFormat();
+    const RectI inputFormat = input->getRenderMetadata(time, view)->getOutputFormat();
     // Truncating division on purpose: an odd size difference lands the input a whole pixel off
     // centre rather than on a half pixel no sample could be written to.
     *dx = (width - inputFormat.width()) / 2;
@@ -175,9 +177,9 @@ DeepReformat::getRegionOfDefinition(U64 hash,
 
     int dx = 0;
     int dy = 0;
-    getTranslation(&dx, &dy);
+    getTranslation(time, view, &dx, &dy);
     if ((dx != 0) || (dy != 0)) {
-        const double par = getAspectRatio(-1);
+        const double par = getRenderMetadata(time, view)->getPixelAspectRatio(-1);
         // RectD::translate() takes its offset in pixels despite the rectangle being canonical, so
         // the shift goes through pixel space where a whole-pixel offset means what it says.
         RectI pixelRod = rod->toPixelEnclosing(0u /*mipmapLevel*/, par);
@@ -200,14 +202,14 @@ DeepReformat::getRegionsOfInterest(double time,
 
     int dx = 0;
     int dy = 0;
-    getTranslation(&dx, &dy);
+    getTranslation(time, view, &dx, &dy);
     if ((dx == 0) && (dy == 0)) {
         return;
     }
 
     // What lands in a window of the output came from that window shifted back by the translation;
     // asking the input for the window itself would drop the samples along the leading edges.
-    const double par = getAspectRatio(-1);
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(-1);
     const double canonicalDx = dx * par;
     for (RoIMap::iterator it = ret->begin(); it != ret->end(); ++it) {
         it->second.x1 -= canonicalDx;
@@ -224,7 +226,7 @@ DeepReformat::route(double time,
     int dx = 0;
     int dy = 0;
 
-    getTranslation(&dx, &dy);
+    getTranslation(time, view, &dx, &dy);
     if ((dx != 0) || (dy != 0)) {
         return Route::none();
     }
@@ -233,13 +235,15 @@ DeepReformat::route(double time,
 }
 
 StatusEnum
-DeepReformat::getPreferredMetadata(NodeMetadata& metadata)
+DeepReformat::getPreferredMetadataAt(double /*time*/,
+                                     ViewIdx /*view*/,
+                                     NodeMetadata& metadata)
 {
     int width = 0;
     int height = 0;
 
     if (getTargetSize(&width, &height)) {
-        // Formats start at (0, 0) -- see DeepRead::getPreferredMetadata() -- so a format carries a
+        // Formats start at (0, 0) -- see DeepRead::getPreferredMetadataAt() -- so a format carries a
         // size and nothing else, and the reposition lives entirely in the region of definition.
         metadata.setOutputFormat(RectI(0, 0, width, height));
     }
@@ -282,7 +286,7 @@ DeepReformat::renderDeep(const DeepRenderActionArgs& args)
 
     int dx = 0;
     int dy = 0;
-    getTranslation(&dx, &dy);
+    getTranslation(args.time, args.view, &dx, &dy);
 
     const RectI inputBounds = input->getBounds();
     const SampleTable& table = input->getSampleTable();

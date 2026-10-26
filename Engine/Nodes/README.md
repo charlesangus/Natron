@@ -1036,7 +1036,7 @@ colour of each photosite in whatever window it renders.
 
 A raw-to-image node that changes the channel count -- a one-channel mosaic in,
 RGB out, as a demosaic does -- declares its own output components by
-overriding `getPreferredMetadata()`, and overrides `deriveOutputMetadata()` to
+overriding `getPreferredMetadataAt(time, view, md)`, and overrides `deriveOutputMetadata()` to
 drop the `raw/` keys that no longer describe its output (the CFA pattern and
 origin, and `raw/stage` once the output is an image). Neither is `FINAL` in
 `StagedImageEffect` or `ImageNode`, so a subclass of either can; a demosaic
@@ -1078,6 +1078,15 @@ copyable parameter block, `GpuOpRef::packed(kernelId, words)` for words the op
 lays out itself, `GpuOpRef::runtime(shader, inputs)` for a runtime shader, or
 `GpuOpRef::none()` to stay on the CPU. A block over the recorder's 64 KB, or a
 component count outside `acceptedComponents`, stays on the CPU too.
+
+A runtime shader finds its source and destination by name, not by binding: its
+only storage buffers are the blocks named `Src` and `Dst`
+(`kGpuShaderSourceBuffer`, `kGpuShaderDestinationBuffer`), at any binding of set
+0, so generated code that puts its own uniform block at binding 0, as
+OpenColorIO's does, is wrapped as it is. Every other binding is a uniform block
+or a texture matched by name to `GpuShaderInputs`. A texture with a `cacheKey`
+is kept by the GPU context's `GpuTextureCache`, shared with the viewer, and
+uploaded once rather than for each render.
 
 The kernel is an `IPixelOp` in the style of `Engine/Gpu/Kernels/pixelwrap.slang`:
 `load()` reads the block, `apply(float4, int2)` does the maths on a pixel in

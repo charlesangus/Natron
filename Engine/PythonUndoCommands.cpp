@@ -32,6 +32,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
@@ -590,7 +591,10 @@ struct PythonUserKnobs {
         std::list<KnobIWPtr> userKnobs;
         const KnobsVec& knobs = node.getKnobs();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-            if ((*it)->isUserKnob()) {
+            // The plug-in's own user pages and groups stay, and with them the plug-in's knobs
+            // placed in them, which deleting a page or group would take along; the restore below
+            // finds them by name and refills them.
+            if ((*it)->isUserKnob() && !(*it)->isDeclaredByPlugin()) {
                 userKnobs.push_back(*it);
             }
         }
@@ -671,23 +675,28 @@ nodeOfHolder(KnobHolder* holder)
 
 //================================================================
 
-void
+bool
 recordPythonKnobEdit(const KnobIPtr& knob)
 {
     if (!knob) {
-        return;
+        return true;
+    }
+    if (IsolatedJob::refusesPythonWrite(knob.get())) {
+        return false;
     }
     KnobHolder* holder = knob->getHolder();
     if (!holder || !isRecordedHolder(holder)) {
-        return;
+        return true;
     }
     UndoRecorderPtr recorder = recorderFor(holder->getApp());
     if (!recorder || !recorder->claimKnob(knob)) {
-        return;
+        return true;
     }
     UndoTouched touched;
     touched.knobs.push_back(knob);
     recorder->record(std::make_shared<KnobStateCommand>(knob), touched);
+
+    return true;
 }
 
 void

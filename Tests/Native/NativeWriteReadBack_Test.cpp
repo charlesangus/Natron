@@ -179,12 +179,12 @@ protected:
 
     RectI outputFormat() const
     {
-        return _writer->getEffectInstance()->getOutputFormat();
+        return _writer->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
     }
 
     double outputPar() const
     {
-        return _writer->getEffectInstance()->getAspectRatio(-1);
+        return _writer->getEffectInstance()->getTimeInvariantMetadata()->getPixelAspectRatio(-1);
     }
 
     void pickOutputSpace(const std::string& space)
@@ -218,7 +218,7 @@ protected:
         ASSERT_TRUE(effect != NULL);
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(effect, 1, 1, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
         ASSERT_FALSE(effect->isDoingSequentialRender());
     }
 

@@ -240,18 +240,18 @@ TEST_F(NativeCropGpuTest, InputRegionIsTheNodesRegionOfInterest)
             ASSERT_TRUE(createGraph(c, false, &source, &node));
             StagedImageEffect* effect = effectOf(node);
             ASSERT_TRUE(effect != NULL);
-            const double sourcePar = source->getEffectInstance()->getAspectRatio(-1);
+            const double sourcePar = source->getEffectInstance()->getTimeInvariantMetadata()->getPixelAspectRatio(-1);
 
             const RectI rect(10, 20, 31, 47);
             for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
                 const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-                const RectD window = rect.toCanonical_noClipping(mipmapLevel, effect->getAspectRatio(-1));
+                const RectD window = rect.toCanonical_noClipping(mipmapLevel, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
                 RoIMap rois;
                 effect->getRegionsOfInterest_public(kTime, scale, window, window, ViewIdx(0), &rois);
                 RoIMap::const_iterator found = rois.find(source->getEffectInstance());
                 ASSERT_TRUE(found != rois.end()) << c.name << " mipmap " << mipmapLevel;
                 const RectI expected = found->second.toPixelEnclosing(scale, sourcePar);
-                const RectI actual = effect->getGpuInputRoI(0, rect, scale);
+                const RectI actual = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), rect, scale);
                 // An empty region keeps whatever corners the intersection left; only its emptiness matters.
                 if (expected.isNull()) {
                     EXPECT_TRUE(actual.isNull()) << c.name << " par " << par << " mipmap " << mipmapLevel;
@@ -314,7 +314,7 @@ pixelRegionOfDefinition(const NodePtr& node,
     const StatusEnum stat = effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::fromMipmapLevel(mipmapLevel), ViewIdx(0), &rod, &isProjectFormat);
     EXPECT_NE(eStatusFailed, stat);
 
-    return rod.toPixelEnclosing(mipmapLevel, effect->getAspectRatio(-1));
+    return rod.toPixelEnclosing(mipmapLevel, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
 }
 
 GpuQuery
@@ -526,7 +526,7 @@ expectCropMatches(GpuParityRuntime& runtime,
     ASSERT_EQ(4u, cpu.channels.size()) << what;
     ASSERT_EQ(roi, cpu.window) << what;
 
-    const RectI bounds = effect->getGpuInputRoI(0, roi, RenderScale::fromMipmapLevel(mipmapLevel)).intersect(pixelRegionOfDefinition(source, mipmapLevel));
+    const RectI bounds = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel)).intersect(pixelRegionOfDefinition(source, mipmapLevel));
     std::vector<GpuParityImage> inputs(1);
     if (!bounds.isNull()) {
         ASSERT_TRUE(sourceImage(source, mipmapLevel, bounds, &inputs[0])) << what;

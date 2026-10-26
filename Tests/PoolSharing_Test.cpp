@@ -835,7 +835,7 @@ TEST_F(PoolSharing, SpawnedThreadScopeInstallsTheSpawnersFrame)
     QThread* spawner = QThread::currentThread();
     ASSERT_TRUE(AppTLS::currentFrameContext() == NULL);
     {
-        AppTLS::SpawnedThreadScope sameThread(spawner, context.get());
+        AppTLS::SpawnedThreadScope sameThread(spawner, context.get(), NULL);
         EXPECT_TRUE(AppTLS::currentFrameContext() == NULL) << "the spawner's own frame must not change";
     }
 
@@ -848,7 +848,7 @@ TEST_F(PoolSharing, SpawnedThreadScopeInstallsTheSpawnersFrame)
     QThread* worker = QThread::create([&]() {
         before = AppTLS::currentFrameContext();
         {
-            AppTLS::SpawnedThreadScope scope(spawner, context.get());
+            AppTLS::SpawnedThreadScope scope(spawner, context.get(), NULL);
             inside = AppTLS::currentFrameContext();
             budgetInside = AppTLS::currentThreadBudget();
             nCPUsInside = appPTR->getNCPUsAvailableForEffect();

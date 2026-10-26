@@ -446,12 +446,14 @@ Posterize::posterizeRow(const PosterizeOp::Params& params,
 }
 
 StatusEnum
-Posterize::getPreferredMetadata(NodeMetadata& metadata)
+Posterize::getPreferredMetadataAt(double time,
+                                  ViewIdx view,
+                                  NodeMetadata& metadata)
 {
     KnobChoicePtr mode = op().dither.lock();
     KnobBoolPtr fixed = op().staticSeed.lock();
 
-    if (mode && fixed && (mode->getValue() == PosterizeOp::eDitherRandom) && !fixed->getValue()) {
+    if (mode && fixed && (mode->getValueAtTime(time, 0, view) == PosterizeOp::eDitherRandom) && !fixed->getValueAtTime(time, 0, view)) {
         metadata.setIsFrameVarying(true);
     }
 

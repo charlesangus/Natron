@@ -76,6 +76,7 @@ private:
     bool _dirty;
     bool _altered;
     bool _cascading;
+    bool _menuOnlySelection;
     int _cascadingIndex;
     int _currentIndex;
     QString _currentText;
@@ -113,6 +114,12 @@ public:
     bool isCascading() const
     {
         return _cascading;
+    }
+
+    /// When set, only picking an entry in the menu changes the index: the wheel and arrow keys do not
+    void setMenuOnlySelection(bool menuOnly)
+    {
+        _menuOnlySelection = menuOnly;
     }
 
     /*Insert a new item BEFORE the specified index.*/
@@ -218,6 +225,9 @@ Q_SIGNALS:
     void currentIndexReselected(int index);
 
     void minimumSizeChanged(QSize);
+
+    /// Emitted when a click is about to open the menu, before it is built from the current entries
+    void menuAboutToShow();
 
 protected:
 

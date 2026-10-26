@@ -238,7 +238,7 @@ protected:
         ASSERT_TRUE(effect != NULL);
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(effect, 1, 1, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
     }
 
     void setFile(const std::string& name)
@@ -315,7 +315,7 @@ protected:
         EffectInstancePtr effect = node->getEffectInstance();
         const RectI roi(0, 0, kSize, kSize);
         FrameRequestMap request;
-        if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), 0, roi.toCanonical_noClipping(0, effect->getAspectRatio(-1)), node, request) == eStatusFailed) {
+        if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), 0, roi.toCanonical_noClipping(0, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1)), node, request) == eStatusFailed) {
             ADD_FAILURE() << "request pass failed";
 
             return false;

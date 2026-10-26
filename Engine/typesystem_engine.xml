@@ -897,6 +897,14 @@
     </object-type>
     
     <object-type name="UserParamHolder" copyable="false">
+        <modify-function signature="addRFVKnob(Param*)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
     	<modify-function signature="createIntParam(QString,QString)">
     	    <inject-code class="target" position="beginning">
     	        <insert-template name="rejectNonEditableHolder"/>

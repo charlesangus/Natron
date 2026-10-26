@@ -47,8 +47,11 @@ NATRON_NAMESPACE_ENTER
  * first call for a knob in a step records the state the step started from; undoing the step
  * restores it with everything the step changed on the knob. Knobs of panels made by Python are
  * not recorded: those panels have no undo of their own and are not part of the project.
+ * Returns false, recording nothing and with a Python RuntimeError set, if a running IsolatedJob
+ * reads the knob and the calling thread is outside it: the caller then returns to Python without
+ * changing the knob. Call with the GIL held.
  **/
-void recordPythonKnobEdit(const KnobIPtr& knob);
+bool recordPythonKnobEdit(const KnobIPtr& knob) WARN_UNUSED_RETURN;
 
 /**
  * @brief Call once a node created from Python exists. Undo removes it, redo brings it back.

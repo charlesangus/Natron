@@ -310,7 +310,7 @@ TEST_F(NativeTransformGpuTest, InputRegionIsTheCpuRegionOfInterest)
             effect->getRegionsOfInterest_public(kTime, scale, window, window, ViewIdx(0), &rois);
             RoIMap::const_iterator found = rois.find(source->getEffectInstance());
             ASSERT_TRUE(found != rois.end()) << "mipmap " << mipmapLevel;
-            EXPECT_EQ(found->second.toPixelEnclosing(scale, 1.), effect->getGpuInputRoI(0, rect, scale)) << (masked ? "masked" : "plain") << " mipmap " << mipmapLevel;
+            EXPECT_EQ(found->second.toPixelEnclosing(scale, 1.), effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), rect, scale)) << (masked ? "masked" : "plain") << " mipmap " << mipmapLevel;
         }
     }
 }
@@ -417,7 +417,7 @@ sourceImage(const NodePtr& source,
             const RectI& roi,
             GpuParityImage* image)
 {
-    const RectI inputRoI = effect.getGpuInputRoI(0, roi, RenderScale::fromMipmapLevel(mipmapLevel));
+    const RectI inputRoI = effect.getGpuInputRoI(0, effect.getCurrentTime(), effect.getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel));
     RenderedPlane in;
     if (!renderColor(source, mipmapLevel, inputRoI, &in)) {
         return false;
@@ -826,7 +826,7 @@ TEST_F(NativeTransformGpuTest, MotionBlur8kKernelTime)
     GpuQuery query = eligibleQuery();
     query.mappedScale = RenderScale::identity;
     ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { 1. }));
-    const RectI inputRoI = effect->getGpuInputRoI(0, rect, RenderScale::identity);
+    const RectI inputRoI = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), rect, RenderScale::identity);
     ASSERT_FALSE(inputRoI.isNull());
 
     // A pattern with edges in every direction, so the variance asks for more samples where it moves.
@@ -858,7 +858,7 @@ TEST_F(NativeTransformGpuTest, MotionBlur8kKernelTime)
     for (double quality : { 1., 4. }) {
         ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { quality }));
         ASSERT_TRUE(effect->canRenderOnGpu(query)) << "quality " << quality;
-        ASSERT_EQ(inputRoI, effect->getGpuInputRoI(0, rect, RenderScale::identity)) << "quality " << quality;
+        ASSERT_EQ(inputRoI, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), rect, RenderScale::identity)) << "quality " << quality;
         double best = 0.;
         for (int run = 0; run < 4; ++run) {
             std::unique_ptr<gpu::GpuRecordContext> context;

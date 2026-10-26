@@ -490,6 +490,24 @@ Reformat::getReformatType() const
     return type ? (ReformatTypeEnum)type->getValue() : eReformatTypeToProjectFormat;
 }
 
+Reformat::ReformatTypeEnum
+Reformat::getReformatType(double time,
+                          ViewIdx view) const
+{
+    KnobChoicePtr type = _type.lock();
+
+    return type ? (ReformatTypeEnum)type->getValueAtTime(time, 0, view) : eReformatTypeToProjectFormat;
+}
+
+double
+Reformat::getSourcePixelAspectRatio(double time,
+                                    ViewIdx view) const
+{
+    NodeMetadataConstPtr metadata = getInputMetadataAt(0, time, view);
+
+    return metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+}
+
 void
 Reformat::refreshVisibility()
 {
@@ -557,7 +575,7 @@ Reformat::knobChanged(KnobI* k,
         int h = 0;
         double par = 1.;
         bool boxFixed = false;
-        if (getBoxValues(time, ViewIdx(0), getAspectRatio(0), &w, &h, &par, &boxFixed)) {
+        if (getBoxValues(time, ViewIdx(0), getSourcePixelAspectRatio(time, ViewIdx(0)), &w, &h, &par, &boxFixed)) {
             KnobIntPtr boxSizeKnob = _boxSize.lock();
             KnobDoublePtr boxParKnob = _boxPar.lock();
             KnobBoolPtr boxFixedKnob = _boxFixed.lock();
@@ -633,8 +651,9 @@ Reformat::getInputFormat(double time,
         if (input) {
             input = input->getNearestNonIdentity(time);
         }
-        if (input) {
-            format = input->getOutputFormat();
+        NodeMetadataConstPtr inputMetadata = input ? input->getMetadata(time, view) : NodeMetadataConstPtr();
+        if (inputMetadata) {
+            format = inputMetadata->getOutputFormat();
         } else {
             Format f;
             getApp()->getProject()->getProjectDefaultFormat(&f);
@@ -660,7 +679,7 @@ Reformat::getBoxValues(double time,
                        double* par,
                        bool* boxFixed) const
 {
-    switch (getReformatType()) {
+    switch (getReformatType(time, view)) {
     case eReformatTypeToFormat: {
         // The host fills the size and the pixel aspect ratio from the chosen format.
         KnobIntPtr formatSize = _formatSize.lock();
@@ -934,24 +953,26 @@ Reformat::getRegionOfDefinition(U64 hash,
     double par = 1.;
     RectD rect;
     RectI format;
-    computeOutputFormat(time, view, getAspectRatio(0), &par, &rect, &format);
+    computeOutputFormat(time, view, getSourcePixelAspectRatio(time, view), &par, &rect, &format);
     *rod = rectIntersection(*rod, toCanonical(format, par));
 
     return eStatusOK;
 }
 
 StatusEnum
-Reformat::getPreferredMetadata(NodeMetadata& metadata)
+Reformat::getPreferredMetadataAt(double time,
+                                 ViewIdx view,
+                                 NodeMetadata& metadata)
 {
-    // The source's pixel aspect ratio is read from the metadata being computed, as the effect's
-    // own copy is the previous one.
+    // The source's pixel aspect ratio is read from the metadata being computed, which hold the
+    // source clip's at time.
     const double srcPar = metadata.getPixelAspectRatio(0);
     double par = 1.;
     RectD rect;
     RectI format;
 
-    computeOutputFormat(getCurrentTime(), ViewIdx(0), srcPar, &par, &rect, &format);
-    switch (getReformatType()) {
+    computeOutputFormat(time, view, srcPar, &par, &rect, &format);
+    switch (getReformatType(time, view)) {
     case eReformatTypeToFormat:
     case eReformatTypeToBox:
     case eReformatTypeToProjectFormat:

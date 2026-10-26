@@ -120,7 +120,8 @@ KnobFile::reloadOtherNodesReadingTheseFiles()
             (*it)->markHashDirty();
             // The format and the rest of the metadata still describe the file as it was read
             // before, and nodes below clip to that format.
-            other->refreshMetadata_public(true);
+            other->dropCachedMetadataDownstream();
+            other->refreshMetadataSideEffects();
         }
     }
 }

@@ -141,7 +141,7 @@ renderAndRead(const AppInstancePtr& app,
 
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
-    app->startWritersRendering(false, works);
+    app->startWritersRendering(eRenderModeBlocking, works);
 
     if (!QFile::exists(QString::fromStdString(path))) {
         *error = "frame was not rendered: " + path;
@@ -904,7 +904,7 @@ TEST_F(ShuffleRenderTest, ShuffleCopyBBoxChoosesTheRegionOfTwoConnectedInputs)
         EXPECT_TRUE(rod == cases[i].expected) << cases[i].id << ": " << rectString(rod) << " != " << rectString(cases[i].expected);
     }
 
-    EXPECT_TRUE(_shuffle->getEffectInstance()->getOutputFormat() == mainInput->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(_shuffle->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat() == mainInput->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     disconnectNodes(constant, _shuffle, true);
     for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {

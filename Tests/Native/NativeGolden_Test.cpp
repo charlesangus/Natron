@@ -58,6 +58,7 @@
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Generator/Noise.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
@@ -597,6 +598,26 @@ TEST_F(NativeGoldenTest, CheckerBoard)
     }));
     v.push_back(variant("boxes", [](const GoldenGraph& g) { return num(g, kCheckerBoardParamBoxSize, { 12., 9. }) && num(g, kCheckerBoardParamLineWidth, { 2. }); }));
     run(generatorSpec("CheckerBoard", PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD), v);
+}
+
+TEST_F(NativeGoldenTest, Noise)
+{
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("perlin", [](const GoldenGraph& g) { return choice(g, kNoiseParamType, "perlin") && num(g, kNoiseParamSize, { 24. }) && num(g, kNoiseParamSeed, { 7. }); }));
+    v.push_back(variant("cellularF1", [](const GoldenGraph& g) {
+        return choice(g, kNoiseParamType, "cellular") && choice(g, kNoiseParamOutput, "f1") && num(g, kNoiseParamSize, { 20. }) && num(g, kNoiseParamSeed, { 3. });
+    }));
+    v.push_back(variant("white", [](const GoldenGraph& g) { return choice(g, kNoiseParamType, "white") && num(g, kNoiseParamSize, { 2. }) && num(g, kNoiseParamSeed, { 11. }); }));
+    v.push_back(variant("fractal", [](const GoldenGraph& g) {
+        return choice(g, kNoiseParamType, "perlin") && choice(g, kNoiseParamFractal, "fbm") && num(g, kNoiseParamOctaves, { 4. }) && num(g, kNoiseParamSize, { 32. });
+    }));
+    v.push_back(variant("warp", [](const GoldenGraph& g) {
+        return choice(g, kNoiseParamType, "simplex") && choice(g, kNoiseParamWarpType, "perlin") && num(g, kNoiseParamWarpAmount, { 0.5 }) && num(g, kNoiseParamSize, { 28. });
+    }));
+    v.push_back(variant("transform", [](const GoldenGraph& g) {
+        return choice(g, kNoiseParamType, "perlin") && num(g, kNoiseParamSize, { 24. }) && num(g, kNoiseParamRotate, { 30. }) && num(g, kNoiseParamScale, { 1.5, 0.75 }) && num(g, kNoiseParamTranslate, { 13., -9. });
+    }));
+    run(generatorSpec("Noise", PLUGINID_NATRON_NOISE, PLUGIN_MAJOR_NATRON_NOISE), v);
 }
 
 TEST_F(NativeGoldenTest, Blur)

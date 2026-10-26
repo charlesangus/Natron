@@ -40,6 +40,7 @@
 #include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
@@ -267,6 +268,8 @@ sourceRegionOfDefinition(const EffectInstancePtr& input,
 // both axes through the horizontal render scale.
 void
 offsetToCanonical(const EffectInstance& effect,
+                  double time,
+                  ViewIdx view,
                   const PixelOffset& offset,
                   const RenderScale& scale,
                   double* dx,
@@ -274,7 +277,7 @@ offsetToCanonical(const EffectInstance& effect,
 {
     const double s = scale.toOfxPointD().x;
 
-    *dx = offset.x * effect.getAspectRatio(-1) / s;
+    *dx = offset.x * effect.getRenderMetadata(time, view)->getPixelAspectRatio(-1) / s;
     *dy = offset.y / s;
 }
 
@@ -330,6 +333,7 @@ gpuSamplingTransforms(const EffectInstance& effect,
                       int sourceInput,
                       const ResampleRequest& request,
                       double time,
+                      ViewIdx view,
                       const RenderScale& scale,
                       Resampler::SamplingTransforms* transforms)
 {
@@ -341,7 +345,8 @@ gpuSamplingTransforms(const EffectInstance& effect,
         blur.shutter = 0.;
     }
     const OfxPointD s = scale.toOfxPointD();
-    Resampler::buildSamplingTransforms(request.transform, time, request.settings.invert, blur, s.x, s.y, false, effect.getAspectRatio(sourceInput), effect.getAspectRatio(-1), transforms);
+    const NodeMetadataConstPtr metadata = effect.getRenderMetadata(time, view);
+    Resampler::buildSamplingTransforms(request.transform, time, request.settings.invert, blur, s.x, s.y, false, metadata->getPixelAspectRatio(sourceInput), metadata->getPixelAspectRatio(-1), transforms);
     if (transforms->invTransforms.empty()) {
         return false;
     }
@@ -495,7 +500,7 @@ runResampleCpu(EffectInstance& effect,
         blur.shutter = 0.;
     }
     const OfxPointD s = args.mappedScale.toOfxPointD();
-    const double dstPar = effect.getAspectRatio(-1);
+    const double dstPar = effect.getRenderMetadata(args.time, args.view)->getPixelAspectRatio(-1);
     const PixelOffset offset = request.offset;
     const bool matted = !matrix && request.matte.isSet();
     MatteAxis matteColumns;
@@ -659,7 +664,7 @@ resampleRegionOfDefinition(EffectInstance& effect,
 
     if (request.form == ResampleRequest::Form::Matrix) {
         const OfxPointD s = scale.toOfxPointD();
-        Resampler::getRegionOfDefinition(request.transform, srcRoD, time, effect.getAspectRatio(-1), s.x, s.y, regionParams(request, stages), rod);
+        Resampler::getRegionOfDefinition(request.transform, srcRoD, time, effect.getRenderMetadata(time, view)->getPixelAspectRatio(-1), s.x, s.y, regionParams(request, stages), rod);
 
         return eStatusOK;
     }
@@ -674,7 +679,7 @@ resampleRegionOfDefinition(EffectInstance& effect,
     }
     double dx = 0.;
     double dy = 0.;
-    offsetToCanonical(effect, request.offset, scale, &dx, &dy);
+    offsetToCanonical(effect, time, view, request.offset, scale, &dx, &dy);
     rod->x1 = srcRoD.x1 + dx;
     rod->x2 = srcRoD.x2 + dx;
     rod->y1 = srcRoD.y1 + dy;
@@ -704,7 +709,7 @@ resampleRegionsOfInterest(EffectInstance& effect,
     RectD srcRoD;
     const bool hasSrcRoD = sourceRegionOfDefinition(input, time, scale, view, &srcRoD);
     const OfxPointD s = scale.toOfxPointD();
-    const double srcPar = effect.getAspectRatio(sourceInput);
+    const double srcPar = effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput);
     const bool readsReference = stages.maskMix && (stages.doMasking || (stages.mix != 1.)) && !renderWindow.isNull();
 
     RectD srcRoI = renderWindow;
@@ -730,7 +735,7 @@ resampleRegionsOfInterest(EffectInstance& effect,
         if (((offset.x != 0) || (offset.y != 0)) && hasSrcRoD && !srcRoD.isNull()) {
             double dx = 0.;
             double dy = 0.;
-            offsetToCanonical(effect, offset, scale, &dx, &dy);
+            offsetToCanonical(effect, time, view, offset, scale, &dx, &dy);
             const RectD shifted(renderWindow.x1 - dx, renderWindow.y1 - dy, renderWindow.x2 - dx, renderWindow.y2 - dy);
             srcRoI = shifted.intersect(srcRoD);
         }
@@ -758,6 +763,7 @@ resampleTransform(EffectInstance& effect,
                   int sourceInput,
                   const ResampleRequest& request,
                   double time,
+                  ViewIdx view,
                   const RenderScale& renderScale,
                   bool draftRender,
                   EffectInstancePtr* inputToTransform,
@@ -788,7 +794,8 @@ resampleTransform(EffectInstance& effect,
         return eStatusFailed;
     }
     const OfxPointD s = renderScale.toOfxPointD();
-    *transform = TransformMath::toEngineMatrix(TransformMath::forwardToPixel(canonical, effect.getAspectRatio(sourceInput), effect.getAspectRatio(-1), s.x, s.y));
+    const NodeMetadataConstPtr metadata = effect.getRenderMetadata(time, view);
+    *transform = TransformMath::toEngineMatrix(TransformMath::forwardToPixel(canonical, metadata->getPixelAspectRatio(sourceInput), metadata->getPixelAspectRatio(-1), s.x, s.y));
     *inputToTransform = input;
 
     return eStatusOK;
@@ -812,7 +819,7 @@ canRecordResampleGpu(const EffectInstance& effect,
     }
     Resampler::SamplingTransforms transforms;
 
-    return gpuSamplingTransforms(effect, plan.sourceInput, request, query.time, query.mappedScale, &transforms) && (transforms.invTransforms.size() <= gpu::kGpuResampleMaxMatrices);
+    return gpuSamplingTransforms(effect, plan.sourceInput, request, query.time, query.view, query.mappedScale, &transforms) && (transforms.invTransforms.size() <= gpu::kGpuResampleMaxMatrices);
 #else
     Q_UNUSED(effect);
     Q_UNUSED(plan);
@@ -839,7 +846,7 @@ sourceCanonicalRoI(const EffectInstance& effect,
     if (!input || outputRect.isNull()) {
         return false;
     }
-    const RectD window = outputRect.toCanonical_noClipping(scale.toMipmapLevel(), effect.getAspectRatio(-1));
+    const RectD window = outputRect.toCanonical_noClipping(scale.toMipmapLevel(), effect.getRenderMetadata(time, view)->getPixelAspectRatio(-1));
     // The region actions only read knobs and the inputs' regions of definition.
     EffectInstance& self = const_cast<EffectInstance&>(effect);
     RectD rod;
@@ -875,7 +882,7 @@ resampleGpuSourceRoI(const EffectInstance& effect,
 
     // The source renders its region of interest in its own pixels, as the CPU's request pass
     // asks it to, even when this node's source clip reports another pixel aspect ratio.
-    return clampedPixelEnclosing(roi, scale, input->getAspectRatio(-1));
+    return clampedPixelEnclosing(roi, scale, input->getRenderMetadata(time, view)->getPixelAspectRatio(-1));
 }
 
 StatusEnum
@@ -896,7 +903,7 @@ recordResampleGpu(EffectInstance& effect,
     const double time = query.time;
     const RenderScale& scale = query.mappedScale;
     Resampler::SamplingTransforms transforms;
-    if (matrix && !gpuSamplingTransforms(effect, sourceInput, request, time, scale, &transforms)) {
+    if (matrix && !gpuSamplingTransforms(effect, sourceInput, request, time, query.view, scale, &transforms)) {
         return eStatusFailed;
     }
 
@@ -913,7 +920,7 @@ recordResampleGpu(EffectInstance& effect,
         }
         RectD srcRoD;
         if (sourceRegionOfDefinition(input, time, scale, query.view, &srcRoD)) {
-            RectI valid = intersectPixels(inputView.bounds, clampedPixelEnclosing(srcRoD, scale, input->getAspectRatio(-1)));
+            RectI valid = intersectPixels(inputView.bounds, clampedPixelEnclosing(srcRoD, scale, input->getRenderMetadata(time, query.view)->getPixelAspectRatio(-1)));
             if (matrix) {
                 valid = intersectPixels(valid, resampleGpuSourceRoI(effect, sourceInput, time, query.view, rect, scale));
             } else if (request.clipSourceToRoI) {
@@ -922,7 +929,7 @@ recordResampleGpu(EffectInstance& effect,
                 // take several clip ratios reports its own there, whatever the source renders in.
                 RectD roi;
                 if (sourceCanonicalRoI(effect, input, time, query.view, rect, scale, &roi)) {
-                    valid = intersectPixels(valid, clampedPixelEnclosing(roi, scale, effect.getAspectRatio(sourceInput)));
+                    valid = intersectPixels(valid, clampedPixelEnclosing(roi, scale, effect.getRenderMetadata(time, query.view)->getPixelAspectRatio(sourceInput)));
                 } else {
                     valid = intersectPixels(valid, rect);
                 }

@@ -34,6 +34,7 @@
 #include <utility>
 
 #include "Engine/EffectInstance.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/RectI.h"
 
@@ -338,21 +339,22 @@ ChannelCopy::findColorStorage(const std::list<ImageLayerDesc>& layers)
 
 ImageLayerDesc
 ChannelCopy::metadataColorStorage(const EffectInstance& effect,
-                                  int inputNb)
+                                  int inputNb,
+                                  double time,
+                                  ViewIdx view)
 {
-    EffectInstancePtr input = effect.getInput(inputNb);
+    NodeMetadataConstPtr metadata = effect.getInputMetadataAt(inputNb, time, view);
 
-    if (!input) {
+    if (!metadata || (metadata->getComponentsType(-1) != kNatronColorLayerID)) {
+        return ImageLayerDesc();
+    }
+    // The stream's own layout, which a colour output may carry narrower than its clip's.
+    const int nComps = (metadata->getOutputStorageNComps() > 0) ? metadata->getOutputStorageNComps() : metadata->getNComps(-1);
+    if (nComps <= 0) {
         return ImageLayerDesc();
     }
 
-    ImageLayerDesc layer, pairedLayer;
-    input->getMetadataComponents(-1, &layer, &pairedLayer);
-    if (!layer.isColorLayer() || (layer.getNumComponents() == 0)) {
-        return ImageLayerDesc();
-    }
-
-    return ImageLayerDesc::mapNCompsToColorLayer(layer.getNumComponents());
+    return ImageLayerDesc::mapNCompsToColorLayer(nComps);
 }
 
 std::vector<int>

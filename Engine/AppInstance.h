@@ -111,6 +111,17 @@ enum CreateNodeStatusEnum {
     eCreateNodeStatusFailed
 };
 
+// How AppInstance::startWritersRendering runs its renders. A background (no GUI) app has no event
+// loop to return to, so it runs every mode as eRenderModeBlocking.
+enum RenderModeEnum {
+    // In this process, returning at once; the caller keeps the user from editing while it runs.
+    eRenderModeForeground,
+    // In a separate process, rendering the project as saved when the render is started.
+    eRenderModeBackground,
+    // In this process, returning once every render has finished.
+    eRenderModeBlocking
+};
+
 class UndoRecorderI;
 
 class AppInstance
@@ -362,10 +373,40 @@ public:
      * will be rendered using the frame ranges.
      **/
     void startWritersRenderingFromNames(bool enableRenderStats,
-                                        bool doBlockingRender,
+                                        RenderModeEnum mode,
                                         const std::list<std::string>& writers,
-                                        const std::list<std::pair<int, std::pair<int, int> > >& frameRanges);
-    void startWritersRendering(bool doBlockingRender, const std::list<RenderWork>& writers);
+                                        const std::list<std::pair<int, std::pair<int, int>>>& frameRanges);
+    void startWritersRendering(RenderModeEnum mode, const std::list<RenderWork>& writers);
+
+    /**
+     * @brief Renders writers in this process while nothing can edit what they read. Without an
+     * interface the render blocks until every frame is written; an app with one returns at once
+     * and blocks the interface behind a modal progress dialog until the renders end.
+     **/
+    virtual void renderForeground(const std::list<RenderWork>& writers);
+
+    /**
+     * @brief Renders work again in a separate process from savePath, the file saved when the
+     * render was first submitted, so the restart sees the project as it was then.
+     * Returns false, starting nothing, if that file is gone.
+     **/
+    bool restartBackgroundRender(const RenderWork& work, const QString& savePath);
+
+    /**
+     * @brief Deletes savePath, a file saved for a render process, once no task can restart from
+     * it. Files still held are deleted when the app quits.
+     **/
+    void releaseRenderSaveFile(const QString& savePath);
+
+    /**
+     * @brief Whether a render of writer started by this app is running or queued.
+     **/
+    bool isRenderActiveOrQueued(const OutputEffectInstance* writer) const;
+
+    /**
+     * @brief The process of writer's running or queued separate-process render, if any.
+     **/
+    ProcessHandlerPtr getRenderProcess(const OutputEffectInstance* writer) const;
 
     /**
      * @brief Turns the -w/--writer arguments of cl into RenderWork requests, resolving each
@@ -431,6 +472,19 @@ public:
     virtual void refreshAllPreviews() {}
 
     virtual void declareCurrentAppVariable_Python();
+
+    /**
+     * @brief Makes app.<name> match the project's knobs on the existing app object, keeping
+     * every other attribute, such as the nodes': declares the knobs not declared yet and deletes
+     * the attributes of knobs that no longer exist. Returns the script it ran; throws
+     * std::runtime_error when a knob name is a Python keyword or the script fails.
+     **/
+    std::string declareProjectParamsToPython();
+
+    /**
+     * @brief declareProjectParamsToPython(), printing the script it ran and logging failures.
+     **/
+    void refreshProjectParamsInPython();
 
     void execOnProjectCreatedCallback();
 
@@ -540,8 +594,7 @@ protected:
     }
 
 private:
-
-    void startNextQueuedRender(OutputEffectInstance* finishedWriter);
+    void startNextQueuedRender(OutputEffectInstance* finishedWriter, const ProcessHandler* finishedProcess);
 
     NodePtr createNodeInternal(CreateNodeArgs& args, CreateNodeStatusEnum* status = nullptr);
 

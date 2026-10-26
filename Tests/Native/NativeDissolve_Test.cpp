@@ -34,6 +34,8 @@
 
 #include <QString>
 
+#include <ofxNatron.h>
+
 #include "BaseTest.h"
 #include "CountingTestEffect.h"
 #include "NativeParity.h"
@@ -42,13 +44,18 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
+#include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -264,4 +271,65 @@ TEST_F(NativeDissolveTest, OnlyTheTwoChosenInputsAreRendered)
 TEST_F(NativeDissolveTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_DISSOLVE, PLUGIN_MAJOR_NATRON_DISSOLVE, "Dissolve");
+}
+
+namespace {
+
+// A native Constant whose output format is width x height at par.
+NodePtr
+createFormatConstant(const AppInstancePtr& app,
+                     double width,
+                     double height,
+                     double par)
+{
+    NodePtr node = createNodeAtMajor(app, PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    KnobChoice* extent = node ? dynamic_cast<KnobChoice*>(node->getKnobByName(kNativeGeneratorParamExtent).get()) : NULL;
+
+    EXPECT_TRUE(extent != NULL);
+    if (!extent) {
+        return NodePtr();
+    }
+    const std::vector<ChoiceOption> entries = extent->getEntries_mt_safe();
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].id == kNativeGeneratorExtentFormat) {
+            extent->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+        }
+    }
+    if (!setKnobValues(node, kNatronParamFormatSize, { width, height }) || !setKnobValues(node, kNatronParamFormatPar, { par })) {
+        return NodePtr();
+    }
+
+    return node;
+}
+
+} // namespace
+
+// Between two sources a Dissolve routes nowhere, so it keeps the derivation from its inputs (the
+// first source's format and PAR) rather than the project format a black route answers. On a
+// whole number it passes that source through and answers its values.
+TEST_F(NativeDissolveTest, AFractionalDissolveKeepsTheDefaultDerivation)
+{
+    resetProject();
+    getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
+    getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, 80, 60, "nativeDissolve80x60", 1.5));
+
+    NodePtr first = createFormatConstant(getApp(), 64., 48., 1.);
+    NodePtr second = createFormatConstant(getApp(), 100., 30., 2.);
+    NodePtr node = createNode(QString::fromUtf8(kDissolveID), kNativeDissolveMajor);
+    ASSERT_TRUE(first && second && isNative(node));
+    connectNodes(first, node, 0, true);
+    connectNodes(second, node, 1, true);
+
+    ASSERT_TRUE(setKnobValues(node, kDissolveParamWhich, { 0.5 }));
+    NodeMetadataConstPtr blended = node->getEffectInstance()->getMetadata(kTime, ViewIdx(0));
+    ASSERT_TRUE(bool(blended));
+    EXPECT_EQ(RectI(0, 0, 64, 48), blended->getOutputFormat());
+    EXPECT_DOUBLE_EQ(1., blended->getPixelAspectRatio(-1));
+    EXPECT_EQ(4, blended->getNComps(-1));
+
+    ASSERT_TRUE(setKnobValues(node, kDissolveParamWhich, { 1. }));
+    NodeMetadataConstPtr passed = node->getEffectInstance()->getMetadata(kTime, ViewIdx(0));
+    ASSERT_TRUE(bool(passed));
+    EXPECT_EQ(RectI(0, 0, 100, 30), passed->getOutputFormat());
+    EXPECT_DOUBLE_EQ(2., passed->getPixelAspectRatio(-1));
 }

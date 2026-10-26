@@ -197,7 +197,9 @@ private:
     virtual void evaluate(bool isSignificant, bool refreshMetadatas) OVERRIDE FINAL;
 
     // The output is RGBA whatever the source: the key is its alpha.
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     // Set by knobChanged() for a source, model or Recentre edit, consumed by evaluate().
     bool _recentrePending;

@@ -488,11 +488,13 @@ Despill::addAcceptedComponents(int inputNb,
 }
 
 StatusEnum
-Despill::getPreferredMetadata(NodeMetadata& metadata)
+Despill::getPreferredMetadataAt(double time,
+                                ViewIdx view,
+                                NodeMetadata& metadata)
 {
     KnobChoicePtr map = op().spillMap.lock();
 
-    if (map && (map->getValue() == DespillOp::eSpillMapAlpha)) {
+    if (map && (map->getValueAtTime(time, 0, view) == DespillOp::eSpillMapAlpha)) {
         metadata.setNComps(-1, 4);
     }
 

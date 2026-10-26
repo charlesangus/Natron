@@ -29,7 +29,9 @@
 #include "Global/Macros.h"
 
 #include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 #include <QMutex>
@@ -44,6 +46,8 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct OfxClipsFrameAnswer;
 
 class AbstractOfxEffectInstance
     : public OutputEffectInstance
@@ -129,6 +133,20 @@ public:
      * or a clip cache takes.
      **/
     void dropStaleClipMetadata();
+
+    /**
+     * @brief For tests only: runs the plug-in's clip preferences on the calling thread, which
+     * may be any thread, over metadata, which holds the default answer on entry and the
+     * plug-in's on return. Holds the preferences lock for writing, so it waits for the actions
+     * that read the clips, and it pushes nothing to the clips or to the node.
+     **/
+    StatusEnum getClipPreferencesOnAnyThreadForTest(NodeMetadata& metadata);
+
+    /**
+     * @brief For tests only: how many times the plug-in's clip preferences ran for an answer at
+     * a frame (see getPreferredMetadataForInputs()) since this instance was created.
+     **/
+    U64 getPerFrameClipPreferencesCallCountForTest() const;
 
 public:
     /********OVERRIDDEN FROM EFFECT INSTANCE*************/
@@ -264,8 +282,14 @@ public:
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
     virtual SequentialPreferenceEnum getSequentialPreference() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL;
-    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+    virtual StatusEnum getTimeInvariantClipPreferences(NodeMetadata& metadata) OVERRIDE FINAL;
+    virtual NodeMetadataConstPtr getPreferredMetadataForInputs(U64 hash,
+                                                               double time,
+                                                               ViewIdx view,
+                                                               const std::vector<EffectInstancePtr>& inputs,
+                                                               const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                                                               const NodeMetadata& defaults) OVERRIDE FINAL;
+    virtual void onTimeInvariantMetadataDerived(const NodeMetadata& metadata) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
     virtual void dropCachedOutputMetadata() OVERRIDE FINAL;
     virtual void getComponentsNeededAndProduced(double time, ViewIdx view,
@@ -358,6 +382,22 @@ private:
     void pushMultiplaneTwin(std::size_t index, bool pushChannelQuad);
 
     void dropClipMetadataNotCachedUnder(U64 hash);
+
+    /// Whether the plug-in's clip preferences can read other parameter values at another frame.
+    bool clipPreferencesVaryWithTime() const;
+
+    /**
+     * @brief The clips' answer at time and view, from the per-frame answers already made. Only
+     * with mayDerive is the node's metadata there derived for it, which an action the derivation
+     * itself runs must not do. Null leaves the clips to the last refresh.
+     **/
+    std::shared_ptr<const OfxClipsFrameAnswer> findFrameAnswer(double time, ViewIdx view, bool mayDerive);
+
+    /// Has the main thread refresh this node's metadata soon, once however often it is asked.
+    void requestDeferredEditsRefresh();
+
+    /// Holds clipPreferencesMutex across a clip preferences call.
+    class ClipPreferencesSerialiser;
 
 private:
 

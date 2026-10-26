@@ -6,6 +6,7 @@
 #include "GpuKernelRegistry.h"
 #include "GpuPipelineCache.h"
 #include "GpuRecord.h"
+#include "GpuTexture.h"
 #include "GpuTransfer.h"
 
 #include <atomic>
@@ -127,6 +128,9 @@ public:
     GpuBufferPool& pool() const { return *pool_; }
     // Rebuilt by recreate(), so a kernel taken from it must be dropped first, like any other handle.
     GpuPipelineCache& pipelines() const { return *pipelines_; }
+    // Textures kept by key for every user of the device, record contexts and the viewer alike. Rebuilt by
+    // recreate(), so a texture taken from it must be dropped first, like any other handle.
+    GpuTextureCache& textures() const { return *textures_; }
 
     // Like GpuKernelRegistry::registerKernel, but the descriptor is registered again after recreate(),
     // under the same id. The SPIR-V it points to must outlive the runtime.
@@ -204,6 +208,7 @@ private:
     std::unique_ptr<GpuKernelRegistry> registry_;
     std::unique_ptr<GpuBufferPool> pool_;
     std::unique_ptr<GpuPipelineCache> pipelines_;
+    std::unique_ptr<GpuTextureCache> textures_;
     std::unique_ptr<GpuImportPreparer> preparer_;
     std::shared_ptr<GpuKeepAlive> keepAlive_;
 };

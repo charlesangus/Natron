@@ -251,6 +251,22 @@ TEST(ClipboardYaml, AGroupKeepsThePositionsOfItsChildren)
     }
 }
 
+TEST(ClipboardYaml, TheSourceProjectRoundTrips)
+{
+    ClipboardSerialization clipboard = blurIntoGrade();
+    clipboard.sourceProject = "6f1c2d3e-0000-4a5b-8c9d-0123456789ab";
+
+    YamlWarnings warnings;
+    const ClipboardSerialization decoded = Serialization::decodeClipboardYaml(Serialization::encodeClipboardYaml(clipboard), &warnings);
+    EXPECT_TRUE(warnings.empty()) << (warnings.empty() ? std::string() : warnings.front());
+    EXPECT_EQ(clipboard.sourceProject, decoded.sourceProject);
+
+    clipboard.sourceProject.clear();
+    const std::string text = Serialization::encodeClipboardYaml(clipboard);
+    EXPECT_EQ(std::string::npos, text.find("sourceProject"));
+    EXPECT_TRUE(Serialization::decodeClipboardYaml(text).sourceProject.empty());
+}
+
 TEST(ClipboardYaml, OtherTextIsRefused)
 {
     EXPECT_THROW(Serialization::decodeClipboardYaml("just some text someone copied"), YamlError);

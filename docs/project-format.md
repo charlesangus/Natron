@@ -114,6 +114,7 @@ The graph. Top-level keys, in the order they are written:
 | `format` | Always `natron-project`. |
 | `formatVersion` | Currently `1`. |
 | `savedBy` | `{version: [major, minor, revision], branch, commit, os, bits}`. |
+| `id` | The project's identity, a random UUID made with a new project (File > New or a reset makes a new one). Loading restores it and Save As keeps it, so every save of one project, under any name, carries the same id. A paste uses it to tell whether nodes come from the open project. Omitted when empty; a file without one gets a new id when loaded. |
 | `knobs` | Project knobs, sparse (see below), then the project's Reverse-Flow Variables in declaration order, each with its definition under `user:`. Omitted when empty. |
 | `formats` | The project's additional formats: a list of `{name, rect: [x1, y1, x2, y2], par}`. Omitted when empty. |
 | `layers` | The layer registry: a map from layer ID to `{label, channelsLabel, channels, origin}`, sorted by ID. Omitted when empty. |
@@ -163,6 +164,14 @@ is needed. The map form can hold `value`, `expr` (with `hasRet`), `secret`, `ali
 [Curves](#curves). Only knobs that differ from their default are saved; defaults are saved for
 user knobs, whose definition the file must carry.
 
+A dimension in a two-way link group (Linked Nodes, Paste Link) is written in the map form with
+`linkGroup`, an id shared by the group's members, `unlinked: true` when the dimension was unlinked
+and keeps its own value, and `nodeLink: true` when it joined through a Linked Node. Its value is
+saved as well. The id is the lowest `node.knob.dimension` among the group's members and only
+groups what is loaded together: on load, or on paste, the dimensions with the same id are linked
+to each other and to nothing else. An alias is not a link group in the file: it is written with
+`alias` and the `link` to its master.
+
 ### Example
 
 This is the document the tests pin (`kExampleProjectYaml` in
@@ -173,6 +182,7 @@ PyPlug that has a user page and holds its own blur.
 format: natron-project
 formatVersion: 1
 savedBy: {version: [2, 6, 0], branch: "main", commit: "5acedc397", os: "Linux", bits: 64}
+id: "6f1c2d3e-7a8b-4c5d-9e0f-123456789abc"
 knobs:
   frameRange: [1, 240]
   frameRate: 23.976
@@ -351,11 +361,14 @@ a list of windows. A window is `{main?, pos: [x, y], size: [w, h]}` plus one chi
 (`{name, tabs, current, anchor?}`) or `panel`. This is the application layout, and the only
 place pane layout is saved.
 
-**Clipboard** (`Serialization/Yaml/ClipboardYaml.*`): `format: natron-clipboard`, and `nodes` in
-the `project.yaml` node schema, so inputs name siblings by script name and position, size and
-colours sit on each node. It travels on the system clipboard as
-`application/vnd.natron.nodes+yaml` next to the same text as `text/plain`. A pasted clone is not
-linked to its original.
+**Clipboard** (`Serialization/Yaml/ClipboardYaml.*`): `format: natron-clipboard`, an optional
+`sourceProject`, the `id` of the project the nodes were copied from (see `project.yaml`), and
+`nodes` in the `project.yaml` node schema, so inputs name siblings by script name and position,
+size and colours sit on each node. It travels on the system clipboard as
+`application/vnd.natron.nodes+yaml` next to the same text as `text/plain`. Pasted into the project
+they came from, even after it was closed and opened again, copies of Linked Nodes, or of knobs
+linked by Paste Link, join their originals' links while an original is still there; otherwise, as
+in another project, the copies are linked only to each other.
 
 ## Versioning
 

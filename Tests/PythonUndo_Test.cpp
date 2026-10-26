@@ -307,27 +307,105 @@ TEST_F(PythonUndo, ValuesKeyframesExpressionsAndLinksAreRestoredExactly)
     const bool cropBefore = crop->getValue(0);
     const std::string t = py(target);
 
-    ASSERT_TRUE(runStep(t + ".size.setValue(3.0, 0)\n" + t + ".size.setValueAtTime(1.0, 1, 0)\n" + t + ".size.setValueAtTime(2.0, 10, 0)\n" + t + ".size.setExpression(\"4.5\", False, 1)\n" + t + ".getParam(\"" kBlurParamCropToFormat "\").slaveTo(" + py(source) + ".getParam(\"" kBlurParamCropToFormat "\"), 0, 0)\n"));
+    ASSERT_TRUE(runStep(t + ".size.setValue(3.0, 0)\n" + t + ".size.setValueAtTime(1.0, 1, 0)\n" + t + ".size.setValueAtTime(2.0, 10, 0)\n" + t + ".size.setExpression(\"4.5\", False, 1)\n" + t + ".getParam(\"" kBlurParamCropToFormat "\").linkTo(" + py(source) + ".getParam(\"" kBlurParamCropToFormat "\"), 0, 0)\n"));
     ASSERT_EQ(2, size->getKeyFramesCount(ViewSpec::current(), 0));
     ASSERT_EQ(std::string("4.5"), size->getExpression(1));
-    ASSERT_TRUE(crop->isSlave(0));
+    ASSERT_TRUE(crop->isLinked(0));
 
     undoAll();
     EXPECT_EQ(0, size->getKeyFramesCount(ViewSpec::current(), 0));
     EXPECT_EQ(before0, size->getValue(0));
     EXPECT_EQ(before1, size->getValue(1));
     EXPECT_TRUE(size->getExpression(1).empty());
-    EXPECT_FALSE(crop->isSlave(0));
+    EXPECT_FALSE(crop->isLinked(0));
     EXPECT_EQ(cropBefore, crop->getValue(0));
 
     redoAll();
     EXPECT_EQ(2, size->getKeyFramesCount(ViewSpec::current(), 0));
     EXPECT_EQ(std::string("4.5"), size->getExpression(1));
-    EXPECT_TRUE(crop->isSlave(0));
+    EXPECT_TRUE(crop->isLinked(0));
 
     undoAll();
     EXPECT_EQ(0, size->getKeyFramesCount(ViewSpec::current(), 0));
-    EXPECT_FALSE(crop->isSlave(0));
+    EXPECT_FALSE(crop->isLinked(0));
+}
+
+// Undoing an unlink links the knob back with the shared value; redoing it unlinks it again with the
+// value it had of its own.
+TEST_F(PythonUndo, UnlinkingAndRelinkingAreRestoredExactly)
+{
+    NodePtr target = createBlur();
+    NodePtr source = createBlur();
+    ASSERT_TRUE(target && source);
+    KnobDoublePtr size = sizeOf(target);
+    KnobDoublePtr sourceSize = sizeOf(source);
+    ASSERT_TRUE(size && sourceSize);
+    ASSERT_TRUE(size->linkTo(-1, sourceSize, -1));
+    sourceSize->setValue(7.0, ViewSpec::all(), 0);
+    ASSERT_EQ(7.0, size->getValue(0));
+
+    const std::string t = py(target);
+    ASSERT_TRUE(runStep(t + ".size.unlink()\n" + t + ".size.setValue(2.0, 0)\n"));
+    ASSERT_FALSE(size->isLinked(0));
+    ASSERT_EQ(2.0, size->getValue(0));
+    ASSERT_EQ(7.0, sourceSize->getValue(0));
+
+    undoAll();
+    EXPECT_TRUE(size->isLinked(0));
+    EXPECT_EQ(7.0, size->getValue(0));
+    sourceSize->setValue(8.0, ViewSpec::all(), 0);
+    EXPECT_EQ(8.0, size->getValue(0));
+
+    redoAll();
+    EXPECT_FALSE(size->isLinked(0));
+    EXPECT_TRUE(size->hasRelinkableGroups());
+    EXPECT_EQ(2.0, size->getValue(0));
+    EXPECT_EQ(8.0, sourceSize->getValue(0));
+
+    recorder->commands.clear();
+    ASSERT_TRUE(runStep(t + ".size.relink()\n"));
+    EXPECT_TRUE(size->isLinked(0));
+    EXPECT_EQ(8.0, size->getValue(0));
+
+    undoAll();
+    EXPECT_FALSE(size->isLinked(0));
+    EXPECT_EQ(2.0, size->getValue(0));
+}
+
+// Undoing a Python edit of a linked knob restores the value it had in every knob of the group, and the
+// knobs stay linked.
+TEST_F(PythonUndo, UndoingAnEditOfALinkedKnobRestoresTheWholeGroup)
+{
+    NodePtr target = createBlur();
+    NodePtr source = createBlur();
+    NodePtr other = createBlur();
+    ASSERT_TRUE(target && source && other);
+    KnobDoublePtr size = sizeOf(target);
+    KnobDoublePtr sourceSize = sizeOf(source);
+    KnobDoublePtr otherSize = sizeOf(other);
+    ASSERT_TRUE(size && sourceSize && otherSize);
+    ASSERT_TRUE(size->linkTo(-1, sourceSize, -1));
+    ASSERT_TRUE(otherSize->linkTo(-1, sourceSize, -1));
+    sourceSize->setValue(7.0, ViewSpec::all(), 0);
+    ASSERT_EQ(7.0, otherSize->getValue(0));
+
+    ASSERT_TRUE(runStep(py(target) + ".size.setValue(3.0, 0)\n"));
+    ASSERT_EQ(3.0, sourceSize->getValue(0));
+    ASSERT_EQ(3.0, otherSize->getValue(0));
+
+    undoAll();
+    EXPECT_TRUE(size->isLinked(0));
+    EXPECT_EQ(7.0, size->getValue(0));
+    EXPECT_EQ(7.0, sourceSize->getValue(0));
+    EXPECT_EQ(7.0, otherSize->getValue(0));
+    sourceSize->setValue(8.0, ViewSpec::all(), 0);
+    EXPECT_EQ(8.0, size->getValue(0));
+    EXPECT_EQ(8.0, otherSize->getValue(0));
+
+    redoAll();
+    EXPECT_EQ(3.0, size->getValue(0));
+    EXPECT_EQ(3.0, sourceSize->getValue(0));
+    EXPECT_EQ(3.0, otherSize->getValue(0));
 }
 
 TEST_F(PythonUndo, AKeyframeLoopIsOneRecord)

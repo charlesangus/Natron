@@ -514,6 +514,49 @@ TEST_F(NativeIDistortAmountTest, IDistortMapScalesEachPixel)
     EXPECT_GT(partial, 0u) << "no pixel has a Map between 0 and 1";
 }
 
+// Where the Map is exactly 0 the output is the Source pixel itself, whatever the filter: a Mitchell
+// footprint widened by displaced neighbours would otherwise soften it. The Map is the parity
+// source's alpha bands, exact 0, exact 1 and a ramp, over a noisy Source.
+TEST_F(NativeIDistortAmountTest, IDistortZeroMapIsTheSourcePixelUnfiltered)
+{
+    for (const char* filter : { "mitchell", "cubic", "impulse" }) {
+        NodePtr source = makeSource();
+        NodePtr map = makeSource();
+        NodePtr uv;
+        NodePtr node = makeIDistortField(source, map, filter, &uv);
+        ASSERT_TRUE(source && map && node);
+        setParitySourceNoise(source, true);
+        const RectI window = paritySourceWindow(source, kTime, 0);
+
+        RenderedPlane before;
+        RenderedPlane mapPlane;
+        RenderedPlane after;
+        ASSERT_TRUE(renderRGBA(source, window, &before));
+        ASSERT_TRUE(renderRGBA(map, window, &mapPlane));
+        ASSERT_TRUE(renderRGBA(node, window, &after));
+
+        std::size_t zero = 0;
+        std::size_t moved = 0;
+        const std::size_t wrong = countMismatches(after, window, [&](int x, int y, float* want) {
+            const float m = mapValue(pixelAt(mapPlane, x, y)[3]);
+            const float* src = pixelAt(before, x, y);
+            if (m != 0.f) {
+                if (std::memcmp(pixelAt(after, x, y), src, 4 * sizeof(float)) != 0) {
+                    ++moved;
+                }
+
+                return false;
+            }
+            ++zero;
+            std::memcpy(want, src, 4 * sizeof(float));
+
+            return true; }, ParityTolerance::exact(), std::string("Map 0 pixel, ") + filter);
+        EXPECT_EQ(0u, wrong) << filter;
+        EXPECT_GT(zero, 0u) << "no pixel has a Map of 0";
+        EXPECT_GT(moved, 0u) << "no pixel with a Map above 0 moved";
+    }
+}
+
 // With a white Map STMap goes all the way to the UV position, as without one, UV Alpha gate
 // included.
 TEST_F(NativeIDistortAmountTest, STMapWhiteMapIsTheUnmappedRender)

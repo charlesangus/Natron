@@ -637,6 +637,7 @@ IWarp::renderOp(const RenderActionArgs& args,
     // into a cached image this render would otherwise already hold a read lock on.
     const RectI& roi = args.roi;
     const int width = roi.width();
+    const bool mapped = (bool)getInput(kIWarpInputMap);
     MapPlane mapPlane;
     {
         const MapInputParams mapParams = [&]() {
@@ -935,6 +936,22 @@ IWarp::renderOp(const RenderActionArgs& args,
                 }
                 Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), impulse ? NULL : jacobian.data(), width, settings.filter, settings.clamp, settings.blackOutside,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
+            }
+            if (mapped && hasSource) {
+                // Where the Map is 0 the output is the Source pixel itself, never filtered, which
+                // would soften a held pixel with its displaced neighbours.
+                for (int i = 0; i < width; ++i) {
+                    if (mapPlane.at(roi.x1 + i, y) != 0.f) {
+                        continue;
+                    }
+                    float* dst = &outRow[(std::size_t)i * nComps];
+                    const float* pix = plane.source.pixel(roi.x1 + i, y);
+                    if (pix) {
+                        std::copy(pix, pix + nComps, dst);
+                    } else {
+                        std::fill(dst, dst + nComps, 0.f);
+                    }
+                }
             }
             if (direct) {
                 continue;

@@ -686,6 +686,22 @@ IDistort::renderOp(const RenderActionArgs& args,
                 Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, jacobian.data() + 4, width, settings.filter, settings.clamp, settings.blackOutside,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
             }
+            if (mapped && hasSource) {
+                // Where the Map is 0 the output is the Source pixel itself, never filtered, which
+                // would soften a held pixel with its displaced neighbours.
+                for (int i = 0; i < width; ++i) {
+                    if (mapPlane.at(roi.x1 + i, y) != 0.f) {
+                        continue;
+                    }
+                    float* dst = &outRow[(std::size_t)i * nComps];
+                    const float* pix = plane.source.pixel(roi.x1 + i, y);
+                    if (pix) {
+                        std::copy(pix, pix + nComps, dst);
+                    } else {
+                        std::fill(dst, dst + nComps, 0.f);
+                    }
+                }
+            }
             if (direct) {
                 continue;
             }

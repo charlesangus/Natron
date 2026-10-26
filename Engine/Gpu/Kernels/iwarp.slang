@@ -158,6 +158,10 @@ float4 iwarpSample(IWarp w, int2 p)
         return zero;
     const bool jacobian = (w.flags & kIWarpJacobian) != 0;
     const float m = iwarpMap(w, p.x, p.y);
+    // Where the Map is 0 the output is the Source pixel itself, never filtered, which would soften
+    // a held pixel with its displaced neighbours.
+    if ((w.flags & kIWarpMapConnected) != 0 && m == 0.0)
+        return wrapReadSource(p);
     const FF none = ffMake(0.0, 0.0);
     // The central differences of the Map, exact as the CPU's doubles are.
     FF dmdx = none;

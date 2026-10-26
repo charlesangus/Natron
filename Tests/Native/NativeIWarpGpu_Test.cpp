@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -308,6 +309,52 @@ TEST_F(NativeIWarpGpuTest, ConnectedMapMatchesTheCpu)
     ASSERT_TRUE(setKnobValues(node, kTransformNodeParamInvert, { 0. }));
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("impulse")));
     expectParity(std::vector<NodePtr>({ node }), node, "impulse");
+}
+
+// Where the Map is exactly 0 the GPU writes the Source pixel itself, bit for bit, with a filter
+// whose footprint would otherwise soften it. The Map is a parity source whose alpha bands give
+// exact 0, exact 1 and a ramp.
+TEST_F(NativeIWarpGpuTest, ZeroMapIsTheSourcePixelUnfiltered)
+{
+    NodePtr source = makeParitySource();
+    NodePtr map = makeParitySource();
+    NodePtr itransform = makeITransform(source, map);
+    NodePtr icornerpin = makeICornerPin(source, map);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(itransform) && bool(icornerpin));
+    ASSERT_TRUE(setKnobValue(itransform, kResamplerParamFilterType, std::string("mitchell")));
+    ASSERT_TRUE(setKnobValue(icornerpin, kResamplerParamFilterType, std::string("mitchell")));
+
+    const NodePtr nodes[2] = { itransform, icornerpin };
+    const char* const names[2] = { "ITransform", "ICornerPin" };
+    for (int n = 0; n < 2; ++n) {
+        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ nodes[n] }), nodes[n], kWindow, kTime);
+        if (result.skipped) {
+            return;
+        }
+        ASSERT_TRUE(result.ok) << names[n] << ": " << result.error;
+        EXPECT_EQ(1u, result.gpuTasksPerNode.count(nodes[n]->getScriptName_mt_safe())) << names[n] << ": the region fell back to the CPU";
+        ASSERT_EQ((std::size_t)kWindow.width() * kWindow.height() * 4, result.gpu.size());
+        std::size_t zero = 0;
+        std::size_t wrong = 0;
+        for (int y = kWindow.y1; y < kWindow.y2; ++y) {
+            for (int x = kWindow.x1; x < kWindow.x2; ++x) {
+                if (paritySourceColorValue(3, x, y, kTime) > 0.f) {
+                    continue;
+                }
+                ++zero;
+                const float* got = &result.gpu[((std::size_t)(y - kWindow.y1) * kWindow.width() + (x - kWindow.x1)) * 4];
+                for (int c = 0; c < 4; ++c) {
+                    const float want = paritySourceColorValue(c, x, y, kTime);
+                    if (std::memcmp(&got[c], &want, sizeof(float)) != 0) {
+                        ++wrong;
+                        break;
+                    }
+                }
+            }
+        }
+        EXPECT_GT(zero, 0u) << names[n];
+        EXPECT_EQ(0u, wrong) << names[n] << ": Map 0 pixels that differ from the Source";
+    }
 }
 
 // A disconnected Map is white: the full transform everywhere.

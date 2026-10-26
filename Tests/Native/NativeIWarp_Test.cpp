@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <list>
@@ -54,6 +55,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/IVariantRegistry.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Transform/CornerPin.h"
 #include "Engine/Nodes/Transform/ICornerPin.h"
 #include "Engine/Nodes/Transform/ITransform.h"
@@ -326,6 +328,52 @@ TEST_F(NativeIWarpTest, BlackMapLeavesTheExtraMatrixOut)
     EXPECT_GE(black0, 0.);
     EXPECT_LE(black0, 1e-6);
     EXPECT_GT(maxDifference(whole, source), 0.1);
+}
+
+// Where the Map is exactly 0 the output is the Source pixel itself, whatever the filter: a
+// Mitchell footprint widened by displaced neighbours would otherwise soften it. The Map is a
+// parity source whose alpha bands give exact 0, exact 1 and a ramp, over a noisy Source.
+TEST_F(NativeIWarpTest, ZeroMapIsTheSourcePixelUnfiltered)
+{
+    for (const char* filter : { "mitchell", "cubic", "impulse" }) {
+        NodePtr source = makeParitySource();
+        NodePtr map = makeParitySource();
+        NodePtr itransform = makeITransform(source, map);
+        NodePtr icornerpin = makeICornerPin(source, map);
+        ASSERT_TRUE(bool(source) && bool(map) && bool(itransform) && bool(icornerpin));
+        setParitySourceNoise(source, true);
+        ASSERT_TRUE(setKnobValue(itransform, kResamplerParamFilterType, std::string(filter)));
+        ASSERT_TRUE(setKnobValue(icornerpin, kResamplerParamFilterType, std::string(filter)));
+
+        RenderedPlane before;
+        RenderedPlane mapPlane;
+        ASSERT_TRUE(renderRGBA(source, kWindow, &before));
+        ASSERT_TRUE(renderRGBA(map, kWindow, &mapPlane));
+        const NodePtr nodes[2] = { itransform, icornerpin };
+        const char* const names[2] = { "ITransform", "ICornerPin" };
+        for (int n = 0; n < 2; ++n) {
+            RenderedPlane after;
+            ASSERT_TRUE(renderRGBA(nodes[n], kWindow, &after));
+            ASSERT_EQ(before.pixels.size(), after.pixels.size());
+            std::size_t zero = 0;
+            std::size_t wrong = 0;
+            std::size_t moved = 0;
+            for (std::size_t i = 0; i < before.pixels.size() / 4; ++i) {
+                const float alpha = mapPlane.pixels[i * 4 + 3];
+                const bool isZero = !(alpha > 0.f);
+                const bool same = std::memcmp(&after.pixels[i * 4], &before.pixels[i * 4], 4 * sizeof(float)) == 0;
+                if (isZero) {
+                    ++zero;
+                    wrong += same ? 0 : 1;
+                } else if (!same) {
+                    ++moved;
+                }
+            }
+            EXPECT_EQ(0u, wrong) << names[n] << ", " << filter << ": Map 0 pixels that differ from the Source";
+            EXPECT_GT(zero, 0u) << names[n];
+            EXPECT_GT(moved, 0u) << names[n] << ": no pixel with a Map above 0 moved";
+        }
+    }
 }
 
 // Outside its image the Map is 0, not inverted: with Invert Map, a Map white over the right half

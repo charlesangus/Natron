@@ -250,9 +250,10 @@ float4 warpSample(Warp w, int2 p, bool idistort)
     const float4 zero = float4(0.0, 0.0, 0.0, 0.0);
     if ((w.flags & kWarpSample) == 0)
         return zero;
-    // STMap where the Map is 0 is the Source pixel itself, never resampled through the wrap,
-    // which would move positions outside the Source format.
-    if (!idistort && warpMapped(w) && warpMap(w, p.x, p.y) == 0.0)
+    // Where the Map is 0 the output is the Source pixel itself, never filtered, which would soften
+    // a held pixel; STMap also never resamples it through the wrap, which would move positions
+    // outside the Source format.
+    if (warpMapped(w) && warpMap(w, p.x, p.y) == 0.0)
         return wrapReadSource(p);
     // Off the UV view, as with no alpha channel at all, every position is valid; where the Map is
     // 0 the pixel keeps its own, so the gate does not apply.

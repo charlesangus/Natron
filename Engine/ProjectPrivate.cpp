@@ -27,7 +27,10 @@
 
 #include <cassert>
 #include <list>
+#include <map>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <QDebug>
 #include <QTimer>
@@ -168,6 +171,9 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
             layers->add(it->desc, it->origin, 0);
         }
 
+        // The variables are created with their saved values, so the by-name match below skips them.
+        restoreRFVVariables(projectSerializedValues);
+
         const std::vector<KnobIPtr> & projectKnobs = _publicInterface->getKnobs();
 
         _publicInterface->resetOCIOConfigKnobsForRestore();
@@ -176,6 +182,9 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
         for (U32 i = 0; i < projectKnobs.size(); ++i) {
             ///try to find a serialized value for this knob
             for (std::list<Serialization::KnobSerialization>::const_iterator it = projectSerializedValues.begin(); it != projectSerializedValues.end(); ++it) {
+                if (it->isUserKnob) {
+                    continue;
+                }
                 if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == projectKnobs[i]->getName()) {
                     // Non persistent knobs are loaded too when the project saved a value for them.
                     const Serialization::KnobSerialization completed = completeKnobSerializationForKnob(*projectKnobs[i], *it);
@@ -242,6 +251,8 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
             }
         }
 
+        restoreRFVVariableLinksAndExpressions(projectSerializedValues, allNodes);
+
         // An expression naming a node restored after its own knob was set aside as invalid; with
         // the whole tree restored, what is still invalid refers to something the file lacks.
         _publicInterface->getApp()->recheckInvalidExpressions();
@@ -280,6 +291,86 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
 
     return ok;
 } // restoreFromSerializedData
+
+void
+ProjectPrivate::restoreRFVVariables(const std::list<Serialization::KnobSerialization>& projectSerializedValues)
+{
+    bool created = false;
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = projectSerializedValues.begin(); it != projectSerializedValues.end(); ++it) {
+        if (!it->isUserKnob) {
+            continue;
+        }
+        const QString knobName = QString::fromUtf8(it->name.c_str());
+        KnobIPtr found = _publicInterface->getKnobByName(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name));
+        if (found && !found->isUserKnob()) {
+            _publicInterface->addLoadWarning(tr("Project variable %1: a project parameter has that name; the variable was dropped").arg(knobName));
+            continue;
+        }
+        KnobIPtr knob = createUserKnobFromSerialization(_publicInterface, *it, found);
+        if (!knob) {
+            _publicInterface->addLoadWarning(tr("Project variable %1: its type %2 cannot be a parameter; the variable was dropped")
+                                                 .arg(knobName)
+                                                 .arg(QString::fromUtf8(it->typeName.c_str())));
+            continue;
+        }
+        if (!rfvGroup->addKnob(knob)) {
+            _publicInterface->addLoadWarning(tr("Project variable %1: its type %2 cannot be a variable; the variable was dropped")
+                                                 .arg(knobName)
+                                                 .arg(QString::fromUtf8(it->typeName.c_str())));
+            if (!found) {
+                _publicInterface->deleteKnob(knob.get(), false);
+            }
+            continue;
+        }
+        created = true;
+    }
+    if (created) {
+        _publicInterface->recreateUserKnobs(true);
+    }
+}
+
+void
+ProjectPrivate::restoreRFVVariableLinksAndExpressions(const std::list<Serialization::KnobSerialization>& projectSerializedValues,
+                                                      const NodesList& allNodes)
+{
+    const std::map<std::string, std::string> oldNewScriptNamesMapping;
+    const KnobsVec variables = rfvGroup->getChildren();
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = projectSerializedValues.begin(); it != projectSerializedValues.end(); ++it) {
+        if (!it->isUserKnob) {
+            continue;
+        }
+        const std::string name = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
+        KnobIPtr knob;
+        for (KnobsVec::const_iterator v = variables.begin(); v != variables.end(); ++v) {
+            if ((*v)->getName() == name) {
+                knob = *v;
+                break;
+            }
+        }
+        if (!knob) {
+            // restoreRFVVariables() dropped it with a warning.
+            continue;
+        }
+        knob->storeLinksFromSerialization(*it);
+        knob->restoreExpressionsFromSerialization(*it, oldNewScriptNamesMapping);
+        std::vector<std::string> missingTargets;
+        knob->restoreLinks(allNodes, oldNewScriptNamesMapping, false, &missingTargets);
+        for (std::size_t i = 0; i < missingTargets.size(); ++i) {
+            _publicInterface->addLoadWarning(tr("Project variable %1 \u2192 %2: link target not found; the link was left out")
+                                                 .arg(QString::fromUtf8(name.c_str()))
+                                                 .arg(QString::fromUtf8(missingTargets[i].c_str())));
+        }
+    }
+}
+
+void
+ProjectPrivate::clearRFVVariables()
+{
+    const KnobsVec variables = rfvGroup->getChildren();
+    for (KnobsVec::const_iterator it = variables.begin(); it != variables.end(); ++it) {
+        _publicInterface->deleteKnob(it->get(), true);
+    }
+}
 
 bool
 ProjectPrivate::findFormat(int index,

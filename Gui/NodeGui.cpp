@@ -689,6 +689,13 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
         panel->setRedrawOnSelectionChanged(true);
     }
 
+    // A panel created open never goes through setClosed(false), which refreshes an opened panel.
+    AppInstancePtr shownApp = shownNode ? shownNode->getApp() : AppInstancePtr();
+    if (_settingsPanel && !_settingsPanel->isClosed() && shownApp && shownApp->getTimeLine()) {
+        shownNode->getEffectInstance()->refreshAfterTimeChange(false, shownApp->getTimeLine()->currentFrame());
+        shownNode->getEffectInstance()->onSettingsPanelOpened();
+    }
+
     if (hideUnmodified) {
         _settingsPanel->restoreHideUnmodifiedState(true);
     }

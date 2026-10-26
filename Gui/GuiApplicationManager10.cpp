@@ -470,12 +470,24 @@ GuiApplicationManager::exitApp(bool warnUserForSave)
         }
     }
 
+    // One question for the whole quit: the apps are closed one after the other, and asking in
+    // each would ask again after the user already chose Quit.
+    if (warnUserForSave && !guiApps.empty()) {
+        int runningRenders = 0;
+        for (const GuiAppInstancePtr& app : guiApps) {
+            runningRenders += app->getRunningRenderCount();
+        }
+        if (!guiApps.front()->getGui()->confirmQuitWithRenders(runningRenders)) {
+            return;
+        }
+    }
+
     std::set<GuiAppInstancePtr> triedInstances;
     while ( !guiApps.empty() ) {
         GuiAppInstancePtr app = guiApps.front();
         if (app) {
             triedInstances.insert(app);
-            app->getGui()->abortProject(true, warnUserForSave, true);
+            app->getGui()->abortProject(true, warnUserForSave, true, false);
         }
 
         //refreshg ui instances

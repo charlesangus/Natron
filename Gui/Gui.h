@@ -484,7 +484,13 @@ public:
      * @brief Close project right away, without any user interaction.
      * @param quitApp If true, the application will exit, otherwise the main window will stay active.
      **/
-    bool abortProject(bool quitApp, bool warnUserIfSaveNeeded, bool blocking);
+    bool abortProject(bool quitApp, bool warnUserIfSaveNeeded, bool blocking, bool warnUserIfRendersRunning = true);
+
+    /**
+     * @brief Asks whether to quit while renders are running, once per quit. Returns true when
+     * runningRenders is zero or the user chose Quit, false when the user chose Cancel.
+     **/
+    bool confirmQuitWithRenders(int runningRenders);
 
     void setGuiAboutToClose(bool about);
 

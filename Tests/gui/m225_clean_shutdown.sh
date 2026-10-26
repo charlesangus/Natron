@@ -12,7 +12,10 @@
 #     keep-alive descriptor nor a cache file.
 # Natron is driven by Tests/gui/m225_clean_shutdown.py. Actions: menu (File > Quit), window
 # (closing the main window), sigterm, sigint, sighup. Scenarios: idle, playback, write_fg,
-# write_bg (a background render, in its own process), modal (a file dialog open), url.
+# write_bg (a background render, in its own process), modal (a file dialog open), url, warn_fg and
+# warn_bg (menu or window: the "renders are still running" warning is answered Cancel, which must
+# keep Natron and the render going, and then Quit, which must end everything). Quitting while a
+# render runs asks that question in every write_* and warn_* case; the driver answers Quit.
 #
 # Run in the natron-dev container, e.g.
 #   docker exec natron-dev bash -c 'cd /home/bosley/git/Natron && Tests/gui/m225_clean_shutdown.sh'
@@ -40,7 +43,7 @@ if [ ${#CASES[@]} -eq 0 ]; then
         write_fg:menu write_fg:window write_fg:sigterm write_fg:sigint
         write_bg:menu write_bg:window write_bg:sigterm write_bg:sigint
         modal:window modal:sigterm modal:sigint
-        url:menu
+        url:menu warn_fg:menu warn_fg:window warn_bg:menu warn_bg:window
     )
 fi
 
@@ -178,8 +181,15 @@ for CASE in "${CASES[@]}"; do
         fail "the driver never reported ready (see driver.log, natron.log)"
     fi
     RENDER_CHILD="$(sed -n 's/^render_child=//p' "$CASE_OUT/ready" 2>/dev/null)"
-    if [ "$SCENARIO" = write_bg ] && [ -z "$RENDER_CHILD" ]; then
+    if { [ "$SCENARIO" = write_bg ] || [ "$SCENARIO" = warn_bg ]; } && [ -z "$RENDER_CHILD" ]; then
         fail "the background render did not run in its own process"
+    fi
+    if [ "${SCENARIO#warn_}" != "$SCENARIO" ]; then
+        grep -q '^warning_count=1$' "$CASE_OUT/ready" || fail "Cancel round: expected exactly one render warning"
+        grep -q '^warning_text=1 render is still running\. Quitting will stop it\.$' "$CASE_OUT/ready" \
+            || fail "the render warning text or count is wrong: $(sed -n 's/^warning_text=//p' "$CASE_OUT/ready")"
+        grep -q '^survived_window=1$' "$CASE_OUT/ready" || fail "Cancel did not keep Natron open"
+        grep -q '^survived_render=1$' "$CASE_OUT/ready" || fail "Cancel did not leave the render running"
     fi
     ps -eo pid,ppid,sid,stat,etime,rss,cmd | awk -v s="$LPID" 'NR==1 || $3==s' | cut -c1-200 > "$CASE_OUT/ps.before-close"
 

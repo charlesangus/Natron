@@ -40,6 +40,8 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QMessageBox>
+#include <QPushButton>
 
 #include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
@@ -1136,6 +1138,23 @@ Gui::saveWarning()
     }
 
     return -1;
+}
+
+bool
+Gui::confirmQuitWithRenders(int runningRenders)
+{
+    if (runningRenders <= 0) {
+        return true;
+    }
+    const QString text = (runningRenders == 1) ? tr("1 render is still running. Quitting will stop it.") : tr("%1 renders are still running. Quitting will stop them.").arg(runningRenders);
+    QMessageBox box(QMessageBox::Warning, QString::fromUtf8(NATRON_APPLICATION_NAME), text, QMessageBox::NoButton, this);
+    QPushButton* quitButton = box.addButton(tr("Quit"), QMessageBox::AcceptRole);
+    QPushButton* cancelButton = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
+    box.setDefaultButton(cancelButton);
+    box.setEscapeButton(cancelButton);
+    box.exec();
+
+    return box.clickedButton() == quitButton;
 }
 
 bool

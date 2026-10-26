@@ -2151,6 +2151,14 @@ AppInstance::isRenderActiveOrQueued(const OutputEffectInstance* writer) const
     return false;
 }
 
+int
+AppInstance::getRunningRenderCount() const
+{
+    QMutexLocker k(&_imp->renderQueueMutex);
+
+    return (int)_imp->activeRenders.size();
+}
+
 ProcessHandlerPtr
 AppInstance::getRenderProcess(const OutputEffectInstance* writer) const
 {

@@ -217,13 +217,20 @@ Gui::notifyGuiClosing()
 bool
 Gui::abortProject(bool quitApp,
                   bool warnUserIfSaveNeeded,
-                  bool blocking)
+                  bool blocking,
+                  bool warnUserIfRendersRunning)
 {
     GuiAppInstancePtr app = getApp();
 
     // Reached from the event loop of a save waiting on the main thread, closing would destroy
     // the project under that save.
     if (app && app->getProject()->isSavingOnMainThread()) {
+        return false;
+    }
+
+    // Asked before anything is stopped or saved so that Cancel leaves the session untouched, and
+    // before the save prompt so that a user who cancels here is not asked about saving first.
+    if (app && quitApp && warnUserIfSaveNeeded && warnUserIfRendersRunning && !confirmQuitWithRenders(app->getRunningRenderCount())) {
         return false;
     }
 

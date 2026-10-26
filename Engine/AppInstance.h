@@ -404,6 +404,12 @@ public:
     bool isRenderActiveOrQueued(const OutputEffectInstance* writer) const;
 
     /**
+     * @brief The number of renders of this app that are running, in this process or in a render
+     * process. Queued renders that have not started are not counted.
+     **/
+    int getRunningRenderCount() const;
+
+    /**
      * @brief The process of writer's running or queued separate-process render, if any.
      **/
     ProcessHandlerPtr getRenderProcess(const OutputEffectInstance* writer) const;

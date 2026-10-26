@@ -4,10 +4,15 @@ The harness checks what is left once Natron is gone, so this script never exits 
 way guitest.finish() does: the close path under test has to do it.
 
 Environment:
-  CLEAN_SHUTDOWN_SCENARIO  idle | playback | write_fg | write_bg | modal | url
+  CLEAN_SHUTDOWN_SCENARIO  idle | playback | write_fg | write_bg | modal | url | warn_fg | warn_bg
   CLEAN_SHUTDOWN_ACTION    menu (File > Quit) | window (close the main window) | signal (the
                            harness signals the process once this script reports ready)
   CLEAN_SHUTDOWN_OUT       directory for driver.log, the ready marker and rendered frames
+
+Every quit while a render runs asks "N renders are still running. Quitting will stop them."; the
+driver answers Quit. The warn_fg and warn_bg scenarios (menu or window action) first answer Cancel
+and check that Natron and the render survive, then close again and answer Quit; their ready
+marker holds the warning text and what survived the Cancel.
 
 The ready marker holds "ready" plus key=value lines the harness reads, such as render_child=<pid>
 when a background render runs in its own process.
@@ -153,14 +158,29 @@ def start_write(background):
     button.click()
 
 
+def click_button_named(box, name):
+    for b in box.buttons():
+        if b.text().replace("&", "").strip().lower() == name:
+            b.click()
+            return True
+    return False
+
+
 def answer_dialogs():
-    # A quit with unsaved changes asks whether to save; the scenario discards them.
     modal = QApplication.activeModalWidget()
-    if isinstance(modal, QMessageBox):
-        discard = modal.button(QMessageBox.Discard)
-        if discard is not None:
-            say("discard changes")
-            discard.click()
+    if not isinstance(modal, QMessageBox):
+        return
+    if "still running" in modal.text():
+        answer = state.get("renders_answer", "quit")
+        state.setdefault("warnings", []).append(modal.text())
+        say("render warning %r, answering %s" % (modal.text(), answer))
+        click_button_named(modal, answer)
+        return
+    # A quit with unsaved changes asks whether to save; the scenario discards them.
+    discard = modal.button(QMessageBox.Discard)
+    if discard is not None:
+        say("discard changes")
+        discard.click()
 
 
 def write_ready(extra):
@@ -171,19 +191,56 @@ def write_ready(extra):
     os.rename(READY + ".tmp", READY)
 
 
-def close_now(extra):
+def start_answerer():
+    if "answerer" in state:
+        return
     answerer = QTimer()
     answerer.setInterval(200)
     answerer.timeout.connect(answer_dialogs)
     answerer.start()
     state["answerer"] = answerer
-    say("closing via %s" % ACTION)
-    write_ready(extra)
+
+
+def request_close():
     if ACTION == "menu":
         find_action("quit").trigger()
     elif ACTION == "window":
         main_window().close()
+
+
+def close_now(extra):
+    start_answerer()
+    say("closing via %s" % ACTION)
+    write_ready(extra)
+    request_close()
     say("close call returned")
+
+
+def frame_count():
+    return len(os.listdir(os.path.join(OUT, "frames")))
+
+
+def cancel_then_close(extra):
+    """Answers Cancel to the render warning, checks the render went on, then quits for real."""
+    start_answerer()
+    state["renders_answer"] = "cancel"
+    say("closing via %s, to cancel" % ACTION)
+    request_close()
+    warnings = list(state.get("warnings", []))
+    frames_at_cancel = frame_count()
+    child = extra.get("render_child")
+
+    def check():
+        extra["warning_count"] = len(warnings)
+        extra["warning_text"] = warnings[0] if warnings else ""
+        extra["survived_window"] = int(main_window() is not None)
+        extra["survived_render"] = int(frame_count() > frames_at_cancel
+                                       and (child is None or os.path.exists("/proc/%d" % child)))
+        say("after cancel %r" % extra)
+        state["renders_answer"] = "quit"
+        state["warnings"] = []
+        close_now(extra)
+    QTimer.singleShot(3000, check)
 
 
 def wait_for_render_then_close():
@@ -199,7 +256,10 @@ def wait_for_render_then_close():
         extra["render_child"] = child
     say("render state %r" % extra)
     # Let the render run on a little so the close interrupts it mid-frame.
-    QTimer.singleShot(1500, lambda: close_now(extra))
+    if SCENARIO.startswith("warn_"):
+        QTimer.singleShot(1500, lambda: cancel_then_close(extra))
+    else:
+        QTimer.singleShot(1500, lambda: close_now(extra))
 
 
 def run_scenario():
@@ -207,8 +267,8 @@ def run_scenario():
         if SCENARIO == "playback":
             app.getViewer("Viewer1").startForward()
             QTimer.singleShot(3000, lambda: close_now({}))
-        elif SCENARIO in ("write_fg", "write_bg"):
-            start_write(SCENARIO == "write_bg")
+        elif SCENARIO in ("write_fg", "write_bg", "warn_fg", "warn_bg"):
+            start_write(SCENARIO.endswith("_bg"))
             QTimer.singleShot(500, wait_for_render_then_close)
         elif SCENARIO == "url":
             find_action("website").trigger()

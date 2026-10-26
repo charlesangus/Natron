@@ -164,3 +164,5 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - 2026-10-13 — **Nuke's node set, with LogConvert folded into OCIOColorSpace as a role preset** (user).
 - 2026-10-13 — **GPU through runtime compilation of OCIO's own shader** (user). This was chosen over translating ops into precompiled kernels or baking a shaped 3D LUT. The compiler and descriptor work is M126 - Runtime GPU Shaders.
 - 2026-10-19 — **Reuse M107 - GPU Viewer Hand-off's `Engine/OcioVulkanShader` helper** (gpu PM, via inbox): the viewer and the nodes then share one OCIO shader generator and LUT cache. M107 joins Deps.
+
+2026-10-26: UAT approved (user). Merges with main merged in and PR CI re-run.

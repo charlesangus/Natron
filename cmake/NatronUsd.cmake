@@ -65,12 +65,15 @@ if(NOT NATRON_USD_PYTHON_VERSION VERSION_EQUAL "${Python3_VERSION_MAJOR}.${Pytho
 endif()
 
 # What Engine's scene code (Engine/Nodes/Scene/) links: authoring and composing layers, the stage,
-# and UsdGeom's stage metadata (up axis, meters per unit).
-set(NATRON_USD_ENGINE_LIBRARIES usd sdf usdGeom pcp ar kind plug vt gf tf work trace arch)
+# UsdGeom's stage metadata (up axis, meters per unit), cameras and xforms, UsdLux's lights,
+# UsdShade's materials, UsdUtils's layer-stack flattening and asset-path rewriting for USDWrite,
+# and USDRender's Storm render: UsdImagingGLEngine on HgiGL, its AOV render buffers, garch's GL
+# loader for the framebuffer it renders under, the camera framing and conforming and the GL
+# lights it hands the engine.
+set(NATRON_USD_ENGINE_LIBRARIES usdImagingGL usdImaging hdx hd hgi hgiGL glf garch cameraUtil usdUtils usd sdf usdGeom usdLux usdShade sdr pcp ar kind plug vt gf tf work trace arch)
 
-# What the viewer's scene view (Gui/SceneViewport) links on top: Storm through UsdImagingGLEngine
-# on HgiGL, the camera framing and the GL lights it hands the engine.
-set(NATRON_USD_GUI_LIBRARIES usdImagingGL usdImaging hdx hd hgi hgiGL glf cameraUtil ${NATRON_USD_ENGINE_LIBRARIES})
+# What the viewer's scene view (Gui/SceneViewport) links: the same Storm render as USDRender.
+set(NATRON_USD_GUI_LIBRARIES ${NATRON_USD_ENGINE_LIBRARIES})
 
 foreach(_natron_usd_target ${NATRON_USD_GUI_LIBRARIES})
     if(NOT TARGET ${_natron_usd_target})

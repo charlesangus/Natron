@@ -263,6 +263,7 @@ set(GuiTests_SOURCES
     NodeGraphSplice_Test.cpp
     RenderDialogRange_Test.cpp
     ScaleSliderQWidget_Test.cpp
+    SceneGizmo_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
     TabMenuBridge_Test.cpp
@@ -273,8 +274,8 @@ set(GuiTests_SOURCES
     guimain.cpp
 )
 add_executable(GuiTests ${GuiTests_SOURCES})
-# Builds its scene with OpenUSD, whose headers need the full Python API.
-set_source_files_properties(SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+# Build their scenes with OpenUSD, whose headers need the full Python API.
+set_source_files_properties(SceneGizmo_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 target_link_libraries(GuiTests
     PRIVATE
         NatronGui

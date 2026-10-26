@@ -6,6 +6,9 @@ view stays up. After each edit it polls, with a timeout, for the view to have sy
 still show the scene with no error, and checks that the view never made a second engine
 (natronSceneEngineCount stays 1).
 
+Then it triggers Cache > Free GPU Memory: the view lets go of its engine at once
+(natronSceneEngineHeld false), and the repaint that follows makes a second one and shows the scene.
+
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
 """
@@ -21,6 +24,9 @@ STARTUP_TIMEOUT_S = 60.0
 EDITS = 10
 
 try:
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import QApplication, QMainWindow
+
     from guitest import FIXTURES, check, finish, plugin_problem, require, run, shot, widgets_of
 
     scene_path = os.path.join(FIXTURES, "scene-reference.usda")
@@ -47,6 +53,20 @@ try:
     def engines():
         v = view()
         return int(v.property("natronSceneEngineCount") or 0) if v is not None else -1
+
+    def engine_held():
+        v = view()
+        return v is not None and bool(v.property("natronSceneEngineHeld"))
+
+    def trigger_free_gpu_memory():
+        for window in QApplication.topLevelWidgets():
+            if not isinstance(window, QMainWindow):
+                continue
+            for a in window.findChildren(QAction):
+                if a.text().replace("&", "") == "Free GPU Memory":
+                    a.trigger()
+                    return True
+        return False
 
     def synced_and_drawn():
         v = view()
@@ -76,6 +96,19 @@ try:
             check(engines() == 1, "%s: still one engine (count %d)" % (what, engines()))
 
         shot("live-edit-after.png")
+
+        check(engine_held(), "the scene view holds its engine before Free GPU Memory")
+        # The release runs inside trigger(); the repaint it asks for comes later on the event loop.
+        # The action is triggered while its window's wrapper is alive: the child wrapper dies with it.
+        require(trigger_free_gpu_memory(), "the Cache menu has a Free GPU Memory action")
+        check(not engine_held(), "Free GPU Memory: the scene view let go of its engine")
+        ok = yield ("until", lambda: engine_held() and engines() == 2, POLL_TIMEOUT_S)
+        check(ok, "Free GPU Memory: the repaint made the view's second engine (count %d)" % engines())
+        ok = yield ("until", synced_and_drawn, POLL_TIMEOUT_S)
+        check(ok, "Free GPU Memory: the scene view still shows the scene")
+        yield ("sleep", SETTLE_MS)
+        check(engines() == 2 and engine_held(), "Free GPU Memory: one engine held, two made (count %d)" % engines())
+        shot("live-edit-after-free-gpu-memory.png")
 
     run(steps())
 except Exception:

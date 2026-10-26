@@ -279,7 +279,7 @@ public:
 
     /**
      * @brief Set regexp filters (in the wildcard unix form).
-     * @param filters A suite of regexp separated by a space
+     * @param filters A suite of regexp separated by a space. A bare `*` accepts every file.
      **/
     void setRegexpFilters(const QString& filters);
 

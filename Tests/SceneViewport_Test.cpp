@@ -40,6 +40,7 @@
 #include <gtest/gtest.h>
 
 // Before Qt's OpenGL headers.
+#include "Gui/SceneGizmo.h"
 #include "Gui/SceneViewport.h"
 
 #include <QColor>
@@ -436,6 +437,103 @@ TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
     glDeleteTextures(1, &texture);
+}
+
+namespace {
+bool
+isGreenish(const Rgb& c)
+{
+    return (c.g > 90) && (c.g > c.r + 40) && (c.g > c.b + 40);
+}
+
+bool
+isYellowish(const Rgb& c)
+{
+    return (c.r > 150) && (c.g > 120) && (c.b < c.g - 60);
+}
+
+// Whether any pixel of the 3x3 block centred on (x, y) passes test: lines are a few pixels wide
+// and smoothed, so the exact pixel a line covers depends on rasterisation.
+bool
+anyNear(const QImage& image,
+        int x,
+        int y,
+        bool (*test)(const Rgb&))
+{
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            const QColor c = image.pixelColor(x + dx, y + dy);
+            if (test(Rgb { c.red(), c.green(), c.blue() })) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// The reference scene with an identity transform op named Gizmo appended to /World/Box.
+ScenePayload
+sceneWithOp()
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneViewportGizmoTest");
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+    PXR_NS::UsdGeomXformable box(stage->OverridePrim(PXR_NS::SdfPath("/World/Box")));
+
+    box.AddTransformOp(PXR_NS::UsdGeomXformOp::PrecisionDouble, PXR_NS::TfToken("Gizmo")).Set(PXR_NS::GfMatrix4d(1.));
+
+    return SceneOps::appendLayer(referenceScene(), layer, 0x91220ULL);
+}
+} // namespace
+
+// From the free camera the handles of an op at the origin are 90 pixels long: the X arrow runs
+// right from the centre along row 128, the Y arrow up along column 128, and the ring about Z, of
+// radius 63 pixels, faces the camera. The rings about X and Y are seen edge-on, as lines along
+// column 128 and row 128 under the arrows.
+TEST_F(SceneViewportStorm, DrawsTransformHandlesOverTheScene)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    ASSERT_TRUE(_renderer.setScene(sceneWithOp(), 1., 24., &error)) << error;
+    SceneViewportRenderer::TransformHandles handles;
+    handles.primPath = "/World/Box";
+    handles.opName = "xformOp:transform:Gizmo";
+    _renderer.setTransformHandles(handles);
+    ASSERT_TRUE(_renderer.hasTransformHandles());
+
+    QImage image = render();
+    EXPECT_TRUE(anyNear(image, 185, 128, isReddish)) << "X arrow: " << pixel(image, 185, 128);
+    EXPECT_TRUE(anyNear(image, 128, 50, isGreenish)) << "Y arrow: " << pixel(image, 128, 50);
+    EXPECT_TRUE(anyNear(image, 172, 83, isBluish)) << "Z ring: " << pixel(image, 172, 83);
+    EXPECT_TRUE(isBackground(pixel(image, 40, 200))) << "away from the handles: " << pixel(image, 40, 200);
+    // The box is still drawn under them.
+    EXPECT_TRUE(isReddish(pixel(image, 110, 145))) << "box: " << pixel(image, 110, 145);
+
+    // Picking agrees with the drawing.
+    EXPECT_EQ(SceneGizmo::makeHandle(SceneGizmo::eHandleKindTranslate, 0), _renderer.hitTestTransformHandles(185.5, 128., kSize, kSize));
+    EXPECT_EQ(SceneGizmo::makeHandle(SceneGizmo::eHandleKindTranslate, 1), _renderer.hitTestTransformHandles(128., 50.5, kSize, kSize));
+    EXPECT_EQ(SceneGizmo::kNoHandle, _renderer.hitTestTransformHandles(40., 200., kSize, kSize));
+
+    // A highlighted handle is drawn yellow.
+    _renderer.setHighlightedTransformHandle(SceneGizmo::makeHandle(SceneGizmo::eHandleKindTranslate, 1));
+    image = render();
+    EXPECT_TRUE(anyNear(image, 128, 50, isYellowish)) << "highlighted Y arrow: " << pixel(image, 128, 50);
+    EXPECT_FALSE(anyNear(image, 128, 50, isGreenish)) << "highlighted Y arrow: " << pixel(image, 128, 50);
+    EXPECT_TRUE(anyNear(image, 185, 128, isReddish)) << "X arrow: " << pixel(image, 185, 128);
+    _renderer.setHighlightedTransformHandle(SceneGizmo::kNoHandle);
+
+    // No handles for an op the stage does not have.
+    handles.opName = "xformOp:transform:Missing";
+    _renderer.setTransformHandles(handles);
+    EXPECT_FALSE(_renderer.hasTransformHandles());
+    image = render();
+    EXPECT_TRUE(isBackground(pixel(image, 128, 50))) << "no Y arrow: " << pixel(image, 128, 50);
+    EXPECT_EQ(SceneGizmo::kNoHandle, _renderer.hitTestTransformHandles(185.5, 128., kSize, kSize));
+
+    _renderer.clearTransformHandles();
+    EXPECT_FALSE(_renderer.hasTransformHandles());
 }
 
 namespace {

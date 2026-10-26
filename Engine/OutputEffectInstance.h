@@ -57,6 +57,10 @@ private:
         int firstFrame;
         int lastFrame;
         int frameStep;
+        // The range the render was asked for, which differs from [firstFrame, lastFrame] for a
+        // node that writesFrameRangeAtOnce().
+        int requestedFirstFrame;
+        int requestedLastFrame;
         bool useStats;
         bool blocking;
     };
@@ -126,6 +130,36 @@ public:
     {
         return eStatusOK;
     }
+
+    /**
+     * @brief Whether one render of this node writes its whole frame range at once, as a scene
+     * export does, rather than one file or image per frame. Such a render runs a single frame,
+     * the first of the range, on the main view only, and that frame calls writeFrameRange() with
+     * the range the render was asked for instead of rendering the node.
+     **/
+    virtual bool writesFrameRangeAtOnce() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief For a node that writesFrameRangeAtOnce(): writes [firstFrame, lastFrame] for view.
+     * Called once per render, from a render thread. On failure, sets a persistent error naming
+     * the cause and returns eStatusFailed, which fails the render.
+     **/
+    virtual StatusEnum writeFrameRange(int /*firstFrame*/,
+                                       int /*lastFrame*/,
+                                       ViewIdx /*view*/)
+    {
+        return eStatusOK;
+    }
+
+    /**
+     * @brief The frame range the running render of this node was asked for. Returns false when
+     * no render of it is running.
+     **/
+    bool getRunningRenderRequestedRange(int* firstFrame,
+                                        int* lastFrame) const;
 
     virtual void initializeData() OVERRIDE FINAL;
     virtual void reportStats(int time, ViewIdx view, double wallTime, const std::map<NodePtr, NodeRenderStats>& stats, const RenderStatsPtr& renderStats);

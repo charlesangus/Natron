@@ -230,6 +230,19 @@ GpuContext::holdRuntime()
     });
 }
 
+void
+GpuContext::releaseIdleMemory()
+{
+#ifdef NATRON_HAVE_GPU
+    // The token keeps recoverIfLost() from recreating the runtime, and with it the pool, meanwhile.
+    std::shared_ptr<void> hold = holdRuntime();
+    gpu::GpuRuntime* rt = hold ? runtime() : nullptr;
+    if (rt) {
+        rt->pool().trim();
+    }
+#endif
+}
+
 bool
 GpuContext::recoverIfLost()
 {

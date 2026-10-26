@@ -1341,6 +1341,16 @@ AppManager::clearPluginsLoadedCache()
 }
 
 void
+AppManager::freeGpuMemory()
+{
+    SceneCaches::releaseRenderEngines();
+    releaseSceneViewEngines();
+    if (_imp->gpuContext) {
+        _imp->gpuContext->releaseIdleMemory();
+    }
+}
+
+void
 AppManager::clearAllCaches()
 {
     AppInstanceVec copy;
@@ -1372,6 +1382,8 @@ AppManager::clearAllCaches()
     clearNodeCache();
     _imp->_deepImageCache->clear();
     SceneCaches::releaseIdleQueryStages();
+    // Not freeGpuMemory(): the GPU pool's free buffers are what the next renders reuse.
+    SceneCaches::releaseRenderEngines();
 
     ///for each app instance clear all its nodes cache
     for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {

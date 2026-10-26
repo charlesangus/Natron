@@ -120,6 +120,9 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionClearAllCaches "clearAllCaches"
 #define kShortcutDescActionClearAllCaches "Clear All Caches"
 
+#define kShortcutIDActionFreeGpuMemory "freeGpuMemory"
+#define kShortcutDescActionFreeGpuMemory "Free GPU Memory"
+
 #define kShortcutIDActionShowAbout "showAbout"
 #define kShortcutDescActionShowAbout "About Natron"
 

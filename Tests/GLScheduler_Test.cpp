@@ -72,7 +72,7 @@ const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
 const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
 
 const char* const kNoOpenGLMessage = "OpenGL did not load, so this test cannot exercise GL rendering. Run it under Xvfb with GLX and Mesa llvmpipe, as "
-                                     "Tests/gui/run-gl-tests.sh does: `Xvfb :79 -screen 0 1600x1000x24 +extension GLX` with "
+                                     "Tests/gui/run-gl-tests.sh does: `Xvfb :79 -screen 0 1920x1080x24 +extension GLX` with "
                                      "DISPLAY=:79 LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa and build/deeprepro/gl first on "
                                      "LD_LIBRARY_PATH.";
 const char* const kGLRenderingDisabledMessage = "OpenGL loaded, but OpenGL rendering stayed disabled in the GPU context pool after the test enabled it.";

@@ -164,7 +164,7 @@ def shot(name):
 
 
 HOST_DISPLAY = bool(os.environ.get("GUI_TEST_HOST_DISPLAY"))
-HOST_WINDOW_SIZE = tuple(int(n) for n in os.environ.get("GUI_TEST_SCREEN_SIZE", "1600x1000").split("x"))
+HOST_WINDOW_SIZE = tuple(int(n) for n in os.environ.get("GUI_TEST_SCREEN_SIZE", "1920x1080").split("x"))
 HOST_ON_SCREEN_TIMEOUT_S = 60.0
 _host_window = []
 

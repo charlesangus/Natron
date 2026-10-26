@@ -218,3 +218,5 @@ All tasks done at d9bfcc47e (release gate green, Storm reference recorded under 
 Phase 20.4 (long-lived scene) done at 6cb13d39e: merged onto M19 - USD/Hydra Foundation's long-lived scene; release gate green incl. the Storm reference; scene viewer GUI scripts pass. Pending: hardware check, perf numbers, user calls on USDWrite sidecar cleanup and Free GPU Memory scope.
 
 2026-10-26: P4.T5–T6 done (24487d02c, 6cddb5bf1) with the user's follow-ups (viewport engine release, flattened-write cleanup with a warning); M19's closure cache merged in; release green; scene GUI scripts pass, including Free GPU Memory. AppImage Natron-m20-3d.AppImage. Scene edit: a USDTransform edit at the head of a 30-op chain on a 100k-prim file shows in ~490 ms (llvmpipe).
+
+Shipped 2026-10-26: PR #118, squash f645dd7a5.

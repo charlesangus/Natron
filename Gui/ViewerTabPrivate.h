@@ -52,6 +52,8 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+class SceneViewport;
+
 struct ViewerTabPrivate
 {
     struct InputName
@@ -70,6 +72,12 @@ struct ViewerTabPrivate
     QHBoxLayout* viewerLayout;
     QWidget* viewerSubContainer;
     QVBoxLayout* viewerSubContainerLayout;
+    // Beside viewer in viewerSubContainerLayout; one of the two is visible.
+    SceneViewport* sceneViewport;
+    // Wipe is off and its operator menu disabled while an input is a scene; the operator chosen
+    // before comes back afterwards.
+    bool wipeDisabledByDataKind;
+    ViewerCompositingOperatorEnum compositingOperatorBeforeScene;
     QVBoxLayout* mainLayout;
 
     /*Viewer Settings*/

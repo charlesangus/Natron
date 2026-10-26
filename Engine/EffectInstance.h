@@ -45,6 +45,7 @@
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/RenderStats.h"
+#include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
 #include "Serialization/SerializationFwd.h"
@@ -839,6 +840,51 @@ public:
                                             std::list<ImagePtr>* outputImages,
                                             DeepImagePtr* outputDeepImage = NULL) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Whether what this effect puts on its output is a scene, as the graph around it
+     * resolves it: eDataKindScene and unambiguously so. Decides whether evaluateScene() may be
+     * asked of it.
+     **/
+    bool producesSceneData() const WARN_UNUSED_RETURN;
+
+    struct EvaluateSceneArgs {
+        // Only decides identities, such as a node disabled at some frames: the payload itself
+        // is the same at every time.
+        double time;
+        ViewIdx view;
+
+        EvaluateSceneArgs()
+            : time(0)
+            , view(0)
+        {
+        }
+
+        EvaluateSceneArgs(double time_,
+                          ViewIdx view_)
+            : time(time_)
+            , view(view_)
+        {
+        }
+    };
+
+    /**
+     * @brief The scene counterpart of renderDeepRoI(): evaluates this effect's scene and returns
+     * it in *outputScene. One payload per layer stack, not per frame: consumers pick the time
+     * when they query a stage composing it (SceneStage, SceneQueryPool).
+     *
+     * The same pull pipeline as renderDeepRoI(): identities (Dot, the NoOps, disabled nodes,
+     * group boundaries) hand back their input's payload, every input whose effective data kind
+     * is eDataKindScene is evaluated first, the render's abort flag is checked between steps,
+     * and only then is this effect's renderScene() called.
+     *
+     * On eRenderRoIRetCodeOk, *outputScene is set, possibly to an empty scene. On
+     * eRenderRoIRetCodeFailed, *errorMessage (if given) carries the message of the node that
+     * failed, whichever node upstream that was.
+     **/
+    RenderRoIRetCode evaluateScene(const EvaluateSceneArgs& args,
+                                   ScenePayload* outputScene,
+                                   std::string* errorMessage) WARN_UNUSED_RETURN;
+
     void getImageFromCacheAndConvertIfNeeded(bool useCache,
                                              StorageModeEnum storage,
                                              StorageModeEnum returnStorage,
@@ -1553,6 +1599,28 @@ public:
         }
     };
 
+    struct SceneRenderActionArgs {
+        double time;
+        ViewIdx view;
+        // The payload of each connected input that produces a scene, by input number.
+        std::map<int, ScenePayload> inputScenes;
+        bool isRenderResponseToUserInteraction;
+
+        SceneRenderActionArgs()
+            : time(0)
+            , view(0)
+            , inputScenes()
+            , isRenderResponseToUserInteraction(false)
+        {
+        }
+
+        /**
+         * @brief The payload of inputNb, or an empty one if that input is not connected or does
+         * not produce a scene.
+         **/
+        ScenePayload getInputScene(int inputNb) const;
+    };
+
 protected:
     /**
      * @brief Must fill the image 'output' for the region of interest 'roi' at the given time and
@@ -1579,6 +1647,23 @@ protected:
      * over a single allocation.
      **/
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& /*args*/) WARN_UNUSED_RETURN
+    {
+        return eStatusReplyDefault;
+    }
+
+    /**
+     * @brief The scene counterpart of render(): must set *outputScene to this effect's scene,
+     * typically args.getInputScene(0) with this node's layer on top (see
+     * NativeEffectBase::emitSceneLayer()). Pre-condition: evaluateScene() has already evaluated
+     * every scene input. Must not edit any layer an input's payload holds.
+     *
+     * On failure returns eStatusFailed with *errorMessage set to what the user should read. The
+     * default returns eStatusReplyDefault, meaning "this effect does not produce a scene", which
+     * evaluateScene() turns into a failure.
+     **/
+    virtual StatusEnum renderScene(const SceneRenderActionArgs& /*args*/,
+                                   ScenePayload* /*outputScene*/,
+                                   std::string* /*errorMessage*/) WARN_UNUSED_RETURN
     {
         return eStatusReplyDefault;
     }

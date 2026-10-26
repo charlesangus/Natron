@@ -174,6 +174,11 @@ public:
 
     bool isSplashcreenVisible() const;
 
+    /**
+     * @brief True when the GUI refused to start because the OpenGL context was not good enough.
+     **/
+    bool hasRefusedGLContext() const;
+
     virtual void hideSplashScreen() OVERRIDE FINAL;
     const QCursor & getColorPickerCursor() const;
     const QCursor & getLinkToCursor() const;
@@ -288,6 +293,7 @@ private:
     virtual AppInstancePtr makeNewInstance(int appID) const OVERRIDE FINAL;
     virtual void registerGuiMetaTypes() const OVERRIDE FINAL;
     virtual void initializeQApp(int &argc, char **argv)  OVERRIDE FINAL;
+    virtual bool checkGLContextRequirements() OVERRIDE FINAL;
 
     void handleOpenFileRequest();
 

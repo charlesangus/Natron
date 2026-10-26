@@ -137,19 +137,20 @@ either side exceeds 1 joins them without the jump Nuke's "or" leaves where both 
 
 ## Layers
 
-- **A Layer** (`aLayer`) is the layer every A input is read in, and **B Layer** (`bLayer`) the
-  layer B is read in; both default to `rgba`. The output is the node's **Layer** knob
-  (`layer`), a target that may create a layer and that follows B Layer whenever the user changes
-  B Layer. A layer an input lacks reads as zero.
-- **Layers** (`layers`) picks what is merged beside the A layer into the output layer:
-  - **Single** (default): only A Layer over B Layer into the output layer.
-  - **All matching**: also every layer present on B and on any connected A input, paired by ID
-    and each read and written in itself.
-  - **List**: also the layers of **Also Merge** (`alsoMerge`, B's layers, Nuke's "also merge"),
-    each read and written in itself; a layer a side lacks reads as zero there. Also Merge is
-    shown in List mode only.
-- In every mode, every other layer of B passes through unchanged. Each merged layer renders as
-  its own plane, with A and B read in that plane, so the GPU path stays one layer per dispatch.
+Merge has no node Layer knob. Its layer knobs are:
+
+- **Layers** (`layers`): the layers of B that are merged, each in place, listed by row. The
+  rows list B's layers, and an **All** row merges every layer B has. The default is `rgba`.
+  Every layer of B that Layers leaves out passes through bit-exact and is not asked of any A
+  input. A listed layer that B lacks is not produced.
+- **A Layer** (`aLayer`): **Matching** (the default) reads every A input, for each merged layer,
+  in A's layer of the same name; one specific A layer is read into every merged layer instead.
+  Channels are taken by index: a three-channel A layer merged into rgba reads its fourth channel
+  as zero, and `rgba` merged into a three-channel layer gives up its A.
+
+Each merged layer renders as its own plane, with A and B read for that plane, so the GPU path
+stays one layer per dispatch. The colour plane is always an output: when Layers leaves it out,
+it is B's colour plane copied.
 
 ## Alpha sources
 
@@ -168,21 +169,22 @@ for each merged channel:
 The output alpha:
 
 - With **Universal**, the universal alpha channel is merged with the operator's alpha rule when
-  it is part of the output layer.
+  it is part of a merged layer.
 - With **Per-layer**, each layer's alpha channel is merged as part of that layer.
 - With **Per-channel** on B, B's alpha layer, which the node then also produces, is written the
-  merged alpha the output layer's fold carries: each channel of B's alpha layer merged with A's
+  merged alpha the fold carries, unless Layers merges it as a layer of its own: each channel of B's alpha layer merged with A's
   alpha for that channel by the operator's alpha rule. A's alpha there is whatever its own source
   gives: its alpha layer's channel when per channel, else its universal or per-layer alpha
-  broadcast, so Over with a universal A alpha a writes a + b × (1 − a).
+  broadcast, so Over with a universal A alpha a writes a + b × (1 − a). Under Matching, A is read
+  in its layer of the alpha layer's name there, which matters for a per-layer A alpha only.
 
 An A or B input that is connected but lacks the layer it is read in has zero pixels there, yet
-keeps the alpha its source gives: with several A inputs, one lacking **A Layer** still attenuates
+keeps the alpha its source gives: with several A inputs, one lacking the layer it is read in still attenuates
 the result under Over by its alpha. Only a disconnected input reads zero pixels and zero alpha.
 
 ## Other knobs
 
-- **Set BBox To** (`bbox`): `union` (default) of B and every connected A input, their
+- **Set BBox** (`setBBox`): `union` (default) of B and every connected A input, their
   `intersection`, `A` (the union of every connected A input) or `B`. An identity, or a mix of 0,
   gives B's region.
 - **Metadata From** (`metadataFrom`): `B` by default, or `A` (input 1, not A2 onwards). When the
@@ -211,8 +213,11 @@ otherwise. A folded A input that is also the mask input renders on the CPU, the 
   alpha like any other channel; mask or premultiply upstream instead.
 - **Mask fringe, inject and video colorspace** (Nuke): masking is the `MaskMix` stage's mask
   channel, invert and mix only.
-- **The A/B/output channel checkboxes** (`AChannels`, `BChannels`, `OutputChannels`): replaced
-  by the layer knobs and the Layer knob's channels.
+- **The A/B/output channel checkboxes** (`AChannels`, `BChannels`, `OutputChannels`) and any
+  per-channel selection: Layers merges whole layers. Copy or Shuffle a channel subset upstream or
+  downstream instead.
+- **B Layer and an output layer**: B is merged in place in each listed layer, so a merge into a
+  layer B lacks is a Shuffle of B into that layer first.
 - **The nine preset plug-ins** (`net.sf.openfx.Merge<Plus|Matte|...>`) and
   `net.sf.openfx.MergePlugin` itself: there is no compatibility with the old node, whose
   formulas were openfx-misc's. A project that uses an old ID loads the missing-plugin node.

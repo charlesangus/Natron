@@ -31,6 +31,7 @@
 #include <list>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -40,11 +41,10 @@
 #define PLUGIN_MAJOR_NATRON_NATIVE_MERGE 1
 
 #define kNativeMergeParamOperation "operation"
-#define kNativeMergeParamBBox "bbox"
+#define kNativeMergeParamSetBBox "setBBox"
 #define kNativeMergeParamMetadataFrom "metadataFrom"
 #define kNativeMergeParamRangeFrom "rangeFrom"
 #define kNativeMergeParamALayer "aLayer"
-#define kNativeMergeParamBLayer "bLayer"
 #define kNativeMergeParamAAlpha "aAlpha"
 #define kNativeMergeParamBAlpha "bAlpha"
 #define kNativeMergeParamAAlphaSource "aAlphaSource"
@@ -52,9 +52,8 @@
 #define kNativeMergeParamAAlphaLayer "aAlphaLayer"
 #define kNativeMergeParamBAlphaLayer "bAlphaLayer"
 #define kNativeMergeParamLayers "layers"
-#define kNativeMergeParamAlsoMerge "alsoMerge"
 
-// Option IDs of the bbox, metadata from and frame range from choices.
+// Option IDs of the set bbox, metadata from and frame range from choices.
 #define kNativeMergeBBoxUnion "union"
 #define kNativeMergeBBoxIntersection "intersection"
 #define kNativeMergeBBoxA "A"
@@ -66,11 +65,6 @@
 #define kNativeMergeAlphaUniversal "universal"
 #define kNativeMergeAlphaPerLayer "perLayer"
 #define kNativeMergeAlphaPerChannel "perChannel"
-
-// Option IDs of the layers choice.
-#define kNativeMergeLayersSingle "single"
-#define kNativeMergeLayersAllMatching "allMatching"
-#define kNativeMergeLayersList "list"
 
 // Inputs: B, A, Mask, then A2..A64, Nuke's order.
 #define kNativeMergeInputB 0
@@ -97,9 +91,10 @@ nativeMergeAInput(int k)
 }
 
 /**
- * @brief Merge: A over B with one of MergeOps' operators, then A2 over the result, and so on. A
- * and B are each read in their own layer with an alpha from their own source, and the result goes
- * to the target layer. Every other layer of B passes through.
+ * @brief Merge: A over B with one of MergeOps' operators, then A2 over the result, and so on, in
+ * each layer of B the Layers list names (every one under All). Each such layer reads A's layer of
+ * the same name, or the one A layer chosen, with an alpha from each side's own source. Every other
+ * layer of B passes through.
  **/
 struct NativeMergeOp {
     /**
@@ -111,17 +106,6 @@ struct NativeMergeOp {
         Universal = 0,
         PerLayer,
         PerChannel
-    };
-
-    /**
-     * @brief What is merged beside the A layer into the output layer. AllMatching also merges
-     * every other layer present on B and on any connected A input, paired by ID; List also merges
-     * the layers alsoMerge selects. Each such layer is read in itself on A and B.
-     **/
-    enum class LayersMode : unsigned char {
-        Single = 0,
-        AllMatching,
-        List
     };
 
     struct Params {
@@ -136,10 +120,10 @@ struct NativeMergeOp {
         .id = PLUGINID_NATRON_NATIVE_MERGE,
         .label = "Merge",
         .description = "Composites A over B with one of Nuke's operators, then A2 over the result, and so on. "
-                       "A and B are each read in a chosen layer with an alpha that is one channel, each layer's "
-                       "own alpha or a per-channel alpha layer; the A layer alone, every layer A and B share, or "
-                       "a list of layers is merged, and every other layer of B passes through. The operators are "
-                       "made HDR-safe where Nuke's clamp or jump outside 0 to 1.",
+                       "Each layer of B the Layers list names, or every layer of B under All, is merged in place, "
+                       "reading A's layer of the same name or one chosen A layer; every other layer of B passes "
+                       "through. Each side's alpha is one channel, each layer's own alpha or a per-channel alpha "
+                       "layer. The operators are made HDR-safe where Nuke's clamp or jump outside 0 to 1.",
         .grouping = PLUGIN_GROUP_MERGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_NATIVE_MERGE,
         .minorVersion = 0,
@@ -149,7 +133,8 @@ struct NativeMergeOp {
 
     static constexpr ImagePipelineSpec kPipeline = {
         .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
-        .layers = LayerPolicy::targetSelect(),
+        // The Layers list picks the merged planes (addProducedPlanes()), so no host layer knob.
+        .layers = LayerPolicy::none(),
         .op = OpKind::Composite,
     };
 
@@ -188,19 +173,17 @@ struct NativeMergeOp {
     static bool isIdentityForTransparentA(MergeOps::Operator op);
 
     KnobChoiceWPtr operation;
-    KnobChoiceWPtr bbox;
+    KnobChoiceWPtr setBBox;
     KnobChoiceWPtr metadataFrom;
     KnobChoiceWPtr rangeFrom;
     KnobLayerSelectWPtr aLayer;
-    KnobLayerSelectWPtr bLayer;
     KnobChannelSelectWPtr aAlpha;
     KnobChannelSelectWPtr bAlpha;
     KnobChoiceWPtr aAlphaSource;
     KnobChoiceWPtr bAlphaSource;
     KnobLayerSelectWPtr aAlphaLayer;
     KnobLayerSelectWPtr bAlphaLayer;
-    KnobChoiceWPtr layers;
-    KnobChannelSetWPtr alsoMerge;
+    KnobChannelSetWPtr layers;
     KnobStringWPtr subLabel;
 };
 
@@ -229,13 +212,6 @@ public:
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief The op's route(), except that a B identity needs B read in the layer the node
-     * writes: with another layer the result is B's selected layer copied over, which renders.
-     **/
-    virtual Route route(double time,
-                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    /**
      * @brief The input number of A input k (0..63).
      **/
     static int aInput(int k)
@@ -245,7 +221,7 @@ public:
 
     /**
      * @brief Points a Merge of a container's internal tree (RotoPaint's) at layerID, the layer
-     * Node::retargetLayerKnob() makes it write: A and B are read in that layer, and each side's
+     * the container writes: Layers is that layer alone, A is read in its namesake, and each side's
      * alpha is the layer's own A or alpha channel, or 0 when it has none. Does nothing to another
      * node.
      **/
@@ -254,17 +230,17 @@ public:
 
 protected:
     /**
-     * @brief The planes the layers mode merges beside the output layer, and B's alpha layer when
-     * B's alpha source is per channel, where the merged alpha layer is written.
+     * @brief The layers of B the Layers list merges, and B's alpha layer when B's alpha source
+     * is per channel, where the merged alphas are written. B's other layers pass through.
      **/
     virtual void addProducedPlanes(double time,
                                    ViewIdx view,
                                    std::list<ImageLayerDesc>* planes) OVERRIDE FINAL;
 
     /**
-     * @brief Reads A and B in plane itself when it is a layer the layers mode merges. B's
-     * per-channel alpha layer is the output layer's fold, A and B in their layers with their
-     * alphas, written its carried alpha. The output layer keeps the A and B layers.
+     * @brief Reads B in plane and A in plane's namesake under Matching, else in the A layer. B's
+     * per-channel alpha layer, unless Layers merges it, is written the carried alpha of the fold,
+     * and another plane Layers leaves out (the colour plane, always an output) is B copied.
      **/
     virtual void adjustInputsForPlane(const ImageLayerDesc& plane,
                                       double time,
@@ -294,13 +270,17 @@ private:
     // Shows each side's universal channel or alpha layer as its alpha source uses them.
     void refreshAlphaKnobs();
 
-    // Shows the also-merge list in List mode only.
-    void refreshLayersKnobs();
+    // The layers of B the Layers list resolves to, every one of them under All.
+    std::vector<ResolvedLayer> mergedLayers(double time,
+                                            ViewIdx view) const WARN_UNUSED_RETURN;
 
-    // Whether plane is the output layer the layer knob selects.
-    bool isOutputPlane(const ImageLayerDesc& plane,
+    // Whether plane is one of mergedLayers(), any colour layer standing for any other.
+    bool isMergedPlane(const ImageLayerDesc& plane,
                        double time,
                        ViewIdx view) const WARN_UNUSED_RETURN;
+
+    // Whether A is read in each plane's namesake rather than in one chosen A layer.
+    bool isMatchingALayer() const WARN_UNUSED_RETURN;
 
     // B's alpha layer, when B's alpha source is per channel and that layer resolves on B.
     bool bAlphaPlane(double time,

@@ -1,5 +1,6 @@
 """Checks for the Merge presets that the bundled Gui/Resources/PyPlugs/initGui.py adds to the nodes
-menu (NatronGui.natron.nodesMenu()) under Merge/.
+menu (NatronGui.natron.nodesMenu()) under Merge/Merge Presets/, and the Mask All Layers and Stencil
+All Layers items under Merge/.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m101-shots/out -w /home/bosley/git/Natron natron-dev \\
@@ -10,10 +11,12 @@ runs the bundled script from the source tree; a bundle runs its own copy too, an
 each preset once.
 
 Sections:
-  - menu: the nodes menu's Merge submenu holds one action per preset, in order, each carrying its
-    operation as the natronMergePreset property;
+  - menu: the nodes menu's Merge/Merge Presets submenu holds one action per preset, in order, each
+    carrying its operation as the natronMergePreset property, and Merge holds the two All Layers items;
   - trigger: triggering each preset creates one Merge node (plug-in ID "Merge") in the root graph
     with its operation set, and the node's sub-label shows that operation;
+  - keys: ; ' Shift+; and Shift+' sent to the node graph create a Merge with operation mask, stencil,
+    mask and stencil; the All Layers variants set the layers param to All when the param exists;
   - tab menu: the tab menu lists one Merge and one Plus, the old node and its presets being gone,
     lists Plus under [Merge], and choosing it creates a Merge whose operation is plus.
 
@@ -44,12 +47,27 @@ PRESETS = [
     ("Max", "max"),
     ("Min", "min"),
     ("Difference", "difference"),
+    ("Mask", "mask"),
+    ("Stencil", "stencil"),
+]
+PRESETS_MENU = "Merge Presets"
+# Merge menu item, then the operation it sets.
+ALL_LAYERS_ITEMS = [
+    ("MergeMaskAllLayers", "mask"),
+    ("MergeStencilAllLayers", "stencil"),
+]
+# Key, modifiers, expected operation, whether the layers param is set to All.
+KEY_CASES = [
+    (Qt.Key_Semicolon, Qt.NoModifier, "mask", False),
+    (Qt.Key_Apostrophe, Qt.NoModifier, "stencil", False),
+    (Qt.Key_Semicolon, Qt.ShiftModifier, "mask", True),
+    (Qt.Key_Apostrophe, Qt.ShiftModifier, "stencil", True),
 ]
 
 try:
     import NatronGui
-    from PySide6.QtCore import QPointF, Qt
-    from PySide6.QtGui import QEnterEvent
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QEnterEvent, QKeyEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QLineEdit, QListView, QMainWindow
 
@@ -77,11 +95,32 @@ try:
                 return gt.menu_of(act)
         return None
 
-    def preset_actions():
+    def presets_submenu():
         menu = merge_submenu()
+        for act in (menu.actions() if menu is not None else []):
+            if act.objectName() == "MergePresetsMenu" and gt.menu_of(act) is not None:
+                return gt.menu_of(act)
+        return None
+
+    def preset_actions():
+        menu = presets_submenu()
         if menu is None:
             return []
         return [a for a in menu.actions() if a.property(PRESET_PROPERTY)]
+
+    def all_layers_actions():
+        menu = merge_submenu()
+        return dict((a.objectName(), a) for a in (menu.actions() if menu is not None else []))
+
+    def layers_is_all(node):
+        """None when the node has no layers param, else whether it is set to All."""
+        param = node.getParam("layers")
+        if param is None:
+            return None
+        try:
+            return param.getOption(param.getValue()) == "All"
+        except Exception:
+            return None
 
     def root_names():
         return set(n.getScriptName() for n in app.getChildren())
@@ -122,11 +161,18 @@ try:
     def menu_section():
         gt.section("menu")
         ok = yield ("until", lambda: len(preset_actions()) >= len(PRESETS), POLL_TIMEOUT_S)
-        require(ok, "the nodes menu's Merge submenu holds the presets",
+        require(ok, "the nodes menu's Merge/%s submenu holds the presets" % PRESETS_MENU,
                 "found %r" % [a.text() for a in preset_actions()])
         actions = preset_actions()
         got = [(re.sub(r"&(&?)", r"\1", a.text()), a.property(PRESET_PROPERTY)) for a in actions]
         check(got == PRESETS, "menu: one action per preset, in order, carrying its operation (got %r)" % got)
+        merge_menu = merge_submenu()
+        top = [a.objectName() for a in merge_menu.actions()] if merge_menu is not None else []
+        check(not any(a.property(PRESET_PROPERTY) for a in merge_menu.actions()),
+              "menu: no preset sits directly in Merge (got %r)" % top)
+        found = all_layers_actions()
+        for name, operation in ALL_LAYERS_ITEMS:
+            check(name in found, "menu: Merge holds %s (got %r)" % (name, top))
 
     def trigger_section():
         gt.section("trigger")
@@ -148,6 +194,36 @@ try:
                   % (label, operation, operation_of(node)))
             check(sublabel_of(node) == operation, "trigger: %s's sub-label shows %s (got %r)"
                   % (label, operation, sublabel_of(node)))
+
+    def keys_section(main_graph):
+        gt.section("keys")
+        for key, modifier, operation, all_layers in KEY_CASES:
+            label = "%s%s" % ("Shift+" if modifier == Qt.ShiftModifier else "",
+                              "; " if key == Qt.Key_Semicolon else "' ")
+            before = root_names()
+            main_graph.setFocus()
+            enter_graph(main_graph)
+            # Shift turns ; and ' into Key_Colon and Key_QuoteDbl, with the physical key's scan code
+            # (47 and 48 on X11) unchanged, so send the event a keyboard would.
+            shifted = modifier == Qt.ShiftModifier
+            qt_key = {(Qt.Key_Semicolon, True): Qt.Key_Colon, (Qt.Key_Apostrophe, True): Qt.Key_QuoteDbl}.get(
+                (key, shifted), key)
+            text = {Qt.Key_Semicolon: ";", Qt.Key_Colon: ":", Qt.Key_Apostrophe: "'", Qt.Key_QuoteDbl: '"'}[qt_key]
+            scan = 47 if key == Qt.Key_Semicolon else 48
+            for kind in (QEvent.KeyPress, QEvent.KeyRelease):
+                QApplication.sendEvent(main_graph, QKeyEvent(kind, qt_key, modifier, scan, 0, 0, text))
+            ok = yield ("until", lambda: len(new_nodes(before)) > 0, 5.0)
+            created = new_nodes(before)
+            if not check(ok and len(created) == 1, "keys: %screates one node (got %d)" % (label, len(created))):
+                continue
+            node = created[0]
+            check(node.getPluginID() == MERGE_ID and operation_of(node) == operation,
+                  "keys: %screates a Merge with operation %s (got %s, %r)"
+                  % (label, operation, node.getPluginID(), operation_of(node)))
+            if all_layers:
+                state = layers_is_all(node)
+                check(state is None or state, "keys: %ssets layers to All when the param exists (got %r)"
+                      % (label, state))
 
     def tab_menu_section(main_graph):
         gt.section("tab menu")
@@ -196,6 +272,7 @@ try:
 
         yield from menu_section()
         yield from trigger_section()
+        yield from keys_section(main_graph)
         yield from tab_menu_section(main_graph)
 
         faulthandler.cancel_dump_traceback_later()

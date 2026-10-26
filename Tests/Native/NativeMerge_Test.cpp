@@ -53,6 +53,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Merge/MergeOps.h"
@@ -223,9 +224,10 @@ protected:
         bool inSpec;
     };
 
-    // A over B, each read and given an alpha as its Side says, both sources carrying spec. The
-    // universal channels are rgba.R, so that a universal alpha differs from a layer's own, and the
-    // per-channel alpha layers are spec, standing in for an alphaRGB layer.
+    // A over B, each read and given an alpha as its Side says, both sources carrying spec. B in
+    // spec is Layers listing spec alone, rendered in spec; B in rgba is the default Layers,
+    // rendered in rgba. The universal channels are rgba.R, so that a universal alpha differs from
+    // a layer's own, and the per-channel alpha layers are spec, standing in for an alphaRGB layer.
     void expectAlphaSources(const Side& aSide,
                             const Side& bSide)
     {
@@ -244,7 +246,9 @@ protected:
         setLayerKnob(merge, kNativeMergeParamAAlphaLayer, kParitySourceExtraLayerID);
         setLayerKnob(merge, kNativeMergeParamBAlphaLayer, kParitySourceExtraLayerID);
         setLayerKnob(merge, kNativeMergeParamALayer, aSide.inSpec ? kParitySourceExtraLayerID : kNatronColorViewRGBA);
-        setLayerKnob(merge, kNativeMergeParamBLayer, bSide.inSpec ? kParitySourceExtraLayerID : kNatronColorViewRGBA);
+        if (bSide.inSpec) {
+            setLayers(merge, { kParitySourceExtraLayerID });
+        }
         ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamAAlphaSource, aSide.source)) << what;
         ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamBAlphaSource, bSide.source)) << what;
         const RectI window = paritySourceWindow(b, kTime, 0);
@@ -255,11 +259,13 @@ protected:
         ASSERT_TRUE(renderLayer(a, window, paritySourceExtraLayer(), &aSpec)) << what;
         ASSERT_TRUE(renderRGBA(b, window, &bRGBA)) << what;
         ASSERT_TRUE(renderLayer(b, window, paritySourceExtraLayer(), &bSpec)) << what;
-        ASSERT_TRUE(renderRGBA(merge, window, &got)) << what;
+        ASSERT_TRUE(renderLayer(merge, window, bSide.inSpec ? paritySourceExtraLayer() : ImageLayerDesc::getRGBAComponents(), &got)) << what;
 
-        // A three-channel layer is read as RGB, its fourth channel reading zero.
-        const auto read = [](const Side& side, const std::vector<float>& rgba, const std::vector<float>& spec, std::size_t p, float* pixel, float* alpha) {
-            for (int c = 0; c < 4; ++c) {
+        // The merged layer's channels are read by index: a three-channel layer read into rgba has
+        // its fourth channel reading zero, and rgba read into spec drops its fourth.
+        const int nComps = bSide.inSpec ? 3 : 4;
+        const auto read = [nComps](const Side& side, const std::vector<float>& rgba, const std::vector<float>& spec, std::size_t p, float* pixel, float* alpha) {
+            for (int c = 0; c < nComps; ++c) {
                 const float specValue = (c < 3) ? spec[p * 3 + c] : 0.f;
                 pixel[c] = side.inSpec ? specValue : rgba[p * 4 + c];
                 if (std::string(side.source) == kNativeMergeAlphaPerChannel) {
@@ -271,14 +277,14 @@ protected:
                 }
             }
         };
-        std::vector<float> want(bRGBA.size());
-        for (std::size_t p = 0; (p + 1) * 4 <= want.size(); ++p) {
+        std::vector<float> want(bSide.inSpec ? bSpec.size() : bRGBA.size());
+        for (std::size_t p = 0; (p + 1) * nComps <= want.size(); ++p) {
             float A[4], aAlpha[4], B[4], bAlpha[4];
             read(aSide, aRGBA, aSpec, p, A, aAlpha);
             read(bSide, bRGBA, bSpec, p, B, bAlpha);
-            const MergeOps::AlphaSpan aSpan = { aAlpha, 4, 1 };
-            const MergeOps::AlphaSpan bSpan = { bAlpha, 4, 1 };
-            MergeOps::mergeRow(MergeOps::eOver, 4, A, aSpan, B, bSpan, 1, &want[p * 4]);
+            const MergeOps::AlphaSpan aSpan = { aAlpha, nComps, 1 };
+            const MergeOps::AlphaSpan bSpan = { bAlpha, nComps, 1 };
+            MergeOps::mergeRow(MergeOps::eOver, nComps, A, aSpan, B, bSpan, 1, &want[p * nComps]);
         }
         expectClose(want, got, kTolerance, what);
     }
@@ -348,12 +354,16 @@ protected:
         return false;
     }
 
-    static void setAlsoMerge(const NodePtr& node,
-                             const std::vector<std::string>& layerIDs)
+    // Sets Layers to layerIDs, one row each; no layer is an All row.
+    static void setLayers(const NodePtr& node,
+                          const std::vector<std::string>& layerIDs)
     {
-        KnobChannelSetPtr knob = node->getEffectInstance()->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamAlsoMerge);
+        KnobChannelSetPtr knob = node->getEffectInstance()->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamLayers);
         ASSERT_TRUE(bool(knob));
-        std::vector<ChannelSetRow> rows(layerIDs.size());
+        std::vector<ChannelSetRow> rows(std::max<std::size_t>(1, layerIDs.size()));
+        if (layerIDs.empty()) {
+            rows[0].mode = ChannelSetRow::eModeAll;
+        }
         for (std::size_t i = 0; i < layerIDs.size(); ++i) {
             rows[i].mode = ChannelSetRow::eModeLayer;
             rows[i].layerOrPattern = layerIDs[i];
@@ -361,12 +371,65 @@ protected:
         knob->setRows(rows);
     }
 
-    // A over B in a three-channel layer, each channel's alphas broadcast from the rgba alphas
-    // (packed four floats per pixel); an empty aLayer is a layer A lacks, read as zero.
-    static std::vector<float> expectedLayerOver(const std::vector<float>& aLayer,
-                                                const std::vector<float>& aRGBA,
-                                                const std::vector<float>& bLayer,
-                                                const std::vector<float>& bRGBA)
+    // B's colour layers copied into the project layers diffuse and normals, and its spec into
+    // albedo, by two Shuffles after a parity source at (x, y) carrying spec: B then carries rgba,
+    // spec, diffuse, albedo and normals, each with its own values but for diffuse and normals.
+    NodePtr createLayeredSource(int x,
+                                int y)
+    {
+        NodePtr source = createSource(x, y);
+        NodePtr toDiffuse = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+        NodePtr toNormals = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+        EXPECT_TRUE(source && toDiffuse && toNormals);
+        if (!source || !toDiffuse || !toNormals) {
+            return NodePtr();
+        }
+        setParitySourceExtraLayer(source, true);
+        connectNodes(source, toDiffuse, Shuffle::eInputMain, true);
+        connectNodes(toDiffuse, toNormals, Shuffle::eInputMain, true);
+        setLayerKnob(toDiffuse, kShuffleParamIn1, kNatronColorViewRGBA);
+        setLayerKnob(toDiffuse, kShuffleParamOut1, "diffuse");
+        setLayerKnob(toDiffuse, kShuffleParamIn2, kParitySourceExtraLayerID);
+        setLayerKnob(toDiffuse, kShuffleParamOut2, "albedo");
+        setLayerKnob(toNormals, kShuffleParamIn1, kNatronColorViewRGBA);
+        setLayerKnob(toNormals, kShuffleParamOut1, "normals");
+
+        return toNormals;
+    }
+
+    // Adds diffuse, albedo and normals, three channels each, to the project.
+    void addProjectLayers()
+    {
+        for (const char* id : { "diffuse", "albedo", "normals" }) {
+            std::string error;
+            EXPECT_EQ(LayerRegistry::eAddResultAdded, getApp()->getProject()->addLayer(ImageLayerDesc(id, id, "", { "R", "G", "B" }), LayerRegistryEntry::eOriginUser, &error)) << id << ": " << error;
+        }
+    }
+
+    static ImageLayerDesc projectLayer(const std::string& id)
+    {
+        return ImageLayerDesc(id, id, "", { "R", "G", "B" });
+    }
+
+    // The first three channels of each rgba pixel.
+    static std::vector<float> rgbOf(const std::vector<float>& rgba)
+    {
+        std::vector<float> rgb;
+
+        for (std::size_t p = 0; (p + 1) * 4 <= rgba.size(); ++p) {
+            rgb.insert(rgb.end(), rgba.begin() + p * 4, rgba.begin() + p * 4 + 3);
+        }
+
+        return rgb;
+    }
+
+    // op merging A over B in a three-channel layer, each channel's alphas broadcast from the rgba
+    // alphas (packed four floats per pixel); an empty aLayer is a layer A lacks, read as zero.
+    static std::vector<float> expectedLayerMerge(MergeOps::Operator op,
+                                                 const std::vector<float>& aLayer,
+                                                 const std::vector<float>& aRGBA,
+                                                 const std::vector<float>& bLayer,
+                                                 const std::vector<float>& bRGBA)
     {
         std::vector<float> want(bLayer.size());
 
@@ -377,7 +440,7 @@ protected:
             const float* A = aLayer.empty() ? zero : &aLayer[p * 3];
             const MergeOps::AlphaSpan aSpan = { &a, 0, 0 };
             const MergeOps::AlphaSpan bSpan = { &b, 0, 0 };
-            MergeOps::mergeRow(MergeOps::eOver, 3, A, aSpan, &bLayer[p * 3], bSpan, 1, &want[p * 3]);
+            MergeOps::mergeRow(op, 3, A, aSpan, &bLayer[p * 3], bSpan, 1, &want[p * 3]);
         }
 
         return want;
@@ -526,7 +589,7 @@ TEST_F(NativeMergeNodeTest, BBoxModes)
         { kNativeMergeBBoxB, bRoD },
     };
     for (const auto& c : cases) {
-        ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamBBox, c.mode)) << c.mode;
+        ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamSetBBox, c.mode)) << c.mode;
         const RectD rod = regionOfDefinition(merge);
         EXPECT_EQ(c.want.x1, rod.x1) << c.mode;
         EXPECT_EQ(c.want.y1, rod.y1) << c.mode;
@@ -535,7 +598,7 @@ TEST_F(NativeMergeNodeTest, BBoxModes)
     }
 
     // At a mix of 0 the output is B, whatever the mode.
-    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamBBox, kNativeMergeBBoxA));
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamSetBBox, kNativeMergeBBoxA));
     ASSERT_TRUE(setKnobValues(merge, kOfxMixParamName, { 0. }));
     const RectD rod = regionOfDefinition(merge);
     EXPECT_EQ(bRoD.x1, rod.x1);
@@ -674,33 +737,6 @@ TEST_F(NativeMergeNodeTest, ASpecOverBRGBA)
     expectClose(want, got, kTolerance, "A spec over B rgba");
 }
 
-// The output layer is a project layer B lacks: it receives the merge, and B's rgba passes through.
-TEST_F(NativeMergeNodeTest, OutputToANewLayer)
-{
-    std::string error;
-    const ImageLayerDesc mergeOut("mergeout", "mergeout", "", { "R", "G", "B", "A" });
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, getApp()->getProject()->addLayer(mergeOut, LayerRegistryEntry::eOriginUser, &error)) << error;
-
-    NodePtr merge = createMerge();
-    NodePtr b = createSource(0, 0);
-    NodePtr a = createSource(10, 6);
-    ASSERT_TRUE(merge && b && a);
-    connectNodes(b, merge, kNativeMergeInputB, true);
-    connectNodes(a, merge, kNativeMergeInputA, true);
-    setLayerKnob(merge, kNodeParamLayerSelect, "mergeout");
-    const RectI window = paritySourceWindow(b, kTime, 0);
-    ASSERT_FALSE(window.isNull());
-
-    std::vector<float> bPixels, aPixels, got, rgba;
-    ASSERT_TRUE(renderRGBA(b, window, &bPixels));
-    ASSERT_TRUE(renderRGBA(a, window, &aPixels));
-    ASSERT_TRUE(renderLayer(merge, window, mergeOut, &got));
-    expectClose(expectedFold(MergeOps::eOver, bPixels, { &aPixels }), got, kTolerance, "over into mergeout");
-
-    ASSERT_TRUE(renderRGBA(merge, window, &rgba));
-    expectClose(bPixels, rgba, 0.f, "rgba passes through from B");
-}
-
 // Each alpha source on each side: a universal channel, a layer's own alpha with the universal
 // channel for a layer without one, and a per-channel alpha layer.
 TEST_F(NativeMergeNodeTest, AlphaSourcesPerSide)
@@ -782,8 +818,9 @@ TEST_F(NativeMergeNodeTest, NonSeparableOperatorRefusesAPerChannelAlpha)
     setParitySourceExtraLayer(b, true);
     connectNodes(b, merge, kNativeMergeInputB, true);
     connectNodes(a, merge, kNativeMergeInputA, true);
-    setLayerKnob(merge, kNativeMergeParamALayer, kParitySourceExtraLayerID);
-    setLayerKnob(merge, kNativeMergeParamBLayer, kParitySourceExtraLayerID);
+    // spec merged alone, A read in its namesake, so that both sides read the alpha layer's
+    // channel count.
+    setLayers(merge, { kParitySourceExtraLayerID });
     setLayerKnob(merge, kNativeMergeParamAAlphaLayer, kParitySourceExtraLayerID);
     setLayerKnob(merge, kNativeMergeParamBAlphaLayer, kParitySourceExtraLayerID);
     const RectI window = paritySourceWindow(b, kTime, 0);
@@ -800,13 +837,13 @@ TEST_F(NativeMergeNodeTest, NonSeparableOperatorRefusesAPerChannelAlpha)
             ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, name)) << what;
             std::vector<RenderedPlane> planes;
             std::string error;
-            EXPECT_FALSE(renderNodePlanesDirect(merge, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << what;
+            EXPECT_FALSE(renderNodePlanesDirect(merge, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, paritySourceExtraLayer()), &planes, &error)) << what;
             EXPECT_NE(std::string::npos, persistentMessage(merge).find(name)) << what << ": " << persistentMessage(merge);
         }
 
         ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, "over"));
         std::vector<float> got;
-        EXPECT_TRUE(renderRGBA(merge, window, &got)) << side;
+        EXPECT_TRUE(renderLayer(merge, window, paritySourceExtraLayer(), &got)) << side;
         EXPECT_TRUE(persistentMessage(merge).empty()) << side << ": " << persistentMessage(merge);
     }
 
@@ -815,45 +852,64 @@ TEST_F(NativeMergeNodeTest, NonSeparableOperatorRefusesAPerChannelAlpha)
     ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamBAlphaSource, kNativeMergeAlphaPerLayer));
     ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, "hue"));
     std::vector<float> got;
-    EXPECT_TRUE(renderRGBA(merge, window, &got));
+    EXPECT_TRUE(renderLayer(merge, window, paritySourceExtraLayer(), &got));
     EXPECT_TRUE(persistentMessage(merge).empty()) << persistentMessage(merge);
 }
 
-// All matching merges, beside the output layer, every layer both sides carry, each in itself with
-// the universal alphas; a layer only B carries is not merged and passes through.
-TEST_F(NativeMergeNodeTest, AllMatchingMergesTheLayersBothSidesCarry)
+// Merge has no host layer knob: Layers, defaulting to rgba, names the merged layers, and A Layer
+// defaults to Matching. The knobs of other layer models are gone.
+TEST_F(NativeMergeNodeTest, LayersReplaceTheHostLayerKnob)
+{
+    NodePtr merge = createMerge();
+    ASSERT_TRUE(bool(merge));
+    EffectInstancePtr effect = merge->getEffectInstance();
+    EXPECT_FALSE(bool(merge->getLayerKnob()));
+    KnobChannelSetPtr layers = effect->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamLayers);
+    ASSERT_TRUE(bool(layers));
+    const std::vector<ChannelSetRow> rows = layers->getRows();
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
+    KnobLayerSelectPtr aLayer = effect->getKnobByNameAndType<KnobLayerSelect>(kNativeMergeParamALayer);
+    ASSERT_TRUE(bool(aLayer));
+    EXPECT_EQ(std::string(kNatronLayerSelectAll), aLayer->getLayer());
+    EXPECT_EQ(std::string("Matching"), aLayer->getSummary());
+    for (const char* gone : { "bLayer", "alsoMerge", "output", "bbox" }) {
+        EXPECT_FALSE(bool(merge->getKnobByName(gone))) << gone;
+    }
+    EXPECT_TRUE(bool(merge->getKnobByName(kNativeMergeParamSetBBox)));
+}
+
+// (a) A over B in rgba, the default: the result is the fold in rgba, and a layer of B Layers
+// leaves out is not asked of A and passes through bit-exact.
+TEST_F(NativeMergeNodeTest, AOverBInRGBAPassesTheOtherLayersThrough)
 {
     NodePtr merge = createMerge();
     NodePtr b = createSource(0, 0);
     NodePtr a = createSource(10, 6);
     ASSERT_TRUE(merge && b && a);
+    setParitySourceExtraLayer(a, true);
     setParitySourceExtraLayer(b, true);
     connectNodes(b, merge, kNativeMergeInputB, true);
     connectNodes(a, merge, kNativeMergeInputA, true);
-    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamLayers, kNativeMergeLayersAllMatching));
-    EXPECT_FALSE(hasPlane(neededPlanes(merge, -1), kParitySourceExtraLayerID)) << "A lacks spec";
-
-    setParitySourceExtraLayer(a, true);
-    EXPECT_TRUE(hasPlane(neededPlanes(merge, -1), kParitySourceExtraLayerID));
-    EXPECT_TRUE(hasPlane(neededPlanes(merge, kNativeMergeInputA), kParitySourceExtraLayerID));
-    EXPECT_TRUE(hasPlane(neededPlanes(merge, kNativeMergeInputB), kParitySourceExtraLayerID));
+    EXPECT_FALSE(hasPlane(neededPlanes(merge, -1), kParitySourceExtraLayerID));
+    EXPECT_FALSE(hasPlane(neededPlanes(merge, kNativeMergeInputA), kParitySourceExtraLayerID));
     const RectI window = paritySourceWindow(b, kTime, 0);
     ASSERT_FALSE(window.isNull());
 
-    std::vector<float> aRGBA, aSpec, bRGBA, bSpec, gotRGBA, gotSpec;
+    std::vector<float> aRGBA, bRGBA, bSpec, gotRGBA, gotSpec;
     ASSERT_TRUE(renderRGBA(a, window, &aRGBA));
-    ASSERT_TRUE(renderLayer(a, window, paritySourceExtraLayer(), &aSpec));
     ASSERT_TRUE(renderRGBA(b, window, &bRGBA));
     ASSERT_TRUE(renderLayer(b, window, paritySourceExtraLayer(), &bSpec));
     ASSERT_TRUE(renderRGBA(merge, window, &gotRGBA));
     ASSERT_TRUE(renderLayer(merge, window, paritySourceExtraLayer(), &gotSpec));
-    expectClose(expectedFold(MergeOps::eOver, bRGBA, { &aRGBA }), gotRGBA, kTolerance, "rgba");
-    expectClose(expectedLayerOver(aSpec, aRGBA, bSpec, bRGBA), gotSpec, kTolerance, "spec in itself");
+    expectClose(expectedFold(MergeOps::eOver, bRGBA, { &aRGBA }), gotRGBA, kTolerance, "A over B in rgba");
+    expectClose(bSpec, gotSpec, 0.f, "spec passes through from B");
 }
 
-// List merges the listed layers each in itself: one A lacks reads as zero there, under A's
-// universal alpha.
-TEST_F(NativeMergeNodeTest, ListMergesTheListedLayers)
+// (b) mask with Layers All multiplies every layer of B by A's rgba.A, spec too, which A lacks:
+// there A reads zero but keeps its alpha.
+TEST_F(NativeMergeNodeTest, MaskWithAllLayersMultipliesEveryLayerOfB)
 {
     NodePtr merge = createMerge();
     NodePtr b = createSource(0, 0);
@@ -862,8 +918,8 @@ TEST_F(NativeMergeNodeTest, ListMergesTheListedLayers)
     setParitySourceExtraLayer(b, true);
     connectNodes(b, merge, kNativeMergeInputB, true);
     connectNodes(a, merge, kNativeMergeInputA, true);
-    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamLayers, kNativeMergeLayersList));
-    setAlsoMerge(merge, { kParitySourceExtraLayerID });
+    setLayers(merge, {});
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, "mask"));
     EXPECT_TRUE(hasPlane(neededPlanes(merge, -1), kParitySourceExtraLayerID));
     const RectI window = paritySourceWindow(b, kTime, 0);
     ASSERT_FALSE(window.isNull());
@@ -874,13 +930,80 @@ TEST_F(NativeMergeNodeTest, ListMergesTheListedLayers)
     ASSERT_TRUE(renderLayer(b, window, paritySourceExtraLayer(), &bSpec));
     ASSERT_TRUE(renderRGBA(merge, window, &gotRGBA));
     ASSERT_TRUE(renderLayer(merge, window, paritySourceExtraLayer(), &gotSpec));
-    expectClose(expectedFold(MergeOps::eOver, bRGBA, { &aRGBA }), gotRGBA, kTolerance, "rgba");
-    expectClose(expectedLayerOver(std::vector<float>(), aRGBA, bSpec, bRGBA), gotSpec, kTolerance, "spec with A lacking it");
+    expectClose(expectedFold(MergeOps::eMask, bRGBA, { &aRGBA }), gotRGBA, kTolerance, "rgba masked");
+    expectClose(expectedLayerMerge(MergeOps::eMask, std::vector<float>(), aRGBA, bSpec, bRGBA), gotSpec, kTolerance, "spec masked");
+    EXPECT_NE(bSpec, gotSpec) << "spec is unchanged, which proves nothing";
 }
 
-// With nothing listed only the output layer is merged: B's other layers pass through untouched,
-// and are not asked of A.
-TEST_F(NativeMergeNodeTest, EmptyListMergesOnlyTheOutputLayer)
+// (c) stencil with Layers spec, diffuse and albedo changes exactly those layers of B; normals and
+// rgba, which Layers leaves out, pass through bit-exact.
+TEST_F(NativeMergeNodeTest, StencilChangesExactlyTheListedLayers)
+{
+    addProjectLayers();
+    NodePtr merge = createMerge();
+    NodePtr b = createLayeredSource(0, 0);
+    NodePtr a = createSource(10, 6);
+    ASSERT_TRUE(merge && b && a);
+    connectNodes(b, merge, kNativeMergeInputB, true);
+    connectNodes(a, merge, kNativeMergeInputA, true);
+    setLayers(merge, { kParitySourceExtraLayerID, "diffuse", "albedo" });
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, "stencil"));
+    const std::list<ImageLayerDesc> produced = neededPlanes(merge, -1);
+    EXPECT_TRUE(hasPlane(produced, kParitySourceExtraLayerID));
+    EXPECT_TRUE(hasPlane(produced, "diffuse"));
+    EXPECT_TRUE(hasPlane(produced, "albedo"));
+    EXPECT_FALSE(hasPlane(produced, "normals"));
+    const RectI window = paritySourceWindow(b, kTime, 0);
+    ASSERT_FALSE(window.isNull());
+
+    std::vector<float> aRGBA, bRGBA, gotRGBA;
+    ASSERT_TRUE(renderRGBA(a, window, &aRGBA));
+    ASSERT_TRUE(renderRGBA(b, window, &bRGBA));
+    for (const char* id : { kParitySourceExtraLayerID, "diffuse", "albedo" }) {
+        const ImageLayerDesc layer = (std::string(id) == kParitySourceExtraLayerID) ? paritySourceExtraLayer() : projectLayer(id);
+        std::vector<float> bLayer, got;
+        ASSERT_TRUE(renderLayer(b, window, layer, &bLayer)) << id;
+        ASSERT_TRUE(renderLayer(merge, window, layer, &got)) << id;
+        expectClose(expectedLayerMerge(MergeOps::eStencil, std::vector<float>(), aRGBA, bLayer, bRGBA), got, kTolerance, std::string(id) + " stencilled");
+        EXPECT_NE(bLayer, got) << id << " is unchanged";
+    }
+    std::vector<float> bNormals, gotNormals;
+    ASSERT_TRUE(renderLayer(b, window, projectLayer("normals"), &bNormals));
+    ASSERT_TRUE(renderLayer(merge, window, projectLayer("normals"), &gotNormals));
+    expectClose(bNormals, gotNormals, 0.f, "normals pass through from B");
+    ASSERT_TRUE(renderRGBA(merge, window, &gotRGBA));
+    expectClose(bRGBA, gotRGBA, 0.f, "rgba passes through from B");
+}
+
+// (d) A Layer rgba merges into B's diffuse, Layers listing diffuse alone: A's R, G and B over
+// diffuse, and B's rgba passes through.
+TEST_F(NativeMergeNodeTest, ALayerRGBAMergesIntoDiffuse)
+{
+    addProjectLayers();
+    NodePtr merge = createMerge();
+    NodePtr b = createLayeredSource(0, 0);
+    NodePtr a = createSource(10, 6);
+    ASSERT_TRUE(merge && b && a);
+    connectNodes(b, merge, kNativeMergeInputB, true);
+    connectNodes(a, merge, kNativeMergeInputA, true);
+    setLayers(merge, { "diffuse" });
+    setLayerKnob(merge, kNativeMergeParamALayer, kNatronColorViewRGBA);
+    const RectI window = paritySourceWindow(b, kTime, 0);
+    ASSERT_FALSE(window.isNull());
+
+    std::vector<float> aRGBA, bRGBA, bDiffuse, gotDiffuse, gotRGBA;
+    ASSERT_TRUE(renderRGBA(a, window, &aRGBA));
+    ASSERT_TRUE(renderRGBA(b, window, &bRGBA));
+    ASSERT_TRUE(renderLayer(b, window, projectLayer("diffuse"), &bDiffuse));
+    ASSERT_TRUE(renderLayer(merge, window, projectLayer("diffuse"), &gotDiffuse));
+    ASSERT_TRUE(renderRGBA(merge, window, &gotRGBA));
+    expectClose(expectedLayerMerge(MergeOps::eOver, rgbOf(aRGBA), aRGBA, bDiffuse, bRGBA), gotDiffuse, kTolerance, "A rgba over B diffuse");
+    expectClose(bRGBA, gotRGBA, 0.f, "rgba passes through from B");
+}
+
+// (e) Per-layer alphas: each merged layer takes its own alpha channel on each side, and a layer
+// without one, spec, the universal channel, rgba.R, so that the two differ.
+TEST_F(NativeMergeNodeTest, PerLayerAlphaTakesEachLayersOwnAlpha)
 {
     NodePtr merge = createMerge();
     NodePtr b = createSource(0, 0);
@@ -890,16 +1013,67 @@ TEST_F(NativeMergeNodeTest, EmptyListMergesOnlyTheOutputLayer)
     setParitySourceExtraLayer(b, true);
     connectNodes(b, merge, kNativeMergeInputB, true);
     connectNodes(a, merge, kNativeMergeInputA, true);
-    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamLayers, kNativeMergeLayersList));
-    EXPECT_FALSE(hasPlane(neededPlanes(merge, -1), kParitySourceExtraLayerID));
-    EXPECT_FALSE(hasPlane(neededPlanes(merge, kNativeMergeInputA), kParitySourceExtraLayerID));
+    setLayers(merge, { kNatronColorViewRGBA, kParitySourceExtraLayerID });
+    const std::string rgbaR = std::string(kNatronColorViewRGBA) + ".R";
+    setChannelKnob(merge, kNativeMergeParamAAlpha, rgbaR);
+    setChannelKnob(merge, kNativeMergeParamBAlpha, rgbaR);
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamAAlphaSource, kNativeMergeAlphaPerLayer));
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamBAlphaSource, kNativeMergeAlphaPerLayer));
     const RectI window = paritySourceWindow(b, kTime, 0);
     ASSERT_FALSE(window.isNull());
 
-    std::vector<float> bSpec, gotSpec;
+    std::vector<float> aRGBA, aSpec, bRGBA, bSpec, gotRGBA, gotSpec;
+    ASSERT_TRUE(renderRGBA(a, window, &aRGBA));
+    ASSERT_TRUE(renderLayer(a, window, paritySourceExtraLayer(), &aSpec));
+    ASSERT_TRUE(renderRGBA(b, window, &bRGBA));
     ASSERT_TRUE(renderLayer(b, window, paritySourceExtraLayer(), &bSpec));
+    ASSERT_TRUE(renderRGBA(merge, window, &gotRGBA));
     ASSERT_TRUE(renderLayer(merge, window, paritySourceExtraLayer(), &gotSpec));
-    expectClose(bSpec, gotSpec, 0.f, "spec passes through from B");
+    expectClose(expectedFold(MergeOps::eOver, bRGBA, { &aRGBA }), gotRGBA, kTolerance, "rgba with rgba.A");
+
+    std::vector<float> want(bSpec.size());
+    for (std::size_t p = 0; (p + 1) * 3 <= want.size(); ++p) {
+        const float aAlpha = aRGBA[p * 4];
+        const float bAlpha = bRGBA[p * 4];
+        const MergeOps::AlphaSpan aSpan = { &aAlpha, 0, 0 };
+        const MergeOps::AlphaSpan bSpan = { &bAlpha, 0, 0 };
+        MergeOps::mergeRow(MergeOps::eOver, 3, &aSpec[p * 3], aSpan, &bSpec[p * 3], bSpan, 1, &want[p * 3]);
+    }
+    expectClose(want, gotSpec, kTolerance, "spec with rgba.R");
+}
+
+// (f) Per-channel alphas: diffuse merged with each channel's alpha from the same channel of each
+// side's albedo layer.
+TEST_F(NativeMergeNodeTest, PerChannelAlphaTakesEachChannelsAlpha)
+{
+    addProjectLayers();
+    NodePtr merge = createMerge();
+    NodePtr b = createLayeredSource(0, 0);
+    NodePtr a = createLayeredSource(10, 6);
+    ASSERT_TRUE(merge && b && a);
+    connectNodes(b, merge, kNativeMergeInputB, true);
+    connectNodes(a, merge, kNativeMergeInputA, true);
+    setLayers(merge, { "diffuse" });
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamAAlphaSource, kNativeMergeAlphaPerChannel));
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamBAlphaSource, kNativeMergeAlphaPerChannel));
+    setLayerKnob(merge, kNativeMergeParamAAlphaLayer, "albedo");
+    setLayerKnob(merge, kNativeMergeParamBAlphaLayer, "albedo");
+    const RectI window = paritySourceWindow(b, kTime, 0);
+    ASSERT_FALSE(window.isNull());
+
+    std::vector<float> aDiffuse, aAlbedo, bDiffuse, bAlbedo, got;
+    ASSERT_TRUE(renderLayer(a, window, projectLayer("diffuse"), &aDiffuse));
+    ASSERT_TRUE(renderLayer(a, window, projectLayer("albedo"), &aAlbedo));
+    ASSERT_TRUE(renderLayer(b, window, projectLayer("diffuse"), &bDiffuse));
+    ASSERT_TRUE(renderLayer(b, window, projectLayer("albedo"), &bAlbedo));
+    ASSERT_TRUE(renderLayer(merge, window, projectLayer("diffuse"), &got));
+    std::vector<float> want(bDiffuse.size());
+    for (std::size_t p = 0; (p + 1) * 3 <= want.size(); ++p) {
+        const MergeOps::AlphaSpan aSpan = { &aAlbedo[p * 3], 3, 1 };
+        const MergeOps::AlphaSpan bSpan = { &bAlbedo[p * 3], 3, 1 };
+        MergeOps::mergeRow(MergeOps::eOver, 3, &aDiffuse[p * 3], aSpan, &bDiffuse[p * 3], bSpan, 1, &want[p * 3]);
+    }
+    expectClose(want, got, kTolerance, "diffuse with albedo alphas");
 }
 
 // A per-channel B alpha makes its alpha layer an output: A's alpha layer merged over B's, each
@@ -939,10 +1113,11 @@ TEST_F(NativeMergeNodeTest, PerChannelAlphaWritesTheAlphaLayer)
     expectClose(want, got, kTolerance, "spec alpha over spec alpha");
 }
 
-// B's per-channel alpha layer is written the alpha the output layer's fold carries, whatever A's
-// alpha source: a universal or per-layer A alpha a, broadcast, merges with each of B's alphas by
-// the operator, so over writes a + b * (1 - a). A is not read in that layer, so whether A carries
-// it changes nothing. The universal channel is rgba.R, so that it differs from rgba's own alpha.
+// B's per-channel alpha layer, which Layers leaves out, is written the alpha the fold carries,
+// whatever A's alpha source: a universal or per-layer A alpha a, broadcast, merges with each of
+// B's alphas by the operator, so over writes a + b * (1 - a). A Layer is rgba, so A is read in
+// rgba there and whether A carries the alpha layer changes nothing. The universal channel is
+// rgba.R, so that it differs from rgba's own alpha.
 TEST_F(NativeMergeNodeTest, PerChannelBAlphaLayerTakesTheCarriedAlpha)
 {
     struct Config {
@@ -968,6 +1143,7 @@ TEST_F(NativeMergeNodeTest, PerChannelBAlphaLayerTakesTheCarriedAlpha)
         connectNodes(b, merge, kNativeMergeInputB, true);
         connectNodes(a, merge, kNativeMergeInputA, true);
         setChannelKnob(merge, kNativeMergeParamAAlpha, std::string(kNatronColorViewRGBA) + ".R");
+        setLayerKnob(merge, kNativeMergeParamALayer, kNatronColorViewRGBA);
         ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamAAlphaSource, config.aSource));
         ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamBAlphaSource, kNativeMergeAlphaPerChannel));
         setLayerKnob(merge, kNativeMergeParamBAlphaLayer, kParitySourceExtraLayerID);

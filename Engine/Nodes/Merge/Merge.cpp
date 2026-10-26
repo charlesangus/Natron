@@ -55,7 +55,7 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// Option indices of the bbox choice.
+// Option indices of the set bbox choice.
 enum BBoxEnum {
     eBBoxUnion = 0,
     eBBoxIntersection,
@@ -135,15 +135,6 @@ boundingBox(const RectD& a,
     return box;
 }
 
-// The layer ID a layer select names, its empty value standing for rgba.
-std::string
-selectedLayerID(const KnobLayerSelectPtr& knob)
-{
-    const std::string layerID = knob ? knob->getLayer() : std::string();
-
-    return layerID.empty() ? std::string(kNatronColorViewRGBA) : layerID;
-}
-
 KnobChoicePtr
 createFromChoice(KnobHolder* holder,
                  const KnobPagePtr& page,
@@ -167,25 +158,17 @@ createFromChoice(KnobHolder* holder,
     return from;
 }
 
-KnobLayerSelectPtr
-createLayerSelect(KnobHolder* holder,
-                  const KnobPagePtr& page,
-                  const std::string& label,
-                  const std::string& name,
-                  const std::string& hint)
+// Separates rows of the panel. Not a value, so never saved.
+void
+addSeparator(KnobHolder* holder,
+             const KnobPagePtr& page,
+             const std::string& name)
 {
-    KnobLayerSelectPtr layer = AppManager::createKnob<KnobLayerSelect>(holder, label, 1, false);
+    KnobSeparatorPtr separator = AppManager::createKnob<KnobSeparator>(holder, std::string(), 1, false);
 
-    layer->setName(name);
-    layer->setHintToolTip(hint);
-    layer->setWithChannelButtons(false);
-    layer->setAllowNone(false);
-    layer->setAnimationEnabled(false);
-    layer->setIsMetadataSlave(true);
-    layer->setDefaultValue(layer->encode(kNatronColorViewRGBA, std::vector<std::string>()));
-    page->addKnob(layer);
-
-    return layer;
+    separator->setName(name);
+    separator->setIsPersistent(false);
+    page->addKnob(separator);
 }
 
 KnobChannelSelectPtr
@@ -300,11 +283,12 @@ hasLayerWithID(const std::list<ImageLayerDesc>& layers,
     return false;
 }
 
+// Appends plane unless it is empty, the colour plane (an output whatever Layers lists) or listed.
 void
 appendPlane(const ImageLayerDesc& plane,
             std::list<ImageLayerDesc>* planes)
 {
-    if ((plane.getNumComponents() > 0) && !hasLayerWithID(*planes, plane)) {
+    if ((plane.getNumComponents() > 0) && !plane.isColorLayer() && !hasLayerWithID(*planes, plane)) {
         planes->push_back(plane);
     }
 }
@@ -346,6 +330,8 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
     page->addKnob(subLabelKnob);
     subLabel = subLabelKnob;
 
+    // The panel's rows: Operation, Set BBox, Metadata From and Range From; Layers; B's alpha;
+    // then A's layer and alpha. The host's mask and mix rows follow under their own separator.
     KnobChoicePtr operationKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Operation").toStdString());
     operationKnob->setName(kNativeMergeParamOperation);
     operationKnob->setHintToolTip(EffectInstance::tr("The operator merging each A input over the result so far, starting "
@@ -360,98 +346,90 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
         operationKnob->populateChoices(options);
     }
     operationKnob->setDefaultValue((int)MergeOps::eOver);
+    operationKnob->setAddNewLine(false);
     page->addKnob(operationKnob);
     operation = operationKnob;
 
-    KnobChoicePtr bboxKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Set BBox To").toStdString());
-    bboxKnob->setName(kNativeMergeParamBBox);
-    bboxKnob->setHintToolTip(EffectInstance::tr("The output's region of definition.").toStdString());
+    KnobChoicePtr setBBoxKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Set BBox").toStdString());
+    setBBoxKnob->setName(kNativeMergeParamSetBBox);
+    setBBoxKnob->setHintToolTip(EffectInstance::tr("The output's region of definition.").toStdString());
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption(kNativeMergeBBoxUnion, EffectInstance::tr("union").toStdString(), EffectInstance::tr("The union of B and every connected A input.").toStdString()));
         options.push_back(ChoiceOption(kNativeMergeBBoxIntersection, EffectInstance::tr("intersection").toStdString(), EffectInstance::tr("The intersection of B and every connected A input.").toStdString()));
         options.push_back(ChoiceOption(kNativeMergeBBoxA, "A", EffectInstance::tr("The union of every connected A input.").toStdString()));
         options.push_back(ChoiceOption(kNativeMergeBBoxB, "B", EffectInstance::tr("Input B's.").toStdString()));
-        bboxKnob->populateChoices(options);
+        setBBoxKnob->populateChoices(options);
     }
-    bboxKnob->setDefaultValue((int)eBBoxUnion);
-    page->addKnob(bboxKnob);
-    bbox = bboxKnob;
+    setBBoxKnob->setDefaultValue((int)eBBoxUnion);
+    setBBoxKnob->setAddNewLine(false);
+    page->addKnob(setBBoxKnob);
+    setBBox = setBBoxKnob;
 
     metadataFrom = createFromChoice(holder, page, EffectInstance::tr("Metadata From").toStdString(), kNativeMergeParamMetadataFrom,
                                     EffectInstance::tr("The input whose metadata the output carries: A is input A, not A2 onwards. "
                                                        "When it is not connected, the other one's.")
                                         .toStdString());
+    metadataFrom.lock()->setAddNewLine(false);
     rangeFrom = createFromChoice(holder, page, EffectInstance::tr("Range From").toStdString(), kNativeMergeParamRangeFrom,
                                  EffectInstance::tr("The input whose frame range the output has: A is input A, not A2 onwards. "
                                                     "When it is not connected, the other one's.")
                                      .toStdString());
+    addSeparator(holder, page, "operationSeparator");
 
-    aLayer = createLayerSelect(holder, page, EffectInstance::tr("A Layer").toStdString(), kNativeMergeParamALayer,
-                               EffectInstance::tr("The layer every A input is read in. A layer an input lacks reads as zero, the input keeping its alpha.").toStdString());
-    aAlphaSource = createAlphaSourceChoice(holder, page, EffectInstance::tr("A Alpha Source").toStdString(), kNativeMergeParamAAlphaSource,
-                                           EffectInstance::tr("Where each A input's alpha, a, comes from.").toStdString());
-    aAlpha = createAlphaSelect(holder, page, EffectInstance::tr("A Alpha").toStdString(), kNativeMergeParamAAlpha,
-                               EffectInstance::tr("The channel of each A input that is its alpha, a, for every merged channel, "
-                                                  "and for a layer without its own alpha under Per-layer. None gives an alpha of 0.")
+    KnobChannelSetPtr layersKnob = AppManager::createKnob<KnobChannelSet>(holder, EffectInstance::tr("Layers").toStdString());
+    layersKnob->setName(kNativeMergeParamLayers);
+    layersKnob->setHintToolTip(EffectInstance::tr("The layers of B merged, each in place; All merges every layer of B. Every "
+                                                  "other layer of B passes through unchanged.")
                                    .toStdString());
-    aAlphaLayer = createAlphaLayerSelect(holder, page, EffectInstance::tr("A Alpha Layer").toStdString(), kNativeMergeParamAAlphaLayer,
-                                         EffectInstance::tr("The layer of each A input whose channel i is the alpha of merged channel i. "
-                                                            "None, or a layer an input lacks, gives an alpha of 0.")
-                                             .toStdString());
-    bLayer = createLayerSelect(holder, page, EffectInstance::tr("B Layer").toStdString(), kNativeMergeParamBLayer,
-                               EffectInstance::tr("The layer B is read in. Choosing it also sets the output layer.").toStdString());
+    layersKnob->setWithChannelButtons(false);
+    layersKnob->setAnimationEnabled(false);
+    layersKnob->setIsMetadataSlave(true);
+    layersKnob->setDefaultValue(layersKnob->encodeRows(KnobChannelSet::defaultRows()));
+    page->addKnob(layersKnob);
+    layers = layersKnob;
+
     bAlphaSource = createAlphaSourceChoice(holder, page, EffectInstance::tr("B Alpha Source").toStdString(), kNativeMergeParamBAlphaSource,
                                            EffectInstance::tr("Where B's alpha, b, comes from.").toStdString());
+    bAlphaSource.lock()->setAddNewLine(false);
     bAlpha = createAlphaSelect(holder, page, EffectInstance::tr("B Alpha").toStdString(), kNativeMergeParamBAlpha,
                                EffectInstance::tr("The channel of B that is its alpha, b, for every merged channel, and for a "
                                                   "layer without its own alpha under Per-layer. None gives an alpha of 0.")
                                    .toStdString());
+    bAlpha.lock()->setAddNewLine(false);
     bAlphaLayer = createAlphaLayerSelect(holder, page, EffectInstance::tr("B Alpha Layer").toStdString(), kNativeMergeParamBAlphaLayer,
                                          EffectInstance::tr("The layer of B whose channel i is the alpha of merged channel i. None, or "
                                                             "a layer B lacks, gives an alpha of 0. The merged alphas are written to it.")
                                              .toStdString());
 
-    KnobChoicePtr layersKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Layers").toStdString());
-    layersKnob->setName(kNativeMergeParamLayers);
-    layersKnob->setHintToolTip(EffectInstance::tr("What is merged beside the A layer into the output layer. Every other layer "
-                                                  "of B passes through.")
+    KnobLayerSelectPtr aLayerKnob = AppManager::createKnob<KnobLayerSelect>(holder, EffectInstance::tr("A Layer").toStdString(), 1, false);
+    aLayerKnob->setName(kNativeMergeParamALayer);
+    aLayerKnob->setHintToolTip(EffectInstance::tr("The layer every A input is read in. Matching reads each merged layer of B "
+                                                  "from A's layer of the same name; another layer is read for every merged "
+                                                  "layer. A layer an input lacks reads as zero, the input keeping its alpha.")
                                    .toStdString());
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kNativeMergeLayersSingle, EffectInstance::tr("Single").toStdString(),
-                                       EffectInstance::tr("Only the A layer into the output layer.").toStdString()));
-        options.push_back(ChoiceOption(kNativeMergeLayersAllMatching, EffectInstance::tr("All matching").toStdString(),
-                                       EffectInstance::tr("Also every layer present on B and on an A input, each read and "
-                                                          "written in itself.")
-                                           .toStdString()));
-        options.push_back(ChoiceOption(kNativeMergeLayersList, EffectInstance::tr("List").toStdString(),
-                                       EffectInstance::tr("Also the layers of the Also Merge list, each read and written in "
-                                                          "itself. A layer a side lacks reads as zero there.")
-                                           .toStdString()));
-        layersKnob->populateChoices(options);
-    }
-    layersKnob->setDefaultValue((int)LayersMode::Single);
-    layersKnob->setAnimationEnabled(false);
-    layersKnob->setIsMetadataSlave(true);
-    page->addKnob(layersKnob);
-    layers = layersKnob;
-
-    KnobChannelSetPtr alsoMergeKnob = AppManager::createKnob<KnobChannelSet>(holder, EffectInstance::tr("Also Merge").toStdString());
-    alsoMergeKnob->setName(kNativeMergeParamAlsoMerge);
-    alsoMergeKnob->setHintToolTip(EffectInstance::tr("The layers of B merged, each in itself, beside the output layer in List "
-                                                     "mode.")
-                                      .toStdString());
-    alsoMergeKnob->setWithChannelButtons(false);
-    alsoMergeKnob->setAnimationEnabled(false);
-    alsoMergeKnob->setIsMetadataSlave(true);
-    {
-        std::vector<ChannelSetRow> none(1);
-        none[0].mode = ChannelSetRow::eModeNone;
-        alsoMergeKnob->setDefaultValue(alsoMergeKnob->encodeRows(none));
-    }
-    page->addKnob(alsoMergeKnob);
-    alsoMerge = alsoMergeKnob;
+    aLayerKnob->setWithChannelButtons(false);
+    aLayerKnob->setAllowNone(false);
+    aLayerKnob->setAllowAll(true);
+    aLayerKnob->setAllLabel(EffectInstance::tr("Matching").toStdString());
+    aLayerKnob->setAnimationEnabled(false);
+    aLayerKnob->setIsMetadataSlave(true);
+    aLayerKnob->setDefaultValue(aLayerKnob->encode(kNatronLayerSelectAll, std::vector<std::string>()));
+    aLayerKnob->setAddNewLine(false);
+    page->addKnob(aLayerKnob);
+    aLayer = aLayerKnob;
+    aAlphaSource = createAlphaSourceChoice(holder, page, EffectInstance::tr("A Alpha Source").toStdString(), kNativeMergeParamAAlphaSource,
+                                           EffectInstance::tr("Where each A input's alpha, a, comes from.").toStdString());
+    aAlphaSource.lock()->setAddNewLine(false);
+    aAlpha = createAlphaSelect(holder, page, EffectInstance::tr("A Alpha").toStdString(), kNativeMergeParamAAlpha,
+                               EffectInstance::tr("The channel of each A input that is its alpha, a, for every merged channel, "
+                                                  "and for a layer without its own alpha under Per-layer. None gives an alpha of 0.")
+                                   .toStdString());
+    aAlpha.lock()->setAddNewLine(false);
+    aAlphaLayer = createAlphaLayerSelect(holder, page, EffectInstance::tr("A Alpha Layer").toStdString(), kNativeMergeParamAAlphaLayer,
+                                         EffectInstance::tr("The layer of each A input whose channel i is the alpha of merged channel i. "
+                                                            "None, or a layer an input lacks, gives an alpha of 0.")
+                                             .toStdString());
 } // NativeMergeOp::createKnobs
 
 NativeMergeOp::Params
@@ -557,7 +535,9 @@ NativeMergeOp::inputs(const Params& params,
     CompositeInputs folded;
     const CompositeAlpha aAlphaOf = compositeAlpha(params.aAlpha, kNativeMergeParamAAlpha, kNativeMergeParamAAlphaLayer);
 
-    folded.base = CompositeInput { kNativeMergeInputB, kNativeMergeParamBLayer, compositeAlpha(params.bAlpha, kNativeMergeParamBAlpha, kNativeMergeParamBAlphaLayer) };
+    // B is read in the plane being rendered; adjustInputsForPlane() reads A in its namesake under
+    // Matching.
+    folded.base = CompositeInput { kNativeMergeInputB, std::string_view(), compositeAlpha(params.bAlpha, kNativeMergeParamBAlpha, kNativeMergeParamBAlphaLayer) };
     for (int k = 0; k < kNativeMergeMaxAInputs; ++k) {
         const int inputNb = nativeMergeAInput(k);
         if (context.isConnected(inputNb)) {
@@ -635,28 +615,16 @@ NativeMerge::initializeKnobs()
 
     NodePtr node = getNode();
     if (node) {
+        // Every layer knob lists an input's own layers: Merge never creates a layer.
+        node->declareLayerKnob(op().layers.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(op().bAlpha.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(op().bAlphaLayer.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
         node->declareLayerKnob(op().aLayer.lock(), kNativeMergeInputA, LayerKnobSpec::eRoleInputBound);
         node->declareLayerKnob(op().aAlpha.lock(), kNativeMergeInputA, LayerKnobSpec::eRoleInputBound);
-        node->declareLayerKnob(op().bLayer.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
-        node->declareLayerKnob(op().bAlpha.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
         node->declareLayerKnob(op().aAlphaLayer.lock(), kNativeMergeInputA, LayerKnobSpec::eRoleInputBound);
-        node->declareLayerKnob(op().bAlphaLayer.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
-        node->declareLayerKnob(op().alsoMerge.lock(), kNativeMergeInputB, LayerKnobSpec::eRoleInputBound);
     }
     refreshSubLabel();
     refreshAlphaKnobs();
-    refreshLayersKnobs();
-}
-
-void
-NativeMerge::refreshLayersKnobs()
-{
-    KnobChoicePtr layers = op().layers.lock();
-    KnobChannelSetPtr alsoMerge = op().alsoMerge.lock();
-
-    if (layers && alsoMerge) {
-        alsoMerge->setSecret(layers->getValue() != (int)NativeMergeOp::LayersMode::List);
-    }
 }
 
 void
@@ -683,7 +651,7 @@ NativeMerge::refreshSubLabel()
 
 bool
 NativeMerge::knobChanged(KnobI* k,
-                         ValueChangedReasonEnum reason,
+                         ValueChangedReasonEnum /*reason*/,
                          ViewSpec /*view*/,
                          double /*time*/,
                          bool /*originatedFromMainThread*/)
@@ -704,24 +672,6 @@ NativeMerge::knobChanged(KnobI* k,
         return true;
     }
 
-    KnobChoicePtr layers = op().layers.lock();
-    if (layers && (k == layers.get())) {
-        refreshLayersKnobs();
-
-        return true;
-    }
-
-    // The output defaults to the B layer: a user's choice of B's layer moves the output with it.
-    KnobLayerSelectPtr bLayer = op().bLayer.lock();
-    if (bLayer && (k == bLayer.get()) && (reason == eValueChangedReasonUserEdited)) {
-        KnobLayerSelectPtr target = getKnobByNameAndType<KnobLayerSelect>(kNodeParamLayerSelect);
-        if (target) {
-            target->setLayer(selectedLayerID(bLayer));
-        }
-
-        return true;
-    }
-
     return false;
 }
 
@@ -734,27 +684,36 @@ NativeMerge::followContainerLayer(const NodePtr& node,
     if (!merge) {
         return;
     }
-    const std::string readLayer = layerID.empty() ? std::string(kNatronColorViewRGBA) : layerID;
+    const std::string mergedLayer = layerID.empty() ? std::string(kNatronColorViewRGBA) : layerID;
     const NativeMergeOp& mergeOp = merge->op();
     // The container is the one reference to its layer: none of this Merge's layer knobs
     // counts as a separate user of it.
     const KnobIPtr declared[] = {
+        mergeOp.layers.lock(),
         mergeOp.aLayer.lock(),
         mergeOp.aAlpha.lock(),
         mergeOp.aAlphaLayer.lock(),
-        mergeOp.bLayer.lock(),
         mergeOp.bAlpha.lock(),
         mergeOp.bAlphaLayer.lock(),
-        mergeOp.alsoMerge.lock(),
     };
+    // The container writes a layer of the project's registry whether or not B carries it, so
+    // Layers resolves against the registry, as a target layer does.
+    KnobChannelSetPtr layersKnob = mergeOp.layers.lock();
+    node->declareLayerKnob(layersKnob, -1, LayerKnobSpec::eRoleTarget);
     for (const KnobIPtr& knob : declared) {
         node->setLayerKnobDrivenByContainer(knob);
     }
-    for (const KnobLayerSelectWPtr& side : { mergeOp.aLayer, mergeOp.bLayer }) {
-        KnobLayerSelectPtr knob = side.lock();
-        if (knob && (knob->getLayer() != readLayer)) {
-            knob->setLayer(readLayer);
+    if (layersKnob) {
+        std::vector<ChannelSetRow> rows(1);
+        rows[0].mode = ChannelSetRow::eModeLayer;
+        rows[0].layerOrPattern = mergedLayer;
+        if (layersKnob->getRows() != rows) {
+            layersKnob->setRows(rows);
         }
+    }
+    KnobLayerSelectPtr aLayerKnob = mergeOp.aLayer.lock();
+    if (aLayerKnob && (aLayerKnob->getLayer() != kNatronLayerSelectAll)) {
+        aLayerKnob->setLayer(kNatronLayerSelectAll);
     }
     for (const KnobChoiceWPtr& side : { mergeOp.aAlphaSource, mergeOp.bAlphaSource }) {
         KnobChoicePtr knob = side.lock();
@@ -775,28 +734,44 @@ NativeMerge::onKnobsLoaded()
 {
     refreshSubLabel();
     refreshAlphaKnobs();
-    refreshLayersKnobs();
+}
+
+std::vector<ResolvedLayer>
+NativeMerge::mergedLayers(double time,
+                          ViewIdx view) const
+{
+    KnobChannelSetPtr layersKnob = op().layers.lock();
+    NodePtr node = getNode();
+
+    if (!layersKnob || !node) {
+        return std::vector<ResolvedLayer>();
+    }
+    std::list<ImageLayerDesc> present;
+    node->listLayersForKnob(layersKnob, time, view, &present);
+
+    return layersKnob->resolve(present);
 }
 
 bool
-NativeMerge::isOutputPlane(const ImageLayerDesc& plane,
+NativeMerge::isMergedPlane(const ImageLayerDesc& plane,
                            double time,
                            ViewIdx view) const
 {
-    NodePtr node = getNode();
-    std::vector<ResolvedLayer> selected;
-
-    if (!node || !node->resolveLayerKnob(time, view, &selected) || selected.empty()) {
-        // getComponentsNeededDefault() then outputs the metadata colour plane.
-        return plane.isColorLayer();
-    }
-    for (const ResolvedLayer& layer : selected) {
-        if ((layer.desc.isColorLayer() && plane.isColorLayer()) || (layer.desc == plane)) {
+    for (const ResolvedLayer& layer : mergedLayers(time, view)) {
+        if ((layer.desc.isColorLayer() && plane.isColorLayer()) || (layer.desc.getLayerID() == plane.getLayerID())) {
             return true;
         }
     }
 
     return false;
+}
+
+bool
+NativeMerge::isMatchingALayer() const
+{
+    KnobLayerSelectPtr aLayerKnob = op().aLayer.lock();
+
+    return !aLayerKnob || (aLayerKnob->getLayer() == kNatronLayerSelectAll);
 }
 
 bool
@@ -828,40 +803,9 @@ NativeMerge::addProducedPlanes(double time,
                                ViewIdx view,
                                std::list<ImageLayerDesc>* planes)
 {
-    KnobChoicePtr layersKnob = op().layers.lock();
-    const int mode = layersKnob ? layersKnob->getValue() : (int)NativeMergeOp::LayersMode::Single;
-
-    if (mode == (int)NativeMergeOp::LayersMode::AllMatching) {
-        std::list<ImageLayerDesc> aLayers;
-        for (int k = 0; k < kNativeMergeMaxAInputs; ++k) {
-            if (!getInput(aInput(k))) {
-                continue;
-            }
-            std::list<ImageLayerDesc> present;
-            getAvailableLayers(time, view, aInput(k), &present);
-            for (const ImageLayerDesc& layer : present) {
-                appendPlane(layer, &aLayers);
-            }
-        }
-        std::list<ImageLayerDesc> bLayers;
-        if (getInput(kNativeMergeInputB)) {
-            getAvailableLayers(time, view, kNativeMergeInputB, &bLayers);
-        }
-        for (const ImageLayerDesc& layer : bLayers) {
-            if (hasLayerWithID(aLayers, layer)) {
-                appendPlane(layer, planes);
-            }
-        }
-    } else if (mode == (int)NativeMergeOp::LayersMode::List) {
-        KnobChannelSetPtr alsoMergeKnob = op().alsoMerge.lock();
-        NodePtr node = getNode();
-        if (alsoMergeKnob && node) {
-            std::list<ImageLayerDesc> listed;
-            node->listLayersForKnob(alsoMergeKnob, time, view, &listed);
-            for (const ResolvedLayer& layer : alsoMergeKnob->resolve(listed)) {
-                appendPlane(layer.desc, planes);
-            }
-        }
+    // Only the merged layers are produced: B's others pass through from B untouched.
+    for (const ResolvedLayer& layer : mergedLayers(time, view)) {
+        appendPlane(layer.desc, planes);
     }
 
     ImageLayerDesc alphaLayer;
@@ -876,11 +820,18 @@ NativeMerge::adjustInputsForPlane(const ImageLayerDesc& plane,
                                   ViewIdx view,
                                   CompositeInputs* inputs) const
 {
-    if ((plane.getNumComponents() == 0) || isOutputPlane(plane, time, view)) {
+    // Matching names no one layer: each A input is read in the plane being rendered, which
+    // reads zero where an input lacks it.
+    if (isMatchingALayer()) {
+        for (CompositeInput& input : inputs->further) {
+            input.layerKnob = std::string_view();
+        }
+    }
+    if ((plane.getNumComponents() == 0) || isMergedPlane(plane, time, view)) {
         return;
     }
-    // B's per-channel alpha layer is written the merged alpha: the fold the output plane runs,
-    // whose carried alpha takes the place of its pixels, so that each side keeps the alpha it
+    // B's per-channel alpha layer, unless Layers merges it, is written the merged alpha: the
+    // fold's carried alpha takes the place of its pixels, so that each side keeps the alpha it
     // has there.
     ImageLayerDesc alphaLayer;
     if (bAlphaPlane(time, view, &alphaLayer) && (alphaLayer.getLayerID() == plane.getLayerID())) {
@@ -888,28 +839,9 @@ NativeMerge::adjustInputsForPlane(const ImageLayerDesc& plane,
 
         return;
     }
-    // Any other plane merges in itself on both sides.
-    inputs->base.layerKnob = std::string_view();
-    for (CompositeInput& input : inputs->further) {
-        input.layerKnob = std::string_view();
-    }
-}
-
-Route
-NativeMerge::route(double time,
-                   ViewIdx view)
-{
-    const Route answer = ImageNode<NativeMergeOp>::route(time, view);
-
-    if (answer.kind != Route::Kind::Input) {
-        return answer;
-    }
-    KnobLayerSelectPtr target = getKnobByNameAndType<KnobLayerSelect>(kNodeParamLayerSelect);
-    if (selectedLayerID(op().bLayer.lock()) != selectedLayerID(target)) {
-        return Route::none();
-    }
-
-    return answer;
+    // A plane Layers leaves out is still rendered when it is the colour plane, which the host
+    // always outputs: it is then B alone.
+    inputs->further.clear();
 }
 
 bool
@@ -947,8 +879,8 @@ NativeMerge::getRegionOfDefinition(U64 /*hash*/,
     if ((answer.kind == Route::Kind::Input) || (getMixValue(time, view) == 0.)) {
         found = getInputRoD(kNativeMergeInputB, time, scale, view, rod);
     } else {
-        KnobChoicePtr bboxKnob = op().bbox.lock();
-        const int bbox = bboxKnob ? bboxKnob->getValueAtTime(time, 0, view) : (int)eBBoxUnion;
+        KnobChoicePtr setBBoxKnob = op().setBBox.lock();
+        const int bbox = setBBoxKnob ? setBBoxKnob->getValueAtTime(time, 0, view) : (int)eBBoxUnion;
         RectD inputRoD;
         if (bbox == eBBoxB) {
             found = getInputRoD(kNativeMergeInputB, time, scale, view, rod);

@@ -158,6 +158,7 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
     , _setRowWithChannelButtons(true)
     , _allowNone(false)
     , _allowAll(false)
+    , _allLabel()
     , _absentMarker()
     , _removable(false)
     , _patternValid(true)
@@ -356,6 +357,16 @@ LayerChannelRow::getAllowAll() const
 }
 
 void
+LayerChannelRow::setAllLabel(const QString& label)
+{
+    if (_allLabel == label) {
+        return;
+    }
+    _allLabel = label;
+    rebuildCombo();
+}
+
+void
 LayerChannelRow::setChannelSelectValue(const std::string& layerDotChannel)
 {
     _channelValue = layerDotChannel;
@@ -548,7 +559,7 @@ LayerChannelRow::currentValueLabel() const
         return tr("None");
     }
     if (_mode == eModeLayerSelect && _layerID == kNatronLayerSelectAll) {
-        return tr("All");
+        return _allLabel.isEmpty() ? tr("All") : _allLabel;
     }
     const LayerEntry* layer = findLayer(_layerID);
 
@@ -628,7 +639,7 @@ LayerChannelRow::rebuildCombo()
             _entries.push_back(ComboEntry(ComboEntry::eKindNone, std::string(), tr("None")));
         }
         if (_allowAll) {
-            _entries.push_back(ComboEntry(ComboEntry::eKindAll, std::string(kNatronLayerSelectAll), tr("All")));
+            _entries.push_back(ComboEntry(ComboEntry::eKindAll, std::string(kNatronLayerSelectAll), _allLabel.isEmpty() ? tr("All") : _allLabel));
         }
         if (!_entries.empty()) {
             _entries.back().separatorAfter = true;

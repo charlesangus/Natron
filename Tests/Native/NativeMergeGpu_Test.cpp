@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <bitset>
 #include <cstdio>
 #include <list>
@@ -95,13 +96,17 @@ setLayerKnob(const NodePtr& node,
     knob->setLayer(layerID);
 }
 
+// Sets the Layers list to layerIDs, or to All when it is empty.
 void
-setAlsoMerge(const NodePtr& node,
-             const std::vector<std::string>& layerIDs)
+setLayers(const NodePtr& node,
+          const std::vector<std::string>& layerIDs)
 {
-    KnobChannelSetPtr knob = node->getEffectInstance()->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamAlsoMerge);
+    KnobChannelSetPtr knob = node->getEffectInstance()->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamLayers);
     ASSERT_TRUE(bool(knob));
-    std::vector<ChannelSetRow> rows(layerIDs.size());
+    std::vector<ChannelSetRow> rows(std::max<std::size_t>(layerIDs.size(), 1));
+    if (layerIDs.empty()) {
+        rows[0].mode = ChannelSetRow::eModeAll;
+    }
     for (std::size_t i = 0; i < layerIDs.size(); ++i) {
         rows[i].mode = ChannelSetRow::eModeLayer;
         rows[i].layerOrPattern = layerIDs[i];
@@ -337,11 +342,11 @@ protected:
 
 #ifdef NATRON_HAVE_GPU
 
-// Every operator over B and two A inputs, with each alpha source and layers mode, the A read in
-// the three-channel spec layer over B in rgba, and plain, masked and masked at a mix, against the
-// node's own CPU render of every plane it merges. Each input arrives in the layer the effect asks
-// for, with the further layers it reads its alpha from, each rendered over its source's own region
-// so the device reads zero outside it as the CPU does.
+// Every operator over B and two A inputs, with each alpha source, A layer and Layers list, and
+// plain, masked and masked at a mix, against the node's own CPU render of every plane it outputs.
+// Each input arrives in the layer the effect asks for, with the further layers it reads its alpha
+// from, each rendered over its source's own region so the device reads zero outside it as the CPU
+// does.
 TEST_F(NativeMergeGpuTest, MatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -357,25 +362,24 @@ TEST_F(NativeMergeGpuTest, MatchesTheCpuRender)
     const ImageLayerDesc rgba = ImageLayerDesc::mapNCompsToColorLayer(4);
     const ImageLayerDesc spec = paritySourceExtraLayer();
 
-    // The planes rendered are the output layer and spec when the configuration merges it: in a
-    // layers mode, or as B's per-channel alpha layer, where the merged alpha is written.
+    // The planes rendered are rgba, which is always an output (B copied when Layers leaves it
+    // out), and spec when Layers merges it.
     struct Config {
         const char* name;
-        bool aInSpec;
-        bool bInSpec;
+        const char* aLayer;
         const char* aAlpha;
         const char* bAlpha;
-        const char* layers;
+        std::vector<std::string> layers;
         bool separableOnly;
         bool rendersSpec;
     };
     const Config configs[] = {
-        { "rgba over rgba", false, false, kNativeMergeAlphaUniversal, kNativeMergeAlphaUniversal, kNativeMergeLayersSingle, false, false },
-        { "A spec over B rgba, per layer", true, false, kNativeMergeAlphaPerLayer, kNativeMergeAlphaPerLayer, kNativeMergeLayersSingle, false, false },
-        { "A spec per channel over B rgba", true, false, kNativeMergeAlphaPerChannel, kNativeMergeAlphaUniversal, kNativeMergeLayersSingle, true, false },
-        { "spec over spec, per channel", true, true, kNativeMergeAlphaPerChannel, kNativeMergeAlphaPerChannel, kNativeMergeLayersSingle, true, true },
-        { "all matching", false, false, kNativeMergeAlphaUniversal, kNativeMergeAlphaUniversal, kNativeMergeLayersAllMatching, false, true },
-        { "list", false, false, kNativeMergeAlphaPerLayer, kNativeMergeAlphaUniversal, kNativeMergeLayersList, false, true },
+        { "rgba over rgba", kNatronLayerSelectAll, kNativeMergeAlphaUniversal, kNativeMergeAlphaUniversal, { kNatronColorViewRGBA }, false, false },
+        { "A spec over B rgba, per layer", kParitySourceExtraLayerID, kNativeMergeAlphaPerLayer, kNativeMergeAlphaPerLayer, { kNatronColorViewRGBA }, false, false },
+        { "A spec per channel over B rgba", kParitySourceExtraLayerID, kNativeMergeAlphaPerChannel, kNativeMergeAlphaUniversal, { kNatronColorViewRGBA }, true, false },
+        { "spec over spec, per channel", kNatronLayerSelectAll, kNativeMergeAlphaPerChannel, kNativeMergeAlphaPerChannel, { kParitySourceExtraLayerID }, true, true },
+        { "all", kNatronLayerSelectAll, kNativeMergeAlphaUniversal, kNativeMergeAlphaUniversal, {}, false, true },
+        { "list", kNatronLayerSelectAll, kNativeMergeAlphaPerLayer, kNativeMergeAlphaUniversal, { kNatronColorViewRGBA, kParitySourceExtraLayerID }, false, true },
     };
     struct Masking {
         const char* name;
@@ -391,21 +395,16 @@ TEST_F(NativeMergeGpuTest, MatchesTheCpuRender)
 
     setLayerKnob(setup.merge, kNativeMergeParamAAlphaLayer, kParitySourceExtraLayerID);
     setLayerKnob(setup.merge, kNativeMergeParamBAlphaLayer, kParitySourceExtraLayerID);
-    setAlsoMerge(setup.merge, { kParitySourceExtraLayerID });
     int nCase = 0;
     int nRenders = 0;
 
     for (const Config& config : configs) {
-        setLayerKnob(setup.merge, kNativeMergeParamALayer, config.aInSpec ? kParitySourceExtraLayerID : kNatronColorViewRGBA);
-        setLayerKnob(setup.merge, kNativeMergeParamBLayer, config.bInSpec ? kParitySourceExtraLayerID : kNatronColorViewRGBA);
-        // The output follows B's layer, as choosing B's layer in the panel moves it: B, the
-        // result the A inputs fold into, is read in the layout of the plane it is written to.
-        setLayerKnob(setup.merge, kNodeParamLayerSelect, config.bInSpec ? kParitySourceExtraLayerID : kNatronColorViewRGBA);
+        setLayerKnob(setup.merge, kNativeMergeParamALayer, config.aLayer);
+        setLayers(setup.merge, config.layers);
         ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamAAlphaSource, config.aAlpha)) << config.name;
         ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamBAlphaSource, config.bAlpha)) << config.name;
-        ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamLayers, config.layers)) << config.name;
-        std::vector<ImageLayerDesc> planes(1, config.bInSpec ? spec : rgba);
-        if (config.rendersSpec && !config.bInSpec) {
+        std::vector<ImageLayerDesc> planes(1, rgba);
+        if (config.rendersSpec) {
             planes.push_back(spec);
         }
 
@@ -494,6 +493,32 @@ TEST_F(NativeMergeGpuTest, AnAInputLackingTheALayerMatchesTheCpuRender)
         ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamOperation, MergeOps::operatorName(op)));
         const std::string what = std::string(MergeOps::operatorName(op)) + ", A2 lacking spec";
         expectGpuMatchesCpu(*runtime, setup.merge, inputNodes, setup.mask, window, rgba, toleranceOf(op), what);
+        if (::testing::Test::HasFatalFailure()) {
+            return;
+        }
+    }
+}
+
+// Mask with Layers set to All, by A's rgba.A: every layer of B is multiplied by A's alpha, spec
+// too though no A input carries it, on the GPU as on the CPU.
+TEST_F(NativeMergeGpuTest, MaskAllLayersByAAlphaMatchesTheCpuRender)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    MergeSetup setup = makeSetup();
+    ASSERT_TRUE(setup.merge && setup.a && setup.a2);
+    setParitySourceExtraLayer(setup.a, false);
+    setParitySourceExtraLayer(setup.a2, false);
+    setLayers(setup.merge, {});
+    ASSERT_TRUE(setKnobValue(setup.merge, kNativeMergeParamOperation, "mask"));
+    const RectI window = paritySourceWindow(setup.b, kTime, 0);
+    ASSERT_FALSE(window.isNull());
+    const std::vector<NodePtr> inputNodes = { setup.b, setup.a, NodePtr(), setup.a2 };
+
+    for (const ImageLayerDesc& plane : { ImageLayerDesc::mapNCompsToColorLayer(4), paritySourceExtraLayer() }) {
+        expectGpuMatchesCpu(*runtime, setup.merge, inputNodes, setup.mask, window, plane, toleranceOf(MergeOps::eMask), "mask, All, plane " + plane.getLayerID());
         if (::testing::Test::HasFatalFailure()) {
             return;
         }

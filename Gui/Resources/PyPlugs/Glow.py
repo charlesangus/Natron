@@ -588,7 +588,7 @@ def createInstance(app,group):
         param.set("copy")
         del param
 
-    param = lastNode.getParam("bbox")
+    param = lastNode.getParam("setBBox")
     if param is not None:
         param.set("B")
         del param
@@ -849,7 +849,7 @@ def createInstance(app,group):
         param.set("copy")
         del param
 
-    param = lastNode.getParam("bbox")
+    param = lastNode.getParam("setBBox")
     if param is not None:
         param.set("B")
         del param
@@ -1488,7 +1488,7 @@ def createInstance(app,group):
     param = groupAddInput.getParam("which")
     param.setExpression("thisGroup.addInput.get()", False, 0)
     del param
-    param = groupRoD.getParam("bbox")
+    param = groupRoD.getParam("setBBox")
     param.setExpression("3-thisGroup.expRoD.get()", False, 0)
     del param
     param = groupPreview.getParam("which")
@@ -1514,7 +1514,7 @@ def createInstance(app,group):
     param.setExpression("thisGroup.RotateIn.center.get()[dimension]", False, 0)
     param.setExpression("thisGroup.RotateIn.center.get()[dimension]", False, 1)
     del param
-    param = groupRoD_2.getParam("bbox")
+    param = groupRoD_2.getParam("setBBox")
     param.setExpression("3-thisGroup.expRoD.get()", False, 0)
     del param
     param = groupTolerance.getParam("blackPoint")

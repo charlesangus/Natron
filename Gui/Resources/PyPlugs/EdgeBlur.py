@@ -330,7 +330,7 @@ def createInstance(app,group):
         param.set("copy")
         del param
 
-    param = lastNode.getParam("bbox")
+    param = lastNode.getParam("setBBox")
     if param is not None:
         param.set("A")
         del param

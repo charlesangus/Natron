@@ -34,6 +34,8 @@
 #include "NativeGolden.h"
 #include "NativeParity.h"
 
+#include "Engine/EffectInstance.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Clamp.h"
@@ -220,39 +222,47 @@ mergeOperation(const std::string& operation)
     return [operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation); };
 }
 
-// Restricts the Merge's output to RGB, so that the output alpha is B's.
+// Layers set to All, so that the non-colour case, which turns on the sources' spec layer, merges
+// spec rather than passing it through from B.
 bool
-mergeOutputRgb(const GoldenGraph& g)
+mergeAllLayers(const GoldenGraph& g)
 {
-    KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(g.node->getKnobByName(kNodeParamLayerSelect));
-    EXPECT_TRUE(layer != nullptr);
-    if (!layer) {
+    KnobChannelSetPtr layers = g.node->getEffectInstance()->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamLayers);
+
+    if (!layers) {
+        ADD_FAILURE() << "Merge has no " kNativeMergeParamLayers " knob";
+
         return false;
     }
-    layer->setChannels({ "R", "G", "B" });
+    std::vector<ChannelSetRow> rows(1);
+    rows[0].mode = ChannelSetRow::eModeAll;
+    layers->setRows(rows);
 
     return true;
 }
 
-// The cases every Merge registration shares: B and the A inputs sit at different origins, so each
-// A reaches outside the render window and the bounding box modes differ.
+// The cases every Merge registration shares, each merging every layer: B and the A inputs sit at
+// different origins, so each A reaches outside the render window and the bounding box modes
+// differ.
 void
 addMergeCases(std::vector<GoldenVariant>* variants,
               const std::string& operation)
 {
+    const auto allLayers = [](const Apply& apply) {
+        return Apply([apply](const GoldenGraph& g) { return mergeAllLayers(g) && apply(g); });
+    };
     const Apply op = mergeOperation(operation);
 
-    variants->push_back(variant("default", op));
-    variants->push_back(variant("bboxa", [operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation) && choice(g, kNativeMergeParamBBox, kNativeMergeBBoxA); }));
-    variants->push_back(variant("bboxintersection", [operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation) && choice(g, kNativeMergeParamBBox, kNativeMergeBBoxIntersection); }));
-    variants->push_back(variant("outputrgb", [operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation) && mergeOutputRgb(g); }));
-    variants->push_back(variant("noalpha", [operation](const GoldenGraph& g) {
-        return choice(g, kNativeMergeParamOperation, operation) && setGoldenChannelSelect(g.node, kNativeMergeParamAAlpha, std::string()) && setGoldenChannelSelect(g.node, kNativeMergeParamBAlpha, std::string());
-    }));
-    variants->push_back(maskVariant("maskmix", [operation](const GoldenGraph& g) {
-        return choice(g, kNativeMergeParamOperation, operation) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });
-    }));
-    variants->push_back(maskVariant("maskplain", op));
+    variants->push_back(variant("default", allLayers(op)));
+    variants->push_back(variant("bboxa", allLayers([operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation) && choice(g, kNativeMergeParamSetBBox, kNativeMergeBBoxA); })));
+    variants->push_back(variant("bboxintersection", allLayers([operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation) && choice(g, kNativeMergeParamSetBBox, kNativeMergeBBoxIntersection); })));
+    variants->push_back(variant("noalpha", allLayers([operation](const GoldenGraph& g) {
+                                    return choice(g, kNativeMergeParamOperation, operation) && setGoldenChannelSelect(g.node, kNativeMergeParamAAlpha, std::string()) && setGoldenChannelSelect(g.node, kNativeMergeParamBAlpha, std::string());
+                                })));
+    variants->push_back(maskVariant("maskmix", allLayers([operation](const GoldenGraph& g) {
+                                        return choice(g, kNativeMergeParamOperation, operation) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });
+                                    })));
+    variants->push_back(maskVariant("maskplain", allLayers(op)));
 }
 
 } // namespace

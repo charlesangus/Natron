@@ -950,6 +950,10 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDuplicate, kShortcutDescActionGraphDuplicate, Qt::AltModifier, Qt::Key_C);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphForcePreview, kShortcutDescActionGraphForcePreview, Qt::ShiftModifier, Qt::Key_P);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphTogglePreview, kShortcutDescActionGraphToggleAutoPreview, Qt::AltModifier, Qt::Key_P);
+    registerKeybind(kShortcutGroupNodes, kShortcutIDActionMergeMask, kShortcutDescActionMergeMask, Qt::NoModifier, Qt::Key_Semicolon);
+    registerKeybind(kShortcutGroupNodes, kShortcutIDActionMergeStencil, kShortcutDescActionMergeStencil, Qt::NoModifier, Qt::Key_Apostrophe);
+    registerKeybind(kShortcutGroupNodes, kShortcutIDActionMergeMaskAllLayers, kShortcutDescActionMergeMaskAllLayers, Qt::ShiftModifier, Qt::Key_Semicolon);
+    registerKeybind(kShortcutGroupNodes, kShortcutIDActionMergeStencilAllLayers, kShortcutDescActionMergeStencilAllLayers, Qt::ShiftModifier, Qt::Key_Apostrophe);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoPreview, kShortcutDescActionGraphToggleAutoPreview, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoTurbo, kShortcutDescActionGraphToggleAutoTurbo, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFrameNodes, kShortcutDescActionGraphFrameNodes, Qt::NoModifier, Qt::Key_F);

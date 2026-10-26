@@ -63,14 +63,17 @@ enum ChannelKind : uint32_t {
 
 /**
  * @brief What the map and the combination do with each channel of a pixel, by its bit in the
- * space of pixelKernelChannelBit(): its luma weight, its tint and its kind. The weights are the
+ * space of pixelKernelChannelBit(): its luma weight, its grade and its kind. The weights are the
  * working space's over the processed colour channels, renormalised to sum to 1, so that a grey
  * of value v has luminance v; with no processed colour channel, a processed alpha is its own
  * luminance.
  **/
 struct ChannelSetup {
     float weight[4] = { 0.f, 0.f, 0.f, 0.f };
-    float tint[4] = { 1.f, 1.f, 1.f, 1.f };
+    // The tint times the brightness, the saturation (1 off the colour channels) and 1 / gamma.
+    float gain[4] = { 1.f, 1.f, 1.f, 1.f };
+    float saturation[4] = { 1.f, 1.f, 1.f, 1.f };
+    float invGamma[4] = { 1.f, 1.f, 1.f, 1.f };
     ChannelKind kind[4] = { eChannelUnprocessed, eChannelUnprocessed, eChannelUnprocessed, eChannelUnprocessed };
     // For a colour channel, its bit (0 red, 1 green, 2 blue), which the hue reads; else -1.
     int colourBit[4] = { -1, -1, -1, -1 };
@@ -92,11 +95,14 @@ channelSetup(const GlowParams& params,
         if (!processed[i]) {
             continue;
         }
-        if (bits[i] < 3) {
+        const int bit = std::min(std::max(bits[i], 0), 3);
+        s.gain[i] = (float)(params.brightness * params.tint[bit]);
+        s.invGamma[i] = (float)(1. / params.gamma[bit]);
+        if (bit < 3) {
             s.kind[i] = eChannelColour;
-            s.colourBit[i] = bits[i];
-            s.tint[i] = (float)params.tint[bits[i]];
-            sum += params.luma[bits[i]];
+            s.colourBit[i] = bit;
+            s.saturation[i] = (float)params.saturation[bit];
+            sum += params.luma[bit];
             ++nColour;
         } else {
             s.kind[i] = eChannelAlpha;
@@ -402,7 +408,7 @@ settingsFor(const GlowParams& params,
     return s;
 }
 
-/// The graded map of slot 0 into slot 1, every row of every plane.
+/// The map of slot 0, its colour channels saturated, into slot 1, every row of every plane.
 std::function<PassRowFn(const PassScratch&)>
 mapWorker(const GlowParams& params)
 {
@@ -413,8 +419,6 @@ mapWorker(const GlowParams& params)
             const int n = std::min(4, scratch.nPlanes);
             const float threshold = (float)params.threshold;
             const float knee = (float)params.knee;
-            const float saturation = (float)params.saturation;
-            const float brightness = (float)params.brightness;
             const std::size_t row = (std::size_t)r * scratch.width;
             const float* in[4];
             float* out[4];
@@ -433,7 +437,7 @@ mapWorker(const GlowParams& params)
                 const float w = mapWeight(params, setup, v, n, scratch.mask, row + x);
                 for (int p = 0; p < n; ++p) {
                     const float m = v[p] * s;
-                    const float g = (setup.kind[p] == eChannelColour) ? brightness * setup.tint[p] * (c + saturation * (m - c)) : brightness * m;
+                    const float g = (setup.kind[p] == eChannelColour) ? (c + setup.saturation[p] * (m - c)) : m;
                     out[p][x] = g * w;
                 }
             }
@@ -441,7 +445,8 @@ mapWorker(const GlowParams& params)
     };
 }
 
-/// The output into slot 2 from the source, the map and, outside the preview, the bloom in slot 2.
+/// The output into slot 2 from the source, the map and, outside the preview, the bloom in slot 2:
+/// the bloom, plus the map with add input, is gamma-corrected and multiplied by the gain.
 std::function<PassRowFn(const PassScratch&)>
 combineWorker(const GlowParams& params)
 {
@@ -452,8 +457,6 @@ combineWorker(const GlowParams& params)
             const int n = std::min(4, scratch.nPlanes);
             const float threshold = (float)params.threshold;
             const float knee = (float)params.knee;
-            const bool gammaOn = (params.gamma != 1.);
-            const float invGamma = (float)(1. / params.gamma);
             const std::size_t row = (std::size_t)r * scratch.width;
             const float* src[4];
             const float* map[4];
@@ -483,9 +486,10 @@ combineWorker(const GlowParams& params)
                     if (params.addInput) {
                         glow += map[p][x];
                     }
-                    if (gammaOn && (glow > 0.f)) {
-                        glow = std::pow(glow, invGamma);
+                    if ((setup.invGamma[p] != 1.f) && (glow > 0.f)) {
+                        glow = std::pow(glow, setup.invGamma[p]);
                     }
+                    glow *= setup.gain[p];
                     const float a = src[p][x];
                     float v;
                     if (params.glowOnly) {
@@ -686,25 +690,23 @@ struct GlowGpuParams {
     uint32_t flags;
     float threshold;
     float knee;
-    float saturation;
-    float brightness;
-    float invGamma;
-    uint32_t pad0;
-    uint32_t pad1;
+    // The ChannelKind of channel c in bits 2c and 2c + 1.
+    uint32_t kinds;
     float weight[4];
-    float tint[4];
-    uint32_t kind[4];
+    float gain[4];
+    float saturation[4];
+    float invGamma[4];
 };
 static_assert(sizeof(GlowGpuParams) == 128);
 static_assert(offsetof(GlowGpuParams, flags) == 48);
-static_assert(offsetof(GlowGpuParams, weight) == 80);
-static_assert(offsetof(GlowGpuParams, kind) == 112);
+static_assert(offsetof(GlowGpuParams, kinds) == 60);
+static_assert(offsetof(GlowGpuParams, weight) == 64);
+static_assert(offsetof(GlowGpuParams, invGamma) == 112);
 
 constexpr uint32_t kGlowGpuPreview = 1;
 constexpr uint32_t kGlowGpuGlowOnly = 2;
 constexpr uint32_t kGlowGpuScreen = 4;
 constexpr uint32_t kGlowGpuAddInput = 8;
-constexpr uint32_t kGlowGpuGamma = 16;
 // The map is multiplied by the weights glow_weight wrote, bound as accBuf to glow_map and to the
 // preview's glow_combine.
 constexpr uint32_t kGlowGpuWeighted = 32;
@@ -932,16 +934,15 @@ glowGpuRecorder(const GlowParams& params,
         p.domWidth = emptyDomain ? 0u : (uint32_t)domain.width();
         p.domHeight = emptyDomain ? 0u : (uint32_t)domain.height();
         p.channels = (uint32_t)nComps;
-        p.flags = (params.preview ? kGlowGpuPreview : 0u) | (params.glowOnly ? kGlowGpuGlowOnly : 0u) | (params.screen ? kGlowGpuScreen : 0u) | (params.addInput ? kGlowGpuAddInput : 0u) | ((params.gamma != 1.) ? kGlowGpuGamma : 0u);
+        p.flags = (params.preview ? kGlowGpuPreview : 0u) | (params.glowOnly ? kGlowGpuGlowOnly : 0u) | (params.screen ? kGlowGpuScreen : 0u) | (params.addInput ? kGlowGpuAddInput : 0u);
         p.threshold = (float)params.threshold;
         p.knee = (float)params.knee;
-        p.saturation = (float)params.saturation;
-        p.brightness = (float)params.brightness;
-        p.invGamma = (float)(1. / params.gamma);
         for (int c = 0; c < 4; ++c) {
+            p.kinds |= (uint32_t)setup.kind[c] << (2 * c);
             p.weight[c] = setup.weight[c];
-            p.tint[c] = setup.tint[c];
-            p.kind[c] = (uint32_t)setup.kind[c];
+            p.gain[c] = setup.gain[c];
+            p.saturation[c] = setup.saturation[c];
+            p.invGamma[c] = setup.invGamma[c];
         }
 
         gpu::GpuBuffer* fill = nullptr;
@@ -1054,6 +1055,35 @@ addDoubleKnob(KnobHolder* holder,
     return knob;
 }
 
+/// A colour knob of dims channels, every one defaulting to 1, with no hard bounds.
+KnobColorPtr
+addColorKnob(KnobHolder* holder,
+             const KnobPagePtr& page,
+             const char* name,
+             const QString& label,
+             const QString& hint,
+             int dims,
+             double displayMinimum,
+             double displayMaximum,
+             ColorKnobRoleEnum role)
+{
+    KnobColorPtr knob = AppManager::createKnob<KnobColor>(holder, label, dims);
+
+    knob->setName(name);
+    knob->setHintToolTip(hint);
+    for (int d = 0; d < dims; ++d) {
+        knob->setDefaultValue(1., d);
+        knob->setMinimum(-DBL_MAX, d);
+        knob->setMaximum(DBL_MAX, d);
+        knob->setDisplayMinimum(displayMinimum, d);
+        knob->setDisplayMaximum(displayMaximum, d);
+    }
+    knob->setColorRole(role);
+    page->addKnob(knob);
+
+    return knob;
+}
+
 KnobBoolPtr
 addBoolKnob(KnobHolder* holder,
             const KnobPagePtr& page,
@@ -1115,11 +1145,13 @@ GlowOp::createKnobs(KnobHolder* holderArg,
                            EffectInstance::tr("Rotate the stretched glow, in degrees: the stretch, horizontal at 0, turns clockwise by this angle. It has no effect when Stretch is 0."), 0., -DBL_MAX, -360., 360.);
     ratio = addDoubleKnob(holder, page, kGlowParamRatio, EffectInstance::tr("Ratio"),
                           EffectInstance::tr("How many times larger each blur is than the previous one. At 1 or less, there is a single blur."), 2., 1., 1., 4.);
+    ratio.lock()->setMaximum(BloomKernels::kMaxRatio);
 
     KnobIntPtr countKnob = AppManager::createKnob<KnobInt>(holder, EffectInstance::tr("Count"));
     countKnob->setName(kGlowParamCount);
     countKnob->setHintToolTip(EffectInstance::tr("The number of blurs averaged into the glow. More give a wider, heavier tail."));
     countKnob->setMinimum(1);
+    countKnob->setMaximum(BloomKernels::kMaxCount);
     countKnob->setDisplayMinimum(1);
     countKnob->setDisplayMaximum(10);
     countKnob->setDefaultValue(7);
@@ -1128,26 +1160,18 @@ GlowOp::createKnobs(KnobHolder* holderArg,
 
     filter = Bloom::createFilterKnob(holder, page, kGlowParamFilter);
 
-    KnobColorPtr tintKnob = AppManager::createKnob<KnobColor>(holder, EffectInstance::tr("Tint"), 3);
-    tintKnob->setName(kGlowParamTint);
-    tintKnob->setHintToolTip(EffectInstance::tr("The colour the glow is multiplied by."));
-    for (int d = 0; d < 3; ++d) {
-        tintKnob->setDefaultValue(1., d);
-        tintKnob->setMinimum(-DBL_MAX, d);
-        tintKnob->setMaximum(DBL_MAX, d);
-        tintKnob->setDisplayMinimum(0., d);
-        tintKnob->setDisplayMaximum(4., d);
-    }
-    tintKnob->setColorRole(eColorKnobRoleGain);
-    page->addKnob(tintKnob);
-    tint = tintKnob;
+    tint = addColorKnob(holder, page, kGlowParamTint, EffectInstance::tr("Tint"),
+                        EffectInstance::tr("The gain of each channel of the glow, alpha included, applied after the gamma."),
+                        4, 0., 4., eColorKnobRoleGain);
 
     brightness = addDoubleKnob(holder, page, kGlowParamBrightness, EffectInstance::tr("Brightness"),
                                EffectInstance::tr("The gain of the glow, on top of the tint."), 1., -DBL_MAX, 0., 4.);
-    saturation = addDoubleKnob(holder, page, kGlowParamSaturation, EffectInstance::tr("Saturation"),
-                               EffectInstance::tr("The saturation of the glow, about its luminance: 0 makes it grey, 1 keeps the source's colours."), 1., -DBL_MAX, 0., 4.);
-    gamma = addDoubleKnob(holder, page, kGlowParamGamma, EffectInstance::tr("Gamma"),
-                          EffectInstance::tr("The gamma of the glow, applied after the bloom. Values at or below 0 are not affected. A gamma below 0.01 is treated as 0.01."), 1., 0., 0.2, 5.);
+    saturation = addColorKnob(holder, page, kGlowParamSaturation, EffectInstance::tr("Saturation"),
+                              EffectInstance::tr("The saturation of each colour channel of the glow, about its luminance: 0 makes the channel the luminance, 1 keeps the source's colours."),
+                              3, 0., 4., eColorKnobRoleGain);
+    gamma = addColorKnob(holder, page, kGlowParamGamma, EffectInstance::tr("Gamma"),
+                         EffectInstance::tr("The gamma of each channel of the glow, alpha included, applied after the bloom and before the tint. Values at or below 0 are not affected. A gamma below 0.01 is treated as 0.01."),
+                         4, 0.2, 5., eColorKnobRolePower);
 
     screen = addBoolKnob(holder, page, kGlowParamScreen, EffectInstance::tr("Screen"),
                          EffectInstance::tr("Screen the glow over the input, which preserves its highlights, instead of adding it."), false);
@@ -1182,12 +1206,14 @@ GlowOp::bake(const KnobReader& reader) const
     if ((f >= (int)BlurKernels::eFilterQuasiGaussian) && (f <= (int)BlurKernels::eFilterFIRGaussian)) {
         params.filter = (BlurKernels::Filter)f;
     }
-    for (int d = 0; d < 3; ++d) {
+    for (int d = 0; d < 4; ++d) {
         params.tint[d] = reader.value(tint, d);
+        params.gamma[d] = std::max(0.01, reader.value(gamma, d));
+    }
+    for (int d = 0; d < 3; ++d) {
+        params.saturation[d] = reader.value(saturation, d);
     }
     params.brightness = reader.value(brightness);
-    params.saturation = reader.value(saturation);
-    params.gamma = std::max(0.01, reader.value(gamma));
     params.screen = reader.value(screen);
     params.addInput = reader.value(addInput);
     params.glowOnly = reader.value(glowOnly);

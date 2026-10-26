@@ -488,7 +488,7 @@ TEST_F(NativeGoldenTest, Glow)
     v.push_back(variant("small", small));
     v.push_back(variant("preview", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamPreview, { 1. }); }));
     v.push_back(variant("graded", [small](const GoldenGraph& g) {
-        return small(g) && num(g, kGlowParamTint, { 1.5, 0.75, 0.5 }) && num(g, kGlowParamBrightness, { 2. }) && num(g, kGlowParamSaturation, { 0.4 }) && num(g, kGlowParamGamma, { 1.8 }) && num(g, kGlowParamStretch, { 0.5 });
+        return small(g) && num(g, kGlowParamTint, { 1.5, 0.75, 0.5, 0.6 }) && num(g, kGlowParamBrightness, { 2. }) && num(g, kGlowParamSaturation, { 0.4, 1.3, 0. }) && num(g, kGlowParamGamma, { 1.8, 1., 0.6, 2.5 }) && num(g, kGlowParamStretch, { 0.5 });
     }));
     v.push_back(variant("screenAddInput", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamScreen, { 1. }) && num(g, kGlowParamAddInput, { 1. }); }));
     v.push_back(variant("glowOnly", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamGlowOnly, { 1. }); }));

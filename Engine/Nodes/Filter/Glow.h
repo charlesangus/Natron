@@ -74,10 +74,12 @@ struct GlowParams {
     double ratio = 2.;
     int count = 7;
     BlurKernels::Filter filter = BlurKernels::eFilterFIRGaussian;
-    double tint[3] = { 1., 1., 1. };
+    // Per channel, red, green, blue and alpha: the gain, times brightness, and the gamma, at least
+    // 0.01. The saturation is per colour channel.
+    double tint[4] = { 1., 1., 1., 1. };
     double brightness = 1.;
-    double saturation = 1.;
-    double gamma = 1.;
+    double saturation[3] = { 1., 1., 1. };
+    double gamma[4] = { 1., 1., 1., 1. };
     bool screen = false;
     bool addInput = false;
     bool glowOnly = false;
@@ -102,11 +104,12 @@ inline constexpr InputSpec kGlowInputs[] = {
  * The map keeps the pixels whose luminance L, with the project working space's luma weights,
  * exceeds the threshold, through a soft knee: each processed channel is scaled by c(L) / L, where
  * c is 0 up to the threshold, a parabola over the knee's width and then L - threshold - knee / 2.
- * The map is graded (saturation about its luminance, tint and brightness), bloomed with Bloom's
- * kernel (BloomKernels.h), optionally added to its bloom, and gamma-corrected into the glow. The
- * output is the source plus (or screened with) the glow, the glow alone, or the ungraded map as a
- * preview. A processed alpha channel is glowed without tint or saturation, and clamped to [0, 1]
- * outside the preview. Black lies outside the image; expand RoD grows the region of definition by
+ * The map's colour channels are saturated about its luminance, each by its own amount; the map is
+ * then bloomed with Bloom's kernel (BloomKernels.h), optionally added to its bloom, and graded
+ * into the glow as ColorCorrect grades: each channel gamma-corrected, then multiplied by its tint
+ * and the brightness. The output is the source plus (or screened with) the glow, the glow alone,
+ * or the ungraded map as a preview. A processed alpha channel is glowed without saturation,
+ * with its own gamma and tint, and clamped to [0, 1] outside the preview. Black lies outside the image; expand RoD grows the region of definition by
  * the bloom's reach. Scene-linear: nothing else is clamped.
  *
  * The map is multiplied by the mask and, with isolate hue, by the closeness of each pixel's hue to
@@ -122,7 +125,7 @@ struct GlowOp {
         .label = "Glow",
         .description = "Make the highlights of the input glow.\n"
                        "\n"
-                       "The pixels brighter than the threshold (by their luminance in the project's working space, with a soft knee) form the glow map, which the mask and, optionally, a picked hue restrict. It is graded, bloomed (the mean of count blurs of growing size, as Bloom, stretched along the rotated direction) and added on top of the input, or screened over it.\n"
+                       "The pixels brighter than the threshold (by their luminance in the project's working space, with a soft knee) form the glow map, which the mask and, optionally, a picked hue restrict. It is saturated, bloomed (the mean of count blurs of growing size, as Bloom, stretched along the rotated direction), graded per channel (gamma, then tint and brightness) and added on top of the input, or screened over it.\n"
                        "\n"
                        "Glow Only outputs the glow alone, to merge later; Preview shows the glow map, to adjust the threshold and the hue isolation.",
         .grouping = PLUGIN_GROUP_FILTER,
@@ -165,8 +168,8 @@ struct GlowOp {
     KnobChoiceWPtr filter;
     KnobColorWPtr tint;
     KnobDoubleWPtr brightness;
-    KnobDoubleWPtr saturation;
-    KnobDoubleWPtr gamma;
+    KnobColorWPtr saturation;
+    KnobColorWPtr gamma;
     KnobBoolWPtr screen;
     KnobBoolWPtr addInput;
     KnobBoolWPtr glowOnly;

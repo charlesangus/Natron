@@ -38,7 +38,7 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief The bloom that Bloom and Glow share: the mean of count blurs of sizes size * ratio^i,
- * i = 0 to count - 1, each one of Blur's filters.
+ * i = 0 to count - 1, each capped at kMaxBlurSize and each one of Blur's filters.
  *
  * The Gaussian (FIR) blurs run on a decimated pyramid. Each level halves the previous one along
  * one axis with the [1 3 3 1] / 8 kernel, and a blur of standard deviation sigma along an axis runs
@@ -57,6 +57,13 @@ NATRON_NAMESPACE_ENTER
  * (nearest) or are zero.
  **/
 namespace BloomKernels {
+/// The largest count and ratio the Bloom and Glow knobs accept; normalised() caps them too.
+constexpr int kMaxCount = 20;
+constexpr double kMaxRatio = 8.;
+/// Each blur's size, in pixels at the render scale, is capped at this: far wider than any image,
+/// so that every halo, pyramid factor and region of interest stays well inside int.
+constexpr double kMaxBlurSize = 65536.;
+
 /// The blurs, in pixels at the render scale.
 struct Settings {
     double sizeX = 0.;
@@ -67,12 +74,13 @@ struct Settings {
 };
 
 /// CImg Bloom's rules: at least one blur, one blur when the ratio is at most 1, and ratio 1 then.
+/// The count and the ratio are capped at kMaxCount and kMaxRatio.
 Settings normalised(const Settings& settings) WARN_UNUSED_RETURN;
 
 /**
  * @brief Whether the bloom leaves the image unchanged: its largest blur, of size
- * size * ratio^(count - 1), is the identity by Blur's rule (sigma below 0.1 for the recursive
- * Gaussians, no FIR sample, a box of at most 1 pixel).
+ * size * ratio^(count - 1) capped at kMaxBlurSize, is the identity by Blur's rule (sigma below
+ * 0.1 for the recursive Gaussians, no FIR sample, a box of at most 1 pixel).
  **/
 bool isIdentity(const Settings& settings) WARN_UNUSED_RETURN;
 

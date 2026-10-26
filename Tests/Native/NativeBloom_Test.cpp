@@ -49,6 +49,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Bloom.h"
+#include "Engine/Nodes/Filter/BloomKernels.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
@@ -244,9 +245,11 @@ TEST_F(NativeBloomTest, InputsAndKnobs)
     KnobDoublePtr ratio = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kBloomParamRatio));
     ASSERT_TRUE(bool(ratio));
     EXPECT_EQ(2., ratio->getValue());
+    EXPECT_EQ(BloomKernels::kMaxRatio, ratio->getMaximum());
     KnobIntPtr count = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kBloomParamCount));
     ASSERT_TRUE(bool(count));
     EXPECT_EQ(5, count->getValue());
+    EXPECT_EQ(BloomKernels::kMaxCount, count->getMaximum());
     KnobChoicePtr filter = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kBloomParamFilter));
     ASSERT_TRUE(bool(filter));
     EXPECT_EQ((int)BlurKernels::eFilterFIRGaussian, filter->getValue());
@@ -402,6 +405,62 @@ TEST_F(NativeBloomTest, TileMatchesFullFrame)
             for (int x = tile.x1; x < tile.x2; ++x) {
                 for (int c = 0; c < 4; ++c) {
                     ASSERT_NEAR(at(whole, x, y, c), at(part, x, y, c), 1e-6 * std::max(1.f, std::fabs(at(whole, x, y, c)))) << filter << " at (" << x << "," << y << ")";
+                }
+            }
+        }
+    }
+}
+
+// Settings far past any image, beyond the knobs' maximums, stay bounded: the count and ratio are
+// capped, every blur's size is capped, the halo fits, and the render is finite with a tile matching
+// the full frame.
+TEST_F(NativeBloomTest, ExtremeSettingsStayFinite)
+{
+    BloomKernels::Settings settings;
+    settings.sizeX = 1000.;
+    settings.sizeY = 1000.;
+    settings.ratio = 2.;
+    settings.count = 30;
+    const BloomKernels::Settings capped = BloomKernels::normalised(settings);
+    EXPECT_EQ(BloomKernels::kMaxCount, capped.count);
+    EXPECT_EQ(2., capped.ratio);
+    settings.ratio = 1e9;
+    EXPECT_EQ(BloomKernels::kMaxRatio, BloomKernels::normalised(settings).ratio);
+    settings.ratio = 2.;
+    for (BlurKernels::Filter f : { BlurKernels::eFilterFIRGaussian, BlurKernels::eFilterGaussian, BlurKernels::eFilterBox }) {
+        settings.filter = f;
+        const BloomKernels::PlanPtr plan = BloomKernels::makePlan(settings, false);
+        ASSERT_TRUE(bool(plan)) << (int)f;
+        EXPECT_GT(BloomKernels::haloX(*plan), 0) << (int)f;
+        EXPECT_LE(BloomKernels::haloX(*plan), 1 << 24) << (int)f;
+        EXPECT_GT(BloomKernels::haloY(*plan), 0) << (int)f;
+        EXPECT_LE(BloomKernels::haloY(*plan), 1 << 24) << (int)f;
+    }
+
+    resetProject(160, 48);
+    const RectI hot(90, 12, 120, 36);
+    NodePtr base = makeBoxOn(0.01, RectI(50, 0, 80, 48), 1.);
+    NodePtr source = makeOver(base, makeConstant(50., &hot));
+    ASSERT_TRUE(bool(source));
+    for (const char* filter : { kBlurParamFilterFIRGaussian, kBlurParamFilterGaussian, kBlurParamFilterBox }) {
+        NodePtr node = makeBloom(source);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValue(node, kBloomParamFilter, std::string(filter)));
+        ASSERT_TRUE(setKnobValues(node, kBloomParamSize, { 1000., 1000. }));
+        ASSERT_TRUE(setKnobValues(node, kBloomParamRatio, { 2. }));
+        ASSERT_TRUE(setKnobValues(node, kBloomParamCount, { 30. }));
+        const RectI rod = pixelRoD(node);
+        const RectI tile(61, 7, 99, 30);
+        RenderedPlane whole, part;
+        ASSERT_TRUE(renderRGBA(node, rod, &whole)) << filter;
+        ASSERT_TRUE(renderRGBA(node, tile, &part)) << filter;
+        for (float v : whole.pixels) {
+            ASSERT_TRUE(std::isfinite(v)) << filter;
+        }
+        for (int y = tile.y1; y < tile.y2; ++y) {
+            for (int x = tile.x1; x < tile.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    ASSERT_NEAR(at(whole, x, y, c), at(part, x, y, c), 1e-5 * std::max(1.f, std::fabs(at(whole, x, y, c)))) << filter << " at (" << x << "," << y << ")";
                 }
             }
         }

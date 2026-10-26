@@ -142,6 +142,7 @@ BloomOp::createKnobs(KnobHolder* holder,
     ratioKnob->setName(kBloomParamRatio);
     ratioKnob->setHintToolTip(EffectInstance::tr("How many times larger each blur is than the previous one. At 1 or less, there is a single blur."));
     ratioKnob->setMinimum(1.);
+    ratioKnob->setMaximum(BloomKernels::kMaxRatio);
     ratioKnob->setDisplayMinimum(1.);
     ratioKnob->setDisplayMaximum(4.);
     ratioKnob->setDefaultValue(2.);
@@ -152,6 +153,7 @@ BloomOp::createKnobs(KnobHolder* holder,
     countKnob->setName(kBloomParamCount);
     countKnob->setHintToolTip(EffectInstance::tr("The number of blurs averaged."));
     countKnob->setMinimum(1);
+    countKnob->setMaximum(BloomKernels::kMaxCount);
     countKnob->setDisplayMinimum(1);
     countKnob->setDisplayMaximum(10);
     countKnob->setDefaultValue(5);

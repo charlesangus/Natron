@@ -2,7 +2,9 @@
 
 The mean of `count` blurs of the input, of sizes `size * ratio^i` for `i = 0` to `count - 1`. Each
 blur is one of Blur's filters, Gaussian (FIR) by default. As in CImg Bloom, `count` is at least 1;
-a ratio of at most 1 gives one blur, and one blur has ratio 1. Size 0, the default, is the
+a ratio of at most 1 gives one blur, and one blur has ratio 1. `count` is at most 20 and `ratio`
+at most 8. Each blur's size, in pixels at the render scale, is capped at 65536, wider than any
+image, so the halo and the pyramid stay bounded whatever the settings. Size 0, the default, is the
 identity, as is any setting whose largest blur is Blur's identity.
 
 The Gaussian (FIR) blurs run on a decimated pyramid. Each level halves the previous one along one
@@ -31,5 +33,5 @@ Tolerance:
 
 The CPU properties (size 0 is the identity, a constant is preserved, a point keeps its energy,
 count 1 is Blur's FIR Gaussian below size 12, negatives go through, a tile matches the full
-frame) are in `Tests/Native/NativeBloom_Test.cpp`; the GPU parity is in
+frame, extreme settings render finite) are in `Tests/Native/NativeBloom_Test.cpp`; the GPU parity is in
 `Tests/Native/NativeBloomGpu_Test.cpp`.

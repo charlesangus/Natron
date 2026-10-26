@@ -1,4 +1,4 @@
-// Glow's own passes, after the workers of Engine/Nodes/Filter/Glow.cpp: the graded glow map of the
+// Glow's own passes, after the workers of Engine/Nodes/Filter/Glow.cpp: the saturated glow map of the
 // source, and the combination of the source, the map and its bloom (bloom.slang's) into the output.
 // The source and the map are tightly packed over the CPU's buffer, domWidth x domHeight pixels from
 // (domX1, domY1), `channels` floats per pixel; the bloom is tightly packed over the output rect.
@@ -28,24 +28,25 @@ struct GlowParams
     uint flags;
     float threshold;
     float knee;
-    float saturation;
-    float brightness;
-    float invGamma;
-    uint pad0;
-    uint pad1;
-    // Per channel: the luma weight, the tint, and the kind (0 unprocessed, 1 colour, 2 alpha).
+    // The kind of channel c (0 unprocessed, 1 colour, 2 alpha) in bits 2c and 2c + 1.
+    uint kinds;
+    // Per channel: the luma weight, the gain (tint times brightness), the saturation and 1 / gamma.
     float weight0;
     float weight1;
     float weight2;
     float weight3;
-    float tint0;
-    float tint1;
-    float tint2;
-    float tint3;
-    uint kind0;
-    uint kind1;
-    uint kind2;
-    uint kind3;
+    float gain0;
+    float gain1;
+    float gain2;
+    float gain3;
+    float saturation0;
+    float saturation1;
+    float saturation2;
+    float saturation3;
+    float invGamma0;
+    float invGamma1;
+    float invGamma2;
+    float invGamma3;
 };
 
 [[vk::push_constant]] ConstantBuffer<GlowParams> params;
@@ -54,7 +55,6 @@ static const uint kPreview = 1;
 static const uint kGlowOnly = 2;
 static const uint kScreen = 4;
 static const uint kAddInput = 8;
-static const uint kGamma = 16;
 // accBuf holds one weight per pixel of the domain, which the map is multiplied by, in glow_map and
 // in the preview.
 static const uint kWeighted = 32;
@@ -67,14 +67,24 @@ float weightOf(uint c)
     return c == 0 ? params.weight0 : (c == 1 ? params.weight1 : (c == 2 ? params.weight2 : params.weight3));
 }
 
-float tintOf(uint c)
+float gainOf(uint c)
 {
-    return c == 0 ? params.tint0 : (c == 1 ? params.tint1 : (c == 2 ? params.tint2 : params.tint3));
+    return c == 0 ? params.gain0 : (c == 1 ? params.gain1 : (c == 2 ? params.gain2 : params.gain3));
+}
+
+float saturationOf(uint c)
+{
+    return c == 0 ? params.saturation0 : (c == 1 ? params.saturation1 : (c == 2 ? params.saturation2 : params.saturation3));
+}
+
+float invGammaOf(uint c)
+{
+    return c == 0 ? params.invGamma0 : (c == 1 ? params.invGamma1 : (c == 2 ? params.invGamma2 : params.invGamma3));
 }
 
 uint kindOf(uint c)
 {
-    return c == 0 ? params.kind0 : (c == 1 ? params.kind1 : (c == 2 ? params.kind2 : params.kind3));
+    return (params.kinds >> (2 * c)) & 3u;
 }
 
 // softKnee() in Glow.cpp.
@@ -97,8 +107,8 @@ void mapScale(uint i, uint n, out float s, out float c)
     s = (l > 0.0 && c > 0.0) ? c / l : 0.0;
 }
 
-// The graded map over the buffer: saturation about its luminance c, tint and brightness on colour,
-// brightness alone on alpha, zero on the unprocessed channels.
+// The map over the buffer: each colour channel saturated about its luminance c, alpha as it is,
+// zero on the unprocessed channels.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void glow_map(uint3 tid : SV_DispatchThreadID)
@@ -117,16 +127,17 @@ void glow_map(uint3 tid : SV_DispatchThreadID)
         const float m = asfloat(srcBuf[i + ch]) * s;
         float g = 0.0;
         if (kind == kKindColour)
-            g = params.brightness * tintOf(ch) * (c + params.saturation * (m - c));
+            g = c + saturationOf(ch) * (m - c);
         else if (kind == kKindAlpha)
-            g = params.brightness * m;
+            g = m;
         mapBuf[i + ch] = asuint(g * w);
     }
 }
 
 // The output: the ungraded map (preview), the glow alone, or the source plus or screened with the
-// glow. The glow is the bloom, plus the graded map with addInput, gamma-corrected. A processed
-// alpha is clamped to [0, 1] outside the preview. Outside the buffer everything reads zero.
+// glow. The glow is the bloom, plus the map with addInput, gamma-corrected and multiplied by the
+// gain, per channel. A processed alpha is clamped to [0, 1] outside the preview. Outside the
+// buffer everything reads zero.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void glow_combine(uint3 tid : SV_DispatchThreadID)
@@ -168,8 +179,10 @@ void glow_combine(uint3 tid : SV_DispatchThreadID)
             float glow = asfloat(accBuf[a + ch]);
             if ((params.flags & kAddInput) != 0 && inside)
                 glow += asfloat(mapBuf[i + ch]);
-            if ((params.flags & kGamma) != 0 && glow > 0.0)
-                glow = pow(glow, params.invGamma);
+            const float invGamma = invGammaOf(ch);
+            if (invGamma != 1.0 && glow > 0.0)
+                glow = pow(glow, invGamma);
+            glow *= gainOf(ch);
             if ((params.flags & kGlowOnly) != 0)
                 v = glow;
             else if ((params.flags & kScreen) != 0)

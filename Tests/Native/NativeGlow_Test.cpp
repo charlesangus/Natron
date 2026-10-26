@@ -53,6 +53,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Filter/BloomKernels.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/Glow.h"
 #include "Engine/Nodes/Generator/Constant.h"
@@ -274,8 +275,6 @@ TEST_F(NativeGlowTest, InputsAndKnobs)
         { kGlowParamStretch, 0. },
         { kGlowParamRatio, 2. },
         { kGlowParamBrightness, 1. },
-        { kGlowParamSaturation, 1. },
-        { kGlowParamGamma, 1. },
         { kGlowParamRotate, 0. },
     };
     for (const auto& d : doubles) {
@@ -286,14 +285,30 @@ TEST_F(NativeGlowTest, InputsAndKnobs)
     KnobIntPtr count = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kGlowParamCount));
     ASSERT_TRUE(bool(count));
     EXPECT_EQ(7, count->getValue());
+    EXPECT_EQ(BloomKernels::kMaxCount, count->getMaximum());
+    KnobDoublePtr ratio = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kGlowParamRatio));
+    ASSERT_TRUE(bool(ratio));
+    EXPECT_EQ(BloomKernels::kMaxRatio, ratio->getMaximum());
     KnobChoicePtr filter = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kGlowParamFilter));
     ASSERT_TRUE(bool(filter));
     EXPECT_EQ((int)BlurKernels::eFilterFIRGaussian, filter->getValue());
-    KnobColorPtr tint = std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(kGlowParamTint));
-    ASSERT_TRUE(bool(tint));
-    ASSERT_EQ(3, tint->getDimension());
-    for (int d = 0; d < 3; ++d) {
-        EXPECT_EQ(1., tint->getValue(d));
+    // The PyPlug's post-grade gain and gamma are red, green, blue and alpha, its saturation the
+    // colour channels; every one defaults to 1.
+    const struct {
+        const char* name;
+        int dims;
+    } grades[] = {
+        { kGlowParamTint, 4 },
+        { kGlowParamGamma, 4 },
+        { kGlowParamSaturation, 3 },
+    };
+    for (const auto& g : grades) {
+        KnobColorPtr knob = std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(g.name));
+        ASSERT_TRUE(bool(knob)) << g.name;
+        ASSERT_EQ(g.dims, knob->getDimension()) << g.name;
+        for (int d = 0; d < g.dims; ++d) {
+            EXPECT_EQ(1., knob->getValue(d)) << g.name << " " << d;
+        }
     }
     for (const char* name : { kGlowParamPreview, kGlowParamScreen, kGlowParamAddInput, kGlowParamGlowOnly, kGlowParamExpandRoD, kGlowParamIsolateHue }) {
         KnobBoolPtr knob = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(name));
@@ -395,7 +410,7 @@ TEST_F(NativeGlowTest, SaturationAndTint)
     ASSERT_TRUE(setKnobValues(node, kGlowParamSaturation, { 0. }));
     RenderedPlane in, grey;
     ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &grey));
-    ASSERT_TRUE(setKnobValues(node, kGlowParamTint, { 1., 0.5, 0.25 }));
+    ASSERT_TRUE(setKnobValues(node, kGlowParamTint, { 1., 0.5, 0.25, 1. }));
     RenderedPlane tinted;
     ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &tinted));
     for (int y = 0; y < 48; y += 3) {
@@ -409,6 +424,118 @@ TEST_F(NativeGlowTest, SaturationAndTint)
         }
     }
     EXPECT_GT(at(grey, 30, 20, 0), 0.1f);
+}
+
+// The grade runs in ColorCorrect's order on each channel of the glow, alpha included: the positive
+// glow raised to 1 / gamma, then multiplied by tint and brightness.
+TEST_F(NativeGlowTest, GradeIsPerChannelGammaThenGain)
+{
+    resetProject();
+    NodePtr source = makeScene(0., RectI(20, 10, 40, 30), 4., 1., 0.5);
+    ASSERT_TRUE(bool(source));
+    NodePtr plain = makeSmallGlow(source);
+    NodePtr graded = makeSmallGlow(source);
+    ASSERT_TRUE(bool(plain) && bool(graded));
+    const double gamma[4] = { 2., 1., 0.5, 2. };
+    const double tint[4] = { 0.5, 2., 1., 0.5 };
+    const double brightness = 1.5;
+    for (const NodePtr& node : { plain, graded }) {
+        ASSERT_TRUE(setKnobValues(node, kGlowParamGlowOnly, { 1. }));
+        KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
+        ASSERT_TRUE(bool(channelSet));
+        channelSet->setChannels(0, std::vector<std::string> { "R", "G", "B", "A" });
+    }
+    ASSERT_TRUE(setKnobValues(graded, kGlowParamGamma, { gamma[0], gamma[1], gamma[2], gamma[3] }));
+    ASSERT_TRUE(setKnobValues(graded, kGlowParamTint, { tint[0], tint[1], tint[2], tint[3] }));
+    ASSERT_TRUE(setKnobValues(graded, kGlowParamBrightness, { brightness }));
+    RenderedPlane in, before, after;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, plain, &in, &before));
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, graded, &in, &after));
+    int alphaSamples = 0;
+    for (int y = 0; y < 48; y += 3) {
+        for (int x = 0; x < 64; x += 3) {
+            for (int c = 0; c < 4; ++c) {
+                const double v = at(before, x, y, c);
+                // A clamped alpha no longer holds the glow.
+                if ((c == 3) && (v >= 1.)) {
+                    continue;
+                }
+                double want = ((v > 0.) ? std::pow(v, 1. / gamma[c]) : v) * brightness * tint[c];
+                if (c == 3) {
+                    want = std::min(std::max(want, 0.), 1.);
+                    alphaSamples += (v > 0.01) ? 1 : 0;
+                }
+                ASSERT_NEAR(want, at(after, x, y, c), 2e-5 * std::max(1., std::fabs(want))) << "channel " << c << " at (" << x << "," << y << ")";
+            }
+        }
+    }
+    // The bloom's falloff leaves an alpha glow between 0 and 1 that the grade can be seen on.
+    EXPECT_GT(alphaSamples, 0);
+}
+
+// Each colour channel has its own saturation about the glow's luminance L: at saturations
+// (0, 1, 0.5), red is L, green is unchanged and blue is halfway between L and its own value.
+TEST_F(NativeGlowTest, SaturationIsPerChannel)
+{
+    resetProject();
+    NodePtr source = makeScene(0., RectI(20, 10, 40, 30), 4., 1., 0.5);
+    ASSERT_TRUE(bool(source));
+    NodePtr plain = makeSmallGlow(source);
+    NodePtr saturated = makeSmallGlow(source);
+    ASSERT_TRUE(bool(plain) && bool(saturated));
+    ASSERT_TRUE(setKnobValues(plain, kGlowParamGlowOnly, { 1. }));
+    ASSERT_TRUE(setKnobValues(saturated, kGlowParamGlowOnly, { 1. }));
+    ASSERT_TRUE(setKnobValues(saturated, kGlowParamSaturation, { 0., 1., 0.5 }));
+    RenderedPlane in, before, after;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, plain, &in, &before));
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, saturated, &in, &after));
+    for (int y = 0; y < 48; y += 3) {
+        for (int x = 0; x < 64; x += 3) {
+            const float l = at(after, x, y, 0);
+            const float g = at(before, x, y, 1);
+            const float b = 0.5f * (l + at(before, x, y, 2));
+            ASSERT_NEAR(g, at(after, x, y, 1), 1e-5 * std::max(1.f, std::fabs(g))) << "(" << x << "," << y << ")";
+            ASSERT_NEAR(b, at(after, x, y, 2), 1e-5 * std::max(1.f, std::fabs(b))) << "(" << x << "," << y << ")";
+        }
+    }
+    EXPECT_GT(std::fabs(at(after, 30, 20, 0) - at(before, 30, 20, 0)), 0.1f);
+}
+
+// Sizes, ratios and counts far past any image, beyond the knobs' maximums, render finite pixels,
+// and a tile matches the full frame, on the axes and in a rotated frame.
+TEST_F(NativeGlowTest, ExtremeSettingsStayFinite)
+{
+    resetProject(160, 48);
+    NodePtr source = makeScene(0.05, RectI(90, 12, 120, 36), 20., 10., 5.);
+    ASSERT_TRUE(bool(source));
+    for (double rotate : { 0., 30. }) {
+        for (const char* filter : { kBlurParamFilterFIRGaussian, kBlurParamFilterGaussian, kBlurParamFilterBox }) {
+            NodePtr node = makeGlow(source);
+            ASSERT_TRUE(bool(node));
+            ASSERT_TRUE(setKnobValue(node, kGlowParamFilter, std::string(filter)));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamSize, { 1000. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamRatio, { 2. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamCount, { 30. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamStretch, { (rotate != 0.) ? 0.5 : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamRotate, { rotate }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamExpandRoD, { 0. }));
+            const RectI rod = pixelRoD(node);
+            const RectI tile(61, 7, 99, 30);
+            RenderedPlane whole, part;
+            ASSERT_TRUE(renderRGBA(node, rod, &whole)) << filter << " rotate " << rotate;
+            ASSERT_TRUE(renderRGBA(node, tile, &part)) << filter << " rotate " << rotate;
+            for (float v : whole.pixels) {
+                ASSERT_TRUE(std::isfinite(v)) << filter << " rotate " << rotate;
+            }
+            for (int y = tile.y1; y < tile.y2; ++y) {
+                for (int x = tile.x1; x < tile.x2; ++x) {
+                    for (int c = 0; c < 4; ++c) {
+                        ASSERT_NEAR(at(whole, x, y, c), at(part, x, y, c), 1e-5 * std::max(1.f, std::fabs(at(whole, x, y, c)))) << filter << " rotate " << rotate << " at (" << x << "," << y << ")";
+                    }
+                }
+            }
+        }
+    }
 }
 
 // Expand RoD grows the region of definition by the bloom's reach; off, it is the source's.
@@ -1076,10 +1203,10 @@ TEST_F(NativeGlowTest, GpuMatchesTheCpuRender)
         ASSERT_TRUE(setKnobValues(node, kGlowParamIsolateHue, { (c.options & eOptionHue) ? 1. : 0. }));
         ASSERT_TRUE(setKnobValues(node, kGlowParamPickHue, { 1., 0.5, 0. }));
         if (c.options & eOptionGrade) {
-            ASSERT_TRUE(setKnobValues(node, kGlowParamTint, { 1.5, 0.75, 0.5 }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamTint, { 1.5, 0.75, 0.5, 0.6 }));
             ASSERT_TRUE(setKnobValues(node, kGlowParamBrightness, { 2. }));
-            ASSERT_TRUE(setKnobValues(node, kGlowParamSaturation, { 0.4 }));
-            ASSERT_TRUE(setKnobValues(node, kGlowParamGamma, { 1.8 }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamSaturation, { 0.4, 1.3, 0. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamGamma, { 1.8, 1., 0.6, 2.5 }));
         }
         KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
         ASSERT_TRUE(bool(channelSet));

@@ -48,7 +48,12 @@ namespace {
 
     // A blur runs on the deepest level where its standard deviation is still this many samples.
     const double kLevelMinSigma = 2.5;
-    const int kMaxLevels = 30;
+    // Deeper than any blur of at most kMaxBlurSize goes, and shallow enough that upTaps()'s
+    // 2 * factor stays exact in float.
+    const int kMaxLevels = 20;
+    // A bound no halo of a blur of at most kMaxBlurSize reaches; a halo is clamped to it all the
+    // same, so the regions of interest grown by it stay inside int.
+    const int64_t kMaxHalo = int64_t(1) << 24;
     // The [1 3 3 1] / 8 downsampling kernel, applied to samples 2j - 1 to 2j + 2 for sample j.
     const float kDown[4] = { 0.125f, 0.375f, 0.375f, 0.125f };
 
@@ -78,6 +83,15 @@ namespace {
             int b)
     {
         return -floorDiv(-a, b);
+    }
+
+    /// The size of blur i, size * ratio^i, capped at kMaxBlurSize.
+    double
+    blurSize(double size,
+             double ratio,
+             int i)
+    {
+        return std::min(size * std::pow(ratio, (double)i), kMaxBlurSize);
     }
 
     /// The deepest level along an axis for a blur of standard deviation sigma.
@@ -505,7 +519,8 @@ normalised(const Settings& settings)
 
     s.sizeX = std::max(0., s.sizeX);
     s.sizeY = std::max(0., s.sizeY);
-    s.count = std::max(1, s.count);
+    s.count = std::min(std::max(1, s.count), kMaxCount);
+    s.ratio = std::min(s.ratio, kMaxRatio);
     if (!(s.ratio > 1.)) {
         s.count = 1;
     }
@@ -520,9 +535,8 @@ bool
 isIdentity(const Settings& settings)
 {
     const Settings s = normalised(settings);
-    const double scale = std::pow(s.ratio, (double)(s.count - 1));
-    const double x = s.sizeX * scale;
-    const double y = s.sizeY * scale;
+    const double x = blurSize(s.sizeX, s.ratio, s.count - 1);
+    const double y = blurSize(s.sizeY, s.ratio, s.count - 1);
 
     if (isGaussianFamily(s.filter)) {
         return ((float)(x / 2.4) < 0.1) && ((float)(y / 2.4) < 0.1);
@@ -548,12 +562,11 @@ makePlan(const Settings& settings,
     int levelX = 0;
     int levelY = 0;
     for (int i = 0; i < s.count; ++i) {
-        const double scale = std::pow(s.ratio, (double)i);
-        const double px = s.sizeX * scale;
-        const double py = s.sizeY * scale;
+        const double px = blurSize(s.sizeX, s.ratio, i);
+        const double py = blurSize(s.sizeY, s.ratio, i);
         Plan::Blur blur;
-        int haloX = 0;
-        int haloY = 0;
+        int64_t haloX = 0;
+        int64_t haloY = 0;
         if (plan->fir) {
             const double sigmaX = px / 2.4;
             const double sigmaY = py / 2.4;
@@ -577,8 +590,8 @@ makePlan(const Settings& settings,
             blur.radiusY = BlurKernels::LineFilter::firGaussianRadius(ey);
             // A pixel reads four level samples about its own and their blur, and a level sample
             // spans under three of its spacings of the pixels.
-            haloX = (blur.factorX == 1) ? blur.radiusX : blur.factorX * (blur.radiusX + 4);
-            haloY = (blur.factorY == 1) ? blur.radiusY : blur.factorY * (blur.radiusY + 4);
+            haloX = (blur.factorX == 1) ? blur.radiusX : (int64_t)blur.factorX * (blur.radiusX + 4);
+            haloY = (blur.factorY == 1) ? blur.radiusY : (int64_t)blur.factorY * (blur.radiusY + 4);
             plan->sigma = std::max(plan->sigma, std::max(ex, ey));
 #ifdef NATRON_HAVE_GPU
             blur.weightsX = BlurKernels::LineFilter::firGaussianWeights(ex);
@@ -587,15 +600,15 @@ makePlan(const Settings& settings,
         } else if (isGaussianFamily(s.filter)) {
             blur.filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)(px / 2.4), 0, nearest));
             blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)(py / 2.4), 0, nearest));
-            haloX = blur.filterX->isIdentity() ? 0 : std::max(3, (int)std::ceil(px * 1.5));
-            haloY = blur.filterY->isIdentity() ? 0 : std::max(3, (int)std::ceil(py * 1.5));
+            haloX = blur.filterX->isIdentity() ? 0 : std::max<int64_t>(3, (int64_t)std::ceil(px * 1.5));
+            haloY = blur.filterY->isIdentity() ? 0 : std::max<int64_t>(3, (int64_t)std::ceil(py * 1.5));
             plan->sigma = std::max(plan->sigma, std::max(px, py) / 2.4);
         } else {
             const int iter = boxIterations(s.filter);
             blur.filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)px, 0, nearest));
             blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)py, 0, nearest));
-            haloX = blur.filterX->isIdentity() ? 0 : iter * (int)(std::floor((px - 1) / 2) + 1);
-            haloY = blur.filterY->isIdentity() ? 0 : iter * (int)(std::floor((py - 1) / 2) + 1);
+            haloX = blur.filterX->isIdentity() ? 0 : iter * (int64_t)(std::floor((px - 1) / 2) + 1);
+            haloY = blur.filterY->isIdentity() ? 0 : iter * (int64_t)(std::floor((py - 1) / 2) + 1);
             plan->sigma = std::max(plan->sigma, std::max(px, py) / 2.4);
         }
 #ifdef NATRON_HAVE_GPU
@@ -604,8 +617,8 @@ makePlan(const Settings& settings,
             blur.lineY = BlurKernels::toGpuLineFilter(*blur.filterY);
         }
 #endif
-        plan->haloX = std::max(plan->haloX, haloX);
-        plan->haloY = std::max(plan->haloY, haloY);
+        plan->haloX = std::max(plan->haloX, (int)std::min(haloX, kMaxHalo));
+        plan->haloY = std::max(plan->haloY, (int)std::min(haloY, kMaxHalo));
         plan->blurs.push_back(blur);
     }
 

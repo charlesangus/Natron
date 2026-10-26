@@ -82,19 +82,19 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
 
 ## Phase 70.6: UAT fixes
 
-- [ ] M70.P6.T1 — Project variables take keyframes
+- [x] M70.P6.T1 — Project variables take keyframes
   - files: `Engine/Project.cpp`, `Engine/ProjectPrivate.cpp`, `Gui/KnobGui*.cpp`, `Tests/ProjectSerialization_Test.cpp`, `Tests/gui/m70_project_variables.py`
   - approach: find why a project variable's knob offers no keyframe (the project's knobs are created non-animatable, or the project panel hides the animation menu) and make every variable in the project RFV group animatable like a node's, from the GUI and from Python.
   - verify: GUI script sets a keyframe on a project Double variable from its animation menu at two frames; the value interpolates when the timeline moves.
   - size: M
 
-- [ ] M70.P6.T2 — Project variable expressions follow time
+- [x] M70.P6.T2 — Project variable expressions follow time
   - files: `Engine/Project.cpp`, `Engine/TimeLine.cpp`, `Engine/Knob.cpp`, `Tests/gui/m70_project_variables.py`
   - approach: a project Double variable with the expression `frame` keeps its first value as the timeline moves: the project's knobs are not refreshed on a time change the way a node's are. Refresh the project RFV group's knobs (value, expression, animation) on every time change, and make sure readers (`app.<name>`, the panel) see the value at the current frame.
   - verify: GUI script sets `frame` as the expression of a project variable, moves the timeline to 1, 10 and 25, and the panel's spin box and `app.<name>.get()` both read the frame.
   - size: M
 
-- [ ] M70.P6.T3 — One Python call adds any knob as a variable
+- [x] M70.P6.T3 — One Python call adds any knob as a variable
   - files: `Engine/AppInstance*`, `Engine/PyAppInstance.*`, `Engine/PyParameter.*`, `Engine/NatronEngine/typesystem_engine.xml`, the RFV helpers, `Tests/` Python cases, docs
   - approach: replace the per-type `app.createRFV<Type>Param` methods with `addRFVKnob(param)` on the app (project variables) and on a Set node: the knob is made with the usual creators, then passed in and moved into the RFV group under its own script name, with the same name checks (valid identifier, unique, not an App attribute, value-holding type). Delete the per-type methods.
   - verify: gtest Python snippet creates a Double and an Int2D with the ordinary creators, adds both with `addRFVKnob`, reads them back as project variables, and an existing name raises ValueError.

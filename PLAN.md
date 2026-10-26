@@ -149,7 +149,7 @@ future core work has solid ground to build on.
 | M68 | Headless GL EGL | todo |  |  | E2 | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
 | M19 | USD/Hydra Foundation | done | M17, M161, M107 |  | E9 | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
 | M20 | 3D Node Vocabulary | doing | M19 | bosley-native-nodes | E9 | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
-| M226 | Scene Hierarchy From Topology | todo | M19, M20 |  | E9 | [M226-scene-hierarchy-from-topology.md](PLAN/MILESTONES/M226-scene-hierarchy-from-topology.md) |
+| M226 | Scene Hierarchy From Topology | doing | M19, M20 | bosley-native-nodes | E9 | [M226-scene-hierarchy-from-topology.md](PLAN/MILESTONES/M226-scene-hierarchy-from-topology.md) |
 | M227 | USD Primitive Nodes | todo | M226 |  | E9 | [M227-usd-primitive-nodes.md](PLAN/MILESTONES/M227-usd-primitive-nodes.md) |
 | M228 | 3D Viewer Navigation | todo | M19, M20, M226 |  | E9 | [M228-3d-viewer-navigation.md](PLAN/MILESTONES/M228-3d-viewer-navigation.md) |
 | M229 | 3D Viewer Guides And Display | todo | M228 |  | E9 | [M229-3d-viewer-guides-and-display.md](PLAN/MILESTONES/M229-3d-viewer-guides-and-display.md) |

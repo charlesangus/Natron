@@ -213,7 +213,6 @@ public Q_SLOTS:
     void onKnobInterpolationChanged();
 
 private:
-
     RotoCurveContextPtr _roto;
     // The engine knob is kept apart from its GUI so that undo commands holding this curve still
     // reach the knob after its panel GUI has been rebuilt.

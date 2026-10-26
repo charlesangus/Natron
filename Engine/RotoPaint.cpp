@@ -1016,20 +1016,20 @@ RotoPaint::onInteractViewportSelectionUpdated(const RectD& rectangle,
 
 bool
 RotoPaint::onOverlayPenDoubleClicked(double /*time*/,
-                                     const RenderScale & /*renderScale*/,
+                                     const RenderScale& /*renderScale*/,
                                      ViewIdx /*view*/,
-                                     const QPointF & /*viewportPos*/,
-                                     const QPointF & pos)
+                                     const QPointF& /*viewportPos*/,
+                                     const QPointF& pos)
 {
     return _imp->ui->onOverlayPenDoubleClicked(pos);
 }
 
 bool
 RotoPaint::onOverlayPenDown(double time,
-                            const RenderScale & /*renderScale*/,
+                            const RenderScale& /*renderScale*/,
                             ViewIdx /*view*/,
-                            const QPointF & /*viewportPos*/,
-                            const QPointF & pos,
+                            const QPointF& /*viewportPos*/,
+                            const QPointF& pos,
                             double pressure,
                             double timestamp,
                             PenType pen)
@@ -1039,10 +1039,10 @@ RotoPaint::onOverlayPenDown(double time,
 
 bool
 RotoPaint::onOverlayPenMotion(double time,
-                              const RenderScale & /*renderScale*/,
+                              const RenderScale& /*renderScale*/,
                               ViewIdx /*view*/,
-                              const QPointF & /*viewportPos*/,
-                              const QPointF & pos,
+                              const QPointF& /*viewportPos*/,
+                              const QPointF& pos,
                               double pressure,
                               double timestamp)
 {
@@ -1051,10 +1051,10 @@ RotoPaint::onOverlayPenMotion(double time,
 
 bool
 RotoPaint::onOverlayPenUp(double /*time*/,
-                          const RenderScale & /*renderScale*/,
+                          const RenderScale& /*renderScale*/,
                           ViewIdx /*view*/,
-                          const QPointF & /*viewportPos*/,
-                          const QPointF & /*pos*/,
+                          const QPointF& /*viewportPos*/,
+                          const QPointF& /*pos*/,
                           double /*pressure*/,
                           double /*timestamp*/)
 {
@@ -1063,7 +1063,7 @@ RotoPaint::onOverlayPenUp(double /*time*/,
 
 bool
 RotoPaint::onOverlayKeyDown(double /*time*/,
-                            const RenderScale & /*renderScale*/,
+                            const RenderScale& /*renderScale*/,
                             ViewIdx /*view*/,
                             Key key,
                             KeyboardModifiers /*modifiers*/)
@@ -1073,7 +1073,7 @@ RotoPaint::onOverlayKeyDown(double /*time*/,
 
 bool
 RotoPaint::onOverlayKeyUp(double /*time*/,
-                          const RenderScale & /*renderScale*/,
+                          const RenderScale& /*renderScale*/,
                           ViewIdx /*view*/,
                           Key key,
                           KeyboardModifiers /*modifiers*/)
@@ -1083,7 +1083,7 @@ RotoPaint::onOverlayKeyUp(double /*time*/,
 
 bool
 RotoPaint::onOverlayKeyRepeat(double /*time*/,
-                              const RenderScale & /*renderScale*/,
+                              const RenderScale& /*renderScale*/,
                               ViewIdx /*view*/,
                               Key /*key*/,
                               KeyboardModifiers /*modifiers*/)
@@ -1093,7 +1093,7 @@ RotoPaint::onOverlayKeyRepeat(double /*time*/,
 
 bool
 RotoPaint::onOverlayFocusGained(double /*time*/,
-                                const RenderScale & /*renderScale*/,
+                                const RenderScale& /*renderScale*/,
                                 ViewIdx /*view*/)
 {
     return false;
@@ -1101,7 +1101,7 @@ RotoPaint::onOverlayFocusGained(double /*time*/,
 
 bool
 RotoPaint::onOverlayFocusLost(double /*time*/,
-                              const RenderScale & /*renderScale*/,
+                              const RenderScale& /*renderScale*/,
                               ViewIdx /*view*/)
 {
     return _imp->ui->onOverlayFocusLost();

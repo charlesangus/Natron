@@ -269,7 +269,7 @@ RotoPaintInteract::onToolSelected(const KnobButtonPtr& actionButton,
 void
 RotoPaintInteract::onBreakMultiStrokeTriggered()
 {
-    makeStroke( true, RotoPoint() );
+    makeStroke(true, RotoPoint());
 }
 
 void

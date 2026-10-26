@@ -331,7 +331,7 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
     page->addKnob(subLabelKnob);
     subLabel = subLabelKnob;
 
-    // The panel's rows: Operation, Set BBox, Metadata From and Range From; Layers; B's alpha;
+    // The panel's rows: Operation; Set BBox and Metadata From; Range From; Layers; B's alpha;
     // then A's layer and alpha. The host's mask and mix rows follow under their own separator.
     KnobChoicePtr operationKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Operation").toStdString());
     operationKnob->setName(kNativeMergeParamOperation);
@@ -347,7 +347,6 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
         operationKnob->populateChoices(options);
     }
     operationKnob->setDefaultValue((int)MergeOps::eOver);
-    operationKnob->setAddNewLine(false);
     page->addKnob(operationKnob);
     operation = operationKnob;
 
@@ -371,7 +370,6 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
                                     EffectInstance::tr("The input whose metadata the output carries: A is input A, not A2 onwards. "
                                                        "When it is not connected, the other one's.")
                                         .toStdString());
-    metadataFrom.lock()->setAddNewLine(false);
     rangeFrom = createFromChoice(holder, page, EffectInstance::tr("Range From").toStdString(), kNativeMergeParamRangeFrom,
                                  EffectInstance::tr("The input whose frame range the output has: A is input A, not A2 onwards. "
                                                     "When it is not connected, the other one's.")
@@ -417,7 +415,6 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
     aLayerKnob->setAnimationEnabled(false);
     aLayerKnob->setIsMetadataSlave(true);
     aLayerKnob->setDefaultValue(aLayerKnob->encode(kNatronLayerSelectAll, std::vector<std::string>()));
-    aLayerKnob->setAddNewLine(false);
     page->addKnob(aLayerKnob);
     aLayer = aLayerKnob;
     aAlphaSource = createAlphaSourceChoice(holder, page, EffectInstance::tr("A Alpha Source").toStdString(), kNativeMergeParamAAlphaSource,

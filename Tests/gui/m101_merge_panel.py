@@ -1,5 +1,5 @@
-"""The Merge properties panel: its knobs sit in the rows Operation, Set BBox, Metadata From and
-Range From; Layers; B Alpha Source and B Alpha; A Layer, A Alpha Source and A Alpha, top to bottom.
+"""The Merge properties panel: its knobs sit in the rows Operation; Set BBox and Metadata From;
+Range From; Layers; B Alpha Source and B Alpha; A Layer; A Alpha Source and A Alpha, top to bottom.
 There is no Layer, Output, B Layer or Also Merge knob. Layers is set to the three layers of a
 multi-layer Read connected to B, with rgba's row merging R, G and B alone: each row shows a button
 per channel of its layer, and rgba's A button is off. The panel is saved to
@@ -20,10 +20,13 @@ MERGE_ID = "Merge"
 ROW_TOLERANCE_PX = 8
 
 ROWS = [
-    ["Operation", "Set BBox", "Metadata From", "Range From"],
+    ["Operation"],
+    ["Set BBox", "Metadata From"],
+    ["Range From"],
     ["Layers"],
     ["B Alpha Source", "B Alpha"],
-    ["A Layer", "A Alpha Source", "A Alpha"],
+    ["A Layer"],
+    ["A Alpha Source", "A Alpha"],
 ]
 
 try:

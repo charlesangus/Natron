@@ -58,14 +58,15 @@ try:
         v = view()
         return v is not None and bool(v.property("natronSceneEngineHeld"))
 
-    def free_gpu_memory_action():
+    def trigger_free_gpu_memory():
         for window in QApplication.topLevelWidgets():
             if not isinstance(window, QMainWindow):
                 continue
             for a in window.findChildren(QAction):
                 if a.text().replace("&", "") == "Free GPU Memory":
-                    return a
-        return None
+                    a.trigger()
+                    return True
+        return False
 
     def synced_and_drawn():
         v = view()
@@ -96,11 +97,10 @@ try:
 
         shot("live-edit-after.png")
 
-        free = free_gpu_memory_action()
-        require(free is not None, "the Cache menu has a Free GPU Memory action")
         check(engine_held(), "the scene view holds its engine before Free GPU Memory")
         # The release runs inside trigger(); the repaint it asks for comes later on the event loop.
-        free.trigger()
+        # The action is triggered while its window's wrapper is alive: the child wrapper dies with it.
+        require(trigger_free_gpu_memory(), "the Cache menu has a Free GPU Memory action")
         check(not engine_held(), "Free GPU Memory: the scene view let go of its engine")
         ok = yield ("until", lambda: engine_held() and engines() == 2, POLL_TIMEOUT_S)
         check(ok, "Free GPU Memory: the repaint made the view's second engine (count %d)" % engines())

@@ -293,9 +293,10 @@ public:
 
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     /**
-     * @brief Called by render-threads to pick some work to do or to get asleep if there's nothing to do
+     * @brief Called by render-threads to pick some work to do or to get asleep if there's nothing to do.
+     * Returns false, leaving the queue untouched, once the thread must quit. A frame it returns must be rendered.
      **/
-    int pickFrameToRender(RenderThreadTask* thread, bool* enableRenderStats, std::vector<ViewIdx>* viewsToRender);
+    bool pickFrameToRender(RenderThreadTask* thread, int* frame, bool* enableRenderStats, std::vector<ViewIdx>* viewsToRender);
 #endif
 
     /**

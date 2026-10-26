@@ -32,7 +32,9 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "Global/GlobalDefines.h"
@@ -111,6 +113,35 @@ typedef std::map<NodeCtxKey, ParallelRenderArgsPtr> ContextFrameArgsMap;
 typedef std::shared_ptr<ContextFrameArgsMap> ContextFrameArgsMapPtr;
 
 /**
+ * @brief The metadata answers one frame args entry keeps for the times and views its frame reads
+ * the node at, keyed by (time, view).
+ *
+ * Frame args are copied to make an entry under another context, whose hash and answers differ, so
+ * a copy starts empty and an assignment empties the target.
+ **/
+class RetainedFrameMetadata {
+public:
+    RetainedFrameMetadata() = default;
+
+    RetainedFrameMetadata(const RetainedFrameMetadata&)
+    {
+    }
+
+    RetainedFrameMetadata& operator=(const RetainedFrameMetadata& other)
+    {
+        if (this != &other) {
+            std::lock_guard<std::mutex> l(mutex);
+            answers.clear();
+        }
+
+        return *this;
+    }
+
+    std::mutex mutex;
+    std::map<std::pair<double, int>, NodeMetadataConstPtr> answers;
+};
+
+/**
  * @brief Thread-local arguments given to render a frame by the tree.
  * This is different than the RenderArgs because it is not local to a
  * renderRoI call but to the rendering of a whole frame.
@@ -146,6 +177,11 @@ public:
     /// The frame args of the nodes rendering under a nonzero context key this frame, set when the
     /// request pass reached any, so that an input pulled under a context finds its own.
     std::weak_ptr<const ContextFrameArgsMap> contextArgs;
+
+    /// The node's answers under nodeHash at the other times and views the frame read it at, kept
+    /// from the first read so every later one in the frame agrees (see
+    /// EffectInstance::getRenderMetadata()). Shared by the threads rendering the frame.
+    RetainedFrameMetadata retainedMetadata;
 
     ///If set, contains data for all frame/view pair that are going to be computed
     ///for this frame/view pair with the overall RoI to avoid rendering several times with this node.

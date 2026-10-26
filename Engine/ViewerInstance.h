@@ -282,6 +282,13 @@ public:
 
     unsigned int getMipmapLevelFromZoomFactor() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The mipmap level a render of this viewer uses before draft mode is applied: the
+     * coarser of the user proxy level and the zoom factor's level, or 0 when full-frame
+     * processing is on.
+     **/
+    unsigned int getMipmapLevelWithoutDraft() const WARN_UNUSED_RETURN;
+
     DisplayChannelsEnum getChannels(int texIndex) const WARN_UNUSED_RETURN;
 
     void setFullFrameProcessingEnabled(bool fullFrame);

@@ -26,6 +26,7 @@
 #include "TimeLineGui.h"
 
 #include <cmath>
+#include <map>
 #include <set>
 #include <stdexcept>
 
@@ -37,6 +38,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include <QCoreApplication>
 #include <QThread>
 #include <QTimer>
+#include <QVariant>
 
 #include "Global/GlobalDefines.h"
 
@@ -175,7 +177,15 @@ struct TimelineGuiPrivate
     // so that we limit the amount of redraws
     QTimer keyframeChangesUpdateTimer;
 
-    TimelineGuiPrivate(TimeLineGui *qq,
+    // Every viewer cache tile signals on its own, so the cached line is rebuilt at most once per
+    // interval rather than once per tile.
+    QTimer cachedFramesRefreshTimer;
+    // The viewer hash and mipmap level the cached line was last built for.
+    bool cachedFramesBuilt;
+    U64 cachedFramesHash;
+    unsigned int cachedFramesMipmapLevel;
+
+    TimelineGuiPrivate(TimeLineGui* qq,
                        ViewerInstance* viewer,
                        Gui* gui,
                        ViewerTab* viewerTab)
@@ -203,6 +213,10 @@ struct TimelineGuiPrivate
         , seekingTimeline(false)
         , isTimeFormatFrames(true)
         , keyframeChangesUpdateTimer()
+        , cachedFramesRefreshTimer()
+        , cachedFramesBuilt(false)
+        , cachedFramesHash(0)
+        , cachedFramesMipmapLevel(0)
     {
     }
 
@@ -232,6 +246,24 @@ struct TimelineGuiPrivate
             keyframeChangesUpdateTimer.start(200);
         }
     }
+
+    void scheduleCachedFramesRefresh()
+    {
+        // Not restarted while running, so a playback adding tiles without pause still sees the line move.
+        if (!cachedFramesRefreshTimer.isActive()) {
+            cachedFramesRefreshTimer.start(100);
+        }
+    }
+
+    // Lets scripts and GUI tests read the cached line, which is drawn with GL only.
+    void publishCachedFrames()
+    {
+        QVariantList times;
+        for (CachedFrames::const_iterator it = cachedFrames.begin(); it != cachedFrames.end(); ++it) {
+            times.push_back(QVariant((int)it->time));
+        }
+        parent->setProperty("natronCachedFrames", times);
+    }
 };
 
 TimeLineGui::TimeLineGui(ViewerInstance* viewer,
@@ -247,6 +279,9 @@ TimeLineGui::TimeLineGui(ViewerInstance* viewer,
 
     _imp->keyframeChangesUpdateTimer.setSingleShot(true);
     connect(&_imp->keyframeChangesUpdateTimer, SIGNAL(timeout()), this, SLOT(onKeyframeChangesUpdateTimerTimeout()));
+    _imp->cachedFramesRefreshTimer.setSingleShot(true);
+    connect(&_imp->cachedFramesRefreshTimer, SIGNAL(timeout()), this, SLOT(refreshCachedFrames()));
+    _imp->publishCachedFrames();
 }
 
 TimeLineGui::~TimeLineGui()
@@ -1326,36 +1361,26 @@ TimeLineGui::setTimeFormatFrames(bool value)
 }
 
 void
-TimeLineGui::onCachedFrameAdded(SequenceTime time)
+TimeLineGui::onCachedFrameAdded(SequenceTime /*time*/)
 {
-    _imp->cachedFrames.insert( CachedFrame(time, eStorageModeRAM) );
+    // The entry may belong to another viewer or to a hash the viewer has left.
+    _imp->scheduleCachedFramesRefresh();
 }
 
 void
-TimeLineGui::onCachedFrameRemoved(SequenceTime time,
+TimeLineGui::onCachedFrameRemoved(SequenceTime /*time*/,
                                   int /*storage*/)
 {
-    for (CachedFrames::iterator it = _imp->cachedFrames.begin(); it != _imp->cachedFrames.end(); ++it) {
-        if (it->time == time) {
-            _imp->cachedFrames.erase(it);
-            break;
-        }
-    }
-    _imp->startKeyframeChangesTimer();
+    // A frame is many tiles, and other hashes may still hold it, so one removal does not unmark it.
+    _imp->scheduleCachedFramesRefresh();
 }
 
 void
-TimeLineGui::onCachedFrameStorageChanged(SequenceTime time,
+TimeLineGui::onCachedFrameStorageChanged(SequenceTime /*time*/,
                                          int /*oldStorage*/,
-                                         int newStorage)
+                                         int /*newStorage*/)
 {
-    for (CachedFrames::iterator it = _imp->cachedFrames.begin(); it != _imp->cachedFrames.end(); ++it) {
-        if (it->time == time) {
-            _imp->cachedFrames.erase(it);
-            _imp->cachedFrames.insert( CachedFrame(time, (StorageModeEnum)newStorage) );
-            break;
-        }
-    }
+    _imp->scheduleCachedFramesRefresh();
 }
 
 void
@@ -1369,7 +1394,10 @@ TimeLineGui::onMemoryCacheCleared()
         }
     }
     _imp->cachedFrames = copy;
+    _imp->publishCachedFrames();
     _imp->startKeyframeChangesTimer();
+    // Entries in use survive a clear, and the frame the clear re-renders comes back.
+    _imp->scheduleCachedFramesRefresh();
 }
 
 void
@@ -1383,14 +1411,59 @@ TimeLineGui::onDiskCacheCleared()
         }
     }
     _imp->cachedFrames = copy;
+    _imp->publishCachedFrames();
     _imp->startKeyframeChangesTimer();
+    _imp->scheduleCachedFramesRefresh();
 }
 
 void
 TimeLineGui::clearCachedFrames()
 {
     _imp->cachedFrames.clear();
+    _imp->publishCachedFrames();
     _imp->startKeyframeChangesTimer();
+    // Rebuilt for the mipmap level the viewer renders at after the zoom change.
+    _imp->scheduleCachedFramesRefresh();
+}
+
+void
+TimeLineGui::refreshCachedFrames()
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+
+    _imp->cachedFramesRefreshTimer.stop();
+    NodePtr node = _imp->viewer ? _imp->viewer->getNode() : NodePtr();
+    if (!node) {
+        return;
+    }
+    const U64 hash = node->getHashValue();
+    const unsigned int mipmapLevel = _imp->viewer->getMipmapLevelWithoutDraft();
+    std::map<SequenceTime, StorageModeEnum> frames;
+    appPTR->getViewerCachedFrames(node->getCacheID(), hash, mipmapLevel, &frames);
+
+    CachedFrames rebuilt;
+    for (std::map<SequenceTime, StorageModeEnum>::const_iterator it = frames.begin(); it != frames.end(); ++it) {
+        rebuilt.insert(CachedFrame(it->first, it->second));
+    }
+    _imp->cachedFrames = rebuilt;
+    _imp->cachedFramesBuilt = true;
+    _imp->cachedFramesHash = hash;
+    _imp->cachedFramesMipmapLevel = mipmapLevel;
+    _imp->publishCachedFrames();
+    update();
+}
+
+void
+TimeLineGui::refreshCachedFramesIfStale()
+{
+    NodePtr node = _imp->viewer ? _imp->viewer->getNode() : NodePtr();
+    if (!node) {
+        return;
+    }
+    if (!_imp->cachedFramesBuilt || (node->getHashValue() != _imp->cachedFramesHash) || (_imp->viewer->getMipmapLevelWithoutDraft() != _imp->cachedFramesMipmapLevel)) {
+        _imp->scheduleCachedFramesRefresh();
+    }
 }
 
 void

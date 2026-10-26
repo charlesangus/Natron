@@ -334,6 +334,14 @@ ViewerTab::clearTimelineCacheLine()
 }
 
 void
+ViewerTab::refreshTimelineCacheLineIfStale()
+{
+    if (_imp->timeLineGui) {
+        _imp->timeLineGui->refreshCachedFramesIfStale();
+    }
+}
+
+void
 ViewerTab::toggleInfobarVisbility()
 {
     bool visible;

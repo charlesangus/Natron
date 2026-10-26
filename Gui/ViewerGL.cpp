@@ -1625,6 +1625,10 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
         }
         setRegionOfDefinition(rod, par, textureIndex);
     }
+
+    // A frame served from the cache adds no entry, so this is where an undo back to cached frames
+    // reaches the cached line.
+    _imp->viewerTab->refreshTimelineCacheLineIfStale();
 } // ViewerGL::endTransferBufferFromRAMToGPU
 
 void

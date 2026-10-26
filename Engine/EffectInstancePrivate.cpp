@@ -45,6 +45,9 @@ const int kActionsCacheMinStates = 64;
 // redirects) and for scrubbing back and forth over about a second of footage; forward playback
 // asks each frame once, so more entries would only hold memory on every node of a large graph.
 const std::size_t kMaxCachedMetadataFrames = 32;
+// The frame ranges one hash state of a node keeps a summary for: one per temporal reader below it
+// and view, which a graph rarely has more of.
+const std::size_t kMaxCachedRangeSummaries = 8;
 } // anonymous namespace
 
 ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
@@ -58,6 +61,7 @@ ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
     , _metadataCache()
     , _passThroughIdentityCache()
     , _timeInvariantMetadata()
+    , _rangeSummaries()
 {
 }
 
@@ -127,6 +131,8 @@ ActionsCache::clearAll()
 {
     QMutexLocker l(&_cacheMutex);
 
+    // A derivation that began before the purge must not put its answer back.
+    ++_metadataGeneration;
     _instances.clear();
     _instancesByHash.clear();
 }
@@ -146,6 +152,9 @@ void
 ActionsCache::clearResults(U64 hash)
 {
     QMutexLocker l(&_cacheMutex);
+
+    // As clearAll(), whether or not the hash has an entry yet: the derivation may store the first.
+    ++_metadataGeneration;
     std::unordered_map<U64, InstancesList::iterator>::iterator found = _instancesByHash.find(hash);
 
     if (found != _instancesByHash.end()) {
@@ -497,6 +506,54 @@ ActionsCache::setTimeInvariantMetadataResult(U64 hash,
     getOrCreateActionCache(hash)._timeInvariantMetadata = metadata;
 }
 
+bool
+ActionsCache::getRangeMetadataSummary(U64 hash,
+                                      ViewIdx view,
+                                      double min,
+                                      double max,
+                                      std::vector<NodeMetadataConstPtr>* answers)
+{
+    QMutexLocker l(&_cacheMutex);
+    ActionsCacheInstance* cache = findActionCache(hash);
+
+    if (!cache) {
+        return false;
+    }
+    for (std::list<RangeMetadataSummary>::iterator it = cache->_rangeSummaries.begin(); it != cache->_rangeSummaries.end(); ++it) {
+        if ((it->view == view) && (it->min == min) && (it->max == max)) {
+            *answers = it->answers;
+            cache->_rangeSummaries.splice(cache->_rangeSummaries.begin(), cache->_rangeSummaries, it);
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+ActionsCache::setRangeMetadataSummary(U64 hash,
+                                      const RangeMetadataSummary& summary,
+                                      U64 generation)
+{
+    QMutexLocker l(&_cacheMutex);
+
+    if (generation != _metadataGeneration) {
+        return;
+    }
+    std::list<RangeMetadataSummary>& summaries = getOrCreateActionCache(hash)._rangeSummaries;
+    for (std::list<RangeMetadataSummary>::iterator it = summaries.begin(); it != summaries.end(); ++it) {
+        if ((it->view == summary.view) && (it->min == summary.min) && (it->max == summary.max)) {
+            summaries.erase(it);
+            break;
+        }
+    }
+    summaries.push_front(summary);
+    if (summaries.size() > kMaxCachedRangeSummaries) {
+        summaries.pop_back();
+    }
+}
+
 U64
 ActionsCache::getMetadataGeneration() const
 {
@@ -523,6 +580,7 @@ ActionsCache::clearMetadataResults()
         it->_metadataCache.clear();
         it->_passThroughIdentityCache.clear();
         it->_timeInvariantMetadata.reset();
+        it->_rangeSummaries.clear();
     }
 }
 
@@ -535,6 +593,7 @@ EffectInstance::RenderArgs::RenderArgs()
     , validArgs(false)
     , isIdentity(false)
     , identityTime(0)
+    , identityView(0)
     , identityInput()
     , identityContext()
     , identityContextSet(false)
@@ -560,6 +619,7 @@ EffectInstance::RenderArgs::RenderArgs(const RenderArgs& o)
     , validArgs(o.validArgs)
     , isIdentity(o.isIdentity)
     , identityTime(o.identityTime)
+    , identityView(o.identityView)
     , identityInput(o.identityInput)
     , identityContext(o.identityContext)
     , identityContextSet(o.identityContextSet)
@@ -588,6 +648,7 @@ EffectInstance::RenderArgs::operator=(const RenderArgs & o)
     validArgs = o.validArgs;
     isIdentity = o.isIdentity;
     identityTime = o.identityTime;
+    identityView = o.identityView;
     identityInput = o.identityInput;
     identityContext = o.identityContext;
     identityContextSet = o.identityContextSet;
@@ -943,6 +1004,7 @@ EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectT
                                                                    ViewIdx view,
                                                                    bool isIdentity,
                                                                    double identityTime,
+                                                                   ViewIdx identityView,
                                                                    const EffectInstancePtr& identityInput,
                                                                    const RenderContextPtr& identityContext,
                                                                    bool identityContextSet,
@@ -960,6 +1022,7 @@ EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectT
     tlsData->currentRenderArgs.view = view;
     tlsData->currentRenderArgs.isIdentity = isIdentity;
     tlsData->currentRenderArgs.identityTime = identityTime;
+    tlsData->currentRenderArgs.identityView = identityView;
     tlsData->currentRenderArgs.identityInput = identityInput;
     tlsData->currentRenderArgs.identityContext = identityContext;
     tlsData->currentRenderArgs.identityContextSet = identityContextSet;

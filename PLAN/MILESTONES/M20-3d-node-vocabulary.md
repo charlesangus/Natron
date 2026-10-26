@@ -172,6 +172,7 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`, on top of M19 - USD
 
 ## Decisions
 
+- 2026-10-26 — **Free GPU Memory scope and flattened cleanup (user):** Free GPU Memory also drops the 3D viewport's Storm renderer, which rebuilds on the next redraw. A flattened USDWrite also deletes leftover `<name>_layerN` sidecars from an earlier layered write, and warns that it did.
 - 2026-10-26 — **USDWrite conforms its target (user):** a write makes the output folder match the render source, deleting any `<name>_layerN` sidecars this write no longer produces (for example after layers were removed upstream).
 - 2026-10-26 — **Free GPU Memory is global (user):** one app-wide action frees every GPU cache Natron holds: USDRender's Hydra engines and stages, the Vulkan pools, and the GPU image and texture caches. It is not specific to USD.
 - 2026-10-25 — **Redesign around a long-lived scene (user):** the viewer and USDRender hold one long-lived USD stage and one Hydra engine each, fed incremental layer updates, instead of composing a new stage and rebuilding Storm per edit; Reload re-reads layers safely against it. A thorough review of all USD work (done and planned) against the USD code, reference implementations and docs comes first and shapes the new phase.

@@ -259,10 +259,16 @@ struct TimelineGuiPrivate
     void publishCachedFrames()
     {
         QVariantList times;
+        // The frames drawn in the cached-frame colour rather than the darker disk-cached one.
+        QVariantList ramTimes;
         for (CachedFrames::const_iterator it = cachedFrames.begin(); it != cachedFrames.end(); ++it) {
             times.push_back(QVariant((int)it->time));
+            if (it->mode == eStorageModeRAM) {
+                ramTimes.push_back(QVariant((int)it->time));
+            }
         }
         parent->setProperty("natronCachedFrames", times);
+        parent->setProperty("natronCachedFramesInRAM", ramTimes);
     }
 };
 

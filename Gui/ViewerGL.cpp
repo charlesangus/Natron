@@ -1903,8 +1903,13 @@ ViewerGL::transferHandoffFrame(const GpuDeviceImagePtr& root,
     glCheckError();
     if (result) {
         *texture = tex;
-        QMutexLocker k(&_imp->lastRenderedImageMutex);
-        info.pendingDeviceRoot = root;
+        {
+            QMutexLocker k(&_imp->lastRenderedImageMutex);
+            info.pendingDeviceRoot = root;
+        }
+        // A device frame does not pass through endTransferBufferFromRAMToGPU(), and one rendered
+        // outside the texture cache adds no entry, so an edit reaches the cached line here.
+        _imp->viewerTab->refreshTimelineCacheLineIfStale();
     }
 
     return result;

@@ -42,6 +42,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 
@@ -89,8 +90,8 @@ isFilesystemPath(const std::string& path)
     return (colon == std::string::npos) || (path.find('/') < colon);
 }
 
-// path made absolute, against the working directory when relative: what USD resolves a relative
-// path authored in an anonymous layer, which has no directory to anchor it, against.
+// path made absolute, against the working directory when relative. Scene nodes author anchored
+// paths (SceneNodeAuthoring::getAnchoredFilePath), so this only cleans those up.
 std::string
 absolutePath(const std::string& path)
 {
@@ -129,35 +130,37 @@ rewriteAssetPath(const std::string& assetPath,
     return arguments.empty() ? rewritten : PXR_NS::SdfLayer::CreateIdentifier(rewritten, arguments);
 }
 
-// A file layer the scene brings in as a sublayer, and the offset mapping its times to the
-// composed stage's root.
-struct ExternalLayer {
+/**
+ * @brief One layer of the scene's layer stack laid out flat: either the content of an anonymous
+ * layer, without its sublayers, or a file layer the scene brings in as a sublayer, which layered
+ * mode keeps a sublayer of what it writes. toRoot maps the layer's times to the composed stage's
+ * root.
+ **/
+struct StackItem {
     PXR_NS::SdfLayerRefPtr layer;
-    PXR_NS::SdfLayerOffset offset;
+    PXR_NS::SdfLayerOffset toRoot;
+    bool external = false;
 };
 
 /**
- * @brief Copies the anonymous layer source into a new anonymous layer, without the file layers it
- * sublayers, and appends those, strongest first, to *externals. Anonymous sublayers are copied
- * the same way. toRoot maps source's times to the root's. Every copy is kept in *copies, since a
- * layer only refers to its sublayers by identifier.
+ * @brief Appends the layer stack of source to *items, strongest first, as composition orders it:
+ * source's own content, then each sublayer's stack in turn. A file layer is one item; what it
+ * sublayers in turn stays its own business. Anonymous layers are copied without their sublayers.
  **/
-PXR_NS::SdfLayerRefPtr
-copyWithoutExternals(const PXR_NS::SdfLayerHandle& source,
-                     const PXR_NS::SdfLayerOffset& toRoot,
-                     std::vector<PXR_NS::SdfLayerRefPtr>* copies,
-                     std::vector<ExternalLayer>* externals)
+void
+appendLayerStack(const PXR_NS::SdfLayerHandle& source,
+                 const PXR_NS::SdfLayerOffset& toRoot,
+                 std::vector<StackItem>* items)
 {
     PXR_NS::SdfLayerRefPtr copy = PXR_NS::SdfLayer::CreateAnonymous("natron-usdwrite-copy");
 
     copy->TransferContent(source);
-    copies->push_back(copy);
+    copy->SetSubLayerPaths(std::vector<std::string>());
+    items->push_back(StackItem { copy, toRoot, false });
 
     const std::vector<std::string> paths = source->GetSubLayerPaths();
     const PXR_NS::SdfLayerOffsetVector offsets = source->GetSubLayerOffsets();
     const double sourceTcps = source->GetTimeCodesPerSecond();
-    std::vector<std::string> keptPaths;
-    PXR_NS::SdfLayerOffsetVector keptOffsets;
     for (std::size_t i = 0; i < paths.size(); ++i) {
         const PXR_NS::SdfLayerRefPtr sublayer = PXR_NS::SdfLayer::FindOrOpenRelativeToLayer(source, paths[i]);
         if (!sublayer) {
@@ -169,19 +172,58 @@ copyWithoutExternals(const PXR_NS::SdfLayerHandle& source,
         const PXR_NS::SdfLayerOffset toSource(authored.GetOffset(), authored.GetScale() * sourceTcps / sublayer->GetTimeCodesPerSecond());
         const PXR_NS::SdfLayerOffset sublayerToRoot = toRoot * toSource;
         if (sublayer->IsAnonymous()) {
-            const PXR_NS::SdfLayerRefPtr nested = copyWithoutExternals(sublayer, sublayerToRoot, copies, externals);
-            keptPaths.push_back(nested->GetIdentifier());
-            keptOffsets.push_back(authored);
+            appendLayerStack(sublayer, sublayerToRoot, items);
         } else {
-            externals->push_back(ExternalLayer { sublayer, sublayerToRoot });
+            items->push_back(StackItem { sublayer, sublayerToRoot, true });
         }
     }
-    copy->SetSubLayerPaths(keptPaths);
-    for (std::size_t i = 0; i < keptOffsets.size(); ++i) {
-        copy->SetSubLayerOffset(keptOffsets[i], (int)i);
+}
+
+/**
+ * @brief The sublayer offset that, authored in a layer of time codes per second rootTcps, maps
+ * layer's times as toRoot does: composition scales an authored offset by the ratio of the two
+ * layers' time codes per second.
+ **/
+PXR_NS::SdfLayerOffset
+authoredOffset(const PXR_NS::SdfLayerOffset& toRoot,
+               const PXR_NS::SdfLayerRefPtr& layer,
+               double rootTcps)
+{
+    return PXR_NS::SdfLayerOffset(toRoot.GetOffset(), toRoot.GetScale() * layer->GetTimeCodesPerSecond() / rootTcps);
+}
+
+/**
+ * @brief The anonymous layers run, strongest first, flattened into one layer of time codes per
+ * second rootTcps, their times mapped to the root's. Null when USD cannot.
+ **/
+PXR_NS::SdfLayerRefPtr
+flattenRun(const std::vector<StackItem>& run,
+           double rootTcps)
+{
+    PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("natron-usdwrite-root");
+
+    root->SetTimeCodesPerSecond(rootTcps);
+    std::vector<std::string> paths;
+    for (const StackItem& item : run) {
+        paths.push_back(item.layer->GetIdentifier());
+    }
+    root->SetSubLayerPaths(paths);
+    for (std::size_t i = 0; i < run.size(); ++i) {
+        root->SetSubLayerOffset(authoredOffset(run[i].toRoot, run[i].layer, rootTcps), (int)i);
+    }
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(root, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadNone);
+    if (!stage) {
+        return PXR_NS::SdfLayerRefPtr();
     }
 
-    return copy;
+    // The scene nodes' layers author anchored asset paths, kept as they are; a file's are resolved
+    // against the file. The written layers make them relative afterwards when asked.
+    return PXR_NS::UsdUtilsFlattenLayerStack(stage, [](const PXR_NS::SdfLayerHandle& sourceLayer, const std::string& assetPath) {
+        if ( sourceLayer && !sourceLayer->IsAnonymous() ) {
+            return PXR_NS::UsdUtilsFlattenLayerStackResolveAssetPath(sourceLayer, assetPath);
+        }
+
+        return assetPath; }, "natron-usdwrite");
 }
 
 /**
@@ -314,7 +356,9 @@ USDWrite::initializeKnobs()
         options.push_back(ChoiceOption("layered", tr("Layered").toStdString(),
                                        tr("Flattens what the nodes of this project authored into the file, and keeps the USD "
                                           "files the scene reads (USDRead's) as sublayers, so they are referred to rather "
-                                          "than copied.")
+                                          "than copied. Each file keeps its strength: what was authored below one goes to "
+                                          "a file of its own beside the written one (name_layer1.usda, ...), sublayered "
+                                          "below it.")
                                            .toStdString()));
         options.push_back(ChoiceOption("flattened", tr("Flattened").toStdString(),
                                        tr("Bakes the whole composed scene, the files it reads included, into the file, which "
@@ -516,85 +560,144 @@ USDWrite::writeFrameRange(int firstFrame,
     const double endTime = SceneOps::frameToTimeCode(scene, lastFrame, fps);
 
     PXR_NS::TfErrorMark mark;
-    PXR_NS::SdfLayerRefPtr output;
-    std::vector<ExternalLayer> externals;
-    // The copies the flattened stack sublayers by identifier, kept open until it is flattened.
-    std::vector<PXR_NS::SdfLayerRefPtr> copies;
-    if (exportMode == eExportModeFlattened) {
-        PXR_NS::UsdStageRefPtr stage = SceneOps::compose(scene);
-        output = stage ? stage->Flatten(false) : PXR_NS::SdfLayerRefPtr();
-    } else {
-        // The same root SceneOps::compose() builds, over copies of the stack that leave out the
-        // files USDRead brings in, which are put back as the written file's sublayers.
-        PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("natron-usdwrite-root");
-        root->SetTimeCodesPerSecond(metadata.timeCodesPerSecond);
-        std::vector<std::string> copyPaths;
-        const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
-        for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
-            // As composition maps a sublayer of the root: by the ratio of their time codes per second.
-            const PXR_NS::SdfLayerOffset toRoot(0., metadata.timeCodesPerSecond / it->layer->GetTimeCodesPerSecond());
-            copyPaths.push_back(copyWithoutExternals(it->layer, toRoot, &copies, &externals)->GetIdentifier());
-        }
-        root->SetSubLayerPaths(copyPaths);
-        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(root, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadNone);
-        if (stage) {
-            // Every layer flattened is anonymous, with no directory to anchor a relative path to:
-            // the working directory, as USD resolves them, is what they are relative to.
-            output = PXR_NS::UsdUtilsFlattenLayerStack(stage, [](const PXR_NS::SdfLayerHandle& sourceLayer, const std::string& assetPath) {
-                if ( sourceLayer && !sourceLayer->IsAnonymous() ) {
-                    return PXR_NS::UsdUtilsFlattenLayerStackResolveAssetPath(sourceLayer, assetPath);
+    // What is written, strongest first: the file itself, then, in layered mode, the files of the
+    // runs of anonymous layers below a file the scene reads, written beside it.
+    struct Written {
+        QString path;
+        PXR_NS::SdfLayerRefPtr layer;
+    };
+    std::vector<Written> written;
+    {
+        // The scene's layers are read while they are flattened: no write may edit them meanwhile.
+        SceneWriteBarrier::ReadScope read;
+        PXR_NS::SdfLayerRefPtr output;
+        // In layered mode, the sublayers of output, strongest first: the files the scene reads, and
+        // between them the runs of anonymous layers weaker than one, flattened in place so the
+        // written file composes with the strength order the scene had.
+        std::vector<StackItem> sublayers;
+        if (exportMode == eExportModeFlattened) {
+            PXR_NS::UsdStageRefPtr stage = SceneOps::compose(scene);
+            output = stage ? stage->Flatten(false) : PXR_NS::SdfLayerRefPtr();
+        } else {
+            std::vector<StackItem> items;
+            const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
+            for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
+                // As composition maps a sublayer of the root: by the ratio of their time codes per second.
+                const PXR_NS::SdfLayerOffset toRoot(0., metadata.timeCodesPerSecond / it->layer->GetTimeCodesPerSecond());
+                appendLayerStack(it->layer, toRoot, &items);
+            }
+            // A file read twice the same way is one sublayer, where it is strongest.
+            std::set<std::pair<std::string, std::pair<double, double>>> seen;
+            std::vector<StackItem> run;
+            bool flattenedOk = true;
+            auto endRun = [&]() {
+                if (run.empty()) {
+                    return;
                 }
+                PXR_NS::SdfLayerRefPtr flattened = flattenRun(run, metadata.timeCodesPerSecond);
+                run.clear();
+                if (!flattened) {
+                    flattenedOk = false;
+                } else if (!output && sublayers.empty()) {
+                    output = flattened;
+                } else {
+                    sublayers.push_back(StackItem { flattened, PXR_NS::SdfLayerOffset(), false });
+                }
+            };
+            for (const StackItem& item : items) {
+                if (!item.external) {
+                    run.push_back(item);
+                    continue;
+                }
+                if (!seen.insert(std::make_pair(item.layer->GetIdentifier(), std::make_pair(item.toRoot.GetOffset(), item.toRoot.GetScale()))).second) {
+                    continue;
+                }
+                endRun();
+                sublayers.push_back(item);
+            }
+            endRun();
+            if (flattenedOk && !output) {
+                // The strongest layer is a file: the written file holds nothing but its sublayers.
+                output = PXR_NS::SdfLayer::CreateAnonymous("natron-usdwrite");
+            }
+            if (!flattenedOk) {
+                output.Reset();
+            }
+        }
+        if (!output) {
+            const std::string errors = takeUsdErrors(mark);
 
-                return isFilesystemPath(assetPath) ? absolutePath(assetPath) : assetPath; }, "natron-usdwrite");
+            return fail(tr("The scene could not be flattened%1").arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
+        }
+
+        const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer) {
+            clipTimeSamples(layer, startTime, endTime);
+            PXR_NS::UsdUtilsModifyAssetPaths(layer, [&outputDir, pathMode](const std::string& assetPath) {
+                return rewriteAssetPath(assetPath, outputDir, pathMode);
+            });
+        };
+        finish(output);
+        authorStageMetadata(output, metadata, startTime, endTime, fps);
+        written.push_back(Written { outputPath, output });
+
+        // After the asset paths are rewritten, which would drop the offsets of the sublayers.
+        std::vector<std::string> subLayerPaths;
+        PXR_NS::SdfLayerOffsetVector subLayerOffsets;
+        int runIndex = 0;
+        for (const StackItem& item : sublayers) {
+            if (item.external) {
+                subLayerPaths.push_back(rewriteAssetPath(item.layer->GetIdentifier(), outputDir, pathMode));
+                // Authored so that composition, which scales by the ratio of the two layers' time
+                // codes per second, arrives at the offset the scene had.
+                subLayerOffsets.push_back(authoredOffset(item.toRoot, item.layer, metadata.timeCodesPerSecond));
+                continue;
+            }
+            // A run below a file goes to a file of its own beside the written one.
+            const QString runPath = QDir(outputDir).filePath(QString::fromUtf8("%1_layer%2.%3").arg(outputInfo.completeBaseName()).arg(++runIndex).arg(outputInfo.suffix()));
+            finish(item.layer);
+            item.layer->SetTimeCodesPerSecond(metadata.timeCodesPerSecond);
+            written.push_back(Written { runPath, item.layer });
+            subLayerPaths.push_back(rewriteAssetPath(runPath.toStdString(), outputDir, pathMode));
+            subLayerOffsets.push_back(PXR_NS::SdfLayerOffset());
+        }
+        for (const StackItem& item : sublayers) {
+            if (!item.external) {
+                continue;
+            }
+            const QString realPath = QDir::cleanPath(QString::fromStdString(item.layer->GetRealPath()));
+            for (const Written& w : written) {
+                if (realPath == w.path) {
+                    return fail(tr("%1 is read by the scene it would be overwritten with: write to another file, or use Flattened mode.").arg(w.path));
+                }
+            }
+        }
+        output->SetSubLayerPaths(subLayerPaths);
+        for (std::size_t i = 0; i < subLayerOffsets.size(); ++i) {
+            output->SetSubLayerOffset(subLayerOffsets[i], (int)i);
+        }
+
+        // The weakest first, so that a reader of the written file never finds a sublayer missing.
+        for (std::vector<Written>::const_reverse_iterator it = written.rbegin(); it != written.rend(); ++it) {
+            if (!it->layer->Export(it->path.toStdString())) {
+                const std::string errors = takeUsdErrors(mark);
+
+                return fail(tr("Cannot write %1%2").arg(it->path).arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
+            }
         }
     }
-    if (!output) {
-        const std::string errors = takeUsdErrors(mark);
-
-        return fail(tr("The scene could not be flattened%1").arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
-    }
-
-    clipTimeSamples(output, startTime, endTime);
-    authorStageMetadata(output, metadata, startTime, endTime, fps);
-    PXR_NS::UsdUtilsModifyAssetPaths(output, [&outputDir, pathMode](const std::string& assetPath) {
-        return rewriteAssetPath(assetPath, outputDir, pathMode);
-    });
-
-    // After the asset paths are rewritten, which would drop the offsets of the sublayers.
-    std::vector<std::string> subLayerPaths;
-    PXR_NS::SdfLayerOffsetVector subLayerOffsets;
-    std::set<std::pair<std::string, std::pair<double, double>>> seen;
-    for (const ExternalLayer& external : externals) {
-        const std::string identifier = external.layer->GetIdentifier();
-        if (QDir::cleanPath(QString::fromStdString(external.layer->GetRealPath())) == outputPath) {
-            return fail(tr("%1 is read by the scene it would be overwritten with: write to another file, or use Flattened mode.").arg(outputPath));
+    // Layers already open on the files, such as a USDRead's of them, would go on showing what
+    // they held before: they are reloaded in place, through the barrier, so every stage composing
+    // them sees the new content.
+    std::vector<PXR_NS::SdfLayerRefPtr> open;
+    for (const Written& w : written) {
+        const PXR_NS::SdfLayerHandle layer = PXR_NS::SdfLayer::Find(w.path.toStdString());
+        if (layer) {
+            open.push_back(PXR_NS::SdfLayerRefPtr(layer));
         }
-        // A file read twice the same way is one sublayer; the stronger one is first.
-        if (!seen.insert(std::make_pair(identifier, std::make_pair(external.offset.GetOffset(), external.offset.GetScale()))).second) {
-            continue;
-        }
-        subLayerPaths.push_back(rewriteAssetPath(identifier, outputDir, pathMode));
-        // Authored so that composition, which scales by the ratio of the two layers' time codes
-        // per second, arrives at the offset the scene had.
-        subLayerOffsets.push_back(PXR_NS::SdfLayerOffset(external.offset.GetOffset(),
-                                                         external.offset.GetScale() * external.layer->GetTimeCodesPerSecond() / metadata.timeCodesPerSecond));
     }
-    output->SetSubLayerPaths(subLayerPaths);
-    for (std::size_t i = 0; i < subLayerOffsets.size(); ++i) {
-        output->SetSubLayerOffset(subLayerOffsets[i], (int)i);
-    }
-
-    const std::string path = outputPath.toStdString();
-    if (!output->Export(path)) {
-        const std::string errors = takeUsdErrors(mark);
-
-        return fail(tr("Cannot write %1%2").arg(outputPath).arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
-    }
-    // A layer already open on the file, such as a USDRead's of it, would go on showing what it
-    // held before.
-    PXR_NS::SdfLayerHandle open = PXR_NS::SdfLayer::Find(path);
-    if (open) {
-        open->Reload(true);
+    std::string reloadError;
+    if (!open.empty() && !SceneOps::reloadFileLayers(open, &reloadError)) {
+        return fail(tr("%1 was written, but the scene could not read it again: %2").arg(outputPath).arg(QString::fromStdString(reloadError)));
     }
     mark.Clear();
 

@@ -20,9 +20,11 @@ Export Mode sets what goes into the file:
   the file, and keeps the USD files the scene reads (USDRead's) as sublayers
   with the time offsets they were read with, as Solaris's USD ROP does with
   Flatten Implicit Layers. Those files are referred to, not copied, and their
-  own time samples are not clipped. What the nodes author is stronger than
-  every file read, so an edit authored below a USDRead in the graph that the
-  file overrides comes out on top.
+  own time samples are not clipped. Every layer keeps its strength: what the
+  nodes authored above the strongest file goes into the written file, and what
+  they authored below a file goes, flattened, into a file of its own beside it
+  (`name_layer1.usda`, `name_layer2.usda`, ... for `name.usda`), sublayered in
+  its place. A file the scene reads above an authored edit still overrides it.
 - Flattened bakes the whole composed scene, the files it reads included, into
   the one file, which then stands on its own.
 
@@ -30,7 +32,13 @@ Asset Paths sets how the file refers to other files (the sublayers of Layered
 mode, references, textures and other asset-valued attributes): relative to the
 written file's directory (the default), with `./` in front unless they start
 with `..`, or absolute. A path that cannot be made relative is written absolute.
-URIs a resolver handles are kept as they are.
+URIs a resolver handles are kept as they are. The nodes author the paths their
+file knobs name made absolute (a relative one against the project's directory,
+or the working directory for an unsaved project), so a relative path in the
+written file resolves from the file's own folder.
+
+A layer already open on a written file, such as a USDRead of it, is reloaded in
+place, so every viewer and node reading it shows the new content.
 
 The node sets an error, and the render fails, when File is empty or does not end
 in a USD extension, when the input scene fails, or when Layered mode would

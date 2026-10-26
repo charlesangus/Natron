@@ -29,10 +29,11 @@
 #include <vector>
 
 #include "Engine/ChoiceOption.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 NATRON_NAMESPACE_ENTER
@@ -99,9 +100,12 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
 
     std::vector<PXR_NS::SdfPath> matches;
     if (!upstream.isEmpty() && (pattern.find_first_not_of(" \t\r\n") != std::string::npos)) {
-        PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(upstream);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+        PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {
-            *errorMessage = tr("USD could not compose the input scene.").toStdString();
+            if (errorMessage->empty()) {
+                *errorMessage = tr("USD could not compose the input scene.").toStdString();
+            }
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;
@@ -165,7 +169,18 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
         return true;
     };
 
-    if (!emitSceneLayer(upstream, author, outputScene, errorMessage)) {
+    // Of the input, the layer reads only the matches and the metadata: an edit upstream that keeps
+    // them re-stacks the layer without authoring it again.
+    ContentHasher facts;
+    SceneNodeAuthoring::appendUpstreamMetadata(upstream, &facts);
+    facts.appendU64(matches.size());
+    for (const PXR_NS::SdfPath& path : matches) {
+        facts.appendString(path.GetString());
+    }
+    SceneLayerReads reads;
+    reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
+    reads.factsDigest = facts.finalize();
+    if (!emitSceneLayer(upstream, reads, author, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;

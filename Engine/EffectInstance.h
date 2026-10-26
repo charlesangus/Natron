@@ -824,7 +824,7 @@ public:
     /**
      * @brief The scene counterpart of renderDeepRoI(): evaluates this effect's scene and returns
      * it in *outputScene. One payload per layer stack, not per frame: consumers pick the time
-     * when they query the composed stage (StageCache).
+     * when they query a stage composing it (SceneStage, SceneQueryPool).
      *
      * The same pull pipeline as renderDeepRoI(): identities (Dot, the NoOps, disabled nodes,
      * group boundaries) hand back their input's payload, every input whose effective data kind

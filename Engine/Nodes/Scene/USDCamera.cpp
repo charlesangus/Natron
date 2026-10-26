@@ -31,6 +31,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -206,7 +207,15 @@ USDCamera::renderScene(const SceneRenderActionArgs& args,
                        ScenePayload* outputScene,
                        std::string* errorMessage)
 {
-    if (!emitSceneLayer(args.getInputScene(0), [this](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, error); }, outputScene, errorMessage)) {
+    // The prim is authored over the input from the knobs alone: of the input, only its metadata
+    // is read, so an edit upstream that keeps it re-stacks the layer without authoring it again.
+    const ScenePayload upstream = args.getInputScene(0);
+    ContentHasher facts;
+    SceneNodeAuthoring::appendUpstreamMetadata(upstream, &facts);
+    SceneLayerReads reads;
+    reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
+    reads.factsDigest = facts.finalize();
+    if (!emitSceneLayer(upstream, reads, [this](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, error); }, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;

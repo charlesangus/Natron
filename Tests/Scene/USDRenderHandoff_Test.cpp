@@ -45,6 +45,7 @@
 
 #include "Engine/GpuContext.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/RectI.h"
 #include "Tests/Native/NativeGpuParity.h"
 
@@ -202,12 +203,12 @@ public:
         }
         std::string error;
         request.owner = this;
-        request.stage = stage;
+        // The fixture file is the scene's one layer; every rung and the reference reuse one
+        // render of the unchanged scene.
+        request.scene = SceneOps::appendLayer(ScenePayload(), stage->GetRootLayer(), 0x5eed);
         request.time = PXR_NS::UsdTimeCode(1);
         request.width = kWidth;
         request.height = kHeight;
-        // Any non-zero hash: every rung and the reference reuse one render of the unchanged scene.
-        request.sceneHash = 0x5eed;
         EXPECT_TRUE(HydraRender::cameraFrustum(stage, PXR_NS::SdfPath("/World/Cam"), request.time, double(kWidth) / kHeight, HydraRender::eFitModeFill, &request.frustum, &error)) << error;
 
         return !::testing::Test::HasFailure();

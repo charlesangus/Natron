@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -48,6 +49,8 @@
 #define kSceneTestPrimPath "/Root"
 #define kSceneTestSourceAttribute "natron:sourceValue"
 #define kSceneTestOpAttribute "natron:opValue"
+// The source value a SceneOp in the facts mode read upstream.
+#define kSceneTestFactAttribute "natron:sourceValueRead"
 
 NATRON_NAMESPACE_ENTER
 
@@ -76,6 +79,9 @@ sceneTestSourceHook()
 // sees USD: this header is included by wmain.cpp, which must stay free of pxr.
 bool sceneTestAuthorSource(const SceneLayerEdit& edit, int value, std::string* errorMessage);
 bool sceneTestAuthorOp(const SceneLayerEdit& edit, int value, std::string* errorMessage);
+bool sceneTestAuthorFactOp(const SceneLayerEdit& edit, int value, int sourceValue, std::string* errorMessage);
+// The source value the stack composes, read through SceneQueryPool; 0 if none.
+bool sceneTestReadSourceValue(const ScenePayload& payload, int* value, std::string* errorMessage);
 
 /**
  * @brief A scene source: defines kSceneTestPrimPath carrying its "value" knob, or fails with
@@ -217,6 +223,14 @@ private:
         value->setDefaultValue(0);
         page->addKnob(value);
         _value = value;
+        // 0: keys on the whole upstream stack; 1: reads nothing upstream; 2: reads only the
+        // source value, through SceneQueryPool, and keys on it.
+        KnobIntPtr upstreamRead = createKnob<KnobInt>(std::string("Upstream Read"));
+        upstreamRead->setName("upstreamRead");
+        upstreamRead->setAnimationEnabled(false);
+        upstreamRead->setDefaultValue(0);
+        page->addKnob(upstreamRead);
+        _upstreamRead = upstreamRead;
     }
 
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
@@ -226,10 +240,29 @@ private:
         KnobIntPtr valueKnob = _value.lock();
         const int value = valueKnob ? valueKnob->getValue() : 0;
 
-        return emitSceneLayer(args.getInputScene(0), [value](const SceneLayerEdit& edit, std::string* error) { return sceneTestAuthorOp(edit, value, error); }, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
+        KnobIntPtr readKnob = _upstreamRead.lock();
+        const int mode = readKnob ? readKnob->getValue() : 0;
+        const ScenePayload upstream = args.getInputScene(0);
+        if (mode == 1) {
+            SceneLayerReads reads;
+            reads.upstream = SceneLayerMemo::Key::eUpstreamReadNothing;
+            return emitSceneLayer(upstream, reads, [value](const SceneLayerEdit& edit, std::string* error) { return sceneTestAuthorOp(edit, value, error); }, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
+        }
+        if (mode == 2) {
+            int sourceValue = 0;
+            if (!sceneTestReadSourceValue(upstream, &sourceValue, errorMessage)) {
+                return eStatusFailed;
+            }
+            SceneLayerReads reads;
+            reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
+            reads.factsDigest = (U64)(std::int64_t)sourceValue;
+            return emitSceneLayer(upstream, reads, [value, sourceValue](const SceneLayerEdit& edit, std::string* error) { return sceneTestAuthorFactOp(edit, value, sourceValue, error); }, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
+        }
+        return emitSceneLayer(upstream, [value](const SceneLayerEdit& edit, std::string* error) { return sceneTestAuthorOp(edit, value, error); }, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
     }
 
     KnobIntWPtr _value;
+    KnobIntWPtr _upstreamRead;
 };
 
 NATRON_NAMESPACE_EXIT

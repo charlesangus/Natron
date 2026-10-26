@@ -64,6 +64,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionClearNodeCache);
     (void)QT_TR_NOOP(kShortcutDescActionClearPluginsLoadCache);
     (void)QT_TR_NOOP(kShortcutDescActionClearAllCaches);
+    (void)QT_TR_NOOP(kShortcutDescActionFreeGpuMemory);
     (void)QT_TR_NOOP(kShortcutDescActionShowAbout);
     (void)QT_TR_NOOP(kShortcutDescActionRenderSelected);
     (void)QT_TR_NOOP(kShortcutDescActionEnableRenderStats);

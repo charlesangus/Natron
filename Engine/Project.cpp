@@ -98,6 +98,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectPrivate.h"
 #include "Engine/RectDSerialization.h"
@@ -3172,7 +3173,9 @@ Project::doResetEnd(bool aboutToQuit)
     } else {
         clearNodesNonBlocking();
     }
-
+    // Idle query stages compose the closed project's layers and keep the files they read open, so
+    // a file changed on disk since is read again by the next project.
+    SceneCaches::releaseIdleQueryStages();
 
     if (!aboutToQuit) {
         {

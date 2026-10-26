@@ -16,7 +16,10 @@ Mode sets how the op combines with what the input authors:
 
 - Append adds the op after the prim's existing ops, so it acts in the prim's
   local space, under its existing (possibly animated) transform. Pivot is in that
-  local space.
+  local space. USD takes a prim's op order from its strongest opinion alone, so
+  where the input merges branches that each appended a transform to the prim,
+  the composed order holds only the stronger branch's ops; Append goes after
+  the ops of every branch instead, keeping them all.
 - Replace authors `!resetXformStack!` and the op alone: the prim's own ops and its
   parent's transform are discarded, and the transform places the prim in world
   space.

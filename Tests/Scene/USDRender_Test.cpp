@@ -56,7 +56,8 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/ViewIdx.h"
@@ -169,7 +170,8 @@ referenceRequest(const PXR_NS::UsdStageRefPtr& stage,
     std::string error;
 
     request.owner = owner;
-    request.stage = stage;
+    // The fixture file is the scene's one layer.
+    request.scene = SceneOps::appendLayer(ScenePayload(), stage->GetRootLayer(), 1);
     request.time = PXR_NS::UsdTimeCode(frame);
     request.width = kWidth;
     request.height = kHeight;
@@ -330,12 +332,100 @@ TEST(USDRenderStorm, TheBallMovesWithItsTimeSamples)
     HydraRender::release(&owner);
 }
 
+// Ten frames with one edit upstream between the fifth and the sixth: one engine renders them
+// all, following the edit through its stage. Releasing the owner frees the engine, and the next
+// render builds another.
+TEST(USDRenderStorm, OneEngineFollowsAnEditAndAReleaseFreesIt)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    std::string error;
+    HydraRender::Result result;
+
+    // The edit: a layer above the fixture moving the box up by 2.
+    PXR_NS::SdfLayerRefPtr editLayer = PXR_NS::SdfLayer::CreateAnonymous("edit.usda");
+    {
+        PXR_NS::UsdStageRefPtr editStage = PXR_NS::UsdStage::Open(editLayer);
+        PXR_NS::UsdPrim box = editStage->OverridePrim(PXR_NS::SdfPath("/World/Box"));
+        PXR_NS::UsdGeomXformable xformable(box);
+        ASSERT_TRUE(xformable.AddTranslateOp(PXR_NS::UsdGeomXformOp::PrecisionDouble, PXR_NS::TfToken("edit")).Set(PXR_NS::GfVec3d(0., 2., 0.)));
+    }
+
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    double boxYBefore = 0.;
+    double boxYAfter = 0.;
+    for (int frame = 1; frame <= 10; ++frame) {
+        HydraRender::Request request = referenceRequest(stage, frame, &owner);
+        if (frame > 5) {
+            request.scene = SceneOps::appendLayer(request.scene, editLayer, 2);
+        }
+        ASSERT_TRUE(HydraRender::render(request, &result, &error)) << frame << ": " << error;
+        const Coverage box = coverageOf("/World/Box", kWidth, kHeight, result.primId, result.depth, result.rgba);
+        ASSERT_GT(box.count, 100) << frame;
+        if (frame == 5) {
+            boxYBefore = box.y;
+        } else if (frame == 6) {
+            boxYAfter = box.y;
+        }
+    }
+    EXPECT_EQ(builds + 1, HydraRender::getEngineBuildCount());
+    // The edit reached Storm: the box moved up the image.
+    EXPECT_GT(boxYAfter, boxYBefore + 1.);
+    EXPECT_EQ(1u, HydraRender::getEngineCount());
+
+    HydraRender::release(&owner);
+    EXPECT_EQ(0u, HydraRender::getEngineCount());
+    ASSERT_TRUE(HydraRender::render(referenceRequest(stage, 1., &owner), &result, &error)) << error;
+    EXPECT_EQ(builds + 2, HydraRender::getEngineBuildCount());
+
+    HydraRender::releaseAll();
+    EXPECT_EQ(0u, HydraRender::getEngineCount());
+}
+
+// Past the memory budget, the least recently used owner's engine goes; the rendering one stays.
+TEST(USDRenderStorm, EnginesOverTheBudgetGoLeastRecentlyUsedFirst)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int first = 0;
+    const int second = 1;
+    std::string error;
+    HydraRender::Result result;
+    const std::size_t budget = HydraRender::getMemoryBudget();
+
+    ASSERT_TRUE(HydraRender::render(referenceRequest(stage, 1., &first), &result, &error)) << error;
+    ASSERT_TRUE(HydraRender::render(referenceRequest(stage, 1., &second), &result, &error)) << error;
+    EXPECT_EQ(2u, HydraRender::getEngineCount());
+
+    HydraRender::setMemoryBudget(1);
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    // The second owner renders again, reusing its engine; the first one's goes.
+    ASSERT_TRUE(HydraRender::render(referenceRequest(stage, 2., &second), &result, &error)) << error;
+    EXPECT_EQ(1u, HydraRender::getEngineCount());
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    // The first owner renders again with a new engine, and the second one's goes.
+    ASSERT_TRUE(HydraRender::render(referenceRequest(stage, 2., &first), &result, &error)) << error;
+    EXPECT_EQ(1u, HydraRender::getEngineCount());
+    EXPECT_EQ(builds + 1, HydraRender::getEngineBuildCount());
+
+    HydraRender::setMemoryBudget(budget);
+    HydraRender::releaseAll();
+    EXPECT_EQ(0u, HydraRender::getEngineCount());
+}
+
 class USDRenderNodeTest
     : public BaseTest {
 protected:
     virtual void TearDown() OVERRIDE
     {
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
         BaseTest::TearDown();
     }
 

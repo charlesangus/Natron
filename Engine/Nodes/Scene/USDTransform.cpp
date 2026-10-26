@@ -25,6 +25,7 @@
 
 #include "USDTransform.h"
 
+#include <algorithm>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -37,7 +38,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 
@@ -68,16 +69,88 @@ isBlank(const std::string& s)
 {
     return s.find_first_not_of(" \t\r\n") == std::string::npos;
 }
+
+/**
+ * @brief Whether order, the op order spec authors, is an Append-mode USDTransform's: it ends with
+ * an op of this node's naming that spec's layer authors too, after the order the node saw, and
+ * holds no reset.
+ **/
+bool
+isAppendedTransformOrder(const PXR_NS::SdfPropertySpecHandle& spec,
+                         const PXR_NS::VtTokenArray& order)
+{
+    if (order.empty() || (std::find(order.begin(), order.end(), PXR_NS::UsdGeomXformOpTypes->resetXformStack) != order.end())) {
+        return false;
+    }
+    const std::string& last = order.back().GetString();
+    if (last.compare(0, std::char_traits<char>::length(kOpPrefix), kOpPrefix) != 0) {
+        return false;
+    }
+    const PXR_NS::SdfLayerHandle layer = spec->GetLayer();
+
+    return layer && bool(layer->GetAttributeAtPath(spec->GetPath().GetPrimPath().AppendProperty(order.back())));
+}
+
+/**
+ * @brief The op order an Append-mode transform of prim goes after. USD composes xformOpOrder as
+ * one value, the strongest opinion's, so when a merge stacks two branches that each appended a
+ * transform to the prim, the composed order holds only the stronger branch's. This adds the
+ * opinions up instead, weakest first: an appended transform's opinion adds its ops to the order
+ * so far, and any other opinion (a file's, a created prim's, a Replace-mode transform's) replaces
+ * it, as it does in USD.
+ **/
+PXR_NS::VtTokenArray
+getAppendBaseOrder(const PXR_NS::UsdPrim& prim)
+{
+    PXR_NS::VtTokenArray result;
+    const PXR_NS::UsdAttribute attribute = prim ? PXR_NS::UsdGeomXformable(prim).GetXformOpOrderAttr() : PXR_NS::UsdAttribute();
+
+    if (!attribute) {
+        return result;
+    }
+    // Strongest first. xformOpOrder is uniform, so no value clip contributes at the default time.
+    const PXR_NS::SdfPropertySpecHandleVector stack = attribute.GetPropertyStack(PXR_NS::UsdTimeCode::Default());
+    for (PXR_NS::SdfPropertySpecHandleVector::const_reverse_iterator it = stack.rbegin(); it != stack.rend(); ++it) {
+        const PXR_NS::SdfPropertySpecHandle& spec = *it;
+        if (!spec || !spec->HasDefaultValue()) {
+            continue;
+        }
+        const PXR_NS::VtValue value = spec->GetDefaultValue();
+        if (value.IsHolding<PXR_NS::SdfValueBlock>()) {
+            result = PXR_NS::VtTokenArray();
+            continue;
+        }
+        if (!value.IsHolding<PXR_NS::VtTokenArray>()) {
+            continue;
+        }
+        const PXR_NS::VtTokenArray& order = value.UncheckedGet<PXR_NS::VtTokenArray>();
+        if (!isAppendedTransformOrder(spec, order)) {
+            result = order;
+            continue;
+        }
+        for (const PXR_NS::TfToken& op : order) {
+            if (std::find(result.begin(), result.end(), op) == result.end()) {
+                result.push_back(op);
+            }
+        }
+    }
+
+    return result;
+} // getAppendBaseOrder
 } // anonymous namespace
 
 struct USDTransform::Implementation {
     mutable std::mutex lock;
-    // The matches of matchedPattern on the stack whose hash is matchedStack, kept so that an
-    // evaluation that changes neither does not traverse the stage again.
+    // The matches of matchedPattern on the stack whose hash is matchedStack, the op name each gets
+    // (from matchedOpName) and the op order an Append-mode op goes after on each, kept so that an
+    // evaluation that changes none of them does not read the stage again.
     bool matchesValid = false;
     U64 matchedStack = 0;
     std::string matchedPattern;
+    std::string matchedOpName;
     std::vector<PXR_NS::SdfPath> matches;
+    std::vector<PXR_NS::TfToken> opNames;
+    std::vector<PXR_NS::VtTokenArray> baseOrders;
     // From the last evaluation, for the handles and the centre pivot button.
     ScenePayload lastUpstream;
     std::string handlePrim;
@@ -238,7 +311,12 @@ USDTransform::centrePivot(std::string* errorMessage)
         }
     }
     KnobDoublePtr pivot = _pivot.lock();
-    PXR_NS::UsdStageRefPtr stage = upstream.isEmpty() ? PXR_NS::UsdStageRefPtr() : StageCache::instance().getStage(upstream);
+    std::string borrowError;
+    SceneQueryPool::Lease lease;
+    if (!upstream.isEmpty() && !matches.empty()) {
+        lease = SceneQueryPool::instance().borrow(upstream, &borrowError);
+    }
+    PXR_NS::UsdStageRefPtr stage = lease.getStage();
     if (!pivot || !stage || matches.empty()) {
         *errorMessage = tr("The pattern matches no prim to centre the pivot on.").toStdString();
 
@@ -255,6 +333,8 @@ USDTransform::centrePivot(std::string* errorMessage)
             range.UnionWith(bboxes.ComputeUntransformedBound(prim).ComputeAlignedRange());
         }
     }
+    // Given back before the knobs change: setting them may evaluate the graph on this thread.
+    lease.release();
     if (range.IsEmpty()) {
         *errorMessage = tr("The matched prims have no bounds to centre the pivot on.").toStdString();
 
@@ -279,21 +359,31 @@ USDTransform::renderScene(const SceneRenderActionArgs& args,
     const ScenePayload upstream = args.getInputScene(0);
     KnobStringPtr patternKnob = _primPattern.lock();
     const std::string pattern = patternKnob ? patternKnob->getValue() : std::string();
+    const std::string baseOpName = getBaseOpName();
 
+    // What the layer reads of the input: the matches, the op name each gets and the order an
+    // Append-mode op goes after. Read here, so the layer is keyed on them alone.
     std::vector<PXR_NS::SdfPath> matches;
+    std::vector<PXR_NS::TfToken> opNames;
+    std::vector<PXR_NS::VtTokenArray> baseOrders;
     if (!upstream.isEmpty() && !isBlank(pattern)) {
         bool cached = false;
         {
             std::lock_guard<std::mutex> l(_imp->lock);
-            if (_imp->matchesValid && (_imp->matchedStack == upstream.getStackHash()) && (_imp->matchedPattern == pattern)) {
+            if (_imp->matchesValid && (_imp->matchedStack == upstream.getStackHash()) && (_imp->matchedPattern == pattern) && (_imp->matchedOpName == baseOpName)) {
                 matches = _imp->matches;
+                opNames = _imp->opNames;
+                baseOrders = _imp->baseOrders;
                 cached = true;
             }
         }
         if (!cached) {
-            PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(upstream);
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+            PXR_NS::UsdStageRefPtr stage = lease.getStage();
             if (!stage) {
-                *errorMessage = tr("USD could not compose the input scene.").toStdString();
+                if (errorMessage->empty()) {
+                    *errorMessage = tr("USD could not compose the input scene.").toStdString();
+                }
                 setPersistentMessage(eMessageTypeError, *errorMessage);
 
                 return eStatusFailed;
@@ -305,27 +395,28 @@ USDTransform::renderScene(const SceneRenderActionArgs& args,
                 return eStatusFailed;
             }
             for (const PXR_NS::SdfPath& path : found) {
-                if (stage->GetPrimAtPath(path).IsA<PXR_NS::UsdGeomXformable>()) {
+                const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+                if (prim.IsA<PXR_NS::UsdGeomXformable>()) {
                     matches.push_back(path);
+                    opNames.push_back(PXR_NS::TfToken(getFreeOpName(prim, baseOpName)));
+                    baseOrders.push_back(getAppendBaseOrder(prim));
                 }
             }
         }
     }
 
-    std::string handleOp;
-    if (!matches.empty()) {
-        PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(upstream);
-        handleOp = getFreeOpName(stage ? stage->GetPrimAtPath(matches.front()) : PXR_NS::UsdPrim(), getBaseOpName());
-    }
     {
         std::lock_guard<std::mutex> l(_imp->lock);
         _imp->lastUpstream = upstream;
         _imp->matchesValid = !upstream.isEmpty() && !isBlank(pattern);
         _imp->matchedStack = upstream.getStackHash();
         _imp->matchedPattern = pattern;
+        _imp->matchedOpName = baseOpName;
         _imp->matches = matches;
+        _imp->opNames = opNames;
+        _imp->baseOrders = baseOrders;
         _imp->handlePrim = matches.empty() ? std::string() : matches.front().GetString();
-        _imp->handleOp = handleOp;
+        _imp->handleOp = opNames.empty() ? std::string() : opNames.front().GetString();
     }
 
     if (matches.empty()) {
@@ -344,14 +435,29 @@ USDTransform::renderScene(const SceneRenderActionArgs& args,
     }
 
     const ModeEnum mode = getMode();
-    const std::string baseOpName = getBaseOpName();
-    SceneLayerMemo::AuthorFunc author = [this, matches, mode, baseOpName](const SceneLayerEdit& edit,
-                                                                          std::string* error) {
-        PXR_NS::UsdStageRefPtr upstreamStage = StageCache::instance().getStage(edit.upstream);
+    ContentHasher facts;
+    SceneNodeAuthoring::appendUpstreamMetadata(upstream, &facts);
+    facts.appendU64(matches.size());
+    for (std::size_t i = 0; i < matches.size(); ++i) {
+        facts.appendString(matches[i].GetString());
+        facts.appendString(opNames[i].GetString());
+        if (mode == eModeAppend) {
+            facts.appendU64(baseOrders[i].size());
+            for (const PXR_NS::TfToken& op : baseOrders[i]) {
+                facts.appendString(op.GetString());
+            }
+        }
+    }
+    SceneLayerReads reads;
+    reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
+    reads.factsDigest = facts.finalize();
+
+    SceneLayerMemo::AuthorFunc author = [this, matches, opNames, baseOrders, mode](const SceneLayerEdit& edit,
+                                                                                   std::string* error) {
         PXR_NS::UsdStageRefPtr stage = SceneNodeAuthoring::openLayerStage(edit, error);
-        if (!upstreamStage || !stage) {
+        if (!stage) {
             if (error->empty()) {
-                *error = tr("USD could not compose the input scene.").toStdString();
+                *error = tr("USD could not open the node's layer.").toStdString();
             }
 
             return false;
@@ -380,9 +486,9 @@ USDTransform::renderScene(const SceneRenderActionArgs& args,
                                                               order);
         };
 
-        for (const PXR_NS::SdfPath& path : matches) {
-            const PXR_NS::UsdPrim source = upstreamStage->GetPrimAtPath(path);
-            const PXR_NS::TfToken opName(getFreeOpName(source, baseOpName));
+        for (std::size_t i = 0; i < matches.size(); ++i) {
+            const PXR_NS::SdfPath& path = matches[i];
+            const PXR_NS::TfToken& opName = opNames[i];
             PXR_NS::UsdPrim prim = stage->OverridePrim(path);
             if (!prim) {
                 *error = tr("USD could not author over %1.").arg(QString::fromStdString(path.GetString())).toStdString();
@@ -397,9 +503,7 @@ USDTransform::renderScene(const SceneRenderActionArgs& args,
             }
             PXR_NS::VtTokenArray opOrder;
             if (mode == eModeAppend) {
-                if (source) {
-                    PXR_NS::UsdGeomXformable(source).GetXformOpOrderAttr().Get(&opOrder);
-                }
+                opOrder = baseOrders[i];
             } else {
                 opOrder.push_back(PXR_NS::UsdGeomXformOpTypes->resetXformStack);
             }
@@ -415,7 +519,7 @@ USDTransform::renderScene(const SceneRenderActionArgs& args,
         return true;
     };
 
-    if (!emitSceneLayer(upstream, author, outputScene, errorMessage)) {
+    if (!emitSceneLayer(upstream, reads, author, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;

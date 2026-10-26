@@ -1,7 +1,7 @@
 Storm context spike (throwaway, not shipped). Build in natron-dev:
   cmake -S tools/spikes/storm -B build/spikes/storm -G Ninja -DCMAKE_PREFIX_PATH=/usr/local && ninja -C build/spikes/storm
 Run (llvmpipe, build/deeprepro Xvfb recipe env; USD plug-ins load from /usr/local/lib/usd):
-  build/spikes/storm/m19spike Tests/fixtures/scene-reference.usda build/spikes/storm-out/llvmpipe
+  build/spikes/storm/storm-spike Tests/fixtures/scene-reference.usda build/spikes/storm-out/llvmpipe
 Run on AMD (radeonsi) and NVIDIA hosts the same way with a real DISPLAY, out dirs build/spikes/storm-out/{radeonsi,nvidia}.
 Each run prints a REPORT block (context version/profile received, GL_VERSION/RENDERER, whether
 Storm and the immediate-mode widget both drew) and writes storm.png, compat.png, window.png.

@@ -27,11 +27,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -49,6 +52,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Gui/GuiGLRequirements.h"
 
 NATRON_NAMESPACE_USING
@@ -530,4 +534,153 @@ TEST_F(SceneViewportStorm, DrawsTransformHandlesOverTheScene)
 
     _renderer.clearTransformHandles();
     EXPECT_FALSE(_renderer.hasTransformHandles());
+}
+
+namespace {
+
+// The reference scene with an edit layer on top: a small green cube at (x, -3, 0), or nothing when
+// x is NaN, so the stage gains, moves and loses a prim from edit to edit.
+ScenePayload
+editedScene(const ScenePayload& reference,
+            double x,
+            int edit)
+{
+    if (std::isnan(x)) {
+        return reference;
+    }
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneViewportEdit");
+    const std::string text = "#usda 1.0\n"
+                             "over \"World\"\n{\n"
+                             "    def Cube \"Edit\"\n    {\n"
+                             "        double size = 1\n"
+                             "        color3f[] primvars:displayColor = [(0.1, 0.8, 0.2)]\n"
+                             "        double3 xformOp:translate = ("
+        + std::to_string(x) + ", -3, 0)\n"
+                              "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                              "    }\n}\n";
+    if (!layer->ImportFromString(text)) {
+        ADD_FAILURE() << "cannot author edit " << edit;
+    }
+
+    return SceneOps::appendLayer(reference, layer, 0xed170000ULL + U64(edit));
+}
+
+// Pixels whose channels differ by more than a few levels.
+int
+countDifferentPixels(const QImage& a,
+                     const QImage& b)
+{
+    if (a.size() != b.size()) {
+        return a.width() * a.height();
+    }
+    int n = 0;
+    for (int y = 0; y < a.height(); ++y) {
+        for (int x = 0; x < a.width(); ++x) {
+            const QColor ca = a.pixelColor(x, y);
+            const QColor cb = b.pixelColor(x, y);
+            if ((std::abs(ca.red() - cb.red()) > 8) || (std::abs(ca.green() - cb.green()) > 8) || (std::abs(ca.blue() - cb.blue()) > 8)) {
+                ++n;
+            }
+        }
+    }
+
+    return n;
+}
+
+} // namespace
+
+// The viewer keeps one stage and one engine through every edit: 50 edits that add, move and
+// remove a prim reuse the engine made by the first render, the free camera and the selection
+// survive them, and every picture matches what a renderer seeing the scene for the first time
+// draws.
+TEST_F(SceneViewportStorm, FiftyEditsReuseOneEngineAndMatchFreshRenders)
+{
+    if (_skip) {
+        return;
+    }
+    const ScenePayload reference = referenceScene();
+    _renderer.setSelectedPrim("/World/Box");
+    (void)render();
+    ASSERT_EQ(U64(1), _renderer.getEngineCount());
+    const SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+
+    for (int edit = 0; edit < 50; ++edit) {
+        // Every seventh edit drops the edit layer.
+        const double x = ((edit % 7) == 6) ? std::nan("") : (-4. + 0.16 * edit);
+        const ScenePayload scene = editedScene(reference, x, edit);
+        std::string error;
+        ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+        const QImage edited = render();
+
+        SceneViewportRenderer fresh;
+        ASSERT_TRUE(fresh.setScene(scene, 1., 24., &error)) << error;
+        fresh.setFreeCamera(camera);
+        fresh.setDrawMode(SceneViewportRenderer::eDrawModeUnshaded);
+        fresh.setShowGrid(false);
+        fresh.setSelectedPrim("/World/Box");
+        bool converged = false;
+        for (int i = 0; i < 4 && !converged; ++i) {
+            converged = fresh.render(_fbo->handle(), kSize, kSize);
+        }
+        const QImage expected = _fbo->toImage();
+        fresh.releaseGL();
+
+        // A few edge pixels may round differently; a moved or stale prim covers hundreds.
+        EXPECT_LE(countDifferentPixels(edited, expected), 40) << "edit " << edit;
+        if (!std::isnan(x) && (x > -3.) && (x < 3.)) {
+            // The cube's centre: x = 128 + 128 X / (10 tan 22.5), y = 128 + 128 * 3 / (10 tan 22.5).
+            const int px = int(std::lround(128. + 128. * x / (10. * 0.41421356237 /* tan 22.5 degrees */)));
+            EXPECT_GT(pixel(edited, px, 221).g, pixel(edited, px, 221).r + 40) << "the edit cube at edit " << edit << ": " << pixel(edited, px, 221);
+        }
+    }
+
+    EXPECT_EQ(U64(1), _renderer.getEngineCount());
+    EXPECT_EQ(std::string("/World/Box"), _renderer.getSelectedPrim());
+    EXPECT_DOUBLE_EQ(camera.distance, _renderer.getFreeCamera().distance);
+    EXPECT_DOUBLE_EQ(camera.azimuth, _renderer.getFreeCamera().azimuth);
+
+    // Showing nothing and then a scene again keeps the engine too.
+    _renderer.clearScene();
+    EXPECT_FALSE(_renderer.hasScene());
+    std::string error;
+    ASSERT_TRUE(_renderer.setScene(reference, 1., 24., &error)) << error;
+    (void)render();
+    EXPECT_EQ(U64(1), _renderer.getEngineCount());
+}
+
+// A paint does not wait for a sync or a layer reload: while a reload holds the viewer lock through
+// SceneWriteBarrier, renderIfIdle() draws nothing, and draws again once it is done.
+TEST_F(SceneViewportStorm, PaintSkipsWhileTheViewerLockIsHeld)
+{
+    if (_skip) {
+        return;
+    }
+    (void)render();
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool writing = false;
+    bool painted = false;
+    std::string error;
+    std::thread writer([&]() {
+        SceneWriteBarrier::runExclusive([&]() {
+            std::unique_lock<std::mutex> lock(mutex);
+            writing = true;
+            changed.notify_all();
+            changed.wait(lock, [&]() { return painted; });
+        },
+                                        &error);
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        changed.wait(lock, [&]() { return writing; });
+    }
+    EXPECT_EQ(SceneViewportRenderer::eRenderStatusBusy, _renderer.renderIfIdle(_fbo->handle(), kSize, kSize));
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        painted = true;
+    }
+    changed.notify_all();
+    writer.join();
+    EXPECT_TRUE(error.empty()) << error;
+    EXPECT_NE(SceneViewportRenderer::eRenderStatusBusy, _renderer.renderIfIdle(_fbo->handle(), kSize, kSize));
 }

@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -49,6 +50,16 @@ NATRON_NAMESPACE_ENTER
  * made, a GL context is current on at most one thread at a time, and Storm makes no promise that
  * two engines can render at once in one process; serializing on one context is what it supports.
  * The GPU, not the calling threads, bounds the throughput anyway.
+ *
+ * Each owner (a USDRender node) keeps one SceneStage and one UsdImagingGLEngine there between
+ * renders, all engines sharing the thread's one HgiGL. A render syncs the owner's stage to the
+ * request's scene, so that a frame whose stack is unchanged only moves the time and an edit
+ * upstream reaches Storm as the change notices of the layers it swapped, and the engine keeps its
+ * buffers, shaders and textures. Stage and engine go when the owner is released, when every one is
+ * (releaseAll), and, least recently used first, while the engines' GPU memory is over the budget.
+ *
+ * Those stages read the scene's layers outside any SceneWriteBarrier::ReadScope, so the thread is
+ * a participant of the barrier: a write waits for the job it is running and holds back the next.
  **/
 namespace HydraRender {
 // How the camera's aperture is conformed to the output format (CameraUtilConformWindow).
@@ -88,18 +99,15 @@ std::uint32_t primPathHash(const std::string& path) WARN_UNUSED_RETURN;
 float hashToFloat(std::uint32_t hash) WARN_UNUSED_RETURN;
 
 struct Request {
-    // Whose engine renders: an engine shows one stage, and stays alive between renders of the
-    // same owner so that Storm keeps its buffers, shaders and textures.
+    // Whose stage and engine render it. A request of the owner's last render with the same stack,
+    // time, camera and size, and no barrier write since, reuses that render, so the planes of a
+    // frame asked for one by one cost one Storm render.
     const void* owner = nullptr;
-    PXR_NS::UsdStageRefPtr stage;
+    ScenePayload scene;
     PXR_NS::UsdTimeCode time;
     PXR_NS::GfFrustum frustum;
     int width = 0;
     int height = 0;
-    // The stack hash of the scene the stage was composed from, or 0. A request of the owner's last
-    // render with the same non-zero hash, time, camera and size reuses that render, so the planes of
-    // a frame asked for one by one cost one Storm render.
-    std::uint64_t sceneHash = 0;
 };
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
@@ -170,8 +178,8 @@ public:
 };
 
 /**
- * @brief Renders request on the render thread, unless the owner's last render can be reused (see
- * Request::sceneHash), then runs job there and waits for it. Returns what job returns; false with
+ * @brief Renders request on the render thread, unless the owner's last render can be reused (its
+ * stage unedited, and the time, view and size unchanged), then runs job there and waits for it. Returns what job returns; false with
  * *error set if the render failed.
  **/
 bool withRender(const Request& request,
@@ -205,8 +213,24 @@ bool renderWindow(const Request& request,
 // Whether the render thread's context packs windows on the GPU, making it if need be.
 bool packsOnGpu();
 
-// Drops owner's engine, on the render thread, without waiting.
+// Drops owner's stage and engine, on the render thread, without waiting.
 void release(const void* owner);
+
+// Drops every owner's stage and engine, on the render thread, without waiting.
+void releaseAll();
+
+/**
+ * @brief The GPU memory, in bytes, the engines may hold together before the least recently used
+ * ones other than the one rendering are dropped. Checked after each render.
+ **/
+void setMemoryBudget(std::size_t bytes);
+std::size_t getMemoryBudget();
+
+// How many engines are alive, waiting for the render thread's queue to drain.
+std::size_t getEngineCount();
+
+// How many engines have been made in this process.
+std::uint64_t getEngineBuildCount();
 
 // The description of the render thread's context, making it if need be; empty if it cannot be.
 std::string contextDescription(std::string* error);

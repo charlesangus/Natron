@@ -38,6 +38,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class ContentHasher;
+
 /**
  * @brief What the scene nodes that author prims from knobs share: a stage to author their layer
  * through with the Usd API, and the time policy for knob values. A knob that is not animated
@@ -57,6 +59,22 @@ double getTimeCodesPerSecond(const SceneLayerEdit& edit);
  * or USD's fallback (centimetres) for a node with no scene input.
  **/
 double getMetersPerUnit(const SceneLayerEdit& edit);
+
+/**
+ * @brief Appends to h what getTimeCodesPerSecond(), getMetersPerUnit() and openLayerStage() read
+ * of upstream: whether there is one, and its stage metadata. A node that keys its layer on the
+ * upstream facts it reads (SceneLayerMemo::Key::eUpstreamReadFacts) hashes these with its own.
+ **/
+/**
+ * @brief The file or frame pattern knob names, as an asset path to author: project variables
+ * expanded, and anchored, a path still relative made absolute against the working directory. A
+ * node's layer is anonymous, with no directory a relative asset path could resolve against; USDWrite
+ * makes the paths relative to the file it writes when asked. Empty when the knob is.
+ **/
+std::string getAnchoredFilePath(const KnobFilePtr& knob);
+
+void appendUpstreamMetadata(const ScenePayload& upstream,
+                            ContentHasher* h);
 
 /**
  * @brief Sets edit.layer's time codes per second and opens a stage on it alone, so the node can

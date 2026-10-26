@@ -42,7 +42,8 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -54,7 +55,7 @@ class USDLightTest
 protected:
     virtual void TearDown() OVERRIDE
     {
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
 
         BaseTest::TearDown();
     }
@@ -70,7 +71,7 @@ protected:
         EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk,
                   node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
             << error;
-        *stage = StageCache::instance().getStage(payload);
+        *stage = SceneOps::compose(payload);
         if (!*stage) {
             ADD_FAILURE() << "no stage";
 

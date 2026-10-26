@@ -27,14 +27,39 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 
+#include <QDir>
+#include <QString>
+
 NATRON_NAMESPACE_ENTER
+
+std::string
+SceneNodeAuthoring::getAnchoredFilePath(const KnobFilePtr& knob)
+{
+    if (!knob) {
+        return std::string();
+    }
+    const std::string path = knob->getResolvedPath();
+    const QString qpath = QString::fromStdString(path);
+    // A URI an asset resolver handles is kept as it is.
+    const int colon = qpath.indexOf(QLatin1Char(':'));
+    const int slash = qpath.indexOf(QLatin1Char('/'));
+    const bool uri = (colon > 1) && ((slash < 0) || (colon < slash));
+    if (path.empty() || uri || !QDir::isRelativePath(qpath)) {
+        return path;
+    }
+
+    return QDir::cleanPath(QDir::current().absoluteFilePath(qpath)).toStdString();
+}
 
 void
 setSceneKnobSecret(const KnobIPtr& knob,
@@ -176,6 +201,19 @@ getMetersPerUnit(const SceneLayerEdit& edit)
     const double metersPerUnit = edit.upstream.getMetadata().metersPerUnit;
 
     return (metersPerUnit > 0.) ? metersPerUnit : SceneMetadata().metersPerUnit;
+}
+
+void
+appendUpstreamMetadata(const ScenePayload& upstream,
+                       ContentHasher* h)
+{
+    const SceneMetadata& metadata = upstream.getMetadata();
+
+    h->appendBool(upstream.isEmpty());
+    h->appendI64((std::int64_t)metadata.upAxis);
+    h->appendDouble(metadata.metersPerUnit);
+    h->appendString(metadata.defaultPrim);
+    h->appendDouble(metadata.timeCodesPerSecond);
 }
 
 PXR_NS::UsdStageRefPtr

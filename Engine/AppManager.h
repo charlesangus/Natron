@@ -695,6 +695,10 @@ public Q_SLOTS:
 
     void clearAllCaches();
 
+    // Drops the stages and Storm engines USDRender nodes keep between renders, freeing their GPU
+    // memory; each node makes its own again when it next renders.
+    void freeGpuMemory();
+
     void wipeAndCreateDiskCacheStructure();
 
     void onNodeMemoryRegistered(qint64 mem);

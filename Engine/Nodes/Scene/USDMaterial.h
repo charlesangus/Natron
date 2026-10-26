@@ -101,7 +101,7 @@ private:
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The path a texture file knob holds, empty for none.
+    // The path a texture file knob holds, anchored (SceneNodeAuthoring::getAnchoredFilePath), empty for none.
     static std::string getTexturePath(const KnobFilePtr& knob);
 
     // Authors the material, and its binding to each of bindPaths, into edit's layer.

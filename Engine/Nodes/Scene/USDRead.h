@@ -28,7 +28,6 @@
 
 #include "Global/Macros.h"
 
-#include <atomic>
 #include <memory>
 #include <string>
 
@@ -85,8 +84,9 @@ public:
     virtual ~USDRead();
 
     /**
-     * @brief Reloads the file and every layer it brings in from disk, and re-keys the node so its
-     * layer is authored again.
+     * @brief Drops the stamps of the file and the files it brings in, and the memoized layer, so
+     * the next evaluation authors the layer again. Edits no USD layer: the Reload button reloads
+     * them in place.
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
 
@@ -117,9 +117,6 @@ private:
     KnobFileWPtr _filename;
     KnobDoubleWPtr _frameOffset;
     KnobButtonWPtr _reload;
-
-    // Bumped by each Reload, so the node re-keys even when the file's stamp did not move.
-    std::atomic<U64> _reloadGeneration;
 
     std::unique_ptr<Implementation> _imp;
 };

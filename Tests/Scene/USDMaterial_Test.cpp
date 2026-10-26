@@ -43,7 +43,8 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/ScenePayload.h"
@@ -84,7 +85,7 @@ class USDMaterialTest
 protected:
     virtual void TearDown() OVERRIDE
     {
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
 
         BaseTest::TearDown();
     }
@@ -98,7 +99,7 @@ protected:
                   node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
             << error;
 
-        return StageCache::instance().getStage(payload);
+        return SceneOps::compose(payload);
     }
 
     // /World holding /World/A and /World/B, and a material after them.

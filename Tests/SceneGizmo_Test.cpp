@@ -36,6 +36,7 @@
 #include "Gui/SceneViewport.h"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QMouseEvent>
 #include <QThreadPool>
 #include <QUndoCommand>
@@ -49,7 +50,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/Nodes/Scene/USDTransform.h"
 #include "Engine/Project.h"
@@ -450,7 +451,7 @@ protected:
         }
         _knobGui.reset();
         _translate.reset();
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
         if (_app) {
             _app->getProject()->reset(false, true);
         }
@@ -474,6 +475,13 @@ protected:
                   _transform->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
             << error;
         _viewport->setScene(payload, 1., 24.);
+        // The viewport's worker syncs its stage, which the handles are placed from.
+        QElapsedTimer timer;
+        timer.start();
+        while (!_viewport->isSceneSynced() && (timer.elapsed() < 30000)) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        }
+        ASSERT_TRUE(_viewport->isSceneSynced());
         ASSERT_TRUE(_viewport->getError().isEmpty()) << _viewport->getError().toStdString();
     }
 
@@ -524,10 +532,13 @@ TEST_F(SceneGizmoDragTest, DraggingAnArrowSetsTranslateAsOneUndoableEdit)
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
               _transform->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
         << error;
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(payload);
-    ASSERT_TRUE(bool(stage));
-    const PXR_NS::GfMatrix4d world = PXR_NS::UsdGeomXformable(stage->GetPrimAtPath(PXR_NS::SdfPath("/Thing"))).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.));
-    EXPECT_NEAR(_translate->getValue(0), world.ExtractTranslation()[0], 1e-9);
+    {
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+        PXR_NS::UsdStageRefPtr stage = lease.getStage();
+        ASSERT_TRUE(bool(stage)) << error;
+        const PXR_NS::GfMatrix4d world = PXR_NS::UsdGeomXformable(stage->GetPrimAtPath(PXR_NS::SdfPath("/Thing"))).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.));
+        EXPECT_NEAR(_translate->getValue(0), world.ExtractTranslation()[0], 1e-9);
+    }
 
     _container.undoStack.undo();
     EXPECT_DOUBLE_EQ(0., _translate->getValue(0));

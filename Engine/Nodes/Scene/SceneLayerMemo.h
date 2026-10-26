@@ -55,10 +55,27 @@ public:
      * sampled over.
      **/
     struct Key {
+        // What the node's authoring reads of its upstream stack.
+        enum UpstreamReadEnum {
+            // Anything: the whole stack's hash keys the layer.
+            eUpstreamReadWholeStack = 0,
+            // Nothing: the layer is authored blind to upstream, which is not passed to the
+            // author, and an upstream edit only re-stacks the memoized layer on the new stack.
+            eUpstreamReadNothing,
+            // Only the facts factsDigest hashes (matched prim paths, values read), which the node
+            // gathers before emitting: the layer is re-authored when they change.
+            eUpstreamReadFacts
+        };
+
         U64 nodeDigest = 0;
         double firstFrame = 0.;
         double lastFrame = 0.;
         double framesPerSecond = 0.;
+        UpstreamReadEnum upstreamRead = eUpstreamReadWholeStack;
+        U64 factsDigest = 0;
+        // Whether the layer samples anything over [firstFrame, lastFrame], animated knobs above
+        // all; a node that does not leaves the range out of its key.
+        bool readsFrameRange = true;
     };
 
     // Authors the node's edits into edit.layer. Returns false and sets the message on failure.
@@ -70,7 +87,8 @@ public:
 
     /**
      * @brief Sets *output to upstream with the node's layer on top, authoring the layer through
-     * author unless the memoized one was made for the same key and upstream stack. On failure
+     * author unless the memoized one was made for the same key and, as far as key.upstreamRead
+     * says the node reads it, the same upstream. On failure
      * returns false with *errorMessage set and keeps the previous layer memoized. layerTag names
      * a newly authored layer, for debugging.
      **/

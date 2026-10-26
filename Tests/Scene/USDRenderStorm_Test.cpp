@@ -54,7 +54,7 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
@@ -255,7 +255,7 @@ class USDRenderStormTest
 protected:
     virtual void TearDown() OVERRIDE
     {
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
         BaseTest::TearDown();
     }
 

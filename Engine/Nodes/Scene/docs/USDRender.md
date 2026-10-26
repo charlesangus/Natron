@@ -36,3 +36,11 @@ The output has three layers:
 
 Storm renders whole frames, one at a time: renders of several USDRender nodes,
 or of several frames, take turns on one OpenGL context.
+
+Each USDRender node keeps its own copy of the scene and its Storm renderer, with
+the geometry, textures and shaders on the GPU, between renders. A frame whose
+scene is unchanged only moves the time, and an edit upstream updates just what
+it changed. They are released when the node is deleted, by Cache > Clear All
+Caches and Clear Per-Node Cache, by Cache > Free GPU Memory, and, least recently
+rendered first, when the nodes' renderers hold more than 2 GB of GPU memory
+together. A released node rebuilds them at its next render.

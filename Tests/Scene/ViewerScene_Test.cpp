@@ -48,7 +48,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/Plugin.h"
@@ -264,7 +264,7 @@ protected:
         _viewer = 0;
         _viewerNode.reset();
         getApp()->getProject()->reset(false, true);
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
         BaseTest::TearDown();
     }
 

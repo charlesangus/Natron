@@ -45,7 +45,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
@@ -106,7 +106,7 @@ class USDMergePruneTest
 protected:
     virtual void TearDown() OVERRIDE
     {
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
 
         BaseTest::TearDown();
     }
@@ -189,16 +189,62 @@ TEST_F(USDMergePruneTest, TheLastInputWinsAConflictingAttribute)
     ASSERT_TRUE(left && right && other);
 
     NodePtr leftThenRight = merge({ left, right, other });
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(evaluate(leftThenRight));
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(leftThenRight));
     ASSERT_TRUE(bool(stage));
     EXPECT_EQ(PXR_NS::GfVec3d(0., 2., 0.), worldTranslation(stage, "/Thing"));
     // What only one input authors is there too.
     EXPECT_EQ(PXR_NS::GfVec3d(0., 0., 3.), worldTranslation(stage, "/Other"));
 
     NodePtr rightThenLeft = merge({ right, left });
-    stage = StageCache::instance().getStage(evaluate(rightThenLeft));
+    stage = SceneOps::compose(evaluate(rightThenLeft));
     ASSERT_TRUE(bool(stage));
     EXPECT_EQ(PXR_NS::GfVec3d(1., 0., 0.), worldTranslation(stage, "/Thing"));
+}
+
+// Two branches each move the same prim in Append mode, a merge joins them, and a third Append
+// transform below the merge moves it again: its op order keeps both branches' ops, weakest
+// first, so the prim lands where all three moves take it.
+TEST_F(USDMergePruneTest, AnAppendTransformBelowAMergeKeepsBothBranchesOps)
+{
+    NodePtr source = prim("/Thing", PXR_NS::GfVec3d(1., 0., 0.));
+    ASSERT_TRUE(bool(source));
+    auto transform = [this](const NodePtr& input, int dimension, double offset) {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTRANSFORM));
+        EXPECT_TRUE(bool(node));
+        if (node) {
+            setString(node, kUSDTransformParamPrimPattern, "/Thing");
+            getDoubleKnob(node, kSceneParamTranslate)->setValue(offset, ViewSpec::all(), dimension);
+            EXPECT_TRUE(node->connectInput(input, 0));
+        }
+
+        return node;
+    };
+    NodePtr up = transform(source, 1, 2.);
+    NodePtr back = transform(source, 2, 3.);
+    ASSERT_TRUE(up && back);
+    NodePtr joined = merge({ up, back });
+    ASSERT_TRUE(bool(joined));
+    NodePtr along = transform(joined, 0, 10.);
+    ASSERT_TRUE(bool(along));
+
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(along));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(PXR_NS::GfVec3d(11., 2., 3.), worldTranslation(stage, "/Thing"));
+
+    PXR_NS::VtTokenArray order;
+    ASSERT_TRUE(PXR_NS::UsdGeomXformable(stage->GetPrimAtPath(PXR_NS::SdfPath("/Thing"))).GetXformOpOrderAttr().Get(&order));
+    const auto indexOf = [&order](const NodePtr& node) {
+        const PXR_NS::TfToken op("xformOp:transform:" + node->getScriptName_mt_safe());
+
+        return std::find(order.begin(), order.end(), op) - order.begin();
+    };
+    const std::ptrdiff_t size = (std::ptrdiff_t)order.size();
+    EXPECT_LT(indexOf(up), size);
+    EXPECT_LT(indexOf(back), size);
+    EXPECT_LT(indexOf(along), size);
+    // The merge's weaker input's op comes first, and the node below the merge's last.
+    EXPECT_LT(indexOf(up), indexOf(back));
+    EXPECT_EQ(size - 1, indexOf(along));
 }
 
 TEST_F(USDMergePruneTest, ADiamondYieldsTheSharedSourceLayerOnce)
@@ -224,7 +270,7 @@ TEST_F(USDMergePruneTest, ADiamondYieldsTheSharedSourceLayerOnce)
     EXPECT_EQ(layersOf(evaluate(child)).back(), layers[2]);
 
     // The source stays under what each branch authored over it: the move survives the union.
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(output);
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(output);
     ASSERT_TRUE(bool(stage));
     EXPECT_EQ(PXR_NS::GfVec3d(100., 5., 0.), worldTranslation(stage, "/World"));
     EXPECT_EQ(PXR_NS::GfVec3d(100., 5., 1.), worldTranslation(stage, "/World/Child"));
@@ -258,7 +304,7 @@ TEST_F(USDMergePruneTest, PrunedPrimsAreInactiveOnTheComposedStage)
     ASSERT_TRUE(bool(b));
     NodePtr node = prune(b, "/World/A", "deactivate");
 
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(evaluate(node));
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(node));
     ASSERT_TRUE(bool(stage));
     const PXR_NS::UsdPrim pruned = stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A"));
     ASSERT_TRUE(bool(pruned));
@@ -269,12 +315,12 @@ TEST_F(USDMergePruneTest, PrunedPrimsAreInactiveOnTheComposedStage)
     }
     EXPECT_EQ(std::vector<std::string>({ "/World", "/World/B" }), traversed);
     // The input is not edited.
-    PXR_NS::UsdStageRefPtr input = StageCache::instance().getStage(evaluate(b));
+    PXR_NS::UsdStageRefPtr input = SceneOps::compose(evaluate(b));
     EXPECT_TRUE(input->GetPrimAtPath(PXR_NS::SdfPath("/World/A")).IsActive());
 
     // Wildcards name several prims.
     setString(node, kUSDPruneParamPrimPattern, "/World/*");
-    stage = StageCache::instance().getStage(evaluate(node));
+    stage = SceneOps::compose(evaluate(node));
     ASSERT_TRUE(bool(stage));
     EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A")).IsActive());
     EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/B")).IsActive());
@@ -289,7 +335,7 @@ TEST_F(USDMergePruneTest, HiddenPrimsStayOnTheStageInvisible)
     ASSERT_TRUE(bool(leaf));
     NodePtr node = prune(leaf, "/World/A", "hide");
 
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(evaluate(node));
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(node));
     ASSERT_TRUE(bool(stage));
     const PXR_NS::UsdGeomImageable hidden(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A")));
     ASSERT_TRUE(bool(hidden));

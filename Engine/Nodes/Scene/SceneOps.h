@@ -95,11 +95,58 @@ SceneMetadata readLayerMetadata(const PXR_NS::SdfLayerRefPtr& layer,
                                 const SceneMetadata& weaker);
 
 /**
+ * @brief The identifiers of payload's layers in the order a root layer sublayers them, strongest
+ * at index 0: the stack's order reversed.
+ **/
+std::vector<std::string> getSubLayerPaths(const ScenePayload& payload);
+
+/**
+ * @brief Writes metadata onto root's pseudo-root, as the stage-level metadata of the stage root
+ * is the root layer of. When applied is given, only the fields that differ from it are written,
+ * so a stage on root hears of nothing that did not change. An empty defaultPrim clears it.
+ **/
+void writeRootMetadata(const PXR_NS::SdfLayerRefPtr& root,
+                       const SceneMetadata& metadata,
+                       const SceneMetadata* applied);
+
+/**
+ * @brief Opens a stage on root with no session layer and every payload loaded. Every stage Natron
+ * composes is opened here, so getStageOpenCount() counts them all.
+ **/
+PXR_NS::UsdStageRefPtr openStage(const PXR_NS::SdfLayerRefPtr& root);
+
+/**
+ * @brief How many stages openStage() has opened in this process.
+ **/
+U64 getStageOpenCount();
+
+/**
  * @brief Composes payload into a new stage: an anonymous root layer carrying the payload's
- * metadata and sublayering its layers, strongest first. Each call builds a new stage; consumers
- * go through StageCache to share them.
+ * metadata and sublayering its layers, strongest first. Each call opens a new stage, so it is
+ * for one-off uses (tests, writing a file); consumers that follow a changing stack keep a
+ * SceneStage, and nodes reading their upstream borrow one from SceneQueryPool.
  **/
 PXR_NS::UsdStageRefPtr compose(const ScenePayload& payload);
+
+/**
+ * @brief The file layers layer composes: layer itself when it is backed by a file, then every
+ * layer its sublayers, references and payloads name, recursively, each once. Asset paths resolve
+ * relative to the layer naming them. Files that cannot be opened are skipped, without posting
+ * errors to the caller's TfErrorMark. Opens the layers not yet open, and the returned references
+ * keep them open.
+ **/
+std::vector<PXR_NS::SdfLayerRefPtr> getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer);
+
+/**
+ * @brief Reloads the file layers among layers in place (SdfLayer::ReloadLayers: only those whose
+ * file changed since it was read), so every stage composing them, live ones included, sees the
+ * files' current content. Anonymous layers are skipped: reloading one clears it. Runs inside
+ * SceneWriteBarrier::runExclusive, so it fails when the calling thread holds a ReadScope.
+ * Returns false with *errorMessage set when the barrier refuses the write or a layer fails to
+ * reload.
+ **/
+bool reloadFileLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
+                      std::string* errorMessage);
 
 /**
  * @brief The timecode of payload's composed stage at frame of a project running at

@@ -29,11 +29,12 @@
 #include <vector>
 
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 NATRON_NAMESPACE_ENTER
@@ -199,12 +200,7 @@ USDMaterial::initializeKnobs()
 std::string
 USDMaterial::getTexturePath(const KnobFilePtr& knob)
 {
-    if (!knob) {
-        return std::string();
-    }
-    const std::string path = knob->getSingleFilePath();
-
-    return path.empty() ? knob->getValue() : path;
+    return SceneNodeAuthoring::getAnchoredFilePath(knob);
 }
 
 bool
@@ -329,9 +325,12 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
     // The prims to bind to, matched on the input scene: never the material or its shaders.
     std::vector<std::string> bindPaths;
     if (hasPattern && !upstream.isEmpty()) {
-        PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(upstream);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+        PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {
-            *errorMessage = tr("USD could not compose the input scene.").toStdString();
+            if (errorMessage->empty()) {
+                *errorMessage = tr("USD could not compose the input scene.").toStdString();
+            }
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;
@@ -352,7 +351,18 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
         }
     }
 
-    if (!emitSceneLayer(upstream, [this, bindPaths](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, bindPaths, error); }, outputScene, errorMessage)) {
+    // Of the input, the layer reads only the prims bound and the metadata: an edit upstream that
+    // keeps them re-stacks the layer without authoring it again.
+    ContentHasher facts;
+    SceneNodeAuthoring::appendUpstreamMetadata(upstream, &facts);
+    facts.appendU64(bindPaths.size());
+    for (const std::string& bindPath : bindPaths) {
+        facts.appendString(bindPath);
+    }
+    SceneLayerReads reads;
+    reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
+    reads.factsDigest = facts.finalize();
+    if (!emitSceneLayer(upstream, reads, [this, bindPaths](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, bindPaths, error); }, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;

@@ -128,6 +128,9 @@ public:
                                ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // Drops the stage and Storm engine the node keeps between renders.
+    virtual void purgeCaches() OVERRIDE FINAL;
+
     /**
      * @brief Fills the camera menu with every camera of the input scene at the current frame,
      * keeping the chosen one even when the scene no longer has it. Main thread only; the node

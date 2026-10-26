@@ -122,7 +122,7 @@ private:
 
     LightTypeEnum getLightType() const;
 
-    // The dome texture the knob names, empty for none.
+    // The dome texture the knob names, anchored (SceneNodeAuthoring::getAnchoredFilePath), empty for none.
     std::string getTexturePath() const;
 
     bool authorLayer(const SceneLayerEdit& edit,

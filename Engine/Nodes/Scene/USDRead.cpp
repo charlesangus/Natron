@@ -25,14 +25,16 @@
 
 #include "USDRead.h"
 
+#include <atomic>
 #include <mutex>
-#include <set>
 #include <string>
+#include <vector>
 
 #include <QFileInfo>
 #include <QString>
 
 #include "Engine/ContentHasher.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -60,20 +62,6 @@ takeUsdErrors(PXR_NS::TfErrorMark& mark)
     return text;
 }
 
-// layer and every layer it brings in -- sublayers, references, payloads -- that is open.
-void
-collectOpenLayers(const PXR_NS::SdfLayerHandle& layer,
-                  std::set<PXR_NS::SdfLayerHandle>* layers)
-{
-    if (!layer || !layers->insert(layer).second) {
-        return;
-    }
-    const std::set<std::string> dependencies = layer->GetCompositionAssetDependencies();
-    for (std::set<std::string>::const_iterator it = dependencies.begin(); it != dependencies.end(); ++it) {
-        collectOpenLayers(PXR_NS::SdfLayer::FindRelativeToLayer(layer, *it), layers);
-    }
-}
-
 // What a USD stage would read as the layer's time codes per second.
 double
 getTimeCodesPerSecond(const PXR_NS::SdfLayerRefPtr& layer)
@@ -90,10 +78,38 @@ getTimeCodesPerSecond(const PXR_NS::SdfLayerRefPtr& layer)
 } // anonymous namespace
 
 struct USDRead::Implementation {
-    std::mutex fileLayerMutex;
-    // The file the current layer sublayers, held open so it is the layer every stage composed
-    // from that layer reads, and the one Reload reloads.
+    mutable std::mutex fileLayerMutex;
+    // The file's layer the current layer sublayers, held so it stays open until the next
+    // authoring replaces it: a stage composed meanwhile finds it rather than reading the file.
     PXR_NS::SdfLayerRefPtr fileLayer;
+    // Every file layer the file brings in, the file's own first, as of the last authoring or
+    // Reload: what Reload reloads.
+    std::vector<PXR_NS::SdfLayerRefPtr> closure;
+    // Their files on disk, in the same order.
+    std::vector<std::string> closurePaths;
+    // The stamps of closurePaths as of the last purge, 0 before any: keys the node, so a Reload
+    // that read a changed file again, however deep, re-authors the layer. Taken only when the
+    // files are read again, never by an evaluation, so an evaluation cannot re-key the node
+    // while the layers still hold what was read before.
+    std::atomic<U64> closureDigest;
+
+    Implementation()
+        : closureDigest(0)
+    {
+    }
+
+    void setClosure(const PXR_NS::SdfLayerRefPtr& layer)
+    {
+        std::vector<PXR_NS::SdfLayerRefPtr> layers = layer ? SceneOps::getFileLayerClosure(layer) : std::vector<PXR_NS::SdfLayerRefPtr>();
+        std::vector<std::string> paths;
+        paths.reserve(layers.size());
+        for (const PXR_NS::SdfLayerRefPtr& l : layers) {
+            paths.push_back(l->GetRealPath());
+        }
+        std::lock_guard<std::mutex> lock(fileLayerMutex);
+        closure.swap(layers);
+        closurePaths.swap(paths);
+    }
 };
 
 USDRead::USDRead(NodePtr node)
@@ -101,7 +117,6 @@ USDRead::USDRead(NodePtr node)
     , _filename()
     , _frameOffset()
     , _reload()
-    , _reloadGeneration(0)
     , _imp(new Implementation)
 {
 }
@@ -130,8 +145,10 @@ USDRead::initializeKnobs()
 
     KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
     reload->setName(kUSDReadParamReload);
-    reload->setHintToolTip(tr("Reads the file again, with every layer it sublayers, references or loads as a payload, "
-                              "so a file changed on disk is what the node outputs."));
+    reload->setHintToolTip(tr("Reads the file again, and every file it sublayers, references or loads as a "
+                              "payload, so files changed on disk are what the node outputs. Each changed file is "
+                              "read again in place: every scene using it, the viewer's included, shows the new "
+                              "content. Renders reading scenes are stopped or waited for first."));
     page->addKnob(reload);
     _reload = reload;
 
@@ -160,15 +177,37 @@ USDRead::knobChanged(KnobI* k,
     if (!reload || (k != reload.get())) {
         return false;
     }
+    // The layers to read again: those the last authoring found, or, if this node has not
+    // authored yet, those of the file's layer if another consumer has it open.
+    std::vector<PXR_NS::SdfLayerRefPtr> layers;
+    {
+        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
+        layers = _imp->closure;
+    }
+    KnobFilePtr filename = _filename.lock();
+    if (layers.empty() && filename) {
+        const std::string path = filename->getSingleFilePath();
+        PXR_NS::SdfLayerHandle open = path.empty() ? PXR_NS::SdfLayerHandle() : PXR_NS::SdfLayer::Find(path);
+        if (open) {
+            layers = SceneOps::getFileLayerClosure(PXR_NS::SdfLayerRefPtr(open));
+        }
+    }
+    std::string error;
+    if (!layers.empty() && !SceneOps::reloadFileLayers(layers, &error)) {
+        setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
+    } else {
+        clearPersistentMessage(false);
+    }
+    // A reload can change what the file brings in. The file's layer is the same object, reloaded
+    // in place.
+    _imp->setClosure(layers.empty() ? PXR_NS::SdfLayerRefPtr() : layers.front());
     purgeCaches();
-    clearPersistentMessage(false);
     // Same as NativeRead: the Reload bracket hashed this node before purgeCaches() moved its
     // hash inputs.
     NodePtr node = getNode();
     if (node) {
         node->markHashDirty();
     }
-    KnobFilePtr filename = _filename.lock();
     if (filename) {
         filename->reloadOtherNodesReadingTheseFiles();
     }
@@ -179,32 +218,30 @@ USDRead::knobChanged(KnobI* k,
 void
 USDRead::purgeCaches()
 {
+    // Drops the stamps of the file and of every file it brings in, so the node's hash reads them
+    // again. Edits no layer: Reload reloads them, behind SceneWriteBarrier.
     KnobFilePtr filename = _filename.lock();
-    PXR_NS::SdfLayerRefPtr fileLayer;
-    {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        fileLayer = _imp->fileLayer;
-    }
-    if (!fileLayer && filename && SceneOps::checkUsdRuntime(nullptr)) {
-        // Another node may have the file open even though this one never read it.
-        const std::string path = filename->getSingleFilePath();
-        if (!path.empty()) {
-            fileLayer = PXR_NS::SdfLayer::Find(path);
-        }
-    }
-    if (fileLayer) {
-        std::set<PXR_NS::SdfLayerHandle> layers;
-        collectOpenLayers(fileLayer, &layers);
-        PXR_NS::TfErrorMark mark;
-        // Forced: a file rewritten within its modification time's resolution still reloads.
-        PXR_NS::SdfLayer::ReloadLayers(layers, true);
-        // A file that no longer reads keeps its old content; the next authoring reports it.
-        (void)takeUsdErrors(mark);
-    }
+
     if (filename) {
         filename->invalidateFileStamp();
     }
-    ++_reloadGeneration;
+    std::vector<std::string> paths;
+    {
+        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
+        paths = _imp->closurePaths;
+    }
+    FileStampRegistry& stamps = FileStampRegistry::instance();
+    for (const std::string& path : paths) {
+        if (!path.empty()) {
+            stamps.invalidate(path);
+        }
+    }
+    ContentHasher h;
+    h.appendU64(paths.size());
+    for (const std::string& path : paths) {
+        h.appendU64(path.empty() ? 0 : stamps.stamp(path));
+    }
+    _imp->closureDigest = h.finalize();
     invalidateSceneLayer();
     clearActionsCache();
 } // USDRead::purgeCaches
@@ -212,7 +249,8 @@ USDRead::purgeCaches()
 void
 USDRead::appendNodeContentHash(ContentHasher& h) const
 {
-    h.appendU64(_reloadGeneration.load());
+    // The file's own stamp is in the File knob's hash; this covers every file it brings in.
+    h.appendU64(_imp->closureDigest.load());
 }
 
 bool
@@ -221,6 +259,9 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
                      double frameOffset,
                      std::string* errorMessage)
 {
+    // One layer per file, shared with every other consumer through USD's layer registry, and
+    // never edited here: Reload reloads it in place behind SceneWriteBarrier, and every stage
+    // composing it follows.
     PXR_NS::SdfLayerRefPtr fileLayer;
     std::string diagnostic;
     {
@@ -267,8 +308,11 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
     layer->InsertSubLayerPath(fileLayer->GetIdentifier());
     layer->SetSubLayerOffset(PXR_NS::SdfLayerOffset(-frameOffset * timeCodesPerSecond / framesPerSecond), 0);
 
-    std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-    _imp->fileLayer = fileLayer;
+    {
+        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
+        _imp->fileLayer = fileLayer;
+    }
+    _imp->setClosure(fileLayer);
 
     return true;
 } // USDRead::authorLayer
@@ -295,7 +339,11 @@ USDRead::renderScene(const SceneRenderActionArgs& /*args*/,
     KnobDoublePtr frameOffsetKnob = _frameOffset.lock();
     const double frameOffset = frameOffsetKnob ? frameOffsetKnob->getValue() : 0.;
 
-    if (!emitSceneLayer(ScenePayload(), [this, path, frameOffset](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, path, frameOffset, error); }, outputScene, errorMessage)) {
+    // Nothing is sampled over the project's frame range: the offset is authored once.
+    SceneLayerReads reads;
+    reads.upstream = SceneLayerMemo::Key::eUpstreamReadNothing;
+    reads.frameRange = false;
+    if (!emitSceneLayer(ScenePayload(), reads, [this, path, frameOffset](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, path, frameOffset, error); }, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;

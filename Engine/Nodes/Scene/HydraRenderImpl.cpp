@@ -26,6 +26,7 @@
 #include "HydraRenderImpl.h"
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -52,11 +53,14 @@
 #include <pxr/imaging/garch/glApi.h>
 #include <pxr/imaging/glf/simpleLight.h>
 #include <pxr/imaging/glf/simpleMaterial.h>
+#include <pxr/imaging/hd/driver.h>
 #include <pxr/imaging/hd/renderBuffer.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hd/types.h>
 #include <pxr/imaging/hdx/tokens.h>
+#include <pxr/imaging/hgi/hgi.h>
 #include <pxr/imaging/hgi/texture.h>
+#include <pxr/imaging/hgi/tokens.h>
 #include <pxr/imaging/hgiGL/texture.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
@@ -68,6 +72,9 @@
 
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
+#include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -77,17 +84,31 @@ namespace {
 // Storm renders a frame in passes until it converges; a rasterizer needs one.
 const int kMaxRenderPasses = 8;
 
+// The GPU memory the engines may hold together by default.
+const std::size_t kDefaultMemoryBudget = (std::size_t)2 << 30;
+
 std::mutex gFactoryMutex;
 HydraGLContextFactory gFactory;
 
+std::atomic<std::size_t> gMemoryBudget(kDefaultMemoryBudget);
+std::atomic<std::uint64_t> gEngineBuilds(0);
+
 struct EngineEntry {
+    // The stage the engine shows, for the entry's whole life; each render syncs it to the
+    // request's scene. Declared first so that the engine, which reads it, goes first.
+    std::unique_ptr<SceneStage> stage;
     std::unique_ptr<UsdImagingGLEngine> engine;
-    UsdStageRefPtr stage;
+    // Whether the engine lights the stage with a headlight, as it does when the stage has no light.
+    bool headlight = false;
+    // When the entry last rendered, by the thread's render serial, for the LRU.
+    std::uint64_t lastUse = 0;
+    // The GPU memory the engine held after its last render.
+    std::size_t bytes = 0;
 
     // What the engine last rendered, which its AOVs hold until it renders again.
     bool rendered = false;
     std::uint64_t serial = 0;
-    std::uint64_t sceneHash = 0;
+    U64 writeCount = 0;
     UsdTimeCode time;
     GfMatrix4d view;
     GfMatrix4d projection;
@@ -224,6 +245,10 @@ public:
     bool post(std::function<void()> job,
               bool start)
     {
+        std::call_once(_registered, [this]() {
+            // Never unregistered: the thread lives as long as the process.
+            (void)SceneWriteBarrier::registerParticipant([this]() { pause(); }, [this]() { resume(); });
+        });
         {
             std::lock_guard<std::mutex> l(_mutex);
             if (!_started) {
@@ -298,6 +323,13 @@ public:
             } else if (!GarchGLApiLoad()) {
                 _contextError = "USDRender could not load the OpenGL entry points of its context (" + _context->description() + ").";
                 _context.reset();
+            } else {
+                _hgi = Hgi::CreateNamedHgi(HgiTokens->OpenGL);
+                if (!_hgi || !_hgi->IsBackendSupported()) {
+                    _contextError = "Storm cannot draw through OpenGL on " + _context->description() + ".";
+                    _hgi.reset();
+                    _context.reset();
+                }
             }
         }
         if (!_context) {
@@ -325,13 +357,44 @@ public:
         if (found == _engines.end()) {
             return;
         }
-        if (_context && _context->makeCurrent()) {
-            _engines.erase(found);
-        } else {
+        if (!_context || !_context->makeCurrent()) {
             // Its GL objects cannot be freed without the context; leak them with the engine.
             (void)found->second.engine.release();
-            _engines.erase(found);
         }
+        _engines.erase(found);
+        _engineCount = _engines.size();
+    }
+
+    void releaseAllEngines()
+    {
+        while (!_engines.empty()) {
+            releaseEngine(_engines.begin()->first);
+        }
+    }
+
+    // Drops the least recently used engines other than keep's while they hold more than the budget.
+    void enforceBudget(const void* keep)
+    {
+        const std::size_t budget = gMemoryBudget.load();
+        for (;;) {
+            std::size_t total = 0;
+            std::map<const void*, EngineEntry>::iterator oldest = _engines.end();
+            for (std::map<const void*, EngineEntry>::iterator it = _engines.begin(); it != _engines.end(); ++it) {
+                total += it->second.bytes;
+                if ((it->first != keep) && ((oldest == _engines.end()) || (it->second.lastUse < oldest->second.lastUse))) {
+                    oldest = it;
+                }
+            }
+            if ((total <= budget) || (oldest == _engines.end())) {
+                return;
+            }
+            releaseEngine(oldest->first);
+        }
+    }
+
+    std::size_t engineCount() const
+    {
+        return _engineCount.load();
     }
 
     // Renders request with its owner's engine, or reuses the engine's last render of the same
@@ -384,15 +447,33 @@ private:
 
     RenderThread() = default;
 
+    // The barrier's quiesce: waits for the running job and holds the queue until resume().
+    void pause()
+    {
+        std::unique_lock<std::mutex> l(_mutex);
+        _paused = true;
+        _idle.wait(l, [this]() { return !_busy; });
+    }
+
+    void resume()
+    {
+        {
+            std::lock_guard<std::mutex> l(_mutex);
+            _paused = false;
+        }
+        _wake.notify_one();
+    }
+
     void run()
     {
         for (;;) {
             std::function<void()> job;
             {
                 std::unique_lock<std::mutex> l(_mutex);
-                _wake.wait(l, [this]() { return !_jobs.empty(); });
+                _wake.wait(l, [this]() { return !_paused && !_jobs.empty(); });
                 job = std::move(_jobs.front());
                 _jobs.pop_front();
+                _busy = true;
             }
             // A job that does not wait has no one to report to; its exception must not end the
             // thread.
@@ -400,6 +481,11 @@ private:
                 job();
             } catch (...) {
             }
+            {
+                std::lock_guard<std::mutex> l(_mutex);
+                _busy = false;
+            }
+            _idle.notify_all();
         }
     }
 
@@ -428,18 +514,29 @@ private:
         glViewport(0, 0, width, height);
     }
 
+    std::once_flag _registered;
     std::mutex _mutex;
     std::condition_variable _wake;
+    std::condition_variable _idle;
     std::deque<std::function<void()>> _jobs;
     bool _started = false;
+    // A barrier write is in progress: no job starts.
+    bool _paused = false;
+    // A job is running.
+    bool _busy = false;
 
     std::unique_ptr<HydraGLContext> _context;
     bool _contextTried = false;
     std::string _contextError;
+    // The one Hgi every engine draws through, made with the context; declared before the engines,
+    // which must go first.
+    HgiUniquePtr _hgi;
     std::map<const void*, EngineEntry> _engines;
+    std::atomic<std::size_t> _engineCount { 0 };
     GLuint _framebuffer = 0;
     GLuint _renderbuffers[2] = { 0, 0 };
     std::uint64_t _renderSerial = 0;
+    std::uint64_t _useSerial = 0;
     // The pack program: 0 untried, 1 built, -1 failed with _packError.
     int _packState = 0;
     std::string _packError;
@@ -569,26 +666,52 @@ RenderThread::renderStorm(const HydraRender::Request& request,
     const TfTokenVector aovs = { HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId };
 
     EngineEntry& entry = _engines[request.owner];
-    if (!entry.engine || (entry.stage != request.stage)) {
+    _engineCount = _engines.size();
+    if (!entry.stage) {
+        entry.stage.reset(new SceneStage);
+        if (!entry.stage->isValid()) {
+            _engines.erase(request.owner);
+            _engineCount = _engines.size();
+            *error = "USD could not open a stage to render.";
+
+            return nullptr;
+        }
+    }
+    const bool edited = entry.stage->sync(request.scene);
+    const UsdStageRefPtr& stage = entry.stage->getStage();
+    bool headlight = entry.headlight;
+    if (edited || !entry.engine) {
+        headlight = !hasSceneLight(stage);
+    }
+    // A headlight once set cannot be taken back, so the engine is made again when the stage gains
+    // or loses its lights.
+    if (!entry.engine || (headlight != entry.headlight)) {
         entry.engine.reset();
         entry.rendered = false;
-        entry.stage = request.stage;
-        entry.engine.reset(new UsdImagingGLEngine(UsdImagingGLEngine::Parameters()));
+        UsdImagingGLEngine::Parameters parameters;
+        parameters.driver.name = HgiTokens->renderDriver;
+        parameters.driver.driver = VtValue(_hgi.get());
+        entry.engine.reset(new UsdImagingGLEngine(parameters));
+        ++gEngineBuilds;
         entry.engine->SetEnablePresentation(false);
         if (!entry.engine->SetRendererAovs(aovs)) {
             *error = "Storm on " + contextDescription() + " offers no color, depth and primId AOVs.";
             _engines.erase(request.owner);
+            _engineCount = _engines.size();
 
             return nullptr;
         }
-        if (!hasSceneLight(request.stage)) {
+        entry.headlight = headlight;
+        if (headlight) {
             setHeadlight(entry.engine.get());
         }
     }
     UsdImagingGLEngine* engine = entry.engine.get();
     const GfMatrix4d view = request.frustum.ComputeViewMatrix();
     const GfMatrix4d projection = request.frustum.ComputeProjectionMatrix();
-    if (entry.rendered && (request.sceneHash != 0) && (entry.sceneHash == request.sceneHash) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height)) {
+    const U64 writeCount = SceneWriteBarrier::getWriteCount();
+    entry.lastUse = ++_useSerial;
+    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height)) {
         return &entry;
     }
     entry.rendered = false;
@@ -612,7 +735,7 @@ RenderThread::renderStorm(const HydraRender::Request& request,
     params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
     params.highlight = false;
     for (int pass = 0; pass < kMaxRenderPasses; ++pass) {
-        engine->Render(request.stage->GetPseudoRoot(), params);
+        engine->Render(stage->GetPseudoRoot(), params);
         if (engine->IsConverged()) {
             break;
         }
@@ -621,14 +744,26 @@ RenderThread::renderStorm(const HydraRender::Request& request,
 
     entry.rendered = true;
     entry.serial = ++_renderSerial;
-    entry.sceneHash = request.sceneHash;
+    entry.writeCount = writeCount;
     entry.time = request.time;
     entry.view = view;
     entry.projection = projection;
     entry.width = width;
     entry.height = height;
 
-    return &entry;
+    // Storm's own count of its buffers and textures, or failing that the AOVs alone (four of four
+    // bytes or less a pixel).
+    std::size_t bytes = (std::size_t)width * (std::size_t)height * 16;
+    const VtDictionary stats = engine->GetRenderStats();
+    const VtDictionary::const_iterator used = stats.find(HdPerfTokens->gpuMemoryUsed.GetString());
+    if ((used != stats.end()) && used->second.IsHolding<size_t>()) {
+        bytes = std::max(bytes, used->second.UncheckedGet<size_t>());
+    }
+    entry.bytes = bytes;
+    const void* owner = request.owner;
+    enforceBudget(owner);
+
+    return &_engines[owner];
 } // RenderThread::renderStorm
 
 bool
@@ -1170,7 +1305,7 @@ render(const Request& request,
        Result* result,
        std::string* error)
 {
-    if (!request.stage || (request.width <= 0) || (request.height <= 0)) {
+    if (request.scene.isEmpty() || (request.width <= 0) || (request.height <= 0)) {
         *error = "Nothing to render.";
 
         return false;
@@ -1196,7 +1331,7 @@ withRender(const Request& request,
            const std::function<bool(RenderAccess& access, std::string* error)>& job,
            std::string* error)
 {
-    if (!request.stage || (request.width <= 0) || (request.height <= 0)) {
+    if (request.scene.isEmpty() || (request.width <= 0) || (request.height <= 0)) {
         *error = "Nothing to render.";
 
         return false;
@@ -1258,7 +1393,7 @@ renderWindow(const Request& request,
              std::map<std::uint32_t, std::string>* primPaths,
              std::string* error)
 {
-    if (!request.stage || (request.width <= 0) || (request.height <= 0)) {
+    if (request.scene.isEmpty() || (request.width <= 0) || (request.height <= 0)) {
         *error = "Nothing to render.";
 
         return false;
@@ -1309,6 +1444,47 @@ release(const void* owner)
     (void)thread.post([&thread, owner]() { thread.releaseEngine(owner); }, false);
 }
 
+void
+releaseAll()
+{
+    RenderThread& thread = RenderThread::instance();
+
+    (void)thread.post([&thread]() { thread.releaseAllEngines(); }, false);
+}
+
+void
+setMemoryBudget(std::size_t bytes)
+{
+    gMemoryBudget = bytes;
+}
+
+std::size_t
+getMemoryBudget()
+{
+    return gMemoryBudget.load();
+}
+
+std::size_t
+getEngineCount()
+{
+    RenderThread& thread = RenderThread::instance();
+
+    // Runs nothing if the thread never started, in which case there is no engine.
+    std::promise<void> drained;
+    std::future<void> done = drained.get_future();
+    if (thread.post([&drained]() { drained.set_value(); }, false)) {
+        done.wait();
+    }
+
+    return thread.engineCount();
+}
+
+std::uint64_t
+getEngineBuildCount()
+{
+    return gEngineBuilds.load();
+}
+
 std::string
 contextDescription(std::string* error)
 {
@@ -1325,5 +1501,13 @@ contextDescription(std::string* error)
     return ran ? description : std::string();
 }
 } // namespace HydraRender
+
+namespace SceneCaches {
+void
+releaseRenderEngines()
+{
+    HydraRender::releaseAll();
+}
+} // namespace SceneCaches
 
 NATRON_NAMESPACE_EXIT

@@ -44,7 +44,8 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/Nodes/Scene/USDRead.h"
@@ -92,7 +93,7 @@ class USDCameraTest
 protected:
     virtual void TearDown() OVERRIDE
     {
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
 
         BaseTest::TearDown();
     }
@@ -112,7 +113,7 @@ protected:
 
         EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, &payload, &error)) << error;
 
-        return StageCache::instance().getStage(payload);
+        return SceneOps::compose(payload);
     }
 };
 
@@ -273,7 +274,7 @@ TEST_F(USDCameraTest, ARelativePrimPathFailsWithANodeError)
     primPath->setValue(std::string("/Rig/Camera"));
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(camera, &payload, &error)) << error;
     EXPECT_FALSE(camera->hasPersistentMessage());
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(payload);
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
     ASSERT_TRUE(bool(stage));
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Rig/Camera")).IsValid());
 }

@@ -45,7 +45,7 @@
 #include "Engine/Nodes/Scene/HydraHandoff.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include <pxr/usd/usd/primRange.h>
@@ -85,6 +85,12 @@ USDRender::USDRender(NodePtr node)
 }
 
 USDRender::~USDRender()
+{
+    HydraRender::release(this);
+}
+
+void
+USDRender::purgeCaches()
 {
     HydraRender::release(this);
 }
@@ -179,8 +185,11 @@ USDRender::refreshCameraMenu()
     ScenePayload scene;
     std::string error;
     if (input && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
-        for (const PXR_NS::SdfPath& path : HydraRender::cameraPaths(StageCache::instance().getStage(scene))) {
-            options.push_back(ChoiceOption(path.GetString(), path.GetString(), ""));
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
+        if (lease.isValid()) {
+            for (const PXR_NS::SdfPath& path : HydraRender::cameraPaths(lease.getStage())) {
+                options.push_back(ChoiceOption(path.GetString(), path.GetString(), ""));
+            }
         }
     }
     // Repopulating an unchanged menu would move the hash and come back here.
@@ -300,7 +309,8 @@ USDRender::deriveOutputMetadata(double time,
     if (!input || (input->evaluateScene(EvaluateSceneArgs(time, view), &scene, &error) != eRenderRoIRetCodeOk) || scene.isEmpty()) {
         return metadata;
     }
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(scene);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
+    PXR_NS::UsdStageRefPtr stage = lease.getStage();
     if (!stage) {
         return metadata;
     }
@@ -362,9 +372,19 @@ USDRender::prepareRender(double time,
 
         return false;
     }
-    PXR_NS::UsdStageRefPtr stage = scene.isEmpty() ? PXR_NS::UsdStageRefPtr() : StageCache::instance().getStage(scene);
-    if (!stage) {
+    if (scene.isEmpty()) {
         return failWith(tr("The input scene is empty: there is no camera to render through.").toStdString());
+    }
+    // The camera is read from a pooled stage, given back before the render: Storm renders the
+    // node's own stage on the render thread.
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, error);
+    const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+    if (!stage) {
+        if (error->empty()) {
+            *error = tr("USD could not compose the input scene.").toStdString();
+        }
+
+        return false;
     }
     AppInstancePtr app = getApp();
     const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
@@ -387,9 +407,8 @@ USDRender::prepareRender(double time,
     const HydraRender::FitModeEnum fit = (fitValue == (int)HydraRender::eFitModeHorizontal) ? HydraRender::eFitModeHorizontal : (fitValue == (int)HydraRender::eFitModeVertical) ? HydraRender::eFitModeVertical
                                                                                                                                                                                  : HydraRender::eFitModeFill;
     setup->request.owner = this;
-    setup->request.stage = stage;
+    setup->request.scene = scene;
     setup->request.time = timeCode;
-    setup->request.sceneHash = scene.getStackHash();
     setup->request.width = setup->pixels.width();
     setup->request.height = setup->pixels.height();
     const double aspect = (format.width() * par) / format.height();

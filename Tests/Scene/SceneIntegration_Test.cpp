@@ -25,6 +25,8 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/usd/usd/primRange.h>
+
 #include "Global/Macros.h"
 
 #include <limits>
@@ -52,7 +54,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
@@ -68,14 +70,14 @@
 NATRON_NAMESPACE_USING
 
 // The headless end-to-end path a viewer takes: USDRead, the scene action through a Dot, the
-// composed stage from the StageCache, and what the stage holds. If USD's libraries or plug-ins
+// stage a query borrows from the SceneQueryPool, and what the stage holds. If USD's libraries or plug-ins
 // fail to load at run time, it fails here rather than in the GUI.
 class SceneIntegrationTest
     : public BaseTest {
 protected:
     virtual void TearDown() OVERRIDE
     {
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
 
         BaseTest::TearDown();
     }
@@ -199,10 +201,10 @@ TEST_F(SceneIntegrationTest, ReferenceSceneThroughTheActionComposesWithItsBounds
               dot->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
         << error;
 
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(payload);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+    ASSERT_TRUE(lease.isValid()) << error;
+    PXR_NS::UsdStageRefPtr stage = lease.getStage();
     ASSERT_TRUE(bool(stage));
-    // The cache hands every consumer of the stack the same stage.
-    EXPECT_EQ(stage, StageCache::instance().getStage(payload));
 
     const char* const prims[] = { "/World", "/World/Box", "/World/Ball", "/World/Cam" };
     for (const char* path : prims) {
@@ -270,7 +272,9 @@ TEST_F(SceneIntegrationTest, CreatedPrimsLayerOverTheReadScene)
     EXPECT_EQ(SceneMetadata::eUpAxisY, payload.getMetadata().upAxis);
     EXPECT_EQ(std::string("World"), payload.getMetadata().defaultPrim);
 
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(payload);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+    ASSERT_TRUE(lease.isValid()) << error;
+    PXR_NS::UsdStageRefPtr stage = lease.getStage();
     ASSERT_TRUE(bool(stage));
     const char* const readPrims[] = { "/World", "/World/Box", "/World/Ball", "/World/Cam" };
     for (const char* path : readPrims) {
@@ -365,6 +369,108 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredSublayersTheReadFile)
         ASSERT_TRUE(stage);
         EXPECT_EQ(PXR_NS::TfToken("Cube"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")).GetTypeName());
     }
+}
+
+namespace {
+// The file the first UsdUVTexture on stage reads, as authored.
+std::string
+textureFileOf(const PXR_NS::UsdStageRefPtr& stage)
+{
+    for (const PXR_NS::UsdPrim& prim : stage->Traverse()) {
+        const PXR_NS::UsdShadeShader shader(prim);
+        PXR_NS::TfToken id;
+        PXR_NS::SdfAssetPath file;
+        if (shader && shader.GetShaderId(&id) && (id == PXR_NS::TfToken("UsdUVTexture")) && shader.GetInput(PXR_NS::TfToken("file")).Get(&file)) {
+            return file.GetAssetPath();
+        }
+    }
+
+    return std::string();
+}
+} // anonymous namespace
+
+// A file read above nodes' layers keeps its strength in the written scene, a relative texture path
+// is anchored where the node resolved it and written relative to the written file's folder, and a
+// USDRead of the written file sees the next write.
+TEST_F(SceneIntegrationTest, USDWriteLayeredKeepsTheStackOrderAndAnchorsRelativePaths)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString overPath = tmp.path() + QString::fromUtf8("/over.usda");
+    {
+        QFile f(overPath);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write("#usda 1.0\n"
+                "over \"World\"\n{\n"
+                "    over \"Box\"\n    {\n"
+                "        double3 xformOp:translate = (0, 7, 0)\n"
+                "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                "    }\n}\n");
+    }
+
+    // Nodes author the box at x = 5 and a textured material bound to it; the file read above them
+    // moves the box to y = 7.
+    NodePtr box = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+    NodePtr reader = createReader(overPath.toStdString());
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(box && material && reader && merge);
+    KnobString* boxPath = getKnob<KnobString>(box, kSceneParamPrimPath);
+    KnobDouble* translate = getKnob<KnobDouble>(box, kSceneParamTranslate);
+    KnobString* materialPath = getKnob<KnobString>(material, kSceneParamPrimPath);
+    KnobString* pattern = getKnob<KnobString>(material, kUSDMaterialParamPrimPattern);
+    KnobFile* texture = getKnob<KnobFile>(material, kUSDMaterialParamDiffuseTexture);
+    ASSERT_TRUE(boxPath && translate && materialPath && pattern && texture);
+    boxPath->setValue(std::string("/World/Box"));
+    translate->setValue(5., ViewSpec::all(), 0);
+    materialPath->setValue(std::string("/World/Looks/Wood"));
+    pattern->setValue(std::string("/World/Box"));
+    texture->setValue(std::string("textures/wood.png"));
+    ASSERT_TRUE(material->connectInput(box, 0));
+    ASSERT_TRUE(merge->connectInput(material, 0));
+    ASSERT_TRUE(merge->connectInput(reader, 1));
+
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    const QString path = outDir + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(merge, path, USDWrite::eExportModeLayered, USDWrite::ePathModeRelative, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+
+    // The read file is the written scene's strongest sublayer, referred to, not copied.
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(layer);
+    const std::vector<std::string> subLayers = layer->GetSubLayerPaths();
+    ASSERT_FALSE(subLayers.empty());
+    EXPECT_EQ(cleanAbsolute(overPath), QDir::cleanPath(QDir(outDir).absoluteFilePath(QString::fromStdString(subLayers[0])))) << subLayers[0];
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+    ASSERT_TRUE(stage);
+    const PXR_NS::UsdGeomXformable written(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")));
+    ASSERT_TRUE(bool(written));
+    EXPECT_EQ(PXR_NS::GfVec3d(0., 7., 0.), written.ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.)).ExtractTranslation());
+
+    // The texture path the node resolved from the working directory, relative to the written file.
+    const QString anchored = QDir::cleanPath(QDir::current().absoluteFilePath(QString::fromUtf8("textures/wood.png")));
+    const std::string file = textureFileOf(stage);
+    ASSERT_FALSE(file.empty());
+    EXPECT_TRUE(QDir::isRelativePath(QString::fromStdString(file))) << file;
+    EXPECT_EQ(anchored, QDir::cleanPath(QDir(outDir).absoluteFilePath(QString::fromStdString(file)))) << file;
+
+    // A USDRead of the written file sees the next write.
+    NodePtr reread = createReader(path.toStdString());
+    ASSERT_TRUE(bool(reread));
+    PXR_NS::UsdStageRefPtr before = composeOutput(reread);
+    ASSERT_TRUE(before);
+    EXPECT_EQ(file, textureFileOf(before));
+    before.Reset();
+    texture->setValue(std::string("textures/oak.png"));
+    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+    PXR_NS::UsdStageRefPtr after = composeOutput(reread);
+    ASSERT_TRUE(after);
+    const std::string oak = textureFileOf(after);
+    EXPECT_EQ(QDir::cleanPath(QDir::current().absoluteFilePath(QString::fromUtf8("textures/oak.png"))),
+              QDir::cleanPath(QDir(outDir).absoluteFilePath(QString::fromStdString(oak))))
+        << oak;
 }
 
 // The frame range knobs set which time samples are written: samples outside are dropped, and the

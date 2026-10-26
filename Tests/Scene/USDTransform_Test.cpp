@@ -42,7 +42,8 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDPrim.h"
 #include "Engine/Nodes/Scene/USDTransform.h"
 #include "Engine/ScenePayload.h"
@@ -98,7 +99,7 @@ class USDTransformTest
 protected:
     virtual void TearDown() OVERRIDE
     {
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
 
         BaseTest::TearDown();
     }
@@ -167,7 +168,7 @@ TEST_F(USDTransformTest, AppendComposesOverTheAnimatedInputOps)
     getDoubleKnob(_transform, kSceneParamTranslate)->setValue(5., ViewSpec::all(), 1);
 
     const ScenePayload payload = evaluate(_transform);
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(payload);
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
     ASSERT_TRUE(bool(stage));
     EXPECT_FALSE(_transform->hasPersistentMessage());
 
@@ -197,7 +198,7 @@ TEST_F(USDTransformTest, ReplaceDiscardsTheInputOpsAndTheParentTransform)
     setMode("replace");
     getDoubleKnob(_transform, kSceneParamTranslate)->setValue(5., ViewSpec::all(), 1);
 
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(evaluate(_transform));
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(_transform));
     ASSERT_TRUE(bool(stage));
     const PXR_NS::VtTokenArray order = getOpOrder(stage, "/World/A");
     ASSERT_EQ((std::size_t)2, order.size());
@@ -219,7 +220,7 @@ TEST_F(USDTransformTest, AWildcardAuthorsTheOpOnEveryMatch)
     setString(_transform, kUSDTransformParamPrimPattern, "/World/*");
     getDoubleKnob(_transform, kSceneParamTranslate)->setValue(1., ViewSpec::all(), 2);
 
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(evaluate(_transform));
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(_transform));
     ASSERT_TRUE(bool(stage));
     for (const char* path : { "/World/A", "/World/B" }) {
         SCOPED_TRACE(path);
@@ -269,12 +270,12 @@ TEST_F(USDTransformTest, TheOpFollowsARename)
 {
     buildGraph();
     setString(_transform, kUSDTransformParamPrimPattern, "/World/B");
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(evaluate(_transform));
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(_transform));
     ASSERT_TRUE(bool(stage));
     EXPECT_EQ(PXR_NS::TfToken(opName()), getOpOrder(stage, "/World/B").back());
 
     _transform->setScriptName("Lift");
-    stage = StageCache::instance().getStage(evaluate(_transform));
+    stage = SceneOps::compose(evaluate(_transform));
     ASSERT_TRUE(bool(stage));
     EXPECT_EQ(PXR_NS::TfToken("xformOp:transform:Lift"), getOpOrder(stage, "/World/B").back());
 }

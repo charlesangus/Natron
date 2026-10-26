@@ -68,4 +68,5 @@ their images through M233 - Live Node Textures. Survey:
 
 ## Decisions
 
+- 2026-10-26 — **Comp-first projection (user):** USDProject3D takes a Camera input (a scene, read where it is wired, as classic Nuke) and an Image input, in place of the camera path knob and prim pattern; its output is a material that feeds a geometry node's Material input (M226.P2.T4). The camera is stored as values (time-sampled matrices), never as a relationship, so grafting needs no repair. A **Projection Space** choice: World (default; the projection stays fixed and moving geometry slides through it) or Geometry (the camera is stored relative to the geometry where the projection is set up and the shader projects object-space positions, so downstream transforms carry the projection with the geometry). USDProjectUV keeps its scene input and pattern but also takes a Camera input.
 - 2026-10-26 — **Both projection styles, separate nodes (user, M19/M20 UAT grill):** a live Storm projection shader (USDProject3D) and portable projected UVs (USDProjectUV). Supersedes the 2026-09-18 roadmap's "projection is a bake, never a live shader".

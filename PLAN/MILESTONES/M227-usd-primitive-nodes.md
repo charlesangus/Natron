@@ -55,3 +55,7 @@ Hierarchy From Topology, and they author the project's up axis and units. Survey
   - size: M
 
 **Verification gate:** release gate green; strict-GL primitive render test passes; screenshots of all four primitives (shaded and wireframe) in the Viewer's 3D view shared before sign-off.
+
+## Decisions
+
+- 2026-10-26 — **Material input (user):** every primitive node takes an optional Material input and authors the material under its own prim, binding itself to it (M226.P2.T4).

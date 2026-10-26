@@ -192,14 +192,17 @@ HydraHandoff::Implementation::current()
 {
     GpuContext* gpuContext = context();
     if (!gpuContext || !gpuContext->isAvailable()) {
+        // A lost runtime makes the context unavailable too; say which it is.
+        const gpu::GpuRuntime* lostRuntime = gpuContext ? gpuContext->runtime() : nullptr;
+        const char* why = (lostRuntime && lostRuntime->isLost()) ? "GPU compute lost" : "GPU compute unavailable";
         std::shared_ptr<State> dropped;
         {
             std::lock_guard<std::mutex> l(mutex);
             dropped.swap(state);
-            reason = "GPU compute unavailable";
+            reason = why;
         }
         if (dropped) {
-            dropped->abandon("GPU compute unavailable");
+            dropped->abandon(why);
         }
 
         return std::shared_ptr<State>();

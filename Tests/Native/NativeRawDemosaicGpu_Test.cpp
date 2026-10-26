@@ -154,7 +154,7 @@ TEST_F(NativeRawDemosaicGpuTest, TiledGpuRenderEqualsTheFullFrameGpuRender)
         setMethod(demosaic, method);
         ASSERT_FALSE(HasFatalFailure());
         RenderedPlane input;
-        ASSERT_TRUE(renderCpu(prepare, effect->getGpuInputRoI(0, full, RenderScale::identity), &input));
+        ASSERT_TRUE(renderCpu(prepare, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), full, RenderScale::identity), &input));
         const std::vector<GpuParityImage> inputs(1, imageOf(input));
         ASSERT_TRUE(effect->canRenderOnGpu(query)) << method.name;
         const GpuRunResult whole = runRenderGpu(*runtime, *effect, query, inputs, nullptr, full);

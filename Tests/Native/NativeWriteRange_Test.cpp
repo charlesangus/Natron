@@ -275,7 +275,7 @@ protected:
         ASSERT_TRUE(effect != NULL);
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(effect, first, last, step, false));
-        getApp()->startWritersRendering(true, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
     }
 
     NodePtr _checker;
@@ -369,7 +369,7 @@ TEST_F(NativeWriteRangeTest, UnionIsTheRangeOfTheInput)
     KnobFile* readFile = knob<KnobFile>(read, kOfxImageEffectFileParamName);
     ASSERT_TRUE(readFile != NULL);
     readFile->setValue(pathOf("source.####.exr"));
-    read->getEffectInstance()->refreshMetadata_public(false);
+    read->getEffectInstance()->dropCachedMetadata();
 
     NodePtr second = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
     ASSERT_TRUE(bool(second));

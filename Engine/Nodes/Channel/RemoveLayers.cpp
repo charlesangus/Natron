@@ -261,16 +261,18 @@ RemoveLayers::filterPassThroughLayers(double time,
 }
 
 StatusEnum
-RemoveLayers::getPreferredMetadata(NodeMetadata& metadata)
+RemoveLayers::getPreferredMetadataAt(double time,
+                                     ViewIdx view,
+                                     NodeMetadata& metadata)
 {
     if (!getInput(0)) {
         return eStatusOK;
     }
 
-    // Resolved against the input's metadata layout, not its layers at some frame: colour rows
-    // resolve against the colour layout alone, and metadata must not depend on the current frame.
+    // Resolved against the input's metadata layout at time rather than its present layers: colour
+    // rows resolve against the colour layout alone.
     std::list<ImageLayerDesc> metadataLayers;
-    const ImageLayerDesc storage = ChannelCopy::metadataColorStorage(*this, 0);
+    const ImageLayerDesc storage = ChannelCopy::metadataColorStorage(*this, 0, time, view);
     if (storage.getNumComponents() > 0) {
         metadataLayers.push_back(storage);
     }
@@ -351,7 +353,7 @@ RemoveLayers::channelRoute(double time,
     }
 
     EffectInstancePtr input = getInput(0);
-    route->cpuOnly = input && ((getBitDepth(0) != eImageBitDepthFloat) || (input->getBitDepth(-1) != eImageBitDepthFloat));
+    route->cpuOnly = input && ((getRenderMetadata(time, view)->getBitDepth(0) != eImageBitDepthFloat) || (input->getRenderMetadata(time, view)->getBitDepth(-1) != eImageBitDepthFloat));
 
     return true;
 } // RemoveLayers::channelRoute

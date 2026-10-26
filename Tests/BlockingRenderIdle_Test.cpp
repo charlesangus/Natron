@@ -182,7 +182,7 @@ protected:
         QMetaObject::Connection connection = QObject::connect(engine.get(), &RenderEngine::renderFinished, engine.get(), [&finished](int) { ++finished; }, Qt::DirectConnection);
         {
             RenderWatchdog watchdog;
-            getApp()->startWritersRendering(true, works);
+            getApp()->startWritersRendering(eRenderModeBlocking, works);
         }
         QObject::disconnect(connection);
 
@@ -268,7 +268,6 @@ TEST_F(BlockingRenderIdleTest, AQueuedSequenceDoesNotLetABlockingRenderReturnBef
     ASSERT_TRUE(interpretPythonScript(define, &error, &output)) << error;
     beforeRender->setValue(std::string("queuedSequenceBeforeRender"));
     afterRender->setValue(std::string("queuedSequenceAfterRender"));
-    _writer->refreshInputRelatedDataForRender();
 
     BlockingBackgroundRender first(effect);
     BlockingBackgroundRender second(effect);

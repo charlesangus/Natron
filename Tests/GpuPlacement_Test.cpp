@@ -27,6 +27,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <set>
 #include <utility>
@@ -489,6 +490,9 @@ struct CostFixture {
         inputs.canRenderOnGpu = [this](const FrameGraph::Task& task) {
             return traits.count(indexOf(graph, task)) != 0;
         };
+        inputs.isPriced = [this](const FrameGraph::Task& task) {
+            return model.isPriced(model.traitsOf(task));
+        };
         inputs.regionGain = [this](const FrameGraph& g, const FrameGraph::Region& region) {
             return model.regionGainMs(g, region, false);
         };
@@ -814,37 +818,35 @@ TEST(GpuDevice, DiscreteDeviceWithResizableBarIsNotUnifiedMemory)
 namespace {
 
 GpuTaskTraits
-unseededTraits(GpuCostClass costClass,
-               int inputCount = 1)
+unseededTraits()
 {
-    GpuTaskTraits traits("test.NoSeedRows");
-
-    traits.costClass = costClass;
-    traits.inputCount = inputCount;
-
-    return traits;
+    return GpuTaskTraits("test.NoSeedRows");
 }
 
 } // namespace
 
-TEST(GpuCostModel, ClassDefaultsFollowGradeAndBlurRows)
+// A plugin without rows has no price, not another plugin's: it is priced once it has measured both a CPU and a GPU row.
+TEST(GpuCostModel, UnseededPluginIsPricedOnlyByItsOwnRows)
 {
     GpuCostModel model;
 
     model.setThreadCount(16);
-    const GpuTaskTraits point = unseededTraits(GpuCostClass::ePointOp);
-    EXPECT_TRUE(model.hasGpuCost(point));
-    EXPECT_NEAR(model.gpuMs(point, 1.), model.gpuMs(GpuTaskTraits(kGradeId), 1.), 1e-12);
-    EXPECT_NEAR(model.cpuMs(point, 1.), model.cpuMs(GpuTaskTraits(kGradeId), 1.), 1e-12);
-    EXPECT_NEAR(model.gpuMs(unseededTraits(GpuCostClass::ePointOp, 3), 1.), 2. * model.gpuMs(GpuTaskTraits(kGradeId), 1.), 1e-12);
+    const GpuTaskTraits unseeded = unseededTraits();
+    EXPECT_FALSE(model.isPriced(unseeded));
+    EXPECT_FALSE(model.hasGpuCost(unseeded));
+    EXPECT_EQ(model.cpuMs(unseeded, 1.), 0.);
+    EXPECT_EQ(model.gpuMs(unseeded, 1.), std::numeric_limits<double>::infinity());
 
-    const GpuTaskTraits spatial = unseededTraits(GpuCostClass::eSpatial);
-    EXPECT_NEAR(model.gpuMs(spatial, 1.), model.gpuMs(GpuTaskTraits(kBlurId, 25.), 1.), 1e-12);
-    EXPECT_NEAR(model.cpuMs(spatial, 1.), model.cpuMs(GpuTaskTraits(kBlurId, 25.), 1.), 1e-12);
+    model.observeCpu(unseeded, 9000000, 16, 1.);
+    EXPECT_FALSE(model.isPriced(unseeded));
+    EXPECT_NEAR(model.cpuMs(unseeded, 1.), 9., 1e-9);
 
-    const GpuTaskTraits other = unseededTraits(GpuCostClass::eOther);
-    EXPECT_FALSE(model.hasGpuCost(other));
-    EXPECT_EQ(model.cpuMs(other, 1.), 0.);
+    model.observeGpu(unseeded, 7000000, 1.);
+    EXPECT_TRUE(model.isPriced(unseeded));
+    EXPECT_NEAR(model.gpuMs(unseeded, 1.), 7., 1e-9);
+
+    EXPECT_TRUE(model.isPriced(GpuTaskTraits(kGradeId)));
+    EXPECT_TRUE(model.isPriced(GpuTaskTraits(kBlurId, 25.)));
 }
 
 // The seed prices a Transform that renders with motion blur apart from a plain one, and measurements of either leave
@@ -855,7 +857,6 @@ TEST(GpuCostModel, MotionBlurRowsPriceOnlyMotionBlur)
 
     model.setThreadCount(1);
     GpuTaskTraits plain("net.sf.openfx.TransformPlugin");
-    plain.costClass = GpuCostClass::eSpatial;
     GpuTaskTraits blurred = plain;
     blurred.motionBlur = true;
     const double plainCpu = model.cpuMs(plain, 1.);
@@ -1075,7 +1076,7 @@ TEST(GpuCostModel, BlurFiltersAreSeededAndLearnedApart)
     }
 }
 
-// Every node with a GPU kernel has seed rows of its own, so none of them falls back on a class default.
+// Every node with a GPU kernel has seed rows of its own, so each is priced from the start.
 TEST(GpuCostModel, EveryGpuNodeIsSeeded)
 {
     GpuCostModel model;
@@ -1103,58 +1104,212 @@ TEST(GpuCostModel, EveryGpuNodeIsSeeded)
     };
     for (const char* id : ids) {
         GpuTaskTraits traits(id);
-        traits.costClass = GpuCostClass::eOther;
-        EXPECT_TRUE(model.hasGpuCost(traits)) << id;
+        EXPECT_TRUE(model.isPriced(traits)) << id;
         EXPECT_GT(model.cpuMs(traits, 1.), 0.) << id;
     }
 }
 
-TEST(GpuCostModel, MeasuredRowsBeatClassDefaults)
+// sink 0 (CPU) <- X 1 <- reader 2 (CPU), X a GPU-capable op with no rows. Even with free transfers it never makes a
+// region on its own.
+TEST(GpuCostModel, UnseededOpAloneStaysOnTheCpu)
 {
-    GpuCostModel model;
+    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
 
-    model.setThreadCount(16);
-    const GpuTaskTraits point = unseededTraits(GpuCostClass::ePointOp);
-    model.observeGpu(point, 7000000, 1.);
-    model.observeCpu(point, 9000000, 16, 1.);
-    EXPECT_NEAR(model.gpuMs(point, 1.), 7., 1e-9);
-    EXPECT_NEAR(model.cpuMs(point, 1.), 9., 1e-9);
+    fixture.traits[1] = unseededTraits();
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+
+    GpuTransferRates unified;
+    unified.unifiedMemory = true;
+    fixture.model.setTransferRates(unified);
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
 }
 
-// sink 0 (CPU) <- Grade 1 <- X 2 <- Grade 3 <- reader 4 (CPU), X a point op with no rows.
-TEST(GpuCostModel, UnseededPointOpJoinsGradeRegion)
+// sink 0 (CPU) <- X 1 <- Y 2 <- reader 3 (CPU), X and Y GPU-capable ops with no rows. Two connected candidates make a
+// region with no cost to veto it, whatever the transfers cost.
+TEST(GpuCostModel, UnseededPairMakesARegion)
+{
+    CostFixture pair(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
+
+    pair.traits[1] = unseededTraits();
+    pair.traits[2] = unseededTraits();
+    pair.place();
+    ASSERT_EQ(pair.graph.regions.size(), 1u);
+    EXPECT_EQ(pair.graph.regions[0].members, std::vector<int>({ 2, 1 }));
+    EXPECT_EQ(pair.graph.tasks[1].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(pair.graph.tasks[2].device, FrameGraph::Device::Gpu);
+}
+
+// sink 0 (CPU) <- X 1 <- Y 2 <- Z 3 <- reader 4 (CPU), three GPU-capable ops with no rows: one region of all three.
+TEST(GpuCostModel, UnseededChainMakesOneRegion)
+{
+    CostFixture chain(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    for (int t : { 1, 2, 3 }) {
+        chain.traits[t] = unseededTraits();
+    }
+    chain.place();
+    ASSERT_EQ(chain.graph.regions.size(), 1u);
+    const FrameGraph::Region& region = chain.graph.regions[0];
+    EXPECT_EQ(region.members, std::vector<int>({ 3, 2, 1 }));
+    EXPECT_EQ(region.externalInputs, std::vector<int>({ 4 }));
+    ASSERT_EQ(region.outputs.size(), 3u);
+    for (int t : { 3, 2 }) {
+        const FrameGraph::Region::Output* output = findOutput(region, t);
+        ASSERT_TRUE(output) << t;
+        EXPECT_EQ(output->internalConsumers, 1) << t;
+        EXPECT_EQ(output->externalConsumers, 0) << t;
+    }
+    const FrameGraph::Region::Output* last = findOutput(region, 1);
+    ASSERT_TRUE(last);
+    EXPECT_EQ(last->internalConsumers, 0);
+    EXPECT_EQ(last->externalConsumers, 1);
+    EXPECT_EQ(chain.graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(chain.graph.tasks[4].device, FrameGraph::Device::Cpu);
+}
+
+// sink 0 (CPU) <- X 1 <- Y 2 <- Grade 3 <- reader 4 (CPU), X and Y with no rows, the Grade far slower on the GPU. The
+// region loses, shrinking drops the Grade, and the unpriced pair left keeps the GPU.
+TEST(GpuCostModel, UnseededPairLeftByShrinkingKeepsTheGpu)
+{
+    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    fixture.model.setCpuSeed(kGradeId, 0.01, 1.);
+    fixture.model.setGpuSeed(kGradeId, 10.);
+    fixture.traits[1] = unseededTraits();
+    fixture.traits[2] = unseededTraits();
+    fixture.traits[3] = GpuTaskTraits(kGradeId);
+    fixture.place();
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 2, 1 }));
+    EXPECT_EQ(fixture.graph.tasks[3].device, FrameGraph::Device::Cpu);
+}
+
+// sink 0 (CPU) <- X 1 <- Grade 2 <- reader 3 (CPU), X with no rows, the Grade far slower on the GPU. Shrinking leaves X
+// alone, which stays on the CPU.
+TEST(GpuCostModel, UnseededOpLeftAloneByShrinkingStaysOnTheCpu)
+{
+    CostFixture fixture(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
+
+    fixture.model.setCpuSeed(kGradeId, 0.01, 1.);
+    fixture.model.setGpuSeed(kGradeId, 10.);
+    fixture.traits[1] = unseededTraits();
+    fixture.traits[2] = GpuTaskTraits(kGradeId);
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Cpu);
+}
+
+// sink 0 (CPU) <- Grade 1 <- X 2 <- Grade 3 <- reader 4 (CPU), X a GPU-capable op with no rows. The two Grades gain on
+// their own, and X runs between them in their region, so nothing is downloaded between them.
+TEST(GpuCostModel, UnseededOpJoinsTheRegionOfItsGpuNeighbours)
 {
     CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
 
     fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.traits[2] = unseededTraits(GpuCostClass::ePointOp);
+    fixture.traits[2] = unseededTraits();
     fixture.traits[3] = GpuTaskTraits(kGradeId);
     fixture.place();
 
     ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members.size(), 3u);
+    const FrameGraph::Region& region = fixture.graph.regions[0];
+    EXPECT_EQ(region.members, std::vector<int>({ 3, 2, 1 }));
+    EXPECT_EQ(region.externalInputs, std::vector<int>({ 4 }));
+    ASSERT_EQ(region.outputs.size(), 3u);
+    for (int t : { 3, 2 }) {
+        const FrameGraph::Region::Output* output = findOutput(region, t);
+        ASSERT_TRUE(output) << t;
+        EXPECT_EQ(output->internalConsumers, 1) << t;
+        EXPECT_EQ(output->externalConsumers, 0) << t;
+    }
+    const FrameGraph::Region::Output* last = findOutput(region, 1);
+    ASSERT_TRUE(last);
+    EXPECT_EQ(last->internalConsumers, 0);
+    EXPECT_EQ(last->externalConsumers, 1);
     EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Gpu);
 }
 
-TEST(GpuCostModel, UnseededOtherNodeIsNeverPlaced)
+// sink 0 (CPU) <- OCIODisplay 1 <- Grade 2 <- OCIOColorSpace 3 <- reader 4 (CPU). The OCIO nodes have no measured
+// rows, so neither is priced, but they are GPU-capable neighbours of the seeded Grade, which gains on the GPU, and join its region: the colour
+// pipeline is one region whose only download is the display's output.
+TEST(GpuCostModel, OcioColorPipelineFormsOneRegion)
 {
     CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+    fixture.model.setCpuSeed(kGradeId, 10., 1.);
+    fixture.model.setGpuSeed(kGradeId, 0.01);
 
-    fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.traits[2] = unseededTraits(GpuCostClass::eOther);
-    fixture.traits[3] = GpuTaskTraits(kGradeId);
+    fixture.traits[1] = GpuTaskTraits("OCIODisplay");
+    fixture.traits[2] = GpuTaskTraits(kGradeId);
+    fixture.traits[3] = GpuTaskTraits("OCIOColorSpace");
+    EXPECT_FALSE(fixture.model.isPriced(fixture.traits[1]));
+    EXPECT_FALSE(fixture.model.isPriced(fixture.traits[3]));
+    EXPECT_TRUE(fixture.model.isPriced(fixture.traits[2]));
     fixture.place();
 
-    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Cpu);
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    const FrameGraph::Region& region = fixture.graph.regions[0];
+    EXPECT_EQ(region.members, std::vector<int>({ 3, 2, 1 }));
+    EXPECT_EQ(region.externalInputs, std::vector<int>({ 4 }));
+    ASSERT_EQ(region.outputs.size(), 3u);
+    for (int t : { 3, 2 }) {
+        const FrameGraph::Region::Output* output = findOutput(region, t);
+        ASSERT_TRUE(output) << t;
+        EXPECT_EQ(output->internalConsumers, 1) << t;
+        EXPECT_EQ(output->externalConsumers, 0) << t;
+    }
+    const FrameGraph::Region::Output* last = findOutput(region, 1);
+    ASSERT_TRUE(last);
+    EXPECT_EQ(last->internalConsumers, 0);
+    EXPECT_EQ(last->externalConsumers, 1);
+    for (int t = 1; t <= 3; ++t) {
+        EXPECT_EQ(fixture.graph.tasks[t].device, FrameGraph::Device::Gpu) << t;
+    }
+    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[4].device, FrameGraph::Device::Cpu);
 }
 
-// X is a point op that cannot render on the GPU, whatever its default cost.
+// sink 0 (CPU) <- OCIODisplay 1 <- OCIOColorSpace 2 <- reader 3 (CPU), no Grade. Neither OCIO node has measured rows,
+// but two connected GPU-capable nodes make a region on their own, so the conversion and the display run on the GPU
+// together.
+TEST(GpuCostModel, UnseededOcioPairFormsOneRegion)
+{
+    CostFixture fixture(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
+
+    fixture.traits[1] = GpuTaskTraits("OCIODisplay");
+    fixture.traits[2] = GpuTaskTraits("OCIOColorSpace");
+    EXPECT_FALSE(fixture.model.isPriced(fixture.traits[1]));
+    EXPECT_FALSE(fixture.model.isPriced(fixture.traits[2]));
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    const FrameGraph::Region& region = fixture.graph.regions[0];
+    EXPECT_EQ(region.members, std::vector<int>({ 2, 1 }));
+    EXPECT_EQ(region.externalInputs, std::vector<int>({ 3 }));
+    const FrameGraph::Region::Output* first = findOutput(region, 2);
+    ASSERT_TRUE(first);
+    EXPECT_EQ(first->internalConsumers, 1);
+    EXPECT_EQ(first->externalConsumers, 0);
+    const FrameGraph::Region::Output* last = findOutput(region, 1);
+    ASSERT_TRUE(last);
+    EXPECT_EQ(last->internalConsumers, 0);
+    EXPECT_EQ(last->externalConsumers, 1);
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[3].device, FrameGraph::Device::Cpu);
+}
+
+// X cannot render on the GPU, so it does not join the Grades' region.
 TEST(GpuCostModel, NodeThatCannotRenderOnGpuIsNeverPlaced)
 {
     CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
 
     fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.traits[2] = unseededTraits(GpuCostClass::ePointOp);
+    fixture.traits[2] = unseededTraits();
     fixture.traits[3] = GpuTaskTraits(kGradeId);
 
     PlacementInputs inputs;

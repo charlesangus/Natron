@@ -201,10 +201,6 @@ static_assert(seedGpuRowsAreValid(kSeedGpuRows), "a GPU seed row has an unknown 
 // The thread count the seed's threaded profiles ran with.
 const int kSeedThreads = 16;
 
-const char* const kGradePluginId = "net.sf.openfx.GradePlugin";
-const char* const kBlurPluginId = "net.sf.cimg.CImgBlur";
-const double kBlurDefaultSigma = 25.;
-
 const double kInfinity = std::numeric_limits<double>::infinity();
 
 double
@@ -394,12 +390,8 @@ GpuCostModel::traitsOf(const FrameGraph::Task& task) const
         return GpuTaskTraits();
     }
     GpuTaskTraits traits(node->getPluginID());
-    traits.inputCount = node->getNInputs();
     EffectInstancePtr effect = node->getEffectInstance();
     const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
-    if (const std::optional<OpKind> kind = native ? native->opKind() : std::nullopt) {
-        traits.costClass = (*kind == OpKind::Point) ? GpuCostClass::ePointOp : GpuCostClass::eSpatial;
-    }
     if (const std::optional<GpuCostHint> hint = native ? native->gpuCostHint(task.key.time, task.key.view, task.cacheMipmapLevel) : std::nullopt) {
         traits.sigma = hint->sigma;
         traits.iir = hint->iir;
@@ -514,22 +506,6 @@ GpuCostModel::seedThreadMsPerMpxLocked(const CpuRow& row) const
     return row.serialMsPerMpx * threads / speedupAt(threads, row.parallelSpeedup);
 }
 
-const GpuCostModel::CpuRow*
-GpuCostModel::findCpuRowOrDefaultLocked(const GpuTaskTraits& traits) const
-{
-    if (const CpuRow* row = findCpuRowLocked(traits)) {
-        return row;
-    }
-    if (traits.costClass == GpuCostClass::ePointOp) {
-        return findCpuRowLocked(GpuTaskTraits(kGradePluginId));
-    }
-    if (traits.costClass == GpuCostClass::eSpatial) {
-        return findCpuRowLocked(GpuTaskTraits(kBlurPluginId, kBlurDefaultSigma, false));
-    }
-
-    return nullptr;
-}
-
 bool
 GpuCostModel::gpuMsPerMpxLocked(const GpuTaskTraits& traits,
                                 double* msPerMpx) const
@@ -538,19 +514,6 @@ GpuCostModel::gpuMsPerMpxLocked(const GpuTaskTraits& traits,
         *msPerMpx = row->kernelMsPerMpx;
 
         return true;
-    }
-    if (traits.costClass == GpuCostClass::ePointOp) {
-        if (const GpuRow* row = findGpuRowLocked(GpuTaskTraits(kGradePluginId))) {
-            *msPerMpx = row->kernelMsPerMpx * (std::max(1, traits.inputCount) + 1) / 2.;
-
-            return true;
-        }
-    } else if (traits.costClass == GpuCostClass::eSpatial) {
-        if (const GpuRow* row = findGpuRowLocked(GpuTaskTraits(kBlurPluginId, kBlurDefaultSigma, false))) {
-            *msPerMpx = row->kernelMsPerMpx;
-
-            return true;
-        }
     }
 
     return false;
@@ -561,7 +524,7 @@ GpuCostModel::cpuMs(const GpuTaskTraits& traits,
                     double megapixels) const
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    const CpuRow* row = findCpuRowOrDefaultLocked(traits);
+    const CpuRow* row = findCpuRowLocked(traits);
 
     if (!row) {
         return 0.;
@@ -589,6 +552,14 @@ GpuCostModel::hasGpuCost(const GpuTaskTraits& traits) const
     double msPerMpx = 0.;
 
     return gpuMsPerMpxLocked(traits, &msPerMpx);
+}
+
+bool
+GpuCostModel::isPriced(const GpuTaskTraits& traits) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return findCpuRowLocked(traits) && findGpuRowLocked(traits);
 }
 
 double
@@ -697,6 +668,9 @@ GpuCostModel::estimateRegionGainMs(const FrameGraph& graph,
             continue;
         }
         const GpuTaskTraits traits = traitsOf(task);
+        if (!isPriced(traits)) {
+            continue;
+        }
         const double megapixels = megapixelsOf(task);
         gpuTotalMs += gpuMs(traits, megapixels);
         savedMs += cpuMs(traits, megapixels);
@@ -727,8 +701,6 @@ GpuCostModel::estimateRegionGainMs(const FrameGraph& graph,
     }
 
     const double fullTransferMs = transferMs(uploadBytes, downloadBytes);
-    // std::max turns the NaN of an infinite transfer less an unseeded member's infinite GPU time into 0, which leaves
-    // the gain at minus infinity.
     const double exposedMs = (!keepsRoot && pipelinesTransfers(graph, region, uploadBytes, downloadBytes, gpuTotalMs)) ? std::max(0., fullTransferMs - gpuTotalMs) : fullTransferMs;
 
     return savedMs - gpuTotalMs - exposedMs - kAcceptMarginMs;

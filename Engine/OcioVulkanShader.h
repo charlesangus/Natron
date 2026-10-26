@@ -30,8 +30,8 @@
 
 #ifdef NATRON_HAVE_GPU
 
+#include <atomic>
 #include <cstddef>
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -65,7 +65,12 @@ public:
         std::string sampler;
         unsigned binding = 0;
         gpu::GpuTextureDesc desc;
-        std::vector<float> texels;
+        // Shared, so that copies of the shader, and the inputs a node bakes from it for each
+        // render, do not copy the table.
+        std::shared_ptr<const std::vector<float>> texels;
+        // Identifies desc and texels, for the runtime's GpuTextureCache: equal tables share one
+        // device texture whatever shader or processor they came from.
+        std::string cacheKey;
     };
 
     /**
@@ -82,6 +87,10 @@ public:
     const std::string& cacheID() const { return _cacheID; }
     const std::string& functionName() const { return _functionName; }
     const std::vector<Texture>& textures() const { return _textures; }
+
+    // The type name of OCIO's uniform block, which has no instance name, so the name a compiled
+    // kernel reflects for it; empty when the shader has no uniforms.
+    const std::string& uniformBlockName() const { return _uniformBlockName; }
 
     // Bytes OCIO lays out in the uniform block; 0 when the shader has no uniforms.
     std::size_t uniformBytes() const { return _uniformBytes; }
@@ -102,9 +111,10 @@ public:
     OCIO_NAMESPACE::DynamicPropertyRcPtr dynamicProperty(OCIO_NAMESPACE::DynamicPropertyType type) const;
 
     /**
-     * @brief The GpuTextures of OCIO shaders on one runtime's device, created once per
-     * OcioVulkanShader::cacheID() and shared by every later lookup. The textures must be released
-     * before the runtime, and any recorded work that samples them must be finished first.
+     * @brief The GpuTextures of OCIO shaders on one runtime's device, taken from the runtime's
+     * GpuTextureCache under each Texture::cacheKey, so that a table is uploaded once and shared by
+     * the viewer and the OCIO nodes alike. The textures must be released before the runtime is
+     * recreated or destroyed, and any recorded work that samples them must be finished first.
      **/
     class Resources {
     public:
@@ -113,8 +123,8 @@ public:
         typedef std::vector<std::shared_ptr<const gpu::GpuTexture>> TextureList;
 
         /**
-         * @brief The textures of \p shader, in textures() order; creates them on the first lookup of
-         * its cacheID. Not thread safe.
+         * @brief The textures of \p shader, in textures() order, uploading those the runtime's
+         * cache does not hold. Thread safe.
          **/
         gpu::GpuStatus acquire(const OcioVulkanShader& shader, std::shared_ptr<const TextureList>& out);
 
@@ -123,13 +133,13 @@ public:
                                    const TextureList& textures,
                                    std::vector<gpu::GpuBinding>& bindings);
 
-        // Textures created so far, to tell a cache hit from a new upload.
-        std::size_t texturesCreated() const { return _texturesCreated; }
+        // Textures this object's acquire() calls uploaded because the runtime's cache did not hold
+        // them; tests use it to tell a cache hit from an upload.
+        std::size_t texturesCreated() const;
 
     private:
         gpu::GpuRuntime& _runtime;
-        std::map<std::string, std::shared_ptr<const TextureList>> _entries;
-        std::size_t _texturesCreated = 0;
+        std::atomic<std::size_t> _created;
     };
 
 private:
@@ -138,6 +148,7 @@ private:
     std::string _cacheID;
     std::string _functionName;
     std::vector<Texture> _textures;
+    std::string _uniformBlockName;
     std::size_t _uniformBytes = 0;
 };
 

@@ -900,100 +900,69 @@ try:
         check(row_canceled, "render-foreground-cancel: the Progress panel shows Paused or Canceled")
         gt.shot("render-foreground-cancel-panel.png")
 
-        # ---- render-foreground-separate-process: the same small foreground render with
-        # "Render in a separate process" on.
-        gt.section("render-foreground-separate-process")
-        settings = NatronEngine.natron.getSettings()
-        sep_param = settings.getParam("renderNewProcess")
-        if not check(sep_param is not None, "found the 'Render in a separate process' settings param"):
-            pass
-        else:
-            original_sep = sep_param.get()
-            try:
-                sep_param.set(True)
-                sep_path = os.path.join(gt.OUT, "render_sep.####.png")
-                writer_sep = create_writer(sep_path, 5600, 1500)
-                src_sep = create("net.sf.openfx.ConstantPlugin", 5300, 1500)
-                connect(writer_sep, 0, src_sep)
-                yield wait_for_render_button(writer_sep)
-                SEP_FRAMES = 5
+        # ---- render-background-negative-range: a background render runs in a separate process,
+        # whose command line cannot express a negative frame, so the dialog refuses a range that
+        # starts below 0 while "Render in background" is checked, and only then.
+        gt.section("render-background-negative-range")
+        neg_path = os.path.join(gt.OUT, "render_neg.####.png")
+        writer_neg = create_writer(neg_path, 5600, 1500)
+        src_neg = create("net.sf.openfx.ConstantPlugin", 5300, 1500)
+        connect(writer_neg, 0, src_neg)
+        yield wait_for_render_button(writer_neg)
 
-                ensure_progress_panel_not_current("render-foreground-separate-process")
-                render_button_sep = find_write_render_button(writer_sep)
-                if check(render_button_sep is not None,
-                         "render-foreground-separate-process: found the Render button"):
-                    open_render_dialog_and(render_button_sep.click, configure_fg_custom(1, SEP_FRAMES),
-                                           "render-foreground-separate-process")
-                yield ("sleep", 300)
-                pdlg_sep = find_progress_dialog()
-                if check(pdlg_sep is not None, "render-foreground-separate-process: the progress dialog is up"):
-                    gt.shot("render-foreground-separate-process-mid.png")
-                    check(not progress_panel_is_current_tab(),
-                         "render-foreground-separate-process: the Progress panel is not the current tab "
-                         "while the modal dialog is up")
-                    closed = yield ("until", lambda: find_progress_dialog() is None, 90.0)
-                    check(closed, "render-foreground-separate-process: the progress dialog closed by itself")
-                check(not progress_panel_is_current_tab(),
-                     "render-foreground-separate-process: the Progress panel did not become the current "
-                     "tab after the render finished")
-                yield from check_panel_stays_hidden_after_timer("render-foreground-separate-process")
-                yield ("sleep", SETTLE_MS)
-                sep_files = count_output_files(os.path.join(gt.OUT, "render_sep.*.png"))
-                check(len(sep_files) == SEP_FRAMES,
-                     "render-foreground-separate-process: all %d frames were written (got %d)"
-                     % (SEP_FRAMES, len(sep_files)))
+        def configure_negative():
+            label = "render-background-negative-range"
+            dlg = find_render_dialog()
+            if not check(dlg is not None, "%s: the RenderDialog opened" % label):
+                return
+            parts = render_dialog_parts(dlg)
 
-                # The child process's command line cannot express a negative frame, so the
-                # dialog refuses a range that starts below 0 while this setting is on.
-                gt.section("render-separate-process-negative-range")
+            def ok_enabled():
+                QApplication.processEvents()
+                if parts["buttons"] is None:
+                    return None
+                ok_btn = parts["buttons"].button(QDialogButtonBox.StandardButton.Ok)
+                return ok_btn is not None and ok_btn.isEnabled()
 
-                def configure_negative():
-                    label = "render-separate-process-negative-range"
-                    dlg = find_render_dialog()
-                    if not check(dlg is not None, "%s: the RenderDialog opened" % label):
-                        return
-                    parts = render_dialog_parts(dlg)
-                    if parts["combo"] is not None:
-                        set_combo_index(parts["combo"], 2)
-                    if check(parts["first"] is not None and parts["last"] is not None,
-                             "%s: found the first/last spin boxes" % label):
-                        set_line_edit_value(parts["first"], -5)
-                        set_line_edit_value(parts["last"], 5)
-                        if parts["step"] is not None:
-                            set_line_edit_value(parts["step"], 1)
-                    QApplication.processEvents()
-                    gt.shot("render-dialog-separate-process-negative.png")
-                    if check(parts["buttons"] is not None, "%s: found the dialog's button box" % label):
-                        ok_btn = parts["buttons"].button(QDialogButtonBox.StandardButton.Ok)
-                        check(ok_btn is not None and not ok_btn.isEnabled(),
-                             "%s: the Ok button is disabled" % label)
-                    error = render_dialog_parts(dlg)["error"]
-                    check(error is not None and "separate process" in error.text(),
-                         "%s: an inline error names the separate-process limit (got %r)"
-                         % (label, error.text() if error is not None else None))
-                    if parts["first"] is not None:
-                        set_line_edit_value(parts["first"], 0)
-                        QApplication.processEvents()
-                        if parts["buttons"] is not None:
-                            ok_btn = parts["buttons"].button(QDialogButtonBox.StandardButton.Ok)
-                            check(ok_btn is not None and ok_btn.isEnabled(),
-                                 "%s: the Ok button is enabled again once the range starts at 0" % label)
-                    if parts["buttons"] is not None:
-                        cancel_btn = parts["buttons"].button(QDialogButtonBox.StandardButton.Cancel)
-                        if cancel_btn is not None:
-                            cancel_btn.click()
+            if parts["combo"] is not None:
+                set_combo_index(parts["combo"], 2)
+            if not check(parts["first"] is not None and parts["last"] is not None
+                         and parts["background"] is not None and parts["buttons"] is not None,
+                         "%s: found the spin boxes, the background checkbox and the button box" % label):
+                return
+            set_line_edit_value(parts["first"], -5)
+            set_line_edit_value(parts["last"], 5)
+            if parts["step"] is not None:
+                set_line_edit_value(parts["step"], 1)
 
-                render_button_neg = find_write_render_button(writer_sep)
-                if check(render_button_neg is not None,
-                         "render-separate-process-negative-range: found the Render button"):
-                    open_render_dialog_and(render_button_neg.click, configure_negative,
-                                           "render-separate-process-negative-range")
-                yield ("sleep", SETTLE_MS)
-            finally:
-                try:
-                    sep_param.set(original_sep)
-                except Exception:
-                    report("NOTE could not restore the 'Render in a separate process' setting")
+            parts["background"].setChecked(False)
+            check(ok_enabled() is True,
+                  "%s: a foreground render may start below frame 0" % label)
+
+            parts["background"].setChecked(True)
+            check(ok_enabled() is False,
+                  "%s: the Ok button is disabled for a background render starting below 0" % label)
+            gt.shot("render-dialog-background-negative.png")
+            error = render_dialog_parts(dlg)["error"]
+            check(error is not None and "separate process" in error.text(),
+                  "%s: an inline error names the separate-process limit (got %r)"
+                  % (label, error.text() if error is not None else None))
+
+            set_line_edit_value(parts["first"], 0)
+            check(ok_enabled() is True,
+                  "%s: the Ok button is enabled again once the range starts at 0" % label)
+
+            cancel_btn = parts["buttons"].button(QDialogButtonBox.StandardButton.Cancel)
+            if cancel_btn is not None:
+                cancel_btn.click()
+
+        ensure_progress_panel_not_current("render-background-negative-range")
+        render_button_neg = find_write_render_button(writer_neg)
+        if check(render_button_neg is not None,
+                 "render-background-negative-range: found the Render button"):
+            open_render_dialog_and(render_button_neg.click, configure_negative,
+                                   "render-background-negative-range")
+        yield ("sleep", SETTLE_MS)
 
         faulthandler.cancel_dump_traceback_later()
 

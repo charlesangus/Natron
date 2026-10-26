@@ -127,7 +127,9 @@ private:
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     // Whether renderOp() reads input inputNb as a mask: it is connected and its selector is on.
     bool isKeyMaskUsed(int inputNb) const WARN_UNUSED_RETURN;

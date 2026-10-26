@@ -147,7 +147,7 @@ TEST_F(NativeReadRawTest, EachFixtureReadsAsRawWithItsChannelsMetadataAndPixels)
         ASSERT_TRUE(bool(read));
         EffectInstancePtr effect = read->getEffectInstance();
         EXPECT_EQ(eDataKindRaw, read->getEffectiveOutputDataKind());
-        EXPECT_EQ(fixture.channels, effect->getMetadataNComps(-1));
+        EXPECT_EQ(fixture.channels, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), -1));
         EXPECT_EQ(header->window, regionOfDefinition(read));
 
         const ImageMetadata metadata = outputMetadata(read);

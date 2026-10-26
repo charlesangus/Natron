@@ -386,6 +386,10 @@ struct KnobChange
 
 typedef std::list<KnobChange> KnobChanges;
 
+/**
+ * @brief IsolatedJob::refusesWrite(knob), for code that sees only this header.
+ **/
+bool isWriteRefusedByIsolatedJob(const KnobI* knob);
 
 class KnobI
     : public OverlaySupport
@@ -722,6 +726,9 @@ public:
                        bool hasRetVariable,
                        bool failIfInvalid)
     {
+        if (isWriteRefusedByIsolatedJob(this)) {
+            return;
+        }
         setExpressionInternal(dimension, expression, hasRetVariable, true, failIfInvalid);
     }
 
@@ -1107,6 +1114,14 @@ public:
     virtual void setIsPersistent(bool b) = 0;
 
     /**
+     * @brief Whether a render can read this knob's value. A knob that is not read by renders keeps
+     * accepting writes while a render or track reads its holder (the project's save bookkeeping,
+     * for instance). True by default; set when the knob is created, never changed afterwards.
+     **/
+    virtual bool isReadByRenders() const = 0;
+    virtual void setReadByRenders(bool b) = 0;
+
+    /**
      * @brief If set to false, the knob will not be able to use undo/redo actions.
      * By default this is set to true.
      **/
@@ -1242,7 +1257,14 @@ public:
                              const int listenerDimension,
                              const int listenedToDimension,
                              const KnobIPtr& listener) = 0;
-    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const = 0;
+    /**
+     * @brief Adds to nodes the nodes whose parameters this knob's expressions and links read,
+     * directly or through theirs, the nodes whose metadata they read, and the tracker nodes whose
+     * tracks they read. With metadataSources, also adds to it the nodes whose metadata they read.
+     **/
+    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                       std::set<NodePtr>* metadataSources = NULL) const
+        = 0;
 
 private:
     virtual void removeListener(KnobI* listener, int listenerDimension) = 0;
@@ -1468,6 +1490,53 @@ public:
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const = 0;
 };
 
+/**
+ * @brief Brackets a knob content write, from before the store until after the hash marks it
+ * raises. A knob stores its value before it marks its node, so a cache keyed by a node hash can
+ * otherwise derive from the new value and still read the old hash and mark count on both sides
+ * of the derive. A cache filled only when isSettled() held for a snapshot taken before its mark
+ * count, and the snapshot is unchanged after the derive, cannot have seen a write its hash misses:
+ * a write that began before the snapshot either ended, with its marks raised before the hash was
+ * read, or is still counted in it; one that began after it moves the snapshot.
+ **/
+class KnobContentWrite {
+public:
+    KnobContentWrite();
+    ~KnobContentWrite();
+
+    void finish();
+
+    static U64 snapshot();
+    static bool isSettled(U64 snapshot);
+
+private:
+    bool _open;
+};
+
+/**
+ * @brief While one lives on the calling thread, a plug-in's own edits there are refused rather
+ * than applied: knob values and keys it sets, and the options and properties it changes on its
+ * parameters. Held around a plug-in action that may run on any thread at any frame, which must
+ * leave the parameters as the main thread sees them; the refusals are counted so the holder can
+ * have the main thread redo the action and apply them.
+ **/
+class PluginEditsDeferral {
+public:
+    PluginEditsDeferral();
+    ~PluginEditsDeferral();
+
+    /// True, and the refusal counted, if a deferral lives on the calling thread.
+    static bool refuse();
+
+    bool hasRefused() const { return _refused > 0; }
+
+private:
+    PluginEditsDeferral(const PluginEditsDeferral&);
+    PluginEditsDeferral& operator=(const PluginEditsDeferral&);
+
+    PluginEditsDeferral* _previous;
+    int _refused;
+};
 
 ///Skins the API of KnobI by implementing most of the functions in a non templated manner.
 struct KnobHelperPrivate;
@@ -1756,6 +1825,8 @@ public:
     virtual bool getEvaluateOnChange() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getIsPersistent() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setIsPersistent(bool b) OVERRIDE FINAL;
+    virtual bool isReadByRenders() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void setReadByRenders(bool b) OVERRIDE FINAL;
     virtual void setCanUndo(bool val) OVERRIDE FINAL;
     virtual bool getCanUndo() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setIsMetadataSlave(bool slave) OVERRIDE FINAL;
@@ -1921,7 +1992,8 @@ public:
      **/
     virtual void addListener(bool isFromExpr, int fromExprDimension, int thisDimension, const KnobIPtr& knob) OVERRIDE FINAL;
     virtual void removeListener(KnobI* listener, int listenerDimension) OVERRIDE FINAL;
-    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const OVERRIDE FINAL;
+    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                       std::set<NodePtr>* metadataSources = NULL) const OVERRIDE FINAL;
     virtual void getListeners(KnobI::ListenerDimsMap& listeners) const OVERRIDE FINAL;
     virtual void clearExpressionsResults(int /*dimension*/) OVERRIDE {}
 
@@ -2621,10 +2693,22 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     friend class RecursionLevelRAII;
+    friend class IsolatedJob;
     struct KnobHolderPrivate;
     std::unique_ptr<KnobHolderPrivate> _imp;
 
+    // How many running IsolatedJobs read this holder.
+    std::atomic<int> _isolatedJobReaders { 0 };
+
 public:
+    /**
+     * @brief True while a running IsolatedJob reads this holder: content writes to its knobs are
+     * then refused outside that job.
+     **/
+    bool isReadByIsolatedJob() const
+    {
+        return _isolatedJobReaders.load(std::memory_order_acquire) > 0;
+    }
 
     enum MultipleParamsEditEnum
     {
@@ -2655,6 +2739,32 @@ public:
     void recreateUserKnobs(bool keepCurPageIndex);
 
     /**
+     * @brief Called by recreateUserKnobs() before any settings panel is rebuilt, whether or not
+     * there is one, and by a node once it has restored its user knobs, so that a holder can
+     * rearrange its user knobs to match what they now are.
+     **/
+    virtual void onUserKnobsChanged()
+    {
+    }
+
+    /**
+     * @brief Called on the main thread when the menu of one of the holder's choice knobs is about
+     * to open, so that a holder whose entries are not kept current can populate them first.
+     **/
+    virtual void refreshChoiceEntries(KnobChoice* /*knob*/)
+    {
+    }
+
+    /**
+     * @brief Called on the main thread when the holder's settings panel opens, or is created
+     * open, so that a holder can bring up to date what its panel shows from the rest of the
+     * project.
+     **/
+    virtual void onSettingsPanelOpened()
+    {
+    }
+
+    /**
      * @brief Wipe all knobs GUI and re-create it to synchronize it to the current internal state.
      * This may only be called on the main-thread. This is an expensive operation.
      **/
@@ -2683,19 +2793,8 @@ public:
     template <typename TYPE>
     std::shared_ptr<TYPE> getKnobByNameAndType(const std::string & name) const
     {
-        const KnobsVec& knobs = getKnobs();
-
-        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-            if ( (*it)->getName() == name ) {
-                std::shared_ptr<TYPE> isType = std::dynamic_pointer_cast<TYPE>(*it);
-                if (isType) {
-                    return isType;
-                }
-                break;
-            }
-        }
-
-        return std::shared_ptr<TYPE>();
+        // getKnobByName() locks the knob list, so this may be called from any thread.
+        return std::dynamic_pointer_cast<TYPE>(getKnobByName(name));
     }
 
     const std::vector<KnobIPtr> & getKnobs() const WARN_UNUSED_RETURN;
@@ -2758,17 +2857,23 @@ public:
     bool areKnobsFrozen() const;
 
     /**
-     * @brief Makes all output nodes connected downstream to this node abort any rendering.
-     * Should be called prior to changing the state of the user interface that could impact the
-     * final image.
+     * @brief Called before an edit that could change the final image: aborts the viewer renders
+     * downstream of this holder and lets them restart. Other renders never see an edit made while
+     * they run, so they are left alone.
      **/
-    virtual void abortAnyEvaluation(bool keepOldestRender = true) { Q_UNUSED(keepOldestRender); }
+    virtual void abortViewerRendersForEdit() { }
 
     /**
-     * @brief abortAnyEvaluation() for a change being made, deferred to the end of the outermost
-     * begin/endChanges bracket when the change is made inside a nested one.
+     * @brief Aborts every render downstream of this holder without restarting it, for a change
+     * that leaves nothing to render, such as deactivation.
      **/
-    void abortAnyEvaluationForChange();
+    virtual void abortAllRendersReadingThis() { }
+
+    /**
+     * @brief abortViewerRendersForEdit() for a change being made, deferred to the end of the
+     * outermost begin/endChanges bracket when the change is made inside a nested one.
+     **/
+    void abortViewerRendersForChange();
 
     /**
      * @brief Dequeues all values set in the queues for all knobs
@@ -2793,8 +2898,17 @@ public:
     void updateHasAnimation();
 
     //////////////////////////////////////////////////////////////////////////////////////////
-    std::shared_ptr<KnobPage> getOrCreateUserPageKnob();
+    /**
+     * @brief The first user page that scripts and the parameter manager made, which is where the
+     * Python creators put a new parameter. A user page the plug-in declares, such as one holding a
+     * variables group, is not it.
+     **/
     std::shared_ptr<KnobPage> getUserPageKnob() const;
+
+    /**
+     * @brief getUserPageKnob(), creating the "User" page when there is none.
+     **/
+    std::shared_ptr<KnobPage> getOrCreateUserPageKnob();
 
     /**
      * @brief These functions below are dynamic in a sense that they can be called at any time (on the main-thread)
@@ -2839,9 +2953,12 @@ public:
 
     bool isSetValueCurrentlyPossible() const;
 
-    void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const;
+    /**
+     * @brief KnobI::getAllExpressionDependenciesRecursive() for every knob of this holder.
+     **/
+    void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                               std::set<NodePtr>* metadataSources = NULL) const;
 
-    
 protected:
 
     //////////////////////////////////////////////////////////////////////////////////////////

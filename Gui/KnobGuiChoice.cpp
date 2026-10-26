@@ -237,11 +237,13 @@ KnobGuiChoice::createWidget(QHBoxLayout* layout)
         return;
     }
     _comboBox->setCascading( knob->isCascading() );
+    _comboBox->setMenuOnlySelection(knob->isMenuOnlySelection());
     onEntriesPopulated();
 
     QObject::connect( _comboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(onCurrentIndexChanged(int)) );
     QObject::connect( _comboBox, SIGNAL(itemNewSelected()), this, SLOT(onItemNewSelected()) );
     QObject::connect(_comboBox, SIGNAL(currentIndexReselected(int)), this, SLOT(onCurrentIndexReselected(int)));
+    QObject::connect(_comboBox, SIGNAL(menuAboutToShow()), this, SLOT(onMenuAboutToShow()));
     ///set the copy/link actions in the right click menu
     enableRightClickMenu(_comboBox, 0);
 
@@ -267,6 +269,17 @@ KnobGuiChoice::onCurrentIndexReselected(int i)
         return;
     }
     ignore_result(knob->setValue(i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL, true));
+}
+
+void
+KnobGuiChoice::onMenuAboutToShow()
+{
+    KnobChoicePtr knob = _knob.lock();
+    KnobHolder* holder = knob ? knob->getHolder() : 0;
+    if (holder) {
+        // A holder whose entries depend on the rest of the project lists them as they are now.
+        holder->refreshChoiceEntries(knob.get());
+    }
 }
 
 void

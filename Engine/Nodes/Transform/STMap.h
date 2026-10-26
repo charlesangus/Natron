@@ -50,6 +50,7 @@
 #define kSTMapParamWrapU "wrapU"
 #define kSTMapParamWrapV "wrapV"
 #define kSTMapParamFormatFrom "formatFrom"
+#define kSTMapParamUVAlpha "uvAlpha"
 
 #define kSTMapWrapClamp "clamp"
 #define kSTMapWrapRepeat "repeat"
@@ -132,6 +133,7 @@ private:
         double vScale = 1.;
         Resampler::WrapMode wrapU = Resampler::eWrapClamp;
         Resampler::WrapMode wrapV = Resampler::eWrapClamp;
+        bool uvAlpha = true;
     };
 
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -140,7 +142,7 @@ private:
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time, ViewIdx view, NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
@@ -178,6 +180,8 @@ private:
                                     ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual RectI getOpGpuInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -196,6 +200,10 @@ private:
 
     void resolveUVChannels(double time, ViewIdx view, UVChannel* u, UVChannel* v);
 
+    // The stored alpha channel of the layer U is read from (V's when U has none), the map's
+    // validity; invalid when that layer stores no alpha.
+    static UVChannel uvAlphaChannel(const UVChannel& u, const UVChannel& v);
+
     // The Source rectangle U and V are normalized to and wrap in, in pixels at scale: its
     // format, or its region of definition when it has no format. False when it has neither.
     bool getSourceDomain(double time, ViewIdx view, const RenderScale& scale, RectI* domain);
@@ -210,6 +218,7 @@ private:
     KnobBoolWPtr _clamp;
     KnobBoolWPtr _blackOutside;
     KnobChoiceWPtr _formatFrom;
+    KnobBoolWPtr _uvAlpha;
 };
 
 NATRON_NAMESPACE_EXIT

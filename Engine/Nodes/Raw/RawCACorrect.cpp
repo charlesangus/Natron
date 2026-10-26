@@ -239,7 +239,7 @@ RawCACorrect::getRegionsOfInterest(double time,
     if (!input || !settings || !settings->passThrough.empty()) {
         return;
     }
-    const double par = getAspectRatio(getSourceInput());
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     (*ret)[input] = PassExec::toCanonical(settings->sourceRoD, scale, par);
 }
 

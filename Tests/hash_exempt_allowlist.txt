@@ -9,14 +9,3 @@
 # the host rewrites from another knob that the sweep perturbs instead. A knob whose
 # change does not reach the hash is a hash gap: fix the hash instead of listing it here.
 # The sweep fails on an entry that no longer matches a knob, or whose knob now passes.
-
-# Host-owned mirrors of Natron's own layer and channel knobs. OfxEffectInstance hides these
-# OpenFX params and writes its twin knob's value over them on every push, including each time the
-# plugin repopulates the menu, so a direct edit is overwritten before the hash is read. The twin
-# (hostInputLayer, hostChannelU/V/A, hostUnPremultByChannel) carries the value and is swept.
-net.sf.openfx.Premult inputPlane  # host mirror of hostInputLayer, overwritten from it
-net.sf.openfx.Premult processAllPlanes  # host mirror of hostInputLayer's All entry, overwritten from it
-net.sf.openfx.Premult unPremultByChannel  # host mirror of hostUnPremultByChannel, overwritten from it
-net.sf.openfx.Unpremult inputPlane  # host mirror of hostInputLayer, overwritten from it
-net.sf.openfx.Unpremult processAllPlanes  # host mirror of hostInputLayer's All entry, overwritten from it
-net.sf.openfx.Unpremult unPremultByChannel  # host mirror of hostUnPremultByChannel, overwritten from it

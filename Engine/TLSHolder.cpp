@@ -30,6 +30,8 @@
 #include <cassert>
 #include <stdexcept>
 
+#include "Engine/FrameRenderContext.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/OfxClipInstance.h"
 #include "Engine/OfxHost.h"
 #include "Engine/OfxParamInstance.h"
@@ -220,15 +222,18 @@ AppTLS::cleanupTLSForThread()
 
 AppTLS::SpawnedThreadScope::SpawnedThreadScope(QThread* fromThread,
                                                const FrameRenderContext* frameContext,
+                                               const IsolatedJob* job,
                                                SpawnKindEnum kind)
     : _spawned(fromThread && fromThread != QThread::currentThread())
     , _previousFrameContext(tCurrentFrameContext)
+    , _previousJob(NULL)
     , _previousBudget(tThreadBudget)
     , _previousOpenMPThreads(0)
 {
     if (_spawned) {
         appPTR->getAppTLS()->softCopy(fromThread, QThread::currentThread(), kind);
         tCurrentFrameContext = frameContext;
+        _previousJob = IsolatedJob::exchangeCurrent(job);
         // The spawner already counted this thread as one of its own; nesting more parallelism here oversubscribes.
         tThreadBudget = 1;
         _previousOpenMPThreads = setOpenMPThreadsOfCurrentThread(1);
@@ -240,6 +245,7 @@ AppTLS::SpawnedThreadScope::~SpawnedThreadScope()
     if (_spawned) {
         appPTR->getAppTLS()->cleanupTLSForThread();
         tCurrentFrameContext = _previousFrameContext;
+        IsolatedJob::exchangeCurrent(_previousJob);
         tThreadBudget = _previousBudget;
         if (_previousOpenMPThreads > 0) {
             setOpenMPThreadsOfCurrentThread(_previousOpenMPThreads);
@@ -251,10 +257,14 @@ AppTLS::FrameContextScope::FrameContextScope(const FrameRenderContext* context,
                                              int budget,
                                              int runnablePriority)
     : _previous(tCurrentFrameContext)
+    , _previousJob(IsolatedJob::current())
     , _previousBudget(tThreadBudget)
     , _previousPriority(tRunnablePriority)
 {
     tCurrentFrameContext = context;
+    if (context) {
+        IsolatedJob::exchangeCurrent(context->getIsolatedJob());
+    }
     tThreadBudget = budget;
     tRunnablePriority = runnablePriority;
 }
@@ -262,6 +272,7 @@ AppTLS::FrameContextScope::FrameContextScope(const FrameRenderContext* context,
 AppTLS::FrameContextScope::~FrameContextScope()
 {
     tCurrentFrameContext = _previous;
+    IsolatedJob::exchangeCurrent(_previousJob);
     tThreadBudget = _previousBudget;
     tRunnablePriority = _previousPriority;
     // A task run inline from within another task's scope must not drop the data the outer task is rendering with.

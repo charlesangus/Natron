@@ -95,13 +95,15 @@ private:
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void getDeepLayers(double time, ViewIdx view, std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
 
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    std::string getFilenameAtTime(double time) const WARN_UNUSED_RETURN;
+    std::string getFilenameAt(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     KnobFileWPtr _filename;
 

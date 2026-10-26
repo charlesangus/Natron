@@ -209,7 +209,9 @@ DeepToImage::getComponentsNeededAndProduced(double time,
 }
 
 StatusEnum
-DeepToImage::getPreferredMetadata(NodeMetadata& metadata)
+DeepToImage::getPreferredMetadataAt(double /*time*/,
+                                    ViewIdx /*view*/,
+                                    NodeMetadata& metadata)
 {
     // Resolved against a fixed RGBA storage rather than the input's layers at some frame, because
     // metadata must not depend on the current frame. A selection with no colour row leaves the

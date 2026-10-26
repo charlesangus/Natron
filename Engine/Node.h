@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <functional>
 #include <list>
 #include <map>
 #include <set>
@@ -303,6 +304,15 @@ public:
     bool getHashValueIfUpToDate(U64* hash) const;
 
     /**
+     * @brief A count that moves whenever the hash is marked dirty, by an edit of this node or of
+     * anything it folds in, after applying the marks queued so far. A result derived from what
+     * the hash covers may be stored under the hash only if this count, read before the hash,
+     * is the same afterwards: a hash read once cannot tell that an input changed and changed back
+     * during the derivation. MT-safe.
+     **/
+    U64 getHashMarkCount() const;
+
+    /**
      * @brief Marks the hash for a recompute on its next read, and with it the hashes of every
      * node that folds this one in. Callable from any thread, under any lock: the nodes downstream
      * are marked before the next hash read on any thread.
@@ -313,7 +323,18 @@ public:
      * @brief Marks every node's hash dirty, for changes to state all of them fold in, such as
      * the project's render settings. Lock-free.
      **/
-    static void invalidateAllHashes();
+    static void invalidateAllHashes(const char* reason = "invalidateAllHashes",
+                                    const KnobI* knob = 0);
+
+    /**
+     * @brief Called with every move of a hash mark count: a node's own mark (`node` the node
+     * marked), a mark reaching it from upstream, or a move of the count all nodes share (`node`
+     * null). `knob` is the knob whose change marked, when known, and is only valid during the
+     * call. Calls are serialized, from whichever thread marks; the trace must not mark. An empty
+     * function removes it. For tests.
+     **/
+    typedef std::function<void(const Node* node, const char* reason, const KnobI* knob)> HashMarkTrace;
+    static void setHashMarkTraceForTesting(const HashMarkTrace& trace);
 
     /**
      * @brief Marks the hash dirty and recomputes it now. Returns true if it changed.
@@ -1437,9 +1458,7 @@ public:
     bool hasAnyPersistentMessage() const;
 
     /**
-     * @brief The persistent message. A missing-channel message is first rechecked by
-     * refreshInputRelatedDataIfStale(), which may recompute dirty hashes, so the caller must not
-     * hold a lock it takes.
+     * @brief The persistent message.
      **/
     void getPersistentMessage(QString* message, int* type, bool prefixLabelAndType = true) const;
 
@@ -1689,46 +1708,55 @@ public:
 
     /**
      * @brief What an edit of this node's inputs refreshes: this node's input-related data now,
-     * after that of its dirty inputs, while the nodes downstream are only marked stale (see
-     * markDownstreamInputRelatedDataStale()). Main thread only.
+     * after that of its dirty inputs, then refreshShownDownstreamInputRelatedData(). Main thread
+     * only.
      **/
     void refreshInputRelatedDataAfterInputChange();
 
     /**
-     * @brief Marks the input-related data (metadata, produced layers, channel selectors) of every
-     * node downstream of this one stale, reading no hash, so that a branch nothing reads is never
-     * rehashed for it. Each node is refreshed by refreshInputRelatedDataIfStale() once it is read;
-     * the nodes whose settings panel is visible are shown, and are refreshed now. Main thread only.
+     * @brief Marks the input-related data (produced layers, channel selectors, identity state,
+     * the current-frame metadata hook) of every node downstream of this one dirty, reading no
+     * hash, so that a branch nothing shows is never rehashed for it. Renders read none of it but
+     * the draft flag, which is settled here for every node reached. The nodes whose settings panel
+     * is visible, or that show a missing-channel message, are refreshed now; the others when their
+     * panel is shown. Main thread only.
      **/
-    void markDownstreamInputRelatedDataStale();
+    void refreshShownDownstreamInputRelatedData();
 
     /**
-     * @brief Refreshes this node's input-related data, after that of its dirty inputs, if an edit
-     * upstream left it stale. A viewer refreshes only the inputs it shows. Reads the hashes of the
-     * nodes it refreshes. Callable from any thread, but does nothing off the main thread, inside a
-     * hash recompute or another refresh, while the project loads or closes, or while a node tree
-     * is being created: those read the data as it stands, and the refresh that follows them
-     * covers it.
+     * @brief The UI hook of a settings panel being shown: refreshes this node's input-related
+     * data, after that of its dirty inputs, if an edit upstream left it dirty, and otherwise only
+     * fires EffectInstance::refreshCurrentFrameMetadata() at the current frame. A viewer
+     * refreshes only the inputs it shows. Does nothing unless canRunMainThreadMetadataRefresh(),
+     * or inside another refresh.
      **/
-    void refreshInputRelatedDataIfStale();
+    void refreshPanelInputRelatedData();
 
     /**
-     * @brief What a render of this node refreshes before it reads metadata and layers:
-     * refreshInputRelatedDataIfStale() on every node upstream of it, the paint trees of RotoPaint
-     * nodes and the nodes inside groups included, and through a viewer only the inputs it shows. Each node is looked at, not
-     * only the stale ones' inputs: a viewer refreshed while it showed other inputs, and a RotoPaint
-     * node whose paint tree was edited, are clean above stale nodes. Does nothing off the main
-     * thread.
+     * @brief Whether a main-thread refresh of this node's metadata side effects (and an OpenFX
+     * node's time-invariant derivation, which runs plug-in actions and may set parameters) may run
+     * here: on the main thread, outside a hash recompute and an InputRelatedDataRefreshDeferral,
+     * on a created, activated node not being destroyed, while the project is not closing, and,
+     * while it loads or a node tree is being created, only inside the refresh that follows those.
      **/
-    void refreshInputRelatedDataForRender();
-
-    bool isInputRelatedDataStale() const;
+    bool canRunMainThreadMetadataRefresh() const;
 
     /**
-     * @brief Has the main thread run refreshInputRelatedDataIfStale() on this node soon, for a
-     * reader off the main thread that found it stale. Callable from any thread.
+     * @brief While one lives on the calling thread, canRunMainThreadMetadataRefresh() is false
+     * there. Held by a caller that may sit under a lock a refresh takes in the other order: an
+     * OpenFX clip fetching its input's metadata runs under the host's metadata mutex, while a
+     * refresh takes an effect's clip preferences lock for writing, which a render holds for
+     * reading while it waits on that same metadata mutex.
      **/
-    void requestInputRelatedDataRefresh();
+    class InputRelatedDataRefreshDeferral {
+    public:
+        InputRelatedDataRefreshDeferral();
+        ~InputRelatedDataRefreshDeferral();
+
+    private:
+        InputRelatedDataRefreshDeferral(const InputRelatedDataRefreshDeferral&);
+        InputRelatedDataRefreshDeferral& operator=(const InputRelatedDataRefreshDeferral&);
+    };
 
     void markAllInputRelatedDataDirty();
 
@@ -1833,7 +1861,8 @@ public:
     /**
      * @brief Registers every non-Color layer this node produces (per
      * getComponentsNeededAndProduced_public()'s output entry) with the project-level
-     * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData().
+     * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData() and when
+     * the timeline moves to another frame.
      **/
     void registerProducedLayers();
 
@@ -1853,6 +1882,12 @@ public:
     bool handleFormatKnob(KnobI* knob);
 
     QString makeDocumentation(bool genHTML) const;
+
+    /**
+     * @brief Whether the documentation of \p pluginID lists menus built from the project's
+     * OpenColorIO config, so that it must be generated live rather than read from a static page.
+     **/
+    static bool documentationDependsOnOcioConfig(const std::string& pluginID);
 
     void refreshPreviewsAfterProjectLoad();
 
@@ -1948,7 +1983,9 @@ private:
      * @brief Marks this node, and if includeGroupContents every node inside it when it is a
      * group. Its dependents are marked by the next flushHashDirtyMarks().
      **/
-    void markHashDirtyInternal(bool includeGroupContents);
+    void markHashDirtyInternal(bool includeGroupContents,
+                               const char* reason,
+                               const KnobI* knob);
 
     /**
      * @brief Marks the dependents of every node marked since the last flush. Any hash read
@@ -1974,6 +2011,7 @@ private:
     /**
      * @brief Recomputes the hashes if they are dirty. With requireCleanInputs, gives up and
      * returns false if a hash it folds in is dirty, which only a concurrent mark or a cycle causes.
+     * Without it, folds the dirty hash in but leaves this node dirty.
      **/
     bool recomputeHashIfDirty(bool requireCleanInputs, HashWalk* walk);
 

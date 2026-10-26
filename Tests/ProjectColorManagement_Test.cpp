@@ -154,6 +154,64 @@ TEST(ProjectColorManagement, DisplayProcessorMatchesADirectlyBuiltOCIOProcessor)
     }
 }
 
+namespace {
+ProjectColorManagement::TransformProcessorPtr
+slopeProcessor(const ProjectColorManagement& cm,
+               int i)
+{
+    OCIO_NAMESPACE::CDLTransformRcPtr cdl = OCIO_NAMESPACE::CDLTransform::Create();
+    const double slope[3] = { 1. + 0.001 * i, 1., 1. };
+    cdl->setSlope(slope);
+    std::string error;
+    ProjectColorManagement::TransformProcessorPtr p = cm.getTransformProcessor(cdl, std::vector<std::pair<std::string, std::string>>(), &error);
+    EXPECT_TRUE(p && p->cpu) << error;
+
+    return p;
+}
+
+void
+expectSlope(const ProjectColorManagement::TransformProcessorPtr& p,
+            int i)
+{
+    ASSERT_TRUE(p && p->cpu);
+    float rgb[3] = { 0.5f, 0.5f, 0.5f };
+    p->cpu->applyRGB(rgb);
+    EXPECT_NEAR(0.5 * (1. + 0.001 * i), rgb[0], 1e-5) << i;
+    EXPECT_NEAR(0.5, rgb[1], 1e-6) << i;
+}
+}
+
+// Every distinct transform, such as each value a CDL slider passes through, would otherwise stay cached for the
+// session. Past the cap the least recently used processor goes, and one a caller still holds keeps working.
+TEST(ProjectColorManagement, TransformCacheEvictsTheLeastRecentlyUsedPastItsCap)
+{
+    ProjectColorManagement cm;
+    std::string error;
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(kStudioURI, std::string(), &error)) << error;
+    const int cap = static_cast<int>(ProjectColorManagement::kTransformCacheCapacity);
+
+    const ProjectColorManagement::TransformProcessorPtr first = slopeProcessor(cm, 0);
+    const ProjectColorManagement::TransformProcessorPtr second = slopeProcessor(cm, 1);
+    for (int i = 2; i < cap; ++i) {
+        slopeProcessor(cm, i);
+    }
+    EXPECT_EQ(ProjectColorManagement::kTransformCacheCapacity, cm.getTransformCacheSize());
+    // Using the first makes the second the oldest.
+    EXPECT_EQ(first, slopeProcessor(cm, 0));
+
+    const ProjectColorManagement::TransformProcessorPtr overflow = slopeProcessor(cm, cap);
+    EXPECT_EQ(ProjectColorManagement::kTransformCacheCapacity, cm.getTransformCacheSize());
+    expectSlope(overflow, cap);
+    EXPECT_EQ(first, slopeProcessor(cm, 0));
+    EXPECT_EQ(overflow, slopeProcessor(cm, cap));
+
+    expectSlope(second, 1);
+    const ProjectColorManagement::TransformProcessorPtr rebuilt = slopeProcessor(cm, 1);
+    EXPECT_NE(second, rebuilt);
+    expectSlope(rebuilt, 1);
+    EXPECT_EQ(ProjectColorManagement::kTransformCacheCapacity, cm.getTransformCacheSize());
+}
+
 TEST(ProjectColorManagement, EqualLookupsShareACacheID)
 {
     ProjectColorManagement cm;
@@ -528,6 +586,57 @@ TEST_F(ProjectColorManagementPageTest, EveryColorKnobRoundTripsThroughSaveAndLoa
     }
     EXPECT_EQ(expectedView, activeID("viewerView"));
     EXPECT_EQ(expected[0], project()->getWorkingColorSpace());
+}
+
+namespace {
+// A raw config that also has the colourspaces lin_a and lin_b, with \p sceneLinear as its scene_linear role.
+QString
+writeTwoSpaceConfig(const QTemporaryDir& dir,
+                    const char* fileName,
+                    const char* sceneLinear)
+{
+    OCIO_NAMESPACE::ConfigRcPtr config = OCIO_NAMESPACE::Config::CreateRaw()->createEditableCopy();
+    const char* const names[] = { "lin_a", "lin_b" };
+    for (const char* name : names) {
+        OCIO_NAMESPACE::ColorSpaceRcPtr space = OCIO_NAMESPACE::ColorSpace::Create();
+        space->setName(name);
+        space->setIsData(false);
+        config->addColorSpace(space);
+    }
+    config->setRole("scene_linear", sceneLinear);
+    const QString file = QDir(dir.path()).filePath(QString::fromUtf8(fileName));
+    std::ofstream out(file.toStdString());
+    config->serialize(out);
+
+    return file;
+}
+}
+
+// A menu at the outgoing config's default follows the new config's default without a warning, even when the new
+// config also has the old name; a name the user picked stays.
+TEST_F(ProjectColorManagementPageTest, SwitchingConfigMovesMenusStillAtTheOldDefaultEvenWhenTheNewConfigHasThem)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString fileA = writeTwoSpaceConfig(tmp, "a.ocio", "lin_a");
+    const QString fileB = writeTwoSpaceConfig(tmp, "b.ocio", "lin_b");
+
+    configFileKnob()->setValue(fileA.toStdString());
+    choiceKnob("ocioConfig")->setValueFromID(kCustomConfigID, 0);
+    ASSERT_EQ(QFileInfo(fileA).canonicalFilePath().toStdString(), project()->getColorManagement()->getConfigSource());
+    ASSERT_EQ("lin_a", project()->getWorkingColorSpace());
+    ASSERT_EQ("lin_a", activeID("colorSpaceFloat"));
+    choiceKnob("colorSpace8Bit")->setValueFromID("raw", 0);
+    ASSERT_EQ("raw", activeID("colorSpace8Bit"));
+    appPTR->clearErrorLog_mt_safe();
+
+    configFileKnob()->setValue(fileB.toStdString());
+    ASSERT_EQ(QFileInfo(fileB).canonicalFilePath().toStdString(), project()->getColorManagement()->getConfigSource());
+    ASSERT_TRUE(hasEntry("workingSpace", "lin_a"));
+    EXPECT_EQ("lin_b", project()->getWorkingColorSpace());
+    EXPECT_EQ("lin_b", activeID("colorSpaceFloat"));
+    EXPECT_EQ("raw", activeID("colorSpace8Bit"));
+    EXPECT_TRUE(colorFallbackWarnings().empty());
 }
 
 TEST_F(ProjectColorManagementPageTest, SwitchingToCGRepopulatesKeepsSharedNamesAndFallsBackOnceForStudioOnlyNames)

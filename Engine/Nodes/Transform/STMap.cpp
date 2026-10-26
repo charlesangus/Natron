@@ -78,13 +78,15 @@ inputRegion(const EffectInstancePtr& input,
     return input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, rod, &isProjectFormat) != eStatusFailed;
 }
 
-// One channel of the UV input, locked on the calling thread; with no image it reads 0.
+// One channel of the UV input, locked on the calling thread; with no image, and outside its
+// bounds, it reads outside.
 struct UVPlane {
     ImagePtr image;
     int channel = -1;
     int nComps = 0;
     RectI bounds;
     std::shared_ptr<Image::ReadAccess> access;
+    float outside = 0.f;
 
     void readRow(int x0,
                  int y,
@@ -92,11 +94,11 @@ struct UVPlane {
                  float* row) const
     {
         if (!access) {
-            std::fill(row, row + width, 0.f);
+            std::fill(row, row + width, outside);
 
             return;
         }
-        PassExec::readChannelRow(image.get(), access.get(), bounds, nComps, channel, x0, y, width, 0.f, row);
+        PassExec::readChannelRow(image.get(), access.get(), bounds, nComps, channel, x0, y, width, outside, row);
     }
 };
 } // namespace
@@ -225,6 +227,15 @@ STMap::initializeKnobs()
     page->addKnob(formatFrom);
     _formatFrom = formatFrom;
 
+    KnobBoolPtr uvAlpha = createKnob<KnobBool>(tr("UV Alpha"));
+    uvAlpha->setName(kSTMapParamUVAlpha);
+    uvAlpha->setDefaultValue(true);
+    uvAlpha->setHintToolTip(tr("When checked, the alpha of the layer U Channel reads from marks where the map holds a "
+                               "position: output pixels where it is 0 or less are black. A layer without alpha, or a "
+                               "pixel outside the UV input's region of definition, counts as opaque."));
+    page->addKnob(uvAlpha);
+    _uvAlpha = uvAlpha;
+
     KnobChoicePtr filter = createKnob<KnobChoice>(tr(kResamplerParamFilterTypeLabel));
     filter->setName(kResamplerParamFilterType);
     filter->setHintToolTip(tr(kResamplerParamFilterTypeHint));
@@ -301,6 +312,10 @@ STMap::readSettings(double time,
     };
     settings->wrapU = wrapMode(_wrapU.lock());
     settings->wrapV = wrapMode(_wrapV.lock());
+    KnobBoolPtr uvAlpha = _uvAlpha.lock();
+    if (uvAlpha) {
+        settings->uvAlpha = uvAlpha->getValueAtTime(time, 0, view);
+    }
 } // STMap::readSettings
 
 void
@@ -326,6 +341,22 @@ STMap::resolveUVChannels(double time,
     }
 }
 
+STMap::UVChannel
+STMap::uvAlphaChannel(const UVChannel& u,
+                      const UVChannel& v)
+{
+    const UVChannel& used = u.valid ? u : v;
+    UVChannel alpha;
+    if (!used.valid || !used.layer.isColorLayer() || !ImageLayerDesc::colorStorageBits(used.layer).test(3)) {
+        return alpha;
+    }
+    alpha.channel = ImageLayerDesc::colorViewChannelIndex(ImageLayerDesc::colorViewForNComps(used.layer.getNumComponents()).getLayerID(), 3);
+    alpha.layer = used.layer;
+    alpha.valid = (alpha.channel >= 0) && (alpha.channel < used.layer.getNumComponents());
+
+    return alpha;
+}
+
 bool
 STMap::getSourceDomain(double time,
                        ViewIdx view,
@@ -336,7 +367,8 @@ STMap::getSourceDomain(double time,
     if (!source) {
         return false;
     }
-    const RectI format = source->getOutputFormat();
+    const NodeMetadataConstPtr sourceMetadata = source->getRenderMetadata(time, view);
+    const RectI format = sourceMetadata->getOutputFormat();
     if (!format.isNull()) {
         domain->x1 = (int)std::floor(format.x1 * scale.toOfxPointD().x);
         domain->y1 = (int)std::floor(format.y1 * scale.toOfxPointD().y);
@@ -349,7 +381,7 @@ STMap::getSourceDomain(double time,
     if (!inputRegion(source, time, view, scale, &rod) || rod.isNull()) {
         return false;
     }
-    *domain = rod.toPixelEnclosing(scale, source->getAspectRatio(-1));
+    *domain = rod.toPixelEnclosing(scale, sourceMetadata->getPixelAspectRatio(-1));
 
     return !domain->isNull();
 }
@@ -368,15 +400,20 @@ STMap::route(double time,
 }
 
 StatusEnum
-STMap::getPreferredMetadata(NodeMetadata& metadata)
+STMap::getPreferredMetadataAt(double time,
+                              ViewIdx view,
+                              NodeMetadata& metadata)
 {
+    if (route(time, view).kind == Route::Kind::Black) {
+        return StagedImageEffect::getPreferredMetadataAt(time, view, metadata);
+    }
     // The output planes are the Source's, whatever the UV input carries.
     if (getInput(kSTMapInputSource)) {
         metadata.setNComps(-1, metadata.getNComps(kSTMapInputSource));
     }
-    EffectInstancePtr uv = getInput(kSTMapInputUV);
-    if (uv) {
-        const RectI format = uv->getOutputFormat();
+    const NodeMetadataConstPtr uvMetadata = getInputMetadataAt(kSTMapInputUV, time, view);
+    if (uvMetadata) {
+        const RectI format = uvMetadata->getOutputFormat();
         if (!format.isNull()) {
             metadata.setOutputFormat(format);
         }
@@ -402,9 +439,10 @@ STMap::getRegionOfDefinition(U64 /*hash*/,
 
     KnobChoicePtr formatFrom = _formatFrom.lock();
     const bool fromRoD = formatFrom && (formatFrom->getValueAtTime(time, 0, view) == 1);
-    const RectI format = uv->getOutputFormat();
+    const NodeMetadataConstPtr uvMetadata = uv->getRenderMetadata(time, view);
+    const RectI format = uvMetadata->getOutputFormat();
     if (!fromRoD && !format.isNull()) {
-        const double par = uv->getAspectRatio(-1);
+        const double par = uvMetadata->getPixelAspectRatio(-1);
         *rod = RectD(format.x1 * par, format.y1, format.x2 * par, format.y2);
     } else if (!inputRegion(uv, time, view, scale, rod)) {
         return eStatusFailed;
@@ -449,7 +487,7 @@ STMap::getRegionsOfInterest(double time,
     // The Jacobians read UV one pixel beyond the window on every side.
     EffectInstancePtr uv = getInput(kSTMapInputUV);
     if (uv) {
-        const double par = getAspectRatio(-1);
+        const double par = getRenderMetadata(time, view)->getPixelAspectRatio(-1);
         const double dx = par / scale.toOfxPointD().x;
         const double dy = 1. / scale.toOfxPointD().y;
         RectD uvRoI(renderWindow.x1 - dx, renderWindow.y1 - dy, renderWindow.x2 + dx, renderWindow.y2 + dy);
@@ -508,6 +546,10 @@ STMap::renderOp(const RenderActionArgs& args,
     // U and V, fetched and locked here, on the calling thread; the band threads only read
     // through these.
     UVPlane uvPlanes[2];
+    // Off the map, as with no map at all, every position is valid, so an opaque map renders the
+    // same with UV Alpha on or off.
+    UVPlane alphaPlane;
+    bool gated = false;
     if (hasDomain) {
         UVChannel uvChannels[2];
         resolveUVChannels(args.time, args.view, &uvChannels[0], &uvChannels[1]);
@@ -534,6 +576,16 @@ STMap::renderOp(const RenderActionArgs& args,
             uvPlanes[i].nComps = (int)uvImages[i]->getComponentsCount();
             uvPlanes[i].bounds = uvImages[i]->getBounds();
             uvPlanes[i].access = std::make_shared<Image::ReadAccess>(uvImages[i].get());
+        }
+        if (settings.uvAlpha) {
+            const UVChannel alpha = uvAlphaChannel(uvChannels[0], uvChannels[1]);
+            const UVPlane& holder = uvChannels[0].valid ? uvPlanes[0] : uvPlanes[1];
+            if (alpha.valid && holder.access && (alpha.channel < holder.nComps)) {
+                alphaPlane = holder;
+                alphaPlane.channel = alpha.channel;
+                alphaPlane.outside = 1.f;
+                gated = true;
+            }
         }
     }
 
@@ -622,6 +674,15 @@ STMap::renderOp(const RenderActionArgs& args,
                 Resampler::resampleRowFromCoords(source, &sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width,
                                                  settings.filter, settings.clamp, settings.blackOutside, settings.wrapU, settings.wrapV,
                                                  &out[0], io.nComps, &domain);
+                if (gated) {
+                    std::vector<float> alphaRow(io.width);
+                    alphaPlane.readRow(io.x0, io.y, io.width, &alphaRow[0]);
+                    for (int i = 0; i < io.width; ++i) {
+                        if (!(alphaRow[i] > 0.f)) {
+                            std::fill(&out[(std::size_t)i * io.nComps], &out[(std::size_t)(i + 1) * io.nComps], 0.f);
+                        }
+                    }
+                }
             }
             for (int c = 0; c < io.nComps; ++c) {
                 if (!io.channels[pixelKernelChannelBit(io.nComps, c)]) {
@@ -715,14 +776,16 @@ STMap::getOpGpuInputLayer(int inputNb,
 
 RectI
 STMap::getOpGpuInputRoI(int inputNb,
+                        double time,
+                        ViewIdx view,
                         const RectI& outputRect,
                         const RenderScale& scale) const
 {
     if ((inputNb == kSTMapInputSource) || (inputNb == kSTMapInputUV)) {
-        return warpGpuInputRoI(*this, inputNb, kSTMapInputSource, kSTMapInputUV, outputRect, scale);
+        return warpGpuInputRoI(*this, inputNb, kSTMapInputSource, kSTMapInputUV, time, view, outputRect, scale);
     }
 
-    return StagedImageEffect::getOpGpuInputRoI(inputNb, outputRect, scale);
+    return StagedImageEffect::getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
 }
 
 StatusEnum
@@ -764,7 +827,18 @@ STMap::renderOpGpu(const GpuRenderArgs& args)
     setWarpGpuDouble(domain.width(), params.width);
     setWarpGpuDouble(domain.height(), params.height);
 
-    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::stmap, params, kSTMapInputUV, uvLayer, uChannel, vChannel);
+    int alphaChannel = -1;
+    if (settings.uvAlpha) {
+        UVChannel u;
+        UVChannel v;
+        resolveUVChannels(query.time, query.view, &u, &v);
+        const UVChannel alpha = uvAlphaChannel(u, v);
+        if (alpha.valid && (alpha.layer == uvLayer)) {
+            alphaChannel = alpha.channel;
+        }
+    }
+
+    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::stmap, params, kSTMapInputUV, uvLayer, uChannel, vChannel, alphaChannel);
 #else
     Q_UNUSED(args);
 

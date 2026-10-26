@@ -202,7 +202,7 @@ TEST_F(NativeBlurGpuTest, InputRegionIsTheSourceRegionOfInterest)
         const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
         BlurParams params;
         blur->getParams(kTime, ViewIdx(0), &params);
-        EXPECT_EQ(Blur::getSourceRoI(rect, scale, params), blur->getGpuInputRoI(0, rect, scale)) << "mipmap " << mipmapLevel;
+        EXPECT_EQ(Blur::getSourceRoI(rect, scale, params), blur->getGpuInputRoI(0, blur->getCurrentTime(), blur->getCurrentView(), rect, scale)) << "mipmap " << mipmapLevel;
     }
 }
 
@@ -315,7 +315,7 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRender)
                 ASSERT_EQ(4u, cpu.channels.size()) << what;
                 ASSERT_EQ(roi, cpu.window) << what;
 
-                const RectI inputRoI = blur->getGpuInputRoI(0, roi, scale);
+                const RectI inputRoI = blur->getGpuInputRoI(0, blur->getCurrentTime(), blur->getCurrentView(), roi, scale);
                 RenderedPlane in;
                 ASSERT_TRUE(renderColor(source, mipmapLevel, inputRoI, &in)) << what;
                 ASSERT_EQ(inputRoI, in.window) << what;
@@ -486,7 +486,7 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixAndChannels)
                 ASSERT_EQ(4u, cpu.channels.size()) << what;
                 ASSERT_EQ(roi, cpu.window) << what;
 
-                const RectI inputRoI = blur->getGpuInputRoI(0, roi, scale);
+                const RectI inputRoI = blur->getGpuInputRoI(0, blur->getCurrentTime(), blur->getCurrentView(), roi, scale);
                 RenderedPlane in;
                 ASSERT_TRUE(renderColor(source, mipmapLevel, inputRoI, &in)) << what;
                 ASSERT_EQ(inputRoI, in.window) << what;
@@ -586,7 +586,7 @@ TEST_F(NativeBlurGpuTest, RecursiveAndBoxFiltersMatchTheCpuRender)
                 ASSERT_TRUE(renderColor(node, 0, roi, &cpu)) << what.str();
                 ASSERT_EQ(4u, cpu.channels.size()) << what.str();
 
-                const RectI inputRoI = blur->getGpuInputRoI(0, roi, RenderScale::identity);
+                const RectI inputRoI = blur->getGpuInputRoI(0, blur->getCurrentTime(), blur->getCurrentView(), roi, RenderScale::identity);
                 RenderedPlane in;
                 ASSERT_TRUE(renderColor(source, 0, inputRoI, &in)) << what.str();
 
@@ -693,7 +693,7 @@ TEST_F(NativeBlurGpuTest, RecursiveFiltersUhdKernelTime)
             ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(filter)));
             ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { size, size }));
             ASSERT_TRUE(blur->canRenderOnGpu(eligibleQuery())) << filter;
-            const RectI inputRoI = blur->getGpuInputRoI(0, rect, RenderScale::identity);
+            const RectI inputRoI = blur->getGpuInputRoI(0, blur->getCurrentTime(), blur->getCurrentView(), rect, RenderScale::identity);
             ASSERT_FALSE(inputRoI.isNull());
 
             // Edges in every direction, so no line is constant.

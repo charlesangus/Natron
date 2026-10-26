@@ -126,7 +126,7 @@ TEST_F(BaseTest, RenderFrameRangeProducesDistinctFramePixels)
 
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false));
-    getApp()->startWritersRendering(false, works);
+    getApp()->startWritersRendering(eRenderModeBlocking, works);
 
     const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
 

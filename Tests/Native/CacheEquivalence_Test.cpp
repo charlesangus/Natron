@@ -229,17 +229,17 @@ captureMetadata(const NodePtr& node,
     const U64 hash = node->getHashValue();
 
     state->rodStatus = (int)effect->getRegionOfDefinition_public(hash, time, RenderScale::identity, view, &state->rod, &state->rodIsProjectFormat);
-    state->format = effect->getOutputFormat();
-    state->par = effect->getAspectRatio(-1);
-    state->fps = effect->getFrameRate();
-    state->fielding = (int)effect->getFieldingOrder();
-    state->continuous = effect->canRenderContinuously();
-    state->frameVarying = effect->isFrameVarying();
+    state->format = effect->getTimeInvariantMetadata()->getOutputFormat();
+    state->par = effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1);
+    state->fps = effect->getTimeInvariantMetadata()->getOutputFrameRate();
+    state->fielding = (int)effect->getTimeInvariantMetadata()->getOutputFielding();
+    state->continuous = effect->getTimeInvariantMetadata()->getIsContinuous();
+    state->frameVarying = effect->getTimeInvariantMetadata()->getIsFrameVarying();
     ImageLayerDesc layer, paired;
-    effect->getMetadataComponents(-1, &layer, &paired);
+    EffectInstance::getLayersFromMetadata(*effect->getTimeInvariantMetadata(), -1, &layer, &paired);
     state->components = describeLayer(layer) + " paired " + describeLayer(paired);
-    state->nComps = effect->getMetadataNComps(-1);
-    state->bitDepth = (int)effect->getBitDepth(-1);
+    state->nComps = EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), -1);
+    state->bitDepth = (int)effect->getTimeInvariantMetadata()->getBitDepth(-1);
     effect->getFrameRange_public(hash, &state->firstFrame, &state->lastFrame);
     std::list<ImageLayerDesc> present;
     effect->getPresentLayers(time, view, -1, &present);
@@ -883,7 +883,7 @@ protected:
         }
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(effect, 1, 3, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
 
         QString savedPath;
         if (!project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("sub.ntpz"), &savedPath)) {
@@ -1492,7 +1492,7 @@ TEST_P(CacheEquivalenceBenchCompTest, EditsAndDisables)
         std::sort(editable.begin(), editable.end(), [](const NodePtr& a, const NodePtr& b) { return a->getScriptName() < b->getScriptName(); });
         s->output = writer->getInput(0);
         s->mipmapLevel = GetParam().mipmapLevel;
-        const RectI format = s->output->getEffectInstance()->getOutputFormat().downscalePowerOfTwoSmallestEnclosing(s->mipmapLevel);
+        const RectI format = s->output->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat().downscalePowerOfTwoSmallestEnclosing(s->mipmapLevel);
         const int cx = (format.x1 + format.x2) / 2;
         const int cy = (format.y1 + format.y2) / 2;
         s->roi = RectI(cx - kSize / 2, cy - kSize / 2, cx + kSize / 2, cy + kSize / 2);

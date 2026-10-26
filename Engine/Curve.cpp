@@ -353,6 +353,7 @@ Curve::~Curve()
 void
 Curve::setPeriodic(bool periodic)
 {
+    KnobContentWrite write;
     QMutexLocker k(&_imp->_lock);
     _imp->isPeriodic = periodic;
     _imp->keyFrames.clear();
@@ -375,6 +376,7 @@ Curve::operator=(const Curve & other)
 void
 Curve::clearKeyFrames()
 {
+    KnobContentWrite write;
     QMutexLocker l(&_imp->_lock);
 
     _imp->keyFrames.clear();
@@ -392,6 +394,7 @@ Curve::areKeyFramesTimeClampedToIntegers() const
 void
 Curve::clone(const Curve & other)
 {
+    KnobContentWrite write;
     KeyFrameSet otherKeys = other.getKeyFrames_mt_safe();
     QMutexLocker l(&_imp->_lock);
 
@@ -423,6 +426,7 @@ Curve::toSerialization(Serialization::CurveSerialization* serialization) const
 void
 Curve::fromSerialization(const Serialization::CurveSerialization& serialization)
 {
+    KnobContentWrite write;
     KeyFrameSet keys;
 
     for (std::vector<Serialization::KeyFrameSerialization>::const_iterator it = serialization.keyframes.begin(); it != serialization.keyframes.end(); ++it) {
@@ -461,6 +465,7 @@ Curve::appendContentHash(ContentHasher& h) const
 bool
 Curve::cloneAndCheckIfChanged(const Curve& other)
 {
+    KnobContentWrite write;
     KeyFrameSet otherKeys = other.getKeyFrames_mt_safe();
     QMutexLocker l(&_imp->_lock);
     bool hasChanged = false;
@@ -492,6 +497,7 @@ Curve::clone(const Curve & other,
              SequenceTime offset,
              const RangeD* range)
 {
+    KnobContentWrite write;
     KeyFrameSet otherKeys = other.getKeyFrames_mt_safe();
     // The range=[0,0] case is obviously a bug in the spec of paramCopy() from the parameter suite:
     // it prevents copying the value of frame 0.
@@ -536,6 +542,7 @@ Curve::getMaximumTimeCovered() const
 bool
 Curve::addKeyFrame(KeyFrame key)
 {
+    KnobContentWrite write;
     QMutexLocker l(&_imp->_lock);
 
     // the default interpolation for bool, string, chaice, int is constant
@@ -552,6 +559,31 @@ Curve::addKeyFrame(KeyFrame key)
     l.unlock();
 
     return it.second;
+}
+
+bool
+Curve::hasKeyFrameEquivalentTo(KeyFrame key) const
+{
+    QMutexLocker l(&_imp->_lock);
+
+    if ((_imp->type == CurvePrivate::eCurveTypeBool) || (_imp->type == CurvePrivate::eCurveTypeString) || (_imp->type == CurvePrivate::eCurveTypeInt) || (_imp->type == CurvePrivate::eCurveTypeIntConstantInterp)) {
+        key.setInterpolation(eKeyframeTypeConstant);
+    }
+    KeyFrameSet::const_iterator it = find(key.getTime());
+    if (it == _imp->keyFrames.end()) {
+        return false;
+    }
+    if ((it->getValue() != key.getValue()) || (it->getInterpolation() != key.getInterpolation()) || (it->getLeftWeight() != key.getLeftWeight()) || (it->getRightWeight() != key.getRightWeight())) {
+        return false;
+    }
+
+    // Other interpolations derive the tangents from the neighbours; these keep the key's own.
+    const KeyframeTypeEnum interpolation = key.getInterpolation();
+    if ((interpolation == eKeyframeTypeFree) || (interpolation == eKeyframeTypeBroken)) {
+        return (it->getLeftDerivative() == key.getLeftDerivative()) && (it->getRightDerivative() == key.getRightDerivative());
+    }
+
+    return true;
 }
 
 std::pair<KeyFrameSet::iterator, bool> Curve::addKeyFrameNoUpdate(const KeyFrame & cp)
@@ -589,6 +621,7 @@ std::pair<KeyFrameSet::iterator, bool> Curve::addKeyFrameNoUpdate(const KeyFrame
 void
 Curve::removeKeyFrame(KeyFrameSet::const_iterator it)
 {
+    KnobContentWrite write;
     // PRIVATE - should not lock
     KeyFrame prevKey;
     bool mustRefreshPrev = false;
@@ -659,6 +692,7 @@ Curve::removeKeyFrame(KeyFrameSet::const_iterator it)
 void
 Curve::removeKeyFrameWithIndex(int index)
 {
+    KnobContentWrite write;
     if (index == -1) {
         return;
     }
@@ -670,6 +704,7 @@ Curve::removeKeyFrameWithIndex(int index)
 void
 Curve::removeKeyFrameWithTime(double time)
 {
+    KnobContentWrite write;
     QMutexLocker l(&_imp->_lock);
     KeyFrameSet::iterator it = find(time);
 
@@ -684,6 +719,7 @@ void
 Curve::removeKeyFramesBeforeTime(double time,
                                  std::list<int>* keyframeRemoved)
 {
+    KnobContentWrite write;
     KeyFrameSet newSet;
     QMutexLocker l(&_imp->_lock);
 
@@ -705,6 +741,7 @@ void
 Curve::removeKeyFramesAfterTime(double time,
                                 std::list<int>* keyframeRemoved)
 {
+    KnobContentWrite write;
     KeyFrameSet newSet;
     QMutexLocker l(&_imp->_lock);
 
@@ -1395,6 +1432,7 @@ void
 Curve::setXRange(double a,
                  double b)
 {
+    KnobContentWrite write;
     QMutexLocker l(&_imp->_lock);
 
     _imp->xMin = a;
@@ -1444,6 +1482,7 @@ Curve::setKeyFrameValueAndTimeNoUpdate(double value,
 KeyFrame
 Curve::setKeyFrameValueAndTimeInternal(double time, double value, int index, int* newIndex)
 {
+    KnobContentWrite write;
     KeyFrame ret;
     {
         QMutexLocker l(&_imp->_lock);
@@ -1474,12 +1513,14 @@ Curve::setKeyFrameValueAndTime(double time,
                                int index,
                                int* newIndex)
 {
+    KnobContentWrite write;
     return setKeyFrameValueAndTimeInternal(time, value, index, newIndex);
 }
 
 bool
 Curve::moveKeyFrameValueAndTimeInternal(const double time, const double dt, const double dv, KeyFrame* newKey)
 {
+    KnobContentWrite write;
     bool isFirst = false;
     bool isLast = false;
     {
@@ -1530,12 +1571,14 @@ Curve::moveKeyFrameValueAndTime(const double time,
                                 const double dv,
                                 KeyFrame* newKey)
 {
+    KnobContentWrite write;
     return moveKeyFrameValueAndTimeInternal(time, dt, dv, newKey);
 }
 
 KeyFrame
 Curve::setKeyFrameLeftDerivativeInternal(double value, int index, int* newIndex)
 {
+    KnobContentWrite write;
     KeyFrame ret;
     {
         QMutexLocker l(&_imp->_lock);
@@ -1561,12 +1604,14 @@ Curve::setKeyFrameLeftDerivative(double value,
                                  int index,
                                  int* newIndex)
 {
+    KnobContentWrite write;
     return setKeyFrameLeftDerivativeInternal(value, index, newIndex);
 }
 
 KeyFrame
 Curve::setKeyFrameRightDerivativeInternal(double value, int index, int* newIndex)
 {
+    KnobContentWrite write;
     KeyFrame ret;
     {
         QMutexLocker l(&_imp->_lock);
@@ -1593,6 +1638,7 @@ Curve::setKeyFrameRightDerivative(double value,
                                   int index,
                                   int* newIndex)
 {
+    KnobContentWrite write;
     return setKeyFrameRightDerivativeInternal(value, index, newIndex);
 }
 
@@ -1604,29 +1650,35 @@ Curve::setKeyFrameTangents(double left,
                            int index,
                            int* newIndex)
 {
-    QMutexLocker l(&_imp->_lock);
-    KeyFrameSet::iterator it = atIndex(index);
-    assert(it != _imp->keyFrames.end());
+    KnobContentWrite write;
+    KeyFrame ret;
+    {
+        QMutexLocker l(&_imp->_lock);
+        KeyFrameSet::iterator it = atIndex(index);
+        assert(it != _imp->keyFrames.end());
 
-    KeyFrame newKey(*it);
-    newKey.setLeftDerivative(left);
-    newKey.setRightDerivative(right);
-    newKey.setLeftWeight(leftWeight);
-    newKey.setRightWeight(rightWeight);
-    if (newKey != *it) {
-        it = addKeyFrameNoUpdate(newKey).first;
-        it = evaluateCurveChanged(eCurveChangedReasonDerivativesChanged, it);
-    }
-    if (newIndex) {
-        *newIndex = std::distance(_imp->keyFrames.begin(), it);
+        KeyFrame newKey(*it);
+        newKey.setLeftDerivative(left);
+        newKey.setRightDerivative(right);
+        newKey.setLeftWeight(leftWeight);
+        newKey.setRightWeight(rightWeight);
+        if (newKey != *it) {
+            it = addKeyFrameNoUpdate(newKey).first;
+            it = evaluateCurveChanged(eCurveChangedReasonDerivativesChanged, it);
+        }
+        if (newIndex) {
+            *newIndex = std::distance(_imp->keyFrames.begin(), it);
+        }
+        ret = *it;
     }
 
-    return *it;
+    return ret;
 }
 
 KeyFrame
 Curve::setKeyFrameInterpolationInternal(KeyframeTypeEnum interp, int index, int* newIndex)
 {
+    KnobContentWrite write;
     KeyFrame ret;
     {
         QMutexLocker l(&_imp->_lock);
@@ -1658,12 +1710,14 @@ Curve::setKeyFrameInterpolation(KeyframeTypeEnum interp,
                                 int index,
                                 int* newIndex)
 {
+    KnobContentWrite write;
     return setKeyFrameInterpolationInternal(interp, index, newIndex);
 }
 
 void
 Curve::setCurveInterpolation(KeyframeTypeEnum interp)
 {
+    KnobContentWrite write;
     {
         QMutexLocker l(&_imp->_lock);
         ///if the curve is a string_curve or bool_curve the interpolation is bound to be constant.
@@ -1685,6 +1739,7 @@ KeyFrameSet::iterator
 Curve::setKeyframeInterpolation_internal(KeyFrameSet::iterator it,
                                          KeyframeTypeEnum interp)
 {
+    KnobContentWrite write;
     ///private should not be locked
     assert( it != _imp->keyFrames.end() );
     KeyFrame newKey(*it);
@@ -1699,6 +1754,7 @@ KeyFrameSet::iterator
 Curve::refreshDerivatives(Curve::CurveChangedReasonEnum reason,
                           KeyFrameSet::iterator key)
 {
+    KnobContentWrite write;
     // PRIVATE - should not lock
     double tcur = key->getTime();
     double vcur = key->getValue();
@@ -1955,6 +2011,7 @@ void
 Curve::setYRange(double yMin,
                  double yMax)
 {
+    KnobContentWrite write;
     QMutexLocker l(&_imp->_lock);
 
     _imp->yMin = yMin;
@@ -1993,6 +2050,7 @@ Curve::invalidateOwnerContentHash()
 void
 Curve::setKeyframesInternal(const KeyFrameSet& keys, bool refreshDerivatives)
 {
+    KnobContentWrite write;
     if (!refreshDerivatives) {
         _imp->keyFrames = keys;
     } else {
@@ -2013,6 +2071,7 @@ Curve::setKeyframesInternal(const KeyFrameSet& keys, bool refreshDerivatives)
 void
 Curve::setKeyframes(const KeyFrameSet& keys, bool refreshDerivatives)
 {
+    KnobContentWrite write;
     QMutexLocker k(&_imp->_lock);
     setKeyframesInternal(keys, refreshDerivatives);
 }
@@ -2020,6 +2079,7 @@ Curve::setKeyframes(const KeyFrameSet& keys, bool refreshDerivatives)
 void
 Curve::smooth(const RangeD* range)
 {
+    KnobContentWrite write;
     std::vector<float> smoothedCurve;
 
     QMutexLocker l(&_imp->_lock);

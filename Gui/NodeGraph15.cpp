@@ -38,9 +38,12 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Settings.h"
+#include "Engine/TimeLine.h"
 
 #include "Gui/BackdropGui.h"
 #include "Gui/Edge.h"
@@ -67,25 +70,33 @@ handleConnectionError(const NodeGuiPtr& outputNode,
     Node::CanConnectInputReturnValue linkRetCode = outputNode->getNode()->canConnectInput(inputNode->getNode(), inputNb, &conflictingNode);
 
     if ( (linkRetCode != Node::eCanConnectInput_ok) && (linkRetCode != Node::eCanConnectInput_inputAlreadyConnected) ) {
+        // The check judged the current frame, so quote that frame's values.
+        const double time = outputNode->getNode()->getApp()->getTimeLine()->currentFrame();
+        const NodeMetadataConstPtr outputMetadata = outputNode->getNode()->getEffectInstance()->getMetadata(time, ViewIdx(0));
+        const NodeMetadataConstPtr inputMetadata = inputNode->getNode()->getEffectInstance()->getMetadata(time, ViewIdx(0));
+        const double outputPAR = outputMetadata ? outputMetadata->getPixelAspectRatio(-1) : 1.;
+        const double inputPAR = inputMetadata ? inputMetadata->getPixelAspectRatio(-1) : 1.;
+        const double outputFPS = outputMetadata ? outputMetadata->getOutputFrameRate() : 0.;
+        const double inputFPS = inputMetadata ? inputMetadata->getOutputFrameRate() : 0.;
         if (linkRetCode == Node::eCanConnectInput_differentPars) {
             QString error = QCoreApplication::translate("NodeGraph", "%1 and %2 do not have the same pixel aspect ratio (%3 vs. %4), and %1 does not support inputs with different pixel aspect ratio.\n"
-                                                        "This might yield unwanted results.")
-                            .arg( QString::fromUtf8( outputNode->getNode()->getLabel().c_str() ) )
-                            .arg( QString::fromUtf8( inputNode->getNode()->getLabel().c_str() ) )
-                            .arg( outputNode->getNode()->getEffectInstance()->getAspectRatio(-1) )
-                            .arg( inputNode->getNode()->getEffectInstance()->getAspectRatio(-1) );
+                                                                     "This might yield unwanted results.")
+                                .arg(QString::fromUtf8(outputNode->getNode()->getLabel().c_str()))
+                                .arg(QString::fromUtf8(inputNode->getNode()->getLabel().c_str()))
+                                .arg(outputPAR)
+                                .arg(inputPAR);
             Dialogs::warningDialog( QCoreApplication::translate("NodeGraph", "Different pixel aspect").toStdString(),
                                     error.toStdString() );
 
             return true;
         } else if (linkRetCode == Node::eCanConnectInput_differentFPS) {
             QString error = QCoreApplication::translate("NodeGraph", "%1 and %2 do not have the same frame rate (%3 vs. %4).\n"
-                                                        "This might yield unwanted results.\n"
-                                                        "Either change the FPS from the Read node parameters or change the settings of the project.")
-                            .arg( QString::fromUtf8( outputNode->getNode()->getLabel().c_str() ) )
-                            .arg( QString::fromUtf8( inputNode->getNode()->getLabel().c_str() ) )
-                            .arg( outputNode->getNode()->getEffectInstance()->getFrameRate() )
-                            .arg( inputNode->getNode()->getEffectInstance()->getFrameRate() );
+                                                                     "This might yield unwanted results.\n"
+                                                                     "Either change the FPS from the Read node parameters or change the settings of the project.")
+                                .arg(QString::fromUtf8(outputNode->getNode()->getLabel().c_str()))
+                                .arg(QString::fromUtf8(inputNode->getNode()->getLabel().c_str()))
+                                .arg(outputFPS)
+                                .arg(inputFPS);
             Dialogs::warningDialog( QCoreApplication::translate("NodeGraph", "Different frame rate").toStdString(),
                                     error.toStdString() );
 
@@ -148,27 +159,107 @@ NodeGraph::connectInputArrowToNode(Edge* arrow,
     return ok;
 }
 
+// Moves the arrowhead end of a connected pipe: the input it fed is disconnected and the target's
+// preferred input takes the same source, as one undo step.
+bool
+NodeGraph::moveInputArrowDestinationToNode(Edge* arrow,
+                                           const NodeGuiPtr& target)
+{
+    assert(arrow && !arrow->isOutputEdge());
+    NodeGuiPtr source = arrow->getSource();
+    NodeGuiPtr oldDest = arrow->getDest();
+    if (!source || !oldDest || !target) {
+        return false;
+    }
+    int preferredInput = target->getNode()->getPreferredInputForConnection();
+    if (preferredInput == -1) {
+        return false;
+    }
+    Edge* targetInput = target->getInputArrow(preferredInput);
+    if (!targetInput || !handleConnectionError(target, source, preferredInput)) {
+        return false;
+    }
+
+    QUndoCommand* moveCommand = new QUndoCommand(tr("Move pipe"));
+    new ConnectCommand(this, arrow, source, NodeGuiPtr(), moveCommand);
+    new ConnectCommand(this, targetInput, targetInput->getSource(), source, moveCommand);
+    pushUndoCommand(moveCommand, NodesGuiList { oldDest, source, target, targetInput->getSource() });
+
+    return true;
+}
+
+// Connects the node owning an output stub to the target's preferred input, as one undo step.
+bool
+NodeGraph::connectOutputArrowToNode(Edge* arrow,
+                                    const NodeGuiPtr& target)
+{
+    assert(arrow && arrow->isOutputEdge());
+    NodeGuiPtr source = arrow->getSource();
+    if (!source || !target || (target == source)) {
+        return false;
+    }
+    int preferredInput = target->getNode()->getPreferredInputForConnection();
+    if (preferredInput == -1) {
+        return false;
+    }
+    Edge* targetInput = target->getInputArrow(preferredInput);
+    if (!targetInput || !handleConnectionError(target, source, preferredInput)) {
+        return false;
+    }
+    pushUndoCommand(new ConnectCommand(this, targetInput, targetInput->getSource(), source),
+                    NodesGuiList { target, targetInput->getSource(), source });
+
+    return true;
+}
+
+bool
+NodeGraph::hasPickedUpArrow() const
+{
+    return _imp->_pickedUpArrowIsOutput || (_imp->_pickedUpArrowInput >= 0);
+}
+
+// An output stub is only drawn while its node feeds nothing, so once the node gains an output the
+// stub is no longer held.
 Edge*
 NodeGraph::getPickedUpArrow() const
 {
-    if (_imp->_pickedUpArrowInput < 0) {
+    if (!hasPickedUpArrow()) {
         return 0;
     }
-    NodeGuiPtr dest = _imp->_pickedUpArrowDest.lock();
-    if (!dest || !dest->getNode() || !dest->getNode()->isActivated()) {
+    NodeGuiPtr node = _imp->_pickedUpArrowNode.lock();
+    if (!node || !node->getNode() || !node->getNode()->isActivated()) {
         return 0;
+    }
+    if (_imp->_pickedUpArrowIsOutput) {
+        Edge* stub = node->getOutputArrow();
+
+        return (stub && stub->isVisible()) ? stub : 0;
     }
 
-    return dest->getInputArrow(_imp->_pickedUpArrowInput);
+    return node->getInputArrow(_imp->_pickedUpArrowInput);
 }
 
 void
-NodeGraph::pickUpArrow(Edge* arrow)
+NodeGraph::pickUpArrow(Edge* arrow,
+                       PickUpEndEnum end)
 {
-    assert(arrow && !arrow->isOutputEdge());
-    _imp->_pickedUpArrowDest = arrow->getDest();
-    _imp->_pickedUpArrowInput = arrow->getInputNumber();
+    assert(arrow);
+    arrow->initLine();
+    const bool isOutput = arrow->isOutputEdge();
+    _imp->_pickedUpArrowNode = isOutput ? arrow->getSource() : arrow->getDest();
+    _imp->_pickedUpArrowInput = isOutput ? -1 : arrow->getInputNumber();
+    _imp->_pickedUpArrowIsOutput = isOutput;
+    _imp->_pickedUpArrowEnd = carriedPickUpEnd(end, isOutput, arrow->hasSource());
     dragPickedUpArrowToCursor();
+}
+
+void
+NodeGraph::forgetPickedUpArrow()
+{
+    _imp->_pickedUpArrowNode.reset();
+    _imp->_pickedUpArrowInput = -1;
+    _imp->_pickedUpArrowIsOutput = false;
+    _imp->_pickedUpArrowEnd = ePickUpEndSource;
 }
 
 // _lastMousePos rather than QCursor::pos(): every mouse and wheel handler keeps it current, and it
@@ -181,18 +272,22 @@ NodeGraph::dragPickedUpArrowToCursor()
         return;
     }
     QPointF cursorScene = mapToScene(_imp->_lastMousePos.x(), _imp->_lastMousePos.y());
-    arrow->dragSource(arrow->mapFromScene(cursorScene));
+    if (_imp->_pickedUpArrowEnd == ePickUpEndDestination) {
+        arrow->dragDest(arrow->mapFromScene(cursorScene));
+    } else {
+        arrow->dragSource(arrow->mapFromScene(cursorScene));
+    }
     update();
 }
 
-// The arrow's source is never changed while it is held, only its drawn line, so restoring the
-// line restores the original connection and nothing reaches the undo stack.
+// The arrow's connection is never changed while it is held, whichever end is carried, only its
+// drawn line, so restoring the line restores the original connection and nothing reaches the undo
+// stack.
 void
 NodeGraph::dropPickedUpArrow()
 {
     Edge* arrow = getPickedUpArrow();
-    _imp->_pickedUpArrowDest.reset();
-    _imp->_pickedUpArrowInput = -1;
+    forgetPickedUpArrow();
     if (arrow) {
         arrow->initLine();
         update();
@@ -218,7 +313,10 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
         button = ePickUpButtonMiddle;
     }
 
-    NodeGuiPtr nodeHoldingEdge = arrow->getDest();
+    const bool carriesOutputStub = arrow->isOutputEdge();
+    NodeGuiPtr nodeHoldingEdge = carriesOutputStub ? arrow->getSource() : arrow->getDest();
+    NodeGuiPtr arrowSource = arrow->getSource();
+    const bool carriesDestination = (_imp->_pickedUpArrowEnd == ePickUpEndDestination) && arrowSource;
     NodeGui* nearbyNode = 0;
     Edge* nearbyEdge = 0;
     PickUpClickTargetEnum target = ePickUpClickTargetOther;
@@ -226,10 +324,13 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
     if (isNearbyNavigator(e->pos(), navigatorScenePos)) {
         target = ePickUpClickTargetNavigator;
     } else if ((hasItemNearbyMouse(e->pos(), &nearbyNode, &nearbyEdge) == eNearbyItemNode) && nearbyNode) {
-        target = (nearbyNode == nodeHoldingEdge.get()) ? ePickUpClickTargetHoldingNode : ePickUpClickTargetNode;
+        // With the arrowhead carried, the pipe hangs from its source: clicking either node it
+        // already joins leaves the connection as it was.
+        const bool isHoldingNode = (nearbyNode == nodeHoldingEdge.get()) || (carriesDestination && (nearbyNode == arrowSource.get()));
+        target = isHoldingNode ? ePickUpClickTargetHoldingNode : ePickUpClickTargetNode;
     }
 
-    switch (decidePickUpPress(button, target)) {
+    switch (decidePickUpPress(button, target, carriesOutputStub)) {
     case ePickUpPressPassThrough:
         return false;
     case ePickUpPressIgnore:
@@ -239,9 +340,8 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
 
         return true;
     case ePickUpPressDisconnect: {
-        _imp->_pickedUpArrowDest.reset();
-        _imp->_pickedUpArrowInput = -1;
-        if (arrow->getSource()) {
+        forgetPickedUpArrow();
+        if (!carriesOutputStub && arrow->getSource()) {
             pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), NodeGuiPtr()),
                             NodesGuiList { arrow->getDest(), arrow->getSource() });
         }
@@ -258,9 +358,16 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
         NodeGuiPtr targetNode = nearbyNode->shared_from_this();
         // Let go of the arrow before connecting: a rejected connection opens a dialog, and the
         // focus loss that causes must not find the arrow still held.
-        _imp->_pickedUpArrowDest.reset();
-        _imp->_pickedUpArrowInput = -1;
-        connectInputArrowToNode(arrow, targetNode);
+        forgetPickedUpArrow();
+        if (carriesOutputStub) {
+            connectOutputArrowToNode(arrow, targetNode);
+            targetNode->refreshEdges();
+        } else if (carriesDestination) {
+            moveInputArrowDestinationToNode(arrow, targetNode);
+            targetNode->refreshEdges();
+        } else {
+            connectInputArrowToNode(arrow, targetNode);
+        }
         if (nodeHoldingEdge) {
             nodeHoldingEdge->refreshEdges();
         }
@@ -285,8 +392,12 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
 
     _imp->autoScrollTimer.stop();
 
-    bool hasMovedOnce = modCASIsControl(e) || _imp->_hasMovedOnce;
-    if ( (state == eEventStateDraggingArrow) && hasMovedOnce ) {
+    // A pipe press is a drag only once it travels the drag distance, however many move events
+    // came in between and whatever modifiers are held.
+    const double arrowDragDistance = TO_DPIX(QApplication::startDragDistance());
+    const double arrowPressToRelease = (e->pos() - _imp->_pressPos).manhattanLength();
+    const bool arrowDragged = isDragDistance(arrowPressToRelease, arrowDragDistance);
+    if ((state == eEventStateDraggingArrow) && arrowDragged) {
         bool foundSrc = false;
         assert(_imp->_arrowSelected);
         NodeGuiPtr nodeHoldingEdge = _imp->_arrowSelected->isOutputEdge() ?
@@ -304,27 +415,13 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
                 if ( !_imp->_arrowSelected->isOutputEdge() ) {
                     foundSrc = connectInputArrowToNode(_imp->_arrowSelected, targetNode);
                 } else {
-                    // Find the input edge of the node we just released the mouse over,
-                    // and use that edge to connect to the source of the selected edge.
-                    int preferredInput = targetNode->getNode()->getPreferredInputForConnection();
-                    if (preferredInput != -1) {
-                        bool ok = handleConnectionError(targetNode, nodeHoldingEdge, preferredInput);
-                        if (ok) {
-                            Edge* foundInput = targetNode->getInputArrow(preferredInput);
-                            assert(foundInput);
-                            foundSrc = true;
-                            pushUndoCommand(new ConnectCommand(this, foundInput,
-                                                               foundInput->getSource(), _imp->_arrowSelected->getSource()),
-                                            NodesGuiList { targetNode, foundInput->getSource(), _imp->_arrowSelected->getSource() });
-                        }
-                    }
+                    foundSrc = connectOutputArrowToNode(_imp->_arrowSelected, targetNode);
                 }
             }
         }
 
-        // If we disconnected the input edge, use the undo/redo stack.
-        // Output edges can never be really connected, they're just there
-        // So the user understands some nodes can have output
+        // A dragged input that found no new source is disconnected through the undo stack. An
+        // output stub feeds nothing, so a drag of one that found no input leaves nothing to undo.
         if ( !foundSrc && !_imp->_arrowSelected->isOutputEdge() && _imp->_arrowSelected->getSource() ) {
             pushUndoCommand(new ConnectCommand(this, _imp->_arrowSelected, _imp->_arrowSelected->getSource(),
                                                NodeGuiPtr()),
@@ -334,8 +431,16 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
 
         nodeHoldingEdge->refreshEdges();
         scene()->update();
-    } else if ((state == eEventStateDraggingArrow) && _imp->_arrowSelected && shouldStartPickUp(triggerButtonIsLeft(e) ? ePickUpButtonLeft : ePickUpButtonOther, hasMovedOnce, _imp->_arrowSelected->isOutputEdge())) {
-        pickUpArrow(_imp->_arrowSelected);
+    } else if ((state == eEventStateDraggingArrow) && _imp->_arrowSelected) {
+        Edge* arrow = _imp->_arrowSelected;
+        // Moves short of the drag distance still dragged the drawn line; put it back first.
+        arrow->initLine();
+        PickUpButtonEnum button = triggerButtonIsLeft(e) ? ePickUpButtonLeft : ePickUpButtonOther;
+        if (shouldStartPickUp(button, arrowPressToRelease, arrowDragDistance)) {
+            QPointF pressScene = mapToScene(_imp->_pressPos);
+            PickUpEndEnum end = pickedUpEnd(pressScene, arrow->mapToScene(arrow->line().p1()), arrow->mapToScene(arrow->line().p2()));
+            pickUpArrow(arrow, end);
+        }
     } else if (state == eEventStateDraggingNode) {
         if ( !_imp->_hasMovedOnce ) {
             if ( modCASIsControl(e) ) { // control-click is the same as double-click, see NodeGraph::mouseDoubleClickEvent

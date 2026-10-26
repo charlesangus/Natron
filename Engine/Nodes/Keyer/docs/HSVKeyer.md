@@ -23,19 +23,28 @@ Hue is in turns from red at 0, and 0 for a colour with no chroma.
 
 ## Ranges (`hueRange`, `saturationRange`, `lumaRange`)
 
-Each is a 4-dimension double (`outerLow`, `innerLow`, `innerHigh`, `outerHigh`): the term rises
-from 0 at the outer low point to 1 at the inner low point, stays 1 to the inner high point and
-falls to 0 at the outer high point.
+Each is a 5-dimension double: a **Centre** and four offsets, **Outer Low**, **Inner Low**,
+**Inner High** and **Outer High**. The term rises from 0 at centre - outer low to 1 at
+centre - inner low, stays 1 to centre + inner high and falls to 0 at centre + outer high.
+Offsets are never below 0, and an outer offset below its inner one counts as equal to it
+(`KnobDouble::sanitizeRangeOffsets()`). The bake resolves the offsets into the same four absolute
+points the CPU and GPU trapezoids read, so `hue.slang` is unaffected by the knob layout.
 
-- **Hue** points are measured going up the hue circle from `outerLow`, so the range may cross red.
-  Defaults 0.25, 0.30, 0.37, 0.42 (greens).
-- **Saturation** and **luma** points out of order are pushed up to the one before. Saturation
-  defaults 0.1, 0.3, 1, 1; luma defaults 0, 0.05, 1, 2.
+- **Hue** wraps around its centre, so the range may cross red; each offset counts up to a whole
+  turn. Defaults 0.4; 0.085, 0.035, 0.035, 0.085.
+- **Saturation** defaults 0.2; 0.18, 0.14, 0.2, 0.2. **Luma** defaults 0.5; 0.5, 0.45, 0.5, 1.5.
+  The defaults suit OkLCh, the default model.
 
-In the Properties panel each range is drawn as a strip with four draggable handles over a
-gradient of its component (the hue strip centred on the plateau), with the spinboxes below.
-Dragging the plateau moves all four points; shift-dragging an inner handle moves its outer
-partner with it.
+In the Properties panel the `useHue`, `useSaturation` and `useLuma` toggles sit above the ranges.
+Each range is a row: a strip with four draggable handles and a centre notch over a gradient of
+its component, a **Recentre** button (the centre from the source colour, offsets kept, one undo
+step) and a **Reset Zoom** button, with the spinboxes below, each labelled above its field. The
+trapezoid's base is left open. Dragging the plateau moves the centre; dragging a handle changes
+its offset, an inner handle stopping at the centre; shift-dragging an inner handle moves its
+outer partner with it. The mouse wheel zooms around the cursor and a middle or Alt drag pans;
+Reset Zoom shows one hue turn centred on the centre, saturation 0 to 1 (0 to 0.4 for OkLCh
+chroma) or luma 0 to the larger of 1 and the outer high point. A row greys out while its toggle
+is off, and the strips grow with the panel's width.
 
 ## Hue fade
 
@@ -48,10 +57,9 @@ a near-grey's unstable hue counts for little:
 ## Source colour and recentring
 
 `sourceColor` is picked from the viewer with the swatch button or typed. Setting it, changing the
-model or pressing **Recentre** moves each range by the distance that centres its plateau on the
-source's component, keeping its widths, in one undo step at the current time. The hue range
-moves the short way round and its points are wrapped into 0 to 1; it stays where it is for a
-source with no chroma.
+model or pressing **Recentre** sets each range's centre to the source's component, keeping its
+offsets, in one undo step at the current time. The hue centre is wrapped into 0 to 1 and stays
+where it is for a source with no chroma.
 
 ## Combination and output
 

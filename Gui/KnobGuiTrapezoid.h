@@ -43,20 +43,25 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The drawn range of a 4-point trapezoid knob (outer low, inner low, inner high, outer
- * high): the trapezoid over a gradient of its component, with a handle per point and a tick at
- * the source colour's component. It has no Q_OBJECT, so it needs no moc: edits are reported
- * through a callback.
+ * @brief The drawn range of a trapezoid knob holding a centre and four offsets
+ * (KnobDouble::RangeWidgetDimensionEnum): the trapezoid over a gradient of its component, with
+ * no line along its base, a handle per point, a mark at the centre and a tick at the source
+ * colour's component. It has no Q_OBJECT, so it needs no moc: edits are reported through a
+ * callback.
  *
- * Hue points are in turns and are drawn unwrapped going up the circle from the outer low point,
- * over one turn centred on the plateau, so a range across red is never split. Saturation and
- * luma are drawn over min(0, outer low) to max(1, outer high), or to 0.4 for OkLCh chroma.
- * The domain is held during a drag, so the handle under the cursor never slides away.
+ * Points are drawn as the offsets key (KnobDouble::sanitizeRangeOffsets()). Hue is in turns and
+ * its points lie around the centre, so a range across red is never split. Until it is zoomed or
+ * panned the strip shows its default domain: one turn centred on the centre for hue, 0 to 1 for
+ * saturation (0 to 0.4 for OkLCh chroma) and 0 to max(1, centre + outer high) for luma. The
+ * mouse wheel zooms around the cursor, a middle or Alt drag pans, and resetZoom() goes back to
+ * the default domain. The domain is held during a drag, so the handle under the cursor never
+ * slides away.
  *
- * Dragging a handle moves its point, clamped between its neighbours (for hue, the outer points
- * also stay within a turn of each other). Dragging the plateau moves all four. Shift-dragging an
- * inner handle moves its outer partner by the same amount. Where handles coincide the first
- * move picks one: leftwards the lowest, rightwards the highest.
+ * Dragging a handle moves its point, clamped between its neighbours, an inner point never
+ * crossing the centre (for hue, an outer point also stays within a turn of the centre). Dragging
+ * the plateau moves the centre. Shift-dragging an inner handle moves its outer partner by the
+ * same amount. Where handles coincide the first move picks one: leftwards the lowest, rightwards
+ * the highest.
  **/
 class TrapezoidStrip
     : public QWidget {
@@ -67,7 +72,7 @@ public:
         eGesturePhaseEnd
     };
 
-    // Called with the four points after each edit of a gesture.
+    // Called with the knob's values, centre first, after each edit of a gesture.
     typedef std::function<void(const double* values, GesturePhaseEnum phase)> EditCallback;
     // Converts count working-space RGB triples in place to display-referred values in 0 to 1.
     typedef std::function<void(float* rgb, int count)> DisplayConverter;
@@ -92,6 +97,7 @@ public:
         return _role;
     }
 
+    // KnobDouble::eRangeWidgetDimensionCount values, centre first.
     void setValues(const double* values);
     void getValues(double* values) const;
 
@@ -111,8 +117,17 @@ public:
     void getDomain(double* low,
                    double* high) const;
 
-    // The positions of the four points in the drawn domain: hue points unwrapped.
-    void getPositions(double* positions) const;
+    // The domain resetZoom() goes back to.
+    void getDefaultDomain(double* low,
+                          double* high) const;
+
+    /**
+     * @brief The positions of the outer low, inner low, inner high and outer high points in the
+     * drawn domain, and the centre's when centre is not null. Hue positions are shifted by the
+     * whole turns that bring the centre nearest the middle of the domain.
+     **/
+    void getPositions(double* positions,
+                      double* centre = 0) const;
 
     double valueToX(double value) const;
     double xToValue(double x) const;
@@ -125,6 +140,20 @@ public:
         return _dragPart != ePartNone;
     }
 
+    // Scales the domain by factor around the value under x: below 1 zooms in.
+    void zoomAround(double x,
+                    double factor);
+
+    // Moves the domain so the value under one x lands dx pixels to the right.
+    void panByPixels(double dx);
+
+    bool isZoomed() const
+    {
+        return _zoomed;
+    }
+
+    void resetZoom();
+
     virtual QSize sizeHint() const OVERRIDE FINAL;
     virtual QSize minimumSizeHint() const OVERRIDE FINAL;
 
@@ -133,6 +162,7 @@ protected:
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void mouseMoveEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void mouseReleaseEvent(QMouseEvent* e) OVERRIDE FINAL;
+    virtual void wheelEvent(QWheelEvent* e) OVERRIDE FINAL;
 
 private:
     bool isHue() const
@@ -140,17 +170,16 @@ private:
         return _role == KnobDouble::eRangeWidgetRoleHue;
     }
 
-    void computeDomain(double* low,
-                       double* high) const;
     void positionsOf(const double* values,
-                     double* positions) const;
+                     double* positions,
+                     double* centre) const;
     void applyDrag(double x);
     void report(GesturePhaseEnum phase);
     void componentsAt(double value,
                       float* comps) const;
 
     KnobDouble::RangeWidgetRoleEnum _role;
-    double _values[4];
+    double _values[KnobDouble::eRangeWidgetDimensionCount];
     ColorMath::KeyModelEnum _model;
     ColorMath::OkLabBasis _basis;
     float _source[3];
@@ -158,21 +187,37 @@ private:
     DisplayConverter _toDisplay;
     EditCallback _onEdit;
 
-    // The drag in progress: the part, held domain, positions at the press and press x.
+    // The domain set by zooming or panning, used while _zoomed.
+    bool _zoomed;
+    double _viewLow;
+    double _viewHigh;
+
+    // The pan in progress: the domain and x at the press.
+    bool _panning;
+    double _panLow;
+    double _panHigh;
+    double _panX;
+
+    // The drag in progress: the part, held domain, values, positions and centre at the press,
+    // and press x.
     PartEnum _dragPart;
     bool _dragResolved;
     bool _dragStarted;
     bool _dragShift;
     double _dragLow;
     double _dragHigh;
+    double _dragValues[KnobDouble::eRangeWidgetDimensionCount];
     double _dragStart[4];
+    double _dragCentre;
     double _pressX;
 };
 
 /**
- * @brief The GUI of a KnobDouble with a range-widget hint: its spinboxes below a TrapezoidStrip.
- * Strip edits go through KnobUndoCommand, one undo step per drag, and the strip repaints when the
- * source colour or the model changes.
+ * @brief The GUI of a KnobDouble with a range-widget hint: a TrapezoidStrip with Recentre and
+ * Reset Zoom buttons, above the spinboxes, each labelled above its field. Strip edits go through
+ * KnobUndoCommand, one undo step per drag; Recentre sets the centre to the source colour's
+ * component in one undo step, keeping the offsets. The strip repaints when the source colour or
+ * the model changes, and the row greys out while the hint's enable knob is off.
  **/
 class KnobGuiTrapezoid
     : public KnobGuiDouble {
@@ -193,6 +238,9 @@ public:
     // The label sits level with the strip at the top of the column.
     virtual bool wantsTopAlignedLabel() const OVERRIDE FINAL;
 
+    // Sets the centre to the source colour's component; a hue range stays for a source with no hue.
+    void recentre();
+
 private:
     virtual QWidget* createBelowRowWidget(QWidget* parent) OVERRIDE FINAL;
     virtual void addExtraWidgets(QHBoxLayout* containerLayout) OVERRIDE FINAL;
@@ -201,11 +249,18 @@ private:
     virtual void _hide() OVERRIDE FINAL;
     virtual void _show() OVERRIDE FINAL;
 
+    // The source colour's components in the current model, false without a range knob.
+    bool sourceComponents(ColorMath::KeyModelEnum* model,
+                          ColorMath::OkLabBasis* basis,
+                          float* comps,
+                          float* hueWeight) const;
     void refreshContext();
+    void refreshEnabledLook();
     void onStripEdited(const double* values,
                        TrapezoidStrip::GesturePhaseEnum phase);
 
     KnobDoubleWPtr _rangeKnob;
+    QPointer<QWidget> _stripRow;
     QPointer<TrapezoidStrip> _strip;
     UndoGesture _gesture;
 };

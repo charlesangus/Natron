@@ -59,10 +59,12 @@ inline constexpr InputSpec kHSVKeyerInputs[] = {
 
 /**
  * @brief Keys by hue, saturation and luma in HSV, HSL or OkLCh: the key is the product of a
- * trapezoid over each enabled component, 1 when none is, inverted on request. The hue trapezoid
- * is in turns and wraps across red, and its value is weighted by ColorMath::keyHueFade() of the
- * chroma, so a grey never matches a hue range. Alpha is the key; RGB passes, is multiplied by the
- * key or is replaced by it, as the output mode says. The output is RGBA whatever the source.
+ * trapezoid over each enabled component, 1 when none is, inverted on request. Each range knob
+ * holds a centre and four offsets from it (KnobDouble::RangeWidgetDimensionEnum). The hue
+ * trapezoid is in turns and wraps around its centre, and its value is weighted by
+ * ColorMath::keyHueFade() of the chroma, so a grey never matches a hue range. Alpha is the key;
+ * RGB passes, is multiplied by the key or is replaced by it, as the output mode says. The output
+ * is RGBA whatever the source.
  **/
 struct HSVKeyerOp {
     enum OutputModeEnum {
@@ -72,12 +74,13 @@ struct HSVKeyerOp {
     };
 
     /**
-     * @brief The hue trapezoid starts at hueLow and reaches 1 hueRise later, stays 1 until
-     * hueFull and falls to 0 at hueFall, all going up the hue circle from hueLow. The saturation
-     * and luma trapezoids' points are in order.
+     * @brief The ranges resolved from their centres and offsets. The hue trapezoid starts at
+     * hueLow and reaches 1 hueRise later, stays 1 until hueFull and falls to 0 at hueFall, all
+     * going up the hue circle from hueLow. The saturation and luma trapezoids' points are the
+     * outer low, inner low, inner high and outer high points, in order.
      **/
     struct Params {
-        ColorMath::KeyModelEnum model = ColorMath::eKeyModelHSV;
+        ColorMath::KeyModelEnum model = ColorMath::eKeyModelOkLCh;
         OutputModeEnum output = eOutputModeAlpha;
         bool useHue = true;
         bool useSat = true;
@@ -97,17 +100,18 @@ struct HSVKeyerOp {
         .label = "HSVKeyer",
         .description = "Compute a key from the hue, saturation and luma of the source.\n"
                        "\n"
-                       "Each component has a trapezoid: the key rises from 0 at its outer low point to 1 at its "
-                       "inner low point, stays 1 up to its inner high point and falls to 0 at its outer high point. "
-                       "The key is the product of the trapezoids of the enabled components. The hue is in turns from "
-                       "red at 0 and its trapezoid wraps across red; hue counts for less as the chroma nears 0, so "
-                       "greys never match a hue range.\n"
+                       "Each component has a range: a centre and four offsets from it. The key rises from 0 at the "
+                       "centre minus the outer low offset to 1 at the centre minus the inner low offset, stays 1 up "
+                       "to the centre plus the inner high offset and falls to 0 at the centre plus the outer high "
+                       "offset. The key is the product of the trapezoids of the enabled components. The hue is in "
+                       "turns from red at 0 and its trapezoid wraps around its centre; hue counts for less as the "
+                       "chroma nears 0, so greys never match a hue range.\n"
                        "\n"
                        "The components are those of the colour model: HSV (saturation (max - min) / max, value max), "
                        "HSL (lightness (max + min) / 2) or OkLCh (OkLab's lightness, chroma and hue, from the "
                        "working space adapted to D65). Setting the source colour, picked from the viewer or typed, "
-                       "or changing the model, moves each range so its plateau is centred on the source colour, "
-                       "keeping its widths.",
+                       "or changing the model, sets each range's centre to the source colour's component, keeping "
+                       "its offsets.",
         .grouping = PLUGIN_GROUP_KEYER,
         .majorVersion = PLUGIN_MAJOR_NATRON_HSVKEYER,
         .minorVersion = 0,
@@ -131,21 +135,6 @@ struct HSVKeyerOp {
     // The key of colour rgb.
     static float key(const Params& params,
                      const float* rgb);
-
-    /**
-     * @brief Moves the four hue points (outer low, inner low, inner high, outer high, in turns) by
-     * the shortest turn that centres the plateau on hue, keeping the widths, each point wrapped
-     * into 0 to 1.
-     **/
-    static void recentreHue(double* points,
-                            double hue);
-
-    /**
-     * @brief Moves the four points by the distance that centres the plateau, taken after the
-     * points are put in order as bake() does, on value.
-     **/
-    static void recentreLinear(double* points,
-                               double value);
 
     KnobHolder* holder = nullptr;
     KnobColorWPtr sourceColor;
@@ -190,9 +179,10 @@ public:
                      const RowIO& io) const;
 
     /**
-     * @brief Centres the three ranges on the source colour's components in the current model at
-     * time, as setting the source colour, changing the model or the Recentre button does. The hue
-     * range stays where it is for a source with no chroma, which has no hue.
+     * @brief Sets the three ranges' centres to the source colour's components in the current
+     * model at time, keeping their offsets, as setting the source colour, changing the model or
+     * the Recentre button does. The hue centre stays where it is for a source with no chroma,
+     * which has no hue.
      **/
     void recentreOnSource(double time);
 

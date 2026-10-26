@@ -210,6 +210,7 @@ KnobDouble::KnobDouble(KnobHolder* holder,
     , _rangeWidgetRole(eRangeWidgetRoleNone)
     , _rangeWidgetSourceColour()
     , _rangeWidgetModel()
+    , _rangeWidgetEnable()
     , _valueIsNormalized(dimension, eValueIsNormalizedNone)
     , _defaultValuesAreNormalized(false)
     , _hasHostOverlayHandle(false)
@@ -236,6 +237,7 @@ KnobDouble::KnobDouble(KnobHolder* holder,
     , _rangeWidgetRole(eRangeWidgetRoleNone)
     , _rangeWidgetSourceColour()
     , _rangeWidgetModel()
+    , _rangeWidgetEnable()
     , _valueIsNormalized(dimension, eValueIsNormalizedNone)
     , _defaultValuesAreNormalized(false)
     , _hasHostOverlayHandle(false)
@@ -324,17 +326,28 @@ KnobDouble::setMatrixVisibleExtent(int rows,
 }
 
 void
+KnobDouble::sanitizeRangeOffsets(double* offsets)
+{
+    offsets[1] = (std::max)(0., offsets[1]);
+    offsets[2] = (std::max)(0., offsets[2]);
+    offsets[0] = (std::max)(offsets[0], offsets[1]);
+    offsets[3] = (std::max)(offsets[3], offsets[2]);
+}
+
+void
 KnobDouble::setRangeWidget(RangeWidgetRoleEnum role,
                            const KnobColorPtr& sourceColourKnob,
-                           const KnobChoicePtr& modelKnob)
+                           const KnobChoicePtr& modelKnob,
+                           const KnobBoolPtr& enableKnob)
 {
-    if ((role == eRangeWidgetRoleNone) || (getDimension() != 4)) {
+    if ((role == eRangeWidgetRoleNone) || (getDimension() != (int)eRangeWidgetDimensionCount)) {
         return;
     }
     _rangeWidgetRole = role;
     _rangeWidgetSourceColour = sourceColourKnob;
     _rangeWidgetModel = modelKnob;
-    // A slider would drive the four points at once, collapsing the trapezoid.
+    _rangeWidgetEnable = enableKnob;
+    // A slider would drive every dimension at once, collapsing the trapezoid.
     disableSlider();
 }
 

@@ -524,7 +524,8 @@ TEST_F(NativeHueGpuTest, HSVKeyerKernelMatchesTheCpu)
 
     const char* const models[] = { "hsv", "hsl", "oklch" };
     const char* const outputs[] = { "alpha", "premultiplied", "matte" };
-    const double hues[][4] = { { 0.25, 0.3, 0.37, 0.42 }, { 0.85, 0.95, 0.05, 0.2 } };
+    // Centre, outer low, inner low, inner high, outer high; the second crosses red.
+    const double hues[][5] = { { 0.335, 0.085, 0.035, 0.035, 0.085 }, { 0., 0.15, 0.05, 0.05, 0.2 } };
     const std::vector<Layout> layouts = { { 4, 0xF }, { 4, 0x8 } };
     int nCase = 0;
     for (const char* model : models) {
@@ -534,9 +535,9 @@ TEST_F(NativeHueGpuTest, HSVKeyerKernelMatchesTheCpu)
             ASSERT_TRUE(setKnobValue(node, kHSVKeyerParamOutputMode, output));
             for (const double* hue : hues) {
                 for (int invert = 0; invert < 2; ++invert) {
-                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamHueRange, { hue[0], hue[1], hue[2], hue[3] }));
-                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSaturationRange, { invert ? -0.1 : 0.01, 0.1, 0.8, 1.5 }));
-                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamLumaRange, { -0.2, 0.1, 0.9, 2. }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamHueRange, { hue[0], hue[1], hue[2], hue[3], hue[4] }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSaturationRange, { 0.45, invert ? 0.55 : 0.44, 0.35, 0.35, 1.05 }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamLumaRange, { 0.5, 0.7, 0.4, 0.4, 1.5 }));
                     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamUseLuma, { (double)(invert == 0) }));
                     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamInvert, { (double)invert }));
                     const HSVKeyerOp::Params params = effect->bakeHSVKeyer(kTime, ViewIdx(0));
@@ -562,9 +563,9 @@ TEST_F(NativeHueGpuTest, HSVKeyerMatchesTheCpuRender)
         ASSERT_TRUE(bool(source) && bool(mask) && bool(op));
         ASSERT_TRUE(setKnobValue(op, kHSVKeyerParamColorModel, model));
         ASSERT_TRUE(setKnobValue(op, kHSVKeyerParamOutputMode, "premultiplied"));
-        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamHueRange, { 0.1, 0.3, 0.5, 0.7 }));
-        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamSaturationRange, { 0., 0.05, 1., 1.5 }));
-        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamLumaRange, { -0.5, 0., 1., 2. }));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamHueRange, { 0.4, 0.3, 0.1, 0.1, 0.3 }));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamSaturationRange, { 0.525, 0.525, 0.475, 0.475, 0.975 }));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamLumaRange, { 0.5, 1., 0.5, 0.5, 1.5 }));
         wire(source, mask, op);
         SCOPED_TRACE(model);
         expectRenderMatches(*runtime, source, mask, op, pointTolerance());

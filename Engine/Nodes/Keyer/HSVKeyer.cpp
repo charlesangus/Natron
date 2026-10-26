@@ -73,26 +73,55 @@ addRange(KnobHolder* holder,
          const char* name,
          const std::string& label,
          const std::string& hint,
-         const double defaults[4])
+         const double defaults[KnobDouble::eRangeWidgetDimensionCount])
 {
-    KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, label, 4);
+    KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, label, KnobDouble::eRangeWidgetDimensionCount);
+    const char* const dimensionNames[KnobDouble::eRangeWidgetDimensionCount] = {
+        "Centre", "Outer Low", "Inner Low", "Inner High", "Outer High"
+    };
 
     knob->setName(name);
     knob->setHintToolTip(hint);
-    knob->setDimensionName(0, "outerLow");
-    knob->setDimensionName(1, "innerLow");
-    knob->setDimensionName(2, "innerHigh");
-    knob->setDimensionName(3, "outerHigh");
-    for (int i = 0; i < 4; ++i) {
-        knob->setMinimum(-DBL_MAX, i);
+    for (int i = 0; i < KnobDouble::eRangeWidgetDimensionCount; ++i) {
+        const bool offset = (i != KnobDouble::eRangeWidgetDimensionCentre);
+        knob->setDimensionName(i, dimensionNames[i]);
+        knob->setMinimum(offset ? 0. : -DBL_MAX, i);
         knob->setMaximum(DBL_MAX, i);
         knob->setDisplayMinimum(0., i);
-        knob->setDisplayMaximum(1., i);
+        knob->setDisplayMaximum(offset ? 0.5 : 1., i);
         knob->setDefaultValue(defaults[i], i);
     }
     page->addKnob(knob);
 
     return knob;
+}
+
+// A range knob's offsets at time, as they key (KnobDouble::sanitizeRangeOffsets()).
+void
+rangeOffsets(const KnobReader& reader,
+             const KnobDoubleWPtr& knob,
+             double* offsets)
+{
+    for (int i = 0; i < 4; ++i) {
+        offsets[i] = reader.value(knob, KnobDouble::eRangeWidgetDimensionOuterLow + i);
+    }
+    KnobDouble::sanitizeRangeOffsets(offsets);
+}
+
+// The outer low, inner low, inner high and outer high points of a linear range.
+void
+linearPoints(const KnobReader& reader,
+             const KnobDoubleWPtr& knob,
+             float* points)
+{
+    const double centre = reader.value(knob, KnobDouble::eRangeWidgetDimensionCentre);
+    double o[4];
+
+    rangeOffsets(reader, knob, o);
+    points[0] = (float)(centre - o[0]);
+    points[1] = (float)(centre - o[1]);
+    points[2] = (float)(centre + o[2]);
+    points[3] = (float)(centre + o[3]);
 }
 
 KnobBoolPtr
@@ -163,7 +192,7 @@ HSVKeyerOp::createKnobs(KnobHolder* knobHolder,
     {
         KnobColorPtr knob = AppManager::createKnob<KnobColor>(knobHolder, EffectInstance::tr("Source Color").toStdString(), 3);
         knob->setName(kHSVKeyerParamSourceColor);
-        knob->setHintToolTip(EffectInstance::tr("The colour to key, picked from the viewer with the swatch button or typed. Setting it moves the three ranges so their plateaus are centred on its components, keeping their widths.").toStdString());
+        knob->setHintToolTip(EffectInstance::tr("The colour to key, picked from the viewer with the swatch button or typed. Setting it sets the three ranges' centres to its components, keeping their offsets.").toStdString());
         for (int i = 0; i < 3; ++i) {
             knob->setMinimum(-DBL_MAX, i);
             knob->setMaximum(DBL_MAX, i);
@@ -181,13 +210,13 @@ HSVKeyerOp::createKnobs(KnobHolder* knobHolder,
     {
         KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(knobHolder, EffectInstance::tr("Color Model").toStdString());
         knob->setName(kHSVKeyerParamColorModel);
-        knob->setHintToolTip(EffectInstance::tr("The model the hue, saturation and luma ranges are in. Changing it centres the ranges on the source colour's components in the model.").toStdString());
+        knob->setHintToolTip(EffectInstance::tr("The model the hue, saturation and luma ranges are in. Changing it sets the ranges' centres to the source colour's components in the model.").toStdString());
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption("hsv", "HSV", EffectInstance::tr("Hue, saturation (max - min) / max and value, the largest of R, G and B.").toStdString()));
         options.push_back(ChoiceOption("hsl", "HSL", EffectInstance::tr("Hue, saturation and lightness, the mean of the largest and smallest of R, G and B.").toStdString()));
         options.push_back(ChoiceOption("oklch", "OkLCh", EffectInstance::tr("OkLab's hue, chroma (about 0 to 0.4) and lightness, from the working space adapted to D65: perceptually even steps.").toStdString()));
         knob->populateChoices(options);
-        knob->setDefaultValue((int)ColorMath::eKeyModelHSV);
+        knob->setDefaultValue((int)ColorMath::eKeyModelOkLCh);
         knob->setAnimationEnabled(false);
         knob->setAddNewLine(false);
         page->addKnob(knob);
@@ -196,37 +225,41 @@ HSVKeyerOp::createKnobs(KnobHolder* knobHolder,
     {
         KnobButtonPtr knob = AppManager::createKnob<KnobButton>(knobHolder, EffectInstance::tr("Recentre").toStdString());
         knob->setName(kHSVKeyerParamRecentre);
-        knob->setHintToolTip(EffectInstance::tr("Centre the three ranges on the source colour's components, keeping their widths.").toStdString());
+        knob->setHintToolTip(EffectInstance::tr("Set the three ranges' centres to the source colour's components, keeping their offsets.").toStdString());
         knob->setEvaluateOnChange(false);
         page->addKnob(knob);
         recentre = knob;
     }
-    const double hueDefaults[4] = { 0.25, 0.30, 0.37, 0.42 };
-    const double satDefaults[4] = { 0.1, 0.3, 1., 1. };
-    const double lumaDefaults[4] = { 0., 0.05, 1., 2. };
-    KnobDoublePtr hue = addRange(knobHolder, page, kHSVKeyerParamHueRange, EffectInstance::tr("Hue Range").toStdString(),
-                                 EffectInstance::tr("The hue trapezoid, in turns from red at 0: the key rises from 0 at the outer low point to 1 at the inner low point, stays 1 to the inner high point and falls to 0 at the outer high point, each point going up the hue circle from the one before, so the range may cross red. Hue counts for less as the chroma nears 0.").toStdString(),
-                                 hueDefaults);
-    KnobDoublePtr sat = addRange(knobHolder, page, kHSVKeyerParamSaturationRange, EffectInstance::tr("Saturation Range").toStdString(),
-                                 EffectInstance::tr("The saturation trapezoid (chroma in OkLCh). A point below the one before counts as equal to it.").toStdString(),
-                                 satDefaults);
-    KnobDoublePtr luma = addRange(knobHolder, page, kHSVKeyerParamLumaRange, EffectInstance::tr("Luma Range").toStdString(),
-                                  EffectInstance::tr("The trapezoid over the model's value, lightness or OkLab lightness. A point below the one before counts as equal to it.").toStdString(),
-                                  lumaDefaults);
-    KnobColorPtr src = sourceColor.lock();
-    KnobChoicePtr model = colorModel.lock();
-    hue->setRangeWidget(KnobDouble::eRangeWidgetRoleHue, src, model);
-    sat->setRangeWidget(KnobDouble::eRangeWidgetRoleSaturation, src, model);
-    luma->setRangeWidget(KnobDouble::eRangeWidgetRoleLuma, src, model);
-    hueRange = hue;
-    satRange = sat;
-    lumaRange = luma;
+    // The toggles sit above the ranges they switch.
     useHue = addBool(knobHolder, page, kHSVKeyerParamUseHue, EffectInstance::tr("Use Hue").toStdString(),
                      EffectInstance::tr("Key by the hue range.").toStdString(), true, false);
     useSat = addBool(knobHolder, page, kHSVKeyerParamUseSaturation, EffectInstance::tr("Use Saturation").toStdString(),
                      EffectInstance::tr("Key by the saturation range.").toStdString(), true, false);
     useLuma = addBool(knobHolder, page, kHSVKeyerParamUseLuma, EffectInstance::tr("Use Luma").toStdString(),
                       EffectInstance::tr("Key by the luma range.").toStdString(), true, true);
+    // Centre, outer low, inner low, inner high, outer high. The defaults suit OkLCh, the default
+    // model, around the default source colour's green.
+    const double hueDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.4, 0.085, 0.035, 0.035, 0.085 };
+    const double satDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.2, 0.18, 0.14, 0.2, 0.2 };
+    const double lumaDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.5, 0.5, 0.45, 0.5, 1.5 };
+    const std::string offsetsHint = EffectInstance::tr("The key rises from 0 at the centre minus the outer low offset to 1 at the centre minus the inner low offset, stays 1 to the centre plus the inner high offset and falls to 0 at the centre plus the outer high offset. Offsets are never below 0, and an outer offset below its inner one counts as equal to it.").toStdString();
+    KnobDoublePtr hue = addRange(knobHolder, page, kHSVKeyerParamHueRange, EffectInstance::tr("Hue Range").toStdString(),
+                                 EffectInstance::tr("The hue range, in turns from red at 0, wrapping around its centre, so it may cross red. Each offset counts up to a whole turn. Hue counts for less as the chroma nears 0.").toStdString() + "\n" + offsetsHint,
+                                 hueDefaults);
+    KnobDoublePtr sat = addRange(knobHolder, page, kHSVKeyerParamSaturationRange, EffectInstance::tr("Saturation Range").toStdString(),
+                                 EffectInstance::tr("The saturation range (chroma in OkLCh).").toStdString() + "\n" + offsetsHint,
+                                 satDefaults);
+    KnobDoublePtr luma = addRange(knobHolder, page, kHSVKeyerParamLumaRange, EffectInstance::tr("Luma Range").toStdString(),
+                                  EffectInstance::tr("The range over the model's value, lightness or OkLab lightness.").toStdString() + "\n" + offsetsHint,
+                                  lumaDefaults);
+    KnobColorPtr src = sourceColor.lock();
+    KnobChoicePtr model = colorModel.lock();
+    hue->setRangeWidget(KnobDouble::eRangeWidgetRoleHue, src, model, useHue.lock());
+    sat->setRangeWidget(KnobDouble::eRangeWidgetRoleSaturation, src, model, useSat.lock());
+    luma->setRangeWidget(KnobDouble::eRangeWidgetRoleLuma, src, model, useLuma.lock());
+    hueRange = hue;
+    satRange = sat;
+    lumaRange = luma;
     invert = addBool(knobHolder, page, kHSVKeyerParamInvert, EffectInstance::tr("Invert").toStdString(),
                      EffectInstance::tr("Output one minus the key.").toStdString(), false, true);
     {
@@ -257,32 +290,21 @@ HSVKeyerOp::bake(const KnobReader& reader) const
     p.useLuma = reader.value(useLuma);
     p.invert = reader.value(invert);
 
-    const double low = reader.value(hueRange, 0);
-    const double lowFull = reader.value(hueRange, 1);
-    const double highFull = reader.value(hueRange, 2);
-    const double high = reader.value(hueRange, 3);
-    // The distances going up the hue circle, each less than a turn.
-    const double rise = lowFull - low - std::floor(lowFull - low);
-    const double full = highFull - lowFull - std::floor(highFull - lowFull);
-    const double fall = high - highFull - std::floor(high - highFull);
-    p.hueLow = (float)wrapUnit(low);
-    p.hueRise = (float)rise;
-    p.hueFull = (float)(rise + full);
-    p.hueFall = (float)(rise + full + fall);
-
-    // Out-of-order points are pushed up to the one before.
-    double s[4];
-    double l[4];
+    // Each hue offset counts up to a whole turn, so the trapezoid spans at most two turns, which
+    // HueCurves::hueTrapezoid() and the kernel overlap in full.
+    const double hueCentre = reader.value(hueRange, KnobDouble::eRangeWidgetDimensionCentre);
+    double h[4];
     for (int i = 0; i < 4; ++i) {
-        s[i] = reader.value(satRange, i);
-        l[i] = reader.value(lumaRange, i);
-        if (i > 0) {
-            s[i] = (std::max)(s[i], s[i - 1]);
-            l[i] = (std::max)(l[i], l[i - 1]);
-        }
-        p.sat[i] = (float)s[i];
-        p.luma[i] = (float)l[i];
+        h[i] = (std::min)(1., reader.value(hueRange, KnobDouble::eRangeWidgetDimensionOuterLow + i));
     }
+    KnobDouble::sanitizeRangeOffsets(h);
+    p.hueLow = (float)wrapUnit(hueCentre - h[0]);
+    p.hueRise = (float)(h[0] - h[1]);
+    p.hueFull = (float)(h[0] + h[2]);
+    p.hueFall = (float)(h[0] + h[3]);
+
+    linearPoints(reader, satRange, p.sat);
+    linearPoints(reader, lumaRange, p.luma);
     if (p.model == ColorMath::eKeyModelOkLCh) {
         p.basis = basisOf(holder);
     }
@@ -407,41 +429,6 @@ HSVKeyerOp::gpu(const Params& params) const
 #endif
 }
 
-void
-HSVKeyerOp::recentreHue(double* points,
-                        double hue)
-{
-    const double low = points[0];
-    const double lowFull = points[1];
-    const double highFull = points[2];
-    const double rise = lowFull - low - std::floor(lowFull - low);
-    const double full = highFull - lowFull - std::floor(highFull - lowFull);
-    const double centre = low + rise + full * 0.5;
-    // The shortest way round, so a range near red does not travel a whole turn.
-    double shift = wrapUnit(hue - centre);
-    if (shift >= 0.5) {
-        shift -= 1.;
-    }
-    for (int i = 0; i < 4; ++i) {
-        points[i] = wrapUnit(points[i] + shift);
-    }
-}
-
-void
-HSVKeyerOp::recentreLinear(double* points,
-                           double value)
-{
-    double ordered[4];
-
-    for (int i = 0; i < 4; ++i) {
-        ordered[i] = (i > 0) ? (std::max)(points[i], ordered[i - 1]) : points[i];
-    }
-    const double shift = value - (ordered[1] + ordered[2]) * 0.5;
-    for (int i = 0; i < 4; ++i) {
-        points[i] += shift;
-    }
-}
-
 HSVKeyer::HSVKeyer(NodePtr node)
     : ImageNode<HSVKeyerOp>(node)
     , _recentrePending(false)
@@ -497,18 +484,8 @@ HSVKeyer::recentreOnSource(double time)
         if (!knob || ((r == 0) && !(hueWeight > 0.f))) {
             continue;
         }
-        double points[4];
-        for (int i = 0; i < 4; ++i) {
-            points[i] = knob->getValueAtTime(time, i);
-        }
-        if (r == 0) {
-            HSVKeyerOp::recentreHue(points, comps[0]);
-        } else {
-            HSVKeyerOp::recentreLinear(points, comps[r]);
-        }
-        for (int i = 0; i < 4; ++i) {
-            knob->setValue(points[i], ViewSpec::all(), i);
-        }
+        const double centre = (r == 0) ? wrapUnit(comps[0]) : (double)comps[r];
+        knob->setValue(centre, ViewSpec::all(), KnobDouble::eRangeWidgetDimensionCentre);
     }
     if (oneUndoStep) {
         setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);

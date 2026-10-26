@@ -406,17 +406,39 @@ public:
     };
 
     /**
-     * @brief Shows the knob as a trapezoid over a colour strip, the four dimensions being the
-     * outer low, inner low, inner high and outer high points, with the numeric fields kept and no
-     * slider. The strip draws the role's component in the colour model that modelKnob's index
-     * selects (ColorMath::KeyModelEnum), its saturation strip tinted with sourceColourKnob's hue,
-     * and redraws when either changes. A hue range is in turns and wraps. Does nothing unless the
-     * knob has four dimensions and role is not eRangeWidgetRoleNone. Call before the knob's GUI is
-     * created.
+     * @brief The dimensions of a range-widget knob: the centre, then the four offsets from it,
+     * the low ones below it and the high ones above. The plateau is centre - inner low to
+     * centre + inner high and the feet are centre - outer low and centre + outer high.
+     **/
+    enum RangeWidgetDimensionEnum {
+        eRangeWidgetDimensionCentre = 0,
+        eRangeWidgetDimensionOuterLow,
+        eRangeWidgetDimensionInnerLow,
+        eRangeWidgetDimensionInnerHigh,
+        eRangeWidgetDimensionOuterHigh,
+        eRangeWidgetDimensionCount
+    };
+
+    /**
+     * @brief The four offsets of a range as they key: none below 0, and each outer one at least
+     * its inner one. offsets holds outer low, inner low, inner high and outer high.
+     **/
+    static void sanitizeRangeOffsets(double* offsets);
+
+    /**
+     * @brief Shows the knob as a trapezoid over a colour strip, the dimensions being those of
+     * RangeWidgetDimensionEnum, with the numeric fields kept and no slider. The strip draws the
+     * role's component in the colour model that modelKnob's index selects
+     * (ColorMath::KeyModelEnum), its saturation strip tinted with sourceColourKnob's hue, and
+     * redraws when either changes. A hue range is in turns and wraps around its centre. While
+     * enableKnob is off the whole row is greyed out. Does nothing unless the knob has
+     * eRangeWidgetDimensionCount dimensions and role is not eRangeWidgetRoleNone. Call before the
+     * knob's GUI is created.
      **/
     void setRangeWidget(RangeWidgetRoleEnum role,
                         const KnobColorPtr& sourceColourKnob,
-                        const KnobChoicePtr& modelKnob);
+                        const KnobChoicePtr& modelKnob,
+                        const KnobBoolPtr& enableKnob);
 
     bool isRangeWidget() const
     {
@@ -436,6 +458,11 @@ public:
     KnobChoicePtr getRangeWidgetModel() const
     {
         return _rangeWidgetModel.lock();
+    }
+
+    KnobBoolPtr getRangeWidgetEnable() const
+    {
+        return _rangeWidgetEnable.lock();
     }
 
 Q_SIGNALS:
@@ -472,6 +499,7 @@ private:
     RangeWidgetRoleEnum _rangeWidgetRole;
     KnobColorWPtr _rangeWidgetSourceColour;
     KnobChoiceWPtr _rangeWidgetModel;
+    KnobBoolWPtr _rangeWidgetEnable;
 
     /// to support ofx deprecated normalizd params:
     /// the first and second dimensions of the double param( hence a pair ) have a normalized state.

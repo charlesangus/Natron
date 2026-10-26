@@ -128,6 +128,9 @@ public:
     // How many engines every renderer of the process has made.
     static U64 getEngineConstructionCount();
 
+    // Whether the renderer holds an engine, which the next render() makes when it does not.
+    bool hasEngine() const;
+
     // The stage timecode shown, the project frame mapped by seconds.
     double getTimeCode() const;
 
@@ -315,6 +318,13 @@ public:
     // Reads the handles of the provided node's op from its knobs, at the shown frame.
     void refreshTransformHandles();
 
+    /**
+     * @brief Destroys the renderer's engine and the GPU memory it holds, in this widget's context,
+     * and repaints, which makes another. The stage stays: it holds no GPU memory, and making it
+     * again would mean syncing the whole scene again. Main thread; waits for a sync under way.
+     **/
+    void releaseEngine();
+
 Q_SIGNALS:
 
     void selectedPrimChanged(const QString& path);
@@ -331,9 +341,10 @@ protected:
     void contextMenuEvent(QContextMenuEvent* e) override;
 
 private:
-    // Mirrors the error, whether a scene is shown, whether every request is synced and how many
-    // engines the renderer made into the natronSceneError, natronSceneShown, natronSceneSynced
-    // and natronSceneEngineCount properties.
+    // Mirrors the error, whether a scene is shown, whether every request is synced, how many
+    // engines the renderer made and whether it holds one into the natronSceneError,
+    // natronSceneShown, natronSceneSynced, natronSceneEngineCount and natronSceneEngineHeld
+    // properties.
     void publishState();
 
     // Starts dragging the transform handle at pos (widget coordinates). False if none is there.

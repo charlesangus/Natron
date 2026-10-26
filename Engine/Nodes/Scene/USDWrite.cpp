@@ -119,27 +119,43 @@ referencedFilePath(const std::string& assetPath)
 
 /**
  * @brief Removes the files beside outputInfo that carry its sidecar names, name_layerN.ext as the
- * layered write names them, except those in keep: what an earlier write of more layer runs left,
- * which nothing written references. A file that cannot be removed stays, as the written files do
- * not depend on it.
+ * layered write names them, except those in keep: what an earlier layered write left, which
+ * nothing written references. A file that cannot be removed stays, as the written files do not
+ * depend on it. Returns the names of the files removed.
  **/
-void
+QStringList
 removeStaleSidecars(const QFileInfo& outputInfo,
                     const std::set<QString>& keep)
 {
+    QStringList removed;
     const QDir dir(outputInfo.absolutePath());
     const QRegularExpression sidecar(QString::fromUtf8("^") + QRegularExpression::escape(outputInfo.completeBaseName()) + QString::fromUtf8("_layer[1-9][0-9]*\\.") + QRegularExpression::escape(outputInfo.suffix()) + QString::fromUtf8("$"));
     const QStringList names = dir.entryList(QDir::Files | QDir::Hidden | QDir::System);
+
+    // A symlinked output folder spells the same file two ways, so keep entries also match by
+    // canonical path.
+    std::set<QString> keepCanonical;
+    for (const QString& k : keep) {
+        const QString canonical = QFileInfo(k).canonicalFilePath();
+        if (!canonical.isEmpty()) {
+            keepCanonical.insert(canonical);
+        }
+    }
 
     for (const QString& name : names) {
         if (!sidecar.match(name).hasMatch()) {
             continue;
         }
         const QString path = QDir::cleanPath(dir.absoluteFilePath(name));
-        if (keep.count(path) == 0) {
-            QFile::remove(path);
+        if (keepCanonical.count(QFileInfo(path).canonicalFilePath()) != 0) {
+            continue;
+        }
+        if ((keep.count(path) == 0) && QFile::remove(path)) {
+            removed.push_back(name);
         }
     }
+
+    return removed;
 }
 
 /**
@@ -405,7 +421,8 @@ USDWrite::initializeKnobs()
                                            .toStdString()));
         options.push_back(ChoiceOption("flattened", tr("Flattened").toStdString(),
                                        tr("Bakes the whole composed scene, the files it reads included, into the file, which "
-                                          "then stands on its own.")
+                                          "then stands on its own. Sidecar files a layered write to the same name left beside it "
+                                          "(name_layer1.usda, ...) are removed, with a warning naming them, unless the scene reads them.")
                                            .toStdString()));
         exportMode->populateChoices(options);
     }
@@ -610,6 +627,7 @@ USDWrite::writeFrameRange(int firstFrame,
         PXR_NS::SdfLayerRefPtr layer;
     };
     std::vector<Written> written;
+    QStringList removedSidecars;
     {
         // The scene's layers are read while they are flattened: no write may edit them meanwhile.
         SceneWriteBarrier::ReadScope read;
@@ -618,9 +636,21 @@ USDWrite::writeFrameRange(int firstFrame,
         // between them the runs of anonymous layers weaker than one, flattened in place so the
         // written file composes with the strength order the scene had.
         std::vector<StackItem> sublayers;
+        // The files the write produces or references, which a removal of stale sidecars spares.
+        std::set<QString> keep;
         if (exportMode == eExportModeFlattened) {
             PXR_NS::UsdStageRefPtr stage = SceneOps::compose(scene);
             output = stage ? stage->Flatten(false) : PXR_NS::SdfLayerRefPtr();
+            // The flattened file holds what these files author, but the nodes reading them, a
+            // USDRead of one, still need them.
+            if (stage) {
+                for (const PXR_NS::SdfLayerHandle& layer : stage->GetUsedLayers()) {
+                    const std::string realPath = layer ? layer->GetRealPath() : std::string();
+                    if (!realPath.empty()) {
+                        keep.insert(QDir::cleanPath(QString::fromStdString(realPath)));
+                    }
+                }
+            }
         } else {
             std::vector<StackItem> items;
             const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
@@ -673,8 +703,6 @@ USDWrite::writeFrameRange(int firstFrame,
             return fail(tr("The scene could not be flattened%1").arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
         }
 
-        // The files the write produces or references, which a removal of stale sidecars spares.
-        std::set<QString> keep;
         const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer) {
             clipTimeSamples(layer, startTime, endTime);
             PXR_NS::UsdUtilsModifyAssetPaths(layer, [&outputDir, pathMode, &keep](const std::string& assetPath) {
@@ -736,12 +764,10 @@ USDWrite::writeFrameRange(int firstFrame,
             }
         }
         // Only once every file is written, so that a failed write leaves the earlier set whole.
-        if (exportMode == eExportModeLayered) {
-            for (const Written& w : written) {
-                keep.insert(QDir::cleanPath(w.path));
-            }
-            removeStaleSidecars(outputInfo, keep);
+        for (const Written& w : written) {
+            keep.insert(QDir::cleanPath(w.path));
         }
+        removedSidecars = removeStaleSidecars(outputInfo, keep);
     }
     // Layers already open on the files, such as a USDRead's of them, would go on showing what
     // they held before: they are reloaded in place, through the barrier, so every stage composing
@@ -760,6 +786,20 @@ USDWrite::writeFrameRange(int firstFrame,
     mark.Clear();
 
     clearPersistentMessage(false);
+    // A layered write replaces its own sidecars, as expected; a flattened one removes files the user
+    // may not know the export mode made, so it says which.
+    if ((exportMode == eExportModeFlattened) && !removedSidecars.isEmpty()) {
+        const int kMaxNamed = 5;
+        const QString what = (removedSidecars.size() <= kMaxNamed)
+            ? removedSidecars.join(QString::fromUtf8(", "))
+            : tr("%1 files named %2_layerN.%3").arg(removedSidecars.size()).arg(outputInfo.completeBaseName()).arg(outputInfo.suffix());
+        setPersistentMessage(eMessageTypeWarning, tr("Removed %1 from %2: sidecar files of a layered write to %3, which the "
+                                                     "flattened file does not use.")
+                                                      .arg(what)
+                                                      .arg(outputDir)
+                                                      .arg(outputInfo.fileName())
+                                                      .toStdString());
+    }
     ++_writeCount;
 
     return eStatusOK;

@@ -70,8 +70,10 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiGLRequirements.h"
 #include "Gui/HydraGLContextQt.h"
 #include "Gui/KnobGuiFactory.h"
+#include "Gui/SceneViewport.h"
 #include "Gui/SplashScreen.h"
 #include "Gui/TabMenuBridge.h"
+#include "Gui/ViewerTab.h"
 
 /**
  * @macro Registers a keybind to the application.
@@ -1167,6 +1169,26 @@ GuiApplicationManager::clearLastRenderedTextures()
         GuiAppInstance* guiApp = dynamic_cast<GuiAppInstance*>( it->get() );
         if (guiApp) {
             guiApp->clearAllLastRenderedImages();
+        }
+    }
+}
+
+void
+GuiApplicationManager::releaseSceneViewEngines()
+{
+    const AppInstanceVec& instances = getAppInstances();
+
+    for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
+        GuiAppInstance* guiApp = dynamic_cast<GuiAppInstance*>(it->get());
+        Gui* gui = guiApp ? guiApp->getGui() : nullptr;
+        if (!gui) {
+            continue;
+        }
+        const std::list<ViewerTab*> viewers = gui->getViewersList_mt_safe();
+        for (ViewerTab* viewer : viewers) {
+            if (SceneViewport* view = viewer->getSceneViewport()) {
+                view->releaseEngine();
+            }
         }
     }
 }

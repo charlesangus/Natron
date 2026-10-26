@@ -710,6 +710,12 @@ SceneViewportRenderer::getEngineCount() const
     return _imp->engineCount;
 }
 
+bool
+SceneViewportRenderer::hasEngine() const
+{
+    return bool(_imp->engine);
+}
+
 U64
 SceneViewportRenderer::getEngineConstructionCount()
 {
@@ -1301,6 +1307,7 @@ SceneViewport::publishState()
     setProperty("natronSceneShown", _imp->renderer.hasScene());
     setProperty("natronSceneSynced", isSceneSynced());
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
+    setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
 }
 
 const QString&
@@ -1420,6 +1427,21 @@ SceneViewport::refreshTransformHandles()
 } // SceneViewport::refreshTransformHandles
 
 void
+SceneViewport::releaseEngine()
+{
+    // The engine's GL objects belong to this widget's context, and releaseGL() takes the viewer
+    // lock, so the worker is not syncing into the stage the engine listens to while it goes.
+    if (_imp->glInitialized && context()) {
+        makeCurrent();
+        _imp->renderer.releaseGL();
+        doneCurrent();
+    }
+    publishState();
+    // A hidden view makes its engine when it is next shown.
+    update();
+}
+
+void
 SceneViewport::initializeGL()
 {
     _imp->glInitialized = true;
@@ -1450,6 +1472,7 @@ SceneViewport::paintGL()
     const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
+    setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::TextAntialiasing);

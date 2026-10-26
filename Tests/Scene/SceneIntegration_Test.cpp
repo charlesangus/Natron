@@ -577,6 +577,94 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredRemovesStaleSidecars)
     EXPECT_EQ(PXR_NS::GfVec3d(0., 7., 0.), written.ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.)).ExtractTranslation());
 }
 
+// A flattened write to a layered write's name removes the sidecars the flattened file does not use,
+// says which with a warning, and spares look-alikes and a sidecar-named file the scene reads.
+TEST_F(SceneIntegrationTest, USDWriteFlattenedRemovesStaleSidecarsWithAWarning)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    ASSERT_TRUE(QDir().mkpath(outDir));
+    const QString aPath = tmp.path() + QString::fromUtf8("/a.usda");
+    // Read by the scene, under a name the sidecar pattern matches.
+    const QString bPath = outDir + QString::fromUtf8("/scene_layer9.usda");
+    writeTextFile(aPath, "#usda 1.0\n"
+                         "over \"World\"\n{\n"
+                         "    over \"Box\"\n    {\n"
+                         "        double3 xformOp:translate = (0, 7, 0)\n"
+                         "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                         "    }\n}\n");
+    writeTextFile(bPath, "#usda 1.0\n"
+                         "over \"World\"\n{\n"
+                         "    def Xform \"FromB\"\n    {\n    }\n}\n");
+    const QStringList unrelated = QStringList() << QString::fromUtf8("notes.txt") << QString::fromUtf8("other_layer1.usda")
+                                                << QString::fromUtf8("scene_layer3.usdc") << QString::fromUtf8("scene_layerX.usda");
+    for (const QString& name : unrelated) {
+        writeTextFile(outDir + QString::fromUtf8("/") + name, "keep\n");
+    }
+
+    // Strongest first: scene_layer9.usda, other, a.usda, box: two runs of node layers, two sidecars.
+    NodePtr box = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr readerA = createReader(aPath.toStdString());
+    NodePtr mergeA = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr readerB = createReader(bPath.toStdString());
+    NodePtr mergeB = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(box && readerA && mergeA && other && readerB && mergeB);
+    KnobString* boxPath = getKnob<KnobString>(box, kSceneParamPrimPath);
+    KnobString* otherPath = getKnob<KnobString>(other, kSceneParamPrimPath);
+    ASSERT_TRUE(boxPath && otherPath);
+    boxPath->setValue(std::string("/World/Box"));
+    otherPath->setValue(std::string("/World/Other"));
+    ASSERT_TRUE(mergeA->connectInput(box, 0));
+    ASSERT_TRUE(mergeA->connectInput(readerA, 1));
+    ASSERT_TRUE(other->connectInput(mergeA, 0));
+    ASSERT_TRUE(mergeB->connectInput(other, 0));
+    ASSERT_TRUE(mergeB->connectInput(readerB, 1));
+
+    const QString path = outDir + QString::fromUtf8("/scene.usda");
+    NodePtr layered = createWriter(mergeB, path, USDWrite::eExportModeLayered, USDWrite::ePathModeRelative, 1, 1);
+    ASSERT_TRUE(layered && getWriter(layered));
+    ASSERT_EQ(eStatusOK, getWriter(layered)->writeFrameRange(1, 1, ViewIdx(0)));
+    QStringList expected = unrelated;
+    expected << QString::fromUtf8("scene.usda") << QString::fromUtf8("scene_layer1.usda") << QString::fromUtf8("scene_layer2.usda")
+             << QString::fromUtf8("scene_layer9.usda");
+    expected.sort();
+    ASSERT_EQ(expected, fileNames(outDir));
+    EXPECT_FALSE(layered->hasPersistentMessage());
+
+    NodePtr flattened = createWriter(mergeB, path, USDWrite::eExportModeFlattened, USDWrite::ePathModeRelative, 1, 1);
+    ASSERT_TRUE(flattened && getWriter(flattened));
+    ASSERT_EQ(eStatusOK, getWriter(flattened)->writeFrameRange(1, 1, ViewIdx(0)));
+    expected = unrelated;
+    expected << QString::fromUtf8("scene.usda") << QString::fromUtf8("scene_layer9.usda");
+    expected.sort();
+    EXPECT_EQ(expected, fileNames(outDir));
+
+    ASSERT_TRUE(flattened->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    flattened->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("scene_layer1.usda"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("scene_layer2.usda"))) << message.toStdString();
+    EXPECT_FALSE(message.contains(QString::fromUtf8("scene_layer9.usda"))) << message.toStdString();
+
+    // The flattened file stands on its own: no sublayers, and what the removed sidecars held is in it.
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(layer);
+    EXPECT_TRUE(layer->GetSubLayerPaths().empty());
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+    ASSERT_TRUE(stage);
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Other")).IsValid());
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/FromB")).IsValid());
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")).IsValid());
+
+    // A flattened write that removes nothing raises no warning.
+    ASSERT_EQ(eStatusOK, getWriter(flattened)->writeFrameRange(1, 1, ViewIdx(0)));
+    EXPECT_FALSE(flattened->hasPersistentMessage());
+}
+
 // The frame range knobs set which time samples are written: samples outside are dropped, and the
 // range's ends get the values the animation had there.
 TEST_F(SceneIntegrationTest, USDWriteFrameRangeClipsTheTimeSamples)

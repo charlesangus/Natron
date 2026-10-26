@@ -1344,6 +1344,7 @@ void
 AppManager::freeGpuMemory()
 {
     SceneCaches::releaseRenderEngines();
+    releaseSceneViewEngines();
     if (_imp->gpuContext) {
         _imp->gpuContext->releaseIdleMemory();
     }

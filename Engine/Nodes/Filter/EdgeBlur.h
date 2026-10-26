@@ -33,6 +33,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
+#include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
@@ -54,12 +55,10 @@
 
 NATRON_NAMESPACE_ENTER
 
-class MapPlane;
-
 /**
  * @brief The knob values one EdgeBlur evaluation reads. size is in canonical units, the blur's
- * and the edge detection's alike; filter is the edge detection's only, the blur being always the
- * Gaussian (IIR).
+ * at full edge strength and the edge detection's alike; filter is the edge detection's only, the
+ * blur being always IBlur's three boxes.
  **/
 struct EdgeBlurParams {
     bool externalMatte = false;
@@ -70,17 +69,21 @@ struct EdgeBlurParams {
 };
 
 /**
- * @brief Blurs the image where its matte has edges: the image blurred by a Gaussian of Size, mixed
- * with the image by the matte's edge strength raised to 1 / Edge Mult and clamped to [0, 1]. The
- * matte is the alpha of the plane being processed, or with External Matte the alpha of the Matte
- * input in that plane; a Matte that is disconnected has no edges, which leaves the image as it is.
+ * @brief Blurs the image where its matte has edges, by IBlur's variable blur: each pixel is
+ * blurred by Size times its edge weight, the matte's edge strength raised to 1 / Edge Mult and
+ * clamped to [0, 1], so the blur narrows smoothly to nothing away from the edge. A fixed blur
+ * mixed in by the weight would add the blurred edge, spread over the blur's whole reach, to a
+ * fading copy of the sharp one: a second step, a ghost, wherever the weight is between 0 and 1. The matte is the alpha of the plane being processed, or with External Matte the alpha of the
+ * Matte input in that plane; a Matte that is disconnected has no edges, which leaves the image as
+ * it is.
  *
  * The edges are EdgeDetect's gradient magnitude of the matte alone, pre-blurred by Size with the
  * Filter, as EdgeDetect computes it over the matte's own region of definition grown by its reach
  * and cropped to the matte's format: so a unit step of the matte gives an edge strength of 1 at
- * the step. The CPU runs EdgeDetect's passes over a buffer of their own and Blur's in the pass
- * list, whose last pass mixes; the GPU records both nodes' recorders and Kernels/edgeblur.slang's
- * mix over the same rects.
+ * the step. They are IBlur's Map, the weight its remap with exponent 1 / Edge Mult. The CPU runs
+ * EdgeDetect's passes over a buffer of their own, over every pixel IBlur's passes read, then
+ * IBlur's passes; the GPU records EdgeDetect's recorder into a buffer IBlur's recorder reads as
+ * its Map.
  **/
 class EdgeBlur
     : public StagedImageEffect {
@@ -103,8 +106,15 @@ public:
     EdgeBlurParams getParams(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief The blur of params at context's scale: Blur's passes with the Gaussian (IIR), empty
-     * when the blur leaves the image unchanged.
+     * @brief The IBlur knob values of params: Size at full edge weight, 0 at none, the Map's
+     * remap raising the edge strength to edgeExponent().
+     **/
+    static IBlurParams blurParams(const EdgeBlurParams& params) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief IBlur's passes for params at context's scale, without CPU work, over the whole range
+     * of the edge weight: they carry the halo and growth the region actions need. Empty when Size
+     * gives a radius of 0.
      **/
     static PassList blurPasses(const EdgeBlurParams& params, const PassContext& context) WARN_UNUSED_RETURN;
 
@@ -115,8 +125,9 @@ public:
     static PassList edgePasses(const EdgeBlurParams& params, const PassContext& context) WARN_UNUSED_RETURN;
 
     /**
-     * @brief The weight a pixel of edge strength edge mixes the blur in with: edge to the power
-     * exponent, 1 / Edge Mult, clamped to [0, 1]; 0 for an edge that is not positive.
+     * @brief The weight a pixel of edge strength edge scales the blur size by: edge to the power
+     * exponent, 1 / Edge Mult, clamped to [0, 1]; 0 for an edge that is not positive. It is
+     * MapInputParams::remap() with that exponent, as IBlur's Map applies it.
      **/
     static float edgeWeight(float edge, float exponent) WARN_UNUSED_RETURN;
 
@@ -165,13 +176,14 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The blur and the mix, without CPU work, with the reach of the edge detection when the matte
-    // is the source; with a GPU recorder while both nodes' passes have one.
+    // blurPasses(), led by the reach of the edge detection when the matte is the source, so that
+    // the source is read over EdgeDetect's buffer; with a GPU recorder while EdgeDetect's passes
+    // have one and IBlur's fit the GPU.
     virtual PassList opPasses(double time,
                               ViewIdx view,
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The Matte over the render window grown by the edge detection's reach.
+    // The Matte over the render window grown by the blur's halo and the edge detection's reach.
     virtual RectI opPassesInputRoI(int inputNb,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -194,10 +206,11 @@ private:
                    RectI* edgeRoD,
                    RectI* buffer) const WARN_UNUSED_RETURN;
 
-    // The edge strength over args.roi, 0 where there is none.
+    // The edge weight over window, 0 where there is no edge.
     StatusEnum computeEdges(const RenderActionArgs& args,
                             const EdgeBlurParams& params,
                             const PassList& edges,
+                            const RectI& window,
                             MapPlane* plane);
 
     // The GPU recorder of opPasses().

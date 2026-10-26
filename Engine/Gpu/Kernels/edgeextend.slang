@@ -1,7 +1,7 @@
 // EdgeExtend's own passes, after the workers of Engine/Nodes/Filter/EdgeExtend.cpp: the source fill
-// with the nearest pixel repeated and the premultiplication, the running result repeated past the
-// CPU's buffer for a slice's blur, the merge of the result over its blur, and the
-// unpremultiplication into the output. The blur of each slice is blur.slang's. The running result,
+// with the nearest pixel repeated and the running result started from the solid pixels, the
+// running result repeated past the CPU's buffer for a slice's blur, the merge of the result over
+// its blur, and the extended colour into the output. The blur of each slice is blur.slang's. The running result,
 // the extended and the blurred buffers are tightly packed, `channels` floats per pixel.
 // EdgeExtendGpuParams in Engine/Nodes/Filter/EdgeExtend.cpp mirrors EdgeExtendParams.
 
@@ -42,9 +42,15 @@ struct EdgeExtendParams
     int srcY2;
     uint srcOffset;
     uint srcStride;
-    uint premultiply;
-    uint unpremultiply;
+    // There is a slice: fill starts the running result and finish ends it; without one both copy.
+    uint extend;
+    // The source's colour is divided by its alpha, where that exceeds epsilon, when it is solid.
+    uint sourcePremultiplied;
+    // The extended colour is multiplied by the source's alpha.
+    uint premultiplyOutput;
     float epsilon;
+    // The source's alpha at or above which a pixel is solid.
+    float threshold;
 };
 [[vk::push_constant]] ConstantBuffer<EdgeExtendParams> params;
 
@@ -61,8 +67,8 @@ uint sourceIndex(int x, int y)
     return params.srcOffset + uint(cy - params.srcY1) * params.srcStride + uint(cx - params.srcX1) * params.channels;
 }
 
-// fillBuffer() with the nearest-pixel boundary, then premultiplyWorker(): zero when the source has
-// no pixel.
+// fillBuffer() with the nearest-pixel boundary, then prepareWorker(): the straight colour with an
+// alpha of 1 where the source is solid, zero elsewhere; zero when the source has no pixel.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void edgeextend_fill(uint3 tid : SV_DispatchThreadID)
@@ -78,12 +84,20 @@ void edgeextend_fill(uint3 tid : SV_DispatchThreadID)
         return;
     }
     const uint src = sourceIndex(params.extX1 + int(tid.x), params.extY1 + int(tid.y));
-    if (params.active != 0 && params.premultiply != 0)
+    if (params.active != 0 && params.extend != 0)
     {
         const float a = asfloat(inBuf[src + 3]);
+        const bool solid = a >= params.threshold;
         for (uint c = 0; c < 3; ++c)
-            outBuf[dst + c] = asuint(asfloat(inBuf[src + c]) * a);
-        outBuf[dst + 3] = asuint(a);
+        {
+            float v = asfloat(inBuf[src + c]);
+            if (!solid)
+                v = 0.0;
+            else if (params.sourcePremultiplied != 0 && a > params.epsilon)
+                v = v / a;
+            outBuf[dst + c] = asuint(v);
+        }
+        outBuf[dst + 3] = asuint(solid ? 1.0 : 0.0);
         return;
     }
     for (uint c = 0; c < n && c < 4; ++c)
@@ -120,7 +134,8 @@ void edgeextend_over(uint3 tid : SV_DispatchThreadID)
         outBuf[k + c] = asuint(asfloat(outBuf[k + c]) + asfloat(blurBuf[k + c]) * t);
 }
 
-// unpremultiplyWorker() into the output; zero outside the CPU's buffer.
+// finishWorker() into the output: the colour divided by the grown alpha, multiplied by the source's
+// alpha with premultiplyOutput, and the source's alpha; zero outside the CPU's buffer.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void edgeextend_finish(uint3 tid : SV_DispatchThreadID)
@@ -138,17 +153,20 @@ void edgeextend_finish(uint3 tid : SV_DispatchThreadID)
         return;
     }
     const uint k = (uint(y - params.bufY1) * params.bufWidth + uint(x - params.bufX1)) * params.channels;
-    if (params.active == 0 || params.unpremultiply == 0)
+    if (params.active == 0 || params.extend == 0)
     {
         for (uint c = 0; c < n; ++c)
             outBuf[dst + c] = inBuf[k + c];
         return;
     }
     const float a = asfloat(inBuf[k + 3]);
+    const float sourceAlpha = hasSource() ? asfloat(blurBuf[sourceIndex(x, y) + 3]) : 0.0;
     for (uint c = 0; c < 3; ++c)
     {
-        const float v = asfloat(inBuf[k + c]);
-        outBuf[dst + c] = asuint((a > params.epsilon) ? (v / a) : v);
+        float v = asfloat(inBuf[k + c]);
+        if (a > params.epsilon)
+            v = v / a;
+        outBuf[dst + c] = asuint(params.premultiplyOutput != 0 ? v * sourceAlpha : v);
     }
-    outBuf[dst + 3] = hasSource() ? blurBuf[sourceIndex(x, y) + 3] : 0u;
+    outBuf[dst + 3] = asuint(sourceAlpha);
 }

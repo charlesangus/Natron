@@ -433,7 +433,10 @@ TEST_F(NativeGoldenTest, EdgeExtend)
     v.push_back(variant("wide", wide));
     v.push_back(variant("oneslice", [](const GoldenGraph& g) { return num(g, kEdgeExtendParamSize, { 6. }) && num(g, kEdgeExtendParamSlices, { 1. }); }));
     v.push_back(variant("premultiplied", [](const GoldenGraph& g) {
-        return num(g, kEdgeExtendParamPremultiplyInput, { 0. }) && num(g, kEdgeExtendParamUnpremultiplyOutput, { 0. });
+        return num(g, kEdgeExtendParamPremultiplyOutput, { 1. }) && num(g, kEdgeExtendParamThreshold, { 0.2 });
+    }));
+    v.push_back(variant("straight", [](const GoldenGraph& g) {
+        return num(g, kEdgeExtendParamSourcePremultiplied, { 0. }) && num(g, kEdgeExtendParamThreshold, { 0.9 });
     }));
     v.push_back(filterMaskMix(wide));
     run(filterSpec("EdgeExtend", PLUGINID_NATRON_EDGEEXTEND, PLUGIN_MAJOR_NATRON_EDGEEXTEND), v);

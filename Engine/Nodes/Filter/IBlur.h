@@ -114,6 +114,24 @@ public:
                            const std::shared_ptr<const MapPlane>& map) WARN_UNUSED_RETURN;
 
     /**
+     * @brief Whether the GPU records passes(): no box radius exceeds the GPU kernels' cap.
+     **/
+    static bool fitsGpu(const PassList& passes) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Records passes() for params at context's scale on the GPU over io.domain, the Map
+     * being channel mapChannel of io.inputs[kIBlurInputMap], or none when mapChannel is negative.
+     * A Map that is not connected blurs at Size everywhere; a connected one reads 0 outside its
+     * image or when it is none. Fails, so that the CPU renders, without a GPU or when a buffer
+     * exceeds the kernels' 32-bit indices.
+     **/
+    static StatusEnum recordPassesGpu(const PassGpuIO& io,
+                                      const IBlurParams& params,
+                                      const PassContext& context,
+                                      bool mapConnected,
+                                      int mapChannel) WARN_UNUSED_RETURN;
+
+    /**
      * @brief The text of the warning a disconnected Map posts.
      **/
     static std::string mapNotConnectedMessage() WARN_UNUSED_RETURN;

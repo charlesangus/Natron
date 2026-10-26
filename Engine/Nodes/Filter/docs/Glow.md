@@ -31,9 +31,12 @@ Bloom applied to the highlights of the image, then added or screened over it.
 
 `preview` outputs the ungraded map (step 1) instead. `expandRoD` grows the region of definition by
 the bloom's reach; off, the glow is cropped to the source's region. Alpha is not processed by
-default. "(Un)premult by" is the host's stage. The mask is not a host mix: it multiplies the map
-inside the node (step 1), so the glow of a masked-out highlight does not spill into the mask's
-area, and there is no mix or mask-invert control.
+default. There is no "(Un)premult by": the source is glowed as it comes, since light adds to a
+premultiplied image as it is. The mask is not a host mix: it multiplies the map inside the node
+(step 1), so the glow of a masked-out highlight does not spill into the mask's area, and there is
+no mask-invert control. Mix is the node's own standard Mix knob: each processed channel of the
+output, preview included, is `in + mix * (out - in)`, bit for bit `out` at 1; at 0 the node is
+the identity.
 
 The map's luma weights are read from the project's working space when the parameters are baked.
 Every node's render hash folds in the project's content digest, which covers the working space,

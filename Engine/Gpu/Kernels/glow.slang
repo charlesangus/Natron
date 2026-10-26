@@ -31,6 +31,7 @@ struct GlowParams
     // The kind of channel c (0 unprocessed, 1 colour, 2 alpha) in bits 2c and 2c + 1.
     uint kinds;
     // Per channel: the luma weight, the gain (tint times brightness), the saturation and 1 / gamma.
+    // Channel 3 is only ever alpha, which has no saturation, so its slot carries the mix.
     float weight0;
     float weight1;
     float weight2;
@@ -42,7 +43,8 @@ struct GlowParams
     float saturation0;
     float saturation1;
     float saturation2;
-    float saturation3;
+    // The output's blend with the source: source + mix * (output - source).
+    float mix;
     float invGamma0;
     float invGamma1;
     float invGamma2;
@@ -74,7 +76,7 @@ float gainOf(uint c)
 
 float saturationOf(uint c)
 {
-    return c == 0 ? params.saturation0 : (c == 1 ? params.saturation1 : (c == 2 ? params.saturation2 : params.saturation3));
+    return c == 0 ? params.saturation0 : (c == 1 ? params.saturation1 : (c == 2 ? params.saturation2 : 1.0));
 }
 
 float invGammaOf(uint c)
@@ -136,8 +138,8 @@ void glow_map(uint3 tid : SV_DispatchThreadID)
 
 // The output: the ungraded map (preview), the glow alone, or the source plus or screened with the
 // glow. The glow is the bloom, plus the map with addInput, gamma-corrected and multiplied by the
-// gain, per channel. A processed alpha is clamped to [0, 1] outside the preview. Outside the
-// buffer everything reads zero.
+// gain, per channel. A processed alpha is clamped to [0, 1] outside the preview. Each processed
+// channel is then blended with the source by the mix. Outside the buffer everything reads zero.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void glow_combine(uint3 tid : SV_DispatchThreadID)
@@ -192,6 +194,9 @@ void glow_combine(uint3 tid : SV_DispatchThreadID)
             if (kind == kKindAlpha)
                 v = clamp(v, 0.0, 1.0);
         }
+        // A mix of 1 keeps v bit-exact rather than as src + (v - src).
+        if (params.mix != 1.0)
+            v = src + params.mix * (v - src);
         outBuf[dst + ch] = asuint(v);
     }
 }

@@ -18,8 +18,9 @@ coordinates, so a tile matches the full frame. The other filters run every blur 
 resolution, as Blur runs them.
 
 Outside the image the blurs repeat the nearest pixel, so the region of definition is the source's.
-Nothing is clamped: negative and over-range values go through. Mask, mix and "(Un)premult by" are
-the host's stages. Glow uses the same bloom on its thresholded highlights.
+Nothing is clamped: negative and over-range values go through. Mask and mix are the host's stages.
+There is no "(Un)premult by": a blur of a premultiplied image is the premultiplied blur, so the
+source is bloomed as it comes. Glow uses the same bloom on its thresholded highlights.
 
 Bloom replaces the OFX CImg Bloom, whose ID, `net.sf.cimg.CImgBloom`, is retired
 (`Engine/OfxRetired/`): a project naming it gets the missing-plug-in node.

@@ -179,8 +179,14 @@ protected:
     // A transparent black image of the project format with a white, opaque kBox over it.
     NodePtr makeBoxOverBlack()
     {
+        return makeRectOverBlack(kBox);
+    }
+
+    // A transparent black image of the project format with a white, opaque rect over it.
+    NodePtr makeRectOverBlack(const RectI& rect)
+    {
         NodePtr black = makeConstant(kWindow, { 0., 0., 0., 0. });
-        NodePtr white = makeConstant(kBox, { 1., 1., 1., 1. });
+        NodePtr white = makeConstant(rect, { 1., 1., 1., 1. });
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
 
         EXPECT_TRUE(bool(black) && bool(white) && bool(merge));
@@ -345,6 +351,47 @@ TEST_F(NativeEdgeBlurTest, EdgeMultWidensTheBand)
     const std::size_t wide = differingFloats(source, node);
     EXPECT_GT(narrow, 0u);
     EXPECT_GE(wide, narrow);
+}
+
+// A step of colour and alpha blurs into a single monotonic transition: the fall per pixel across
+// it rises to one peak and falls again. Mixing a fixed blur in by the edge weight gives a second
+// peak, the sharp step showing through the blurred one where the weight is between 0 and 1.
+TEST_F(NativeEdgeBlurTest, StepBlursWithoutAGhost)
+{
+    const int stepX = kWindow.width() / 2;
+    NodePtr step = makeRectOverBlack(RectI(0, 0, stepX, kWindow.height()));
+    NodePtr node = makeEdgeBlur(step, NodePtr());
+    ASSERT_TRUE(bool(step) && bool(node));
+    ASSERT_TRUE(setKnobValues(node, kEdgeBlurParamSize, { 10. }));
+    ASSERT_TRUE(setKnobValues(node, kEdgeBlurParamEdgeMult, { 1. }));
+
+    RenderedPlane plane;
+    ASSERT_TRUE(renderRGBA(node, &plane));
+    ASSERT_EQ((std::size_t)kWindow.width() * kWindow.height() * 4, plane.pixels.size());
+    // The middle row, clear of the top and bottom of the image by more than the blur reaches.
+    const int y = kWindow.height() / 2;
+    const auto red = [&plane, y](int x) {
+        return (double)plane.pixels[((std::size_t)y * kWindow.width() + x) * 4];
+    };
+    EXPECT_LT(red(stepX - 1), 1.) << "the step is blurred";
+    EXPECT_GT(red(stepX), 0.) << "the step is blurred";
+
+    // The fall per pixel over the band about the step, never negative.
+    const int band = 16;
+    std::vector<double> fall;
+    for (int x = stepX - band; x < stepX + band - 1; ++x) {
+        fall.push_back(red(x) - red(x + 1));
+        EXPECT_GE(fall.back(), -1e-6) << "monotonic at x=" << x;
+    }
+    const std::size_t peak = (std::size_t)(std::max_element(fall.begin(), fall.end()) - fall.begin());
+    const double tolerance = 1e-3;
+    for (std::size_t i = 0; i + 1 < fall.size(); ++i) {
+        if (i < peak) {
+            EXPECT_GE(fall[i + 1], fall[i] - tolerance) << "a second step before the peak at x=" << (stepX - band + (int)i);
+        } else {
+            EXPECT_LE(fall[i + 1], fall[i] + tolerance) << "a second step after the peak at x=" << (stepX - band + (int)i);
+        }
+    }
 }
 
 // Regression fixtures: the parity source blurred along the edges of its own alpha bands, or of a

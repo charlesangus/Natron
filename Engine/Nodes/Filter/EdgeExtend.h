@@ -36,10 +36,11 @@
 #define PLUGINID_NATRON_EDGEEXTEND "EdgeExtend"
 #define PLUGIN_MAJOR_NATRON_EDGEEXTEND 1
 
+#define kEdgeExtendParamSourcePremultiplied "sourcePremultiplied"
+#define kEdgeExtendParamThreshold "threshold"
 #define kEdgeExtendParamSize "size"
 #define kEdgeExtendParamSlices "slices"
-#define kEdgeExtendParamPremultiplyInput "premultiplyInput"
-#define kEdgeExtendParamUnpremultiplyOutput "unpremultiplyOutput"
+#define kEdgeExtendParamPremultiplyOutput "premultiplyOutput"
 
 NATRON_NAMESPACE_ENTER
 
@@ -49,18 +50,23 @@ NATRON_NAMESPACE_ENTER
  * as Blur's are.
  **/
 struct EdgeExtendParams {
+    // The source's colour is premultiplied by its alpha, and is unpremultiplied first.
+    bool sourcePremultiplied;
+    // The alpha, in [0, 1], at or above which a pixel is solid: its colour is kept and extended.
+    double threshold;
     double sizeX;
     double sizeY;
     int slices;
-    bool premultiplyInput;
-    bool unpremultiplyOutput;
+    // The extended colour is multiplied by the source's alpha on output.
+    bool premultiplyOutput;
 
     EdgeExtendParams()
-        : sizeX(10.)
+        : sourcePremultiplied(true)
+        , threshold(0.5)
+        , sizeX(10.)
         , sizeY(10.)
         , slices(5)
-        , premultiplyInput(true)
-        , unpremultiplyOutput(true)
+        , premultiplyOutput(false)
     {
     }
 };
@@ -73,15 +79,17 @@ inline constexpr InputSpec kEdgeExtendInputs[] = {
 /**
  * @brief EdgeExtend: smears the colour of a matte's edge outwards, into where the matte is clear.
  *
- * With premultiplyInput the source's colour is first multiplied by its alpha. Then each of the
- * `slices` slices blurs the running result, premultiplied colour and alpha alike, and merges the
- * result over its blur (a + b * (1 - alpha a)), the blur growing linearly from slice to slice:
- * slice i of n has i times the size size / sqrt(n (n + 1) (n + 0.5) / 3), so that the slices'
- * blurs add up to one of `size`. The colour so spreads past the edge while the pixels the matte
- * covers keep theirs: an opaque pixel is unchanged. With unpremultiplyOutput the colour is then
- * divided by the grown alpha where that exceeds kAlphaEpsilon, and the alpha is the source's, so
- * the output is the extended colour under the original matte; without it the output is the
- * premultiplied colour with the grown alpha.
+ * The source's straight colour is its colour, divided by its alpha where that exceeds
+ * kAlphaEpsilon with sourcePremultiplied. A pixel whose alpha is at least the threshold is solid:
+ * the running result starts as its straight colour with an alpha of 1 there, and as 0 everywhere
+ * else. Each of the `slices` slices then blurs the running result, colour and alpha alike, and
+ * merges the result over its blur (a + b * (1 - alpha a)), the blur growing linearly from slice to
+ * slice: slice i of n has i times the size size / sqrt(n (n + 1) (n + 0.5) / 3), so that the
+ * slices' blurs add up to one of `size`. The colour of the solid pixels so spreads outwards over
+ * the others, while the solid pixels keep theirs. The extended colour is the result's colour
+ * divided by its grown alpha where that exceeds kAlphaEpsilon: the solid pixels' straight colour,
+ * and elsewhere the solid colour nearby. The output is the extended colour, straight, or with
+ * premultiplyOutput multiplied by the source's alpha; its alpha is always the source's.
  *
  * The blurs are FIR Gaussians (Blur's "Gaussian (FIR)") with the nearest pixel repeated outside
  * the image, so the region of definition is the source's, and nothing spreads past the reach of
@@ -97,9 +105,11 @@ struct EdgeExtendOp {
         .label = "EdgeExtend",
         .description = "Extend the colour at the edges of a matte outwards, into the area the matte leaves clear. This fills the transparent areas of a keyed plate with the colour of the nearest edge, so that later filtering and despill do not pull in black.\n"
                        "\n"
-                       "The colour, premultiplied by the alpha, is blurred and the result merged over its blur, several times (the slices) with a growing blur. Size is the total size of the extension, and more slices keep the colour sharper near the original edge. Opaque pixels are unchanged.\n"
+                       "The pixels whose alpha is at least the threshold are solid: their colour is kept, and spread outwards over the other pixels by a blur merged under it, several times (the slices) with a growing blur. Size is the total size of the extension, and more slices keep the colour sharper near the solid edge. The colour of the pixels below the threshold is replaced by the colour extended from the solid ones nearby.\n"
                        "\n"
-                       "Premultiply Input multiplies the colour by the alpha first; leave it off for an input that is already premultiplied. Unpremultiply Output divides the extended colour by the extended alpha and outputs the source's alpha, so the output is the extended colour under the original matte; without it, the output is premultiplied, with the extended alpha.\n"
+                       "Source Premultiplied: check it when the input's colour is premultiplied by its alpha, as a keyer outputs it; the colour is then unpremultiplied before it is extended. Leave it unchecked for a straight (unpremultiplied) input.\n"
+                       "\n"
+                       "The output alpha is always the input's. The output colour is the extended colour, straight (unpremultiplied); with Premultiply Output it is multiplied by the input's alpha, which gives a premultiplied image whose soft edges carry the extended colour.\n"
                        "\n"
                        "The node needs the red, green, blue and alpha channels: with fewer of them processed, it passes the input through.",
         .grouping = PLUGIN_GROUP_FILTER,
@@ -128,17 +138,18 @@ struct EdgeExtendOp {
                     const PassContext& context) const;
 
     /**
-     * @brief The premultiplication, then per slice a copy, the horizontal and the vertical blur
-     * and the merge, then the unpremultiplication. The GPU recorder is left out where a slice's
+     * @brief The solid pixels' straight colour, then per slice a copy, the horizontal and the
+     * vertical blur and the merge, then the output colour and the source's alpha. The GPU recorder is left out where a slice's
      * radius exceeds the GPU blur's.
      **/
     PassList passes(const Params& params,
                     const PassContext& context) const;
 
+    KnobBoolWPtr sourcePremultiplied;
+    KnobDoubleWPtr threshold;
     KnobDoubleWPtr size;
     KnobIntWPtr slices;
-    KnobBoolWPtr premultiplyInput;
-    KnobBoolWPtr unpremultiplyOutput;
+    KnobBoolWPtr premultiplyOutput;
 };
 
 static_assert(PassesOp<EdgeExtendOp>);
@@ -170,7 +181,8 @@ public:
     static std::vector<double> sliceSigmas(double size, int slices) WARN_UNUSED_RETURN;
 
     /**
-     * @brief The alpha at or below which unpremultiplying leaves the colour as it is.
+     * @brief The alpha at or below which unpremultiplying, of the source or of the grown result,
+     * leaves the colour as it is.
      **/
     static constexpr float kAlphaEpsilon = 1e-6f;
 

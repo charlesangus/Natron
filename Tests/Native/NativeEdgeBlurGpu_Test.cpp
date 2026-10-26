@@ -61,9 +61,9 @@ const double kTime = 1.;
 // The window every case renders: the project format, which is the parity source's.
 const RectI kWindow(0, 0, kParitySourceWidth, kParitySourceHeight);
 
-// The CPU/GPU parity bound. The blur and the edges are Blur's and EdgeDetect's kernels, within
-// float roundings of the CPU's; the weight, the edge to the power 1 / Edge Mult, steepens near 0,
-// where a rounding of the edge moves it most.
+// The CPU/GPU parity bound. The edges are EdgeDetect's kernels, within float roundings of the
+// CPU's, and the blur IBlur's, whose summed-area tables the GPU quantises; the weight, the edge to
+// the power 1 / Edge Mult, steepens near 0, where a rounding of the edge moves the blur size most.
 const ParityTolerance kEdgeBlurTolerance = ParityTolerance::make(2e-4, 1e-4);
 
 GpuQuery
@@ -214,8 +214,8 @@ TEST_F(NativeEdgeBlurGpuTest, Eligibility)
     }
 }
 
-// The Matte is read only with External Matte on, over the output grown by the edge detection's
-// reach.
+// The Matte is read only with External Matte on, over the output grown by the blur's halo and the
+// edge detection's reach.
 TEST_F(NativeEdgeBlurGpuTest, MatteIsReadOverTheEdgeRegion)
 {
     NodePtr source = makeParitySource();
@@ -236,6 +236,11 @@ TEST_F(NativeEdgeBlurGpuTest, MatteIsReadOverTheEdgeRegion)
         const RectI matteRoI = effect->getGpuInputRoI(kEdgeBlurInputMatte, rect, scale);
         EXPECT_TRUE(matteRoI.contains(rect)) << "mipmap " << mipmapLevel;
         EXPECT_NE(rect, matteRoI) << "mipmap " << mipmapLevel << ": the Matte is read beyond the output";
+        PassContext context;
+        context.scale = scale;
+        const EdgeBlurParams params = effect->getParams(kTime, ViewIdx(0));
+        const RectI expected = passListSourceRoI(passListSourceRoI(rect, EdgeBlur::blurPasses(params, context)), EdgeBlur::edgePasses(params, context));
+        EXPECT_EQ(expected, matteRoI) << "mipmap " << mipmapLevel << ": the blur's halo, then the edge detection's reach";
     }
 }
 

@@ -297,8 +297,9 @@ pickChannels(const std::vector<float>& rgba,
 struct ParityCase {
     double size;
     int slices;
-    bool premultiply;
-    bool unpremultiply;
+    bool sourcePremultiplied;
+    bool premultiplyOutput;
+    double threshold;
     int nComps;
     unsigned processed;
     bool tile;
@@ -317,7 +318,7 @@ channelsOfPlane(int nComps)
 }
 
 // Every combination of the premultiplications on RGBA at the default size and slices, each also
-// rendered as a tile; one slice, many slices, sizes of zero and below a pixel whose blurs are all
+// rendered as a tile; a low and a high threshold; one slice, many slices, sizes of zero and below a pixel whose blurs are all
 // the identity, sizes below a pixel that blur with some of their slices or with a single one, and
 // a large one; one, two and three components and an RGB subset on RGBA, all passed through.
 std::vector<ParityCase>
@@ -325,23 +326,25 @@ parityCases()
 {
     std::vector<ParityCase> cases;
 
-    for (bool premultiply : { true, false }) {
-        for (bool unpremultiply : { true, false }) {
-            cases.push_back(ParityCase { 10., 5, premultiply, unpremultiply, 4, 0xFu, true });
+    for (bool sourcePremultiplied : { true, false }) {
+        for (bool premultiplyOutput : { true, false }) {
+            cases.push_back(ParityCase { 10., 5, sourcePremultiplied, premultiplyOutput, 0.5, 4, 0xFu, true });
         }
     }
-    cases.push_back(ParityCase { 6., 1, true, true, 4, 0xFu, false });
-    cases.push_back(ParityCase { 20., 12, true, true, 4, 0xFu, true });
-    cases.push_back(ParityCase { 0.1, 5, true, true, 4, 0xFu, false });
-    cases.push_back(ParityCase { 0., 5, true, true, 4, 0xFu, false });
-    cases.push_back(ParityCase { 0.1, 5, false, true, 4, 0xFu, false });
-    cases.push_back(ParityCase { 0.5, 5, true, true, 4, 0xFu, false });
-    cases.push_back(ParityCase { 0.3, 1, true, true, 4, 0xFu, false });
-    cases.push_back(ParityCase { 40., 3, false, true, 4, 0xFu, false });
+    cases.push_back(ParityCase { 10., 5, true, false, 0.1, 4, 0xFu, false });
+    cases.push_back(ParityCase { 10., 5, false, true, 0.9, 4, 0xFu, false });
+    cases.push_back(ParityCase { 6., 1, true, false, 0.5, 4, 0xFu, false });
+    cases.push_back(ParityCase { 20., 12, true, false, 0.5, 4, 0xFu, true });
+    cases.push_back(ParityCase { 0.1, 5, true, false, 0.5, 4, 0xFu, false });
+    cases.push_back(ParityCase { 0., 5, true, false, 0.5, 4, 0xFu, false });
+    cases.push_back(ParityCase { 0.1, 5, false, false, 0.5, 4, 0xFu, false });
+    cases.push_back(ParityCase { 0.5, 5, true, false, 0.5, 4, 0xFu, false });
+    cases.push_back(ParityCase { 0.3, 1, true, false, 0.5, 4, 0xFu, false });
+    cases.push_back(ParityCase { 40., 3, false, false, 0.5, 4, 0xFu, false });
     for (int nComps = 1; nComps <= 3; ++nComps) {
-        cases.push_back(ParityCase { 10., 5, true, true, nComps, channelsOfPlane(nComps), false });
+        cases.push_back(ParityCase { 10., 5, true, false, 0.5, nComps, channelsOfPlane(nComps), false });
     }
-    cases.push_back(ParityCase { 10., 5, true, true, 4, 0x7u, false });
+    cases.push_back(ParityCase { 10., 5, true, false, 0.5, 4, 0x7u, false });
 
     return cases;
 }
@@ -351,7 +354,7 @@ describeCase(const ParityCase& c,
              const RectI& roi)
 {
     std::ostringstream s;
-    s << "size " << c.size << " slices " << c.slices << " premultiply " << c.premultiply << " unpremultiply " << c.unpremultiply
+    s << "size " << c.size << " slices " << c.slices << " source premultiplied " << c.sourcePremultiplied << " premultiply output " << c.premultiplyOutput << " threshold " << c.threshold
       << " components " << c.nComps << " channels 0x" << std::hex << c.processed << std::dec
       << " roi (" << roi.x1 << "," << roi.y1 << ")-(" << roi.x2 << "," << roi.y2 << ")";
 
@@ -403,8 +406,9 @@ TEST_F(NativeEdgeExtendGpuTest, MatchesTheCpuRender)
         connectNodes(source, node, 0, true);
         ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSize, { c.size }));
         ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSlices, { (double)c.slices }));
-        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamPremultiplyInput, { c.premultiply ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamUnpremultiplyOutput, { c.unpremultiply ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSourcePremultiplied, { c.sourcePremultiplied ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamPremultiplyOutput, { c.premultiplyOutput ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamThreshold, { c.threshold }));
         KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
         ASSERT_TRUE(bool(channelSet));
         channelSet->setChannels(0, channelNames(c.processed));

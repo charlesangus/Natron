@@ -236,7 +236,7 @@ TEST_F(NativeBloomTest, InputsAndKnobs)
     EXPECT_EQ(std::string("Mask"), node->getInputLabel(1));
     EXPECT_TRUE(node->getEffectInstance()->isInputMask(1));
     EXPECT_TRUE(bool(node->getKnobByName("enableMask_Mask")));
-    EXPECT_TRUE(bool(node->getKnobByName("hostUnPremultBy")));
+    EXPECT_FALSE(bool(node->getKnobByName("hostUnPremultBy")));
 
     KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kBloomParamSize));
     ASSERT_TRUE(bool(size));

@@ -37,6 +37,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Bloom.h"
 #include "Engine/Nodes/Filter/BloomKernels.h"
 #include "Engine/Nodes/Image/ColorMath.h"
@@ -457,6 +458,7 @@ combineWorker(const GlowParams& params)
             const int n = std::min(4, scratch.nPlanes);
             const float threshold = (float)params.threshold;
             const float knee = (float)params.knee;
+            const float mix = (float)params.mix;
             const std::size_t row = (std::size_t)r * scratch.width;
             const float* src[4];
             const float* map[4];
@@ -477,7 +479,8 @@ combineWorker(const GlowParams& params)
                     mapScale(setup, v, n, threshold, knee, &s, &c);
                     const float w = mapWeight(params, setup, v, n, scratch.mask, row + x);
                     for (int p = 0; p < n; ++p) {
-                        out[p][x] = (v[p] * s) * w;
+                        const float m = (v[p] * s) * w;
+                        out[p][x] = (mix == 1.f) ? m : v[p] + mix * (m - v[p]);
                     }
                     continue;
                 }
@@ -502,7 +505,8 @@ combineWorker(const GlowParams& params)
                     if (setup.kind[p] == eChannelAlpha) {
                         v = std::min(std::max(v, 0.f), 1.f);
                     }
-                    out[p][x] = v;
+                    // A mix of 1 keeps v bit-exact rather than as a + (v - a).
+                    out[p][x] = (mix == 1.f) ? v : a + mix * (v - a);
                 }
             }
         };
@@ -694,13 +698,16 @@ struct GlowGpuParams {
     uint32_t kinds;
     float weight[4];
     float gain[4];
-    float saturation[4];
+    // Channel 3 is only ever alpha, which has no saturation, so its slot carries the mix.
+    float saturation[3];
+    float mix;
     float invGamma[4];
 };
 static_assert(sizeof(GlowGpuParams) == 128);
 static_assert(offsetof(GlowGpuParams, flags) == 48);
 static_assert(offsetof(GlowGpuParams, kinds) == 60);
 static_assert(offsetof(GlowGpuParams, weight) == 64);
+static_assert(offsetof(GlowGpuParams, mix) == 108);
 static_assert(offsetof(GlowGpuParams, invGamma) == 112);
 
 constexpr uint32_t kGlowGpuPreview = 1;
@@ -941,9 +948,12 @@ glowGpuRecorder(const GlowParams& params,
             p.kinds |= (uint32_t)setup.kind[c] << (2 * c);
             p.weight[c] = setup.weight[c];
             p.gain[c] = setup.gain[c];
-            p.saturation[c] = setup.saturation[c];
+            if (c < 3) {
+                p.saturation[c] = setup.saturation[c];
+            }
             p.invGamma[c] = setup.invGamma[c];
         }
+        p.mix = (float)params.mix;
 
         gpu::GpuBuffer* fill = nullptr;
         if (BloomKernels::recordFill(io, false, &fill) != eStatusOK) {
@@ -1181,6 +1191,20 @@ GlowOp::createKnobs(KnobHolder* holderArg,
                            EffectInstance::tr("Output the glow alone, to add or screen it over the source later."), false);
     expandRoD = addBoolKnob(holder, page, kGlowParamExpandRoD, EffectInstance::tr("Expand RoD"),
                             EffectInstance::tr("Grow the region of definition by the bloom's reach, so the glow spills past the input's edges instead of being cropped. Large sizes and counts make it very large."), true);
+
+    // The standard Mix knob, as StagedImageEffect::addMaskMixKnobs() makes it; the node moves it to
+    // the footer by its name.
+    KnobDoublePtr mixKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Mix"));
+    mixKnob->setName(kOfxMixParamName);
+    mixKnob->setHintToolTip(EffectInstance::tr("Mix factor between the original and the transformed image."));
+    mixKnob->setDefaultValue(1.);
+    mixKnob->setIncrement(0.01);
+    mixKnob->setMinimum(0.);
+    mixKnob->setMaximum(1.);
+    mixKnob->setDisplayMinimum(0.);
+    mixKnob->setDisplayMaximum(1.);
+    page->addKnob(mixKnob);
+    mix = mixKnob;
 } // GlowOp::createKnobs
 
 GlowOp::Params
@@ -1218,6 +1242,7 @@ GlowOp::bake(const KnobReader& reader) const
     params.addInput = reader.value(addInput);
     params.glowOnly = reader.value(glowOnly);
     params.expandRoD = reader.value(expandRoD);
+    params.mix = std::min(std::max(reader.value(mix), 0.), 1.);
 
     const double* fallback = ColorMath::acesCgLumaWeights();
     for (int d = 0; d < 3; ++d) {
@@ -1234,10 +1259,10 @@ GlowOp::bake(const KnobReader& reader) const
 } // GlowOp::bake
 
 bool
-GlowOp::isIdentity(const Params& /*params*/,
+GlowOp::isIdentity(const Params& params,
                    const PassContext& /*context*/) const
 {
-    return false;
+    return params.mix <= 0.;
 }
 
 PassList

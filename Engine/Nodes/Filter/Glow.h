@@ -91,6 +91,8 @@ struct GlowParams {
     // The hue of the picked colour in degrees, in [0, 360).
     double hue = 0.;
     double luma[3] = { 0., 0., 0. };
+    // The output's blend with the source, in [0, 1]: 0 is the source, 1 the full output.
+    double mix = 1.;
 };
 
 inline constexpr InputSpec kGlowInputs[] = {
@@ -109,8 +111,11 @@ inline constexpr InputSpec kGlowInputs[] = {
  * into the glow as ColorCorrect grades: each channel gamma-corrected, then multiplied by its tint
  * and the brightness. The output is the source plus (or screened with) the glow, the glow alone,
  * or the ungraded map as a preview. A processed alpha channel is glowed without saturation,
- * with its own gamma and tint, and clamped to [0, 1] outside the preview. Black lies outside the image; expand RoD grows the region of definition by
- * the bloom's reach. Scene-linear: nothing else is clamped.
+ * with its own gamma and tint, and clamped to [0, 1] outside the preview. Mix blends each processed
+ * channel of the output, preview included, with the source's: source + mix * (output - source).
+ * Black lies outside the image; expand RoD grows the region of definition by the bloom's reach.
+ * Scene-linear: nothing else is clamped. The source is glowed as it comes, with no unpremultiply:
+ * light adds to a premultiplied image as it is.
  *
  * The map is multiplied by the mask and, with isolate hue, by the closeness of each pixel's hue to
  * the picked one: 1 at it, falling linearly to 0 at 50 degrees away, as the PyPlug's HSVTool keyed
@@ -127,7 +132,9 @@ struct GlowOp {
                        "\n"
                        "The pixels brighter than the threshold (by their luminance in the project's working space, with a soft knee) form the glow map, which the mask and, optionally, a picked hue restrict. It is saturated, bloomed (the mean of count blurs of growing size, as Bloom, stretched along the rotated direction), graded per channel (gamma, then tint and brightness) and added on top of the input, or screened over it.\n"
                        "\n"
-                       "Glow Only outputs the glow alone, to merge later; Preview shows the glow map, to adjust the threshold and the hue isolation.",
+                       "Glow Only outputs the glow alone, to merge later; Preview shows the glow map, to adjust the threshold and the hue isolation.\n"
+                       "\n"
+                       "Mix blends the output with the input: 0 leaves the input unchanged.",
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_GLOW,
         .minorVersion = 0,
@@ -136,8 +143,9 @@ struct GlowOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        // The mask multiplies the glow map inside the op (PassList::opMask), so there is no MaskMix.
-        .stages = { Stage::Premult, Stage::PassThroughUnprocessed },
+        // The mask multiplies the glow map inside the op (PassList::opMask), so there is no MaskMix:
+        // the op makes its own Mix knob and blends with the source itself.
+        .stages = { Stage::PassThroughUnprocessed },
         .layers = LayerPolicy::color(true, true, true, false),
         .op = OpKind::Passes,
     };
@@ -149,7 +157,7 @@ struct GlowOp {
     /// hash folds in the project's content digest, which covers its working space.
     Params bake(const KnobReader& reader) const;
 
-    /// Never: even a bloom that is the identity adds the map.
+    /// Only at a mix of 0: even a bloom that is the identity adds the map.
     bool isIdentity(const Params& params,
                     const PassContext& context) const;
 
@@ -177,6 +185,7 @@ struct GlowOp {
     KnobDoubleWPtr rotate;
     KnobBoolWPtr isolateHue;
     KnobColorWPtr pickHue;
+    KnobDoubleWPtr mix;
 };
 
 static_assert(PassesOp<GlowOp>);

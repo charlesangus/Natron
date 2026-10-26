@@ -132,28 +132,39 @@ lineWorker(const LineFilterPtr& filter,
     };
 }
 
-// The source's alpha saved, and its colour premultiplied by it when asked. Like the passes after
-// it, a no-op unless the four channels are processed.
+// The source's alpha saved and, with extend, the running result started: the straight colour with
+// an alpha of 1 where the source's alpha is at least the threshold, 0 elsewhere. The straight
+// colour of a premultiplied source is its colour divided by its alpha where that exceeds the
+// epsilon. Like the passes after it, a no-op unless the four channels are processed.
 std::function<PassRowFn(const PassScratch&)>
-prepareWorker(bool premultiply)
+prepareWorker(bool extend,
+              bool sourcePremultiplied,
+              float threshold)
 {
-    return [premultiply](const PassScratch& scratch) -> PassRowFn {
-        return [&scratch, premultiply](int row) {
+    return [extend, sourcePremultiplied, threshold](const PassScratch& scratch) -> PassRowFn {
+        return [&scratch, extend, sourcePremultiplied, threshold](int row) {
             if (scratch.nPlanes != kNPlanes) {
                 return;
             }
             const std::size_t offset = (std::size_t)row * scratch.width;
-            const float* alpha = scratch.plane(kSlotResult, kAlphaPlane) + offset;
+            float* alpha = scratch.plane(kSlotResult, kAlphaPlane) + offset;
 
             std::copy(alpha, alpha + scratch.width, scratch.plane(kSlotAlpha, kAlphaPlane) + offset);
-            if (!premultiply) {
+            if (!extend) {
                 return;
             }
-            for (int p = 0; p < kAlphaPlane; ++p) {
-                float* colour = scratch.plane(kSlotResult, p) + offset;
-                for (int i = 0; i < scratch.width; ++i) {
-                    colour[i] *= alpha[i];
+            for (int i = 0; i < scratch.width; ++i) {
+                const float a = alpha[i];
+                const bool solid = a >= threshold;
+                for (int p = 0; p < kAlphaPlane; ++p) {
+                    float* colour = scratch.plane(kSlotResult, p) + offset;
+                    if (!solid) {
+                        colour[i] = 0.f;
+                    } else if (sourcePremultiplied && (a > EdgeExtend::kAlphaEpsilon)) {
+                        colour[i] = colour[i] / a;
+                    }
                 }
+                alpha[i] = solid ? 1.f : 0.f;
             }
         };
     };
@@ -198,28 +209,30 @@ overWorker()
     };
 }
 
-// The colour divided by the grown alpha where that exceeds the epsilon, and the source's alpha
-// restored.
+// The extended colour, the result's colour divided by the grown alpha where that exceeds the
+// epsilon, multiplied by the source's alpha with premultiplyOutput; the source's alpha restored.
 std::function<PassRowFn(const PassScratch&)>
-unpremultiplyWorker()
+finishWorker(bool premultiplyOutput)
 {
-    return [](const PassScratch& scratch) -> PassRowFn {
-        return [&scratch](int row) {
+    return [premultiplyOutput](const PassScratch& scratch) -> PassRowFn {
+        return [&scratch, premultiplyOutput](int row) {
             if (scratch.nPlanes != kNPlanes) {
                 return;
             }
             const std::size_t offset = (std::size_t)row * scratch.width;
             float* alpha = scratch.plane(kSlotResult, kAlphaPlane) + offset;
+            const float* source = scratch.plane(kSlotAlpha, kAlphaPlane) + offset;
 
             for (int p = 0; p < kAlphaPlane; ++p) {
                 float* colour = scratch.plane(kSlotResult, p) + offset;
                 for (int i = 0; i < scratch.width; ++i) {
+                    float v = colour[i];
                     if (alpha[i] > EdgeExtend::kAlphaEpsilon) {
-                        colour[i] = colour[i] / alpha[i];
+                        v = v / alpha[i];
                     }
+                    colour[i] = premultiplyOutput ? v * source[i] : v;
                 }
             }
-            const float* source = scratch.plane(kSlotAlpha, kAlphaPlane) + offset;
             std::copy(source, source + scratch.width, alpha);
         };
     };
@@ -259,19 +272,25 @@ struct EdgeExtendGpuParams {
     int32_t srcY2;
     uint32_t srcOffset;
     uint32_t srcStride;
-    uint32_t premultiply;
-    uint32_t unpremultiply;
+    uint32_t extend;
+    uint32_t sourcePremultiplied;
+    uint32_t premultiplyOutput;
     float epsilon;
+    float threshold;
 };
-static_assert(sizeof(EdgeExtendGpuParams) == 100);
+static_assert(sizeof(EdgeExtendGpuParams) == 108);
 static_assert(offsetof(EdgeExtendGpuParams, dstOffset) == 48);
 static_assert(offsetof(EdgeExtendGpuParams, srcX1) == 64);
-static_assert(offsetof(EdgeExtendGpuParams, epsilon) == 96);
+static_assert(offsetof(EdgeExtendGpuParams, epsilon) == 100);
 
 // The slices of edgeExtendPasses() as the GPU recorder runs them.
 struct EdgeExtendGpuPlan {
-    bool premultiply = true;
-    bool unpremultiply = true;
+    // There is a slice: the fill starts the running result and the finish ends it, as
+    // prepareWorker() and finishWorker() do; without one both copy.
+    bool extend = false;
+    bool sourcePremultiplied = true;
+    bool premultiplyOutput = false;
+    float threshold = 0.5f;
     struct GpuSlice {
         int radiusX = 0;
         int radiusY = 0;
@@ -371,9 +390,11 @@ edgeExtendGpuRecorder(const std::shared_ptr<const EdgeExtendGpuPlan>& plan)
         EdgeExtendGpuParams base {};
         base.channels = (uint32_t)nComps;
         base.active = active ? 1u : 0u;
-        base.premultiply = plan->premultiply ? 1u : 0u;
-        base.unpremultiply = plan->unpremultiply ? 1u : 0u;
+        base.extend = plan->extend ? 1u : 0u;
+        base.sourcePremultiplied = plan->sourcePremultiplied ? 1u : 0u;
+        base.premultiplyOutput = plan->premultiplyOutput ? 1u : 0u;
         base.epsilon = EdgeExtend::kAlphaEpsilon;
+        base.threshold = plan->threshold;
         if (!PassExec::isEmptyRect(domain)) {
             base.bufX1 = domain.x1;
             base.bufY1 = domain.y1;
@@ -480,23 +501,23 @@ edgeExtendGpuRecorder(const std::shared_ptr<const EdgeExtendGpuPlan>& plan)
 /// The passes of one extension at pixel sizes s. Each slice's blur reads its radius beyond what
 /// it writes, so the halo is the sum of the slices' radii; the nearest-pixel boundary spreads
 /// nothing, so the region of definition is the source's. Without an active slice the node is an
-/// identity, so neither path premultiplies or unpremultiplies: the round trip would zero the colour
-/// where the alpha is at most the epsilon, which the pass-through keeps.
+/// identity, so neither path starts or ends the running result: that would replace the colour
+/// below the threshold, which the pass-through keeps.
 PassList
 edgeExtendPasses(const EdgeExtendParams& params,
                  const PixelSizes& s)
 {
     const std::vector<Slice> slices = activeSlices(params, s);
     const bool neumann = true;
-    const bool premultiply = params.premultiplyInput && !slices.empty();
-    const bool unpremultiply = params.unpremultiplyOutput && !slices.empty();
+    const bool extend = !slices.empty();
+    const float threshold = (float)params.threshold;
 
     PassList list;
     list.boundary = PassExec::Boundary::Nearest;
     list.scratchSlots = 3;
     list.resultSlot = kSlotResult;
 
-    list.passes.push_back(Pass::point(false, prepareWorker(premultiply)));
+    list.passes.push_back(Pass::point(false, prepareWorker(extend, params.sourcePremultiplied, threshold)));
     for (const Slice& slice : slices) {
         const LineFilterPtr filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(slice.sigmaX, 0, neumann));
         const LineFilterPtr filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(slice.sigmaY, 0, neumann));
@@ -514,14 +535,16 @@ edgeExtendPasses(const EdgeExtendParams& params,
         list.passes.push_back(atSlot(passY, kSlotBlur));
         list.passes.push_back(Pass::point(false, overWorker()));
     }
-    if (unpremultiply) {
-        list.passes.push_back(Pass::point(false, unpremultiplyWorker()));
+    if (extend) {
+        list.passes.push_back(Pass::point(false, finishWorker(params.premultiplyOutput)));
     }
 
 #ifdef NATRON_HAVE_GPU
     std::shared_ptr<EdgeExtendGpuPlan> plan = std::make_shared<EdgeExtendGpuPlan>();
-    plan->premultiply = premultiply;
-    plan->unpremultiply = unpremultiply;
+    plan->extend = extend;
+    plan->sourcePremultiplied = params.sourcePremultiplied;
+    plan->premultiplyOutput = params.premultiplyOutput;
+    plan->threshold = threshold;
     bool fits = true;
     for (const Slice& slice : slices) {
         EdgeExtendGpuPlan::GpuSlice g;
@@ -545,6 +568,25 @@ void
 EdgeExtendOp::createKnobs(KnobHolder* holder,
                           const KnobPagePtr& page)
 {
+    KnobBoolPtr premultKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Source Premultiplied"));
+    premultKnob->setName(kEdgeExtendParamSourcePremultiplied);
+    premultKnob->setHintToolTip(EffectInstance::tr("Check it when the input's colour is premultiplied by its alpha, as a keyer outputs it: the colour is divided by the alpha before it is extended. Leave it unchecked for a straight (unpremultiplied) input, whose colour is extended as it is."));
+    premultKnob->setDefaultValue(true);
+    page->addKnob(premultKnob);
+    sourcePremultiplied = premultKnob;
+
+    KnobDoublePtr thresholdKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Threshold"));
+    thresholdKnob->setName(kEdgeExtendParamThreshold);
+    thresholdKnob->setHintToolTip(EffectInstance::tr("The alpha at or above which a pixel is solid: its colour is kept and extended outwards. The colour of the pixels below it is replaced by the colour extended from the solid pixels nearby. 0.5 starts the extension at the matte's edge; raise it to keep only the colour of the nearly opaque core, whose colour the background contaminates least."));
+    thresholdKnob->setMinimum(0.);
+    thresholdKnob->setMaximum(1.);
+    thresholdKnob->setDisplayMinimum(0.);
+    thresholdKnob->setDisplayMaximum(1.);
+    thresholdKnob->setIncrement(0.01);
+    thresholdKnob->setDefaultValue(0.5);
+    page->addKnob(thresholdKnob);
+    threshold = thresholdKnob;
+
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Size"));
     sizeKnob->setName(kEdgeExtendParamSize);
     sizeKnob->setHintToolTip(EffectInstance::tr("How far the colour is extended, in pixel units (>=0): the size (diameter) of the blur the slices add up to. The standard deviation of the corresponding Gaussian is size/2.4."));
@@ -561,7 +603,7 @@ EdgeExtendOp::createKnobs(KnobHolder* holder,
 
     KnobIntPtr slicesKnob = AppManager::createKnob<KnobInt>(holder, EffectInstance::tr("Slices"));
     slicesKnob->setName(kEdgeExtendParamSlices);
-    slicesKnob->setHintToolTip(EffectInstance::tr("How many blurs, of growing size, extend the colour one after the other. More slices keep the colour sharper near the original edge. 1 merges the source over a single blur of the size."));
+    slicesKnob->setHintToolTip(EffectInstance::tr("How many blurs, of growing size, extend the colour one after the other. More slices keep the colour sharper near the solid edge. 1 merges the solid pixels over a single blur of the size."));
     slicesKnob->setMinimum(1);
     slicesKnob->setMaximum(EdgeExtend::kMaxSlices);
     slicesKnob->setDisplayMinimum(1);
@@ -570,19 +612,12 @@ EdgeExtendOp::createKnobs(KnobHolder* holder,
     page->addKnob(slicesKnob);
     slices = slicesKnob;
 
-    KnobBoolPtr premultKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Premultiply Input"));
-    premultKnob->setName(kEdgeExtendParamPremultiplyInput);
-    premultKnob->setHintToolTip(EffectInstance::tr("Multiply the input's colour by its alpha before extending it. Turn it off for an input that is already premultiplied."));
-    premultKnob->setDefaultValue(true);
-    page->addKnob(premultKnob);
-    premultiplyInput = premultKnob;
-
-    KnobBoolPtr unpremultKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Unpremultiply Output"));
-    unpremultKnob->setName(kEdgeExtendParamUnpremultiplyOutput);
-    unpremultKnob->setHintToolTip(EffectInstance::tr("Divide the extended colour by the extended alpha and output the input's alpha: the extended colour under the original matte. Off, the output is premultiplied, with the extended alpha."));
-    unpremultKnob->setDefaultValue(true);
-    page->addKnob(unpremultKnob);
-    unpremultiplyOutput = unpremultKnob;
+    KnobBoolPtr outKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Premultiply Output"));
+    outKnob->setName(kEdgeExtendParamPremultiplyOutput);
+    outKnob->setHintToolTip(EffectInstance::tr("Multiply the extended colour by the input's alpha: a premultiplied image whose soft edges carry the extended colour. Unchecked, the output colour is the extended colour, straight, filling the areas the matte leaves clear. The output alpha is the input's either way."));
+    outKnob->setDefaultValue(false);
+    page->addKnob(outKnob);
+    premultiplyOutput = outKnob;
 } // EdgeExtendOp::createKnobs
 
 EdgeExtendOp::Params
@@ -590,10 +625,11 @@ EdgeExtendOp::bake(const KnobReader& reader) const
 {
     Params params;
 
+    params.sourcePremultiplied = reader.value(sourcePremultiplied);
+    params.threshold = std::min(std::max((double)reader.value(threshold), 0.), 1.);
     params.sizeX = params.sizeY = std::max(0., (double)reader.value(size));
     params.slices = std::min(EdgeExtend::kMaxSlices, std::max(1, (int)reader.value(slices)));
-    params.premultiplyInput = reader.value(premultiplyInput);
-    params.unpremultiplyOutput = reader.value(unpremultiplyOutput);
+    params.premultiplyOutput = reader.value(premultiplyOutput);
 
     return params;
 }

@@ -210,18 +210,35 @@ TEST_F(NativeEdgeExtendTest, InputsAndKnobs)
     EXPECT_TRUE(node->getEffectInstance()->isInputMask(1));
     EXPECT_TRUE(bool(node->getKnobByName("enableMask_Mask")));
 
+    KnobBoolPtr sourcePremultiplied = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kEdgeExtendParamSourcePremultiplied));
+    ASSERT_TRUE(bool(sourcePremultiplied));
+    EXPECT_TRUE(sourcePremultiplied->getValue());
+    KnobDoublePtr threshold = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kEdgeExtendParamThreshold));
+    ASSERT_TRUE(bool(threshold));
+    EXPECT_EQ(0.5, threshold->getValue());
+    EXPECT_EQ(0., threshold->getMinimum());
+    EXPECT_EQ(1., threshold->getMaximum());
     KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kEdgeExtendParamSize));
     ASSERT_TRUE(bool(size));
     EXPECT_EQ(10., size->getValue());
     KnobIntPtr slices = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kEdgeExtendParamSlices));
     ASSERT_TRUE(bool(slices));
     EXPECT_EQ(5, slices->getValue());
-    KnobBoolPtr premult = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kEdgeExtendParamPremultiplyInput));
-    ASSERT_TRUE(bool(premult));
-    EXPECT_TRUE(premult->getValue());
-    KnobBoolPtr unpremult = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kEdgeExtendParamUnpremultiplyOutput));
-    ASSERT_TRUE(bool(unpremult));
-    EXPECT_TRUE(unpremult->getValue());
+    KnobBoolPtr premultiplyOutput = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kEdgeExtendParamPremultiplyOutput));
+    ASSERT_TRUE(bool(premultiplyOutput));
+    EXPECT_FALSE(premultiplyOutput->getValue());
+
+    // The input's premultiplication comes first, above the size.
+    const std::vector<KnobIPtr> knobs = node->getEffectInstance()->getKnobs_mt_safe();
+    std::vector<std::string> order;
+    for (const KnobIPtr& knob : knobs) {
+        const std::string name = knob->getName();
+        if ((name == kEdgeExtendParamSourcePremultiplied) || (name == kEdgeExtendParamThreshold) || (name == kEdgeExtendParamSize) || (name == kEdgeExtendParamSlices) || (name == kEdgeExtendParamPremultiplyOutput)) {
+            order.push_back(name);
+        }
+    }
+    const std::vector<std::string> expected = { kEdgeExtendParamSourcePremultiplied, kEdgeExtendParamThreshold, kEdgeExtendParamSize, kEdgeExtendParamSlices, kEdgeExtendParamPremultiplyOutput };
+    EXPECT_EQ(expected, order);
 }
 
 // The slices' blurs add up to one of the size: their variances sum to that of size / 2.4, each
@@ -301,35 +318,159 @@ TEST_F(NativeEdgeExtendTest, StopsAtTheKernelsReach)
     EXPECT_EQ(0.f, at(out, kBox.x1 - 3, y, 3));
 }
 
-// Without the unpremultiplication the output is the premultiplied colour with the grown alpha:
-// the alpha rises towards the box, and the colour over it is the box's.
-TEST_F(NativeEdgeExtendTest, PremultipliedOutputCarriesTheGrownAlpha)
+// The colour of the contaminated ring, kRingColour, at alpha kRingAlpha around the box, which has
+// alpha kBoxAlpha over the ring, 0.72: with the default threshold of 0.5, the box is solid and the
+// ring is not.
+const RectI kRing(10, 6, 54, 42);
+const double kRingColour[3] = { 0.1, 0.9, 0.1 };
+const double kRingAlpha = 0.3;
+const double kBoxAlpha = 0.6;
+
+class NativeEdgeExtendSoftTest
+    : public NativeEdgeExtendTest {
+protected:
+    // A soft matte: the box of kColour at kBoxAlpha over the ring of kRingColour at kRingAlpha,
+    // over transparent black, with the colours premultiplied or straight. Over black the ring
+    // keeps its values, and the straight box's colour is whatever over makes of it: the tests
+    // read the box's values from the render.
+    NodePtr makeSoftMatte(bool premultiplied)
+    {
+        const double box = premultiplied ? kBoxAlpha : 1.;
+        const double ring = premultiplied ? kRingAlpha : 1.;
+        NodePtr black = makeConstant({ 0., 0., 0., 0. }, NULL);
+        NodePtr ringNode = makeConstant({ kRingColour[0] * ring, kRingColour[1] * ring, kRingColour[2] * ring, kRingAlpha }, &kRing);
+        NodePtr boxNode = makeConstant({ kColour[0] * box, kColour[1] * box, kColour[2] * box, kBoxAlpha }, &kBox);
+
+        return makeMerge(makeMerge(black, ringNode, "over"), boxNode, "over");
+    }
+
+    NodePtr makeMerge(const NodePtr& b,
+                      const NodePtr& a,
+                      const char* operation)
+    {
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+        EXPECT_TRUE(bool(merge));
+        if (!merge || !a || !b) {
+            return NodePtr();
+        }
+        EXPECT_TRUE(setKnobValue(merge, kMergeParamOperation, std::string(operation)));
+        connectNodes(b, merge, 0, true);
+        connectNodes(a, merge, 1, true);
+
+        return merge;
+    }
+};
+
+// A premultiplied input with Source Premultiplied and Premultiply Output comes back premultiplied:
+// the solid box within a rounding, its alpha exactly, and the ring's colour replaced by the box's,
+// times the ring's alpha. Without Premultiply Output the colour is the straight one.
+TEST_F(NativeEdgeExtendSoftTest, PremultipliedRoundTrip)
 {
     resetProject();
-    NodePtr source = makeMatte();
+    NodePtr source = makeSoftMatte(true);
+    ASSERT_TRUE(bool(source));
+    NodePtr premultiplied = makeEdgeExtend(source);
+    NodePtr straight = makeEdgeExtend(source);
+    ASSERT_TRUE(bool(premultiplied) && bool(straight));
+    ASSERT_TRUE(setKnobValues(premultiplied, kEdgeExtendParamPremultiplyOutput, { 1. }));
+    RenderedPlane in, out, unpremultiplied;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, premultiplied, &in, &out));
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, straight, &in, &unpremultiplied));
+    const int y = (kBox.y1 + kBox.y2) / 2;
+    const float boxAlpha = at(in, kBox.x1, y, 3);
+    ASSERT_NEAR(kBoxAlpha + kRingAlpha * (1. - kBoxAlpha), boxAlpha, 1e-6);
+    float boxColour[3];
+    for (int c = 0; c < 3; ++c) {
+        boxColour[c] = at(in, kBox.x1, y, c) / boxAlpha;
+    }
+
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            ASSERT_EQ(at(in, x, y, 3), at(out, x, y, 3)) << "alpha at (" << x << "," << y << ")";
+            ASSERT_EQ(at(in, x, y, 3), at(unpremultiplied, x, y, 3)) << "alpha at (" << x << "," << y << ")";
+            if (kBox.contains(x, y)) {
+                for (int c = 0; c < 3; ++c) {
+                    ASSERT_NEAR(at(in, x, y, c), at(out, x, y, c), 1e-6) << "solid pixel (" << x << "," << y << ") channel " << c;
+                    ASSERT_NEAR(boxColour[c], at(unpremultiplied, x, y, c), 1e-6) << "solid pixel (" << x << "," << y << ") channel " << c;
+                }
+            }
+        }
+    }
+    for (int d : { 1, 3 }) {
+        const int x = kBox.x1 - d;
+        ASSERT_NEAR(kRingAlpha, at(in, x, y, 3), 1e-6);
+        ASSERT_NEAR(kRingColour[1] * kRingAlpha, at(in, x, y, 1), 1e-6) << "the source is premultiplied";
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_NEAR(boxColour[c] * kRingAlpha, at(out, x, y, c), 1e-4) << "ring pixel " << d << " out, channel " << c;
+            EXPECT_NEAR(boxColour[c], at(unpremultiplied, x, y, c), 1e-4) << "ring pixel " << d << " out, channel " << c;
+        }
+    }
+}
+
+// A straight input without Source Premultiplied or Premultiply Output gives back its solid pixels
+// bit for bit, and fills the rest, the straight colour of its transparent pixels included, with
+// the extended colour.
+TEST_F(NativeEdgeExtendSoftTest, StraightRoundTrip)
+{
+    resetProject();
+    NodePtr source = makeSoftMatte(false);
     ASSERT_TRUE(bool(source));
     NodePtr node = makeEdgeExtend(source);
     ASSERT_TRUE(bool(node));
-    ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamUnpremultiplyOutput, { 0. }));
+    ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSourcePremultiplied, { 0. }));
     RenderedPlane in, out;
     ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &out));
-
     const int y = (kBox.y1 + kBox.y2) / 2;
-    float previous = 0.f;
-    for (int x = kBox.x1 - 8; x < kBox.x1; ++x) {
-        const float alpha = at(out, x, y, 3);
-        EXPECT_GT(alpha, previous) << "x " << x;
-        EXPECT_LT(alpha, 1.f) << "x " << x;
-        for (int c = 0; c < 3; ++c) {
-            EXPECT_NEAR(kColour[c] * alpha, at(out, x, y, c), 1e-5) << "x " << x << " channel " << c;
+    ASSERT_NEAR(kRingColour[1], at(in, kBox.x1 - 2, y, 1), 1e-6) << "the source is straight";
+
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            ASSERT_EQ(at(in, x, y, 3), at(out, x, y, 3)) << "alpha at (" << x << "," << y << ")";
+            if (kBox.contains(x, y)) {
+                for (int c = 0; c < 3; ++c) {
+                    ASSERT_EQ(at(in, x, y, c), at(out, x, y, c)) << "solid pixel (" << x << "," << y << ") channel " << c;
+                }
+            }
         }
-        previous = alpha;
     }
-    EXPECT_EQ(1.f, at(out, kBox.x1, y, 3));
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_NEAR(at(in, kBox.x1, y, c), at(out, kBox.x1 - 2, y, c), 1e-4) << "ring pixel, channel " << c;
+    }
 }
 
-// Size 0 blurs nothing, and the node returns the source exactly, the unpremultiplication
-// included.
+// The threshold decides which pixels are solid: below the ring's alpha the ring keeps its own
+// colour, and above the box's nothing is solid, so there is no colour to extend.
+TEST_F(NativeEdgeExtendSoftTest, ThresholdSetsTheSolidPixels)
+{
+    resetProject();
+    NodePtr source = makeSoftMatte(true);
+    ASSERT_TRUE(bool(source));
+    NodePtr low = makeEdgeExtend(source);
+    NodePtr high = makeEdgeExtend(source);
+    ASSERT_TRUE(bool(low) && bool(high));
+    ASSERT_TRUE(setKnobValues(low, kEdgeExtendParamThreshold, { 0.25 }));
+    ASSERT_TRUE(setKnobValues(high, kEdgeExtendParamThreshold, { 0.8 }));
+    RenderedPlane in, lowOut, highOut;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, low, &in, &lowOut));
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, high, &in, &highOut));
+
+    const int y = (kBox.y1 + kBox.y2) / 2;
+    for (int c = 0; c < 3; ++c) {
+        // Two pixels into the ring, its colour unpremultiplied; and the box's.
+        EXPECT_NEAR(kRingColour[c], at(lowOut, kBox.x1 - 2, y, c), 1e-6) << "channel " << c;
+        EXPECT_NEAR(at(in, kBox.x1, y, c) / at(in, kBox.x1, y, 3), at(lowOut, kBox.x1, y, c), 1e-6) << "channel " << c;
+    }
+    for (std::size_t i = 0; i < highOut.pixels.size(); ++i) {
+        if ((i % 4) == 3) {
+            ASSERT_EQ(in.pixels[i], highOut.pixels[i]) << "float " << i;
+        } else {
+            ASSERT_EQ(0.f, highOut.pixels[i]) << "float " << i;
+        }
+    }
+}
+
+// Size 0 blurs nothing, and the node returns the source exactly, neither unpremultiplied nor
+// replaced below the threshold.
 TEST_F(NativeEdgeExtendTest, SizeZeroIsIdentity)
 {
     resetProject();
@@ -371,8 +512,8 @@ TEST_F(NativeEdgeExtendTest, TileMatchesFullFrame)
     }
 }
 
-// Legacy and task-graph renders agree bit for bit, with and without the premultiplications, and
-// with a mask and mix.
+// Legacy and task-graph renders agree bit for bit, with the default and the opposite
+// premultiplications and another threshold, and with a mask and mix.
 TEST_F(NativeEdgeExtendTest, SameBothWays)
 {
     resetProject();
@@ -397,8 +538,9 @@ TEST_F(NativeEdgeExtendTest, SameBothWays)
         }
     };
     expectSame("default");
-    ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamPremultiplyInput, { 0. }));
-    ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamUnpremultiplyOutput, { 0. }));
+    ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSourcePremultiplied, { 0. }));
+    ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamPremultiplyOutput, { 1. }));
+    ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamThreshold, { 0.2 }));
     ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSlices, { 2. }));
     expectSame("premultiplied-2-slices");
 

@@ -321,8 +321,43 @@ TEST_F(NativeGlowTest, InputsAndKnobs)
     for (int d = 0; d < 3; ++d) {
         EXPECT_EQ(0., pickHue->getValue(d));
     }
-    // The mask multiplies the glow map, so there is no mix of the output with the source.
-    EXPECT_FALSE(bool(node->getKnobByName(kOfxMixParamName)));
+    // The mask multiplies the glow map, and the op blends with the source by its own Mix knob.
+    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kOfxMixParamName));
+    ASSERT_TRUE(bool(mix));
+    EXPECT_EQ(1., mix->getValue());
+    EXPECT_EQ(0., mix->getMinimum());
+    EXPECT_EQ(1., mix->getMaximum());
+    // The source is glowed as it comes: there is no unpremultiply selector.
+    EXPECT_FALSE(bool(node->getKnobByName("hostUnPremultBy")));
+}
+
+// A mix of 0 is the source, and a mix of 0.5 is halfway between the source and the full glow.
+TEST_F(NativeGlowTest, MixBlendsTheOutputWithTheSource)
+{
+    resetProject();
+    NodePtr source = makeScene(0.1, RectI(20, 10, 40, 30), 3., 2., 1.);
+    ASSERT_TRUE(bool(source));
+    NodePtr full = makeSmallGlow(source);
+    NodePtr none = makeSmallGlow(source);
+    NodePtr half = makeSmallGlow(source);
+    ASSERT_TRUE(full && none && half);
+    ASSERT_TRUE(setKnobValues(none, kOfxMixParamName, { 0. }));
+    ASSERT_TRUE(setKnobValues(half, kOfxMixParamName, { 0.5 }));
+    RenderedPlane in, out, unmixed, halfway;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, full, &in, &out));
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, none, &in, &unmixed));
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, half, &in, &halfway));
+
+    double glowSum = 0.;
+    for (std::size_t i = 0; i < in.pixels.size(); ++i) {
+        const float a = in.pixels[i];
+        const float v = out.pixels[i];
+        ASSERT_EQ(a, unmixed.pixels[i]) << "float " << i;
+        const float h = a + 0.5f * (v - a);
+        ASSERT_NEAR(h, halfway.pixels[i], 1e-6 * std::max(1.f, std::fabs(h))) << "float " << i;
+        glowSum += v - a;
+    }
+    EXPECT_GT(glowSum, 1.) << "the full output glows";
 }
 
 // A threshold above the image's luminance leaves no glow map, so the image is unchanged.
@@ -1207,6 +1242,7 @@ TEST_F(NativeGlowTest, GpuMatchesTheCpuRender)
             ASSERT_TRUE(setKnobValues(node, kGlowParamBrightness, { 2. }));
             ASSERT_TRUE(setKnobValues(node, kGlowParamSaturation, { 0.4, 1.3, 0. }));
             ASSERT_TRUE(setKnobValues(node, kGlowParamGamma, { 1.8, 1., 0.6, 2.5 }));
+            ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
         }
         KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
         ASSERT_TRUE(bool(channelSet));

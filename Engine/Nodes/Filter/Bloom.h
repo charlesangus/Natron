@@ -101,7 +101,7 @@ struct BloomOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
         .layers = LayerPolicy::all(),
         .op = OpKind::Passes,
     };

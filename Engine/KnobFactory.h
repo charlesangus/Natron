@@ -56,12 +56,16 @@ public:
         return std::dynamic_pointer_cast<K>( createKnob(K::typeNameStatic(), holder, label, dimension, declaredByPlugin) );
     }
 
-private:
+    /**
+     * @brief Creates a knob of the type whose typeName() is id, or returns a null pointer if there is none.
+     **/
     KnobHelperPtr createKnob(const std::string &id,
                                              KnobHolder* holder,
                                              const std::string &label,
                                              int dimension = 1,
                                              bool declaredByPlugin = true) const WARN_UNUSED_RETURN;
+
+private:
     const std::map<std::string, LibraryBinary *> &getLoadedKnobs() const
     {
         return _loadedKnobs;

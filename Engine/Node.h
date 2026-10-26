@@ -1263,12 +1263,63 @@ public:
     void refreshPreviewsRecursivelyUpstream(double time);
 
 public:
-    void onAllKnobsSlaved(bool isSlave, KnobHolder* master);
+    void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master, int dimension, bool isSlave, bool isExpression);
 
-    void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master, int dimension, bool isSlave);
+    /**
+     * @brief Makes this node a Linked Node of other, which must be of the same plug-in: each knob declared
+     * by the plug-in or by the user, except buttons, pages, groups and separators, is linked two-way to the
+     * knob of the same name on other. Knobs of other that are already linked keep their groups, which
+     * this node joins. Refused for viewers and multi-instance nodes.
+     **/
+    bool linkAllKnobsTo(const NodePtr& other);
 
-    NodePtr getMasterNode() const;
+    /**
+     * @brief False for the plug-ins whose nodes cannot be Linked Nodes (viewers).
+     **/
+    static bool canPluginBeLinkedNode(const std::string& pluginID);
 
+    /**
+     * @brief False for the nodes linkAllKnobsTo() refuses: viewers, multi-instance nodes and their instances.
+     **/
+    bool canBeLinkedNode() const;
+
+    /**
+     * @brief Unlinks every knob of this node from its link groups that are not permanent. If unlinkedKnobs is
+     * given, the knobs that were unlinked are appended to it, for relinkKnobs() to undo.
+     **/
+    bool unlinkAllKnobs(KnobsVec* unlinkedKnobs = 0);
+
+    /**
+     * @brief Makes each of the given knobs of this node rejoin the link groups it left, discarding its own
+     * value, animation and expression for theirs.
+     **/
+    bool relinkKnobs(const KnobsVec& knobs);
+
+    /**
+     * @brief True if a knob of this node is linked to an active node through linkAllKnobsTo().
+     **/
+    bool isLinkedNode() const;
+
+    /**
+     * @brief The active nodes with a knob linked to a knob of this node through linkAllKnobsTo().
+     **/
+    void getLinkedNodes(NodesList* nodes) const;
+
+    /**
+     * @brief The active nodes with a knob linked to a knob of this node, however the link was made.
+     **/
+    void getKnobLinkedNodes(NodesList* nodes) const;
+
+    /**
+     * @brief Emits linksChanged() on this node, on every node it shares a link group with and on the
+     * nodes in alsoNotify, such as the ones it shared a group with before a change.
+     **/
+    void emitLinksChanged(const NodesList& alsoNotify);
+
+private:
+    void collectLinkedNodes(bool nodeLinksOnly, bool activeOnly, NodesList* nodes) const;
+
+public:
     /**
      * @brief Attempts to lock an image for render. If it successfully obtained the lock,
      * the thread can continue and render normally. If another thread is currently
@@ -1376,6 +1427,17 @@ public:
      **/
     void clearLastRenderedImage();
 
+    enum KnobLinkKindEnum {
+        // A dimension of slave reads master in its expression.
+        eKnobLinkKindExpression = 0,
+
+        // A dimension of slave is slaved one-way to master by slaveTo(), which only a node's own internals do.
+        eKnobLinkKindSlave,
+
+        // A dimension of slave shares a link group with a dimension of master.
+        eKnobLinkKindLinkGroup
+    };
+
     struct KnobLink
     {
         ///The knob being slaved
@@ -1387,8 +1449,14 @@ public:
 
         ///The dimension being slaved, -1 if irrelevant
         int dimension;
+
+        KnobLinkKindEnum kind;
     };
 
+    /**
+     * @brief The expression and slaveTo() links of this node's knobs, followed by a link of kind
+     * eKnobLinkKindLinkGroup for each dimension of a knob of this node linked to a knob of an active node.
+     **/
     void getKnobsLinks(std::list<KnobLink> & links) const;
 
     /*Initialises inputs*/
@@ -2083,8 +2151,6 @@ public Q_SLOTS:
         Q_EMIT previewImageChanged(time);
     }
 
-    void onMasterNodeDeactivated();
-
     void onInputLabelChanged(const QString & name);
 
     void notifySettingsPanelClosed(bool closed )
@@ -2174,10 +2240,12 @@ Q_SIGNALS:
     ///and the old value
     void pluginMemoryUsageChanged(qint64 mem);
 
-    void allKnobsSlaved(bool b);
-
     ///Called when a knob is either slaved or unslaved
     void knobsLinksChanged();
+
+    /// Emitted when a knob of this node joins or leaves a link group, or a node it is linked to is
+    /// deactivated, activated or destroyed.
+    void linksChanged();
 
     void knobSlaved();
 

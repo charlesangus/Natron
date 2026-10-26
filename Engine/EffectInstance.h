@@ -2490,7 +2490,8 @@ public:
 
     virtual void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master,
                               int dimension,
-                              bool isSlave) OVERRIDE FINAL;
+                              bool isSlave,
+                              bool isExpression) OVERRIDE FINAL;
 
     /**
      * @brief This function calls the implementation specific attachOpenGLContext()
@@ -3106,7 +3107,6 @@ public:
     virtual void onKnobContentChanged(const KnobI* knob) OVERRIDE FINAL;
 
 private:
-    virtual void onAllKnobsSlaved(bool isSlave, KnobHolder* master) OVERRIDE FINAL;
     enum RenderingFunctorRetEnum
     {
         eRenderingFunctorRetFailed, //< must stop rendering

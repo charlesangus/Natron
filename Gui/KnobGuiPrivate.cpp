@@ -30,13 +30,12 @@
 
 NATRON_NAMESPACE_ENTER
 
-
 KnobGuiPrivate::KnobGuiPrivate(KnobGuiContainerI* container)
     : triggerNewLine(true)
     , spacingBetweenItems(0)
     , widgetCreated(false)
     , container(container)
-    , copyRightClickMenu( new MenuWithToolTips( container->getContainerWidget() ) )
+    , copyRightClickMenu(new MenuWithToolTips(container->getContainerWidget()))
     , fieldLayout(NULL)
     , knobsOnSameLine()
     , field(NULL)

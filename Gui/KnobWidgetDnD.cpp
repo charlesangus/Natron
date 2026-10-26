@@ -351,29 +351,16 @@ KnobWidgetDnDPrivate::canDrop(bool warn,
 
 
     bool ret = true;
+    // Knobs of different dimensions link per component: see KnobI::getPasteSourceDimension().
     if (source) {
-        int targetDim = dimension;
-        if ( (targetDim == 0) && !guiKnob->getAllDimensionsVisible() ) {
-            targetDim = -1;
-        }
-
         if ( !KnobI::areTypesCompatibleForSlave( source.get(), thisKnob.get() ) ) {
             if (warn) {
                 Dialogs::errorDialog( tr("Link").toStdString(), tr("You can only link parameters of the same type. To overcome this, use an expression instead.").toStdString() );
             }
             ret = false;
-        }
-
-        if ( ret && (srcDim != -1) && (targetDim == -1) ) {
+        } else if (KnobI::isAliasKnob(source.get())) {
             if (warn) {
-                Dialogs::errorDialog( tr("Link").toStdString(), tr("When linking on all dimensions, original and target parameters must have the same dimension.").toStdString() );
-            }
-            ret = false;
-        }
-
-        if ( ret && ( (targetDim == -1) || (srcDim == -1) ) && ( source->getDimension() != thisKnob->getDimension() ) ) {
-            if (warn) {
-                Dialogs::errorDialog( tr("Link").toStdString(), tr("When linking on all dimensions, original and target parameters must have the same dimension.").toStdString() );
+                Dialogs::errorDialog(tr("Link").toStdString(), tr("Cannot link from an alias parameter: the target would join its permanent link group and could never be unlinked.").toStdString());
             }
             ret = false;
         }

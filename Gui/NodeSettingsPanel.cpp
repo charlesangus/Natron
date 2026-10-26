@@ -179,7 +179,6 @@ NodeSettingsPanel::onSettingsButtonClicked()
     Menu menu(this);
     //menu.setFont(QFont(appFont,appFontSize));
     NodeGuiPtr node = getNode();
-    NodePtr master = node->getNode()->getMasterNode();
     QAction* importPresets = new QAction(tr("Import presets"), &menu);
     QObject::connect( importPresets, SIGNAL(triggered()), this, SLOT(onImportPresetsActionTriggered()) );
     QAction* exportAsPresets = new QAction(tr("Export as presets"), &menu);
@@ -210,7 +209,7 @@ NodeSettingsPanel::onSettingsButtonClicked()
         removeAnimationOnAll->setEnabled(false);
     }
 
-    if ( master || !node->getDagGui() || !node->getDagGui()->getGui() || node->getDagGui()->getGui()->isGUIFrozen() ) {
+    if (!node->getDagGui() || !node->getDagGui()->getGui() || node->getDagGui()->getGui()->isGUIFrozen()) {
         importPresets->setEnabled(false);
         exportAsPresets->setEnabled(false);
         setKeyOnAll->setEnabled(false);

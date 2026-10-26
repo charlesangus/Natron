@@ -76,8 +76,10 @@ set(Tests_SOURCES
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
     KnobContentHash_Test.cpp
+    KnobLinkGroup_Test.cpp
     KnobNoOpWrite_Test.cpp
     LazyHash_Test.cpp
+    LinkedNode_Test.cpp
     NodeContentHash_Test.cpp
     NodeDestroyWatcher_Test.cpp
     FileStamp_Test.cpp
@@ -115,6 +117,7 @@ set(Tests_SOURCES
     ProjectSerialization_Test.cpp
     Serialization/ProjectEquivalence.cpp
     PyKeyTangents_Test.cpp
+    PyLinks_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
     PythonUndo_Test.cpp
@@ -255,6 +258,7 @@ set(GuiTests_SOURCES
     KnobGuiString_Test.cpp
     KnobUndoHash_Test.cpp
     LayerChannelRow_Test.cpp
+    NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
     NodeGraphPickUp_Test.cpp
     NodeGraphSplice_Test.cpp

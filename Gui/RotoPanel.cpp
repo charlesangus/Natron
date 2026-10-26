@@ -1878,13 +1878,6 @@ RotoPanel::onItemSelectionChanged()
     _imp->context->deselect(_imp->selectedItems, RotoItem::eSelectionReasonSettingsPanel);
     _imp->selectedItems.clear();
 
-    ///Don't allow any selection to be made if the roto is a clone of another roto  node.
-    if ( getNode()->getNode()->getMasterNode() ) {
-        _imp->tree->selectionModel()->clear();
-
-        return;
-    }
-
     QList<QTreeWidgetItem*> selectedItems = _imp->tree->selectedItems();
     std::list<std::set<double> > toAdd;
     int selectedBeziersCount = 0;

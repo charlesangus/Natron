@@ -126,6 +126,7 @@ putOnSystemClipboard(const NodeClipBoard& cb)
     try {
         Serialization::ClipboardSerialization serialization;
         serialization.nodes = cb.nodes;
+        serialization.sourceProject = cb.sourceProject;
         text = Serialization::encodeClipboardYaml(serialization);
     } catch (const std::exception& e) {
         Dialogs::errorDialog(NodeGraph::tr("Copy").toStdString(), NodeGraph::tr("The selection cannot be copied: %1").arg(QString::fromUtf8(e.what())).toStdString());
@@ -338,6 +339,7 @@ decodeClipboardNodes(const std::string& text,
     }
     clipboard->nodes = serialization.nodes;
     clipboard->sourceNodes.assign(serialization.nodes.size(), NodePtr());
+    clipboard->sourceProject = serialization.sourceProject;
 
     return true;
 }
@@ -419,10 +421,10 @@ NodeGraph::duplicateSelectedNodes()
 }
 
 void
-NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
+NodeGraph::createLinkedNodes(const QPointF& scenePos)
 {
     if ( _imp->_selection.empty() ) {
-        Dialogs::warningDialog( tr("Clone").toStdString(), tr("You must select at least a node to clone first.").toStdString() );
+        Dialogs::warningDialog(tr("Create Linked Node").toStdString(), tr("You must select at least a node to link first.").toStdString());
 
         return;
     }
@@ -433,11 +435,6 @@ NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
     double ymax = std::numeric_limits<int>::min();
     NodesGuiList nodesToCopy = _imp->_selection;
     for (NodesGuiList::iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
-        if ( (*it)->getNode()->getMasterNode() ) {
-            Dialogs::errorDialog( tr("Clone").toStdString(), tr("You cannot clone a node which is already a clone.").toStdString() );
-
-            return;
-        }
         QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
         if ( ( bbox.x() + bbox.width() ) > xmax ) {
             xmax = ( bbox.x() + bbox.width() );
@@ -467,22 +464,16 @@ NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
     }
 
     for (NodesGuiList::iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
-        if ( (*it)->getNode()->getEffectInstance()->isSlave() ) {
-            Dialogs::errorDialog( tr("Clone").toStdString(), tr("You cannot clone a node which is already a clone.").toStdString() );
-
-            return;
-        }
         ViewerInstance* isViewer = (*it)->getNode()->isEffectViewer();
         if (isViewer) {
-            Dialogs::errorDialog( tr("Clone").toStdString(), tr("Cloning a viewer is not a valid operation.").toStdString() );
+            Dialogs::errorDialog(tr("Create Linked Node").toStdString(), tr("A viewer cannot be a Linked Node.").toStdString());
 
             return;
         }
-        // A missing-plugin placeholder is saved back unchanged, so a clone of it would lose its link on save.
-        if ((*it)->getNode()->isMultiInstance() || !(*it)->getNode()->getEffectInstance()->getIsEditable()) {
-            QString err = QString::fromUtf8("%1 cannot be cloned.").arg( QString::fromUtf8( (*it)->getNode()->getLabel().c_str() ) );
-            Dialogs::errorDialog( tr("Clone").toStdString(),
-                                  tr( err.toStdString().c_str() ).toStdString() );
+        // A missing-plugin placeholder is saved back unchanged, so a Linked Node of it would lose its links on save.
+        if (!(*it)->getNode()->canBeLinkedNode() || !(*it)->getNode()->getEffectInstance()->getIsEditable()) {
+            Dialogs::errorDialog(tr("Create Linked Node").toStdString(),
+                                 tr("%1 cannot be a Linked Node.").arg(QString::fromUtf8((*it)->getNode()->getLabel().c_str())).toStdString());
 
             return;
         }
@@ -493,18 +484,22 @@ NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
     std::list<Serialization::NodeSerializationPtr> serializations;
     std::list<NodeGuiPtr> newNodesList;
     std::map<std::string, std::string> oldNewScriptNamesMapping;
+    std::list<std::pair<NodePtr, NodePtr>> linkedNodes;
     for (NodesGuiList::iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
         NodePtr sourceNode = (*it)->getNode();
         Serialization::NodeSerializationPtr internalSerialization = std::make_shared<Serialization::NodeSerialization>();
         sourceNode->toSerialization(internalSerialization.get());
-        NodeGuiPtr clone = _imp->pasteNode(internalSerialization, sourceNode, offset,
-                                           _imp->group.lock(), std::string(), true, &oldNewScriptNamesMapping);
+        NodeGuiPtr copy = _imp->pasteNode(internalSerialization, sourceNode, offset,
+                                          _imp->group.lock(), std::string(), &linkedNodes, &oldNewScriptNamesMapping);
+        if (!copy) {
+            continue;
+        }
 
-        newNodes.push_back(std::make_pair(internalSerialization->scriptName, clone));
-        newNodesList.push_back(clone);
+        newNodes.push_back(std::make_pair(internalSerialization->scriptName, copy));
+        newNodesList.push_back(copy);
         serializations.push_back(internalSerialization);
 
-        oldNewScriptNamesMapping[internalSerialization->scriptName] = clone->getNode()->getScriptName();
+        oldNewScriptNamesMapping[internalSerialization->scriptName] = copy->getNode()->getScriptName();
     }
 
 
@@ -518,51 +513,97 @@ NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
 
     //Restore links once all children are created for alias knobs/expressions
     std::list<Serialization::NodeSerializationPtr>::iterator itS = serializations.begin();
+    NodesList copies;
     for (std::list<NodeGuiPtr> ::iterator it = newNodesList.begin(); it != newNodesList.end(); ++it, ++itS) {
         (*it)->getNode()->storeKnobsLinks(**itS, oldNewScriptNamesMapping);
-        (*it)->getNode()->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, true); // clone should never fail
+        (*it)->getNode()->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, true); // a copy of an existing node should never fail
+        copies.push_back((*it)->getNode());
+    }
+    KnobHelper::restoreLinkGroups(copies);
+
+    // Linking last makes each copy adopt its original's value, animation and expression as they are, with
+    // the expressions read in each copy's own context, rather than the ones restored above.
+    QStringList notLinked;
+    for (std::list<std::pair<NodePtr, NodePtr>>::const_iterator it = linkedNodes.begin(); it != linkedNodes.end(); ++it) {
+        if (!it->first->linkAllKnobsTo(it->second)) {
+            notLinked.push_back(QString::fromUtf8(it->second->getLabel().c_str()));
+        }
+    }
+    if (!notLinked.isEmpty()) {
+        // The preflight above refuses what linkAllKnobsTo() refuses; a copy left unlinked anyway stays, undoable with the others.
+        Dialogs::errorDialog(tr("Create Linked Node").toStdString(),
+                             tr("The copy of %1 could not be linked to it.").arg(notLinked.join(QString::fromUtf8(", "))).toStdString());
     }
 
     pushUndoCommand(new AddMultipleNodesCommand(this, newNodesList), newNodesList);
-} // NodeGraph::cloneSelectedNodes
+} // NodeGraph::createLinkedNodes
 
 void
-NodeGraph::cloneSelectedNodes()
+NodeGraph::createLinkedNodes()
 {
     QPointF scenePos = mapToScene( mapFromGlobal( QCursor::pos() ) );
 
-    cloneSelectedNodes(scenePos);
-} // cloneSelectedNodes
+    createLinkedNodes(scenePos);
+} // createLinkedNodes
+
+// True if a knob of the node has a dimension in a link group that it can leave.
+static bool
+hasUnlinkableKnob(const NodePtr& node)
+{
+    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+    if (!effect) {
+        return false;
+    }
+    const KnobsVec& knobs = effect->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        for (int i = 0; i < (*it)->getDimension(); ++i) {
+            if ((*it)->isLinked(i) && !(*it)->isLinkPermanent(i)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
 
 void
-NodeGraph::decloneSelectedNodes()
+NodeGraph::unlinkSelectedNodes()
 {
     if ( _imp->_selection.empty() ) {
-        Dialogs::warningDialog( tr("Declone").toStdString(), tr("You must select at least a node to declone first.").toStdString() );
+        Dialogs::warningDialog(tr("Unlink Node").toStdString(), tr("You must select at least a node to unlink first.").toStdString());
 
         return;
     }
-    NodesGuiList nodesToDeclone;
-
+    NodesGuiList nodesToUnlink;
 
     for (NodesGuiList::iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
         BackdropGui* isBd = dynamic_cast<BackdropGui*>( it->get() );
         if (isBd) {
-            ///Also copy all nodes within the backdrop
+            /// Also unlink all nodes within the backdrop
             NodesGuiList nodesWithinBD = getNodesWithinBackdrop(*it);
             for (NodesGuiList::iterator it2 = nodesWithinBD.begin(); it2 != nodesWithinBD.end(); ++it2) {
-                NodesGuiList::iterator found = std::find(nodesToDeclone.begin(), nodesToDeclone.end(), *it2);
-                if ( found == nodesToDeclone.end() ) {
-                    nodesToDeclone.push_back(*it2);
+                NodesGuiList::iterator found = std::find(nodesToUnlink.begin(), nodesToUnlink.end(), *it2);
+                if (found == nodesToUnlink.end()) {
+                    nodesToUnlink.push_back(*it2);
                 }
             }
         }
-        if ( (*it)->getNode()->getEffectInstance()->isSlave() ) {
-            nodesToDeclone.push_back(*it);
+        if (std::find(nodesToUnlink.begin(), nodesToUnlink.end(), *it) == nodesToUnlink.end()) {
+            nodesToUnlink.push_back(*it);
         }
     }
+    for (NodesGuiList::iterator it = nodesToUnlink.begin(); it != nodesToUnlink.end();) {
+        if (hasUnlinkableKnob((*it)->getNode())) {
+            ++it;
+        } else {
+            it = nodesToUnlink.erase(it);
+        }
+    }
+    if (nodesToUnlink.empty()) {
+        return;
+    }
 
-    pushUndoCommand(new DecloneMultipleNodesCommand(this, nodesToDeclone), nodesToDeclone);
+    pushUndoCommand(new UnlinkMultipleNodesCommand(this, nodesToUnlink), nodesToUnlink);
 }
 
 void

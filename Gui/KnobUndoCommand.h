@@ -433,6 +433,32 @@ public:
     static KnobIPtr createCopyForKnob(const KnobIPtr & originalKnob);
 };
 
+/**
+ * @brief A dimension of a knob that is linked two-way, and a member of its link group that it can
+ * be linked back to after it has left the group.
+ **/
+struct KnobLinkPartner {
+    UndoKnobRef knob;
+    int dimension;
+    bool nodeLink;
+    UndoKnobRef partner;
+    int partnerDimension;
+    bool partnerNodeLink;
+};
+
+/**
+ * @brief Appends to partners the partner of each linked dimension of knob, or of the given dimension
+ * only, skipping permanent groups. The partner is a member on another holder when the group has
+ * one, so that linking back also rejoins the group of a knob linked to knobs of its own node.
+ **/
+void getKnobLinkPartners(const KnobIPtr& knob, int dimension, std::vector<KnobLinkPartner>* partners);
+
+/**
+ * @brief Links each recorded dimension back to its partner, which still holds the group's shared
+ * state, and restores both members' node-link flags.
+ **/
+void restoreKnobLinkPartners(const std::vector<KnobLinkPartner>& partners);
+
 struct PasteUndoCommandPrivate;
 class PasteUndoCommand
     : public QUndoCommand
@@ -455,9 +481,38 @@ public:
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
 
-    void copyFrom(const KnobIPtr& fromKnob, bool isRedo);
+private:
+    // Whether a link paste links the given dimension of the target.
+    bool isLinkPasteTarget(int dimension) const;
 };
 
+/**
+ * @brief Unlinks a knob from its link groups, the knob keeping its current state, or re-links it to
+ * them, discarding its own state for theirs. Undoing a re-link gives the knob back its own state.
+ **/
+class KnobLinkUndoCommand
+    : public QUndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(KnobLinkUndoCommand)
+
+public:
+    KnobLinkUndoCommand(const KnobIPtr& knob,
+                        bool relink);
+
+    virtual ~KnobLinkUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+private:
+    void setLinked(bool linked);
+
+    UndoKnobRef _knob;
+    bool _relink;
+
+    // For a re-link: a copy of the knob before it, and the dimensions it re-links, whose state undo restores.
+    KnobIPtr _localState;
+    std::vector<int> _relinkedDimensions;
+};
 
 class RestoreDefaultsCommand
     : public QUndoCommand

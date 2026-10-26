@@ -62,3 +62,5 @@ Clicking a connected pipe to pick it up fails unless the cursor is perfectly sti
   - size: M
 
 **Verification gate:** the full build and `ctest` pass, `Tests/gui/m192_pipe_pickup.py` and `Tests/gui/m55_node_graph.py` pass under Xvfb on a `package.sh` AppImage, and the GUI bench rule in the board's Context applies to the diff.
+
+2026-10-26: UAT approved (user). Merges when PR CI passes with main merged in.

@@ -156,13 +156,13 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`, on top of M19 - USD
   - verify: merge two branches with different transforms on one prim, then Append: both branches' ops survive.
   - size: S
 
-- [ ] M20.P4.T5 — USDWrite deletes stale sidecars
+- [x] M20.P4.T5 — USDWrite deletes stale sidecars
   - files: `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDWrite_Test.cpp`
   - approach: after a layered write, delete the `<name>_layerN` files in the target folder that this write did not produce, matching only USDWrite's own sidecar pattern for this output name. Delete them after the new files are written, so a failed write leaves the old set intact.
   - verify: a write that produces 3 sidecars, then removing a layer and writing again, leaves 2 and the main file resolves; unrelated files in the folder are untouched.
   - size: M
 
-- [ ] M20.P4.T6 — Free GPU Memory is a global action
+- [x] M20.P4.T6 — Free GPU Memory is a global action
   - files: the "Free GPU Memory" menu action, `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}`, the Vulkan pool and GPU cache owners, a test
   - approach: one app-wide entry point frees every GPU-resident cache: USDRender engines and stages, Natron's Vulkan pools, and GPU image and texture caches. It waits for or aborts in-flight GPU work as the existing purge does. The menu item and the Python API call it.
   - verify: after GPU renders, the action drops the Hydra engine count and the Vulkan pool usage to zero, and the next render rebuilds them correctly.
@@ -203,3 +203,5 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`, on top of M19 - USD
 - 2026-10-24 — `USDWrite` has a path-mode knob, relative (default) or absolute: user's call, since relative-only was an arbitrary restriction; relative stays the default so exports can be moved.
 All tasks done at d9bfcc47e (release gate green, Storm reference recorded under llvmpipe). Pending: hardware check on AMD/NVIDIA (zero-copy rung, reference match), screenshots, PR stacked on M19 - USD/Hydra Foundation.
 Phase 20.4 (long-lived scene) done at 6cb13d39e: merged onto M19 - USD/Hydra Foundation's long-lived scene; release gate green incl. the Storm reference; scene viewer GUI scripts pass. Pending: hardware check, perf numbers, user calls on USDWrite sidecar cleanup and Free GPU Memory scope.
+
+2026-10-26: P4.T5–T6 done (24487d02c, 6cddb5bf1) with the user's follow-ups (viewport engine release, flattened-write cleanup with a warning); M19's closure cache merged in; release green; scene GUI scripts pass, including Free GPU Memory. AppImage Natron-m20-3d.AppImage. Scene edit: a USDTransform edit at the head of a 30-op chain on a 100k-prim file shows in ~490 ms (llvmpipe).

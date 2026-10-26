@@ -631,7 +631,7 @@ renderFrameOne(const NodePtr& writer)
     }
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
-    appPTR->getTopLevelInstance()->startWritersRendering(false, works);
+    appPTR->getTopLevelInstance()->startWritersRendering(eRenderModeBlocking, works);
 
     return true;
 }

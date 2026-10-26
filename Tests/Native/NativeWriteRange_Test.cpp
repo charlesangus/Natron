@@ -275,7 +275,7 @@ protected:
         ASSERT_TRUE(effect != NULL);
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(effect, first, last, step, false));
-        getApp()->startWritersRendering(true, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
     }
 
     NodePtr _checker;

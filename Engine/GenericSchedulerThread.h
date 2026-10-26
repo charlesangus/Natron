@@ -27,6 +27,7 @@
 // ***** END PYTHON BLOCK *****
 
 #include <functional>
+#include <list>
 
 #include <QThread>
 
@@ -288,6 +289,12 @@ protected:
      * @brief Called when quitThread has been requested
      **/
     virtual void onQuitRequested(bool /*allowRestarts*/) {}
+
+    /**
+     * @brief Called by quitThread, before onQuitRequested, with the tasks it removed from the
+     * queue before they ran: none of them will run.
+     **/
+    virtual void onQueuedTasksDropped(const std::list<GenericThreadStartArgsPtr>& /*tasks*/) { }
 
     /**
      * @brief Called when we successfully waited for an abort to be processed. This can be used to wait for extra threads

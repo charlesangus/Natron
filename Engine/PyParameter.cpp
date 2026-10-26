@@ -40,6 +40,7 @@
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
@@ -432,7 +433,9 @@ Param::copy(Param* other,
     if (!checkIsEditable()) {
         return false;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return false;
+    }
     KnobIPtr thisKnob = _knob.lock();
     KnobIPtr otherKnob = other->_knob.lock();
 
@@ -452,7 +455,9 @@ Param::slaveTo(Param* other,
     if (!checkIsEditable()) {
         return false;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return false;
+    }
     KnobIPtr thisKnob = _knob.lock();
     KnobIPtr otherKnob = other->_knob.lock();
 
@@ -472,7 +477,9 @@ Param::unslave(int dimension)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIPtr thisKnob = _knob.lock();
 
     if (!thisKnob) {
@@ -562,7 +569,9 @@ Param::setAsAlias(Param* other)
     }
 
     // The alias is the other parameter: its knob is the one that changes.
-    recordPythonKnobEdit(otherKnob);
+    if (!recordPythonKnobEdit(otherKnob)) {
+        return false;
+    }
 
     return otherKnob->setKnobAsAliasOfThis(thisKnob, true);
 }
@@ -644,7 +653,9 @@ AnimatedParam::deleteValueAtTime(double time,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if (!knob) {
@@ -659,7 +670,9 @@ AnimatedParam::removeAnimation(int dimension)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if (!knob) {
@@ -712,7 +725,9 @@ AnimatedParam::setInterpolationAtTime(double time,
     if (!checkIsEditable()) {
         return false;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return false;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if (!knob) {
@@ -783,6 +798,10 @@ AnimatedParam::setKeyTangents(double time,
     if (!checkIsEditable()) {
         return;
     }
+    // Not recorded for undo, but refused like every other write while a job reads the knob.
+    if (IsolatedJob::refusesPythonWrite(getInternalKnob().get())) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if (!knob) {
@@ -847,7 +866,9 @@ AnimatedParam::setExpression(const QString& expr,
     if (!checkIsEditable()) {
         return false;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return false;
+    }
     KnobIPtr thisKnob = _knob.lock();
     if (!thisKnob) {
         return false;
@@ -978,7 +999,9 @@ IntParam::set(int x)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -993,7 +1016,9 @@ Int2DParam::set(int x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -1012,7 +1037,9 @@ Int3DParam::set(int x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -1032,7 +1059,9 @@ IntParam::set(int x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -1048,7 +1077,9 @@ Int2DParam::set(int x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -1065,7 +1096,9 @@ Int3DParam::set(int x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -1090,7 +1123,9 @@ IntParam::setValue(int value,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -1117,7 +1152,9 @@ IntParam::setValueAtTime(int value,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -1155,7 +1192,9 @@ IntParam::restoreDefaultValue(int dimension)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -1373,7 +1412,9 @@ DoubleParam::set(double x)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1388,7 +1429,9 @@ Double2DParam::set(double x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1405,7 +1448,9 @@ Double3DParam::set(double x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1421,7 +1466,9 @@ DoubleParam::set(double x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1437,7 +1484,9 @@ Double2DParam::set(double x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1483,7 +1532,9 @@ Double3DParam::set(double x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1509,7 +1560,9 @@ DoubleParam::setValue(double value,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1536,7 +1589,9 @@ DoubleParam::setValueAtTime(double value,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1574,7 +1629,9 @@ DoubleParam::restoreDefaultValue(int dimension)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1745,7 +1802,9 @@ ColorParam::set(double r,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1770,7 +1829,9 @@ ColorParam::set(double r,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1803,7 +1864,9 @@ ColorParam::setValue(double value,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1830,7 +1893,9 @@ ColorParam::setValueAtTime(double value,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1868,7 +1933,9 @@ ColorParam::restoreDefaultValue(int dimension)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -2023,7 +2090,9 @@ ChoiceParam::set(int x)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -2038,7 +2107,9 @@ ChoiceParam::set(int x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -2052,7 +2123,9 @@ ChoiceParam::set(const QString& label)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -2078,7 +2151,9 @@ ChoiceParam::setValue(int value)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -2092,7 +2167,9 @@ ChoiceParam::setValue(const QString& label)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     set(label);
 }
 
@@ -2113,7 +2190,9 @@ ChoiceParam::setValueAtTime(int value,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -2163,7 +2242,9 @@ ChoiceParam::restoreDefaultValue()
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -2305,7 +2386,9 @@ BooleanParam::set(bool x)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobBoolPtr knob = _boolKnob.lock();
     if (!knob) {
         return;
@@ -2321,7 +2404,9 @@ BooleanParam::set(bool x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobBoolPtr knob = _boolKnob.lock();
     if (!knob) {
         return;
@@ -2347,7 +2432,9 @@ BooleanParam::setValue(bool value)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobBoolPtr knob = _boolKnob.lock();
     if (!knob) {
         return;
@@ -2374,7 +2461,9 @@ BooleanParam::setValueAtTime(bool value,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobBoolPtr knob = _boolKnob.lock();
     if (!knob) {
         return;
@@ -2414,7 +2503,9 @@ BooleanParam::restoreDefaultValue()
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobBoolPtr knob = _boolKnob.lock();
     if (!knob) {
         return;
@@ -2479,7 +2570,9 @@ StringParamBase::set(const QString& x)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobStringBasePtr knob = _stringKnob.lock();
     if (!knob) {
         return;
@@ -2495,7 +2588,9 @@ StringParamBase::set(const QString& x,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobStringBasePtr knob = _stringKnob.lock();
     if (!knob) {
         return;
@@ -2521,7 +2616,9 @@ StringParamBase::setValue(const QString& value)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobStringBasePtr knob = _stringKnob.lock();
     if (!knob) {
         return;
@@ -2548,7 +2645,9 @@ StringParamBase::setValueAtTime(const QString& value,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobStringBasePtr knob = _stringKnob.lock();
     if (!knob) {
         return;
@@ -2588,7 +2687,9 @@ StringParamBase::restoreDefaultValue()
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobStringBasePtr knob = _stringKnob.lock();
     if (!knob) {
         return;
@@ -2782,7 +2883,9 @@ PathParam::setTable(const std::list<std::vector<std::string> >& table)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobPathPtr k = _sKnob.lock();
     if (!k) {
         return;
@@ -2892,7 +2995,9 @@ ChannelSetParam::setNone()
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2911,7 +3016,9 @@ ChannelSetParam::setAll()
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2932,7 +3039,9 @@ ChannelSetParam::setLayer(const QString& layerID,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2956,7 +3065,9 @@ ChannelSetParam::setChannels(const QStringList& channels,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2977,7 +3088,9 @@ ChannelSetParam::setRegex(const QString& pattern,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2997,7 +3110,9 @@ ChannelSetParam::setExcludedChannels(const QStringList& channels,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3039,7 +3154,9 @@ ChannelSetParam::addLayer(const QString& layerID,
     if (!checkIsEditable()) {
         return -1;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return -1;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3056,7 +3173,9 @@ ChannelSetParam::addRegex(const QString& pattern)
     if (!checkIsEditable()) {
         return -1;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return -1;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3072,7 +3191,9 @@ ChannelSetParam::removeRow(int row)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3127,7 +3248,9 @@ LayerSelectParam::setLayer(const QString& layerID)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobLayerSelectPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3162,7 +3285,9 @@ LayerSelectParam::setChannels(const QStringList& channels)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobLayerSelectPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3218,7 +3343,9 @@ ChannelSelectParam::set(const QString& value)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChannelSelectPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3238,7 +3365,9 @@ ChannelSelectParam::setNone()
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobChannelSelectPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3628,7 +3757,9 @@ ShuffleMapParam::connect(const QString& src,
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobShuffleMapPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3654,7 +3785,9 @@ ShuffleMapParam::disconnect(const QString& dst)
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobShuffleMapPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3726,7 +3859,9 @@ ShuffleMapParam::reset()
     if (!checkIsEditable()) {
         return;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return;
+    }
     KnobShuffleMapPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3934,7 +4069,9 @@ ParametricParam::addControlPoint(int dimension,
     if (!checkIsEditable()) {
         return eStatusFailed;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
@@ -3953,7 +4090,9 @@ ParametricParam::addControlPoint(int dimension,
     if (!checkIsEditable()) {
         return eStatusFailed;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
@@ -3972,6 +4111,10 @@ ParametricParam::addControlPointWithWeights(int dimension,
                                             KeyframeTypeEnum interpolation)
 {
     if (!checkIsEditable()) {
+        return eStatusFailed;
+    }
+    // Not recorded for undo, but refused like every other write while a job reads the knob.
+    if (IsolatedJob::refusesPythonWrite(getInternalKnob().get())) {
         return eStatusFailed;
     }
     KnobParametricPtr param = _parametricKnob.lock();
@@ -4070,7 +4213,9 @@ ParametricParam::setNthControlPoint(int dimension,
     if (!checkIsEditable()) {
         return eStatusFailed;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
@@ -4089,6 +4234,10 @@ ParametricParam::setNthControlPointWithWeights(int dimension,
                                                double rightWeight)
 {
     if (!checkIsEditable()) {
+        return eStatusFailed;
+    }
+    // Not recorded for undo, but refused like every other write while a job reads the knob.
+    if (IsolatedJob::refusesPythonWrite(getInternalKnob().get())) {
         return eStatusFailed;
     }
     KnobParametricPtr param = _parametricKnob.lock();
@@ -4117,7 +4266,9 @@ ParametricParam::setNthControlPointInterpolation(int dimension,
     if (!checkIsEditable()) {
         return eStatusFailed;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
@@ -4132,7 +4283,9 @@ ParametricParam::deleteControlPoint(int dimension,
     if (!checkIsEditable()) {
         return eStatusFailed;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
@@ -4146,7 +4299,9 @@ ParametricParam::deleteAllControlPoints(int dimension)
     if (!checkIsEditable()) {
         return eStatusFailed;
     }
-    recordPythonKnobEdit(getInternalKnob());
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;

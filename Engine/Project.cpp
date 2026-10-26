@@ -1393,6 +1393,11 @@ Project::isRenderSaveFile(const QString& filePath)
 bool
 Project::saveForRenderProcess(QString* filePath)
 {
+    // Only a GUI session creates the directory at startup; a session without one has none yet.
+    if (!QDir().mkpath(autoSavesDir())) {
+        return false;
+    }
+
     return saveProject_imp(QString(), makeRenderSaveFileName(getApp()->getAppID()), true, false, filePath);
 }
 
@@ -1935,7 +1940,8 @@ Project::initializeKnobs()
     _imp->projectName = AppManager::createKnob<KnobString>( this, tr("Project Name") );
     _imp->projectName->setName("projectName");
     _imp->projectName->setIsPersistent(false);
-//    _imp->projectName->setAsLabel();
+    _imp->projectName->setReadByRenders(false);
+    //    _imp->projectName->setAsLabel();
     _imp->projectName->setDefaultEnabled(0, false);
     _imp->projectName->setAnimationEnabled(false);
     _imp->projectName->setDefaultValue(NATRON_PROJECT_UNTITLED);
@@ -1955,6 +1961,7 @@ Project::initializeKnobs()
     // _imp->natronVersion->setAsLabel();
     _imp->natronVersion->setDefaultEnabled(0, false);
     _imp->natronVersion->setEvaluateOnChange(false);
+    _imp->natronVersion->setReadByRenders(false);
     _imp->natronVersion->setAnimationEnabled(false);
 
     _imp->natronVersion->setDefaultValue( generateUserFriendlyNatronVersionName() );
@@ -1966,6 +1973,7 @@ Project::initializeKnobs()
     //_imp->originalAuthorName->setAsLabel();
     _imp->originalAuthorName->setDefaultEnabled(0, false);
     _imp->originalAuthorName->setEvaluateOnChange(false);
+    _imp->originalAuthorName->setReadByRenders(false);
     _imp->originalAuthorName->setAnimationEnabled(false);
     std::string authorName = generateGUIUserName();
     _imp->originalAuthorName->setDefaultValue(authorName);
@@ -1977,6 +1985,7 @@ Project::initializeKnobs()
     // _imp->lastAuthorName->setAsLabel();
     _imp->lastAuthorName->setDefaultEnabled(0, false);
     _imp->lastAuthorName->setEvaluateOnChange(false);
+    _imp->lastAuthorName->setReadByRenders(false);
     _imp->lastAuthorName->setAnimationEnabled(false);
     _imp->lastAuthorName->setDefaultValue(authorName);
     infoPage->addKnob(_imp->lastAuthorName);
@@ -1988,6 +1997,7 @@ Project::initializeKnobs()
     //_imp->projectCreationDate->setAsLabel();
     _imp->projectCreationDate->setDefaultEnabled(0, false);
     _imp->projectCreationDate->setEvaluateOnChange(false);
+    _imp->projectCreationDate->setReadByRenders(false);
     _imp->projectCreationDate->setAnimationEnabled(false);
     _imp->projectCreationDate->setDefaultValue( QDateTime::currentDateTime().toString().toStdString() );
     infoPage->addKnob(_imp->projectCreationDate);
@@ -1998,6 +2008,7 @@ Project::initializeKnobs()
     //_imp->saveDate->setAsLabel();
     _imp->saveDate->setDefaultEnabled(0, false);
     _imp->saveDate->setEvaluateOnChange(false);
+    _imp->saveDate->setReadByRenders(false);
     _imp->saveDate->setAnimationEnabled(false);
     infoPage->addKnob(_imp->saveDate);
 

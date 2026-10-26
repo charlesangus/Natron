@@ -2458,7 +2458,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(EffectInstance::Implementa
                                                       QThread* callingThread)
 {
     ///Make the thread-storage live as long as the render action is called if we're in a newly launched thread in eRenderSafetyFullySafeFrame mode
-    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, args.frameContext, AppTLS::eSpawnKindHostFrameThreading);
+    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, args.frameContext, args.isolatedJob, AppTLS::eSpawnKindHostFrameThreading);
 
     EffectInstance::RenderingFunctorRetEnum ret = tiledRenderingFunctor(specificData,
                                                                         args.renderFullScaleThenDownscale,
@@ -3449,7 +3449,7 @@ void
 EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
 {
     //We changed, abort any ongoing current render to refresh them with a newer version
-    abortAnyEvaluationForChange();
+    abortViewerRendersForChange();
 
     NodePtr node = getNode();
     if ( !node->isNodeCreated() ) {
@@ -6048,26 +6048,20 @@ EffectInstance::canSetValue() const
 }
 
 void
-EffectInstance::abortAnyEvaluation(bool keepOldestRender)
+EffectInstance::getDownstreamOutputs(std::list<OutputEffectInstance*>* outputNodes) const
 {
-    /*
-       Get recursively downstream all Output nodes and abort any render on them
-       If an output node such as a viewer was doing playback, enable it to restart
-       automatically playback when the abort finished
-     */
     NodePtr node = getNode();
 
     assert(node);
-    std::list<OutputEffectInstance*> outputNodes;
-    NodeGroup* isGroup = dynamic_cast<NodeGroup*>(this);
+    const NodeGroup* isGroup = dynamic_cast<const NodeGroup*>(this);
     if (isGroup) {
         NodesList inputOutputs;
         isGroup->getInputsOutputs(&inputOutputs, false);
         for (NodesList::iterator it = inputOutputs.begin(); it != inputOutputs.end(); ++it) {
-            (*it)->hasOutputNodesConnected(&outputNodes);
+            (*it)->hasOutputNodesConnected(outputNodes);
         }
     } else {
-        RotoDrawableItemPtr attachedStroke = getNode()->getAttachedRotoItem();
+        RotoDrawableItemPtr attachedStroke = node->getAttachedRotoItem();
         if (attachedStroke) {
             ///For nodes internal to the rotopaint tree, check outputs of the rotopaint node instead
             RotoContextPtr context = attachedStroke->getContext();
@@ -6075,21 +6069,39 @@ EffectInstance::abortAnyEvaluation(bool keepOldestRender)
             if (context) {
                 NodePtr rotonode = context->getNode();
                 if (rotonode) {
-                    rotonode->hasOutputNodesConnected(&outputNodes);
+                    rotonode->hasOutputNodesConnected(outputNodes);
                 }
             }
         } else {
-            node->hasOutputNodesConnected(&outputNodes);
+            node->hasOutputNodesConnected(outputNodes);
         }
     }
+}
+
+void
+EffectInstance::abortViewerRendersForEdit()
+{
+    std::list<OutputEffectInstance*> outputNodes;
+    getDownstreamOutputs(&outputNodes);
     for (std::list<OutputEffectInstance*>::const_iterator it = outputNodes.begin(); it != outputNodes.end(); ++it) {
-        //Abort and allow playback to restart but do not block, when this function returns any ongoing render may very
-        //well not be finished
-        if (keepOldestRender) {
-            (*it)->getRenderEngine()->abortRenderingAutoRestart();
-        } else {
-            (*it)->getRenderEngine()->abortRenderingNoRestart(keepOldestRender);
+        // Only a viewer reads knob values while the user edits them. Any other render keeps going
+        // on the values it started with, as nothing in the GUI can edit while it runs.
+        if (!dynamic_cast<ViewerInstance*>(*it)) {
+            continue;
         }
+        // Does not wait: a render in progress may still be running when this returns, and
+        // playback restarts once it has stopped.
+        (*it)->getRenderEngine()->abortRenderingAutoRestart();
+    }
+}
+
+void
+EffectInstance::abortAllRendersReadingThis()
+{
+    std::list<OutputEffectInstance*> outputNodes;
+    getDownstreamOutputs(&outputNodes);
+    for (std::list<OutputEffectInstance*>::const_iterator it = outputNodes.begin(); it != outputNodes.end(); ++it) {
+        (*it)->getRenderEngine()->abortRenderingNoRestart(false);
     }
 }
 

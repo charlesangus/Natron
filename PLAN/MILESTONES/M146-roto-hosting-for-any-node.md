@@ -173,3 +173,5 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check line numbers at claim
 - 2026-10-20 — **The item hierarchy stays as is (planner):** only node creation moves. Splitting `Bezier` from `RotoDrawableItem` is a 3,670-line refactor with no SplineWarp need behind it.
 
 2026-10-26: UAT approved (user). Merges with main merged in and PR CI re-run. A pre-existing RotoPaint interactivity problem went to M224 - Fluid Roto And RotoPaint Interaction.
+
+Shipped 2026-10-26: PR #104, squash df215a9b8.

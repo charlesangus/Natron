@@ -229,3 +229,4 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 - 2026-10-13 — **GPU ships with each port (user):** every node has a GPU kernel and a parity test in this milestone, after M85 - Native GPU Kernels.
 
 **Verification gate:** the full build and `ctest` pass. Every `Native*Gpu` parity test in this milestone passes on RADV. Under Xvfb, Sharpen, Bloom, Glow, EdgeExtend and EdgeBlur are created from the tab menu, rendered with a mask and mix ≠ 1, and screenshotted, and the screenshots are shared with the user before sign-off. The retired CImg IDs load as missing-plugin nodes. An AppImage built with `package.sh` is handed over for UAT.
+Review round (Claude, PR #116): Bloom overflow caps and Glow's per-channel grade fixed at 2084280fa; release gate green. Cost seeds pending; UAT pending.

@@ -25,7 +25,9 @@
 
 #include "USDRead.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -34,6 +36,7 @@
 #include <QFileInfo>
 #include <QString>
 
+#include "Engine/AppInstance.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/FileStampRegistry.h"
 #include "Engine/KnobFile.h"
@@ -41,6 +44,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/Project.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -75,6 +79,12 @@ getTimeCodesPerSecond(const PXR_NS::SdfLayerRefPtr& layer)
     }
 
     return layer->GetTimeCodesPerSecond();
+}
+
+QString
+upAxisName(SceneMetadata::UpAxisEnum upAxis)
+{
+    return (upAxis == SceneMetadata::eUpAxisZ) ? QString::fromUtf8("Z") : QString::fromUtf8("Y");
 }
 } // anonymous namespace
 
@@ -378,6 +388,27 @@ USDRead::renderScene(const SceneRenderActionArgs& /*args*/,
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;
+    }
+
+    // The file's units as its stage reads them, USD's fallbacks where it authors none.
+    const SceneMetadata& file = outputScene->getMetadata();
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (project) {
+        const SceneMetadata::UpAxisEnum projectUpAxis = project->isProjectUpAxisZ() ? SceneMetadata::eUpAxisZ : SceneMetadata::eUpAxisY;
+        const double projectMetersPerUnit = project->getProjectMetersPerUnit();
+        const bool sameMetersPerUnit = std::abs(file.metersPerUnit - projectMetersPerUnit) <= 1e-9 * std::max(std::abs(file.metersPerUnit), std::abs(projectMetersPerUnit));
+        if ((file.upAxis != projectUpAxis) || !sameMetersPerUnit) {
+            setPersistentMessage(eMessageTypeWarning,
+                                 tr("The file's up axis is %1 and meters per unit %2; the project's are %3 and %4. The scene is not converted.")
+                                     .arg(upAxisName(file.upAxis))
+                                     .arg(file.metersPerUnit)
+                                     .arg(upAxisName(projectUpAxis))
+                                     .arg(projectMetersPerUnit)
+                                     .toStdString());
+
+            return eStatusOK;
+        }
     }
     clearPersistentMessage(false);
 

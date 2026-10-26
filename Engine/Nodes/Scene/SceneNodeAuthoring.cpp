@@ -201,9 +201,7 @@ getTimeCodesPerSecond(const SceneLayerEdit& edit)
 double
 getMetersPerUnit(const SceneLayerEdit& edit)
 {
-    const double metersPerUnit = edit.upstream.getMetadata().metersPerUnit;
-
-    return (metersPerUnit > 0.) ? metersPerUnit : SceneMetadata().metersPerUnit;
+    return (edit.metersPerUnit > 0.) ? edit.metersPerUnit : SceneMetadata().metersPerUnit;
 }
 
 void
@@ -219,6 +217,17 @@ appendUpstreamMetadata(const ScenePayload& upstream,
     h->appendDouble(metadata.timeCodesPerSecond);
 }
 
+void
+authorLayerMetadata(const SceneLayerEdit& edit)
+{
+    const PXR_NS::SdfPath& root = PXR_NS::SdfPath::AbsoluteRootPath();
+
+    edit.layer->SetTimeCodesPerSecond(getTimeCodesPerSecond(edit));
+    edit.layer->SetField(root, PXR_NS::UsdGeomTokens->upAxis,
+                         (edit.upAxis == SceneMetadata::eUpAxisZ) ? PXR_NS::UsdGeomTokens->z : PXR_NS::UsdGeomTokens->y);
+    edit.layer->SetField(root, PXR_NS::UsdGeomTokens->metersPerUnit, getMetersPerUnit(edit));
+}
+
 PXR_NS::UsdStageRefPtr
 openLayerStage(const SceneLayerEdit& edit,
                std::string* errorMessage)
@@ -228,7 +237,7 @@ openLayerStage(const SceneLayerEdit& edit,
 
         return PXR_NS::UsdStageRefPtr();
     }
-    edit.layer->SetTimeCodesPerSecond(getTimeCodesPerSecond(edit));
+    authorLayerMetadata(edit);
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(edit.layer, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadNone);
     if (!stage) {
         *errorMessage = EffectInstance::tr("USD could not open a stage on the node's layer.").toStdString();

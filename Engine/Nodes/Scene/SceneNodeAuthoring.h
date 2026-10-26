@@ -72,14 +72,12 @@ namespace SceneNodeAuthoring {
 double getTimeCodesPerSecond(const SceneLayerEdit& edit);
 
 /**
- * @brief The meters per unit of the scene the node's layer goes on top of: the upstream stage's,
- * or USD's fallback (centimetres) for a node with no scene input.
+ * @brief The project's meters per unit, which the node's layer authors.
  **/
 double getMetersPerUnit(const SceneLayerEdit& edit);
 
 /**
- * @brief Appends to h what getTimeCodesPerSecond(), getMetersPerUnit() and openLayerStage() read
- * of upstream: whether there is one, and its stage metadata. A node that keys its layer on the
+ * @brief Appends to h what getTimeCodesPerSecond() and openLayerStage() read of upstream: whether there is one, and its stage metadata. A node that keys its layer on the
  * upstream facts it reads (SceneLayerMemo::Key::eUpstreamReadFacts) hashes these with its own.
  **/
 /**
@@ -94,8 +92,14 @@ void appendUpstreamMetadata(const ScenePayload& upstream,
                             ContentHasher* h);
 
 /**
- * @brief Sets edit.layer's time codes per second and opens a stage on it alone, so the node can
- * author through the Usd schema API with edit.layer as the edit target.
+ * @brief Authors edit.layer's stage metadata: its time codes per second, and the project's upAxis
+ * and metersPerUnit from edit.
+ **/
+void authorLayerMetadata(const SceneLayerEdit& edit);
+
+/**
+ * @brief authorLayerMetadata(), then opens a stage on edit.layer alone, so the node can author
+ * through the Usd schema API with edit.layer as the edit target.
  **/
 PXR_NS::UsdStageRefPtr openLayerStage(const SceneLayerEdit& edit,
                                       std::string* errorMessage);

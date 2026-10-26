@@ -118,11 +118,11 @@ TEST_F(USDCameraTest, DefaultsAuthorAFiftyMillimetreCameraInTenthsOfASceneUnit)
     ASSERT_TRUE(bool(usdCamera));
     EXPECT_EQ(PXR_NS::TfToken("Camera"), usdCamera.GetPrim().GetTypeName());
 
-    // The stage is the default centimetre scene, where a millimetre is 1 / 10 of a
-    // scene unit and USD's camera unit (a tenth of a scene unit) is that millimetre.
-    EXPECT_FLOAT_EQ(50.f, getFloat(usdCamera.GetFocalLengthAttr()));
-    EXPECT_FLOAT_EQ(36.f, getFloat(usdCamera.GetHorizontalApertureAttr()));
-    EXPECT_FLOAT_EQ(24.f, getFloat(usdCamera.GetVerticalApertureAttr()));
+    // The project's default scene is in meters, where USD's camera unit (a tenth of a scene
+    // unit) is 100 mm.
+    EXPECT_FLOAT_EQ(0.5f, getFloat(usdCamera.GetFocalLengthAttr()));
+    EXPECT_FLOAT_EQ(0.36f, getFloat(usdCamera.GetHorizontalApertureAttr()));
+    EXPECT_FLOAT_EQ(0.24f, getFloat(usdCamera.GetVerticalApertureAttr()));
     EXPECT_FLOAT_EQ(0.f, getFloat(usdCamera.GetHorizontalApertureOffsetAttr()));
     EXPECT_FLOAT_EQ(0.f, getFloat(usdCamera.GetVerticalApertureOffsetAttr()));
     PXR_NS::GfVec2f clipping;
@@ -170,9 +170,9 @@ TEST_F(USDCameraTest, AnimatedKnobsAuthorATimeSampleAtEveryProjectFrame)
     const PXR_NS::UsdAttribute attribute = usdCamera.GetFocalLengthAttr();
     EXPECT_EQ((std::size_t)(std::floor(last) - std::ceil(first) + 1.), attribute.GetNumTimeSamples());
     // The layer runs at the project rate, so timecodes are frames.
-    EXPECT_FLOAT_EQ(35.f, getFloat(attribute, PXR_NS::UsdTimeCode(1.)));
-    EXPECT_FLOAT_EQ((float)focalLength->getValueAtTime(6.), getFloat(attribute, PXR_NS::UsdTimeCode(6.)));
-    EXPECT_FLOAT_EQ(85.f, getFloat(attribute, PXR_NS::UsdTimeCode(11.)));
+    EXPECT_FLOAT_EQ(0.35f, getFloat(attribute, PXR_NS::UsdTimeCode(1.)));
+    EXPECT_FLOAT_EQ((float)(focalLength->getValueAtTime(6.) * 0.01), getFloat(attribute, PXR_NS::UsdTimeCode(6.)));
+    EXPECT_FLOAT_EQ(0.85f, getFloat(attribute, PXR_NS::UsdTimeCode(11.)));
     // A knob left alone is still a single default value.
     EXPECT_EQ((std::size_t)0, usdCamera.GetHorizontalApertureAttr().GetNumTimeSamples());
 }
@@ -202,9 +202,9 @@ TEST_F(USDCameraTest, TheComposedCameraMatchesTheKnobs)
 
     // What a look-through reads: the GfCamera at a time.
     const PXR_NS::GfCamera gfCamera = usdCamera.GetCamera(PXR_NS::UsdTimeCode(1.));
-    EXPECT_FLOAT_EQ(25.f, gfCamera.GetFocalLength());
-    EXPECT_FLOAT_EQ(36.f, gfCamera.GetHorizontalAperture());
-    EXPECT_FLOAT_EQ(24.f, gfCamera.GetVerticalAperture());
+    EXPECT_FLOAT_EQ(0.25f, gfCamera.GetFocalLength());
+    EXPECT_FLOAT_EQ(0.36f, gfCamera.GetHorizontalAperture());
+    EXPECT_FLOAT_EQ(0.24f, gfCamera.GetVerticalAperture());
     EXPECT_NEAR(2. * std::atan(18. / 25.) * 180. / 3.14159265358979323846, gfCamera.GetFieldOfView(PXR_NS::GfCamera::FOVHorizontal), 1e-3);
     EXPECT_FLOAT_EQ(1.f, gfCamera.GetClippingRange().GetMin());
     EXPECT_FLOAT_EQ(500.f, gfCamera.GetClippingRange().GetMax());

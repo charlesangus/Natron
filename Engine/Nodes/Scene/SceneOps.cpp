@@ -1046,6 +1046,8 @@ SceneLayerMemo::produce(const Key& key,
     }
     // Always: time codes are authored per second of the project rate.
     h.appendDouble(key.framesPerSecond);
+    h.appendI64((std::int64_t)key.upAxis);
+    h.appendDouble(key.metersPerUnit);
     const U64 layerHash = h.finalize();
 
     if (!SceneOps::checkUsdRuntime(errorMessage)) {
@@ -1078,6 +1080,8 @@ SceneLayerMemo::produce(const Key& key,
     edit.firstFrame = key.firstFrame;
     edit.lastFrame = key.lastFrame;
     edit.framesPerSecond = key.framesPerSecond;
+    edit.upAxis = key.upAxis;
+    edit.metersPerUnit = key.metersPerUnit;
     SceneLinkIndex sublayerLinks;
     edit.sublayerLinks = &sublayerLinks;
     if (!edit.layer) {

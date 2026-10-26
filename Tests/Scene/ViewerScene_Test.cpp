@@ -45,6 +45,7 @@
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
@@ -320,6 +321,10 @@ protected:
 
 TEST_F(ViewerSceneTest, ShowsASceneThroughTheSceneActionAndFlipsBackForAnImage)
 {
+    // The fixture is a centimetre scene: a project in the same units reads it without a warning.
+    KnobDouble* metersPerUnit = dynamic_cast<KnobDouble*>(getApp()->getProject()->getKnobByName("metersPerUnit").get());
+    ASSERT_TRUE(metersPerUnit != NULL);
+    metersPerUnit->setValue(0.01);
     NodePtr reader = createUsdRead(NATRON_TESTS_FIXTURES_DIR "/scene-reference.usda");
     NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     ASSERT_TRUE(reader && constant);

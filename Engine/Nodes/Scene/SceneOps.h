@@ -52,6 +52,9 @@ struct SceneLayerEdit {
     double firstFrame = 0.;
     double lastFrame = 0.;
     double framesPerSecond = 24.;
+    // The project's scene units, which the layer authors as its stage metadata.
+    SceneMetadata::UpAxisEnum upAxis = SceneMetadata::eUpAxisY;
+    double metersPerUnit = 1.;
     // Links out of their root that layer composes from the layers it sublayers, which the scan of
     // layer itself does not reach: an author sublayering a file records the file's here.
     SceneLinkIndex* sublayerLinks = nullptr;

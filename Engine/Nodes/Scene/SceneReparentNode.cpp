@@ -135,7 +135,7 @@ SceneReparentNode::authorOverrides(const SceneLayerEdit& edit,
 
         return false;
     }
-    edit.layer->SetTimeCodesPerSecond(SceneNodeAuthoring::getTimeCodesPerSecond(edit));
+    SceneNodeAuthoring::authorLayerMetadata(edit);
     if (!authorPrimOverrides(edit, primPath, errorMessage)) {
         return false;
     }

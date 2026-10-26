@@ -52,7 +52,7 @@ public:
     /**
      * @brief Everything the node's layer depends on besides the upstream stack: nodeDigest covers
      * the node's identity and knobs, the rest the project time settings animated knobs are
-     * sampled over.
+     * sampled over and the project scene units every layer authors.
      **/
     struct Key {
         // What the node's authoring reads of its upstream stack.
@@ -76,6 +76,8 @@ public:
         // Whether the layer samples anything over [firstFrame, lastFrame], animated knobs above
         // all; a node that does not leaves the range out of its key.
         bool readsFrameRange = true;
+        SceneMetadata::UpAxisEnum upAxis = SceneMetadata::eUpAxisY;
+        double metersPerUnit = 1.;
     };
 
     // Authors the node's edits into edit.layer. Returns false and sets the message on failure.

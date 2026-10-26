@@ -1826,6 +1826,33 @@ Project::initializeKnobs()
     _imp->frameRate->setDisplayMaximum(120.);
     page->addKnob(_imp->frameRate);
 
+    _imp->upAxis = AppManager::createKnob<KnobChoice>(this, tr("Up Axis"));
+    _imp->upAxis->setName("upAxis");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("Y", "", tr("Y points up in the project's 3D scenes.").toStdString()));
+        entries.push_back(ChoiceOption("Z", "", tr("Z points up in the project's 3D scenes.").toStdString()));
+        _imp->upAxis->populateChoices(entries);
+    }
+    _imp->upAxis->setHintToolTip(tr("The up axis of the project's 3D scenes. Every 3D node authors it as its layer's upAxis; "
+                                    "USDRead warns when a file's differs, without converting it."));
+    _imp->upAxis->setAnimationEnabled(false);
+    _imp->upAxis->setDefaultValue(0);
+    page->addKnob(_imp->upAxis);
+
+    _imp->metersPerUnit = AppManager::createKnob<KnobDouble>(this, tr("Meters Per Unit"));
+    _imp->metersPerUnit->setName("metersPerUnit");
+    _imp->metersPerUnit->setHintToolTip(tr("The length of one scene unit in meters in the project's 3D scenes: 1 for meters, 0.01 "
+                                           "for centimeters. Every 3D node authors it as its layer's metersPerUnit, and USDCamera "
+                                           "converts its millimetre lens settings with it. USDRead warns when a file's differs, "
+                                           "without converting it."));
+    _imp->metersPerUnit->setAnimationEnabled(false);
+    _imp->metersPerUnit->setDefaultValue(1.);
+    _imp->metersPerUnit->setMinimum(1e-6);
+    _imp->metersPerUnit->setDisplayMinimum(0.001);
+    _imp->metersPerUnit->setDisplayMaximum(1.);
+    page->addKnob(_imp->metersPerUnit);
+
     _imp->gpuSupport = AppManager::createKnob<KnobChoice>( this, tr("GPU Rendering") );
     _imp->gpuSupport->setName("gpuRendering");
     {
@@ -2877,6 +2904,12 @@ Project::onKnobValueChanged(KnobI* knob,
     } else if (knob == _imp->frameRate.get()) {
         forceComputeInputDependentDataOnAllTrees();
         shouldAutoSave = true;
+    } else if ((knob == _imp->upAxis.get()) || (knob == _imp->metersPerUnit.get())) {
+        // Both are in the project digest and every scene layer key, so each scene node re-authors
+        // its layer when next evaluated.
+        forceComputeInputDependentDataOnAllTrees();
+        getApp()->renderAllViewers(true);
+        shouldAutoSave = true;
     } else if (knob == _imp->frameRange.get()) {
         int first = _imp->frameRange->getValue(0);
         int last = _imp->frameRange->getValue(1);
@@ -3504,6 +3537,8 @@ Project::computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::
     // The frame range is left out: adding a sequence Read grows it, which would re-key every node.
     // The nodes that depend on it hash it themselves (Node::dependsOnProjectFrameRange()).
     h.appendDouble(getProjectFrameRate());
+    h.appendBool(isProjectUpAxisZ());
+    h.appendDouble(getProjectMetersPerUnit());
 
     const std::vector<std::string>& views = getProjectViewNames();
     h.appendU64(views.size());
@@ -3934,6 +3969,18 @@ double
 Project::getProjectFrameRate() const
 {
     return _imp->frameRate->getValue();
+}
+
+bool
+Project::isProjectUpAxisZ() const
+{
+    return _imp->upAxis->getValue() == 1;
+}
+
+double
+Project::getProjectMetersPerUnit() const
+{
+    return _imp->metersPerUnit->getValue();
 }
 
 KnobPathPtr

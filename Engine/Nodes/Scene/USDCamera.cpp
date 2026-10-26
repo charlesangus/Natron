@@ -168,7 +168,8 @@ USDCamera::authorLayer(const SceneLayerEdit& edit,
         return false;
     }
 
-    // Millimetres to tenths of a scene unit: a tenth of a scene unit is 100 x metersPerUnit mm.
+    // Millimetres to tenths of a scene unit: a tenth of a scene unit is 100 x the project's
+    // metersPerUnit mm.
     const double millimetresToCameraUnits = 1. / (100. * SceneNodeAuthoring::getMetersPerUnit(edit));
     const auto lengthAt = [millimetresToCameraUnits](const KnobDoublePtr& knob) {
         return [knob, millimetresToCameraUnits](double frame) {

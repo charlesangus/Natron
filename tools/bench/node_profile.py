@@ -10,6 +10,12 @@
 #              lets the placement see a region worth its transfers; kernel time is then per chain.
 #   NP_FRAMES  frames rendered one at a time (default 6); the first is cold and is dropped later
 #   NP_WORK    directory the frames are written to
+#   NP_OCIO_CONFIG  path of a config.ocio the project uses (as its Custom config) before any node is
+#              created. Unset, the project keeps its default, the built-in ACES studio config
+#              (ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5), which the ocio_* nodes below are
+#              written for. A binary without the OCIO nodes has no such project knobs.
+#
+# A key whose plugin the running binary lacks fails at creation, so select only keys it has.
 
 import os
 
@@ -75,6 +81,12 @@ NODES = {
     "iblur": ("IBlur", {"size": (60.0, 60.0)}, False),
     "ierode": ("IErode", {"size": (6.0, 6.0)}, False),
     "idilate": ("IDilate", {"size": (6.0, 6.0)}, False),
+    "sharpen": ("Sharpen", {"size": (6.0, 6.0), "amount": 1.5, "threshold": 0.01}, False),
+    "edgeextend": ("EdgeExtend", {"size": 40.0, "slices": 5}, False),
+    "bloom": ("Bloom", {"size": (24.0, 24.0), "ratio": 2.0, "count": 5}, False),
+    "glow": ("Glow", {"threshold": 0.25, "knee": 0.2, "size": 24.0, "count": 7, "brightness": 1.5,
+                      "tint": (1.0, 0.9, 0.8, 1.0)}, False),
+    "edgeblur": ("EdgeBlur", {"size": 12.0, "edgeMult": 2.0}, False),
     "dissolve": ("net.sf.openfx.DissolvePlugin", {"which": 0.5}, False),
     "crop": ("net.sf.openfx.CropPlugin",
              {"bottomLeft": (200.0, 150.0), "size": (3400.0, 1900.0), "softness": 20.0}, False),
@@ -83,21 +95,72 @@ NODES = {
     "constant": ("net.sf.openfx.ConstantPlugin", {}, True),
     "solid": ("net.sf.openfx.Solid", {}, True),
     "checkerboard": ("net.sf.openfx.CheckerBoardPlugin", {}, True),
+    "lensdistortion": ("LensDistortion", {"model": "Nuke", "k1": 0.1, "k2": 0.02, "direction": "Distort"}, False),
+    "merge": ("Merge", {"operation": "over"}, False),
+    "merge_plus": ("Merge", {"operation": "plus"}, False),
+    "ocio_colorspace": ("OCIOColorSpace", {"in_colorspace": "ACES2065-1", "out_colorspace": "ACEScg"}, False),
+    "ocio_display": ("OCIODisplay", {"in_colorspace": "ACEScg", "display": "sRGB - Display",
+                                     "view": "ACES 2.0 - SDR 100 nits (Rec.709)", "gain": 1.1}, False),
+    "ocio_cdl": ("OCIOCDLTransform", {"slope": (1.1, 0.9, 1.0), "offset": (0.01, 0.0, -0.01),
+                                      "power": (1.1, 1.0, 0.9), "saturation": 1.2}, False),
+    "ocio_file": ("OCIOFileTransform", {"file": "@LUT@"}, False),
+    "ocio_look": ("OCIOLookTransform", {"in_colorspace": "ACEScg", "out_colorspace": "ACEScg",
+                                        "single_look": True, "look": "@LOOK@"}, False),
 }
 
 
 # Nodes whose input 1 is fed a second source.
-TWO_INPUTS = ("dissolve",)
+# Merge: input 0 is B, fed the chain; input 1 is A, fed the second source.
+TWO_INPUTS = ("dissolve", "merge", "merge_plus")
 
 # Nodes whose Map input (the number given) is fed a ramp whose alpha, the Map's default channel,
 # runs from 0 to 1 across the frame, so the size varies from Size At Black to Size.
 MAP_INPUTS = {"iblur": 2, "ierode": 2, "idilate": 2}
 
 
+def use_ocio_config():
+    path = os.environ.get("NP_OCIO_CONFIG")
+    if not path:
+        return
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        raise RuntimeError("NP_OCIO_CONFIG is not a file: " + path)
+    app.getProjectParam("ocioConfigFile").set(path)
+    app.getProjectParam("ocioConfig").set("Custom config")
+
+
+def write_cube():
+    # A 17^3 LUT, red fastest, that bends every channel and mixes in the others: never an identity.
+    path = os.path.join(WORK, "np_lut17.cube")
+    os.makedirs(WORK, exist_ok=True)
+    n = 17
+    with open(path, "w") as f:
+        f.write("LUT_3D_SIZE %d\n" % n)
+        for b in range(n):
+            for g in range(n):
+                for r in range(n):
+                    x, y, z = r / (n - 1.0), g / (n - 1.0), b / (n - 1.0)
+                    f.write("%.6f %.6f %.6f\n" % (min(1.0, x ** 0.8 * 0.9 + y * 0.1),
+                                                   min(1.0, y ** 0.9 * 0.9 + z * 0.1),
+                                                   min(1.0, z ** 1.1 * 0.9 + x * 0.1)))
+    return path
+
+
+def first_look(node):
+    for option in param(node, "look").getOptions():
+        if option and option.lower() != "none":
+            return option
+    raise RuntimeError("the OCIO config has no looks")
+
+
 def configure(name, index):
     plugin_id, values, generator = NODES[name]
     node = make(plugin_id, "np_%s_%d" % (name, index))
     for key, value in values.items():
+        if value == "@LUT@":
+            value = write_cube()
+        elif value == "@LOOK@":
+            value = first_look(node)
         if isinstance(value, tuple):
             param(node, key).set(*value)
         else:
@@ -115,6 +178,7 @@ def configure(name, index):
 
 
 def main():
+    use_ocio_config()
     app.getProjectParam("outputFormat").set("UHD_4K")
     app.getProjectParam("frameRange").set(1, LAST_FRAME)
     plugin_id, _, generator = NODES[NODE]

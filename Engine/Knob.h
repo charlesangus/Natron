@@ -1905,6 +1905,21 @@ public:
     bool getExpressionContextKey(U64* key) const;
 
     /**
+     * @brief What the Python expression source reads of the rfv object: the variable named by each
+     * rfv.<name>, rfv('<name>') and rfv['<name>'], either quote, in code rather than in a string
+     * or a comment. Any other use of the name rfv, such as passing it on, getattr() or a computed
+     * key, may read any variable and makes the result reads-all.
+     **/
+    static RenderContextReadSet getRFVExpressionReads(const std::string& expression);
+
+    /**
+     * @brief The union of getRFVExpressionReads() over the expressions of every dimension. The
+     * knob registers it as one of its context read sources (see addContextReadSource()) while it
+     * is not empty, and recomputes it whenever an expression is set or cleared. MT-safe.
+     **/
+    RenderContextReadSet getRFVReadSet() const;
+
+    /**
      * @brief Has every invalidateContentHash() of this knob also move generation, for an owner
      * that is not its holder (a roto item) and memoizes over the knob's content hash. Set before
      * the knob is shared.
@@ -2120,6 +2135,9 @@ protected:
 private:
 
     void expressionChanged(int dimension);
+
+    // Recomputes getRFVReadSet() and swaps the context read source holding it.
+    void refreshRFVReads();
 
     std::unique_ptr<KnobHelperPrivate> _imp;
 };

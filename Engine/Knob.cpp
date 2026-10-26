@@ -65,6 +65,8 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/PyRFV.h"
+#include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
 #include "Engine/StringAnimationManager.h"
 #include "Engine/TLSHolder.h"
@@ -545,6 +547,11 @@ struct KnobHelperPrivate
     std::vector<ContextReadSourcePtr> contextReadSources;
     // Lets the read-set walk skip the mutex on the many knobs without a source.
     std::atomic<bool> hasContextReadSources { false };
+    mutable QMutex rfvReadsMutex; // protects the 2 members below
+    // What the expressions read of the rfv object (see KnobHelper::getRFVExpressionReads()), and
+    // the source registered with those reads, null while they are empty.
+    RenderContextReadSet rfvReads;
+    ContextReadSourcePtr rfvReadSource;
 
     KnobHelperPrivate(KnobHelper* publicInterface_,
                       KnobHolder* holder_,
@@ -2818,6 +2825,10 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
         }
     }
 
+    // Declared after the nodes, so that rfv always names the variables.
+    PyRFV::ensureDeclared();
+    ss << tabStr << "rfv = " << PyRFV::kMainGlobalName << "\n";
+
     if (isParentGrp) {
         ss << tabStr << "thisGroup = " << appID << "." << collectionScriptName << "\n";
     } else {
@@ -2883,6 +2894,24 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension)
         QMutexLocker k(&expressionMutex);
         expressionCopy = expressions[dimension].originalExpression;
     }
+
+    // The project's variables are the values rfv falls back to (see PyRFV::getVariable()), so an
+    // edit of one the expression reads reaches it as the edit of a parameter it reads does.
+    {
+        const RenderContextReadSet reads = KnobHelper::getRFVExpressionReads(expressionCopy);
+        AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+        ProjectPtr project = app ? app->getProject() : ProjectPtr();
+        if (project && !reads.empty()) {
+            KnobIPtr thisKnob = publicInterface->shared_from_this();
+            const std::vector<RFV::VariableDeclaration> declared = RFV::getDeclaredVariables(project.get());
+            for (const RFV::VariableDeclaration& variable : declared) {
+                if ((variable.knob != thisKnob) && (reads.readsAll() || reads.contains(RenderContextName::plain(variable.name)))) {
+                    variable.knob->addListener(true, dimension, -1, thisKnob);
+                }
+            }
+        }
+    }
+
     std::string script;
 
     if  ( !extractAllOcurrences(expressionCopy, "getValue", false, 0, dimension, &script) ) {
@@ -2919,7 +2948,11 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension)
     script = ss.str();
     ///This will register the listeners
     std::string error;
-    bool ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, NULL);
+    bool ok;
+    {
+        PyRFV::ExpressionScope rfvScope(publicInterface);
+        ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, NULL);
+    }
     if ( !error.empty() ) {
         qDebug() << error.c_str();
     }
@@ -3034,7 +3067,12 @@ KnobHelper::validateExpression(const std::string& expression,
 
         std::stringstream ss;
         ss << funcExecScript << '(' << getCurrentTime() << ", " <<  getCurrentView() << ")\n";
-        if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(ss.str(), &error, 0) ) {
+        bool evaluated;
+        {
+            PyRFV::ExpressionScope rfvScope(this);
+            evaluated = NATRON_PYTHON_NAMESPACE::interpretPythonScript(ss.str(), &error, 0);
+        }
+        if (!evaluated) {
             throw std::runtime_error(error);
         }
 
@@ -3637,6 +3675,7 @@ KnobHelper::clearExpression(int dimension,
 void
 KnobHelper::expressionChanged(int dimension)
 {
+    refreshRFVReads();
     invalidateContentHash();
     if (_imp->holder) {
         _imp->holder->updateHasAnimation();
@@ -3702,6 +3741,7 @@ KnobHelper::executeExpression(double time,
     ss << expr << '(' << time << ", " <<  view << ")\n";
 
     const ExpressionTimeScope timeScope(time);
+    PyRFV::ExpressionScope rfvScope(this);
 
     return executeExpression(ss.str(), ret, error);
 }
@@ -5805,6 +5845,156 @@ KnobHelper::invalidateContentHash()
         }
         listeners.clear();
         listener->getListeners(listeners);
+    }
+}
+
+namespace {
+
+// The reads of an expression scan, fixed once made: a change of the reads replaces the source.
+class RFVExpressionReadSource
+    : public ContextReadSource {
+public:
+    explicit RFVExpressionReadSource(const RenderContextReadSet& reads)
+        : _reads(reads)
+    {
+    }
+
+    virtual void appendContextReads(RenderContextReadSet* reads) const OVERRIDE FINAL
+    {
+        reads->merge(_reads);
+    }
+
+private:
+    const RenderContextReadSet _reads;
+};
+
+bool
+isPythonBlank(char c)
+{
+    return (c == ' ') || (c == '\t');
+}
+
+std::size_t
+skipPythonBlanks(const std::string& str,
+                 std::size_t pos)
+{
+    while ((pos < str.size()) && isPythonBlank(str[pos])) {
+        ++pos;
+    }
+
+    return pos;
+}
+} // anonymous namespace
+
+RenderContextReadSet
+KnobHelper::getRFVExpressionReads(const std::string& expression)
+{
+    static const std::string kRFV("rfv");
+    RenderContextReadSet reads;
+    const std::vector<bool> code = pythonCodeMask(expression);
+    const std::size_t n = expression.size();
+
+    for (std::size_t pos = expression.find(kRFV); pos != std::string::npos; pos = expression.find(kRFV, pos + 1)) {
+        const std::size_t after = pos + kRFV.size();
+        if (!code[pos] || ((pos > 0) && isIdentifierCharacter(expression[pos - 1])) || ((after < n) && isIdentifierCharacter(expression[after]))) {
+            continue;
+        }
+        // An attribute named rfv of some other object is not the rfv object.
+        std::size_t before = pos;
+        while ((before > 0) && isPythonBlank(expression[before - 1])) {
+            --before;
+        }
+        if ((before > 0) && (expression[before - 1] == '.') && code[before - 1]) {
+            continue;
+        }
+
+        std::size_t i = skipPythonBlanks(expression, after);
+        if ((i < n) && code[i] && (expression[i] == '.')) {
+            // rfv.<name>
+            const std::size_t begin = skipPythonBlanks(expression, i + 1);
+            std::size_t end = begin;
+            while ((end < n) && isIdentifierCharacter(expression[end])) {
+                ++end;
+            }
+            if ((end > begin) && !std::isdigit((unsigned char)expression[begin])) {
+                reads.add(RenderContextName::plain(expression.substr(begin, end - begin)));
+                continue;
+            }
+        } else if ((i < n) && code[i] && ((expression[i] == '(') || (expression[i] == '['))) {
+            // rfv('<name>') or rfv['<name>'], with either quote, and a plain literal only: a
+            // prefixed, triple-quoted or escaped string, a second argument or a computed key
+            // makes the name unknown.
+            const char close = (expression[i] == '(') ? ')' : ']';
+            const std::size_t open = skipPythonBlanks(expression, i + 1);
+            if ((open < n) && ((expression[open] == '\'') || (expression[open] == '"'))) {
+                const char quote = expression[open];
+                std::size_t end = open + 1;
+                while ((end < n) && (expression[end] != quote) && (expression[end] != '\\') && (expression[end] != '\n')) {
+                    ++end;
+                }
+                if ((end < n) && (expression[end] == quote)) {
+                    const std::size_t closing = skipPythonBlanks(expression, end + 1);
+                    if ((closing < n) && code[closing] && (expression[closing] == close)) {
+                        reads.add(RenderContextName::plain(expression.substr(open + 1, end - open - 1)));
+                        continue;
+                    }
+                }
+            }
+        }
+        // Any other use, such as passing the object on or reading a computed name, may read
+        // any variable.
+        reads.setReadsAll();
+
+        return reads;
+    }
+
+    return reads;
+} // KnobHelper::getRFVExpressionReads
+
+RenderContextReadSet
+KnobHelper::getRFVReadSet() const
+{
+    QMutexLocker k(&_imp->rfvReadsMutex);
+
+    return _imp->rfvReads;
+}
+
+void
+KnobHelper::refreshRFVReads()
+{
+    std::vector<std::string> expressions;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        for (std::size_t i = 0; i < _imp->expressions.size(); ++i) {
+            if (!_imp->expressions[i].originalExpression.empty()) {
+                expressions.push_back(_imp->expressions[i].originalExpression);
+            }
+        }
+    }
+    RenderContextReadSet reads;
+    for (const std::string& expression : expressions) {
+        reads.merge(getRFVExpressionReads(expression));
+    }
+
+    ContextReadSourcePtr previous;
+    ContextReadSourcePtr source;
+    {
+        QMutexLocker k(&_imp->rfvReadsMutex);
+        if (reads == _imp->rfvReads) {
+            return;
+        }
+        _imp->rfvReads = reads;
+        previous = _imp->rfvReadSource;
+        if (!reads.empty()) {
+            source = std::make_shared<RFVExpressionReadSource>(reads);
+        }
+        _imp->rfvReadSource = source;
+    }
+    if (previous) {
+        removeContextReadSource(previous);
+    }
+    if (source) {
+        addContextReadSource(source);
     }
 }
 

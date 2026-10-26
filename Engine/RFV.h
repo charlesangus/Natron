@@ -33,7 +33,9 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/RenderContext.h"
 #include "Engine/UndoCommand.h"
+#include "Engine/ViewIdx.h"
 #include "Serialization/SerializationFwd.h"
 
 NATRON_NAMESPACE_ENTER
@@ -169,6 +171,28 @@ bool canPromoteToProject(const KnobIPtr& knob, std::string* reason = nullptr);
  * or the project's RFV group refuses the copy.
  **/
 KnobIPtr promoteToProject(const KnobIPtr& knob, std::string* error = nullptr);
+
+/**
+ * @brief The variable the holder declares under name (see getDeclaredVariables()), or null.
+ **/
+KnobIPtr findDeclaredVariable(const KnobHolder* holder, const std::string& name);
+
+/**
+ * @brief The value of the variable knob at time and view, as a render context holds it: a bool
+ * for a boolean, an integer for a one-dimensional integer or choice, a double for a
+ * one-dimensional double, a list of either for more dimensions, and a string for a string.
+ * Evaluating it runs its expression, if any, on the calling thread.
+ * @returns false, leaving value alone, for a knob of another type.
+ **/
+bool getVariableValue(const KnobIPtr& knob, double time, ViewIdx view, RenderContextValue* value);
+
+/**
+ * @brief base, or the empty context when null, with every variable the holder declares set over
+ * it to its value at time and view (see getVariableValue()). The values are evaluated on the
+ * calling thread, so an expression of a variable reading rfv sees the context the caller acts
+ * under.
+ **/
+RenderContextPtr overlayDeclaredVariables(const KnobHolder* holder, double time, ViewIdx view, const RenderContextPtr& base);
 
 /**
  * @brief promoteToProject() as one undo step. The first redo() promotes the node's variable; undo()

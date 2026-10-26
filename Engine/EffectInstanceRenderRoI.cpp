@@ -600,8 +600,12 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                 // exactly the planes the caller asked for, whatever its own layer knob selects.
                 inputArgs->components = requestedComponents;
 
+                // The identity input is pulled under the context this node requests it under, as
+                // the request pass planned it: a node setting context variables may pass its
+                // input through.
+                InputContextArgs identityContext(this, inputEffectIdentity, inputNbIdentity, args.time, args.view);
                 std::map<ImageLayerDesc, ImagePtr> identityLayers;
-                RenderRoIRetCode ret = renderInputOrTakeFromStore(inputEffectIdentity, inputNbIdentity, inputArgs.get(), &identityLayers, this);
+                RenderRoIRetCode ret = renderInputOrTakeFromStore(inputEffectIdentity, inputNbIdentity, inputArgs.get(), &identityLayers, this, &identityContext);
                 if (ret != eRenderRoIRetCodeOk) {
                     return ret;
                 }

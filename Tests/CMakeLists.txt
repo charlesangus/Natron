@@ -118,7 +118,9 @@ set(Tests_SOURCES
     PyPlugInstantiate_Test.cpp
     PythonUndo_Test.cpp
     RFV_Test.cpp
+    RFVExpression_Test.cpp
     RFVPython_Test.cpp
+    RFVRender_Test.cpp
     RFVSetNode_Test.cpp
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp

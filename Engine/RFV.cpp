@@ -39,6 +39,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/UndoKnobRef.h"
 
 #include "Serialization/KnobSerialization.h"
@@ -581,6 +582,95 @@ KnobIPtr
 PromoteToProjectCommand::getProjectVariable() const
 {
     return _copy.lock();
+}
+
+KnobIPtr
+findDeclaredVariable(const KnobHolder* holder,
+                     const std::string& name)
+{
+    if (!holder) {
+        return KnobIPtr();
+    }
+    const std::vector<VariableDeclaration> declared = getDeclaredVariables(holder);
+    for (std::size_t i = 0; i < declared.size(); ++i) {
+        if (declared[i].name == name) {
+            return declared[i].knob;
+        }
+    }
+
+    return KnobIPtr();
+}
+
+namespace {
+
+    template <typename T, typename V>
+    RenderContextValue
+    knobValue(Knob<T>* knob,
+              double time,
+              ViewIdx view)
+    {
+        const int dimensions = knob->getDimension();
+        if (dimensions == 1) {
+            return RenderContextValue((V)knob->getValueAtTime(time, 0, ViewSpec(view)));
+        }
+        std::vector<V> values(dimensions);
+        for (int i = 0; i < dimensions; ++i) {
+            values[i] = (V)knob->getValueAtTime(time, i, ViewSpec(view));
+        }
+
+        return RenderContextValue(values);
+    }
+} // anonymous namespace
+
+bool
+getVariableValue(const KnobIPtr& knob,
+                 double time,
+                 ViewIdx view,
+                 RenderContextValue* value)
+{
+    if (!knob) {
+        return false;
+    }
+    if (KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(knob.get())) {
+        *value = RenderContextValue(isBool->getValueAtTime(time, 0, ViewSpec(view)));
+
+        return true;
+    }
+    if (KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob.get())) {
+        *value = knobValue<int, std::int64_t>(isInt, time, view);
+
+        return true;
+    }
+    if (KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(knob.get())) {
+        *value = knobValue<double, double>(isDouble, time, view);
+
+        return true;
+    }
+    if (KnobStringBase* isString = dynamic_cast<KnobStringBase*>(knob.get())) {
+        *value = RenderContextValue(isString->getValueAtTime(time, 0, ViewSpec(view)));
+
+        return true;
+    }
+
+    return false;
+}
+
+RenderContextPtr
+overlayDeclaredVariables(const KnobHolder* holder,
+                         double time,
+                         ViewIdx view,
+                         const RenderContextPtr& base)
+{
+    RenderContext::Builder builder(base);
+    const std::vector<VariableDeclaration> declared = getDeclaredVariables(holder);
+    for (std::size_t i = 0; i < declared.size(); ++i) {
+        RenderContextValue value;
+        if (getVariableValue(declared[i].knob, time, view, &value)) {
+            builder.set(RenderContextName::plain(declared[i].name), value);
+        }
+    }
+
+    return builder.build();
 }
 
 } // namespace RFV

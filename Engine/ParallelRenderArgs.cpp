@@ -964,7 +964,15 @@ visitRequestPassItem(bool useTransforms,
         EffectInstancePtr inputEffectIdentity = effect->getInput(fvRequest->globalData.identityInputNb);
         if (inputEffectIdentity) {
             NodePtr inputIdentityNode = inputEffectIdentity->getNode();
-            const RequestPassItem visit = makeVisitItem(inputIdentityNode, item.context, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, canonicalRenderWindow);
+            // A node setting context variables may pass its input through: the input is visited
+            // under the one context the node requests it under, as its render pulls it.
+            RenderContextPtr identityContext = item.context;
+            std::vector<RenderContextPtr> identityContexts;
+            if (effect->getInputContexts(fvRequest->globalData.identityInputNb, time, view, item.context, &identityContexts) && (identityContexts.size() == 1)) {
+                noteContextFanOut(requests, node, item.contextKey == 0);
+                identityContext = identityContexts.front();
+            }
+            const RequestPassItem visit = makeVisitItem(inputIdentityNode, identityContext, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, canonicalRenderWindow);
             fvRequest->walking = true;
             stack->push_back(makeConsumerItem(RequestPassItem::eKindIdentityEdge, fvRequest, inputIdentityNode, visit.contextKey, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, fvRequest->globalData.identityInputNb));
             stack->push_back(visit);

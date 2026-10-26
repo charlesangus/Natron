@@ -251,3 +251,5 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 Review round (Claude, PR #116): Bloom overflow caps and Glow's per-channel grade fixed at 2084280fa; release gate green. Cost seeds pending; UAT pending.
 
 2026-10-26: UAT round 1 fixes (0a4b160cf) and goldens; release green. AppImage Natron-m123-sharpen-glow.AppImage for UAT round 2.
+
+UAT round 2 approved by the user 2026-10-26; follow-up M238 - EdgeExtend Options. Merges after M184 - Variable-Size Filter Kit (RADV parity pending).

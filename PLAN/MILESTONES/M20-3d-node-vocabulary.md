@@ -168,6 +168,18 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`, on top of M19 - USD
   - verify: after GPU renders, the action drops the Hydra engine count and the Vulkan pool usage to zero, and the next render rebuilds them correctly.
   - size: M
 
+- [ ] M20.P4.T7 — File pickers list files under the `*` filter
+  - files: `Gui/KnobGuiFile.cpp`, `Gui/SequenceFileDialog.cpp`, `Engine/FileSystemModel.cpp`, USDRead/USDMaterial knobs, a FileSystemModel gtest, an Xvfb check
+  - approach: an empty regexp list with `*` accepts all files (an M16 regression that hides every file from non-image file knobs); USDRead's File knob lists USD/Alembic extensions and USDMaterial's texture knobs image extensions.
+  - verify: gtest on FileSystemModel; Xvfb: the USDRead dialog lists `.usda` files.
+  - size: M
+
+- [ ] M20.P4.T8 — Right-click leaves no stuck dolly
+  - files: `Gui/SceneViewport.cpp`
+  - approach: set the drag button only on accepted presses, clear it in `contextMenuEvent`, and check `e->buttons()` in move.
+  - verify: Xvfb script: right-click, Esc, then mouse moves leave the camera unchanged.
+  - size: S
+
 **Verification gate:** release gate green; strict-GL USDRender test passes; perf numbers for USDRender recorded.
 
 ## Decisions

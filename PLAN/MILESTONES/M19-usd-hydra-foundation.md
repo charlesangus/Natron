@@ -164,7 +164,7 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`: node layers stay im
   - verify: gtest: editing the head of a 30-node chain re-authors one layer; changing a prim a downstream Prune matches re-authors the Prune.
   - size: M
 
-- [ ] M19.P3.T6 — Edit-to-frame performance gate
+- [x] M19.P3.T6 — Edit-to-frame performance gate
   - files: `tools/bench/scene_edit_bench.py` (new), `tools/bench/README.md`
   - approach: measure edit-to-frame latency in the viewer and USDRender for a 30-node chain and a 1M-prim file, before and after the phase.
   - verify: numbers recorded in Decisions; an upstream edit on the 1M-prim file costs far less than a reopen.

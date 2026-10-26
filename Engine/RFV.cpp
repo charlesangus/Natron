@@ -199,6 +199,35 @@ getDeclaredVariables(const KnobHolder* holder,
     return declarations;
 } // getDeclaredVariables
 
+void
+refreshDeclarationSnapshot(KnobHolder* holder)
+{
+    if (!holder) {
+        return;
+    }
+    std::shared_ptr<std::vector<VariableDeclaration>> declarations = std::make_shared<std::vector<VariableDeclaration>>(getDeclaredVariables(holder));
+    const RFVDeclarationsConstPtr previous = holder->getRFVDeclarationSnapshot();
+    holder->setRFVDeclarationSnapshot(declarations);
+
+    bool changed = !previous || (previous->size() != declarations->size());
+    for (std::size_t i = 0; !changed && (i < declarations->size()); ++i) {
+        changed = ((*previous)[i].name != (*declarations)[i].name) || ((*previous)[i].knob != (*declarations)[i].knob);
+    }
+    if (changed) {
+        // What a Set overrides and what a project variable's readers read follow the declarations.
+        invalidateRenderContextReads();
+    }
+}
+
+RFVDeclarationsConstPtr
+getDeclarationSnapshot(const KnobHolder* holder)
+{
+    static const RFVDeclarationsConstPtr none = std::make_shared<const std::vector<VariableDeclaration>>();
+    RFVDeclarationsConstPtr declarations = holder ? holder->getRFVDeclarationSnapshot() : RFVDeclarationsConstPtr();
+
+    return declarations ? declarations : none;
+}
+
 std::vector<VariableDeclaration>
 getExistingVariables(const KnobHolder* holder)
 {
@@ -637,10 +666,10 @@ findDeclaredVariable(const KnobHolder* holder,
     if (!holder) {
         return KnobIPtr();
     }
-    const std::vector<VariableDeclaration> declared = getDeclaredVariables(holder);
-    for (std::size_t i = 0; i < declared.size(); ++i) {
-        if (declared[i].name == name) {
-            return declared[i].knob;
+    const RFVDeclarationsConstPtr declared = getDeclarationSnapshot(holder);
+    for (const VariableDeclaration& declaration : *declared) {
+        if (declaration.name == name) {
+            return declaration.knob;
         }
     }
 
@@ -708,11 +737,11 @@ overlayDeclaredVariables(const KnobHolder* holder,
                          const RenderContextPtr& base)
 {
     RenderContext::Builder builder(base);
-    const std::vector<VariableDeclaration> declared = getDeclaredVariables(holder);
-    for (std::size_t i = 0; i < declared.size(); ++i) {
+    const RFVDeclarationsConstPtr declared = getDeclarationSnapshot(holder);
+    for (const VariableDeclaration& declaration : *declared) {
         RenderContextValue value;
-        if (getVariableValue(declared[i].knob, time, view, &value)) {
-            builder.set(RenderContextName::plain(declared[i].name), value);
+        if (getVariableValue(declaration.knob, time, view, &value)) {
+            builder.set(RenderContextName::plain(declaration.name), value);
         }
     }
 

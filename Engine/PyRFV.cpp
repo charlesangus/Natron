@@ -48,18 +48,33 @@ const char* const kMainGlobalName = "NatronEngine_rfv";
 
 namespace {
 
-    // The knobs whose expressions this thread evaluates, innermost last.
-    thread_local std::vector<const KnobI*> t_expressionKnobs;
+    // The knobs whose expressions this thread evaluates and the views they are evaluated at,
+    // innermost last.
+    struct ExpressionEntry {
+        const KnobI* knob;
+        ViewIdx view;
+    };
 
-    // The project variables this thread evaluates for rfv: a variable whose expression reads itself
-    // through rfv gets None rather than recursing.
-    thread_local std::vector<std::string> t_evaluatingVariables;
+    thread_local std::vector<ExpressionEntry> t_expressions;
+
+    // The project variables this thread evaluates for rfv, innermost last, each with the time,
+    // view and context it is evaluated for. A variable whose expression reads itself through rfv
+    // gets None rather than recursing, and the rfv reads of a variable's expression keep the
+    // render the outermost read came from: the project's knobs have no render of their own.
+    struct VariableEvaluation {
+        std::string name;
+        double time = 0.;
+        ViewIdx view = ViewIdx(0);
+        RenderContextPtr context;
+    };
+
+    thread_local std::vector<VariableEvaluation> t_evaluatingVariables;
 
     class EvaluatingVariable {
     public:
-        explicit EvaluatingVariable(const std::string& name)
+        explicit EvaluatingVariable(const VariableEvaluation& evaluation)
         {
-            t_evaluatingVariables.push_back(name);
+            t_evaluatingVariables.push_back(evaluation);
         }
 
         ~EvaluatingVariable()
@@ -67,6 +82,18 @@ namespace {
             t_evaluatingVariables.pop_back();
         }
     };
+
+    bool
+    isEvaluating(const std::string& name)
+    {
+        for (const VariableEvaluation& evaluation : t_evaluatingVariables) {
+            if (evaluation.name == name) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     template <typename T>
     PyObject*
@@ -254,19 +281,26 @@ ensureDeclared()
 PyObject*
 getVariable(const std::string& name)
 {
-    if (std::find(t_evaluatingVariables.begin(), t_evaluatingVariables.end(), name) != t_evaluatingVariables.end()) {
+    if (isEvaluating(name)) {
         Py_RETURN_NONE;
     }
-    const KnobI* knob = t_expressionKnobs.empty() ? NULL : t_expressionKnobs.back();
+    const ExpressionEntry* entry = t_expressions.empty() ? NULL : &t_expressions.back();
+    const KnobI* knob = entry ? entry->knob : NULL;
     KnobHolder* holder = knob ? knob->getHolder() : NULL;
     const EffectInstance* effect = dynamic_cast<const EffectInstance*>(holder);
+    const VariableEvaluation* outer = t_evaluatingVariables.empty() ? NULL : &t_evaluatingVariables.back();
 
-    // In a render, or acting under a context for one, the context's variable wins.
+    // In a render, or acting under a context for one, the context's variable wins. An expression
+    // of a project variable read for a render reads under that render's context.
     RenderContextPtr context;
     const bool acting = ActionContextScope::current(&context);
     const ParallelRenderArgsPtr frameArgs = effect ? effect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
-    if (!acting && frameArgs) {
-        context = effect->getCurrentRenderContext();
+    if (!acting) {
+        if (frameArgs) {
+            context = effect->getCurrentRenderContext();
+        } else if (outer) {
+            context = outer->context;
+        }
     }
     if (context) {
         if (const RenderContextValue* value = context->find(RenderContextName::plain(name))) {
@@ -274,26 +308,34 @@ getVariable(const std::string& name)
         }
     }
 
-    // Otherwise the project's variable is the base every context starts from: at the time the
-    // render started, or outside a render at the timeline's frame.
+    // Otherwise the project's variable is the base every context starts from: at the time and
+    // view the render started at, or outside a render at the timeline's frame and the view the
+    // expression is evaluated at.
     AppInstancePtr app = holder ? holder->getApp() : appPTR->getTopLevelInstance();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     KnobIPtr variable = RFV::findDeclaredVariable(project.get(), name);
     if (!variable) {
         Py_RETURN_NONE;
     }
-    double time = 0.;
+    VariableEvaluation evaluation;
+    evaluation.name = name;
+    evaluation.context = context;
     if (frameArgs) {
-        time = frameArgs->time;
+        evaluation.time = frameArgs->time;
+        evaluation.view = frameArgs->view;
+    } else if (outer) {
+        evaluation.time = outer->time;
+        evaluation.view = outer->view;
     } else {
         TimeLinePtr timeline = app->getTimeLine();
-        time = timeline ? (double)timeline->currentFrame() : 0.;
+        evaluation.time = timeline ? (double)timeline->currentFrame() : 0.;
+        evaluation.view = entry ? entry->view : ViewIdx(0);
     }
     RenderContextValue value;
     bool found = false;
     try {
-        EvaluatingVariable evaluating(name);
-        found = RFV::getVariableValue(variable, time, ViewIdx(0), &value);
+        EvaluatingVariable evaluating(evaluation);
+        found = RFV::getVariableValue(variable, evaluation.time, evaluation.view, &value);
     } catch (const std::exception& e) {
         PyErr_SetString(PyExc_RuntimeError, e.what());
 
@@ -306,14 +348,26 @@ getVariable(const std::string& name)
     return toPython(value);
 } // getVariable
 
-ExpressionScope::ExpressionScope(const KnobI* knob)
+RenderContextPtr
+getProjectExpressionContext()
 {
-    t_expressionKnobs.push_back(knob);
+    RenderContextPtr context;
+    if (ActionContextScope::current(&context)) {
+        return context;
+    }
+
+    return t_evaluatingVariables.empty() ? RenderContextPtr() : t_evaluatingVariables.back().context;
+}
+
+ExpressionScope::ExpressionScope(const KnobI* knob,
+                                 ViewIdx view)
+{
+    t_expressions.push_back(ExpressionEntry { knob, view });
 }
 
 ExpressionScope::~ExpressionScope()
 {
-    t_expressionKnobs.pop_back();
+    t_expressions.pop_back();
 }
 
 } // namespace PyRFV

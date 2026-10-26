@@ -133,7 +133,8 @@ private:
                                   std::vector<RenderContextPtr>* contexts) const OVERRIDE FINAL;
 
     /**
-     * @brief The variables this node declares, whatever the nodes upstream read of them.
+     * @brief The variables this node declares, as its declaration snapshot holds them (see
+     * RFV::getDeclarationSnapshot()), whatever the nodes upstream read of them.
      **/
     virtual RenderContextReadSet getOverriddenContextVariables(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

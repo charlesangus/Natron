@@ -26,11 +26,13 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <list>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -59,6 +61,7 @@
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderContext.h"
@@ -204,6 +207,15 @@ protected:
         return knob;
     }
 
+    // A second project view, so view 1 is one the project renders.
+    void addRightView()
+    {
+        std::vector<std::string> extraViews;
+        extraViews.push_back("Right");
+        getApp()->getProject()->createProjectViews(extraViews);
+        ASSERT_EQ(2u, getApp()->getProject()->getProjectViewNames().size());
+    }
+
     StatusEnum runRequestPass(const NodePtr& root,
                               FrameRequestMap* request)
     {
@@ -230,15 +242,17 @@ protected:
         return stat;
     }
 
-    // Renders root's RGBA at time through the given scheduler and returns its first pixel's red, or -1.
+    // Renders root's RGBA at time and view through the given scheduler and returns its first
+    // pixel's red, or -1.
     float renderFirstPixel(const NodePtr& root,
                            RenderSchedulerModeEnum mode,
-                           double time = 1.)
+                           double time = 1.,
+                           ViewIdx view = ViewIdx(0))
     {
         std::vector<RenderedPlane> planes;
         std::string error;
         const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
-        if (!renderNodePlanesInMode(root, time, ViewIdx(0), 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(), mode, true /*byPassCache*/, &planes, &error)) {
+        if (!renderNodePlanesInMode(root, time, view, 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(), mode, true /*byPassCache*/, &planes, &error)) {
             ADD_FAILURE() << error;
 
             return -1.f;
@@ -486,6 +500,144 @@ TEST_F(RFVRender, SetVariableExpressionReadsTheDownstreamValue)
 
     const RenderMismatch m = renderBothWaysDirect(outer, 1., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kCountingTestSize, kCountingTestSize), std::vector<int> { 1, 4 });
     EXPECT_FALSE(m.any) << describe(m);
+}
+
+// A right-view render reads a project variable at the right view: the variable's expression is
+// evaluated at the view the render started at, not at the left one.
+TEST_F(RFVRender, RightViewRenderReadsTheProjectVariableAtThatView)
+{
+    addRightView();
+    addProjectDouble("base", 1.);
+    KnobDoublePtr perView = addProjectDouble("perView", 0.);
+    // Reading base through rfv also keeps the variable's results by view, not by time alone.
+    ASSERT_NO_THROW(perView->setExpression(0, "(rfv.base or 0) + 10 * view", false, true));
+    NodePtr reader = createReader("rfv.perView or 0");
+    ASSERT_TRUE(bool(reader));
+
+    EXPECT_EQ(11.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 1., ViewIdx(1)));
+    EXPECT_EQ(11.f, renderFirstPixel(reader, eRenderSchedulerModeLegacy, 1., ViewIdx(1)));
+    EXPECT_EQ(1.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 1., ViewIdx(0)));
+    EXPECT_EQ(1.f, renderFirstPixel(reader, eRenderSchedulerModeLegacy, 1., ViewIdx(0)));
+}
+
+// A project variable whose expression reads an animated project variable gives a render at frame
+// 10 the animated value at frame 10, while the timeline is on frame 1.
+TEST_F(RFVRender, NestedProjectVariableReadsAtTheRenderedFrame)
+{
+    KnobDoublePtr animated = addProjectDouble("animated", 0.);
+    animated->setValueAtTime(1., 10., ViewSpec::all(), 0);
+    animated->setValueAtTime(10., 100., ViewSpec::all(), 0);
+    KnobDoublePtr derived = addProjectDouble("derived", 0.);
+    ASSERT_NO_THROW(derived->setExpression(0, "rfv.animated or 0", false, true));
+    NodePtr reader = createReader("rfv.derived or 0");
+    ASSERT_TRUE(bool(reader));
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+
+    EXPECT_EQ(100.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 10.));
+    EXPECT_EQ(100.f, renderFirstPixel(reader, eRenderSchedulerModeLegacy, 10.));
+    EXPECT_EQ(10.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 1.));
+    EXPECT_EQ(10.f, renderFirstPixel(reader, eRenderSchedulerModeLegacy, 1.));
+}
+
+// A reader of the project variable derived, whose expression reads rfv.source, under two Sets
+// setting source to 1 and 2: the reader reads source through derived, so each Set's context keeps
+// source, the reader renders once per Set, and each branch sees its own value.
+TEST_F(RFVRender, DiamondThroughADerivedProjectVariable)
+{
+    addProjectDouble("source", 0.);
+    KnobDoublePtr derived = addProjectDouble("derived", 0.);
+    ASSERT_NO_THROW(derived->setExpression(0, "rfv.source or 0", false, true));
+    NodePtr reader = createReader("rfv.derived or 0");
+    NodePtr set1 = createSet("source", 1.);
+    NodePtr set2 = createSet("source", 2.);
+    NodePtr merge = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
+    ASSERT_TRUE(reader && set1 && set2 && merge);
+    connectNodes(reader, set1, 0, true);
+    connectNodes(reader, set2, 0, true);
+    connectNodes(set1, merge, 0, true);
+    connectNodes(set2, merge, 1, true);
+
+    {
+        FrameRequestMap request;
+        ASSERT_NE(eStatusFailed, runRequestPass(merge, &request));
+        const std::vector<NodeFrameRequestPtr> entries = entriesOf(request, reader);
+        ASSERT_EQ(2u, entries.size());
+        std::vector<double> values;
+        for (const NodeFrameRequestPtr& entry : entries) {
+            values.push_back(doubleIn(entry->context, "source"));
+        }
+        std::sort(values.begin(), values.end());
+        EXPECT_EQ((std::vector<double> { 1., 2. }), values);
+        EXPECT_NE(entries[0]->contextKey, entries[1]->contextKey);
+    }
+
+    CountingTestRegistry::reset();
+    // The merge holds its value 1 plus the reader under source = 1 and under source = 2.
+    EXPECT_EQ(1.f + 1.f + 2.f, renderFirstPixel(merge, eRenderSchedulerModeTaskGraph));
+    EXPECT_EQ(2, CountingTestRegistry::renders(reader));
+    EXPECT_EQ(1.f + 1.f + 2.f, renderFirstPixel(merge, eRenderSchedulerModeLegacy));
+
+    const RenderMismatch m = renderBothWaysDirect(merge, 1., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kCountingTestSize, kCountingTestSize), std::vector<int> { 1, 4 });
+    EXPECT_FALSE(m.any) << describe(m);
+}
+
+// Threads asking a Set what it overrides and for the context it requests its input under, as a
+// render does, while the main thread adds, moves and deletes other variables of the Set: every
+// answer holds the variable that stays, with its value.
+TEST_F(RFVRender, SetDeclarationEditsDuringRenderReads)
+{
+    const int kReaders = 4;
+    const int kEdits = 200;
+    NodePtr set = createSet("stable", 5.);
+    ASSERT_TRUE(bool(set));
+    const EffectInstancePtr effect = set->getEffectInstance();
+    const KnobGroupPtr variables = variablesGroupOf(set);
+    ASSERT_TRUE(effect && variables);
+
+    std::atomic<bool> stop(false);
+    std::atomic<int> torn(0);
+    std::atomic<int> reads(0);
+    std::vector<std::thread> readers;
+    for (int t = 0; t < kReaders; ++t) {
+        readers.emplace_back([&]() {
+            while (!stop.load()) {
+                if (!effect->getOverriddenContextVariables(0).contains(RenderContextName::plain("stable"))) {
+                    ++torn;
+                }
+                std::vector<RenderContextPtr> contexts;
+                if (!effect->getInputContexts(0, 1., ViewIdx(0), RenderContextPtr(), &contexts) || (contexts.size() != 1) || (doubleIn(contexts.front(), "stable") != 5.)) {
+                    ++torn;
+                }
+                ++reads;
+            }
+        });
+    }
+    // The edits must overlap reads, so the readers get going first.
+    while (reads.load() < kReaders) {
+        std::this_thread::yield();
+    }
+    int refused = 0;
+    for (int i = 0; i < kEdits; ++i) {
+        const std::string name = "edited" + std::to_string(i % 4);
+        KnobDoublePtr knob = effect->createDoubleKnob(name, name, 1);
+        if (variables->addKnob(knob)) {
+            effect->recreateUserKnobs(false);
+            variables->moveOneStepUp(knob.get());
+        } else {
+            ++refused;
+        }
+        effect->deleteKnob(knob.get(), true);
+        effect->recreateUserKnobs(false);
+    }
+    stop.store(true);
+    for (std::thread& reader : readers) {
+        reader.join();
+    }
+    EXPECT_EQ(0, refused);
+    EXPECT_EQ(0, torn.load());
+    const RFVDeclarationsConstPtr declared = RFV::getDeclarationSnapshot(effect.get());
+    ASSERT_EQ(1u, declared->size());
+    EXPECT_EQ("stable", declared->front().name);
 }
 
 // A variable no Set and not the project sets reads as None in a render.

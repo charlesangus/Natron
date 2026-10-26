@@ -238,9 +238,11 @@ ReverseFlowVariableSet::getOverriddenContextVariables(int inputNb) const
     if (inputNb != 0) {
         return overridden;
     }
-    const std::vector<RFV::VariableDeclaration> declared = RFV::getDeclaredVariables(this);
-    for (std::size_t i = 0; i < declared.size(); ++i) {
-        overridden.add(RenderContextName::plain(declared[i].name));
+    // Asked on render threads while the main thread may edit the variables: the snapshot, not
+    // the groups' children.
+    const RFVDeclarationsConstPtr declared = RFV::getDeclarationSnapshot(this);
+    for (const RFV::VariableDeclaration& declaration : *declared) {
+        overridden.add(RenderContextName::plain(declaration.name));
     }
 
     return overridden;

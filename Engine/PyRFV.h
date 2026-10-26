@@ -31,6 +31,7 @@
 #include <string>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -40,8 +41,10 @@ NATRON_NAMESPACE_ENTER
  * is read when the expression asks for it, on the thread evaluating the expression: the variable
  * of the render context the expression's node acts or renders under (see
  * EffectInstance::getCurrentRenderContext()) when that context sets it, otherwise the project's
- * variable, at the time the render started, or outside a render at the timeline's frame. Values
- * are Python bools, ints, floats, strings, or lists of them for a variable with several dimensions.
+ * variable, at the time and view the render started at, or outside a render at the timeline's
+ * frame and the view the expression is evaluated at. The project variable's own expression reads
+ * rfv for that same render: at its time and view, under its context. Values are Python bools,
+ * ints, floats, strings, or lists of them for a variable with several dimensions.
  **/
 namespace PyRFV {
 
@@ -64,13 +67,22 @@ void ensureDeclared();
 PyObject* getVariable(const std::string& name);
 
 /**
- * @brief Marks the knob whose expression the calling thread evaluates, for as long as the scope
- * lives, so that rfv reads the context of the knob's node and the variables of its project.
- * Scopes nest, the innermost winning.
+ * @brief The context rfv reads under, on the calling thread, for an expression whose knob is not
+ * on a node, such as a project variable's: that of the open ActionContextScope, else that of the
+ * render a project variable is being read for through rfv, null outside both. A project-held
+ * expression keeps its results under this context (see KnobHelper::getExpressionContextKey()).
+ **/
+RenderContextPtr getProjectExpressionContext();
+
+/**
+ * @brief Marks the knob whose expression the calling thread evaluates, and the view it is
+ * evaluated at, for as long as the scope lives, so that rfv reads the context of the knob's node
+ * and the variables of its project. Scopes nest, the innermost winning.
  **/
 class ExpressionScope {
 public:
-    explicit ExpressionScope(const KnobI* knob);
+    explicit ExpressionScope(const KnobI* knob,
+                             ViewIdx view = ViewIdx(0));
     ~ExpressionScope();
 
     ExpressionScope(const ExpressionScope&) = delete;

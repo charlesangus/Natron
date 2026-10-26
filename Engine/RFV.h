@@ -104,6 +104,22 @@ bool isDeclaredOnApp(const KnobI& knob);
 std::vector<VariableDeclaration> getDeclaredVariables(const KnobHolder* holder, std::vector<std::string>* errors = nullptr);
 
 /**
+ * @brief Takes getDeclaredVariables() of the holder as its declaration snapshot (see
+ * KnobHolder::getRFVDeclarationSnapshot()), and invalidates the render-context reads when the
+ * declarations changed. Called on the thread that edits the holder's RFV groups or renames a
+ * variable, after the edit: a change of an RFV group's children, a rename of one of them,
+ * KnobGroup::setAsRFVGroup() and KnobHolder::recreateUserKnobs() call it.
+ **/
+void refreshDeclarationSnapshot(KnobHolder* holder);
+
+/**
+ * @brief The holder's declarations as refreshDeclarationSnapshot() last took them, empty before
+ * it first ran. Unlike getDeclaredVariables(), safe on a render thread while the main thread
+ * edits the holder's variables. MT-safe.
+ **/
+RFVDeclarationsConstPtr getDeclarationSnapshot(const KnobHolder* holder);
+
+/**
  * @brief Whether the knob is a variable of a node: a direct child of an RFV group of an effect,
  * such as a ReverseFlowVariableSet node, rather than of the project's, and not a plug-in control.
  **/
@@ -180,7 +196,8 @@ bool canPromoteToProject(const KnobIPtr& knob, std::string* reason = nullptr);
 KnobIPtr promoteToProject(const KnobIPtr& knob, std::string* error = nullptr);
 
 /**
- * @brief The variable the holder declares under name (see getDeclaredVariables()), or null.
+ * @brief The variable the holder declares under name in its declaration snapshot (see
+ * getDeclarationSnapshot()), or null. MT-safe.
  **/
 KnobIPtr findDeclaredVariable(const KnobHolder* holder, const std::string& name);
 
@@ -194,8 +211,9 @@ KnobIPtr findDeclaredVariable(const KnobHolder* holder, const std::string& name)
 bool getVariableValue(const KnobIPtr& knob, double time, ViewIdx view, RenderContextValue* value);
 
 /**
- * @brief base, or the empty context when null, with every variable the holder declares set over
- * it to its value at time and view (see getVariableValue()). The values are evaluated on the
+ * @brief base, or the empty context when null, with every variable of the holder's declaration
+ * snapshot (see getDeclarationSnapshot()) set over it to its value at time and view (see
+ * getVariableValue()). The values are evaluated on the
  * calling thread, so an expression of a variable reading rfv sees the context the caller acts
  * under.
  **/

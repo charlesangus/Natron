@@ -3759,7 +3759,7 @@ KnobHelper::executeExpression(double time,
     ss << expr << '(' << time << ", " <<  view << ")\n";
 
     const ExpressionTimeScope timeScope(time);
-    PyRFV::ExpressionScope rfvScope(this);
+    PyRFV::ExpressionScope rfvScope(this, view);
 
     return executeExpression(ss.str(), ret, error);
 }
@@ -3848,10 +3848,18 @@ void
 KnobHelper::setName(const std::string & name,
                     bool throwExceptions)
 {
-    // Node hashes cover knob names, so every way out of a rename must move the holder's generation.
+    // Node hashes cover knob names, so every way out of a rename must move the holder's
+    // generation; a variable is declared under its name, so it must retake the declarations too.
     struct InvalidateOnExit {
         KnobHelper* knob;
-        ~InvalidateOnExit() { knob->invalidateContentHash(); }
+        ~InvalidateOnExit()
+        {
+            knob->invalidateContentHash();
+            KnobGroup* parent = dynamic_cast<KnobGroup*>(knob->getParentKnob().get());
+            if (parent && parent->isRFVGroup() && knob->getHolder()) {
+                RFV::refreshDeclarationSnapshot(knob->getHolder());
+            }
+        }
     } invalidateOnExit = { this };
 
     _imp->originalName = name;
@@ -5868,22 +5876,77 @@ KnobHelper::invalidateContentHash()
 
 namespace {
 
-// The reads of an expression scan, fixed once made: a change of the reads replaces the source.
+/**
+ * @brief Adds to reads, transitively, what the expressions of the project variables it names read
+ * through rfv: such a variable is the base its readers see, so they read what its expression reads.
+ * Each name is expanded once, which also ends a cycle of variables reading each other.
+ **/
+void
+appendProjectVariableReads(const Project& project,
+                           RenderContextReadSet* reads)
+{
+    if (reads->readsAll()) {
+        return;
+    }
+    std::set<std::string> expanded;
+    std::vector<std::string> pending;
+    for (const RenderContextName& name : reads->names()) {
+        if (name.ns.empty()) {
+            pending.push_back(name.name);
+        }
+    }
+    while (!pending.empty()) {
+        const std::string name = pending.back();
+        pending.pop_back();
+        if (!expanded.insert(name).second) {
+            continue;
+        }
+        const KnobIPtr variable = RFV::findDeclaredVariable(&project, name);
+        const KnobHelper* helper = dynamic_cast<const KnobHelper*>(variable.get());
+        if (!helper) {
+            continue;
+        }
+        const RenderContextReadSet variableReads = helper->getRFVReadSet();
+        if (variableReads.readsAll()) {
+            reads->setReadsAll();
+
+            return;
+        }
+        for (const RenderContextName& read : variableReads.names()) {
+            reads->add(read);
+            if (read.ns.empty()) {
+                pending.push_back(read.name);
+            }
+        }
+    }
+}
+
+// The reads of an expression scan, fixed once made, widened when asked by what the project
+// variables they name read in turn. A change of the scan replaces the source; a change of a
+// variable's expression or of the project's declarations invalidates the reads.
 class RFVExpressionReadSource
     : public ContextReadSource {
 public:
-    explicit RFVExpressionReadSource(const RenderContextReadSet& reads)
+    RFVExpressionReadSource(const RenderContextReadSet& reads,
+                            const ProjectWPtr& project)
         : _reads(reads)
+        , _project(project)
     {
     }
 
     virtual void appendContextReads(RenderContextReadSet* reads) const OVERRIDE FINAL
     {
-        reads->merge(_reads);
+        RenderContextReadSet own = _reads;
+        const ProjectPtr project = _project.lock();
+        if (project) {
+            appendProjectVariableReads(*project, &own);
+        }
+        reads->merge(own);
     }
 
 private:
     const RenderContextReadSet _reads;
+    const ProjectWPtr _project;
 };
 
 bool
@@ -6004,7 +6067,8 @@ KnobHelper::refreshRFVReads()
         _imp->rfvReads = reads;
         previous = _imp->rfvReadSource;
         if (!reads.empty()) {
-            source = std::make_shared<RFVExpressionReadSource>(reads);
+            const AppInstancePtr app = _imp->holder ? _imp->holder->getApp() : AppInstancePtr();
+            source = std::make_shared<RFVExpressionReadSource>(reads, app ? ProjectWPtr(app->getProject()) : ProjectWPtr());
         }
         _imp->rfvReadSource = source;
     }
@@ -6185,8 +6249,10 @@ KnobHelper::getExpressionContextKey(U64* key) const
     if (!ownSources && reads.empty()) {
         return false;
     }
+    // A knob not on a node, such as a project variable's, reads under the context rfv gives its
+    // expression: one result per context, rather than the first one's for all.
     const EffectInstance* effect = dynamic_cast<const EffectInstance*>(getHolder());
-    const RenderContextPtr context = effect ? effect->getCurrentRenderContext() : RenderContextPtr();
+    const RenderContextPtr context = effect ? effect->getCurrentRenderContext() : PyRFV::getProjectExpressionContext();
     if (context && !context->isEmpty()) {
         const RenderContextPtr kept = context->restrictTo(reads);
         *key = kept ? kept->hash() : 0;
@@ -6365,6 +6431,8 @@ struct KnobHolder::KnobHolderPrivate
     bool hasAnimation;
     DockablePanelI* settingsPanel;
     std::atomic<U64> knobsContentGeneration { 0 };
+    mutable QMutex rfvDeclarationsMutex; // protects rfvDeclarations
+    RFVDeclarationsConstPtr rfvDeclarations;
 
     KnobHolderPrivate(const AppInstancePtr& appInstance_)
         : app(appInstance_)
@@ -6574,6 +6642,27 @@ KnobHolder::bumpKnobsContentGeneration(const KnobI* knob)
     onKnobContentChanged(knob);
 }
 
+RFVDeclarationsConstPtr
+KnobHolder::getRFVDeclarationSnapshot() const
+{
+    QMutexLocker k(&_imp->rfvDeclarationsMutex);
+
+    return _imp->rfvDeclarations;
+}
+
+void
+KnobHolder::setRFVDeclarationSnapshot(const RFVDeclarationsConstPtr& declarations)
+{
+    // The previous snapshot is released outside the mutex: it may hold the last reference to a
+    // variable the holder no longer declares.
+    RFVDeclarationsConstPtr previous;
+    {
+        QMutexLocker k(&_imp->rfvDeclarationsMutex);
+        previous = _imp->rfvDeclarations;
+        _imp->rfvDeclarations = declarations;
+    }
+}
+
 void
 KnobHolder::setPanelPointer(DockablePanelI* gui)
 {
@@ -6593,6 +6682,8 @@ KnobHolder::recreateUserKnobs(bool keepCurPageIndex)
 {
     assert( QThread::currentThread() == qApp->thread() );
     onUserKnobsChanged();
+    // onUserKnobsChanged() may have moved, renamed or replaced variables.
+    RFV::refreshDeclarationSnapshot(this);
     if (_imp->settingsPanel) {
         _imp->settingsPanel->recreateUserKnobs(keepCurPageIndex);
         EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);

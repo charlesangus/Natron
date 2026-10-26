@@ -1898,8 +1898,10 @@ public:
      * read sources name and, transitively, what the knobs its expressions and links read name,
      * and the upstream read-sets (see Node::getUpstreamContextReadSet()) of the nodes whose
      * metadata those expressions read. The key is the hash of the context the holder is queried
-     * under (see EffectInstance::getCurrentRenderContext()) restricted to those reads, 0 for the
-     * empty one. Returns false for a knob reading none, whose results are kept by time whatever
+     * under (see EffectInstance::getCurrentRenderContext()), or for a knob not on a node, such as
+     * a project variable's, the context its expression reads rfv under (see
+     * PyRFV::getProjectExpressionContext()), restricted to those reads, 0 for the empty one.
+     * Returns false for a knob reading none, whose results are kept by time whatever
      * else its holder node reads.
      **/
     bool getExpressionContextKey(U64* key) const;
@@ -1915,7 +1917,9 @@ public:
     /**
      * @brief The union of getRFVExpressionReads() over the expressions of every dimension. The
      * knob registers it as one of its context read sources (see addContextReadSource()) while it
-     * is not empty, and recomputes it whenever an expression is set or cleared. MT-safe.
+     * is not empty, and recomputes it whenever an expression is set or cleared. That source also
+     * reads, transitively, what this set returns for each project variable it names, since such a
+     * variable's value is its expression's; this set itself holds the direct reads only. MT-safe.
      **/
     RenderContextReadSet getRFVReadSet() const;
 
@@ -3091,6 +3095,18 @@ public:
      * the knob list changed. Lets a holder-wide digest of its knobs be memoized. MT-safe.
      **/
     U64 getKnobsContentGeneration() const;
+
+    /**
+     * @brief The Reverse-Flow Variables the holder declares, as RFV::refreshDeclarationSnapshot()
+     * last took them; null before it first ran. Render threads read declarations here rather than
+     * walk the groups' children, which the main thread edits. MT-safe.
+     **/
+    RFVDeclarationsConstPtr getRFVDeclarationSnapshot() const;
+
+    /**
+     * @brief Replaces the snapshot getRFVDeclarationSnapshot() returns. MT-safe.
+     **/
+    void setRFVDeclarationSnapshot(const RFVDeclarationsConstPtr& declarations);
 
     /**
      * @brief Moves the generation and calls onKnobContentChanged() with the knob that changed,

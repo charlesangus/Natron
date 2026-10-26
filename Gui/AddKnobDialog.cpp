@@ -463,24 +463,15 @@ AddKnobDialog::AddKnobDialog(DockablePanel* panel,
     _imp->vLayout->addWidget(_imp->mainContainer);
 
     {
-        KnobIPtr isAlias;
         KnobIPtr listener;
         if (knob) {
-            KnobI::ListenerDimsMap listeners;
-            knob->getListeners(listeners);
-            if ( !listeners.empty() ) {
-                listener = listeners.begin()->first.lock();
-                if (listener) {
-                    isAlias = listener->getAliasMaster();
-                }
-                if (isAlias != knob) {
-                    listener.reset();
-                }
+            KnobsVec aliases = knob->getAliasesOfThis();
+            if (!aliases.empty()) {
+                listener = aliases.front();
             }
         }
         _imp->isKnobAlias = listener;
     }
-
 
     {
         QWidget* firstRowContainer = new QWidget(this);

@@ -200,6 +200,8 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
                     } else if (serializedKnob) {
                         projectKnobs[i]->clone(serializedKnob);
                     }
+                    // Its link groups are rebuilt with the nodes' once every node exists.
+                    projectKnobs[i]->storeLinkGroupsFromSerialization(*it);
                     break;
                 }
             }
@@ -250,8 +252,11 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
                 }
             }
         }
-
+        // The variables store their link groups first, so that the groups they share with node knobs
+        // are rebuilt together.
         restoreRFVVariableLinksAndExpressions(projectSerializedValues, allNodes);
+
+        KnobHelper::restoreLinkGroups(allNodes, false, _publicInterface->getKnobs());
 
         // An expression naming a node restored after its own knob was set aside as invalid; with
         // the whole tree restored, what is still invalid refers to something the file lacks.

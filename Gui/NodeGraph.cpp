@@ -225,10 +225,12 @@ NodeGraph::onSettingsSaved()
     for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
         (*it)->refreshCategoryColor();
         (*it)->refreshEdgesDataKindPen(true);
+        (*it)->refreshLinkLinesAppearance();
     }
     for (NodesGuiList::const_iterator it = _imp->_nodesTrash.begin(); it != _imp->_nodesTrash.end(); ++it) {
         (*it)->refreshCategoryColor();
         (*it)->refreshEdgesDataKindPen(true);
+        (*it)->refreshLinkLinesAppearance();
     }
     if (scene()) {
         scene()->update();

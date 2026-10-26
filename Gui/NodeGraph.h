@@ -172,7 +172,12 @@ public:
 
     void duplicateSelectedNodes(const QPointF& pos);
     bool pasteNodeClipBoards(const QPointF& pos);
-    void cloneSelectedNodes(const QPointF& pos);
+
+    /**
+     * @brief Pastes a copy of each selected node, centred on pos, and makes it a Linked Node of the node
+     * it was copied from: each of its knobs is linked two-way to the original's.
+     **/
+    void createLinkedNodes(const QPointF& pos);
 
     QPointF getRootPos() const;
 
@@ -228,8 +233,13 @@ public Q_SLOTS:
     void cutSelectedNodes();
     bool pasteNodeClipBoards();
     void duplicateSelectedNodes();
-    void cloneSelectedNodes();
-    void decloneSelectedNodes();
+    void createLinkedNodes();
+
+    /**
+     * @brief Unlinks every knob of the selected nodes, and of the nodes in selected backdrops, from its
+     * link groups that are not permanent.
+     **/
+    void unlinkSelectedNodes();
     /////////////////////////////////////////////
 
     void centerOnAllNodes();

@@ -1122,6 +1122,48 @@
                 return ret;
             </inject-code>
         </modify-function>
+        <modify-function signature="createLinkedNode()">
+            <inject-documentation format="target">
+                Creates a Linked Node of this node, as Create Linked Node in the node graph does: a copy whose parameters are linked two-way to the ones of this node, and for a group the nodes inside it to the ones of this group. Returns the new node. Raises ValueError for a viewer, a multi-instance node or a node standing in for a missing plug-in.
+            </inject-documentation>
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME();
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+                %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
+            </inject-code>
+        </modify-function>
+        <modify-function signature="unlinkAllParams()">
+            <inject-documentation format="target">
+                Unlinks every parameter of the node from the parameters it is linked to, except aliases, as Unlink Node in the node graph does. Each parameter keeps its value, animation and expression and can be linked back with Param.relink(). Returns False if no parameter was linked.
+            </inject-documentation>
+        </modify-function>
+        <modify-function signature="isLinkedNode()const">
+            <inject-documentation format="target">
+                Returns True if this node and another one are Linked Nodes of each other.
+            </inject-documentation>
+        </modify-function>
+        <modify-function signature="getLinkedNodes()const">
+            <inject-documentation format="target">
+                Returns the nodes this node is a Linked Node of.
+            </inject-documentation>
+            <inject-code class="target" position="beginning">
+                std::list&lt;Effect*&gt; effects = %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                PyObject* ret = PyList_New((int) effects.size());
+                int idx = 0;
+                for (std::list&lt;Effect*&gt;::iterator it = effects.begin(); it!=effects.end(); ++it,++idx) {
+                    PyObject* item = %CONVERTTOPYTHON[Effect*](*it);
+                    // Ownership transferences.
+                    Shiboken::Object::getOwnership(item);
+                    PyList_SET_ITEM(ret, idx, item);
+                }
+                return ret;
+            </inject-code>
+        </modify-function>
         <modify-function signature="destroy(bool)">
             <inject-code class="target" position="beginning">
                 %CPPSELF.%FUNCTION_NAME(%1);
@@ -1315,6 +1357,26 @@
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
+        </modify-function>
+        <modify-function signature="linkTo(Param*,int,int)">
+            <inject-documentation format="target">
+                Links this parameter two-way to other, as Paste Link does: an edit of either one reaches the other. This parameter takes other's value, animation and expression. With thisDimension -1 every dimension the two have in common is linked one-to-one, or every dimension of this parameter to otherDimension when that is not -1. Returns False if the types are not compatible or nothing was linked.
+            </inject-documentation>
+        </modify-function>
+        <modify-function signature="unlink()">
+            <inject-documentation format="target">
+                Unlinks the parameter from the parameters it is linked to. It keeps its current value, animation and expression, and relink() links it back. Raises ValueError if the parameter is an alias or has aliases (see setAsAlias()): those links cannot be broken. Returns False if the parameter was not linked.
+            </inject-documentation>
+        </modify-function>
+        <modify-function signature="relink()">
+            <inject-documentation format="target">
+                Links the parameter back to the parameters unlink() unlinked it from, discarding its own value, animation and expression for theirs. Returns False if there was nothing to link back to.
+            </inject-documentation>
+        </modify-function>
+        <modify-function signature="isLinked(int)const">
+            <inject-documentation format="target">
+                Returns whether the dimension is linked to another parameter, or with -1 whether any dimension is.
+            </inject-documentation>
         </modify-function>
     </object-type>
     <object-type name="AnimatedParam">

@@ -9,7 +9,7 @@ to world positions, a `ProjectTexture` node that projects any image
 through a camera into that UV space with occlusion, and an in-process
 `Ar`/`Hio` plugin so `USDMaterial` can bind a node's output as a live
 texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
-`USDMaterial`, the Viewer's 3D view, `USDWrite`).
+`USDMaterial`, the Viewer's 3D view, `USDWrite`). The live-texture half (resolver, Hio plugin, `USDMaterial` image inputs, viewer refresh, export) moved to M233 - Live Node Textures on 2026-10-26; this milestone keeps the UV bake, `ProjectTexture` and the paint preset, and builds on M233. Read `StageCache` below as M19's `SceneQueryPool`.
 
 ## Phase 53.1: CPU raster substrate
 
@@ -33,25 +33,25 @@ texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
   - verify: unit test — a constant red image projected onto a camera-facing UV quad yields an all-red, alpha-1 texture inside the coverage mask; a second quad in front of half of it leaves that half at alpha 0 with occlusion on and red with it off.
   - size: L
 
-- [ ] M53.P2.T2 — Live-texture registry and `Ar` resolver plugin
+- [ ] ~~M53.P2.T2 — Live-texture registry and `Ar` resolver plugin~~ — cancelled 2026-10-26: moved to M233 - Live Node Textures.
   - files: `Engine/Nodes/Scene/LiveTextureRegistry.h`/`.cpp`, `Engine/Nodes/Scene/LiveTextureResolver.h`/`.cpp` (`ArResolver` + `ArAsset`), `Engine/Nodes/Scene/plugInfo.json` + CMake to install it where `PlugRegistry` finds it, `Tests/LiveTexture_Test.cpp`
   - approach: URI scheme `natron://<nodeScriptName>/<plane>?v=<imageHash>`. The registry maps node script name → weak `NodePtr` plus the time the image was registered for (set by `USDMaterial` at layer-authoring time). The resolver answers `Resolve()` with the URI itself when the node exists and `OpenAsset()` with an in-memory `ArAsset` wrapping the node's rendered RGBA float image for that time. A URI whose node is gone resolves to nothing, so Hydra shows the missing-texture fallback rather than crashing. Registered via `plugInfo.json`; USD's plugin path must include the Natron binary's plugin dir in the installed and AppImage layouts.
   - verify: unit test — register a `Constant` node, `ArGetResolver().OpenAsset()` on its URI returns pixel bytes of the expected size; unregistering makes the resolve fail cleanly. Packaging (M15) still builds with the plugin dir.
   - size: L
 
-- [ ] M53.P2.T3 — `Hio` image plugin for live-texture assets
+- [ ] ~~M53.P2.T3 — `Hio` image plugin for live-texture assets~~ — cancelled 2026-10-26: moved to M233 - Live Node Textures.
   - files: `Engine/Nodes/Scene/LiveTextureImage.h`/`.cpp` (`HioImage` subclass), `Engine/Nodes/Scene/plugInfo.json`, `Tests/LiveTexture_Test.cpp`
   - approach: an `HioImage` implementation for the `natron` scheme that reads the `ArAsset` from T2 as RGBA float with the correct size and orientation (Natron images are bottom-up; Hio expects top-down — flip once). Registered in the same `plugInfo.json`. This is what lets Storm's texture loader consume a node output without touching disk.
   - verify: unit test — `HioImage::OpenForReading()` on a registered `Constant` URI reads back matching dimensions and the constant's colour at the corners.
   - size: M
 
-- [ ] M53.P2.T4 — `USDMaterial` texture inputs bound as live textures
+- [ ] ~~M53.P2.T4 — `USDMaterial` texture inputs bound as live textures~~ — cancelled 2026-10-26: moved to M233 - Live Node Textures.
   - files: `Engine/Nodes/Scene/USDMaterial.cpp`, `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/` (USDMaterial and USDWrite tests)
   - approach: add optional **Image** inputs to `USDMaterial` for diffuseColor, roughness, metallic, normal and emissive alongside the existing file-path knobs (a connected input wins). For a connected input, author a `UsdUVTexture` shader whose `file` is the `natron://` URI with `?v=<input image hash>`, register the node with `LiveTextureRegistry`, and fold the input image hash into the node's layer hash so a changed texture yields a new layer, a new stage and a new texture path Storm reloads. `USDWrite` gains "export live textures": on export, each `natron://` reference is rendered to `<usd basename>_textures/<node>_<plane>.exr` next to the output and the exported layer's path is rewritten to it.
   - verify: unit test — a `Constant` → `USDMaterial` diffuse input composes a `UsdUVTexture` with a `natron://` asset path; `USDWrite` produces the `.exr` and a layer referencing the relative file path that `USDRead` composes cleanly.
   - size: M
 
-- [ ] M53.P2.T5 — The Viewer's 3D view refreshes when a live texture's source changes
+- [ ] ~~M53.P2.T5 — The Viewer's 3D view refreshes when a live texture's source changes~~ — cancelled 2026-10-26: moved to M233 - Live Node Textures.
   - files: `Gui/SceneViewport.cpp`, `Engine/Nodes/Scene/USDMaterial.cpp`
   - approach: the viewport already re-composes when the viewed node's stack hash changes (M19.P1.T3); confirm the `?v=<hash>` path change propagates through Storm's texture registry as a reload, and add an explicit `HdChangeTracker` material-dirty mark if a stale texture persists. Keep it simple: whole-texture reload per change is acceptable for v1 (design doc, Risks).
   - verify: manual — paint a stroke upstream of a live-textured material and see it appear on the model in the Viewer's 3D view without touching the viewport.
@@ -69,10 +69,11 @@ texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
   - files: `Tests/ProjectTexture_Test.cpp` (extend), reference `.usda` with a UV-mapped quad and an occluder
   - approach: headless graph — `USDRead` + `USDCamera` + `Constant` → `ProjectTexture` → assert coverage and occlusion; `ProjectTexture` → `USDMaterial`(live) → `USDWrite`(export textures) → assert the exported `.exr` matches the `ProjectTexture` output. No GL involved (`SceneRaster` is CPU).
   - verify: test green in `build-and-test`.
-  - size: S
+  - size: M
 
 **Verification gate:** CI green including M53.P3.T2; on real hardware the `PaintThroughCamera` round trip works end to end with occlusion; `USDWrite` exports a portable USD + textures that `usdview` displays with the painted texture; packaging still builds with the `Ar`/`Hio` plugin discoverable; pre-existing ctest suite green.
 
 ## Decisions
 
 - 2026-10-25 — **Long-lived USD scene (bosley-native-nodes, from the review in `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`):** Drop "the viewport re-composes on stack hash": the viewer keeps one long-lived stage, and a `?v=` texture path change is a plain property/asset-path invalidation. Check that the `natron://` resolver never renders synchronously from inside Hydra on the GUI thread (deadlock risk).
+- 2026-10-26 — **Live textures split out (user, M19/M20 UAT grill):** M53.P2.T2–T5 move to M233 - Live Node Textures, which ships first in the 3D MVP; `ProjectTexture` and the paint preset bind their output through M233's `USDMaterial` image inputs. Live camera projection is M234 - Camera Projection Nodes; this milestone's bake remains the occlusion-aware and export path.

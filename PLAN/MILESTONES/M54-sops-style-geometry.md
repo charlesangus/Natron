@@ -20,7 +20,7 @@ choice arises.
   - files: `Global/Enums.h`, `Gui/Edge.cpp`, `Gui/NodeGui.cpp`, `Tests/DataKind_Test.cpp`, `Engine/Nodes/README.md`
   - approach: add the fifth `DataKindEnum` value; edge styling and node silhouette per the 2026-09-05 design doc's "Communicating kind" rules (distinct from image/deep/scene); connection typing needs no change — it is kind-agnostic. Document the kind in the README's "Data kinds" section with the same "declaration only until 54.1 lands" caveat deep carried.
   - verify: `DataKind_Test` extended — a geometry source into a scene input is refused, geometry → `Dot` → geometry consumer resolves; Xvfb GUI screenshot shows the new edge style.
-  - size: S
+  - size: M
 
 - [ ] M54.P1.T2 — `GeoDetail` value type
   - files: `Engine/GeoDetail.h`/`.cpp` (pimpl, no pxr header), `Engine/Nodes/Geometry/GeoDetailImpl.h`/`.cpp`, `Tests/GeoDetail_Test.cpp`, `Tests/CMakeLists.txt`
@@ -84,13 +84,13 @@ choice arises.
   - files: `Engine/Nodes/Geometry/GeoTransform.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoTransform_Test.cpp`
   - approach: TRS + pivot knobs (same layout as `USDTransform`), optional group restriction; transforms points and normals (COW copy of those two arrays only, everything else stays shared with the input).
   - verify: unit test — transform moves points; `st` storage is identical to the input's (`VtArray::IsIdentical`).
-  - size: S
+  - size: M
 
 - [ ] M54.P3.T4 — `GeoMerge`
   - files: `Engine/Nodes/Geometry/GeoMerge.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoMerge_Test.cpp`
   - approach: multi-input concatenation of prims in input order; prim-path collisions get a numeric suffix; groups keep their names per prim.
   - verify: unit test — merge of two details has both prims with unique paths and each input's groups intact.
-  - size: S
+  - size: M
 
 - [ ] M54.P3.T5 — `GeoGroup`
   - files: `Engine/Nodes/Geometry/GeoGroup.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoGroup_Test.cpp`
@@ -108,7 +108,7 @@ choice arises.
   - files: `Engine/Nodes/Geometry/GeoNormals.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoNormals_Test.cpp`
   - approach: computes area-weighted vertex normals as a `vertex` `normals` attribute, optionally face normals as a `uniform` attribute; exposes the computation as a static helper other nodes (`GeoDisplace`, `GeoEdit`) call after moving points.
   - verify: unit test — normals of a cube are unit length and outward; a flat grid's are all +Z.
-  - size: S
+  - size: M
 
 - [ ] M54.P3.T8 — `GeoDisplace`
   - files: `Engine/Nodes/Geometry/GeoDisplace.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoDisplace_Test.cpp`
@@ -126,7 +126,7 @@ choice arises.
   - files: `Engine/Nodes/Geometry/GeoUVProject.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoUVProject_Test.cpp`
   - approach: writes `st` from a planar (axis + TRS) or camera projection (inputs: optional Scene for the camera; camera path knob), `faceVarying` interpolation. Pairs with M53's `ProjectTexture` for geometry with no UVs.
   - verify: unit test — planar projection of a grid yields `st` equal to its normalized XY; camera projection of a camera-facing quad yields 0–1.
-  - size: S
+  - size: M
 
 - [ ] M54.P3.T11 — `GeoWrangle`: Python over the detail's arrays
   - files: `Engine/Nodes/Geometry/GeoWrangle.h`/`.cpp`, `Engine/Nodes/Geometry/GeoPyBuffer.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoWrangle_Test.cpp`
@@ -154,10 +154,11 @@ choice arises.
   - files: `Tests/GeoPipeline_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: headless graph — `GeoPrimitive`(grid) → `GeoTransform` → `GeoGroup`(bbox) → `GeoDelete` → `GeoDisplace`(constant) → `GeoNormals` → `GeoEdit`(one point) → `GeoToUSD` → `USDMerge`(with `USDRead`) → `USDWrite`; assert the exported mesh's point count, one edited point's position, and the `primvars:normals`. Plus `USDToGeo` of the same export equals the pre-bridge detail.
   - verify: test green in `build-and-test`.
-  - size: S
+  - size: M
 
 **Verification gate:** CI green including M54.P5.T1; on real hardware a geometry chain displays in the Viewer's 3D view, point picking and `GeoEdit` drag work with undo, and the result renders through `GeoToUSD` → `USDRender` to an image; `GeoWrangle` runs a script that edits points; geometry cache respects its own budget; pre-existing ctest suite green; `Engine/GeoDetail.h` and `Engine/` core stay pxr-free.
 
 ## Decisions
 
 - 2026-10-25 — **Long-lived USD scene (bosley-native-nodes, from the review in `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`):** The scratch stage "keyed by detail hash" would rebuild per frame: use a viewer-private geometry layer edited in place instead, so value-only changes become dirty points. GeoToUSD layer keys follow M19's per-node read keys. Geometry keys on time only when something upstream varies with time (user).
+- 2026-10-26 — **USD primitives come first (user, M19/M20 UAT grill):** card, sphere, cube and cylinder ship as USD-authoring source nodes in M227 - USD Primitive Nodes; `GeoPrimitive` (P3.T1) stays the native-geometry generator and should share M227's `PrimitiveMeshes` builders rather than duplicate them. Read `USDTransform` as `USDEditTransform` (M226 - Scene Hierarchy From Topology).

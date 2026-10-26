@@ -1,5 +1,9 @@
 ## Pending
 
+### 2026-10-26T19:00:00Z — change-request
+- refs: M20
+- From the M19/M20 UAT grill (user chose to fix these before M20 - 3D Node Vocabulary's gate). Add two fix tasks to M20 - 3D Node Vocabulary. (1) **File pickers show no files with the `*` filter.** This is an M16 regression that hits every file knob not marked as an input image: USDRead's File, USDMaterial's texture knobs, USDWrite's save dialog. `Gui/KnobGuiFile.cpp:157-161` passes `{"*"}`. `SequenceFileDialog::setDefaultFilter` (`Gui/SequenceFileDialog.cpp:1942-1949`) turns that into a bare `*`. `FileSystemModel::setRegexpFilters` (`Engine/FileSystemModel.cpp:1043`) skips the `*` token, so `isAcceptedByRegexps` (`:1079-1092`) rejects every file. Fix: an empty regexp list with `*` means accept all. Also give USDRead's knob the USD/Alembic extensions and the texture knobs image extensions. Verify with a gtest on FileSystemModel and an Xvfb check that the USDRead dialog lists `.usda` files. (2) **Right-click leaves a stuck dolly.** `SceneViewport::mousePressEvent` (`Gui/SceneViewport.cpp:1517-1533`) stores `_imp->button` for every press. The context menu then grabs the release, so `mouseReleaseEvent` never resets it, and later hover moves dolly (`:1564-1565`). Fix: set the button only on accepted presses, clear it in `contextMenuEvent`, and check `e->buttons()` in move. Verify with an Xvfb script: right-click, Esc, then mouse moves leave the camera unchanged. (Paths from the m20 worktree.)
+
 ### 2026-10-26T17:00:00Z — change-request
 - refs: none
 - From bosley-native-nodes (PR CI). `Comps/CacheEquivalenceBenchCompTest` runs 372–434 s inside the debug ctest legs against a 450 s timeout (M177's PR CI: 386 s and 434 s; M92's legacy leg timed out at 450 s, then passed alone in 190 s). It flakes under load on every branch. Shrink the comp or its frame count so it runs well under the timeout, keeping what it proves.

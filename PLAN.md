@@ -149,9 +149,19 @@ future core work has solid ground to build on.
 | M68 | Headless GL EGL | todo |  |  | E2 | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
 | M19 | USD/Hydra Foundation | doing | M17, M161, M107 | bosley-native-nodes | E9 | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
 | M20 | 3D Node Vocabulary | doing | M19 | bosley-native-nodes | E9 | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
-| M52 | USD Layer-Stack Completion | todo |  |  | E9 | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
-| M53 | Projected Texture Painting | todo |  |  | E9 | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
-| M54 | SOPs-Style Geometry | todo |  |  | E9 | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |
+| M226 | Scene Hierarchy From Topology | todo | M19, M20 |  | E9 | [M226-scene-hierarchy-from-topology.md](PLAN/MILESTONES/M226-scene-hierarchy-from-topology.md) |
+| M227 | USD Primitive Nodes | todo | M226 |  | E9 | [M227-usd-primitive-nodes.md](PLAN/MILESTONES/M227-usd-primitive-nodes.md) |
+| M228 | 3D Viewer Navigation | todo | M19, M20, M226 |  | E9 | [M228-3d-viewer-navigation.md](PLAN/MILESTONES/M228-3d-viewer-navigation.md) |
+| M229 | 3D Viewer Guides And Display | todo | M228 |  | E9 | [M229-3d-viewer-guides-and-display.md](PLAN/MILESTONES/M229-3d-viewer-guides-and-display.md) |
+| M230 | 3D Transform Widgets | todo | M226, M229 |  | E9 | [M230-3d-transform-widgets.md](PLAN/MILESTONES/M230-3d-transform-widgets.md) |
+| M231 | Scene Graph Panel | todo | M229 |  | E9 | [M231-scene-graph-panel.md](PLAN/MILESTONES/M231-scene-graph-panel.md) |
+| M232 | Scene Selection To Nodes | todo | M226, M231 |  | E9 | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
+| M233 | Live Node Textures | todo | M19, M20 |  | E9 | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
+| M234 | Camera Projection Nodes | todo | M227, M233 |  | E9 | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
+| M235 | USDCamera From File | todo | M226 |  | E9 | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
+| M52 | USD Layer-Stack Completion | todo | M226 |  | E9 | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
+| M53 | Projected Texture Painting | todo | M52, M233 |  | E9 | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
+| M54 | SOPs-Style Geometry | todo | M52, M53, M227 |  | E9 | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |
 | M21 | Deep Tier-2 And Bridges | todo |  |  | E8 | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  |  | E8 | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  |  | E8 | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |

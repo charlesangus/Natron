@@ -8,7 +8,7 @@ set; this milestone adds the three pieces that make the rest of USD's
 surface reachable without a node per attribute: `SdfPathExpression` prim
 selection shared by every pattern knob, authored-only knob semantics, and
 a schema-driven `USDEditPrim`. Then the small set of composition nodes
-that are one Sdf call each. Requires M20's gate. All nodes are
+that are one Sdf call each. Requires M20's gate and M226 - Scene Hierarchy From Topology (node renames, re-parenting); part of the 3D MVP (user, 2026-10-26). All nodes are
 `NativeEffectBase` subclasses in `Engine/Nodes/Scene/`, one anonymous
 layer each via `SceneOps`, memoized per M19.P1.T3, registered in
 `AppManager::loadBuiltinNodePlugins()` under `PLUGIN_GROUP_3D`.
@@ -21,11 +21,11 @@ layer each via `SceneOps`, memoized per M19.P1.T3, registered in
   - verify: unit tests against the M19.P2.T4 reference `.usda` — absolute path, wildcard, descendant and union expressions each return the expected prim set; an invalid expression reports an error string.
   - size: M
 
-- [ ] M52.P1.T2 — Migrate M20's pattern knobs onto `PrimSelector`
-  - files: `Engine/Nodes/Scene/USDTransform.cpp`, `Engine/Nodes/Scene/USDPrune.cpp`, `Engine/Nodes/Scene/USDMaterial.cpp`, `Tests/` (the M20.P3.T3 scene vocabulary test)
-  - approach: replace each node's "path or wildcard" knob with `PrimSelector`; knob script-name unchanged so M20-era projects load. Behaviour for the old plain-path and `*` forms must be identical (they are valid `SdfPathExpression`s).
-  - verify: M20.P3.T3 integration test still green unchanged; a project saved with M20's USDTransform loads and composes the same override.
-  - size: S
+- [ ] M52.P1.T2 — Migrate the scene nodes' pattern knobs onto `PrimSelector`
+  - files: `Engine/Nodes/Scene/USDEditTransform.cpp`, `Engine/Nodes/Scene/USDPrune.cpp`, `Engine/Nodes/Scene/USDMaterial.cpp`, `Engine/Nodes/Scene/USDProjectUV.cpp` and `USDProject3D.cpp` if M234 - Camera Projection Nodes has landed, `Tests/Scene/SceneIntegration_Test.cpp`
+  - approach: replace each node's "path or wildcard" knob with `PrimSelector`, keeping the knob's script name and the prim-path hint that M231 - Scene Graph Panel's drag and M232 - Scene Selection To Nodes' picker use. Today's plain-path, `*` and space-separated forms are valid `SdfPathExpression`s and must behave identically. No compatibility with older projects (fork rule).
+  - verify: the scene integration test still passes unchanged; a space-separated two-path pattern written by the picker selects both prims.
+  - size: M
 
 - [ ] M52.P1.T3 — `AuthoredKnobSet`: only knobs the user touched write opinions
   - files: `Engine/Nodes/Scene/AuthoredKnobSet.h`/`.cpp`, `Tests/AuthoredKnobSet_Test.cpp`, `Tests/CMakeLists.txt`
@@ -47,11 +47,13 @@ layer each via `SceneOps`, memoized per M19.P1.T3, registered in
   - verify: unit test — over the reference camera prim, editing only focalLength yields an exported layer whose only opinion under that prim is `focalLength`; switching schema to `CollectionAPI` and setting one field authors the apiSchemas entry plus that field. Manual: property panel with `UsdGeomMesh` selected stays responsive.
   - size: L
 
-- [ ] M52.P2.T3 — `USDPrim` gains a schema type
-  - files: `Engine/Nodes/Scene/USDPrim.cpp`, `Tests/` (M20's USDPrim test)
-  - approach: replace M20's "empty xform / simple prim" choice with the `SchemaKnobMapper` typed-schema list; the created prim gets that type, and its attributes are exposed through an `AuthoredKnobSet` exactly as in `USDEditPrim` (share the page-building code — factor it into `SchemaKnobMapper` or a small `SchemaKnobPage` helper if T2 didn't already).
-  - verify: unit test — `USDPrim` with type `SphereLight` authors a prim of that type; with `Xform` (the default) behaves exactly as M20's test expects.
-  - size: S
+- [ ] ~~M52.P2.T3 — `USDPrim` gains a schema type~~ — cancelled 2026-10-26: `USDPrim` is retired by M226 - Scene Hierarchy From Topology; typed prim creation moves to M52.P2.T4.
+
+- [ ] M52.P2.T4 — `USDEditPrim` can define the prims it targets
+  - files: `Engine/Nodes/Scene/USDEditPrim.{h,cpp}`, `Tests/EditPrim3D_Test.cpp`
+  - approach: add a Define mode (Solaris Primitive LOP). The node takes a prim path (instead of the selector) plus the chosen typed schema, defines the prim (missing ancestors as Xform) and authors the touched attributes through the same `AuthoredKnobSet` page. The Edit mode stays the default. This is the route for arbitrary typed prims now that the hand-made hierarchy nodes are only `USDXformPrim`/`USDScopePrim`.
+  - verify: unit test — Define with type `SphereLight` at `/rig/key` authors a SphereLight with an Xform `/rig`, and only touched attributes carry opinions; Edit mode behaves as P2.T2's test expects.
+  - size: M
 
 ## Phase 52.3: Composition nodes
 
@@ -71,17 +73,18 @@ layer each via `SceneOps`, memoized per M19.P1.T3, registered in
   - files: `Engine/Nodes/Scene/USDSetAttribute.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/SetAttribute3D_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: inputs: Scene. Knobs: `PrimSelector`, attribute name, value type (`KnobChoice` over the scalar/vector types `SchemaKnobMapper` supports, plus `token`), value knob rebuilt per type, `primvar` bool (authors `primvars:<name>` with `constant` interpolation), animated → time samples. The no-Python escape hatch for anything `USDEditPrim` can't reach: custom attributes, primvars, arbitrary metadata-free opinions.
   - verify: unit test — authoring `primvars:displayColor` as color3f on the reference mesh composes a constant primvar; a custom `float` attribute round-trips through `USDWrite`.
-  - size: S
+  - size: M
 
 - [ ] M52.P3.T4 — Extend the scene vocabulary integration test
   - files: `Tests/` (M20.P3.T3's test), a second small reference `.usda` with a variant set
   - approach: extend the headless graph with `USDReference` → `USDVariant` → `USDEditPrim` → `USDSetAttribute` → `USDWrite`, asserting the exported composition: referenced prims present, selected variant applied, only the authored attribute opinions present, custom attribute present.
   - verify: test green in `build-and-test`.
-  - size: S
+  - size: M
 
-**Verification gate:** CI green including M52.P3.T4; `USDEditPrim` over a camera prim exports exactly the touched attributes and nothing else; `USDVariant` switches a variant visible in the Viewer's 3D view on real hardware; every M20 pattern knob is a `PrimSelector` and M20-era projects still load; pre-existing ctest suite green.
+**Verification gate:** CI green including M52.P3.T4; `USDEditPrim` over a camera prim exports exactly the touched attributes and nothing else; `USDVariant` switches a variant visible in the Viewer's 3D view on real hardware; every scene pattern knob is a `PrimSelector`; `USDEditPrim` Define mode creates a typed prim; pre-existing ctest suite green.
 
 ## Decisions
 
 - 2026-10-25 — **Long-lived USD scene (bosley-native-nodes, from the review in `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`):** selectPrims and USDVariant read their upstream through M19 - USD/Hydra Foundation's query-stage pool, not StageCache. USDReference must not reference only the strongest anonymous layer (that drops the weaker ones): reference a stack layer that sublayers the whole input, and handle it in USDWrite.
 - 2026-10-03 — **USD Python coexistence spike (user decision):** after M52's gate, run a time-boxed spike testing whether pxr Python bindings can load into Natron's Shiboken6/PySide6 interpreter (M19 builds USD with Python OFF). A Solaris-style Python-over-the-stage node depends on the outcome; `USDSetAttribute` (P3.T3) stays the no-Python substitute meanwhile. Add the spike as a trailing task when M52 is promoted.
+- 2026-10-26 — **M52 joins the 3D MVP and follows M226 (user, M19/M20 UAT grill):** USDTransform is now USDEditTransform and USDPrim is retired, so P1.T2 migrates the renamed nodes and P2.T3 is replaced by a Define mode on USDEditPrim (P2.T4) — typed prims come through the schema-driven node rather than a generic USDAddPrim (user chose Xform + Scope only).

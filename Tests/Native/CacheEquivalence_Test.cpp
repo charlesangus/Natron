@@ -883,7 +883,7 @@ protected:
         }
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(effect, 1, 3, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
 
         QString savedPath;
         if (!project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("sub.ntpz"), &savedPath)) {

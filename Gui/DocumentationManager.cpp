@@ -152,35 +152,10 @@ DocumentationManager::handler(QHttpRequest *req,
         staticPage = QString::fromUtf8("/_prefs.html");
         dynamicPage = page;
     }
-    // if this is one of the plugins that depend on the ocioConfigFile, the static page should not be used.
-    // to get the list of plugins:
-    // (cd Documentation/source/plugins; fgrep -l ocioConfigFile *.rst)
-    // as of Natron 2.2:
-    /*
-     fr.inria.built-in.Read.rst
-     fr.inria.built-in.Write.rst
-     fr.inria.openfx.OCIOColorSpace.rst
-     fr.inria.openfx.OCIODisplay.rst
-     fr.inria.openfx.OCIOLogConvert.rst
-     fr.inria.openfx.OCIOLookTransform.rst
-     fr.inria.openfx.OpenRaster.rst
-     fr.inria.openfx.ReadCDR.rst
-     fr.inria.openfx.ReadFFmpeg.rst
-     fr.inria.openfx.ReadKrita.rst
-     fr.inria.openfx.ReadMisc.rst
-     fr.inria.openfx.ReadOIIO.rst
-     fr.inria.openfx.ReadPDF.rst
-     fr.inria.openfx.ReadPFM.rst
-     fr.inria.openfx.ReadPNG.rst
-     net.fxarena.openfx.ReadPSD.rst
-     net.fxarena.openfx.ReadSVG.rst
-     */
-    {
-        const std::string id = pluginID.toStdString();
-        if (pluginID.startsWith(QString::fromUtf8("fr.inria.openfx.OCIO")) || id == PLUGINID_NATRON_READ || id == PLUGINID_NATRON_WRITE) {
-            // use the dynamic version, to get the right colorspace options
-            staticPage.clear();
-        }
+    // The static page of a plug-in whose menus list the project's OpenColorIO config would show
+    // another config's options.
+    if (Node::documentationDependsOnOcioConfig(pluginID.toStdString())) {
+        staticPage.clear();
     }
     if ( !staticPage.isEmpty() ) {
         QFileInfo staticFileInfo(docDir + staticPage);

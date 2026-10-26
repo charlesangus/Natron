@@ -386,6 +386,10 @@ struct KnobChange
 
 typedef std::list<KnobChange> KnobChanges;
 
+/**
+ * @brief IsolatedJob::refusesWrite(knob), for code that sees only this header.
+ **/
+bool isWriteRefusedByIsolatedJob(const KnobI* knob);
 
 class KnobI
     : public OverlaySupport
@@ -722,6 +726,9 @@ public:
                        bool hasRetVariable,
                        bool failIfInvalid)
     {
+        if (isWriteRefusedByIsolatedJob(this)) {
+            return;
+        }
         setExpressionInternal(dimension, expression, hasRetVariable, true, failIfInvalid);
     }
 
@@ -1107,6 +1114,14 @@ public:
     virtual void setIsPersistent(bool b) = 0;
 
     /**
+     * @brief Whether a render can read this knob's value. A knob that is not read by renders keeps
+     * accepting writes while a render or track reads its holder (the project's save bookkeeping,
+     * for instance). True by default; set when the knob is created, never changed afterwards.
+     **/
+    virtual bool isReadByRenders() const = 0;
+    virtual void setReadByRenders(bool b) = 0;
+
+    /**
      * @brief If set to false, the knob will not be able to use undo/redo actions.
      * By default this is set to true.
      **/
@@ -1242,7 +1257,14 @@ public:
                              const int listenerDimension,
                              const int listenedToDimension,
                              const KnobIPtr& listener) = 0;
-    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const = 0;
+    /**
+     * @brief Adds to nodes the nodes whose parameters this knob's expressions and links read,
+     * directly or through theirs, the nodes whose metadata they read, and the tracker nodes whose
+     * tracks they read. With metadataSources, also adds to it the nodes whose metadata they read.
+     **/
+    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                       std::set<NodePtr>* metadataSources = NULL) const
+        = 0;
 
 private:
     virtual void removeListener(KnobI* listener, int listenerDimension) = 0;
@@ -1803,6 +1825,8 @@ public:
     virtual bool getEvaluateOnChange() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getIsPersistent() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setIsPersistent(bool b) OVERRIDE FINAL;
+    virtual bool isReadByRenders() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void setReadByRenders(bool b) OVERRIDE FINAL;
     virtual void setCanUndo(bool val) OVERRIDE FINAL;
     virtual bool getCanUndo() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setIsMetadataSlave(bool slave) OVERRIDE FINAL;
@@ -1968,7 +1992,8 @@ public:
      **/
     virtual void addListener(bool isFromExpr, int fromExprDimension, int thisDimension, const KnobIPtr& knob) OVERRIDE FINAL;
     virtual void removeListener(KnobI* listener, int listenerDimension) OVERRIDE FINAL;
-    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const OVERRIDE FINAL;
+    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                       std::set<NodePtr>* metadataSources = NULL) const OVERRIDE FINAL;
     virtual void getListeners(KnobI::ListenerDimsMap& listeners) const OVERRIDE FINAL;
     virtual void clearExpressionsResults(int /*dimension*/) OVERRIDE {}
 
@@ -2668,10 +2693,22 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     friend class RecursionLevelRAII;
+    friend class IsolatedJob;
     struct KnobHolderPrivate;
     std::unique_ptr<KnobHolderPrivate> _imp;
 
+    // How many running IsolatedJobs read this holder.
+    std::atomic<int> _isolatedJobReaders { 0 };
+
 public:
+    /**
+     * @brief True while a running IsolatedJob reads this holder: content writes to its knobs are
+     * then refused outside that job.
+     **/
+    bool isReadByIsolatedJob() const
+    {
+        return _isolatedJobReaders.load(std::memory_order_acquire) > 0;
+    }
 
     enum MultipleParamsEditEnum
     {
@@ -2820,17 +2857,23 @@ public:
     bool areKnobsFrozen() const;
 
     /**
-     * @brief Makes all output nodes connected downstream to this node abort any rendering.
-     * Should be called prior to changing the state of the user interface that could impact the
-     * final image.
+     * @brief Called before an edit that could change the final image: aborts the viewer renders
+     * downstream of this holder and lets them restart. Other renders never see an edit made while
+     * they run, so they are left alone.
      **/
-    virtual void abortAnyEvaluation(bool keepOldestRender = true) { Q_UNUSED(keepOldestRender); }
+    virtual void abortViewerRendersForEdit() { }
 
     /**
-     * @brief abortAnyEvaluation() for a change being made, deferred to the end of the outermost
-     * begin/endChanges bracket when the change is made inside a nested one.
+     * @brief Aborts every render downstream of this holder without restarting it, for a change
+     * that leaves nothing to render, such as deactivation.
      **/
-    void abortAnyEvaluationForChange();
+    virtual void abortAllRendersReadingThis() { }
+
+    /**
+     * @brief abortViewerRendersForEdit() for a change being made, deferred to the end of the
+     * outermost begin/endChanges bracket when the change is made inside a nested one.
+     **/
+    void abortViewerRendersForChange();
 
     /**
      * @brief Dequeues all values set in the queues for all knobs
@@ -2910,9 +2953,12 @@ public:
 
     bool isSetValueCurrentlyPossible() const;
 
-    void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const;
+    /**
+     * @brief KnobI::getAllExpressionDependenciesRecursive() for every knob of this holder.
+     **/
+    void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                               std::set<NodePtr>* metadataSources = NULL) const;
 
-    
 protected:
 
     //////////////////////////////////////////////////////////////////////////////////////////

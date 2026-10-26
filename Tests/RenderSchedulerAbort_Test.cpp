@@ -637,7 +637,7 @@ TEST_F(RenderSchedulerAbortTiming, WriterRangeStopsSoonAfterEngineAbort)
     clock.start();
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false));
-    getApp()->startWritersRendering(true, works);
+    getApp()->startWritersRendering(eRenderModeBlocking, works);
     const qint64 finishedAtMs = clock.elapsed();
     QObject::disconnect(abortOnFirstFrame);
     QObject::disconnect(finished);

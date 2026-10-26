@@ -711,7 +711,7 @@ PrecompNodePrivate::launchPreRender()
 
     std::list<AppInstance::RenderWork> works;
     works.push_back(w);
-    _publicInterface->getApp()->startWritersRendering(false, works);
+    _publicInterface->getApp()->renderForeground(works);
 }
 
 void

@@ -560,7 +560,7 @@ TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
 
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
-    getApp()->startWritersRendering(false, works);
+    getApp()->startWritersRendering(eRenderModeBlocking, works);
 
     const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
     const std::string renderedPath = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);
@@ -929,7 +929,7 @@ TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
 
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false));
-    getApp()->startWritersRendering(false, works);
+    getApp()->startWritersRendering(eRenderModeBlocking, works);
 
     long long readsDuringRender = 0;
     for (std::size_t i = 0; i < readers.size(); ++i) {

@@ -55,6 +55,7 @@
 #include "Engine/Curve.h"
 #include "Engine/DockablePanelI.h"
 #include "Engine/Hash64.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
@@ -468,6 +469,7 @@ struct KnobHelperPrivate
     QMutex evaluateOnChangeMutex;
     bool evaluateOnChange; //< if true, a value change will never trigger an evaluation
     bool IsPersistent; //will it be serialized?
+    bool ReadByRenders; // can a render read its value?
     std::string tooltipHint;
     bool hintIsMarkdown;
     bool isAnimationEnabled;
@@ -573,6 +575,7 @@ struct KnobHelperPrivate
         , evaluateOnChangeMutex()
         , evaluateOnChange(true)
         , IsPersistent(true)
+        , ReadByRenders(true)
         , tooltipHint()
         , hintIsMarkdown(false)
         , isAnimationEnabled(true)
@@ -986,6 +989,9 @@ KnobHelper::deleteValuesAtTime(CurveChangeReason curveChangeReason,
                                ViewSpec view,
                                int dimension, bool copyCurveValueAtTimeToInternalValue)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     if ( ( dimension > (int)_imp->curves.size() ) || (dimension < 0) ) {
         throw std::invalid_argument("KnobHelper::deleteValueAtTime(): Dimension out of range");
     }
@@ -1065,6 +1071,9 @@ KnobHelper::deleteValueAtTime(CurveChangeReason curveChangeReason,
                               ViewSpec view,
                               int dimension, bool copyCurveValueAtTimeToInternalValue)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     if ( ( dimension > (int)_imp->curves.size() ) || (dimension < 0) ) {
         throw std::invalid_argument("KnobHelper::deleteValueAtTime(): Dimension out of range");
     }
@@ -1147,6 +1156,9 @@ KnobHelper::moveValuesAtTime(CurveChangeReason reason,
                              double dv,
                              std::vector<KeyFrame>* keyframes)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert(keyframes);
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
@@ -1242,6 +1254,9 @@ KnobHelper::moveValueAtTime(CurveChangeReason reason,
                             double dv,
                             KeyFrame* newKey)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1280,6 +1295,9 @@ KnobHelper::transformValuesAtTime(CurveChangeReason curveChangeReason,
                                   const Transform::Matrix3x3& matrix,
                                   std::vector<KeyFrame>* keyframes)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1396,6 +1414,9 @@ KnobHelper::transformValueAtTime(CurveChangeReason curveChangeReason,
                                  const Transform::Matrix3x3& matrix,
                                  KeyFrame* newKey)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1472,6 +1493,9 @@ KnobHelper::setInterpolationAtTime(CurveChangeReason reason,
                                    KeyframeTypeEnum interpolation,
                                    KeyFrame* newKey)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1592,6 +1616,9 @@ KnobHelper::removeAnimationWithReason(ViewSpec view,
                                       int dimension,
                                       ValueChangedReasonEnum reason)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     assert(0 <= dimension);
     if ( (dimension < 0) || ( (int)_imp->curves.size() <= dimension ) ) {
         throw std::invalid_argument("KnobHelper::removeAnimationWithReason(): Dimension out of range");
@@ -4002,6 +4029,18 @@ KnobHelper::getIsPersistent() const
     return _imp->IsPersistent;
 }
 
+bool
+KnobHelper::isReadByRenders() const
+{
+    return _imp->ReadByRenders;
+}
+
+void
+KnobHelper::setReadByRenders(bool b)
+{
+    _imp->ReadByRenders = b;
+}
+
 void
 KnobHelper::setIsPersistent(bool b)
 {
@@ -4343,6 +4382,9 @@ KnobHelper::slaveToInternal(int dimension,
                             ValueChangedReasonEnum reason,
                             bool ignoreMasterPersistence)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     KnobContentWrite write;
     assert(other.get() != this);
     assert( 0 <= dimension && dimension < (int)_imp->masters.size() );
@@ -4530,6 +4572,9 @@ KnobHelper::deleteAnimationConditional(double time,
                                        ValueChangedReasonEnum reason,
                                        bool before)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     if (!_imp->curves[dimension]) {
         return;
     }
@@ -5895,7 +5940,8 @@ KnobHelper::getOwnDimensionContentHash(int dimension) const
 }
 
 void
-KnobHelper::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const
+KnobHelper::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                  std::set<NodePtr>* metadataSources) const
 {
     std::set<KnobIPtr> deps;
     {
@@ -5924,21 +5970,34 @@ KnobHelper::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) cons
     std::list<KnobIPtr> knobsToInspectRecursive;
 
     for (std::set<KnobIPtr>::iterator it = deps.begin(); it != deps.end(); ++it) {
-        EffectInstance* effect  = dynamic_cast<EffectInstance*>( (*it)->getHolder() );
+        KnobHolder* holder = (*it)->getHolder();
+        EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
         if (effect) {
             NodePtr node = effect->getNode();
 
             nodes.insert(node);
             knobsToInspectRecursive.push_back(*it);
+            continue;
+        }
+        // A track's parameter: the track belongs to its tracker node.
+        TrackMarker* marker = dynamic_cast<TrackMarker*>(holder);
+        TrackerContextPtr tracker = marker ? marker->getContext() : TrackerContextPtr();
+        NodePtr trackerNode = tracker ? tracker->getNode() : NodePtr();
+        if (trackerNode) {
+            nodes.insert(trackerNode);
+            knobsToInspectRecursive.push_back(*it);
         }
     }
 
-    std::list<NodePtr> metadataSources;
-    getMetadataDependencies(-1, &metadataSources);
-    nodes.insert(metadataSources.begin(), metadataSources.end());
+    std::list<NodePtr> metadataNodes;
+    getMetadataDependencies(-1, &metadataNodes);
+    nodes.insert(metadataNodes.begin(), metadataNodes.end());
+    if (metadataSources) {
+        metadataSources->insert(metadataNodes.begin(), metadataNodes.end());
+    }
 
     for (std::list<KnobIPtr>::iterator it = knobsToInspectRecursive.begin(); it != knobsToInspectRecursive.end(); ++it) {
-        (*it)->getAllExpressionDependenciesRecursive(nodes);
+        (*it)->getAllExpressionDependenciesRecursive(nodes, metadataSources);
     }
 }
 
@@ -6851,7 +6910,7 @@ KnobHolder::onDoEvaluateOnMainThread(bool significant,
 }
 
 void
-KnobHolder::abortAnyEvaluationForChange()
+KnobHolder::abortViewerRendersForChange()
 {
     {
         QMutexLocker l(&_imp->evaluationBlockedMutex);
@@ -6864,7 +6923,7 @@ KnobHolder::abortAnyEvaluationForChange()
             return;
         }
     }
-    abortAnyEvaluation();
+    abortViewerRendersForEdit();
 }
 
 void
@@ -7013,7 +7072,7 @@ KnobHolder::endChanges(bool discardRendering)
     }
 
     if (mustAbort) {
-        abortAnyEvaluation();
+        abortViewerRendersForEdit();
     }
 
     // Call getClipPreferences & render
@@ -7139,12 +7198,13 @@ KnobHolder::isSetValueCurrentlyPossible() const
 }
 
 void
-KnobHolder::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const
+KnobHolder::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                  std::set<NodePtr>* metadataSources) const
 {
     QMutexLocker k(&_imp->knobsMutex);
 
     for (KnobsVec::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        (*it)->getAllExpressionDependenciesRecursive(nodes);
+        (*it)->getAllExpressionDependenciesRecursive(nodes, metadataSources);
     }
 }
 

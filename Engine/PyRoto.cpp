@@ -31,15 +31,28 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/PyNode.h"
 #include "Engine/Node.h"
+#include "Engine/PyNode.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
+
+namespace {
+// True, with a Python RuntimeError set, if a running render or track reads the Roto node whose
+// shapes context holds.
+bool
+refusesShapeEdit(const RotoContextPtr& context)
+{
+    NodePtr node = context ? context->getNode() : NodePtr();
+
+    return node && IsolatedJob::refusesPythonEdit(node->getEffectInstance().get(), "the shapes");
+}
+} // anonymous namespace
 
 ItemBase::ItemBase(const RotoItemPtr& item)
     : _item(item)
@@ -95,6 +108,9 @@ ItemBase::getLockedRecursive() const
 void
 ItemBase::setVisible(bool activated)
 {
+    if (refusesShapeEdit(_item->getContext())) {
+        return;
+    }
     _item->setGloballyActivated(activated, true);
 }
 
@@ -146,6 +162,9 @@ Layer::~Layer()
 void
 Layer::addItem(ItemBase* item)
 {
+    if (refusesShapeEdit(_layer->getContext())) {
+        return;
+    }
     _layer->addItem( item->getInternalItem() );
 }
 
@@ -153,12 +172,18 @@ void
 Layer::insertItem(int pos,
                   ItemBase* item)
 {
+    if (refusesShapeEdit(_layer->getContext())) {
+        return;
+    }
     _layer->insertItem(item->getInternalItem(), pos);
 }
 
 void
 Layer::removeItem(ItemBase* item)
 {
+    if (refusesShapeEdit(_layer->getContext())) {
+        return;
+    }
     _layer->removeItem( item->getInternalItem() );
 }
 
@@ -188,6 +213,9 @@ BezierCurve::~BezierCurve()
 void
 BezierCurve::setCurveFinished(bool finished)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->setCurveFinished(finished);
     _bezier->getContext()->emitRefreshViewerOverlays();
     _bezier->getContext()->evaluateChange();
@@ -203,6 +231,9 @@ void
 BezierCurve::addControlPoint(double x,
                              double y)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     const std::list<BezierCPPtr>& cps = _bezier->getControlPoints();
     double keyframeTime;
 
@@ -218,12 +249,18 @@ void
 BezierCurve::addControlPointOnSegment(int index,
                                       double t)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->addControlPointAfterIndex(index, t);
 }
 
 void
 BezierCurve::removeControlPointByIndex(int index)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->removeControlPointByIndex(index);
 }
 
@@ -233,6 +270,9 @@ BezierCurve::movePointByIndex(int index,
                               double dx,
                               double dy)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->movePointByIndex(index, time, dx, dy);
 }
 
@@ -242,6 +282,9 @@ BezierCurve::moveFeatherByIndex(int index,
                                 double dx,
                                 double dy)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->moveFeatherByIndex(index, time, dx, dy);
 }
 
@@ -251,6 +294,9 @@ BezierCurve::moveLeftBezierPoint(int index,
                                  double dx,
                                  double dy)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->moveLeftBezierPoint(index, time, dx, dy);
 }
 
@@ -260,6 +306,9 @@ BezierCurve::moveRightBezierPoint(int index,
                                   double dx,
                                   double dy)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->moveRightBezierPoint(index, time, dx, dy);
 }
 
@@ -273,6 +322,9 @@ BezierCurve::setPointAtIndex(int index,
                              double rx,
                              double ry)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->setPointAtIndex(false, index, time, x, y, lx, ly, rx, ry);
 }
 
@@ -286,6 +338,9 @@ BezierCurve::setFeatherPointAtIndex(int index,
                                     double rx,
                                     double ry)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->setPointAtIndex(true, index, time, x, y, lx, ly, rx, ry);
 }
 
@@ -344,6 +399,9 @@ void
 BezierCurve::setActivated(double time,
                           bool activated)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->setActivated(activated, time);
 }
 
@@ -357,6 +415,9 @@ void
 BezierCurve::setOpacity(double opacity,
                         double time)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->setOpacity(opacity, time);
 }
 
@@ -405,6 +466,9 @@ void
 BezierCurve::setFeatherDistance(double dist,
                                 double time)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->setFeatherDistance(dist, time);
 }
 
@@ -418,6 +482,9 @@ void
 BezierCurve::setFeatherFallOff(double falloff,
                                double time)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->setFeatherFallOff(falloff, time);
 }
 
@@ -442,12 +509,18 @@ BezierCurve::setColor(double time,
                       double g,
                       double b)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->setColor(time, r, g, b);
 }
 
 void
 BezierCurve::setCompositingOperator(MergingFunctionEnum op)
 {
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
     _bezier->setCompositingOperator( (int)op );
 }
 
@@ -577,6 +650,9 @@ Roto::getItemByName(const QString& name) const
 Layer*
 Roto::createLayer()
 {
+    if (refusesShapeEdit(_ctx)) {
+        return 0;
+    }
     RotoLayerPtr  layer = _ctx->addLayer();
 
     if (layer) {
@@ -591,6 +667,9 @@ Roto::createBezier(double x,
                    double y,
                    double time)
 {
+    if (refusesShapeEdit(_ctx)) {
+        return 0;
+    }
     BezierPtr  ret = _ctx->makeBezier(x, y, kRotoBezierBaseName, time, false);
 
     if (ret) {
@@ -607,6 +686,9 @@ Roto::createEllipse(double x,
                     bool fromCenter,
                     double time)
 {
+    if (refusesShapeEdit(_ctx)) {
+        return 0;
+    }
     BezierPtr  ret = _ctx->makeEllipse(x, y, diameter, fromCenter, time);
 
     if (ret) {
@@ -622,6 +704,9 @@ Roto::createRectangle(double x,
                       double size,
                       double time)
 {
+    if (refusesShapeEdit(_ctx)) {
+        return 0;
+    }
     BezierPtr  ret = _ctx->makeSquare(x, y, size, time);
 
     if (ret) {

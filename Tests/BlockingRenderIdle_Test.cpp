@@ -182,7 +182,7 @@ protected:
         QMetaObject::Connection connection = QObject::connect(engine.get(), &RenderEngine::renderFinished, engine.get(), [&finished](int) { ++finished; }, Qt::DirectConnection);
         {
             RenderWatchdog watchdog;
-            getApp()->startWritersRendering(true, works);
+            getApp()->startWritersRendering(eRenderModeBlocking, works);
         }
         QObject::disconnect(connection);
 

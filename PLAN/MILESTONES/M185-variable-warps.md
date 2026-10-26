@@ -60,8 +60,15 @@ Exact native I-warps (user, 2026-10-24). Slicing a transform and blending the sl
   - verify: `ctest -R NativePluginList` passes; docs reviewed at the gate.
   - size: S
 
+- [ ] M185.P2.T3 — Exact Source pixel where the Map is 0
+  - files: `Engine/Nodes/Transform/{IDistort,ITransform,ICornerPin}.cpp`, `Engine/Gpu/Kernels/{stmap,iwarp}.slang`, `Tests/Native/NativeIDistortAmount_Test.cpp` and the ITransform/ICornerPin tests
+  - approach: mirror STMap's 6a0688c79: where the Map is 0, copy the Source pixel unfiltered on CPU and GPU.
+  - verify: with Mitchell and Cubic filters and a hard and a soft Map, every Map=0 pixel equals the Source bit for bit on CPU and GPU; goldens re-recorded where they change.
+  - size: M
+
 ## Decisions
 
+- 2026-10-26 — **Exact at Map 0 (user):** every Map-driven warp (IDistort, ITransform, ICornerPin, as STMap already does) outputs the Source pixel itself, bit for bit, wherever the Map is 0, on CPU and GPU. No filter is applied, so softening filters and a footprint widened by displaced neighbours never blur a held pixel.
 - 2026-10-25 — **Map on IDistort and STMap (bosley-native-nodes):** the Map is optional input 3 after Mask; IDistort samples at c + d·m, STMap at c + (p − c)·m; with no Map both are bit-identical to before. STMap's UV Alpha blacks a pixel only where the Map is above 0, so a pixel the Map holds in place shows the source. Cost seeds for ITransform/ICornerPin and the Map variants wait on measurement (P2.T2 stays open for them).
 - 2026-10-25 — **Interpolation and Map wording (bosley-native-nodes):** skew blends linearly with the Map amount, matching how Transform's own amount knob blends it, rather than in log space; per-pixel matrices come from exact matrices at 256–512 Map values joined by Hermite interpolation (exact at 0, ½ and 1). The Map knobs' tooltips must not speak of sizes on a warp node; fixed with the docs task.
 - 2026-10-25 — **Freshness check (bosley-native-nodes):** references re-verified against the base branch; corrections in `PLAN/DESIGN/2026-10-25-freshness-m122-m192-m202-m178-m185-m20.md` override stale paths, lines and APIs in this file. ITransform/ICornerPin are Custom ops; the branch is rebased onto main before STMap/IDistort GPU work.

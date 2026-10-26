@@ -288,3 +288,5 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
   - The existing Shift+E session toggle becomes "Show Link Lines", a master switch over both kinds. Each kind still obeys its own preference when the switch is on.
   - The dashed lines between Linked Nodes count as link lines. The Linked Node glyph is always shown.
 - 2026-10-10 — **Deps M24:** M24 - Node Graph Category Colour is reworking the same `NodeGui` body and border drawing, including the clone colour exception, so this milestone starts after it lands.
+
+2026-10-26: UAT approved (user). Merges after M167 - Per-Frame Node Metadata lands, with main merged in and PR CI re-run.

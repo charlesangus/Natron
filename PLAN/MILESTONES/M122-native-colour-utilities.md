@@ -267,6 +267,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-26 — **HSVKeyer UAT round 3 (user):** HSV is the default model; range knobs are ordered Outer Low, Inner Low, Centre, Inner High, Outer High; outer offsets are measured from the inner edges (0 = hard cut); strips open at 0–1 saturation and luma, and Reset Zoom returns there unless points lie outside, then zooms out to include them; a per-range "S" toggle switches the falloff to smoothstep, drawn in the strip.
 - 2026-10-26 — **HSVKeyer defaults (user):** OkLCh saturation zooms to 0–0.4 on Reset Zoom; defaults Hue 0.4 (0.085/0.035/0.035/0.085), Saturation 0.2 (0.18/0.14/0.2/0.2), Luma 0.5 (0.5/0.45/0.5/1.5).
 - 2026-10-26 — **HSVKeyer UAT round 2 (user):** good, with tweaks: no bottom line on the trapezoid; readable dimension labels (Outer Low, not outerLow); the Use toggles above the range widgets, and a row greys out when its Use is off; Recentre and Reset Zoom buttons on each row; the strips grow with the panel; OkLCh is the default model; each range is a Centre plus four positive offsets (Outer Low, Inner Low, Inner High, Outer High; the low ones subtract), which suits hue's wrap.
 - 2026-10-26 — **Premult and ColorMatrix (user):** (un)premultiplying never touches the divisor channel, so rgb and rgba selections give the same result; ColorMatrix clampBlack stays off by default; knob labels match their script names, made readable ("Matrix Size", "Matrix").

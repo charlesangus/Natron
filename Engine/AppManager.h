@@ -737,6 +737,15 @@ protected:
     }
 
     virtual void initializeQApp(int &argc, char** argv);
+
+    /**
+     * @brief Runs right after initializeQApp(); returning false stops the application from loading.
+     **/
+    virtual bool checkGLContextRequirements()
+    {
+        return true;
+    }
+
     virtual void onLoadCompleted()
     {
     }

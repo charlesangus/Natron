@@ -38,8 +38,10 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
+#include <string>
 #include <vector>
 
 #include <QMutex>
@@ -55,6 +57,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectColorManagement.h"
+#include "Engine/ScenePayload.h"
 #include "Engine/Settings.h"
 #include "Engine/TextureRect.h"
 #include "Engine/UpdateViewerParams.h"
@@ -161,6 +164,7 @@ public:
             lastRequestSequential[i] = false;
             isViewerPaused[i] = false;
             viewerParamsChannels[i] = eDisplayChannelsRGB;
+            lastSceneOk[i] = false;
         }
     }
     // clang-format on
@@ -504,6 +508,15 @@ public:
     // it superseded. Protected by renderAgeMutex.
     std::weak_ptr<AbortableRenderInfo> lastRequest[2];
     bool lastRequestSequential[2];
+
+    // What activeInputDataKindChanged() last announced. Only accessed from MT
+    DataKindEnum notifiedInputDataKind = eDataKindImage;
+    bool notifiedWipeDisabled = false;
+
+    mutable std::mutex lastSceneMutex; // protects lastScene, lastSceneError, lastSceneOk
+    ScenePayload lastScene[2];
+    std::string lastSceneError[2];
+    bool lastSceneOk[2];
 
 #ifdef NATRON_HAVE_GPU
     // Only accessed from MT

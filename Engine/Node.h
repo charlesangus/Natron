@@ -289,6 +289,14 @@ public:
     U64 getStoredContentHash() const;
 
     /**
+     * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content
+     * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
+     * Scene nodes key their memoized layer on it (SceneLayerMemo): unlike the content hash, it
+     * does not move when an input changes.
+     **/
+    U64 getKnobsContentDigest(bool* hasExpression) const;
+
+    /**
      * @brief Sets hash to the content hash and returns true if it is up to date, and returns false
      * if it is dirty: unlike getHashValue(), it never recomputes, so a caller that only looks at a
      * node does not make an edit rehash it.
@@ -2016,12 +2024,6 @@ private:
     bool computeHashInternal(U64 projectDigest, const HashInputs& inputs, U64* contentHash) WARN_UNUSED_RETURN;
 
     U64 computeContentHash(U64 projectDigest, const HashInputs& inputs) const;
-
-    /**
-     * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content
-     * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
-     **/
-    U64 getKnobsContentDigest(bool* hasExpression) const;
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 

@@ -26,6 +26,7 @@
 #include "GuiApplicationManager.h"
 #include "GuiApplicationManagerPrivate.h"
 
+#include <iostream>
 #include <stdexcept> // runtime_error
 
 #ifdef Q_OS_DARWIN
@@ -41,6 +42,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QFileInfo>
 #include <QFileOpenEvent>
 #include <QGuiApplication>
+#include <QMessageBox>
 #include <QPixmapCache>
 #include <QScreen>
 #include <QSettings>
@@ -65,6 +67,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/CurveWidget.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/GuiGLRequirements.h"
 #include "Gui/KnobGuiFactory.h"
 #include "Gui/SplashScreen.h"
 #include "Gui/TabMenuBridge.h"
@@ -299,6 +302,8 @@ GuiApplicationManager::initializeQApp(int &argc,
         // division_by_zero happens here - don't trap it
         boost_adaptbx::floating_point::exception_trapping trap(boost_adaptbx::floating_point::exception_trapping::overflow);
 #endif
+        // The default format must be in place before the QApplication exists for contexts to share.
+        GuiGLRequirements::installDefaultFormat();
         app = new Application(this, argc, argv);
     }
     // QDesktopWidget is gone in Qt6; QScreen carries the same values and exists
@@ -323,6 +328,31 @@ GuiApplicationManager::initializeQApp(int &argc,
 
     ///Register all the shortcuts.
     populateShortcuts();
+}
+
+bool
+GuiApplicationManager::checkGLContextRequirements()
+{
+    const GuiGLRequirements::Verdict verdict = GuiGLRequirements::judge(GuiGLRequirements::probe());
+    if (verdict.accepted) {
+        return true;
+    }
+    _imp->glContextRefused = true;
+    std::cerr << verdict.message.toStdString() << std::endl;
+
+    const QString platform = QGuiApplication::platformName();
+    const bool canShowDialog = platform != QLatin1String("offscreen") && platform != QLatin1String("minimal");
+    if (canShowDialog && !GuiGLRequirements::isRefusalDialogSuppressed()) {
+        QMessageBox::critical(nullptr, QString::fromUtf8(NATRON_APPLICATION_NAME), verdict.message);
+    }
+
+    return false;
+}
+
+bool
+GuiApplicationManager::hasRefusedGLContext() const
+{
+    return _imp->glContextRefused;
 }
 
 QString

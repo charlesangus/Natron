@@ -1967,15 +1967,16 @@ isRegisteredAdapter(DataKindEnum from,
     return (from == eDataKindDeep) && (to == eDataKindImage);
 }
 
-// Raw reaches an image input only at the Viewer, which shows the values as they are for display
-// (RawDisplay) and feeds nothing downstream. It is kept out of the table above so that no other
-// image input, whatever its virtual answers, can take raw without a RawToImage in the graph.
+// Raw and scene reach an image input only at the Viewer, which feeds nothing downstream: it shows
+// raw values as they are for display (RawDisplay) and hands a scene to its 3D view instead of
+// rendering it as an image. They are kept out of the table above so that no other image input,
+// whatever its virtual answers, can take raw without a RawToImage, or a scene at all.
 static bool
 isViewerOnlyAdapter(const EffectInstancePtr& effect,
                     DataKindEnum from,
                     DataKindEnum to)
 {
-    return (from == eDataKindRaw) && (to == eDataKindImage) && dynamic_cast<const ViewerInstance*>(effect.get());
+    return ((from == eDataKindRaw) || (from == eDataKindScene)) && (to == eDataKindImage) && dynamic_cast<const ViewerInstance*>(effect.get());
 }
 
 static bool

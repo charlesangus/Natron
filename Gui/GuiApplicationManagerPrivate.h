@@ -88,6 +88,7 @@ struct GuiApplicationManagerPrivate
 
     ///Used temporarily to store startup args while we load fonts
     CLArgs startupArgs;
+    bool glContextRefused = false;
     std::shared_ptr<QFutureWatcher<void> > fontconfigUpdateWatcher;
     QTimer updateSplashscreenTimer;
     QTimer themeReloadTimer;

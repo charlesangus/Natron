@@ -1860,6 +1860,14 @@ public:
     static bool getExpressionEvaluationTime(double* time);
 
     virtual ViewIdx getCurrentView() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The view an expression is evaluated at: the requested one, or for the current view the one
+    // the calling thread renders or acts at.
+    ViewIdx expressionView(ViewSpec view) const
+    {
+        return view.isCurrent() ? getCurrentView() : ViewIdx(view.value());
+    }
+
     virtual std::string getDimensionName(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setDimensionName(int dim, const std::string & name) OVERRIDE FINAL;
     virtual bool hasModifications() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -2172,7 +2180,9 @@ public:
        that we're able to get the same value again for the same render.
        Of course, this saved in the project to retrieve the same values between 2 runs of the project.
      */
-    typedef std::map<double, T> FrameValueMap;
+    // Keyed by (time, view): an expression reads the view it is evaluated at, directly or through
+    // the knobs and project variables it reads, so one view's result is not another's.
+    typedef std::map<std::pair<double, int>, T> FrameValueMap;
     typedef std::vector<FrameValueMap> ExprResults;
     // The results of a knob whose value reads context variables, by (time, view, context key).
     typedef std::map<std::tuple<double, int, U64>, T> ContextValueMap;

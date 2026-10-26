@@ -82,6 +82,12 @@ public:
 
     void setType(ParamDataTypeEnum type);
 
+    /**
+     * @brief Makes the parameter a variable of the RFV group: it goes in that group, the page and
+     * group menus are hidden, and the types that cannot be variables are disabled.
+     **/
+    void setRFVScope(const KnobGroupPtr& group);
+
     static int dataTypeDim(ParamDataTypeEnum t);
 
 public Q_SLOTS:

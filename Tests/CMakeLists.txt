@@ -59,6 +59,7 @@ set(Tests_SOURCES
     GeneratorLayer_Test.cpp
     GLScheduler_Test.cpp
     GpuContext_Test.cpp
+    GpuMemberTiming_Test.cpp
     GpuPlacement_Test.cpp
     GpuRegionFallback_Test.cpp
     GpuResidency_Test.cpp
@@ -75,6 +76,7 @@ set(Tests_SOURCES
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
     KnobContentHash_Test.cpp
+    KnobNoOpWrite_Test.cpp
     LazyHash_Test.cpp
     NodeContentHash_Test.cpp
     NodeDestroyWatcher_Test.cpp
@@ -116,6 +118,9 @@ set(Tests_SOURCES
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
     PythonUndo_Test.cpp
+    RFV_Test.cpp
+    RFVPython_Test.cpp
+    RFVSetNode_Test.cpp
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp
     RemoveLayersRender_Test.cpp
@@ -143,6 +148,9 @@ set(Tests_SOURCES
     ImageMetadata_Test.cpp
     NativeMetadata_Test.cpp
     NativeMetadataPolicy_Test.cpp
+    PerFrameMetadata_Test.cpp
+    OfxClipPreferencesThread_Test.cpp
+    OfxPerFrameMetadata_Test.cpp
     OfxMetadataBridge_Test.cpp
     OfxRetired_Test.cpp
     OfxTestPlugin_Test.cpp

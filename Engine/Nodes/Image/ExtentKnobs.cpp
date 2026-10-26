@@ -285,6 +285,15 @@ ExtentKnobs::getExtent() const
     return extent ? (ExtentEnum)extent->getValue() : (ExtentEnum)_policy.defaultExtent;
 }
 
+ExtentKnobs::ExtentEnum
+ExtentKnobs::getExtent(double time,
+                       ViewIdx view) const
+{
+    KnobChoicePtr extent = _extent.lock();
+
+    return extent ? (ExtentEnum)extent->getValueAtTime(time, 0, view) : (ExtentEnum)_policy.defaultExtent;
+}
+
 void
 ExtentKnobs::updateVisibility()
 {
@@ -406,7 +415,7 @@ ExtentKnobs::getExtentRegionOfDefinition(double time,
                                          ViewIdx view,
                                          RectD* rod) const
 {
-    switch (getExtent()) {
+    switch (getExtent(time, view)) {
     case eExtentFormat: {
         KnobIntPtr formatSize = _formatSize.lock();
         KnobDoublePtr formatPar = _formatPar.lock();

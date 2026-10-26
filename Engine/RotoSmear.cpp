@@ -128,7 +128,7 @@ RotoSmear::isIdentity(double time,
     NodePtr node = getNode();
     node->getPaintStrokeRoD(time, &maskRod);
 
-    const RectI maskPixelRod = maskRod.toPixelEnclosing(scale, getAspectRatio(-1));
+    const RectI maskPixelRod = maskRod.toPixelEnclosing(scale, getRenderMetadata(time, view)->getPixelAspectRatio(-1));
     if ( !maskPixelRod.intersects(roi) ) {
         *inputTime = time;
         *inputNb = 0;

@@ -33,6 +33,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
@@ -246,7 +247,8 @@ ViewerTabPrivate::getOverlayTransform(double time,
         return false;
     } else {
         assert(input);
-        double par = input->getAspectRatio(-1);
+        const NodeMetadataConstPtr inputMetadata = input->getMetadata(time, view);
+        double par = inputMetadata ? inputMetadata->getPixelAspectRatio(-1) : 1.;
 
         //The mat is in pixel coordinates, though
         mat = Transform::matMul(Transform::matPixelToCanonical(par, 1, 1, false), mat);

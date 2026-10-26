@@ -340,7 +340,7 @@ TEST_F(ColorViewsRenderTest, GradeRgbGain2DoublesRgbAndKeepsAlpha)
     gain->setValues(2., 2., 2., 2., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     channels->setLayer(0, kNatronColorViewRGB, NULL);
 
-    EXPECT_EQ(4, grade->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*grade->getEffectInstance()->getTimeInvariantMetadata(), -1));
 
     FlatExrImage image;
     std::string error;
@@ -423,15 +423,15 @@ TEST_F(ColorViewsRenderTest, GradeRgbaOverRgbWidensAndReadsAlphaAsZero)
     ASSERT_TRUE(bool(channels));
     EffectInstancePtr effect = grade->getEffectInstance();
 
-    EXPECT_EQ(3, effect->getMetadataNComps(-1)) << "the default row (rgba R, G, B) writes no missing channel";
+    EXPECT_EQ(3, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), -1)) << "the default row (rgba R, G, B) writes no missing channel";
 
     KnobColor* offset = dynamic_cast<KnobColor*>(grade->getKnobByName("offset").get());
     ASSERT_TRUE(offset != NULL);
     offset->setValues(0., 0., 0., 0.25, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     channels->setLayer(0, kNatronColorViewRGBA, NULL);
 
-    EXPECT_EQ(4, effect->getMetadataNComps(-1));
-    EXPECT_EQ(4, effect->getMetadataNComps(0));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), -1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), 0));
 
     FlatExrImage image;
     std::string error;
@@ -453,7 +453,7 @@ TEST_F(ColorViewsRenderTest, GradeAlphaOverRgbCopiesRgbAndGradesAlphaFromZero)
     offset->setValues(0.25, 0.25, 0.25, 0.25, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     channels->setLayer(0, kNatronColorViewAlpha, NULL);
 
-    EXPECT_EQ(4, grade->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*grade->getEffectInstance()->getTimeInvariantMetadata(), -1));
 
     FlatExrImage image;
     std::string error;
@@ -477,8 +477,8 @@ TEST_F(ColorViewsRenderTest, BlurOnAllOverRgbDoesNotWiden)
     ASSERT_EQ(ChannelSetRow::eModeAll, rows[0].mode);
 
     EffectInstancePtr effect = blur->getEffectInstance();
-    EXPECT_EQ(3, effect->getMetadataNComps(-1));
-    EXPECT_EQ(3, effect->getMetadataNComps(0));
+    EXPECT_EQ(3, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), -1));
+    EXPECT_EQ(3, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), 0));
 
     FlatExrImage image;
     std::string error;
@@ -503,7 +503,7 @@ TEST_F(ColorViewsRenderTest, IdentityGradeRgbaOverRgbReadsAlphaAsZero)
     channels->setLayer(0, kNatronColorViewRGBA, NULL);
 
     EffectInstancePtr effect = grade->getEffectInstance();
-    EXPECT_EQ(4, effect->getMetadataNComps(-1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), -1));
 
     double identityTime = 0.;
     ViewIdx identityView(0);
@@ -544,7 +544,7 @@ TEST_F(ColorViewsRenderTest, MergeReadsAlphaOfRgbAInputAsZero)
     connectNodes(rgba, merge, inputB, true);
     connectNodes(rgb, merge, inputA, true);
 
-    EXPECT_EQ(4, merge->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*merge->getEffectInstance()->getTimeInvariantMetadata(), -1));
 
     FlatExrImage image;
     std::string error;
@@ -577,7 +577,7 @@ TEST_F(ColorViewsRenderTest, MergeReadsRgbOfAlphaOnlyAInputAsZero)
     connectNodes(rgba, merge, inputB, true);
     connectNodes(alpha, merge, inputA, true);
 
-    EXPECT_EQ(4, merge->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*merge->getEffectInstance()->getTimeInvariantMetadata(), -1));
 
     FlatExrImage image;
     std::string error;
@@ -625,8 +625,8 @@ TEST_F(ColorViewsRenderTest, GradeRgbOverAlphaWidensAndGradesRgbFromZero)
     offset->setValues(0.3, 0.3, 0.3, 0., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     channels->setLayer(0, kNatronColorViewRGB, NULL);
 
-    EXPECT_EQ(4, effect->getMetadataNComps(-1));
-    EXPECT_EQ(4, effect->getMetadataNComps(0));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), -1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), 0));
 
     FlatExrImage image;
     std::string error;
@@ -652,8 +652,8 @@ TEST_F(ColorViewsRenderTest, GradeAlphaOverAlphaStaysAlphaOnly)
     gain->setValues(2., 2., 2., 2., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     channels->setLayer(0, kNatronColorViewAlpha, NULL);
 
-    EXPECT_EQ(1, effect->getMetadataNComps(-1));
-    EXPECT_EQ(1, effect->getMetadataNComps(0)) << "the Alpha stream reaches Grade as Alpha, since Grade's clip now declares Alpha support";
+    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), -1));
+    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), 0)) << "the Alpha stream reaches Grade as Alpha, since Grade's clip now declares Alpha support";
 
     std::list<ImageLayerDesc> present;
     effect->getPresentLayers(1, ViewIdx(0), -1, &present);
@@ -688,7 +688,7 @@ TEST_F(ColorViewsRenderTest, BlurOnAllOverAlphaStaysAlphaOnly)
     ASSERT_EQ(1u, rows.size());
     ASSERT_EQ(ChannelSetRow::eModeAll, rows[0].mode);
 
-    EXPECT_EQ(1, blur->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*blur->getEffectInstance()->getTimeInvariantMetadata(), -1));
 
     FlatExrImage image;
     std::string error;
@@ -709,8 +709,8 @@ TEST_F(ColorViewsRenderTest, DefaultGradeOverAlphaKeepsAlphaExactly)
     ASSERT_TRUE(bool(channels));
     EffectInstancePtr effect = grade->getEffectInstance();
 
-    EXPECT_EQ(4, effect->getMetadataNComps(-1));
-    EXPECT_EQ(4, effect->getMetadataNComps(0));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), -1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), 0));
 
     FlatExrImage image;
     std::string error;
@@ -1044,7 +1044,7 @@ TEST_F(ColorViewsRenderTest, ReadDecodesAlphaOnlyFileIntoOneChannel)
 
     ImageLayerDesc layer;
     ImageLayerDesc paired;
-    reader->getEffectInstance()->getMetadataComponents(-1, &layer, &paired);
+    EffectInstance::getLayersFromMetadata(*reader->getEffectInstance()->getTimeInvariantMetadata(), -1, &layer, &paired);
     EXPECT_EQ(1u, layer.getChannels().size());
 
     FlatExrImage image;
@@ -1063,7 +1063,7 @@ TEST_F(ColorViewsRenderTest, ReadDecodesRgbaFileIntoFourChannels)
 
     ImageLayerDesc layer;
     ImageLayerDesc paired;
-    reader->getEffectInstance()->getMetadataComponents(-1, &layer, &paired);
+    EffectInstance::getLayersFromMetadata(*reader->getEffectInstance()->getTimeInvariantMetadata(), -1, &layer, &paired);
     EXPECT_EQ(4u, layer.getChannels().size());
 
     FlatExrImage image;
@@ -1285,10 +1285,10 @@ TEST_F(ColorViewsRenderTest, TimeBufferCarriesAnAlphaOnlyStreamToTheNextFrame)
     EXPECT_TRUE(bufferRead->isSupportedComponent(-1, ImageLayerDesc::getAlphaComponents()));
     EXPECT_TRUE(bufferWrite->isSupportedComponent(0, ImageLayerDesc::getAlphaComponents()));
     EXPECT_TRUE(bufferWrite->isSupportedComponent(-1, ImageLayerDesc::getAlphaComponents()));
-    EXPECT_EQ(1, bufferRead->getEffectInstance()->getMetadataNComps(0));
-    EXPECT_EQ(1, bufferRead->getEffectInstance()->getMetadataNComps(-1));
-    EXPECT_EQ(1, bufferWrite->getEffectInstance()->getMetadataNComps(0));
-    EXPECT_EQ(1, bufferWrite->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*bufferRead->getEffectInstance()->getTimeInvariantMetadata(), 0));
+    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*bufferRead->getEffectInstance()->getTimeInvariantMetadata(), -1));
+    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*bufferWrite->getEffectInstance()->getTimeInvariantMetadata(), 0));
+    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*bufferWrite->getEffectInstance()->getTimeInvariantMetadata(), -1));
 
     FlatExrImage frame1;
     std::string error;
@@ -1328,8 +1328,8 @@ TEST_F(ColorViewsRenderTest, TimeBufferReadFailsWhenTheBufferLayoutDiffersFromIt
     createTimeBufferPair(alphaReader, rgbaReader, &bufferRead, &bufferWrite);
     ASSERT_FALSE(HasFatalFailure());
 
-    EXPECT_EQ(1, bufferRead->getEffectInstance()->getMetadataNComps(-1));
-    EXPECT_EQ(4, bufferWrite->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*bufferRead->getEffectInstance()->getTimeInvariantMetadata(), -1));
+    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*bufferWrite->getEffectInstance()->getTimeInvariantMetadata(), -1));
 
     FlatExrImage frame1;
     std::string error;
@@ -1528,8 +1528,8 @@ TEST_F(ColorViewsRenderTest, MagickEffectsAcceptAlphaOnlyStreamsNatively)
 
         EXPECT_TRUE(effect->isSupportedComponent(0, ImageLayerDesc::getAlphaComponents()));
         EXPECT_TRUE(effect->isSupportedComponent(-1, ImageLayerDesc::getAlphaComponents()));
-        EXPECT_EQ(1, effect->getEffectInstance()->getMetadataNComps(0));
-        EXPECT_EQ(1, effect->getEffectInstance()->getMetadataNComps(-1));
+        EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*effect->getEffectInstance()->getTimeInvariantMetadata(), 0));
+        EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*effect->getEffectInstance()->getTimeInvariantMetadata(), -1));
 
         FlatExrImage alphaImage;
         ASSERT_TRUE(render(effect, &ColorViewsRenderTest::writeAll, &alphaImage, &error)) << error;

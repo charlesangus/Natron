@@ -178,7 +178,9 @@ private:
 
     virtual void onChannelsSelectorRefreshed() OVERRIDE FINAL;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void getComponentsNeededAndProduced(double time,
                                                 ViewIdx view,

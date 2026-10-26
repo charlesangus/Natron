@@ -38,9 +38,12 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Settings.h"
+#include "Engine/TimeLine.h"
 
 #include "Gui/BackdropGui.h"
 #include "Gui/Edge.h"
@@ -67,25 +70,33 @@ handleConnectionError(const NodeGuiPtr& outputNode,
     Node::CanConnectInputReturnValue linkRetCode = outputNode->getNode()->canConnectInput(inputNode->getNode(), inputNb, &conflictingNode);
 
     if ( (linkRetCode != Node::eCanConnectInput_ok) && (linkRetCode != Node::eCanConnectInput_inputAlreadyConnected) ) {
+        // The check judged the current frame, so quote that frame's values.
+        const double time = outputNode->getNode()->getApp()->getTimeLine()->currentFrame();
+        const NodeMetadataConstPtr outputMetadata = outputNode->getNode()->getEffectInstance()->getMetadata(time, ViewIdx(0));
+        const NodeMetadataConstPtr inputMetadata = inputNode->getNode()->getEffectInstance()->getMetadata(time, ViewIdx(0));
+        const double outputPAR = outputMetadata ? outputMetadata->getPixelAspectRatio(-1) : 1.;
+        const double inputPAR = inputMetadata ? inputMetadata->getPixelAspectRatio(-1) : 1.;
+        const double outputFPS = outputMetadata ? outputMetadata->getOutputFrameRate() : 0.;
+        const double inputFPS = inputMetadata ? inputMetadata->getOutputFrameRate() : 0.;
         if (linkRetCode == Node::eCanConnectInput_differentPars) {
             QString error = QCoreApplication::translate("NodeGraph", "%1 and %2 do not have the same pixel aspect ratio (%3 vs. %4), and %1 does not support inputs with different pixel aspect ratio.\n"
-                                                        "This might yield unwanted results.")
-                            .arg( QString::fromUtf8( outputNode->getNode()->getLabel().c_str() ) )
-                            .arg( QString::fromUtf8( inputNode->getNode()->getLabel().c_str() ) )
-                            .arg( outputNode->getNode()->getEffectInstance()->getAspectRatio(-1) )
-                            .arg( inputNode->getNode()->getEffectInstance()->getAspectRatio(-1) );
+                                                                     "This might yield unwanted results.")
+                                .arg(QString::fromUtf8(outputNode->getNode()->getLabel().c_str()))
+                                .arg(QString::fromUtf8(inputNode->getNode()->getLabel().c_str()))
+                                .arg(outputPAR)
+                                .arg(inputPAR);
             Dialogs::warningDialog( QCoreApplication::translate("NodeGraph", "Different pixel aspect").toStdString(),
                                     error.toStdString() );
 
             return true;
         } else if (linkRetCode == Node::eCanConnectInput_differentFPS) {
             QString error = QCoreApplication::translate("NodeGraph", "%1 and %2 do not have the same frame rate (%3 vs. %4).\n"
-                                                        "This might yield unwanted results.\n"
-                                                        "Either change the FPS from the Read node parameters or change the settings of the project.")
-                            .arg( QString::fromUtf8( outputNode->getNode()->getLabel().c_str() ) )
-                            .arg( QString::fromUtf8( inputNode->getNode()->getLabel().c_str() ) )
-                            .arg( outputNode->getNode()->getEffectInstance()->getFrameRate() )
-                            .arg( inputNode->getNode()->getEffectInstance()->getFrameRate() );
+                                                                     "This might yield unwanted results.\n"
+                                                                     "Either change the FPS from the Read node parameters or change the settings of the project.")
+                                .arg(QString::fromUtf8(outputNode->getNode()->getLabel().c_str()))
+                                .arg(QString::fromUtf8(inputNode->getNode()->getLabel().c_str()))
+                                .arg(outputFPS)
+                                .arg(inputFPS);
             Dialogs::warningDialog( QCoreApplication::translate("NodeGraph", "Different frame rate").toStdString(),
                                     error.toStdString() );
 

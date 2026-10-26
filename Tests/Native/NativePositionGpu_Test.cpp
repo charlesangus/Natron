@@ -198,7 +198,7 @@ TEST_F(NativePositionGpuTest, InputRegionIsTheNodesRegionOfInterest)
         effect->getRegionsOfInterest_public(kTime, scale, window, window, ViewIdx(0), &rois);
         RoIMap::const_iterator found = rois.find(source->getEffectInstance());
         ASSERT_TRUE(found != rois.end()) << "mipmap " << mipmapLevel;
-        EXPECT_EQ(found->second.toPixelEnclosing(scale, 1.), effect->getGpuInputRoI(0, rect, scale)) << "mipmap " << mipmapLevel;
+        EXPECT_EQ(found->second.toPixelEnclosing(scale, 1.), effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), rect, scale)) << "mipmap " << mipmapLevel;
     }
 }
 
@@ -253,7 +253,7 @@ pixelRegionOfDefinition(const NodePtr& node,
     const StatusEnum stat = effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::fromMipmapLevel(mipmapLevel), ViewIdx(0), &rod, &isProjectFormat);
     EXPECT_NE(eStatusFailed, stat);
 
-    return rod.toPixelEnclosing(mipmapLevel, effect->getAspectRatio(-1));
+    return rod.toPixelEnclosing(mipmapLevel, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
 }
 
 GpuQuery
@@ -382,14 +382,14 @@ expectShiftMatches(GpuParityRuntime& runtime,
         cpu.pixels.assign((std::size_t)roi.area() * 4, 0.f);
     }
 
-    const RectI bounds = effect->getGpuInputRoI(0, roi, RenderScale::fromMipmapLevel(mipmapLevel)).intersect(pixelRegionOfDefinition(source, mipmapLevel));
+    const RectI bounds = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel)).intersect(pixelRegionOfDefinition(source, mipmapLevel));
     std::vector<GpuParityImage> inputs(1);
     if (!bounds.isNull()) {
         ASSERT_TRUE(sourceImage(source, mipmapLevel, bounds, &inputs[0])) << what;
     }
     if (outside) {
         *outside = 0;
-        const RectI roiSource = effect->getGpuInputRoI(0, roi, RenderScale::fromMipmapLevel(mipmapLevel));
+        const RectI roiSource = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel));
         for (int y = roi.y1; y < roi.y2; ++y) {
             for (int x = roi.x1; x < roi.x2; ++x) {
                 if (!roiSource.contains(x, y)) {

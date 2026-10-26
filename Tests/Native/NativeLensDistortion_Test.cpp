@@ -576,8 +576,8 @@ TEST_F(NativeLensDistortionTest, OverscanRoundTripRestoresTheWholeFormat)
     const int padX = (int)std::floor(kParitySourceWidth * overscan / 200. + 0.5);
     const int padY = (int)std::floor(kParitySourceHeight * overscan / 200. + 0.5);
     const RectI overscanned(-padX, -padY, kParitySourceWidth + padX, kParitySourceHeight + padY);
-    EXPECT_EQ(overscanned, distort->getEffectInstance()->getOutputFormat());
-    EXPECT_EQ(window, undistort->getEffectInstance()->getOutputFormat());
+    EXPECT_EQ(overscanned, distort->getEffectInstance()->getMetadata(kTime, ViewIdx(0))->getOutputFormat());
+    EXPECT_EQ(window, undistort->getEffectInstance()->getMetadata(kTime, ViewIdx(0))->getOutputFormat());
 
     // Where the Source edges land in the Distort output: inside the overscan, clear of a cubic footprint.
     const LensModels::Model model = LensModels::makeNuke(kFrame, nukeParams());

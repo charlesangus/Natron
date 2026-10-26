@@ -514,7 +514,7 @@ RawPrepare::getRegionOfDefinition(U64 hash,
     if (!settings || settings->passThrough) {
         return StagedImageEffect::getRegionOfDefinition(hash, time, scale, view, rod);
     }
-    const double par = getAspectRatio(getSourceInput());
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     *rod = RectD(0., 0., settings->kept.width() * par, settings->kept.height());
 
     return eStatusOK;
@@ -535,7 +535,7 @@ RawPrepare::getRegionsOfInterest(double time,
     if (!input || !settings || settings->passThrough) {
         return;
     }
-    const double par = getAspectRatio(getSourceInput());
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     RectI window = PassExec::toPixelEnclosing(renderWindow, scale, par);
     window.translate(settings->kept.x1, settings->kept.y1);
     (*ret)[input] = PassExec::toCanonical(window, scale, par);
@@ -735,10 +735,12 @@ RawPrepare::getOpGpuInputLayer(int inputNb,
 
 RectI
 RawPrepare::getOpGpuInputRoI(int inputNb,
+                             double time,
+                             ViewIdx view,
                              const RectI& outputRect,
                              const RenderScale& /*scale*/) const
 {
-    const std::optional<Settings> settings = const_cast<RawPrepare*>(this)->resolveSettings(getCurrentTime(), getCurrentView());
+    const std::optional<Settings> settings = const_cast<RawPrepare*>(this)->resolveSettings(time, view);
 
     if ((inputNb != getSourceInput()) || !settings || settings->passThrough) {
         return outputRect;

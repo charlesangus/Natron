@@ -237,6 +237,12 @@ public:
     ///existing key at this time.
     bool addKeyFrame(KeyFrame key);
 
+    /**
+     * @brief True if addKeyFrame(key) would leave the curve as it is: a key already sits at its
+     * time with its value, its weights and the interpolation the curve would give it.
+     **/
+    bool hasKeyFrameEquivalentTo(KeyFrame key) const WARN_UNUSED_RETURN;
+
     void removeKeyFrameWithTime(double time);
 
     void removeKeyFrameWithIndex(int index);

@@ -398,12 +398,6 @@ public:
     U64 hashFlushRootVisit = 0; //< the flush pass that last walked from the node's own mark; same locking
     QMutex hashRecomputeMutex; //< serializes recomputes of this node; no other node's is taken under it
 
-    // Set on the nodes downstream of an edit instead of refreshing their input-related data, which
-    // their readers then refresh. Written on the main thread, read on any by the render setups.
-    std::atomic<bool> inputRelatedDataStale { false };
-    // Set while a refresh requested off the main thread waits in the main thread's event queue.
-    std::atomic<bool> inputRelatedDataRefreshRequested { false };
-
     // The knob part of the content hash, memoized against the effect's knobs content generation.
     // Knobs that read another knob or a file are kept as live entries and hashed on every use.
     struct KnobsDigestEntry {

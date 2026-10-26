@@ -1067,14 +1067,22 @@ std::list<CurveGuiPtr>
 CurveEditor::findCurve(const KnobGuiPtr& knob,
                        int dimension) const
 {
-    KnobHolder* holder = knob->getKnob()->getHolder();
+    KnobIPtr internalKnob = knob->getKnob();
+    KnobHolder* holder = internalKnob->getHolder();
 
     assert(holder);
     EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
-    assert(effect);
 
     std::list<CurveGuiPtr> ret;
-    if (effect) {
+    if (!effect) {
+        // The editor lists only nodes' curves. The knob of another holder, such as a project
+        // variable, gets a curve that is not shown, through which commands edit its animation.
+        CurvePtr curve = knob->getCurve(ViewIdx(0), dimension);
+        if (curve) {
+            QString curveName = QString::fromUtf8(internalKnob->getLabel().c_str()) + QLatin1Char('.') + QString::fromUtf8(internalKnob->getDimensionName(dimension).c_str());
+            ret.push_back(std::make_shared<KnobCurveGui>(getCurveWidget(), curve, knob, dimension, curveName, QColor(255, 255, 255), 1.));
+        }
+    } else {
         RotoCurveContextPtr roto = effect->getNode()->getCurveContext();
         if (roto) {
             for (std::list<RotoCurveEditorContext*>::const_iterator it = _imp->rotos.begin(); it != _imp->rotos.end(); ++it) {

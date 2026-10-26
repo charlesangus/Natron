@@ -85,11 +85,13 @@ setWarpGpuDouble(double v,
     out[1] = (float)(v - (double)out[0]);
 }
 
-// The region of definition of input inputNb of effect, in pixels at scale; empty when there is no
-// input or it has none.
+// The region of definition of input inputNb of effect at time and view, in pixels at scale; empty
+// when there is no input or it has none.
 inline RectI
 warpGpuInputRegion(const EffectInstance& effect,
                    int inputNb,
+                   double time,
+                   ViewIdx view,
                    const RenderScale& scale)
 {
     EffectInstancePtr input = effect.getInput(inputNb);
@@ -99,11 +101,11 @@ warpGpuInputRegion(const EffectInstance& effect,
     const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
     RectD rod;
     bool isProjectFormat = false;
-    if ((input->getRegionOfDefinition_public(input->getRenderHash(), effect.getCurrentTime(), inputScale, effect.getCurrentView(), &rod, &isProjectFormat) == eStatusFailed) || rod.isNull()) {
+    if ((input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &rod, &isProjectFormat) == eStatusFailed) || rod.isNull()) {
         return RectI();
     }
 
-    return rod.toPixelEnclosing(scale, effect.getAspectRatio(inputNb));
+    return rod.toPixelEnclosing(scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(inputNb));
 }
 
 // What the CPU's getRegionsOfInterest asks of each input: the whole Source, as the map may point
@@ -113,11 +115,13 @@ warpGpuInputRoI(const EffectInstance& effect,
                 int inputNb,
                 int sourceInput,
                 int uvInput,
+                double time,
+                ViewIdx view,
                 const RectI& outputRect,
                 const RenderScale& scale)
 {
     RectI sourceRoI = outputRect;
-    const RectI sourceRegion = warpGpuInputRegion(effect, sourceInput, scale);
+    const RectI sourceRegion = warpGpuInputRegion(effect, sourceInput, time, view, scale);
     if (!sourceRegion.isNull()) {
         sourceRoI.merge(sourceRegion);
     }

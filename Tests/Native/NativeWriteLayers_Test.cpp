@@ -225,7 +225,7 @@ protected:
         if (inputSpace) {
             inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
         }
-        node->getEffectInstance()->refreshMetadata_public(false);
+        node->getEffectInstance()->dropCachedMetadata();
 
         return node;
     }

@@ -39,21 +39,6 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-bool
-isAnimatedKnob(const KnobIPtr& knob)
-{
-    if (!knob) {
-        return false;
-    }
-    for (int d = 0; d < knob->getDimension(); ++d) {
-        if (knob->isAnimated(d)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 ExtentPolicy
 generatorExtentPolicy()
 {
@@ -129,9 +114,10 @@ NativeGenerator::getRegionOfDefinition(double time,
 }
 
 double
-NativeGenerator::getPixelAspectRatio() const
+NativeGenerator::getPixelAspectRatio(double time,
+                                     ViewIdx view) const
 {
-    const double par = _effect->getAspectRatio(-1);
+    const double par = _effect->getRenderMetadata(time, view)->getPixelAspectRatio(-1);
 
     return (par == 0.) ? 1. : par;
 }
@@ -147,28 +133,32 @@ NativeGenerator::getFrameRange(double* first,
 }
 
 ImageMetadata
-NativeGenerator::deriveOutputMetadata() const
+NativeGenerator::deriveOutputMetadata(double time,
+                                      ViewIdx view) const
 {
     ImageMetadata metadata;
 
     metadata.setDouble(kOfxMetadataKeyFrameRate, _effect->getApp()->getProjectFrameRate());
-    metadata.setDouble(kOfxMetadataKeyPixelAspect, _effect->getAspectRatio(-1));
+    NodeMetadataConstPtr own = _effect->getMetadata(time, view);
+    metadata.setDouble(kOfxMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
 
     return metadata;
 }
 
 StatusEnum
-NativeGenerator::getPreferredMetadata(NodeMetadata& metadata) const
+NativeGenerator::getPreferredMetadataAt(double time,
+                                        ViewIdx view,
+                                        NodeMetadata& metadata) const
 {
     metadata.setIsContinuous(true);
     metadata.setNComps(-1, 4);
     metadata.setComponentsType(-1, kNatronColorLayerID);
 
     double par = 0.;
-    switch (getExtent()) {
+    switch (_extentKnobs.getExtent(time, view)) {
     case ExtentKnobs::eExtentFormat: {
         KnobDoublePtr formatPar = _extentKnobs.getFormatParKnob();
-        par = formatPar ? formatPar->getValue() : 1.;
+        par = formatPar ? formatPar->getValueAtTime(time, 0, view) : 1.;
         break;
     }
     case ExtentKnobs::eExtentProject:
@@ -178,7 +168,9 @@ NativeGenerator::getPreferredMetadata(NodeMetadata& metadata) const
     }
     case ExtentKnobs::eExtentSize: {
         KnobBoolPtr reformat = _extentKnobs.getReformatKnob();
-        if (reformat && reformat->getValue() && !isAnimatedKnob(_extentKnobs.getBottomLeftKnob()) && !isAnimatedKnob(_extentKnobs.getSizeKnob())) {
+        // Asked at a frame, an animated rectangle reformats to that frame's size, where a
+        // timeless answer could only leave the format alone.
+        if (reformat && reformat->getValueAtTime(time, 0, view)) {
             par = 1.;
         }
         break;
@@ -188,7 +180,7 @@ NativeGenerator::getPreferredMetadata(NodeMetadata& metadata) const
     if (par != 0.) {
         metadata.setPixelAspectRatio(-1, par);
         RectD rod;
-        if (getExtentRegionOfDefinition(0., ViewIdx(0), &rod)) {
+        if (getExtentRegionOfDefinition(time, view, &rod)) {
             RectI format(0, 0, 0, 0);
             if ((rod.x2 > rod.x1) && (rod.y2 > rod.y1)) {
                 format.x1 = (int)std::floor(rod.x1 / par + 0.5);
@@ -201,6 +193,6 @@ NativeGenerator::getPreferredMetadata(NodeMetadata& metadata) const
     }
 
     return eStatusOK;
-} // NativeGenerator::getPreferredMetadata
+} // NativeGenerator::getPreferredMetadataAt
 
 NATRON_NAMESPACE_EXIT

@@ -290,3 +290,5 @@ Deps: M100 - Content Node Hashing.
 - 2026-10-24 — **User decision: a Write over a range whose metadata varies writes per-file headers.** Each image-sequence file's header follows its own frame's metadata; an OpenFX video writer keeps its per-hash clip preferences and the host converts each frame to them, as today (P5.T4). Open: the user asked whether OpenFX can be handed the correct metadata for the frame it is processing rather than a time-invariant answer; P4's design waits on that analysis, and the identity-rule question for OpenFX follows from it.
 
 - 2026-10-24 — **Elaborated from the stub (PM, opus consultant).** M110 is not added to Deps: M110.P3.T4 (`fd155a8e5`) touches `EffectInstance.cpp` and `StagedImageEffect.cpp`, and M167 rebases onto it when M110 merges (textual conflicts expected). P5.T3 drops the no-argument Python metadata calls (clean break).
+
+Shipped 2026-10-26: UAT approved; PR #111 squash-merged to main as 3b258160f (with Noise's per-frame pixel aspect fix). Follow-ups in M223 - Read And Write Knob Cleanup.

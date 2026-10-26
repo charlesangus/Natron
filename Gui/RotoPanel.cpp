@@ -2920,7 +2920,9 @@ PasteItemUndoCommand::redo()
         Bezier* isBezier = dynamic_cast<Bezier*>( _targetItem.get() );
         RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>( _targetItem.get() );
         if (isBezier) {
-            BezierPtr oldBezier( new Bezier(isBezier->getContext(), isBezier->getScriptName(), isBezier->getParentLayer(), false) );
+            // The saved state is never in a layer, and wiring its render nodes looks it up among
+            // its parent layer's items, so it gets none.
+            BezierPtr oldBezier(new Bezier(isBezier->getContext(), isBezier->getScriptName(), RotoLayerPtr(), false));
             oldBezier->getContext()->onItemCreated(oldBezier, true);
             _oldTargetItem = oldBezier;
         } else if (isStroke) {

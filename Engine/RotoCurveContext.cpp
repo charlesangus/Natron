@@ -103,7 +103,9 @@ RotoCurveContext::makeDrawableCopy(const RotoDrawableItemPtr& source,
     RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(source);
 
     if (isBezier) {
-        copy.reset(new Bezier(this_shared, name, isBezier->getParentLayer(), false));
+        // Built with no parent layer: the copy is not in the source's layer, and wiring its
+        // render nodes looks it up among that layer's items.
+        copy.reset(new Bezier(this_shared, name, RotoLayerPtr(), false));
         onItemCreated(copy, true);
     } else if (isStroke) {
         copy.reset(new RotoStrokeItem(isStroke->getBrushType(), this_shared, name, RotoLayerPtr()));
@@ -115,6 +117,10 @@ RotoCurveContext::makeDrawableCopy(const RotoDrawableItemPtr& source,
         return copy;
     }
     copy->clone(source.get());
+    if (isBezier) {
+        // clone() takes the source's parent layer, which does not hold the copy.
+        copy->setParentLayer(RotoLayerPtr());
+    }
     // clone() overwrites the script name.
     copy->setScriptName(name);
     copy->setLabel(name);

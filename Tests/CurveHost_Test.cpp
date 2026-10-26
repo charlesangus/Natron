@@ -244,6 +244,50 @@ TEST_F(CurveHostTest, CopyingRotoPaintCurvesStillCreatesTheirNodes)
     EXPECT_TRUE(foundStroke);
 }
 
+// The curve panel duplicates an item by copying it, then adding the copy to the source's layer;
+// undo removes it and redo adds it again. Each step must leave the copy in that layer exactly once.
+TEST_F(CurveHostTest, DuplicatingAStrokeLeavesItInItsLayerOnce)
+{
+    NodePtr paintNode = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(paintNode));
+    RotoContextPtr paint = paintNode->getRotoContext();
+    ASSERT_TRUE(bool(paint));
+    ASSERT_FALSE(paint->getLayers().empty());
+    const RotoLayerPtr layer = paint->getLayers().front();
+
+    RotoStrokeItemPtr stroke(new RotoStrokeItem(eRotoStrokeTypeSolid, paint, "Stroke", RotoLayerPtr()));
+    stroke->createNodes();
+    paint->addItem(layer, 0, stroke, RotoItem::eSelectionReasonOther);
+    for (int i = 0; i < 8; ++i) {
+        stroke->appendPoint(i == 0, RotoPoint(4. + i, 4. + 2. * i, 0.5, 1.));
+    }
+    stroke->setStrokeFinished();
+
+    RotoDrawableItemPtr copy = paint->makeDrawableCopy(stroke, "StrokeCopy");
+    ASSERT_TRUE(bool(std::dynamic_pointer_cast<RotoStrokeItem>(copy)));
+
+    const auto occurrences = [&layer](const RotoItemPtr& item) {
+        const std::list<RotoItemPtr> items = layer->getItems_mt_safe();
+        return std::count(items.begin(), items.end(), item);
+    };
+
+    paint->addItem(stroke->getParentLayer(), 0, copy, RotoItem::eSelectionReasonOther);
+    EXPECT_EQ(1, occurrences(copy));
+    EXPECT_EQ(1, occurrences(stroke));
+    EXPECT_EQ(layer, copy->getParentLayer());
+    EXPECT_TRUE(bool(copy->getEffectNode()));
+    EXPECT_TRUE(bool(copy->getMergeNode()));
+
+    paint->removeItem(copy, RotoItem::eSelectionReasonOther);
+    EXPECT_EQ(0, occurrences(copy));
+    EXPECT_EQ(1, occurrences(stroke));
+
+    paint->addItem(stroke->getParentLayer(), 0, copy, RotoItem::eSelectionReasonOther);
+    EXPECT_EQ(1, occurrences(copy));
+    EXPECT_EQ(1, occurrences(stroke));
+    EXPECT_EQ(layer, copy->getParentLayer());
+}
+
 TEST_F(CurveHostTest, MovingAControlPointChangesTheContentHash)
 {
     NodePtr host = createNode(QString::fromUtf8(kTestPluginIDCurveHost));

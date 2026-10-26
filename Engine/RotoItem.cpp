@@ -106,11 +106,11 @@ NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 
 static RotoMetaTypesRegistration registration;
-RotoItem::RotoItem(const RotoContextPtr& context,
-                   const std::string & name,
+RotoItem::RotoItem(const RotoCurveContextPtr& context,
+                   const std::string& name,
                    RotoLayerPtr parent)
     : itemMutex()
-    , _imp( new RotoItemPrivate(context, name, parent) )
+    , _imp(new RotoItemPrivate(context, name, parent))
 {
 }
 
@@ -185,7 +185,7 @@ RotoItem::setGloballyActivated(bool a,
         QMutexLocker l(&itemMutex);
         _imp->globallyActivated = a;
     }
-    RotoContextPtr c = _imp->context.lock();
+    RotoCurveContextPtr c = _imp->context.lock();
     if (c) {
         RotoDrawableItem* isDrawable = dynamic_cast<RotoDrawableItem*>(this);
         if (isDrawable) {
@@ -338,10 +338,16 @@ RotoItem::getHierarchyLevel() const
     return ret;
 }
 
-RotoContextPtr
+RotoCurveContextPtr
 RotoItem::getContext() const
 {
     return _imp->context.lock();
+}
+
+RotoContextPtr
+RotoItem::getPaintContext() const
+{
+    return std::dynamic_pointer_cast<RotoContext>(_imp->context.lock());
 }
 
 bool
@@ -374,7 +380,7 @@ RotoItem::setScriptName(const std::string & name)
         _imp->scriptName = cpy;
     }
     std::string newFullName = getFullyQualifiedName();
-    RotoContextPtr c = _imp->context.lock();
+    RotoCurveContextPtr c = _imp->context.lock();
     if (c) {
         if (!oldNameEmpty) {
             RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(this);
@@ -437,7 +443,7 @@ RotoItem::setLabel(const std::string& label)
         QMutexLocker l(&itemMutex);
         _imp->label = label;
     }
-    RotoContextPtr c = _imp->context.lock();
+    RotoCurveContextPtr c = _imp->context.lock();
 
     if (c) {
         c->onItemLabelChanged( shared_from_this() );
@@ -569,7 +575,7 @@ RotoItem::invalidateContentHash()
     _imp->contentGeneration.fetch_add(1, std::memory_order_acq_rel);
 
     // The context's node hashes the items, and marking it marks the paint tree's nodes too.
-    RotoContextPtr context = getContext();
+    RotoCurveContextPtr context = getContext();
     NodePtr node = context ? context->getNode() : NodePtr();
     if (node) {
         node->markHashDirty();

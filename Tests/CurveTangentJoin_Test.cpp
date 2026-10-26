@@ -89,7 +89,7 @@ TEST(CurveTangentJoin, CommandRoundTripRestoresTheBrokenStateOnUndo)
     ASSERT_TRUE(bool(curve));
     curve->addKeyFrame(KeyFrame(0., 0., -4., 1., eKeyframeTypeBroken));
 
-    CurveGuiPtr curveGui = std::make_shared<KnobCurveGui>(nullptr, curve, KnobIPtr(knob), RotoContextPtr(),
+    CurveGuiPtr curveGui = std::make_shared<KnobCurveGui>(nullptr, curve, KnobIPtr(knob), RotoCurveContextPtr(),
                                                           0, QString::fromUtf8("Join"), QColor());
 
     KeyFrameSet keys = curve->getKeyFrames_mt_safe();
@@ -127,7 +127,7 @@ TEST(CurveTangentJoin, AnUnbrokenKeyIsLeftAlone)
     ASSERT_TRUE(bool(curve));
     curve->addKeyFrame(KeyFrame(0., 0., 2., 2., eKeyframeTypeFree));
 
-    CurveGuiPtr curveGui = std::make_shared<KnobCurveGui>(nullptr, curve, KnobIPtr(knob), RotoContextPtr(),
+    CurveGuiPtr curveGui = std::make_shared<KnobCurveGui>(nullptr, curve, KnobIPtr(knob), RotoCurveContextPtr(),
                                                           0, QString::fromUtf8("Join"), QColor());
 
     KeyFrameSet keys = curve->getKeyFrames_mt_safe();

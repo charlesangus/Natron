@@ -87,19 +87,12 @@ NATRON_NAMESPACE_ENTER
 
 ////////////////////////////////////Layer////////////////////////////////////
 
-RotoLayer::RotoLayer(const RotoContextPtr& context,
-                     const std::string & n,
+RotoLayer::RotoLayer(const RotoCurveContextPtr& context,
+                     const std::string& n,
                      const RotoLayerPtr& parent)
     : RotoItem(context, n, parent)
-    , _imp( new RotoLayerPrivate() )
+    , _imp(new RotoLayerPrivate())
 {
-}
-
-RotoLayer::RotoLayer(const RotoLayer & other)
-    : RotoItem( other.getContext(), other.getScriptName(), other.getParentLayer() )
-    , _imp( new RotoLayerPrivate() )
-{
-    clone(&other);
 }
 
 RotoLayer::~RotoLayer()
@@ -121,7 +114,6 @@ RotoLayer::clone(const RotoItem* other)
     // Built without itemMutex held: creating and attaching a copy's nodes hashes them, and that
     // reads whether this layer is activated, which takes itemMutex.
     RotoItems copies;
-    std::list<RotoStrokeItemPtr> strokes;
     std::list<RotoLayerPtr> layers;
     const RotoItems otherItems = isOtherLayer->getItems_mt_safe();
     for (RotoItems::const_iterator it = otherItems.begin(); it != otherItems.end(); ++it) {
@@ -129,21 +121,24 @@ RotoLayer::clone(const RotoItem* other)
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
         RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(*it);
         if (isBezier) {
-            BezierPtr copy( new Bezier(*isBezier, this_shared) );
-            copy->createNodes();
+            // clone() needs the copy owned by a shared_ptr, so it runs after construction.
+            BezierPtr copy(new Bezier(getContext(), isBezier->getScriptName(), RotoLayerPtr(), false));
+            getContext()->onItemCreated(copy, true);
+            copy->clone(isBezier.get());
+            copy->setParentLayer(this_shared);
             copies.push_back(copy);
         } else if (isStroke) {
-            RotoStrokeItemPtr copy( new RotoStrokeItem( isStroke->getBrushType(),
-                                                                        isStroke->getContext(),
-                                                                        isStroke->getScriptName() + "copy",
-                                                                        RotoLayerPtr() ) );
-            copy->createNodes();
+            RotoStrokeItemPtr copy(new RotoStrokeItem(isStroke->getBrushType(), getContext(), isStroke->getScriptName(), RotoLayerPtr()));
+            getContext()->onItemCreated(copy, true);
+            copy->clone(isStroke.get());
+            copy->setParentLayer(this_shared);
             copies.push_back(copy);
-            strokes.push_back(copy);
         } else {
             assert(isLayer);
             if (isLayer) {
-                RotoLayerPtr copy( new RotoLayer(*isLayer) );
+                // clone() needs the copy owned by a shared_ptr, so it runs after construction.
+                RotoLayerPtr copy(new RotoLayer(getContext(), isLayer->getScriptName(), RotoLayerPtr()));
+                copy->clone(isLayer.get());
                 copy->setParentLayer(this_shared);
                 copies.push_back(copy);
                 layers.push_back(copy);
@@ -154,9 +149,6 @@ RotoLayer::clone(const RotoItem* other)
     {
         QMutexLocker l(&itemMutex);
         _imp->items.swap(copies);
-    }
-    for (std::list<RotoStrokeItemPtr>::const_iterator it = strokes.begin(); it != strokes.end(); ++it) {
-        (*it)->setParentLayer(this_shared);
     }
     for (std::list<RotoLayerPtr>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
         getContext()->addLayer(*it);
@@ -186,7 +178,7 @@ RotoLayer::addItem(const RotoItemPtr & item,
     }
     // The children are hashed in order.
     invalidateContentHash();
-    getContext()->refreshRotoPaintTree();
+    getContext()->onStructureChanged();
 }
 
 void
@@ -224,7 +216,7 @@ RotoLayer::insertItem(const RotoItemPtr & item,
     }
     invalidateContentHash();
     getContext()->declareItemAsPythonField(item);
-    getContext()->refreshRotoPaintTree();
+    getContext()->onStructureChanged();
 }
 
 void
@@ -250,7 +242,7 @@ RotoLayer::removeItem(const RotoItemPtr& item)
     if (isStroke) {
         isStroke->disconnectNodes();
     }
-    getContext()->refreshRotoPaintTree();
+    getContext()->onStructureChanged();
 }
 
 int

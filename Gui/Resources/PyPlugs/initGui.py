@@ -39,25 +39,13 @@ def _natronAddMergePresets():
     presetsMenuLabel = "Merge Presets"
 
     def setAllLayers(node):
-        # The "layers" knob is a multi-select list with an All entry. Without the knob or the
-        # entry the node keeps its default layers.
+        # "layers" is a channel set (ChannelSetParam): All is its row 0's mode, and an All row
+        # merges every layer of B whatever rows follow it. Without the param the node keeps its
+        # default layers.
         param = node.getParam("layers")
-        if param is None:
+        if param is None or not hasattr(param, "setAll"):
             return
-        try:
-            count = len(param.getOptions())
-            names = [param.getOption(i) for i in range(count)]
-        except Exception:
-            return
-        if "All" not in names:
-            return
-        try:
-            param.set("All")
-        except Exception:
-            try:
-                param.set(names.index("All"))
-            except Exception:
-                pass
+        param.setAll()
 
     def createMerge(operation, allLayers=False):
         # Created in the active project with no group, so a tab menu's creation context, when the

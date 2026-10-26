@@ -26,6 +26,7 @@
 #include "Merge.h"
 
 #include <algorithm>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -379,10 +380,11 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
 
     KnobChannelSetPtr layersKnob = AppManager::createKnob<KnobChannelSet>(holder, EffectInstance::tr("Layers").toStdString());
     layersKnob->setName(kNativeMergeParamLayers);
-    layersKnob->setHintToolTip(EffectInstance::tr("The layers of B merged, each in place; All merges every layer of B. Every "
-                                                  "other layer of B passes through unchanged.")
+    layersKnob->setHintToolTip(EffectInstance::tr("The layers of B merged, each in place; All merges every layer of B. A row's "
+                                                  "channel buttons choose the channels of its layer merged, the others passing "
+                                                  "through from B unchanged, as does every other layer of B.")
                                    .toStdString());
-    layersKnob->setWithChannelButtons(false);
+    layersKnob->setWithChannelButtons(true);
     layersKnob->setAnimationEnabled(false);
     layersKnob->setIsMetadataSlave(true);
     layersKnob->setDefaultValue(layersKnob->encodeRows(KnobChannelSet::defaultRows()));
@@ -811,6 +813,30 @@ NativeMerge::addProducedPlanes(double time,
     ImageLayerDesc alphaLayer;
     if (bAlphaPlane(time, view, &alphaLayer)) {
         appendPlane(alphaLayer, planes);
+    }
+}
+
+void
+NativeMerge::addProducedPlanesChannels(double time,
+                                       ViewIdx view,
+                                       const std::list<ImageLayerDesc>& outputPlanes,
+                                       ProcessChannelsPerPlaneMap* processChannelsPerPlane)
+{
+    const std::vector<ResolvedLayer> merged = mergedLayers(time, view);
+
+    // Every output plane gets an entry: the host's node-wide channels, which a plane without one
+    // takes, are the union of the entries when the colour plane has none, and would then mask B's
+    // per-channel alpha layer or B's copied colour plane with a merged layer's channels.
+    for (const ImageLayerDesc& plane : outputPlanes) {
+        std::bitset<4> channels;
+        channels.set();
+        for (const ResolvedLayer& layer : merged) {
+            if ((layer.desc.isColorLayer() && plane.isColorLayer()) || (layer.desc.getLayerID() == plane.getLayerID())) {
+                channels = layer.channels;
+                break;
+            }
+        }
+        (*processChannelsPerPlane)[plane] = channels;
     }
 }
 

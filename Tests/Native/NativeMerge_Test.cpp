@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <list>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -369,6 +370,51 @@ protected:
             rows[i].layerOrPattern = layerIDs[i];
         }
         knob->setRows(rows);
+    }
+
+    // Sets Layers to one row per (layer, channels) pair, each row merging the named channels of
+    // its layer; an empty channel list merges every channel.
+    static void setLayerRows(const NodePtr& node,
+                             const std::vector<std::pair<std::string, std::vector<std::string>>>& layers)
+    {
+        KnobChannelSetPtr knob = node->getEffectInstance()->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamLayers);
+        ASSERT_TRUE(bool(knob));
+        ASSERT_TRUE(knob->getWithChannelButtons());
+        std::vector<ChannelSetRow> rows(layers.size());
+        for (std::size_t i = 0; i < layers.size(); ++i) {
+            rows[i].mode = ChannelSetRow::eModeLayer;
+            rows[i].layerOrPattern = layers[i].first;
+            rows[i].channels = layers[i].second;
+        }
+        knob->setRows(rows);
+    }
+
+    // Checks got, nComps floats per pixel, against want channel by channel: a channel written
+    // is within kTolerance of want, any other is bit-exact from b.
+    static void expectWrittenChannels(const std::vector<float>& want,
+                                      const std::vector<float>& b,
+                                      const std::vector<float>& got,
+                                      int nComps,
+                                      const std::vector<bool>& written,
+                                      const std::string& what)
+    {
+        ASSERT_EQ(want.size(), got.size()) << what;
+        ASSERT_EQ(b.size(), got.size()) << what;
+        for (int c = 0; c < nComps; ++c) {
+            std::vector<float> wantChannel, bChannel, gotChannel;
+            for (std::size_t i = c; i < got.size(); i += nComps) {
+                wantChannel.push_back(want[i]);
+                bChannel.push_back(b[i]);
+                gotChannel.push_back(got[i]);
+            }
+            const std::string channelWhat = what + " channel " + std::to_string(c);
+            if (written[c]) {
+                expectClose(wantChannel, gotChannel, kTolerance, channelWhat + " merged");
+                EXPECT_NE(bChannel, gotChannel) << channelWhat << " is unchanged, which proves nothing";
+            } else {
+                expectClose(bChannel, gotChannel, 0.f, channelWhat + " passes through from B");
+            }
+        }
     }
 
     // B's colour layers copied into the project layers diffuse and normals, and its spec into
@@ -973,6 +1019,60 @@ TEST_F(NativeMergeNodeTest, StencilChangesExactlyTheListedLayers)
     expectClose(bNormals, gotNormals, 0.f, "normals pass through from B");
     ASSERT_TRUE(renderRGBA(merge, window, &gotRGBA));
     expectClose(bRGBA, gotRGBA, 0.f, "rgba passes through from B");
+}
+
+// A Layers row with only A on merges rgba's alpha alone: B's R, G and B, and spec, which Layers
+// leaves out, pass through bit-exact.
+TEST_F(NativeMergeNodeTest, AlphaOnlyRowMergesTheAlphaAlone)
+{
+    NodePtr merge = createMerge();
+    NodePtr b = createSource(0, 0);
+    NodePtr a = createSource(10, 6);
+    ASSERT_TRUE(merge && b && a);
+    setParitySourceExtraLayer(a, true);
+    setParitySourceExtraLayer(b, true);
+    connectNodes(b, merge, kNativeMergeInputB, true);
+    connectNodes(a, merge, kNativeMergeInputA, true);
+    setLayerRows(merge, { { kNatronColorViewRGBA, { "A" } } });
+    const RectI window = paritySourceWindow(b, kTime, 0);
+    ASSERT_FALSE(window.isNull());
+
+    std::vector<float> aRGBA, bRGBA, bSpec, gotRGBA, gotSpec;
+    ASSERT_TRUE(renderRGBA(a, window, &aRGBA));
+    ASSERT_TRUE(renderRGBA(b, window, &bRGBA));
+    ASSERT_TRUE(renderLayer(b, window, paritySourceExtraLayer(), &bSpec));
+    ASSERT_TRUE(renderRGBA(merge, window, &gotRGBA));
+    ASSERT_TRUE(renderLayer(merge, window, paritySourceExtraLayer(), &gotSpec));
+    expectWrittenChannels(expectedFold(MergeOps::eOver, bRGBA, { &aRGBA }), bRGBA, gotRGBA, 4, { false, false, false, true }, "alpha only rgba");
+    expectClose(bSpec, gotSpec, 0.f, "spec passes through from B");
+}
+
+// Rows rgba with R, G and B on and spec with R and B on merge those channels alone, each row by its
+// own layer's channel names: B's alpha and spec's G pass through bit-exact.
+TEST_F(NativeMergeNodeTest, RGBOnlyRowsKeepBsOtherChannels)
+{
+    NodePtr merge = createMerge();
+    NodePtr b = createSource(0, 0);
+    NodePtr a = createSource(10, 6);
+    ASSERT_TRUE(merge && b && a);
+    setParitySourceExtraLayer(a, true);
+    setParitySourceExtraLayer(b, true);
+    connectNodes(b, merge, kNativeMergeInputB, true);
+    connectNodes(a, merge, kNativeMergeInputA, true);
+    setLayerRows(merge, { { kNatronColorViewRGBA, { "R", "G", "B" } }, { kParitySourceExtraLayerID, { "R", "B" } } });
+    EXPECT_TRUE(hasPlane(neededPlanes(merge, -1), kParitySourceExtraLayerID));
+    const RectI window = paritySourceWindow(b, kTime, 0);
+    ASSERT_FALSE(window.isNull());
+
+    std::vector<float> aRGBA, bRGBA, aSpec, bSpec, gotRGBA, gotSpec;
+    ASSERT_TRUE(renderRGBA(a, window, &aRGBA));
+    ASSERT_TRUE(renderRGBA(b, window, &bRGBA));
+    ASSERT_TRUE(renderLayer(a, window, paritySourceExtraLayer(), &aSpec));
+    ASSERT_TRUE(renderLayer(b, window, paritySourceExtraLayer(), &bSpec));
+    ASSERT_TRUE(renderRGBA(merge, window, &gotRGBA));
+    ASSERT_TRUE(renderLayer(merge, window, paritySourceExtraLayer(), &gotSpec));
+    expectWrittenChannels(expectedFold(MergeOps::eOver, bRGBA, { &aRGBA }), bRGBA, gotRGBA, 4, { true, true, true, false }, "rgb only rgba");
+    expectWrittenChannels(expectedLayerMerge(MergeOps::eOver, aSpec, aRGBA, bSpec, bRGBA), bSpec, gotSpec, 3, { true, false, true }, "spec R and B");
 }
 
 // (d) A Layer rgba merges into B's diffuse, Layers listing diffuse alone: A's R, G and B over

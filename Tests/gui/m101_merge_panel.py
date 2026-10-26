@@ -1,7 +1,9 @@
 """The Merge properties panel: its knobs sit in the rows Operation, Set BBox, Metadata From and
 Range From; Layers; B Alpha Source and B Alpha; A Layer, A Alpha Source and A Alpha, top to bottom.
 There is no Layer, Output, B Layer or Also Merge knob. Layers is set to the three layers of a
-multi-layer Read connected to B, and the panel is saved to $NATRON_GUI_TEST_OUT/shots/merge_panel.png.
+multi-layer Read connected to B, with rgba's row merging R, G and B alone: each row shows a button
+per channel of its layer, and rgba's A button is off. The panel is saved to
+$NATRON_GUI_TEST_OUT/shots/merge_panel.png.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m101_merge_panel.py
 """
@@ -27,7 +29,7 @@ ROWS = [
 try:
     from PySide6.QtCore import QMetaObject, QRect
     from PySide6.QtGui import QGuiApplication
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton, QScrollArea
 
     import guitest as gt
     from guitest import check, report, require
@@ -106,6 +108,21 @@ try:
         for gone in ("Layer", "Output", "B Layer", "Also Merge"):
             check(gone not in centres, "the panel has no %s knob" % gone)
 
+    # Set by LayerChannelRow on each channel button to the channel's name.
+    CHANNEL_NAME_PROPERTY = "channelName"
+
+    def channel_buttons(panel):
+        """The visible channel buttons of panel's layer rows, as (tooltip, name, checked)."""
+        found = []
+        for b in panel.findChildren(QPushButton):
+            try:
+                name = b.property(CHANNEL_NAME_PROPERTY)
+                if name and b.isVisible():
+                    found.append((b.toolTip(), str(name), b.isChecked()))
+            except RuntimeError:
+                continue
+        return found
+
     def steps():
         gt.section("merge panel")
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
@@ -143,7 +160,11 @@ try:
         layers.setLayer("rgba")
         layers.addLayer("diffuse")
         layers.addLayer("specular")
+        layers.setChannels(["R", "G", "B"], 0)
         yield ("sleep", 800)
+        rows = layers.getRows()
+        report("NOTE Layers rows: %r" % (rows,))
+        check(bool(rows) and list(rows[0][2]) == ["R", "G", "B"], "rgba's row merges R, G and B alone")
         summary = layers.getSummary()
         report("NOTE Layers summary: %r" % summary)
         for layer in ("diffuse", "specular"):
@@ -153,6 +174,14 @@ try:
         enlarge(panel)
         yield ("sleep", 500)
         check_rows(panel)
+        buttons = channel_buttons(panel)
+        report("NOTE channel buttons: %r" % buttons)
+        rgba = [(name, checked) for tip, name, checked in buttons if tip.lower().startswith("rgba.")]
+        check(sorted(name for name, _ in rgba) == ["A", "B", "G", "R"],
+              "rgba's row shows R, G, B and A buttons (got %r)" % rgba)
+        check(("A", False) in rgba and all(checked for name, checked in rgba if name != "A"),
+              "rgba's A button is off and its R, G and B buttons on")
+        check(len(buttons) > len(rgba), "the diffuse and specular rows show their own channel buttons")
         screen_crop("merge_panel", panel)
 
     gt.run(steps())

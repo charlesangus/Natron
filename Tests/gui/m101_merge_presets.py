@@ -16,7 +16,7 @@ Sections:
   - trigger: triggering each preset creates one Merge node (plug-in ID "Merge") in the root graph
     with its operation set, and the node's sub-label shows that operation;
   - keys: ; ' Shift+; and Shift+' sent to the node graph create a Merge with operation mask, stencil,
-    mask and stencil; the All Layers variants set the layers param to All when the param exists;
+    mask and stencil; the All Layers variants set row 0 of the layers param to All;
   - tab menu: the tab menu lists one Merge and one Plus, the old node and its presets being gone,
     lists Plus under [Merge], and choosing it creates a Merge whose operation is plus.
 
@@ -56,13 +56,6 @@ ALL_LAYERS_ITEMS = [
     ("MergeMaskAllLayers", "mask"),
     ("MergeStencilAllLayers", "stencil"),
 ]
-# Key, modifiers, expected operation, whether the layers param is set to All.
-KEY_CASES = [
-    (Qt.Key_Semicolon, Qt.NoModifier, "mask", False),
-    (Qt.Key_Apostrophe, Qt.NoModifier, "stencil", False),
-    (Qt.Key_Semicolon, Qt.ShiftModifier, "mask", True),
-    (Qt.Key_Apostrophe, Qt.ShiftModifier, "stencil", True),
-]
 
 try:
     import NatronGui
@@ -73,6 +66,14 @@ try:
 
     import guitest as gt
     from guitest import check, require
+
+    # Key, modifiers, expected operation, whether the layers param is set to All.
+    KEY_CASES = [
+        (Qt.Key_Semicolon, Qt.NoModifier, "mask", False),
+        (Qt.Key_Apostrophe, Qt.NoModifier, "stencil", False),
+        (Qt.Key_Semicolon, Qt.ShiftModifier, "mask", True),
+        (Qt.Key_Apostrophe, Qt.ShiftModifier, "stencil", True),
+    ]
 
     import faulthandler
     _watchdog_file = open(os.path.join(gt.OUT, "watchdog.txt"), "w")
@@ -113,14 +114,13 @@ try:
         return dict((a.objectName(), a) for a in (menu.actions() if menu is not None else []))
 
     def layers_is_all(node):
-        """None when the node has no layers param, else whether it is set to All."""
+        """None when the node has no layers param, else whether its row 0 is All, the mode that
+        merges every layer of B."""
         param = node.getParam("layers")
         if param is None:
             return None
-        try:
-            return param.getOption(param.getValue()) == "All"
-        except Exception:
-            return None
+        rows = param.getRows()
+        return bool(rows) and rows[0][0] == "all"
 
     def root_names():
         return set(n.getScriptName() for n in app.getChildren())
@@ -222,8 +222,7 @@ try:
                   % (label, operation, node.getPluginID(), operation_of(node)))
             if all_layers:
                 state = layers_is_all(node)
-                check(state is None or state, "keys: %ssets layers to All when the param exists (got %r)"
-                      % (label, state))
+                check(state is True, "keys: %ssets layers to All (got %r)" % (label, state))
 
     def tab_menu_section(main_graph):
         gt.section("tab menu")

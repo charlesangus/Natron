@@ -92,9 +92,9 @@ nativeMergeAInput(int k)
 
 /**
  * @brief Merge: A over B with one of MergeOps' operators, then A2 over the result, and so on, in
- * each layer of B the Layers list names (every one under All). Each such layer reads A's layer of
- * the same name, or the one A layer chosen, with an alpha from each side's own source. Every other
- * layer of B passes through.
+ * the channels of each layer of B the Layers list names (every one under All). Each such layer
+ * reads A's layer of the same name, or the one A layer chosen, with an alpha from each side's own
+ * source. Every other layer and channel of B passes through.
  **/
 struct NativeMergeOp {
     /**
@@ -236,6 +236,16 @@ protected:
     virtual void addProducedPlanes(double time,
                                    ViewIdx view,
                                    std::list<ImageLayerDesc>* planes) OVERRIDE FINAL;
+
+    /**
+     * @brief Each merged plane processes the channels its Layers row has on, every one under
+     * All or with all of a row's on; B's others pass through. Every other output plane is
+     * processed on every channel.
+     **/
+    virtual void addProducedPlanesChannels(double time,
+                                           ViewIdx view,
+                                           const std::list<ImageLayerDesc>& outputPlanes,
+                                           ProcessChannelsPerPlaneMap* processChannelsPerPlane) OVERRIDE FINAL;
 
     /**
      * @brief Reads B in plane and A in plane's namesake under Matching, else in the A layer. B's

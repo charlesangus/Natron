@@ -41,8 +41,8 @@ def paramChanged(thisParam, thisNode, thisGroup, app, userEdited):
         channels = thisNode.getNode(name).getParam("channels")
         channels.setLayer("rgba" if withAlpha else "rgb")
     for name in ("Merge1", "Merge2"):
-        layer = thisNode.getNode(name).getParam("layer")
-        layer.setChannels(["R", "G", "B", "A"] if withAlpha else ["R", "G", "B"])
+        layers = thisNode.getNode(name).getParam("layers")
+        layers.setChannels(["R", "G", "B", "A"] if withAlpha else ["R", "G", "B"])
     clampAlpha = thisNode.getNode("ClampAlpha").getParam("channels")
     if withAlpha:
         clampAlpha.setLayer("alpha")
@@ -539,7 +539,7 @@ def createInstance(app,group):
         param.setValue("<Natron>(plus)</Natron>")
         del param
 
-    param = lastNode.getParam("layer")
+    param = lastNode.getParam("layers")
     if param is not None:
         param.setChannels(["R", "G", "B"])
         del param
@@ -945,7 +945,7 @@ def createInstance(app,group):
         param.setValue("<Natron>(multiply)</Natron>")
         del param
 
-    param = lastNode.getParam("layer")
+    param = lastNode.getParam("layers")
     if param is not None:
         param.setChannels(["R", "G", "B"])
         del param
@@ -1266,7 +1266,7 @@ def createInstance(app,group):
         param.setValue("<Natron>(plus)</Natron>")
         del param
 
-    param = lastNode.getParam("layer")
+    param = lastNode.getParam("layers")
     if param is not None:
         param.setChannels(["R", "G", "B"])
         del param
@@ -1322,7 +1322,7 @@ def createInstance(app,group):
         param.setValue("<Natron>(screen)</Natron>")
         del param
 
-    param = lastNode.getParam("layer")
+    param = lastNode.getParam("layers")
     if param is not None:
         param.setChannels(["R", "G", "B"])
         del param

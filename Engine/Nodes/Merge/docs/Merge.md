@@ -16,7 +16,8 @@ Tolerance:
   arithmetic for conjoint-over and disjoint-over, which divide (Vulkan division is 2.5 ulp);
   transcendental for every blend mode.
 - **The node against expected pixels** (`Tests/Native/NativeMerge_Test.cpp`): 1e-6 relative, the
-  rounding of a fused or reordered operation, for folds, layers, alpha sources, mask and mix.
+  rounding of a fused or reordered operation, for folds, layers, alpha sources, mask and mix; a
+  channel a Layers row leaves off is bit-exact from B.
 - **Goldens** (`NativeGolden_Test`, `MergeOver`, `MergePlusOperation`, `MergeA2`, `MergeA2Plus`,
   `MergeMultiply`): bit for bit on the recording configuration.
 
@@ -143,6 +144,15 @@ Merge has no node Layer knob. Its layer knobs are:
   rows list B's layers, and an **All** row merges every layer B has. The default is `rgba`.
   Every layer of B that Layers leaves out passes through bit-exact and is not asked of any A
   input. A listed layer that B lacks is not produced.
+- **Channel buttons**: each layer row carries one button per channel of its layer, by the
+  layer's own channel names (R G B A on `rgba`, U V on `uv`), all on by default. Only the
+  channels on are merged; every other channel of that layer passes through from B bit-exact, as
+  Nuke's output channels do. A row with `A` alone merges rgba's alpha only, one with R, G and B
+  merges the colour and keeps B's alpha. A row with every channel on merges the whole layer. The
+  All row has no buttons and merges every channel of every layer. The buttons feed the host's
+  per-plane channel mask (`EffectInstance::addProducedPlanesChannels()`), the one a node Layer
+  knob's buttons feed, so the CPU finish copies the unmerged channels from B and the GPU wrap
+  masks them the same way.
 - **A Layer** (`aLayer`): **Matching** (the default) reads every A input, for each merged layer,
   in A's layer of the same name; one specific A layer is read into every merged layer instead.
   Channels are taken by index: a three-channel A layer merged into rgba reads its fourth channel
@@ -205,7 +215,8 @@ they are not plug-ins, and projects only ever hold `Merge`.
 `canRenderOnGpu` accepts every operator. The kernel (`Engine/Gpu/Kernels/merge.slang`, importing
 `mergeops`) is wrapped by the Composite fold, one dispatch per connected A input, and the result
 stays resident. A non-separable operator needs three or four components and renders on the CPU
-otherwise. A folded A input that is also the mask input renders on the CPU, the framework's rule.
+otherwise. A folded A input that is also the mask input renders on the CPU, the framework's rule. The
+Layers rows' channel buttons are the wrap's channel mask and leave the GPU path eligible.
 
 ## Dropped
 
@@ -213,9 +224,8 @@ otherwise. A folded A input that is also the mask input renders on the CPU, the 
   alpha like any other channel; mask or premultiply upstream instead.
 - **Mask fringe, inject and video colorspace** (Nuke): masking is the `MaskMix` stage's mask
   channel, invert and mix only.
-- **The A/B/output channel checkboxes** (`AChannels`, `BChannels`, `OutputChannels`) and any
-  per-channel selection: Layers merges whole layers. Copy or Shuffle a channel subset upstream or
-  downstream instead.
+- **The A/B channel checkboxes** (`AChannels`, `BChannels`): A and B are read in whole layers.
+  The output channels are each Layers row's channel buttons.
 - **B Layer and an output layer**: B is merged in place in each listed layer, so a merge into a
   layer B lacks is a Shuffle of B into that layer first.
 - **The nine preset plug-ins** (`net.sf.openfx.Merge<Plus|Matte|...>`) and

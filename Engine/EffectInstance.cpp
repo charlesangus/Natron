@@ -4941,6 +4941,9 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
                 producedPlanes.push_back(*it);
             }
         }
+        if (!hasLayerKnob) {
+            addProducedPlanesChannels(time, view, outputPlanes, processChannelsPerPlane);
+        }
     }
 
     processChannels->set();

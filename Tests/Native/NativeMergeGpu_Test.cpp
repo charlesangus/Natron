@@ -525,6 +525,44 @@ TEST_F(NativeMergeGpuTest, MaskAllLayersByAAlphaMatchesTheCpuRender)
     }
 }
 
+// Rows rgba with A alone on and spec with R and B on: the GPU merges those channels only, the
+// others passing through from B, as the CPU does.
+TEST_F(NativeMergeGpuTest, LayersRowChannelsMatchTheCpuRender)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    MergeSetup setup = makeSetup();
+    ASSERT_TRUE(bool(setup.merge));
+    KnobChannelSetPtr knob = setup.merge->getEffectInstance()->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamLayers);
+    ASSERT_TRUE(bool(knob));
+    std::vector<ChannelSetRow> rows(2);
+    rows[0].layerOrPattern = kNatronColorViewRGBA;
+    rows[0].channels = { "A" };
+    rows[1].layerOrPattern = kParitySourceExtraLayerID;
+    rows[1].channels = { "R", "B" };
+    knob->setRows(rows);
+    const RectI window = paritySourceWindow(setup.b, kTime, 0);
+    ASSERT_FALSE(window.isNull());
+    const std::vector<NodePtr> inputNodes = { setup.b, setup.a, NodePtr(), setup.a2 };
+
+    const std::bitset<4> alphaOnly(0x8);
+    const std::bitset<4> redAndBlue(0x5);
+    for (const ImageLayerDesc& plane : { ImageLayerDesc::mapNCompsToColorLayer(4), paritySourceExtraLayer() }) {
+        const GpuQuery query = queryFor(setup.merge, plane);
+        std::bitset<4> channels;
+        for (int i = 0; i < 4; ++i) {
+            channels[i] = query.processChannels[i];
+        }
+        EXPECT_EQ(plane.isColorLayer() ? alphaOnly : redAndBlue, channels) << plane.getLayerID();
+        expectGpuMatchesCpu(*runtime, setup.merge, inputNodes, setup.mask, window, plane, toleranceOf(MergeOps::eOver), "over, row channels, plane " + plane.getLayerID());
+        if (::testing::Test::HasFatalFailure()) {
+            return;
+        }
+    }
+}
+
 // A non-separable operator blends a colour, so the GPU takes it at three and four components only,
 // and never with a per-channel alpha, which is a render error; a separable one takes every count.
 // The node has no input, so the query's channel count is all that decides: with inputs, B is read

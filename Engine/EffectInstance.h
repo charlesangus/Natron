@@ -2593,6 +2593,20 @@ protected:
     {
     }
 
+    /**
+     * @brief Sets, for output planes of an effect without a layer knob that chooses its planes
+     * and channels with a knob of its own, the channels it processes on each, as a layer knob's
+     * channel buttons do: every other channel of such a plane passes through from the
+     * pass-through input. outputPlanes are every plane the effect renders, addProducedPlanes()'
+     * among them. A plane left out of the map is processed on every channel. Nothing by default.
+     **/
+    virtual void addProducedPlanesChannels(double /*time*/,
+                                           ViewIdx /*view*/,
+                                           const std::list<ImageLayerDesc>& /*outputPlanes*/,
+                                           ProcessChannelsPerPlaneMap* /*processChannelsPerPlane*/)
+    {
+    }
+
     virtual void setInteractColourPicker(const OfxRGBAColourD& /*color*/, bool /*setColor*/, bool /*hasColor*/)
     {
 

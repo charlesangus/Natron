@@ -249,22 +249,23 @@ TEST_F(USDMergePruneTest, AnAppendTransformBelowAMergeKeepsBothBranchesOps)
 
 TEST_F(USDMergePruneTest, ADiamondYieldsTheSharedSourceLayerOnce)
 {
-    NodePtr source = prim("/World", PXR_NS::GfVec3d(100., 0., 0.));
+    NodePtr source = prim("/World", PXR_NS::GfVec3d(100., 0., 0.), { prim("/Child", PXR_NS::GfVec3d(0.)) });
     ASSERT_TRUE(bool(source));
-    // Each branch moves /World along its own axis.
-    auto move = [this, &source](int dimension, double offset) {
+    // Each branch moves a prim of its own: USD takes an op order from its strongest opinion alone,
+    // so two branches moving the same prim would not both survive.
+    auto move = [this, &source](const char* pattern, int dimension, double offset) {
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
         EXPECT_TRUE(bool(node));
         if (node) {
-            setString(node, kUSDEditTransformParamPrimPattern, "/World");
+            setString(node, kUSDEditTransformParamPrimPattern, pattern);
             getDoubleKnob(node, kSceneParamTranslate)->setValue(offset, ViewSpec::all(), dimension);
             EXPECT_TRUE(node->connectInput(source, 0));
         }
 
         return node;
     };
-    NodePtr lift = move(1, 5.);
-    NodePtr push = move(2, 1.);
+    NodePtr lift = move("/World", 1, 5.);
+    NodePtr push = move("/World/Child", 2, 1.);
     ASSERT_TRUE(lift && push);
     NodePtr node = merge({ lift, push });
 
@@ -284,7 +285,8 @@ TEST_F(USDMergePruneTest, ADiamondYieldsTheSharedSourceLayerOnce)
     // The source stays under what each branch authored over it: both moves survive the union.
     PXR_NS::UsdStageRefPtr stage = SceneOps::compose(output);
     ASSERT_TRUE(bool(stage));
-    EXPECT_EQ(PXR_NS::GfVec3d(100., 5., 1.), worldTranslation(stage, "/World"));
+    EXPECT_EQ(PXR_NS::GfVec3d(100., 5., 0.), worldTranslation(stage, "/World"));
+    EXPECT_EQ(PXR_NS::GfVec3d(100., 5., 1.), worldTranslation(stage, "/World/Child"));
 
     // The same layers give the same stack.
     EXPECT_EQ(output.getStackHash(), evaluate(merge({ lift, push })).getStackHash());

@@ -83,9 +83,16 @@ namespace {
 PXR_NS::SdfPath
 rootPrimOf(const PXR_NS::SdfPath& path)
 {
-    const PXR_NS::SdfPathVector prefixes = path.StripAllVariantSelections().GetPrefixes(1);
+    PXR_NS::SdfPath prim = path.StripAllVariantSelections().GetPrimPath();
 
-    return (!prefixes.empty() && prefixes.front().IsRootPrimPath()) ? prefixes.front() : PXR_NS::SdfPath();
+    if (!prim.IsAbsolutePath()) {
+        return PXR_NS::SdfPath();
+    }
+    while (prim.IsPrimPath() && !prim.IsRootPrimPath()) {
+        prim = prim.GetParentPath();
+    }
+
+    return prim.IsRootPrimPath() ? prim : PXR_NS::SdfPath();
 }
 
 bool
@@ -665,7 +672,10 @@ namespace {
                 return PXR_NS::SdfLayerRefPtr();
             }
             spec->SetSpecifier(PXR_NS::SdfSpecifierDef);
-            spec->SetTypeName((prefix == destination) ? destinationType : ancestorType);
+            const std::string& typeName = (prefix == destination) ? destinationType : ancestorType;
+            if (!typeName.empty()) {
+                spec->SetTypeName(typeName);
+            }
         }
         layer->SetPermissionToEdit(false);
 

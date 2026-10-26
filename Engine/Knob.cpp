@@ -3135,6 +3135,7 @@ KnobHelper::setExpressionInvalid(int dimension,
                                  bool valid,
                                  const std::string& error)
 {
+    KnobContentWrite write;
     int ndims = getDimension();
 
     if ( (dimension < 0) || (dimension >= ndims) ) {
@@ -3183,6 +3184,7 @@ KnobHelper::setExpressionInternal(int dimension,
                                   bool clearResults,
                                   bool failIfInvalid)
 {
+    KnobContentWrite write;
     if (!supportsExpressions()) {
         throw std::invalid_argument("This parameter does not support expressions");
     }
@@ -3531,6 +3533,7 @@ void
 KnobHelper::clearExpression(int dimension,
                             bool clearResults)
 {
+    KnobContentWrite write;
     PythonGILLocker pgl;
     bool hadExpression;
     {
@@ -4340,6 +4343,7 @@ KnobHelper::slaveToInternal(int dimension,
                             ValueChangedReasonEnum reason,
                             bool ignoreMasterPersistence)
 {
+    KnobContentWrite write;
     assert(other.get() != this);
     assert( 0 <= dimension && dimension < (int)_imp->masters.size() );
 
@@ -4429,6 +4433,7 @@ std::pair<int, KnobIPtr> KnobHelper::getMaster(int dimension) const
 void
 KnobHelper::resetMaster(int dimension)
 {
+    KnobContentWrite write;
     assert(dimension >= 0);
     {
         QWriteLocker l(&_imp->mastersMutex);
@@ -5679,6 +5684,80 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
     path.erase(key);
 
     return h.finalize();
+}
+
+namespace {
+// The low bits count writes in flight, the rest count writes begun. One word, so a single load
+// sees both at the same instant.
+const U64 kContentWritesInFlightMask = (U64(1) << 24) - 1;
+const U64 kContentWriteBegun = U64(1) << 24;
+
+std::atomic<U64>&
+contentWriteState()
+{
+    static std::atomic<U64> state(0);
+
+    return state;
+}
+}
+
+KnobContentWrite::KnobContentWrite()
+    : _open(true)
+{
+    contentWriteState().fetch_add(kContentWriteBegun + 1);
+}
+
+KnobContentWrite::~KnobContentWrite()
+{
+    finish();
+}
+
+void
+KnobContentWrite::finish()
+{
+    if (_open) {
+        _open = false;
+        contentWriteState().fetch_sub(1);
+    }
+}
+
+U64
+KnobContentWrite::snapshot()
+{
+    return contentWriteState().load();
+}
+
+bool
+KnobContentWrite::isSettled(U64 snapshot)
+{
+    return ((snapshot & kContentWritesInFlightMask) == 0) && (contentWriteState().load() == snapshot);
+}
+
+namespace {
+thread_local PluginEditsDeferral* tPluginEditsDeferral = NULL;
+}
+
+PluginEditsDeferral::PluginEditsDeferral()
+    : _previous(tPluginEditsDeferral)
+    , _refused(0)
+{
+    tPluginEditsDeferral = this;
+}
+
+PluginEditsDeferral::~PluginEditsDeferral()
+{
+    tPluginEditsDeferral = _previous;
+}
+
+bool
+PluginEditsDeferral::refuse()
+{
+    if (!tPluginEditsDeferral) {
+        return false;
+    }
+    ++tPluginEditsDeferral->_refused;
+
+    return true;
 }
 
 void
@@ -7496,6 +7575,7 @@ AnimatingKnobStringHelper::cloneExtraData(KnobI* other,
                                           int /*dimension*/,
                                           int /*otherDimension*/)
 {
+    KnobContentWrite write;
     AnimatingKnobStringHelper* isAnimatedString = dynamic_cast<AnimatingKnobStringHelper*>(other);
 
     if (isAnimatedString) {
@@ -7509,6 +7589,7 @@ AnimatingKnobStringHelper::cloneExtraDataAndCheckIfChanged(KnobI* other,
                                                            int /*dimension*/,
                                                            int /*otherDimension*/)
 {
+    KnobContentWrite write;
     AnimatingKnobStringHelper* isAnimatedString = dynamic_cast<AnimatingKnobStringHelper*>(other);
 
     if (isAnimatedString) {
@@ -7530,6 +7611,7 @@ AnimatingKnobStringHelper::cloneExtraData(KnobI* other,
                                           int /*dimension*/,
                                           int /*otherDimension*/)
 {
+    KnobContentWrite write;
     AnimatingKnobStringHelper* isAnimatedString = dynamic_cast<AnimatingKnobStringHelper*>(other);
 
     if (isAnimatedString) {
@@ -7557,6 +7639,7 @@ AnimatingKnobStringHelper::stringToKeyFrameValue(double time,
                                                  const std::string & v,
                                                  double* returnValue)
 {
+    KnobContentWrite write;
     _animation->insertKeyFrame(time, v, returnValue);
     invalidateContentHash();
 }
@@ -7574,6 +7657,7 @@ AnimatingKnobStringHelper::stringFromInterpolatedValue(double interpolated,
 void
 AnimatingKnobStringHelper::animationRemoved_virtual(int /*dimension*/)
 {
+    KnobContentWrite write;
     _animation->clearKeyFrames();
     invalidateContentHash();
 }
@@ -7582,6 +7666,7 @@ void
 AnimatingKnobStringHelper::keyframeRemoved_virtual(int /*dimension*/,
                                                    double time)
 {
+    KnobContentWrite write;
     _animation->removeKeyFrame(time);
     invalidateContentHash();
 }
@@ -7622,6 +7707,7 @@ AnimatingKnobStringHelper::setCustomInterpolation(customParamInterpolationV1Entr
 void
 AnimatingKnobStringHelper::loadAnimation(const std::map<int, std::string> & keyframes)
 {
+    KnobContentWrite write;
     _animation->load(keyframes);
     invalidateContentHash();
 }

@@ -1746,7 +1746,7 @@ Project::initializeKnobs()
 
         _imp->builtinFormats.push_back(f);
         ++_imp->formatsGeneration;
-        Node::invalidateAllHashes();
+        Node::invalidateAllHashes("project formats changed");
     }
     _imp->formatKnob->setAddNewLine(false);
 
@@ -2200,7 +2200,7 @@ Project::refreshColorManagement(bool warnOnFallback)
     cm.setWorkingSpace(getWorkingColorSpace());
     // The digest folds in the loaded config's source, which no project knob holds when the
     // environment overrides it.
-    Node::invalidateAllHashes();
+    Node::invalidateAllHashes("OCIO config loaded");
     pushOCIOConfigToNodes();
     cm.notifyConfigChanged();
 
@@ -2399,7 +2399,7 @@ Project::tryAddProjectFormat(const Format & f, bool* existed)
     QString formatStr = ProjectPrivate::generateStringFromFormat(f);
     _imp->additionalFormats.push_back(f);
     ++_imp->formatsGeneration;
-    Node::invalidateAllHashes();
+    Node::invalidateAllHashes("project formats changed");
     if ( !f.getName().empty() ) {
         _imp->formatKnob->appendChoice( ChoiceOption(f.getName(), formatStr.toStdString(), "") );
     } else {
@@ -2497,7 +2497,7 @@ Project::addLayer(const ImageLayerDesc& desc, LayerRegistryEntry::OriginEnum ori
 {
     LayerRegistry::AddResultEnum ret = _imp->layers->add(desc, origin, error);
     if (ret == LayerRegistry::eAddResultAdded || ret == LayerRegistry::eAddResultGrown) {
-        Node::invalidateAllHashes();
+        Node::invalidateAllHashes("a layer was added or grown");
         if (!isLoadingProject()) {
             notifyLayersChanged();
         }
@@ -2530,7 +2530,7 @@ Project::removeLayer(const std::string& id, std::string* error)
 
     bool ok = _imp->layers->remove(id, error);
     if (ok) {
-        Node::invalidateAllHashes();
+        Node::invalidateAllHashes("a layer was removed");
         if (!isLoadingProject()) {
             notifyLayersChanged();
         }
@@ -2895,9 +2895,9 @@ Project::refreshOpenGLRenderingFlagOnNodes()
 }
 
 void
-Project::onKnobContentChanged(const KnobI* /*knob*/)
+Project::onKnobContentChanged(const KnobI* knob)
 {
-    Node::invalidateAllHashes();
+    Node::invalidateAllHashes("a project knob changed", knob);
 }
 
 bool
@@ -3206,7 +3206,7 @@ Project::doResetEnd(bool aboutToQuit)
             _imp->autoSaveTimer->stop();
             _imp->additionalFormats.clear();
             ++_imp->formatsGeneration;
-            Node::invalidateAllHashes();
+            Node::invalidateAllHashes("project formats changed");
             _imp->layers.reset(new LayerRegistry());
         }
         {

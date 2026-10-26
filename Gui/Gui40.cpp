@@ -964,6 +964,19 @@ Gui::renderViewersAndRefreshKnobsAfterTimelineTimeChange(SequenceTime time,
                 }
             }
         }
+
+        // The node graph shows every node's stream warnings, panel open or not. Not during
+        // playback: it would derive each frame's metadata for nodes the viewer does not render.
+        if (!isPlayback) {
+            NodesList nodes;
+            getApp()->getProject()->getNodes_recursive(nodes, true);
+            for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+                if ((*it)->isNodeCreated()) {
+                    (*it)->getEffectInstance()->refreshCurrentFrameMetadata(time, false);
+                }
+            }
+        }
+
         // The project settings panel is not a node's: its variables, the only project knobs that
         // animate, are refreshed whether or not it is open.
         getApp()->getProject()->refreshVariablesAfterTimeChange(isPlayback, time);

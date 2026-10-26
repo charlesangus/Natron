@@ -44,6 +44,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/Project.h"
 #include "Engine/PyParameter.h" // checkHolderIsEditable
@@ -1245,28 +1246,44 @@ Effect::getAvailableLayers(int inputNb) const
     return ret;
 }
 
-RectI
-Effect::getOutputFormat() const
+namespace {
+NodeMetadataConstPtr
+getEffectMetadataAt(const NodePtr& node,
+                    double time,
+                    int view)
 {
-    NodePtr node = getInternalNode();
+    if (!node || !node->getEffectInstance()) {
+        return NodeMetadataConstPtr();
+    }
 
-    if (!node) {
+    return node->getEffectInstance()->getMetadata(time, ViewIdx(view));
+}
+} // namespace
+
+RectI
+Effect::getOutputFormat(double time,
+                        int view) const
+{
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
+
+    if (!metadata) {
         return RectI();
     }
 
-    return node->getEffectInstance()->getOutputFormat();
+    return metadata->getOutputFormat();
 }
 
 double
-Effect::getFrameRate() const
+Effect::getFrameRate(double time,
+                     int view) const
 {
-    NodePtr node = getInternalNode();
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
 
-    if (!node) {
+    if (!metadata) {
         return 24.;
     }
 
-    return node->getEffectInstance()->getFrameRate();
+    return metadata->getOutputFrameRate();
 }
 
 namespace {
@@ -1384,27 +1401,29 @@ Effect::addMetadataAsDependencyOf(int fromExprDimension,
 }
 
 double
-Effect::getPixelAspectRatio() const
+Effect::getPixelAspectRatio(double time,
+                            int view) const
 {
-    NodePtr node = getInternalNode();
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
 
-    if (!node) {
+    if (!metadata) {
         return 1.;
     }
 
-    return node->getEffectInstance()->getAspectRatio(-1);
+    return metadata->getPixelAspectRatio(-1);
 }
 
 ImageBitDepthEnum
-Effect::getBitDepth() const
+Effect::getBitDepth(double time,
+                    int view) const
 {
-    NodePtr node = getInternalNode();
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
 
-    if (!node) {
+    if (!metadata) {
         return eImageBitDepthFloat;
     }
 
-    return node->getEffectInstance()->getBitDepth(-1);
+    return metadata->getBitDepth(-1);
 }
 
 void

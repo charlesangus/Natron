@@ -418,9 +418,13 @@ public:
 
     std::list<ImageLayer> getAvailableLayers(int inputNb) const;
 
-    RectI getOutputFormat() const;
+    /**
+     * @brief The format, frame rate, pixel aspect ratio and bit depth this node puts out at the
+     * given frame and view. They can differ from one frame to the next.
+     **/
+    RectI getOutputFormat(double time, int /* Python API: do not use ViewIdx */ view) const;
 
-    double getFrameRate() const;
+    double getFrameRate(double time, int /* Python API: do not use ViewIdx */ view) const;
 
     /**
      * @brief The value of the metadata key this node puts out at the given frame and view, as an
@@ -442,9 +446,9 @@ public:
      **/
     void addMetadataAsDependencyOf(int fromExprDimension, Param* param);
 
-    double getPixelAspectRatio() const;
+    double getPixelAspectRatio(double time, int /* Python API: do not use ViewIdx */ view) const;
 
-    Natron::ImageBitDepthEnum getBitDepth() const;
+    Natron::ImageBitDepthEnum getBitDepth(double time, int /* Python API: do not use ViewIdx */ view) const;
 
     void setPagesOrder(const QStringList& pages);
 };

@@ -295,7 +295,7 @@ private:
         if (!effect || !renderCpu(node, window, cpu)) {
             return false;
         }
-        const RectI sourceWindow = effect->getGpuInputRoI(0, window, RenderScale::identity);
+        const RectI sourceWindow = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), window, RenderScale::identity);
         RenderedPlane input;
         if (!renderCpu(source, sourceWindow, &input)) {
             return false;

@@ -409,6 +409,7 @@ getOutputComponents(const EffectInstancePtr& effect,
                     U64 hash,
                     double time,
                     ViewIdx view,
+                    const NodeMetadata& metadata,
                     std::list<ImageLayerDesc>* components)
 {
     EffectInstance::ComponentsNeededMap neededComps;
@@ -427,7 +428,7 @@ getOutputComponents(const EffectInstancePtr& effect,
     }
     if (components->empty()) {
         ImageLayerDesc layer, pairedLayer;
-        effect->getMetadataComponents(-1, &layer, &pairedLayer);
+        EffectInstance::getLayersFromMetadata(metadata, -1, &layer, &pairedLayer);
         if (layer.getNumComponents() > 0) {
             components->push_back(layer);
         }
@@ -566,16 +567,18 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
 
         task.dfsPostOrder = fvRequest->dfsPostOrder;
         task.isIdentity = fvRequest->globalData.isIdentity;
-        task.bitdepth = effect->getBitDepth(-1);
+        // The frame's own layout, not the widest over the sequence, sizes the memory estimate.
+        const NodeMetadataConstPtr metadata = effect->getRenderMetadata(context->getArgs(task.key.node), task.key.time, task.key.view);
+        task.bitdepth = metadata->getBitDepth(-1);
 
-        const double par = effect->getAspectRatio(-1);
+        const double par = metadata->getPixelAspectRatio(-1);
         if (!fvRequest->finalData.finalRoi.isNull()) {
             task.roi = fvRequest->finalData.finalRoi.toPixelEnclosing(task.key.mipmapLevel, par);
         }
 
         task.components = fvRequest->componentsRequested;
         if (task.components.empty()) {
-            getOutputComponents(effect, nodeRequest->second->nodeHash, task.key.time, task.key.view, &task.components);
+            getOutputComponents(effect, nodeRequest->second->nodeHash, task.key.time, task.key.view, *metadata, &task.components);
         }
 
         ParallelRenderArgsPtr frameArgs = effect->getParallelRenderArgsTLS();

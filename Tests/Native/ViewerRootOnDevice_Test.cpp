@@ -372,7 +372,7 @@ protected:
             return false;
         }
         file->setValue(path);
-        _read->getEffectInstance()->refreshMetadata_public(false);
+        _read->getEffectInstance()->dropCachedMetadata();
         const std::string master = kColorCorrectGroupMaster;
         if (!setKnobValues(_grade, "multiply", { 1.25, 1.25, 1.25, 1.25 }) || !setKnobValues(_grade, "offset", { 0.05, 0.05, 0.05, 0.05 }) || !setKnobValues(_blur, kBlurParamSize, { 9., 9. }) || !setKnobValues(_colorCorrect, master + kColorCorrectParamSaturation, { 0.8, 0.8, 0.8, 0.8 }) || !setKnobValues(_colorCorrect, master + kColorCorrectParamGain, { 1.1, 1.1, 1.1, 1.1 })) {
             return false;

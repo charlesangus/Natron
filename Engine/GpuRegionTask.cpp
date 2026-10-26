@@ -560,10 +560,10 @@ private:
         layout.rod = request ? request->globalData.rod : RectD();
         layout.bounds = bounds;
         layout.mipmapLevel = task.key.mipmapLevel;
-        layout.par = effect ? effect->getAspectRatio(-1) : 1.;
-        layout.fielding = effect ? effect->getFieldingOrder() : eImageFieldingOrderNone;
-
         const ParallelRenderArgsPtr frameArgs = _context->getArgs(task.key.node);
+        const NodeMetadataConstPtr metadata = effect ? effect->getRenderMetadata(frameArgs, task.key.time, task.key.view) : NodeMetadataConstPtr();
+        layout.par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+        layout.fielding = metadata ? metadata->getOutputFielding() : eImageFieldingOrderNone;
         FrameRequestMap::const_iterator nodeRequest = _context->getRequest() ? _context->getRequest()->find(task.key.node) : FrameRequestMap::const_iterator();
         const U64 nodeHash = (_context->getRequest() && (nodeRequest != _context->getRequest()->end()) && nodeRequest->second) ? nodeRequest->second->nodeHash : 0;
         layout.key = ImageKey(task.key.node.get(),
@@ -716,7 +716,7 @@ private:
             if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
                 return fail(member->task, "an input renders an empty window");
             }
-            const RectI needed = effect->getGpuInputRoI(inputNb, task.renderedRoI, member->query.mappedScale);
+            const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, task.renderedRoI, member->query.mappedScale);
             const int slot = readSlot(edges[e].second, layer, needed);
             if (slot < 0) {
                 return fail(member->task, "an input produced in the region is not in the layer the node reads");
@@ -740,7 +740,7 @@ private:
             if (!effect->getGpuExtraInputLayers(inputNb, member->plane, task.key.time, task.key.view, &layers)) {
                 return fail(member->task, "the node cannot read an input on the GPU");
             }
-            const RectI needed = effect->getGpuInputRoI(inputNb, task.renderedRoI, member->query.mappedScale);
+            const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, task.renderedRoI, member->query.mappedScale);
             for (const ImageLayerDesc& layer : layers) {
                 const int slot = readSlot(inputTasks[inputNb], layer, needed);
                 if (slot < 0) {
@@ -2040,9 +2040,11 @@ private:
             stripMember.inputSlots = member.inputSlots;
             NativeEffectBase* effect = member.effect;
             const RenderScale scale = member.query.mappedScale;
+            const double time = member.query.time;
+            const ViewIdx view = member.query.view;
             const std::vector<int> inputOfSlot = member.inputSlotInput;
-            stripMember.inputRoI = [effect, scale, inputOfSlot](int k, const RectI& rect) {
-                return effect->getGpuInputRoI(inputOfSlot[k], rect, scale);
+            stripMember.inputRoI = [effect, time, view, scale, inputOfSlot](int k, const RectI& rect) {
+                return effect->getGpuInputRoI(inputOfSlot[k], time, view, rect, scale);
             };
             stripMember.kernelMs = member.predictedKernelMs;
             graph.members.push_back(stripMember);

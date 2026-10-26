@@ -175,7 +175,7 @@ private:
 
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
 
-    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+    virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
 
     // darktable's gui_changed() for the source's sensor, read from its CFA: only that sensor's
     // method list and the knobs its method uses show. With no source, or one without a CFA, both
@@ -221,6 +221,8 @@ private:
                                     ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual RectI getOpGpuInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -231,7 +233,9 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual ImageMetadata deriveOutputMetadata(double time,
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;

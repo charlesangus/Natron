@@ -186,7 +186,8 @@ CropOp::matte(const Params& params,
         return ResampleMatte();
     }
     const double scale = context.scale.toOfxPointD().x;
-    const double dstPar = crop->getAspectRatio(-1);
+    NodeMetadataConstPtr own = crop->getMetadata(params.time, params.view);
+    const double dstPar = own ? own->getPixelAspectRatio(-1) : 1.;
     RectD cropFull;
     double par = 1.;
     crop->getCropRectangle(params.time, params.view, context.scale, false, false, false, false, &cropFull, &par);
@@ -303,6 +304,19 @@ Crop::initializeKnobs()
     _extentKnobs.finishKnobs();
 } // Crop::initializeKnobs
 
+namespace {
+// The PAR of source's output at (time, view), which is what this node's input clip carries there.
+double
+sourcePixelAspectRatio(EffectInstance& source,
+                       double time,
+                       ViewIdx view)
+{
+    NodeMetadataConstPtr metadata = source.getMetadata(time, view);
+
+    return metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+}
+} // anonymous namespace
+
 Crop::ExtentEnum
 Crop::getExtent() const
 {
@@ -390,13 +404,13 @@ Crop::getCropRectangle(double time,
 
     RectD rod;
     double rodPar = 1.;
-    switch (getExtent()) {
+    switch (_extentKnobs.getExtent(time, view)) {
     case eExtentFormat: {
         KnobIntPtr formatSize = _extentKnobs.getFormatSizeKnob();
         KnobDoublePtr formatPar = _extentKnobs.getFormatParKnob();
-        const int w = formatSize ? formatSize->getValue(0) : 0;
-        const int h = formatSize ? formatSize->getValue(1) : 0;
-        rodPar = formatPar ? formatPar->getValue() : 1.;
+        const int w = formatSize ? formatSize->getValueAtTime(time, 0, view) : 0;
+        const int h = formatSize ? formatSize->getValueAtTime(time, 1, view) : 0;
+        rodPar = formatPar ? formatPar->getValueAtTime(time, 0, view) : 1.;
         rod = toCanonical(RectI(0, 0, w, h), 1., rodPar);
         break;
     }
@@ -404,7 +418,7 @@ Crop::getCropRectangle(double time,
         KnobDoublePtr size = _extentKnobs.getSizeKnob();
         KnobDoublePtr bottomLeft = _extentKnobs.getBottomLeftKnob();
         if (source) {
-            rodPar = getAspectRatio(0);
+            rodPar = sourcePixelAspectRatio(*source, time, view);
         } else {
             _extentKnobs.getProjectExtentRect(&rodPar);
         }
@@ -422,7 +436,7 @@ Crop::getCropRectangle(double time,
     case eExtentDefault:
         if (source && hasSourceRoD) {
             rod = sourceRoD;
-            rodPar = getAspectRatio(0);
+            rodPar = sourcePixelAspectRatio(*source, time, view);
         } else {
             rod = _extentKnobs.getProjectExtentRect(&rodPar);
         }
@@ -497,33 +511,35 @@ Crop::getRegionsOfInterest(double time,
 }
 
 StatusEnum
-Crop::getPreferredMetadata(NodeMetadata& metadata)
+Crop::getPreferredMetadataAt(double time,
+                             ViewIdx view,
+                             NodeMetadata& metadata)
 {
     KnobBoolPtr reformat = op().reformat.lock();
 
-    if (!reformat || !reformat->getValue()) {
+    if (!reformat || !reformat->getValueAtTime(time, 0, view)) {
         return eStatusOK;
     }
 
     RectI pixelFormat(0, 0, 0, 0);
     double par = 0.;
-    const ExtentEnum extent = getExtent();
+    const ExtentEnum extent = _extentKnobs.getExtent(time, view);
     if (extent == eExtentFormat) {
         KnobIntPtr formatSize = _extentKnobs.getFormatSizeKnob();
         KnobDoublePtr formatPar = _extentKnobs.getFormatParKnob();
         if (formatSize && formatPar) {
-            par = formatPar->getValue();
-            pixelFormat = RectI(0, 0, formatSize->getValue(0), formatSize->getValue(1));
+            par = formatPar->getValueAtTime(time, 0, view);
+            pixelFormat = RectI(0, 0, formatSize->getValueAtTime(time, 0, view), formatSize->getValueAtTime(time, 1, view));
         }
     } else if (extent == eExtentProject) {
         const RectD project = _extentKnobs.getProjectExtentRect(&par);
         pixelFormat = toPixelNearest(project, 1., par);
     } else {
         // Unlike the OpenFX Crop, which leaves the source's format around the smaller image for
-        // these extents. The rectangle may be animated while a format cannot, so the format is
-        // the rectangle at the current time.
+        // these extents. The format is the rectangle at time, so an animated rectangle gives
+        // each frame its own format.
         RectD rect;
-        getCropRectangle(getCurrentTime(), ViewIdx(0), RenderScale::identity, false, false, false, true, &rect, &par);
+        getCropRectangle(time, view, RenderScale::identity, false, false, false, true, &rect, &par);
         pixelFormat = toPixelNearest(rect, 1., par);
     }
     if (par != 0.) {

@@ -62,6 +62,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
 #include "Engine/NodeGuiI.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -5056,9 +5057,10 @@ ViewerGL::getInputColorAtCanonicalRect(int textureIndex,
         return false;
     }
 
-    // The viewed node may change the pixel aspect ratio, so its input's own ratio, not the
-    // displayed image's, places canonicalRect in the input's pixels.
-    double par = input->getEffectInstance()->getAspectRatio(-1);
+    // The viewed node may change the pixel aspect ratio, so its input's own ratio at the
+    // displayed frame, not the displayed image's, places canonicalRect in the input's pixels.
+    const NodeMetadataConstPtr inputMetadata = input->getEffectInstance()->getMetadata(time, getCurrentView());
+    double par = inputMetadata ? inputMetadata->getPixelAspectRatio(-1) : 1.;
     if (par <= 0.) {
         par = 1.;
     }

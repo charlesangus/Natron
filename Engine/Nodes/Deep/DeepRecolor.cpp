@@ -412,7 +412,7 @@ DeepRecolor::renderDeep(const DeepRenderActionArgs& args)
         RectD rod;
         bool isProjectFormat = false;
         if (colorInput && (colorInput->getRegionOfDefinition_public(colorInput->getHash(), args.time, args.scale, args.view, &rod, &isProjectFormat) != eStatusFailed)) {
-            colourlessCoverage = rod.toPixelEnclosing(args.mipmapLevel, colorInput->getAspectRatio(-1));
+            colourlessCoverage = rod.toPixelEnclosing(args.mipmapLevel, colorInput->getRenderMetadata(args.time, args.view)->getPixelAspectRatio(-1));
         }
     }
 

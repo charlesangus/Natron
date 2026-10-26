@@ -539,7 +539,9 @@ ParitySourceTestEffect::getRegionOfDefinition(U64 /*hash*/,
 }
 
 StatusEnum
-ParitySourceTestEffect::getPreferredMetadata(NodeMetadata& metadata)
+ParitySourceTestEffect::getPreferredMetadataAt(double /*time*/,
+                                               ViewIdx /*view*/,
+                                               NodeMetadata& metadata)
 {
     metadata.setNComps(-1, colorNComps());
     metadata.setBitDepth(-1, eImageBitDepthFloat);

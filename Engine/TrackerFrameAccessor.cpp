@@ -298,18 +298,6 @@ TrackerFrameAccessor::GetImage(int /*clip*/,
     // Not in accessor cache, call renderRoI
     const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
 
-
-    RectD precomputedRoD;
-    if (!region) {
-        bool isProjectFormat;
-        StatusEnum stat = effect->getRegionOfDefinition_public(_imp->trackerInput->getHashValue(), frame, scale, ViewIdx(0), &precomputedRoD, &isProjectFormat);
-        if (stat == eStatusFailed) {
-            return (mv::FrameAccessor::Key)0;
-        }
-        double par = effect->getAspectRatio(-1);
-        roi = precomputedRoD.toPixelEnclosing(mipmapLevel, par);
-    }
-
     std::list<ImageLayerDesc> components;
     components.push_back(_imp->layer);
 
@@ -333,6 +321,20 @@ TrackerFrameAccessor::GetImage(int /*clip*/,
                                               true, //isAnalysis
                                               false, //draftMode
                                               RenderStatsPtr() ); // Stats
+
+    // Read under the args, so the region and its aspect ratio are those of the hash and layout
+    // the frame snapshotted, whatever is edited while the track runs.
+    RectD precomputedRoD;
+    if (!region) {
+        bool isProjectFormat;
+        StatusEnum stat = effect->getRegionOfDefinition_public(effect->getRenderHash(), frame, scale, ViewIdx(0), &precomputedRoD, &isProjectFormat);
+        if (stat == eStatusFailed) {
+            return (mv::FrameAccessor::Key)0;
+        }
+        const double par = effect->getRenderMetadata(frame, ViewIdx(0))->getPixelAspectRatio(-1);
+        roi = precomputedRoD.toPixelEnclosing(mipmapLevel, par);
+    }
+
     EffectInstance::RenderRoIArgs args( frame,
                                         scale,
                                         mipmapLevel,

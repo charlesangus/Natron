@@ -30,6 +30,7 @@
 #include <iterator>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <tuple>
@@ -411,10 +412,6 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
             }
         }
 
-
-        const double inputPar = inputEffect->getAspectRatio(-1);
-
-
         {
             ///Notify the node that we're going to render something with the input
             EffectInstance::NotifyInputNRenderingStarted_RAIIPtr inputNIsRendering_RAII;
@@ -433,8 +430,10 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                         for (double f = viewIt->second[range].min;
                              f <= viewIt->second[range].max && nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING;
                              f += 1.) {
-                            /// Render the input image with the bit depth of its preference
-                            ImageBitDepthEnum inputPrefDepth = inputEffect->getBitDepth(-1);
+                            /// Render the input image with the bit depth of its preference, at the frame read
+                            const NodeMetadataConstPtr inputMetadata = inputEffect->getRenderMetadata(f, viewIt->first);
+                            const double inputPar = inputMetadata->getPixelAspectRatio(-1);
+                            ImageBitDepthEnum inputPrefDepth = inputMetadata->getBitDepth(-1);
 
                             if (!compsNeeded || compsNeeded->empty()) {
                                 continue;
@@ -723,7 +722,7 @@ visitRequestPassItem(bool useTransforms,
 
     FrameViewRequest* fvRequest = 0;
     NodeFrameViewRequestData::iterator foundFrameView = nodeRequest->frames.find(frameView);
-    double par = effect->getAspectRatio(-1);
+    double par = effect->getRenderMetadata(time, view)->getPixelAspectRatio(-1);
     EffectInstance::ViewInvarianceLevel viewInvariance = effect->isViewInvariant();
 
     if ( foundFrameView != nodeRequest->frames.end() ) {
@@ -1103,6 +1102,96 @@ struct FindDependenciesNode
 
 typedef std::map<NodePtr,FindDependenciesNode> FindDependenciesMap;
 
+namespace {
+std::mutex g_metadataSnapshotHookMutex;
+ParallelRenderArgsSetter::MetadataSnapshotHook g_metadataSnapshotHook;
+
+// A snapshot that raced an edit is retaken at most this many times, so a graph edited faster than
+// it can be snapshotted does not hold the render thread; see buildArgsMap() for what follows.
+const int kMaxMetadataSnapshotRetries = 3;
+
+// Inputs come before the nodes reading them, so each derivation finds its inputs' answers already
+// cached instead of recursing the depth of the graph on the calling thread's stack. Iterative for
+// the same reason.
+std::vector<NodePtr>
+upstreamFirstOrder(const std::set<NodePtr>& nodes)
+{
+    std::vector<NodePtr> order;
+    std::set<NodePtr> visited;
+    std::vector<std::pair<NodePtr, int>> stack;
+
+    order.reserve(nodes.size());
+    for (std::set<NodePtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (!visited.insert(*it).second) {
+            continue;
+        }
+        stack.push_back(std::make_pair(*it, 0));
+        while (!stack.empty()) {
+            const NodePtr node = stack.back().first;
+            const int nInputs = node->getNInputs();
+            NodePtr next;
+            while (!next && (stack.back().second < nInputs)) {
+                NodePtr input = node->getInput(stack.back().second++);
+                if (input && nodes.count(input) && visited.insert(input).second) {
+                    next = input;
+                }
+            }
+            if (next) {
+                stack.push_back(std::make_pair(next, 0));
+            } else {
+                order.push_back(node);
+                stack.pop_back();
+            }
+        }
+    }
+
+    return order;
+}
+
+// Fills moved with the nodes whose answer belongs to another hash than their args', that is
+// where an edit landed between reading the hashes and reading the answers. Empty when the snapshot
+// is consistent.
+void
+snapshotMetadata(double time,
+                 ViewIdx view,
+                 const std::vector<NodePtr>& order,
+                 const std::map<NodePtr, ParallelRenderArgsPtr>& args,
+                 std::vector<NodePtr>* moved)
+{
+    ParallelRenderArgsSetter::MetadataSnapshotHook hook;
+    {
+        std::lock_guard<std::mutex> lock(g_metadataSnapshotHookMutex);
+        hook = g_metadataSnapshotHook;
+    }
+    moved->clear();
+    for (std::vector<NodePtr>::const_iterator it = order.begin(); it != order.end(); ++it) {
+        std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator found = args.find(*it);
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        if ((found == args.end()) || !effect) {
+            continue;
+        }
+        U64 hash = 0;
+        found->second->metadata = effect->getMetadata(time, view, &hash);
+        // 0: no derivation could be told to belong to one hash, which a knob written anywhere in
+        // the project while deriving causes. A node still at nodeHash then has not moved, and a
+        // write to it not yet marked aborts the frame when it marks, as any edit made after.
+        U64 current = 0;
+        if ((hash != found->second->nodeHash) && ((hash != 0) || !(*it)->getHashValueIfUpToDate(&current) || (current != found->second->nodeHash))) {
+            moved->push_back(*it);
+        }
+        if (hook) {
+            hook(*it);
+        }
+    }
+}
+} // anon namespace
+
+void
+ParallelRenderArgsSetter::setMetadataSnapshotHookForTests(const MetadataSnapshotHook& hook)
+{
+    std::lock_guard<std::mutex> lock(g_metadataSnapshotHookMutex);
+    g_metadataSnapshotHook = hook;
+}
 
 /**
  * @brief Builds a list with all nodes upstream of the given node (including this node) and all its dependencies through expressions as well (which
@@ -1174,7 +1263,6 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
                                                    const RenderStatsPtr& stats,
                                                    bool setUpstreamArgs)
     : argsMap()
-    , _abortedForStaleInputData(false)
 {
     assert(treeRoot);
 
@@ -1189,14 +1277,14 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
     _openGLContext = glContext;
 
     ArgsInstallSequence installSequence;
-    _abortedForStaleInputData = buildArgsMap(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline,
-                                             activeRotoPaintNode, isAnalysis, draftMode, stats, setUpstreamArgs, glContext, &_installedArgs, &installSequence, &nodes);
+    buildArgsMap(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline,
+                 activeRotoPaintNode, isAnalysis, draftMode, stats, setUpstreamArgs, glContext, &_installedArgs, &installSequence, &nodes);
     for (ArgsInstallSequence::const_iterator it = installSequence.begin(); it != installSequence.end(); ++it) {
         it->first->getEffectInstance()->setParallelRenderArgsTLS(it->second);
     }
 }
 
-bool
+void
 ParallelRenderArgsSetter::buildArgsMap(double time,
                                        ViewIdx view,
                                        bool isRenderUserInteraction,
@@ -1218,7 +1306,6 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
     assert(treeRoot);
     assert(out);
 
-    bool abortedForStaleInputData = false;
     FindDependenciesMap dependenciesMap;
     if (setUpstreamArgs) {
         getAllUpstreamNodesRecursiveWithDependencies_internal(treeRoot, dependenciesMap);
@@ -1229,51 +1316,6 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
         dependenciesMap.insert(std::make_pair(treeRoot, n));
     }
 
-    // Before any hash is read below: a refresh can change knobs, and with them hashes. Off the
-    // main thread the refresh can only be posted, and the hashes read below are already the new
-    // ones, so a render using the stale metadata would store results under keys a fresh render
-    // looks up.
-    if (setUpstreamArgs) {
-        const bool isMainThread = (QThread::currentThread() == qApp->thread());
-        std::vector<NodeWPtr> stale;
-        for (FindDependenciesMap::iterator it = dependenciesMap.begin(); it != dependenciesMap.end(); ++it) {
-            NodesList pulled(1, it->first);
-            RotoContextPtr roto = it->first->getRotoContext();
-            if (roto) {
-                roto->getRotoPaintTreeNodes(&pulled);
-            }
-            for (NodesList::const_iterator node = pulled.begin(); node != pulled.end(); ++node) {
-                if (isMainThread) {
-                    (*node)->refreshInputRelatedDataIfStale();
-                } else if ((*node)->isInputRelatedDataStale()) {
-                    (*node)->requestInputRelatedDataRefresh();
-                    stale.push_back(*node);
-                }
-            }
-        }
-        // Only a viewer render is dropped and redrawn: aborting a frame of a file render or an
-        // analysis would fail the whole job. Queued after the refreshes, so it runs once they are
-        // done, and only redraws once every node is fresh, so a refresh that cannot run yet never
-        // loops back into another aborted render.
-        if (!stale.empty() && abortInfo && abortInfo->canAbort() && treeRoot->isEffectViewer()) {
-            abortInfo->setAborted();
-            abortedForStaleInputData = true;
-            AppInstanceWPtr weakApp = treeRoot->getApp();
-            QMetaObject::invokeMethod(qApp, [weakApp, stale]() {
-                AppInstancePtr app = weakApp.lock();
-                if (!app) {
-                    return;
-                }
-                for (std::size_t i = 0; i < stale.size(); ++i) {
-                    NodePtr node = stale[i].lock();
-                    if (node && node->isInputRelatedDataStale()) {
-                        return;
-                    }
-                }
-                app->renderAllViewers(true); }, Qt::QueuedConnection);
-        }
-    }
-
     auto add = [out, installSequence](const NodePtr& node, const ParallelRenderArgsPtr& args) {
         (*out)[node] = args;
         if (installSequence) {
@@ -1282,6 +1324,7 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
     };
 
     std::map<const EffectInstance*, bool> frameVaryingMemo;
+    std::set<NodePtr> renderedNodes;
     for (FindDependenciesMap::iterator it = dependenciesMap.begin(); it != dependenciesMap.end(); ++it) {
 
         const NodePtr& node = it->first;
@@ -1312,6 +1355,8 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
         if (setUpstreamArgs && it->second.recursed) {
             nodeArgs->isFrameVaryingOrAnimated = liveInstance->isFrameVaryingOrAnimated_Recursive(&frameVaryingMemo);
             nodeArgs->frameVaryingComputed = true;
+            renderedNodes.insert(node);
+            renderedNodes.insert(rotoPaintNodes.begin(), rotoPaintNodes.end());
         }
         for (NodesList::iterator it2 = rotoPaintNodes.begin(); it2 != rotoPaintNodes.end(); ++it2) {
             U64 nodeHash = (*it2)->getHashValue();
@@ -1342,7 +1387,31 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
         }
     }
 
-    return abortedForStaleInputData;
+    // Only for a frame that renders upstream: the setters giving args to the root alone do not
+    // render it through these args, and a query they make is answered live.
+    if (setUpstreamArgs && !renderedNodes.empty()) {
+        const std::vector<NodePtr> order = upstreamFirstOrder(renderedNodes);
+        std::vector<NodePtr> moved;
+        snapshotMetadata(time, view, order, *out, &moved);
+        for (int retry = 0; !moved.empty() && (retry < kMaxMetadataSnapshotRetries); ++retry) {
+            for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = out->begin(); it != out->end(); ++it) {
+                it->second->nodeHash = it->first->getHashValue();
+            }
+            snapshotMetadata(time, view, order, *out, &moved);
+        }
+        if (!moved.empty()) {
+            // Still edited: the frame is aborted, as the edits abort it, rather than rendered from
+            // answers of states it was not set up with. A render that cannot be aborted reads
+            // those nodes live instead, as before snapshots; their args keep no answer of a
+            // state other than nodeHash's.
+            if (abortInfo && abortInfo->canAbort()) {
+                abortInfo->setAborted();
+            }
+            for (std::vector<NodePtr>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
+                (*out)[*it]->metadata.reset();
+            }
+        }
+    }
 } // ParallelRenderArgsSetter::buildArgsMap
 
 void
@@ -1386,7 +1455,6 @@ ParallelRenderArgsSetter::updateNodesRequest(const FrameRequestMap& request)
 
 ParallelRenderArgsSetter::ParallelRenderArgsSetter(const std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr>>& args)
     : argsMap(args)
-    , _abortedForStaleInputData(false)
 {
     // Ensure this thread gets an OpenGL context for the render of the frame
     OSGLContextPtr glContext;

@@ -38,6 +38,7 @@
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -53,11 +54,10 @@ namespace ChannelCopy {
 const ImageLayerDesc* findColorStorage(const std::list<ImageLayerDesc>& layers);
 
 /**
- * @brief The colour storage layout the metadata of input `inputNb` declare, or the None layout
- * when that input is not connected. Metadata do not vary with time, so neither does this,
- * whereas the input's present layers may.
+ * @brief The colour storage layout the metadata of input `inputNb` declare at (time, view), or
+ * the None layout when that input is not connected or its output is not a colour layer.
  **/
-ImageLayerDesc metadataColorStorage(const EffectInstance& effect, int inputNb);
+ImageLayerDesc metadataColorStorage(const EffectInstance& effect, int inputNb, double time, ViewIdx view);
 
 /**
  * @brief For each channel of the colour plane `plane`, the index of the channel of `source`
@@ -261,6 +261,8 @@ public:
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual RectI getGpuInputRoI(int /*inputNb*/,
+                                 double /*time*/,
+                                 ViewIdx /*view*/,
                                  const RectI& outputRect,
                                  const RenderScale& /*scale*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {

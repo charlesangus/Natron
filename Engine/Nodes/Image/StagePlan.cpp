@@ -493,7 +493,7 @@ stageMaskMissesWindow(const EffectInstance& effect,
     if (mask->getRegionOfDefinition_public(mask->getRenderHash(), time, maskScale, view, &maskRoD, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    const RectI maskPixels = maskRoD.toPixelEnclosing(scale.toMipmapLevel(), mask->getAspectRatio(-1));
+    const RectI maskPixels = maskRoD.toPixelEnclosing(scale.toMipmapLevel(), mask->getRenderMetadata(time, view)->getPixelAspectRatio(-1));
 
     return !roi.intersects(maskPixels);
 }
@@ -1214,7 +1214,7 @@ stageGpuInputView(EffectInstance& effect,
     if (input->getRegionOfDefinition_public(input->getRenderHash(), args.query.time, inputScale, args.query.view, &rod, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    const RectI crop = in.bounds.intersect(rod.toPixelEnclosing(scale, effect.getAspectRatio(inputNb)));
+    const RectI crop = in.bounds.intersect(rod.toPixelEnclosing(scale, effect.getRenderMetadata(args.query.time, args.query.view)->getPixelAspectRatio(inputNb)));
     if (crop.isNull()) {
         return true;
     }

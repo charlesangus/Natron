@@ -124,8 +124,6 @@ Node::load(const CreateNodeArgs& args)
 
         refreshAcceptedBitDepths();
 
-        _imp->effect->setDefaultMetadata();
-
         if (serialization) {
 
             _imp->effect->onKnobsAboutToBeLoaded(serialization);

@@ -318,7 +318,7 @@ private:
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time, ViewIdx view, NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
@@ -347,12 +347,16 @@ private:
                                     ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual RectI getOpGpuInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void readSettings(double time, ViewIdx view, Settings* settings) const;
 
-    void getGeometry(double time, ViewIdx view, Geometry* geometry);
+    // derivingMetadata: called from getPreferredMetadataAt(), so Source's metadata is the one that
+    // derivation reads (getInputMetadataAt()) rather than the render's.
+    void getGeometry(double time, ViewIdx view, bool derivingMetadata, Geometry* geometry);
 
     // The model the knobs give at (time, view) over the reference format.
     LensModels::Model buildModel(double time, ViewIdx view, const Geometry& geometry) const WARN_UNUSED_RETURN;

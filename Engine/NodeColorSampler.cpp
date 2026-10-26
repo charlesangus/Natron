@@ -113,10 +113,13 @@ renderLayer(const NodePtr& node,
     const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
     RectD rod;
     bool isProjectFormat = false;
-    if (effect->getRegionOfDefinition_public(node->getHashValue(), time, scale, view, &rod, &isProjectFormat) == eStatusFailed) {
+    // The hash and layout the args snapshotted, so an edit made while sampling cannot pair one
+    // state's region with another's layout.
+    if (effect->getRegionOfDefinition_public(effect->getRenderHash(), time, scale, view, &rod, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    const double par = effect->getAspectRatio(-1);
+    const NodeMetadataConstPtr renderMetadata = effect->getRenderMetadata(time, view);
+    const double par = renderMetadata->getPixelAspectRatio(-1);
     *roi = pixelRect.intersect(rod.toPixelEnclosing(mipmapLevel, par));
     if (roi->isNull()) {
         return false;
@@ -129,7 +132,7 @@ renderLayer(const NodePtr& node,
     frameRenderArgs.updateNodesRequest(request);
 
     // The viewer renders at the effect's own depth, so asking for the same depth finds its image.
-    ImageBitDepthEnum depth = effect->getBitDepth(-1);
+    ImageBitDepthEnum depth = renderMetadata->getBitDepth(-1);
     if ((depth != eImageBitDepthByte) && (depth != eImageBitDepthShort)) {
         depth = eImageBitDepthFloat;
     }

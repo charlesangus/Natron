@@ -348,7 +348,7 @@ IDistort::getRegionsOfInterest(double time,
     // The Jacobians read the UV of the neighbouring pixels.
     EffectInstancePtr uv = getInput(kIDistortInputUV);
     if (uv) {
-        const double par = getAspectRatio(-1);
+        const double par = getRenderMetadata(time, view)->getPixelAspectRatio(-1);
         RectI pixels = PassExec::toPixelEnclosing(renderWindow, scale, par);
         pixels.x1 -= 1;
         pixels.y1 -= 1;
@@ -746,14 +746,16 @@ IDistort::getOpGpuInputLayer(int inputNb,
 
 RectI
 IDistort::getOpGpuInputRoI(int inputNb,
+                           double time,
+                           ViewIdx view,
                            const RectI& outputRect,
                            const RenderScale& scale) const
 {
     if ((inputNb == kIDistortInputSource) || (inputNb == kIDistortInputUV)) {
-        return warpGpuInputRoI(*this, inputNb, kIDistortInputSource, kIDistortInputUV, outputRect, scale);
+        return warpGpuInputRoI(*this, inputNb, kIDistortInputSource, kIDistortInputUV, time, view, outputRect, scale);
     }
 
-    return StagedImageEffect::getOpGpuInputRoI(inputNb, outputRect, scale);
+    return StagedImageEffect::getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
 }
 
 StatusEnum

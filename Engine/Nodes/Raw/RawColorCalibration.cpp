@@ -1188,9 +1188,9 @@ RawColorCalibration::onInputChanged(int /*inputNo*/)
 }
 
 void
-RawColorCalibration::onMetadataRefreshed(const NodeMetadata& metadata)
+RawColorCalibration::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
 {
-    ImageNode<RawColorCalibrationOp>::onMetadataRefreshed(metadata);
+    ImageNode<RawColorCalibrationOp>::onCurrentFrameMetadataChanged(metadata);
     refreshSpotDefaults();
     refreshCheckerDefaults();
     refreshCameraOption();

@@ -465,7 +465,7 @@ renderCached(const NodePtr& node,
                                        false /*draftMode*/,
                                        RenderStatsPtr());
     EffectInstancePtr effect = node->getEffectInstance();
-    const RectD canonicalWindow = roi.toCanonical_noClipping(0, effect->getAspectRatio(-1));
+    const RectD canonicalWindow = roi.toCanonical_noClipping(0, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
     FrameRequestMap request;
 
     if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), 0 /*mipmapLevel*/, canonicalWindow, node, request) == eStatusFailed) {

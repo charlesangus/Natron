@@ -432,8 +432,9 @@ TEST_F(NativeMergeGpuTest, MatchesTheCpuRender)
 }
 
 // B's per-channel alpha layer under a universal or per-layer A alpha, written the alpha the output
-// layer's fold carries, renders on the GPU as on the CPU, and so does the output layer itself. B is
-// rgb, so that its layer has as many channels as its three-channel alpha layer.
+// layer's fold carries, renders on the GPU as on the CPU, and so does the output layer itself. The
+// rgba row merges R, G and B, the three channels its three-channel alpha layer is the alpha of, and
+// rgba's A passes through from B.
 TEST_F(NativeMergeGpuTest, PerChannelBAlphaLayerMatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -444,9 +445,17 @@ TEST_F(NativeMergeGpuTest, PerChannelBAlphaLayerMatchesTheCpuRender)
     NodePtr b = makeSource(0, 0);
     NodePtr a = makeSource(10, 6);
     ASSERT_TRUE(merge && b && a);
-    setParitySourceComponents(b, "rgb");
     connectNodes(b, merge, kNativeMergeInputB, true);
     connectNodes(a, merge, kNativeMergeInputA, true);
+    {
+        KnobChannelSetPtr layers = merge->getEffectInstance()->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamLayers);
+        ASSERT_TRUE(bool(layers));
+        std::vector<ChannelSetRow> rows(1);
+        rows[0].mode = ChannelSetRow::eModeLayer;
+        rows[0].layerOrPattern = kNatronColorViewRGBA;
+        rows[0].channels = { "R", "G", "B" };
+        layers->setRows(rows);
+    }
     KnobChannelSelectPtr aAlpha = merge->getEffectInstance()->getKnobByNameAndType<KnobChannelSelect>(kNativeMergeParamAAlpha);
     ASSERT_TRUE(bool(aAlpha));
     aAlpha->set(std::string(kNatronColorViewRGBA) + ".R");
@@ -455,7 +464,7 @@ TEST_F(NativeMergeGpuTest, PerChannelBAlphaLayerMatchesTheCpuRender)
     const RectI window = paritySourceWindow(b, kTime, 0);
     ASSERT_FALSE(window.isNull());
     const std::vector<NodePtr> inputNodes = { b, a };
-    const ImageLayerDesc planes[] = { paritySourceExtraLayer(), ImageLayerDesc::mapNCompsToColorLayer(3) };
+    const ImageLayerDesc planes[] = { paritySourceExtraLayer(), ImageLayerDesc::mapNCompsToColorLayer(4) };
 
     for (const char* aSource : { kNativeMergeAlphaUniversal, kNativeMergeAlphaPerLayer }) {
         ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamAAlphaSource, aSource));

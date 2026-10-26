@@ -283,7 +283,9 @@ namespace {
         out[at + 4] = static_cast<uint32_t>(alpha.view.bounds.x2);
         out[at + 5] = static_cast<uint32_t>(alpha.view.bounds.y2);
         out[at + 6] = alpha.view.nComps;
-        out[at + 7] = alpha.channel >= 0 ? static_cast<uint32_t>(alpha.channel) : kGpuWrapAlphaPerChannel;
+        out[at + 7] = alpha.channel >= 0                             ? static_cast<uint32_t>(alpha.channel)
+            : alpha.channel == kGpuWrapAlphaChannelPerWrittenChannel ? kGpuWrapAlphaPerWrittenChannel
+                                                                     : kGpuWrapAlphaPerChannel;
         return {};
     }
 

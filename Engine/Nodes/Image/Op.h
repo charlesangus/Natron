@@ -246,10 +246,12 @@ concept RoutesOp = requires(const OP& op, const typename OP::Params& params, con
  *
  * None gives the input no alpha of its own. Channel is the channel a KnobChannelSelect named knob
  * selects among the input's layers, the same for every channel (broadcast). Layer is the layer a
- * KnobLayerSelect named knob selects, whose channel i is the alpha of channel i of the input's
- * read layer (per channel); the two must have as many channels. ReadLayer is the read layer's own
- * channel named "A" or "alpha", in any case, broadcast, falling back to Channel through knob when
- * the read layer has none. A knob that is missing or resolves to nothing reads an alpha of zero.
+ * KnobLayerSelect named knob selects, read per channel: for an input read in the plane rendered,
+ * its channel i is the alpha of the i-th channel of the plane the render writes, the unwritten
+ * ones passing through without an alpha; for an input read in a selected layer, its channel i is
+ * the alpha of channel i of that layer. The alpha layer must have as many channels as those it is
+ * the alpha of. ReadLayer is the read layer's own channel named "A" or "alpha", in any case,
+ * broadcast, falling back to Channel through knob when the read layer has none. A knob that is missing or resolves to nothing reads an alpha of zero.
  **/
 struct CompositeAlpha {
     enum class Kind : unsigned char {

@@ -234,8 +234,9 @@ bool stageSourcesHaveAlpha(const StagePlan& plan) WARN_UNUSED_RETURN;
 
 /**
  * @brief The render error plan's Composite inputs raise at time and view, or nullopt: a layer read
- * per channel as another layer's alpha with a different number of channels from it, a layer read
- * in plan's plane having the plane's.
+ * per channel as another layer's alpha with a different number of channels from those it is the
+ * alpha of, which for a layer read in plan's plane are the plane's channels plan.processChannels
+ * writes.
  **/
 std::optional<std::string> stageSourcesError(EffectInstance& effect,
                                              const StagePlan& plan,

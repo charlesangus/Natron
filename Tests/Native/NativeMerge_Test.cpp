@@ -1274,6 +1274,65 @@ TEST_F(NativeMergeNodeTest, PerChannelBAlphaLayerTakesTheCarriedAlpha)
     }
 }
 
+// An rgba row merging R, G and B with B's three-channel per-channel alpha layer spec: spec's
+// channel i is the alpha of the i-th merged channel, so R, G and B each merge with their own
+// alpha, and rgba's A passes through from B. A row merging two channels has not as many as spec,
+// which fails the render with an error naming both layers.
+TEST_F(NativeMergeNodeTest, PerChannelAlphaPairsWithTheRowsMergedChannels)
+{
+    NodePtr merge = createMerge();
+    NodePtr b = createSource(0, 0);
+    NodePtr a = createSource(10, 6);
+    ASSERT_TRUE(merge && b && a);
+    setParitySourceExtraLayer(a, true);
+    setParitySourceExtraLayer(b, true);
+    connectNodes(b, merge, kNativeMergeInputB, true);
+    connectNodes(a, merge, kNativeMergeInputA, true);
+    setLayerRows(merge, { { kNatronColorViewRGBA, { "R", "G", "B" } } });
+    setChannelKnob(merge, kNativeMergeParamAAlpha, std::string(kNatronColorViewRGBA) + ".A");
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamAAlphaSource, kNativeMergeAlphaUniversal));
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamBAlphaSource, kNativeMergeAlphaPerChannel));
+    setLayerKnob(merge, kNativeMergeParamBAlphaLayer, kParitySourceExtraLayerID);
+    const RectI window = paritySourceWindow(b, kTime, 0);
+    ASSERT_FALSE(window.isNull());
+
+    std::vector<float> aRGBA, bRGBA, bSpec;
+    ASSERT_TRUE(renderRGBA(a, window, &aRGBA));
+    ASSERT_TRUE(renderRGBA(b, window, &bRGBA));
+    ASSERT_TRUE(renderLayer(b, window, paritySourceExtraLayer(), &bSpec));
+    ASSERT_EQ(bRGBA.size() / 4, bSpec.size() / 3);
+
+    // atop and xor read b, so each channel's result shows which of spec's channels is its alpha.
+    for (MergeOps::Operator op : { MergeOps::eATop, MergeOps::eXor }) {
+        const std::string what = std::string("rgb row, ") + MergeOps::operatorName(op);
+        ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, MergeOps::operatorName(op))) << what;
+        std::vector<float> got;
+        ASSERT_TRUE(renderRGBA(merge, window, &got)) << what << ": " << persistentMessage(merge);
+
+        std::vector<float> want(bRGBA.size());
+        std::vector<float> wantBroadcast(bRGBA.size());
+        for (std::size_t p = 0; (p + 1) * 4 <= want.size(); ++p) {
+            const float aAlpha = aRGBA[p * 4 + 3];
+            const float bAlphas[4] = { bSpec[p * 3], bSpec[p * 3 + 1], bSpec[p * 3 + 2], 0.f };
+            const MergeOps::AlphaSpan aSpan = { &aAlpha, 0, 0 };
+            const MergeOps::AlphaSpan bSpan = { bAlphas, 4, 1 };
+            MergeOps::mergeRow(op, 4, &aRGBA[p * 4], aSpan, &bRGBA[p * 4], bSpan, 1, &want[p * 4]);
+            const MergeOps::AlphaSpan bFirstSpan = { bAlphas, 0, 0 };
+            MergeOps::mergeRow(op, 4, &aRGBA[p * 4], aSpan, &bRGBA[p * 4], bFirstSpan, 1, &wantBroadcast[p * 4]);
+        }
+        EXPECT_NE(rgbOf(want), rgbOf(wantBroadcast)) << what << ": spec's channels are alike, which proves nothing";
+        expectWrittenChannels(want, bRGBA, got, 4, { true, true, true, false }, what);
+    }
+
+    setLayerRows(merge, { { kNatronColorViewRGBA, { "R", "G" } } });
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    EXPECT_FALSE(renderNodePlanesDirect(merge, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error));
+    const QString message = QString::fromUtf8(persistentMessage(merge).c_str());
+    EXPECT_TRUE(message.contains(QString::fromUtf8(kParitySourceExtraLayerID))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8(kNatronColorViewRGBA), Qt::CaseInsensitive)) << message.toStdString();
+}
+
 // An A input lacking A's layer has zero pixels there but keeps its alpha: under over it still
 // attenuates the result so far by (1 - a), as an A input carrying the layer does. Only a
 // disconnected input reads zero alpha too.

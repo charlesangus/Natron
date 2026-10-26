@@ -106,6 +106,16 @@ resolvePlanMask(EffectInstance& effect,
     }
 }
 
+// Whether a source's per-channel alpha pairs with the channels of plane a render writes: its
+// layer is read in plane's layout. A layer read as stored lands its channels in the row's first
+// ones, and its alpha pairs with them channel by channel.
+bool
+stageAlphaPairsWrittenChannels(const StageSourceLayers& layers,
+                               const ImageLayerDesc& plane)
+{
+    return layers.mapped && (plane.getNumComponents() > 0);
+}
+
 // One input image a Composite op reads, locked on the calling thread like PassExec::PlaneJob.
 struct SourceImage {
     ImagePtr image;
@@ -404,7 +414,7 @@ makeStageGpuAlpha(const StagePlan& plan,
         return false;
     }
     if (layers.alphaPerChannel()) {
-        alpha->channel = -1;
+        alpha->channel = stageAlphaPairsWrittenChannels(layers, plan.plane) ? gpu::kGpuWrapAlphaChannelPerWrittenChannel : gpu::kGpuWrapAlphaChannelPerChannel;
 
         return true;
     }
@@ -813,26 +823,86 @@ resolveStageSourcesLayers(EffectInstance& effect,
 }
 
 namespace {
-// The error a source whose alpha layer is read per channel raises when it has not as many
-// channels as the layer it is the alpha of, or nullopt.
-std::optional<std::string>
-stageSourceLayersError(const StageSourceLayers& layers,
-                       const ImageLayerDesc& plane)
+// How many of an nComps-channel layout's channels processChannels writes.
+int
+writtenChannelCount(int nComps,
+                    const std::bitset<4>& processChannels)
 {
-    // A layer read in the clip layout arrives in the layout of the plane rendered, which the
-    // per-channel alpha must then match.
-    const ImageLayerDesc& readIn = (layers.mapped && (plane.getNumComponents() > 0)) ? plane : layers.layer;
-
-    if (!layers.read || !layers.alphaPerChannel() || (layers.alphaLayer.getNumComponents() == readIn.getNumComponents())) {
-        return std::nullopt;
+    int count = 0;
+    for (int c = 0; (c < nComps) && (c < 4); ++c) {
+        if (processChannels[pixelKernelChannelBit(nComps, c)]) {
+            ++count;
+        }
     }
 
-    return QCoreApplication::translate("StagePlan", "The alpha layer %1 has %2 channels, but the layer %3 it is the alpha of has %4.")
+    return count;
+}
+
+// The error a source whose alpha layer is read per channel raises when it has not as many
+// channels as the channels it is the alpha of (stageAlphaPairsWrittenChannels()), or nullopt.
+// Channels a render leaves unwritten pass through without an alpha.
+std::optional<std::string>
+stageSourceLayersError(const StageSourceLayers& layers,
+                       const ImageLayerDesc& plane,
+                       const std::bitset<4>& processChannels)
+{
+    const bool inPlane = stageAlphaPairsWrittenChannels(layers, plane);
+    const ImageLayerDesc& readIn = inPlane ? plane : layers.layer;
+    const int paired = inPlane ? writtenChannelCount(plane.getNumComponents(), processChannels) : readIn.getNumComponents();
+
+    if (!layers.read || !layers.alphaPerChannel() || (layers.alphaLayer.getNumComponents() == paired)) {
+        return std::nullopt;
+    }
+    if (paired == readIn.getNumComponents()) {
+        return QCoreApplication::translate("StagePlan", "The alpha layer %1 has %2 channels, but the layer %3 it is the alpha of has %4.")
+            .arg(QString::fromUtf8(layers.alphaLayer.getUserFacingLabel().c_str()))
+            .arg(layers.alphaLayer.getNumComponents())
+            .arg(QString::fromUtf8(readIn.getUserFacingLabel().c_str()))
+            .arg(paired)
+            .toStdString();
+    }
+
+    return QCoreApplication::translate("StagePlan", "The alpha layer %1 has %2 channels, but %3 channels of the layer %4 it is the alpha of are written.")
         .arg(QString::fromUtf8(layers.alphaLayer.getUserFacingLabel().c_str()))
         .arg(layers.alphaLayer.getNumComponents())
+        .arg(paired)
         .arg(QString::fromUtf8(readIn.getUserFacingLabel().c_str()))
-        .arg(readIn.getNumComponents())
         .toStdString();
+}
+
+// Row x0..x0+width of a per-channel alpha image into row, nComps floats per pixel: channel i of
+// the alpha is the alpha of the i-th channel channels writes, and the others, which pass through
+// unprocessed, read zero. scratch holds the alpha's own row.
+void
+readStagePerChannelAlphaRow(const SourceImage& alpha,
+                            const std::bitset<4>& channels,
+                            int x0,
+                            int y,
+                            int width,
+                            int nComps,
+                            std::vector<float>* scratch,
+                            float* row)
+{
+    const int alphaNComps = alpha.nComps;
+    scratch->resize((std::size_t)width * alphaNComps);
+    PassExec::readSourceRow(alpha.image.get(), alpha.access.get(), alpha.bounds, alphaNComps, x0, y, width, alphaNComps, scratch->data());
+    std::fill(row, row + (std::size_t)width * nComps, 0.f);
+    int alphaOf[4] = { -1, -1, -1, -1 };
+    const int nMapped = std::min(nComps, 4);
+    int next = 0;
+    for (int c = 0; c < nMapped; ++c) {
+        if (channels[pixelKernelChannelBit(nComps, c)] && (next < alphaNComps)) {
+            alphaOf[c] = next++;
+        }
+    }
+    const float* src = scratch->data();
+    for (int x = 0; x < width; ++x, src += alphaNComps, row += nComps) {
+        for (int c = 0; c < nMapped; ++c) {
+            if (alphaOf[c] >= 0) {
+                row[c] = src[alphaOf[c]];
+            }
+        }
+    }
 }
 
 // One row of a Composite input, x0 onwards, in the nComps-channel layout plane is rendered in. A
@@ -883,7 +953,7 @@ stageSourcesError(EffectInstance& effect,
         if (source.alpha.kind != CompositeAlpha::Kind::Layer) {
             continue;
         }
-        const std::optional<std::string> error = stageSourceLayersError(resolveStageSourceLayers(effect, source, plan.plane, time, view), plan.plane);
+        const std::optional<std::string> error = stageSourceLayersError(resolveStageSourceLayers(effect, source, plan.plane, time, view), plan.plane, plan.processChannels);
         if (error) {
             return error;
         }
@@ -1005,7 +1075,7 @@ runStagesCpu(EffectInstance& effect,
     std::vector<StageSourceLayers> sourceLayers(nFolded);
     for (std::size_t s = 0; s < nFolded; ++s) {
         sourceLayers[s] = resolveStageSourceLayers(effect, plan.composite[s], plan.plane, args.time, args.view);
-        if (stageSourceLayersError(sourceLayers[s], plan.plane)) {
+        if (stageSourceLayersError(sourceLayers[s], plan.plane, plan.processChannels)) {
             return eStatusFailed;
         }
     }
@@ -1094,6 +1164,7 @@ runStagesCpu(EffectInstance& effect,
         std::vector<float> inputAlphaRow(foldAlpha ? rowSize : 0);
         std::vector<float> alphaRows[2];
         std::vector<float> zeroAlphaRow(foldAlpha ? width : 0, 0.f);
+        std::vector<float> alphaScratch;
         if (foldAlpha) {
             alphaRows[0].resize(rowSize);
             alphaRows[1].resize(rowSize);
@@ -1105,7 +1176,11 @@ runStagesCpu(EffectInstance& effect,
                 span.data = zeroAlphaRow.data();
                 span.pixelStride = 1;
             } else if (sourceLayers[s].alphaPerChannel()) {
-                readStageSourceRow(jobPlanes[band.job], alpha, roi.x1, y, width, nComps, buffer);
+                if (stageAlphaPairsWrittenChannels(sourceLayers[s], jobPlanes[band.job])) {
+                    readStagePerChannelAlphaRow(alpha, job.channels, roi.x1, y, width, nComps, &alphaScratch, buffer);
+                } else {
+                    readStageSourceRow(jobPlanes[band.job], alpha, roi.x1, y, width, nComps, buffer);
+                }
                 span.data = buffer;
                 span.pixelStride = nComps;
                 span.channelStride = 1;
@@ -1365,7 +1440,7 @@ canRunStageSourcesGpu(const StagePlan& plan,
             return false;
         }
         const StageSourceLayers& layers = plan.compositeLayers[s];
-        if (stageSourceLayersError(layers, query.plane)) {
+        if (stageSourceLayersError(layers, query.plane, plan.processChannels)) {
             return false;
         }
         const ImageLayerDesc inputLayer = stageGpuSourceInputLayer(plan, source.inputNb, query.plane);

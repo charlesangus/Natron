@@ -11,7 +11,9 @@ import compositestep;
 // its offset, row stride, x1, y1, x2, y2, channel count and channel, then the destination alpha's
 // offset and row stride, from the output's origin, in the destination's layout. A view reads zero
 // outside its bounds and everywhere when it has no channels. Its channel is the alpha of every
-// channel, or kStepAlphaPerChannel to read the view per channel by channel bit, as stepInput is.
+// channel, kStepAlphaPerChannel to read the view per channel by channel bit, as stepInput is, or
+// kStepAlphaPerWrittenChannel to read its channel i as the alpha of the i-th channel the wrap's
+// channelMask writes, the others reading zero.
 //
 // These live in their own module so that a step without alpha keeps compositestep.slang's bindings.
 
@@ -22,6 +24,7 @@ import compositestep;
 
 static const uint kStepAlphaViewWords = 8;
 static const uint kStepAlphaPerChannel = 0xFFFFFFFF;
+static const uint kStepAlphaPerWrittenChannel = 0xFFFFFFFE;
 
 // The op sees and returns pixels and their alphas in channel-bit order, absent channels reading as
 // zero. It updates result and resultAlpha, the result so far and its alpha, with input, of alpha
@@ -43,12 +46,27 @@ float4 stepReadAlpha(StructuredBuffer<float> alpha, uint view, int2 p)
         return v;
     const uint base = stepAlphaGeometry[view] + uint(p.y - y1) * stepAlphaGeometry[view + 1] + uint(p.x - x1) * comps;
     const uint channel = stepAlphaGeometry[view + 7];
+    const uint n = wrap.nComps;
+    if (channel == kStepAlphaPerWrittenChannel)
+    {
+        // The channels channelMask leaves out pass through unprocessed and need no alpha.
+        uint next = 0;
+        for (uint c = 0; c < n && c < 4; ++c)
+        {
+            const uint bit = wrapChannelBit(n, c);
+            if ((wrap.channelMask & (1u << bit)) == 0)
+                continue;
+            if (next < comps)
+                v[bit] = alpha[base + next];
+            ++next;
+        }
+        return v;
+    }
     if (channel != kStepAlphaPerChannel)
     {
         const float a = alpha[base + channel];
         return float4(a, a, a, a);
     }
-    const uint n = wrap.nComps;
     for (uint c = 0; c < n && c < 4; ++c)
     {
         const uint bit = wrapChannelBit(n, c);

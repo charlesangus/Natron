@@ -96,8 +96,12 @@ struct GpuWrap {
 };
 
 // An alpha a Composite step reads, in the output's channels by channel bit: component `channel` of
-// `view` for every channel or, with channel -1, `view` read per channel as a step's input is read.
-// It reads zero outside the view's bounds, which may be empty.
+// `view` for every channel; with kGpuWrapAlphaChannelPerChannel, `view` read per channel as a
+// step's input is read; with kGpuWrapAlphaChannelPerWrittenChannel, component i of `view` the alpha
+// of the i-th channel the step's channelMask writes, the others reading zero. It reads zero outside
+// the view's bounds, which may be empty.
+inline constexpr int32_t kGpuWrapAlphaChannelPerChannel = -1;
+inline constexpr int32_t kGpuWrapAlphaChannelPerWrittenChannel = -2;
 struct GpuWrapAlpha {
     GpuWrapView view;
     int32_t channel = -1;
@@ -137,11 +141,12 @@ inline constexpr uint32_t kGpuWrapAlphaStepBindings = kGpuWrapStepBindings + 4;
 
 // The alpha geometry block of compositealpha.slang, in words: per alpha view, the result's then the
 // input's, its offset, row stride, x1, y1, x2, y2, channel count (0 reads zero) and channel
-// (kGpuWrapAlphaPerChannel to read it per channel), then the destination alpha's offset and row
-// stride from the output's origin.
+// (kGpuWrapAlphaPerChannel to read it per channel, kGpuWrapAlphaPerWrittenChannel per written
+// channel), then the destination alpha's offset and row stride from the output's origin.
 inline constexpr uint32_t kGpuWrapAlphaViewWords = 8;
 inline constexpr uint32_t kGpuWrapAlphaGeometryWords = 2 * kGpuWrapAlphaViewWords + 2;
 inline constexpr uint32_t kGpuWrapAlphaPerChannel = 0xFFFFFFFFu;
+inline constexpr uint32_t kGpuWrapAlphaPerWrittenChannel = 0xFFFFFFFEu;
 using GpuWrapAlphaGeometry = std::array<uint32_t, kGpuWrapAlphaGeometryWords>;
 
 // Validates the geometry of `wrap` and packs it for a dispatch over its output; buffers are only

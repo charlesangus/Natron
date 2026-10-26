@@ -30,3 +30,21 @@ Operator presets (plus Mask, Stencil) in a Merge Presets submenu (`Gui/Resources
 
 ## Tasks
 1. Own layer knob (policy + adoptLayerKnob); 2. Merge model (knobs, All/Matching, produced planes, All-target fix); 3. panel layout + screenshots; 4. callers `layer` → `output` (LightWrap.py, Glow.py, docs); 5. menu and shortcuts + `Tests/gui/m101_merge_presets.py`.
+
+## Revision (user, 2026-10-26) — supersedes Model, Knobs and Panel above
+- `layers` → Layers: multi-select list of B's layers with an All entry (the KnobChannelSet-style row list AddLayers uses, plus All). Listed layers are merged in place; all other B layers pass through untouched. Default `rgba`.
+- No `output` knob, no `bLayer`, no Matching B mode, no `alsoMerge`, no new-layer creation. The host `layer` knob is not created on Merge.
+- `aLayer` → A Layer: Matching (default; each listed layer reads A's same-named layer, a missing one reads zero while A's alpha still applies) or one of A's layers, merged into every listed layer.
+- `bAlphaSource`/`bAlpha`/`bAlphaLayer`, `aAlphaSource`/`aAlpha`/`aAlphaLayer` as above.
+
+```
+Operation [stencil v]  Set BBox [union v]  Metadata From [B v]  Range From [B v]
+------------------------------------------------------------------------------
+Layers   [spec] [diffuse] [albedo] (+)      or  [All]
+B Alpha Source [Channel v]  B Alpha [rgba.A v]
+A Layer  [Matching v]  A Alpha Source [Channel v]  A Alpha [rgba.A v]
+------------------------------------------------------------------------------
+[x] Mask [rgba.A v]  [ ] Invert Mask
+Mix [1.0 -------o]
+```
+Example: stencil spec, diffuse and albedo by A's alpha = Operation stencil, Layers spec/diffuse/albedo, A Alpha rgba.A.

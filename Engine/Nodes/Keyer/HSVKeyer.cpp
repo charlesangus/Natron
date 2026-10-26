@@ -207,7 +207,7 @@ HSVKeyerOp::createKnobs(KnobHolder* knobHolder,
     KnobDoublePtr hue = addRange(knobHolder, page, kHSVKeyerParamHueRange, EffectInstance::tr("Hue Range").toStdString(),
                                  EffectInstance::tr("The hue trapezoid, in turns from red at 0: the key rises from 0 at the outer low point to 1 at the inner low point, stays 1 to the inner high point and falls to 0 at the outer high point, each point going up the hue circle from the one before, so the range may cross red. Hue counts for less as the chroma nears 0.").toStdString(),
                                  hueDefaults);
-    KnobDoublePtr sat = addRange(knobHolder, page, kHSVKeyerParamSatRange, EffectInstance::tr("Saturation Range").toStdString(),
+    KnobDoublePtr sat = addRange(knobHolder, page, kHSVKeyerParamSaturationRange, EffectInstance::tr("Saturation Range").toStdString(),
                                  EffectInstance::tr("The saturation trapezoid (chroma in OkLCh). A point below the one before counts as equal to it.").toStdString(),
                                  satDefaults);
     KnobDoublePtr luma = addRange(knobHolder, page, kHSVKeyerParamLumaRange, EffectInstance::tr("Luma Range").toStdString(),
@@ -223,14 +223,14 @@ HSVKeyerOp::createKnobs(KnobHolder* knobHolder,
     lumaRange = luma;
     useHue = addBool(knobHolder, page, kHSVKeyerParamUseHue, EffectInstance::tr("Use Hue").toStdString(),
                      EffectInstance::tr("Key by the hue range.").toStdString(), true, false);
-    useSat = addBool(knobHolder, page, kHSVKeyerParamUseSat, EffectInstance::tr("Use Saturation").toStdString(),
+    useSat = addBool(knobHolder, page, kHSVKeyerParamUseSaturation, EffectInstance::tr("Use Saturation").toStdString(),
                      EffectInstance::tr("Key by the saturation range.").toStdString(), true, false);
     useLuma = addBool(knobHolder, page, kHSVKeyerParamUseLuma, EffectInstance::tr("Use Luma").toStdString(),
                       EffectInstance::tr("Key by the luma range.").toStdString(), true, true);
     invert = addBool(knobHolder, page, kHSVKeyerParamInvert, EffectInstance::tr("Invert").toStdString(),
                      EffectInstance::tr("Output one minus the key.").toStdString(), false, true);
     {
-        KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(knobHolder, EffectInstance::tr("Output").toStdString());
+        KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(knobHolder, EffectInstance::tr("Output Mode").toStdString());
         knob->setName(kHSVKeyerParamOutputMode);
         knob->setHintToolTip(EffectInstance::tr("What the key does to RGB. Alpha is the key in every mode.").toStdString());
         std::vector<ChoiceOption> options;

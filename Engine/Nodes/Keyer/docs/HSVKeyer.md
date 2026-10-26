@@ -21,7 +21,7 @@ Hue is in turns from red at 0, and 0 for a colour with no chroma.
   (M1), all fused into one 3x3 matrix at bake; then a signed cube root and M2 give L, a and b.
   The components are h = atan2(b, a) in turns, C = sqrt(a^2 + b^2) (about 0 to 0.4) and L.
 
-## Ranges (`hueRange`, `satRange`, `lumaRange`)
+## Ranges (`hueRange`, `saturationRange`, `lumaRange`)
 
 Each is a 4-dimension double (`outerLow`, `innerLow`, `innerHigh`, `outerHigh`): the term rises
 from 0 at the outer low point to 1 at the inner low point, stays 1 to the inner high point and
@@ -55,7 +55,7 @@ source with no chroma.
 
 ## Combination and output
 
-The key is the product of the terms of the enabled components (`useHue`, `useSat`, `useLuma`, all
+The key is the product of the terms of the enabled components (`useHue`, `useSaturation`, `useLuma`, all
 on by default), 1 when none is, or one minus that with `invert`. Alpha is the key in every
 `outputMode`; RGB passes unchanged (**Alpha**), is multiplied by the key (**Premultiplied**) or is
 replaced by it (**Matte**). The output is RGBA whatever the source. Mask and mix blend the result

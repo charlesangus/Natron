@@ -59,7 +59,7 @@ void
 ColorMatrixOp::createKnobs(KnobHolder* holder,
                            const KnobPagePtr& page)
 {
-    KnobChoicePtr sizeKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Matrix").toStdString());
+    KnobChoicePtr sizeKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Matrix Size").toStdString());
     sizeKnob->setName(kColorMatrixParamMatrixSize);
     sizeKnob->setHintToolTip(EffectInstance::tr("The size of the matrix. At 3x3 the matrix mixes R, G and B and alpha passes through untouched; "
                                                 "at 4x4 alpha takes part as a fourth input and output. Switching keeps every coefficient.")
@@ -75,7 +75,7 @@ ColorMatrixOp::createKnobs(KnobHolder* holder,
     page->addKnob(sizeKnob);
     matrixSize = sizeKnob;
 
-    KnobDoublePtr matrixKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Coefficients").toStdString(), 16);
+    KnobDoublePtr matrixKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Matrix").toStdString(), 16);
     matrixKnob->setName(kColorMatrixParamMatrix);
     matrixKnob->setHintToolTip(EffectInstance::tr("The matrix: each row holds the weights of the input R, G, B and A in "
                                                   "the output channel the row is named after.")

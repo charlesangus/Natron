@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 POLL_TIMEOUT_S = 20.0
 STARTUP_TIMEOUT_S = 60.0
 PLUGIN_ID = "HSVKeyer"
-RANGE_KNOBS = ("hueRange", "satRange", "lumaRange")
+RANGE_KNOBS = ("hueRange", "saturationRange", "lumaRange")
 STRIP_PREFIX = "TrapezoidStrip_"
 # Orange: hue 30 degrees in HSV and HSL, full saturation, V 1 and L 0.5.
 SOURCE = (1.0, 0.5, 0.0)
@@ -117,7 +117,7 @@ try:
         source = node.getParam("sourceColor")
         model = node.getParam("colorModel")
         hue = node.getParam("hueRange")
-        sat = node.getParam("satRange")
+        sat = node.getParam("saturationRange")
         luma = node.getParam("lumaRange")
         use_hue = node.getParam("useHue")
         require(None not in (source, model, hue, sat, luma, use_hue), "HSVKeyer has its source, model, range and toggle knobs")

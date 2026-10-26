@@ -535,7 +535,7 @@ TEST_F(NativeHueGpuTest, HSVKeyerKernelMatchesTheCpu)
             for (const double* hue : hues) {
                 for (int invert = 0; invert < 2; ++invert) {
                     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamHueRange, { hue[0], hue[1], hue[2], hue[3] }));
-                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSatRange, { invert ? -0.1 : 0.01, 0.1, 0.8, 1.5 }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSaturationRange, { invert ? -0.1 : 0.01, 0.1, 0.8, 1.5 }));
                     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamLumaRange, { -0.2, 0.1, 0.9, 2. }));
                     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamUseLuma, { (double)(invert == 0) }));
                     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamInvert, { (double)invert }));
@@ -563,7 +563,7 @@ TEST_F(NativeHueGpuTest, HSVKeyerMatchesTheCpuRender)
         ASSERT_TRUE(setKnobValue(op, kHSVKeyerParamColorModel, model));
         ASSERT_TRUE(setKnobValue(op, kHSVKeyerParamOutputMode, "premultiplied"));
         ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamHueRange, { 0.1, 0.3, 0.5, 0.7 }));
-        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamSatRange, { 0., 0.05, 1., 1.5 }));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamSaturationRange, { 0., 0.05, 1., 1.5 }));
         ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamLumaRange, { -0.5, 0., 1., 2. }));
         wire(source, mask, op);
         SCOPED_TRACE(model);

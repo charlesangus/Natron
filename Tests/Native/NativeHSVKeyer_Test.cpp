@@ -159,7 +159,7 @@ protected:
     void openAll(const NodePtr& node)
     {
         setRange(node, kHSVKeyerParamHueRange, 0., 0., 0.999, 0.999);
-        setRange(node, kHSVKeyerParamSatRange, -10., -10., 10., 10.);
+        setRange(node, kHSVKeyerParamSaturationRange, -10., -10., 10., 10.);
         setRange(node, kHSVKeyerParamLumaRange, -10., -10., 10., 10.);
     }
 
@@ -169,7 +169,7 @@ protected:
              bool luma)
     {
         ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamUseHue, { (double)hue }));
-        ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamUseSat, { (double)sat }));
+        ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamUseSaturation, { (double)sat }));
         ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamUseLuma, { (double)luma }));
     }
 };
@@ -185,7 +185,7 @@ TEST_F(NativeHSVKeyerTest, ControlsAndDefaults)
     };
     const Range ranges[] = {
         { kHSVKeyerParamHueRange, KnobDouble::eRangeWidgetRoleHue, { 0.25, 0.30, 0.37, 0.42 } },
-        { kHSVKeyerParamSatRange, KnobDouble::eRangeWidgetRoleSaturation, { 0.1, 0.3, 1., 1. } },
+        { kHSVKeyerParamSaturationRange, KnobDouble::eRangeWidgetRoleSaturation, { 0.1, 0.3, 1., 1. } },
         { kHSVKeyerParamLumaRange, KnobDouble::eRangeWidgetRoleLuma, { 0., 0.05, 1., 2. } },
     };
     KnobColorPtr source = std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(kHSVKeyerParamSourceColor));
@@ -206,7 +206,7 @@ TEST_F(NativeHSVKeyerTest, ControlsAndDefaults)
             EXPECT_DOUBLE_EQ(r.values[i], knob->getValue(i)) << r.name << " " << i;
         }
     }
-    const char* const toggles[] = { kHSVKeyerParamUseHue, kHSVKeyerParamUseSat, kHSVKeyerParamUseLuma };
+    const char* const toggles[] = { kHSVKeyerParamUseHue, kHSVKeyerParamUseSaturation, kHSVKeyerParamUseLuma };
     for (const char* name : toggles) {
         KnobBoolPtr knob = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(name));
         ASSERT_TRUE(bool(knob)) << name;
@@ -239,7 +239,7 @@ TEST_F(NativeHSVKeyerTest, TrapezoidEdges)
 
     // The saturation trapezoid alone.
     openAll(node);
-    setRange(node, kHSVKeyerParamSatRange, 0.2, 0.4, 0.6, 0.8);
+    setRange(node, kHSVKeyerParamSaturationRange, 0.2, 0.4, 0.6, 0.8);
     EXPECT_EQ(0.f, keyOf(node, 0.5f, 0.1f));
     EXPECT_NEAR(0.5f, keyOf(node, 0.5f, 0.3f), kTolerance);
     EXPECT_EQ(1.f, keyOf(node, 0.5f, 0.5f));
@@ -324,7 +324,7 @@ TEST_F(NativeHSVKeyerTest, KeyIsTheProductOfEnabledTermsAndInverts)
     ASSERT_TRUE(bool(node));
     openAll(node);
     setRange(node, kHSVKeyerParamHueRange, 0.2, 0.3, 0.4, 0.6);
-    setRange(node, kHSVKeyerParamSatRange, 0.2, 0.4, 0.6, 0.8);
+    setRange(node, kHSVKeyerParamSaturationRange, 0.2, 0.4, 0.6, 0.8);
     setRange(node, kHSVKeyerParamLumaRange, 0.2, 0.4, 0.6, 0.8);
 
     // Half up each ramp.
@@ -353,10 +353,10 @@ TEST_F(NativeHSVKeyerTest, HslComponents)
     // (0.75, 0.25, 0.25): L = 0.5, S = 0.5 / 1 = 0.5; (0.9, 0.7, 0.7): L = 0.8, S = 0.2 / 0.4 = 0.5.
     const float lower[3] = { 0.75f, 0.25f, 0.25f };
     const float upper[3] = { 0.9f, 0.7f, 0.7f };
-    setRange(node, kHSVKeyerParamSatRange, 0.4, 0.6, 0.6, 0.8);
+    setRange(node, kHSVKeyerParamSaturationRange, 0.4, 0.6, 0.6, 0.8);
     EXPECT_NEAR(0.5f, keyOfRgb(node, lower), 1e-5f);
     EXPECT_NEAR(0.5f, keyOfRgb(node, upper), 1e-5f);
-    setRange(node, kHSVKeyerParamSatRange, -10., -10., 10., 10.);
+    setRange(node, kHSVKeyerParamSaturationRange, -10., -10., 10., 10.);
     setRange(node, kHSVKeyerParamLumaRange, 0.4, 0.6, 0.6, 0.8);
     EXPECT_NEAR(0.5f, keyOfRgb(node, lower), 1e-5f);
     EXPECT_NEAR(0.f, keyOfRgb(node, upper), 1e-5f);
@@ -401,7 +401,7 @@ TEST_F(NativeHSVKeyerTest, SourceColourRecentresKeepingWidths)
     NodePtr node = makeNode(NodePtr());
     ASSERT_TRUE(bool(node));
     setRange(node, kHSVKeyerParamHueRange, 0.25, 0.30, 0.37, 0.42);
-    setRange(node, kHSVKeyerParamSatRange, 0.1, 0.3, 0.5, 0.6);
+    setRange(node, kHSVKeyerParamSaturationRange, 0.1, 0.3, 0.5, 0.6);
     setRange(node, kHSVKeyerParamLumaRange, 0., 0.1, 0.3, 0.5);
     float rgb[3];
     hsv(0.6f, 0.8f, 0.5f, rgb);
@@ -413,9 +413,9 @@ TEST_F(NativeHSVKeyerTest, SourceColourRecentresKeepingWidths)
     EXPECT_NEAR(0.07, upTheCircle(hue[1], hue[2]), 1e-6);
     EXPECT_NEAR(0.05, upTheCircle(hue[2], hue[3]), 1e-6);
     EXPECT_NEAR(0.6, hue[1] + 0.035, 1e-5);
-    EXPECT_NEAR(0.5, rangeValue(node, kHSVKeyerParamSatRange, 0), 1e-5);
-    EXPECT_NEAR(0.8, (rangeValue(node, kHSVKeyerParamSatRange, 1) + rangeValue(node, kHSVKeyerParamSatRange, 2)) * 0.5, 1e-5);
-    EXPECT_NEAR(1., rangeValue(node, kHSVKeyerParamSatRange, 3), 1e-5);
+    EXPECT_NEAR(0.5, rangeValue(node, kHSVKeyerParamSaturationRange, 0), 1e-5);
+    EXPECT_NEAR(0.8, (rangeValue(node, kHSVKeyerParamSaturationRange, 1) + rangeValue(node, kHSVKeyerParamSaturationRange, 2)) * 0.5, 1e-5);
+    EXPECT_NEAR(1., rangeValue(node, kHSVKeyerParamSaturationRange, 3), 1e-5);
     EXPECT_NEAR(0.3, rangeValue(node, kHSVKeyerParamLumaRange, 0), 1e-5);
     EXPECT_NEAR(0.5, (rangeValue(node, kHSVKeyerParamLumaRange, 1) + rangeValue(node, kHSVKeyerParamLumaRange, 2)) * 0.5, 1e-5);
     // The source keys fully.
@@ -436,7 +436,7 @@ TEST_F(NativeHSVKeyerTest, SourceColourRecentresKeepingWidths)
     const double before = rangeValue(node, kHSVKeyerParamHueRange, 1);
     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSourceColor, { 0.25, 0.25, 0.25 }));
     EXPECT_DOUBLE_EQ(before, rangeValue(node, kHSVKeyerParamHueRange, 1));
-    EXPECT_NEAR(0., (rangeValue(node, kHSVKeyerParamSatRange, 1) + rangeValue(node, kHSVKeyerParamSatRange, 2)) * 0.5, 1e-5);
+    EXPECT_NEAR(0., (rangeValue(node, kHSVKeyerParamSaturationRange, 1) + rangeValue(node, kHSVKeyerParamSaturationRange, 2)) * 0.5, 1e-5);
     EXPECT_NEAR(0.25, (rangeValue(node, kHSVKeyerParamLumaRange, 1) + rangeValue(node, kHSVKeyerParamLumaRange, 2)) * 0.5, 1e-5);
 }
 
@@ -449,7 +449,7 @@ TEST_F(NativeHSVKeyerTest, ModelChangeAndRecentreButtonRecentre)
     ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSourceColor, { 0.9, 0.7, 0.7 }));
     ASSERT_TRUE(setKnobValue(node, kHSVKeyerParamColorModel, "hsl"));
     // HSL: S = 0.5, L = 0.8.
-    EXPECT_NEAR(0.5, (rangeValue(node, kHSVKeyerParamSatRange, 1) + rangeValue(node, kHSVKeyerParamSatRange, 2)) * 0.5, 1e-5);
+    EXPECT_NEAR(0.5, (rangeValue(node, kHSVKeyerParamSaturationRange, 1) + rangeValue(node, kHSVKeyerParamSaturationRange, 2)) * 0.5, 1e-5);
     EXPECT_NEAR(0.8, (rangeValue(node, kHSVKeyerParamLumaRange, 1) + rangeValue(node, kHSVKeyerParamLumaRange, 2)) * 0.5, 1e-5);
     const float src[3] = { 0.9f, 0.7f, 0.7f };
     EXPECT_EQ(1.f, keyOfRgb(node, src));
@@ -476,7 +476,7 @@ TEST_F(NativeHSVKeyerTest, RenderOutputModes)
         ASSERT_TRUE(bool(source) && bool(node));
         ASSERT_TRUE(setKnobValue(node, kHSVKeyerParamOutputMode, modes[mode]));
         setRange(node, kHSVKeyerParamHueRange, 0.1, 0.3, 0.5, 0.7);
-        setRange(node, kHSVKeyerParamSatRange, 0., 0.2, 1., 2.);
+        setRange(node, kHSVKeyerParamSaturationRange, 0., 0.2, 1., 2.);
         setRange(node, kHSVKeyerParamLumaRange, -1., 0., 1., 2.);
 
         const RectI window = paritySourceWindow(source, kTime, 0);

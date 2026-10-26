@@ -6,8 +6,8 @@ Tolerance:
 |---|---|---|---|
 | ColorMatrix | arithmetic, plus an absolute bound | `kMatrixTolerance` | single-precision products summed in a fixed order; against a double reference the error follows the terms, not the result, so 5e-6 absolute covers cancellation |
 
-- **Knobs.** `matrixSize` (label "Matrix") picks 3x3 (the default) or 4x4. `matrix` (label
-  "Coefficients") is one 16-dimension double knob, rows R, G, B, A over columns r, g, b, a:
+- **Knobs.** `matrixSize` (label "Matrix Size") picks 3x3 (the default) or 4x4. `matrix` (label
+  "Matrix") is one 16-dimension double knob, rows R, G, B, A over columns r, g, b, a:
   dimension `row * 4 + column`, named `rr`, `rg`, ... `aa`, identity by default. The panel shows
   it as a grid of plain numeric fields headed R G B A across and down, with no slider; each field
   keeps its own animation, expression, link and right-click menu.

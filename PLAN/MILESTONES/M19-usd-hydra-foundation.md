@@ -174,6 +174,7 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`: node layers stay im
 
 ## Decisions
 
+- 2026-10-26 — **Hardware check (user):** NVIDIA done in the user's UAT; AMD pending on the user's side and assumed good unless they report issues. Merge M19 as is (follow-up MVP work is M226–M235), first, without --delete-branch.
 - 2026-10-26 — **Reload only (user):** a USD file changed on disk is picked up only when Reload is pressed; no file watching. The code already does this: `FileStampRegistry` stats each file once and re-stats only on Reload (`USDRead::purgeCaches`).
 - 2026-10-25 — **Long-lived scene choices (user):** the viewer syncs on a worker thread under a lock; Reload aborts viewer renders and waits for every other render; USDRender keeps a stage and engine per node sharing one GL device, with a way to purge them to free memory; M54 geometry keys on time only when something upstream varies with time.
 - 2026-10-25 — **Redesign around a long-lived scene (user):** the viewer and USDRender hold one long-lived USD stage and one Hydra engine each, fed incremental layer updates, instead of composing a new stage and rebuilding Storm per edit; Reload re-reads layers safely against it. A thorough review of all USD work (done and planned) against the USD code, reference implementations and docs comes first and shapes the new phase.

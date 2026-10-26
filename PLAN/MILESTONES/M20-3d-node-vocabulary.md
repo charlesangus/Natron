@@ -184,6 +184,7 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`, on top of M19 - USD
 
 ## Decisions
 
+- 2026-10-26 — **Hardware check and merge (user):** NVIDIA done; AMD assumed good unless reported. Merge after M20.P4.T7–T8 and the user's re-check of the fixed AppImage; retarget to main via REST after M19 merges.
 - 2026-10-26 — **Free GPU Memory scope and flattened cleanup (user):** Free GPU Memory also drops the 3D viewport's Storm renderer, which rebuilds on the next redraw. A flattened USDWrite also deletes leftover `<name>_layerN` sidecars from an earlier layered write, and warns that it did.
 - 2026-10-26 — **USDWrite conforms its target (user):** a write makes the output folder match the render source, deleting any `<name>_layerN` sidecars this write no longer produces (for example after layers were removed upstream).
 - 2026-10-26 — **Free GPU Memory is global (user):** one app-wide action frees every GPU cache Natron holds: USDRender's Hydra engines and stages, the Vulkan pools, and the GPU image and texture caches. It is not specific to USD.

@@ -2421,18 +2421,32 @@ AppInstance::clearAllLastRenderedImages()
 void
 AppInstance::aboutToQuit()
 {
-    ///Clear nodes now, not in the destructor of the project as
-    ///deleting nodes might reference the project.
-    _imp->_currentProject->reset(true /*aboutToQuit*/, /*blocking*/true);
-
     // Queued renders never start now, no task can restart, and a running render process dies
-    // with this app, possibly before loading its file.
+    // with this app, possibly before loading its file. The processes are stopped here because
+    // their handlers are shared with the progress panel, so a handler's destruction is no
+    // point to rely on; a process left running only dies with the GUI process, unreaped and
+    // with both IPC sockets left behind. They go before the project, which owns their writers.
     QStringList savePaths;
+    std::list<ProcessHandlerPtr> processes;
     {
         QMutexLocker k(&_imp->renderQueueMutex);
         savePaths.swap(_imp->renderSaveFiles);
         _imp->renderQueue.clear();
+        for (const RenderQueueItem& item : _imp->activeRenders) {
+            if (item.process) {
+                processes.push_back(item.process);
+            }
+        }
     }
+    // Not under the queue mutex: a process ending can call back into the queue.
+    for (const ProcessHandlerPtr& process : processes) {
+        process->stopNow();
+    }
+
+    /// Clear nodes now, not in the destructor of the project as
+    /// deleting nodes might reference the project.
+    _imp->_currentProject->reset(true /*aboutToQuit*/, /*blocking*/ true);
+
     for (const QString& savePath : savePaths) {
         QFile::remove(savePath);
     }

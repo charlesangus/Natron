@@ -114,6 +114,13 @@ public:
 
     virtual ~ProcessHandler();
 
+    /**
+     * @brief Kills the render process, waits for it and removes both IPC socket files, without
+     * reporting the end. For an app that quits: the handler can outlive it, held elsewhere.
+     * Safe to call more than once.
+     **/
+    void stopNow();
+
     const QString & getProcessLog() const;
     OutputEffectInstance* getWriter() const
     {

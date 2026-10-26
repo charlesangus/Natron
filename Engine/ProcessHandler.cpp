@@ -133,22 +133,36 @@ ProcessHandler::~ProcessHandler()
 {
     Q_EMIT deleted();
 
-    if (_ipcServer) {
-        _ipcServer->close();
-        delete _ipcServer;
+    stopNow();
+}
+
+void
+ProcessHandler::stopNow()
+{
+    if (_process) {
+        // The end of a process stopped this way is no render result to report.
+        QObject::disconnect(_process, nullptr, this, nullptr);
+        // Kills the render process and waits for it, which also reaps it.
+        _process->close();
+        delete _process;
+        _process = 0;
     }
     if (_bgProcessInputSocket) {
         _bgProcessInputSocket->close();
         delete _bgProcessInputSocket;
+        _bgProcessInputSocket = 0;
     }
-    if (_process) {
-        // Kills the render process and waits for it.
-        _process->close();
-        delete _process;
+    if (_ipcServer) {
+        // Closing the server removes its socket file; it owns the output socket.
+        _ipcServer->close();
+        delete _ipcServer;
+        _ipcServer = 0;
+        _bgProcessOutputSocket = 0;
     }
     // A killed render process can't remove its own socket file.
     if (!_childServerName.isEmpty()) {
         QLocalServer::removeServer(_childServerName);
+        _childServerName.clear();
     }
 }
 
@@ -165,7 +179,7 @@ ProcessHandler::setLaunchDisabledForTesting(bool disabled)
 void
 ProcessHandler::startProcess()
 {
-    if (launchDisabledForTesting) {
+    if (launchDisabledForTesting || !_process) {
         return;
     }
 #if defined(Q_OS_LINUX)

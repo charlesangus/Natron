@@ -799,7 +799,11 @@ KnobGui::onAppendParamEditChanged(int reason,
 void
 KnobGui::onFrozenChanged(bool frozen)
 {
+    // A render that ends while the app quits sends this after the project has destroyed the knob.
     KnobIPtr knob = getKnob();
+    if (!knob) {
+        return;
+    }
     KnobButton* isBtn = dynamic_cast<KnobButton*>( knob.get() );
 
     if ( isBtn && !isBtn->isRenderButton() ) {

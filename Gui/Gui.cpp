@@ -100,7 +100,10 @@ Gui::Gui(const GuiAppInstancePtr& app,
 
     setAcceptDrops(true);
 
-    setAttribute(Qt::WA_DeleteOnClose, true);
+    // The app's quit deletes the window (GuiAppInstance::aboutToQuit). A quit that waits for
+    // renders to stop ends after the close event has returned, and a window deleted on close
+    // would leave the app holding a dangling Gui.
+    setAttribute(Qt::WA_DeleteOnClose, false);
 
 #ifdef Q_OS_DARWIN
      QObject::connect( appPTR, SIGNAL(dockClicked()), this, SLOT(dockClicked()) );

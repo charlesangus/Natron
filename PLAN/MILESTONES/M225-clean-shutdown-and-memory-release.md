@@ -11,3 +11,7 @@ Acceptance sketch:
 - After every close path, no Natron process (main, children, AppImage mount helper) remains within a bounded time (a few seconds; renders are cancelled or, where the user chose to keep a background render, that is explicit and visible).
 - No shared-memory segments, cache mmaps or temp files owned by the closed instance remain, apart from the persistent caches that are meant to stay on disk.
 - An automated test launches Natron under Xvfb, exercises each close path (with renders running where relevant), and asserts no leftover processes or shared-memory segments.
+
+## Decisions
+
+- 2026-10-26 — **Renders on quit (user):** quitting while renders are running warns that N renders are still running and that quitting will stop them (Quit / Cancel); nothing outlives Natron. Render processes are killed if the GUI dies. Reproduced: every close path ended processes within ~1.1 s, but closing the window and SIGTERM/SIGINT during renders crashed; spawned programs (xdg-open) inherited descriptors that kept the AppImage mount alive; post-exit "RAM" was the viewer cache's reclaimable page cache.

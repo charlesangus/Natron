@@ -245,8 +245,29 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, `OfxRetired_Test` and `NativePluginList_Test` pass, and `getPluginIDs()` contains no retired ID.
   - size: S
 
+## Phase 121.7: UAT round 1
+
+- [ ] M122.P7.T1 — Premult "all" breaks the node permanently
+  - files: `Engine/Nodes/Color/Premult.{h,cpp}` and whatever holds the stuck state
+  - approach: user repro: Constant → Shuffle to a second layer → Copy a blurred alpha in → Premult → Unpremult is fine. Set Premult's channels to "all" and the Unpremult gives very bright edges; setting Premult back to rgba, refreshing the viewer and clearing caches doesn't recover. Find the persistent state (a knob, metadata, a premult flag, a layer selection) and fix it.
+  - verify: a gtest of the repro: after the round trip all → rgba the output equals a fresh node's; plus the GUI check.
+  - size: L
+
+- [ ] M122.P7.T2 — ColorMatrix matrix interface
+  - files: ColorMatrix, a matrix knob display in Gui
+  - approach: a grid of sliderless float fields (4×4, with a 3×3 mode that hides the alpha row and column and leaves them identity), in place of four RGBA rows.
+  - verify: Xvfb screenshot shared with the user; gtests for 3×3 mode keeping alpha untouched.
+  - size: L
+
+- [ ] M122.P7.T3 — HueKeyer becomes HSVKeyer
+  - files: `Engine/Nodes/Keyer/HSVKeyer.*` (rename), a trapezoid range knob and its Gui widget
+  - approach: pick a source colour, which centres the ranges; one trapezoid (outer low, inner low, inner high, outer high) per hue, saturation and value/luma, edited on a custom widget; a toggle for each component's contribution to the alpha; a colour-model choice. Hue ranges wrap.
+  - verify: gtests per component and model, plus the wrap; Xvfb screenshots shared with the user.
+  - size: L
+
 ## Decisions
 
+- 2026-10-26 — **UAT round 1 (user):** Premult breaks permanently after its channels are set to "all"; ColorMatrix needs a proper matrix grid of sliderless fields, possibly with 3×3 and 4×4 modes; HueKeyer becomes HSVKeyer with a picked source colour, trapezoid controls (outer/inner/inner/outer) for hue, saturation and luma on custom knobs, per-component alpha toggles, and a colour-model choice.
 - 2026-10-25 — **Colorspace premultiplication (user):** Colorspace keeps the standard "(Un)premult by" knob, off by default; with it set, it divides before the conversion and multiplies after, like every other colour node.
 - 2026-10-25 — **Despill and Posterize (bosley-native-nodes):** Despill's Expand scales the limit by (1−expand) as OFX did; Replace Color adds only the replacement's chroma in proportion to the spill and Luma Restore adds the removed luminance back as grey; the spill map goes to alpha only, since a staged node cannot write another layer. Posterize ports every Quantize control (all seven dithers, seed, static seed) and adds a Range Min/Max; the plan's blue noise is OFX's void-and-cluster matrices.
 - 2026-10-25 — **Phase 121.3 departures (bosley-native-nodes):** HSVTool ports all 8 OFX alpha outputs (the plan listed 5) and HueCorrect keeps clampBlack/clampWhite (default off), because a port means every control. HueKeyer's saturation defaults (0.1/0.3/1/1) leave greys unkeyed. GPU parity uses the transcendental tolerance (1e-5) for HSVTool and HueKeyer, since GPU division error is scaled by chroma and ramp slopes, and one table step for HueCorrect. `net.sf.openfx.HueCorrect1` (OFX's deprecated nine-curve v1) is retired with the others.

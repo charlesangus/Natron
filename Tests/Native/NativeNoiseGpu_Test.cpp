@@ -270,8 +270,13 @@ bool
 setCaseKnobs(const NodePtr& node,
              const Case& c)
 {
+    // A small odd-sized extent, so the run is dominated by the cases and not the pixel count, with
+    // odd edges at mipmap 0 and 1 (61x45 and 31x23).
+    bool ok = setKnobValue(node, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize);
+    ok = ok && setKnobValues(node, kNativeGeneratorParamBottomLeft, { 0., 0. });
+    ok = ok && setKnobValues(node, kNativeGeneratorParamSize, { 61., 45. });
     // Small cells, so neighbouring pixels differ, and alpha that varies with the noise.
-    bool ok = setKnobValues(node, kNoiseParamSize, { 7.5, 5.25 });
+    ok = ok && setKnobValues(node, kNoiseParamSize, { 7.5, 5.25 });
     ok = ok && setKnobValues(node, kNoiseParamSeed, { 77. });
     ok = ok && setKnobValues(node, kNoiseParamColor0, { 0., 0., 0., 0. });
     for (const auto& k : c.knobs) {

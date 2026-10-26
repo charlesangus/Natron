@@ -27,7 +27,9 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <string>
+#include <thread>
 
 #include <gtest/gtest.h>
 
@@ -39,6 +41,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -70,6 +73,25 @@ std::string
 sceneDefining(const std::string& primName)
 {
     return "#usda 1.0\n\ndef Xform \"" + primName + "\"\n{\n}\n";
+}
+
+// Whether the stage's only root prim is /<primName>.
+bool
+holdsOnly(const PXR_NS::UsdStageRefPtr& stage,
+          const std::string& primName)
+{
+    if (!stage) {
+        return false;
+    }
+    std::size_t count = 0;
+    for (const PXR_NS::UsdPrim& prim : stage->GetPseudoRoot().GetChildren()) {
+        if (prim.GetName().GetString() != primName) {
+            return false;
+        }
+        ++count;
+    }
+
+    return count == 1;
 }
 } // anonymous namespace
 
@@ -267,6 +289,107 @@ TEST_F(USDReadTest, ReloadReadsTheRewrittenFile)
     ASSERT_TRUE(bool(stage));
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/AfterTheRewrite")).IsValid());
     EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Before")).IsValid());
+}
+
+// The file's layer is keyed by the file's stamp: once the stamp moves (dropped here as a Read
+// node's purge of the same path drops it), a new USDRead reads the file as it now is on disk,
+// though a cached stage still holds the layer of the old content open. That stage is untouched.
+TEST_F(USDReadTest, ANewReaderReadsTheRewrittenFileOnceItsStampMoves)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("reexported.usda")).toStdString();
+    writeFile(path, sceneDefining("Before"));
+    NodePtr first = createReader(path);
+    ASSERT_TRUE(bool(first));
+
+    ScenePayload before;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(first, &before, &error)) << error;
+    PXR_NS::UsdStageRefPtr cached = StageCache::instance().getStage(before);
+    ASSERT_TRUE(holdsOnly(cached, "Before"));
+
+    writeFile(path, sceneDefining("AfterTheRewrite"));
+    FileStampRegistry::instance().invalidate(path);
+    NodePtr second = createReader(path);
+    ASSERT_TRUE(bool(second));
+
+    ScenePayload after;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(second, &after, &error)) << error;
+    EXPECT_NE(before.getStackHash(), after.getStackHash());
+    EXPECT_TRUE(holdsOnly(StageCache::instance().getStage(after), "AfterTheRewrite"));
+    EXPECT_TRUE(holdsOnly(cached, "Before"));
+}
+
+// Reload edits no layer: while the main thread rewrites the file and reloads it, a render thread
+// reading the stage composed before, and composing that payload again as a cache miss would,
+// keeps seeing the content it was composed from. A reload in place would change it under the
+// reader on the first composition after a Reload, besides racing the reads.
+TEST_F(USDReadTest, ReloadLeavesTheStagesOfEarlierEvaluationsUntouched)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("reloaded.usda")).toStdString();
+    writeFile(path, sceneDefining("Before"));
+    NodePtr reader = createReader(path);
+    ASSERT_TRUE(bool(reader));
+
+    ScenePayload before;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &before, &error)) << error;
+    // Held as the viewer holds the stage it shows, which keeps the file's first layer open.
+    PXR_NS::UsdStageRefPtr shown = StageCache::instance().getStage(before);
+    ASSERT_TRUE(holdsOnly(shown, "Before"));
+
+    std::atomic<bool> done(false);
+    std::atomic<int> reads(0);
+    std::atomic<int> wrongReads(0);
+    std::thread renderThread([&]() {
+        while (!done.load()) {
+            const bool shownIntact = holdsOnly(shown, "Before");
+            const bool composedIntact = holdsOnly(SceneOps::compose(before), "Before");
+            if (!shownIntact || !composedIntact) {
+                ++wrongReads;
+            }
+            ++reads;
+        }
+    });
+    while (reads.load() == 0) {
+        std::this_thread::yield();
+    }
+
+    for (int i = 0; i < 20; ++i) {
+        // A longer name each time, so every rewrite also changes the file's size.
+        const std::string primName = "After" + std::string(i + 1, 'x');
+        writeFile(path, sceneDefining(primName));
+        pressReload(reader);
+        ScenePayload after;
+        if (evaluate(reader, &after, &error) != EffectInstance::eRenderRoIRetCodeOk) {
+            ADD_FAILURE() << "Rewrite " << i << ": " << error;
+            break;
+        }
+        EXPECT_TRUE(holdsOnly(StageCache::instance().getStage(after), primName)) << "Rewrite " << i;
+    }
+    done = true;
+    renderThread.join();
+
+    EXPECT_EQ(0, wrongReads.load());
+}
+
+TEST_F(USDReadTest, ResettingTheProjectEmptiesTheStageCache)
+{
+    NodePtr reader = createReader(kReferenceScene);
+    ASSERT_TRUE(bool(reader));
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    ASSERT_TRUE(bool(StageCache::instance().getStage(payload)));
+    ASSERT_LT((std::size_t)0, StageCache::instance().getNumEntries());
+    reader.reset();
+
+    getApp()->getProject()->reset(false, true);
+
+    EXPECT_EQ((std::size_t)0, StageCache::instance().getNumEntries());
 }
 
 // Time maps by seconds: frame 25 of a 25 fps project is one second in, timecode 24 of a 24 tcps

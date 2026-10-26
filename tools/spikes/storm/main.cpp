@@ -1,4 +1,4 @@
-// Usage: m19spike <file.usda> <outDir> [--force-version M.m]
+// Usage: storm-spike <file.usda> <outDir> [--force-version M.m]
 // Requests a GL 4.5 compatibility default format, docks a compat widget drawing immediate-mode GL
 // beside a Storm (UsdImagingGLEngine, HgiGL) widget in one QMainWindow, renders the stage, then
 // writes storm.png, compat.png and window.png to outDir and prints one REPORT block. Exit 0 only

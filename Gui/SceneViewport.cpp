@@ -763,6 +763,18 @@ struct SceneViewport::Implementation {
     QPoint pressPos;
     QPoint lastPos;
     bool dragging = false;
+
+    // Destroys the renderer's engine, its GL objects and the stage it holds, in the widget's
+    // context, so none outlives the scene it drew.
+    void releaseEngine(QOpenGLWidget* widget)
+    {
+        if (!glInitialized || !widget->context()) {
+            return;
+        }
+        widget->makeCurrent();
+        renderer.releaseGL();
+        widget->doneCurrent();
+    }
 };
 
 SceneViewport::SceneViewport(QWidget* parent)
@@ -807,6 +819,7 @@ void
 SceneViewport::setError(const QString& message)
 {
     _imp->renderer.clearScene();
+    _imp->releaseEngine(this);
     _imp->error = message;
     publishState();
     update();
@@ -816,6 +829,7 @@ void
 SceneViewport::clearScene()
 {
     _imp->renderer.clearScene();
+    _imp->releaseEngine(this);
     _imp->error.clear();
     publishState();
     update();

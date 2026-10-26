@@ -147,6 +147,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NativeRegistry.h"
 #include "Engine/Nodes/NodeSpec.h"
+#include "Engine/Nodes/Scene/SceneCaches.h"
 
 #include "Engine/NodeGroup.h"
 #include "Engine/Utils.h"
@@ -1370,6 +1371,7 @@ AppManager::clearAllCaches()
     clearDiskCache();
     clearNodeCache();
     _imp->_deepImageCache->clear();
+    SceneCaches::clearComposedStages();
 
     ///for each app instance clear all its nodes cache
     for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {

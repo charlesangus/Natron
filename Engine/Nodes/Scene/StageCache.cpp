@@ -27,6 +27,7 @@
 
 #include <algorithm>
 
+#include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 
 // How many composed stages the process-wide cache keeps: one per viewer input, with room for
@@ -110,9 +111,12 @@ StageCache::getStage(const ScenePayload& payload)
 void
 StageCache::clear()
 {
-    std::lock_guard<std::mutex> lock(_mutex);
-
-    _entries.clear();
+    std::list<Entry> entries;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        entries.swap(_entries);
+    }
+    // The stages are released here, outside the lock: tearing one down can take a while.
 }
 
 std::size_t
@@ -138,5 +142,13 @@ StageCache::getMissCount() const
 
     return _misses;
 }
+
+namespace SceneCaches {
+void
+clearComposedStages()
+{
+    StageCache::instance().clear();
+}
+} // namespace SceneCaches
 
 NATRON_NAMESPACE_EXIT

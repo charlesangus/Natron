@@ -85,8 +85,8 @@ public:
     virtual ~USDRead();
 
     /**
-     * @brief Reloads the file and every layer it brings in from disk, and re-keys the node so its
-     * layer is authored again.
+     * @brief Drops the file's stamp and the memoized layer, so the next evaluation authors the
+     * layer again and opens the file anew if it changed on disk. Edits no USD layer.
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
 
@@ -118,7 +118,8 @@ private:
     KnobDoubleWPtr _frameOffset;
     KnobButtonWPtr _reload;
 
-    // Bumped by each Reload, so the node re-keys even when the file's stamp did not move.
+    // A process-wide unique token taken by each Reload, 0 before any: keys the node and the file's
+    // layer, so a Reload reads the file again even when its stamp did not move.
     std::atomic<U64> _reloadGeneration;
 
     std::unique_ptr<Implementation> _imp;

@@ -367,7 +367,8 @@ STMap::getSourceDomain(double time,
     if (!source) {
         return false;
     }
-    const RectI format = source->getOutputFormat();
+    const NodeMetadataConstPtr sourceMetadata = source->getRenderMetadata(time, view);
+    const RectI format = sourceMetadata->getOutputFormat();
     if (!format.isNull()) {
         domain->x1 = (int)std::floor(format.x1 * scale.toOfxPointD().x);
         domain->y1 = (int)std::floor(format.y1 * scale.toOfxPointD().y);
@@ -380,7 +381,7 @@ STMap::getSourceDomain(double time,
     if (!inputRegion(source, time, view, scale, &rod) || rod.isNull()) {
         return false;
     }
-    *domain = rod.toPixelEnclosing(scale, source->getAspectRatio(-1));
+    *domain = rod.toPixelEnclosing(scale, sourceMetadata->getPixelAspectRatio(-1));
 
     return !domain->isNull();
 }
@@ -399,15 +400,20 @@ STMap::route(double time,
 }
 
 StatusEnum
-STMap::getPreferredMetadata(NodeMetadata& metadata)
+STMap::getPreferredMetadataAt(double time,
+                              ViewIdx view,
+                              NodeMetadata& metadata)
 {
+    if (route(time, view).kind == Route::Kind::Black) {
+        return StagedImageEffect::getPreferredMetadataAt(time, view, metadata);
+    }
     // The output planes are the Source's, whatever the UV input carries.
     if (getInput(kSTMapInputSource)) {
         metadata.setNComps(-1, metadata.getNComps(kSTMapInputSource));
     }
-    EffectInstancePtr uv = getInput(kSTMapInputUV);
-    if (uv) {
-        const RectI format = uv->getOutputFormat();
+    const NodeMetadataConstPtr uvMetadata = getInputMetadataAt(kSTMapInputUV, time, view);
+    if (uvMetadata) {
+        const RectI format = uvMetadata->getOutputFormat();
         if (!format.isNull()) {
             metadata.setOutputFormat(format);
         }
@@ -433,9 +439,10 @@ STMap::getRegionOfDefinition(U64 /*hash*/,
 
     KnobChoicePtr formatFrom = _formatFrom.lock();
     const bool fromRoD = formatFrom && (formatFrom->getValueAtTime(time, 0, view) == 1);
-    const RectI format = uv->getOutputFormat();
+    const NodeMetadataConstPtr uvMetadata = uv->getRenderMetadata(time, view);
+    const RectI format = uvMetadata->getOutputFormat();
     if (!fromRoD && !format.isNull()) {
-        const double par = uv->getAspectRatio(-1);
+        const double par = uvMetadata->getPixelAspectRatio(-1);
         *rod = RectD(format.x1 * par, format.y1, format.x2 * par, format.y2);
     } else if (!inputRegion(uv, time, view, scale, rod)) {
         return eStatusFailed;
@@ -480,7 +487,7 @@ STMap::getRegionsOfInterest(double time,
     // The Jacobians read UV one pixel beyond the window on every side.
     EffectInstancePtr uv = getInput(kSTMapInputUV);
     if (uv) {
-        const double par = getAspectRatio(-1);
+        const double par = getRenderMetadata(time, view)->getPixelAspectRatio(-1);
         const double dx = par / scale.toOfxPointD().x;
         const double dy = 1. / scale.toOfxPointD().y;
         RectD uvRoI(renderWindow.x1 - dx, renderWindow.y1 - dy, renderWindow.x2 + dx, renderWindow.y2 + dy);
@@ -769,14 +776,16 @@ STMap::getOpGpuInputLayer(int inputNb,
 
 RectI
 STMap::getOpGpuInputRoI(int inputNb,
+                        double time,
+                        ViewIdx view,
                         const RectI& outputRect,
                         const RenderScale& scale) const
 {
     if ((inputNb == kSTMapInputSource) || (inputNb == kSTMapInputUV)) {
-        return warpGpuInputRoI(*this, inputNb, kSTMapInputSource, kSTMapInputUV, outputRect, scale);
+        return warpGpuInputRoI(*this, inputNb, kSTMapInputSource, kSTMapInputUV, time, view, outputRect, scale);
     }
 
-    return StagedImageEffect::getOpGpuInputRoI(inputNb, outputRect, scale);
+    return StagedImageEffect::getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
 }
 
 StatusEnum

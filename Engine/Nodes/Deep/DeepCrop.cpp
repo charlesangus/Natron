@@ -184,13 +184,15 @@ DeepCrop::isIdentity(double time,
 } // DeepCrop::isIdentity
 
 StatusEnum
-DeepCrop::getPreferredMetadata(NodeMetadata& metadata)
+DeepCrop::getPreferredMetadataAt(double time,
+                                 ViewIdx view,
+                                 NodeMetadata& metadata)
 {
     KnobBoolPtr reformatKnob = _reformat.lock();
 
-    if (reformatKnob && reformatKnob->getValue()) {
+    if (reformatKnob && reformatKnob->getValueAtTime(time, 0, view)) {
         const double par = metadata.getPixelAspectRatio(-1);
-        const RectI format = getBBoxCanonical(getCurrentTime()).toPixelEnclosing(0u /*mipmapLevel*/, par);
+        const RectI format = getBBoxCanonical(time).toPixelEnclosing(0u /*mipmapLevel*/, par);
         metadata.setOutputFormat(format);
     }
 

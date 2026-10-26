@@ -164,7 +164,7 @@ getInputPixelRoD(EffectInstance& effect,
     if (input->getRegionOfDefinition_public(input->getRenderHash(), time, RenderScale::identity, view, &canonical, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    *rod = canonical.toPixelEnclosing(0u, input->getAspectRatio(-1));
+    *rod = canonical.toPixelEnclosing(0u, input->getRenderMetadata(time, view)->getPixelAspectRatio(-1));
 
     return !rod->isNull();
 }

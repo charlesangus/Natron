@@ -63,7 +63,7 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   channels from the channel set and the format's capabilities; the encoder
   writes its plan, and the output follows it in three places: the produced
   planes (`getComponentsNeededAndProduced()`), the colour layout
-  (`getPreferredMetadata()` makes an RGBA input RGB when the file gets no
+  (`getPreferredMetadataAt()` makes an RGBA input RGB when the file gets no
   alpha), and the pixels the render copies. So a partial R/G/B selection shows
   the whole RGB triple the file gets, a layer the file gets only some channels
   of is declared as a layer of those channels alone under its own name (what

@@ -226,7 +226,9 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum getRegionOfDefinition(U64 hash,
                                              double time,

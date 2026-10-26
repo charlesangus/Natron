@@ -206,7 +206,7 @@ TEST_F(NativeEdgeDetectGpuTest, InputRegionIsTheSourceRegionOfInterest)
     const RectI rect(10, 20, 31, 47);
     for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
         const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-        EXPECT_EQ(EdgeDetect::getSourceRoI(rect, scale, params), effect->getGpuInputRoI(0, rect, scale)) << "mipmap " << mipmapLevel;
+        EXPECT_EQ(EdgeDetect::getSourceRoI(rect, scale, params), effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), rect, scale)) << "mipmap " << mipmapLevel;
     }
 }
 
@@ -490,7 +490,7 @@ TEST_F(NativeEdgeDetectGpuTest, MatchesTheCpuRender)
         const std::vector<int> channels = planeChannels(c.nComps);
         for (const RectI& roi : rois) {
             const std::string what = describeCase(c, roi);
-            const RectI inputRoI = effect->getGpuInputRoI(0, roi, RenderScale::identity);
+            const RectI inputRoI = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::identity);
             RenderedPlane in;
             ASSERT_TRUE(renderRGBA(source, inputRoI, &in)) << what;
             ASSERT_EQ(inputRoI, in.window) << what;

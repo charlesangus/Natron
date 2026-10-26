@@ -111,7 +111,9 @@ RawToImage::isOpIdentity(double /*time*/,
 }
 
 StatusEnum
-RawToImage::getPreferredMetadata(NodeMetadata& metadata)
+RawToImage::getPreferredMetadataAt(double /*time*/,
+                                   ViewIdx /*view*/,
+                                   NodeMetadata& metadata)
 {
     metadata.setNComps(-1, 4);
 

@@ -632,7 +632,7 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
     // Before the knob GUIs are built from it: a panel is shown as it is created.
     NodePtr shownNode = getNode();
     if (shownNode) {
-        shownNode->refreshInputRelatedDataIfStale();
+        shownNode->refreshPanelInputRelatedData();
     }
     Gui* gui = getDagGui()->getGui();
     QVBoxLayout* propsLayout = gui->getPropertiesLayout();
@@ -689,6 +689,13 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
         panel->setRedrawOnSelectionChanged(true);
     }
 
+    // A panel created open never goes through setClosed(false), which refreshes an opened panel.
+    AppInstancePtr shownApp = shownNode ? shownNode->getApp() : AppInstancePtr();
+    if (_settingsPanel && !_settingsPanel->isClosed() && shownApp && shownApp->getTimeLine()) {
+        shownNode->getEffectInstance()->refreshAfterTimeChange(false, shownApp->getTimeLine()->currentFrame());
+        shownNode->getEffectInstance()->onSettingsPanelOpened();
+    }
+
     if (hideUnmodified) {
         _settingsPanel->restoreHideUnmodifiedState(true);
     }
@@ -701,10 +708,10 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
 void
 NodeGui::onSettingsPanelClosed(bool closed)
 {
-    // A node nobody looks at is left stale by the edits upstream of it, and its panel shows it.
+    // A node nobody looks at is left dirty by the edits upstream of it, and its panel shows it.
     NodePtr node = closed ? NodePtr() : getNode();
     if (node) {
-        node->refreshInputRelatedDataIfStale();
+        node->refreshPanelInputRelatedData();
     }
     Q_EMIT settingsPanelClosed(closed);
 }

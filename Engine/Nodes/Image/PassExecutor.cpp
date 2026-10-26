@@ -621,7 +621,7 @@ effectRoDPixels(EffectInstance& effect,
     if (effect.getRegionOfDefinition_public(effect.getRenderHash(), time, scale, view, &rod, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    *out = toPixelEnclosing(rod, scale, effect.getAspectRatio(-1));
+    *out = toPixelEnclosing(rod, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(-1));
 
     return true;
 }
@@ -1180,7 +1180,7 @@ recordPassesGpu(EffectInstance& effect,
         return eStatusFailed;
     }
     RectI valid;
-    intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, effect.getAspectRatio(sourceInput)), &valid);
+    intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput)), &valid);
 
     int divisor = -1;
     if (!stageGpuDivisorComponent(plan, query, &divisor)) {

@@ -430,7 +430,7 @@ private:
 
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
 
-    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+    virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
 
     // raw/cat_applied while the node adapts (darktable's _declare_cat_on_pipe()).
     virtual ImageMetadata deriveOutputMetadata(double time,

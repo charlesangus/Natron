@@ -65,7 +65,7 @@ expectSquareFormat(const NodePtr& read,
                    int size)
 {
     EffectInstancePtr effect = read->getEffectInstance();
-    const RectI format = effect->getOutputFormat();
+    const RectI format = effect->getTimeInvariantMetadata()->getOutputFormat();
     EXPECT_EQ(RectI(0, 0, size, size), format) << read->getScriptName() << " output format is " << format.x1 << ' ' << format.y1 << ' ' << format.x2 << ' ' << format.y2;
 
     RectD rod;

@@ -66,15 +66,14 @@ struct IdentityResults
     ViewIdx inputView;
 };
 
-struct ComponentsNeededResults
-{
-    EffectInstance::ComponentsNeededMap neededComps;
-    std::bitset<4> processChannels;
-    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
-    std::list<ImageLayerDesc> passThroughLayers;
-    int passThroughInputNb;
-    double passThroughTime;
-    ViewIdx passThroughView;
+// getLayersPassThroughInput()'s identity answer: whole image, layer selection skipped. metadata
+// is the effect's own the check read, whose format is the window checked.
+struct PassThroughIdentityResults {
+    NodeMetadataConstPtr metadata;
+    bool identity;
+    int inputIdentityNb;
+    double inputIdentityTime;
+    ViewIdx inputView;
 };
 
 struct CompareActionsCacheKeys
@@ -105,7 +104,103 @@ struct CompareActionsCacheKeys
 typedef std::map<ActionKey, IdentityResults, CompareActionsCacheKeys> IdentityCacheMap;
 typedef std::map<ActionKey, RectD, CompareActionsCacheKeys> RoDCacheMap;
 typedef std::map<ActionKey, FramesNeededMap, CompareActionsCacheKeys> FramesNeededCacheMap;
-typedef std::map<ActionKey, ComponentsNeededResults, CompareActionsCacheKeys> ComponentsNeededCacheMap;
+typedef std::map<ActionKey, EffectInstance::ComponentsNeededResultsPtr, CompareActionsCacheKeys> ComponentsNeededCacheMap;
+/**
+ * @brief At most a fixed count of results keyed by ActionKey, the least recently used replaced
+ * first. Flat: at a few dozen entries a scan is as quick as a tree, and a full set replaces an
+ * entry in place rather than allocating for it. Not thread-safe; ActionsCache locks around it.
+ **/
+template <typename Value>
+class ActionsLRU {
+public:
+    ActionsLRU()
+        : _entries()
+        , _clock(0)
+    {
+    }
+
+    // Marks the entry found as the most recently used.
+    Value* find(const ActionKey& key)
+    {
+        for (typename std::vector<Entry>::iterator it = _entries.begin(); it != _entries.end(); ++it) {
+            if ((it->key.time == key.time) && (it->key.view == key.view) && (it->key.mipmapLevel == key.mipmapLevel)) {
+                it->lastUse = ++_clock;
+
+                return &it->value;
+            }
+        }
+
+        return 0;
+    }
+
+    void insert(const ActionKey& key,
+                const Value& value,
+                std::size_t capacity)
+    {
+        Value* found = find(key);
+        if (found) {
+            *found = value;
+
+            return;
+        }
+        if (_entries.size() < capacity) {
+            if (_entries.empty()) {
+                _entries.reserve(capacity);
+            }
+            Entry entry;
+            entry.key = key;
+            entry.value = value;
+            entry.lastUse = ++_clock;
+            _entries.push_back(entry);
+
+            return;
+        }
+        if (_entries.empty()) {
+            return;
+        }
+        typename std::vector<Entry>::iterator oldest = _entries.begin();
+        for (typename std::vector<Entry>::iterator it = _entries.begin(); it != _entries.end(); ++it) {
+            if (it->lastUse < oldest->lastUse) {
+                oldest = it;
+            }
+        }
+        oldest->key = key;
+        oldest->value = value;
+        oldest->lastUse = ++_clock;
+    }
+
+    void clear()
+    {
+        _entries.clear();
+    }
+
+    std::size_t size() const
+    {
+        return _entries.size();
+    }
+
+private:
+    struct Entry {
+        ActionKey key;
+        Value value;
+        U64 lastUse;
+    };
+
+    std::vector<Entry> _entries;
+    U64 _clock;
+};
+
+typedef ActionsLRU<PassThroughIdentityResults> PassThroughIdentityCacheLRU;
+typedef ActionsLRU<NodeMetadataConstPtr> MetadataCacheLRU;
+
+// The answers a node gives over every frame of a range in one view, one per distinct colour
+// components and depth, which is all a reader widening its input over the range looks at.
+struct RangeMetadataSummary {
+    ViewIdx view;
+    double min;
+    double max;
+    std::vector<NodeMetadataConstPtr> answers;
+};
 
 /**
  * @brief This class stores all results of the following actions:
@@ -141,13 +236,9 @@ public:
 
     void setIdentityResult(U64 hash, double time, ViewIdx view, int inputNbIdentity, ViewIdx inputView, double identityTime);
 
-    bool getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4>* processChannels,
-                                    EffectInstance::ProcessChannelsPerPlaneMap* processChannelsPerPlane,
-                                    std::list<ImageLayerDesc>* passThroughLayers, int* passThroughInputNb, ViewIdx* passThroughView, double* passThroughTime);
+    EffectInstance::ComponentsNeededResultsPtr getComponentsNeededResults(U64 hash, double time, ViewIdx view);
 
-    void setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededMap& neededComps, std::bitset<4> processChannels,
-                                    const EffectInstance::ProcessChannelsPerPlaneMap& processChannelsPerPlane,
-                                    const std::list<ImageLayerDesc>& passThroughLayers, int passThroughInputNb, ViewIdx passThroughView, double passThroughTime);
+    void setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededResultsPtr& results);
 
     void clearComponentsNeededResults();
 
@@ -163,6 +254,58 @@ public:
 
     void setTimeDomainResult(U64 hash, double first, double last);
 
+    /**
+     * @brief The node metadata stored under (hash, time, view), or null. The results of one hash
+     * are capped to a fixed count of frames, the least recently used replaced first.
+     **/
+    NodeMetadataConstPtr getMetadataResult(U64 hash, double time, ViewIdx view);
+
+    /**
+     * @brief Stores metadata under (hash, time, view), unless the metadata generation moved past
+     * generation, which getMetadataGeneration() returned before the metadata was derived.
+     **/
+    void setMetadataResult(U64 hash, double time, ViewIdx view, const NodeMetadataConstPtr& metadata, U64 generation);
+
+    /**
+     * @brief The pass-through identity answer stored under (hash, time, view) for metadata equal
+     * to the one given. Kept apart from the render-window identity results, and dropped with the
+     * metadata.
+     **/
+    bool getPassThroughIdentityResult(U64 hash, double time, ViewIdx view, const NodeMetadataConstPtr& metadata, bool* identity, int* inputNbIdentity, ViewIdx* inputView, double* identityTime);
+
+    /**
+     * @brief As setMetadataResult().
+     **/
+    void setPassThroughIdentityResult(U64 hash, double time, ViewIdx view, const PassThroughIdentityResults& results, U64 generation);
+
+    NodeMetadataConstPtr getTimeInvariantMetadataResult(U64 hash);
+
+    void setTimeInvariantMetadataResult(U64 hash, const NodeMetadataConstPtr& metadata, U64 generation);
+
+    /**
+     * @brief The answers stored under hash for every frame of [min, max] in view, distinct in
+     * colour components and depth. False when none are stored.
+     **/
+    bool getRangeMetadataSummary(U64 hash, ViewIdx view, double min, double max, std::vector<NodeMetadataConstPtr>* answers);
+
+    /**
+     * @brief As setMetadataResult(). The summaries of one hash are capped to a fixed count, the
+     * least recently used replaced first.
+     **/
+    void setRangeMetadataSummary(U64 hash, const RangeMetadataSummary& summary, U64 generation);
+
+    U64 getMetadataGeneration() const;
+
+    /**
+     * @brief Moves the metadata generation, so a derivation in flight does not store its result.
+     **/
+    void moveMetadataGeneration();
+
+    /**
+     * @brief Drops the metadata stored under every hash and moves the metadata generation.
+     **/
+    void clearMetadataResults();
+
 private:
     mutable QMutex _cacheMutex; //< protects everything in the cache
     struct ActionsCacheInstance
@@ -174,6 +317,10 @@ private:
         RoDCacheMap _rodCache;
         FramesNeededCacheMap _framesNeededCache;
         ComponentsNeededCacheMap _componentsNeededCache;
+        MetadataCacheLRU _metadataCache;
+        PassThroughIdentityCacheLRU _passThroughIdentityCache;
+        NodeMetadataConstPtr _timeInvariantMetadata;
+        std::list<RangeMetadataSummary> _rangeSummaries; //< most recently used first
 
         ActionsCacheInstance();
     };
@@ -184,6 +331,7 @@ private:
     InstancesList _instances;
     std::unordered_map<U64, InstancesList::iterator> _instancesByHash;
     std::size_t _maxInstances;
+    U64 _metadataGeneration;
     ActionsCacheInstance* findActionCache(U64 hash);
     ActionsCacheInstance & getOrCreateActionCache(U64 newHash);
 };
@@ -244,9 +392,9 @@ public:
 
     ///A cache for components available
     std::list<KnobIWPtr> overlaySlaves;
-    mutable QMutex metadataMutex;
-    NodeMetadata metadata;
     bool runningClipPreferences; //only used on main thread
+    // The current frame's metadata last given to onCurrentFrameMetadataChanged(). Main thread only.
+    NodeMetadataConstPtr currentFrameMetadata;
 
     // set during interact actions on main-thread
     OverlaySupport* overlaysViewport;
@@ -263,7 +411,7 @@ public:
     bool isDoingInstanceSafeRender; // true if this instance is rendering
     mutable QMutex renderClonesMutex;
     std::list<EffectInstancePtr> renderClonesPool;
-    bool mustSyncPrivateData; //!< true if the effect's knobs were changed but instanceChanged could not be called (e.g. when loading a PyPlug), so that syncPrivateData should be called in getPreferredMetadata_public before calling getPreferredMetadata
+    bool mustSyncPrivateData; //!< true if the effect's knobs were changed but instanceChanged could not be called (e.g. when loading a PyPlug), so that syncPrivateData should be called before the main-thread time-invariant derivation calls the clip preferences
     mutable QMutex mustSyncPrivateDataMutex; //!< protects mustSyncPrivateData
 
 public:
@@ -321,25 +469,26 @@ public:
         EffectTLSDataPtr tlsData;
 
 public:
-        ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
-                         const RectD & rod,
-                         const RectI & renderWindow,
-                         double time,
-                         ViewIdx view,
-                         bool isIdentity,
-                         double identityTime,
-                         const EffectInstancePtr& identityInput,
-                         const ComponentsNeededMapPtr& compsNeeded,
-                         const EffectInstance::InputImagesMap& inputImages,
-                         const RoIMap & roiMap,
-                         int firstFrame,
-                         int lastFrame,
-                         bool isDoingOpenGLRender);
+    ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
+                     const RectD& rod,
+                     const RectI& renderWindow,
+                     double time,
+                     ViewIdx view,
+                     bool isIdentity,
+                     double identityTime,
+                     ViewIdx identityView,
+                     const EffectInstancePtr& identityInput,
+                     const ComponentsNeededMapPtr& compsNeeded,
+                     const EffectInstance::InputImagesMap& inputImages,
+                     const RoIMap& roiMap,
+                     int firstFrame,
+                     int lastFrame,
+                     bool isDoingOpenGLRender);
 
-        ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
-                         const EffectTLSDataPtr& otherThreadData);
+    ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
+                     const EffectTLSDataPtr& otherThreadData);
 
-        ~ScopedRenderArgs();
+    ~ScopedRenderArgs();
     };
 
     void addInputImageTempPointer(int inputNb, const ImagePtr & img);
@@ -432,7 +581,20 @@ public:
                         const AbortableRenderInfoPtr& abortInfo,
                         const EffectInstancePtr& treeRoot)  WARN_UNUSED_RETURN;
 
-    void checkMetadata(NodeMetadata &metadata);
+    /**
+     * @brief Sets the node's bit-depth, pixel aspect ratio and frame rate warnings from md, the
+     * node's metadata at time and view, and its inputs' metadata there.
+     **/
+    void refreshStreamWarnings(double time, ViewIdx view, const NodeMetadata& md);
+
+    /**
+     * @brief Clamps the depths and components to what the node supports and widens the colour
+     * layout to what the node writes.
+     * inputsMetadata holds the output metadata of each input, null where none is connected.
+     **/
+    void clampMetadata(const std::vector<EffectInstancePtr>& inputs,
+                       const std::vector<NodeMetadataConstPtr>& inputsMetadata,
+                       NodeMetadata& metadata);
 };
 
 

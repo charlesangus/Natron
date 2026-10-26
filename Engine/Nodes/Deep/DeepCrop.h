@@ -112,7 +112,9 @@ private:
                             ViewIdx* inputView,
                             int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

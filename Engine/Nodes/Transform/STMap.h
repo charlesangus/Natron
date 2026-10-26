@@ -142,7 +142,7 @@ private:
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time, ViewIdx view, NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
@@ -180,6 +180,8 @@ private:
                                     ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual RectI getOpGpuInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

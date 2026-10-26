@@ -353,8 +353,8 @@ protected:
 
         connectNodes(reader, transform, 0, true);
         connectNodes(transform, material, 0, true);
-        connectNodes(camera, light, 0, true);
-        connectNodes(light, rig, 0, true);
+        connectNodes(camera, rig, 0, true);
+        connectNodes(light, rig, 1, true);
         connectNodes(material, merge, 0, true);
         connectNodes(rig, merge, 1, true);
         connectNodes(merge, prune, 0, true);

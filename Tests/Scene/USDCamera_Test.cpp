@@ -32,22 +32,18 @@
 
 #include <gtest/gtest.h>
 
-#include <QFile>
 #include <QString>
-#include <QTemporaryDir>
 
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
-#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
-#include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -122,7 +118,7 @@ TEST_F(USDCameraTest, DefaultsAuthorAFiftyMillimetreCameraInTenthsOfASceneUnit)
     ASSERT_TRUE(bool(usdCamera));
     EXPECT_EQ(PXR_NS::TfToken("Camera"), usdCamera.GetPrim().GetTypeName());
 
-    // No input: the stage is the default centimetre scene, where a millimetre is 1 / 10 of a
+    // The stage is the default centimetre scene, where a millimetre is 1 / 10 of a
     // scene unit and USD's camera unit (a tenth of a scene unit) is that millimetre.
     EXPECT_FLOAT_EQ(50.f, getFloat(usdCamera.GetFocalLengthAttr()));
     EXPECT_FLOAT_EQ(36.f, getFloat(usdCamera.GetHorizontalApertureAttr()));
@@ -140,38 +136,18 @@ TEST_F(USDCameraTest, DefaultsAuthorAFiftyMillimetreCameraInTenthsOfASceneUnit)
     EXPECT_EQ((std::size_t)0, usdCamera.GetFocalLengthAttr().GetNumTimeSamples());
 }
 
-TEST_F(USDCameraTest, LensKnobsAreConvertedToTheInputScenesUnits)
+TEST_F(USDCameraTest, TheNodeIsASourceThatComposesOnlyItsOwnPrim)
 {
-    QTemporaryDir dir;
-    ASSERT_TRUE(dir.isValid());
-    const QString path = dir.filePath(QString::fromUtf8("metres.usda"));
-    {
-        QFile f(path);
-        ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
-        f.write("#usda 1.0\n(\n    metersPerUnit = 1\n)\n\ndef Xform \"World\"\n{\n}\n");
-    }
-    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
     NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
-    ASSERT_TRUE(reader && camera);
-    KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
-    ASSERT_TRUE(file != NULL);
-    file->setValue(path.toStdString());
-    ASSERT_TRUE(camera->connectInput(reader, 0));
+    ASSERT_TRUE(bool(camera));
+    EXPECT_EQ(0, camera->getNInputs());
+    EXPECT_EQ(0, camera->getEffectInstance()->getNInputs());
 
     PXR_NS::UsdStageRefPtr stage = composeNode(camera);
     ASSERT_TRUE(bool(stage));
-    EXPECT_DOUBLE_EQ(1., PXR_NS::UsdGeomGetStageMetersPerUnit(stage));
-    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World")).IsValid());
-    PXR_NS::UsdGeomCamera usdCamera(stage->GetPrimAtPath(getNodePath(camera)));
-    ASSERT_TRUE(bool(usdCamera));
-    // In a metre scene a tenth of a scene unit is 100 mm.
-    EXPECT_FLOAT_EQ(0.5f, getFloat(usdCamera.GetFocalLengthAttr()));
-    EXPECT_FLOAT_EQ(0.36f, getFloat(usdCamera.GetHorizontalApertureAttr()));
-    EXPECT_FLOAT_EQ(0.24f, getFloat(usdCamera.GetVerticalApertureAttr()));
-    // Clipping is in scene units already.
-    PXR_NS::GfVec2f clipping;
-    ASSERT_TRUE(usdCamera.GetClippingRangeAttr().Get(&clipping));
-    EXPECT_FLOAT_EQ(0.1f, clipping[0]);
+    EXPECT_TRUE(stage->GetPrimAtPath(getNodePath(camera)).IsValid());
+    EXPECT_EQ((std::size_t)1, stage->GetPseudoRoot().GetAllChildrenNames().size());
+    EXPECT_TRUE(stage->GetPrimAtPath(getNodePath(camera)).GetAllChildrenNames().empty());
 }
 
 TEST_F(USDCameraTest, AnimatedKnobsAuthorATimeSampleAtEveryProjectFrame)
@@ -193,7 +169,7 @@ TEST_F(USDCameraTest, AnimatedKnobsAuthorATimeSampleAtEveryProjectFrame)
     ASSERT_TRUE(bool(usdCamera));
     const PXR_NS::UsdAttribute attribute = usdCamera.GetFocalLengthAttr();
     EXPECT_EQ((std::size_t)(std::floor(last) - std::ceil(first) + 1.), attribute.GetNumTimeSamples());
-    // With no input the layer runs at the project rate, so timecodes are frames.
+    // The layer runs at the project rate, so timecodes are frames.
     EXPECT_FLOAT_EQ(35.f, getFloat(attribute, PXR_NS::UsdTimeCode(1.)));
     EXPECT_FLOAT_EQ((float)focalLength->getValueAtTime(6.), getFloat(attribute, PXR_NS::UsdTimeCode(6.)));
     EXPECT_FLOAT_EQ(85.f, getFloat(attribute, PXR_NS::UsdTimeCode(11.)));

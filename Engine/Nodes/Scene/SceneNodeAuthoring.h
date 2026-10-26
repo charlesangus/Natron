@@ -130,7 +130,7 @@ authorValue(const PXR_NS::UsdAttribute& attribute,
 
 /**
  * @brief Authors knobs as xformable's op stack: xformOp:translate, xformOp:rotate<order> and
- * xformOp:scale, replacing whatever op order a weaker layer gives the prim.
+ * xformOp:scale, as the prim's whole op order.
  **/
 bool authorTransform(const SceneTransformKnobs& knobs,
                      const PXR_NS::UsdGeomXformable& xformable,

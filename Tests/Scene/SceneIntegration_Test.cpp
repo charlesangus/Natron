@@ -232,7 +232,7 @@ TEST_F(SceneIntegrationTest, ReferenceSceneThroughTheActionComposesWithItsBounds
     }
 }
 
-TEST_F(SceneIntegrationTest, CreatedPrimsLayerOverTheReadScene)
+TEST_F(SceneIntegrationTest, CreatedPrimsGroupUnderTheRigNextToTheReadScene)
 {
     NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
     NodePtr rig = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
@@ -244,7 +244,7 @@ TEST_F(SceneIntegrationTest, CreatedPrimsLayerOverTheReadScene)
     ASSERT_TRUE(file != NULL);
     file->setValue(NATRON_TESTS_FIXTURES_DIR "/scene-reference.usda");
 
-    // A rig xform under the read scene's root, the camera and a light grafted inside it.
+    // A rig xform under the read scene's root, holding the camera and a light.
     const auto setPrimPath = [](const NodePtr& node, const char* path) {
         KnobString* primPath = dynamic_cast<KnobString*>(node->getKnobByName(kSceneParamPrimPath).get());
         ASSERT_TRUE(primPath != NULL);
@@ -259,8 +259,8 @@ TEST_F(SceneIntegrationTest, CreatedPrimsLayerOverTheReadScene)
     rigTranslate->setValue(100., ViewSpec::all(), 0);
     cameraTranslate->setValue(5., ViewSpec::all(), 2);
 
-    ASSERT_TRUE(light->connectInput(camera, 0));
-    ASSERT_TRUE(rig->connectInput(light, 0));
+    ASSERT_TRUE(rig->connectInput(camera, 0));
+    ASSERT_TRUE(rig->connectInput(light, 1));
     ASSERT_TRUE(merge->connectInput(reader, 0));
     ASSERT_TRUE(merge->connectInput(rig, 1));
 
@@ -272,9 +272,9 @@ TEST_F(SceneIntegrationTest, CreatedPrimsLayerOverTheReadScene)
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &readPayload, &error)) << error;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(rig, &rigPayload, &error)) << error;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(merge, &payload, &error)) << error;
-    // The created layers go over the read scene's, which share none of them.
+    // The rig's layers stack over the read scene's, which share none of them.
     EXPECT_EQ(readPayload.getNumLayers() + rigPayload.getNumLayers(), payload.getNumLayers());
-    // The read scene's metadata passes through the created layers.
+    // The read scene's metadata passes through the rig's layers.
     EXPECT_EQ(SceneMetadata::eUpAxisY, payload.getMetadata().upAxis);
     EXPECT_EQ(std::string("World"), payload.getMetadata().defaultPrim);
 
@@ -780,7 +780,7 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     // The box lifted by 5.
     setString(transform, kUSDEditTransformParamPrimPattern, "/World/Box");
     setTranslate(transform, 1, 5.);
-    // A props xform at x = 7 with a light grafted inside it, and a red textured material bound to
+    // A props xform at x = 7 holding a light, and a red textured material bound to
     // it: USDMaterial binds what its own input holds.
     setString(props, kSceneParamPrimPath, "/World/Props");
     setTranslate(props, 0, 7.);

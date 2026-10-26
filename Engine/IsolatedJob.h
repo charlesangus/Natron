@@ -53,8 +53,10 @@ NATRON_NAMESPACE_ENTER
  * The nodes it reads also refuse graph edits from outside the job: connecting, replacing,
  * swapping or disconnecting their inputs, and editing their Roto shapes from Python.
  *
- * A thread is in a job's context while a ThreadScope for that job lives on it. A write from a
- * job's context to a holder no other job reads goes through.
+ * A thread is in a job's context while a ThreadScope for that job lives on it, while it runs a
+ * task of a frame created in the job's context (AppTLS::FrameContextScope), and while it runs work
+ * a thread in the job's context handed out (AppTLS::SpawnedThreadScope). A write from a job's
+ * context to a holder no other job reads goes through.
  *
  * Checking a write to a holder no job reads costs one atomic load (KnobHolder::isReadByIsolatedJob()).
  **/
@@ -100,6 +102,18 @@ public:
         const IsolatedJob* _previous;
         bool _entered;
     };
+
+    /**
+     * @brief The job whose context the calling thread is in, or null. A thread handing work to
+     * other threads reads it to put them in the same context.
+     **/
+    static const IsolatedJob* current();
+
+    /**
+     * @brief Puts the calling thread in job's context, or in none for a null job, and returns the
+     * context it was in, for scopes that cannot hold a ThreadScope to restore it with.
+     **/
+    static const IsolatedJob* exchangeCurrent(const IsolatedJob* job);
 
     /**
      * @brief True, after logging a warning naming knob, if a running job other than the calling

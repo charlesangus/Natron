@@ -424,22 +424,35 @@ TEST_F(RenderIsolation, InputEditUpstreamIsRefusedDuringWriteRender)
     ASSERT_TRUE(bool(_writer));
     NodePtr loose = createNode(QString::fromUtf8(kCheckerBoardPluginID));
     ASSERT_TRUE(bool(loose));
+    // Connecting to an input that is already connected changes nothing and is turned down before
+    // any refusal, so the connections are tried on an input left free.
+    int freeInput = -1;
+    for (int i = 0; i < _grade->getNInputs(); ++i) {
+        if (!_grade->getInput(i)) {
+            freeInput = i;
+            break;
+        }
+    }
+    ASSERT_GE(freeInput, 0) << "the Grade has no free input";
+    const Node::CanConnectInputReturnValue canConnect = _grade->canConnectInput(loose, freeInput);
+    ASSERT_TRUE((canConnect == Node::eCanConnectInput_ok) || (canConnect == Node::eCanConnectInput_differentFPS) || (canConnect == Node::eCanConnectInput_differentPars)) << canConnect;
 
     const std::string script = "grade = " + getApp()->getAppIDString() + ".getNode(\"" + _grade->getScriptName() + "\")\n"
                                                                                                                    "loose = "
         + getApp()->getAppIDString() + ".getNode(\"" + loose->getScriptName() + "\")\n"
                                                                                 "try:\n"
-                                                                                "    grade.connectInput(0, loose)\n"
-                                                                                "    renderIsolationRefusal = ''\n"
-                                                                                "except RuntimeError as e:\n"
-                                                                                "    renderIsolationRefusal = str(e)\n"
-                                                                                "assert 'the inputs of' in renderIsolationRefusal, renderIsolationRefusal\n"
-                                                                                "try:\n"
-                                                                                "    grade.disconnectInput(0)\n"
-                                                                                "    renderIsolationRefusal = ''\n"
-                                                                                "except RuntimeError as e:\n"
-                                                                                "    renderIsolationRefusal = str(e)\n"
-                                                                                "assert 'the inputs of' in renderIsolationRefusal, renderIsolationRefusal\n";
+                                                                                "    grade.connectInput("
+        + std::to_string(freeInput) + ", loose)\n"
+                                      "    renderIsolationRefusal = ''\n"
+                                      "except RuntimeError as e:\n"
+                                      "    renderIsolationRefusal = str(e)\n"
+                                      "assert 'the inputs of' in renderIsolationRefusal, renderIsolationRefusal\n"
+                                      "try:\n"
+                                      "    grade.disconnectInput(0)\n"
+                                      "    renderIsolationRefusal = ''\n"
+                                      "except RuntimeError as e:\n"
+                                      "    renderIsolationRefusal = str(e)\n"
+                                      "assert 'the inputs of' in renderIsolationRefusal, renderIsolationRefusal\n";
     NodePtr grade = _grade;
     bool scriptPassed = false;
     std::string error;
@@ -448,11 +461,12 @@ TEST_F(RenderIsolation, InputEditUpstreamIsRefusedDuringWriteRender)
     bool replaced = true;
     int disconnected = 0;
     NodePtr inputAfterEdits;
+    NodePtr freeInputAfterEdits;
     const std::function<void()> edit = [&]() {
         std::string output;
         scriptPassed = NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output);
         try {
-            connected = grade->connectInput(loose, 0);
+            connected = grade->connectInput(loose, freeInput);
             replaced = grade->replaceInput(loose, 0);
             grade->switchInput0And1();
             disconnected = grade->disconnectInput(0);
@@ -460,6 +474,7 @@ TEST_F(RenderIsolation, InputEditUpstreamIsRefusedDuringWriteRender)
             threw = true;
         }
         inputAfterEdits = grade->getInput(0);
+        freeInputAfterEdits = grade->getInput(freeInput);
     };
     bool actionRan = false;
     const int finishedCode = renderWithActionAtFrame(edit, eActionThreadMain, &actionRan);
@@ -471,6 +486,7 @@ TEST_F(RenderIsolation, InputEditUpstreamIsRefusedDuringWriteRender)
     EXPECT_FALSE(replaced);
     EXPECT_EQ(-1, disconnected);
     EXPECT_TRUE(inputAfterEdits == _source);
+    EXPECT_FALSE(freeInputAfterEdits);
     EXPECT_TRUE(_grade->getInput(0) == _source);
     EXPECT_EQ(0, finishedCode);
 

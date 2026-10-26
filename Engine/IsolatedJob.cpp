@@ -208,6 +208,22 @@ IsolatedJob::ThreadScope::~ThreadScope()
     }
 }
 
+const IsolatedJob*
+IsolatedJob::current()
+{
+    return tCurrentJob;
+}
+
+const IsolatedJob*
+IsolatedJob::exchangeCurrent(const IsolatedJob* job)
+{
+    const IsolatedJob* previous = tCurrentJob;
+
+    tCurrentJob = job;
+
+    return previous;
+}
+
 std::string
 IsolatedJob::refusal(const KnobHolder& holder,
                      const KnobI* knob,

@@ -494,6 +494,7 @@ public:
         std::bitset<4> processChannels;
         ImageLayersToRenderPtr layers;
         const FrameRenderContext* frameContext;
+        const IsolatedJob* isolatedJob;
     };
 
     RenderingFunctorRetEnum tiledRenderingFunctor(TiledRenderingFunctorArgs & args,  const RectToRender & specificData,

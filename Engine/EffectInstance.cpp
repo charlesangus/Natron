@@ -2458,7 +2458,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(EffectInstance::Implementa
                                                       QThread* callingThread)
 {
     ///Make the thread-storage live as long as the render action is called if we're in a newly launched thread in eRenderSafetyFullySafeFrame mode
-    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, args.frameContext, AppTLS::eSpawnKindHostFrameThreading);
+    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, args.frameContext, args.isolatedJob, AppTLS::eSpawnKindHostFrameThreading);
 
     EffectInstance::RenderingFunctorRetEnum ret = tiledRenderingFunctor(specificData,
                                                                         args.renderFullScaleThenDownscale,

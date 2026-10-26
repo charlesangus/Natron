@@ -194,14 +194,15 @@ protected:
         return node;
     }
 
-    // A project variable of one dimension.
+    // A project variable of one dimension, declared the way the Python API and the parameter
+    // manager declare one: that also makes it app.<name>, which an expression on it needs.
     KnobDoublePtr addProjectDouble(const std::string& name,
                                    double value)
     {
         ProjectPtr project = getApp()->getProject();
         KnobDoublePtr knob = project->createDoubleKnob(name, name, 1);
-        EXPECT_TRUE(project->getRFVGroup()->addKnob(knob));
-        project->recreateUserKnobs(false);
+        std::string error;
+        EXPECT_TRUE(RFV::addAsVariable(project.get(), knob, &error)) << error;
         knob->setValue(value);
 
         return knob;

@@ -39,19 +39,24 @@
 
 #include "BaseTest.h"
 #include "CountingTestEffect.h"
+#include "DeepRenderTestEffect.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/DeepImage.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -110,10 +115,12 @@ protected:
         BaseTest::SetUp();
         getApp()->getProject()->reset(false, true);
         CountingTestRegistry::reset();
+        deepSyntheticSourceImages().clear();
     }
 
     virtual void TearDown() OVERRIDE
     {
+        deepSyntheticSourceImages().clear();
         CountingTestRegistry::reset();
         getApp()->getProject()->reset(false, true);
         BaseTest::TearDown();
@@ -581,4 +588,180 @@ TEST_F(RFVRender, TiledIdentityWalksThroughTheSet)
         }
     }
     EXPECT_TRUE(nonZero);
+}
+
+namespace {
+
+const int kDeepSlotSize = 4;
+
+// A kDeepSlotSize square of one sample per pixel at depth 1, opaque, with colour value.
+DeepImagePtr
+makeDeepSlotImage(float value)
+{
+    DeepImagePtr image = std::make_shared<DeepImage>(RectI(0, 0, kDeepSlotSize, kDeepSlotSize), RenderScale::identity, ViewIdx(0));
+    SampleTable& table = image->getSampleTableForWriting();
+    const std::size_t pixels = (std::size_t)(kDeepSlotSize * kDeepSlotSize);
+    for (std::size_t p = 0; p < pixels; ++p) {
+        table.setCount(p, 1);
+    }
+    table.recomputeOffsets();
+    const char* const colour[] = { "R", "G", "B" };
+    for (const char* name : colour) {
+        float* data = image->getChannelForWriting(name).dataForWriting();
+        std::fill(data, data + pixels, value);
+    }
+    float* alpha = image->getChannelForWriting("A").dataForWriting();
+    float* z = image->getChannelForWriting("Z").dataForWriting();
+    float* zBack = image->getChannelForWriting("ZBack").dataForWriting();
+    std::fill(alpha, alpha + pixels, 1.f);
+    std::fill(z, z + pixels, 1.f);
+    std::fill(zBack, zBack + pixels, 1.f);
+    image->setTidy(true);
+
+    return image;
+}
+
+// The red of node's first deep sample at frame 1, rendered under the scheduler's frame args, or -1.
+float
+renderFirstDeepRed(const NodePtr& node,
+                   const TimeLinePtr& timeline)
+{
+    const double time = 1.;
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+    ParallelRenderArgsSetter frameRenderArgs(time,
+                                             ViewIdx(0),
+                                             true /*isRenderUserInteraction*/,
+                                             false /*isSequential*/,
+                                             abortInfo,
+                                             node,
+                                             0 /*textureIndex*/,
+                                             timeline.get(),
+                                             NodePtr(),
+                                             false /*isAnalysis*/,
+                                             false /*draftMode*/,
+                                             RenderStatsPtr());
+    EffectInstance::RenderDeepRoIArgs args(time,
+                                           RenderScale::identity,
+                                           0 /*mipmapLevel*/,
+                                           ViewIdx(0),
+                                           false /*byPassCache*/,
+                                           RectI(0, 0, kDeepSlotSize, kDeepSlotSize),
+                                           RectD(),
+                                           0 /*caller*/,
+                                           time);
+    DeepImagePtr image;
+    if (node->getEffectInstance()->renderDeepRoI(args, &image) != EffectInstance::eRenderRoIRetCodeOk) {
+        ADD_FAILURE() << "the deep render failed";
+
+        return -1.f;
+    }
+    const DeepChannelBuffer* red = image ? image->getChannel("R") : 0;
+    if (!red || (image->getSampleTable().getTotalSampleCount() == 0)) {
+        ADD_FAILURE() << "no deep sample rendered";
+
+        return -1.f;
+    }
+
+    return red->data()[0];
+}
+
+} // namespace
+
+// A deep source whose slot knob reads rfv.var, under a deep gain, under Set(var = 'a') and
+// Set(var = 'b'): each Set's deep render is the source's image for that Set's value, through the
+// Set's identity hop to the gain and the gain's pull of the source.
+TEST_F(RFVRender, DeepSourceFollowsTheSetBelowIt)
+{
+    deepSyntheticSourceImages()[1] = makeDeepSlotImage(1.f);
+    deepSyntheticSourceImages()[2] = makeDeepSlotImage(2.f);
+    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDDeepSyntheticSource));
+    NodePtr gain = createNode(QString::fromUtf8(kTestPluginIDDeepRenderGain));
+    ASSERT_TRUE(source && gain);
+    KnobIPtr slot = source->getKnobByName("slot");
+    ASSERT_TRUE(bool(slot));
+    ASSERT_NO_THROW(slot->setExpression(0, "1 if rfv.var == 'a' else 2", false, true));
+    connectNodes(source, gain, 0, true);
+    NodePtr setA = createStringSet("var", "a");
+    NodePtr setB = createStringSet("var", "b");
+    ASSERT_TRUE(setA && setB);
+    connectNodes(gain, setA, 0, true);
+    connectNodes(gain, setB, 0, true);
+
+    const TimeLinePtr timeline = getApp()->getTimeLine();
+    EXPECT_EQ(1.f * kDeepRenderTestGain, renderFirstDeepRed(setA, timeline));
+    EXPECT_EQ(2.f * kDeepRenderTestGain, renderFirstDeepRed(setB, timeline));
+    // From the deep cache, each Set's answer stays its own.
+    EXPECT_EQ(1.f * kDeepRenderTestGain, renderFirstDeepRed(setA, timeline));
+    // Without a Set, var is unset.
+    EXPECT_EQ(2.f * kDeepRenderTestGain, renderFirstDeepRed(gain, timeline));
+}
+
+// Checkerboard -> Crop, reformatting to a rectangle whose width is 32 while rfv.var is 'a' and 16
+// otherwise, under Set(var = 'a') and Set(var = 'b'), each followed by a Grade: the format and
+// region of definition each Set and the node below it see are the Crop's under that Set's value,
+// outside a render and in the request pass.
+TEST_F(RFVRender, MetadataAndRoDFollowTheSetBelowThem)
+{
+    getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kFormatWidth, kFormatHeight, "rfvMetadataFormat", 1.));
+    NodePtr checker = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD), PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr crop = createNode(QString::fromUtf8(PLUGINID_NATRON_CROP), PLUGIN_MAJOR_NATRON_CROP);
+    ASSERT_TRUE(checker && crop);
+    connectNodes(checker, crop, 0, true);
+    KnobBoolPtr reformat = std::dynamic_pointer_cast<KnobBool>(crop->getKnobByName(kCropParamReformat));
+    KnobDoublePtr bottomLeft = std::dynamic_pointer_cast<KnobDouble>(crop->getKnobByName(kNativeGeneratorParamBottomLeft));
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(crop->getKnobByName(kNativeGeneratorParamSize));
+    ASSERT_TRUE(reformat && bottomLeft && size);
+    reformat->setValue(true);
+    bottomLeft->setValue(0., ViewSpec::all(), 0);
+    bottomLeft->setValue(0., ViewSpec::all(), 1);
+    size->setValue(24., ViewSpec::all(), 1);
+    ASSERT_NO_THROW(size->setExpression(0, "32 if rfv.var == 'a' else 16", false, true));
+
+    NodePtr setA = createStringSet("var", "a");
+    NodePtr setB = createStringSet("var", "b");
+    NodePtr gradeA = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE), PLUGIN_MAJOR_NATRON_GRADE);
+    NodePtr gradeB = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE), PLUGIN_MAJOR_NATRON_GRADE);
+    ASSERT_TRUE(setA && setB && gradeA && gradeB);
+    connectNodes(crop, setA, 0, true);
+    connectNodes(crop, setB, 0, true);
+    connectNodes(setA, gradeA, 0, true);
+    connectNodes(setB, gradeB, 0, true);
+
+    const NodePtr branches[2][2] = { { setA, gradeA }, { setB, gradeB } };
+    const int widths[2] = { 32, 16 };
+    for (int b = 0; b < 2; ++b) {
+        for (const NodePtr& node : branches[b]) {
+            NodeMetadataConstPtr metadata = node->getEffectInstance()->getMetadata(1., ViewIdx(0));
+            ASSERT_TRUE(bool(metadata));
+            EXPECT_EQ(RectI(0, 0, widths[b], 24), metadata->getOutputFormat()) << node->getScriptName_mt_safe();
+        }
+    }
+
+    // The crop may pad its rectangle, so the two branches are compared by the width they differ by.
+    double rodWidths[2][2];
+    for (int b = 0; b < 2; ++b) {
+        for (int n = 0; n < 2; ++n) {
+            EffectInstancePtr effect = branches[b][n]->getEffectInstance();
+            RectD rod;
+            bool isProjectFormat = false;
+            ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), 1., RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+            rodWidths[b][n] = rod.width();
+        }
+    }
+    for (int n = 0; n < 2; ++n) {
+        EXPECT_EQ(16., rodWidths[0][n] - rodWidths[1][n]) << "node " << n;
+    }
+
+    // The request pass plans each Grade over the region its Set's value gives.
+    double requestWidths[2];
+    for (int b = 0; b < 2; ++b) {
+        FrameRequestMap request;
+        ASSERT_NE(eStatusFailed, runRequestPass(branches[b][1], &request));
+        const std::vector<NodeFrameRequestPtr> entries = entriesOf(request, branches[b][1]);
+        ASSERT_EQ(1u, entries.size());
+        const FrameViewRequest* fv = entries.front()->getFrameViewRequest(1., ViewIdx(0));
+        ASSERT_TRUE(fv != 0);
+        requestWidths[b] = fv->globalData.rod.width();
+    }
+    EXPECT_EQ(16., requestWidths[0] - requestWidths[1]);
 }

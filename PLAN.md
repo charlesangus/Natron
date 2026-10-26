@@ -278,6 +278,7 @@ future core work has solid ground to build on.
 | M220 | SplineWarp Follow Vectors | todo | M219, M148 |  | E18 | [M220-splinewarp-follow-vectors.md](PLAN/MILESTONES/M220-splinewarp-follow-vectors.md) |
 | M221 | Neural Optical Flow | todo | M217, M203, M204 |  | E16 | [M221-neural-optical-flow.md](PLAN/MILESTONES/M221-neural-optical-flow.md) |
 | M222 | User Control Of GPU Placement | todo | M132 |  | E5 | [M222-user-control-of-gpu-placement.md](PLAN/MILESTONES/M222-user-control-of-gpu-placement.md) |
+| M223 | Read And Write Knob Cleanup | todo | M167 |  | E3 | [M223-read-and-write-knob-cleanup.md](PLAN/MILESTONES/M223-read-and-write-knob-cleanup.md) |
 
 # Epics
 

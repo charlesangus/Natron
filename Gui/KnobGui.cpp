@@ -27,20 +27,29 @@
 #include "KnobGui.h"
 
 #include <cassert>
+#include <memory>
 #include <stdexcept>
 
+#include <QCoreApplication>
+#include <QUndoCommand>
+
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
+#include "Engine/UndoKnobRef.h"
 #include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 
-#include "Gui/KnobGuiPrivate.h"
-#include "Gui/GuiDefines.h"
-#include "Gui/GuiApplicationManager.h"
 #include "Gui/ClickableLabel.h"
-
+#include "Gui/Gui.h"
+#include "Gui/GuiApplicationManager.h"
+#include "Gui/GuiDefines.h"
+#include "Gui/KnobGuiPrivate.h"
+#include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -823,7 +832,90 @@ KnobGui::createAnimationMenu(QMenu* menu,
         QObject::connect( createMasterOnGroup, SIGNAL(triggered()), this, SLOT(onCreateAliasOnGroupActionTriggered()) );
         menu->addAction(createMasterOnGroup);
     }
+    if (isAppKnob && RFV::isNodeVariable(knob)) {
+        menu->addSeparator();
+        QAction* promoteAction = new QAction(tr("Add to project variables"), menu);
+        std::string reason;
+        if (!RFV::canPromoteToProject(knob, &reason)) {
+            promoteAction->setEnabled(false);
+            promoteAction->setToolTip(QString::fromUtf8(reason.c_str()));
+            menu->setToolTipsVisible(true);
+        }
+        QObject::connect(promoteAction, SIGNAL(triggered()), this, SLOT(onPromoteToProjectActionTriggered()));
+        menu->addAction(promoteAction);
+    }
 } // createAnimationMenu
+
+namespace {
+
+// The history's entry for a promote. A promote that made no copy leaves no entry.
+class PromoteToProjectUndoCommand
+    : public QUndoCommand {
+public:
+    explicit PromoteToProjectUndoCommand(const std::shared_ptr<RFV::PromoteToProjectCommand>& command)
+        : QUndoCommand()
+        , _command(command)
+    {
+        setText(QString::fromUtf8(command->getText().c_str()));
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        _command->undo();
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        _command->redo();
+        if (!_command->getProjectVariable()) {
+            setObsolete(true);
+        }
+    }
+
+private:
+    std::shared_ptr<RFV::PromoteToProjectCommand> _command;
+};
+
+// Runs once the right-click menu and the slot that queued it have returned: promoting rebuilds
+// the node's user knobs, and with them the GUI of the knob whose menu asked for it.
+void
+promoteToProjectNow(const KnobIPtr& knob,
+                    Gui* gui)
+{
+    std::string error;
+    if (!RFV::canPromoteToProject(knob, &error)) {
+        Dialogs::errorDialog(KnobGui::tr("Add to project variables").toStdString(), error);
+
+        return;
+    }
+    std::shared_ptr<RFV::PromoteToProjectCommand> command = std::make_shared<RFV::PromoteToProjectCommand>(knob);
+    UndoHistory* history = gui ? gui->getUndoHistory() : 0;
+    ProjectPtr project = knob->getHolder()->getApp()->getProject();
+    if (history) {
+        history->push(new PromoteToProjectUndoCommand(command), UndoScope(project.get()));
+    } else {
+        command->redo();
+    }
+    if (!command->getProjectVariable()) {
+        Dialogs::errorDialog(KnobGui::tr("Add to project variables").toStdString(), command->getError());
+    }
+}
+
+} // namespace
+
+void
+KnobGui::onPromoteToProjectActionTriggered()
+{
+    KnobIWPtr knob = getKnob();
+    Gui* gui = _imp->container ? _imp->container->getGui() : 0;
+    // The window outlives the panels; were it to go first, the queued call would go with it.
+    QObject* context = gui ? static_cast<QObject*>(gui) : QCoreApplication::instance();
+    QMetaObject::invokeMethod(context, [knob, gui]() {
+        KnobIPtr variable = lockUndoKnob(knob);
+        if (variable) {
+            promoteToProjectNow(variable, gui);
+        } }, Qt::QueuedConnection);
+}
 
 KnobIPtr
 KnobGui::createDuplicateOnNode(EffectInstance* effect,

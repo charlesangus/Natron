@@ -98,6 +98,7 @@ optimizeRectsToRender(EffectInstance* self,
         EffectInstance::RectToRender nonIdentityRect;
         nonIdentityRect.isIdentity = false;
         nonIdentityRect.identityTime = 0;
+        nonIdentityRect.identityView = view;
         nonIdentityRect.rect.x1 = std::numeric_limits<int>::max();
         nonIdentityRect.rect.x2 = std::numeric_limits<int>::min();
         nonIdentityRect.rect.y1 = std::numeric_limits<int>::max();

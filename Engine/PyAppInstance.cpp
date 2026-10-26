@@ -32,11 +32,14 @@
 #include <QDebug>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
+#include "Engine/PyParameter.h"
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/Settings.h"
 
@@ -47,6 +50,7 @@ NATRON_PYTHON_NAMESPACE_ENTER
 
 App::App(const AppInstancePtr& instance)
     : Group()
+    , UserParamHolder(instance->getProject().get())
     , _instance(instance)
 {
     if ( instance->getProject() ) {

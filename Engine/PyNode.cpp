@@ -52,6 +52,7 @@
 #include "Engine/PyRoto.h"
 #include "Engine/PyTracker.h"
 #include "Engine/PythonUndoCommands.h"
+#include "Engine/RFV.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -664,7 +665,7 @@ UserParamHolder::createIntParam(const QString& name,
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 1);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -685,7 +686,7 @@ UserParamHolder::createInt2DParam(const QString& name,
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 2);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -706,7 +707,7 @@ UserParamHolder::createInt3DParam(const QString& name,
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 3);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -728,7 +729,7 @@ UserParamHolder::createDoubleParam(const QString& name,
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 1);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -749,7 +750,7 @@ UserParamHolder::createDouble2DParam(const QString& name,
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 2);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -770,7 +771,7 @@ UserParamHolder::createDouble3DParam(const QString& name,
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 3);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -792,7 +793,7 @@ UserParamHolder::createBooleanParam(const QString& name,
     KnobBoolPtr knob = _holder->createBoolKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -814,7 +815,7 @@ UserParamHolder::createChoiceParam(const QString& name,
     KnobChoicePtr knob = _holder->createChoiceKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -837,7 +838,7 @@ UserParamHolder::createColorParam(const QString& name,
     KnobColorPtr knob = _holder->createColorKnob(name.toStdString(), label.toStdString(), useAlpha ? 4 : 3);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -859,7 +860,7 @@ UserParamHolder::createStringParam(const QString& name,
     KnobStringPtr knob = _holder->createStringKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -881,7 +882,7 @@ UserParamHolder::createFileParam(const QString& name,
     KnobFilePtr knob = _holder->createFileKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -903,7 +904,7 @@ UserParamHolder::createOutputFileParam(const QString& name,
     KnobOutputFilePtr knob = _holder->createOuptutFileKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -925,7 +926,7 @@ UserParamHolder::createPathParam(const QString& name,
     KnobPathPtr knob = _holder->createPathKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -947,7 +948,7 @@ UserParamHolder::createChannelSetParam(const QString& name,
     KnobChannelSetPtr knob = _holder->createChannelSetKnob(name.toStdString(), label.toStdString());
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -970,7 +971,7 @@ UserParamHolder::createLayerSelectParam(const QString& name,
     KnobLayerSelectPtr knob = _holder->createLayerSelectKnob(name.toStdString(), label.toStdString(), withChannelButtons);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -992,7 +993,7 @@ UserParamHolder::createChannelSelectParam(const QString& name,
     KnobChannelSelectPtr knob = _holder->createChannelSelectKnob(name.toStdString(), label.toStdString());
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1014,7 +1015,7 @@ UserParamHolder::createButtonParam(const QString& name,
     KnobButtonPtr knob = _holder->createButtonKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1036,7 +1037,7 @@ UserParamHolder::createSeparatorParam(const QString& name,
     KnobSeparatorPtr knob = _holder->createSeparatorKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1058,7 +1059,7 @@ UserParamHolder::createGroupParam(const QString& name,
     KnobGroupPtr knob = _holder->createGroupKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1102,7 +1103,7 @@ UserParamHolder::createParametricParam(const QString& name,
     KnobParametricPtr knob = _holder->createParametricKnob(name.toStdString(), label.toStdString(), nbCurves);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1133,6 +1134,25 @@ UserParamHolder::removeParam(Param* param)
     _holder->deleteKnob(param->getInternalKnob().get(), true);
 
     return true;
+}
+
+void
+UserParamHolder::addRFVKnob(Param* param)
+{
+    if (!checkHolderIsEditable(_holder)) {
+        return;
+    }
+    KnobIPtr knob = param ? param->getInternalKnob() : KnobIPtr();
+    std::string error;
+    if (!RFV::canAddAsVariable(_holder, knob, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+
+        return;
+    }
+    PythonUserKnobsUndoGuard undo(_holder);
+    if (!RFV::addAsVariable(_holder, knob, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+    }
 }
 
 PageParam*

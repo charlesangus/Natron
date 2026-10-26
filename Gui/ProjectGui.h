@@ -100,6 +100,9 @@ public Q_SLOTS:
 
     void initializeKnobsGui();
 
+    // Opens the user-parameter dialog on the project's RFV group.
+    void editVariables();
+
 private:
 
 

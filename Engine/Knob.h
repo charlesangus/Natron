@@ -2739,6 +2739,32 @@ public:
     void recreateUserKnobs(bool keepCurPageIndex);
 
     /**
+     * @brief Called by recreateUserKnobs() before any settings panel is rebuilt, whether or not
+     * there is one, and by a node once it has restored its user knobs, so that a holder can
+     * rearrange its user knobs to match what they now are.
+     **/
+    virtual void onUserKnobsChanged()
+    {
+    }
+
+    /**
+     * @brief Called on the main thread when the menu of one of the holder's choice knobs is about
+     * to open, so that a holder whose entries are not kept current can populate them first.
+     **/
+    virtual void refreshChoiceEntries(KnobChoice* /*knob*/)
+    {
+    }
+
+    /**
+     * @brief Called on the main thread when the holder's settings panel opens, or is created
+     * open, so that a holder can bring up to date what its panel shows from the rest of the
+     * project.
+     **/
+    virtual void onSettingsPanelOpened()
+    {
+    }
+
+    /**
      * @brief Wipe all knobs GUI and re-create it to synchronize it to the current internal state.
      * This may only be called on the main-thread. This is an expensive operation.
      **/
@@ -2872,8 +2898,17 @@ public:
     void updateHasAnimation();
 
     //////////////////////////////////////////////////////////////////////////////////////////
-    std::shared_ptr<KnobPage> getOrCreateUserPageKnob();
+    /**
+     * @brief The first user page that scripts and the parameter manager made, which is where the
+     * Python creators put a new parameter. A user page the plug-in declares, such as one holding a
+     * variables group, is not it.
+     **/
     std::shared_ptr<KnobPage> getUserPageKnob() const;
+
+    /**
+     * @brief getUserPageKnob(), creating the "User" page when there is none.
+     **/
+    std::shared_ptr<KnobPage> getOrCreateUserPageKnob();
 
     /**
      * @brief These functions below are dynamic in a sense that they can be called at any time (on the main-thread)

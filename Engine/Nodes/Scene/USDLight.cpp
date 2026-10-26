@@ -128,8 +128,9 @@ USDLight::initializeKnobs()
     KnobBoolPtr normalize = createKnob<KnobBool>(tr("Normalize"));
     normalize->setName(kUSDLightParamNormalize);
     normalize->setHintToolTip(tr("Divides the light's power by its area (for a distant light, its angular size), so resizing it keeps its "
-                                 "brightness (inputs:normalize)."));
-    normalize->setDefaultValue(false);
+                                 "brightness and Intensity alone sets it (inputs:normalize). Off, the power grows with the area: a "
+                                 "distant light of the default 0.53 degrees then gives about 7e-5 of its Intensity."));
+    normalize->setDefaultValue(true);
     page->addKnob(normalize);
     _normalize = normalize;
 

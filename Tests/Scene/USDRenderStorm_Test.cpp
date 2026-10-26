@@ -417,9 +417,15 @@ TEST_F(USDRenderStormTest, TheReferenceSceneMatchesItsImageDepthAndPrimIds)
     EXPECT_LT(box.y, kHeight / 2.);
     EXPECT_GT(ball.x, kWidth / 2.);
     EXPECT_NEAR(kHeight / 2., ball.y, 3.);
-    // The material made the box green; the ball keeps its blue display colour.
+    // The material made the box green; the ball keeps its blue display colour. The key light,
+    // normalized and of intensity 1, faces the box's front face head on and lights the ball's
+    // camera side, so both are well lit and not merely tinted.
+    EXPECT_GT(box.rgb[1], 0.2) << "box colour " << box.rgb[0] << ", " << box.rgb[1] << ", " << box.rgb[2];
     EXPECT_GT(box.rgb[1], 2. * box.rgb[0]);
-    EXPECT_GT(ball.rgb[2], ball.rgb[0]);
+    EXPECT_GT(box.rgb[1], 2. * box.rgb[2]);
+    EXPECT_GT(ball.rgb[2], 0.1) << "ball colour " << ball.rgb[0] << ", " << ball.rgb[1] << ", " << ball.rgb[2];
+    EXPECT_GT(ball.rgb[2], 2. * ball.rgb[0]);
+    EXPECT_GT(ball.rgb[2], ball.rgb[1]);
 
     // Where nothing was hit: no colour, depth +inf, primId 0. Elsewhere depth is finite and positive.
     const std::size_t corner = (std::size_t)(kHeight - 1) * (std::size_t)kWidth;

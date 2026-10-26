@@ -28,6 +28,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -48,7 +49,9 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GpuContext.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -62,7 +65,13 @@
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
+#include "Tests/Native/NativeGpuParity.h"
 #include "ofxNatron.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 
 NATRON_NAMESPACE_USING
 
@@ -561,4 +570,91 @@ TEST_F(USDRenderNodeTest, AChosenCameraTheSceneLacksIsANodeErrorNamingIt)
     int type = 0;
     node->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Gone"))) << message.toStdString();
+}
+
+// Free GPU Memory drops USDRender's Storm engines and the device buffers the GPU runtime's pool
+// keeps free, and the next render and allocation make what they need again.
+TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesEnginesAndPooledBuffers)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    std::string error;
+    HydraRender::Result result;
+
+#ifdef NATRON_HAVE_GPU
+    // A context of the test's own, since the application's may refuse a CPU-type device.
+    GpuContextOptions options;
+    options.mode = GpuResolvedMode::Force;
+    options.infoLog = [](const std::string&) { };
+    std::unique_ptr<GpuContext> own(new GpuContext(options));
+    const bool haveGpu = own->waitForInit(std::chrono::seconds(60)) && own->isAvailable();
+    gpu::GpuRuntime* runtime = haveGpu ? own->runtime() : nullptr;
+    // Puts the application's context back however the test ends.
+    struct RestoreContext {
+        std::unique_ptr<GpuContext> saved;
+        bool swapped = false;
+        ~RestoreContext()
+        {
+            if (swapped) {
+                appPTR->swapGpuContextForTests(std::move(saved));
+            }
+        }
+    } restore;
+    if (haveGpu) {
+        restore.saved = appPTR->swapGpuContextForTests(std::move(own));
+        restore.swapped = true;
+    } else {
+        reportNoGpu("the GPU context did not come up; only the Storm engines are checked");
+    }
+    // A buffer acquired and dropped stays in the pool, free for the next acquire.
+    const VkDeviceSize bytes = 1u << 20;
+    if (runtime) {
+        runtime->pool().trim();
+        gpu::GpuBufferHandle handle;
+        const gpu::GpuStatus status = runtime->acquire(bytes, handle);
+        ASSERT_TRUE(status.ok()) << status.message;
+    }
+    if (runtime) {
+        const gpu::GpuBufferPoolStats pooled = runtime->pool().stats();
+        EXPECT_EQ(0u, pooled.liveBytes);
+        EXPECT_GE(pooled.pooledBytes, (std::uint64_t)bytes);
+    }
+#endif
+
+    ASSERT_TRUE(HydraRender::render(referenceRequest(stage, 1., &owner), &result, &error)) << error;
+    EXPECT_EQ(1u, HydraRender::getEngineCount());
+
+    appPTR->freeGpuMemory();
+    EXPECT_EQ(0u, HydraRender::getEngineCount());
+#ifdef NATRON_HAVE_GPU
+    if (runtime) {
+        const gpu::GpuBufferPoolStats freed = runtime->pool().stats();
+        EXPECT_EQ(0u, freed.liveBytes);
+        EXPECT_EQ(0u, freed.pooledBytes);
+    }
+#endif
+
+    // Rendering goes on: the next render builds an engine, and the next acquire allocates a buffer.
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    ASSERT_TRUE(HydraRender::render(referenceRequest(stage, 2., &owner), &result, &error)) << error;
+    EXPECT_EQ(1u, HydraRender::getEngineCount());
+    EXPECT_EQ(builds + 1, HydraRender::getEngineBuildCount());
+    const Coverage box = coverageOf("/World/Box", kWidth, kHeight, result.primId, result.depth, result.rgba);
+    EXPECT_GT(box.count, 100);
+#ifdef NATRON_HAVE_GPU
+    if (runtime) {
+        const std::uint64_t allocations = runtime->pool().allocationCount();
+        gpu::GpuBufferHandle handle;
+        const gpu::GpuStatus status = runtime->acquire(bytes, handle);
+        EXPECT_TRUE(status.ok()) << status.message;
+        EXPECT_EQ(allocations + 1, runtime->pool().allocationCount());
+    }
+#endif
+
+    HydraRender::releaseAll();
+    EXPECT_EQ(0u, HydraRender::getEngineCount());
 }

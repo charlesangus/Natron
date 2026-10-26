@@ -33,8 +33,11 @@
 #include <vector>
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QString>
+#include <QStringList>
 
 #include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
@@ -98,6 +101,45 @@ absolutePath(const std::string& path)
     const QString qpath = QString::fromStdString(path);
 
     return QDir::cleanPath(QDir::current().absoluteFilePath(qpath)).toStdString();
+}
+
+// The absolute path of the file an authored asset path names, or an empty string when it names none.
+QString
+referencedFilePath(const std::string& assetPath)
+{
+    std::string path;
+    PXR_NS::SdfLayer::FileFormatArguments arguments;
+
+    if (!PXR_NS::SdfLayer::SplitIdentifier(assetPath, &path, &arguments) || !isFilesystemPath(path)) {
+        return QString();
+    }
+
+    return QString::fromStdString(absolutePath(path));
+}
+
+/**
+ * @brief Removes the files beside outputInfo that carry its sidecar names, name_layerN.ext as the
+ * layered write names them, except those in keep: what an earlier write of more layer runs left,
+ * which nothing written references. A file that cannot be removed stays, as the written files do
+ * not depend on it.
+ **/
+void
+removeStaleSidecars(const QFileInfo& outputInfo,
+                    const std::set<QString>& keep)
+{
+    const QDir dir(outputInfo.absolutePath());
+    const QRegularExpression sidecar(QString::fromUtf8("^") + QRegularExpression::escape(outputInfo.completeBaseName()) + QString::fromUtf8("_layer[1-9][0-9]*\\.") + QRegularExpression::escape(outputInfo.suffix()) + QString::fromUtf8("$"));
+    const QStringList names = dir.entryList(QDir::Files | QDir::Hidden | QDir::System);
+
+    for (const QString& name : names) {
+        if (!sidecar.match(name).hasMatch()) {
+            continue;
+        }
+        const QString path = QDir::cleanPath(dir.absoluteFilePath(name));
+        if (keep.count(path) == 0) {
+            QFile::remove(path);
+        }
+    }
 }
 
 /**
@@ -358,7 +400,8 @@ USDWrite::initializeKnobs()
                                           "files the scene reads (USDRead's) as sublayers, so they are referred to rather "
                                           "than copied. Each file keeps its strength: what was authored below one goes to "
                                           "a file of its own beside the written one (name_layer1.usda, ...), sublayered "
-                                          "below it.")
+                                          "below it. Files of those names that the write does not produce, left by an earlier write, are "
+                                          "removed.")
                                            .toStdString()));
         options.push_back(ChoiceOption("flattened", tr("Flattened").toStdString(),
                                        tr("Bakes the whole composed scene, the files it reads included, into the file, which "
@@ -630,9 +673,16 @@ USDWrite::writeFrameRange(int firstFrame,
             return fail(tr("The scene could not be flattened%1").arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
         }
 
+        // The files the write produces or references, which a removal of stale sidecars spares.
+        std::set<QString> keep;
         const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer) {
             clipTimeSamples(layer, startTime, endTime);
-            PXR_NS::UsdUtilsModifyAssetPaths(layer, [&outputDir, pathMode](const std::string& assetPath) {
+            PXR_NS::UsdUtilsModifyAssetPaths(layer, [&outputDir, pathMode, &keep](const std::string& assetPath) {
+                const QString referenced = referencedFilePath(assetPath);
+                if (!referenced.isEmpty()) {
+                    keep.insert(referenced);
+                }
+
                 return rewriteAssetPath(assetPath, outputDir, pathMode);
             });
         };
@@ -665,6 +715,7 @@ USDWrite::writeFrameRange(int firstFrame,
                 continue;
             }
             const QString realPath = QDir::cleanPath(QString::fromStdString(item.layer->GetRealPath()));
+            keep.insert(realPath);
             for (const Written& w : written) {
                 if (realPath == w.path) {
                     return fail(tr("%1 is read by the scene it would be overwritten with: write to another file, or use Flattened mode.").arg(w.path));
@@ -683,6 +734,13 @@ USDWrite::writeFrameRange(int firstFrame,
 
                 return fail(tr("Cannot write %1%2").arg(it->path).arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
             }
+        }
+        // Only once every file is written, so that a failed write leaves the earlier set whole.
+        if (exportMode == eExportModeLayered) {
+            for (const Written& w : written) {
+                keep.insert(QDir::cleanPath(w.path));
+            }
+            removeStaleSidecars(outputInfo, keep);
         }
     }
     // Layers already open on the files, such as a USDRead's of them, would go on showing what

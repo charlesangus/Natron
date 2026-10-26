@@ -473,6 +473,110 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredKeepsTheStackOrderAndAnchorsRelative
         << oak;
 }
 
+namespace {
+void
+writeTextFile(const QString& path,
+              const char* content)
+{
+    QFile f(path);
+    ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate)) << path.toStdString();
+    f.write(content);
+}
+
+// The names in dir, sorted.
+QStringList
+fileNames(const QString& dir)
+{
+    return QDir(dir).entryList(QDir::Files | QDir::Hidden, QDir::Name);
+}
+} // anonymous namespace
+
+// A layered write conforms the folder to the scene: the sidecars of a write with more layer runs
+// that this one does not produce are removed, and nothing else in the folder is touched.
+TEST_F(SceneIntegrationTest, USDWriteLayeredRemovesStaleSidecars)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString aPath = tmp.path() + QString::fromUtf8("/a.usda");
+    const QString bPath = tmp.path() + QString::fromUtf8("/b.usda");
+    writeTextFile(aPath, "#usda 1.0\n"
+                         "over \"World\"\n{\n"
+                         "    over \"Box\"\n    {\n"
+                         "        double3 xformOp:translate = (0, 7, 0)\n"
+                         "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                         "    }\n}\n");
+    writeTextFile(bPath, "#usda 1.0\n"
+                         "over \"World\"\n{\n"
+                         "    def Xform \"FromB\"\n    {\n    }\n}\n");
+
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    ASSERT_TRUE(QDir().mkpath(outDir));
+    // Names close to the sidecars' that are not theirs: another extension, another output name, a
+    // suffix that is not a number, and a file of another kind.
+    const QStringList unrelated = QStringList() << QString::fromUtf8("notes.txt") << QString::fromUtf8("other_layer1.usda")
+                                                << QString::fromUtf8("scene_layer3.usdc") << QString::fromUtf8("scene_layerX.usda");
+    for (const QString& name : unrelated) {
+        writeTextFile(outDir + QString::fromUtf8("/") + name, "keep\n");
+    }
+
+    // Strongest first: b.usda, other, a.usda, box. Each run of node layers below a file is a sidecar.
+    NodePtr box = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr readerA = createReader(aPath.toStdString());
+    NodePtr mergeA = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr readerB = createReader(bPath.toStdString());
+    NodePtr mergeB = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(box && readerA && mergeA && other && readerB && mergeB);
+    KnobString* boxPath = getKnob<KnobString>(box, kSceneParamPrimPath);
+    KnobDouble* translate = getKnob<KnobDouble>(box, kSceneParamTranslate);
+    KnobString* otherPath = getKnob<KnobString>(other, kSceneParamPrimPath);
+    ASSERT_TRUE(boxPath && translate && otherPath);
+    boxPath->setValue(std::string("/World/Box"));
+    translate->setValue(5., ViewSpec::all(), 0);
+    otherPath->setValue(std::string("/World/Other"));
+    ASSERT_TRUE(mergeA->connectInput(box, 0));
+    ASSERT_TRUE(mergeA->connectInput(readerA, 1));
+    ASSERT_TRUE(other->connectInput(mergeA, 0));
+    ASSERT_TRUE(mergeB->connectInput(other, 0));
+    ASSERT_TRUE(mergeB->connectInput(readerB, 1));
+
+    const QString path = outDir + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(mergeB, path, USDWrite::eExportModeLayered, USDWrite::ePathModeRelative, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+    QStringList expected = unrelated;
+    expected << QString::fromUtf8("scene.usda") << QString::fromUtf8("scene_layer1.usda") << QString::fromUtf8("scene_layer2.usda");
+    expected.sort();
+    EXPECT_EQ(expected, fileNames(outDir));
+
+    // Without b.usda, the strongest layer is other's, which becomes the written file itself: one
+    // sidecar is left, for box below a.usda.
+    NodePtr shorter = createWriter(other, path, USDWrite::eExportModeLayered, USDWrite::ePathModeRelative, 1, 1);
+    ASSERT_TRUE(shorter && getWriter(shorter));
+    ASSERT_EQ(eStatusOK, getWriter(shorter)->writeFrameRange(1, 1, ViewIdx(0)));
+    expected = unrelated;
+    expected << QString::fromUtf8("scene.usda") << QString::fromUtf8("scene_layer1.usda");
+    expected.sort();
+    EXPECT_EQ(expected, fileNames(outDir));
+
+    // The written file opens, every sublayer it names is there, and it composes the shorter stack.
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(layer);
+    const std::vector<std::string> subLayers = layer->GetSubLayerPaths();
+    EXPECT_EQ(2u, subLayers.size());
+    for (const std::string& subLayer : subLayers) {
+        const QString subPath = QDir::cleanPath(QDir(outDir).absoluteFilePath(QString::fromStdString(subLayer)));
+        EXPECT_TRUE(PXR_NS::SdfLayer::FindOrOpen(subPath.toStdString())) << subLayer;
+    }
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+    ASSERT_TRUE(stage);
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Other")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/FromB")).IsValid());
+    const PXR_NS::UsdGeomXformable written(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")));
+    ASSERT_TRUE(bool(written));
+    EXPECT_EQ(PXR_NS::GfVec3d(0., 7., 0.), written.ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.)).ExtractTranslation());
+}
+
 // The frame range knobs set which time samples are written: samples outside are dropped, and the
 // range's ends get the values the animation had there.
 TEST_F(SceneIntegrationTest, USDWriteFrameRangeClipsTheTimeSamples)

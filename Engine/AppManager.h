@@ -695,8 +695,10 @@ public Q_SLOTS:
 
     void clearAllCaches();
 
-    // Drops the stages and Storm engines USDRender nodes keep between renders, freeing their GPU
-    // memory; each node makes its own again when it next renders.
+    // Frees the GPU memory Natron keeps between renders: the stages and Storm engines of USDRender
+    // nodes, which each node makes again when it next renders, and the device buffers the GPU
+    // runtime's pool keeps free for reuse. Memory a running render or a frame waiting to be shown
+    // uses stays. Does not wait for the engines to go.
     void freeGpuMemory();
 
     void wipeAndCreateDiskCacheStructure();

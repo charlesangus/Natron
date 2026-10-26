@@ -185,6 +185,13 @@ public:
      **/
     bool recoverIfLost();
 
+    /**
+     * @brief Destroys the device buffers the runtime's pool keeps free for reuse. Buffers in use, by a render or a
+     * frame waiting to be shown, stay: only those no handle holds go, so no running GPU work loses its memory. Does
+     * nothing while unavailable. Thread-safe.
+     **/
+    void releaseIdleMemory();
+
 private:
     struct Shared;
 

@@ -216,17 +216,17 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 122.5: UAT round 1
 
-- [ ] M123.P5.T1 — EdgeExtend inputs, threshold and order
+- [x] M123.P5.T1 — EdgeExtend inputs, threshold and order
   - files: `Engine/Nodes/Filter/EdgeExtend.{h,cpp}`, tests, docs
   - approach: make the premultiplied/unpremultiply input handling behave as documented; add a threshold (0–1 on alpha) where the extend begins; put the premultiplied control above Size.
   - verify: gtests for premultiplied and straight inputs and for the threshold; the GUI check.
   - size: M
-- [ ] M123.P5.T2 — Glow mix, no "(Un)premult by" on filters
+- [x] M123.P5.T2 — Glow mix, no "(Un)premult by" on filters
   - files: `Engine/Nodes/Filter/{Glow,Bloom}.{h,cpp}`
   - approach: Glow gets the standard Mix knob; Glow and Bloom drop the "(Un)premult by" knob, as filtering nodes do.
   - verify: gtests; knob list check.
   - size: M
-- [ ] M123.P5.T3 — EdgeBlur through IBlur
+- [x] M123.P5.T3 — EdgeBlur through IBlur
   - files: `Engine/Nodes/Filter/EdgeBlur.{h,cpp}`, `IBlur`
   - approach: blur with M184's variable-size IBlur driven by the edge distance, so the result has no ghosting from blended slices; CPU and GPU.
   - verify: gtests; goldens re-recorded.
@@ -249,3 +249,5 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 **Verification gate:** the full build and `ctest` pass. Every `Native*Gpu` parity test in this milestone passes on RADV. Under Xvfb, Sharpen, Bloom, Glow, EdgeExtend and EdgeBlur are created from the tab menu, rendered with a mask and mix ≠ 1, and screenshotted, and the screenshots are shared with the user before sign-off. The retired CImg IDs load as missing-plugin nodes. An AppImage built with `package.sh` is handed over for UAT.
 Review round (Claude, PR #116): Bloom overflow caps and Glow's per-channel grade fixed at 2084280fa; release gate green. Cost seeds pending; UAT pending.
+
+2026-10-26: UAT round 1 fixes (0a4b160cf) and goldens; release green. AppImage Natron-m123-sharpen-glow.AppImage for UAT round 2.

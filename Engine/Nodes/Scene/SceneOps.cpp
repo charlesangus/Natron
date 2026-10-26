@@ -38,11 +38,23 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+// A property under one of an input's roots whose composed targets leave that root.
+struct InputLink {
+    PXR_NS::SdfPath property;
+    std::vector<PXR_NS::SdfPath> targets;
+    bool isConnection = false;
+    bool custom = false;
+    PXR_NS::SdfVariability variability = PXR_NS::SdfVariabilityUniform;
+    PXR_NS::SdfValueTypeName typeName;
+};
+
 // One input of a re-parenting node, as last grafted.
 struct GraftSlot {
     ScenePayload input;
     // The input's root prim names, in the composed stage's order.
     std::vector<std::string> rootNames;
+    // The properties of its link index that its stage composes with targets out of their root.
+    std::vector<InputLink> links;
     // Sublayers input's stack; created once the input has roots.
     PXR_NS::SdfLayerRefPtr wrapper;
     std::string destinationPath;
@@ -65,6 +77,73 @@ struct SceneGraftMemo::State {
     ScenePayload output;
     U64 graftLayerAuthorCount = 0;
 };
+
+namespace {
+// The root prim path lies under, or the empty path when it lies under none.
+PXR_NS::SdfPath
+rootPrimOf(const PXR_NS::SdfPath& path)
+{
+    const PXR_NS::SdfPathVector prefixes = path.StripAllVariantSelections().GetPrefixes(1);
+
+    return (!prefixes.empty() && prefixes.front().IsRootPrimPath()) ? prefixes.front() : PXR_NS::SdfPath();
+}
+
+bool
+leavesRoot(const PXR_NS::SdfPath& property,
+           const std::vector<PXR_NS::SdfPath>& targets)
+{
+    const PXR_NS::SdfPath root = rootPrimOf(property);
+
+    for (const PXR_NS::SdfPath& target : targets) {
+        if (root.IsEmpty() || (rootPrimOf(target) != root)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+appendLayerLinks(const PXR_NS::SdfLayerRefPtr& layer,
+                 SceneLinkIndex* links)
+{
+    layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&layer, links](const PXR_NS::SdfPath& path) {
+        if (!path.IsPrimPropertyPath()) {
+            return;
+        }
+        PXR_NS::SdfPathListOp listOp;
+        if (!layer->HasField(path, PXR_NS::SdfFieldKeys->TargetPaths, &listOp) && !layer->HasField(path, PXR_NS::SdfFieldKeys->ConnectionPaths, &listOp)) {
+            return;
+        }
+        const PXR_NS::SdfPath property = path.StripAllVariantSelections();
+        std::vector<PXR_NS::SdfPath> targets = listOp.GetAppliedItems();
+        for (PXR_NS::SdfPath& target : targets) {
+            target = target.MakeAbsolutePath(property.GetPrimPath());
+        }
+        if (leavesRoot(property, targets)) {
+            links->push_back(property);
+        }
+    });
+}
+
+void
+sortLinks(SceneLinkIndex* links)
+{
+    std::sort(links->begin(), links->end());
+    links->erase(std::unique(links->begin(), links->end()), links->end());
+}
+
+std::shared_ptr<const SceneLinkIndex>
+shareLinks(SceneLinkIndex links)
+{
+    if (links.empty()) {
+        return std::shared_ptr<const SceneLinkIndex>();
+    }
+    sortLinks(&links);
+
+    return std::make_shared<const SceneLinkIndex>(std::move(links));
+}
+} // anonymous namespace
 
 namespace SceneOps {
 bool
@@ -109,8 +188,69 @@ appendLayer(const ScenePayload& base,
 
     entry.layer = layer;
     entry.hash = layerHash;
+    entry.links = shareLinks(findLayerLinks(layer));
 
     return appendEntry(base, entry);
+}
+
+SceneLinkIndex
+findLayerLinks(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    SceneLinkIndex links;
+
+    if (layer) {
+        appendLayerLinks(layer, &links);
+    }
+    sortLinks(&links);
+
+    return links;
+}
+
+SceneLinkIndex
+findLayerStackLinks(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    SceneLinkIndex links;
+
+    if (!layer) {
+        return links;
+    }
+    std::set<std::string> visited;
+    std::vector<PXR_NS::SdfLayerRefPtr> pending(1, layer);
+    PXR_NS::TfErrorMark mark;
+    while (!pending.empty()) {
+        const PXR_NS::SdfLayerRefPtr current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current->GetIdentifier()).second) {
+            continue;
+        }
+        appendLayerLinks(current, &links);
+        for (const std::string& subLayerPath : current->GetSubLayerPaths()) {
+            const PXR_NS::SdfLayerRefPtr subLayer = PXR_NS::SdfLayer::FindOrOpenRelativeToLayer(current, subLayerPath);
+            if (subLayer) {
+                pending.push_back(subLayer);
+            }
+        }
+    }
+    // A missing sublayer is the stage's error to report when it composes.
+    mark.Clear();
+    sortLinks(&links);
+
+    return links;
+}
+
+SceneLinkIndex
+getLinks(const ScenePayload& payload)
+{
+    SceneLinkIndex links;
+
+    for (const ScenePayloadImpl* link = payload.getImpl().get(); link; link = link->base.get()) {
+        if (link->top.links) {
+            links.insert(links.end(), link->top.links->begin(), link->top.links->end());
+        }
+    }
+    sortLinks(&links);
+
+    return links;
 }
 
 ScenePayload
@@ -380,12 +520,14 @@ frameToTimeCode(const ScenePayload& payload,
 }
 
 namespace {
-    // The defined, non-abstract root prims of input's composed stage. Pure overs define nothing to
-    // graft, and classes stay where the input's inherits expect them.
+    // The defined, non-abstract root prims of input's composed stage, and the properties under
+    // them its link index lists whose composed targets leave their root. Pure overs define nothing
+    // to graft, and classes stay where the input's inherits expect them.
     bool
-    readRootNames(const ScenePayload& input,
-                  std::vector<std::string>* names,
-                  std::string* errorMessage)
+    readInput(const ScenePayload& input,
+              std::vector<std::string>* names,
+              std::vector<InputLink>* links,
+              std::string* errorMessage)
     {
         if (input.isEmpty()) {
             return true;
@@ -399,7 +541,60 @@ namespace {
             names->push_back(root.GetName().GetString());
         }
 
+        const std::set<std::string> roots(names->begin(), names->end());
+        for (const PXR_NS::SdfPath& property : getLinks(input)) {
+            const PXR_NS::SdfPath root = rootPrimOf(property);
+            if (root.IsEmpty() || !roots.count(root.GetName())) {
+                continue;
+            }
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(property.GetPrimPath());
+            if (!prim) {
+                continue;
+            }
+            InputLink link;
+            link.property = property;
+            const PXR_NS::UsdProperty composed = prim.GetProperty(property.GetNameToken());
+            if (composed.Is<PXR_NS::UsdRelationship>()) {
+                const PXR_NS::UsdRelationship relationship = composed.As<PXR_NS::UsdRelationship>();
+                relationship.GetTargets(&link.targets);
+                link.custom = relationship.IsCustom();
+            } else if (composed.Is<PXR_NS::UsdAttribute>()) {
+                const PXR_NS::UsdAttribute attribute = composed.As<PXR_NS::UsdAttribute>();
+                attribute.GetConnections(&link.targets);
+                link.isConnection = true;
+                link.custom = attribute.IsCustom();
+                link.variability = attribute.GetVariability();
+                link.typeName = attribute.GetTypeName();
+            } else {
+                continue;
+            }
+            if (leavesRoot(property, link.targets)) {
+                links->push_back(link);
+            }
+        }
+
         return true;
+    }
+
+    // Where path lies once slot's roots are grafted under destination; the empty path when it lies
+    // under none of them.
+    PXR_NS::SdfPath
+    graftedPathOf(const GraftSlot& slot,
+                  const PXR_NS::SdfPath& destination,
+                  const PXR_NS::SdfPath& path)
+    {
+        const PXR_NS::SdfPath root = rootPrimOf(path);
+
+        if (root.IsEmpty()) {
+            return root;
+        }
+        for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
+            if (slot.rootNames[i] == root.GetName()) {
+                return path.ReplacePrefix(root, destination.AppendChild(PXR_NS::TfToken(slot.childNames[i])));
+            }
+        }
+
+        return PXR_NS::SdfPath();
     }
 
     // Copies onto layer the stage metadata input's layers author, each field from the strongest
@@ -504,6 +699,33 @@ namespace {
             child->SetSpecifier(PXR_NS::SdfSpecifierDef);
             child->GetReferenceList().Prepend(PXR_NS::SdfReference(wrapperIdentifier, PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(slot.rootNames[i]))));
         }
+        // The reference drops the targets that leave the root; an explicit list here, stronger
+        // than the reference, stands in for its whole list.
+        for (const InputLink& link : slot.links) {
+            const PXR_NS::SdfPath property = graftedPathOf(slot, destination, link.property);
+            const PXR_NS::SdfPrimSpecHandle owner = property.IsEmpty() ? PXR_NS::SdfPrimSpecHandle() : PXR_NS::SdfCreatePrimInLayer(layer, property.GetPrimPath());
+            if (!owner) {
+                return PXR_NS::SdfLayerRefPtr();
+            }
+            std::vector<PXR_NS::SdfPath> targets;
+            for (const PXR_NS::SdfPath& target : link.targets) {
+                const PXR_NS::SdfPath grafted = graftedPathOf(slot, destination, target);
+                if (!grafted.IsEmpty()) {
+                    targets.push_back(grafted);
+                }
+            }
+            if (link.isConnection) {
+                if (!PXR_NS::SdfAttributeSpec::New(owner, property.GetName(), link.typeName, link.variability, link.custom)) {
+                    return PXR_NS::SdfLayerRefPtr();
+                }
+                layer->SetField(property, PXR_NS::SdfFieldKeys->ConnectionPaths, PXR_NS::SdfPathListOp::CreateExplicit(targets));
+            } else {
+                if (!PXR_NS::SdfRelationshipSpec::New(owner, property.GetName(), link.custom)) {
+                    return PXR_NS::SdfLayerRefPtr();
+                }
+                layer->SetField(property, PXR_NS::SdfFieldKeys->TargetPaths, PXR_NS::SdfPathListOp::CreateExplicit(targets));
+            }
+        }
         layer->SetPermissionToEdit(false);
 
         return layer;
@@ -554,6 +776,7 @@ reparentRoots(const SceneReparentArgs& args,
               SceneGraftMemo* memo,
               ScenePayload* output,
               std::vector<SceneRootGraft>* grafts,
+              std::vector<SceneUnmappedLink>* unmappedLinks,
               std::string* errorMessage)
 {
     if (!memo || !output) {
@@ -592,8 +815,9 @@ reparentRoots(const SceneReparentArgs& args,
         slot.destinationPath = args.destinationPath;
         if (const GraftSlot* previous = findSlot(state.slots, slot.input, NULL, NULL)) {
             slot.rootNames = previous->rootNames;
+            slot.links = previous->links;
             slot.wrapper = previous->wrapper;
-        } else if (!readRootNames(slot.input, &slot.rootNames, errorMessage)) {
+        } else if (!readInput(slot.input, &slot.rootNames, &slot.links, errorMessage)) {
             return false;
         }
         if (destination.IsRootPrimPath()) {
@@ -753,6 +977,23 @@ reparentRoots(const SceneReparentArgs& args,
             }
         }
     }
+    if (unmappedLinks) {
+        unmappedLinks->clear();
+        for (std::size_t i = 0; i < state.slots.size(); ++i) {
+            const GraftSlot& slot = state.slots[i];
+            for (const InputLink& link : slot.links) {
+                for (const PXR_NS::SdfPath& target : link.targets) {
+                    if (graftedPathOf(slot, destination, target).IsEmpty()) {
+                        SceneUnmappedLink unmapped;
+                        unmapped.inputIndex = i;
+                        unmapped.propertyPath = graftedPathOf(slot, destination, link.property).GetString();
+                        unmapped.targetPath = target.GetString();
+                        unmappedLinks->push_back(unmapped);
+                    }
+                }
+            }
+        }
+    }
     *output = result;
 
     return true;
@@ -837,6 +1078,8 @@ SceneLayerMemo::produce(const Key& key,
     edit.firstFrame = key.firstFrame;
     edit.lastFrame = key.lastFrame;
     edit.framesPerSecond = key.framesPerSecond;
+    SceneLinkIndex sublayerLinks;
+    edit.sublayerLinks = &sublayerLinks;
     if (!edit.layer) {
         if (errorMessage) {
             *errorMessage = "Could not create a layer for " + layerTag;
@@ -856,7 +1099,13 @@ SceneLayerMemo::produce(const Key& key,
     ++_imp->authorCount;
     edit.layer->SetPermissionToEdit(false);
 
-    _imp->output = SceneOps::appendLayer(upstream, edit.layer, layerHash);
+    SceneLayerEntry entry;
+    entry.layer = edit.layer;
+    entry.hash = layerHash;
+    SceneLinkIndex links = SceneOps::findLayerLinks(edit.layer);
+    links.insert(links.end(), sublayerLinks.begin(), sublayerLinks.end());
+    entry.links = shareLinks(std::move(links));
+    _imp->output = SceneOps::appendEntry(upstream, entry);
     _imp->layerHash = layerHash;
     _imp->valid = true;
     *output = _imp->output;

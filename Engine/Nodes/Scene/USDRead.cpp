@@ -88,6 +88,8 @@ struct USDRead::Implementation {
     std::vector<PXR_NS::SdfLayerRefPtr> closure;
     // Their files on disk, in the same order.
     std::vector<std::string> closurePaths;
+    // The links out of their root the file's layer stack authors, as of the closure's walk.
+    SceneLinkIndex links;
     // SceneOps::getFileLayerReloadCount() when closure was walked: authoring skips the walk,
     // which visits every spec of every layer, while closure starts with the layer it sublayers
     // and no reload has run since. Reload walks afresh, which also finds files that were missing.
@@ -114,9 +116,11 @@ struct USDRead::Implementation {
         for (const PXR_NS::SdfLayerRefPtr& l : layers) {
             paths.push_back(l->GetRealPath());
         }
+        SceneLinkIndex fileLinks = SceneOps::findLayerStackLinks(layer);
         std::lock_guard<std::mutex> lock(fileLayerMutex);
         closure.swap(layers);
         closurePaths.swap(paths);
+        links.swap(fileLinks);
         closureReloadCount = reloadCount;
     }
 
@@ -336,6 +340,10 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
         _imp->fileLayer = fileLayer;
     }
     _imp->updateClosure(fileLayer);
+    if (edit.sublayerLinks) {
+        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
+        *edit.sublayerLinks = _imp->links;
+    }
 
     return true;
 } // USDRead::authorLayer

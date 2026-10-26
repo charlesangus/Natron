@@ -52,6 +52,9 @@ struct SceneLayerEdit {
     double firstFrame = 0.;
     double lastFrame = 0.;
     double framesPerSecond = 24.;
+    // Links out of their root that layer composes from the layers it sublayers, which the scan of
+    // layer itself does not reach: an author sublayering a file records the file's here.
+    SceneLinkIndex* sublayerLinks = nullptr;
 };
 
 /**
@@ -90,6 +93,19 @@ struct SceneRootGraft {
 };
 
 /**
+ * @brief A relationship target or attribute connection a graft could not carry: it lies under no
+ * root prim its input grafts, so no grafted path stands for it. The grafted property is authored
+ * without it.
+ **/
+struct SceneUnmappedLink {
+    std::size_t inputIndex = 0;
+    // The property as grafted.
+    std::string propertyPath;
+    // The target as the input names it.
+    std::string targetPath;
+};
+
+/**
  * @brief The thin interface scene nodes use to author layers, stack them into payloads and
  * compose them. It is deliberately not an abstraction over USD's semantics: nodes author with
  * the Sdf and Usd APIs directly.
@@ -113,11 +129,30 @@ PXR_NS::SdfLayerRefPtr createNodeLayer(const std::string& tag);
 /**
  * @brief The payload made of base's layers with layer on top as the strongest. layerHash must
  * identify layer's content: equal hashes over equal bases are taken to mean equal stacks.
- * The metadata a layer authors on its pseudo-root overrides base's.
+ * The metadata a layer authors on its pseudo-root overrides base's. The entry's link index is
+ * findLayerLinks() of layer.
  **/
 ScenePayload appendLayer(const ScenePayload& base,
                          const PXR_NS::SdfLayerRefPtr& layer,
                          U64 layerHash);
+
+/**
+ * @brief The properties layer authors whose relationship targets or attribute connections lie
+ * outside the root prim the property sits under: an Sdf-level scan of layer's specs alone, not of
+ * what it sublayers or references.
+ **/
+SceneLinkIndex findLayerLinks(const PXR_NS::SdfLayerRefPtr& layer);
+
+/**
+ * @brief findLayerLinks() over layer's layer stack: layer and every layer it sublayers,
+ * recursively, each once.
+ **/
+SceneLinkIndex findLayerStackLinks(const PXR_NS::SdfLayerRefPtr& layer);
+
+/**
+ * @brief The union of the link indexes of payload's layers.
+ **/
+SceneLinkIndex getLinks(const ScenePayload& payload);
 
 /**
  * @brief appendLayer() for an entry taken from another payload, keeping what it depends on alive
@@ -143,6 +178,12 @@ ScenePayload appendEntry(const ScenePayload& base,
  * keep their timing and the result's metadata follows the strongest input, as a merge's does; a
  * default prim is not carried, as the input's roots are no longer roots.
  *
+ * A reference to a root drops the relationship targets and attribute connections that lie
+ * outside it. For each property of a grafted root that the input's link index lists and whose
+ * composed targets leave its root, the graft layer authors an explicit target list at the
+ * property's grafted path, each target moved to where its root was grafted from the same input.
+ * Targets under no root of that input are left out and listed in unmappedLinks, when given.
+ *
  * When grafts is given, it receives where each input root landed. Returns false with
  * *errorMessage set, keeping memo's layers, when the destination is not an absolute prim path, an
  * input root is the destination itself, or authoring fails.
@@ -151,6 +192,7 @@ bool reparentRoots(const SceneReparentArgs& args,
                    SceneGraftMemo* memo,
                    ScenePayload* output,
                    std::vector<SceneRootGraft>* grafts,
+                   std::vector<SceneUnmappedLink>* unmappedLinks,
                    std::string* errorMessage);
 
 /**

@@ -62,6 +62,7 @@
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/sdf/primSpec.h>
 #include <pxr/usd/sdf/reference.h>
+#include <pxr/usd/sdf/relationshipSpec.h>
 #include <pxr/usd/sdf/types.h>
 #include <pxr/usd/usd/attribute.h>
 #include <pxr/usd/usd/modelAPI.h>

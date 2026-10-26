@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -111,12 +112,13 @@ setTranslateOverrides(SceneReparentArgs* args,
 ScenePayload
 reparent(const SceneReparentArgs& args,
          SceneGraftMemo* memo,
-         std::vector<SceneRootGraft>* grafts = NULL)
+         std::vector<SceneRootGraft>* grafts = NULL,
+         std::vector<SceneUnmappedLink>* unmappedLinks = NULL)
 {
     ScenePayload output;
     std::string error;
 
-    EXPECT_TRUE(SceneOps::reparentRoots(args, memo, &output, grafts, &error)) << error;
+    EXPECT_TRUE(SceneOps::reparentRoots(args, memo, &output, grafts, unmappedLinks, &error)) << error;
 
     return output;
 }
@@ -131,6 +133,31 @@ rootPrimNames(const PXR_NS::UsdStageRefPtr& stage)
     }
 
     return names;
+}
+
+// Two roots: /geo, bound to the material /looks/<material> and with an attribute connected to
+// it, and /looks.
+std::string
+boundGeo(const std::string& material)
+{
+    return "def Xform \"geo\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+           "    rel material:binding = </looks/"
+        + material + ">\n"
+                     "    custom float c\n    float c.connect = </looks/"
+        + material + ".outputs:x>\n"
+                     "    def Mesh \"sub\"\n    {\n    }\n}\n"
+                     "def Scope \"looks\"\n{\n"
+                     "    def Material \"M\"\n    {\n        float outputs:x\n    }\n"
+                     "    def Material \"N\"\n    {\n        float outputs:x\n    }\n}\n";
+}
+
+PXR_NS::SdfPath
+boundMaterial(const PXR_NS::UsdStageRefPtr& stage,
+              const std::string& path)
+{
+    const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath(path))).ComputeBoundMaterial();
+
+    return material ? material.GetPath() : PXR_NS::SdfPath();
 }
 
 // Records the ObjectsChanged notices one stage sends.
@@ -295,13 +322,13 @@ TEST(SceneReparentTest, InputRootAtTheDestinationIsAnError)
     ScenePayload output = good;
     std::string error;
 
-    EXPECT_FALSE(SceneOps::reparentRoots(graftUnderT1({ stack({ makeLayer("def Xform \"T1\"\n{\n}\n") }) }), &memo, &output, NULL, &error));
+    EXPECT_FALSE(SceneOps::reparentRoots(graftUnderT1({ stack({ makeLayer("def Xform \"T1\"\n{\n}\n") }) }), &memo, &output, NULL, NULL, &error));
     EXPECT_NE(std::string::npos, error.find("/T1")) << error;
     EXPECT_TRUE(output.isSameStack(good));
 
     SceneReparentArgs relative = graftUnderT1({});
     relative.destinationPath = "T1";
-    EXPECT_FALSE(SceneOps::reparentRoots(relative, &memo, &output, NULL, &error));
+    EXPECT_FALSE(SceneOps::reparentRoots(relative, &memo, &output, NULL, NULL, &error));
 }
 
 TEST(SceneReparentTest, UnchangedInputsKeepTheirLayers)
@@ -402,7 +429,7 @@ TEST(SceneReparentTest, OverridesMayOnlyAuthorOvers)
     ScenePayload output;
     std::string error;
 
-    EXPECT_FALSE(SceneOps::reparentRoots(args, &memo, &output, NULL, &error));
+    EXPECT_FALSE(SceneOps::reparentRoots(args, &memo, &output, NULL, NULL, &error));
     EXPECT_NE(std::string::npos, error.find("over")) << error;
 }
 
@@ -463,4 +490,120 @@ TEST(SceneReparentTest, GraftedSamplesKeepTheirInputsRate)
         EXPECT_TRUE(grafted->GetPrimAtPath(PXR_NS::SdfPath("/T1/Card1")).GetAttribute(PXR_NS::TfToken("v")).Get(&graftedValue, PXR_NS::UsdTimeCode(time)));
         EXPECT_EQ(flatValue, graftedValue) << "time " << time;
     }
+}
+
+TEST(SceneReparentTest, LinkIndexListsTargetsOutOfTheirRoot)
+{
+    const PXR_NS::SdfLayerRefPtr file = makeLayer(boundGeo("M") + "def Xform \"inside\"\n{\n    rel own = </inside/child>\n    def Xform \"child\"\n    {\n    }\n}\n");
+    const std::vector<std::string> expected = { "/geo.c", "/geo.material:binding" };
+    std::vector<std::string> links;
+    for (const PXR_NS::SdfPath& path : SceneOps::findLayerLinks(file)) {
+        links.push_back(path.GetString());
+    }
+    std::sort(links.begin(), links.end());
+    EXPECT_EQ(expected, links);
+
+    // Only the layer stack scan follows the sublayer.
+    const PXR_NS::SdfLayerRefPtr wrapper = SceneOps::createNodeLayer("SceneReparentTest");
+    wrapper->SetSubLayerPaths({ file->GetIdentifier() });
+    EXPECT_TRUE(SceneOps::findLayerLinks(wrapper).empty());
+    EXPECT_EQ(2u, SceneOps::findLayerStackLinks(wrapper).size());
+
+    // A memoized layer carries what its author records of its sublayers, and restacked, as a
+    // merge does, its entry keeps it.
+    SceneLayerMemo memo;
+    SceneLayerMemo::Key key;
+    key.upstreamRead = SceneLayerMemo::Key::eUpstreamReadNothing;
+    key.readsFrameRange = false;
+    ScenePayload produced;
+    std::string error;
+    const SceneLayerMemo::AuthorFunc author = [&file](const SceneLayerEdit& edit, std::string* /*errorMessage*/) {
+        edit.layer->SetSubLayerPaths({ file->GetIdentifier() });
+        *edit.sublayerLinks = SceneOps::findLayerStackLinks(edit.layer);
+
+        return true;
+    };
+    ASSERT_TRUE(memo.produce(key, ScenePayload(), "SceneReparentTest", author, &produced, &error)) << error;
+    EXPECT_EQ(2u, SceneOps::getLinks(produced).size());
+    const ScenePayload restacked = SceneOps::appendLayer(SceneOps::appendEntry(ScenePayload(), SceneOps::getLayers(produced)[0]), makeLayer(sphere(1.)), 7);
+    EXPECT_EQ(2u, SceneOps::getLinks(restacked).size());
+}
+
+TEST(SceneReparentTest, GraftedBindingFollowsItsMaterial)
+{
+    const ScenePayload input = stack({ makeLayer(boundGeo("M")) });
+    SceneGraftMemo memo;
+    std::vector<SceneUnmappedLink> unmapped;
+    const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(graftUnderT1({ input }), &memo, NULL, &unmapped));
+
+    ASSERT_TRUE(stage);
+    EXPECT_TRUE(unmapped.empty());
+    EXPECT_EQ(PXR_NS::SdfPath("/T1/looks/M"), boundMaterial(stage, "/T1/geo"));
+    EXPECT_EQ(PXR_NS::SdfPath("/T1/looks/M"), boundMaterial(stage, "/T1/geo/sub"));
+    std::vector<PXR_NS::SdfPath> connections;
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/geo")).GetAttribute(PXR_NS::TfToken("c")).GetConnections(&connections));
+    EXPECT_EQ(std::vector<PXR_NS::SdfPath>({ PXR_NS::SdfPath("/T1/looks/M.outputs:x") }), connections);
+}
+
+TEST(SceneReparentTest, UnmappableTargetsAreReported)
+{
+    // /looks is a class, so it is not grafted, and the input has no /nowhere.
+    const ScenePayload input = stack({ makeLayer("def Xform \"geo\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+                                                 "    rel material:binding = </looks/M>\n"
+                                                 "    rel mixed = [</geo>, </nowhere/X>]\n}\n"
+                                                 "class Scope \"looks\"\n{\n    def Material \"M\"\n    {\n    }\n}\n") });
+    SceneGraftMemo memo;
+    std::vector<SceneUnmappedLink> unmapped;
+    const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(graftUnderT1({ input }), &memo, NULL, &unmapped));
+
+    ASSERT_TRUE(stage);
+    std::vector<std::string> reported;
+    for (const SceneUnmappedLink& link : unmapped) {
+        EXPECT_EQ(0u, link.inputIndex);
+        reported.push_back(link.propertyPath + " -> " + link.targetPath);
+    }
+    std::sort(reported.begin(), reported.end());
+    EXPECT_EQ(std::vector<std::string>({ "/T1/geo.material:binding -> /looks/M", "/T1/geo.mixed -> /nowhere/X" }), reported);
+
+    // The targets that map still compose.
+    std::vector<PXR_NS::SdfPath> targets;
+    stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/geo")).GetRelationship(PXR_NS::TfToken("mixed")).GetTargets(&targets);
+    EXPECT_EQ(std::vector<PXR_NS::SdfPath>({ PXR_NS::SdfPath("/T1/geo") }), targets);
+    EXPECT_TRUE(boundMaterial(stage, "/T1/geo").IsEmpty());
+
+    // A memoized graft reports them again.
+    unmapped.clear();
+    reparent(graftUnderT1({ input }), &memo, NULL, &unmapped);
+    EXPECT_EQ(2u, unmapped.size());
+}
+
+TEST(SceneReparentTest, EditingOneInputWithRepairedLinksResyncsOnlyItsRoots)
+{
+    SceneGraftMemo memo;
+    SceneReparentArgs args = graftUnderT1({ stack({ makeLayer(boundGeo("M")) }), stack({ makeLayer(sphere(1.)) }) });
+    SceneStage stage;
+    ASSERT_TRUE(stage.isValid());
+    EXPECT_TRUE(stage.sync(reparent(args, &memo)));
+
+    args.inputs[1] = stack({ makeLayer(sphere(2.)) });
+    {
+        NoticeLog log(stage.getStage());
+        EXPECT_TRUE(stage.sync(reparent(args, &memo)));
+        ASSERT_FALSE(log.resynced.empty());
+        for (const PXR_NS::SdfPath& path : log.resynced) {
+            EXPECT_TRUE(path.HasPrefix(PXR_NS::SdfPath("/T1/Sphere1"))) << path;
+        }
+    }
+    EXPECT_EQ(PXR_NS::SdfPath("/T1/looks/M"), boundMaterial(stage.getStage(), "/T1/geo"));
+
+    args.inputs[0] = stack({ makeLayer(boundGeo("N")) });
+    {
+        NoticeLog log(stage.getStage());
+        EXPECT_TRUE(stage.sync(reparent(args, &memo)));
+        ASSERT_FALSE(log.resynced.empty());
+        for (const PXR_NS::SdfPath& path : log.resynced) {
+            EXPECT_TRUE(path.HasPrefix(PXR_NS::SdfPath("/T1/geo")) || path.HasPrefix(PXR_NS::SdfPath("/T1/looks"))) << path;
+        }
+    }
+    EXPECT_EQ(PXR_NS::SdfPath("/T1/looks/N"), boundMaterial(stage.getStage(), "/T1/geo"));
 }

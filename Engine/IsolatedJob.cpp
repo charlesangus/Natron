@@ -30,9 +30,11 @@
 
 #include <QtCore/QtGlobal>
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Project.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 
@@ -74,6 +76,9 @@ holderName(const KnobHolder& holder)
     if (named) {
         return named->getFullyQualifiedName();
     }
+    if (dynamic_cast<const Project*>(&holder)) {
+        return "Project";
+    }
 
     return std::string();
 }
@@ -86,13 +91,20 @@ IsolatedJob::IsolatedJob(const NodePtr& root,
     , _holders()
     , _counted()
 {
+    // The format, frame rate, views and colour settings every render reads.
+    if (root && root->getApp()) {
+        addHolder(root->getApp()->getProject());
+    }
+
     std::set<Node*> walked;
     std::list<NodePtr> toWalk;
     toWalk.push_back(root);
 
     // Nodes reached only through expressions and links feed knob values, not images: they are
-    // read, but their inputs are not.
+    // read, but their inputs are not. A node whose metadata a parameter reads is walked like an
+    // input, since its metadata follows from everything upstream of it.
     std::set<NodePtr> readByKnobs;
+    std::set<NodePtr> metadataSources;
 
     while (!toWalk.empty()) {
         NodePtr node = toWalk.front();
@@ -100,18 +112,12 @@ IsolatedJob::IsolatedJob(const NodePtr& root,
         if (!node || !walked.insert(node.get()).second) {
             continue;
         }
+        addNode(node);
         EffectInstancePtr effect = node->getEffectInstance();
         if (effect) {
-            addHolder(effect);
-            effect->getAllExpressionDependenciesRecursive(readByKnobs);
-        }
-        TrackerContextPtr tracker = node->getTrackerContext();
-        if (tracker) {
-            std::vector<TrackMarkerPtr> markers;
-            tracker->getAllMarkers(&markers);
-            for (std::size_t i = 0; i < markers.size(); ++i) {
-                addHolder(markers[i]);
-            }
+            metadataSources.clear();
+            effect->getAllExpressionDependenciesRecursive(readByKnobs, &metadataSources);
+            toWalk.insert(toWalk.end(), metadataSources.begin(), metadataSources.end());
         }
         NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getGroup());
         if (group) {
@@ -128,7 +134,7 @@ IsolatedJob::IsolatedJob(const NodePtr& root,
 
     for (std::set<NodePtr>::const_iterator it = readByKnobs.begin(); it != readByKnobs.end(); ++it) {
         if (*it && (walked.find(it->get()) == walked.end())) {
-            addHolder((*it)->getEffectInstance());
+            addNode(*it);
         }
     }
 
@@ -166,6 +172,20 @@ IsolatedJob::addHolder(const KnobHolderPtr& holder)
     }
 }
 
+void
+IsolatedJob::addNode(const NodePtr& node)
+{
+    addHolder(node->getEffectInstance());
+    TrackerContextPtr tracker = node->getTrackerContext();
+    if (tracker) {
+        std::vector<TrackMarkerPtr> markers;
+        tracker->getAllMarkers(&markers);
+        for (std::size_t i = 0; i < markers.size(); ++i) {
+            addHolder(markers[i]);
+        }
+    }
+}
+
 bool
 IsolatedJob::reads(const KnobHolder* holder) const
 {
@@ -189,8 +209,9 @@ IsolatedJob::ThreadScope::~ThreadScope()
 }
 
 std::string
-IsolatedJob::refusal(const KnobI& knob,
-                     const KnobHolder& holder)
+IsolatedJob::refusal(const KnobHolder& holder,
+                     const KnobI* knob,
+                     const char* what)
 {
     const IsolatedJob* own = tCurrentJob;
     std::string kind;
@@ -208,19 +229,24 @@ IsolatedJob::refusal(const KnobI& knob,
         return std::string();
     }
     std::string name = holderName(holder);
-    if (!name.empty()) {
-        name += '.';
+    if (knob) {
+        if (!name.empty()) {
+            name += '.';
+        }
+        name += knob->getName();
+    } else {
+        name = std::string(what ? what : "") + " of " + name;
     }
-    name += knob.getName();
 
     return "Cannot change " + name + " while a " + kind + " reads it";
 }
 
 bool
-IsolatedJob::logRefusal(const KnobI& knob,
-                        const KnobHolder& holder)
+IsolatedJob::logRefusal(const KnobHolder& holder,
+                        const KnobI* knob,
+                        const char* what)
 {
-    const std::string message = refusal(knob, holder);
+    const std::string message = refusal(holder, knob, what);
     if (message.empty()) {
         return false;
     }
@@ -230,10 +256,11 @@ IsolatedJob::logRefusal(const KnobI& knob,
 }
 
 bool
-IsolatedJob::raiseRefusalInPython(const KnobI& knob,
-                                  const KnobHolder& holder)
+IsolatedJob::raiseRefusalInPython(const KnobHolder& holder,
+                                  const KnobI* knob,
+                                  const char* what)
 {
-    const std::string message = refusal(knob, holder);
+    const std::string message = refusal(holder, knob, what);
     if (message.empty()) {
         return false;
     }

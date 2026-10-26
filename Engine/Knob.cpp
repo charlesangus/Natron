@@ -5926,7 +5926,8 @@ KnobHelper::getOwnDimensionContentHash(int dimension) const
 }
 
 void
-KnobHelper::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const
+KnobHelper::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                  std::set<NodePtr>* metadataSources) const
 {
     std::set<KnobIPtr> deps;
     {
@@ -5955,21 +5956,34 @@ KnobHelper::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) cons
     std::list<KnobIPtr> knobsToInspectRecursive;
 
     for (std::set<KnobIPtr>::iterator it = deps.begin(); it != deps.end(); ++it) {
-        EffectInstance* effect  = dynamic_cast<EffectInstance*>( (*it)->getHolder() );
+        KnobHolder* holder = (*it)->getHolder();
+        EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
         if (effect) {
             NodePtr node = effect->getNode();
 
             nodes.insert(node);
             knobsToInspectRecursive.push_back(*it);
+            continue;
+        }
+        // A track's parameter: the track belongs to its tracker node.
+        TrackMarker* marker = dynamic_cast<TrackMarker*>(holder);
+        TrackerContextPtr tracker = marker ? marker->getContext() : TrackerContextPtr();
+        NodePtr trackerNode = tracker ? tracker->getNode() : NodePtr();
+        if (trackerNode) {
+            nodes.insert(trackerNode);
+            knobsToInspectRecursive.push_back(*it);
         }
     }
 
-    std::list<NodePtr> metadataSources;
-    getMetadataDependencies(-1, &metadataSources);
-    nodes.insert(metadataSources.begin(), metadataSources.end());
+    std::list<NodePtr> metadataNodes;
+    getMetadataDependencies(-1, &metadataNodes);
+    nodes.insert(metadataNodes.begin(), metadataNodes.end());
+    if (metadataSources) {
+        metadataSources->insert(metadataNodes.begin(), metadataNodes.end());
+    }
 
     for (std::list<KnobIPtr>::iterator it = knobsToInspectRecursive.begin(); it != knobsToInspectRecursive.end(); ++it) {
-        (*it)->getAllExpressionDependenciesRecursive(nodes);
+        (*it)->getAllExpressionDependenciesRecursive(nodes, metadataSources);
     }
 }
 
@@ -7169,12 +7183,13 @@ KnobHolder::isSetValueCurrentlyPossible() const
 }
 
 void
-KnobHolder::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const
+KnobHolder::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                  std::set<NodePtr>* metadataSources) const
 {
     QMutexLocker k(&_imp->knobsMutex);
 
     for (KnobsVec::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        (*it)->getAllExpressionDependenciesRecursive(nodes);
+        (*it)->getAllExpressionDependenciesRecursive(nodes, metadataSources);
     }
 }
 

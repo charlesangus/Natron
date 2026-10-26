@@ -609,6 +609,10 @@ OutputSchedulerThread::~OutputSchedulerThread()
     ///Make sure they are all gone, there will be a deadlock here if that's not the case.
     _imp->waitForRenderThreadsToQuit();
 
+    // The scope belongs to the scheduler thread, not this one, whose context it must not change.
+    if (_imp->schedulerInJob) {
+        _imp->schedulerInJob->detach();
+    }
     _imp->endIsolatedJob();
 }
 

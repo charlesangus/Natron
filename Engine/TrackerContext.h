@@ -372,6 +372,8 @@ public Q_SLOTS:
     void onSchedulerTrackingStarted(int frameStep);
     void onSchedulerTrackingFinished();
     void onSchedulerRunEnded(quint64 runId);
+    // Ends the job of a run that never started, if it is the latest.
+    void onSchedulerRunDropped(quint64 runId);
 
     void onSchedulerTrackingProgress(double progress);
 
@@ -526,9 +528,9 @@ public:
      * @param start the first frame to track, if forward is true then start < end otherwise start > end
      * @param end the next frame after the last frame to track (a la STL iterators), if forward is true then end > start
      **/
-    void track(const TrackArgsPtr& args)
+    bool track(const TrackArgsPtr& args) WARN_UNUSED_RETURN
     {
-        startTask(args);
+        return startTask(args);
     }
 
     void emit_trackingStarted(int step)
@@ -561,6 +563,9 @@ Q_SIGNALS:
     // short to report progress.
     void runEnded(quint64 runId);
 
+    // A run that quitting the thread removed before it started, so that never ends.
+    void runDropped(quint64 runId);
+
     void trackingProgress(double progress);
 
     void renderCurrentFrameForViewer(ViewerInstance* viewer);
@@ -573,6 +578,8 @@ private:
     }
 
     virtual ThreadStateEnum threadLoopOnce(const GenericThreadStartArgsPtr& inArgs) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void onQueuedTasksDropped(const std::list<GenericThreadStartArgsPtr>& tasks) OVERRIDE FINAL;
     std::unique_ptr<TrackSchedulerPrivate> _imp;
 };
 

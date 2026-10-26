@@ -126,6 +126,7 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
     QObject::connect( &scheduler, SIGNAL(trackingStarted(int)), _publicInterface, SLOT(onSchedulerTrackingStarted(int)) );
     QObject::connect( &scheduler, SIGNAL(trackingFinished()), _publicInterface, SLOT(onSchedulerTrackingFinished()) );
     QObject::connect(&scheduler, &TrackScheduler::runEnded, _publicInterface, &TrackerContext::onSchedulerRunEnded);
+    QObject::connect(&scheduler, &TrackScheduler::runDropped, _publicInterface, &TrackerContext::onSchedulerRunDropped);
     QObject::connect( &scheduler, SIGNAL(trackingProgress(double)), _publicInterface, SLOT(onSchedulerTrackingProgress(double)) );
     TrackerNodePtr isTrackerNode = std::dynamic_pointer_cast<TrackerNode>(effect);
     QString fixedNamePrefix = QString::fromUtf8( node->getScriptName_mt_safe().c_str() );
@@ -1294,8 +1295,14 @@ TrackerContext::trackMarkers(const std::list<TrackMarkerPtr>& markers,
        Launch tracking in the scheduler thread.
      */
     TrackArgsPtr args( new TrackArgs(start, end, frameStep, getNode()->getApp()->getTimeLine(), viewer, trackContext, accessor, trackAndOptions, formatWidth, formatHeight, autoKeyingOnEnabledParamEnabled) );
-    args->setRunId(startTrackingJob());
-    _imp->scheduler.track(args);
+    const quint64 runId = startTrackingJob();
+    args->setRunId(runId);
+    // A scheduler that is quitting refuses the run, which then never ends on its own.
+    if (!_imp->scheduler.track(args)) {
+        _imp->endTrackingJob(runId);
+        Q_EMIT trackingFinished();
+        Q_EMIT trackingJobFinished();
+    }
 } // TrackerContext::trackMarkers
 
 void

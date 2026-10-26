@@ -34,6 +34,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeGroup.h"
@@ -818,6 +819,9 @@ Node::connectInput(const NodePtr & input,
         }
     }
 
+    if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
+        return false;
+    }
     bool useGuiInputs = isNodeRendering();
     _imp->effect->abortViewerRendersForEdit();
 
@@ -963,7 +967,9 @@ Node::replaceInput(const NodePtr& input,
                    int inputNumber)
 {
 
-
+    if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
+        return false;
+    }
     bool useGuiInputs = isNodeRendering();
     _imp->effect->abortViewerRendersForEdit();
     return replaceInputInternal(input, inputNumber, useGuiInputs);
@@ -1012,6 +1018,9 @@ Node::switchInput0And1()
         }
     }
 
+    if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
+        return;
+    }
     bool useGuiInputs = isNodeRendering();
     _imp->effect->abortViewerRendersForEdit();
 
@@ -1113,6 +1122,9 @@ Node::disconnectInput(int inputNumber)
         destroyed = _imp->isBeingDestroyed;
     }
     if (!destroyed) {
+        if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
+            return -1;
+        }
         _imp->effect->abortViewerRendersForEdit();
     }
 
@@ -1240,7 +1252,9 @@ Node::disconnectInputInternal(Node* input, bool useGuiValues)
 int
 Node::disconnectInput(Node* input)
 {
-
+    if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
+        return -1;
+    }
     bool useGuiValues = isNodeRendering();
     _imp->effect->abortViewerRendersForEdit();
     return disconnectInputInternal(input, useGuiValues);

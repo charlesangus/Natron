@@ -42,6 +42,7 @@
 #include <QObject>
 #include <QString>
 #include <QTemporaryDir>
+#include <QThread>
 
 #include <SequenceParsing.h>
 
@@ -60,6 +61,7 @@
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
 #include "Engine/TLSHolder.h"
+#include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 #include "Engine/ViewIdx.h"
 
@@ -412,6 +414,146 @@ TEST_F(RenderIsolation, EditOutsideTheRenderGoesThrough)
     EXPECT_EQ(0, finishedCode);
 }
 
+// Changing the inputs of a node a render reads, from C++, is refused without an exception and
+// changes nothing; from Python it raises a RuntimeError. The render runs to its end.
+TEST_F(RenderIsolation, InputEditUpstreamIsRefusedDuringWriteRender)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    buildGraph(tmp);
+    ASSERT_TRUE(bool(_writer));
+    NodePtr loose = createNode(QString::fromUtf8(kCheckerBoardPluginID));
+    ASSERT_TRUE(bool(loose));
+
+    const std::string script = "grade = " + getApp()->getAppIDString() + ".getNode(\"" + _grade->getScriptName() + "\")\n"
+                                                                                                                   "loose = "
+        + getApp()->getAppIDString() + ".getNode(\"" + loose->getScriptName() + "\")\n"
+                                                                                "try:\n"
+                                                                                "    grade.connectInput(0, loose)\n"
+                                                                                "    renderIsolationRefusal = ''\n"
+                                                                                "except RuntimeError as e:\n"
+                                                                                "    renderIsolationRefusal = str(e)\n"
+                                                                                "assert 'the inputs of' in renderIsolationRefusal, renderIsolationRefusal\n"
+                                                                                "try:\n"
+                                                                                "    grade.disconnectInput(0)\n"
+                                                                                "    renderIsolationRefusal = ''\n"
+                                                                                "except RuntimeError as e:\n"
+                                                                                "    renderIsolationRefusal = str(e)\n"
+                                                                                "assert 'the inputs of' in renderIsolationRefusal, renderIsolationRefusal\n";
+    NodePtr grade = _grade;
+    bool scriptPassed = false;
+    std::string error;
+    bool threw = false;
+    bool connected = true;
+    bool replaced = true;
+    int disconnected = 0;
+    NodePtr inputAfterEdits;
+    const std::function<void()> edit = [&]() {
+        std::string output;
+        scriptPassed = NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output);
+        try {
+            connected = grade->connectInput(loose, 0);
+            replaced = grade->replaceInput(loose, 0);
+            grade->switchInput0And1();
+            disconnected = grade->disconnectInput(0);
+        } catch (...) {
+            threw = true;
+        }
+        inputAfterEdits = grade->getInput(0);
+    };
+    bool actionRan = false;
+    const int finishedCode = renderWithActionAtFrame(edit, eActionThreadMain, &actionRan);
+
+    ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
+    EXPECT_TRUE(scriptPassed) << error;
+    EXPECT_FALSE(threw);
+    EXPECT_FALSE(connected);
+    EXPECT_FALSE(replaced);
+    EXPECT_EQ(-1, disconnected);
+    EXPECT_TRUE(inputAfterEdits == _source);
+    EXPECT_TRUE(_grade->getInput(0) == _source);
+    EXPECT_EQ(0, finishedCode);
+
+    // Once the render has returned, nothing reads the Grade any more.
+    EXPECT_TRUE(_grade->replaceInput(loose, 0));
+    EXPECT_TRUE(_grade->getInput(0) == loose);
+}
+
+// A render reads the project's parameters (format, frame rate and the like): a write to one while
+// it runs is refused.
+TEST_F(RenderIsolation, ProjectParamWriteIsRefusedDuringWriteRender)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    buildGraph(tmp);
+    ASSERT_TRUE(bool(_writer));
+
+    KnobDouble* frameRate = dynamic_cast<KnobDouble*>(getApp()->getProject()->getKnobByName("frameRate").get());
+    ASSERT_TRUE(frameRate != NULL);
+    const double before = frameRate->getValue(0);
+    const double changed = before + 1.;
+
+    std::atomic<int> returnCode { -1 };
+    const std::function<void()> edit = [frameRate, changed, &returnCode]() {
+        returnCode = (int)frameRate->setValue(changed, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    };
+    bool actionRan = false;
+    const int finishedCode = renderWithActionAtFrame(edit, eActionThreadOwn, &actionRan);
+
+    ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
+    EXPECT_EQ((int)KnobHelper::eValueChangedReturnCodeNothingChanged, returnCode.load());
+    EXPECT_DOUBLE_EQ(before, frameRate->getValue(0));
+    EXPECT_EQ(0, finishedCode);
+
+    frameRate->setValue(changed, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    EXPECT_DOUBLE_EQ(changed, frameRate->getValue(0));
+}
+
+// A parameter of the rendered graph that reads another node's metadata makes the render read that
+// node and everything upstream of it, though neither is connected to the Write: a write upstream of
+// the metadata source is refused while the render runs.
+TEST_F(RenderIsolation, EditUpstreamOfMetadataSourceIsRefusedDuringWriteRender)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    buildGraph(tmp);
+    ASSERT_TRUE(bool(_writer));
+
+    // upstream -> metadataSource, outside the Write's inputs.
+    NodePtr upstream = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    ASSERT_TRUE(bool(upstream));
+    NodePtr metadataSource = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    ASSERT_TRUE(bool(metadataSource));
+    connectNodes(upstream, metadataSource, 0, true);
+
+    KnobIPtr mix = _grade->getKnobByName("mix");
+    ASSERT_TRUE(bool(mix));
+    mix->addMetadataDependency(0, metadataSource);
+    std::list<NodePtr> sources;
+    mix->getMetadataDependencies(0, &sources);
+    ASSERT_EQ(1u, sources.size());
+
+    KnobColor* upstreamMultiply = dynamic_cast<KnobColor*>(upstream->getKnobByName("multiply").get());
+    ASSERT_TRUE(upstreamMultiply != NULL);
+    const double before = upstreamMultiply->getValue(0);
+    const double changed = before + 0.5;
+
+    std::atomic<int> returnCode { -1 };
+    const std::function<void()> edit = [upstreamMultiply, changed, &returnCode]() {
+        returnCode = (int)upstreamMultiply->setValue(changed, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    };
+    bool actionRan = false;
+    const int finishedCode = renderWithActionAtFrame(edit, eActionThreadOwn, &actionRan);
+
+    ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
+    EXPECT_EQ((int)KnobHelper::eValueChangedReturnCodeNothingChanged, returnCode.load());
+    EXPECT_DOUBLE_EQ(before, upstreamMultiply->getValue(0));
+    EXPECT_EQ(0, finishedCode);
+
+    upstreamMultiply->setValue(changed, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    EXPECT_DOUBLE_EQ(changed, upstreamMultiply->getValue(0));
+}
+
 class TrackingIsolation
     : public BaseTest {
 };
@@ -444,6 +586,52 @@ TEST_F(TrackingIsolation, StaleRunEndLeavesTheLaterRunsJob)
 
     context->onSchedulerRunEnded(laterRun);
     EXPECT_TRUE(context->getRunningTrackingJob() == NULL);
+    maxError->setValue(changed, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    EXPECT_DOUBLE_EQ(changed, maxError->getValue(0));
+}
+
+// A tracking run its scheduler refuses to start, here because the tracker's thread has quit for
+// good, ends its job at once and reports trackingJobFinished, rather than leaving the tracker
+// refusing every write.
+TEST_F(TrackingIsolation, RefusedTrackStartLeavesNoJob)
+{
+    NodePtr source = createNode(QString::fromUtf8(kCheckerBoardPluginID));
+    ASSERT_TRUE(bool(source));
+    NodePtr tracker = createNode(QString::fromUtf8(PLUGINID_NATRON_TRACKER));
+    ASSERT_TRUE(bool(tracker));
+    connectNodes(source, tracker, 0, true);
+    TrackerContextPtr context = tracker->getTrackerContext();
+    ASSERT_TRUE(bool(context));
+    TrackMarkerPtr marker = context->createMarker();
+    ASSERT_TRUE(bool(marker));
+    marker->getCenterKnob()->setValue(32., ViewSpec::all(), 0);
+    marker->getCenterKnob()->setValue(32., ViewSpec::all(), 1);
+    std::list<TrackMarkerPtr> markers;
+    markers.push_back(marker);
+
+    int jobsFinished = 0;
+    QObject receiver;
+    QObject::connect(context.get(), &TrackerContext::trackingJobFinished, &receiver, [&jobsFinished]() {
+        ++jobsFinished;
+    });
+
+    // A first run starts the scheduler thread, which can only quit once it runs.
+    context->trackMarkers(markers, 1, 3, 1, NULL);
+    for (int i = 0; i < 3000 && jobsFinished == 0; ++i) {
+        QCoreApplication::processEvents();
+        QThread::msleep(10);
+    }
+    ASSERT_EQ(1, jobsFinished) << "the first tracking run did not finish in time";
+    ASSERT_TRUE(context->getRunningTrackingJob() == NULL);
+
+    context->quitTrackerThread_blocking(false);
+    context->trackMarkers(markers, 1, 3, 1, NULL);
+    EXPECT_TRUE(context->getRunningTrackingJob() == NULL);
+    EXPECT_EQ(2, jobsFinished);
+
+    KnobDouble* maxError = dynamic_cast<KnobDouble*>(tracker->getKnobByName("maxError").get());
+    ASSERT_TRUE(maxError != NULL);
+    const double changed = maxError->getValue(0) + 0.5;
     maxError->setValue(changed, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
     EXPECT_DOUBLE_EQ(changed, maxError->getValue(0));
 }

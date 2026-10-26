@@ -38,7 +38,12 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Node.h"
+#include "Engine/OutputEffectInstance.h"
+#include "Engine/OutputSchedulerThread.h"
 
 #include "Gui/Gui.h"
 #include "Gui/ProgressTaskInfo.h"
@@ -113,6 +118,7 @@ ForegroundTaskDialog::show(Gui* gui,
         entry.task = tasks[i].task;
         entry.progress = 0.;
         entry.done = !entry.task || entry.task->wasCanceled();
+        entry.stopping = false;
         if (!entry.done) {
             entry.task->setForeground(true);
             anyRunning = true;
@@ -163,24 +169,36 @@ ForegroundTaskDialog::connectTasks()
         }
         ProgressTaskInfo* taskPtr = _entries[i].task.get();
         QObject::connect(taskPtr, &ProgressTaskInfo::progressChanged, dialog, [self, taskPtr](double progress) {
-            for (std::size_t j = 0; j < self->_entries.size(); ++j) {
-                if (self->_entries[j].task.get() == taskPtr) {
-                    self->_entries[j].progress = progress;
-                }
+            Entry* entry = self->entryFor(taskPtr);
+            if (entry) {
+                entry->progress = progress;
             }
             self->refresh();
         });
         QObject::connect(taskPtr, &ProgressTaskInfo::taskFinished, dialog, [self, taskPtr](int retCode) {
-            for (std::size_t j = 0; j < self->_entries.size(); ++j) {
-                if (self->_entries[j].task.get() == taskPtr) {
-                    if (!self->_entries[j].done && (retCode != 0) && !self->_userCanceled) {
-                        self->_failedLabels.push_back(self->_entries[j].label);
-                    }
-                    self->_entries[j].done = true;
+            Entry* entry = self->entryFor(taskPtr);
+            // A cancelled task finishes at once, while its render may still be stopping.
+            if (entry && !entry->stopping) {
+                if (!entry->done && (retCode != 0) && !self->_userCanceled) {
+                    self->_failedLabels.push_back(entry->label);
                 }
+                entry->done = true;
             }
             self->refresh();
         });
+        NodePtr node = taskPtr->getNode();
+        OutputEffectInstance* writer = node ? dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get()) : 0;
+        RenderEnginePtr engine = writer ? writer->getRenderEngine() : RenderEnginePtr();
+        if (engine) {
+            QObject::connect(engine.get(), &RenderEngine::renderFinished, dialog, [self, taskPtr](int /*retCode*/) {
+                Entry* entry = self->entryFor(taskPtr);
+                if (entry && entry->stopping) {
+                    entry->stopping = false;
+                    entry->done = true;
+                }
+                self->refresh();
+            });
+        }
     }
     QObject::connect(dialog, &QProgressDialog::canceled, dialog, [self]() {
         self->cancel();
@@ -205,13 +223,13 @@ ForegroundTaskDialog::refresh()
         }
     }
 
-    if (current == n) {
-        if (!_held) {
-            close();
+    if ((current == n) && !_held) {
+        close();
 
-            return;
-        }
-        if (_dialog && _userCanceled) {
+        return;
+    }
+    if (_userCanceled) {
+        if (_dialog) {
             _dialog->setLabelText(QCoreApplication::translate("ForegroundTaskDialog", "Stopping..."));
             QPushButton* cancelButton = _dialog->findChild<QPushButton*>();
             if (cancelButton) {
@@ -219,6 +237,9 @@ ForegroundTaskDialog::refresh()
             }
         }
 
+        return;
+    }
+    if (current == n) {
         return;
     }
 
@@ -254,8 +275,11 @@ ForegroundTaskDialog::cancel()
         Entry& entry = _entries[i];
         if (!entry.done && entry.task) {
             toCancel.push_back(entry.task);
+            // Until the render has stopped, its job may still refuse edits.
+            entry.stopping = true;
+        } else {
+            entry.done = true;
         }
-        entry.done = true;
     }
     // The tasks end as Canceled, not Paused (see ProgressTaskInfo::setForeground).
     for (std::size_t i = 0; i < toCancel.size(); ++i) {
@@ -263,11 +287,38 @@ ForegroundTaskDialog::cancel()
             toCancel[i]->cancelTask(false, 1);
         }
     }
+    // A render still active reports renderFinished once it has stopped; one that never started
+    // has left the queue and will not.
+    for (std::size_t i = 0; i < toCancel.size(); ++i) {
+        Entry* entry = entryFor(toCancel[i].get());
+        if (!entry || !entry->stopping) {
+            continue;
+        }
+        NodePtr node = toCancel[i]->getNode();
+        OutputEffectInstance* writer = node ? dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get()) : 0;
+        AppInstancePtr app = node ? node->getApp() : AppInstancePtr();
+        if (!writer || !app || !app->isRenderActiveOrQueued(writer)) {
+            entry->stopping = false;
+            entry->done = true;
+        }
+    }
     if (_onCancel) {
         std::function<void()> onCancel = _onCancel;
         onCancel();
     }
     refresh();
+}
+
+ForegroundTaskDialog::Entry*
+ForegroundTaskDialog::entryFor(const ProgressTaskInfo* task)
+{
+    for (std::size_t i = 0; i < _entries.size(); ++i) {
+        if (_entries[i].task.get() == task) {
+            return &_entries[i];
+        }
+    }
+
+    return 0;
 }
 
 void

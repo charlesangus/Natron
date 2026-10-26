@@ -3,7 +3,8 @@ Write's Render button triggered from Python, and app.render), the modal "Foregro
 active modal widget while the render runs; a key edit to an open Grade spinbox and a drag in the
 node graph, both sent through the window system the way a person's input arrives, change nothing;
 Cancel stops the render early and ends its Progress panel task as Canceled, not Paused, since a
-restart would render the project as edited since. Then, with no render running, an edit while
+restart would render the project as edited since; the dialog stays up, saying it is stopping, until
+the render has stopped, and once it closes a script edit to the Grade goes through. Then, with no render running, an edit while
 the viewer plays restarts the viewer's render, so the viewer shows the edit.
 
 Input goes through QTest's QWindow overloads, which enter Qt where the window system's events do
@@ -283,10 +284,26 @@ try:
         buttons = [b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel"] if dialog else []
         if check(len(buttons) == 1, "found the dialog's Cancel button"):
             buttons[0].click()
+        # The render reports that it stopped through the event loop, which has not run since the
+        # click: the dialog must still be up, saying it is stopping.
+        dialog = task_dialog()
+        check(dialog is not None, "the dialog stays up after Cancel until the render has stopped")
+        labels = [l.text() for l in dialog.findChildren(QLabel)] if dialog else []
+        check(any("Stopping" in t for t in labels), "it says it is stopping (%r)" % labels)
         closed = yield ("until", lambda: task_dialog() is None, POLL_TIMEOUT_S)
-        check(closed, "Cancel closed the dialog")
-        yield ("sleep", 1000)
+        check(closed, "Cancel closed the dialog once the render stopped")
+        # Once the dialog is gone the render no longer reads the Grade, so a script may edit it,
+        # and no frame follows.
         written = len(frames_written(tag))
+        try:
+            mix.setValue(0.5)
+            edit_error = None
+        except RuntimeError as e:
+            edit_error = str(e)
+        check(edit_error is None, "a script edit to the Grade goes through once the dialog closed (%r)" % edit_error)
+        mix.setValue(1.0)
+        yield ("sleep", 1000)
+        check(len(frames_written(tag)) == written, "no frame was written after the dialog closed (%d -> %d)" % (written, len(frames_written(tag))))
         check(written < FRAMES, "Cancel stopped the render early (%d of %d frames)" % (written, FRAMES))
         status = task_status(write)
         check(status == "Canceled", "Cancel ended the task as Canceled, not Paused (%r)" % status)

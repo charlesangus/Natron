@@ -45,9 +45,13 @@ NATRON_NAMESPACE_ENTER
  * knob's entry points return as if nothing changed and log a warning naming the knob, and the
  * Python parameter bindings raise a RuntimeError before they record or change anything.
  *
- * The holders it reads are its root node, every node upstream of it through inputs (into and out
- * of groups), the groups holding those nodes, the nodes their expressions and links read, and the
- * tracks of the trackers among them.
+ * The holders it reads are the project, its root node, every node upstream of it through inputs
+ * (into and out of groups), the groups holding those nodes, the nodes their expressions and links
+ * read, the nodes whose metadata their parameters read together with everything upstream of
+ * those, and the tracker nodes and tracks among them or read by their expressions and links.
+ *
+ * The nodes it reads also refuse graph edits from outside the job: connecting, replacing,
+ * swapping or disconnecting their inputs, and editing their Roto shapes from Python.
  *
  * A thread is in a job's context while a ThreadScope for that job lives on it. A write from a
  * job's context to a holder no other job reads goes through.
@@ -82,6 +86,16 @@ public:
         ThreadScope(const ThreadScope&) = delete;
         ThreadScope& operator=(const ThreadScope&) = delete;
 
+        /**
+         * @brief Makes the destructor leave the context of the thread that made this scope as it
+         * is, for a scope destroyed on another thread: restoring would change the destroying
+         * thread's context instead.
+         **/
+        void detach()
+        {
+            _entered = false;
+        }
+
     private:
         const IsolatedJob* _previous;
         bool _entered;
@@ -95,7 +109,7 @@ public:
     {
         KnobHolder* holder = knob ? knob->getHolder() : NULL;
 
-        return holder && holder->isReadByIsolatedJob() && logRefusal(*knob, *holder);
+        return holder && holder->isReadByIsolatedJob() && logRefusal(*holder, knob, NULL);
     }
 
     /**
@@ -117,16 +131,40 @@ public:
     {
         KnobHolder* holder = knob ? knob->getHolder() : NULL;
 
-        return holder && holder->isReadByIsolatedJob() && raiseRefusalInPython(*knob, *holder);
+        return holder && holder->isReadByIsolatedJob() && raiseRefusalInPython(*holder, knob, NULL);
+    }
+
+    /**
+     * @brief True, after logging a warning, if a running job other than the calling thread's
+     * reads holder: the caller then leaves holder's inputs or shapes as they are. what names the
+     * change, as in "Cannot change <what> of <holder> while a render reads it".
+     **/
+    static bool refusesEdit(const KnobHolder* holder,
+                            const char* what)
+    {
+        return holder && holder->isReadByIsolatedJob() && logRefusal(*holder, NULL, what);
+    }
+
+    /**
+     * @brief refusesEdit() for an edit a Python script asks for: when refused, sets a Python
+     * RuntimeError instead of logging. Call with the GIL held.
+     **/
+    static bool refusesPythonEdit(const KnobHolder* holder,
+                                  const char* what)
+    {
+        return holder && holder->isReadByIsolatedJob() && raiseRefusalInPython(*holder, NULL, what);
     }
 
 private:
-    // Why a write to knob from the calling thread is refused, or empty if it is not.
-    static std::string refusal(const KnobI& knob, const KnobHolder& holder);
-    static bool logRefusal(const KnobI& knob, const KnobHolder& holder);
-    static bool raiseRefusalInPython(const KnobI& knob, const KnobHolder& holder);
+    // Why a change from the calling thread is refused, or empty if it is not: a write to knob
+    // when knob is set, otherwise the edit what of holder.
+    static std::string refusal(const KnobHolder& holder, const KnobI* knob, const char* what);
+    static bool logRefusal(const KnobHolder& holder, const KnobI* knob, const char* what);
+    static bool raiseRefusalInPython(const KnobHolder& holder, const KnobI* knob, const char* what);
 
     void addHolder(const KnobHolderPtr& holder);
+    // The node's effect and, for a tracker, its tracks.
+    void addNode(const NodePtr& node);
 
     std::string _kind;
     std::set<const KnobHolder*> _holders;

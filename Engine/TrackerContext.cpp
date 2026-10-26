@@ -1527,6 +1527,17 @@ TrackerContext::onSchedulerRunEnded(quint64 runId)
 }
 
 void
+TrackerContext::onSchedulerRunDropped(quint64 runId)
+{
+    // Nothing was tracked, so there is nothing to solve.
+    if (runId != _imp->trackingRunId) {
+        return;
+    }
+    _imp->endTrackingJob(runId);
+    Q_EMIT trackingJobFinished();
+}
+
+void
 TrackerContext::onSchedulerTrackingProgress(double progress)
 {
     IsolatedJob::ThreadScope inJob(getRunningTrackingJob());
@@ -1884,6 +1895,17 @@ public:
 };
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+void
+TrackScheduler::onQueuedTasksDropped(const std::list<GenericThreadStartArgsPtr>& tasks)
+{
+    for (std::list<GenericThreadStartArgsPtr>::const_iterator it = tasks.begin(); it != tasks.end(); ++it) {
+        TrackArgsPtr args = std::dynamic_pointer_cast<TrackArgs>(*it);
+        if (args) {
+            Q_EMIT runDropped(args->getRunId());
+        }
+    }
+}
 
 GenericSchedulerThread::ThreadStateEnum
 TrackScheduler::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)

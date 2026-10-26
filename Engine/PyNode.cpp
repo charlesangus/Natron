@@ -35,6 +35,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Hash64.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
@@ -311,6 +312,9 @@ Effect::connectInput(int inputNumber,
                      const Effect* input)
 {
     if ( canConnectInput(inputNumber, input) ) {
+        if (IsolatedJob::refusesPythonEdit(getInternalNode()->getEffectInstance().get(), "the inputs")) {
+            return false;
+        }
         PythonInputUndoGuard undo(getInternalNode(), inputNumber);
 
         return getInternalNode()->connectInput(input->getInternalNode(), inputNumber);
@@ -322,6 +326,9 @@ Effect::connectInput(int inputNumber,
 void
 Effect::disconnectInput(int inputNumber)
 {
+    if (IsolatedJob::refusesPythonEdit(getInternalNode()->getEffectInstance().get(), "the inputs")) {
+        return;
+    }
     PythonInputUndoGuard undo(getInternalNode(), inputNumber);
 
     getInternalNode()->disconnectInput(inputNumber);

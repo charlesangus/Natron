@@ -54,8 +54,9 @@ typedef std::shared_ptr<ForegroundTaskDialog> ForegroundTaskDialogPtr;
  * @brief An application-modal progress dialog over the main window that follows progress-panel
  * tasks running in this process, so that nothing in the interface can edit what they read.
  * Cancel, Escape or closing the window cancels every task still running. The dialog closes once
- * each task has finished or been cancelled and nothing holds it open, then reports the tasks that
- * failed in one error dialog. Its object name is "ForegroundTaskDialog".
+ * each task has finished, or been cancelled and, for a render, its render has stopped, and nothing
+ * holds it open; it shows "Stopping..." meanwhile. It then reports the tasks that failed in one
+ * error dialog. Its object name is "ForegroundTaskDialog".
  **/
 class ForegroundTaskDialog
     : public std::enable_shared_from_this<ForegroundTaskDialog> {
@@ -112,7 +113,12 @@ private:
         ProgressTaskInfoPtr task;
         double progress;
         bool done;
+        // Cancelled, with its render still running: done once the render reports it finished.
+        bool stopping;
     };
+
+    // The entry following task, or null.
+    Entry* entryFor(const ProgressTaskInfo* task);
 
     ForegroundTaskDialog();
 

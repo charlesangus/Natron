@@ -230,6 +230,15 @@ public:
 
     void startRenderingFullSequence(bool blocking, const RenderQueueItem& writerWork);
 
+    // Starts a render already in activeRenders.
+    void launchRender(const RenderQueueItem& item);
+
+    // Whether item may start beside the active renders, under renderQueueMutex. A render in a
+    // separate process waits for every other render; one in this process waits only for the
+    // others in this process, so a foreground render never waits behind a background one while
+    // its dialog blocks the interface.
+    bool canStartNow(const RenderQueueItem& item) const;
+
     void makeRenderProcess(RenderQueueItem* item);
 
     void startOrQueueRenders(bool blocking, std::list<RenderQueueItem> items);
@@ -1988,7 +1997,8 @@ AppInstance::startWritersRendering(RenderModeEnum mode,
 
         if (renderInSeparateProcess) {
             // One file per render, kept until its task can no longer restart: a queued or
-            // restarted render may start long after the others, from the project as it is now.
+            // restarted render may start long after the others, and still renders the project
+            // as it was saved here.
             if (!getProject()->saveForRenderProcess(&item.savePath)) {
                 appPTR->writeToErrorLog_mt_safe(tr("Render"), QDateTime::currentDateTime(),
                                                 tr("%1 was not rendered: the project could not be saved for the render process.").arg(item.sequenceName));
@@ -2047,20 +2057,20 @@ AppInstancePrivate::startOrQueueRenders(bool blocking,
     } else {
         bool isQueuingEnabled = appPTR->getCurrentSettings()->isRenderQueuingEnabled();
         if (isQueuingEnabled) {
-            QMutexLocker k(&renderQueueMutex);
-            if (!activeRenders.empty()) {
-                renderQueue.insert(renderQueue.end(), items.begin(), items.end());
-
-                return;
-            } else {
-                std::list<RenderQueueItem>::const_iterator it = items.begin();
-                const RenderQueueItem& firstWork = *it;
-                ++it;
-                for (; it != items.end(); ++it) {
-                    renderQueue.push_back(*it);
+            std::list<RenderQueueItem> toStart;
+            {
+                QMutexLocker k(&renderQueueMutex);
+                for (std::list<RenderQueueItem>::const_iterator it = items.begin(); it != items.end(); ++it) {
+                    if (canStartNow(*it)) {
+                        activeRenders.push_back(*it);
+                        toStart.push_back(*it);
+                    } else {
+                        renderQueue.push_back(*it);
+                    }
                 }
-                k.unlock();
-                startRenderingFullSequence(false, firstWork);
+            }
+            for (std::list<RenderQueueItem>::const_iterator it = toStart.begin(); it != toStart.end(); ++it) {
+                launchRender(*it);
             }
         } else {
             for (std::list<RenderQueueItem>::const_iterator it = items.begin(); it != items.end(); ++it) {
@@ -2238,13 +2248,32 @@ AppInstancePrivate::startRenderingFullSequence(bool blocking,
         QMutexLocker k(&renderQueueMutex);
         activeRenders.push_back(w);
     }
+    launchRender(w);
+}
 
-
-    if (w.process) {
-        w.process->startProcess();
+void
+AppInstancePrivate::launchRender(const RenderQueueItem& item)
+{
+    if (item.process) {
+        item.process->startProcess();
     } else {
-        w.work.writer->renderFullSequence(false, w.work.useRenderStats, NULL, w.work.firstFrame, w.work.lastFrame, w.work.frameStep);
+        item.work.writer->renderFullSequence(false, item.work.useRenderStats, NULL, item.work.firstFrame, item.work.lastFrame, item.work.frameStep);
     }
+}
+
+bool
+AppInstancePrivate::canStartNow(const RenderQueueItem& item) const
+{
+    if (item.process) {
+        return activeRenders.empty();
+    }
+    for (std::list<RenderQueueItem>::const_iterator it = activeRenders.begin(); it != activeRenders.end(); ++it) {
+        if (!it->process) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void
@@ -2287,11 +2316,10 @@ void
 AppInstance::startNextQueuedRender(OutputEffectInstance* finishedWriter,
                                    const ProcessHandler* finishedProcess)
 {
-    RenderQueueItem nextWork;
+    std::list<RenderQueueItem> toStart;
 
     // Do not make the process die under the mutex otherwise we may deadlock
     ProcessHandlerPtr processDying;
-    bool hasNextWork = false;
     {
         QMutexLocker k(&_imp->renderQueueMutex);
         // Matched on the process too: a paused render process may end after its restart began,
@@ -2305,16 +2333,24 @@ AppInstance::startNextQueuedRender(OutputEffectInstance* finishedWriter,
                 break;
             }
         }
-        if (finishedActive && !_imp->renderQueue.empty()) {
-            nextWork = _imp->renderQueue.front();
-            _imp->renderQueue.pop_front();
-            hasNextWork = true;
+        if (finishedActive) {
+            // In queue order, every render that may now start.
+            std::list<RenderQueueItem>::iterator it = _imp->renderQueue.begin();
+            while (it != _imp->renderQueue.end()) {
+                if (_imp->canStartNow(*it)) {
+                    _imp->activeRenders.push_back(*it);
+                    toStart.push_back(*it);
+                    it = _imp->renderQueue.erase(it);
+                } else {
+                    ++it;
+                }
+            }
         }
     }
     processDying.reset();
 
-    if (hasNextWork) {
-        _imp->startRenderingFullSequence(false, nextWork);
+    for (std::list<RenderQueueItem>::const_iterator it = toStart.begin(); it != toStart.end(); ++it) {
+        _imp->launchRender(*it);
     }
 }
 

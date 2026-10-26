@@ -1249,7 +1249,14 @@ public:
                              const int listenerDimension,
                              const int listenedToDimension,
                              const KnobIPtr& listener) = 0;
-    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const = 0;
+    /**
+     * @brief Adds to nodes the nodes whose parameters this knob's expressions and links read,
+     * directly or through theirs, the nodes whose metadata they read, and the tracker nodes whose
+     * tracks they read. With metadataSources, also adds to it the nodes whose metadata they read.
+     **/
+    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                       std::set<NodePtr>* metadataSources = NULL) const
+        = 0;
 
 private:
     virtual void removeListener(KnobI* listener, int listenerDimension) = 0;
@@ -1975,7 +1982,8 @@ public:
      **/
     virtual void addListener(bool isFromExpr, int fromExprDimension, int thisDimension, const KnobIPtr& knob) OVERRIDE FINAL;
     virtual void removeListener(KnobI* listener, int listenerDimension) OVERRIDE FINAL;
-    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const OVERRIDE FINAL;
+    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                       std::set<NodePtr>* metadataSources = NULL) const OVERRIDE FINAL;
     virtual void getListeners(KnobI::ListenerDimsMap& listeners) const OVERRIDE FINAL;
     virtual void clearExpressionsResults(int /*dimension*/) OVERRIDE {}
 
@@ -2900,9 +2908,12 @@ public:
 
     bool isSetValueCurrentlyPossible() const;
 
-    void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const;
+    /**
+     * @brief KnobI::getAllExpressionDependenciesRecursive() for every knob of this holder.
+     **/
+    void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                               std::set<NodePtr>* metadataSources = NULL) const;
 
-    
 protected:
 
     //////////////////////////////////////////////////////////////////////////////////////////

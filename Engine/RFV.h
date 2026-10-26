@@ -118,6 +118,13 @@ bool isNodeVariable(const KnobIPtr& knob);
 void refreshNodeVariableGroups(const Project& project);
 
 /**
+ * @brief Has every expression of the project and its nodes that reads a variable the project
+ * declares listen to that variable (see KnobHelper::refreshRFVListeners()), so an expression set
+ * before the variable was declared, or before it took its name, follows its edits.
+ **/
+void refreshExpressionListeners(const Project& project);
+
+/**
  * @brief The variables the holder could take over from elsewhere in its project: the project's,
  * then those of every other node with an RFV group. A name declared more than once is listed
  * once, with its first declaration, and a name the holder already has a knob for is left out.

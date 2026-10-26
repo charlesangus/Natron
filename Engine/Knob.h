@@ -1920,6 +1920,13 @@ public:
     RenderContextReadSet getRFVReadSet() const;
 
     /**
+     * @brief Has every project variable an expression of this knob reads of rfv listened to by
+     * the expression's dimension, as setting the expression does, for the variables the project
+     * declares after the expression was set. Listeners already registered are kept as they are.
+     **/
+    void refreshRFVListeners();
+
+    /**
      * @brief Has every invalidateContentHash() of this knob also move generation, for an owner
      * that is not its holder (a roto item) and memoizes over the knob's content hash. Set before
      * the knob is shared.

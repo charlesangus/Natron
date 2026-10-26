@@ -2659,6 +2659,8 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 rectToRender.isIdentity,
                                                 rectToRender.identityTime,
                                                 rectToRender.identityInput,
+                                                rectToRender.identityContext,
+                                                rectToRender.identityContextSet,
                                                 compsNeeded,
                                                 rectToRender.imgs,
                                                 rectToRender.inputRois,
@@ -2973,8 +2975,16 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             return eRenderingFunctorRetOK;
         } else {
             EffectInstance::RenderRoIRetCode renderOk;
-            // renderRoI() finds store images needing a conversion by key, whatever input number they are filed under.
-            renderOk = EffectInstance::renderInputOrTakeFromStore(tls->currentRenderArgs.identityInput, -1, renderArgs.get(), &identityLayers, _publicInterface);
+            {
+                // The identity input is pulled under the context the walk to it composed, as a
+                // node on the way may set context variables over its input.
+                std::unique_ptr<InputContextScope> identityScope;
+                if (tls->currentRenderArgs.identityContextSet) {
+                    identityScope.reset(new InputContextScope(_publicInterface, tls->currentRenderArgs.identityContext));
+                }
+                // renderRoI() finds store images needing a conversion by key, whatever input number they are filed under.
+                renderOk = EffectInstance::renderInputOrTakeFromStore(tls->currentRenderArgs.identityInput, -1, renderArgs.get(), &identityLayers, _publicInterface);
+            }
             if (renderOk == eRenderRoIRetCodeAborted) {
                 return eRenderingFunctorRetAborted;
             } else if (renderOk == eRenderRoIRetCodeFailed) {

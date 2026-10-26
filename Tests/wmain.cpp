@@ -128,6 +128,8 @@ registerRenderSchedulerTestPlugins()
     // Registered to count the render calls of every task, which no shipped plugin exposes.
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
+    // Registered to be an identity over part of its window only, which no shipped native node is.
+    registerTestBuiltInPlugin<TiledIdentityTestEffect>();
     // Registered to request inputs under render contexts and read them, which no shipped plugin does yet.
     registerTestBuiltInPlugin<ContextReaderTestEffect>();
     registerTestBuiltInPlugin<ContextFanOutTestEffect>();

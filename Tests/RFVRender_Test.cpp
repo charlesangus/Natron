@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <list>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -490,4 +491,94 @@ TEST_F(RFVRender, UnsetVariableIsNone)
 
     EXPECT_EQ(-1.f, renderFirstPixel(set, eRenderSchedulerModeTaskGraph));
     EXPECT_EQ(-1.f, renderFirstPixel(set, eRenderSchedulerModeLegacy));
+}
+
+// Checkerboard -> Grade -> Set(var = 'a') as input B of a node that is an identity of B over every
+// tile but the one holding input A. During a paint stroke renderRoI pulls those tiles from the end
+// of the identity walk directly, through the Set; they are the checkerboard as the Grade passes it
+// under the Set's 'a', not doubled as it would be with the Set's value dropped.
+TEST_F(RFVRender, TiledIdentityWalksThroughTheSet)
+{
+    NodePtr checker, grade;
+    buildGradedChecker(&checker, &grade);
+    ASSERT_TRUE(checker && grade);
+    getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kTiledIdentityTestSize, kTiledIdentityTestSize, "rfvTiledFormat", 1.));
+    NodePtr setA = createStringSet("var", "a");
+    NodePtr inputA = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr tiled = createNode(QString::fromUtf8(kTestPluginIDTiledIdentity));
+    ASSERT_TRUE(setA && inputA && tiled);
+    connectNodes(grade, setA, 0, true);
+    connectNodes(inputA, tiled, 0, true);
+    connectNodes(setA, tiled, 1, true);
+
+    const RectI roi(0, 0, kTiledIdentityTestSize, kTiledIdentityTestSize);
+    std::vector<RenderedPlane> checkerPlanes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(checker, 1., ViewIdx(0), 0, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &checkerPlanes, &error)) << error;
+    ASSERT_EQ(1u, checkerPlanes.size());
+    const std::size_t stride = checkerPlanes[0].channels.size();
+    ASSERT_GE(stride, 3u);
+
+    const double time = 1.;
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+    ParallelRenderArgsSetter frameRenderArgs(time,
+                                             ViewIdx(0),
+                                             true /*isRenderUserInteraction*/,
+                                             false /*isSequential*/,
+                                             abortInfo,
+                                             tiled,
+                                             0 /*textureIndex*/,
+                                             getApp()->getTimeLine().get(),
+                                             NodePtr(),
+                                             false /*isAnalysis*/,
+                                             false /*draftMode*/,
+                                             RenderStatsPtr());
+    FrameRequestMap request;
+    ASSERT_NE(eStatusFailed, EffectInstance::computeRequestPass(time, ViewIdx(0), 0 /*mipmapLevel*/, roi.toCanonical_noClipping(0, 1.), tiled, request));
+    frameRenderArgs.updateNodesRequest(request);
+    EffectInstancePtr effect = tiled->getEffectInstance();
+    // The identity tiles are taken only while a paint stroke is being drawn.
+    effect->setDuringPaintStrokeCreationThreadLocal(true);
+    EffectInstance::RenderRoIArgs args(time,
+                                       RenderScale::identity,
+                                       0 /*mipmapLevel*/,
+                                       ViewIdx(0),
+                                       true /*byPassCache*/,
+                                       roi,
+                                       RectD(),
+                                       std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()),
+                                       eImageBitDepthFloat,
+                                       false /*calledFromGetImage*/,
+                                       0 /*caller*/,
+                                       eStorageModeRAM,
+                                       time);
+    std::map<ImageLayerDesc, ImagePtr> layers;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, effect->renderRoI(args, &layers));
+    ASSERT_EQ(1u, layers.size());
+    const ImagePtr& image = layers.begin()->second;
+    ASSERT_TRUE(image && (image->getBitDepth() == eImageBitDepthFloat));
+    ASSERT_EQ((int)stride, (int)image->getComponentsCount());
+
+    Image::ReadAccess access = image->getReadRights();
+    bool nonZero = false;
+    // The tile holding input A, the first of the 128 x 128 tiles, is rendered; every other one is an identity.
+    const int renderedTile = 128;
+    for (int y = roi.y1; y < roi.y2; ++y) {
+        for (int x = roi.x1; x < roi.x2; ++x) {
+            if ((x < renderedTile) && (y < renderedTile)) {
+                continue;
+            }
+            const float* pixel = (const float*)access.pixelAt(x, y);
+            ASSERT_TRUE(pixel != 0) << x << ", " << y;
+            const std::size_t at = ((std::size_t)(y - roi.y1) * roi.width() + (x - roi.x1)) * stride;
+            for (std::size_t c = 0; c < 3; ++c) {
+                const float expected = checkerPlanes[0].pixels[at + c];
+                nonZero = nonZero || (expected != 0.f);
+                if (std::abs(expected - pixel[c]) > 1e-5f) {
+                    FAIL() << "pixel " << x << ", " << y << " channel " << c << ": " << pixel[c] << " is not " << expected;
+                }
+            }
+        }
+    }
+    EXPECT_TRUE(nonZero);
 }

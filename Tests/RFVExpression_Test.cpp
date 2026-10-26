@@ -279,3 +279,34 @@ TEST_F(RFVPythonObject, ReadsTheProjectValueAtTheTimelineFrame)
     ASSERT_NO_THROW(check->setExpression(0, "rfv.a == 20.0", false, true));
     EXPECT_TRUE(check->getValue(0));
 }
+
+// An expression set before the project declares the variable it reads follows the variable's
+// edits once it is declared.
+TEST_F(RFVPythonObject, FollowsAVariableDeclaredAfterTheExpression)
+{
+    NodePtr node = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr doubled = node->getEffectInstance()->createDoubleKnob("rfvDoubled", "Doubled", 1);
+    ASSERT_NO_THROW(doubled->setExpression(0, "rfv.late * 2", false, false));
+
+    KnobDoublePtr late = addProjectDouble("late", 3.);
+    EXPECT_EQ(6., doubled->getValue(0));
+    late->setValue(5.);
+    EXPECT_EQ(10., doubled->getValue(0));
+}
+
+// An expression reading a variable it names only through a value follows every project variable,
+// those declared after it included.
+TEST_F(RFVPythonObject, ReadingAllFollowsAVariableDeclaredAfterTheExpression)
+{
+    NodePtr node = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr doubled = node->getEffectInstance()->createDoubleKnob("rfvDoubled", "Doubled", 1);
+    ASSERT_NO_THROW(doubled->setExpression(0, "(getattr(rfv, 'late') or 0) * 2", false, true));
+    EXPECT_EQ(0., doubled->getValue(0));
+
+    KnobDoublePtr late = addProjectDouble("late", 3.);
+    EXPECT_EQ(6., doubled->getValue(0));
+    late->setValue(5.);
+    EXPECT_EQ(10., doubled->getValue(0));
+}

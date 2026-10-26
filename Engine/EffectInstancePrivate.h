@@ -461,25 +461,27 @@ public:
         EffectTLSDataPtr tlsData;
 
 public:
-        ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
-                         const RectD & rod,
-                         const RectI & renderWindow,
-                         double time,
-                         ViewIdx view,
-                         bool isIdentity,
-                         double identityTime,
-                         const EffectInstancePtr& identityInput,
-                         const ComponentsNeededMapPtr& compsNeeded,
-                         const EffectInstance::InputImagesMap& inputImages,
-                         const RoIMap & roiMap,
-                         int firstFrame,
-                         int lastFrame,
-                         bool isDoingOpenGLRender);
+    ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
+                     const RectD& rod,
+                     const RectI& renderWindow,
+                     double time,
+                     ViewIdx view,
+                     bool isIdentity,
+                     double identityTime,
+                     const EffectInstancePtr& identityInput,
+                     const RenderContextPtr& identityContext,
+                     bool identityContextSet,
+                     const ComponentsNeededMapPtr& compsNeeded,
+                     const EffectInstance::InputImagesMap& inputImages,
+                     const RoIMap& roiMap,
+                     int firstFrame,
+                     int lastFrame,
+                     bool isDoingOpenGLRender);
 
-        ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
-                         const EffectTLSDataPtr& otherThreadData);
+    ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
+                     const EffectTLSDataPtr& otherThreadData);
 
-        ~ScopedRenderArgs();
+    ~ScopedRenderArgs();
     };
 
     void addInputImageTempPointer(int inputNb, const ImagePtr & img);

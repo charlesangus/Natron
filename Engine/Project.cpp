@@ -3923,6 +3923,13 @@ void
 Project::onUserKnobsChanged()
 {
     RFV::refreshNodeVariableGroups(*this);
+    // An expression reading rfv may name a variable the project declares only from here on.
+    RFV::refreshExpressionListeners(*this);
+    // Such an expression failed while the variable was undeclared and is applied again.
+    AppInstancePtr app = getApp();
+    if (app) {
+        app->recheckInvalidExpressions();
+    }
 }
 
 std::string

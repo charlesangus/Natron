@@ -417,6 +417,52 @@ refreshNodeVariableGroups(const Project& project)
     }
 }
 
+namespace {
+
+    void
+    refreshHolderExpressionListeners(const KnobHolder& holder,
+                                     const std::vector<VariableDeclaration>& declared)
+    {
+        const KnobsVec& knobs = holder.getKnobs();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            KnobHelper* helper = dynamic_cast<KnobHelper*>(it->get());
+            if (!helper) {
+                continue;
+            }
+            const RenderContextReadSet reads = helper->getRFVReadSet();
+            if (reads.empty()) {
+                continue;
+            }
+            bool readsDeclared = reads.readsAll();
+            for (std::size_t i = 0; !readsDeclared && (i < declared.size()); ++i) {
+                readsDeclared = reads.contains(RenderContextName::plain(declared[i].name));
+            }
+            if (readsDeclared) {
+                helper->refreshRFVListeners();
+            }
+        }
+    }
+
+} // namespace
+
+void
+refreshExpressionListeners(const Project& project)
+{
+    const std::vector<VariableDeclaration> declared = getDeclaredVariables(&project);
+    if (declared.empty()) {
+        return;
+    }
+    refreshHolderExpressionListeners(project, declared);
+    NodesList nodes;
+    project.getNodes_recursive(nodes, false);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        if (effect) {
+            refreshHolderExpressionListeners(*effect, declared);
+        }
+    }
+}
+
 bool
 canPromoteToProject(const KnobIPtr& knob,
                     std::string* reason)

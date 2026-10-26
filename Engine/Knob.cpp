@@ -649,6 +649,10 @@ struct KnobHelperPrivate
 
     void parseListenersFromExpression(int dimension);
 
+    // Has every project variable the expression reads of rfv (see KnobHelper::getRFVExpressionReads())
+    // listened to by this knob's dimension, once.
+    void registerRFVListeners(int dimension, const std::string& expression);
+
     std::string declarePythonVariables(bool addTab, int dimension);
 
     bool shouldUseGuiCurve() const
@@ -2876,6 +2880,35 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
 } // KnobHelperPrivate::declarePythonVariables
 
 void
+KnobHelperPrivate::registerRFVListeners(int dimension,
+                                        const std::string& expression)
+{
+    // The project's variables are the values rfv falls back to (see PyRFV::getVariable()), so an
+    // edit of one the expression reads reaches it as the edit of a parameter it reads does.
+    const RenderContextReadSet reads = KnobHelper::getRFVExpressionReads(expression);
+    AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project || reads.empty()) {
+        return;
+    }
+    KnobIPtr thisKnob = publicInterface->shared_from_this();
+    const std::vector<RFV::VariableDeclaration> declared = RFV::getDeclaredVariables(project.get());
+    for (const RFV::VariableDeclaration& variable : declared) {
+        if ((variable.knob == thisKnob) || (!reads.readsAll() && !reads.contains(RenderContextName::plain(variable.name)))) {
+            continue;
+        }
+        // A listener is registered once: each registration also files a dependency of the expression.
+        KnobI::ListenerDimsMap listeners;
+        variable.knob->getListeners(listeners);
+        KnobI::ListenerDimsMap::const_iterator found = listeners.find(thisKnob);
+        if ((found != listeners.end()) && (dimension < (int)found->second.size()) && found->second[dimension].isListening && found->second[dimension].isExpr) {
+            continue;
+        }
+        variable.knob->addListener(true, dimension, -1, thisKnob);
+    }
+}
+
+void
 KnobHelperPrivate::parseListenersFromExpression(int dimension)
 {
     // Extract pointers to knobs referred to by the expression
@@ -2895,22 +2928,7 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension)
         expressionCopy = expressions[dimension].originalExpression;
     }
 
-    // The project's variables are the values rfv falls back to (see PyRFV::getVariable()), so an
-    // edit of one the expression reads reaches it as the edit of a parameter it reads does.
-    {
-        const RenderContextReadSet reads = KnobHelper::getRFVExpressionReads(expressionCopy);
-        AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
-        ProjectPtr project = app ? app->getProject() : ProjectPtr();
-        if (project && !reads.empty()) {
-            KnobIPtr thisKnob = publicInterface->shared_from_this();
-            const std::vector<RFV::VariableDeclaration> declared = RFV::getDeclaredVariables(project.get());
-            for (const RFV::VariableDeclaration& variable : declared) {
-                if ((variable.knob != thisKnob) && (reads.readsAll() || reads.contains(RenderContextName::plain(variable.name)))) {
-                    variable.knob->addListener(true, dimension, -1, thisKnob);
-                }
-            }
-        }
-    }
+    registerRFVListeners(dimension, expressionCopy);
 
     std::string script;
 
@@ -5995,6 +6013,26 @@ KnobHelper::refreshRFVReads()
     }
     if (source) {
         addContextReadSource(source);
+    }
+}
+
+void
+KnobHelper::refreshRFVListeners()
+{
+    if (!_imp->holder) {
+        return;
+    }
+    std::vector<std::pair<int, std::string>> expressions;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        for (std::size_t i = 0; i < _imp->expressions.size(); ++i) {
+            if (!_imp->expressions[i].originalExpression.empty()) {
+                expressions.push_back(std::make_pair((int)i, _imp->expressions[i].originalExpression));
+            }
+        }
+    }
+    for (const std::pair<int, std::string>& expression : expressions) {
+        _imp->registerRFVListeners(expression.first, expression.second);
     }
 }
 

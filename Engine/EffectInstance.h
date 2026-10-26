@@ -2072,6 +2072,10 @@ public:
         double identityTime;
         bool isIdentity;
         ViewIdx identityView;
+        // The context identityInput is pulled under when a node on the walk to it requests its
+        // input under a context of its own; identityContextSet is false when none does.
+        RenderContextPtr identityContext;
+        bool identityContextSet = false;
     };
 
     struct ImageLayersToRender {
@@ -2623,6 +2627,8 @@ public:
         bool isIdentity;
         double identityTime;
         EffectInstancePtr identityInput;
+        RenderContextPtr identityContext; //< see RectToRender::identityContext
+        bool identityContextSet;
         EffectInstance::InputImagesMap inputImages;
         std::map<ImageLayerDesc, LayerToRender> outputLayers;
 

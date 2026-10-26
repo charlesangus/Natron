@@ -79,6 +79,26 @@
 NATRON_NAMESPACE_ENTER
 
 /*
+ * @brief Moves context one identity hop upstream: to the single context effect requests input
+ * inputNb under when it renders under context, setting contextSet; context is left alone when
+ * effect requests that input under its own context, or under several.
+ */
+static void
+applyIdentityHopContext(const EffectInstance* effect,
+                        int inputNb,
+                        double time,
+                        ViewIdx view,
+                        RenderContextPtr* context,
+                        bool* contextSet)
+{
+    std::vector<RenderContextPtr> inputContexts;
+    if (effect->getInputContexts(inputNb, time, view, *context, &inputContexts) && (inputContexts.size() == 1)) {
+        *context = inputContexts.front();
+        *contextSet = true;
+    }
+}
+
+/*
  * @brief Split all rects to render in smaller rects and check if each one of them is identity.
  * For identity rectangles, we just call renderRoI again on the identity input in the tiledRenderingFunctor.
  * For non-identity rectangles, compute the bounding box of them and render it
@@ -92,6 +112,8 @@ optimizeRectsToRender(EffectInstance* self,
                       const RenderScale & renderMappedScale,
                       std::list<EffectInstance::RectToRender>* finalRectsToRender)
 {
+    const ParallelRenderArgsPtr selfArgs = self->getParallelRenderArgsTLS();
+    const RenderContextPtr consumerContext = selfArgs ? selfArgs->context : RenderContextPtr();
     for (std::list<RectI>::const_iterator it = rectsToRender.begin(); it != rectsToRender.end(); ++it) {
         std::vector<RectI> splits = it->splitIntoSmallerRects(0);
         EffectInstance::RectToRender nonIdentityRect;
@@ -119,17 +141,30 @@ optimizeRectsToRender(EffectInstance* self,
                 r.isIdentity = true;
 
                 // Walk along the identity branch until we find the non identity input, or NULL in we case we will
-                // just render black and transparent
+                // just render black and transparent. Each hop is taken under the context the node it
+                // leaves requests that input under, so a node on the way setting context variables
+                // over its input is walked through with its variables applied, as the main identity
+                // path pulls it.
+                RenderContextPtr walkContext = consumerContext;
+                bool walkContextSet = false;
+                applyIdentityHopContext(self, identityInputNb, time, view, &walkContext, &walkContextSet);
                 EffectInstancePtr identityInput = self->getInput(identityInputNb);
                 if (identityInput) {
                     for (;; ) {
-                        identity = identityInput->isIdentity_public(false, 0, time, renderMappedScale, splits[i], view, &identityInputTime, &inputIdentityView,  &identityInputNb);
+                        {
+                            ActionContextScope acting(walkContextSet, walkContext);
+                            identity = identityInput->isIdentity_public(false, 0, time, renderMappedScale, splits[i], view, &identityInputTime, &inputIdentityView, &identityInputNb);
+                        }
                         if ( !identity || (identityInputNb == -2) ) {
                             break;
                         }
                         EffectInstancePtr subIdentityInput = identityInput->getInput(identityInputNb);
                         if (subIdentityInput == identityInput) {
                             break;
+                        }
+                        if (subIdentityInput) {
+                            ActionContextScope acting(walkContextSet, walkContext);
+                            applyIdentityHopContext(identityInput.get(), identityInputNb, time, view, &walkContext, &walkContextSet);
                         }
 
                         identityInput = subIdentityInput;
@@ -139,6 +174,8 @@ optimizeRectsToRender(EffectInstance* self,
                     }
                 }
                 r.identityInput = identityInput;
+                r.identityContext = walkContext;
+                r.identityContextSet = walkContextSet;
                 r.identityTime = identityInputTime;
                 r.identityView = inputIdentityView;
                 r.rect = splits[i];
@@ -496,7 +533,10 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                         }
 
                         std::map<ImageLayerDesc, ImagePtr> inputLayers;
-                        RenderRoIRetCode inputRetCode = renderInputOrTakeFromStore(passThroughInput, ptInputNb, inArgs.get(), &inputLayers, this);
+                        // A pass-through plane is pulled under the context this node requests the
+                        // input under, as the identity input is.
+                        InputContextArgs passThroughContext(this, passThroughInput, ptInputNb, args.time, args.view);
+                        RenderRoIRetCode inputRetCode = renderInputOrTakeFromStore(passThroughInput, ptInputNb, inArgs.get(), &inputLayers, this, &passThroughContext);
                         assert(inputLayers.size() == 1 || inputLayers.empty());
                         if ((inputRetCode == eRenderRoIRetCodeAborted) || (inputRetCode == eRenderRoIRetCodeFailed) || inputLayers.empty()) {
                             return inputRetCode;

@@ -536,6 +536,8 @@ EffectInstance::RenderArgs::RenderArgs()
     , isIdentity(false)
     , identityTime(0)
     , identityInput()
+    , identityContext()
+    , identityContextSet(false)
     , inputImages()
     , outputLayers()
     , outputLayerBeingRendered()
@@ -559,6 +561,8 @@ EffectInstance::RenderArgs::RenderArgs(const RenderArgs& o)
     , isIdentity(o.isIdentity)
     , identityTime(o.identityTime)
     , identityInput(o.identityInput)
+    , identityContext(o.identityContext)
+    , identityContextSet(o.identityContextSet)
     , inputImages(o.inputImages)
     , outputLayers(o.outputLayers)
     , outputLayerBeingRendered(o.outputLayerBeingRendered)
@@ -585,6 +589,8 @@ EffectInstance::RenderArgs::operator=(const RenderArgs & o)
     isIdentity = o.isIdentity;
     identityTime = o.identityTime;
     identityInput = o.identityInput;
+    identityContext = o.identityContext;
+    identityContextSet = o.identityContextSet;
     inputImages = o.inputImages;
     outputLayers = o.outputLayers;
     outputLayerBeingRendered = o.outputLayerBeingRendered;
@@ -930,18 +936,19 @@ EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr & img,
 #endif \
     // if NATRON_ENABLE_TRIMAP
 
-
 EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
-                                                                   const RectD & rod,
-                                                                   const RectI & renderWindow,
+                                                                   const RectD& rod,
+                                                                   const RectI& renderWindow,
                                                                    double time,
                                                                    ViewIdx view,
                                                                    bool isIdentity,
                                                                    double identityTime,
                                                                    const EffectInstancePtr& identityInput,
+                                                                   const RenderContextPtr& identityContext,
+                                                                   bool identityContextSet,
                                                                    const ComponentsNeededMapPtr& compsNeeded,
                                                                    const EffectInstance::InputImagesMap& inputImages,
-                                                                   const RoIMap & roiMap,
+                                                                   const RoIMap& roiMap,
                                                                    int firstFrame,
                                                                    int lastFrame,
                                                                    bool isDoingOpenGLRender)
@@ -954,6 +961,8 @@ EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectT
     tlsData->currentRenderArgs.isIdentity = isIdentity;
     tlsData->currentRenderArgs.identityTime = identityTime;
     tlsData->currentRenderArgs.identityInput = identityInput;
+    tlsData->currentRenderArgs.identityContext = identityContext;
+    tlsData->currentRenderArgs.identityContextSet = identityContextSet;
     tlsData->currentRenderArgs.compsNeeded = compsNeeded;
     tlsData->currentRenderArgs.inputImages.insert( inputImages.begin(), inputImages.end() );
     tlsData->currentRenderArgs.regionOfInterestResults = roiMap;

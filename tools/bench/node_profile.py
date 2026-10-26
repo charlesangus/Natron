@@ -10,6 +10,12 @@
 #              lets the placement see a region worth its transfers; kernel time is then per chain.
 #   NP_FRAMES  frames rendered one at a time (default 6); the first is cold and is dropped later
 #   NP_WORK    directory the frames are written to
+#   NP_OCIO_CONFIG  path of a config.ocio the project uses (as its Custom config) before any node is
+#              created. Unset, the project keeps its default, the built-in ACES studio config
+#              (ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5), which the ocio_* nodes below are
+#              written for. Only binaries with the OCIO nodes have the project knobs.
+#
+# A key whose plugin the running binary lacks fails at creation, so select only keys it has.
 
 import os
 
@@ -83,21 +89,85 @@ NODES = {
     "constant": ("net.sf.openfx.ConstantPlugin", {}, True),
     "solid": ("net.sf.openfx.Solid", {}, True),
     "checkerboard": ("net.sf.openfx.CheckerBoardPlugin", {}, True),
+    "itransform": ("ITransform", {"translate": (10.5, 7.25), "rotate": 1.0, "center": (1920.0, 1080.0)}, False),
+    "icornerpin": ("ICornerPin", {"to1": (120.0, 90.0), "to2": (3700.0, 60.0),
+                                  "to3": (3760.0, 2100.0), "to4": (80.0, 2040.0)}, False),
+    "idistort_map": ("IDistort", {"uvOffset": (0.5, 0.5), "uvScale": (40.0, 40.0)}, False),
+    "stmap_map": ("STMap", {}, False),
+    "lensdistortion": ("LensDistortion", {"model": "Nuke", "k1": 0.1, "k2": 0.02, "direction": "Distort"}, False),
+    "merge": ("Merge", {"operation": "over"}, False),
+    "merge_plus": ("Merge", {"operation": "plus"}, False),
+    "ocio_colorspace": ("OCIOColorSpace", {"in_colorspace": "ACES2065-1", "out_colorspace": "ACEScg"}, False),
+    "ocio_display": ("OCIODisplay", {"in_colorspace": "ACEScg", "display": "sRGB - Display",
+                                     "view": "ACES 2.0 - SDR 100 nits (Rec.709)", "gain": 1.1}, False),
+    "ocio_cdl": ("OCIOCDLTransform", {"slope": (1.1, 0.9, 1.0), "offset": (0.01, 0.0, -0.01),
+                                      "power": (1.1, 1.0, 0.9), "saturation": 1.2}, False),
+    "ocio_file": ("OCIOFileTransform", {"file": "@LUT@"}, False),
+    "ocio_look": ("OCIOLookTransform", {"in_colorspace": "ACEScg", "out_colorspace": "ACEScg",
+                                        "single_look": True, "look": "@LOOK@"}, False),
 }
 
 
 # Nodes whose input 1 is fed a second source.
-TWO_INPUTS = ("dissolve",)
+# Merge: input 0 is B, fed the chain; input 1 is A, fed the second source.
+TWO_INPUTS = ("dissolve", "merge", "merge_plus")
 
 # Nodes whose Map input (the number given) is fed a ramp whose alpha, the Map's default channel,
 # runs from 0 to 1 across the frame, so the size varies from Size At Black to Size.
-MAP_INPUTS = {"iblur": 2, "ierode": 2, "idilate": 2}
+MAP_INPUTS = {"iblur": 2, "ierode": 2, "idilate": 2, "itransform": 2, "icornerpin": 2,
+              "idistort_map": 3, "stmap_map": 3}
+
+# Nodes whose input (the number given) is fed a UV ramp: red and green rise from 0 to 1 across the
+# frame diagonal, a displacement for IDistort (with its offset and scale) and a position for STMap.
+UV_INPUTS = {"idistort_map": 1, "stmap_map": 0}
+
+# Nodes whose chain connects to an input other than 0.
+SOURCE_INPUTS = {"stmap_map": 1}
+
+
+def use_ocio_config():
+    path = os.environ.get("NP_OCIO_CONFIG")
+    if not path:
+        return
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        raise RuntimeError("NP_OCIO_CONFIG is not a file: " + path)
+    app.getProjectParam("ocioConfigFile").set(path)
+    app.getProjectParam("ocioConfig").set("Custom config")
+
+
+def write_cube():
+    # A 17^3 LUT, red fastest, that bends every channel and mixes in the others: never an identity.
+    path = os.path.join(WORK, "np_lut17.cube")
+    os.makedirs(WORK, exist_ok=True)
+    n = 17
+    with open(path, "w") as f:
+        f.write("LUT_3D_SIZE %d\n" % n)
+        for b in range(n):
+            for g in range(n):
+                for r in range(n):
+                    x, y, z = r / (n - 1.0), g / (n - 1.0), b / (n - 1.0)
+                    f.write("%.6f %.6f %.6f\n" % (min(1.0, x ** 0.8 * 0.9 + y * 0.1),
+                                                   min(1.0, y ** 0.9 * 0.9 + z * 0.1),
+                                                   min(1.0, z ** 1.1 * 0.9 + x * 0.1)))
+    return path
+
+
+def first_look(node):
+    for option in param(node, "look").getOptions():
+        if option and option.lower() != "none":
+            return option
+    raise RuntimeError("the OCIO config has no looks")
 
 
 def configure(name, index):
     plugin_id, values, generator = NODES[name]
     node = make(plugin_id, "np_%s_%d" % (name, index))
     for key, value in values.items():
+        if value == "@LUT@":
+            value = write_cube()
+        elif value == "@LOOK@":
+            value = first_look(node)
         if isinstance(value, tuple):
             param(node, key).set(*value)
         else:
@@ -115,6 +185,7 @@ def configure(name, index):
 
 
 def main():
+    use_ocio_config()
     app.getProjectParam("outputFormat").set("UHD_4K")
     app.getProjectParam("frameRange").set(1, LAST_FRAME)
     plugin_id, _, generator = NODES[NODE]
@@ -141,11 +212,20 @@ def main():
             param(size_map, "point1").set(3840.0, 0.0)
             param(size_map, "color0").set(0.0, 0.0, 0.0, 0.0)
             param(size_map, "color1").set(1.0, 1.0, 1.0, 1.0)
+        uv = None
+        if NODE in UV_INPUTS:
+            uv = make("net.sf.openfx.Ramp", "np_uv")
+            param(uv, "point0").set(0.0, 0.0)
+            param(uv, "point1").set(3840.0, 2160.0)
+            param(uv, "color0").set(0.0, 0.0, 0.0, 1.0)
+            param(uv, "color1").set(1.0, 1.0, 0.0, 1.0)
         last = source
         count = CHAIN
         for i in range(count):
             node = configure(NODE, i)
-            node.connectInput(0, last)
+            node.connectInput(SOURCE_INPUTS.get(NODE, 0), last)
+            if uv is not None:
+                node.connectInput(UV_INPUTS[NODE], uv)
             if other is not None:
                 node.connectInput(1, other)
             if size_map is not None:

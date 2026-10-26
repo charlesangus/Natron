@@ -195,6 +195,8 @@ struct FileSystemModelPrivate
     QDir::Filters filters;
     QString encodedRegexps;
     std::list<QRegularExpression> regexps;
+    // A bare `*` among the filters accepts every file, whatever the other patterns say.
+    bool acceptsAllFiles;
     mutable QMutex filtersMutex;
     mutable QMutex sequenceModeEnabledMutex;
     bool sequenceModeEnabled;
@@ -203,7 +205,6 @@ struct FileSystemModelPrivate
     mutable QMutex sortMutex;
     mutable QMutex mappingMutex;
     std::map<FileSystemItem*, FileSystemItemWPtr> itemsMap;
-
 
     FileSystemModelPrivate(FileSystemModel* model)
         : _publicInterface(model)
@@ -216,6 +217,7 @@ struct FileSystemModelPrivate
         , filters(QDir::AllEntries | QDir::NoDotAndDotDot)
         , encodedRegexps()
         , regexps()
+        , acceptsAllFiles(false)
         , filtersMutex()
         , sequenceModeEnabledMutex()
         , sequenceModeEnabled(false)
@@ -1034,6 +1036,7 @@ FileSystemModel::setRegexpFilters(const QString& filters)
 
         _imp->encodedRegexps = filters;
         _imp->regexps.clear();
+        _imp->acceptsAllFiles = false;
         int i = 0;
         while ( i < filters.size() ) {
             QString regExp;
@@ -1041,7 +1044,9 @@ FileSystemModel::setRegexpFilters(const QString& filters)
                 regExp.append( filters.at(i) );
                 ++i;
             }
-            if ( regExp != QString( QLatin1Char('*') ) ) {
+            if (regExp == QString(QLatin1Char('*'))) {
+                _imp->acceptsAllFiles = true;
+            } else if (!regExp.isEmpty()) {
                 QRegularExpression rx(QRegularExpression::wildcardToRegularExpression(regExp),
                                       QRegularExpression::CaseInsensitiveOption);
                 if ( rx.isValid() ) {
@@ -1080,7 +1085,7 @@ FileSystemModel::isAcceptedByRegexps(const QString & path) const
 {
     QMutexLocker l(&_imp->filtersMutex);
 
-    if ( _imp->encodedRegexps.isEmpty() ) {
+    if (_imp->encodedRegexps.isEmpty() || _imp->acceptsAllFiles) {
         return true;
     }
 

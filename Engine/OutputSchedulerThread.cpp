@@ -2459,6 +2459,24 @@ private:
 
                     return;
                 }
+                if (output->writesFrameRangeAtOnce()) {
+                    // The render was narrowed to this one frame; the node writes the whole range
+                    // it was asked for here, rather than rendering an output of its own.
+                    int firstFrame = time;
+                    int lastFrame = time;
+                    output->getRunningRenderRequestedRange(&firstFrame, &lastFrame);
+                    if (output->writeFrameRange(firstFrame, lastFrame, viewsToRender[view]) == eStatusFailed) {
+                        QString message;
+                        int type = 0;
+                        activeInputNode->getPersistentMessage(&message, &type, false);
+                        _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while writing") : message.toStdString());
+
+                        return;
+                    }
+                    notifyFrameStatsObserver(time, viewsToRender[view], stats);
+                    _imp->scheduler->notifyFrameRendered(time, viewsToRender[view], viewsToRender, stats, eSchedulingPolicyFFA);
+                    continue;
+                }
 
                 // The frame's region, layers and layout all come from the snapshot its args took,
                 // so an edit made while the sequence renders cannot pair one state's region with

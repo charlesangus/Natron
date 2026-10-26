@@ -32,7 +32,8 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Entry points into the scene caches for code that cannot include pxr headers: the
- * project and AppManager are compiled under Py_LIMITED_API. Implemented in SceneQueryPool.cpp.
+ * project and AppManager are compiled under Py_LIMITED_API. Implemented beside the caches they
+ * reach (SceneQueryPool.cpp, HydraRenderImpl.cpp).
  **/
 namespace SceneCaches {
 /**
@@ -40,6 +41,12 @@ namespace SceneCaches {
  * kept open. Borrowed stages are dropped when they come back past the pool's capacity. MT-safe.
  **/
 void releaseIdleQueryStages();
+
+/**
+ * @brief Drops every USDRender node's stage and Storm engine, and with them the GPU memory they
+ * hold; the next render of a node makes them again. Does not wait. MT-safe.
+ **/
+void releaseRenderEngines();
 } // namespace SceneCaches
 
 NATRON_NAMESPACE_EXIT

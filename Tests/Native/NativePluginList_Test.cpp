@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Metadata/RemoveMetadata.h"
 #include "Engine/Nodes/Metadata/ViewMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/USDWrite.h"
 #include "Engine/OfxRetired.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -306,7 +307,8 @@ TEST_F(NativePluginListTest, NativeWriteIsTheOnlyImageWriter)
     for (const auto& versions : appPTR->getPluginsList()) {
         for (const Plugin* plugin : versions.second) {
             if (plugin->isWriter()) {
-                EXPECT_TRUE(versions.first == PLUGINID_NATRON_WRITE || versions.first == PLUGINID_NATRON_DEEPWRITE) << versions.first;
+                // USDWrite writes scenes, not images.
+                EXPECT_TRUE(versions.first == PLUGINID_NATRON_WRITE || versions.first == PLUGINID_NATRON_DEEPWRITE || versions.first == PLUGINID_NATRON_USDWRITE) << versions.first;
             }
         }
     }

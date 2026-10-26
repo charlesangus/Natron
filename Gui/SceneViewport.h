@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +39,7 @@
 #include <QtCore/QPoint>
 #include <QtCore/QString>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/ScenePayload.h"
 
 // Free of USD: the viewer tab includes it, and USD's headers need the full Python API. Everything
@@ -52,7 +54,8 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Draws a scene with Storm (UsdImagingGLEngine on HgiGL) into a framebuffer of the GL
- * context current when its methods run, with a ground grid over it, and picks prims at pixels.
+ * context current when its methods run, with a ground grid and an op's transform handles over it,
+ * and picks prims at pixels.
  *
  * Owns one long-lived stage (SceneStage) for its whole life and syncs each new scene into it, so
  * an edit upstream reaches the engine as the stage's change notices, which it applies to the
@@ -125,6 +128,9 @@ public:
     // How many engines every renderer of the process has made.
     static U64 getEngineConstructionCount();
 
+    // Whether the renderer holds an engine, which the next render() makes when it does not.
+    bool hasEngine() const;
+
     // The stage timecode shown, the project frame mapped by seconds.
     double getTimeCode() const;
 
@@ -169,6 +175,54 @@ public:
 
     const std::string& getSelectedPrim() const;
 
+    // The values of an op whose handles the viewer draws over the scene: a translate, rotate
+    // (degrees, in rotateOrder, a SceneRotateOrderEnum) and pivot, authored as opName on primPath.
+    struct TransformHandles {
+        std::string primPath;
+        std::string opName;
+        double translate[3] = { 0., 0., 0. };
+        double rotate[3] = { 0., 0., 0. };
+        double pivot[3] = { 0., 0., 0. };
+        int rotateOrder = 0;
+    };
+
+    /**
+     * @brief Draws the handles of an op over the scene, at the shown time, until
+     * clearTransformHandles(). Nothing is drawn while the shown stage has no such op on the prim.
+     **/
+    void setTransformHandles(const TransformHandles& handles);
+
+    void clearTransformHandles();
+
+    // Whether the shown stage has the op of the handles set, so that they are drawn.
+    bool hasTransformHandles() const;
+
+    // The handle (a SceneGizmo handle) under the pixel (x, y) of a width x height view, or -1.
+    int hitTestTransformHandles(double x, double y, int width, int height) const;
+
+    // The handle drawn highlighted, -1 for none.
+    void setHighlightedTransformHandle(int handle);
+
+    int getHighlightedTransformHandle() const;
+
+    // A pixel on handle, to aim at. False if the handle is not drawn.
+    bool getTransformHandlePixel(int handle, int width, int height, double* x, double* y) const;
+
+    /**
+     * @brief Starts dragging handle from the pixel (x, y): later changes are measured against the
+     * handles as they are now. False if the handle is not drawn.
+     **/
+    bool beginTransformDrag(int handle, double x, double y, int width, int height);
+
+    /**
+     * @brief The change a drag to the pixel (x, y) makes since beginTransformDrag(): the amount
+     * added to the translate or rotate value of the handle's axis, or the factor its scale value
+     * is multiplied by. False if the drag says nothing, as for a ring seen edge-on.
+     **/
+    bool getTransformDragChange(double x, double y, int width, int height, double* change) const;
+
+    void endTransformDrag();
+
     /**
      * @brief Draws into the framebuffer fbo of the current context, width x height pixels, and
      * leaves the GL state as it found it. Clears to the background when there is no scene.
@@ -204,7 +258,8 @@ private:
 /**
  * @brief The viewer tab's view of a scene input: SceneViewportRenderer in a QOpenGLWidget, with
  * the camera driven from the mouse, prim picking, and a context menu for the draw mode and the
- * camera to look through. Shows an error message in place of the scene when there is one.
+ * camera to look through, and transform handles that drag a node's knobs. Shows an error message
+ * in place of the scene when there is one.
  *
  * setScene() hands the payload to a worker thread, which syncs the renderer's stage; a paint that
  * finds the worker syncing keeps the last frame, and the widget repaints once the sync is done.
@@ -253,6 +308,23 @@ public:
 
     QString getSelectedPrim() const;
 
+    /**
+     * @brief Sets the function that names the node whose transform handles are drawn: a
+     * USDTransform with its settings panel open, or null for none. Dragging a handle sets the
+     * node's Translate, Rotate or Scale, one undoable edit per drag.
+     **/
+    void setTransformNodeProvider(const std::function<NodePtr()>& provider);
+
+    // Reads the handles of the provided node's op from its knobs, at the shown frame.
+    void refreshTransformHandles();
+
+    /**
+     * @brief Destroys the renderer's engine and the GPU memory it holds, in this widget's context,
+     * and repaints, which makes another. The stage stays: it holds no GPU memory, and making it
+     * again would mean syncing the whole scene again. Main thread; waits for a sync under way.
+     **/
+    void releaseEngine();
+
 Q_SIGNALS:
 
     void selectedPrimChanged(const QString& path);
@@ -269,10 +341,20 @@ protected:
     void contextMenuEvent(QContextMenuEvent* e) override;
 
 private:
-    // Mirrors the error, whether a scene is shown, whether every request is synced and how many
-    // engines the renderer made into the natronSceneError, natronSceneShown, natronSceneSynced
-    // and natronSceneEngineCount properties.
+    // Mirrors the error, whether a scene is shown, whether every request is synced, how many
+    // engines the renderer made and whether it holds one into the natronSceneError,
+    // natronSceneShown, natronSceneSynced, natronSceneEngineCount and natronSceneEngineHeld
+    // properties.
     void publishState();
+
+    // Starts dragging the transform handle at pos (widget coordinates). False if none is there.
+    bool beginHandleDrag(const QPoint& pos);
+
+    void dragHandle(const QPoint& pos);
+
+    void endHandleDrag();
+
+    void highlightHandleAt(const QPoint& pos);
 
     // Queues payload for the worker; the error shown once it is synced.
     void requestSync(const ScenePayload& payload, const QString& error);

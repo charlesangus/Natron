@@ -22,7 +22,7 @@ file(GLOB NatronGui_HEADERS *.h)
 file(GLOB NatronGui_SOURCES *.cpp)
 # OpenUSD's headers include its Python bindings' headers, which need the full Python API, and
 # libshiboken puts Py_LIMITED_API on everything that links it.
-set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/SceneViewport.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/SceneViewport.cpp ${CMAKE_CURRENT_SOURCE_DIR}/SceneGizmo.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 
 set(PYGUI_OUT ${CMAKE_CURRENT_BINARY_DIR}/Qt${QT_VERSION_MAJOR})
 set(PYGUI_INCLUDE_DIRS . .. ../Engine ../Global ../libs/OpenFX/include)

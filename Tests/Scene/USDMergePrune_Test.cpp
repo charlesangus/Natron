@@ -46,9 +46,9 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
-#include "Engine/Nodes/Scene/USDTransform.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -209,10 +209,10 @@ TEST_F(USDMergePruneTest, AnAppendTransformBelowAMergeKeepsBothBranchesOps)
     NodePtr source = prim("/Thing", PXR_NS::GfVec3d(1., 0., 0.));
     ASSERT_TRUE(bool(source));
     auto transform = [this](const NodePtr& input, int dimension, double offset) {
-        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTRANSFORM));
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
         EXPECT_TRUE(bool(node));
         if (node) {
-            setString(node, kUSDTransformParamPrimPattern, "/Thing");
+            setString(node, kUSDEditTransformParamPrimPattern, "/Thing");
             getDoubleKnob(node, kSceneParamTranslate)->setValue(offset, ViewSpec::all(), dimension);
             EXPECT_TRUE(node->connectInput(input, 0));
         }
@@ -253,10 +253,10 @@ TEST_F(USDMergePruneTest, ADiamondYieldsTheSharedSourceLayerOnce)
     ASSERT_TRUE(bool(source));
     // Each branch moves /World along its own axis.
     auto move = [this, &source](int dimension, double offset) {
-        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTRANSFORM));
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
         EXPECT_TRUE(bool(node));
         if (node) {
-            setString(node, kUSDTransformParamPrimPattern, "/World");
+            setString(node, kUSDEditTransformParamPrimPattern, "/World");
             getDoubleKnob(node, kSceneParamTranslate)->setValue(offset, ViewSpec::all(), dimension);
             EXPECT_TRUE(node->connectInput(source, 0));
         }

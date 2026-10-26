@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "USDTransform.h"
+#include "USDEditTransform.h"
 
 #include <algorithm>
 #include <mutex>
@@ -71,7 +71,7 @@ isBlank(const std::string& s)
 }
 
 /**
- * @brief Whether order, the op order spec authors, is an Append-mode USDTransform's: it ends with
+ * @brief Whether order, the op order spec authors, is an Append-mode USDEditTransform's: it ends with
  * an op of this node's naming that spec's layer authors too, after the order the node saw, and
  * holds no reset.
  **/
@@ -139,7 +139,7 @@ getAppendBaseOrder(const PXR_NS::UsdPrim& prim)
 } // getAppendBaseOrder
 } // anonymous namespace
 
-struct USDTransform::Implementation {
+struct USDEditTransform::Implementation {
     mutable std::mutex lock;
     // The matches of matchedPattern on the stack whose hash is matchedStack, the op name each gets
     // (from matchedOpName) and the op order an Append-mode op goes after on each, kept so that an
@@ -157,29 +157,29 @@ struct USDTransform::Implementation {
     std::string handleOp;
 };
 
-USDTransform::USDTransform(NodePtr node)
+USDEditTransform::USDEditTransform(NodePtr node)
     : NativeEffectBase(node)
     , _imp(new Implementation())
 {
 }
 
-USDTransform::~USDTransform()
+USDEditTransform::~USDEditTransform()
 {
 }
 
 const NodeSpec*
-USDTransform::nodeSpec() const
+USDEditTransform::nodeSpec() const
 {
     return staticNodeSpec<kNodeSpec>();
 }
 
 void
-USDTransform::initializeKnobs()
+USDEditTransform::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
     KnobStringPtr primPattern = createKnob<KnobString>(tr("Prim Pattern"));
-    primPattern->setName(kUSDTransformParamPrimPattern);
+    primPattern->setName(kUSDEditTransformParamPrimPattern);
     primPattern->setHintToolTip(tr("The prims to transform: absolute prim paths separated by spaces, whose names may use * "
                                    "(any run of characters) and ? (any one character), such as /World/Geo/*. "
                                    "Only prims that can hold a transform match."));
@@ -188,7 +188,7 @@ USDTransform::initializeKnobs()
     _primPattern = primPattern;
 
     KnobChoicePtr mode = createKnob<KnobChoice>(tr("Mode"));
-    mode->setName(kUSDTransformParamMode);
+    mode->setName(kUSDEditTransformParamMode);
     mode->setHintToolTip(tr("How the transform combines with the transform each prim already has."));
     {
         std::vector<ChoiceOption> options;
@@ -210,7 +210,7 @@ USDTransform::initializeKnobs()
     _transform.create(this, page);
 
     KnobDoublePtr pivot = createKnob<KnobDouble>(tr("Pivot"), 3);
-    pivot->setName(kUSDTransformParamPivot);
+    pivot->setName(kUSDEditTransformParamPivot);
     pivot->setHintToolTip(tr("The point the rotation and scale are about, in the space the transform applies in: the "
                              "prim's local space."));
     for (int d = 0; d < 3; ++d) {
@@ -220,15 +220,15 @@ USDTransform::initializeKnobs()
     _pivot = pivot;
 
     KnobButtonPtr centrePivot = createKnob<KnobButton>(tr("Centre Pivot"));
-    centrePivot->setName(kUSDTransformParamCentrePivot);
+    centrePivot->setName(kUSDEditTransformParamCentrePivot);
     centrePivot->setHintToolTip(tr("Sets the pivot to the centre of the matched prims' bounds in their local space, at the "
                                    "current frame."));
     page->addKnob(centrePivot);
     _centrePivot = centrePivot;
-} // USDTransform::initializeKnobs
+} // USDEditTransform::initializeKnobs
 
-USDTransform::ModeEnum
-USDTransform::getMode() const
+USDEditTransform::ModeEnum
+USDEditTransform::getMode() const
 {
     KnobChoicePtr mode = _mode.lock();
 
@@ -236,19 +236,19 @@ USDTransform::getMode() const
 }
 
 KnobDoublePtr
-USDTransform::getPivotKnob() const
+USDEditTransform::getPivotKnob() const
 {
     return _pivot.lock();
 }
 
 std::string
-USDTransform::getBaseOpName() const
+USDEditTransform::getBaseOpName() const
 {
     return kOpPrefix + getScriptName_mt_safe();
 }
 
 void
-USDTransform::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
+USDEditTransform::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
 {
     // The op name is the node's name: the layer must be authored again under the new one.
     invalidateSceneLayer();
@@ -259,17 +259,17 @@ USDTransform::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
 }
 
 void
-USDTransform::appendNodeContentHash(ContentHasher& h) const
+USDEditTransform::appendNodeContentHash(ContentHasher& h) const
 {
     h.appendString(getBaseOpName());
 }
 
 bool
-USDTransform::knobChanged(KnobI* k,
-                          ValueChangedReasonEnum /*reason*/,
-                          ViewSpec /*view*/,
-                          double /*time*/,
-                          bool /*originatedFromMainThread*/)
+USDEditTransform::knobChanged(KnobI* k,
+                              ValueChangedReasonEnum /*reason*/,
+                              ViewSpec /*view*/,
+                              double /*time*/,
+                              bool /*originatedFromMainThread*/)
 {
     KnobButtonPtr button = _centrePivot.lock();
     if (!button || (k != button.get())) {
@@ -284,8 +284,8 @@ USDTransform::knobChanged(KnobI* k,
 }
 
 bool
-USDTransform::getHandleTarget(std::string* primPath,
-                              std::string* opName) const
+USDEditTransform::getHandleTarget(std::string* primPath,
+                                  std::string* opName) const
 {
     std::lock_guard<std::mutex> l(_imp->lock);
 
@@ -299,7 +299,7 @@ USDTransform::getHandleTarget(std::string* primPath,
 }
 
 bool
-USDTransform::centrePivot(std::string* errorMessage)
+USDEditTransform::centrePivot(std::string* errorMessage)
 {
     ScenePayload upstream;
     std::vector<PXR_NS::SdfPath> matches;
@@ -349,12 +349,12 @@ USDTransform::centrePivot(std::string* errorMessage)
     setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
 
     return true;
-} // USDTransform::centrePivot
+} // USDEditTransform::centrePivot
 
 StatusEnum
-USDTransform::renderScene(const SceneRenderActionArgs& args,
-                          ScenePayload* outputScene,
-                          std::string* errorMessage)
+USDEditTransform::renderScene(const SceneRenderActionArgs& args,
+                              ScenePayload* outputScene,
+                              std::string* errorMessage)
 {
     const ScenePayload upstream = args.getInputScene(0);
     KnobStringPtr patternKnob = _primPattern.lock();
@@ -514,6 +514,6 @@ USDTransform::renderScene(const SceneRenderActionArgs& args,
     clearPersistentMessage(false);
 
     return eStatusOK;
-} // USDTransform::renderScene
+} // USDEditTransform::renderScene
 
 NATRON_NAMESPACE_EXIT

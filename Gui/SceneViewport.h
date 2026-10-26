@@ -310,7 +310,7 @@ public:
 
     /**
      * @brief Sets the function that names the node whose transform handles are drawn: a
-     * USDTransform with its settings panel open, or null for none. Dragging a handle sets the
+     * USDEditTransform with its settings panel open, or null for none. Dragging a handle sets the
      * node's Translate, Rotate or Scale, one undoable edit per drag.
      **/
     void setTransformNodeProvider(const std::function<NodePtr()>& provider);

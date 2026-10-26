@@ -56,12 +56,12 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
-#include "Engine/Nodes/Scene/USDTransform.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
@@ -746,7 +746,7 @@ TEST_F(SceneIntegrationTest, USDWriteRendersOncePerCommandLineRender)
 
 // The whole scene vocabulary in one headless graph, written out:
 //
-//   USDRead -> USDTransform ----------------------------\
+//   USDRead -> USDEditTransform ----------------------------\
 //                                                        USDMerge -> USDPrune -> USDWrite
 //   USDLight -> USDXformPrim -> USDMaterial ------------/
 //
@@ -758,7 +758,7 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     ASSERT_TRUE(tmp.isValid());
 
     NodePtr reader = createReader(kReferenceScene);
-    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTRANSFORM));
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
     NodePtr props = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
     NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
@@ -778,7 +778,7 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     };
 
     // The box lifted by 5.
-    setString(transform, kUSDTransformParamPrimPattern, "/World/Box");
+    setString(transform, kUSDEditTransformParamPrimPattern, "/World/Box");
     setTranslate(transform, 1, 5.);
     // A props xform at x = 7 with a light grafted inside it, and a red textured material bound to
     // it: USDMaterial binds what its own input holds.
@@ -819,7 +819,7 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     EXPECT_TRUE(QDir::isRelativePath(QString::fromStdString(subLayers[0]))) << subLayers[0];
     // USDRead: the file's prims come from the sublayer, not from copies.
     EXPECT_FALSE(layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Box.size")));
-    // USDTransform: an xform op on the box.
+    // USDEditTransform: an xform op on the box.
     PXR_NS::SdfPrimSpecHandle box = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Box"));
     ASSERT_TRUE(box);
     EXPECT_TRUE(layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Box.xformOpOrder")));

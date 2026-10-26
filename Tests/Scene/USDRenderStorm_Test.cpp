@@ -56,13 +56,13 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
-#include "Engine/Nodes/Scene/USDTransform.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
@@ -306,7 +306,7 @@ protected:
     NodePtr createReferenceGraph()
     {
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
-        NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTRANSFORM));
+        NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
         NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
         NodePtr rig = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
@@ -331,7 +331,7 @@ protected:
         file->setValue(std::string(kFixture));
 
         bool ok = true;
-        ok = ok && setString(transform, kUSDTransformParamPrimPattern, "/World/Ball");
+        ok = ok && setString(transform, kUSDEditTransformParamPrimPattern, "/World/Ball");
         ok = ok && setTriple(transform, kSceneParamTranslate, 0., 1., 0.);
 
         ok = ok && setString(material, kSceneParamPrimPath, "/World/Looks/Green");

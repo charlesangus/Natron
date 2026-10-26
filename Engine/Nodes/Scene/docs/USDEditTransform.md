@@ -1,4 +1,4 @@
-# USDTransform
+# USDEditTransform
 
 Transforms the prims of its scene input that Prim Pattern names. The pattern is a
 list of absolute prim paths separated by spaces, whose names may use `*` (any run

@@ -56,9 +56,9 @@ NATRON_NAMESPACE_USING
 // so a change to how the roto contexts are built, saved or loaded shows up as a text diff. To
 // record the reference, run this test with NATRON_GOLDEN_RECORD_DIR set to
 // Tests/fixtures/roto-roundtrip and commit rotopaint.yaml. The build that saved the project and
-// the temporary directory it was saved in differ from run to run, so normalizedYaml() drops the
-// savedBy line and replaces the project path with a placeholder before anything is compared or
-// recorded.
+// the temporary directory it was saved in differ from run to run, and so does the random project id,
+// so normalizedYaml() drops the savedBy line and the top-level id line and replaces the project path
+// with a placeholder before anything is compared or recorded.
 
 namespace {
 
@@ -108,6 +108,9 @@ normalizedYaml(const std::string& yaml)
     std::string line;
     while (std::getline(in, line)) {
         if (line.compare(0, 8, "savedBy:") == 0) {
+            continue;
+        }
+        if (line.compare(0, 3, "id:") == 0) {
             continue;
         }
         if (line.find("projectPaths:") != std::string::npos) {

@@ -134,31 +134,31 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
 
 Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`: node layers stay immutable and memoized, and a `ScenePayload` is still the stack; each consumer owns one long-lived stage on a private root layer whose sublayer list is synced in place, and one persistent engine. StageCache goes.
 
-- [ ] M19.P3.T1 — `SceneStage`: a long-lived stage synced incrementally to a payload's stack
+- [x] M19.P3.T1 — `SceneStage`: a long-lived stage synced incrementally to a payload's stack
   - files: `Engine/Nodes/Scene/SceneStage.{h,cpp}` (new), `Engine/Nodes/Scene/SceneOps.cpp`, `Tests/Scene/SceneStage_Test.cpp`
   - approach: owns a private anonymous root layer and `UsdStage::Open(root, SdfLayerHandle(), load)`; `sync(payload)` diffs the applied stack against the new one and calls `SetSubLayerPaths` inside an `SdfChangeBlock`; root metadata (upAxis, metersPerUnit, time codes) is written only when it changes. Not thread-safe by itself: the owner serializes sync and reads.
   - verify: gtest counts `UsdNotice::ObjectsChanged` resynced paths: editing one node's layer resyncs only that node's paths, never `/`; values match a freshly composed stage for chains, merges and diamonds.
   - size: M
 
-- [ ] M19.P3.T2 — The viewer keeps one stage and one engine
+- [x] M19.P3.T2 — The viewer keeps one stage and one engine
   - files: `Gui/SceneViewport.{h,cpp}`, `Gui/ViewerTab*.cpp`, `Tests/Scene/SceneViewportStorm_Test.cpp`
   - approach: one `SceneStage` and one `UsdImagingGLEngine` per viewer for the widget's lifetime (scene-index path). Edits sync on a worker thread under a viewer lock; paint skips redrawing while a sync holds the lock (user: worker + lock). Picking, bbox, camera framing and look-through read the viewer's stage. Selection and the free camera survive edits. Delete the per-stage engine rebuild.
   - verify: Storm test: 50 edits to an upstream knob reuse one engine (count constructions) and the picture matches a fresh render after each; GUI script under Xvfb edits a Transform while the scene is shown, no rebuild logged.
   - size: M
 
-- [ ] M19.P3.T3 — Query stages replace StageCache
+- [x] M19.P3.T3 — Query stages replace StageCache
   - files: `Engine/Nodes/Scene/SceneQueryPool.{h,cpp}` (new), `StageCache.*` (deleted), every caller (`USDTransform.cpp`, `USDPrune.cpp`, `USDMaterial.cpp`, `USDRead.cpp` and others found by grep)
   - approach: a pool of `SceneStage`s, about one per render thread, borrowed exclusively and synced to the stack the caller needs; returned after the query. Bounded; idle stages are dropped on cache purge and project close.
   - verify: gtests for every former caller; a 30-node chain edit does no full composition (count `UsdStage::Open` calls) and stays linear in chain length.
   - size: M
 
-- [ ] M19.P3.T4 — Scene write barrier and a real Reload
+- [x] M19.P3.T4 — Scene write barrier and a real Reload
   - files: `Engine/Nodes/Scene/SceneWriteBarrier.{h,cpp}` (new), `USDRead.cpp`, `USDWrite.cpp` (M20), `Tests/Scene/USDRead_Test.cpp`
   - approach: a process-wide barrier for in-place USD layer edits: abort viewer renders, wait for every other in-flight render (user), idle the Hydra thread and take back every query stage, then run `SdfLayer::ReloadLayers` over the file's closure (`GetCompositionAssetDependencies` / the stages' used layers), so notices reach every live stage. Drop the per-stamp/per-Reload format-argument keying. Hash every file in the closure's mtimes, not only the top file.
   - verify: a nested sublayer changed on disk shows after Reload in the viewer's stage and in a new evaluation; a render thread composing through 20 Reload rounds never crashes (TSan-friendly stress test).
   - size: L
 
-- [ ] M19.P3.T5 — Layer keys cover only what a node reads
+- [x] M19.P3.T5 — Layer keys cover only what a node reads
   - files: `Engine/Nodes/Scene/SceneOps.cpp`, `SceneNodeAuthoring.cpp` (M20), per-node key functions
   - approach: a node's layer key mixes its own knobs and only the upstream facts it reads (matched prim paths, read values), not the whole upstream stack hash, so an upstream edit re-authors only nodes whose inputs changed. Animated knobs author only the frames needed.
   - verify: gtest: editing the head of a 30-node chain re-authors one layer; changing a prim a downstream Prune matches re-authors the Prune.
@@ -196,3 +196,4 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`: node layers stay im
 - 2026-10-24 — Up-axis and units are honoured from stage metadata with no conversion; normalising would rewrite what the file says.
 - 2026-10-24 — Deps are M17, M161, M107: fix the startup GL race (M161 - Startup Compositor Crash) before changing the context format so a regression can be attributed, and let M107 - GPU Viewer Hand-off land its ViewerGL/ViewerInstance edits before the viewer gains a scene view.
 - 2026-10-24 — Scene nodes are named `USD<Whatever>` (so the old `ReadScene` becomes `USDRead`; native geometry nodes are `Geo<Whatever>`), matching `Deep<Whatever>` and `Raw<Whatever>`: user's naming rule, recorded project-wide in `PLAN/DECISIONS/2026-10-24-usd-node-naming.md`.
+Phase 19.3 (long-lived scene) T1–T5 done at 39dc63851; release gate green; scene_viewer_flip and scene_viewer_live_edit pass under Xvfb (engine count stays 1). T6 bench script written; numbers pending a run.

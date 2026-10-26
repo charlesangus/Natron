@@ -246,8 +246,8 @@ future core work has solid ground to build on.
 | M189 | Make I-Node Action | todo | M183, M184, M181 |  | E15 | [M189-make-i-node-action.md](PLAN/MILESTONES/M189-make-i-node-action.md) |
 | M190 | Cross-Frame Feedback | todo | M182 |  | E15 | [M190-cross-frame-feedback.md](PLAN/MILESTONES/M190-cross-frame-feedback.md) |
 | M191 | Native VectorBlur | todo | M120, M137 |  | E3 | [M191-native-vectorblur.md](PLAN/MILESTONES/M191-native-vectorblur.md) |
-| M177 | Renders Isolated From Edits | doing | M167 | bosley-native-nodes | E14 | [M177-renders-isolated-from-edits.md](PLAN/MILESTONES/M177-renders-isolated-from-edits.md) |
-| M192 | Reliable Pipe Pick-Up | doing | - | bosley-native-nodes | E10 | [M192-reliable-pipe-pick-up.md](PLAN/MILESTONES/M192-reliable-pipe-pick-up.md) |
+| M177 | Renders Isolated From Edits | done ||  || Renders Isolated From Edits | doing | M167 | bosley-native-nodes | E14 | [M177-renders-isolated-from-edits.md](PLAN/MILESTONES/M177-renders-isolated-from-edits.md) |
+| M192 | Reliable Pipe Pick-Up | done ||  || Reliable Pipe Pick-Up | doing | - | bosley-native-nodes | E10 | [M192-reliable-pipe-pick-up.md](PLAN/MILESTONES/M192-reliable-pipe-pick-up.md) |
 | M193 | Pipe Hint Highlight Colour | todo | M176 |  | E10 | [M193-pipe-hint-highlight-colour.md](PLAN/MILESTONES/M193-pipe-hint-highlight-colour.md) |
 | M194 | Kiss Connections | todo | M192, M193 |  | E10 | [M194-kiss-connections.md](PLAN/MILESTONES/M194-kiss-connections.md) |
 | M195 | Shake And Cut Disconnect | todo | M194 |  | E10 | [M195-shake-and-cut-disconnect.md](PLAN/MILESTONES/M195-shake-and-cut-disconnect.md) |

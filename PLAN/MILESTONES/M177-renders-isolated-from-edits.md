@@ -142,3 +142,5 @@ All tasks done; debug gate green, the three m177 Xvfb scripts pass on the releas
 Review round (Claude, PR #120): nine findings fixed (closure gaps, Cancel, queueing, tracking job lifetime), render-job threads propagated to task-graph/tiled/OFX/deep workers, bookkeeping knobs exempt; debug gate green, GUI scripts pass on release. UAT pending.
 
 2026-10-26: UAT approved (user). Merge waits on M167 - Per-Frame Node Metadata (#111), its base, which is still in UAT.
+
+Shipped 2026-10-26: UAT approved; PR #120 squash-merged to main as 774fbbe0a.

@@ -485,7 +485,7 @@ NoiseOp::bake(const KnobReader& reader) const
     params.scaleY = reader.valueOr(scale, 1., 1);
     params.centerX = reader.valueOr(center, 0., 0);
     params.centerY = reader.valueOr(center, 0., 1);
-    params.par = generator ? generator->getPixelAspectRatio() : 1.;
+    params.par = generator ? generator->getPixelAspectRatio(reader.time(), reader.view()) : 1.;
     readColor(reader, color0, 0., params.color0);
     readColor(reader, color1, 1., params.color1);
     params.amplitude = boundedFloat(reader.valueOr(amplitude, 1.), 1., -kNoiseMaxColorValue, kNoiseMaxColorValue);

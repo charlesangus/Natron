@@ -150,6 +150,11 @@ struct KnobGuiValuePrivate
     std::vector<ScaleSliderQWidget*> dimensionSliders; // indexed by dimension; entry 0 stays null, the row's slider drives it
     bool foldStateHeld;
     bool dimensionsFolded;
+    // Matrix display only: the grid, each field's container by dimension and the header labels.
+    QWidget* matrixGrid;
+    std::vector<QWidget*> matrixFields;
+    std::vector<Label*> matrixRowHeaders;
+    std::vector<Label*> matrixColumnHeaders;
 
     KnobGuiValuePrivate(KnobIPtr knob)
         : knob(knob)
@@ -172,6 +177,10 @@ struct KnobGuiValuePrivate
         , dimensionSliders()
         , foldStateHeld(false)
         , dimensionsFolded(false)
+        , matrixGrid(0)
+        , matrixFields()
+        , matrixRowHeaders()
+        , matrixColumnHeaders()
     {
     }
 
@@ -303,6 +312,10 @@ KnobGuiValue::removeSpecificGui()
     _imp->dimensionLines = 0;
     _imp->dimensionLinesLayout = 0;
     _imp->dimensionSliders.clear();
+    _imp->matrixGrid = 0;
+    _imp->matrixFields.clear();
+    _imp->matrixRowHeaders.clear();
+    _imp->matrixColumnHeaders.clear();
 }
 
 void
@@ -418,20 +431,30 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         type = SpinBox::eSpinBoxTypeInt;
     }
 
+    KnobDoublePtr matrixKnob = std::dynamic_pointer_cast<KnobDouble>(knob);
+    if (matrixKnob && !matrixKnob->isMatrixDisplay()) {
+        matrixKnob.reset();
+    }
 
     int nItemsPerRow = nDims;
-    if (std::floor(nDims / 3. + 0.5) == nDims / 3.) {
-        nItemsPerRow = 3;
-    }
-    if (std::floor(nDims / 4. + 0.5) == nDims / 4.) {
-        nItemsPerRow = 4;
+    if (matrixKnob) {
+        nItemsPerRow = matrixKnob->getMatrixColumns();
+    } else {
+        if (std::floor(nDims / 3. + 0.5) == nDims / 3.) {
+            nItemsPerRow = 3;
+        }
+        if (std::floor(nDims / 4. + 0.5) == nDims / 4.) {
+            nItemsPerRow = 4;
+        }
     }
 
     int nbRows = nDims / nItemsPerRow;
     assert(nbRows >= 1);
+    // A matrix's first grid row and column hold its headers.
+    const int gridOffset = matrixKnob ? 1 : 0;
     QWidget* allSpinBoxesContainer = 0;
     QGridLayout* spinBoxesGrid = 0;
-    if (nbRows == 1) {
+    if ((nbRows == 1) && !matrixKnob) {
         allSpinBoxesContainer = _imp->container;
     } else {
         allSpinBoxesContainer = new QWidget(_imp->container);
@@ -439,6 +462,24 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         spinBoxesGrid->setContentsMargins(0, 0, 0, 0);
         spinBoxesGrid->setVerticalSpacing( TO_DPIY(1) );
         spinBoxesGrid->setHorizontalSpacing( TO_DPIX(1) );
+    }
+    if (matrixKnob) {
+        allSpinBoxesContainer->setObjectName(QString::fromUtf8("KnobMatrixGrid"));
+        _imp->matrixGrid = allSpinBoxesContainer;
+        const std::vector<std::string>& rowLabels = matrixKnob->getMatrixRowLabels();
+        const std::vector<std::string>& columnLabels = matrixKnob->getMatrixColumnLabels();
+        for (std::size_t c = 0; c < columnLabels.size(); ++c) {
+            Label* header = new Label(QString::fromUtf8(columnLabels[c].c_str()), allSpinBoxesContainer);
+            header->setAlignment(Qt::AlignCenter);
+            spinBoxesGrid->addWidget(header, 0, (int)c + gridOffset);
+            _imp->matrixColumnHeaders.push_back(header);
+        }
+        for (std::size_t r = 0; r < rowLabels.size(); ++r) {
+            Label* header = new Label(QString::fromUtf8(rowLabels[r].c_str()), allSpinBoxesContainer);
+            header->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            spinBoxesGrid->addWidget(header, (int)r + gridOffset, 0);
+            _imp->matrixRowHeaders.push_back(header);
+        }
     }
 
     _imp->spinBoxes.resize(nDims);
@@ -466,7 +507,7 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
 
 
         ClickableLabel *subDesc = 0;
-        if ( (nDims != 1) && (nbRows == 1) ) {
+        if ((nDims != 1) && (nbRows == 1) && !matrixKnob) {
             subDesc = new ClickableLabel(QString::fromUtf8( dimensionLabels[i].c_str() ), boxContainer);
             if ((i == 0) && wantsFixedDimensionLabelSlot()) {
                 subDesc->setFixedWidth(dimensionLabelSlotWidth);
@@ -506,9 +547,12 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         if (!spinBoxesGrid) {
             containerLayout->addWidget(boxContainer);
         } else {
-            spinBoxesGrid->addWidget(boxContainer, rowIndex, columnIndex);
+            spinBoxesGrid->addWidget(boxContainer, rowIndex + gridOffset, columnIndex + gridOffset);
         }
         _imp->spinBoxes[i] = std::make_pair(box, subDesc);
+        if (matrixKnob) {
+            _imp->matrixFields.push_back(boxContainer);
+        }
 
         ++columnIndex;
         if (columnIndex >= nItemsPerRow) {
@@ -519,6 +563,9 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
 
     if (spinBoxesGrid) {
         containerLayout->addWidget(allSpinBoxesContainer);
+    }
+    if (matrixKnob) {
+        applyMatrixVisibleExtent();
     }
 
     bool sliderVisible = false;
@@ -1752,6 +1799,9 @@ KnobGuiValue::_hide()
     if (_imp->dimensionLines) {
         _imp->dimensionLines->hide();
     }
+    if (_imp->matrixGrid) {
+        _imp->matrixGrid->hide();
+    }
 }
 
 void
@@ -1784,9 +1834,52 @@ KnobGuiValue::_show()
     if (_imp->rectangleFormatButton) {
         _imp->rectangleFormatButton->show();
     }
+    if (_imp->matrixGrid) {
+        _imp->matrixGrid->show();
+    }
     if (_imp->dimensionLines && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked()) {
         _imp->dimensionLines->show();
     }
+}
+
+void
+KnobGuiValue::applyMatrixVisibleExtent()
+{
+    KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(_imp->getKnob());
+    if (!_imp->matrixGrid || !knob || !knob->isMatrixDisplay()) {
+        return;
+    }
+    const int columns = knob->getMatrixColumns();
+    const int visibleRows = knob->getMatrixVisibleRows();
+    const int visibleColumns = knob->getMatrixVisibleColumns();
+    for (std::size_t i = 0; i < _imp->matrixFields.size(); ++i) {
+        const int row = (int)i / columns;
+        const int column = (int)i % columns;
+        _imp->matrixFields[i]->setVisible((row < visibleRows) && (column < visibleColumns));
+    }
+    for (std::size_t r = 0; r < _imp->matrixRowHeaders.size(); ++r) {
+        _imp->matrixRowHeaders[r]->setVisible((int)r < visibleRows);
+    }
+    for (std::size_t c = 0; c < _imp->matrixColumnHeaders.size(); ++c) {
+        _imp->matrixColumnHeaders[c]->setVisible((int)c < visibleColumns);
+    }
+}
+
+void
+KnobGuiValue::onMatrixVisibleExtentChanged()
+{
+    applyMatrixVisibleExtent();
+}
+
+bool
+KnobGuiValue::wantsTopAlignedLabel() const
+{
+    KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(_imp->getKnob());
+    if (knob && knob->isMatrixDisplay()) {
+        return true;
+    }
+
+    return KnobGui::wantsTopAlignedLabel();
 }
 
 void
@@ -2014,6 +2107,7 @@ KnobGuiDouble::connectKnobSignalSlots()
     KnobDoublePtr knob = _knob.lock();
     QObject::connect( knob.get(), SIGNAL(incrementChanged(double,int)), this, SLOT(onIncrementChanged(double,int)) );
     QObject::connect( knob.get(), SIGNAL(decimalsChanged(int,int)), this, SLOT(onDecimalsChanged(int,int)) );
+    QObject::connect(knob.get(), SIGNAL(matrixVisibleExtentChanged()), this, SLOT(onMatrixVisibleExtentChanged()));
 }
 
 void

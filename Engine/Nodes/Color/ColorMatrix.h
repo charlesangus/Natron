@@ -37,10 +37,8 @@
 #define PLUGINID_NATRON_COLORMATRIX "ColorMatrix"
 #define PLUGIN_MAJOR_NATRON_COLORMATRIX 1
 
-#define kColorMatrixParamOutputRed "outputRed"
-#define kColorMatrixParamOutputGreen "outputGreen"
-#define kColorMatrixParamOutputBlue "outputBlue"
-#define kColorMatrixParamOutputAlpha "outputAlpha"
+#define kColorMatrixParamMatrixSize "matrixSize"
+#define kColorMatrixParamMatrix "matrix"
 #define kColorMatrixParamClampBlack "clampBlack"
 #define kColorMatrixParamClampWhite "clampWhite"
 
@@ -52,16 +50,24 @@ inline constexpr InputSpec kColorMatrixInputs[] = {
 };
 
 /**
- * @brief Each processed output channel is a weighted sum of the input's R, G, B and A: output
- * row c of the matrix (outputRed, outputGreen, outputBlue, outputAlpha) dotted with the input
- * pixel. A pixel without alpha reads alpha as 1, and one without colour reads colour as 0. The
- * sum is in float, in the order r, g, b, a, with no fused multiply-add, as the GPU kernel
- * computes it.
+ * @brief Each processed output channel is a weighted sum of the input's channels: row c of the
+ * matrix dotted with the input pixel. At 4x4 the sum runs over R, G, B and A, a pixel without
+ * alpha reading alpha as 1 and one without colour reading colour as 0. At 3x3 the sum runs over
+ * R, G and B only and alpha passes through untouched, whatever the stored alpha row and column
+ * hold. The sum is in float, in the order r, g, b, a, with no fused multiply-add, as the GPU
+ * kernel computes it.
  **/
 struct ColorMatrixOp {
+    enum MatrixSizeEnum {
+        eMatrixSize3x3 = 0,
+        eMatrixSize4x4,
+    };
+
     struct Params {
-        // Rows R, G, B, A over columns r, g, b, a.
+        // Rows R, G, B, A over columns r, g, b, a, the full 4x4 whatever the size.
         float m[4][4];
+        // At 3x3 the alpha row and column are not read and alpha passes through.
+        bool threeByThree;
         bool clampBlack;
         bool clampWhite;
     };
@@ -69,10 +75,10 @@ struct ColorMatrixOp {
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_COLORMATRIX,
         .label = "ColorMatrix",
-        .description = "Multiply the RGBA channels by an arbitrary 4x4 matrix.\n"
-                       "Each processed output channel is the dot product of its row (Output Red, Output Green, "
-                       "Output Blue or Output Alpha) with the input's R, G, B and A. An input without alpha reads "
-                       "alpha as 1.",
+        .description = "Multiply the RGB or RGBA channels by an arbitrary 3x3 or 4x4 matrix.\n"
+                       "Each processed output channel is the dot product of its row of the matrix with the "
+                       "input's R, G, B (and A at 4x4). At 3x3 alpha passes through untouched. At 4x4 an input "
+                       "without alpha reads alpha as 1.",
         .grouping = PLUGIN_GROUP_COLOR "/Math",
         .majorVersion = PLUGIN_MAJOR_NATRON_COLORMATRIX,
         .minorVersion = 0,
@@ -93,7 +99,8 @@ struct ColorMatrixOp {
              const RowIO& io) const;
     GpuOpRef gpu(const Params& params) const;
 
-    KnobColorWPtr outputs[4];
+    KnobChoiceWPtr matrixSize;
+    KnobDoubleWPtr matrix;
     KnobBoolWPtr clampBlack;
     KnobBoolWPtr clampWhite;
 };
@@ -112,6 +119,14 @@ public:
 
     virtual ~ColorMatrix();
 
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
 
     /**
@@ -125,6 +140,12 @@ public:
      **/
     void colorMatrixRow(const ColorMatrixOp::Params& params,
                         const RowIO& io) const;
+
+private:
+    /**
+     * @brief Shows the matrix's 3x3 or 4x4 block to match the Matrix choice.
+     **/
+    void refreshMatrixExtent();
 };
 
 NATRON_NAMESPACE_EXIT

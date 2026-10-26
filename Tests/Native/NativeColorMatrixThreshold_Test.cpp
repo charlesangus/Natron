@@ -64,8 +64,9 @@ const int kOfxColorMatrixMajor = 2;
 const char* const kOfxThresholdID = "net.sf.openfx.Threshold";
 const int kOfxThresholdMajor = 1;
 
-const char* const kOutputKnobs[4] = {
-    kColorMatrixParamOutputRed, kColorMatrixParamOutputGreen, kColorMatrixParamOutputBlue, kColorMatrixParamOutputAlpha
+// The OpenFX ColorMatrix's per-row knobs, which the native node's single matrix knob replaces.
+const char* const kOfxOutputKnobs[4] = {
+    "outputRed", "outputGreen", "outputBlue", "outputAlpha"
 };
 
 // The node sums single-precision products of single-precision coefficients, so against a double
@@ -120,16 +121,31 @@ planeValue(const RenderedPlane& plane,
 }
 
 bool
+setMatrixSize(const NodePtr& node,
+              ColorMatrixOp::MatrixSizeEnum size)
+{
+    return setKnobValues(node, kColorMatrixParamMatrixSize, std::vector<double>(1, (double)size));
+}
+
+// Stores all 16 coefficients, rows R, G, B, A over columns r, g, b, a, without touching the size.
+bool
+storeMatrix(const NodePtr& node,
+            const double m[4][4])
+{
+    std::vector<double> values;
+    for (int r = 0; r < 4; ++r) {
+        values.insert(values.end(), m[r], m[r] + 4);
+    }
+
+    return setKnobValues(node, kColorMatrixParamMatrix, values);
+}
+
+// Stores the coefficients and sets the size to 4x4, so that all of them apply.
+bool
 setMatrix(const NodePtr& node,
           const double m[4][4])
 {
-    for (int r = 0; r < 4; ++r) {
-        if (!setKnobValues(node, kOutputKnobs[r], std::vector<double>(m[r], m[r] + 4))) {
-            return false;
-        }
-    }
-
-    return true;
+    return setMatrixSize(node, ColorMatrixOp::eMatrixSize4x4) && storeMatrix(node, m);
 }
 
 } // namespace
@@ -233,6 +249,8 @@ TEST_F(NativeColorMatrixThresholdTest, ColorMatrixIdentityDetection)
 
     EXPECT_TRUE(identityAt(node, window, &inputNb));
     EXPECT_EQ(0, inputNb);
+    ASSERT_TRUE(setMatrixSize(node, ColorMatrixOp::eMatrixSize4x4));
+    EXPECT_TRUE(identityAt(node, window, &inputNb));
 
     ASSERT_TRUE(setKnobValues(node, kColorMatrixParamClampBlack, std::vector<double>(1, 1.)));
     EXPECT_FALSE(identityAt(node, window, &inputNb));
@@ -242,17 +260,25 @@ TEST_F(NativeColorMatrixThresholdTest, ColorMatrixIdentityDetection)
     ASSERT_TRUE(setKnobValues(node, kColorMatrixParamClampWhite, std::vector<double>(1, 0.)));
     EXPECT_TRUE(identityAt(node, window, &inputNb));
 
-    // Each off-diagonal and diagonal coefficient alone breaks the identity.
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) {
-            std::vector<double> row(4, 0.);
-            row[r] = 1.;
-            row[c] += 0.5;
-            ASSERT_TRUE(setKnobValues(node, kOutputKnobs[r], row));
-            EXPECT_FALSE(identityAt(node, window, &inputNb)) << "row " << r << " column " << c;
-            row[c] -= 0.5;
-            ASSERT_TRUE(setKnobValues(node, kOutputKnobs[r], row));
-            EXPECT_TRUE(identityAt(node, window, &inputNb)) << "row " << r << " column " << c;
+    // At 4x4 each off-diagonal and diagonal coefficient alone breaks the identity; at 3x3 only
+    // those outside the alpha row and column do.
+    for (int size = 0; size < 2; ++size) {
+        const bool fourByFour = (size == 1);
+        ASSERT_TRUE(setMatrixSize(node, fourByFour ? ColorMatrixOp::eMatrixSize4x4 : ColorMatrixOp::eMatrixSize3x3));
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                std::vector<double> m(16, 0.);
+                for (int d = 0; d < 4; ++d) {
+                    m[d * 4 + d] = 1.;
+                }
+                m[r * 4 + c] += 0.5;
+                ASSERT_TRUE(setKnobValues(node, kColorMatrixParamMatrix, m));
+                const bool readsCoefficient = fourByFour || ((r < 3) && (c < 3));
+                EXPECT_EQ(!readsCoefficient, identityAt(node, window, &inputNb)) << "size " << (fourByFour ? 4 : 3) << ", row " << r << " column " << c;
+                m[r * 4 + c] -= 0.5;
+                ASSERT_TRUE(setKnobValues(node, kColorMatrixParamMatrix, m));
+                EXPECT_TRUE(identityAt(node, window, &inputNb)) << "size " << (fourByFour ? 4 : 3) << ", row " << r << " column " << c;
+            }
         }
     }
 
@@ -261,6 +287,43 @@ TEST_F(NativeColorMatrixThresholdTest, ColorMatrixIdentityDetection)
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, std::vector<double>(1, 0.)));
     EXPECT_TRUE(identityAt(node, window, &inputNb));
     EXPECT_EQ(0, inputNb);
+}
+
+// The default size is 3x3: R, G and B mix over r, g and b only, and alpha comes through bit for
+// bit although the stored alpha row and column are far from identity. Switching to 4x4 brings
+// the stored alpha coefficients back into play.
+TEST_F(NativeColorMatrixThresholdTest, ColorMatrixThreeByThreeLeavesAlphaUntouched)
+{
+    NodePtr source = makeSource();
+    NodePtr node = makeNode(PLUGINID_NATRON_COLORMATRIX, PLUGIN_MAJOR_NATRON_COLORMATRIX, source);
+    ASSERT_TRUE(bool(source) && bool(node));
+    ASSERT_TRUE(storeMatrix(node, kHdrMatrix));
+    ColorMatrix* effect = dynamic_cast<ColorMatrix*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+    EXPECT_TRUE(effect->bakeColorMatrix(kTime, ViewIdx(0)).threeByThree);
+
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    RenderedPlane plane;
+    ASSERT_TRUE(renderRgba(node, window, &plane));
+    ASSERT_EQ(4u, plane.channels.size());
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            double in[4];
+            for (int c = 0; c < 4; ++c) {
+                in[c] = paritySourceColorValue(c, x, y, kTime);
+            }
+            for (int c = 0; c < 3; ++c) {
+                const double want = kHdrMatrix[c][0] * in[0] + kHdrMatrix[c][1] * in[1] + kHdrMatrix[c][2] * in[2];
+                const float got = planeValue(plane, x, y, c);
+                ASSERT_TRUE(kMatrixTolerance.accepts((float)want, got)) << "at " << x << "," << y << " c=" << c << ": want " << want << ", got " << got;
+            }
+            ASSERT_EQ((float)in[3], planeValue(plane, x, y, 3)) << "alpha at " << x << "," << y;
+        }
+    }
+
+    ASSERT_TRUE(setMatrixSize(node, ColorMatrixOp::eMatrixSize4x4));
+    EXPECT_FALSE(effect->bakeColorMatrix(kTime, ViewIdx(0)).threeByThree);
+    expectPixels(node, source, [](int c, const double* in) { return kHdrMatrix[c][0] * in[0] + kHdrMatrix[c][1] * in[1] + kHdrMatrix[c][2] * in[2] + kHdrMatrix[c][3] * in[3]; }, "4x4 after 3x3", kMatrixTolerance);
 }
 
 // At softness 0 a value equal to the level gives 1. The levels are taken from source pixels so
@@ -370,8 +433,9 @@ TEST_F(NativeColorMatrixThresholdTest, MatchesTheOpenFXPlugins)
         std::string caseName;
         if (i == 0) {
             ASSERT_TRUE(setKnobOnBoth(pair, kColorMatrixParamClampBlack, { 0. }));
+            ASSERT_TRUE(setMatrix(pair.native, kHdrMatrix));
             for (int r = 0; r < 4; ++r) {
-                ASSERT_TRUE(setKnobOnBoth(pair, kOutputKnobs[r], { kHdrMatrix[r][0], kHdrMatrix[r][1], kHdrMatrix[r][2], kHdrMatrix[r][3] }));
+                ASSERT_TRUE(setKnobValues(pair.ofx, kOfxOutputKnobs[r], { kHdrMatrix[r][0], kHdrMatrix[r][1], kHdrMatrix[r][2], kHdrMatrix[r][3] }));
             }
             caseName = "hdr-matrix";
         } else {

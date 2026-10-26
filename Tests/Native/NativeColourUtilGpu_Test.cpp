@@ -67,10 +67,6 @@ namespace {
 
 const double kTime = 1.;
 
-const char* const kOutputKnobs[4] = {
-    kColorMatrixParamOutputRed, kColorMatrixParamOutputGreen, kColorMatrixParamOutputBlue, kColorMatrixParamOutputAlpha
-};
-
 struct MatrixSetting {
     double m[4][4];
     bool clampBlack;
@@ -96,13 +92,18 @@ const ThresholdSetting kThresholdSettings[] = {
     { { -0.5, 2., 0.3333, 0. }, { 1., 0.75, 0.05, 2. } },
 };
 
+// Every setting stores a full 4x4; at 3x3 its alpha row and column stay stored but unread.
 void
 applyMatrix(const NodePtr& node,
-            const MatrixSetting& s)
+            const MatrixSetting& s,
+            ColorMatrixOp::MatrixSizeEnum size = ColorMatrixOp::eMatrixSize4x4)
 {
+    std::vector<double> values;
     for (int r = 0; r < 4; ++r) {
-        ASSERT_TRUE(setKnobValues(node, kOutputKnobs[r], std::vector<double>(s.m[r], s.m[r] + 4)));
+        values.insert(values.end(), s.m[r], s.m[r] + 4);
     }
+    ASSERT_TRUE(setKnobValues(node, kColorMatrixParamMatrixSize, std::vector<double>(1, (double)size)));
+    ASSERT_TRUE(setKnobValues(node, kColorMatrixParamMatrix, values));
     ASSERT_TRUE(setKnobValues(node, kColorMatrixParamClampBlack, std::vector<double>(1, s.clampBlack ? 1. : 0.)));
     ASSERT_TRUE(setKnobValues(node, kColorMatrixParamClampWhite, std::vector<double>(1, s.clampWhite ? 1. : 0.)));
 }
@@ -206,6 +207,9 @@ cpuRows(const std::vector<float>& src,
         io.src[0] = src.data() + (size_t)y * width * nComps;
         io.dst = dst.data() + (size_t)y * width * nComps;
         io.divisor = divisor.empty() ? NULL : divisor.data() + (size_t)y * width;
+        // A divisor here is the RGBA source's own alpha, which the stage names as the channel to
+        // leave alone, as the wrap's skipChannel does on the GPU.
+        io.divisorSkipChannel = divisor.empty() ? -1 : 3;
         io.y = y;
         io.width = width;
         io.nComps = nComps;
@@ -359,21 +363,24 @@ TEST_F(NativeColourUtilGpuTest, ColorMatrixKernelMatchesTheCpu)
     const int height = 9;
     int nCase = 0;
     for (const MatrixSetting& setting : kMatrixSettings) {
-        applyMatrix(node, setting);
-        if (HasFatalFailure()) {
-            return;
-        }
-        const ColorMatrixOp::Params params = effect->bakeColorMatrix(kTime, ViewIdx(0));
-        for (int nComps : { 1, 3, 4 }) {
-            for (unsigned channelMask : channelMasks) {
-                if ((channelMask & presentBits(nComps)) == 0) {
-                    continue;
+        for (ColorMatrixOp::MatrixSizeEnum size : { ColorMatrixOp::eMatrixSize3x3, ColorMatrixOp::eMatrixSize4x4 }) {
+            applyMatrix(node, setting, size);
+            if (HasFatalFailure()) {
+                return;
+            }
+            const ColorMatrixOp::Params params = effect->bakeColorMatrix(kTime, ViewIdx(0));
+            EXPECT_EQ(size == ColorMatrixOp::eMatrixSize3x3, params.threeByThree);
+            for (int nComps : { 1, 3, 4 }) {
+                for (unsigned channelMask : channelMasks) {
+                    if ((channelMask & presentBits(nComps)) == 0) {
+                        continue;
+                    }
+                    const std::vector<float> src = testImage(width, height, nComps, nCase);
+                    const std::vector<float> want = cpuRows(src, std::vector<float>(), width, height, nComps, channelMask, [effect, &params](const RowIO& io) { effect->colorMatrixRow(params, io); });
+                    char what[112];
+                    std::snprintf(what, sizeof(what), "matrix %d, size %d, components %d, channels %x", nCase, (size == ColorMatrixOp::eMatrixSize3x3) ? 3 : 4, nComps, channelMask);
+                    expectKernel(*runtime, *effect, plainQuery(nComps, channelMask), src, width, height, want, what);
                 }
-                const std::vector<float> src = testImage(width, height, nComps, nCase);
-                const std::vector<float> want = cpuRows(src, std::vector<float>(), width, height, nComps, channelMask, [effect, &params](const RowIO& io) { effect->colorMatrixRow(params, io); });
-                char what[96];
-                std::snprintf(what, sizeof(what), "matrix %d, components %d, channels %x", nCase, nComps, channelMask);
-                expectKernel(*runtime, *effect, plainQuery(nComps, channelMask), src, width, height, want, what);
             }
         }
         ++nCase;

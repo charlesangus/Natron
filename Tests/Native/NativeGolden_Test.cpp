@@ -62,7 +62,7 @@
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Despill.h"
-#include "Engine/Nodes/Keyer/HueKeyer.h"
+#include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
@@ -341,7 +341,7 @@ TEST_F(NativeGoldenTest, Unpremult)
 TEST_F(NativeGoldenTest, ColorMatrix)
 {
     const Apply hdr = [](const GoldenGraph& g) {
-        return num(g, kColorMatrixParamOutputRed, { 1.75, -0.4, 0.25, 0.5 }) && num(g, kColorMatrixParamOutputGreen, { 0.3, 2.5, -0.8, 0. }) && num(g, kColorMatrixParamOutputBlue, { -1.2, 0.1, 3., -0.25 }) && num(g, kColorMatrixParamOutputAlpha, { 0.2, 0.3, 0.1, 0.6 });
+        return num(g, kColorMatrixParamMatrixSize, { (double)ColorMatrixOp::eMatrixSize4x4 }) && num(g, kColorMatrixParamMatrix, { 1.75, -0.4, 0.25, 0.5, 0.3, 2.5, -0.8, 0., -1.2, 0.1, 3., -0.25, 0.2, 0.3, 0.1, 0.6 });
     };
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
@@ -451,16 +451,28 @@ TEST_F(NativeGoldenTest, HueCorrect)
     run(filterSpec("HueCorrect", PLUGINID_NATRON_HUECORRECT, PLUGIN_MAJOR_NATRON_HUECORRECT), v);
 }
 
-TEST_F(NativeGoldenTest, HueKeyer)
+TEST_F(NativeGoldenTest, HSVKeyer)
 {
+    // The model is set before the ranges: changing it recentres them on the source colour.
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
     v.push_back(variant("acrossRed", [](const GoldenGraph& g) {
-        return num(g, kHueKeyerParamHueLow, { 0.85 }) && num(g, kHueKeyerParamHueLowFull, { 0.95 }) && num(g, kHueKeyerParamHueHighFull, { 0.05 }) && num(g, kHueKeyerParamHueHigh, { 0.15 }) && num(g, kHueKeyerParamSatLow, { 0. });
+        return num(g, kHSVKeyerParamHueRange, { 0.85, 0.95, 0.05, 0.15 }) && num(g, kHSVKeyerParamSatRange, { 0., 0.3, 1., 1. });
     }));
-    v.push_back(variant("invert", [](const GoldenGraph& g) { return num(g, kHueKeyerParamInvert, { 1. }) && num(g, kHueKeyerParamSatHigh, { 2. }); }));
-    v.push_back(filterMaskMix([](const GoldenGraph& g) { return num(g, kHueKeyerParamHueLow, { 0.1 }) && num(g, kHueKeyerParamHueHigh, { 0.6 }); }));
-    run(filterSpec("HueKeyer", PLUGINID_NATRON_HUEKEYER, PLUGIN_MAJOR_NATRON_HUEKEYER), v);
+    v.push_back(variant("hsl", [](const GoldenGraph& g) {
+        return choice(g, kHSVKeyerParamColorModel, "hsl") && num(g, kHSVKeyerParamHueRange, { 0.2, 0.28, 0.4, 0.5 }) && num(g, kHSVKeyerParamLumaRange, { 0.1, 0.3, 0.7, 0.9 });
+    }));
+    v.push_back(variant("oklch", [](const GoldenGraph& g) {
+        return choice(g, kHSVKeyerParamColorModel, "oklch") && num(g, kHSVKeyerParamHueRange, { 0.3, 0.36, 0.44, 0.5 }) && num(g, kHSVKeyerParamSatRange, { 0.02, 0.06, 0.4, 0.5 }) && num(g, kHSVKeyerParamLumaRange, { 0.2, 0.4, 0.9, 1.2 });
+    }));
+    v.push_back(variant("premultipliedHueOnly", [](const GoldenGraph& g) {
+        return num(g, kHSVKeyerParamUseSat, { 0. }) && num(g, kHSVKeyerParamUseLuma, { 0. }) && choice(g, kHSVKeyerParamOutputMode, "premultiplied");
+    }));
+    v.push_back(variant("matteInvert", [](const GoldenGraph& g) {
+        return num(g, kHSVKeyerParamInvert, { 1. }) && choice(g, kHSVKeyerParamOutputMode, "matte");
+    }));
+    v.push_back(filterMaskMix([](const GoldenGraph& g) { return num(g, kHSVKeyerParamHueRange, { 0.1, 0.25, 0.45, 0.6 }); }));
+    run(filterSpec("HSVKeyer", PLUGINID_NATRON_HSVKEYER, PLUGIN_MAJOR_NATRON_HSVKEYER), v);
 }
 
 TEST_F(NativeGoldenTest, Despill)

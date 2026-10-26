@@ -73,7 +73,8 @@ premultNodeSpec(bool divide)
 
 /**
  * @brief Premult (DIVIDE false) and Unpremult (DIVIDE true): the processed channels times, or
- * divided by, the "(Un)premult by" channel the Divisor stage hands the row. Unpremult divides
+ * divided by, the "(Un)premult by" channel the Divisor stage hands the row; that channel itself
+ * passes through when it is among the processed ones. Unpremult divides
  * only where that channel is usable (Image::unPremultDivisorIsUsable), as the host's own
  * unpremultiply does. The op has no knobs: the channels, the divisor, the mask and the mix are
  * all the stages'.

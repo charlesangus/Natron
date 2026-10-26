@@ -50,31 +50,8 @@ static_assert(sizeof(ColorMatrixGpuParams) == 68, "must match ColorMatrixOp in c
 
 constexpr uint32_t kColorMatrixGpuClampBlack = 1;
 constexpr uint32_t kColorMatrixGpuClampWhite = 2;
+constexpr uint32_t kColorMatrixGpuThreeByThree = 4;
 #endif
-
-KnobColorPtr
-addOutputKnob(KnobHolder* holder,
-              const KnobPagePtr& page,
-              const char* name,
-              const std::string& label,
-              const std::string& hint,
-              int row)
-{
-    KnobColorPtr knob = AppManager::createKnob<KnobColor>(holder, label, 4);
-
-    knob->setName(name);
-    knob->setHintToolTip(hint);
-    for (int i = 0; i < 4; ++i) {
-        knob->setDefaultValue((i == row) ? 1. : 0., i);
-        knob->setMinimum(-DBL_MAX, i);
-        knob->setMaximum(DBL_MAX, i);
-        knob->setDisplayMinimum(0., i);
-        knob->setDisplayMaximum(1., i);
-    }
-    page->addKnob(knob);
-
-    return knob;
-}
 
 } // anonymous namespace
 
@@ -82,10 +59,41 @@ void
 ColorMatrixOp::createKnobs(KnobHolder* holder,
                            const KnobPagePtr& page)
 {
-    outputs[0] = addOutputKnob(holder, page, kColorMatrixParamOutputRed, EffectInstance::tr("Output Red").toStdString(), EffectInstance::tr("The weights of the input R, G, B and A in the red output.").toStdString(), 0);
-    outputs[1] = addOutputKnob(holder, page, kColorMatrixParamOutputGreen, EffectInstance::tr("Output Green").toStdString(), EffectInstance::tr("The weights of the input R, G, B and A in the green output.").toStdString(), 1);
-    outputs[2] = addOutputKnob(holder, page, kColorMatrixParamOutputBlue, EffectInstance::tr("Output Blue").toStdString(), EffectInstance::tr("The weights of the input R, G, B and A in the blue output.").toStdString(), 2);
-    outputs[3] = addOutputKnob(holder, page, kColorMatrixParamOutputAlpha, EffectInstance::tr("Output Alpha").toStdString(), EffectInstance::tr("The weights of the input R, G, B and A in the alpha output.").toStdString(), 3);
+    KnobChoicePtr sizeKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Matrix").toStdString());
+    sizeKnob->setName(kColorMatrixParamMatrixSize);
+    sizeKnob->setHintToolTip(EffectInstance::tr("The size of the matrix. At 3x3 the matrix mixes R, G and B and alpha passes through untouched; "
+                                                "at 4x4 alpha takes part as a fourth input and output. Switching keeps every coefficient.")
+                                 .toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("3x3", "3x3", EffectInstance::tr("Mix R, G and B; alpha passes through untouched.").toStdString()));
+        options.push_back(ChoiceOption("4x4", "4x4", EffectInstance::tr("Mix R, G, B and A.").toStdString()));
+        sizeKnob->populateChoices(options);
+    }
+    sizeKnob->setDefaultValue((int)eMatrixSize3x3);
+    sizeKnob->setAnimationEnabled(false);
+    page->addKnob(sizeKnob);
+    matrixSize = sizeKnob;
+
+    KnobDoublePtr matrixKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Coefficients").toStdString(), 16);
+    matrixKnob->setName(kColorMatrixParamMatrix);
+    matrixKnob->setHintToolTip(EffectInstance::tr("The matrix: each row holds the weights of the input R, G, B and A in "
+                                                  "the output channel the row is named after.")
+                                   .toStdString());
+    const char* const channelNames[4] = { "r", "g", "b", "a" };
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            const int dim = r * 4 + c;
+            matrixKnob->setDefaultValue((r == c) ? 1. : 0., dim);
+            matrixKnob->setMinimum(-DBL_MAX, dim);
+            matrixKnob->setMaximum(DBL_MAX, dim);
+            matrixKnob->setDimensionName(dim, std::string(channelNames[r]) + channelNames[c]);
+        }
+    }
+    matrixKnob->setMatrixDisplay(4, 4, std::vector<std::string> { "R", "G", "B", "A" }, std::vector<std::string> { "R", "G", "B", "A" });
+    matrixKnob->setMatrixVisibleExtent(3, 3);
+    page->addKnob(matrixKnob);
+    matrix = matrixKnob;
 
     KnobBoolPtr clampBlackKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Clamp Black").toStdString());
     clampBlackKnob->setName(kColorMatrixParamClampBlack);
@@ -110,9 +118,10 @@ ColorMatrixOp::bake(const KnobReader& reader) const
 
     for (int r = 0; r < 4; ++r) {
         for (int c = 0; c < 4; ++c) {
-            p.m[r][c] = (float)reader.value(outputs[r], c);
+            p.m[r][c] = (float)reader.value(matrix, r * 4 + c);
         }
     }
+    p.threeByThree = (reader.value(matrixSize) != (int)eMatrixSize4x4);
     p.clampBlack = reader.value(clampBlack);
     p.clampWhite = reader.value(clampWhite);
 
@@ -125,8 +134,9 @@ ColorMatrixOp::isIdentity(const Params& params) const
     if (params.clampBlack || params.clampWhite) {
         return false;
     }
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) {
+    const int n = params.threeByThree ? 3 : 4;
+    for (int r = 0; r < n; ++r) {
+        for (int c = 0; c < n; ++c) {
             if (params.m[r][c] != ((r == c) ? 1.f : 0.f)) {
                 return false;
             }
@@ -150,6 +160,7 @@ ColorMatrixOp::row(const Params& params,
     }
     // Alpha reads 1 where the pixel has none, as the OFX ColorMatrix reads it.
     const float missingAlpha = ((nComps == 2) || (nComps == 3)) ? 1.f : 0.f;
+    const bool threeByThree = params.threeByThree;
     const float* src = io.src[0];
     float* dst = io.dst;
     for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
@@ -161,6 +172,10 @@ ColorMatrixOp::row(const Params& params,
             if (!process[c]) {
                 continue;
             }
+            if (threeByThree && (bit[c] == 3)) {
+                dst[c] = src[c];
+                continue;
+            }
             const float* m = params.m[bit[c]];
             // One product and one sum per statement, in the kernel's order.
             float s = m[0] * v[0];
@@ -168,8 +183,10 @@ ColorMatrixOp::row(const Params& params,
             s = s + g;
             const float b = m[2] * v[2];
             s = s + b;
-            const float a = m[3] * v[3];
-            s = s + a;
+            if (!threeByThree) {
+                const float a = m[3] * v[3];
+                s = s + a;
+            }
             if (params.clampBlack && (s < 0.f)) {
                 s = 0.f;
             } else if (params.clampWhite && (s > 1.f)) {
@@ -190,7 +207,7 @@ ColorMatrixOp::gpu(const Params& params) const
             p.m[r][c] = params.m[r][c];
         }
     }
-    p.flags = (params.clampBlack ? kColorMatrixGpuClampBlack : 0) | (params.clampWhite ? kColorMatrixGpuClampWhite : 0);
+    p.flags = (params.clampBlack ? kColorMatrixGpuClampBlack : 0) | (params.clampWhite ? kColorMatrixGpuClampWhite : 0) | (params.threeByThree ? kColorMatrixGpuThreeByThree : 0);
 
     return GpuOpRef::compiled((int)gpu::GpuKernelId::colormatrix_wrapped, p);
 #else
@@ -207,6 +224,40 @@ ColorMatrix::ColorMatrix(NodePtr node)
 
 ColorMatrix::~ColorMatrix()
 {
+}
+
+void
+ColorMatrix::refreshMatrixExtent()
+{
+    KnobChoicePtr sizeKnob = op().matrixSize.lock();
+    KnobDoublePtr matrixKnob = op().matrix.lock();
+    if (!sizeKnob || !matrixKnob) {
+        return;
+    }
+    const int n = (sizeKnob->getValue() == (int)ColorMatrixOp::eMatrixSize4x4) ? 4 : 3;
+    matrixKnob->setMatrixVisibleExtent(n, n);
+}
+
+bool
+ColorMatrix::knobChanged(KnobI* k,
+                         ValueChangedReasonEnum /*reason*/,
+                         ViewSpec /*view*/,
+                         double /*time*/,
+                         bool /*originatedFromMainThread*/)
+{
+    KnobChoicePtr sizeKnob = op().matrixSize.lock();
+    if (!sizeKnob || (k != sizeKnob.get())) {
+        return false;
+    }
+    refreshMatrixExtent();
+
+    return true;
+}
+
+void
+ColorMatrix::onKnobsLoaded()
+{
+    refreshMatrixExtent();
 }
 
 ColorMatrixOp::Params

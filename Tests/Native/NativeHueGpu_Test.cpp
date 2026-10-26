@@ -52,7 +52,7 @@
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
-#include "Engine/Nodes/Keyer/HueKeyer.h"
+#include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -509,54 +509,66 @@ TEST_F(NativeHueGpuTest, HueCorrectMatchesTheCpuRender)
     expectRenderMatches(*runtime, source, mask, op, tableTolerance());
 }
 
-// A hue trapezoid across red and one within the circle, with and without invert.
-TEST_F(NativeHueGpuTest, HueKeyerKernelMatchesTheCpu)
+// Every model and output mode, with a hue trapezoid within the circle and one across red, with
+// and without invert; the sat and luma ranges reach past 0 and 1 so negative and HDR samples key.
+TEST_F(NativeHueGpuTest, HSVKeyerKernelMatchesTheCpu)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
         return;
     }
-    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_HUEKEYER), PLUGIN_MAJOR_NATRON_HUEKEYER);
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_HSVKEYER), PLUGIN_MAJOR_NATRON_HSVKEYER);
     ASSERT_TRUE(bool(node));
-    HueKeyer* effect = dynamic_cast<HueKeyer*>(node->getEffectInstance().get());
+    HSVKeyer* effect = dynamic_cast<HSVKeyer*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL);
 
+    const char* const models[] = { "hsv", "hsl", "oklch" };
+    const char* const outputs[] = { "alpha", "premultiplied", "matte" };
     const double hues[][4] = { { 0.25, 0.3, 0.37, 0.42 }, { 0.85, 0.95, 0.05, 0.2 } };
-    const std::vector<Layout> layouts = { { 4, 0x8 } };
+    const std::vector<Layout> layouts = { { 4, 0xF }, { 4, 0x8 } };
     int nCase = 0;
-    for (const double* hue : hues) {
-        for (int invert = 0; invert < 2; ++invert) {
-            ASSERT_TRUE(setKnobValues(node, kHueKeyerParamHueLow, { hue[0] }));
-            ASSERT_TRUE(setKnobValues(node, kHueKeyerParamHueLowFull, { hue[1] }));
-            ASSERT_TRUE(setKnobValues(node, kHueKeyerParamHueHighFull, { hue[2] }));
-            ASSERT_TRUE(setKnobValues(node, kHueKeyerParamHueHigh, { hue[3] }));
-            ASSERT_TRUE(setKnobValues(node, kHueKeyerParamSatLow, { invert ? -0.1 : 0.1 }));
-            ASSERT_TRUE(setKnobValues(node, kHueKeyerParamSatHigh, { invert ? 1.5 : 1. }));
-            ASSERT_TRUE(setKnobValues(node, kHueKeyerParamInvert, { (double)invert }));
-            const HueKeyerOp::Params params = effect->bakeHueKeyer(kTime, ViewIdx(0));
-            const std::string label = "HueKeyer hues " + std::to_string(hue[0]) + " invert " + std::to_string(invert);
-            expectKernelMatches(*runtime, *effect, layouts, [effect, &params](const RowIO& io) { effect->hueKeyerRow(params, io); }, pointTolerance(), label, &nCase);
+    for (const char* model : models) {
+        // Choosing the model recentres the ranges, so they are set after it.
+        ASSERT_TRUE(setKnobValue(node, kHSVKeyerParamColorModel, model));
+        for (const char* output : outputs) {
+            ASSERT_TRUE(setKnobValue(node, kHSVKeyerParamOutputMode, output));
+            for (const double* hue : hues) {
+                for (int invert = 0; invert < 2; ++invert) {
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamHueRange, { hue[0], hue[1], hue[2], hue[3] }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamSatRange, { invert ? -0.1 : 0.01, 0.1, 0.8, 1.5 }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamLumaRange, { -0.2, 0.1, 0.9, 2. }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamUseLuma, { (double)(invert == 0) }));
+                    ASSERT_TRUE(setKnobValues(node, kHSVKeyerParamInvert, { (double)invert }));
+                    const HSVKeyerOp::Params params = effect->bakeHSVKeyer(kTime, ViewIdx(0));
+                    const std::string label = std::string("HSVKeyer ") + model + " " + output + " hues " + std::to_string(hue[0]) + " invert " + std::to_string(invert);
+                    expectKernelMatches(*runtime, *effect, layouts, [effect, &params](const RowIO& io) { effect->hsvKeyerRow(params, io); }, pointTolerance(), label, &nCase);
+                }
+            }
         }
     }
 }
 
-TEST_F(NativeHueGpuTest, HueKeyerMatchesTheCpuRender)
+TEST_F(NativeHueGpuTest, HSVKeyerMatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
         return;
     }
-    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
-    NodePtr mask = createNode(QString::fromUtf8(kTestPluginIDParitySource));
-    NodePtr op = createNode(QString::fromUtf8(PLUGINID_NATRON_HUEKEYER), PLUGIN_MAJOR_NATRON_HUEKEYER);
-    ASSERT_TRUE(bool(source) && bool(mask) && bool(op));
-    ASSERT_TRUE(setKnobValues(op, kHueKeyerParamHueLow, { 0.1 }));
-    ASSERT_TRUE(setKnobValues(op, kHueKeyerParamHueLowFull, { 0.3 }));
-    ASSERT_TRUE(setKnobValues(op, kHueKeyerParamHueHighFull, { 0.5 }));
-    ASSERT_TRUE(setKnobValues(op, kHueKeyerParamHueHigh, { 0.7 }));
-    ASSERT_TRUE(setKnobValues(op, kHueKeyerParamSatLow, { 0. }));
-    wire(source, mask, op);
-    expectRenderMatches(*runtime, source, mask, op, pointTolerance());
+    const char* const models[] = { "hsv", "hsl", "oklch" };
+    for (const char* model : models) {
+        NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+        NodePtr mask = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+        NodePtr op = createNode(QString::fromUtf8(PLUGINID_NATRON_HSVKEYER), PLUGIN_MAJOR_NATRON_HSVKEYER);
+        ASSERT_TRUE(bool(source) && bool(mask) && bool(op));
+        ASSERT_TRUE(setKnobValue(op, kHSVKeyerParamColorModel, model));
+        ASSERT_TRUE(setKnobValue(op, kHSVKeyerParamOutputMode, "premultiplied"));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamHueRange, { 0.1, 0.3, 0.5, 0.7 }));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamSatRange, { 0., 0.05, 1., 1.5 }));
+        ASSERT_TRUE(setKnobValues(op, kHSVKeyerParamLumaRange, { -0.5, 0., 1., 2. }));
+        wire(source, mask, op);
+        SCOPED_TRACE(model);
+        expectRenderMatches(*runtime, source, mask, op, pointTolerance());
+    }
 }
 
 #endif // NATRON_HAVE_GPU

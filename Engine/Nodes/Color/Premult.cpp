@@ -59,6 +59,11 @@ PremultOp<DIVIDE>::row(const Params& /*params*/,
     for (int c = 0; (c < nComps) && (c < 4); ++c) {
         process[c] = io.channels[pixelKernelChannelBit(nComps, c)];
     }
+    // The divisor channel is copied, never scaled by itself: with it among the processed
+    // channels ("All", or a layer row holding every channel of rgba) a Premult would square
+    // alpha and an Unpremult would set it to 1, so a later Unpremult divides by alpha squared.
+    // The host's own (un)premultiply leaves it alone too.
+    const int skip = io.divisor ? io.divisorSkipChannel : -1;
     const float* src = io.src[0];
     float* dst = io.dst;
     for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
@@ -69,7 +74,9 @@ PremultOp<DIVIDE>::row(const Params& /*params*/,
             if (!process[c]) {
                 continue;
             }
-            if (!DIVIDE) {
+            if (c == skip) {
+                dst[c] = src[c];
+            } else if (!DIVIDE) {
                 dst[c] = src[c] * d;
             } else if (divides) {
                 dst[c] = Image::unPremultiplyValue(src[c], d);

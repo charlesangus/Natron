@@ -34,7 +34,7 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Hue helpers shared by HSVTool, HueCorrect and HueKeyer, with hue in turns (0 to 1, red
+ * @brief Hue helpers shared by HSVTool, HueCorrect and HSVKeyer, with hue in turns (0 to 1, red
  * at 0). Each statement rounds once, as hue.slang does, so the CPU and the GPU agree to float
  * rounding.
  *

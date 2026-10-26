@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <functional>
 #include <map>
 #include <string>
@@ -341,11 +342,109 @@ public:
         return _isRectangle;
     }
 
+    /**
+     * @brief Shows the knob as a grid of plain numeric fields, rows x columns, with dimension
+     * (row * columns + column) at row, column, a header label over each column and beside each
+     * row, and no slider. Does nothing unless rows * columns is the knob's dimension and both
+     * label lists have the matching length. Call before the knob's GUI is created.
+     **/
+    void setMatrixDisplay(int rows,
+                          int columns,
+                          const std::vector<std::string>& rowLabels,
+                          const std::vector<std::string>& columnLabels);
+
+    bool isMatrixDisplay() const
+    {
+        return _matrixRows > 0;
+    }
+
+    int getMatrixRows() const
+    {
+        return _matrixRows;
+    }
+
+    int getMatrixColumns() const
+    {
+        return _matrixColumns;
+    }
+
+    const std::vector<std::string>& getMatrixRowLabels() const
+    {
+        return _matrixRowLabels;
+    }
+
+    const std::vector<std::string>& getMatrixColumnLabels() const
+    {
+        return _matrixColumnLabels;
+    }
+
+    /**
+     * @brief Shows only the matrix's top-left rows x columns block; the other fields and their
+     * headers are hidden but keep their values. Clamped to the matrix's size.
+     **/
+    void setMatrixVisibleExtent(int rows,
+                                int columns);
+
+    int getMatrixVisibleRows() const
+    {
+        return _matrixVisibleRows;
+    }
+
+    int getMatrixVisibleColumns() const
+    {
+        return _matrixVisibleColumns;
+    }
+
+    /**
+     * @brief The component a range widget's trapezoid lies over.
+     **/
+    enum RangeWidgetRoleEnum {
+        eRangeWidgetRoleNone = 0,
+        eRangeWidgetRoleHue,
+        eRangeWidgetRoleSaturation,
+        eRangeWidgetRoleLuma
+    };
+
+    /**
+     * @brief Shows the knob as a trapezoid over a colour strip, the four dimensions being the
+     * outer low, inner low, inner high and outer high points, with the numeric fields kept and no
+     * slider. The strip draws the role's component in the colour model that modelKnob's index
+     * selects (ColorMath::KeyModelEnum), its saturation strip tinted with sourceColourKnob's hue,
+     * and redraws when either changes. A hue range is in turns and wraps. Does nothing unless the
+     * knob has four dimensions and role is not eRangeWidgetRoleNone. Call before the knob's GUI is
+     * created.
+     **/
+    void setRangeWidget(RangeWidgetRoleEnum role,
+                        const KnobColorPtr& sourceColourKnob,
+                        const KnobChoicePtr& modelKnob);
+
+    bool isRangeWidget() const
+    {
+        return _rangeWidgetRole != eRangeWidgetRoleNone;
+    }
+
+    RangeWidgetRoleEnum getRangeWidgetRole() const
+    {
+        return _rangeWidgetRole;
+    }
+
+    KnobColorPtr getRangeWidgetSourceColour() const
+    {
+        return _rangeWidgetSourceColour.lock();
+    }
+
+    KnobChoicePtr getRangeWidgetModel() const
+    {
+        return _rangeWidgetModel.lock();
+    }
+
 Q_SIGNALS:
 
     void incrementChanged(double incr, int index = 0);
 
     void decimalsChanged(int deci, int index = 0);
+
+    void matrixVisibleExtentChanged();
 
 private:
 
@@ -363,6 +462,16 @@ private:
     std::vector<int> _decimals;
     bool _disableSlider;
     bool _autoFoldEnabled;
+    int _matrixRows;
+    int _matrixColumns;
+    std::vector<std::string> _matrixRowLabels;
+    std::vector<std::string> _matrixColumnLabels;
+    // Written from knobChanged handlers and read by the GUI on the main thread.
+    std::atomic<int> _matrixVisibleRows;
+    std::atomic<int> _matrixVisibleColumns;
+    RangeWidgetRoleEnum _rangeWidgetRole;
+    KnobColorWPtr _rangeWidgetSourceColour;
+    KnobChoiceWPtr _rangeWidgetModel;
 
     /// to support ofx deprecated normalizd params:
     /// the first and second dimensions of the double param( hence a pair ) have a normalized state.

@@ -911,6 +911,159 @@ colorspaceConvert(const ColorspaceColorimetry& cm,
     }
     colorspaceFromReference(cm, out, v);
 }
+
+/**
+ * @brief The colour models a hue, saturation and luma key works in. HSV and HSL are the hexagonal
+ * models of the working RGB, unclamped; OkLCh is OkLab's lightness, chroma and hue, from the
+ * working RGB adapted to D65 (okLabBasis()). Hue is in turns, 0 to 1, and 0 at zero chroma.
+ **/
+enum KeyModelEnum {
+    eKeyModelHSV = 0,
+    eKeyModelHSL,
+    eKeyModelOkLCh,
+    eKeyModelCount
+};
+
+/**
+ * @brief The chroma over which hue fades into a key, from 0 at zero chroma to 1 at this value: the
+ * relative chroma (max - min) / max for HSV and HSL, and OkLab's C for OkLCh. A grey has no hue,
+ * so a hue range never keys it.
+ **/
+constexpr float kKeyHueFadeRelativeChroma = 0.05f;
+constexpr float kKeyHueFadeOkChroma = 0.02f;
+
+/**
+ * @brief The working RGB's matrices to OkLab's LMS cone space and back, row-major. To LMS is
+ * OkLab's M1 after a Bradford adaptation of the working white to D65 after the working space's
+ * matrix to XYZ, fused into one, so the working white has lightness 1 and no chroma.
+ **/
+struct OkLabBasis {
+    float toLms[9];
+    float fromLms[9];
+};
+
+/**
+ * @brief The OkLab basis of the working space whose RGB-to-XYZ matrix is toXYZ, computed in
+ * double. A singular matrix takes the ACEScg basis.
+ **/
+OkLabBasis okLabBasis(const double toXYZ[9]);
+
+/**
+ * @brief OkLab's M2, from the cube roots of LMS to L, a and b, row-major.
+ **/
+inline const float*
+okLabM2()
+{
+    static const float m[9] = {
+        0.2104542553f, 0.7936177850f, -0.0040720468f,
+        1.9779984951f, -2.4285922050f, 0.4505937099f,
+        0.0259040371f, 0.7827717662f, -0.8086757660f
+    };
+
+    return m;
+}
+
+// The cube root keeping the sign, as OkLab takes it of negative LMS from out-of-gamut colours.
+inline float
+colorspaceSignedCbrt(float x)
+{
+    if (x > 0.f) {
+        return colorspaceCbrtPositive(x);
+    }
+    if (x < 0.f) {
+        const float n = -x;
+        const float r = colorspaceCbrtPositive(n);
+
+        return -r;
+    }
+
+    return 0.f;
+}
+
+// 0 at or below 0, 1 at or above edge, and the smoothstep between.
+inline float
+keyHueFade(float c,
+           float edge)
+{
+    if (!(c > 0.f)) {
+        return 0.f;
+    }
+    if (c >= edge) {
+        return 1.f;
+    }
+    const float t = c / edge;
+    const float t2 = t * t;
+    const float tt = t + t;
+    const float u = 3.f - tt;
+
+    return t2 * u;
+}
+
+/**
+ * @brief The hue, saturation (HSV, HSL) or chroma (OkLCh), and value, lightness or OkLab lightness
+ * of the working colour rgb in model, in out, and the weight hue takes in a key, keyHueFade() of
+ * the chroma. One rounding per statement, as the HSVKeyer kernel in hue.slang computes them.
+ **/
+inline void
+keyModelComponents(KeyModelEnum model,
+                   const OkLabBasis& basis,
+                   const float* rgb,
+                   float* out,
+                   float* hueWeight)
+{
+    if (model == eKeyModelOkLCh) {
+        float v[3] = { rgb[0], rgb[1], rgb[2] };
+        colorspaceMul3(basis.toLms, v);
+        for (int i = 0; i < 3; ++i) {
+            v[i] = colorspaceSignedCbrt(v[i]);
+        }
+        colorspaceMul3(okLabM2(), v);
+        const float aa = v[1] * v[1];
+        const float bb = v[2] * v[2];
+        const float cc = aa + bb;
+        const float c = std::sqrt(cc);
+        out[0] = colorspaceAtan2Turns(v[2], v[1]);
+        out[1] = c;
+        out[2] = v[0];
+        *hueWeight = keyHueFade(c, kKeyHueFadeOkChroma);
+
+        return;
+    }
+    const float maxv = (std::max)((std::max)(rgb[0], rgb[1]), rgb[2]);
+    const float minv = (std::min)((std::min)(rgb[0], rgb[1]), rgb[2]);
+    const float delta = maxv - minv;
+    const float h = colorspaceHexHue(rgb[0], rgb[1], rgb[2], maxv, delta);
+    float relative = 0.f;
+
+    if (maxv > 0.f) {
+        relative = delta / maxv;
+    }
+    out[0] = h;
+    if (model == eKeyModelHSL) {
+        const float sum = maxv + minv;
+        const float l = sum * 0.5f;
+        const float den = (l <= 0.5f) ? sum : (2.f - sum);
+        float s = 0.f;
+        if (den != 0.f) {
+            s = delta / den;
+        }
+        out[1] = s;
+        out[2] = l;
+    } else {
+        out[1] = relative;
+        out[2] = maxv;
+    }
+    *hueWeight = keyHueFade(relative, kKeyHueFadeRelativeChroma);
+}
+
+/**
+ * @brief The working colour whose components in model are comps (hue, saturation or chroma,
+ * luma), the inverse of keyModelComponents() for drawing; not bit-matched to any kernel.
+ **/
+void keyModelToWorking(KeyModelEnum model,
+                       const OkLabBasis& basis,
+                       const float* comps,
+                       float* rgb);
 } // namespace ColorMath
 
 NATRON_NAMESPACE_EXIT

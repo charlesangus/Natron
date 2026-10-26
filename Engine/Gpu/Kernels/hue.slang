@@ -1,6 +1,6 @@
 import pixelwrap;
 
-// The HSVTool, HueCorrect and HueKeyer nodes, with HSVTool.cpp, HueCorrect.cpp, HueKeyer.cpp and
+// The HSVTool, HueCorrect and HSVKeyer nodes, with HSVTool.cpp, HueCorrect.cpp, HSVKeyer.cpp and
 // HueCurves.h written the same way, one rounding per statement, so the CPU and the GPU agree to
 // float rounding.
 
@@ -515,46 +515,244 @@ void huecorrect_wrapped(uint3 tid : SV_DispatchThreadID)
 }
 
 // ---------------------------------------------------------------------------------------------
-// HueKeyer. Parameter block, in words: flags (1: invert), the hue trapezoid's low, rise, full and
-// fall, then the saturation trapezoid's four points.
+// HSVKeyer. Parameter block, in words: flags (1: invert, 2/4/8: use hue/saturation/luma, bits 4-5:
+// the model, 0 HSV, 1 HSL, 2 OkLCh, bits 6-7: the output, 0 alpha, 1 premultiplied, 2 matte), the
+// hue trapezoid's low, rise, full and fall, the saturation and luma trapezoids' four points, then
+// the working RGB to OkLab LMS matrix, row-major. Mirrors HSVKeyerOp::key and
+// ColorMath::keyModelComponents statement by statement.
 
 static const uint kHkInvert = 1;
+static const uint kHkUseHue = 2;
+static const uint kHkUseSat = 4;
+static const uint kHkUseLuma = 8;
+static const uint kHkModelShift = 4;
+static const uint kHkOutputShift = 6;
+static const uint kHkModelHsl = 1;
+static const uint kHkModelOkLch = 2;
+static const uint kHkOutputPremultiplied = 1;
+static const uint kHkOutputMatte = 2;
+// ColorMath::kKeyHueFadeRelativeChroma and kKeyHueFadeOkChroma.
+static const float kHkFadeRelative = 0.05;
+static const float kHkFadeOk = 0.02;
 
-struct HueKeyerOp : IPixelOp
+// ColorMath::colorspaceCbrtPositive.
+float hueCbrtPositive(float x)
+{
+    precise float r = asfloat(0x54a21d2au - asuint(x) / 3u);
+    [ForceUnroll]
+    for (uint i = 0; i < 3; ++i)
+    {
+        precise float r2 = r * r;
+        precise float r3 = r2 * r;
+        precise float xr3 = x * r3;
+        precise float third = xr3 * 0.3333333432674408;
+        precise float d = 1.3333333730697632 - third;
+        r = r * d;
+    }
+    precise float r2 = r * r;
+    precise float o = x * r2;
+    return o;
+}
+
+// ColorMath::colorspaceSignedCbrt.
+float hueSignedCbrt(float x)
+{
+    if (x > 0.0)
+        return hueCbrtPositive(x);
+    if (x < 0.0)
+    {
+        precise float n = -x;
+        return -hueCbrtPositive(n);
+    }
+    return 0.0;
+}
+
+// ColorMath::colorspaceAtanUnit.
+float hueAtanUnit(float tIn)
+{
+    precise float t = tIn;
+    precise float base = 0.0;
+    if (t > 0.4142135679721832)
+    {
+        precise float num = t - 1.0;
+        precise float den = t + 1.0;
+        t = num / den;
+        base = 0.7853981852531433;
+    }
+    precise float z = t * t;
+    precise float p = 0.0805374458432197 * z;
+    p = p - 0.13877685368061066;
+    p = p * z;
+    p = p + 0.19977711141109467;
+    p = p * z;
+    p = p - 0.3333294987678528;
+    p = p * z;
+    p = p * t;
+    p = p + t;
+    precise float o = base + p;
+    return o;
+}
+
+// ColorMath::colorspaceAtan2Turns.
+float hueAtan2Turns(float y, float x)
+{
+    const float ax = abs(x);
+    const float ay = abs(y);
+    if (ax == 0.0 && ay == 0.0)
+        return 0.0;
+    precise float a;
+    if (ay <= ax)
+    {
+        precise float q = ay / ax;
+        a = hueAtanUnit(q);
+    }
+    else
+    {
+        precise float q = ax / ay;
+        precise float t = hueAtanUnit(q);
+        a = 1.5707963705062866 - t;
+    }
+    if (x < 0.0)
+        a = 3.1415927410125732 - a;
+    if (y < 0.0)
+        a = -a;
+    precise float turns = a * 0.15915493667125702;
+    if (turns < 0.0)
+        turns = turns + 1.0;
+    return turns;
+}
+
+// ColorMath::keyHueFade.
+float hueKeyFade(float c, float edge)
+{
+    if (!(c > 0.0))
+        return 0.0;
+    if (c >= edge)
+        return 1.0;
+    precise float t = c / edge;
+    precise float t2 = t * t;
+    precise float tt = t + t;
+    precise float u = 3.0 - tt;
+    precise float o = t2 * u;
+    return o;
+}
+
+// m (row-major) times v, rounding as ColorMath::colorspaceMul3 does.
+float3 hueMul3(float m[9], float3 v)
+{
+    float3 o;
+    [ForceUnroll]
+    for (uint r = 0; r < 3; ++r)
+    {
+        precise float s = m[r * 3] * v.x;
+        precise float g = m[r * 3 + 1] * v.y;
+        s = s + g;
+        precise float b = m[r * 3 + 2] * v.z;
+        s = s + b;
+        o[r] = s;
+    }
+    return o;
+}
+
+struct HSVKeyerOp : IPixelOp
 {
     uint flags;
     float4 hue;
     float4 sat;
+    float4 luma;
+    float toLms[9];
 
     [mutating] void load(StructuredBuffer<uint> params)
     {
         flags = params[0];
         hue = wrapParamFloat4(params, 1);
         sat = wrapParamFloat4(params, 5);
+        luma = wrapParamFloat4(params, 9);
+        [ForceUnroll]
+        for (uint i = 0; i < 9; ++i)
+            toLms[i] = wrapParamFloat(params, 13 + i);
     }
 
     float4 apply(float4 v, int2 xy)
     {
-        const float maxv = hueMax3(v.rgb);
-        const float minv = hueMin3(v.rgb);
-        precise float delta = maxv - minv;
-        const float h = hueHexHue(v.rgb, maxv, delta);
-        precise float s = 0.0;
-        if (maxv > 0.0)
-            s = delta / maxv;
-        const float hk = hueCircleTrapezoid(h, hue.x, hue.y, hue.z, hue.w);
-        const float sk = hueTrapezoid4(s, sat.x, sat.y, sat.z, sat.w);
-        precise float k = hk * sk;
+        const uint model = (flags >> kHkModelShift) & 3u;
+        float3 comps;
+        float weight;
+        if (model == kHkModelOkLch)
+        {
+            float3 lms = hueMul3(toLms, v.rgb);
+            lms = float3(hueSignedCbrt(lms.x), hueSignedCbrt(lms.y), hueSignedCbrt(lms.z));
+            float m2[9] = { 0.2104542553, 0.7936177850, -0.0040720468,
+                            1.9779984951, -2.4285922050, 0.4505937099,
+                            0.0259040371, 0.7827717662, -0.8086757660 };
+            const float3 lab = hueMul3(m2, lms);
+            precise float aa = lab.y * lab.y;
+            precise float bb = lab.z * lab.z;
+            precise float cc = aa + bb;
+            precise float c = sqrt(cc);
+            comps = float3(hueAtan2Turns(lab.z, lab.y), c, lab.x);
+            weight = hueKeyFade(c, kHkFadeOk);
+        }
+        else
+        {
+            const float maxv = hueMax3(v.rgb);
+            const float minv = hueMin3(v.rgb);
+            precise float delta = maxv - minv;
+            const float h = hueHexHue(v.rgb, maxv, delta);
+            precise float relative = 0.0;
+            if (maxv > 0.0)
+                relative = delta / maxv;
+            if (model == kHkModelHsl)
+            {
+                precise float sum = maxv + minv;
+                precise float l = sum * 0.5;
+                precise float den = (l <= 0.5) ? sum : (2.0 - sum);
+                precise float s = 0.0;
+                if (den != 0.0)
+                    s = delta / den;
+                comps = float3(h, s, l);
+            }
+            else
+            {
+                comps = float3(h, relative, maxv);
+            }
+            weight = hueKeyFade(relative, kHkFadeRelative);
+        }
+        precise float k = 1.0;
+        if ((flags & kHkUseHue) != 0)
+        {
+            const float hk = hueCircleTrapezoid(comps.x, hue.x, hue.y, hue.z, hue.w);
+            precise float weighted = hk * weight;
+            k = k * weighted;
+        }
+        if ((flags & kHkUseSat) != 0)
+        {
+            const float sk = hueTrapezoid4(comps.y, sat.x, sat.y, sat.z, sat.w);
+            k = k * sk;
+        }
+        if ((flags & kHkUseLuma) != 0)
+        {
+            const float lk = hueTrapezoid4(comps.z, luma.x, luma.y, luma.z, luma.w);
+            k = k * lk;
+        }
         if ((flags & kHkInvert) != 0)
             k = 1.0 - k;
+        const uint output = (flags >> kHkOutputShift) & 3u;
+        if (output == kHkOutputMatte)
+            return float4(k, k, k, k);
+        if (output == kHkOutputPremultiplied)
+        {
+            precise float3 rgb = v.rgb * k;
+            return float4(rgb, k);
+        }
         return float4(v.rgb, k);
     }
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void huekeyer_wrapped(uint3 tid : SV_DispatchThreadID)
+void hsvkeyer_wrapped(uint3 tid : SV_DispatchThreadID)
 {
-    HueKeyerOp op;
-    runWrapped<HueKeyerOp>(op, tid);
+    HSVKeyerOp op;
+    runWrapped<HSVKeyerOp>(op, tid);
 }

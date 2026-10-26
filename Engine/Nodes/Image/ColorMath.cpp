@@ -61,6 +61,29 @@ namespace {
         return true;
     }
 
+    void
+    mul3v(const double* m,
+          const double* v,
+          double* o)
+    {
+        for (int r = 0; r < 3; ++r) {
+            o[r] = m[r * 3] * v[0] + m[r * 3 + 1] * v[1] + m[r * 3 + 2] * v[2];
+        }
+    }
+
+    // o = a·b, row-major.
+    void
+    mul33(const double* a,
+          const double* b,
+          double* o)
+    {
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                o[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
+            }
+        }
+    }
+
 } // anonymous namespace
 
 void
@@ -171,6 +194,101 @@ colorspaceColorimetry(const double toXYZ[9])
     c.whiteXy[1] = (float)(white[1] / sum);
 
     return c;
+}
+
+OkLabBasis
+okLabBasis(const double toXYZ[9])
+{
+    static const double bradford[9] = {
+        0.8951, 0.2664, -0.1614,
+        -0.7502, 1.7135, 0.0367,
+        0.0389, -0.0685, 1.0296
+    };
+    static const double m1[9] = {
+        0.8189330101, 0.3618667424, -0.1288597137,
+        0.0329845436, 0.9293118715, 0.0361456387,
+        0.0482003018, 0.2643662691, 0.6338517070
+    };
+    static const double d65[3] = { 0.95047, 1.0, 1.08883 };
+    const double* m = toXYZ;
+    double inverse[9];
+
+    if (!invert3(m, inverse)) {
+        m = acesCgToXYZ();
+    }
+    double white[3];
+    for (int r = 0; r < 3; ++r) {
+        white[r] = m[r * 3] + m[r * 3 + 1] + m[r * 3 + 2];
+    }
+    double coneWhite[3];
+    double coneD65[3];
+    mul3v(bradford, white, coneWhite);
+    mul3v(bradford, d65, coneD65);
+    // Von Kries scaling in Bradford's cone space carries the working white onto D65 exactly,
+    // luminance included, so the working white has OkLab lightness 1.
+    double scaled[9];
+    for (int r = 0; r < 3; ++r) {
+        const double k = (coneWhite[r] != 0.) ? (coneD65[r] / coneWhite[r]) : 1.;
+        for (int c = 0; c < 3; ++c) {
+            scaled[r * 3 + c] = bradford[r * 3 + c] * k;
+        }
+    }
+    double bradfordInv[9];
+    invert3(bradford, bradfordInv);
+    double adapt[9];
+    mul33(bradfordInv, scaled, adapt);
+    double xyzToLms[9];
+    mul33(m1, adapt, xyzToLms);
+    double toLms[9];
+    mul33(xyzToLms, m, toLms);
+    double fromLms[9];
+    if (!invert3(toLms, fromLms)) {
+        std::fill(fromLms, fromLms + 9, 0.);
+    }
+    OkLabBasis b = {};
+    for (int i = 0; i < 9; ++i) {
+        b.toLms[i] = (float)toLms[i];
+        b.fromLms[i] = (float)fromLms[i];
+    }
+
+    return b;
+}
+
+void
+keyModelToWorking(KeyModelEnum model,
+                  const OkLabBasis& basis,
+                  const float* comps,
+                  float* rgb)
+{
+    float v[3] = { comps[0], comps[1], comps[2] };
+
+    if (model == eKeyModelHSV) {
+        colorspaceHsvToRgb(v);
+    } else if (model == eKeyModelHSL) {
+        colorspaceHslToRgb(v);
+    } else {
+        static double m2Inverse[9];
+        static const bool m2Inverted = [] {
+            double m2[9];
+            for (int i = 0; i < 9; ++i) {
+                m2[i] = okLabM2()[i];
+            }
+
+            return invert3(m2, m2Inverse);
+        }();
+        Q_UNUSED(m2Inverted);
+        const double angle = 6.283185307179586 * comps[0];
+        const double lab[3] = { comps[2], comps[1] * std::cos(angle), comps[1] * std::sin(angle) };
+        double lms[3];
+        mul3v(m2Inverse, lab, lms);
+        for (int i = 0; i < 3; ++i) {
+            v[i] = (float)(lms[i] * lms[i] * lms[i]);
+        }
+        colorspaceMul3(basis.fromLms, v);
+    }
+    rgb[0] = v[0];
+    rgb[1] = v[1];
+    rgb[2] = v[2];
 }
 
 } // namespace ColorMath

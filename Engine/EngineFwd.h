@@ -167,6 +167,7 @@ class Image;
 class ImageKey;
 class ImageParams;
 class ImageLayerDesc;
+class IsolatedJob;
 class KeyFrame;
 struct KeyTangents;
 class KnobBool;

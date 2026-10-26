@@ -195,9 +195,10 @@ GenericSchedulerThread::quitThread(bool allowRestarts)
 
 
     // Clear any task enqueued and push a fake request
+    std::list<GenericThreadStartArgsPtr> dropped;
     {
         QMutexLocker k(&_imp->enqueuedTasksMutex);
-        _imp->enqueuedTasks.clear();
+        dropped.swap(_imp->enqueuedTasks);
         GenericThreadStartArgsPtr stubArgs = std::make_shared<GenericThreadStartArgs>(true);
         _imp->enqueuedTasks.push_back(stubArgs);
     }
@@ -213,6 +214,7 @@ GenericSchedulerThread::quitThread(bool allowRestarts)
     qDebug() << QThread::currentThread() << ": Termination request on " << getThreadName().c_str();
 #endif
 
+    onQueuedTasksDropped(dropped);
     onQuitRequested(allowRestarts);
     return true;
 }

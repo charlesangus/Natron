@@ -1325,7 +1325,8 @@ public:
     virtual bool tryLock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual void unlock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual bool canSetValue() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual void abortAnyEvaluation(bool keepOldestRender = true) OVERRIDE FINAL;
+    virtual void abortViewerRendersForEdit() OVERRIDE FINAL;
+    virtual void abortAllRendersReadingThis() OVERRIDE FINAL;
     virtual double getCurrentTime() const OVERRIDE WARN_UNUSED_RETURN;
     virtual ViewIdx getCurrentView() const OVERRIDE WARN_UNUSED_RETURN;
     virtual bool getCanTransform() const
@@ -2510,6 +2511,8 @@ public:
                                    bool* isIdentity = NULL);
 
 private:
+    void getDownstreamOutputs(std::list<OutputEffectInstance*>* outputNodes) const;
+
     bool isResolvingLayersPassThrough() const;
 
     ComponentsNeededResultsPtr getPresentLayersResults(double time, ViewIdx view, int inputNb);

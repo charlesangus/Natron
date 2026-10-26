@@ -48,6 +48,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
 #include "Gui/NodeGraphConnect.h"
+#include "Gui/NodeGraphPickUp.h"
 #include "Gui/PanelWidget.h"
 
 NATRON_NAMESPACE_ENTER
@@ -287,11 +288,19 @@ private:
 
     bool connectInputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
 
+    bool moveInputArrowDestinationToNode(Edge* arrow, const NodeGuiPtr& target);
+
+    bool connectOutputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
+
     void applyConnectPlan(const std::vector<ConnectPlanConnection>& plan, const QString& undoText);
+
+    bool hasPickedUpArrow() const;
 
     Edge* getPickedUpArrow() const;
 
-    void pickUpArrow(Edge* arrow);
+    void pickUpArrow(Edge* arrow, PickUpEndEnum end);
+
+    void forgetPickedUpArrow();
 
     void dragPickedUpArrowToCursor();
 

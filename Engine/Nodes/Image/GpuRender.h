@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -130,11 +131,15 @@ struct GpuImageView {
  * compiled when it is first asked for.
  *
  * The base runs it between the same divide and finish passes as a spatial node, so the mask, mix,
- * unprocessed channels and "(Un)premult by" are the base's. Binding 0 is a storage buffer holding
- * the divided source and binding 1 one the shader writes, both nComps floats per pixel of the
- * output rect, packed row by row from its bottom row. Its push constants, if it declares any, are
- * GpuShaderRegion. Every other binding of set 0 is a uniform block or a texture named in
- * GpuShaderInputs.
+ * unprocessed channels and "(Un)premult by" are the base's. Its storage buffers are found by
+ * name, at whatever bindings of set 0 the shader declares them: the block named
+ * kGpuShaderSourceBuffer holds the divided source and the one named kGpuShaderDestinationBuffer
+ * is the one the shader writes, both nComps floats per pixel of the output rect, packed row by row
+ * from its bottom row. A block's name is its variable name, or its type name when it has none, as
+ * for the uniforms. It declares no other storage buffer. Its push constants, if it declares any,
+ * are GpuShaderRegion. Every other binding of set 0 is a uniform block or a texture named in
+ * GpuShaderInputs, so that generated code which puts its own blocks first, as OpenColorIO's does,
+ * needs no renumbering.
  **/
 struct GpuRuntimeShader {
     std::string source;
@@ -146,6 +151,10 @@ struct GpuRuntimeShader {
     {
     }
 };
+
+// The names of a runtime shader's source and destination storage buffers.
+inline constexpr const char* kGpuShaderSourceBuffer = "Src";
+inline constexpr const char* kGpuShaderDestinationBuffer = "Dst";
 
 // Mirrors the push-constant block of a runtime shader.
 struct GpuShaderRegion {
@@ -166,9 +175,16 @@ struct GpuShaderUniform {
 
 /**
  * @brief A float texture with a clamp-to-edge sampler, texels x fastest, then y, then z.
+ *
+ * With a cacheKey the texture is kept by the GPU context under that key, shared with every node
+ * and the viewer asking for it, and uploaded only when the context does not hold it already. The
+ * key must then identify the dimensions, extents, channels, filter and texels, since a texture the
+ * context holds under it is used whatever this one carries. Without one it is uploaded for each
+ * render.
  **/
 struct GpuShaderTexture {
     std::string binding;
+    std::string cacheKey;
     // 1, 2 or 3; the unused extents stay 1.
     int dimensions;
     int width;
@@ -177,10 +193,12 @@ struct GpuShaderTexture {
     // 1 to 4 floats per texel.
     int channels;
     bool linear;
-    std::vector<float> texels;
+    // Shared, so that inputs baked for every render do not copy a large table each time.
+    std::shared_ptr<const std::vector<float>> texels;
 
     GpuShaderTexture()
         : binding()
+        , cacheKey()
         , dimensions(2)
         , width(1)
         , height(1)

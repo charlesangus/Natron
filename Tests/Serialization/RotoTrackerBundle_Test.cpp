@@ -452,7 +452,7 @@ protected:
             QFile::remove(QString::fromStdString(path));
             std::list<AppInstance::RenderWork> works;
             works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
-            getApp()->startWritersRendering(false, works);
+            getApp()->startWritersRendering(eRenderModeBlocking, works);
             if (!QFile::exists(QString::fromStdString(path))) {
                 *error = "frame " + std::to_string(frame) + " was not rendered: " + path;
 

@@ -473,8 +473,9 @@ Project::hasMissingPluginNode() const
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-// The parameter names openfx-io's GenericOCIO gives every plug-in that reads,
-// writes or converts through OpenColorIO (see IOSupport/GenericOCIO.h).
+// The parameter names the native Read and Write take from openfx-io's GenericOCIO
+// (see Engine/Nodes/IO/OcioSpaceKnobs.h). The native OCIO nodes share the config pair
+// and check their own colourspaces.
 const char* const ocioConfigFileKnobName = "ocioConfigFile";
 const char* const ocioWorkingSpaceKnobName = "ocioWorkingSpace";
 const char* const ocioColorSpaceKnobNames[] = { "ocioInputSpace", "ocioOutputSpace" };
@@ -1406,6 +1407,11 @@ Project::isRenderSaveFile(const QString& filePath)
 bool
 Project::saveForRenderProcess(QString* filePath)
 {
+    // Only a GUI session creates the directory at startup; a session without one has none yet.
+    if (!QDir().mkpath(autoSavesDir())) {
+        return false;
+    }
+
     return saveProject_imp(QString(), makeRenderSaveFileName(getApp()->getAppID()), true, false, filePath);
 }
 
@@ -1633,29 +1639,39 @@ resolveRoles(const ProjectColorManagement& cm,
 const char* const kWorkingSpaceRoles[] = { "scene_linear" };
 const char* const kLogRoles[] = { "compositing_log", "scene_linear" };
 const char* const kIntegerRoles[] = { "texture_paint", "color_picking", "scene_linear" };
+const int kColorManagementKnobCount = 7;
 
 /*
  * Repopulates the knob and, when its active name is not among the new options, switches it to
- * the first available fallback, recording "label: old -> new" in fallbacks.
+ * the first available fallback, recording "label: old -> new" in fallbacks. A name equal to
+ * previousDefault was the outgoing config's own default rather than a user choice, so it is not
+ * recorded, and with movePreviousDefault it moves to the new config's default even when the new
+ * config also has it.
  */
 void
 repopulateWithFallback(const KnobChoicePtr& knob,
                        const std::vector<ChoiceOption>& options,
                        const std::vector<std::string>& fallbackNames,
-                       QStringList* fallbacks)
+                       QStringList* fallbacks,
+                       const std::string& previousDefault = std::string(),
+                       bool movePreviousDefault = false)
 {
     const std::string old = knob->getActiveEntry().id;
 
     knob->populateChoices(options);
-    if (!old.empty() && knob->isActiveEntryPresentInEntries()) {
+    const bool atPreviousDefault = !old.empty() && (old == previousDefault);
+    if (!old.empty() && !(atPreviousDefault && movePreviousDefault) && knob->isActiveEntryPresentInEntries()) {
         return;
     }
     const std::string target = firstPresent(options, fallbackNames);
     if (target.empty()) {
         return;
     }
+    if (target == old) {
+        return;
+    }
     knob->setValueFromID(target, 0);
-    if (!old.empty() && (old != target) && fallbacks) {
+    if (!old.empty() && !atPreviousDefault && fallbacks) {
         fallbacks->push_back(QString::fromUtf8("%1: %2 -> %3")
                                  .arg(QString::fromUtf8(knob->getLabel().c_str()))
                                  .arg(QString::fromUtf8(old.c_str()))
@@ -1665,13 +1681,15 @@ repopulateWithFallback(const KnobChoicePtr& knob,
 
 void
 repopulateViewerViews(ProjectPrivate* imp,
-                      QStringList* fallbacks)
+                      QStringList* fallbacks,
+                      const std::string& previousDefault = std::string(),
+                      bool movePreviousDefault = false)
 {
     const ProjectColorManagement& cm = *imp->colorManagement;
     const std::string display = imp->viewerDisplay->getActiveEntry().id;
     std::vector<std::string> fallbackNames(1, cm.getDefaultView(display));
 
-    repopulateWithFallback(imp->viewerView, namesToOptions(cm.getViews(display)), fallbackNames, fallbacks);
+    repopulateWithFallback(imp->viewerView, namesToOptions(cm.getViews(display)), fallbackNames, fallbacks, previousDefault, movePreviousDefault);
 }
 
 /*
@@ -1948,7 +1966,8 @@ Project::initializeKnobs()
     _imp->projectName = AppManager::createKnob<KnobString>( this, tr("Project Name") );
     _imp->projectName->setName("projectName");
     _imp->projectName->setIsPersistent(false);
-//    _imp->projectName->setAsLabel();
+    _imp->projectName->setReadByRenders(false);
+    //    _imp->projectName->setAsLabel();
     _imp->projectName->setDefaultEnabled(0, false);
     _imp->projectName->setAnimationEnabled(false);
     _imp->projectName->setDefaultValue(NATRON_PROJECT_UNTITLED);
@@ -1968,6 +1987,7 @@ Project::initializeKnobs()
     // _imp->natronVersion->setAsLabel();
     _imp->natronVersion->setDefaultEnabled(0, false);
     _imp->natronVersion->setEvaluateOnChange(false);
+    _imp->natronVersion->setReadByRenders(false);
     _imp->natronVersion->setAnimationEnabled(false);
 
     _imp->natronVersion->setDefaultValue( generateUserFriendlyNatronVersionName() );
@@ -1979,6 +1999,7 @@ Project::initializeKnobs()
     //_imp->originalAuthorName->setAsLabel();
     _imp->originalAuthorName->setDefaultEnabled(0, false);
     _imp->originalAuthorName->setEvaluateOnChange(false);
+    _imp->originalAuthorName->setReadByRenders(false);
     _imp->originalAuthorName->setAnimationEnabled(false);
     std::string authorName = generateGUIUserName();
     _imp->originalAuthorName->setDefaultValue(authorName);
@@ -1990,6 +2011,7 @@ Project::initializeKnobs()
     // _imp->lastAuthorName->setAsLabel();
     _imp->lastAuthorName->setDefaultEnabled(0, false);
     _imp->lastAuthorName->setEvaluateOnChange(false);
+    _imp->lastAuthorName->setReadByRenders(false);
     _imp->lastAuthorName->setAnimationEnabled(false);
     _imp->lastAuthorName->setDefaultValue(authorName);
     infoPage->addKnob(_imp->lastAuthorName);
@@ -2001,6 +2023,7 @@ Project::initializeKnobs()
     //_imp->projectCreationDate->setAsLabel();
     _imp->projectCreationDate->setDefaultEnabled(0, false);
     _imp->projectCreationDate->setEvaluateOnChange(false);
+    _imp->projectCreationDate->setReadByRenders(false);
     _imp->projectCreationDate->setAnimationEnabled(false);
     _imp->projectCreationDate->setDefaultValue( QDateTime::currentDateTime().toString().toStdString() );
     infoPage->addKnob(_imp->projectCreationDate);
@@ -2011,6 +2034,7 @@ Project::initializeKnobs()
     //_imp->saveDate->setAsLabel();
     _imp->saveDate->setDefaultEnabled(0, false);
     _imp->saveDate->setEvaluateOnChange(false);
+    _imp->saveDate->setReadByRenders(false);
     _imp->saveDate->setAnimationEnabled(false);
     infoPage->addKnob(_imp->saveDate);
 
@@ -2134,7 +2158,8 @@ Project::applyColorManagementDefaults(bool asKnobDefaults)
 }
 
 void
-Project::refreshColorManagement(bool warnOnFallback)
+Project::refreshColorManagement(bool warnOnFallback,
+                                bool restoring)
 {
     FlagSetter suppressRefresh(true, &_imp->suppressColorManagementRefresh);
     ProjectColorManagement& cm = *_imp->colorManagement;
@@ -2146,6 +2171,19 @@ Project::refreshColorManagement(bool warnOnFallback)
     // The config in use must be the file the digest's stamp describes: once Reload re-stamps a
     // file that changed on disk, the same source is loaded again.
     const U64 sourceStamp = isOCIOConfigFile(source) ? FileStampRegistry::instance().stamp(source) : 0;
+
+    // What the outgoing config would have chosen for each knob, read while the menus still hold
+    // its names; a knob left at that default follows the new config without a warning.
+    std::string previousDefaults[kColorManagementKnobCount];
+    if (cm.getConfig()) {
+        previousDefaults[0] = firstPresent(_imp->workingSpace->getEntries_mt_safe(), resolveRoles(cm, kWorkingSpaceRoles));
+        previousDefaults[1] = firstPresent(_imp->colorSpace8Bit->getEntries_mt_safe(), withRoles(kDefaultColorSpace8Bit, resolveRoles(cm, kIntegerRoles)));
+        previousDefaults[2] = firstPresent(_imp->colorSpace16Bit->getEntries_mt_safe(), withRoles(kDefaultColorSpace16Bit, resolveRoles(cm, kIntegerRoles)));
+        previousDefaults[3] = firstPresent(_imp->colorSpaceLog->getEntries_mt_safe(), withRoles(kDefaultColorSpaceLog, resolveRoles(cm, kLogRoles)));
+        previousDefaults[4] = firstPresent(_imp->colorSpaceFloat->getEntries_mt_safe(), withRoles(kDefaultColorSpaceFloat, resolveRoles(cm, kWorkingSpaceRoles)));
+        previousDefaults[5] = cm.getDefaultDisplay();
+        previousDefaults[6] = cm.getDefaultView(_imp->viewerDisplay->getActiveEntry().id);
+    }
 
     // Choosing Custom before picking a file is an intermediate state, not an error.
     if (!source.empty() && (!cm.getConfig() || (source != cm.getConfigSource()) || (sourceStamp != _imp->loadedOCIOConfigStamp))) {
@@ -2177,14 +2215,16 @@ Project::refreshColorManagement(bool warnOnFallback)
     }
 
     QStringList fallbacks;
+    // A restored name is the saved project's choice, even when it matches the outgoing config's default.
+    const bool move = !restoring;
     const std::vector<ChoiceOption> spaces = colorSpaceOptions(cm);
-    repopulateWithFallback(_imp->workingSpace, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks);
-    repopulateWithFallback(_imp->colorSpace8Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks);
-    repopulateWithFallback(_imp->colorSpace16Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks);
-    repopulateWithFallback(_imp->colorSpaceLog, spaces, resolveRoles(cm, kLogRoles), &fallbacks);
-    repopulateWithFallback(_imp->colorSpaceFloat, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks);
-    repopulateWithFallback(_imp->viewerDisplay, namesToOptions(cm.getDisplays()), std::vector<std::string>(1, cm.getDefaultDisplay()), &fallbacks);
-    repopulateViewerViews(_imp.get(), &fallbacks);
+    repopulateWithFallback(_imp->workingSpace, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks, previousDefaults[0], move);
+    repopulateWithFallback(_imp->colorSpace8Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks, previousDefaults[1], move);
+    repopulateWithFallback(_imp->colorSpace16Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks, previousDefaults[2], move);
+    repopulateWithFallback(_imp->colorSpaceLog, spaces, resolveRoles(cm, kLogRoles), &fallbacks, previousDefaults[3], move);
+    repopulateWithFallback(_imp->colorSpaceFloat, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks, previousDefaults[4], move);
+    repopulateWithFallback(_imp->viewerDisplay, namesToOptions(cm.getDisplays()), std::vector<std::string>(1, cm.getDefaultDisplay()), &fallbacks, previousDefaults[5], move);
+    repopulateViewerViews(_imp.get(), &fallbacks, previousDefaults[6], move);
 
     if (warnOnFallback && !fallbacks.isEmpty()) {
         const QString message = tr("The OpenColorIO config \"%1\" does not define some of the project's colorspaces, displays or views. "

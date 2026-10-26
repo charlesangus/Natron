@@ -384,6 +384,15 @@ ProgressPanel::removeTasksFromTable(const std::list<ProgressTaskInfoPtr>& tasks)
         _imp->tasksOrdered[i]->createCellWidgets();
         _imp->tasksOrdered[i]->setCellWidgets(i, _imp->view);
     }
+
+    // A task off the panel can no longer restart, so its render process's file can go.
+    for (std::list<ProgressTaskInfoPtr>::const_iterator it = tasks.begin(); it != tasks.end(); ++it) {
+        ProcessHandlerPtr process = (*it)->getProcess();
+        NodePtr node = (*it)->getNode();
+        if (process && node && node->getApp()) {
+            node->getApp()->releaseRenderSaveFile(process->getProjectPath());
+        }
+    }
 }
 
 static void

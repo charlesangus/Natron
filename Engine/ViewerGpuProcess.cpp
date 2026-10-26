@@ -421,10 +421,8 @@ ViewerGpuProcess::buildPipeline(const ProjectColorManagement::DisplayProcessorPt
             }
             pipeline->uboBinding = b.binding;
         }
-        {
-            std::lock_guard<std::mutex> lock(_resourcesMutex);
-            s = _resources.acquire(pipeline->shader, pipeline->textures);
-        }
+        // The LUTs come from the runtime's texture cache, shared with the OCIO nodes.
+        s = _resources.acquire(pipeline->shader, pipeline->textures);
         if (!s) {
             return s;
         }

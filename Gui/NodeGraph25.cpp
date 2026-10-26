@@ -159,7 +159,7 @@ NodeGraph::mouseDoubleClickEvent(QMouseEvent* e)
 {
     // The second press of a double click arrives here instead of in mousePressEvent, so a held
     // arrow must get it too.
-    if ((_imp->_pickedUpArrowInput >= 0) && handlePickUpPress(e)) {
+    if (hasPickedUpArrow() && handlePickUpPress(e)) {
         _imp->_evtState = eEventStateNone;
 
         return;

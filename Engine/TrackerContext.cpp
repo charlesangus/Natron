@@ -1490,6 +1490,8 @@ TrackerContext::onOverlayFocusLostInternalNodes(double time,
 void
 TrackerContext::onSchedulerTrackingStarted(int frameStep)
 {
+    // What follows the run's start (its track buttons) is part of the run.
+    IsolatedJob::ThreadScope inJob(getRunningTrackingJob());
     getNode()->getApp()->progressStart(getNode(), tr("Tracking...").toStdString(), "");
     Q_EMIT trackingStarted(frameStep);
 }
@@ -1497,16 +1499,68 @@ TrackerContext::onSchedulerTrackingStarted(int frameStep)
 void
 TrackerContext::onSchedulerTrackingFinished()
 {
+    IsolatedJob::ThreadScope inJob(getRunningTrackingJob());
     getNode()->getApp()->progressEnd( getNode() );
     Q_EMIT trackingFinished();
 }
 
 void
+TrackerContext::onSchedulerRunEnded(quint64 runId)
+{
+    // A run started since this one was handed to the scheduler: its own end solves and ends its
+    // job.
+    if (runId != _imp->trackingRunId) {
+        return;
+    }
+    // The solve is part of the run: it ends the run's job when it has written its result.
+    IsolatedJob::ThreadScope inJob(getRunningTrackingJob());
+    // Solved here rather than on the tracking thread: the solver delivers its result through a
+    // QFutureWatcher, which needs the event loop of the thread it lives in.
+    _imp->solvingRunId = runId;
+    solveTransformParams();
+    const bool solveInFlight = _imp->lastSolveRequest.tWatcher || _imp->lastSolveRequest.cpWatcher;
+    if ((_imp->solvingRunId == runId) && !solveInFlight) {
+        _imp->solvingRunId = 0;
+        _imp->endTrackingJob(runId);
+        Q_EMIT trackingJobFinished();
+    }
+}
+
+void
+TrackerContext::onSchedulerRunDropped(quint64 runId)
+{
+    // Nothing was tracked, so there is nothing to solve.
+    if (runId != _imp->trackingRunId) {
+        return;
+    }
+    _imp->endTrackingJob(runId);
+    Q_EMIT trackingJobFinished();
+}
+
+void
 TrackerContext::onSchedulerTrackingProgress(double progress)
 {
+    IsolatedJob::ThreadScope inJob(getRunningTrackingJob());
     if ( getNode()->getApp() && !getNode()->getApp()->progressUpdate(getNode(), progress) ) {
         _imp->scheduler.abortThreadedTask();
     }
+}
+
+const IsolatedJob*
+TrackerContext::getRunningTrackingJob() const
+{
+    return _imp->runningTrackingJob.load();
+}
+
+quint64
+TrackerContext::startTrackingJob()
+{
+    _imp->endTrackingJob(_imp->trackingRunId);
+    ++_imp->trackingRunId;
+    _imp->trackingJob.reset(new IsolatedJob(getNode(), "track"));
+    _imp->runningTrackingJob.store(_imp->trackingJob.get());
+
+    return _imp->trackingRunId;
 }
 
 //////////////////////// TrackScheduler
@@ -1526,6 +1580,7 @@ struct TrackArgsPrivate
     mutable QMutex autoTrackMutex;
     
     bool autoKeyingOnEnabledParamEnabled;
+    quint64 runId;
 
     TrackArgsPrivate()
         : start(0)
@@ -1539,6 +1594,7 @@ struct TrackArgsPrivate
         , formatWidth(0)
         , formatHeight(0)
         , autoKeyingOnEnabledParamEnabled(false)
+        , runId(0)
     {
     }
 };
@@ -1600,6 +1656,19 @@ TrackArgs::operator=(const TrackArgs& other)
     _imp->formatWidth = other._imp->formatWidth;
     _imp->formatHeight = other._imp->formatHeight;
     _imp->autoKeyingOnEnabledParamEnabled = other._imp->autoKeyingOnEnabledParamEnabled;
+    _imp->runId = other._imp->runId;
+}
+
+quint64
+TrackArgs::getRunId() const
+{
+    return _imp->runId;
+}
+
+void
+TrackArgs::setRunId(quint64 runId)
+{
+    _imp->runId = runId;
 }
 
 bool
@@ -1827,12 +1896,27 @@ public:
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
+void
+TrackScheduler::onQueuedTasksDropped(const std::list<GenericThreadStartArgsPtr>& tasks)
+{
+    for (std::list<GenericThreadStartArgsPtr>::const_iterator it = tasks.begin(); it != tasks.end(); ++it) {
+        TrackArgsPtr args = std::dynamic_pointer_cast<TrackArgs>(*it);
+        if (args) {
+            Q_EMIT runDropped(args->getRunId());
+        }
+    }
+}
+
 GenericSchedulerThread::ThreadStateEnum
 TrackScheduler::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
 {
     TrackArgsPtr args = std::dynamic_pointer_cast<TrackArgs>(inArgs);
 
     assert(args);
+
+    TrackerContext* isContext = dynamic_cast<TrackerContext*>(_imp->paramsProvider);
+    const IsolatedJob* job = isContext ? isContext->getRunningTrackingJob() : NULL;
+    IsolatedJob::ThreadScope inJob(job);
 
     ThreadStateEnum state = eThreadStateActive;
     TimeLinePtr timeline = args->getTimeLine();
@@ -1877,8 +1961,9 @@ TrackScheduler::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
             cur = end;
         }
 
+        std::function<bool(const std::size_t&)> track = [&](const std::size_t& i) {
+            IsolatedJob::ThreadScope stepInJob(job);
 
-        std::function<bool (const std::size_t&)> track = [&](const std::size_t &i) {
             return TrackSchedulerPrivate::trackStepFunctor(i, *args, cur);
         };
         while (cur != end) {
@@ -1962,40 +2047,41 @@ TrackScheduler::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
                 break;
             }
         } // while (cur != end) {
+
+        // Inside the flag's scope so that trackingFinished follows the markers' last writes.
+        KnobBoolPtr contextEnabledKnob;
+        if (isContext) {
+            contextEnabledKnob = isContext->getEnabledKnob();
+        }
+        // Re-slave the knobs to the gui
+        if (contextEnabledKnob) {
+            for (std::size_t i = 0; i < tracks.size(); ++i) {
+                // unslave the enabled knob, since it is slaved to the gui but we may modify it
+                KnobBoolPtr enabledKnob = tracks[i]->natronMarker->getEnabledKnob();
+
+                tracks[i]->natronMarker->notifyTrackingEnded();
+                contextEnabledKnob->blockListenersNotification();
+                contextEnabledKnob->cloneAndUpdateGui(enabledKnob.get());
+                contextEnabledKnob->unblockListenersNotification();
+                enabledKnob->slaveTo(0, contextEnabledKnob, 0);
+            }
+            contextEnabledKnob->setDirty(tracks.size() > 1);
+        }
     } // IsTrackingFlagSetter_RAII
-    TrackerContext* isContext = dynamic_cast<TrackerContext*>(_imp->paramsProvider);
-    if (isContext) {
-        isContext->solveTransformParams();
-    }
 
     appPTR->getAppTLS()->cleanupTLSForThread();
-
-
-    KnobBoolPtr contextEnabledKnob;
-    if (isContext) {
-        contextEnabledKnob = isContext->getEnabledKnob();
-    }
-    // Re-slave the knobs to the gui
-    if (contextEnabledKnob) {
-        for (std::size_t i = 0; i < tracks.size(); ++i) {
-            // unslave the enabled knob, since it is slaved to the gui but we may modify it
-            KnobBoolPtr enabledKnob = tracks[i]->natronMarker->getEnabledKnob();
-
-            tracks[i]->natronMarker->notifyTrackingEnded();
-            contextEnabledKnob->blockListenersNotification();
-            contextEnabledKnob->cloneAndUpdateGui( enabledKnob.get() );
-            contextEnabledKnob->unblockListenersNotification();
-            enabledKnob->slaveTo(0, contextEnabledKnob, 0);
-        }
-        contextEnabledKnob->setDirty(tracks.size() > 1);
-    }
-
 
     //Now that tracking is done update viewer once to refresh the whole visible portion
 
     if ( _imp->paramsProvider && _imp->paramsProvider->getUpdateViewer() ) {
         //Refresh all viewers to the current frame
         timeline->seekFrame(lastValidFrame, true, 0, eTimelineChangeReasonOtherSeek);
+    }
+
+    // The tracker context solves for its transform when this reaches the main thread, queued
+    // behind trackingFinished.
+    if (isContext) {
+        emit_runEnded(args->getRunId());
     }
 
     return state;

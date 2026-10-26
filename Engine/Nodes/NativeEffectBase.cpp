@@ -41,6 +41,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/DeepImage.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
@@ -542,11 +543,12 @@ NativeEffectBase::forEachDeepChunk(const std::vector<RectI>& chunks,
 {
     QThread* const callingThread = QThread::currentThread();
     const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
+    const IsolatedJob* const job = IsolatedJob::current();
     RenderCancellation cancel(this);
     std::atomic<int> chunksRun(0);
 
     const std::function<void(int)> runChunk = [&](int i) {
-        AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, AppTLS::eSpawnKindHostFrameThreading);
+        AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, job, AppTLS::eSpawnKindHostFrameThreading);
 
         if (!aborted()) {
             body(chunks[i]);

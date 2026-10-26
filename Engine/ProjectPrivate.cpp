@@ -216,7 +216,7 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
 
         // Choice ids that did not match the previous config's entries are still pending and
         // re-match here, so the order in which the Color page knobs restored does not matter.
-        _publicInterface->refreshColorManagement(true);
+        _publicInterface->refreshColorManagement(true, true);
 
         /// 2) restore the timeline
         timeline->seekFrame(currentTime, false, 0, eTimelineChangeReasonOtherSeek);
@@ -289,8 +289,8 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
     QDateTime time = QDateTime::currentDateTime();
     autoSetProjectFormat = false;
     hasProjectBeenSavedByUser = true;
-    projectName->setValue( name.toStdString() );
-    projectPath->setValue( path.toStdString() );
+    setProjectFilename(name.toStdString());
+    setProjectPath(path.toStdString());
     ageSinceLastSave = time;
     lastAutoSave = time;
 
@@ -645,7 +645,9 @@ ProjectPrivate::runOnProjectLoadCallback()
 void
 ProjectPrivate::setProjectFilename(const std::string& filename)
 {
-    projectName->setValue(filename);
+    if (projectName->getValue() != filename) {
+        projectName->setValue(filename);
+    }
 }
 
 std::string
@@ -657,7 +659,10 @@ ProjectPrivate::getProjectFilename() const
 void
 ProjectPrivate::setProjectPath(const std::string& path)
 {
-    projectPath->setValue(path);
+    // A save that keeps the path writes nothing, so it is not refused while a render reads the project.
+    if (projectPath->getValue() != path) {
+        projectPath->setValue(path);
+    }
 }
 
 std::string

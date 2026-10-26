@@ -4209,7 +4209,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     ///exited, just exit them when the effect is really deleted instead
     //quitAnyProcessing();
     if (!beingDestroyed) {
-        _imp->effect->abortAnyEvaluation(false /*keepOldestRender*/);
+        _imp->effect->abortAllRendersReadingThis();
         _imp->abortPreview_non_blocking();
     }
 
@@ -6860,7 +6860,7 @@ Node::onEffectKnobValueChanged(KnobI* what,
             w.useRenderStats = getApp()->isRenderStatsActionChecked();
             std::list<AppInstance::RenderWork> works;
             works.push_back(w);
-            getApp()->startWritersRendering(false, works);
+            getApp()->renderForeground(works);
         }
     } else if ( ( what == _imp->disableNodeKnob.lock().get() ) && !_imp->isMultiInstance && !_imp->multiInstanceParent.lock() ) {
         Q_EMIT disabledKnobToggled( _imp->disableNodeKnob.lock()->getValue() );

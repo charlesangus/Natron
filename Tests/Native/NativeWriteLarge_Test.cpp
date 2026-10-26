@@ -336,7 +336,7 @@ TEST_F(NativeWriteLargeTest, NodeWritesAFrameOverTwoGigabytes)
     ASSERT_TRUE(effect != NULL);
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(effect, 1, 1, 1, false));
-    getApp()->startWritersRendering(false, works);
+    getApp()->startWritersRendering(eRenderModeBlocking, works);
 
     std::error_code ec;
     const std::uint64_t written = (std::uint64_t)std::filesystem::file_size(path, ec);

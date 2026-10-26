@@ -50,6 +50,7 @@
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -1061,6 +1062,9 @@ Knob<T>::setValue(const T & v,
     if ((reason == eValueChangedReasonPluginEdited) && PluginEditsDeferral::refuse()) {
         return eValueChangedReturnCodeNothingChanged;
     }
+    if (IsolatedJob::refusesValueWrite(this, reason)) {
+        return eValueChangedReturnCodeNothingChanged;
+    }
 
     KnobHelper::ValueChangedReturnCodeEnum ret = eValueChangedReturnCodeNoKeyframeAdded;
     KnobHolder* holder =  getHolder();
@@ -1145,7 +1149,7 @@ Knob<T>::setValue(const T & v,
         if ( holder && getEvaluateOnChange() ) {
             //We explicitly abort rendering now and do not wait for it to be done in EffectInstance::evaluate()
             //because the actual value change (which will call evaluate()) may arise well later
-            holder->abortAnyEvaluation();
+            holder->abortViewerRendersForEdit();
         }
 
         KnobHelper::ValueChangedReturnCodeEnum returnValue;
@@ -1480,6 +1484,9 @@ Knob<T>::setValueAtTime(double time,
     if ((reason == eValueChangedReasonPluginEdited) && PluginEditsDeferral::refuse()) {
         return eValueChangedReturnCodeNothingChanged;
     }
+    if (IsolatedJob::refusesValueWrite(this, reason)) {
+        return eValueChangedReturnCodeNothingChanged;
+    }
 
     if ( !canAnimate() || !isAnimationEnabled() ) {
         qDebug() << "WARNING: Attempting to call setValueAtTime on " << getName().c_str() << " which does not have animation enabled.";
@@ -1561,7 +1568,7 @@ Knob<T>::setValueAtTime(double time,
         if ( holder && getEvaluateOnChange() ) {
             //We explicitly abort rendering now and do not wait for it to be done in EffectInstance::evaluate()
             //because the actual value change (which will call evaluate()) may arise well later
-            holder->abortAnyEvaluation();
+            holder->abortViewerRendersForEdit();
         }
 
         QueuedSetValueAtTimePtr qv = std::make_shared<QueuedSetValueAtTime>( time, view, dimension, v, *newKey, reason, isValueChangesBlocked() );

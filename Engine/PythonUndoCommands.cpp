@@ -32,6 +32,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobLinkGroup.h"
 #include "Engine/Node.h"
@@ -813,23 +814,28 @@ nodeOfHolder(KnobHolder* holder)
 
 //================================================================
 
-void
+bool
 recordPythonKnobEdit(const KnobIPtr& knob)
 {
     if (!knob) {
-        return;
+        return true;
+    }
+    if (IsolatedJob::refusesPythonWrite(knob.get())) {
+        return false;
     }
     KnobHolder* holder = knob->getHolder();
     if (!holder || !isRecordedHolder(holder)) {
-        return;
+        return true;
     }
     UndoRecorderPtr recorder = recorderFor(holder->getApp());
     if (!recorder || !recorder->claimKnob(knob)) {
-        return;
+        return true;
     }
     UndoTouched touched;
     touched.knobs.push_back(knob);
     recorder->record(std::make_shared<KnobStateCommand>(knob), touched);
+
+    return true;
 }
 
 void

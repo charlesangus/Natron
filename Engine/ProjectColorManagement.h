@@ -28,11 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <functional>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -95,6 +98,19 @@ public:
     };
 
     typedef std::shared_ptr<const DisplayProcessor> DisplayProcessorPtr;
+
+    struct TransformProcessor {
+        OCIO_NAMESPACE::ConstProcessorRcPtr processor;
+        OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu;
+    };
+
+    typedef std::shared_ptr<const TransformProcessor> TransformProcessorPtr;
+
+    /**
+     * @brief How many transform processors stay cached; past it the least recently used is dropped.
+     * A caller holding a dropped processor keeps it alive until it lets go.
+     **/
+    static constexpr std::size_t kTransformCacheCapacity = 256;
     typedef std::function<void()> ConfigChangedCallback;
 
     ProjectColorManagement();
@@ -143,6 +159,29 @@ public:
                                                                   const std::string& dst,
                                                                   const std::vector<std::pair<std::string, std::string>>& context = std::vector<std::pair<std::string, std::string>>()) const;
 
+    /**
+     * @brief The processor of \p transform in the loaded config, with \p context's variables set
+     * on the config's current context, in order. A processor is cached per description of the
+     * transform and set of variables until a config loads, so a transform whose result depends
+     * on more than its description (a file whose contents changed) needs reloadFile() to be read
+     * again. Returns null and fills \p error on failure.
+     **/
+    TransformProcessorPtr getTransformProcessor(const OCIO_NAMESPACE::ConstTransformRcPtr& transform,
+                                                const std::vector<std::pair<std::string, std::string>>& context,
+                                                std::string* error = 0) const;
+
+    /**
+     * @brief Makes the next processor of a transform naming the file \p path read it from disk
+     * again: clears OpenColorIO's file caches and the config's processor cache, and drops the
+     * cached transform processors whose description names \p path, or all of them for an empty one.
+     **/
+    void reloadFile(const std::string& path);
+
+    /**
+     * @brief How many transform processors are cached, at most kTransformCacheCapacity.
+     **/
+    std::size_t getTransformCacheSize() const;
+
     void setWorkingSpace(const std::string& name);
 
     /**
@@ -190,6 +229,10 @@ private:
     OCIO_NAMESPACE::ConstCPUProcessorRcPtr _pickingToWorking;
     mutable std::map<std::string, DisplayProcessorPtr> _displayCache;
     mutable std::map<std::string, OCIO_NAMESPACE::ConstCPUProcessorRcPtr> _conversionCache;
+    // Most recently used first; the map indexes the list by key.
+    typedef std::list<std::pair<std::string, TransformProcessorPtr>> TransformLru;
+    mutable TransformLru _transformLru;
+    mutable std::unordered_map<std::string, TransformLru::iterator> _transformCache;
     bool _workingToXYZValid;
     double _workingToXYZMatrix[9];
     double _workingLuma[3];

@@ -67,7 +67,9 @@ try:
         return w if w is not None and gt.class_name(w) == "SequenceFileDialog" else None
 
     def listed_names(dialog):
-        views = [v for v in dialog.findChildren(QTreeView) if gt.class_name(v) == "SequenceDialogView"]
+        # SequenceDialogView has no Q_OBJECT, so its metaObject reports plain QTreeView; it is the
+        # dialog's only tree view (the favorites pane is a QListView).
+        views = [v for v in dialog.findChildren(QTreeView) if v.isVisible()]
         if not views:
             return []
         view = views[0]
@@ -79,8 +81,9 @@ try:
         return any(n == name or n.endswith("/" + name) for n in listed_names(dialog))
 
     def steps():
-        ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
-        require(ok, "the viewer is up")
+        # The dialog needs only the main window, not a viewer showing anything.
+        ok = yield ("until", lambda: any(w.isVisible() for w in gt.widgets_of("NodeGraph")), STARTUP_TIMEOUT_S)
+        require(ok, "the node graph is up")
         view = node_graph_view()
         require(view is not None, "the node graph is on screen")
         app.selectNode(usd, True)

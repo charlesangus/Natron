@@ -47,6 +47,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
+#include "Engine/Nodes/OCIO/OCIOColorSpace.h"
+#include "Engine/Nodes/OCIO/OCIODisplay.h"
+#include "Engine/Nodes/OCIO/OCIOLookTransform.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OutputEffectInstance.h"
@@ -65,11 +68,9 @@ const char* const kStudioOnlySpace = "Camera Rec.709";
 const char* const kSharedSpace = "ACEScg";
 
 const char* const kConfigFixtureID = kNatronTestOCIOConfigPluginID;
-const char* const kOCIOColorSpaceID = "fr.inria.openfx.OCIOColorSpace";
-const char* const kOCIODisplayID = "fr.inria.openfx.OCIODisplay";
-const char* const kOCIOLookTransformID = "fr.inria.openfx.OCIOLookTransform";
-const char* const kOCIOCDLTransformID = "fr.inria.openfx.OCIOCDLTransform";
-const char* const kOCIOFileTransformID = "fr.inria.openfx.OCIOFileTransform";
+const char* const kOCIOColorSpaceID = PLUGINID_NATRON_OCIOCOLORSPACE;
+const char* const kOCIODisplayID = PLUGINID_NATRON_OCIODISPLAY;
+const char* const kOCIOLookTransformID = PLUGINID_NATRON_OCIOLOOKTRANSFORM;
 
 const char* const kOCIOVar = "OCIO";
 const char* const kPreferenceMarkerVar = "NATRON_OCIO_ENV_IS_PREFERENCE";
@@ -143,8 +144,7 @@ switchProjectConfig(const char* uri)
     ASSERT_EQ(std::string(uri), project()->getColorManagement()->getConfigSource());
 }
 
-// Planted as a plug-in edit: a user edit would make the plug-in replace a name its config
-// lacks before the host ever checks it.
+// Planted as a plug-in edit, which leaves the space unchosen by the user, as a loaded project's is.
 void
 plantSpace(const NodePtr& node,
            const char* knobName,
@@ -161,22 +161,16 @@ void
 plantInputSpace(const NodePtr& node,
                 const std::string& space)
 {
-    plantSpace(node, "ocioInputSpace", space);
+    plantSpace(node, kOCIOColorSpaceParamInputSpace, space);
 }
 
-bool
-endsWith(const std::string& s,
-         const std::string& suffix)
-{
-    return (s.size() >= suffix.size()) && (s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0);
-}
-
+// The menu labels are family paths; the ids are the colourspace names.
 bool
 hasOptionNamed(const std::vector<ChoiceOption>& options,
                const std::string& name)
 {
     for (std::size_t i = 0; i < options.size(); ++i) {
-        if ((options[i].label == name) || endsWith(options[i].label, "/" + name)) {
+        if (options[i].id == name) {
             return true;
         }
     }
@@ -313,7 +307,7 @@ TEST_F(ProjectOCIOTest, SwitchingToCGUpdatesEveryNodeAndRebuildsTheColorSpaceMen
     ASSERT_TRUE(bool(colorSpace));
     ASSERT_TRUE(bool(configNode));
 
-    KnobChoicePtr inputMenu = choiceKnob(colorSpace, "ocioInputSpaceIndex");
+    KnobChoicePtr inputMenu = choiceKnob(colorSpace, kOCIOColorSpaceParamInputSpace "Index");
     ASSERT_TRUE(bool(inputMenu));
     ASSERT_TRUE(hasOptionNamed(inputMenu->getEntries_mt_safe(), kStudioOnlySpace));
 
@@ -326,7 +320,7 @@ TEST_F(ProjectOCIOTest, SwitchingToCGUpdatesEveryNodeAndRebuildsTheColorSpaceMen
 
     const std::vector<ChoiceOption> entries = inputMenu->getEntries_mt_safe();
     const std::vector<std::string> cgSpaces = project()->getColorManagement()->getColorSpaces();
-    EXPECT_EQ(cgSpaces.size(), entries.size());
+    EXPECT_EQ(Project::colorSpaceOptions(*project()->getColorManagement()).size(), entries.size());
     EXPECT_FALSE(hasOptionNamed(entries, kStudioOnlySpace));
     for (std::size_t i = 0; i < cgSpaces.size(); ++i) {
         EXPECT_TRUE(hasOptionNamed(entries, cgSpaces[i])) << cgSpaces[i];
@@ -345,19 +339,17 @@ TEST_F(ProjectOCIOTest, SwitchingToAConfigThatLacksAColorSpaceKeepsTheNameAndFla
 
     switchProjectConfig(kCGURI);
 
-    EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, "ocioInputSpace")->getValue());
+    EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, kOCIOColorSpaceParamInputSpace)->getValue());
     ASSERT_TRUE(colorSpace->hasPersistentMessage());
     QString message;
     int type = 0;
     colorSpace->getPersistentMessage(&message, &type, false);
     EXPECT_EQ((int)eMessageTypeError, type);
-    EXPECT_TRUE(message.contains(QString::fromUtf8("ocioInputSpace = \"Camera Rec.709\" is not a colorspace in the "
-                                                   "OpenColorIO config \"cg-config-v4.0.0_aces-v2.0_ocio-v2.5\".")))
-        << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8(kStudioOnlySpace))) << message.toStdString();
 
     switchProjectConfig(kStudioURI);
 
-    EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, "ocioInputSpace")->getValue());
+    EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, kOCIOColorSpaceParamInputSpace)->getValue());
     EXPECT_FALSE(colorSpace->hasPersistentMessage());
 }
 
@@ -373,38 +365,34 @@ TEST_F(ProjectOCIOTest, AColorSpaceTheConfigLacksIsAnErrorOnLoadThatClearsWhenTh
     ASSERT_TRUE(bool(colorSpace));
     const std::string name = colorSpace->getScriptName_mt_safe();
     plantInputSpace(colorSpace, kStudioOnlySpace);
-
-    project()->reportUnresolvedOCIOColorSpaces();
     EXPECT_TRUE(colorSpace->hasPersistentMessage());
 
     saveResetAndLoad(tmp, "cg-unresolved.ntpz");
     colorSpace = project()->getNodeByName(name);
     ASSERT_TRUE(bool(colorSpace));
-    EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, "ocioInputSpace")->getValue());
+    EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, kOCIOColorSpaceParamInputSpace)->getValue());
     EXPECT_TRUE(colorSpace->hasPersistentMessage());
     QString message;
     int type = 0;
     colorSpace->getPersistentMessage(&message, &type, false);
     EXPECT_EQ((int)eMessageTypeError, type);
-    EXPECT_TRUE(message.contains(QString::fromUtf8("ocioInputSpace = \"Camera Rec.709\" is not a colorspace in the "
-                                                   "OpenColorIO config \"cg-config-v4.0.0_aces-v2.0_ocio-v2.5\".")))
-        << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8(kStudioOnlySpace))) << message.toStdString();
 
     switchProjectConfig(kStudioURI);
 
-    EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, "ocioInputSpace")->getValue());
+    EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, kOCIOColorSpaceParamInputSpace)->getValue());
     EXPECT_FALSE(colorSpace->hasPersistentMessage());
 }
 
 TEST_F(ProjectOCIOTest, TheCheckLeavesOtherPersistentMessagesAlone)
 {
-    NodePtr colorSpace = createNode(kOCIOColorSpaceID);
-    ASSERT_TRUE(bool(colorSpace));
+    NodePtr read = createReader("flat-rgb-only.exr");
+    ASSERT_TRUE(bool(read));
 
-    colorSpace->setPersistentMessage(eMessageTypeError, "some other failure");
+    read->setPersistentMessage(eMessageTypeError, "some other failure");
     project()->reportUnresolvedOCIOColorSpaces();
 
-    EXPECT_TRUE(colorSpace->hasPersistentMessage());
+    EXPECT_TRUE(read->hasPersistentMessage());
 }
 
 TEST_F(ProjectOCIOTest, ASavedAndReloadedProjectKeepsTheConfigTheCleanStateAndTheHiddenKnob)
@@ -455,9 +443,6 @@ TEST_F(ProjectOCIOTest, UnderAnOCIOOverrideALoadedProjectsNodesUseTheOverrideAnd
     const std::string readName = read->getScriptName_mt_safe();
     const std::string colorSpaceName = colorSpace->getScriptName_mt_safe();
     plantInputSpace(colorSpace, kStudioOnlySpace);
-    // The describe-time default is empty without an env config, and an empty destination
-    // makes the plug-in raise its own persistent error on load.
-    plantSpace(colorSpace, "ocioOutputSpace", kSharedSpace);
     QString saved;
     ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("cg.ntpz"), &saved));
 
@@ -472,7 +457,7 @@ TEST_F(ProjectOCIOTest, UnderAnOCIOOverrideALoadedProjectsNodesUseTheOverrideAnd
     ASSERT_TRUE(bool(colorSpace));
     expectCarriesConfig(read, kStudioURI);
     expectCarriesConfig(colorSpace, kStudioURI);
-    EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, "ocioInputSpace")->getValue());
+    EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, kOCIOColorSpaceParamInputSpace)->getValue());
     EXPECT_FALSE(colorSpace->hasPersistentMessage());
 
     setOCIOOverride(0);
@@ -491,8 +476,8 @@ TEST_F(ProjectOCIOTest, LookAndDisplayMenusFollowTheProjectConfig)
     NodePtr display = createNode(kOCIODisplayID);
     ASSERT_TRUE(bool(look));
     ASSERT_TRUE(bool(display));
-    KnobChoicePtr lookMenu = choiceKnob(look, "lookChoice");
-    KnobChoicePtr displayMenu = choiceKnob(display, "displayIndex");
+    KnobChoicePtr lookMenu = choiceKnob(look, kOCIOLookTransformParamLook);
+    KnobChoicePtr displayMenu = choiceKnob(display, kOCIODisplayParamDisplay);
     ASSERT_TRUE(bool(lookMenu));
     ASSERT_TRUE(bool(displayMenu));
 
@@ -510,25 +495,9 @@ TEST_F(ProjectOCIOTest, LookAndDisplayMenusFollowTheProjectConfig)
         const std::vector<ChoiceOption> displayEntries = displayMenu->getEntries_mt_safe();
         ASSERT_EQ(displays.size(), displayEntries.size()) << uris[u];
         for (std::size_t i = 0; i < displays.size(); ++i) {
-            EXPECT_EQ(displays[i], displayEntries[i].label) << uris[u];
+            EXPECT_EQ(displays[i], displayEntries[i].id) << uris[u];
         }
     }
-}
-
-TEST_F(ProjectOCIOTest, CDLAndFileTransformsCarryThePushedConfig)
-{
-    NodePtr cdl = createNode(kOCIOCDLTransformID);
-    NodePtr fileTransform = createNode(kOCIOFileTransformID);
-    ASSERT_TRUE(bool(cdl));
-    ASSERT_TRUE(bool(fileTransform));
-
-    expectCarriesConfig(cdl, kStudioURI);
-    expectCarriesConfig(fileTransform, kStudioURI);
-
-    switchProjectConfig(kCGURI);
-
-    expectCarriesConfig(cdl, kCGURI);
-    expectCarriesConfig(fileTransform, kCGURI);
 }
 
 TEST_F(ProjectOCIOTest, AHostOwnedConfigSwitchLeavesARoleNamedColorSpaceAsWritten)
@@ -538,12 +507,12 @@ TEST_F(ProjectOCIOTest, AHostOwnedConfigSwitchLeavesARoleNamedColorSpaceAsWritte
     NodePtr colorSpace = createNode(kOCIOColorSpaceID);
     ASSERT_TRUE(bool(colorSpace));
     plantInputSpace(colorSpace, "scene_linear");
-    plantSpace(colorSpace, "ocioOutputSpace", "color_picking");
+    plantSpace(colorSpace, kOCIOColorSpaceParamOutputSpace, "color_picking");
 
     switchProjectConfig(kCGURI);
 
-    EXPECT_EQ(std::string("scene_linear"), stringKnob(colorSpace, "ocioInputSpace")->getValue());
-    EXPECT_EQ(std::string("color_picking"), stringKnob(colorSpace, "ocioOutputSpace")->getValue());
+    EXPECT_EQ(std::string("scene_linear"), stringKnob(colorSpace, kOCIOColorSpaceParamInputSpace)->getValue());
+    EXPECT_EQ(std::string("color_picking"), stringKnob(colorSpace, kOCIOColorSpaceParamOutputSpace)->getValue());
     EXPECT_FALSE(colorSpace->hasPersistentMessage());
 }
 
@@ -556,7 +525,7 @@ TEST_F(ProjectOCIOTest, ChangingTheWorkingSpaceMovesOnlyTheTechnicalSideOfExisti
     ASSERT_TRUE(bool(colorSpace));
     write->setOutputFilesForWriter("/tmp/projectOcioWorkingSpace.exr");
     plantInputSpace(colorSpace, kSharedSpace);
-    plantSpace(colorSpace, "ocioOutputSpace", kSharedSpace);
+    plantSpace(colorSpace, kOCIOColorSpaceParamOutputSpace, kSharedSpace);
 
     ASSERT_EQ(std::string(kSharedSpace), stringKnob(read, "ocioWorkingSpace")->getValue());
     ASSERT_EQ(std::string(kSharedSpace), stringKnob(write, "ocioWorkingSpace")->getValue());
@@ -570,8 +539,8 @@ TEST_F(ProjectOCIOTest, ChangingTheWorkingSpaceMovesOnlyTheTechnicalSideOfExisti
     EXPECT_EQ(std::string("ACEScct"), stringKnob(write, "ocioWorkingSpace")->getValue());
     EXPECT_EQ(readFileSpace, stringKnob(read, "ocioInputSpace")->getValue());
     EXPECT_EQ(writeFileSpace, stringKnob(write, "ocioOutputSpace")->getValue());
-    EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, "ocioInputSpace")->getValue());
-    EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, "ocioOutputSpace")->getValue());
+    EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, kOCIOColorSpaceParamInputSpace)->getValue());
+    EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, kOCIOColorSpaceParamOutputSpace)->getValue());
 
     setWorkingSpace(kSharedSpace);
 

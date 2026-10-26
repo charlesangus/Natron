@@ -45,6 +45,7 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include "BaseTest.h"
+#include "Native/GlHostWrapTestEffect.h"
 #include "NativeParity.h"
 #include "RenderBothWays.h"
 
@@ -68,7 +69,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
-const char* const kOCIOColorSpacePluginID = "fr.inria.openfx.OCIOColorSpace";
 const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
 
 const char* const kNoOpenGLMessage = "OpenGL did not load, so this test cannot exercise GL rendering. Run it under Xvfb with GLX and Mesa llvmpipe, as "
@@ -268,33 +268,16 @@ protected:
         BaseTest::TearDown();
     }
 
-    // An OCIOColorSpace node reading input whose current OpenGL support is ePluginOpenGLRenderSupportYes.
-    void createGPUColorSpace(const NodePtr& input,
-                             NodePtr* colorSpace)
+    // A node reading input whose current OpenGL support is ePluginOpenGLRenderSupportYes. It renders
+    // the same constant on OpenGL as on the CPU.
+    void createGLNode(const NodePtr& input,
+                      NodePtr* glNode)
     {
-        *colorSpace = createNode(QString::fromUtf8(kOCIOColorSpacePluginID));
-        ASSERT_TRUE(bool(*colorSpace));
-        connectNodes(input, *colorSpace, 0, true);
+        *glNode = createNode(QString::fromUtf8(kTestPluginIDGlHostWrap));
+        ASSERT_TRUE(bool(*glNode));
+        connectNodes(input, *glNode, 0, true);
 
-        // Connecting a premultiplied source turns premult on, which rules out the plug-in's GPU path.
-        KnobBoolPtr premult = std::dynamic_pointer_cast<KnobBool>((*colorSpace)->getKnobByName("premult"));
-        ASSERT_TRUE(bool(premult));
-        premult->setValue(false, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
-        KnobBoolPtr enableGPU = std::dynamic_pointer_cast<KnobBool>((*colorSpace)->getKnobByName("enableGPU"));
-        ASSERT_TRUE(bool(enableGPU));
-        enableGPU->setValue(true, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
-
-        // An identity transform would skip the render, and with it the GPU path.
-        KnobStringPtr inputSpace = std::dynamic_pointer_cast<KnobString>((*colorSpace)->getKnobByName("ocioInputSpace"));
-        KnobStringPtr outputSpace = std::dynamic_pointer_cast<KnobString>((*colorSpace)->getKnobByName("ocioOutputSpace"));
-        ASSERT_TRUE(inputSpace && outputSpace);
-        const std::string target = getApp()->getProject()->getFileColorSpace(eFileColorCategory8Bit);
-        ASSERT_NE(inputSpace->getValue(), target);
-        outputSpace->setValue(target, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
-        // The plug-in renames a colorspace to the first role that resolves to it, so two names differ only if the spaces do.
-        ASSERT_NE(inputSpace->getValue(), outputSpace->getValue());
-
-        ASSERT_EQ(ePluginOpenGLRenderSupportYes, (*colorSpace)->getCurrentOpenGLRenderSupport());
+        ASSERT_EQ(ePluginOpenGLRenderSupportYes, (*glNode)->getCurrentOpenGLRenderSupport());
     }
 
     void createMerge(const NodePtr& a,
@@ -393,12 +376,12 @@ TEST_F(GLScheduler, GLNodeRendersInsideATaskAndStoresRAM)
 
     NodePtr checker = createNode(QString::fromUtf8(kCheckerBoardPluginID));
     ASSERT_TRUE(bool(checker));
-    NodePtr colorSpace;
-    ASSERT_NO_FATAL_FAILURE(createGPUColorSpace(checker, &colorSpace));
+    NodePtr glNode;
+    ASSERT_NO_FATAL_FAILURE(createGLNode(checker, &glNode));
 
     NodePtr writer = createNativeWriter();
     ASSERT_TRUE(bool(writer));
-    connectNodes(colorSpace, writer, 0, true);
+    connectNodes(glNode, writer, 0, true);
 
     // Contexts left by earlier tests would count as used below.
     appPTR->getGPUContextPool()->clear();
@@ -432,19 +415,19 @@ TEST_F(GLScheduler, ConcurrentGLTasksBeyondTheContextLimitRenderOnCPU)
 
     // Nodes with the same plug-in, parameters and inputs share cache entries. Over one source, a task refused the
     // context could cache the image before the task holding the context renders, which would then take it from the
-    // cache without binding its context. Each colour-space node gets its own source, so each renders its own image.
-    std::vector<NodePtr> colorSpaces(4);
-    for (std::size_t i = 0; i < colorSpaces.size(); ++i) {
+    // cache without binding its context. Each GL node gets its own source, so each renders its own image.
+    std::vector<NodePtr> glNodes(4);
+    for (std::size_t i = 0; i < glNodes.size(); ++i) {
         NodePtr checker = createNode(QString::fromUtf8(kCheckerBoardPluginID));
         ASSERT_TRUE(bool(checker));
         ASSERT_TRUE(setKnobValues(checker, kCheckerBoardParamBoxSize, { 16. + 8. * (double)i }));
-        ASSERT_NO_FATAL_FAILURE(createGPUColorSpace(checker, &colorSpaces[i]));
+        ASSERT_NO_FATAL_FAILURE(createGLNode(checker, &glNodes[i]));
     }
     NodePtr left;
     NodePtr right;
     NodePtr root;
-    ASSERT_NO_FATAL_FAILURE(createMerge(colorSpaces[0], colorSpaces[1], &left));
-    ASSERT_NO_FATAL_FAILURE(createMerge(colorSpaces[2], colorSpaces[3], &right));
+    ASSERT_NO_FATAL_FAILURE(createMerge(glNodes[0], glNodes[1], &left));
+    ASSERT_NO_FATAL_FAILURE(createMerge(glNodes[2], glNodes[3], &right));
     ASSERT_NO_FATAL_FAILURE(createMerge(left, right, &root));
 
     NodePtr writer = createNativeWriter();
@@ -455,8 +438,7 @@ TEST_F(GLScheduler, ConcurrentGLTasksBeyondTheContextLimitRenderOnCPU)
     appPTR->getGPUContextPool()->clear();
 
     const std::vector<int> poolSizes { 4 };
-    // The capped pass mixes OCIO's GPU and CPU implementations, which agree to about 5e-6.
-    const RenderMismatch m = renderBothWays(writer, 1, 1, poolSizes, std::function<void()>(), 1e-4f);
+    const RenderMismatch m = renderBothWays(writer, 1, 1, poolSizes);
     EXPECT_FALSE(m.any) << describe(m);
 
     const std::size_t used = appPTR->getGPUContextPool()->getNumThreadContextsUsedForRender();

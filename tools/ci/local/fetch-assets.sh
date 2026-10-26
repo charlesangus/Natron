@@ -121,14 +121,15 @@ fi
 # ReadFFmpeg and WriteOIIO, WriteEXR, WritePNG, WritePFM, WriteFFmpeg) are
 # disabled because the native Read and Write handle those files, so the EXR,
 # FFmpeg and PNG libraries are not linked. OIIOText, OIIOResize, the OCIO
-# plugins, SeExpr and RunScript are built.
+# plugins, SeExpr and RunScript are built. The OCIO plugins are retired
+# (Engine/OfxRetired/) in favour of the native OCIO nodes, so Natron does
+# not load them.
 #
 # It also takes the OCIO config from the host's instance property and
 # the working space and per-file-type colourspaces (8-bit, 16-bit, log,
 # float) as defaults for new Reads and Writes, rebuilding the colourspace
-# menus when the config changes. OCIODisplay, OCIOLogConvert,
-# OCIOCDLTransform and OCIOFileTransform use that instance config instead
-# of the process-wide OCIO variable, and ReadPNG/ReadOIIO/WritePNG/
+# menus when the config changes. Its OCIO plugins use that instance config
+# instead of the process-wide OCIO variable, and ReadPNG/ReadOIIO/WritePNG/
 # WriteOIIO classify files by bit depth for those defaults.
 #
 # SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's

@@ -115,7 +115,9 @@ struct StageSourceLayers {
  * input followed by its further inputs in fold order, and is empty for any other op.
  * compositeLayers, parallel to composite, holds the layers each of them reads once
  * resolveStageSourcesLayers() has filled it, for inputs that read a selected layer or have an alpha
- * source; it is empty otherwise. compositeResultIsAlpha is CompositeInputs::resultIsAlpha.
+ * source; it is empty otherwise. compositeResultIsAlpha is CompositeInputs::resultIsAlpha. plane
+ * is the plane a Composite op's plan renders, which every input without a selected layer is read
+ * in; empty when the plan serves no one plane.
  **/
 struct StagePlan {
     double time = 0.;
@@ -134,6 +136,7 @@ struct StagePlan {
     std::vector<StageSource> composite;
     std::vector<StageSourceLayers> compositeLayers;
     bool compositeResultIsAlpha = false;
+    ImageLayerDesc plane;
 };
 
 /**
@@ -206,10 +209,13 @@ void resolveStageSources(const NodeSpec* spec,
                          StagePlan* plan);
 
 /**
- * @brief The layers source reads in a render of effect at time and view.
+ * @brief The layers source reads in a render of plane by effect at time and view. A source without
+ * a selected layer reads plane when it is a layer other than the colour one, and reads zero when
+ * its input lacks it; it reads its input's colour plane otherwise, or when plane is empty.
  **/
 StageSourceLayers resolveStageSourceLayers(EffectInstance& effect,
                                            const StageSource& source,
+                                           const ImageLayerDesc& plane,
                                            double time,
                                            ViewIdx view) WARN_UNUSED_RETURN;
 
@@ -228,7 +234,8 @@ bool stageSourcesHaveAlpha(const StagePlan& plan) WARN_UNUSED_RETURN;
 
 /**
  * @brief The render error plan's Composite inputs raise at time and view, or nullopt: a layer read
- * per channel as another layer's alpha with a different number of channels from it.
+ * per channel as another layer's alpha with a different number of channels from it, a layer read
+ * in plan's plane having the plane's.
  **/
 std::optional<std::string> stageSourcesError(EffectInstance& effect,
                                              const StagePlan& plan,
@@ -339,7 +346,9 @@ void stageGpuInputLayer(const EffectInstance& effect,
 /**
  * @brief The layer the GPU executor hands Composite input inputNb over in when plan renders plane:
  * the selected colour layer every further input reading inputNb reads it in, in the layout
- * runStagesCpu() reads it in, when plane is a colour layer of another colour layout; plane
+ * runStagesCpu() reads it in, when plane is a colour layer of another colour layout; the layer
+ * its alpha is read from when plane is another layer that the further inputs reading inputNb
+ * lack, since they read zero pixels there and the input has no plane to hand over; plane
  * otherwise, and always for the base, blend and mask inputs, whose views the fold and the stages
  * read in plane's layout. Needs plan's compositeLayers; plane without them.
  **/

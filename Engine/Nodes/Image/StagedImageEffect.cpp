@@ -145,6 +145,7 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
     const CompositeInputs inputs = opInputsForPlane(query.time, query.view, query.plane);
     StagePlan plan = resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), query);
     resolveStageSources(nodeSpec(), inputs, &plan);
+    plan.plane = query.plane;
     resolveStageSourcesLayers(*self, &plan);
 
     return plan;
@@ -256,6 +257,7 @@ StagedImageEffect::resolveSourcesPlan(double time,
     plan.time = time;
     plan.view = view;
     plan.sourceInput = inputs.blend();
+    plan.plane = plane;
     resolveStageSources(nodeSpec(), inputs, &plan);
 
     return plan;
@@ -809,9 +811,11 @@ StagedImageEffect::render(const RenderActionArgs& args)
 
         return renderOp(args, resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), args.time, args.view, args.processChannels));
     }
-    const CompositeInputs inputs = opInputsForPlane(args.time, args.view, args.outputLayers.empty() ? ImageLayerDesc() : args.outputLayers.front().first);
+    const ImageLayerDesc plane = args.outputLayers.empty() ? ImageLayerDesc() : args.outputLayers.front().first;
+    const CompositeInputs inputs = opInputsForPlane(args.time, args.view, plane);
     StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), args.time, args.view, args.processChannels);
     resolveStageSources(nodeSpec(), inputs, &plan);
+    plan.plane = plane;
     std::optional<std::string> error = checksRawStage ? rawStageError(args.time, args.view) : std::nullopt;
     if (!error) {
         error = opError(args.time, args.view);

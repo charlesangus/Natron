@@ -866,8 +866,10 @@ NativeMerge::adjustInputsForPlane(const ImageLayerDesc& plane,
         return;
     }
     // A plane Layers leaves out is still rendered when it is the colour plane, which the host
-    // always outputs: it is then B alone.
+    // always outputs: it is then B alone. Nothing folds into B there, so B's alpha goes unread,
+    // and a per-channel alpha layer sized for the merged layers must not fail the copy.
     inputs->further.clear();
+    inputs->base.alpha = CompositeAlpha::none();
 }
 
 bool

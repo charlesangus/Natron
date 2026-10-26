@@ -727,6 +727,7 @@ resolveStageSources(const NodeSpec* spec,
 StageSourceLayers
 resolveStageSourceLayers(EffectInstance& effect,
                          const StageSource& source,
+                         const ImageLayerDesc& plane,
                          double time,
                          ViewIdx view)
 {
@@ -738,6 +739,13 @@ resolveStageSourceLayers(EffectInstance& effect,
     if (!source.layerKnob.empty()) {
         layers.read = resolveStageLayerKnob(effect, source.layerKnob, source.layerInput, time, view, &layers.layer);
         layers.mapped = !layers.read;
+    } else if ((plane.getNumComponents() > 0) && !plane.isColorLayer()) {
+        // The plane itself, which only a render's planned input planes would otherwise name: the
+        // GPU query and the request pass have none, and the node may have no layer knob naming it.
+        std::list<ImageLayerDesc> present;
+        effect.getAvailableLayers(time, view, source.layerInput, &present);
+        layers.read = ImageLayerDesc::findEquivalentLayer(plane, present.begin(), present.end()) != present.end();
+        layers.layer = plane;
     } else {
         layers.read = effect.resolveInputPlaneForRender(source.layerInput, time, view, &layers.layer, NULL);
     }
@@ -800,7 +808,7 @@ resolveStageSourcesLayers(EffectInstance& effect,
     }
     plan->compositeLayers.reserve(plan->composite.size());
     for (const StageSource& source : plan->composite) {
-        plan->compositeLayers.push_back(resolveStageSourceLayers(effect, source, plan->time, plan->view));
+        plan->compositeLayers.push_back(resolveStageSourceLayers(effect, source, plan->plane, plan->time, plan->view));
     }
 }
 
@@ -808,17 +816,22 @@ namespace {
 // The error a source whose alpha layer is read per channel raises when it has not as many
 // channels as the layer it is the alpha of, or nullopt.
 std::optional<std::string>
-stageSourceLayersError(const StageSourceLayers& layers)
+stageSourceLayersError(const StageSourceLayers& layers,
+                       const ImageLayerDesc& plane)
 {
-    if (!layers.read || !layers.alphaPerChannel() || (layers.alphaLayer.getNumComponents() == layers.layer.getNumComponents())) {
+    // A layer read in the clip layout arrives in the layout of the plane rendered, which the
+    // per-channel alpha must then match.
+    const ImageLayerDesc& readIn = (layers.mapped && (plane.getNumComponents() > 0)) ? plane : layers.layer;
+
+    if (!layers.read || !layers.alphaPerChannel() || (layers.alphaLayer.getNumComponents() == readIn.getNumComponents())) {
         return std::nullopt;
     }
 
     return QCoreApplication::translate("StagePlan", "The alpha layer %1 has %2 channels, but the layer %3 it is the alpha of has %4.")
         .arg(QString::fromUtf8(layers.alphaLayer.getUserFacingLabel().c_str()))
         .arg(layers.alphaLayer.getNumComponents())
-        .arg(QString::fromUtf8(layers.layer.getUserFacingLabel().c_str()))
-        .arg(layers.layer.getNumComponents())
+        .arg(QString::fromUtf8(readIn.getUserFacingLabel().c_str()))
+        .arg(readIn.getNumComponents())
         .toStdString();
 }
 
@@ -870,7 +883,7 @@ stageSourcesError(EffectInstance& effect,
         if (source.alpha.kind != CompositeAlpha::Kind::Layer) {
             continue;
         }
-        const std::optional<std::string> error = stageSourceLayersError(resolveStageSourceLayers(effect, source, time, view));
+        const std::optional<std::string> error = stageSourceLayersError(resolveStageSourceLayers(effect, source, plan.plane, time, view), plan.plane);
         if (error) {
             return error;
         }
@@ -991,8 +1004,8 @@ runStagesCpu(EffectInstance& effect,
     }
     std::vector<StageSourceLayers> sourceLayers(nFolded);
     for (std::size_t s = 0; s < nFolded; ++s) {
-        sourceLayers[s] = resolveStageSourceLayers(effect, plan.composite[s], args.time, args.view);
-        if (stageSourceLayersError(sourceLayers[s])) {
+        sourceLayers[s] = resolveStageSourceLayers(effect, plan.composite[s], plan.plane, args.time, args.view);
+        if (stageSourceLayersError(sourceLayers[s], plan.plane)) {
             return eStatusFailed;
         }
     }
@@ -1295,8 +1308,25 @@ stageGpuSourceInputLayer(const StagePlan& plan,
                          int inputNb,
                          const ImageLayerDesc& plane)
 {
-    if (!plane.isColorLayer() || (plan.composite.size() < 2) || (plan.compositeLayers.size() != plan.composite.size()) || (inputNb == plan.composite[0].inputNb) || (inputNb == plan.sourceInput) || (plan.applyMask && (inputNb == plan.maskInput))) {
+    if ((plan.composite.size() < 2) || (plan.compositeLayers.size() != plan.composite.size()) || (inputNb == plan.composite[0].inputNb) || (inputNb == plan.sourceInput) || (plan.applyMask && (inputNb == plan.maskInput))) {
         return plane;
+    }
+    if (!plane.isColorLayer()) {
+        // An input lacking the plane reads zero pixels there, so it is handed over in the layer
+        // its alpha is read from, which it carries, rather than in a plane it cannot render.
+        ImageLayerDesc alphaLayer;
+        for (std::size_t s = 1; s < plan.composite.size(); ++s) {
+            const StageSourceLayers& layers = plan.compositeLayers[s];
+            if (plan.composite[s].inputNb != inputNb) {
+                continue;
+            }
+            if (layers.read || !layers.mapped || !layers.hasAlpha() || ((alphaLayer.getNumComponents() > 0) && (alphaLayer != layers.alphaLayer))) {
+                return plane;
+            }
+            alphaLayer = layers.alphaLayer;
+        }
+
+        return (alphaLayer.getNumComponents() > 0) ? alphaLayer : plane;
     }
     ImageLayerDesc selected;
     for (std::size_t s = 1; s < plan.composite.size(); ++s) {
@@ -1335,7 +1365,7 @@ canRunStageSourcesGpu(const StagePlan& plan,
             return false;
         }
         const StageSourceLayers& layers = plan.compositeLayers[s];
-        if (stageSourceLayersError(layers)) {
+        if (stageSourceLayersError(layers, query.plane)) {
             return false;
         }
         const ImageLayerDesc inputLayer = stageGpuSourceInputLayer(plan, source.inputNb, query.plane);
@@ -1488,7 +1518,7 @@ stageSourcesNeededLayers(EffectInstance& effect,
         if ((source.inputNb != inputNb) || (source.layerKnob.empty() && (source.alpha.kind == CompositeAlpha::Kind::None))) {
             continue;
         }
-        const StageSourceLayers read = resolveStageSourceLayers(effect, source, time, view);
+        const StageSourceLayers read = resolveStageSourceLayers(effect, source, plan.plane, time, view);
         if (read.read && !read.mapped) {
             appendStageNeededLayer(read.layer, layers);
         }

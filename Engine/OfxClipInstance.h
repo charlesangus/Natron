@@ -30,7 +30,10 @@
 
 #include <cassert>
 #include <list>
+#include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 #include <QMutex>
@@ -52,12 +55,50 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/EngineFwd.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
 class OfxImageCommon;
 struct OfxClipInstancePrivate;
+
+/**
+ * @brief What an effect's clips report at one frame, computed once from the effect's metadata
+ * there and its inputs' metadata there, and pushed on the clips of a thread acting at that frame
+ * so that they read neither the effect's last refresh nor the inputs at another frame.
+ **/
+struct OfxClipsFrameAnswer {
+    struct Clip {
+        // From the effect's metadata for the clip.
+        std::string components;
+        std::string pixelDepth;
+        double aspectRatio;
+
+        // From what feeds the clip: the input's output, or the effect's own for the output clip.
+        // False for an input clip with nothing connected, whose values are left to the clip.
+        bool hasSource;
+        std::string unmappedComponents;
+        std::string unmappedPixelDepth;
+        OfxRectI format;
+        double frameRate;
+        std::string fieldOrder;
+        bool continuousSamples;
+
+        Clip();
+    };
+
+    // Indexed by input number + 1, the output clip first.
+    std::vector<Clip> clips;
+
+    static std::shared_ptr<const OfxClipsFrameAnswer> create(const NodeMetadata& metadata,
+                                                             const std::vector<NodeMetadataConstPtr>& inputsMetadata);
+
+    /// Null if the effect has no clip numbered inputNb.
+    const Clip* getClip(int inputNb) const;
+};
+
+typedef std::shared_ptr<const OfxClipsFrameAnswer> OfxClipsFrameAnswerPtr;
 class OfxClipInstance
     : public OFX::Host::ImageEffect::ClipInstance
 {
@@ -198,6 +239,7 @@ public:
     /// override this for extra weird custom component depths
     virtual const std::string &findSupportedComp(const std::string &s) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual const std::string &getComponents() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const std::string& getPixelDepth() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /// override this to set the view to be returned by getImage()
     /// This is called by Instance::renderAction() for each clip, before calling
@@ -222,6 +264,13 @@ public:
      **/
     void pushComponentsPresentTimeView(double time, ViewIdx view);
     void popComponentsPresentTimeView();
+
+    /**
+     * @brief While pushed, this clip's properties on the calling thread are those answer gives,
+     * where it gives one, rather than those the effect's last refresh set.
+     **/
+    void pushFrameAnswer(const OfxClipsFrameAnswerPtr& answer);
+    void popFrameAnswer();
 
     //returns the index of this clip if it is an input clip, otherwise -1.
     int getInputNb() const WARN_UNUSED_RETURN;
@@ -276,6 +325,7 @@ public:
         //mipmaplevel may be involved in a recursive action
         std::list<unsigned int> mipmapLevel;
         std::list<std::pair<double, ViewIdx>> componentsPresentTimeView;
+        std::list<OfxClipsFrameAnswerPtr> frameAnswers;
 
         //////////////////////////////////////////////////////////////
         //////////////////////////////////////////////////////////////
@@ -295,6 +345,7 @@ public:
             : view()
             , mipmapLevel()
             , componentsPresentTimeView()
+            , frameAnswers()
             , componentsPresent()
             , unmappedComponents()
         {
@@ -304,6 +355,7 @@ public:
             : view(other.view)
             , mipmapLevel(other.mipmapLevel)
             , componentsPresentTimeView(other.componentsPresentTimeView)
+            , frameAnswers(other.frameAnswers)
             , renderData()
             , componentsPresent(other.componentsPresent)
             , unmappedComponents(other.unmappedComponents)
@@ -327,6 +379,10 @@ protected:
 
 private:
     EffectInstancePtr getEffectHolder() const;
+
+    /// What the frame answer pushed on the calling thread gives for this clip, or null if none is
+    /// pushed, or with needSource, if it leaves the source's values to the clip.
+    const OfxClipsFrameAnswer::Clip* getFrameAnswerClip(bool needSource) const;
 
     void getRegionOfDefinitionInternal(OfxTime time, ViewIdx view, unsigned int mipmapLevel, EffectInstance* associatedNode,
                                        OfxRectD* rod) const;

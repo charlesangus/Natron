@@ -179,12 +179,12 @@ protected:
 
     RectI outputFormat() const
     {
-        return _writer->getEffectInstance()->getOutputFormat();
+        return _writer->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
     }
 
     double outputPar() const
     {
-        return _writer->getEffectInstance()->getAspectRatio(-1);
+        return _writer->getEffectInstance()->getTimeInvariantMetadata()->getPixelAspectRatio(-1);
     }
 
     void pickOutputSpace(const std::string& space)

@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -38,7 +39,10 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -124,4 +128,61 @@ TEST_F(EffectMetadataPythonTest, KeysAreSortedAndComplete)
                                            "    assert k in keys, k\n"
                                            "assert 'exr/missing' not in keys\n"
                                            "assert n.metadataKeys() == n.metadataKeys(n.getCurrentTime())\n");
+}
+
+TEST_F(EffectMetadataPythonTest, StreamGettersFollowTheFrameAndView)
+{
+    NodePtr sourceA = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
+    NodePtr sourceB = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
+    NodePtr switchNode = createNode(QString::fromUtf8(PLUGINID_NATRON_SWITCH));
+    ASSERT_TRUE(sourceA && sourceB && switchNode);
+    connectNodes(sourceA, switchNode, 0, true);
+    connectNodes(sourceB, switchNode, 1, true);
+    MetadataSourceTestEffect* effectA = dynamic_cast<MetadataSourceTestEffect*>(sourceA->getEffectInstance().get());
+    MetadataSourceTestEffect* effectB = dynamic_cast<MetadataSourceTestEffect*>(sourceB->getEffectInstance().get());
+    ASSERT_TRUE(effectA != NULL && effectB != NULL);
+    // Set after connecting: the connection check compares the inputs' aspect ratios.
+    effectA->getFormatKnob()->setValue(40, ViewSpec::all(), 0);
+    effectA->getFormatKnob()->setValue(30, ViewSpec::all(), 1);
+    effectA->getBitDepthKnob()->setValue(static_cast<int>(eImageBitDepthByte), ViewSpec::all(), 0);
+    effectB->getFormatKnob()->setValue(80, ViewSpec::all(), 0);
+    effectB->getFormatKnob()->setValue(60, ViewSpec::all(), 1);
+    effectB->getParKnob()->setValue(2., ViewSpec::all(), 0);
+    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kSwitchParamWhich));
+    ASSERT_TRUE(bool(which));
+    which->setValueAtTime(1, 0, ViewSpec::all(), 0);
+    which->setValueAtTime(2, 1, ViewSpec::all(), 0);
+
+    const NodeMetadataConstPtr atF1 = switchNode->getEffectInstance()->getMetadata(1., ViewIdx(0));
+    const NodeMetadataConstPtr atF2 = switchNode->getEffectInstance()->getMetadata(2., ViewIdx(0));
+    ASSERT_NE(nullptr, atF1);
+    ASSERT_NE(nullptr, atF2);
+    ASSERT_EQ(RectI(0, 0, 40, 30), atF1->getOutputFormat());
+    ASSERT_EQ(RectI(0, 0, 80, 60), atF2->getOutputFormat());
+    ASSERT_EQ(1., atF1->getPixelAspectRatio(-1));
+    ASSERT_EQ(2., atF2->getPixelAspectRatio(-1));
+    ASSERT_NE(atF1->getBitDepth(-1), atF2->getBitDepth(-1));
+
+    std::stringstream script;
+    script << "import NatronEngine\n"
+           << "n = " << getApp()->getAppIDString() << "." << switchNode->getFullyQualifiedName() << "\n"
+           << "f1 = n.getOutputFormat(1, 0)\n"
+           << "f2 = n.getOutputFormat(2, 0)\n"
+           << "assert (f1.width(), f1.height()) == (40, 30), (f1.width(), f1.height())\n"
+           << "assert (f2.width(), f2.height()) == (80, 60), (f2.width(), f2.height())\n"
+           << "assert n.getPixelAspectRatio(1, 0) == 1.0\n"
+           << "assert n.getPixelAspectRatio(2, 0) == 2.0\n"
+           << "assert n.getBitDepth(1, 0) == NatronEngine.Natron.ImageBitDepthEnum.eImageBitDepthByte\n"
+           << "assert n.getBitDepth(2, 0) == NatronEngine.Natron.ImageBitDepthEnum.eImageBitDepthFloat\n"
+           << "assert n.getFrameRate(1, 0) == " << atF1->getOutputFrameRate() << "\n"
+           << "assert n.getFrameRate(2, 0) == " << atF2->getOutputFrameRate() << "\n"
+           // The stream getters have no frame default: a node's stream can change from one frame to the next.
+           << "for name in ('getOutputFormat', 'getFrameRate', 'getPixelAspectRatio', 'getBitDepth'):\n"
+           << "    for args in ((), (1,)):\n"
+           << "        try:\n"
+           << "            getattr(n, name)(*args)\n"
+           << "        except TypeError:\n"
+           << "            continue\n"
+           << "        raise AssertionError(name + str(args) + ' accepted')\n";
+    expectScript(script.str());
 }

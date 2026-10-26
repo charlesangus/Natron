@@ -1468,6 +1468,53 @@ public:
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const = 0;
 };
 
+/**
+ * @brief Brackets a knob content write, from before the store until after the hash marks it
+ * raises. A knob stores its value before it marks its node, so a cache keyed by a node hash can
+ * otherwise derive from the new value and still read the old hash and mark count on both sides
+ * of the derive. A cache filled only when isSettled() held for a snapshot taken before its mark
+ * count, and the snapshot is unchanged after the derive, cannot have seen a write its hash misses:
+ * a write that began before the snapshot either ended, with its marks raised before the hash was
+ * read, or is still counted in it; one that began after it moves the snapshot.
+ **/
+class KnobContentWrite {
+public:
+    KnobContentWrite();
+    ~KnobContentWrite();
+
+    void finish();
+
+    static U64 snapshot();
+    static bool isSettled(U64 snapshot);
+
+private:
+    bool _open;
+};
+
+/**
+ * @brief While one lives on the calling thread, a plug-in's own edits there are refused rather
+ * than applied: knob values and keys it sets, and the options and properties it changes on its
+ * parameters. Held around a plug-in action that may run on any thread at any frame, which must
+ * leave the parameters as the main thread sees them; the refusals are counted so the holder can
+ * have the main thread redo the action and apply them.
+ **/
+class PluginEditsDeferral {
+public:
+    PluginEditsDeferral();
+    ~PluginEditsDeferral();
+
+    /// True, and the refusal counted, if a deferral lives on the calling thread.
+    static bool refuse();
+
+    bool hasRefused() const { return _refused > 0; }
+
+private:
+    PluginEditsDeferral(const PluginEditsDeferral&);
+    PluginEditsDeferral& operator=(const PluginEditsDeferral&);
+
+    PluginEditsDeferral* _previous;
+    int _refused;
+};
 
 ///Skins the API of KnobI by implementing most of the functions in a non templated manner.
 struct KnobHelperPrivate;
@@ -2655,6 +2702,32 @@ public:
     void recreateUserKnobs(bool keepCurPageIndex);
 
     /**
+     * @brief Called by recreateUserKnobs() before any settings panel is rebuilt, whether or not
+     * there is one, and by a node once it has restored its user knobs, so that a holder can
+     * rearrange its user knobs to match what they now are.
+     **/
+    virtual void onUserKnobsChanged()
+    {
+    }
+
+    /**
+     * @brief Called on the main thread when the menu of one of the holder's choice knobs is about
+     * to open, so that a holder whose entries are not kept current can populate them first.
+     **/
+    virtual void refreshChoiceEntries(KnobChoice* /*knob*/)
+    {
+    }
+
+    /**
+     * @brief Called on the main thread when the holder's settings panel opens, or is created
+     * open, so that a holder can bring up to date what its panel shows from the rest of the
+     * project.
+     **/
+    virtual void onSettingsPanelOpened()
+    {
+    }
+
+    /**
      * @brief Wipe all knobs GUI and re-create it to synchronize it to the current internal state.
      * This may only be called on the main-thread. This is an expensive operation.
      **/
@@ -2683,19 +2756,8 @@ public:
     template <typename TYPE>
     std::shared_ptr<TYPE> getKnobByNameAndType(const std::string & name) const
     {
-        const KnobsVec& knobs = getKnobs();
-
-        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-            if ( (*it)->getName() == name ) {
-                std::shared_ptr<TYPE> isType = std::dynamic_pointer_cast<TYPE>(*it);
-                if (isType) {
-                    return isType;
-                }
-                break;
-            }
-        }
-
-        return std::shared_ptr<TYPE>();
+        // getKnobByName() locks the knob list, so this may be called from any thread.
+        return std::dynamic_pointer_cast<TYPE>(getKnobByName(name));
     }
 
     const std::vector<KnobIPtr> & getKnobs() const WARN_UNUSED_RETURN;
@@ -2793,8 +2855,17 @@ public:
     void updateHasAnimation();
 
     //////////////////////////////////////////////////////////////////////////////////////////
-    std::shared_ptr<KnobPage> getOrCreateUserPageKnob();
+    /**
+     * @brief The first user page that scripts and the parameter manager made, which is where the
+     * Python creators put a new parameter. A user page the plug-in declares, such as one holding a
+     * variables group, is not it.
+     **/
     std::shared_ptr<KnobPage> getUserPageKnob() const;
+
+    /**
+     * @brief getUserPageKnob(), creating the "User" page when there is none.
+     **/
+    std::shared_ptr<KnobPage> getOrCreateUserPageKnob();
 
     /**
      * @brief These functions below are dynamic in a sense that they can be called at any time (on the main-thread)

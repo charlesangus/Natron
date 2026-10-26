@@ -206,6 +206,8 @@ public:
     ~InputRelatedDataRefreshScope() { --inputRelatedDataRefreshDepth; }
 };
 
+thread_local int inputRelatedDataRefreshDeferralDepth = 0;
+
 bool
 isSkippedByHashInputs(const Node& node)
 {
@@ -1305,6 +1307,38 @@ hashDirtyQueue()
 
 thread_local bool flushingHashDirtyMarks = false;
 
+// The hash mark trace tests install. Off, a mark only loads the flag.
+std::atomic<bool> hashMarkTraceOn(false);
+
+struct HashMarkTraceSlot {
+    std::mutex mutex; //< held through a call, so that removing the trace waits for one in progress
+    Node::HashMarkTrace trace;
+};
+
+// Deliberately leaked, like the queue.
+HashMarkTraceSlot&
+hashMarkTraceSlot()
+{
+    static HashMarkTraceSlot* slot = new HashMarkTraceSlot;
+
+    return *slot;
+}
+
+void
+traceHashMark(const Node* node,
+              const char* reason,
+              const KnobI* knob)
+{
+    if (!hashMarkTraceOn.load(std::memory_order_relaxed)) {
+        return;
+    }
+    HashMarkTraceSlot& slot = hashMarkTraceSlot();
+    std::lock_guard<std::mutex> l(slot.mutex);
+    if (slot.trace) {
+        slot.trace(node, reason, knob);
+    }
+}
+
 class FlushingHashDirtyMarksFlag {
 public:
     FlushingHashDirtyMarksFlag() { flushingHashDirtyMarks = true; }
@@ -1360,16 +1394,19 @@ struct Node::HashWalk {
 void
 Node::markHashDirty()
 {
-    markHashDirtyInternal(false);
+    markHashDirtyInternal(false, "markHashDirty", 0);
 }
 
 void
-Node::markHashDirtyInternal(bool includeGroupContents)
+Node::markHashDirtyInternal(bool includeGroupContents,
+                            const char* reason,
+                            const KnobI* knob)
 {
     // Raised before the generation moves: a walk that finds the node dirty must also see that its
     // mark is pending, or it would stop at the node and leave the dependents clean.
     const bool alreadyQueued = _imp->hashDirtyQueued.exchange(true);
     _imp->hashDirtyGeneration.fetch_add(1);
+    traceHashMark(this, reason, knob);
     if (alreadyQueued && !includeGroupContents) {
         return;
     }
@@ -1391,9 +1428,21 @@ Node::markHashDirtyInternal(bool includeGroupContents)
 }
 
 void
-Node::invalidateAllHashes()
+Node::invalidateAllHashes(const char* reason,
+                          const KnobI* knob)
 {
     hashEpoch().fetch_add(1);
+    traceHashMark(0, reason, knob);
+}
+
+void
+Node::setHashMarkTraceForTesting(const HashMarkTrace& trace)
+{
+    HashMarkTraceSlot& slot = hashMarkTraceSlot();
+    std::lock_guard<std::mutex> l(slot.mutex);
+
+    slot.trace = trace;
+    hashMarkTraceOn.store(bool(trace));
 }
 
 void
@@ -1464,6 +1513,7 @@ Node::flushHashDirtyMarks()
                 return;
             }
             const U64 previous = node->_imp->hashDirtyGeneration.fetch_add(1);
+            traceHashMark(node.get(), "reached by a mark upstream", 0);
             const bool wasDirty = (previous != node->_imp->hashCleanGeneration.load()) || (hashEpoch().load() != node->_imp->hashCleanEpoch.load());
             // Whatever folds in a dirty node is dirty too, except below a node whose own mark is
             // still pending, so the walk stops at dirty nodes that are not pending.
@@ -1512,6 +1562,18 @@ Node::flushHashDirtyMarks()
     }
 } // Node::flushHashDirtyMarks
 
+U64
+Node::getHashMarkCount() const
+{
+    // A queued mark has not reached this node's generation yet.
+    if (hashComputeDepth == 0) {
+        flushHashDirtyMarksBeforeRead(this);
+    }
+
+    // Both only grow, so the sum stays put only while neither moves.
+    return _imp->hashDirtyGeneration.load() + hashEpoch().load();
+}
+
 bool
 Node::isHashDirty() const
 {
@@ -1541,25 +1603,29 @@ Node::recomputeHashIfDirty(bool requireCleanInputs,
         // The inputs checked are the ones hashed.
         HashInputs inputs;
         getHashInputs(&inputs);
-        if (requireCleanInputs) {
-            for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
-                const NodePtr& input = inputs.bySlot[i].second;
-                if (input && input->isHashDirty()) {
-                    return false;
-                }
-            }
-            for (std::size_t i = 0; i < inputs.metadataSources.size(); ++i) {
-                if (inputs.metadataSources[i]->isHashDirty()) {
-                    return false;
-                }
-            }
+        bool inputsClean = true;
+        for (std::size_t i = 0; inputsClean && (i < inputs.bySlot.size()); ++i) {
+            const NodePtr& input = inputs.bySlot[i].second;
+            inputsClean = !input || !input->isHashDirty();
+        }
+        for (std::size_t i = 0; inputsClean && (i < inputs.metadataSources.size()); ++i) {
+            inputsClean = !inputs.metadataSources[i]->isHashDirty();
+        }
+        if (!inputsClean && requireCleanInputs) {
+            return false;
         }
         {
             HashComputeScope computing;
             changed = computeHashInternal(walk->projectDigest(*this, epoch), inputs, &contentHash);
         }
-        _imp->hashCleanEpoch.store(epoch);
-        _imp->hashCleanGeneration.store(generation);
+        // Folded over a dirty input, the hash may stand for a state the graph has left, so the
+        // node stays dirty: a mark flush stops at a dirty node that is not queued, on the promise
+        // that everything folding it in is dirty too, and a clean node here would keep that stale
+        // hash, and its mark count, through the edits that flush skips.
+        if (inputsClean) {
+            _imp->hashCleanEpoch.store(epoch);
+            _imp->hashCleanGeneration.store(generation);
+        }
     }
 
     // Run outside the recompute lock, since they take the effect's and knobs' locks. The cache entries
@@ -1575,7 +1641,8 @@ void
 Node::refreshDirtyHashes()
 {
     // Another attempt is only needed when a concurrent mark lands mid-refresh. The last one
-    // accepts dirty inputs, so that a cycle still settles.
+    // accepts dirty inputs, so that a read under contention or in a cycle still gets a hash, but
+    // leaves the nodes that folded one in dirty.
     const int attempts = 4;
     NodePtr self = weak_from_this().lock();
 
@@ -1660,7 +1727,7 @@ Node::onKnobContentChanged(const KnobI* knob)
     if (knob && dynamic_cast<NodeGroup*>(_imp->effect.get())) {
         groupState = (knob == _imp->disableNodeKnob.lock().get()) || (knob == _imp->lifeTimeKnob.lock().get()) || (knob == _imp->enableLifeTimeKnob.lock().get());
     }
-    markHashDirtyInternal(groupState);
+    markHashDirtyInternal(groupState, "knob content changed", knob);
 }
 
 bool
@@ -1748,10 +1815,14 @@ Node::onMetadataChangedUnderSameHash()
         EffectInstancePtr effect = output->getEffectInstance();
         if (effect) {
             effect->dropCachedOutputMetadata();
+            effect->dropCachedMetadata();
         }
         output->_imp->metadataRevision.fetch_add(1);
         output->refreshMetadataReaders(true);
         output->appendOutputsWithGroupRedirection(&toVisit);
+    }
+    if (_imp->effect) {
+        _imp->effect->dropCachedMetadata();
     }
     _imp->metadataRevision.fetch_add(1);
     refreshMetadataReaders(true);
@@ -2859,7 +2930,7 @@ Node::makeInfoForInput(int inputNumber) const
         ss << "</font><br />";
     }
     {
-        ImageBitDepthEnum depth = _imp->effect->getBitDepth(inputNumber);
+        ImageBitDepthEnum depth = _imp->effect->getMetadata(time, ViewIdx(0))->getBitDepth(inputNumber);
         QString depthStr = tr("unknown");
         switch (depth) {
             case eImageBitDepthByte:
@@ -2878,19 +2949,20 @@ Node::makeInfoForInput(int inputNumber) const
         }
         ss << "<b>" << tr("BitDepth:").toStdString() << "</b> <font color=#c8c8c8>" << depthStr.toStdString() << "</font><br />";
     }
+    const NodeMetadataConstPtr inputMetadata = input->getMetadata(time, ViewIdx(0));
     {
-        RectI format = input->getOutputFormat();
+        RectI format = inputMetadata->getOutputFormat();
         if ( !format.isNull() ) {
             ss << "<b>" << tr("Format (pixels):").toStdString() << "</b> <font color=#c8c8c8>";
             ss << tr("left = %1 bottom = %2 right = %3 top = %4").arg(format.x1).arg(format.y1).arg(format.x2).arg(format.y2).toStdString() << "</font><br />";
         }
     }
     { // par
-        double par = input->getAspectRatio(-1);
+        double par = inputMetadata->getPixelAspectRatio(-1);
         ss << "<b>" << tr("Pixel aspect ratio:").toStdString() << "</b> <font color=#c8c8c8>" << par << "</font><br />";
     }
     { // fps
-        double fps = input->getFrameRate();
+        double fps = inputMetadata->getOutputFrameRate();
         ss << "<b>" << tr("Frame rate:").toStdString() << "</b> <font color=#c8c8c8>" << tr("%1fps").arg(fps).toStdString() << "</font><br />";
     }
     {
@@ -4671,7 +4743,8 @@ Node::makePreviewImage(SequenceTime time,
 
     const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
 
-    const double par = effect->getAspectRatio(-1);
+    const NodeMetadataConstPtr metadata = effect->getMetadata(time, ViewIdx(0));
+    const double par = metadata->getPixelAspectRatio(-1);
     const RectI renderWindow = rod.toPixelEnclosing(mipmapLevel, par);
 
     NodePtr thisNode = shared_from_this();
@@ -4707,10 +4780,10 @@ Node::makePreviewImage(SequenceTime time,
         frameRenderArgs.updateNodesRequest(request);
 
         std::list<ImageLayerDesc> requestedComps;
-        ImageBitDepthEnum depth = effect->getBitDepth(-1);
+        ImageBitDepthEnum depth = metadata->getBitDepth(-1);
         {
             ImageLayerDesc layer, pairedLayer;
-            effect->getMetadataComponents(-1, &layer, &pairedLayer);
+            EffectInstance::getLayersFromMetadata(*metadata, -1, &layer, &pairedLayer);
             requestedComps.push_back(layer);
         }
 
@@ -5416,16 +5489,6 @@ Node::getPersistentMessage(QString* message,
                            int* type,
                            bool prefixLabelAndType) const
 {
-    bool hasChannelSelectorMessage;
-    {
-        QMutexLocker k(&_imp->persistentMessageMutex);
-        hasChannelSelectorMessage = _imp->persistentMessageFromChannelSelector;
-    }
-    // The refresh is what clears a missing-channel message an upstream edit resolved.
-    if (hasChannelSelectorMessage) {
-        const_cast<Node*>(this)->refreshInputRelatedDataIfStale();
-    }
-
     QMutexLocker k(&_imp->persistentMessageMutex);
 
     *type = _imp->persistentMessageType;
@@ -6061,20 +6124,19 @@ ImageLayerDesc
 Node::findClosestSupportedComponents(int inputNb,
                                      const ImageLayerDesc& comp) const
 {
-    std::list<ImageLayerDesc> comps;
-    {
-        QMutexLocker l(&_imp->inputsMutex);
+    // Searched in place: this runs for every input of every node each frame, and the lists are
+    // only replaced, under the same lock, when the inputs are initialized.
+    const bool multiPlanar = _imp->effect->isMultiPlanar();
+    QMutexLocker l(&_imp->inputsMutex);
 
-        if (inputNb >= 0) {
-            assert( inputNb < (int)_imp->inputsComponents.size() );
-            comps = _imp->inputsComponents[inputNb];
-        } else {
-            assert(inputNb == -1);
-            comps = _imp->outputComponents;
-        }
+    if (inputNb >= 0) {
+        assert(inputNb < (int)_imp->inputsComponents.size());
+
+        return findClosestInList(comp, _imp->inputsComponents[inputNb], multiPlanar);
     }
+    assert(inputNb == -1);
 
-    return findClosestInList( comp, comps, _imp->effect->isMultiPlanar() );
+    return findClosestInList(comp, _imp->outputComponents, multiPlanar);
 }
 
 int
@@ -6871,6 +6933,33 @@ findAliasSlaveOnOtherNode(const KnobIPtr& master,
     return KnobIPtr();
 }
 
+// The layers an image stream on inputNb carries. Every image stream carries a Color plane, so an
+// unconnected input still lists it.
+static std::shared_ptr<const std::list<ImageLayerDesc>>
+getInputStreamLayers(const EffectInstancePtr& effect,
+                     int inputNb,
+                     double time,
+                     ViewIdx view)
+{
+    std::shared_ptr<const std::list<ImageLayerDesc>> present;
+    if (effect && (inputNb >= 0)) {
+        present = effect->getPresentLayersShared(time, view, inputNb);
+    }
+    if (present) {
+        for (std::list<ImageLayerDesc>::const_iterator it = present->begin(); it != present->end(); ++it) {
+            if (it->isColorLayer()) {
+                return present;
+            }
+        }
+    }
+    std::shared_ptr<std::list<ImageLayerDesc>> layers = std::make_shared<std::list<ImageLayerDesc>>(1, ImageLayerDesc::getRGBAComponents());
+    if (present) {
+        layers->insert(layers->end(), present->begin(), present->end());
+    }
+
+    return layers;
+}
+
 static void
 appendInputStreamLayers(const EffectInstancePtr& effect,
                         int inputNb,
@@ -6878,23 +6967,8 @@ appendInputStreamLayers(const EffectInstancePtr& effect,
                         ViewIdx view,
                         std::list<ImageLayerDesc>* layers)
 {
-    std::list<ImageLayerDesc> present;
-    if (effect && (inputNb >= 0)) {
-        effect->getPresentLayers(time, view, inputNb, &present);
-    }
-
-    // Every image stream carries a Color plane, so an unconnected input still lists it.
-    bool hasColor = false;
-    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
-        if (it->isColorLayer()) {
-            hasColor = true;
-            break;
-        }
-    }
-    if (!hasColor) {
-        layers->push_back(ImageLayerDesc::getRGBAComponents());
-    }
-    layers->insert(layers->end(), present.begin(), present.end());
+    std::shared_ptr<const std::list<ImageLayerDesc>> present = getInputStreamLayers(effect, inputNb, time, view);
+    layers->insert(layers->end(), present->begin(), present->end());
 }
 
 void
@@ -7035,6 +7109,23 @@ Node::resolveLayerKnob(double time,
         return false;
     }
 
+    std::map<const KnobI*, LayerKnobSource>::const_iterator found = _imp->layerKnobSources.find(layerKnob.get());
+    if ((found != _imp->layerKnobSources.end()) && (found->second.role != LayerKnobSpec::eRoleTarget)) {
+        int inputNb = found->second.inputNb;
+        double inputTime = time;
+        ViewIdx inputView = view;
+        if (inputNb == LayerKnobSource::kPreferredInput) {
+            if (_imp->effect) {
+                _imp->effect->getLayersPassThroughInput(time, view, &inputNb, &inputTime, &inputView);
+            } else {
+                inputNb = -1;
+            }
+        }
+        resolveAgainstPresentLayers(channelSet, layerSelect, *getInputStreamLayers(_imp->effect, inputNb, inputTime, inputView), selected);
+
+        return true;
+    }
+
     std::list<ImageLayerDesc> present;
     listLayersForKnob(layerKnob, time, view, &present);
     resolveAgainstPresentLayers(channelSet, layerSelect, present, selected);
@@ -7059,14 +7150,14 @@ Node::resolveLayerKnob(double time,
         return false;
     }
 
-    std::list<ImageLayerDesc> present;
     std::map<const KnobI*, LayerKnobSource>::const_iterator found = _imp->layerKnobSources.find(layerKnob.get());
     if ((found != _imp->layerKnobSources.end()) && (found->second.role != LayerKnobSpec::eRoleTarget) && (found->second.inputNb == LayerKnobSource::kPreferredInput)) {
-        appendInputStreamLayers(_imp->effect, passThroughInputNb, passThroughTime, passThroughView, &present);
+        resolveAgainstPresentLayers(channelSet, layerSelect, *getInputStreamLayers(_imp->effect, passThroughInputNb, passThroughTime, passThroughView), selected);
     } else {
+        std::list<ImageLayerDesc> present;
         listLayersForKnob(layerKnob, time, view, &present);
+        resolveAgainstPresentLayers(channelSet, layerSelect, present, selected);
     }
-    resolveAgainstPresentLayers(channelSet, layerSelect, present, selected);
 
     return true;
 }
@@ -7202,7 +7293,7 @@ Node::Implementation::onMaskSelectorChanged(int inputNb,
 
     if (!isRefreshingInputRelatedData) {
         ///Clip preferences have changed
-        effect->refreshMetadata_public(true);
+        effect->refreshMetadataSideEffects();
     }
 }
 
@@ -7403,7 +7494,8 @@ Node::areKeyframesVisibleOnTimeline() const
 bool
 Node::hasAnimatedKnob() const
 {
-    const KnobsVec & knobs = getKnobs();
+    // Metadata derivation asks this from render threads, so the knob list is copied under its lock.
+    const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
     bool hasAnimation = false;
 
     for (U32 i = 0; i < knobs.size(); ++i) {
@@ -7720,7 +7812,7 @@ addIdentityNodesRecursively(const Node* caller,
                 double inputTimeId;
                 ViewIdx identityView;
                 int inputNbId;
-                RectI format = node->getEffectInstance()->getOutputFormat();
+                RectI format = node->getEffectInstance()->getMetadata(time, view)->getOutputFormat();
 
                 // Uncached: the output format is not the node's image, and the identity cache keeps
                 // whole-image answers keyed on the hash alone, which the node's own render would then
@@ -7961,9 +8053,6 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
     assert( QThread::currentThread() == qApp->thread() );
     RefreshingInputData_RAII _refreshingflag( _imp.get() );
     InputRelatedDataRefreshScope refreshing;
-    // Cleared before the refresh reads anything, so that an edit landing during it leaves the
-    // node to be refreshed again.
-    _imp->inputRelatedDataStale.store(false);
     {
         QMutexLocker k(&_imp->pluginsPropMutex);
         _imp->mustComputeInputRelatedData = false;
@@ -7998,7 +8087,10 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
                 }
             }
         }
-        hasChanged |= _imp->effect->refreshMetadata_public(false);
+        // Renders compute their metadata per frame and need nothing from here. An OpenFX node
+        // derives (and pushes to its clips) its time-invariant answer for its new state, and the
+        // UI hook below follows the answer at the current frame.
+        (void)_imp->effect->getTimeInvariantMetadata();
     }
 
     refreshChannelSelectors();
@@ -8007,6 +8099,8 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
     _imp->notifyLayerReferencesChanged();
 
     refreshIdentityState();
+
+    _imp->effect->refreshCurrentFrameMetadata(getApp()->getTimeLine()->currentFrame(), false);
 
     if (loadingProject) {
         hasChanged |= refreshHashNow();
@@ -8181,8 +8275,6 @@ Node::refreshShownInputRelatedData(std::set<Node*>& visited)
         return false;
     }
     if (!isInputRelatedDataDirty()) {
-        _imp->inputRelatedDataStale.store(false);
-
         return false;
     }
 
@@ -8221,14 +8313,13 @@ Node::refreshInputRelatedDataAfterInputChange()
 {
     assert(QThread::currentThread() == qApp->thread());
     markAllInputRelatedDataDirty();
-    markDownstreamInputRelatedDataStale();
+    refreshShownDownstreamInputRelatedData();
 
     NodeGroup* isGroup = dynamic_cast<NodeGroup*>(_imp->effect.get());
     if (isGroup) {
         // A container's inputs feed the nodes inside it, which are refreshed as nodes downstream
         // of the edit. A container with a host layer knob (Write) lists its own inputs' layers on
         // it, so its selectors are refreshed here like those of the node the edit is on.
-        _imp->inputRelatedDataStale.store(true);
         if (_imp->layerKnob.lock()) {
             refreshChannelSelectors();
         }
@@ -8241,7 +8332,7 @@ Node::refreshInputRelatedDataAfterInputChange()
 }
 
 void
-Node::markDownstreamInputRelatedDataStale()
+Node::refreshShownDownstreamInputRelatedData()
 {
     assert(QThread::currentThread() == qApp->thread());
 
@@ -8250,129 +8341,98 @@ Node::markDownstreamInputRelatedDataStale()
     // Breadth first: the vector is the queue, read from the front without erasing.
     std::vector<NodePtr> toVisit;
     appendOutputsWithGroupRedirection(&toVisit);
-    std::vector<NodePtr> shown;
+    std::vector<NodePtr> reached;
     for (std::size_t next = 0; next < toVisit.size(); ++next) {
         NodePtr node = toVisit[next];
         if (!node || !visited.insert(node.get()).second) {
             continue;
         }
         node->markAllInputRelatedDataDirty();
-        node->_imp->inputRelatedDataStale.store(true);
-        if (node->isSettingsPanelVisible()) {
-            shown.push_back(node);
-        }
+        reached.push_back(node);
         node->appendOutputsWithGroupRedirection(&toVisit);
     }
 
-    for (std::size_t i = 0; i < shown.size(); ++i) {
-        shown[i]->refreshInputRelatedDataIfStale();
+    // The draft flag is the one piece of this data a render reads; it only reads the inputs'
+    // flags, so it is settled here for every node reached, without reading a hash. Breadth-first
+    // order is upstream first on a chain; a diamond takes another pass.
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (std::size_t i = 0; i < reached.size(); ++i) {
+            if (reached[i]->_imp->effect) {
+                changed |= reached[i]->refreshDraftFlagInternal(reached[i]->getInputs_copy());
+            }
+        }
     }
+
+    // The rest is what panels and the node graph show: the nodes whose settings panel is visible,
+    // and those showing a missing-channel message the edit may have resolved, are refreshed now.
+    // The others are refreshed when their panel is shown (refreshPanelInputRelatedData()).
+    for (std::size_t i = 0; i < reached.size(); ++i) {
+        bool hasChannelSelectorMessage;
+        {
+            QMutexLocker k(&reached[i]->_imp->persistentMessageMutex);
+            hasChannelSelectorMessage = reached[i]->_imp->persistentMessageFromChannelSelector;
+        }
+        if (hasChannelSelectorMessage || reached[i]->isSettingsPanelVisible()) {
+            reached[i]->refreshPanelInputRelatedData();
+        }
+    }
+}
+
+Node::InputRelatedDataRefreshDeferral::InputRelatedDataRefreshDeferral()
+{
+    ++inputRelatedDataRefreshDeferralDepth;
+}
+
+Node::InputRelatedDataRefreshDeferral::~InputRelatedDataRefreshDeferral()
+{
+    --inputRelatedDataRefreshDeferralDepth;
 }
 
 bool
-Node::isInputRelatedDataStale() const
+Node::canRunMainThreadMetadataRefresh() const
 {
-    return _imp->inputRelatedDataStale.load();
-}
-
-void
-Node::refreshInputRelatedDataIfStale()
-{
-    if (!_imp->inputRelatedDataStale.load() || (QThread::currentThread() != qApp->thread())) {
-        return;
+    if (QThread::currentThread() != qApp->thread()) {
+        return false;
     }
-    if ((hashComputeDepth > 0) || (inputRelatedDataRefreshDepth > 0)) {
-        return;
+    if ((hashComputeDepth > 0) || (inputRelatedDataRefreshDeferralDepth > 0)) {
+        return false;
     }
     if (!_imp->effect || !isNodeCreated() || !isActivated()) {
-        return;
+        return false;
     }
     {
         QMutexLocker k(&_imp->isBeingDestroyedMutex);
         if (_imp->isBeingDestroyed) {
-            return;
+            return false;
         }
     }
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
-    if (!project || app->isCreatingNodeTree() || project->isLoadingProject() || project->isProjectClosing()) {
-        return;
+    if (!project || project->isProjectClosing()) {
+        return false;
+    }
+    // While the project loads or a node tree is created, only the refresh that follows covers it.
+    if ((app->isCreatingNodeTree() || project->isLoadingProject()) && (inputRelatedDataRefreshDepth == 0)) {
+        return false;
     }
 
-    std::set<Node*> visited;
-    refreshShownInputRelatedData(visited);
+    return true;
 }
 
 void
-Node::refreshInputRelatedDataForRender()
+Node::refreshPanelInputRelatedData()
 {
-    if (QThread::currentThread() != qApp->thread()) {
+    // A refresh already running orders the nodes it reaches itself, inputs first.
+    if ((inputRelatedDataRefreshDepth > 0) || !canRunMainThreadMetadataRefresh()) {
         return;
     }
-    NodePtr self = weak_from_this().lock();
-    if (!self) {
-        return;
+    if (isInputRelatedDataDirty()) {
+        std::set<Node*> visited;
+        refreshShownInputRelatedData(visited);
+    } else {
+        _imp->effect->refreshCurrentFrameMetadata(getApp()->getTimeLine()->currentFrame(), false);
     }
-    std::unordered_set<const Node*> visited;
-    std::vector<NodePtr> toVisit(1, self);
-    std::vector<NodePtr> reached;
-    visited.insert(self.get());
-    auto reach = [&visited, &toVisit](const NodePtr& node) {
-        if (node && visited.insert(node.get()).second) {
-            toVisit.push_back(node);
-        }
-    };
-    while (!toVisit.empty()) {
-        NodePtr node = toVisit.back();
-        toVisit.pop_back();
-        reached.push_back(node);
-
-        int shown[2] = { -1, -1 };
-        ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(node->_imp->effect.get());
-        if (isViewer) {
-            isViewer->getActiveInputs(shown[0], shown[1]);
-        }
-        const int maxInputs = node->getNInputs();
-        for (int i = 0; i < maxInputs; ++i) {
-            if (!isViewer || (i == shown[0]) || (i == shown[1])) {
-                reach(node->getInput(i));
-            }
-        }
-        // The inputs of a group lead around the nodes inside it, which render it.
-        NodeGroup* isGroup = node->isEffectGroup();
-        if (isGroup) {
-            reach(isGroup->getOutputNode(false));
-        }
-        // The paint tree is rendered through the RotoPaint node without being upstream of it, so
-        // its edits leave the RotoPaint node itself clean.
-        RotoContextPtr roto = node->getRotoContext();
-        if (roto) {
-            NodesList paintTree;
-            roto->getRotoPaintTreeNodes(&paintTree);
-            for (NodesList::const_iterator it = paintTree.begin(); it != paintTree.end(); ++it) {
-                reach(*it);
-            }
-        }
-    }
-
-    for (std::size_t i = 0; i < reached.size(); ++i) {
-        reached[i]->refreshInputRelatedDataIfStale();
-    }
-} // Node::refreshInputRelatedDataForRender
-
-void
-Node::requestInputRelatedDataRefresh()
-{
-    if (_imp->inputRelatedDataRefreshRequested.exchange(true)) {
-        return;
-    }
-    NodeWPtr weakSelf = weak_from_this();
-    QMetaObject::invokeMethod(qApp, [weakSelf]() {
-        NodePtr node = weakSelf.lock();
-        if (node) {
-            node->_imp->inputRelatedDataRefreshRequested.store(false);
-            node->refreshInputRelatedDataIfStale();
-        } }, Qt::QueuedConnection);
 }
 
 bool

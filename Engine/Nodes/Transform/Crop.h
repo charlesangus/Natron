@@ -115,7 +115,8 @@ struct CropOp {
     ResampleMatte matte(const Params& params,
                         const PassContext& context) const;
 
-    const Crop* crop = nullptr;
+    // Not const: the matte reads the node's metadata at its frame, which caches them.
+    Crop* crop = nullptr;
     KnobDoubleWPtr softness;
     KnobBoolWPtr reformat;
     KnobBoolWPtr blackOutside;
@@ -195,7 +196,9 @@ protected:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,

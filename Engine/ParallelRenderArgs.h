@@ -28,15 +28,19 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
 #include <map>
+#include <mutex>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "Global/GlobalDefines.h"
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -88,6 +92,17 @@ public:
 
     ///The hash of the node at the time we started rendering
     U64 nodeHash;
+
+    /// The node's metadata at time and view, derived under nodeHash when the frame was set up and
+    /// read by the render instead of the live answer (see EffectInstance::getRenderMetadata()).
+    /// Null when the frame was set up without walking upstream.
+    NodeMetadataConstPtr metadata;
+
+    /// The node's answers under nodeHash at the other times and views the frame read it at, kept
+    /// from the first read so every later one in the frame agrees (see
+    /// EffectInstance::getRenderMetadata()). Shared by the threads rendering the frame.
+    std::mutex retainedMetadataMutex;
+    std::map<std::pair<double, int>, NodeMetadataConstPtr> retainedMetadata;
 
     ///If set, contains data for all frame/view pair that are going to be computed
     ///for this frame/view pair with the overall RoI to avoid rendering several times with this node.
@@ -326,11 +341,8 @@ public:
      * the args getParallelRenderArgsTLS() returns once they are installed. installSequence, when given, receives
      * every installation in order, including a node installed twice, and collectedNodes the nodes whose args the
      * destructor invalidates.
-     * Returns true when it aborted a viewer render because a pulled node's input-related data was stale off the main
-     * thread. The caller must then return before running any action: the hashes are already the refreshed ones, so a
-     * RoD or components result computed from the stale data would be cached where the queued fresh render looks.
      **/
-    static bool buildArgsMap(double time,
+    static void buildArgsMap(double time,
                              ViewIdx view,
                              bool isRenderUserInteraction,
                              bool isSequential,
@@ -351,6 +363,13 @@ public:
     void updateNodesRequest(const FrameRequestMap& request);
 
     /**
+     * @brief Called by buildArgsMap() on the setting-up thread after each node's metadata is
+     * snapshotted, so a test can edit the graph in the middle of a snapshot.
+     **/
+    typedef std::function<void(const NodePtr& node)> MetadataSnapshotHook;
+    static void setMetadataSnapshotHookForTests(const MetadataSnapshotHook& hook);
+
+    /**
      * @brief The frame args the first constructor installed on this thread, each node mapped to the args
      * getParallelRenderArgsTLS() returns for it. Empty when built from an existing args map.
      **/
@@ -359,16 +378,10 @@ public:
         return _installedArgs;
     }
 
-    bool isAbortedForStaleInputData() const
-    {
-        return _abortedForStaleInputData;
-    }
-
     virtual ~ParallelRenderArgsSetter();
 
 private:
     std::map<NodePtr, ParallelRenderArgsPtr> _installedArgs;
-    bool _abortedForStaleInputData;
 };
 
 NATRON_NAMESPACE_EXIT

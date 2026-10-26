@@ -406,7 +406,7 @@ sourceImage(const NodePtr& source,
             const RectI& roi,
             GpuParityImage* image)
 {
-    const RectI inputRoI = effect.getGpuInputRoI(0, roi, RenderScale::fromMipmapLevel(mipmapLevel)).intersect(pixelRegionOfDefinition(source, mipmapLevel));
+    const RectI inputRoI = effect.getGpuInputRoI(0, effect.getCurrentTime(), effect.getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel)).intersect(pixelRegionOfDefinition(source, mipmapLevel));
     if (inputRoI.isNull()) {
         // A window that reads nothing of the source: an empty image stands for none.
         image->bounds = RectI();

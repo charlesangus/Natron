@@ -628,8 +628,8 @@ protected:
             return NodePtr();
         }
         connectNodes(*source, format, 0, true);
-        (*source)->getEffectInstance()->refreshMetadata_public(false);
-        format->getEffectInstance()->refreshMetadata_public(false);
+        (*source)->getEffectInstance()->dropCachedMetadata();
+        format->getEffectInstance()->dropCachedMetadata();
 
         return format;
     }
@@ -1739,7 +1739,7 @@ TEST_F(DeepNodesTest, DeepCropReformatSetsTheOutputFormatToBboxAndOffLeavesTheIn
 
     NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
     ASSERT_TRUE(source != NULL);
-    source->getEffectInstance()->refreshMetadata_public(false);
+    source->getEffectInstance()->dropCachedMetadata();
 
     NodePtr cropOff = createDeepCrop(1., 1., 4., 3., true, 0., 0., false, false);
     NodePtr cropOn = createDeepCrop(1., 1., 4., 3., true, 0., 0., false, true);
@@ -1747,11 +1747,11 @@ TEST_F(DeepNodesTest, DeepCropReformatSetsTheOutputFormatToBboxAndOffLeavesTheIn
     connectNodes(source, cropOff, 0, true);
     connectNodes(source, cropOn, 0, true);
 
-    cropOff->getEffectInstance()->refreshMetadata_public(false);
-    cropOn->getEffectInstance()->refreshMetadata_public(false);
+    cropOff->getEffectInstance()->dropCachedMetadata();
+    cropOn->getEffectInstance()->dropCachedMetadata();
 
-    EXPECT_TRUE(source->getEffectInstance()->getOutputFormat() == cropOff->getEffectInstance()->getOutputFormat());
-    EXPECT_TRUE(RectI(1, 1, 5, 4) == cropOn->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(source->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat() == cropOff->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
+    EXPECT_TRUE(RectI(1, 1, 5, 4) == cropOn->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 }
 
 TEST_F(DeepNodesTest, DeepCropOutputFormatRefreshesWhenReformatOrBboxChangeWithNoExplicitRefresh)
@@ -1764,14 +1764,14 @@ TEST_F(DeepNodesTest, DeepCropOutputFormatRefreshesWhenReformatOrBboxChangeWithN
 
     NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
     ASSERT_TRUE(source != NULL);
-    source->getEffectInstance()->refreshMetadata_public(false);
+    source->getEffectInstance()->dropCachedMetadata();
 
     NodePtr crop = createDeepCrop(1., 1., 4., 3., true, 0., 0., false, false);
     ASSERT_TRUE(crop != NULL);
     connectNodes(source, crop, 0, true);
-    crop->getEffectInstance()->refreshMetadata_public(false);
+    crop->getEffectInstance()->dropCachedMetadata();
 
-    EXPECT_TRUE(source->getEffectInstance()->getOutputFormat() == crop->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(source->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat() == crop->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     DeepImagePtr image;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(crop, 1., bounds, &image));
@@ -1781,13 +1781,13 @@ TEST_F(DeepNodesTest, DeepCropOutputFormatRefreshesWhenReformatOrBboxChangeWithN
     ASSERT_TRUE(reformatKnob != NULL);
     reformatKnob->setValue(true);
 
-    EXPECT_TRUE(RectI(1, 1, 5, 4) == crop->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(1, 1, 5, 4) == crop->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     KnobDouble* bboxKnob = dynamic_cast<KnobDouble*>(crop->getKnobByName("bbox").get());
     ASSERT_TRUE(bboxKnob != NULL);
     bboxKnob->setValue(6., ViewSpec::all(), 2);
 
-    EXPECT_TRUE(RectI(1, 1, 7, 4) == crop->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(1, 1, 7, 4) == crop->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 }
 
 namespace {
@@ -1880,9 +1880,9 @@ TEST_F(DeepNodesTest, DeepReformatCentresByAWholePixelOffsetAndLeavesEverySample
     NodePtr reformat = createDeepReformat(12, 12, true, true);
     ASSERT_TRUE(reformat != NULL);
     connectNodes(formatted, reformat, 0, true);
-    reformat->getEffectInstance()->refreshMetadata_public(false);
+    reformat->getEffectInstance()->dropCachedMetadata();
 
-    EXPECT_TRUE(RectI(0, 0, 12, 12) == reformat->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, 12, 12) == reformat->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     DeepImagePtr out;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reformat, 1., RectI(0, 0, 12, 12), &out));
@@ -1910,7 +1910,7 @@ TEST_F(DeepNodesTest, DeepReformatOddSizeDifferenceTruncatesTheOffset)
     NodePtr reformat = createDeepReformat(11, 11, true, true);
     ASSERT_TRUE(reformat != NULL);
     connectNodes(formatted, reformat, 0, true);
-    reformat->getEffectInstance()->refreshMetadata_public(false);
+    reformat->getEffectInstance()->dropCachedMetadata();
 
     DeepImagePtr out;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reformat, 1., RectI(0, 0, 11, 11), &out));
@@ -1938,12 +1938,12 @@ TEST_F(DeepNodesTest, DeepReformatWithCentreOffOnlyChangesTheFormatAndSharesTheI
 
     NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
     ASSERT_TRUE(source != NULL);
-    source->getEffectInstance()->refreshMetadata_public(false);
+    source->getEffectInstance()->dropCachedMetadata();
 
     NodePtr reformat = createDeepReformat(40, 30, true, false);
     ASSERT_TRUE(reformat != NULL);
     connectNodes(source, reformat, 0, true);
-    reformat->getEffectInstance()->refreshMetadata_public(false);
+    reformat->getEffectInstance()->dropCachedMetadata();
 
     DeepImagePtr fromSource;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, 1., bounds, &fromSource));
@@ -1955,7 +1955,7 @@ TEST_F(DeepNodesTest, DeepReformatWithCentreOffOnlyChangesTheFormatAndSharesTheI
 
     EXPECT_EQ(fromSource.get(), fromReformat.get());
     EXPECT_TRUE(cachedDeepEntryBounds(reformat, 1.).empty());
-    EXPECT_TRUE(RectI(0, 0, 40, 30) == reformat->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, 40, 30) == reformat->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 }
 
 TEST_F(DeepNodesTest, DeepReformatToTheInputsOwnFormatIsAnIdentity)
@@ -1969,7 +1969,7 @@ TEST_F(DeepNodesTest, DeepReformatToTheInputsOwnFormatIsAnIdentity)
     NodePtr reformat = createDeepReformat(8, 8, true, true);
     ASSERT_TRUE(reformat != NULL);
     connectNodes(formatted, reformat, 0, true);
-    reformat->getEffectInstance()->refreshMetadata_public(false);
+    reformat->getEffectInstance()->dropCachedMetadata();
 
     DeepImagePtr fromInput;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(formatted, 1., bounds, &fromInput));
@@ -1995,9 +1995,9 @@ TEST_F(DeepNodesTest, DeepReformatKeepsSamplesPushedOutsideTheNewFormat)
     NodePtr reformat = createDeepReformat(4, 4, true, true);
     ASSERT_TRUE(reformat != NULL);
     connectNodes(formatted, reformat, 0, true);
-    reformat->getEffectInstance()->refreshMetadata_public(false);
+    reformat->getEffectInstance()->dropCachedMetadata();
 
-    EXPECT_TRUE(RectI(0, 0, 4, 4) == reformat->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, 4, 4) == reformat->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     DeepImagePtr out;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reformat, 1., RectI(-2, -2, 6, 6), &out));
@@ -2023,7 +2023,7 @@ TEST_F(DeepNodesTest, DeepReformatAsksItsInputForATranslatedRegion)
     NodePtr reformat = createDeepReformat(12, 12, true, true);
     ASSERT_TRUE(reformat != NULL);
     connectNodes(formatted, reformat, 0, true);
-    reformat->getEffectInstance()->refreshMetadata_public(false);
+    reformat->getEffectInstance()->dropCachedMetadata();
 
     // Narrower than the region of definition (2, 2, 10, 10), so the render window is what
     // propagates upstream rather than the whole frame.
@@ -2051,29 +2051,29 @@ TEST_F(DeepNodesTest, DeepReformatOutputFormatRefreshesWhenTheFormatKnobChangesW
 
     NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
     ASSERT_TRUE(source != NULL);
-    source->getEffectInstance()->refreshMetadata_public(false);
+    source->getEffectInstance()->dropCachedMetadata();
 
     NodePtr reformat = createDeepReformat(6, 6, false, false);
     ASSERT_TRUE(reformat != NULL);
     connectNodes(source, reformat, 0, true);
-    reformat->getEffectInstance()->refreshMetadata_public(false);
+    reformat->getEffectInstance()->dropCachedMetadata();
 
     Format projectFormat;
     getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
-    EXPECT_TRUE(RectI(0, 0, projectFormat.width(), projectFormat.height()) == reformat->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, projectFormat.width(), projectFormat.height()) == reformat->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     KnobBool* useCustomSize = dynamic_cast<KnobBool*>(reformat->getKnobByName("useCustomSize").get());
     KnobInt* customSize = dynamic_cast<KnobInt*>(reformat->getKnobByName("customSize").get());
     ASSERT_TRUE(useCustomSize && customSize);
 
     useCustomSize->setValue(true);
-    EXPECT_TRUE(RectI(0, 0, 6, 6) == reformat->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, 6, 6) == reformat->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     customSize->setValue(10, ViewSpec::all(), 1);
-    EXPECT_TRUE(RectI(0, 0, 6, 10) == reformat->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, 6, 10) == reformat->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     useCustomSize->setValue(false);
-    EXPECT_TRUE(RectI(0, 0, projectFormat.width(), projectFormat.height()) == reformat->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, projectFormat.width(), projectFormat.height()) == reformat->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 
     // The Format choice is the host's to fill and to translate into the hidden size knob, so the
     // node only ever sees the size; picking another entry has to reach the metadata all the same.
@@ -2092,8 +2092,8 @@ TEST_F(DeepNodesTest, DeepReformatOutputFormatRefreshesWhenTheFormatKnobChangesW
     ASSERT_NE(-1, otherIndex);
 
     formatChoice->setValue(otherIndex);
-    EXPECT_FALSE(RectI(0, 0, projectFormat.width(), projectFormat.height()) == reformat->getEffectInstance()->getOutputFormat());
-    EXPECT_TRUE(RectI(0, 0, formatSize->getValue(0), formatSize->getValue(1)) == reformat->getEffectInstance()->getOutputFormat());
+    EXPECT_FALSE(RectI(0, 0, projectFormat.width(), projectFormat.height()) == reformat->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, formatSize->getValue(0), formatSize->getValue(1)) == reformat->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 }
 
 namespace {

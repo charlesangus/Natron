@@ -420,7 +420,7 @@ RawTemperature::refreshSpotDefaults()
     if (!bottomLeft || !size || !input) {
         return;
     }
-    const RectI format = input->getOutputFormat();
+    const RectI format = input->getMetadata(getCurrentTime(), ViewIdx(0))->getOutputFormat();
     if (format.isNull()) {
         return;
     }
@@ -592,9 +592,9 @@ RawTemperature::onInputChanged(int /*inputNo*/)
 }
 
 void
-RawTemperature::onMetadataRefreshed(const NodeMetadata& metadata)
+RawTemperature::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
 {
-    ImageNode<RawTemperatureOp>::onMetadataRefreshed(metadata);
+    ImageNode<RawTemperatureOp>::onCurrentFrameMetadataChanged(metadata);
     refreshPresets();
     refreshSpotDefaults();
 }

@@ -35,6 +35,8 @@
 
 #include <QString>
 
+#include <ofxNatron.h>
+
 #include "BaseTest.h"
 #include "CountingTestEffect.h"
 #include "NativeParity.h"
@@ -43,15 +45,20 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
+#include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
@@ -116,7 +123,7 @@ renderRoIDirect(const NodePtr& node,
                                        RenderStatsPtr());
     EffectInstancePtr effect = node->getEffectInstance();
     const RectI window = fullWindow();
-    const RectD canonicalWindow = window.toCanonical_noClipping(0, effect->getAspectRatio(-1));
+    const RectD canonicalWindow = window.toCanonical_noClipping(0, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
     FrameRequestMap request;
 
     if (EffectInstance::computeRequestPass(time, ViewIdx(0), 0, canonicalWindow, node, request) == eStatusFailed) {
@@ -391,4 +398,103 @@ TEST_F(NativeSwitchTest, NoInputIsBlackWithAnEmptyRegion)
         EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderRoIDirect(node, kTime, &planes)) << "pass " << pass;
         EXPECT_TRUE(allZero(planes)) << "pass " << pass;
     }
+}
+
+namespace {
+
+// A native Constant whose output format is width x height at par.
+NodePtr
+createFormatConstant(const AppInstancePtr& app,
+                     double width,
+                     double height,
+                     double par)
+{
+    NodePtr node = createNodeAtMajor(app, PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    KnobChoice* extent = node ? dynamic_cast<KnobChoice*>(node->getKnobByName(kNativeGeneratorParamExtent).get()) : NULL;
+
+    EXPECT_TRUE(extent != NULL);
+    if (!extent) {
+        return NodePtr();
+    }
+    const std::vector<ChoiceOption> entries = extent->getEntries_mt_safe();
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].id == kNativeGeneratorExtentFormat) {
+            extent->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+        }
+    }
+    if (!setKnobValues(node, kNatronParamFormatSize, { width, height }) || !setKnobValues(node, kNatronParamFormatPar, { par })) {
+        return NodePtr();
+    }
+
+    return node;
+}
+
+const RectI kSwitchProjectFormat(0, 0, 80, 60);
+const double kSwitchProjectPar = 1.5;
+
+// What a Switch that routes to black answers: RGBA float at the project format and PAR.
+void
+expectBlackAnswer(const NodeMetadataConstPtr& metadata,
+                  const std::string& what)
+{
+    ASSERT_TRUE(bool(metadata)) << what;
+    EXPECT_EQ(4, metadata->getNComps(-1)) << what;
+    EXPECT_EQ(std::string(kNatronColorLayerID), metadata->getComponentsType(-1)) << what;
+    EXPECT_EQ(eImageBitDepthFloat, metadata->getBitDepth(-1)) << what;
+    EXPECT_EQ(kSwitchProjectFormat, metadata->getOutputFormat()) << what;
+    EXPECT_DOUBLE_EQ(kSwitchProjectPar, metadata->getPixelAspectRatio(-1)) << what;
+}
+
+} // namespace
+
+// Keyed between two Constants of different format and PAR, the Switch answers each Constant's at
+// the frame it routes to it, whichever frame the timeline is on.
+TEST_F(NativeSwitchTest, AKeyedSwitchAnswersEachFramesInput)
+{
+    resetProject();
+    NodePtr wide = createFormatConstant(getApp(), 64., 48., 1.);
+    NodePtr anamorphic = createFormatConstant(getApp(), 100., 30., 2.);
+    NodePtr node = createSwitch();
+    ASSERT_TRUE(wide && anamorphic && node);
+    connectNodes(wide, node, 0, true);
+    connectNodes(anamorphic, node, 1, true);
+    KnobInt* which = dynamic_cast<KnobInt*>(node->getKnobByName(kSwitchParamWhich).get());
+    ASSERT_TRUE(which != NULL);
+    which->setValueAtTime(1, 0, ViewSpec::all(), 0);
+    which->setValueAtTime(2, 1, ViewSpec::all(), 0);
+    ASSERT_TRUE(which->isAnimated(0));
+
+    const SequenceTime timelineFrames[2] = { 2, 1 };
+    for (int t = 0; t < 2; ++t) {
+        getApp()->getTimeLine()->seekFrame(timelineFrames[t], false, NULL, eTimelineChangeReasonOtherSeek);
+        NodeMetadataConstPtr first = node->getEffectInstance()->getMetadata(1, ViewIdx(0));
+        NodeMetadataConstPtr second = node->getEffectInstance()->getMetadata(2, ViewIdx(0));
+        ASSERT_TRUE(first && second);
+        EXPECT_EQ(RectI(0, 0, 64, 48), first->getOutputFormat()) << "timeline at " << timelineFrames[t];
+        EXPECT_DOUBLE_EQ(1., first->getPixelAspectRatio(-1)) << "timeline at " << timelineFrames[t];
+        EXPECT_EQ(RectI(0, 0, 100, 30), second->getOutputFormat()) << "timeline at " << timelineFrames[t];
+        EXPECT_DOUBLE_EQ(2., second->getPixelAspectRatio(-1)) << "timeline at " << timelineFrames[t];
+    }
+}
+
+// A Switch whose chosen input is not connected, and a Switch with no input at all, route to black
+// and answer RGBA float at the project format rather than any input's.
+TEST_F(NativeSwitchTest, ABlackSwitchAnswersTheProjectFormat)
+{
+    resetProject();
+    getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
+    getApp()->getProject()->setOrAddProjectFormat(Format(kSwitchProjectFormat.x1, kSwitchProjectFormat.y1, kSwitchProjectFormat.x2, kSwitchProjectFormat.y2, "nativeSwitch80x60", kSwitchProjectPar));
+
+    NodePtr low = createFormatConstant(getApp(), 64., 48., 1.);
+    NodePtr high = createFormatConstant(getApp(), 100., 30., 2.);
+    NodePtr gap = createSwitch();
+    ASSERT_TRUE(low && high && gap);
+    connectNodes(low, gap, 0, true);
+    connectNodes(high, gap, 2, true);
+    ASSERT_TRUE(setKnobValues(gap, kSwitchParamWhich, { 1. }));
+    expectBlackAnswer(gap->getEffectInstance()->getMetadata(1, ViewIdx(0)), "which 1 with inputs 0 and 2");
+
+    NodePtr empty = createSwitch();
+    ASSERT_TRUE(bool(empty));
+    expectBlackAnswer(empty->getEffectInstance()->getMetadata(1, ViewIdx(0)), "no input");
 }

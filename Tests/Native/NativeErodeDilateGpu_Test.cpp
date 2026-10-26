@@ -178,7 +178,7 @@ TEST_F(NativeErodeDilateGpuTest, InputRegionIsTheSourceRegionOfInterest)
         const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
         ErodeDilateParams params;
         effect->getParams(kTime, ViewIdx(0), &params);
-        EXPECT_EQ(ErodeDilate::getSourceRoI(rect, scale, params), effect->getGpuInputRoI(0, rect, scale)) << "mipmap " << mipmapLevel;
+        EXPECT_EQ(ErodeDilate::getSourceRoI(rect, scale, params), effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), rect, scale)) << "mipmap " << mipmapLevel;
     }
 }
 
@@ -284,7 +284,7 @@ sourceImage(const NodePtr& source,
             const RectI& roi,
             GpuParityImage* image)
 {
-    const RectI inputRoI = effect.getGpuInputRoI(0, roi, RenderScale::fromMipmapLevel(mipmapLevel));
+    const RectI inputRoI = effect.getGpuInputRoI(0, effect.getCurrentTime(), effect.getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel));
     RenderedPlane in;
     if (!renderColor(source, mipmapLevel, inputRoI, &in)) {
         return false;
@@ -645,7 +645,7 @@ TEST_F(NativeErodeDilateGpuTest, SpecialValuesMatchFilterLineBitForBit)
 
             for (const RectI& roi : testWindows(rod)) {
                 const std::string what = describeSize(dilate, size, true, 0) + " " + describeRoI(roi);
-                const RectI inputRoI = effect->getGpuInputRoI(0, roi, RenderScale::identity);
+                const RectI inputRoI = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::identity);
                 GpuParityImage image;
                 image.bounds = inputRoI;
                 image.nComps = 4;

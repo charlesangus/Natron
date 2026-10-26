@@ -1053,7 +1053,9 @@ Keyer::onKnobsLoaded()
 }
 
 StatusEnum
-Keyer::getPreferredMetadata(NodeMetadata& metadata)
+Keyer::getPreferredMetadataAt(double /*time*/,
+                              ViewIdx /*view*/,
+                              NodeMetadata& metadata)
 {
     // The output is RGBA whatever the source: the foreground key is its alpha.
     metadata.setNComps(-1, 4);
@@ -1377,7 +1379,7 @@ Keyer::renderOpGpu(const GpuRenderArgs& args)
             return none;
         }
 
-        return PassExec::cropGpuView(v, v.bounds.intersect(rod.toPixelEnclosing(scale, getAspectRatio(inputNb))));
+        return PassExec::cropGpuView(v, v.bounds.intersect(rod.toPixelEnclosing(scale, getRenderMetadata(time, view)->getPixelAspectRatio(inputNb))));
     };
 
     const int srcNComps = getResolvedInputNComps(kKeyerInputSource, time, view);

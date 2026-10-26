@@ -2520,7 +2520,7 @@ RotoStrokeItem::renderSingleStroke(const RectD& pointsBbox,
     const RectI pixelPointsBbox = pointsBbox.toPixelEnclosing(mipmapLevel, par);
 
     NodePtr node = getContext()->getNode();
-    ImageFieldingOrderEnum fielding = node->getEffectInstance()->getFieldingOrder();
+    ImageFieldingOrderEnum fielding = node->getEffectInstance()->getRenderMetadata(time, ViewIdx(0))->getOutputFielding();
     bool copyFromImage = false;
     bool mipmapLevelChanged = false;
     if (!source) {
@@ -2789,7 +2789,7 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
                                               false,
                                               components,
                                               depth,
-                                              node->getEffectInstance()->getFieldingOrder());
+                                              node->getEffectInstance()->getRenderMetadata(time, view)->getOutputFielding());
     /*
        At this point we take the cacheAccessMutex so that no other thread can retrieve this image from the cache while it has not been
        finished rendering. You might wonder why we do this differently here than in EffectInstance::renderRoI, this is because we do not use

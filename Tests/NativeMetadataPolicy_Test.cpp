@@ -225,6 +225,6 @@ TEST_F(BaseTest, GeneratorMetadataIsTheMinimalKeySet)
         EXPECT_EQ(sortedExpected, keysOf(result)) << id;
         EXPECT_FALSE(result.contains(kOfxMetadataKeySourceFrame)) << id;
         EXPECT_EQ(std::optional<double>(getApp()->getProjectFrameRate()), result.getDouble(kOfxMetadataKeyFrameRate)) << id;
-        EXPECT_EQ(std::optional<double>(effect->getAspectRatio(-1)), result.getDouble(kOfxMetadataKeyPixelAspect)) << id;
+        EXPECT_EQ(std::optional<double>(effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1)), result.getDouble(kOfxMetadataKeyPixelAspect)) << id;
     }
 }

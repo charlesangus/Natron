@@ -853,7 +853,9 @@ ChromaKeyer::initializeKnobs()
 }
 
 StatusEnum
-ChromaKeyer::getPreferredMetadata(NodeMetadata& metadata)
+ChromaKeyer::getPreferredMetadataAt(double /*time*/,
+                                    ViewIdx /*view*/,
+                                    NodeMetadata& metadata)
 {
     // The output is RGBA whatever the source: the foreground key is its alpha.
     metadata.setNComps(-1, 4);
@@ -1204,7 +1206,7 @@ ChromaKeyer::getGpuReadableInput(const GpuRenderArgs& args,
     if (input->getRegionOfDefinition_public(input->getRenderHash(), args.query.time, inputScale, args.query.view, &rod, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    *view = PassExec::cropGpuView(in, in.bounds.intersect(rod.toPixelEnclosing(scale, getAspectRatio(inputNb))));
+    *view = PassExec::cropGpuView(in, in.bounds.intersect(rod.toPixelEnclosing(scale, getRenderMetadata(args.query.time, args.query.view)->getPixelAspectRatio(inputNb))));
 
     return true;
 }

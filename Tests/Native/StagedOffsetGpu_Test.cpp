@@ -493,7 +493,7 @@ TEST_F(StagedOffsetGpuTest, InputRegionIsTheNodesRegionOfInterest)
             effect->getRegionsOfInterest_public(kTime, scale, window, window, ViewIdx(0), &rois);
             RoIMap::const_iterator found = rois.find(source->getEffectInstance());
             ASSERT_TRUE(found != rois.end()) << id << " mipmap " << mipmapLevel;
-            EXPECT_EQ(found->second.toPixelEnclosing(scale, 1.), effect->getGpuInputRoI(0, rect, scale)) << id << " mipmap " << mipmapLevel;
+            EXPECT_EQ(found->second.toPixelEnclosing(scale, 1.), effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), rect, scale)) << id << " mipmap " << mipmapLevel;
         }
     }
 }
@@ -705,7 +705,7 @@ TEST_F(StagedOffsetGpuTest, ShiftMatchesTheCpuRender)
                     ASSERT_EQ(roi, cpu.window) << what;
 
                     const RectI bounds = (variant == OffsetVariant::Clipped) ? paritySourceWindow(source, kTime, mipmapLevel)
-                                                                             : effect->getGpuInputRoI(0, roi, RenderScale::fromMipmapLevel(mipmapLevel));
+                                                                             : effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel));
                     GpuParityImage image;
                     ASSERT_TRUE(sourceImage(source, mipmapLevel, bounds, &image)) << what;
                     const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, roi, outputLayout());
@@ -742,7 +742,7 @@ TEST_F(StagedOffsetGpuTest, SourceSmallerThanTheWindowReadsZero)
         ASSERT_TRUE(renderColor(node, 0, roi, &cpu)) << c.name;
         ASSERT_EQ(roi, cpu.window) << c.name;
         GpuParityImage full;
-        ASSERT_TRUE(sourceImage(source, 0, effect->getGpuInputRoI(0, roi, RenderScale::identity), &full)) << c.name;
+        ASSERT_TRUE(sourceImage(source, 0, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::identity), &full)) << c.name;
         const RectI inner(full.bounds.x1 + 4, full.bounds.y1 + 3, full.bounds.x2 - 6, full.bounds.y2 - 5);
         ASSERT_FALSE(inner.isNull()) << c.name;
         const GpuParityImage image = cropImage(full, inner);
@@ -804,7 +804,7 @@ TEST_F(StagedOffsetGpuTest, MatteMatchesTheCpuRender)
                 ASSERT_EQ(roi, cpu.window) << what;
 
                 GpuParityImage image;
-                ASSERT_TRUE(sourceImage(source, mipmapLevel, effect->getGpuInputRoI(0, roi, scale), &image)) << what;
+                ASSERT_TRUE(sourceImage(source, mipmapLevel, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, scale), &image)) << what;
                 std::vector<float> expected = cpu.pixels;
                 std::size_t poisoned[4] = { 0, 0, 0, 0 };
                 for (int y = roi.y1; y < roi.y2; ++y) {

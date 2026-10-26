@@ -80,3 +80,5 @@ Exact native I-warps (user, 2026-10-24). Slicing a transform and blending the sl
 Rebased on M184 - Variable-Size Filter Kit's head; Codex review round (PR #121): five findings fixed at bd394d4cc/6a0688c79, Map goldens re-recorded; release gate green. GPU seeds pending the GPU host; UAT pending.
 
 2026-10-26: P2.T3 done at 3c62b1e93 + goldens; release gate green (run 40317895326); AppImage Natron-m185-warps.AppImage for UAT.
+
+2026-10-26: UAT approved (user). Merge waits on its base M184 - Variable-Size Filter Kit (#113). A transient stale-Map render after disconnecting STMap's Map input went to the inbox as a cache-invalidation audit.

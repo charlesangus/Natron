@@ -102,6 +102,7 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
 
 ## Decisions
 
+- 2026-10-25 — **addRFVKnob API accepted (user):** `app.create<Type>Param` makes an ordinary project parameter on a User tab and `app.addRFVKnob(param)` / `node.addRFVKnob(param)` adopt it as a variable (ValueError on refusal); a parameter never adopted stays on the User tab; `app.<name>` after `app.removeParam` lingers until the next re-declaration.
 - 2026-10-25 — **UAT round 1 (user):** project variables must take keyframes and their expressions must follow time; the Python API is one `addRFVKnob(param)` taking a knob made with the ordinary creators, not a method per type.
 - 2026-10-25 — **Two groups on the Variables tab, no separate tab (user):** group 1 "Variables" holds variables only this node defines; group 2 "Global Variables" holds the "Existing variable" drop-down and every variable on this node that overrides a project variable (one the project declares by name). Membership follows the project's declarations: a promote moves the variable to group 2, and undoing it moves the variable back. Replaces the separate-tab layout.
 - 2026-10-25 — **Existing-variable drop-down sits in its own group (user):** the "Add existing variable..." drop-down lives in a separate group on the Set node, apart from the node's own variables group, for picking global (project) variables.

@@ -74,6 +74,17 @@ const double kWheelDeltaPerDoubling = 480.;
 const int kMaxHueCopies = 256;
 // The share of the default domain's span added beyond a point that widens it.
 const double kFitMargin = 0.05;
+// How far past 0 or 1 a point must lie to widen the default domain, so that offsets summing
+// to an edge up to rounding leave it at 0 to 1.
+const double kFitTolerance = 1e-9;
+
+// The band the gradient fills in a strip of width w and height h.
+QRectF
+bandOf(int w,
+       int h)
+{
+    return QRectF(kHandleRadius, 1., (std::max)(1., w - 2. * kHandleRadius), (std::max)(1., h - 2.));
+}
 
 double
 wrapUnit(double x)
@@ -275,8 +286,8 @@ TrapezoidStrip::getDefaultDomain(double* low,
         double o[4], p[4];
         keyedOffsets(_values, false, o);
         pointsAround(centre, o, p);
-        const bool widenLow = p[0] < 0.;
-        const bool widenHigh = p[3] > 1.;
+        const bool widenLow = p[0] < -kFitTolerance;
+        const bool widenHigh = p[3] > 1. + kFitTolerance;
         *low = widenLow ? p[0] : 0.;
         *high = widenHigh ? p[3] : 1.;
         const double margin = kFitMargin * (*high - *low);
@@ -465,6 +476,36 @@ TrapezoidStrip::componentsAt(double value,
     }
 }
 
+QPainterPath
+TrapezoidStrip::outlinePath(int turn) const
+{
+    const QRectF band = bandOf(width(), height());
+    const double top = band.top() + kHandleRadius;
+    const double bottom = band.bottom() - kHandleRadius;
+    double p[4];
+
+    getPositions(p);
+    const QPointF corners[4] = {
+        QPointF(valueToX(p[0] + turn), bottom), QPointF(valueToX(p[1] + turn), top),
+        QPointF(valueToX(p[2] + turn), top), QPointF(valueToX(p[3] + turn), bottom)
+    };
+    QPainterPath outline(corners[0]);
+    for (int i = 1; i < 4; ++i) {
+        const QPointF& a = corners[i - 1];
+        const QPointF& b = corners[i];
+        if (_smooth && (i != 2)) {
+            // A cubic with its controls a third and two thirds along x, level with its ends,
+            // is x linear and y 3t^2 - 2t^3 in t: the smoothstep exactly.
+            const double dx = (b.x() - a.x()) / 3.;
+            outline.cubicTo(QPointF(a.x() + dx, a.y()), QPointF(b.x() - dx, b.y()), b);
+        } else {
+            outline.lineTo(b);
+        }
+    }
+
+    return outline;
+}
+
 void
 TrapezoidStrip::paintEvent(QPaintEvent* /*e*/)
 {
@@ -481,7 +522,7 @@ TrapezoidStrip::paintEvent(QPaintEvent* /*e*/)
         setProperty("domainLow", low);
         setProperty("domainHigh", high);
     }
-    const QRectF band(kHandleRadius, 1., (std::max)(1., width() - 2. * kHandleRadius), (std::max)(1., height() - 2.));
+    const QRectF band = bandOf(width(), height());
 
     // The gradient, one column per pixel.
     std::vector<float> rgb(3 * (std::size_t)w);
@@ -507,8 +548,6 @@ TrapezoidStrip::paintEvent(QPaintEvent* /*e*/)
     painter.drawImage(QRectF(0., band.top(), w, band.height()), gradient);
     painter.setClipRect(band);
 
-    const double top = band.top() + kHandleRadius;
-    const double bottom = band.bottom() - kHandleRadius;
     double p[4];
     double centre;
     getPositions(p, &centre);
@@ -525,23 +564,7 @@ TrapezoidStrip::paintEvent(QPaintEvent* /*e*/)
         firstTurn = (std::max)(firstTurn, lastTurn - kMaxHueCopies);
     }
     for (int turn = firstTurn; turn <= lastTurn; ++turn) {
-        const QPointF corners[4] = {
-            QPointF(valueToX(p[0] + turn), bottom), QPointF(valueToX(p[1] + turn), top),
-            QPointF(valueToX(p[2] + turn), top), QPointF(valueToX(p[3] + turn), bottom)
-        };
-        QPainterPath outline(corners[0]);
-        for (int i = 1; i < 4; ++i) {
-            const QPointF& a = corners[i - 1];
-            const QPointF& b = corners[i];
-            if (_smooth && (i != 2)) {
-                // A cubic with its controls a third and two thirds along x, level with its ends,
-                // is x linear and y 3t^2 - 2t^3 in t: the smoothstep exactly.
-                const double dx = (b.x() - a.x()) / 3.;
-                outline.cubicTo(QPointF(a.x() + dx, a.y()), QPointF(b.x() - dx, b.y()), b);
-            } else {
-                outline.lineTo(b);
-            }
-        }
+        const QPainterPath outline = outlinePath(turn);
         QPainterPath shape(outline);
         shape.closeSubpath();
         painter.setPen(Qt::NoPen);
@@ -584,6 +607,8 @@ TrapezoidStrip::paintEvent(QPaintEvent* /*e*/)
     }
 
     painter.setClipping(false);
+    const double top = band.top() + kHandleRadius;
+    const double bottom = band.bottom() - kHandleRadius;
     for (int i = 0; i < 4; ++i) {
         const bool inner = (i == 1) || (i == 2);
         const QPointF handle(valueToX(p[i]), inner ? top : bottom);

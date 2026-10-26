@@ -458,7 +458,7 @@ TEST_F(NativeGoldenTest, HSVKeyer)
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
     v.push_back(variant("acrossRed", [](const GoldenGraph& g) {
-        return choice(g, kHSVKeyerParamColorModel, "hsv") && num(g, kHSVKeyerParamHueRange, { 0.1, 0.05, 0., 0.05, 0.1 }) && num(g, kHSVKeyerParamSaturationRange, { 0.3, 0.35, 0.65, 0.35, 0. });
+        return choice(g, kHSVKeyerParamColorModel, "hsv") && num(g, kHSVKeyerParamHueRange, { 0.1, 0.05, 0., 0.05, 0.1 }) && num(g, kHSVKeyerParamSaturationRange, { 0.3, 0.35, 0.65, 0.35, 0. }) && num(g, kHSVKeyerParamLumaRange, { 0.05, 0.45, 1., 0.5, 1. });
     }));
     v.push_back(variant("hsl", [](const GoldenGraph& g) {
         return choice(g, kHSVKeyerParamColorModel, "hsl") && num(g, kHSVKeyerParamHueRange, { 0.08, 0.06, 0.34, 0.06, 0.1 }) && num(g, kHSVKeyerParamLumaRange, { 0.2, 0.2, 0.5, 0.2, 0.2 });

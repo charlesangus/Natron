@@ -31,6 +31,7 @@
 #include <functional>
 
 #include <QAbstractButton>
+#include <QPainterPath>
 #include <QPointer>
 #include <QWidget>
 
@@ -138,6 +139,12 @@ public:
      **/
     void getPositions(double* positions,
                       double* centre = 0) const;
+
+    /**
+     * @brief The outline drawn over the gradient, open along its base: from the outer low point
+     * up to the plateau, along it and down to the outer high point, shifted by turn whole turns.
+     **/
+    QPainterPath outlinePath(int turn = 0) const;
 
     double valueToX(double value) const;
     double xToValue(double x) const;

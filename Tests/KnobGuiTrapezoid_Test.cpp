@@ -31,7 +31,9 @@
 #include <QDir>
 #include <QImage>
 #include <QMouseEvent>
+#include <QPainterPath>
 #include <QPointF>
+#include <QPolygonF>
 #include <QString>
 #include <QWheelEvent>
 
@@ -449,43 +451,67 @@ TEST(KnobGuiTrapezoid, NoLineAlongTheBase)
     EXPECT_NEAR(mid.blue(), nearBase.blue(), 2);
 }
 
-// Smooth draws the falloffs as smoothsteps: a quarter of the way along the rising edge the curve
-// is at 0.15625 of the height, not 0.25, so the outline crosses that column lower down.
+// The height of an outline above its base at x, as a share of the trapezoid's height, from the
+// path flattened into line segments; -1 where the outline does not cross x.
+static double
+outlineHeightAt(const QPainterPath& outline,
+                double x)
+{
+    const QList<QPolygonF> polygons = outline.toSubpathPolygons();
+    if (polygons.isEmpty() || polygons.front().size() < 2) {
+        return -1.;
+    }
+    const QPolygonF& poly = polygons.front();
+    const QRectF bounds = outline.boundingRect();
+    const double base = poly.front().y();
+    const double height = base - bounds.top();
+    if (!(height > 0.)) {
+        return -1.;
+    }
+    for (int i = 1; i < poly.size(); ++i) {
+        const QPointF& a = poly[i - 1];
+        const QPointF& b = poly[i];
+        if ((x >= a.x()) && (x <= b.x()) && (b.x() > a.x())) {
+            const double t = (x - a.x()) / (b.x() - a.x());
+
+            return (base - (a.y() + t * (b.y() - a.y()))) / height;
+        }
+    }
+
+    return -1.;
+}
+
+// Smooth draws the falloffs as smoothsteps: a quarter of the way along the rising edge the
+// outline is at 0.15625 of the height, not 0.25.
 TEST(KnobGuiTrapezoid, SmoothCurvesTheFalloffs)
 {
     TrapezoidStrip strip(KnobDouble::eRangeWidgetRoleLuma);
 
     // 0.1, 0.3, 0.6, 0.8.
     setUp(strip, 0.2, 0.15, 0.45, 0.15, 0.2);
-    // Tall enough that the curves part by several pixels.
     strip.resize(kWidth, 120);
     EXPECT_FALSE(strip.isSmooth());
-    const QImage linear = strip.grab().toImage();
+    const QPainterPath linear = strip.outlinePath();
     strip.setSmooth(true);
     EXPECT_TRUE(strip.isSmooth());
-    const QImage smooth = strip.grab().toImage();
-    ASSERT_EQ(linear.size(), smooth.size());
+    const QPainterPath smooth = strip.outlinePath();
 
-    // The topmost row of a column where the white outline is drawn.
-    auto outlineRow = [](const QImage& image, int x) {
-        for (int y = 0; y < image.height(); ++y) {
-            const QColor c = image.pixelColor(x, y);
-            if ((c.red() > 200) && (c.green() > 200) && (c.blue() > 200)) {
-                return y;
-            }
-        }
-
-        return -1;
-    };
-    const int x = (int)std::floor(strip.valueToX(0.15));
-    const int linearRow = outlineRow(linear, x);
-    const int smoothRow = outlineRow(smooth, x);
-    ASSERT_GE(linearRow, 0);
-    ASSERT_GE(smoothRow, 0);
-    EXPECT_GT(smoothRow, linearRow);
+    // The flattening of a cubic is within a fraction of a pixel of the curve.
+    const double tolerance = 0.01;
+    const double rising = strip.valueToX(0.15);
+    EXPECT_NEAR(0.25, outlineHeightAt(linear, rising), tolerance);
+    EXPECT_NEAR(0.15625, outlineHeightAt(smooth, rising), tolerance);
+    const double falling = strip.valueToX(0.75);
+    EXPECT_NEAR(0.25, outlineHeightAt(linear, falling), tolerance);
+    EXPECT_NEAR(0.15625, outlineHeightAt(smooth, falling), tolerance);
+    // Three quarters up the rising edge the smoothstep is above the line.
+    const double upper = strip.valueToX(0.25);
+    EXPECT_NEAR(0.75, outlineHeightAt(linear, upper), tolerance);
+    EXPECT_NEAR(0.84375, outlineHeightAt(smooth, upper), tolerance);
     // The plateau is drawn alike.
-    const int plateauX = (int)std::floor(strip.valueToX(0.4));
-    EXPECT_EQ(outlineRow(linear, plateauX), outlineRow(smooth, plateauX));
+    const double plateau = strip.valueToX(0.4);
+    EXPECT_NEAR(1., outlineHeightAt(linear, plateau), 1e-9);
+    EXPECT_NEAR(1., outlineHeightAt(smooth, plateau), 1e-9);
 }
 
 TEST(KnobGuiTrapezoid, WritesGrabPngs)

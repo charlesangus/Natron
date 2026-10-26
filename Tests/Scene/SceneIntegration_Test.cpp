@@ -752,7 +752,8 @@ TEST_F(SceneIntegrationTest, USDWriteRendersOncePerCommandLineRender)
 //   USDMaterial -> geometry --/
 //
 // Every node's opinions reach the written file: Layered mode flattens what the nodes authored
-// into it and keeps the read file as its sublayer.
+// into it, keeps the read file as its sublayer, and writes the layers USDXformPrim and the geometry
+// graft their inputs from beside it, referenced.
 TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
 {
     QTemporaryDir tmp;
@@ -826,17 +827,22 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     PXR_NS::SdfPrimSpecHandle box = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Box"));
     ASSERT_TRUE(static_cast<bool>(box));
     EXPECT_TRUE(layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Box.xformOpOrder")));
-    // USDMaterial: the binding on the card, and the texture relative to the written file.
-    EXPECT_TRUE(layer->GetRelationshipAtPath(PXR_NS::SdfPath("/World/Props/Card.material:binding")));
-    PXR_NS::SdfAttributeSpecHandle textureFile = layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Props/Card/Red/diffuseColorTexture.inputs:file"));
-    ASSERT_TRUE(static_cast<bool>(textureFile));
-    EXPECT_EQ(std::string("../textures/red.png"), textureFile->GetDefaultValue().Get<PXR_NS::SdfAssetPath>().GetAssetPath());
-    // USDXformPrim and USDLight: their prims defined.
+    // USDXformPrim: its prim defined, and its inputs' prims defined under it, each referencing
+    // its input's layers, written beside the file.
     PXR_NS::SdfPrimSpecHandle propsSpec = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Props"));
-    PXR_NS::SdfPrimSpecHandle keySpec = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Props/Key"));
-    ASSERT_TRUE(propsSpec && keySpec);
+    ASSERT_TRUE(static_cast<bool>(propsSpec));
     EXPECT_EQ(PXR_NS::SdfSpecifierDef, propsSpec->GetSpecifier());
-    EXPECT_EQ(PXR_NS::SdfSpecifierDef, keySpec->GetSpecifier());
+    const char* const grafted[] = { "/World/Props/Key", "/World/Props/Card" };
+    for (const char* graftedPath : grafted) {
+        PXR_NS::SdfPrimSpecHandle spec = layer->GetPrimAtPath(PXR_NS::SdfPath(graftedPath));
+        ASSERT_TRUE(static_cast<bool>(spec)) << graftedPath;
+        EXPECT_EQ(PXR_NS::SdfSpecifierDef, spec->GetSpecifier());
+        PXR_NS::SdfReferenceListOp references;
+        ASSERT_TRUE(layer->HasField(spec->GetPath(), PXR_NS::SdfFieldKeys->References, &references)) << graftedPath;
+        const std::vector<PXR_NS::SdfReference> items = references.GetAppliedItems();
+        ASSERT_EQ((std::size_t)1, items.size()) << graftedPath;
+        EXPECT_TRUE(QString::fromStdString(items[0].GetAssetPath()).startsWith(QString::fromUtf8("./scene_layer"))) << items[0].GetAssetPath();
+    }
     // USDPrune: the camera deactivated.
     PXR_NS::SdfPrimSpecHandle camera = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Cam"));
     ASSERT_TRUE(static_cast<bool>(camera));
@@ -854,6 +860,16 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     EXPECT_EQ(PXR_NS::TfToken("Xform"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props")).GetTypeName());
     EXPECT_EQ(PXR_NS::TfToken("DistantLight"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props/Key")).GetTypeName());
     EXPECT_EQ(PXR_NS::TfToken("Material"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props/Card/Red")).GetTypeName());
+    // USDMaterial: the texture relative to the written files, which sit side by side.
+    const PXR_NS::UsdAttribute textureFile = stage->GetAttributeAtPath(PXR_NS::SdfPath("/World/Props/Card/Red/diffuseColorTexture.inputs:file"));
+    ASSERT_TRUE(static_cast<bool>(textureFile));
+    PXR_NS::SdfAssetPath textureAsset;
+    ASSERT_TRUE(textureFile.Get(&textureAsset));
+    EXPECT_EQ(std::string("../textures/red.png"), textureAsset.GetAssetPath());
+    const std::vector<PXR_NS::SdfPropertySpecHandle> textureSpecs = textureFile.GetPropertyStack();
+    ASSERT_FALSE(textureSpecs.empty());
+    EXPECT_EQ(cleanAbsolute(tmp.path() + QString::fromUtf8("/out")),
+              QFileInfo(QString::fromStdString(textureSpecs[0]->GetLayer()->GetRealPath())).absolutePath());
 
     const PXR_NS::GfVec3d boxAt = PXR_NS::UsdGeomXformable(boxPrim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.)).ExtractTranslation();
     EXPECT_NEAR(5., boxAt[1], 1e-9);

@@ -1506,6 +1506,30 @@ public:
         return _signalEmitter;
     }
 
+    /**
+     * @brief Calls visitor(key, storage) once per entry, under the cache lock: storage is
+     * eStorageModeRAM for the memory portion and eStorageModeDisk for the disk portion. The visitor
+     * must not call back into this cache.
+     **/
+    template <typename Visitor>
+    void visitEntryKeys(Visitor visitor) const
+    {
+        QMutexLocker locker(&_lock);
+
+        for (ConstCacheIterator it = _memoryCache.begin(); it != _memoryCache.end(); ++it) {
+            const std::list<EntryTypePtr>& entries = getValueFromIterator(it);
+            for (typename std::list<EntryTypePtr>::const_iterator e = entries.begin(); e != entries.end(); ++e) {
+                visitor((*e)->getKey(), eStorageModeRAM);
+            }
+        }
+        for (ConstCacheIterator it = _diskCache.begin(); it != _diskCache.end(); ++it) {
+            const std::list<EntryTypePtr>& entries = getValueFromIterator(it);
+            for (typename std::list<EntryTypePtr>::const_iterator e = entries.begin(); e != entries.end(); ++e) {
+                visitor((*e)->getKey(), eStorageModeDisk);
+            }
+        }
+    }
+
     /** @brief This function can be called to remove a specific entry from the cache. For example a frame
      * that has had its render aborted but already belong to the cache.
      **/

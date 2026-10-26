@@ -233,6 +233,8 @@ public:
 
     void clearTimelineCacheLine();
 
+    void refreshTimelineCacheLineIfStale();
+
     bool isInfobarVisible() const;
     bool isTopToolbarVisible() const;
     bool isPlayerVisible() const;

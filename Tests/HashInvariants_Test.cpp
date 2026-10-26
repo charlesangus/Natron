@@ -37,6 +37,8 @@
 #include <OpenImageIO/imageio.h>
 
 #include <QCoreApplication>
+#include <QDateTime>
+#include <QDir>
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
@@ -54,6 +56,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
@@ -290,6 +293,76 @@ TEST_F(HashInvariantsTest, SameGraphHashesEqualInASecondAppInstance)
         EXPECT_EQ(local.constant->getHashValue(), remote.constant->getHashValue());
         EXPECT_EQ(local.blur->getHashValue(), remote.blur->getHashValue());
     }
+}
+
+namespace {
+
+// Writes size bytes to dir/name and gives the file a fixed modification time, as an AppImage's
+// squashfs does for a bundled plug-in wherever it is mounted.
+QString
+writeStampedBinary(const QString& dir,
+                   const QString& name,
+                   int size)
+{
+    if (!QDir().mkpath(dir)) {
+        return QString();
+    }
+    const QString path = dir + QLatin1Char('/') + name;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        return QString();
+    }
+    f.write(QByteArray(size, 'x'));
+    // Unflushed bytes written at close would set the modification time again.
+    if (!f.flush()) {
+        return QString();
+    }
+    if (!f.setFileTime(QDateTime::fromSecsSinceEpoch(1700000000), QFileDevice::FileModificationTime)) {
+        return QString();
+    }
+    f.close();
+
+    return path;
+}
+
+} // namespace
+
+// The disk cache outlives the session, so a hash input that differs per launch, such as the
+// mount point of an AppImage holding the OpenFX plug-ins, would miss it on every launch.
+TEST(OfxBinaryStamp, SameBinaryStampsEqualWhereverItIsMounted)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString name = QString::fromUtf8("Plugin.ofx");
+    const QString first = writeStampedBinary(tmp.path() + QString::fromUtf8("/.mount_aaaa/Plugins/OFX/Natron"), name, 64);
+    const QString second = writeStampedBinary(tmp.path() + QString::fromUtf8("/.mount_bbbb/Plugins/OFX/Natron"), name, 64);
+    ASSERT_FALSE(first.isEmpty());
+    ASSERT_FALSE(second.isEmpty());
+
+    EXPECT_EQ(Plugin::ofxBinaryStamp(first.toStdString()), Plugin::ofxBinaryStamp(second.toStdString()));
+}
+
+TEST(OfxBinaryStamp, RebuiltOrRenamedBinaryStampsDiffer)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString name = QString::fromUtf8("Plugin.ofx");
+    const QString original = writeStampedBinary(tmp.path() + QString::fromUtf8("/a"), name, 64);
+    const QString resized = writeStampedBinary(tmp.path() + QString::fromUtf8("/b"), name, 65);
+    const QString renamed = writeStampedBinary(tmp.path() + QString::fromUtf8("/c"), QString::fromUtf8("Other.ofx"), 64);
+    ASSERT_FALSE(original.isEmpty());
+    ASSERT_FALSE(resized.isEmpty());
+    ASSERT_FALSE(renamed.isEmpty());
+
+    const U64 stamp = Plugin::ofxBinaryStamp(original.toStdString());
+    EXPECT_NE(stamp, Plugin::ofxBinaryStamp(resized.toStdString()));
+    EXPECT_NE(stamp, Plugin::ofxBinaryStamp(renamed.toStdString()));
+
+    QFile f(original);
+    ASSERT_TRUE(f.open(QIODevice::ReadWrite));
+    ASSERT_TRUE(f.setFileTime(QDateTime::fromSecsSinceEpoch(1700000060), QFileDevice::FileModificationTime));
+    f.close();
+    EXPECT_NE(stamp, Plugin::ofxBinaryStamp(original.toStdString()));
 }
 
 // ---------------------------------------------------------------------------------------------

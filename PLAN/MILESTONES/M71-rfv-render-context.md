@@ -87,3 +87,7 @@ Scouting notes: `treeRoot` is the viewer/writer requester only, with about 10 se
   - size: M
 
 **Verification gate:** full ctest passes, including the new RFV tests and the existing `SchedulerEquivalence`, `FrameGraphBuild` and `GraphScalingTLS` suites unchanged; `tools/bench` shows no regression on a graph with no RFVs (context key 0 path); `git clang-format` against the merge base is clean.
+
+## Decisions
+
+- 2026-10-26 — **Metadata follows the context (bosley-native-nodes):** input metadata, region-of-definition and layer reads run under each input's context, so a format or RoD driven by an rfv expression follows the Set below it (RFVRender.MetadataAndRoDFollowTheSetBelowThem). This goes beyond the 2026-10-08 design's v1 note that RFV-dependent metadata is unsupported; the M178 context machinery made it cheap and leaving it out gave wrong formats under a Set.

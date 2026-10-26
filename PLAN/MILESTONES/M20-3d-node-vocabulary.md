@@ -102,7 +102,7 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
   - verify: NatronRenderer renders a `USDRender` comp to PNG with `DISPLAY` unset, inside natron-dev (llvmpipe); with EGL hidden (`LD_LIBRARY_PATH` pointing at an empty stub), the node fails with the error and a 2D Write in the same project still renders.
   - size: M
 
-- [ ] M20.P3.T4 — GL→Vulkan hand-off ladder for `USDRender`
+- [x] M20.P3.T4 — GL→Vulkan hand-off ladder for `USDRender`
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/HydraHandoff.h`/`.cpp` (new), `Engine/ViewerHandoff.*` (M107's — reuse its interop helpers, factoring shared code out rather than duplicating it), CMake source list
   - approach: mirror M107 - GPU Viewer Hand-off's ladder in the reverse direction. When the render's placement is GPU: ZeroCopy (export Storm's AOV textures with `GL_EXT_memory_object_fd` and semaphores, import into the Vulkan device as a `GpuDeviceImage`) → ZeroCopyHostSync → readback (M20.P3.T1's CPU path, uploaded by the existing placement). Pick the rung per device pair by UUID match and extension support, as M107 does; drop rungs silently on failure; on device loss drop the interop and use readback until `recoverIfLost`. The output is identical on every rung.
   - verify: unit test — forcing each rung (env or test hook) yields byte-identical AOVs; `NATRON_GPU=off` and an injected device loss fall back to readback with no error dialog or log spam. Manual on AMD and NVIDIA — the report shows the zero-copy rung reached and no root download for a `USDRender → GPU node → Viewer` chain.
@@ -120,7 +120,7 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
   - verify: test green in `build-and-test`; each node's authored opinions visible in the exported layer stack.
   - size: M
 
-- [ ] M20.P3.T6 — Automated `USDRender` test under the strict GL runner
+- [x] M20.P3.T6 — Automated `USDRender` test under the strict GL runner
   - files: `Tests/` (GL test beside M19.P2.T7's Storm case), `build/m63-gui/run-gl-tests.sh` if it needs the case listed, a committed reference scene and reference image
   - approach: under the strict llvmpipe runner (headless EGL, M20.P3.T5), render the reference scene built from create/edit nodes through `USDRender` and compare `rgba` to the committed reference with a tolerance (not bit-exact); check that `depth.Z` grows with distance and is +inf on background, and that `primId.id` at known pixels decodes to the expected prim paths. Skips without GL like its siblings.
   - verify: passes under `build/m63-gui/run-gl-tests.sh` with `NATRON_TEST_REQUIRE_GL=1`; moving a prim in the reference scene makes it fail.
@@ -155,3 +155,4 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 - 2026-10-24 — `Deps` is M19: the milestone requires M19 - USD/Hydra Foundation's gate, and `USDRender` reuses M107 - GPU Viewer Hand-off's ladder, which M19 already depends on.
 - 2026-10-24 — The old M20.P3.T1 was split into the readback render (P3.T1), the headless EGL context (P3.T5), the interop ladder (P3.T4) and the strict GL test (P3.T6); `USDWrite` was re-sized S → M: per the task sizing rule, each is one coherent change, and the export logic plus its tests is not haiku-safe.
 - 2026-10-24 — `USDWrite` has a path-mode knob, relative (default) or absolute: user's call, since relative-only was an arbitrary restriction; relative stays the default so exports can be moved.
+All tasks done at d9bfcc47e (release gate green, Storm reference recorded under llvmpipe). Pending: hardware check on AMD/NVIDIA (zero-copy rung, reference match), screenshots, PR stacked on M19 - USD/Hydra Foundation.
